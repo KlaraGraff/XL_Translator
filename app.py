@@ -1,0 +1,90 @@
+"""
+XL Translator — Streamlit 应用入口。
+导航：翻译任务 | 记忆库管理（两页）
+"""
+from pathlib import Path
+
+import streamlit as st
+
+from core.tm_manager import init_db
+from settings import load_settings, save_settings
+from ui.branding import get_page_icon_config
+from ui.sidebar import render_sidebar
+import ui.page_translate as page_translate
+import ui.page_tm as page_tm
+
+
+# ── CSS 注入 ──────────────────────────────────────────────
+
+def _inject_css():
+    css_path = Path(__file__).parent / "ui" / "styles.css"
+    if css_path.exists():
+        st.markdown(
+            f"<style>{css_path.read_text(encoding='utf-8')}</style>",
+            unsafe_allow_html=True,
+        )
+
+
+# ── session_state 初始化 ──────────────────────────────────
+
+def _init():
+    if "settings"    not in st.session_state:
+        st.session_state["settings"]    = load_settings()
+    if "active_page" not in st.session_state:
+        st.session_state["active_page"] = "translate"
+
+
+def _persist_settings_if_changed(settings) -> None:
+    """Persist settings whenever their serialized content changes."""
+    settings_json = settings.model_dump_json()
+    if settings_json != st.session_state.get("_settings_json"):
+        save_settings(settings)
+        st.session_state["_settings_json"] = settings_json
+
+
+# ── 主入口 ────────────────────────────────────────────────
+
+def main():
+    st.set_page_config(
+        page_title="Translator",
+        page_icon=get_page_icon_config(),
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    _inject_css()
+    _init()
+    init_db()
+
+    settings    = st.session_state["settings"]
+    active_page = st.session_state["active_page"]
+    is_running  = (
+        active_page == "translate"
+        and st.session_state.get("translate_phase") == "running"
+    )
+
+    # 侧边栏（含导航按钮，返回新页面标识）
+    settings, new_page = render_sidebar(settings, active_page, is_running)
+
+    if new_page != active_page:
+        st.session_state["active_page"] = new_page
+        active_page = new_page
+        st.rerun()
+
+    # 持久化侧边栏修改（仅在内容实际变更时写磁盘，避免每次 rerun 都 I/O）
+    _persist_settings_if_changed(settings)
+    st.session_state["settings"] = settings
+
+    # 主内容区路由
+    if active_page == "translate":
+        updated = page_translate.render_page(settings)
+    else:
+        updated = page_tm.render_page(settings)
+
+    # 回写被页面修改的 settings（同样加比较保护，避免无变化时写盘）
+    _persist_settings_if_changed(updated)
+    st.session_state["settings"] = updated
+
+
+if __name__ == "__main__":
+    main()

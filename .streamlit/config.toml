@@ -1,0 +1,16 @@
+[client]
+toolbarMode = "minimal"
+
+[server]
+headless = false
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
+[theme]
+base = "light"
+primaryColor = "#0EA5E9"
+backgroundColor = "#F4F6F9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1A2035"
+font = "sans serif"

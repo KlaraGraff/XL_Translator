@@ -1,0 +1,4 @@
+interface:
+  display_name: "Excel 翻译直连"
+  short_description: "直接调用本地表格翻译器处理 Excel 路径"
+  default_prompt: "用本地 Excel 翻译器直接处理这个文件或目录，并把输出文件路径回给我。"

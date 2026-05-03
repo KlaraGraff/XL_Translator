@@ -1,0 +1,46 @@
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data and self-test artifacts
+.runtime/
+logs/
+output/
+tmp/
+tmp*/
+
+# Build and distribution artifacts
+build/
+dist/
+*.zip
+*.dmg
+*.pkg
+
+# Local/user configuration and secrets
+.env
+.env.*
+!.env.example
+settings.json
+keys.json
+tm.db
+app.log
+secrets.toml
+
+# Editor/OS files
+.DS_Store
+.vscode/
+.idea/
+
+# External local copies
+andrej-karpathy-skills/
+
+# Accidental shell/temp artifact
+nul`r`nexit
