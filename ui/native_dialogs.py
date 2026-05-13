@@ -36,6 +36,22 @@ on run argv
 end run
 """
 
+_MACOS_WORD_FILE_PICKER_SCRIPT = r"""
+on run argv
+    set initialDir to ""
+    set promptText to "选择 Word 文件（.docx）"
+    if (count of argv) > 0 then
+        set initialDir to item 1 of argv
+    end if
+    if initialDir is not "" then
+        set chosenItem to choose file with prompt promptText default location ((POSIX file initialDir) as alias)
+    else
+        set chosenItem to choose file with prompt promptText
+    end if
+    return POSIX path of chosenItem
+end run
+"""
+
 
 def pick_folder(initial_path: str | Path | None = None) -> str | None:
     """Open a native folder picker and return the chosen path."""
@@ -45,6 +61,11 @@ def pick_folder(initial_path: str | Path | None = None) -> str | None:
 def pick_excel_file(initial_path: str | Path | None = None) -> str | None:
     """Open a native Excel file picker and return the chosen path."""
     return _run_picker(script=_MACOS_EXCEL_FILE_PICKER_SCRIPT, initial_path=initial_path)
+
+
+def pick_word_file(initial_path: str | Path | None = None) -> str | None:
+    """Open a native Word file picker and return the chosen path."""
+    return _run_picker(script=_MACOS_WORD_FILE_PICKER_SCRIPT, initial_path=initial_path)
 
 
 def _run_picker(*, script: str, initial_path: str | Path | None) -> str | None:

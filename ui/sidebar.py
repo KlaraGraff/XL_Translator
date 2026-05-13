@@ -21,11 +21,11 @@ from ui.components import build_sidebar_tooltip_html, render_field_group
 _BRAND_TOOLTIP = {
     "title": "Translator",
     "title_meta": "by OA",
-    "summary": "左侧完成配置，右侧执行翻译任务或维护记忆库。",
+    "summary": "左侧完成配置，右侧执行表格或 Word 翻译任务，并维护统一记忆库。",
     "items": [
-        "翻译任务页用于扫描文件、执行翻译和查看结果。",
-        "记忆库管理页用于搜索、新增、固定和清理词条。",
-        "当前侧边栏里的领域、引擎与吞吐设置会持续作用于本次工作流。",
+        "表格翻译页用于扫描 Excel 文件、执行翻译和查看结果。",
+        "Word 翻译页用于扫描 DOCX 文件并生成双语 Word。",
+        "记忆库管理页用于搜索、新增、固定和清理共享词条。",
     ],
 }
 
@@ -183,28 +183,34 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                 unsafe_allow_html=True,
             )
             st.markdown('<div class="nav-section">', unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
-            with col1:
-                btn_translate = st.button(
-                    "翻译任务",
-                    key="nav_translate",
-                    use_container_width=True,
-                    type="primary" if active_page == "translate" else "secondary",
-                    disabled=is_running,
-                )
-            with col2:
-                btn_tm = st.button(
-                    "记忆库管理",
-                    key="nav_tm",
-                    use_container_width=True,
-                    type="primary" if active_page == "tm" else "secondary",
-                    disabled=is_running,
-                )
+            btn_excel = st.button(
+                "表格翻译",
+                key="nav_excel_translate",
+                use_container_width=True,
+                type="primary" if active_page in ("excel_translate", "translate") else "secondary",
+                disabled=is_running,
+            )
+            btn_word = st.button(
+                "Word 翻译",
+                key="nav_word_translate",
+                use_container_width=True,
+                type="primary" if active_page == "word_translate" else "secondary",
+                disabled=is_running,
+            )
+            btn_tm = st.button(
+                "记忆库管理",
+                key="nav_tm",
+                use_container_width=True,
+                type="primary" if active_page == "tm" else "secondary",
+                disabled=is_running,
+            )
             st.markdown('</div>', unsafe_allow_html=True)
 
         new_page = active_page
-        if btn_translate:
-            new_page = "translate"
+        if btn_excel:
+            new_page = "excel_translate"
+        elif btn_word:
+            new_page = "word_translate"
         elif btn_tm:
             new_page = "tm"
 

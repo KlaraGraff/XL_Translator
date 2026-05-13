@@ -1,6 +1,6 @@
 """
 XL Translator — Streamlit 应用入口。
-导航：翻译任务 | 记忆库管理（两页）
+导航：表格翻译 | Word 翻译 | 记忆库管理
 """
 from pathlib import Path
 
@@ -11,6 +11,7 @@ from settings import load_settings, save_settings
 from ui.branding import get_page_icon_config
 from ui.sidebar import render_sidebar
 import ui.page_translate as page_translate
+import ui.page_word_translate as page_word_translate
 import ui.page_tm as page_tm
 
 
@@ -31,7 +32,9 @@ def _init():
     if "settings"    not in st.session_state:
         st.session_state["settings"]    = load_settings()
     if "active_page" not in st.session_state:
-        st.session_state["active_page"] = "translate"
+        st.session_state["active_page"] = "excel_translate"
+    elif st.session_state["active_page"] == "translate":
+        st.session_state["active_page"] = "excel_translate"
 
 
 def _persist_settings_if_changed(settings) -> None:
@@ -59,8 +62,8 @@ def main():
     settings    = st.session_state["settings"]
     active_page = st.session_state["active_page"]
     is_running  = (
-        active_page == "translate"
-        and st.session_state.get("translate_phase") == "running"
+        st.session_state.get("translate_phase") == "running"
+        or st.session_state.get("word_translate_phase") == "running"
     )
 
     # 侧边栏（含导航按钮，返回新页面标识）
@@ -76,8 +79,10 @@ def main():
     st.session_state["settings"] = settings
 
     # 主内容区路由
-    if active_page == "translate":
+    if active_page in ("excel_translate", "translate"):
         updated = page_translate.render_page(settings)
+    elif active_page == "word_translate":
+        updated = page_word_translate.render_page(settings)
     else:
         updated = page_tm.render_page(settings)
 

@@ -4,6 +4,8 @@ streamlit-extras>=0.4.3
 # Excel 操作
 openpyxl>=3.1.0
 xlwings>=0.34.0
+# Word 操作
+python-docx>=1.1.0
 # 云端翻译引擎 SDK
 anthropic>=0.28.0
 openai>=1.35.0
