@@ -127,6 +127,17 @@ CHUNK_LOCAL_DEFAULT = 12
 CHUNK_LOCAL_MIN     = 5
 CHUNK_LOCAL_MAX     = 20
 
+# ── Word 独立批次策略（段落比 Excel 单元格更长，默认更保守）──────────────
+WORD_BATCH_PARAGRAPHS_DEFAULT = 4
+WORD_BATCH_PARAGRAPHS_MIN     = 1
+WORD_BATCH_PARAGRAPHS_MAX     = 8
+WORD_BATCH_CHARS_DEFAULT      = 3000
+WORD_BATCH_CHARS_MIN          = 800
+WORD_BATCH_CHARS_MAX          = 12000
+WORD_BATCH_SPLIT_CHARS_DEFAULT = 6000
+WORD_BATCH_SPLIT_CHARS_MIN     = 1500
+WORD_BATCH_SPLIT_CHARS_MAX     = 30000
+
 # ── 全局并发控制（输入框按模式限制区间）────────────────────
 CONCURRENCY_UNLOCK_CODE      = "OA"
 CONCURRENCY_CLOUD_DEFAULT    = 5
@@ -260,4 +271,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 6
+SETTINGS_SCHEMA_VERSION = 7

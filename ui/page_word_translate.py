@@ -7,6 +7,14 @@ from pathlib import Path
 
 import streamlit as st
 
+from config import (
+    WORD_BATCH_CHARS_MAX,
+    WORD_BATCH_CHARS_MIN,
+    WORD_BATCH_PARAGRAPHS_MAX,
+    WORD_BATCH_PARAGRAPHS_MIN,
+    WORD_BATCH_SPLIT_CHARS_MAX,
+    WORD_BATCH_SPLIT_CHARS_MIN,
+)
 from core.bilingual_writer import (
     custom_output_dir_will_be_created,
     get_custom_output_dir_error,
@@ -103,6 +111,18 @@ def _init(settings: AppSettings | None = None) -> None:
     if "word_custom_output_dir_input" not in st.session_state:
         st.session_state["word_custom_output_dir_input"] = (
             settings.output.custom_output_dir if settings else ""
+        )
+    if "word_batch_paragraphs_input" not in st.session_state:
+        st.session_state["word_batch_paragraphs_input"] = (
+            settings.word_batch.max_paragraphs_per_batch if settings else 4
+        )
+    if "word_batch_chars_input" not in st.session_state:
+        st.session_state["word_batch_chars_input"] = (
+            settings.word_batch.max_chars_per_batch if settings else 3000
+        )
+    if "word_split_chars_input" not in st.session_state:
+        st.session_state["word_split_chars_input"] = (
+            settings.word_batch.split_paragraph_chars if settings else 6000
         )
 
 
@@ -308,6 +328,27 @@ def _sync_word_inspector_state(settings: AppSettings) -> AppSettings:
         )
     else:
         settings.output.custom_output_dir = ""
+    settings.word_batch.max_paragraphs_per_batch = int(
+        st.session_state.get(
+            "word_batch_paragraphs_input",
+            settings.word_batch.max_paragraphs_per_batch,
+        )
+    )
+    settings.word_batch.max_chars_per_batch = int(
+        st.session_state.get(
+            "word_batch_chars_input",
+            settings.word_batch.max_chars_per_batch,
+        )
+    )
+    settings.word_batch.split_paragraph_chars = max(
+        settings.word_batch.max_chars_per_batch,
+        int(
+            st.session_state.get(
+                "word_split_chars_input",
+                settings.word_batch.split_paragraph_chars,
+            )
+        ),
+    )
     return settings
 
 
@@ -416,6 +457,67 @@ def _render_word_inspector(settings: AppSettings, phase: str) -> AppSettings:
                     settings.source_lang = chosen_source_lang
                 else:
                     st.session_state[_SOURCE_LANG_SELECTED] = ""
+
+        batch_section = st.container(key="word-batch-strategy")
+        with batch_section:
+            st.markdown(
+                '<div class="word-batch-section-title">高级批次策略</div>',
+                unsafe_allow_html=True,
+            )
+            batch_col1, batch_col2 = st.columns(2, gap="small")
+            with batch_col1:
+                paragraphs_field = render_field_group(
+                    batch_col1,
+                    key="word-batch-paragraphs",
+                    label="每批最多段落",
+                    hint=f"{WORD_BATCH_PARAGRAPHS_MIN} - {WORD_BATCH_PARAGRAPHS_MAX}",
+                )
+                with paragraphs_field:
+                    st.number_input(
+                        "每批最多段落",
+                        min_value=WORD_BATCH_PARAGRAPHS_MIN,
+                        max_value=WORD_BATCH_PARAGRAPHS_MAX,
+                        step=1,
+                        format="%d",
+                        disabled=phase == "running",
+                        label_visibility="collapsed",
+                        key="word_batch_paragraphs_input",
+                    )
+            with batch_col2:
+                chars_field = render_field_group(
+                    batch_col2,
+                    key="word-batch-chars",
+                    label="每批字符上限",
+                    hint=f"{WORD_BATCH_CHARS_MIN} - {WORD_BATCH_CHARS_MAX}",
+                )
+                with chars_field:
+                    st.number_input(
+                        "每批字符上限",
+                        min_value=WORD_BATCH_CHARS_MIN,
+                        max_value=WORD_BATCH_CHARS_MAX,
+                        step=100,
+                        format="%d",
+                        disabled=phase == "running",
+                        label_visibility="collapsed",
+                        key="word_batch_chars_input",
+                    )
+            split_field = render_field_group(
+                batch_section,
+                key="word-split-chars",
+                label="长段拆分阈值",
+                hint=f"{WORD_BATCH_SPLIT_CHARS_MIN} - {WORD_BATCH_SPLIT_CHARS_MAX}",
+            )
+            with split_field:
+                st.number_input(
+                    "长段拆分阈值",
+                    min_value=WORD_BATCH_SPLIT_CHARS_MIN,
+                    max_value=WORD_BATCH_SPLIT_CHARS_MAX,
+                    step=500,
+                    format="%d",
+                    disabled=phase == "running",
+                    label_visibility="collapsed",
+                    key="word_split_chars_input",
+                )
 
         render_checkbox_tooltip_row(
             params_card,

@@ -12,6 +12,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config import (  # noqa: E402
+    WORD_BATCH_CHARS_MAX,
+    WORD_BATCH_CHARS_MIN,
+    WORD_BATCH_PARAGRAPHS_MAX,
+    WORD_BATCH_PARAGRAPHS_MIN,
+    WORD_BATCH_SPLIT_CHARS_MAX,
+    WORD_BATCH_SPLIT_CHARS_MIN,
+)
 from core.headless_translate import build_runtime_settings  # noqa: E402
 from core.headless_word_translate import run_word_translation_path  # noqa: E402
 from settings import load_settings  # noqa: E402
@@ -32,7 +40,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ollama-model", help="Override the saved Ollama model.")
     parser.add_argument("--concurrency", type=int, help="Override the saved cloud concurrency.")
     parser.add_argument("--ollama-concurrency", type=int, help="Override the saved Ollama concurrency.")
-    parser.add_argument("--batch-size", type=int, help="Override the saved batch size.")
+    parser.add_argument("--batch-size", type=int, help="Alias for --word-batch-paragraphs.")
+    parser.add_argument("--word-batch-paragraphs", type=int, help="Override Word paragraphs per request batch.")
+    parser.add_argument("--word-batch-chars", type=int, help="Override Word character budget per request batch.")
+    parser.add_argument("--word-split-chars", type=int, help="Override the long-paragraph split threshold.")
     parser.add_argument("--domain-preset", help="Override the saved domain preset.")
     parser.add_argument("--custom-prompt", help="Set a one-off custom prompt and force domain preset to 自定义.")
     parser.add_argument("--json", action="store_true", help="Print the final result as JSON.")
@@ -83,12 +94,45 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
     if args.ollama_concurrency is not None:
         settings.engine.ollama_concurrency = args.ollama_concurrency
     if args.batch_size is not None:
-        settings.engine.batch_size = args.batch_size
+        settings.word_batch.max_paragraphs_per_batch = _clamp(
+            args.batch_size,
+            WORD_BATCH_PARAGRAPHS_MIN,
+            WORD_BATCH_PARAGRAPHS_MAX,
+        )
+    if args.word_batch_paragraphs is not None:
+        settings.word_batch.max_paragraphs_per_batch = _clamp(
+            args.word_batch_paragraphs,
+            WORD_BATCH_PARAGRAPHS_MIN,
+            WORD_BATCH_PARAGRAPHS_MAX,
+        )
+    if args.word_batch_chars is not None:
+        settings.word_batch.max_chars_per_batch = _clamp(
+            args.word_batch_chars,
+            WORD_BATCH_CHARS_MIN,
+            WORD_BATCH_CHARS_MAX,
+        )
+    if args.word_split_chars is not None:
+        settings.word_batch.split_paragraph_chars = max(
+            settings.word_batch.max_chars_per_batch,
+            _clamp(
+                args.word_split_chars,
+                WORD_BATCH_SPLIT_CHARS_MIN,
+                WORD_BATCH_SPLIT_CHARS_MAX,
+            ),
+        )
     if args.domain_preset:
         settings.domain_preset = args.domain_preset.strip()
     if args.custom_prompt:
         settings.domain_preset = "自定义"
         settings.custom_prompt = args.custom_prompt
+    settings.word_batch.split_paragraph_chars = max(
+        settings.word_batch.max_chars_per_batch,
+        settings.word_batch.split_paragraph_chars,
+    )
+
+
+def _clamp(value: int, minimum: int, maximum: int) -> int:
+    return max(minimum, min(maximum, int(value)))
 
 
 def _print_event(event: dict[str, object]) -> None:

@@ -98,6 +98,15 @@ class WordDocumentTests(unittest.TestCase):
                 "2、增设墙体厚度300mm",
                 "2. Le mur ajouté aura une épaisseur de 300 mm.",
                 source_lang="zh",
+                target_lang="fr",
+            )
+        )
+        self.assertTrue(
+            _needs_word_translation_retry(
+                "2、增设墙体厚度300mm",
+                "2. Le mur ajouté 增设墙体 épaisseur 300 mm.",
+                source_lang="zh",
+                target_lang="fr",
             )
         )
 

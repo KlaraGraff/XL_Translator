@@ -14,9 +14,7 @@ from core import tm_manager
 from core.bilingual_writer import get_custom_output_dir_error
 from core.engine_dispatcher import (
     build_engine,
-    get_batch_size,
     get_system_prompt,
-    translate_texts,
 )
 from core.language_registry import build_lang_pair
 from core.task_logger import TaskLogger
@@ -36,6 +34,7 @@ from core.word_document import (
     extract_word_segments,
     write_bilingual_docx,
 )
+from core.word_batching import WordBatchRunStats, translate_word_texts
 from settings import AppSettings
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -106,7 +105,6 @@ class WordTaskRunner:
                 target_lang=target_lang,
                 source_lang=source_lang,
             )
-            batch_size = get_batch_size(settings)
             concurrency = (
                 settings.engine.ollama_concurrency
                 if settings.engine.mode == "local"
@@ -253,17 +251,39 @@ class WordTaskRunner:
                     )
 
                 t0 = datetime.now()
-                api_translations = translate_texts(
+                word_batch_stats = WordBatchRunStats()
+                word_prompt = _build_word_batch_prompt(system_prompt)
+                self._log(
+                    "INFO",
+                    (
+                        "Word 批次策略："
+                        f"每批最多 {settings.word_batch.max_paragraphs_per_batch} 段，"
+                        f"字符预算 {settings.word_batch.max_chars_per_batch}，"
+                        f"长段拆分阈值 {settings.word_batch.split_paragraph_chars}"
+                    ),
+                )
+                api_translations = translate_word_texts(
                     misses,
                     engine,
                     target_lang,
-                    system_prompt,
-                    batch_size,
+                    word_prompt,
+                    settings.word_batch,
                     concurrency,
-                    progress_cb,
-                    lambda msg: self._log("ERROR", msg),
+                    progress_callback=progress_cb,
+                    error_callback=lambda msg: self._log("WARN", msg),
                     should_stop=self.stop_requested,
                     source_lang=source_lang,
+                    stats=word_batch_stats,
+                )
+                self._log(
+                    "INFO",
+                    (
+                        "Word 实际请求："
+                        f"{word_batch_stats.batch_count} 批，"
+                        f"{word_batch_stats.unit_count} 个请求片段，"
+                        f"长段拆分 {word_batch_stats.split_source_count} 段，"
+                        f"缩小重试 {word_batch_stats.retry_count} 次"
+                    ),
                 )
                 _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
 
@@ -274,6 +294,7 @@ class WordTaskRunner:
                         source,
                         api_translations.get(source),
                         source_lang=source_lang,
+                        target_lang=target_lang,
                     )
                 ]
                 if retry_sources:
@@ -285,15 +306,18 @@ class WordTaskRunner:
                         ),
                     )
                     retry_prompt = _build_word_retry_prompt(system_prompt)
-                    retry_translations = translate_texts(
+                    retry_batch_settings = settings.word_batch.model_copy(
+                        update={"max_paragraphs_per_batch": 1}
+                    )
+                    retry_translations = translate_word_texts(
                         retry_sources,
                         engine,
                         target_lang,
                         retry_prompt,
-                        batch_size=1,
+                        retry_batch_settings,
                         concurrency=1,
                         progress_callback=None,
-                        error_callback=lambda msg: self._log("ERROR", msg),
+                        error_callback=lambda msg: self._log("WARN", msg),
                         should_stop=self.stop_requested,
                         source_lang=source_lang,
                     )
@@ -307,6 +331,7 @@ class WordTaskRunner:
                             source,
                             api_translations.get(source),
                             source_lang=source_lang,
+                            target_lang=target_lang,
                         )
                     ]
                     unresolved_source_set = set(unresolved_sources)
@@ -491,6 +516,7 @@ def _needs_word_translation_retry(
     translated: str | None,
     *,
     source_lang: str,
+    target_lang: str = "",
 ) -> bool:
     """Whether a Word source paragraph should be retried before writing."""
     source_text = str(source or "").strip()
@@ -502,7 +528,20 @@ def _needs_word_translation_retry(
     translated_text = str(translated or "").strip()
     if not translated_text:
         return True
+    if source_lang == "zh" and target_lang not in {"zh", "ja"} and _CJK_RE.search(translated_text):
+        return True
     return translated_text.casefold() == source_text.casefold()
+
+
+def _build_word_batch_prompt(system_prompt: str) -> str:
+    return (
+        f"{system_prompt}\n\n"
+        "Word 文档段落翻译规则：\n"
+        "1. 当前输入来自 Word 正文段落或表格单元格，通常比 Excel 单元格更长。\n"
+        "2. 必须完整翻译每个数组项，不能跳过、合并、摘要或只翻译前半段。\n"
+        "3. 输出数组长度必须与输入完全一致，并按原顺序一一对应。\n"
+        "4. 必须完整保留原文中的数字、负号、小数、单位、钢筋规格、强度等级和轴线编号。"
+    ).strip()
 
 
 def _build_word_retry_prompt(system_prompt: str) -> str:

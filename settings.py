@@ -27,6 +27,15 @@ from config import (
     KEYS_PATH,
     SETTINGS_SCHEMA_VERSION,
     SETTINGS_PATH,
+    WORD_BATCH_CHARS_DEFAULT,
+    WORD_BATCH_CHARS_MAX,
+    WORD_BATCH_CHARS_MIN,
+    WORD_BATCH_PARAGRAPHS_DEFAULT,
+    WORD_BATCH_PARAGRAPHS_MAX,
+    WORD_BATCH_PARAGRAPHS_MIN,
+    WORD_BATCH_SPLIT_CHARS_DEFAULT,
+    WORD_BATCH_SPLIT_CHARS_MAX,
+    WORD_BATCH_SPLIT_CHARS_MIN,
 )
 from core.language_registry import (
     CustomTargetLang,
@@ -124,10 +133,37 @@ class OutputSettings(BaseModel):
     enable_task_log: bool = False
 
 
+class WordBatchSettings(BaseModel):
+    max_paragraphs_per_batch: int = Field(
+        default=WORD_BATCH_PARAGRAPHS_DEFAULT,
+        ge=WORD_BATCH_PARAGRAPHS_MIN,
+        le=WORD_BATCH_PARAGRAPHS_MAX,
+    )
+    max_chars_per_batch: int = Field(
+        default=WORD_BATCH_CHARS_DEFAULT,
+        ge=WORD_BATCH_CHARS_MIN,
+        le=WORD_BATCH_CHARS_MAX,
+    )
+    split_paragraph_chars: int = Field(
+        default=WORD_BATCH_SPLIT_CHARS_DEFAULT,
+        ge=WORD_BATCH_SPLIT_CHARS_MIN,
+        le=WORD_BATCH_SPLIT_CHARS_MAX,
+    )
+
+    @model_validator(mode="after")
+    def _normalize_thresholds(self):
+        self.split_paragraph_chars = max(
+            self.max_chars_per_batch,
+            self.split_paragraph_chars,
+        )
+        return self
+
+
 class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
+    word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = "zh"
     target_lang: str = "en"
@@ -287,6 +323,14 @@ def _migrate_settings_to_v6(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v7(data: dict) -> dict:
+    """Migrate settings payloads to schema version 7."""
+    migrated = dict(data)
+    migrated.setdefault("word_batch", WordBatchSettings().model_dump())
+    migrated["settings_version"] = 7
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -306,6 +350,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v5(migrated)
         elif next_version == 6:
             migrated = _migrate_settings_to_v6(migrated)
+        elif next_version == 7:
+            migrated = _migrate_settings_to_v7(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

@@ -2549,6 +2549,14 @@ p.tm-hdr {
   color: var(--text-3);
 }
 
+.word-batch-section-title {
+  margin-top: 0.7rem;
+  margin-bottom: 0.45rem;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .word-quality-panel {
   margin-top: var(--space-4);
   margin-bottom: 0.5rem;
