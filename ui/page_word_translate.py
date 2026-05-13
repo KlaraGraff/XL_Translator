@@ -736,6 +736,9 @@ def _render_done_content() -> None:
     done: DoneMsg = st.session_state[_DONE]
     success_n = sum(1 for item in done.file_results if item.get("success"))
     failure_n = len(done.file_results) - success_n
+    issues = list(done.issues or [])
+    resolved_issues = [issue for issue in issues if issue.get("severity") == "resolved"]
+    review_issues = [issue for issue in issues if issue.get("severity") != "resolved"]
 
     workspace = st.container(key="word-done-shell")
     with workspace:
@@ -748,7 +751,14 @@ def _render_done_content() -> None:
             '</div>',
             unsafe_allow_html=True,
         )
-        st.success("Word 翻译任务已完成。")
+        if failure_n == 0 and not issues:
+            st.success("翻译成功。")
+        elif issues and failure_n:
+            st.warning("翻译完成，但有内容需复核，且有文件未成功。")
+        elif issues:
+            st.warning("翻译完成，但有内容需复核。")
+        else:
+            st.warning("翻译完成，但有文件未成功。")
         st.markdown(
             '<div class="kpi-strip kpi-strip--done">'
             f'  <div class="kpi-tile"><span class="kpi-tile__label">成功文件</span><span class="kpi-tile__value">{success_n}</span></div>'
@@ -764,20 +774,86 @@ def _render_done_content() -> None:
             done.api_call_count,
         )
         st.markdown(f'<div class="mono-block">{html.escape(done.output_dir)}</div>', unsafe_allow_html=True)
+        if done.report_path:
+            st.markdown(
+                f'<div class="subtle-note">质量报告：{html.escape(done.report_path)}</div>',
+                unsafe_allow_html=True,
+            )
+
+        _render_word_quality_issues(review_issues, resolved_issues)
 
         for result in done.file_results:
             modifier = " translate-result-row--error" if not result.get("success") else ""
             detail_html = ""
+            issue_count = len(result.get("issues") or [])
             if result.get("error"):
                 detail_html = f'<div class="translate-result-row__detail">{html.escape(result["error"])}</div>'
+            elif issue_count:
+                detail_html = (
+                    f'<div class="translate-result-row__detail translate-result-row__detail--muted">'
+                    f'本文件有 {issue_count} 条质量提示，详情见上方复核清单。</div>'
+                )
             st.markdown(
                 f'<div class="translate-result-row{modifier}">'
                 f'  <div class="translate-result-row__title">{html.escape(result["name"])}</div>'
-                f'  <div class="translate-result-row__meta">{"成功" if result.get("success") else "失败"}</div>'
+                f'  <div class="translate-result-row__meta">{_format_word_result_status(result, issue_count)}</div>'
                 f'  {detail_html}'
                 '</div>',
                 unsafe_allow_html=True,
             )
+
+
+def _render_word_quality_issues(
+    review_issues: list[dict],
+    resolved_issues: list[dict],
+) -> None:
+    if not review_issues and not resolved_issues:
+        return
+
+    st.markdown(
+        '<div class="word-quality-panel">'
+        '  <div class="word-quality-panel__title">质量提示</div>'
+        '  <div class="word-quality-panel__caption">以下段落在翻译过程中触发了质量校验或自动重试，建议按位置回看输出文件。</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    _render_word_quality_group("需人工复核", review_issues)
+    _render_word_quality_group("已自动处理", resolved_issues)
+
+
+def _render_word_quality_group(title: str, issues: list[dict]) -> None:
+    if not issues:
+        return
+    st.markdown(
+        f'<div class="word-quality-group-title">{html.escape(title)}（{len(issues)}）</div>',
+        unsafe_allow_html=True,
+    )
+    for issue in issues:
+        severity = str(issue.get("severity") or "")
+        modifier = " word-quality-issue--review" if severity == "needs_review" else " word-quality-issue--resolved"
+        st.markdown(
+            f'<div class="word-quality-issue{modifier}">'
+            f'  <div class="word-quality-issue__title">{html.escape(issue.get("snippet") or "未记录段落内容")}</div>'
+            f'  <div class="word-quality-issue__meta">{html.escape(issue.get("file") or "未知文件")}</div>'
+            f'  <div class="word-quality-issue__detail">'
+            f'    <span>{html.escape(issue.get("section_path") or "正文")}</span>'
+            f'    <span>{html.escape(issue.get("location_label") or "未知位置")}</span>'
+            f'  </div>'
+            f'  <div class="word-quality-issue__detail">'
+            f'    <span>问题：{html.escape(issue.get("problem") or "未记录")}</span>'
+            f'    <span>处理：{html.escape(issue.get("status") or "未记录")}</span>'
+            f'  </div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _format_word_result_status(result: dict, issue_count: int) -> str:
+    if not result.get("success"):
+        return "失败"
+    if issue_count:
+        return f"成功 / {issue_count} 条提示"
+    return "成功"
 
 
 def _render_error_content() -> None:

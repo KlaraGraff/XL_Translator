@@ -24,6 +24,10 @@ SUPPORTED_WORD_SUFFIXES = {".docx"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+_HEADING_STYLE_RE = re.compile(r"heading\s*(\d+)|标题\s*(\d+)", re.IGNORECASE)
+_CHINESE_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百千万]+[章节篇]|[一二三四五六七八九十]+[、.．])")
+_CHINESE_SECTION_RE = re.compile(r"^（[一二三四五六七八九十]+）")
+_NUMBERED_SECTION_RE = re.compile(r"^\d+(?:\.\d+)+\s+")
 
 
 @dataclass
@@ -41,6 +45,7 @@ class WordSegment:
     source: str
     kind: str
     location: str
+    section_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,9 +121,14 @@ def extract_word_segments(
     doc = Document(str(path))
     seen: set[str] = set()
     segments: list[WordSegment] = []
+    section_stack: dict[int, str] = {}
 
     for index, paragraph in enumerate(doc.paragraphs):
         source = _paragraph_source_text(paragraph)
+        heading_level = _detect_heading_level(paragraph)
+        if heading_level is not None and source:
+            _update_section_stack(section_stack, heading_level, source)
+
         if not _is_translatable_source(
             source,
             target_lang=target_lang,
@@ -135,6 +145,7 @@ def extract_word_segments(
                 source=source,
                 kind="paragraph",
                 location=f"body.paragraph[{index}]",
+                section_path=_format_section_path(section_stack),
             )
         )
 
@@ -155,6 +166,7 @@ def extract_word_segments(
                     source=source,
                     kind="table_cell",
                     location=f"table[{table_index}].cell[{cell_index}]",
+                    section_path=f"表格 {table_index + 1}",
                 )
             )
 
@@ -341,6 +353,46 @@ def _paragraph_style_name(paragraph: Paragraph) -> str:
 def _is_heading_style(paragraph: Paragraph) -> bool:
     style_name = _paragraph_style_name(paragraph).casefold()
     return style_name.startswith("heading") or "标题" in style_name
+
+
+def _detect_heading_level(paragraph: Paragraph) -> int | None:
+    text = _paragraph_source_text(paragraph)
+    if not text:
+        return None
+
+    style_name = _paragraph_style_name(paragraph)
+    match = _HEADING_STYLE_RE.search(style_name)
+    if match:
+        raw_level = match.group(1) or match.group(2)
+        try:
+            return max(1, min(int(raw_level), 6))
+        except (TypeError, ValueError):
+            return 1
+
+    if _CHINESE_CHAPTER_RE.match(text):
+        return 1
+    if _CHINESE_SECTION_RE.match(text):
+        return 2
+    if _NUMBERED_SECTION_RE.match(text):
+        return min(text.split(maxsplit=1)[0].count(".") + 1, 6)
+
+    return None
+
+
+def _update_section_stack(section_stack: dict[int, str], level: int, text: str) -> None:
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return
+    for existing_level in list(section_stack):
+        if existing_level >= level:
+            section_stack.pop(existing_level, None)
+    section_stack[level] = cleaned
+
+
+def _format_section_path(section_stack: dict[int, str]) -> str:
+    if not section_stack:
+        return "正文"
+    return " / ".join(section_stack[level] for level in sorted(section_stack))
 
 
 def _insert_translation_paragraph_after(

@@ -152,6 +152,8 @@ class WordTaskRunner:
         phase_total = 3
         file_texts: list[set[str]] = []
         global_unique_texts: set[str] = set()
+        segment_locations: dict[str, list[dict]] = {}
+        quality_issues: list[dict] = []
 
         try:
             _raise_if_stopped()
@@ -177,6 +179,7 @@ class WordTaskRunner:
                         target_lang=target_lang,
                         source_lang=source_lang,
                     )
+                    _remember_segment_locations(segment_locations, file_item.name, segments)
                     text_set = {segment.source for segment in segments}
                     file_texts.append(text_set)
                     global_unique_texts.update(text_set)
@@ -306,7 +309,29 @@ class WordTaskRunner:
                             source_lang=source_lang,
                         )
                     ]
+                    unresolved_source_set = set(unresolved_sources)
+                    retry_fixed_sources = [
+                        source
+                        for source in retry_sources
+                        if source not in unresolved_source_set
+                    ]
+                    _add_quality_issues(
+                        quality_issues,
+                        segment_locations,
+                        retry_fixed_sources,
+                        problem="初次翻译未获得有效译文",
+                        status="已自动单段重试并恢复译文。",
+                        severity="resolved",
+                    )
                     if unresolved_sources:
+                        _add_quality_issues(
+                            quality_issues,
+                            segment_locations,
+                            unresolved_sources,
+                            problem="重试后仍未获得有效译文",
+                            status="已保留原文，需人工复核。",
+                            severity="needs_review",
+                        )
                         self._log(
                             "ERROR",
                             (
@@ -399,6 +424,11 @@ class WordTaskRunner:
                             "name": file_item.name,
                             "output": str(out_path),
                             "success": True,
+                            "issues": [
+                                issue
+                                for issue in quality_issues
+                                if issue.get("file") == file_item.name
+                            ],
                         }
                     )
                     self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
@@ -429,6 +459,14 @@ class WordTaskRunner:
 
         elapsed_sec = (datetime.now() - start_ts).total_seconds()
         self._task_logger.task_end(elapsed_sec=elapsed_sec, file_results=file_results)
+        report_path = _write_word_quality_report(
+            output_dir=output_dir,
+            file_results=file_results,
+            issues=quality_issues,
+            elapsed_sec=elapsed_sec,
+            tm_hit_count=tm_hit_count,
+            api_call_count=api_call_count,
+        )
 
         if stopped_message is not None:
             self._log("WARN", stopped_message)
@@ -442,6 +480,8 @@ class WordTaskRunner:
                 elapsed_sec=elapsed_sec,
                 tm_hit_count=tm_hit_count,
                 api_call_count=api_call_count,
+                issues=quality_issues,
+                report_path=str(report_path) if report_path else "",
             )
         )
 
@@ -474,3 +514,147 @@ def _build_word_retry_prompt(system_prompt: str) -> str:
         "3. 必须完整保留原文中的所有数字、负号、小数、单位、钢筋规格、强度等级和轴线编号。\n"
         "4. 不要省略任何参数；若句子很长，也要完整翻译整段。"
     ).strip()
+
+
+def _remember_segment_locations(
+    segment_locations: dict[str, list[dict]],
+    file_name: str,
+    segments,
+) -> None:
+    for segment in segments:
+        segment_locations.setdefault(segment.source, []).append(
+            {
+                "file": file_name,
+                "kind": segment.kind,
+                "location": segment.location,
+                "location_label": _format_location_label(segment.location),
+                "section_path": segment.section_path or "正文",
+                "snippet": _build_source_excerpt(segment.source),
+            }
+        )
+
+
+def _add_quality_issues(
+    issues: list[dict],
+    segment_locations: dict[str, list[dict]],
+    sources: list[str],
+    *,
+    problem: str,
+    status: str,
+    severity: str,
+) -> None:
+    seen_keys = {
+        (
+            issue.get("file"),
+            issue.get("location"),
+            issue.get("problem"),
+            issue.get("severity"),
+        )
+        for issue in issues
+    }
+    for source in sources:
+        locations = segment_locations.get(source) or [
+            {
+                "file": "",
+                "kind": "",
+                "location": "",
+                "location_label": "未知位置",
+                "section_path": "正文",
+                "snippet": _build_source_excerpt(source),
+            }
+        ]
+        for location in locations:
+            issue = {
+                **location,
+                "problem": problem,
+                "status": status,
+                "severity": severity,
+            }
+            key = (
+                issue.get("file"),
+                issue.get("location"),
+                issue.get("problem"),
+                issue.get("severity"),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            issues.append(issue)
+
+
+def _build_source_excerpt(text: str, *, head: int = 18, tail: int = 16) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= head + tail + 3:
+        return normalized
+    return f"{normalized[:head]}……{normalized[-tail:]}"
+
+
+def _format_location_label(location: str) -> str:
+    paragraph_match = re.match(r"body\.paragraph\[(\d+)\]", str(location or ""))
+    if paragraph_match:
+        return f"正文段落 {int(paragraph_match.group(1)) + 1}"
+
+    cell_match = re.match(r"table\[(\d+)\]\.cell\[(\d+)\]", str(location or ""))
+    if cell_match:
+        return f"表格 {int(cell_match.group(1)) + 1} / 单元格 {int(cell_match.group(2)) + 1}"
+
+    return location or "未知位置"
+
+
+def _write_word_quality_report(
+    *,
+    output_dir: Path,
+    file_results: list[dict],
+    issues: list[dict],
+    elapsed_sec: float,
+    tm_hit_count: int,
+    api_call_count: int,
+) -> Path | None:
+    try:
+        report_path = output_dir / "word_translation_report.md"
+        successful = sum(1 for item in file_results if item.get("success"))
+        failed = len(file_results) - successful
+        resolved_count = sum(1 for issue in issues if issue.get("severity") == "resolved")
+        review_count = len(issues) - resolved_count
+
+        lines = [
+            "# Word 翻译质量报告",
+            "",
+            "## 任务概览",
+            "",
+            f"- 文件数：{len(file_results)}",
+            f"- 成功文件：{successful}",
+            f"- 失败文件：{failed}",
+            f"- 耗时：{elapsed_sec:.2f} 秒",
+            f"- TM 命中：{tm_hit_count}",
+            f"- API 翻译：{api_call_count}",
+            f"- 已自动处理事项：{resolved_count}",
+            f"- 需人工复核事项：{review_count}",
+            "",
+        ]
+
+        if not issues:
+            lines.extend(["## 质量提示", "", "未发现需要提示的问题。", ""])
+        else:
+            lines.extend(["## 需复核内容", ""])
+            for idx, issue in enumerate(issues, 1):
+                label = "已自动处理" if issue.get("severity") == "resolved" else "需人工复核"
+                lines.extend(
+                    [
+                        f"### {idx}. {label}",
+                        "",
+                        f"- 文件：{issue.get('file') or '未知文件'}",
+                        f"- 章节路径：{issue.get('section_path') or '正文'}",
+                        f"- 位置：{issue.get('location_label') or '未知位置'}",
+                        f"- 段落：{issue.get('snippet') or ''}",
+                        f"- 问题：{issue.get('problem') or ''}",
+                        f"- 处理结果：{issue.get('status') or ''}",
+                        "",
+                    ]
+                )
+
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+        return report_path
+    except Exception as exc:  # noqa: BLE001 - report generation must not fail the translation task
+        logger.warning(f"Word 翻译质量报告写入失败：{exc}")
+        return None

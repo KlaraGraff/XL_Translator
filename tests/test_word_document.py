@@ -13,6 +13,7 @@ from core.word_document import (
     write_bilingual_docx,
 )
 from core.word_task_runner import _needs_word_translation_retry
+from core.word_task_runner import _build_source_excerpt, _write_word_quality_report
 
 
 class WordDocumentTests(unittest.TestCase):
@@ -119,6 +120,56 @@ class WordDocumentTests(unittest.TestCase):
                 source_lang="zh",
             )
         )
+
+    def test_word_segments_keep_section_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "sections.docx"
+            doc = Document()
+            doc.add_heading("一、工程概况", level=1)
+            doc.add_paragraph("施工范围：增设墙体。")
+            doc.add_paragraph("（一）材料要求")
+            doc.add_paragraph("混凝土强度等级为B30。")
+            doc.save(str(source_path))
+
+            segments = extract_word_segments(
+                source_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+            paths = {segment.source: segment.section_path for segment in segments}
+
+            self.assertEqual(paths["施工范围：增设墙体。"], "一、工程概况")
+            self.assertEqual(paths["混凝土强度等级为B30。"], "一、工程概况 / （一）材料要求")
+
+    def test_word_quality_report_records_location_and_excerpt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source = "这是一个较长的施工段落，用于验证报告会记录开头和结尾，方便用户定位。"
+            issue = {
+                "file": "方案",
+                "section_path": "一、工程概况 / （一）材料要求",
+                "location_label": "正文段落 8",
+                "snippet": _build_source_excerpt(source, head=10, tail=8),
+                "problem": "初次翻译未获得有效译文",
+                "status": "已自动单段重试并恢复译文。",
+                "severity": "resolved",
+            }
+
+            report_path = _write_word_quality_report(
+                output_dir=output_dir,
+                file_results=[{"name": "方案", "success": True}],
+                issues=[issue],
+                elapsed_sec=1.25,
+                tm_hit_count=2,
+                api_call_count=3,
+            )
+
+            self.assertIsNotNone(report_path)
+            content = report_path.read_text(encoding="utf-8")
+            self.assertIn("已自动处理", content)
+            self.assertIn("一、工程概况 / （一）材料要求", content)
+            self.assertIn("正文段落 8", content)
+            self.assertIn(issue["snippet"], content)
 
     @staticmethod
     def _build_sample_docx(path: Path) -> None:

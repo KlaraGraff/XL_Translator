@@ -37,6 +37,8 @@ class HeadlessWordTranslationResult:
     target_lang: str
     target_lang_display: str
     file_count: int
+    issues: list[dict[str, Any]]
+    report_path: str
     log_entries: list[dict[str, str]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -142,6 +144,8 @@ def run_word_translation_path(
                     include_optional=True,
                 ),
                 file_count=len(file_items),
+                issues=message.issues,
+                report_path=message.report_path,
                 log_entries=log_entries,
             )
             _emit_event(
@@ -150,6 +154,8 @@ def run_word_translation_path(
                     "type": "done",
                     "output_dir": message.output_dir,
                     "successful_outputs": successful_outputs,
+                    "issues": message.issues,
+                    "report_path": message.report_path,
                 },
             )
             return result

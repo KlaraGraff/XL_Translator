@@ -75,6 +75,8 @@ class DoneMsg:
     elapsed_sec:  float
     tm_hit_count: int
     api_call_count: int
+    issues: list[dict] = field(default_factory=list)
+    report_path: str = ""
 
 
 @dataclass

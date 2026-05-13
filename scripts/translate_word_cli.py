@@ -116,6 +116,8 @@ def _print_event(event: dict[str, object]) -> None:
 
     if event_type == "done":
         print(f"[DONE] 输出目录：{event['output_dir']}", file=sys.stderr, flush=True)
+        if event.get("report_path"):
+            print(f"[DONE] 质量报告：{event['report_path']}", file=sys.stderr, flush=True)
         return
 
     if event_type == "error":
@@ -134,7 +136,14 @@ def _print_human_summary(result: dict[str, object]) -> None:
         f"{result['source_lang_display']} -> {result['target_lang_display']}"
     )
     print(f"输出目录: {result['output_dir']}")
+    if result.get("report_path"):
+        print(f"质量报告: {result['report_path']}")
     print(f"成功文件: {len(successful_outputs)}")
+    issues = list(result.get("issues") or [])
+    resolved_count = sum(1 for issue in issues if issue.get("severity") == "resolved")
+    review_count = len(issues) - resolved_count
+    if issues:
+        print(f"质量提示: 需复核 {review_count}，已自动处理 {resolved_count}")
     if successful_outputs:
         print("结果文件:")
         for output_path in successful_outputs:
