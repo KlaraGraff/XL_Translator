@@ -15,7 +15,9 @@ $targets = @(
     "settings.py",
     "core",
     "ui",
-    "engines"
+    "engines",
+    "scripts",
+    "tests"
 )
 
 if (-not $python) {

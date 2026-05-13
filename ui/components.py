@@ -5,7 +5,6 @@ import html
 import json
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 def _checkbox_row_container_key(key: str) -> str:
@@ -286,7 +285,7 @@ def _render_main_tooltip_autoposition_script() -> None:
     })();
     </script>
     """
-    components.html(script, height=0, scrolling=False)
+    st.iframe(script, height=1, tab_index=-1)
 
 
 def render_main_tooltip_support() -> None:
@@ -409,7 +408,7 @@ def render_radio_option_tooltips(
     """
     hook_container = st.container(key=f"radio-tooltip-hook-{safe_key}")
     with hook_container:
-        components.html(script, height=0, scrolling=False)
+        st.iframe(script, height=1, tab_index=-1)
 
 
 def render_setting_card(
@@ -615,7 +614,7 @@ def _render_log_autofollow_script(container_id: str) -> None:
     }})();
     </script>
     """
-    components.html(script, height=0, scrolling=False)
+    st.iframe(script, height=1, tab_index=-1)
 
 
 def render_log_area(

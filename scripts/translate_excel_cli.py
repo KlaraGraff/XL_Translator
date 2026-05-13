@@ -13,8 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.headless_translate import build_runtime_settings, run_translation_path
-from settings import load_settings
+from core.headless_translate import build_runtime_settings, run_translation_path  # noqa: E402
+from settings import load_settings  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
