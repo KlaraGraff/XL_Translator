@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,8 @@ from core.word_document import (
     write_bilingual_docx,
 )
 from settings import AppSettings
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 class WordTaskRunner:
@@ -260,6 +263,58 @@ class WordTaskRunner:
                     source_lang=source_lang,
                 )
                 _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+
+                retry_sources = [
+                    source
+                    for source in misses
+                    if _needs_word_translation_retry(
+                        source,
+                        api_translations.get(source),
+                        source_lang=source_lang,
+                    )
+                ]
+                if retry_sources:
+                    self._log(
+                        "WARN",
+                        (
+                            f"检测到 {len(retry_sources)} 条 Word 段落未获得有效译文，"
+                            "正在改为单条严格重试..."
+                        ),
+                    )
+                    retry_prompt = _build_word_retry_prompt(system_prompt)
+                    retry_translations = translate_texts(
+                        retry_sources,
+                        engine,
+                        target_lang,
+                        retry_prompt,
+                        batch_size=1,
+                        concurrency=1,
+                        progress_callback=None,
+                        error_callback=lambda msg: self._log("ERROR", msg),
+                        should_stop=self.stop_requested,
+                        source_lang=source_lang,
+                    )
+                    _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+                    api_translations.update(retry_translations)
+
+                    unresolved_sources = [
+                        source
+                        for source in retry_sources
+                        if _needs_word_translation_retry(
+                            source,
+                            api_translations.get(source),
+                            source_lang=source_lang,
+                        )
+                    ]
+                    if unresolved_sources:
+                        self._log(
+                            "ERROR",
+                            (
+                                f"仍有 {len(unresolved_sources)} 条 Word 段落没有有效译文，"
+                                "本次将保留原文并在结果中体现为未插入译文。"
+                            ),
+                        )
+
                 elapsed = (datetime.now() - t0).total_seconds()
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=elapsed)
@@ -389,3 +444,33 @@ class WordTaskRunner:
                 api_call_count=api_call_count,
             )
         )
+
+
+def _needs_word_translation_retry(
+    source: str,
+    translated: str | None,
+    *,
+    source_lang: str,
+) -> bool:
+    """Whether a Word source paragraph should be retried before writing."""
+    source_text = str(source or "").strip()
+    if not source_text:
+        return False
+    if source_lang == "zh" and not _CJK_RE.search(source_text):
+        return False
+
+    translated_text = str(translated or "").strip()
+    if not translated_text:
+        return True
+    return translated_text.casefold() == source_text.casefold()
+
+
+def _build_word_retry_prompt(system_prompt: str) -> str:
+    return (
+        f"{system_prompt}\n\n"
+        "Word 文档段落重试规则：\n"
+        "1. 当前输入是 Word 正文中的完整段落，不是 Excel 短单元格。\n"
+        "2. 只要原文含中文，就必须返回目标语言译文，不能返回空字符串，也不能返回原文。\n"
+        "3. 必须完整保留原文中的所有数字、负号、小数、单位、钢筋规格、强度等级和轴线编号。\n"
+        "4. 不要省略任何参数；若句子很长，也要完整翻译整段。"
+    ).strip()

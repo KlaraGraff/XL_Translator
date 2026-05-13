@@ -6,6 +6,7 @@ import re
 from collections import Counter
 
 _CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")
+_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
 
 
 # ── 辅助函数 ──────────────────────────────────────────────────────────────────
@@ -19,11 +20,16 @@ def _check_numbers_intact(original: str, translated: str) -> bool:
 
     实现：提取整数/小数数值序列，使用 Counter 频次对比。
     """
-    orig_nums = Counter(re.findall(r'\d+(?:\.\d+)?', original))
+    orig_nums = Counter(_normalize_number_token(token) for token in _NUMBER_TOKEN_RE.findall(original))
     if not orig_nums:
         return True  # 原文无数字，无需校验
-    tran_nums = Counter(re.findall(r'\d+(?:\.\d+)?', translated))
+    tran_nums = Counter(_normalize_number_token(token) for token in _NUMBER_TOKEN_RE.findall(translated))
     return all(tran_nums[num] >= count for num, count in orig_nums.items())
+
+
+def _normalize_number_token(token: str) -> str:
+    """Normalize dot/comma decimal variants for cross-language number checks."""
+    return str(token or "").replace(",", ".")
 
 
 def _contains_chinese(text: str) -> bool:

@@ -6,11 +6,13 @@ from pathlib import Path
 
 from docx import Document
 
+from core.translation_filter import is_translation_redundant
 from core.word_document import (
     extract_word_segments,
     scan_word_path,
     write_bilingual_docx,
 )
+from core.word_task_runner import _needs_word_translation_retry
 
 
 class WordDocumentTests(unittest.TestCase):
@@ -67,6 +69,56 @@ class WordDocumentTests(unittest.TestCase):
             items = scan_word_path(root)
 
             self.assertEqual([item.path for item in items], [source_path])
+
+    def test_word_retry_only_targets_unresolved_chinese_sources(self) -> None:
+        self.assertTrue(
+            _needs_word_translation_retry(
+                "2、增设墙体厚度300mm",
+                "2、增设墙体厚度300mm",
+                source_lang="zh",
+            )
+        )
+        self.assertTrue(
+            _needs_word_translation_retry(
+                "2、增设墙体厚度300mm",
+                "",
+                source_lang="zh",
+            )
+        )
+        self.assertFalse(
+            _needs_word_translation_retry(
+                "Plan de construction pour la saison des pluies",
+                "",
+                source_lang="zh",
+            )
+        )
+        self.assertFalse(
+            _needs_word_translation_retry(
+                "2、增设墙体厚度300mm",
+                "2. Le mur ajouté aura une épaisseur de 300 mm.",
+                source_lang="zh",
+            )
+        )
+
+    def test_french_decimal_commas_pass_number_integrity_check(self) -> None:
+        source = (
+            "2、增设墙体厚度300mm，宽度8.925米，高度1.7米，"
+            "底部标高-0.800米，顶部标高0.900米，预留200mm厚B30混凝土。"
+        )
+        translated = (
+            "2. Ajouter un mur d'une épaisseur de 300 mm, largeur 8,925 m, "
+            "hauteur 1,7 m, cote inférieure -0,800 m, cote supérieure 0,900 m, "
+            "avec une réservation de 200 mm en béton B30."
+        )
+
+        self.assertFalse(
+            is_translation_redundant(
+                source,
+                translated,
+                target_lang="fr",
+                source_lang="zh",
+            )
+        )
 
     @staticmethod
     def _build_sample_docx(path: Path) -> None:
