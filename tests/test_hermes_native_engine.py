@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,17 @@ def _clear_project_modules() -> None:
 
 class HermesNativeEngineTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp_dir.name) / "home"
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.env_patch = patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.home),
+                "USERPROFILE": str(self.home),
+            },
+        )
+        self.env_patch.start()
         self.home = Path.home()
         shutil.rmtree(self.home / ".xl_translator", ignore_errors=True)
         shutil.rmtree(self.home / ".hermes", ignore_errors=True)
@@ -36,6 +48,11 @@ class HermesNativeEngineTests(unittest.TestCase):
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ.pop("OPENAI_API_KEY_BACKUP", None)
         _clear_project_modules()
+
+    def tearDown(self) -> None:
+        _clear_project_modules()
+        self.env_patch.stop()
+        self.temp_dir.cleanup()
 
     def _write_hermes_config(self) -> None:
         (self.hermes_home / "config.yaml").write_text(
