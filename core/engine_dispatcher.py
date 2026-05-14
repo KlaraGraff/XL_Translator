@@ -10,6 +10,7 @@ from loguru import logger
 
 from config import (
     DOMAIN_PRESETS,
+    DEFAULT_CUSTOM_OPENAI_BASE_URL,
     CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX,
     CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX,
 )
@@ -18,6 +19,15 @@ from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, get_key
 from core.translation_filter import is_translation_redundant  # 质量闭环拦截
+
+
+def _official_provider_base_url(provider: str, base_url: str) -> str:
+    """Avoid leaking the custom OpenAI default into official provider clients."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    custom_default = DEFAULT_CUSTOM_OPENAI_BASE_URL.rstrip("/")
+    if provider in ("openai", "claude") and normalized == custom_default:
+        return ""
+    return normalized
 
 
 def build_engine(settings: AppSettings) -> TranslationEngine:
@@ -44,7 +54,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
         return ClaudeEngine(
             api_key=api_key,
             model=s.cloud_model,
-            base_url=s.cloud_base_url,
+            base_url=_official_provider_base_url(provider, s.cloud_base_url),
         )
 
     if provider in ("openai", "siliconflow", "custom_openai", "lanyi"):
@@ -52,7 +62,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
         return OpenAIEngine(
             api_key=api_key,
             model=s.cloud_model,
-            base_url=s.cloud_base_url,
+            base_url=_official_provider_base_url(provider, s.cloud_base_url),
         )
 
     if provider == "zhipu":

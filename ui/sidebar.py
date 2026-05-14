@@ -2,6 +2,9 @@
 侧边栏：导航 + 专业领域 + 翻译引擎配置。
 目标语言、输出选项已移至主页面；TM阈值已移至记忆库管理页。
 """
+import hashlib
+import webbrowser
+
 import streamlit as st
 
 from app_meta import APP_VERSION_LABEL
@@ -13,6 +16,8 @@ from config import (
     get_default_concurrency,
     is_valid_concurrency_unlock_code,
 )
+from core.connectivity_check import ConnectivityResult, check_connectivity
+from core.update_checker import UpdateCheckResult, check_for_updates
 from settings import AppSettings, get_key, save_key
 from ui.branding import build_sidebar_brand_label_html
 from ui.components import build_sidebar_tooltip_html, render_field_group
@@ -91,6 +96,9 @@ _TUNING_TOOLTIP = {
     ],
 }
 
+_UPDATE_CHECK_RESULT_KEY = "sidebar_update_check_result"
+_CONNECTIVITY_RESULT_KEY = "sidebar_connectivity_result"
+
 
 def _build_sidebar_section_title_html(
     label: str,
@@ -153,6 +161,102 @@ def _normalize_concurrency_widget_value(
     return current_value, unlocked, str(current_value)
 
 
+def _render_update_check(is_running: bool) -> None:
+    if st.button(
+        "检查更新",
+        key="sidebar_check_update",
+        use_container_width=True,
+        disabled=is_running,
+    ):
+        with st.spinner("正在检查更新..."):
+            st.session_state[_UPDATE_CHECK_RESULT_KEY] = check_for_updates()
+
+    result = st.session_state.get(_UPDATE_CHECK_RESULT_KEY)
+    if not isinstance(result, UpdateCheckResult):
+        return
+
+    if result.has_update:
+        st.success(result.message)
+        if result.asset_name:
+            st.caption(f"下载项：{result.asset_name}")
+        download_url = result.download_url or result.release_url
+        if st.button(
+            "下载新版",
+            key="sidebar_download_update",
+            use_container_width=True,
+            disabled=is_running or not download_url,
+        ):
+            webbrowser.open(download_url)
+    elif result.ok:
+        st.caption(result.message)
+    else:
+        st.warning(result.message)
+
+
+def _hash_secret_for_signature(secret: str) -> str:
+    if not secret:
+        return ""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+
+
+def _build_connectivity_signature(settings: AppSettings) -> str:
+    engine_settings = settings.engine
+    if engine_settings.mode == "local":
+        return f"local|{engine_settings.ollama_model}"
+
+    provider = engine_settings.cloud_provider
+    if provider == "hermes":
+        return "cloud|hermes"
+
+    return "|".join(
+        [
+            "cloud",
+            provider,
+            engine_settings.cloud_model,
+            engine_settings.cloud_base_url,
+            _hash_secret_for_signature(get_key(provider)),
+        ]
+    )
+
+
+def _render_connectivity_result(entry: dict) -> None:
+    result = entry.get("result")
+    if not isinstance(result, ConnectivityResult):
+        return
+
+    if result.ok:
+        st.success(result.message)
+    else:
+        st.warning(result.message)
+        if result.detail:
+            st.caption(result.detail)
+
+
+def _render_connectivity_check(settings: AppSettings, is_running: bool) -> None:
+    signature = _build_connectivity_signature(settings)
+    if st.button(
+        "测试连接",
+        key="sidebar_test_connectivity",
+        use_container_width=True,
+        disabled=is_running,
+    ):
+        with st.spinner("正在测试连接..."):
+            st.session_state[_CONNECTIVITY_RESULT_KEY] = {
+                "signature": signature,
+                "result": check_connectivity(settings),
+            }
+
+    entry = st.session_state.get(_CONNECTIVITY_RESULT_KEY)
+    if not isinstance(entry, dict):
+        return
+
+    if entry.get("signature") != signature:
+        st.caption("配置已变化，请重新测试连接。")
+        return
+
+    _render_connectivity_result(entry)
+
+
 def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) -> tuple[AppSettings, str]:
     """
     渲染侧边栏。
@@ -182,6 +286,7 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                 '</div>',
                 unsafe_allow_html=True,
             )
+            _render_update_check(is_running)
             st.markdown('<div class="nav-section">', unsafe_allow_html=True)
             btn_excel = st.button(
                 "表格翻译",
@@ -430,6 +535,7 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                                 label_visibility="collapsed",
                                 disabled=is_running,
                             )
+                    _render_connectivity_check(settings, is_running)
             else:
                 model_options = OLLAMA_RECOMMENDED_MODELS + ["自定义..."]
                 if settings.engine.ollama_model in OLLAMA_RECOMMENDED_MODELS:
@@ -466,6 +572,7 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                         )
                 else:
                     settings.engine.ollama_model = selected_model
+                _render_connectivity_check(settings, is_running)
 
         # ── 批次大小 / 并发数：按模式动态适配区间 ──
         _batch_key = "sb_batch_size_input"

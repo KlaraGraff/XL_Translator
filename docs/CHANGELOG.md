@@ -1,9 +1,23 @@
 # XL Translator 版本更新日志
 
+## V4.2
+- 新增应用内版本检测，可从侧边栏检查 GitHub 最新版本并跳转下载新版安装包。
+- 新增 API / Ollama 连接测试按钮，配置完成后可先验证服务、模型与密钥是否可用。
+- 修复官方 OpenAI / Claude 配置可能误继承自定义 OpenAI Base URL 的问题。
+- Word 翻译“每批最多段落”默认值调整为 8，并将可选范围扩展为 1-16。
+
 ## V4.1
 - 修复 macOS Monterey 12.x 启动时 NumPy C 扩展无法加载的问题。
 - macOS 发布流程强制使用兼容旧系统的 NumPy wheel，并在打包后检查 `NEWLAPACK/ILP64` 符号，避免再次生成不兼容安装包。
 - macOS 发布构建固定使用 Python 3.11，防止本地高版本 Python runtime 误进入安装包。
+
+## V4.0
+- 新增应用内桌面窗口体验：Streamlit 本地服务启动后优先打开 XL Translator 桌面窗口，不再直接依赖系统浏览器。
+- 新增 `pywebview` 运行依赖，并在 WebView 不可用时自动回退到系统浏览器。
+- Streamlit 服务默认绑定 `127.0.0.1`，启动参数关闭使用统计，减少本机服务暴露和启动噪音。
+- 应用窗口关闭后会自动清理对应 Streamlit 进程，改善安装版与源码版的退出行为。
+- PyInstaller 打包配置补齐 WebView/桌面窗口相关隐式依赖，Windows 与 macOS 安装包都带上内置窗口能力。
+- 发布流程移除无版本号 release assets，统一保留带版本号的安装包与校验文件。
 
 ## V3.3
 - 统一翻译质量校验核心，保留 Excel 严格校验路径，Word 仅在单段重试恢复阶段启用更宽松的恢复策略。
