@@ -51,12 +51,9 @@ COLLECT_PATH="$DIST_DIR/XL Translator"
 DMG_NAME="XL_Translator_macOS_${VERSION}.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 CHECKSUM_PATH="$DMG_PATH.sha256"
-STABLE_DMG_NAME="XL_Translator_macOS.dmg"
-STABLE_DMG_PATH="$DIST_DIR/$STABLE_DMG_NAME"
-STABLE_CHECKSUM_PATH="$STABLE_DMG_PATH.sha256"
 
 rm -rf "$ROOT_DIR/build/XL_Translator_macOS" "$APP_PATH" "$COLLECT_PATH" "$STAGING_DIR"
-rm -f "$DMG_PATH" "$CHECKSUM_PATH" "$STABLE_DMG_PATH" "$STABLE_CHECKSUM_PATH"
+rm -f "$DMG_PATH" "$CHECKSUM_PATH"
 
 echo "[INFO] Build macOS app bundle"
 "$PYTHON" -m PyInstaller --noconfirm "$SPEC_PATH"
@@ -78,15 +75,11 @@ hdiutil create \
   "$DMG_PATH"
 
 shasum -a 256 "$DMG_PATH" | sed "s|$DMG_PATH|$DMG_NAME|" > "$CHECKSUM_PATH"
-cp "$DMG_PATH" "$STABLE_DMG_PATH"
-shasum -a 256 "$STABLE_DMG_PATH" | sed "s|$STABLE_DMG_PATH|$STABLE_DMG_NAME|" > "$STABLE_CHECKSUM_PATH"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     echo "MACOS_DMG=dist/$DMG_NAME"
     echo "MACOS_DMG_SHA256=dist/$DMG_NAME.sha256"
-    echo "MACOS_DMG_STABLE=dist/$STABLE_DMG_NAME"
-    echo "MACOS_DMG_STABLE_SHA256=dist/$STABLE_DMG_NAME.sha256"
   } >> "$GITHUB_ENV"
 fi
 
