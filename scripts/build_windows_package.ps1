@@ -98,6 +98,9 @@ $PackageDir = Join-Path $DistDir "XL_Translator_Windows"
 $SetupName = "XL_Translator_Windows_${Version}_Setup.exe"
 $SetupPath = Join-Path $DistDir $SetupName
 $ChecksumPath = "$SetupPath.sha256"
+$StableSetupName = "XL_Translator_Windows_Setup.exe"
+$StableSetupPath = Join-Path $DistDir $StableSetupName
+$StableChecksumPath = "$StableSetupPath.sha256"
 
 if (Test-Path $BuildDir) {
     Remove-Item -Recurse -Force $BuildDir
@@ -110,6 +113,12 @@ if (Test-Path $SetupPath) {
 }
 if (Test-Path $ChecksumPath) {
     Remove-Item -Force $ChecksumPath
+}
+if (Test-Path $StableSetupPath) {
+    Remove-Item -Force $StableSetupPath
+}
+if (Test-Path $StableChecksumPath) {
+    Remove-Item -Force $StableChecksumPath
 }
 
 Invoke-Step "Build Windows app bundle" {
@@ -132,11 +141,17 @@ if (-not (Test-Path $SetupPath)) {
 
 $Hash = (Get-FileHash -Algorithm SHA256 $SetupPath).Hash.ToLowerInvariant()
 "$Hash  $SetupName" | Set-Content -Encoding ascii $ChecksumPath
+Copy-Item -Force $SetupPath $StableSetupPath
+$StableHash = (Get-FileHash -Algorithm SHA256 $StableSetupPath).Hash.ToLowerInvariant()
+"$StableHash  $StableSetupName" | Set-Content -Encoding ascii $StableChecksumPath
 
 if ($env:GITHUB_ENV) {
     "WINDOWS_SETUP=dist/$SetupName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
     "WINDOWS_SETUP_SHA256=dist/$SetupName.sha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    "WINDOWS_SETUP_STABLE=dist/$StableSetupName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    "WINDOWS_SETUP_STABLE_SHA256=dist/$StableSetupName.sha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
 
 Write-Host "[INFO] Windows installer: $SetupPath"
 Write-Host "[INFO] SHA256: $ChecksumPath"
+Write-Host "[INFO] Stable Windows installer: $StableSetupPath"

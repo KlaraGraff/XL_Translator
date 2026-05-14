@@ -51,6 +51,8 @@ jobs:
           path: |
             ${{ env.WINDOWS_SETUP }}
             ${{ env.WINDOWS_SETUP_SHA256 }}
+            ${{ env.WINDOWS_SETUP_STABLE }}
+            ${{ env.WINDOWS_SETUP_STABLE_SHA256 }}
 
       - name: Upload Windows release asset
         if: startsWith(github.ref, 'refs/tags/')
@@ -59,6 +61,8 @@ jobs:
           files: |
             ${{ env.WINDOWS_SETUP }}
             ${{ env.WINDOWS_SETUP_SHA256 }}
+            ${{ env.WINDOWS_SETUP_STABLE }}
+            ${{ env.WINDOWS_SETUP_STABLE_SHA256 }}
 
   macos:
     name: macOS dmg
@@ -89,6 +93,8 @@ jobs:
           path: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}
+            ${{ env.MACOS_DMG_STABLE }}
+            ${{ env.MACOS_DMG_STABLE_SHA256 }}
 
       - name: Upload macOS release asset
         if: startsWith(github.ref, 'refs/tags/')
@@ -97,3 +103,5 @@ jobs:
           files: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}
+            ${{ env.MACOS_DMG_STABLE }}
+            ${{ env.MACOS_DMG_STABLE_SHA256 }}
