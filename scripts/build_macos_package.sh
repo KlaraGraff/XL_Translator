@@ -6,6 +6,8 @@ DIST_DIR="$ROOT_DIR/dist"
 SPEC_PATH="$ROOT_DIR/packaging/macos/XL_Translator_macOS.spec"
 STAGING_DIR="$ROOT_DIR/.runtime/package/macos-dmg"
 
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+
 resolve_python() {
   if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN:-}" ]]; then
     echo "$PYTHON_BIN"
@@ -30,12 +32,27 @@ resolve_python() {
 
 PYTHON="$(resolve_python)"
 cd "$ROOT_DIR"
+
+if [[ "${XL_TRANSLATOR_ALLOW_UNSUPPORTED_PYTHON:-}" != "1" ]]; then
+  "$PYTHON" - <<'PY'
+import sys
+
+if sys.version_info[:2] != (3, 11):
+    raise SystemExit(
+        "Python 3.11 is required for release builds; "
+        f"got {sys.version.split()[0]} from {sys.executable}. "
+        "Set PYTHON_BIN to a Python 3.11 interpreter."
+    )
+PY
+fi
+
 mkdir -p "$DIST_DIR"
 export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.runtime/pyinstaller-config"
 mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 echo "[INFO] Verify build dependencies"
 "$PYTHON" -c "import PyInstaller, PIL, webview; print('ok')"
+"$PYTHON" -c "import numpy; print(f'numpy {numpy.__version__}: {numpy.__file__}')"
 
 VERSION="$("$PYTHON" -c "import app_meta; print(app_meta.APP_VERSION)")"
 if [[ -z "$VERSION" ]]; then
@@ -61,6 +78,26 @@ echo "[INFO] Build macOS app bundle"
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Expected app bundle was not produced: $APP_PATH" >&2
   exit 1
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  shopt -s nullglob
+  numpy_extensions=( "$APP_PATH"/Contents/Frameworks/numpy/_core/_multiarray_umath.cpython-*-darwin.so )
+  shopt -u nullglob
+
+  if (( ${#numpy_extensions[@]} == 0 )); then
+    echo "[WARN] NumPy extension was not found in the app bundle; skipping Monterey compatibility check."
+  else
+    for numpy_extension in "${numpy_extensions[@]}"; do
+      if nm -u "$numpy_extension" 2>/dev/null | grep -q 'NEWLAPACK.*ILP64'; then
+        echo "Incompatible NumPy wheel detected: $numpy_extension" >&2
+        echo "The app would fail on macOS Monterey because it references NEWLAPACK ILP64 Accelerate symbols." >&2
+        echo "Run scripts/install_macos_dependencies.sh before packaging to force a Monterey-compatible NumPy wheel." >&2
+        exit 1
+      fi
+    done
+    echo "[INFO] NumPy Monterey compatibility check passed"
+  fi
 fi
 
 echo "[INFO] Build macOS dmg"

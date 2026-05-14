@@ -1,5 +1,10 @@
 # XL Translator 版本更新日志
 
+## V4.1
+- 修复 macOS Monterey 12.x 启动时 NumPy C 扩展无法加载的问题。
+- macOS 发布流程强制使用兼容旧系统的 NumPy wheel，并在打包后检查 `NEWLAPACK/ILP64` 符号，避免再次生成不兼容安装包。
+- macOS 发布构建固定使用 Python 3.11，防止本地高版本 Python runtime 误进入安装包。
+
 ## V3.3
 - 统一翻译质量校验核心，保留 Excel 严格校验路径，Word 仅在单段重试恢复阶段启用更宽松的恢复策略。
 - 优化 Word 正文金额与数量校验，支持 `2000万` 与 `20,000,000` 等语义等价数字。
