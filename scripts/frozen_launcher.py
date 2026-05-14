@@ -247,10 +247,12 @@ def run_streamlit_child(port: int) -> int:
     from streamlit.web import bootstrap
 
     flag_options = {
+        "global.developmentMode": False,
         "server.port": port,
         "server.headless": True,
         "browser.gatherUsageStats": False,
     }
+    bootstrap.load_config_options(flag_options)
     bootstrap.run(str(app_path), False, [], flag_options)
     return 0
 

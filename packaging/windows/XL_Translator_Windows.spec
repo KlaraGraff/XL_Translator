@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parents[1]
 ICON_PATH = ROOT / "packaging" / "windows" / "assets" / "app-icon.ico"
@@ -18,6 +18,32 @@ datas = [
 ]
 datas += collect_data_files("streamlit")
 datas += collect_data_files("streamlit_extras")
+
+metadata_packages = [
+    "anthropic",
+    "altair",
+    "dashscope",
+    "httpx",
+    "loguru",
+    "openai",
+    "openpyxl",
+    "pandas",
+    "Pillow",
+    "psutil",
+    "pyarrow",
+    "pydantic",
+    "python-docx",
+    "python-dotenv",
+    "rich",
+    "streamlit",
+    "streamlit-extras",
+    "tenacity",
+    "xlrd",
+    "xlwings",
+    "zhipuai",
+]
+for package_name in metadata_packages:
+    datas += copy_metadata(package_name)
 
 hiddenimports = []
 hiddenimports += collect_submodules("core")
