@@ -1,6 +1,7 @@
 # UI 框架
 streamlit>=1.35.0
 streamlit-extras>=0.4.3
+pywebview>=6.2,<7
 # Excel 操作
 openpyxl>=3.1.0
 xlwings>=0.34.0

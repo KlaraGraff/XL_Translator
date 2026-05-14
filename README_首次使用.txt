@@ -1,7 +1,7 @@
 【macOS 用户怎么做】
 1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“XL_Translator_macOS_<版本>.dmg”。
 2) 将“XL Translator.app”拖入 Applications 或其他本地文件夹。
-3) 双击“XL Translator.app”，程序会自动启动本地服务并打开浏览器。
+3) 双击“XL Translator.app”，程序会自动启动本地服务并打开应用内窗口。
 4) 若系统首次阻止打开，可在 Finder 中右键“XL Translator.app”并选择“打开”。
 5) 如果你拿到的是源码式 macOS 包，请双击根目录“启动应用.command”；这种模式需要本机已有 Python 3.10+。
 

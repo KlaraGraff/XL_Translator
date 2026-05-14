@@ -1,7 +1,7 @@
 """Frozen desktop launcher for PyInstaller builds.
 
-The launcher starts the packaged Streamlit app on a local port and opens the
-user's default browser. It is intentionally thin: product logic stays in the
+The launcher starts the packaged Streamlit app on a local port and opens an
+in-app desktop window. It is intentionally thin: product logic stays in the
 shared app/core/ui modules.
 """
 
@@ -16,11 +16,19 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
-import app as _app  # noqa: F401 - imported so PyInstaller collects app modules
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import app as _app  # noqa: E402,F401 - imported so PyInstaller collects app modules
+try:
+    from scripts.desktop_window import open_app_window
+except ModuleNotFoundError:
+    from desktop_window import open_app_window
 
 PORT_START = 8501
 PORT_END = 8510
@@ -232,13 +240,6 @@ def subprocess_creation_kwargs() -> dict[str, int]:
     return {}
 
 
-def open_browser(url: str) -> None:
-    if os.name == "nt":
-        os.startfile(url)  # type: ignore[attr-defined]
-        return
-    webbrowser.open(url)
-
-
 def run_streamlit_child(port: int) -> int:
     app_path = app_script_path()
     if not app_path.exists():
@@ -248,6 +249,7 @@ def run_streamlit_child(port: int) -> int:
 
     flag_options = {
         "global.developmentMode": False,
+        "server.address": "127.0.0.1",
         "server.port": port,
         "server.headless": True,
         "browser.gatherUsageStats": False,
@@ -285,8 +287,21 @@ def start_desktop_app() -> int:
         remove_state()
         raise RuntimeError("Packaged Streamlit process did not become healthy in time.")
 
-    log(f"Opening browser: {url}")
-    open_browser(url)
+    managed_window = open_app_window(url, log_callback=log)
+    if managed_window:
+        log("App window closed. Stopping packaged Streamlit process.")
+        if process.poll() is None:
+            terminate_pid(process.pid, force=False)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                terminate_pid(process.pid, force=True)
+                process.wait(timeout=3)
+        exit_code = process.wait()
+        remove_state()
+        log(f"Packaged Streamlit process exited with code={exit_code}")
+        return 0
+
     exit_code = process.wait()
     remove_state()
     log(f"Packaged Streamlit process exited with code={exit_code}")

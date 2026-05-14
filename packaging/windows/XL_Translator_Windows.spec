@@ -18,6 +18,7 @@ datas = [
 ]
 datas += collect_data_files("streamlit")
 datas += collect_data_files("streamlit_extras")
+datas += collect_data_files("webview")
 
 metadata_packages = [
     "anthropic",
@@ -32,6 +33,7 @@ metadata_packages = [
     "psutil",
     "pyarrow",
     "pydantic",
+    "pywebview",
     "python-docx",
     "python-dotenv",
     "rich",
@@ -48,11 +50,13 @@ for package_name in metadata_packages:
 hiddenimports = []
 hiddenimports += collect_submodules("core")
 hiddenimports += collect_submodules("engines")
+hiddenimports += collect_submodules("scripts")
 hiddenimports += collect_submodules("ui")
 hiddenimports += collect_submodules("streamlit")
 hiddenimports += collect_submodules("streamlit_extras")
 hiddenimports += collect_submodules("altair")
 hiddenimports += collect_submodules("pyarrow")
+hiddenimports += collect_submodules("webview")
 hiddenimports += [
     "anthropic",
     "dashscope",
@@ -64,6 +68,7 @@ hiddenimports += [
     "PIL",
     "psutil",
     "pydantic",
+    "webview",
     "loguru",
     "dotenv",
     "tenacity",

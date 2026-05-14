@@ -20,7 +20,7 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 
 - macOS 已有对应启动入口
 - macOS 标准发布包由 `.app` 和 `.dmg` 组成
-- 启动主链路具备首启显性、后续静默、旧实例清理、健康检查后打开浏览器等行为
+- 启动主链路具备首启显性、后续静默、旧实例清理、健康检查后打开应用内窗口等行为
 
 ## 2. 当前 macOS 启动链路
 
@@ -31,7 +31,7 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 - 核心启动逻辑：`scripts/frozen_launcher.py`
 
 `.app` 是 PyInstaller 冻结后的应用，不需要用户本机先创建 `.venv`。
-启动后会在本地端口拉起 Streamlit，并自动打开浏览器。
+启动后会在本地端口拉起 Streamlit，并自动打开应用内窗口。
 
 ### 2.2 源码包入口
 
@@ -62,7 +62,7 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 - 若检测到本项目旧实例，则先结束旧实例并等待端口释放
 - 在 `8501~8510` 之间选择可用端口
 - 启动 `streamlit run app.py`
-- 健康检查通过后再打开浏览器
+- 健康检查通过后再打开应用内窗口
 - 静默模式下把日志写入 `.runtime/launcher.log`
 
 ## 3. Python 运行环境约定
@@ -114,7 +114,7 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 
 1. 在 macOS 上打开 dmg
 2. 将 `XL Translator.app` 放入合适位置后双击启动
-3. 验证启动后会打开浏览器
+3. 验证启动后会打开应用内窗口
 4. 验证重新启动时会先清理旧实例，再打开新的本地服务
 5. 若需排查安装版启动链路，检查 `~/.xl_translator/desktop_launcher.log`
 

@@ -14,8 +14,18 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+try:
+    from scripts.desktop_window import open_app_window
+except ModuleNotFoundError:
+    from desktop_window import open_app_window
+
 BOOTSTRAP_MARKER = ".bootstrap_success"
-MIN_CHECK_IMPORTS = ("streamlit", "openpyxl", "pandas")
+MIN_CHECK_IMPORTS = ("streamlit", "openpyxl", "pandas", "webview")
 MIN_PYTHON_VERSION = (3, 10)
 MIN_PYTHON_VERSION_TEXT = ".".join(str(part) for part in MIN_PYTHON_VERSION)
 PORT_START = 8501
@@ -604,16 +614,6 @@ def cleanup_previous_instance(root: Path) -> None:
     remove_instance_state(root)
 
 
-def open_browser(url: str) -> None:
-    if os.name == "nt":
-        os.startfile(url)  # type: ignore[attr-defined]
-        return
-
-    import webbrowser
-
-    webbrowser.open(url)
-
-
 def wait_streamlit_ready(port: int, timeout_seconds: int) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
@@ -669,10 +669,14 @@ def start_streamlit_once(root: Path, port: int) -> int:
                 "streamlit",
                 "run",
                 str(app),
+                "--server.address",
+                "127.0.0.1",
                 "--server.port",
                 str(port),
                 "--server.headless",
                 "true",
+                "--browser.gatherUsageStats",
+                "false",
             ],
             **popen_kwargs,
         )
@@ -701,8 +705,22 @@ def start_streamlit_once(root: Path, port: int) -> int:
                 "The selected port may have been occupied by another instance."
             )
 
-        log(root, f"[INFO] Opening browser: {url}")
-        open_browser(url)
+        managed_window = open_app_window(url, log_callback=lambda message: log(root, f"[INFO] {message}"))
+        if managed_window:
+            log(root, "[INFO] App window closed. Stopping Streamlit process.")
+            if process.poll() is None:
+                terminate_pid(process.pid, force=False)
+                if not wait_process_exit(process.pid, SHUTDOWN_TIMEOUT_SECONDS):
+                    terminate_pid(process.pid, force=True)
+                    if not wait_process_exit(process.pid, FORCE_KILL_TIMEOUT_SECONDS):
+                        raise RuntimeError(
+                            f"Unable to stop Streamlit after app window closed. PID={process.pid}"
+                        )
+            exit_code = process.poll()
+            remove_instance_state(root)
+            log(root, f"[INFO] Streamlit process exited with code={exit_code}")
+            return 0
+
         if LAUNCH_SILENT:
             log(root, "[INFO] App started in silent mode.")
         else:

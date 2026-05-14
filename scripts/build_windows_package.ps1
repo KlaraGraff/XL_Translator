@@ -81,7 +81,7 @@ $env:PYINSTALLER_CONFIG_DIR = Join-Path $Root ".runtime/pyinstaller-config"
 New-Item -ItemType Directory -Force -Path $env:PYINSTALLER_CONFIG_DIR | Out-Null
 
 Invoke-Step "Verify build dependencies" {
-    & $Python -c "import PyInstaller, PIL; print('ok')"
+    & $Python -c "import PyInstaller, PIL, webview; print('ok')"
 }
 
 $Version = (& $Python -c "import app_meta; print(app_meta.APP_VERSION)").Trim()

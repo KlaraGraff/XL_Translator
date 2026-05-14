@@ -35,7 +35,7 @@ export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.runtime/pyinstaller-config"
 mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 echo "[INFO] Verify build dependencies"
-"$PYTHON" -c "import PyInstaller, PIL; print('ok')"
+"$PYTHON" -c "import PyInstaller, PIL, webview; print('ok')"
 
 VERSION="$("$PYTHON" -c "import app_meta; print(app_meta.APP_VERSION)")"
 if [[ -z "$VERSION" ]]; then
@@ -85,4 +85,3 @@ fi
 
 echo "[INFO] macOS dmg: $DMG_PATH"
 echo "[INFO] SHA256: $CHECKSUM_PATH"
-echo "[INFO] Stable macOS dmg: $STABLE_DMG_PATH"
