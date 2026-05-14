@@ -1040,6 +1040,15 @@ def _render_word_quality_group(title: str, issues: list[dict]) -> None:
     for issue in issues:
         severity = str(issue.get("severity") or "")
         modifier = " word-quality-issue--review" if severity == "needs_review" else " word-quality-issue--resolved"
+        fragments = issue.get("review_fragments") or []
+        fragment_html = ""
+        if fragments:
+            fragment_text = "、".join(str(fragment) for fragment in fragments)
+            fragment_html = (
+                f'  <div class="word-quality-issue__detail">'
+                f'    <span>问题片段：{html.escape(fragment_text)}</span>'
+                f'  </div>'
+            )
         st.markdown(
             f'<div class="word-quality-issue{modifier}">'
             f'  <div class="word-quality-issue__title">{html.escape(issue.get("snippet") or "未记录段落内容")}</div>'
@@ -1052,6 +1061,7 @@ def _render_word_quality_group(title: str, issues: list[dict]) -> None:
             f'    <span>问题：{html.escape(issue.get("problem") or "未记录")}</span>'
             f'    <span>处理：{html.escape(issue.get("status") or "未记录")}</span>'
             f'  </div>'
+            f'{fragment_html}'
             '</div>',
             unsafe_allow_html=True,
         )

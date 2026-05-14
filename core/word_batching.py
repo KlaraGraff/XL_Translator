@@ -10,7 +10,10 @@ from typing import Callable
 
 from loguru import logger
 
-from core.translation_filter import is_translation_redundant
+from core.translation_filter import (
+    VALIDATION_PROFILE_STRICT,
+    validate_translation,
+)
 from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
@@ -61,6 +64,7 @@ def translate_word_texts(
     should_stop=None,
     source_lang: str = "zh",
     stats: WordBatchRunStats | None = None,
+    quality_profile: str | None = VALIDATION_PROFILE_STRICT,
 ) -> dict[str, str]:
     """Translate Word paragraphs using character-budgeted batches with fallback retries."""
     if not texts:
@@ -94,6 +98,7 @@ def translate_word_texts(
             target_lang=target_lang,
             system_prompt=system_prompt,
             source_lang=source_lang,
+            quality_profile=quality_profile,
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
@@ -211,6 +216,7 @@ def _translate_units_with_fallback(
     target_lang: str,
     system_prompt: str,
     source_lang: str,
+    quality_profile: str | None,
     should_stop,
     error_callback: ErrorCallback | None,
     stats: WordBatchRunStats,
@@ -229,7 +235,12 @@ def _translate_units_with_fallback(
             source_lang=source_lang,
         )
         _validate_batch_integrity(payloads, raw_results)
-        _apply_word_quality_filter(raw_results, target_lang, source_lang=source_lang)
+        _apply_word_quality_filter(
+            raw_results,
+            target_lang,
+            source_lang=source_lang,
+            quality_profile=quality_profile,
+        )
         return {
             (unit.source, unit.part_index): raw_results.get(unit.text, unit.text)
             for unit in units
@@ -248,6 +259,7 @@ def _translate_units_with_fallback(
                 target_lang=target_lang,
                 system_prompt=system_prompt,
                 source_lang=source_lang,
+                quality_profile=quality_profile,
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
@@ -258,6 +270,7 @@ def _translate_units_with_fallback(
                 target_lang=target_lang,
                 system_prompt=system_prompt,
                 source_lang=source_lang,
+                quality_profile=quality_profile,
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
@@ -297,18 +310,23 @@ def _apply_word_quality_filter(
     target_lang: str,
     *,
     source_lang: str,
+    quality_profile: str | None = VALIDATION_PROFILE_STRICT,
 ) -> None:
+    if not quality_profile:
+        return
     reset_count = 0
     for source in list(results):
         translated = results[source]
         if not should_apply_quality_filter(translated):
             continue
-        if is_translation_redundant(
+        validation = validate_translation(
             source,
             translated,
             target_lang=target_lang,
             source_lang=source_lang,
-        ):
+            profile=quality_profile,
+        )
+        if validation.is_fail:
             results[source] = source
             reset_count += 1
     if reset_count:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -28,6 +29,12 @@ from core.task_runner import (
     StoppedMsg,
     TaskStopped,
 )
+from core.translation_filter import (
+    VALIDATION_PROFILE_STRICT,
+    VALIDATION_PROFILE_WORD_RECOVERY,
+    TranslationValidationResult,
+    validate_translation,
+)
 from core.translation_protocol import should_store_translation_in_tm
 from core.word_document import (
     WordFileItem,
@@ -39,6 +46,12 @@ from core.word_batching import WordBatchRunStats, translate_word_texts
 from settings import AppSettings
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+@dataclass(frozen=True)
+class _WordRetryEvaluation:
+    accepted: bool
+    validation: TranslationValidationResult
 
 
 class WordTaskRunner:
@@ -154,6 +167,7 @@ class WordTaskRunner:
         segment_locations: dict[str, list[dict]] = {}
         quality_issues: list[dict] = []
         unresolved_review_sources: set[str] = set()
+        recovery_review_sources: set[str] = set()
 
         try:
             _raise_if_stopped()
@@ -312,7 +326,11 @@ class WordTaskRunner:
                     retry_batch_settings = settings.word_batch.model_copy(
                         update={"max_paragraphs_per_batch": 1}
                     )
-                    retry_fixed_sources, unresolved_sources = _run_word_strict_retries(
+                    (
+                        retry_fixed_sources,
+                        unresolved_sources,
+                        retry_review_results,
+                    ) = _run_word_strict_retries(
                         retry_sources=retry_sources,
                         api_translations=api_translations,
                         engine=engine,
@@ -325,14 +343,33 @@ class WordTaskRunner:
                         log_callback=self._log,
                     )
                     _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+                    recovery_review_sources.update(retry_review_results)
+                    standard_fixed_sources = [
+                        source
+                        for source in retry_fixed_sources
+                        if source not in retry_review_results
+                    ]
                     _add_quality_issues(
                         quality_issues,
                         segment_locations,
-                        retry_fixed_sources,
+                        standard_fixed_sources,
                         problem="初次翻译未获得有效译文",
                         status="已自动单段严格重试并恢复译文。",
                         severity="resolved",
                     )
+                    if retry_review_results:
+                        _add_quality_issues(
+                            quality_issues,
+                            segment_locations,
+                            list(retry_review_results.keys()),
+                            problem="重试译文按 Word 恢复规则自动接受",
+                            status=(
+                                "译文主体已通过恢复校验，本段已写入译文并高亮原文，"
+                                "建议复核提示片段。"
+                            ),
+                            severity="resolved",
+                            validation_results=retry_review_results,
+                        )
                     if unresolved_sources:
                         unresolved_review_sources.update(unresolved_sources)
                         _add_quality_issues(
@@ -361,7 +398,11 @@ class WordTaskRunner:
                 new_pairs = [
                     (source, translated)
                     for source, translated in api_translations.items()
-                    if should_store_translation_in_tm(source, translated)
+                    if (
+                        source not in recovery_review_sources
+                        and source not in unresolved_review_sources
+                        and should_store_translation_in_tm(source, translated)
+                    )
                 ]
                 written = tm_manager.insert_batch(new_pairs, lang_pair, max_len, engine.engine_name)
                 if written:
@@ -419,7 +460,7 @@ class WordTaskRunner:
                         target_lang=target_lang,
                         source_lang=source_lang,
                         review_highlight_sources=(
-                            unresolved_review_sources
+                            unresolved_review_sources | recovery_review_sources
                             if settings.word_review.highlight_unresolved
                             else None
                         ),
@@ -514,18 +555,58 @@ def _needs_word_translation_retry(
     target_lang: str = "",
 ) -> bool:
     """Whether a Word source paragraph should be retried before writing."""
+    return not _evaluate_word_translation(
+        source,
+        translated,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        allow_recovery=False,
+    ).accepted
+
+
+def _evaluate_word_translation(
+    source: str,
+    translated: str | None,
+    *,
+    source_lang: str,
+    target_lang: str,
+    allow_recovery: bool,
+) -> _WordRetryEvaluation:
     source_text = str(source or "").strip()
     if not source_text:
-        return False
+        return _WordRetryEvaluation(True, TranslationValidationResult())
     if source_lang == "zh" and not _CJK_RE.search(source_text):
-        return False
+        return _WordRetryEvaluation(True, TranslationValidationResult())
 
     translated_text = str(translated or "").strip()
-    if not translated_text:
-        return True
-    if source_lang == "zh" and target_lang not in {"zh", "ja"} and _CJK_RE.search(translated_text):
-        return True
-    return translated_text.casefold() == source_text.casefold()
+    strict_validation = validate_translation(
+        source_text,
+        translated_text,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        profile=VALIDATION_PROFILE_STRICT,
+    )
+    has_residual_cjk = (
+        source_lang == "zh"
+        and target_lang not in {"zh", "ja"}
+        and bool(_CJK_RE.search(translated_text))
+    )
+    if strict_validation.is_pass and not has_residual_cjk:
+        return _WordRetryEvaluation(True, strict_validation)
+
+    if allow_recovery:
+        recovery_validation = validate_translation(
+            source_text,
+            translated_text,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            profile=VALIDATION_PROFILE_WORD_RECOVERY,
+        )
+        if not recovery_validation.is_fail:
+            return _WordRetryEvaluation(True, recovery_validation)
+        return _WordRetryEvaluation(False, recovery_validation)
+
+    return _WordRetryEvaluation(False, strict_validation)
 
 
 def _run_word_strict_retries(
@@ -540,7 +621,7 @@ def _run_word_strict_retries(
     source_lang: str,
     should_stop,
     log_callback: Callable[[str, str], None] | None = None,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], dict[str, TranslationValidationResult]]:
     """Retry unresolved Word paragraphs as single-item requests."""
     try:
         max_attempts = max(1, int(retry_attempts))
@@ -548,6 +629,7 @@ def _run_word_strict_retries(
         max_attempts = 1
 
     pending_sources = list(retry_sources)
+    recovery_review_results: dict[str, TranslationValidationResult] = {}
     for attempt_index in range(1, max_attempts + 1):
         if not pending_sources or (should_stop and should_stop()):
             break
@@ -574,19 +656,25 @@ def _run_word_strict_retries(
             should_stop=should_stop,
             source_lang=source_lang,
             stats=retry_stats,
+            quality_profile=None,
         )
         api_translations.update(retry_translations)
 
-        next_pending_sources = [
-            source
-            for source in pending_sources
-            if _needs_word_translation_retry(
+        next_pending_sources: list[str] = []
+        for source in pending_sources:
+            evaluation = _evaluate_word_translation(
                 source,
                 api_translations.get(source),
                 source_lang=source_lang,
                 target_lang=target_lang,
+                allow_recovery=True,
             )
-        ]
+            if evaluation.accepted:
+                if evaluation.validation.needs_review:
+                    recovery_review_results[source] = evaluation.validation
+                continue
+            next_pending_sources.append(source)
+
         fixed_count = len(pending_sources) - len(next_pending_sources)
         if fixed_count and log_callback:
             log_callback(
@@ -601,13 +689,16 @@ def _run_word_strict_retries(
 
         pending_sources = next_pending_sources
 
+    for source in pending_sources:
+        api_translations[source] = source
+
     unresolved_source_set = set(pending_sources)
     retry_fixed_sources = [
         source
         for source in retry_sources
         if source not in unresolved_source_set
     ]
-    return retry_fixed_sources, pending_sources
+    return retry_fixed_sources, pending_sources, recovery_review_results
 
 
 def _build_word_batch_prompt(system_prompt: str) -> str:
@@ -658,6 +749,7 @@ def _add_quality_issues(
     problem: str,
     status: str,
     severity: str,
+    validation_results: dict[str, TranslationValidationResult] | None = None,
 ) -> None:
     seen_keys = {
         (
@@ -680,12 +772,15 @@ def _add_quality_issues(
             }
         ]
         for location in locations:
+            validation_result = (validation_results or {}).get(source)
             issue = {
                 **location,
                 "problem": problem,
                 "status": status,
                 "severity": severity,
             }
+            if validation_result and validation_result.review_fragments:
+                issue["review_fragments"] = list(validation_result.review_fragments)
             key = (
                 issue.get("file"),
                 issue.get("location"),
@@ -765,9 +860,12 @@ def _write_word_quality_report(
                         f"- 段落：{issue.get('snippet') or ''}",
                         f"- 问题：{issue.get('problem') or ''}",
                         f"- 处理结果：{issue.get('status') or ''}",
-                        "",
                     ]
                 )
+                fragments = issue.get("review_fragments") or []
+                if fragments:
+                    lines.append(f"- 问题片段：{'、'.join(str(item) for item in fragments)}")
+                lines.append("")
 
         report_path.write_text("\n".join(lines), encoding="utf-8")
         return report_path

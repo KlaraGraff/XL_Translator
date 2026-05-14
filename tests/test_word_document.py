@@ -8,7 +8,12 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-from core.translation_filter import is_translation_redundant
+from core.translation_filter import (
+    VALIDATION_PROFILE_STRICT,
+    VALIDATION_PROFILE_WORD_RECOVERY,
+    validate_translation,
+    is_translation_redundant,
+)
 from core.word_document import (
     extract_word_segments,
     scan_word_path,
@@ -44,6 +49,26 @@ class RetryWordEngine(TranslationEngine):
         if len(self.calls) < self.success_on_call:
             return {text: text for text in texts}
         return {text: f"Traduction valide {len(text)}" for text in texts}
+
+
+class MappingWordEngine(TranslationEngine):
+    def __init__(self, translations: dict[str, str]) -> None:
+        self.translations = translations
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/mapping-word"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        return {text: self.translations.get(text, text) for text in texts}
 
 
 class WordDocumentTests(unittest.TestCase):
@@ -239,7 +264,7 @@ class WordDocumentTests(unittest.TestCase):
         retry_settings.max_paragraphs_per_batch = 1
         engine = RetryWordEngine(success_on_call=3)
 
-        fixed_sources, unresolved_sources = _run_word_strict_retries(
+        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
             retry_sources=[source],
             api_translations=api_translations,
             engine=engine,
@@ -253,6 +278,7 @@ class WordDocumentTests(unittest.TestCase):
 
         self.assertEqual(fixed_sources, [source])
         self.assertEqual(unresolved_sources, [])
+        self.assertEqual(recovery_reviews, {})
         self.assertEqual(len(engine.calls), 3)
         self.assertEqual(api_translations[source], f"Traduction valide {len(source)}")
 
@@ -263,7 +289,7 @@ class WordDocumentTests(unittest.TestCase):
         retry_settings.max_paragraphs_per_batch = 1
         engine = RetryWordEngine(success_on_call=4)
 
-        fixed_sources, unresolved_sources = _run_word_strict_retries(
+        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
             retry_sources=[source],
             api_translations=api_translations,
             engine=engine,
@@ -277,8 +303,69 @@ class WordDocumentTests(unittest.TestCase):
 
         self.assertEqual(fixed_sources, [])
         self.assertEqual(unresolved_sources, [source])
+        self.assertEqual(recovery_reviews, {})
         self.assertEqual(len(engine.calls), 3)
         self.assertEqual(api_translations[source], source)
+
+    def test_word_recovery_accepts_vnd_ten_thousand_amount_equivalence(self) -> None:
+        source = (
+            "6.7.4 乙方须严格遵守安全规定，违约行为将被处以"
+            "每起违规行为 VND 2000万至 VND 3000万的罚款。"
+        )
+        translated = (
+            "6.7.4 Party B shall strictly comply with safety regulations; "
+            "each violation shall be subject to a fine from VND 20,000,000 "
+            "to VND 30,000,000."
+        )
+
+        self.assertTrue(
+            validate_translation(
+                source,
+                translated,
+                target_lang="en",
+                source_lang="zh",
+                profile=VALIDATION_PROFILE_STRICT,
+            ).is_fail
+        )
+
+        recovery = validate_translation(
+            source,
+            translated,
+            target_lang="en",
+            source_lang="zh",
+            profile=VALIDATION_PROFILE_WORD_RECOVERY,
+        )
+        self.assertTrue(recovery.is_pass)
+
+    def test_word_retry_soft_accepts_embedded_ocr_digit_with_review(self) -> None:
+        source = "承包0商应被视为已将所有直接和间接成本计入合同金额。"
+        translated = (
+            "The contractor shall be deemed to have included all direct "
+            "and indirect costs in the contract amount."
+        )
+        api_translations = {source: source}
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        engine = MappingWordEngine({source: translated})
+
+        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
+            retry_sources=[source],
+            api_translations=api_translations,
+            engine=engine,
+            target_lang="en",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=3,
+            source_lang="zh",
+            should_stop=lambda: False,
+        )
+
+        self.assertEqual(fixed_sources, [source])
+        self.assertEqual(unresolved_sources, [])
+        self.assertIn(source, recovery_reviews)
+        self.assertIn("承包0商", recovery_reviews[source].review_fragments)
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(api_translations[source], translated)
 
     def test_french_decimal_commas_pass_number_integrity_check(self) -> None:
         source = (
@@ -332,6 +419,7 @@ class WordDocumentTests(unittest.TestCase):
                 "problem": "初次翻译未获得有效译文",
                 "status": "已自动单段重试并恢复译文。",
                 "severity": "resolved",
+                "review_fragments": ["承包0商"],
             }
 
             report_path = _write_word_quality_report(
@@ -349,6 +437,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("一、工程概况 / （一）材料要求", content)
             self.assertIn("正文段落 8", content)
             self.assertIn(issue["snippet"], content)
+            self.assertIn("问题片段：承包0商", content)
 
     @staticmethod
     def _build_sample_docx(path: Path) -> None:
