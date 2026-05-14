@@ -1,0 +1,94 @@
+name: Build distributions
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run quality gate
+        shell: pwsh
+        run: ./quality_gate.ps1
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build Windows executable
+        run: pyinstaller --noconfirm packaging/windows/XL_Translator_Windows.spec
+
+      - name: Create Windows zip
+        shell: pwsh
+        run: |
+          $version = python -c "import app_meta; print(app_meta.APP_VERSION)"
+          $zip = "dist/XL_Translator_Windows_$version.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path "dist/XL_Translator_Windows/*" -DestinationPath $zip
+          echo "WINDOWS_ZIP=$zip" >> $env:GITHUB_ENV
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XL_Translator_Windows
+          path: ${{ env.WINDOWS_ZIP }}
+
+      - name: Upload Windows release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.WINDOWS_ZIP }}
+
+  macos:
+    name: macOS source package
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build macOS zip
+        run: python scripts/build_distribution.py --platform macos --zip --version-zip
+
+      - name: Find macOS zip
+        run: |
+          zip_path="$(ls dist/XL_Translator_Distribution_*.zip | head -n 1)"
+          echo "MACOS_ZIP=$zip_path" >> "$GITHUB_ENV"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XL_Translator_macOS
+          path: ${{ env.MACOS_ZIP }}
+
+      - name: Upload macOS release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.MACOS_ZIP }}

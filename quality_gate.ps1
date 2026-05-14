@@ -5,10 +5,14 @@ param(
 $ErrorActionPreference = "Stop"
 
 $venvPythonCandidates = @(
+    (Join-Path $PSScriptRoot ".venv/Scripts/python.exe"),
     (Join-Path $PSScriptRoot ".venv/bin/python3"),
     (Join-Path $PSScriptRoot ".venv/bin/python")
 )
 $python = $venvPythonCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $python) {
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+}
 $targets = @(
     "app.py",
     "config.py",
@@ -21,7 +25,7 @@ $targets = @(
 )
 
 if (-not $python) {
-    Write-Error "Project venv Python not found under .venv/bin/python3"
+    Write-Error "Python not found. Expected .venv or a python command on PATH."
     exit 1
 }
 

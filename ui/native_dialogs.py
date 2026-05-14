@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+_INITIAL_DIR_ENV = "PRODUCT_TRANSLATE_DIALOG_INITIAL_DIR"
 
 _MACOS_FOLDER_PICKER_SCRIPT = r"""
 on run argv
@@ -52,25 +55,137 @@ on run argv
 end run
 """
 
+_WINDOWS_FOLDER_PICKER_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择源文件夹'
+
+$initial = $env:PRODUCT_TRANSLATE_DIALOG_INITIAL_DIR
+if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) {
+    $dialog.SelectedPath = (Resolve-Path -LiteralPath $initial).Path
+}
+
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.SelectedPath)
+}
+"""
+
+_WINDOWS_EXCEL_FILE_PICKER_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择 Excel 文件'
+$dialog.Filter = 'Excel 文件 (*.xlsx;*.xls)|*.xlsx;*.xls|所有文件 (*.*)|*.*'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $false
+
+$initial = $env:PRODUCT_TRANSLATE_DIALOG_INITIAL_DIR
+if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) {
+    $dialog.InitialDirectory = (Resolve-Path -LiteralPath $initial).Path
+}
+
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"""
+
+_WINDOWS_WORD_FILE_PICKER_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = '选择 Word 文件'
+$dialog.Filter = 'Word 文件 (*.docx)|*.docx|所有文件 (*.*)|*.*'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $false
+
+$initial = $env:PRODUCT_TRANSLATE_DIALOG_INITIAL_DIR
+if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) {
+    $dialog.InitialDirectory = (Resolve-Path -LiteralPath $initial).Path
+}
+
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"""
+
 
 def pick_folder(initial_path: str | Path | None = None) -> str | None:
     """Open a native folder picker and return the chosen path."""
-    return _run_picker(script=_MACOS_FOLDER_PICKER_SCRIPT, initial_path=initial_path)
+    return _run_picker(
+        macos_script=_MACOS_FOLDER_PICKER_SCRIPT,
+        windows_script=_WINDOWS_FOLDER_PICKER_SCRIPT,
+        initial_path=initial_path,
+    )
 
 
 def pick_excel_file(initial_path: str | Path | None = None) -> str | None:
     """Open a native Excel file picker and return the chosen path."""
-    return _run_picker(script=_MACOS_EXCEL_FILE_PICKER_SCRIPT, initial_path=initial_path)
+    return _run_picker(
+        macos_script=_MACOS_EXCEL_FILE_PICKER_SCRIPT,
+        windows_script=_WINDOWS_EXCEL_FILE_PICKER_SCRIPT,
+        initial_path=initial_path,
+    )
 
 
 def pick_word_file(initial_path: str | Path | None = None) -> str | None:
     """Open a native Word file picker and return the chosen path."""
-    return _run_picker(script=_MACOS_WORD_FILE_PICKER_SCRIPT, initial_path=initial_path)
+    return _run_picker(
+        macos_script=_MACOS_WORD_FILE_PICKER_SCRIPT,
+        windows_script=_WINDOWS_WORD_FILE_PICKER_SCRIPT,
+        initial_path=initial_path,
+    )
 
 
-def _run_picker(*, script: str, initial_path: str | Path | None) -> str | None:
+def _run_picker(
+    *,
+    macos_script: str,
+    windows_script: str,
+    initial_path: str | Path | None,
+) -> str | None:
     initial_dir = _resolve_initial_directory(initial_path)
-    return _run_macos_picker(script, initial_dir)
+    if os.name == "nt":
+        return _run_windows_picker(windows_script, initial_dir)
+    return _run_macos_picker(macos_script, initial_dir)
+
+
+def _run_windows_picker(script: str, initial_dir: str) -> str | None:
+    env = os.environ.copy()
+    if initial_dir:
+        env[_INITIAL_DIR_ENV] = initial_dir
+    else:
+        env.pop(_INITIAL_DIR_ENV, None)
+
+    startupinfo = None
+    creationflags = 0
+    if os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", script],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(details or "无法打开系统选择窗口。")
+
+    selected_path = (result.stdout or "").strip()
+    return selected_path or None
 
 
 def _run_macos_picker(script: str, initial_dir: str) -> str | None:

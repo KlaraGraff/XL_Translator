@@ -37,6 +37,11 @@ def project_root() -> Path:
 
 def venv_python_candidates(root: Path) -> list[Path]:
     venv_root = root / ".venv"
+    if os.name == "nt":
+        return [
+            venv_root / "Scripts" / "python.exe",
+            venv_root / "Scripts" / "pythonw.exe",
+        ]
     return [
         venv_root / "bin" / "python3",
         venv_root / "bin" / "python",
@@ -61,6 +66,26 @@ def bootstrap_python_candidates(root: Path) -> list[Path]:
 
     _append(os.environ.get("PRODUCT_TRANSLATE_BOOTSTRAP_PYTHON"))
     _append(sys.executable)
+    if os.name == "nt":
+        for known_path in (
+            root / "runtime" / "python" / "python.exe",
+            root / "runtime" / "python" / "pythonw.exe",
+        ):
+            _append(known_path)
+        for command_name in (
+            "py",
+            "python",
+            "python3",
+            "python3.13",
+            "python3.12",
+            "python3.11",
+            "python3.10",
+        ):
+            _append(shutil.which(command_name))
+        for candidate in venv_python_candidates(root):
+            _append(candidate)
+        return candidates
+
     for known_path in (
         "/opt/homebrew/bin/python3",
         "/opt/homebrew/bin/python3.13",
@@ -196,6 +221,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def subprocess_creation_kwargs() -> dict[str, int]:
+    if LAUNCH_SILENT and os.name == "nt":
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        }
     return {}
 
 
@@ -422,6 +451,21 @@ def is_process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
 
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+            **subprocess_creation_kwargs(),
+        )
+        if result.returncode != 0:
+            return False
+        output = (result.stdout or "").strip()
+        if not output or "No tasks are running" in output:
+            return False
+        return f'"{pid}"' in output
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -432,6 +476,26 @@ def is_process_alive(pid: int) -> bool:
 
 
 def get_process_commandline(pid: int) -> str:
+    if os.name == "nt":
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"$p=Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\"; "
+                    "if($p){$p.CommandLine}else{''}"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            **subprocess_creation_kwargs(),
+        )
+        if result.returncode != 0:
+            return ""
+        return (result.stdout or "").strip()
+
     result = subprocess.run(
         ["ps", "-ww", "-p", str(pid), "-o", "command="],
         capture_output=True,
@@ -463,6 +527,19 @@ def is_owned_streamlit_instance(root: Path, pid: int) -> bool:
 
 
 def terminate_pid(pid: int, force: bool = False) -> None:
+    if os.name == "nt":
+        cmd = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            cmd.append("/F")
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            **subprocess_creation_kwargs(),
+        )
+        return
+
     sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         os.kill(pid, sig)
@@ -528,6 +605,10 @@ def cleanup_previous_instance(root: Path) -> None:
 
 
 def open_browser(url: str) -> None:
+    if os.name == "nt":
+        os.startfile(url)  # type: ignore[attr-defined]
+        return
+
     import webbrowser
 
     webbrowser.open(url)

@@ -4,15 +4,17 @@
 
 ## 1. 文档定位
 
-本文件说明当前仓库已经收敛为 macOS 单平台后的启动入口与分发入口链路。
+本文件说明当前仓库中的 macOS 启动入口与分发入口链路。
 
 - 范围：macOS 启动程序与分发入口
-- 目标：提供稳定的 macOS 单平台启动体验
+- 目标：提供稳定的 macOS 启动体验
 - 边界：**本文件不代表整个应用已完成 macOS 业务兼容**
 
 当前已知仍存在业务层面的环境前提，例如：
 
 - 本地 Excel 深度处理仍依赖 `xlwings` 与本机安装的 Excel
+
+Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 
 因此，本次交付的含义是：
 
@@ -56,7 +58,7 @@
 
 ## 3. Python 运行环境约定
 
-当前仓库不再携带 Windows 风格的 `runtime/python`。
+当前 macOS 分发不携带 Windows 风格的 `runtime/python`。
 
 - 首次启动：通过本机可用的 `python3` 创建 `.venv`
 - 后续启动：统一使用 `.venv/bin/python3` 或 `.venv/bin/python`
@@ -64,12 +66,12 @@
 
 ## 4. 分发脚本的当前支持
 
-`scripts/build_distribution.py` 现在会：
+`scripts/build_distribution.py --platform macos` 现在会：
 
 - 复制根目录 `启动应用.command`
 - 复制 `scripts/start_macos.command`
 - 复制 `scripts/launch_silent_macos.sh`
-- 不再复制 Windows 启动脚本或 `runtime/python`
+- 不复制 Windows 根入口或 `runtime/python`
 - 在生成 zip 时，为 `.command` / `.sh` 写入可执行权限位
 
 这一步是为了降低 macOS 用户解压后还要手动 `chmod +x` 的概率。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 import stat
 import shutil
 import sys
@@ -22,8 +23,17 @@ PROJECT_FILES = {
     "config.py",
     "settings.py",
     "requirements.txt",
-    "启动应用.command",
     "README_首次使用.txt",
+}
+
+PLATFORM_PROJECT_FILES = {
+    "macos": {
+        "启动应用.command",
+    },
+    "windows": {
+        "启动应用.bat",
+        "分发应用.bat",
+    },
 }
 
 PROJECT_DIRS = {
@@ -33,6 +43,24 @@ PROJECT_DIRS = {
     "ui",
     "scripts",
     ".streamlit",
+}
+
+PLATFORM_PROJECT_DIRS = {
+    "macos": set(),
+    "windows": {
+        "runtime",
+    },
+}
+
+PLATFORM_SCRIPT_FILES = {
+    "macos": {
+        Path("scripts") / "start_macos.command",
+        Path("scripts") / "launch_silent_macos.sh",
+    },
+    "windows": {
+        Path("scripts") / "start_windows.bat",
+        Path("scripts") / "launch_silent_windows.ps1",
+    },
 }
 
 ADDITIONAL_ROOT_FILES = {
@@ -71,6 +99,7 @@ EXCLUDE_NAMES = {
 }
 
 EXECUTABLE_SUFFIXES = {".command", ".sh"}
+SUPPORTED_PLATFORMS = {"macos", "windows"}
 
 
 def root_dir() -> Path:
@@ -102,6 +131,50 @@ def copy_tree(src_dir: Path, dst_dir: Path) -> None:
             target.mkdir(parents=True, exist_ok=True)
         elif item.is_file():
             copy_file(item, target)
+
+
+def current_platform_name() -> str:
+    system = platform.system().lower()
+    if system == "windows":
+        return "windows"
+    return "macos"
+
+
+def normalize_platform(raw_platform: str) -> str:
+    platform_name = str(raw_platform or "").strip().lower()
+    if platform_name in {"current", "auto"}:
+        return current_platform_name()
+    if platform_name in SUPPORTED_PLATFORMS:
+        return platform_name
+    supported = ", ".join(sorted([*SUPPORTED_PLATFORMS, "current"]))
+    raise ValueError(f"Unsupported platform={raw_platform!r}. Supported: {supported}")
+
+
+def iter_project_files(target_platform: str) -> list[Path]:
+    files = {Path(name) for name in PROJECT_FILES}
+    files.update(Path(name) for name in PLATFORM_PROJECT_FILES[target_platform])
+    files.update(PLATFORM_SCRIPT_FILES[target_platform])
+    return sorted(files)
+
+
+def iter_project_dirs(target_platform: str) -> list[Path]:
+    dirs = {Path(name) for name in PROJECT_DIRS}
+    dirs.update(Path(name) for name in PLATFORM_PROJECT_DIRS[target_platform])
+    return sorted(dirs)
+
+
+def ensure_windows_runtime_placeholder(dist_root: Path) -> None:
+    runtime_python = dist_root / "runtime" / "python"
+    runtime_python.mkdir(parents=True, exist_ok=True)
+    if any(runtime_python.iterdir()):
+        return
+    (runtime_python / "README.txt").write_text(
+        (
+            "Optional bundled Python runtime directory.\n"
+            "The Windows launcher can also use a system Python 3.10+ installation.\n"
+        ),
+        encoding="utf-8",
+    )
 
 def should_mark_executable(rel_path: Path) -> bool:
     return rel_path.suffix.lower() in EXECUTABLE_SUFFIXES
@@ -139,8 +212,10 @@ def build_distribution(
     make_zip: bool,
     skip_rebuild: bool = False,
     version_zip: bool = False,
+    target_platform: str = "current",
 ) -> Path:
     root = root_dir()
+    target_platform = normalize_platform(target_platform)
     dist_dir = root / "dist"
     dist_root = dist_dir / output_name
 
@@ -155,12 +230,12 @@ def build_distribution(
 
         dist_root.mkdir(parents=True, exist_ok=True)
 
-        for filename in PROJECT_FILES:
-            src = root / filename
+        for rel_path in iter_project_files(target_platform):
+            src = root / rel_path
             if src.exists() and src.is_file():
-                copy_file(src, dist_root / filename)
+                copy_file(src, dist_root / rel_path)
 
-        for dirname in PROJECT_DIRS:
+        for dirname in iter_project_dirs(target_platform):
             src_dir = root / dirname
             if src_dir.exists() and src_dir.is_dir():
                 copy_tree(src_dir, dist_root / dirname)
@@ -170,6 +245,8 @@ def build_distribution(
             if src.exists() and src.is_file():
                 copy_file(src, dist_root / dst_rel)
 
+        if target_platform == "windows":
+            ensure_windows_runtime_placeholder(dist_root)
         print(f"[INFO] 分发目录已生成: {dist_root}")
 
     # ── 压缩包生成 ────────────────────────────────────────────
@@ -195,6 +272,12 @@ def build_distribution(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="构建项目分发目录")
+    parser.add_argument(
+        "--platform",
+        choices=sorted([*SUPPORTED_PLATFORMS, "current"]),
+        default="current",
+        help="目标平台：current / macos / windows",
+    )
     parser.add_argument(
         "--output-name",
         default=DEFAULT_DISTRIBUTION_OUTPUT_NAME,
@@ -231,6 +314,7 @@ def main() -> int:
         make_zip=args.zip,
         skip_rebuild=args.skip_rebuild,
         version_zip=(args.version_zip or args.legacy_version_zip),
+        target_platform=args.platform,
     )
     return 0
 
