@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = Path(SPECPATH).parents[1]
-ICON_PATH = ROOT / "packaging" / "windows" / "assets" / "app-icon.ico"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app_meta import APP_VERSION  # noqa: E402
+
+ICON_PATH = ROOT / "packaging" / "macos" / "assets" / "app-icon.icns"
 
 datas = [
     (str(ROOT / "app.py"), "."),
@@ -30,16 +36,16 @@ hiddenimports += collect_submodules("pyarrow")
 hiddenimports += [
     "anthropic",
     "dashscope",
+    "docx",
+    "dotenv",
     "httpx",
+    "loguru",
     "openai",
     "openpyxl",
     "pandas",
-    "docx",
     "PIL",
     "psutil",
     "pydantic",
-    "loguru",
-    "dotenv",
     "tenacity",
     "xlrd",
     "xlwings",
@@ -71,7 +77,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -86,7 +92,22 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    name="XL_Translator_Windows",
+    name="XL Translator",
+)
+
+app = BUNDLE(
+    coll,
+    name="XL Translator.app",
+    icon=str(ICON_PATH),
+    bundle_identifier="com.klara-graff.xl-translator",
+    info_plist={
+        "CFBundleDisplayName": "XL Translator",
+        "CFBundleName": "XL Translator",
+        "CFBundleShortVersionString": APP_VERSION,
+        "CFBundleVersion": APP_VERSION,
+        "LSMinimumSystemVersion": "11.0",
+        "NSHighResolutionCapable": True,
+    },
 )

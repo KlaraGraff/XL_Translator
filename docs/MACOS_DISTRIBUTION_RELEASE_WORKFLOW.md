@@ -1,6 +1,6 @@
 # XL Translator macOS 启动与分发入口说明（当前基线）
 
-最后更新：2026-04-08
+最后更新：2026-05-14
 
 ## 1. 文档定位
 
@@ -19,19 +19,28 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 因此，本次交付的含义是：
 
 - macOS 已有对应启动入口
-- macOS 分发包已能携带 `.command` 入口
+- macOS 标准发布包由 `.app` 和 `.dmg` 组成
 - 启动主链路具备首启显性、后续静默、旧实例清理、健康检查后打开浏览器等行为
 
 ## 2. 当前 macOS 启动链路
 
-### 2.1 用户入口
+### 2.1 标准安装包入口
+
+- GitHub Release 产物：`XL_Translator_macOS_<版本>.dmg`
+- 用户入口：`XL Translator.app`
+- 核心启动逻辑：`scripts/frozen_launcher.py`
+
+`.app` 是 PyInstaller 冻结后的应用，不需要用户本机先创建 `.venv`。
+启动后会在本地端口拉起 Streamlit，并自动打开浏览器。
+
+### 2.2 源码包入口
 
 - 根目录入口：`启动应用.command`
 - 显性启动脚本：`scripts/start_macos.command`
 - 静默辅助脚本：`scripts/launch_silent_macos.sh`
 - 核心启动逻辑：`scripts/launcher.py`
 
-### 2.2 行为说明
+### 2.3 源码包行为说明
 
 1. 用户双击根目录 `启动应用.command`
 2. 根入口先检查：
@@ -46,7 +55,7 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
    - 该脚本会尝试将 `.venv/bin/python3 scripts/launcher.py --silent` 以后台方式拉起
    - 根入口会尽快结束，后续由 `launcher.py --silent` 继续启动应用
 
-### 2.3 `launcher.py` 在 macOS 下的共用职责
+### 2.4 `launcher.py` 在 macOS 下的共用职责
 
 - 首次启动时自动解析本机 `python3`
 - 检查并完成首启 bootstrap
@@ -58,10 +67,12 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 
 ## 3. Python 运行环境约定
 
-当前 macOS 分发不携带 Windows 风格的 `runtime/python`。
+当前 macOS 标准安装包由 PyInstaller 内置 Python 运行时。
 
-- 首次启动：通过本机可用的 `python3` 创建 `.venv`
-- 后续启动：统一使用 `.venv/bin/python3` 或 `.venv/bin/python`
+源码分发不携带 Windows 风格的 `runtime/python`。
+
+- 源码包首次启动：通过本机可用的 `python3` 创建 `.venv`
+- 源码包后续启动：统一使用 `.venv/bin/python3` 或 `.venv/bin/python`
 - 如需手动指定首启解释器，可设置 `PRODUCT_TRANSLATE_BOOTSTRAP_PYTHON`
 
 ## 4. 分发脚本的当前支持
@@ -72,46 +83,61 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 - 复制 `scripts/start_macos.command`
 - 复制 `scripts/launch_silent_macos.sh`
 - 不复制 Windows 根入口或 `runtime/python`
-- 在生成 zip 时，为 `.command` / `.sh` 写入可执行权限位
 
-这一步是为了降低 macOS 用户解压后还要手动 `chmod +x` 的概率。
+这一步只保留为内部源码目录生成入口。标准安装包不调用这条链路，也不生成 zip。
 
-## 5. 使用与验收建议
+## 5. GitHub Actions 分发
 
-### 5.1 推荐的分发方式
+标准发布现在改为：
 
-优先使用 zip 分发并在 macOS 上解压后运行。
+1. 在 `macos-latest` runner 安装 Python 3.11
+2. 安装 `requirements-build.txt`
+3. 运行 `scripts/prepare_icons.py --macos`
+4. 使用 `packaging/macos/XL_Translator_macOS.spec` 生成 `.app`
+5. 使用 `hdiutil` 生成 `XL_Translator_macOS_<版本>.dmg`
+6. 输出对应 SHA256 文件并上传到 GitHub Release
+
+发布产物不再包含 `.zip`。
+
+## 6. 使用与验收建议
+
+### 6.1 推荐的分发方式
+
+优先使用 dmg 分发并拖入或直接运行。
 
 原因：
 
-- 当前 zip 生成逻辑会主动写入 `.command` / `.sh` 的可执行权限位
-- 如果只是把 Windows 上生成的目录直接拷贝到 macOS，权限位可能丢失
+- dmg 是 macOS 用户更熟悉的标准分发形态
+- `.app` 被封装到 dmg 后，更容易保持布局一致
 
-### 5.2 macOS 基本验收
+### 6.2 macOS 基本验收
 
-1. 在 macOS 上解压分发 zip
-2. 双击 `启动应用.command`
-3. 验证首次启动会显示可见终端过程
-4. 验证首次启动完成后会打开浏览器
-5. 保持 `.venv` 与 `.bootstrap_success` 不动，再次双击 `启动应用.command`
-6. 验证第二次启动会优先走静默链路，终端通常只会短暂出现
-7. 若需排查静默链路，检查 `.runtime/launcher.log`
+1. 在 macOS 上打开 dmg
+2. 将 `XL Translator.app` 放入合适位置后双击启动
+3. 验证启动后会打开浏览器
+4. 验证重新启动时会先清理旧实例，再打开新的本地服务
+5. 若需排查安装版启动链路，检查 `~/.xl_translator/desktop_launcher.log`
 
-## 6. 失败排查
+## 7. 失败排查
 
-### 6.1 首次启动失败
+### 7.1 安装版启动失败
+
+- 优先检查 `~/.xl_translator/desktop_launcher.log`
+- 未签名 dmg 第一次运行可能被系统阻止，可在 Finder 右键 `XL Translator.app` 后选择“打开”
+
+### 7.2 源码包首次启动失败
 
 - 优先保留终端窗口中的实时报错
 - 可直接运行 `scripts/start_macos.command` 复现
 
-### 6.2 后续静默启动失败
+### 7.3 源码包后续静默启动失败
 
 - 优先检查 `.runtime/launcher.log`
 - 若需要切回显性排查，直接运行 `scripts/start_macos.command`
 
-### 6.3 `.command` 无法直接打开
+### 7.4 `.command` 无法直接打开
 
-若是从非 zip 场景拷贝到 macOS，可能缺少可执行权限，可在终端执行：
+若是直接拷贝源码目录到 macOS，可能缺少可执行权限，可在终端执行：
 
 ```bash
 chmod +x 启动应用.command scripts/start_macos.command scripts/launch_silent_macos.sh

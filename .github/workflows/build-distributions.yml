@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows package
+    name: Windows installer
     runs-on: windows-latest
 
     steps:
@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements-build.txt
 
       - name: Run quality gate
         shell: pwsh
@@ -36,32 +36,32 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests
 
-      - name: Build Windows executable
-        run: pyinstaller --noconfirm packaging/windows/XL_Translator_Windows.spec
-
-      - name: Create Windows zip
+      - name: Install Inno Setup
         shell: pwsh
-        run: |
-          $version = python -c "import app_meta; print(app_meta.APP_VERSION)"
-          $zip = "dist/XL_Translator_Windows_$version.zip"
-          if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path "dist/XL_Translator_Windows/*" -DestinationPath $zip
-          echo "WINDOWS_ZIP=$zip" >> $env:GITHUB_ENV
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./scripts/build_windows_package.ps1
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XL_Translator_Windows
-          path: ${{ env.WINDOWS_ZIP }}
+          name: XL_Translator_Windows_Setup
+          path: |
+            ${{ env.WINDOWS_SETUP }}
+            ${{ env.WINDOWS_SETUP_SHA256 }}
 
       - name: Upload Windows release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.WINDOWS_ZIP }}
+          files: |
+            ${{ env.WINDOWS_SETUP }}
+            ${{ env.WINDOWS_SETUP_SHA256 }}
 
   macos:
-    name: macOS source package
+    name: macOS dmg
     runs-on: macos-latest
 
     steps:
@@ -72,23 +72,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Build macOS zip
-        run: python scripts/build_distribution.py --platform macos --zip --version-zip
-
-      - name: Find macOS zip
+      - name: Install dependencies
         run: |
-          zip_path="$(ls dist/XL_Translator_Distribution_*.zip | head -n 1)"
-          echo "MACOS_ZIP=$zip_path" >> "$GITHUB_ENV"
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build macOS dmg
+        run: bash ./scripts/build_macos_package.sh
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XL_Translator_macOS
-          path: ${{ env.MACOS_ZIP }}
+          name: XL_Translator_macOS_DMG
+          path: |
+            ${{ env.MACOS_DMG }}
+            ${{ env.MACOS_DMG_SHA256 }}
 
       - name: Upload macOS release asset
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.MACOS_ZIP }}
+          files: |
+            ${{ env.MACOS_DMG }}
+            ${{ env.MACOS_DMG_SHA256 }}

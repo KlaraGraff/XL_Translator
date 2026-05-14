@@ -24,6 +24,9 @@ dist/
 *.zip
 *.dmg
 *.pkg
+*.sha256
+packaging/macos/assets/app-icon.icns
+packaging/windows/assets/app-icon.ico
 
 # Local/user configuration and secrets
 .env
