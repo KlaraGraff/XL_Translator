@@ -7,6 +7,7 @@ import re
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
 
@@ -152,6 +153,7 @@ class WordTaskRunner:
         global_unique_texts: set[str] = set()
         segment_locations: dict[str, list[dict]] = {}
         quality_issues: list[dict] = []
+        unresolved_review_sources: set[str] = set()
 
         try:
             _raise_if_stopped()
@@ -259,7 +261,8 @@ class WordTaskRunner:
                         "Word 批次策略："
                         f"每批最多 {settings.word_batch.max_paragraphs_per_batch} 段，"
                         f"字符预算 {settings.word_batch.max_chars_per_batch}，"
-                        f"长段拆分阈值 {settings.word_batch.split_paragraph_chars}"
+                        f"长段拆分阈值 {settings.word_batch.split_paragraph_chars}，"
+                        f"失败严格重试 {settings.word_batch.strict_retry_attempts} 轮"
                     ),
                 )
                 api_translations = translate_word_texts(
@@ -302,59 +305,45 @@ class WordTaskRunner:
                         "WARN",
                         (
                             f"检测到 {len(retry_sources)} 条 Word 段落未获得有效译文，"
-                            "正在改为单条严格重试..."
+                            f"正在改为单条严格重试，最多 {settings.word_batch.strict_retry_attempts} 轮..."
                         ),
                     )
                     retry_prompt = _build_word_retry_prompt(system_prompt)
                     retry_batch_settings = settings.word_batch.model_copy(
                         update={"max_paragraphs_per_batch": 1}
                     )
-                    retry_translations = translate_word_texts(
-                        retry_sources,
-                        engine,
-                        target_lang,
-                        retry_prompt,
-                        retry_batch_settings,
-                        concurrency=1,
-                        progress_callback=None,
-                        error_callback=lambda msg: self._log("WARN", msg),
-                        should_stop=self.stop_requested,
+                    retry_fixed_sources, unresolved_sources = _run_word_strict_retries(
+                        retry_sources=retry_sources,
+                        api_translations=api_translations,
+                        engine=engine,
+                        target_lang=target_lang,
+                        retry_prompt=retry_prompt,
+                        retry_batch_settings=retry_batch_settings,
+                        retry_attempts=settings.word_batch.strict_retry_attempts,
                         source_lang=source_lang,
+                        should_stop=self.stop_requested,
+                        log_callback=self._log,
                     )
                     _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
-                    api_translations.update(retry_translations)
-
-                    unresolved_sources = [
-                        source
-                        for source in retry_sources
-                        if _needs_word_translation_retry(
-                            source,
-                            api_translations.get(source),
-                            source_lang=source_lang,
-                            target_lang=target_lang,
-                        )
-                    ]
-                    unresolved_source_set = set(unresolved_sources)
-                    retry_fixed_sources = [
-                        source
-                        for source in retry_sources
-                        if source not in unresolved_source_set
-                    ]
                     _add_quality_issues(
                         quality_issues,
                         segment_locations,
                         retry_fixed_sources,
                         problem="初次翻译未获得有效译文",
-                        status="已自动单段重试并恢复译文。",
+                        status="已自动单段严格重试并恢复译文。",
                         severity="resolved",
                     )
                     if unresolved_sources:
+                        unresolved_review_sources.update(unresolved_sources)
                         _add_quality_issues(
                             quality_issues,
                             segment_locations,
                             unresolved_sources,
                             problem="重试后仍未获得有效译文",
-                            status="已保留原文，需人工复核。",
+                            status=(
+                                f"已进行 {settings.word_batch.strict_retry_attempts} "
+                                "轮单段严格重试，仍保留原文，需人工复核。"
+                            ),
                             severity="needs_review",
                         )
                         self._log(
@@ -429,6 +418,12 @@ class WordTaskRunner:
                         translations=global_translations,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        review_highlight_sources=(
+                            unresolved_review_sources
+                            if settings.word_review.highlight_unresolved
+                            else None
+                        ),
+                        review_highlight_color=settings.word_review.highlight_color,
                         log_callback=lambda msg: self._log(
                             "OK" if msg.startswith("[OK]") else "INFO",
                             msg,
@@ -531,6 +526,88 @@ def _needs_word_translation_retry(
     if source_lang == "zh" and target_lang not in {"zh", "ja"} and _CJK_RE.search(translated_text):
         return True
     return translated_text.casefold() == source_text.casefold()
+
+
+def _run_word_strict_retries(
+    *,
+    retry_sources: list[str],
+    api_translations: dict[str, str],
+    engine,
+    target_lang: str,
+    retry_prompt: str,
+    retry_batch_settings,
+    retry_attempts: int,
+    source_lang: str,
+    should_stop,
+    log_callback: Callable[[str, str], None] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Retry unresolved Word paragraphs as single-item requests."""
+    try:
+        max_attempts = max(1, int(retry_attempts))
+    except (TypeError, ValueError):
+        max_attempts = 1
+
+    pending_sources = list(retry_sources)
+    for attempt_index in range(1, max_attempts + 1):
+        if not pending_sources or (should_stop and should_stop()):
+            break
+
+        if log_callback:
+            log_callback(
+                "INFO",
+                (
+                    f"Word 单段严格重试第 {attempt_index}/{max_attempts} 轮："
+                    f"{len(pending_sources)} 条"
+                ),
+            )
+
+        retry_stats = WordBatchRunStats()
+        retry_translations = translate_word_texts(
+            pending_sources,
+            engine,
+            target_lang,
+            retry_prompt,
+            retry_batch_settings,
+            concurrency=1,
+            progress_callback=None,
+            error_callback=(lambda msg: log_callback("WARN", msg)) if log_callback else None,
+            should_stop=should_stop,
+            source_lang=source_lang,
+            stats=retry_stats,
+        )
+        api_translations.update(retry_translations)
+
+        next_pending_sources = [
+            source
+            for source in pending_sources
+            if _needs_word_translation_retry(
+                source,
+                api_translations.get(source),
+                source_lang=source_lang,
+                target_lang=target_lang,
+            )
+        ]
+        fixed_count = len(pending_sources) - len(next_pending_sources)
+        if fixed_count and log_callback:
+            log_callback(
+                "OK",
+                (
+                    f"Word 单段严格重试第 {attempt_index}/{max_attempts} 轮"
+                    f"恢复 {fixed_count} 条"
+                ),
+            )
+        if next_pending_sources and attempt_index < max_attempts and log_callback:
+            log_callback("WARN", f"仍有 {len(next_pending_sources)} 条未恢复，将继续重试。")
+
+        pending_sources = next_pending_sources
+
+    unresolved_source_set = set(pending_sources)
+    retry_fixed_sources = [
+        source
+        for source in retry_sources
+        if source not in unresolved_source_set
+    ]
+    return retry_fixed_sources, pending_sources
 
 
 def _build_word_batch_prompt(system_prompt: str) -> str:

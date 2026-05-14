@@ -187,12 +187,20 @@ def write_bilingual_docx(
     translations: dict[str, str],
     target_lang: str,
     source_lang: str = "zh",
+    review_highlight_sources: set[str] | None = None,
+    review_highlight_color: str = "FFF2CC",
     log_callback=None,
 ) -> Path:
     """Write a bilingual Word document to the output directory."""
     source_path = Path(source_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    review_highlight_source_set = {
+        str(source or "").strip()
+        for source in (review_highlight_sources or set())
+        if str(source or "").strip()
+    }
+    review_highlight_fill = _normalize_hex_fill(review_highlight_color)
 
     lang_display = _sanitize_filename_fragment(
         get_target_lang_display(target_lang, include_optional=True)
@@ -225,6 +233,8 @@ def write_bilingual_docx(
 
     paragraph_insertions = 0
     table_insertions = 0
+    highlight_count = 0
+    highlight_skip_count = 0
 
     for paragraph in body_paragraphs:
         paragraph_key = id(paragraph)
@@ -240,6 +250,13 @@ def write_bilingual_docx(
             continue
         if _is_toc_or_field_paragraph(paragraph):
             continue
+
+        should_highlight = source.strip() in review_highlight_source_set
+        if should_highlight:
+            if _apply_paragraph_review_highlight(paragraph, review_highlight_fill):
+                highlight_count += 1
+            else:
+                highlight_skip_count += 1
 
         resolved = _resolve_translation(source, translations)
         if resolved is None:
@@ -273,6 +290,11 @@ def write_bilingual_docx(
         ):
             continue
         resolved = _resolve_translation(source, translations)
+        if source.strip() in review_highlight_source_set:
+            if _apply_cell_review_highlight(cell, review_highlight_fill):
+                highlight_count += 1
+            else:
+                highlight_skip_count += 1
         if resolved is None:
             continue
         numbering_label = _single_cell_numbering_label(cell, numbering_labels)
@@ -288,8 +310,13 @@ def write_bilingual_docx(
 
     doc.save(str(out_path))
     if log_callback:
+        highlight_summary = ""
+        if review_highlight_source_set:
+            highlight_summary = f"，复核高亮 {highlight_count}"
+            if highlight_skip_count:
+                highlight_summary += f"，跳过已有标记 {highlight_skip_count}"
         log_callback(
-            f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，表格单元格 {table_insertions}）"
+            f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，表格单元格 {table_insertions}{highlight_summary}）"
         )
     return out_path
 
@@ -374,6 +401,87 @@ def _resolve_translation(
     if source.strip().casefold() == translated.casefold():
         return None
     return ResolvedWordTranslation(translated)
+
+
+def _normalize_hex_fill(value: str) -> str:
+    cleaned = str(value or "").strip().lstrip("#").upper()
+    if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
+        return cleaned
+    return "FFF2CC"
+
+
+def _apply_paragraph_review_highlight(paragraph: Paragraph, fill: str) -> bool:
+    if _paragraph_has_existing_highlight(paragraph):
+        return False
+    p_pr = paragraph._p.get_or_add_pPr()
+    _set_shading_fill(p_pr, fill)
+    return True
+
+
+def _apply_cell_review_highlight(cell: _Cell, fill: str) -> bool:
+    if _cell_has_existing_highlight(cell):
+        return False
+    tc_pr = cell._tc.get_or_add_tcPr()
+    _set_shading_fill(tc_pr, fill)
+    return True
+
+
+def _paragraph_has_existing_highlight(paragraph: Paragraph) -> bool:
+    p_pr = getattr(paragraph._p, "pPr", None)
+    if _element_has_existing_shading(p_pr):
+        return True
+    try:
+        if _element_has_existing_shading(getattr(paragraph.style._element, "pPr", None)):
+            return True
+    except Exception:
+        pass
+
+    for run in paragraph.runs:
+        try:
+            if run.font.highlight_color is not None:
+                return True
+        except Exception:
+            pass
+
+        r_pr = getattr(run._element, "rPr", None)
+        if _element_has_existing_shading(r_pr):
+            return True
+        highlight = r_pr.find(qn("w:highlight")) if r_pr is not None else None
+        if highlight is not None:
+            value = str(highlight.get(qn("w:val")) or "").strip().upper()
+            if value and value != "NONE":
+                return True
+    return False
+
+
+def _cell_has_existing_highlight(cell: _Cell) -> bool:
+    tc_pr = getattr(cell._tc, "tcPr", None)
+    if _element_has_existing_shading(tc_pr):
+        return True
+    return any(_paragraph_has_existing_highlight(paragraph) for paragraph in cell.paragraphs)
+
+
+def _element_has_existing_shading(element) -> bool:
+    if element is None:
+        return False
+    shd = element.find(qn("w:shd"))
+    if shd is None:
+        return False
+    fill = str(shd.get(qn("w:fill")) or "").strip().upper()
+    if fill and fill != "AUTO":
+        return True
+    value = str(shd.get(qn("w:val")) or "").strip().upper()
+    return bool(value and value not in {"CLEAR", "NIL"})
+
+
+def _set_shading_fill(parent_element, fill: str) -> None:
+    shd = parent_element.find(qn("w:shd"))
+    if shd is None:
+        shd = OxmlElement("w:shd")
+        parent_element.append(shd)
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), _normalize_hex_fill(fill))
 
 
 def _is_toc_or_field_paragraph(paragraph: Paragraph) -> bool:
