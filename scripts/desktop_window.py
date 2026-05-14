@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import sys
 import webbrowser
 from collections.abc import Callable
 
@@ -8,6 +10,7 @@ from app_meta import APP_NAME
 
 BROWSER_FALLBACK_ENV = "XL_TRANSLATOR_OPEN_BROWSER"
 WEBVIEW_DEBUG_ENV = "XL_TRANSLATOR_WEBVIEW_DEBUG"
+MACOS_BROWSER_FALLBACK_MAX_MAJOR = 12
 
 WINDOW_WIDTH = 1320
 WINDOW_HEIGHT = 880
@@ -22,6 +25,33 @@ def _env_truthy(name: str) -> bool:
 def _log(log_callback: Callable[[str], None] | None, message: str) -> None:
     if log_callback is not None:
         log_callback(message)
+
+
+def _parse_macos_major_version(version: str) -> int | None:
+    normalized = str(version or "").strip()
+    if not normalized:
+        return None
+    try:
+        return int(normalized.split(".", 1)[0])
+    except ValueError:
+        return None
+
+
+def should_use_system_browser_for_macos(
+    *,
+    platform_name: str | None = None,
+    macos_version: str | None = None,
+) -> bool:
+    platform_name = platform_name or sys.platform
+    if platform_name != "darwin":
+        return False
+
+    version = macos_version if macos_version is not None else platform.mac_ver()[0]
+    major_version = _parse_macos_major_version(version)
+    return (
+        major_version is not None
+        and major_version <= MACOS_BROWSER_FALLBACK_MAX_MAJOR
+    )
 
 
 def open_system_browser(url: str) -> None:
@@ -64,6 +94,15 @@ def open_app_window(
         _log(
             log_callback,
             f"{BROWSER_FALLBACK_ENV}=1 detected. Opening system browser: {url}",
+        )
+        open_system_browser(url)
+        return False
+
+    if should_use_system_browser_for_macos():
+        _log(
+            log_callback,
+            "macOS 12 or earlier detected. Opening system browser "
+            f"instead of WebView: {url}",
         )
         open_system_browser(url)
         return False
