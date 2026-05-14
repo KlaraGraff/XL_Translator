@@ -6,10 +6,12 @@ import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from math import ceil
 from typing import Callable
 
 from loguru import logger
 
+from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     validate_translation,
@@ -24,6 +26,11 @@ _SOFT_SPLIT_CHARS = set("，,、")
 
 ProgressCallback = Callable[[int, int], None]
 ErrorCallback = Callable[[str], None]
+CandidateCallback = Callable[[str, str], None]
+
+_API_WEIGHT_CHARS_PER_SLOT = 2800
+_API_WEIGHT_PROMPT_CHAR_CAP = 900
+_API_WEIGHT_OUTPUT_MULTIPLIER = 1.15
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,9 @@ def translate_word_texts(
     source_lang: str = "zh",
     stats: WordBatchRunStats | None = None,
     quality_profile: str | None = VALIDATION_PROFILE_STRICT,
+    api_scheduler: WeightedApiScheduler | None = None,
+    request_category: str = API_REQUEST_CATEGORY_NORMAL,
+    candidate_callback: CandidateCallback | None = None,
 ) -> dict[str, str]:
     """Translate Word paragraphs using character-budgeted batches with fallback retries."""
     if not texts:
@@ -99,6 +109,9 @@ def translate_word_texts(
             system_prompt=system_prompt,
             source_lang=source_lang,
             quality_profile=quality_profile,
+            api_scheduler=api_scheduler,
+            request_category=request_category,
+            candidate_callback=candidate_callback,
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
@@ -217,6 +230,9 @@ def _translate_units_with_fallback(
     system_prompt: str,
     source_lang: str,
     quality_profile: str | None,
+    api_scheduler: WeightedApiScheduler | None,
+    request_category: str,
+    candidate_callback: CandidateCallback | None,
     should_stop,
     error_callback: ErrorCallback | None,
     stats: WordBatchRunStats,
@@ -228,13 +244,24 @@ def _translate_units_with_fallback(
 
     try:
         payloads = _unique_unit_texts(units)
-        raw_results = engine.translate_batch(
-            payloads,
-            target_lang,
-            system_prompt,
-            source_lang=source_lang,
-        )
+        request_weight = estimate_api_request_weight(payloads, system_prompt)
+        if api_scheduler is None:
+            raw_results = engine.translate_batch(
+                payloads,
+                target_lang,
+                system_prompt,
+                source_lang=source_lang,
+            )
+        else:
+            with api_scheduler.slot(request_weight, category=request_category):
+                raw_results = engine.translate_batch(
+                    payloads,
+                    target_lang,
+                    system_prompt,
+                    source_lang=source_lang,
+                )
         _validate_batch_integrity(payloads, raw_results)
+        _notify_whole_paragraph_candidates(units, raw_results, candidate_callback)
         _apply_word_quality_filter(
             raw_results,
             target_lang,
@@ -260,6 +287,9 @@ def _translate_units_with_fallback(
                 system_prompt=system_prompt,
                 source_lang=source_lang,
                 quality_profile=quality_profile,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                candidate_callback=candidate_callback,
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
@@ -271,6 +301,9 @@ def _translate_units_with_fallback(
                 system_prompt=system_prompt,
                 source_lang=source_lang,
                 quality_profile=quality_profile,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                candidate_callback=candidate_callback,
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
@@ -293,6 +326,38 @@ def _unique_unit_texts(units: list[WordTranslationUnit]) -> list[str]:
         seen.add(unit.text)
         payloads.append(unit.text)
     return payloads
+
+
+def estimate_api_request_weight(
+    texts: list[str],
+    system_prompt: str = "",
+    *,
+    chars_per_slot: int = _API_WEIGHT_CHARS_PER_SLOT,
+) -> int:
+    """Estimate API request weight for the shared weighted scheduler."""
+    input_chars = sum(len(str(text or "")) for text in texts)
+    prompt_chars = min(len(str(system_prompt or "")), _API_WEIGHT_PROMPT_CHAR_CAP)
+    estimated_output_chars = int(ceil(input_chars * _API_WEIGHT_OUTPUT_MULTIPLIER))
+    total_chars = max(1, input_chars + prompt_chars + estimated_output_chars)
+    return max(1, int(ceil(total_chars / max(1, int(chars_per_slot)))))
+
+
+def _notify_whole_paragraph_candidates(
+    units: list[WordTranslationUnit],
+    raw_results: dict[str, str],
+    candidate_callback: CandidateCallback | None,
+) -> None:
+    if candidate_callback is None:
+        return
+    for unit in units:
+        if unit.is_split_part:
+            continue
+        if unit.text not in raw_results:
+            continue
+        try:
+            candidate_callback(unit.source, raw_results[unit.text])
+        except Exception as exc:  # noqa: BLE001 - callbacks must not break translation
+            logger.warning(f"Word 候选译文回调失败：{exc}")
 
 
 def _validate_batch_integrity(payloads: list[str], results: dict[str, str]) -> None:

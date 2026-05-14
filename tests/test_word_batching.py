@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+from core.api_scheduler import WeightedApiScheduler
 from core.word_batching import WordBatchRunStats, translate_word_texts
+from core.word_batching import estimate_api_request_weight
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
 
@@ -104,6 +106,24 @@ class WordBatchingTests(unittest.TestCase):
         self.assertTrue(all(len(chunk) < len(source) for chunk in translated_chunks))
         self.assertIn("译文:第一句", result[source])
         self.assertGreater(result[source].count("译文:"), 1)
+
+    def test_api_request_weight_scales_with_batch_size(self) -> None:
+        small = estimate_api_request_weight(["短句"], "system")
+        large = estimate_api_request_weight(["长句" * 3000], "system")
+
+        self.assertEqual(small, 1)
+        self.assertGreater(large, small)
+
+    def test_weighted_scheduler_uses_soft_limit_when_recovery_is_waiting(self) -> None:
+        scheduler = WeightedApiScheduler(10, normal_soft_ratio=0.8)
+        first = scheduler.acquire(8, category="normal")
+
+        self.assertEqual(first, 8)
+        snapshot = scheduler.snapshot()
+        self.assertEqual(snapshot.active_total_weight, 8)
+        self.assertEqual(scheduler.normal_soft_limit, 8)
+
+        scheduler.release(first, category="normal")
 
 
 if __name__ == "__main__":

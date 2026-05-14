@@ -21,6 +21,7 @@ from core.word_document import (
 )
 from core.word_task_runner import _needs_word_translation_retry
 from core.word_task_runner import (
+    _WordRecoveryPool,
     _build_source_excerpt,
     _run_word_strict_retries,
     _write_word_quality_report,
@@ -69,6 +70,17 @@ class MappingWordEngine(TranslationEngine):
     ) -> dict[str, str]:
         self.calls.append(list(texts))
         return {text: self.translations.get(text, text) for text in texts}
+
+
+class SemanticWordEngine(MappingWordEngine):
+    def __init__(self, translations: dict[str, str], verdict: str = "equivalent") -> None:
+        super().__init__(translations)
+        self.verdict = verdict
+        self.chat_calls: list[tuple[str, str]] = []
+
+    def chat(self, system: str, user: str) -> str:
+        self.chat_calls.append((system, user))
+        return f'{{"verdict":"{self.verdict}","reason":"same meaning"}}'
 
 
 class WordDocumentTests(unittest.TestCase):
@@ -366,6 +378,60 @@ class WordDocumentTests(unittest.TestCase):
         self.assertIn("承包0商", recovery_reviews[source].review_fragments)
         self.assertEqual(len(engine.calls), 1)
         self.assertEqual(api_translations[source], translated)
+
+    def test_word_recovery_pool_semantic_accepts_valid_rejected_candidate(self) -> None:
+        source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
+        candidate = "Signing Date / Date: February 10, 2026"
+        engine = SemanticWordEngine({source: source}, verdict="equivalent")
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        pool = _WordRecoveryPool(
+            engine=engine,
+            target_lang="en",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=1,
+            source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
+            should_stop=lambda: False,
+            enable_semantic=True,
+        )
+
+        pool.add_candidate(source, candidate)
+        outcome = pool.wait_for_completion()
+
+        self.assertEqual(outcome.unresolved_sources, [])
+        self.assertEqual(outcome.accepted_translations[source], candidate)
+        self.assertIn(source, outcome.semantic_review_results)
+        self.assertGreaterEqual(outcome.semantic_check_count, 1)
+        self.assertTrue(engine.chat_calls)
+
+    def test_word_recovery_pool_keeps_review_when_semantic_is_uncertain(self) -> None:
+        source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
+        candidate = "Signing Date / Date: February 10, 2026"
+        engine = SemanticWordEngine({source: source}, verdict="uncertain")
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        pool = _WordRecoveryPool(
+            engine=engine,
+            target_lang="en",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=1,
+            source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
+            should_stop=lambda: False,
+            enable_semantic=True,
+        )
+
+        pool.add_candidate(source, candidate)
+        outcome = pool.wait_for_completion()
+
+        self.assertEqual(outcome.fixed_sources, [])
+        self.assertEqual(outcome.unresolved_sources, [source])
+        self.assertIn(source, outcome.unresolved_validation_results)
 
     def test_french_decimal_commas_pass_number_integrity_check(self) -> None:
         source = (

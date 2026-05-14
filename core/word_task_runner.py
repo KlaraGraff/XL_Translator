@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import re
 import threading
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -13,6 +15,11 @@ from typing import Callable
 from loguru import logger
 
 from core import tm_manager
+from core.api_scheduler import (
+    API_REQUEST_CATEGORY_NORMAL,
+    API_REQUEST_CATEGORY_RECOVERY,
+    WeightedApiScheduler,
+)
 from core.bilingual_writer import get_custom_output_dir_error
 from core.engine_dispatcher import (
     build_engine,
@@ -30,28 +37,67 @@ from core.task_runner import (
     TaskStopped,
 )
 from core.translation_filter import (
+    VALIDATION_STATUS_SOFT_PASS_REVIEW,
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
+    TranslationValidationIssue,
     TranslationValidationResult,
     validate_translation,
 )
-from core.translation_protocol import should_store_translation_in_tm
+from core.translation_protocol import (
+    extract_replace_translation,
+    is_replace_translation,
+    should_store_translation_in_tm,
+)
 from core.word_document import (
     WordFileItem,
     build_word_output_dir,
     extract_word_segments,
     write_bilingual_docx,
 )
-from core.word_batching import WordBatchRunStats, translate_word_texts
+from core.word_batching import (
+    WordBatchRunStats,
+    estimate_api_request_weight,
+    translate_word_texts,
+)
+from engines.base_engine import TranslationEngine, strip_markdown_json
 from settings import AppSettings
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_SEMANTIC_VERDICT_EQUIVALENT = "equivalent"
+_SEMANTIC_VERDICT_NOT_EQUIVALENT = "not_equivalent"
+_SEMANTIC_VERDICT_UNCERTAIN = "uncertain"
+_WORD_RECOVERY_NORMAL_SOFT_RATIO = 0.8
+_SEMANTIC_MIN_LENGTH_RATIO = 0.18
+_SEMANTIC_RESIDUAL_CJK_RATIO_BLOCK = 0.12
+_SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK = 12
 
 
 @dataclass(frozen=True)
 class _WordRetryEvaluation:
     accepted: bool
     validation: TranslationValidationResult
+
+
+@dataclass(frozen=True)
+class _SemanticArbitrationResult:
+    verdict: str
+    reason: str = ""
+
+    @property
+    def equivalent(self) -> bool:
+        return self.verdict == _SEMANTIC_VERDICT_EQUIVALENT
+
+
+@dataclass
+class _WordRecoveryOutcome:
+    fixed_sources: list[str]
+    unresolved_sources: list[str]
+    accepted_translations: dict[str, str]
+    recovery_review_results: dict[str, TranslationValidationResult]
+    semantic_review_results: dict[str, TranslationValidationResult]
+    unresolved_validation_results: dict[str, TranslationValidationResult]
+    semantic_check_count: int = 0
 
 
 class WordTaskRunner:
@@ -123,6 +169,10 @@ class WordTaskRunner:
                 settings.engine.ollama_concurrency
                 if settings.engine.mode == "local"
                 else settings.engine.concurrency
+            )
+            api_scheduler = WeightedApiScheduler(
+                concurrency,
+                normal_soft_ratio=_WORD_RECOVERY_NORMAL_SOFT_RATIO,
             )
         except Exception as exc:
             self._queue.put(ErrorMsg(message=f"引擎初始化失败：{exc}"))
@@ -269,6 +319,34 @@ class WordTaskRunner:
                 t0 = datetime.now()
                 word_batch_stats = WordBatchRunStats()
                 word_prompt = _build_word_batch_prompt(system_prompt)
+                retry_prompt = _build_word_retry_prompt(system_prompt)
+                retry_batch_settings = settings.word_batch.model_copy(
+                    update={"max_paragraphs_per_batch": 1}
+                )
+                recovery_pool = _WordRecoveryPool(
+                    engine=engine,
+                    target_lang=target_lang,
+                    retry_prompt=retry_prompt,
+                    retry_batch_settings=retry_batch_settings,
+                    retry_attempts=settings.word_batch.strict_retry_attempts,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    concurrency=concurrency,
+                    should_stop=self.stop_requested,
+                    log_callback=self._log,
+                )
+
+                def recovery_candidate_cb(source: str, candidate: str) -> None:
+                    if self.stop_requested():
+                        return
+                    if _needs_word_translation_retry(
+                        source,
+                        candidate,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    ):
+                        recovery_pool.add_candidate(source, candidate)
+
                 self._log(
                     "INFO",
                     (
@@ -291,6 +369,10 @@ class WordTaskRunner:
                     should_stop=self.stop_requested,
                     source_lang=source_lang,
                     stats=word_batch_stats,
+                    quality_profile=None,
+                    api_scheduler=api_scheduler,
+                    request_category=API_REQUEST_CATEGORY_NORMAL,
+                    candidate_callback=recovery_candidate_cb,
                 )
                 self._log(
                     "INFO",
@@ -319,35 +401,25 @@ class WordTaskRunner:
                         "WARN",
                         (
                             f"检测到 {len(retry_sources)} 条 Word 段落未获得有效译文，"
-                            f"正在改为单条严格重试，最多 {settings.word_batch.strict_retry_attempts} 轮..."
+                            "正在进入并行恢复池：单段重试与语义仲裁会并行执行..."
                         ),
                     )
-                    retry_prompt = _build_word_retry_prompt(system_prompt)
-                    retry_batch_settings = settings.word_batch.model_copy(
-                        update={"max_paragraphs_per_batch": 1}
-                    )
-                    (
-                        retry_fixed_sources,
-                        unresolved_sources,
-                        retry_review_results,
-                    ) = _run_word_strict_retries(
-                        retry_sources=retry_sources,
-                        api_translations=api_translations,
-                        engine=engine,
-                        target_lang=target_lang,
-                        retry_prompt=retry_prompt,
-                        retry_batch_settings=retry_batch_settings,
-                        retry_attempts=settings.word_batch.strict_retry_attempts,
-                        source_lang=source_lang,
-                        should_stop=self.stop_requested,
-                        log_callback=self._log,
-                    )
+                    for source in retry_sources:
+                        recovery_pool.add_candidate(source, api_translations.get(source, ""))
+                    recovery_outcome = recovery_pool.wait_for_completion()
                     _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
-                    recovery_review_sources.update(retry_review_results)
+                    api_translations.update(recovery_outcome.accepted_translations)
+                    for source in recovery_outcome.unresolved_sources:
+                        api_translations[source] = source
+                    recovery_review_sources.update(recovery_outcome.recovery_review_results)
+                    recovery_review_sources.update(recovery_outcome.semantic_review_results)
                     standard_fixed_sources = [
                         source
-                        for source in retry_fixed_sources
-                        if source not in retry_review_results
+                        for source in recovery_outcome.fixed_sources
+                        if (
+                            source not in recovery_outcome.recovery_review_results
+                            and source not in recovery_outcome.semantic_review_results
+                        )
                     ]
                     _add_quality_issues(
                         quality_issues,
@@ -357,39 +429,60 @@ class WordTaskRunner:
                         status="已自动单段严格重试并恢复译文。",
                         severity="resolved",
                     )
-                    if retry_review_results:
+                    if recovery_outcome.recovery_review_results:
                         _add_quality_issues(
                             quality_issues,
                             segment_locations,
-                            list(retry_review_results.keys()),
+                            list(recovery_outcome.recovery_review_results.keys()),
                             problem="重试译文按 Word 恢复规则自动接受",
                             status=(
                                 "译文主体已通过恢复校验，本段已写入译文并高亮原文，"
                                 "建议复核提示片段。"
                             ),
                             severity="resolved",
-                            validation_results=retry_review_results,
+                            validation_results=recovery_outcome.recovery_review_results,
                         )
-                    if unresolved_sources:
-                        unresolved_review_sources.update(unresolved_sources)
+                    if recovery_outcome.semantic_review_results:
                         _add_quality_issues(
                             quality_issues,
                             segment_locations,
-                            unresolved_sources,
+                            list(recovery_outcome.semantic_review_results.keys()),
+                            problem="规则校验未通过，语义仲裁自动接受",
+                            status=(
+                                "候选译文未通过程序化规则校验，但语义仲裁判定与原文完整等义；"
+                                "本段已写入译文并高亮原文，且不会写入翻译记忆库。"
+                            ),
+                            severity="resolved",
+                            validation_results=recovery_outcome.semantic_review_results,
+                        )
+                    if recovery_outcome.unresolved_sources:
+                        unresolved_review_sources.update(recovery_outcome.unresolved_sources)
+                        _add_quality_issues(
+                            quality_issues,
+                            segment_locations,
+                            recovery_outcome.unresolved_sources,
                             problem="重试后仍未获得有效译文",
                             status=(
                                 f"已进行 {settings.word_batch.strict_retry_attempts} "
-                                "轮单段严格重试，仍保留原文，需人工复核。"
+                                "轮并行单段重试与语义仲裁，仍保留原文，需人工复核。"
                             ),
                             severity="needs_review",
+                            validation_results=recovery_outcome.unresolved_validation_results,
                         )
                         self._log(
                             "ERROR",
                             (
-                                f"仍有 {len(unresolved_sources)} 条 Word 段落没有有效译文，"
+                                f"仍有 {len(recovery_outcome.unresolved_sources)} 条 Word 段落没有有效译文，"
                                 "本次将保留原文并在结果中体现为未插入译文。"
                             ),
                         )
+                    if recovery_outcome.semantic_check_count:
+                        self._log(
+                            "INFO",
+                            f"Word 语义仲裁完成：{recovery_outcome.semantic_check_count} 次检查",
+                        )
+                else:
+                    recovery_pool.wait_for_completion()
 
                 elapsed = (datetime.now() - t0).total_seconds()
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{elapsed:.2f}s）")
@@ -578,7 +671,7 @@ def _evaluate_word_translation(
     if source_lang == "zh" and not _CJK_RE.search(source_text):
         return _WordRetryEvaluation(True, TranslationValidationResult())
 
-    translated_text = str(translated or "").strip()
+    translated_text = _candidate_validation_text(translated)
     strict_validation = validate_translation(
         source_text,
         translated_text,
@@ -607,6 +700,441 @@ def _evaluate_word_translation(
         return _WordRetryEvaluation(False, recovery_validation)
 
     return _WordRetryEvaluation(False, strict_validation)
+
+
+@dataclass
+class _WordRecoveryState:
+    source: str
+    attempts_done: int = 0
+    retry_inflight: bool = False
+    semantic_inflight: int = 0
+    accepted_translation: str = ""
+    accepted_by: str = ""
+    accepted_validation: TranslationValidationResult = field(default_factory=TranslationValidationResult)
+    last_validation: TranslationValidationResult = field(default_factory=TranslationValidationResult)
+    seen_semantic_candidates: set[str] = field(default_factory=set)
+
+    @property
+    def accepted(self) -> bool:
+        return bool(self.accepted_by)
+
+    def complete(self, max_attempts: int) -> bool:
+        return (
+            self.accepted
+            or (
+                self.attempts_done >= max_attempts
+                and not self.retry_inflight
+                and self.semantic_inflight <= 0
+            )
+        )
+
+
+class _WordRecoveryPool:
+    """Parallel Word recovery pool for retry and semantic arbitration."""
+
+    def __init__(
+        self,
+        *,
+        engine,
+        target_lang: str,
+        retry_prompt: str,
+        retry_batch_settings,
+        retry_attempts: int,
+        source_lang: str,
+        api_scheduler: WeightedApiScheduler | None,
+        concurrency: int,
+        should_stop,
+        log_callback: Callable[[str, str], None] | None = None,
+        enable_semantic: bool = True,
+    ) -> None:
+        try:
+            self._max_attempts = max(1, int(retry_attempts))
+        except (TypeError, ValueError):
+            self._max_attempts = 1
+        self._engine = engine
+        self._target_lang = target_lang
+        self._retry_prompt = retry_prompt
+        self._retry_batch_settings = retry_batch_settings
+        self._source_lang = source_lang
+        self._api_scheduler = api_scheduler
+        self._should_stop = should_stop
+        self._log_callback = log_callback
+        self._enable_semantic = enable_semantic and _engine_supports_chat(engine)
+        self._states: dict[str, _WordRecoveryState] = {}
+        self._futures = set()
+        self._condition = threading.Condition()
+        self._executor = ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1)))
+        self._semantic_check_count = 0
+
+    def add_candidate(
+        self,
+        source: str,
+        candidate: str | None,
+        *,
+        allow_recovery: bool = False,
+    ) -> None:
+        source_text = str(source or "").strip()
+        if not source_text or (self._should_stop and self._should_stop()):
+            return
+
+        candidate_text = str(candidate or "").strip()
+        evaluation = _evaluate_word_translation(
+            source_text,
+            candidate_text,
+            source_lang=self._source_lang,
+            target_lang=self._target_lang,
+            allow_recovery=allow_recovery,
+        )
+
+        with self._condition:
+            state = self._states.setdefault(source_text, _WordRecoveryState(source=source_text))
+            if state.accepted:
+                return
+            if evaluation.accepted:
+                accepted_by = (
+                    "word_recovery"
+                    if evaluation.validation.needs_review
+                    else "strict_retry"
+                )
+                self._accept_locked(state, candidate_text, accepted_by, evaluation.validation)
+                return
+
+            state.last_validation = evaluation.validation
+            self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
+            self._schedule_retry_locked(state)
+            self._condition.notify_all()
+
+    def wait_for_completion(self) -> _WordRecoveryOutcome:
+        with self._condition:
+            while not self._all_complete_locked():
+                self._condition.wait(timeout=0.1)
+
+        self._executor.shutdown(wait=True)
+        return self._build_outcome()
+
+    def _all_complete_locked(self) -> bool:
+        return all(
+            state.complete(self._max_attempts)
+            for state in self._states.values()
+        )
+
+    def _build_outcome(self) -> _WordRecoveryOutcome:
+        with self._condition:
+            fixed_sources: list[str] = []
+            unresolved_sources: list[str] = []
+            accepted_translations: dict[str, str] = {}
+            recovery_review_results: dict[str, TranslationValidationResult] = {}
+            semantic_review_results: dict[str, TranslationValidationResult] = {}
+            unresolved_validation_results: dict[str, TranslationValidationResult] = {}
+
+            for source, state in self._states.items():
+                if state.accepted:
+                    fixed_sources.append(source)
+                    accepted_translations[source] = state.accepted_translation
+                    if state.accepted_by == "word_recovery":
+                        recovery_review_results[source] = state.accepted_validation
+                    elif state.accepted_by == "semantic":
+                        semantic_review_results[source] = state.accepted_validation
+                    continue
+                unresolved_sources.append(source)
+                unresolved_validation_results[source] = state.last_validation
+
+            return _WordRecoveryOutcome(
+                fixed_sources=fixed_sources,
+                unresolved_sources=unresolved_sources,
+                accepted_translations=accepted_translations,
+                recovery_review_results=recovery_review_results,
+                semantic_review_results=semantic_review_results,
+                unresolved_validation_results=unresolved_validation_results,
+                semantic_check_count=self._semantic_check_count,
+            )
+
+    def _accept_locked(
+        self,
+        state: _WordRecoveryState,
+        candidate: str,
+        accepted_by: str,
+        validation: TranslationValidationResult,
+    ) -> None:
+        if state.accepted:
+            return
+        state.accepted_translation = str(candidate or "").strip()
+        state.accepted_by = accepted_by
+        state.accepted_validation = validation
+        self._condition.notify_all()
+
+    def _schedule_retry_locked(self, state: _WordRecoveryState) -> None:
+        if state.accepted or state.retry_inflight:
+            return
+        if state.attempts_done >= self._max_attempts:
+            return
+        if self._should_stop and self._should_stop():
+            return
+        state.retry_inflight = True
+        attempt_index = state.attempts_done + 1
+        self._submit(self._run_retry_attempt, state.source, attempt_index)
+
+    def _schedule_semantic_locked(
+        self,
+        state: _WordRecoveryState,
+        candidate: str,
+        validation: TranslationValidationResult,
+    ) -> None:
+        if not self._enable_semantic or state.accepted:
+            return
+        candidate_key = _candidate_validation_text(candidate)
+        if candidate_key in state.seen_semantic_candidates:
+            return
+        if not _semantic_candidate_is_eligible(
+            state.source,
+            candidate,
+            target_lang=self._target_lang,
+            source_lang=self._source_lang,
+            validation=validation,
+        ):
+            return
+        state.seen_semantic_candidates.add(candidate_key)
+        state.semantic_inflight += 1
+        self._submit(self._run_semantic_check, state.source, candidate, validation)
+
+    def _submit(self, fn, *args) -> None:
+        future = self._executor.submit(fn, *args)
+        self._futures.add(future)
+        future.add_done_callback(self._future_done)
+
+    def _future_done(self, future) -> None:
+        try:
+            future.result()
+        except Exception as exc:  # noqa: BLE001 - recovery must degrade to review
+            if self._log_callback:
+                self._log_callback("WARN", f"Word 恢复池任务失败：{exc}")
+        finally:
+            with self._condition:
+                self._futures.discard(future)
+                self._condition.notify_all()
+
+    def _run_retry_attempt(self, source: str, attempt_index: int) -> None:
+        if self._log_callback:
+            self._log_callback(
+                "INFO",
+                f"Word 单段并行重试第 {attempt_index}/{self._max_attempts} 轮：1 条",
+            )
+        retry_stats = WordBatchRunStats()
+        retry_translations = translate_word_texts(
+            [source],
+            self._engine,
+            self._target_lang,
+            self._retry_prompt,
+            self._retry_batch_settings,
+            concurrency=1,
+            progress_callback=None,
+            error_callback=(lambda msg: self._log_callback("WARN", msg)) if self._log_callback else None,
+            should_stop=self._should_stop,
+            source_lang=self._source_lang,
+            stats=retry_stats,
+            quality_profile=None,
+            api_scheduler=self._api_scheduler,
+            request_category=API_REQUEST_CATEGORY_RECOVERY,
+        )
+        candidate = retry_translations.get(source, "")
+        self._handle_retry_result(source, candidate, attempt_index)
+
+    def _handle_retry_result(self, source: str, candidate: str, attempt_index: int) -> None:
+        evaluation = _evaluate_word_translation(
+            source,
+            candidate,
+            source_lang=self._source_lang,
+            target_lang=self._target_lang,
+            allow_recovery=True,
+        )
+        with self._condition:
+            state = self._states.get(source)
+            if state is None:
+                return
+            state.retry_inflight = False
+            state.attempts_done = max(state.attempts_done, attempt_index)
+            if state.accepted:
+                self._condition.notify_all()
+                return
+            if evaluation.accepted:
+                accepted_by = (
+                    "word_recovery"
+                    if evaluation.validation.needs_review
+                    else "strict_retry"
+                )
+                self._accept_locked(state, candidate, accepted_by, evaluation.validation)
+                return
+            state.last_validation = evaluation.validation
+            self._schedule_semantic_locked(state, candidate, evaluation.validation)
+            self._schedule_retry_locked(state)
+            self._condition.notify_all()
+
+    def _run_semantic_check(
+        self,
+        source: str,
+        candidate: str,
+        validation: TranslationValidationResult,
+    ) -> None:
+        result = _run_semantic_arbitration(
+            self._engine,
+            source,
+            candidate,
+            target_lang=self._target_lang,
+            source_lang=self._source_lang,
+            api_scheduler=self._api_scheduler,
+        )
+        with self._condition:
+            state = self._states.get(source)
+            self._semantic_check_count += 1
+            if state is None:
+                return
+            state.semantic_inflight = max(0, state.semantic_inflight - 1)
+            if not state.accepted and result.equivalent:
+                self._accept_locked(
+                    state,
+                    candidate,
+                    "semantic",
+                    _semantic_review_validation(validation, result),
+                )
+            self._condition.notify_all()
+
+
+def _candidate_validation_text(candidate: str | None) -> str:
+    value = str(candidate or "").strip()
+    if is_replace_translation(value):
+        return extract_replace_translation(value).strip()
+    return value
+
+
+def _engine_supports_chat(engine) -> bool:
+    chat = getattr(type(engine), "chat", None)
+    return chat is not None and chat is not TranslationEngine.chat
+
+
+def _semantic_candidate_is_eligible(
+    source: str,
+    candidate: str | None,
+    *,
+    target_lang: str,
+    source_lang: str,
+    validation: TranslationValidationResult,
+) -> bool:
+    candidate_text = _candidate_validation_text(candidate)
+    source_text = str(source or "").strip()
+    if not source_text or not candidate_text:
+        return False
+    if source_text.casefold() == candidate_text.casefold():
+        return False
+
+    hard_codes = {
+        "empty_translation",
+        "same_as_source",
+        "source_non_chinese_only",
+        "missing_target_chinese",
+    }
+    if any(issue.code in hard_codes for issue in validation.issues):
+        return False
+
+    source_len = len(re.sub(r"\s+", "", source_text))
+    candidate_len = len(re.sub(r"\s+", "", candidate_text))
+    if source_len >= 40 and candidate_len < max(8, int(source_len * _SEMANTIC_MIN_LENGTH_RATIO)):
+        return False
+
+    if source_lang == "zh" and target_lang not in {"zh", "ja"}:
+        cjk_count = len(_CJK_RE.findall(candidate_text))
+        if cjk_count:
+            candidate_non_space_len = max(len(re.sub(r"\s+", "", candidate_text)), 1)
+            if (
+                cjk_count >= _SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK
+                or (cjk_count / candidate_non_space_len) > _SEMANTIC_RESIDUAL_CJK_RATIO_BLOCK
+            ):
+                return False
+
+    return True
+
+
+def _run_semantic_arbitration(
+    engine,
+    source: str,
+    candidate: str,
+    *,
+    target_lang: str,
+    source_lang: str,
+    api_scheduler: WeightedApiScheduler | None,
+) -> _SemanticArbitrationResult:
+    candidate_text = _candidate_validation_text(candidate)
+    if not candidate_text:
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "候选译文为空")
+
+    system_prompt = _build_semantic_arbitration_prompt()
+    user_payload = json.dumps(
+        {
+            "source_language": source_lang,
+            "target_language": target_lang,
+            "source_text": source,
+            "candidate_translation": candidate_text,
+        },
+        ensure_ascii=False,
+    )
+    weight = estimate_api_request_weight([source, candidate_text], system_prompt)
+
+    try:
+        if api_scheduler is None:
+            raw = engine.chat(system_prompt, user_payload)
+        else:
+            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY):
+                raw = engine.chat(system_prompt, user_payload)
+        payload = json.loads(strip_markdown_json(raw))
+    except Exception as exc:  # noqa: BLE001 - uncertain keeps original review path
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, str(exc))
+
+    if not isinstance(payload, dict):
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "仲裁结果不是 JSON 对象")
+
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    if verdict not in {
+        _SEMANTIC_VERDICT_EQUIVALENT,
+        _SEMANTIC_VERDICT_NOT_EQUIVALENT,
+        _SEMANTIC_VERDICT_UNCERTAIN,
+    }:
+        verdict = _SEMANTIC_VERDICT_UNCERTAIN
+    reason = str(payload.get("reason") or "").strip()
+    return _SemanticArbitrationResult(verdict, reason)
+
+
+def _build_semantic_arbitration_prompt() -> str:
+    return (
+        "你是一个严谨的合同与工程文本翻译质量仲裁器。\n"
+        "任务：只判断候选译文是否完整、准确传达源文的全部实质信息。\n"
+        "判定规则：\n"
+        "1. 日期、金额、单位、编号、公司名或专有名词可以用目标语言习惯表达，只要事实等价即可。\n"
+        "2. 如果遗漏主体、义务、条件、范围、日期、金额、比例、处罚或关键限制，必须判定为 not_equivalent。\n"
+        "3. 如果候选译文只是摘要、只翻译局部、照抄原文、包含明显大量未翻译源语言内容，必须判定为 not_equivalent。\n"
+        "4. 无法确定时判定为 uncertain。\n"
+        "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
+        '{"verdict":"equivalent|not_equivalent|uncertain","reason":"简短原因"}'
+    )
+
+
+def _semantic_review_validation(
+    validation: TranslationValidationResult,
+    arbitration: _SemanticArbitrationResult,
+) -> TranslationValidationResult:
+    issues = list(validation.issues)
+    issues.append(
+        TranslationValidationIssue(
+            code="semantic_equivalence",
+            message=(
+                "程序化规则校验未通过，但语义仲裁判定候选译文与原文完整等义。"
+                + (f"原因：{arbitration.reason}" if arbitration.reason else "")
+            ),
+            fragments=validation.review_fragments,
+        )
+    )
+    return TranslationValidationResult(
+        status=VALIDATION_STATUS_SOFT_PASS_REVIEW,
+        issues=tuple(issues),
+    )
 
 
 def _run_word_strict_retries(
