@@ -54,6 +54,13 @@ class ResolvedWordTranslation:
     replace_only: bool = False
 
 
+@dataclass(frozen=True)
+class NumberingLevelDefinition:
+    start: int = 1
+    number_format: str = "decimal"
+    level_text: str = "%1."
+
+
 def is_supported_word_file(path: str | Path) -> bool:
     """Return whether a path points to a supported Word file."""
     path = Path(path)
@@ -195,11 +202,36 @@ def write_bilingual_docx(
     _ensure_owner_writable(out_path)
 
     doc = Document(str(out_path))
+    body_paragraphs = list(doc.paragraphs)
+    table_cells = [
+        cell
+        for table in doc.tables
+        for cell in _iter_unique_table_cells(table)
+    ]
+    all_paragraphs = [
+        *body_paragraphs,
+        *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
+    ]
+    original_paragraph_sources = {
+        id(paragraph): _paragraph_source_text(paragraph)
+        for paragraph in all_paragraphs
+    }
+    original_cell_sources = {
+        id(cell): _cell_source_text(cell)
+        for cell in table_cells
+    }
+    numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
+    _flatten_automatic_numbering(all_paragraphs, numbering_labels)
+
     paragraph_insertions = 0
     table_insertions = 0
 
-    for paragraph in list(doc.paragraphs):
-        source = _paragraph_source_text(paragraph)
+    for paragraph in body_paragraphs:
+        paragraph_key = id(paragraph)
+        source = original_paragraph_sources.get(
+            paragraph_key,
+            _paragraph_source_text(paragraph),
+        )
         if not _is_translatable_source(
             source,
             target_lang=target_lang,
@@ -213,32 +245,46 @@ def write_bilingual_docx(
         if resolved is None:
             continue
         if resolved.replace_only:
-            _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
+            _replace_paragraph_text(
+                paragraph,
+                _prepend_numbering_label(
+                    resolved.text,
+                    numbering_labels.get(paragraph_key, ""),
+                ),
+                target_lang=target_lang,
+            )
         else:
             _insert_translation_paragraph_after(
                 paragraph,
-                resolved.text,
+                _prepend_numbering_label(
+                    resolved.text,
+                    numbering_labels.get(paragraph_key, ""),
+                ),
                 target_lang=target_lang,
             )
         paragraph_insertions += 1
 
-    for table in doc.tables:
-        for cell in _iter_unique_table_cells(table):
-            source = _cell_source_text(cell)
-            if not _is_translatable_source(
-                source,
+    for cell in table_cells:
+        source = original_cell_sources.get(id(cell), _cell_source_text(cell))
+        if not _is_translatable_source(
+            source,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        ):
+            continue
+        resolved = _resolve_translation(source, translations)
+        if resolved is None:
+            continue
+        numbering_label = _single_cell_numbering_label(cell, numbering_labels)
+        if resolved.replace_only:
+            cell.text = _prepend_numbering_label(resolved.text, numbering_label)
+        else:
+            _append_translation_to_cell(
+                cell,
+                _prepend_numbering_label(resolved.text, numbering_label),
                 target_lang=target_lang,
-                source_lang=source_lang,
-            ):
-                continue
-            resolved = _resolve_translation(source, translations)
-            if resolved is None:
-                continue
-            if resolved.replace_only:
-                cell.text = resolved.text
-            else:
-                _append_translation_to_cell(cell, resolved.text, target_lang=target_lang)
-            table_insertions += 1
+            )
+        table_insertions += 1
 
     doc.save(str(out_path))
     if log_callback:
@@ -395,6 +441,278 @@ def _format_section_path(section_stack: dict[int, str]) -> str:
     return " / ".join(section_stack[level] for level in sorted(section_stack))
 
 
+def _collect_numbering_labels(
+    doc: Document,
+    paragraphs: list[Paragraph],
+) -> dict[int, str]:
+    level_definitions = _load_numbering_level_definitions(doc)
+    counters: dict[tuple[str, int], int] = {}
+    labels: dict[int, str] = {}
+
+    for paragraph in paragraphs:
+        numbering_info = _get_paragraph_numbering_info(paragraph)
+        if numbering_info is None:
+            continue
+
+        num_id, ilvl = numbering_info
+        level_definition = level_definitions.get((num_id, ilvl))
+        if level_definition is None:
+            continue
+
+        for key in list(counters):
+            if key[0] == num_id and key[1] > ilvl:
+                counters.pop(key, None)
+
+        counter_key = (num_id, ilvl)
+        if counter_key not in counters:
+            counters[counter_key] = level_definition.start - 1
+        counters[counter_key] += 1
+
+        label = _format_numbering_label(
+            num_id=num_id,
+            ilvl=ilvl,
+            counters=counters,
+            level_definitions=level_definitions,
+        )
+        if label:
+            labels[id(paragraph)] = label
+
+    return labels
+
+
+def _load_numbering_level_definitions(doc: Document) -> dict[tuple[str, int], NumberingLevelDefinition]:
+    try:
+        numbering_root = doc.part.numbering_part.element
+    except Exception:
+        return {}
+
+    abstract_by_id = {
+        abstract_num.get(qn("w:abstractNumId")): abstract_num
+        for abstract_num in numbering_root.findall(qn("w:abstractNum"))
+    }
+    definitions: dict[tuple[str, int], NumberingLevelDefinition] = {}
+
+    for num in numbering_root.findall(qn("w:num")):
+        num_id = num.get(qn("w:numId"))
+        abstract_id = _child_val(num, "w:abstractNumId")
+        abstract_num = abstract_by_id.get(abstract_id)
+        if not num_id or abstract_num is None:
+            continue
+
+        levels = {
+            int(level.get(qn("w:ilvl")) or 0): _read_numbering_level_definition(level)
+            for level in abstract_num.findall(qn("w:lvl"))
+        }
+
+        for override in num.findall(qn("w:lvlOverride")):
+            ilvl = _to_int(override.get(qn("w:ilvl")), fallback=0)
+            if override.find(qn("w:lvl")) is not None:
+                levels[ilvl] = _read_numbering_level_definition(override.find(qn("w:lvl")))
+            elif override.find(qn("w:startOverride")) is not None:
+                existing = levels.get(ilvl, NumberingLevelDefinition())
+                levels[ilvl] = NumberingLevelDefinition(
+                    start=_to_int(
+                        _child_val(override, "w:startOverride"),
+                        fallback=existing.start,
+                    ),
+                    number_format=existing.number_format,
+                    level_text=existing.level_text,
+                )
+
+        for ilvl, definition in levels.items():
+            definitions[(num_id, ilvl)] = definition
+
+    return definitions
+
+
+def _read_numbering_level_definition(level) -> NumberingLevelDefinition:
+    return NumberingLevelDefinition(
+        start=_to_int(_child_val(level, "w:start"), fallback=1),
+        number_format=_child_val(level, "w:numFmt", default="decimal"),
+        level_text=_child_val(level, "w:lvlText", default="%1."),
+    )
+
+
+def _child_val(element, child_tag: str, default: str = "") -> str:
+    if element is None:
+        return default
+    child = element.find(qn(child_tag))
+    if child is None:
+        return default
+    return str(child.get(qn("w:val")) or default)
+
+
+def _to_int(value, *, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _get_paragraph_numbering_info(paragraph: Paragraph) -> tuple[str, int] | None:
+    direct = _read_numbering_info_from_ppr(getattr(paragraph._p, "pPr", None))
+    if direct is not None:
+        return direct
+
+    try:
+        style_element = paragraph.style._element
+    except Exception:
+        return None
+    return _read_numbering_info_from_ppr(getattr(style_element, "pPr", None))
+
+
+def _read_numbering_info_from_ppr(p_pr) -> tuple[str, int] | None:
+    if p_pr is None:
+        return None
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is None:
+        return None
+
+    num_id = _child_val(num_pr, "w:numId")
+    if not num_id or num_id == "0":
+        return None
+    return num_id, _to_int(_child_val(num_pr, "w:ilvl"), fallback=0)
+
+
+def _format_numbering_label(
+    *,
+    num_id: str,
+    ilvl: int,
+    counters: dict[tuple[str, int], int],
+    level_definitions: dict[tuple[str, int], NumberingLevelDefinition],
+) -> str:
+    definition = level_definitions.get((num_id, ilvl))
+    if definition is None:
+        return ""
+
+    label = definition.level_text or "%1."
+    if definition.number_format == "bullet":
+        return _normalize_bullet_label(label)
+
+    def replace_placeholder(match: re.Match[str]) -> str:
+        level = max(0, _to_int(match.group(1), fallback=1) - 1)
+        level_counter = counters.get((num_id, level), 0)
+        level_definition = level_definitions.get((num_id, level), definition)
+        return _format_number(level_counter, level_definition.number_format)
+
+    return re.sub(r"%(\d+)", replace_placeholder, label).strip()
+
+
+def _format_number(number: int, number_format: str) -> str:
+    if number <= 0:
+        number = 1
+    if number_format == "lowerLetter":
+        return _format_alpha_number(number).lower()
+    if number_format == "upperLetter":
+        return _format_alpha_number(number).upper()
+    if number_format == "lowerRoman":
+        return _format_roman_number(number).lower()
+    if number_format == "upperRoman":
+        return _format_roman_number(number).upper()
+    return str(number)
+
+
+def _format_alpha_number(number: int) -> str:
+    chars: list[str] = []
+    while number > 0:
+        number -= 1
+        chars.append(chr(ord("A") + (number % 26)))
+        number //= 26
+    return "".join(reversed(chars)) or "A"
+
+
+def _format_roman_number(number: int) -> str:
+    values = (
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    )
+    result: list[str] = []
+    for value, token in values:
+        while number >= value:
+            result.append(token)
+            number -= value
+    return "".join(result) or "I"
+
+
+def _normalize_bullet_label(label: str) -> str:
+    cleaned = (label or "").strip()
+    if cleaned in {"\uf0b7", ""}:
+        return "•"
+    return cleaned or "•"
+
+
+def _flatten_automatic_numbering(
+    paragraphs: list[Paragraph],
+    numbering_labels: dict[int, str],
+) -> None:
+    if not numbering_labels:
+        return
+    for paragraph in paragraphs:
+        label = numbering_labels.get(id(paragraph), "")
+        if not label:
+            continue
+        _prepend_paragraph_text(paragraph, label)
+        _remove_paragraph_numbering(paragraph)
+
+
+def _prepend_paragraph_text(paragraph: Paragraph, label: str) -> None:
+    source = _paragraph_source_text(paragraph)
+    if not source or _text_starts_with_label(source, label):
+        return
+
+    prefix = f"{label} "
+    if paragraph.runs:
+        paragraph.runs[0].text = prefix + paragraph.runs[0].text.lstrip()
+        return
+    paragraph.add_run(prefix + source)
+
+
+def _remove_paragraph_numbering(paragraph: Paragraph) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is not None:
+        p_pr.remove(num_pr)
+    suppress_num_pr = OxmlElement("w:numPr")
+    suppress_num_id = OxmlElement("w:numId")
+    suppress_num_id.set(qn("w:val"), "0")
+    suppress_num_pr.append(suppress_num_id)
+    p_pr.append(suppress_num_pr)
+
+
+def _prepend_numbering_label(text: str, label: str) -> str:
+    cleaned = str(text or "").strip()
+    if not label or not cleaned or _text_starts_with_label(cleaned, label):
+        return cleaned
+    return f"{label} {cleaned}"
+
+
+def _text_starts_with_label(text: str, label: str) -> bool:
+    if not label:
+        return False
+    return bool(re.match(rf"^\s*{re.escape(label)}(?:\s|$)", str(text or "")))
+
+
+def _single_cell_numbering_label(cell: _Cell, numbering_labels: dict[int, str]) -> str:
+    labelled = [
+        numbering_labels.get(id(paragraph), "")
+        for paragraph in cell.paragraphs
+        if _paragraph_source_text(paragraph)
+    ]
+    labelled = [label for label in labelled if label]
+    return labelled[0] if len(labelled) == 1 else ""
+
+
 def _insert_translation_paragraph_after(
     paragraph: Paragraph,
     text: str,
@@ -405,6 +723,7 @@ def _insert_translation_paragraph_after(
     paragraph._p.addnext(new_p)
     new_para = Paragraph(new_p, paragraph._parent)
     _copy_translation_paragraph_shape(paragraph, new_para)
+    _remove_paragraph_numbering(new_para)
     run = new_para.add_run(text)
     _copy_run_shape(paragraph, run, target_lang=target_lang)
     return new_para
@@ -420,6 +739,7 @@ def _append_translation_to_cell(
     new_para = cell.add_paragraph()
     if source_para is not None:
         _copy_translation_paragraph_shape(source_para, new_para)
+        _remove_paragraph_numbering(new_para)
     run = new_para.add_run(text)
     if source_para is not None:
         _copy_run_shape(source_para, run, target_lang=target_lang)

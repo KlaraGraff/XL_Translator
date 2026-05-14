@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from core.translation_filter import is_translation_redundant
 from core.word_document import (
@@ -53,6 +55,48 @@ class WordDocumentTests(unittest.TestCase):
 
             cell_text = out_doc.tables[0].cell(0, 0).text
             self.assertEqual(cell_text, "设备\n安装\nEquipment installation")
+
+    def test_word_automatic_numbering_is_flattened_in_bilingual_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "numbered.docx"
+            output_dir = temp_path / "out"
+            self._build_lower_letter_numbered_docx(source_path)
+
+            segments = extract_word_segments(
+                source_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+            sources = {segment.source for segment in segments}
+            self.assertIn("包括但不限于根据合同约定或确定的款项；", sources)
+            self.assertNotIn("a. 包括但不限于根据合同约定或确定的款项；", sources)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "包括但不限于根据合同约定或确定的款项；": "y compris les montants prévus au contrat ;",
+                    "乙方未履行整改通知规定的违约补救义务；": (
+                        "La partie B n'a pas rempli les obligations de remédiation ;"
+                    ),
+                },
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertIn("a. 包括但不限于根据合同约定或确定的款项；", paragraph_texts)
+            self.assertIn("a. y compris les montants prévus au contrat ;", paragraph_texts)
+            self.assertIn("b. 乙方未履行整改通知规定的违约补救义务；", paragraph_texts)
+            self.assertIn(
+                "b. La partie B n'a pas rempli les obligations de remédiation ;",
+                paragraph_texts,
+            )
+
+            for paragraph in out_doc.paragraphs[:4]:
+                self.assertEqual(self._paragraph_num_id(paragraph), "0")
 
     def test_scan_word_path_ignores_temp_and_generated_output_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -190,6 +234,67 @@ class WordDocumentTests(unittest.TestCase):
         cell.text = "设备"
         cell.add_paragraph("安装")
         doc.save(str(path))
+
+    @staticmethod
+    def _build_lower_letter_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_default_num_id_9_to_lower_letter(doc)
+        first = doc.add_paragraph("包括但不限于根据合同约定或确定的款项；")
+        second = doc.add_paragraph("乙方未履行整改通知规定的违约补救义务；")
+        for paragraph in (first, second):
+            WordDocumentTests._set_paragraph_num_pr(paragraph, num_id="9", ilvl="0")
+        doc.save(str(path))
+
+    @staticmethod
+    def _set_default_num_id_9_to_lower_letter(doc: Document) -> None:
+        numbering_root = doc.part.numbering_part.element
+        target_abstract_id = None
+        for num in numbering_root.findall(qn("w:num")):
+            if num.get(qn("w:numId")) == "9":
+                abstract_id = num.find(qn("w:abstractNumId"))
+                target_abstract_id = abstract_id.get(qn("w:val")) if abstract_id is not None else None
+                break
+        if target_abstract_id is None:
+            return
+        for abstract_num in numbering_root.findall(qn("w:abstractNum")):
+            if abstract_num.get(qn("w:abstractNumId")) != target_abstract_id:
+                continue
+            level = abstract_num.find(qn("w:lvl"))
+            if level is None:
+                return
+            num_format = level.find(qn("w:numFmt"))
+            if num_format is None:
+                num_format = OxmlElement("w:numFmt")
+                level.append(num_format)
+            num_format.set(qn("w:val"), "lowerLetter")
+            level_text = level.find(qn("w:lvlText"))
+            if level_text is None:
+                level_text = OxmlElement("w:lvlText")
+                level.append(level_text)
+            level_text.set(qn("w:val"), "%1.")
+
+    @staticmethod
+    def _set_paragraph_num_pr(paragraph, *, num_id: str, ilvl: str) -> None:
+        p_pr = paragraph._p.get_or_add_pPr()
+        num_pr = OxmlElement("w:numPr")
+        ilvl_element = OxmlElement("w:ilvl")
+        ilvl_element.set(qn("w:val"), ilvl)
+        num_id_element = OxmlElement("w:numId")
+        num_id_element.set(qn("w:val"), num_id)
+        num_pr.append(ilvl_element)
+        num_pr.append(num_id_element)
+        p_pr.append(num_pr)
+
+    @staticmethod
+    def _paragraph_num_id(paragraph) -> str:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        if p_pr is None:
+            return ""
+        num_pr = p_pr.find(qn("w:numPr"))
+        if num_pr is None:
+            return ""
+        num_id = num_pr.find(qn("w:numId"))
+        return num_id.get(qn("w:val")) if num_id is not None else ""
 
 
 if __name__ == "__main__":

@@ -101,12 +101,13 @@ def _normalize_route(
         raise ValueError(f"Hermes 路由缺少 model：provider={provider}")
 
     api_key_env = str(payload.get("api_key_env") or "").strip()
+    inline_api_key = str(payload.get("api_key") or "").strip()
     return HermesRuntimeRoute(
         provider=provider,
         model=model,
         base_url=str(payload.get("base_url") or "").strip().rstrip("/"),
         api_key_env=api_key_env,
-        api_key=_resolve_secret(api_key_env, env_values),
+        api_key=inline_api_key or _resolve_secret(api_key_env, env_values),
         api_mode=str(payload.get("api_mode") or "").strip(),
     )
 

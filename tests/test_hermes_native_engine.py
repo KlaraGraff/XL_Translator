@@ -82,6 +82,20 @@ agent:
             encoding="utf-8",
         )
 
+    def _write_inline_hermes_config(self) -> None:
+        (self.hermes_home / "config.yaml").write_text(
+            """
+model:
+  default: mimo-v2.5-pro
+  provider: xiaomimimo
+  base_url: https://token-plan-cn.xiaomimimo.com/v1
+  api_mode: openai
+  api_key: inline-secret
+""".strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
     def test_load_settings_defaults_to_hermes_without_packaged_keys(self) -> None:
         from settings import load_settings
 
@@ -104,6 +118,18 @@ agent:
         self.assertEqual(routes[0].base_url, "https://primary.example/v1")
         self.assertEqual(routes[0].api_mode, "codex_responses")
         self.assertEqual(routes[0].api_key, "primary-secret")
+
+    def test_load_hermes_runtime_routes_accepts_inline_api_key(self) -> None:
+        self._write_inline_hermes_config()
+
+        from engines.hermes_engine import load_hermes_runtime_routes
+
+        routes = load_hermes_runtime_routes()
+
+        self.assertEqual(routes[0].provider, "xiaomimimo")
+        self.assertEqual(routes[0].model, "mimo-v2.5-pro")
+        self.assertEqual(routes[0].base_url, "https://token-plan-cn.xiaomimimo.com/v1")
+        self.assertEqual(routes[0].api_key, "inline-secret")
 
     def test_build_engine_accepts_hermes_provider(self) -> None:
         self._write_hermes_config()
