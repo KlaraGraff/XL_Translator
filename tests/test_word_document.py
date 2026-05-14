@@ -15,7 +15,35 @@ from core.word_document import (
     write_bilingual_docx,
 )
 from core.word_task_runner import _needs_word_translation_retry
-from core.word_task_runner import _build_source_excerpt, _write_word_quality_report
+from core.word_task_runner import (
+    _build_source_excerpt,
+    _run_word_strict_retries,
+    _write_word_quality_report,
+)
+from engines.base_engine import TranslationEngine
+from settings import WordBatchSettings
+
+
+class RetryWordEngine(TranslationEngine):
+    def __init__(self, *, success_on_call: int) -> None:
+        self.success_on_call = success_on_call
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/retry-word"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        if len(self.calls) < self.success_on_call:
+            return {text: text for text in texts}
+        return {text: f"Traduction valide {len(text)}" for text in texts}
 
 
 class WordDocumentTests(unittest.TestCase):
@@ -55,6 +83,56 @@ class WordDocumentTests(unittest.TestCase):
 
             cell_text = out_doc.tables[0].cell(0, 0).text
             self.assertEqual(cell_text, "设备\n安装\nEquipment installation")
+
+    def test_word_review_highlight_marks_unresolved_paragraph_and_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "sample.docx"
+            output_dir = temp_path / "out"
+            self._build_sample_docx(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={},
+                target_lang="en",
+                source_lang="zh",
+                review_highlight_sources={"项目名称：测试工程", "设备\n安装"},
+                review_highlight_color="DDEBFF",
+            )
+
+            out_doc = Document(str(out_path))
+            self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "DDEBFF")
+            self.assertEqual(self._cell_shading_fill(out_doc.tables[0].cell(0, 0)), "DDEBFF")
+
+    def test_word_review_highlight_preserves_existing_shading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "shaded.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            paragraph = doc.add_paragraph("项目名称：测试工程")
+            self._set_shading_fill(paragraph._p.get_or_add_pPr(), "AABBCC")
+            table = doc.add_table(rows=1, cols=1)
+            cell = table.cell(0, 0)
+            cell.text = "设备安装"
+            self._set_shading_fill(cell._tc.get_or_add_tcPr(), "CCDDEE")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={},
+                target_lang="en",
+                source_lang="zh",
+                review_highlight_sources={"项目名称：测试工程", "设备安装"},
+                review_highlight_color="FFF2CC",
+            )
+
+            out_doc = Document(str(out_path))
+            self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "AABBCC")
+            self.assertEqual(self._cell_shading_fill(out_doc.tables[0].cell(0, 0)), "CCDDEE")
 
     def test_word_automatic_numbering_is_flattened_in_bilingual_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -153,6 +231,54 @@ class WordDocumentTests(unittest.TestCase):
                 target_lang="fr",
             )
         )
+
+    def test_word_strict_retry_repeats_until_translation_recovers(self) -> None:
+        source = "短段落也应该通过多次重试恢复。"
+        api_translations = {source: source}
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        engine = RetryWordEngine(success_on_call=3)
+
+        fixed_sources, unresolved_sources = _run_word_strict_retries(
+            retry_sources=[source],
+            api_translations=api_translations,
+            engine=engine,
+            target_lang="fr",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=3,
+            source_lang="zh",
+            should_stop=lambda: False,
+        )
+
+        self.assertEqual(fixed_sources, [source])
+        self.assertEqual(unresolved_sources, [])
+        self.assertEqual(len(engine.calls), 3)
+        self.assertEqual(api_translations[source], f"Traduction valide {len(source)}")
+
+    def test_word_strict_retry_reports_unresolved_after_attempts_exhausted(self) -> None:
+        source = "短段落如果仍然返回原文则需要复核。"
+        api_translations = {source: source}
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        engine = RetryWordEngine(success_on_call=4)
+
+        fixed_sources, unresolved_sources = _run_word_strict_retries(
+            retry_sources=[source],
+            api_translations=api_translations,
+            engine=engine,
+            target_lang="fr",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=3,
+            source_lang="zh",
+            should_stop=lambda: False,
+        )
+
+        self.assertEqual(fixed_sources, [])
+        self.assertEqual(unresolved_sources, [source])
+        self.assertEqual(len(engine.calls), 3)
+        self.assertEqual(api_translations[source], source)
 
     def test_french_decimal_commas_pass_number_integrity_check(self) -> None:
         source = (
@@ -295,6 +421,35 @@ class WordDocumentTests(unittest.TestCase):
             return ""
         num_id = num_pr.find(qn("w:numId"))
         return num_id.get(qn("w:val")) if num_id is not None else ""
+
+    @staticmethod
+    def _paragraph_shading_fill(paragraph) -> str:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        return WordDocumentTests._shading_fill(p_pr)
+
+    @staticmethod
+    def _cell_shading_fill(cell) -> str:
+        tc_pr = getattr(cell._tc, "tcPr", None)
+        return WordDocumentTests._shading_fill(tc_pr)
+
+    @staticmethod
+    def _shading_fill(parent_element) -> str:
+        if parent_element is None:
+            return ""
+        shd = parent_element.find(qn("w:shd"))
+        if shd is None:
+            return ""
+        return str(shd.get(qn("w:fill")) or "").strip().upper()
+
+    @staticmethod
+    def _set_shading_fill(parent_element, fill: str) -> None:
+        shd = parent_element.find(qn("w:shd"))
+        if shd is None:
+            shd = OxmlElement("w:shd")
+            parent_element.append(shd)
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), fill)
 
 
 if __name__ == "__main__":

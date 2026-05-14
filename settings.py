@@ -36,6 +36,11 @@ from config import (
     WORD_BATCH_SPLIT_CHARS_DEFAULT,
     WORD_BATCH_SPLIT_CHARS_MAX,
     WORD_BATCH_SPLIT_CHARS_MIN,
+    WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+    WORD_REVIEW_HIGHLIGHT_DEFAULT,
+    WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
+    WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    WORD_STRICT_RETRY_ATTEMPTS_MIN,
 )
 from core.language_registry import (
     CustomTargetLang,
@@ -55,6 +60,13 @@ def _clamp_int(value, *, minimum: int, maximum: int, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return max(minimum, min(maximum, number))
+
+
+def _normalize_hex_color(value: str, *, fallback: str) -> str:
+    cleaned = str(value or "").strip().lstrip("#").upper()
+    if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
+        return cleaned
+    return fallback
 
 
 class EngineSettings(BaseModel):
@@ -149,6 +161,11 @@ class WordBatchSettings(BaseModel):
         ge=WORD_BATCH_SPLIT_CHARS_MIN,
         le=WORD_BATCH_SPLIT_CHARS_MAX,
     )
+    strict_retry_attempts: int = Field(
+        default=WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
+        ge=WORD_STRICT_RETRY_ATTEMPTS_MIN,
+        le=WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    )
 
     @model_validator(mode="after")
     def _normalize_thresholds(self):
@@ -159,11 +176,25 @@ class WordBatchSettings(BaseModel):
         return self
 
 
+class WordReviewSettings(BaseModel):
+    highlight_unresolved: bool = WORD_REVIEW_HIGHLIGHT_DEFAULT
+    highlight_color: str = WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
+
+    @model_validator(mode="after")
+    def _normalize_highlight_color(self):
+        self.highlight_color = _normalize_hex_color(
+            self.highlight_color,
+            fallback=WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+        )
+        return self
+
+
 class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
+    word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = "zh"
     target_lang: str = "en"
@@ -331,6 +362,27 @@ def _migrate_settings_to_v7(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v8(data: dict) -> dict:
+    """Migrate settings payloads to schema version 8."""
+    migrated = dict(data)
+    word_batch_payload = dict(migrated.get("word_batch") or {})
+    word_batch_payload.setdefault(
+        "strict_retry_attempts",
+        WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
+    )
+    migrated["word_batch"] = word_batch_payload
+    migrated["settings_version"] = 8
+    return migrated
+
+
+def _migrate_settings_to_v9(data: dict) -> dict:
+    """Migrate settings payloads to schema version 9."""
+    migrated = dict(data)
+    migrated.setdefault("word_review", WordReviewSettings().model_dump())
+    migrated["settings_version"] = 9
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -352,6 +404,10 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v6(migrated)
         elif next_version == 7:
             migrated = _migrate_settings_to_v7(migrated)
+        elif next_version == 8:
+            migrated = _migrate_settings_to_v8(migrated)
+        elif next_version == 9:
+            migrated = _migrate_settings_to_v9(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

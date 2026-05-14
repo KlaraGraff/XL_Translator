@@ -1,7 +1,7 @@
 """Centralized app metadata and version helpers."""
 
 APP_NAME = "XL Translator"
-APP_VERSION = "3.1"
+APP_VERSION = "3.2"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 
 DEFAULT_DISTRIBUTION_OUTPUT_NAME = "XL_Translator_Distribution"

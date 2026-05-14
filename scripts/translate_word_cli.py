@@ -19,6 +19,9 @@ from config import (  # noqa: E402
     WORD_BATCH_PARAGRAPHS_MIN,
     WORD_BATCH_SPLIT_CHARS_MAX,
     WORD_BATCH_SPLIT_CHARS_MIN,
+    WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+    WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    WORD_STRICT_RETRY_ATTEMPTS_MIN,
 )
 from core.headless_translate import build_runtime_settings  # noqa: E402
 from core.headless_word_translate import run_word_translation_path  # noqa: E402
@@ -44,6 +47,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--word-batch-paragraphs", type=int, help="Override Word paragraphs per request batch.")
     parser.add_argument("--word-batch-chars", type=int, help="Override Word character budget per request batch.")
     parser.add_argument("--word-split-chars", type=int, help="Override the long-paragraph split threshold.")
+    parser.add_argument("--word-retry-attempts", type=int, help="Override Word strict retry attempts for unresolved paragraphs.")
+    highlight_group = parser.add_mutually_exclusive_group()
+    highlight_group.add_argument(
+        "--word-highlight-review",
+        dest="word_highlight_review",
+        action="store_true",
+        help="Highlight unresolved review items in generated Word files.",
+    )
+    highlight_group.add_argument(
+        "--word-no-highlight-review",
+        dest="word_highlight_review",
+        action="store_false",
+        help="Disable unresolved review highlighting in generated Word files.",
+    )
+    parser.set_defaults(word_highlight_review=None)
+    parser.add_argument("--word-highlight-color", help="Review highlight color as a 6-digit hex value, such as FFF2CC.")
     parser.add_argument("--domain-preset", help="Override the saved domain preset.")
     parser.add_argument("--custom-prompt", help="Set a one-off custom prompt and force domain preset to 自定义.")
     parser.add_argument("--json", action="store_true", help="Print the final result as JSON.")
@@ -120,6 +139,19 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
                 WORD_BATCH_SPLIT_CHARS_MAX,
             ),
         )
+    if args.word_retry_attempts is not None:
+        settings.word_batch.strict_retry_attempts = _clamp(
+            args.word_retry_attempts,
+            WORD_STRICT_RETRY_ATTEMPTS_MIN,
+            WORD_STRICT_RETRY_ATTEMPTS_MAX,
+        )
+    if args.word_highlight_review is not None:
+        settings.word_review.highlight_unresolved = bool(args.word_highlight_review)
+    if args.word_highlight_color:
+        settings.word_review.highlight_color = _normalize_hex_color(
+            args.word_highlight_color,
+            fallback=WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+        )
     if args.domain_preset:
         settings.domain_preset = args.domain_preset.strip()
     if args.custom_prompt:
@@ -133,6 +165,13 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, int(value)))
+
+
+def _normalize_hex_color(value: str, *, fallback: str) -> str:
+    cleaned = str(value or "").strip().lstrip("#").upper()
+    if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
+        return cleaned
+    return fallback
 
 
 def _print_event(event: dict[str, object]) -> None:

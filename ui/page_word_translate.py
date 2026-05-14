@@ -14,6 +14,9 @@ from config import (
     WORD_BATCH_PARAGRAPHS_MIN,
     WORD_BATCH_SPLIT_CHARS_MAX,
     WORD_BATCH_SPLIT_CHARS_MIN,
+    WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+    WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    WORD_STRICT_RETRY_ATTEMPTS_MIN,
 )
 from core.bilingual_writer import (
     custom_output_dir_will_be_created,
@@ -63,6 +66,30 @@ _PENDING_SCAN_PATH = "word_translate_pending_scan_path"
 _PENDING_SOURCE_INPUT_VALUE = "word_translate_pending_source_input_value"
 _BROWSE_ERROR = "word_translate_browse_error"
 _FOLDER_INPUT_KEY = "word_translate_source_input"
+_WORD_HIGHLIGHT_ENABLED_KEY = "word_highlight_unresolved_checkbox"
+_WORD_HIGHLIGHT_COLOR_KEY = "word_highlight_color_select"
+_WORD_HIGHLIGHT_COLORS = {
+    "浅黄": "FFF2CC",
+    "浅蓝": "DDEBFF",
+    "浅红": "F4CCCC",
+    "浅紫": "EADCF8",
+    "浅灰": "E7E6E6",
+}
+
+
+def _normalize_word_highlight_color(value: str | None) -> str:
+    color = str(value or "").strip().lstrip("#").upper()
+    if color in _WORD_HIGHLIGHT_COLORS.values():
+        return color
+    return WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
+
+
+def _format_word_highlight_color(value: str) -> str:
+    color = _normalize_word_highlight_color(value)
+    for label, candidate in _WORD_HIGHLIGHT_COLORS.items():
+        if candidate == color:
+            return f"{label}  #{color}"
+    return f"#{color}"
 
 
 def _init(settings: AppSettings | None = None) -> None:
@@ -123,6 +150,18 @@ def _init(settings: AppSettings | None = None) -> None:
     if "word_split_chars_input" not in st.session_state:
         st.session_state["word_split_chars_input"] = (
             settings.word_batch.split_paragraph_chars if settings else 6000
+        )
+    if "word_retry_attempts_input" not in st.session_state:
+        st.session_state["word_retry_attempts_input"] = (
+            settings.word_batch.strict_retry_attempts if settings else 3
+        )
+    if _WORD_HIGHLIGHT_ENABLED_KEY not in st.session_state:
+        st.session_state[_WORD_HIGHLIGHT_ENABLED_KEY] = (
+            settings.word_review.highlight_unresolved if settings else False
+        )
+    if _WORD_HIGHLIGHT_COLOR_KEY not in st.session_state:
+        st.session_state[_WORD_HIGHLIGHT_COLOR_KEY] = _normalize_word_highlight_color(
+            settings.word_review.highlight_color if settings else WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
         )
 
 
@@ -349,6 +388,24 @@ def _sync_word_inspector_state(settings: AppSettings) -> AppSettings:
             )
         ),
     )
+    settings.word_batch.strict_retry_attempts = int(
+        st.session_state.get(
+            "word_retry_attempts_input",
+            settings.word_batch.strict_retry_attempts,
+        )
+    )
+    settings.word_review.highlight_unresolved = bool(
+        st.session_state.get(
+            _WORD_HIGHLIGHT_ENABLED_KEY,
+            settings.word_review.highlight_unresolved,
+        )
+    )
+    settings.word_review.highlight_color = _normalize_word_highlight_color(
+        st.session_state.get(
+            _WORD_HIGHLIGHT_COLOR_KEY,
+            settings.word_review.highlight_color,
+        )
+    )
     return settings
 
 
@@ -501,23 +558,73 @@ def _render_word_inspector(settings: AppSettings, phase: str) -> AppSettings:
                         label_visibility="collapsed",
                         key="word_batch_chars_input",
                     )
-            split_field = render_field_group(
-                batch_section,
-                key="word-split-chars",
-                label="长段拆分阈值",
-                hint=f"{WORD_BATCH_SPLIT_CHARS_MIN} - {WORD_BATCH_SPLIT_CHARS_MAX}",
-            )
-            with split_field:
-                st.number_input(
-                    "长段拆分阈值",
-                    min_value=WORD_BATCH_SPLIT_CHARS_MIN,
-                    max_value=WORD_BATCH_SPLIT_CHARS_MAX,
-                    step=500,
-                    format="%d",
-                    disabled=phase == "running",
-                    label_visibility="collapsed",
-                    key="word_split_chars_input",
+            batch_col3, batch_col4 = st.columns(2, gap="small")
+            with batch_col3:
+                split_field = render_field_group(
+                    batch_col3,
+                    key="word-split-chars",
+                    label="长段拆分阈值",
+                    hint=f"{WORD_BATCH_SPLIT_CHARS_MIN} - {WORD_BATCH_SPLIT_CHARS_MAX}",
                 )
+                with split_field:
+                    st.number_input(
+                        "长段拆分阈值",
+                        min_value=WORD_BATCH_SPLIT_CHARS_MIN,
+                        max_value=WORD_BATCH_SPLIT_CHARS_MAX,
+                        step=500,
+                        format="%d",
+                        disabled=phase == "running",
+                        label_visibility="collapsed",
+                        key="word_split_chars_input",
+                    )
+            with batch_col4:
+                retry_field = render_field_group(
+                    batch_col4,
+                    key="word-retry-attempts",
+                    label="失败重试次数",
+                    hint=f"{WORD_STRICT_RETRY_ATTEMPTS_MIN} - {WORD_STRICT_RETRY_ATTEMPTS_MAX}",
+                )
+                with retry_field:
+                    st.number_input(
+                        "失败重试次数",
+                        min_value=WORD_STRICT_RETRY_ATTEMPTS_MIN,
+                        max_value=WORD_STRICT_RETRY_ATTEMPTS_MAX,
+                        step=1,
+                        format="%d",
+                        disabled=phase == "running",
+                        label_visibility="collapsed",
+                        key="word_retry_attempts_input",
+                    )
+
+            highlight_enabled = render_checkbox_tooltip_row(
+                params_card,
+                "高亮需复核内容",
+                "高亮需人工复核内容",
+                "在输出 Word 中标记重试后仍未获得有效译文的位置，便于快速定位。",
+                [
+                    "默认关闭，只影响新生成的双语 Word 文件。",
+                    "只标记最终仍需人工复核的原文段落或表格单元格。",
+                    "若检测到原位置已有底纹或文本高亮，将跳过，不覆盖原样式。",
+                ],
+                key=_WORD_HIGHLIGHT_ENABLED_KEY,
+                checkbox_label="高亮需复核内容开关",
+                disabled=phase == "running",
+            )
+            if highlight_enabled:
+                highlight_color_field = render_field_group(
+                    params_card,
+                    key="word-review-highlight-color",
+                    label="复核高亮颜色",
+                )
+                with highlight_color_field:
+                    st.selectbox(
+                        "复核高亮颜色",
+                        options=list(_WORD_HIGHLIGHT_COLORS.values()),
+                        format_func=_format_word_highlight_color,
+                        disabled=phase == "running",
+                        label_visibility="collapsed",
+                        key=_WORD_HIGHLIGHT_COLOR_KEY,
+                    )
 
         render_checkbox_tooltip_row(
             params_card,
