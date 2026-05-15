@@ -23,6 +23,7 @@ class TauriWorkerProtocolTests(unittest.TestCase):
             env = dict(os.environ)
             env["HOME"] = temp_dir
             env["USERPROFILE"] = temp_dir
+            env["PYTHONUTF8"] = "1"
             payload = "".join(
                 json.dumps(request, ensure_ascii=False) + "\n"
                 for request in requests
@@ -32,6 +33,7 @@ class TauriWorkerProtocolTests(unittest.TestCase):
                 cwd=PROJECT_ROOT,
                 input=payload,
                 text=True,
+                encoding="utf-8",
                 capture_output=True,
                 env=env,
                 check=True,
