@@ -45,7 +45,12 @@ def main() -> int:
         raise FileNotFoundError(f"Expected worker bundle was not produced: {DIST_WORKER_DIR}")
 
     RESOURCE_WORKERS_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(DIST_WORKER_DIR, RESOURCE_WORKER_DIR)
+    preserve_symlinks = sys.platform == "darwin"
+    shutil.copytree(
+        DIST_WORKER_DIR,
+        RESOURCE_WORKER_DIR,
+        symlinks=preserve_symlinks,
+    )
     print(f"[INFO] Worker resource ready: {RESOURCE_WORKER_DIR}")
     return 0
 

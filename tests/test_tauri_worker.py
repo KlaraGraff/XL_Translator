@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app_meta import APP_VERSION
 from core.connectivity_check import ConnectivityResult
 from settings import AppSettings
 from scripts.tauri_worker import connectivity_check_payload
@@ -51,7 +52,7 @@ class TauriWorkerProtocolTests(unittest.TestCase):
         self.assertEqual(messages[0]["event"], "worker.ready")
         self.assertEqual(messages[1]["id"], "ping-1")
         self.assertTrue(messages[1]["ok"])
-        self.assertEqual(messages[1]["result"]["version"], "5.0")
+        self.assertEqual(messages[1]["result"]["version"], APP_VERSION)
 
     def test_bootstrap_exposes_word_paragraph_range_for_v5_ui(self) -> None:
         messages = self.run_worker(

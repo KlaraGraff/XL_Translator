@@ -1,5 +1,10 @@
 # XL Translator 版本更新日志
 
+## V5.0.1
+- 修复 macOS v5.0 DMG 安装后提示 “XL Translator is damaged and can't be opened” 的打包问题。
+- macOS 发布流程现在会对 PyInstaller worker 内的 Mach-O 二进制执行 ad-hoc codesign，并让 Tauri 对外层 `.app` 做 ad-hoc 签名，避免 Gatekeeper 因包内未签名可执行文件直接拦截。
+- macOS worker 复制到 Tauri resources 时会保留 PyInstaller 产物里的 framework / dylib 符号链接，避免破坏 `Python.framework` 结构。
+
 ## V5.0
 - 桌面壳从 Streamlit + PyWebView 重做为 Tauri v2 + React + TypeScript，界面布局、对齐和控件状态改由前端工程统一管理。
 - 新增 Tauri IPC 到 Python JSONL worker 的通信层，前端不直接访问 localhost，本地业务能力继续复用现有 Python core、engines、settings、TM 与 Word/Excel 流程。

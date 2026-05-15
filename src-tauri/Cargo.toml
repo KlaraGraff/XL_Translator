@@ -1,6 +1,6 @@
 [package]
 name = "xl-translator"
-version = "5.0.0"
+version = "5.0.1"
 description = "XL Translator desktop shell"
 authors = ["KlaraGraff"]
 edition = "2021"

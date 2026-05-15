@@ -132,6 +132,9 @@ jobs:
       - name: Build Python worker
         run: python scripts/build_tauri_worker.py
 
+      - name: Ad-hoc sign macOS worker
+        run: python scripts/sign_macos_worker.py --verify
+
       - name: Build Tauri macOS dmg
         run: npm run tauri build -- --bundles dmg
 
