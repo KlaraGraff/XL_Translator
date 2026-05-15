@@ -9,9 +9,12 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   windows:
-    name: Windows installer
+    name: Windows Tauri installer
     runs-on: windows-latest
 
     steps:
@@ -24,25 +27,55 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-build.txt
+
+      - name: Install frontend dependencies
+        run: npm ci
 
       - name: Run quality gate
         shell: pwsh
         run: ./quality_gate.ps1
 
-      - name: Run tests
+      - name: Run Python tests
         run: python -m unittest discover -s tests
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
+      - name: Build Python worker
+        run: python scripts/build_tauri_worker.py
 
-      - name: Build Windows installer
+      - name: Install NSIS
         shell: pwsh
-        run: ./scripts/build_windows_package.ps1
+        run: choco install nsis --no-progress -y
+
+      - name: Build Tauri Windows installer
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Normalize Windows release asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Version = (python -c "import app_meta; print(app_meta.APP_VERSION)").Trim()
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $Source = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $Source) { throw "Tauri NSIS installer was not produced." }
+          $SetupName = "XL_Translator_Windows_${Version}_Setup.exe"
+          $SetupPath = Join-Path "dist" $SetupName
+          Copy-Item $Source.FullName $SetupPath -Force
+          $Hash = (Get-FileHash -Algorithm SHA256 $SetupPath).Hash.ToLowerInvariant()
+          "$Hash  $SetupName" | Set-Content -Encoding ascii "$SetupPath.sha256"
+          "WINDOWS_SETUP=$SetupPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_SETUP_SHA256=$SetupPath.sha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -61,7 +94,7 @@ jobs:
             ${{ env.WINDOWS_SETUP_SHA256 }}
 
   macos:
-    name: macOS dmg
+    name: macOS Tauri dmg
     runs-on: macos-latest
 
     steps:
@@ -74,12 +107,52 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install dependencies
-        run: |
-          bash ./scripts/install_macos_dependencies.sh
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
 
-      - name: Build macOS dmg
-        run: bash ./scripts/build_macos_package.sh
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python dependencies
+        run: bash ./scripts/install_macos_dependencies.sh
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run quality gate
+        shell: pwsh
+        run: ./quality_gate.ps1
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests
+
+      - name: Build Python worker
+        run: python scripts/build_tauri_worker.py
+
+      - name: Build Tauri macOS dmg
+        run: npm run tauri build -- --bundles dmg
+
+      - name: Normalize macOS release asset
+        run: |
+          set -euo pipefail
+          VERSION="$(python -c "import app_meta; print(app_meta.APP_VERSION)")"
+          mkdir -p dist
+          SOURCE="$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)"
+          if [[ -z "$SOURCE" ]]; then
+            echo "Tauri DMG was not produced." >&2
+            exit 1
+          fi
+          DMG_NAME="XL_Translator_macOS_${VERSION}.dmg"
+          DMG_PATH="dist/$DMG_NAME"
+          cp "$SOURCE" "$DMG_PATH"
+          shasum -a 256 "$DMG_PATH" | sed "s|$DMG_PATH|$DMG_NAME|" > "$DMG_PATH.sha256"
+          {
+            echo "MACOS_DMG=$DMG_PATH"
+            echo "MACOS_DMG_SHA256=$DMG_PATH.sha256"
+          } >> "$GITHUB_ENV"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4

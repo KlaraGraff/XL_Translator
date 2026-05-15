@@ -21,6 +21,10 @@ tmp*/
 # Build and distribution artifacts
 build/
 dist/
+dist-tauri/
+node_modules/
+src-tauri/target/
+src-tauri/resources/workers/xl-translator-worker/
 *.zip
 *.dmg
 *.pkg

@@ -1,5 +1,11 @@
 # XL Translator 版本更新日志
 
+## V5.0
+- 桌面壳从 Streamlit + PyWebView 重做为 Tauri v2 + React + TypeScript，界面布局、对齐和控件状态改由前端工程统一管理。
+- 新增 Tauri IPC 到 Python JSONL worker 的通信层，前端不直接访问 localhost，本地业务能力继续复用现有 Python core、engines、settings、TM 与 Word/Excel 流程。
+- 新增 Tauri 桌面工作区：表格翻译、Word 翻译、记忆库、设置和诊断页面，并接通文件扫描、翻译任务、连接测试、更新检测和 TM 基础操作。
+- 发布流程切换为双平台 Tauri 安装包构建：GitHub tag 触发 Windows NSIS installer 与 macOS DMG，同时打包 Python worker sidecar。
+
 ## V4.4
 - Word 翻译新增并行恢复池：首轮严格校验失败后，会并发执行单段重试与语义仲裁，任一路径可靠通过即写入译文。
 - Word 恢复路径会保留首轮被规则拦截的候选译文，并在安全护栏内交由大模型判断源文与候选译文是否完整等义。
