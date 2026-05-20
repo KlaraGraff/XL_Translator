@@ -7,6 +7,7 @@ import platform
 import shutil
 import sqlite3
 import stat
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -290,8 +291,8 @@ def _copy_sqlite_database(source: Path, target: Path) -> None:
         raise FileExistsError(f"目标数据库已存在：{target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     with (
-        sqlite3.connect(str(source)) as source_conn,
-        sqlite3.connect(str(target)) as target_conn,
+        closing(sqlite3.connect(str(source))) as source_conn,
+        closing(sqlite3.connect(str(target))) as target_conn,
     ):
         source_conn.backup(target_conn)
 
