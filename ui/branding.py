@@ -10,9 +10,10 @@ from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
+from app_meta import APP_NAME
 
 DEFAULT_BRAND_EMOJI = "🔤"
-DEFAULT_BRAND_LABEL = "Translator"
+DEFAULT_BRAND_LABEL = APP_NAME
 BRAND_ICON_RELATIVE_PATH = Path("assets") / "branding" / "app-icon.png"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BRAND_ICON_PATH = PROJECT_ROOT / BRAND_ICON_RELATIVE_PATH

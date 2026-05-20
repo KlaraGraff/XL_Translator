@@ -46,7 +46,7 @@ When legacy `.xls` files are present and the user agrees to compatibility fallba
 ## Runtime Notes
 
 - The CLI reuses the repository's existing `TaskRunner`, TM lookup, and bilingual writer logic.
-- API keys and TM data still come from `~/.xl_translator/` unless the caller intentionally isolates `HOME`.
+- API keys and TM data come from Translator's platform-native app data directory unless the caller intentionally isolates it with `TRANSLATOR_APP_DATA_DIR`.
 - If the user does not specify a target language, you may omit `--target-lang` and let the repository's saved settings decide.
 - If the user asks to change model behavior for one run, use the CLI overrides like `--engine-mode`, `--cloud-provider`, `--cloud-model`, or `--ollama-model`.
 

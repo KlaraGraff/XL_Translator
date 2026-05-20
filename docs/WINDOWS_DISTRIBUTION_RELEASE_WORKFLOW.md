@@ -1,4 +1,4 @@
-# XL Translator Windows 分发说明
+# Translator Windows 分发说明
 
 最后更新：2026-05-14
 
@@ -47,9 +47,9 @@ Windows 构建方式：
 3. 运行 `quality_gate.ps1`
 4. 运行 `python -m unittest discover -s tests`
 5. 生成 `app-icon.ico`
-6. 使用 `packaging/windows/XL_Translator_Windows.spec` 构建 one-folder 可执行包
-7. 使用 `packaging/windows/XL_Translator_Windows.iss` 构建安装器
-8. 输出 `dist/XL_Translator_Windows_<版本>_Setup.exe` 和对应的 SHA256 文件
+6. 使用 `packaging/windows/app_windows.spec` 构建 one-folder 可执行包
+7. 使用 `packaging/windows/app_windows.iss` 构建安装器
+8. 输出 `dist/Translator_Windows_<版本>_Setup.exe` 和对应的 SHA256 文件
 
 最终用户直接运行安装器即可。
 

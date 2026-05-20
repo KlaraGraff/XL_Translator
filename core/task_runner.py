@@ -19,6 +19,7 @@ from pathlib import Path
 from loguru import logger
 
 from core import bilingual_writer
+from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.api_config_check import check_translation_api_config
 from core.file_scanner import FileItem
 from core.language_registry import build_lang_pair
@@ -169,6 +170,7 @@ class TaskRunner:
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
+        fatal_error_message: str | None = None
         quality_issues: list[dict] = []
 
         try:
@@ -576,6 +578,12 @@ class TaskRunner:
                         f"缩小重试 {batch_stats.retry_count} 次，"
                         f"单条失败 {batch_stats.failed_batch_count} 条，"
                         f"最大请求权重 {batch_stats.max_request_weight}"
+                        + (
+                            f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
+                            f"最低并发 {batch_stats.adaptive_lowest_concurrency}"
+                            if batch_stats.adaptive_concurrency_reductions
+                            else ""
+                        )
                     ),
                 )
                 if batch_stats.failed_batch_count:
@@ -800,6 +808,8 @@ class TaskRunner:
                 self._log("INFO", '已启用"锁定行高，缩小字号"，跳过 Excel AutoFit。')
         except TaskStopped as e:
             stopped_message = str(e)
+        except ApiKeyTemporarilyUnavailableError as e:
+            fatal_error_message = str(e)
         finally:
             if excel_app is not None:
                 self._log("INFO", "清理全局 Excel 进程...")
@@ -814,6 +824,17 @@ class TaskRunner:
                 file_results=file_results,
             )
             self._queue.put(StoppedMsg(message=stopped_message))
+            return
+
+        if fatal_error_message is not None:
+            elapsed = (datetime.now() - start_ts).total_seconds()
+            self._log("ERROR", fatal_error_message)
+            self._task_logger.error(fatal_error_message)
+            self._task_logger.task_end(
+                elapsed_sec=elapsed,
+                file_results=file_results,
+            )
+            self._queue.put(ErrorMsg(message=fatal_error_message))
             return
 
         elapsed = (datetime.now() - start_ts).total_seconds()

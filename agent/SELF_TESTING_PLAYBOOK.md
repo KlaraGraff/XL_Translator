@@ -98,7 +98,7 @@ assert not at.exception
 这类测试默认按“有副作用”处理：
 
 - `settings.py` 会落盘 `settings.json`
-- `config.py` 会把应用数据目录放到 `Path.home() / ".xl_translator"`
+- `config.py` 会把应用数据目录放到平台原生位置，测试中可用 `TRANSLATOR_APP_DATA_DIR` 隔离
 - `core/tm_manager.py` 会连接 TM 数据库
 
 因此：

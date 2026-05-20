@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from core.api_scheduler import WeightedApiScheduler
+from core.api_scheduler import (
+    API_CONCURRENCY_ACTION_REDUCED,
+    API_CONCURRENCY_ACTION_RETRY_CURRENT,
+    WeightedApiScheduler,
+)
 from core.word_batching import WordBatchRunStats, translate_word_texts
 from core.word_batching import estimate_api_request_weight
 from engines.base_engine import TranslationEngine
@@ -124,6 +128,20 @@ class WordBatchingTests(unittest.TestCase):
         self.assertEqual(scheduler.normal_soft_limit, 8)
 
         scheduler.release(first, category="normal")
+
+    def test_scheduler_reduces_once_per_request_generation(self) -> None:
+        scheduler = WeightedApiScheduler(5)
+        with scheduler.slot(1) as lease:
+            first = scheduler.register_concurrency_limit_hit(lease.generation)
+            stale = scheduler.register_concurrency_limit_hit(lease.generation)
+
+        self.assertEqual(first.action, API_CONCURRENCY_ACTION_REDUCED)
+        self.assertEqual(first.previous_capacity, 5)
+        self.assertEqual(first.current_capacity, 4)
+        self.assertEqual(stale.action, API_CONCURRENCY_ACTION_RETRY_CURRENT)
+        self.assertEqual(stale.current_capacity, 4)
+        self.assertEqual(scheduler.snapshot().capacity, 4)
+        self.assertEqual(scheduler.snapshot().active_total_weight, 0)
 
 
 if __name__ == "__main__":

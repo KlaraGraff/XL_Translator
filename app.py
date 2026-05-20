@@ -1,15 +1,17 @@
 """
-XL Translator — Streamlit 应用入口。
+Streamlit 应用入口。
 导航：表格翻译 | Word 翻译 | 记忆库管理
 """
 from pathlib import Path
 
 import streamlit as st
 
+from app_meta import APP_NAME
 from core.tm_manager import init_db
 from settings import load_settings, save_settings
 from ui.api_health_notice import render_api_health_monitor
 from ui.branding import get_page_icon_config
+from ui.data_migration_gate import render_data_migration_gate
 from ui.sidebar import render_sidebar
 import ui.page_translate as page_translate
 import ui.page_word_translate as page_word_translate
@@ -50,13 +52,14 @@ def _persist_settings_if_changed(settings) -> None:
 
 def main():
     st.set_page_config(
-        page_title="Translator",
+        page_title=APP_NAME,
         page_icon=get_page_icon_config(),
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
     _inject_css()
+    render_data_migration_gate()
     _init()
     init_db()
 

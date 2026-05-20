@@ -6,7 +6,7 @@ import webbrowser
 
 import streamlit as st
 
-from app_meta import APP_VERSION_LABEL
+from app_meta import APP_NAME, APP_VERSION_LABEL
 from config import (
     CLOUD_ENGINES, OLLAMA_RECOMMENDED_MODELS, DOMAIN_PRESETS, LANYI_BASE_URL,
     CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX, CHUNK_CLOUD_DEFAULT,
@@ -29,9 +29,9 @@ from ui.components import build_sidebar_tooltip_html, render_field_group
 
 
 _BRAND_TOOLTIP = {
-    "title": "Translator",
+    "title": APP_NAME,
     "title_meta": "by OA",
-    "summary": "左侧完成配置，右侧执行表格或 Word 翻译任务，并维护统一记忆库。",
+    "summary": f"{APP_NAME} 是一个面向 Excel 和 Word 文档的本地翻译器，左侧完成配置，右侧执行任务并维护统一记忆库。",
     "items": [
         "表格翻译页用于扫描 Excel 文件、执行翻译和查看结果。",
         "Word 翻译页用于扫描 DOCX 文件并生成双语 Word。",
@@ -334,7 +334,7 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
     with st.sidebar:
         # ── 应用标题 ──────────────────────────────────────
         brand_tooltip_html = build_sidebar_tooltip_html(
-            "Translator",
+            APP_NAME,
             _BRAND_TOOLTIP["title"],
             _BRAND_TOOLTIP["summary"],
             _BRAND_TOOLTIP["items"],
@@ -342,7 +342,7 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
             label_class="sidebar-title sidebar-tooltip__label--brand",
             trigger_class="sidebar-tooltip--brand",
             card_class="sidebar-tooltip-card--brand",
-            label_html=build_sidebar_brand_label_html("Translator"),
+            label_html=build_sidebar_brand_label_html(APP_NAME),
         )
         top_shell = st.container(key="sidebar-top-shell")
         with top_shell:

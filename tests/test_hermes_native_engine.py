@@ -41,13 +41,16 @@ class HermesNativeEngineTests(unittest.TestCase):
         )
         self.env_patch.start()
         self.home = Path.home()
-        shutil.rmtree(self.home / ".xl_translator", ignore_errors=True)
+        _clear_project_modules()
+        from core.app_paths import get_app_data_dir
+
+        self.app_data_dir = get_app_data_dir()
+        shutil.rmtree(self.app_data_dir, ignore_errors=True)
         shutil.rmtree(self.home / ".hermes", ignore_errors=True)
         self.hermes_home = self.home / ".hermes"
         self.hermes_home.mkdir(parents=True, exist_ok=True)
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ.pop("OPENAI_API_KEY_BACKUP", None)
-        _clear_project_modules()
 
     def tearDown(self) -> None:
         _clear_project_modules()
@@ -102,7 +105,7 @@ model:
         settings = load_settings()
 
         self.assertEqual(settings.engine.cloud_provider, "custom_openai")
-        self.assertFalse((self.home / ".xl_translator" / "keys.json").exists())
+        self.assertFalse((self.app_data_dir / "keys.json").exists())
 
     def test_load_hermes_runtime_routes_reads_config_and_env(self) -> None:
         self._write_hermes_config()

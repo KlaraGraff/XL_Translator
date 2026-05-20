@@ -4,7 +4,7 @@
 每次翻译任务实例化一个 TaskLogger，通过 LoggerAdapter 注入 task_id。
 关闭时所有方法立即返回，零开销。
 
-日志文件：~/.xl_translator/app.log
+日志文件：平台原生应用数据目录下的 app.log
 轮转策略：RotatingFileHandler，5 MB / 文件，保留 4 个备份（加当前文件共 5 个）
 """
 import logging
@@ -15,7 +15,7 @@ from datetime import datetime
 from config import APP_DATA_DIR, LOG_PATH
 from core.language_registry import get_target_lang_display
 
-# ── 日志路径：统一写入用户数据目录 ~/.xl_translator/app.log ───────────────
+# ── 日志路径：统一写入用户数据目录 app.log ───────────────────────────────
 LOG_DIR = APP_DATA_DIR
 
 # ── 全局 logger（仅初始化一次）───────────────────────────────────────────

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-SPEC_PATH="$ROOT_DIR/packaging/macos/XL_Translator_macOS.spec"
+SPEC_PATH="$ROOT_DIR/packaging/macos/app_macos.spec"
 STAGING_DIR="$ROOT_DIR/.runtime/package/macos-dmg"
 
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
@@ -59,17 +59,26 @@ if [[ -z "$VERSION" ]]; then
   echo "APP_VERSION could not be resolved." >&2
   exit 1
 fi
+APP_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.APP_NAME)")"
+MACOS_APP_BUNDLE_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.MACOS_APP_BUNDLE_NAME)")"
+MACOS_COLLECT_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.MACOS_COLLECT_NAME)")"
+MACOS_DMG_BASENAME="$("$PYTHON" -c "import app_meta; print(app_meta.MACOS_DMG_BASENAME)")"
+if [[ -z "$APP_NAME" || -z "$MACOS_APP_BUNDLE_NAME" || -z "$MACOS_COLLECT_NAME" || -z "$MACOS_DMG_BASENAME" ]]; then
+  echo "App packaging metadata could not be resolved." >&2
+  exit 1
+fi
 
 echo "[INFO] Prepare macOS icon"
 "$PYTHON" scripts/prepare_icons.py --macos
 
-APP_PATH="$DIST_DIR/XL Translator.app"
-COLLECT_PATH="$DIST_DIR/XL Translator"
-DMG_NAME="XL_Translator_macOS_${VERSION}.dmg"
+APP_PATH="$DIST_DIR/$MACOS_APP_BUNDLE_NAME"
+COLLECT_PATH="$DIST_DIR/$MACOS_COLLECT_NAME"
+DMG_NAME="${MACOS_DMG_BASENAME}.dmg"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 CHECKSUM_PATH="$DMG_PATH.sha256"
 
-rm -rf "$ROOT_DIR/build/XL_Translator_macOS" "$APP_PATH" "$COLLECT_PATH" "$STAGING_DIR"
+SPEC_BUILD_NAME="$(basename "$SPEC_PATH" .spec)"
+rm -rf "$ROOT_DIR/build/$SPEC_BUILD_NAME" "$APP_PATH" "$COLLECT_PATH" "$STAGING_DIR"
 rm -f "$DMG_PATH" "$CHECKSUM_PATH"
 
 echo "[INFO] Build macOS app bundle"
@@ -105,7 +114,7 @@ mkdir -p "$STAGING_DIR"
 cp -R "$APP_PATH" "$STAGING_DIR/"
 ln -s /Applications "$STAGING_DIR/Applications"
 hdiutil create \
-  -volname "XL Translator" \
+  -volname "$APP_NAME" \
   -srcfolder "$STAGING_DIR" \
   -ov \
   -format UDZO \

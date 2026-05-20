@@ -10,6 +10,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from config import LOG_PATH
 from core.api_config_check import check_translation_api_config
 from core.bilingual_writer import (
     custom_output_dir_will_be_created,
@@ -576,7 +577,7 @@ def _render_translate_inspector(settings: AppSettings, phase: str) -> AppSetting
             [
                 "开启后会将任务运行日志持续写入本地文件。",
                 "适合排查失败重试、格式异常与性能波动问题。",
-                "默认日志路径：~/.xl_translator/app.log。",
+                f"默认日志路径：{LOG_PATH}。",
             ],
             key="cb_task_log",
             checkbox_label="启用任务日志开关",

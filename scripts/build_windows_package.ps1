@@ -7,8 +7,8 @@ Set-StrictMode -Version Latest
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $DistDir = Join-Path $Root "dist"
-$SpecPath = Join-Path $Root "packaging/windows/XL_Translator_Windows.spec"
-$InstallerScript = Join-Path $Root "packaging/windows/XL_Translator_Windows.iss"
+$SpecPath = Join-Path $Root "packaging/windows/app_windows.spec"
+$InstallerScript = Join-Path $Root "packaging/windows/app_windows.iss"
 
 function Resolve-Python {
     param([string]$ExplicitPython)
@@ -88,14 +88,22 @@ $Version = (& $Python -c "import app_meta; print(app_meta.APP_VERSION)").Trim()
 if (-not $Version) {
     throw "APP_VERSION could not be resolved."
 }
+$AppName = (& $Python -c "import app_meta; print(app_meta.APP_NAME)").Trim()
+$PackageName = (& $Python -c "import app_meta; print(app_meta.WINDOWS_PACKAGE_NAME)").Trim()
+$ExeName = (& $Python -c "import app_meta; print(app_meta.WINDOWS_EXE_NAME)").Trim()
+$SetupBaseName = (& $Python -c "import app_meta; print(app_meta.WINDOWS_SETUP_BASENAME)").Trim()
+if (-not $AppName -or -not $PackageName -or -not $ExeName -or -not $SetupBaseName) {
+    throw "App packaging metadata could not be resolved."
+}
 
 Invoke-Step "Prepare Windows icon" {
     & $Python "scripts/prepare_icons.py" --windows
 }
 
-$BuildDir = Join-Path $Root "build/XL_Translator_Windows"
-$PackageDir = Join-Path $DistDir "XL_Translator_Windows"
-$SetupName = "XL_Translator_Windows_${Version}_Setup.exe"
+$SpecBuildName = [IO.Path]::GetFileNameWithoutExtension($SpecPath)
+$BuildDir = Join-Path $Root "build/$SpecBuildName"
+$PackageDir = Join-Path $DistDir $PackageName
+$SetupName = "$SetupBaseName.exe"
 $SetupPath = Join-Path $DistDir $SetupName
 $ChecksumPath = "$SetupPath.sha256"
 
@@ -116,14 +124,14 @@ Invoke-Step "Build Windows app bundle" {
     & $Python -m PyInstaller --noconfirm $SpecPath
 }
 
-$ExePath = Join-Path $PackageDir "XL Translator.exe"
+$ExePath = Join-Path $PackageDir $ExeName
 if (-not (Test-Path $ExePath)) {
     throw "Expected executable was not produced: $ExePath"
 }
 
 $Iscc = Resolve-Iscc
 Invoke-Step "Build Windows installer" {
-    & $Iscc "/DAppVersion=$Version" $InstallerScript
+    & $Iscc "/DAppVersion=$Version" "/DAppName=$AppName" "/DAppExeName=$ExeName" "/DWindowsPackageName=$PackageName" "/DOutputBaseName=$SetupBaseName" $InstallerScript
 }
 
 if (-not (Test-Path $SetupPath)) {

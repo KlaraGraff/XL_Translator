@@ -19,11 +19,11 @@ class UpdateCheckerTests(unittest.TestCase):
             "html_url": "https://github.com/KlaraGraff/XL_Translator/releases/tag/v4.2",
             "assets": [
                 {
-                    "name": "XL_Translator_Windows_4.2_Setup.exe",
+                    "name": "Translator_Windows_4.2_Setup.exe",
                     "browser_download_url": "https://example.test/windows.exe",
                 },
                 {
-                    "name": "XL_Translator_macOS_4.2.dmg",
+                    "name": "Translator_macOS_4.2.dmg",
                     "browser_download_url": "https://example.test/macos.dmg",
                 },
             ],
@@ -37,7 +37,7 @@ class UpdateCheckerTests(unittest.TestCase):
 
         self.assertTrue(result.has_update)
         self.assertEqual(result.latest_version, "4.2")
-        self.assertEqual(result.asset_name, "XL_Translator_macOS_4.2.dmg")
+        self.assertEqual(result.asset_name, "Translator_macOS_4.2.dmg")
         self.assertEqual(result.download_url, "https://example.test/macos.dmg")
 
     def test_build_update_result_reports_current_version(self) -> None:

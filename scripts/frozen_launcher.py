@@ -25,6 +25,8 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import app as _app  # noqa: E402,F401 - imported so PyInstaller collects app modules
+from app_meta import APP_NAME  # noqa: E402
+from core.app_paths import get_app_data_dir  # noqa: E402
 try:
     from scripts.desktop_window import open_app_window
 except ModuleNotFoundError:
@@ -48,10 +50,7 @@ def app_script_path() -> Path:
 
 
 def state_root() -> Path:
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "XL Translator"
-    return Path.home() / ".xl_translator"
+    return get_app_data_dir()
 
 
 def state_file() -> Path:
@@ -75,7 +74,7 @@ def log(message: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch packaged XL Translator.")
+    parser = argparse.ArgumentParser(description=f"Launch packaged {APP_NAME}.")
     parser.add_argument("--streamlit-child", action="store_true")
     parser.add_argument("--port", type=int, default=0)
     return parser.parse_args()

@@ -1,4 +1,4 @@
-# XL Translator macOS 启动与分发入口说明（当前基线）
+# Translator macOS 启动与分发入口说明（当前基线）
 
 最后更新：2026-05-14
 
@@ -26,8 +26,8 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 
 ### 2.1 标准安装包入口
 
-- GitHub Release 产物：`XL_Translator_macOS_<版本>.dmg`
-- 用户入口：`XL Translator.app`
+- GitHub Release 产物：`Translator_macOS_<版本>.dmg`
+- 用户入口：`Translator.app`
 - 核心启动逻辑：`scripts/frozen_launcher.py`
 
 `.app` 是 PyInstaller 冻结后的应用，不需要用户本机先创建 `.venv`。
@@ -93,8 +93,8 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 1. 在 `macos-latest` runner 安装 Python 3.11
 2. 安装 `requirements-build.txt`
 3. 运行 `scripts/prepare_icons.py --macos`
-4. 使用 `packaging/macos/XL_Translator_macOS.spec` 生成 `.app`
-5. 使用 `hdiutil` 生成 `XL_Translator_macOS_<版本>.dmg`
+4. 使用 `packaging/macos/app_macos.spec` 生成 `.app`
+5. 使用 `hdiutil` 生成 `Translator_macOS_<版本>.dmg`
 6. 输出对应 SHA256 文件并上传到 GitHub Release
 
 发布产物不再包含 `.zip`。
@@ -113,17 +113,17 @@ Windows 分发说明见 `docs/WINDOWS_DISTRIBUTION_RELEASE_WORKFLOW.md`。
 ### 6.2 macOS 基本验收
 
 1. 在 macOS 上打开 dmg
-2. 将 `XL Translator.app` 放入合适位置后双击启动
+2. 将 `Translator.app` 放入合适位置后双击启动
 3. 验证启动后会打开应用内窗口
 4. 验证重新启动时会先清理旧实例，再打开新的本地服务
-5. 若需排查安装版启动链路，检查 `~/.xl_translator/desktop_launcher.log`
+5. 若需排查安装版启动链路，检查 `~/Library/Application Support/Translator/desktop_launcher.log`
 
 ## 7. 失败排查
 
 ### 7.1 安装版启动失败
 
-- 优先检查 `~/.xl_translator/desktop_launcher.log`
-- 未签名 dmg 第一次运行可能被系统阻止，可在 Finder 右键 `XL Translator.app` 后选择“打开”
+- 优先检查 `~/Library/Application Support/Translator/desktop_launcher.log`
+- 未签名 dmg 第一次运行可能被系统阻止，可在 Finder 右键 `Translator.app` 后选择“打开”
 
 ### 7.2 源码包首次启动失败
 

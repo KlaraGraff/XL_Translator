@@ -24,5 +24,5 @@ Useful options:
 Behavior notes:
 
 - The command reuses the existing project logic in `TaskRunner`; it is not a second implementation.
-- API keys, TM database, and saved settings still live under `~/.xl_translator/` unless the caller isolates `HOME`.
+- API keys, TM database, and saved settings live under Translator's platform-native app data directory unless the caller isolates it with `TRANSLATOR_APP_DATA_DIR`.
 - When `--output-dir` is omitted, the command writes to the default timestamped output folder next to the source path.

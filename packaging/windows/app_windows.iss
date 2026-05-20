@@ -1,9 +1,22 @@
-#define AppName "XL Translator"
+#ifndef AppName
+  #define AppName "Translator"
+#endif
 #define AppPublisher "KlaraGraff"
-#define AppExeName "XL Translator.exe"
+
+#ifndef AppExeName
+  #define AppExeName "Translator.exe"
+#endif
+
+#ifndef WindowsPackageName
+  #define WindowsPackageName "Translator_Windows"
+#endif
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
+#endif
+
+#ifndef OutputBaseName
+  #define OutputBaseName "Translator_Windows_" + AppVersion + "_Setup"
 #endif
 
 [Setup]
@@ -16,7 +29,7 @@ DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist
-OutputBaseFilename=XL_Translator_Windows_{#AppVersion}_Setup
+OutputBaseFilename={#OutputBaseName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -34,7 +47,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\..\dist\XL_Translator_Windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\dist\{#WindowsPackageName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"

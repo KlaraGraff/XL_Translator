@@ -15,6 +15,10 @@ from typing import Callable
 from loguru import logger
 
 from core import tm_manager
+from core.api_concurrency_control import (
+    ApiKeyTemporarilyUnavailableError,
+    handle_api_concurrency_limit,
+)
 from core.api_config_check import check_translation_api_config
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_NORMAL,
@@ -162,6 +166,7 @@ class WordTaskRunner:
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
+        fatal_error_message: str | None = None
 
         try:
             config_check = check_translation_api_config(settings)
@@ -392,6 +397,12 @@ class WordTaskRunner:
                         f"{word_batch_stats.unit_count} 个请求片段，"
                         f"长段拆分 {word_batch_stats.split_source_count} 段，"
                         f"缩小重试 {word_batch_stats.retry_count} 次"
+                        + (
+                            f"，自适应降并发 {word_batch_stats.adaptive_concurrency_reductions} 次，"
+                            f"最低并发 {word_batch_stats.adaptive_lowest_concurrency}"
+                            if word_batch_stats.adaptive_concurrency_reductions
+                            else ""
+                        )
                     ),
                 )
                 _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
@@ -620,6 +631,8 @@ class WordTaskRunner:
             self._log("OK", f"[阶段 3 完成] Word 文件写入完毕（{phase3_elapsed:.2f}s）")
         except TaskStopped as exc:
             stopped_message = str(exc)
+        except ApiKeyTemporarilyUnavailableError as exc:
+            fatal_error_message = str(exc)
 
         elapsed_sec = (datetime.now() - start_ts).total_seconds()
         self._task_logger.task_end(elapsed_sec=elapsed_sec, file_results=file_results)
@@ -635,6 +648,12 @@ class WordTaskRunner:
         if stopped_message is not None:
             self._log("WARN", stopped_message)
             self._queue.put(StoppedMsg(message=stopped_message))
+            return
+
+        if fatal_error_message is not None:
+            self._log("ERROR", fatal_error_message)
+            self._task_logger.error(fatal_error_message)
+            self._queue.put(ErrorMsg(message=fatal_error_message))
             return
 
         self._queue.put(
@@ -775,6 +794,7 @@ class _WordRecoveryPool:
         self._condition = threading.Condition()
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1)))
         self._semantic_check_count = 0
+        self._fatal_error: BaseException | None = None
 
     def add_candidate(
         self,
@@ -816,8 +836,14 @@ class _WordRecoveryPool:
 
     def wait_for_completion(self) -> _WordRecoveryOutcome:
         with self._condition:
-            while not self._all_complete_locked():
+            while self._fatal_error is None and not self._all_complete_locked():
                 self._condition.wait(timeout=0.1)
+
+            fatal_error = self._fatal_error
+
+        if fatal_error is not None:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            raise fatal_error
 
         self._executor.shutdown(wait=True)
         return self._build_outcome()
@@ -915,6 +941,10 @@ class _WordRecoveryPool:
     def _future_done(self, future) -> None:
         try:
             future.result()
+        except ApiKeyTemporarilyUnavailableError as exc:
+            with self._condition:
+                self._fatal_error = exc
+                self._condition.notify_all()
         except Exception as exc:  # noqa: BLE001 - recovery must degrade to review
             if self._log_callback:
                 self._log_callback("WARN", f"Word 恢复池任务失败：{exc}")
@@ -938,7 +968,11 @@ class _WordRecoveryPool:
             self._retry_batch_settings,
             concurrency=1,
             progress_callback=None,
-            error_callback=(lambda msg: self._log_callback("WARN", msg)) if self._log_callback else None,
+            error_callback=(
+                (lambda msg: self._log_callback("WARN", msg))
+                if self._log_callback
+                else None
+            ),
             should_stop=self._should_stop,
             source_lang=self._source_lang,
             stats=retry_stats,
@@ -992,6 +1026,11 @@ class _WordRecoveryPool:
             target_lang=self._target_lang,
             source_lang=self._source_lang,
             api_scheduler=self._api_scheduler,
+            error_callback=(
+                (lambda msg: self._log_callback("WARN", msg))
+                if self._log_callback
+                else None
+            ),
         )
         with self._condition:
             state = self._states.get(source)
@@ -1071,6 +1110,7 @@ def _run_semantic_arbitration(
     target_lang: str,
     source_lang: str,
     api_scheduler: WeightedApiScheduler | None,
+    error_callback: Callable[[str], None] | None = None,
 ) -> _SemanticArbitrationResult:
     candidate_text = _candidate_validation_text(candidate)
     if not candidate_text:
@@ -1088,14 +1128,36 @@ def _run_semantic_arbitration(
     )
     weight = estimate_api_request_weight([source, candidate_text], system_prompt)
 
+    request_generation: int | None = None
     try:
         if api_scheduler is None:
             raw = engine.chat(system_prompt, user_payload)
         else:
-            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY):
+            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+                request_generation = lease.generation
                 raw = engine.chat(system_prompt, user_payload)
         payload = json.loads(strip_markdown_json(raw))
     except Exception as exc:  # noqa: BLE001 - uncertain keeps original review path
+        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
+            raise
+        if api_scheduler is not None and not engine.engine_name.startswith("ollama/"):
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Word 语义仲裁",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                return _run_semantic_arbitration(
+                    engine,
+                    source,
+                    candidate,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    error_callback=error_callback,
+                )
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, str(exc))
 
     if not isinstance(payload, dict):

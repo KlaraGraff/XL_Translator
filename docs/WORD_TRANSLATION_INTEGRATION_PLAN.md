@@ -12,7 +12,8 @@ format behind its own small adapter.
 - Let users switch between table translation, Word translation, and TM
   management from one sidebar.
 - Reuse the existing local settings and key storage. API keys must stay in
-  `~/.xl_translator/keys.json` and must never be committed.
+  the platform-native app data directory as `keys.json` and must never be
+  committed.
 - Reuse the existing SQLite translation memory so Excel and Word translations
   reinforce the same terminology choices.
 

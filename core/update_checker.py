@@ -8,9 +8,10 @@ from typing import Any
 
 import httpx
 
-from app_meta import APP_VERSION
+from app_meta import APP_UPDATE_USER_AGENT, APP_VERSION
 
 
+# Keep the existing release repository until the GitHub repo itself is renamed.
 GITHUB_REPO = "KlaraGraff/XL_Translator"
 LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 LATEST_RELEASE_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
@@ -162,7 +163,7 @@ def check_for_updates(
                 LATEST_RELEASE_API_URL,
                 headers={
                     "Accept": "application/vnd.github+json",
-                    "User-Agent": "XL-Translator-Updater",
+                    "User-Agent": APP_UPDATE_USER_AGENT,
                 },
             )
             response.raise_for_status()

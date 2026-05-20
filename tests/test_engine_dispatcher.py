@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.engine_dispatcher import TranslationBatchRunStats, translate_texts
 from engines.base_engine import TranslationEngine
 
@@ -26,6 +27,29 @@ class FakeExcelEngine(TranslationEngine):
         if self.omit_last_for_multi and len(texts) > 1:
             texts = texts[:-1]
         return {text: f"translated:{len(text)}" for text in texts}
+
+
+class ConcurrencyLimitExcelEngine(TranslationEngine):
+    def __init__(self, *, fail_count: int) -> None:
+        self.fail_count = fail_count
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/excel-cloud"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        if self.fail_count > 0:
+            self.fail_count -= 1
+            raise RuntimeError("too many concurrent requests: concurrency limit reached")
+        return {text: f"translated:{text}" for text in texts}
 
 
 class EngineDispatcherTests(unittest.TestCase):
@@ -72,6 +96,45 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertEqual([len(call) for call in engine.calls], [2, 1, 1])
         self.assertGreaterEqual(stats.retry_count, 1)
         self.assertTrue(errors)
+
+    def test_translate_texts_retries_same_batch_after_concurrency_limit(self) -> None:
+        engine = ConcurrencyLimitExcelEngine(fail_count=1)
+        stats = TranslationBatchRunStats()
+        errors: list[str] = []
+
+        result = translate_texts(
+            ["alpha", "beta"],
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=5,
+            error_callback=errors.append,
+            source_lang="en",
+            stats=stats,
+        )
+
+        self.assertEqual(result["alpha"], "translated:alpha")
+        self.assertEqual(result["beta"], "translated:beta")
+        self.assertEqual(engine.calls, [["alpha", "beta"], ["alpha", "beta"]])
+        self.assertEqual(stats.retry_count, 0)
+        self.assertEqual(stats.adaptive_concurrency_reductions, 1)
+        self.assertEqual(stats.adaptive_lowest_concurrency, 4)
+        self.assertTrue(any("降至 4" in message for message in errors))
+
+    def test_translate_texts_reports_key_unavailable_at_minimum_capacity(self) -> None:
+        engine = ConcurrencyLimitExcelEngine(fail_count=2)
+
+        with self.assertRaises(ApiKeyTemporarilyUnavailableError):
+            translate_texts(
+                ["alpha"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                source_lang="en",
+            )
 
 
 if __name__ == "__main__":

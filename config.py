@@ -2,12 +2,11 @@
 全局常量（不可变默认值）。
 用户可修改的配置在 settings.py 中管理。
 """
-from pathlib import Path
-
 from app_meta import APP_NAME as APP_NAME, APP_VERSION as APP_VERSION
+from core.app_paths import get_app_data_dir
 
 # ── 路径常量 ──────────────────────────────────────────────
-APP_DATA_DIR  = Path.home() / ".xl_translator"
+APP_DATA_DIR  = get_app_data_dir()
 DB_PATH       = APP_DATA_DIR / "tm.db"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
 KEYS_PATH     = APP_DATA_DIR / "keys.json"

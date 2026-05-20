@@ -17,8 +17,14 @@ from config import (
     CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX,
 )
 from core.api_scheduler import (
+    API_CONCURRENCY_ACTION_REDUCED,
     API_REQUEST_CATEGORY_NORMAL,
+    ApiConcurrencyLimitDecision,
     WeightedApiScheduler,
+)
+from core.api_concurrency_control import (
+    ApiKeyTemporarilyUnavailableError,
+    handle_api_concurrency_limit,
 )
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.translation_protocol import should_apply_quality_filter
@@ -42,6 +48,8 @@ class TranslationBatchRunStats:
     failed_items: list[dict[str, str]] = field(default_factory=list)
     max_request_weight: int = 1
     weighted_scheduler_used: bool = False
+    adaptive_concurrency_reductions: int = 0
+    adaptive_lowest_concurrency: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def record_request_weight(self, request_weight: int) -> None:
@@ -61,6 +69,22 @@ class TranslationBatchRunStats:
                         "source": source_text,
                         "error": error,
                     }
+                )
+
+    def record_adaptive_concurrency_decision(
+        self,
+        decision: ApiConcurrencyLimitDecision,
+    ) -> None:
+        if decision.action != API_CONCURRENCY_ACTION_REDUCED:
+            return
+        with self._lock:
+            self.adaptive_concurrency_reductions += 1
+            if self.adaptive_lowest_concurrency <= 0:
+                self.adaptive_lowest_concurrency = decision.current_capacity
+            else:
+                self.adaptive_lowest_concurrency = min(
+                    self.adaptive_lowest_concurrency,
+                    decision.current_capacity,
                 )
 
 
@@ -350,6 +374,7 @@ def _translate_batch_with_fallback(
     if should_stop and should_stop():
         return {text: text for text in batch}
 
+    request_generation: int | None = None
     try:
         request_weight = _estimate_api_request_weight(batch, system_prompt)
         stats.record_request_weight(request_weight)
@@ -361,7 +386,8 @@ def _translate_batch_with_fallback(
                 source_lang=source_lang,
             )
         else:
-            with api_scheduler.slot(request_weight, category=request_category):
+            with api_scheduler.slot(request_weight, category=request_category) as lease:
+                request_generation = lease.generation
                 partial = engine.translate_batch(
                     batch,
                     target_lang,
@@ -371,6 +397,33 @@ def _translate_batch_with_fallback(
         _validate_batch_integrity(batch, partial)
         return partial
     except Exception as exc:  # noqa: BLE001 - fallback decides the safest degradation
+        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
+            raise
+        if api_scheduler is not None:
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Excel",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                stats.record_adaptive_concurrency_decision(decision)
+                if should_stop and should_stop():
+                    return {text: text for text in batch}
+                return _translate_batch_with_fallback(
+                    batch,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    request_category=request_category,
+                    should_stop=should_stop,
+                    error_callback=error_callback,
+                    stats=stats,
+                )
+
         if len(batch) > 1 and not (should_stop and should_stop()):
             midpoint = max(1, len(batch) // 2)
             stats.record_retry()

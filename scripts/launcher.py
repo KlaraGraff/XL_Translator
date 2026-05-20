@@ -19,6 +19,8 @@ _PROJECT_ROOT = _SCRIPT_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from app_meta import APP_NAME  # noqa: E402
+
 try:
     from scripts.desktop_window import open_app_window
 except ModuleNotFoundError:
@@ -221,7 +223,7 @@ def now_ts() -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch the XL Translator app.")
+    parser = argparse.ArgumentParser(description=f"Launch the {APP_NAME} app.")
     parser.add_argument(
         "--silent",
         action="store_true",

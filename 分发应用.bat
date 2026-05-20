@@ -25,7 +25,7 @@ if not defined PYTHON_EXE (
 )
 
 echo ================================================
-echo   XL Translator Windows Distribution Build
+echo   Translator Windows Distribution Build
 echo ================================================
 echo.
 

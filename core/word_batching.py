@@ -11,7 +11,16 @@ from typing import Callable
 
 from loguru import logger
 
-from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
+from core.api_concurrency_control import (
+    ApiKeyTemporarilyUnavailableError,
+    handle_api_concurrency_limit,
+)
+from core.api_scheduler import (
+    API_CONCURRENCY_ACTION_REDUCED,
+    API_REQUEST_CATEGORY_NORMAL,
+    ApiConcurrencyLimitDecision,
+    WeightedApiScheduler,
+)
 from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     validate_translation,
@@ -53,6 +62,23 @@ class WordBatchRunStats:
     split_source_count: int = 0
     retry_count: int = 0
     failed_unit_count: int = 0
+    adaptive_concurrency_reductions: int = 0
+    adaptive_lowest_concurrency: int = 0
+
+    def record_adaptive_concurrency_decision(
+        self,
+        decision: ApiConcurrencyLimitDecision,
+    ) -> None:
+        if decision.action != API_CONCURRENCY_ACTION_REDUCED:
+            return
+        self.adaptive_concurrency_reductions += 1
+        if self.adaptive_lowest_concurrency <= 0:
+            self.adaptive_lowest_concurrency = decision.current_capacity
+        else:
+            self.adaptive_lowest_concurrency = min(
+                self.adaptive_lowest_concurrency,
+                decision.current_capacity,
+            )
 
 
 class WordBatchIntegrityError(RuntimeError):
@@ -242,6 +268,7 @@ def _translate_units_with_fallback(
     if should_stop and should_stop():
         return {}
 
+    request_generation: int | None = None
     try:
         payloads = _unique_unit_texts(units)
         request_weight = estimate_api_request_weight(payloads, system_prompt)
@@ -253,7 +280,8 @@ def _translate_units_with_fallback(
                 source_lang=source_lang,
             )
         else:
-            with api_scheduler.slot(request_weight, category=request_category):
+            with api_scheduler.slot(request_weight, category=request_category) as lease:
+                request_generation = lease.generation
                 raw_results = engine.translate_batch(
                     payloads,
                     target_lang,
@@ -273,6 +301,35 @@ def _translate_units_with_fallback(
             for unit in units
         }
     except Exception as exc:  # noqa: BLE001 - fallback decides how to recover the batch
+        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
+            raise
+        if api_scheduler is not None and not engine.engine_name.startswith("ollama/"):
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Word",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                stats.record_adaptive_concurrency_decision(decision)
+                if should_stop and should_stop():
+                    return {}
+                return _translate_units_with_fallback(
+                    units,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    source_lang=source_lang,
+                    quality_profile=quality_profile,
+                    api_scheduler=api_scheduler,
+                    request_category=request_category,
+                    candidate_callback=candidate_callback,
+                    should_stop=should_stop,
+                    error_callback=error_callback,
+                    stats=stats,
+                )
+
         if len(units) > 1:
             stats.retry_count += 1
             midpoint = max(1, len(units) // 2)

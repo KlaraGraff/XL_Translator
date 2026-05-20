@@ -1,6 +1,6 @@
 """
 翻译记忆库（Translation Memory）管理器。
-存储介质：SQLite（~/.xl_translator/tm.db）
+存储介质：SQLite（平台原生应用数据目录下的 tm.db）
 
 入库规则：
   len(source) ≤ max_len → 写入词库

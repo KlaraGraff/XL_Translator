@@ -11,7 +11,7 @@
 - `app.py` 启动时调用 `core.tm_manager.init_db()`
 - `init_db()` 会先检查当前 TM schema 版本；如果检测到旧版数据库，会先备份旧库，再重建新 schema 并迁移旧词条
 - 随后统一确保当前表结构与索引存在，并回填 `source_hash` 为空的历史数据
-- 旧库备份会写到 `~/.xl_translator/backups/tm/`
+- 旧库备份会写到平台原生应用数据目录下的 `backups/tm/`
 
 ## 推荐处理方式
 
