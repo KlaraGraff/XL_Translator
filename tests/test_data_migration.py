@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core.data_migration import (
@@ -15,13 +16,14 @@ from core.data_migration import (
 
 def _write_sqlite_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(path)) as conn:
-        conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
-        conn.execute("INSERT INTO sample (value) VALUES ('legacy')")
+    with closing(sqlite3.connect(str(path))) as conn:
+        with conn:
+            conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
+            conn.execute("INSERT INTO sample (value) VALUES ('legacy')")
 
 
 def _read_sqlite_value(path: Path) -> str:
-    with sqlite3.connect(str(path)) as conn:
+    with closing(sqlite3.connect(str(path))) as conn:
         row = conn.execute("SELECT value FROM sample WHERE id = 1").fetchone()
     return str(row[0])
 
