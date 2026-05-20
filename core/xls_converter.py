@@ -17,6 +17,30 @@ class XlwingsUnavailableError(Exception):
     """当尝试使用 xlwings 但环境不可用时抛出。"""
 
 
+def is_excel_automation_permission_denied(exc: BaseException | str) -> bool:
+    """Return whether an Excel automation error is a macOS privacy denial."""
+    text = str(exc or "").lower()
+    return (
+        "oserror: -1743" in text
+        or "the user has declined permission" in text
+        or "not authorized to send apple events" in text
+        or "自动化权限" in text
+    )
+
+
+def _format_excel_conversion_error(exc: BaseException) -> str:
+    message = str(exc)
+    if not is_excel_automation_permission_denied(message):
+        return f"使用 Excel 转换失败：{message}"
+
+    return (
+        "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。"
+        "可在「系统设置 > 隐私与安全性 > 自动化」中允许 Translator 控制 Microsoft Excel，"
+        "或将 .xls 手动另存为 .xlsx 后再翻译。"
+        f" 原始错误：{message}"
+    )
+
+
 def get_local_excel_availability() -> tuple[bool, str]:
     """检查当前环境是否真的可用本地 Excel 自动化。"""
     return probe_local_excel_automation()
@@ -62,7 +86,7 @@ def convert_with_excel(app, xls_path: Path) -> Path:
         wb.save(str(out_path))
         wb.close()
     except Exception as e:
-        raise XlwingsUnavailableError(f"使用 Excel 转换失败：{e}")
+        raise XlwingsUnavailableError(_format_excel_conversion_error(e)) from e
         
     return out_path
 

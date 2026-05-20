@@ -1274,7 +1274,7 @@ def _run_cleaning(lang_pair: str, settings: AppSettings):
     _launch_cleaning(lang_pair, settings)
 
 
-@st.fragment(run_every=0.5)
+@st.fragment(run_every=1.0)
 def _cleaning_progress_frag():
     """模块级 fragment，每 0.5 秒自动轮询清洗进度。
     参数通过 session_state 传入：_clean_frag_lang_pair / _clean_frag_mode / _clean_frag_auto_pin

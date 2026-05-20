@@ -955,7 +955,7 @@ def _render_running_fragment() -> None:
     _translate_running_fragment()
 
 
-@st.fragment(run_every=0.3)
+@st.fragment(run_every=0.8)
 def _translate_running_fragment() -> None:
     phase = st.session_state.get(_PHASE, "idle")
     if phase != "running":

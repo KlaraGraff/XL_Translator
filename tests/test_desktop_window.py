@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 import unittest
 
-from scripts.desktop_window import should_use_system_browser_for_macos
+from scripts.desktop_window import (
+    configure_webview_downloads,
+    should_use_system_browser_for_macos,
+)
 
 
 class DesktopWindowTests(unittest.TestCase):
@@ -29,6 +33,13 @@ class DesktopWindowTests(unittest.TestCase):
                 macos_version="12.7.6",
             )
         )
+
+    def test_webview_downloads_are_enabled_for_app_window(self) -> None:
+        webview = SimpleNamespace(settings={"ALLOW_DOWNLOADS": False})
+
+        configure_webview_downloads(webview)
+
+        self.assertTrue(webview.settings["ALLOW_DOWNLOADS"])
 
 
 if __name__ == "__main__":

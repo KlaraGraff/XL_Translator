@@ -79,6 +79,10 @@ def _create_window(webview_module, url: str):
         )
 
 
+def configure_webview_downloads(webview_module) -> None:
+    webview_module.settings["ALLOW_DOWNLOADS"] = True
+
+
 def open_app_window(
     url: str,
     *,
@@ -119,6 +123,7 @@ def open_app_window(
 
     try:
         _log(log_callback, f"Opening app window: {url}")
+        configure_webview_downloads(webview)
         _create_window(webview, url)
         if _env_truthy(WEBVIEW_DEBUG_ENV):
             webview.start(debug=True)

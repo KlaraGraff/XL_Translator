@@ -548,8 +548,8 @@ _LOG_COLOR = {
     "ERROR": "log-error",
 }
 
-_LOG_FULL_RENDER_LIMIT = 1500
-_LOG_WINDOW_SIZE = 1000
+_LOG_FULL_RENDER_LIMIT = 300
+_LOG_WINDOW_SIZE = 200
 
 
 def _slice_log_messages(messages: list[dict]) -> tuple[list[dict], int]:

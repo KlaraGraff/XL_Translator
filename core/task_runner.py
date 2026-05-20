@@ -406,12 +406,28 @@ class TaskRunner:
                 # .xls 格式转换（在阶段 1 顺便完成）
                 if source_is_xls:
                     self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
-                    from core.xls_converter import convert_with_excel, convert_with_fallback
+                    from core.xls_converter import (
+                        XlwingsUnavailableError,
+                        convert_with_excel,
+                        convert_with_fallback,
+                        is_excel_automation_permission_denied,
+                    )
                     t_conv = datetime.now()
                     try:
                         if not self._allow_xls_fallback:
                             app = _get_excel_app()
-                            process_path = convert_with_excel(app, process_path)
+                            try:
+                                process_path = convert_with_excel(app, process_path)
+                            except XlwingsUnavailableError as conversion_error:
+                                if not is_excel_automation_permission_denied(conversion_error):
+                                    raise
+                                self._log(
+                                    "WARN",
+                                    "本机 Excel 自动化权限被 macOS 拒绝，已自动改用 .xls 兼容模式继续；"
+                                    "复杂格式、图片或图表可能无法完整保留。可在系统设置的“隐私与安全性 > 自动化”"
+                                    "中允许 Translator 控制 Microsoft Excel。",
+                                )
+                                process_path = convert_with_fallback(file_item.path)
                         else:
                             process_path = convert_with_fallback(process_path)
                         self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")

@@ -2,8 +2,6 @@
    Light productivity workspace UI
    ============================================================ */
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap");
-
 :root {
   --bg-app: #f6f7fa;
   --bg-panel: #ffffff;

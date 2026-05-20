@@ -20,11 +20,16 @@ import ui.page_tm as page_tm
 
 # ── CSS 注入 ──────────────────────────────────────────────
 
+@st.cache_data(show_spinner=False)
+def _load_css(css_path: str) -> str:
+    return Path(css_path).read_text(encoding="utf-8")
+
+
 def _inject_css():
     css_path = Path(__file__).parent / "ui" / "styles.css"
     if css_path.exists():
         st.markdown(
-            f"<style>{css_path.read_text(encoding='utf-8')}</style>",
+            f"<style>{_load_css(str(css_path))}</style>",
             unsafe_allow_html=True,
         )
 
@@ -48,6 +53,14 @@ def _persist_settings_if_changed(settings) -> None:
         st.session_state["_settings_json"] = settings_json
 
 
+def _ensure_db_initialized() -> None:
+    """Initialize the TM database once per Streamlit session."""
+    if st.session_state.get("_tm_db_initialized"):
+        return
+    init_db()
+    st.session_state["_tm_db_initialized"] = True
+
+
 # ── 主入口 ────────────────────────────────────────────────
 
 def main():
@@ -61,7 +74,7 @@ def main():
     _inject_css()
     render_data_migration_gate()
     _init()
-    init_db()
+    _ensure_db_initialized()
 
     settings    = st.session_state["settings"]
     active_page = st.session_state["active_page"]
@@ -76,7 +89,6 @@ def main():
     if new_page != active_page:
         st.session_state["active_page"] = new_page
         active_page = new_page
-        st.rerun()
 
     # 持久化侧边栏修改（仅在内容实际变更时写磁盘，避免每次 rerun 都 I/O）
     _persist_settings_if_changed(settings)
