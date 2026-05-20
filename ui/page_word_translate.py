@@ -18,11 +18,13 @@ from config import (
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
 )
+from core.api_config_check import check_translation_api_config
 from core.bilingual_writer import (
     custom_output_dir_will_be_created,
     get_custom_output_dir_error,
     resolve_custom_output_dir,
 )
+from core.diagnostics import archive_task_diagnostics
 from core.language_registry import (
     get_default_source_lang,
     get_default_target_lang,
@@ -43,6 +45,10 @@ from ui.components import (
     render_main_tooltip_support,
     render_setting_card,
     render_stat_cards,
+)
+from ui.diagnostics_panel import (
+    render_current_diagnostic_download,
+    render_history_diagnostic_export,
 )
 from ui.native_dialogs import pick_folder, pick_word_file
 from ui.target_language_selector import render_target_lang_selectbox
@@ -68,6 +74,9 @@ _BROWSE_ERROR = "word_translate_browse_error"
 _FOLDER_INPUT_KEY = "word_translate_source_input"
 _WORD_HIGHLIGHT_ENABLED_KEY = "word_highlight_unresolved_checkbox"
 _WORD_HIGHLIGHT_COLOR_KEY = "word_highlight_color_select"
+_TASK_ID = "word_translate_task_id"
+_DIAGNOSTIC_RECORD_DIR = "word_translate_diagnostic_record_dir"
+_DIAGNOSTIC_ERROR = "word_translate_diagnostic_error"
 _WORD_HIGHLIGHT_COLORS = {
     "浅黄": "FFF2CC",
     "浅蓝": "DDEBFF",
@@ -107,6 +116,9 @@ def _init(settings: AppSettings | None = None) -> None:
         (_PENDING_SCAN_PATH, None),
         (_PENDING_SOURCE_INPUT_VALUE, None),
         (_BROWSE_ERROR, ""),
+        (_TASK_ID, ""),
+        (_DIAGNOSTIC_RECORD_DIR, ""),
+        (_DIAGNOSTIC_ERROR, ""),
     ]:
         if key not in st.session_state:
             st.session_state[key] = value
@@ -719,11 +731,11 @@ def render_page(settings: AppSettings) -> AppSettings:
         elif phase == "running":
             _render_running_fragment()
         elif phase == "done":
-            _render_done_content()
+            _render_done_content(settings)
         elif phase == "stopped":
             _render_stopped_content()
         elif phase == "error":
-            _render_error_content()
+            _render_error_content(settings)
 
     with side_col:
         _render_action_buttons(settings, phase)
@@ -941,13 +953,72 @@ def _word_running_fragment() -> None:
         st.rerun()
 
 
-def _render_done_content() -> None:
+def _latest_word_error_message() -> str:
+    error_messages = [
+        str(item.get("message") or "")
+        for item in st.session_state.get(_LOGS, [])
+        if item.get("level") == "ERROR"
+    ]
+    return error_messages[-1] if error_messages else ""
+
+
+def _done_needs_word_diagnostics(done: DoneMsg) -> bool:
+    failure_n = sum(1 for item in done.file_results if not item.get("success"))
+    return failure_n > 0 or bool(done.issues)
+
+
+def _ensure_word_diagnostic_archive(settings: AppSettings, phase: str) -> None:
+    if st.session_state.get(_DIAGNOSTIC_RECORD_DIR) or st.session_state.get(_DIAGNOSTIC_ERROR):
+        return
+
+    done = st.session_state.get(_DONE)
+    if phase == "done":
+        if not isinstance(done, DoneMsg) or not _done_needs_word_diagnostics(done):
+            return
+        error_message = ""
+    elif phase == "error":
+        error_message = _latest_word_error_message() or "任务执行出错，请查看日志。"
+    else:
+        return
+
+    try:
+        record_dir = archive_task_diagnostics(
+            surface="word",
+            phase=phase,
+            task_id=st.session_state.get(_TASK_ID, ""),
+            settings=settings,
+            selected_files=st.session_state.get(_FILES, []),
+            logs=st.session_state.get(_LOGS, []),
+            done=done if isinstance(done, DoneMsg) else None,
+            error_message=error_message,
+            source_root=st.session_state.get(_SOURCE_ROOT, ""),
+            status=st.session_state.get(_STATUS, ""),
+            progress=st.session_state.get(_PROGRESS),
+        )
+        st.session_state[_DIAGNOSTIC_RECORD_DIR] = str(record_dir)
+    except Exception as exc:  # noqa: BLE001 - show recoverable UI notice
+        st.session_state[_DIAGNOSTIC_ERROR] = str(exc)
+
+
+def _render_word_diagnostic_panel() -> None:
+    diagnostic_error = st.session_state.get(_DIAGNOSTIC_ERROR)
+    if diagnostic_error:
+        st.warning(f"诊断归档失败：{diagnostic_error}")
+        return
+    render_current_diagnostic_download(
+        st.session_state.get(_DIAGNOSTIC_RECORD_DIR),
+        key_prefix="word",
+    )
+
+
+def _render_done_content(settings: AppSettings) -> None:
     done: DoneMsg = st.session_state[_DONE]
     success_n = sum(1 for item in done.file_results if item.get("success"))
     failure_n = len(done.file_results) - success_n
     issues = list(done.issues or [])
     resolved_issues = [issue for issue in issues if issue.get("severity") == "resolved"]
     review_issues = [issue for issue in issues if issue.get("severity") != "resolved"]
+    _ensure_word_diagnostic_archive(settings, "done")
 
     workspace = st.container(key="word-done-shell")
     with workspace:
@@ -968,6 +1039,7 @@ def _render_done_content() -> None:
             st.warning("翻译完成，但有内容需复核。")
         else:
             st.warning("翻译完成，但有文件未成功。")
+        _render_word_diagnostic_panel()
         st.markdown(
             '<div class="kpi-strip kpi-strip--done">'
             f'  <div class="kpi-tile"><span class="kpi-tile__label">成功文件</span><span class="kpi-tile__value">{success_n}</span></div>'
@@ -1075,7 +1147,8 @@ def _format_word_result_status(result: dict, issue_count: int) -> str:
     return "成功"
 
 
-def _render_error_content() -> None:
+def _render_error_content(settings: AppSettings) -> None:
+    _ensure_word_diagnostic_archive(settings, "error")
     workspace = st.container(key="word-error-shell")
     with workspace:
         st.markdown(
@@ -1087,7 +1160,13 @@ def _render_error_content() -> None:
             '</div>',
             unsafe_allow_html=True,
         )
-        st.error("任务执行出错，请查看日志。")
+        error_messages = [
+            str(item.get("message") or "")
+            for item in st.session_state.get(_LOGS, [])
+            if item.get("level") == "ERROR"
+        ]
+        st.error(error_messages[-1] if error_messages else "任务执行出错，请查看日志。")
+        _render_word_diagnostic_panel()
         render_log_area(st.session_state[_LOGS], container_id="word-translate-log-container")
 
 
@@ -1124,12 +1203,16 @@ def _start_word_translation_task(
     )
     runner.start()
     st.session_state[_RUNNER] = runner
+    st.session_state[_TASK_ID] = runner.task_id
     st.session_state[_LOGS] = []
     st.session_state[_PROGRESS] = None
     st.session_state[_STATUS] = None
     st.session_state[_PHASE] = "running"
+    st.session_state[_DONE] = None
     st.session_state[_STOP_PENDING] = False
     st.session_state[_STOP_MESSAGE] = ""
+    st.session_state[_DIAGNOSTIC_RECORD_DIR] = ""
+    st.session_state[_DIAGNOSTIC_ERROR] = ""
     st.rerun()
 
 
@@ -1196,6 +1279,12 @@ def _render_action_buttons(settings: AppSettings, phase: str) -> None:
                 if selected_source_lang == selected_target_lang:
                     st.error("源语言与目标语言不能相同，请重新选择后再开始翻译。")
                     return
+                api_config_check = check_translation_api_config(settings)
+                if not api_config_check.ok:
+                    st.error(api_config_check.message)
+                    if api_config_check.detail:
+                        st.caption(api_config_check.detail)
+                    return
 
                 source_root = (st.session_state.get(_SOURCE_ROOT) or settings.last_source_folder or "").strip().strip('"')
                 _start_word_translation_task(
@@ -1252,4 +1341,12 @@ def _render_action_buttons(settings: AppSettings, phase: str) -> None:
                 st.session_state[_RUNNER] = None
                 st.session_state[_STOP_PENDING] = False
                 st.session_state[_STOP_MESSAGE] = ""
+                st.session_state[_TASK_ID] = ""
+                st.session_state[_DIAGNOSTIC_RECORD_DIR] = ""
+                st.session_state[_DIAGNOSTIC_ERROR] = ""
                 st.rerun()
+
+        render_history_diagnostic_export(
+            key_prefix="word",
+            disabled=(phase == "running"),
+        )

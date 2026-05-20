@@ -19,10 +19,12 @@ from pathlib import Path
 from loguru import logger
 
 from core import bilingual_writer
+from core.api_config_check import check_translation_api_config
 from core.file_scanner import FileItem
 from core.language_registry import build_lang_pair
 from core.translation_filter import should_translate
 from core.engine_dispatcher import (
+    TranslationBatchRunStats,
     build_engine,
     get_system_prompt,
     get_batch_size,
@@ -126,6 +128,10 @@ class TaskRunner:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    @property
+    def task_id(self) -> str:
+        return self._task_logger.task_id
+
     def stop(self) -> None:
         self._stop_event.set()
 
@@ -163,8 +169,14 @@ class TaskRunner:
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
+        quality_issues: list[dict] = []
 
         try:
+            config_check = check_translation_api_config(settings)
+            if not config_check.ok:
+                detail = f"（{config_check.detail}）" if config_check.detail else ""
+                self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
+                return
             engine        = build_engine(settings)
             system_prompt = get_system_prompt(
                 settings,
@@ -535,7 +547,12 @@ class TaskRunner:
                         step_done=done, step_total=total,
                     ))
 
+                def api_error_cb(msg: str) -> None:
+                    level = "ERROR" if "单条翻译仍失败" in msg else "WARN"
+                    self._log(level, msg)
+
                 t0 = datetime.now()
+                batch_stats = TranslationBatchRunStats()
                 api_translations = translate_texts(
                     misses,
                     engine,
@@ -544,12 +561,35 @@ class TaskRunner:
                     batch_size,
                     concurrency,
                     progress_cb,
-                    lambda msg: self._log("ERROR", msg),
+                    api_error_cb,
                     should_stop=self.stop_requested,
                     source_lang=source_lang,
+                    stats=batch_stats,
                 )
                 _raise_if_stopped("任务已中止，未写入剩余翻译结果。")
                 api_elapsed = (datetime.now() - t0).total_seconds()
+                self._log(
+                    "INFO",
+                    (
+                        "Excel 实际请求："
+                        f"{batch_stats.batch_count} 批，"
+                        f"缩小重试 {batch_stats.retry_count} 次，"
+                        f"单条失败 {batch_stats.failed_batch_count} 条，"
+                        f"最大请求权重 {batch_stats.max_request_weight}"
+                    ),
+                )
+                if batch_stats.failed_batch_count:
+                    quality_issues.append(
+                        {
+                            "type": "api_unavailable",
+                            "severity": "needs_action",
+                            "message": (
+                                "部分内容未能从 API 获得译文，已按安全策略保留原文。"
+                                "请检查 API Key、Base URL、模型名称或服务状态，重新配置后再试。"
+                            ),
+                            "failed_sources": list(batch_stats.failed_items),
+                        }
+                    )
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
 
@@ -789,6 +829,7 @@ class TaskRunner:
             elapsed_sec    = elapsed,
             tm_hit_count   = tm_hit_count,
             api_call_count = api_call_count,
+            issues         = quality_issues,
         ))
 
     @staticmethod

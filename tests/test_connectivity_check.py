@@ -134,8 +134,7 @@ class ConnectivityCheckTests(unittest.TestCase):
         self.assertNotIn("secret-token", result.message)
         self.assertIn("***", result.message)
 
-    def test_official_openai_does_not_inherit_custom_default_base_url(self) -> None:
-        from config import DEFAULT_CUSTOM_OPENAI_BASE_URL
+    def test_official_openai_ignores_configured_base_url(self) -> None:
         from core.engine_dispatcher import build_engine
 
         settings = AppSettings(
@@ -143,7 +142,7 @@ class ConnectivityCheckTests(unittest.TestCase):
                 mode="cloud",
                 cloud_provider="openai",
                 cloud_model="gpt-5.4",
-                cloud_base_url=DEFAULT_CUSTOM_OPENAI_BASE_URL,
+                cloud_base_url="https://api.example.test/v1",
             )
         )
 

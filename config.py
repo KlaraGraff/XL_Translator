@@ -28,7 +28,7 @@ CLOUD_ENGINES = {
     "硅基流动":                    "siliconflow",
 }
 
-DEFAULT_CLOUD_PROVIDER = "hermes"
+DEFAULT_CLOUD_PROVIDER = "custom_openai"
 DEFAULT_CLOUD_MODEL = "gpt-5.4"
 DEFAULT_CUSTOM_OPENAI_BASE_URL = "https://api.asxs.top/v1"
 DEFAULT_CUSTOM_OPENAI_API_KEY = ""

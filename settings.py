@@ -514,7 +514,16 @@ def save_key(provider: str, api_key: str) -> None:
 
 def get_key(provider: str) -> str:
     """Get the API key for one provider."""
-    return load_keys().get(provider, "")
+    keys = load_keys()
+    value = str(keys.get(provider) or "").strip()
+    if value:
+        return value
+
+    if provider == "custom_openai":
+        return str(keys.get("lanyi") or "").strip()
+    if provider == "lanyi":
+        return str(keys.get("custom_openai") or "").strip()
+    return ""
 
 
 def delete_key(provider: str) -> None:

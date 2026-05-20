@@ -15,6 +15,7 @@ from typing import Callable
 from loguru import logger
 
 from core import tm_manager
+from core.api_config_check import check_translation_api_config
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_NORMAL,
     API_REQUEST_CATEGORY_RECOVERY,
@@ -124,6 +125,10 @@ class WordTaskRunner:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    @property
+    def task_id(self) -> str:
+        return self._task_logger.task_id
+
     def stop(self) -> None:
         self._stop_event.set()
 
@@ -159,6 +164,11 @@ class WordTaskRunner:
         stopped_message: str | None = None
 
         try:
+            config_check = check_translation_api_config(settings)
+            if not config_check.ok:
+                detail = f"（{config_check.detail}）" if config_check.detail else ""
+                self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
+                return
             engine = build_engine(settings)
             system_prompt = get_system_prompt(
                 settings,

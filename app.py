@@ -8,6 +8,7 @@ import streamlit as st
 
 from core.tm_manager import init_db
 from settings import load_settings, save_settings
+from ui.api_health_notice import render_api_health_monitor
 from ui.branding import get_page_icon_config
 from ui.sidebar import render_sidebar
 import ui.page_translate as page_translate
@@ -77,6 +78,8 @@ def main():
     # 持久化侧边栏修改（仅在内容实际变更时写磁盘，避免每次 rerun 都 I/O）
     _persist_settings_if_changed(settings)
     st.session_state["settings"] = settings
+
+    render_api_health_monitor(settings)
 
     # 主内容区路由
     if active_page in ("excel_translate", "translate"):

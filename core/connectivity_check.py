@@ -66,9 +66,11 @@ def _normalize_base_url(base_url: str, *, default_url: str = "") -> str:
 
 
 def _official_provider_base_url(provider: str, base_url: str) -> str:
+    if provider == "openai":
+        return ""
     normalized = str(base_url or "").strip().rstrip("/")
     custom_default = DEFAULT_CUSTOM_OPENAI_BASE_URL.rstrip("/")
-    if provider in ("openai", "claude") and normalized == custom_default:
+    if provider == "claude" and normalized == custom_default:
         return ""
     return normalized
 

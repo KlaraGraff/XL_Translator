@@ -2,7 +2,6 @@
 侧边栏：导航 + 专业领域 + 翻译引擎配置。
 目标语言、输出选项已移至主页面；TM阈值已移至记忆库管理页。
 """
-import hashlib
 import webbrowser
 
 import streamlit as st
@@ -16,7 +15,13 @@ from config import (
     get_default_concurrency,
     is_valid_concurrency_unlock_code,
 )
+from core.api_health import build_connectivity_signature
 from core.connectivity_check import ConnectivityResult, check_connectivity
+from core.model_catalog import (
+    ModelCatalogResult,
+    build_model_catalog_signature,
+    fetch_openai_compatible_models,
+)
 from core.update_checker import UpdateCheckResult, check_for_updates
 from settings import AppSettings, get_key, save_key
 from ui.branding import build_sidebar_brand_label_html
@@ -98,6 +103,12 @@ _TUNING_TOOLTIP = {
 
 _UPDATE_CHECK_RESULT_KEY = "sidebar_update_check_result"
 _CONNECTIVITY_RESULT_KEY = "sidebar_connectivity_result"
+_MODEL_CATALOG_RESULT_KEY = "sidebar_model_catalog_result"
+_MODEL_CATALOG_SELECT_KEY = "sidebar_model_catalog_select"
+_MODEL_CATALOG_PLACEHOLDER = "选择模型..."
+_MODEL_INPUT_KEY = "sidebar_cloud_model_input"
+_MODEL_INPUT_PROVIDER_KEY = "sidebar_cloud_model_provider"
+_MODEL_CATALOG_PROVIDERS = {"openai", "custom_openai", "lanyi", "siliconflow"}
 
 
 def _build_sidebar_section_title_html(
@@ -193,32 +204,6 @@ def _render_update_check(is_running: bool) -> None:
         st.warning(result.message)
 
 
-def _hash_secret_for_signature(secret: str) -> str:
-    if not secret:
-        return ""
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
-
-
-def _build_connectivity_signature(settings: AppSettings) -> str:
-    engine_settings = settings.engine
-    if engine_settings.mode == "local":
-        return f"local|{engine_settings.ollama_model}"
-
-    provider = engine_settings.cloud_provider
-    if provider == "hermes":
-        return "cloud|hermes"
-
-    return "|".join(
-        [
-            "cloud",
-            provider,
-            engine_settings.cloud_model,
-            engine_settings.cloud_base_url,
-            _hash_secret_for_signature(get_key(provider)),
-        ]
-    )
-
-
 def _render_connectivity_result(entry: dict) -> None:
     result = entry.get("result")
     if not isinstance(result, ConnectivityResult):
@@ -233,7 +218,7 @@ def _render_connectivity_result(entry: dict) -> None:
 
 
 def _render_connectivity_check(settings: AppSettings, is_running: bool) -> None:
-    signature = _build_connectivity_signature(settings)
+    signature = build_connectivity_signature(settings)
     if st.button(
         "测试连接",
         key="sidebar_test_connectivity",
@@ -255,6 +240,90 @@ def _render_connectivity_check(settings: AppSettings, is_running: bool) -> None:
         return
 
     _render_connectivity_result(entry)
+
+
+def _apply_model_catalog_selection() -> None:
+    selected_model = st.session_state.get(_MODEL_CATALOG_SELECT_KEY)
+    if selected_model and selected_model != _MODEL_CATALOG_PLACEHOLDER:
+        st.session_state[_MODEL_INPUT_KEY] = selected_model
+
+
+def _render_model_catalog_result(entry: dict, settings: AppSettings, is_running: bool) -> None:
+    result = entry.get("result")
+    if not isinstance(result, ModelCatalogResult):
+        return
+
+    current_model = str(settings.engine.cloud_model or "").strip()
+    if result.ok:
+        st.caption(result.message)
+        options = [_MODEL_CATALOG_PLACEHOLDER] + result.models
+        if current_model and current_model in result.models:
+            st.session_state[_MODEL_CATALOG_SELECT_KEY] = current_model
+        elif not current_model or current_model not in result.models:
+            st.session_state[_MODEL_CATALOG_SELECT_KEY] = _MODEL_CATALOG_PLACEHOLDER
+
+        st.selectbox(
+            "可用模型",
+            options,
+            key=_MODEL_CATALOG_SELECT_KEY,
+            label_visibility="collapsed",
+            disabled=is_running,
+            on_change=_apply_model_catalog_selection,
+        )
+        settings.engine.cloud_model = st.session_state.get(_MODEL_INPUT_KEY, current_model)
+        return
+
+    st.warning(result.message)
+    if result.detail:
+        st.caption(result.detail)
+
+
+def _render_model_catalog_picker(
+    settings: AppSettings,
+    *,
+    provider: str,
+    api_key: str,
+    base_url: str,
+    is_running: bool,
+) -> None:
+    if provider not in _MODEL_CATALOG_PROVIDERS:
+        return
+
+    signature = build_model_catalog_signature(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    needs_base_url = provider in {"custom_openai", "lanyi", "siliconflow"}
+    fetch_disabled = is_running or not api_key or (needs_base_url and not str(base_url or "").strip())
+    if st.button(
+        "获取模型列表",
+        key="sidebar_fetch_model_catalog",
+        use_container_width=True,
+        disabled=fetch_disabled,
+    ):
+        with st.spinner("正在获取模型列表..."):
+            st.session_state[_MODEL_CATALOG_RESULT_KEY] = {
+                "signature": signature,
+                "result": fetch_openai_compatible_models(
+                    provider=provider,
+                    api_key=api_key,
+                    base_url=base_url,
+                ),
+            }
+
+    entry = st.session_state.get(_MODEL_CATALOG_RESULT_KEY)
+    if not isinstance(entry, dict):
+        if fetch_disabled and not is_running:
+            hint = "填写 API Key 和 Base URL 后，可获取模型列表。" if needs_base_url else "填写 API Key 后，可获取模型列表。"
+            st.caption(hint)
+        return
+
+    if entry.get("signature") != signature:
+        st.caption("API Key 或 Base URL 已变化，请重新获取模型列表。")
+        return
+
+    _render_model_catalog_result(entry, settings, is_running)
 
 
 def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) -> tuple[AppSettings, str]:
@@ -468,9 +537,11 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                             label_visibility="collapsed",
                             disabled=is_running,
                         )
-                    selected_provider = CLOUD_ENGINES[selected_label]
-                    previous_provider = settings.engine.cloud_provider
-                    settings.engine.cloud_provider = selected_provider
+                        selected_provider = CLOUD_ENGINES[selected_label]
+                        previous_provider = settings.engine.cloud_provider
+                        settings.engine.cloud_provider = selected_provider
+                        if selected_provider == "openai":
+                            settings.engine.cloud_base_url = ""
 
                     if selected_provider == "hermes":
                         st.caption(
@@ -503,9 +574,12 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                             save_key(current_key_provider, new_key)
                             if current_key_provider != selected_provider:
                                 save_key(selected_provider, new_key)
+                        effective_api_key = new_key
 
                         if current_key_provider == "lanyi" and not settings.engine.cloud_base_url:
                             settings.engine.cloud_base_url = LANYI_BASE_URL
+                        if selected_provider == "openai":
+                            settings.engine.cloud_base_url = ""
 
                         if settings.engine.cloud_provider in ("siliconflow", "custom_openai"):
                             base_url_row = st.container(key="sidebar-cloud-subfield-base-url")
@@ -528,12 +602,26 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
                                 '<div class="sidebar-inline-setting-label">模型名称</div>',
                                 unsafe_allow_html=True,
                             )
+                            if (
+                                _MODEL_INPUT_KEY not in st.session_state
+                                or st.session_state.get(_MODEL_INPUT_PROVIDER_KEY) != selected_provider
+                            ):
+                                st.session_state[_MODEL_INPUT_KEY] = settings.engine.cloud_model
+                                st.session_state[_MODEL_INPUT_PROVIDER_KEY] = selected_provider
                             settings.engine.cloud_model = st.text_input(
                                 "模型名称",
-                                value=settings.engine.cloud_model,
+                                key=_MODEL_INPUT_KEY,
                                 placeholder="claude-sonnet-4-6",
                                 label_visibility="collapsed",
                                 disabled=is_running,
+                            )
+                            settings.engine.cloud_model = st.session_state.get(_MODEL_INPUT_KEY, settings.engine.cloud_model)
+                            _render_model_catalog_picker(
+                                settings,
+                                provider=selected_provider,
+                                api_key=effective_api_key,
+                                base_url=settings.engine.cloud_base_url,
+                                is_running=is_running,
                             )
                     _render_connectivity_check(settings, is_running)
             else:

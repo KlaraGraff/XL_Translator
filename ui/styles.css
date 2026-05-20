@@ -139,6 +139,111 @@ footer {
   box-sizing: border-box !important;
 }
 
+@keyframes api-health-notice-auto-hide {
+  to {
+    opacity: 0;
+    visibility: hidden;
+    transform: translate(-50%, -8px);
+  }
+}
+
+[class*="st-key-api-health-notice"] {
+  position: fixed !important;
+  top: 18px !important;
+  left: 50% !important;
+  width: min(560px, calc(100vw - 32px)) !important;
+  margin: 0 !important;
+  padding: 0.72rem 0.78rem 0.68rem !important;
+  border: 1px solid rgba(152, 109, 47, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 18px 42px rgba(31, 44, 61, 0.14), 0 1px 0 rgba(255, 255, 255, 0.72) inset;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  z-index: 999999 !important;
+  transform: translateX(-50%);
+  animation: api-health-notice-auto-hide 180ms ease forwards 8s;
+}
+
+[class*="st-key-api-health-notice"] [data-testid="stVerticalBlock"] {
+  gap: 0.42rem !important;
+}
+
+[class*="st-key-api-health-notice"] [data-testid="stElementContainer"],
+[class*="st-key-api-health-notice"] .stMarkdown,
+[class*="st-key-api-health-notice"] [data-testid="stMarkdown"] {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.api-health-notice__body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.68rem;
+  min-width: 0;
+}
+
+.api-health-notice__icon {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(211, 154, 65, 0.14);
+  color: #9a651c;
+  font-size: 14px;
+  font-weight: 720;
+  line-height: 1;
+}
+
+.api-health-notice__copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.api-health-notice__title {
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 660;
+  line-height: 1.25;
+}
+
+.api-health-notice__detail,
+.api-health-notice__hint {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.api-health-notice__detail {
+  margin-top: 0.12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-health-notice__hint {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+
+[class*="st-key-api-health-notice-actions"] [data-testid="stHorizontalBlock"] {
+  align-items: center !important;
+  gap: 0.42rem !important;
+}
+
+[class*="st-key-api-health-notice-actions"] .stButton > button {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 0 0.62rem !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+  font-weight: 560 !important;
+  white-space: nowrap !important;
+}
+
 .main [data-testid="stHorizontalBlock"] {
   align-items: flex-start !important;
 }

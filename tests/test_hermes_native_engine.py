@@ -96,12 +96,12 @@ model:
             encoding="utf-8",
         )
 
-    def test_load_settings_defaults_to_hermes_without_packaged_keys(self) -> None:
+    def test_load_settings_defaults_to_openai_compatible_without_packaged_keys(self) -> None:
         from settings import load_settings
 
         settings = load_settings()
 
-        self.assertEqual(settings.engine.cloud_provider, "hermes")
+        self.assertEqual(settings.engine.cloud_provider, "custom_openai")
         self.assertFalse((self.home / ".xl_translator" / "keys.json").exists())
 
     def test_load_hermes_runtime_routes_reads_config_and_env(self) -> None:

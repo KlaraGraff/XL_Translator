@@ -3,8 +3,10 @@
 根据用户配置实例化对应引擎，对外暴露统一的 translate_batch() 接口。
 云端引擎使用 ThreadPoolExecutor 并发发送批次，Ollama 保持原有 asyncio 逻辑不变。
 """
+import math
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
 
 from loguru import logger
 
@@ -14,18 +16,61 @@ from config import (
     CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX,
     CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX,
 )
+from core.api_scheduler import (
+    API_REQUEST_CATEGORY_NORMAL,
+    WeightedApiScheduler,
+)
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, get_key
 from core.translation_filter import is_translation_redundant  # 质量闭环拦截
 
+_EXCEL_CLOUD_BATCH_CHAR_BUDGET = 3200
+_EXCEL_LOCAL_BATCH_CHAR_BUDGET = 2400
+_API_WEIGHT_CHARS_PER_SLOT = 2800
+_API_WEIGHT_PROMPT_CHAR_CAP = 900
+_API_WEIGHT_OUTPUT_MULTIPLIER = 1.15
+
+
+@dataclass
+class TranslationBatchRunStats:
+    original_count: int = 0
+    batch_count: int = 0
+    retry_count: int = 0
+    failed_batch_count: int = 0
+    failed_items: list[dict[str, str]] = field(default_factory=list)
+    max_request_weight: int = 1
+    weighted_scheduler_used: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def record_request_weight(self, request_weight: int) -> None:
+        with self._lock:
+            self.max_request_weight = max(self.max_request_weight, request_weight)
+
+    def record_retry(self) -> None:
+        with self._lock:
+            self.retry_count += 1
+
+    def record_failed_batch(self, source_text: str = "", error: str = "") -> None:
+        with self._lock:
+            self.failed_batch_count += 1
+            if source_text:
+                self.failed_items.append(
+                    {
+                        "source": source_text,
+                        "error": error,
+                    }
+                )
+
 
 def _official_provider_base_url(provider: str, base_url: str) -> str:
     """Avoid leaking the custom OpenAI default into official provider clients."""
+    if provider == "openai":
+        return ""
     normalized = str(base_url or "").strip().rstrip("/")
     custom_default = DEFAULT_CUSTOM_OPENAI_BASE_URL.rstrip("/")
-    if provider in ("openai", "claude") and normalized == custom_default:
+    if provider == "claude" and normalized == custom_default:
         return ""
     return normalized
 
@@ -129,6 +174,9 @@ def translate_texts(
     error_callback=None,
     should_stop=None,
     source_lang: str = "zh",
+    api_scheduler: WeightedApiScheduler | None = None,
+    request_category: str = API_REQUEST_CATEGORY_NORMAL,
+    stats: TranslationBatchRunStats | None = None,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -149,10 +197,16 @@ def translate_texts(
     else:
         chunk = max(CHUNK_CLOUD_MIN, min(CHUNK_CLOUD_MAX, batch_size))
 
-    batches: list[list[str]] = [
-        texts[i: i + chunk] for i in range(0, len(texts), chunk)
-    ]
+    char_budget = (
+        _EXCEL_LOCAL_BATCH_CHAR_BUDGET
+        if is_local
+        else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
+    )
+    batches = _build_text_batches(texts, max_items=chunk, max_chars=char_budget)
     total = len(texts)
+    run_stats = stats or TranslationBatchRunStats()
+    run_stats.original_count = total
+    run_stats.batch_count = len(batches)
 
     # Ollama 走原有串行路径，不引入线程池（内部已有 asyncio 并发）
     if is_local:
@@ -162,20 +216,19 @@ def translate_texts(
             if should_stop and should_stop():
                 logger.info("翻译任务收到停止信号，停止提交后续本地批次。")
                 break
-            try:
-                partial = engine.translate_batch(
-                    batch,
-                    target_lang,
-                    system_prompt,
-                    source_lang=source_lang,
-                )
-                results.update(partial)
-            except Exception as e:
-                err_msg = f"批次翻译失败（{len(results)+1}~{len(results)+len(batch)} 条）：{e}"
-                logger.error(err_msg)
-                if error_callback:
-                    error_callback(err_msg)
-                results.update({t: t for t in batch})
+            partial = _translate_batch_with_fallback(
+                batch,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=None,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=run_stats,
+            )
+            results.update(partial)
             done += len(batch)
             if progress_callback:
                 progress_callback(done, total)
@@ -187,22 +240,23 @@ def translate_texts(
     done_count = 0
     lock = threading.Lock()
     max_workers = max(1, int(concurrency))
+    scheduler = api_scheduler or WeightedApiScheduler(max_workers)
+    run_stats.weighted_scheduler_used = True
 
     def _submit_batch(batch: list[str]) -> tuple[list[str], dict[str, str]]:
-        """单批次执行，返回 (原始词条列表, 翻译结果)，异常时降级为原文。"""
-        try:
-            return batch, engine.translate_batch(
-                batch,
-                target_lang,
-                system_prompt,
-                source_lang=source_lang,
-            )
-        except Exception as e:
-            err_msg = f"批次翻译失败（{batch[0][:20]}… 等 {len(batch)} 条）：{e}"
-            logger.error(err_msg)
-            if error_callback:
-                error_callback(err_msg)
-            return batch, {t: t for t in batch}
+        """单批次执行，返回 (原始词条列表, 翻译结果)。失败时会缩小批次重试。"""
+        return batch, _translate_batch_with_fallback(
+            batch,
+            engine=engine,
+            target_lang=target_lang,
+            system_prompt=system_prompt,
+            source_lang=source_lang,
+            api_scheduler=scheduler,
+            request_category=request_category,
+            should_stop=should_stop,
+            error_callback=error_callback,
+            stats=run_stats,
+        )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map: dict = {}
@@ -230,8 +284,7 @@ def translate_texts(
                 future_map.pop(future, None)
                 with lock:
                     results.update(partial)
-                    # 用实际返回译文条数累加，真实反映已完成量，防止虚高超出 total
-                    done_count += len(partial)
+                    done_count += len(batch)
                     if progress_callback:
                         progress_callback(min(done_count, total), total)
                 if not (should_stop and should_stop()):
@@ -239,6 +292,149 @@ def translate_texts(
 
     _apply_quality_filter(results, target_lang, source_lang=source_lang)
     return results
+
+
+def _build_text_batches(
+    texts: list[str],
+    *,
+    max_items: int,
+    max_chars: int,
+) -> list[list[str]]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_chars = 0
+    item_limit = max(1, int(max_items or 1))
+    char_limit = max(1, int(max_chars or 1))
+
+    def flush() -> None:
+        nonlocal current, current_chars
+        if current:
+            batches.append(current)
+        current = []
+        current_chars = 0
+
+    for text in texts:
+        text_chars = len(str(text or ""))
+        if text_chars >= char_limit:
+            flush()
+            batches.append([text])
+            continue
+
+        would_exceed_items = len(current) >= item_limit
+        would_exceed_chars = current and (current_chars + text_chars > char_limit)
+        if would_exceed_items or would_exceed_chars:
+            flush()
+
+        current.append(text)
+        current_chars += text_chars
+
+    flush()
+    return batches
+
+
+def _translate_batch_with_fallback(
+    batch: list[str],
+    *,
+    engine: TranslationEngine,
+    target_lang: str,
+    system_prompt: str,
+    source_lang: str,
+    api_scheduler: WeightedApiScheduler | None,
+    request_category: str,
+    should_stop,
+    error_callback,
+    stats: TranslationBatchRunStats,
+) -> dict[str, str]:
+    if not batch:
+        return {}
+    if should_stop and should_stop():
+        return {text: text for text in batch}
+
+    try:
+        request_weight = _estimate_api_request_weight(batch, system_prompt)
+        stats.record_request_weight(request_weight)
+        if api_scheduler is None:
+            partial = engine.translate_batch(
+                batch,
+                target_lang,
+                system_prompt,
+                source_lang=source_lang,
+            )
+        else:
+            with api_scheduler.slot(request_weight, category=request_category):
+                partial = engine.translate_batch(
+                    batch,
+                    target_lang,
+                    system_prompt,
+                    source_lang=source_lang,
+                )
+        _validate_batch_integrity(batch, partial)
+        return partial
+    except Exception as exc:  # noqa: BLE001 - fallback decides the safest degradation
+        if len(batch) > 1 and not (should_stop and should_stop()):
+            midpoint = max(1, len(batch) // 2)
+            stats.record_retry()
+            message = (
+                "Excel 批次翻译失败，已缩小批次重试"
+                f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc}"
+            )
+            logger.warning(message)
+            if error_callback:
+                error_callback(message)
+            left = _translate_batch_with_fallback(
+                batch[:midpoint],
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+            )
+            right = _translate_batch_with_fallback(
+                batch[midpoint:],
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+            )
+            return {**left, **right}
+
+        stats.record_failed_batch(str(batch[0] if batch else ""), str(exc))
+        head = str(batch[0] if batch else "")[:40]
+        err_msg = f"Excel 单条翻译仍失败，已保留原文：{head}... | {exc}"
+        logger.error(err_msg)
+        if error_callback:
+            error_callback(err_msg)
+        return {text: text for text in batch}
+
+
+def _validate_batch_integrity(batch: list[str], results: dict[str, str]) -> None:
+    missing = [text for text in batch if text not in results]
+    if missing:
+        raise ValueError(f"缺少 {len(missing)} 条译文")
+    if len(results) < len(set(batch)):
+        raise ValueError(f"返回条数不足：输入 {len(set(batch))} 条，返回 {len(results)} 条")
+
+
+def _estimate_api_request_weight(
+    texts: list[str],
+    system_prompt: str = "",
+    *,
+    chars_per_slot: int = _API_WEIGHT_CHARS_PER_SLOT,
+) -> int:
+    input_chars = sum(len(str(text or "")) for text in texts)
+    prompt_chars = min(len(str(system_prompt or "")), _API_WEIGHT_PROMPT_CHAR_CAP)
+    estimated_output_chars = int(math.ceil(input_chars * _API_WEIGHT_OUTPUT_MULTIPLIER))
+    total_chars = max(1, input_chars + prompt_chars + estimated_output_chars)
+    return max(1, int(math.ceil(total_chars / max(1, int(chars_per_slot)))))
 
 
 def _apply_quality_filter(
