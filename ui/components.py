@@ -161,6 +161,8 @@ def _render_main_tooltip_autoposition_script() -> None:
       const state = parentWindow[stateKey] = parentWindow[stateKey] || {
         observerBound: false,
         resizeBound: false,
+        bindScheduled: false,
+        repositionScheduled: false,
       };
 
       const resetCardSize = (card) => {
@@ -255,6 +257,17 @@ def _render_main_tooltip_autoposition_script() -> None:
           .forEach(bindTrigger);
       };
 
+      const scheduleBindAllTriggers = () => {
+        if (state.bindScheduled) {
+          return;
+        }
+        state.bindScheduled = true;
+        parentWindow.requestAnimationFrame(() => {
+          state.bindScheduled = false;
+          bindAllTriggers();
+        });
+      };
+
       const repositionVisibleTriggers = () => {
         parentDoc
           .querySelectorAll(".ui-tooltip-label[data-tooltip-auto='1']")
@@ -269,17 +282,28 @@ def _render_main_tooltip_autoposition_script() -> None:
           });
       };
 
+      const scheduleRepositionVisibleTriggers = () => {
+        if (state.repositionScheduled) {
+          return;
+        }
+        state.repositionScheduled = true;
+        parentWindow.requestAnimationFrame(() => {
+          state.repositionScheduled = false;
+          repositionVisibleTriggers();
+        });
+      };
+
       bindAllTriggers();
 
       if (!state.observerBound && parentWindow.MutationObserver) {
-        const observer = new parentWindow.MutationObserver(() => bindAllTriggers());
+        const observer = new parentWindow.MutationObserver(() => scheduleBindAllTriggers());
         observer.observe(parentDoc.body, { childList: true, subtree: true });
         state.observerBound = true;
       }
 
       if (!state.resizeBound) {
-        parentWindow.addEventListener("resize", repositionVisibleTriggers, { passive: true });
-        parentWindow.addEventListener("scroll", repositionVisibleTriggers, { passive: true, capture: true });
+        parentWindow.addEventListener("resize", scheduleRepositionVisibleTriggers, { passive: true });
+        parentWindow.addEventListener("scroll", scheduleRepositionVisibleTriggers, { passive: true, capture: true });
         state.resizeBound = true;
       }
     })();
@@ -336,6 +360,7 @@ def render_radio_option_tooltips(
       const state = parentWindow[stateKey] = parentWindow[stateKey] || {{
         observerBound: false,
         registry: {{}},
+        bindScheduled: false,
       }};
       const containerClass = "st-key-{safe_key}";
       state.registry[containerClass] = {option_markup_json};
@@ -395,11 +420,22 @@ def render_radio_option_tooltips(
         }});
       }};
 
+      const scheduleBindAll = () => {{
+        if (state.bindScheduled) {{
+          return;
+        }}
+        state.bindScheduled = true;
+        parentWindow.requestAnimationFrame(() => {{
+          state.bindScheduled = false;
+          bindAll();
+        }});
+      }};
+
       bindAll();
-      parentWindow.requestAnimationFrame(bindAll);
+      scheduleBindAll();
 
       if (!state.observerBound && parentWindow.MutationObserver) {{
-        const observer = new parentWindow.MutationObserver(() => bindAll());
+        const observer = new parentWindow.MutationObserver(() => scheduleBindAll());
         observer.observe(parentDoc.body, {{ childList: true, subtree: true }});
         state.observerBound = true;
       }}

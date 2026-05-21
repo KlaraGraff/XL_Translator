@@ -2082,6 +2082,9 @@ footer {
   min-height: 132px;
   max-height: calc(100vh - 290px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: layout paint;
   color: var(--text-2);
   font-family: var(--mono);
   font-size: 12px;
@@ -2223,6 +2226,9 @@ footer {
   overflow-y: auto !important;
   overflow-x: hidden;
   padding-right: 0.15rem;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: layout paint;
 }
 
 [data-testid="stMarkdownContainer"]:has(.file-table-row-anchor) + [data-testid="stHorizontalBlock"] {
@@ -2349,6 +2355,9 @@ footer {
   overflow-y: auto !important;
   overflow-x: hidden;
   padding-right: 0.25rem;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: layout paint;
 }
 
 [class*="st-key-tm-table-shell"] {

@@ -111,6 +111,10 @@ _MODEL_INPUT_PROVIDER_KEY = "sidebar_cloud_model_provider"
 _MODEL_CATALOG_PROVIDERS = {"openai", "custom_openai", "lanyi", "siliconflow"}
 
 
+def _set_active_page(page: str) -> None:
+    st.session_state["active_page"] = page
+
+
 def _build_sidebar_section_title_html(
     label: str,
     title: str,
@@ -357,36 +361,36 @@ def render_sidebar(settings: AppSettings, active_page: str, is_running: bool) ->
             )
             _render_update_check(is_running)
             st.markdown('<div class="nav-section">', unsafe_allow_html=True)
-            btn_excel = st.button(
+            st.button(
                 "表格翻译",
                 key="nav_excel_translate",
                 use_container_width=True,
                 type="primary" if active_page in ("excel_translate", "translate") else "secondary",
                 disabled=is_running,
+                on_click=_set_active_page,
+                args=("excel_translate",),
             )
-            btn_word = st.button(
+            st.button(
                 "Word 翻译",
                 key="nav_word_translate",
                 use_container_width=True,
                 type="primary" if active_page == "word_translate" else "secondary",
                 disabled=is_running,
+                on_click=_set_active_page,
+                args=("word_translate",),
             )
-            btn_tm = st.button(
+            st.button(
                 "记忆库管理",
                 key="nav_tm",
                 use_container_width=True,
                 type="primary" if active_page == "tm" else "secondary",
                 disabled=is_running,
+                on_click=_set_active_page,
+                args=("tm",),
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        new_page = active_page
-        if btn_excel:
-            new_page = "excel_translate"
-        elif btn_word:
-            new_page = "word_translate"
-        elif btn_tm:
-            new_page = "tm"
+        new_page = st.session_state.get("active_page", active_page)
 
         # ── 专业领域 ──────────────────────────────────────
         domain_shell = st.container(key="sidebar-domain-shell")

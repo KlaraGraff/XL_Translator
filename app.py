@@ -2,6 +2,7 @@
 Streamlit 应用入口。
 导航：表格翻译 | Word 翻译 | 记忆库管理
 """
+from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
@@ -20,7 +21,7 @@ import ui.page_tm as page_tm
 
 # ── CSS 注入 ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner=False)
+@lru_cache(maxsize=1)
 def _load_css(css_path: str) -> str:
     return Path(css_path).read_text(encoding="utf-8")
 
@@ -83,12 +84,9 @@ def main():
         or st.session_state.get("word_translate_phase") == "running"
     )
 
-    # 侧边栏（含导航按钮，返回新页面标识）
-    settings, new_page = render_sidebar(settings, active_page, is_running)
-
-    if new_page != active_page:
-        st.session_state["active_page"] = new_page
-        active_page = new_page
+    # 侧边栏使用按钮 callback 在脚本主体执行前切换 active_page，
+    # 避免导航高亮与主内容页落后一轮。
+    settings, active_page = render_sidebar(settings, active_page, is_running)
 
     # 持久化侧边栏修改（仅在内容实际变更时写磁盘，避免每次 rerun 都 I/O）
     _persist_settings_if_changed(settings)
