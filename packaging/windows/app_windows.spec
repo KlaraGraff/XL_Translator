@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parents[1]
 if str(ROOT) not in sys.path:
@@ -14,21 +14,14 @@ from app_meta import APP_NAME, WINDOWS_PACKAGE_NAME  # noqa: E402
 ICON_PATH = ROOT / "packaging" / "windows" / "assets" / "app-icon.ico"
 
 datas = [
-    (str(ROOT / "app.py"), "."),
     (str(ROOT / "app_meta.py"), "."),
     (str(ROOT / "config.py"), "."),
     (str(ROOT / "settings.py"), "."),
     (str(ROOT / "assets"), "assets"),
-    (str(ROOT / "ui" / "styles.css"), "ui"),
-    (str(ROOT / ".streamlit"), ".streamlit"),
 ]
-datas += collect_data_files("streamlit")
-datas += collect_data_files("streamlit_extras")
-datas += collect_data_files("webview")
 
 metadata_packages = [
     "anthropic",
-    "altair",
     "dashscope",
     "httpx",
     "loguru",
@@ -37,14 +30,12 @@ metadata_packages = [
     "pandas",
     "Pillow",
     "psutil",
-    "pyarrow",
     "pydantic",
-    "pywebview",
+    "PySide6_Essentials",
     "python-docx",
     "python-dotenv",
     "rich",
-    "streamlit",
-    "streamlit-extras",
+    "shiboken6",
     "tenacity",
     "xlrd",
     "xlwings",
@@ -56,13 +47,7 @@ for package_name in metadata_packages:
 hiddenimports = []
 hiddenimports += collect_submodules("core")
 hiddenimports += collect_submodules("engines")
-hiddenimports += collect_submodules("scripts")
-hiddenimports += collect_submodules("ui")
-hiddenimports += collect_submodules("streamlit")
-hiddenimports += collect_submodules("streamlit_extras")
-hiddenimports += collect_submodules("altair")
-hiddenimports += collect_submodules("pyarrow")
-hiddenimports += collect_submodules("webview")
+hiddenimports += collect_submodules("native_app")
 hiddenimports += [
     "anthropic",
     "dashscope",
@@ -73,8 +58,10 @@ hiddenimports += [
     "docx",
     "PIL",
     "psutil",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
     "pydantic",
-    "webview",
     "loguru",
     "dotenv",
     "tenacity",
@@ -84,7 +71,7 @@ hiddenimports += [
 ]
 
 a = Analysis(
-    [str(ROOT / "scripts" / "frozen_launcher.py")],
+    [str(ROOT / "scripts" / "launch_native.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,

@@ -196,8 +196,8 @@ class AppSettings(BaseModel):
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
-    source_lang: str = "zh"
-    target_lang: str = "en"
+    source_lang: str = Field(default_factory=get_default_source_lang)
+    target_lang: str = Field(default_factory=get_default_target_lang)
     custom_target_langs: list[CustomTargetLang] = Field(default_factory=list)
     recent_target_langs: list[str] = Field(default_factory=list)
     domain_preset: str = "同步工程场景"
@@ -235,7 +235,14 @@ class AppSettings(BaseModel):
             include_optional=True,
         )
 
-        if not is_supported_source_lang(self.source_lang):
+        if not (
+            is_supported_source_lang(self.source_lang)
+            or is_supported_target_lang(
+                self.source_lang,
+                self.custom_target_langs,
+                include_optional=True,
+            )
+        ):
             self.source_lang = default_source_lang
 
         if not is_supported_target_lang(

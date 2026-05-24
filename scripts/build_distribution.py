@@ -24,6 +24,7 @@ PROJECT_FILES = {
     "settings.py",
     "requirements.txt",
     "README_首次使用.txt",
+    "启动原生应用.command",
 }
 
 PLATFORM_PROJECT_FILES = {
@@ -40,6 +41,7 @@ PROJECT_DIRS = {
     "assets",
     "core",
     "engines",
+    "native_app",
     "ui",
     "scripts",
     ".streamlit",
@@ -55,6 +57,7 @@ PLATFORM_PROJECT_DIRS = {
 PLATFORM_SCRIPT_FILES = {
     "macos": {
         Path("scripts") / "start_macos.command",
+        Path("scripts") / "start_native_macos.command",
         Path("scripts") / "launch_silent_macos.sh",
     },
     "windows": {

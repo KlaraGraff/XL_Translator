@@ -434,11 +434,11 @@ def get_supported_languages(
 
 
 def get_default_target_lang() -> str:
-    return next(iter(SUPPORTED_LANGS.values()), "en")
+    return "en"
 
 
 def get_default_source_lang() -> str:
-    return next(iter(SUPPORTED_SOURCE_LANGS.values()), "zh")
+    return "zh"
 
 
 def get_supported_source_languages() -> dict[str, str]:

@@ -51,7 +51,7 @@ export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.runtime/pyinstaller-config"
 mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 echo "[INFO] Verify build dependencies"
-"$PYTHON" -c "import PyInstaller, PIL, webview; print('ok')"
+"$PYTHON" -c "import PyInstaller, PIL; from PySide6 import QtWidgets; print('ok')"
 "$PYTHON" -c "import numpy; print(f'numpy {numpy.__version__}: {numpy.__file__}')"
 
 VERSION="$("$PYTHON" -c "import app_meta; print(app_meta.APP_VERSION)")"

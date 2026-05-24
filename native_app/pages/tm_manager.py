@@ -1,0 +1,1371 @@
+"""Native translation-memory management page."""
+
+from __future__ import annotations
+
+import csv
+import html
+import io
+import json
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app_meta import APP_NAME
+from config import CLOUD_ENGINES
+from core import tm_manager
+from core.language_registry import (
+    build_lang_pair,
+    get_ordered_target_lang_codes,
+    get_target_lang_display,
+    remember_recent_target_lang,
+)
+from core.tm_cleaner import (
+    CleanSuggestion,
+    apply_suggestions,
+    build_clean_system_prompt,
+    get_clean_builtin_system_prompt,
+)
+from native_app.workers import TmCleanWorker
+from native_app.widgets import (
+    configure_searchable_combo,
+    refresh_combo_completer,
+    select_combo_text_match,
+)
+from settings import AppSettings, save_settings
+
+
+HEADER_TILE_HEIGHT = 48
+HEADER_TILE_MIN_WIDTH = 86
+COMPACT_CONTROL_HEIGHT = 32
+COMPACT_BUTTON_HEIGHT = 34
+WORKSPACE_ACTION_BUTTON_WIDTH = 96
+WORKSPACE_ACTION_BUTTON_HEIGHT = 38
+ENTRY_DIALOG_WIDTH = 860
+ENTRY_DIALOG_MIN_WIDTH = 760
+ENTRY_DIALOG_FIELD_HEIGHT = 72
+PAGE_SIZE = 10
+
+
+def _clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def _label(text: str, object_name: str | None = None) -> QLabel:
+    label = QLabel(text)
+    if object_name:
+        label.setObjectName(object_name)
+    return label
+
+
+def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
+    item_html = "".join(f"<li>{html.escape(item)}</li>" for item in items or [])
+    body = f"<b>{html.escape(title)}</b><br>{html.escape(summary)}"
+    if item_html:
+        body += f"<ul>{item_html}</ul>"
+    return body
+
+
+def _set_tooltip(
+    widget: QWidget,
+    title: str,
+    summary: str,
+    items: list[str] | None = None,
+) -> None:
+    widget.setToolTip(_tooltip(title, summary, items))
+    widget.setToolTipDuration(3600)
+
+
+def _field_label(
+    text: str,
+    title: str,
+    summary: str,
+    items: list[str] | None = None,
+) -> QLabel:
+    label = QLabel(text)
+    _set_tooltip(label, title, summary, items)
+    return label
+
+
+def _card() -> tuple[QFrame, QVBoxLayout]:
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setSpacing(7)
+    layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+    return frame, layout
+
+
+def _compact_control(widget: QWidget, height: int = COMPACT_CONTROL_HEIGHT) -> QWidget:
+    widget.setProperty("compact", "true")
+    widget.setFixedHeight(height)
+    return widget
+
+
+def _workspace_action_button(text: str) -> QPushButton:
+    button = QPushButton(text)
+    button.setFixedSize(WORKSPACE_ACTION_BUTTON_WIDTH, WORKSPACE_ACTION_BUTTON_HEIGHT)
+    return button
+
+
+def _cloud_provider_label(provider: str) -> str:
+    for label, value in CLOUD_ENGINES.items():
+        if value == provider:
+            return label
+    return next(iter(CLOUD_ENGINES.keys()))
+
+
+def _normalize_clean_progress_payload(payload):
+    if payload is None:
+        return None
+
+    if isinstance(payload, dict):
+        total_entries = int(payload.get("total_entries") or payload.get("total") or 0)
+        completed_entries = int(payload.get("completed_entries") or payload.get("done") or 0)
+        total_batches = int(payload.get("total_batches") or 0)
+        completed_batches = int(payload.get("completed_batches") or 0)
+        submitted_batches = int(payload.get("submitted_batches") or completed_batches or 0)
+        stage = str(payload.get("stage") or "prepared")
+    elif isinstance(payload, (tuple, list)) and len(payload) >= 2:
+        completed_entries = int(payload[0] or 0)
+        total_entries = int(payload[1] or 0)
+        total_batches = 0
+        completed_batches = 0
+        submitted_batches = 0
+        stage = "processing" if completed_entries else "prepared"
+    else:
+        return None
+
+    total_entries = max(0, total_entries)
+    completed_entries = min(max(0, completed_entries), total_entries)
+    total_batches = max(0, total_batches)
+    completed_batches = min(max(0, completed_batches), total_batches)
+    if total_batches:
+        submitted_batches = min(max(completed_batches, submitted_batches), total_batches)
+    else:
+        submitted_batches = max(0, submitted_batches)
+
+    return {
+        "stage": stage,
+        "total_entries": total_entries,
+        "completed_entries": completed_entries,
+        "total_batches": total_batches,
+        "completed_batches": completed_batches,
+        "submitted_batches": submitted_batches,
+    }
+
+
+def _build_clean_progress_display(progress: dict) -> tuple[float, str, str]:
+    stage = progress["stage"]
+    total_entries = progress["total_entries"]
+    completed_entries = progress["completed_entries"]
+    total_batches = progress["total_batches"]
+    completed_batches = progress["completed_batches"]
+    submitted_batches = progress["submitted_batches"]
+
+    if stage == "prepared":
+        detail = (
+            f"已切分为 {total_batches} 个批次"
+            if total_batches
+            else "正在初始化清洗任务"
+        )
+        return 0.0, f"已装载 {total_entries} 条词条", detail
+
+    if stage == "waiting_first_result":
+        detail = (
+            f"已调度 {submitted_batches} / {total_batches} 个批次"
+            if total_batches
+            else "正在等待首批结果返回"
+        )
+        return 0.02, "深度清洗已开始", detail
+
+    ratio = completed_entries / max(total_entries, 1)
+    detail = (
+        f"完成 {completed_batches} / {total_batches} 个批次"
+        if total_batches
+        else ""
+    )
+    if stage == "completed":
+        return 1.0, f"清洗完成：{completed_entries} / {total_entries} 条", detail
+    return ratio, f"清洗中：{completed_entries} / {total_entries} 条", detail
+
+
+def _update_lang_prompt_map(prompt_map: dict[str, str], lang_pair: str, prompt: str) -> dict[str, str]:
+    updated = dict(prompt_map)
+    value = str(prompt or "").strip()
+    if value:
+        updated[lang_pair] = value
+    else:
+        updated.pop(lang_pair, None)
+    return updated
+
+
+class TmManagerPage(QWidget):
+    """Qt implementation of the translation-memory workbench."""
+
+    def __init__(self, settings: AppSettings):
+        super().__init__()
+        self.settings = settings
+        self.keyword = ""
+        self.current_page = 1
+        self.phase = "idle"
+        self.clean_worker: TmCleanWorker | None = None
+        self.clean_progress: dict | None = None
+        self.clean_suggestions: list[CleanSuggestion] = []
+
+        tm_manager.init_db()
+        self._build_ui()
+        self._refresh_all()
+
+    @property
+    def lang_pair(self) -> str:
+        return build_lang_pair(self._selected_target_lang(), self._selected_source_lang())
+
+    def refresh_settings(self) -> None:
+        self._refresh_language_options()
+        self._refresh_clean_model_options()
+        self._refresh_all()
+
+    def sync_language_from_translation(self, target_lang: str, source_lang: str) -> None:
+        target_lang = str(target_lang or "").strip()
+        source_lang = str(source_lang or "").strip()
+        if not target_lang or not source_lang:
+            return
+
+        old_lang_pair = self.lang_pair
+        self.settings.target_lang = target_lang
+        self.settings.source_lang = source_lang
+        if build_lang_pair(target_lang, source_lang) != old_lang_pair:
+            self.current_page = 1
+            self.keyword = ""
+        self._refresh_language_options()
+        self._refresh_all()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(12)
+
+        self.header_layout = QVBoxLayout()
+        self.header_layout.setSpacing(6)
+        root.addLayout(self.header_layout)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        root.addLayout(top_row)
+        self._build_scope_card(top_row)
+        self._build_overview_card(top_row)
+        self._build_cleaner_card(top_row)
+
+        self.workspace = QFrame()
+        self.workspace.setObjectName("Workspace")
+        self.workspace_layout = QVBoxLayout(self.workspace)
+        self.workspace_layout.setContentsMargins(18, 18, 18, 18)
+        self.workspace_layout.setSpacing(14)
+        root.addWidget(self.workspace, 1)
+
+    def _build_scope_controls(self, layout: QVBoxLayout) -> None:
+        form_grid = QGridLayout()
+        form_grid.setHorizontalSpacing(8)
+        form_grid.setVerticalSpacing(7)
+        form_grid.setColumnMinimumWidth(0, 70)
+        form_grid.setColumnStretch(0, 0)
+        form_grid.setColumnStretch(1, 1)
+        layout.addLayout(form_grid)
+
+        form_grid.addWidget(
+            _field_label(
+                "最长词上限",
+                "自动入库上限",
+                "定义允许自动进入记忆库的最长词条长度。",
+                [
+                    "超过该值的长句会跳过自动入库，避免污染词库。",
+                    "手动新增词条不受这项规则影响。",
+                ],
+            ),
+            0,
+            0,
+        )
+        self.max_len_spin = QSpinBox()
+        self.max_len_spin.setRange(1, 200)
+        self.max_len_spin.setValue(self.settings.tm.max_len)
+        self.max_len_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        _compact_control(self.max_len_spin)
+        self.max_len_spin.valueChanged.connect(self._on_max_len_changed)
+        form_grid.addWidget(self.max_len_spin, 0, 1)
+
+        form_grid.addWidget(
+            _field_label("源语言", "源语言", "选择当前词库原文语言。"),
+            1,
+            0,
+        )
+        self.source_combo = QComboBox()
+        configure_searchable_combo(self.source_combo)
+        if self.source_combo.lineEdit() is not None:
+            self.source_combo.lineEdit().setPlaceholderText("输入源语言")
+        _set_tooltip(self.source_combo, "源语言", "输入前几个字可快速匹配词库源语言。")
+        _compact_control(self.source_combo)
+        form_grid.addWidget(self.source_combo, 1, 1)
+
+        form_grid.addWidget(
+            _field_label("目标语言", "目标语言", "选择当前词库译文语言。"),
+            2,
+            0,
+        )
+        self.target_combo = QComboBox()
+        configure_searchable_combo(self.target_combo)
+        if self.target_combo.lineEdit() is not None:
+            self.target_combo.lineEdit().setPlaceholderText("输入目标语言")
+        _set_tooltip(self.target_combo, "目标语言", "输入前几个字可快速匹配词库目标语言。")
+        _compact_control(self.target_combo)
+        form_grid.addWidget(self.target_combo, 2, 1)
+
+        self._refresh_language_options()
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+
+        self.lang_pair_hint = QLabel("", self)
+        self.lang_pair_hint.setObjectName("FieldHint")
+        self.lang_pair_hint.hide()
+
+    def _build_scope_card(self, row: QHBoxLayout) -> None:
+        frame, layout = _card()
+        row.addWidget(frame, 3)
+        layout.addWidget(_label("词库规则与语言范围", "SectionTitle"))
+        self._build_scope_controls(layout)
+
+    def _build_overview_card(self, row: QHBoxLayout) -> None:
+        frame, layout = _card()
+        row.addWidget(frame, 4)
+        layout.addWidget(_label("词库概览与交换", "SectionTitle"))
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.export_json_button = QPushButton("导出 JSON")
+        _compact_control(self.export_json_button, COMPACT_BUTTON_HEIGHT)
+        _set_tooltip(
+            self.export_json_button,
+            "导出 JSON",
+            "导出当前语言对的全部词条，适合完整备份或迁移。",
+        )
+        self.export_json_button.clicked.connect(lambda: self._export_entries("json"))
+        buttons.addWidget(self.export_json_button)
+
+        self.export_csv_button = QPushButton("导出 CSV")
+        _compact_control(self.export_csv_button, COMPACT_BUTTON_HEIGHT)
+        _set_tooltip(
+            self.export_csv_button,
+            "导出 CSV",
+            "导出为表格格式，便于人工查看或外部编辑。",
+        )
+        self.export_csv_button.clicked.connect(lambda: self._export_entries("csv"))
+        buttons.addWidget(self.export_csv_button)
+
+        self.import_button = QPushButton("导入词库")
+        _compact_control(self.import_button, COMPACT_BUTTON_HEIGHT)
+        _set_tooltip(
+            self.import_button,
+            "导入词库",
+            "导入 JSON 或 CSV 词库文件，可选择跳过或覆盖重复原文。",
+            ["建议导入前先导出当前词库作为备份。"],
+        )
+        self.import_button.clicked.connect(self._import_entries)
+        buttons.addWidget(self.import_button)
+        layout.addLayout(buttons)
+
+        self.stats_grid = QGridLayout()
+        self.stats_grid.setHorizontalSpacing(8)
+        self.stats_grid.setVerticalSpacing(8)
+        layout.addLayout(self.stats_grid)
+
+    def _build_cleaner_card(self, row: QHBoxLayout) -> None:
+        frame, layout = _card()
+        row.addWidget(frame, 7)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_row.addWidget(_label("深度清洗", "SectionTitle"))
+        title_row.addStretch(1)
+        self.auto_pin_check = QCheckBox("清洗后自动固定")
+        self.auto_pin_check.setChecked(self.settings.auto_pin_after_clean)
+        _set_tooltip(
+            self.auto_pin_check,
+            "清洗后自动固定",
+            "将本次写入的清洗结果设为固定词条，避免重复清洗和误删。",
+        )
+        self.auto_pin_check.toggled.connect(self._on_cleaner_settings_changed)
+        title_row.addWidget(self.auto_pin_check)
+        layout.addLayout(title_row)
+
+        field_grid = QGridLayout()
+        field_grid.setHorizontalSpacing(8)
+        field_grid.setVerticalSpacing(6)
+        field_grid.setColumnStretch(0, 1)
+        field_grid.setColumnStretch(1, 1)
+        field_grid.setColumnStretch(2, 2)
+        layout.addLayout(field_grid)
+
+        field_grid.addWidget(
+            _field_label("清洗模式", "清洗模式", "控制 AI 清洗建议的落库方式。"),
+            0,
+            0,
+        )
+        self.clean_mode_combo = QComboBox()
+        self.clean_mode_combo.addItem("差异确认模式", "diff")
+        self.clean_mode_combo.addItem("直接覆写模式", "overwrite")
+        self.clean_mode_combo.setCurrentIndex(
+            1 if self.settings.cleaner_mode == "overwrite" else 0
+        )
+        _set_tooltip(
+            self.clean_mode_combo,
+            "清洗模式",
+            "控制 AI 清洗建议的落库方式。",
+            [
+                "差异确认模式：逐条审核后写入，更稳妥。",
+                "直接覆写模式：自动写入建议，效率更高但需谨慎。",
+            ],
+        )
+        self.clean_mode_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
+        _compact_control(self.clean_mode_combo)
+        field_grid.addWidget(self.clean_mode_combo, 1, 0)
+
+        field_grid.addWidget(
+            _field_label("清洗引擎", "清洗引擎", "选择用于深度清洗的云端模型服务商。"),
+            0,
+            1,
+        )
+        self.clean_engine_combo = QComboBox()
+        self.clean_engine_combo.addItems(list(CLOUD_ENGINES.keys()))
+        self.clean_engine_combo.setCurrentText(_cloud_provider_label(self.settings.cleaner_engine))
+        _set_tooltip(self.clean_engine_combo, "清洗引擎", "选择用于深度清洗的云端模型服务商。")
+        self.clean_engine_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
+        _compact_control(self.clean_engine_combo)
+        field_grid.addWidget(self.clean_engine_combo, 1, 1)
+
+        field_grid.addWidget(
+            _field_label("清洗模型", "清洗模型", "留空时使用当前翻译模型。"),
+            0,
+            2,
+        )
+        self.clean_model_input = QComboBox()
+        self.clean_model_input.setEditable(True)
+        self.clean_model_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._refresh_clean_model_options()
+        if self.clean_model_input.lineEdit() is not None:
+            self.clean_model_input.lineEdit().setPlaceholderText("跟随当前翻译模型")
+        _set_tooltip(
+            self.clean_model_input,
+            "清洗模型",
+            "可从当前云端 API 模型中选择，也可手动输入。",
+        )
+        self.clean_model_input.currentTextChanged.connect(self._on_cleaner_settings_changed)
+        _compact_control(self.clean_model_input)
+        field_grid.addWidget(self.clean_model_input, 1, 2)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        self.clean_button = QPushButton("启动深度清洗")
+        self.clean_button.setObjectName("PrimaryButton")
+        _compact_control(self.clean_button, COMPACT_BUTTON_HEIGHT)
+        _set_tooltip(
+            self.clean_button,
+            "启动深度清洗",
+            "对当前语言对未固定词条进行 AI 清洗。",
+            ["固定词条会被保护，不参与清洗。"],
+        )
+        self.clean_button.clicked.connect(self._toggle_cleaning)
+        action_row.addWidget(self.clean_button, 1)
+
+        self.prompt_button = QPushButton("编辑清洗提示词")
+        _compact_control(self.prompt_button, COMPACT_BUTTON_HEIGHT)
+        _set_tooltip(
+            self.prompt_button,
+            "编辑清洗提示词",
+            "查看内置规则，并为当前语言对补充或覆盖清洗 Prompt。",
+        )
+        self.prompt_button.clicked.connect(self._open_cleaner_prompt_dialog)
+        action_row.addWidget(self.prompt_button, 1)
+        layout.addLayout(action_row)
+
+        self.clean_progress_panel = QWidget()
+        progress_row = QHBoxLayout(self.clean_progress_panel)
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.setSpacing(10)
+        self.clean_progress_bar = QProgressBar()
+        self.clean_progress_bar.setRange(0, 100)
+        progress_row.addWidget(self.clean_progress_bar, 1)
+
+        self.clean_status = QLabel("清洗任务未启动。")
+        self.clean_status.setWordWrap(False)
+        self.clean_status.setObjectName("FieldHint")
+        progress_row.addWidget(self.clean_status)
+        layout.addWidget(self.clean_progress_panel)
+
+    def _refresh_language_options(self) -> None:
+        if not hasattr(self, "target_combo"):
+            return
+        current_source = self.settings.source_lang
+        current_target = self.settings.target_lang
+        source_codes = get_ordered_target_lang_codes(
+            [current_source],
+            self.settings.custom_target_langs,
+            include_optional=True,
+        )
+        target_codes = get_ordered_target_lang_codes(
+            [current_target],
+            self.settings.custom_target_langs,
+            include_optional=True,
+        )
+
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        for code in source_codes:
+            self.source_combo.addItem(
+                get_target_lang_display(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
+                code,
+            )
+        source_index = self.source_combo.findData(current_source)
+        self.source_combo.setCurrentIndex(source_index if source_index >= 0 else 0)
+        refresh_combo_completer(self.source_combo)
+        self.source_combo.blockSignals(False)
+
+        self.target_combo.blockSignals(True)
+        self.target_combo.clear()
+        for code in target_codes:
+            self.target_combo.addItem(
+                get_target_lang_display(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
+                code,
+            )
+        index = self.target_combo.findData(current_target)
+        self.target_combo.setCurrentIndex(index if index >= 0 else 0)
+        refresh_combo_completer(self.target_combo)
+        self.target_combo.blockSignals(False)
+
+    def _refresh_clean_model_options(self) -> None:
+        if not hasattr(self, "clean_model_input"):
+            return
+        current = str(self.settings.cleaner_model or "").strip()
+        cloud_model = str(self.settings.engine.cloud_model or "").strip()
+        options = ["跟随当前翻译模型"]
+        if cloud_model:
+            options.append(cloud_model)
+        if current and current not in options:
+            options.append(current)
+        self.clean_model_input.blockSignals(True)
+        self.clean_model_input.clear()
+        self.clean_model_input.addItems(options)
+        if current:
+            self.clean_model_input.setCurrentText(current)
+        else:
+            self.clean_model_input.setCurrentIndex(0)
+        self.clean_model_input.blockSignals(False)
+
+    def _selected_target_lang(self) -> str:
+        if (
+            hasattr(self, "target_combo")
+            and self.target_combo.currentIndex() >= 0
+            and self.target_combo.currentText().strip()
+            != self.target_combo.itemText(self.target_combo.currentIndex()).strip()
+        ):
+            select_combo_text_match(self.target_combo)
+        return str(self.target_combo.currentData() or self.settings.target_lang or "")
+
+    def _selected_source_lang(self) -> str:
+        if (
+            hasattr(self, "source_combo")
+            and self.source_combo.currentIndex() >= 0
+            and self.source_combo.currentText().strip()
+            != self.source_combo.itemText(self.source_combo.currentIndex()).strip()
+        ):
+            select_combo_text_match(self.source_combo)
+        return str(self.source_combo.currentData() or self.settings.source_lang or "")
+
+    def _selected_target_label(self) -> str:
+        target_lang = self._selected_target_lang() if hasattr(self, "target_combo") else self.settings.target_lang
+        return get_target_lang_display(
+            target_lang,
+            self.settings.custom_target_langs,
+            include_optional=True,
+        )
+
+    def _refresh_all(self) -> None:
+        self._refresh_header()
+        self._refresh_stats()
+        self._refresh_cleaner_controls()
+        self._refresh_workspace()
+
+    def _refresh_header(self) -> None:
+        _clear_layout(self.header_layout)
+        self.header_layout.addWidget(_label("TM Workbench", "PageEyebrow"))
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        title_row.addWidget(_label("记忆库管理", "PageTitle"))
+        title_row.addStretch(1)
+        stats = tm_manager.get_stats(self.lang_pair)
+        title_row.addWidget(self._pill("语言对", self.lang_pair), alignment=Qt.AlignmentFlag.AlignTop)
+        title_row.addWidget(self._pill("总词条", f"{stats['total']} 条"), alignment=Qt.AlignmentFlag.AlignTop)
+        title_row.addWidget(self._phase_badge(), alignment=Qt.AlignmentFlag.AlignTop)
+        self.header_layout.addLayout(title_row)
+        self.lang_pair_hint.setText(f"当前检视范围：{self.lang_pair}")
+
+    def _pill(self, label: str, value: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("Pill")
+        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        frame.setFixedHeight(HEADER_TILE_HEIGHT)
+        frame.setMinimumWidth(HEADER_TILE_MIN_WIDTH)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 3, 8, 3)
+        layout.setSpacing(0)
+        label_widget = QLabel(label)
+        label_widget.setObjectName("PillLabel")
+        value_widget = QLabel(value)
+        value_widget.setObjectName("PillValue")
+        value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(label_widget)
+        layout.addWidget(value_widget)
+        return frame
+
+    def _phase_badge(self) -> QFrame:
+        text = {
+            "idle": "词库就绪",
+            "cleaning": "清洗执行中",
+            "review": "等待确认",
+        }.get(self.phase, "词库就绪")
+        frame = QFrame()
+        frame.setObjectName("PhaseBadge")
+        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        frame.setFixedHeight(HEADER_TILE_HEIGHT)
+        frame.setMinimumWidth(HEADER_TILE_MIN_WIDTH)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 3, 8, 3)
+        label = QLabel(text)
+        label.setObjectName("PhaseBadgeText")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        return frame
+
+    def _refresh_stats(self) -> None:
+        _clear_layout(self.stats_grid)
+        stats = tm_manager.get_stats(self.lang_pair)
+        items = [
+            ("总词条", f"{stats['total']:,}"),
+            ("自动入库", f"{stats['auto']:,}"),
+            ("手动录入", f"{stats['manual']:,}"),
+            ("已固定", f"{stats['pinned']:,}"),
+        ]
+        for index, (label, value) in enumerate(items):
+            tile = QFrame()
+            tile.setObjectName("KpiTile")
+            tile_layout = QHBoxLayout(tile)
+            tile_layout.setContentsMargins(8, 4, 8, 4)
+            tile_layout.setSpacing(8)
+            tile_layout.addWidget(_label(label, "PillLabel"))
+            tile_layout.addStretch(1)
+            tile_layout.addWidget(_label(value, "PillValue"))
+            self.stats_grid.addWidget(tile, index // 2, index % 2)
+
+    def _refresh_cleaner_controls(self) -> None:
+        running = self.phase == "cleaning"
+        for widget in (
+            self.auto_pin_check,
+            self.clean_mode_combo,
+            self.clean_engine_combo,
+            self.clean_model_input,
+            self.prompt_button,
+        ):
+            widget.setEnabled(not running)
+        self.clean_button.setText("中止清洗" if running else "启动深度清洗")
+        self.clean_button.setObjectName("DangerButton" if running else "PrimaryButton")
+        self.clean_button.style().unpolish(self.clean_button)
+        self.clean_button.style().polish(self.clean_button)
+        self.clean_progress_panel.setVisible(running)
+        if not running:
+            self.clean_progress_bar.setValue(0)
+            self.clean_status.setText("清洗任务未启动。")
+
+    def _refresh_workspace(self) -> None:
+        _clear_layout(self.workspace_layout)
+        if self.phase == "review" and self.clean_suggestions:
+            self._render_diff_workspace()
+            return
+        self._render_entry_workspace()
+
+    def _render_entry_workspace(self) -> None:
+        self.workspace_layout.addWidget(_label("词条工作区", "SectionTitle"))
+        if self.phase == "cleaning":
+            note = QLabel("深度清洗执行中，词库仍可浏览；新增、删除、编辑和批量操作暂时锁定。")
+            note.setWordWrap(True)
+            note.setObjectName("MutedText")
+            self.workspace_layout.addWidget(note)
+
+        search_row = QHBoxLayout()
+        self.search_input = QLineEdit(self.keyword)
+        self.search_input.setPlaceholderText("输入原文、译文或关键词")
+        _set_tooltip(self.search_input, "搜索词条", "按原文或译文搜索当前语言对词库。")
+        self.search_input.returnPressed.connect(self._apply_search)
+        search_row.addWidget(self.search_input, 1)
+
+        search_button = _workspace_action_button("搜索")
+        _set_tooltip(search_button, "搜索", "应用当前关键词并返回第一页。")
+        search_button.clicked.connect(self._apply_search)
+        search_row.addWidget(search_button)
+
+        add_button = _workspace_action_button("新增词条")
+        _set_tooltip(add_button, "新增词条", "手动新增当前语言对词条。")
+        add_button.setEnabled(self.phase != "cleaning")
+        add_button.clicked.connect(self._add_entry)
+        search_row.addWidget(add_button)
+        self.workspace_layout.addLayout(search_row)
+
+        rows, total = self._load_current_rows()
+        pin_stats = tm_manager.get_pin_count(self.lang_pair, self.keyword)
+        all_pinned = pin_stats["unpinned"] == 0 and pin_stats["pinned"] > 0
+
+        scope_row = QHBoxLayout()
+        scope = QLabel(
+            f"当前范围：{total:,} 条；已固定 {pin_stats['pinned']:,}；"
+            f"可编辑 {pin_stats['unpinned']:,}"
+        )
+        scope.setObjectName("MutedText")
+        scope_row.addWidget(scope, 1)
+
+        bulk_delete = _workspace_action_button("批量删除")
+        _set_tooltip(bulk_delete, "批量删除", "删除当前筛选范围内的词条。")
+        bulk_delete.setEnabled(total > 0 and self.phase != "cleaning")
+        bulk_delete.clicked.connect(lambda: self._bulk_delete(total, pin_stats))
+        scope_row.addWidget(bulk_delete)
+
+        bulk_pin = _workspace_action_button("全部解锁" if all_pinned else "全部固定")
+        _set_tooltip(bulk_pin, "批量固定", "固定或解锁当前筛选范围内的全部词条。")
+        bulk_pin.setEnabled(total > 0 and self.phase != "cleaning")
+        bulk_pin.clicked.connect(lambda: self._bulk_pin(not all_pinned))
+        scope_row.addWidget(bulk_pin)
+        self.workspace_layout.addLayout(scope_row)
+
+        self._render_entries_table(rows)
+        self._render_pager(total)
+
+    def _load_current_rows(self) -> tuple[list[dict], int]:
+        rows, total = tm_manager.search_entries(
+            self.lang_pair,
+            self.keyword,
+            page=self.current_page,
+            page_size=PAGE_SIZE,
+        )
+        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        if self.current_page > total_pages:
+            self.current_page = total_pages
+            rows, total = tm_manager.search_entries(
+                self.lang_pair,
+                self.keyword,
+                page=self.current_page,
+                page_size=PAGE_SIZE,
+            )
+        return rows, total
+
+    def _render_entries_table(self, rows: list[dict]) -> None:
+        table = QTableWidget(len(rows), 3)
+        table.setHorizontalHeaderLabels(["原文", "译文", "操作"])
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(2, 252)
+        table.setWordWrap(True)
+        for row_index, row in enumerate(rows):
+            is_pinned = bool(row.get("pinned", 0))
+            values = [
+                str(row.get("source_text") or ""),
+                str(row.get("target_text") or ""),
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(row_index, col_index, item)
+            table.setCellWidget(row_index, 2, self._build_row_actions(row, is_pinned))
+        table.resizeRowsToContents()
+        for row_index in range(len(rows)):
+            table.setRowHeight(row_index, max(table.rowHeight(row_index), 58))
+        self.workspace_layout.addWidget(table, 1)
+
+    def _build_row_actions(self, row: dict, is_pinned: bool) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+        disabled = self.phase == "cleaning"
+
+        edit = QPushButton("编辑")
+        edit.setMinimumWidth(66)
+        edit.setEnabled(not is_pinned and not disabled)
+        _set_tooltip(edit, "编辑", "修改当前词条的原文和译文。固定词条需先解锁。")
+        edit.clicked.connect(lambda _=False, entry=dict(row): self._edit_entry(entry))
+        layout.addWidget(edit)
+
+        delete = QPushButton("删除")
+        delete.setMinimumWidth(66)
+        delete.setEnabled(not is_pinned and not disabled)
+        _set_tooltip(delete, "删除", "删除当前词条。固定词条受保护。")
+        delete.clicked.connect(lambda _=False, entry_id=int(row["id"]): self._delete_entry(entry_id))
+        layout.addWidget(delete)
+
+        pin = QPushButton("解锁" if is_pinned else "固定")
+        pin.setMinimumWidth(66)
+        pin.setEnabled(not disabled)
+        _set_tooltip(pin, "固定", "切换词条固定状态。固定词条不会参与清洗。")
+        pin.clicked.connect(
+            lambda _=False, entry_id=int(row["id"]), pinned=not is_pinned: self._pin_entry(
+                entry_id,
+                pinned,
+            )
+        )
+        layout.addWidget(pin)
+        return container
+
+    def _render_pager(self, total: int) -> None:
+        total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+        row = QHBoxLayout()
+        prev_button = QPushButton("上一页")
+        prev_button.setEnabled(self.current_page > 1)
+        prev_button.clicked.connect(lambda: self._change_page(self.current_page - 1))
+        row.addWidget(prev_button)
+
+        summary = QLabel(f"第 {self.current_page} / {total_pages} 页，共 {total:,} 条词条")
+        summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        summary.setObjectName("MutedText")
+        row.addWidget(summary, 1)
+
+        next_button = QPushButton("下一页")
+        next_button.setEnabled(self.current_page < total_pages)
+        next_button.clicked.connect(lambda: self._change_page(self.current_page + 1))
+        row.addWidget(next_button)
+        self.workspace_layout.addLayout(row)
+
+    def _render_diff_workspace(self) -> None:
+        self.workspace_layout.addWidget(_label("清洗差异确认", "SectionTitle"))
+        note = QLabel(f"发现 {len(self.clean_suggestions)} 条建议。勾选需要写入的结果后点击确认。")
+        note.setWordWrap(True)
+        note.setObjectName("MutedText")
+        self.workspace_layout.addWidget(note)
+
+        table = QTableWidget(len(self.clean_suggestions), 4)
+        table.setHorizontalHeaderLabels(["写入", "原文", "当前译文", "建议译文"])
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        table.setWordWrap(True)
+        self.diff_table = table
+        for row, suggestion in enumerate(self.clean_suggestions):
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check.setCheckState(
+                Qt.CheckState.Checked
+                if suggestion.accepted
+                else Qt.CheckState.Unchecked
+            )
+            table.setItem(row, 0, check)
+            for col, value in enumerate(
+                [
+                    suggestion.source_text,
+                    suggestion.old_target,
+                    suggestion.new_target,
+                ],
+                start=1,
+            ):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(row, col, item)
+        table.resizeRowsToContents()
+        self.workspace_layout.addWidget(table, 1)
+
+        actions = QHBoxLayout()
+        apply_button = QPushButton("写入已勾选建议")
+        apply_button.setObjectName("PrimaryButton")
+        apply_button.clicked.connect(self._apply_clean_suggestions)
+        actions.addWidget(apply_button)
+
+        discard_button = QPushButton("放弃本次结果")
+        discard_button.clicked.connect(self._discard_clean_suggestions)
+        actions.addWidget(discard_button)
+        actions.addStretch(1)
+        self.workspace_layout.addLayout(actions)
+
+    def _apply_search(self) -> None:
+        self.keyword = self.search_input.text().strip()
+        self.current_page = 1
+        self._refresh_all()
+
+    def _change_page(self, page: int) -> None:
+        self.current_page = max(1, page)
+        self._refresh_workspace()
+
+    def _on_max_len_changed(self, value: int) -> None:
+        self.settings.tm.max_len = value
+        save_settings(self.settings)
+
+    def _on_target_changed(self) -> None:
+        target_lang = self._selected_target_lang()
+        self.settings.target_lang = target_lang
+        self.settings.recent_target_langs = remember_recent_target_lang(
+            self.settings.recent_target_langs,
+            target_lang,
+            self.settings.custom_target_langs,
+            include_optional=True,
+        )
+        self.current_page = 1
+        self.keyword = ""
+        save_settings(self.settings)
+        self._refresh_all()
+
+    def _on_source_changed(self) -> None:
+        self.settings.source_lang = self._selected_source_lang()
+        self.current_page = 1
+        self.keyword = ""
+        save_settings(self.settings)
+        self._refresh_all()
+
+    def _on_cleaner_settings_changed(self) -> None:
+        self.settings.cleaner_mode = str(self.clean_mode_combo.currentData() or "diff")
+        self.settings.cleaner_engine = CLOUD_ENGINES.get(
+            self.clean_engine_combo.currentText(),
+            self.settings.cleaner_engine,
+        )
+        model_text = self.clean_model_input.currentText().strip()
+        self.settings.cleaner_model = (
+            "" if model_text == "跟随当前翻译模型" else model_text
+        )
+        self.settings.auto_pin_after_clean = self.auto_pin_check.isChecked()
+        save_settings(self.settings)
+
+    def _add_entry(self) -> None:
+        ok, source, target = self._entry_dialog("新增词条")
+        if not ok:
+            return
+        if not tm_manager.insert_manual_entry(source, target, self.lang_pair):
+            QMessageBox.warning(self, APP_NAME, "新增失败：请确认原文和译文均已填写。")
+            return
+        self._refresh_all()
+
+    def _edit_entry(self, entry: dict) -> None:
+        ok, source, target = self._entry_dialog(
+            "编辑词条",
+            source=str(entry.get("source_text") or ""),
+            target=str(entry.get("target_text") or ""),
+        )
+        if not ok:
+            return
+        if not tm_manager.update_entry_full(int(entry["id"]), source, target):
+            QMessageBox.warning(self, APP_NAME, "保存失败：原文为空、译文为空或与已有词条冲突。")
+            return
+        self._refresh_all()
+
+    def _entry_dialog(
+        self,
+        title: str,
+        *,
+        source: str = "",
+        target: str = "",
+    ) -> tuple[bool, str, str]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumWidth(ENTRY_DIALOG_MIN_WIDTH)
+        dialog.resize(ENTRY_DIALOG_WIDTH, 260)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(8)
+        layout.addWidget(_label("原文", "SectionTitle"))
+        source_edit = QTextEdit()
+        source_edit.setFixedHeight(ENTRY_DIALOG_FIELD_HEIGHT)
+        source_edit.setPlainText(source)
+        layout.addWidget(source_edit)
+        layout.addWidget(_label("译文", "SectionTitle"))
+        target_edit = QTextEdit()
+        target_edit.setFixedHeight(ENTRY_DIALOG_FIELD_HEIGHT)
+        target_edit.setPlainText(target)
+        layout.addWidget(target_edit)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("保存")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False, "", ""
+        return True, source_edit.toPlainText().strip(), target_edit.toPlainText().strip()
+
+    def _delete_entry(self, entry_id: int) -> None:
+        answer = QMessageBox.question(
+            self,
+            APP_NAME,
+            "确认删除该词条？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        tm_manager.delete_entry(entry_id)
+        self._refresh_all()
+
+    def _pin_entry(self, entry_id: int, pinned: bool) -> None:
+        tm_manager.pin_entry(entry_id, pinned)
+        self._refresh_all()
+
+    def _bulk_pin(self, pinned: bool) -> None:
+        tm_manager.set_all_pinned(self.lang_pair, pinned, self.keyword)
+        self._refresh_all()
+
+    def _bulk_delete(self, total: int, pin_stats: dict) -> None:
+        keyword_hint = f"\n当前关键词：{self.keyword}" if self.keyword else ""
+        if pin_stats["pinned"] > 0:
+            box = QMessageBox(self)
+            box.setWindowTitle(APP_NAME)
+            box.setText(
+                f"当前范围共 {total} 条词条，其中 {pin_stats['pinned']} 条已固定。"
+                f"{keyword_hint}\n请选择删除方式。"
+            )
+            unpinned_button = box.addButton("仅删除未固定", QMessageBox.ButtonRole.AcceptRole)
+            all_button = box.addButton("全部删除", QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked == unpinned_button:
+                deleted = tm_manager.delete_unpinned_entries(self.lang_pair, self.keyword)
+            elif clicked == all_button:
+                deleted = tm_manager.delete_all_entries(self.lang_pair, self.keyword)
+            else:
+                return
+        else:
+            answer = QMessageBox.question(
+                self,
+                APP_NAME,
+                f"确认删除当前范围内的 {total} 条词条？{keyword_hint}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            deleted = tm_manager.delete_all_entries(self.lang_pair, self.keyword)
+        QMessageBox.information(self, APP_NAME, f"已删除 {deleted} 条词条。")
+        self.current_page = 1
+        self._refresh_all()
+
+    def _export_entries(self, fmt: str) -> None:
+        entries = tm_manager.get_all_entries_for_export(self.lang_pair)
+        if fmt == "json":
+            data = json.dumps(entries, ensure_ascii=False, indent=2)
+            filename = f"tm_{self.lang_pair}.json"
+            file_filter = "JSON 文件 (*.json)"
+        else:
+            buf = io.StringIO()
+            fieldnames = ["source_text", "target_text", "word_type", "pinned", "updated_at"]
+            writer = csv.DictWriter(buf, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(entries)
+            data = buf.getvalue()
+            filename = f"tm_{self.lang_pair}.csv"
+            file_filter = "CSV 文件 (*.csv)"
+
+        target, _ = QFileDialog.getSaveFileName(self, "导出词库", filename, file_filter)
+        if not target:
+            return
+        Path(target).write_text(data, encoding="utf-8-sig" if fmt == "csv" else "utf-8")
+        QMessageBox.information(self, APP_NAME, f"已导出：{target}")
+
+    def _import_entries(self) -> None:
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入词库",
+            "",
+            "词库文件 (*.json *.csv)",
+        )
+        if not source:
+            return
+        try:
+            entries = self._parse_import_file(Path(source))
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, f"导入失败：{exc}")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            APP_NAME,
+            "遇到重复原文时是否覆盖本地译文？\n选择“否”将跳过重复项。",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Cancel:
+            return
+        mode = "overwrite" if answer == QMessageBox.StandardButton.Yes else "skip"
+        result = tm_manager.import_entries(entries, self.lang_pair, mode)
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"导入完成：新增或更新 {result['inserted']} 条；"
+            f"重复 {result['duplicates']} 条；跳过 {result['skipped']} 条。",
+        )
+        self._refresh_all()
+
+    @staticmethod
+    def _parse_import_file(path: Path) -> list[dict]:
+        content = path.read_text(encoding="utf-8-sig")
+        if path.suffix.lower() == ".json":
+            data = json.loads(content)
+            if not isinstance(data, list):
+                raise ValueError("JSON 顶层应为数组")
+            return data
+        if path.suffix.lower() == ".csv":
+            return list(csv.DictReader(io.StringIO(content)))
+        raise ValueError(f"不支持的文件类型：{path.name}")
+
+    def _toggle_cleaning(self) -> None:
+        if self.phase == "cleaning":
+            if self.clean_worker is not None:
+                self.clean_worker.cancel()
+                self.clean_status.setText("已发送中止请求，等待当前批次结束...")
+            return
+        self._start_cleaning()
+
+    def _start_cleaning(self) -> None:
+        stats = tm_manager.get_stats(self.lang_pair)
+        if stats["unpinned"] <= 0:
+            QMessageBox.information(self, APP_NAME, "当前语言对没有可清洗的未固定词条。")
+            return
+        self._on_cleaner_settings_changed()
+        self.phase = "cleaning"
+        self.clean_progress = None
+        self.clean_suggestions = []
+        self.clean_progress_bar.setValue(0)
+        self.clean_status.setText("清洗任务正在启动...")
+        self.clean_worker = TmCleanWorker(
+            lang_pair=self.lang_pair,
+            settings=self.settings.model_copy(deep=True),
+            overwrite=self.settings.cleaner_mode == "overwrite",
+            parent=self,
+        )
+        self.clean_worker.progress.connect(self._on_clean_progress)
+        self.clean_worker.finished.connect(self._on_clean_finished)
+        self.clean_worker.start()
+        self._refresh_all()
+
+    def _on_clean_progress(self, payload: object) -> None:
+        progress = _normalize_clean_progress_payload(payload)
+        if progress is None:
+            return
+        self.clean_progress = progress
+        ratio, text, detail = _build_clean_progress_display(progress)
+        self.clean_progress_bar.setValue(int(ratio * 100))
+        self.clean_status.setText(f"{text}\n{detail}".strip())
+
+    def _on_clean_finished(self, suggestions: object, message: str, ok: bool) -> None:
+        self.clean_worker = None
+        self.clean_progress_bar.setValue(0)
+        if not ok:
+            self.phase = "idle"
+            self.clean_status.setText(message or "清洗任务已结束。")
+            if message and "中止" not in message:
+                QMessageBox.warning(self, APP_NAME, f"清洗失败：{message}")
+            self._refresh_all()
+            return
+
+        suggestions_list = list(suggestions)
+        if self.settings.cleaner_mode == "overwrite":
+            self.phase = "idle"
+            self.clean_status.setText(message or "清洗完成。")
+            QMessageBox.information(self, APP_NAME, message or "清洗完成。")
+            self._refresh_all()
+            return
+
+        if not suggestions_list:
+            self.phase = "idle"
+            self.clean_status.setText("清洗完成，未发现需要修改的词条。")
+            QMessageBox.information(self, APP_NAME, "清洗完成，未发现需要修改的词条。")
+            self._refresh_all()
+            return
+
+        self.phase = "review"
+        self.clean_suggestions = suggestions_list
+        self.clean_status.setText(f"清洗完成，发现 {len(suggestions_list)} 条建议，等待确认。")
+        self._refresh_all()
+
+    def _apply_clean_suggestions(self) -> None:
+        table = getattr(self, "diff_table", None)
+        if table is not None:
+            for row, suggestion in enumerate(self.clean_suggestions):
+                item = table.item(row, 0)
+                suggestion.accepted = (
+                    item is not None and item.checkState() == Qt.CheckState.Checked
+                )
+        applied = apply_suggestions(
+            self.clean_suggestions,
+            auto_pin=self.auto_pin_check.isChecked(),
+        )
+        QMessageBox.information(self, APP_NAME, f"已写入 {applied} 条清洗建议。")
+        self.phase = "idle"
+        self.clean_suggestions = []
+        self._refresh_all()
+
+    def _discard_clean_suggestions(self) -> None:
+        self.phase = "idle"
+        self.clean_suggestions = []
+        self.clean_status.setText("已放弃本次清洗建议。")
+        self._refresh_all()
+
+    def _open_cleaner_prompt_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("自定义深度清洗提示词")
+        dialog.resize(760, 760)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+
+        intro = QLabel(f"当前语言对：{self.lang_pair}。内置规则只读，可为该语言对追加或覆盖提示词。")
+        intro.setWordWrap(True)
+        intro.setObjectName("MutedText")
+        layout.addWidget(intro)
+
+        layout.addWidget(_label("内置提示词（只读）", "SectionTitle"))
+        builtin_edit = QTextEdit()
+        builtin_edit.setReadOnly(True)
+        builtin_edit.setMinimumHeight(150)
+        builtin_edit.setPlainText(
+            get_clean_builtin_system_prompt(
+                self.lang_pair,
+                self.settings.custom_target_langs,
+            )
+        )
+        layout.addWidget(builtin_edit)
+
+        layout.addWidget(_label("当前语言的补充提示词", "SectionTitle"))
+        extra_edit = QTextEdit()
+        extra_edit.setMinimumHeight(100)
+        extra_edit.setPlaceholderText("例如：优先统一当前项目的工程缩写，保持语气简洁。")
+        extra_edit.setPlainText(self.settings.cleaner_prompt_extras.get(self.lang_pair, ""))
+        layout.addWidget(extra_edit)
+
+        full_check = QCheckBox("启用完整提示词覆盖（高级）")
+        full_override = self.settings.cleaner_full_prompt_overrides.get(self.lang_pair, "")
+        full_check.setChecked(bool(full_override))
+        _set_tooltip(
+            full_check,
+            "完整提示词覆盖",
+            "开启后将直接使用下方 Prompt，不再拼接内置规则。",
+        )
+        layout.addWidget(full_check)
+
+        full_edit = QTextEdit()
+        full_edit.setMinimumHeight(120)
+        full_edit.setPlaceholderText("仅在需要完全接管清洗 prompt 时使用。")
+        full_edit.setPlainText(full_override)
+        full_edit.setEnabled(full_check.isChecked())
+        layout.addWidget(full_edit)
+
+        layout.addWidget(_label("实际发送预览", "SectionTitle"))
+        preview_edit = QTextEdit()
+        preview_edit.setReadOnly(True)
+        preview_edit.setMinimumHeight(150)
+        layout.addWidget(preview_edit)
+
+        def refresh_preview() -> None:
+            preview_edit.setPlainText(
+                build_clean_system_prompt(
+                    lang_pair=self.lang_pair,
+                    extra_prompt=extra_edit.toPlainText(),
+                    full_override_prompt=(
+                        full_edit.toPlainText()
+                        if full_check.isChecked()
+                        else ""
+                    ),
+                    custom_target_langs=self.settings.custom_target_langs,
+                )
+            )
+
+        full_check.toggled.connect(full_edit.setEnabled)
+        full_check.toggled.connect(refresh_preview)
+        extra_edit.textChanged.connect(refresh_preview)
+        full_edit.textChanged.connect(refresh_preview)
+        refresh_preview()
+
+        buttons = QDialogButtonBox()
+        reset_button = buttons.addButton("恢复默认", QDialogButtonBox.ButtonRole.ResetRole)
+        save_button = buttons.addButton("保存", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_button = buttons.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
+        save_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+
+        def reset_prompt() -> None:
+            extra_edit.clear()
+            full_check.setChecked(False)
+            full_edit.clear()
+            refresh_preview()
+
+        reset_button.clicked.connect(reset_prompt)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        full_text = full_edit.toPlainText().strip() if full_check.isChecked() else ""
+        if full_check.isChecked() and not full_text:
+            QMessageBox.warning(self, APP_NAME, "已启用完整覆盖，请填写完整 Prompt 或关闭高级模式。")
+            return
+        self.settings.cleaner_prompt_extras = _update_lang_prompt_map(
+            self.settings.cleaner_prompt_extras,
+            self.lang_pair,
+            extra_edit.toPlainText(),
+        )
+        self.settings.cleaner_full_prompt_overrides = _update_lang_prompt_map(
+            self.settings.cleaner_full_prompt_overrides,
+            self.lang_pair,
+            full_text,
+        )
+        save_settings(self.settings)
+        QMessageBox.information(self, APP_NAME, "当前语言的清洗 Prompt 已更新。")

@@ -19,6 +19,7 @@ $targets = @(
     "settings.py",
     "core",
     "ui",
+    "native_app",
     "engines",
     "scripts",
     "tests"
