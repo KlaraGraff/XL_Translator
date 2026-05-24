@@ -14,11 +14,9 @@ if (-not $python) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 }
 $targets = @(
-    "app.py",
     "config.py",
     "settings.py",
     "core",
-    "ui",
     "native_app",
     "engines",
     "scripts",

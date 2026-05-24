@@ -1,5 +1,5 @@
 """
-Headless translation helpers for running the Excel pipeline without Streamlit.
+Headless translation helpers for running the Excel pipeline without the desktop UI.
 """
 from __future__ import annotations
 

@@ -18,7 +18,6 @@ from app_meta import (  # noqa: E402
 )
 
 PROJECT_FILES = {
-    "app.py",
     "app_meta.py",
     "config.py",
     "settings.py",
@@ -42,9 +41,7 @@ PROJECT_DIRS = {
     "core",
     "engines",
     "native_app",
-    "ui",
     "scripts",
-    ".streamlit",
 }
 
 PLATFORM_PROJECT_DIRS = {
@@ -58,11 +55,9 @@ PLATFORM_SCRIPT_FILES = {
     "macos": {
         Path("scripts") / "start_macos.command",
         Path("scripts") / "start_native_macos.command",
-        Path("scripts") / "launch_silent_macos.sh",
     },
     "windows": {
         Path("scripts") / "start_windows.bat",
-        Path("scripts") / "launch_silent_windows.ps1",
     },
 }
 

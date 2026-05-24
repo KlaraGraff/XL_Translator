@@ -9,38 +9,8 @@
 
 ## 索引
 
-- `UI-001` 翻译页顶部目标语言选择控件与字段标题轻微不对齐
 - `VAL-005` 图片锚点对象兼容假设错误
 - `VAL-006` `image_detector` 保留源码，但当前未启用
-
-## UI-001
-
-### 概要
-- 页面：翻译页
-- 状态：已记录，暂不继续修复
-- 性质：UI 对齐瑕疵，不影响主流程
-
-### 源码位置
-- `ui/page_translate.py`
-- `ui/target_language_selector.py`
-- `ui/styles.css`
-
-### 现象
-- 顶部目标语言区域中，字段标题与目标语言 `selectbox` 触发器在部分缩放比例下存在轻微垂直不对齐。
-- 历史实现里这里曾用过 checkbox；当前实现已经切换为 `selectbox`，因此旧描述不再适用。
-
-### 当前决定
-- 暂不继续修复。
-- 原因：已尝试多轮调整，修复成本与收益不成比例。
-
-### 后续入口
-- `ui/page_translate.py`
-- `ui/target_language_selector.py`
-- `ui/styles.css`
-
-### 源码反向索引关键词
-- `UI-001`
-- `KNOWN-ISSUE-UI-001`
 
 ## VAL-005
 

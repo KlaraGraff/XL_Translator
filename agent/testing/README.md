@@ -10,21 +10,6 @@
   - 自动建立 `.runtime/self-tests/<task-slug>/artifacts`。
   - 自动把项目根目录注入 `PYTHONPATH`，让 `.runtime` 下的测试脚本也能直接导入项目模块。
 
-- `wrappers/page_translate_render_app.py`
-  - 翻译主页的 Streamlit AppTest 包装器。
-
-- `wrappers/page_tm_render_app.py`
-  - TM 管理页的 Streamlit AppTest 包装器。
-
-- `wrappers/app_main_render_app.py`
-  - 完整应用壳的 AppTest 包装器。
-
-- `wrappers/page_translate_visual_app.py`
-  - 翻译页的视觉检查包装器（带全局 CSS 与侧边栏外壳）。
-
-- `wrappers/page_tm_visual_app.py`
-  - TM 页的视觉检查包装器（带全局 CSS 与侧边栏外壳）。
-
 ## 推荐用法
 
 1. 先在 `.runtime/self-tests/<task-slug>/` 下写一次性验证脚本。
@@ -36,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
   -ScriptPath .runtime/self-tests/tm-import-header/check_tm_import.py
 ```
 
-3. 如果要测页面，脚本里优先通过 `AppTest.from_file(...)` 加载 `page_*_render_app.py`；只有在需要完整壳或视觉检查时，再使用其他包装器。
+3. 如果要测原生页面，脚本里优先设置 `QT_QPA_PLATFORM=offscreen`，再直接实例化目标 PySide6 页面或主窗口并断言控件状态。
 
 ## 复用到新项目时怎么搬
 
@@ -49,7 +34,5 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
 
 1. `quality_gate.ps1`
    - 改成新项目自己的静态检查命令。
-2. `wrappers/*.py`
-   - 把当前项目里的 `render_page(...)` 导入改成新项目页面的入口。
-
-如果新项目也是 Streamlit，多数情况下直接复制一个包装器，再改两行 import 就能复用。
+2. 动态测试脚本
+   - 按新项目 UI 技术栈实例化页面、准备隔离数据，并断言关键控件和核心流程。

@@ -1,7 +1,7 @@
 【macOS 用户怎么做】
 1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“Translator_macOS_<版本>.dmg”。
 2) 将“Translator.app”拖入 Applications 或其他本地文件夹。
-3) 双击“Translator.app”，程序会自动启动本地服务并打开应用内窗口。
+3) 双击“Translator.app”，程序会打开原生桌面界面。
 4) 若系统首次阻止打开，可在 Finder 中右键“Translator.app”并选择“打开”。
 5) 如果你拿到的是源码式 macOS 包，请双击根目录“启动应用.command”；这种模式需要本机已有 Python 3.10+。
 
@@ -13,7 +13,7 @@
 
 【如果失败怎么办】
 1) 第一次启动失败时，请保留终端/命令行窗口中的报错信息并截图。
-2) 源码包后续静默启动失败时，请优先保留 `.runtime/launcher.log`。
+2) 源码包启动失败时，请保留终端/命令行窗口中的完整报错信息。
 3) 安装版启动失败时，macOS 请保留 `~/Library/Application Support/Translator/desktop_launcher.log`，Windows 请保留 `%LOCALAPPDATA%\Translator\desktop_launcher.log`。
 4) 把截图或日志发给我，我会协助你排查。
 5) 如需手动查看源码包的完整启动过程，macOS 可运行 `scripts/start_macos.command`，Windows 源码包可运行 `scripts\start_windows.bat`。

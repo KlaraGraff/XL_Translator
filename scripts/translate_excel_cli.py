@@ -20,7 +20,7 @@ from settings import load_settings  # noqa: E402
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the local Excel translator without opening the Streamlit UI."
+            "Run the local Excel translator without opening the desktop UI."
         ),
     )
     parser.add_argument(

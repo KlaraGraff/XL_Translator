@@ -11,11 +11,6 @@
 - `SELF_TESTING_PLAYBOOK.md`：完整自测规则与执行细节。
 - `testing/README.md`：测试资产目录说明与复用指引。
 - `testing/Run-IsolatedVenvPython.ps1`：隔离 `HOME` / `USERPROFILE` / `TEMP` / `TMP` 后再用项目 `.venv` 运行 Python 脚本。
-- `testing/wrappers/page_translate_render_app.py`：翻译主页的 AppTest 包装器。
-- `testing/wrappers/page_tm_render_app.py`：TM 管理页的 AppTest 包装器。
-- `testing/wrappers/app_main_render_app.py`：完整应用壳的 AppTest 包装器。
-- `testing/wrappers/page_translate_visual_app.py`：翻译页的视觉检查包装器（带全局 CSS 与侧边栏外壳）。
-- `testing/wrappers/page_tm_visual_app.py`：TM 页的视觉检查包装器（带全局 CSS 与侧边栏外壳）。
 
 默认交付门：
 1. 先跑 `quality_gate.ps1`。
@@ -26,6 +21,6 @@
 1. 根目录 `AGENTS.md`
 2. 整个 `agent/` 目录
 3. 按新项目结构更新 `quality_gate.ps1`
-4. 从 `agent/testing/wrappers/` 复制一个页面包装器作为模板，改成新项目自己的 `render_page(...)` 入口
+4. 按新项目 UI 技术栈补充对应的动态测试脚本
 
 不要把这套长期规则和一次性的验证过程文档混放；过程记录继续放 `docs/validation/...`，长期规则始终保留在根目录 `AGENTS.md` 与 `agent/` 目录。

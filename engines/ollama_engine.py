@@ -47,7 +47,7 @@ class OllamaEngine(TranslationEngine):
         """
         同步入口，内部用独立 event loop 运行异步并发子批次。
         使用 new_event_loop() 而非 asyncio.run()，
-        避免在 Streamlit 已有 event loop 的环境中引发 RuntimeError。
+        避免在已有 event loop 的环境中引发 RuntimeError。
         """
         if not texts:
             return {}

@@ -48,50 +48,37 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
 
 如果测试脚本需要写文件，优先写到 `PRODUCT_TRANSLATE_SELF_TEST_ARTIFACTS`。
 
-## 4. Streamlit 页面动态测试
+## 4. 原生界面动态测试
 
-Streamlit 页面优先使用 `streamlit.testing.v1.AppTest`，并通过 `agent/testing/wrappers/` 下的包装器直达页面渲染函数，而不是每次都启动完整应用。
-
-当前项目内置两类包装器：
-
-- 优先用于 `AppTest` 的页面包装器：
-  - `agent/testing/wrappers/page_translate_render_app.py`
-  - `agent/testing/wrappers/page_tm_render_app.py`
-- 辅助包装器（用于完整壳或视觉检查）：
-  - `agent/testing/wrappers/app_main_render_app.py`
-  - `agent/testing/wrappers/page_translate_visual_app.py`
-  - `agent/testing/wrappers/page_tm_visual_app.py`
+当前主线只保留 PySide6 原生界面。界面改动优先用隔离脚本直接实例化页面或主窗口，不再保留网页页面包装器。
 
 典型做法是：
 
 1. 在 `.runtime/self-tests/<task-slug>/` 下写一个一次性验证脚本。
-2. 在脚本里导入 `AppTest`。
-3. 通过包装器加载目标页面。
-4. 对页面状态、错误消息、关键组件或输出结果做断言。
-5. 用 `Run-IsolatedVenvPython.ps1` 跑这个脚本。
+2. 在脚本启动前设置 `QT_QPA_PLATFORM=offscreen`。
+3. 创建 `QApplication`，再实例化目标页面或 `NativeMainWindow`。
+4. 对控件文本、默认值、按钮状态、表格内容和关键交互结果做断言。
+5. 用 `Run-IsolatedVenvPython.ps1` 或项目 `.venv` 运行脚本。
 
 示例：
 
 ```python
-from streamlit.testing.v1 import AppTest
+import os
+import sys
 
-from settings import AppSettings
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-at = AppTest.from_file(
-    "agent/testing/wrappers/page_translate_render_app.py",
-    default_timeout=20,
-)
-at.session_state["settings"] = AppSettings()
-at.run()
+from PySide6.QtWidgets import QApplication
 
-assert not at.exception
+from native_app.pages.word_translate import WordTranslatePage
+
+app = QApplication.instance() or QApplication(sys.argv)
+page = WordTranslatePage()
+
+assert page.title_label.text() == "Word 翻译"
 ```
 
-注意：
-
-- 断言时优先用 `at.session_state["key"]` 的映射式访问。
-- 不要把测试断言建立在 `.get()` 的“缺省为空”行为上。
-- 如果要验证页面副作用，先准备好隔离目录和输入数据。
+如果要验证截图或复杂布局，优先把产物写到 `PRODUCT_TRANSLATE_SELF_TEST_ARTIFACTS`。
 
 ## 5. TM / settings / 数据文件相关测试
 
@@ -111,7 +98,7 @@ assert not at.exception
 
 ### macOS 说明
 
-- 当前项目已收敛为 macOS 单平台，自测默认按 macOS 路径和命令组织。
+- 当前项目主线保留 PySide6 原生界面，自测默认按原生应用路径和命令组织。
 - 项目文件统一按 UTF-8 编辑和保存。
 
 ## 7. 最低交付标准
@@ -126,6 +113,6 @@ assert not at.exception
 推荐表述：
 
 - `已运行 powershell -ExecutionPolicy Bypass -File ./quality_gate.ps1`
-- `已运行 translate page AppTest smoke`
+- `已运行 native page offscreen smoke`
 - `已验证自定义输出目录分支`
 - `未覆盖真实 Excel COM 调用，原因是当前环境缺少 ...`

@@ -30,7 +30,7 @@ from settings import load_settings  # noqa: E402
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the local Word translator without opening the Streamlit UI.",
+        description="Run the local Word translator without opening the desktop UI.",
     )
     parser.add_argument("source", help="DOCX file path or folder path to translate.")
     parser.add_argument("--target-lang", help="Target language code or display name, such as en or 英文.")

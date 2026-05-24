@@ -8,7 +8,7 @@
 
 数据库结构修复由应用启动流程自动完成：
 
-- `app.py` 启动时调用 `core.tm_manager.init_db()`
+- 原生应用启动时由 `native_app/main.py` 调用 `core.tm_manager.init_db()`
 - `init_db()` 会先检查当前 TM schema 版本；如果检测到旧版数据库，会先备份旧库，再重建新 schema 并迁移旧词条
 - 随后统一确保当前表结构与索引存在，并回填 `source_hash` 为空的历史数据
 - 旧库备份会写到平台原生应用数据目录下的 `backups/tm/`
@@ -27,5 +27,6 @@
 
 - `python src/scripts/repair_db.py`
 - `python src/scripts/launcher.py`
+- `streamlit run app.py`
 
 以上路径会导致“文件不存在”错误。

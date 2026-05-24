@@ -1,6 +1,6 @@
 ---
 name: excel-translate-direct
-description: Use this skill when the user wants Codex to run the local Product_TranslateForExcel workbook translator directly on an Excel file or folder path, without launching the Streamlit app, and return the translated output files.
+description: Use this skill when the user wants Codex to run the local Product_TranslateForExcel workbook translator directly on an Excel file or folder path, without launching the desktop app, and return the translated output files.
 ---
 
 # Excel Translate Direct
