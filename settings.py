@@ -390,6 +390,16 @@ def _migrate_settings_to_v9(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v10(data: dict) -> dict:
+    """Migrate settings payloads to schema version 10."""
+    migrated = dict(data)
+    word_review_payload = dict(migrated.get("word_review") or {})
+    word_review_payload["highlight_unresolved"] = WORD_REVIEW_HIGHLIGHT_DEFAULT
+    migrated["word_review"] = word_review_payload
+    migrated["settings_version"] = 10
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -415,6 +425,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v8(migrated)
         elif next_version == 9:
             migrated = _migrate_settings_to_v9(migrated)
+        elif next_version == 10:
+            migrated = _migrate_settings_to_v10(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

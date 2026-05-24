@@ -70,6 +70,24 @@ QLabel#SectionTitle {
     font-weight: 700;
 }
 
+QLabel#ResultSuccess {
+    background: #ECFDF5;
+    color: #047857;
+    border: 1px solid #A7F3D0;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-weight: 700;
+}
+
+QLabel#ResultWarning {
+    background: #FFFBEB;
+    color: #B45309;
+    border: 1px solid #FDE68A;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-weight: 700;
+}
+
 QFrame#Card,
 QFrame#CommandBar,
 QFrame#Workspace,
@@ -104,6 +122,57 @@ QFrame#PhaseBadge {
 QLabel#PhaseBadgeText {
     color: #0B6FA4;
     font-size: 12px;
+    font-weight: 700;
+}
+
+QFrame#RecoveryCard {
+    background: #FFFFFF;
+    border: 1px solid #D9E2EC;
+    border-radius: 8px;
+}
+
+QLabel#RecoveryTitle {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QLabel#RecoveryBadge {
+    color: #0B6FA4;
+    background: #EAF6FD;
+    border: 1px solid #BDE3F8;
+    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QFrame#RecoveryMetric {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 7px;
+}
+
+QLabel#RecoveryMetricLabel {
+    color: #667085;
+    font-size: 10px;
+}
+
+QLabel#RecoveryMetricValue_active {
+    color: #0B6FA4;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+QLabel#RecoveryMetricValue_success {
+    color: #047857;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+QLabel#RecoveryMetricValue_warn {
+    color: #B45309;
+    font-size: 14px;
     font-weight: 700;
 }
 
@@ -176,6 +245,7 @@ QPlainTextEdit {
 }
 
 QComboBox {
+    combobox-popup: 0;
     min-height: 22px;
 }
 
@@ -185,12 +255,36 @@ QSpinBox[compact="true"] {
     padding: 5px 8px;
 }
 
+QFrame[tmTopCard="true"] QLabel[tmFieldLabel="true"],
+QFrame[tmTopCard="true"] QComboBox,
+QFrame[tmTopCard="true"] QSpinBox,
+QFrame[tmTopCard="true"] QPushButton,
+QFrame[tmTopCard="true"] QCheckBox {
+    font-size: 12px;
+}
+
+QFrame[tmTopCard="true"] QComboBox[compact="true"],
+QFrame[tmTopCard="true"] QSpinBox[compact="true"] {
+    min-height: 18px;
+    padding: 4px 7px;
+}
+
+QFrame[tmTopCard="true"] QPushButton[compact="true"] {
+    padding: 5px 8px;
+}
+
 QComboBox QAbstractItemView {
     background: #FFFFFF;
     border: 1px solid #CBD5E1;
+    outline: 0;
     selection-background-color: #EAF6FD;
     selection-color: #075985;
     padding: 4px;
+}
+
+QComboBox QAbstractItemView::item {
+    min-height: 24px;
+    padding: 4px 8px;
 }
 
 QCheckBox,
@@ -261,6 +355,43 @@ QTableWidget {
     border: none;
     gridline-color: #E2E8F0;
     alternate-background-color: #F8FAFC;
+}
+
+QTableWidget[appTable="true"] {
+    outline: 0;
+    selection-background-color: #EAF6FD;
+    selection-color: #0F172A;
+}
+
+QTableWidget[appTable="true"]::item {
+    padding: 7px 8px;
+}
+
+QTableWidget[appTable="true"]::item:selected,
+QTableWidget[appTable="true"]::item:selected:active,
+QTableWidget[appTable="true"]::item:selected:!active {
+    background: #EAF6FD;
+    color: #0F172A;
+}
+
+QTableWidget[appTable="true"]::item:focus {
+    background: #FFFFFF;
+    color: #0F172A;
+    border: 1px solid #7DD3FC;
+}
+
+QTableWidget[appTable="true"] QLineEdit {
+    background: #FFFFFF;
+    border: 1px solid #7DD3FC;
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: #0F172A;
+    selection-background-color: #BAE6FD;
+    selection-color: #0F172A;
+}
+
+QTableWidget[appTable="true"] QLineEdit:focus {
+    border-color: #0EA5E9;
 }
 
 QHeaderView::section {

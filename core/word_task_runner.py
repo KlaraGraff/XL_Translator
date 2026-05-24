@@ -40,6 +40,7 @@ from core.task_runner import (
     StatusMsg,
     StoppedMsg,
     TaskStopped,
+    WordRecoveryStatusMsg,
 )
 from core.translation_filter import (
     VALIDATION_STATUS_SOFT_PASS_REVIEW,
@@ -103,6 +104,37 @@ class _WordRecoveryOutcome:
     semantic_review_results: dict[str, TranslationValidationResult]
     unresolved_validation_results: dict[str, TranslationValidationResult]
     semantic_check_count: int = 0
+
+
+def _source_position_count(
+    source: str,
+    source_locations: dict[str, list[dict]] | None,
+) -> int:
+    return max(1, len((source_locations or {}).get(source) or []))
+
+
+def _sources_position_count(
+    sources: list[str] | set[str],
+    source_locations: dict[str, list[dict]] | None,
+) -> int:
+    return sum(_source_position_count(source, source_locations) for source in sources)
+
+
+def _iter_source_location_labels(
+    source: str,
+    source_locations: dict[str, list[dict]] | None,
+) -> list[str]:
+    locations = (source_locations or {}).get(source) or []
+    if not locations:
+        return ["未知文件 · 正文 · 未知位置"]
+
+    labels: list[str] = []
+    for location in locations:
+        file_name = str(location.get("file") or "未知文件")
+        section_path = str(location.get("section_path") or "正文")
+        location_label = str(location.get("location_label") or "未知位置")
+        labels.append(f"{file_name} · {section_path} · {location_label}")
+    return labels
 
 
 class WordTaskRunner:
@@ -349,6 +381,8 @@ class WordTaskRunner:
                     concurrency=concurrency,
                     should_stop=self.stop_requested,
                     log_callback=self._log,
+                    status_callback=lambda msg: self._queue.put(msg),
+                    source_locations=segment_locations,
                 )
 
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
@@ -418,13 +452,6 @@ class WordTaskRunner:
                     )
                 ]
                 if retry_sources:
-                    self._log(
-                        "WARN",
-                        (
-                            f"检测到 {len(retry_sources)} 条 Word 段落未获得有效译文，"
-                            "正在进入并行恢复池：单段重试与语义仲裁会并行执行..."
-                        ),
-                    )
                     for source in retry_sources:
                         recovery_pool.add_candidate(source, api_translations.get(source, ""))
                     recovery_outcome = recovery_pool.wait_for_completion()
@@ -490,18 +517,9 @@ class WordTaskRunner:
                             severity="needs_review",
                             validation_results=recovery_outcome.unresolved_validation_results,
                         )
-                        self._log(
-                            "ERROR",
-                            (
-                                f"仍有 {len(recovery_outcome.unresolved_sources)} 条 Word 段落没有有效译文，"
-                                "本次将保留原文并在结果中体现为未插入译文。"
-                            ),
-                        )
-                    if recovery_outcome.semantic_check_count:
-                        self._log(
-                            "INFO",
-                            f"Word 语义仲裁完成：{recovery_outcome.semantic_check_count} 次检查",
-                        )
+                        for source in recovery_outcome.unresolved_sources:
+                            for label in _iter_source_location_labels(source, segment_locations):
+                                self._log("WARN", f"{label} 保留原文，需复核")
                 else:
                     recovery_pool.wait_for_completion()
 
@@ -774,6 +792,8 @@ class _WordRecoveryPool:
         concurrency: int,
         should_stop,
         log_callback: Callable[[str, str], None] | None = None,
+        status_callback: Callable[[WordRecoveryStatusMsg], None] | None = None,
+        source_locations: dict[str, list[dict]] | None = None,
         enable_semantic: bool = True,
     ) -> None:
         try:
@@ -788,13 +808,73 @@ class _WordRecoveryPool:
         self._api_scheduler = api_scheduler
         self._should_stop = should_stop
         self._log_callback = log_callback
+        self._status_callback = status_callback
+        self._source_locations = source_locations or {}
         self._enable_semantic = enable_semantic and _engine_supports_chat(engine)
         self._states: dict[str, _WordRecoveryState] = {}
         self._futures = set()
         self._condition = threading.Condition()
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1)))
         self._semantic_check_count = 0
+        self._semantic_checked_sources: set[str] = set()
+        self._semantic_accepted_sources: set[str] = set()
+        self._semantic_uncertain_sources: set[str] = set()
+        self._latest_retry_round = 0
         self._fatal_error: BaseException | None = None
+
+    def _position_count(self, source: str) -> int:
+        return _source_position_count(source, self._source_locations)
+
+    def _log_source_locations(self, level: str, source: str, message: str) -> None:
+        if not self._log_callback:
+            return
+        for label in _iter_source_location_labels(source, self._source_locations):
+            self._log_callback(level, f"{label} {message}")
+
+    def _emit_status_locked(self) -> None:
+        if not self._status_callback:
+            return
+        retry_processing_count = sum(
+            self._position_count(source)
+            for source, state in self._states.items()
+            if state.retry_inflight
+        )
+        retry_recovered_count = sum(
+            self._position_count(source)
+            for source, state in self._states.items()
+            if state.accepted_by in {"strict_retry", "word_recovery"}
+        )
+        retry_unresolved_count = sum(
+            self._position_count(source)
+            for source, state in self._states.items()
+            if not state.accepted
+        )
+        semantic_processing_count = sum(
+            self._position_count(source)
+            for source, state in self._states.items()
+            if state.semantic_inflight > 0
+        )
+        msg = WordRecoveryStatusMsg(
+            retry_round=self._latest_retry_round,
+            retry_total=self._max_attempts,
+            retry_processing_count=retry_processing_count,
+            retry_recovered_count=retry_recovered_count,
+            retry_unresolved_count=retry_unresolved_count,
+            semantic_processing_count=semantic_processing_count,
+            semantic_checked_count=_sources_position_count(
+                self._semantic_checked_sources,
+                self._source_locations,
+            ),
+            semantic_accepted_count=_sources_position_count(
+                self._semantic_accepted_sources,
+                self._source_locations,
+            ),
+            semantic_uncertain_count=_sources_position_count(
+                self._semantic_uncertain_sources,
+                self._source_locations,
+            ),
+        )
+        self._status_callback(msg)
 
     def add_candidate(
         self,
@@ -832,6 +912,7 @@ class _WordRecoveryPool:
             state.last_validation = evaluation.validation
             self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
             self._schedule_retry_locked(state)
+            self._emit_status_locked()
             self._condition.notify_all()
 
     def wait_for_completion(self) -> _WordRecoveryOutcome:
@@ -897,6 +978,7 @@ class _WordRecoveryPool:
         state.accepted_translation = str(candidate or "").strip()
         state.accepted_by = accepted_by
         state.accepted_validation = validation
+        self._emit_status_locked()
         self._condition.notify_all()
 
     def _schedule_retry_locked(self, state: _WordRecoveryState) -> None:
@@ -908,6 +990,8 @@ class _WordRecoveryPool:
             return
         state.retry_inflight = True
         attempt_index = state.attempts_done + 1
+        self._latest_retry_round = max(self._latest_retry_round, attempt_index)
+        self._emit_status_locked()
         self._submit(self._run_retry_attempt, state.source, attempt_index)
 
     def _schedule_semantic_locked(
@@ -931,6 +1015,7 @@ class _WordRecoveryPool:
             return
         state.seen_semantic_candidates.add(candidate_key)
         state.semantic_inflight += 1
+        self._emit_status_locked()
         self._submit(self._run_semantic_check, state.source, candidate, validation)
 
     def _submit(self, fn, *args) -> None:
@@ -954,11 +1039,11 @@ class _WordRecoveryPool:
                 self._condition.notify_all()
 
     def _run_retry_attempt(self, source: str, attempt_index: int) -> None:
-        if self._log_callback:
-            self._log_callback(
-                "INFO",
-                f"Word 单段并行重试第 {attempt_index}/{self._max_attempts} 轮：1 条",
-            )
+        self._log_source_locations(
+            "INFO",
+            source,
+            f"正在单段重试（第 {attempt_index}/{self._max_attempts} 轮）",
+        )
         retry_stats = WordBatchRunStats()
         retry_translations = translate_word_texts(
             [source],
@@ -998,6 +1083,7 @@ class _WordRecoveryPool:
             state.retry_inflight = False
             state.attempts_done = max(state.attempts_done, attempt_index)
             if state.accepted:
+                self._emit_status_locked()
                 self._condition.notify_all()
                 return
             if evaluation.accepted:
@@ -1007,10 +1093,20 @@ class _WordRecoveryPool:
                     else "strict_retry"
                 )
                 self._accept_locked(state, candidate, accepted_by, evaluation.validation)
+                self._log_source_locations("OK", source, "单段重试恢复")
                 return
             state.last_validation = evaluation.validation
+            if attempt_index >= self._max_attempts:
+                self._log_source_locations("WARN", source, "单段重试未恢复")
+            else:
+                self._log_source_locations(
+                    "WARN",
+                    source,
+                    f"单段重试未恢复，将继续重试（已完成 {attempt_index}/{self._max_attempts} 轮）",
+                )
             self._schedule_semantic_locked(state, candidate, evaluation.validation)
             self._schedule_retry_locked(state)
+            self._emit_status_locked()
             self._condition.notify_all()
 
     def _run_semantic_check(
@@ -1019,6 +1115,7 @@ class _WordRecoveryPool:
         candidate: str,
         validation: TranslationValidationResult,
     ) -> None:
+        self._log_source_locations("INFO", source, "正在语义仲裁")
         result = _run_semantic_arbitration(
             self._engine,
             source,
@@ -1038,13 +1135,21 @@ class _WordRecoveryPool:
             if state is None:
                 return
             state.semantic_inflight = max(0, state.semantic_inflight - 1)
+            self._semantic_checked_sources.add(source)
             if not state.accepted and result.equivalent:
+                self._semantic_uncertain_sources.discard(source)
+                self._semantic_accepted_sources.add(source)
                 self._accept_locked(
                     state,
                     candidate,
                     "semantic",
                     _semantic_review_validation(validation, result),
                 )
+                self._log_source_locations("OK", source, "语义仲裁接受")
+            elif not state.accepted and not result.equivalent:
+                self._semantic_uncertain_sources.add(source)
+                self._log_source_locations("WARN", source, f"语义仲裁未接受（{result.verdict}）")
+            self._emit_status_locked()
             self._condition.notify_all()
 
 

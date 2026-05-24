@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -10,7 +9,6 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,7 +22,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -54,12 +51,25 @@ from core.language_registry import (
     is_supported_target_lang,
     remember_recent_target_lang,
 )
-from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
+from core.task_runner import (
+    DoneMsg,
+    ErrorMsg,
+    LogMsg,
+    ProgressMsg,
+    StatusMsg,
+    StoppedMsg,
+    WordRecoveryStatusMsg,
+)
 from core.word_document import WordFileItem, is_supported_word_file
 from core.word_task_runner import WordTaskRunner
 from native_app.workers import WordScanWorker
 from native_app.widgets import (
-    configure_searchable_combo,
+    build_app_tooltip_html,
+    configure_app_table,
+    create_check_table_item,
+    create_searchable_combo,
+    create_table_item,
+    MiddleElideLabel,
     refresh_combo_completer,
     select_combo_text_match,
 )
@@ -91,12 +101,39 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
     return label
 
 
+def _format_elapsed(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    rest = int(seconds % 60)
+    if minutes:
+        return f"{minutes}分{rest}秒"
+    return f"{rest}秒"
+
+
+def _split_word_issues(issues: list[dict]) -> tuple[list[dict], list[dict]]:
+    resolved = [issue for issue in issues if issue.get("severity") == "resolved"]
+    review = [issue for issue in issues if issue.get("severity") != "resolved"]
+    return review, resolved
+
+
+def _build_done_summary(
+    *,
+    generated_count: int,
+    failed_count: int,
+    review_count: int,
+    resolved_count: int,
+) -> str:
+    parts = [f"已生成 {generated_count} 个文件"]
+    if failed_count:
+        parts.append(f"生成失败 {failed_count} 个文件")
+    if review_count:
+        parts.append(f"需复核 {review_count} 段")
+    if resolved_count:
+        parts.append(f"已自动处理 {resolved_count} 段")
+    return "任务完成：" + "，".join(parts) + "。"
+
+
 def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
-    item_html = "".join(f"<li>{html.escape(item)}</li>" for item in items or [])
-    body = f"<b>{html.escape(title)}</b><br>{html.escape(summary)}"
-    if item_html:
-        body += f"<ul>{item_html}</ul>"
-    return body
+    return build_app_tooltip_html(title, summary, items)
 
 
 def _set_tooltip(
@@ -106,7 +143,7 @@ def _set_tooltip(
     items: list[str] | None = None,
 ) -> None:
     widget.setToolTip(_tooltip(title, summary, items))
-    widget.setToolTipDuration(3600)
+    widget.setToolTipDuration(4200)
 
 
 def _field_label(
@@ -144,6 +181,7 @@ class WordTranslatePage(QWidget):
         self.scan_worker: WordScanWorker | None = None
         self.log_entries: list[dict[str, str]] = []
         self.progress: ProgressMsg | None = None
+        self.recovery_status: WordRecoveryStatusMsg | None = None
         self.status_text = ""
         self.done: DoneMsg | None = None
         self.stop_message = ""
@@ -308,8 +346,7 @@ class WordTranslatePage(QWidget):
             ["可与源语言独立选择；新配置默认目标语言为英文。"],
         )
         layout.addWidget(self.target_lang_label)
-        self.target_combo = QComboBox()
-        configure_searchable_combo(self.target_combo)
+        self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
             self.target_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
         self._load_target_options()
@@ -328,8 +365,7 @@ class WordTranslatePage(QWidget):
             "选择原文语言，可与目标语言独立设置。",
         )
         layout.addWidget(self.source_lang_label)
-        self.source_lang_combo = QComboBox()
-        configure_searchable_combo(self.source_lang_combo)
+        self.source_lang_combo = create_searchable_combo()
         if self.source_lang_combo.lineEdit() is not None:
             self.source_lang_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
         self._load_source_options()
@@ -436,10 +472,14 @@ class WordTranslatePage(QWidget):
         layout.setSpacing(0)
         label_widget = QLabel(label)
         label_widget.setObjectName("PillLabel")
-        value_widget = QLabel(value)
+        value_widget = MiddleElideLabel(value) if max_width is not None else QLabel(value)
         value_widget.setObjectName("PillValue")
         value_widget.setWordWrap(False)
-        value_widget.setMaximumWidth(260)
+        if max_width is not None:
+            value_widget.setMaximumWidth(max(1, max_width - 16))
+            value_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        else:
+            value_widget.setMaximumWidth(260)
         value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(label_widget)
         layout.addWidget(value_widget)
@@ -530,24 +570,18 @@ class WordTranslatePage(QWidget):
         )
         self.table = QTableWidget(len(self.files), 5)
         self.table.setHorizontalHeaderLabels(["选择", "文件名", "大小", "段落", "表格"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        configure_app_table(self.table, row_height=38)
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
         self._configure_file_table_columns()
         for row, item in enumerate(self.files):
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            check.setCheckState(Qt.CheckState.Checked)
-            check.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 0, check)
-            self.table.setItem(row, 1, QTableWidgetItem(item.name))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{item.size_kb:.1f} KB"))
-            self.table.setItem(row, 3, QTableWidgetItem(str(item.paragraph_count)))
-            self.table.setItem(row, 4, QTableWidgetItem(str(item.table_count)))
+            self.table.setItem(row, 0, create_check_table_item())
+            self.table.setItem(row, 1, create_table_item(item.name))
+            self.table.setItem(row, 2, create_table_item(f"{item.size_kb:.1f} KB"))
+            self.table.setItem(row, 3, create_table_item(item.paragraph_count))
+            self.table.setItem(row, 4, create_table_item(item.table_count))
         self.table.itemChanged.connect(self._on_file_selection_changed)
         self._refresh_selection_summary()
         layout.addWidget(self.table, 1)
@@ -558,6 +592,8 @@ class WordTranslatePage(QWidget):
         self.running_status = QLabel("初始化中，请稍候...")
         self.running_status.setObjectName("MutedText")
         layout.addWidget(self.running_status)
+        self.recovery_summary = self._build_recovery_summary()
+        layout.addWidget(self.recovery_summary)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         layout.addWidget(self.progress_bar)
@@ -573,34 +609,100 @@ class WordTranslatePage(QWidget):
         if done is None:
             layout.addWidget(QLabel("Word 翻译任务已完成。"))
             return
-        success_count = sum(1 for item in done.file_results if item.get("success"))
-        failure_count = len(done.file_results) - success_count
+        generated_count = sum(1 for item in done.file_results if item.get("success"))
+        failure_count = len(done.file_results) - generated_count
+        issues = list(done.issues or [])
+        review_issues, resolved_issues = _split_word_issues(issues)
+        summary_label = QLabel(
+            "翻译成功。"
+            if failure_count == 0 and not review_issues
+            else _build_done_summary(
+                generated_count=generated_count,
+                failed_count=failure_count,
+                review_count=len(review_issues),
+                resolved_count=len(resolved_issues),
+            )
+        )
+        summary_label.setWordWrap(True)
+        summary_label.setObjectName("ResultSuccess" if failure_count == 0 and not review_issues else "ResultWarning")
+        layout.addWidget(summary_label)
         layout.addLayout(
             self._build_result_kpis(
                 [
-                    ("成功文件", str(success_count)),
-                    ("失败文件", str(failure_count)),
-                    ("输出目录", done.output_dir),
-                    ("耗时", f"{done.elapsed_sec:.1f}s"),
+                    ("已生成文件", str(generated_count)),
+                    ("生成失败", str(failure_count)),
+                    ("需复核段落", str(len(review_issues))),
+                    ("已自动处理", str(len(resolved_issues))),
+                    ("耗时", _format_elapsed(done.elapsed_sec)),
                     ("TM 命中", str(done.tm_hit_count)),
-                    ("API 调用", str(done.api_call_count)),
+                    ("API 翻译", str(done.api_call_count)),
                 ]
             )
         )
-        output = QLabel(done.output_dir)
+        output_label = _label("输出目录", "PillLabel")
+        layout.addWidget(output_label)
+        output = MiddleElideLabel(done.output_dir)
         output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         output.setObjectName("MutedText")
         layout.addWidget(output)
+
+        ordered_issues = [*review_issues, *resolved_issues]
+        if ordered_issues:
+            layout.addWidget(_label("结果定位清单", "SectionTitle"))
+            issue_table = QTableWidget(len(ordered_issues), 5)
+            issue_table.setHorizontalHeaderLabels(["类型", "文件", "位置", "问题", "处理"])
+            configure_app_table(issue_table, row_height=48, word_wrap=True)
+            issue_table.horizontalHeader().setStretchLastSection(True)
+            issue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            issue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            issue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            issue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            for row, issue in enumerate(ordered_issues):
+                issue_type = "已自动处理" if issue.get("severity") == "resolved" else "需复核"
+                position = " · ".join(
+                    part
+                    for part in [
+                        str(issue.get("section_path") or "正文"),
+                        str(issue.get("location_label") or "未知位置"),
+                    ]
+                    if part
+                )
+                table_values = [
+                    issue_type,
+                    str(issue.get("file") or ""),
+                    position,
+                    str(issue.get("problem") or issue.get("snippet") or ""),
+                    str(issue.get("status") or ""),
+                ]
+                for col, value in enumerate(table_values):
+                    issue_table.setItem(row, col, create_table_item(value))
+            issue_table.setMinimumHeight(min(260, 44 + 50 * max(1, min(len(ordered_issues), 4))))
+            issue_table.setMaximumHeight(360)
+            layout.addWidget(issue_table)
+
         table = QTableWidget(len(done.file_results), 3)
         table.setHorizontalHeaderLabels(["文件名", "状态", "详情"])
-        table.verticalHeader().setVisible(False)
+        configure_app_table(table, row_height=40, word_wrap=True)
         table.horizontalHeader().setStretchLastSection(True)
         for row, result in enumerate(done.file_results):
-            table.setItem(row, 0, QTableWidgetItem(str(result.get("name") or "")))
-            table.setItem(row, 1, QTableWidgetItem("成功" if result.get("success") else "失败"))
-            table.setItem(row, 2, QTableWidgetItem(str(result.get("error") or "")))
+            table.setItem(row, 0, create_table_item(result.get("name") or ""))
+            table.setItem(row, 1, create_table_item(self._format_file_result_status(result)))
+            table.setItem(row, 2, create_table_item(result.get("error") or ""))
         table.resizeColumnsToContents()
         layout.addWidget(table, 1)
+
+    def _format_file_result_status(self, result: dict) -> str:
+        if not result.get("success"):
+            return "生成失败"
+        review_issues, resolved_issues = _split_word_issues(list(result.get("issues") or []))
+        parts = ["已生成"]
+        if not review_issues:
+            parts.append("成功")
+        if review_issues:
+            parts.append(f"需复核 {len(review_issues)} 段")
+        if resolved_issues:
+            parts.append(f"已自动处理 {len(resolved_issues)} 段")
+        return " / ".join(parts)
 
     def _render_error_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("任务异常", "SectionTitle"))
@@ -822,6 +924,76 @@ class WordTranslatePage(QWidget):
         table.setMinimumHeight(target_height)
         table.setMaximumHeight(target_height)
 
+    def _build_recovery_card(
+        self,
+        title: str,
+        metric_labels: tuple[str, str, str],
+    ) -> tuple[QFrame, QLabel, tuple[QLabel, QLabel, QLabel]]:
+        card = QFrame()
+        card.setObjectName("RecoveryCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 9, 12, 10)
+        layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title_label = _label(title, "RecoveryTitle")
+        badge = _label("等待候选", "RecoveryBadge")
+        header.addWidget(title_label)
+        header.addStretch(1)
+        header.addWidget(badge)
+        layout.addLayout(header)
+
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(6)
+        value_labels: list[QLabel] = []
+        tones = ("active", "success", "warn")
+        for label_text, tone in zip(metric_labels, tones):
+            metric = QFrame()
+            metric.setObjectName("RecoveryMetric")
+            metric.setProperty("metricTone", tone)
+            metric_layout = QVBoxLayout(metric)
+            metric_layout.setContentsMargins(8, 5, 8, 5)
+            metric_layout.setSpacing(1)
+            metric_layout.addWidget(_label(label_text, "RecoveryMetricLabel"))
+            value_label = _label("0", f"RecoveryMetricValue_{tone}")
+            metric_layout.addWidget(value_label)
+            value_labels.append(value_label)
+            metric_row.addWidget(metric, 1)
+        layout.addLayout(metric_row)
+        return card, badge, tuple(value_labels)
+
+    def _build_recovery_summary(self) -> QWidget:
+        summary = QWidget()
+        summary.setObjectName("RecoverySummary")
+        layout = QHBoxLayout(summary)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        retry_card, self.retry_badge, retry_values = self._build_recovery_card(
+            "单段重试",
+            ("正在", "已恢复", "未恢复"),
+        )
+        semantic_card, self.semantic_badge, semantic_values = self._build_recovery_card(
+            "语义仲裁",
+            ("正在", "已接受", "未接受"),
+        )
+        (
+            self.retry_processing_value,
+            self.retry_recovered_value,
+            self.retry_unresolved_value,
+        ) = retry_values
+        (
+            self.semantic_processing_value,
+            self.semantic_accepted_value,
+            self.semantic_uncertain_value,
+        ) = semantic_values
+
+        layout.addWidget(retry_card, 1)
+        layout.addWidget(semantic_card, 1)
+        summary.setVisible(False)
+        return summary
+
     def _selected_target_lang(self) -> str:
         if (
             hasattr(self, "target_combo")
@@ -998,6 +1170,7 @@ class WordTranslatePage(QWidget):
         self.phase = "running"
         self.log_entries = []
         self.progress = None
+        self.recovery_status = None
         self.status_text = ""
         self.done = None
         self.stop_message = ""
@@ -1037,6 +1210,8 @@ class WordTranslatePage(QWidget):
                 self.progress = msg
             elif isinstance(msg, StatusMsg):
                 self.status_text = msg.phase_desc
+            elif isinstance(msg, WordRecoveryStatusMsg):
+                self.recovery_status = msg
             elif isinstance(msg, DoneMsg):
                 self.done = msg
                 self.runner = None
@@ -1086,7 +1261,37 @@ class WordTranslatePage(QWidget):
                 f"{progress.phase_name} | {progress.step_done} / {progress.step_total}"
                 + (f"\n{status}" if status else "")
             )
+        self._refresh_recovery_summary()
         self._refresh_log_view()
+
+    def _refresh_recovery_summary(self) -> None:
+        if not hasattr(self, "recovery_summary"):
+            return
+        summary = self.recovery_status
+        self.recovery_summary.setVisible(summary is not None)
+        if summary is None:
+            return
+
+        if summary.retry_round and summary.retry_total:
+            self.retry_badge.setText(f"第 {summary.retry_round}/{summary.retry_total} 轮")
+        else:
+            self.retry_badge.setText("等待候选")
+        semantic_badge = "处理中" if summary.semantic_processing_count else "已完成"
+        if (
+            summary.semantic_processing_count == 0
+            and summary.semantic_checked_count == 0
+            and summary.semantic_accepted_count == 0
+            and summary.semantic_uncertain_count == 0
+        ):
+            semantic_badge = "等待候选"
+        self.semantic_badge.setText(semantic_badge)
+
+        self.retry_processing_value.setText(str(summary.retry_processing_count))
+        self.retry_recovered_value.setText(str(summary.retry_recovered_count))
+        self.retry_unresolved_value.setText(str(summary.retry_unresolved_count))
+        self.semantic_processing_value.setText(str(summary.semantic_processing_count))
+        self.semantic_accepted_value.setText(str(summary.semantic_accepted_count))
+        self.semantic_uncertain_value.setText(str(summary.semantic_uncertain_count))
 
     def _refresh_log_view(self) -> None:
         if not hasattr(self, "log_view"):
@@ -1120,6 +1325,7 @@ class WordTranslatePage(QWidget):
         self.done = None
         self.runner = None
         self.progress = None
+        self.recovery_status = None
         self.status_text = ""
         self.stop_message = ""
         self.log_entries = []

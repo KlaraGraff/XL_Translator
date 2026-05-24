@@ -139,7 +139,7 @@ WORD_BATCH_SPLIT_CHARS_MAX     = 30000
 WORD_STRICT_RETRY_ATTEMPTS_DEFAULT = 3
 WORD_STRICT_RETRY_ATTEMPTS_MIN     = 1
 WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
-WORD_REVIEW_HIGHLIGHT_DEFAULT      = False
+WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
 WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = "FFF2CC"
 
 # ── 全局并发控制（输入框按模式限制区间）────────────────────
@@ -275,4 +275,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 9
+SETTINGS_SCHEMA_VERSION = 10

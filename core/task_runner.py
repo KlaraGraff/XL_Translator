@@ -65,6 +65,20 @@ class StatusMsg:
 
 
 @dataclass
+class WordRecoveryStatusMsg:
+    """Word recovery summary for the non-scrolling execution monitor."""
+    retry_round: int = 0
+    retry_total: int = 0
+    retry_processing_count: int = 0
+    retry_recovered_count: int = 0
+    retry_unresolved_count: int = 0
+    semantic_processing_count: int = 0
+    semantic_checked_count: int = 0
+    semantic_accepted_count: int = 0
+    semantic_uncertain_count: int = 0
+
+
+@dataclass
 class LogMsg:
     level:   str           # INFO / OK / WARN / ERROR
     message: str

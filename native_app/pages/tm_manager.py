@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import csv
-import html
 import io
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -50,7 +48,12 @@ from core.tm_cleaner import (
 )
 from native_app.workers import TmCleanWorker
 from native_app.widgets import (
-    configure_searchable_combo,
+    build_app_tooltip_html,
+    configure_app_table,
+    create_check_table_item,
+    create_editable_combo,
+    create_option_combo,
+    create_searchable_combo,
     refresh_combo_completer,
     select_combo_text_match,
 )
@@ -61,12 +64,23 @@ HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
 COMPACT_CONTROL_HEIGHT = 32
 COMPACT_BUTTON_HEIGHT = 34
+TM_SCOPE_CARD_MAX_WIDTH = 330
+TM_OVERVIEW_CARD_MAX_WIDTH = 420
+CLEAN_MODE_MIN_WIDTH = 142
+CLEAN_ENGINE_MIN_WIDTH = 150
+CLEAN_MODEL_MIN_WIDTH = 220
 WORKSPACE_ACTION_BUTTON_WIDTH = 96
 WORKSPACE_ACTION_BUTTON_HEIGHT = 38
 ENTRY_DIALOG_WIDTH = 860
 ENTRY_DIALOG_MIN_WIDTH = 760
 ENTRY_DIALOG_FIELD_HEIGHT = 72
 PAGE_SIZE = 10
+CLEAN_NOTICE_VISIBLE_MS = 8000
+ENTRY_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+ENTRY_SOURCE_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+ENTRY_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+ENTRY_PINNED_ROLE = int(Qt.ItemDataRole.UserRole) + 4
+DIFF_TARGET_ROLE = int(Qt.ItemDataRole.UserRole) + 11
 
 
 def _clear_layout(layout) -> None:
@@ -89,11 +103,7 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
 
 
 def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
-    item_html = "".join(f"<li>{html.escape(item)}</li>" for item in items or [])
-    body = f"<b>{html.escape(title)}</b><br>{html.escape(summary)}"
-    if item_html:
-        body += f"<ul>{item_html}</ul>"
-    return body
+    return build_app_tooltip_html(title, summary, items)
 
 
 def _set_tooltip(
@@ -103,7 +113,7 @@ def _set_tooltip(
     items: list[str] | None = None,
 ) -> None:
     widget.setToolTip(_tooltip(title, summary, items))
-    widget.setToolTipDuration(3600)
+    widget.setToolTipDuration(4200)
 
 
 def _field_label(
@@ -112,7 +122,19 @@ def _field_label(
     summary: str,
     items: list[str] | None = None,
 ) -> QLabel:
+    del title, summary, items
     label = QLabel(text)
+    label.setProperty("tmFieldLabel", "true")
+    return label
+
+
+def _module_title(
+    text: str,
+    title: str,
+    summary: str,
+    items: list[str] | None = None,
+) -> QLabel:
+    label = _label(text, "SectionTitle")
     _set_tooltip(label, title, summary, items)
     return label
 
@@ -243,6 +265,18 @@ class TmManagerPage(QWidget):
         self.clean_worker: TmCleanWorker | None = None
         self.clean_progress: dict | None = None
         self.clean_suggestions: list[CleanSuggestion] = []
+        self._updating_entry_table = False
+        self._updating_diff_table = False
+        self._clean_notice_text = ""
+        self._clean_notice_seen = False
+        self._is_page_active = False
+        self._pending_language_sync: tuple[str, str] | None = None
+        self._clean_session_lang_pair = ""
+        self._clean_session_target_lang = ""
+        self._clean_session_source_lang = ""
+        self._clean_notice_timer = QTimer(self)
+        self._clean_notice_timer.setSingleShot(True)
+        self._clean_notice_timer.timeout.connect(self._hide_clean_notice)
 
         tm_manager.init_db()
         self._build_ui()
@@ -251,6 +285,21 @@ class TmManagerPage(QWidget):
     @property
     def lang_pair(self) -> str:
         return build_lang_pair(self._selected_target_lang(), self._selected_source_lang())
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        super().showEvent(event)
+        self.set_page_active(True)
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self.set_page_active(False)
+        super().hideEvent(event)
+
+    def set_page_active(self, active: bool) -> None:
+        self._is_page_active = active
+        if active:
+            self._arm_clean_notice_timer()
+        else:
+            self._clean_notice_timer.stop()
 
     def refresh_settings(self) -> None:
         self._refresh_language_options()
@@ -262,7 +311,13 @@ class TmManagerPage(QWidget):
         source_lang = str(source_lang or "").strip()
         if not target_lang or not source_lang:
             return
+        if self._is_clean_session_locked():
+            self._pending_language_sync = (target_lang, source_lang)
+            return
 
+        self._apply_synced_language(target_lang, source_lang)
+
+    def _apply_synced_language(self, target_lang: str, source_lang: str) -> None:
         old_lang_pair = self.lang_pair
         self.settings.target_lang = target_lang
         self.settings.source_lang = source_lang
@@ -271,6 +326,18 @@ class TmManagerPage(QWidget):
             self.keyword = ""
         self._refresh_language_options()
         self._refresh_all()
+
+    def _apply_pending_language_sync(self) -> bool:
+        pending = self._pending_language_sync
+        self._pending_language_sync = None
+        if pending is None:
+            return False
+        target_lang, source_lang = pending
+        self._apply_synced_language(target_lang, source_lang)
+        return True
+
+    def _is_clean_session_locked(self) -> bool:
+        return self.phase in {"cleaning", "review"}
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -333,11 +400,9 @@ class TmManagerPage(QWidget):
             1,
             0,
         )
-        self.source_combo = QComboBox()
-        configure_searchable_combo(self.source_combo)
+        self.source_combo = create_searchable_combo()
         if self.source_combo.lineEdit() is not None:
             self.source_combo.lineEdit().setPlaceholderText("输入源语言")
-        _set_tooltip(self.source_combo, "源语言", "输入前几个字可快速匹配词库源语言。")
         _compact_control(self.source_combo)
         form_grid.addWidget(self.source_combo, 1, 1)
 
@@ -346,11 +411,9 @@ class TmManagerPage(QWidget):
             2,
             0,
         )
-        self.target_combo = QComboBox()
-        configure_searchable_combo(self.target_combo)
+        self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
             self.target_combo.lineEdit().setPlaceholderText("输入目标语言")
-        _set_tooltip(self.target_combo, "目标语言", "输入前几个字可快速匹配词库目标语言。")
         _compact_control(self.target_combo)
         form_grid.addWidget(self.target_combo, 2, 1)
 
@@ -364,45 +427,56 @@ class TmManagerPage(QWidget):
 
     def _build_scope_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
-        row.addWidget(frame, 3)
-        layout.addWidget(_label("词库规则与语言范围", "SectionTitle"))
+        frame.setProperty("tmTopCard", "true")
+        frame.setMaximumWidth(TM_SCOPE_CARD_MAX_WIDTH)
+        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        row.addWidget(frame, 0)
+        layout.addWidget(
+            _module_title(
+                "词库规则与语言范围",
+                "词库规则与语言范围",
+                "设置当前词库的自动入库长度和语言对范围。",
+                [
+                    "最长词上限只影响自动入库，手动新增不受限制。",
+                    "源语言和目标语言共同决定当前显示和维护的词库范围。",
+                ],
+            )
+        )
         self._build_scope_controls(layout)
 
     def _build_overview_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
-        row.addWidget(frame, 4)
-        layout.addWidget(_label("词库概览与交换", "SectionTitle"))
+        frame.setProperty("tmTopCard", "true")
+        frame.setMaximumWidth(TM_OVERVIEW_CARD_MAX_WIDTH)
+        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        row.addWidget(frame, 0)
+        layout.addWidget(
+            _module_title(
+                "词库概览与交换",
+                "词库概览与交换",
+                "查看当前语言对的词条统计，并执行导入导出。",
+                [
+                    "JSON 适合完整备份和迁移。",
+                    "CSV 适合人工查看、编辑和外部表格处理。",
+                    "导入词库时会按原文判断重复项。",
+                ],
+            )
+        )
 
         buttons = QHBoxLayout()
         buttons.setSpacing(6)
         self.export_json_button = QPushButton("导出 JSON")
         _compact_control(self.export_json_button, COMPACT_BUTTON_HEIGHT)
-        _set_tooltip(
-            self.export_json_button,
-            "导出 JSON",
-            "导出当前语言对的全部词条，适合完整备份或迁移。",
-        )
         self.export_json_button.clicked.connect(lambda: self._export_entries("json"))
         buttons.addWidget(self.export_json_button)
 
         self.export_csv_button = QPushButton("导出 CSV")
         _compact_control(self.export_csv_button, COMPACT_BUTTON_HEIGHT)
-        _set_tooltip(
-            self.export_csv_button,
-            "导出 CSV",
-            "导出为表格格式，便于人工查看或外部编辑。",
-        )
         self.export_csv_button.clicked.connect(lambda: self._export_entries("csv"))
         buttons.addWidget(self.export_csv_button)
 
         self.import_button = QPushButton("导入词库")
         _compact_control(self.import_button, COMPACT_BUTTON_HEIGHT)
-        _set_tooltip(
-            self.import_button,
-            "导入词库",
-            "导入 JSON 或 CSV 词库文件，可选择跳过或覆盖重复原文。",
-            ["建议导入前先导出当前词库作为备份。"],
-        )
         self.import_button.clicked.connect(self._import_entries)
         buttons.addWidget(self.import_button)
         layout.addLayout(buttons)
@@ -414,19 +488,26 @@ class TmManagerPage(QWidget):
 
     def _build_cleaner_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
-        row.addWidget(frame, 7)
+        frame.setProperty("tmTopCard", "true")
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row.addWidget(frame, 1)
 
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
-        title_row.addWidget(_label("深度清洗", "SectionTitle"))
+        self.cleaner_title_label = _module_title(
+            "深度清洗",
+            "深度清洗",
+            "用 AI 对当前语言对的未固定词条做统一清理。",
+            [
+                "差异确认模式：先生成建议，用户逐条确认且可编辑后再写入。",
+                "直接覆写模式：自动写入清洗结果，效率更高，但更适合已有备份或低风险词库。",
+                "固定词条会被保护，不参与本次清洗。",
+            ],
+        )
+        title_row.addWidget(self.cleaner_title_label)
         title_row.addStretch(1)
         self.auto_pin_check = QCheckBox("清洗后自动固定")
         self.auto_pin_check.setChecked(self.settings.auto_pin_after_clean)
-        _set_tooltip(
-            self.auto_pin_check,
-            "清洗后自动固定",
-            "将本次写入的清洗结果设为固定词条，避免重复清洗和误删。",
-        )
         self.auto_pin_check.toggled.connect(self._on_cleaner_settings_changed)
         title_row.addWidget(self.auto_pin_check)
         layout.addLayout(title_row)
@@ -434,9 +515,12 @@ class TmManagerPage(QWidget):
         field_grid = QGridLayout()
         field_grid.setHorizontalSpacing(8)
         field_grid.setVerticalSpacing(6)
-        field_grid.setColumnStretch(0, 1)
-        field_grid.setColumnStretch(1, 1)
-        field_grid.setColumnStretch(2, 2)
+        field_grid.setColumnMinimumWidth(0, CLEAN_MODE_MIN_WIDTH)
+        field_grid.setColumnMinimumWidth(1, CLEAN_ENGINE_MIN_WIDTH)
+        field_grid.setColumnMinimumWidth(2, CLEAN_MODEL_MIN_WIDTH)
+        field_grid.setColumnStretch(0, 2)
+        field_grid.setColumnStretch(1, 2)
+        field_grid.setColumnStretch(2, 3)
         layout.addLayout(field_grid)
 
         field_grid.addWidget(
@@ -444,23 +528,15 @@ class TmManagerPage(QWidget):
             0,
             0,
         )
-        self.clean_mode_combo = QComboBox()
+        self.clean_mode_combo = create_option_combo()
         self.clean_mode_combo.addItem("差异确认模式", "diff")
         self.clean_mode_combo.addItem("直接覆写模式", "overwrite")
         self.clean_mode_combo.setCurrentIndex(
             1 if self.settings.cleaner_mode == "overwrite" else 0
         )
-        _set_tooltip(
-            self.clean_mode_combo,
-            "清洗模式",
-            "控制 AI 清洗建议的落库方式。",
-            [
-                "差异确认模式：逐条审核后写入，更稳妥。",
-                "直接覆写模式：自动写入建议，效率更高但需谨慎。",
-            ],
-        )
         self.clean_mode_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
         _compact_control(self.clean_mode_combo)
+        self.clean_mode_combo.setMinimumWidth(CLEAN_MODE_MIN_WIDTH)
         field_grid.addWidget(self.clean_mode_combo, 1, 0)
 
         field_grid.addWidget(
@@ -468,12 +544,12 @@ class TmManagerPage(QWidget):
             0,
             1,
         )
-        self.clean_engine_combo = QComboBox()
+        self.clean_engine_combo = create_option_combo()
         self.clean_engine_combo.addItems(list(CLOUD_ENGINES.keys()))
         self.clean_engine_combo.setCurrentText(_cloud_provider_label(self.settings.cleaner_engine))
-        _set_tooltip(self.clean_engine_combo, "清洗引擎", "选择用于深度清洗的云端模型服务商。")
         self.clean_engine_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
         _compact_control(self.clean_engine_combo)
+        self.clean_engine_combo.setMinimumWidth(CLEAN_ENGINE_MIN_WIDTH)
         field_grid.addWidget(self.clean_engine_combo, 1, 1)
 
         field_grid.addWidget(
@@ -481,19 +557,13 @@ class TmManagerPage(QWidget):
             0,
             2,
         )
-        self.clean_model_input = QComboBox()
-        self.clean_model_input.setEditable(True)
-        self.clean_model_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.clean_model_input = create_editable_combo()
         self._refresh_clean_model_options()
         if self.clean_model_input.lineEdit() is not None:
             self.clean_model_input.lineEdit().setPlaceholderText("跟随当前翻译模型")
-        _set_tooltip(
-            self.clean_model_input,
-            "清洗模型",
-            "可从当前云端 API 模型中选择，也可手动输入。",
-        )
         self.clean_model_input.currentTextChanged.connect(self._on_cleaner_settings_changed)
         _compact_control(self.clean_model_input)
+        self.clean_model_input.setMinimumWidth(CLEAN_MODEL_MIN_WIDTH)
         field_grid.addWidget(self.clean_model_input, 1, 2)
 
         action_row = QHBoxLayout()
@@ -501,22 +571,11 @@ class TmManagerPage(QWidget):
         self.clean_button = QPushButton("启动深度清洗")
         self.clean_button.setObjectName("PrimaryButton")
         _compact_control(self.clean_button, COMPACT_BUTTON_HEIGHT)
-        _set_tooltip(
-            self.clean_button,
-            "启动深度清洗",
-            "对当前语言对未固定词条进行 AI 清洗。",
-            ["固定词条会被保护，不参与清洗。"],
-        )
         self.clean_button.clicked.connect(self._toggle_cleaning)
         action_row.addWidget(self.clean_button, 1)
 
         self.prompt_button = QPushButton("编辑清洗提示词")
         _compact_control(self.prompt_button, COMPACT_BUTTON_HEIGHT)
-        _set_tooltip(
-            self.prompt_button,
-            "编辑清洗提示词",
-            "查看内置规则，并为当前语言对补充或覆盖清洗 Prompt。",
-        )
         self.prompt_button.clicked.connect(self._open_cleaner_prompt_dialog)
         action_row.addWidget(self.prompt_button, 1)
         layout.addLayout(action_row)
@@ -538,8 +597,16 @@ class TmManagerPage(QWidget):
     def _refresh_language_options(self) -> None:
         if not hasattr(self, "target_combo"):
             return
-        current_source = self.settings.source_lang
-        current_target = self.settings.target_lang
+        current_source = (
+            self._clean_session_source_lang
+            if self._is_clean_session_locked() and self._clean_session_source_lang
+            else self.settings.source_lang
+        )
+        current_target = (
+            self._clean_session_target_lang
+            if self._is_clean_session_locked() and self._clean_session_target_lang
+            else self.settings.target_lang
+        )
         source_codes = get_ordered_target_lang_codes(
             [current_source],
             self.settings.custom_target_langs,
@@ -600,6 +667,7 @@ class TmManagerPage(QWidget):
             self.clean_model_input.setCurrentText(current)
         else:
             self.clean_model_input.setCurrentIndex(0)
+        refresh_combo_completer(self.clean_model_input)
         self.clean_model_input.blockSignals(False)
 
     def _selected_target_lang(self) -> str:
@@ -710,6 +778,7 @@ class TmManagerPage(QWidget):
 
     def _refresh_cleaner_controls(self) -> None:
         running = self.phase == "cleaning"
+        locked = self._is_clean_session_locked()
         for widget in (
             self.auto_pin_check,
             self.clean_mode_combo,
@@ -717,17 +786,65 @@ class TmManagerPage(QWidget):
             self.clean_model_input,
             self.prompt_button,
         ):
-            widget.setEnabled(not running)
+            widget.setEnabled(not locked)
+        for widget in (self.source_combo, self.target_combo):
+            widget.setEnabled(not locked)
+        self.clean_button.setEnabled(self.phase != "review")
         self.clean_button.setText("中止清洗" if running else "启动深度清洗")
         self.clean_button.setObjectName("DangerButton" if running else "PrimaryButton")
         self.clean_button.style().unpolish(self.clean_button)
         self.clean_button.style().polish(self.clean_button)
-        self.clean_progress_panel.setVisible(running)
-        if not running:
-            self.clean_progress_bar.setValue(0)
-            self.clean_status.setText("清洗任务未启动。")
+        self._sync_clean_progress_panel()
+
+    def _sync_clean_progress_panel(self) -> None:
+        running = self.phase == "cleaning"
+        has_notice = bool(self._clean_notice_text)
+        self.clean_progress_panel.setVisible(running or has_notice)
+        self.clean_progress_bar.setVisible(running)
+        if running:
+            if self.clean_progress:
+                ratio, text, detail = _build_clean_progress_display(self.clean_progress)
+                self.clean_progress_bar.setValue(int(ratio * 100))
+                self.clean_status.setText(f"{text}\n{detail}".strip())
+            else:
+                self.clean_progress_bar.setValue(0)
+                self.clean_status.setText("清洗任务正在启动...")
+            return
+        self.clean_progress_bar.setValue(0)
+        self.clean_status.setText(self._clean_notice_text or "清洗任务未启动。")
+
+    def _set_clean_notice(self, message: str) -> None:
+        self._clean_notice_text = str(message or "").strip()
+        self._clean_notice_seen = False
+        self._clean_notice_timer.stop()
+        self._sync_clean_progress_panel()
+        self._arm_clean_notice_timer()
+
+    def _clear_clean_notice(self) -> None:
+        self._clean_notice_text = ""
+        self._clean_notice_seen = False
+        self._clean_notice_timer.stop()
+        self._sync_clean_progress_panel()
+
+    def _arm_clean_notice_timer(self) -> None:
+        if (
+            not self._clean_notice_text
+            or not self._is_page_active
+            or self._clean_notice_timer.isActive()
+        ):
+            return
+        self._clean_notice_seen = True
+        self._clean_notice_timer.start(CLEAN_NOTICE_VISIBLE_MS)
+
+    def _hide_clean_notice(self) -> None:
+        if not self._clean_notice_seen or self.phase == "cleaning":
+            return
+        self._clean_notice_text = ""
+        self._clean_notice_seen = False
+        self._sync_clean_progress_panel()
 
     def _refresh_workspace(self) -> None:
+        self.diff_table = None
         _clear_layout(self.workspace_layout)
         if self.phase == "review" and self.clean_suggestions:
             self._render_diff_workspace()
@@ -745,17 +862,14 @@ class TmManagerPage(QWidget):
         search_row = QHBoxLayout()
         self.search_input = QLineEdit(self.keyword)
         self.search_input.setPlaceholderText("输入原文、译文或关键词")
-        _set_tooltip(self.search_input, "搜索词条", "按原文或译文搜索当前语言对词库。")
         self.search_input.returnPressed.connect(self._apply_search)
         search_row.addWidget(self.search_input, 1)
 
         search_button = _workspace_action_button("搜索")
-        _set_tooltip(search_button, "搜索", "应用当前关键词并返回第一页。")
         search_button.clicked.connect(self._apply_search)
         search_row.addWidget(search_button)
 
         add_button = _workspace_action_button("新增词条")
-        _set_tooltip(add_button, "新增词条", "手动新增当前语言对词条。")
         add_button.setEnabled(self.phase != "cleaning")
         add_button.clicked.connect(self._add_entry)
         search_row.addWidget(add_button)
@@ -774,13 +888,11 @@ class TmManagerPage(QWidget):
         scope_row.addWidget(scope, 1)
 
         bulk_delete = _workspace_action_button("批量删除")
-        _set_tooltip(bulk_delete, "批量删除", "删除当前筛选范围内的词条。")
         bulk_delete.setEnabled(total > 0 and self.phase != "cleaning")
         bulk_delete.clicked.connect(lambda: self._bulk_delete(total, pin_stats))
         scope_row.addWidget(bulk_delete)
 
         bulk_pin = _workspace_action_button("全部解锁" if all_pinned else "全部固定")
-        _set_tooltip(bulk_pin, "批量固定", "固定或解锁当前筛选范围内的全部词条。")
         bulk_pin.setEnabled(total > 0 and self.phase != "cleaning")
         bulk_pin.clicked.connect(lambda: self._bulk_pin(not all_pinned))
         scope_row.addWidget(bulk_pin)
@@ -809,16 +921,15 @@ class TmManagerPage(QWidget):
 
     def _render_entries_table(self, rows: list[dict]) -> None:
         table = QTableWidget(len(rows), 3)
+        table.setObjectName("TmEntryTable")
         table.setHorizontalHeaderLabels(["原文", "译文", "操作"])
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        configure_app_table(table, editable=True, row_height=58, word_wrap=True)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(2, 252)
         table.setWordWrap(True)
+        table.blockSignals(True)
         for row_index, row in enumerate(rows):
             is_pinned = bool(row.get("pinned", 0))
             values = [
@@ -827,13 +938,112 @@ class TmManagerPage(QWidget):
             ]
             for col_index, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                flags = item.flags()
+                if is_pinned or self.phase == "cleaning":
+                    flags &= ~Qt.ItemFlag.ItemIsEditable
+                    item.setToolTip("固定词条需先解锁后才能直接修改。")
+                else:
+                    flags |= Qt.ItemFlag.ItemIsEditable
+                    item.setToolTip("点击单元格可直接修改，回车或失焦后保存。")
+                item.setFlags(flags)
+                item.setData(ENTRY_ID_ROLE, int(row["id"]))
+                item.setData(ENTRY_SOURCE_ROLE, values[0])
+                item.setData(ENTRY_TARGET_ROLE, values[1])
+                item.setData(ENTRY_PINNED_ROLE, is_pinned)
                 table.setItem(row_index, col_index, item)
             table.setCellWidget(row_index, 2, self._build_row_actions(row, is_pinned))
+        table.blockSignals(False)
+        table.cellClicked.connect(self._edit_entry_cell_on_click)
+        table.itemChanged.connect(self._on_entry_item_changed)
         table.resizeRowsToContents()
         for row_index in range(len(rows)):
             table.setRowHeight(row_index, max(table.rowHeight(row_index), 58))
         self.workspace_layout.addWidget(table, 1)
+
+    def _edit_entry_cell_on_click(self, row: int, column: int) -> None:
+        if column not in (0, 1) or self.phase == "cleaning":
+            return
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            return
+        item = table.item(row, column)
+        if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
+            return
+        table.editItem(item)
+
+    def _on_entry_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_entry_table or item.column() not in (0, 1):
+            return
+        table = item.tableWidget()
+        if table is None:
+            return
+        entry_id = item.data(ENTRY_ID_ROLE)
+        if entry_id is None or item.data(ENTRY_PINNED_ROLE):
+            return
+
+        row = item.row()
+        source_item = table.item(row, 0)
+        target_item = table.item(row, 1)
+        if source_item is None or target_item is None:
+            return
+
+        old_source = str(source_item.data(ENTRY_SOURCE_ROLE) or "")
+        old_target = str(target_item.data(ENTRY_TARGET_ROLE) or "")
+        new_source = source_item.text().strip()
+        new_target = target_item.text().strip()
+        if new_source == old_source and new_target == old_target:
+            return
+
+        if not new_source or not new_target:
+            self._restore_entry_row_items(table, row, old_source, old_target)
+            QMessageBox.warning(self, APP_NAME, "保存失败：原文和译文均不能为空。")
+            return
+
+        if not tm_manager.update_entry_full(int(entry_id), new_source, new_target):
+            self._restore_entry_row_items(table, row, old_source, old_target)
+            QMessageBox.warning(self, APP_NAME, "保存失败：原文或译文为空，或与已有词条冲突。")
+            return
+        self._commit_entry_row_items(table, row, new_source, new_target)
+
+    def _commit_entry_row_items(
+        self,
+        table: QTableWidget,
+        row: int,
+        source: str,
+        target: str,
+    ) -> None:
+        self._updating_entry_table = True
+        try:
+            source_item = table.item(row, 0)
+            target_item = table.item(row, 1)
+            if source_item is not None:
+                source_item.setText(source)
+                source_item.setData(ENTRY_SOURCE_ROLE, source)
+                source_item.setData(ENTRY_TARGET_ROLE, target)
+            if target_item is not None:
+                target_item.setText(target)
+                target_item.setData(ENTRY_SOURCE_ROLE, source)
+                target_item.setData(ENTRY_TARGET_ROLE, target)
+        finally:
+            self._updating_entry_table = False
+
+    def _restore_entry_row_items(
+        self,
+        table: QTableWidget,
+        row: int,
+        source: str,
+        target: str,
+    ) -> None:
+        self._updating_entry_table = True
+        try:
+            source_item = table.item(row, 0)
+            target_item = table.item(row, 1)
+            if source_item is not None:
+                source_item.setText(source)
+            if target_item is not None:
+                target_item.setText(target)
+        finally:
+            self._updating_entry_table = False
 
     def _build_row_actions(self, row: dict, is_pinned: bool) -> QWidget:
         container = QWidget()
@@ -845,21 +1055,18 @@ class TmManagerPage(QWidget):
         edit = QPushButton("编辑")
         edit.setMinimumWidth(66)
         edit.setEnabled(not is_pinned and not disabled)
-        _set_tooltip(edit, "编辑", "修改当前词条的原文和译文。固定词条需先解锁。")
         edit.clicked.connect(lambda _=False, entry=dict(row): self._edit_entry(entry))
         layout.addWidget(edit)
 
         delete = QPushButton("删除")
         delete.setMinimumWidth(66)
         delete.setEnabled(not is_pinned and not disabled)
-        _set_tooltip(delete, "删除", "删除当前词条。固定词条受保护。")
         delete.clicked.connect(lambda _=False, entry_id=int(row["id"]): self._delete_entry(entry_id))
         layout.addWidget(delete)
 
         pin = QPushButton("解锁" if is_pinned else "固定")
         pin.setMinimumWidth(66)
         pin.setEnabled(not disabled)
-        _set_tooltip(pin, "固定", "切换词条固定状态。固定词条不会参与清洗。")
         pin.clicked.connect(
             lambda _=False, entry_id=int(row["id"]), pinned=not is_pinned: self._pin_entry(
                 entry_id,
@@ -897,16 +1104,16 @@ class TmManagerPage(QWidget):
 
         table = QTableWidget(len(self.clean_suggestions), 4)
         table.setHorizontalHeaderLabels(["写入", "原文", "当前译文", "建议译文"])
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
+        configure_app_table(table, editable=True, row_height=58, word_wrap=True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(0, 64)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        table.setWordWrap(True)
         self.diff_table = table
+        table.blockSignals(True)
         for row, suggestion in enumerate(self.clean_suggestions):
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check = create_check_table_item()
             check.setCheckState(
                 Qt.CheckState.Checked
                 if suggestion.accepted
@@ -922,8 +1129,16 @@ class TmManagerPage(QWidget):
                 start=1,
             ):
                 item = QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col == 3:
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                    item.setData(DIFF_TARGET_ROLE, suggestion.new_target)
+                    item.setToolTip("点击单元格可修改本次准备写入的建议译文。")
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 table.setItem(row, col, item)
+        table.blockSignals(False)
+        table.cellClicked.connect(self._edit_clean_suggestion_on_click)
+        table.itemChanged.connect(self._on_clean_suggestion_item_changed)
         table.resizeRowsToContents()
         self.workspace_layout.addWidget(table, 1)
 
@@ -939,6 +1154,55 @@ class TmManagerPage(QWidget):
         actions.addStretch(1)
         self.workspace_layout.addLayout(actions)
 
+    def _edit_clean_suggestion_on_click(self, row: int, column: int) -> None:
+        if column != 3:
+            return
+        table = self.sender()
+        if not isinstance(table, QTableWidget):
+            return
+        item = table.item(row, column)
+        if item is None or not (item.flags() & Qt.ItemFlag.ItemIsEditable):
+            return
+        table.editItem(item)
+
+    def _on_clean_suggestion_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_diff_table or item.column() != 3:
+            return
+        table = item.tableWidget()
+        if table is None:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self.clean_suggestions):
+            return
+        previous = str(item.data(DIFF_TARGET_ROLE) or "")
+        new_target = item.text().strip()
+        if not new_target:
+            self._restore_clean_suggestion_item(item, previous)
+            QMessageBox.warning(self, APP_NAME, "建议译文不能为空。")
+            return
+        if new_target == previous:
+            return
+        self.clean_suggestions[row].new_target = new_target
+        item.setData(DIFF_TARGET_ROLE, new_target)
+        check = table.item(row, 0)
+        if check is not None:
+            self._updating_diff_table = True
+            try:
+                check.setCheckState(Qt.CheckState.Checked)
+            finally:
+                self._updating_diff_table = False
+
+    def _restore_clean_suggestion_item(
+        self,
+        item: QTableWidgetItem,
+        value: str,
+    ) -> None:
+        self._updating_diff_table = True
+        try:
+            item.setText(value)
+        finally:
+            self._updating_diff_table = False
+
     def _apply_search(self) -> None:
         self.keyword = self.search_input.text().strip()
         self.current_page = 1
@@ -953,6 +1217,9 @@ class TmManagerPage(QWidget):
         save_settings(self.settings)
 
     def _on_target_changed(self) -> None:
+        if self._is_clean_session_locked():
+            self._refresh_language_options()
+            return
         target_lang = self._selected_target_lang()
         self.settings.target_lang = target_lang
         self.settings.recent_target_langs = remember_recent_target_lang(
@@ -967,6 +1234,9 @@ class TmManagerPage(QWidget):
         self._refresh_all()
 
     def _on_source_changed(self) -> None:
+        if self._is_clean_session_locked():
+            self._refresh_language_options()
+            return
         self.settings.source_lang = self._selected_source_lang()
         self.current_page = 1
         self.keyword = ""
@@ -1174,6 +1444,13 @@ class TmManagerPage(QWidget):
                 self.clean_worker.cancel()
                 self.clean_status.setText("已发送中止请求，等待当前批次结束...")
             return
+        if self.phase == "review":
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "请先写入或放弃本次清洗结果，再启动新的深度清洗。",
+            )
+            return
         self._start_cleaning()
 
     def _start_cleaning(self) -> None:
@@ -1182,13 +1459,17 @@ class TmManagerPage(QWidget):
             QMessageBox.information(self, APP_NAME, "当前语言对没有可清洗的未固定词条。")
             return
         self._on_cleaner_settings_changed()
+        self._clear_clean_notice()
         self.phase = "cleaning"
         self.clean_progress = None
         self.clean_suggestions = []
+        self._clean_session_target_lang = self._selected_target_lang()
+        self._clean_session_source_lang = self._selected_source_lang()
+        self._clean_session_lang_pair = self.lang_pair
         self.clean_progress_bar.setValue(0)
         self.clean_status.setText("清洗任务正在启动...")
         self.clean_worker = TmCleanWorker(
-            lang_pair=self.lang_pair,
+            lang_pair=self._clean_session_lang_pair,
             settings=self.settings.model_copy(deep=True),
             overwrite=self.settings.cleaner_mode == "overwrite",
             parent=self,
@@ -1212,36 +1493,46 @@ class TmManagerPage(QWidget):
         self.clean_progress_bar.setValue(0)
         if not ok:
             self.phase = "idle"
-            self.clean_status.setText(message or "清洗任务已结束。")
+            self.clean_suggestions = []
+            self._set_clean_notice(message or "清洗任务已结束。")
             if message and "中止" not in message:
                 QMessageBox.warning(self, APP_NAME, f"清洗失败：{message}")
-            self._refresh_all()
+            self._finish_clean_session()
             return
 
         suggestions_list = list(suggestions)
         if self.settings.cleaner_mode == "overwrite":
             self.phase = "idle"
-            self.clean_status.setText(message or "清洗完成。")
-            QMessageBox.information(self, APP_NAME, message or "清洗完成。")
-            self._refresh_all()
+            self.clean_suggestions = []
+            self._set_clean_notice(message or "清洗完成。")
+            self._finish_clean_session()
             return
 
         if not suggestions_list:
             self.phase = "idle"
-            self.clean_status.setText("清洗完成，未发现需要修改的词条。")
-            QMessageBox.information(self, APP_NAME, "清洗完成，未发现需要修改的词条。")
-            self._refresh_all()
+            self.clean_suggestions = []
+            self._set_clean_notice("清洗完成，未发现需要修改的词条。")
+            self._finish_clean_session()
             return
 
         self.phase = "review"
         self.clean_suggestions = suggestions_list
-        self.clean_status.setText(f"清洗完成，发现 {len(suggestions_list)} 条建议，等待确认。")
+        self._set_clean_notice(f"清洗完成，发现 {len(suggestions_list)} 条建议，等待确认。")
         self._refresh_all()
 
     def _apply_clean_suggestions(self) -> None:
         table = getattr(self, "diff_table", None)
         if table is not None:
             for row, suggestion in enumerate(self.clean_suggestions):
+                target_item = table.item(row, 3)
+                if target_item is not None:
+                    new_target = target_item.text().strip()
+                    if not new_target:
+                        QMessageBox.warning(self, APP_NAME, "建议译文不能为空。")
+                        table.setCurrentCell(row, 3)
+                        table.editItem(target_item)
+                        return
+                    suggestion.new_target = new_target
                 item = table.item(row, 0)
                 suggestion.accepted = (
                     item is not None and item.checkState() == Qt.CheckState.Checked
@@ -1250,16 +1541,23 @@ class TmManagerPage(QWidget):
             self.clean_suggestions,
             auto_pin=self.auto_pin_check.isChecked(),
         )
-        QMessageBox.information(self, APP_NAME, f"已写入 {applied} 条清洗建议。")
         self.phase = "idle"
         self.clean_suggestions = []
-        self._refresh_all()
+        self._set_clean_notice(f"已写入 {applied} 条清洗建议。")
+        self._finish_clean_session()
 
     def _discard_clean_suggestions(self) -> None:
         self.phase = "idle"
         self.clean_suggestions = []
-        self.clean_status.setText("已放弃本次清洗建议。")
-        self._refresh_all()
+        self._set_clean_notice("已放弃本次清洗建议。")
+        self._finish_clean_session()
+
+    def _finish_clean_session(self) -> None:
+        self._clean_session_lang_pair = ""
+        self._clean_session_target_lang = ""
+        self._clean_session_source_lang = ""
+        if not self._apply_pending_language_sync():
+            self._refresh_all()
 
     def _open_cleaner_prompt_dialog(self) -> None:
         dialog = QDialog(self)

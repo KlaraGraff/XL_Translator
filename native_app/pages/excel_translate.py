@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -21,12 +20,10 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QSizePolicy,
     QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
     QCheckBox,
-    QComboBox,
 )
 
 from app_meta import APP_NAME
@@ -59,7 +56,12 @@ from core.task_runner import (
 from core.xls_converter import get_local_excel_availability
 from native_app.workers import ScanWorker
 from native_app.widgets import (
-    configure_searchable_combo,
+    build_app_tooltip_html,
+    configure_app_table,
+    create_check_table_item,
+    create_searchable_combo,
+    create_table_item,
+    MiddleElideLabel,
     refresh_combo_completer,
     select_combo_text_match,
 )
@@ -92,11 +94,7 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
 
 
 def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
-    item_html = "".join(f"<li>{html.escape(item)}</li>" for item in items or [])
-    body = f"<b>{html.escape(title)}</b><br>{html.escape(summary)}"
-    if item_html:
-        body += f"<ul>{item_html}</ul>"
-    return body
+    return build_app_tooltip_html(title, summary, items)
 
 
 def _set_tooltip(
@@ -106,7 +104,7 @@ def _set_tooltip(
     items: list[str] | None = None,
 ) -> None:
     widget.setToolTip(_tooltip(title, summary, items))
-    widget.setToolTipDuration(3600)
+    widget.setToolTipDuration(4200)
 
 
 def _field_label(
@@ -204,11 +202,11 @@ class ExcelTranslatePage(QWidget):
 
     def _refresh_header(self) -> None:
         _clear_layout(self.header_layout)
-        self.header_layout.addWidget(_label("Translate Workspace", "PageEyebrow"))
+        self.header_layout.addWidget(_label("Excel Workspace", "PageEyebrow"))
 
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        title_row.addWidget(_label("翻译任务", "PageTitle"))
+        title_row.addWidget(_label("Excel 翻译", "PageTitle"))
         title_row.addStretch(1)
         title_row.addWidget(
             self._pill("目标语言", self._selected_target_label()),
@@ -332,8 +330,7 @@ class ExcelTranslatePage(QWidget):
             ["可与源语言独立选择；新配置默认目标语言为英文。"],
         )
         layout.addWidget(self.target_lang_label)
-        self.target_combo = QComboBox()
-        configure_searchable_combo(self.target_combo)
+        self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
             self.target_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
         self._load_target_options()
@@ -352,8 +349,7 @@ class ExcelTranslatePage(QWidget):
             "选择原文语言，可与目标语言独立设置。",
         )
         layout.addWidget(self.source_lang_label)
-        self.source_lang_combo = QComboBox()
-        configure_searchable_combo(self.source_lang_combo)
+        self.source_lang_combo = create_searchable_combo()
         if self.source_lang_combo.lineEdit() is not None:
             self.source_lang_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
         self._load_source_options()
@@ -496,10 +492,14 @@ class ExcelTranslatePage(QWidget):
         layout.setSpacing(0)
         label_widget = QLabel(label)
         label_widget.setObjectName("PillLabel")
-        value_widget = QLabel(value)
+        value_widget = MiddleElideLabel(value) if max_width is not None else QLabel(value)
         value_widget.setObjectName("PillValue")
         value_widget.setWordWrap(False)
-        value_widget.setMaximumWidth(260)
+        if max_width is not None:
+            value_widget.setMaximumWidth(max(1, max_width - 16))
+            value_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        else:
+            value_widget.setMaximumWidth(260)
         value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(label_widget)
         layout.addWidget(value_widget)
@@ -582,23 +582,17 @@ class ExcelTranslatePage(QWidget):
         layout.addLayout(self._build_kpi_strip())
         self.table = QTableWidget(len(self.files), 4)
         self.table.setHorizontalHeaderLabels(["选择", "文件名", "大小", "分表数"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        configure_app_table(self.table, row_height=38)
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
         self._configure_file_table_columns()
         for row, item in enumerate(self.files):
-            check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            check.setCheckState(Qt.CheckState.Checked)
-            check.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 0, check)
-            self.table.setItem(row, 1, QTableWidgetItem(item.name))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{item.size_kb:.1f} KB"))
-            self.table.setItem(row, 3, QTableWidgetItem(str(len(item.sheets))))
+            self.table.setItem(row, 0, create_check_table_item())
+            self.table.setItem(row, 1, create_table_item(item.name))
+            self.table.setItem(row, 2, create_table_item(f"{item.size_kb:.1f} KB"))
+            self.table.setItem(row, 3, create_table_item(len(item.sheets)))
         self.table.itemChanged.connect(self._on_file_selection_changed)
         self._refresh_selection_summary()
         layout.addWidget(self.table, 1)
@@ -622,7 +616,7 @@ class ExcelTranslatePage(QWidget):
         done = self.done
         layout.addWidget(_label("任务结果", "SectionTitle"))
         if done is None:
-            layout.addWidget(QLabel("翻译任务已完成。"))
+            layout.addWidget(QLabel("Excel 翻译任务已完成。"))
             return
 
         success_count = sum(1 for item in done.file_results if item.get("success"))
@@ -647,16 +641,16 @@ class ExcelTranslatePage(QWidget):
 
         table = QTableWidget(len(done.file_results), 3)
         table.setHorizontalHeaderLabels(["文件名", "状态", "详情"])
-        table.verticalHeader().setVisible(False)
+        configure_app_table(table, row_height=40, word_wrap=True)
         table.horizontalHeader().setStretchLastSection(True)
         for row, result in enumerate(done.file_results):
-            table.setItem(row, 0, QTableWidgetItem(str(result.get("name") or "")))
+            table.setItem(row, 0, create_table_item(result.get("name") or ""))
             table.setItem(
                 row,
                 1,
-                QTableWidgetItem("成功" if result.get("success") else "失败"),
+                create_table_item("成功" if result.get("success") else "失败"),
             )
-            table.setItem(row, 2, QTableWidgetItem(str(result.get("error") or "")))
+            table.setItem(row, 2, create_table_item(result.get("error") or ""))
         table.resizeColumnsToContents()
         layout.addWidget(table, 1)
 
@@ -1147,7 +1141,7 @@ class ExcelTranslatePage(QWidget):
         answer = QMessageBox.question(
             self,
             APP_NAME,
-            "确认终止当前翻译任务？",
+            "确认终止当前 Excel 翻译任务？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:

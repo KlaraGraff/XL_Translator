@@ -2,6 +2,10 @@
 
 Translator 是一个面向 Excel 和 Word 文档的本地翻译器，支持批量翻译、术语库管理和双语结果输出。
 
+## 版本说明
+
+当前主线只维护原生桌面版本，不再维护旧的网页包装 / Streamlit 版本。仍需要旧网页包装版本的用户，请在 GitHub Releases 中下载 V4.6 旧版。
+
 ## 下载最新版
 
 打开 [最新版发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)，在 `Assets` 中下载适合你系统的安装包。发布页当前沿用既有 GitHub 仓库地址。

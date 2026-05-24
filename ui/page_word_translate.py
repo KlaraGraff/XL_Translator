@@ -34,7 +34,15 @@ from core.language_registry import (
     is_supported_source_lang,
     is_supported_target_lang,
 )
-from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
+from core.task_runner import (
+    DoneMsg,
+    ErrorMsg,
+    LogMsg,
+    ProgressMsg,
+    StatusMsg,
+    StoppedMsg,
+    WordRecoveryStatusMsg,
+)
 from core.word_document import is_supported_word_file, scan_word_path
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings
@@ -44,7 +52,6 @@ from ui.components import (
     render_log_area,
     render_main_tooltip_support,
     render_setting_card,
-    render_stat_cards,
 )
 from ui.diagnostics_panel import (
     render_current_diagnostic_download,
@@ -58,6 +65,7 @@ _RUNNER = "word_translate_runner"
 _LOGS = "word_translate_logs"
 _PROGRESS = "word_translate_progress"
 _STATUS = "word_translate_status"
+_RECOVERY_STATUS = "word_translate_recovery_status"
 _DONE = "word_translate_done"
 _FILES = "word_translate_file_items"
 _STOP_PENDING = "word_translate_stop_pending"
@@ -108,6 +116,7 @@ def _init(settings: AppSettings | None = None) -> None:
         (_LOGS, []),
         (_PROGRESS, None),
         (_STATUS, None),
+        (_RECOVERY_STATUS, None),
         (_DONE, None),
         (_FILES, []),
         (_STOP_PENDING, False),
@@ -276,6 +285,7 @@ def _set_scanned_files(items: list) -> None:
     st.session_state[_LOGS] = []
     st.session_state[_PROGRESS] = None
     st.session_state[_STATUS] = None
+    st.session_state[_RECOVERY_STATUS] = None
     st.session_state[_STOP_PENDING] = False
     st.session_state[_STOP_MESSAGE] = ""
     for index in range(len(items)):
@@ -853,6 +863,34 @@ def _calc_word_overall_progress(progress: ProgressMsg) -> float:
     return min(overall, 1.0)
 
 
+def _render_word_recovery_summary(summary: WordRecoveryStatusMsg | None) -> None:
+    if summary is None:
+        return
+
+    retry_round = summary.retry_round or 0
+    retry_total = summary.retry_total or 0
+    retry_round_text = (
+        f"第 {retry_round}/{retry_total} 轮"
+        if retry_round and retry_total
+        else "待启动"
+    )
+    st.markdown(
+        '<div class="word-recovery-summary">'
+        '  <div class="word-recovery-summary__item">'
+        '    <span>单段重试</span>'
+        f'    <strong>{html.escape(retry_round_text)}</strong>'
+        f'    <em>处理中 {summary.retry_processing_count} 段 · 已恢复 {summary.retry_recovered_count} 段 · 未恢复 {summary.retry_unresolved_count} 段</em>'
+        '  </div>'
+        '  <div class="word-recovery-summary__item">'
+        '    <span>语义仲裁</span>'
+        f'    <strong>已检查 {summary.semantic_checked_count} 段</strong>'
+        f'    <em>处理中 {summary.semantic_processing_count} 段 · 已接受 {summary.semantic_accepted_count} 段 · 未接受 {summary.semantic_uncertain_count} 段</em>'
+        '  </div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _drain_word_runner_messages(runner: WordTaskRunner) -> None:
     while True:
         msg = runner.get_message(timeout=0.0)
@@ -866,6 +904,8 @@ def _drain_word_runner_messages(runner: WordTaskRunner) -> None:
             st.session_state[_PROGRESS] = msg
         elif isinstance(msg, StatusMsg):
             st.session_state[_STATUS] = msg.phase_desc
+        elif isinstance(msg, WordRecoveryStatusMsg):
+            st.session_state[_RECOVERY_STATUS] = msg
         elif isinstance(msg, DoneMsg):
             st.session_state[_DONE] = msg
             st.session_state[_RUNNER] = None
@@ -895,6 +935,7 @@ def _render_running_status_block() -> bool:
         return False
 
     progress: ProgressMsg | None = st.session_state.get(_PROGRESS)
+    recovery_summary: WordRecoveryStatusMsg | None = st.session_state.get(_RECOVERY_STATUS)
     status_desc = (st.session_state.get(_STATUS) or "").replace("状态：", "", 1).strip()
     stop_hint = runner.stop_requested()
 
@@ -935,6 +976,7 @@ def _render_running_status_block() -> bool:
         if stop_hint:
             st.warning("已收到停止请求，等待后台任务退出...")
 
+    _render_word_recovery_summary(recovery_summary)
     render_log_area(st.session_state[_LOGS], container_id="word-translate-log-container")
     return True
 
@@ -1011,13 +1053,97 @@ def _render_word_diagnostic_panel() -> None:
     )
 
 
-def _render_done_content(settings: AppSettings) -> None:
-    done: DoneMsg = st.session_state[_DONE]
-    success_n = sum(1 for item in done.file_results if item.get("success"))
-    failure_n = len(done.file_results) - success_n
-    issues = list(done.issues or [])
+def _split_word_issues(issues: list[dict]) -> tuple[list[dict], list[dict]]:
     resolved_issues = [issue for issue in issues if issue.get("severity") == "resolved"]
     review_issues = [issue for issue in issues if issue.get("severity") != "resolved"]
+    return review_issues, resolved_issues
+
+
+def _format_word_elapsed(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    rest = int(seconds % 60)
+    if minutes:
+        return f"{minutes}分{rest}秒"
+    return f"{rest}秒"
+
+
+def _build_word_result_summary(
+    *,
+    generated_count: int,
+    failed_count: int,
+    review_count: int,
+    resolved_count: int,
+) -> str:
+    parts = [f"已生成 {generated_count} 个文件"]
+    if failed_count:
+        parts.append(f"生成失败 {failed_count} 个文件")
+    if review_count:
+        parts.append(f"需复核 {review_count} 段")
+    if resolved_count:
+        parts.append(f"已自动处理 {resolved_count} 段")
+    return "任务完成：" + "，".join(parts) + "。"
+
+
+def _middle_ellipsis(value: str, max_chars: int = 92) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    keep = max(max_chars - 3, 8)
+    head = max(4, keep // 2)
+    tail = max(4, keep - head)
+    return f"{text[:head]}...{text[-tail:]}"
+
+
+def _render_word_done_kpis(
+    done: DoneMsg,
+    *,
+    generated_count: int,
+    failed_count: int,
+    review_count: int,
+    resolved_count: int,
+) -> None:
+    tiles = [
+        ("已生成文件", str(generated_count)),
+        ("生成失败", str(failed_count)),
+        ("需复核段落", str(review_count)),
+        ("已自动处理", str(resolved_count)),
+        ("耗时", _format_word_elapsed(done.elapsed_sec)),
+        ("TM 命中", str(done.tm_hit_count)),
+        ("API 翻译", str(done.api_call_count)),
+    ]
+    html_tiles = "".join(
+        '<div class="kpi-tile">'
+        f'<span class="kpi-tile__label">{html.escape(label)}</span>'
+        f'<span class="kpi-tile__value">{html.escape(value)}</span>'
+        '</div>'
+        for label, value in tiles
+    )
+    st.markdown(
+        f'<div class="kpi-strip kpi-strip--done kpi-strip--word-result">{html_tiles}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_word_output_path(path: str) -> None:
+    full_path = str(path or "")
+    display_path = _middle_ellipsis(full_path)
+    st.markdown(
+        '<div class="word-output-path">'
+        '  <span class="word-output-path__label">输出目录</span>'
+        f'  <span class="word-output-path__value" title="{html.escape(full_path, quote=True)}">{html.escape(display_path)}</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_done_content(settings: AppSettings) -> None:
+    done: DoneMsg = st.session_state[_DONE]
+    generated_n = sum(1 for item in done.file_results if item.get("success"))
+    failure_n = len(done.file_results) - generated_n
+    issues = list(done.issues or [])
+    review_issues, resolved_issues = _split_word_issues(issues)
+    review_count = len(review_issues)
+    resolved_count = len(resolved_issues)
     _ensure_word_diagnostic_archive(settings, "done")
 
     workspace = st.container(key="word-done-shell")
@@ -1031,30 +1157,26 @@ def _render_done_content(settings: AppSettings) -> None:
             '</div>',
             unsafe_allow_html=True,
         )
-        if failure_n == 0 and not issues:
+        if failure_n == 0 and review_count == 0:
             st.success("翻译成功。")
-        elif issues and failure_n:
-            st.warning("翻译完成，但有内容需复核，且有文件未成功。")
-        elif issues:
-            st.warning("翻译完成，但有内容需复核。")
         else:
-            st.warning("翻译完成，但有文件未成功。")
+            st.warning(
+                _build_word_result_summary(
+                    generated_count=generated_n,
+                    failed_count=failure_n,
+                    review_count=review_count,
+                    resolved_count=resolved_count,
+                )
+            )
         _render_word_diagnostic_panel()
-        st.markdown(
-            '<div class="kpi-strip kpi-strip--done">'
-            f'  <div class="kpi-tile"><span class="kpi-tile__label">成功文件</span><span class="kpi-tile__value">{success_n}</span></div>'
-            f'  <div class="kpi-tile"><span class="kpi-tile__label">失败文件</span><span class="kpi-tile__value">{failure_n}</span></div>'
-            f'  <div class="kpi-tile kpi-tile--wide"><span class="kpi-tile__label">输出目录</span><span class="kpi-tile__value">{html.escape(done.output_dir)}</span></div>'
-            '</div>',
-            unsafe_allow_html=True,
+        _render_word_done_kpis(
+            done,
+            generated_count=generated_n,
+            failed_count=failure_n,
+            review_count=review_count,
+            resolved_count=resolved_count,
         )
-        render_stat_cards(
-            done.elapsed_sec,
-            len(done.file_results),
-            done.tm_hit_count,
-            done.api_call_count,
-        )
-        st.markdown(f'<div class="mono-block">{html.escape(done.output_dir)}</div>', unsafe_allow_html=True)
+        _render_word_output_path(done.output_dir)
         if done.report_path:
             st.markdown(
                 f'<div class="subtle-note">质量报告：{html.escape(done.report_path)}</div>',
@@ -1066,18 +1188,12 @@ def _render_done_content(settings: AppSettings) -> None:
         for result in done.file_results:
             modifier = " translate-result-row--error" if not result.get("success") else ""
             detail_html = ""
-            issue_count = len(result.get("issues") or [])
             if result.get("error"):
                 detail_html = f'<div class="translate-result-row__detail">{html.escape(result["error"])}</div>'
-            elif issue_count:
-                detail_html = (
-                    f'<div class="translate-result-row__detail translate-result-row__detail--muted">'
-                    f'本文件有 {issue_count} 条质量提示，详情见上方复核清单。</div>'
-                )
             st.markdown(
                 f'<div class="translate-result-row{modifier}">'
                 f'  <div class="translate-result-row__title">{html.escape(result["name"])}</div>'
-                f'  <div class="translate-result-row__meta">{_format_word_result_status(result, issue_count)}</div>'
+                f'  <div class="translate-result-row__meta">{_format_word_result_status(result)}</div>'
                 f'  {detail_html}'
                 '</div>',
                 unsafe_allow_html=True,
@@ -1093,12 +1209,12 @@ def _render_word_quality_issues(
 
     st.markdown(
         '<div class="word-quality-panel">'
-        '  <div class="word-quality-panel__title">质量提示</div>'
-        '  <div class="word-quality-panel__caption">以下段落在翻译过程中触发了质量校验或自动重试，建议按位置回看输出文件。</div>'
+        '  <div class="word-quality-panel__title">结果定位清单</div>'
+        '  <div class="word-quality-panel__caption">按文件、章节和段落位置列出需复核内容与已自动处理内容。</div>'
         '</div>',
         unsafe_allow_html=True,
     )
-    _render_word_quality_group("需人工复核", review_issues)
+    _render_word_quality_group("需复核", review_issues)
     _render_word_quality_group("已自动处理", resolved_issues)
 
 
@@ -1139,12 +1255,18 @@ def _render_word_quality_group(title: str, issues: list[dict]) -> None:
         )
 
 
-def _format_word_result_status(result: dict, issue_count: int) -> str:
+def _format_word_result_status(result: dict) -> str:
     if not result.get("success"):
-        return "失败"
-    if issue_count:
-        return f"成功 / {issue_count} 条提示"
-    return "成功"
+        return "生成失败"
+    review_issues, resolved_issues = _split_word_issues(list(result.get("issues") or []))
+    parts = ["已生成"]
+    if not review_issues:
+        parts.append("成功")
+    if review_issues:
+        parts.append(f"需复核 {len(review_issues)} 段")
+    if resolved_issues:
+        parts.append(f"已自动处理 {len(resolved_issues)} 段")
+    return " / ".join(parts)
 
 
 def _render_error_content(settings: AppSettings) -> None:
@@ -1207,6 +1329,7 @@ def _start_word_translation_task(
     st.session_state[_LOGS] = []
     st.session_state[_PROGRESS] = None
     st.session_state[_STATUS] = None
+    st.session_state[_RECOVERY_STATUS] = None
     st.session_state[_PHASE] = "running"
     st.session_state[_DONE] = None
     st.session_state[_STOP_PENDING] = False
@@ -1339,6 +1462,7 @@ def _render_action_buttons(settings: AppSettings, phase: str) -> None:
                 st.session_state[_FILES] = []
                 st.session_state[_DONE] = None
                 st.session_state[_RUNNER] = None
+                st.session_state[_RECOVERY_STATUS] = None
                 st.session_state[_STOP_PENDING] = False
                 st.session_state[_STOP_MESSAGE] = ""
                 st.session_state[_TASK_ID] = ""

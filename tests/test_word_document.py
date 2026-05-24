@@ -407,6 +407,52 @@ class WordDocumentTests(unittest.TestCase):
         self.assertGreaterEqual(outcome.semantic_check_count, 1)
         self.assertTrue(engine.chat_calls)
 
+    def test_word_recovery_pool_logs_locations_and_emits_summary(self) -> None:
+        source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
+        candidate = "Signing Date / Date: February 10, 2026"
+        engine = SemanticWordEngine({source: source}, verdict="equivalent")
+        retry_settings = WordBatchSettings()
+        retry_settings.max_paragraphs_per_batch = 1
+        logs: list[tuple[str, str]] = []
+        summaries = []
+        pool = _WordRecoveryPool(
+            engine=engine,
+            target_lang="en",
+            retry_prompt="retry",
+            retry_batch_settings=retry_settings,
+            retry_attempts=1,
+            source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
+            should_stop=lambda: False,
+            log_callback=lambda level, message: logs.append((level, message)),
+            status_callback=summaries.append,
+            source_locations={
+                source: [
+                    {
+                        "file": "方案.docx",
+                        "section_path": "一、工程概况",
+                        "location_label": "正文段落 8",
+                    },
+                    {
+                        "file": "方案.docx",
+                        "section_path": "二、表格",
+                        "location_label": "表格 1 / 单元格 2",
+                    },
+                ]
+            },
+            enable_semantic=True,
+        )
+
+        pool.add_candidate(source, candidate)
+        pool.wait_for_completion()
+
+        log_text = "\n".join(message for _, message in logs)
+        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 正在语义仲裁", log_text)
+        self.assertIn("方案.docx · 二、表格 · 表格 1 / 单元格 2 正在语义仲裁", log_text)
+        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 语义仲裁接受", log_text)
+        self.assertTrue(any(summary.semantic_accepted_count == 2 for summary in summaries))
+
     def test_word_recovery_pool_keeps_review_when_semantic_is_uncertain(self) -> None:
         source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
         candidate = "Signing Date / Date: February 10, 2026"

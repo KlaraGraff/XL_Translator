@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS tm_meta (
 
 TM_SCHEMA_VERSION = 2
 TM_SCHEMA_VERSION_KEY = "tm_schema_version"
+BIDIRECTIONAL_BACKFILL_KEY = "tm_bidirectional_backfill_v1"
 AUTO_WORD_TYPE = "term"
 
 
@@ -96,6 +97,7 @@ def init_db() -> None:
 
     _ensure_current_schema()
     _backfill_source_hashes()
+    _backfill_reverse_entries()
     logger.info(f"TM 数据库就绪：{DB_PATH}")
 
 
@@ -179,6 +181,305 @@ def _normalize_word_type(word_type: str | None) -> str:
     if normalized == "import":
         return "import"
     return AUTO_WORD_TYPE
+
+
+def _split_lang_pair(lang_pair: str) -> tuple[str, str] | None:
+    text = str(lang_pair or "").strip()
+    if not text or "-" not in text:
+        return None
+
+    if text.startswith("x-custom-"):
+        custom_target_marker = "-x-custom-"
+        marker_index = text.find(custom_target_marker, len("x-custom-"))
+        if marker_index >= 0:
+            source_lang = text[:marker_index]
+            separator = "-"
+            target_lang = text[marker_index + 1 :]
+        else:
+            source_lang, separator, target_lang = text.rpartition("-")
+    else:
+        source_lang, separator, target_lang = text.partition("-")
+    if not separator or not source_lang or not target_lang:
+        return None
+    return source_lang, target_lang
+
+
+def _reverse_lang_pair(lang_pair: str) -> str | None:
+    split_pair = _split_lang_pair(lang_pair)
+    if split_pair is None:
+        return None
+    source_lang, target_lang = split_pair
+    if source_lang == target_lang:
+        return None
+    return f"{target_lang}-{source_lang}"
+
+
+def _entry_priority(row: sqlite3.Row | dict) -> int:
+    if int(row["pinned"] or 0):
+        return 30
+    if _normalize_word_type(row["word_type"]) == "manual":
+        return 20
+    return 10
+
+
+def _incoming_priority(word_type: str, pinned: int = 0) -> int:
+    if int(pinned or 0):
+        return 30
+    if _normalize_word_type(word_type) == "manual":
+        return 20
+    return 10
+
+
+def _fetch_entry(conn: sqlite3.Connection, entry_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, source_text, source_hash, target_text, lang_pair,
+               word_type, source_engine, pinned, created_at, updated_at
+        FROM tm_entries
+        WHERE id = ?
+        """,
+        [entry_id],
+    ).fetchone()
+
+
+def _fetch_entry_by_source(
+    conn: sqlite3.Connection,
+    source_text: str,
+    lang_pair: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, source_text, source_hash, target_text, lang_pair,
+               word_type, source_engine, pinned, created_at, updated_at
+        FROM tm_entries
+        WHERE source_text = ? AND lang_pair = ?
+        """,
+        [source_text, lang_pair],
+    ).fetchone()
+
+
+def _upsert_entry(
+    conn: sqlite3.Connection,
+    source_text: str,
+    target_text: str,
+    lang_pair: str,
+    *,
+    word_type: str,
+    source_engine: str = "",
+    pinned: int = 0,
+    protect_higher_priority: bool = True,
+) -> bool:
+    word_type = _normalize_word_type(word_type)
+    pinned = 1 if int(pinned or 0) else 0
+    existing = _fetch_entry_by_source(conn, source_text, lang_pair)
+    incoming_priority = _incoming_priority(word_type, pinned)
+    source_hash = _make_hash(source_text, lang_pair)
+
+    if existing is not None:
+        if protect_higher_priority and _entry_priority(existing) > incoming_priority:
+            return False
+        conn.execute(
+            """
+            UPDATE tm_entries
+            SET source_hash = ?,
+                target_text = ?,
+                word_type = ?,
+                source_engine = ?,
+                pinned = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            [
+                source_hash,
+                target_text,
+                word_type,
+                str(source_engine or ""),
+                pinned,
+                existing["id"],
+            ],
+        )
+        return True
+
+    conn.execute(
+        """
+        INSERT INTO tm_entries (
+            source_text,
+            source_hash,
+            target_text,
+            lang_pair,
+            word_type,
+            source_engine,
+            pinned
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            source_text,
+            source_hash,
+            target_text,
+            lang_pair,
+            word_type,
+            str(source_engine or ""),
+            pinned,
+        ],
+    )
+    return True
+
+
+def _sync_reverse_upsert(
+    conn: sqlite3.Connection,
+    source_text: str,
+    target_text: str,
+    lang_pair: str,
+    *,
+    word_type: str,
+    source_engine: str = "",
+    pinned: int = 0,
+) -> bool:
+    reverse_pair = _reverse_lang_pair(lang_pair)
+    if reverse_pair is None:
+        return False
+    return _upsert_entry(
+        conn,
+        target_text,
+        source_text,
+        reverse_pair,
+        word_type=word_type,
+        source_engine=source_engine,
+        pinned=pinned,
+        protect_higher_priority=True,
+    )
+
+
+def _delete_matching_reverse(conn: sqlite3.Connection, row: sqlite3.Row | dict) -> int:
+    reverse_pair = _reverse_lang_pair(row["lang_pair"])
+    if reverse_pair is None:
+        return 0
+
+    reverse = _fetch_entry_by_source(conn, row["target_text"], reverse_pair)
+    if reverse is None or reverse["target_text"] != row["source_text"]:
+        return 0
+    if _entry_priority(reverse) > _entry_priority(row):
+        return 0
+
+    conn.execute("DELETE FROM tm_entries WHERE id = ?", [reverse["id"]])
+    return 1
+
+
+def _sync_reverse_pin(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row | dict,
+    pinned: bool,
+) -> int:
+    reverse_pair = _reverse_lang_pair(row["lang_pair"])
+    if reverse_pair is None:
+        return 0
+    cur = conn.execute(
+        """
+        UPDATE tm_entries
+        SET pinned = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE lang_pair = ? AND source_text = ? AND target_text = ?
+        """,
+        [
+            1 if pinned else 0,
+            reverse_pair,
+            row["target_text"],
+            row["source_text"],
+        ],
+    )
+    return cur.rowcount
+
+
+def _select_scope_rows(
+    conn: sqlite3.Connection,
+    lang_pair: str,
+    keyword: str = "",
+    *,
+    only_unpinned: bool = False,
+) -> list[sqlite3.Row]:
+    base_where = "WHERE lang_pair = ?"
+    params: list = [lang_pair]
+    if only_unpinned:
+        base_where += " AND pinned = 0"
+    if keyword.strip():
+        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
+        kw = f"%{keyword.strip()}%"
+        params.extend([kw, kw])
+    return conn.execute(
+        f"""
+        SELECT id, source_text, source_hash, target_text, lang_pair,
+               word_type, source_engine, pinned, created_at, updated_at
+        FROM tm_entries
+        {base_where}
+        ORDER BY id
+        """,
+        params,
+    ).fetchall()
+
+
+def _is_bidirectional_backfill_done(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT meta_value FROM tm_meta WHERE meta_key = ?",
+        [BIDIRECTIONAL_BACKFILL_KEY],
+    ).fetchone()
+    return row is not None and row["meta_value"] == "1"
+
+
+def _mark_bidirectional_backfill_done(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO tm_meta (meta_key, meta_value)
+        VALUES (?, '1')
+        ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value
+        """,
+        [BIDIRECTIONAL_BACKFILL_KEY],
+    )
+
+
+def _backfill_reverse_entries() -> None:
+    with _get_conn() as conn:
+        if _is_bidirectional_backfill_done(conn):
+            return
+        rows = conn.execute(
+            """
+            SELECT id, source_text, target_text, lang_pair, word_type, source_engine, pinned
+            FROM tm_entries
+            ORDER BY id
+            """
+        ).fetchall()
+        if not rows:
+            _mark_bidirectional_backfill_done(conn)
+            return
+
+    backup_path = _backup_legacy_db()
+    logger.info(f"TM 双向词库补录前已备份数据库：{backup_path}")
+
+    inserted_or_updated = 0
+    skipped = 0
+    with _get_conn() as conn:
+        for row in rows:
+            source_text = normalize_tm_text_for_storage(row["source_text"])
+            target_text = normalize_tm_text_for_storage(row["target_text"])
+            lang_pair = str(row["lang_pair"] or "").strip()
+            if not source_text or not target_text or not lang_pair:
+                continue
+            if _sync_reverse_upsert(
+                conn,
+                source_text,
+                target_text,
+                lang_pair,
+                word_type=row["word_type"],
+                source_engine=row["source_engine"],
+                pinned=1 if row["pinned"] else 0,
+            ):
+                inserted_or_updated += 1
+            else:
+                skipped += 1
+        _mark_bidirectional_backfill_done(conn)
+    logger.info(
+        "TM 双向词库补录完成："
+        f"新增或更新反向词条 {inserted_or_updated} 条，跳过 {skipped} 条"
+    )
 
 
 def _load_legacy_entries(legacy_db_path: str) -> list[sqlite3.Row]:
@@ -356,7 +657,7 @@ def insert_batch(
     批量写入新词条（INSERT OR UPDATE）。
     返回实际写入条数。
     """
-    to_insert: list[tuple] = []
+    normalized_pairs: list[tuple[str, str]] = []
     for src, tgt in pairs:
         src = normalize_tm_text_for_storage(src)
         tgt = normalize_tm_text_for_storage(tgt)
@@ -364,35 +665,39 @@ def insert_batch(
             continue
         if len(src) > max_len:
             continue  # 超长词条不入库
+        normalized_pairs.append((src, tgt))
 
-        to_insert.append(
-            (
-                src,
-                _make_hash(src, lang_pair),
-                tgt,
-                lang_pair,
-                AUTO_WORD_TYPE,
-                engine_name,
-            )
-        )
-
-    if not to_insert:
+    if not normalized_pairs:
         return 0
 
-    sql = """
-        INSERT INTO tm_entries (source_text, source_hash, target_text, lang_pair, word_type, source_engine)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source_text, lang_pair) DO UPDATE SET
-            target_text   = excluded.target_text,
-            source_hash   = excluded.source_hash,
-            source_engine = excluded.source_engine,
-            updated_at    = CURRENT_TIMESTAMP
-    """
+    written = 0
     with _get_conn() as conn:
-        conn.executemany(sql, to_insert)
+        for src, tgt in normalized_pairs:
+            changed = _upsert_entry(
+                conn,
+                src,
+                tgt,
+                lang_pair,
+                word_type=AUTO_WORD_TYPE,
+                source_engine=engine_name,
+                pinned=0,
+            )
+            if not changed:
+                continue
+            written += 1
+            if _sync_reverse_upsert(
+                conn,
+                src,
+                tgt,
+                lang_pair,
+                word_type=AUTO_WORD_TYPE,
+                source_engine=engine_name,
+                pinned=0,
+            ):
+                written += 1
 
-    logger.debug(f"TM 写入 {len(to_insert)} 条（{lang_pair}）")
-    return len(to_insert)
+    logger.debug(f"TM 写入 {written} 条（{lang_pair}，含反向同步）")
+    return written
 
 
 def insert_manual_entry(source: str, target: str, lang_pair: str) -> bool:
@@ -401,23 +706,33 @@ def insert_manual_entry(source: str, target: str, lang_pair: str) -> bool:
     若原文已存在则更新译文（不修改固定状态）。
     返回 True 表示成功。
     """
-    sql = """
-        INSERT INTO tm_entries (source_text, source_hash, target_text, lang_pair, word_type, source_engine)
-        VALUES (?, ?, ?, ?, 'manual', 'manual')
-        ON CONFLICT(source_text, lang_pair) DO UPDATE SET
-            target_text = excluded.target_text,
-            source_hash = excluded.source_hash,
-            updated_at  = CURRENT_TIMESTAMP
-    """
     try:
         source = normalize_tm_text_for_storage(source)
         target = normalize_tm_text_for_storage(target)
         if not source or not target:
             return False
         with _get_conn() as conn:
-            conn.execute(sql, [source, _make_hash(source, lang_pair), target, lang_pair])
-        logger.debug(f"TM 手动新增：{source[:20]} → {target[:20]}")
-        return True
+            changed = _upsert_entry(
+                conn,
+                source,
+                target,
+                lang_pair,
+                word_type="manual",
+                source_engine="manual",
+                pinned=0,
+            )
+            if changed:
+                _sync_reverse_upsert(
+                    conn,
+                    source,
+                    target,
+                    lang_pair,
+                    word_type="manual",
+                    source_engine="manual",
+                    pinned=0,
+                )
+        logger.debug(f"TM 手动新增：{source[:20]} → {target[:20]}（双向同步）")
+        return changed
     except Exception as e:
         logger.warning(f"TM 手动新增失败：{e}")
         return False
@@ -425,15 +740,8 @@ def insert_manual_entry(source: str, target: str, lang_pair: str) -> bool:
 
 def update_entry(entry_id: int, new_target: str) -> None:
     """更新单条词条的译文（TM 管理页手动编辑用）。"""
-    sql = """
-        UPDATE tm_entries
-        SET target_text = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    """
-    normalized_target = normalize_tm_text_for_storage(new_target)
-    with _get_conn() as conn:
-        conn.execute(sql, [normalized_target, entry_id])
-    logger.debug(f"TM 更新条目 id={entry_id}")
+    bulk_update([(entry_id, new_target)])
+    logger.debug(f"TM 更新条目 id={entry_id}（双向同步）")
 
 
 def update_entry_full(entry_id: int, new_source: str, new_target: str) -> bool:
@@ -450,27 +758,43 @@ def update_entry_full(entry_id: int, new_source: str, new_target: str) -> bool:
     
     try:
         with _get_conn() as conn:
-            # 先查出该词条的 lang_pair，以便计算新哈希
-            row = conn.execute(
-                "SELECT lang_pair FROM tm_entries WHERE id = ?", [entry_id]
-            ).fetchone()
-            if not row:
+            old_row = _fetch_entry(conn, entry_id)
+            if old_row is None:
                 logger.warning(f"TM 全量更新失败：词条 id={entry_id} 不存在")
                 return False
-            
-            lang_pair = row["lang_pair"]
+            conflict = _fetch_entry_by_source(conn, new_source, old_row["lang_pair"])
+            if conflict is not None and int(conflict["id"]) != int(entry_id):
+                logger.warning(f"TM 全量更新失败：词条 id={entry_id} 的新原文与现有词条冲突")
+                return False
+
+            lang_pair = old_row["lang_pair"]
             new_hash = _make_hash(new_source, lang_pair)
-            
-            # 更新原文、译文、哈希、固定状态
+
             conn.execute(
                 """
                 UPDATE tm_entries
-                SET source_text = ?, source_hash = ?, target_text = ?, pinned = 0, updated_at = CURRENT_TIMESTAMP
+                SET source_text = ?,
+                    source_hash = ?,
+                    target_text = ?,
+                    word_type = 'manual',
+                    source_engine = 'manual',
+                    pinned = 0,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 [new_source, new_hash, new_target, entry_id],
             )
-        logger.debug(f"TM 全量更新条目 id={entry_id}（已同步 source_hash）")
+            _delete_matching_reverse(conn, old_row)
+            _sync_reverse_upsert(
+                conn,
+                new_source,
+                new_target,
+                lang_pair,
+                word_type="manual",
+                source_engine="manual",
+                pinned=0,
+            )
+        logger.debug(f"TM 全量更新条目 id={entry_id}（已同步 source_hash 与反向词条）")
         return True
     except Exception as e:
         logger.warning(f"TM 全量更新失败（可能原文冲突）：{e}")
@@ -480,8 +804,12 @@ def update_entry_full(entry_id: int, new_source: str, new_target: str) -> bool:
 def delete_entry(entry_id: int) -> None:
     """删除单条词条。"""
     with _get_conn() as conn:
+        row = _fetch_entry(conn, entry_id)
+        if row is None:
+            return
         conn.execute("DELETE FROM tm_entries WHERE id = ?", [entry_id])
-    logger.debug(f"TM 删除条目 id={entry_id}")
+        _delete_matching_reverse(conn, row)
+    logger.debug(f"TM 删除条目 id={entry_id}（已同步反向词条）")
 
 
 def delete_unpinned_entries(lang_pair: str, keyword: str = "") -> int:
@@ -489,15 +817,17 @@ def delete_unpinned_entries(lang_pair: str, keyword: str = "") -> int:
     仅删除未固定词条（pinned=0）。
     返回删除条数。
     """
-    base_where = "WHERE lang_pair = ? AND pinned = 0"
-    params: list = [lang_pair]
-    if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
-        kw = f"%{keyword.strip()}%"
-        params.extend([kw, kw])
     with _get_conn() as conn:
-        cur = conn.execute(f"DELETE FROM tm_entries {base_where}", params)
-        return cur.rowcount
+        rows = _select_scope_rows(
+            conn,
+            lang_pair,
+            keyword,
+            only_unpinned=True,
+        )
+        for row in rows:
+            conn.execute("DELETE FROM tm_entries WHERE id = ?", [row["id"]])
+            _delete_matching_reverse(conn, row)
+        return len(rows)
 
 
 def delete_all_entries(lang_pair: str, keyword: str = "") -> int:
@@ -505,15 +835,12 @@ def delete_all_entries(lang_pair: str, keyword: str = "") -> int:
     删除指定语言对下（可按关键词过滤）的所有词条。
     返回删除条数。
     """
-    base_where = "WHERE lang_pair = ?"
-    params: list = [lang_pair]
-    if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
-        kw = f"%{keyword.strip()}%"
-        params.extend([kw, kw])
     with _get_conn() as conn:
-        cur = conn.execute(f"DELETE FROM tm_entries {base_where}", params)
-        return cur.rowcount
+        rows = _select_scope_rows(conn, lang_pair, keyword)
+        for row in rows:
+            conn.execute("DELETE FROM tm_entries WHERE id = ?", [row["id"]])
+            _delete_matching_reverse(conn, row)
+        return len(rows)
 
 
 def bulk_update(updates: list[tuple[int, str]]) -> int:
@@ -524,19 +851,39 @@ def bulk_update(updates: list[tuple[int, str]]) -> int:
     """
     if not updates:
         return 0
-    sql = """
-        UPDATE tm_entries
-        SET target_text = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    """
     rows = [(normalize_tm_text_for_storage(tgt), eid) for eid, tgt in updates]
     rows = [(tgt, eid) for tgt, eid in rows if tgt]
     if not rows:
         return 0
+    count = 0
     with _get_conn() as conn:
-        conn.executemany(sql, rows)
-    logger.info(f"TM 批量更新 {len(rows)} 条")
-    return len(rows)
+        for target_text, entry_id in rows:
+            old_row = _fetch_entry(conn, int(entry_id))
+            if old_row is None:
+                continue
+            conn.execute(
+                """
+                UPDATE tm_entries
+                SET target_text = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                [target_text, entry_id],
+            )
+            updated_row = dict(old_row)
+            updated_row["target_text"] = target_text
+            _delete_matching_reverse(conn, old_row)
+            _sync_reverse_upsert(
+                conn,
+                updated_row["source_text"],
+                updated_row["target_text"],
+                updated_row["lang_pair"],
+                word_type=updated_row["word_type"],
+                source_engine=updated_row["source_engine"],
+                pinned=1 if updated_row["pinned"] else 0,
+            )
+            count += 1
+    logger.info(f"TM 批量更新 {count} 条（已同步反向词条）")
+    return count
 
 
 # ── 固定管理 ──────────────────────────────────────────────────────────────────
@@ -544,24 +891,40 @@ def bulk_update(updates: list[tuple[int, str]]) -> int:
 def pin_entry(entry_id: int, pinned: bool = True) -> None:
     """固定或解除固定单条词条。"""
     with _get_conn() as conn:
+        row = _fetch_entry(conn, entry_id)
+        if row is None:
+            return
         conn.execute(
-            "UPDATE tm_entries SET pinned = ? WHERE id = ?",
+            "UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             [1 if pinned else 0, entry_id],
         )
-    logger.debug(f"TM {'固定' if pinned else '解固'} id={entry_id}")
+        _sync_reverse_pin(conn, row, pinned)
+    logger.debug(f"TM {'固定' if pinned else '解固'} id={entry_id}（已同步反向词条）")
 
 
 def bulk_pin_entries(ids: list[int], pinned: bool = True) -> None:
     """批量固定或解除固定（按 ID 列表）。"""
     if not ids:
         return
-    placeholders = ",".join("?" * len(ids))
     with _get_conn() as conn:
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT id, source_text, target_text, lang_pair, word_type, source_engine, pinned
+            FROM tm_entries
+            WHERE id IN ({placeholders})
+            """,
+            ids,
+        ).fetchall()
+        if not rows:
+            return
         conn.execute(
-            f"UPDATE tm_entries SET pinned = ? WHERE id IN ({placeholders})",
+            f"UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
             [1 if pinned else 0, *ids],
         )
-    logger.debug(f"TM 批量{'固定' if pinned else '解固'} {len(ids)} 条")
+        for row in rows:
+            _sync_reverse_pin(conn, row, pinned)
+    logger.debug(f"TM 批量{'固定' if pinned else '解固'} {len(rows)} 条（已同步反向词条）")
 
 
 def set_all_pinned(lang_pair: str, pinned: bool, keyword: str = "") -> int:
@@ -569,18 +932,18 @@ def set_all_pinned(lang_pair: str, pinned: bool, keyword: str = "") -> int:
     将指定语言对下（可按关键词过滤）的所有词条设置为固定或解固。
     返回影响条数。
     """
-    base_where = "WHERE lang_pair = ?"
-    params: list = [lang_pair]
-    if keyword.strip():
-        base_where += " AND (source_text LIKE ? OR target_text LIKE ?)"
-        kw = f"%{keyword.strip()}%"
-        params.extend([kw, kw])
     with _get_conn() as conn:
-        cur = conn.execute(
-            f"UPDATE tm_entries SET pinned = ? {base_where}",
-            [1 if pinned else 0, *params],
+        rows = _select_scope_rows(conn, lang_pair, keyword)
+        if not rows:
+            return 0
+        placeholders = ",".join("?" * len(rows))
+        conn.execute(
+            f"UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+            [1 if pinned else 0, *[row["id"] for row in rows]],
         )
-        return cur.rowcount
+        for row in rows:
+            _sync_reverse_pin(conn, row, pinned)
+        return len(rows)
 
 
 # ── 查询与统计 ────────────────────────────────────────────────────────────────
@@ -696,61 +1059,65 @@ def import_entries(
     mode: 'skip'（跳过重复）| 'overwrite'（覆盖重复）| 'keep_both'（保留双份）
     返回 {inserted, skipped, duplicates}。
     """
-    # 取出现有原文集合
-    with _get_conn() as conn:
-        existing = {
-            r[0] for r in conn.execute(
-                "SELECT source_text FROM tm_entries WHERE lang_pair = ?", [lang_pair]
-            ).fetchall()
-        }
-
-    to_insert:    list[tuple] = []
-    to_update:    list[tuple] = []
-    to_dup_insert: list[tuple] = []
-    duplicates = 0
-
-    for e in entries:
-        src = normalize_tm_text_for_storage(e.get("source_text", ""))
-        tgt = normalize_tm_text_for_storage(e.get("target_text", ""))
+    normalized_entries: list[tuple[str, str, str, int]] = []
+    for entry in entries:
+        src = normalize_tm_text_for_storage(entry.get("source_text", ""))
+        tgt = normalize_tm_text_for_storage(entry.get("target_text", ""))
         if not src or not tgt:
             continue
-        pinned = 1 if str(e.get("pinned", "0")) not in ("0", "False", "false", "") else 0
-        wt = _normalize_word_type(e.get("word_type", AUTO_WORD_TYPE))
+        pinned = 1 if str(entry.get("pinned", "0")) not in ("0", "False", "false", "") else 0
+        normalized_entries.append(
+            (
+                src,
+                tgt,
+                _normalize_word_type(entry.get("word_type", AUTO_WORD_TYPE)),
+                pinned,
+            )
+        )
 
-        if src in existing:
-            duplicates += 1
-            if mode == "overwrite":
-                to_update.append((tgt, pinned, _make_hash(src, lang_pair), src, lang_pair))
-            elif mode == "keep_both":
-                dup_src = src + " [导入备份]"
-                to_dup_insert.append((dup_src, _make_hash(dup_src, lang_pair), tgt, lang_pair, wt, "import", pinned))
-        else:
-            to_insert.append((src, _make_hash(src, lang_pair), tgt, lang_pair, wt, "import", pinned))
-
-    ins_sql = """
-        INSERT OR IGNORE INTO tm_entries
-            (source_text, source_hash, target_text, lang_pair, word_type, source_engine, pinned)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """
-    upd_sql = """
-        UPDATE tm_entries
-        SET target_text = ?, pinned = ?, source_hash = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE source_text = ? AND lang_pair = ?
-    """
     inserted = 0
+    skipped = 0
+    duplicates = 0
     with _get_conn() as conn:
-        if to_insert:
-            conn.executemany(ins_sql, to_insert)
-            inserted += len(to_insert)
-        if to_update:
-            conn.executemany(upd_sql, to_update)
-            inserted += len(to_update)
-        if to_dup_insert:
-            conn.executemany(ins_sql, to_dup_insert)
-            inserted += len(to_dup_insert)
+        for src, tgt, word_type, pinned in normalized_entries:
+            existing = _fetch_entry_by_source(conn, src, lang_pair)
+            write_source = src
+            if existing is not None:
+                duplicates += 1
+                if mode == "skip":
+                    skipped += 1
+                    continue
+                if mode == "keep_both":
+                    write_source = src + " [导入备份]"
 
-    skipped = duplicates if mode == "skip" else 0
-    logger.info(f"TM 导入：新增 {inserted} 条，重复 {duplicates} 条（模式={mode}）")
+            changed = _upsert_entry(
+                conn,
+                write_source,
+                tgt,
+                lang_pair,
+                word_type=word_type,
+                source_engine="import",
+                pinned=pinned,
+            )
+            if not changed:
+                skipped += 1
+                continue
+            inserted += 1
+            if _sync_reverse_upsert(
+                conn,
+                write_source,
+                tgt,
+                lang_pair,
+                word_type=word_type,
+                source_engine="import",
+                pinned=pinned,
+            ):
+                inserted += 1
+
+    logger.info(
+        f"TM 导入：新增或更新 {inserted} 条（含反向同步），"
+        f"重复 {duplicates} 条，跳过 {skipped} 条（模式={mode}）"
+    )
     return {"inserted": inserted, "skipped": skipped, "duplicates": duplicates}
 
 
