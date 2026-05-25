@@ -2,6 +2,8 @@
 
 Date: 2026-05-24
 
+Updated: 2026-05-25 for the V5.0 native release line.
+
 ## Status
 
 Accepted
@@ -9,12 +11,15 @@ Accepted
 ## Context
 
 The project has completed the main UI migration to the PySide6 native desktop
-interface. Keeping the legacy Streamlit/web-wrapper path in the same mainline
+interface. V5.0 is the first major native-only release line. Keeping the legacy
+Streamlit/web-wrapper path in the same mainline
 adds duplicate launchers, duplicate UI documentation, extra dependencies, and
 extra test paths that no longer represent the product direction.
 
 The legacy web-wrapper release remains available from older GitHub Releases,
 with V4.6 documented as the last line for users who still need that route.
+That path is historical context only and is not a maintained launch route in
+V5.0 or later.
 
 ## Decision
 

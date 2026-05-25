@@ -47,7 +47,7 @@ jobs:
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XL_Translator_Windows_Setup
+          name: Translator_Windows_Setup
           path: |
             ${{ env.WINDOWS_SETUP }}
             ${{ env.WINDOWS_SETUP_SHA256 }}
@@ -84,7 +84,7 @@ jobs:
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XL_Translator_macOS_DMG
+          name: Translator_macOS_DMG
           path: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}

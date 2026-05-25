@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import platform
+from dataclasses import dataclass
 from typing import Any
 
 import psutil
 
 
-SUPPORTED_LOCAL_EXCEL_PLATFORMS = {"Darwin"}
+SUPPORTED_LOCAL_EXCEL_PLATFORMS = {"Darwin", "Windows"}
+
+
+@dataclass
+class ExcelThreadState:
+    pythoncom: Any | None = None
+    com_initialized: bool = False
 
 
 def local_excel_platform() -> str:
@@ -18,12 +25,31 @@ def supports_local_excel_automation() -> bool:
 
 
 def initialize_excel_thread() -> Any | None:
-    """macOS 不需要额外的线程级 Excel 初始化。"""
-    return None
+    """Initialize per-thread state required by the platform's Excel bridge."""
+    if local_excel_platform() != "Windows":
+        return None
+
+    try:
+        import pythoncom
+    except ImportError as exc:
+        raise RuntimeError("未安装 pywin32，无法初始化 Windows Excel COM 自动化。") from exc
+
+    pythoncom.CoInitialize()
+    return ExcelThreadState(pythoncom=pythoncom, com_initialized=True)
 
 
 def finalize_excel_thread(thread_state: Any | None) -> None:
-    _ = thread_state
+    if not getattr(thread_state, "com_initialized", False):
+        return
+
+    pythoncom = getattr(thread_state, "pythoncom", None)
+    if pythoncom is None:
+        return
+
+    try:
+        pythoncom.CoUninitialize()
+    except Exception:
+        pass
 
 
 def create_excel_app(*, visible: bool = False, add_book: bool = False):
@@ -44,7 +70,11 @@ def probe_local_excel_automation() -> tuple[bool, str]:
     if not supports_local_excel_automation():
         return False, f"当前平台 {local_excel_platform()} 暂不支持本地 Excel 自动化。"
 
-    thread_state = initialize_excel_thread()
+    try:
+        thread_state = initialize_excel_thread()
+    except Exception as exc:
+        return False, f"无法初始化本地 Excel 自动化：{exc}"
+
     app = None
     try:
         try:

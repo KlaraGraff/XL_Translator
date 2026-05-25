@@ -10,7 +10,7 @@
 3. 使用项目虚拟环境运行静态检查：
    `powershell -ExecutionPolicy Bypass -File .\quality_gate.ps1`
 4. 静态检查通过后，至少再执行 1 个与本次改动直接相关的动态测试。
-5. Streamlit 页面优先使用 `agent/testing/wrappers/` 下的包装器配合 `streamlit.testing.v1.AppTest`。
+5. 原生界面优先使用隔离的 PySide6/offscreen 测试，直接实例化页面或主窗口并断言关键控件状态。
 6. 涉及 `settings.json`、`keys.json`、TM 数据库、临时目录或用户目录的测试，优先使用：
    `powershell -ExecutionPolicy Bypass -File .\agent\testing\Run-IsolatedVenvPython.ps1 ...`
 7. 动态测试产物统一写入 `.runtime\self-tests\<task-slug>\`。

@@ -25,9 +25,9 @@
 复用这套规则到新项目时，优先复制根目录 `AGENTS.md` 和整个 `agent/` 目录，再按新项目实际结构调整 `quality_gate.ps1` 与动态测试脚本。
 
 GitHub 同步规则：
-- 本项目远程仓库：`https://github.com/KlaraGraff/Product_TranslateForExcel`
+- 本项目远程仓库：`https://github.com/KlaraGraff/XL_Translator`
 - 默认分支：`main`
 - 不要创建新的 GitHub 仓库；除非用户明确要求，也不要新建无关分支。
 - 如果当前目录不是 Git 仓库，先提醒用户确认工作目录，不要自行初始化到别处。
 - 完成修改并通过自测后，按顺序执行：`git status`、`git add ...`、`git commit -m "<message>"`、`git push origin main`。
-- 推送前确认 `git remote -v` 指向 `https://github.com/KlaraGraff/Product_TranslateForExcel.git`。
+- 推送前确认 `git remote -v` 指向 `https://github.com/KlaraGraff/XL_Translator.git`。

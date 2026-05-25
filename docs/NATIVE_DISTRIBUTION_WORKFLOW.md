@@ -1,6 +1,6 @@
 # Native Distribution Workflow
 
-当前主线只维护 PySide6 原生桌面应用。
+当前主线从 V5.0 起只维护 PySide6 原生桌面应用，并以 Windows 安装器和 macOS dmg 作为标准发布产物。
 
 ## 入口
 
@@ -9,6 +9,8 @@
 - Windows 源码包入口：`启动应用.bat`
 - macOS 打包配置：`packaging/macos/app_macos.spec`
 - Windows 打包配置：`packaging/windows/app_windows.spec`
+- Windows 标准安装包：`Translator_Windows_5.0_Setup.exe`
+- macOS 标准安装包：`Translator_macOS_5.0.dmg`
 
 `启动原生应用.command` 保留为 macOS 明确命名入口；`启动应用.command`
 现在也是同一条原生启动线路。

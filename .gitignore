@@ -10,6 +10,7 @@ __pycache__/
 .venv/
 venv/
 env/
+node_modules/
 
 # Local runtime data and self-test artifacts
 .runtime/
@@ -21,6 +22,7 @@ tmp*/
 # Build and distribution artifacts
 build/
 dist/
+src-tauri/
 *.zip
 *.dmg
 *.pkg

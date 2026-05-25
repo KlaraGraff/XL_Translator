@@ -1,5 +1,9 @@
 # 2026-05-24 Full Native Regression Test Log
 
+Historical note: this file records the validation state during the migration.
+V5.0 and later do not retain or require Streamlit wrapper smoke tests; current
+maintenance uses PySide6 native/offscreen tests plus the standard quality gate.
+
 Scope: native PySide6 UI refactor, core translation utilities, TM management, Word/Excel task pages, abnormal interaction paths.
 
 ## Running Notes

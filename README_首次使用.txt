@@ -1,12 +1,12 @@
 【macOS 用户怎么做】
-1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“Translator_macOS_<版本>.dmg”。
+1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“Translator_macOS_5.0.dmg”或后续更高版本 dmg。
 2) 将“Translator.app”拖入 Applications 或其他本地文件夹。
 3) 双击“Translator.app”，程序会打开原生桌面界面。
 4) 若系统首次阻止打开，可在 Finder 中右键“Translator.app”并选择“打开”。
 5) 如果你拿到的是源码式 macOS 包，请双击根目录“启动应用.command”；这种模式需要本机已有 Python 3.10+。
 
 【Windows 用户怎么做】
-1) 如果下载的是 GitHub Release 里的 Windows 安装包，请直接运行“Translator_Windows_<版本>_Setup.exe”。
+1) 如果下载的是 GitHub Release 里的 Windows 安装包，请直接运行“Translator_Windows_5.0_Setup.exe”或后续更高版本安装包。
 2) 安装完成后可从开始菜单或桌面启动“Translator”。
 3) 如果你拿到的是源码式 Windows 包，请双击根目录“启动应用.bat”。这种模式需要本机已有 Python 3.10+，或包内带有 runtime\python。
 4) Windows 文件夹、Excel 文件、Word 文件选择窗口会使用系统原生窗口。
@@ -22,3 +22,4 @@
 1) 不要直接删除 `.venv`，除非你准备重新初始化运行环境。
 2) 源码包不要在压缩包内直接运行，必须先解压后再启动。
 3) macOS 标准发布包不再使用 zip；若直接从其他系统拷贝源码目录，`.command` 可能缺少执行权限。
+4) V5.0 起不要再寻找网页入口、Streamlit 命令或浏览器页面；当前版本启动后就是原生桌面界面。

@@ -1,6 +1,6 @@
 # 数据库修复说明（与当前代码对齐）
 
-最后更新：2026-04-06
+最后更新：2026-05-25
 
 ## 当前真实情况
 
@@ -16,9 +16,9 @@
 ## 推荐处理方式
 
 1. 正常启动应用。
-2. 若这是该机器的第一次启动，通常会先看到可见命令行窗口；后续启动通常为静默模式。
+2. 若这是该机器第一次运行 V5.0 原生版，按提示确认旧数据迁移。
 3. 观察启动日志是否出现数据库迁移、备份或 `source_hash` 回填信息。
-4. 若希望显性查看完整启动过程，也可直接运行 `scripts/start_macos.command`。
+4. 若希望显性查看源码包启动过程，macOS 可运行 `scripts/start_macos.command`，Windows 可运行 `scripts\start_windows.bat`。
 5. 若仍异常，请保留报错截图和日志，反馈排查。
 
 ## 不要使用的旧指令
@@ -27,6 +27,6 @@
 
 - `python src/scripts/repair_db.py`
 - `python src/scripts/launcher.py`
-- `streamlit run app.py`
+- `streamlit run app.py`（V5.0 起已无网页入口）
 
 以上路径会导致“文件不存在”错误。

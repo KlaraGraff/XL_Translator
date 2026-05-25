@@ -1,9 +1,13 @@
 # Translator 版本更新日志
 
-## Unreleased
-- 主线清理旧网页包装线路，只保留 PySide6 原生桌面界面。
-- 移除 Streamlit / pywebview 运行依赖、旧网页页面目录和旧 WebView 启动器。
-- 源码启动脚本调整为直接创建/使用项目虚拟环境并启动原生应用。
+## V5.0
+- 重大升级：Translator 从旧版网页包装应用切换为真正的 PySide6 原生桌面应用；启动后直接进入系统原生窗口，不再通过本地网页、浏览器页或 WebView 承载主界面。
+- 与 V4.6 相比，当前主线删除旧网页包装启动路径，移除 Streamlit / pywebview 运行依赖、旧网页页面目录和旧 WebView 启动器，后续功能只在原生界面维护。
+- 发布路线升级为 Windows 与 macOS 双平台原生安装包：Windows 输出 `Translator_Windows_5.0_Setup.exe`，macOS 输出 `Translator_macOS_5.0.dmg`，两端安装包都使用同一个 `scripts/launch_native.py` 原生入口。
+- Windows 兼容性增强：Windows 本地 Excel 自动化现在会在线程内初始化和释放 COM，可用于 `.xls` 转换、Excel 精调等需要本机 Excel 的路径；没有可用 Excel 时仍会提示用户选择纯代码兼容模式。
+- Word 翻译能力进入主线：支持 Word 工作区、`.doc` 到 `.docx` 的本地 Word / LibreOffice 转换链路、独立批次策略、恢复重试、语义仲裁和复核高亮。
+- Excel / Word 任务完成页统一为文件级结果和内容级结果，提供结果定位清单、诊断归档和可导出的历史诊断包，方便定位失败单元格、段落和表格位置。
+- 启动与分发文档统一到原生主线：源码启动脚本直接创建或使用项目虚拟环境并启动原生应用；内部自测规范改为 PySide6/offscreen 原生页面测试。
 
 ## V4.6
 - 图标换成了可爱帅气的凉前辈。
