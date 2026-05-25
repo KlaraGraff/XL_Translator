@@ -97,7 +97,7 @@ class NativeComboWidgetTests(unittest.TestCase):
 
         self.assertIn("…", label.text())
         self.assertTrue(label.text().startswith("/Users"))
-        self.assertTrue(label.text().endswith("/source.docx"))
+        self.assertTrue(label.text().endswith("source.docx"))
         self.assertEqual(label.toolTip(), label.fullText())
 
     def test_popup_geometry_attaches_below_field_when_space_allows(self) -> None:

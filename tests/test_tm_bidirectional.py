@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from core import tm_manager
@@ -24,7 +25,7 @@ class BidirectionalTmTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _row(self, source: str, lang_pair: str) -> dict | None:
-        with sqlite3.connect(str(tm_manager.DB_PATH)) as conn:
+        with closing(sqlite3.connect(str(tm_manager.DB_PATH))) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -138,7 +139,7 @@ class BidirectionalTmTests(unittest.TestCase):
         current = self._row("梁", "zh-en")
         assert protected_reverse is not None
         assert current is not None
-        with sqlite3.connect(str(tm_manager.DB_PATH)) as conn:
+        with closing(sqlite3.connect(str(tm_manager.DB_PATH))) as conn:
             conn.execute(
                 "UPDATE tm_entries SET pinned = 1 WHERE id = ?",
                 [protected_reverse["id"]],
@@ -190,7 +191,7 @@ class BidirectionalTmTests(unittest.TestCase):
     def test_existing_data_backfill_creates_reverse_entries_once(self) -> None:
         tm_manager.DB_PATH.unlink(missing_ok=True)
         tm_manager._ensure_current_schema()
-        with sqlite3.connect(str(tm_manager.DB_PATH)) as conn:
+        with closing(sqlite3.connect(str(tm_manager.DB_PATH))) as conn:
             conn.execute(
                 """
                 INSERT INTO tm_entries (
