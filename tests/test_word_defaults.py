@@ -15,6 +15,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.word_batch.max_chars_per_batch, 3000)
         self.assertEqual(settings.word_batch.split_paragraph_chars, 6000)
         self.assertEqual(settings.word_batch.strict_retry_attempts, 3)
+        self.assertTrue(settings.word_conversion.prefer_native_word)
 
     def test_word_batch_defaults_match_expected_baseline(self) -> None:
         settings = WordBatchSettings()
@@ -38,6 +39,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
 
         self.assertEqual(migrated["settings_version"], SETTINGS_SCHEMA_VERSION)
         self.assertTrue(migrated["word_review"]["highlight_unresolved"])
+        self.assertTrue(migrated["word_conversion"]["prefer_native_word"])
 
 
 if __name__ == "__main__":

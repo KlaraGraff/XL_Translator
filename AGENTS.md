@@ -16,6 +16,12 @@
 6. 原生界面改动优先使用隔离的 PySide6/offscreen 动态测试，必要时补充截图或控件状态断言。
 7. 如果无法完成测试，交付前必须明确说明未执行项、阻塞原因和风险范围。
 
+本地原生界面测试收尾动作：
+- 只要本地修改了 `native_app/`、原生页面、原生样式、原生启动路径或会影响原生界面状态的代码，完成自测后必须主动关闭旧的 `Translator` / `launch_native.py` / `start_native_macos.command` 进程，再用当前源码启动一个新进程。
+- macOS 本地测试优先用项目脚本启动：`open -a Terminal "<repo>/scripts/start_native_macos.command"`；若用命令行直接启动，则在仓库根目录执行 `./.venv/bin/python scripts/launch_native.py`。
+- 启动后必须确认新进程 PID、启动时间和启动路径，确保不是 `/Applications/Translator.app` 旧安装包或旧内存进程。
+- 该动作只属于本地测试交付流程。除非用户明确要求，不要因为记录或执行这个本地测试规则而提交、推送或上传到云端。
+
 复用这套规则到新项目时，优先复制根目录 `AGENTS.md` 和整个 `agent/` 目录，再按新项目实际结构调整 `quality_gate.ps1` 与动态测试脚本。
 
 GitHub 同步规则：

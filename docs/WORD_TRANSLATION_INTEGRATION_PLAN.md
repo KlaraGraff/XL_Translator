@@ -8,7 +8,8 @@ format behind its own small adapter.
 ## Product Goal
 
 - Keep the existing Excel translation flow working as-is.
-- Add a Word translation flow for `.docx` files.
+- Add a Word translation flow for `.docx` files, with legacy `.doc`
+  compatibility through conversion to `.docx`.
 - Let users switch between table translation, Word translation, and TM
   management from one sidebar.
 - Reuse the existing local settings and key storage. API keys must stay in
@@ -19,9 +20,14 @@ format behind its own small adapter.
 
 ## MVP Boundary
 
-- Supported Word input: `.docx` only.
-- Unsupported for now: `.doc`, WPS-native formats, password-protected files,
+- Supported Word input: `.docx` directly and `.doc` through a conversion step.
+- `.doc` conversion prefers local Microsoft Word when enabled. If Word is not
+  available or conversion fails, the app falls back quietly to compatible
+  converters such as LibreOffice/soffice or macOS textutil when present.
+- Unsupported for now: WPS-native formats, password-protected files,
   native Word macro preprocessing, and automatic TOC refresh.
+- Macro-enabled legacy `.doc` files may be converted to ordinary `.docx`; macros
+  are not preserved, executed, or written to the output.
 - Output defaults to bilingual Word files.
 - The source file is never modified. A timestamped output directory is created
   with copied results.
@@ -43,7 +49,9 @@ format behind its own small adapter.
 
 ## Word-Specific Components
 
-- `core.word_document`: scan `.docx`, extract translatable segments, write
+- `core.word_converter`: convert legacy `.doc` to temporary `.docx` using local
+  Word, LibreOffice/soffice, or macOS textutil fallback.
+- `core.word_document`: scan `.docx` / `.doc`, extract translatable segments, write
   bilingual `.docx`, and perform light structural QA.
 - `core.word_batching`: Word-only character-budget batching, long-paragraph
   splitting, batch integrity checks, and shrinking retry fallback.
@@ -68,7 +76,8 @@ format behind its own small adapter.
 ## Validation Checklist
 
 - Existing Excel page still renders and imports.
-- Word page scans a single `.docx` and a folder containing `.docx` files.
+- Word page scans a single `.docx` / `.doc` and a folder containing supported
+  Word files.
 - Generated Word table cells contain actual newline-separated source and target
   text.
 - Word body paragraphs insert translated paragraphs after source paragraphs.

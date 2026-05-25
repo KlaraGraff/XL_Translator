@@ -216,6 +216,7 @@ class WordDocumentTests(unittest.TestCase):
     def test_scan_word_path_ignores_temp_and_generated_output_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            legacy_path = root / "legacy.doc"
             source_path = root / "source.docx"
             temp_docx = root / "~$source.docx"
             output_dir = root / "source_翻译输出_20260513_120000"
@@ -224,11 +225,32 @@ class WordDocumentTests(unittest.TestCase):
 
             self._build_sample_docx(source_path)
             self._build_sample_docx(generated_path)
+            legacy_path.write_bytes(b"legacy word payload")
             temp_docx.write_text("not a real docx", encoding="utf-8")
 
             items = scan_word_path(root)
 
-            self.assertEqual([item.path for item in items], [source_path])
+            self.assertEqual([item.path for item in items], [legacy_path, source_path])
+            self.assertEqual(items[0].paragraph_count, 0)
+
+    def test_write_bilingual_docx_uses_docx_output_name_for_legacy_doc(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            converted_path = temp_path / "legacy_temp.docx"
+            output_dir = temp_path / "out"
+            self._build_sample_docx(converted_path)
+
+            out_path = write_bilingual_docx(
+                source_path=converted_path,
+                output_dir=output_dir,
+                translations={"项目名称：测试工程": "Project name: Test Project"},
+                target_lang="en",
+                source_lang="zh",
+                output_name="legacy.doc",
+            )
+
+            self.assertEqual(out_path.name, "双语(英文)_legacy.docx")
+            self.assertTrue(out_path.exists())
 
     def test_word_retry_only_targets_unresolved_chinese_sources(self) -> None:
         self.assertTrue(

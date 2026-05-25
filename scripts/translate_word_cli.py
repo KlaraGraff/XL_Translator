@@ -32,7 +32,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the local Word translator without opening the desktop UI.",
     )
-    parser.add_argument("source", help="DOCX file path or folder path to translate.")
+    parser.add_argument("source", help="DOCX/DOC file path or folder path to translate.")
     parser.add_argument("--target-lang", help="Target language code or display name, such as en or 英文.")
     parser.add_argument("--source-lang", help="Source language code or display name, such as zh or 中文.")
     parser.add_argument("--output-dir", help="Optional custom output root directory.")
@@ -63,6 +63,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.set_defaults(word_highlight_review=None)
     parser.add_argument("--word-highlight-color", help="Review highlight color as a 6-digit hex value, such as FFF2CC.")
+    native_group = parser.add_mutually_exclusive_group()
+    native_group.add_argument(
+        "--word-doc-prefer-native",
+        dest="word_doc_prefer_native",
+        action="store_true",
+        help="Prefer local Microsoft Word when converting legacy .doc files.",
+    )
+    native_group.add_argument(
+        "--word-doc-no-native",
+        dest="word_doc_prefer_native",
+        action="store_false",
+        help="Skip local Microsoft Word and use compatible .doc conversion fallbacks.",
+    )
+    parser.set_defaults(word_doc_prefer_native=None)
     parser.add_argument("--domain-preset", help="Override the saved domain preset.")
     parser.add_argument("--custom-prompt", help="Set a one-off custom prompt and force domain preset to 自定义.")
     parser.add_argument("--json", action="store_true", help="Print the final result as JSON.")
@@ -152,6 +166,8 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
             args.word_highlight_color,
             fallback=WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
         )
+    if args.word_doc_prefer_native is not None:
+        settings.word_conversion.prefer_native_word = bool(args.word_doc_prefer_native)
     if args.domain_preset:
         settings.domain_preset = args.domain_preset.strip()
     if args.custom_prompt:

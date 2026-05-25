@@ -19,8 +19,9 @@ from core.bilingual_writer import build_output_dir
 from core.language_registry import get_target_lang_display
 from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
+from core.word_converter import is_legacy_word_doc
 
-SUPPORTED_WORD_SUFFIXES = {".docx"}
+SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -38,6 +39,7 @@ class WordFileItem:
     paragraph_count: int = 0
     table_count: int = 0
     translatable_count: int = 0
+    original_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ def is_supported_word_file(path: str | Path) -> bool:
 
 
 def scan_word_path(path: str | Path) -> list[WordFileItem]:
-    """Scan a folder or single `.docx` file."""
+    """Scan a folder or single supported Word file."""
     path = Path(path)
     if not path.exists():
         logger.warning(f"路径不存在：{path}")
@@ -96,15 +98,19 @@ def scan_word_path(path: str | Path) -> list[WordFileItem]:
 
 
 def scan_word_folder(root: str | Path) -> list[WordFileItem]:
-    """Recursively scan a folder for `.docx` files."""
+    """Recursively scan a folder for supported Word files."""
     root = Path(root)
     if not root.exists():
         logger.warning(f"文件夹不存在：{root}")
         return []
 
     items: list[WordFileItem] = []
-    for path in root.rglob("*.docx"):
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
         if path.name.startswith("~"):
+            continue
+        if path.suffix.lower() not in SUPPORTED_WORD_SUFFIXES:
             continue
         if _is_generated_output(path.relative_to(root)):
             continue
@@ -187,6 +193,7 @@ def write_bilingual_docx(
     translations: dict[str, str],
     target_lang: str,
     source_lang: str = "zh",
+    output_name: str | None = None,
     review_highlight_sources: set[str] | None = None,
     review_highlight_color: str = "FFF2CC",
     log_callback=None,
@@ -205,7 +212,8 @@ def write_bilingual_docx(
     lang_display = _sanitize_filename_fragment(
         get_target_lang_display(target_lang, include_optional=True)
     )
-    out_path = output_dir / f"双语({lang_display})_{source_path.name}"
+    source_output_name = _normalize_word_output_name(output_name or source_path.name)
+    out_path = output_dir / f"双语({lang_display})_{source_output_name}"
     shutil.copy2(source_path, out_path)
     _ensure_owner_writable(out_path)
 
@@ -330,6 +338,14 @@ def build_word_output_dir(
 
 
 def _build_word_file_item(path: Path) -> WordFileItem:
+    if is_legacy_word_doc(path):
+        return WordFileItem(
+            path=path,
+            name=path.stem,
+            size_kb=round(path.stat().st_size / 1024, 1),
+            original_path=path,
+        )
+
     doc = Document(str(path))
     segments = extract_word_segments(path, target_lang="en", source_lang="zh")
     return WordFileItem(
@@ -340,6 +356,15 @@ def _build_word_file_item(path: Path) -> WordFileItem:
         table_count=len(doc.tables),
         translatable_count=len(segments),
     )
+
+
+def _normalize_word_output_name(name: str) -> str:
+    cleaned = _sanitize_filename_fragment(Path(str(name or "document")).name)
+    if Path(cleaned).suffix.lower() == ".doc":
+        return f"{Path(cleaned).stem}.docx"
+    if Path(cleaned).suffix.lower() != ".docx":
+        return f"{cleaned}.docx"
+    return cleaned
 
 
 def _is_generated_output(path: Path) -> bool:

@@ -55,6 +55,11 @@ from core.translation_protocol import (
     is_replace_translation,
     should_store_translation_in_tm,
 )
+from core.word_converter import (
+    WordConversionError,
+    convert_doc_to_docx,
+    is_legacy_word_doc,
+)
 from core.word_document import (
     WordFileItem,
     build_word_output_dir,
@@ -154,7 +159,7 @@ class WordTaskRunner:
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._task_logger = TaskLogger(enabled=settings.output.enable_task_log)
+        self._task_logger = TaskLogger(enabled=True)
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -265,6 +270,8 @@ class WordTaskRunner:
         quality_issues: list[dict] = []
         unresolved_review_sources: set[str] = set()
         recovery_review_sources: set[str] = set()
+        process_paths: list[Path] = []
+        converted_temp_paths: list[Path] = []
 
         try:
             _raise_if_stopped()
@@ -285,8 +292,49 @@ class WordTaskRunner:
                 self._log("INFO", f"[阶段 1] 提取文本：{file_item.name}（{index + 1}/{len(self._files)}）")
                 try:
                     t0 = datetime.now()
+                    process_path = file_item.path
+                    if is_legacy_word_doc(file_item.path):
+                        self._queue.put(
+                            StatusMsg(
+                                phase_desc=(
+                                    f"状态：[阶段 1/{phase_total}] 正在转换 .doc 文件："
+                                    f"{file_item.name}"
+                                )
+                            )
+                        )
+                        try:
+                            conversion = convert_doc_to_docx(
+                                file_item.path,
+                                prefer_native_word=settings.word_conversion.prefer_native_word,
+                            )
+                            process_path = conversion.path
+                            converted_temp_paths.append(conversion.path)
+                            for fallback_message in conversion.fallback_messages:
+                                self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一转换方式。")
+                            self._log(
+                                "INFO",
+                                (
+                                    f".doc 转换完成 {file_item.name}，"
+                                    f"使用 {conversion.method}，"
+                                    f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
+                                ),
+                            )
+                        except WordConversionError as exc:
+                            process_paths.append(process_path)
+                            file_texts.append(set())
+                            self._log("ERROR", f"Word 源文件转换失败 {file_item.name}: {exc}")
+                            self._task_logger.file_error(file_item.name, f"Word 源文件转换失败: {exc}")
+                            file_results.append(
+                                {
+                                    "name": file_item.name,
+                                    "success": False,
+                                    "error": f"Word 源文件转换失败: {exc}",
+                                }
+                            )
+                            continue
+                    process_paths.append(process_path)
                     segments = extract_word_segments(
-                        file_item.path,
+                        process_path,
                         target_lang=target_lang,
                         source_lang=source_lang,
                     )
@@ -298,6 +346,8 @@ class WordTaskRunner:
                     self._log("INFO", f"  → {file_item.name}：{len(text_set)} 个词条（{elapsed:.3f}s）")
                     self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
                 except Exception as exc:
+                    if len(process_paths) < index + 1:
+                        process_paths.append(file_item.path)
                     file_texts.append(set())
                     self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {exc}")
                     self._task_logger.file_error(file_item.name, f"Word 文件读取失败: {exc}")
@@ -585,12 +635,14 @@ class WordTaskRunner:
 
                 try:
                     t0 = datetime.now()
+                    source_path = process_paths[index] if index < len(process_paths) else file_item.path
                     out_path = write_bilingual_docx(
-                        source_path=file_item.path,
+                        source_path=source_path,
                         output_dir=output_dir / rel_subdir,
                         translations=global_translations,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        output_name=_word_output_source_name(file_item.path),
                         review_highlight_sources=(
                             unresolved_review_sources | recovery_review_sources
                             if settings.word_review.highlight_unresolved
@@ -662,6 +714,7 @@ class WordTaskRunner:
             tm_hit_count=tm_hit_count,
             api_call_count=api_call_count,
         )
+        _cleanup_converted_word_paths(converted_temp_paths, self._log)
 
         if stopped_message is not None:
             self._log("WARN", stopped_message)
@@ -685,6 +738,21 @@ class WordTaskRunner:
                 report_path=str(report_path) if report_path else "",
             )
         )
+
+
+def _word_output_source_name(path: Path) -> str:
+    return f"{path.stem}.docx" if is_legacy_word_doc(path) else path.name
+
+
+def _cleanup_converted_word_paths(
+    paths: list[Path],
+    log_callback: Callable[[str, str], None],
+) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as exc:
+            log_callback("WARN", f"临时 Word 转换文件清理失败 {path.name}: {exc}")
 
 
 def _needs_word_translation_retry(

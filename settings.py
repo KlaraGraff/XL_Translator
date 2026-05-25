@@ -189,12 +189,17 @@ class WordReviewSettings(BaseModel):
         return self
 
 
+class WordConversionSettings(BaseModel):
+    prefer_native_word: bool = True
+
+
 class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
+    word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
     target_lang: str = Field(default_factory=get_default_target_lang)
@@ -400,6 +405,14 @@ def _migrate_settings_to_v10(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v11(data: dict) -> dict:
+    """Migrate settings payloads to schema version 11."""
+    migrated = dict(data)
+    migrated.setdefault("word_conversion", WordConversionSettings().model_dump())
+    migrated["settings_version"] = 11
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -427,6 +440,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v9(migrated)
         elif next_version == 10:
             migrated = _migrate_settings_to_v10(migrated)
+        elif next_version == 11:
+            migrated = _migrate_settings_to_v11(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

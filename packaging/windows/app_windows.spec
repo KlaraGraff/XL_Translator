@@ -34,6 +34,7 @@ metadata_packages = [
     "PySide6_Essentials",
     "python-docx",
     "python-dotenv",
+    "pywin32",
     "rich",
     "shiboken6",
     "tenacity",
@@ -62,11 +63,15 @@ hiddenimports += [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "pydantic",
+    "pythoncom",
+    "pywintypes",
     "loguru",
     "dotenv",
     "tenacity",
     "xlrd",
     "xlwings",
+    "win32com",
+    "win32com.client",
     "zhipuai",
 ]
 

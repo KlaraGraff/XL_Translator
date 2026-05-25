@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QHeaderView,
     QSizePolicy,
     QSpinBox,
     QTableWidget,
@@ -44,7 +43,11 @@ from core.bilingual_writer import (
     get_custom_output_dir_error,
     resolve_custom_output_dir,
 )
-from core.diagnostics import build_diagnostics_history_zip_bytes, count_diagnostic_records
+from core.diagnostics import (
+    archive_task_diagnostics,
+    build_diagnostics_history_zip_bytes,
+    count_diagnostic_records,
+)
 from core.language_registry import (
     get_ordered_target_lang_codes,
     get_target_lang_display,
@@ -63,10 +66,18 @@ from core.task_runner import (
 from core.word_document import WordFileItem, is_supported_word_file
 from core.word_task_runner import WordTaskRunner
 from native_app.workers import WordScanWorker
+from native_app.result_view import (
+    ResultIssueRow,
+    build_done_summary,
+    format_elapsed,
+    render_translation_result,
+)
 from native_app.widgets import (
     build_app_tooltip_html,
     configure_app_table,
+    configure_file_selection_table,
     create_check_table_item,
+    create_elide_table_item,
     create_searchable_combo,
     create_table_item,
     MiddleElideLabel,
@@ -80,6 +91,10 @@ HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
 HEADER_SOURCE_MIN_WIDTH = 300
 HEADER_SOURCE_MAX_WIDTH = 430
+VISIBLE_LOG_ENTRY_LIMIT = 300
+VISIBLE_LOG_CHAR_LIMIT = 140_000
+DIAGNOSTIC_LOG_ENTRY_LIMIT = 5000
+DIAGNOSTIC_LOG_CHAR_LIMIT = 2_000_000
 
 
 def _clear_layout(layout) -> None:
@@ -101,35 +116,10 @@ def _label(text: str, object_name: str | None = None) -> QLabel:
     return label
 
 
-def _format_elapsed(seconds: float) -> str:
-    minutes = int(seconds // 60)
-    rest = int(seconds % 60)
-    if minutes:
-        return f"{minutes}分{rest}秒"
-    return f"{rest}秒"
-
-
 def _split_word_issues(issues: list[dict]) -> tuple[list[dict], list[dict]]:
     resolved = [issue for issue in issues if issue.get("severity") == "resolved"]
     review = [issue for issue in issues if issue.get("severity") != "resolved"]
     return review, resolved
-
-
-def _build_done_summary(
-    *,
-    generated_count: int,
-    failed_count: int,
-    review_count: int,
-    resolved_count: int,
-) -> str:
-    parts = [f"已生成 {generated_count} 个文件"]
-    if failed_count:
-        parts.append(f"生成失败 {failed_count} 个文件")
-    if review_count:
-        parts.append(f"需复核 {review_count} 段")
-    if resolved_count:
-        parts.append(f"已自动处理 {resolved_count} 段")
-    return "任务完成：" + "，".join(parts) + "。"
 
 
 def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
@@ -180,15 +170,26 @@ class WordTranslatePage(QWidget):
         self.runner: WordTaskRunner | None = None
         self.scan_worker: WordScanWorker | None = None
         self.log_entries: list[dict[str, str]] = []
+        self.diagnostic_log_entries: list[dict[str, str]] = []
+        self._visible_log_chars = 0
+        self._diagnostic_log_chars = 0
         self.progress: ProgressMsg | None = None
         self.recovery_status: WordRecoveryStatusMsg | None = None
         self.status_text = ""
         self.done: DoneMsg | None = None
         self.stop_message = ""
+        self.task_files: list[WordFileItem] = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._workspace_render_phase = self.phase
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(800)
         self.poll_timer.timeout.connect(self._poll_runner)
+
+        self.ui_sync_timer = QTimer(self)
+        self.ui_sync_timer.setInterval(500)
+        self.ui_sync_timer.timeout.connect(self._sync_action_card_with_workspace)
 
         self._build_ui()
         self._render_workspace()
@@ -282,8 +283,8 @@ class WordTranslatePage(QWidget):
         _set_tooltip(
             self.source_input,
             "源路径",
-            "可输入一个文件夹或单个 DOCX 文件的绝对路径。",
-            ["文件夹会递归扫描其中所有 .docx 文件。"],
+            "可输入一个文件夹或单个 Word 文件的绝对路径。",
+            ["文件夹会递归扫描其中所有 .docx / .doc 文件。"],
         )
         row.addWidget(self.source_input, 1)
 
@@ -382,6 +383,20 @@ class WordTranslatePage(QWidget):
         )
         self.highlight_check.toggled.connect(self._on_params_changed)
         layout.addWidget(self.highlight_check)
+
+        self.native_word_check = QCheckBox("优先调用本地 Word 处理 .doc")
+        self.native_word_check.setChecked(self.settings.word_conversion.prefer_native_word)
+        _set_tooltip(
+            self.native_word_check,
+            "优先调用本地 Word",
+            "处理旧版 .doc 时先尝试使用本机 Microsoft Word 另存为 .docx。",
+            [
+                "本地 Word 不可用或转换失败时，会自动改用 LibreOffice/textutil 等兼容方式继续。",
+                "转换结果为普通 .docx；宏不会保留、执行或输出。",
+            ],
+        )
+        self.native_word_check.toggled.connect(self._on_params_changed)
+        layout.addWidget(self.native_word_check)
 
         layout.addWidget(_field_label("每批最多段落", "每批最多段落", "控制 Word 段落打包数量。"))
         self.batch_paragraphs_spin = QSpinBox()
@@ -507,6 +522,8 @@ class WordTranslatePage(QWidget):
         return frame
 
     def _render_workspace(self) -> None:
+        self._normalize_terminal_state()
+        self._workspace_render_phase = self.phase
         _clear_layout(self.workspace_layout)
         frame = QFrame()
         frame.setObjectName("Workspace")
@@ -528,6 +545,7 @@ class WordTranslatePage(QWidget):
             self._render_stopped_workspace(layout)
         self.workspace_layout.addStretch(1)
         self._refresh_header()
+        self._render_action_card()
 
     def _render_idle_workspace(self, layout: QVBoxLayout) -> None:
         if not self.files:
@@ -578,7 +596,7 @@ class WordTranslatePage(QWidget):
         self._configure_file_table_columns()
         for row, item in enumerate(self.files):
             self.table.setItem(row, 0, create_check_table_item())
-            self.table.setItem(row, 1, create_table_item(item.name))
+            self.table.setItem(row, 1, create_elide_table_item(item.name))
             self.table.setItem(row, 2, create_table_item(f"{item.size_kb:.1f} KB"))
             self.table.setItem(row, 3, create_table_item(item.paragraph_count))
             self.table.setItem(row, 4, create_table_item(item.table_count))
@@ -605,91 +623,80 @@ class WordTranslatePage(QWidget):
 
     def _render_done_workspace(self, layout: QVBoxLayout) -> None:
         done = self.done
-        layout.addWidget(_label("任务结果", "SectionTitle"))
         if done is None:
-            layout.addWidget(QLabel("Word 翻译任务已完成。"))
+            render_translation_result(
+                layout,
+                empty_message="Word 翻译任务已完成。",
+                done=None,
+                summary_text="",
+                summary_success=True,
+                kpi_items=[],
+                file_status_formatter=self._format_file_result_status,
+            )
             return
         generated_count = sum(1 for item in done.file_results if item.get("success"))
         failure_count = len(done.file_results) - generated_count
         issues = list(done.issues or [])
         review_issues, resolved_issues = _split_word_issues(issues)
-        summary_label = QLabel(
+        summary_success = failure_count == 0 and not review_issues
+        summary_text = (
             "翻译成功。"
-            if failure_count == 0 and not review_issues
-            else _build_done_summary(
+            if summary_success
+            else build_done_summary(
                 generated_count=generated_count,
                 failed_count=failure_count,
                 review_count=len(review_issues),
                 resolved_count=len(resolved_issues),
             )
         )
-        summary_label.setWordWrap(True)
-        summary_label.setObjectName("ResultSuccess" if failure_count == 0 and not review_issues else "ResultWarning")
-        layout.addWidget(summary_label)
-        layout.addLayout(
-            self._build_result_kpis(
-                [
-                    ("已生成文件", str(generated_count)),
-                    ("生成失败", str(failure_count)),
-                    ("需复核段落", str(len(review_issues))),
-                    ("已自动处理", str(len(resolved_issues))),
-                    ("耗时", _format_elapsed(done.elapsed_sec)),
-                    ("TM 命中", str(done.tm_hit_count)),
-                    ("API 翻译", str(done.api_call_count)),
-                ]
-            )
-        )
-        output_label = _label("输出目录", "PillLabel")
-        layout.addWidget(output_label)
-        output = MiddleElideLabel(done.output_dir)
-        output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        output.setObjectName("MutedText")
-        layout.addWidget(output)
 
         ordered_issues = [*review_issues, *resolved_issues]
-        if ordered_issues:
-            layout.addWidget(_label("结果定位清单", "SectionTitle"))
-            issue_table = QTableWidget(len(ordered_issues), 5)
-            issue_table.setHorizontalHeaderLabels(["类型", "文件", "位置", "问题", "处理"])
-            configure_app_table(issue_table, row_height=48, word_wrap=True)
-            issue_table.horizontalHeader().setStretchLastSection(True)
-            issue_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            issue_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            issue_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-            issue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-            for row, issue in enumerate(ordered_issues):
-                issue_type = "已自动处理" if issue.get("severity") == "resolved" else "需复核"
-                position = " · ".join(
-                    part
-                    for part in [
-                        str(issue.get("section_path") or "正文"),
-                        str(issue.get("location_label") or "未知位置"),
-                    ]
-                    if part
-                )
-                table_values = [
-                    issue_type,
-                    str(issue.get("file") or ""),
-                    position,
-                    str(issue.get("problem") or issue.get("snippet") or ""),
-                    str(issue.get("status") or ""),
-                ]
-                for col, value in enumerate(table_values):
-                    issue_table.setItem(row, col, create_table_item(value))
-            issue_table.setMinimumHeight(min(260, 44 + 50 * max(1, min(len(ordered_issues), 4))))
-            issue_table.setMaximumHeight(360)
-            layout.addWidget(issue_table)
+        render_translation_result(
+            layout,
+            empty_message="Word 翻译任务已完成。",
+            done=done,
+            summary_text=summary_text,
+            summary_success=summary_success,
+            kpi_items=[
+                ("已生成文件", str(generated_count)),
+                ("生成失败", str(failure_count)),
+                ("需复核段落", str(len(review_issues))),
+                ("已自动处理", str(len(resolved_issues))),
+                ("耗时", format_elapsed(done.elapsed_sec)),
+                ("TM 命中", str(done.tm_hit_count)),
+                ("API 翻译", str(done.api_call_count)),
+            ],
+            issue_rows=self._build_result_issue_rows(ordered_issues),
+            file_status_formatter=self._format_file_result_status,
+            file_status_width=220,
+            file_detail_width=180,
+        )
 
-        table = QTableWidget(len(done.file_results), 3)
-        table.setHorizontalHeaderLabels(["文件名", "状态", "详情"])
-        configure_app_table(table, row_height=40, word_wrap=True)
-        table.horizontalHeader().setStretchLastSection(True)
-        for row, result in enumerate(done.file_results):
-            table.setItem(row, 0, create_table_item(result.get("name") or ""))
-            table.setItem(row, 1, create_table_item(self._format_file_result_status(result)))
-            table.setItem(row, 2, create_table_item(result.get("error") or ""))
-        table.resizeColumnsToContents()
-        layout.addWidget(table, 1)
+    def _build_result_issue_rows(self, issues: list[dict]) -> list[ResultIssueRow]:
+        rows: list[ResultIssueRow] = []
+        for issue in issues:
+            position = " · ".join(
+                part
+                for part in [
+                    str(issue.get("section_path") or "正文"),
+                    str(issue.get("location_label") or "未知位置"),
+                ]
+                if part
+            )
+            rows.append(
+                ResultIssueRow(
+                    issue_type=(
+                        "已自动处理"
+                        if issue.get("severity") == "resolved"
+                        else "需复核"
+                    ),
+                    file_name=str(issue.get("file") or ""),
+                    position=position,
+                    problem=str(issue.get("problem") or issue.get("snippet") or ""),
+                    status=str(issue.get("status") or ""),
+                )
+            )
+        return rows
 
     def _format_file_result_status(self, result: dict) -> str:
         if not result.get("success"):
@@ -742,6 +749,7 @@ class WordTranslatePage(QWidget):
         return row
 
     def _render_action_card(self) -> None:
+        self._normalize_terminal_state()
         _clear_layout(self.action_layout)
         self.action_layout.addWidget(_label("执行操作", "SectionTitle"))
         if self.phase == "idle":
@@ -757,7 +765,7 @@ class WordTranslatePage(QWidget):
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
-        elif self.phase == "running":
+        elif self._has_running_task():
             stop = QPushButton("终止翻译")
             stop.setObjectName("DangerButton")
             stop.clicked.connect(self._confirm_stop)
@@ -770,10 +778,73 @@ class WordTranslatePage(QWidget):
         history = QPushButton(
             "导出历史诊断归档" if count_diagnostic_records() > 0 else "暂无历史诊断"
         )
-        history.setEnabled(count_diagnostic_records() > 0 and self.phase != "running")
+        history.setEnabled(count_diagnostic_records() > 0 and not self._has_running_task())
         history.clicked.connect(self._export_history_diagnostics)
         self.action_layout.addWidget(history)
         self.action_layout.addStretch(1)
+        self.action_card.updateGeometry()
+        self.action_card.update()
+
+    def _visible_action_button_texts(self) -> list[str]:
+        return [
+            button.text()
+            for button in self.action_card.findChildren(QPushButton)
+            if button.parent() is not None
+        ]
+
+    def _sync_action_card_with_workspace(self) -> None:
+        if not hasattr(self, "action_card"):
+            return
+        terminal_phase = ""
+        if self.done is not None:
+            terminal_phase = "done"
+        elif self._workspace_render_phase in {"done", "error", "stopped"}:
+            terminal_phase = self._workspace_render_phase
+        if not terminal_phase:
+            if self.phase != "running":
+                self._stop_ui_sync_guard()
+            return
+
+        self.phase = terminal_phase
+        self.runner = None
+        self.poll_timer.stop()
+        self._lock_inputs(False)
+
+        button_texts = self._visible_action_button_texts()
+        if "终止翻译" in button_texts or "返回并开始新任务" not in button_texts:
+            self._render_action_card()
+            button_texts = self._visible_action_button_texts()
+        if "终止翻译" not in button_texts and "返回并开始新任务" in button_texts:
+            self._stop_ui_sync_guard()
+
+    def _start_ui_sync_guard(self) -> None:
+        if not self.ui_sync_timer.isActive():
+            self.ui_sync_timer.start()
+
+    def _stop_ui_sync_guard(self) -> None:
+        if self.ui_sync_timer.isActive():
+            self.ui_sync_timer.stop()
+
+    def _has_running_task(self) -> bool:
+        self._normalize_terminal_state()
+        return self.phase == "running" and self.done is None and self.runner is not None
+
+    def _normalize_terminal_state(self) -> None:
+        if self.phase in {"done", "error", "stopped"}:
+            self.runner = None
+            self.poll_timer.stop()
+            self._lock_inputs(False)
+            return
+        if self.done is not None:
+            self.runner = None
+            self.phase = "done"
+            self.poll_timer.stop()
+            self._lock_inputs(False)
+
+    def _schedule_action_card_resync(self) -> None:
+        self._start_ui_sync_guard()
+        QTimer.singleShot(0, self._render_action_card)
+        QTimer.singleShot(150, self._render_action_card)
 
     def _browse_source(self) -> None:
         current = self.source_input.text().strip().strip('"')
@@ -795,7 +866,7 @@ class WordTranslatePage(QWidget):
                 self,
                 "选择 Word 文件",
                 base,
-                "Word 文件 (*.docx)",
+                "Word 文件 (*.docx *.doc)",
             )
         else:
             return
@@ -813,7 +884,7 @@ class WordTranslatePage(QWidget):
             QMessageBox.warning(self, APP_NAME, f"路径不存在：{raw_path}")
             return
         if input_path.is_file() and not is_supported_word_file(input_path):
-            QMessageBox.warning(self, APP_NAME, "不支持的文件类型：仅支持 .docx 文件。")
+            QMessageBox.warning(self, APP_NAME, "不支持的文件类型：仅支持 .docx / .doc 文件。")
             return
         self.scan_button.setEnabled(False)
         self.scan_button.setText("扫描中...")
@@ -832,7 +903,10 @@ class WordTranslatePage(QWidget):
         self.settings.last_source_folder = self.source_input.text().strip().strip('"')
         self.phase = "idle"
         self.done = None
-        self.log_entries = []
+        self.task_files = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         save_settings(self.settings)
         self._render_workspace()
         self._render_action_card()
@@ -847,6 +921,51 @@ class WordTranslatePage(QWidget):
             if check is None or check.checkState() == Qt.CheckState.Checked:
                 selected.append(item)
         return selected
+
+    def _reset_runtime_logs(self) -> None:
+        self.log_entries = []
+        self.diagnostic_log_entries = []
+        self._visible_log_chars = 0
+        self._diagnostic_log_chars = 0
+
+    def _append_runtime_log(self, level: str, message: str, ts: str = "") -> None:
+        entry = {"level": str(level or ""), "message": str(message or ""), "ts": str(ts or "")}
+        self._append_bounded_log(
+            self.log_entries,
+            entry,
+            "_visible_log_chars",
+            VISIBLE_LOG_ENTRY_LIMIT,
+            VISIBLE_LOG_CHAR_LIMIT,
+        )
+        self._append_bounded_log(
+            self.diagnostic_log_entries,
+            entry,
+            "_diagnostic_log_chars",
+            DIAGNOSTIC_LOG_ENTRY_LIMIT,
+            DIAGNOSTIC_LOG_CHAR_LIMIT,
+        )
+
+    def _append_bounded_log(
+        self,
+        entries: list[dict[str, str]],
+        entry: dict[str, str],
+        char_attr: str,
+        entry_limit: int,
+        char_limit: int,
+    ) -> None:
+        entries.append(dict(entry))
+        setattr(self, char_attr, getattr(self, char_attr) + self._log_entry_size(entry))
+        while entries and (len(entries) > entry_limit or getattr(self, char_attr) > char_limit):
+            removed = entries.pop(0)
+            setattr(
+                self,
+                char_attr,
+                max(0, getattr(self, char_attr) - self._log_entry_size(removed)),
+            )
+
+    @staticmethod
+    def _log_entry_size(entry: dict[str, str]) -> int:
+        return sum(len(str(value or "")) for value in entry.values()) + 16
 
     def _set_all_file_selection(self, checked: bool) -> None:
         table = getattr(self, "table", None)
@@ -867,14 +986,10 @@ class WordTranslatePage(QWidget):
             label.setText(f"已选 {len(self._selected_files())} / {len(self.files)}")
 
     def _configure_file_table_columns(self) -> None:
-        header = self.table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (2, 3, 4):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(0, 58)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        configure_file_selection_table(
+            self.table,
+            fixed_column_widths={2: 112, 3: 72, 4: 72},
+        )
         self.table.verticalHeader().setDefaultSectionSize(34)
 
     def _schedule_file_table_height_refresh(self) -> None:
@@ -1082,6 +1197,7 @@ class WordTranslatePage(QWidget):
 
     def _on_params_changed(self) -> None:
         self.settings.word_review.highlight_unresolved = self.highlight_check.isChecked()
+        self.settings.word_conversion.prefer_native_word = self.native_word_check.isChecked()
         self.settings.word_batch.max_paragraphs_per_batch = self.batch_paragraphs_spin.value()
         self.settings.word_batch.max_chars_per_batch = self.batch_chars_spin.value()
         self.settings.word_batch.split_paragraph_chars = self.split_chars_spin.value()
@@ -1133,6 +1249,7 @@ class WordTranslatePage(QWidget):
             self.output_custom_radio,
             self.custom_output_input,
             self.highlight_check,
+            self.native_word_check,
             self.batch_paragraphs_spin,
             self.batch_chars_spin,
             self.split_chars_spin,
@@ -1166,14 +1283,19 @@ class WordTranslatePage(QWidget):
             source_root=self.source_root or None,
             source_lang=source_lang,
         )
+        self.task_files = list(selected)
+        self.current_task_id = self.runner.task_id
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         self.runner.start()
         self.phase = "running"
-        self.log_entries = []
+        self._workspace_render_phase = self.phase
         self.progress = None
         self.recovery_status = None
         self.status_text = ""
         self.done = None
         self.stop_message = ""
+        self._start_ui_sync_guard()
         self._lock_inputs(True)
         self._render_workspace()
         self._render_action_card()
@@ -1203,9 +1325,7 @@ class WordTranslatePage(QWidget):
             if msg is None:
                 break
             if isinstance(msg, LogMsg):
-                self.log_entries.append(
-                    {"level": msg.level, "message": msg.message, "ts": msg.ts}
-                )
+                self._append_runtime_log(msg.level, msg.message, msg.ts)
             elif isinstance(msg, ProgressMsg):
                 self.progress = msg
             elif isinstance(msg, StatusMsg):
@@ -1218,32 +1338,77 @@ class WordTranslatePage(QWidget):
                 self.phase = "done"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(phase="done", done=msg)
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
             elif isinstance(msg, ErrorMsg):
-                self.log_entries.append({"level": "ERROR", "message": msg.message, "ts": ""})
+                self._append_runtime_log("ERROR", msg.message)
                 self.runner = None
                 self.phase = "error"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(
+                    phase="error",
+                    error_message=msg.message,
+                    status=self.status_text or "任务异常",
+                )
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
             elif isinstance(msg, StoppedMsg):
-                self.log_entries.append({"level": "WARN", "message": msg.message, "ts": ""})
+                self._append_runtime_log("WARN", msg.message)
                 self.stop_message = msg.message
                 self.runner = None
                 self.phase = "stopped"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(
+                    phase="stopped",
+                    error_message=msg.message,
+                    status=self.status_text or "任务已中止",
+                )
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
         if not runner.needs_poll():
             self.runner = None
             self.poll_timer.stop()
         self._refresh_running_widgets()
+
+    def _archive_current_task(
+        self,
+        *,
+        phase: str,
+        done: DoneMsg | None = None,
+        error_message: str = "",
+        status: str = "",
+    ) -> None:
+        if self._task_diagnostics_archived:
+            return
+        task_id = self.current_task_id
+        if not task_id and self.runner is not None:
+            task_id = self.runner.task_id
+        try:
+            archive_task_diagnostics(
+                surface="word",
+                phase=phase,
+                task_id=task_id or "runtime",
+                settings=self.settings,
+                selected_files=self.task_files or self._selected_files(),
+                logs=list(self.diagnostic_log_entries),
+                done=done,
+                error_message=error_message,
+                source_root=self.source_root or "",
+                status=status or self.status_text or phase,
+                progress=self.progress,
+            )
+            self._task_diagnostics_archived = True
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not block UI transition.
+            self._append_runtime_log("WARN", f"诊断归档写入失败：{exc}")
 
     def _refresh_running_widgets(self) -> None:
         if not hasattr(self, "running_status"):
@@ -1297,7 +1462,7 @@ class WordTranslatePage(QWidget):
         if not hasattr(self, "log_view"):
             return
         lines = []
-        for item in self.log_entries[-300:]:
+        for item in self.log_entries:
             prefix = f"[{item.get('ts')}]" if item.get("ts") else ""
             lines.append(f"{prefix} {item.get('level', '')} {item.get('message', '')}".strip())
         self.log_view.setPlainText("\n".join(lines))
@@ -1314,13 +1479,15 @@ class WordTranslatePage(QWidget):
     def _latest_error_message(self) -> str:
         errors = [
             item.get("message", "")
-            for item in self.log_entries
+            for item in (self.diagnostic_log_entries or self.log_entries)
             if item.get("level") == "ERROR"
         ]
         return errors[-1] if errors else ""
 
     def _reset_task(self) -> None:
         self.phase = "idle"
+        self._workspace_render_phase = self.phase
+        self._stop_ui_sync_guard()
         self.files = []
         self.done = None
         self.runner = None
@@ -1328,7 +1495,10 @@ class WordTranslatePage(QWidget):
         self.recovery_status = None
         self.status_text = ""
         self.stop_message = ""
-        self.log_entries = []
+        self.task_files = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         self._lock_inputs(False)
         self._render_workspace()
         self._render_action_card()

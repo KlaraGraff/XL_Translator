@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import re
+import shutil
 import zipfile
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -34,6 +35,17 @@ _URL_SECRET_RE = re.compile(
 )
 _SOURCE_EXCERPT_LIMIT = 220
 _APP_LOG_TAIL_CHARS = 160_000
+_DIAGNOSTIC_MAX_RECORDS = 80
+_DIAGNOSTIC_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+_WORD_RUNTIME_EVENT_MARKERS = (
+    "正在单段重试",
+    "单段重试恢复",
+    "单段重试未恢复",
+    "正在语义仲裁",
+    "语义仲裁接受",
+    "语义仲裁未接受",
+    "保留原文，需复核",
+)
 
 
 def archive_task_diagnostics(
@@ -71,6 +83,7 @@ def archive_task_diagnostics(
         else []
     )
     word_locations = _extract_word_locations(quality_issues) if surface == "word" else []
+    word_runtime_events = _extract_word_runtime_events(logs) if surface == "word" else []
 
     created_at = datetime.now().isoformat(timespec="seconds")
     manifest = {
@@ -86,8 +99,10 @@ def archive_task_diagnostics(
         "file_count": len(selected_file_payload),
         "failed_file_count": failure_count,
         "quality_issue_count": len(quality_issues),
+        "runtime_log_count": len(logs),
         "excel_location_count": len(excel_locations),
         "word_location_count": len(word_locations),
+        "word_runtime_event_count": len(word_runtime_events),
     }
 
     _write_json(record_dir / "manifest.json", manifest)
@@ -137,6 +152,21 @@ def archive_task_diagnostics(
                 "snippet",
             ],
         )
+        _write_csv(
+            record_dir / "locate" / "word_runtime_events.csv",
+            word_runtime_events,
+            [
+                "ts",
+                "level",
+                "file",
+                "section_path",
+                "location_label",
+                "event",
+                "message",
+            ],
+        )
+
+    prune_diagnostic_records()
 
     return record_dir
 
@@ -163,6 +193,26 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
 def count_diagnostic_records() -> int:
     """Return the number of persisted diagnostic records."""
     return len(list_diagnostic_records())
+
+
+def prune_diagnostic_records(
+    *,
+    max_records: int = _DIAGNOSTIC_MAX_RECORDS,
+    max_total_bytes: int = _DIAGNOSTIC_MAX_TOTAL_BYTES,
+) -> None:
+    """Keep diagnostic history bounded while preserving the newest record."""
+    records = list_diagnostic_records()
+    kept_size = 0
+    for index, record in enumerate(records):
+        record_dir = Path(str(record.get("record_dir") or ""))
+        size = int(record.get("size_bytes") or 0)
+        keep_by_count = index < max_records
+        keep_by_size = kept_size + size <= max_total_bytes
+        if index == 0 or (keep_by_count and keep_by_size):
+            kept_size += size
+            continue
+        if record_dir.exists():
+            shutil.rmtree(record_dir, ignore_errors=True)
 
 
 def build_diagnostic_zip_bytes(record_dir: str | Path) -> tuple[bytes, str]:
@@ -651,6 +701,39 @@ def _extract_word_locations(quality_issues: list[dict[str, Any]]) -> list[dict[s
                 "problem": issue.get("problem", ""),
                 "status": issue.get("status", ""),
                 "snippet": issue.get("snippet", ""),
+            }
+        )
+    return rows
+
+
+def _extract_word_runtime_events(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in logs:
+        message = str(item.get("message") or "")
+        if " · " not in message:
+            continue
+        parts = message.split(" · ", 2)
+        if len(parts) != 3:
+            continue
+        file_name, section_path, location_and_event = parts
+        marker_match = None
+        marker_index = -1
+        for marker in _WORD_RUNTIME_EVENT_MARKERS:
+            index = location_and_event.find(marker)
+            if index >= 0 and (marker_index < 0 or index < marker_index):
+                marker_match = marker
+                marker_index = index
+        if marker_match is None:
+            continue
+        rows.append(
+            {
+                "ts": item.get("ts", ""),
+                "level": item.get("level", ""),
+                "file": file_name,
+                "section_path": section_path,
+                "location_label": location_and_event[:marker_index].strip(),
+                "event": location_and_event[marker_index:].strip(),
+                "message": message,
             }
         )
     return rows

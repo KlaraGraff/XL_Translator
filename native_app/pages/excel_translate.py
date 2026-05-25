@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
-    QHeaderView,
     QSizePolicy,
     QTableWidget,
     QTextEdit,
@@ -34,6 +33,7 @@ from core.bilingual_writer import (
     resolve_custom_output_dir,
 )
 from core.diagnostics import (
+    archive_task_diagnostics,
     build_diagnostics_history_zip_bytes,
     count_diagnostic_records,
 )
@@ -55,10 +55,17 @@ from core.task_runner import (
 )
 from core.xls_converter import get_local_excel_availability
 from native_app.workers import ScanWorker
+from native_app.result_view import (
+    build_done_summary,
+    format_elapsed,
+    render_translation_result,
+)
 from native_app.widgets import (
     build_app_tooltip_html,
     configure_app_table,
+    configure_file_selection_table,
     create_check_table_item,
+    create_elide_table_item,
     create_searchable_combo,
     create_table_item,
     MiddleElideLabel,
@@ -72,6 +79,10 @@ HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
 HEADER_SOURCE_MIN_WIDTH = 300
 HEADER_SOURCE_MAX_WIDTH = 430
+VISIBLE_LOG_ENTRY_LIMIT = 300
+VISIBLE_LOG_CHAR_LIMIT = 140_000
+DIAGNOSTIC_LOG_ENTRY_LIMIT = 5000
+DIAGNOSTIC_LOG_CHAR_LIMIT = 2_000_000
 
 
 def _clear_layout(layout) -> None:
@@ -141,14 +152,25 @@ class ExcelTranslatePage(QWidget):
         self.runner: TaskRunner | None = None
         self.scan_worker: ScanWorker | None = None
         self.log_entries: list[dict[str, str]] = []
+        self.diagnostic_log_entries: list[dict[str, str]] = []
+        self._visible_log_chars = 0
+        self._diagnostic_log_chars = 0
         self.progress: ProgressMsg | None = None
         self.status_text = ""
         self.done: DoneMsg | None = None
         self.stop_message = ""
+        self.task_files: list[FileItem] = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._workspace_render_phase = self.phase
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(800)
         self.poll_timer.timeout.connect(self._poll_runner)
+
+        self.ui_sync_timer = QTimer(self)
+        self.ui_sync_timer.setInterval(500)
+        self.ui_sync_timer.timeout.connect(self._sync_action_card_with_workspace)
 
         self._build_ui()
         self._render_workspace()
@@ -381,11 +403,6 @@ class ExcelTranslatePage(QWidget):
             self.settings.output.lock_row_height,
             layout,
         )
-        self.task_log_check = self._checkbox(
-            "启用任务日志",
-            self.settings.output.enable_task_log,
-            layout,
-        )
         self._sync_source_lang_visibility()
 
     def _checkbox(self, text: str, checked: bool, layout: QVBoxLayout) -> QCheckBox:
@@ -420,10 +437,6 @@ class ExcelTranslatePage(QWidget):
                         "适合版式必须固定、不能拉伸行高的表格模板。",
                         "与“Excel 精调行高”互斥。",
                     ],
-                ),
-                "启用任务日志": _tooltip(
-                    "启用任务日志",
-                    "记录每次翻译任务的关键过程与异常信息，便于定位问题。",
                 ),
             }.get(text, "")
         )
@@ -527,6 +540,8 @@ class ExcelTranslatePage(QWidget):
         return frame
 
     def _render_workspace(self) -> None:
+        self._normalize_terminal_state()
+        self._workspace_render_phase = self.phase
         _clear_layout(self.workspace_layout)
         frame = QFrame()
         frame.setObjectName("Workspace")
@@ -549,6 +564,7 @@ class ExcelTranslatePage(QWidget):
 
         self.workspace_layout.addStretch(1)
         self._refresh_header()
+        self._render_action_card()
 
     def _render_idle_workspace(self, layout: QVBoxLayout) -> None:
         if not self.files:
@@ -590,7 +606,7 @@ class ExcelTranslatePage(QWidget):
         self._configure_file_table_columns()
         for row, item in enumerate(self.files):
             self.table.setItem(row, 0, create_check_table_item())
-            self.table.setItem(row, 1, create_table_item(item.name))
+            self.table.setItem(row, 1, create_elide_table_item(item.name))
             self.table.setItem(row, 2, create_table_item(f"{item.size_kb:.1f} KB"))
             self.table.setItem(row, 3, create_table_item(len(item.sheets)))
         self.table.itemChanged.connect(self._on_file_selection_changed)
@@ -614,45 +630,49 @@ class ExcelTranslatePage(QWidget):
 
     def _render_done_workspace(self, layout: QVBoxLayout) -> None:
         done = self.done
-        layout.addWidget(_label("任务结果", "SectionTitle"))
         if done is None:
-            layout.addWidget(QLabel("Excel 翻译任务已完成。"))
+            render_translation_result(
+                layout,
+                empty_message="Excel 翻译任务已完成。",
+                done=None,
+                summary_text="",
+                summary_success=True,
+                kpi_items=[],
+                file_status_formatter=self._format_file_result_status,
+            )
             return
 
-        success_count = sum(1 for item in done.file_results if item.get("success"))
-        failure_count = len(done.file_results) - success_count
-        layout.addLayout(
-            self._build_result_kpis(
-                [
-                    ("成功文件", str(success_count)),
-                    ("失败文件", str(failure_count)),
-                    ("输出目录", done.output_dir),
-                    ("耗时", f"{done.elapsed_sec:.1f}s"),
-                    ("TM 命中", str(done.tm_hit_count)),
-                    ("API 调用", str(done.api_call_count)),
-                ]
+        generated_count = sum(1 for item in done.file_results if item.get("success"))
+        failure_count = len(done.file_results) - generated_count
+        summary_success = failure_count == 0
+        summary_text = (
+            "翻译成功。"
+            if summary_success
+            else build_done_summary(
+                generated_count=generated_count,
+                failed_count=failure_count,
             )
         )
-        output = QLabel(done.output_dir)
-        output.setTextFormat(Qt.TextFormat.PlainText)
-        output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        output.setObjectName("MutedText")
-        layout.addWidget(output)
+        render_translation_result(
+            layout,
+            empty_message="Excel 翻译任务已完成。",
+            done=done,
+            summary_text=summary_text,
+            summary_success=summary_success,
+            kpi_items=[
+                ("已生成文件", str(generated_count)),
+                ("生成失败", str(failure_count)),
+                ("耗时", format_elapsed(done.elapsed_sec)),
+                ("TM 命中", str(done.tm_hit_count)),
+                ("API 翻译", str(done.api_call_count)),
+            ],
+            file_status_formatter=self._format_file_result_status,
+            file_status_width=112,
+            file_detail_width=180,
+        )
 
-        table = QTableWidget(len(done.file_results), 3)
-        table.setHorizontalHeaderLabels(["文件名", "状态", "详情"])
-        configure_app_table(table, row_height=40, word_wrap=True)
-        table.horizontalHeader().setStretchLastSection(True)
-        for row, result in enumerate(done.file_results):
-            table.setItem(row, 0, create_table_item(result.get("name") or ""))
-            table.setItem(
-                row,
-                1,
-                create_table_item("成功" if result.get("success") else "失败"),
-            )
-            table.setItem(row, 2, create_table_item(result.get("error") or ""))
-        table.resizeColumnsToContents()
-        layout.addWidget(table, 1)
+    def _format_file_result_status(self, result: dict) -> str:
+        return "已生成 / 成功" if result.get("success") else "生成失败"
 
     def _render_error_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("任务异常", "SectionTitle"))
@@ -706,6 +726,7 @@ class ExcelTranslatePage(QWidget):
         return row
 
     def _render_action_card(self) -> None:
+        self._normalize_terminal_state()
         _clear_layout(self.action_layout)
         self.action_layout.addWidget(_label("执行操作", "SectionTitle"))
 
@@ -728,7 +749,7 @@ class ExcelTranslatePage(QWidget):
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
-        elif self.phase == "running":
+        elif self._has_running_task():
             note = QLabel("运行期间会锁定参数；终止操作采用二次确认，防止误触。")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
@@ -755,16 +776,79 @@ class ExcelTranslatePage(QWidget):
             if count_diagnostic_records() > 0
             else "暂无历史诊断"
         )
-        history.setEnabled(count_diagnostic_records() > 0 and self.phase != "running")
+        history.setEnabled(count_diagnostic_records() > 0 and not self._has_running_task())
         _set_tooltip(
             history,
             "历史诊断归档",
-            "导出之前异常任务留下的轻量诊断包。",
+            "导出之前自动保存的轻量诊断包。",
             ["诊断包不包含原始文件和 API Key。"],
         )
         history.clicked.connect(self._export_history_diagnostics)
         self.action_layout.addWidget(history)
         self.action_layout.addStretch(1)
+        self.action_card.updateGeometry()
+        self.action_card.update()
+
+    def _visible_action_button_texts(self) -> list[str]:
+        return [
+            button.text()
+            for button in self.action_card.findChildren(QPushButton)
+            if button.parent() is not None
+        ]
+
+    def _sync_action_card_with_workspace(self) -> None:
+        if not hasattr(self, "action_card"):
+            return
+        terminal_phase = ""
+        if self.done is not None:
+            terminal_phase = "done"
+        elif self._workspace_render_phase in {"done", "error", "stopped"}:
+            terminal_phase = self._workspace_render_phase
+        if not terminal_phase:
+            if self.phase != "running":
+                self._stop_ui_sync_guard()
+            return
+
+        self.phase = terminal_phase
+        self.runner = None
+        self.poll_timer.stop()
+        self._lock_inputs(False)
+
+        button_texts = self._visible_action_button_texts()
+        if "终止翻译" in button_texts or "返回并开始新任务" not in button_texts:
+            self._render_action_card()
+            button_texts = self._visible_action_button_texts()
+        if "终止翻译" not in button_texts and "返回并开始新任务" in button_texts:
+            self._stop_ui_sync_guard()
+
+    def _start_ui_sync_guard(self) -> None:
+        if not self.ui_sync_timer.isActive():
+            self.ui_sync_timer.start()
+
+    def _stop_ui_sync_guard(self) -> None:
+        if self.ui_sync_timer.isActive():
+            self.ui_sync_timer.stop()
+
+    def _has_running_task(self) -> bool:
+        self._normalize_terminal_state()
+        return self.phase == "running" and self.done is None and self.runner is not None
+
+    def _normalize_terminal_state(self) -> None:
+        if self.phase in {"done", "error", "stopped"}:
+            self.runner = None
+            self.poll_timer.stop()
+            self._lock_inputs(False)
+            return
+        if self.done is not None:
+            self.runner = None
+            self.phase = "done"
+            self.poll_timer.stop()
+            self._lock_inputs(False)
+
+    def _schedule_action_card_resync(self) -> None:
+        self._start_ui_sync_guard()
+        QTimer.singleShot(0, self._render_action_card)
+        QTimer.singleShot(150, self._render_action_card)
 
     def _browse_source(self) -> None:
         current = self.source_input.text().strip().strip('"')
@@ -835,7 +919,10 @@ class ExcelTranslatePage(QWidget):
         self.settings.last_source_folder = self.source_input.text().strip().strip('"')
         self.phase = "idle"
         self.done = None
-        self.log_entries = []
+        self.task_files = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         save_settings(self.settings)
         self._render_workspace()
         self._render_action_card()
@@ -850,6 +937,51 @@ class ExcelTranslatePage(QWidget):
             if check is None or check.checkState() == Qt.CheckState.Checked:
                 selected.append(item)
         return selected
+
+    def _reset_runtime_logs(self) -> None:
+        self.log_entries = []
+        self.diagnostic_log_entries = []
+        self._visible_log_chars = 0
+        self._diagnostic_log_chars = 0
+
+    def _append_runtime_log(self, level: str, message: str, ts: str = "") -> None:
+        entry = {"level": str(level or ""), "message": str(message or ""), "ts": str(ts or "")}
+        self._append_bounded_log(
+            self.log_entries,
+            entry,
+            "_visible_log_chars",
+            VISIBLE_LOG_ENTRY_LIMIT,
+            VISIBLE_LOG_CHAR_LIMIT,
+        )
+        self._append_bounded_log(
+            self.diagnostic_log_entries,
+            entry,
+            "_diagnostic_log_chars",
+            DIAGNOSTIC_LOG_ENTRY_LIMIT,
+            DIAGNOSTIC_LOG_CHAR_LIMIT,
+        )
+
+    def _append_bounded_log(
+        self,
+        entries: list[dict[str, str]],
+        entry: dict[str, str],
+        char_attr: str,
+        entry_limit: int,
+        char_limit: int,
+    ) -> None:
+        entries.append(dict(entry))
+        setattr(self, char_attr, getattr(self, char_attr) + self._log_entry_size(entry))
+        while entries and (len(entries) > entry_limit or getattr(self, char_attr) > char_limit):
+            removed = entries.pop(0)
+            setattr(
+                self,
+                char_attr,
+                max(0, getattr(self, char_attr) - self._log_entry_size(removed)),
+            )
+
+    @staticmethod
+    def _log_entry_size(entry: dict[str, str]) -> int:
+        return sum(len(str(value or "")) for value in entry.values()) + 16
 
     def _set_all_file_selection(self, checked: bool) -> None:
         table = getattr(self, "table", None)
@@ -870,14 +1002,10 @@ class ExcelTranslatePage(QWidget):
             label.setText(f"已选 {len(self._selected_files())} / {len(self.files)}")
 
     def _configure_file_table_columns(self) -> None:
-        header = self.table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (2, 3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(0, 58)
-        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        configure_file_selection_table(
+            self.table,
+            fixed_column_widths={2: 112, 3: 86},
+        )
         self.table.verticalHeader().setDefaultSectionSize(34)
 
     def _schedule_file_table_height_refresh(self) -> None:
@@ -1017,7 +1145,6 @@ class ExcelTranslatePage(QWidget):
         )
         self.settings.output.enable_excel_autofit = self.excel_autofit_check.isChecked()
         self.settings.output.lock_row_height = self.lock_row_height_check.isChecked()
-        self.settings.output.enable_task_log = self.task_log_check.isChecked()
         save_settings(self.settings)
 
     def _on_output_changed(self) -> None:
@@ -1069,7 +1196,6 @@ class ExcelTranslatePage(QWidget):
             self.formula_backfill_check,
             self.excel_autofit_check,
             self.lock_row_height_check,
-            self.task_log_check,
         ):
             widget.setEnabled(not locked)
         self._sync_source_lang_visibility()
@@ -1123,13 +1249,18 @@ class ExcelTranslatePage(QWidget):
             allow_xls_fallback=allow_xls_fallback,
             source_lang=source_lang,
         )
+        self.task_files = list(selected)
+        self.current_task_id = self.runner.task_id
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         self.runner.start()
         self.phase = "running"
-        self.log_entries = []
+        self._workspace_render_phase = self.phase
         self.progress = None
         self.status_text = ""
         self.done = None
         self.stop_message = ""
+        self._start_ui_sync_guard()
         self._lock_inputs(True)
         self._render_workspace()
         self._render_action_card()
@@ -1160,9 +1291,7 @@ class ExcelTranslatePage(QWidget):
             if msg is None:
                 break
             if isinstance(msg, LogMsg):
-                self.log_entries.append(
-                    {"level": msg.level, "message": msg.message, "ts": msg.ts}
-                )
+                self._append_runtime_log(msg.level, msg.message, msg.ts)
             elif isinstance(msg, ProgressMsg):
                 self.progress = msg
             elif isinstance(msg, StatusMsg):
@@ -1173,33 +1302,78 @@ class ExcelTranslatePage(QWidget):
                 self.phase = "done"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(phase="done", done=msg)
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
             elif isinstance(msg, ErrorMsg):
-                self.log_entries.append({"level": "ERROR", "message": msg.message, "ts": ""})
+                self._append_runtime_log("ERROR", msg.message)
                 self.runner = None
                 self.phase = "error"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(
+                    phase="error",
+                    error_message=msg.message,
+                    status=self.status_text or "任务异常",
+                )
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
             elif isinstance(msg, StoppedMsg):
-                self.log_entries.append({"level": "WARN", "message": msg.message, "ts": ""})
+                self._append_runtime_log("WARN", msg.message)
                 self.stop_message = msg.message
                 self.runner = None
                 self.phase = "stopped"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
+                self._archive_current_task(
+                    phase="stopped",
+                    error_message=msg.message,
+                    status=self.status_text or "任务已中止",
+                )
                 self._render_workspace()
                 self._render_action_card()
+                self._schedule_action_card_resync()
                 return
 
         if not runner.needs_poll():
             self.runner = None
             self.poll_timer.stop()
         self._refresh_running_widgets()
+
+    def _archive_current_task(
+        self,
+        *,
+        phase: str,
+        done: DoneMsg | None = None,
+        error_message: str = "",
+        status: str = "",
+    ) -> None:
+        if self._task_diagnostics_archived:
+            return
+        task_id = self.current_task_id
+        if not task_id and self.runner is not None:
+            task_id = self.runner.task_id
+        try:
+            archive_task_diagnostics(
+                surface="excel",
+                phase=phase,
+                task_id=task_id or "runtime",
+                settings=self.settings,
+                selected_files=self.task_files or self._selected_files(),
+                logs=list(self.diagnostic_log_entries),
+                done=done,
+                error_message=error_message,
+                source_root=self.source_root or "",
+                status=status or self.status_text or phase,
+                progress=self.progress,
+            )
+            self._task_diagnostics_archived = True
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not block UI transition.
+            self._append_runtime_log("WARN", f"诊断归档写入失败：{exc}")
 
     def _refresh_running_widgets(self) -> None:
         if not hasattr(self, "running_status"):
@@ -1223,7 +1397,7 @@ class ExcelTranslatePage(QWidget):
         if not hasattr(self, "log_view"):
             return
         lines = []
-        for item in self.log_entries[-300:]:
+        for item in self.log_entries:
             prefix = f"[{item.get('ts')}]" if item.get("ts") else ""
             lines.append(f"{prefix} {item.get('level', '')} {item.get('message', '')}".strip())
         self.log_view.setPlainText("\n".join(lines))
@@ -1243,20 +1417,25 @@ class ExcelTranslatePage(QWidget):
     def _latest_error_message(self) -> str:
         errors = [
             item.get("message", "")
-            for item in self.log_entries
+            for item in (self.diagnostic_log_entries or self.log_entries)
             if item.get("level") == "ERROR"
         ]
         return errors[-1] if errors else ""
 
     def _reset_task(self) -> None:
         self.phase = "idle"
+        self._workspace_render_phase = self.phase
+        self._stop_ui_sync_guard()
         self.files = []
         self.done = None
         self.runner = None
         self.progress = None
         self.status_text = ""
         self.stop_message = ""
-        self.log_entries = []
+        self.task_files = []
+        self.current_task_id = ""
+        self._task_diagnostics_archived = False
+        self._reset_runtime_logs()
         self._lock_inputs(False)
         self._render_workspace()
         self._render_action_card()

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
     QFrame,
+    QHeaderView,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -235,6 +236,48 @@ def configure_app_table(
     return table
 
 
+def configure_file_result_table(
+    table: QTableWidget,
+    *,
+    status_width: int = 220,
+    detail_width: int = 180,
+) -> QTableWidget:
+    """Use stable result-table columns: filename flexes, trailing columns stay visible."""
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(20)
+    header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+    table.setColumnWidth(1, status_width)
+    if table.columnCount() > 2:
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(2, detail_width)
+    table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return table
+
+
+def configure_file_selection_table(
+    table: QTableWidget,
+    *,
+    fixed_column_widths: dict[int, int],
+    checkbox_width: int = 58,
+) -> QTableWidget:
+    """Use stable task-list columns: filename flexes, metrics stay visible."""
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(20)
+    header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+    header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+    table.setColumnWidth(0, checkbox_width)
+    for column, width in fixed_column_widths.items():
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(column, width)
+    table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    return table
+
+
 def create_table_item(
     value: object,
     *,
@@ -249,6 +292,20 @@ def create_table_item(
         flags &= ~Qt.ItemFlag.ItemIsEditable
     item.setFlags(flags)
     item.setTextAlignment(alignment)
+    return item
+
+
+def create_elide_table_item(
+    value: object,
+    *,
+    editable: bool = False,
+    alignment: Qt.AlignmentFlag | Qt.Alignment = Qt.AlignmentFlag.AlignVCenter,
+) -> QTableWidgetItem:
+    """Create a table item that can middle-elide while keeping the full text in a tooltip."""
+    item = create_table_item(value, editable=editable, alignment=alignment)
+    text = str(value or "")
+    if text:
+        item.setToolTip(text)
     return item
 
 

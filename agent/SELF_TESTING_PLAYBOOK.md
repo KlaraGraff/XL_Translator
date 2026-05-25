@@ -80,6 +80,29 @@ assert page.title_label.text() == "Word 翻译"
 
 如果要验证截图或复杂布局，优先把产物写到 `PRODUCT_TRANSLATE_SELF_TEST_ARTIFACTS`。
 
+### 本地原生进程收尾
+
+修改原生界面相关代码后，交付前除了 offscreen 动态测试，还要处理当前机器上的真实原生进程，避免用户继续测到旧内存里的代码。
+
+固定动作：
+
+1. 查找并关闭旧进程：`Translator`、`launch_native.py`、`start_native_macos.command`。
+2. 从当前仓库源码重新启动原生界面。macOS 推荐：
+
+```bash
+open -a Terminal "<repo>/scripts/start_native_macos.command"
+```
+
+也可以在仓库根目录运行：
+
+```bash
+./.venv/bin/python scripts/launch_native.py
+```
+
+3. 启动后确认新进程 PID、启动时间和启动路径，确认不是 `/Applications/Translator.app` 旧安装包，也不是修改前遗留的旧进程。
+
+这个流程只服务本地测试和用户当场验收。除非用户明确要求，不要把这类本地测试收尾动作单独提交或推送。
+
 ## 5. TM / settings / 数据文件相关测试
 
 这类测试默认按“有副作用”处理：

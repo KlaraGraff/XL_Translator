@@ -134,9 +134,7 @@ class TaskRunner:
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._task_logger = TaskLogger(
-            enabled=settings.output.enable_task_log,
-        )
+        self._task_logger = TaskLogger(enabled=True)
 
     def start(self) -> None:
         self._stop_event.clear()

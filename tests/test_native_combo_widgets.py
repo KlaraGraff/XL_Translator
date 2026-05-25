@@ -6,7 +6,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtWidgets import QApplication, QTableWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QTableWidget
 
 from native_app.style import APP_QSS
 from native_app.widgets import (
@@ -17,6 +17,7 @@ from native_app.widgets import (
     MiddleElideLabel,
     _calculate_combo_popup_geometry,
     configure_app_table,
+    configure_file_selection_table,
     create_check_table_item,
     create_editable_combo,
     create_option_combo,
@@ -71,6 +72,22 @@ class NativeComboWidgetTests(unittest.TestCase):
             DEFAULT_TABLE_ROW_HEIGHT,
         )
         self.assertFalse(table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable)
+
+    def test_file_selection_table_keeps_metrics_fixed_and_filename_stretching(self) -> None:
+        table = QTableWidget(1, 5)
+        configure_file_selection_table(
+            table,
+            fixed_column_widths={2: 112, 3: 72, 4: 72},
+        )
+
+        header = table.horizontalHeader()
+        self.assertEqual(header.sectionResizeMode(0), QHeaderView.ResizeMode.Fixed)
+        self.assertEqual(header.sectionResizeMode(1), QHeaderView.ResizeMode.Stretch)
+        self.assertEqual(header.sectionResizeMode(2), QHeaderView.ResizeMode.Fixed)
+        self.assertEqual(table.columnWidth(0), 58)
+        self.assertEqual(table.columnWidth(2), 112)
+        self.assertEqual(table.textElideMode(), Qt.TextElideMode.ElideMiddle)
+        self.assertEqual(table.horizontalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def test_middle_elide_label_preserves_full_value_in_tooltip(self) -> None:
         label = MiddleElideLabel("/Users/example/Workspace/project/final/source.docx")
