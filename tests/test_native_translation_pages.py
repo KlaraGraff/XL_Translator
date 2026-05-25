@@ -6,10 +6,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QPushButton, QTableWidget, QVBoxLayout, QWidget
 
 from core.task_runner import DoneMsg
 from native_app.pages.excel_translate import ExcelTranslatePage
+from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.word_translate import WordTranslatePage
 from native_app.result_view import ResultIssueRow, render_translation_result
 from settings import AppSettings
@@ -218,6 +219,100 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertIn("返回并开始新任务", button_texts)
         self.assertNotIn("终止翻译", button_texts)
         self.assertFalse(page.ui_sync_timer.isActive())
+
+    def test_pdf_page_renders_image_layout_route_defaults(self) -> None:
+        with patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0):
+            page = PdfTranslatePage(AppSettings())
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+
+        self.assertEqual(page.windowTitle(), "")
+        self.assertEqual(page.retry_spin.value(), 3)
+        self.assertEqual(page.pdf_concurrency_input.text(), "")
+        compression_checks = [
+            checkbox
+            for checkbox in page.findChildren(QCheckBox)
+            if checkbox.text() == "同时生成压缩 PDF（推荐）"
+        ]
+        self.assertEqual(len(compression_checks), 1)
+        self.assertTrue(compression_checks[0].isChecked())
+        self.assertFalse(any(label.text() == "源语言" for label in page.findChildren(QLabel)))
+        self.assertIn("开始翻译", " ".join(self._button_texts(page)))
+
+    def test_pdf_concurrency_input_clamps_to_safety_cap(self) -> None:
+        with (
+            patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0),
+            patch("native_app.pages.pdf_translate.save_settings"),
+        ):
+            page = PdfTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            page.pdf_concurrency_input.setText("99")
+            page._on_params_changed()
+
+        self.assertEqual(page.settings.pdf.page_generation_concurrency, 20)
+        self.assertEqual(page.pdf_concurrency_input.text(), "20")
+
+    def test_pdf_review_checkbox_requires_configured_review_model(self) -> None:
+        with (
+            patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0),
+            patch("native_app.pages.pdf_translate.save_settings"),
+            patch.object(PdfTranslatePage, "_is_pdf_review_model_configured", return_value=False),
+            patch.object(PdfTranslatePage, "_prompt_configure_pdf_review_model") as prompt,
+        ):
+            page = PdfTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            page.pdf_review_checkbox.setChecked(True)
+
+        self.assertFalse(page.settings.pdf.review_enabled)
+        self.assertFalse(page.pdf_review_checkbox.isChecked())
+        self.assertTrue(prompt.called)
+
+    def test_pdf_done_poll_persists_runtime_model_state(self) -> None:
+        class FakeRunner:
+            task_id = "fake-pdf"
+
+            def __init__(self, done: DoneMsg) -> None:
+                self._messages = [done]
+
+            def get_message(self, timeout: float = 0.0):
+                return self._messages.pop(0) if self._messages else None
+
+            def needs_poll(self) -> bool:
+                return bool(self._messages)
+
+        with (
+            patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0),
+            patch("native_app.pages.pdf_translate.archive_task_diagnostics"),
+            patch("native_app.pages.pdf_translate.save_settings") as save_settings,
+        ):
+            page = PdfTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            page.phase = "running"
+            page.runner = FakeRunner(self._done_msg())
+            page._poll_runner()
+
+        self.assertTrue(save_settings.called)
+
+    def test_pdf_action_card_does_not_offer_stop_after_done_payload(self) -> None:
+        with patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0):
+            page = PdfTranslatePage(AppSettings())
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+
+        page.phase = "running"
+        page.runner = object()
+        page.done = self._done_msg()
+        page._render_action_card()
+
+        button_texts = self._button_texts(page)
+        self.assertIn("返回并开始新任务", button_texts)
+        self.assertNotIn("终止翻译", button_texts)
 
     def test_excel_done_workspace_uses_shared_result_contract(self) -> None:
         with patch("native_app.pages.excel_translate.count_diagnostic_records", return_value=0):

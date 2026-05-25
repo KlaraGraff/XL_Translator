@@ -79,6 +79,17 @@ class WordRecoveryStatusMsg:
 
 
 @dataclass
+class PdfReviewStatusMsg:
+    """PDF page-review summary for the non-scrolling execution monitor."""
+    enabled: bool = False
+    review_round: int = 0
+    review_total: int = 0
+    review_processing_count: int = 0
+    review_passed_count: int = 0
+    review_failed_count: int = 0
+
+
+@dataclass
 class LogMsg:
     level:   str           # INFO / OK / WARN / ERROR
     message: str
@@ -99,11 +110,17 @@ class DoneMsg:
 @dataclass
 class ErrorMsg:
     message: str
+    output_dir: str = ""
+    report_path: str = ""
+    manifest_path: str = ""
 
 
 @dataclass
 class StoppedMsg:
     message: str
+    output_dir: str = ""
+    report_path: str = ""
+    manifest_path: str = ""
 
 
 class TaskStopped(Exception):

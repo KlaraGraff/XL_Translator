@@ -61,6 +61,7 @@ def archive_task_diagnostics(
     source_root: str | Path | None = None,
     status: str = "",
     progress: Any | None = None,
+    task_artifacts: dict[str, Any] | None = None,
 ) -> Path:
     """Persist a lightweight diagnostic record and return its directory."""
     record_dir = _unique_record_dir(surface=surface, task_id=task_id)
@@ -73,6 +74,9 @@ def archive_task_diagnostics(
     file_results = list(done_payload.get("file_results") or []) if isinstance(done_payload, dict) else []
     quality_issues = list(done_payload.get("issues") or []) if isinstance(done_payload, dict) else []
     output_dir = str(done_payload.get("output_dir") or "") if isinstance(done_payload, dict) else ""
+    artifact_payload = _redact(_json_safe(task_artifacts or {}))
+    if not output_dir and isinstance(artifact_payload, dict):
+        output_dir = str(artifact_payload.get("output_dir") or "")
     failure_count = sum(1 for item in file_results if not item.get("success"))
 
     selected_file_payload = [_serialize_file_item(item) for item in selected_files]
@@ -84,6 +88,7 @@ def archive_task_diagnostics(
     )
     word_locations = _extract_word_locations(quality_issues) if surface == "word" else []
     word_runtime_events = _extract_word_runtime_events(logs) if surface == "word" else []
+    pdf_summary: dict[str, Any] = {}
 
     created_at = datetime.now().isoformat(timespec="seconds")
     manifest = {
@@ -104,6 +109,26 @@ def archive_task_diagnostics(
         "word_location_count": len(word_locations),
         "word_runtime_event_count": len(word_runtime_events),
     }
+    if surface == "pdf":
+        pdf_summary = _build_pdf_diagnostic_summary(
+            output_dir=output_dir,
+            file_results=file_results,
+            quality_issues=quality_issues,
+            artifacts=artifact_payload if isinstance(artifact_payload, dict) else {},
+        )
+        manifest.update(
+            {
+                "pdf_status": pdf_summary.get("status", ""),
+                "pdf_manifest_path": pdf_summary.get("manifest_path", ""),
+                "pdf_report_path": pdf_summary.get("report_path", ""),
+                "pdf_total_page_count": pdf_summary.get("total_page_count", 0),
+                "pdf_placeholder_page_count": pdf_summary.get("placeholder_page_count", 0),
+                "pdf_emergency_ratio_normalized_count": pdf_summary.get(
+                    "emergency_ratio_normalized_count",
+                    0,
+                ),
+            }
+        )
 
     _write_json(record_dir / "manifest.json", manifest)
     _write_text(record_dir / "summary.md", _build_summary(manifest, file_results, quality_issues))
@@ -115,6 +140,8 @@ def archive_task_diagnostics(
         _sanitize_quality_issues(quality_issues),
     )
     _write_json(record_dir / "task" / "progress.json", _redact(_json_safe(progress)))
+    if surface == "pdf":
+        _write_json(record_dir / "task" / "pdf_summary.json", pdf_summary)
     _write_json(record_dir / "environment" / "runtime.json", _build_runtime_payload())
     _write_jsonl(record_dir / "logs" / "ui_runtime_log.jsonl", logs)
     _write_text(
@@ -363,6 +390,59 @@ def _serialize_file_item(item: Any) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value not in (None, [], "")}
 
 
+def _build_pdf_diagnostic_summary(
+    *,
+    output_dir: str,
+    file_results: list[dict[str, Any]],
+    quality_issues: list[dict[str, Any]],
+    artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    manifest_path = str(artifacts.get("manifest_path") or "")
+    report_path = str(artifacts.get("report_path") or "")
+    if not manifest_path and output_dir:
+        candidate = Path(output_dir) / "pdf_translation_manifest.json"
+        if candidate.exists():
+            manifest_path = str(candidate)
+    if not report_path and output_dir:
+        candidate = Path(output_dir) / "pdf_translation_report.md"
+        if candidate.exists():
+            report_path = str(candidate)
+
+    summary: dict[str, Any] = {
+        "output_dir": output_dir,
+        "manifest_path": manifest_path,
+        "report_path": report_path,
+        "generated_pdf_count": sum(1 for item in file_results if item.get("success")),
+        "placeholder_page_count": sum(
+            int(item.get("placeholder_page_count") or 0) for item in file_results
+        ),
+        "emergency_ratio_normalized_count": sum(
+            int(item.get("emergency_ratio_normalized_count") or 0)
+            for item in file_results
+        ),
+        "quality_issue_count": len(quality_issues),
+    }
+    if manifest_path and Path(manifest_path).exists():
+        try:
+            package_manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        except Exception:
+            package_manifest = {}
+        for key in (
+            "status",
+            "file_count",
+            "total_page_count",
+            "generated_pdf_count",
+            "placeholder_page_count",
+            "emergency_ratio_normalized_count",
+            "retry_count",
+            "rate_limit_reduction_count",
+            "partial_artifacts_available",
+        ):
+            if key in package_manifest:
+                summary[key] = package_manifest[key]
+    return _redact(summary)
+
+
 def _build_runtime_payload() -> dict[str, Any]:
     return {
         "app_version": APP_VERSION,
@@ -377,7 +457,11 @@ def _build_summary(
     file_results: list[dict[str, Any]],
     quality_issues: list[dict[str, Any]],
 ) -> str:
-    surface_label = "Excel" if manifest.get("surface") == "excel" else "Word"
+    surface_label = {
+        "excel": "Excel",
+        "word": "Word",
+        "pdf": "PDF",
+    }.get(str(manifest.get("surface") or ""), "任务")
     lines = [
         f"# {surface_label} 翻译诊断摘要",
         "",

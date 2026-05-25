@@ -117,6 +117,28 @@ _Avoid_: 三个常驻板块按钮
 The kind of work a model service can perform for a model role, such as text generation or image generation. A service provider can appear in more than one capability list only when it supports those capabilities.
 _Avoid_: 服务商列表, 模型用途
 
+**模型可用状态**:
+The recorded runtime availability of an effective model configuration after connection testing or real task calls. PDF image translation should use this record to avoid repeating preflight API calls before every task.
+An unavailable history state should warn the user before PDF image translation starts, but it should not hard-block the user from continuing with the real task.
+_Avoid_: 每次启动前强制测试, 仅按模型名判断
+
+**图像生成可用性校验**:
+The image-generation-specific validation for an effective image model configuration. The first usable configuration must be verified with retry, and later PDF tasks can trust a prior success unless the configuration changes or task calls repeatedly fail.
+_Avoid_: 文本连接测试, 每次任务前测试
+
+**历史不可用提示**:
+The confirmation dialog shown when a user starts PDF image translation with an image model configuration that was last recorded as unavailable. It must offer testing connectivity, continuing generation, and cancelling the task.
+_Avoid_: 硬拦截
+
+**模型级不可用错误**:
+A task-level failure that shows the effective image model configuration cannot be used for any page, such as invalid credentials, insufficient balance or quota, missing model, unsupported image-generation capability, or unreachable configured endpoint. It is separate from page-level generation failures and should not consume page-level retry semantics.
+It must be detected by a narrow explicit whitelist; ambiguous errors such as timeouts, rate limits, server errors, bad images, empty images, page-ratio failures, low resolution, or generic generation failures are treated as page-level failures instead.
+_Avoid_: 页级失败, 版式校验失败
+
+**限流恢复**:
+The temporary recovery path for upstream rate-limit or concurrency-limit feedback. It reduces task concurrency and retries work without marking the model configuration as unavailable.
+_Avoid_: 模型级不可用错误
+
 **翻译模型**:
 The model role used to translate document or spreadsheet text.
 It requires text generation capability.
@@ -139,6 +161,11 @@ For cloud-only model roles, following applies only to cloud API configuration, n
 Followed configurations should be visibly marked in the shared model configuration area, such as with a subtle highlight or status marker.
 When a role follows another role, service provider, API key, and Base URL are read-only for that role; the model name remains editable. Changing those cloud access fields requires switching the role to independent configuration.
 _Avoid_: 一键复制, 同步一次, 循环跟随
+
+**配置来源**:
+The control used only for model roles that can follow another role, such as deep TM cleaning and image generation. The translation model does not show this control because it is always independently configured.
+Chained following is not allowed. If a user selects a source role that already follows another role, the app should warn them and ask them to choose the final source role directly.
+_Avoid_: 翻译模型来源选择
 
 **共用模型操作**:
 The shared actions outside the model-role-specific fields, such as fetching model lists and testing connectivity. They operate on the effective configuration of the currently selected model role.
@@ -170,21 +197,62 @@ _Avoid_: Word 翻译模式
 
 **PDF 翻译输出包**:
 The output folder produced by PDF 版式图像翻译. It presents the final translated PDF as the primary artifact and keeps page image archives so a problematic page can be inspected or regenerated without rerunning the whole document.
-The final translated PDF uses a stable translated-file name; review status and failed-page counts belong in the result view and report, not in the PDF filename.
+The final translated PDF uses a stable translated-file name in the form "译文(目标语言)_原文件名.pdf"; review status and failed-page counts belong in the result view and report, not in the PDF filename.
+If the translated PDF name already exists in an app-managed output copy, the app should use engineering-style revision suffixes such as R1 and R2 rather than overwriting or using generic numeric suffixes. An existing un-suffixed translated PDF should be renamed with an R1 suffix before the new translated PDF is written as the next revision. In an arbitrary custom output directory that is not recognized as an app output copy, the app should not rename existing files.
 The first product version does not provide an in-app single-page regeneration workflow; the output package preserves page artifacts so that workflow can be added later.
 _Avoid_: 临时目录, 诊断归档
 
+**PDF 可替换目录副本**:
+The output directory shape for PDF folder translation. It mirrors the original directory structure, keeps source PDFs in their original relative locations, and places translated PDFs beside the corresponding source PDFs so the folder can replace the original source-only folder after review.
+Page image archives are stored under a root-level "_pdf_pages/" folder so business folders remain clean.
+The first product version copies only source PDFs and generated translated PDFs, not non-PDF files; copying non-PDF files can become an explicit option later.
+Copied source PDFs should keep basic file metadata when practical; generated translated PDFs, page images, reports, and manifests use new output metadata.
+_Avoid_: 成果仓库, 每文件独立输出包
+
+**受保护 PDF**:
+A PDF that requires a password or otherwise prevents normal opening or rendering. The product may support user-authorized password entry and skipping behavior, but it must not present password cracking or permission bypass as a product capability.
+_Avoid_: 破解 PDF, 绕过权限
+
+**受保护 PDF 授权解锁**:
+The flow where the user provides a password during the task so the app can open and render a protected PDF. Passwords are used for the current task and are not saved by default.
+_Avoid_: 破解密码, 自动绕过
+
+**PDF 翻译报告**:
+The human-readable Markdown report in a PDF translation output package. It summarizes page-level outcomes, retries, failure placeholder pages, emergency ratio normalization, rate-limit recovery, and relevant output paths.
+_Avoid_: JSON manifest
+
+**PDF 翻译清单**:
+The machine-readable JSON manifest in a PDF translation output package. It records page artifacts and outcomes for future workflows such as single-page regeneration or PDF reassembly.
+It is the preferred signal for recognizing an app-managed output directory; the timestamped output folder name is only a fallback signal.
+It should record the task outcome state, such as completed, needs_review, stopped, failed, and whether partial page artifacts are available.
+_Avoid_: Markdown 报告
+
+**PDF 诊断归档**:
+The lightweight diagnostic archive for PDF translation tasks. It can include summaries, runtime logs, and manifest summaries, but must not package source PDFs, translated PDFs, page images, or API keys.
+_Avoid_: 页面素材归档, 原文件备份
+
 **PDF 页级结果指标**:
 The result metrics for PDF 版式图像翻译, such as file count, total page count, generated page count, failure placeholder page count, emergency ratio-normalized page count, retry count, and output directory. Translation memory counts do not apply to this route.
+The PDF translation page should show scanned PDF file count and total page count; large page counts can be hinted without blocking task start.
 _Avoid_: 记忆库命中, 新增词条, API 翻译条数
+
+**PDF 任务中止**:
+The user-initiated stop behavior for PDF 版式图像翻译. It stops submitting new page-generation requests, lets already submitted page requests finish or time out, keeps completed page artifacts and reports, and does not assemble a final translated PDF.
+_Avoid_: 半成品 PDF
 
 **原始页图像归档**:
 The retained page images rendered from the source PDF before translation. It is used for page-level inspection and regeneration.
+Page image filenames use 1-based page numbers padded to the total page count width.
+The first product version stores page images as PNG to preserve text, tables, and line clarity.
 _Avoid_: 临时图片
 
 **PDF 渲染 DPI**:
 The resolution used when rendering PDF pages into source page images for PDF 版式图像翻译. The first product version uses a fixed 300 DPI default to prioritize page clarity over lower cost or smaller output size.
 _Avoid_: 标清, 高清
+
+**PDF 页面方向**:
+The page orientation produced by rendering the source PDF page. The first product version preserves the rendered orientation and does not attempt automatic rotation correction.
+_Avoid_: 自动纠正方向
 
 **页面比例一致**:
 The PDF page image requirement that the generated translated page keeps the same width-to-height ratio as the source page. Pixel dimensions may differ when the generated image has a different resolution, as long as the page ratio is preserved.
@@ -200,6 +268,8 @@ _Avoid_: 原图分辨率对比
 **译后页图像归档**:
 The retained page images used to reassemble the translated PDF. Successful pages contain model-generated translated page images; failed pages can contain locally generated failure placeholder pages.
 It contains only the final page image artifact for each PDF page, not intermediate retry attempts or debug files.
+Page image filenames use 1-based page numbers padded to the total page count width; failed pages add a failure suffix.
+The first product version stores page images as PNG to preserve text, tables, and line clarity.
 _Avoid_: 临时图片, 缓存
 
 **页级恢复**:

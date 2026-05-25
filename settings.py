@@ -20,6 +20,10 @@ from config import (
     DEFAULT_CUSTOM_OPENAI_API_KEY,
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     DEFAULT_MAX_LEN,
+    PDF_PAGE_CONCURRENCY_SAFETY_CAP,
+    PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
+    PDF_PAGE_RETRY_ATTEMPTS_MAX,
+    PDF_PAGE_RETRY_ATTEMPTS_MIN,
     get_cloud_concurrency_bounds,
     get_concurrency_cap,
     get_default_concurrency,
@@ -193,6 +197,56 @@ class WordConversionSettings(BaseModel):
     prefer_native_word: bool = True
 
 
+class ModelRoleSettings(BaseModel):
+    """Cloud access settings owned by one model role."""
+
+    source_role: str = "independent"
+    cloud_provider: str = DEFAULT_CLOUD_PROVIDER
+    cloud_model: str = DEFAULT_CLOUD_MODEL
+    cloud_base_url: str = DEFAULT_CUSTOM_OPENAI_BASE_URL
+    availability_status: str = "unknown"
+    availability_message: str = ""
+    availability_checked_at: str = ""
+    availability_signature: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_role(self):
+        if self.source_role not in {"independent", "translation", "cleaner"}:
+            self.source_role = "independent"
+        if self.availability_status not in {"unknown", "available", "unavailable"}:
+            self.availability_status = "unknown"
+        self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+        self.cloud_model = str(self.cloud_model or "").strip()
+        self.cloud_base_url = str(self.cloud_base_url or "").strip()
+        return self
+
+
+class PdfSettings(BaseModel):
+    page_retry_attempts: int = Field(
+        default=PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
+        ge=PDF_PAGE_RETRY_ATTEMPTS_MIN,
+        le=PDF_PAGE_RETRY_ATTEMPTS_MAX,
+    )
+    page_generation_concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        le=PDF_PAGE_CONCURRENCY_SAFETY_CAP,
+    )
+    review_enabled: bool = False
+    generate_compressed_pdf: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_blankable_concurrency(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        raw = migrated.get("page_generation_concurrency")
+        if raw in ("", None):
+            migrated["page_generation_concurrency"] = None
+        return migrated
+
+
 class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
@@ -200,6 +254,16 @@ class AppSettings(BaseModel):
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
+    cleaner_model_role: ModelRoleSettings = Field(
+        default_factory=lambda: ModelRoleSettings(source_role="translation")
+    )
+    image_model_role: ModelRoleSettings = Field(
+        default_factory=lambda: ModelRoleSettings(source_role="translation", cloud_model="")
+    )
+    pdf_review_model_role: ModelRoleSettings = Field(
+        default_factory=lambda: ModelRoleSettings(source_role="translation", cloud_model="")
+    )
+    pdf: PdfSettings = Field(default_factory=PdfSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
     target_lang: str = Field(default_factory=get_default_target_lang)
@@ -216,6 +280,67 @@ class AppSettings(BaseModel):
     cleaner_full_prompt_overrides: dict[str, str] = Field(default_factory=dict)
     domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_model_role_payload(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        engine_payload = dict(migrated.get("engine") or {})
+
+        if "cleaner_model_role" not in migrated:
+            cleaner_provider = str(
+                migrated.get("cleaner_engine")
+                or engine_payload.get("cloud_provider")
+                or DEFAULT_CLOUD_PROVIDER
+            ).strip()
+            cleaner_model = str(migrated.get("cleaner_model") or "").strip()
+            follows_translation = (
+                not cleaner_model
+                and cleaner_provider
+                == str(engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER).strip()
+            )
+            migrated["cleaner_model_role"] = {
+                "source_role": "translation" if follows_translation else "independent",
+                "cloud_provider": cleaner_provider or DEFAULT_CLOUD_PROVIDER,
+                "cloud_model": cleaner_model
+                or str(engine_payload.get("cloud_model") or DEFAULT_CLOUD_MODEL).strip(),
+                "cloud_base_url": str(
+                    engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+                ).strip(),
+            }
+
+        migrated.setdefault(
+            "image_model_role",
+            {
+                "source_role": "translation",
+                "cloud_provider": str(
+                    engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
+                ).strip(),
+                "cloud_model": "",
+                "cloud_base_url": str(
+                    engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+                ).strip(),
+                "availability_status": "unknown",
+            },
+        )
+        migrated.setdefault(
+            "pdf_review_model_role",
+            {
+                "source_role": "translation",
+                "cloud_provider": str(
+                    engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
+                ).strip(),
+                "cloud_model": "",
+                "cloud_base_url": str(
+                    engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+                ).strip(),
+                "availability_status": "unknown",
+            },
+        )
+        migrated.setdefault("pdf", PdfSettings().model_dump())
+        return migrated
 
     @model_validator(mode="before")
     @classmethod
@@ -413,6 +538,75 @@ def _migrate_settings_to_v11(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v12(data: dict) -> dict:
+    """Migrate settings payloads to schema version 12."""
+    migrated = dict(data)
+    engine_payload = dict(migrated.get("engine") or {})
+    cleaner_provider = str(
+        migrated.get("cleaner_engine")
+        or engine_payload.get("cloud_provider")
+        or DEFAULT_CLOUD_PROVIDER
+    ).strip()
+    cleaner_model = str(migrated.get("cleaner_model") or "").strip()
+    translation_provider = str(
+        engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
+    ).strip()
+    follows_translation = not cleaner_model and cleaner_provider == translation_provider
+    migrated.setdefault(
+        "cleaner_model_role",
+        ModelRoleSettings(
+            source_role="translation" if follows_translation else "independent",
+            cloud_provider=cleaner_provider or DEFAULT_CLOUD_PROVIDER,
+            cloud_model=cleaner_model
+            or str(engine_payload.get("cloud_model") or DEFAULT_CLOUD_MODEL).strip(),
+            cloud_base_url=str(
+                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+            ).strip(),
+        ).model_dump(),
+    )
+    migrated.setdefault(
+        "image_model_role",
+        ModelRoleSettings(
+            source_role="translation",
+            cloud_provider=translation_provider or DEFAULT_CLOUD_PROVIDER,
+            cloud_model="",
+            cloud_base_url=str(
+                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+            ).strip(),
+            availability_status="unknown",
+        ).model_dump(),
+    )
+    migrated.setdefault("pdf", PdfSettings().model_dump())
+    migrated["settings_version"] = 12
+    return migrated
+
+
+def _migrate_settings_to_v13(data: dict) -> dict:
+    """Migrate settings payloads to schema version 13."""
+    migrated = dict(data)
+    engine_payload = dict(migrated.get("engine") or {})
+    translation_provider = str(
+        engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
+    ).strip()
+    migrated.setdefault(
+        "pdf_review_model_role",
+        ModelRoleSettings(
+            source_role="translation",
+            cloud_provider=translation_provider or DEFAULT_CLOUD_PROVIDER,
+            cloud_model="",
+            cloud_base_url=str(
+                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
+            ).strip(),
+            availability_status="unknown",
+        ).model_dump(),
+    )
+    pdf_payload = dict(migrated.get("pdf") or {})
+    pdf_payload.setdefault("review_enabled", False)
+    migrated["pdf"] = pdf_payload
+    migrated["settings_version"] = 13
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -442,6 +636,10 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v10(migrated)
         elif next_version == 11:
             migrated = _migrate_settings_to_v11(migrated)
+        elif next_version == 12:
+            migrated = _migrate_settings_to_v12(migrated)
+        elif next_version == 13:
+            migrated = _migrate_settings_to_v13(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

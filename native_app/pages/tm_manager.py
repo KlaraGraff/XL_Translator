@@ -539,11 +539,12 @@ class TmManagerPage(QWidget):
         self.clean_mode_combo.setMinimumWidth(CLEAN_MODE_MIN_WIDTH)
         field_grid.addWidget(self.clean_mode_combo, 1, 0)
 
-        field_grid.addWidget(
-            _field_label("清洗引擎", "清洗引擎", "选择用于深度清洗的云端模型服务商。"),
-            0,
-            1,
+        self.clean_engine_label = _field_label(
+            "清洗引擎",
+            "清洗引擎",
+            "深度清洗模型现在统一在左侧“模型配置”中设置。",
         )
+        field_grid.addWidget(self.clean_engine_label, 0, 1)
         self.clean_engine_combo = create_option_combo()
         self.clean_engine_combo.addItems(list(CLOUD_ENGINES.keys()))
         self.clean_engine_combo.setCurrentText(_cloud_provider_label(self.settings.cleaner_engine))
@@ -552,11 +553,12 @@ class TmManagerPage(QWidget):
         self.clean_engine_combo.setMinimumWidth(CLEAN_ENGINE_MIN_WIDTH)
         field_grid.addWidget(self.clean_engine_combo, 1, 1)
 
-        field_grid.addWidget(
-            _field_label("清洗模型", "清洗模型", "留空时使用当前翻译模型。"),
-            0,
-            2,
+        self.clean_model_label = _field_label(
+            "清洗模型",
+            "清洗模型",
+            "深度清洗模型现在统一在左侧“模型配置”中设置。",
         )
+        field_grid.addWidget(self.clean_model_label, 0, 2)
         self.clean_model_input = create_editable_combo()
         self._refresh_clean_model_options()
         if self.clean_model_input.lineEdit() is not None:
@@ -565,6 +567,19 @@ class TmManagerPage(QWidget):
         _compact_control(self.clean_model_input)
         self.clean_model_input.setMinimumWidth(CLEAN_MODEL_MIN_WIDTH)
         field_grid.addWidget(self.clean_model_input, 1, 2)
+
+        for widget in (
+            self.clean_engine_label,
+            self.clean_engine_combo,
+            self.clean_model_label,
+            self.clean_model_input,
+        ):
+            widget.setVisible(False)
+
+        model_config_hint = QLabel("清洗模型请在左侧“模型配置 > 深度清洗模型”中设置。")
+        model_config_hint.setObjectName("FieldHint")
+        model_config_hint.setWordWrap(True)
+        layout.addWidget(model_config_hint)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
@@ -1245,14 +1260,6 @@ class TmManagerPage(QWidget):
 
     def _on_cleaner_settings_changed(self) -> None:
         self.settings.cleaner_mode = str(self.clean_mode_combo.currentData() or "diff")
-        self.settings.cleaner_engine = CLOUD_ENGINES.get(
-            self.clean_engine_combo.currentText(),
-            self.settings.cleaner_engine,
-        )
-        model_text = self.clean_model_input.currentText().strip()
-        self.settings.cleaner_model = (
-            "" if model_text == "跟随当前翻译模型" else model_text
-        )
         self.settings.auto_pin_after_clean = self.auto_pin_check.isChecked()
         save_settings(self.settings)
 

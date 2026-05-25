@@ -8,9 +8,11 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from core.file_scanner import scan_path
+from core.pdf_image_translation import scan_pdf_path
 from core.word_document import scan_word_path
 from core.tm_cleaner import apply_suggestions, run_cleaning
 from core.engine_dispatcher import build_engine, get_batch_size
+from core.model_roles import ROLE_CLEANER, settings_for_text_role
 
 
 class ScanWorker(QThread):
@@ -51,6 +53,25 @@ class WordScanWorker(QThread):
             self.finished.emit([], "", str(exc))
 
 
+class PdfScanWorker(QThread):
+    """Run PDF source scanning away from the GUI thread."""
+
+    finished = Signal(object, str, str)
+
+    def __init__(self, raw_path: str, parent=None):
+        super().__init__(parent)
+        self._raw_path = raw_path
+
+    def run(self) -> None:
+        try:
+            input_path = Path(self._raw_path).expanduser()
+            items = scan_pdf_path(input_path)
+            source_root = input_path if input_path.is_dir() else input_path.parent
+            self.finished.emit(items, str(source_root), "")
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            self.finished.emit([], "", str(exc))
+
+
 class TmCleanWorker(QThread):
     """Run TM deep cleaning away from the GUI thread."""
 
@@ -76,13 +97,7 @@ class TmCleanWorker(QThread):
 
     def run(self) -> None:
         try:
-            clean_settings = self._settings.model_copy(deep=True)
-            clean_settings.engine.mode = "cloud"
-            clean_settings.engine.cloud_provider = self._settings.cleaner_engine
-            clean_settings.engine.cloud_model = (
-                self._settings.cleaner_model
-                or self._settings.engine.cloud_model
-            )
+            clean_settings = settings_for_text_role(self._settings, ROLE_CLEANER)
             engine = build_engine(clean_settings)
             concurrency = (
                 clean_settings.engine.ollama_concurrency

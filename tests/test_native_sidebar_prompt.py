@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from config import DOMAIN_PRESETS
+from core.model_roles import ROLE_CLEANER, ROLE_IMAGE, ROLE_TRANSLATION
 from native_app.main_window import Sidebar
 from settings import AppSettings
 
@@ -100,6 +101,49 @@ class NativeSidebarPromptTests(unittest.TestCase):
 
         self.assertEqual(settings.custom_prompt, "新的自定义提示词")
         self.assertEqual(settings.domain_prompt_overrides, {})
+
+    def test_sidebar_model_role_selector_switches_to_image_role(self) -> None:
+        settings = AppSettings()
+        sidebar = self._make_sidebar(settings)
+
+        self.assertEqual(sidebar.model_role_combo.currentData(), ROLE_TRANSLATION)
+
+        sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
+        self.app.processEvents()
+
+        self.assertEqual(sidebar.model_role_combo.currentData(), ROLE_IMAGE)
+        self.assertFalse(sidebar.source_role_combo.isHidden())
+        self.assertTrue(sidebar.mode_combo.isHidden())
+        self.assertTrue(sidebar.model_catalog_status.text())
+        self.assertFalse(sidebar.pdf_review_frame.isHidden())
+        self.assertIn("可选项", sidebar.review_model_status.text())
+
+    def test_sidebar_model_role_selector_keeps_form_width_alignment(self) -> None:
+        sidebar = self._make_sidebar(AppSettings())
+        sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
+        sidebar.resize(330, 980)
+        sidebar.show()
+        self.app.processEvents()
+
+        self.assertEqual(sidebar.model_role_combo.objectName(), "ModelRoleCombo")
+        self.assertEqual(sidebar.model_role_combo.width(), sidebar.source_role_combo.width())
+        self.assertEqual(sidebar.model_role_combo.width(), sidebar.provider_combo.width())
+
+    def test_sidebar_rejects_chained_follow_selection(self) -> None:
+        settings = AppSettings()
+        settings.cleaner_model_role.source_role = ROLE_TRANSLATION
+        sidebar = self._make_sidebar(settings)
+        sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
+        self.app.processEvents()
+
+        with patch("native_app.main_window.QMessageBox.warning") as warning:
+            sidebar.source_role_combo.setCurrentIndex(
+                sidebar.source_role_combo.findData(ROLE_CLEANER)
+            )
+            self.app.processEvents()
+
+        self.assertTrue(warning.called)
+        self.assertNotEqual(settings.image_model_role.source_role, ROLE_CLEANER)
 
 
 if __name__ == "__main__":

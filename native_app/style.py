@@ -102,6 +102,19 @@ QFrame#Pill {
     padding: 4px 8px;
 }
 
+QComboBox#ModelRoleCombo {
+    background: #FFFFFF;
+    border: 1px solid #7DD3FC;
+    border-radius: 7px;
+    color: #075985;
+    font-weight: 700;
+    padding: 7px 9px;
+}
+
+QComboBox#ModelRoleCombo:hover {
+    border-color: #0EA5E9;
+}
+
 QLabel#PillLabel {
     color: #667085;
     font-size: 10px;

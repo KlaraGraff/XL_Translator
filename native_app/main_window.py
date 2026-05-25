@@ -32,18 +32,39 @@ from config import (
     CHUNK_LOCAL_MIN,
     CLOUD_ENGINES,
     DOMAIN_PRESETS,
+    IMAGE_GENERATION_MODEL_PROVIDERS,
     OLLAMA_RECOMMENDED_MODELS,
+    VISION_TEXT_MODEL_PROVIDERS,
     get_concurrency_bounds,
     is_valid_concurrency_unlock_code,
 )
 from core.connectivity_check import check_connectivity
+from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import build_model_catalog_signature, fetch_openai_compatible_models
+from core.model_roles import (
+    FOLLOW_SOURCE_LABELS,
+    ROLE_CLEANER,
+    ROLE_IMAGE,
+    ROLE_PDF_REVIEW,
+    ROLE_TRANSLATION,
+    SOURCE_INDEPENDENT,
+    ChainedModelFollowError,
+    allowed_source_roles,
+    get_role_settings,
+    provider_supports_capability,
+    resolve_effective_model_config,
+    role_label,
+    settings_for_text_role,
+)
+from core.pdf_review import check_pdf_review_connectivity
 from core.update_checker import check_for_updates
 from native_app.pages.excel_translate import ExcelTranslatePage
+from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.tm_manager import TmManagerPage
 from native_app.pages.word_translate import WordTranslatePage
 from native_app.widgets import (
     build_app_tooltip_html,
+    create_centered_option_combo,
     create_editable_combo,
     create_option_combo,
     install_in_app_tooltips,
@@ -98,12 +119,13 @@ def _cloud_provider_value(label: str) -> str:
 BRAND_TOOLTIP = {
     "title": APP_NAME,
     "summary": (
-        f"{APP_NAME} 是一个面向 Excel 和 Word 文档的本地翻译器，"
+        f"{APP_NAME} 是一个面向 Excel、Word 和 PDF 文档的本地翻译器，"
         "左侧完成配置，右侧执行任务并维护统一记忆库。"
     ),
     "items": [
         "Excel 翻译页用于扫描表格文件、执行批量翻译和查看结果。",
         "Word 翻译页用于扫描 DOCX 文件并生成双语 Word。",
+        "PDF 翻译页用于执行版式图像翻译并生成可审阅输出包。",
         "记忆库管理页用于搜索、新增、固定和清理共享词条。",
     ],
 }
@@ -130,12 +152,12 @@ PROMPT_TOOLTIP = {
 }
 
 ENGINE_TOOLTIP = {
-    "title": "翻译引擎",
-    "summary": "选择本次任务使用云端 API 还是本地 Ollama，在质量、灵活性与文件隐私之间做取舍。",
+    "title": "模型配置",
+    "summary": "按模型用途切换翻译、深度清洗和图像生成配置。",
     "items": [
-        "云端 API 适合模型选择更多、通用质量更高、接入更灵活的场景。",
-        "本地 Ollama 更适合处理隐私敏感文件，因为翻译内容不会上传到云端。",
-        "切换引擎后，下方可配置项和吞吐范围会同步变化。",
+        "翻译模型可使用云端 API 或本地 Ollama。",
+        "深度清洗模型和图像生成模型使用云端配置，可跟随上游模型的服务商凭据。",
+        "获取模型和测试连接始终作用于当前选中的模型用途。",
     ],
 }
 
@@ -182,6 +204,7 @@ class Sidebar(QFrame):
         self.settings = settings
         self.setObjectName("Sidebar")
         self.setFixedWidth(330)
+        self._current_model_role = ROLE_TRANSLATION
         self._model_catalog_signature = ""
         self._model_catalog_models: list[str] = []
         self._updating_prompt_edit = False
@@ -208,6 +231,7 @@ class Sidebar(QFrame):
         nav_items = [
             ("excel_translate", "Excel 翻译"),
             ("word_translate", "Word 翻译"),
+            ("pdf_translate", "PDF 翻译"),
             ("tm", "记忆库管理"),
         ]
         for index, (page, title) in enumerate(nav_items):
@@ -220,6 +244,7 @@ class Sidebar(QFrame):
                 {
                     "excel_translate": "扫描 Excel 文件并执行批量翻译。",
                     "word_translate": "扫描 Word 文件并生成双语文档。",
+                    "pdf_translate": "执行 PDF 版式图像翻译。",
                     "tm": "搜索、新增、固定和清理翻译记忆库。",
                 }[page],
             )
@@ -242,13 +267,22 @@ class Sidebar(QFrame):
         self._build_domain_section()
         self._build_engine_section()
         self._build_tuning_section()
+        self._refresh_source_role_options()
+        self._sync_model_role_fields()
         self._sync_engine_visibility()
         self._form.addStretch(1)
 
     def set_active_page(self, page: str) -> None:
-        page_to_index = {"excel_translate": 0, "word_translate": 1, "tm": 2}
+        page_to_index = {"excel_translate": 0, "word_translate": 1, "pdf_translate": 2, "tm": 3}
         button = self._nav_group.buttons()[page_to_index.get(page, 0)]
         button.setChecked(True)
+
+    def select_model_role(self, role: str) -> None:
+        if not hasattr(self, "model_role_combo"):
+            return
+        index = self.model_role_combo.findData(role)
+        if index >= 0:
+            self.model_role_combo.setCurrentIndex(index)
 
     def _build_card(self) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
@@ -329,7 +363,7 @@ class Sidebar(QFrame):
 
     def _build_engine_section(self) -> None:
         _, layout = self._build_card()
-        title = _section_title("翻译引擎")
+        title = _section_title("模型配置")
         _set_tooltip(
             title,
             ENGINE_TOOLTIP["title"],
@@ -337,6 +371,36 @@ class Sidebar(QFrame):
             ENGINE_TOOLTIP["items"],
         )
         layout.addWidget(title)
+
+        self.model_role_combo = create_centered_option_combo()
+        self.model_role_combo.setObjectName("ModelRoleCombo")
+        self.model_role_combo.addItem(role_label(ROLE_TRANSLATION), ROLE_TRANSLATION)
+        self.model_role_combo.addItem(role_label(ROLE_CLEANER), ROLE_CLEANER)
+        self.model_role_combo.addItem("PDF 图像翻译模型", ROLE_IMAGE)
+        self.model_role_combo.currentIndexChanged.connect(self._on_model_role_changed)
+        _set_tooltip(
+            self.model_role_combo,
+            "模型用途",
+            "切换当前正在配置的模型用途。",
+            ["下方服务商、模型名和共用操作会随用途切换。"],
+        )
+        layout.addWidget(self.model_role_combo)
+
+        self.pdf_image_generation_hint = QLabel("PDF 生图模型")
+        self.pdf_image_generation_hint.setObjectName("FieldHint")
+        self.pdf_image_generation_hint.setWordWrap(True)
+        layout.addWidget(self.pdf_image_generation_hint)
+
+        self.source_role_label = _field_label(
+            "配置来源",
+            "配置来源",
+            "选择独立配置，或跟随上游模型的服务商、API Key 与 Base URL。",
+            ["不允许链式跟随；模型名称仍可单独填写。"],
+        )
+        layout.addWidget(self.source_role_label)
+        self.source_role_combo = create_option_combo()
+        self.source_role_combo.currentIndexChanged.connect(self._on_source_role_changed)
+        layout.addWidget(self.source_role_combo)
 
         self.mode_combo = create_option_combo()
         self.mode_combo.addItem("云端 API", "cloud")
@@ -463,6 +527,8 @@ class Sidebar(QFrame):
         model_buttons.addWidget(test_conn)
         layout.addLayout(model_buttons)
 
+        self._build_pdf_review_model_section(layout)
+
         layout.addWidget(
             _field_label(
                 "Ollama 模型",
@@ -488,6 +554,78 @@ class Sidebar(QFrame):
         _set_tooltip(update_button, "检查更新", "检查 GitHub 发布页是否存在新版安装包。")
         update_button.clicked.connect(self._check_updates)
         layout.addWidget(update_button)
+
+    def _build_pdf_review_model_section(self, parent_layout: QVBoxLayout) -> None:
+        self.pdf_review_frame = QFrame()
+        self.pdf_review_frame.setObjectName("RecoveryCard")
+        layout = QVBoxLayout(self.pdf_review_frame)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(_section_title("PDF 翻译审核模型"))
+        optional = QLabel("可选")
+        optional.setObjectName("RecoveryBadge")
+        title_row.addStretch(1)
+        title_row.addWidget(optional)
+        layout.addLayout(title_row)
+
+        hint = QLabel("仅在 PDF 翻译页启用“翻译审核”后使用；未启用时无需配置。")
+        hint.setObjectName("FieldHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        layout.addWidget(
+            _field_label(
+                "配置来源",
+                "配置来源",
+                "审核模型可独立配置，也可跟随翻译模型的服务商、API Key 与 Base URL。",
+                ["模型名称仍可单独填写。"],
+            )
+        )
+        self.review_source_role_combo = create_option_combo()
+        self.review_source_role_combo.currentIndexChanged.connect(
+            self._on_review_source_role_changed
+        )
+        layout.addWidget(self.review_source_role_combo)
+
+        layout.addWidget(_field_label("服务商", "服务商", "PDF 翻译审核模型使用图像理解 + 文本输出能力。"))
+        self.review_provider_combo = create_option_combo()
+        self.review_provider_combo.addItems(list(VISION_TEXT_MODEL_PROVIDERS.keys()))
+        self.review_provider_combo.currentTextChanged.connect(self._on_review_provider_changed)
+        layout.addWidget(self.review_provider_combo)
+
+        layout.addWidget(_field_label("API Key", "API Key", "用于审核模型服务商的身份认证。"))
+        self.review_api_key_input = QLineEdit()
+        self.review_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.review_api_key_input.editingFinished.connect(self._on_review_api_key_changed)
+        layout.addWidget(self.review_api_key_input)
+
+        layout.addWidget(_field_label("Base URL", "Base URL", "审核模型的 OpenAI 兼容接口基础地址。"))
+        self.review_base_url_input = QLineEdit()
+        self.review_base_url_input.editingFinished.connect(self._on_review_base_url_changed)
+        layout.addWidget(self.review_base_url_input)
+
+        layout.addWidget(_field_label("模型名称", "模型名称", "填写具备图像理解能力的审核模型。"))
+        self.review_model_combo = create_editable_combo()
+        self.review_model_combo.currentTextChanged.connect(self._on_review_model_changed)
+        layout.addWidget(self.review_model_combo)
+
+        self.review_model_status = QLabel("")
+        self.review_model_status.setObjectName("FieldHint")
+        self.review_model_status.setWordWrap(True)
+        layout.addWidget(self.review_model_status)
+
+        buttons = QHBoxLayout()
+        fetch_models = QPushButton("获取审核模型")
+        fetch_models.clicked.connect(self._fetch_review_models)
+        buttons.addWidget(fetch_models)
+        test_conn = QPushButton("测试审核连接")
+        test_conn.clicked.connect(self._test_review_connectivity)
+        buttons.addWidget(test_conn)
+        layout.addLayout(buttons)
+
+        parent_layout.addWidget(self.pdf_review_frame)
 
     def _build_tuning_section(self) -> None:
         _, layout = self._build_card()
@@ -552,7 +690,280 @@ class Sidebar(QFrame):
                 self.settings.domain_prompt_overrides[preset] = prompt
         self._persist()
 
+    def _current_role(self) -> str:
+        return str(
+            self.model_role_combo.currentData()
+            if hasattr(self, "model_role_combo")
+            else self._current_model_role
+        ) or ROLE_TRANSLATION
+
+    def _role_settings(self):
+        return get_role_settings(self.settings, self._current_role())
+
+    def _is_following_current_role(self) -> bool:
+        role_settings = self._role_settings()
+        return bool(role_settings and role_settings.source_role != SOURCE_INDEPENDENT)
+
+    def _on_model_role_changed(self) -> None:
+        self._current_model_role = self._current_role()
+        self._refresh_source_role_options()
+        self._sync_model_role_fields()
+        self._sync_engine_visibility()
+
+    def _refresh_source_role_options(self) -> None:
+        role = self._current_role()
+        self.source_role_combo.blockSignals(True)
+        self.source_role_combo.clear()
+        for source in allowed_source_roles(role):
+            self.source_role_combo.addItem(FOLLOW_SOURCE_LABELS.get(source, source), source)
+        role_settings = self._role_settings()
+        current = role_settings.source_role if role_settings else SOURCE_INDEPENDENT
+        index = self.source_role_combo.findData(current)
+        self.source_role_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.source_role_combo.blockSignals(False)
+        visible = role != ROLE_TRANSLATION
+        self.source_role_label.setVisible(visible)
+        self.source_role_combo.setVisible(visible)
+
+    def _on_source_role_changed(self) -> None:
+        role_settings = self._role_settings()
+        if role_settings is None:
+            return
+        previous = role_settings.source_role
+        selected = str(self.source_role_combo.currentData() or SOURCE_INDEPENDENT)
+        role_settings.source_role = selected
+        try:
+            resolve_effective_model_config(self.settings, self._current_role())
+        except ChainedModelFollowError as exc:
+            role_settings.source_role = previous
+            QMessageBox.warning(self, APP_NAME, str(exc))
+        self._refresh_source_role_options()
+        self._sync_model_role_fields()
+        self._sync_engine_visibility()
+        self._persist()
+
+    def _on_review_source_role_changed(self) -> None:
+        role_settings = self.settings.pdf_review_model_role
+        previous = role_settings.source_role
+        selected = str(self.review_source_role_combo.currentData() or SOURCE_INDEPENDENT)
+        role_settings.source_role = selected
+        try:
+            resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        except ChainedModelFollowError as exc:
+            role_settings.source_role = previous
+            QMessageBox.warning(self, APP_NAME, str(exc))
+        self._sync_review_model_fields()
+        self._persist()
+
+    def _on_review_provider_changed(self, label: str) -> None:
+        role_settings = self.settings.pdf_review_model_role
+        if role_settings.source_role != SOURCE_INDEPENDENT:
+            return
+        role_settings.cloud_provider = VISION_TEXT_MODEL_PROVIDERS.get(
+            label,
+            role_settings.cloud_provider,
+        )
+        self.review_api_key_input.setText(get_key(role_settings.cloud_provider))
+        self._refresh_review_role_status()
+        self._persist()
+
+    def _on_review_api_key_changed(self) -> None:
+        config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        save_key(config.provider, self.review_api_key_input.text().strip())
+        self.settingsChanged.emit()
+
+    def _on_review_base_url_changed(self) -> None:
+        role_settings = self.settings.pdf_review_model_role
+        if role_settings.source_role == SOURCE_INDEPENDENT:
+            role_settings.cloud_base_url = self.review_base_url_input.text().strip()
+        self._refresh_review_role_status()
+        self._persist()
+
+    def _on_review_model_changed(self) -> None:
+        self.settings.pdf_review_model_role.cloud_model = self.review_model_combo.currentText().strip()
+        self._refresh_review_role_status()
+        self._persist()
+
+    def _sync_model_role_fields(self) -> None:
+        role = self._current_role()
+        previous_signature = self._current_model_catalog_signature()
+        try:
+            config = resolve_effective_model_config(self.settings, role)
+        except ChainedModelFollowError:
+            role_settings = self._role_settings()
+            if role_settings is not None:
+                role_settings.source_role = SOURCE_INDEPENDENT
+            config = resolve_effective_model_config(self.settings, role)
+
+        self._reload_provider_options(config.provider)
+        self.pdf_image_generation_hint.setVisible(role == ROLE_IMAGE)
+        if role == ROLE_IMAGE:
+            self.pdf_image_generation_hint.setText("PDF 生图模型（必填）")
+        self.mode_combo.blockSignals(True)
+        self.mode_combo.setCurrentIndex(0 if self.settings.engine.mode == "cloud" else 1)
+        self.mode_combo.blockSignals(False)
+        self.provider_combo.blockSignals(True)
+        self.provider_combo.setCurrentText(_cloud_provider_label(config.provider))
+        self.provider_combo.blockSignals(False)
+        self.api_key_input.setText(get_key(config.provider))
+        self.base_url_input.setText(config.base_url)
+        self._set_model_combo_items([config.model])
+        self._clear_model_catalog_if_signature_changed(previous_signature)
+        self._refresh_role_status()
+        self._sync_review_model_fields()
+
+    def _reload_provider_options(self, provider: str) -> None:
+        role = self._current_role()
+        follows = self._is_following_current_role()
+        provider_items = (
+            IMAGE_GENERATION_MODEL_PROVIDERS
+            if role == ROLE_IMAGE and not follows
+            else CLOUD_ENGINES
+        )
+        current_label = _cloud_provider_label(provider)
+        self.provider_combo.blockSignals(True)
+        self.provider_combo.clear()
+        self.provider_combo.addItems(list(provider_items.keys()))
+        if self.provider_combo.findText(current_label) < 0:
+            self.provider_combo.addItem(current_label)
+        self.provider_combo.setCurrentText(current_label)
+        self.provider_combo.blockSignals(False)
+
+    def _sync_review_model_fields(self) -> None:
+        if not hasattr(self, "review_source_role_combo"):
+            return
+        role_settings = self.settings.pdf_review_model_role
+        self.review_source_role_combo.blockSignals(True)
+        self.review_source_role_combo.clear()
+        for source in allowed_source_roles(ROLE_PDF_REVIEW):
+            self.review_source_role_combo.addItem(FOLLOW_SOURCE_LABELS.get(source, source), source)
+        source_index = self.review_source_role_combo.findData(role_settings.source_role)
+        self.review_source_role_combo.setCurrentIndex(source_index if source_index >= 0 else 0)
+        self.review_source_role_combo.blockSignals(False)
+
+        try:
+            config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        except ChainedModelFollowError:
+            role_settings.source_role = SOURCE_INDEPENDENT
+            config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        except Exception:
+            config = None
+
+        provider = config.provider if config is not None else role_settings.cloud_provider
+        self.review_provider_combo.blockSignals(True)
+        self.review_provider_combo.clear()
+        self.review_provider_combo.addItems(list(VISION_TEXT_MODEL_PROVIDERS.keys()))
+        provider_label = _cloud_provider_label(provider)
+        if self.review_provider_combo.findText(provider_label) < 0:
+            self.review_provider_combo.addItem(provider_label)
+        self.review_provider_combo.setCurrentText(provider_label)
+        self.review_provider_combo.blockSignals(False)
+
+        self.review_api_key_input.setText(get_key(provider))
+        self.review_base_url_input.setText(config.base_url if config is not None else role_settings.cloud_base_url)
+        self._set_review_model_combo_items([
+            config.model if config is not None else role_settings.cloud_model
+        ])
+        self._refresh_review_role_status()
+        self._sync_review_model_visibility()
+
+    def _set_review_model_combo_items(self, models: list[str]) -> None:
+        try:
+            fallback_model = resolve_effective_model_config(
+                self.settings,
+                ROLE_PDF_REVIEW,
+            ).model
+        except Exception:
+            fallback_model = self.settings.pdf_review_model_role.cloud_model
+        current = self.review_model_combo.currentText().strip() or fallback_model
+        options: list[str] = []
+        for model in [current, *models]:
+            value = str(model or "").strip()
+            if value and value not in options:
+                options.append(value)
+        if not options:
+            options.append("")
+        self.review_model_combo.blockSignals(True)
+        self.review_model_combo.clear()
+        self.review_model_combo.addItems(options)
+        self.review_model_combo.setCurrentText(current)
+        refresh_combo_completer(self.review_model_combo)
+        self.review_model_combo.blockSignals(False)
+
+    def _sync_review_model_visibility(self) -> None:
+        if not hasattr(self, "review_provider_combo"):
+            return
+        follows = self.settings.pdf_review_model_role.source_role != SOURCE_INDEPENDENT
+        access_editable = not follows
+        for widget in (
+            self.review_provider_combo,
+            self.review_api_key_input,
+            self.review_base_url_input,
+        ):
+            widget.setEnabled(access_editable)
+        self.review_model_combo.setEnabled(True)
+
+    def _refresh_review_role_status(self) -> None:
+        if not hasattr(self, "review_model_status"):
+            return
+        try:
+            config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        except Exception as exc:  # noqa: BLE001 - status only.
+            self.review_model_status.setText(str(exc))
+            return
+        status = self.settings.pdf_review_model_role.availability_status
+        message = self.settings.pdf_review_model_role.availability_message
+        capability_hint = (
+            "图像理解审核能力可用。"
+            if provider_supports_capability(config.provider, "vision_text")
+            else "当前服务商不在图像理解审核能力列表中。"
+        )
+        state_text = {
+            "available": "上次审核连接测试：可用",
+            "unavailable": "上次审核连接测试：不可用",
+        }.get(status, "尚未完成审核模型可用性校验")
+        optional_hint = "可选项：未启用 PDF 翻译审核时可留空。"
+        follow_hint = (
+            f"\n当前正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
+            if config.follows
+            else ""
+        )
+        self.review_model_status.setText(
+            f"{optional_hint}\n{state_text}。{capability_hint}"
+            + (f"\n{message}" if message else "")
+            + follow_hint
+        )
+
+    def _refresh_role_status(self) -> None:
+        try:
+            config = resolve_effective_model_config(self.settings, self._current_role())
+        except Exception as exc:  # noqa: BLE001 - status only.
+            self.model_catalog_status.setText(str(exc))
+            return
+        if config.role == ROLE_IMAGE:
+            status = self.settings.image_model_role.availability_status
+            message = self.settings.image_model_role.availability_message
+            capability_hint = (
+                "图像生成能力可用。"
+                if provider_supports_capability(config.provider, "image")
+                else "当前服务商不在图像生成能力列表中。"
+            )
+            state_text = {
+                "available": "上次图像连接测试：可用",
+                "unavailable": "上次图像连接测试：不可用",
+            }.get(status, "尚未完成图像生成可用性校验")
+            self.model_catalog_status.setText(
+                f"{state_text}。{capability_hint}" + (f"\n{message}" if message else "")
+            )
+            return
+        if config.follows:
+            self.model_catalog_status.setText(
+                f"当前{config.label}正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
+            )
+
     def _on_engine_mode_changed(self) -> None:
+        if self._current_role() != ROLE_TRANSLATION:
+            return
         self.settings.engine.mode = self.mode_combo.currentData()
         self._sync_engine_visibility()
         self._persist()
@@ -560,25 +971,41 @@ class Sidebar(QFrame):
     def _on_provider_changed(self, label: str) -> None:
         previous_signature = self._current_model_catalog_signature()
         provider = _cloud_provider_value(label)
-        self.settings.engine.cloud_provider = provider
+        role_settings = self._role_settings()
+        if self._current_role() == ROLE_TRANSLATION:
+            self.settings.engine.cloud_provider = provider
+        elif role_settings is not None and role_settings.source_role == SOURCE_INDEPENDENT:
+            role_settings.cloud_provider = provider
         self.api_key_input.setText(get_key(provider))
         self._clear_model_catalog_if_signature_changed(previous_signature)
+        self._refresh_role_status()
         self._persist()
 
     def _on_api_key_changed(self) -> None:
         previous_signature = self._current_model_catalog_signature()
-        save_key(self.settings.engine.cloud_provider, self.api_key_input.text().strip())
+        config = resolve_effective_model_config(self.settings, self._current_role())
+        save_key(config.provider, self.api_key_input.text().strip())
         self._clear_model_catalog_if_signature_changed(previous_signature)
         self.settingsChanged.emit()
 
     def _on_base_url_changed(self) -> None:
         previous_signature = self._current_model_catalog_signature()
-        self.settings.engine.cloud_base_url = self.base_url_input.text().strip()
+        role_settings = self._role_settings()
+        if self._current_role() == ROLE_TRANSLATION:
+            self.settings.engine.cloud_base_url = self.base_url_input.text().strip()
+        elif role_settings is not None and role_settings.source_role == SOURCE_INDEPENDENT:
+            role_settings.cloud_base_url = self.base_url_input.text().strip()
         self._clear_model_catalog_if_signature_changed(previous_signature)
+        self._refresh_role_status()
         self._persist()
 
     def _on_model_changed(self) -> None:
-        self.settings.engine.cloud_model = self.model_combo.currentText().strip()
+        role_settings = self._role_settings()
+        if self._current_role() == ROLE_TRANSLATION:
+            self.settings.engine.cloud_model = self.model_combo.currentText().strip()
+        elif role_settings is not None:
+            role_settings.cloud_model = self.model_combo.currentText().strip()
+        self._refresh_role_status()
         self._persist()
 
     def _on_ollama_changed(self, value: str) -> None:
@@ -614,7 +1041,11 @@ class Sidebar(QFrame):
         self._persist()
 
     def _sync_engine_visibility(self) -> None:
-        is_cloud = self.settings.engine.mode == "cloud"
+        role = self._current_role()
+        follows = self._is_following_current_role()
+        is_translation = role == ROLE_TRANSLATION
+        is_cloud = self.settings.engine.mode == "cloud" if is_translation else True
+        self.mode_combo.setVisible(is_translation)
         cloud_widgets = (
             self.provider_combo,
             self.api_key_input,
@@ -622,8 +1053,16 @@ class Sidebar(QFrame):
             self.model_combo,
         )
         for widget in cloud_widgets:
-            widget.setEnabled(is_cloud)
-        self.ollama_combo.setEnabled(not is_cloud)
+            widget.setVisible(is_cloud)
+        access_editable = is_cloud and not follows
+        self.provider_combo.setEnabled(access_editable)
+        self.api_key_input.setEnabled(access_editable)
+        self.base_url_input.setEnabled(access_editable)
+        self.model_combo.setEnabled(is_cloud)
+        self.ollama_combo.setVisible(is_translation)
+        self.ollama_combo.setEnabled(is_translation and not is_cloud)
+        self.pdf_review_frame.setVisible(role == ROLE_IMAGE)
+        self._sync_review_model_visibility()
         if self.settings.engine.mode == "local":
             self.batch_spin.setRange(CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX)
             self.batch_spin.setValue(
@@ -645,16 +1084,40 @@ class Sidebar(QFrame):
 
     def _test_connectivity(self) -> None:
         def run() -> str:
-            result = check_connectivity(self.settings)
+            role = self._current_role()
+            if role == ROLE_IMAGE:
+                result = check_image_generation_connectivity(self.settings)
+                save_settings(self.settings)
+                return result.message if result.ok else f"{result.message}\n{result.detail}"
+            result = check_connectivity(settings_for_text_role(self.settings, role))
             return result.message if result.ok else f"{result.message}\n{result.detail}"
 
         self._with_busy_cursor(run)
+        self._refresh_role_status()
+
+    def _test_review_connectivity(self) -> None:
+        def run() -> str:
+            result = check_pdf_review_connectivity(self.settings)
+            save_settings(self.settings)
+            return result.message if result.ok else f"{result.message}\n{result.detail}"
+
+        self._with_busy_cursor(run)
+        self._sync_review_model_fields()
 
     def _current_model_catalog_signature(self) -> str:
+        try:
+            config = resolve_effective_model_config(self.settings, self._current_role())
+            provider = config.provider
+            api_key = config.api_key
+            base_url = config.base_url
+        except Exception:
+            provider = self.settings.engine.cloud_provider
+            api_key = get_key(provider)
+            base_url = self.settings.engine.cloud_base_url
         return build_model_catalog_signature(
-            provider=self.settings.engine.cloud_provider,
-            api_key=get_key(self.settings.engine.cloud_provider),
-            base_url=self.settings.engine.cloud_base_url,
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
         )
 
     def _clear_model_catalog_if_signature_changed(self, previous_signature: str) -> None:
@@ -671,7 +1134,12 @@ class Sidebar(QFrame):
         *,
         include_current: bool = True,
     ) -> None:
-        current = self.model_combo.currentText().strip() or self.settings.engine.cloud_model
+        try:
+            config = resolve_effective_model_config(self.settings, self._current_role())
+            fallback_model = config.model
+        except Exception:
+            fallback_model = self.settings.engine.cloud_model
+        current = self.model_combo.currentText().strip() or fallback_model
         options: list[str] = []
         seed_models = [current, *models] if include_current else models
         for model in seed_models:
@@ -679,7 +1147,7 @@ class Sidebar(QFrame):
             if value and value not in options:
                 options.append(value)
         if not options:
-            options.append(self.settings.engine.cloud_model)
+            options.append(fallback_model)
 
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
@@ -690,12 +1158,22 @@ class Sidebar(QFrame):
         self.model_combo.blockSignals(False)
 
     def _fetch_models(self) -> None:
+        try:
+            config = resolve_effective_model_config(self.settings, self._current_role())
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        if not provider_supports_capability(config.provider, config.capability):
+            message = f"当前服务商不支持{config.label}所需的{config.capability}能力，请手动填写或更换服务商。"
+            self.model_catalog_status.setText(message)
+            QMessageBox.warning(self, APP_NAME, message)
+            return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             result = fetch_openai_compatible_models(
-                provider=self.settings.engine.cloud_provider,
-                api_key=get_key(self.settings.engine.cloud_provider),
-                base_url=self.settings.engine.cloud_base_url,
+                provider=config.provider,
+                api_key=config.api_key,
+                base_url=config.base_url,
             )
         finally:
             QApplication.restoreOverrideCursor()
@@ -716,6 +1194,42 @@ class Sidebar(QFrame):
         self._on_model_changed()
         self.model_catalog_status.setText(f"{result.message} 可从下拉列表选择。")
         self.model_combo.showPopup()
+
+    def _fetch_review_models(self) -> None:
+        try:
+            config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        if not provider_supports_capability(config.provider, config.capability):
+            message = f"当前服务商不支持{config.label}所需的图像理解审核能力，请手动填写或更换服务商。"
+            self.review_model_status.setText(message)
+            QMessageBox.warning(self, APP_NAME, message)
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = fetch_openai_compatible_models(
+                provider=config.provider,
+                api_key=config.api_key,
+                base_url=config.base_url,
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not result.ok or not result.models:
+            message = f"{result.message}\n{result.detail}".strip()
+            self.review_model_status.setText(message)
+            QMessageBox.warning(self, APP_NAME, message)
+            return
+
+        previous_model = self.review_model_combo.currentText().strip()
+        selected_model = previous_model if previous_model in result.models else result.models[0]
+        self._set_review_model_combo_items(result.models)
+        self.review_model_combo.setCurrentText(selected_model)
+        select_combo_text_match(self.review_model_combo)
+        self._on_review_model_changed()
+        self.review_model_status.setText(f"{result.message} 可从下拉列表选择。")
+        self.review_model_combo.showPopup()
 
     def _check_updates(self) -> None:
         def run() -> str:
@@ -748,6 +1262,7 @@ class NativeMainWindow(QMainWindow):
         self.pages = {
             "excel_translate": ExcelTranslatePage(settings),
             "word_translate": WordTranslatePage(settings),
+            "pdf_translate": PdfTranslatePage(settings),
             "tm": TmManagerPage(settings),
         }
         for page in self.pages.values():
@@ -756,6 +1271,7 @@ class NativeMainWindow(QMainWindow):
         self.sidebar.navigateRequested.connect(self._navigate)
         self.sidebar.settingsChanged.connect(self.pages["excel_translate"].refresh_settings)
         self.sidebar.settingsChanged.connect(self.pages["word_translate"].refresh_settings)
+        self.sidebar.settingsChanged.connect(self.pages["pdf_translate"].refresh_settings)
         self.sidebar.settingsChanged.connect(self.pages["tm"].refresh_settings)
         self.pages["excel_translate"].languageChanged.connect(
             self._sync_tm_language_from_translation
@@ -777,7 +1293,7 @@ class NativeMainWindow(QMainWindow):
         file_menu.addAction(quit_action)
 
     def _navigate(self, page: str) -> None:
-        page_order = ["excel_translate", "word_translate", "tm"]
+        page_order = ["excel_translate", "word_translate", "pdf_translate", "tm"]
         self.stack.setCurrentIndex(page_order.index(page))
         self.sidebar.set_active_page(page)
         self._sync_page_activation(page)

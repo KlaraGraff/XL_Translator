@@ -27,6 +27,18 @@ CLOUD_ENGINES = {
     "硅基流动":                    "siliconflow",
 }
 
+IMAGE_GENERATION_MODEL_PROVIDERS = {
+    "OpenAI / ChatGPT": "openai",
+    "OpenAI 兼容": "custom_openai",
+    "硅基流动": "siliconflow",
+}
+
+VISION_TEXT_MODEL_PROVIDERS = {
+    "OpenAI / ChatGPT": "openai",
+    "OpenAI 兼容": "custom_openai",
+    "硅基流动": "siliconflow",
+}
+
 DEFAULT_CLOUD_PROVIDER = "custom_openai"
 DEFAULT_CLOUD_MODEL = "gpt-5.4"
 DEFAULT_CUSTOM_OPENAI_BASE_URL = "https://api.asxs.top/v1"
@@ -141,6 +153,19 @@ WORD_STRICT_RETRY_ATTEMPTS_MIN     = 1
 WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
 WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
 WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = "FFF2CC"
+
+# ── PDF 图像版式翻译 ─────────────────────────────────────
+PDF_RENDER_DPI_DEFAULT = 300
+PDF_PAGE_RETRY_ATTEMPTS_DEFAULT = 3
+PDF_PAGE_RETRY_ATTEMPTS_MIN = 1
+PDF_PAGE_RETRY_ATTEMPTS_MAX = 8
+PDF_PAGE_CONCURRENCY_SAFETY_CAP = 20
+PDF_PAGE_RENDER_AHEAD_COUNT = 2
+PDF_ASPECT_RATIO_TOLERANCE = 0.01
+PDF_MIN_READABLE_SHORT_EDGE_PX = 1200
+PDF_MIN_READABLE_LONG_EDGE_PX = 1600
+PDF_COMPRESSED_JPEG_QUALITY_DEFAULT = 85
+PDF_COMPRESSED_MAX_LONG_EDGE_PX = 2200
 
 # ── 全局并发控制（输入框按模式限制区间）────────────────────
 CONCURRENCY_UNLOCK_CODE      = "OA"
@@ -275,4 +300,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 11
+SETTINGS_SCHEMA_VERSION = 13

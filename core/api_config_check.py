@@ -41,21 +41,21 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
         return ApiConfigCheckResult(
             ok=False,
             status="missing_model",
-            message=f"{provider_label} 尚未填写模型名称。请先在左侧“翻译引擎”中完成配置。",
+            message=f"{provider_label} 尚未填写模型名称。请先在左侧“模型配置”中完成配置。",
         )
 
     if provider in {"custom_openai", "siliconflow", "lanyi"} and not str(engine.cloud_base_url or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_base_url",
-            message=f"{provider_label} 尚未填写 Base URL。请先在左侧“翻译引擎”中完成配置。",
+            message=f"{provider_label} 尚未填写 Base URL。请先在左侧“模型配置”中完成配置。",
         )
 
     if not str(get_key(provider) or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_api_key",
-            message=f"{provider_label} 尚未填写 API Key。请先在左侧“翻译引擎”中完成配置后再开始翻译。",
+            message=f"{provider_label} 尚未填写 API Key。请先在左侧“模型配置”中完成配置后再开始翻译。",
         )
 
     return ApiConfigCheckResult(ok=True)

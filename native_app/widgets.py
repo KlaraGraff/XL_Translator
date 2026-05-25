@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -335,6 +338,41 @@ class AlignedComboBox(QComboBox):
         _align_popup_to_combo(self, popup)
 
 
+class CenteredTextComboBox(AlignedComboBox):
+    """Combo box that centers the selected value while keeping popup behavior."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        current_text = option.currentText
+        option.currentText = ""
+
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+
+        edit_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        arrow_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxArrow,
+            self,
+        )
+        edit_rect.setLeft(self.rect().left() + 8)
+        edit_rect.setRight(arrow_rect.left() - 4)
+
+        painter.setPen(option.palette.text().color())
+        painter.drawText(
+            edit_rect,
+            Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter,
+            current_text,
+        )
+
+
 class AlignedCompleter(QCompleter):
     """Completer popup with the same edge-attached positioning as combo popups."""
 
@@ -361,6 +399,16 @@ class AlignedCompleter(QCompleter):
 def create_option_combo(*, max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS) -> QComboBox:
     """Create a standard app select control with the shared popup behavior."""
     combo = AlignedComboBox()
+    configure_option_combo(combo, max_visible_items=max_visible_items)
+    return combo
+
+
+def create_centered_option_combo(
+    *,
+    max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS,
+) -> QComboBox:
+    """Create a select control with centered selected text."""
+    combo = CenteredTextComboBox()
     configure_option_combo(combo, max_visible_items=max_visible_items)
     return combo
 

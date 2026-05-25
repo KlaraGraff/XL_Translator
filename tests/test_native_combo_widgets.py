@@ -14,10 +14,12 @@ from native_app.widgets import (
     DEFAULT_COMBO_POPUP_MAX_HEIGHT,
     DEFAULT_TABLE_ROW_HEIGHT,
     AlignedComboBox,
+    CenteredTextComboBox,
     MiddleElideLabel,
     _calculate_combo_popup_geometry,
     configure_app_table,
     configure_file_selection_table,
+    create_centered_option_combo,
     create_check_table_item,
     create_editable_combo,
     create_option_combo,
@@ -39,6 +41,14 @@ class NativeComboWidgetTests(unittest.TestCase):
         self.assertTrue(combo.property("appOptionCombo"))
         self.assertEqual(combo.maxVisibleItems(), DEFAULT_COMBO_MAX_VISIBLE_ITEMS)
         self.assertEqual(combo.view().maximumHeight(), DEFAULT_COMBO_POPUP_MAX_HEIGHT)
+
+    def test_centered_option_combo_keeps_select_contract(self) -> None:
+        combo = create_centered_option_combo()
+
+        self.assertIsInstance(combo, CenteredTextComboBox)
+        self.assertFalse(combo.isEditable())
+        self.assertTrue(combo.property("appOptionCombo"))
+        self.assertEqual(combo.maxVisibleItems(), DEFAULT_COMBO_MAX_VISIBLE_ITEMS)
 
     def test_editable_and_searchable_combos_share_contract(self) -> None:
         editable = create_editable_combo()
