@@ -12,9 +12,11 @@ from loguru import logger
 
 from config import (
     DOMAIN_PRESETS,
-    DEFAULT_CUSTOM_OPENAI_BASE_URL,
     CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX,
     CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX,
+    LM_STUDIO_BASE_URL,
+    OLLAMA_BASE_URL,
+    normalize_cloud_base_url,
 )
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -88,15 +90,8 @@ class TranslationBatchRunStats:
                 )
 
 
-def _official_provider_base_url(provider: str, base_url: str) -> str:
-    """Avoid leaking the custom OpenAI default into official provider clients."""
-    if provider == "openai":
-        return ""
-    normalized = str(base_url or "").strip().rstrip("/")
-    custom_default = DEFAULT_CUSTOM_OPENAI_BASE_URL.rstrip("/")
-    if provider == "claude" and normalized == custom_default:
-        return ""
-    return normalized
+def is_local_engine_name(engine_name: str) -> bool:
+    return str(engine_name or "").startswith(("ollama/", "local_openai/"))
 
 
 def build_engine(settings: AppSettings) -> TranslationEngine:
@@ -104,26 +99,36 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
     s = settings.engine
 
     if s.mode == "local":
-        from engines.ollama_engine import OllamaEngine
-        return OllamaEngine(
-            model=s.ollama_model,
-            concurrency=s.ollama_concurrency,
-        )
+        provider = str(s.local_provider or "ollama").strip()
+        model = str(s.local_model or s.ollama_model or "").strip()
+        base_url = str(s.local_base_url or "").strip()
+        if provider == "ollama":
+            from engines.ollama_engine import OllamaEngine
+            return OllamaEngine(
+                model=model,
+                concurrency=s.ollama_concurrency,
+                base_url=base_url or OLLAMA_BASE_URL,
+            )
+        if provider in {"lm_studio", "custom_local"}:
+            from engines.openai_engine import OpenAIEngine
+            return OpenAIEngine(
+                api_key=get_key(provider) or "local-model",
+                model=model,
+                base_url=base_url or (LM_STUDIO_BASE_URL if provider == "lm_studio" else ""),
+                engine_name_prefix=f"local_openai/{provider}",
+            )
+        raise ValueError(f"未知本地模型服务：{provider}")
 
     # 云端模式
     provider = s.cloud_provider
     api_key  = get_key(provider)
-
-    if provider == "hermes":
-        from engines.hermes_engine import HermesEngine
-        return HermesEngine()
 
     if provider == "claude":
         from engines.claude_engine import ClaudeEngine
         return ClaudeEngine(
             api_key=api_key,
             model=s.cloud_model,
-            base_url=_official_provider_base_url(provider, s.cloud_base_url),
+            base_url=normalize_cloud_base_url(provider, s.cloud_base_url),
         )
 
     if provider in ("openai", "siliconflow", "custom_openai", "lanyi"):
@@ -131,7 +136,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
         return OpenAIEngine(
             api_key=api_key,
             model=s.cloud_model,
-            base_url=_official_provider_base_url(provider, s.cloud_base_url),
+            base_url=normalize_cloud_base_url(provider, s.cloud_base_url),
         )
 
     if provider == "zhipu":
@@ -215,7 +220,7 @@ def translate_texts(
 
     # 最后一道参数钳位：强制将 batch_size 限制在合规区间，
     # 防止配置脏数据或 UI 传参异常导致越界请求。
-    is_local = engine.engine_name.startswith("ollama/")
+    is_local = is_local_engine_name(engine.engine_name)
     if is_local:
         chunk = max(CHUNK_LOCAL_MIN, min(CHUNK_LOCAL_MAX, batch_size))
     else:

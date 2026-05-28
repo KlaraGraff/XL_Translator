@@ -80,6 +80,7 @@ class OpenAIEngine(TranslationEngine):
         model: str = "gpt-4o",
         base_url: str = "",
         api_mode: str = "",
+        engine_name_prefix: str = "openai",
     ):
         import openai
         kwargs: dict = {"api_key": api_key}
@@ -90,10 +91,11 @@ class OpenAIEngine(TranslationEngine):
         self._api_key = api_key
         self._base_url = str(base_url or "").rstrip("/")
         self._api_mode = str(api_mode or "").strip()
+        self._engine_name_prefix = str(engine_name_prefix or "openai").strip()
 
     @property
     def engine_name(self) -> str:
-        return f"openai/{self._model}"
+        return f"{self._engine_name_prefix}/{self._model}"
 
     def translate_batch(
         self,

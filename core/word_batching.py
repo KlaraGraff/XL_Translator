@@ -25,6 +25,7 @@ from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     validate_translation,
 )
+from core.engine_dispatcher import is_local_engine_name
 from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
@@ -145,7 +146,7 @@ def translate_word_texts(
         _record_progress(len(batch))
         return partial
 
-    max_workers = 1 if engine.engine_name.startswith("ollama/") else max(1, int(concurrency))
+    max_workers = 1 if is_local_engine_name(engine.engine_name) else max(1, int(concurrency))
     max_workers = min(max_workers, len(batches))
 
     if max_workers <= 1:
@@ -303,7 +304,7 @@ def _translate_units_with_fallback(
     except Exception as exc:  # noqa: BLE001 - fallback decides how to recover the batch
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
-        if api_scheduler is not None and not engine.engine_name.startswith("ollama/"):
+        if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
                 scheduler=api_scheduler,

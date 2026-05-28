@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
 )
 
 from app_meta import APP_NAME
-from config import CLOUD_ENGINES
 from core import tm_manager
 from core.language_registry import (
     build_lang_pair,
@@ -46,12 +45,16 @@ from core.tm_cleaner import (
     build_clean_system_prompt,
     get_clean_builtin_system_prompt,
 )
+from core.model_roles import (
+    ROLE_CLEANER,
+    LocalModelFollowNotAllowedError,
+    resolve_effective_model_config,
+)
 from native_app.workers import TmCleanWorker
 from native_app.widgets import (
     build_app_tooltip_html,
     configure_app_table,
     create_check_table_item,
-    create_editable_combo,
     create_option_combo,
     create_searchable_combo,
     refresh_combo_completer,
@@ -64,11 +67,9 @@ HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
 COMPACT_CONTROL_HEIGHT = 32
 COMPACT_BUTTON_HEIGHT = 34
-TM_SCOPE_CARD_MAX_WIDTH = 330
-TM_OVERVIEW_CARD_MAX_WIDTH = 420
-CLEAN_MODE_MIN_WIDTH = 142
-CLEAN_ENGINE_MIN_WIDTH = 150
-CLEAN_MODEL_MIN_WIDTH = 220
+TM_SCOPE_CARD_MIN_WIDTH = 300
+TM_OVERVIEW_CARD_MIN_WIDTH = 380
+TM_CLEANER_CARD_MIN_WIDTH = 340
 WORKSPACE_ACTION_BUTTON_WIDTH = 96
 WORKSPACE_ACTION_BUTTON_HEIGHT = 38
 ENTRY_DIALOG_WIDTH = 860
@@ -143,8 +144,8 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("Card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(7)
+    layout.setContentsMargins(12, 9, 12, 9)
+    layout.setSpacing(8)
     layout.setAlignment(Qt.AlignmentFlag.AlignTop)
     return frame, layout
 
@@ -161,11 +162,20 @@ def _workspace_action_button(text: str) -> QPushButton:
     return button
 
 
-def _cloud_provider_label(provider: str) -> str:
-    for label, value in CLOUD_ENGINES.items():
-        if value == provider:
-            return label
-    return next(iter(CLOUD_ENGINES.keys()))
+def _metric_pair(label: str, value: str) -> QWidget:
+    widget = QWidget()
+    widget.setProperty("tmMetricPair", "true")
+    layout = QHBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(5)
+    label_widget = QLabel(label)
+    label_widget.setObjectName("TmMetricLabel")
+    value_widget = QLabel(value)
+    value_widget.setObjectName("TmMetricValue")
+    layout.addWidget(label_widget)
+    layout.addWidget(value_widget)
+    layout.addStretch(1)
+    return widget
 
 
 def _normalize_clean_progress_payload(payload):
@@ -351,8 +361,8 @@ class TmManagerPage(QWidget):
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
         root.addLayout(top_row)
-        self._build_scope_card(top_row)
         self._build_overview_card(top_row)
+        self._build_scope_card(top_row)
         self._build_cleaner_card(top_row)
 
         self.workspace = QFrame()
@@ -365,11 +375,44 @@ class TmManagerPage(QWidget):
     def _build_scope_controls(self, layout: QVBoxLayout) -> None:
         form_grid = QGridLayout()
         form_grid.setHorizontalSpacing(8)
-        form_grid.setVerticalSpacing(7)
-        form_grid.setColumnMinimumWidth(0, 70)
+        form_grid.setVerticalSpacing(8)
+        form_grid.setColumnMinimumWidth(0, 50)
+        form_grid.setColumnMinimumWidth(2, 50)
         form_grid.setColumnStretch(0, 0)
         form_grid.setColumnStretch(1, 1)
+        form_grid.setColumnStretch(2, 0)
+        form_grid.setColumnStretch(3, 1)
         layout.addLayout(form_grid)
+
+        form_grid.addWidget(
+            _field_label("源语言", "源语言", "选择当前词库原文语言。"),
+            0,
+            0,
+        )
+        self.source_combo = create_searchable_combo()
+        if self.source_combo.lineEdit() is not None:
+            self.source_combo.lineEdit().setPlaceholderText("输入源语言")
+        self.source_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        _compact_control(self.source_combo)
+        form_grid.addWidget(self.source_combo, 0, 1)
+
+        form_grid.addWidget(
+            _field_label("目标语言", "目标语言", "选择当前词库译文语言。"),
+            0,
+            2,
+        )
+        self.target_combo = create_searchable_combo()
+        if self.target_combo.lineEdit() is not None:
+            self.target_combo.lineEdit().setPlaceholderText("输入目标语言")
+        self.target_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        _compact_control(self.target_combo)
+        form_grid.addWidget(self.target_combo, 0, 3)
 
         form_grid.addWidget(
             _field_label(
@@ -381,7 +424,7 @@ class TmManagerPage(QWidget):
                     "手动新增词条不受这项规则影响。",
                 ],
             ),
-            0,
+            1,
             0,
         )
         self.max_len_spin = QSpinBox()
@@ -393,29 +436,7 @@ class TmManagerPage(QWidget):
         )
         _compact_control(self.max_len_spin)
         self.max_len_spin.valueChanged.connect(self._on_max_len_changed)
-        form_grid.addWidget(self.max_len_spin, 0, 1)
-
-        form_grid.addWidget(
-            _field_label("源语言", "源语言", "选择当前词库原文语言。"),
-            1,
-            0,
-        )
-        self.source_combo = create_searchable_combo()
-        if self.source_combo.lineEdit() is not None:
-            self.source_combo.lineEdit().setPlaceholderText("输入源语言")
-        _compact_control(self.source_combo)
-        form_grid.addWidget(self.source_combo, 1, 1)
-
-        form_grid.addWidget(
-            _field_label("目标语言", "目标语言", "选择当前词库译文语言。"),
-            2,
-            0,
-        )
-        self.target_combo = create_searchable_combo()
-        if self.target_combo.lineEdit() is not None:
-            self.target_combo.lineEdit().setPlaceholderText("输入目标语言")
-        _compact_control(self.target_combo)
-        form_grid.addWidget(self.target_combo, 2, 1)
+        form_grid.addWidget(self.max_len_spin, 1, 1, 1, 3)
 
         self._refresh_language_options()
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
@@ -428,13 +449,13 @@ class TmManagerPage(QWidget):
     def _build_scope_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
         frame.setProperty("tmTopCard", "true")
-        frame.setMaximumWidth(TM_SCOPE_CARD_MAX_WIDTH)
-        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        row.addWidget(frame, 0)
+        frame.setMinimumWidth(TM_SCOPE_CARD_MIN_WIDTH)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row.addWidget(frame, 2)
         layout.addWidget(
             _module_title(
-                "词库规则与语言范围",
-                "词库规则与语言范围",
+                "语言与规则",
+                "语言与规则",
                 "设置当前词库的自动入库长度和语言对范围。",
                 [
                     "最长词上限只影响自动入库，手动新增不受限制。",
@@ -447,13 +468,13 @@ class TmManagerPage(QWidget):
     def _build_overview_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
         frame.setProperty("tmTopCard", "true")
-        frame.setMaximumWidth(TM_OVERVIEW_CARD_MAX_WIDTH)
-        frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
-        row.addWidget(frame, 0)
+        frame.setMinimumWidth(TM_OVERVIEW_CARD_MIN_WIDTH)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        row.addWidget(frame, 4)
         layout.addWidget(
             _module_title(
-                "词库概览与交换",
-                "词库概览与交换",
+                "词库概况",
+                "词库概况",
                 "查看当前语言对的词条统计，并执行导入导出。",
                 [
                     "JSON 适合完整备份和迁移。",
@@ -463,40 +484,52 @@ class TmManagerPage(QWidget):
             )
         )
 
+        self.stats_layout = QHBoxLayout()
+        self.stats_layout.setSpacing(10)
+        layout.addLayout(self.stats_layout)
+
         buttons = QHBoxLayout()
-        buttons.setSpacing(6)
+        buttons.setSpacing(8)
+        self.import_button = QPushButton("导入词库")
+        _compact_control(self.import_button, COMPACT_BUTTON_HEIGHT)
+        self.import_button.clicked.connect(self._import_entries)
+        self.import_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        buttons.addWidget(self.import_button)
+
         self.export_json_button = QPushButton("导出 JSON")
         _compact_control(self.export_json_button, COMPACT_BUTTON_HEIGHT)
         self.export_json_button.clicked.connect(lambda: self._export_entries("json"))
+        self.export_json_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         buttons.addWidget(self.export_json_button)
 
         self.export_csv_button = QPushButton("导出 CSV")
         _compact_control(self.export_csv_button, COMPACT_BUTTON_HEIGHT)
         self.export_csv_button.clicked.connect(lambda: self._export_entries("csv"))
+        self.export_csv_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         buttons.addWidget(self.export_csv_button)
-
-        self.import_button = QPushButton("导入词库")
-        _compact_control(self.import_button, COMPACT_BUTTON_HEIGHT)
-        self.import_button.clicked.connect(self._import_entries)
-        buttons.addWidget(self.import_button)
         layout.addLayout(buttons)
-
-        self.stats_grid = QGridLayout()
-        self.stats_grid.setHorizontalSpacing(8)
-        self.stats_grid.setVerticalSpacing(8)
-        layout.addLayout(self.stats_grid)
 
     def _build_cleaner_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
         frame.setProperty("tmTopCard", "true")
+        frame.setMinimumWidth(TM_CLEANER_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row.addWidget(frame, 1)
+        row.addWidget(frame, 3)
 
         title_row = QHBoxLayout()
         title_row.setSpacing(10)
         self.cleaner_title_label = _module_title(
-            "深度清洗",
-            "深度清洗",
+            "维护与清洗",
+            "维护与清洗",
             "用 AI 对当前语言对的未固定词条做统一清理。",
             [
                 "差异确认模式：先生成建议，用户逐条确认且可编辑后再写入。",
@@ -512,22 +545,6 @@ class TmManagerPage(QWidget):
         title_row.addWidget(self.auto_pin_check)
         layout.addLayout(title_row)
 
-        field_grid = QGridLayout()
-        field_grid.setHorizontalSpacing(8)
-        field_grid.setVerticalSpacing(6)
-        field_grid.setColumnMinimumWidth(0, CLEAN_MODE_MIN_WIDTH)
-        field_grid.setColumnMinimumWidth(1, CLEAN_ENGINE_MIN_WIDTH)
-        field_grid.setColumnMinimumWidth(2, CLEAN_MODEL_MIN_WIDTH)
-        field_grid.setColumnStretch(0, 2)
-        field_grid.setColumnStretch(1, 2)
-        field_grid.setColumnStretch(2, 3)
-        layout.addLayout(field_grid)
-
-        field_grid.addWidget(
-            _field_label("清洗模式", "清洗模式", "控制 AI 清洗建议的落库方式。"),
-            0,
-            0,
-        )
         self.clean_mode_combo = create_option_combo()
         self.clean_mode_combo.addItem("差异确认模式", "diff")
         self.clean_mode_combo.addItem("直接覆写模式", "overwrite")
@@ -535,61 +552,22 @@ class TmManagerPage(QWidget):
             1 if self.settings.cleaner_mode == "overwrite" else 0
         )
         self.clean_mode_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
-        _compact_control(self.clean_mode_combo)
-        self.clean_mode_combo.setMinimumWidth(CLEAN_MODE_MIN_WIDTH)
-        field_grid.addWidget(self.clean_mode_combo, 1, 0)
+        self.clean_mode_combo.hide()
+        layout.addWidget(self.clean_mode_combo)
 
-        self.clean_engine_label = _field_label(
-            "清洗引擎",
-            "清洗引擎",
-            "深度清洗模型现在统一在左侧“模型配置”中设置。",
-        )
-        field_grid.addWidget(self.clean_engine_label, 0, 1)
-        self.clean_engine_combo = create_option_combo()
-        self.clean_engine_combo.addItems(list(CLOUD_ENGINES.keys()))
-        self.clean_engine_combo.setCurrentText(_cloud_provider_label(self.settings.cleaner_engine))
-        self.clean_engine_combo.currentIndexChanged.connect(self._on_cleaner_settings_changed)
-        _compact_control(self.clean_engine_combo)
-        self.clean_engine_combo.setMinimumWidth(CLEAN_ENGINE_MIN_WIDTH)
-        field_grid.addWidget(self.clean_engine_combo, 1, 1)
-
-        self.clean_model_label = _field_label(
-            "清洗模型",
-            "清洗模型",
-            "深度清洗模型现在统一在左侧“模型配置”中设置。",
-        )
-        field_grid.addWidget(self.clean_model_label, 0, 2)
-        self.clean_model_input = create_editable_combo()
-        self._refresh_clean_model_options()
-        if self.clean_model_input.lineEdit() is not None:
-            self.clean_model_input.lineEdit().setPlaceholderText("跟随当前翻译模型")
-        self.clean_model_input.currentTextChanged.connect(self._on_cleaner_settings_changed)
-        _compact_control(self.clean_model_input)
-        self.clean_model_input.setMinimumWidth(CLEAN_MODEL_MIN_WIDTH)
-        field_grid.addWidget(self.clean_model_input, 1, 2)
-
-        for widget in (
-            self.clean_engine_label,
-            self.clean_engine_combo,
-            self.clean_model_label,
-            self.clean_model_input,
-        ):
-            widget.setVisible(False)
-
-        model_config_hint = QLabel("清洗模型请在左侧“模型配置 > 深度清洗模型”中设置。")
-        model_config_hint.setObjectName("FieldHint")
-        model_config_hint.setWordWrap(True)
-        layout.addWidget(model_config_hint)
+        self.clean_summary_layout = QHBoxLayout()
+        self.clean_summary_layout.setSpacing(8)
+        layout.addLayout(self.clean_summary_layout)
 
         action_row = QHBoxLayout()
-        action_row.setSpacing(10)
+        action_row.setSpacing(8)
         self.clean_button = QPushButton("启动深度清洗")
         self.clean_button.setObjectName("PrimaryButton")
         _compact_control(self.clean_button, COMPACT_BUTTON_HEIGHT)
         self.clean_button.clicked.connect(self._toggle_cleaning)
         action_row.addWidget(self.clean_button, 1)
 
-        self.prompt_button = QPushButton("编辑清洗提示词")
+        self.prompt_button = QPushButton("编辑提示词")
         _compact_control(self.prompt_button, COMPACT_BUTTON_HEIGHT)
         self.prompt_button.clicked.connect(self._open_cleaner_prompt_dialog)
         action_row.addWidget(self.prompt_button, 1)
@@ -772,24 +750,16 @@ class TmManagerPage(QWidget):
         return frame
 
     def _refresh_stats(self) -> None:
-        _clear_layout(self.stats_grid)
+        _clear_layout(self.stats_layout)
         stats = tm_manager.get_stats(self.lang_pair)
         items = [
             ("总词条", f"{stats['total']:,}"),
-            ("自动入库", f"{stats['auto']:,}"),
-            ("手动录入", f"{stats['manual']:,}"),
             ("已固定", f"{stats['pinned']:,}"),
+            ("手动", f"{stats['manual']:,}"),
+            ("自动", f"{stats['auto']:,}"),
         ]
-        for index, (label, value) in enumerate(items):
-            tile = QFrame()
-            tile.setObjectName("KpiTile")
-            tile_layout = QHBoxLayout(tile)
-            tile_layout.setContentsMargins(8, 4, 8, 4)
-            tile_layout.setSpacing(8)
-            tile_layout.addWidget(_label(label, "PillLabel"))
-            tile_layout.addStretch(1)
-            tile_layout.addWidget(_label(value, "PillValue"))
-            self.stats_grid.addWidget(tile, index // 2, index % 2)
+        for label, value in items:
+            self.stats_layout.addWidget(_metric_pair(label, value), 1)
 
     def _refresh_cleaner_controls(self) -> None:
         running = self.phase == "cleaning"
@@ -797,8 +767,6 @@ class TmManagerPage(QWidget):
         for widget in (
             self.auto_pin_check,
             self.clean_mode_combo,
-            self.clean_engine_combo,
-            self.clean_model_input,
             self.prompt_button,
         ):
             widget.setEnabled(not locked)
@@ -809,7 +777,24 @@ class TmManagerPage(QWidget):
         self.clean_button.setObjectName("DangerButton" if running else "PrimaryButton")
         self.clean_button.style().unpolish(self.clean_button)
         self.clean_button.style().polish(self.clean_button)
+        self._refresh_clean_summary()
         self._sync_clean_progress_panel()
+
+    def _refresh_clean_summary(self) -> None:
+        _clear_layout(self.clean_summary_layout)
+        state = {
+            "idle": "未开始",
+            "cleaning": "清洗中",
+            "review": "待确认",
+        }.get(self.phase, "未开始")
+        pending = len(self.clean_suggestions) if self.phase == "review" else 0
+        items = [
+            ("状态", state),
+            ("待确认", f"{pending:,}"),
+            ("冲突", "0"),
+        ]
+        for label, value in items:
+            self.clean_summary_layout.addWidget(_metric_pair(label, value), 1)
 
     def _sync_clean_progress_panel(self) -> None:
         running = self.phase == "cleaning"
@@ -1464,6 +1449,11 @@ class TmManagerPage(QWidget):
         stats = tm_manager.get_stats(self.lang_pair)
         if stats["unpinned"] <= 0:
             QMessageBox.information(self, APP_NAME, "当前语言对没有可清洗的未固定词条。")
+            return
+        try:
+            resolve_effective_model_config(self.settings, ROLE_CLEANER)
+        except LocalModelFollowNotAllowedError as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
             return
         self._on_cleaner_settings_changed()
         self._clear_clean_notice()

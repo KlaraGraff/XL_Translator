@@ -85,10 +85,7 @@ def render_translation_result(
     if issue_rows:
         _add_issue_table(layout, issue_rows)
 
-    show_detail = any(
-        str(result.get("error") or result.get("detail") or "").strip()
-        for result in done.file_results
-    )
+    show_detail = any(str(result.get("error") or "").strip() for result in done.file_results)
     file_table = QTableWidget(len(done.file_results), 3 if show_detail else 2)
     file_table.setHorizontalHeaderLabels(
         ["文件名", "状态", "错误原因"] if show_detail else ["文件名", "状态"]
@@ -113,7 +110,7 @@ def render_translation_result(
             file_table.setItem(
                 row,
                 2,
-                create_elide_table_item(result.get("error") or result.get("detail") or ""),
+                create_elide_table_item(result.get("error") or ""),
             )
     layout.addWidget(file_table, 1)
 
@@ -168,9 +165,7 @@ def _add_issue_table(layout: QVBoxLayout, issue_rows: list[ResultIssueRow]) -> N
             0,
             create_table_item(issue.issue_type, alignment=Qt.AlignmentFlag.AlignCenter),
         )
-        table.setItem(row, 1, create_table_item(issue.file_name))
         table.setCellWidget(row, 1, _table_elide_label(issue.file_name))
-        table.setItem(row, 2, create_table_item(issue.position))
         table.setCellWidget(row, 2, _table_elide_label(issue.position))
         for col, value in ((3, issue.problem), (4, issue.status)):
             item = create_table_item(

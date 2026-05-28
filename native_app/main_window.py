@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,19 +26,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_meta import APP_NAME, APP_VERSION_LABEL
+from app_meta import APP_NAME, APP_VERSION, APP_VERSION_LABEL
 from config import (
     CHUNK_CLOUD_MAX,
     CHUNK_CLOUD_MIN,
     CHUNK_LOCAL_MAX,
     CHUNK_LOCAL_MIN,
     CLOUD_ENGINES,
+    DISABLED_BASE_URL_PLACEHOLDER,
     DOMAIN_PRESETS,
     IMAGE_GENERATION_MODEL_PROVIDERS,
-    OLLAMA_RECOMMENDED_MODELS,
+    LOCAL_MODEL_PROVIDERS,
+    LM_STUDIO_BASE_URL,
+    OLLAMA_BASE_URL,
     VISION_TEXT_MODEL_PROVIDERS,
+    cloud_provider_base_url_default,
+    cloud_provider_uses_base_url,
     get_concurrency_bounds,
     is_valid_concurrency_unlock_code,
+    normalize_cloud_base_url,
 )
 from core.connectivity_check import check_connectivity
 from core.image_generation import check_image_generation_connectivity
@@ -49,6 +57,7 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     SOURCE_INDEPENDENT,
     ChainedModelFollowError,
+    LocalModelFollowNotAllowedError,
     allowed_source_roles,
     get_role_settings,
     provider_supports_capability,
@@ -57,11 +66,17 @@ from core.model_roles import (
     settings_for_text_role,
 )
 from core.pdf_review import check_pdf_review_connectivity
-from core.update_checker import check_for_updates
+from core.update_checker import (
+    UpdateCheckResult,
+    is_major_upgrade,
+    major_version,
+)
 from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.tm_manager import TmManagerPage
 from native_app.pages.word_translate import WordTranslatePage
+from native_app.task_queue_controller import NativeTranslationQueueController
+from native_app.task_queue_view import clear_layout
 from native_app.widgets import (
     build_app_tooltip_html,
     create_centered_option_combo,
@@ -71,12 +86,34 @@ from native_app.widgets import (
     refresh_combo_completer,
     select_combo_text_match,
 )
-from settings import AppSettings, get_key, save_key, save_settings
+from native_app.workers import UpdateCheckWorker
+from settings import (
+    AppSettings,
+    get_cloud_provider_config,
+    get_key,
+    save_key,
+    save_settings,
+    select_cloud_provider_config,
+    set_cloud_provider_config,
+)
 
 
 def _section_title(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("SectionTitle")
+    return label
+
+
+def _snapshot_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("MutedText")
+    return label
+
+
+def _readonly_snapshot_value(text: str) -> QLabel:
+    label = QLabel(str(text or ""))
+    label.setWordWrap(True)
+    label.setObjectName("ReadonlyField")
     return label
 
 
@@ -116,6 +153,97 @@ def _cloud_provider_value(label: str) -> str:
     return CLOUD_ENGINES.get(label, next(iter(CLOUD_ENGINES.values())))
 
 
+RELEASE_NOTES_MAX_CHARS = 1200
+
+
+def _release_notes_preview(notes: str) -> str:
+    value = str(notes or "").strip()
+    if not value:
+        return "本次发布未填写更新说明。"
+    if len(value) <= RELEASE_NOTES_MAX_CHARS:
+        return value
+    return f"{value[:RELEASE_NOTES_MAX_CHARS].rstrip()}\n\n内容较长，完整说明请查看发布页。"
+
+
+def _local_provider_label(provider: str) -> str:
+    for label, value in LOCAL_MODEL_PROVIDERS.items():
+        if value == provider:
+            return label
+    return next(iter(LOCAL_MODEL_PROVIDERS.keys()))
+
+
+def _local_provider_value(label: str) -> str:
+    return LOCAL_MODEL_PROVIDERS.get(label, next(iter(LOCAL_MODEL_PROVIDERS.values())))
+
+
+def _local_provider_default_base_url(provider: str) -> str:
+    if provider == "ollama":
+        return OLLAMA_BASE_URL
+    if provider == "lm_studio":
+        return LM_STUDIO_BASE_URL
+    return ""
+
+
+def _flow_step(title: str, detail: str) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("RecoveryCard")
+    frame.setFixedWidth(128)
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(8, 7, 8, 7)
+    layout.setSpacing(2)
+
+    title_label = QLabel(title)
+    title_label.setObjectName("FieldHint")
+    title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    title_label.setWordWrap(True)
+    layout.addWidget(title_label)
+
+    detail_label = QLabel(detail)
+    detail_label.setObjectName("SectionTitle")
+    detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    detail_label.setWordWrap(True)
+    layout.addWidget(detail_label)
+    return frame
+
+
+def _show_local_follow_warning(parent: QWidget, message: str) -> None:
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(APP_NAME)
+    dialog.setModal(True)
+    dialog.setMinimumWidth(520)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 16, 18, 14)
+    layout.setSpacing(12)
+
+    title = _section_title("跟随来源不可用")
+    layout.addWidget(title)
+
+    text = QLabel(str(message or "").strip())
+    text.setWordWrap(True)
+    text.setObjectName("FieldHint")
+    layout.addWidget(text)
+
+    flow = QHBoxLayout()
+    flow.setSpacing(8)
+    flow.addWidget(_flow_step("翻译模型", "本地模型"))
+    for label in ("跟随", "改为"):
+        arrow = QLabel(f"{label}\n→")
+        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow.setObjectName("FieldHint")
+        arrow.setFixedWidth(34)
+        flow.addWidget(arrow)
+        if label == "跟随":
+            flow.addWidget(_flow_step("当前用途", "需要云端能力"))
+    flow.addWidget(_flow_step("处理方式", "独立云端配置"))
+    layout.addLayout(flow)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+    buttons.accepted.connect(dialog.accept)
+    layout.addWidget(buttons)
+    dialog.exec()
+
+
 BRAND_TOOLTIP = {
     "title": APP_NAME,
     "summary": (
@@ -125,7 +253,7 @@ BRAND_TOOLTIP = {
     "items": [
         "Excel 翻译页用于扫描表格文件、执行批量翻译和查看结果。",
         "Word 翻译页用于扫描 DOCX 文件并生成双语 Word。",
-        "PDF 翻译页用于执行版式图像翻译并生成可审阅输出包。",
+        "PDF/图片翻译页用于执行版式图像翻译并生成可审阅输出包。",
         "记忆库管理页用于搜索、新增、固定和清理共享词条。",
     ],
 }
@@ -155,7 +283,7 @@ ENGINE_TOOLTIP = {
     "title": "模型配置",
     "summary": "按模型用途切换翻译、深度清洗和图像生成配置。",
     "items": [
-        "翻译模型可使用云端 API 或本地 Ollama。",
+        "翻译模型可使用云端 API 或本地模型。",
         "深度清洗模型和图像生成模型使用云端配置，可跟随上游模型的服务商凭据。",
         "获取模型和测试连接始终作用于当前选中的模型用途。",
     ],
@@ -169,16 +297,6 @@ CLOUD_SETTINGS_TOOLTIP = {
         "API Key 用于身份认证。",
         "Base URL 主要用于兼容接口或自定义网关。",
         "模型名称决定本次实际调用的云端模型。",
-    ],
-}
-
-OLLAMA_TOOLTIP = {
-    "title": "Ollama 模型",
-    "summary": "本地模型运行在当前设备上，适合对数据不出本机有要求的翻译任务。",
-    "items": [
-        "推荐列表适合快速选择常用模型，也可以手动填写本机已安装的其他模型名。",
-        "模型越大，通常效果更好，但也会占用更多本机资源。",
-        "只要使用本地引擎，翻译内容就不会发送到外部云端服务。",
     ],
 }
 
@@ -198,6 +316,10 @@ class Sidebar(QFrame):
 
     navigateRequested = Signal(str)
     settingsChanged = Signal()
+    updateCheckRequested = Signal()
+    globalUpdateIgnoreToggled = Signal()
+    currentUpdateIgnored = Signal()
+    updatePromptRequested = Signal()
 
     def __init__(self, settings: AppSettings):
         super().__init__()
@@ -208,11 +330,15 @@ class Sidebar(QFrame):
         self._model_catalog_signature = ""
         self._model_catalog_models: list[str] = []
         self._updating_prompt_edit = False
+        self._update_notice_result: UpdateCheckResult | None = None
+        self._task_snapshot_active = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(14)
 
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(8)
         brand = QLabel(APP_NAME)
         brand.setObjectName("BrandTitle")
         _set_tooltip(
@@ -221,9 +347,22 @@ class Sidebar(QFrame):
             BRAND_TOOLTIP["summary"],
             BRAND_TOOLTIP["items"],
         )
+        brand_row.addWidget(brand, 1)
+        self.update_notice_button = QPushButton("更新")
+        self.update_notice_button.setObjectName("UpdateNoticeButton")
+        self.update_notice_button.setProperty("compact", True)
+        self.update_notice_button.clicked.connect(self.updatePromptRequested.emit)
+        self.update_notice_button.hide()
+        brand_row.addWidget(self.update_notice_button)
+        self.ignore_notice_button = QPushButton("忽略")
+        self.ignore_notice_button.setObjectName("UpdateNoticeButton")
+        self.ignore_notice_button.setProperty("compact", True)
+        self.ignore_notice_button.clicked.connect(self.currentUpdateIgnored.emit)
+        self.ignore_notice_button.hide()
+        brand_row.addWidget(self.ignore_notice_button)
         version = QLabel(f"by OA | {APP_VERSION_LABEL}")
         version.setObjectName("BrandMeta")
-        root.addWidget(brand)
+        root.addLayout(brand_row)
         root.addWidget(version)
 
         self._nav_group = QButtonGroup(self)
@@ -231,7 +370,7 @@ class Sidebar(QFrame):
         nav_items = [
             ("excel_translate", "Excel 翻译"),
             ("word_translate", "Word 翻译"),
-            ("pdf_translate", "PDF 翻译"),
+            ("pdf_translate", "PDF/图片翻译"),
             ("tm", "记忆库管理"),
         ]
         for index, (page, title) in enumerate(nav_items):
@@ -267,9 +406,62 @@ class Sidebar(QFrame):
         self._build_domain_section()
         self._build_engine_section()
         self._build_tuning_section()
+        self._build_update_footer()
         self._refresh_source_role_options()
         self._sync_model_role_fields()
         self._sync_engine_visibility()
+        self.sync_update_ignore_button()
+        self._form.addStretch(1)
+
+    def show_task_snapshot(self, task) -> None:
+        self._task_snapshot_active = True
+        clear_layout(self._form)
+        snapshot = task.snapshot
+
+        frame, layout = self._build_card()
+        title_row = QHBoxLayout()
+        title_row.addWidget(_section_title("任务配置快照"))
+        title_row.addStretch(1)
+        badge = QLabel("只读")
+        badge.setObjectName("MutedText")
+        title_row.addWidget(badge)
+        layout.addLayout(title_row)
+        layout.addWidget(_snapshot_label("选中任务"))
+        layout.addWidget(QLabel(snapshot.title))
+        layout.addWidget(_snapshot_label("安排时间"))
+        layout.addWidget(QLabel(task.arranged_at.strftime("%H:%M")))
+        layout.addWidget(_snapshot_label("专业领域"))
+        layout.addWidget(_readonly_snapshot_value(snapshot.domain or ""))
+        layout.addWidget(_snapshot_label("Prompt"))
+        layout.addWidget(_readonly_snapshot_value(snapshot.prompt_summary or ""))
+
+        frame, layout = self._build_card()
+        layout.addWidget(_section_title("模型配置快照"))
+        layout.addWidget(_snapshot_label("模型角色"))
+        layout.addWidget(_readonly_snapshot_value(snapshot.model_role or ""))
+        layout.addWidget(_snapshot_label("服务商"))
+        layout.addWidget(_readonly_snapshot_value(snapshot.provider or ""))
+        layout.addWidget(_snapshot_label("模型"))
+        layout.addWidget(_readonly_snapshot_value(snapshot.model or ""))
+        if snapshot.api_key_fingerprint:
+            layout.addWidget(_snapshot_label("API Key"))
+            layout.addWidget(_readonly_snapshot_value(snapshot.api_key_fingerprint))
+
+        self._form.addStretch(1)
+
+    def clear_task_snapshot(self) -> None:
+        if not self._task_snapshot_active:
+            return
+        self._task_snapshot_active = False
+        clear_layout(self._form)
+        self._build_domain_section()
+        self._build_engine_section()
+        self._build_tuning_section()
+        self._build_update_footer()
+        self._refresh_source_role_options()
+        self._sync_model_role_fields()
+        self._sync_engine_visibility()
+        self.sync_update_ignore_button()
         self._form.addStretch(1)
 
     def set_active_page(self, page: str) -> None:
@@ -292,6 +484,62 @@ class Sidebar(QFrame):
         layout.setSpacing(10)
         self._form.addWidget(frame)
         return frame, layout
+
+    def _build_update_footer(self) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.update_check_button = QPushButton("检查更新")
+        self.update_check_button.clicked.connect(self.updateCheckRequested.emit)
+        _set_tooltip(
+            self.update_check_button,
+            "检查更新",
+            "检查 GitHub 发布页是否存在新版安装包。",
+        )
+        row.addWidget(self.update_check_button, 1)
+
+        self.update_ignore_button = QPushButton("忽略更新")
+        self.update_ignore_button.clicked.connect(self.globalUpdateIgnoreToggled.emit)
+        row.addWidget(self.update_ignore_button, 1)
+        self._form.addLayout(row)
+
+    def _refresh_widget_style(self, widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
+
+    def sync_update_ignore_button(self) -> None:
+        ignored = self.settings.update.ignore_updates
+        self.update_ignore_button.setText("已忽略更新" if ignored else "忽略更新")
+        self.update_ignore_button.setProperty("updateIgnored", ignored)
+        _set_tooltip(
+            self.update_ignore_button,
+            "已忽略更新" if ignored else "忽略更新",
+            "当前已忽略常规更新；点击恢复更新提醒。"
+            if ignored
+            else "忽略常规更新提醒；大版本首次发现时仍会显示更新内容。",
+        )
+        self._refresh_widget_style(self.update_ignore_button)
+
+    def set_update_checking(self, checking: bool) -> None:
+        self.update_check_button.setEnabled(not checking)
+        self.update_check_button.setText("检查中..." if checking else "检查更新")
+
+    def set_update_notice(self, result: UpdateCheckResult | None) -> None:
+        self._update_notice_result = result
+        visible = result is not None and result.has_update
+        if result is not None:
+            _set_tooltip(
+                self.update_notice_button,
+                "更新",
+                f"发现新版 V{result.latest_version}，点击查看更新内容。",
+            )
+            _set_tooltip(
+                self.ignore_notice_button,
+                "忽略",
+                f"忽略当前版本 V{result.latest_version} 的提醒。",
+            )
+        self.update_notice_button.setVisible(visible)
+        self.ignore_notice_button.setVisible(visible)
 
     def _persist(self) -> None:
         save_settings(self.settings)
@@ -404,7 +652,7 @@ class Sidebar(QFrame):
 
         self.mode_combo = create_option_combo()
         self.mode_combo.addItem("云端 API", "cloud")
-        self.mode_combo.addItem("本地 Ollama", "local")
+        self.mode_combo.addItem("本地模型", "local")
         self.mode_combo.setCurrentIndex(0 if self.settings.engine.mode == "cloud" else 1)
         _set_tooltip(
             self.mode_combo,
@@ -415,14 +663,13 @@ class Sidebar(QFrame):
         self.mode_combo.currentIndexChanged.connect(self._on_engine_mode_changed)
         layout.addWidget(self.mode_combo)
 
-        layout.addWidget(
-            _field_label(
-                "服务商",
-                "服务商",
-                "切换当前接入渠道，决定 API Key、Base URL 和模型名称的实际用法。",
-                CLOUD_SETTINGS_TOOLTIP["items"],
-            )
+        self.provider_label = _field_label(
+            "服务商",
+            "服务商",
+            "切换当前接入渠道，决定 Base URL、模型名称和认证方式。",
+            CLOUD_SETTINGS_TOOLTIP["items"],
         )
+        layout.addWidget(self.provider_label)
         self.provider_combo = create_option_combo()
         self.provider_combo.addItems(list(CLOUD_ENGINES.keys()))
         self.provider_combo.setCurrentText(
@@ -431,14 +678,13 @@ class Sidebar(QFrame):
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
         layout.addWidget(self.provider_combo)
 
-        layout.addWidget(
-            _field_label(
-                "API Key",
-                "API Key",
-                "用于当前云端服务商的身份认证。",
-                ["密钥会保存到本机 keys.json，不显示明文。"],
-            )
+        self.api_key_label = _field_label(
+            "API Key",
+            "API Key",
+            "用于当前云端服务商的身份认证。",
+            ["密钥会保存到本机 keys.json，不显示明文。"],
         )
+        layout.addWidget(self.api_key_label)
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_input.setText(get_key(self.settings.engine.cloud_provider))
@@ -451,13 +697,12 @@ class Sidebar(QFrame):
         self.api_key_input.editingFinished.connect(self._on_api_key_changed)
         layout.addWidget(self.api_key_input)
 
-        layout.addWidget(
-            _field_label(
-                "Base URL",
-                "Base URL",
-                "云端接口地址，主要用于 OpenAI 兼容接口或自定义网关。",
-            )
+        self.base_url_label = _field_label(
+            "Base URL",
+            "Base URL",
+            "接口基础地址。云端兼容接口和本地兼容服务都可以在这里设置。",
         )
+        layout.addWidget(self.base_url_label)
         self.base_url_input = QLineEdit(self.settings.engine.cloud_base_url)
         _set_tooltip(
             self.base_url_input,
@@ -471,18 +716,17 @@ class Sidebar(QFrame):
         self.base_url_input.editingFinished.connect(self._on_base_url_changed)
         layout.addWidget(self.base_url_input)
 
-        layout.addWidget(
-            _field_label(
-                "模型名称",
-                "模型名称",
-                "决定本次实际调用的云端模型。",
-                [
-                    "可手动输入模型名，也可点击“获取模型”后从列表选择。",
-                    "输入部分模型名后按回车，会优先匹配已加载列表中的模型。",
-                    "只要 API Key、Base URL 和服务商不变，已获取列表会保留在下拉框中。",
-                ],
-            )
+        self.model_label = _field_label(
+            "模型名称",
+            "模型名称",
+            "决定本次实际调用的模型。",
+            [
+                "可手动输入模型名，也可点击“获取模型”后从列表选择。",
+                "输入部分模型名后按回车，会优先匹配已加载列表中的模型。",
+                "只要服务商、API Key、Base URL 不变，已获取列表会保留在下拉框中。",
+            ],
         )
+        layout.addWidget(self.model_label)
         self.model_combo = create_editable_combo()
         self.model_combo.addItem(self.settings.engine.cloud_model)
         self.model_combo.setCurrentText(self.settings.engine.cloud_model)
@@ -529,32 +773,6 @@ class Sidebar(QFrame):
 
         self._build_pdf_review_model_section(layout)
 
-        layout.addWidget(
-            _field_label(
-                "Ollama 模型",
-                OLLAMA_TOOLTIP["title"],
-                OLLAMA_TOOLTIP["summary"],
-                OLLAMA_TOOLTIP["items"],
-            )
-        )
-        self.ollama_combo = create_editable_combo()
-        self.ollama_combo.addItems(OLLAMA_RECOMMENDED_MODELS)
-        self.ollama_combo.setCurrentText(self.settings.engine.ollama_model)
-        refresh_combo_completer(self.ollama_combo)
-        _set_tooltip(
-            self.ollama_combo,
-            OLLAMA_TOOLTIP["title"],
-            OLLAMA_TOOLTIP["summary"],
-            OLLAMA_TOOLTIP["items"],
-        )
-        self.ollama_combo.currentTextChanged.connect(self._on_ollama_changed)
-        layout.addWidget(self.ollama_combo)
-
-        update_button = QPushButton("检查更新")
-        _set_tooltip(update_button, "检查更新", "检查 GitHub 发布页是否存在新版安装包。")
-        update_button.clicked.connect(self._check_updates)
-        layout.addWidget(update_button)
-
     def _build_pdf_review_model_section(self, parent_layout: QVBoxLayout) -> None:
         self.pdf_review_frame = QFrame()
         self.pdf_review_frame.setObjectName("RecoveryCard")
@@ -579,7 +797,7 @@ class Sidebar(QFrame):
             _field_label(
                 "配置来源",
                 "配置来源",
-                "审核模型可独立配置，也可跟随翻译模型的服务商、API Key 与 Base URL。",
+                "审核模型可独立配置，也可跟随翻译模型或 PDF 图像翻译模型的服务商、API Key 与 Base URL。",
                 ["模型名称仍可单独填写。"],
             )
         )
@@ -704,7 +922,97 @@ class Sidebar(QFrame):
         role_settings = self._role_settings()
         return bool(role_settings and role_settings.source_role != SOURCE_INDEPENDENT)
 
+    def _provider_owner_for_role(self, role: str):
+        if role == ROLE_TRANSLATION:
+            return self.settings.engine
+        return get_role_settings(self.settings, role)
+
+    def _normalized_base_url_input(
+        self,
+        provider: str,
+        raw_value: str,
+        previous_value: str,
+    ) -> str:
+        if not cloud_provider_uses_base_url(provider):
+            return ""
+        value = str(raw_value or "").strip()
+        if value:
+            return normalize_cloud_base_url(provider, value)
+        default_url = cloud_provider_base_url_default(provider)
+        if default_url:
+            return default_url
+        return str(previous_value or "").strip()
+
+    def _set_base_url_field(self, field: QLineEdit, provider: str, value: str) -> None:
+        if cloud_provider_uses_base_url(provider):
+            field.setPlaceholderText(
+                cloud_provider_base_url_default(provider) or "https://.../v1"
+            )
+            field.setText(str(value or ""))
+        else:
+            field.setText("")
+            field.setPlaceholderText(DISABLED_BASE_URL_PLACEHOLDER)
+
+    def _save_model_role_fields(self, role: str) -> None:
+        if not hasattr(self, "model_combo"):
+            return
+        model = self.model_combo.currentText().strip()
+        if role == ROLE_TRANSLATION and self.settings.engine.mode == "local":
+            self.settings.engine.local_model = model
+            if self.settings.engine.local_provider == "ollama":
+                self.settings.engine.ollama_model = model
+            if hasattr(self, "base_url_input"):
+                self.settings.engine.local_base_url = self.base_url_input.text().strip()
+            return
+
+        owner = self._provider_owner_for_role(role)
+        if owner is None:
+            return
+        if role != ROLE_TRANSLATION and owner.source_role != SOURCE_INDEPENDENT:
+            owner.cloud_model = model
+            return
+
+        provider = str(owner.cloud_provider or "").strip()
+        previous = get_cloud_provider_config(owner, provider)
+        base_url = self._normalized_base_url_input(
+            provider,
+            self.base_url_input.text() if hasattr(self, "base_url_input") else "",
+            previous.cloud_base_url,
+        )
+        set_cloud_provider_config(
+            owner,
+            provider,
+            cloud_model=model,
+            cloud_base_url=base_url,
+        )
+
+    def _save_current_model_role_fields(self) -> None:
+        self._save_model_role_fields(self._current_model_role)
+
+    def _save_review_model_fields(self) -> None:
+        if not hasattr(self, "review_model_combo"):
+            return
+        role_settings = self.settings.pdf_review_model_role
+        model = self.review_model_combo.currentText().strip()
+        if role_settings.source_role != SOURCE_INDEPENDENT:
+            role_settings.cloud_model = model
+            return
+        provider = str(role_settings.cloud_provider or "").strip()
+        previous = get_cloud_provider_config(role_settings, provider)
+        base_url = self._normalized_base_url_input(
+            provider,
+            self.review_base_url_input.text(),
+            previous.cloud_base_url,
+        )
+        set_cloud_provider_config(
+            role_settings,
+            provider,
+            cloud_model=model,
+            cloud_base_url=base_url,
+        )
+
     def _on_model_role_changed(self) -> None:
+        self._save_current_model_role_fields()
         self._current_model_role = self._current_role()
         self._refresh_source_role_options()
         self._sync_model_role_fields()
@@ -729,6 +1037,7 @@ class Sidebar(QFrame):
         role_settings = self._role_settings()
         if role_settings is None:
             return
+        self._save_current_model_role_fields()
         previous = role_settings.source_role
         selected = str(self.source_role_combo.currentData() or SOURCE_INDEPENDENT)
         role_settings.source_role = selected
@@ -737,6 +1046,9 @@ class Sidebar(QFrame):
         except ChainedModelFollowError as exc:
             role_settings.source_role = previous
             QMessageBox.warning(self, APP_NAME, str(exc))
+        except LocalModelFollowNotAllowedError as exc:
+            role_settings.source_role = previous
+            _show_local_follow_warning(self, str(exc))
         self._refresh_source_role_options()
         self._sync_model_role_fields()
         self._sync_engine_visibility()
@@ -744,6 +1056,7 @@ class Sidebar(QFrame):
 
     def _on_review_source_role_changed(self) -> None:
         role_settings = self.settings.pdf_review_model_role
+        self._save_review_model_fields()
         previous = role_settings.source_role
         selected = str(self.review_source_role_combo.currentData() or SOURCE_INDEPENDENT)
         role_settings.source_role = selected
@@ -752,6 +1065,9 @@ class Sidebar(QFrame):
         except ChainedModelFollowError as exc:
             role_settings.source_role = previous
             QMessageBox.warning(self, APP_NAME, str(exc))
+        except LocalModelFollowNotAllowedError as exc:
+            role_settings.source_role = previous
+            _show_local_follow_warning(self, str(exc))
         self._sync_review_model_fields()
         self._persist()
 
@@ -759,11 +1075,14 @@ class Sidebar(QFrame):
         role_settings = self.settings.pdf_review_model_role
         if role_settings.source_role != SOURCE_INDEPENDENT:
             return
-        role_settings.cloud_provider = VISION_TEXT_MODEL_PROVIDERS.get(
+        self._save_review_model_fields()
+        provider = VISION_TEXT_MODEL_PROVIDERS.get(
             label,
             role_settings.cloud_provider,
         )
+        select_cloud_provider_config(role_settings, provider)
         self.review_api_key_input.setText(get_key(role_settings.cloud_provider))
+        self._sync_review_model_fields()
         self._refresh_review_role_status()
         self._persist()
 
@@ -775,18 +1094,40 @@ class Sidebar(QFrame):
     def _on_review_base_url_changed(self) -> None:
         role_settings = self.settings.pdf_review_model_role
         if role_settings.source_role == SOURCE_INDEPENDENT:
-            role_settings.cloud_base_url = self.review_base_url_input.text().strip()
+            provider = str(role_settings.cloud_provider or "").strip()
+            previous = get_cloud_provider_config(role_settings, provider)
+            base_url = self._normalized_base_url_input(
+                provider,
+                self.review_base_url_input.text(),
+                previous.cloud_base_url,
+            )
+            set_cloud_provider_config(
+                role_settings,
+                provider,
+                cloud_base_url=base_url,
+            )
+            self.review_base_url_input.setText(base_url)
         self._refresh_review_role_status()
         self._persist()
 
     def _on_review_model_changed(self) -> None:
-        self.settings.pdf_review_model_role.cloud_model = self.review_model_combo.currentText().strip()
+        role_settings = self.settings.pdf_review_model_role
+        model = self.review_model_combo.currentText().strip()
+        if role_settings.source_role == SOURCE_INDEPENDENT:
+            set_cloud_provider_config(
+                role_settings,
+                role_settings.cloud_provider,
+                cloud_model=model,
+            )
+        else:
+            role_settings.cloud_model = model
         self._refresh_review_role_status()
         self._persist()
 
     def _sync_model_role_fields(self) -> None:
         role = self._current_role()
         previous_signature = self._current_model_catalog_signature()
+        local_follow_error = ""
         try:
             config = resolve_effective_model_config(self.settings, role)
         except ChainedModelFollowError:
@@ -794,6 +1135,16 @@ class Sidebar(QFrame):
             if role_settings is not None:
                 role_settings.source_role = SOURCE_INDEPENDENT
             config = resolve_effective_model_config(self.settings, role)
+        except LocalModelFollowNotAllowedError as exc:
+            local_follow_error = str(exc)
+            role_settings = self._role_settings()
+            if role_settings is not None:
+                previous_source = role_settings.source_role
+                role_settings.source_role = SOURCE_INDEPENDENT
+                config = resolve_effective_model_config(self.settings, role)
+                role_settings.source_role = previous_source
+            else:
+                config = resolve_effective_model_config(self.settings, ROLE_TRANSLATION)
 
         self._reload_provider_options(config.provider)
         self.pdf_image_generation_hint.setVisible(role == ROLE_IMAGE)
@@ -803,24 +1154,37 @@ class Sidebar(QFrame):
         self.mode_combo.setCurrentIndex(0 if self.settings.engine.mode == "cloud" else 1)
         self.mode_combo.blockSignals(False)
         self.provider_combo.blockSignals(True)
-        self.provider_combo.setCurrentText(_cloud_provider_label(config.provider))
+        provider_label = (
+            _local_provider_label(config.provider)
+            if config.mode == "local"
+            else _cloud_provider_label(config.provider)
+        )
+        self.provider_combo.setCurrentText(provider_label)
         self.provider_combo.blockSignals(False)
-        self.api_key_input.setText(get_key(config.provider))
-        self.base_url_input.setText(config.base_url)
-        self._set_model_combo_items([config.model])
+        self.api_key_input.setText("" if config.mode == "local" else get_key(config.provider))
+        self._set_base_url_field(self.base_url_input, config.provider, config.base_url)
+        self._set_model_combo_items([config.model], include_current=False, current_text=config.model)
         self._clear_model_catalog_if_signature_changed(previous_signature)
         self._refresh_role_status()
+        if local_follow_error:
+            self.model_catalog_status.setText(local_follow_error)
         self._sync_review_model_fields()
 
     def _reload_provider_options(self, provider: str) -> None:
         role = self._current_role()
         follows = self._is_following_current_role()
         provider_items = (
-            IMAGE_GENERATION_MODEL_PROVIDERS
+            LOCAL_MODEL_PROVIDERS
+            if role == ROLE_TRANSLATION and self.settings.engine.mode == "local"
+            else IMAGE_GENERATION_MODEL_PROVIDERS
             if role == ROLE_IMAGE and not follows
             else CLOUD_ENGINES
         )
-        current_label = _cloud_provider_label(provider)
+        current_label = (
+            _local_provider_label(provider)
+            if role == ROLE_TRANSLATION and self.settings.engine.mode == "local"
+            else _cloud_provider_label(provider)
+        )
         self.provider_combo.blockSignals(True)
         self.provider_combo.clear()
         self.provider_combo.addItems(list(provider_items.keys()))
@@ -860,14 +1224,20 @@ class Sidebar(QFrame):
         self.review_provider_combo.blockSignals(False)
 
         self.review_api_key_input.setText(get_key(provider))
-        self.review_base_url_input.setText(config.base_url if config is not None else role_settings.cloud_base_url)
+        review_base_url = config.base_url if config is not None else role_settings.cloud_base_url
+        self._set_base_url_field(self.review_base_url_input, provider, review_base_url)
         self._set_review_model_combo_items([
             config.model if config is not None else role_settings.cloud_model
-        ])
+        ], current_text=config.model if config is not None else role_settings.cloud_model)
         self._refresh_review_role_status()
         self._sync_review_model_visibility()
 
-    def _set_review_model_combo_items(self, models: list[str]) -> None:
+    def _set_review_model_combo_items(
+        self,
+        models: list[str],
+        *,
+        current_text: str | None = None,
+    ) -> None:
         try:
             fallback_model = resolve_effective_model_config(
                 self.settings,
@@ -875,7 +1245,11 @@ class Sidebar(QFrame):
             ).model
         except Exception:
             fallback_model = self.settings.pdf_review_model_role.cloud_model
-        current = self.review_model_combo.currentText().strip() or fallback_model
+        current = (
+            str(current_text or "").strip()
+            if current_text is not None
+            else self.review_model_combo.currentText().strip() or fallback_model
+        )
         options: list[str] = []
         for model in [current, *models]:
             value = str(model or "").strip()
@@ -895,12 +1269,17 @@ class Sidebar(QFrame):
             return
         follows = self.settings.pdf_review_model_role.source_role != SOURCE_INDEPENDENT
         access_editable = not follows
+        try:
+            config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+            base_url_editable = cloud_provider_uses_base_url(config.provider)
+        except Exception:
+            base_url_editable = True
         for widget in (
             self.review_provider_combo,
             self.review_api_key_input,
-            self.review_base_url_input,
         ):
             widget.setEnabled(access_editable)
+        self.review_base_url_input.setEnabled(access_editable and base_url_editable)
         self.review_model_combo.setEnabled(True)
 
     def _refresh_review_role_status(self) -> None:
@@ -940,6 +1319,11 @@ class Sidebar(QFrame):
         except Exception as exc:  # noqa: BLE001 - status only.
             self.model_catalog_status.setText(str(exc))
             return
+        if config.mode == "local":
+            self.model_catalog_status.setText(
+                "当前翻译模型使用本地模型；可点击“获取模型”读取本机服务模型列表。"
+            )
+            return
         if config.role == ROLE_IMAGE:
             status = self.settings.image_model_role.availability_status
             message = self.settings.image_model_role.availability_message
@@ -960,23 +1344,48 @@ class Sidebar(QFrame):
             self.model_catalog_status.setText(
                 f"当前{config.label}正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
             )
+            return
+        self.model_catalog_status.setText("")
 
     def _on_engine_mode_changed(self) -> None:
         if self._current_role() != ROLE_TRANSLATION:
             return
+        self._save_current_model_role_fields()
         self.settings.engine.mode = self.mode_combo.currentData()
+        if self.settings.engine.mode == "local" and not self.settings.engine.local_base_url:
+            self.settings.engine.local_base_url = _local_provider_default_base_url(
+                self.settings.engine.local_provider,
+            )
+        self._sync_model_role_fields()
         self._sync_engine_visibility()
         self._persist()
 
     def _on_provider_changed(self, label: str) -> None:
         previous_signature = self._current_model_catalog_signature()
-        provider = _cloud_provider_value(label)
+        self._save_current_model_role_fields()
+        local_translation = (
+            self._current_role() == ROLE_TRANSLATION
+            and self.settings.engine.mode == "local"
+        )
+        provider = (
+            _local_provider_value(label)
+            if local_translation
+            else _cloud_provider_value(label)
+        )
         role_settings = self._role_settings()
-        if self._current_role() == ROLE_TRANSLATION:
-            self.settings.engine.cloud_provider = provider
+        if local_translation:
+            self.settings.engine.local_provider = provider
+            self.settings.engine.local_base_url = _local_provider_default_base_url(provider)
+            self.base_url_input.setText(self.settings.engine.local_base_url)
+            self.api_key_input.setText("")
+        elif self._current_role() == ROLE_TRANSLATION:
+            select_cloud_provider_config(self.settings.engine, provider)
+            self.api_key_input.setText(get_key(provider))
         elif role_settings is not None and role_settings.source_role == SOURCE_INDEPENDENT:
-            role_settings.cloud_provider = provider
-        self.api_key_input.setText(get_key(provider))
+            select_cloud_provider_config(role_settings, provider)
+            self.api_key_input.setText(get_key(provider))
+        self._sync_model_role_fields()
+        self._sync_engine_visibility()
         self._clear_model_catalog_if_signature_changed(previous_signature)
         self._refresh_role_status()
         self._persist()
@@ -991,25 +1400,63 @@ class Sidebar(QFrame):
     def _on_base_url_changed(self) -> None:
         previous_signature = self._current_model_catalog_signature()
         role_settings = self._role_settings()
-        if self._current_role() == ROLE_TRANSLATION:
-            self.settings.engine.cloud_base_url = self.base_url_input.text().strip()
+        if self._current_role() == ROLE_TRANSLATION and self.settings.engine.mode == "local":
+            self.settings.engine.local_base_url = self.base_url_input.text().strip()
+        elif self._current_role() == ROLE_TRANSLATION:
+            provider = str(self.settings.engine.cloud_provider or "").strip()
+            previous = get_cloud_provider_config(self.settings.engine, provider)
+            base_url = self._normalized_base_url_input(
+                provider,
+                self.base_url_input.text(),
+                previous.cloud_base_url,
+            )
+            set_cloud_provider_config(
+                self.settings.engine,
+                provider,
+                cloud_base_url=base_url,
+            )
+            self._set_base_url_field(self.base_url_input, provider, base_url)
         elif role_settings is not None and role_settings.source_role == SOURCE_INDEPENDENT:
-            role_settings.cloud_base_url = self.base_url_input.text().strip()
+            provider = str(role_settings.cloud_provider or "").strip()
+            previous = get_cloud_provider_config(role_settings, provider)
+            base_url = self._normalized_base_url_input(
+                provider,
+                self.base_url_input.text(),
+                previous.cloud_base_url,
+            )
+            set_cloud_provider_config(
+                role_settings,
+                provider,
+                cloud_base_url=base_url,
+            )
+            self._set_base_url_field(self.base_url_input, provider, base_url)
         self._clear_model_catalog_if_signature_changed(previous_signature)
         self._refresh_role_status()
         self._persist()
 
     def _on_model_changed(self) -> None:
         role_settings = self._role_settings()
-        if self._current_role() == ROLE_TRANSLATION:
-            self.settings.engine.cloud_model = self.model_combo.currentText().strip()
+        if self._current_role() == ROLE_TRANSLATION and self.settings.engine.mode == "local":
+            value = self.model_combo.currentText().strip()
+            self.settings.engine.local_model = value
+            if self.settings.engine.local_provider == "ollama":
+                self.settings.engine.ollama_model = value
+        elif self._current_role() == ROLE_TRANSLATION:
+            set_cloud_provider_config(
+                self.settings.engine,
+                self.settings.engine.cloud_provider,
+                cloud_model=self.model_combo.currentText().strip(),
+            )
         elif role_settings is not None:
-            role_settings.cloud_model = self.model_combo.currentText().strip()
+            if role_settings.source_role == SOURCE_INDEPENDENT:
+                set_cloud_provider_config(
+                    role_settings,
+                    role_settings.cloud_provider,
+                    cloud_model=self.model_combo.currentText().strip(),
+                )
+            else:
+                role_settings.cloud_model = self.model_combo.currentText().strip()
         self._refresh_role_status()
-        self._persist()
-
-    def _on_ollama_changed(self, value: str) -> None:
-        self.settings.engine.ollama_model = value.strip()
         self._persist()
 
     def _on_batch_changed(self, value: int) -> None:
@@ -1044,23 +1491,30 @@ class Sidebar(QFrame):
         role = self._current_role()
         follows = self._is_following_current_role()
         is_translation = role == ROLE_TRANSLATION
-        is_cloud = self.settings.engine.mode == "cloud" if is_translation else True
+        is_local_translation = is_translation and self.settings.engine.mode == "local"
         self.mode_combo.setVisible(is_translation)
-        cloud_widgets = (
+        always_model_widgets = (
+            self.provider_label,
             self.provider_combo,
-            self.api_key_input,
+            self.base_url_label,
             self.base_url_input,
+            self.model_label,
             self.model_combo,
         )
-        for widget in cloud_widgets:
-            widget.setVisible(is_cloud)
-        access_editable = is_cloud and not follows
+        for widget in always_model_widgets:
+            widget.setVisible(True)
+        self.api_key_label.setVisible(not is_local_translation)
+        self.api_key_input.setVisible(not is_local_translation)
+        access_editable = not follows
+        try:
+            config = resolve_effective_model_config(self.settings, role)
+            base_url_editable = config.mode == "local" or cloud_provider_uses_base_url(config.provider)
+        except Exception:
+            base_url_editable = True
         self.provider_combo.setEnabled(access_editable)
-        self.api_key_input.setEnabled(access_editable)
-        self.base_url_input.setEnabled(access_editable)
-        self.model_combo.setEnabled(is_cloud)
-        self.ollama_combo.setVisible(is_translation)
-        self.ollama_combo.setEnabled(is_translation and not is_cloud)
+        self.api_key_input.setEnabled(access_editable and not is_local_translation)
+        self.base_url_input.setEnabled(access_editable and base_url_editable)
+        self.model_combo.setEnabled(True)
         self.pdf_review_frame.setVisible(role == ROLE_IMAGE)
         self._sync_review_model_visibility()
         if self.settings.engine.mode == "local":
@@ -1073,6 +1527,13 @@ class Sidebar(QFrame):
             self.batch_spin.setValue(
                 max(CHUNK_CLOUD_MIN, min(CHUNK_CLOUD_MAX, self.settings.engine.batch_size))
             )
+        if hasattr(self, "concurrency_input") and not self.concurrency_input.hasFocus():
+            value = (
+                self.settings.engine.ollama_concurrency
+                if self.settings.engine.mode == "local"
+                else self.settings.engine.concurrency
+            )
+            self.concurrency_input.setText(str(value))
 
     def _with_busy_cursor(self, fn: Callable[[], str]) -> None:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -1084,22 +1545,28 @@ class Sidebar(QFrame):
 
     def _test_connectivity(self) -> None:
         def run() -> str:
-            role = self._current_role()
-            if role == ROLE_IMAGE:
-                result = check_image_generation_connectivity(self.settings)
-                save_settings(self.settings)
+            try:
+                role = self._current_role()
+                if role == ROLE_IMAGE:
+                    result = check_image_generation_connectivity(self.settings)
+                    save_settings(self.settings)
+                    return result.message if result.ok else f"{result.message}\n{result.detail}"
+                result = check_connectivity(settings_for_text_role(self.settings, role))
                 return result.message if result.ok else f"{result.message}\n{result.detail}"
-            result = check_connectivity(settings_for_text_role(self.settings, role))
-            return result.message if result.ok else f"{result.message}\n{result.detail}"
+            except LocalModelFollowNotAllowedError as exc:
+                return str(exc)
 
         self._with_busy_cursor(run)
         self._refresh_role_status()
 
     def _test_review_connectivity(self) -> None:
         def run() -> str:
-            result = check_pdf_review_connectivity(self.settings)
-            save_settings(self.settings)
-            return result.message if result.ok else f"{result.message}\n{result.detail}"
+            try:
+                result = check_pdf_review_connectivity(self.settings)
+                save_settings(self.settings)
+                return result.message if result.ok else f"{result.message}\n{result.detail}"
+            except LocalModelFollowNotAllowedError as exc:
+                return str(exc)
 
         self._with_busy_cursor(run)
         self._sync_review_model_fields()
@@ -1133,13 +1600,18 @@ class Sidebar(QFrame):
         models: list[str],
         *,
         include_current: bool = True,
+        current_text: str | None = None,
     ) -> None:
         try:
             config = resolve_effective_model_config(self.settings, self._current_role())
             fallback_model = config.model
         except Exception:
             fallback_model = self.settings.engine.cloud_model
-        current = self.model_combo.currentText().strip() or fallback_model
+        current = (
+            str(current_text or "").strip()
+            if current_text is not None
+            else self.model_combo.currentText().strip() or fallback_model
+        )
         options: list[str] = []
         seed_models = [current, *models] if include_current else models
         for model in seed_models:
@@ -1147,7 +1619,7 @@ class Sidebar(QFrame):
             if value and value not in options:
                 options.append(value)
         if not options:
-            options.append(fallback_model)
+            options.append(fallback_model if current_text is None else current)
 
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
@@ -1163,7 +1635,7 @@ class Sidebar(QFrame):
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
-        if not provider_supports_capability(config.provider, config.capability):
+        if config.mode != "local" and not provider_supports_capability(config.provider, config.capability):
             message = f"当前服务商不支持{config.label}所需的{config.capability}能力，请手动填写或更换服务商。"
             self.model_catalog_status.setText(message)
             QMessageBox.warning(self, APP_NAME, message)
@@ -1185,7 +1657,10 @@ class Sidebar(QFrame):
             return
 
         previous_model = self.model_combo.currentText().strip()
-        selected_model = previous_model if previous_model in result.models else result.models[0]
+        if config.role == ROLE_IMAGE and "gpt-image-2" in result.models:
+            selected_model = "gpt-image-2"
+        else:
+            selected_model = previous_model if previous_model in result.models else result.models[0]
         self._model_catalog_signature = self._current_model_catalog_signature()
         self._model_catalog_models = list(result.models)
         self._set_model_combo_items(result.models, include_current=False)
@@ -1231,15 +1706,6 @@ class Sidebar(QFrame):
         self.review_model_status.setText(f"{result.message} 可从下拉列表选择。")
         self.review_model_combo.showPopup()
 
-    def _check_updates(self) -> None:
-        def run() -> str:
-            result = check_for_updates()
-            if result.has_update:
-                return f"{result.message}\n{result.release_url}"
-            return result.message
-
-        self._with_busy_cursor(run)
-
 
 class NativeMainWindow(QMainWindow):
     """Top-level native desktop window."""
@@ -1251,6 +1717,9 @@ class NativeMainWindow(QMainWindow):
             install_in_app_tooltips(app)
         self.settings = settings
         self.setWindowTitle(APP_NAME)
+        self._update_worker: UpdateCheckWorker | None = None
+        self._update_check_source = ""
+        self._latest_update_result: UpdateCheckResult | None = None
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -1258,6 +1727,7 @@ class NativeMainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.sidebar = Sidebar(settings)
+        self.queue_controller = NativeTranslationQueueController()
         self.stack = QStackedWidget()
         self.pages = {
             "excel_translate": ExcelTranslatePage(settings),
@@ -1267,8 +1737,19 @@ class NativeMainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
+        for page in (
+            self.pages["excel_translate"],
+            self.pages["word_translate"],
+            self.pages["pdf_translate"],
+        ):
+            if hasattr(page, "set_queue_controller"):
+                page.set_queue_controller(self.queue_controller)
 
         self.sidebar.navigateRequested.connect(self._navigate)
+        self.sidebar.updateCheckRequested.connect(lambda: self._start_update_check("manual"))
+        self.sidebar.globalUpdateIgnoreToggled.connect(self._toggle_global_update_ignore)
+        self.sidebar.currentUpdateIgnored.connect(self._ignore_current_update_version)
+        self.sidebar.updatePromptRequested.connect(self._show_latest_update_dialog)
         self.sidebar.settingsChanged.connect(self.pages["excel_translate"].refresh_settings)
         self.sidebar.settingsChanged.connect(self.pages["word_translate"].refresh_settings)
         self.sidebar.settingsChanged.connect(self.pages["pdf_translate"].refresh_settings)
@@ -1279,12 +1760,239 @@ class NativeMainWindow(QMainWindow):
         self.pages["word_translate"].languageChanged.connect(
             self._sync_tm_language_from_translation
         )
+        self.queue_controller.changed.connect(self._sync_sidebar_task_snapshot)
 
         layout.addWidget(self.sidebar)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self._build_menu()
         self._sync_page_activation("excel_translate")
+        QTimer.singleShot(600, lambda: self._start_update_check("auto"))
+
+    def _sync_sidebar_task_snapshot(self) -> None:
+        current = self.stack.currentWidget()
+        selected_task = None
+        if current is not None and hasattr(current, "selected_queue_task"):
+            selected_task = current.selected_queue_task()
+        if selected_task is not None:
+            self.sidebar.show_task_snapshot(selected_task)
+        else:
+            self.sidebar.clear_task_snapshot()
+
+    def _start_update_check(self, source: str) -> None:
+        if self._update_worker is not None and self._update_worker.isRunning():
+            if source != "auto":
+                self._update_check_source = source
+                self.sidebar.set_update_checking(True)
+            return
+        self._update_check_source = source
+        self.sidebar.set_update_checking(True)
+        worker = UpdateCheckWorker(self)
+        self._update_worker = worker
+        worker.resultReady.connect(self._on_update_check_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_update_check_finished(self, result: object) -> None:
+        source = self._update_check_source or "auto"
+        self._update_check_source = ""
+        self._update_worker = None
+        self.sidebar.set_update_checking(False)
+
+        if not isinstance(result, UpdateCheckResult):
+            self.sidebar.set_update_notice(None)
+            if source != "auto":
+                QMessageBox.warning(self, APP_NAME, "检查更新失败：返回结果异常。")
+            return
+
+        self._latest_update_result = result
+        self._handle_update_check_result(result, source)
+
+    def _handle_update_check_result(
+        self,
+        result: UpdateCheckResult,
+        source: str,
+    ) -> None:
+        if not result.ok or result.status == "error":
+            self.sidebar.set_update_notice(None)
+            if source != "auto":
+                QMessageBox.warning(self, APP_NAME, result.message)
+            return
+
+        if result.status == "unknown":
+            self.sidebar.set_update_notice(None)
+            if source != "auto":
+                QMessageBox.information(self, APP_NAME, result.message)
+            return
+
+        if not result.has_update:
+            self.sidebar.set_update_notice(None)
+            if source != "auto":
+                QMessageBox.information(self, APP_NAME, result.message)
+            return
+
+        if source == "manual":
+            self._show_manual_update_result(result)
+            return
+
+        if source == "restore":
+            self._show_update_notice_if_allowed(result)
+            return
+
+        self._handle_automatic_update(result)
+
+    def _handle_automatic_update(self, result: UpdateCheckResult) -> None:
+        if self._is_release_ignored(result):
+            self.sidebar.set_update_notice(None)
+            return
+
+        is_major = is_major_upgrade(result.latest_version, result.current_version)
+        if self.settings.update.ignore_updates:
+            if is_major and not self._major_prompt_was_shown(result):
+                self._show_update_dialog(result)
+                self._record_major_prompt_shown(result)
+            self.sidebar.set_update_notice(None)
+            return
+
+        if is_major:
+            if not self._major_prompt_was_shown(result):
+                self._show_update_dialog(result)
+                self._record_major_prompt_shown(result)
+            self.sidebar.set_update_notice(None)
+            return
+
+        self.sidebar.set_update_notice(result)
+
+    def _show_update_notice_if_allowed(self, result: UpdateCheckResult) -> None:
+        if (
+            result.has_update
+            and not self.settings.update.ignore_updates
+            and not self._is_release_ignored(result)
+        ):
+            self.sidebar.set_update_notice(result)
+            return
+        self.sidebar.set_update_notice(None)
+
+    def _show_manual_update_result(self, result: UpdateCheckResult) -> None:
+        self._show_update_notice_if_allowed(result)
+        if self.settings.update.ignore_updates:
+            self._show_global_ignored_update_dialog(result)
+            return
+        if self._is_release_ignored(result):
+            self._show_release_ignored_update_dialog(result)
+            return
+        self._show_update_dialog(result)
+
+    def _show_latest_update_dialog(self) -> None:
+        result = self._latest_update_result
+        if result is None or not result.has_update:
+            self._start_update_check("manual")
+            return
+        self._show_update_dialog(result)
+
+    def _toggle_global_update_ignore(self) -> None:
+        self.settings.update.ignore_updates = not self.settings.update.ignore_updates
+        save_settings(self.settings)
+        self.sidebar.sync_update_ignore_button()
+        if self.settings.update.ignore_updates:
+            self.sidebar.set_update_notice(None)
+            return
+        self._start_update_check("restore")
+
+    def _ignore_current_update_version(self) -> None:
+        result = self._latest_update_result
+        if result is None or not result.has_update:
+            self.sidebar.set_update_notice(None)
+            return
+        self.settings.update.ignored_release_version = result.latest_version
+        save_settings(self.settings)
+        self.sidebar.set_update_notice(None)
+
+    def _is_release_ignored(self, result: UpdateCheckResult) -> bool:
+        ignored = self.settings.update.ignored_release_version.strip()
+        return bool(ignored and ignored == result.latest_version)
+
+    def _major_prompt_was_shown(self, result: UpdateCheckResult) -> bool:
+        latest_major = major_version(result.latest_version)
+        return (
+            latest_major is not None
+            and self.settings.update.last_prompted_major_version == str(latest_major)
+        )
+
+    def _record_major_prompt_shown(self, result: UpdateCheckResult) -> None:
+        latest_major = major_version(result.latest_version)
+        if latest_major is None:
+            return
+        self.settings.update.last_prompted_major_version = str(latest_major)
+        save_settings(self.settings)
+
+    def _show_global_ignored_update_dialog(self, result: UpdateCheckResult) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(APP_NAME)
+        box.setText(f"发现新版 V{result.latest_version}")
+        box.setInformativeText("当前已开启忽略更新。")
+        restore_button = box.addButton("恢复更新", QMessageBox.ButtonRole.AcceptRole)
+        release_button = box.addButton("查看发布页", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is restore_button:
+            self.settings.update.ignore_updates = False
+            save_settings(self.settings)
+            self.sidebar.sync_update_ignore_button()
+            self._show_update_notice_if_allowed(result)
+        elif clicked is release_button:
+            self._open_update_url(result.release_url)
+
+    def _show_release_ignored_update_dialog(self, result: UpdateCheckResult) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(APP_NAME)
+        box.setText(f"发现新版 V{result.latest_version}")
+        box.setInformativeText("该版本已被忽略。")
+        restore_button = box.addButton("取消忽略", QMessageBox.ButtonRole.AcceptRole)
+        release_button = box.addButton("查看发布页", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is restore_button:
+            self.settings.update.ignored_release_version = ""
+            save_settings(self.settings)
+            self._show_update_notice_if_allowed(result)
+        elif clicked is release_button:
+            self._open_update_url(result.release_url)
+
+    def _show_update_dialog(self, result: UpdateCheckResult) -> None:
+        notes = _release_notes_preview(result.release_notes)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(APP_NAME)
+        box.setText(f"发现新版 V{result.latest_version}")
+        box.setInformativeText(
+            f"当前版本：V{APP_VERSION}\n"
+            f"最新版本：V{result.latest_version}\n\n"
+            f"更新内容：\n{notes}"
+        )
+        install_button = None
+        if result.asset_name and result.download_url:
+            install_button = box.addButton("下载安装包", QMessageBox.ButtonRole.AcceptRole)
+        release_button = box.addButton("查看发布页", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if install_button is not None and clicked is install_button:
+            self._open_update_url(result.download_url)
+        elif clicked is release_button:
+            self._open_update_url(result.release_url)
+
+    def _open_update_url(self, url: str) -> None:
+        target = str(url or "").strip()
+        if not target:
+            QMessageBox.warning(self, APP_NAME, "没有可打开的更新链接。")
+            return
+        if not QDesktopServices.openUrl(QUrl(target)):
+            QMessageBox.warning(self, APP_NAME, f"无法打开链接：\n{target}")
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("文件")
@@ -1297,6 +2005,7 @@ class NativeMainWindow(QMainWindow):
         self.stack.setCurrentIndex(page_order.index(page))
         self.sidebar.set_active_page(page)
         self._sync_page_activation(page)
+        self._sync_sidebar_task_snapshot()
 
     def _sync_page_activation(self, active_page: str) -> None:
         for page_key, page in self.pages.items():

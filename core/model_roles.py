@@ -17,7 +17,13 @@ from config import (
     IMAGE_GENERATION_MODEL_PROVIDERS,
     VISION_TEXT_MODEL_PROVIDERS,
 )
-from settings import AppSettings, ModelRoleSettings, get_key
+from settings import (
+    AppSettings,
+    ModelRoleSettings,
+    get_cloud_provider_config,
+    get_key,
+    set_cloud_provider_config,
+)
 
 ROLE_TRANSLATION = "translation"
 ROLE_CLEANER = "cleaner"
@@ -44,6 +50,7 @@ FOLLOW_SOURCE_LABELS = {
     SOURCE_INDEPENDENT: "独立配置",
     ROLE_TRANSLATION: "跟随翻译模型",
     ROLE_CLEANER: "跟随深度清洗模型",
+    ROLE_IMAGE: "跟随PDF图像翻译模型",
 }
 
 
@@ -53,6 +60,10 @@ class ModelRoleConfigError(ValueError):
 
 class ChainedModelFollowError(ModelRoleConfigError):
     """Raised when a role tries to follow a role that already follows another."""
+
+
+class LocalModelFollowNotAllowedError(ModelRoleConfigError):
+    """Raised when a cloud-only role tries to follow a local translation model."""
 
 
 @dataclass(frozen=True)
@@ -74,7 +85,7 @@ class EffectiveModelConfig:
     @property
     def engine_label(self) -> str:
         if self.mode == "local":
-            return f"ollama/{self.model}"
+            return f"{self.provider}/{self.model}"
         return f"{self.provider}/{self.model}"
 
 
@@ -102,7 +113,7 @@ def allowed_source_roles(role: str) -> list[str]:
     if role == ROLE_IMAGE:
         return [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_CLEANER]
     if role == ROLE_PDF_REVIEW:
-        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION]
+        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_IMAGE]
     return [SOURCE_INDEPENDENT]
 
 
@@ -168,7 +179,6 @@ def provider_supports_capability(provider: str, capability: str) -> bool:
     if capability == "vision_text":
         return provider_value in vision_text_provider_values()
     return provider_value in {
-        "hermes",
         "claude",
         "openai",
         "custom_openai",
@@ -191,25 +201,27 @@ def resolve_effective_model_config(
 
     if normalized_role == ROLE_TRANSLATION:
         if settings.engine.mode == "local":
+            provider = str(settings.engine.local_provider or "ollama").strip()
             return EffectiveModelConfig(
                 role=ROLE_TRANSLATION,
                 label=role_label(ROLE_TRANSLATION),
                 capability="text",
                 mode="local",
-                provider="ollama",
-                model=str(settings.engine.ollama_model or "").strip(),
-                base_url="",
+                provider=provider,
+                model=str(settings.engine.local_model or settings.engine.ollama_model or "").strip(),
+                base_url=str(settings.engine.local_base_url or "").strip(),
                 api_key="",
             )
         provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+        provider_config = get_cloud_provider_config(settings.engine, provider)
         return EffectiveModelConfig(
             role=ROLE_TRANSLATION,
             label=role_label(ROLE_TRANSLATION),
             capability="text",
             mode="cloud",
             provider=provider,
-            model=str(settings.engine.cloud_model or DEFAULT_CLOUD_MODEL).strip(),
-            base_url=str(settings.engine.cloud_base_url or "").strip(),
+            model=provider_config.cloud_model or DEFAULT_CLOUD_MODEL,
+            base_url=provider_config.cloud_base_url,
             api_key=get_key(provider),
         )
 
@@ -234,9 +246,9 @@ def resolve_effective_model_config(
             _seen=(*_seen, normalized_role),
         )
         if source_config.mode == "local":
-            provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-            base_url = str(settings.engine.cloud_base_url or "").strip()
-            api_key = get_key(provider)
+            raise LocalModelFollowNotAllowedError(
+                _local_follow_not_allowed_message(normalized_role)
+            )
         else:
             provider = source_config.provider
             base_url = source_config.base_url
@@ -258,14 +270,15 @@ def resolve_effective_model_config(
         )
 
     provider = str(role_settings.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+    provider_config = get_cloud_provider_config(role_settings, provider)
     return EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
         capability=role_capability(normalized_role),
         mode="cloud",
         provider=provider,
-        model=_role_model_name(role_settings, normalized_role),
-        base_url=str(role_settings.cloud_base_url or "").strip(),
+        model=provider_config.cloud_model or _role_model_name(role_settings, normalized_role),
+        base_url=provider_config.cloud_base_url,
         api_key=get_key(provider),
         source_role=SOURCE_INDEPENDENT,
         follows=False,
@@ -275,17 +288,39 @@ def resolve_effective_model_config(
     )
 
 
+def _local_follow_not_allowed_message(role: str) -> str:
+    role_name = role_label(role)
+    reason = {
+        ROLE_CLEANER: "深度清洗需要云端文本模型。",
+        ROLE_IMAGE: "PDF 图像翻译需要云端图像生成模型。",
+        ROLE_PDF_REVIEW: "翻译审核需要云端图像理解模型。",
+    }.get(role, f"{role_name}只支持云端模型。")
+    return (
+        "跟随来源不可用：翻译模型当前是本地模型，请改为独立云端配置。"
+        f"\n原因：{reason}"
+    )
+
+
 def settings_for_text_role(settings: AppSettings, role: str) -> AppSettings:
     config = resolve_effective_model_config(settings, role)
     copy_settings = settings.model_copy(deep=True)
     if config.mode == "local":
         copy_settings.engine.mode = "local"
+        copy_settings.engine.local_provider = config.provider
+        copy_settings.engine.local_model = config.model
+        copy_settings.engine.local_base_url = config.base_url
         copy_settings.engine.ollama_model = config.model
         return copy_settings
     copy_settings.engine.mode = "cloud"
     copy_settings.engine.cloud_provider = config.provider
     copy_settings.engine.cloud_model = config.model
     copy_settings.engine.cloud_base_url = config.base_url
+    set_cloud_provider_config(
+        copy_settings.engine,
+        config.provider,
+        cloud_model=config.model,
+        cloud_base_url=config.base_url,
+    )
     return copy_settings
 
 

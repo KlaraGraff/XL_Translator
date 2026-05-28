@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config import CLOUD_ENGINES
+from config import CLOUD_ENGINES, LM_STUDIO_BASE_URL, OLLAMA_BASE_URL, normalize_cloud_base_url
 from settings import AppSettings, get_key
 
 
@@ -24,18 +24,28 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
     """Return whether the selected translation backend has required config."""
     engine = settings.engine
     if engine.mode == "local":
-        if not str(engine.ollama_model or "").strip():
+        provider = str(engine.local_provider or "ollama").strip()
+        model = str(engine.local_model or engine.ollama_model or "").strip()
+        base_url = str(engine.local_base_url or "").strip()
+        if not model:
             return ApiConfigCheckResult(
                 ok=False,
                 status="missing_local_model",
-                message="请先配置本地 Ollama 模型名称，再开始翻译。",
+                message="请先配置本地模型名称，再开始翻译。",
+            )
+        if provider == "ollama" and not base_url:
+            engine.local_base_url = OLLAMA_BASE_URL
+        elif provider == "lm_studio" and not base_url:
+            engine.local_base_url = LM_STUDIO_BASE_URL
+        elif provider == "custom_local" and not base_url:
+            return ApiConfigCheckResult(
+                ok=False,
+                status="missing_local_base_url",
+                message="请先填写本地模型服务 Base URL，再开始翻译。",
             )
         return ApiConfigCheckResult(ok=True)
 
     provider = str(engine.cloud_provider or "").strip()
-    if provider == "hermes":
-        return _check_hermes_config()
-
     provider_label = _provider_label(provider)
     if not str(engine.cloud_model or "").strip():
         return ApiConfigCheckResult(
@@ -44,7 +54,7 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
             message=f"{provider_label} 尚未填写模型名称。请先在左侧“模型配置”中完成配置。",
         )
 
-    if provider in {"custom_openai", "siliconflow", "lanyi"} and not str(engine.cloud_base_url or "").strip():
+    if provider in {"custom_openai"} and not normalize_cloud_base_url(provider, engine.cloud_base_url):
         return ApiConfigCheckResult(
             ok=False,
             status="missing_base_url",
@@ -56,39 +66,6 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
             ok=False,
             status="missing_api_key",
             message=f"{provider_label} 尚未填写 API Key。请先在左侧“模型配置”中完成配置后再开始翻译。",
-        )
-
-    return ApiConfigCheckResult(ok=True)
-
-
-def _check_hermes_config() -> ApiConfigCheckResult:
-    try:
-        from engines.hermes_engine import load_hermes_runtime_routes
-
-        routes = load_hermes_runtime_routes()
-    except Exception as exc:  # noqa: BLE001 - user-facing config validation
-        return ApiConfigCheckResult(
-            ok=False,
-            status="hermes_config_error",
-            message="Hermes 内置引擎尚未完成配置。请先配置 Hermes 主模型，或切换到其他云端服务商。",
-            detail=str(exc),
-        )
-
-    if not routes:
-        return ApiConfigCheckResult(
-            ok=False,
-            status="hermes_missing_route",
-            message="Hermes 内置引擎未找到可用模型路由。请先配置 Hermes 主模型，或切换到其他云端服务商。",
-        )
-
-    route = routes[0]
-    if not str(route.api_key or "").strip():
-        hint = f"环境变量 {route.api_key_env}" if route.api_key_env else "对应服务商 API Key"
-        return ApiConfigCheckResult(
-            ok=False,
-            status="hermes_missing_api_key",
-            message="Hermes 内置引擎未找到 API Key。请先补全 Hermes 配置后再开始翻译。",
-            detail=f"缺少：{hint}",
         )
 
     return ApiConfigCheckResult(ok=True)

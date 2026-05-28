@@ -117,6 +117,64 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(fake_client.get_calls[0]["url"], "https://api.openai.com/v1/models")
 
+    def test_fetch_models_respects_openai_custom_base_url(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "gpt-5.4"}]}))
+
+        with self._patch_client(fake_client):
+            result = fetch_openai_compatible_models(
+                provider="openai",
+                api_key="secret",
+                base_url="https://proxy.example.test/v1",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(fake_client.get_calls[0]["url"], "https://proxy.example.test/v1/models")
+
+    def test_fetch_models_appends_v1_for_bare_compatible_host(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "gpt-5.4"}]}))
+
+        with self._patch_client(fake_client):
+            result = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret",
+                base_url="https://api.example.test",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(fake_client.get_calls[0]["url"], "https://api.example.test/v1/models")
+
+    def test_fetch_ollama_models_uses_api_tags(self) -> None:
+        fake_client = _FakeClient(
+            _FakeResponse({"models": [{"name": "qwen2.5:14b"}, {"model": "llama3.1:8b"}]})
+        )
+
+        with self._patch_client(fake_client):
+            result = fetch_openai_compatible_models(
+                provider="ollama",
+                api_key="",
+                base_url="http://localhost:11434",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.models, ["qwen2.5:14b", "llama3.1:8b"])
+        self.assertEqual(fake_client.get_calls[0]["url"], "http://localhost:11434/api/tags")
+        self.assertEqual(fake_client.get_calls[0]["headers"], None)
+
+    def test_fetch_lm_studio_models_does_not_require_api_key(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "qwen-local"}]}))
+
+        with self._patch_client(fake_client):
+            result = fetch_openai_compatible_models(
+                provider="lm_studio",
+                api_key="",
+                base_url="",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.models, ["qwen-local"])
+        self.assertEqual(fake_client.get_calls[0]["url"], "http://localhost:1234/v1/models")
+        self.assertEqual(fake_client.get_calls[0]["headers"], {})
+
     def test_error_message_does_not_echo_api_key(self) -> None:
         fake_client = _FakeClient(
             _FakeResponse({}, status_code=401, text="invalid secret-token")
@@ -145,7 +203,7 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertNotIn("secret-token", signature)
         self.assertRegex(signature.split("|")[-1], r"^[0-9a-f]{12}$")
 
-    def test_openai_signature_ignores_stale_base_url(self) -> None:
+    def test_openai_signature_includes_configured_base_url(self) -> None:
         first = build_model_catalog_signature(
             provider="openai",
             api_key="secret-token",
@@ -157,7 +215,7 @@ class ModelCatalogTests(unittest.TestCase):
             base_url="https://api.example.test/v1",
         )
 
-        self.assertEqual(first, second)
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

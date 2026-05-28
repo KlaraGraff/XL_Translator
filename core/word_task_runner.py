@@ -29,6 +29,7 @@ from core.bilingual_writer import get_custom_output_dir_error
 from core.engine_dispatcher import (
     build_engine,
     get_system_prompt,
+    is_local_engine_name,
 )
 from core.language_registry import build_lang_pair
 from core.task_logger import TaskLogger
@@ -72,7 +73,7 @@ from core.word_batching import (
     translate_word_texts,
 )
 from engines.base_engine import TranslationEngine, strip_markdown_json
-from settings import AppSettings
+from settings import AppSettings, provider_key_overrides
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _SEMANTIC_VERDICT_EQUIVALENT = "equivalent"
@@ -151,11 +152,15 @@ class WordTaskRunner:
         settings: AppSettings,
         source_root: Path | str | None = None,
         source_lang: str | None = None,
+        key_overrides: dict[str, str] | None = None,
+        api_scheduler: WeightedApiScheduler | None = None,
     ):
         self._files = file_items
         self._settings = settings
         self._source_root = Path(source_root) if source_root else None
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
+        self._key_overrides = dict(key_overrides or {})
+        self._api_scheduler_override = api_scheduler
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -163,7 +168,7 @@ class WordTaskRunner:
 
     def start(self) -> None:
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
         self._thread.start()
 
     @property
@@ -191,6 +196,10 @@ class WordTaskRunner:
     def _log(self, level: str, message: str) -> None:
         self._queue.put(LogMsg(level=level, message=message))
         logger.info(f"[{level}] {message}")
+
+    def _run_with_overrides(self) -> None:
+        with provider_key_overrides(self._key_overrides):
+            self._run()
 
     def _run(self) -> None:
         start_ts = datetime.now()
@@ -222,10 +231,16 @@ class WordTaskRunner:
                 if settings.engine.mode == "local"
                 else settings.engine.concurrency
             )
-            api_scheduler = WeightedApiScheduler(
-                concurrency,
-                normal_soft_ratio=_WORD_RECOVERY_NORMAL_SOFT_RATIO,
+            api_scheduler = (
+                self._api_scheduler_override
+                if settings.engine.mode != "local"
+                else None
             )
+            if api_scheduler is None and settings.engine.mode != "local":
+                api_scheduler = WeightedApiScheduler(
+                    concurrency,
+                    normal_soft_ratio=_WORD_RECOVERY_NORMAL_SOFT_RATIO,
+                )
         except Exception as exc:
             self._queue.put(ErrorMsg(message=f"引擎初始化失败：{exc}"))
             return
@@ -1313,7 +1328,7 @@ def _run_semantic_arbitration(
     except Exception as exc:  # noqa: BLE001 - uncertain keeps original review path
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
-        if api_scheduler is not None and not engine.engine_name.startswith("ollama/"):
+        if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
                 scheduler=api_scheduler,

@@ -2,6 +2,8 @@
 全局常量（不可变默认值）。
 用户可修改的配置在 settings.py 中管理。
 """
+from urllib.parse import urlsplit, urlunsplit
+
 from app_meta import APP_NAME as APP_NAME, APP_VERSION as APP_VERSION
 from core.app_paths import get_app_data_dir
 
@@ -18,7 +20,6 @@ DEFAULT_MAX_LEN = 25
 
 # ── 翻译引擎标识符 ────────────────────────────────────────
 CLOUD_ENGINES = {
-    "Hermes 内置":                  "hermes",
     "Claude (Anthropic)":          "claude",
     "OpenAI / ChatGPT":            "openai",
     "OpenAI 兼容":                  "custom_openai",
@@ -40,18 +41,57 @@ VISION_TEXT_MODEL_PROVIDERS = {
 }
 
 DEFAULT_CLOUD_PROVIDER = "custom_openai"
-DEFAULT_CLOUD_MODEL = "gpt-5.4"
-DEFAULT_CUSTOM_OPENAI_BASE_URL = "https://api.asxs.top/v1"
+DEFAULT_CLOUD_MODEL = ""
+DEFAULT_CUSTOM_OPENAI_BASE_URL = ""
 DEFAULT_CUSTOM_OPENAI_API_KEY = ""
 
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
+SILICONFLOW_BASE_URL = "https://api.siliconflow.com/v1"
 LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
-LOCAL_ENGINES = {
-    "Ollama (本地 LLM)": "ollama",
+CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
+    "openai": OPENAI_BASE_URL,
+    "claude": CLAUDE_BASE_URL,
+    "siliconflow": SILICONFLOW_BASE_URL,
+    "lanyi": LANYI_BASE_URL,
 }
+CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
+DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
+LOCAL_MODEL_PROVIDERS = {
+    "Ollama": "ollama",
+    "LM Studio": "lm_studio",
+    "自定义": "custom_local",
+}
+DEFAULT_LOCAL_MODEL_PROVIDER = "ollama"
+LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
 
-# ── Ollama 配置 ───────────────────────────────────────────
+# ── 本地模型配置 ───────────────────────────────────────────
 OLLAMA_BASE_URL   = "http://localhost:11434"
 OLLAMA_TIMEOUT    = 120  # 秒
+
+
+def cloud_provider_base_url_default(provider: str) -> str:
+    return CLOUD_PROVIDER_BASE_URL_DEFAULTS.get(str(provider or "").strip(), "")
+
+
+def cloud_provider_uses_base_url(provider: str) -> bool:
+    return str(provider or "").strip() not in CLOUD_PROVIDER_BASE_URL_DISABLED
+
+
+def normalize_cloud_base_url(provider: str, base_url: str) -> str:
+    provider_name = str(provider or "").strip()
+    if not cloud_provider_uses_base_url(provider_name):
+        return ""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return cloud_provider_base_url_default(provider_name).rstrip("/")
+
+    parsed = urlsplit(normalized)
+    if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, "/v1", parsed.query, parsed.fragment)
+        ).rstrip("/")
+    return normalized
 
 OLLAMA_RECOMMENDED_MODELS = [
     "qwen2.5:14b",
@@ -157,7 +197,7 @@ WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = "FFF2CC"
 # ── PDF 图像版式翻译 ─────────────────────────────────────
 PDF_RENDER_DPI_DEFAULT = 300
 PDF_PAGE_RETRY_ATTEMPTS_DEFAULT = 3
-PDF_PAGE_RETRY_ATTEMPTS_MIN = 1
+PDF_PAGE_RETRY_ATTEMPTS_MIN = 0
 PDF_PAGE_RETRY_ATTEMPTS_MAX = 8
 PDF_PAGE_CONCURRENCY_SAFETY_CAP = 20
 PDF_PAGE_RENDER_AHEAD_COUNT = 2
@@ -300,4 +340,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 13
+SETTINGS_SCHEMA_VERSION = 17

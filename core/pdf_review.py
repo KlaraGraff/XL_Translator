@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import httpx
 from PIL import Image
 
+from config import normalize_cloud_base_url
 from core.image_generation import is_model_unavailable_error
 from core.model_roles import (
     EffectiveModelConfig,
@@ -280,9 +281,7 @@ def check_pdf_review_connectivity(
 
 
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
-    if config.provider == "openai":
-        return "https://api.openai.com/v1"
-    base_url = str(config.base_url or "").strip().rstrip("/")
+    base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
         raise PdfReviewModelUnavailableError("PDF 翻译审核模型缺少 Base URL")
     return base_url

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from config import LANYI_BASE_URL
+from config import LM_STUDIO_BASE_URL, OLLAMA_BASE_URL, normalize_cloud_base_url
 
 
 DEFAULT_MODEL_LIST_TIMEOUT_SECONDS = 12.0
@@ -16,6 +16,8 @@ OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "custom_openai",
     "lanyi",
     "siliconflow",
+    "lm_studio",
+    "custom_local",
 }
 
 
@@ -66,11 +68,13 @@ def _append_url_path(base_url: str, path: str) -> str:
 
 def _normalize_base_url(provider: str, base_url: str) -> str:
     normalized = str(base_url or "").strip().rstrip("/")
-    if provider == "openai":
-        return "https://api.openai.com/v1"
-    if provider == "lanyi" and not normalized:
-        return LANYI_BASE_URL.rstrip("/")
-    return normalized
+    if provider == "lm_studio" and not normalized:
+        return LM_STUDIO_BASE_URL.rstrip("/")
+    if provider == "ollama" and not normalized:
+        return OLLAMA_BASE_URL.rstrip("/")
+    if provider in {"ollama", "lm_studio", "custom_local"}:
+        return normalized
+    return normalize_cloud_base_url(provider, normalized)
 
 
 def _extract_model_ids(payload: object) -> list[str]:
@@ -104,6 +108,46 @@ def _extract_model_ids(payload: object) -> list[str]:
     return models
 
 
+def fetch_ollama_models(
+    *,
+    base_url: str,
+    timeout_seconds: float = DEFAULT_MODEL_LIST_TIMEOUT_SECONDS,
+) -> ModelCatalogResult:
+    """Fetch locally installed Ollama model names from `/api/tags`."""
+    normalized_base_url = _normalize_base_url("ollama", base_url)
+    url = _append_url_path(normalized_base_url, "/api/tags")
+    try:
+        with httpx.Client(timeout=timeout_seconds) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:  # noqa: BLE001 - converted to user-facing result.
+        return ModelCatalogResult(
+            ok=False,
+            models=[],
+            status="request_failed",
+            message=f"Ollama 模型列表获取失败：{_sanitize_error_message(exc)}",
+            detail=url,
+        )
+
+    models = _extract_model_ids(payload)
+    if not models:
+        return ModelCatalogResult(
+            ok=False,
+            models=[],
+            status="empty_models",
+            message="Ollama 已响应，但没有读取到已安装模型。",
+            detail=url,
+        )
+    return ModelCatalogResult(
+        ok=True,
+        models=models,
+        status="ok",
+        message=f"已获取 {len(models)} 个本地模型。",
+        detail=url,
+    )
+
+
 def fetch_openai_compatible_models(
     *,
     provider: str,
@@ -116,6 +160,11 @@ def fetch_openai_compatible_models(
     key = str(api_key or "").strip()
     normalized_base_url = _normalize_base_url(provider_name, base_url)
 
+    if provider_name == "ollama":
+        return fetch_ollama_models(
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
     if provider_name not in OPENAI_COMPATIBLE_MODEL_PROVIDERS:
         return ModelCatalogResult(
             ok=False,
@@ -123,7 +172,8 @@ def fetch_openai_compatible_models(
             status="unsupported_provider",
             message="当前服务商暂不支持自动获取模型列表。",
         )
-    if not key:
+    local_openai_provider = provider_name in {"lm_studio", "custom_local"}
+    if not key and not local_openai_provider:
         return ModelCatalogResult(
             ok=False,
             models=[],
@@ -139,7 +189,7 @@ def fetch_openai_compatible_models(
         )
 
     url = _append_url_path(normalized_base_url, "/models")
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
 
     try:
         with httpx.Client(timeout=timeout_seconds) as client:

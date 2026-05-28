@@ -15,7 +15,11 @@ from typing import Any, Protocol
 import httpx
 from PIL import Image
 
-from config import PDF_MIN_READABLE_LONG_EDGE_PX, PDF_MIN_READABLE_SHORT_EDGE_PX
+from config import (
+    PDF_MIN_READABLE_LONG_EDGE_PX,
+    PDF_MIN_READABLE_SHORT_EDGE_PX,
+    normalize_cloud_base_url,
+)
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
@@ -292,9 +296,7 @@ def is_model_unavailable_error(exc: BaseException) -> bool:
 
 
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
-    if config.provider == "openai":
-        return "https://api.openai.com/v1"
-    base_url = str(config.base_url or "").strip().rstrip("/")
+    base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
         raise ImageModelUnavailableError("图像生成模型缺少 Base URL")
     return base_url

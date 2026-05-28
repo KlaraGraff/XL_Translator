@@ -98,6 +98,30 @@ QFrame#KpiTile {
     border-radius: 8px;
 }
 
+QFrame#QueueTaskCard {
+    background: #FFFFFF;
+    border: 1px solid #D9E2EC;
+    border-radius: 8px;
+}
+
+QFrame#QueueTaskCard[selected="true"] {
+    background: #F8FBFF;
+    border: 1px solid #BAE6FD;
+}
+
+QFrame#QueueTaskCard[blocked="true"] {
+    background: #FFFBEB;
+    border: 1px solid #FDE68A;
+}
+
+QLabel#ReadonlyField {
+    background: #F8FAFC;
+    border: 1px solid #D9E2EC;
+    border-radius: 7px;
+    padding: 9px 10px;
+    color: #334155;
+}
+
 QFrame#Pill {
     padding: 4px 8px;
 }
@@ -124,6 +148,22 @@ QLabel#PillValue {
     color: #111827;
     font-size: 11px;
     font-weight: 600;
+}
+
+QLabel#TmMetricLabel {
+    color: #667085;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#TmMetricValue {
+    color: #111827;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+QWidget[tmMetricPair="true"] {
+    background: transparent;
 }
 
 QFrame#PhaseBadge {
@@ -210,6 +250,30 @@ QPushButton:disabled {
 
 QPushButton[compact="true"] {
     padding: 6px 10px;
+}
+
+QPushButton#UpdateNoticeButton {
+    background: #EAF6FD;
+    border-color: #7DD3FC;
+    color: #075985;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
+QPushButton#UpdateNoticeButton:hover {
+    background: #DDF2FC;
+    border-color: #38BDF8;
+}
+
+QPushButton[updateIgnored="true"] {
+    background: #FFFBEB;
+    border-color: #FDE68A;
+    color: #92400E;
+}
+
+QPushButton[updateIgnored="true"]:hover {
+    background: #FEF3C7;
+    border-color: #FBBF24;
 }
 
 QPushButton#PrimaryButton {

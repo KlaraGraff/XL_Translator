@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Translator Task Queue Mockup</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --panel: #ffffff;
+      --panel-soft: #f8fbff;
+      --line: #d7e3f1;
+      --line-strong: #b9cbe0;
+      --text: #14223a;
+      --muted: #65748c;
+      --blue: #11a3de;
+      --blue-deep: #087fba;
+      --cyan-soft: #e6f7ff;
+      --green: #1f9d63;
+      --amber: #c98319;
+      --red: #c94242;
+      --shadow: 0 8px 28px rgba(35, 65, 105, 0.08);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #e9eef5;
+      color: var(--text);
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .window {
+      width: min(1440px, calc(100vw - 32px));
+      min-height: 980px;
+      margin: 28px auto;
+      background: var(--bg);
+      border: 1px solid #d8e0ea;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 18px 60px rgba(15, 34, 62, 0.18);
+    }
+
+    .titlebar {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      background: #fbfcfe;
+      border-bottom: 1px solid #dfe7f0;
+      color: #485870;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.red { background: #ff5f57; }
+    .dot.yellow { background: #febc2e; }
+    .dot.green { background: #28c840; }
+    .titlebar span.title { margin-left: 8px; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 330px 1fr;
+      min-height: 944px;
+    }
+
+    .sidebar {
+      background: #fbfdff;
+      border-right: 1px solid var(--line);
+      padding: 22px 18px;
+    }
+
+    .brand {
+      font-size: 26px;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .nav button,
+    .button {
+      min-height: 42px;
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 8px;
+      font: inherit;
+      font-weight: 750;
+      padding: 0 16px;
+      text-align: left;
+    }
+
+    .nav button.active {
+      background: var(--cyan-soft);
+      border-color: #52caff;
+      color: #0976a5;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-size: 17px;
+      font-weight: 850;
+      margin: 0 0 12px;
+    }
+
+    label {
+      display: block;
+      color: #273653;
+      font-weight: 800;
+      margin: 12px 0 6px;
+    }
+
+    .input,
+    select {
+      width: 100%;
+      height: 42px;
+      border: 1px solid #cbd8e8;
+      background: #fff;
+      border-radius: 7px;
+      padding: 0 12px;
+      color: var(--text);
+      font: inherit;
+      font-weight: 650;
+    }
+
+    .side-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .side-actions .button {
+      text-align: center;
+      padding: 0 10px;
+    }
+
+    .content {
+      padding: 28px 26px 34px;
+    }
+
+    .eyebrow {
+      color: #0a8dcd;
+      font-weight: 850;
+      margin-bottom: 16px;
+    }
+
+    .path-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .path-row {
+      display: grid;
+      grid-template-columns: 1fr 78px 78px;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .primary {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+      text-align: center;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.55fr) 360px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .queue-layout {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .queue-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .small-muted {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .task-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .task-item {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .task-item.selected {
+      border-color: #52caff;
+      background: var(--cyan-soft);
+    }
+
+    .task-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-weight: 850;
+      margin-bottom: 8px;
+    }
+
+    .badge {
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .badge.run {
+      color: #0f734b;
+      background: #e8f7ef;
+    }
+
+    .badge.queue {
+      color: #9a6519;
+      background: #fff2da;
+    }
+
+    .badge.done {
+      color: #557088;
+      background: #edf3f8;
+    }
+
+    .badge.block {
+      color: #a83838;
+      background: #fdecec;
+    }
+
+    .task-meta {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: #e3ecf5;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .progress-bar > div {
+      height: 100%;
+      background: var(--blue);
+      border-radius: inherit;
+    }
+
+    .detail-card {
+      min-height: 560px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .detail-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: start;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+      margin-bottom: 14px;
+    }
+
+    .detail-title {
+      font-size: 21px;
+      font-weight: 900;
+      margin-bottom: 7px;
+    }
+
+    .detail-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .detail-actions .button {
+      min-height: 38px;
+      padding: 0 12px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    .metric {
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .metric b {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pool {
+      background: #f6fbff;
+      border: 1px solid #cce8f8;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 14px;
+    }
+
+    .pool-row {
+      display: grid;
+      grid-template-columns: 122px 1fr 66px;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      color: #263752;
+      font-weight: 700;
+    }
+
+    .slotbar {
+      height: 12px;
+      border-radius: 999px;
+      background: #dce8f2;
+      overflow: hidden;
+    }
+
+    .slotbar span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, #11a3de, #35be8b);
+    }
+
+    .timeline {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .log {
+      display: grid;
+      grid-template-columns: 86px 1fr;
+      gap: 10px;
+      padding: 9px 12px;
+      border-bottom: 1px solid #edf2f7;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .log:last-child {
+      border-bottom: 0;
+    }
+
+    .log time {
+      color: #56677f;
+    }
+
+    .log.ok strong { color: var(--green); }
+    .log.warn strong { color: var(--amber); }
+
+    .right-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .param-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .param {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--panel-soft);
+    }
+
+    .param b {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .footer-note {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid #d7e7f3;
+      background: #f7fbff;
+      border-radius: 8px;
+      color: #4d6078;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 980px) {
+      .window {
+        width: 100%;
+        margin: 0;
+        border-radius: 0;
+      }
+
+      .app,
+      .main-grid,
+      .queue-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .metrics {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <i class="dot red"></i>
+      <i class="dot yellow"></i>
+      <i class="dot green"></i>
+      <span class="title">Translator</span>
+    </div>
+
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">Translator</div>
+        <div class="meta">by OA | V5.0</div>
+
+        <div class="nav">
+          <button>Excel 翻译</button>
+          <button>Word 翻译</button>
+          <button class="active">PDF 翻译</button>
+          <button>记忆库管理</button>
+        </div>
+
+        <section class="card">
+          <h2 class="section-title">模型配置</h2>
+          <label>模型用途</label>
+          <select>
+            <option>PDF 图像翻译模型</option>
+          </select>
+          <label>配置来源</label>
+          <select>
+            <option>跟随翻译模型</option>
+          </select>
+          <label>服务商</label>
+          <select>
+            <option>OpenAI 兼容</option>
+          </select>
+          <label>API Key</label>
+          <input class="input" type="password" value="secretsecretsecret" />
+          <label>Base URL</label>
+          <input class="input" value="https://token-plan-cn.xiaomimo.com/v1" />
+          <label>模型名称</label>
+          <input class="input" value="mimo-v2-pro" />
+          <div class="side-actions">
+            <button class="button">获取模型</button>
+            <button class="button">测试连接</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 class="section-title">吞吐调优</h2>
+          <label>批次大小</label>
+          <input class="input" value="20" />
+          <label>并发数</label>
+          <input class="input" value="7" />
+        </section>
+      </aside>
+
+      <main class="content">
+        <div class="eyebrow">PDF Workspace</div>
+
+        <section class="path-card">
+          <h2 class="section-title">安排新任务</h2>
+          <div class="path-row">
+            <input class="input" value="/Users/lijianwei/Desktop/防火棉属地实验室检测报告/" />
+            <button class="button">浏览</button>
+            <button class="button">扫描</button>
+          </div>
+          <div class="footer-note">
+            现在“开始翻译”会变成“安排翻译任务”。如果同一 API 并发组还有可用槽位，任务会自动开始；否则按安排顺序排队。
+          </div>
+        </section>
+
+        <div class="main-grid">
+          <section class="card">
+            <div class="queue-head">
+              <div>
+                <h2 class="section-title">任务队列</h2>
+                <div class="small-muted">当前页显示 PDF 任务，也能看到占用相同 API 并发组的其他类型任务。</div>
+              </div>
+              <button class="button primary">安排翻译任务</button>
+            </div>
+
+            <div class="queue-layout">
+              <div class="task-list">
+                <article class="task-item selected">
+                  <div class="task-title">
+                    <span>PDF #028 防火棉报告</span>
+                    <span class="badge run">运行中</span>
+                  </div>
+                  <div class="task-meta">
+                    <span>PDF 图像翻译 · 36 页 · 中文</span>
+                    <span>API 并发组 A · 已用 3 / 20 槽</span>
+                    <span>08:02 安排 · 自动启动</span>
+                  </div>
+                  <div class="progress-bar"><div style="width: 86%"></div></div>
+                </article>
+
+                <article class="task-item">
+                  <div class="task-title">
+                    <span>PDF #029 防火棉补充扫描</span>
+                    <span class="badge queue">等待槽位</span>
+                  </div>
+                  <div class="task-meta">
+                    <span>PDF 图像翻译 · 12 页 · 中文</span>
+                    <span>API 并发组 A · 排队第 1 位</span>
+                    <span>预计：#028 跑不满时自动开始</span>
+                  </div>
+                  <div class="progress-bar"><div style="width: 0%"></div></div>
+                </article>
+
+                <article class="task-item">
+                  <div class="task-title">
+                    <span>Excel #041 材料台账</span>
+                    <span class="badge run">并行运行</span>
+                  </div>
+                  <div class="task-meta">
+                    <span>Excel 翻译 · 9 文件 · 法文</span>
+                    <span>API 并发组 B · 与 PDF 不冲突</span>
+                    <span>08:06 安排 · 直接启动</span>
+                  </div>
+                  <div class="progress-bar"><div style="width: 44%"></div></div>
+                </article>
+
+                <article class="task-item">
+                  <div class="task-title">
+                    <span>Word #017 会议纪要</span>
+                    <span class="badge done">已完成</span>
+                  </div>
+                  <div class="task-meta">
+                    <span>Word 翻译 · 3 文件 · 英文</span>
+                    <span>API 并发组 A · 已释放</span>
+                    <span>07:44 完成 · 有 2 处需复核</span>
+                  </div>
+                  <div class="progress-bar"><div style="width: 100%"></div></div>
+                </article>
+              </div>
+
+              <article class="detail-card">
+                <div class="detail-top">
+                  <div>
+                    <div class="detail-title">PDF #028 防火棉报告</div>
+                    <div class="small-muted">运行中 · API 并发组 A · /Desktop/防火棉属地实验室检测报告/</div>
+                  </div>
+                  <div class="detail-actions">
+                    <button class="button">查看输出</button>
+                    <button class="button">导出诊断</button>
+                    <button class="button" style="border-color: #efb5b5; color: #b43434;">终止任务</button>
+                  </div>
+                </div>
+
+                <div class="pool">
+                  <b>API 并发组 A</b>
+                  <div class="pool-row">
+                    <span>组容量</span>
+                    <div class="slotbar"><span style="width: 100%"></span></div>
+                    <span>20 槽</span>
+                  </div>
+                  <div class="pool-row">
+                    <span>当前 PDF #028</span>
+                    <div class="slotbar"><span style="width: 15%"></span></div>
+                    <span>3 槽</span>
+                  </div>
+                  <div class="pool-row">
+                    <span>可让给队列</span>
+                    <div class="slotbar"><span style="width: 85%"></span></div>
+                    <span>17 槽</span>
+                  </div>
+                  <div class="small-muted" style="margin-top: 9px;">
+                    当 #028 只剩少量页面时，#029 会自动开始，但它仍受自己的 PDF 页生成并发数限制。
+                  </div>
+                </div>
+
+                <div class="metrics">
+                  <div class="metric"><b>31 / 36</b><span>页面完成</span></div>
+                  <div class="metric"><b>3</b><span>请求进行中</span></div>
+                  <div class="metric"><b>2</b><span>审核修复</span></div>
+                  <div class="metric"><b>0</b><span>审核未通过</span></div>
+                </div>
+
+                <h2 class="section-title">运行日志</h2>
+                <div class="timeline">
+                  <div class="log ok"><time>08:09:05</time><strong>OK</strong> 第 31 页已生成，审核通过</div>
+                  <div class="log warn"><time>08:08:54</time><strong>WARN</strong> 第 30 页第 1 轮审核未通过，已带反馈重试</div>
+                  <div class="log ok"><time>08:08:42</time><strong>OK</strong> 第 29 页已生成，质检通过</div>
+                  <div class="log"><time>08:08:30</time><strong>INFO</strong> 第 32 页已提交图像生成</div>
+                  <div class="log"><time>08:08:16</time><strong>INFO</strong> 检测到并发组 A 有 17 个空闲槽，队列任务 #029 已具备启动条件</div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <aside>
+            <section class="right-card">
+              <h2 class="section-title">输出位置</h2>
+              <label><input type="radio" checked /> 源目录内</label>
+              <label><input type="radio" /> 自定义目录</label>
+              <div class="small-muted">输出目录会创建在源路径同级位置，并自动附带时间戳。</div>
+            </section>
+
+            <section class="right-card">
+              <h2 class="section-title">任务参数</h2>
+              <label>目标语言</label>
+              <select><option>中文</option></select>
+              <div class="param-grid">
+                <div class="param"><b>3</b><span class="small-muted">页级重试次数</span></div>
+                <div class="param"><b>20</b><span class="small-muted">PDF 页生成并发数</span></div>
+                <div class="param"><b>开启</b><span class="small-muted">生成压缩 PDF</span></div>
+                <div class="param"><b>开启</b><span class="small-muted">翻译审核</span></div>
+              </div>
+            </section>
+
+            <section class="right-card">
+              <h2 class="section-title">排队提示</h2>
+              <div class="small-muted">
+                PDF #029 和 PDF #028 使用同一 API 并发组 A，所以按顺序等待槽位。Excel #041 使用 API 并发组 B，所以不会被 PDF 队列阻塞。
+              </div>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

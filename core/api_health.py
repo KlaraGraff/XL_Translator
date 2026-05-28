@@ -49,12 +49,16 @@ def build_connectivity_signature(settings: AppSettings) -> str:
     """Return a stable, non-secret signature for the active backend config."""
     engine_settings = settings.engine
     if engine_settings.mode == "local":
-        return f"local|{engine_settings.ollama_model}"
+        return "|".join(
+            [
+                "local",
+                str(engine_settings.local_provider or ""),
+                str(engine_settings.local_model or engine_settings.ollama_model or ""),
+                str(engine_settings.local_base_url or "").strip().rstrip("/"),
+            ]
+        )
 
     provider = engine_settings.cloud_provider
-    if provider == "hermes":
-        return "cloud|hermes"
-
     return "|".join(
         [
             "cloud",

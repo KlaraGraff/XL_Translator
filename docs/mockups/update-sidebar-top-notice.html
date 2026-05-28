@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Translator Update Notice Mockup</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #edf2f7;
+      color: #1a2035;
+      font-family: Arial, Helvetica, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .window {
+      width: min(1280px, calc(100vw - 32px));
+      height: min(820px, calc(100vh - 32px));
+      margin: 16px auto;
+      background: #f4f6f9;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.14);
+    }
+
+    .titlebar {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      background: #ffffff;
+      border-bottom: 1px solid #d9e2ec;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .dot.red { background: #ff5f57; }
+    .dot.yellow { background: #febc2e; }
+    .dot.green { background: #28c840; }
+
+    .titlebar span {
+      margin-left: 10px;
+      color: #475467;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .shell {
+      display: flex;
+      height: calc(100% - 34px);
+    }
+
+    aside {
+      width: 330px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 18px;
+      background: #ffffff;
+      border-right: 1px solid #d9e2ec;
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .brand {
+      flex: 1;
+      min-width: 0;
+      color: #0f172a;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .notice-actions {
+      display: flex;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    button {
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      background: #ffffff;
+      color: #1a2035;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 12px;
+      min-height: 34px;
+    }
+
+    .notice-button {
+      min-height: 30px;
+      padding: 5px 8px;
+      background: #eaf6fd;
+      border-color: #7dd3fc;
+      color: #075985;
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .meta,
+    .hint {
+      color: #667085;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .nav button {
+      width: 100%;
+      text-align: left;
+      padding: 10px 12px;
+    }
+
+    .nav .active {
+      background: #eaf6fd;
+      border-color: #7dd3fc;
+      color: #075985;
+    }
+
+    .scroll-area {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .section-title {
+      color: #111827;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .select,
+    .input {
+      height: 36px;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      background: #ffffff;
+      padding: 8px 10px;
+      color: #1a2035;
+      font-weight: 600;
+      margin-top: 8px;
+    }
+
+    .role {
+      border-color: #7dd3fc;
+      color: #075985;
+      text-align: center;
+    }
+
+    .two-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .two-buttons button,
+    .footer-actions button {
+      flex: 1;
+    }
+
+    .footer-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    main {
+      flex: 1;
+      padding: 28px 32px;
+      overflow: hidden;
+    }
+
+    .eyebrow {
+      color: #3182ce;
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0 0 28px;
+      color: #111827;
+      font-size: 26px;
+      line-height: 1.2;
+    }
+
+    .command-bar {
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+
+    .path-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .path-row .input {
+      flex: 1;
+      margin: 0;
+    }
+
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 16px;
+    }
+
+    .panel {
+      background: #ffffff;
+      border: 1px solid #d9e2ec;
+      border-radius: 8px;
+      padding: 18px;
+      min-height: 132px;
+    }
+
+    .primary {
+      width: 100%;
+      margin-top: 14px;
+      background: #0ea5e9;
+      border-color: #0ea5e9;
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="dot red"></div>
+      <div class="dot yellow"></div>
+      <div class="dot green"></div>
+      <span>Translator</span>
+    </div>
+    <div class="shell">
+      <aside>
+        <div class="brand-row">
+          <div class="brand">Translator</div>
+          <div class="notice-actions" aria-label="发现新版 V5.1">
+            <button class="notice-button">更新</button>
+            <button class="notice-button">忽略</button>
+          </div>
+        </div>
+        <div class="meta">by OA | V5.0</div>
+
+        <div class="nav">
+          <button class="active">Excel 翻译</button>
+          <button>Word 翻译</button>
+          <button>PDF 翻译</button>
+          <button>记忆库管理</button>
+        </div>
+
+        <div class="scroll-area">
+          <div class="card">
+            <div class="section-title">模型配置</div>
+            <div class="select role">翻译模型</div>
+            <div class="select">云端 API</div>
+            <div class="hint" style="margin-top: 12px;">服务商</div>
+            <div class="select">硅基流动</div>
+            <div class="hint" style="margin-top: 12px;">API Key</div>
+            <div class="input"></div>
+            <div class="hint" style="margin-top: 12px;">Base URL</div>
+            <div class="input">https://api.siliconflow.com/v1</div>
+            <div class="two-buttons">
+              <button>获取模型</button>
+              <button>测试连接</button>
+            </div>
+          </div>
+
+          <div class="footer-actions">
+            <button>检查更新</button>
+            <button>忽略更新</button>
+          </div>
+        </div>
+      </aside>
+
+      <main>
+        <div class="eyebrow">Excel Workspace</div>
+        <h1>Excel 翻译</h1>
+
+        <div class="command-bar">
+          <div class="section-title">源路径</div>
+          <div class="path-row">
+            <div class="input">/Users/lijianwei/Desktop/防火棉属地实验室检测报告/</div>
+            <button>浏览</button>
+            <button>扫描</button>
+          </div>
+        </div>
+
+        <div class="workspace-grid">
+          <div class="panel">
+            <div class="section-title">任务清单</div>
+            <div class="hint">可手动输入文件夹或单个 Excel 文件路径后点击“扫描”，也可点击“浏览”选择并自动扫描。</div>
+          </div>
+          <div class="panel">
+            <div class="section-title">执行操作</div>
+            <div class="hint">当前目标语言：中文；可执行文件：0 / 0</div>
+            <button class="primary">开始翻译（中文）</button>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

@@ -13,6 +13,16 @@ from core.word_document import scan_word_path
 from core.tm_cleaner import apply_suggestions, run_cleaning
 from core.engine_dispatcher import build_engine, get_batch_size
 from core.model_roles import ROLE_CLEANER, settings_for_text_role
+from core.update_checker import check_for_updates
+
+
+class UpdateCheckWorker(QThread):
+    """Run update checks away from the GUI thread."""
+
+    resultReady = Signal(object)
+
+    def run(self) -> None:
+        self.resultReady.emit(check_for_updates())
 
 
 class ScanWorker(QThread):
@@ -58,14 +68,15 @@ class PdfScanWorker(QThread):
 
     finished = Signal(object, str, str)
 
-    def __init__(self, raw_path: str, parent=None):
+    def __init__(self, raw_path: str, parent=None, *, include_images: bool = False):
         super().__init__(parent)
         self._raw_path = raw_path
+        self._include_images = include_images
 
     def run(self) -> None:
         try:
             input_path = Path(self._raw_path).expanduser()
-            items = scan_pdf_path(input_path)
+            items = scan_pdf_path(input_path, include_images=self._include_images)
             source_root = input_path if input_path.is_dir() else input_path.parent
             self.finished.emit(items, str(source_root), "")
         except Exception as exc:  # noqa: BLE001 - converted to UI message.

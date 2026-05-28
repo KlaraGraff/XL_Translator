@@ -24,6 +24,7 @@ from core.language_registry import (
     build_target_lang_note_block_from_lang_pair,
     get_target_lang_display_from_lang_pair,
 )
+from core.engine_dispatcher import is_local_engine_name
 from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
 from engines.base_engine import TranslationEngine, strip_markdown_json
 
@@ -320,7 +321,7 @@ def run_cleaning(
     )
 
     # 判断引擎类型，选择对应的并发策略
-    is_local = engine.engine_name.startswith("ollama/")
+    is_local = is_local_engine_name(engine.engine_name)
 
     if is_local:
         # 本地引擎：使用 asyncio 并发（与翻译流程一致）

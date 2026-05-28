@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
-from core.engine_dispatcher import TranslationBatchRunStats, translate_texts
+from core.engine_dispatcher import TranslationBatchRunStats, build_engine, translate_texts
 from engines.base_engine import TranslationEngine
+from settings import AppSettings, EngineSettings
 
 
 class FakeExcelEngine(TranslationEngine):
@@ -135,6 +137,30 @@ class EngineDispatcherTests(unittest.TestCase):
                 concurrency=1,
                 source_lang="en",
             )
+
+    def test_build_engine_uses_lm_studio_as_local_openai_provider(self) -> None:
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="local",
+                local_provider="lm_studio",
+                local_model="qwen-local",
+                local_base_url="http://localhost:1234/v1",
+            )
+        )
+
+        with (
+            patch("core.engine_dispatcher.get_key", return_value=""),
+            patch("engines.openai_engine.OpenAIEngine") as engine_cls,
+        ):
+            build_engine(settings)
+
+        self.assertEqual(engine_cls.call_args.kwargs["api_key"], "local-model")
+        self.assertEqual(engine_cls.call_args.kwargs["model"], "qwen-local")
+        self.assertEqual(engine_cls.call_args.kwargs["base_url"], "http://localhost:1234/v1")
+        self.assertEqual(
+            engine_cls.call_args.kwargs["engine_name_prefix"],
+            "local_openai/lm_studio",
+        )
 
 
 if __name__ == "__main__":

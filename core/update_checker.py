@@ -35,6 +35,7 @@ class UpdateCheckResult:
     release_url: str = LATEST_RELEASE_PAGE_URL
     asset_name: str = ""
     download_url: str = ""
+    release_notes: str = ""
 
     @property
     def has_update(self) -> bool:
@@ -42,23 +43,40 @@ class UpdateCheckResult:
 
 
 def _version_key(version: str) -> tuple[int, ...]:
-    normalized = str(version or "").strip()
-    normalized = normalized[1:] if normalized.lower().startswith("v") else normalized
-    release_part = re.split(r"[-+]", normalized, maxsplit=1)[0]
-    parts = []
-    for raw_part in release_part.split("."):
-        if not raw_part:
-            parts.append(0)
-            continue
-        match = re.match(r"(\d+)", raw_part)
-        parts.append(int(match.group(1)) if match else 0)
+    parts = _parse_version_parts(version)
+    if parts is None:
+        return ()
     while len(parts) < 3:
         parts.append(0)
     return tuple(parts)
 
 
+def _parse_version_parts(version: str) -> list[int] | None:
+    normalized = str(version or "").strip()
+    normalized = normalized[1:] if normalized.lower().startswith("v") else normalized
+    release_part = re.split(r"[-+]", normalized, maxsplit=1)[0]
+    if not release_part or not re.fullmatch(r"\d+(?:\.\d+)*", release_part):
+        return None
+    return [int(part) for part in release_part.split(".")]
+
+
 def is_newer_version(latest_version: str, current_version: str = APP_VERSION) -> bool:
-    return _version_key(latest_version) > _version_key(current_version)
+    latest_key = _version_key(latest_version)
+    current_key = _version_key(current_version)
+    return bool(latest_key and current_key and latest_key > current_key)
+
+
+def major_version(version: str) -> int | None:
+    parts = _parse_version_parts(version)
+    return parts[0] if parts else None
+
+
+def is_major_upgrade(latest_version: str, current_version: str = APP_VERSION) -> bool:
+    latest_major = major_version(latest_version)
+    current_major = major_version(current_version)
+    if latest_major is None or current_major is None:
+        return False
+    return latest_major > current_major
 
 
 def _strip_tag_prefix(tag_name: str) -> str:
@@ -114,6 +132,7 @@ def build_update_result_from_release_payload(
     tag_name = str(payload.get("tag_name") or "").strip()
     latest_version = _strip_tag_prefix(tag_name)
     release_url = str(payload.get("html_url") or LATEST_RELEASE_PAGE_URL).strip()
+    release_notes = str(payload.get("body") or "").strip()
 
     if not tag_name:
         return UpdateCheckResult(
@@ -122,6 +141,19 @@ def build_update_result_from_release_payload(
             message="GitHub Release 响应缺少版本标签。",
             current_version=current_version,
             release_url=release_url,
+            release_notes=release_notes,
+        )
+
+    if major_version(latest_version) is None or major_version(current_version) is None:
+        return UpdateCheckResult(
+            ok=True,
+            status="unknown",
+            message=f"无法判断版本号 {tag_name} 是否为新版，已跳过更新提示。",
+            current_version=current_version,
+            latest_version=latest_version,
+            latest_tag=tag_name,
+            release_url=release_url,
+            release_notes=release_notes,
         )
 
     assets = _parse_release_assets(payload)
@@ -136,6 +168,7 @@ def build_update_result_from_release_payload(
             latest_version=latest_version,
             latest_tag=tag_name,
             release_url=release_url,
+            release_notes=release_notes,
         )
 
     return UpdateCheckResult(
@@ -148,6 +181,7 @@ def build_update_result_from_release_payload(
         release_url=release_url,
         asset_name=selected_asset.name if selected_asset else "",
         download_url=selected_asset.download_url if selected_asset else release_url,
+        release_notes=release_notes,
     )
 
 

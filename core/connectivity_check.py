@@ -7,7 +7,11 @@ from urllib.parse import urlparse
 
 import httpx
 
-from config import DEFAULT_CUSTOM_OPENAI_BASE_URL, LANYI_BASE_URL, OLLAMA_BASE_URL
+from config import (
+    LM_STUDIO_BASE_URL,
+    OLLAMA_BASE_URL,
+    normalize_cloud_base_url,
+)
 from settings import AppSettings, get_key
 
 
@@ -21,23 +25,6 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "lanyi",
     "siliconflow",
 }
-
-HERMES_OPENAI_COMPATIBLE_PROVIDERS = {
-    "custom",
-    "custom_openai",
-    "openai",
-    "openrouter",
-    "siliconflow",
-    "deepseek",
-    "xai",
-    "ai-gateway",
-    "google",
-    "gemini",
-    "huggingface",
-    "kimi-coding",
-    "zai",
-}
-
 
 @dataclass(frozen=True)
 class ConnectivityResult:
@@ -63,16 +50,6 @@ def _normalize_base_url(base_url: str, *, default_url: str = "") -> str:
     if normalized:
         return normalized
     return default_url.rstrip("/")
-
-
-def _official_provider_base_url(provider: str, base_url: str) -> str:
-    if provider == "openai":
-        return ""
-    normalized = str(base_url or "").strip().rstrip("/")
-    custom_default = DEFAULT_CUSTOM_OPENAI_BASE_URL.rstrip("/")
-    if provider == "claude" and normalized == custom_default:
-        return ""
-    return normalized
 
 
 def _append_url_path(base_url: str, path: str) -> str:
@@ -115,6 +92,7 @@ def _extract_ollama_model_names(payload: dict[str, Any]) -> set[str]:
 def _check_ollama_model(
     model: str,
     *,
+    base_url: str = OLLAMA_BASE_URL,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ConnectivityResult:
     model_name = str(model or "").strip()
@@ -128,7 +106,7 @@ def _check_ollama_model(
 
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
-            response = client.get(_append_url_path(OLLAMA_BASE_URL, "/api/tags"))
+            response = client.get(_append_url_path(base_url or OLLAMA_BASE_URL, "/api/tags"))
             _raise_for_status(response)
             payload = response.json()
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
@@ -176,8 +154,9 @@ def _check_openai_compatible(
     model: str,
     base_url: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    require_api_key: bool = True,
 ) -> ConnectivityResult:
-    if not api_key:
+    if require_api_key and not api_key:
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
@@ -193,11 +172,18 @@ def _check_openai_compatible(
             provider=provider,
         )
 
-    normalized_base_url = _normalize_base_url(base_url, default_url="https://api.openai.com/v1")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    normalized_base_url = normalize_cloud_base_url(provider, base_url)
+    if not normalized_base_url:
+        return ConnectivityResult(
+            ok=False,
+            status="missing_base_url",
+            message="请先填写 Base URL。",
+            provider=provider,
+            model=model,
+        )
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     if _supports_asxs_responses_route(normalized_base_url):
         url = _append_url_path(normalized_base_url, "/responses")
         payload: dict[str, Any] = {
@@ -274,7 +260,7 @@ def _check_claude(
             provider="claude",
         )
 
-    normalized_base_url = _normalize_base_url(base_url, default_url="https://api.anthropic.com/v1")
+    normalized_base_url = normalize_cloud_base_url("claude", base_url)
     url = _append_url_path(normalized_base_url, "/messages")
     headers = {
         "x-api-key": api_key,
@@ -426,55 +412,32 @@ def _check_dashscope(
     )
 
 
-def _check_hermes(
+def _check_local_openai_compatible(
     *,
+    provider: str,
+    model: str,
+    base_url: str,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ConnectivityResult:
-    try:
-        from engines.hermes_engine import load_hermes_runtime_routes
-
-        routes = load_hermes_runtime_routes()
-    except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
+    normalized_base_url = _normalize_base_url(
+        base_url,
+        default_url=LM_STUDIO_BASE_URL if provider == "lm_studio" else "",
+    )
+    if not normalized_base_url:
         return ConnectivityResult(
             ok=False,
-            status="config_error",
-            message=f"Hermes 配置不可用：{_sanitize_error_message(exc)}",
-            provider="hermes",
+            status="missing_base_url",
+            message="请先填写本地模型服务 Base URL。",
+            provider=provider,
+            model=model,
         )
-
-    if not routes:
-        return ConnectivityResult(
-            ok=False,
-            status="config_error",
-            message="Hermes 未返回可用模型路由。",
-            provider="hermes",
-        )
-
-    route = routes[0]
-    provider = route.provider.lower()
-    if provider == "anthropic":
-        return _check_claude(
-            api_key=route.api_key,
-            model=route.model,
-            base_url=route.base_url,
-            timeout_seconds=timeout_seconds,
-        )
-
-    if provider in HERMES_OPENAI_COMPATIBLE_PROVIDERS or route.base_url:
-        return _check_openai_compatible(
-            provider=f"hermes/{route.provider}",
-            api_key=route.api_key,
-            model=route.model,
-            base_url=route.base_url,
-            timeout_seconds=timeout_seconds,
-        )
-
-    return ConnectivityResult(
-        ok=False,
-        status="unsupported_provider",
-        message=f"Hermes 当前 provider 暂不支持连接测试：{route.provider}。",
-        provider="hermes",
-        model=route.model,
+    return _check_openai_compatible(
+        provider=provider,
+        api_key="",
+        model=model,
+        base_url=normalized_base_url,
+        timeout_seconds=timeout_seconds,
+        require_api_key=False,
     )
 
 
@@ -486,26 +449,38 @@ def check_connectivity(
     engine_settings = settings.engine
 
     if engine_settings.mode == "local":
-        return _check_ollama_model(
-            engine_settings.ollama_model,
-            timeout_seconds=timeout_seconds,
+        local_provider = str(engine_settings.local_provider or "ollama").strip()
+        model = str(engine_settings.local_model or engine_settings.ollama_model or "").strip()
+        if local_provider == "ollama":
+            return _check_ollama_model(
+                model,
+                base_url=engine_settings.local_base_url or OLLAMA_BASE_URL,
+                timeout_seconds=timeout_seconds,
+            )
+        if local_provider in {"lm_studio", "custom_local"}:
+            return _check_local_openai_compatible(
+                provider=local_provider,
+                model=model,
+                base_url=engine_settings.local_base_url,
+                timeout_seconds=timeout_seconds,
+            )
+        return ConnectivityResult(
+            ok=False,
+            status="unsupported_provider",
+            message=f"暂不支持该本地模型服务：{local_provider or '未设置'}。",
+            provider=local_provider,
+            model=model,
         )
 
     provider = str(engine_settings.cloud_provider or "").strip()
     model = str(engine_settings.cloud_model or "").strip()
 
-    if provider == "hermes":
-        return _check_hermes(timeout_seconds=timeout_seconds)
-
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
-        base_url = _official_provider_base_url(provider, engine_settings.cloud_base_url)
-        if provider == "lanyi" and not base_url:
-            base_url = LANYI_BASE_URL
         return _check_openai_compatible(
             provider=provider,
             api_key=get_key(provider),
             model=model,
-            base_url=base_url,
+            base_url=normalize_cloud_base_url(provider, engine_settings.cloud_base_url),
             timeout_seconds=timeout_seconds,
         )
 
@@ -513,7 +488,7 @@ def check_connectivity(
         return _check_claude(
             api_key=get_key(provider),
             model=model,
-            base_url=_official_provider_base_url(provider, engine_settings.cloud_base_url),
+            base_url=normalize_cloud_base_url(provider, engine_settings.cloud_base_url),
             timeout_seconds=timeout_seconds,
         )
 

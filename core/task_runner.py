@@ -41,7 +41,7 @@ from core.excel_automation import (
     terminate_process_tree,
 )
 from core.task_logger import TaskLogger
-from settings import AppSettings
+from settings import AppSettings, provider_key_overrides
 
 AUTOFIT_STALL_TIMEOUT_SECONDS = 180
 AUTOFIT_MONITOR_POLL_SECONDS = 0.5
@@ -90,10 +90,24 @@ class PdfReviewStatusMsg:
 
 
 @dataclass
+class PdfPageRecoveryStatusMsg:
+    """PDF page retry/recovery summary for the non-scrolling execution monitor."""
+    total_pages: int = 0
+    completed_pages: int = 0
+    submitted_page_count: int = 0
+    pending_submitted_page_count: int = 0
+    retrying_page_count: int = 0
+    retried_page_count: int = 0
+    recovered_page_count: int = 0
+    placeholder_page_count: int = 0
+
+
+@dataclass
 class LogMsg:
     level:   str           # INFO / OK / WARN / ERROR
     message: str
     ts:      str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
+    visible: bool = True
 
 
 @dataclass
@@ -142,12 +156,16 @@ class TaskRunner:
         source_root: Path | str | None = None,
         allow_xls_fallback: bool = False,
         source_lang: str | None = None,
+        key_overrides: dict[str, str] | None = None,
+        api_scheduler=None,
     ):
         self._files       = file_items
         self._settings    = settings
         self._source_root = Path(source_root) if source_root else None
         self._allow_xls_fallback = allow_xls_fallback
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
+        self._key_overrides = dict(key_overrides or {})
+        self._api_scheduler = api_scheduler
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -155,7 +173,7 @@ class TaskRunner:
 
     def start(self) -> None:
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
         self._thread.start()
 
     @property
@@ -187,6 +205,10 @@ class TaskRunner:
         logger.info(f"[{level}] {msg}")
 
     # ── 全局聚合流水线主入口 ──────────────────────────────────────────────
+
+    def _run_with_overrides(self) -> None:
+        with provider_key_overrides(self._key_overrides):
+            self._run()
 
     def _run(self) -> None:
         start_ts     = datetime.now()
@@ -611,6 +633,7 @@ class TaskRunner:
                     api_error_cb,
                     should_stop=self.stop_requested,
                     source_lang=source_lang,
+                    api_scheduler=self._api_scheduler,
                     stats=batch_stats,
                 )
                 _raise_if_stopped("任务已中止，未写入剩余翻译结果。")

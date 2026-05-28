@@ -12,14 +12,17 @@ from PySide6.QtWidgets import (
     QFrame,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QStyle,
     QStyleOptionComboBox,
+    QStyleOptionFrame,
     QStylePainter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 
 DEFAULT_COMBO_MAX_VISIBLE_ITEMS = 12
@@ -29,6 +32,11 @@ TOOLTIP_MARGIN = 12
 TOOLTIP_CURSOR_OFFSET = QPoint(14, 18)
 TOOLTIP_MAX_WIDTH = 380
 TOOLTIP_MIN_WIDTH = 220
+
+
+def is_live_widget(widget: QWidget | None) -> bool:
+    """Return whether a Qt widget reference still points to a live C++ object."""
+    return widget is not None and isValid(widget)
 
 
 def build_app_tooltip_html(
@@ -212,6 +220,67 @@ class MiddleElideLabel(QLabel):
             width,
         )
         super().setText(text)
+
+
+class MiddleElideLineEdit(QLineEdit):
+    """Line edit that middle-elides long values while keeping editable text intact."""
+
+    def elided_text(self, width: int | None = None) -> str:
+        text = self.text()
+        if not text:
+            return ""
+        available_width = width if width is not None else self._text_rect_width()
+        return self.fontMetrics().elidedText(
+            text,
+            Qt.TextElideMode.ElideMiddle,
+            max(0, available_width),
+        )
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        if self._should_use_native_paint():
+            super().paintEvent(event)
+            return
+
+        option = QStyleOptionFrame()
+        self.initStyleOption(option)
+        painter = QStylePainter(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_PanelLineEdit, option, painter, self)
+
+        text_rect = self._text_rect(option)
+        painter.setPen(option.palette.text().color())
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self.elided_text(text_rect.width()),
+        )
+
+    def _should_use_native_paint(self) -> bool:
+        return (
+            self.hasFocus()
+            or self.echoMode() != QLineEdit.EchoMode.Normal
+            or bool(self.selectedText())
+            or not self.text()
+        )
+
+    def _text_rect_width(self) -> int:
+        option = QStyleOptionFrame()
+        self.initStyleOption(option)
+        return self._text_rect(option).width()
+
+    def _text_rect(self, option: QStyleOptionFrame) -> QRect:
+        text_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_LineEditContents,
+            option,
+            self,
+        )
+        margins = self.textMargins()
+        text_rect.adjust(
+            margins.left(),
+            margins.top(),
+            -margins.right(),
+            -margins.bottom(),
+        )
+        return text_rect
 
 
 def configure_app_table(

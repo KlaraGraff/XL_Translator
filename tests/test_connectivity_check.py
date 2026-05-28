@@ -98,6 +98,30 @@ class ConnectivityCheckTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "missing_api_key")
 
+    def test_local_lm_studio_connectivity_does_not_require_api_key(self) -> None:
+        from core.connectivity_check import check_connectivity
+
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="local",
+                local_provider="lm_studio",
+                local_model="qwen-local",
+                local_base_url="http://localhost:1234/v1",
+            )
+        )
+        fake_client = _FakeClient(post_response=_FakeResponse({"id": "chatcmpl_1"}))
+
+        with self._patch_client(fake_client):
+            result = check_connectivity(settings)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider, "lm_studio")
+        self.assertEqual(
+            fake_client.post_calls[0]["url"],
+            "http://localhost:1234/v1/chat/completions",
+        )
+        self.assertNotIn("Authorization", fake_client.post_calls[0]["headers"])
+
     def test_openai_compatible_uses_responses_route_for_asxs(self) -> None:
         fake_client = _FakeClient(post_response=_FakeResponse({"id": "resp_1"}))
 
@@ -134,7 +158,7 @@ class ConnectivityCheckTests(unittest.TestCase):
         self.assertNotIn("secret-token", result.message)
         self.assertIn("***", result.message)
 
-    def test_official_openai_ignores_configured_base_url(self) -> None:
+    def test_official_openai_uses_configured_base_url(self) -> None:
         from core.engine_dispatcher import build_engine
 
         settings = AppSettings(
@@ -152,7 +176,7 @@ class ConnectivityCheckTests(unittest.TestCase):
         ):
             build_engine(settings)
 
-        self.assertEqual(engine_cls.call_args.kwargs["base_url"], "")
+        self.assertEqual(engine_cls.call_args.kwargs["base_url"], "https://api.example.test/v1")
 
 
 if __name__ == "__main__":

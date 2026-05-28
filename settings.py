@@ -5,6 +5,8 @@ API keys are stored separately in keys.json with OS-level permissions.
 import json
 import platform
 import stat
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +21,10 @@ from config import (
     DEFAULT_CLOUD_PROVIDER,
     DEFAULT_CUSTOM_OPENAI_API_KEY,
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
+    DEFAULT_LOCAL_MODEL_PROVIDER,
+    LM_STUDIO_BASE_URL,
+    LOCAL_MODEL_PROVIDERS,
+    OLLAMA_BASE_URL,
     DEFAULT_MAX_LEN,
     PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
@@ -45,7 +51,9 @@ from config import (
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
+    normalize_cloud_base_url,
 )
+
 from core.language_registry import (
     CustomTargetLang,
     get_default_source_lang,
@@ -56,6 +64,8 @@ from core.language_registry import (
     normalize_recent_target_langs,
     remember_recent_target_lang,
 )
+
+_KEY_OVERRIDE_LOCAL = threading.local()
 
 
 def _clamp_int(value, *, minimum: int, maximum: int, fallback: int) -> int:
@@ -73,12 +83,143 @@ def _normalize_hex_color(value: str, *, fallback: str) -> str:
     return fallback
 
 
+def _normalize_local_provider(value: str) -> str:
+    provider = str(value or DEFAULT_LOCAL_MODEL_PROVIDER).strip()
+    return provider if provider in set(LOCAL_MODEL_PROVIDERS.values()) else DEFAULT_LOCAL_MODEL_PROVIDER
+
+
+def _default_local_base_url(provider: str) -> str:
+    normalized = _normalize_local_provider(provider)
+    if normalized == "lm_studio":
+        return LM_STUDIO_BASE_URL
+    if normalized == "ollama":
+        return OLLAMA_BASE_URL
+    return ""
+
+
+class CloudProviderConfig(BaseModel):
+    """Provider-specific model and Base URL values for one model role."""
+
+    cloud_model: str = ""
+    cloud_base_url: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_values(self):
+        self.cloud_model = str(self.cloud_model or "").strip()
+        self.cloud_base_url = str(self.cloud_base_url or "").strip().rstrip("/")
+        return self
+
+
+def _normalize_provider_configs(
+    configs: dict[str, CloudProviderConfig] | dict[str, dict] | None,
+) -> dict[str, CloudProviderConfig]:
+    if not isinstance(configs, dict):
+        return {}
+    normalized: dict[str, CloudProviderConfig] = {}
+    for raw_provider, raw_config in configs.items():
+        provider = str(raw_provider or "").strip()
+        if not provider:
+            continue
+        try:
+            config = (
+                raw_config
+                if isinstance(raw_config, CloudProviderConfig)
+                else CloudProviderConfig.model_validate(raw_config or {})
+            )
+        except Exception:
+            config = CloudProviderConfig()
+        normalized[provider] = CloudProviderConfig(
+            cloud_model=config.cloud_model,
+            cloud_base_url=normalize_cloud_base_url(provider, config.cloud_base_url),
+        )
+    return normalized
+
+
+def get_cloud_provider_config(owner, provider: str) -> CloudProviderConfig:
+    """Resolve one provider's remembered model/Base URL for an engine or role."""
+    provider_name = str(provider or DEFAULT_CLOUD_PROVIDER).strip()
+    configs = _normalize_provider_configs(getattr(owner, "cloud_provider_configs", {}))
+    config = configs.get(provider_name)
+    if config is not None:
+        return config
+
+    current_provider = str(getattr(owner, "cloud_provider", "") or "").strip()
+    if provider_name == current_provider:
+        return CloudProviderConfig(
+            cloud_model=str(getattr(owner, "cloud_model", "") or "").strip(),
+            cloud_base_url=normalize_cloud_base_url(
+                provider_name,
+                str(getattr(owner, "cloud_base_url", "") or "").strip(),
+            ),
+        )
+    return CloudProviderConfig(
+        cloud_model="",
+        cloud_base_url=normalize_cloud_base_url(provider_name, ""),
+    )
+
+
+def set_cloud_provider_config(
+    owner,
+    provider: str,
+    *,
+    cloud_model: str | None = None,
+    cloud_base_url: str | None = None,
+) -> CloudProviderConfig:
+    """Store provider-specific values and keep legacy current fields in sync."""
+    provider_name = str(provider or DEFAULT_CLOUD_PROVIDER).strip()
+    current = get_cloud_provider_config(owner, provider_name)
+    model = (
+        current.cloud_model
+        if cloud_model is None
+        else str(cloud_model or "").strip()
+    )
+    base_url_raw = (
+        current.cloud_base_url
+        if cloud_base_url is None
+        else str(cloud_base_url or "").strip()
+    )
+    config = CloudProviderConfig(
+        cloud_model=model,
+        cloud_base_url=normalize_cloud_base_url(provider_name, base_url_raw),
+    )
+    owner.cloud_provider_configs = _normalize_provider_configs(
+        getattr(owner, "cloud_provider_configs", {}),
+    )
+    owner.cloud_provider_configs[provider_name] = config
+    if provider_name == str(getattr(owner, "cloud_provider", "") or "").strip():
+        owner.cloud_model = config.cloud_model
+        owner.cloud_base_url = config.cloud_base_url
+    return config
+
+
+def select_cloud_provider_config(owner, provider: str) -> CloudProviderConfig:
+    """Switch an engine/role to a provider and load that provider's remembered values."""
+    provider_name = str(provider or DEFAULT_CLOUD_PROVIDER).strip()
+    owner.cloud_provider_configs = _normalize_provider_configs(
+        getattr(owner, "cloud_provider_configs", {}),
+    )
+    config = owner.cloud_provider_configs.get(provider_name)
+    if config is None:
+        config = CloudProviderConfig(
+            cloud_model="",
+            cloud_base_url=normalize_cloud_base_url(provider_name, ""),
+        )
+    owner.cloud_provider = provider_name
+    owner.cloud_model = config.cloud_model
+    owner.cloud_base_url = config.cloud_base_url
+    return config
+
+
 class EngineSettings(BaseModel):
     mode: str = "cloud"  # "cloud" | "local"
     cloud_provider: str = DEFAULT_CLOUD_PROVIDER
     cloud_model: str = DEFAULT_CLOUD_MODEL
     cloud_base_url: str = DEFAULT_CUSTOM_OPENAI_BASE_URL
-    ollama_model: str = "qwen2.5:14b"
+    cloud_provider_configs: dict[str, CloudProviderConfig] = Field(default_factory=dict)
+    local_provider: str = DEFAULT_LOCAL_MODEL_PROVIDER
+    local_model: str = ""
+    local_base_url: str = OLLAMA_BASE_URL
+    ollama_model: str = ""
     concurrency: int = Field(
         default=CONCURRENCY_DEFAULT,
         ge=1,
@@ -121,6 +262,13 @@ class EngineSettings(BaseModel):
                 fallback=get_default_concurrency("local"),
             )
 
+        migrated.setdefault("local_provider", DEFAULT_LOCAL_MODEL_PROVIDER)
+        if "local_model" not in migrated:
+            migrated["local_model"] = str(migrated.get("ollama_model") or "").strip()
+        if "local_base_url" not in migrated:
+            migrated["local_base_url"] = _default_local_base_url(
+                migrated.get("local_provider"),
+            )
         migrated.setdefault("concurrency_unlocked", False)
         return migrated
 
@@ -131,6 +279,30 @@ class EngineSettings(BaseModel):
 
         local_min, local_max = get_local_concurrency_bounds(self.concurrency_unlocked)
         self.ollama_concurrency = max(local_min, min(local_max, self.ollama_concurrency))
+        self.local_provider = _normalize_local_provider(self.local_provider)
+        self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+        self.cloud_model = str(self.cloud_model or "").strip()
+        self.cloud_base_url = normalize_cloud_base_url(
+            self.cloud_provider,
+            self.cloud_base_url,
+        )
+        self.cloud_provider_configs = _normalize_provider_configs(self.cloud_provider_configs)
+        if self.cloud_model or self.cloud_base_url:
+            existing = self.cloud_provider_configs.get(self.cloud_provider)
+            if existing is None or not (existing.cloud_model or existing.cloud_base_url):
+                self.cloud_provider_configs[self.cloud_provider] = CloudProviderConfig(
+                    cloud_model=self.cloud_model,
+                    cloud_base_url=self.cloud_base_url,
+                )
+            else:
+                self.cloud_model = existing.cloud_model
+                self.cloud_base_url = existing.cloud_base_url
+        if not str(self.local_base_url or "").strip():
+            self.local_base_url = _default_local_base_url(self.local_provider)
+        self.local_model = str(self.local_model or "").strip()
+        self.ollama_model = self.local_model if self.local_provider == "ollama" else str(
+            self.ollama_model or ""
+        ).strip()
         return self
 
 
@@ -204,6 +376,7 @@ class ModelRoleSettings(BaseModel):
     cloud_provider: str = DEFAULT_CLOUD_PROVIDER
     cloud_model: str = DEFAULT_CLOUD_MODEL
     cloud_base_url: str = DEFAULT_CUSTOM_OPENAI_BASE_URL
+    cloud_provider_configs: dict[str, CloudProviderConfig] = Field(default_factory=dict)
     availability_status: str = "unknown"
     availability_message: str = ""
     availability_checked_at: str = ""
@@ -211,13 +384,27 @@ class ModelRoleSettings(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_role(self):
-        if self.source_role not in {"independent", "translation", "cleaner"}:
+        if self.source_role not in {"independent", "translation", "cleaner", "image"}:
             self.source_role = "independent"
         if self.availability_status not in {"unknown", "available", "unavailable"}:
             self.availability_status = "unknown"
         self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
         self.cloud_model = str(self.cloud_model or "").strip()
-        self.cloud_base_url = str(self.cloud_base_url or "").strip()
+        self.cloud_base_url = normalize_cloud_base_url(
+            self.cloud_provider,
+            self.cloud_base_url,
+        )
+        self.cloud_provider_configs = _normalize_provider_configs(self.cloud_provider_configs)
+        if self.cloud_model or self.cloud_base_url:
+            existing = self.cloud_provider_configs.get(self.cloud_provider)
+            if existing is None or not (existing.cloud_model or existing.cloud_base_url):
+                self.cloud_provider_configs[self.cloud_provider] = CloudProviderConfig(
+                    cloud_model=self.cloud_model,
+                    cloud_base_url=self.cloud_base_url,
+                )
+            else:
+                self.cloud_model = existing.cloud_model
+                self.cloud_base_url = existing.cloud_base_url
         return self
 
 
@@ -234,6 +421,7 @@ class PdfSettings(BaseModel):
     )
     review_enabled: bool = False
     generate_compressed_pdf: bool = True
+    image_translation_enabled: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -244,6 +432,26 @@ class PdfSettings(BaseModel):
         raw = migrated.get("page_generation_concurrency")
         if raw in ("", None):
             migrated["page_generation_concurrency"] = None
+        return migrated
+
+
+class UpdateSettings(BaseModel):
+    ignore_updates: bool = False
+    ignored_release_version: str = ""
+    last_prompted_major_version: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_update_payload(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        migrated["ignored_release_version"] = str(
+            migrated.get("ignored_release_version") or ""
+        ).strip()
+        migrated["last_prompted_major_version"] = str(
+            migrated.get("last_prompted_major_version") or ""
+        ).strip()
         return migrated
 
 
@@ -264,6 +472,7 @@ class AppSettings(BaseModel):
         default_factory=lambda: ModelRoleSettings(source_role="translation", cloud_model="")
     )
     pdf: PdfSettings = Field(default_factory=PdfSettings)
+    update: UpdateSettings = Field(default_factory=UpdateSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
     target_lang: str = Field(default_factory=get_default_target_lang)
@@ -272,6 +481,9 @@ class AppSettings(BaseModel):
     domain_preset: str = "同步工程场景"
     custom_prompt: str = ""
     last_source_folder: str = ""
+    last_excel_source_folder: str = ""
+    last_word_source_folder: str = ""
+    last_pdf_source_folder: str = ""
     cleaner_mode: str = "diff"  # "diff" | "overwrite"
     cleaner_engine: str = DEFAULT_CLOUD_PROVIDER
     cleaner_model: str = ""
@@ -340,6 +552,7 @@ class AppSettings(BaseModel):
             },
         )
         migrated.setdefault("pdf", PdfSettings().model_dump())
+        migrated.setdefault("update", UpdateSettings().model_dump())
         return migrated
 
     @model_validator(mode="before")
@@ -399,8 +612,6 @@ def _seed_packaged_default_api_key() -> None:
     if KEYS_PATH.exists():
         return
     default_api_key = str(DEFAULT_CUSTOM_OPENAI_API_KEY or "").strip()
-    if DEFAULT_CLOUD_PROVIDER == "hermes":
-        return
     if not default_api_key or default_api_key in {"*", "**", "***"}:
         return
     save_key(DEFAULT_CLOUD_PROVIDER, default_api_key)
@@ -607,6 +818,93 @@ def _migrate_settings_to_v13(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v14(data: dict) -> dict:
+    """Migrate settings payloads to schema version 14."""
+    migrated = dict(data)
+    engine_payload = dict(migrated.get("engine") or {})
+    local_provider = _normalize_local_provider(engine_payload.get("local_provider"))
+    engine_payload.setdefault("local_provider", local_provider)
+    engine_payload.setdefault(
+        "local_model",
+        str(engine_payload.get("ollama_model") or "").strip(),
+    )
+    engine_payload.setdefault("local_base_url", _default_local_base_url(local_provider))
+    engine_payload.setdefault("ollama_model", engine_payload.get("local_model", ""))
+    migrated["engine"] = engine_payload
+    migrated["settings_version"] = 14
+    return migrated
+
+
+def _seed_provider_config_payload(payload: dict) -> dict:
+    seeded = dict(payload or {})
+    provider = str(seeded.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER).strip()
+    configs = dict(seeded.get("cloud_provider_configs") or {})
+    if provider and provider not in configs:
+        configs[provider] = {
+            "cloud_model": str(seeded.get("cloud_model") or "").strip(),
+            "cloud_base_url": normalize_cloud_base_url(
+                provider,
+                str(seeded.get("cloud_base_url") or "").strip(),
+            ),
+        }
+    seeded["cloud_provider_configs"] = configs
+    return seeded
+
+
+def _migrate_settings_to_v15(data: dict) -> dict:
+    """Migrate settings payloads to schema version 15."""
+    migrated = dict(data)
+    migrated["engine"] = _seed_provider_config_payload(dict(migrated.get("engine") or {}))
+    for key in (
+        "cleaner_model_role",
+        "image_model_role",
+        "pdf_review_model_role",
+    ):
+        if key in migrated:
+            migrated[key] = _seed_provider_config_payload(dict(migrated.get(key) or {}))
+    migrated["settings_version"] = 15
+    return migrated
+
+
+def _migrate_settings_to_v16(data: dict) -> dict:
+    """Migrate settings payloads to schema version 16."""
+    migrated = dict(data)
+    migrated.setdefault("update", UpdateSettings().model_dump())
+    migrated["settings_version"] = 16
+    return migrated
+
+
+def _migrate_settings_to_v17(data: dict) -> dict:
+    """Split the legacy source path into page-specific source histories."""
+    migrated = dict(data)
+    legacy_source = str(migrated.get("last_source_folder") or "").strip().strip('"')
+    source_keys = {
+        "excel": "last_excel_source_folder",
+        "word": "last_word_source_folder",
+        "pdf": "last_pdf_source_folder",
+    }
+    for key in source_keys.values():
+        migrated[key] = str(migrated.get(key) or "").strip().strip('"')
+
+    if legacy_source:
+        suffix = Path(legacy_source).suffix.lower()
+        if suffix in {".xlsx", ".xls"}:
+            target_keys = [source_keys["excel"]]
+        elif suffix in {".docx", ".doc"}:
+            target_keys = [source_keys["word"]]
+        elif suffix == ".pdf":
+            target_keys = [source_keys["pdf"]]
+        else:
+            target_keys = list(source_keys.values())
+
+        for key in target_keys:
+            if not str(migrated.get(key) or "").strip():
+                migrated[key] = legacy_source
+
+    migrated["settings_version"] = 17
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -640,6 +938,14 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v12(migrated)
         elif next_version == 13:
             migrated = _migrate_settings_to_v13(migrated)
+        elif next_version == 14:
+            migrated = _migrate_settings_to_v14(migrated)
+        elif next_version == 15:
+            migrated = _migrate_settings_to_v15(migrated)
+        elif next_version == 16:
+            migrated = _migrate_settings_to_v16(migrated)
+        elif next_version == 17:
+            migrated = _migrate_settings_to_v17(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version
@@ -744,16 +1050,57 @@ def save_key(provider: str, api_key: str) -> None:
     logger.debug(f"API Key 已更新：provider={provider}")
 
 
+@contextmanager
+def provider_key_overrides(overrides: dict[str, str] | None):
+    """Temporarily use provider API keys captured by one task snapshot.
+
+    Overrides are thread-local so a queued runner can keep using its arranged
+    credentials without mutating the global key store or affecting other tasks.
+    """
+    previous = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
+    normalized = {
+        str(provider or "").strip(): str(api_key or "").strip()
+        for provider, api_key in (overrides or {}).items()
+        if str(provider or "").strip()
+    }
+    _KEY_OVERRIDE_LOCAL.overrides = normalized
+    try:
+        yield
+    finally:
+        if previous is None:
+            try:
+                delattr(_KEY_OVERRIDE_LOCAL, "overrides")
+            except AttributeError:
+                pass
+        else:
+            _KEY_OVERRIDE_LOCAL.overrides = previous
+
+
 def get_key(provider: str) -> str:
     """Get the API key for one provider."""
+    normalized_provider = str(provider or "").strip()
+    overrides = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
+    if isinstance(overrides, dict):
+        value = str(overrides.get(normalized_provider) or "").strip()
+        if value:
+            return value
+        if normalized_provider == "custom_openai":
+            value = str(overrides.get("lanyi") or "").strip()
+            if value:
+                return value
+        if normalized_provider == "lanyi":
+            value = str(overrides.get("custom_openai") or "").strip()
+            if value:
+                return value
+
     keys = load_keys()
-    value = str(keys.get(provider) or "").strip()
+    value = str(keys.get(normalized_provider) or "").strip()
     if value:
         return value
 
-    if provider == "custom_openai":
+    if normalized_provider == "custom_openai":
         return str(keys.get("lanyi") or "").strip()
-    if provider == "lanyi":
+    if normalized_provider == "lanyi":
         return str(keys.get("custom_openai") or "").strip()
     return ""
 

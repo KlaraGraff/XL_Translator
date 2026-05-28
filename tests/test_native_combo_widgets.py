@@ -16,6 +16,7 @@ from native_app.widgets import (
     AlignedComboBox,
     CenteredTextComboBox,
     MiddleElideLabel,
+    MiddleElideLineEdit,
     _calculate_combo_popup_geometry,
     configure_app_table,
     configure_file_selection_table,
@@ -109,6 +110,21 @@ class NativeComboWidgetTests(unittest.TestCase):
         self.assertTrue(label.text().startswith("/Users"))
         self.assertEqual(label.toolTip(), label.fullText())
         self.assertTrue(label.fullText().endswith("/source.docx"))
+
+    def test_middle_elide_line_edit_keeps_full_text_value(self) -> None:
+        full_path = (
+            "/Users/example/Workspace/1001 Creativity/001 Translate for excel/"
+            "github_Product_TranslateForExcel/.runtime/self-tests/"
+            "queue-ui-regression/sample-files/queue_test_sample.xlsx"
+        )
+        field = MiddleElideLineEdit(full_path)
+
+        elided = field.elided_text(300)
+
+        self.assertEqual(field.text(), full_path)
+        self.assertIn("…", elided)
+        self.assertTrue(elided.startswith("/Users"))
+        self.assertTrue(elided.endswith("queue_test_sample.xlsx"))
 
     def test_popup_geometry_attaches_below_field_when_space_allows(self) -> None:
         geometry = _calculate_combo_popup_geometry(

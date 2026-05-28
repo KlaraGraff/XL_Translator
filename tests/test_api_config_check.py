@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from core.api_config_check import check_translation_api_config
-from engines.hermes_engine import HermesRuntimeRoute
 from settings import AppSettings, EngineSettings, get_key
 
 
@@ -45,7 +44,8 @@ class ApiConfigCheckTests(unittest.TestCase):
         settings = AppSettings(
             engine=EngineSettings(
                 mode="local",
-                ollama_model="qwen2.5:14b",
+                local_provider="ollama",
+                local_model="qwen2.5:14b",
             )
         )
 
@@ -54,26 +54,35 @@ class ApiConfigCheckTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
 
-    def test_hermes_config_requires_resolved_api_key(self) -> None:
+    def test_local_lm_studio_uses_default_base_url_when_blank(self) -> None:
         settings = AppSettings(
             engine=EngineSettings(
-                mode="cloud",
-                cloud_provider="hermes",
+                mode="local",
+                local_provider="lm_studio",
+                local_model="qwen-local",
+                local_base_url="",
             )
         )
-        route = HermesRuntimeRoute(
-            provider="openai",
-            model="gpt-5.4",
-            api_key_env="OPENAI_API_KEY",
-            api_key="",
+
+        result = check_translation_api_config(settings)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(settings.engine.local_base_url, "http://localhost:1234/v1")
+
+    def test_local_custom_requires_base_url(self) -> None:
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="local",
+                local_provider="custom_local",
+                local_model="local-model",
+                local_base_url="",
+            )
         )
 
-        with patch("engines.hermes_engine.load_hermes_runtime_routes", return_value=[route]):
-            result = check_translation_api_config(settings)
+        result = check_translation_api_config(settings)
 
         self.assertFalse(result.ok)
-        self.assertEqual(result.status, "hermes_missing_api_key")
-        self.assertIn("OPENAI_API_KEY", result.detail)
+        self.assertEqual(result.status, "missing_local_base_url")
 
     def test_custom_openai_can_read_legacy_lanyi_key(self) -> None:
         with patch("settings.load_keys", return_value={"lanyi": "legacy-secret"}):

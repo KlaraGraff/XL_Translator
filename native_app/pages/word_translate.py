@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -63,8 +62,24 @@ from core.task_runner import (
     StoppedMsg,
     WordRecoveryStatusMsg,
 )
+from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
+from core.task_queue import (
+    TASK_STATUS_COMPLETED,
+    TASK_STATUS_FAILED,
+    TASK_STATUS_STOPPED,
+    TRANSLATION_TYPE_WORD,
+    TranslationTask,
+    TranslationTaskSnapshot,
+    api_requirement_from_config,
+    is_api_group_blocking_error,
+)
 from core.word_document import WordFileItem, is_supported_word_file
 from core.word_task_runner import WordTaskRunner
+from native_app.task_queue_view import (
+    clear_layout as clear_queue_layout,
+    render_selected_task_snapshot,
+    render_translation_list,
+)
 from native_app.workers import WordScanWorker
 from native_app.result_view import (
     ResultIssueRow,
@@ -81,6 +96,8 @@ from native_app.widgets import (
     create_searchable_combo,
     create_table_item,
     MiddleElideLabel,
+    MiddleElideLineEdit,
+    is_live_widget,
     refresh_combo_completer,
     select_combo_text_match,
 )
@@ -91,6 +108,7 @@ HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
 HEADER_SOURCE_MIN_WIDTH = 300
 HEADER_SOURCE_MAX_WIDTH = 430
+KPI_TILE_HEIGHT = 76
 VISIBLE_LOG_ENTRY_LIMIT = 300
 VISIBLE_LOG_CHAR_LIMIT = 140_000
 DIAGNOSTIC_LOG_ENTRY_LIMIT = 5000
@@ -166,7 +184,7 @@ class WordTranslatePage(QWidget):
         self.settings = settings
         self.phase = "idle"
         self.files: list[WordFileItem] = []
-        self.source_root = settings.last_source_folder
+        self.source_root = settings.last_word_source_folder
         self.runner: WordTaskRunner | None = None
         self.scan_worker: WordScanWorker | None = None
         self.log_entries: list[dict[str, str]] = []
@@ -179,7 +197,16 @@ class WordTranslatePage(QWidget):
         self.done: DoneMsg | None = None
         self.stop_message = ""
         self.task_files: list[WordFileItem] = []
+        self.current_task_source_root = ""
         self.current_task_id = ""
+        self.current_queue_task_id = ""
+        self.queue_controller = None
+        self.translation_list_open = False
+        self.selected_queue_task_id = ""
+        self.preparing_next_task = False
+        self.deferred_terminal_phase = ""
+        self.deferred_done: DoneMsg | None = None
+        self.deferred_stop_message = ""
         self._task_diagnostics_archived = False
         self._workspace_render_phase = self.phase
 
@@ -198,6 +225,63 @@ class WordTranslatePage(QWidget):
     def refresh_settings(self) -> None:
         self._refresh_header()
         self._render_action_card()
+
+    def set_queue_controller(self, controller) -> None:
+        self.queue_controller = controller
+        controller.changed.connect(self._on_queue_changed)
+
+    def selected_queue_task(self):
+        if not self.translation_list_open or self.queue_controller is None:
+            return None
+        return self.queue_controller.queue.task(self.selected_queue_task_id)
+
+    def _on_queue_changed(self) -> None:
+        had_open_list = self.translation_list_open
+        has_tasks = (
+            self.queue_controller is not None
+            and bool(self.queue_controller.queue.tasks())
+        )
+        if not has_tasks:
+            self.translation_list_open = False
+            self.selected_queue_task_id = ""
+        if self.translation_list_open or had_open_list:
+            self._ensure_selected_queue_task()
+            self._render_workspace()
+        else:
+            self._render_action_card()
+        self._sync_window_sidebar_task_snapshot()
+
+    def _ensure_selected_queue_task(self) -> None:
+        if self.queue_controller is None:
+            self.selected_queue_task_id = ""
+            return
+        tasks = self.queue_controller.queue.tasks()
+        if any(task.task_id == self.selected_queue_task_id for task in tasks):
+            return
+        self.selected_queue_task_id = tasks[0].task_id if tasks else ""
+
+    def _sync_window_sidebar_task_snapshot(self) -> None:
+        window = self.window()
+        if hasattr(window, "_sync_sidebar_task_snapshot"):
+            window._sync_sidebar_task_snapshot()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        super().showEvent(event)
+        self.set_page_active(True)
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self.set_page_active(False)
+        super().hideEvent(event)
+
+    def set_page_active(self, active: bool) -> None:
+        if active:
+            if self.runner is not None or self._is_preparing_next_task():
+                self._start_ui_sync_guard()
+            self._refresh_header()
+            self._render_action_card()
+            self._sync_window_sidebar_task_snapshot()
+        else:
+            self._stop_ui_sync_guard()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -232,8 +316,12 @@ class WordTranslatePage(QWidget):
         side_layout = QVBoxLayout(side_content)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(12)
+        self.side_layout = side_layout
         self.action_card, self.action_layout = _card()
         side_layout.addWidget(self.action_card)
+        self.queue_snapshot_card, self.queue_snapshot_layout = _card()
+        self.queue_snapshot_card.hide()
+        side_layout.addWidget(self.queue_snapshot_card)
         self._build_output_card(side_layout)
         self._build_params_card(side_layout)
         side_layout.addStretch(1)
@@ -278,7 +366,7 @@ class WordTranslatePage(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.source_input = QLineEdit(self.settings.last_source_folder)
+        self.source_input = MiddleElideLineEdit(self.settings.last_word_source_folder)
         self.source_input.setPlaceholderText("可手动输入文件夹或 Word 文件绝对路径")
         _set_tooltip(
             self.source_input,
@@ -302,6 +390,7 @@ class WordTranslatePage(QWidget):
 
     def _build_output_card(self, side_layout: QVBoxLayout) -> None:
         frame, layout = _card()
+        self.output_card = frame
         side_layout.addWidget(frame)
         layout.addWidget(_label("输出位置", "SectionTitle"))
 
@@ -324,7 +413,7 @@ class WordTranslatePage(QWidget):
         layout.addWidget(self.output_default_radio)
         layout.addWidget(self.output_custom_radio)
 
-        self.custom_output_input = QLineEdit(self.settings.output.custom_output_dir)
+        self.custom_output_input = MiddleElideLineEdit(self.settings.output.custom_output_dir)
         self.custom_output_input.setPlaceholderText("输入输出目录绝对路径")
         self.custom_output_input.editingFinished.connect(self._on_output_changed)
         layout.addWidget(self.custom_output_input)
@@ -337,6 +426,7 @@ class WordTranslatePage(QWidget):
 
     def _build_params_card(self, side_layout: QVBoxLayout) -> None:
         frame, layout = _card()
+        self.params_card = frame
         side_layout.addWidget(frame)
         layout.addWidget(_label("任务参数", "SectionTitle"))
 
@@ -492,7 +582,6 @@ class WordTranslatePage(QWidget):
         value_widget.setWordWrap(False)
         if max_width is not None:
             value_widget.setMaximumWidth(max(1, max_width - 16))
-            value_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         else:
             value_widget.setMaximumWidth(260)
         value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -533,7 +622,9 @@ class WordTranslatePage(QWidget):
         self.workspace_frame = frame
         self.workspace_layout.addWidget(frame, 1 if self.phase == "idle" and self.files else 0)
 
-        if self.phase == "idle":
+        if self.translation_list_open and self.queue_controller is not None:
+            self._render_translation_list_workspace(layout)
+        elif self.phase == "idle":
             self._render_idle_workspace(layout)
         elif self.phase == "running":
             self._render_running_workspace(layout)
@@ -546,6 +637,20 @@ class WordTranslatePage(QWidget):
         self.workspace_layout.addStretch(1)
         self._refresh_header()
         self._render_action_card()
+
+    def _render_translation_list_workspace(self, layout: QVBoxLayout) -> None:
+        self._ensure_selected_queue_task()
+        tasks = self.queue_controller.queue.tasks() if self.queue_controller is not None else []
+        render_translation_list(
+            layout,
+            tasks=tasks,
+            selected_task_id=self.selected_queue_task_id,
+            on_select=self._select_queue_task,
+            on_move=self._move_queue_task,
+            on_cancel=self._cancel_queue_task,
+            on_open_output=self._open_queue_output,
+            on_clear_history=self._clear_queue_history,
+        )
 
     def _render_idle_workspace(self, layout: QVBoxLayout) -> None:
         if not self.files:
@@ -739,11 +844,14 @@ class WordTranslatePage(QWidget):
         for label, value in items:
             tile = QFrame()
             tile.setObjectName("KpiTile")
+            tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            tile.setFixedHeight(KPI_TILE_HEIGHT)
             layout = QVBoxLayout(tile)
-            layout.setContentsMargins(12, 10, 12, 10)
+            layout.setContentsMargins(12, 8, 12, 8)
+            layout.setSpacing(4)
             layout.addWidget(_label(label, "PillLabel"))
             value_label = _label(value, "PillValue")
-            value_label.setWordWrap(True)
+            value_label.setWordWrap(False)
             layout.addWidget(value_label)
             row.addWidget(tile, 1)
         return row
@@ -752,7 +860,48 @@ class WordTranslatePage(QWidget):
         self._normalize_terminal_state()
         _clear_layout(self.action_layout)
         self.action_layout.addWidget(_label("执行操作", "SectionTitle"))
-        if self.phase == "idle":
+        self._sync_queue_side_cards()
+
+        if self.translation_list_open:
+            close = QPushButton("关闭翻译列表")
+            close.clicked.connect(self._toggle_translation_list)
+            self.action_layout.addWidget(close)
+            self.action_layout.addStretch(1)
+            self.action_card.updateGeometry()
+            self.action_card.update()
+            self._render_queue_snapshot_card()
+            return
+
+        queue_label = self._queue_entry_text()
+        if queue_label:
+            queue_button = QPushButton(queue_label)
+            queue_button.clicked.connect(self._toggle_translation_list)
+            self.action_layout.addWidget(queue_button)
+        deferred_label = self._deferred_terminal_entry_text()
+        if deferred_label:
+            deferred_button = QPushButton(deferred_label)
+            deferred_button.setObjectName("PrimaryButton")
+            deferred_button.clicked.connect(self._show_deferred_terminal_result)
+            self.action_layout.addWidget(deferred_button)
+
+        if self._is_preparing_next_task():
+            selected = self._selected_files()
+            lang_label = self._selected_target_label()
+            note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            note.setWordWrap(True)
+            note.setObjectName("MutedText")
+            self.action_layout.addWidget(note)
+
+            start = QPushButton(f"开始翻译（{lang_label}）")
+            start.setObjectName("PrimaryButton")
+            start.setEnabled(self._can_start())
+            start.clicked.connect(self._start_translation)
+            self.action_layout.addWidget(start)
+
+            cancel = QPushButton("取消安排")
+            cancel.clicked.connect(self._cancel_prepare_next_task)
+            self.action_layout.addWidget(cancel)
+        elif self.phase == "idle":
             selected = self._selected_files()
             lang_label = self._selected_target_label()
             note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
@@ -766,10 +915,16 @@ class WordTranslatePage(QWidget):
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
         elif self._has_running_task():
+            running_actions = QHBoxLayout()
+            arrange_next = QPushButton("安排新任务")
+            arrange_next.setObjectName("PrimaryButton")
+            arrange_next.clicked.connect(self._prepare_next_task)
+            running_actions.addWidget(arrange_next)
             stop = QPushButton("终止翻译")
             stop.setObjectName("DangerButton")
             stop.clicked.connect(self._confirm_stop)
-            self.action_layout.addWidget(stop)
+            running_actions.addWidget(stop)
+            self.action_layout.addLayout(running_actions)
         else:
             reset = QPushButton("返回并开始新任务")
             reset.setObjectName("PrimaryButton")
@@ -784,6 +939,184 @@ class WordTranslatePage(QWidget):
         self.action_layout.addStretch(1)
         self.action_card.updateGeometry()
         self.action_card.update()
+        self._render_queue_snapshot_card()
+
+    def _queue_entry_text(self) -> str:
+        if self.queue_controller is None:
+            return ""
+        tasks = self.queue_controller.queue.tasks()
+        if len(tasks) <= 1:
+            return ""
+        active = self.queue_controller.queue.active_count()
+        if active:
+            running = next(
+                (
+                    task
+                    for task in tasks
+                    if task.status == "running"
+                ),
+                None,
+            )
+            position, total = (
+                self.queue_controller.queue.active_position(
+                    running.task_id,
+                )
+                if running is not None
+                else (1, active)
+            )
+            return f"查看翻译列表，当前 {position}/{total}"
+        return "查看翻译列表"
+
+    def _deferred_terminal_entry_text(self) -> str:
+        if self.deferred_terminal_phase == "done":
+            return "上一轮任务已完成，点击查看"
+        if self.deferred_terminal_phase == "error":
+            return "上一轮任务异常，点击查看"
+        if self.deferred_terminal_phase == "stopped":
+            return "上一轮任务已中止，点击查看"
+        return ""
+
+    def _defer_terminal_result(
+        self,
+        phase: str,
+        *,
+        done: DoneMsg | None = None,
+        stop_message: str = "",
+    ) -> None:
+        self.deferred_terminal_phase = phase
+        self.deferred_done = done
+        self.deferred_stop_message = stop_message
+
+    def _clear_deferred_terminal_result(self) -> None:
+        self.deferred_terminal_phase = ""
+        self.deferred_done = None
+        self.deferred_stop_message = ""
+
+    def _show_deferred_terminal_result(self) -> None:
+        phase = self.deferred_terminal_phase
+        if not phase:
+            return
+        self.preparing_next_task = False
+        self.phase = phase
+        self._workspace_render_phase = phase
+        if phase == "done":
+            self.done = self.deferred_done
+        elif phase == "stopped":
+            self.stop_message = self.deferred_stop_message
+        self.translation_list_open = False
+        self.runner = None
+        self.poll_timer.stop()
+        self._lock_inputs(False)
+        self._clear_deferred_terminal_result()
+        self._render_workspace()
+        self._sync_window_sidebar_task_snapshot()
+
+    def _sync_queue_side_cards(self) -> None:
+        if hasattr(self, "output_card"):
+            self.output_card.setVisible(not self.translation_list_open)
+        if hasattr(self, "params_card"):
+            self.params_card.setVisible(not self.translation_list_open)
+        if hasattr(self, "queue_snapshot_card"):
+            self.queue_snapshot_card.setVisible(self.translation_list_open)
+
+    def _render_queue_snapshot_card(self) -> None:
+        if not hasattr(self, "queue_snapshot_layout"):
+            return
+        clear_queue_layout(self.queue_snapshot_layout)
+        if not self.translation_list_open:
+            return
+        render_selected_task_snapshot(
+            self.queue_snapshot_layout,
+            task=self.selected_queue_task(),
+            on_stop=self._stop_queue_task,
+            on_open_output=self._open_queue_output,
+        )
+
+    def _toggle_translation_list(self) -> None:
+        if (
+            self.queue_controller is None
+            or len(self.queue_controller.queue.tasks()) <= 1
+        ):
+            self.translation_list_open = False
+            self.selected_queue_task_id = ""
+            self._render_workspace()
+            self._sync_window_sidebar_task_snapshot()
+            return
+        self.translation_list_open = not self.translation_list_open
+        self._ensure_selected_queue_task()
+        self._render_workspace()
+        self._sync_window_sidebar_task_snapshot()
+
+    def _select_queue_task(self, task_id: str) -> None:
+        self.selected_queue_task_id = task_id
+        self._render_workspace()
+        self._sync_window_sidebar_task_snapshot()
+
+    def _move_queue_task(self, task_id: str, direction: int) -> None:
+        if self.queue_controller is not None:
+            self.queue_controller.move(task_id, direction)
+
+    def _cancel_queue_task(self, task_id: str) -> None:
+        if self.queue_controller is not None:
+            self.queue_controller.cancel(task_id)
+
+    def _clear_queue_history(self) -> None:
+        if self.queue_controller is not None:
+            self.queue_controller.clear_history()
+
+    def _clear_queue_history_if_idle(self) -> None:
+        if (
+            self.queue_controller is not None
+            and not self.queue_controller.queue.active_tasks()
+        ):
+            self.queue_controller.clear_history()
+
+    def _stop_queue_task(self, task_id: str) -> None:
+        if self.queue_controller is not None:
+            self.queue_controller.request_stop(task_id)
+
+    def _open_queue_output(self, task) -> None:
+        path = str(task.output_path or task.snapshot.output_path or "").strip()
+        if not path:
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _prepare_next_task(self) -> None:
+        self.preparing_next_task = True
+        self.translation_list_open = False
+        self.phase = "idle"
+        self._workspace_render_phase = self.phase
+        self.files = []
+        self._lock_inputs(False)
+        self._render_workspace()
+        self._sync_window_sidebar_task_snapshot()
+
+    def _is_preparing_next_task(self) -> bool:
+        return bool(
+            self.preparing_next_task
+            or (
+                self.phase == "idle"
+                and self.runner is not None
+                and self.done is None
+            )
+        )
+
+    def _cancel_prepare_next_task(self) -> None:
+        self.preparing_next_task = False
+        self.translation_list_open = False
+        if self.deferred_terminal_phase:
+            self._show_deferred_terminal_result()
+            return
+        if self.runner is not None and self.done is None:
+            self.phase = "running"
+            self._workspace_render_phase = self.phase
+            self._lock_inputs(True)
+        else:
+            self.phase = "idle" if self.done is None else self.phase
+            self._workspace_render_phase = self.phase
+            self._lock_inputs(False)
+        self._render_workspace()
+        self._sync_window_sidebar_task_snapshot()
 
     def _visible_action_button_texts(self) -> list[str]:
         return [
@@ -795,10 +1128,23 @@ class WordTranslatePage(QWidget):
     def _sync_action_card_with_workspace(self) -> None:
         if not hasattr(self, "action_card"):
             return
+        if self._is_preparing_next_task():
+            button_texts = self._visible_action_button_texts()
+            if (
+                "取消安排" not in button_texts
+                or not any(text.startswith("开始翻译（") for text in button_texts)
+            ):
+                self._render_action_card()
+            if self.runner is None:
+                self._stop_ui_sync_guard()
+            return
         terminal_phase = ""
         if self.done is not None:
             terminal_phase = "done"
-        elif self._workspace_render_phase in {"done", "error", "stopped"}:
+        elif (
+            self.phase in {"running", "done", "error", "stopped"}
+            and self._workspace_render_phase in {"done", "error", "stopped"}
+        ):
             terminal_phase = self._workspace_render_phase
         if not terminal_phase:
             if self.phase != "running":
@@ -827,7 +1173,7 @@ class WordTranslatePage(QWidget):
 
     def _has_running_task(self) -> bool:
         self._normalize_terminal_state()
-        return self.phase == "running" and self.done is None and self.runner is not None
+        return self.done is None and self.runner is not None
 
     def _normalize_terminal_state(self) -> None:
         if self.phase in {"done", "error", "stopped"}:
@@ -900,13 +1246,19 @@ class WordTranslatePage(QWidget):
             return
         self.files = list(items)
         self.source_root = source_root
-        self.settings.last_source_folder = self.source_input.text().strip().strip('"')
+        self.settings.last_word_source_folder = self.source_input.text().strip().strip('"')
         self.phase = "idle"
-        self.done = None
-        self.task_files = []
-        self.current_task_id = ""
-        self._task_diagnostics_archived = False
-        self._reset_runtime_logs()
+        self.translation_list_open = False
+        if not self._is_preparing_next_task():
+            self.done = None
+            self.task_files = []
+            self.current_task_id = ""
+            self.current_queue_task_id = ""
+            self.selected_queue_task_id = ""
+            self._clear_deferred_terminal_result()
+            self._task_diagnostics_archived = False
+            self._reset_runtime_logs()
+            self._clear_queue_history_if_idle()
         save_settings(self.settings)
         self._render_workspace()
         self._render_action_card()
@@ -1268,6 +1620,11 @@ class WordTranslatePage(QWidget):
         if not target_lang or not source_lang:
             QMessageBox.warning(self, APP_NAME, "请先选择目标语言和源语言。")
             return
+        if self.runner is not None and (
+            self.queue_controller is None or self.settings.engine.mode == "local"
+        ):
+            QMessageBox.warning(self, APP_NAME, "当前任务仍在运行，本地模型任务暂不支持排队。")
+            return
         config_check = check_translation_api_config(self.settings)
         if not config_check.ok:
             detail = f"\n{config_check.detail}" if config_check.detail else ""
@@ -1277,14 +1634,139 @@ class WordTranslatePage(QWidget):
         self.settings.source_lang = source_lang
         self._on_output_changed()
         self._on_params_changed()
-        self.runner = WordTaskRunner(
+        settings_snapshot = self.settings.model_copy(deep=True)
+        if self.queue_controller is not None and settings_snapshot.engine.mode != "local":
+            try:
+                config = resolve_effective_model_config(settings_snapshot, ROLE_TRANSLATION)
+                requirement = api_requirement_from_config(
+                    config,
+                    declared_concurrency=settings_snapshot.engine.concurrency,
+                )
+            except Exception as exc:  # noqa: BLE001 - converted to UI warning.
+                QMessageBox.warning(self, APP_NAME, f"翻译模型配置不可用：{exc}")
+                return
+            if requirement is not None:
+                key_overrides = {config.provider: config.api_key}
+                task = TranslationTask(
+                    snapshot=TranslationTaskSnapshot(
+                        title=f"Word 翻译 · {len(selected)} 个文件",
+                        translation_type=TRANSLATION_TYPE_WORD,
+                        file_count=len(selected),
+                        target_language=self._selected_target_label(),
+                        source_language=source_lang,
+                        source_path=self.source_root or "",
+                        output_policy=(
+                            "自定义目录"
+                            if settings_snapshot.output.use_custom_output_dir
+                            else "源目录内"
+                        ),
+                        domain=settings_snapshot.domain_preset,
+                        prompt_summary=(
+                            "自定义 Prompt"
+                            if settings_snapshot.custom_prompt
+                            else settings_snapshot.domain_preset
+                        ),
+                        model_role=config.label,
+                        provider=config.provider,
+                        model=config.model,
+                        api_key_fingerprint=requirement.key_fingerprint,
+                        concurrency_label=str(settings_snapshot.engine.concurrency),
+                        params=(
+                            ("源语言", source_lang),
+                            (
+                                "每批最多段落",
+                                str(settings_snapshot.word_batch.max_paragraphs_per_batch),
+                            ),
+                            (
+                                "每批最多字符",
+                                str(settings_snapshot.word_batch.max_chars_per_batch),
+                            ),
+                            (
+                                "严格重试次数",
+                                str(settings_snapshot.word_batch.strict_retry_attempts),
+                            ),
+                        ),
+                    ),
+                    group_requirements=(requirement,),
+                    metadata={
+                        "files": list(selected),
+                        "settings": settings_snapshot,
+                        "source_root": self.source_root or None,
+                        "source_lang": source_lang,
+                        "key_overrides": key_overrides,
+                    },
+                )
+                arranged = self.queue_controller.arrange(
+                    task,
+                    starter=self._start_queued_translation,
+                )
+                self.preparing_next_task = False
+                self.translation_list_open = False
+                self.selected_queue_task_id = arranged.task_id
+                if self.runner is not None and self.done is None:
+                    self.phase = "running"
+                    self._workspace_render_phase = self.phase
+                self._render_workspace()
+                self._sync_window_sidebar_task_snapshot()
+                return
+
+        self.preparing_next_task = False
+        self._begin_runner(
             selected,
             self.settings,
-            source_root=self.source_root or None,
             source_lang=source_lang,
         )
+
+    def _start_queued_translation(self, task: TranslationTask) -> None:
+        metadata = task.metadata
+        requirement = task.group_requirements[0] if task.group_requirements else None
+        scheduler = (
+            self.queue_controller.queue.scheduler_for(
+                requirement.key,
+                fallback_capacity=requirement.declared_concurrency,
+            )
+            if self.queue_controller is not None and requirement is not None
+            else None
+        )
+        self._begin_runner(
+            list(metadata.get("files") or []),
+            metadata.get("settings") or self.settings,
+            source_lang=str(metadata.get("source_lang") or self.settings.source_lang),
+            source_root=metadata.get("source_root"),
+            queue_task=task,
+            api_scheduler=scheduler,
+            key_overrides=dict(metadata.get("key_overrides") or {}),
+        )
+
+    def _begin_runner(
+        self,
+        selected: list[WordFileItem],
+        settings: AppSettings,
+        *,
+        source_lang: str,
+        source_root=None,
+        queue_task: TranslationTask | None = None,
+        api_scheduler=None,
+        key_overrides: dict[str, str] | None = None,
+    ) -> None:
+        effective_source_root = source_root if source_root is not None else self.source_root or None
+        self.runner = WordTaskRunner(
+            selected,
+            settings,
+            source_root=effective_source_root,
+            source_lang=source_lang,
+            key_overrides=key_overrides,
+            api_scheduler=api_scheduler,
+        )
         self.task_files = list(selected)
+        self.current_task_source_root = str(effective_source_root or "")
         self.current_task_id = self.runner.task_id
+        self.current_queue_task_id = queue_task.task_id if queue_task is not None else ""
+        if queue_task is not None and self.queue_controller is not None:
+            self.queue_controller.register_stopper(
+                queue_task.task_id,
+                self.runner.stop,
+            )
         self._task_diagnostics_archived = False
         self._reset_runtime_logs()
         self.runner.start()
@@ -1328,25 +1810,52 @@ class WordTranslatePage(QWidget):
                 self._append_runtime_log(msg.level, msg.message, msg.ts)
             elif isinstance(msg, ProgressMsg):
                 self.progress = msg
+                if self.current_queue_task_id and self.queue_controller is not None:
+                    self.queue_controller.update_progress(
+                        self.current_queue_task_id,
+                        progress_label=f"{msg.step_done}/{msg.step_total}",
+                        status_message=msg.phase_name,
+                    )
             elif isinstance(msg, StatusMsg):
                 self.status_text = msg.phase_desc
+                if self.current_queue_task_id and self.queue_controller is not None:
+                    self.queue_controller.update_progress(
+                        self.current_queue_task_id,
+                        status_message=msg.phase_desc,
+                    )
             elif isinstance(msg, WordRecoveryStatusMsg):
                 self.recovery_status = msg
             elif isinstance(msg, DoneMsg):
-                self.done = msg
+                finished_queue_task_id = self.current_queue_task_id
+                show_terminal = self.phase == "running" or not finished_queue_task_id
+                self.done = msg if show_terminal else None
                 self.runner = None
-                self.phase = "done"
+                self.phase = "done" if show_terminal else "idle"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
                 self._archive_current_task(phase="done", done=msg)
+                if finished_queue_task_id and self.queue_controller is not None:
+                    self.queue_controller.finish_task(
+                        finished_queue_task_id,
+                        TASK_STATUS_COMPLETED,
+                        message="已完成",
+                        output_path=msg.output_dir,
+                    )
+                    if self.current_queue_task_id == finished_queue_task_id:
+                        self.current_queue_task_id = ""
+                if not show_terminal:
+                    self._defer_terminal_result("done", done=msg)
+                    self.done = None
                 self._render_workspace()
                 self._render_action_card()
                 self._schedule_action_card_resync()
                 return
             elif isinstance(msg, ErrorMsg):
+                finished_queue_task_id = self.current_queue_task_id
+                show_terminal = self.phase == "running" or not finished_queue_task_id
                 self._append_runtime_log("ERROR", msg.message)
                 self.runner = None
-                self.phase = "error"
+                self.phase = "error" if show_terminal else "idle"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
                 self._archive_current_task(
@@ -1354,15 +1863,30 @@ class WordTranslatePage(QWidget):
                     error_message=msg.message,
                     status=self.status_text or "任务异常",
                 )
+                if finished_queue_task_id and self.queue_controller is not None:
+                    self.queue_controller.finish_task(
+                        finished_queue_task_id,
+                        TASK_STATUS_FAILED,
+                        message=msg.message,
+                        output_path=msg.output_dir,
+                        error_message=msg.message,
+                        block_api_groups=is_api_group_blocking_error(msg.message),
+                    )
+                    if self.current_queue_task_id == finished_queue_task_id:
+                        self.current_queue_task_id = ""
+                if not show_terminal:
+                    self._defer_terminal_result("error")
                 self._render_workspace()
                 self._render_action_card()
                 self._schedule_action_card_resync()
                 return
             elif isinstance(msg, StoppedMsg):
+                finished_queue_task_id = self.current_queue_task_id
+                show_terminal = self.phase == "running" or not finished_queue_task_id
                 self._append_runtime_log("WARN", msg.message)
                 self.stop_message = msg.message
                 self.runner = None
-                self.phase = "stopped"
+                self.phase = "stopped" if show_terminal else "idle"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
                 self._archive_current_task(
@@ -1370,6 +1894,18 @@ class WordTranslatePage(QWidget):
                     error_message=msg.message,
                     status=self.status_text or "任务已中止",
                 )
+                if finished_queue_task_id and self.queue_controller is not None:
+                    self.queue_controller.finish_task(
+                        finished_queue_task_id,
+                        TASK_STATUS_STOPPED,
+                        message=msg.message,
+                        output_path=msg.output_dir,
+                        error_message=msg.message,
+                    )
+                    if self.current_queue_task_id == finished_queue_task_id:
+                        self.current_queue_task_id = ""
+                if not show_terminal:
+                    self._defer_terminal_result("stopped", stop_message=msg.message)
                 self._render_workspace()
                 self._render_action_card()
                 self._schedule_action_card_resync()
@@ -1402,7 +1938,7 @@ class WordTranslatePage(QWidget):
                 logs=list(self.diagnostic_log_entries),
                 done=done,
                 error_message=error_message,
-                source_root=self.source_root or "",
+                source_root=self.current_task_source_root or self.source_root or "",
                 status=status or self.status_text or phase,
                 progress=self.progress,
             )
@@ -1411,7 +1947,9 @@ class WordTranslatePage(QWidget):
             self._append_runtime_log("WARN", f"诊断归档写入失败：{exc}")
 
     def _refresh_running_widgets(self) -> None:
-        if not hasattr(self, "running_status"):
+        if not is_live_widget(getattr(self, "running_status", None)) or not is_live_widget(
+            getattr(self, "progress_bar", None)
+        ):
             return
         progress = self.progress
         if progress is None:
@@ -1430,7 +1968,7 @@ class WordTranslatePage(QWidget):
         self._refresh_log_view()
 
     def _refresh_recovery_summary(self) -> None:
-        if not hasattr(self, "recovery_summary"):
+        if not is_live_widget(getattr(self, "recovery_summary", None)):
             return
         summary = self.recovery_status
         self.recovery_summary.setVisible(summary is not None)
@@ -1459,7 +1997,7 @@ class WordTranslatePage(QWidget):
         self.semantic_uncertain_value.setText(str(summary.semantic_uncertain_count))
 
     def _refresh_log_view(self) -> None:
-        if not hasattr(self, "log_view"):
+        if not is_live_widget(getattr(self, "log_view", None)):
             return
         lines = []
         for item in self.log_entries:
@@ -1486,6 +2024,7 @@ class WordTranslatePage(QWidget):
 
     def _reset_task(self) -> None:
         self.phase = "idle"
+        self.translation_list_open = False
         self._workspace_render_phase = self.phase
         self._stop_ui_sync_guard()
         self.files = []
@@ -1496,10 +2035,16 @@ class WordTranslatePage(QWidget):
         self.status_text = ""
         self.stop_message = ""
         self.task_files = []
+        self.current_task_source_root = ""
         self.current_task_id = ""
+        self.current_queue_task_id = ""
+        self.selected_queue_task_id = ""
+        self.preparing_next_task = False
+        self._clear_deferred_terminal_result()
         self._task_diagnostics_archived = False
         self._reset_runtime_logs()
         self._lock_inputs(False)
+        self._clear_queue_history_if_idle()
         self._render_workspace()
         self._render_action_card()
 

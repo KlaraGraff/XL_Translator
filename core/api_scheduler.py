@@ -169,6 +169,25 @@ class WeightedApiScheduler:
                 waiting_recovery_count=self._waiting_recovery_count,
             )
 
+    def set_capacity(self, capacity: int) -> None:
+        """Update the group-level capacity while preserving active leases."""
+        with self._condition:
+            normalized = max(1, int(capacity or 1))
+            self.capacity = max(normalized, self._active_total_weight)
+            self.initial_capacity = max(self.initial_capacity, self.capacity)
+            self._adaptive_capacity_levels = _build_adaptive_capacity_levels(
+                self.initial_capacity
+            )
+            self.minimum_capacity = min(
+                self.minimum_capacity,
+                self._adaptive_capacity_levels[-1],
+            )
+            self.normal_soft_limit = max(
+                1,
+                int(math.floor(self.capacity * self._normal_soft_ratio)),
+            )
+            self._condition.notify_all()
+
     def register_concurrency_limit_hit(
         self,
         request_generation: int | None,
