@@ -1366,13 +1366,13 @@ class NativeTranslationPageTests(unittest.TestCase):
             def stop_requested(self) -> bool:
                 return False
 
-        with patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=2):
-            page = PdfTranslatePage(AppSettings())
+        page = PdfTranslatePage(AppSettings())
         self.addCleanup(page.close)
         self.addCleanup(page.deleteLater)
         page.phase = "running"
         page.runner = FakeRunner()
-        page._render_action_card()
+        with patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=2):
+            page._render_action_card()
 
         history_buttons = [
             button
