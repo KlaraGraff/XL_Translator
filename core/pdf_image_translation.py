@@ -758,10 +758,10 @@ class PdfImageTranslationRunner:
             model_signature = image_model_signature(self._settings)
             if not provider_supports_capability(model_config.provider, "image"):
                 raise ImageModelUnavailableError(
-                    f"当前图像生成模型服务商不支持图像生成能力：{model_config.provider}"
+                    f"当前 PDF 翻译模型服务商不支持图像生成能力：{model_config.provider}"
                 )
             if not model_config.model:
-                raise ImageModelUnavailableError("图像生成模型名称不能为空")
+                raise ImageModelUnavailableError("PDF 翻译模型名称不能为空")
         except ImageModelUnavailableError as exc:
             message = str(exc)
             record_image_model_availability(
@@ -771,10 +771,10 @@ class PdfImageTranslationRunner:
                 signature=model_signature,
                 checked_at=datetime.now().isoformat(timespec="seconds"),
             )
-            self._queue.put(ErrorMsg(message=f"图像生成模型配置不可用：{message}"))
+            self._queue.put(ErrorMsg(message=f"PDF 翻译模型配置不可用：{message}"))
             return
         except Exception as exc:  # noqa: BLE001 - init converted to UI error.
-            self._queue.put(ErrorMsg(message=f"图像生成模型配置不可用：{exc}"))
+            self._queue.put(ErrorMsg(message=f"PDF 翻译模型配置不可用：{exc}"))
             return
 
         if review_enabled:
@@ -823,8 +823,8 @@ class PdfImageTranslationRunner:
             self._review_total = max_attempts
             scheduler = self._api_scheduler_override or WeightedApiScheduler(concurrency)
             review_scheduler = self._review_api_scheduler_override or scheduler
-            self._queue.put(ProgressMsg(1, 4, "预处理 PDF/图片", 0, max(1, len(self._files))))
-            self._queue.put(StatusMsg("状态：正在准备 PDF/图片输出目录和页面任务..."))
+            self._queue.put(ProgressMsg(1, 4, "预处理 PDF", 0, max(1, len(self._files))))
+            self._queue.put(StatusMsg("状态：正在准备 PDF 输出目录和页面任务..."))
             image_file_count = sum(1 for item in self._files if item.source_type == SOURCE_TYPE_IMAGE)
             pdf_file_count = len(self._files) - image_file_count
             self._log("INFO", f"扫描到 {pdf_file_count} 个 PDF 文件、{image_file_count} 个图片文件")
@@ -850,7 +850,7 @@ class PdfImageTranslationRunner:
             self._total_page_count = total_pages
             self._emit_page_status()
             self._queue.put(
-                ProgressMsg(1, 4, "预处理 PDF/图片", len(prepared_files), max(1, len(self._files)))
+                ProgressMsg(1, 4, "预处理 PDF", len(prepared_files), max(1, len(self._files)))
             )
             self._queue.put(StatusMsg(f"状态：已准备 {len(prepared_files)} 个文件，共 {total_pages} 页。"))
 
@@ -912,7 +912,7 @@ class PdfImageTranslationRunner:
                 break
 
             if stopped and not fatal_error:
-                self._log("WARN", "任务已中止：完整完成的 PDF/图片已生成，未完成文件保留页面素材和报告。")
+                self._log("WARN", "任务已中止：完整完成的文件已生成，未完成文件保留页面素材和报告。")
         except ImageModelUnavailableError as exc:
             fatal_error = str(exc)
             record_image_model_availability(
@@ -935,7 +935,7 @@ class PdfImageTranslationRunner:
             self._log("ERROR", fatal_error)
         except Exception as exc:  # noqa: BLE001 - task-level failure.
             fatal_error = str(exc)
-            self._log("ERROR", f"PDF/图片翻译任务失败：{fatal_error}")
+            self._log("ERROR", f"PDF 翻译任务失败：{fatal_error}")
 
         if output_dir is not None:
             summary = self._build_summary(
@@ -947,14 +947,14 @@ class PdfImageTranslationRunner:
             )
             self._queue.put(ProgressMsg(4, 4, "写入报告", 0, 1))
             manifest_path, report_path = write_pdf_manifest_and_report(summary)
-            self._log("INFO", f"已写入 PDF/图片翻译清单：{manifest_path.name}")
-            self._log("INFO", f"已写入 PDF/图片翻译报告：{report_path.name}")
+            self._log("INFO", f"已写入 PDF 翻译清单：{manifest_path.name}")
+            self._log("INFO", f"已写入 PDF 翻译报告：{report_path.name}")
             self._queue.put(ProgressMsg(4, 4, "写入报告", 1, 1))
 
             if stopped:
                 self._queue.put(
                     StoppedMsg(
-                        message=f"PDF/图片翻译已中止（用户主动中止），已保留页面素材和报告：{output_dir}",
+                        message=f"PDF 翻译已中止（用户主动中止），已保留页面素材和报告：{output_dir}",
                         output_dir=str(output_dir),
                         report_path=str(report_path),
                         manifest_path=str(manifest_path),
@@ -1041,7 +1041,7 @@ class PdfImageTranslationRunner:
                         app_managed=app_managed,
                     )
                 )
-                self._queue.put(ProgressMsg(1, 4, "预处理 PDF/图片", index, max(1, len(self._files))))
+                self._queue.put(ProgressMsg(1, 4, "预处理 PDF", index, max(1, len(self._files))))
                 continue
 
             try:
@@ -1066,7 +1066,7 @@ class PdfImageTranslationRunner:
                     app_managed=app_managed,
                 )
             )
-            self._queue.put(ProgressMsg(1, 4, "预处理 PDF/图片", index, max(1, len(self._files))))
+            self._queue.put(ProgressMsg(1, 4, "预处理 PDF", index, max(1, len(self._files))))
         return prepared_files
 
     def _prepared_file_shell(
@@ -1125,7 +1125,7 @@ class PdfImageTranslationRunner:
         stop_logged = False
         page_iter = self._iter_rendered_pages(prepared_files)
         self._queue.put(ProgressMsg(2, 4, "翻译页面", 0, max(1, total_pages)))
-        self._queue.put(StatusMsg(f"状态：正在翻译 PDF/图片页面，已完成 0 / {total_pages} 页。"))
+        self._queue.put(StatusMsg(f"状态：正在翻译 PDF 页面，已完成 0 / {total_pages} 页。"))
 
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             while not producer_done or futures:
@@ -1223,7 +1223,7 @@ class PdfImageTranslationRunner:
                         StatusMsg(
                             self._stop_wait_status()
                             if self._stop_event.is_set()
-                            else f"状态：正在翻译 PDF/图片页面，已完成 {self._completed_page_count} / {total_pages} 页。"
+                            else f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
                         )
                     )
 
@@ -2932,7 +2932,7 @@ def _safe_pdf_review_model_signature(settings: AppSettings) -> str:
 
 def _summary_to_report(summary: PdfTaskSummary) -> str:
     lines = [
-        "# PDF/图片翻译报告",
+        "# PDF 翻译报告",
         "",
         f"- 状态：{summary.status}",
         f"- 状态说明：{_pdf_status_label(summary.status)}",

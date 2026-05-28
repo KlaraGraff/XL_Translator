@@ -95,9 +95,9 @@ class OpenAICompatibleImageGenerationClient:
                 f"当前服务商不在图像生成能力列表中：{model_config.provider}"
             )
         if not model_config.api_key:
-            raise ImageModelUnavailableError("图像生成模型缺少 API Key")
+            raise ImageModelUnavailableError(f"{model_config.label}缺少 API Key")
         if not model_config.model:
-            raise ImageModelUnavailableError("图像生成模型名称不能为空")
+            raise ImageModelUnavailableError(f"{model_config.label}名称不能为空")
 
         base_url = _normalize_base_url(model_config)
         prompt = build_pdf_image_translation_prompt(
@@ -298,7 +298,7 @@ def is_model_unavailable_error(exc: BaseException) -> bool:
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
     base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
-        raise ImageModelUnavailableError("图像生成模型缺少 Base URL")
+        raise ImageModelUnavailableError(f"{config.label}缺少 Base URL")
     return base_url
 
 

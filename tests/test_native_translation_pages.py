@@ -480,7 +480,7 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertEqual(page.windowTitle(), "")
         title_labels = [
             label for label in page.findChildren(QLabel)
-            if label.text() == "PDF/图片翻译"
+            if label.text() == "PDF 翻译"
         ]
         self.assertEqual(len(title_labels), 1)
         self.assertEqual(page.retry_spin.value(), 3)

@@ -249,7 +249,7 @@ def _show_local_follow_warning(parent: QWidget, message: str) -> None:
 
 BRAND_TOOLTIP = {
     "title": APP_NAME,
-    "summary": f"{APP_NAME} 用于本地处理 Excel、Word、PDF 与图片翻译任务。",
+    "summary": f"{APP_NAME} 用于本地处理 Excel、Word 与 PDF 翻译任务。",
     "items": [
         "左侧设置模型、领域和吞吐参数。",
         "右侧执行翻译、查看结果并维护记忆库。",
@@ -380,7 +380,7 @@ class Sidebar(QFrame):
         nav_items = [
             ("excel_translate", "Excel 翻译"),
             ("word_translate", "Word 翻译"),
-            ("pdf_translate", "PDF/图片翻译"),
+            ("pdf_translate", "PDF 翻译"),
             ("tm", "记忆库管理"),
         ]
         for index, (page, title) in enumerate(nav_items):
@@ -393,7 +393,7 @@ class Sidebar(QFrame):
                 {
                     "excel_translate": "扫描 Excel 文件并执行批量翻译。",
                     "word_translate": "扫描 Word 文件并生成双语文档。",
-                    "pdf_translate": "执行 PDF 版式图像翻译。",
+                    "pdf_translate": "执行 PDF 翻译。",
                     "tm": "搜索、新增、固定和清理翻译记忆库。",
                 }[page],
             )
@@ -817,7 +817,7 @@ class Sidebar(QFrame):
         self.model_role_combo.setObjectName("ModelRoleCombo")
         self.model_role_combo.addItem(role_label(ROLE_TRANSLATION), ROLE_TRANSLATION)
         self.model_role_combo.addItem(role_label(ROLE_CLEANER), ROLE_CLEANER)
-        self.model_role_combo.addItem("PDF 图像翻译模型", ROLE_IMAGE)
+        self.model_role_combo.addItem(role_label(ROLE_IMAGE), ROLE_IMAGE)
         self.model_role_combo.currentIndexChanged.connect(self._on_model_role_changed)
         _set_tooltip(
             self.model_role_combo,
@@ -827,7 +827,7 @@ class Sidebar(QFrame):
         )
         layout.addWidget(self.model_role_combo)
 
-        self.pdf_image_generation_hint = QLabel("PDF 生图模型")
+        self.pdf_image_generation_hint = QLabel(role_label(ROLE_IMAGE))
         self.pdf_image_generation_hint.setObjectName("FieldHint")
         self.pdf_image_generation_hint.setWordWrap(True)
         layout.addWidget(self.pdf_image_generation_hint)
@@ -1366,7 +1366,7 @@ class Sidebar(QFrame):
         self._reload_provider_options(config.provider)
         self.pdf_image_generation_hint.setVisible(role == ROLE_IMAGE)
         if role == ROLE_IMAGE:
-            self.pdf_image_generation_hint.setText("PDF 生图模型（必填）")
+            self.pdf_image_generation_hint.setText(f"{role_label(ROLE_IMAGE)}（必填）")
         self.mode_combo.blockSignals(True)
         self.mode_combo.setCurrentIndex(0 if self.settings.engine.mode == "cloud" else 1)
         self.mode_combo.blockSignals(False)
@@ -1550,9 +1550,9 @@ class Sidebar(QFrame):
                 else "服务商暂未标记为支持图像生成。"
             )
             state_text = {
-                "available": "上次图像连接测试：可用",
-                "unavailable": "上次图像连接测试：不可用",
-            }.get(status, "图像生成模型尚未校验")
+                "available": "上次 PDF 翻译模型测试：可用",
+                "unavailable": "上次 PDF 翻译模型测试：不可用",
+            }.get(status, "PDF 翻译模型尚未校验")
             self._set_model_catalog_status(
                 f"{state_text}。{capability_hint}" + (f"\n{message}" if message else "")
             )

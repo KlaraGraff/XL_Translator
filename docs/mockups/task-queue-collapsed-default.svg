@@ -57,7 +57,7 @@
     <text x="82" y="596" class="card-title">模型配置</text>
     <text x="82" y="648" class="label">模型用途</text>
     <rect x="82" y="671" width="306" height="56" rx="8" fill="#ffffff" stroke="#cbd8e8"/>
-    <text x="102" y="708" class="small">PDF 图像翻译模型</text>
+    <text x="102" y="708" class="small">PDF 翻译模型</text>
     <text x="82" y="772" class="label">配置来源</text>
     <rect x="82" y="795" width="306" height="56" rx="8" fill="#ffffff" stroke="#cbd8e8"/>
     <text x="102" y="832" class="small">跟随翻译模型</text>

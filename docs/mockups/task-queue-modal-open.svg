@@ -81,7 +81,7 @@
     <rect x="540" y="308" width="104" height="38" rx="19" fill="#e8f7ef"/>
     <text x="568" y="335" class="badge" fill="#16784f">运行中</text>
     <text x="666" y="334" class="body">PDF #028 防火棉属地实验室检测报告</text>
-    <text x="666" y="374" class="small muted">PDF 图像翻译 · 中文 · API 并发组 A · 已用 3 / 20 槽 · 已完成 31 / 36 页</text>
+    <text x="666" y="374" class="small muted">PDF 翻译 · 中文 · API 并发组 A · 已用 3 / 20 槽 · 已完成 31 / 36 页</text>
     <rect x="1280" y="311" width="222" height="56" rx="8" fill="#ffffff" stroke="#4ec3ee"/>
     <text x="1338" y="348" class="button" fill="#087fc1">查看详情</text>
     <rect x="666" y="382" width="570" height="10" rx="5" fill="#dbe8f2"/>
@@ -93,7 +93,7 @@
     <rect x="540" y="464" width="126" height="38" rx="19" fill="#fff2da"/>
     <text x="565" y="491" class="badge" fill="#9a6519">等待槽位</text>
     <text x="690" y="490" class="body">PDF #029 防火棉补充扫描</text>
-    <text x="690" y="530" class="small muted">PDF 图像翻译 · 中文 · API 并发组 A · 排队第 1 位</text>
+    <text x="690" y="530" class="small muted">PDF 翻译 · 中文 · API 并发组 A · 排队第 1 位</text>
     <text x="690" y="557" class="tiny muted">A 组出现空闲槽时自动启动</text>
     <rect x="1280" y="467" width="104" height="56" rx="8" fill="#ffffff" stroke="#b9cbe0"/>
     <text x="1306" y="504" class="button">上移</text>

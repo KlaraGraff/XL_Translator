@@ -340,10 +340,10 @@ class PdfTranslatePage(QWidget):
 
     def _refresh_header(self) -> None:
         _clear_layout(self.header_layout)
-        self.header_layout.addWidget(_label("PDF / Image Workspace", "PageEyebrow"))
+        self.header_layout.addWidget(_label("PDF Workspace", "PageEyebrow"))
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        title_row.addWidget(_label("PDF/图片翻译", "PageTitle"))
+        title_row.addWidget(_label("PDF 翻译", "PageTitle"))
         title_row.addStretch(1)
         title_row.addWidget(self._pill("目标语言", self._selected_target_label()), alignment=Qt.AlignmentFlag.AlignTop)
         title_row.addWidget(self._pill("已选文件", f"{len(self._selected_files())} 个"), alignment=Qt.AlignmentFlag.AlignTop)
@@ -731,7 +731,7 @@ class PdfTranslatePage(QWidget):
         if done is None:
             render_translation_result(
                 layout,
-                empty_message="PDF/图片翻译任务已完成。",
+                empty_message="PDF 翻译任务已完成。",
                 done=None,
                 summary_text="",
                 summary_success=True,
@@ -792,7 +792,7 @@ class PdfTranslatePage(QWidget):
         )
         render_translation_result(
             layout,
-            empty_message="PDF/图片翻译任务已完成。",
+            empty_message="PDF 翻译任务已完成。",
             done=done,
             summary_text=summary_text,
             summary_success=summary_success,
@@ -805,7 +805,7 @@ class PdfTranslatePage(QWidget):
 
     def _render_error_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("任务异常", "SectionTitle"))
-        message = QLabel(self._latest_error_message() or "PDF/图片翻译任务执行出错，请查看日志。")
+        message = QLabel(self._latest_error_message() or "PDF 翻译任务执行出错，请查看日志。")
         message.setWordWrap(True)
         layout.addWidget(message)
         self.log_view = QTextEdit()
@@ -867,7 +867,7 @@ class PdfTranslatePage(QWidget):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - result page should still render.
-            self._append_runtime_log("WARN", f"读取 PDF/图片翻译清单失败：{exc}")
+            self._append_runtime_log("WARN", f"读取 PDF 翻译清单失败：{exc}")
             return {}
         return payload if isinstance(payload, dict) else {}
 
@@ -1710,18 +1710,18 @@ class PdfTranslatePage(QWidget):
             QMessageBox.warning(self, APP_NAME, "请先选择目标语言。")
             return
         if self.runner is not None and self.queue_controller is None:
-            QMessageBox.warning(self, APP_NAME, "任务正在运行，暂不能直接启动新的 PDF/图片翻译。")
+            QMessageBox.warning(self, APP_NAME, "任务正在运行，暂不能直接启动新的 PDF 翻译。")
             return
         try:
             image_config = resolve_effective_model_config(self.settings, ROLE_IMAGE)
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
-            QMessageBox.warning(self, APP_NAME, f"图像生成模型配置不可用：{exc}")
+            QMessageBox.warning(self, APP_NAME, f"PDF 翻译模型配置不可用：{exc}")
             return
         if not provider_supports_capability(image_config.provider, "image"):
-            QMessageBox.warning(self, APP_NAME, f"图像生成服务商不支持该能力：{image_config.provider}")
+            QMessageBox.warning(self, APP_NAME, f"PDF 翻译服务商不支持图像生成能力：{image_config.provider}")
             return
         if not image_config.model:
-            QMessageBox.warning(self, APP_NAME, "请先填写图像生成模型名称。")
+            QMessageBox.warning(self, APP_NAME, "请先填写 PDF 翻译模型名称。")
             return
         if not self._handle_image_model_history_prompt():
             return
@@ -1756,7 +1756,7 @@ class PdfTranslatePage(QWidget):
                         declared_concurrency=1,
                     )
             except Exception as exc:  # noqa: BLE001 - converted to UI warning.
-                QMessageBox.warning(self, APP_NAME, f"PDF 模型配置不可用：{exc}")
+                QMessageBox.warning(self, APP_NAME, f"PDF 翻译模型配置不可用：{exc}")
                 return
 
             requirements = tuple(
@@ -1771,11 +1771,7 @@ class PdfTranslatePage(QWidget):
                 total_pages = sum(item.page_count for item in selected)
                 selected_image_count = self._image_file_count(selected)
                 selected_pdf_count = len(selected) - selected_image_count
-                mixed_title = (
-                    f"PDF/图片翻译 · {len(selected)} 个文件"
-                    if selected_image_count
-                    else f"PDF 翻译 · {len(selected)} 个文件"
-                )
+                mixed_title = f"PDF 翻译 · {len(selected)} 个文件"
                 task = TranslationTask(
                     snapshot=TranslationTaskSnapshot(
                         title=mixed_title,
@@ -1943,7 +1939,7 @@ class PdfTranslatePage(QWidget):
         self._reset_runtime_logs()
         self.phase = "running"
         self._workspace_render_phase = self.phase
-        self.progress = ProgressMsg(1, 4, "预处理 PDF/图片", 0, max(1, len(selected)))
+        self.progress = ProgressMsg(1, 4, "预处理 PDF", 0, max(1, len(selected)))
         self.page_recovery_status = None
         self.review_status = None
         self.status_text = "状态：正在初始化任务..."
@@ -1974,11 +1970,11 @@ class PdfTranslatePage(QWidget):
             role_settings.availability_status == "unavailable"
             and role_settings.availability_signature == signature
         ):
-            box.setText("图像生成模型上次校验不可用。")
+            box.setText("PDF 翻译模型上次校验不可用。")
             if role_settings.availability_message:
                 box.setInformativeText(role_settings.availability_message)
         else:
-            box.setText("图像生成模型尚未校验。")
+            box.setText("PDF 翻译模型尚未校验。")
             box.setInformativeText("建议先测试连接，也可继续执行。")
         test_button = box.addButton("测试连接", QMessageBox.ButtonRole.ActionRole)
         continue_button = box.addButton("继续生成", QMessageBox.ButtonRole.AcceptRole)
@@ -2049,7 +2045,7 @@ class PdfTranslatePage(QWidget):
         answer = QMessageBox.question(
             self,
             APP_NAME,
-            "确认停止提交新的 PDF/图片页面？\n\n已提交页面会继续完成；未完成文件仅保留页面素材和报告。",
+            "确认停止提交新的 PDF 页面？\n\n已提交页面会继续完成；未完成文件仅保留页面素材和报告。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:

@@ -35,7 +35,7 @@ SOURCE_INDEPENDENT = "independent"
 MODEL_ROLE_LABELS = {
     ROLE_TRANSLATION: "翻译模型",
     ROLE_CLEANER: "深度清洗模型",
-    ROLE_IMAGE: "PDF 生图模型",
+    ROLE_IMAGE: "PDF 翻译模型",
     ROLE_PDF_REVIEW: "PDF 翻译审核模型",
 }
 
@@ -50,7 +50,7 @@ FOLLOW_SOURCE_LABELS = {
     SOURCE_INDEPENDENT: "独立配置",
     ROLE_TRANSLATION: "跟随翻译模型",
     ROLE_CLEANER: "跟随深度清洗模型",
-    ROLE_IMAGE: "跟随PDF图像翻译模型",
+    ROLE_IMAGE: "跟随PDF翻译模型",
 }
 
 
@@ -292,7 +292,7 @@ def _local_follow_not_allowed_message(role: str) -> str:
     role_name = role_label(role)
     reason = {
         ROLE_CLEANER: "深度清洗需要云端文本模型。",
-        ROLE_IMAGE: "PDF 图像翻译需要云端图像生成模型。",
+        ROLE_IMAGE: "PDF 翻译需要云端图像生成模型。",
         ROLE_PDF_REVIEW: "翻译审核需要云端图像理解模型。",
     }.get(role, f"{role_name}只支持云端模型。")
     return (

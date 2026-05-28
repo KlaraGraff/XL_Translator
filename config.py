@@ -194,7 +194,7 @@ WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
 WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
 WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = "FFF2CC"
 
-# ── PDF 图像版式翻译 ─────────────────────────────────────
+# ── PDF 翻译 ────────────────────────────────────────────
 PDF_RENDER_DPI_DEFAULT = 300
 PDF_PAGE_RETRY_ATTEMPTS_DEFAULT = 3
 PDF_PAGE_RETRY_ATTEMPTS_MIN = 0

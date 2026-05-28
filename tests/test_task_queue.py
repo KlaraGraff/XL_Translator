@@ -132,7 +132,7 @@ class SecretMaskTests(unittest.TestCase):
 class ApiGroupBlockingErrorTests(unittest.TestCase):
     def test_model_or_key_errors_block_api_group(self):
         self.assertTrue(is_api_group_blocking_error("invalid api key"))
-        self.assertTrue(is_api_group_blocking_error("图像生成模型配置不可用：模型名称不能为空"))
+        self.assertTrue(is_api_group_blocking_error("PDF 翻译模型配置不可用：模型名称不能为空"))
 
     def test_ordinary_file_errors_do_not_block_api_group(self):
         self.assertFalse(is_api_group_blocking_error("某个文件写入失败"))

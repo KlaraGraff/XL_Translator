@@ -211,14 +211,14 @@ _Avoid_: 队伍创建页, 第二个运行页, 任务详情页
 The immutable user choices and effective model access captured when a translation task is arranged. Later changes to model settings, API Key, Base URL, language choices, source selections, output location, or concurrency tuning do not change already arranged tasks.
 _Avoid_: 实时读取当前设置, 队列共享当前配置, 排队任务原地编辑
 
-**PDF 版式图像翻译**:
+**PDF 版式翻译**:
 A PDF translation route that renders each source PDF page to an image, generates an equal-scale translated page image, and merges the translated page images back into a PDF. Its primary promise is visual layout preservation, not editable text output.
 It does not read from or write to translation memory because its unit of work is a page image, not paired source and target text segments.
 It lets users choose the target language, but does not expose a source-language setting because the image route asks the model to translate the page's visible text directly.
 _Avoid_: PDF 转 Word 翻译, 可编辑 PDF 翻译
 
-**PDF 图像翻译提示词**:
-The concise general prompt used for PDF 版式图像翻译. It asks the image-generation model to translate page text in context while preserving original placement, visual style, and page structure; it does not reuse the product's professional-domain text translation prompt.
+**PDF 翻译提示词**:
+The concise general prompt used for PDF 版式翻译. It asks the image-generation model to translate page text in context while preserving original placement, visual style, and page structure; it does not reuse the product's professional-domain text translation prompt.
 The first product version keeps this prompt fixed rather than exposing user customization.
 _Avoid_: 专业领域 Prompt, 文本批量翻译 Prompt
 
@@ -228,7 +228,7 @@ Its visual language and result presentation should stay consistent with the exis
 _Avoid_: Word 翻译模式
 
 **PDF 翻译输出包**:
-The output folder produced by PDF 版式图像翻译. It presents the final translated PDF as the primary artifact and keeps page image archives so a problematic page can be inspected or regenerated without rerunning the whole document.
+The output folder produced by PDF 版式翻译. It presents the final translated PDF as the primary artifact and keeps page image archives so a problematic page can be inspected or regenerated without rerunning the whole document.
 The final translated PDF uses a stable translated-file name in the form "译文(目标语言)_原文件名.pdf"; review status and failed-page counts belong in the result view and report, not in the PDF filename.
 If the translated PDF name already exists in an app-managed output copy, the app should use engineering-style revision suffixes such as R1 and R2 rather than overwriting or using generic numeric suffixes. An existing un-suffixed translated PDF should be renamed with an R1 suffix before the new translated PDF is written as the next revision. In an arbitrary custom output directory that is not recognized as an app output copy, the app should not rename existing files.
 The first product version does not provide an in-app single-page regeneration workflow; the output package preserves page artifacts so that workflow can be added later.
@@ -264,12 +264,12 @@ The lightweight diagnostic archive for PDF translation tasks. It can include sum
 _Avoid_: 页面素材归档, 原文件备份
 
 **PDF 页级结果指标**:
-The result metrics for PDF 版式图像翻译, such as file count, total page count, generated page count, failure placeholder page count, emergency ratio-normalized page count, retry count, and output directory. Translation memory counts do not apply to this route.
+The result metrics for PDF 版式翻译, such as file count, total page count, generated page count, failure placeholder page count, emergency ratio-normalized page count, retry count, and output directory. Translation memory counts do not apply to this route.
 The PDF translation page should show scanned PDF file count and total page count; large page counts can be hinted without blocking task start.
 _Avoid_: 记忆库命中, 新增词条, API 翻译条数
 
 **PDF 任务中止**:
-The user-initiated stop behavior for PDF 版式图像翻译. It stops submitting new page-generation requests, lets already submitted page requests finish or time out, keeps completed page artifacts and reports, and does not assemble a final translated PDF.
+The user-initiated stop behavior for PDF 版式翻译. It stops submitting new page-generation requests, lets already submitted page requests finish or time out, keeps completed page artifacts and reports, and does not assemble a final translated PDF.
 _Avoid_: 半成品 PDF
 
 **原始页图像归档**:
@@ -279,7 +279,7 @@ The first product version stores page images as PNG to preserve text, tables, an
 _Avoid_: 临时图片
 
 **PDF 渲染 DPI**:
-The resolution used when rendering PDF pages into source page images for PDF 版式图像翻译. The first product version uses a fixed 300 DPI default to prioritize page clarity over lower cost or smaller output size.
+The resolution used when rendering PDF pages into source page images for PDF 版式翻译. The first product version uses a fixed 300 DPI default to prioritize page clarity over lower cost or smaller output size.
 _Avoid_: 标清, 高清
 
 **PDF 页面方向**:
@@ -310,7 +310,7 @@ Its retry count is configurable for PDF tasks and defaults to three attempts.
 _Avoid_: 直接失败
 
 **页级生成请求**:
-One image-generation request for one PDF page image. PDF 版式图像翻译 does not batch multiple pages into one model request, and each page request counts as one scheduling unit.
+One image-generation request for one PDF page image. PDF 版式翻译 does not batch multiple pages into one model request, and each page request counts as one scheduling unit.
 It does not apply extra image-size weighting; upstream concurrency or rate-limit feedback can still reduce the task's active concurrency.
 _Avoid_: 批量页请求, 字符权重请求
 
@@ -319,7 +319,7 @@ The number of PDF page image-generation requests that may run at the same time. 
 _Avoid_: 批次大小, 图像权重
 
 **失败占位页**:
-A clearly marked page image inserted when PDF 版式图像翻译 cannot produce a translated page image after page-level recovery. It prevents the final PDF from being mistaken for a fully translated result while preserving page order.
+A clearly marked page image inserted when PDF 版式翻译 cannot produce a translated page image after page-level recovery. It prevents the final PDF from being mistaken for a fully translated result while preserving page order.
 It is generated locally by the application and saved as the page artifact used for PDF reassembly; it is not a model-generated translated image.
 It should display the failure ordinal as current failed page over total failed pages, such as "1/3", so users can navigate all failed pages during review.
 _Avoid_: 原图占位, 静默跳过
@@ -329,10 +329,10 @@ The fallback handling used only after page-level recovery is exhausted for a gen
 _Avoid_: 常规尺寸处理, 静默缩放
 
 **PDF Markdown 文本翻译**:
-A future PDF translation route that extracts or converts PDF content into Markdown and then translates the Markdown through the text translation model. It is a separate optional route from PDF 版式图像翻译.
+A future PDF translation route that extracts or converts PDF content into Markdown and then translates the Markdown through the text translation model. It is a separate optional route from PDF 版式翻译.
 It can use translation memory because its unit of work can become text segments.
 It can expose both source-language and target-language settings because it uses the text translation route.
-_Avoid_: PDF 版式图像翻译
+_Avoid_: PDF 版式翻译
 
 ## Example Dialogue
 
