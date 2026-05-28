@@ -80,6 +80,17 @@ class NativeTranslationPageTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self) -> None:
+        super().setUp()
+        for target in (
+            "native_app.pages.excel_translate.count_diagnostic_records",
+            "native_app.pages.word_translate.count_diagnostic_records",
+            "native_app.pages.pdf_translate.count_diagnostic_records",
+        ):
+            patcher = patch(target, return_value=0)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _done_msg(self) -> DoneMsg:
         return DoneMsg(
             output_dir="",

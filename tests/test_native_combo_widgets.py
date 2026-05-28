@@ -101,21 +101,21 @@ class NativeComboWidgetTests(unittest.TestCase):
         self.assertEqual(table.horizontalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def test_middle_elide_label_preserves_full_value_in_tooltip(self) -> None:
-        label = MiddleElideLabel("/Users/example/Workspace/project/final/source.docx")
+        label = MiddleElideLabel(r"C:\Users\example\Workspace\project\final\source.docx")
         label.resize(220, 24)
         label.show()
         self.app.processEvents()
 
         self.assertIn("…", label.text())
-        self.assertTrue(label.text().startswith("/Users"))
+        self.assertTrue(label.text().startswith("C:"))
         self.assertEqual(label.toolTip(), label.fullText())
-        self.assertTrue(label.fullText().endswith("/source.docx"))
+        self.assertTrue(label.fullText().endswith(r"\source.docx"))
 
     def test_middle_elide_line_edit_keeps_full_text_value(self) -> None:
         full_path = (
-            "/Users/example/Workspace/1001 Creativity/001 Translate for excel/"
-            "github_Product_TranslateForExcel/.runtime/self-tests/"
-            "queue-ui-regression/sample-files/queue_test_sample.xlsx"
+            r"C:\Users\example\Workspace\1001 Creativity\001 Translate for excel"
+            r"\github_Product_TranslateForExcel\.runtime\self-tests"
+            r"\queue-ui-regression\sample-files\queue_test_sample.xlsx"
         )
         field = MiddleElideLineEdit(full_path)
 
@@ -123,7 +123,7 @@ class NativeComboWidgetTests(unittest.TestCase):
 
         self.assertEqual(field.text(), full_path)
         self.assertIn("…", elided)
-        self.assertTrue(elided.startswith("/Users"))
+        self.assertTrue(elided.startswith("C:"))
         self.assertTrue(elided.endswith(".xlsx"))
         self.assertIn("sample", elided)
 

@@ -436,8 +436,9 @@ def translated_pdf_base_name(
         )
     )
     source_path = Path(source_pdf_name)
+    source_stem = _sanitize_filename_fragment(source_path.stem)
     suffix = f"_{_sanitize_filename_fragment(variant_label)}" if variant_label else ""
-    return f"译文({label})_{source_path.stem}{suffix}{source_path.suffix}"
+    return f"译文({label})_{source_stem}{suffix}{source_path.suffix}"
 
 
 def resolve_translated_pdf_path(
@@ -542,8 +543,9 @@ def translated_image_base_name(
         )
     )
     source_path = Path(source_image_name)
+    source_stem = _sanitize_filename_fragment(source_path.stem)
     suffix = output_suffix if output_suffix.startswith(".") else f".{output_suffix}"
-    return f"译文({label})_{source_path.stem}{suffix}"
+    return f"译文({label})_{source_stem}{suffix}"
 
 
 def resolve_translated_image_path(
@@ -2437,7 +2439,7 @@ def _sanitize_filename_fragment(value: str) -> str:
 def _next_revision_number(target_dir: Path, stem: str, suffix: str) -> int:
     revision = 1
     pattern = re.compile(rf"^{re.escape(stem)}_R(\d+){re.escape(suffix)}$")
-    for path in target_dir.glob(f"{stem}_R*{suffix}"):
+    for path in target_dir.iterdir() if target_dir.exists() else ():
         match = pattern.match(path.name)
         if match:
             revision = max(revision, int(match.group(1)) + 1)
@@ -2446,7 +2448,10 @@ def _next_revision_number(target_dir: Path, stem: str, suffix: str) -> int:
 
 def _has_revision_files(target_dir: Path, stem: str, suffix: str) -> bool:
     pattern = re.compile(rf"^{re.escape(stem)}_R(\d+){re.escape(suffix)}$")
-    return any(pattern.match(path.name) for path in target_dir.glob(f"{stem}_R*{suffix}"))
+    return any(
+        pattern.match(path.name)
+        for path in target_dir.iterdir()
+    ) if target_dir.exists() else False
 
 
 def _safe_file_size(path: str | Path) -> int:

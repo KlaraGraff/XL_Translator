@@ -48,6 +48,8 @@ from core.pdf_image_translation import (
     resolve_translated_pdf_variant_paths,
     resolve_translated_pdf_path,
     scan_pdf_path,
+    translated_image_base_name,
+    translated_pdf_base_name,
     write_pdf_manifest_and_report,
 )
 from core.pdf_review import PdfPageReviewResult, PdfReviewIssue
@@ -325,6 +327,39 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue((target_dir / "译文(英文)_source_高清_R1.pdf").exists())
             self.assertEqual(high.name, "译文(英文)_source_高清_R2.pdf")
             self.assertEqual(compressed.name, "译文(英文)_source_压缩_R2.pdf")
+
+    def test_translated_artifact_names_sanitize_windows_invalid_fragments(self) -> None:
+        settings = AppSettings(target_lang="en")
+
+        self.assertEqual(
+            translated_pdf_base_name('site:plan?"A".pdf', "en", settings),
+            "译文(英文)_site_plan_A_.pdf",
+        )
+        self.assertEqual(
+            translated_image_base_name(
+                'diagram:phase*1.png',
+                "en",
+                settings,
+                output_suffix=".jpg",
+            ),
+            "译文(英文)_diagram_phase_1.jpg",
+        )
+
+    def test_revision_lookup_handles_glob_special_characters_in_source_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target_dir = Path(tmp)
+            settings = AppSettings(target_lang="en")
+            (target_dir / "译文(英文)_[source]_R1.pdf").write_text("old", encoding="utf-8")
+
+            next_path = resolve_translated_pdf_path(
+                target_dir,
+                "[source].pdf",
+                "en",
+                settings,
+                app_managed=True,
+            )
+
+            self.assertEqual(next_path.name, "译文(英文)_[source]_R2.pdf")
 
     def test_page_quality_order_decode_ratio_then_resolution(self) -> None:
         decode = check_page_quality(b"not an image", source_width=1600, source_height=1200)
