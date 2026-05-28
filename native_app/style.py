@@ -316,6 +316,11 @@ QSpinBox {
     selection-background-color: #0EA5E9;
 }
 
+QLineEdit[readonlyHint="true"] {
+    background: #EDF2F7;
+    color: #667085;
+}
+
 QTextEdit,
 QPlainTextEdit {
     padding: 8px;

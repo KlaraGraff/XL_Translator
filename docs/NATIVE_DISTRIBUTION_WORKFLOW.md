@@ -9,8 +9,8 @@
 - Windows 源码包入口：`启动应用.bat`
 - macOS 打包配置：`packaging/macos/app_macos.spec`
 - Windows 打包配置：`packaging/windows/app_windows.spec`
-- Windows 标准安装包：`Translator_Windows_6.2_Setup.exe`
-- macOS 标准安装包：`Translator_macOS_6.2.dmg`
+- Windows 标准安装包：`Translator_Windows_6.3_Setup.exe`
+- macOS 标准安装包：`Translator_macOS_6.3.dmg`
 
 `启动原生应用.command` 保留为 macOS 明确命名入口；`启动应用.command`
 现在也是同一条原生启动线路。

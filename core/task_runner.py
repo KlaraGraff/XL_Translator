@@ -28,9 +28,10 @@ from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
     get_system_prompt,
-    get_batch_size,
     translate_texts,
 )
+from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
+from core.model_throughput import get_model_throughput
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
 from core.excel_automation import (
@@ -236,12 +237,10 @@ class TaskRunner:
                 target_lang=target_lang,
                 source_lang=source_lang,
             )
-            batch_size    = get_batch_size(settings)
-            concurrency   = (
-                settings.engine.ollama_concurrency
-                if settings.engine.mode == "local"
-                else settings.engine.concurrency
-            )
+            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            throughput = get_model_throughput(settings, model_config)
+            batch_size = throughput.batch_size or 1
+            concurrency = throughput.concurrency
         except Exception as e:
             self._queue.put(ErrorMsg(message=f"引擎初始化失败：{e}"))
             return

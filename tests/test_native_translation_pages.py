@@ -490,7 +490,11 @@ class NativeTranslationPageTests(unittest.TestCase):
         ]
         self.assertEqual(len(retry_labels), 1)
         self.assertIn("设置单页失败后的重试次数", retry_labels[0].toolTip())
-        self.assertEqual(page.pdf_concurrency_input.text(), "")
+        pdf_concurrency_labels = [
+            label for label in page.findChildren(QLabel)
+            if label.text() == "PDF 页生成并发数"
+        ]
+        self.assertEqual(pdf_concurrency_labels, [])
         compression_checks = [
             checkbox
             for checkbox in page.findChildren(QCheckBox)
@@ -1393,21 +1397,6 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertEqual(len(history_buttons), 1)
         self.assertEqual(history_buttons[0].text(), "导出历史诊断归档")
         self.assertFalse(history_buttons[0].isEnabled())
-
-    def test_pdf_concurrency_input_clamps_to_safety_cap(self) -> None:
-        with (
-            patch("native_app.pages.pdf_translate.count_diagnostic_records", return_value=0),
-            patch("native_app.pages.pdf_translate.save_settings"),
-        ):
-            page = PdfTranslatePage(AppSettings())
-            self.addCleanup(page.close)
-            self.addCleanup(page.deleteLater)
-
-            page.pdf_concurrency_input.setText("99")
-            page._on_params_changed()
-
-        self.assertEqual(page.settings.pdf.page_generation_concurrency, 20)
-        self.assertEqual(page.pdf_concurrency_input.text(), "20")
 
     def test_pdf_review_checkbox_requires_configured_review_model(self) -> None:
         with (

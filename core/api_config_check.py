@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from config import CLOUD_ENGINES, LM_STUDIO_BASE_URL, OLLAMA_BASE_URL, normalize_cloud_base_url
-from settings import AppSettings, get_key
+from settings import AppSettings, get_cloud_provider_config, get_key
 
 
 @dataclass(frozen=True)
@@ -46,22 +46,24 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
         return ApiConfigCheckResult(ok=True)
 
     provider = str(engine.cloud_provider or "").strip()
+    provider_config = get_cloud_provider_config(engine, provider)
     provider_label = _provider_label(provider)
-    if not str(engine.cloud_model or "").strip():
+    if not str(provider_config.cloud_model or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_model",
             message=f"{provider_label} 尚未填写模型名称。",
         )
 
-    if provider in {"custom_openai"} and not normalize_cloud_base_url(provider, engine.cloud_base_url):
+    base_url = normalize_cloud_base_url(provider, provider_config.cloud_base_url)
+    if provider in {"custom_openai"} and not base_url:
         return ApiConfigCheckResult(
             ok=False,
             status="missing_base_url",
             message=f"{provider_label} 尚未填写 Base URL。",
         )
 
-    if not str(get_key(provider) or "").strip():
+    if not str(get_key(provider, base_url) or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_api_key",

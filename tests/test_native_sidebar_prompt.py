@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,7 +20,15 @@ from config import (
     OPENAI_BASE_URL,
 )
 from core.model_catalog import ModelCatalogResult
-from core.model_roles import ROLE_CLEANER, ROLE_IMAGE, ROLE_TRANSLATION, SOURCE_INDEPENDENT
+from core.model_roles import (
+    ROLE_CLEANER,
+    ROLE_IMAGE,
+    ROLE_PDF_REVIEW,
+    ROLE_TRANSLATION,
+    SOURCE_INDEPENDENT,
+    resolve_effective_model_config,
+)
+from core.model_throughput import get_model_throughput
 from core.update_checker import UpdateCheckResult
 from native_app.main_window import Sidebar
 from settings import AppSettings, get_cloud_provider_config
@@ -128,7 +136,8 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertTrue(sidebar.mode_combo.isHidden())
         self.assertTrue(sidebar.model_catalog_status.text())
         self.assertFalse(sidebar.pdf_review_frame.isHidden())
-        self.assertIn("未启用 PDF 翻译审核时可留空", sidebar.review_model_status.text())
+        self.assertEqual(sidebar.review_model_status.text(), "")
+        self.assertTrue(sidebar.review_model_status.isHidden())
 
     def test_sidebar_update_ignore_button_reflects_global_ignore_state(self) -> None:
         settings = AppSettings()
@@ -193,10 +202,28 @@ class NativeSidebarPromptTests(unittest.TestCase):
         settings.engine.cloud_provider = "custom_openai"
         settings.engine.cloud_model = "mimo-v2-pro"
         settings.engine.cloud_base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_model = "gpt-image-2"
+        settings.image_model_role.cloud_base_url = "https://api.asxs.top/v1"
         sidebar = self._make_sidebar(settings)
 
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "model-config.json"
+
+            def fake_get_key(provider: str, base_url: str = "") -> str:
+                keys = {
+                    ("custom_openai", ""): "legacy-secret",
+                    (
+                        "custom_openai",
+                        "https://token-plan-cn.xiaomimimo.com/v1",
+                    ): "translation-secret",
+                    ("custom_openai", "https://api.asxs.top/v1"): "image-secret",
+                    ("openai", ""): "unused-cloud-secret-should-not-export",
+                    ("ollama", ""): "local-secret-should-not-export",
+                }
+                return keys.get((provider, base_url), "")
+
             with (
                 patch(
                     "native_app.main_window.QFileDialog.getSaveFileName",
@@ -204,11 +231,7 @@ class NativeSidebarPromptTests(unittest.TestCase):
                 ),
                 patch(
                     "native_app.main_window.get_key",
-                    side_effect=lambda provider: {
-                        "custom_openai": "secret",
-                        "openai": "unused-cloud-secret-should-not-export",
-                        "ollama": "local-secret-should-not-export",
-                    }.get(provider, ""),
+                    side_effect=fake_get_key,
                 ),
                 patch("native_app.main_window.QMessageBox.information"),
             ):
@@ -216,17 +239,27 @@ class NativeSidebarPromptTests(unittest.TestCase):
 
             payload = json.loads(target.read_text(encoding="utf-8"))
 
-        self.assertEqual(payload["type"], "translator_cloud_model_config")
+        self.assertEqual(payload["type"], "translator_model_config")
+        self.assertEqual(payload["version"], 2)
+        self.assertNotIn("api_keys", payload)
+        self.assertNotIn("scoped_api_keys", payload)
+        profiles = payload["model_profiles"]
+        translation = profiles["translation"]
+        self.assertEqual(translation["mode"], "cloud")
+        self.assertEqual(translation["cloud"]["provider"], "custom_openai")
+        self.assertEqual(translation["cloud"]["model"], "mimo-v2-pro")
         self.assertEqual(
-            payload["model_config"]["engine"]["cloud_provider"],
-            "custom_openai",
+            translation["cloud"]["base_url"],
+            "https://token-plan-cn.xiaomimimo.com/v1",
         )
-        self.assertEqual(payload["model_config"]["engine"]["cloud_model"], "mimo-v2-pro")
-        self.assertNotIn("local_provider", payload["model_config"]["engine"])
-        self.assertNotIn("local_model", payload["model_config"]["engine"])
-        self.assertNotIn("local_base_url", payload["model_config"]["engine"])
-        self.assertNotIn("ollama_concurrency", payload["model_config"]["engine"])
-        self.assertEqual(payload["api_keys"], {"custom_openai": "secret"})
+        self.assertEqual(translation["cloud"]["api_key"], "translation-secret")
+        self.assertIn("local", translation)
+        pdf_translation = profiles["pdf_translation"]
+        self.assertEqual(pdf_translation["source_role"], SOURCE_INDEPENDENT)
+        self.assertEqual(pdf_translation["cloud"]["provider"], "custom_openai")
+        self.assertEqual(pdf_translation["cloud"]["model"], "gpt-image-2")
+        self.assertEqual(pdf_translation["cloud"]["base_url"], "https://api.asxs.top/v1")
+        self.assertEqual(pdf_translation["cloud"]["api_key"], "image-secret")
 
     def test_export_model_config_resolves_legacy_custom_openai_key(self) -> None:
         settings = AppSettings()
@@ -243,7 +276,7 @@ class NativeSidebarPromptTests(unittest.TestCase):
                 ),
                 patch(
                     "native_app.main_window.get_key",
-                    side_effect=lambda provider: "legacy-secret"
+                    side_effect=lambda provider, base_url="": "legacy-secret"
                     if provider == "custom_openai"
                     else "",
                 ),
@@ -253,7 +286,10 @@ class NativeSidebarPromptTests(unittest.TestCase):
 
             payload = json.loads(target.read_text(encoding="utf-8"))
 
-        self.assertEqual(payload["api_keys"], {"custom_openai": "legacy-secret"})
+        self.assertEqual(
+            payload["model_profiles"]["translation"]["cloud"]["api_key"],
+            "legacy-secret",
+        )
 
     def test_import_model_config_updates_model_settings_and_keys(self) -> None:
         settings = AppSettings()
@@ -279,6 +315,18 @@ class NativeSidebarPromptTests(unittest.TestCase):
                 "custom_openai": "imported-secret",
                 "ollama": "local-secret-should-be-ignored",
             },
+            "scoped_api_keys": [
+                {
+                    "provider": "custom_openai",
+                    "base_url": "https://import.example/v1",
+                    "api_key": "imported-scoped-secret",
+                },
+                {
+                    "provider": "custom_openai",
+                    "base_url": "https://image.example/v1",
+                    "api_key": "image-secret",
+                },
+            ],
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -303,7 +351,128 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertEqual(settings.engine.local_base_url, "http://localhost:1234/v1")
         self.assertEqual(sidebar.provider_combo.currentText(), "OpenAI 兼容")
         self.assertEqual(sidebar.model_combo.currentText(), "imported-model")
-        save_key_mock.assert_called_once_with("custom_openai", "imported-secret")
+        save_key_mock.assert_has_calls(
+            [
+                call("custom_openai", "imported-secret"),
+                call(
+                    "custom_openai",
+                    "imported-scoped-secret",
+                    "https://import.example/v1",
+                ),
+                call("custom_openai", "image-secret", "https://image.example/v1"),
+            ]
+        )
+
+    def test_import_model_profiles_syncs_current_model_config(self) -> None:
+        settings = AppSettings()
+        settings.engine.mode = "local"
+        sidebar = self._make_sidebar(settings)
+        payload = {
+            "type": "translator_model_config",
+            "version": 2,
+            "model_profiles": {
+                "translation": {
+                    "mode": "cloud",
+                    "source_role": "independent",
+                    "cloud": {
+                        "provider": "custom_openai",
+                        "model": "translation-model",
+                        "base_url": "https://translation.example/v1",
+                        "api_key": "translation-secret",
+                        "provider_configs": {
+                            "custom_openai": {
+                                "model": "translation-model",
+                                "base_url": "https://translation.example/v1",
+                                "api_key": "translation-secret",
+                            }
+                        },
+                    },
+                    "local": {
+                        "provider": "lm_studio",
+                        "model": "local-model",
+                        "base_url": "http://localhost:1234/v1",
+                    },
+                    "throughput": {"batch_size": 18, "concurrency": 6},
+                },
+                "cleaner": {
+                    "source_role": "independent",
+                    "cloud": {
+                        "provider": "openai",
+                        "model": "cleaner-model",
+                        "base_url": "",
+                        "api_key": "cleaner-secret",
+                    },
+                    "throughput": {"batch_size": 12, "concurrency": 3},
+                },
+                "pdf_translation": {
+                    "source_role": "independent",
+                    "cloud": {
+                        "provider": "custom_openai",
+                        "model": "gpt-image-2",
+                        "base_url": "https://image.example/v1",
+                        "api_key": "image-secret",
+                    },
+                    "throughput": {"concurrency": 4},
+                },
+                "pdf_review": {
+                    "source_role": "pdf_translation",
+                    "cloud": {
+                        "provider": "custom_openai",
+                        "model": "review-model",
+                        "base_url": "https://review.example/v1",
+                        "api_key": "review-secret",
+                    },
+                    "throughput": {"concurrency": 2},
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "model-config.json"
+            source.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch(
+                    "native_app.main_window.QFileDialog.getOpenFileName",
+                    return_value=(str(source), "JSON 文件 (*.json)"),
+                ),
+                patch("native_app.main_window.save_key") as save_key_mock,
+                patch("native_app.main_window.QMessageBox.information"),
+            ):
+                sidebar._import_model_config()
+
+        self.assertEqual(settings.engine.mode, "cloud")
+        self.assertEqual(settings.engine.cloud_provider, "custom_openai")
+        self.assertEqual(settings.engine.cloud_model, "translation-model")
+        self.assertEqual(settings.engine.cloud_base_url, "https://translation.example/v1")
+        self.assertEqual(settings.engine.local_provider, "lm_studio")
+        self.assertEqual(settings.engine.local_model, "local-model")
+        self.assertEqual(settings.cleaner_model_role.source_role, SOURCE_INDEPENDENT)
+        self.assertEqual(settings.cleaner_model_role.cloud_provider, "openai")
+        self.assertEqual(settings.cleaner_model_role.cloud_model, "cleaner-model")
+        self.assertEqual(settings.image_model_role.cloud_model, "gpt-image-2")
+        self.assertEqual(settings.pdf_review_model_role.source_role, ROLE_IMAGE)
+        self.assertEqual(settings.pdf_review_model_role.cloud_model, "review-model")
+
+        translation_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+        image_config = resolve_effective_model_config(settings, ROLE_IMAGE)
+        review_config = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
+        self.assertEqual(get_model_throughput(settings, translation_config).batch_size, 18)
+        self.assertEqual(get_model_throughput(settings, translation_config).concurrency, 6)
+        self.assertEqual(get_model_throughput(settings, image_config).concurrency, 4)
+        self.assertEqual(get_model_throughput(settings, review_config).concurrency, 2)
+        save_key_mock.assert_has_calls(
+            [
+                call(
+                    "custom_openai",
+                    "translation-secret",
+                    "https://translation.example/v1",
+                ),
+                call("openai", "cleaner-secret", OPENAI_BASE_URL),
+                call("custom_openai", "image-secret", "https://image.example/v1"),
+                call("custom_openai", "review-secret", "https://review.example/v1"),
+            ],
+            any_order=True,
+        )
 
     def test_translation_local_mode_shows_only_local_provider_fields(self) -> None:
         settings = AppSettings()
@@ -410,6 +579,49 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertEqual(settings.engine.mode, "local")
         self.assertEqual(sidebar.concurrency_input.text(), "2")
 
+    def test_sidebar_throughput_is_saved_per_effective_model(self) -> None:
+        settings = AppSettings()
+        settings.engine.mode = "cloud"
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_base_url = "https://api.example.test/v1"
+        settings.engine.cloud_model = "model-a"
+        sidebar = self._make_sidebar(settings)
+
+        sidebar.concurrency_input.setValue(12)
+        self.app.processEvents()
+        config_a = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+        self.assertEqual(get_model_throughput(settings, config_a).concurrency, 12)
+
+        sidebar.model_combo.setCurrentText("model-b")
+        self.app.processEvents()
+        sidebar.concurrency_input.setValue(4)
+        self.app.processEvents()
+        config_b = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+        self.assertEqual(get_model_throughput(settings, config_b).concurrency, 4)
+
+        sidebar.model_combo.setCurrentText("model-a")
+        self.app.processEvents()
+
+        self.assertEqual(sidebar.concurrency_input.value(), 12)
+
+    def test_sidebar_image_role_controls_pdf_page_concurrency(self) -> None:
+        settings = AppSettings()
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_base_url = "https://images.example.test/v1"
+        settings.image_model_role.cloud_model = "gpt-image-2"
+        sidebar = self._make_sidebar(settings)
+        sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
+        self.app.processEvents()
+
+        self.assertEqual(sidebar.concurrency_label.text(), "并发数")
+        sidebar.concurrency_input.setValue(9)
+        self.app.processEvents()
+
+        config = resolve_effective_model_config(settings, ROLE_IMAGE)
+        self.assertEqual(get_model_throughput(settings, config).concurrency, 9)
+        self.assertEqual(settings.pdf.page_generation_concurrency, 9)
+
     def test_fetch_image_models_prefers_gpt_image_2_when_available(self) -> None:
         settings = AppSettings()
         settings.image_model_role.source_role = "independent"
@@ -447,6 +659,8 @@ class NativeSidebarPromptTests(unittest.TestCase):
         sidebar = self._make_sidebar(settings)
         sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
         self.app.processEvents()
+        sidebar.concurrency_input.setValue(8)
+        self.app.processEvents()
 
         sources = [
             sidebar.review_source_role_combo.itemData(i)
@@ -464,6 +678,20 @@ class NativeSidebarPromptTests(unittest.TestCase):
             sidebar.review_source_role_combo.currentData(),
             ROLE_IMAGE,
         )
+        self.assertTrue(sidebar.review_concurrency_spin.isHidden())
+        self.assertFalse(sidebar.review_concurrency_shared_input.isHidden())
+        self.assertTrue(sidebar.review_concurrency_shared_input.isReadOnly())
+        self.assertEqual(sidebar.review_concurrency_shared_input.text(), "共用页生成并发")
+        self.assertIn("审核请求会按实际进度动态占用", sidebar.review_concurrency_shared_input.toolTip())
+        self.assertEqual(sidebar.review_concurrency_spin.value(), 8)
+
+        sidebar.review_source_role_combo.setCurrentIndex(
+            sidebar.review_source_role_combo.findData(SOURCE_INDEPENDENT)
+        )
+        self.app.processEvents()
+
+        self.assertFalse(sidebar.review_concurrency_spin.isHidden())
+        self.assertTrue(sidebar.review_concurrency_shared_input.isHidden())
 
     def test_cloud_provider_switches_restore_isolated_base_url_and_model(self) -> None:
         settings = AppSettings()

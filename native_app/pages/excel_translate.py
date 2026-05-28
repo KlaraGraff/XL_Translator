@@ -53,6 +53,7 @@ from core.task_runner import (
     TaskRunner,
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
+from core.model_throughput import get_model_throughput
 from core.task_queue import (
     TASK_STATUS_COMPLETED,
     TASK_STATUS_FAILED,
@@ -89,7 +90,7 @@ from native_app.widgets import (
     refresh_combo_completer,
     select_combo_text_match,
 )
-from settings import AppSettings, save_settings
+from settings import AppSettings, api_key_scope, save_settings
 
 
 HEADER_TILE_HEIGHT = 48
@@ -1604,15 +1605,18 @@ class ExcelTranslatePage(QWidget):
         if self.queue_controller is not None and settings_snapshot.engine.mode != "local":
             try:
                 config = resolve_effective_model_config(settings_snapshot, ROLE_TRANSLATION)
+                throughput = get_model_throughput(settings_snapshot, config)
                 requirement = api_requirement_from_config(
                     config,
-                    declared_concurrency=settings_snapshot.engine.concurrency,
+                    declared_concurrency=throughput.concurrency,
                 )
             except Exception as exc:  # noqa: BLE001 - converted to UI warning.
                 QMessageBox.warning(self, APP_NAME, f"翻译模型配置不可用：{exc}")
                 return
             if requirement is not None:
-                key_overrides = {config.provider: config.api_key}
+                key_overrides = {
+                    api_key_scope(config.provider, config.base_url): config.api_key
+                }
                 task = TranslationTask(
                     snapshot=TranslationTaskSnapshot(
                         title=f"Excel 翻译 · {len(selected)} 个文件",
@@ -1636,10 +1640,10 @@ class ExcelTranslatePage(QWidget):
                         provider=config.provider,
                         model=config.model,
                         api_key_fingerprint=requirement.key_fingerprint,
-                        concurrency_label=str(settings_snapshot.engine.concurrency),
+                        concurrency_label=str(throughput.concurrency),
                         params=(
                             ("源语言", source_lang),
-                            ("批次大小", str(settings_snapshot.engine.batch_size)),
+                            ("批次大小", str(throughput.batch_size or "")),
                         ),
                     ),
                     group_requirements=(requirement,),

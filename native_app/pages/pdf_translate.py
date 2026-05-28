@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -30,7 +29,6 @@ from PySide6.QtWidgets import (
 
 from app_meta import APP_NAME
 from config import (
-    PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     PDF_PAGE_RETRY_ATTEMPTS_MAX,
     PDF_PAGE_RETRY_ATTEMPTS_MIN,
 )
@@ -59,6 +57,7 @@ from core.model_roles import (
     provider_supports_capability,
     resolve_effective_model_config,
 )
+from core.model_throughput import get_model_throughput
 from core.pdf_image_translation import (
     PDF_MANIFEST_FILENAME,
     PDF_PAGES_ROOT,
@@ -115,7 +114,7 @@ from native_app.widgets import (
     select_combo_text_match,
 )
 from native_app.workers import PdfScanWorker
-from settings import AppSettings, save_settings
+from settings import AppSettings, api_key_scope, save_settings
 
 
 HEADER_TILE_HEIGHT = 48
@@ -427,13 +426,6 @@ class PdfTranslatePage(QWidget):
         self.retry_spin.setValue(self.settings.pdf.page_retry_attempts)
         self.retry_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.retry_spin)
-        layout.addWidget(_field_label("PDF 页生成并发数", "PDF 页生成并发数", "留空时跟随云端并发数。"))
-        self.pdf_concurrency_input = QLineEdit(
-            "" if self.settings.pdf.page_generation_concurrency is None else str(self.settings.pdf.page_generation_concurrency)
-        )
-        self.pdf_concurrency_input.setPlaceholderText("留空")
-        self.pdf_concurrency_input.editingFinished.connect(self._on_params_changed)
-        layout.addWidget(self.pdf_concurrency_input)
         self.image_translation_checkbox = QCheckBox("启用图片翻译")
         self.image_translation_checkbox.setChecked(self.settings.pdf.image_translation_enabled)
         self.image_translation_checkbox.toggled.connect(self._on_image_translation_enabled_changed)
@@ -1623,17 +1615,6 @@ class PdfTranslatePage(QWidget):
     def _on_params_changed(self) -> None:
         self.settings.pdf.page_retry_attempts = self.retry_spin.value()
         self.settings.pdf.generate_compressed_pdf = self.pdf_compression_checkbox.isChecked()
-        raw = self.pdf_concurrency_input.text().strip()
-        if not raw:
-            self.settings.pdf.page_generation_concurrency = None
-        else:
-            try:
-                value = max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, int(raw)))
-                self.settings.pdf.page_generation_concurrency = value
-                self.pdf_concurrency_input.setText(str(value))
-            except ValueError:
-                self.pdf_concurrency_input.setText("")
-                self.settings.pdf.page_generation_concurrency = None
         save_settings(self.settings)
 
     def _on_image_translation_enabled_changed(self, checked: bool) -> None:
@@ -1693,7 +1674,6 @@ class PdfTranslatePage(QWidget):
             self.output_custom_radio,
             self.custom_output_input,
             self.retry_spin,
-            self.pdf_concurrency_input,
             self.image_translation_checkbox,
             self.pdf_compression_checkbox,
             self.pdf_review_checkbox,
@@ -1739,21 +1719,27 @@ class PdfTranslatePage(QWidget):
         if self.queue_controller is not None:
             try:
                 image_config = resolve_effective_model_config(settings_snapshot, ROLE_IMAGE)
-                pdf_concurrency = self._queue_pdf_concurrency(settings_snapshot)
+                image_throughput = get_model_throughput(settings_snapshot, image_config)
+                pdf_concurrency = image_throughput.concurrency
                 image_requirement = api_requirement_from_config(
                     image_config,
                     declared_concurrency=pdf_concurrency,
                 )
                 review_config = None
                 review_requirement = None
+                review_concurrency = 1
                 if settings_snapshot.pdf.review_enabled:
                     review_config = resolve_effective_model_config(
                         settings_snapshot,
                         ROLE_PDF_REVIEW,
                     )
+                    review_concurrency = get_model_throughput(
+                        settings_snapshot,
+                        review_config,
+                    ).concurrency
                     review_requirement = api_requirement_from_config(
                         review_config,
-                        declared_concurrency=1,
+                        declared_concurrency=review_concurrency,
                     )
             except Exception as exc:  # noqa: BLE001 - converted to UI warning.
                 QMessageBox.warning(self, APP_NAME, f"PDF 翻译模型配置不可用：{exc}")
@@ -1765,9 +1751,16 @@ class PdfTranslatePage(QWidget):
                 if requirement is not None
             )
             if requirements:
-                key_overrides = {image_config.provider: image_config.api_key}
+                key_overrides = {
+                    api_key_scope(
+                        image_config.provider,
+                        image_config.base_url,
+                    ): image_config.api_key
+                }
                 if review_config is not None:
-                    key_overrides[review_config.provider] = review_config.api_key
+                    key_overrides[
+                        api_key_scope(review_config.provider, review_config.base_url)
+                    ] = review_config.api_key
                 total_pages = sum(item.page_count for item in selected)
                 selected_image_count = self._image_file_count(selected)
                 selected_pdf_count = len(selected) - selected_image_count
@@ -1812,6 +1805,12 @@ class PdfTranslatePage(QWidget):
                             ("图片文件数", str(selected_image_count)),
                             ("总页数", str(total_pages)),
                             ("页生成并发", str(pdf_concurrency)),
+                            (
+                                "审核并发",
+                                str(review_concurrency)
+                                if settings_snapshot.pdf.review_enabled
+                                else "未启用",
+                            ),
                             ("页级重试次数", str(settings_snapshot.pdf.page_retry_attempts)),
                             (
                                 "压缩 PDF",
@@ -1853,16 +1852,6 @@ class PdfTranslatePage(QWidget):
             self.settings,
             source_root=self.source_root or None,
         )
-
-    def _queue_pdf_concurrency(self, settings: AppSettings) -> int:
-        raw = settings.pdf.page_generation_concurrency
-        if raw is None:
-            raw = settings.engine.concurrency
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = 1
-        return max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
 
     def _queue_api_key_fingerprint(self, requirements) -> str:
         fingerprints: list[str] = []
