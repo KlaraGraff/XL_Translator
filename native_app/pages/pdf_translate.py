@@ -1150,6 +1150,7 @@ class PdfTranslatePage(QWidget):
             reset.clicked.connect(self._reset_task)
             self.action_layout.addWidget(reset)
         history = QPushButton("导出历史诊断归档" if count_diagnostic_records() > 0 else "暂无历史诊断")
+        history.setObjectName("PdfHistoryDiagnosticsButton")
         history.setEnabled(count_diagnostic_records() > 0 and not self._has_running_task())
         history.clicked.connect(self._export_history_diagnostics)
         self.action_layout.addWidget(history)

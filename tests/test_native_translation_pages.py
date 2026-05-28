@@ -1377,9 +1377,10 @@ class NativeTranslationPageTests(unittest.TestCase):
         history_buttons = [
             button
             for button in page.action_card.findChildren(QPushButton)
-            if button.text() == "导出历史诊断归档"
+            if button.objectName() == "PdfHistoryDiagnosticsButton"
         ]
         self.assertEqual(len(history_buttons), 1)
+        self.assertEqual(history_buttons[0].text(), "导出历史诊断归档")
         self.assertFalse(history_buttons[0].isEnabled())
 
     def test_pdf_concurrency_input_clamps_to_safety_cap(self) -> None:

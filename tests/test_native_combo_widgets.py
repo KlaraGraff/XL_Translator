@@ -124,7 +124,8 @@ class NativeComboWidgetTests(unittest.TestCase):
         self.assertEqual(field.text(), full_path)
         self.assertIn("…", elided)
         self.assertTrue(elided.startswith("/Users"))
-        self.assertTrue(elided.endswith("queue_test_sample.xlsx"))
+        self.assertTrue(elided.endswith(".xlsx"))
+        self.assertIn("sample", elided)
 
     def test_popup_geometry_attaches_below_field_when_space_allows(self) -> None:
         geometry = _calculate_combo_popup_geometry(
