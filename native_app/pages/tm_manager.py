@@ -385,13 +385,13 @@ class TmManagerPage(QWidget):
         layout.addLayout(form_grid)
 
         form_grid.addWidget(
-            _field_label("源语言", "源语言", "选择当前词库原文语言。"),
+            _field_label("源语言", "源语言", "选择词库原文语言。"),
             0,
             0,
         )
         self.source_combo = create_searchable_combo()
         if self.source_combo.lineEdit() is not None:
-            self.source_combo.lineEdit().setPlaceholderText("输入源语言")
+            self.source_combo.lineEdit().setPlaceholderText("筛选源语言")
         self.source_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -400,13 +400,13 @@ class TmManagerPage(QWidget):
         form_grid.addWidget(self.source_combo, 0, 1)
 
         form_grid.addWidget(
-            _field_label("目标语言", "目标语言", "选择当前词库译文语言。"),
+            _field_label("目标语言", "目标语言", "选择词库译文语言。"),
             0,
             2,
         )
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
-            self.target_combo.lineEdit().setPlaceholderText("输入目标语言")
+            self.target_combo.lineEdit().setPlaceholderText("筛选目标语言")
         self.target_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -418,10 +418,10 @@ class TmManagerPage(QWidget):
             _field_label(
                 "最长词上限",
                 "自动入库上限",
-                "定义允许自动进入记忆库的最长词条长度。",
+                "设置自动入库的最长词条长度。",
                 [
-                    "超过该值的长句会跳过自动入库，避免污染词库。",
-                    "手动新增词条不受这项规则影响。",
+                    "超过上限的长句不会自动入库。",
+                    "手动新增不受限制。",
                 ],
             ),
             1,
@@ -456,10 +456,10 @@ class TmManagerPage(QWidget):
             _module_title(
                 "语言与规则",
                 "语言与规则",
-                "设置当前词库的自动入库长度和语言对范围。",
+                "设置当前语言对和自动入库规则。",
                 [
-                    "最长词上限只影响自动入库，手动新增不受限制。",
-                    "源语言和目标语言共同决定当前显示和维护的词库范围。",
+                    "语言对决定当前词库范围。",
+                    "最长词上限仅影响自动入库。",
                 ],
             )
         )
@@ -475,11 +475,11 @@ class TmManagerPage(QWidget):
             _module_title(
                 "词库概况",
                 "词库概况",
-                "查看当前语言对的词条统计，并执行导入导出。",
+                "查看统计并管理词库文件。",
                 [
-                    "JSON 适合完整备份和迁移。",
-                    "CSV 适合人工查看、编辑和外部表格处理。",
-                    "导入词库时会按原文判断重复项。",
+                    "JSON 用于备份和迁移。",
+                    "CSV 用于查看和表格处理。",
+                    "导入时按原文判断重复项。",
                 ],
             )
         )
@@ -530,11 +530,11 @@ class TmManagerPage(QWidget):
         self.cleaner_title_label = _module_title(
             "维护与清洗",
             "维护与清洗",
-            "用 AI 对当前语言对的未固定词条做统一清理。",
+            "清洗当前语言对的未固定词条。",
             [
-                "差异确认模式：先生成建议，用户逐条确认且可编辑后再写入。",
-                "直接覆写模式：自动写入清洗结果，效率更高，但更适合已有备份或低风险词库。",
-                "固定词条会被保护，不参与本次清洗。",
+                "差异确认模式会先生成建议，再由用户确认写入。",
+                "直接覆写模式会自动写入结果。",
+                "固定词条不参与清洗。",
             ],
         )
         title_row.addWidget(self.cleaner_title_label)
@@ -710,7 +710,7 @@ class TmManagerPage(QWidget):
         title_row.addWidget(self._pill("总词条", f"{stats['total']} 条"), alignment=Qt.AlignmentFlag.AlignTop)
         title_row.addWidget(self._phase_badge(), alignment=Qt.AlignmentFlag.AlignTop)
         self.header_layout.addLayout(title_row)
-        self.lang_pair_hint.setText(f"当前检视范围：{self.lang_pair}")
+        self.lang_pair_hint.setText(f"当前范围：{self.lang_pair}")
 
     def _pill(self, label: str, value: str) -> QFrame:
         frame = QFrame()
@@ -854,7 +854,7 @@ class TmManagerPage(QWidget):
     def _render_entry_workspace(self) -> None:
         self.workspace_layout.addWidget(_label("词条工作区", "SectionTitle"))
         if self.phase == "cleaning":
-            note = QLabel("深度清洗执行中，词库仍可浏览；新增、删除、编辑和批量操作暂时锁定。")
+            note = QLabel("清洗执行中。词库可浏览，编辑操作暂时锁定。")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.workspace_layout.addWidget(note)
@@ -941,10 +941,10 @@ class TmManagerPage(QWidget):
                 flags = item.flags()
                 if is_pinned or self.phase == "cleaning":
                     flags &= ~Qt.ItemFlag.ItemIsEditable
-                    item.setToolTip("固定词条需先解锁后才能直接修改。")
+                    item.setToolTip("固定词条需先解锁后修改。")
                 else:
                     flags |= Qt.ItemFlag.ItemIsEditable
-                    item.setToolTip("点击单元格可直接修改，回车或失焦后保存。")
+                    item.setToolTip("点击后编辑，回车或失焦保存。")
                 item.setFlags(flags)
                 item.setData(ENTRY_ID_ROLE, int(row["id"]))
                 item.setData(ENTRY_SOURCE_ROLE, values[0])
@@ -1097,7 +1097,7 @@ class TmManagerPage(QWidget):
 
     def _render_diff_workspace(self) -> None:
         self.workspace_layout.addWidget(_label("清洗差异确认", "SectionTitle"))
-        note = QLabel(f"发现 {len(self.clean_suggestions)} 条建议。勾选需要写入的结果后点击确认。")
+        note = QLabel(f"发现 {len(self.clean_suggestions)} 条建议。请选择需要写入的结果。")
         note.setWordWrap(True)
         note.setObjectName("MutedText")
         self.workspace_layout.addWidget(note)
@@ -1132,7 +1132,7 @@ class TmManagerPage(QWidget):
                 if col == 3:
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                     item.setData(DIFF_TARGET_ROLE, suggestion.new_target)
-                    item.setToolTip("点击单元格可修改本次准备写入的建议译文。")
+                    item.setToolTip("点击后修改本次建议译文。")
                 else:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 table.setItem(row, col, item)
@@ -1401,7 +1401,7 @@ class TmManagerPage(QWidget):
         answer = QMessageBox.question(
             self,
             APP_NAME,
-            "遇到重复原文时是否覆盖本地译文？\n选择“否”将跳过重复项。",
+            "如遇重复原文，是否覆盖本地译文？\n选择“否”将跳过重复项。",
             QMessageBox.StandardButton.Yes
             | QMessageBox.StandardButton.No
             | QMessageBox.StandardButton.Cancel,
@@ -1440,7 +1440,7 @@ class TmManagerPage(QWidget):
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "请先写入或放弃本次清洗结果，再启动新的深度清洗。",
+                "请先处理当前清洗结果，再启动新的清洗。",
             )
             return
         self._start_cleaning()
@@ -1563,7 +1563,7 @@ class TmManagerPage(QWidget):
         layout = QVBoxLayout(dialog)
         layout.setSpacing(10)
 
-        intro = QLabel(f"当前语言对：{self.lang_pair}。内置规则只读，可为该语言对追加或覆盖提示词。")
+        intro = QLabel(f"语言对：{self.lang_pair}。内置规则只读，可追加或覆盖提示词。")
         intro.setWordWrap(True)
         intro.setObjectName("MutedText")
         layout.addWidget(intro)
@@ -1583,7 +1583,7 @@ class TmManagerPage(QWidget):
         layout.addWidget(_label("当前语言的补充提示词", "SectionTitle"))
         extra_edit = QTextEdit()
         extra_edit.setMinimumHeight(100)
-        extra_edit.setPlaceholderText("例如：优先统一当前项目的工程缩写，保持语气简洁。")
+        extra_edit.setPlaceholderText("例如：统一项目缩写，保持译文简洁。")
         extra_edit.setPlainText(self.settings.cleaner_prompt_extras.get(self.lang_pair, ""))
         layout.addWidget(extra_edit)
 
@@ -1593,13 +1593,13 @@ class TmManagerPage(QWidget):
         _set_tooltip(
             full_check,
             "完整提示词覆盖",
-            "开启后将直接使用下方 Prompt，不再拼接内置规则。",
+            "启用后仅使用下方 Prompt。",
         )
         layout.addWidget(full_check)
 
         full_edit = QTextEdit()
         full_edit.setMinimumHeight(120)
-        full_edit.setPlaceholderText("仅在需要完全接管清洗 prompt 时使用。")
+        full_edit.setPlaceholderText("输入完整清洗 Prompt")
         full_edit.setPlainText(full_override)
         full_edit.setEnabled(full_check.isChecked())
         layout.addWidget(full_edit)
@@ -1650,7 +1650,7 @@ class TmManagerPage(QWidget):
             return
         full_text = full_edit.toPlainText().strip() if full_check.isChecked() else ""
         if full_check.isChecked() and not full_text:
-            QMessageBox.warning(self, APP_NAME, "已启用完整覆盖，请填写完整 Prompt 或关闭高级模式。")
+            QMessageBox.warning(self, APP_NAME, "请填写完整 Prompt，或关闭完整覆盖。")
             return
         self.settings.cleaner_prompt_extras = _update_lang_prompt_map(
             self.settings.cleaner_prompt_extras,
@@ -1663,4 +1663,4 @@ class TmManagerPage(QWidget):
             full_text,
         )
         save_settings(self.settings)
-        QMessageBox.information(self, APP_NAME, "当前语言的清洗 Prompt 已更新。")
+        QMessageBox.information(self, APP_NAME, "清洗 Prompt 已更新。")

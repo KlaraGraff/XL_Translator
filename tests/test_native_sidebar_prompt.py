@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -125,7 +128,7 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertTrue(sidebar.mode_combo.isHidden())
         self.assertTrue(sidebar.model_catalog_status.text())
         self.assertFalse(sidebar.pdf_review_frame.isHidden())
-        self.assertIn("可选项", sidebar.review_model_status.text())
+        self.assertIn("未启用 PDF 翻译审核时可留空", sidebar.review_model_status.text())
 
     def test_sidebar_update_ignore_button_reflects_global_ignore_state(self) -> None:
         settings = AppSettings()
@@ -166,6 +169,141 @@ class NativeSidebarPromptTests(unittest.TestCase):
 
         self.assertIs(sidebar.update_check_button.parentWidget(), sidebar._form.parentWidget())
         self.assertIs(sidebar.update_ignore_button.parentWidget(), sidebar._form.parentWidget())
+
+    def test_empty_model_catalog_status_does_not_reserve_blank_row(self) -> None:
+        sidebar = self._make_sidebar(AppSettings())
+
+        self.assertEqual(sidebar.model_catalog_status.text(), "")
+        self.assertTrue(sidebar.model_catalog_status.isHidden())
+
+        sidebar._set_model_catalog_status("API 配置已变化，请重新获取模型列表。")
+        self.assertFalse(sidebar.model_catalog_status.isHidden())
+
+        sidebar._set_model_catalog_status("")
+        self.assertTrue(sidebar.model_catalog_status.isHidden())
+
+    def test_sidebar_model_config_import_export_buttons_exist(self) -> None:
+        sidebar = self._make_sidebar(AppSettings())
+
+        self.assertEqual(sidebar.export_model_config_button.text(), "导出配置")
+        self.assertEqual(sidebar.import_model_config_button.text(), "导入配置")
+
+    def test_export_model_config_writes_json_with_keys(self) -> None:
+        settings = AppSettings()
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_model = "mimo-v2-pro"
+        settings.engine.cloud_base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+        sidebar = self._make_sidebar(settings)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model-config.json"
+            with (
+                patch(
+                    "native_app.main_window.QFileDialog.getSaveFileName",
+                    return_value=(str(target), "JSON 文件 (*.json)"),
+                ),
+                patch(
+                    "native_app.main_window.get_key",
+                    side_effect=lambda provider: {
+                        "custom_openai": "secret",
+                        "openai": "unused-cloud-secret-should-not-export",
+                        "ollama": "local-secret-should-not-export",
+                    }.get(provider, ""),
+                ),
+                patch("native_app.main_window.QMessageBox.information"),
+            ):
+                sidebar._export_model_config()
+
+            payload = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["type"], "translator_cloud_model_config")
+        self.assertEqual(
+            payload["model_config"]["engine"]["cloud_provider"],
+            "custom_openai",
+        )
+        self.assertEqual(payload["model_config"]["engine"]["cloud_model"], "mimo-v2-pro")
+        self.assertNotIn("local_provider", payload["model_config"]["engine"])
+        self.assertNotIn("local_model", payload["model_config"]["engine"])
+        self.assertNotIn("local_base_url", payload["model_config"]["engine"])
+        self.assertNotIn("ollama_concurrency", payload["model_config"]["engine"])
+        self.assertEqual(payload["api_keys"], {"custom_openai": "secret"})
+
+    def test_export_model_config_resolves_legacy_custom_openai_key(self) -> None:
+        settings = AppSettings()
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_model = "mimo-v2-pro"
+        sidebar = self._make_sidebar(settings)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model-config.json"
+            with (
+                patch(
+                    "native_app.main_window.QFileDialog.getSaveFileName",
+                    return_value=(str(target), "JSON 文件 (*.json)"),
+                ),
+                patch(
+                    "native_app.main_window.get_key",
+                    side_effect=lambda provider: "legacy-secret"
+                    if provider == "custom_openai"
+                    else "",
+                ),
+                patch("native_app.main_window.QMessageBox.information"),
+            ):
+                sidebar._export_model_config()
+
+            payload = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["api_keys"], {"custom_openai": "legacy-secret"})
+
+    def test_import_model_config_updates_model_settings_and_keys(self) -> None:
+        settings = AppSettings()
+        settings.engine.mode = "local"
+        settings.engine.local_provider = "lm_studio"
+        settings.engine.local_model = "do-not-overwrite"
+        settings.engine.local_base_url = "http://localhost:1234/v1"
+        sidebar = self._make_sidebar(settings)
+        payload = {
+            "type": "translator_cloud_model_config",
+            "version": 1,
+            "model_config": {
+                "engine": {
+                    "cloud_provider": "custom_openai",
+                    "cloud_model": "imported-model",
+                    "cloud_base_url": "https://import.example/v1",
+                    "local_provider": "ollama",
+                    "local_model": "should-be-ignored",
+                    "local_base_url": "http://localhost:11434",
+                }
+            },
+            "api_keys": {
+                "custom_openai": "imported-secret",
+                "ollama": "local-secret-should-be-ignored",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "model-config.json"
+            source.write_text(json.dumps(payload), encoding="utf-8")
+            with (
+                patch(
+                    "native_app.main_window.QFileDialog.getOpenFileName",
+                    return_value=(str(source), "JSON 文件 (*.json)"),
+                ),
+                patch("native_app.main_window.save_key") as save_key_mock,
+                patch("native_app.main_window.QMessageBox.information"),
+            ):
+                sidebar._import_model_config()
+
+        self.assertEqual(settings.engine.cloud_provider, "custom_openai")
+        self.assertEqual(settings.engine.cloud_model, "imported-model")
+        self.assertEqual(settings.engine.cloud_base_url, "https://import.example/v1")
+        self.assertEqual(settings.engine.mode, "cloud")
+        self.assertEqual(settings.engine.local_provider, "lm_studio")
+        self.assertEqual(settings.engine.local_model, "do-not-overwrite")
+        self.assertEqual(settings.engine.local_base_url, "http://localhost:1234/v1")
+        self.assertEqual(sidebar.provider_combo.currentText(), "OpenAI 兼容")
+        self.assertEqual(sidebar.model_combo.currentText(), "imported-model")
+        save_key_mock.assert_called_once_with("custom_openai", "imported-secret")
 
     def test_translation_local_mode_shows_only_local_provider_fields(self) -> None:
         settings = AppSettings()

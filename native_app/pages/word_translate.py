@@ -367,22 +367,22 @@ class WordTranslatePage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(10)
         self.source_input = MiddleElideLineEdit(self.settings.last_word_source_folder)
-        self.source_input.setPlaceholderText("可手动输入文件夹或 Word 文件绝对路径")
+        self.source_input.setPlaceholderText("输入文件夹或 Word 文件绝对路径")
         _set_tooltip(
             self.source_input,
             "源路径",
-            "可输入一个文件夹或单个 Word 文件的绝对路径。",
-            ["文件夹会递归扫描其中所有 .docx / .doc 文件。"],
+            "指定待翻译的 Word 文件或文件夹。",
+            ["文件夹会递归扫描 .docx 和 .doc 文件。"],
         )
         row.addWidget(self.source_input, 1)
 
         self.browse_button = QPushButton("浏览")
-        _set_tooltip(self.browse_button, "浏览", "选择源文件夹或单个 Word 文件。")
+        _set_tooltip(self.browse_button, "浏览", "选择源文件夹或 Word 文件。")
         self.browse_button.clicked.connect(self._browse_source)
         row.addWidget(self.browse_button)
 
         self.scan_button = QPushButton("扫描")
-        _set_tooltip(self.scan_button, "扫描", "读取源路径中的 Word 文件并生成任务清单。")
+        _set_tooltip(self.scan_button, "扫描", "扫描源路径并生成任务清单。")
         self.scan_button.clicked.connect(self._scan_source)
         row.addWidget(self.scan_button)
         layout.addLayout(row)
@@ -399,12 +399,12 @@ class WordTranslatePage(QWidget):
         _set_tooltip(
             self.output_default_radio,
             "源目录内",
-            "输出目录会创建在源路径同级位置，目录名自动附带时间戳。",
+            "在源路径同级位置创建输出目录。",
         )
         _set_tooltip(
             self.output_custom_radio,
             "自定义目录",
-            "将翻译结果集中写入指定输出目录。",
+            "将结果写入指定目录。",
         )
         self.output_custom_radio.setChecked(self.settings.output.use_custom_output_dir)
         self.output_default_radio.setChecked(not self.settings.output.use_custom_output_dir)
@@ -414,7 +414,7 @@ class WordTranslatePage(QWidget):
         layout.addWidget(self.output_custom_radio)
 
         self.custom_output_input = MiddleElideLineEdit(self.settings.output.custom_output_dir)
-        self.custom_output_input.setPlaceholderText("输入输出目录绝对路径")
+        self.custom_output_input.setPlaceholderText("输入输出目录")
         self.custom_output_input.editingFinished.connect(self._on_output_changed)
         layout.addWidget(self.custom_output_input)
 
@@ -433,19 +433,19 @@ class WordTranslatePage(QWidget):
         self.target_lang_label = _field_label(
             "目标语言",
             "目标语言",
-            "选择本次要翻译成的语言。",
-            ["可与源语言独立选择；新配置默认目标语言为英文。"],
+            "选择译文语言。",
+            ["可与源语言独立设置。"],
         )
         layout.addWidget(self.target_lang_label)
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
-            self.target_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
+            self.target_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_target_options()
         _set_tooltip(
             self.target_combo,
             "目标语言",
-            "默认目标语言为英文，默认源语言为中文；输入前几个字可快速匹配目标语言。",
-            ["点击右侧箭头可展开候选列表。"],
+            "选择输出语言。",
+            ["可输入名称快速筛选。"],
         )
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         layout.addWidget(self.target_combo)
@@ -453,14 +453,14 @@ class WordTranslatePage(QWidget):
         self.source_lang_label = _field_label(
             "源语言",
             "源语言",
-            "选择原文语言，可与目标语言独立设置。",
+            "选择原文语言。",
         )
         layout.addWidget(self.source_lang_label)
         self.source_lang_combo = create_searchable_combo()
         if self.source_lang_combo.lineEdit() is not None:
-            self.source_lang_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
+            self.source_lang_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_source_options()
-        _set_tooltip(self.source_lang_combo, "源语言", "选择原文语言；输入前几个字可快速匹配。")
+        _set_tooltip(self.source_lang_combo, "源语言", "选择源文件的主要语言。")
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
@@ -469,7 +469,7 @@ class WordTranslatePage(QWidget):
         _set_tooltip(
             self.highlight_check,
             "高亮需复核原文",
-            "在生成的双语 Word 中标记仍需人工确认的段落或表格单元格。",
+            "在输出文档中标记需人工确认的内容。",
         )
         self.highlight_check.toggled.connect(self._on_params_changed)
         layout.addWidget(self.highlight_check)
@@ -479,37 +479,37 @@ class WordTranslatePage(QWidget):
         _set_tooltip(
             self.native_word_check,
             "优先调用本地 Word",
-            "处理旧版 .doc 时先尝试使用本机 Microsoft Word 另存为 .docx。",
+            "处理 .doc 时优先使用本机 Microsoft Word 转换。",
             [
-                "本地 Word 不可用或转换失败时，会自动改用 LibreOffice/textutil 等兼容方式继续。",
-                "转换结果为普通 .docx；宏不会保留、执行或输出。",
+                "不可用时自动改用兼容方式。",
+                "宏不会保留、执行或输出。",
             ],
         )
         self.native_word_check.toggled.connect(self._on_params_changed)
         layout.addWidget(self.native_word_check)
 
-        layout.addWidget(_field_label("每批最多段落", "每批最多段落", "控制 Word 段落打包数量。"))
+        layout.addWidget(_field_label("每批最多段落", "每批最多段落", "设置每批段落上限。"))
         self.batch_paragraphs_spin = QSpinBox()
         self.batch_paragraphs_spin.setRange(WORD_BATCH_PARAGRAPHS_MIN, WORD_BATCH_PARAGRAPHS_MAX)
         self.batch_paragraphs_spin.setValue(self.settings.word_batch.max_paragraphs_per_batch)
         self.batch_paragraphs_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.batch_paragraphs_spin)
 
-        layout.addWidget(_field_label("每批最多字符", "每批最多字符", "控制 Word 批次字符预算。"))
+        layout.addWidget(_field_label("每批最多字符", "每批最多字符", "设置每批字符上限。"))
         self.batch_chars_spin = QSpinBox()
         self.batch_chars_spin.setRange(WORD_BATCH_CHARS_MIN, WORD_BATCH_CHARS_MAX)
         self.batch_chars_spin.setValue(self.settings.word_batch.max_chars_per_batch)
         self.batch_chars_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.batch_chars_spin)
 
-        layout.addWidget(_field_label("长段拆分阈值", "长段拆分阈值", "超过该字符数的段落会尝试拆分。"))
+        layout.addWidget(_field_label("长段拆分阈值", "长段拆分阈值", "超过阈值的段落将尝试拆分。"))
         self.split_chars_spin = QSpinBox()
         self.split_chars_spin.setRange(WORD_BATCH_SPLIT_CHARS_MIN, WORD_BATCH_SPLIT_CHARS_MAX)
         self.split_chars_spin.setValue(self.settings.word_batch.split_paragraph_chars)
         self.split_chars_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.split_chars_spin)
 
-        layout.addWidget(_field_label("严格重试次数", "严格重试次数", "首轮失败后单段严格重试的次数。"))
+        layout.addWidget(_field_label("严格重试次数", "严格重试次数", "设置单段失败后的重试次数。"))
         self.retry_spin = QSpinBox()
         self.retry_spin.setRange(WORD_STRICT_RETRY_ATTEMPTS_MIN, WORD_STRICT_RETRY_ATTEMPTS_MAX)
         self.retry_spin.setValue(self.settings.word_batch.strict_retry_attempts)
@@ -656,8 +656,7 @@ class WordTranslatePage(QWidget):
         if not self.files:
             layout.addWidget(_label("任务清单", "SectionTitle"))
             placeholder = QLabel(
-                "可手动输入文件夹或单个 Word 文件路径后点击“扫描”，"
-                "也可点击“浏览”选择并自动扫描，即可在此查看可处理文件列表。"
+                "输入或选择源路径后扫描，生成可处理文件列表。"
             )
             placeholder.setWordWrap(True)
             placeholder.setObjectName("MutedText")
@@ -672,11 +671,11 @@ class WordTranslatePage(QWidget):
         title_row.addWidget(self.selection_status_label)
         title_row.addStretch(1)
         select_all = QPushButton("全选")
-        _set_tooltip(select_all, "全选", "勾选当前任务清单中的全部 Word 文件。")
+        _set_tooltip(select_all, "全选", "选择全部 Word 文件。")
         select_all.clicked.connect(lambda: self._set_all_file_selection(True))
         title_row.addWidget(select_all)
         deselect_all = QPushButton("全不选")
-        _set_tooltip(deselect_all, "全不选", "取消勾选当前任务清单中的全部 Word 文件。")
+        _set_tooltip(deselect_all, "全不选", "取消选择全部 Word 文件。")
         deselect_all.clicked.connect(lambda: self._set_all_file_selection(False))
         title_row.addWidget(deselect_all)
         layout.addLayout(title_row)
@@ -712,7 +711,7 @@ class WordTranslatePage(QWidget):
 
     def _render_running_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("执行监控", "SectionTitle"))
-        self.running_status = QLabel("初始化中，请稍候...")
+        self.running_status = QLabel("正在初始化...")
         self.running_status.setObjectName("MutedText")
         layout.addWidget(self.running_status)
         self.recovery_summary = self._build_recovery_summary()
@@ -887,7 +886,7 @@ class WordTranslatePage(QWidget):
         if self._is_preparing_next_task():
             selected = self._selected_files()
             lang_label = self._selected_target_label()
-            note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            note = QLabel(f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -904,13 +903,13 @@ class WordTranslatePage(QWidget):
         elif self.phase == "idle":
             selected = self._selected_files()
             lang_label = self._selected_target_label()
-            note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            note = QLabel(f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
             start = QPushButton(f"开始翻译（{lang_label}）")
             start.setObjectName("PrimaryButton")
-            _set_tooltip(start, "开始翻译", "按当前任务清单和 Word 参数启动翻译。")
+            _set_tooltip(start, "开始翻译", "按当前设置启动翻译。")
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
@@ -964,16 +963,16 @@ class WordTranslatePage(QWidget):
                 if running is not None
                 else (1, active)
             )
-            return f"查看翻译列表，当前 {position}/{total}"
+            return f"查看翻译列表（{position}/{total}）"
         return "查看翻译列表"
 
     def _deferred_terminal_entry_text(self) -> str:
         if self.deferred_terminal_phase == "done":
-            return "上一轮任务已完成，点击查看"
+            return "查看上一轮结果"
         if self.deferred_terminal_phase == "error":
-            return "上一轮任务异常，点击查看"
+            return "查看上一轮异常"
         if self.deferred_terminal_phase == "stopped":
-            return "上一轮任务已中止，点击查看"
+            return "查看上一轮中止结果"
         return ""
 
     def _defer_terminal_result(
@@ -1572,7 +1571,7 @@ class WordTranslatePage(QWidget):
         self.custom_output_input.setVisible(use_custom)
         self.custom_output_input.setEnabled(use_custom and self.phase != "running")
         if not use_custom:
-            self.output_status.setText("输出目录会创建在源路径同级位置，并自动附带时间戳。")
+            self.output_status.setText("输出目录将创建在源路径同级位置。")
             return
         custom_dir = self.custom_output_input.text().strip().strip('"')
         error = get_custom_output_dir_error(custom_dir)
@@ -1581,7 +1580,7 @@ class WordTranslatePage(QWidget):
             return
         custom_output_root = resolve_custom_output_dir(custom_dir)
         if custom_output_dir_will_be_created(custom_dir):
-            self.output_status.setText(f"目录将在执行时自动创建：{custom_output_root}")
+            self.output_status.setText(f"执行时创建目录：{custom_output_root}")
         else:
             self.output_status.setText("自定义输出目录可用。")
 
@@ -1623,7 +1622,7 @@ class WordTranslatePage(QWidget):
         if self.runner is not None and (
             self.queue_controller is None or self.settings.engine.mode == "local"
         ):
-            QMessageBox.warning(self, APP_NAME, "当前任务仍在运行，本地模型任务暂不支持排队。")
+            QMessageBox.warning(self, APP_NAME, "任务正在运行；本地模型任务暂不支持排队。")
             return
         config_check = check_translation_api_config(self.settings)
         if not config_check.ok:
@@ -1953,7 +1952,7 @@ class WordTranslatePage(QWidget):
             return
         progress = self.progress
         if progress is None:
-            self.running_status.setText(self.status_text or "初始化中，请稍候...")
+            self.running_status.setText(self.status_text or "正在初始化...")
             self.progress_bar.setValue(0)
         else:
             overall = self._calc_overall_progress(progress)

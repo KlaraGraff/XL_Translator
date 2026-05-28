@@ -352,16 +352,14 @@ class ExcelTranslatePage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(10)
         self.source_input = MiddleElideLineEdit(self.settings.last_excel_source_folder)
-        self.source_input.setPlaceholderText(
-            "可手动输入文件夹或 Excel 文件绝对路径，也可点击“浏览”选择"
-        )
+        self.source_input.setPlaceholderText("输入文件夹或 Excel 文件绝对路径")
         _set_tooltip(
             self.source_input,
             "源路径",
-            "可输入一个文件夹或单个 Excel 文件的绝对路径。",
+            "指定待翻译的 Excel 文件或文件夹。",
             [
-                "文件夹会递归扫描其中所有 .xlsx / .xls 文件。",
-                "单个 Excel 文件则只扫描该文件。",
+                "文件夹会递归扫描 .xlsx 和 .xls 文件。",
+                "单个文件仅扫描该文件。",
             ],
         )
         row.addWidget(self.source_input, 1)
@@ -370,7 +368,7 @@ class ExcelTranslatePage(QWidget):
         _set_tooltip(
             self.browse_button,
             "浏览",
-            "打开系统选择窗口，选择源文件夹或单个 Excel 文件。",
+            "选择源文件夹或 Excel 文件。",
         )
         self.browse_button.clicked.connect(self._browse_source)
         row.addWidget(self.browse_button)
@@ -379,7 +377,7 @@ class ExcelTranslatePage(QWidget):
         _set_tooltip(
             self.scan_button,
             "扫描",
-            "读取源路径中的 Excel 文件并生成任务清单。",
+            "扫描源路径并生成任务清单。",
         )
         self.scan_button.clicked.connect(self._scan_source)
         row.addWidget(self.scan_button)
@@ -397,14 +395,14 @@ class ExcelTranslatePage(QWidget):
         _set_tooltip(
             self.output_default_radio,
             "源目录内",
-            "输出目录会创建在源路径同级位置，目录名自动附带时间戳。",
-            ["适合希望翻译结果与原文件邻近管理的场景。"],
+            "在源路径同级位置创建输出目录。",
+            ["目录名自动附加时间戳。"],
         )
         _set_tooltip(
             self.output_custom_radio,
             "自定义目录",
-            "将翻译结果集中写入指定输出目录。",
-            ["目录不存在时会在执行阶段自动创建。"],
+            "将结果写入指定目录。",
+            ["目录不存在时会自动创建。"],
         )
         self.output_custom_radio.setChecked(self.settings.output.use_custom_output_dir)
         self.output_default_radio.setChecked(not self.settings.output.use_custom_output_dir)
@@ -414,11 +412,11 @@ class ExcelTranslatePage(QWidget):
         layout.addWidget(self.output_custom_radio)
 
         self.custom_output_input = MiddleElideLineEdit(self.settings.output.custom_output_dir)
-        self.custom_output_input.setPlaceholderText("输入输出目录绝对路径")
+        self.custom_output_input.setPlaceholderText("输入输出目录")
         _set_tooltip(
             self.custom_output_input,
             "自定义输出目录",
-            "填写翻译结果集中保存的位置。",
+            "指定翻译结果保存位置。",
         )
         self.custom_output_input.editingFinished.connect(self._on_output_changed)
         layout.addWidget(self.custom_output_input)
@@ -438,19 +436,19 @@ class ExcelTranslatePage(QWidget):
         self.target_lang_label = _field_label(
             "目标语言",
             "目标语言",
-            "选择本次要翻译成的语言。",
-            ["可与源语言独立选择；新配置默认目标语言为英文。"],
+            "选择译文语言。",
+            ["可与源语言独立设置。"],
         )
         layout.addWidget(self.target_lang_label)
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
-            self.target_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
+            self.target_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_target_options()
         _set_tooltip(
             self.target_combo,
             "目标语言",
-            "默认目标语言为英文，默认源语言为中文；输入前几个字可快速匹配目标语言。",
-            ["点击右侧箭头可展开候选列表。"],
+            "选择输出语言。",
+            ["可输入名称快速筛选。"],
         )
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         layout.addWidget(self.target_combo)
@@ -458,17 +456,17 @@ class ExcelTranslatePage(QWidget):
         self.source_lang_label = _field_label(
             "源语言",
             "源语言",
-            "选择原文语言，可与目标语言独立设置。",
+            "选择原文语言。",
         )
         layout.addWidget(self.source_lang_label)
         self.source_lang_combo = create_searchable_combo()
         if self.source_lang_combo.lineEdit() is not None:
-            self.source_lang_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
+            self.source_lang_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_source_options()
         _set_tooltip(
             self.source_lang_combo,
             "源语言",
-            "选择原文语言；输入前几个字可快速匹配。",
+            "选择源文件的主要语言。",
         )
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
@@ -501,30 +499,29 @@ class ExcelTranslatePage(QWidget):
             {
                 "保留原始表格": _tooltip(
                     "保留原始表格",
-                    "控制输出文件是否同时保留原始中文工作表。",
+                    "在输出文件中保留原始工作表。",
                     [
-                        "开启后便于对照审校、回溯字段来源与排查差异。",
-                        "关闭后仅保留翻译结果，文件更精简。",
+                        "便于对照审校。",
+                        "关闭后仅保留翻译结果。",
                     ],
                 ),
                 "公式文本按显示值回填": _tooltip(
                     "公式文本按显示值回填",
-                    "当单元格显示内容来自公式时，按公式计算结果匹配翻译并覆盖写入。",
+                    "按公式显示值匹配并写入译文。",
                     [
-                        "命中后对应单元格会被静态文本覆盖，不再保留原公式。",
-                        "关闭后更保守，但这类公式文本可能无法正确回填。",
+                        "命中后会以静态文本替换原公式。",
+                        "关闭后保留原公式。",
                     ],
                 ),
                 "Excel 精调行高": _tooltip(
                     "Excel 精调行高",
-                    "翻译完成后调用本地 Excel 进行更精确的行高自适应。",
+                    "翻译完成后调用本地 Excel 调整行高。",
                     ["与“锁定行高，缩小字号”互斥。"],
                 ),
                 "锁定行高，缩小字号": _tooltip(
                     "锁定行高，缩小字号",
-                    "保持现有行高不变，通过递减字体来提升文本容纳能力。",
+                    "保持行高不变，通过缩小字号容纳译文。",
                     [
-                        "适合版式必须固定、不能拉伸行高的表格模板。",
                         "与“Excel 精调行高”互斥。",
                     ],
                 ),
@@ -675,8 +672,7 @@ class ExcelTranslatePage(QWidget):
         if not self.files:
             layout.addWidget(_label("任务清单", "SectionTitle"))
             placeholder = QLabel(
-                "可手动输入文件夹或单个 Excel 文件路径后点击“扫描”，"
-                "也可点击“浏览”选择并自动扫描，即可在此查看可处理文件列表。"
+                "输入或选择源路径后扫描，生成可处理文件列表。"
             )
             placeholder.setWordWrap(True)
             placeholder.setObjectName("MutedText")
@@ -691,11 +687,11 @@ class ExcelTranslatePage(QWidget):
         title_row.addWidget(self.selection_status_label)
         title_row.addStretch(1)
         select_all = QPushButton("全选")
-        _set_tooltip(select_all, "全选", "勾选当前任务清单中的全部 Excel 文件。")
+        _set_tooltip(select_all, "全选", "选择全部 Excel 文件。")
         select_all.clicked.connect(lambda: self._set_all_file_selection(True))
         title_row.addWidget(select_all)
         deselect_all = QPushButton("全不选")
-        _set_tooltip(deselect_all, "全不选", "取消勾选当前任务清单中的全部 Excel 文件。")
+        _set_tooltip(deselect_all, "全不选", "取消选择全部 Excel 文件。")
         deselect_all.clicked.connect(lambda: self._set_all_file_selection(False))
         title_row.addWidget(deselect_all)
         layout.addLayout(title_row)
@@ -721,7 +717,7 @@ class ExcelTranslatePage(QWidget):
 
     def _render_running_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("执行监控", "SectionTitle"))
-        self.running_status = QLabel("初始化中，请稍候...")
+        self.running_status = QLabel("正在初始化...")
         self.running_status.setObjectName("MutedText")
         layout.addWidget(self.running_status)
         self.progress_bar = QProgressBar()
@@ -864,7 +860,7 @@ class ExcelTranslatePage(QWidget):
         if self._is_preparing_next_task():
             selected = self._selected_files()
             lang_label = self._selected_target_label()
-            note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            note = QLabel(f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -874,8 +870,8 @@ class ExcelTranslatePage(QWidget):
             _set_tooltip(
                 start,
                 "开始翻译",
-                "按当前任务清单、目标语言、输出位置和引擎配置启动翻译。",
-                ["启动前会先检查 API 配置和 .xls 兼容条件。"],
+                "按当前设置启动翻译。",
+                ["启动前会检查模型配置和 .xls 兼容条件。"],
             )
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
@@ -887,7 +883,7 @@ class ExcelTranslatePage(QWidget):
         elif self.phase == "idle":
             selected = self._selected_files()
             lang_label = self._selected_target_label()
-            note = QLabel(f"当前目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            note = QLabel(f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -897,14 +893,14 @@ class ExcelTranslatePage(QWidget):
             _set_tooltip(
                 start,
                 "开始翻译",
-                "按当前任务清单、目标语言、输出位置和引擎配置启动翻译。",
-                ["启动前会先检查 API 配置和 .xls 兼容条件。"],
+                "按当前设置启动翻译。",
+                ["启动前会检查模型配置和 .xls 兼容条件。"],
             )
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
         elif self._has_running_task():
-            note = QLabel("运行期间会锁定参数；终止操作采用二次确认，防止误触。")
+            note = QLabel("任务运行中，参数已锁定。")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -918,8 +914,8 @@ class ExcelTranslatePage(QWidget):
             _set_tooltip(
                 stop,
                 "终止翻译",
-                "请求停止当前后台任务。",
-                ["任务会等待当前批次安全结束后再退出。"],
+                "停止当前后台任务。",
+                ["当前批次结束后退出。"],
             )
             stop.clicked.connect(self._confirm_stop)
             running_actions.addWidget(stop)
@@ -927,7 +923,7 @@ class ExcelTranslatePage(QWidget):
         else:
             reset = QPushButton("返回并开始新任务")
             reset.setObjectName("PrimaryButton")
-            _set_tooltip(reset, "返回并开始新任务", "清空当前任务状态，回到待执行页面。")
+            _set_tooltip(reset, "返回并开始新任务", "返回待执行状态。")
             reset.clicked.connect(self._reset_task)
             self.action_layout.addWidget(reset)
 
@@ -940,8 +936,8 @@ class ExcelTranslatePage(QWidget):
         _set_tooltip(
             history,
             "历史诊断归档",
-            "导出之前自动保存的轻量诊断包。",
-            ["诊断包不包含原始文件和 API Key。"],
+            "导出已保存的诊断包。",
+            ["不包含原始文件和 API Key。"],
         )
         history.clicked.connect(self._export_history_diagnostics)
         self.action_layout.addWidget(history)
@@ -980,16 +976,16 @@ class ExcelTranslatePage(QWidget):
                 if running is not None
                 else (1, active)
             )
-            return f"查看翻译列表，当前 {position}/{total}"
+            return f"查看翻译列表（{position}/{total}）"
         return "查看翻译列表"
 
     def _deferred_terminal_entry_text(self) -> str:
         if self.deferred_terminal_phase == "done":
-            return "上一轮任务已完成，点击查看"
+            return "查看上一轮结果"
         if self.deferred_terminal_phase == "error":
-            return "上一轮任务异常，点击查看"
+            return "查看上一轮异常"
         if self.deferred_terminal_phase == "stopped":
-            return "上一轮任务已中止，点击查看"
+            return "查看上一轮中止结果"
         return ""
 
     def _defer_terminal_result(
@@ -1520,7 +1516,7 @@ class ExcelTranslatePage(QWidget):
         self.custom_output_input.setVisible(use_custom)
         self.custom_output_input.setEnabled(use_custom and self.phase != "running")
         if not use_custom:
-            self.output_status.setText("输出目录会创建在源路径同级位置，并自动附带时间戳。")
+            self.output_status.setText("输出目录将创建在源路径同级位置。")
             return
 
         custom_dir = self.custom_output_input.text().strip().strip('"')
@@ -1530,7 +1526,7 @@ class ExcelTranslatePage(QWidget):
             return
         custom_output_root = resolve_custom_output_dir(custom_dir)
         if custom_output_dir_will_be_created(custom_dir):
-            self.output_status.setText(f"目录将在执行时自动创建：{custom_output_root}")
+            self.output_status.setText(f"执行时创建目录：{custom_output_root}")
         else:
             self.output_status.setText("自定义输出目录可用。")
 
@@ -1571,7 +1567,7 @@ class ExcelTranslatePage(QWidget):
         if self.runner is not None and (
             self.queue_controller is None or self.settings.engine.mode == "local"
         ):
-            QMessageBox.warning(self, APP_NAME, "当前任务仍在运行，本地模型任务暂不支持排队。")
+            QMessageBox.warning(self, APP_NAME, "任务正在运行；本地模型任务暂不支持排队。")
             return
 
         config_check = check_translation_api_config(self.settings)
@@ -1585,8 +1581,8 @@ class ExcelTranslatePage(QWidget):
         allow_xls_fallback = False
         if has_xls and not excel_available:
             message = (
-                "列表中包含旧版 .xls 文件，且当前环境未检测到可用的本地 Excel "
-                "自动化支持。\n\n是否使用纯代码兼容模式继续？\n\n"
+                "当前列表包含 .xls 文件，但未检测到可用的本地 Excel 自动化。\n\n"
+                "是否使用兼容模式继续？\n\n"
                 f"检测详情：{unavailable_reason}"
             )
             answer = QMessageBox.warning(
@@ -1916,7 +1912,7 @@ class ExcelTranslatePage(QWidget):
             return
         progress = self.progress
         if progress is None:
-            self.running_status.setText(self.status_text or "初始化中，请稍候...")
+            self.running_status.setText(self.status_text or "正在初始化...")
             self.progress_bar.setValue(0)
         else:
             overall = self._calc_overall_progress(progress)

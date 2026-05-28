@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -246,69 +249,76 @@ def _show_local_follow_warning(parent: QWidget, message: str) -> None:
 
 BRAND_TOOLTIP = {
     "title": APP_NAME,
-    "summary": (
-        f"{APP_NAME} 是一个面向 Excel、Word 和 PDF 文档的本地翻译器，"
-        "左侧完成配置，右侧执行任务并维护统一记忆库。"
-    ),
+    "summary": f"{APP_NAME} 用于本地处理 Excel、Word、PDF 与图片翻译任务。",
     "items": [
-        "Excel 翻译页用于扫描表格文件、执行批量翻译和查看结果。",
-        "Word 翻译页用于扫描 DOCX 文件并生成双语 Word。",
-        "PDF/图片翻译页用于执行版式图像翻译并生成可审阅输出包。",
-        "记忆库管理页用于搜索、新增、固定和清理共享词条。",
+        "左侧设置模型、领域和吞吐参数。",
+        "右侧执行翻译、查看结果并维护记忆库。",
     ],
 }
 
 DOMAIN_TOOLTIP = {
     "title": "专业领域",
-    "summary": "先选最接近当前资料的领域预设，再决定是否细调 Prompt。",
+    "summary": "选择与资料内容匹配的领域预设。",
     "items": [
-        "预设会带入该领域常用术语、语气和翻译侧重。",
-        "常规任务优先直接使用预设，只有特殊要求时再改 Prompt。",
-        "同一批文件尽量保持同一领域，结果通常更稳定。",
+        "预设会影响术语、语气和翻译侧重。",
+        "同一批文件建议使用同一领域。",
     ],
 }
 
 PROMPT_TOOLTIP = {
     "title": "Prompt",
-    "summary": "这是本次翻译的工作指令，会直接影响术语、语气和约束。",
+    "summary": "设置本次翻译的补充指令。",
     "items": [
-        "跟随领域预设时，可以在默认内容上小幅微调。",
-        "清空修改内容会恢复为当前预设的默认值。",
-        "选择“自定义”后，这里的内容会完整作为本次任务 Prompt。",
-        "建议只保留必要规则，避免重复和过长。",
+        "留空时使用当前领域默认指令。",
+        "自定义内容应简短、明确、可执行。",
     ],
 }
 
 ENGINE_TOOLTIP = {
     "title": "模型配置",
-    "summary": "按模型用途切换翻译、深度清洗和图像生成配置。",
+    "summary": "配置各类任务使用的模型。",
     "items": [
-        "翻译模型可使用云端 API 或本地模型。",
-        "深度清洗模型和图像生成模型使用云端配置，可跟随上游模型的服务商凭据。",
-        "获取模型和测试连接始终作用于当前选中的模型用途。",
+        "翻译模型支持云端 API 和本地模型。",
+        "清洗、图像和审核模型按用途独立配置。",
     ],
 }
 
 CLOUD_SETTINGS_TOOLTIP = {
     "title": "云端 API 设置",
-    "summary": "这组配置决定请求会发送到哪个云端服务，以及由哪个模型完成翻译。",
+    "summary": "设置云端请求所需的服务商、密钥、地址和模型。",
     "items": [
-        "服务商用于切换当前接入渠道。",
-        "API Key 用于身份认证。",
-        "Base URL 主要用于兼容接口或自定义网关。",
-        "模型名称决定本次实际调用的云端模型。",
+        "Base URL 仅在兼容接口或自定义网关中使用。",
+        "API Key 保存在本机密钥文件中。",
     ],
 }
 
 TUNING_TOOLTIP = {
     "title": "吞吐调优",
-    "summary": "批次大小和并发数一起决定速度、稳定性和资源占用。",
+    "summary": "调整批次大小和并发数。",
     "items": [
-        "批次越大通常越快，但更容易超时或带来上下文压力。",
-        "并发越高整体吞吐越高，但也更容易限流或占满本机资源。",
-        "遇到超时、失败重试或机器负载偏高时，优先把这两项调低。",
+        "数值越高，速度可能更快，限流和超时风险也更高。",
+        "出现失败、超时或负载过高时，请适当调低。",
     ],
 }
+
+MODEL_CONFIG_EXPORT_TYPE = "translator_cloud_model_config"
+MODEL_CONFIG_EXPORT_VERSION = 1
+MODEL_CONFIG_SETTING_KEYS = (
+    "engine",
+    "cleaner_model_role",
+    "image_model_role",
+    "pdf_review_model_role",
+)
+MODEL_CONFIG_CLOUD_FIELDS = (
+    "cloud_provider",
+    "cloud_model",
+    "cloud_base_url",
+    "cloud_provider_configs",
+)
+MODEL_CONFIG_ROLE_CLOUD_FIELDS = (
+    "source_role",
+    *MODEL_CONFIG_CLOUD_FIELDS,
+)
 
 
 class Sidebar(QFrame):
@@ -493,7 +503,7 @@ class Sidebar(QFrame):
         _set_tooltip(
             self.update_check_button,
             "检查更新",
-            "检查 GitHub 发布页是否存在新版安装包。",
+            "检查是否有可用新版本。",
         )
         row.addWidget(self.update_check_button, 1)
 
@@ -514,9 +524,9 @@ class Sidebar(QFrame):
         _set_tooltip(
             self.update_ignore_button,
             "已忽略更新" if ignored else "忽略更新",
-            "当前已忽略常规更新；点击恢复更新提醒。"
+            "常规更新提醒已暂停。"
             if ignored
-            else "忽略常规更新提醒；大版本首次发现时仍会显示更新内容。",
+            else "暂停常规更新提醒；大版本仍会提示。",
         )
         self._refresh_widget_style(self.update_ignore_button)
 
@@ -531,12 +541,12 @@ class Sidebar(QFrame):
             _set_tooltip(
                 self.update_notice_button,
                 "更新",
-                f"发现新版 V{result.latest_version}，点击查看更新内容。",
+                f"发现新版 V{result.latest_version}。",
             )
             _set_tooltip(
                 self.ignore_notice_button,
                 "忽略",
-                f"忽略当前版本 V{result.latest_version} 的提醒。",
+                f"不再提示 V{result.latest_version}。",
             )
         self.update_notice_button.setVisible(visible)
         self.ignore_notice_button.setVisible(visible)
@@ -544,6 +554,187 @@ class Sidebar(QFrame):
     def _persist(self) -> None:
         save_settings(self.settings)
         self.settingsChanged.emit()
+
+    def _set_model_catalog_status(self, text: str) -> None:
+        value = str(text or "").strip()
+        self.model_catalog_status.setText(value)
+        self.model_catalog_status.setVisible(bool(value))
+
+    def _cloud_model_config_payload(self) -> dict:
+        payload = self.settings.model_dump(mode="json")
+        cloud_config = {}
+        for key in MODEL_CONFIG_SETTING_KEYS:
+            source = payload.get(key, {})
+            if not isinstance(source, dict):
+                continue
+            allowed_fields = (
+                MODEL_CONFIG_CLOUD_FIELDS
+                if key == "engine"
+                else MODEL_CONFIG_ROLE_CLOUD_FIELDS
+            )
+            cloud_config[key] = {
+                field: source[field]
+                for field in allowed_fields
+                if field in source
+            }
+        return cloud_config
+
+    def _cloud_api_keys_for_export(self, cloud_config: dict) -> dict[str, str]:
+        cloud_providers = set(CLOUD_ENGINES.values())
+        configured_providers: set[str] = set()
+        for owner in cloud_config.values():
+            if not isinstance(owner, dict):
+                continue
+            provider = str(owner.get("cloud_provider") or "").strip()
+            if provider in cloud_providers:
+                configured_providers.add(provider)
+            provider_configs = owner.get("cloud_provider_configs")
+            if isinstance(provider_configs, dict):
+                configured_providers.update(
+                    provider
+                    for provider in provider_configs
+                    if str(provider or "").strip() in cloud_providers
+                )
+        return {
+            provider: api_key
+            for provider in sorted(configured_providers)
+            if (api_key := str(get_key(provider) or "").strip())
+        }
+
+    def _build_model_config_export_payload(self) -> dict:
+        self._save_current_model_role_fields()
+        self._save_review_model_fields()
+        cloud_config = self._cloud_model_config_payload()
+        return {
+            "type": MODEL_CONFIG_EXPORT_TYPE,
+            "version": MODEL_CONFIG_EXPORT_VERSION,
+            "app": APP_NAME,
+            "app_version": APP_VERSION,
+            "model_config": cloud_config,
+            "api_keys": self._cloud_api_keys_for_export(cloud_config),
+        }
+
+    def _extract_imported_model_config(self, raw: object) -> tuple[dict, dict[str, str]]:
+        if not isinstance(raw, dict):
+            raise ValueError("导入文件必须是 JSON 对象。")
+
+        source = raw.get("model_config")
+        if not isinstance(source, dict):
+            settings_payload = raw.get("settings")
+            source = settings_payload if isinstance(settings_payload, dict) else raw
+
+        model_config = {}
+        for key in MODEL_CONFIG_SETTING_KEYS:
+            value = source.get(key)
+            if not isinstance(value, dict):
+                continue
+            allowed_fields = (
+                MODEL_CONFIG_CLOUD_FIELDS
+                if key == "engine"
+                else MODEL_CONFIG_ROLE_CLOUD_FIELDS
+            )
+            cloud_values = {
+                field: value[field]
+                for field in allowed_fields
+                if field in value
+            }
+            if cloud_values:
+                model_config[key] = cloud_values
+        if not model_config:
+            raise ValueError("未找到可导入的云端模型配置。")
+
+        keys_raw = raw.get("api_keys", {})
+        if keys_raw in (None, ""):
+            keys_raw = {}
+        if not isinstance(keys_raw, dict):
+            raise ValueError("api_keys 必须是 JSON 对象。")
+        cloud_providers = set(CLOUD_ENGINES.values())
+        api_keys = {
+            str(provider or "").strip(): str(api_key or "").strip()
+            for provider, api_key in keys_raw.items()
+            if str(provider or "").strip() in cloud_providers
+            and str(api_key or "").strip()
+        }
+        return model_config, api_keys
+
+    def _apply_imported_model_config(
+        self,
+        model_config: dict,
+        api_keys: dict[str, str],
+    ) -> None:
+        payload = self.settings.model_dump(mode="json")
+        for key in MODEL_CONFIG_SETTING_KEYS:
+            if key in model_config:
+                current = dict(payload.get(key) or {})
+                current.update(model_config[key])
+                if key == "engine":
+                    current["mode"] = "cloud"
+                payload[key] = current
+
+        imported = AppSettings.model_validate(payload)
+        for key in MODEL_CONFIG_SETTING_KEYS:
+            setattr(self.settings, key, getattr(imported, key))
+        for provider, api_key in api_keys.items():
+            save_key(provider, api_key)
+
+        self._model_catalog_signature = ""
+        self._model_catalog_models = []
+        self._refresh_source_role_options()
+        self._sync_model_role_fields()
+        self._sync_engine_visibility()
+        self._persist()
+
+    def _export_model_config(self) -> None:
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出云端模型配置",
+            "translator-cloud-model-config.json",
+            "JSON 文件 (*.json)",
+        )
+        if not target:
+            return
+
+        path = Path(target)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        try:
+            path.write_text(
+                json.dumps(
+                    self._build_model_config_export_payload(),
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, f"导出配置失败：\n{exc}")
+            return
+
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"云端模型配置已导出：\n{path}\n\n本地模型配置不会导出；导出文件包含云端 API Key，请妥善保存。",
+        )
+
+    def _import_model_config(self) -> None:
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入云端模型配置",
+            "",
+            "JSON 文件 (*.json)",
+        )
+        if not source:
+            return
+
+        try:
+            raw = json.loads(Path(source).read_text(encoding="utf-8"))
+            model_config, api_keys = self._extract_imported_model_config(raw)
+            self._apply_imported_model_config(model_config, api_keys)
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, f"导入配置失败：\n{exc}")
+            return
+
+        QMessageBox.information(self, APP_NAME, "云端模型配置已导入，本地模型配置保持不变。")
 
     def _build_domain_section(self) -> None:
         _, layout = self._build_card()
@@ -575,7 +766,7 @@ class Sidebar(QFrame):
 
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setMinimumHeight(112)
-        self.prompt_edit.setPlaceholderText("输入专属 System Prompt...")
+        self.prompt_edit.setPlaceholderText("输入补充 Prompt")
         self.prompt_edit.setPlainText(self._domain_prompt_value(self.domain_combo.currentText()))
         _set_tooltip(
             self.prompt_edit,
@@ -620,6 +811,8 @@ class Sidebar(QFrame):
         )
         layout.addWidget(title)
 
+        self._build_model_config_actions(layout)
+
         self.model_role_combo = create_centered_option_combo()
         self.model_role_combo.setObjectName("ModelRoleCombo")
         self.model_role_combo.addItem(role_label(ROLE_TRANSLATION), ROLE_TRANSLATION)
@@ -629,8 +822,8 @@ class Sidebar(QFrame):
         _set_tooltip(
             self.model_role_combo,
             "模型用途",
-            "切换当前正在配置的模型用途。",
-            ["下方服务商、模型名和共用操作会随用途切换。"],
+            "选择要配置的模型用途。",
+            ["下方字段会随用途切换。"],
         )
         layout.addWidget(self.model_role_combo)
 
@@ -642,8 +835,8 @@ class Sidebar(QFrame):
         self.source_role_label = _field_label(
             "配置来源",
             "配置来源",
-            "选择独立配置，或跟随上游模型的服务商、API Key 与 Base URL。",
-            ["不允许链式跟随；模型名称仍可单独填写。"],
+            "选择独立配置或跟随上游模型。",
+            ["跟随时共用服务商、API Key 与 Base URL。"],
         )
         layout.addWidget(self.source_role_label)
         self.source_role_combo = create_option_combo()
@@ -666,7 +859,7 @@ class Sidebar(QFrame):
         self.provider_label = _field_label(
             "服务商",
             "服务商",
-            "切换当前接入渠道，决定 Base URL、模型名称和认证方式。",
+            "选择当前模型的接入渠道。",
             CLOUD_SETTINGS_TOOLTIP["items"],
         )
         layout.addWidget(self.provider_label)
@@ -681,8 +874,8 @@ class Sidebar(QFrame):
         self.api_key_label = _field_label(
             "API Key",
             "API Key",
-            "用于当前云端服务商的身份认证。",
-            ["密钥会保存到本机 keys.json，不显示明文。"],
+            "当前云端服务商的访问密钥。",
+            ["密钥保存在本机，不显示明文。"],
         )
         layout.addWidget(self.api_key_label)
         self.api_key_input = QLineEdit()
@@ -691,8 +884,8 @@ class Sidebar(QFrame):
         _set_tooltip(
             self.api_key_input,
             "API Key",
-            "用于当前云端服务商的身份认证，密钥会保存到本机 keys.json，不显示明文。",
-            ["更换 API Key 后，已获取的模型列表会自动失效，需要重新获取。"],
+            "当前云端服务商的访问密钥。",
+            ["更换后需重新获取模型列表。"],
         )
         self.api_key_input.editingFinished.connect(self._on_api_key_changed)
         layout.addWidget(self.api_key_input)
@@ -700,17 +893,17 @@ class Sidebar(QFrame):
         self.base_url_label = _field_label(
             "Base URL",
             "Base URL",
-            "接口基础地址。云端兼容接口和本地兼容服务都可以在这里设置。",
+            "接口基础地址。",
         )
         layout.addWidget(self.base_url_label)
         self.base_url_input = QLineEdit(self.settings.engine.cloud_base_url)
         _set_tooltip(
             self.base_url_input,
             "Base URL",
-            "填写服务商提供的接口基础地址，例如 https://.../v1。",
+            "填写服务商提供的接口地址。",
             [
-                "主要用于 OpenAI 兼容接口或自定义网关。",
-                "更换 Base URL 后，已获取的模型列表会自动失效，需要重新获取。",
+                "常见格式：https://.../v1。",
+                "更换后需重新获取模型列表。",
             ],
         )
         self.base_url_input.editingFinished.connect(self._on_base_url_changed)
@@ -719,11 +912,10 @@ class Sidebar(QFrame):
         self.model_label = _field_label(
             "模型名称",
             "模型名称",
-            "决定本次实际调用的模型。",
+            "设置实际调用的模型。",
             [
-                "可手动输入模型名，也可点击“获取模型”后从列表选择。",
-                "输入部分模型名后按回车，会优先匹配已加载列表中的模型。",
-                "只要服务商、API Key、Base URL 不变，已获取列表会保留在下拉框中。",
+                "可输入模型名，也可从列表选择。",
+                "服务商、密钥和地址不变时，列表会保留。",
             ],
         )
         layout.addWidget(self.model_label)
@@ -734,10 +926,10 @@ class Sidebar(QFrame):
         _set_tooltip(
             self.model_combo,
             "模型名称",
-            "可手动输入模型名，也可点击“获取模型”后从列表选择。",
+            "输入或选择模型名称。",
             [
-                "输入部分模型名后按回车，会优先匹配已加载列表中的模型。",
-                "API 配置未变化时，模型列表会继续保留，方便反复切换。",
+                "可先获取模型列表。",
+                "输入部分名称后按回车可匹配候选项。",
             ],
         )
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
@@ -746,6 +938,7 @@ class Sidebar(QFrame):
         self.model_catalog_status = QLabel("")
         self.model_catalog_status.setObjectName("FieldHint")
         self.model_catalog_status.setWordWrap(True)
+        self.model_catalog_status.hide()
         layout.addWidget(self.model_catalog_status)
 
         model_buttons = QHBoxLayout()
@@ -753,10 +946,10 @@ class Sidebar(QFrame):
         _set_tooltip(
             fetch_models,
             "获取模型",
-            "向当前 OpenAI 兼容服务商请求模型列表。",
+            "从当前服务商读取模型列表。",
             [
-                "成功后会把模型名称加载到上方下拉框，便于直接选择。",
-                "后续只要服务商、API Key、Base URL 不变，列表会继续保留。",
+                "成功后可在模型名称下拉框中选择。",
+                "仅支持兼容模型列表接口的服务商。",
             ],
         )
         fetch_models.clicked.connect(self._fetch_models)
@@ -765,13 +958,37 @@ class Sidebar(QFrame):
         _set_tooltip(
             test_conn,
             "测试连接",
-            "按当前服务商、Base URL、API Key 和模型配置发起连通性检查。",
+            "测试当前模型配置是否可用。",
         )
         test_conn.clicked.connect(self._test_connectivity)
         model_buttons.addWidget(test_conn)
         layout.addLayout(model_buttons)
 
         self._build_pdf_review_model_section(layout)
+
+    def _build_model_config_actions(self, parent_layout: QVBoxLayout) -> None:
+        config_buttons = QHBoxLayout()
+        config_buttons.setSpacing(8)
+        self.export_model_config_button = QPushButton("导出配置")
+        _set_tooltip(
+            self.export_model_config_button,
+            "导出配置",
+            "导出云端模型配置及相关 API Key。",
+            ["不包含本地模型配置；JSON 文件含密钥，请妥善保管。"],
+        )
+        self.export_model_config_button.clicked.connect(self._export_model_config)
+        config_buttons.addWidget(self.export_model_config_button)
+
+        self.import_model_config_button = QPushButton("导入配置")
+        _set_tooltip(
+            self.import_model_config_button,
+            "导入配置",
+            "导入云端模型配置并刷新当前设置。",
+            ["本机本地模型配置保持不变。"],
+        )
+        self.import_model_config_button.clicked.connect(self._import_model_config)
+        config_buttons.addWidget(self.import_model_config_button)
+        parent_layout.addLayout(config_buttons)
 
     def _build_pdf_review_model_section(self, parent_layout: QVBoxLayout) -> None:
         self.pdf_review_frame = QFrame()
@@ -797,8 +1014,8 @@ class Sidebar(QFrame):
             _field_label(
                 "配置来源",
                 "配置来源",
-                "审核模型可独立配置，也可跟随翻译模型或 PDF 图像翻译模型的服务商、API Key 与 Base URL。",
-                ["模型名称仍可单独填写。"],
+                "选择独立配置或跟随上游模型。",
+                ["跟随时模型名称仍可单独填写。"],
             )
         )
         self.review_source_role_combo = create_option_combo()
@@ -807,24 +1024,24 @@ class Sidebar(QFrame):
         )
         layout.addWidget(self.review_source_role_combo)
 
-        layout.addWidget(_field_label("服务商", "服务商", "PDF 翻译审核模型使用图像理解 + 文本输出能力。"))
+        layout.addWidget(_field_label("服务商", "服务商", "选择审核模型服务商。"))
         self.review_provider_combo = create_option_combo()
         self.review_provider_combo.addItems(list(VISION_TEXT_MODEL_PROVIDERS.keys()))
         self.review_provider_combo.currentTextChanged.connect(self._on_review_provider_changed)
         layout.addWidget(self.review_provider_combo)
 
-        layout.addWidget(_field_label("API Key", "API Key", "用于审核模型服务商的身份认证。"))
+        layout.addWidget(_field_label("API Key", "API Key", "审核模型的访问密钥。"))
         self.review_api_key_input = QLineEdit()
         self.review_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.review_api_key_input.editingFinished.connect(self._on_review_api_key_changed)
         layout.addWidget(self.review_api_key_input)
 
-        layout.addWidget(_field_label("Base URL", "Base URL", "审核模型的 OpenAI 兼容接口基础地址。"))
+        layout.addWidget(_field_label("Base URL", "Base URL", "审核模型的接口地址。"))
         self.review_base_url_input = QLineEdit()
         self.review_base_url_input.editingFinished.connect(self._on_review_base_url_changed)
         layout.addWidget(self.review_base_url_input)
 
-        layout.addWidget(_field_label("模型名称", "模型名称", "填写具备图像理解能力的审核模型。"))
+        layout.addWidget(_field_label("模型名称", "模型名称", "填写审核模型名称。"))
         self.review_model_combo = create_editable_combo()
         self.review_model_combo.currentTextChanged.connect(self._on_review_model_changed)
         layout.addWidget(self.review_model_combo)
@@ -860,7 +1077,7 @@ class Sidebar(QFrame):
             _field_label(
                 "批次大小",
                 "批次大小",
-                "每次提交给模型的一组文本数量。",
+                "每次请求包含的文本数量。",
                 TUNING_TOOLTIP["items"],
             )
         )
@@ -874,7 +1091,7 @@ class Sidebar(QFrame):
             _field_label(
                 "并发数",
                 "并发数",
-                "同时发起的翻译请求数量。",
+                "同时发起的请求数量。",
                 TUNING_TOOLTIP["items"],
             )
         )
@@ -1167,7 +1384,7 @@ class Sidebar(QFrame):
         self._clear_model_catalog_if_signature_changed(previous_signature)
         self._refresh_role_status()
         if local_follow_error:
-            self.model_catalog_status.setText(local_follow_error)
+            self._set_model_catalog_status(local_follow_error)
         self._sync_review_model_fields()
 
     def _reload_provider_options(self, provider: str) -> None:
@@ -1293,17 +1510,17 @@ class Sidebar(QFrame):
         status = self.settings.pdf_review_model_role.availability_status
         message = self.settings.pdf_review_model_role.availability_message
         capability_hint = (
-            "图像理解审核能力可用。"
+            "服务商支持图像理解审核。"
             if provider_supports_capability(config.provider, "vision_text")
-            else "当前服务商不在图像理解审核能力列表中。"
+            else "服务商暂未标记为支持图像理解审核。"
         )
         state_text = {
             "available": "上次审核连接测试：可用",
             "unavailable": "上次审核连接测试：不可用",
-        }.get(status, "尚未完成审核模型可用性校验")
-        optional_hint = "可选项：未启用 PDF 翻译审核时可留空。"
+        }.get(status, "审核模型尚未校验")
+        optional_hint = "未启用 PDF 翻译审核时可留空。"
         follow_hint = (
-            f"\n当前正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
+            f"\n正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
             if config.follows
             else ""
         )
@@ -1317,35 +1534,35 @@ class Sidebar(QFrame):
         try:
             config = resolve_effective_model_config(self.settings, self._current_role())
         except Exception as exc:  # noqa: BLE001 - status only.
-            self.model_catalog_status.setText(str(exc))
+            self._set_model_catalog_status(str(exc))
             return
         if config.mode == "local":
-            self.model_catalog_status.setText(
-                "当前翻译模型使用本地模型；可点击“获取模型”读取本机服务模型列表。"
+            self._set_model_catalog_status(
+                "当前使用本地翻译模型。可获取本机模型列表。"
             )
             return
         if config.role == ROLE_IMAGE:
             status = self.settings.image_model_role.availability_status
             message = self.settings.image_model_role.availability_message
             capability_hint = (
-                "图像生成能力可用。"
+                "服务商支持图像生成。"
                 if provider_supports_capability(config.provider, "image")
-                else "当前服务商不在图像生成能力列表中。"
+                else "服务商暂未标记为支持图像生成。"
             )
             state_text = {
                 "available": "上次图像连接测试：可用",
                 "unavailable": "上次图像连接测试：不可用",
-            }.get(status, "尚未完成图像生成可用性校验")
-            self.model_catalog_status.setText(
+            }.get(status, "图像生成模型尚未校验")
+            self._set_model_catalog_status(
                 f"{state_text}。{capability_hint}" + (f"\n{message}" if message else "")
             )
             return
         if config.follows:
-            self.model_catalog_status.setText(
-                f"当前{config.label}正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
+            self._set_model_catalog_status(
+                f"{config.label}正在{FOLLOW_SOURCE_LABELS.get(config.source_role)}，服务商/API Key/Base URL 只读。"
             )
             return
-        self.model_catalog_status.setText("")
+        self._set_model_catalog_status("")
 
     def _on_engine_mode_changed(self) -> None:
         if self._current_role() != ROLE_TRANSLATION:
@@ -1593,7 +1810,7 @@ class Sidebar(QFrame):
         self._model_catalog_signature = ""
         self._model_catalog_models = []
         self._set_model_combo_items([self.model_combo.currentText().strip()])
-        self.model_catalog_status.setText("API 配置已变化，请重新获取模型列表。")
+        self._set_model_catalog_status("API 配置已变化，请重新获取模型列表。")
 
     def _set_model_combo_items(
         self,
@@ -1636,8 +1853,8 @@ class Sidebar(QFrame):
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
         if config.mode != "local" and not provider_supports_capability(config.provider, config.capability):
-            message = f"当前服务商不支持{config.label}所需的{config.capability}能力，请手动填写或更换服务商。"
-            self.model_catalog_status.setText(message)
+            message = f"服务商不支持{config.label}所需能力，请更换服务商或手动填写模型。"
+            self._set_model_catalog_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -1652,7 +1869,7 @@ class Sidebar(QFrame):
 
         if not result.ok or not result.models:
             message = f"{result.message}\n{result.detail}".strip()
-            self.model_catalog_status.setText(message)
+            self._set_model_catalog_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
 
@@ -1667,7 +1884,7 @@ class Sidebar(QFrame):
         self.model_combo.setCurrentText(selected_model)
         select_combo_text_match(self.model_combo)
         self._on_model_changed()
-        self.model_catalog_status.setText(f"{result.message} 可从下拉列表选择。")
+        self._set_model_catalog_status(f"{result.message} 可从下拉列表选择。")
         self.model_combo.showPopup()
 
     def _fetch_review_models(self) -> None:
@@ -1677,7 +1894,7 @@ class Sidebar(QFrame):
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
         if not provider_supports_capability(config.provider, config.capability):
-            message = f"当前服务商不支持{config.label}所需的图像理解审核能力，请手动填写或更换服务商。"
+            message = f"服务商不支持{config.label}所需审核能力，请更换服务商或手动填写模型。"
             self.review_model_status.setText(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
@@ -1931,7 +2148,7 @@ class NativeMainWindow(QMainWindow):
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(APP_NAME)
         box.setText(f"发现新版 V{result.latest_version}")
-        box.setInformativeText("当前已开启忽略更新。")
+        box.setInformativeText("常规更新提醒已暂停。")
         restore_button = box.addButton("恢复更新", QMessageBox.ButtonRole.AcceptRole)
         release_button = box.addButton("查看发布页", QMessageBox.ButtonRole.ActionRole)
         box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)

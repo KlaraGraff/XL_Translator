@@ -489,7 +489,7 @@ class NativeTranslationPageTests(unittest.TestCase):
             if label.text() == "页级重试次数"
         ]
         self.assertEqual(len(retry_labels), 1)
-        self.assertIn("总尝试次数 = 首次生成 + 重试次数", retry_labels[0].toolTip())
+        self.assertIn("设置单页失败后的重试次数", retry_labels[0].toolTip())
         self.assertEqual(page.pdf_concurrency_input.text(), "")
         compression_checks = [
             checkbox
@@ -498,7 +498,7 @@ class NativeTranslationPageTests(unittest.TestCase):
         ]
         self.assertEqual(len(compression_checks), 1)
         self.assertTrue(compression_checks[0].isChecked())
-        self.assertIn("关闭时只输出高清版", compression_checks[0].toolTip())
+        self.assertIn("关闭后仅输出高清版", compression_checks[0].toolTip())
         image_checks = [
             checkbox
             for checkbox in page.findChildren(QCheckBox)
@@ -574,7 +574,7 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertIn("已提交 3 页，等待 0 页完成", page.running_status.text())
         self.assertIn("继续翻译", page.running_status.text())
         action_labels = [label.text() for label in page.action_card.findChildren(QLabel)]
-        self.assertIn("已停止提交新页，当前可继续翻译。", action_labels)
+        self.assertIn("已停止提交新页，可继续翻译。", action_labels)
 
         page._resume_translation()
 
@@ -778,7 +778,7 @@ class NativeTranslationPageTests(unittest.TestCase):
 
                 self.assertFalse(page.translation_list_open)
                 button_texts = self._visible_button_texts(page)
-                self.assertIn("查看翻译列表，当前 1/2", button_texts)
+                self.assertIn("查看翻译列表（1/2）", button_texts)
                 self.assertIn("安排新任务", button_texts)
                 self.assertIn(stop_label, button_texts)
 
@@ -1038,7 +1038,7 @@ class NativeTranslationPageTests(unittest.TestCase):
                     button_texts = self._visible_button_texts(page)
                     self.assertEqual(page.phase, "running")
                     self.assertFalse(page.preparing_next_task)
-                    self.assertIn("查看翻译列表，当前 1/2", button_texts)
+                    self.assertIn("查看翻译列表（1/2）", button_texts)
                     self.assertIn("安排新任务", button_texts)
                     self.assertIn("终止翻译", button_texts)
                     self.assertNotIn("取消安排", button_texts)
@@ -1172,14 +1172,14 @@ class NativeTranslationPageTests(unittest.TestCase):
                 self.assertEqual(page.phase, "idle")
                 self.assertIsNone(page.done)
                 self.assertEqual(
-                    [text for text in self._visible_button_texts(page) if "上一轮任务" in text],
-                    ["上一轮任务已完成，点击查看"],
+                    [text for text in self._visible_button_texts(page) if "上一轮" in text],
+                    ["查看上一轮结果"],
                 )
 
                 result_button = next(
                     button
                     for button in page.action_card.findChildren(QPushButton)
-                    if button.text() == "上一轮任务已完成，点击查看"
+                    if button.text() == "查看上一轮结果"
                 )
                 result_button.click()
 

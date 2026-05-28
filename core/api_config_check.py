@@ -31,7 +31,7 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
             return ApiConfigCheckResult(
                 ok=False,
                 status="missing_local_model",
-                message="请先配置本地模型名称，再开始翻译。",
+                message="请先填写本地模型名称。",
             )
         if provider == "ollama" and not base_url:
             engine.local_base_url = OLLAMA_BASE_URL
@@ -41,7 +41,7 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
             return ApiConfigCheckResult(
                 ok=False,
                 status="missing_local_base_url",
-                message="请先填写本地模型服务 Base URL，再开始翻译。",
+                message="请先填写本地模型 Base URL。",
             )
         return ApiConfigCheckResult(ok=True)
 
@@ -51,21 +51,21 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
         return ApiConfigCheckResult(
             ok=False,
             status="missing_model",
-            message=f"{provider_label} 尚未填写模型名称。请先在左侧“模型配置”中完成配置。",
+            message=f"{provider_label} 尚未填写模型名称。",
         )
 
     if provider in {"custom_openai"} and not normalize_cloud_base_url(provider, engine.cloud_base_url):
         return ApiConfigCheckResult(
             ok=False,
             status="missing_base_url",
-            message=f"{provider_label} 尚未填写 Base URL。请先在左侧“模型配置”中完成配置。",
+            message=f"{provider_label} 尚未填写 Base URL。",
         )
 
     if not str(get_key(provider) or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_api_key",
-            message=f"{provider_label} 尚未填写 API Key。请先在左侧“模型配置”中完成配置后再开始翻译。",
+            message=f"{provider_label} 尚未填写 API Key。",
         )
 
     return ApiConfigCheckResult(ok=True)

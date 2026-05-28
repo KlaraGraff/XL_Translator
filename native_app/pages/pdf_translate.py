@@ -376,9 +376,9 @@ class PdfTranslatePage(QWidget):
         if not hasattr(self, "source_input"):
             return
         if self.settings.pdf.image_translation_enabled:
-            self.source_input.setPlaceholderText("可手动输入文件夹、PDF 文件或图片文件绝对路径")
+            self.source_input.setPlaceholderText("输入文件夹、PDF 或图片文件路径")
         else:
-            self.source_input.setPlaceholderText("可手动输入文件夹或 PDF 文件绝对路径")
+            self.source_input.setPlaceholderText("输入文件夹或 PDF 文件路径")
 
     def _build_output_card(self, side_layout: QVBoxLayout) -> None:
         frame, layout = _card()
@@ -394,7 +394,7 @@ class PdfTranslatePage(QWidget):
         layout.addWidget(self.output_default_radio)
         layout.addWidget(self.output_custom_radio)
         self.custom_output_input = MiddleElideLineEdit(self.settings.output.custom_output_dir)
-        self.custom_output_input.setPlaceholderText("输入输出目录绝对路径")
+        self.custom_output_input.setPlaceholderText("输入输出目录")
         self.custom_output_input.editingFinished.connect(self._on_output_changed)
         layout.addWidget(self.custom_output_input)
         self.output_status = QLabel("")
@@ -408,10 +408,10 @@ class PdfTranslatePage(QWidget):
         self.params_card = frame
         side_layout.addWidget(frame)
         layout.addWidget(_label("任务参数", "SectionTitle"))
-        layout.addWidget(_field_label("目标语言", "目标语言", "PDF 图像路线只需要选择目标语言。"))
+        layout.addWidget(_field_label("目标语言", "目标语言", "选择译文语言。"))
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
-            self.target_combo.lineEdit().setPlaceholderText("输入语言名称筛选")
+            self.target_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_target_options()
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         layout.addWidget(self.target_combo)
@@ -419,7 +419,7 @@ class PdfTranslatePage(QWidget):
             _field_label(
                 "页级重试次数",
                 "页级重试次数",
-                "单页生成、质检或审核失败后最多再重试的次数；总尝试次数 = 首次生成 + 重试次数。",
+                "设置单页失败后的重试次数。",
             )
         )
         self.retry_spin = QSpinBox()
@@ -427,7 +427,7 @@ class PdfTranslatePage(QWidget):
         self.retry_spin.setValue(self.settings.pdf.page_retry_attempts)
         self.retry_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.retry_spin)
-        layout.addWidget(_field_label("PDF 页生成并发数", "PDF 页生成并发数", "留空表示跟随云端并发数。"))
+        layout.addWidget(_field_label("PDF 页生成并发数", "PDF 页生成并发数", "留空时跟随云端并发数。"))
         self.pdf_concurrency_input = QLineEdit(
             "" if self.settings.pdf.page_generation_concurrency is None else str(self.settings.pdf.page_generation_concurrency)
         )
@@ -440,11 +440,10 @@ class PdfTranslatePage(QWidget):
         _set_tooltip(
             self.image_translation_checkbox,
             "启用图片翻译",
-            "勾选后扫描文件夹时会同时识别支持的图片文件，也可以直接选择单个图片文件。",
+            "允许扫描和翻译图片文件。",
             [
                 "支持 PNG、JPG、JPEG、WebP、BMP、TIFF。",
-                "每张图片按 1 页进入图像翻译队列。",
-                "图片主输出按模型返回的真实图片格式保存，不额外转码。",
+                "每张图片按单页任务处理。",
             ],
         )
         layout.addWidget(self.image_translation_checkbox)
@@ -454,11 +453,10 @@ class PdfTranslatePage(QWidget):
         _set_tooltip(
             self.pdf_compression_checkbox,
             "同时生成压缩 PDF",
-            "勾选后会保留高清版，并额外生成带“压缩”标注的 PDF。",
+            "同时输出高清版和压缩版 PDF。",
             [
-                "开启后会同时输出高清版和压缩版。",
-                "关闭时只输出高清版。",
-                "归档页面素材仍保留原质量。",
+                "关闭后仅输出高清版。",
+                "页面素材仍保留原质量。",
             ],
         )
         layout.addWidget(self.pdf_compression_checkbox)
@@ -468,16 +466,15 @@ class PdfTranslatePage(QWidget):
         _set_tooltip(
             self.pdf_review_checkbox,
             "启用翻译审核",
-            "启用后每页候选译图会先交给 PDF 翻译审核模型判断，通过后再采用。",
+            "使用审核模型检查候选译图。",
             [
                 "未启用时无需配置审核模型。",
-                "启用后会保留候选图和审核记录。",
-                "这是可选增强流程，会增加审核请求和耗时。",
-                "审核模型在左侧“模型配置”中的“PDF 图像翻译模型”下配置。",
+                "启用后会增加请求和耗时。",
+                "审核模型在左侧模型配置中设置。",
             ],
         )
         layout.addWidget(self.pdf_review_checkbox)
-        fixed = QLabel("PDF 固定 300 DPI 渲染，源页面素材保存为 PNG；图片译图按模型返回格式保存。")
+        fixed = QLabel("PDF 按 300 DPI 渲染；源页面保存为 PNG，图片译图按模型返回格式保存。")
         fixed.setObjectName("FieldHint")
         fixed.setWordWrap(True)
         layout.addWidget(fixed)
@@ -591,9 +588,9 @@ class PdfTranslatePage(QWidget):
         if not self.files:
             layout.addWidget(_label("任务清单", "SectionTitle"))
             if self.settings.pdf.image_translation_enabled:
-                placeholder_text = "可手动输入文件夹、单个 PDF 或图片文件路径后点击“扫描”，即可在此查看可处理文件列表。"
+                placeholder_text = "输入或选择文件夹、PDF 或图片文件后扫描，生成任务清单。"
             else:
-                placeholder_text = "可手动输入文件夹或单个 PDF 文件路径后点击“扫描”，即可在此查看可处理文件列表。"
+                placeholder_text = "输入或选择文件夹、PDF 文件后扫描，生成任务清单。"
             placeholder = QLabel(placeholder_text)
             placeholder.setWordWrap(True)
             placeholder.setObjectName("MutedText")
@@ -640,7 +637,7 @@ class PdfTranslatePage(QWidget):
 
     def _render_running_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("执行监控", "SectionTitle"))
-        self.running_status = QLabel("初始化中，请稍候...")
+        self.running_status = QLabel("正在初始化...")
         self.running_status.setObjectName("MutedText")
         layout.addWidget(self.running_status)
         self.progress_bar = QProgressBar()
@@ -768,9 +765,9 @@ class PdfTranslatePage(QWidget):
             and review_failed_count == 0
         )
         if summary_success:
-            summary_text = f"翻译成功：已生成 {pdf_generated_count} 个高清 PDF、{compressed_count} 个压缩 PDF、{image_generated_count} 张译图。"
+            summary_text = f"翻译成功：高清 PDF {pdf_generated_count} 个，压缩 PDF {compressed_count} 个，译图 {image_generated_count} 张。"
         else:
-            summary_text = f"任务完成：已生成 {pdf_generated_count} 个高清 PDF、{compressed_count} 个压缩 PDF、{image_generated_count} 张译图，需复核页面 {placeholder_count + emergency_count + review_failed_count} 页。"
+            summary_text = f"任务完成：高清 PDF {pdf_generated_count} 个，压缩 PDF {compressed_count} 个，译图 {image_generated_count} 张；需复核 {placeholder_count + emergency_count + review_failed_count} 页。"
         kpi_items = [
             ("高清 PDF", str(pdf_generated_count)),
             ("压缩 PDF", str(compressed_count)),
@@ -819,7 +816,7 @@ class PdfTranslatePage(QWidget):
 
     def _render_stopped_workspace(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_label("任务已中止", "SectionTitle"))
-        message = QLabel(self.stop_message or "任务已中止，已保留完整产物、页面素材和报告。")
+        message = QLabel(self.stop_message or "任务已中止。已保留现有产物、页面素材和报告。")
         message.setWordWrap(True)
         layout.addWidget(message)
 
@@ -1090,9 +1087,7 @@ class PdfTranslatePage(QWidget):
             review_label = "已启用翻译审核" if self.settings.pdf.review_enabled else "未启用翻译审核"
             image_count = self._image_file_count(selected)
             pdf_count = len(selected) - image_count
-            note = QLabel(
-                f"当前目标语言：{lang_label}；已选 PDF {pdf_count} 个、图片 {image_count} 个；{review_label}"
-            )
+            note = QLabel(f"目标语言：{lang_label}；PDF {pdf_count} 个，图片 {image_count} 个；{review_label}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -1111,9 +1106,7 @@ class PdfTranslatePage(QWidget):
             review_label = "已启用翻译审核" if self.settings.pdf.review_enabled else "未启用翻译审核"
             image_count = self._image_file_count(selected)
             pdf_count = len(selected) - image_count
-            note = QLabel(
-                f"当前目标语言：{lang_label}；已选 PDF {pdf_count} 个、图片 {image_count} 个；{review_label}"
-            )
+            note = QLabel(f"目标语言：{lang_label}；PDF {pdf_count} 个，图片 {image_count} 个；{review_label}")
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -1134,7 +1127,7 @@ class PdfTranslatePage(QWidget):
                 resume.clicked.connect(self._resume_translation)
                 running_actions.addWidget(resume)
                 self.action_layout.addLayout(running_actions)
-                note = QLabel("已停止提交新页，当前可继续翻译。")
+                note = QLabel("已停止提交新页，可继续翻译。")
                 note.setWordWrap(True)
                 note.setObjectName("MutedText")
                 self.action_layout.addWidget(note)
@@ -1182,16 +1175,16 @@ class PdfTranslatePage(QWidget):
                 if running is not None
                 else (1, active)
             )
-            return f"查看翻译列表，当前 {position}/{total}"
+            return f"查看翻译列表（{position}/{total}）"
         return "查看翻译列表"
 
     def _deferred_terminal_entry_text(self) -> str:
         if self.deferred_terminal_phase == "done":
-            return "上一轮任务已完成，点击查看"
+            return "查看上一轮结果"
         if self.deferred_terminal_phase == "error":
-            return "上一轮任务异常，点击查看"
+            return "查看上一轮异常"
         if self.deferred_terminal_phase == "stopped":
-            return "上一轮任务已中止，点击查看"
+            return "查看上一轮中止结果"
         return ""
 
     def _defer_terminal_result(
@@ -1425,7 +1418,7 @@ class PdfTranslatePage(QWidget):
         base = str(base_path if base_path.is_dir() else base_path.parent)
         choice = QMessageBox(self)
         choice.setWindowTitle("浏览源路径")
-        choice.setText("请选择要扫描的源路径类型。")
+        choice.setText("请选择源路径类型。")
         file_button = choice.addButton("选择 PDF 文件", QMessageBox.ButtonRole.ActionRole)
         image_button = None
         if self.settings.pdf.image_translation_enabled:
@@ -1602,8 +1595,8 @@ class PdfTranslatePage(QWidget):
     def _prompt_configure_pdf_review_model(self) -> None:
         box = QMessageBox(self)
         box.setWindowTitle(APP_NAME)
-        box.setText("当前尚未配置 PDF 翻译审核模型。")
-        box.setInformativeText("请前往左侧“模型配置”-“PDF 图像翻译模型”中配置“PDF 翻译审核模型”。")
+        box.setText("PDF 翻译审核模型未配置。")
+        box.setInformativeText("请在左侧“模型配置”中完成审核模型设置。")
         configure_button = box.addButton("前往配置", QMessageBox.ButtonRole.ActionRole)
         box.addButton("取消启用", QMessageBox.ButtonRole.RejectRole)
         box.exec()
@@ -1677,7 +1670,7 @@ class PdfTranslatePage(QWidget):
         self.custom_output_input.setVisible(use_custom)
         self.custom_output_input.setEnabled(use_custom and self.phase != "running")
         if not use_custom:
-            self.output_status.setText("输出目录会创建在源路径同级位置，并自动附带时间戳。")
+            self.output_status.setText("输出目录将创建在源路径同级位置。")
             return
         custom_dir = self.custom_output_input.text().strip().strip('"')
         error = get_custom_output_dir_error(custom_dir)
@@ -1686,7 +1679,7 @@ class PdfTranslatePage(QWidget):
             return
         custom_output_root = resolve_custom_output_dir(custom_dir)
         if custom_output_dir_will_be_created(custom_dir):
-            self.output_status.setText(f"目录将在执行时自动创建：{custom_output_root}")
+            self.output_status.setText(f"执行时创建目录：{custom_output_root}")
         else:
             self.output_status.setText("自定义输出目录可用。")
 
@@ -1717,7 +1710,7 @@ class PdfTranslatePage(QWidget):
             QMessageBox.warning(self, APP_NAME, "请先选择目标语言。")
             return
         if self.runner is not None and self.queue_controller is None:
-            QMessageBox.warning(self, APP_NAME, "当前任务仍在运行，暂不能直接启动新的 PDF/图片翻译。")
+            QMessageBox.warning(self, APP_NAME, "任务正在运行，暂不能直接启动新的 PDF/图片翻译。")
             return
         try:
             image_config = resolve_effective_model_config(self.settings, ROLE_IMAGE)
@@ -1725,10 +1718,10 @@ class PdfTranslatePage(QWidget):
             QMessageBox.warning(self, APP_NAME, f"图像生成模型配置不可用：{exc}")
             return
         if not provider_supports_capability(image_config.provider, "image"):
-            QMessageBox.warning(self, APP_NAME, f"当前图像生成模型服务商不支持图像生成能力：{image_config.provider}")
+            QMessageBox.warning(self, APP_NAME, f"图像生成服务商不支持该能力：{image_config.provider}")
             return
         if not image_config.model:
-            QMessageBox.warning(self, APP_NAME, "请先在左侧“模型配置”中填写图像生成模型名称。")
+            QMessageBox.warning(self, APP_NAME, "请先填写图像生成模型名称。")
             return
         if not self._handle_image_model_history_prompt():
             return
@@ -1981,12 +1974,12 @@ class PdfTranslatePage(QWidget):
             role_settings.availability_status == "unavailable"
             and role_settings.availability_signature == signature
         ):
-            box.setText("当前图像生成模型上次记录为不可用。")
+            box.setText("图像生成模型上次校验不可用。")
             if role_settings.availability_message:
                 box.setInformativeText(role_settings.availability_message)
         else:
-            box.setText("当前图像生成模型尚未完成可用性校验。")
-            box.setInformativeText("建议先测试连接；也可以继续生成并让真实任务记录可用状态。")
+            box.setText("图像生成模型尚未校验。")
+            box.setInformativeText("建议先测试连接，也可继续执行。")
         test_button = box.addButton("测试连接", QMessageBox.ButtonRole.ActionRole)
         continue_button = box.addButton("继续生成", QMessageBox.ButtonRole.AcceptRole)
         cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
@@ -2018,12 +2011,12 @@ class PdfTranslatePage(QWidget):
             role_settings.availability_status == "unavailable"
             and role_settings.availability_signature == signature
         ):
-            box.setText("当前 PDF 翻译审核模型上次记录为不可用。")
+            box.setText("PDF 翻译审核模型上次校验不可用。")
             if role_settings.availability_message:
                 box.setInformativeText(role_settings.availability_message)
         else:
-            box.setText("当前 PDF 翻译审核模型尚未完成可用性校验。")
-            box.setInformativeText("建议先测试审核连接；也可以继续生成并让真实任务记录可用状态。")
+            box.setText("PDF 翻译审核模型尚未校验。")
+            box.setInformativeText("建议先测试审核连接，也可继续执行。")
         test_button = box.addButton("测试审核连接", QMessageBox.ButtonRole.ActionRole)
         continue_button = box.addButton("继续生成", QMessageBox.ButtonRole.AcceptRole)
         cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
@@ -2056,7 +2049,7 @@ class PdfTranslatePage(QWidget):
         answer = QMessageBox.question(
             self,
             APP_NAME,
-            "确认停止提交新的 PDF/图片页面？\n\n已提交页面会继续完成；已完整完成的 PDF 或图片会继续生成，未完成文件只保留页面素材和报告。",
+            "确认停止提交新的 PDF/图片页面？\n\n已提交页面会继续完成；未完成文件仅保留页面素材和报告。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
@@ -2258,7 +2251,7 @@ class PdfTranslatePage(QWidget):
             return
         progress = self.progress
         if progress is None:
-            self.running_status.setText(self.status_text or "初始化中，请稍候...")
+            self.running_status.setText(self.status_text or "正在初始化...")
             self.progress_bar.setValue(0)
         else:
             overall = self._calc_overall_progress(progress)
@@ -2282,12 +2275,12 @@ class PdfTranslatePage(QWidget):
     def _stop_wait_status_text(self) -> str:
         summary = self.page_recovery_status
         if summary is None:
-            return "状态：正在停止任务：不再提交新页，等待已提交页面完成；可点击“继续翻译”恢复提交新页。"
+            return "状态：正在停止任务：不再提交新页，等待已提交页面完成；可继续翻译。"
         submitted = getattr(summary, "submitted_page_count", 0)
         pending = getattr(summary, "pending_submitted_page_count", 0)
         return (
             f"状态：正在停止任务：已提交 {submitted} 页，等待 {pending} 页完成；"
-            "可点击“继续翻译”恢复提交新页。"
+            "可继续翻译。"
         )
 
     def _calc_overall_progress(self, progress: ProgressMsg) -> float:
