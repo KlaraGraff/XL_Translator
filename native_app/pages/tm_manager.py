@@ -374,14 +374,11 @@ class TmManagerPage(QWidget):
 
     def _build_scope_controls(self, layout: QVBoxLayout) -> None:
         form_grid = QGridLayout()
-        form_grid.setHorizontalSpacing(8)
+        form_grid.setHorizontalSpacing(10)
         form_grid.setVerticalSpacing(8)
-        form_grid.setColumnMinimumWidth(0, 50)
-        form_grid.setColumnMinimumWidth(2, 50)
-        form_grid.setColumnStretch(0, 0)
-        form_grid.setColumnStretch(1, 1)
-        form_grid.setColumnStretch(2, 0)
-        form_grid.setColumnStretch(3, 1)
+        for column in range(3):
+            form_grid.setColumnMinimumWidth(column, 96)
+            form_grid.setColumnStretch(column, 1)
         layout.addLayout(form_grid)
 
         form_grid.addWidget(
@@ -397,12 +394,12 @@ class TmManagerPage(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         _compact_control(self.source_combo)
-        form_grid.addWidget(self.source_combo, 0, 1)
+        form_grid.addWidget(self.source_combo, 1, 0)
 
         form_grid.addWidget(
             _field_label("目标语言", "目标语言", "选择词库译文语言。"),
             0,
-            2,
+            1,
         )
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
@@ -412,11 +409,11 @@ class TmManagerPage(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         _compact_control(self.target_combo)
-        form_grid.addWidget(self.target_combo, 0, 3)
+        form_grid.addWidget(self.target_combo, 1, 1)
 
         form_grid.addWidget(
             _field_label(
-                "最长词上限",
+                "词长上限",
                 "自动入库上限",
                 "设置自动入库的最长词条长度。",
                 [
@@ -424,8 +421,8 @@ class TmManagerPage(QWidget):
                     "手动新增不受限制。",
                 ],
             ),
-            1,
             0,
+            2,
         )
         self.max_len_spin = QSpinBox()
         self.max_len_spin.setRange(1, 200)
@@ -436,7 +433,7 @@ class TmManagerPage(QWidget):
         )
         _compact_control(self.max_len_spin)
         self.max_len_spin.valueChanged.connect(self._on_max_len_changed)
-        form_grid.addWidget(self.max_len_spin, 1, 1, 1, 3)
+        form_grid.addWidget(self.max_len_spin, 1, 2)
 
         self._refresh_language_options()
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
@@ -451,7 +448,7 @@ class TmManagerPage(QWidget):
         frame.setProperty("tmTopCard", "true")
         frame.setMinimumWidth(TM_SCOPE_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row.addWidget(frame, 2)
+        row.addWidget(frame, 4)
         layout.addWidget(
             _module_title(
                 "语言与规则",
@@ -459,7 +456,7 @@ class TmManagerPage(QWidget):
                 "设置当前语言对和自动入库规则。",
                 [
                     "语言对决定当前词库范围。",
-                    "最长词上限仅影响自动入库。",
+                    "词长上限仅影响自动入库。",
                 ],
             )
         )
@@ -470,7 +467,7 @@ class TmManagerPage(QWidget):
         frame.setProperty("tmTopCard", "true")
         frame.setMinimumWidth(TM_OVERVIEW_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        row.addWidget(frame, 4)
+        row.addWidget(frame, 3)
         layout.addWidget(
             _module_title(
                 "词库概况",
