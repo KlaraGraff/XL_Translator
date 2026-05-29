@@ -88,6 +88,9 @@ $Version = (& $Python -c "import app_meta; print(app_meta.APP_VERSION)").Trim()
 if (-not $Version) {
     throw "APP_VERSION could not be resolved."
 }
+Invoke-Step "Verify changelog version" {
+    & $Python "scripts/check_changelog_version.py" --version $Version
+}
 $AppName = (& $Python -c "import app_meta; print(app_meta.APP_NAME)").Trim()
 $PackageName = (& $Python -c "import app_meta; print(app_meta.WINDOWS_PACKAGE_NAME)").Trim()
 $ExeName = (& $Python -c "import app_meta; print(app_meta.WINDOWS_EXE_NAME)").Trim()
