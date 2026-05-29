@@ -59,6 +59,7 @@ if [[ -z "$VERSION" ]]; then
   echo "APP_VERSION could not be resolved." >&2
   exit 1
 fi
+"$PYTHON" scripts/check_changelog_version.py --version "$VERSION"
 APP_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.APP_NAME)")"
 MACOS_APP_BUNDLE_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.MACOS_APP_BUNDLE_NAME)")"
 MACOS_COLLECT_NAME="$("$PYTHON" -c "import app_meta; print(app_meta.MACOS_COLLECT_NAME)")"
