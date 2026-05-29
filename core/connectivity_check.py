@@ -12,7 +12,7 @@ from config import (
     OLLAMA_BASE_URL,
     normalize_cloud_base_url,
 )
-from settings import AppSettings, get_key
+from settings import AppSettings, get_cloud_provider_config, get_key
 
 
 DEFAULT_TIMEOUT_SECONDS = 12.0
@@ -473,35 +473,37 @@ def check_connectivity(
         )
 
     provider = str(engine_settings.cloud_provider or "").strip()
-    model = str(engine_settings.cloud_model or "").strip()
+    provider_config = get_cloud_provider_config(engine_settings, provider)
+    model = str(provider_config.cloud_model or "").strip()
+    base_url = normalize_cloud_base_url(provider, provider_config.cloud_base_url)
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return _check_openai_compatible(
             provider=provider,
-            api_key=get_key(provider),
+            api_key=get_key(provider, base_url),
             model=model,
-            base_url=normalize_cloud_base_url(provider, engine_settings.cloud_base_url),
+            base_url=base_url,
             timeout_seconds=timeout_seconds,
         )
 
     if provider == "claude":
         return _check_claude(
-            api_key=get_key(provider),
+            api_key=get_key(provider, base_url),
             model=model,
-            base_url=normalize_cloud_base_url(provider, engine_settings.cloud_base_url),
+            base_url=base_url,
             timeout_seconds=timeout_seconds,
         )
 
     if provider == "zhipu":
         return _check_zhipu(
-            api_key=get_key(provider),
+            api_key=get_key(provider, base_url),
             model=model,
             timeout_seconds=timeout_seconds,
         )
 
     if provider == "dashscope":
         return _check_dashscope(
-            api_key=get_key(provider),
+            api_key=get_key(provider, base_url),
             model=model,
             timeout_seconds=timeout_seconds,
         )

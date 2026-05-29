@@ -31,7 +31,7 @@ from core.api_concurrency_control import (
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
-from settings import AppSettings, get_key
+from settings import AppSettings, get_cloud_provider_config, get_key
 from core.translation_filter import is_translation_redundant  # 质量闭环拦截
 
 _EXCEL_CLOUD_BATCH_CHAR_BUDGET = 3200
@@ -120,32 +120,35 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
         raise ValueError(f"未知本地模型服务：{provider}")
 
     # 云端模式
-    provider = s.cloud_provider
-    api_key  = get_key(provider)
+    provider = str(s.cloud_provider or "").strip()
+    provider_config = get_cloud_provider_config(s, provider)
+    cloud_model = provider_config.cloud_model or s.cloud_model
+    cloud_base_url = normalize_cloud_base_url(provider, provider_config.cloud_base_url)
+    api_key = get_key(provider, cloud_base_url)
 
     if provider == "claude":
         from engines.claude_engine import ClaudeEngine
         return ClaudeEngine(
             api_key=api_key,
-            model=s.cloud_model,
-            base_url=normalize_cloud_base_url(provider, s.cloud_base_url),
+            model=cloud_model,
+            base_url=cloud_base_url,
         )
 
     if provider in ("openai", "siliconflow", "custom_openai", "lanyi"):
         from engines.openai_engine import OpenAIEngine
         return OpenAIEngine(
             api_key=api_key,
-            model=s.cloud_model,
-            base_url=normalize_cloud_base_url(provider, s.cloud_base_url),
+            model=cloud_model,
+            base_url=cloud_base_url,
         )
 
     if provider == "zhipu":
         from engines.zhipu_engine import ZhipuEngine
-        return ZhipuEngine(api_key=api_key, model=s.cloud_model)
+        return ZhipuEngine(api_key=api_key, model=cloud_model)
 
     if provider == "dashscope":
         from engines.dashscope_engine import DashscopeEngine
-        return DashscopeEngine(api_key=api_key, model=s.cloud_model)
+        return DashscopeEngine(api_key=api_key, model=cloud_model)
 
     raise ValueError(f"未知翻译引擎：{provider}")
 

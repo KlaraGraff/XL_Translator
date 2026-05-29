@@ -98,22 +98,6 @@ QFrame#KpiTile {
     border-radius: 8px;
 }
 
-QFrame#QueueTaskCard {
-    background: #FFFFFF;
-    border: 1px solid #D9E2EC;
-    border-radius: 8px;
-}
-
-QFrame#QueueTaskCard[selected="true"] {
-    background: #F8FBFF;
-    border: 1px solid #BAE6FD;
-}
-
-QFrame#QueueTaskCard[blocked="true"] {
-    background: #FFFBEB;
-    border: 1px solid #FDE68A;
-}
-
 QLabel#ReadonlyField {
     background: #F8FAFC;
     border: 1px solid #D9E2EC;
@@ -314,6 +298,11 @@ QSpinBox {
     border-radius: 7px;
     padding: 7px 9px;
     selection-background-color: #0EA5E9;
+}
+
+QLineEdit[readonlyHint="true"] {
+    background: #EDF2F7;
+    color: #667085;
 }
 
 QTextEdit,

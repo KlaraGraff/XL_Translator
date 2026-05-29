@@ -222,7 +222,7 @@ def resolve_effective_model_config(
             provider=provider,
             model=provider_config.cloud_model or DEFAULT_CLOUD_MODEL,
             base_url=provider_config.cloud_base_url,
-            api_key=get_key(provider),
+            api_key=get_key(provider, provider_config.cloud_base_url),
         )
 
     role_settings = get_role_settings(settings, normalized_role)
@@ -279,7 +279,7 @@ def resolve_effective_model_config(
         provider=provider,
         model=provider_config.cloud_model or _role_model_name(role_settings, normalized_role),
         base_url=provider_config.cloud_base_url,
-        api_key=get_key(provider),
+        api_key=get_key(provider, provider_config.cloud_base_url),
         source_role=SOURCE_INDEPENDENT,
         follows=False,
         availability_status=role_settings.availability_status,

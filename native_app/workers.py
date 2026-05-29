@@ -12,7 +12,8 @@ from core.pdf_image_translation import scan_pdf_path
 from core.word_document import scan_word_path
 from core.tm_cleaner import apply_suggestions, run_cleaning
 from core.engine_dispatcher import build_engine, get_batch_size
-from core.model_roles import ROLE_CLEANER, settings_for_text_role
+from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
+from core.model_throughput import get_model_throughput
 from core.update_checker import check_for_updates
 
 
@@ -110,16 +111,13 @@ class TmCleanWorker(QThread):
         try:
             clean_settings = settings_for_text_role(self._settings, ROLE_CLEANER)
             engine = build_engine(clean_settings)
-            concurrency = (
-                clean_settings.engine.ollama_concurrency
-                if clean_settings.engine.mode == "local"
-                else clean_settings.engine.concurrency
-            )
+            config = resolve_effective_model_config(self._settings, ROLE_CLEANER)
+            throughput = get_model_throughput(self._settings, config)
             suggestions = run_cleaning(
                 self._lang_pair,
                 engine,
-                batch_size=get_batch_size(clean_settings),
-                concurrency=concurrency,
+                batch_size=throughput.batch_size or get_batch_size(clean_settings),
+                concurrency=throughput.concurrency,
                 progress_callback=self.progress.emit,
                 extra_prompt=self._settings.cleaner_prompt_extras.get(self._lang_pair, ""),
                 full_override_prompt=self._settings.cleaner_full_prompt_overrides.get(

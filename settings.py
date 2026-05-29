@@ -66,6 +66,74 @@ from core.language_registry import (
 )
 
 _KEY_OVERRIDE_LOCAL = threading.local()
+API_KEY_SCOPE_SEPARATOR = "::"
+
+
+def _normalize_api_key_provider(provider: str) -> str:
+    return str(provider or "").strip()
+
+
+def _normalize_api_key_base_url(provider: str, base_url: str = "") -> str:
+    raw_base_url = str(base_url or "").strip()
+    if not raw_base_url:
+        return ""
+    return normalize_cloud_base_url(provider, raw_base_url)
+
+
+def api_key_scope(provider: str, base_url: str = "") -> str:
+    """Return the storage key for one provider/Base URL credential scope."""
+    normalized_provider = _normalize_api_key_provider(provider)
+    if not normalized_provider:
+        return ""
+    normalized_base_url = _normalize_api_key_base_url(
+        normalized_provider,
+        base_url,
+    )
+    if not normalized_base_url:
+        return normalized_provider
+    return f"{normalized_provider}{API_KEY_SCOPE_SEPARATOR}{normalized_base_url}"
+
+
+def parse_api_key_scope(scope: str) -> tuple[str, str]:
+    """Split a persisted credential scope into provider and Base URL."""
+    raw_scope = str(scope or "").strip()
+    if not raw_scope:
+        return "", ""
+    if API_KEY_SCOPE_SEPARATOR not in raw_scope:
+        return raw_scope, ""
+    provider, base_url = raw_scope.split(API_KEY_SCOPE_SEPARATOR, 1)
+    provider = _normalize_api_key_provider(provider)
+    return provider, _normalize_api_key_base_url(provider, base_url)
+
+
+def _legacy_provider_aliases(provider: str) -> tuple[str, ...]:
+    normalized_provider = _normalize_api_key_provider(provider)
+    if normalized_provider == "custom_openai":
+        return ("lanyi",)
+    if normalized_provider == "lanyi":
+        return ("custom_openai",)
+    return ()
+
+
+def _api_key_lookup_scopes(provider: str, base_url: str = "") -> list[str]:
+    normalized_provider = _normalize_api_key_provider(provider)
+    if not normalized_provider:
+        return []
+    normalized_base_url = _normalize_api_key_base_url(
+        normalized_provider,
+        base_url,
+    )
+    lookup_providers = (
+        normalized_provider,
+        *_legacy_provider_aliases(normalized_provider),
+    )
+    scopes: list[str] = []
+    if normalized_base_url:
+        for lookup_provider in lookup_providers:
+            scopes.append(api_key_scope(lookup_provider, normalized_base_url))
+    for lookup_provider in lookup_providers:
+        scopes.append(api_key_scope(lookup_provider))
+    return list(dict.fromkeys(scope for scope in scopes if scope))
 
 
 def _clamp_int(value, *, minimum: int, maximum: int, fallback: int) -> int:
@@ -435,6 +503,24 @@ class PdfSettings(BaseModel):
         return migrated
 
 
+class ModelThroughputSettings(BaseModel):
+    """Per effective model tuning values."""
+
+    batch_size: int | None = None
+    concurrency: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_blank_values(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        for key in ("batch_size", "concurrency"):
+            if migrated.get(key) in ("", None):
+                migrated[key] = None
+        return migrated
+
+
 class UpdateSettings(BaseModel):
     ignore_updates: bool = False
     ignored_release_version: str = ""
@@ -472,6 +558,7 @@ class AppSettings(BaseModel):
         default_factory=lambda: ModelRoleSettings(source_role="translation", cloud_model="")
     )
     pdf: PdfSettings = Field(default_factory=PdfSettings)
+    model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
@@ -552,6 +639,7 @@ class AppSettings(BaseModel):
             },
         )
         migrated.setdefault("pdf", PdfSettings().model_dump())
+        migrated.setdefault("model_throughput_profiles", {})
         migrated.setdefault("update", UpdateSettings().model_dump())
         return migrated
 
@@ -905,6 +993,14 @@ def _migrate_settings_to_v17(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v18(data: dict) -> dict:
+    """Add per-model throughput profiles."""
+    migrated = dict(data)
+    migrated.setdefault("model_throughput_profiles", {})
+    migrated["settings_version"] = 18
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -946,6 +1042,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v16(migrated)
         elif next_version == 17:
             migrated = _migrate_settings_to_v17(migrated)
+        elif next_version == 18:
+            migrated = _migrate_settings_to_v18(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version
@@ -1037,24 +1135,27 @@ def load_keys() -> dict[str, str]:
     return {}
 
 
-def save_key(provider: str, api_key: str) -> None:
-    """Save or remove the API key for one provider."""
+def save_key(provider: str, api_key: str, base_url: str = "") -> None:
+    """Save or remove the API key for one provider/Base URL scope."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    scope = api_key_scope(provider, base_url)
+    if not scope:
+        return
     keys = load_keys()
     if api_key:
-        keys[provider] = api_key
+        keys[scope] = api_key
     else:
-        keys.pop(provider, None)
+        keys.pop(scope, None)
     KEYS_PATH.write_text(json.dumps(keys, indent=2, ensure_ascii=False), encoding="utf-8")
     _apply_key_file_permissions(KEYS_PATH)
-    logger.debug(f"API Key 已更新：provider={provider}")
+    logger.debug(f"API Key 已更新：scope={scope}")
 
 
 @contextmanager
 def provider_key_overrides(overrides: dict[str, str] | None):
     """Temporarily use provider API keys captured by one task snapshot.
 
-    Overrides are thread-local so a queued runner can keep using its arranged
+    Overrides are thread-local so a task runner can keep using its captured
     credentials without mutating the global key store or affecting other tasks.
     """
     previous = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
@@ -1076,35 +1177,25 @@ def provider_key_overrides(overrides: dict[str, str] | None):
             _KEY_OVERRIDE_LOCAL.overrides = previous
 
 
-def get_key(provider: str) -> str:
-    """Get the API key for one provider."""
-    normalized_provider = str(provider or "").strip()
+def get_key(provider: str, base_url: str = "") -> str:
+    """Get the API key for one provider/Base URL scope."""
+    normalized_provider = _normalize_api_key_provider(provider)
     overrides = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
+    lookup_scopes = _api_key_lookup_scopes(normalized_provider, base_url)
     if isinstance(overrides, dict):
-        value = str(overrides.get(normalized_provider) or "").strip()
-        if value:
-            return value
-        if normalized_provider == "custom_openai":
-            value = str(overrides.get("lanyi") or "").strip()
-            if value:
-                return value
-        if normalized_provider == "lanyi":
-            value = str(overrides.get("custom_openai") or "").strip()
+        for scope in lookup_scopes:
+            value = str(overrides.get(scope) or "").strip()
             if value:
                 return value
 
     keys = load_keys()
-    value = str(keys.get(normalized_provider) or "").strip()
-    if value:
-        return value
-
-    if normalized_provider == "custom_openai":
-        return str(keys.get("lanyi") or "").strip()
-    if normalized_provider == "lanyi":
-        return str(keys.get("custom_openai") or "").strip()
+    for scope in lookup_scopes:
+        value = str(keys.get(scope) or "").strip()
+        if value:
+            return value
     return ""
 
 
-def delete_key(provider: str) -> None:
-    """Delete the API key for one provider."""
-    save_key(provider, "")
+def delete_key(provider: str, base_url: str = "") -> None:
+    """Delete the API key for one provider/Base URL scope."""
+    save_key(provider, "", base_url)

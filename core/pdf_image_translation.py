@@ -30,6 +30,7 @@ from config import (
     PDF_PAGE_RENDER_AHEAD_COUNT,
     PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
     PDF_RENDER_DPI_DEFAULT,
+    normalize_cloud_base_url,
 )
 from core import bilingual_writer
 from core.api_concurrency_control import handle_api_concurrency_limit
@@ -51,6 +52,7 @@ from core.model_roles import (
     record_pdf_review_model_availability,
     resolve_effective_model_config,
 )
+from core.model_throughput import get_model_throughput
 from core.pdf_review import (
     OpenAICompatiblePdfReviewClient,
     PdfPageReviewClient,
@@ -88,6 +90,19 @@ PDF_OUTPUT_STATE_STOPPED = "stopped"
 PDF_OUTPUT_STATE_FAILED = "failed"
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+def _api_group_signature_from_config(config: Any) -> tuple[str, str, str] | None:
+    mode = str(getattr(config, "mode", "") or "").strip()
+    if mode != "cloud":
+        return None
+    provider = str(getattr(config, "provider", "") or "").strip()
+    base_url = normalize_cloud_base_url(
+        provider,
+        str(getattr(config, "base_url", "") or ""),
+    ).rstrip("/")
+    api_key = str(getattr(config, "api_key", "") or "").strip()
+    return ("cloud", base_url, api_key)
 
 
 @dataclass
@@ -750,11 +765,13 @@ class PdfImageTranslationRunner:
         self._placeholder_pages.clear()
         model_signature = _safe_image_model_signature(self._settings)
         review_model_config = None
+        review_concurrency = 1
         review_model_signature = _safe_pdf_review_model_signature(self._settings)
         review_enabled = bool(self._settings.pdf.review_enabled)
 
         try:
             model_config = resolve_effective_model_config(self._settings, ROLE_IMAGE)
+            image_throughput = get_model_throughput(self._settings, model_config)
             model_signature = image_model_signature(self._settings)
             if not provider_supports_capability(model_config.provider, "image"):
                 raise ImageModelUnavailableError(
@@ -783,6 +800,10 @@ class PdfImageTranslationRunner:
                     self._settings,
                     ROLE_PDF_REVIEW,
                 )
+                review_concurrency = get_model_throughput(
+                    self._settings,
+                    review_model_config,
+                ).concurrency
                 review_model_signature = pdf_review_model_signature(self._settings)
                 if not provider_supports_capability(review_model_config.provider, "vision_text"):
                     raise PdfReviewModelUnavailableError(
@@ -819,10 +840,19 @@ class PdfImageTranslationRunner:
             max_attempts = max_page_generation_attempts(
                 self._settings.pdf.page_retry_attempts
             )
-            concurrency = self._resolve_pdf_concurrency()
+            concurrency = image_throughput.concurrency
             self._review_total = max_attempts
             scheduler = self._api_scheduler_override or WeightedApiScheduler(concurrency)
-            review_scheduler = self._review_api_scheduler_override or scheduler
+            same_review_group = (
+                review_model_config is not None
+                and _api_group_signature_from_config(model_config)
+                == _api_group_signature_from_config(review_model_config)
+            )
+            review_scheduler = self._review_api_scheduler_override or (
+                scheduler
+                if same_review_group
+                else WeightedApiScheduler(review_concurrency)
+            )
             self._queue.put(ProgressMsg(1, 4, "预处理 PDF", 0, max(1, len(self._files))))
             self._queue.put(StatusMsg("状态：正在准备 PDF 输出目录和页面任务..."))
             image_file_count = sum(1 for item in self._files if item.source_type == SOURCE_TYPE_IMAGE)

@@ -32,6 +32,8 @@ from core.engine_dispatcher import (
     is_local_engine_name,
 )
 from core.language_registry import build_lang_pair
+from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
+from core.model_throughput import get_model_throughput
 from core.task_logger import TaskLogger
 from core.task_runner import (
     DoneMsg,
@@ -226,11 +228,8 @@ class WordTaskRunner:
                 target_lang=target_lang,
                 source_lang=source_lang,
             )
-            concurrency = (
-                settings.engine.ollama_concurrency
-                if settings.engine.mode == "local"
-                else settings.engine.concurrency
-            )
+            model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            concurrency = get_model_throughput(settings, model_config).concurrency
             api_scheduler = (
                 self._api_scheduler_override
                 if settings.engine.mode != "local"

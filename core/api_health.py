@@ -11,7 +11,7 @@ from typing import Callable
 
 from config import APP_DATA_DIR
 from core.connectivity_check import ConnectivityResult, check_connectivity
-from settings import AppSettings, get_key
+from settings import AppSettings, get_cloud_provider_config, get_key
 
 
 API_HEALTH_STATE_PATH = APP_DATA_DIR / "api_health_state.json"
@@ -59,13 +59,15 @@ def build_connectivity_signature(settings: AppSettings) -> str:
         )
 
     provider = engine_settings.cloud_provider
+    provider_config = get_cloud_provider_config(engine_settings, provider)
+    base_url = provider_config.cloud_base_url
     return "|".join(
         [
             "cloud",
             provider,
-            engine_settings.cloud_model,
-            _signature_base_url(provider, engine_settings.cloud_base_url),
-            _hash_secret_for_signature(get_key(provider)),
+            provider_config.cloud_model,
+            _signature_base_url(provider, base_url),
+            _hash_secret_for_signature(get_key(provider, base_url)),
         ]
     )
 
