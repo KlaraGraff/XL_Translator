@@ -1,12 +1,12 @@
 【macOS 用户怎么做】
-1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“Translator_macOS_6.3.dmg”或后续更高版本 dmg。
+1) 如果下载的是 GitHub Release 里的 macOS 安装包，请先打开“Translator_macOS_6.4.dmg”或后续更高版本 dmg。
 2) 将“Translator.app”拖入 Applications 或其他本地文件夹。
 3) 双击“Translator.app”，程序会打开原生桌面界面。
 4) 若系统首次阻止打开，可在 Finder 中右键“Translator.app”并选择“打开”。
 5) 如果你拿到的是源码式 macOS 包，请双击根目录“启动应用.command”；这种模式需要本机已有 Python 3.10+。
 
 【Windows 用户怎么做】
-1) 如果下载的是 GitHub Release 里的 Windows 安装包，请直接运行“Translator_Windows_6.3_Setup.exe”或后续更高版本安装包。
+1) 如果下载的是 GitHub Release 里的 Windows 安装包，请直接运行“Translator_Windows_6.4_Setup.exe”或后续更高版本安装包。
 2) 安装完成后可从开始菜单或桌面启动“Translator”。
 3) 如果你拿到的是源码式 Windows 包，请双击根目录“启动应用.bat”。这种模式需要本机已有 Python 3.10+，或包内带有 runtime\python。
 4) Windows 文件夹、Excel 文件、Word 文件选择窗口会使用系统原生窗口。

@@ -1155,7 +1155,7 @@ def save_key(provider: str, api_key: str, base_url: str = "") -> None:
 def provider_key_overrides(overrides: dict[str, str] | None):
     """Temporarily use provider API keys captured by one task snapshot.
 
-    Overrides are thread-local so a queued runner can keep using its arranged
+    Overrides are thread-local so a task runner can keep using its captured
     credentials without mutating the global key store or affecting other tasks.
     """
     previous = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)

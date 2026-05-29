@@ -79,8 +79,6 @@ from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.tm_manager import TmManagerPage
 from native_app.pages.word_translate import WordTranslatePage
-from native_app.task_queue_controller import NativeTranslationQueueController
-from native_app.task_queue_view import clear_layout
 from native_app.widgets import (
     build_app_tooltip_html,
     create_centered_option_combo,
@@ -107,19 +105,6 @@ from settings import (
 def _section_title(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("SectionTitle")
-    return label
-
-
-def _snapshot_label(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName("MutedText")
-    return label
-
-
-def _readonly_snapshot_value(text: str) -> QLabel:
-    label = QLabel(str(text or ""))
-    label.setWordWrap(True)
-    label.setObjectName("ReadonlyField")
     return label
 
 
@@ -362,7 +347,6 @@ class Sidebar(QFrame):
         self._model_catalog_models: list[str] = []
         self._updating_prompt_edit = False
         self._update_notice_result: UpdateCheckResult | None = None
-        self._task_snapshot_active = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
@@ -434,56 +418,6 @@ class Sidebar(QFrame):
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
-        self._build_domain_section()
-        self._build_engine_section()
-        self._build_update_footer()
-        self._refresh_source_role_options()
-        self._sync_model_role_fields()
-        self._sync_engine_visibility()
-        self.sync_update_ignore_button()
-        self._form.addStretch(1)
-
-    def show_task_snapshot(self, task) -> None:
-        self._task_snapshot_active = True
-        clear_layout(self._form)
-        snapshot = task.snapshot
-
-        frame, layout = self._build_card()
-        title_row = QHBoxLayout()
-        title_row.addWidget(_section_title("任务配置快照"))
-        title_row.addStretch(1)
-        badge = QLabel("只读")
-        badge.setObjectName("MutedText")
-        title_row.addWidget(badge)
-        layout.addLayout(title_row)
-        layout.addWidget(_snapshot_label("选中任务"))
-        layout.addWidget(QLabel(snapshot.title))
-        layout.addWidget(_snapshot_label("安排时间"))
-        layout.addWidget(QLabel(task.arranged_at.strftime("%H:%M")))
-        layout.addWidget(_snapshot_label("专业领域"))
-        layout.addWidget(_readonly_snapshot_value(snapshot.domain or ""))
-        layout.addWidget(_snapshot_label("Prompt"))
-        layout.addWidget(_readonly_snapshot_value(snapshot.prompt_summary or ""))
-
-        frame, layout = self._build_card()
-        layout.addWidget(_section_title("模型配置快照"))
-        layout.addWidget(_snapshot_label("模型角色"))
-        layout.addWidget(_readonly_snapshot_value(snapshot.model_role or ""))
-        layout.addWidget(_snapshot_label("服务商"))
-        layout.addWidget(_readonly_snapshot_value(snapshot.provider or ""))
-        layout.addWidget(_snapshot_label("模型"))
-        layout.addWidget(_readonly_snapshot_value(snapshot.model or ""))
-        if snapshot.api_key_fingerprint:
-            layout.addWidget(_snapshot_label("API Key"))
-            layout.addWidget(_readonly_snapshot_value(snapshot.api_key_fingerprint))
-
-        self._form.addStretch(1)
-
-    def clear_task_snapshot(self) -> None:
-        if not self._task_snapshot_active:
-            return
-        self._task_snapshot_active = False
-        clear_layout(self._form)
         self._build_domain_section()
         self._build_engine_section()
         self._build_update_footer()
@@ -2502,7 +2436,6 @@ class NativeMainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self.sidebar = Sidebar(settings)
-        self.queue_controller = NativeTranslationQueueController()
         self.stack = QStackedWidget()
         self.pages = {
             "excel_translate": ExcelTranslatePage(settings),
@@ -2512,14 +2445,6 @@ class NativeMainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
-        for page in (
-            self.pages["excel_translate"],
-            self.pages["word_translate"],
-            self.pages["pdf_translate"],
-        ):
-            if hasattr(page, "set_queue_controller"):
-                page.set_queue_controller(self.queue_controller)
-
         self.sidebar.navigateRequested.connect(self._navigate)
         self.sidebar.updateCheckRequested.connect(lambda: self._start_update_check("manual"))
         self.sidebar.globalUpdateIgnoreToggled.connect(self._toggle_global_update_ignore)
@@ -2535,24 +2460,12 @@ class NativeMainWindow(QMainWindow):
         self.pages["word_translate"].languageChanged.connect(
             self._sync_tm_language_from_translation
         )
-        self.queue_controller.changed.connect(self._sync_sidebar_task_snapshot)
-
         layout.addWidget(self.sidebar)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self._build_menu()
         self._sync_page_activation("excel_translate")
         QTimer.singleShot(600, lambda: self._start_update_check("auto"))
-
-    def _sync_sidebar_task_snapshot(self) -> None:
-        current = self.stack.currentWidget()
-        selected_task = None
-        if current is not None and hasattr(current, "selected_queue_task"):
-            selected_task = current.selected_queue_task()
-        if selected_task is not None:
-            self.sidebar.show_task_snapshot(selected_task)
-        else:
-            self.sidebar.clear_task_snapshot()
 
     def _start_update_check(self, source: str) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():

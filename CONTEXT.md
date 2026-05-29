@@ -179,38 +179,6 @@ _Avoid_: 断开同步
 The credential used to access a cloud model service provider. In the current product language, credentials belong to the service provider and are shared by model roles that use that provider.
 _Avoid_: 模型凭据, 配置档案
 
-**API 并发组**:
-A concurrency boundary for cloud model calls that share the same effective API endpoint and API Key. Model role, task type, and model name do not split the group when the endpoint and credential are the same.
-_Avoid_: 服务商, 模型用途, 模型名称
-
-**API 并发组容量**:
-The maximum concurrent cloud-call capacity available to one API 并发组, derived from the highest declared concurrency among running and queued tasks in that group. Finished historical tasks do not affect capacity. Each task still keeps its own task-level concurrency limit inside the shared group capacity.
-_Avoid_: 单个任务并发数, 所有任务并发数相加
-
-**翻译类型**:
-A user-facing route for arranging translation tasks, such as Excel translation, Word translation, or PDF translation. The same 翻译类型 can have multiple independently arranged tasks in the queue.
-_Avoid_: 页面实例, 单类型单任务
-
-**翻译列表**:
-The user-facing list of tasks in the current translation-list lifecycle, including running tasks, queued tasks, and tasks that have moved from that active list into completed, failed, stopped, or canceled states. It communicates the current active task position and active queue size without becoming a cross-session or previous-list history center.
-_Avoid_: 任务列表, 诊断归档
-
-**历史翻译任务**:
-A task that previously belonged to the current 翻译列表 and has reached a completed, failed, stopped, or canceled state. It is not a task from a previous app session or a previous translation-list lifecycle.
-_Avoid_: 历史记录, 上一次任务列表, 诊断归档
-
-**翻译任务排队**:
-The pending state for a requested Excel, Word, or PDF translation task whose API 并发组 overlaps with running work. A queued task can start before the earlier task fully finishes once the overlapping API 并发组 has available concurrency slots; tasks whose API 并发组 do not overlap with running work can run at the same time instead of entering this queue.
-_Avoid_: 全局单任务, 禁止所有并行, 等上一个任务完全结束, 单类型单任务
-
-**新任务安排态**:
-The temporary user-facing state where a translation page lets the user scan files and choose parameters for another task while an existing task from the same 翻译类型 keeps running. Leaving this state should return the page to the running task view unless the running task has already reached a terminal result.
-_Avoid_: 队伍创建页, 第二个运行页, 任务详情页
-
-**翻译任务配置快照**:
-The immutable user choices and effective model access captured when a translation task is arranged. Later changes to model settings, API Key, Base URL, language choices, source selections, output location, or concurrency tuning do not change already arranged tasks.
-_Avoid_: 实时读取当前设置, 队列共享当前配置, 排队任务原地编辑
-
 **PDF 版式翻译**:
 A PDF translation route that renders each source PDF page to an image, generates an equal-scale translated page image, and merges the translated page images back into a PDF. Its primary promise is visual layout preservation, not editable text output.
 It does not read from or write to translation memory because its unit of work is a page image, not paired source and target text segments.
