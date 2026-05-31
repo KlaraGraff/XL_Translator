@@ -23,15 +23,20 @@ from loguru import logger
 
 from config import (
     BILINGUAL_SEPARATOR,
+    EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     PRINT_GUARD_LINE_HEIGHT_MULTIPLIER,
     PRINT_GUARD_FONT_STEP,
     PRINT_GUARD_FONT_FLOOR,
+    REVIEW_MARK_COLOR_DEFAULTS,
 )
 from core.language_registry import get_target_lang_display
+from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.translation_filter import should_translate
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+_EXCEL_REVIEW_RISK_FONT_COLOR = "FF0000"
+_EXCEL_REVIEW_MARK_COLORS = dict(REVIEW_MARK_COLOR_DEFAULTS)
 
 
 def _ensure_owner_writable(path: Path) -> None:
@@ -123,6 +128,9 @@ def write_bilingual_file(
     enable_print_guard: bool,
     source_lang: str = "zh",
     lock_row_height: bool = False,
+    review_marks: dict[str, str] | None = None,
+    review_mark_colors: dict[str, str] | None = None,
+    existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
     original_path: Path | None = None,
 ) -> Path:
@@ -138,6 +146,9 @@ def write_bilingual_file(
                                  是否对公式生成的显示文本按显示值匹配后回填
     :param enable_print_guard:   保留参数（MVP 阶段不生效）
     :param lock_row_height:      是否锁定行高并通过缩小字号适配内容
+    :param review_marks:         {原文: 风险标记类型}，用于整格标记需复核内容
+    :param review_mark_colors:   风险标记类型到 RGB 色值的映射
+    :param existing_fill_policy: 已有底色处理策略：skip/overwrite/red_font
     :param log_callback:         日志回调 log_callback(msg: str)
     :param original_path:        原 .xls 路径（如果是经过转换的临时文件）
     :return:                     输出文件路径
@@ -167,6 +178,9 @@ def write_bilingual_file(
         keep_original_sheets=keep_original_sheets,
         formula_display_value_backfill=formula_display_value_backfill,
         lock_row_height=lock_row_height,
+        review_marks=review_marks,
+        review_mark_colors=review_mark_colors,
+        existing_fill_policy=existing_fill_policy,
         log_callback=log_callback,
     )
 
@@ -190,6 +204,9 @@ def _write_with_openpyxl(
     formula_display_value_backfill: bool,
     source_lang: str = "zh",
     lock_row_height: bool = False,
+    review_marks: dict[str, str] | None = None,
+    review_mark_colors: dict[str, str] | None = None,
+    existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
 ) -> None:
     """使用 openpyxl 回填（纯文本模式，不处理图片）。"""
@@ -198,6 +215,10 @@ def _write_with_openpyxl(
     # See docs/KNOWN_ISSUES.md for the retained-but-disabled rationale.
     from openpyxl import load_workbook
     from openpyxl.styles import Alignment
+
+    review_color_map = _normalize_review_mark_colors(review_mark_colors)
+    review_mark_map = _normalize_review_marks(review_marks, review_color_map)
+    fill_policy = _normalize_existing_fill_policy(existing_fill_policy)
 
     wb = load_workbook(str(file_path))
     wb_values = (
@@ -219,6 +240,8 @@ def _write_with_openpyxl(
             ws = wb[name]
             ws_values = wb_values[name] if wb_values is not None else None
             adjusted_cell_count = 0
+            review_mark_count = 0
+            review_skip_count = 0
 
             for row in ws.iter_rows():
                 for cell in row:
@@ -241,22 +264,72 @@ def _write_with_openpyxl(
                     ):
                         continue
 
-                    tgt = translations.get(source_text.strip())
+                    source_key = source_text.strip()
+                    tgt = translations.get(source_key)
                     if tgt is None:
                         continue
+                    mark_kind = review_mark_map.get(source_key)
                     if is_replace_translation(tgt):
                         final_text = extract_replace_translation(tgt).strip()
                         if not final_text:
+                            if mark_kind:
+                                applied = _apply_excel_review_mark(
+                                    cell,
+                                    mark_kind,
+                                    review_mark_colors=review_color_map,
+                                    existing_fill_policy=fill_policy,
+                                )
+                                if applied:
+                                    review_mark_count += 1
+                                else:
+                                    review_skip_count += 1
                             continue
                         cell.value = final_text
                     else:
                         if not tgt:
+                            if mark_kind:
+                                applied = _apply_excel_review_mark(
+                                    cell,
+                                    mark_kind,
+                                    review_mark_colors=review_color_map,
+                                    existing_fill_policy=fill_policy,
+                                )
+                                if applied:
+                                    review_mark_count += 1
+                                else:
+                                    review_skip_count += 1
                             continue
-                        if source_text.strip().lower() == tgt.strip().lower():
+                        retained_original = source_key.lower() == tgt.strip().lower()
+                        if retained_original and not mark_kind:
+                            mark_kind = MIXED_MARK_UNRESOLVED
+                        if retained_original:
+                            if mark_kind:
+                                applied = _apply_excel_review_mark(
+                                    cell,
+                                    mark_kind,
+                                    review_mark_colors=review_color_map,
+                                    existing_fill_policy=fill_policy,
+                                )
+                                if applied:
+                                    review_mark_count += 1
+                                else:
+                                    review_skip_count += 1
                             continue
 
                         # ── 双语回填 ──────────────────────────────────────────────
                         cell.value = source_text + BILINGUAL_SEPARATOR + tgt
+
+                    if mark_kind:
+                        applied = _apply_excel_review_mark(
+                            cell,
+                            mark_kind,
+                            review_mark_colors=review_color_map,
+                            existing_fill_policy=fill_policy,
+                        )
+                        if applied:
+                            review_mark_count += 1
+                        else:
+                            review_skip_count += 1
 
                     # ── 自动换行 ──────────────────────────────────────────────
                     existing = cell.alignment
@@ -285,13 +358,113 @@ def _write_with_openpyxl(
                 log_callback(f"[INFO] 分表已锁定行高并缩字号：{name}（{adjusted_cell_count} 个单元格）")
 
             if log_callback:
-                log_callback(f"[INFO] 分表已处理：{name}")
+                review_summary = ""
+                if review_mark_count or review_skip_count:
+                    review_summary = f"（风险标记 {review_mark_count}"
+                    if review_skip_count:
+                        review_summary += f"，保留原底色未改 {review_skip_count}"
+                    review_summary += "）"
+                log_callback(f"[INFO] 分表已处理：{name}{review_summary}")
 
         wb.save(str(file_path))
     finally:
         wb.close()
         if wb_values is not None:
             wb_values.close()
+
+
+def _normalize_review_mark_colors(colors: dict[str, str] | None) -> dict[str, str]:
+    raw_colors = dict(colors or {})
+    normalized: dict[str, str] = {}
+    for mark, default_color in _EXCEL_REVIEW_MARK_COLORS.items():
+        normalized[mark] = _normalize_excel_rgb(
+            raw_colors.get(mark, ""),
+            fallback=default_color,
+        )
+    return normalized
+
+
+def _normalize_review_marks(
+    review_marks: dict[str, str] | None,
+    review_mark_colors: dict[str, str],
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for source, mark in (review_marks or {}).items():
+        source_key = str(source or "").strip()
+        mark_key = str(mark or "").strip()
+        if source_key and mark_key in review_mark_colors:
+            normalized[source_key] = mark_key
+    return normalized
+
+
+def _normalize_existing_fill_policy(policy: str) -> str:
+    normalized = str(policy or "").strip()
+    if normalized not in {"skip", "overwrite", "red_font"}:
+        return EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
+    return normalized
+
+
+def _apply_excel_review_mark(
+    cell,
+    mark_kind: str,
+    *,
+    review_mark_colors: dict[str, str],
+    existing_fill_policy: str,
+) -> bool:
+    fill_color = review_mark_colors.get(mark_kind)
+    if not fill_color:
+        return False
+
+    has_existing_fill = _cell_has_existing_fill(cell)
+    if has_existing_fill and existing_fill_policy == "skip":
+        return False
+    if has_existing_fill and existing_fill_policy == "red_font":
+        _set_cell_font_color(cell, _EXCEL_REVIEW_RISK_FONT_COLOR)
+        return True
+
+    _set_cell_fill(cell, fill_color)
+    return True
+
+
+def _cell_has_existing_fill(cell) -> bool:
+    fill = getattr(cell, "fill", None)
+    if fill is None:
+        return False
+    pattern = str(
+        getattr(fill, "fill_type", None)
+        or getattr(fill, "patternType", None)
+        or ""
+    ).strip().lower()
+    return bool(pattern and pattern != "none")
+
+
+def _set_cell_fill(cell, rgb: str) -> None:
+    from openpyxl.styles import PatternFill
+
+    argb = _to_excel_argb(rgb)
+    cell.fill = PatternFill(fill_type="solid", fgColor=argb, start_color=argb, end_color=argb)
+
+
+def _set_cell_font_color(cell, rgb: str) -> None:
+    new_font = copy(cell.font)
+    new_font.color = _to_excel_argb(rgb)
+    cell.font = new_font
+
+
+def _to_excel_argb(value: str) -> str:
+    cleaned = _normalize_excel_rgb(value, fallback="")
+    if cleaned:
+        return f"FF{cleaned}"
+    return "FFFF0000"
+
+
+def _normalize_excel_rgb(value: str, *, fallback: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
+    if len(cleaned) == 8:
+        return cleaned[-6:]
+    if len(cleaned) == 6:
+        return cleaned
+    return fallback
 
 
 def _resolve_cell_source_text(

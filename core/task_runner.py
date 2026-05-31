@@ -20,9 +20,23 @@ from loguru import logger
 
 from core import bilingual_writer
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
 from core.file_scanner import FileItem
 from core.language_registry import build_lang_pair
+from core.mixed_language import (
+    DEFAULT_MIXED_MAX_BATCH_CHARS,
+    MIXED_ACTION_EXISTING_BILINGUAL,
+    MIXED_ACTION_FOREIGN_NOISE,
+    MIXED_ACTION_TRANSLATE,
+    MIXED_ACTION_UNCERTAIN,
+    MIXED_MARK_FOREIGN_NOISE,
+    MIXED_MARK_SEMANTIC,
+    MIXED_MARK_UNRESOLVED,
+    MixedLanguageRunStats,
+    split_mixed_language_sources,
+    translate_mixed_language_texts,
+)
 from core.translation_filter import should_translate
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
@@ -46,6 +60,11 @@ from settings import AppSettings, provider_key_overrides
 
 AUTOFIT_STALL_TIMEOUT_SECONDS = 180
 AUTOFIT_MONITOR_POLL_SECONDS = 0.5
+_EXCEL_REVIEW_MARK_PRIORITY = {
+    MIXED_MARK_SEMANTIC: 10,
+    MIXED_MARK_UNRESOLVED: 20,
+    MIXED_MARK_FOREIGN_NOISE: 30,
+}
 
 
 # ── 消息类型 ──────────────────────────────────────────────────────────────────
@@ -140,6 +159,15 @@ class StoppedMsg:
 
 class TaskStopped(Exception):
     """后台任务收到停止信号时抛出，用于统一收尾。"""
+
+
+def _set_excel_review_mark(review_marks: dict[str, str], source: str, mark: str) -> None:
+    source_key = str(source or "").strip()
+    if not source_key:
+        return
+    existing = review_marks.get(source_key)
+    if existing is None or _EXCEL_REVIEW_MARK_PRIORITY.get(mark, 0) > _EXCEL_REVIEW_MARK_PRIORITY.get(existing, 0):
+        review_marks[source_key] = mark
 
 
 # ── TaskRunner ────────────────────────────────────────────────────────────────
@@ -584,16 +612,31 @@ class TaskRunner:
 
             t_phase2 = datetime.now()
 
-            # TM 批量查询
+            # 混合语言先分流，避免旧 TM 命中污染已双语/夹杂外文内容。
             all_texts_list = list(global_unique_texts)
-            tm_result = tm_manager.lookup_batch(all_texts_list, lang_pair)
+            normal_texts, mixed_texts = split_mixed_language_sources(
+                all_texts_list,
+                target_lang=target_lang,
+                source_lang=source_lang,
+            )
+            if mixed_texts:
+                self._log(
+                    "INFO",
+                    f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
+                )
+
+            # TM 批量查询
+            tm_result = tm_manager.lookup_batch(normal_texts, lang_pair)
             hits   = {t: v for t, v in tm_result.items() if v is not None}
             misses = [t for t, v in tm_result.items() if v is None]
 
             tm_hit_count   = len(hits)
-            api_call_count = len(misses)
+            api_call_count = len(misses) + len(mixed_texts)
 
-            self._log("INFO", f"[阶段 2] TM 命中：{tm_hit_count}  待 API：{api_call_count}")
+            self._log(
+                "INFO",
+                f"[阶段 2] TM 命中：{tm_hit_count}  普通待 API：{len(misses)}  混合语言：{len(mixed_texts)}",
+            )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
             self._queue.put(ProgressMsg(
                 phase_index=2,
@@ -605,14 +648,16 @@ class TaskRunner:
 
             # API 翻译未命中词条
             api_translations: dict[str, str] = {}
-            if misses and not self._stop_event.is_set():
+            normal_api_translations: dict[str, str] = {}
+            excel_review_marks: dict[str, str] = {}
+            if (misses or mixed_texts) and not self._stop_event.is_set():
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
-                self._log("INFO", f"发送 API 请求，共 {len(misses)} 词条")
+                self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
 
                 def progress_cb(done, total):
                     self._queue.put(ProgressMsg(
                         phase_index=2, phase_total=phase_total, phase_name="云端翻译",
-                        step_done=done, step_total=total,
+                        step_done=done, step_total=max(api_call_count, 1),
                     ))
 
                 def api_error_cb(msg: str) -> None:
@@ -621,20 +666,84 @@ class TaskRunner:
 
                 t0 = datetime.now()
                 batch_stats = TranslationBatchRunStats()
-                api_translations = translate_texts(
-                    misses,
-                    engine,
-                    target_lang,
-                    system_prompt,
-                    batch_size,
-                    concurrency,
-                    progress_cb,
-                    api_error_cb,
-                    should_stop=self.stop_requested,
-                    source_lang=source_lang,
-                    api_scheduler=self._api_scheduler,
-                    stats=batch_stats,
-                )
+                shared_scheduler = None
+                if settings.engine.mode != "local":
+                    shared_scheduler = self._api_scheduler or WeightedApiScheduler(concurrency)
+                if misses:
+                    normal_api_translations = translate_texts(
+                        misses,
+                        engine,
+                        target_lang,
+                        system_prompt,
+                        batch_size,
+                        concurrency,
+                        progress_cb,
+                        api_error_cb,
+                        should_stop=self.stop_requested,
+                        source_lang=source_lang,
+                        api_scheduler=shared_scheduler,
+                        stats=batch_stats,
+                    )
+                    api_translations.update(normal_api_translations)
+                    for source, translation in normal_api_translations.items():
+                        if str(source or "").strip().lower() == str(translation or "").strip().lower():
+                            _set_excel_review_mark(
+                                excel_review_marks,
+                                source,
+                                MIXED_MARK_UNRESOLVED,
+                            )
+                if mixed_texts:
+                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
+
+                    def mixed_progress_cb(done, total):
+                        self._queue.put(ProgressMsg(
+                            phase_index=2,
+                            phase_total=phase_total,
+                            phase_name="云端翻译",
+                            step_done=min(len(misses) + done, max(api_call_count, 1)),
+                            step_total=max(api_call_count, 1),
+                        ))
+
+                    mixed_stats = MixedLanguageRunStats()
+                    mixed_results = translate_mixed_language_texts(
+                        mixed_texts,
+                        engine=engine,
+                        target_lang=target_lang,
+                        system_prompt=system_prompt,
+                        source_lang=source_lang,
+                        concurrency=concurrency,
+                        max_items_per_batch=batch_size,
+                        max_chars_per_batch=DEFAULT_MIXED_MAX_BATCH_CHARS,
+                        retry_attempts=3,
+                        progress_callback=mixed_progress_cb,
+                        error_callback=api_error_cb,
+                        should_stop=self.stop_requested,
+                        api_scheduler=shared_scheduler,
+                        request_category=API_REQUEST_CATEGORY_NORMAL,
+                        stats=mixed_stats,
+                    )
+                    for source, result in mixed_results.items():
+                        if result.action in {MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE} and result.translation.strip():
+                            api_translations[source] = result.translation.strip()
+                        elif result.action == MIXED_ACTION_UNCERTAIN:
+                            api_translations[source] = source
+                        if result.mark_kind:
+                            _set_excel_review_mark(
+                                excel_review_marks,
+                                source,
+                                result.mark_kind,
+                            )
+                    self._log(
+                        "INFO",
+                        (
+                            "混合语言路径："
+                            f"命中 {mixed_stats.input_count} 条，"
+                            f"已双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)}，"
+                            f"疑似原文错误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)}，"
+                            f"不确定 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)}，"
+                            f"语义校验接受 {mixed_stats.semantic_accepted_count}"
+                        ),
+                    )
                 _raise_if_stopped("任务已中止，未写入剩余翻译结果。")
                 api_elapsed = (datetime.now() - t0).total_seconds()
                 self._log(
@@ -671,7 +780,7 @@ class TaskRunner:
                 # 将 API 结果写入 TM
                 new_pairs = [
                     (k, v)
-                    for k, v in api_translations.items()
+                    for k, v in normal_api_translations.items()
                     if should_store_translation_in_tm(k, v)
                 ]
                 written = tm_manager.insert_batch(new_pairs, lang_pair, max_len, engine.engine_name)
@@ -680,6 +789,13 @@ class TaskRunner:
 
             # 汇聚全局翻译词典：TM 命中覆盖 API 结果（TM 优先）
             global_translations = {**api_translations, **hits}
+            for source, translation in global_translations.items():
+                if str(source or "").strip().lower() == str(translation or "").strip().lower():
+                    _set_excel_review_mark(
+                        excel_review_marks,
+                        source,
+                        MIXED_MARK_UNRESOLVED,
+                    )
 
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
@@ -741,6 +857,9 @@ class TaskRunner:
                         formula_display_value_backfill = self._settings.output.formula_display_value_backfill,
                         enable_print_guard   = self._settings.output.enable_print_guard,
                         lock_row_height      = self._settings.output.lock_row_height,
+                        review_marks         = excel_review_marks,
+                        review_mark_colors   = self._settings.word_review.mark_colors,
+                        existing_fill_policy = self._settings.excel_review.existing_fill_policy,
                         log_callback         = lambda msg: self._log(
                             "OK" if msg.startswith("[OK]") else "INFO", msg
                         ),
@@ -752,7 +871,7 @@ class TaskRunner:
                     # 统计该文件对应的 TM/API 使用情况
                     this_file_texts = file_texts[fi]
                     this_tm = sum(1 for t in this_file_texts if t in hits)
-                    this_api = sum(1 for t in this_file_texts if t in misses)
+                    this_api = sum(1 for t in this_file_texts if t in misses or t in mixed_texts)
                     self._task_logger.file_done(
                         filename=file_item.name,
                         elapsed=write_elapsed,

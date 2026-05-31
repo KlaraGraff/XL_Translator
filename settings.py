@@ -22,6 +22,7 @@ from config import (
     DEFAULT_CUSTOM_OPENAI_API_KEY,
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     DEFAULT_LOCAL_MODEL_PROVIDER,
+    EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     LM_STUDIO_BASE_URL,
     LOCAL_MODEL_PROVIDERS,
     OLLAMA_BASE_URL,
@@ -30,6 +31,9 @@ from config import (
     PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
     PDF_PAGE_RETRY_ATTEMPTS_MAX,
     PDF_PAGE_RETRY_ATTEMPTS_MIN,
+    REVIEW_MARK_COLOR_DEFAULTS,
+    REVIEW_MARK_FOREIGN_NOISE,
+    REVIEW_MARK_UNRESOLVED,
     get_cloud_concurrency_bounds,
     get_concurrency_cap,
     get_default_concurrency,
@@ -48,6 +52,7 @@ from config import (
     WORD_BATCH_SPLIT_CHARS_MIN,
     WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
+    WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
@@ -149,6 +154,37 @@ def _normalize_hex_color(value: str, *, fallback: str) -> str:
     if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
         return cleaned
     return fallback
+
+
+def _default_review_mark_colors(legacy_color: str | None = None) -> dict[str, str]:
+    if legacy_color:
+        return {mark: legacy_color for mark in REVIEW_MARK_COLOR_DEFAULTS}
+    return dict(REVIEW_MARK_COLOR_DEFAULTS)
+
+
+def _review_mark_colors_from_payload(payload: dict) -> dict[str, str]:
+    raw_colors = payload.get("mark_colors")
+    if isinstance(raw_colors, dict) and raw_colors:
+        colors = dict(raw_colors)
+    else:
+        legacy_color = _normalize_hex_color(
+            payload.get("highlight_color", ""),
+            fallback=WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
+        )
+        colors = _default_review_mark_colors(
+            legacy_color
+            if legacy_color != WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
+            else None
+        )
+
+    normalized: dict[str, str] = {}
+    defaults = _default_review_mark_colors()
+    for mark, default_color in defaults.items():
+        normalized[mark] = _normalize_hex_color(
+            colors.get(mark, ""),
+            fallback=default_color,
+        )
+    return normalized
 
 
 def _normalize_local_provider(value: str) -> str:
@@ -389,6 +425,19 @@ class OutputSettings(BaseModel):
     enable_task_log: bool = False
 
 
+class ExcelReviewSettings(BaseModel):
+    existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
+
+    @model_validator(mode="after")
+    def _normalize_existing_fill_policy(self):
+        allowed = {"skip", "overwrite", "red_font"}
+        policy = str(self.existing_fill_policy or "").strip()
+        if policy not in allowed:
+            policy = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
+        self.existing_fill_policy = policy
+        return self
+
+
 class WordBatchSettings(BaseModel):
     max_paragraphs_per_batch: int = Field(
         default=WORD_BATCH_PARAGRAPHS_DEFAULT,
@@ -423,6 +472,17 @@ class WordBatchSettings(BaseModel):
 class WordReviewSettings(BaseModel):
     highlight_unresolved: bool = WORD_REVIEW_HIGHLIGHT_DEFAULT
     highlight_color: str = WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
+    mark_colors: dict[str, str] = Field(default_factory=_default_review_mark_colors)
+    existing_highlight_policy: str = WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT
+
+    @model_validator(mode="before")
+    @classmethod
+    def _seed_mark_colors(cls, data):
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        payload["mark_colors"] = _review_mark_colors_from_payload(payload)
+        return payload
 
     @model_validator(mode="after")
     def _normalize_highlight_color(self):
@@ -430,6 +490,17 @@ class WordReviewSettings(BaseModel):
             self.highlight_color,
             fallback=WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
         )
+        self.mark_colors = _review_mark_colors_from_payload(
+            {
+                "highlight_color": self.highlight_color,
+                "mark_colors": self.mark_colors,
+            }
+        )
+        allowed = {"skip", "overwrite", "red_underline"}
+        policy = str(self.existing_highlight_policy or "").strip()
+        if policy not in allowed:
+            policy = WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT
+        self.existing_highlight_policy = policy
         return self
 
 
@@ -545,6 +616,7 @@ class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
+    excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
@@ -1001,6 +1073,61 @@ def _migrate_settings_to_v18(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v19(data: dict) -> dict:
+    """Add Word existing-highlight handling policy."""
+    migrated = dict(data)
+    word_review_payload = dict(migrated.get("word_review") or {})
+    word_review_payload.setdefault(
+        "existing_highlight_policy",
+        WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT,
+    )
+    migrated["word_review"] = word_review_payload
+    migrated["settings_version"] = 19
+    return migrated
+
+
+def _migrate_settings_to_v20(data: dict) -> dict:
+    """Add Excel existing-fill handling policy."""
+    migrated = dict(data)
+    migrated.setdefault("excel_review", ExcelReviewSettings().model_dump())
+    migrated["settings_version"] = 20
+    return migrated
+
+
+def _migrate_settings_to_v21(data: dict) -> dict:
+    """Add configurable Word/Excel review mark colors."""
+    migrated = dict(data)
+    word_review_payload = dict(migrated.get("word_review") or {})
+    word_review_payload["mark_colors"] = _review_mark_colors_from_payload(
+        word_review_payload
+    )
+    migrated["word_review"] = word_review_payload
+    migrated["settings_version"] = 21
+    return migrated
+
+
+def _migrate_settings_to_v22(data: dict) -> dict:
+    """Swap unresolved and foreign-noise default review colors."""
+    migrated = dict(data)
+    word_review_payload = dict(migrated.get("word_review") or {})
+    mark_colors = _review_mark_colors_from_payload(word_review_payload)
+    unresolved = _normalize_hex_color(
+        mark_colors.get(REVIEW_MARK_UNRESOLVED, ""),
+        fallback="",
+    )
+    foreign_noise = _normalize_hex_color(
+        mark_colors.get(REVIEW_MARK_FOREIGN_NOISE, ""),
+        fallback="",
+    )
+    if unresolved == "F4CCCC" and foreign_noise == "FCE4D6":
+        mark_colors[REVIEW_MARK_UNRESOLVED] = "FCE4D6"
+        mark_colors[REVIEW_MARK_FOREIGN_NOISE] = "F4CCCC"
+    word_review_payload["mark_colors"] = mark_colors
+    migrated["word_review"] = word_review_payload
+    migrated["settings_version"] = 22
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -1044,6 +1171,14 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v17(migrated)
         elif next_version == 18:
             migrated = _migrate_settings_to_v18(migrated)
+        elif next_version == 19:
+            migrated = _migrate_settings_to_v19(migrated)
+        elif next_version == 20:
+            migrated = _migrate_settings_to_v20(migrated)
+        elif next_version == 21:
+            migrated = _migrate_settings_to_v21(migrated)
+        elif next_version == 22:
+            migrated = _migrate_settings_to_v22(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

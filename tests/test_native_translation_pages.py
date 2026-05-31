@@ -10,8 +10,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QVBoxLayout, QWidget
 
+from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, ProgressMsg
 from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
@@ -134,6 +137,82 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertEqual(pdf_page.source_input.text(), "/tmp/pdf-source.pdf")
         self.assertIsInstance(pdf_page.source_input, MiddleElideLineEdit)
         self.assertIsInstance(pdf_page.custom_output_input, MiddleElideLineEdit)
+
+    def test_word_review_color_options_show_highlight_background(self) -> None:
+        with patch("native_app.pages.word_translate.count_diagnostic_records", return_value=0):
+            page = WordTranslatePage(AppSettings())
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+
+        combo = page.review_color_combos[MIXED_MARK_UNRESOLVED]
+        default_index = combo.findData("FCE4D6")
+        brush = combo.itemData(default_index, Qt.ItemDataRole.BackgroundRole)
+        foreground = combo.itemData(default_index, Qt.ItemDataRole.ForegroundRole)
+
+        self.assertEqual(combo.currentIndex(), default_index)
+        self.assertEqual(combo.itemText(default_index), "浅橙（默认） #FCE4D6")
+        self.assertFalse(any(combo.itemText(index).startswith("默认 ") for index in range(combo.count())))
+        self.assertIn("保留原文复核", combo.toolTip())
+        self.assertNotIn("保留原文需复核", combo.toolTip())
+        self.assertEqual(brush.color().name().upper(), "#FCE4D6")
+        self.assertEqual(foreground.color().name().upper(), "#111827")
+        self.assertFalse(page.review_color_inputs[MIXED_MARK_UNRESOLVED].isVisible())
+        self.assertTrue(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
+
+        combo.addItem("深色 #000000", "000000")
+        page._set_combo_item_highlight(combo, combo.count() - 1, "000000")
+        foreground = combo.itemData(combo.count() - 1, Qt.ItemDataRole.ForegroundRole)
+
+        self.assertEqual(foreground.color().name().upper(), "#FFFFFF")
+
+    def test_excel_review_color_options_show_highlight_background(self) -> None:
+        with (
+            patch("native_app.pages.excel_translate.count_diagnostic_records", return_value=0),
+            patch("native_app.pages.excel_translate.save_settings"),
+        ):
+            page = ExcelTranslatePage(AppSettings())
+
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            combo = page.review_color_combos[MIXED_MARK_UNRESOLVED]
+            default_index = combo.findData("FCE4D6")
+            brush = combo.itemData(default_index, Qt.ItemDataRole.BackgroundRole)
+            custom_index = combo.findData("__custom__")
+
+            self.assertEqual(combo.currentIndex(), default_index)
+            self.assertEqual(combo.itemText(default_index), "浅橙（默认） #FCE4D6")
+            self.assertFalse(any(combo.itemText(index).startswith("默认 ") for index in range(combo.count())))
+            self.assertIn("保留原文复核", combo.toolTip())
+            self.assertNotIn("保留原文需复核", combo.toolTip())
+            self.assertEqual(brush.color().name().upper(), "#FCE4D6")
+            self.assertFalse(page.review_color_inputs[MIXED_MARK_UNRESOLVED].isVisible())
+            self.assertTrue(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
+
+            combo.setCurrentIndex(custom_index)
+            page.review_color_inputs[MIXED_MARK_UNRESOLVED].setText("#000000")
+            page._on_params_changed()
+
+            self.assertEqual(
+                page.settings.word_review.mark_colors[MIXED_MARK_UNRESOLVED],
+                "000000",
+            )
+            self.assertFalse(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
+
+            with patch(
+                "native_app.pages.excel_translate.QColorDialog.getColor",
+                return_value=QColor("#336699"),
+            ):
+                page._choose_review_custom_color(MIXED_MARK_UNRESOLVED)
+
+            self.assertEqual(
+                page.settings.word_review.mark_colors[MIXED_MARK_UNRESOLVED],
+                "336699",
+            )
+            self.assertEqual(
+                page.review_color_inputs[MIXED_MARK_UNRESOLVED].text(),
+                "#336699",
+            )
 
     def test_word_action_card_does_not_offer_stop_after_done_payload(self) -> None:
         with patch("native_app.pages.word_translate.count_diagnostic_records", return_value=0):

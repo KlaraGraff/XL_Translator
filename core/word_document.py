@@ -9,20 +9,30 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
+from docx.shared import RGBColor
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 from loguru import logger
 
+from config import REVIEW_MARK_COLOR_DEFAULTS
 from core.bilingual_writer import build_output_dir
 from core.language_registry import get_target_lang_display
+from core.mixed_language import (
+    MIXED_MARK_FOREIGN_NOISE,
+    MIXED_MARK_SEMANTIC,
+    MIXED_MARK_UNRESOLVED,
+)
 from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from core.word_converter import is_legacy_word_doc
 
 SUPPORTED_WORD_SUFFIXES = {".docx", ".doc"}
 GENERATED_OUTPUT_DIR_MARKER = "_翻译输出_"
+EXISTING_HIGHLIGHT_POLICY_SKIP = "skip"
+EXISTING_HIGHLIGHT_POLICY_OVERWRITE = "overwrite"
+EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE = "red_underline"
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _HEADING_STYLE_RE = re.compile(r"heading\s*(\d+)|标题\s*(\d+)", re.IGNORECASE)
@@ -196,18 +206,22 @@ def write_bilingual_docx(
     output_name: str | None = None,
     review_highlight_sources: set[str] | None = None,
     review_highlight_color: str = "FFF2CC",
+    review_marks: dict[str, str] | None = None,
+    review_mark_colors: dict[str, str] | None = None,
+    existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
 ) -> Path:
     """Write a bilingual Word document to the output directory."""
     source_path = Path(source_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    review_highlight_source_set = {
-        str(source or "").strip()
-        for source in (review_highlight_sources or set())
-        if str(source or "").strip()
-    }
-    review_highlight_fill = _normalize_hex_fill(review_highlight_color)
+    review_mark_map = _normalize_review_marks(
+        review_marks=review_marks,
+        review_highlight_sources=review_highlight_sources,
+        review_highlight_color=review_highlight_color,
+    )
+    review_color_map = _normalize_review_mark_colors(review_mark_colors)
+    highlight_policy = _normalize_existing_highlight_policy(existing_highlight_policy)
 
     lang_display = _sanitize_filename_fragment(
         get_target_lang_display(target_lang, include_optional=True)
@@ -259,9 +273,14 @@ def write_bilingual_docx(
         if _is_toc_or_field_paragraph(paragraph):
             continue
 
-        should_highlight = source.strip() in review_highlight_source_set
-        if should_highlight:
-            if _apply_paragraph_review_highlight(paragraph, review_highlight_fill):
+        review_mark = review_mark_map.get(source.strip())
+        if review_mark:
+            if _apply_paragraph_review_mark(
+                paragraph,
+                review_mark,
+                highlight_policy,
+                review_color_map,
+            ):
                 highlight_count += 1
             else:
                 highlight_skip_count += 1
@@ -278,8 +297,15 @@ def write_bilingual_docx(
                 ),
                 target_lang=target_lang,
             )
+            if review_mark:
+                _apply_paragraph_review_mark(
+                    paragraph,
+                    review_mark,
+                    highlight_policy,
+                    review_color_map,
+                )
         else:
-            _insert_translation_paragraph_after(
+            translation_paragraph = _insert_translation_paragraph_after(
                 paragraph,
                 _prepend_numbering_label(
                     resolved.text,
@@ -287,6 +313,13 @@ def write_bilingual_docx(
                 ),
                 target_lang=target_lang,
             )
+            if review_mark:
+                _apply_paragraph_review_mark(
+                    translation_paragraph,
+                    review_mark,
+                    highlight_policy,
+                    review_color_map,
+                )
         paragraph_insertions += 1
 
     for cell in table_cells:
@@ -297,13 +330,19 @@ def write_bilingual_docx(
             source_lang=source_lang,
         ):
             continue
+        review_mark = review_mark_map.get(source.strip())
         resolved = _resolve_translation(source, translations)
-        if source.strip() in review_highlight_source_set:
-            if _apply_cell_review_highlight(cell, review_highlight_fill):
-                highlight_count += 1
-            else:
-                highlight_skip_count += 1
         if resolved is None:
+            if review_mark:
+                if _apply_cell_review_mark(
+                    cell,
+                    review_mark,
+                    highlight_policy,
+                    review_color_map,
+                ):
+                    highlight_count += 1
+                else:
+                    highlight_skip_count += 1
             continue
         numbering_label = _single_cell_numbering_label(cell, numbering_labels)
         if resolved.replace_only:
@@ -314,13 +353,23 @@ def write_bilingual_docx(
                 _prepend_numbering_label(resolved.text, numbering_label),
                 target_lang=target_lang,
             )
+        if review_mark:
+            if _apply_cell_review_mark(
+                cell,
+                review_mark,
+                highlight_policy,
+                review_color_map,
+            ):
+                highlight_count += 1
+            else:
+                highlight_skip_count += 1
         table_insertions += 1
 
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""
-        if review_highlight_source_set:
-            highlight_summary = f"，复核高亮 {highlight_count}"
+        if review_mark_map:
+            highlight_summary = f"，复核标记 {highlight_count}"
             if highlight_skip_count:
                 highlight_summary += f"，跳过已有标记 {highlight_skip_count}"
         log_callback(
@@ -428,27 +477,135 @@ def _resolve_translation(
     return ResolvedWordTranslation(translated)
 
 
-def _normalize_hex_fill(value: str) -> str:
+def _normalize_hex_fill(value: str, fallback: str = "FFF2CC") -> str:
     cleaned = str(value or "").strip().lstrip("#").upper()
     if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
         return cleaned
-    return "FFF2CC"
+    return fallback
 
 
-def _apply_paragraph_review_highlight(paragraph: Paragraph, fill: str) -> bool:
+def _normalize_review_mark_colors(colors: dict[str, str] | None) -> dict[str, str]:
+    raw_colors = dict(colors or {})
+    normalized: dict[str, str] = {}
+    for mark, default_color in REVIEW_MARK_COLOR_DEFAULTS.items():
+        normalized[mark] = _normalize_hex_fill(
+            raw_colors.get(mark, ""),
+            fallback=default_color,
+        )
+    return normalized
+
+
+def _normalize_existing_highlight_policy(policy: str) -> str:
+    value = str(policy or "").strip()
+    if value in {
+        EXISTING_HIGHLIGHT_POLICY_SKIP,
+        EXISTING_HIGHLIGHT_POLICY_OVERWRITE,
+        EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE,
+    }:
+        return value
+    return EXISTING_HIGHLIGHT_POLICY_SKIP
+
+
+def _normalize_review_marks(
+    *,
+    review_marks: dict[str, str] | None,
+    review_highlight_sources: set[str] | None,
+    review_highlight_color: str,
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for source, mark in (review_marks or {}).items():
+        cleaned_source = str(source or "").strip()
+        if not cleaned_source:
+            continue
+        normalized[cleaned_source] = _normalize_review_mark(mark)
+
+    if review_marks is None:
+        legacy_fill = _normalize_hex_fill(review_highlight_color)
+        for source in review_highlight_sources or set():
+            cleaned_source = str(source or "").strip()
+            if cleaned_source:
+                normalized[cleaned_source] = legacy_fill
+    return normalized
+
+
+def _normalize_review_mark(mark: str) -> str:
+    value = str(mark or "").strip()
+    if value in {
+        MIXED_MARK_UNRESOLVED,
+        MIXED_MARK_FOREIGN_NOISE,
+        MIXED_MARK_SEMANTIC,
+    }:
+        return value
+    return _normalize_hex_fill(value)
+
+
+def _review_mark_fill(mark: str, mark_colors: dict[str, str]) -> str:
+    if mark in mark_colors:
+        return mark_colors[mark]
+    return _normalize_hex_fill(mark)
+
+
+def _apply_paragraph_review_mark(
+    paragraph: Paragraph,
+    mark: str,
+    existing_policy: str,
+    mark_colors: dict[str, str],
+) -> bool:
     if _paragraph_has_existing_highlight(paragraph):
-        return False
-    p_pr = paragraph._p.get_or_add_pPr()
-    _set_shading_fill(p_pr, fill)
-    return True
+        if existing_policy == EXISTING_HIGHLIGHT_POLICY_SKIP:
+            return False
+        if existing_policy == EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE:
+            return _apply_paragraph_red_underline(paragraph)
+    return _apply_paragraph_text_shading(paragraph, _review_mark_fill(mark, mark_colors))
 
 
-def _apply_cell_review_highlight(cell: _Cell, fill: str) -> bool:
+def _apply_cell_review_mark(
+    cell: _Cell,
+    mark: str,
+    existing_policy: str,
+    mark_colors: dict[str, str],
+) -> bool:
     if _cell_has_existing_highlight(cell):
-        return False
-    tc_pr = cell._tc.get_or_add_tcPr()
-    _set_shading_fill(tc_pr, fill)
-    return True
+        if existing_policy == EXISTING_HIGHLIGHT_POLICY_SKIP:
+            return False
+        if existing_policy == EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE:
+            return _apply_cell_red_underline(cell)
+    applied = False
+    fill = _review_mark_fill(mark, mark_colors)
+    for paragraph in cell.paragraphs:
+        applied = _apply_paragraph_text_shading(paragraph, fill) or applied
+    return applied
+
+
+def _apply_paragraph_text_shading(paragraph: Paragraph, fill: str) -> bool:
+    applied = False
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        _set_shading_fill(run._element.get_or_add_rPr(), fill)
+        applied = True
+    return applied
+
+
+def _apply_paragraph_red_underline(paragraph: Paragraph) -> bool:
+    applied = False
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        try:
+            run.font.color.rgb = RGBColor(192, 0, 0)
+            run.underline = True
+            applied = True
+        except Exception:
+            continue
+    return applied
+
+
+def _apply_cell_red_underline(cell: _Cell) -> bool:
+    applied = False
+    for paragraph in cell.paragraphs:
+        applied = _apply_paragraph_red_underline(paragraph) or applied
+    return applied
 
 
 def _paragraph_has_existing_highlight(paragraph: Paragraph) -> bool:

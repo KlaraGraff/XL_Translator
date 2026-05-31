@@ -5,13 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QBrush, QColor, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
+    QColorDialog,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -33,6 +36,9 @@ from config import (
     WORD_BATCH_PARAGRAPHS_MIN,
     WORD_BATCH_SPLIT_CHARS_MAX,
     WORD_BATCH_SPLIT_CHARS_MIN,
+    REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT,
+    REVIEW_MARK_COLOR_SEMANTIC_DEFAULT,
+    REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
 )
@@ -52,6 +58,11 @@ from core.language_registry import (
     get_target_lang_display,
     is_supported_target_lang,
     remember_recent_target_lang,
+)
+from core.mixed_language import (
+    MIXED_MARK_FOREIGN_NOISE,
+    MIXED_MARK_SEMANTIC,
+    MIXED_MARK_UNRESOLVED,
 )
 from core.task_runner import (
     DoneMsg,
@@ -86,6 +97,43 @@ from native_app.widgets import (
     select_combo_text_match,
 )
 from settings import AppSettings, save_settings
+
+_CUSTOM_COLOR_VALUE = "__custom__"
+_REVIEW_COLOR_PRESETS = (
+    ("浅黄", "FFF2CC"),
+    ("浅红", "F4CCCC"),
+    ("浅橙", "FCE4D6"),
+    ("浅蓝", "DDEBFF"),
+    ("浅绿", "D9EAD3"),
+)
+_REVIEW_COLOR_ROWS = (
+    (MIXED_MARK_SEMANTIC, "语义校验接受", REVIEW_MARK_COLOR_SEMANTIC_DEFAULT),
+    (MIXED_MARK_UNRESOLVED, "保留原文复核", REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT),
+    (MIXED_MARK_FOREIGN_NOISE, "疑似原文异常", REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT),
+)
+
+
+def _normalize_color_hex(value: str, fallback: str) -> str:
+    cleaned = str(value or "").strip().lstrip("#").upper()
+    if len(cleaned) == 6 and all(char in "0123456789ABCDEF" for char in cleaned):
+        return cleaned
+    return fallback
+
+
+def _review_default_color(mark: str) -> str:
+    for row_mark, _label, default_color in _REVIEW_COLOR_ROWS:
+        if row_mark == mark:
+            return default_color
+    return REVIEW_MARK_COLOR_SEMANTIC_DEFAULT
+
+
+def _contrast_text_color(color: str) -> str:
+    normalized = _normalize_color_hex(color, "FFF2CC")
+    red = int(normalized[0:2], 16)
+    green = int(normalized[2:4], 16)
+    blue = int(normalized[4:6], 16)
+    luminance = (red * 299 + green * 587 + blue * 114) / 1000
+    return "#111827" if luminance >= 150 else "#FFFFFF"
 
 
 HEADER_TILE_HEIGHT = 48
@@ -397,15 +445,45 @@ class WordTranslatePage(QWidget):
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
-        self.highlight_check = QCheckBox("高亮需复核原文")
+        self.highlight_check = QCheckBox("标记需复核内容")
         self.highlight_check.setChecked(self.settings.word_review.highlight_unresolved)
         _set_tooltip(
             self.highlight_check,
-            "高亮需复核原文",
-            "在输出文档中标记需人工确认的内容。",
+            "标记需复核内容",
+            "在输出文档中标记需人工确认的原文和译文。",
         )
         self.highlight_check.toggled.connect(self._on_params_changed)
         layout.addWidget(self.highlight_check)
+
+        self.review_color_combos: dict[str, QComboBox] = {}
+        self.review_color_inputs: dict[str, QLineEdit] = {}
+        self.review_color_buttons: dict[str, QPushButton] = {}
+        self._build_review_color_controls(layout)
+
+        layout.addWidget(
+            _field_label(
+                "原有高亮处理",
+                "原有高亮处理",
+                "选择机器标记遇到原文已有标记时的处理方式。",
+            )
+        )
+        self.existing_highlight_policy_combo = QComboBox()
+        self.existing_highlight_policy_combo.addItem("不覆盖原有高亮", "skip")
+        self.existing_highlight_policy_combo.addItem("覆盖原有高亮", "overwrite")
+        self.existing_highlight_policy_combo.addItem("保留原有高亮并使用红字下划线", "red_underline")
+        policy_index = self.existing_highlight_policy_combo.findData(
+            self.settings.word_review.existing_highlight_policy
+        )
+        self.existing_highlight_policy_combo.setCurrentIndex(max(0, policy_index))
+        _set_tooltip(
+            self.existing_highlight_policy_combo,
+            "原有高亮处理",
+            "控制机器标记与原文已有高亮或底纹冲突时的行为。",
+        )
+        self.existing_highlight_policy_combo.currentIndexChanged.connect(
+            self._on_params_changed
+        )
+        layout.addWidget(self.existing_highlight_policy_combo)
 
         self.native_word_check = QCheckBox("优先调用本地 Word 处理 .doc")
         self.native_word_check.setChecked(self.settings.word_conversion.prefer_native_word)
@@ -448,7 +526,196 @@ class WordTranslatePage(QWidget):
         self.retry_spin.setValue(self.settings.word_batch.strict_retry_attempts)
         self.retry_spin.valueChanged.connect(self._on_params_changed)
         layout.addWidget(self.retry_spin)
-        self._sync_source_lang_visibility()
+
+    def _build_review_color_controls(self, layout: QVBoxLayout) -> None:
+        layout.addWidget(
+            _field_label(
+                "标记颜色",
+                "标记颜色",
+                "设置输出文档中复核和异常标记使用的填充颜色。",
+                [
+                    "下拉选项会直接显示对应高亮底色。",
+                    "选择自定义后可点击选色按钮，也可输入 #RRGGBB 色值。",
+                ],
+            )
+        )
+        for mark, label, default_color in _REVIEW_COLOR_ROWS:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+
+            name_label = QLabel(label)
+            name_label.setObjectName("FieldHint")
+            name_label.setMinimumWidth(88)
+            row.addWidget(name_label)
+
+            current_color = self.settings.word_review.mark_colors.get(mark, default_color)
+            combo = QComboBox()
+            combo.setMinimumWidth(116)
+            self._populate_review_color_combo(combo, default_color, current_color)
+            combo.currentIndexChanged.connect(
+                lambda _index=0, key=mark: self._on_review_color_combo_changed(key)
+            )
+            _set_tooltip(
+                combo,
+                label,
+                "选择该类标记写入输出文件时使用的填充颜色。",
+            )
+            row.addWidget(combo, 1)
+
+            custom_input = QLineEdit()
+            custom_input.setPlaceholderText("#RRGGBB")
+            custom_input.setMaxLength(7)
+            custom_input.editingFinished.connect(
+                lambda key=mark: self._on_review_custom_color_finished(key)
+            )
+            _set_tooltip(
+                custom_input,
+                "自定义色值",
+                "输入 6 位十六进制颜色，例如 #DDEBFF。",
+            )
+            row.addWidget(custom_input, 1)
+
+            pick_button = QPushButton("选色")
+            pick_button.setMinimumWidth(56)
+            pick_button.clicked.connect(
+                lambda _checked=False, key=mark: self._choose_review_custom_color(key)
+            )
+            _set_tooltip(
+                pick_button,
+                "选色",
+                "打开系统颜色选择器设置自定义标记颜色。",
+            )
+            row.addWidget(pick_button)
+
+            self.review_color_combos[mark] = combo
+            self.review_color_inputs[mark] = custom_input
+            self.review_color_buttons[mark] = pick_button
+            self._refresh_review_color_control(mark)
+            layout.addLayout(row)
+
+    def _populate_review_color_combo(
+        self,
+        combo: QComboBox,
+        default_color: str,
+        current_color: str,
+    ) -> None:
+        combo.clear()
+        normalized_default = _normalize_color_hex(default_color, default_color)
+
+        for label, color in _REVIEW_COLOR_PRESETS:
+            normalized = _normalize_color_hex(color, normalized_default)
+            default_suffix = "（默认）" if normalized == normalized_default else ""
+            combo.addItem(f"{label}{default_suffix} #{normalized}", normalized)
+            self._set_combo_item_highlight(combo, combo.count() - 1, normalized)
+
+        normalized_current = _normalize_color_hex(current_color, normalized_default)
+        combo.addItem(f"自定义 #{normalized_current}", _CUSTOM_COLOR_VALUE)
+        self._set_combo_item_highlight(combo, combo.count() - 1, normalized_current)
+
+        for index in range(combo.count()):
+            if combo.itemData(index) == normalized_current:
+                combo.setCurrentIndex(index)
+                return
+        combo.setCurrentIndex(combo.count() - 1)
+
+    def _set_combo_item_highlight(
+        self,
+        combo: QComboBox,
+        index: int,
+        color: str,
+    ) -> None:
+        normalized = _normalize_color_hex(color, "FFF2CC")
+        qcolor = QColor(f"#{normalized}")
+        combo.setItemData(index, QBrush(qcolor), Qt.ItemDataRole.BackgroundRole)
+        combo.setItemData(
+            index,
+            QBrush(QColor(_contrast_text_color(normalized))),
+            Qt.ItemDataRole.ForegroundRole,
+        )
+
+    def _on_review_color_combo_changed(self, mark: str) -> None:
+        self._refresh_review_color_control(mark)
+        self._on_params_changed()
+
+    def _on_review_custom_color_finished(self, mark: str) -> None:
+        combo = self.review_color_combos.get(mark)
+        if combo is not None and combo.currentData() != _CUSTOM_COLOR_VALUE:
+            custom_index = combo.findData(_CUSTOM_COLOR_VALUE)
+            if custom_index >= 0:
+                combo.setCurrentIndex(custom_index)
+        self._on_params_changed()
+
+    def _choose_review_custom_color(self, mark: str) -> None:
+        combo = self.review_color_combos.get(mark)
+        custom_input = self.review_color_inputs.get(mark)
+        if combo is None or custom_input is None:
+            return
+
+        initial = QColor(f"#{self._selected_review_color(mark)}")
+        selected = QColorDialog.getColor(initial, self, "选择标记颜色")
+        if not selected.isValid():
+            return
+
+        custom_index = combo.findData(_CUSTOM_COLOR_VALUE)
+        if custom_index >= 0 and combo.currentData() != _CUSTOM_COLOR_VALUE:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(custom_index)
+            combo.blockSignals(False)
+        custom_input.setText(selected.name().upper())
+        self._refresh_review_color_control(mark)
+        self._on_params_changed()
+
+    def _refresh_review_color_control(self, mark: str) -> None:
+        combo = self.review_color_combos.get(mark)
+        custom_input = self.review_color_inputs.get(mark)
+        pick_button = self.review_color_buttons.get(mark)
+        if combo is None or custom_input is None or pick_button is None:
+            return
+
+        color = self._selected_review_color(mark)
+        is_custom = combo.currentData() == _CUSTOM_COLOR_VALUE
+        custom_input.setVisible(is_custom)
+        custom_input.setEnabled(is_custom and self.phase != "running")
+        pick_button.setVisible(is_custom)
+        pick_button.setEnabled(is_custom and self.phase != "running")
+        custom_input.setText(f"#{color}")
+        custom_index = combo.findData(_CUSTOM_COLOR_VALUE)
+        if custom_index >= 0:
+            combo.setItemText(custom_index, f"自定义 #{color}")
+            self._set_combo_item_highlight(combo, custom_index, color)
+        self._apply_review_color_preview(combo, color)
+        self._apply_review_color_preview(custom_input, color)
+        self._apply_review_color_preview(pick_button, color)
+
+    def _selected_review_color(self, mark: str) -> str:
+        default_color = _review_default_color(mark)
+        combo = self.review_color_combos.get(mark)
+        custom_input = self.review_color_inputs.get(mark)
+        if combo is None:
+            return default_color
+        if combo.currentData() == _CUSTOM_COLOR_VALUE:
+            raw_color = custom_input.text() if custom_input is not None else ""
+            return _normalize_color_hex(raw_color, default_color)
+        return _normalize_color_hex(str(combo.currentData() or ""), default_color)
+
+    def _sync_review_color_settings(self) -> None:
+        if not getattr(self, "review_color_combos", None):
+            return
+        for mark, _label, default_color in _REVIEW_COLOR_ROWS:
+            self.settings.word_review.mark_colors[mark] = _normalize_color_hex(
+                self._selected_review_color(mark),
+                default_color,
+            )
+            self._refresh_review_color_control(mark)
+
+    def _apply_review_color_preview(self, widget: QWidget, color: str) -> None:
+        normalized = _normalize_color_hex(color, "FFF2CC")
+        text_color = _contrast_text_color(normalized)
+        widget.setStyleSheet(
+            f"background-color: #{normalized}; "
+            f"color: {text_color}; "
+            f"selection-background-color: #{normalized};"
+        )
 
     def _load_target_options(self) -> None:
         target_codes = get_ordered_target_lang_codes(
@@ -1228,6 +1495,10 @@ class WordTranslatePage(QWidget):
 
     def _on_params_changed(self) -> None:
         self.settings.word_review.highlight_unresolved = self.highlight_check.isChecked()
+        self.settings.word_review.existing_highlight_policy = (
+            self.existing_highlight_policy_combo.currentData() or "skip"
+        )
+        self._sync_review_color_settings()
         self.settings.word_conversion.prefer_native_word = self.native_word_check.isChecked()
         self.settings.word_batch.max_paragraphs_per_batch = self.batch_paragraphs_spin.value()
         self.settings.word_batch.max_chars_per_batch = self.batch_chars_spin.value()
@@ -1280,6 +1551,7 @@ class WordTranslatePage(QWidget):
             self.output_custom_radio,
             self.custom_output_input,
             self.highlight_check,
+            self.existing_highlight_policy_combo,
             self.native_word_check,
             self.batch_paragraphs_spin,
             self.batch_chars_spin,
@@ -1287,6 +1559,14 @@ class WordTranslatePage(QWidget):
             self.retry_spin,
         ):
             widget.setEnabled(not locked)
+        for widget in (
+            *getattr(self, "review_color_combos", {}).values(),
+            *getattr(self, "review_color_inputs", {}).values(),
+            *getattr(self, "review_color_buttons", {}).values(),
+        ):
+            widget.setEnabled(not locked)
+        for mark in getattr(self, "review_color_combos", {}):
+            self._refresh_review_color_control(mark)
         self._sync_source_lang_visibility()
 
     def _start_translation(self) -> None:

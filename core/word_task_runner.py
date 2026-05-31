@@ -32,6 +32,20 @@ from core.engine_dispatcher import (
     is_local_engine_name,
 )
 from core.language_registry import build_lang_pair
+from core.mixed_language import (
+    DEFAULT_MIXED_MAX_BATCH_CHARS,
+    MIXED_ACTION_EXISTING_BILINGUAL,
+    MIXED_ACTION_FOREIGN_NOISE,
+    MIXED_ACTION_TRANSLATE,
+    MIXED_ACTION_UNCERTAIN,
+    MIXED_MARK_FOREIGN_NOISE,
+    MIXED_MARK_SEMANTIC,
+    MIXED_MARK_UNRESOLVED,
+    MixedLanguageResult,
+    MixedLanguageRunStats,
+    split_mixed_language_sources,
+    translate_mixed_language_texts,
+)
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from core.model_throughput import get_model_throughput
 from core.task_logger import TaskLogger
@@ -85,6 +99,11 @@ _WORD_RECOVERY_NORMAL_SOFT_RATIO = 0.8
 _SEMANTIC_MIN_LENGTH_RATIO = 0.18
 _SEMANTIC_RESIDUAL_CJK_RATIO_BLOCK = 0.12
 _SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK = 12
+_WORD_REVIEW_MARK_PRIORITY = {
+    MIXED_MARK_SEMANTIC: 1,
+    MIXED_MARK_UNRESOLVED: 2,
+    MIXED_MARK_FOREIGN_NOISE: 3,
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +145,15 @@ def _sources_position_count(
     source_locations: dict[str, list[dict]] | None,
 ) -> int:
     return sum(_source_position_count(source, source_locations) for source in sources)
+
+
+def _set_review_mark(review_marks: dict[str, str], source: str, mark: str) -> None:
+    cleaned = str(source or "").strip()
+    if not cleaned:
+        return
+    existing = review_marks.get(cleaned)
+    if existing is None or _WORD_REVIEW_MARK_PRIORITY.get(mark, 0) > _WORD_REVIEW_MARK_PRIORITY.get(existing, 0):
+        review_marks[cleaned] = mark
 
 
 def _iter_source_location_labels(
@@ -284,6 +312,7 @@ class WordTaskRunner:
         quality_issues: list[dict] = []
         unresolved_review_sources: set[str] = set()
         recovery_review_sources: set[str] = set()
+        review_marks: dict[str, str] = {}
         process_paths: list[Path] = []
         converted_temp_paths: list[Path] = []
 
@@ -395,12 +424,25 @@ class WordTaskRunner:
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在比对翻译记忆库..."))
             t_phase2 = datetime.now()
             all_texts = list(global_unique_texts)
-            tm_result = tm_manager.lookup_batch(all_texts, lang_pair)
+            normal_texts, mixed_texts = split_mixed_language_sources(
+                all_texts,
+                target_lang=target_lang,
+                source_lang=source_lang,
+            )
+            if mixed_texts:
+                self._log(
+                    "INFO",
+                    f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
+                )
+            tm_result = tm_manager.lookup_batch(normal_texts, lang_pair)
             hits = {text: value for text, value in tm_result.items() if value is not None}
             misses = [text for text, value in tm_result.items() if value is None]
             tm_hit_count = len(hits)
-            api_call_count = len(misses)
-            self._log("INFO", f"[阶段 2] TM 命中：{tm_hit_count}  待 API：{api_call_count}")
+            api_call_count = len(misses) + len(mixed_texts)
+            self._log(
+                "INFO",
+                f"[阶段 2] TM 命中：{tm_hit_count}  普通待 API：{len(misses)}  混合语言：{len(mixed_texts)}",
+            )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
             self._queue.put(
                 ProgressMsg(
@@ -413,7 +455,7 @@ class WordTaskRunner:
             )
 
             api_translations: dict[str, str] = {}
-            if misses and not self._stop_event.is_set():
+            if (misses or mixed_texts) and not self._stop_event.is_set():
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
 
                 def progress_cb(done, total):
@@ -423,7 +465,7 @@ class WordTaskRunner:
                             phase_total=phase_total,
                             phase_name="云端翻译",
                             step_done=done,
-                            step_total=total,
+                            step_total=max(api_call_count, 1),
                         )
                     )
 
@@ -470,23 +512,24 @@ class WordTaskRunner:
                         f"失败严格重试 {settings.word_batch.strict_retry_attempts} 轮"
                     ),
                 )
-                api_translations = translate_word_texts(
-                    misses,
-                    engine,
-                    target_lang,
-                    word_prompt,
-                    settings.word_batch,
-                    concurrency,
-                    progress_callback=progress_cb,
-                    error_callback=lambda msg: self._log("WARN", msg),
-                    should_stop=self.stop_requested,
-                    source_lang=source_lang,
-                    stats=word_batch_stats,
-                    quality_profile=None,
-                    api_scheduler=api_scheduler,
-                    request_category=API_REQUEST_CATEGORY_NORMAL,
-                    candidate_callback=recovery_candidate_cb,
-                )
+                if misses:
+                    api_translations = translate_word_texts(
+                        misses,
+                        engine,
+                        target_lang,
+                        word_prompt,
+                        settings.word_batch,
+                        concurrency,
+                        progress_callback=progress_cb,
+                        error_callback=lambda msg: self._log("WARN", msg),
+                        should_stop=self.stop_requested,
+                        source_lang=source_lang,
+                        stats=word_batch_stats,
+                        quality_profile=None,
+                        api_scheduler=api_scheduler,
+                        request_category=API_REQUEST_CATEGORY_NORMAL,
+                        candidate_callback=recovery_candidate_cb,
+                    )
                 self._log(
                     "INFO",
                     (
@@ -525,6 +568,10 @@ class WordTaskRunner:
                         api_translations[source] = source
                     recovery_review_sources.update(recovery_outcome.recovery_review_results)
                     recovery_review_sources.update(recovery_outcome.semantic_review_results)
+                    for source in recovery_outcome.recovery_review_results:
+                        _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
+                    for source in recovery_outcome.semantic_review_results:
+                        _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
                     standard_fixed_sources = [
                         source
                         for source in recovery_outcome.fixed_sources
@@ -548,7 +595,7 @@ class WordTaskRunner:
                             list(recovery_outcome.recovery_review_results.keys()),
                             problem="重试译文按 Word 恢复规则自动接受",
                             status=(
-                                "译文主体已通过恢复校验，本段已写入译文并高亮原文，"
+                                "译文主体已通过恢复校验，本段已写入译文，"
                                 "建议复核提示片段。"
                             ),
                             severity="resolved",
@@ -562,13 +609,15 @@ class WordTaskRunner:
                             problem="规则校验未通过，语义仲裁自动接受",
                             status=(
                                 "候选译文未通过程序化规则校验，但语义仲裁判定与原文完整等义；"
-                                "本段已写入译文并高亮原文，且不会写入翻译记忆库。"
+                                "本段已写入译文，且不会写入翻译记忆库。"
                             ),
                             severity="resolved",
                             validation_results=recovery_outcome.semantic_review_results,
                         )
                     if recovery_outcome.unresolved_sources:
                         unresolved_review_sources.update(recovery_outcome.unresolved_sources)
+                        for source in recovery_outcome.unresolved_sources:
+                            _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
                         _add_quality_issues(
                             quality_issues,
                             segment_locations,
@@ -587,6 +636,63 @@ class WordTaskRunner:
                 else:
                     recovery_pool.wait_for_completion()
 
+                mixed_results: dict[str, MixedLanguageResult] = {}
+                if mixed_texts:
+                    self._queue.put(
+                        StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容...")
+                    )
+
+                    def mixed_progress_cb(done, total):
+                        self._queue.put(
+                            ProgressMsg(
+                                phase_index=2,
+                                phase_total=phase_total,
+                                phase_name="云端翻译",
+                                step_done=min(len(misses) + done, max(api_call_count, 1)),
+                                step_total=max(api_call_count, 1),
+                            )
+                        )
+
+                    mixed_stats = MixedLanguageRunStats()
+                    mixed_results = translate_mixed_language_texts(
+                        mixed_texts,
+                        engine=engine,
+                        target_lang=target_lang,
+                        system_prompt=system_prompt,
+                        source_lang=source_lang,
+                        concurrency=concurrency,
+                        max_items_per_batch=settings.word_batch.max_paragraphs_per_batch,
+                        max_chars_per_batch=max(
+                            DEFAULT_MIXED_MAX_BATCH_CHARS,
+                            settings.word_batch.max_chars_per_batch,
+                        ),
+                        retry_attempts=settings.word_batch.strict_retry_attempts,
+                        progress_callback=mixed_progress_cb,
+                        error_callback=lambda msg: self._log("WARN", msg),
+                        should_stop=self.stop_requested,
+                        api_scheduler=api_scheduler,
+                        request_category=API_REQUEST_CATEGORY_NORMAL,
+                        stats=mixed_stats,
+                    )
+                    _apply_mixed_language_word_results(
+                        mixed_results=mixed_results,
+                        translations=api_translations,
+                        quality_issues=quality_issues,
+                        segment_locations=segment_locations,
+                        review_marks=review_marks,
+                    )
+                    self._log(
+                        "INFO",
+                        (
+                            "混合语言路径："
+                            f"命中 {mixed_stats.input_count} 条，"
+                            f"已双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)}，"
+                            f"疑似原文错误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)}，"
+                            f"不确定 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)}，"
+                            f"语义校验接受 {mixed_stats.semantic_accepted_count}"
+                        ),
+                    )
+
                 elapsed = (datetime.now() - t0).total_seconds()
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=elapsed)
@@ -595,7 +701,8 @@ class WordTaskRunner:
                     (source, translated)
                     for source, translated in api_translations.items()
                     if (
-                        source not in recovery_review_sources
+                        source not in mixed_texts
+                        and source not in recovery_review_sources
                         and source not in unresolved_review_sources
                         and should_store_translation_in_tm(source, translated)
                     )
@@ -657,12 +764,13 @@ class WordTaskRunner:
                         target_lang=target_lang,
                         source_lang=source_lang,
                         output_name=_word_output_source_name(file_item.path),
-                        review_highlight_sources=(
-                            unresolved_review_sources | recovery_review_sources
+                        review_marks=(
+                            review_marks
                             if settings.word_review.highlight_unresolved
                             else None
                         ),
-                        review_highlight_color=settings.word_review.highlight_color,
+                        review_mark_colors=settings.word_review.mark_colors,
+                        existing_highlight_policy=settings.word_review.existing_highlight_policy,
                         log_callback=lambda msg: self._log(
                             "OK" if msg.startswith("[OK]") else "INFO",
                             msg,
@@ -671,7 +779,7 @@ class WordTaskRunner:
                     elapsed = (datetime.now() - t0).total_seconds()
                     this_file_texts = file_texts[index]
                     this_tm = sum(1 for text in this_file_texts if text in hits)
-                    this_api = sum(1 for text in this_file_texts if text in misses)
+                    this_api = sum(1 for text in this_file_texts if text in misses or text in mixed_texts)
                     self._task_logger.file_done(
                         filename=file_item.name,
                         elapsed=elapsed,
@@ -1578,6 +1686,81 @@ def _add_quality_issues(
                 continue
             seen_keys.add(key)
             issues.append(issue)
+
+
+def _apply_mixed_language_word_results(
+    *,
+    mixed_results: dict[str, MixedLanguageResult],
+    translations: dict[str, str],
+    quality_issues: list[dict],
+    segment_locations: dict[str, list[dict]],
+    review_marks: dict[str, str],
+) -> None:
+    existing_bilingual: list[str] = []
+    foreign_noise: list[str] = []
+    uncertain: list[str] = []
+    semantic_translate: list[str] = []
+
+    for source, result in mixed_results.items():
+        if result.action == MIXED_ACTION_EXISTING_BILINGUAL:
+            existing_bilingual.append(source)
+            continue
+        if result.action == MIXED_ACTION_FOREIGN_NOISE:
+            if result.translation.strip():
+                translations[source] = result.translation.strip()
+            foreign_noise.append(source)
+            _set_review_mark(review_marks, source, MIXED_MARK_FOREIGN_NOISE)
+            continue
+        if result.action == MIXED_ACTION_TRANSLATE:
+            if result.translation.strip():
+                translations[source] = result.translation.strip()
+            if result.accepted_by == "semantic":
+                semantic_translate.append(source)
+                _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
+            continue
+        uncertain.append(source)
+        translations[source] = source
+        _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+
+    if existing_bilingual:
+        _add_quality_issues(
+            quality_issues,
+            segment_locations,
+            existing_bilingual,
+            problem="原文疑似已包含目标语言译文",
+            status="已保留原内容，未追加译文，未写入翻译记忆库。",
+            severity="resolved",
+        )
+    if foreign_noise:
+        _add_quality_issues(
+            quality_issues,
+            segment_locations,
+            foreign_noise,
+            problem="原文疑似夹杂错误外文",
+            status="已输出译文，原文疑似存在错误外文，未写入翻译记忆库。",
+            severity="resolved",
+        )
+    if uncertain:
+        _add_quality_issues(
+            quality_issues,
+            segment_locations,
+            uncertain,
+            problem="混合语言内容未能确认",
+            status="已保留原文，需人工复核。",
+            severity="needs_review",
+        )
+    if semantic_translate:
+        _add_quality_issues(
+            quality_issues,
+            segment_locations,
+            semantic_translate,
+            problem="混合语言译文经语义校验接受",
+            status=(
+                "混合语言路径候选未通过程序化规则校验，但专属语义校验判定可接受；"
+                "本段已写入译文，且不会写入翻译记忆库。"
+            ),
+            severity="resolved",
+        )
 
 
 def _build_source_excerpt(text: str, *, head: int = 18, tail: int = 16) -> str:

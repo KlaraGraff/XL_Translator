@@ -8,6 +8,11 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+from core.mixed_language import (
+    MIXED_MARK_FOREIGN_NOISE,
+    MIXED_MARK_SEMANTIC,
+    MIXED_MARK_UNRESOLVED,
+)
 from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
@@ -139,8 +144,58 @@ class WordDocumentTests(unittest.TestCase):
             )
 
             out_doc = Document(str(out_path))
-            self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "DDEBFF")
-            self.assertEqual(self._cell_shading_fill(out_doc.tables[0].cell(0, 0)), "DDEBFF")
+            self.assertEqual(self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]), "DDEBFF")
+            self.assertTrue(
+                all(
+                    self._paragraph_first_run_shading_fill(paragraph) == "DDEBFF"
+                    for paragraph in out_doc.tables[0].cell(0, 0).paragraphs
+                    if paragraph.text.strip()
+                )
+            )
+
+    def test_word_review_marks_use_configured_color_map(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "sample.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            doc.add_paragraph("语义接受")
+            doc.add_paragraph("保留原文")
+            doc.add_paragraph("疑似异常")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={},
+                target_lang="en",
+                source_lang="zh",
+                review_marks={
+                    "语义接受": MIXED_MARK_SEMANTIC,
+                    "保留原文": MIXED_MARK_UNRESOLVED,
+                    "疑似异常": MIXED_MARK_FOREIGN_NOISE,
+                },
+                review_mark_colors={
+                    MIXED_MARK_SEMANTIC: "DDEBFF",
+                    MIXED_MARK_UNRESOLVED: "D9EAD3",
+                    MIXED_MARK_FOREIGN_NOISE: "FCE4D6",
+                },
+            )
+
+            out_doc = Document(str(out_path))
+            self.assertEqual(
+                self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]),
+                "DDEBFF",
+            )
+            self.assertEqual(
+                self._paragraph_first_run_shading_fill(out_doc.paragraphs[1]),
+                "D9EAD3",
+            )
+            self.assertEqual(
+                self._paragraph_first_run_shading_fill(out_doc.paragraphs[2]),
+                "FCE4D6",
+            )
 
     def test_word_review_highlight_preserves_existing_shading(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,6 +225,38 @@ class WordDocumentTests(unittest.TestCase):
             out_doc = Document(str(out_path))
             self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "AABBCC")
             self.assertEqual(self._cell_shading_fill(out_doc.tables[0].cell(0, 0)), "CCDDEE")
+            self.assertEqual(self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]), "")
+            self.assertEqual(
+                self._paragraph_first_run_shading_fill(out_doc.tables[0].cell(0, 0).paragraphs[0]),
+                "",
+            )
+
+    def test_word_review_mark_can_use_red_underline_when_existing_shading_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "shaded.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            paragraph = doc.add_paragraph("项目名称：测试工程")
+            self._set_shading_fill(paragraph._p.get_or_add_pPr(), "AABBCC")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={},
+                target_lang="en",
+                source_lang="zh",
+                review_highlight_sources={"项目名称：测试工程"},
+                existing_highlight_policy="red_underline",
+            )
+
+            out_doc = Document(str(out_path))
+            run = out_doc.paragraphs[0].runs[0]
+            self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "AABBCC")
+            self.assertTrue(run.underline)
+            self.assertEqual(str(run.font.color.rgb), "C00000")
 
     def test_word_automatic_numbering_is_flattened_in_bilingual_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -654,6 +741,13 @@ class WordDocumentTests(unittest.TestCase):
     def _cell_shading_fill(cell) -> str:
         tc_pr = getattr(cell._tc, "tcPr", None)
         return WordDocumentTests._shading_fill(tc_pr)
+
+    @staticmethod
+    def _paragraph_first_run_shading_fill(paragraph) -> str:
+        run = next((item for item in paragraph.runs if item.text.strip()), None)
+        if run is None:
+            return ""
+        return WordDocumentTests._shading_fill(getattr(run._element, "rPr", None))
 
     @staticmethod
     def _shading_fill(parent_element) -> str:

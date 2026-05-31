@@ -125,3 +125,11 @@ class OllamaEngine(TranslationEngine):
             resp.raise_for_status()
             data = resp.json()
             return data["message"]["content"]
+
+    def chat(self, system: str, user: str) -> str:
+        """Direct chat call used by structured review/translation helpers."""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self._call_ollama(system, user))
+        finally:
+            loop.close()
