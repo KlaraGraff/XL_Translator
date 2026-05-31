@@ -25,6 +25,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
                 MIXED_MARK_FOREIGN_NOISE: "F4CCCC",
             },
         )
+        self.assertTrue(settings.excel_review.mark_review_items)
         self.assertEqual(settings.excel_review.existing_fill_policy, "red_font")
         self.assertEqual(settings.word_batch.max_paragraphs_per_batch, 8)
         self.assertEqual(settings.word_batch.max_chars_per_batch, 3000)
@@ -63,6 +64,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
                 MIXED_MARK_FOREIGN_NOISE: "F4CCCC",
             },
         )
+        self.assertTrue(migrated["excel_review"]["mark_review_items"])
         self.assertEqual(migrated["excel_review"]["existing_fill_policy"], "red_font")
         self.assertTrue(migrated["word_conversion"]["prefer_native_word"])
 
@@ -114,6 +116,19 @@ class WordDefaultSettingsTests(unittest.TestCase):
                 MIXED_MARK_FOREIGN_NOISE: "F4CCCC",
             },
         )
+
+    def test_schema_v23_migration_enables_excel_review_mark(self) -> None:
+        migrated = _migrate_settings_payload(
+            {
+                "settings_version": 22,
+                "excel_review": {"existing_fill_policy": "skip"},
+            },
+            source_version=22,
+        )
+
+        self.assertEqual(migrated["settings_version"], SETTINGS_SCHEMA_VERSION)
+        self.assertTrue(migrated["excel_review"]["mark_review_items"])
+        self.assertEqual(migrated["excel_review"]["existing_fill_policy"], "skip")
 
 
 if __name__ == "__main__":

@@ -186,8 +186,13 @@ class NativeTranslationPageTests(unittest.TestCase):
             self.assertIn("保留原文复核", combo.toolTip())
             self.assertNotIn("保留原文需复核", combo.toolTip())
             self.assertEqual(brush.color().name().upper(), "#FCE4D6")
+            self.assertTrue(page.review_mark_check.isChecked())
             self.assertFalse(page.review_color_inputs[MIXED_MARK_UNRESOLVED].isVisible())
             self.assertTrue(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
+
+            page.review_mark_check.setChecked(False)
+            page._on_params_changed()
+            self.assertFalse(page.settings.excel_review.mark_review_items)
 
             combo.setCurrentIndex(custom_index)
             page.review_color_inputs[MIXED_MARK_UNRESOLVED].setText("#000000")

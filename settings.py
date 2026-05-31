@@ -23,6 +23,7 @@ from config import (
     DEFAULT_CUSTOM_OPENAI_BASE_URL,
     DEFAULT_LOCAL_MODEL_PROVIDER,
     EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
+    EXCEL_REVIEW_MARK_DEFAULT,
     LM_STUDIO_BASE_URL,
     LOCAL_MODEL_PROVIDERS,
     OLLAMA_BASE_URL,
@@ -426,6 +427,7 @@ class OutputSettings(BaseModel):
 
 
 class ExcelReviewSettings(BaseModel):
+    mark_review_items: bool = EXCEL_REVIEW_MARK_DEFAULT
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
 
     @model_validator(mode="after")
@@ -1128,6 +1130,16 @@ def _migrate_settings_to_v22(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v23(data: dict) -> dict:
+    """Add Excel review-mark toggle."""
+    migrated = dict(data)
+    excel_review_payload = dict(migrated.get("excel_review") or {})
+    excel_review_payload.setdefault("mark_review_items", EXCEL_REVIEW_MARK_DEFAULT)
+    migrated["excel_review"] = excel_review_payload
+    migrated["settings_version"] = 23
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -1179,6 +1191,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v21(migrated)
         elif next_version == 22:
             migrated = _migrate_settings_to_v22(migrated)
+        elif next_version == 23:
+            migrated = _migrate_settings_to_v23(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

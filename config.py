@@ -205,6 +205,7 @@ REVIEW_MARK_COLOR_DEFAULTS = {
 }
 WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = REVIEW_MARK_COLOR_SEMANTIC_DEFAULT
 WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT = "skip"
+EXCEL_REVIEW_MARK_DEFAULT = True
 EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT = "red_font"
 
 # ── PDF 翻译 ────────────────────────────────────────────
@@ -353,4 +354,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 22
+SETTINGS_SCHEMA_VERSION = 23

@@ -500,6 +500,11 @@ class ExcelTranslatePage(QWidget):
             self.settings.output.lock_row_height,
             layout,
         )
+        self.review_mark_check = self._checkbox(
+            "标记需复核内容",
+            self.settings.excel_review.mark_review_items,
+            layout,
+        )
         self.review_color_combos: dict[str, QComboBox] = {}
         self.review_color_inputs: dict[str, QLineEdit] = {}
         self.review_color_buttons: dict[str, QPushButton] = {}
@@ -747,6 +752,14 @@ class ExcelTranslatePage(QWidget):
                     "保持行高不变，通过缩小字号容纳译文。",
                     [
                         "与“Excel 精调行高”互斥。",
+                    ],
+                ),
+                "标记需复核内容": _tooltip(
+                    "标记需复核内容",
+                    "在输出表格中标记需人工确认的单元格。",
+                    [
+                        "关闭后不会写入风险底色或红字。",
+                        "颜色和已有底色处理设置会保留，重新开启后继续生效。",
                     ],
                 ),
             }.get(text, "")
@@ -1470,6 +1483,7 @@ class ExcelTranslatePage(QWidget):
         )
         self.settings.output.enable_excel_autofit = self.excel_autofit_check.isChecked()
         self.settings.output.lock_row_height = self.lock_row_height_check.isChecked()
+        self.settings.excel_review.mark_review_items = self.review_mark_check.isChecked()
         self.settings.excel_review.existing_fill_policy = (
             self.existing_fill_policy_combo.currentData() or "red_font"
         )
@@ -1528,6 +1542,7 @@ class ExcelTranslatePage(QWidget):
             self.formula_backfill_check,
             self.excel_autofit_check,
             self.lock_row_height_check,
+            self.review_mark_check,
             self.existing_fill_policy_combo,
         ):
             widget.setEnabled(not effective_locked)

@@ -142,6 +142,51 @@ class BilingualWriterTests(unittest.TestCase):
             finally:
                 wb.close()
 
+    def test_excel_review_mark_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(Path(tmp), "source.xlsx", "项目")
+            out_path = write_bilingual_file(
+                source_path=source,
+                output_dir=Path(tmp) / "out",
+                translations={"项目": "Projet"},
+                target_lang="fr",
+                keep_original_sheets=False,
+                formula_display_value_backfill=True,
+                enable_print_guard=False,
+                review_marks={"项目": MIXED_MARK_FOREIGN_NOISE},
+                mark_review_items=False,
+            )
+
+            wb = load_workbook(out_path)
+            try:
+                cell = wb.active["A1"]
+                self.assertEqual(cell.value, "项目\nProjet")
+                self.assertEqual(str(cell.fill.fgColor.rgb), "00000000")
+            finally:
+                wb.close()
+
+    def test_excel_disabled_review_mark_skips_retained_original_auto_mark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(Path(tmp), "source.xlsx", "项目")
+            out_path = write_bilingual_file(
+                source_path=source,
+                output_dir=Path(tmp) / "out",
+                translations={"项目": "项目"},
+                target_lang="fr",
+                keep_original_sheets=False,
+                formula_display_value_backfill=True,
+                enable_print_guard=False,
+                mark_review_items=False,
+            )
+
+            wb = load_workbook(out_path)
+            try:
+                cell = wb.active["A1"]
+                self.assertEqual(cell.value, "项目")
+                self.assertEqual(str(cell.fill.fgColor.rgb), "00000000")
+            finally:
+                wb.close()
+
     @staticmethod
     def _workbook(
         root: Path,

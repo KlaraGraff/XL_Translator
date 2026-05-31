@@ -130,6 +130,7 @@ def write_bilingual_file(
     lock_row_height: bool = False,
     review_marks: dict[str, str] | None = None,
     review_mark_colors: dict[str, str] | None = None,
+    mark_review_items: bool = True,
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
     original_path: Path | None = None,
@@ -148,6 +149,7 @@ def write_bilingual_file(
     :param lock_row_height:      是否锁定行高并通过缩小字号适配内容
     :param review_marks:         {原文: 风险标记类型}，用于整格标记需复核内容
     :param review_mark_colors:   风险标记类型到 RGB 色值的映射
+    :param mark_review_items:    是否写入需复核标记
     :param existing_fill_policy: 已有底色处理策略：skip/overwrite/red_font
     :param log_callback:         日志回调 log_callback(msg: str)
     :param original_path:        原 .xls 路径（如果是经过转换的临时文件）
@@ -180,6 +182,7 @@ def write_bilingual_file(
         lock_row_height=lock_row_height,
         review_marks=review_marks,
         review_mark_colors=review_mark_colors,
+        mark_review_items=mark_review_items,
         existing_fill_policy=existing_fill_policy,
         log_callback=log_callback,
     )
@@ -206,6 +209,7 @@ def _write_with_openpyxl(
     lock_row_height: bool = False,
     review_marks: dict[str, str] | None = None,
     review_mark_colors: dict[str, str] | None = None,
+    mark_review_items: bool = True,
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
 ) -> None:
@@ -216,8 +220,13 @@ def _write_with_openpyxl(
     from openpyxl import load_workbook
     from openpyxl.styles import Alignment
 
+    review_enabled = bool(mark_review_items)
     review_color_map = _normalize_review_mark_colors(review_mark_colors)
-    review_mark_map = _normalize_review_marks(review_marks, review_color_map)
+    review_mark_map = (
+        _normalize_review_marks(review_marks, review_color_map)
+        if review_enabled
+        else {}
+    )
     fill_policy = _normalize_existing_fill_policy(existing_fill_policy)
 
     wb = load_workbook(str(file_path))
@@ -300,7 +309,7 @@ def _write_with_openpyxl(
                                     review_skip_count += 1
                             continue
                         retained_original = source_key.lower() == tgt.strip().lower()
-                        if retained_original and not mark_kind:
+                        if review_enabled and retained_original and not mark_kind:
                             mark_kind = MIXED_MARK_UNRESOLVED
                         if retained_original:
                             if mark_kind:

@@ -859,6 +859,7 @@ class TaskRunner:
                         lock_row_height      = self._settings.output.lock_row_height,
                         review_marks         = excel_review_marks,
                         review_mark_colors   = self._settings.word_review.mark_colors,
+                        mark_review_items    = self._settings.excel_review.mark_review_items,
                         existing_fill_policy = self._settings.excel_review.existing_fill_policy,
                         log_callback         = lambda msg: self._log(
                             "OK" if msg.startswith("[OK]") else "INFO", msg
