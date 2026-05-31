@@ -92,6 +92,10 @@ _Avoid_: 定位清单
 The rule that limits how much running log history remains visible during long tasks. It controls UI volume without hiding the specific positions of retry, semantic arbitration, or needs-review events that remain in the retained window; diagnostic archives should retain complete or much larger log history.
 _Avoid_: 少写位置
 
+**翻译任务排队机制**:
+The user-facing behavior that lets users arrange additional Excel, Word, or PDF translation tasks before the current task finishes, including additional tasks of the same translation type. Queued tasks wait in a translation list and may have ordering, cancellation, inspection, and history controls; it does not mean progress-message delivery or PDF page-generation concurrency inside a single running task.
+_Avoid_: 进度消息队列, PDF 页生成并发, 同类任务并行执行
+
 **模型配置**:
 The user-facing area for configuring model access and model roles across the product. It includes cloud API configuration, local model configuration, and the model role choices that use them.
 In the first product version, it remains in the sidebar and uses a compact model-role selector to switch which role is being configured rather than becoming a separate settings page.
