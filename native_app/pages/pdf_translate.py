@@ -57,6 +57,7 @@ from core.model_roles import (
     provider_supports_capability,
     resolve_effective_model_config,
 )
+from core.model_api_identity import ApiGroupSignature, task_api_context_for_page
 from core.pdf_image_translation import (
     PDF_MANIFEST_FILENAME,
     PDF_PAGES_ROOT,
@@ -192,11 +193,15 @@ class PdfTranslatePage(QWidget):
         self.task_files: list[PdfFileItem] = []
         self.current_task_source_root = ""
         self.current_task_id = ""
+        self.current_task_api_groups: set[ApiGroupSignature] = set()
         self._task_diagnostics_archived = False
         self._terminal_output_dir = ""
         self._terminal_report_path = ""
         self._terminal_manifest_path = ""
         self._workspace_render_phase = self.phase
+        self.external_task_lock = False
+        self.external_task_owner_label = ""
+        self.external_task_lock_reason = ""
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(800)
@@ -229,6 +234,27 @@ class PdfTranslatePage(QWidget):
             self._render_action_card()
         else:
             self._stop_ui_sync_guard()
+
+    def set_external_task_lock(
+        self,
+        locked: bool,
+        owner_label: str = "",
+        reason: str = "",
+    ) -> None:
+        locked = bool(locked)
+        owner_label = str(owner_label or "").strip()
+        reason = str(reason or "").strip()
+        if (
+            self.external_task_lock == locked
+            and self.external_task_owner_label == owner_label
+            and self.external_task_lock_reason == reason
+        ):
+            return
+        self.external_task_lock = locked
+        self.external_task_owner_label = owner_label
+        self.external_task_lock_reason = reason
+        self._lock_inputs(self.phase == "running")
+        self._render_action_card()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -972,7 +998,18 @@ class PdfTranslatePage(QWidget):
             review_label = "已启用翻译审核" if self.settings.pdf.review_enabled else "未启用翻译审核"
             image_count = self._image_file_count(selected)
             pdf_count = len(selected) - image_count
-            note = QLabel(f"目标语言：{lang_label}；PDF {pdf_count} 个，图片 {image_count} 个；{review_label}")
+            if self.external_task_lock:
+                owner = self.external_task_owner_label or "其他翻译"
+                note_text = (
+                    self.external_task_lock_reason
+                    or f"{owner}任务正在运行，请先完成或终止当前任务。"
+                )
+            else:
+                note_text = (
+                    f"目标语言：{lang_label}；PDF {pdf_count} 个，"
+                    f"图片 {image_count} 个；{review_label}"
+                )
+            note = QLabel(note_text)
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -1244,6 +1281,8 @@ class PdfTranslatePage(QWidget):
         return get_target_lang_display(target_lang, self.settings.custom_target_langs, include_optional=True)
 
     def _can_start(self) -> bool:
+        if self.external_task_lock:
+            return False
         if self.phase != "idle" or not self._selected_files():
             return False
         if not self._selected_target_lang():
@@ -1345,6 +1384,7 @@ class PdfTranslatePage(QWidget):
             self.output_status.setText("自定义输出目录可用。")
 
     def _lock_inputs(self, locked: bool) -> None:
+        effective_locked = bool(locked or self.external_task_lock)
         for widget in (
             self.source_input,
             self.browse_button,
@@ -1358,7 +1398,7 @@ class PdfTranslatePage(QWidget):
             self.pdf_compression_checkbox,
             self.pdf_review_checkbox,
         ):
-            widget.setEnabled(not locked)
+            widget.setEnabled(not effective_locked)
 
     def _start_translation(self) -> None:
         selected = self._selected_files()
@@ -1409,14 +1449,22 @@ class PdfTranslatePage(QWidget):
         source_root=None,
     ) -> None:
         effective_source_root = source_root if source_root is not None else self.source_root or None
+        task_settings = settings.model_copy(deep=True)
+        try:
+            api_context = task_api_context_for_page(task_settings, "pdf_translate")
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, f"PDF 翻译 API 配置不可用：{exc}")
+            return
         self.runner = PdfImageTranslationRunner(
             selected,
-            settings,
+            task_settings,
             source_root=effective_source_root,
+            key_overrides=api_context.key_overrides,
         )
         self.task_files = list(selected)
         self.current_task_source_root = str(effective_source_root or "")
         self.current_task_id = self.runner.task_id
+        self.current_task_api_groups = set(api_context.api_groups)
         self._task_diagnostics_archived = False
         self._reset_runtime_logs()
         self.phase = "running"
@@ -1844,6 +1892,7 @@ class PdfTranslatePage(QWidget):
         self.status_text = ""
         self.stop_message = ""
         self.task_files = []
+        self.current_task_api_groups = set()
         self.current_task_source_root = ""
         self.current_task_id = ""
         self._task_diagnostics_archived = False

@@ -1,7 +1,7 @@
 """Centralized app metadata and version helpers."""
 
 APP_NAME = "Translator"
-APP_VERSION = "6.6"
+APP_VERSION = "6.7"
 APP_VERSION_LABEL = f"V{APP_VERSION}"
 
 APP_SAFE_NAME = "_".join(APP_NAME.split())

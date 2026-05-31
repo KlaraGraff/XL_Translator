@@ -62,6 +62,7 @@ from core.model_roles import (
     role_label,
     settings_for_text_role,
 )
+from core.model_api_identity import task_api_groups_for_page
 from core.model_throughput import (
     batch_size_bounds,
     concurrency_bounds,
@@ -2419,6 +2420,12 @@ class Sidebar(QFrame):
 class NativeMainWindow(QMainWindow):
     """Top-level native desktop window."""
 
+    TRANSLATION_PAGE_LABELS = {
+        "excel_translate": "Excel 翻译",
+        "word_translate": "Word 翻译",
+        "pdf_translate": "PDF 翻译",
+    }
+
     def __init__(self, settings: AppSettings):
         super().__init__()
         app = QApplication.instance()
@@ -2465,6 +2472,11 @@ class NativeMainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._build_menu()
         self._sync_page_activation("excel_translate")
+        self._task_lock_timer = QTimer(self)
+        self._task_lock_timer.setInterval(500)
+        self._task_lock_timer.timeout.connect(self._sync_translation_task_locks)
+        self._task_lock_timer.start()
+        self._sync_translation_task_locks()
         QTimer.singleShot(600, lambda: self._start_update_check("auto"))
 
     def _start_update_check(self, source: str) -> None:
@@ -2693,12 +2705,100 @@ class NativeMainWindow(QMainWindow):
         self.stack.setCurrentIndex(page_order.index(page))
         self.sidebar.set_active_page(page)
         self._sync_page_activation(page)
-        self._sync_sidebar_task_snapshot()
+        self._sync_translation_task_locks()
 
     def _sync_page_activation(self, active_page: str) -> None:
         for page_key, page in self.pages.items():
             if hasattr(page, "set_page_active"):
                 page.set_page_active(page_key == active_page)
+
+    def _is_translation_page_running(self, page_key: str) -> bool:
+        page = self.pages.get(page_key)
+        if page is None:
+            return False
+        return (
+            getattr(page, "runner", None) is not None
+            and getattr(page, "done", None) is None
+            and getattr(page, "phase", "") == "running"
+        )
+
+    def _running_translation_tasks(self) -> list[dict[str, object]]:
+        tasks: list[dict[str, object]] = []
+        for page_key in self.TRANSLATION_PAGE_LABELS:
+            page = self.pages.get(page_key)
+            if page is None or not self._is_translation_page_running(page_key):
+                continue
+            groups = frozenset(
+                getattr(page, "current_task_api_groups", set()) or set()
+            )
+            error = ""
+            if not groups:
+                try:
+                    groups = task_api_groups_for_page(self.settings, page_key)
+                except Exception as exc:  # noqa: BLE001 - used for conservative locking.
+                    error = str(exc)
+            tasks.append(
+                {
+                    "page_key": page_key,
+                    "label": self.TRANSLATION_PAGE_LABELS.get(page_key, ""),
+                    "api_groups": groups,
+                    "api_error": error,
+                }
+            )
+        return tasks
+
+    def _sync_translation_task_locks(self) -> None:
+        running_tasks = self._running_translation_tasks()
+        for page_key, label in self.TRANSLATION_PAGE_LABELS.items():
+            page = self.pages.get(page_key)
+            if page is None or not hasattr(page, "set_external_task_lock"):
+                continue
+            if self._is_translation_page_running(page_key) or not running_tasks:
+                page.set_external_task_lock(False, label, "")
+                continue
+
+            locked = False
+            owner_label = ""
+            reason = ""
+            try:
+                candidate_groups = task_api_groups_for_page(self.settings, page_key)
+                candidate_error = ""
+            except Exception as exc:  # noqa: BLE001 - avoid unsafe parallel start.
+                candidate_groups = frozenset()
+                candidate_error = str(exc)
+
+            for task in running_tasks:
+                if task.get("page_key") == page_key:
+                    continue
+                task_label = str(task.get("label") or "其他翻译")
+                task_groups = frozenset(
+                    task.get("api_groups") or frozenset()
+                )
+                if candidate_error:
+                    locked = True
+                    owner_label = task_label
+                    reason = (
+                        "已有翻译任务正在运行；当前模型配置无法判断 API，"
+                        "请先完成模型配置或等待任务结束。"
+                    )
+                    break
+                if not candidate_groups or not task_groups:
+                    locked = True
+                    owner_label = task_label
+                    reason = (
+                        f"{task_label}正在运行；无法确认当前 API 是否独立，"
+                        "请切换到明确不同的 API 后再启动。"
+                    )
+                    break
+                if candidate_groups & task_groups:
+                    locked = True
+                    owner_label = task_label
+                    reason = (
+                        f"{task_label}正在使用当前 API，请切换到不同 API 后再启动。"
+                    )
+                    break
+
+            page.set_external_task_lock(locked, owner_label if locked else label, reason)
 
     def _sync_tm_language_from_translation(
         self,

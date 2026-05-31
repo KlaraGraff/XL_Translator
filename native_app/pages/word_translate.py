@@ -64,6 +64,7 @@ from core.mixed_language import (
     MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
 )
+from core.model_api_identity import ApiGroupSignature, task_api_context_for_page
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -231,8 +232,12 @@ class WordTranslatePage(QWidget):
         self.task_files: list[WordFileItem] = []
         self.current_task_source_root = ""
         self.current_task_id = ""
+        self.current_task_api_groups: set[ApiGroupSignature] = set()
         self._task_diagnostics_archived = False
         self._workspace_render_phase = self.phase
+        self.external_task_lock = False
+        self.external_task_owner_label = ""
+        self.external_task_lock_reason = ""
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(800)
@@ -266,6 +271,27 @@ class WordTranslatePage(QWidget):
             self._render_action_card()
         else:
             self._stop_ui_sync_guard()
+
+    def set_external_task_lock(
+        self,
+        locked: bool,
+        owner_label: str = "",
+        reason: str = "",
+    ) -> None:
+        locked = bool(locked)
+        owner_label = str(owner_label or "").strip()
+        reason = str(reason or "").strip()
+        if (
+            self.external_task_lock == locked
+            and self.external_task_owner_label == owner_label
+            and self.external_task_lock_reason == reason
+        ):
+            return
+        self.external_task_lock = locked
+        self.external_task_owner_label = owner_label
+        self.external_task_lock_reason = reason
+        self._lock_inputs(self.phase == "running")
+        self._render_action_card()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -674,10 +700,11 @@ class WordTranslatePage(QWidget):
 
         color = self._selected_review_color(mark)
         is_custom = combo.currentData() == _CUSTOM_COLOR_VALUE
+        controls_enabled = self.phase != "running" and not self.external_task_lock
         custom_input.setVisible(is_custom)
-        custom_input.setEnabled(is_custom and self.phase != "running")
+        custom_input.setEnabled(is_custom and controls_enabled)
         pick_button.setVisible(is_custom)
-        pick_button.setEnabled(is_custom and self.phase != "running")
+        pick_button.setEnabled(is_custom and controls_enabled)
         custom_input.setText(f"#{color}")
         custom_index = combo.findData(_CUSTOM_COLOR_VALUE)
         if custom_index >= 0:
@@ -1046,7 +1073,15 @@ class WordTranslatePage(QWidget):
         if self.phase == "idle":
             selected = self._selected_files()
             lang_label = self._selected_target_label()
-            note = QLabel(f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}")
+            if self.external_task_lock:
+                owner = self.external_task_owner_label or "其他翻译"
+                note_text = (
+                    self.external_task_lock_reason
+                    or f"{owner}任务正在运行，请先完成或终止当前任务。"
+                )
+            else:
+                note_text = f"目标语言：{lang_label}；可执行文件：{len(selected)} / {len(self.files)}"
+            note = QLabel(note_text)
             note.setWordWrap(True)
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
@@ -1446,6 +1481,8 @@ class WordTranslatePage(QWidget):
         )
 
     def _can_start(self) -> bool:
+        if self.external_task_lock:
+            return False
         if self.phase != "idle" or not self._selected_files():
             return False
         if not self._selected_target_lang() or not self._selected_source_lang():
@@ -1538,9 +1575,12 @@ class WordTranslatePage(QWidget):
     def _sync_source_lang_visibility(self) -> None:
         self.source_lang_label.setVisible(True)
         self.source_lang_combo.setVisible(True)
-        self.source_lang_combo.setEnabled(self.phase != "running")
+        self.source_lang_combo.setEnabled(
+            self.phase != "running" and not self.external_task_lock
+        )
 
     def _lock_inputs(self, locked: bool) -> None:
+        effective_locked = bool(locked or self.external_task_lock)
         for widget in (
             self.source_input,
             self.browse_button,
@@ -1558,13 +1598,13 @@ class WordTranslatePage(QWidget):
             self.split_chars_spin,
             self.retry_spin,
         ):
-            widget.setEnabled(not locked)
+            widget.setEnabled(not effective_locked)
         for widget in (
             *getattr(self, "review_color_combos", {}).values(),
             *getattr(self, "review_color_inputs", {}).values(),
             *getattr(self, "review_color_buttons", {}).values(),
         ):
-            widget.setEnabled(not locked)
+            widget.setEnabled(not effective_locked)
         for mark in getattr(self, "review_color_combos", {}):
             self._refresh_review_color_control(mark)
         self._sync_source_lang_visibility()
@@ -1606,15 +1646,23 @@ class WordTranslatePage(QWidget):
         source_root=None,
     ) -> None:
         effective_source_root = source_root if source_root is not None else self.source_root or None
+        task_settings = settings.model_copy(deep=True)
+        try:
+            api_context = task_api_context_for_page(task_settings, "word_translate")
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            QMessageBox.warning(self, APP_NAME, f"Word 翻译 API 配置不可用：{exc}")
+            return
         self.runner = WordTaskRunner(
             selected,
-            settings,
+            task_settings,
             source_root=effective_source_root,
             source_lang=source_lang,
+            key_overrides=api_context.key_overrides,
         )
         self.task_files = list(selected)
         self.current_task_source_root = str(effective_source_root or "")
         self.current_task_id = self.runner.task_id
+        self.current_task_api_groups = set(api_context.api_groups)
         self._task_diagnostics_archived = False
         self._reset_runtime_logs()
         self.runner.start()
@@ -1828,6 +1876,7 @@ class WordTranslatePage(QWidget):
         self.status_text = ""
         self.stop_message = ""
         self.task_files = []
+        self.current_task_api_groups = set()
         self.current_task_source_root = ""
         self.current_task_id = ""
         self._task_diagnostics_archived = False
