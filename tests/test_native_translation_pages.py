@@ -14,13 +14,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QVBoxLayout, QWidget
 
+from core import tm_manager as tm_store
 from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, ProgressMsg
 from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
+from native_app.pages.tm_manager import TM_LANG_PAIR_TILE_MAX_WIDTH, TmManagerPage
 from native_app.pages.word_translate import WordTranslatePage
 from native_app.result_view import ResultIssueRow, render_translation_result
-from native_app.widgets import MiddleElideLineEdit
+from native_app.style import APP_QSS
+from native_app.widgets import AlignedComboBox, CurrentTextOverrideComboBox, MiddleElideLabel, MiddleElideLineEdit
 from settings import AppSettings
 
 
@@ -66,6 +69,17 @@ class NativeTranslationPageTests(unittest.TestCase):
             for button in page.action_card.findChildren(QPushButton)
             if button.parent() is not None
         ]
+
+    def _make_tm_page(self, settings: AppSettings | None = None) -> TmManagerPage:
+        temp_dir = tempfile.TemporaryDirectory()
+        old_db_path = tm_store.DB_PATH
+        tm_store.DB_PATH = Path(temp_dir.name) / "tm.db"
+        self.addCleanup(temp_dir.cleanup)
+        self.addCleanup(lambda: setattr(tm_store, "DB_PATH", old_db_path))
+        page = TmManagerPage(settings or AppSettings())
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+        return page
 
     def test_running_action_cards_offer_only_current_task_controls(self) -> None:
         class FakePdfRunner:
@@ -146,18 +160,37 @@ class NativeTranslationPageTests(unittest.TestCase):
 
         combo = page.review_color_combos[MIXED_MARK_UNRESOLVED]
         default_index = combo.findData("FCE4D6")
+        custom_index = combo.findData("__custom__")
         brush = combo.itemData(default_index, Qt.ItemDataRole.BackgroundRole)
         foreground = combo.itemData(default_index, Qt.ItemDataRole.ForegroundRole)
 
+        self.assertIsInstance(combo, CurrentTextOverrideComboBox)
         self.assertEqual(combo.currentIndex(), default_index)
         self.assertEqual(combo.itemText(default_index), "浅橙（默认） #FCE4D6")
         self.assertFalse(any(combo.itemText(index).startswith("默认 ") for index in range(combo.count())))
-        self.assertIn("保留原文复核", combo.toolTip())
-        self.assertNotIn("保留原文需复核", combo.toolTip())
+        self.assertEqual(combo.toolTip(), "")
+        self.assertIn("保留原文复核", page.review_color_label.toolTip())
+        self.assertNotIn("保留原文需复核", page.review_color_label.toolTip())
         self.assertEqual(brush.color().name().upper(), "#FCE4D6")
         self.assertEqual(foreground.color().name().upper(), "#111827")
         self.assertFalse(page.review_color_inputs[MIXED_MARK_UNRESOLVED].isVisible())
+        self.assertEqual(page.review_color_inputs[MIXED_MARK_UNRESOLVED].toolTip(), "")
         self.assertTrue(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
+        self.assertIn("border: 1px solid palette(base);", combo.styleSheet())
+        self.assertIn("QComboBox QAbstractItemView", combo.styleSheet())
+        self.assertGreaterEqual(int(combo.property("popupMinimumWidth")), 236)
+
+        combo.blockSignals(True)
+        combo.setCurrentIndex(custom_index)
+        combo.blockSignals(False)
+        page.review_color_inputs[MIXED_MARK_UNRESOLVED].setText("#112233")
+        page._refresh_review_color_control(MIXED_MARK_UNRESOLVED)
+
+        self.assertEqual(combo.currentDisplayTextOverride(), "自定义")
+        self.assertEqual(combo.itemText(custom_index), "自定义 #112233")
+        self.assertEqual(combo.minimumWidth(), combo.maximumWidth())
+        self.assertLess(combo.maximumWidth(), 116)
+        self.assertGreaterEqual(page.review_color_inputs[MIXED_MARK_UNRESOLVED].minimumWidth(), 92)
 
         combo.addItem("深色 #000000", "000000")
         page._set_combo_item_highlight(combo, combo.count() - 1, "000000")
@@ -180,14 +213,20 @@ class NativeTranslationPageTests(unittest.TestCase):
             brush = combo.itemData(default_index, Qt.ItemDataRole.BackgroundRole)
             custom_index = combo.findData("__custom__")
 
+            self.assertIsInstance(combo, CurrentTextOverrideComboBox)
             self.assertEqual(combo.currentIndex(), default_index)
             self.assertEqual(combo.itemText(default_index), "浅橙（默认） #FCE4D6")
             self.assertFalse(any(combo.itemText(index).startswith("默认 ") for index in range(combo.count())))
-            self.assertIn("保留原文复核", combo.toolTip())
-            self.assertNotIn("保留原文需复核", combo.toolTip())
+            self.assertEqual(combo.toolTip(), "")
+            self.assertIn("保留原文复核", page.review_color_label.toolTip())
+            self.assertNotIn("保留原文需复核", page.review_color_label.toolTip())
             self.assertEqual(brush.color().name().upper(), "#FCE4D6")
+            self.assertIn("border: 1px solid palette(base);", combo.styleSheet())
+            self.assertIn("QComboBox QAbstractItemView", combo.styleSheet())
+            self.assertGreaterEqual(int(combo.property("popupMinimumWidth")), 236)
             self.assertTrue(page.review_mark_check.isChecked())
             self.assertFalse(page.review_color_inputs[MIXED_MARK_UNRESOLVED].isVisible())
+            self.assertEqual(page.review_color_inputs[MIXED_MARK_UNRESOLVED].toolTip(), "")
             self.assertTrue(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
 
             page.review_mark_check.setChecked(False)
@@ -201,6 +240,14 @@ class NativeTranslationPageTests(unittest.TestCase):
             self.assertEqual(
                 page.settings.word_review.mark_colors[MIXED_MARK_UNRESOLVED],
                 "000000",
+            )
+            self.assertEqual(combo.currentDisplayTextOverride(), "自定义")
+            self.assertEqual(combo.itemText(custom_index), "自定义 #000000")
+            self.assertEqual(combo.minimumWidth(), combo.maximumWidth())
+            self.assertLess(combo.maximumWidth(), 116)
+            self.assertGreaterEqual(
+                page.review_color_inputs[MIXED_MARK_UNRESOLVED].minimumWidth(),
+                92,
             )
             self.assertFalse(page.review_color_buttons[MIXED_MARK_UNRESOLVED].isHidden())
 
@@ -218,6 +265,134 @@ class NativeTranslationPageTests(unittest.TestCase):
                 page.review_color_inputs[MIXED_MARK_UNRESOLVED].text(),
                 "#336699",
             )
+
+    def test_review_policy_combos_use_shared_popup_contract(self) -> None:
+        with patch("native_app.pages.excel_translate.save_settings"):
+            excel_page = ExcelTranslatePage(AppSettings())
+        word_page = WordTranslatePage(AppSettings())
+        for page in (excel_page, word_page):
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+        policy_combos = (
+            excel_page.existing_fill_policy_combo,
+            word_page.existing_highlight_policy_combo,
+        )
+        for combo in policy_combos:
+            longest = max(
+                combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+                for index in range(combo.count())
+            )
+            self.assertIsInstance(combo, AlignedComboBox)
+            self.assertFalse(combo.isEditable())
+            self.assertTrue(combo.property("appOptionCombo"))
+            self.assertEqual(combo.maxVisibleItems(), combo.count())
+            self.assertGreaterEqual(int(combo.property("popupMinimumWidth")), longest + 48)
+
+    def test_tm_language_pair_pill_clips_from_left_without_middle_elide(self) -> None:
+        settings = AppSettings()
+        settings.source_lang = "x-very-long-source-language-code"
+        settings.target_lang = "x-very-long-target-language-code"
+        page = self._make_tm_page(settings)
+
+        page.resize(1100, 720)
+        page.show()
+        self.app.processEvents()
+
+        value_labels = [
+            label
+            for label in page.findChildren(QLabel)
+            if label.objectName() == "PillValue" and label.text() == page.lang_pair
+        ]
+        self.assertTrue(value_labels)
+        value_label = value_labels[0]
+        self.assertNotIsInstance(value_label, MiddleElideLabel)
+        self.assertTrue(value_label.alignment() & Qt.AlignmentFlag.AlignLeft)
+        self.assertEqual(value_label.toolTip(), page.lang_pair)
+        self.assertLessEqual(
+            value_label.maximumWidth(),
+            TM_LANG_PAIR_TILE_MAX_WIDTH - 16,
+        )
+
+    def test_tm_scope_controls_keep_three_columns_aligned(self) -> None:
+        page = self._make_tm_page(AppSettings())
+
+        page.resize(1100, 720)
+        page.show()
+        self.app.processEvents()
+
+        controls = (page.source_combo, page.target_combo, page.max_len_spin)
+        tops = [
+            control.mapTo(page, control.rect().topLeft()).y()
+            for control in controls
+        ]
+        heights = [control.height() for control in controls]
+        widths = [control.width() for control in controls]
+
+        self.assertLessEqual(max(tops) - min(tops), 1)
+        self.assertEqual(heights, [heights[0]] * len(heights))
+        self.assertEqual(heights[0], 32)
+        self.assertLessEqual(max(widths) - min(widths), 1)
+
+    def test_tm_top_cards_keep_rows_aligned(self) -> None:
+        page = self._make_tm_page(AppSettings())
+
+        page.resize(1100, 720)
+        page.show()
+        self.app.processEvents()
+
+        row_groups = (
+            (page.overview_title_row, page.scope_title_row, page.cleaner_title_row),
+            (page.overview_info_row, page.scope_label_row, page.cleaner_info_row),
+            (page.overview_action_row, page.scope_control_row, page.cleaner_action_row),
+        )
+        for rows in row_groups:
+            tops = [row.mapTo(page, row.rect().topLeft()).y() for row in rows]
+            heights = [row.height() for row in rows]
+
+            self.assertLessEqual(max(tops) - min(tops), 1)
+            self.assertEqual(heights, [heights[0]] * len(heights))
+            self.assertTrue(all(row.property("tmTopCardRow") for row in rows))
+        self.assertIn(
+            'QFrame[tmTopCard="true"] QWidget[tmTopCardRow="true"] {\n    background: transparent;',
+            APP_QSS,
+        )
+
+    def test_tm_metric_rows_use_inline_separators_and_balanced_weight(self) -> None:
+        page = self._make_tm_page(AppSettings())
+
+        page.resize(1100, 720)
+        page.show()
+        self.app.processEvents()
+
+        separators = [
+            widget
+            for widget in page.findChildren(QWidget)
+            if widget.property("tmMetricSeparator")
+        ]
+        self.assertEqual(len(separators), 5)
+        self.assertTrue(all(separator.width() == 1 for separator in separators))
+        self.assertTrue(all(separator.height() == 16 for separator in separators))
+        self.assertIn("QFrame[tmMetricSeparator=\"true\"]", APP_QSS)
+        self.assertIn("QLabel#TmMetricValue {\n    color: #1A2035;\n    font-size: 12px;\n    font-weight: 500;", APP_QSS)
+        self.assertNotIn("QLabel#TmMetricValue {\n    color: #111827;\n    font-size: 13px;\n    font-weight: 700;", APP_QSS)
+
+    def test_tm_language_combo_popups_read_from_left_to_right(self) -> None:
+        page = self._make_tm_page(AppSettings())
+
+        for combo in (page.source_combo, page.target_combo):
+            longest = max(
+                combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+                for index in range(combo.count())
+            )
+            self.assertEqual(combo.view().textElideMode(), Qt.TextElideMode.ElideRight)
+            self.assertEqual(
+                combo.completer().popup().textElideMode(),
+                Qt.TextElideMode.ElideRight,
+            )
+            self.assertGreaterEqual(int(combo.property("popupMinimumWidth")), longest + 56)
+            self.assertIsNotNone(combo.lineEdit())
+            self.assertEqual(combo.lineEdit().cursorPosition(), 0)
 
     def test_word_action_card_does_not_offer_stop_after_done_payload(self) -> None:
         with patch("native_app.pages.word_translate.count_diagnostic_records", return_value=0):
@@ -458,6 +633,8 @@ class NativeTranslationPageTests(unittest.TestCase):
         ]
         self.assertEqual(len(retry_labels), 1)
         self.assertIn("设置单页失败后的重试次数", retry_labels[0].toolTip())
+        params_tooltip = page.params_title_label.toolTip()
+        self.assertIn("设置 PDF 页图翻译", params_tooltip)
         pdf_concurrency_labels = [
             label for label in page.findChildren(QLabel)
             if label.text() == "PDF 页生成并发数"
@@ -470,7 +647,8 @@ class NativeTranslationPageTests(unittest.TestCase):
         ]
         self.assertEqual(len(compression_checks), 1)
         self.assertTrue(compression_checks[0].isChecked())
-        self.assertIn("关闭后仅输出高清版", compression_checks[0].toolTip())
+        self.assertEqual(compression_checks[0].toolTip(), "")
+        self.assertIn("关闭后仅输出高清版", params_tooltip)
         image_checks = [
             checkbox
             for checkbox in page.findChildren(QCheckBox)
@@ -478,7 +656,8 @@ class NativeTranslationPageTests(unittest.TestCase):
         ]
         self.assertEqual(len(image_checks), 1)
         self.assertFalse(image_checks[0].isChecked())
-        self.assertIn("支持 PNG、JPG、JPEG、WebP、BMP、TIFF", image_checks[0].toolTip())
+        self.assertEqual(image_checks[0].toolTip(), "")
+        self.assertIn("PNG、JPG、JPEG、WebP、BMP、TIFF", params_tooltip)
         self.assertFalse(
             any(
                 label.text() == "开启后会同时输出高清版和压缩版；关闭时只输出高清版。"
@@ -491,7 +670,8 @@ class NativeTranslationPageTests(unittest.TestCase):
             if checkbox.text() == "启用翻译审核"
         ]
         self.assertEqual(len(review_checks), 1)
-        self.assertIn("未启用时无需配置审核模型", review_checks[0].toolTip())
+        self.assertEqual(review_checks[0].toolTip(), "")
+        self.assertIn("未启用时无需配置审核模型", params_tooltip)
         self.assertFalse(
             any(
                 label.text() == "可选项：未启用时无需配置审核模型；启用后会保留候选图和审核记录。"

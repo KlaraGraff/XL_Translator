@@ -137,17 +137,22 @@ QLabel#PillValue {
 QLabel#TmMetricLabel {
     color: #667085;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 QLabel#TmMetricValue {
-    color: #111827;
-    font-size: 13px;
-    font-weight: 700;
+    color: #1A2035;
+    font-size: 12px;
+    font-weight: 500;
 }
 
 QWidget[tmMetricPair="true"] {
     background: transparent;
+}
+
+QFrame[tmMetricSeparator="true"] {
+    background: #D9E2EC;
+    border: none;
 }
 
 QFrame#PhaseBadge {
@@ -329,6 +334,10 @@ QFrame[tmTopCard="true"] QCheckBox {
     font-size: 12px;
 }
 
+QFrame[tmTopCard="true"] QWidget[tmTopCardRow="true"] {
+    background: transparent;
+}
+
 QFrame[tmTopCard="true"] QComboBox[compact="true"],
 QFrame[tmTopCard="true"] QSpinBox[compact="true"] {
     min-height: 18px;
@@ -483,23 +492,23 @@ QProgressBar::chunk {
 }
 
 QToolTip {
-    background: #111827;
-    color: #FFFFFF;
-    border: 1px solid #334155;
-    border-radius: 6px;
-    padding: 6px;
+    background: #FFFFFF;
+    color: #425267;
+    border: 1px solid #E1E8F0;
+    border-radius: 10px;
+    padding: 8px 10px;
     font-size: 12px;
 }
 
 QFrame#InAppToolTip {
-    background: #111827;
-    border: 1px solid #334155;
-    border-radius: 6px;
+    background: #FFFFFF;
+    border: 1px solid #E1E8F0;
+    border-radius: 10px;
 }
 
 QLabel#InAppToolTipText {
     background: transparent;
-    color: #FFFFFF;
+    color: #425267;
     font-size: 12px;
 }
 """.replace("__CHECK_ICON_URL__", _asset_url("check-white.svg")).replace(

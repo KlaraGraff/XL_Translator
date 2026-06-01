@@ -74,6 +74,8 @@ from core.translation_protocol import (
 )
 from core.word_converter import (
     WordConversionError,
+    WordConversionResult,
+    convert_numbering_to_text_with_native_apps,
     convert_doc_to_docx,
     is_legacy_word_doc,
 )
@@ -81,6 +83,7 @@ from core.word_document import (
     WordFileItem,
     build_word_output_dir,
     extract_word_segments,
+    normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
 from core.word_batching import (
@@ -131,6 +134,16 @@ class _WordRecoveryOutcome:
     semantic_review_results: dict[str, TranslationValidationResult]
     unresolved_validation_results: dict[str, TranslationValidationResult]
     semantic_check_count: int = 0
+
+
+@dataclass(frozen=True)
+class _PreparedWordSource:
+    path: Path
+    method: str
+    temp_paths: tuple[Path, ...] = ()
+    fallback_messages: tuple[str, ...] = ()
+    labels_seen: int = 0
+    labels_prepended: int = 0
 
 
 def _source_position_count(
@@ -315,6 +328,7 @@ class WordTaskRunner:
         review_marks: dict[str, str] = {}
         process_paths: list[Path] = []
         converted_temp_paths: list[Path] = []
+        preprocess_summaries: list[dict] = []
 
         try:
             _raise_if_stopped()
@@ -335,47 +349,42 @@ class WordTaskRunner:
                 self._log("INFO", f"[阶段 1] 提取文本：{file_item.name}（{index + 1}/{len(self._files)}）")
                 try:
                     t0 = datetime.now()
-                    process_path = file_item.path
-                    if is_legacy_word_doc(file_item.path):
-                        self._queue.put(
-                            StatusMsg(
-                                phase_desc=(
-                                    f"状态：[阶段 1/{phase_total}] 正在转换 .doc 文件："
-                                    f"{file_item.name}"
-                                )
+                    self._queue.put(
+                        StatusMsg(
+                            phase_desc=(
+                                f"状态：[阶段 1/{phase_total}] 正在预处理 Word 文档："
+                                f"{file_item.name}"
                             )
                         )
-                        try:
-                            conversion = convert_doc_to_docx(
-                                file_item.path,
-                                prefer_native_word=settings.word_conversion.prefer_native_word,
-                            )
-                            process_path = conversion.path
-                            converted_temp_paths.append(conversion.path)
-                            for fallback_message in conversion.fallback_messages:
-                                self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一转换方式。")
-                            self._log(
-                                "INFO",
-                                (
-                                    f".doc 转换完成 {file_item.name}，"
-                                    f"使用 {conversion.method}，"
-                                    f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
-                                ),
-                            )
-                        except WordConversionError as exc:
-                            process_paths.append(process_path)
-                            file_texts.append(set())
-                            self._log("ERROR", f"Word 源文件转换失败 {file_item.name}: {exc}")
-                            self._task_logger.file_error(file_item.name, f"Word 源文件转换失败: {exc}")
-                            file_results.append(
-                                {
-                                    "name": file_item.name,
-                                    "success": False,
-                                    "error": f"Word 源文件转换失败: {exc}",
-                                }
-                            )
-                            continue
+                    )
+                    prepared = _prepare_word_source_for_translation(
+                        file_item.path,
+                        use_native_preprocessing=(
+                            settings.word_conversion.use_native_preprocessing
+                        ),
+                    )
+                    process_path = prepared.path
+                    converted_temp_paths.extend(prepared.temp_paths)
+                    for fallback_message in prepared.fallback_messages:
+                        self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一处理方式。")
+                    self._log(
+                        "INFO",
+                        (
+                            f"Word 预处理完成 {file_item.name}，"
+                            f"使用 {prepared.method}，"
+                            f"自动编号 {prepared.labels_seen} 段，"
+                            f"物化 {prepared.labels_prepended} 段，"
+                            f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
+                        ),
+                    )
                     process_paths.append(process_path)
+                    preprocess_summaries.append(
+                        {
+                            "method": prepared.method,
+                            "labels_seen": prepared.labels_seen,
+                            "labels_prepended": prepared.labels_prepended,
+                        }
+                    )
                     segments = extract_word_segments(
                         process_path,
                         target_lang=target_lang,
@@ -391,6 +400,8 @@ class WordTaskRunner:
                 except Exception as exc:
                     if len(process_paths) < index + 1:
                         process_paths.append(file_item.path)
+                    if len(preprocess_summaries) < index + 1:
+                        preprocess_summaries.append({})
                     file_texts.append(set())
                     self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {exc}")
                     self._task_logger.file_error(file_item.name, f"Word 文件读取失败: {exc}")
@@ -791,6 +802,11 @@ class WordTaskRunner:
                             "name": file_item.name,
                             "output": str(out_path),
                             "success": True,
+                            "preprocess": (
+                                preprocess_summaries[index]
+                                if index < len(preprocess_summaries)
+                                else {}
+                            ),
                             "issues": [
                                 issue
                                 for issue in quality_issues
@@ -860,6 +876,63 @@ class WordTaskRunner:
                 report_path=str(report_path) if report_path else "",
             )
         )
+
+
+def _prepare_word_source_for_translation(
+    source_path: Path,
+    *,
+    use_native_preprocessing: bool,
+) -> _PreparedWordSource:
+    temp_paths: list[Path] = []
+    fallback_messages: list[str] = []
+    process_path = source_path
+    conversion_method = ""
+
+    if is_legacy_word_doc(source_path):
+        conversion = convert_doc_to_docx(
+            source_path,
+            prefer_native_word=use_native_preprocessing,
+        )
+        process_path = conversion.path
+        conversion_method = f".doc 转换：{conversion.method}"
+        temp_paths.append(conversion.path)
+        fallback_messages.extend(conversion.fallback_messages)
+
+    native_result: WordConversionResult | None = None
+    if use_native_preprocessing:
+        try:
+            native_result = convert_numbering_to_text_with_native_apps(
+                process_path,
+                prefer_native_word=True,
+            )
+            process_path = native_result.path
+            temp_paths.append(native_result.path)
+            fallback_messages.extend(native_result.fallback_messages)
+        except WordConversionError as exc:
+            fallback_messages.append(f"本地 Office 编号预处理不可用：{exc}")
+
+    normalized = normalize_docx_automatic_numbering(process_path)
+    process_path = normalized.path
+    temp_paths.append(normalized.path)
+
+    method_parts: list[str] = []
+    if conversion_method:
+        method_parts.append(conversion_method)
+    if native_result is not None:
+        method_parts.append(f"编号预处理：{native_result.method}")
+        if normalized.stats.labels_seen:
+            method_parts.append("Python 残余清理")
+    else:
+        method_parts.append("编号预处理：Python 兜底")
+
+    return _PreparedWordSource(
+        path=process_path,
+        method="；".join(method_parts),
+        temp_paths=tuple(dict.fromkeys(temp_paths)),
+        fallback_messages=tuple(fallback_messages),
+        labels_seen=normalized.stats.labels_seen,
+        labels_prepended=normalized.stats.labels_prepended,
+    )
 
 
 def _word_output_source_name(path: Path) -> str:
@@ -1813,6 +1886,22 @@ def _write_word_quality_report(
             f"- 需人工复核事项：{review_count}",
             "",
         ]
+
+        preprocess_lines = []
+        for item in file_results:
+            preprocess = item.get("preprocess") or {}
+            method = preprocess.get("method")
+            if not method:
+                continue
+            preprocess_lines.append(
+                (
+                    f"- {item.get('name') or '未知文件'}：{method}"
+                    f"（自动编号 {int(preprocess.get('labels_seen') or 0)} 段，"
+                    f"物化 {int(preprocess.get('labels_prepended') or 0)} 段）"
+                )
+            )
+        if preprocess_lines:
+            lines.extend(["## Word 预处理", "", *preprocess_lines, ""])
 
         if not issues:
             lines.extend(["## 质量提示", "", "未发现需要提示的问题。", ""])

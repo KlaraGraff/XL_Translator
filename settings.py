@@ -507,7 +507,25 @@ class WordReviewSettings(BaseModel):
 
 
 class WordConversionSettings(BaseModel):
+    use_native_preprocessing: bool = True
     prefer_native_word: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_native_preference(cls, data):
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        if "use_native_preprocessing" not in migrated and "prefer_native_word" in migrated:
+            migrated["use_native_preprocessing"] = bool(migrated.get("prefer_native_word"))
+        if "prefer_native_word" not in migrated and "use_native_preprocessing" in migrated:
+            migrated["prefer_native_word"] = bool(migrated.get("use_native_preprocessing"))
+        return migrated
+
+    @model_validator(mode="after")
+    def _sync_legacy_native_preference(self):
+        self.prefer_native_word = bool(self.use_native_preprocessing)
+        return self
 
 
 class ModelRoleSettings(BaseModel):

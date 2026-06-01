@@ -31,6 +31,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.word_batch.max_chars_per_batch, 3000)
         self.assertEqual(settings.word_batch.split_paragraph_chars, 6000)
         self.assertEqual(settings.word_batch.strict_retry_attempts, 3)
+        self.assertTrue(settings.word_conversion.use_native_preprocessing)
         self.assertTrue(settings.word_conversion.prefer_native_word)
 
     def test_word_batch_defaults_match_expected_baseline(self) -> None:
@@ -40,6 +41,12 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.max_chars_per_batch, 3000)
         self.assertEqual(settings.split_paragraph_chars, 6000)
         self.assertEqual(settings.strict_retry_attempts, 3)
+
+    def test_word_conversion_legacy_native_preference_maps_to_preprocessing(self) -> None:
+        settings = AppSettings(word_conversion={"prefer_native_word": False})
+
+        self.assertFalse(settings.word_conversion.use_native_preprocessing)
+        self.assertFalse(settings.word_conversion.prefer_native_word)
 
     def test_schema_v10_migration_enables_word_review_highlight(self) -> None:
         migrated = _migrate_settings_payload(
@@ -66,6 +73,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
         )
         self.assertTrue(migrated["excel_review"]["mark_review_items"])
         self.assertEqual(migrated["excel_review"]["existing_fill_policy"], "red_font")
+        self.assertTrue(migrated["word_conversion"]["use_native_preprocessing"])
         self.assertTrue(migrated["word_conversion"]["prefer_native_word"])
 
     def test_word_review_custom_legacy_highlight_seeds_mark_colors(self) -> None:

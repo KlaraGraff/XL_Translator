@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import html
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, QStringListModel
+from PySide6.QtCore import (
+    QChildEvent,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    Qt,
+    QTimer,
+    QStringListModel,
+)
+from PySide6.QtGui import QColor, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSpinBox,
     QApplication,
     QComboBox,
     QCompleter,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -32,6 +46,13 @@ TOOLTIP_MARGIN = 12
 TOOLTIP_CURSOR_OFFSET = QPoint(14, 18)
 TOOLTIP_MAX_WIDTH = 380
 TOOLTIP_MIN_WIDTH = 220
+TOOLTIP_TITLE_COLOR = "#1F2C3D"
+TOOLTIP_BODY_COLOR = "#6E7C8D"
+TOOLTIP_LIST_COLOR = "#425267"
+TOOLTIP_META_COLOR = "#97A4B3"
+_COMBO_ALLOW_FREE_TEXT_PROPERTY = "appComboAllowFreeText"
+_COMBO_LAST_VALID_TEXT_PROPERTY = "appComboLastValidText"
+_COMBO_VALIDATION_CONFIGURED_PROPERTY = "appComboValidationConfigured"
 
 
 def is_live_widget(widget: QWidget | None) -> bool:
@@ -48,20 +69,34 @@ def build_app_tooltip_html(
 ) -> str:
     """Build compact rich-text tooltip markup for Qt labels."""
     title_html = html.escape(title)
+    title_style = f"color:{TOOLTIP_TITLE_COLOR}; font-size:13px; font-weight:700;"
     if title_meta:
-        title_html = (
-            f"{title_html}"
-            f' <span style="color:#94A3B8; font-weight:600;">| {html.escape(title_meta)}</span>'
+        title_block = (
+            '<table width="100%" cellspacing="0" cellpadding="0" '
+            'style="margin-bottom:4px; border-collapse:collapse;">'
+            "<tr>"
+            f'<td style="{title_style}">{title_html}</td>'
+            f'<td align="right" style="color:{TOOLTIP_META_COLOR}; '
+            'font-size:13px; font-weight:700; white-space:nowrap;">'
+            f"{html.escape(title_meta)}</td>"
+            "</tr>"
+            "</table>"
         )
-    body = (
-        f'<div style="font-weight:700; margin-bottom:4px;">{title_html}</div>'
-        f'<div style="line-height:1.35;">{html.escape(summary)}</div>'
+    else:
+        title_block = (
+            f'<div style="{title_style} margin-bottom:4px;">{title_html}</div>'
+        )
+    body = title_block + (
+        f'<div style="color:{TOOLTIP_BODY_COLOR}; line-height:1.35;">'
+        f"{html.escape(summary)}</div>"
     )
     if items:
         rows = "".join(
             "<tr>"
-            '<td style="padding:3px 7px 1px 0; vertical-align:top;">&bull;</td>'
-            f'<td style="padding:3px 0 1px 0; line-height:1.32;">{html.escape(item)}</td>'
+            f'<td style="color:{TOOLTIP_META_COLOR}; padding:3px 7px 1px 0; '
+            'vertical-align:top;">&bull;</td>'
+            f'<td style="color:{TOOLTIP_LIST_COLOR}; padding:3px 0 1px 0; '
+            f'line-height:1.32;">{html.escape(item)}</td>'
             "</tr>"
             for item in items
         )
@@ -167,6 +202,11 @@ class InAppToolTipManager(QObject):
         frame.setObjectName("InAppToolTip")
         frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         frame.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        shadow = QGraphicsDropShadowEffect(frame)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(31, 44, 61, 34))
+        frame.setGraphicsEffect(shadow)
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(10, 8, 10, 8)
         label = QLabel(frame)
@@ -187,6 +227,131 @@ def install_in_app_tooltips(app: QApplication) -> InAppToolTipManager:
     manager = InAppToolTipManager(app)
     setattr(app, "_translator_in_app_tooltips", manager)
     return manager
+
+
+class ScrollWheelFocusGuard(QObject):
+    """Keep page scrolling from accidentally changing value controls."""
+
+    def __init__(self, app: QApplication):
+        super().__init__(app)
+        app.installEventFilter(self)
+        self.sync_existing_widgets(app)
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt API name.
+        if isinstance(obj, QWidget) and event.type() in {
+            QEvent.Type.Polish,
+            QEvent.Type.Show,
+        }:
+            _apply_guarded_focus_policy(obj)
+
+        if event.type() == QEvent.Type.ChildAdded and isinstance(event, QChildEvent):
+            child = event.child()
+            if isinstance(child, QWidget):
+                _apply_guarded_focus_policy(child)
+
+        if event.type() != QEvent.Type.Wheel or not isinstance(obj, QWidget):
+            return super().eventFilter(obj, event)
+
+        control = _guarded_wheel_control_for(obj)
+        if control is None or _widget_contains_focus(control):
+            return super().eventFilter(obj, event)
+
+        _forward_wheel_to_scroll_parent(control, event)
+        event.accept()
+        return True
+
+    def sync_existing_widgets(self, app: QApplication) -> None:
+        for widget in app.allWidgets():
+            _apply_guarded_focus_policy(widget)
+
+
+def install_scroll_wheel_focus_guard(app: QApplication) -> ScrollWheelFocusGuard:
+    """Install global wheel protection for spin boxes and combo boxes."""
+    existing = getattr(app, "_translator_scroll_wheel_focus_guard", None)
+    if isinstance(existing, ScrollWheelFocusGuard):
+        return existing
+    guard = ScrollWheelFocusGuard(app)
+    setattr(app, "_translator_scroll_wheel_focus_guard", guard)
+    return guard
+
+
+def _guarded_wheel_control_for(widget: QWidget) -> QWidget | None:
+    current: QWidget | None = widget
+    while current is not None:
+        if isinstance(current, QComboBox):
+            if _is_combo_popup_part(current, widget):
+                return None
+            return current
+        if isinstance(current, QAbstractSpinBox):
+            return current
+        current = current.parentWidget()
+    return None
+
+
+def _apply_guarded_focus_policy(widget: QWidget) -> None:
+    if isinstance(widget, QComboBox):
+        if widget.focusPolicy() in {
+            Qt.FocusPolicy.TabFocus,
+            Qt.FocusPolicy.WheelFocus,
+            Qt.FocusPolicy.StrongFocus,
+        }:
+            widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+    elif isinstance(widget, QAbstractSpinBox):
+        if widget.focusPolicy() in {
+            Qt.FocusPolicy.WheelFocus,
+            Qt.FocusPolicy.StrongFocus,
+        }:
+            widget.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
+
+def _is_combo_popup_part(combo: QComboBox, widget: QWidget) -> bool:
+    view = combo.view()
+    current: QWidget | None = widget
+    while current is not None:
+        if current is view:
+            return True
+        current = current.parentWidget()
+    return False
+
+
+def _widget_contains_focus(widget: QWidget) -> bool:
+    current = QApplication.focusWidget()
+    while current is not None:
+        if current is widget:
+            return True
+        current = current.parentWidget()
+    return False
+
+
+def _forward_wheel_to_scroll_parent(source: QWidget, event: QWheelEvent) -> None:
+    receiver = _nearest_scroll_viewport(source)
+    if receiver is None:
+        event.ignore()
+        return
+
+    local_pos = receiver.mapFromGlobal(event.globalPosition().toPoint())
+    forwarded = QWheelEvent(
+        QPointF(local_pos),
+        event.globalPosition(),
+        event.pixelDelta(),
+        event.angleDelta(),
+        event.buttons(),
+        event.modifiers(),
+        event.phase(),
+        event.inverted(),
+        event.source(),
+        event.pointingDevice(),
+    )
+    QApplication.sendEvent(receiver, forwarded)
+
+
+def _nearest_scroll_viewport(widget: QWidget) -> QWidget | None:
+    current = widget.parentWidget()
+    while current is not None:
+        if isinstance(current, QAbstractScrollArea):
+            return current.viewport()
+        current = current.parentWidget()
+    return None
 
 
 class MiddleElideLabel(QLabel):
@@ -442,6 +607,55 @@ class CenteredTextComboBox(AlignedComboBox):
         )
 
 
+class CurrentTextOverrideComboBox(AlignedComboBox):
+    """Combo box that can paint a shorter closed-state label than its popup item."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._current_display_text_override = ""
+
+    def setCurrentDisplayTextOverride(self, text: str) -> None:  # noqa: N802 - Qt-style setter.
+        self._current_display_text_override = str(text or "")
+        self.update()
+
+    def currentDisplayTextOverride(self) -> str:  # noqa: N802 - Qt-style getter.
+        return self._current_display_text_override
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        if not self._current_display_text_override:
+            super().paintEvent(event)
+            return
+
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.currentText = ""
+
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+
+        edit_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        arrow_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxArrow,
+            self,
+        )
+        edit_rect.setLeft(self.rect().left() + 9)
+        edit_rect.setRight(arrow_rect.left() - 4)
+
+        painter.setPen(option.palette.text().color())
+        painter.drawText(
+            edit_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self._current_display_text_override,
+        )
+
+
 class AlignedCompleter(QCompleter):
     """Completer popup with the same edge-attached positioning as combo popups."""
 
@@ -482,6 +696,16 @@ def create_centered_option_combo(
     return combo
 
 
+def create_current_text_override_combo(
+    *,
+    max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS,
+) -> CurrentTextOverrideComboBox:
+    """Create a select control whose closed label can be shorter than popup text."""
+    combo = CurrentTextOverrideComboBox()
+    configure_option_combo(combo, max_visible_items=max_visible_items)
+    return combo
+
+
 def create_editable_combo(*, max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS) -> QComboBox:
     """Create a combo that allows free text while keeping the app popup style."""
     combo = AlignedComboBox()
@@ -505,6 +729,7 @@ def configure_option_combo(
     combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
     combo.setMaxVisibleItems(max_visible_items)
     combo.view().setMaximumHeight(DEFAULT_COMBO_POPUP_MAX_HEIGHT)
+    combo.view().setTextElideMode(Qt.TextElideMode.ElideRight)
     combo.setProperty("appOptionCombo", True)
 
 
@@ -512,12 +737,30 @@ def configure_editable_combo(
     combo: QComboBox,
     *,
     max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS,
+    allow_free_text: bool = True,
 ) -> None:
-    """Make a combo editable without changing unknown text on blur."""
+    """Make a combo editable while keeping the last valid value available."""
     configure_option_combo(combo, max_visible_items=max_visible_items)
     combo.setEditable(True)
-    if combo.lineEdit() is not None:
-        combo.lineEdit().returnPressed.connect(lambda: select_combo_text_match(combo))
+    combo.setProperty(_COMBO_ALLOW_FREE_TEXT_PROPERTY, allow_free_text)
+    if not combo.property(_COMBO_VALIDATION_CONFIGURED_PROPERTY):
+        combo.currentIndexChanged.connect(
+            lambda _index=0, combo=combo: _remember_combo_current_valid_text(combo)
+        )
+        combo.currentIndexChanged.connect(
+            lambda _index=0, combo=combo: _queue_combo_text_from_start(combo)
+        )
+        combo.currentTextChanged.connect(
+            lambda text="", combo=combo: _remember_combo_free_text(combo, text)
+        )
+        if combo.lineEdit() is not None:
+            combo.lineEdit().returnPressed.connect(
+                lambda combo=combo: select_combo_text_match(combo)
+            )
+            combo.lineEdit().editingFinished.connect(
+                lambda combo=combo: select_combo_text_match(combo)
+            )
+        combo.setProperty(_COMBO_VALIDATION_CONFIGURED_PROPERTY, True)
     refresh_combo_completer(combo)
 
 
@@ -527,15 +770,17 @@ def configure_searchable_combo(
     max_visible_items: int = DEFAULT_COMBO_MAX_VISIBLE_ITEMS,
 ) -> None:
     """Make a combo box searchable without opening an oversized popup by default."""
-    configure_editable_combo(combo, max_visible_items=max_visible_items)
+    configure_editable_combo(
+        combo,
+        max_visible_items=max_visible_items,
+        allow_free_text=False,
+    )
     completer = combo.completer()
     if completer is None:
         completer = QCompleter(combo)
         combo.setCompleter(completer)
     completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
-    if combo.lineEdit() is not None:
-        combo.lineEdit().editingFinished.connect(lambda: select_combo_text_match(combo))
     refresh_combo_completer(combo)
 
 
@@ -547,6 +792,9 @@ def refresh_combo_completer(combo: QComboBox) -> None:
     completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
+    completer.popup().setTextElideMode(Qt.TextElideMode.ElideRight)
+    _remember_combo_current_valid_text(combo)
+    _queue_combo_text_from_start(combo)
 
 
 def _ensure_aligned_completer(combo: QComboBox) -> AlignedCompleter:
@@ -589,7 +837,13 @@ def _align_popup_to_combo(
         popup_view=popup_view or combo.view(),
         item_count=combo.count() if item_count is None else item_count,
     )
-    geometry = _calculate_combo_popup_geometry(anchor, available, popup_height)
+    popup_width = _combo_popup_target_width(combo, popup_view=popup_view or combo.view())
+    geometry = _calculate_combo_popup_geometry(
+        anchor,
+        available,
+        popup_height,
+        requested_width=popup_width,
+    )
     popup.setGeometry(geometry)
 
 
@@ -612,14 +866,35 @@ def _combo_popup_target_height(
     return max(row_height + frame_extra, min(content_height, DEFAULT_COMBO_POPUP_MAX_HEIGHT))
 
 
+def _combo_popup_target_width(
+    combo: QComboBox,
+    *,
+    popup_view: QWidget,
+) -> int | None:
+    raw_minimum_width = combo.property("popupMinimumWidth")
+    if raw_minimum_width in (None, False):
+        return None
+    try:
+        minimum_width = int(raw_minimum_width)
+    except (TypeError, ValueError):
+        return None
+
+    content_width = max(0, popup_view.sizeHintForColumn(0))
+    viewport = getattr(popup_view, "viewport", lambda: popup_view)()
+    frame_extra = max(0, popup_view.width() - max(1, viewport.width()))
+    return max(combo.width(), minimum_width, content_width + frame_extra)
+
+
 def _calculate_combo_popup_geometry(
     anchor: QRect,
     available: QRect,
     requested_height: int,
+    *,
+    requested_width: int | None = None,
 ) -> QRect:
     requested_height = max(1, requested_height)
-    x = max(available.left(), min(anchor.left(), available.right() - anchor.width() + 1))
-    width = min(anchor.width(), available.width())
+    width = min(max(1, requested_width or anchor.width()), available.width())
+    x = max(available.left(), min(anchor.left(), available.right() - width + 1))
 
     anchor_top = anchor.top()
     anchor_bottom = anchor.top() + anchor.height()
@@ -640,34 +915,113 @@ def _calculate_combo_popup_geometry(
     return QRect(x, y, width, height)
 
 
-def select_combo_text_match(combo: QComboBox) -> bool:
-    """Select the closest item for manually typed combo text."""
+def _combo_allows_free_text(combo: QComboBox) -> bool:
+    return bool(combo.property(_COMBO_ALLOW_FREE_TEXT_PROPERTY))
+
+
+def _queue_combo_text_from_start(combo: QComboBox) -> None:
+    _show_combo_text_from_start(combo)
+    QTimer.singleShot(0, lambda combo=combo: _show_combo_text_from_start(combo))
+
+
+def _show_combo_text_from_start(combo: QComboBox) -> None:
+    if not is_live_widget(combo) or not combo.isEditable():
+        return
+    line_edit = combo.lineEdit()
+    if line_edit is None or not is_live_widget(line_edit):
+        return
+    if line_edit.hasSelectedText():
+        line_edit.deselect()
+    line_edit.setCursorPosition(0)
+
+
+def _combo_text_index(combo: QComboBox, text: str) -> int:
+    lowered = str(text or "").strip().casefold()
+    for index in range(combo.count()):
+        if combo.itemText(index).strip().casefold() == lowered:
+            return index
+    return -1
+
+
+def _combo_text_match_index(combo: QComboBox, text: str) -> int:
+    lowered = str(text or "").strip().casefold()
+    if not lowered:
+        return _combo_text_index(combo, "")
+
+    exact_index = _combo_text_index(combo, text)
+    if exact_index >= 0:
+        return exact_index
+
+    for index in range(combo.count()):
+        if combo.itemText(index).strip().casefold().startswith(lowered):
+            return index
+    for index in range(combo.count()):
+        if lowered in combo.itemText(index).strip().casefold():
+            return index
+    return -1
+
+
+def _set_combo_to_item_index(combo: QComboBox, index: int) -> None:
+    text = combo.itemText(index)
+    if index == combo.currentIndex():
+        combo.setCurrentText(text)
+    else:
+        combo.setCurrentIndex(index)
+    combo.setProperty(_COMBO_LAST_VALID_TEXT_PROPERTY, text)
+    _queue_combo_text_from_start(combo)
+
+
+def _remember_combo_current_valid_text(combo: QComboBox) -> None:
+    if combo.currentIndex() >= 0:
+        combo.setProperty(
+            _COMBO_LAST_VALID_TEXT_PROPERTY,
+            combo.itemText(combo.currentIndex()),
+        )
+        return
+
     text = combo.currentText().strip()
-    if not text:
+    if _combo_allows_free_text(combo) or _combo_text_index(combo, text) >= 0:
+        combo.setProperty(_COMBO_LAST_VALID_TEXT_PROPERTY, text)
+
+
+def _remember_combo_free_text(combo: QComboBox, text: str) -> None:
+    if _combo_allows_free_text(combo):
+        combo.setProperty(_COMBO_LAST_VALID_TEXT_PROPERTY, str(text or "").strip())
+
+
+def _restore_combo_last_valid_text(combo: QComboBox) -> bool:
+    fallback = combo.property(_COMBO_LAST_VALID_TEXT_PROPERTY)
+    if fallback is None and combo.currentIndex() >= 0:
+        fallback = combo.itemText(combo.currentIndex())
+    if fallback is None and combo.count() > 0:
+        fallback = combo.itemText(0)
+    if fallback is None:
         return False
 
-    lowered = text.casefold()
-    candidates = [combo.itemText(index) for index in range(combo.count())]
-    matched = next(
-        (candidate for candidate in candidates if candidate.casefold() == lowered),
-        "",
-    )
-    if not matched:
-        matched = next(
-            (candidate for candidate in candidates if candidate.casefold().startswith(lowered)),
-            "",
-        )
-    if not matched:
-        matched = next(
-            (candidate for candidate in candidates if lowered in candidate.casefold()),
-            "",
-        )
-    if not matched:
-        return False
-
-    index = combo.findText(matched)
-    if index < 0 or index == combo.currentIndex():
-        combo.setCurrentText(matched)
+    text = str(fallback or "").strip()
+    index = _combo_text_index(combo, text)
+    if index >= 0:
+        _set_combo_to_item_index(combo, index)
         return True
-    combo.setCurrentIndex(index)
-    return True
+    if _combo_allows_free_text(combo):
+        combo.setCurrentText(text)
+        combo.setProperty(_COMBO_LAST_VALID_TEXT_PROPERTY, text)
+        _queue_combo_text_from_start(combo)
+        return True
+    return False
+
+
+def select_combo_text_match(combo: QComboBox) -> bool:
+    """Select the closest item for typed combo text, or restore the last valid value."""
+    text = combo.currentText().strip()
+    index = _combo_text_match_index(combo, text)
+    if index >= 0:
+        _set_combo_to_item_index(combo, index)
+        return True
+    if _combo_allows_free_text(combo):
+        combo.setCurrentText(text)
+        combo.setProperty(_COMBO_LAST_VALID_TEXT_PROPERTY, text)
+        _queue_combo_text_from_start(combo)
+        return True
+    _restore_combo_last_valid_text(combo)
+    return False

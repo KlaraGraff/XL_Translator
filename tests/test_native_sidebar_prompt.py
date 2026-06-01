@@ -9,8 +9,9 @@ from unittest.mock import call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
+from app_meta import APP_VERSION_LABEL
 from config import (
     CLAUDE_BASE_URL,
     CLOUD_ENGINES,
@@ -30,7 +31,7 @@ from core.model_roles import (
 )
 from core.model_throughput import get_model_throughput
 from core.update_checker import UpdateCheckResult
-from native_app.main_window import Sidebar
+from native_app.main_window import GITHUB_PROJECT_PAGE_URL, Sidebar
 from settings import AppSettings, get_cloud_provider_config
 
 
@@ -173,11 +174,33 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertFalse(sidebar.update_notice_button.isHidden())
         self.assertFalse(sidebar.ignore_notice_button.isHidden())
 
+    def test_brand_author_and_version_live_in_tooltip(self) -> None:
+        sidebar = self._make_sidebar(AppSettings())
+
+        brand = sidebar.findChild(QLabel, "BrandTitle")
+        self.assertIsNotNone(brand)
+        assert brand is not None
+
+        self.assertIn(f"by OA | {APP_VERSION_LABEL}", brand.toolTip())
+        self.assertIn('align="right"', brand.toolTip())
+        self.assertEqual(sidebar.findChildren(QLabel, "BrandMeta"), [])
+
     def test_sidebar_update_footer_lives_inside_scroll_form(self) -> None:
         sidebar = self._make_sidebar(AppSettings())
 
         self.assertIs(sidebar.update_check_button.parentWidget(), sidebar._form.parentWidget())
         self.assertIs(sidebar.update_ignore_button.parentWidget(), sidebar._form.parentWidget())
+        self.assertIs(sidebar.github_project_button.parentWidget(), sidebar._form.parentWidget())
+        self.assertEqual(sidebar.github_project_button.text(), "打开 GitHub 仓库")
+
+    def test_sidebar_github_project_button_opens_project_page(self) -> None:
+        sidebar = self._make_sidebar(AppSettings())
+
+        with patch("native_app.main_window.QDesktopServices.openUrl", return_value=True) as open_url:
+            sidebar.github_project_button.click()
+
+        open_url.assert_called_once()
+        self.assertEqual(open_url.call_args.args[0].toString(), GITHUB_PROJECT_PAGE_URL)
 
     def test_empty_model_catalog_status_does_not_reserve_blank_row(self) -> None:
         sidebar = self._make_sidebar(AppSettings())
@@ -682,7 +705,8 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertFalse(sidebar.review_concurrency_shared_input.isHidden())
         self.assertTrue(sidebar.review_concurrency_shared_input.isReadOnly())
         self.assertEqual(sidebar.review_concurrency_shared_input.text(), "共用页生成并发")
-        self.assertIn("审核请求会按实际进度动态占用", sidebar.review_concurrency_shared_input.toolTip())
+        self.assertEqual(sidebar.review_concurrency_shared_input.toolTip(), "")
+        self.assertIn("审核请求会按实际进度动态占用", sidebar.review_concurrency_label.toolTip())
         self.assertEqual(sidebar.review_concurrency_spin.value(), 8)
 
         sidebar.review_source_role_combo.setCurrentIndex(

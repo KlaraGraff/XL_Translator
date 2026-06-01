@@ -12,6 +12,7 @@ from core.image_generation import (
     GPT_IMAGE_2_MAX_PIXELS,
     ImageModelUnavailableError,
     _pdf_page_image_size_for_model,
+    build_pdf_image_translation_prompt,
     check_image_generation_connectivity,
 )
 from core.model_roles import SOURCE_INDEPENDENT
@@ -19,6 +20,57 @@ from settings import AppSettings
 
 
 class ImageGenerationTests(unittest.TestCase):
+    def test_pdf_prompt_uses_only_current_language_specific_rule(self) -> None:
+        prompt = build_pdf_image_translation_prompt("法文", target_lang_code="fr")
+
+        self.assertIn("Translate every readable visible text element", prompt)
+        self.assertIn("concise professional French", prompt)
+        self.assertIn("do not mirror, reorder, relayout", prompt)
+        self.assertIn("do not omit source meaning", prompt)
+        self.assertNotIn("concise professional English", prompt)
+        self.assertNotIn("Simplified Chinese", prompt)
+        self.assertNotIn("Modern Standard Arabic", prompt)
+
+    def test_pdf_prompt_uses_english_specific_rule(self) -> None:
+        prompt = build_pdf_image_translation_prompt("英文", target_lang_code="en")
+
+        self.assertIn("concise professional English", prompt)
+        self.assertIn("short noun phrases", prompt)
+        self.assertNotIn("concise professional French", prompt)
+        self.assertNotIn("Simplified Chinese", prompt)
+
+    def test_pdf_prompt_uses_generic_rule_for_unconfigured_language(self) -> None:
+        prompt = build_pdf_image_translation_prompt("德文", target_lang_code="de")
+
+        self.assertIn("Use natural, concise 德文", prompt)
+        self.assertIn("compact noun phrases", prompt)
+        self.assertNotIn("concise professional English", prompt)
+        self.assertNotIn("concise professional French", prompt)
+        self.assertNotIn("Simplified Chinese", prompt)
+
+    def test_pdf_prompt_uses_arabic_specific_rtl_without_table_mirroring(self) -> None:
+        prompt = build_pdf_image_translation_prompt("阿拉伯语", target_lang_code="ar")
+
+        self.assertIn("Modern Standard Arabic", prompt)
+        self.assertIn("inside each original text box or table cell", prompt)
+        self.assertIn("source leftmost column must remain leftmost", prompt)
+        self.assertIn("Do not mirror the page, table, column order", prompt)
+        self.assertIn("never move that cell", prompt)
+        self.assertIn("mixed-language identifiers stable", prompt)
+        self.assertNotIn("concise professional French", prompt)
+        self.assertNotIn("concise professional English", prompt)
+
+    def test_pdf_prompt_keeps_review_feedback_after_language_rule(self) -> None:
+        prompt = build_pdf_image_translation_prompt(
+            "中文",
+            target_lang_code="zh",
+            review_feedback="第 1 行仍有漏译。",
+        )
+
+        self.assertIn("Simplified Chinese", prompt)
+        self.assertIn("Previous candidate review found blocking issues", prompt)
+        self.assertTrue(prompt.endswith("第 1 行仍有漏译。"))
+
     def test_gpt_image_2_pdf_page_size_preserves_a4_ratio_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "page.png"

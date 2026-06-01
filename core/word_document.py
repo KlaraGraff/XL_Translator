@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import shutil
 import stat
+import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +41,19 @@ _HEADING_STYLE_RE = re.compile(r"heading\s*(\d+)|标题\s*(\d+)", re.IGNORECASE)
 _CHINESE_CHAPTER_RE = re.compile(r"^(?:第[一二三四五六七八九十百千万]+[章节篇]|[一二三四五六七八九十]+[、.．])")
 _CHINESE_SECTION_RE = re.compile(r"^（[一二三四五六七八九十]+）")
 _NUMBERED_SECTION_RE = re.compile(r"^\d+(?:\.\d+)+\s+")
+_CHINESE_NUMBER_CHARS = "零〇一二两三四五六七八九十百千万"
+_CHINESE_NUMBERING_PREFIX_RE = re.compile(
+    rf"^第[{_CHINESE_NUMBER_CHARS}0-9０-９]+[章节篇卷部]"
+)
+_CHINESE_LIST_PREFIX_RE = re.compile(
+    rf"^(?:[{_CHINESE_NUMBER_CHARS}]+[、.．]|[（(][{_CHINESE_NUMBER_CHARS}]+[）)])"
+)
+_ARABIC_LIST_PREFIX_RE = re.compile(
+    r"^(?:\d{1,3}[、．.)）]|[（(]\d{1,3}[）)])"
+)
+_ALPHA_LIST_PREFIX_RE = re.compile(r"^[A-Za-z][.)）]")
+_BULLET_PREFIX_RE = re.compile(r"^[•·▪▫●○◆◇■□]\s+")
+_ARABIC_DECIMAL_PREFIX_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3})+)(.*)$")
 
 
 @dataclass
@@ -71,6 +86,19 @@ class NumberingLevelDefinition:
     start: int = 1
     number_format: str = "decimal"
     level_text: str = "%1."
+
+
+@dataclass(frozen=True)
+class WordNumberingNormalizationStats:
+    labels_seen: int = 0
+    labels_prepended: int = 0
+    numbering_removed: int = 0
+
+
+@dataclass(frozen=True)
+class WordNumberingNormalizationResult:
+    path: Path
+    stats: WordNumberingNormalizationStats
 
 
 def is_supported_word_file(path: str | Path) -> bool:
@@ -242,6 +270,8 @@ def write_bilingual_docx(
         *body_paragraphs,
         *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
     ]
+    numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
+    _flatten_automatic_numbering(all_paragraphs, numbering_labels)
     original_paragraph_sources = {
         id(paragraph): _paragraph_source_text(paragraph)
         for paragraph in all_paragraphs
@@ -250,8 +280,6 @@ def write_bilingual_docx(
         id(cell): _cell_source_text(cell)
         for cell in table_cells
     }
-    numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
-    _flatten_automatic_numbering(all_paragraphs, numbering_labels)
 
     paragraph_insertions = 0
     table_insertions = 0
@@ -291,10 +319,7 @@ def write_bilingual_docx(
         if resolved.replace_only:
             _replace_paragraph_text(
                 paragraph,
-                _prepend_numbering_label(
-                    resolved.text,
-                    numbering_labels.get(paragraph_key, ""),
-                ),
+                resolved.text,
                 target_lang=target_lang,
             )
             if review_mark:
@@ -307,10 +332,7 @@ def write_bilingual_docx(
         else:
             translation_paragraph = _insert_translation_paragraph_after(
                 paragraph,
-                _prepend_numbering_label(
-                    resolved.text,
-                    numbering_labels.get(paragraph_key, ""),
-                ),
+                resolved.text,
                 target_lang=target_lang,
             )
             if review_mark:
@@ -344,13 +366,12 @@ def write_bilingual_docx(
                 else:
                     highlight_skip_count += 1
             continue
-        numbering_label = _single_cell_numbering_label(cell, numbering_labels)
         if resolved.replace_only:
-            cell.text = _prepend_numbering_label(resolved.text, numbering_label)
+            cell.text = resolved.text
         else:
             _append_translation_to_cell(
                 cell,
-                _prepend_numbering_label(resolved.text, numbering_label),
+                resolved.text,
                 target_lang=target_lang,
             )
         if review_mark:
@@ -386,6 +407,33 @@ def build_word_output_dir(
     return build_output_dir(source_dir, custom_output_dir)
 
 
+def normalize_docx_automatic_numbering(
+    source_path: str | Path,
+    output_path: str | Path | None = None,
+) -> WordNumberingNormalizationResult:
+    """Materialize automatic numbering once, then suppress residual list metadata."""
+    source_path = Path(source_path)
+    target_path = Path(output_path) if output_path is not None else _temp_docx_path(source_path)
+    if source_path.resolve() != target_path.resolve():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+    doc = Document(str(target_path))
+    table_cells = [
+        cell
+        for table in doc.tables
+        for cell in _iter_unique_table_cells(table)
+    ]
+    all_paragraphs = [
+        *list(doc.paragraphs),
+        *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
+    ]
+    numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
+    stats = _flatten_automatic_numbering(all_paragraphs, numbering_labels)
+    doc.save(str(target_path))
+    return WordNumberingNormalizationResult(path=target_path, stats=stats)
+
+
 def _build_word_file_item(path: Path) -> WordFileItem:
     if is_legacy_word_doc(path):
         return WordFileItem(
@@ -414,6 +462,12 @@ def _normalize_word_output_name(name: str) -> str:
     if Path(cleaned).suffix.lower() != ".docx":
         return f"{cleaned}.docx"
     return cleaned
+
+
+def _temp_docx_path(original_path: Path) -> Path:
+    temp_dir = Path(tempfile.gettempdir()) / "word_translator_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return temp_dir / f"{original_path.stem}_normalized_{uuid.uuid4().hex[:8]}.docx"
 
 
 def _is_generated_output(path: Path) -> bool:
@@ -945,30 +999,42 @@ def _normalize_bullet_label(label: str) -> str:
 def _flatten_automatic_numbering(
     paragraphs: list[Paragraph],
     numbering_labels: dict[int, str],
-) -> None:
+) -> WordNumberingNormalizationStats:
     if not numbering_labels:
-        return
+        return WordNumberingNormalizationStats()
+    labels_seen = 0
+    labels_prepended = 0
+    numbering_removed = 0
     for paragraph in paragraphs:
         label = numbering_labels.get(id(paragraph), "")
         if not label:
             continue
-        _prepend_paragraph_text(paragraph, label)
-        _remove_paragraph_numbering(paragraph)
+        labels_seen += 1
+        if _prepend_paragraph_text(paragraph, label):
+            labels_prepended += 1
+        if _remove_paragraph_numbering(paragraph):
+            numbering_removed += 1
+    return WordNumberingNormalizationStats(
+        labels_seen=labels_seen,
+        labels_prepended=labels_prepended,
+        numbering_removed=numbering_removed,
+    )
 
 
-def _prepend_paragraph_text(paragraph: Paragraph, label: str) -> None:
+def _prepend_paragraph_text(paragraph: Paragraph, label: str) -> bool:
     source = _paragraph_source_text(paragraph)
-    if not source or _text_starts_with_label(source, label):
-        return
+    if not source or _has_visible_numbering_prefix(source) or _text_starts_with_label(source, label):
+        return False
 
     prefix = f"{label} "
     if paragraph.runs:
         paragraph.runs[0].text = prefix + paragraph.runs[0].text.lstrip()
-        return
+        return True
     paragraph.add_run(prefix + source)
+    return True
 
 
-def _remove_paragraph_numbering(paragraph: Paragraph) -> None:
+def _remove_paragraph_numbering(paragraph: Paragraph) -> bool:
     p_pr = paragraph._p.get_or_add_pPr()
     num_pr = p_pr.find(qn("w:numPr"))
     if num_pr is not None:
@@ -978,29 +1044,71 @@ def _remove_paragraph_numbering(paragraph: Paragraph) -> None:
     suppress_num_id.set(qn("w:val"), "0")
     suppress_num_pr.append(suppress_num_id)
     p_pr.append(suppress_num_pr)
-
-
-def _prepend_numbering_label(text: str, label: str) -> str:
-    cleaned = str(text or "").strip()
-    if not label or not cleaned or _text_starts_with_label(cleaned, label):
-        return cleaned
-    return f"{label} {cleaned}"
+    return True
 
 
 def _text_starts_with_label(text: str, label: str) -> bool:
-    if not label:
+    cleaned_text = str(text or "").strip()
+    cleaned_label = str(label or "").strip()
+    if not cleaned_text or not cleaned_label:
         return False
-    return bool(re.match(rf"^\s*{re.escape(label)}(?:\s|$)", str(text or "")))
+    return _text_starts_with_exact_label(cleaned_text, cleaned_label)
 
 
-def _single_cell_numbering_label(cell: _Cell, numbering_labels: dict[int, str]) -> str:
-    labelled = [
-        numbering_labels.get(id(paragraph), "")
-        for paragraph in cell.paragraphs
-        if _paragraph_source_text(paragraph)
-    ]
-    labelled = [label for label in labelled if label]
-    return labelled[0] if len(labelled) == 1 else ""
+def _has_visible_numbering_prefix(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return False
+    if _BULLET_PREFIX_RE.match(cleaned):
+        return True
+    if _CHINESE_NUMBERING_PREFIX_RE.match(cleaned):
+        return True
+    if _CHINESE_LIST_PREFIX_RE.match(cleaned):
+        return True
+    if _ARABIC_LIST_PREFIX_RE.match(cleaned):
+        return True
+    if _ALPHA_LIST_PREFIX_RE.match(cleaned):
+        return True
+
+    decimal_match = _ARABIC_DECIMAL_PREFIX_RE.match(cleaned)
+    if decimal_match is None:
+        return False
+    remainder = decimal_match.group(2)
+    if not remainder:
+        return True
+    next_char = remainder[0]
+    if next_char.isascii() and (next_char.isalpha() or next_char in {"%", "#"}):
+        return False
+    return True
+
+
+def _text_starts_with_exact_label(text: str, label: str) -> bool:
+    if not text.startswith(label):
+        return False
+    remainder = text[len(label) :]
+    if not remainder:
+        return True
+    if label.startswith("第") and re.search(r"[章节篇]$", label):
+        return True
+    return _is_numbering_boundary(remainder[0])
+
+
+def _is_numbering_boundary(char: str) -> bool:
+    return char.isspace() or char in {
+        ".",
+        "．",
+        "、",
+        "，",
+        ",",
+        ":",
+        "：",
+        ")",
+        "）",
+        "-",
+        "－",
+        "—",
+        "·",
+    }
 
 
 def _insert_translation_paragraph_after(

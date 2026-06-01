@@ -10,6 +10,7 @@ from docx import Document
 from core.word_converter import (
     WordConversionError,
     convert_doc_to_docx,
+    convert_numbering_to_text_with_native_apps,
 )
 
 
@@ -74,6 +75,61 @@ class WordConverterTests(unittest.TestCase):
                 ),
             ):
                 result = convert_doc_to_docx(source_path, prefer_native_word=False)
+
+            self.assertEqual(result.method, "LibreOffice")
+            self.assertEqual(native_calls, [])
+
+    def test_numbering_preprocess_falls_back_after_native_word_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.docx"
+            converted_path = root / "numbering.docx"
+            self._build_docx(source_path)
+            self._build_docx(converted_path)
+
+            def _missing_word(_path):
+                raise WordConversionError("Word missing")
+
+            with patch.dict(
+                convert_numbering_to_text_with_native_apps.__globals__,
+                {
+                    "convert_numbering_to_text_with_native_word": _missing_word,
+                    "convert_numbering_to_text_with_libreoffice": lambda _path: converted_path,
+                },
+            ):
+                result = convert_numbering_to_text_with_native_apps(
+                    source_path,
+                    prefer_native_word=True,
+                )
+
+            self.assertEqual(result.path, converted_path)
+            self.assertEqual(result.method, "LibreOffice")
+            self.assertIn("Word missing", result.fallback_messages[0])
+
+    def test_numbering_preprocess_can_skip_native_word(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "source.docx"
+            converted_path = root / "numbering.docx"
+            self._build_docx(source_path)
+            self._build_docx(converted_path)
+            native_calls = []
+
+            def _native_word(_path):
+                native_calls.append(_path)
+                return converted_path
+
+            with patch.dict(
+                convert_numbering_to_text_with_native_apps.__globals__,
+                {
+                    "convert_numbering_to_text_with_native_word": _native_word,
+                    "convert_numbering_to_text_with_libreoffice": lambda _path: converted_path,
+                },
+            ):
+                result = convert_numbering_to_text_with_native_apps(
+                    source_path,
+                    prefer_native_word=False,
+                )
 
             self.assertEqual(result.method, "LibreOffice")
             self.assertEqual(native_calls, [])

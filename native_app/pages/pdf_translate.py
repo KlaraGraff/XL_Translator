@@ -315,7 +315,17 @@ class PdfTranslatePage(QWidget):
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        layout.addWidget(_label("源路径", "SectionTitle"))
+        self.source_title_label = _label("源路径", "SectionTitle")
+        _set_tooltip(
+            self.source_title_label,
+            "源路径",
+            "指定待翻译的 PDF、图片文件或文件夹。",
+            [
+                "文件夹会递归扫描 PDF。",
+                "启用图片翻译后也会扫描 PNG、JPG、JPEG、WebP、BMP、TIFF。",
+            ],
+        )
+        layout.addWidget(self.source_title_label)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.source_input = MiddleElideLineEdit(self.settings.last_pdf_source_folder)
@@ -342,7 +352,17 @@ class PdfTranslatePage(QWidget):
         frame, layout = _card()
         self.output_card = frame
         side_layout.addWidget(frame)
-        layout.addWidget(_label("输出位置", "SectionTitle"))
+        self.output_title_label = _label("输出位置", "SectionTitle")
+        _set_tooltip(
+            self.output_title_label,
+            "输出位置",
+            "设置翻译结果保存目录。",
+            [
+                "源目录内：在源路径同级位置创建带时间戳的输出目录。",
+                "自定义目录：将结果写入指定目录，目录不存在时自动创建。",
+            ],
+        )
+        layout.addWidget(self.output_title_label)
         self.output_default_radio = QRadioButton("源目录内")
         self.output_custom_radio = QRadioButton("自定义目录")
         self.output_custom_radio.setChecked(self.settings.output.use_custom_output_dir)
@@ -365,7 +385,19 @@ class PdfTranslatePage(QWidget):
         frame, layout = _card()
         self.params_card = frame
         side_layout.addWidget(frame)
-        layout.addWidget(_label("任务参数", "SectionTitle"))
+        self.params_title_label = _label("任务参数", "SectionTitle")
+        _set_tooltip(
+            self.params_title_label,
+            "任务参数",
+            "设置 PDF 页图翻译、图片输入、压缩输出和审核行为。",
+            [
+                "页级重试次数：设置单页失败后的重试次数。",
+                "启用图片翻译：允许扫描 PNG、JPG、JPEG、WebP、BMP、TIFF。",
+                "同时生成压缩 PDF：关闭后仅输出高清版，页面素材仍保留原质量。",
+                "启用翻译审核：未启用时无需配置审核模型；启用后会增加请求和耗时。",
+            ],
+        )
+        layout.addWidget(self.params_title_label)
         layout.addWidget(_field_label("目标语言", "目标语言", "选择译文语言。"))
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
@@ -388,42 +420,14 @@ class PdfTranslatePage(QWidget):
         self.image_translation_checkbox = QCheckBox("启用图片翻译")
         self.image_translation_checkbox.setChecked(self.settings.pdf.image_translation_enabled)
         self.image_translation_checkbox.toggled.connect(self._on_image_translation_enabled_changed)
-        _set_tooltip(
-            self.image_translation_checkbox,
-            "启用图片翻译",
-            "允许扫描和翻译图片文件。",
-            [
-                "支持 PNG、JPG、JPEG、WebP、BMP、TIFF。",
-                "每张图片按单页任务处理。",
-            ],
-        )
         layout.addWidget(self.image_translation_checkbox)
         self.pdf_compression_checkbox = QCheckBox("同时生成压缩 PDF（推荐）")
         self.pdf_compression_checkbox.setChecked(self.settings.pdf.generate_compressed_pdf)
         self.pdf_compression_checkbox.toggled.connect(self._on_params_changed)
-        _set_tooltip(
-            self.pdf_compression_checkbox,
-            "同时生成压缩 PDF",
-            "同时输出高清版和压缩版 PDF。",
-            [
-                "关闭后仅输出高清版。",
-                "页面素材仍保留原质量。",
-            ],
-        )
         layout.addWidget(self.pdf_compression_checkbox)
         self.pdf_review_checkbox = QCheckBox("启用翻译审核")
         self.pdf_review_checkbox.setChecked(self.settings.pdf.review_enabled)
         self.pdf_review_checkbox.toggled.connect(self._on_review_enabled_changed)
-        _set_tooltip(
-            self.pdf_review_checkbox,
-            "启用翻译审核",
-            "使用审核模型检查候选译图。",
-            [
-                "未启用时无需配置审核模型。",
-                "启用后会增加请求和耗时。",
-                "审核模型在左侧模型配置中设置。",
-            ],
-        )
         layout.addWidget(self.pdf_review_checkbox)
         fixed = QLabel("PDF 按 300 DPI 渲染；源页面保存为 PNG，图片译图按模型返回格式保存。")
         fixed.setObjectName("FieldHint")

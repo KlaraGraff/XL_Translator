@@ -1825,6 +1825,7 @@ class PdfImageTranslationRunner:
                 image_bytes = self._image_client.generate_page(
                     source_image_path=Path(page_record.source_image_path),
                     target_language=target_language,
+                    target_lang_code=self._settings.target_lang,
                     model_config=model_config,
                     review_feedback=review_feedback or None,
                 )

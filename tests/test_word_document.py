@@ -22,6 +22,8 @@ from core.translation_filter import (
 from core.word_document import (
     extract_word_segments,
     scan_word_path,
+    _has_visible_numbering_prefix,
+    normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
 from core.word_task_runner import _needs_word_translation_retry
@@ -274,13 +276,24 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("包括但不限于根据合同约定或确定的款项；", sources)
             self.assertNotIn("a. 包括但不限于根据合同约定或确定的款项；", sources)
 
+            normalized = normalize_docx_automatic_numbering(source_path)
+            normalized_segments = extract_word_segments(
+                normalized.path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+            normalized_sources = {segment.source for segment in normalized_segments}
+            self.assertIn("a. 包括但不限于根据合同约定或确定的款项；", normalized_sources)
+
             out_path = write_bilingual_docx(
-                source_path=source_path,
+                source_path=normalized.path,
                 output_dir=output_dir,
                 translations={
-                    "包括但不限于根据合同约定或确定的款项；": "y compris les montants prévus au contrat ;",
-                    "乙方未履行整改通知规定的违约补救义务；": (
-                        "La partie B n'a pas rempli les obligations de remédiation ;"
+                    "a. 包括但不限于根据合同约定或确定的款项；": (
+                        "a. y compris les montants prévus au contrat ;"
+                    ),
+                    "b. 乙方未履行整改通知规定的违约补救义务；": (
+                        "b. La partie B n'a pas rempli les obligations de remédiation ;"
                     ),
                 },
                 target_lang="fr",
@@ -299,6 +312,42 @@ class WordDocumentTests(unittest.TestCase):
 
             for paragraph in out_doc.paragraphs[:4]:
                 self.assertEqual(self._paragraph_num_id(paragraph), "0")
+
+    def test_word_automatic_chapter_number_is_not_duplicated_when_text_already_has_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "chapter.docx"
+            output_dir = temp_path / "out"
+            self._build_chapter_numbered_docx(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "第一章 编制依据": "Chapter 1 Compilation Basis",
+                },
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertIn("第一章 编制依据", paragraph_texts)
+            self.assertIn("Chapter 1 Compilation Basis", paragraph_texts)
+            self.assertNotIn("第1章 第一章 编制依据", paragraph_texts)
+            self.assertNotIn("第1章 Chapter 1 Compilation Basis", paragraph_texts)
+
+    def test_word_visible_numbering_prefix_detection_is_rule_based(self) -> None:
+        self.assertTrue(_has_visible_numbering_prefix("第一章 编制依据"))
+        self.assertTrue(_has_visible_numbering_prefix("第一节 工程概况"))
+        self.assertTrue(_has_visible_numbering_prefix("1.施工图纸"))
+        self.assertTrue(_has_visible_numbering_prefix("1.1主要材料概况"))
+        self.assertTrue(_has_visible_numbering_prefix("一、工程概况"))
+        self.assertTrue(_has_visible_numbering_prefix("（一）材料要求"))
+        self.assertFalse(_has_visible_numbering_prefix("10mm控制线"))
+        self.assertFalse(_has_visible_numbering_prefix("2#楼外墙"))
+        self.assertFalse(_has_visible_numbering_prefix("2026年计划"))
+        self.assertFalse(_has_visible_numbering_prefix("B20混凝土"))
 
     def test_scan_word_path_ignores_temp_and_generated_output_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -674,7 +723,11 @@ class WordDocumentTests(unittest.TestCase):
     @staticmethod
     def _build_lower_letter_numbered_docx(path: Path) -> None:
         doc = Document()
-        WordDocumentTests._set_default_num_id_9_to_lower_letter(doc)
+        WordDocumentTests._set_default_num_id_9_level(
+            doc,
+            number_format="lowerLetter",
+            level_text_value="%1.",
+        )
         first = doc.add_paragraph("包括但不限于根据合同约定或确定的款项；")
         second = doc.add_paragraph("乙方未履行整改通知规定的违约补救义务；")
         for paragraph in (first, second):
@@ -682,7 +735,24 @@ class WordDocumentTests(unittest.TestCase):
         doc.save(str(path))
 
     @staticmethod
-    def _set_default_num_id_9_to_lower_letter(doc: Document) -> None:
+    def _build_chapter_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_default_num_id_9_level(
+            doc,
+            number_format="decimal",
+            level_text_value="第%1章",
+        )
+        chapter = doc.add_paragraph("第一章 编制依据")
+        WordDocumentTests._set_paragraph_num_pr(chapter, num_id="9", ilvl="0")
+        doc.save(str(path))
+
+    @staticmethod
+    def _set_default_num_id_9_level(
+        doc: Document,
+        *,
+        number_format: str,
+        level_text_value: str,
+    ) -> None:
         numbering_root = doc.part.numbering_part.element
         target_abstract_id = None
         for num in numbering_root.findall(qn("w:num")):
@@ -702,12 +772,12 @@ class WordDocumentTests(unittest.TestCase):
             if num_format is None:
                 num_format = OxmlElement("w:numFmt")
                 level.append(num_format)
-            num_format.set(qn("w:val"), "lowerLetter")
+            num_format.set(qn("w:val"), number_format)
             level_text = level.find(qn("w:lvlText"))
             if level_text is None:
                 level_text = OxmlElement("w:lvlText")
                 level.append(level_text)
-            level_text.set(qn("w:val"), "%1.")
+            level_text.set(qn("w:val"), level_text_value)
 
     @staticmethod
     def _set_paragraph_num_pr(paragraph, *, num_id: str, ilvl: str) -> None:

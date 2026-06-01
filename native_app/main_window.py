@@ -72,6 +72,7 @@ from core.model_throughput import (
 )
 from core.pdf_review import check_pdf_review_connectivity
 from core.update_checker import (
+    GITHUB_REPO,
     UpdateCheckResult,
     is_major_upgrade,
     major_version,
@@ -109,8 +110,14 @@ def _section_title(text: str) -> QLabel:
     return label
 
 
-def _tooltip(title: str, summary: str, items: list[str] | None = None) -> str:
-    return build_app_tooltip_html(title, summary, items)
+def _tooltip(
+    title: str,
+    summary: str,
+    items: list[str] | None = None,
+    *,
+    title_meta: str = "",
+) -> str:
+    return build_app_tooltip_html(title, summary, items, title_meta=title_meta)
 
 
 def _set_tooltip(
@@ -118,8 +125,10 @@ def _set_tooltip(
     title: str,
     summary: str,
     items: list[str] | None = None,
+    *,
+    title_meta: str = "",
 ) -> None:
-    widget.setToolTip(_tooltip(title, summary, items))
+    widget.setToolTip(_tooltip(title, summary, items, title_meta=title_meta))
     widget.setToolTipDuration(5200)
 
 
@@ -146,6 +155,7 @@ def _cloud_provider_value(label: str) -> str:
 
 
 RELEASE_NOTES_MAX_CHARS = 1200
+GITHUB_PROJECT_PAGE_URL = f"https://github.com/{GITHUB_REPO}"
 
 
 def _release_notes_preview(notes: str) -> str:
@@ -238,6 +248,7 @@ def _show_local_follow_warning(parent: QWidget, message: str) -> None:
 
 BRAND_TOOLTIP = {
     "title": APP_NAME,
+    "title_meta": f"by OA | {APP_VERSION_LABEL}",
     "summary": f"{APP_NAME} 用于本地处理 Excel、Word 与 PDF 翻译任务。",
     "items": [
         "左侧设置模型、领域和吞吐参数。",
@@ -267,8 +278,28 @@ ENGINE_TOOLTIP = {
     "title": "模型配置",
     "summary": "配置各类任务使用的模型。",
     "items": [
-        "翻译模型支持云端 API 和本地模型。",
-        "清洗、图像和审核模型按用途独立配置。",
+        "模型用途：翻译模型处理 Excel/Word，清洗模型维护记忆库，PDF 翻译模型生成页图。",
+        "接入方式：云端 API 使用服务商接口，本地模型使用本机服务。",
+        "PDF 翻译审核模型可独立配置，也可跟随 PDF 翻译模型。",
+    ],
+}
+
+MODEL_ROLE_TOOLTIP = {
+    "title": "模型用途",
+    "summary": "选择当前要配置的模型用途。",
+    "items": [
+        "翻译模型：用于 Excel 和 Word 文本翻译。",
+        "清洗模型：用于记忆库深度清洗。",
+        "PDF 翻译模型：用于 PDF 页图和图片翻译。",
+    ],
+}
+
+ENGINE_MODE_TOOLTIP = {
+    "title": "接入方式",
+    "summary": "选择模型的调用方式。",
+    "items": [
+        "云端 API：通过服务商接口调用模型。",
+        "本地模型：通过本机 Ollama、LM Studio 或自定义地址调用模型。",
     ],
 }
 
@@ -362,6 +393,7 @@ class Sidebar(QFrame):
             BRAND_TOOLTIP["title"],
             BRAND_TOOLTIP["summary"],
             BRAND_TOOLTIP["items"],
+            title_meta=BRAND_TOOLTIP["title_meta"],
         )
         brand_row.addWidget(brand, 1)
         self.update_notice_button = QPushButton("更新")
@@ -376,10 +408,7 @@ class Sidebar(QFrame):
         self.ignore_notice_button.clicked.connect(self.currentUpdateIgnored.emit)
         self.ignore_notice_button.hide()
         brand_row.addWidget(self.ignore_notice_button)
-        version = QLabel(f"by OA | {APP_VERSION_LABEL}")
-        version.setObjectName("BrandMeta")
         root.addLayout(brand_row)
-        root.addWidget(version)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
@@ -465,6 +494,23 @@ class Sidebar(QFrame):
         self.update_ignore_button.clicked.connect(self.globalUpdateIgnoreToggled.emit)
         row.addWidget(self.update_ignore_button, 1)
         self._form.addLayout(row)
+
+        self.github_project_button = QPushButton("打开 GitHub 仓库")
+        self.github_project_button.clicked.connect(self._open_github_project_page)
+        _set_tooltip(
+            self.github_project_button,
+            "GitHub 仓库",
+            "打开 Translator 的 GitHub 代码仓库。",
+        )
+        self._form.addWidget(self.github_project_button)
+
+    def _open_github_project_page(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(GITHUB_PROJECT_PAGE_URL)):
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                f"无法打开链接：\n{GITHUB_PROJECT_PAGE_URL}",
+            )
 
     def _refresh_widget_style(self, widget: QWidget) -> None:
         widget.style().unpolish(widget)
@@ -1083,12 +1129,6 @@ class Sidebar(QFrame):
 
         self.domain_combo = create_option_combo()
         self.domain_combo.addItems(list(DOMAIN_PRESETS.keys()))
-        _set_tooltip(
-            self.domain_combo,
-            DOMAIN_TOOLTIP["title"],
-            DOMAIN_TOOLTIP["summary"],
-            DOMAIN_TOOLTIP["items"],
-        )
         if self.settings.domain_preset in DOMAIN_PRESETS:
             self.domain_combo.setCurrentText(self.settings.domain_preset)
         self.domain_combo.currentTextChanged.connect(self._on_domain_changed)
@@ -1096,18 +1136,18 @@ class Sidebar(QFrame):
 
         prompt_hint = QLabel("Prompt")
         prompt_hint.setObjectName("FieldHint")
+        _set_tooltip(
+            prompt_hint,
+            PROMPT_TOOLTIP["title"],
+            PROMPT_TOOLTIP["summary"],
+            PROMPT_TOOLTIP["items"],
+        )
         layout.addWidget(prompt_hint)
 
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setMinimumHeight(112)
         self.prompt_edit.setPlaceholderText("输入补充 Prompt")
         self.prompt_edit.setPlainText(self._domain_prompt_value(self.domain_combo.currentText()))
-        _set_tooltip(
-            self.prompt_edit,
-            PROMPT_TOOLTIP["title"],
-            PROMPT_TOOLTIP["summary"],
-            PROMPT_TOOLTIP["items"],
-        )
         self.prompt_edit.textChanged.connect(self._on_prompt_changed)
         layout.addWidget(self.prompt_edit)
 
@@ -1147,18 +1187,19 @@ class Sidebar(QFrame):
 
         self._build_model_config_actions(layout)
 
+        self.model_role_label = _field_label(
+            "模型用途",
+            MODEL_ROLE_TOOLTIP["title"],
+            MODEL_ROLE_TOOLTIP["summary"],
+            MODEL_ROLE_TOOLTIP["items"],
+        )
+        layout.addWidget(self.model_role_label)
         self.model_role_combo = create_centered_option_combo()
         self.model_role_combo.setObjectName("ModelRoleCombo")
         self.model_role_combo.addItem(role_label(ROLE_TRANSLATION), ROLE_TRANSLATION)
         self.model_role_combo.addItem(role_label(ROLE_CLEANER), ROLE_CLEANER)
         self.model_role_combo.addItem(role_label(ROLE_IMAGE), ROLE_IMAGE)
         self.model_role_combo.currentIndexChanged.connect(self._on_model_role_changed)
-        _set_tooltip(
-            self.model_role_combo,
-            "模型用途",
-            "选择要配置的模型用途。",
-            ["下方字段会随用途切换。"],
-        )
         layout.addWidget(self.model_role_combo)
 
         self.pdf_image_generation_hint = QLabel(role_label(ROLE_IMAGE))
@@ -1177,16 +1218,17 @@ class Sidebar(QFrame):
         self.source_role_combo.currentIndexChanged.connect(self._on_source_role_changed)
         layout.addWidget(self.source_role_combo)
 
+        self.mode_label = _field_label(
+            "接入方式",
+            ENGINE_MODE_TOOLTIP["title"],
+            ENGINE_MODE_TOOLTIP["summary"],
+            ENGINE_MODE_TOOLTIP["items"],
+        )
+        layout.addWidget(self.mode_label)
         self.mode_combo = create_option_combo()
         self.mode_combo.addItem("云端 API", "cloud")
         self.mode_combo.addItem("本地模型", "local")
         self.mode_combo.setCurrentIndex(0 if self.settings.engine.mode == "cloud" else 1)
-        _set_tooltip(
-            self.mode_combo,
-            ENGINE_TOOLTIP["title"],
-            ENGINE_TOOLTIP["summary"],
-            ENGINE_TOOLTIP["items"],
-        )
         self.mode_combo.currentIndexChanged.connect(self._on_engine_mode_changed)
         layout.addWidget(self.mode_combo)
 
@@ -1209,7 +1251,10 @@ class Sidebar(QFrame):
             "API Key",
             "API Key",
             "当前云端服务商的访问密钥。",
-            ["密钥保存在本机，不显示明文。"],
+            [
+                "密钥保存在本机，不显示明文。",
+                "更换后需重新获取模型列表。",
+            ],
         )
         layout.addWidget(self.api_key_label)
         self.api_key_input = QLineEdit()
@@ -1222,12 +1267,6 @@ class Sidebar(QFrame):
         self.api_key_input.setText(
             get_key(initial_provider, initial_provider_config.cloud_base_url)
         )
-        _set_tooltip(
-            self.api_key_input,
-            "API Key",
-            "当前云端服务商的访问密钥。",
-            ["更换后需重新获取模型列表。"],
-        )
         self.api_key_input.editingFinished.connect(self._on_api_key_changed)
         layout.addWidget(self.api_key_input)
 
@@ -1235,18 +1274,13 @@ class Sidebar(QFrame):
             "Base URL",
             "Base URL",
             "接口基础地址。",
-        )
-        layout.addWidget(self.base_url_label)
-        self.base_url_input = QLineEdit(self.settings.engine.cloud_base_url)
-        _set_tooltip(
-            self.base_url_input,
-            "Base URL",
-            "填写服务商提供的接口地址。",
             [
                 "常见格式：https://.../v1。",
                 "更换后需重新获取模型列表。",
             ],
         )
+        layout.addWidget(self.base_url_label)
+        self.base_url_input = QLineEdit(self.settings.engine.cloud_base_url)
         self.base_url_input.editingFinished.connect(self._on_base_url_changed)
         layout.addWidget(self.base_url_input)
 
@@ -1255,7 +1289,8 @@ class Sidebar(QFrame):
             "模型名称",
             "设置实际调用的模型。",
             [
-                "可输入模型名，也可从列表选择。",
+                "可输入模型名，也可先获取模型列表后选择。",
+                "输入部分名称后按回车可匹配候选项。",
                 "服务商、密钥和地址不变时，列表会保留。",
             ],
         )
@@ -1264,15 +1299,6 @@ class Sidebar(QFrame):
         self.model_combo.addItem(self.settings.engine.cloud_model)
         self.model_combo.setCurrentText(self.settings.engine.cloud_model)
         refresh_combo_completer(self.model_combo)
-        _set_tooltip(
-            self.model_combo,
-            "模型名称",
-            "输入或选择模型名称。",
-            [
-                "可先获取模型列表。",
-                "输入部分名称后按回车可匹配候选项。",
-            ],
-        )
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         layout.addWidget(self.model_combo)
 
@@ -1385,7 +1411,17 @@ class Sidebar(QFrame):
         layout.setSpacing(8)
 
         title_row = QHBoxLayout()
-        title_row.addWidget(_section_title("PDF 翻译审核模型"))
+        review_title = _section_title("PDF 翻译审核模型")
+        _set_tooltip(
+            review_title,
+            "PDF 翻译审核模型",
+            "配置用于检查候选译图的审核模型。",
+            [
+                "可独立配置，也可跟随 PDF 翻译模型。",
+                "启用 PDF 翻译审核后才会调用。",
+            ],
+        )
+        title_row.addWidget(review_title)
         optional = QLabel("可选")
         optional.setObjectName("RecoveryBadge")
         title_row.addStretch(1)
@@ -1459,24 +1495,12 @@ class Sidebar(QFrame):
         self.review_concurrency_spin.valueChanged.connect(
             self._on_review_concurrency_changed
         )
-        _set_tooltip(
-            self.review_concurrency_spin,
-            "并发数",
-            "审核模型同时发起的请求数量。",
-            TUNING_TOOLTIP["items"],
-        )
         review_concurrency_layout.addWidget(self.review_concurrency_spin)
 
         self.review_concurrency_shared_input = QLineEdit("共用页生成并发")
         self.review_concurrency_shared_input.setReadOnly(True)
         self.review_concurrency_shared_input.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.review_concurrency_shared_input.setProperty("readonlyHint", True)
-        _set_tooltip(
-            self.review_concurrency_shared_input,
-            "并发数",
-            "跟随 PDF 翻译模型时共用页生成并发，审核请求会按实际进度动态占用，无需单独设置。",
-            TUNING_TOOLTIP["items"],
-        )
         self.review_concurrency_shared_input.hide()
         review_concurrency_layout.addWidget(self.review_concurrency_shared_input)
 
@@ -2127,12 +2151,6 @@ class Sidebar(QFrame):
                 batch_summary,
                 TUNING_TOOLTIP["items"],
             )
-            _set_tooltip(
-                self.batch_spin,
-                "批次大小",
-                batch_summary,
-                TUNING_TOOLTIP["items"],
-            )
             self.batch_spin.blockSignals(True)
             self.batch_spin.setRange(minimum, maximum)
             self.batch_spin.setValue(throughput.batch_size or minimum)
@@ -2148,12 +2166,6 @@ class Sidebar(QFrame):
         self.concurrency_label.setText("并发数")
         _set_tooltip(
             self.concurrency_label,
-            "并发数",
-            concurrency_summary,
-            TUNING_TOOLTIP["items"],
-        )
-        _set_tooltip(
-            self.concurrency_input,
             "并发数",
             concurrency_summary,
             TUNING_TOOLTIP["items"],
@@ -2218,6 +2230,7 @@ class Sidebar(QFrame):
         follows = self._is_following_current_role()
         is_translation = role == ROLE_TRANSLATION
         is_local_translation = is_translation and self.settings.engine.mode == "local"
+        self.mode_label.setVisible(is_translation)
         self.mode_combo.setVisible(is_translation)
         always_model_widgets = (
             self.provider_label,

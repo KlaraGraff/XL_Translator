@@ -39,17 +39,58 @@ GPT_IMAGE_2_MAX_PIXELS = 8_294_400
 GPT_IMAGE_2_MAX_EDGE = 3840
 GPT_IMAGE_2_PDF_TARGET_LONG_EDGE = 2048
 
-PDF_IMAGE_TRANSLATION_PROMPT = (
+PDF_IMAGE_TRANSLATION_BASE_PROMPT = (
     "Translate every readable visible text element on this PDF page into {target_language}. "
-    "For Chinese, use concise Simplified Chinese that fits the original boxes and table cells. "
     "Return one complete full-page PNG preserving the original orientation, aspect ratio, margins, "
     "tables, drawings, colors, stamps, signatures, logos, font scale, line breaks, reading order, "
-    "and text positions. Translate each heading, note, label, and table cell from its own source "
-    "text; do not copy neighboring labels or redesign the page. Keep numbers, units, dates, "
-    "reference codes, proper names, contacts, stamps, signatures, logos, and text already in "
-    "{target_language} unchanged. Do not crop, rotate, summarize, add explanations, add watermarks, "
-    "or add/remove rows, columns, images, or layout elements."
+    "and text positions. Keep the page geometry fixed: do not mirror, reorder, relayout, or redesign "
+    "tables, forms, rows, columns, headers, footers, logos, stamps, signatures, drawings, or page regions. "
+    "The physical left-to-right column order in the source image must remain exactly the same, even for "
+    "right-to-left target languages. "
+    "Translate each heading, note, label, and table cell from its own source text; do not copy neighboring "
+    "labels. Use compact wording, but do not omit source meaning or drop leading qualifiers from headings, "
+    "field names, or labels. Put translated text inside the same original text box or table cell whenever possible. "
+    "Keep numbers, units, dates, reference codes, proper names, contacts, stamps, signatures, logos, "
+    "and text already in {target_language} unchanged. If a cell or label contains only a number, code, "
+    "date, unit, name, stamp, logo, signature, email, phone number, or document reference, keep it unchanged. "
+    "Do not crop, rotate, summarize, add explanations, add watermarks, or add/remove rows, columns, images, "
+    "or layout elements."
 )
+
+PDF_IMAGE_TRANSLATION_GENERIC_LANGUAGE_RULE = (
+    "Use natural, concise {target_language} that fits the original text boxes and table cells. "
+    "Prefer short official document labels and compact noun phrases over explanatory rewrites."
+)
+
+PDF_IMAGE_TRANSLATION_LANGUAGE_RULES: dict[str, str] = {
+    "zh": (
+        "Use concise Simplified Chinese that fits the original boxes and table cells. "
+        "Prefer short engineering/document labels and field names; avoid verbose paraphrases, long sentences, "
+        "and Traditional Chinese."
+    ),
+    "en": (
+        "Use concise professional English suitable for engineering, administrative, and document-control PDFs. "
+        "For headings, field names, table headers, and labels, use compact official document wording and short "
+        "noun phrases, not explanatory sentences."
+    ),
+    "fr": (
+        "Use concise professional French suitable for engineering, administrative, and document-control PDFs. "
+        "Prefer compact official French labels for headings, field names, table headers, and labels; use standard "
+        "short forms when space is tight and avoid long clauses that would overflow the original boxes or table cells."
+    ),
+    "ar": (
+        "Use concise Modern Standard Arabic with correct right-to-left text flow inside each original text box or "
+        "table cell. Preserve the original physical table and form layout exactly: the source leftmost column must "
+        "remain leftmost, the source rightmost column must remain rightmost, and columns must not be switched into "
+        "right-to-left order. Do not mirror the page, table, column order, row order, coordinate system, numeric "
+        "columns, stamps, logos, or signatures. Right-align Arabic text inside its existing cell when useful, but "
+        "never move that cell. Keep Latin company names, project names, document numbers, dates, decimal separators, "
+        "units, test codes, contacts, stamps, signatures, logos, and mixed-language identifiers stable and readable."
+    ),
+}
+
+# Backward-compatible alias for callers/tests that import the historical name.
+PDF_IMAGE_TRANSLATION_PROMPT = PDF_IMAGE_TRANSLATION_BASE_PROMPT
 
 
 class ImageModelUnavailableError(RuntimeError):
@@ -62,6 +103,7 @@ class ImageGenerationClient(Protocol):
         *,
         source_image_path: Path,
         target_language: str,
+        target_lang_code: str | None = None,
         model_config: EffectiveModelConfig,
         review_feedback: str | None = None,
     ) -> bytes:
@@ -87,6 +129,7 @@ class OpenAICompatibleImageGenerationClient:
         *,
         source_image_path: Path,
         target_language: str,
+        target_lang_code: str | None = None,
         model_config: EffectiveModelConfig,
         review_feedback: str | None = None,
     ) -> bytes:
@@ -102,6 +145,7 @@ class OpenAICompatibleImageGenerationClient:
         base_url = _normalize_base_url(model_config)
         prompt = build_pdf_image_translation_prompt(
             target_language,
+            target_lang_code=target_lang_code,
             review_feedback=review_feedback,
         )
         if _is_gpt_image_model(model_config.model):
@@ -196,9 +240,18 @@ def _generate_page_with_images_edit(
 def build_pdf_image_translation_prompt(
     target_language: str,
     *,
+    target_lang_code: str | None = None,
     review_feedback: str | None = None,
 ) -> str:
-    prompt = PDF_IMAGE_TRANSLATION_PROMPT.format(target_language=target_language)
+    prompt = " ".join(
+        (
+            PDF_IMAGE_TRANSLATION_BASE_PROMPT.format(target_language=target_language),
+            _pdf_image_translation_language_rule(
+                target_language,
+                target_lang_code=target_lang_code,
+            ),
+        )
+    ).strip()
     feedback = str(review_feedback or "").strip()
     if not feedback:
         return prompt
@@ -207,6 +260,20 @@ def build_pdf_image_translation_prompt(
         "page from the original source image, using the original page as the source of "
         "truth. Fix only these issues and preserve every correct existing element:\n"
         f"{feedback}"
+    )
+
+
+def _pdf_image_translation_language_rule(
+    target_language: str,
+    *,
+    target_lang_code: str | None = None,
+) -> str:
+    normalized_code = str(target_lang_code or "").strip().lower()
+    rule = PDF_IMAGE_TRANSLATION_LANGUAGE_RULES.get(normalized_code)
+    if rule:
+        return rule
+    return PDF_IMAGE_TRANSLATION_GENERIC_LANGUAGE_RULE.format(
+        target_language=target_language
     )
 
 
@@ -239,6 +306,7 @@ def check_image_generation_connectivity(
                 image_bytes = client.generate_page(
                     source_image_path=test_image,
                     target_language="English",
+                    target_lang_code="en",
                     model_config=config,
                 )
                 Image.open(BytesIO(image_bytes)).verify()

@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -65,11 +65,19 @@ from settings import AppSettings, save_settings
 
 HEADER_TILE_HEIGHT = 48
 HEADER_TILE_MIN_WIDTH = 86
+TM_LANG_PAIR_TILE_MIN_WIDTH = 150
+TM_LANG_PAIR_TILE_MAX_WIDTH = 240
 COMPACT_CONTROL_HEIGHT = 32
 COMPACT_BUTTON_HEIGHT = 34
-TM_SCOPE_CARD_MIN_WIDTH = 300
+TM_TOP_CARD_TITLE_ROW_HEIGHT = 24
+TM_TOP_CARD_INFO_ROW_HEIGHT = 24
+TM_TOP_CARD_ACTION_ROW_HEIGHT = COMPACT_BUTTON_HEIGHT
+TM_TOP_CARD_ROW_SPACING = 6
+TM_TOP_CARD_COLUMN_MIN_WIDTH = 108
+TM_SCOPE_CARD_MIN_WIDTH = 360
 TM_OVERVIEW_CARD_MIN_WIDTH = 380
 TM_CLEANER_CARD_MIN_WIDTH = 340
+TM_LANGUAGE_POPUP_MIN_WIDTH = 160
 WORKSPACE_ACTION_BUTTON_WIDTH = 96
 WORKSPACE_ACTION_BUTTON_HEIGHT = 38
 ENTRY_DIALOG_WIDTH = 860
@@ -123,9 +131,9 @@ def _field_label(
     summary: str,
     items: list[str] | None = None,
 ) -> QLabel:
-    del title, summary, items
     label = QLabel(text)
     label.setProperty("tmFieldLabel", "true")
+    _set_tooltip(label, title, summary, items)
     return label
 
 
@@ -145,15 +153,59 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
     frame.setObjectName("Card")
     layout = QVBoxLayout(frame)
     layout.setContentsMargins(12, 9, 12, 9)
-    layout.setSpacing(8)
+    layout.setSpacing(TM_TOP_CARD_ROW_SPACING)
     layout.setAlignment(Qt.AlignmentFlag.AlignTop)
     return frame, layout
+
+
+def _fixed_hbox_row(
+    height: int,
+    *,
+    spacing: int = 8,
+) -> tuple[QWidget, QHBoxLayout]:
+    row = QWidget()
+    row.setProperty("tmTopCardRow", "true")
+    row.setFixedHeight(height)
+    row_layout = QHBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.setSpacing(spacing)
+    row_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+    return row, row_layout
+
+
+def _top_card_title_row(
+    title: QLabel,
+    trailing_widget: QWidget | None = None,
+) -> tuple[QWidget, QHBoxLayout]:
+    row, row_layout = _fixed_hbox_row(TM_TOP_CARD_TITLE_ROW_HEIGHT, spacing=10)
+    row_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignVCenter)
+    row_layout.addStretch(1)
+    if trailing_widget is not None:
+        row_layout.addWidget(trailing_widget, alignment=Qt.AlignmentFlag.AlignVCenter)
+    return row, row_layout
+
+
+def _top_card_column_widget(widget: QWidget) -> QWidget:
+    widget.setMinimumWidth(TM_TOP_CARD_COLUMN_MIN_WIDTH)
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return widget
 
 
 def _compact_control(widget: QWidget, height: int = COMPACT_CONTROL_HEIGHT) -> QWidget:
     widget.setProperty("compact", "true")
     widget.setFixedHeight(height)
     return widget
+
+
+def _language_combo_popup_width(combo: QComboBox) -> int:
+    longest_item_width = max(
+        (
+            combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+            for index in range(combo.count())
+        ),
+        default=0,
+    )
+    return max(TM_LANGUAGE_POPUP_MIN_WIDTH, longest_item_width + 56)
 
 
 def _workspace_action_button(text: str) -> QPushButton:
@@ -167,7 +219,8 @@ def _metric_pair(label: str, value: str) -> QWidget:
     widget.setProperty("tmMetricPair", "true")
     layout = QHBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(5)
+    layout.setSpacing(6)
+    layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
     label_widget = QLabel(label)
     label_widget.setObjectName("TmMetricLabel")
     value_widget = QLabel(value)
@@ -176,6 +229,28 @@ def _metric_pair(label: str, value: str) -> QWidget:
     layout.addWidget(value_widget)
     layout.addStretch(1)
     return widget
+
+
+def _metric_separator() -> QFrame:
+    separator = QFrame()
+    separator.setProperty("tmMetricSeparator", "true")
+    separator.setFixedSize(1, 16)
+    return separator
+
+
+def _add_metric_pairs(layout: QHBoxLayout, items: list[tuple[str, str]]) -> None:
+    for index, (label, value) in enumerate(items):
+        if index > 0:
+            layout.addWidget(
+                _metric_separator(),
+                0,
+                alignment=Qt.AlignmentFlag.AlignVCenter,
+            )
+        layout.addWidget(
+            _metric_pair(label, value),
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
 
 
 def _normalize_clean_progress_payload(payload):
@@ -373,67 +448,81 @@ class TmManagerPage(QWidget):
         root.addWidget(self.workspace, 1)
 
     def _build_scope_controls(self, layout: QVBoxLayout) -> None:
-        form_grid = QGridLayout()
-        form_grid.setHorizontalSpacing(10)
-        form_grid.setVerticalSpacing(8)
-        for column in range(3):
-            form_grid.setColumnMinimumWidth(column, 96)
-            form_grid.setColumnStretch(column, 1)
-        layout.addLayout(form_grid)
-
-        form_grid.addWidget(
-            _field_label("源语言", "源语言", "选择词库原文语言。"),
-            0,
-            0,
+        self.scope_label_row, label_row = _fixed_hbox_row(
+            TM_TOP_CARD_INFO_ROW_HEIGHT,
+            spacing=10,
         )
+        layout.addWidget(self.scope_label_row)
+
+        label_row.addWidget(
+            _top_card_column_widget(
+                _field_label("源语言", "源语言", "选择词库原文语言。")
+            ),
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        label_row.addWidget(
+            _top_card_column_widget(
+                _field_label("目标语言", "目标语言", "选择词库译文语言。")
+            ),
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+        label_row.addWidget(
+            _top_card_column_widget(
+                _field_label(
+                    "词长上限",
+                    "自动入库上限",
+                    "设置自动入库的最长词条长度。",
+                    [
+                        "超过上限的长句不会自动入库。",
+                        "手动新增不受限制。",
+                    ],
+                )
+            ),
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        self.scope_control_row, control_row = _fixed_hbox_row(
+            TM_TOP_CARD_ACTION_ROW_HEIGHT,
+            spacing=10,
+        )
+        layout.addWidget(self.scope_control_row)
+
         self.source_combo = create_searchable_combo()
         if self.source_combo.lineEdit() is not None:
             self.source_combo.lineEdit().setPlaceholderText("筛选源语言")
-        self.source_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        _top_card_column_widget(self.source_combo)
         _compact_control(self.source_combo)
-        form_grid.addWidget(self.source_combo, 1, 0)
-
-        form_grid.addWidget(
-            _field_label("目标语言", "目标语言", "选择词库译文语言。"),
-            0,
+        control_row.addWidget(
+            self.source_combo,
             1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
         )
+
         self.target_combo = create_searchable_combo()
         if self.target_combo.lineEdit() is not None:
             self.target_combo.lineEdit().setPlaceholderText("筛选目标语言")
-        self.target_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        _top_card_column_widget(self.target_combo)
         _compact_control(self.target_combo)
-        form_grid.addWidget(self.target_combo, 1, 1)
-
-        form_grid.addWidget(
-            _field_label(
-                "词长上限",
-                "自动入库上限",
-                "设置自动入库的最长词条长度。",
-                [
-                    "超过上限的长句不会自动入库。",
-                    "手动新增不受限制。",
-                ],
-            ),
-            0,
-            2,
+        control_row.addWidget(
+            self.target_combo,
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
         )
+
         self.max_len_spin = QSpinBox()
         self.max_len_spin.setRange(1, 200)
         self.max_len_spin.setValue(self.settings.tm.max_len)
-        self.max_len_spin.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
-        )
+        _top_card_column_widget(self.max_len_spin)
         _compact_control(self.max_len_spin)
         self.max_len_spin.valueChanged.connect(self._on_max_len_changed)
-        form_grid.addWidget(self.max_len_spin, 1, 2)
+        control_row.addWidget(
+            self.max_len_spin,
+            1,
+            alignment=Qt.AlignmentFlag.AlignVCenter,
+        )
 
         self._refresh_language_options()
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
@@ -449,7 +538,7 @@ class TmManagerPage(QWidget):
         frame.setMinimumWidth(TM_SCOPE_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         row.addWidget(frame, 4)
-        layout.addWidget(
+        self.scope_title_row, _ = _top_card_title_row(
             _module_title(
                 "语言与规则",
                 "语言与规则",
@@ -460,6 +549,7 @@ class TmManagerPage(QWidget):
                 ],
             )
         )
+        layout.addWidget(self.scope_title_row)
         self._build_scope_controls(layout)
 
     def _build_overview_card(self, row: QHBoxLayout) -> None:
@@ -468,7 +558,7 @@ class TmManagerPage(QWidget):
         frame.setMinimumWidth(TM_OVERVIEW_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         row.addWidget(frame, 3)
-        layout.addWidget(
+        self.overview_title_row, _ = _top_card_title_row(
             _module_title(
                 "词库概况",
                 "词库概况",
@@ -480,13 +570,18 @@ class TmManagerPage(QWidget):
                 ],
             )
         )
+        layout.addWidget(self.overview_title_row)
 
-        self.stats_layout = QHBoxLayout()
-        self.stats_layout.setSpacing(10)
-        layout.addLayout(self.stats_layout)
+        self.overview_info_row, self.stats_layout = _fixed_hbox_row(
+            TM_TOP_CARD_INFO_ROW_HEIGHT,
+            spacing=10,
+        )
+        layout.addWidget(self.overview_info_row)
 
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
+        self.overview_action_row, buttons = _fixed_hbox_row(
+            TM_TOP_CARD_ACTION_ROW_HEIGHT,
+            spacing=8,
+        )
         self.import_button = QPushButton("导入词库")
         _compact_control(self.import_button, COMPACT_BUTTON_HEIGHT)
         self.import_button.clicked.connect(self._import_entries)
@@ -513,7 +608,7 @@ class TmManagerPage(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         buttons.addWidget(self.export_csv_button)
-        layout.addLayout(buttons)
+        layout.addWidget(self.overview_action_row)
 
     def _build_cleaner_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
@@ -522,8 +617,6 @@ class TmManagerPage(QWidget):
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         row.addWidget(frame, 3)
 
-        title_row = QHBoxLayout()
-        title_row.setSpacing(10)
         self.cleaner_title_label = _module_title(
             "维护与清洗",
             "维护与清洗",
@@ -534,13 +627,14 @@ class TmManagerPage(QWidget):
                 "固定词条不参与清洗。",
             ],
         )
-        title_row.addWidget(self.cleaner_title_label)
-        title_row.addStretch(1)
         self.auto_pin_check = QCheckBox("清洗后自动固定")
         self.auto_pin_check.setChecked(self.settings.auto_pin_after_clean)
         self.auto_pin_check.toggled.connect(self._on_cleaner_settings_changed)
-        title_row.addWidget(self.auto_pin_check)
-        layout.addLayout(title_row)
+        self.cleaner_title_row, _ = _top_card_title_row(
+            self.cleaner_title_label,
+            self.auto_pin_check,
+        )
+        layout.addWidget(self.cleaner_title_row)
 
         self.clean_mode_combo = create_option_combo()
         self.clean_mode_combo.addItem("差异确认模式", "diff")
@@ -552,12 +646,16 @@ class TmManagerPage(QWidget):
         self.clean_mode_combo.hide()
         layout.addWidget(self.clean_mode_combo)
 
-        self.clean_summary_layout = QHBoxLayout()
-        self.clean_summary_layout.setSpacing(8)
-        layout.addLayout(self.clean_summary_layout)
+        self.cleaner_info_row, self.clean_summary_layout = _fixed_hbox_row(
+            TM_TOP_CARD_INFO_ROW_HEIGHT,
+            spacing=8,
+        )
+        layout.addWidget(self.cleaner_info_row)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        self.cleaner_action_row, action_row = _fixed_hbox_row(
+            TM_TOP_CARD_ACTION_ROW_HEIGHT,
+            spacing=8,
+        )
         self.clean_button = QPushButton("启动深度清洗")
         self.clean_button.setObjectName("PrimaryButton")
         _compact_control(self.clean_button, COMPACT_BUTTON_HEIGHT)
@@ -568,7 +666,7 @@ class TmManagerPage(QWidget):
         _compact_control(self.prompt_button, COMPACT_BUTTON_HEIGHT)
         self.prompt_button.clicked.connect(self._open_cleaner_prompt_dialog)
         action_row.addWidget(self.prompt_button, 1)
-        layout.addLayout(action_row)
+        layout.addWidget(self.cleaner_action_row)
 
         self.clean_progress_panel = QWidget()
         progress_row = QHBoxLayout(self.clean_progress_panel)
@@ -622,6 +720,10 @@ class TmManagerPage(QWidget):
         source_index = self.source_combo.findData(current_source)
         self.source_combo.setCurrentIndex(source_index if source_index >= 0 else 0)
         refresh_combo_completer(self.source_combo)
+        self.source_combo.setProperty(
+            "popupMinimumWidth",
+            _language_combo_popup_width(self.source_combo),
+        )
         self.source_combo.blockSignals(False)
 
         self.target_combo.blockSignals(True)
@@ -638,6 +740,10 @@ class TmManagerPage(QWidget):
         index = self.target_combo.findData(current_target)
         self.target_combo.setCurrentIndex(index if index >= 0 else 0)
         refresh_combo_completer(self.target_combo)
+        self.target_combo.setProperty(
+            "popupMinimumWidth",
+            _language_combo_popup_width(self.target_combo),
+        )
         self.target_combo.blockSignals(False)
 
     def _refresh_clean_model_options(self) -> None:
@@ -703,18 +809,35 @@ class TmManagerPage(QWidget):
         title_row.addWidget(_label("记忆库管理", "PageTitle"))
         title_row.addStretch(1)
         stats = tm_manager.get_stats(self.lang_pair)
-        title_row.addWidget(self._pill("语言对", self.lang_pair), alignment=Qt.AlignmentFlag.AlignTop)
+        title_row.addWidget(
+            self._pill(
+                "语言对",
+                self.lang_pair,
+                min_width=TM_LANG_PAIR_TILE_MIN_WIDTH,
+                max_width=TM_LANG_PAIR_TILE_MAX_WIDTH,
+            ),
+            alignment=Qt.AlignmentFlag.AlignTop,
+        )
         title_row.addWidget(self._pill("总词条", f"{stats['total']} 条"), alignment=Qt.AlignmentFlag.AlignTop)
         title_row.addWidget(self._phase_badge(), alignment=Qt.AlignmentFlag.AlignTop)
         self.header_layout.addLayout(title_row)
         self.lang_pair_hint.setText(f"当前范围：{self.lang_pair}")
 
-    def _pill(self, label: str, value: str) -> QFrame:
+    def _pill(
+        self,
+        label: str,
+        value: str,
+        *,
+        min_width: int = HEADER_TILE_MIN_WIDTH,
+        max_width: int | None = None,
+    ) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Pill")
         frame.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         frame.setFixedHeight(HEADER_TILE_HEIGHT)
-        frame.setMinimumWidth(HEADER_TILE_MIN_WIDTH)
+        frame.setMinimumWidth(min_width)
+        if max_width is not None:
+            frame.setMaximumWidth(max_width)
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(8, 3, 8, 3)
         layout.setSpacing(0)
@@ -722,6 +845,14 @@ class TmManagerPage(QWidget):
         label_widget.setObjectName("PillLabel")
         value_widget = QLabel(value)
         value_widget.setObjectName("PillValue")
+        value_widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        value_widget.setWordWrap(False)
+        if max_width is not None:
+            text_width = value_widget.fontMetrics().horizontalAdvance(value) + 16
+            frame.setMinimumWidth(max(min_width, min(max_width, text_width)))
+            value_widget.setMaximumWidth(max(1, max_width - 16))
+            value_widget.setToolTip(value)
+            value_widget.setToolTipDuration(4200)
         value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(label_widget)
         layout.addWidget(value_widget)
@@ -755,8 +886,7 @@ class TmManagerPage(QWidget):
             ("手动", f"{stats['manual']:,}"),
             ("自动", f"{stats['auto']:,}"),
         ]
-        for label, value in items:
-            self.stats_layout.addWidget(_metric_pair(label, value), 1)
+        _add_metric_pairs(self.stats_layout, items)
 
     def _refresh_cleaner_controls(self) -> None:
         running = self.phase == "cleaning"
@@ -790,8 +920,7 @@ class TmManagerPage(QWidget):
             ("待确认", f"{pending:,}"),
             ("冲突", "0"),
         ]
-        for label, value in items:
-            self.clean_summary_layout.addWidget(_metric_pair(label, value), 1)
+        _add_metric_pairs(self.clean_summary_layout, items)
 
     def _sync_clean_progress_panel(self) -> None:
         running = self.phase == "cleaning"
@@ -1584,14 +1713,17 @@ class TmManagerPage(QWidget):
         extra_edit.setPlainText(self.settings.cleaner_prompt_extras.get(self.lang_pair, ""))
         layout.addWidget(extra_edit)
 
+        layout.addWidget(
+            _field_label(
+                "完整提示词覆盖",
+                "完整提示词覆盖",
+                "启用后仅使用下方 Prompt。",
+                ["关闭时会使用内置提示词加补充提示词。"],
+            )
+        )
         full_check = QCheckBox("启用完整提示词覆盖（高级）")
         full_override = self.settings.cleaner_full_prompt_overrides.get(self.lang_pair, "")
         full_check.setChecked(bool(full_override))
-        _set_tooltip(
-            full_check,
-            "完整提示词覆盖",
-            "启用后仅使用下方 Prompt。",
-        )
         layout.addWidget(full_check)
 
         full_edit = QTextEdit()

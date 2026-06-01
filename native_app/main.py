@@ -10,7 +10,7 @@ from app_meta import APP_NAME
 from core.tm_manager import init_db
 from native_app.main_window import NativeMainWindow
 from native_app.style import APP_QSS
-from native_app.widgets import install_in_app_tooltips
+from native_app.widgets import install_in_app_tooltips, install_scroll_wheel_focus_guard
 from settings import load_settings, save_settings
 
 
@@ -30,6 +30,7 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setStyle(FastToolTipStyle(app.style()))
     app.setStyleSheet(APP_QSS)
+    install_scroll_wheel_focus_guard(app)
     install_in_app_tooltips(app)
 
     settings = load_settings()

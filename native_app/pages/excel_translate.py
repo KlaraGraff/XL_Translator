@@ -78,7 +78,9 @@ from native_app.widgets import (
     configure_app_table,
     configure_file_selection_table,
     create_check_table_item,
+    create_current_text_override_combo,
     create_elide_table_item,
+    create_option_combo,
     create_searchable_combo,
     create_table_item,
     MiddleElideLabel,
@@ -102,6 +104,14 @@ _REVIEW_COLOR_ROWS = (
     (MIXED_MARK_UNRESOLVED, "保留原文复核", REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT),
     (MIXED_MARK_FOREIGN_NOISE, "疑似原文异常", REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT),
 )
+_REVIEW_COLOR_LABEL_WIDTH = 80
+_REVIEW_COLOR_ROW_SPACING = 4
+_REVIEW_COLOR_COMBO_MIN_WIDTH = 116
+_REVIEW_COLOR_CUSTOM_COMBO_MIN_WIDTH = 70
+_REVIEW_COLOR_CUSTOM_INPUT_MIN_WIDTH = 92
+_REVIEW_COLOR_PICK_BUTTON_WIDTH = 50
+_REVIEW_COLOR_POPUP_MIN_WIDTH = 236
+_QT_WIDGET_MAX_WIDTH = 16_777_215
 
 
 def _normalize_color_hex(value: str, fallback: str) -> str:
@@ -125,6 +135,28 @@ def _contrast_text_color(color: str) -> str:
     blue = int(normalized[4:6], 16)
     luminance = (red * 299 + green * 587 + blue * 114) / 1000
     return "#111827" if luminance >= 150 else "#FFFFFF"
+
+
+def _review_custom_combo_width(combo: QComboBox) -> int:
+    return max(
+        _REVIEW_COLOR_CUSTOM_COMBO_MIN_WIDTH,
+        combo.fontMetrics().horizontalAdvance("自定义") + 34,
+    )
+
+
+def _combo_popup_width(combo: QComboBox, minimum_width: int = _REVIEW_COLOR_POPUP_MIN_WIDTH) -> int:
+    longest_item_width = max(
+        (
+            combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+            for index in range(combo.count())
+        ),
+        default=0,
+    )
+    return max(minimum_width, longest_item_width + 48)
+
+
+def _review_color_popup_width(combo: QComboBox) -> int:
+    return _combo_popup_width(combo)
 
 
 HEADER_TILE_HEIGHT = 48
@@ -356,14 +388,9 @@ class ExcelTranslatePage(QWidget):
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(8)
-        layout.addWidget(_label("源路径", "SectionTitle"))
-
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        self.source_input = MiddleElideLineEdit(self.settings.last_excel_source_folder)
-        self.source_input.setPlaceholderText("输入文件夹或 Excel 文件绝对路径")
+        self.source_title_label = _label("源路径", "SectionTitle")
         _set_tooltip(
-            self.source_input,
+            self.source_title_label,
             "源路径",
             "指定待翻译的 Excel 文件或文件夹。",
             [
@@ -371,6 +398,12 @@ class ExcelTranslatePage(QWidget):
                 "单个文件仅扫描该文件。",
             ],
         )
+        layout.addWidget(self.source_title_label)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.source_input = MiddleElideLineEdit(self.settings.last_excel_source_folder)
+        self.source_input.setPlaceholderText("输入文件夹或 Excel 文件绝对路径")
         row.addWidget(self.source_input, 1)
 
         self.browse_button = QPushButton("浏览")
@@ -397,22 +430,20 @@ class ExcelTranslatePage(QWidget):
         frame, layout = _card()
         self.output_card = frame
         side_layout.addWidget(frame)
-        layout.addWidget(_label("输出位置", "SectionTitle"))
+        self.output_title_label = _label("输出位置", "SectionTitle")
+        _set_tooltip(
+            self.output_title_label,
+            "输出位置",
+            "设置翻译结果保存目录。",
+            [
+                "源目录内：在源路径同级位置创建带时间戳的输出目录。",
+                "自定义目录：将结果写入指定目录，目录不存在时自动创建。",
+            ],
+        )
+        layout.addWidget(self.output_title_label)
 
         self.output_default_radio = QRadioButton("源目录内")
         self.output_custom_radio = QRadioButton("自定义目录")
-        _set_tooltip(
-            self.output_default_radio,
-            "源目录内",
-            "在源路径同级位置创建输出目录。",
-            ["目录名自动附加时间戳。"],
-        )
-        _set_tooltip(
-            self.output_custom_radio,
-            "自定义目录",
-            "将结果写入指定目录。",
-            ["目录不存在时会自动创建。"],
-        )
         self.output_custom_radio.setChecked(self.settings.output.use_custom_output_dir)
         self.output_default_radio.setChecked(not self.settings.output.use_custom_output_dir)
         self.output_default_radio.toggled.connect(self._on_output_changed)
@@ -422,11 +453,6 @@ class ExcelTranslatePage(QWidget):
 
         self.custom_output_input = MiddleElideLineEdit(self.settings.output.custom_output_dir)
         self.custom_output_input.setPlaceholderText("输入输出目录")
-        _set_tooltip(
-            self.custom_output_input,
-            "自定义输出目录",
-            "指定翻译结果保存位置。",
-        )
         self.custom_output_input.editingFinished.connect(self._on_output_changed)
         layout.addWidget(self.custom_output_input)
 
@@ -440,7 +466,20 @@ class ExcelTranslatePage(QWidget):
         frame, layout = _card()
         self.params_card = frame
         side_layout.addWidget(frame)
-        layout.addWidget(_label("任务参数", "SectionTitle"))
+        self.params_title_label = _label("任务参数", "SectionTitle")
+        _set_tooltip(
+            self.params_title_label,
+            "任务参数",
+            "设置 Excel 翻译输出和复核行为。",
+            [
+                "保留原始表格：输出文件中保留原始工作表；关闭后仅保留翻译结果。",
+                "公式文本按显示值回填：命中后以静态文本替换原公式；关闭后保留原公式。",
+                "Excel 精调行高：翻译后调用本地 Excel 调整行高。",
+                "锁定行高，缩小字号：保持行高不变，通过缩小字号容纳译文。",
+                "标记需复核内容：在输出表格中标记需人工确认的单元格。",
+            ],
+        )
+        layout.addWidget(self.params_title_label)
 
         self.target_lang_label = _field_label(
             "目标语言",
@@ -453,12 +492,6 @@ class ExcelTranslatePage(QWidget):
         if self.target_combo.lineEdit() is not None:
             self.target_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_target_options()
-        _set_tooltip(
-            self.target_combo,
-            "目标语言",
-            "选择输出语言。",
-            ["可输入名称快速筛选。"],
-        )
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         layout.addWidget(self.target_combo)
 
@@ -472,11 +505,6 @@ class ExcelTranslatePage(QWidget):
         if self.source_lang_combo.lineEdit() is not None:
             self.source_lang_combo.lineEdit().setPlaceholderText("筛选语言")
         self._load_source_options()
-        _set_tooltip(
-            self.source_lang_combo,
-            "源语言",
-            "选择源文件的主要语言。",
-        )
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
 
@@ -509,78 +537,77 @@ class ExcelTranslatePage(QWidget):
         self.review_color_inputs: dict[str, QLineEdit] = {}
         self.review_color_buttons: dict[str, QPushButton] = {}
         self._build_review_color_controls(layout)
-        layout.addWidget(_field_label(
+        self.existing_fill_policy_label = _field_label(
             "已有底色处理",
             "已有底色处理",
             "设置风险标记遇到原单元格已有底色时的处理方式。",
-        ))
-        self.existing_fill_policy_combo = QComboBox()
+            [
+                "不覆盖原有底色：保留原底色，不再写入风险填充色。",
+                "覆盖原有底色：使用风险填充色替换原底色。",
+                "保留原有底色并使用红字：保留原底色，用红字提示需复核。",
+            ],
+        )
+        layout.addWidget(self.existing_fill_policy_label)
+        self.existing_fill_policy_combo = create_option_combo(max_visible_items=3)
         self.existing_fill_policy_combo.addItem("不覆盖原有底色", "skip")
         self.existing_fill_policy_combo.addItem("覆盖原有底色", "overwrite")
         self.existing_fill_policy_combo.addItem("保留原有底色并使用红字", "red_font")
+        self.existing_fill_policy_combo.setProperty(
+            "popupMinimumWidth",
+            _combo_popup_width(self.existing_fill_policy_combo),
+        )
         policy_index = self.existing_fill_policy_combo.findData(
             self.settings.excel_review.existing_fill_policy
         )
         self.existing_fill_policy_combo.setCurrentIndex(max(0, policy_index))
-        _set_tooltip(
-            self.existing_fill_policy_combo,
-            "已有底色处理",
-            "风险单元格无底色时会直接填充风险色；已有底色时按此策略处理。",
-        )
         self.existing_fill_policy_combo.currentIndexChanged.connect(self._on_params_changed)
         layout.addWidget(self.existing_fill_policy_combo)
         self._sync_source_lang_visibility()
 
     def _build_review_color_controls(self, layout: QVBoxLayout) -> None:
-        layout.addWidget(
-            _field_label(
-                "标记颜色",
-                "标记颜色",
-                "设置输出表格中复核和异常标记使用的填充颜色。",
-                [
-                    "下拉选项会直接显示对应高亮底色。",
-                    "选择自定义后可点击选色按钮，也可输入 #RRGGBB 色值。",
-                ],
-            )
+        self.review_color_label = _field_label(
+            "标记颜色",
+            "标记颜色",
+            "设置输出表格中复核和异常标记使用的填充颜色。",
+            [
+                "语义校验接受：译文通过语义校验，但建议人工抽查。",
+                "保留原文复核：未能可靠翻译时保留原文，需人工确认。",
+                "疑似原文异常：原文疑似噪声、错写或非目标内容。",
+                "自定义：可输入 #RRGGBB 色值或点击选色按钮。",
+            ],
         )
+        layout.addWidget(self.review_color_label)
         for mark, label, default_color in _REVIEW_COLOR_ROWS:
             row = QHBoxLayout()
-            row.setSpacing(8)
+            row.setSpacing(_REVIEW_COLOR_ROW_SPACING)
 
             name_label = QLabel(label)
             name_label.setObjectName("FieldHint")
-            name_label.setMinimumWidth(88)
+            name_label.setFixedWidth(_REVIEW_COLOR_LABEL_WIDTH)
             row.addWidget(name_label)
 
             current_color = self.settings.word_review.mark_colors.get(mark, default_color)
-            combo = QComboBox()
-            combo.setMinimumWidth(116)
+            combo = create_current_text_override_combo(
+                max_visible_items=len(_REVIEW_COLOR_PRESETS) + 1
+            )
+            combo.setMinimumWidth(_REVIEW_COLOR_COMBO_MIN_WIDTH)
             self._populate_review_color_combo(combo, default_color, current_color)
             combo.currentIndexChanged.connect(
                 lambda _index=0, key=mark: self._on_review_color_combo_changed(key)
-            )
-            _set_tooltip(
-                combo,
-                label,
-                "选择该类标记写入输出文件时使用的填充颜色。",
             )
             row.addWidget(combo, 1)
 
             custom_input = QLineEdit()
             custom_input.setPlaceholderText("#RRGGBB")
             custom_input.setMaxLength(7)
+            custom_input.setMinimumWidth(_REVIEW_COLOR_CUSTOM_INPUT_MIN_WIDTH)
             custom_input.editingFinished.connect(
                 lambda key=mark: self._on_review_custom_color_finished(key)
-            )
-            _set_tooltip(
-                custom_input,
-                "自定义色值",
-                "输入 6 位十六进制颜色，例如 #DDEBFF。",
             )
             row.addWidget(custom_input, 1)
 
             pick_button = QPushButton("选色")
-            pick_button.setMinimumWidth(56)
+            pick_button.setFixedWidth(_REVIEW_COLOR_PICK_BUTTON_WIDTH)
             pick_button.clicked.connect(
                 lambda _checked=False, key=mark: self._choose_review_custom_color(key)
             )
@@ -615,6 +642,7 @@ class ExcelTranslatePage(QWidget):
         normalized_current = _normalize_color_hex(current_color, normalized_default)
         combo.addItem(f"自定义 #{normalized_current}", _CUSTOM_COLOR_VALUE)
         self._set_combo_item_highlight(combo, combo.count() - 1, normalized_current)
+        combo.setProperty("popupMinimumWidth", _review_color_popup_width(combo))
 
         for index in range(combo.count()):
             if combo.itemData(index) == normalized_current:
@@ -684,10 +712,19 @@ class ExcelTranslatePage(QWidget):
         pick_button.setVisible(is_custom)
         pick_button.setEnabled(is_custom and controls_enabled)
         custom_input.setText(f"#{color}")
+        custom_input.setCursorPosition(0)
         custom_index = combo.findData(_CUSTOM_COLOR_VALUE)
         if custom_index >= 0:
             combo.setItemText(custom_index, f"自定义 #{color}")
             self._set_combo_item_highlight(combo, custom_index, color)
+            combo.setProperty("popupMinimumWidth", _review_color_popup_width(combo))
+        if hasattr(combo, "setCurrentDisplayTextOverride"):
+            combo.setCurrentDisplayTextOverride("自定义" if is_custom else "")
+        if is_custom:
+            combo.setFixedWidth(_review_custom_combo_width(combo))
+        else:
+            combo.setMinimumWidth(_REVIEW_COLOR_COMBO_MIN_WIDTH)
+            combo.setMaximumWidth(_QT_WIDGET_MAX_WIDTH)
         self._apply_review_color_preview(combo, color)
         self._apply_review_color_preview(custom_input, color)
         self._apply_review_color_preview(pick_button, color)
@@ -716,54 +753,26 @@ class ExcelTranslatePage(QWidget):
     def _apply_review_color_preview(self, widget: QWidget, color: str) -> None:
         normalized = _normalize_color_hex(color, "FFF2CC")
         text_color = _contrast_text_color(normalized)
-        widget.setStyleSheet(
+        preview_style = (
             f"background-color: #{normalized}; "
             f"color: {text_color}; "
+            "border: 1px solid palette(base); "
+            "border-radius: 7px; "
             f"selection-background-color: #{normalized};"
         )
+        if isinstance(widget, QComboBox):
+            widget.setStyleSheet(
+                f"QComboBox {{ {preview_style} }}"
+                "QComboBox QAbstractItemView { "
+                "background: palette(base); "
+                "border: 1px solid palette(base); "
+                "}"
+            )
+            return
+        widget.setStyleSheet(preview_style)
 
     def _checkbox(self, text: str, checked: bool, layout: QVBoxLayout) -> QCheckBox:
         checkbox = QCheckBox(text)
-        checkbox.setToolTip(
-            {
-                "保留原始表格": _tooltip(
-                    "保留原始表格",
-                    "在输出文件中保留原始工作表。",
-                    [
-                        "便于对照审校。",
-                        "关闭后仅保留翻译结果。",
-                    ],
-                ),
-                "公式文本按显示值回填": _tooltip(
-                    "公式文本按显示值回填",
-                    "按公式显示值匹配并写入译文。",
-                    [
-                        "命中后会以静态文本替换原公式。",
-                        "关闭后保留原公式。",
-                    ],
-                ),
-                "Excel 精调行高": _tooltip(
-                    "Excel 精调行高",
-                    "翻译完成后调用本地 Excel 调整行高。",
-                    ["与“锁定行高，缩小字号”互斥。"],
-                ),
-                "锁定行高，缩小字号": _tooltip(
-                    "锁定行高，缩小字号",
-                    "保持行高不变，通过缩小字号容纳译文。",
-                    [
-                        "与“Excel 精调行高”互斥。",
-                    ],
-                ),
-                "标记需复核内容": _tooltip(
-                    "标记需复核内容",
-                    "在输出表格中标记需人工确认的单元格。",
-                    [
-                        "关闭后不会写入风险底色或红字。",
-                        "颜色和已有底色处理设置会保留，重新开启后继续生效。",
-                    ],
-                ),
-            }.get(text, "")
-        )
         checkbox.setChecked(checked)
         checkbox.toggled.connect(self._on_params_changed)
         layout.addWidget(checkbox)

@@ -774,6 +774,8 @@ class PdfImageTranslationTests(unittest.TestCase):
                 image_client.calls[0]["source_image_path"],
                 image_client.calls[1]["source_image_path"],
             )
+            self.assertEqual(image_client.calls[0]["target_language"], "英文")
+            self.assertEqual(image_client.calls[0]["target_lang_code"], "en")
             self.assertIn("编号标签误译", image_client.calls[1]["review_feedback"])
 
     def test_single_page_all_generation_failures_do_not_create_placeholder_pdf(self) -> None:
@@ -1378,6 +1380,8 @@ class _RecordingImageClient(_FakeImageClient):
         self.calls.append(
             {
                 "source_image_path": str(kwargs.get("source_image_path") or ""),
+                "target_language": str(kwargs.get("target_language") or ""),
+                "target_lang_code": str(kwargs.get("target_lang_code") or ""),
                 "review_feedback": str(kwargs.get("review_feedback") or ""),
             }
         )
