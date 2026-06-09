@@ -98,7 +98,6 @@ from native_app.widgets import (
     create_elide_table_item,
     FileSelectionTable,
     create_searchable_combo,
-    create_table_item,
     is_live_widget,
     refresh_combo_completer,
     select_combo_text_match,

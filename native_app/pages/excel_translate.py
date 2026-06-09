@@ -84,7 +84,6 @@ from native_app.widgets import (
     create_elide_table_item,
     create_option_combo,
     create_searchable_combo,
-    create_table_item,
     FileSelectionTable,
     MiddleElideLabel,
     MiddleElideLineEdit,
