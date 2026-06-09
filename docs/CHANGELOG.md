@@ -1,5 +1,10 @@
 # Translator 版本更新日志
 
+## V7.1
+- 升级 GitHub Actions 分发构建工作流，使用 Node 24 兼容的 checkout、setup-python、upload-artifact 和 release 上传 action 版本。
+- 固定 Windows 与 macOS 构建 runner，避免 `windows-latest`、`macos-latest` 迁移导致自动打包环境漂移。
+- 保持 V7.0 小屏适配功能不变，作为自动打包基础设施升级版本发布。
+
 ## V7.0
 - 小屏启动改为按屏幕可用区域自适应，避免 13/14 英寸屏幕首次打开时窗口超出屏幕。
 - 新增小屏窄导航栏，完整模型、领域和 Prompt 设置可通过“设置”面板打开，让主工作区保留更多横向空间。
