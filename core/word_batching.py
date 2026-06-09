@@ -37,8 +37,9 @@ _SOFT_SPLIT_CHARS = set("，,、")
 ProgressCallback = Callable[[int, int], None]
 ErrorCallback = Callable[[str], None]
 CandidateCallback = Callable[[str, str], None]
+DrainedCallback = Callable[[], None]
 
-_API_WEIGHT_CHARS_PER_SLOT = 2800
+_API_WEIGHT_CHARS_PER_SLOT = 4000
 _API_WEIGHT_PROMPT_CHAR_CAP = 900
 _API_WEIGHT_OUTPUT_MULTIPLIER = 1.15
 
@@ -102,6 +103,7 @@ def translate_word_texts(
     api_scheduler: WeightedApiScheduler | None = None,
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     candidate_callback: CandidateCallback | None = None,
+    drained_callback: DrainedCallback | None = None,
 ) -> dict[str, str]:
     """Translate Word paragraphs using character-budgeted batches with fallback retries."""
     if not texts:
@@ -120,6 +122,7 @@ def translate_word_texts(
     done_units = 0
     done_lock = threading.Lock()
     unit_results: dict[tuple[str, int], str] = {}
+    drained_notified = False
 
     def _record_progress(completed: int) -> None:
         nonlocal done_units
@@ -127,6 +130,14 @@ def translate_word_texts(
             done_units += completed
             if progress_callback:
                 progress_callback(min(done_units, total_units), total_units)
+
+    def _notify_drained() -> None:
+        nonlocal drained_notified
+        if drained_notified:
+            return
+        drained_notified = True
+        if drained_callback:
+            drained_callback()
 
     def _translate_one_batch(batch: list[WordTranslationUnit]) -> dict[tuple[str, int], str]:
         partial = _translate_units_with_fallback(
@@ -155,6 +166,7 @@ def translate_word_texts(
                 logger.info("Word 翻译任务收到停止信号，停止提交后续批次。")
                 break
             unit_results.update(_translate_one_batch(batch))
+        _notify_drained()
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map: dict = {}
@@ -166,6 +178,7 @@ def translate_word_texts(
                 try:
                     batch = next(batch_iter)
                 except StopIteration:
+                    _notify_drained()
                     return False
                 future = executor.submit(_translate_one_batch, batch)
                 future_map[future] = batch

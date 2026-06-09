@@ -54,6 +54,40 @@ _ARABIC_LIST_PREFIX_RE = re.compile(
 _ALPHA_LIST_PREFIX_RE = re.compile(r"^[A-Za-z][.)）]")
 _BULLET_PREFIX_RE = re.compile(r"^[•·▪▫●○◆◇■□]\s+")
 _ARABIC_DECIMAL_PREFIX_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3})+)(.*)$")
+_LEADING_INLINE_WHITESPACE_RE = re.compile(r"^[ \t\u3000]+")
+
+_WORD_HIGHLIGHT_RGB = {
+    "black": (0x00, 0x00, 0x00),
+    "blue": (0x00, 0x00, 0xFF),
+    "cyan": (0x00, 0xFF, 0xFF),
+    "green": (0x00, 0xFF, 0x00),
+    "magenta": (0xFF, 0x00, 0xFF),
+    "red": (0xFF, 0x00, 0x00),
+    "yellow": (0xFF, 0xFF, 0x00),
+    "white": (0xFF, 0xFF, 0xFF),
+    "darkBlue": (0x00, 0x00, 0x80),
+    "darkCyan": (0x00, 0x80, 0x80),
+    "darkGreen": (0x00, 0x80, 0x00),
+    "darkMagenta": (0x80, 0x00, 0x80),
+    "darkRed": (0x80, 0x00, 0x00),
+    "darkYellow": (0x80, 0x80, 0x00),
+    "darkGray": (0x80, 0x80, 0x80),
+    "lightGray": (0xC0, 0xC0, 0xC0),
+}
+_WORD_HIGHLIGHT_HEX_OVERRIDES = {
+    "FFF2CC": "yellow",
+    "FCE4D6": "yellow",
+    "F4CCCC": "red",
+    "DDEBFF": "cyan",
+    "D9EAD3": "green",
+}
+_CHINESE_NUMBER_FORMATS = {
+    "chineseCounting",
+    "chineseCountingThousand",
+    "chineseLegalSimplified",
+    "chineseCountingThousand2",
+}
+_CHINESE_DIGITS = "零一二三四五六七八九"
 
 
 @dataclass
@@ -276,6 +310,10 @@ def write_bilingual_docx(
         id(paragraph): _paragraph_source_text(paragraph)
         for paragraph in all_paragraphs
     }
+    original_paragraph_prefixes = {
+        id(paragraph): _paragraph_leading_inline_whitespace(paragraph)
+        for paragraph in all_paragraphs
+    }
     original_cell_sources = {
         id(cell): _cell_source_text(cell)
         for cell in table_cells
@@ -316,10 +354,12 @@ def write_bilingual_docx(
         resolved = _resolve_translation(source, translations)
         if resolved is None:
             continue
+        leading_prefix = original_paragraph_prefixes.get(paragraph_key, "")
+        translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
         if resolved.replace_only:
             _replace_paragraph_text(
                 paragraph,
-                resolved.text,
+                translated_text,
                 target_lang=target_lang,
             )
             if review_mark:
@@ -332,7 +372,7 @@ def write_bilingual_docx(
         else:
             translation_paragraph = _insert_translation_paragraph_after(
                 paragraph,
-                resolved.text,
+                translated_text,
                 target_lang=target_lang,
             )
             if review_mark:
@@ -492,6 +532,23 @@ def _paragraph_source_text(paragraph: Paragraph) -> str:
     return (paragraph.text or "").strip()
 
 
+def _paragraph_raw_text(paragraph: Paragraph) -> str:
+    return paragraph.text or ""
+
+
+def _paragraph_leading_inline_whitespace(paragraph: Paragraph) -> str:
+    match = _LEADING_INLINE_WHITESPACE_RE.match(_paragraph_raw_text(paragraph))
+    return match.group(0) if match else ""
+
+
+def _apply_leading_prefix(text: str, prefix: str) -> str:
+    if not prefix:
+        return text
+    if str(text or "").startswith(prefix):
+        return text
+    return f"{prefix}{text}"
+
+
 def _cell_source_text(cell: _Cell) -> str:
     return (cell.text or "").strip()
 
@@ -610,7 +667,10 @@ def _apply_paragraph_review_mark(
             return False
         if existing_policy == EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE:
             return _apply_paragraph_red_underline(paragraph)
-    return _apply_paragraph_text_shading(paragraph, _review_mark_fill(mark, mark_colors))
+    return _apply_paragraph_text_highlight(
+        paragraph,
+        _review_mark_highlight(mark, mark_colors),
+    )
 
 
 def _apply_cell_review_mark(
@@ -625,9 +685,62 @@ def _apply_cell_review_mark(
         if existing_policy == EXISTING_HIGHLIGHT_POLICY_RED_UNDERLINE:
             return _apply_cell_red_underline(cell)
     applied = False
-    fill = _review_mark_fill(mark, mark_colors)
+    highlight = _review_mark_highlight(mark, mark_colors)
     for paragraph in cell.paragraphs:
-        applied = _apply_paragraph_text_shading(paragraph, fill) or applied
+        applied = _apply_paragraph_text_highlight(paragraph, highlight) or applied
+    return applied
+
+
+def _review_mark_highlight(mark: str, mark_colors: dict[str, str]) -> str:
+    fill = _review_mark_fill(mark, mark_colors)
+    return _highlight_value_for_hex(fill)
+
+
+def _highlight_value_for_hex(value: str) -> str:
+    cleaned = _normalize_hex_fill(value)
+    if cleaned in _WORD_HIGHLIGHT_HEX_OVERRIDES:
+        return _WORD_HIGHLIGHT_HEX_OVERRIDES[cleaned]
+    try:
+        red, green, blue = tuple(int(cleaned[index : index + 2], 16) for index in (0, 2, 4))
+    except Exception:
+        return "yellow"
+    high = max(red, green, blue)
+    low = min(red, green, blue)
+    if high <= 48:
+        return "black"
+    if high - low <= 18:
+        return "lightGray" if high > 160 else "darkGray"
+
+    if high == red:
+        hue = ((green - blue) / (high - low)) % 6
+    elif high == green:
+        hue = ((blue - red) / (high - low)) + 2
+    else:
+        hue = ((red - green) / (high - low)) + 4
+    hue *= 60
+
+    if hue < 20 or hue >= 340:
+        return "red"
+    if hue < 70:
+        return "yellow"
+    if hue < 165:
+        return "green"
+    if hue < 205:
+        return "cyan"
+    if hue < 265:
+        return "blue"
+    if hue < 330:
+        return "magenta"
+    return "red"
+
+
+def _apply_paragraph_text_highlight(paragraph: Paragraph, highlight: str) -> bool:
+    applied = False
+    for run in paragraph.runs:
+        if not run.text:
+            continue
+        _set_highlight_value(run._element.get_or_add_rPr(), highlight)
+        applied = True
     return applied
 
 
@@ -720,6 +833,15 @@ def _set_shading_fill(parent_element, fill: str) -> None:
     shd.set(qn("w:fill"), _normalize_hex_fill(fill))
 
 
+def _set_highlight_value(parent_element, value: str) -> None:
+    highlight = parent_element.find(qn("w:highlight"))
+    if highlight is None:
+        highlight = OxmlElement("w:highlight")
+        parent_element.append(highlight)
+    cleaned = str(value or "").strip()
+    highlight.set(qn("w:val"), cleaned if cleaned in _WORD_HIGHLIGHT_RGB else "yellow")
+
+
 def _is_toc_or_field_paragraph(paragraph: Paragraph) -> bool:
     style_name = _paragraph_style_name(paragraph).casefold()
     if "toc" in style_name or "目录" in style_name:
@@ -796,6 +918,8 @@ def _collect_numbering_labels(
     for paragraph in paragraphs:
         numbering_info = _get_paragraph_numbering_info(paragraph)
         if numbering_info is None:
+            continue
+        if not _paragraph_source_text(paragraph):
             continue
 
         num_id, ilvl = numbering_info
@@ -894,15 +1018,27 @@ def _to_int(value, *, fallback: int) -> int:
 
 
 def _get_paragraph_numbering_info(paragraph: Paragraph) -> tuple[str, int] | None:
-    direct = _read_numbering_info_from_ppr(getattr(paragraph._p, "pPr", None))
+    direct_p_pr = getattr(paragraph._p, "pPr", None)
+    direct = _read_numbering_info_from_ppr(direct_p_pr)
     if direct is not None:
         return direct
+    if _ppr_suppresses_numbering(direct_p_pr):
+        return None
 
     try:
         style_element = paragraph.style._element
     except Exception:
         return None
     return _read_numbering_info_from_ppr(getattr(style_element, "pPr", None))
+
+
+def _ppr_suppresses_numbering(p_pr) -> bool:
+    if p_pr is None:
+        return False
+    num_pr = p_pr.find(qn("w:numPr"))
+    if num_pr is None:
+        return False
+    return _child_val(num_pr, "w:numId") == "0"
 
 
 def _read_numbering_info_from_ppr(p_pr) -> tuple[str, int] | None:
@@ -945,6 +1081,10 @@ def _format_numbering_label(
 def _format_number(number: int, number_format: str) -> str:
     if number <= 0:
         number = 1
+    if number_format in _CHINESE_NUMBER_FORMATS:
+        return _format_chinese_number(number)
+    if number_format == "decimalFullWidth":
+        return _format_full_width_number(number)
     if number_format == "lowerLetter":
         return _format_alpha_number(number).lower()
     if number_format == "upperLetter":
@@ -953,6 +1093,40 @@ def _format_number(number: int, number_format: str) -> str:
         return _format_roman_number(number).lower()
     if number_format == "upperRoman":
         return _format_roman_number(number).upper()
+    return str(number)
+
+
+def _format_full_width_number(number: int) -> str:
+    return str(number).translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+
+
+def _format_chinese_number(number: int) -> str:
+    if number <= 0:
+        return _CHINESE_DIGITS[0]
+    if number < 10:
+        return _CHINESE_DIGITS[number]
+    if number < 100:
+        tens, ones = divmod(number, 10)
+        prefix = "" if tens == 1 else _CHINESE_DIGITS[tens]
+        return f"{prefix}十{_CHINESE_DIGITS[ones] if ones else ''}"
+    if number < 1000:
+        hundreds, remainder = divmod(number, 100)
+        if remainder == 0:
+            return f"{_CHINESE_DIGITS[hundreds]}百"
+        connector = "" if remainder >= 10 else "零"
+        return f"{_CHINESE_DIGITS[hundreds]}百{connector}{_format_chinese_number(remainder)}"
+    if number < 10000:
+        thousands, remainder = divmod(number, 1000)
+        if remainder == 0:
+            return f"{_CHINESE_DIGITS[thousands]}千"
+        connector = "" if remainder >= 100 else "零"
+        return f"{_CHINESE_DIGITS[thousands]}千{connector}{_format_chinese_number(remainder)}"
+    if number < 100000000:
+        high, remainder = divmod(number, 10000)
+        if remainder == 0:
+            return f"{_format_chinese_number(high)}万"
+        connector = "" if remainder >= 1000 else "零"
+        return f"{_format_chinese_number(high)}万{connector}{_format_chinese_number(remainder)}"
     return str(number)
 
 
@@ -1000,14 +1174,15 @@ def _flatten_automatic_numbering(
     paragraphs: list[Paragraph],
     numbering_labels: dict[int, str],
 ) -> WordNumberingNormalizationStats:
-    if not numbering_labels:
-        return WordNumberingNormalizationStats()
     labels_seen = 0
     labels_prepended = 0
     numbering_removed = 0
     for paragraph in paragraphs:
         label = numbering_labels.get(id(paragraph), "")
         if not label:
+            if not _paragraph_source_text(paragraph) and _get_paragraph_numbering_info(paragraph):
+                if _remove_paragraph_numbering(paragraph):
+                    numbering_removed += 1
             continue
         labels_seen += 1
         if _prepend_paragraph_text(paragraph, label):

@@ -68,8 +68,11 @@ _LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 _STANDARD_RE = re.compile(r"\b(?:GB/T|ISO|EN|ASTM|DIN|IEC|JIS|BS)\b", re.IGNORECASE)
+_UNIT_TOKEN_PATTERN = (
+    r"(?:mpa|kpa|mm|cm|km|kg|kn|kv|kw|hz|m2|m3|m²|m³|pa|m|g|t|n|v|w)"
+)
 _UNIT_RE = re.compile(
-    r"\b(?:mm|cm|m|km|kg|g|t|mpa|kpa|pa|kn|n|kv|v|kw|w|hz|m2|m3|m²|m³)\b",
+    rf"(?<![A-Za-zÀ-ÖØ-öø-ÿ]){_UNIT_TOKEN_PATTERN}(?![A-Za-zÀ-ÖØ-öø-ÿ])",
     re.IGNORECASE,
 )
 _MODEL_RE = re.compile(
@@ -211,6 +214,7 @@ def translate_mixed_language_texts(
     api_scheduler: WeightedApiScheduler | None = None,
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: MixedLanguageRunStats | None = None,
+    drained_callback: Callable[[], None] | None = None,
 ) -> dict[str, MixedLanguageResult]:
     """Translate mixed-language sources with structured actions keyed by source text."""
     if not texts:
@@ -227,6 +231,7 @@ def translate_mixed_language_texts(
     results: dict[str, MixedLanguageResult] = {}
     done_count = 0
     lock = threading.Lock()
+    drained_notified = False
 
     def _record_progress(completed: int) -> None:
         nonlocal done_count
@@ -234,6 +239,14 @@ def translate_mixed_language_texts(
             done_count += completed
             if progress_callback:
                 progress_callback(min(done_count, len(texts)), len(texts))
+
+    def _notify_drained() -> None:
+        nonlocal drained_notified
+        if drained_notified:
+            return
+        drained_notified = True
+        if drained_callback:
+            drained_callback()
 
     def _translate_one_batch(batch: list[str]) -> dict[str, MixedLanguageResult]:
         partial = _translate_mixed_batch_with_fallback(
@@ -272,6 +285,7 @@ def translate_mixed_language_texts(
             if should_stop and should_stop():
                 break
             results.update(_translate_one_batch(batch))
+        _notify_drained()
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map: dict = {}
@@ -283,6 +297,7 @@ def translate_mixed_language_texts(
                 try:
                     batch = next(batch_iter)
                 except StopIteration:
+                    _notify_drained()
                     return False
                 future = executor.submit(_translate_one_batch, batch)
                 future_map[future] = batch

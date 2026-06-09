@@ -146,10 +146,11 @@ class WordDocumentTests(unittest.TestCase):
             )
 
             out_doc = Document(str(out_path))
-            self.assertEqual(self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]), "DDEBFF")
+            self.assertEqual(self._paragraph_first_run_highlight(out_doc.paragraphs[0]), "cyan")
+            self.assertEqual(self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]), "")
             self.assertTrue(
                 all(
-                    self._paragraph_first_run_shading_fill(paragraph) == "DDEBFF"
+                    self._paragraph_first_run_highlight(paragraph) == "cyan"
                     for paragraph in out_doc.tables[0].cell(0, 0).paragraphs
                     if paragraph.text.strip()
                 )
@@ -187,16 +188,16 @@ class WordDocumentTests(unittest.TestCase):
 
             out_doc = Document(str(out_path))
             self.assertEqual(
-                self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]),
-                "DDEBFF",
+                self._paragraph_first_run_highlight(out_doc.paragraphs[0]),
+                "cyan",
             )
             self.assertEqual(
-                self._paragraph_first_run_shading_fill(out_doc.paragraphs[1]),
-                "D9EAD3",
+                self._paragraph_first_run_highlight(out_doc.paragraphs[1]),
+                "green",
             )
             self.assertEqual(
-                self._paragraph_first_run_shading_fill(out_doc.paragraphs[2]),
-                "FCE4D6",
+                self._paragraph_first_run_highlight(out_doc.paragraphs[2]),
+                "yellow",
             )
 
     def test_word_review_highlight_preserves_existing_shading(self) -> None:
@@ -228,6 +229,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertEqual(self._paragraph_shading_fill(out_doc.paragraphs[0]), "AABBCC")
             self.assertEqual(self._cell_shading_fill(out_doc.tables[0].cell(0, 0)), "CCDDEE")
             self.assertEqual(self._paragraph_first_run_shading_fill(out_doc.paragraphs[0]), "")
+            self.assertEqual(self._paragraph_first_run_highlight(out_doc.paragraphs[0]), "")
             self.assertEqual(
                 self._paragraph_first_run_shading_fill(out_doc.tables[0].cell(0, 0).paragraphs[0]),
                 "",
@@ -312,6 +314,50 @@ class WordDocumentTests(unittest.TestCase):
 
             for paragraph in out_doc.paragraphs[:4]:
                 self.assertEqual(self._paragraph_num_id(paragraph), "0")
+
+    def test_chinese_numbering_fallback_keeps_chinese_labels_and_skips_blank_list_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "chinese-numbered.docx"
+            self._build_chinese_section_numbered_docx(source_path)
+
+            normalized = normalize_docx_automatic_numbering(source_path)
+            out_doc = Document(str(normalized.path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+
+            self.assertIn("", paragraph_texts)
+            self.assertIn("第一节 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertIn("第二节 修复总体原则与目标", paragraph_texts)
+            self.assertNotIn("第1节 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertNotIn("第2节 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertTrue(all(self._paragraph_num_id(paragraph) == "0" for paragraph in out_doc.paragraphs))
+
+    def test_translation_inherits_manual_leading_spaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "spaces.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            doc.add_paragraph("   人工空格缩进段落")
+            doc.add_paragraph("\u3000\u3000全角空格缩进段落")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "人工空格缩进段落": "Indented translation",
+                    "全角空格缩进段落": "Full-width indented translation",
+                },
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertIn("   Indented translation", paragraph_texts)
+            self.assertIn("\u3000\u3000Full-width indented translation", paragraph_texts)
 
     def test_word_automatic_chapter_number_is_not_duplicated_when_text_already_has_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -747,6 +793,21 @@ class WordDocumentTests(unittest.TestCase):
         doc.save(str(path))
 
     @staticmethod
+    def _build_chinese_section_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_default_num_id_9_level(
+            doc,
+            number_format="chineseCountingThousand",
+            level_text_value="第%1节",
+        )
+        blank = doc.add_paragraph("")
+        first = doc.add_paragraph("裂缝开裂现状及成因分析")
+        second = doc.add_paragraph("修复总体原则与目标")
+        for paragraph in (blank, first, second):
+            WordDocumentTests._set_paragraph_num_pr(paragraph, num_id="9", ilvl="0")
+        doc.save(str(path))
+
+    @staticmethod
     def _set_default_num_id_9_level(
         doc: Document,
         *,
@@ -818,6 +879,19 @@ class WordDocumentTests(unittest.TestCase):
         if run is None:
             return ""
         return WordDocumentTests._shading_fill(getattr(run._element, "rPr", None))
+
+    @staticmethod
+    def _paragraph_first_run_highlight(paragraph) -> str:
+        run = next((item for item in paragraph.runs if item.text.strip()), None)
+        if run is None:
+            return ""
+        r_pr = getattr(run._element, "rPr", None)
+        if r_pr is None:
+            return ""
+        highlight = r_pr.find(qn("w:highlight"))
+        if highlight is None:
+            return ""
+        return str(highlight.get(qn("w:val")) or "").strip()
 
     @staticmethod
     def _shading_fill(parent_element) -> str:

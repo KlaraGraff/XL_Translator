@@ -10,13 +10,16 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QVBoxLayout, QWidget
 
+from core.file_scanner import FileItem
 from core import tm_manager as tm_store
 from core.mixed_language import MIXED_MARK_UNRESOLVED
+from core.pdf_image_translation import PdfFileItem
 from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, ProgressMsg
+from core.word_document import WordFileItem
 from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.tm_manager import TM_LANG_PAIR_TILE_MAX_WIDTH, TmManagerPage
@@ -69,6 +72,12 @@ class NativeTranslationPageTests(unittest.TestCase):
             for button in page.action_card.findChildren(QPushButton)
             if button.parent() is not None
         ]
+
+    def _wait_for_qt_timers(self, delay_ms: int = 250) -> None:
+        self.app.processEvents()
+        QTimer.singleShot(delay_ms, self.app.quit)
+        self.app.exec()
+        self.app.processEvents()
 
     def _make_tm_page(self, settings: AppSettings | None = None) -> TmManagerPage:
         temp_dir = tempfile.TemporaryDirectory()
@@ -151,6 +160,262 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertEqual(pdf_page.source_input.text(), "/tmp/pdf-source.pdf")
         self.assertIsInstance(pdf_page.source_input, MiddleElideLineEdit)
         self.assertIsInstance(pdf_page.custom_output_input, MiddleElideLineEdit)
+
+    def test_excel_untranslated_only_checkbox_updates_start_button_without_persistence(self) -> None:
+        with patch("native_app.pages.excel_translate.save_settings"):
+            page = ExcelTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            self.assertFalse(page.untranslated_only_check.isChecked())
+            self.assertTrue(
+                any(
+                    text.startswith("开始翻译（")
+                    for text in self._button_texts(page)
+                )
+            )
+
+            page.untranslated_only_check.setChecked(True)
+
+            self.assertTrue(
+                any(
+                    text.startswith("开始补译未译内容（")
+                    for text in self._button_texts(page)
+                )
+            )
+
+            fresh_page = ExcelTranslatePage(page.settings)
+            self.addCleanup(fresh_page.close)
+            self.addCleanup(fresh_page.deleteLater)
+            self.assertFalse(fresh_page.untranslated_only_check.isChecked())
+
+    def test_word_untranslated_only_checkbox_updates_start_button_without_persistence(self) -> None:
+        with patch("native_app.pages.word_translate.save_settings"):
+            page = WordTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+            self.assertFalse(page.untranslated_only_check.isChecked())
+            self.assertTrue(
+                any(
+                    text.startswith("开始翻译（")
+                    for text in self._button_texts(page)
+                )
+            )
+
+            page.untranslated_only_check.setChecked(True)
+
+            self.assertTrue(
+                any(
+                    text.startswith("开始补译未译内容（")
+                    for text in self._button_texts(page)
+                )
+            )
+
+            fresh_page = WordTranslatePage(page.settings)
+            self.addCleanup(fresh_page.close)
+            self.addCleanup(fresh_page.deleteLater)
+            self.assertFalse(fresh_page.untranslated_only_check.isChecked())
+
+    def test_delayed_reset_keeps_start_action_and_allows_empty_scan(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("native_app.pages.excel_translate.save_settings"),
+            patch("native_app.pages.word_translate.save_settings"),
+            patch("native_app.pages.pdf_translate.save_settings"),
+        ):
+            root = Path(tmp)
+            cases = (
+                (
+                    ExcelTranslatePage(AppSettings()),
+                    FileItem(root / "source.xlsx", "source", 1.0, ["Sheet1"]),
+                ),
+                (
+                    WordTranslatePage(AppSettings()),
+                    WordFileItem(
+                        root / "source.docx",
+                        "source",
+                        1.0,
+                        paragraph_count=1,
+                        table_count=0,
+                        translatable_count=1,
+                    ),
+                ),
+                (
+                    PdfTranslatePage(AppSettings()),
+                    PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1),
+                ),
+            )
+            for page, item in cases:
+                with self.subTest(page=type(page).__name__):
+                    self.addCleanup(page.close)
+                    self.addCleanup(page.deleteLater)
+                    page.files = [item]
+                    page.source_root = str(root)
+                    page.phase = "idle"
+                    page.done = None
+                    page._render_workspace()
+
+                    page.done = self._done_msg()
+                    page.phase = "done"
+                    page._render_workspace()
+                    page._schedule_action_card_resync()
+                    reset_buttons = [
+                        button
+                        for button in page.action_card.findChildren(QPushButton)
+                        if button.text() == "返回并开始新任务" and button.parent() is not None
+                    ]
+                    self.assertEqual(len(reset_buttons), 1)
+
+                    reset_buttons[0].click()
+                    self._wait_for_qt_timers()
+
+                    button_texts = self._visible_button_texts(page)
+                    self.assertEqual(page.phase, "idle")
+                    self.assertTrue(any(text.startswith("开始翻译（") for text in button_texts))
+                    self.assertNotIn("返回并开始新任务", button_texts)
+
+                    page._on_scan_finished([], str(root), "")
+                    self.assertTrue(
+                        any(
+                            text.startswith("开始翻译（")
+                            for text in self._visible_button_texts(page)
+                        )
+                    )
+
+    def test_reset_scan_and_rescan_never_use_stale_file_tables(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("native_app.pages.excel_translate.save_settings"),
+            patch("native_app.pages.word_translate.save_settings"),
+            patch("native_app.pages.pdf_translate.save_settings"),
+        ):
+            root = Path(tmp)
+            cases = (
+                (
+                    ExcelTranslatePage(AppSettings()),
+                    FileItem(root / "source.xlsx", "source", 1.0, ["Sheet1"]),
+                    FileItem(root / "next.xlsx", "next", 2.0, ["Sheet1"]),
+                ),
+                (
+                    WordTranslatePage(AppSettings()),
+                    WordFileItem(
+                        root / "source.docx",
+                        "source",
+                        1.0,
+                        paragraph_count=1,
+                        table_count=0,
+                        translatable_count=1,
+                    ),
+                    WordFileItem(
+                        root / "next.docx",
+                        "next",
+                        2.0,
+                        paragraph_count=2,
+                        table_count=0,
+                        translatable_count=2,
+                    ),
+                ),
+                (
+                    PdfTranslatePage(AppSettings()),
+                    PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1),
+                    PdfFileItem(root / "next.pdf", "next", 2.0, page_count=2),
+                ),
+            )
+            for page, first_item, next_item in cases:
+                with self.subTest(page=type(page).__name__):
+                    self.addCleanup(page.close)
+                    self.addCleanup(page.deleteLater)
+                    page.files = [first_item]
+                    page.source_root = str(root)
+                    page.phase = "idle"
+                    page._render_workspace()
+                    stale_table = page.table
+                    self.assertIsNotNone(stale_table)
+
+                    page.done = self._done_msg()
+                    page.phase = "done"
+                    page._render_workspace()
+                    page._reset_task()
+                    self.assertIsNone(page.table)
+                    self.assertEqual(page._selected_files(), [])
+                    self.assertTrue(
+                        any(text.startswith("开始翻译（") for text in self._visible_button_texts(page))
+                    )
+                    self.assertNotIn("返回并开始新任务", self._visible_button_texts(page))
+
+                    page._on_scan_finished([], str(root), "")
+                    self.assertIsNone(page.table)
+                    self.assertEqual(page._selected_files(), [])
+                    self.assertTrue(
+                        any(text.startswith("开始翻译（") for text in self._visible_button_texts(page))
+                    )
+                    self.assertFalse(page._can_start())
+
+                    page._on_scan_finished([next_item], str(root), "")
+                    self.assertIsNotNone(page.table)
+                    self.assertIsNot(page.table, stale_table)
+                    self.assertEqual(page._selected_files(), [next_item])
+                    self.assertTrue(page._can_start())
+                    self.assertTrue(
+                        any(text.startswith("开始翻译（") for text in self._visible_button_texts(page))
+                    )
+
+    def test_excel_begin_runner_passes_untranslated_only_to_task_runner(self) -> None:
+        captured_kwargs = {}
+
+        class FakeRunner:
+            task_id = "fake-excel"
+
+            def __init__(self, *_args, **kwargs) -> None:
+                captured_kwargs.update(kwargs)
+
+            def start(self) -> None:
+                pass
+
+        with (
+            patch("native_app.pages.excel_translate.TaskRunner", FakeRunner),
+            patch("native_app.pages.excel_translate.save_settings"),
+        ):
+            page = ExcelTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+            page._begin_runner(
+                [FileItem(path=Path("source.xlsx"), name="source", size_kb=1.0)],
+                page.settings,
+                source_lang="zh",
+                untranslated_only=True,
+            )
+
+        self.assertTrue(captured_kwargs["untranslated_only"])
+
+    def test_word_begin_runner_passes_untranslated_only_to_task_runner(self) -> None:
+        captured_kwargs = {}
+
+        class FakeRunner:
+            task_id = "fake-word"
+
+            def __init__(self, *_args, **kwargs) -> None:
+                captured_kwargs.update(kwargs)
+
+            def start(self) -> None:
+                pass
+
+        with (
+            patch("native_app.pages.word_translate.WordTaskRunner", FakeRunner),
+            patch("native_app.pages.word_translate.save_settings"),
+        ):
+            page = WordTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+            page._begin_runner(
+                [WordFileItem(path=Path("source.docx"), name="source", size_kb=1.0)],
+                page.settings,
+                source_lang="zh",
+                untranslated_only=True,
+            )
+
+        self.assertTrue(captured_kwargs["untranslated_only"])
 
     def test_word_review_color_options_show_highlight_background(self) -> None:
         with patch("native_app.pages.word_translate.count_diagnostic_records", return_value=0):

@@ -85,6 +85,42 @@ class MixedLanguageTests(unittest.TestCase):
 
         self.assertFalse(decision.is_mixed)
 
+    def test_long_body_whitelist_allows_units_attached_to_numbers(self) -> None:
+        source = (
+            "1.灌木种类：金叶女贞（具体草种由甲方确认）\n"
+            "2.灌木规格：高度65-70cm，冠幅35cm（修剪后高度为60cm），9株/平方米\n"
+            "3.其他：满足设计图纸、招标文件及相关技术规范要求"
+        )
+
+        decision = classify_mixed_language_source(
+            source,
+            target_lang="fr",
+            source_lang="zh",
+        )
+
+        self.assertFalse(decision.is_mixed)
+
+    def test_long_body_whitelist_allows_compound_units(self) -> None:
+        source = "使用商品有机肥50Kg/亩，草籽按20g/㎡，操作平台荷载不超过1.5kN/m²。"
+
+        decision = classify_mixed_language_source(
+            source,
+            target_lang="fr",
+            source_lang="zh",
+        )
+
+        self.assertFalse(decision.is_mixed)
+
+    def test_short_label_keeps_non_unit_abbreviation_on_mixed_path(self) -> None:
+        decision = classify_mixed_language_source(
+            "不含税单价/HT",
+            target_lang="fr",
+            source_lang="zh",
+        )
+
+        self.assertTrue(decision.is_mixed)
+        self.assertEqual(decision.reason, "short_label")
+
     def test_long_body_residual_foreign_text_routes_to_mixed_path(self) -> None:
         source = "本段说明沉降观测点布置与复测要求 asdfg，其他内容均为中文工程说明。"
 

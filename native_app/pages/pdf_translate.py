@@ -180,6 +180,7 @@ class PdfTranslatePage(QWidget):
         self.source_root = settings.last_pdf_source_folder
         self.runner: PdfImageTranslationRunner | None = None
         self.scan_worker: PdfScanWorker | None = None
+        self.table: QTableWidget | None = None
         self.log_entries: list[dict[str, str]] = []
         self.diagnostic_log_entries: list[dict[str, str]] = []
         self._visible_log_chars = 0
@@ -255,6 +256,12 @@ class PdfTranslatePage(QWidget):
         self.external_task_lock_reason = reason
         self._lock_inputs(self.phase == "running")
         self._render_action_card()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self.poll_timer.stop()
+        self._stop_ui_sync_guard()
+        self._dispose_scan_worker(wait=True)
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -501,6 +508,7 @@ class PdfTranslatePage(QWidget):
     def _render_workspace(self) -> None:
         self._normalize_terminal_state()
         self._workspace_render_phase = self.phase
+        self.table = None
         _clear_layout(self.workspace_layout)
         frame = QFrame()
         frame.setObjectName("Workspace")
@@ -1160,6 +1168,10 @@ class PdfTranslatePage(QWidget):
             self._scan_source()
 
     def _scan_source(self) -> None:
+        if self.scan_worker is not None:
+            if self.scan_worker.isRunning():
+                return
+            self._dispose_scan_worker()
         raw_path = self.source_input.text().strip().strip('"')
         if not raw_path:
             QMessageBox.warning(self, APP_NAME, "请输入文件夹或文件路径。")
@@ -1188,6 +1200,7 @@ class PdfTranslatePage(QWidget):
         self.scan_worker.start()
 
     def _on_scan_finished(self, items: object, source_root: str, error: str) -> None:
+        self._dispose_scan_worker(wait=True)
         self.scan_button.setEnabled(True)
         self.scan_button.setText("扫描")
         if error:
@@ -1206,9 +1219,30 @@ class PdfTranslatePage(QWidget):
         self._render_workspace()
         self._render_action_card()
 
+    def _dispose_scan_worker(self, *, wait: bool = False) -> None:
+        worker = self.scan_worker
+        self.scan_worker = None
+        if worker is None:
+            return
+        try:
+            worker.finished.disconnect(self._on_scan_finished)
+        except (RuntimeError, TypeError):
+            pass
+        if wait and worker.isRunning():
+            worker.quit()
+            worker.wait(5000)
+        if worker.isRunning():
+            worker.setParent(None)
+            try:
+                worker.finished.connect(lambda *_args, worker=worker: worker.deleteLater())
+            except (RuntimeError, TypeError):
+                pass
+            return
+        worker.deleteLater()
+
     def _selected_files(self) -> list[PdfFileItem]:
         table = getattr(self, "table", None)
-        if table is None or table.rowCount() != len(self.files):
+        if not is_live_widget(table) or table.rowCount() != len(self.files):
             return list(self.files)
         selected: list[PdfFileItem] = []
         for row, item in enumerate(self.files):
@@ -1227,7 +1261,7 @@ class PdfTranslatePage(QWidget):
 
     def _set_all_file_selection(self, checked: bool) -> None:
         table = getattr(self, "table", None)
-        if table is None:
+        if not is_live_widget(table):
             return
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         table.blockSignals(True)
@@ -1245,7 +1279,7 @@ class PdfTranslatePage(QWidget):
 
     def _refresh_selection_summary(self) -> None:
         label = getattr(self, "selection_status_label", None)
-        if label is not None:
+        if is_live_widget(label):
             label.setText(f"已选 {len(self._selected_files())} / {len(self.files)}")
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
@@ -1258,7 +1292,7 @@ class PdfTranslatePage(QWidget):
 
     def _refresh_file_table_height(self) -> None:
         table = getattr(self, "table", None)
-        if table is None:
+        if not is_live_widget(table):
             return
         header_height = max(table.horizontalHeader().height(), table.horizontalHeader().sizeHint().height(), 34)
         row_height = max(table.verticalHeader().defaultSectionSize(), 34)

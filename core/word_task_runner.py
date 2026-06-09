@@ -26,6 +26,7 @@ from core.api_scheduler import (
     WeightedApiScheduler,
 )
 from core.bilingual_writer import get_custom_output_dir_error
+from core.word_coverage import build_word_coverage_plan, write_untranslated_docx
 from core.engine_dispatcher import (
     build_engine,
     get_system_prompt,
@@ -197,6 +198,7 @@ class WordTaskRunner:
         source_lang: str | None = None,
         key_overrides: dict[str, str] | None = None,
         api_scheduler: WeightedApiScheduler | None = None,
+        untranslated_only: bool = False,
     ):
         self._files = file_items
         self._settings = settings
@@ -204,6 +206,7 @@ class WordTaskRunner:
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler_override = api_scheduler
+        self._untranslated_only = bool(untranslated_only)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -317,9 +320,12 @@ class WordTaskRunner:
         )
         self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
         self._log("INFO", f"扫描到 {len(self._files)} 个 Word 文件")
+        if self._untranslated_only:
+            self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
 
         phase_total = 3
         file_texts: list[set[str]] = []
+        coverage_plans: list = []
         global_unique_texts: set[str] = set()
         segment_locations: dict[str, list[dict]] = {}
         quality_issues: list[dict] = []
@@ -385,13 +391,38 @@ class WordTaskRunner:
                             "labels_prepended": prepared.labels_prepended,
                         }
                     )
-                    segments = extract_word_segments(
-                        process_path,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                    )
-                    _remember_segment_locations(segment_locations, file_item.name, segments)
-                    text_set = {segment.source for segment in segments}
+                    if self._untranslated_only:
+                        coverage_plan = build_word_coverage_plan(
+                            process_path,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                        )
+                        coverage_plans.append(coverage_plan)
+                        _remember_coverage_unit_locations(
+                            segment_locations,
+                            file_item.name,
+                            coverage_plan.source_units,
+                        )
+                        text_set = set(coverage_plan.source_texts)
+                        summary = coverage_plan.summary
+                        self._log(
+                            "INFO",
+                            (
+                                "  → 补译识别："
+                                f"待补 {summary.get('source_only', 0)}，"
+                                f"已覆盖 {summary.get('covered', 0)}，"
+                                f"不确定跳过 {summary.get('ambiguous', 0)}"
+                            ),
+                        )
+                    else:
+                        segments = extract_word_segments(
+                            process_path,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                        )
+                        coverage_plans.append(None)
+                        _remember_segment_locations(segment_locations, file_item.name, segments)
+                        text_set = {segment.source for segment in segments}
                     file_texts.append(text_set)
                     global_unique_texts.update(text_set)
                     elapsed = (datetime.now() - t0).total_seconds()
@@ -402,6 +433,8 @@ class WordTaskRunner:
                         process_paths.append(file_item.path)
                     if len(preprocess_summaries) < index + 1:
                         preprocess_summaries.append({})
+                    if len(coverage_plans) < index + 1:
+                        coverage_plans.append(None)
                     file_texts.append(set())
                     self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {exc}")
                     self._task_logger.file_error(file_item.name, f"Word 文件读取失败: {exc}")
@@ -500,6 +533,11 @@ class WordTaskRunner:
                     log_callback=self._log,
                     status_callback=lambda msg: self._queue.put(msg),
                     source_locations=segment_locations,
+                    defer_until_started=True,
+                )
+                main_drain_gate = _MainTranslationDrainGate(
+                    queue_count=int(bool(misses)) + int(bool(mixed_texts)),
+                    on_all_drained=recovery_pool.start,
                 )
 
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
@@ -523,8 +561,14 @@ class WordTaskRunner:
                         f"失败严格重试 {settings.word_batch.strict_retry_attempts} 轮"
                     ),
                 )
-                if misses:
-                    api_translations = translate_word_texts(
+                normal_api_translations: dict[str, str] = {}
+                mixed_results: dict[str, MixedLanguageResult] = {}
+                mixed_stats = MixedLanguageRunStats()
+
+                def run_normal_main_translation() -> dict[str, str]:
+                    if not misses:
+                        return {}
+                    return translate_word_texts(
                         misses,
                         engine,
                         target_lang,
@@ -540,115 +584,12 @@ class WordTaskRunner:
                         api_scheduler=api_scheduler,
                         request_category=API_REQUEST_CATEGORY_NORMAL,
                         candidate_callback=recovery_candidate_cb,
+                        drained_callback=main_drain_gate.queue_drained,
                     )
-                self._log(
-                    "INFO",
-                    (
-                        "Word 实际请求："
-                        f"{word_batch_stats.batch_count} 批，"
-                        f"{word_batch_stats.unit_count} 个请求片段，"
-                        f"长段拆分 {word_batch_stats.split_source_count} 段，"
-                        f"缩小重试 {word_batch_stats.retry_count} 次"
-                        + (
-                            f"，自适应降并发 {word_batch_stats.adaptive_concurrency_reductions} 次，"
-                            f"最低并发 {word_batch_stats.adaptive_lowest_concurrency}"
-                            if word_batch_stats.adaptive_concurrency_reductions
-                            else ""
-                        )
-                    ),
-                )
-                _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
 
-                retry_sources = [
-                    source
-                    for source in misses
-                    if _needs_word_translation_retry(
-                        source,
-                        api_translations.get(source),
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                    )
-                ]
-                if retry_sources:
-                    for source in retry_sources:
-                        recovery_pool.add_candidate(source, api_translations.get(source, ""))
-                    recovery_outcome = recovery_pool.wait_for_completion()
-                    _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
-                    api_translations.update(recovery_outcome.accepted_translations)
-                    for source in recovery_outcome.unresolved_sources:
-                        api_translations[source] = source
-                    recovery_review_sources.update(recovery_outcome.recovery_review_results)
-                    recovery_review_sources.update(recovery_outcome.semantic_review_results)
-                    for source in recovery_outcome.recovery_review_results:
-                        _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
-                    for source in recovery_outcome.semantic_review_results:
-                        _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
-                    standard_fixed_sources = [
-                        source
-                        for source in recovery_outcome.fixed_sources
-                        if (
-                            source not in recovery_outcome.recovery_review_results
-                            and source not in recovery_outcome.semantic_review_results
-                        )
-                    ]
-                    _add_quality_issues(
-                        quality_issues,
-                        segment_locations,
-                        standard_fixed_sources,
-                        problem="初次翻译未获得有效译文",
-                        status="已自动单段严格重试并恢复译文。",
-                        severity="resolved",
-                    )
-                    if recovery_outcome.recovery_review_results:
-                        _add_quality_issues(
-                            quality_issues,
-                            segment_locations,
-                            list(recovery_outcome.recovery_review_results.keys()),
-                            problem="重试译文按 Word 恢复规则自动接受",
-                            status=(
-                                "译文主体已通过恢复校验，本段已写入译文，"
-                                "建议复核提示片段。"
-                            ),
-                            severity="resolved",
-                            validation_results=recovery_outcome.recovery_review_results,
-                        )
-                    if recovery_outcome.semantic_review_results:
-                        _add_quality_issues(
-                            quality_issues,
-                            segment_locations,
-                            list(recovery_outcome.semantic_review_results.keys()),
-                            problem="规则校验未通过，语义仲裁自动接受",
-                            status=(
-                                "候选译文未通过程序化规则校验，但语义仲裁判定与原文完整等义；"
-                                "本段已写入译文，且不会写入翻译记忆库。"
-                            ),
-                            severity="resolved",
-                            validation_results=recovery_outcome.semantic_review_results,
-                        )
-                    if recovery_outcome.unresolved_sources:
-                        unresolved_review_sources.update(recovery_outcome.unresolved_sources)
-                        for source in recovery_outcome.unresolved_sources:
-                            _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
-                        _add_quality_issues(
-                            quality_issues,
-                            segment_locations,
-                            recovery_outcome.unresolved_sources,
-                            problem="重试后仍未获得有效译文",
-                            status=(
-                                f"已进行 {settings.word_batch.strict_retry_attempts} "
-                                "轮并行单段重试与语义仲裁，仍保留原文，需人工复核。"
-                            ),
-                            severity="needs_review",
-                            validation_results=recovery_outcome.unresolved_validation_results,
-                        )
-                        for source in recovery_outcome.unresolved_sources:
-                            for label in _iter_source_location_labels(source, segment_locations):
-                                self._log("WARN", f"{label} 保留原文，需复核")
-                else:
-                    recovery_pool.wait_for_completion()
-
-                mixed_results: dict[str, MixedLanguageResult] = {}
-                if mixed_texts:
+                def run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
+                    if not mixed_texts:
+                        return {}
                     self._queue.put(
                         StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容...")
                     )
@@ -664,8 +605,7 @@ class WordTaskRunner:
                             )
                         )
 
-                    mixed_stats = MixedLanguageRunStats()
-                    mixed_results = translate_mixed_language_texts(
+                    return translate_mixed_language_texts(
                         mixed_texts,
                         engine=engine,
                         target_lang=target_lang,
@@ -684,7 +624,39 @@ class WordTaskRunner:
                         api_scheduler=api_scheduler,
                         request_category=API_REQUEST_CATEGORY_NORMAL,
                         stats=mixed_stats,
+                        drained_callback=main_drain_gate.queue_drained,
                     )
+
+                if misses and mixed_texts and api_scheduler is not None:
+                    with ThreadPoolExecutor(max_workers=2) as main_executor:
+                        normal_future = main_executor.submit(run_normal_main_translation)
+                        mixed_future = main_executor.submit(run_mixed_main_translation)
+                        normal_api_translations = normal_future.result()
+                        mixed_results = mixed_future.result()
+                else:
+                    normal_api_translations = run_normal_main_translation()
+                    mixed_results = run_mixed_main_translation()
+
+                api_translations.update(normal_api_translations)
+                self._log(
+                    "INFO",
+                    (
+                        "Word 实际请求："
+                        f"{word_batch_stats.batch_count} 批，"
+                        f"{word_batch_stats.unit_count} 个请求片段，"
+                        f"长段拆分 {word_batch_stats.split_source_count} 段，"
+                        f"缩小重试 {word_batch_stats.retry_count} 次"
+                        + (
+                            f"，自适应降并发 {word_batch_stats.adaptive_concurrency_reductions} 次，"
+                            f"最低并发 {word_batch_stats.adaptive_lowest_concurrency}"
+                            if word_batch_stats.adaptive_concurrency_reductions
+                            else ""
+                        )
+                    ),
+                )
+                _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+
+                if mixed_texts:
                     _apply_mixed_language_word_results(
                         mixed_results=mixed_results,
                         translations=api_translations,
@@ -703,6 +675,91 @@ class WordTaskRunner:
                             f"语义校验接受 {mixed_stats.semantic_accepted_count}"
                         ),
                     )
+
+                retry_sources = [
+                    source
+                    for source in misses
+                    if _needs_word_translation_retry(
+                        source,
+                        api_translations.get(source),
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                    )
+                ]
+                for source in retry_sources:
+                    recovery_pool.add_candidate(source, api_translations.get(source, ""))
+                recovery_outcome = recovery_pool.wait_for_completion()
+                _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+                api_translations.update(recovery_outcome.accepted_translations)
+                for source in recovery_outcome.unresolved_sources:
+                    api_translations[source] = source
+                recovery_review_sources.update(recovery_outcome.recovery_review_results)
+                recovery_review_sources.update(recovery_outcome.semantic_review_results)
+                for source in recovery_outcome.recovery_review_results:
+                    _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
+                for source in recovery_outcome.semantic_review_results:
+                    _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
+                standard_fixed_sources = [
+                    source
+                    for source in recovery_outcome.fixed_sources
+                    if (
+                        source not in recovery_outcome.recovery_review_results
+                        and source not in recovery_outcome.semantic_review_results
+                    )
+                ]
+                _add_quality_issues(
+                    quality_issues,
+                    segment_locations,
+                    standard_fixed_sources,
+                    problem="初次翻译未获得有效译文",
+                    status="已自动单段严格重试并恢复译文。",
+                    severity="resolved",
+                )
+                if recovery_outcome.recovery_review_results:
+                    _add_quality_issues(
+                        quality_issues,
+                        segment_locations,
+                        list(recovery_outcome.recovery_review_results.keys()),
+                        problem="重试译文按 Word 恢复规则自动接受",
+                        status=(
+                            "译文主体已通过恢复校验，本段已写入译文，"
+                            "建议复核提示片段。"
+                        ),
+                        severity="resolved",
+                        validation_results=recovery_outcome.recovery_review_results,
+                    )
+                if recovery_outcome.semantic_review_results:
+                    _add_quality_issues(
+                        quality_issues,
+                        segment_locations,
+                        list(recovery_outcome.semantic_review_results.keys()),
+                        problem="规则校验未通过，语义仲裁自动接受",
+                        status=(
+                            "候选译文未通过程序化规则校验，但语义仲裁判定与原文完整等义；"
+                            "本段已写入译文，且不会写入翻译记忆库。"
+                        ),
+                        severity="resolved",
+                        validation_results=recovery_outcome.semantic_review_results,
+                    )
+                if recovery_outcome.unresolved_sources:
+                    unresolved_review_sources.update(recovery_outcome.unresolved_sources)
+                    for source in recovery_outcome.unresolved_sources:
+                        _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
+                    _add_quality_issues(
+                        quality_issues,
+                        segment_locations,
+                        recovery_outcome.unresolved_sources,
+                        problem="重试后仍未获得有效译文",
+                        status=(
+                            f"已进行 {settings.word_batch.strict_retry_attempts} "
+                            "轮并行单段重试与语义仲裁，仍保留原文，需人工复核。"
+                        ),
+                        severity="needs_review",
+                        validation_results=recovery_outcome.unresolved_validation_results,
+                    )
+                    for source in recovery_outcome.unresolved_sources:
+                        for label in _iter_source_location_labels(source, segment_locations):
+                            self._log("WARN", f"{label} 保留原文，需复核")
 
                 elapsed = (datetime.now() - t0).total_seconds()
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{elapsed:.2f}s）")
@@ -768,25 +825,43 @@ class WordTaskRunner:
                 try:
                     t0 = datetime.now()
                     source_path = process_paths[index] if index < len(process_paths) else file_item.path
-                    out_path = write_bilingual_docx(
-                        source_path=source_path,
-                        output_dir=output_dir / rel_subdir,
-                        translations=global_translations,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        output_name=_word_output_source_name(file_item.path),
-                        review_marks=(
-                            review_marks
-                            if settings.word_review.highlight_unresolved
-                            else None
-                        ),
-                        review_mark_colors=settings.word_review.mark_colors,
-                        existing_highlight_policy=settings.word_review.existing_highlight_policy,
-                        log_callback=lambda msg: self._log(
-                            "OK" if msg.startswith("[OK]") else "INFO",
-                            msg,
-                        ),
-                    )
+                    if self._untranslated_only:
+                        coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
+                        if coverage_plan is None:
+                            raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                        out_path = write_untranslated_docx(
+                            source_path=source_path,
+                            output_dir=output_dir / rel_subdir,
+                            plan=coverage_plan,
+                            translations=global_translations,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            output_name=_word_output_source_name(file_item.path),
+                            log_callback=lambda msg: self._log(
+                                "OK" if msg.startswith("[OK]") else "INFO",
+                                msg,
+                            ),
+                        )
+                    else:
+                        out_path = write_bilingual_docx(
+                            source_path=source_path,
+                            output_dir=output_dir / rel_subdir,
+                            translations=global_translations,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            output_name=_word_output_source_name(file_item.path),
+                            review_marks=(
+                                review_marks
+                                if settings.word_review.highlight_unresolved
+                                else None
+                            ),
+                            review_mark_colors=settings.word_review.mark_colors,
+                            existing_highlight_policy=settings.word_review.existing_highlight_policy,
+                            log_callback=lambda msg: self._log(
+                                "OK" if msg.startswith("[OK]") else "INFO",
+                                msg,
+                            ),
+                        )
                     elapsed = (datetime.now() - t0).total_seconds()
                     this_file_texts = file_texts[index]
                     this_tm = sum(1 for text in this_file_texts if text in hits)
@@ -1018,6 +1093,7 @@ class _WordRecoveryState:
     attempts_done: int = 0
     retry_inflight: bool = False
     semantic_inflight: int = 0
+    pending_candidates: list[tuple[str, TranslationValidationResult]] = field(default_factory=list)
     accepted_translation: str = ""
     accepted_by: str = ""
     accepted_validation: TranslationValidationResult = field(default_factory=TranslationValidationResult)
@@ -1039,6 +1115,30 @@ class _WordRecoveryState:
         )
 
 
+class _MainTranslationDrainGate:
+    """Start recovery once every main translation queue has no new batches left."""
+
+    def __init__(self, *, queue_count: int, on_all_drained: Callable[[], None]) -> None:
+        self._remaining = max(0, int(queue_count or 0))
+        self._on_all_drained = on_all_drained
+        self._started = False
+        self._lock = threading.Lock()
+        if self._remaining <= 0:
+            self.queue_drained()
+
+    def queue_drained(self) -> None:
+        should_start = False
+        with self._lock:
+            if self._started:
+                return
+            self._remaining = max(0, self._remaining - 1)
+            if self._remaining <= 0:
+                self._started = True
+                should_start = True
+        if should_start:
+            self._on_all_drained()
+
+
 class _WordRecoveryPool:
     """Parallel Word recovery pool for retry and semantic arbitration."""
 
@@ -1058,6 +1158,7 @@ class _WordRecoveryPool:
         status_callback: Callable[[WordRecoveryStatusMsg], None] | None = None,
         source_locations: dict[str, list[dict]] | None = None,
         enable_semantic: bool = True,
+        defer_until_started: bool = False,
     ) -> None:
         try:
             self._max_attempts = max(1, int(retry_attempts))
@@ -1084,6 +1185,7 @@ class _WordRecoveryPool:
         self._semantic_uncertain_sources: set[str] = set()
         self._latest_retry_round = 0
         self._fatal_error: BaseException | None = None
+        self._started = not defer_until_started
 
     def _position_count(self, source: str) -> int:
         return _source_position_count(source, self._source_locations)
@@ -1173,12 +1275,36 @@ class _WordRecoveryPool:
                 return
 
             state.last_validation = evaluation.validation
-            self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
-            self._schedule_retry_locked(state)
+            if self._started:
+                self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
+                self._schedule_retry_locked(state)
+            else:
+                state.pending_candidates.append((candidate_text, evaluation.validation))
+            self._emit_status_locked()
+            self._condition.notify_all()
+
+    def start(self) -> None:
+        with self._condition:
+            if self._started:
+                return
+            self._started = True
+            stopped = bool(self._should_stop and self._should_stop())
+            for state in self._states.values():
+                if state.accepted:
+                    continue
+                pending_candidates = list(state.pending_candidates)
+                state.pending_candidates.clear()
+                if stopped:
+                    state.attempts_done = self._max_attempts
+                    continue
+                for candidate, validation in pending_candidates:
+                    self._schedule_semantic_locked(state, candidate, validation)
+                self._schedule_retry_locked(state)
             self._emit_status_locked()
             self._condition.notify_all()
 
     def wait_for_completion(self) -> _WordRecoveryOutcome:
+        self.start()
         with self._condition:
             while self._fatal_error is None and not self._all_complete_locked():
                 self._condition.wait(timeout=0.1)
@@ -1245,6 +1371,8 @@ class _WordRecoveryPool:
         self._condition.notify_all()
 
     def _schedule_retry_locked(self, state: _WordRecoveryState) -> None:
+        if not self._started:
+            return
         if state.accepted or state.retry_inflight:
             return
         if state.attempts_done >= self._max_attempts:
@@ -1263,6 +1391,8 @@ class _WordRecoveryPool:
         candidate: str,
         validation: TranslationValidationResult,
     ) -> None:
+        if not self._started:
+            return
         if not self._enable_semantic or state.accepted:
             return
         candidate_key = _candidate_validation_text(candidate)
@@ -1705,6 +1835,27 @@ def _remember_segment_locations(
                 "location_label": _format_location_label(segment.location),
                 "section_path": segment.section_path or "正文",
                 "snippet": _build_source_excerpt(segment.source),
+            }
+        )
+
+
+def _remember_coverage_unit_locations(
+    segment_locations: dict[str, list[dict]],
+    file_name: str,
+    units,
+) -> None:
+    for unit in units:
+        source = str(unit.source_text or "").strip()
+        if not source:
+            continue
+        segment_locations.setdefault(source, []).append(
+            {
+                "file": file_name,
+                "kind": unit.kind,
+                "location": unit.location,
+                "location_label": _format_location_label(unit.location),
+                "section_path": unit.section_path or "正文",
+                "snippet": _build_source_excerpt(source),
             }
         )
 

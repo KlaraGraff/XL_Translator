@@ -236,6 +236,7 @@ class ExcelTranslatePage(QWidget):
         self.source_root = settings.last_excel_source_folder
         self.runner: TaskRunner | None = None
         self.scan_worker: ScanWorker | None = None
+        self.table: QTableWidget | None = None
         self.log_entries: list[dict[str, str]] = []
         self.diagnostic_log_entries: list[dict[str, str]] = []
         self._visible_log_chars = 0
@@ -307,6 +308,12 @@ class ExcelTranslatePage(QWidget):
         self.external_task_lock_reason = reason
         self._lock_inputs(self.phase == "running")
         self._render_action_card()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self.poll_timer.stop()
+        self._stop_ui_sync_guard()
+        self._dispose_scan_worker(wait=True)
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -507,6 +514,19 @@ class ExcelTranslatePage(QWidget):
         self._load_source_options()
         self.source_lang_combo.currentIndexChanged.connect(self._on_source_lang_changed)
         layout.addWidget(self.source_lang_combo)
+
+        self.untranslated_only_check = self._checkbox(
+            "只补未译内容",
+            False,
+            layout,
+        )
+        _set_tooltip(
+            self.untranslated_only_check,
+            "只补未译内容",
+            "仅翻译缺少译文的位置，已有译文保持不变。",
+            ["适用于用户修改原文后已手动清空译文的双语文件。"],
+        )
+        self.untranslated_only_check.toggled.connect(lambda _checked: self._render_action_card())
 
         self.keep_original_check = self._checkbox(
             "保留原始表格",
@@ -874,6 +894,7 @@ class ExcelTranslatePage(QWidget):
     def _render_workspace(self) -> None:
         self._normalize_terminal_state()
         self._workspace_render_phase = self.phase
+        self.table = None
         _clear_layout(self.workspace_layout)
         frame = QFrame()
         frame.setObjectName("Workspace")
@@ -1080,14 +1101,27 @@ class ExcelTranslatePage(QWidget):
             note.setObjectName("MutedText")
             self.action_layout.addWidget(note)
 
-            start = QPushButton(f"开始翻译（{lang_label}）")
-            start.setObjectName("PrimaryButton")
-            _set_tooltip(
-                start,
-                "开始翻译",
-                "按当前设置启动翻译。",
-                ["启动前会检查模型配置和 .xls 兼容条件。"],
+            untranslated_check = getattr(self, "untranslated_only_check", None)
+            untranslated_only = bool(
+                untranslated_check is not None and untranslated_check.isChecked()
             )
+            start_title = "开始补译未译内容" if untranslated_only else "开始翻译"
+            start = QPushButton(f"{start_title}（{lang_label}）")
+            start.setObjectName("PrimaryButton")
+            if untranslated_only:
+                _set_tooltip(
+                    start,
+                    "开始补译未译内容",
+                    "只处理缺少译文的位置，已有译文不会被覆盖或重写。",
+                    ["启动前会检查模型配置和 .xls 兼容条件。"],
+                )
+            else:
+                _set_tooltip(
+                    start,
+                    "开始翻译",
+                    "按当前设置启动翻译。",
+                    ["启动前会检查模型配置和 .xls 兼容条件。"],
+                )
             start.setEnabled(self._can_start())
             start.clicked.connect(self._start_translation)
             self.action_layout.addWidget(start)
@@ -1235,6 +1269,10 @@ class ExcelTranslatePage(QWidget):
         QTimer.singleShot(0, self._refresh_file_table_height)
 
     def _scan_source(self) -> None:
+        if self.scan_worker is not None:
+            if self.scan_worker.isRunning():
+                return
+            self._dispose_scan_worker()
         raw_path = self.source_input.text().strip().strip('"')
         if not raw_path:
             QMessageBox.warning(self, APP_NAME, "请输入文件夹或文件路径。")
@@ -1254,6 +1292,7 @@ class ExcelTranslatePage(QWidget):
         self.scan_worker.start()
 
     def _on_scan_finished(self, items: object, source_root: str, error: str) -> None:
+        self._dispose_scan_worker(wait=True)
         self.scan_button.setEnabled(True)
         self.scan_button.setText("扫描")
         if error:
@@ -1272,9 +1311,30 @@ class ExcelTranslatePage(QWidget):
         self._render_workspace()
         self._render_action_card()
 
+    def _dispose_scan_worker(self, *, wait: bool = False) -> None:
+        worker = self.scan_worker
+        self.scan_worker = None
+        if worker is None:
+            return
+        try:
+            worker.finished.disconnect(self._on_scan_finished)
+        except (RuntimeError, TypeError):
+            pass
+        if wait and worker.isRunning():
+            worker.quit()
+            worker.wait(5000)
+        if worker.isRunning():
+            worker.setParent(None)
+            try:
+                worker.finished.connect(lambda *_args, worker=worker: worker.deleteLater())
+            except (RuntimeError, TypeError):
+                pass
+            return
+        worker.deleteLater()
+
     def _selected_files(self) -> list[FileItem]:
         table = getattr(self, "table", None)
-        if table is None or table.rowCount() != len(self.files):
+        if not is_live_widget(table) or table.rowCount() != len(self.files):
             return list(self.files)
         selected: list[FileItem] = []
         for row, item in enumerate(self.files):
@@ -1330,7 +1390,7 @@ class ExcelTranslatePage(QWidget):
 
     def _set_all_file_selection(self, checked: bool) -> None:
         table = getattr(self, "table", None)
-        if table is None:
+        if not is_live_widget(table):
             return
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         table.blockSignals(True)
@@ -1343,7 +1403,7 @@ class ExcelTranslatePage(QWidget):
 
     def _refresh_selection_summary(self) -> None:
         label = getattr(self, "selection_status_label", None)
-        if label is not None:
+        if is_live_widget(label):
             label.setText(f"已选 {len(self._selected_files())} / {len(self.files)}")
 
     def _configure_file_table_columns(self) -> None:
@@ -1359,7 +1419,7 @@ class ExcelTranslatePage(QWidget):
 
     def _refresh_file_table_height(self) -> None:
         table = getattr(self, "table", None)
-        if table is None:
+        if not is_live_widget(table):
             return
 
         header_height = max(
@@ -1552,6 +1612,7 @@ class ExcelTranslatePage(QWidget):
             self.excel_autofit_check,
             self.lock_row_height_check,
             self.review_mark_check,
+            self.untranslated_only_check,
             self.existing_fill_policy_combo,
         ):
             widget.setEnabled(not effective_locked)
@@ -1615,6 +1676,7 @@ class ExcelTranslatePage(QWidget):
             self.settings,
             source_lang=source_lang,
             allow_xls_fallback=allow_xls_fallback,
+            untranslated_only=self.untranslated_only_check.isChecked(),
         )
 
     def _begin_runner(
@@ -1625,6 +1687,7 @@ class ExcelTranslatePage(QWidget):
         source_lang: str,
         source_root=None,
         allow_xls_fallback: bool = False,
+        untranslated_only: bool = False,
     ) -> None:
         effective_source_root = source_root if source_root is not None else self.source_root or None
         task_settings = settings.model_copy(deep=True)
@@ -1640,6 +1703,7 @@ class ExcelTranslatePage(QWidget):
             allow_xls_fallback=allow_xls_fallback,
             source_lang=source_lang,
             key_overrides=api_context.key_overrides,
+            untranslated_only=untranslated_only,
         )
         self.task_files = list(selected)
         self.current_task_source_root = str(effective_source_root or "")

@@ -2449,6 +2449,7 @@ class NativeMainWindow(QMainWindow):
         self._update_worker: UpdateCheckWorker | None = None
         self._update_check_source = ""
         self._latest_update_result: UpdateCheckResult | None = None
+        self._closing = False
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -2493,6 +2494,8 @@ class NativeMainWindow(QMainWindow):
         QTimer.singleShot(600, lambda: self._start_update_check("auto"))
 
     def _start_update_check(self, source: str) -> None:
+        if self._closing:
+            return
         if self._update_worker is not None and self._update_worker.isRunning():
             if source != "auto":
                 self._update_check_source = source
@@ -2507,6 +2510,8 @@ class NativeMainWindow(QMainWindow):
         worker.start()
 
     def _on_update_check_finished(self, result: object) -> None:
+        if self._closing:
+            return
         source = self._update_check_source or "auto"
         self._update_check_source = ""
         self._update_worker = None
@@ -2821,5 +2826,26 @@ class NativeMainWindow(QMainWindow):
         self.pages["tm"].sync_language_from_translation(target_lang, source_lang)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self._closing = True
+        self._task_lock_timer.stop()
+        worker = self._update_worker
+        self._update_worker = None
+        self._update_check_source = ""
+        if worker is not None:
+            try:
+                worker.resultReady.disconnect(self._on_update_check_finished)
+            except (RuntimeError, TypeError):
+                pass
+            if worker.isRunning():
+                worker.quit()
+                worker.wait(5000)
+            if worker.isRunning():
+                worker.setParent(None)
+                try:
+                    worker.finished.connect(worker.deleteLater)
+                except (RuntimeError, TypeError):
+                    pass
+            else:
+                worker.deleteLater()
         save_settings(self.settings)
         super().closeEvent(event)

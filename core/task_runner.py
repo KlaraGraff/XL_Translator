@@ -12,6 +12,7 @@ import os
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from core import bilingual_writer
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
+from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
 from core.file_scanner import FileItem
 from core.language_registry import build_lang_pair
 from core.mixed_language import (
@@ -187,6 +189,7 @@ class TaskRunner:
         source_lang: str | None = None,
         key_overrides: dict[str, str] | None = None,
         api_scheduler=None,
+        untranslated_only: bool = False,
     ):
         self._files       = file_items
         self._settings    = settings
@@ -195,6 +198,7 @@ class TaskRunner:
         self._source_lang = str(source_lang or settings.source_lang or "zh").strip() or "zh"
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler = api_scheduler
+        self._untranslated_only = bool(untranslated_only)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -304,6 +308,8 @@ class TaskRunner:
 
         self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
         self._log("INFO", f"扫描到 {len(self._files)} 个文件")
+        if self._untranslated_only:
+            self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
 
         need_autofit = self._settings.output.enable_excel_autofit and not self._settings.output.lock_row_height
         phase_total = 4 if need_autofit else 3
@@ -463,6 +469,7 @@ class TaskRunner:
             process_paths: list[Path] = []
             # file_texts[i] 对应 self._files[i] 的本文件词条集合
             file_texts: list[set[str]] = []
+            coverage_plans = []
             global_unique_texts: set[str] = set()
 
             t_phase1 = datetime.now()
@@ -515,6 +522,7 @@ class TaskRunner:
                         file_results.append({"name": file_item.name, "success": False, "error": f"源文件转换失败: {e}"})
                         process_paths.append(process_path)
                         file_texts.append(set())
+                        coverage_plans.append(None)
                         continue
 
                 process_paths.append(process_path)
@@ -523,16 +531,42 @@ class TaskRunner:
                 self._log("INFO", f"[阶段 1] 提取词汇：{file_item.name}（{fi+1}/{len(self._files)}）")
                 t0 = datetime.now()
                 try:
-                    texts, sheet_count = self._collect_texts(
-                        process_path,
-                        file_item.name,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                    )
+                    if self._untranslated_only:
+                        coverage_plan = build_excel_coverage_plan(
+                            process_path,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            formula_display_value_backfill=(
+                                settings.output.formula_display_value_backfill
+                            ),
+                        )
+                        coverage_plans.append(coverage_plan)
+                        texts = coverage_plan.source_texts
+                        sheet_count = coverage_plan.sheet_count
+                        summary = coverage_plan.summary
+                        self._log(
+                            "INFO",
+                            (
+                                "  → 补译识别："
+                                f"待补 {summary.get('source_only', 0)}，"
+                                f"已覆盖 {summary.get('covered', 0)}，"
+                                f"不确定跳过 {summary.get('ambiguous', 0)}"
+                            ),
+                        )
+                    else:
+                        texts, sheet_count = self._collect_texts(
+                            process_path,
+                            file_item.name,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                        )
+                        coverage_plans.append(None)
                 except Exception as e:
                     self._log("ERROR", f"源文件读取失败 {file_item.name}: {e}")
                     self._task_logger.file_error(file_item.name, f"源文件读取失败: {e}")
                     file_results.append({"name": file_item.name, "success": False, "error": f"源文件读取失败: {e}"})
+                    if len(coverage_plans) < len(process_paths):
+                        coverage_plans.append(None)
                     file_texts.append(set())
                     if process_path != file_item.path:
                         try:
@@ -654,11 +688,26 @@ class TaskRunner:
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
                 self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
 
-                def progress_cb(done, total):
+                progress_lock = threading.Lock()
+                progress_done = {"normal": 0, "mixed": 0}
+
+                def _emit_api_progress(kind: str, done: int) -> None:
+                    with progress_lock:
+                        progress_done[kind] = max(0, int(done or 0))
+                        total_done = min(progress_done["normal"], len(misses)) + min(
+                            progress_done["mixed"],
+                            len(mixed_texts),
+                        )
                     self._queue.put(ProgressMsg(
-                        phase_index=2, phase_total=phase_total, phase_name="云端翻译",
-                        step_done=done, step_total=max(api_call_count, 1),
+                        phase_index=2,
+                        phase_total=phase_total,
+                        phase_name="云端翻译",
+                        step_done=min(total_done, max(api_call_count, 1)),
+                        step_total=max(api_call_count, 1),
                     ))
+
+                def progress_cb(done, total):
+                    _emit_api_progress("normal", done)
 
                 def api_error_cb(msg: str) -> None:
                     level = "ERROR" if "单条翻译仍失败" in msg else "WARN"
@@ -669,8 +718,14 @@ class TaskRunner:
                 shared_scheduler = None
                 if settings.engine.mode != "local":
                     shared_scheduler = self._api_scheduler or WeightedApiScheduler(concurrency)
-                if misses:
-                    normal_api_translations = translate_texts(
+
+                mixed_stats = MixedLanguageRunStats()
+                mixed_results = {}
+
+                def run_normal_api_translation() -> dict[str, str]:
+                    if not misses:
+                        return {}
+                    return translate_texts(
                         misses,
                         engine,
                         target_lang,
@@ -684,28 +739,16 @@ class TaskRunner:
                         api_scheduler=shared_scheduler,
                         stats=batch_stats,
                     )
-                    api_translations.update(normal_api_translations)
-                    for source, translation in normal_api_translations.items():
-                        if str(source or "").strip().lower() == str(translation or "").strip().lower():
-                            _set_excel_review_mark(
-                                excel_review_marks,
-                                source,
-                                MIXED_MARK_UNRESOLVED,
-                            )
-                if mixed_texts:
+
+                def run_mixed_api_translation():
+                    if not mixed_texts:
+                        return {}
                     self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
 
                     def mixed_progress_cb(done, total):
-                        self._queue.put(ProgressMsg(
-                            phase_index=2,
-                            phase_total=phase_total,
-                            phase_name="云端翻译",
-                            step_done=min(len(misses) + done, max(api_call_count, 1)),
-                            step_total=max(api_call_count, 1),
-                        ))
+                        _emit_api_progress("mixed", done)
 
-                    mixed_stats = MixedLanguageRunStats()
-                    mixed_results = translate_mixed_language_texts(
+                    return translate_mixed_language_texts(
                         mixed_texts,
                         engine=engine,
                         target_lang=target_lang,
@@ -722,6 +765,27 @@ class TaskRunner:
                         request_category=API_REQUEST_CATEGORY_NORMAL,
                         stats=mixed_stats,
                     )
+
+                if misses and mixed_texts and shared_scheduler is not None:
+                    with ThreadPoolExecutor(max_workers=2) as main_executor:
+                        normal_future = main_executor.submit(run_normal_api_translation)
+                        mixed_future = main_executor.submit(run_mixed_api_translation)
+                        normal_api_translations = normal_future.result()
+                        mixed_results = mixed_future.result()
+                else:
+                    normal_api_translations = run_normal_api_translation()
+                    mixed_results = run_mixed_api_translation()
+
+                api_translations.update(normal_api_translations)
+                for source, translation in normal_api_translations.items():
+                    if str(source or "").strip().lower() == str(translation or "").strip().lower():
+                        _set_excel_review_mark(
+                            excel_review_marks,
+                            source,
+                            MIXED_MARK_UNRESOLVED,
+                        )
+
+                if mixed_texts:
                     for source, result in mixed_results.items():
                         if result.action in {MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE} and result.translation.strip():
                             api_translations[source] = result.translation.strip()
@@ -847,25 +911,47 @@ class TaskRunner:
                     # KNOWN-ISSUE-VAL-006:
                     # The current write path intentionally stays text-only.
                     # See docs/KNOWN_ISSUES.md before reintroducing image flow.
-                    out_path = bilingual_writer.write_bilingual_file(
-                        source_path          = process_path,
-                        output_dir           = output_dir / rel_subdir,
-                        translations         = global_translations,
-                        target_lang          = target_lang,
-                        source_lang          = source_lang,
-                        keep_original_sheets = self._settings.output.keep_original_sheets,
-                        formula_display_value_backfill = self._settings.output.formula_display_value_backfill,
-                        enable_print_guard   = self._settings.output.enable_print_guard,
-                        lock_row_height      = self._settings.output.lock_row_height,
-                        review_marks         = excel_review_marks,
-                        review_mark_colors   = self._settings.word_review.mark_colors,
-                        mark_review_items    = self._settings.excel_review.mark_review_items,
-                        existing_fill_policy = self._settings.excel_review.existing_fill_policy,
-                        log_callback         = lambda msg: self._log(
-                            "OK" if msg.startswith("[OK]") else "INFO", msg
-                        ),
-                        original_path        = file_item.original_path,
-                    )
+                    if self._untranslated_only:
+                        coverage_plan = coverage_plans[fi] if fi < len(coverage_plans) else None
+                        if coverage_plan is None:
+                            raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                        out_path = write_untranslated_excel_file(
+                            source_path=process_path,
+                            output_dir=output_dir / rel_subdir,
+                            plan=coverage_plan,
+                            translations=global_translations,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            keep_original_sheets=self._settings.output.keep_original_sheets,
+                            formula_display_value_backfill=(
+                                self._settings.output.formula_display_value_backfill
+                            ),
+                            lock_row_height=self._settings.output.lock_row_height,
+                            log_callback=lambda msg: self._log(
+                                "OK" if msg.startswith("[OK]") else "INFO", msg
+                            ),
+                            original_path=file_item.original_path,
+                        )
+                    else:
+                        out_path = bilingual_writer.write_bilingual_file(
+                            source_path          = process_path,
+                            output_dir           = output_dir / rel_subdir,
+                            translations         = global_translations,
+                            target_lang          = target_lang,
+                            source_lang          = source_lang,
+                            keep_original_sheets = self._settings.output.keep_original_sheets,
+                            formula_display_value_backfill = self._settings.output.formula_display_value_backfill,
+                            enable_print_guard   = self._settings.output.enable_print_guard,
+                            lock_row_height      = self._settings.output.lock_row_height,
+                            review_marks         = excel_review_marks,
+                            review_mark_colors   = self._settings.word_review.mark_colors,
+                            mark_review_items    = self._settings.excel_review.mark_review_items,
+                            existing_fill_policy = self._settings.excel_review.existing_fill_policy,
+                            log_callback         = lambda msg: self._log(
+                                "OK" if msg.startswith("[OK]") else "INFO", msg
+                            ),
+                            original_path        = file_item.original_path,
+                        )
                     write_elapsed = (datetime.now() - t0).total_seconds()
                     self._task_logger.file_write_done(file_item.name, write_elapsed)
 
