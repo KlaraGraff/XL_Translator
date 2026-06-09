@@ -361,6 +361,123 @@ class NativeTranslationPageTests(unittest.TestCase):
                         any(text.startswith("开始翻译（") for text in self._visible_button_texts(page))
                     )
 
+    def test_file_selection_state_survives_table_rerenders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = (
+                (
+                    ExcelTranslatePage(AppSettings()),
+                    [
+                        FileItem(root / "first.xlsx", "first", 1.0, ["Sheet1"]),
+                        FileItem(root / "second.xlsx", "second", 2.0, ["Sheet1"]),
+                    ],
+                ),
+                (
+                    WordTranslatePage(AppSettings()),
+                    [
+                        WordFileItem(
+                            root / "first.docx",
+                            "first",
+                            1.0,
+                            paragraph_count=1,
+                            table_count=0,
+                            translatable_count=1,
+                        ),
+                        WordFileItem(
+                            root / "second.docx",
+                            "second",
+                            2.0,
+                            paragraph_count=2,
+                            table_count=0,
+                            translatable_count=2,
+                        ),
+                    ],
+                ),
+                (
+                    PdfTranslatePage(AppSettings()),
+                    [
+                        PdfFileItem(root / "first.pdf", "first", 1.0, page_count=1),
+                        PdfFileItem(root / "second.pdf", "second", 2.0, page_count=2),
+                    ],
+                ),
+            )
+            for page, items in cases:
+                with self.subTest(page=type(page).__name__):
+                    self.addCleanup(page.close)
+                    self.addCleanup(page.deleteLater)
+                    page.files = page.file_selection.set_files(items, select_all=True)
+                    page.source_root = str(root)
+                    page.phase = "idle"
+                    page._render_workspace()
+                    self.assertIsNotNone(page.table)
+
+                    page.table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+                    self.assertEqual(page._selected_files(), [items[1]])
+
+                    page._render_workspace()
+                    self.assertEqual(page._selected_files(), [items[1]])
+                    self.assertEqual(
+                        page.table.item(0, 0).checkState(),
+                        Qt.CheckState.Unchecked,
+                    )
+                    self.assertEqual(
+                        page.table.item(1, 0).checkState(),
+                        Qt.CheckState.Checked,
+                    )
+
+    def test_delayed_action_card_resync_ignores_stale_workspace_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = (
+                (
+                    ExcelTranslatePage(AppSettings()),
+                    FileItem(root / "source.xlsx", "source", 1.0, ["Sheet1"]),
+                ),
+                (
+                    WordTranslatePage(AppSettings()),
+                    WordFileItem(
+                        root / "source.docx",
+                        "source",
+                        1.0,
+                        paragraph_count=1,
+                        table_count=0,
+                        translatable_count=1,
+                    ),
+                ),
+                (
+                    PdfTranslatePage(AppSettings()),
+                    PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1),
+                ),
+            )
+            for page, item in cases:
+                with self.subTest(page=type(page).__name__):
+                    self.addCleanup(page.close)
+                    self.addCleanup(page.deleteLater)
+                    page.files = page.file_selection.set_files([item], select_all=True)
+                    page.source_root = str(root)
+                    page.phase = "done"
+                    page.done = self._done_msg()
+                    page._render_workspace()
+
+                    calls = 0
+                    original_render_action_card = page._render_action_card
+
+                    def counted_render_action_card() -> None:
+                        nonlocal calls
+                        calls += 1
+                        original_render_action_card()
+
+                    page._render_action_card = counted_render_action_card
+                    page._schedule_action_card_resync()
+                    page._reset_task()
+                    calls = 0
+
+                    self._wait_for_qt_timers()
+
+                    self.assertEqual(calls, 0)
+                    self.assertEqual(page.phase, "idle")
+                    self.assertNotIn("返回并开始新任务", self._visible_button_texts(page))
+
     def test_excel_begin_runner_passes_untranslated_only_to_task_runner(self) -> None:
         captured_kwargs = {}
 

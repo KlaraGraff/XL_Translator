@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
+from typing import Generic, TypeVar
 
 from PySide6.QtCore import (
     QChildEvent,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QSizePolicy,
     QStyle,
     QStyleOptionComboBox,
     QStyleOptionFrame,
@@ -53,6 +56,7 @@ TOOLTIP_META_COLOR = "#97A4B3"
 _COMBO_ALLOW_FREE_TEXT_PROPERTY = "appComboAllowFreeText"
 _COMBO_LAST_VALID_TEXT_PROPERTY = "appComboLastValidText"
 _COMBO_VALIDATION_CONFIGURED_PROPERTY = "appComboValidationConfigured"
+T = TypeVar("T")
 
 
 def is_live_widget(widget: QWidget | None) -> bool:
@@ -513,6 +517,57 @@ def configure_file_selection_table(
     table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     return table
+
+
+class FileSelectionTable(QTableWidget, Generic[T]):
+    """File selection table whose checkbox rows are fed by page state."""
+
+    def __init__(
+        self,
+        files: list[T],
+        *,
+        headers: list[str],
+        row_values: Callable[[T], list[object]],
+        is_selected: Callable[[T], bool],
+        fixed_column_widths: dict[int, int],
+        row_height: int = 38,
+        checkbox_width: int = 58,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(len(files), len(headers), parent)
+        self._files = list(files)
+        self._is_selected = is_selected
+        self.setHorizontalHeaderLabels(headers)
+        configure_app_table(self, row_height=row_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        configure_file_selection_table(
+            self,
+            fixed_column_widths=fixed_column_widths,
+            checkbox_width=checkbox_width,
+        )
+        self.populate_rows(row_values)
+
+    def populate_rows(self, row_values: Callable[[T], list[object]]) -> None:
+        self.blockSignals(True)
+        for row, item in enumerate(self._files):
+            self.setItem(row, 0, create_check_table_item(self._is_selected(item)))
+            for column, value in enumerate(row_values(item), start=1):
+                self.setItem(row, column, self._table_item_for_value(value))
+        self.blockSignals(False)
+
+    @staticmethod
+    def _table_item_for_value(value: object) -> QTableWidgetItem:
+        if isinstance(value, QTableWidgetItem):
+            return value
+        return create_table_item(value)
+
+    def selected_rows(self) -> list[tuple[int, T, bool]]:
+        rows: list[tuple[int, T, bool]] = []
+        for row, item in enumerate(self._files):
+            check = self.item(row, 0)
+            selected = check is None or check.checkState() == Qt.CheckState.Checked
+            rows.append((row, item, selected))
+        return rows
 
 
 def create_table_item(

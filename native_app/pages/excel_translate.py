@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSizePolicy,
-    QTableWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -73,16 +72,20 @@ from native_app.result_view import (
     format_elapsed,
     render_translation_result,
 )
+from native_app.task_page_models import FileSelectionModel
+from native_app.task_page_lifecycle import (
+    begin_workspace_render,
+    invalidate_workspace_generation,
+    schedule_workspace_callback,
+)
 from native_app.widgets import (
     build_app_tooltip_html,
-    configure_app_table,
-    configure_file_selection_table,
-    create_check_table_item,
     create_current_text_override_combo,
     create_elide_table_item,
     create_option_combo,
     create_searchable_combo,
     create_table_item,
+    FileSelectionTable,
     MiddleElideLabel,
     MiddleElideLineEdit,
     is_live_widget,
@@ -236,7 +239,8 @@ class ExcelTranslatePage(QWidget):
         self.source_root = settings.last_excel_source_folder
         self.runner: TaskRunner | None = None
         self.scan_worker: ScanWorker | None = None
-        self.table: QTableWidget | None = None
+        self.table: FileSelectionTable[FileItem] | None = None
+        self.file_selection = FileSelectionModel[FileItem]()
         self.log_entries: list[dict[str, str]] = []
         self.diagnostic_log_entries: list[dict[str, str]] = []
         self._visible_log_chars = 0
@@ -250,6 +254,7 @@ class ExcelTranslatePage(QWidget):
         self.current_task_id = ""
         self.current_task_api_groups: set[ApiGroupSignature] = set()
         self._task_diagnostics_archived = False
+        self._workspace_generation = 0
         self._workspace_render_phase = self.phase
         self.external_task_lock = False
         self.external_task_owner_label = ""
@@ -310,6 +315,7 @@ class ExcelTranslatePage(QWidget):
         self._render_action_card()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        invalidate_workspace_generation(self)
         self.poll_timer.stop()
         self._stop_ui_sync_guard()
         self._dispose_scan_worker(wait=True)
@@ -893,7 +899,7 @@ class ExcelTranslatePage(QWidget):
 
     def _render_workspace(self) -> None:
         self._normalize_terminal_state()
-        self._workspace_render_phase = self.phase
+        begin_workspace_render(self, self.phase)
         self.table = None
         _clear_layout(self.workspace_layout)
         frame = QFrame()
@@ -948,19 +954,18 @@ class ExcelTranslatePage(QWidget):
         layout.addLayout(title_row)
 
         layout.addLayout(self._build_kpi_strip())
-        self.table = QTableWidget(len(self.files), 4)
-        self.table.setHorizontalHeaderLabels(["选择", "文件名", "大小", "分表数"])
-        configure_app_table(self.table, row_height=38)
-        self.table.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
+        self.table = FileSelectionTable(
+            self.files,
+            headers=["选择", "文件名", "大小", "分表数"],
+            row_values=lambda item: [
+                create_elide_table_item(item.name),
+                f"{item.size_kb:.1f} KB",
+                len(item.sheets),
+            ],
+            is_selected=self.file_selection.is_selected,
+            fixed_column_widths={2: 112, 3: 86},
         )
-        self._configure_file_table_columns()
-        for row, item in enumerate(self.files):
-            self.table.setItem(row, 0, create_check_table_item())
-            self.table.setItem(row, 1, create_elide_table_item(item.name))
-            self.table.setItem(row, 2, create_table_item(f"{item.size_kb:.1f} KB"))
-            self.table.setItem(row, 3, create_table_item(len(item.sheets)))
+        self.table.verticalHeader().setDefaultSectionSize(34)
         self.table.itemChanged.connect(self._on_file_selection_changed)
         self._refresh_selection_summary()
         layout.addWidget(self.table, 1)
@@ -1226,8 +1231,8 @@ class ExcelTranslatePage(QWidget):
 
     def _schedule_action_card_resync(self) -> None:
         self._start_ui_sync_guard()
-        QTimer.singleShot(0, self._render_action_card)
-        QTimer.singleShot(150, self._render_action_card)
+        schedule_workspace_callback(self, 0, self._render_action_card)
+        schedule_workspace_callback(self, 150, self._render_action_card)
 
     def _browse_source(self) -> None:
         current = self.source_input.text().strip().strip('"')
@@ -1260,13 +1265,14 @@ class ExcelTranslatePage(QWidget):
             self._scan_source()
 
     def _on_file_selection_changed(self) -> None:
+        self._sync_file_selection_from_table()
         self._refresh_selection_summary()
         self._refresh_header()
         self._render_action_card()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._refresh_file_table_height)
+        schedule_workspace_callback(self, 0, self._refresh_file_table_height)
 
     def _scan_source(self) -> None:
         if self.scan_worker is not None:
@@ -1298,7 +1304,7 @@ class ExcelTranslatePage(QWidget):
         if error:
             QMessageBox.warning(self, APP_NAME, f"扫描失败：{error}")
             return
-        self.files = list(items)
+        self.files = self.file_selection.set_files(list(items), select_all=True)
         self.source_root = source_root
         self.settings.last_excel_source_folder = self.source_input.text().strip().strip('"')
         self.phase = "idle"
@@ -1333,15 +1339,7 @@ class ExcelTranslatePage(QWidget):
         worker.deleteLater()
 
     def _selected_files(self) -> list[FileItem]:
-        table = getattr(self, "table", None)
-        if not is_live_widget(table) or table.rowCount() != len(self.files):
-            return list(self.files)
-        selected: list[FileItem] = []
-        for row, item in enumerate(self.files):
-            check = table.item(row, 0)
-            if check is None or check.checkState() == Qt.CheckState.Checked:
-                selected.append(item)
-        return selected
+        return self.file_selection.selected_files(self.files)
 
     def _reset_runtime_logs(self) -> None:
         self.log_entries = []
@@ -1389,8 +1387,10 @@ class ExcelTranslatePage(QWidget):
         return sum(len(str(value or "")) for value in entry.values()) + 16
 
     def _set_all_file_selection(self, checked: bool) -> None:
+        self.file_selection.set_all(checked, self.files)
         table = getattr(self, "table", None)
         if not is_live_widget(table):
+            self._on_file_selection_changed()
             return
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         table.blockSignals(True)
@@ -1401,21 +1401,24 @@ class ExcelTranslatePage(QWidget):
         table.blockSignals(False)
         self._on_file_selection_changed()
 
+    def _sync_file_selection_from_table(self) -> None:
+        table = getattr(self, "table", None)
+        if not is_live_widget(table) or table.rowCount() != len(self.files):
+            self.file_selection.sync_files(self.files)
+            return
+        self.file_selection.sync_files(self.files)
+        selected_rows = table.selected_rows() if isinstance(table, FileSelectionTable) else []
+        for _row, item, selected in selected_rows:
+            self.file_selection.set_selected(item, selected)
+
     def _refresh_selection_summary(self) -> None:
         label = getattr(self, "selection_status_label", None)
         if is_live_widget(label):
             label.setText(f"已选 {len(self._selected_files())} / {len(self.files)}")
 
-    def _configure_file_table_columns(self) -> None:
-        configure_file_selection_table(
-            self.table,
-            fixed_column_widths={2: 112, 3: 86},
-        )
-        self.table.verticalHeader().setDefaultSectionSize(34)
-
     def _schedule_file_table_height_refresh(self) -> None:
         self._refresh_file_table_height()
-        QTimer.singleShot(0, self._refresh_file_table_height)
+        schedule_workspace_callback(self, 0, self._refresh_file_table_height)
 
     def _refresh_file_table_height(self) -> None:
         table = getattr(self, "table", None)
@@ -1883,10 +1886,12 @@ class ExcelTranslatePage(QWidget):
         return errors[-1] if errors else ""
 
     def _reset_task(self) -> None:
+        invalidate_workspace_generation(self)
         self.phase = "idle"
         self._workspace_render_phase = self.phase
         self._stop_ui_sync_guard()
         self.files = []
+        self.file_selection.clear()
         self.done = None
         self.runner = None
         self.progress = None
