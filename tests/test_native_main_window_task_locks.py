@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from native_app.main_window import NativeMainWindow
+from native_app.main_window import COMPACT_NAV_RAIL_WIDTH, NativeMainWindow
 from settings import AppSettings
 
 
@@ -64,6 +64,45 @@ class NativeMainWindowTaskLockTests(unittest.TestCase):
                 window._navigate(page)
 
         self.assertEqual(window.stack.currentWidget(), window.pages["excel_translate"])
+
+    def test_compact_shell_reduces_minimum_width_without_wrapping_tm_cards(self) -> None:
+        window = self._make_window()
+        wide_min_width = window.minimumSizeHint().width()
+
+        window.set_compact_shell(True)
+        self.app.processEvents()
+
+        self.assertLess(window.minimumSizeHint().width(), wide_min_width)
+        self.assertLessEqual(window.minimumSizeHint().width(), 1210)
+        self.assertEqual(window.compact_nav.minimumWidth(), COMPACT_NAV_RAIL_WIDTH)
+        self.assertEqual(window.compact_nav.maximumWidth(), COMPACT_NAV_RAIL_WIDTH)
+        self.assertEqual(window.sidebar.maximumWidth(), 0)
+
+        page = window.pages["tm"]
+        page.resize(page.minimumSizeHint().width(), 720)
+        page.show()
+        self.app.processEvents()
+        row_groups = (
+            (page.overview_title_row, page.scope_title_row, page.cleaner_title_row),
+            (page.overview_info_row, page.scope_label_row, page.cleaner_info_row),
+            (page.overview_action_row, page.scope_control_row, page.cleaner_action_row),
+        )
+        for rows in row_groups:
+            tops = [row.mapTo(page, row.rect().topLeft()).y() for row in rows]
+            self.assertLessEqual(max(tops) - min(tops), 1)
+
+    def test_compact_shell_keeps_tm_language_controls_readable(self) -> None:
+        window = self._make_window()
+        window.set_compact_shell(True)
+        window._navigate("tm")
+        window.resize(window.minimumSizeHint().width(), 760)
+        window.show()
+        self.app.processEvents()
+
+        page = window.pages["tm"]
+        for combo in (page.source_combo, page.target_combo):
+            with self.subTest(combo=combo.objectName() or combo.currentText()):
+                self.assertGreaterEqual(combo.width(), combo.sizeHint().width())
 
     def test_running_translation_locks_only_pages_sharing_api_until_terminal(self) -> None:
         window = self._make_window()

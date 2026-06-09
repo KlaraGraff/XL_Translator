@@ -156,6 +156,11 @@ def _cloud_provider_value(label: str) -> str:
 
 RELEASE_NOTES_MAX_CHARS = 1200
 GITHUB_PROJECT_PAGE_URL = f"https://github.com/{GITHUB_REPO}"
+SIDEBAR_WIDTH = 330
+COMPACT_NAV_RAIL_WIDTH = 72
+COMPACT_SHELL_SCREEN_WIDTH = 1360
+DEFAULT_WINDOW_WIDTH = 1320
+DEFAULT_WINDOW_HEIGHT = 880
 
 
 def _release_notes_preview(notes: str) -> str:
@@ -373,7 +378,7 @@ class Sidebar(QFrame):
         super().__init__()
         self.settings = settings
         self.setObjectName("Sidebar")
-        self.setFixedWidth(330)
+        self.setFixedWidth(SIDEBAR_WIDTH)
         self._current_model_role = ROLE_TRANSLATION
         self._model_catalog_signature = ""
         self._model_catalog_models: list[str] = []
@@ -2430,6 +2435,61 @@ class Sidebar(QFrame):
         self.review_model_combo.showPopup()
 
 
+class CompactNavRail(QFrame):
+    """Small-screen navigation rail that keeps the work area wide."""
+
+    navigateRequested = Signal(str)
+    settingsRequested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("CompactNavRail")
+        self.setFixedWidth(COMPACT_NAV_RAIL_WIDTH)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 12, 8, 12)
+        root.setSpacing(8)
+
+        brand = QLabel("OA")
+        brand.setObjectName("SectionTitle")
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(brand)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+        self._buttons: dict[str, QPushButton] = {}
+        nav_items = [
+            ("excel_translate", "Excel", "Excel 翻译"),
+            ("word_translate", "Word", "Word 翻译"),
+            ("pdf_translate", "PDF", "PDF 翻译"),
+            ("tm", "TM", "记忆库管理"),
+        ]
+        for index, (page, short_title, title) in enumerate(nav_items):
+            button = QPushButton(short_title)
+            button.setObjectName("RailButton")
+            button.setCheckable(True)
+            _set_tooltip(button, title, f"切换到{title}。")
+            button.clicked.connect(lambda _=False, key=page: self.navigateRequested.emit(key))
+            self._nav_group.addButton(button)
+            self._buttons[page] = button
+            root.addWidget(button)
+            if index == 0:
+                button.setChecked(True)
+
+        root.addStretch(1)
+
+        settings_button = QPushButton("设置")
+        settings_button.setObjectName("RailButton")
+        _set_tooltip(settings_button, "设置", "打开完整模型、领域和 Prompt 设置。")
+        settings_button.clicked.connect(self.settingsRequested.emit)
+        root.addWidget(settings_button)
+
+    def set_active_page(self, page: str) -> None:
+        button = self._buttons.get(page)
+        if button is not None:
+            button.setChecked(True)
+
+
 class NativeMainWindow(QMainWindow):
     """Top-level native desktop window."""
 
@@ -2450,12 +2510,16 @@ class NativeMainWindow(QMainWindow):
         self._update_check_source = ""
         self._latest_update_result: UpdateCheckResult | None = None
         self._closing = False
+        self._current_page = "excel_translate"
+        self._compact_shell = False
 
         central = QWidget()
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self.compact_nav = CompactNavRail()
+        self.compact_nav.hide()
         self.sidebar = Sidebar(settings)
         self.stack = QStackedWidget()
         self.pages = {
@@ -2466,21 +2530,21 @@ class NativeMainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
+        self.compact_nav.navigateRequested.connect(self._navigate)
+        self.compact_nav.settingsRequested.connect(self._open_compact_settings)
         self.sidebar.navigateRequested.connect(self._navigate)
         self.sidebar.updateCheckRequested.connect(lambda: self._start_update_check("manual"))
         self.sidebar.globalUpdateIgnoreToggled.connect(self._toggle_global_update_ignore)
         self.sidebar.currentUpdateIgnored.connect(self._ignore_current_update_version)
         self.sidebar.updatePromptRequested.connect(self._show_latest_update_dialog)
-        self.sidebar.settingsChanged.connect(self.pages["excel_translate"].refresh_settings)
-        self.sidebar.settingsChanged.connect(self.pages["word_translate"].refresh_settings)
-        self.sidebar.settingsChanged.connect(self.pages["pdf_translate"].refresh_settings)
-        self.sidebar.settingsChanged.connect(self.pages["tm"].refresh_settings)
+        self.sidebar.settingsChanged.connect(self._refresh_pages_from_settings)
         self.pages["excel_translate"].languageChanged.connect(
             self._sync_tm_language_from_translation
         )
         self.pages["word_translate"].languageChanged.connect(
             self._sync_tm_language_from_translation
         )
+        layout.addWidget(self.compact_nav)
         layout.addWidget(self.sidebar)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
@@ -2492,6 +2556,87 @@ class NativeMainWindow(QMainWindow):
         self._task_lock_timer.start()
         self._sync_translation_task_locks()
         QTimer.singleShot(600, lambda: self._start_update_check("auto"))
+
+    def apply_initial_window_layout(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        available_width = available.width() if available is not None else DEFAULT_WINDOW_WIDTH
+        available_height = available.height() if available is not None else DEFAULT_WINDOW_HEIGHT
+        compact = available_width <= COMPACT_SHELL_SCREEN_WIDTH
+        self.set_compact_shell(compact)
+
+        width_ratio = 0.94 if compact else 0.86
+        target_width = min(DEFAULT_WINDOW_WIDTH, int(available_width * width_ratio))
+        target_width = max(self.minimumSizeHint().width(), target_width)
+        target_width = min(target_width, available_width)
+        target_height = min(DEFAULT_WINDOW_HEIGHT, int(available_height * 0.92))
+        self.resize(target_width, target_height)
+
+        if available is not None:
+            x = available.x() + max(0, (available.width() - self.width()) // 2)
+            y = available.y() + max(0, (available.height() - self.height()) // 2)
+            self.move(x, y)
+
+    def set_compact_shell(self, compact: bool) -> None:
+        self._compact_shell = compact
+        self.compact_nav.setVisible(compact)
+        self.sidebar.setFixedWidth(0 if compact else SIDEBAR_WIDTH)
+        self.sidebar.setVisible(not compact)
+        tm_page = self.pages.get("tm")
+        if hasattr(tm_page, "set_compact_layout"):
+            tm_page.set_compact_layout(compact)
+        self.compact_nav.set_active_page(self._current_page)
+        self.sidebar.set_active_page(self._current_page)
+        layout = self.centralWidget().layout()
+        layout.invalidate()
+        layout.activate()
+        self.stack.updateGeometry()
+        self.centralWidget().updateGeometry()
+        self.updateGeometry()
+
+    def _refresh_pages_from_settings(self) -> None:
+        self.pages["excel_translate"].refresh_settings()
+        self.pages["word_translate"].refresh_settings()
+        self.pages["pdf_translate"].refresh_settings()
+        self.pages["tm"].refresh_settings()
+
+    def _open_compact_settings(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("设置")
+        dialog.setModal(False)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        sidebar = Sidebar(self.settings)
+        sidebar.set_active_page(self._current_page)
+        if self._latest_update_result is not None:
+            sidebar.set_update_notice(
+                self._latest_update_result if self._latest_update_result.has_update else None
+            )
+        sidebar.sync_update_ignore_button()
+        layout.addWidget(sidebar)
+
+        def navigate_from_dialog(page: str) -> None:
+            self._navigate(page)
+            dialog.accept()
+
+        sidebar.navigateRequested.connect(navigate_from_dialog)
+        sidebar.updateCheckRequested.connect(lambda: self._start_update_check("manual"))
+        sidebar.globalUpdateIgnoreToggled.connect(self._toggle_global_update_ignore)
+        sidebar.currentUpdateIgnored.connect(self._ignore_current_update_version)
+        sidebar.updatePromptRequested.connect(self._show_latest_update_dialog)
+        sidebar.settingsChanged.connect(self._refresh_pages_from_settings)
+
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        dialog_width = SIDEBAR_WIDTH
+        dialog_height = min(
+            860,
+            int((available.height() if available is not None else DEFAULT_WINDOW_HEIGHT) * 0.9),
+        )
+        dialog.resize(dialog_width, dialog_height)
+        dialog.exec()
 
     def _start_update_check(self, source: str) -> None:
         if self._closing:
@@ -2721,7 +2866,9 @@ class NativeMainWindow(QMainWindow):
     def _navigate(self, page: str) -> None:
         page_order = ["excel_translate", "word_translate", "pdf_translate", "tm"]
         self.stack.setCurrentIndex(page_order.index(page))
+        self._current_page = page
         self.sidebar.set_active_page(page)
+        self.compact_nav.set_active_page(page)
         self._sync_page_activation(page)
         self._sync_translation_task_locks()
 

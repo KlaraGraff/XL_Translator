@@ -39,6 +39,11 @@ QFrame#Sidebar {
     border-right: 1px solid #D9E2EC;
 }
 
+QFrame#CompactNavRail {
+    background: #FFFFFF;
+    border-right: 1px solid #D9E2EC;
+}
+
 QLabel#BrandTitle {
     color: #0F172A;
     font-size: 20px;
@@ -288,6 +293,18 @@ QPushButton#NavButton {
 }
 
 QPushButton#NavButton:checked {
+    background: #EAF6FD;
+    border-color: #7DD3FC;
+    color: #075985;
+}
+
+QPushButton#RailButton {
+    padding: 8px 4px;
+    text-align: center;
+    font-size: 12px;
+}
+
+QPushButton#RailButton:checked {
     background: #EAF6FD;
     border-color: #7DD3FC;
     color: #075985;

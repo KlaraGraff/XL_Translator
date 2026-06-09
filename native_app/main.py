@@ -37,7 +37,7 @@ def main() -> int:
     init_db()
 
     window = NativeMainWindow(settings)
-    window.resize(1320, 880)
+    window.apply_initial_window_layout()
     window.show()
 
     exit_code = app.exec()

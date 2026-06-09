@@ -77,6 +77,9 @@ TM_TOP_CARD_COLUMN_MIN_WIDTH = 108
 TM_SCOPE_CARD_MIN_WIDTH = 360
 TM_OVERVIEW_CARD_MIN_WIDTH = 380
 TM_CLEANER_CARD_MIN_WIDTH = 340
+TM_COMPACT_SCOPE_CARD_MIN_WIDTH = 500
+TM_COMPACT_OVERVIEW_CARD_MIN_WIDTH = 300
+TM_COMPACT_CLEANER_CARD_MIN_WIDTH = 280
 TM_LANGUAGE_POPUP_MIN_WIDTH = 160
 WORKSPACE_ACTION_BUTTON_WIDTH = 96
 WORKSPACE_ACTION_BUTTON_HEIGHT = 38
@@ -426,6 +429,7 @@ class TmManagerPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        self.root_layout = root
         root.setContentsMargins(24, 18, 24, 18)
         root.setSpacing(12)
 
@@ -534,6 +538,7 @@ class TmManagerPage(QWidget):
 
     def _build_scope_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
+        self.scope_card = frame
         frame.setProperty("tmTopCard", "true")
         frame.setMinimumWidth(TM_SCOPE_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -554,6 +559,7 @@ class TmManagerPage(QWidget):
 
     def _build_overview_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
+        self.overview_card = frame
         frame.setProperty("tmTopCard", "true")
         frame.setMinimumWidth(TM_OVERVIEW_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -612,6 +618,7 @@ class TmManagerPage(QWidget):
 
     def _build_cleaner_card(self, row: QHBoxLayout) -> None:
         frame, layout = _card()
+        self.cleaner_card = frame
         frame.setProperty("tmTopCard", "true")
         frame.setMinimumWidth(TM_CLEANER_CARD_MIN_WIDTH)
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -681,6 +688,20 @@ class TmManagerPage(QWidget):
         self.clean_status.setObjectName("FieldHint")
         progress_row.addWidget(self.clean_status)
         layout.addWidget(self.clean_progress_panel)
+
+    def set_compact_layout(self, compact: bool) -> None:
+        if compact:
+            self.root_layout.setContentsMargins(16, 14, 16, 14)
+            self.overview_card.setMinimumWidth(TM_COMPACT_OVERVIEW_CARD_MIN_WIDTH)
+            self.scope_card.setMinimumWidth(TM_COMPACT_SCOPE_CARD_MIN_WIDTH)
+            self.cleaner_card.setMinimumWidth(TM_COMPACT_CLEANER_CARD_MIN_WIDTH)
+        else:
+            self.root_layout.setContentsMargins(24, 18, 24, 18)
+            self.overview_card.setMinimumWidth(TM_OVERVIEW_CARD_MIN_WIDTH)
+            self.scope_card.setMinimumWidth(TM_SCOPE_CARD_MIN_WIDTH)
+            self.cleaner_card.setMinimumWidth(TM_CLEANER_CARD_MIN_WIDTH)
+        self.root_layout.invalidate()
+        self.updateGeometry()
 
     def _refresh_language_options(self) -> None:
         if not hasattr(self, "target_combo"):
