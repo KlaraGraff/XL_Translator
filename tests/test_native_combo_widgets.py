@@ -32,6 +32,7 @@ from native_app.widgets import (
     create_table_item,
     install_scroll_wheel_focus_guard,
     select_combo_text_match,
+    set_combo_item_search_aliases,
 )
 
 
@@ -161,6 +162,19 @@ class NativeComboWidgetTests(unittest.TestCase):
 
         self.assertEqual(combo.currentText(), "英文")
         self.assertEqual(combo.currentIndex(), 1)
+
+    def test_searchable_combo_commits_hidden_alias_match(self) -> None:
+        combo = create_searchable_combo()
+        combo.addItem("中文", "zh")
+        combo.addItem("法文", "fr")
+        set_combo_item_search_aliases(combo, 1, ["法语"])
+        combo.setCurrentIndex(0)
+
+        combo.setEditText("法语")
+        combo.lineEdit().editingFinished.emit()
+
+        self.assertEqual(combo.currentText(), "法文")
+        self.assertEqual(combo.currentData(), "fr")
 
     def test_editable_combo_keeps_custom_manual_text_valid(self) -> None:
         combo = create_editable_combo()

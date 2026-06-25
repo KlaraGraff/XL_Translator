@@ -64,11 +64,14 @@ from core.language_registry import (
     CustomTargetLang,
     get_default_source_lang,
     get_default_target_lang,
+    get_supported_languages,
+    get_supported_source_languages,
     is_supported_source_lang,
     is_supported_target_lang,
     normalize_custom_target_langs,
     normalize_recent_target_langs,
     remember_recent_target_lang,
+    resolve_language_code,
 )
 
 _KEY_OVERRIDE_LOCAL = threading.local()
@@ -752,6 +755,27 @@ class AppSettings(BaseModel):
         self.custom_target_langs = normalize_custom_target_langs(self.custom_target_langs)
         default_source_lang = get_default_source_lang()
         default_target_lang = get_default_target_lang()
+        target_supported_map = get_supported_languages(
+            self.custom_target_langs,
+            include_optional=True,
+        )
+        source_supported_map = get_supported_source_languages()
+        source_supported_map.update(target_supported_map)
+
+        resolved_source_lang = resolve_language_code(
+            self.source_lang,
+            source_supported_map,
+        )
+        if resolved_source_lang:
+            self.source_lang = resolved_source_lang
+
+        resolved_target_lang = resolve_language_code(
+            self.target_lang,
+            target_supported_map,
+        )
+        if resolved_target_lang:
+            self.target_lang = resolved_target_lang
+
         self.recent_target_langs = normalize_recent_target_langs(
             self.recent_target_langs,
             self.custom_target_langs,
@@ -776,6 +800,12 @@ class AppSettings(BaseModel):
             self.target_lang = (
                 self.recent_target_langs[0]
                 if self.recent_target_langs else default_target_lang
+            )
+
+        if self.source_lang == default_source_lang and self.target_lang == self.source_lang:
+            self.target_lang = next(
+                (lang for lang in self.recent_target_langs if lang != self.source_lang),
+                default_target_lang,
             )
 
         self.recent_target_langs = remember_recent_target_lang(
@@ -1158,6 +1188,47 @@ def _migrate_settings_to_v23(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v24(data: dict) -> dict:
+    """Normalize language aliases and repair accidental zh -> zh state."""
+    migrated = dict(data)
+    custom_target_langs = normalize_custom_target_langs(migrated.get("custom_target_langs"))
+    target_supported_map = get_supported_languages(custom_target_langs, include_optional=True)
+    source_supported_map = get_supported_source_languages()
+    source_supported_map.update(target_supported_map)
+
+    source_lang = (
+        resolve_language_code(str(migrated.get("source_lang") or ""), source_supported_map)
+        or get_default_source_lang()
+    )
+    target_lang = resolve_language_code(
+        str(migrated.get("target_lang") or ""),
+        target_supported_map,
+    )
+    recent_target_langs = normalize_recent_target_langs(
+        migrated.get("recent_target_langs"),
+        custom_target_langs,
+        include_optional=True,
+    )
+    if not target_lang:
+        target_lang = recent_target_langs[0] if recent_target_langs else get_default_target_lang()
+    if source_lang == get_default_source_lang() and target_lang == source_lang:
+        target_lang = next(
+            (lang for lang in recent_target_langs if lang != source_lang),
+            get_default_target_lang(),
+        )
+
+    migrated["source_lang"] = source_lang
+    migrated["target_lang"] = target_lang
+    migrated["recent_target_langs"] = remember_recent_target_lang(
+        recent_target_langs,
+        target_lang,
+        custom_target_langs,
+        include_optional=True,
+    )
+    migrated["settings_version"] = 24
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -1211,6 +1282,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v22(migrated)
         elif next_version == 23:
             migrated = _migrate_settings_to_v23(migrated)
+        elif next_version == 24:
+            migrated = _migrate_settings_to_v24(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

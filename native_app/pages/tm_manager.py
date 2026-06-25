@@ -37,6 +37,7 @@ from core.language_registry import (
     build_lang_pair,
     get_ordered_target_lang_codes,
     get_target_lang_display,
+    get_target_lang_search_aliases,
     remember_recent_target_lang,
 )
 from core.tm_cleaner import (
@@ -59,6 +60,7 @@ from native_app.widgets import (
     create_searchable_combo,
     refresh_combo_completer,
     select_combo_text_match,
+    set_combo_item_search_aliases,
 )
 from settings import AppSettings, save_settings
 
@@ -738,6 +740,15 @@ class TmManagerPage(QWidget):
                 ),
                 code,
             )
+            set_combo_item_search_aliases(
+                self.source_combo,
+                self.source_combo.count() - 1,
+                get_target_lang_search_aliases(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
+            )
         source_index = self.source_combo.findData(current_source)
         self.source_combo.setCurrentIndex(source_index if source_index >= 0 else 0)
         refresh_combo_completer(self.source_combo)
@@ -757,6 +768,15 @@ class TmManagerPage(QWidget):
                     include_optional=True,
                 ),
                 code,
+            )
+            set_combo_item_search_aliases(
+                self.target_combo,
+                self.target_combo.count() - 1,
+                get_target_lang_search_aliases(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
             )
         index = self.target_combo.findData(current_target)
         self.target_combo.setCurrentIndex(index if index >= 0 else 0)

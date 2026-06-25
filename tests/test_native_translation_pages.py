@@ -217,6 +217,29 @@ class NativeTranslationPageTests(unittest.TestCase):
             self.addCleanup(fresh_page.deleteLater)
             self.assertFalse(fresh_page.untranslated_only_check.isChecked())
 
+    def test_language_pages_keep_french_target_after_rebuild(self) -> None:
+        settings = AppSettings(source_lang="zh", target_lang="fr", recent_target_langs=["fr"])
+
+        with (
+            patch("native_app.pages.excel_translate.save_settings"),
+            patch("native_app.pages.word_translate.save_settings"),
+            patch("native_app.pages.pdf_translate.save_settings"),
+            patch("native_app.pages.tm_manager.save_settings"),
+        ):
+            excel_page = ExcelTranslatePage(settings)
+            word_page = WordTranslatePage(settings)
+            pdf_page = PdfTranslatePage(settings)
+            tm_page = self._make_tm_page(settings)
+        for page in (excel_page, word_page, pdf_page):
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+
+        self.assertEqual(excel_page.target_combo.currentData(), "fr")
+        self.assertEqual(word_page.target_combo.currentData(), "fr")
+        self.assertEqual(pdf_page.target_combo.currentData(), "fr")
+        self.assertEqual(tm_page.target_combo.currentData(), "fr")
+        self.assertEqual(settings.target_lang, "fr")
+
     def test_delayed_reset_keeps_start_action_and_allows_empty_scan(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,

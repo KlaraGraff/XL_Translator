@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Generic, TypeVar
 
 from PySide6.QtCore import (
@@ -56,6 +56,7 @@ TOOLTIP_META_COLOR = "#97A4B3"
 _COMBO_ALLOW_FREE_TEXT_PROPERTY = "appComboAllowFreeText"
 _COMBO_LAST_VALID_TEXT_PROPERTY = "appComboLastValidText"
 _COMBO_VALIDATION_CONFIGURED_PROPERTY = "appComboValidationConfigured"
+_COMBO_SEARCH_ALIASES_ROLE = Qt.ItemDataRole.UserRole.value + 1
 T = TypeVar("T")
 
 
@@ -841,9 +842,7 @@ def configure_searchable_combo(
 
 def refresh_combo_completer(combo: QComboBox) -> None:
     completer = _ensure_aligned_completer(combo)
-    completer.setModel(
-        QStringListModel([combo.itemText(index) for index in range(combo.count())], combo)
-    )
+    completer.setModel(QStringListModel(_combo_completion_texts(combo), combo))
     completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
     completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     completer.setFilterMode(Qt.MatchFlag.MatchContains)
@@ -993,7 +992,7 @@ def _show_combo_text_from_start(combo: QComboBox) -> None:
 def _combo_text_index(combo: QComboBox, text: str) -> int:
     lowered = str(text or "").strip().casefold()
     for index in range(combo.count()):
-        if combo.itemText(index).strip().casefold() == lowered:
+        if lowered in _combo_item_search_keys(combo, index):
             return index
     return -1
 
@@ -1008,12 +1007,49 @@ def _combo_text_match_index(combo: QComboBox, text: str) -> int:
         return exact_index
 
     for index in range(combo.count()):
-        if combo.itemText(index).strip().casefold().startswith(lowered):
+        if any(key.startswith(lowered) for key in _combo_item_search_keys(combo, index)):
             return index
     for index in range(combo.count()):
-        if lowered in combo.itemText(index).strip().casefold():
+        if any(lowered in key for key in _combo_item_search_keys(combo, index)):
             return index
     return -1
+
+
+def set_combo_item_search_aliases(
+    combo: QComboBox,
+    index: int,
+    aliases: Iterable[str],
+) -> None:
+    """Attach hidden searchable aliases to one combo item."""
+    if index < 0 or index >= combo.count():
+        return
+    normalized = [
+        str(alias or "").strip()
+        for alias in aliases
+        if str(alias or "").strip()
+    ]
+    combo.setItemData(index, list(dict.fromkeys(normalized)), _COMBO_SEARCH_ALIASES_ROLE)
+
+
+def _combo_item_search_texts(combo: QComboBox, index: int) -> list[str]:
+    values = [combo.itemText(index).strip()]
+    alias_data = combo.itemData(index, _COMBO_SEARCH_ALIASES_ROLE)
+    if isinstance(alias_data, str):
+        values.append(alias_data)
+    elif isinstance(alias_data, Iterable):
+        values.extend(str(alias or "").strip() for alias in alias_data)
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _combo_item_search_keys(combo: QComboBox, index: int) -> set[str]:
+    return {value.casefold() for value in _combo_item_search_texts(combo, index)}
+
+
+def _combo_completion_texts(combo: QComboBox) -> list[str]:
+    texts: list[str] = []
+    for index in range(combo.count()):
+        texts.extend(_combo_item_search_texts(combo, index))
+    return list(dict.fromkeys(texts))
 
 
 def _set_combo_to_item_index(combo: QComboBox, index: int) -> None:

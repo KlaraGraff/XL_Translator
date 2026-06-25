@@ -94,6 +94,21 @@ class WordCoverageTests(unittest.TestCase):
                 ["项目名称", "Project name", "项目名称", "Project name"],
             )
 
+    def test_table_unit_line_is_not_misclassified_as_target_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "units.docx"
+            doc = Document()
+            table = doc.add_table(rows=1, cols=2)
+            table.cell(0, 0).text = "水泥\n(kg/m³)"
+            table.cell(0, 1).text = "砂子\nsable\n(kg/m³)"
+            doc.save(source)
+
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(by_location["table[0].cell[0]"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(by_location["table[0].cell[1]"].status, COVERAGE_COVERED)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

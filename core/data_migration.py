@@ -93,7 +93,19 @@ def inspect_data_migration(
         _iter_support_items(legacy_data_dir, legacy_launcher_dir, app_data_dir)
     )
 
-    if marker_path.exists() or not primary_items:
+    if marker_path.exists():
+        marker_status = _read_marker_status(marker_path)
+        return DataMigrationPlan(
+            status="skipped" if marker_status == "skipped" else "marked",
+            app_data_dir=app_data_dir,
+            legacy_data_dir=legacy_data_dir,
+            legacy_launcher_dir=legacy_launcher_dir,
+            marker_path=marker_path,
+            primary_items=primary_items,
+            support_items=support_items,
+        )
+
+    if not primary_items:
         return DataMigrationPlan(
             status="none",
             app_data_dir=app_data_dir,
@@ -168,6 +180,69 @@ def migrate_legacy_data(
     return MigrationResult(tuple(migrated), tuple(skipped), plan.marker_path)
 
 
+def migrate_non_conflicting_legacy_data(
+    plan: DataMigrationPlan,
+    *,
+    include_support_files: bool = False,
+    progress: ProgressCallback | None = None,
+) -> MigrationResult:
+    """Migrate legacy files whose targets do not exist, without overwriting current data."""
+    if plan.status == "ready":
+        return migrate_legacy_data(
+            plan,
+            include_support_files=include_support_files,
+            progress=progress,
+        )
+    if plan.status not in {"conflict", "marked"}:
+        return MigrationResult((), (), plan.marker_path)
+
+    items = [item for item in plan.primary_items if not item.target.exists()]
+    if include_support_files:
+        items.extend(plan.support_items)
+
+    if plan.status == "marked" and not items:
+        skipped = tuple(item for item in plan.primary_items if item.target.exists())
+        return MigrationResult((), skipped, plan.marker_path)
+
+    total = max(len(items) + 2, 1)
+    migrated: list[MigrationItem] = []
+    skipped: list[MigrationItem] = [
+        item for item in plan.primary_items if item.target.exists()
+    ]
+
+    _emit_progress(progress, 0, total, "准备新数据目录")
+    plan.app_data_dir.mkdir(parents=True, exist_ok=True)
+
+    step = 1
+    for item in items:
+        _emit_progress(progress, step, total, f"迁移{item.label}")
+        if not item.source.exists():
+            skipped.append(item)
+        elif item.kind == "sqlite":
+            _copy_sqlite_database(item.source, item.target)
+            migrated.append(item)
+        elif item.kind == "directory":
+            _copy_directory(item.source, item.target)
+            migrated.append(item)
+        else:
+            _copy_file(item.source, item.target)
+            migrated.append(item)
+        step += 1
+
+    _emit_progress(progress, step, total, "写入迁移记录")
+    _write_marker(
+        plan.marker_path,
+        status="partial_migrated",
+        legacy_data_dir=plan.legacy_data_dir,
+        include_support_files=include_support_files,
+        migrated_items=migrated,
+        skipped_items=skipped,
+        reason="existing_current_data_preserved",
+    )
+    _emit_progress(progress, total, total, "迁移完成")
+    return MigrationResult(tuple(migrated), tuple(skipped), plan.marker_path)
+
+
 def mark_migration_skipped(
     plan: DataMigrationPlan,
     *,
@@ -185,6 +260,16 @@ def mark_migration_skipped(
         reason=reason,
     )
     return plan.marker_path
+
+
+def _read_marker_status(marker_path: Path) -> str:
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("status") or "").strip()
 
 
 def format_size(num_bytes: int) -> str:

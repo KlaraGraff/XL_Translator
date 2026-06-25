@@ -7,6 +7,7 @@ import shutil
 import stat
 import tempfile
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -426,6 +427,7 @@ def write_bilingual_docx(
                 highlight_skip_count += 1
         table_insertions += 1
 
+    _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""
@@ -514,18 +516,23 @@ def _is_generated_output(path: Path) -> bool:
     return any(GENERATED_OUTPUT_DIR_MARKER in part for part in path.parts)
 
 
-def _iter_unique_table_cells(table: Table, seen: set[int] | None = None):
+def _iter_unique_table_cells(table: Table, seen: set | None = None):
     if seen is None:
         seen = set()
     for row in table.rows:
         for cell in row.cells:
-            key = id(cell._tc)
-            if key in seen:
+            if cell._tc in seen:
                 continue
-            seen.add(key)
+            seen.add(cell._tc)
             yield cell
             for nested_table in cell.tables:
                 yield from _iter_unique_table_cells(nested_table, seen)
+
+
+def _iter_cell_direct_paragraphs(cell: _Cell):
+    for child in cell._tc.iterchildren():
+        if child.tag == qn("w:p"):
+            yield Paragraph(child, cell)
 
 
 def _paragraph_source_text(paragraph: Paragraph) -> str:
@@ -550,7 +557,11 @@ def _apply_leading_prefix(text: str, prefix: str) -> str:
 
 
 def _cell_source_text(cell: _Cell) -> str:
-    return (cell.text or "").strip()
+    paragraphs = [
+        _paragraph_source_text(paragraph)
+        for paragraph in _iter_cell_direct_paragraphs(cell)
+    ]
+    return "\n".join(text for text in paragraphs if text).strip()
 
 
 def _is_translatable_source(
@@ -1295,7 +1306,7 @@ def _insert_translation_paragraph_after(
     new_p = OxmlElement("w:p")
     paragraph._p.addnext(new_p)
     new_para = Paragraph(new_p, paragraph._parent)
-    _copy_translation_paragraph_shape(paragraph, new_para)
+    _copy_translation_paragraph_shape(paragraph, new_para, target_lang=target_lang)
     _remove_paragraph_numbering(new_para)
     run = new_para.add_run(text)
     _copy_run_shape(paragraph, run, target_lang=target_lang)
@@ -1311,7 +1322,7 @@ def _append_translation_to_cell(
     source_para = _last_non_empty_paragraph(cell.paragraphs)
     new_para = cell.add_paragraph()
     if source_para is not None:
-        _copy_translation_paragraph_shape(source_para, new_para)
+        _copy_translation_paragraph_shape(source_para, new_para, target_lang=target_lang)
         _remove_paragraph_numbering(new_para)
     run = new_para.add_run(text)
     if source_para is not None:
@@ -1338,6 +1349,43 @@ def _replace_paragraph_text(
         _set_latin_run_font(run, target_lang=target_lang)
 
 
+def _trim_trailing_empty_body_paragraphs(doc) -> None:
+    body = doc._body._element
+    children = list(body)
+    last_content_index = len(children) - 1
+    if last_content_index >= 0 and children[last_content_index].tag == qn("w:sectPr"):
+        last_content_index -= 1
+
+    while last_content_index >= 0:
+        element = children[last_content_index]
+        if element.tag != qn("w:p") or not _is_removable_empty_paragraph_element(element):
+            break
+        body.remove(element)
+        children.pop(last_content_index)
+        last_content_index -= 1
+
+
+def _is_removable_empty_paragraph_element(paragraph_element) -> bool:
+    for tag in (
+        "t",
+        "tab",
+        "br",
+        "drawing",
+        "pict",
+        "object",
+        "fldChar",
+        "instrText",
+        "sectPr",
+        "bookmarkStart",
+        "bookmarkEnd",
+        "commentRangeStart",
+        "commentRangeEnd",
+    ):
+        if paragraph_element.findall(f".//{qn(f'w:{tag}')}"):
+            return False
+    return True
+
+
 def _last_non_empty_paragraph(paragraphs: list[Paragraph]) -> Paragraph | None:
     for paragraph in reversed(paragraphs):
         if paragraph.text.strip():
@@ -1345,47 +1393,396 @@ def _last_non_empty_paragraph(paragraphs: list[Paragraph]) -> Paragraph | None:
     return paragraphs[-1] if paragraphs else None
 
 
-def _copy_translation_paragraph_shape(source: Paragraph, target: Paragraph) -> None:
-    if not _is_heading_style(source):
-        try:
-            target.style = source.style
-        except Exception:
-            pass
+def _copy_translation_paragraph_shape(
+    source: Paragraph,
+    target: Paragraph,
+    *,
+    target_lang: str,
+) -> None:
+    target_p_pr = getattr(target._p, "pPr", None)
+    if target_p_pr is not None:
+        target._p.remove(target_p_pr)
 
-    source_format = source.paragraph_format
-    target_format = target.paragraph_format
-    for attr in (
-        "alignment",
-        "first_line_indent",
-        "keep_together",
-        "keep_with_next",
-        "left_indent",
-        "line_spacing",
-        "line_spacing_rule",
-        "page_break_before",
-        "right_indent",
-        "space_after",
-        "space_before",
-        "widow_control",
-    ):
-        try:
-            setattr(target_format, attr, getattr(source_format, attr))
-        except Exception:
+    copied_p_pr = _build_translation_paragraph_properties(source)
+    if _is_heading_style(source):
+        p_style = copied_p_pr.find(qn("w:pStyle"))
+        if p_style is not None:
+            copied_p_pr.remove(p_style)
+    _strip_translation_flow_controls(source, copied_p_pr)
+    if target_lang != "zh":
+        _materialize_character_first_line_indent(source, copied_p_pr)
+    target._p.insert(0, copied_p_pr)
+
+
+def _build_translation_paragraph_properties(source: Paragraph):
+    p_pr = OxmlElement("w:pPr")
+    for style in _paragraph_style_chain(source):
+        style_p_pr = getattr(style.element, "pPr", None)
+        if style_p_pr is not None:
+            _merge_paragraph_properties(p_pr, style_p_pr)
+
+    source_p_pr = getattr(source._p, "pPr", None)
+    if source_p_pr is not None:
+        _merge_paragraph_properties(p_pr, source_p_pr)
+    return p_pr
+
+
+def _paragraph_style_chain(paragraph: Paragraph) -> list:
+    try:
+        style = paragraph.style
+    except Exception:
+        return []
+    chain = []
+    seen: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", id(style)))
+        if style_id in seen:
+            break
+        seen.add(style_id)
+        chain.append(style)
+        style = getattr(style, "base_style", None)
+    chain.reverse()
+    return chain
+
+
+def _merge_paragraph_properties(target_p_pr, source_p_pr) -> None:
+    for child in list(source_p_pr):
+        if child.tag == qn("w:ind"):
+            _merge_indentation(target_p_pr, child)
             continue
+        existing = target_p_pr.find(child.tag)
+        if existing is not None:
+            target_p_pr.remove(existing)
+        target_p_pr.append(deepcopy(child))
+
+
+def _merge_indentation(target_p_pr, source_ind) -> None:
+    target_ind = target_p_pr.find(qn("w:ind"))
+    if target_ind is None:
+        target_ind = OxmlElement("w:ind")
+        target_p_pr.append(target_ind)
+
+    source_attrs = dict(source_ind.attrib)
+    if source_attrs.get(qn("w:firstLineChars")) == "0":
+        _remove_indent_attrs(
+            target_ind,
+            ("w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars"),
+        )
+    elif _indent_has_hanging(source_attrs):
+        _remove_indent_attrs(target_ind, ("w:firstLine", "w:firstLineChars"))
+    elif _indent_has_authoritative_first_line(source_attrs):
+        _remove_indent_attrs(target_ind, ("w:hanging", "w:hangingChars"))
+        if source_attrs.get(qn("w:firstLine")) not in {None, "0"}:
+            _remove_indent_attrs(target_ind, ("w:firstLineChars",))
+
+    for key, value in source_attrs.items():
+        target_ind.set(key, value)
+
+
+def _indent_has_hanging(attrs: dict) -> bool:
+    return any(attrs.get(qn(attr)) is not None for attr in ("w:hanging", "w:hangingChars"))
+
+
+def _indent_has_authoritative_first_line(attrs: dict) -> bool:
+    return any(attrs.get(qn(attr)) is not None for attr in ("w:firstLine", "w:firstLineChars"))
+
+
+def _remove_indent_attrs(ind, attrs: tuple[str, ...]) -> None:
+    for attr in attrs:
+        key = qn(attr)
+        if key in ind.attrib:
+            del ind.attrib[key]
+
+
+def _strip_translation_flow_controls(source: Paragraph, p_pr) -> None:
+    _remove_ppr_children(p_pr, "sectPr")
+    _remove_ppr_children(p_pr, "pageBreakBefore")
+
+    if _style_page_break_before(source) and p_pr.find(qn("w:pStyle")) is not None:
+        page_break_before = OxmlElement("w:pageBreakBefore")
+        page_break_before.set(qn("w:val"), "0")
+        p_pr.append(page_break_before)
+
+
+def _remove_ppr_children(p_pr, tag: str) -> None:
+    for child in list(p_pr.findall(qn(f"w:{tag}"))):
+        p_pr.remove(child)
 
 
 def _copy_run_shape(source_paragraph: Paragraph, target_run, *, target_lang: str) -> None:
-    source_run = next((run for run in source_paragraph.runs if run.text.strip()), None)
-    if source_run is not None:
+    source_runs = [run for run in source_paragraph.runs if run.text.strip()]
+    if source_runs:
         try:
-            target_run.bold = source_run.bold
-            target_run.italic = source_run.italic
-            target_run.underline = source_run.underline
-            target_run.font.size = source_run.font.size
-            target_run.font.color.rgb = source_run.font.color.rgb
+            target_run.bold = _first_defined(
+                _uniform_run_value(source_runs, "bold"),
+                _paragraph_default_bool(source_paragraph, "b"),
+                _style_font_value(source_paragraph, "bold"),
+            )
+            target_run.italic = _first_defined(
+                _uniform_run_value(source_runs, "italic"),
+                _paragraph_default_bool(source_paragraph, "i"),
+                _style_font_value(source_paragraph, "italic"),
+            )
+            target_run.underline = _first_defined(
+                _uniform_run_value(source_runs, "underline"),
+                _paragraph_default_underline(source_paragraph),
+                _style_font_value(source_paragraph, "underline"),
+            )
+            target_run.font.size = _first_defined(
+                _uniform_run_font_value(source_runs, "size"),
+                _paragraph_default_size(source_paragraph),
+                _style_font_value(source_paragraph, "size"),
+            )
+            target_run.font.color.rgb = _first_defined(
+                _uniform_run_font_color(source_runs),
+                _paragraph_default_color(source_paragraph),
+                _style_font_color(source_paragraph),
+            )
         except Exception:
             pass
     _set_latin_run_font(target_run, target_lang=target_lang)
+
+
+def _materialize_character_first_line_indent(source: Paragraph, p_pr) -> None:
+    raw_chars = _direct_first_line_chars(p_pr)
+    if raw_chars is None and _direct_ind_keeps_style_first_line(p_pr):
+        raw_chars = _style_first_line_chars(source)
+    if raw_chars is None:
+        return
+    try:
+        first_line_chars = int(raw_chars or "0")
+    except ValueError:
+        _clear_character_indent_attrs(p_pr)
+        return
+    if first_line_chars <= 0:
+        _clear_character_indent_attrs(p_pr)
+        return
+
+    half_points = _paragraph_effective_half_points(source)
+    twips = max(0, round((first_line_chars / 100) * (half_points / 2) * 20))
+    if twips <= 0:
+        _clear_character_indent_attrs(p_pr)
+        return
+
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        ind = OxmlElement("w:ind")
+        p_pr.append(ind)
+    try:
+        current = int(ind.get(qn("w:firstLine")) or "0")
+    except ValueError:
+        current = 0
+    if current < twips:
+        ind.set(qn("w:firstLine"), str(twips))
+    _clear_character_indent_attrs(p_pr)
+
+
+def _clear_character_indent_attrs(p_pr) -> None:
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        return
+    for attr in ("w:firstLineChars", "w:hangingChars"):
+        key = qn(attr)
+        if key in ind.attrib:
+            del ind.attrib[key]
+
+
+def _direct_first_line_chars(p_pr) -> str | None:
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        return None
+    return ind.get(qn("w:firstLineChars"))
+
+
+def _direct_ind_keeps_style_first_line(p_pr) -> bool:
+    ind = p_pr.find(qn("w:ind"))
+    if ind is None:
+        return True
+    for attr in ("w:firstLine", "w:firstLineChars", "w:hanging", "w:hangingChars"):
+        if ind.get(qn(attr)) is not None:
+            return False
+    return True
+
+
+def _style_first_line_chars(paragraph: Paragraph) -> str | None:
+    try:
+        style = paragraph.style
+    except Exception:
+        return None
+    while style is not None:
+        p_pr = style.element.pPr
+        if p_pr is not None:
+            value = _direct_first_line_chars(p_pr)
+            if value is not None:
+                return value
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _style_page_break_before(paragraph: Paragraph) -> bool:
+    try:
+        style = paragraph.style
+    except Exception:
+        return False
+    while style is not None:
+        p_pr = style.element.pPr
+        if p_pr is not None:
+            value = _on_off_value(p_pr.find(qn("w:pageBreakBefore")))
+            if value is not None:
+                return value
+        style = getattr(style, "base_style", None)
+    return False
+
+
+def _paragraph_effective_half_points(paragraph: Paragraph) -> int:
+    for run in paragraph.runs:
+        if not run.text.strip():
+            continue
+        value = _run_half_points(run)
+        if value is not None:
+            return value
+    value = _paragraph_default_half_points(paragraph)
+    if value is not None:
+        return value
+    value = _style_half_points(paragraph)
+    if value is not None:
+        return value
+    return 24
+
+
+def _run_half_points(run) -> int | None:
+    try:
+        size = run.font.size
+        if size is not None:
+            return round(size.pt * 2)
+    except Exception:
+        pass
+    return _rpr_half_points(getattr(run._element, "rPr", None))
+
+
+def _paragraph_default_half_points(paragraph: Paragraph) -> int | None:
+    return _rpr_half_points(_paragraph_rpr(paragraph))
+
+
+def _style_half_points(paragraph: Paragraph) -> int | None:
+    try:
+        style = paragraph.style
+    except Exception:
+        return None
+    while style is not None:
+        value = _rpr_half_points(style.element.rPr)
+        if value is not None:
+            return value
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _rpr_half_points(r_pr) -> int | None:
+    if r_pr is None:
+        return None
+    sz = r_pr.find(qn("w:sz"))
+    if sz is None:
+        return None
+    try:
+        return int(sz.get(qn("w:val")) or "0")
+    except ValueError:
+        return None
+
+
+def _uniform_run_value(runs, attr: str):
+    values = [getattr(run, attr) for run in runs]
+    if len(set(values)) == 1:
+        return values[0]
+    return None
+
+
+def _uniform_run_font_value(runs, attr: str):
+    values = [getattr(run.font, attr) for run in runs]
+    if len(set(values)) == 1:
+        return values[0]
+    return None
+
+
+def _uniform_run_font_color(runs):
+    values = [run.font.color.rgb for run in runs]
+    if len(set(values)) == 1:
+        return values[0]
+    return None
+
+
+def _paragraph_rpr(paragraph: Paragraph):
+    p_pr = getattr(paragraph._p, "pPr", None)
+    if p_pr is None:
+        return None
+    return p_pr.find(qn("w:rPr"))
+
+
+def _paragraph_default_bool(paragraph: Paragraph, tag: str) -> bool | None:
+    r_pr = _paragraph_rpr(paragraph)
+    if r_pr is None:
+        return None
+    return _on_off_value(r_pr.find(qn(f"w:{tag}")))
+
+
+def _paragraph_default_underline(paragraph: Paragraph) -> bool | None:
+    r_pr = _paragraph_rpr(paragraph)
+    if r_pr is None:
+        return None
+    underline = r_pr.find(qn("w:u"))
+    if underline is None:
+        return None
+    return str(underline.get(qn("w:val")) or "single").lower() != "none"
+
+
+def _paragraph_default_size(paragraph: Paragraph):
+    half_points = _paragraph_default_half_points(paragraph)
+    if half_points is None:
+        return None
+    return half_points * 6350
+
+
+def _paragraph_default_color(paragraph: Paragraph):
+    r_pr = _paragraph_rpr(paragraph)
+    if r_pr is None:
+        return None
+    color = r_pr.find(qn("w:color"))
+    if color is None:
+        return None
+    value = str(color.get(qn("w:val")) or "").strip()
+    if len(value) != 6 or value.lower() == "auto":
+        return None
+    try:
+        return RGBColor.from_string(value)
+    except ValueError:
+        return None
+
+
+def _on_off_value(element) -> bool | None:
+    if element is None:
+        return None
+    value = str(element.get(qn("w:val")) or "1").lower()
+    return value not in {"0", "false", "off", "none"}
+
+
+def _first_defined(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _style_font_value(paragraph: Paragraph, attr: str):
+    try:
+        return getattr(paragraph.style.font, attr)
+    except Exception:
+        return None
+
+
+def _style_font_color(paragraph: Paragraph):
+    try:
+        return paragraph.style.font.color.rgb
+    except Exception:
+        return None
 
 
 def _set_latin_run_font(run, *, target_lang: str) -> None:

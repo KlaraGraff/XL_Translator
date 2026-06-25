@@ -27,13 +27,23 @@ _INLINE_WHITESPACE_RE = re.compile(r"[^\S\n]+")
 _PAREN_WRAPPER_RE = re.compile(r"^(?P<outer>.+?)\s*[（(](?P<inner>.+?)[）)]$")
 
 EXPLICIT_LANGUAGE_ALIAS_GROUPS: dict[str, set[str]] = {
-    "中文": {"中文", "汉语"},
+    "中文": {"中文", "汉语", "汉文", "华语", "普通话", "国语", "中国话", "中国语"},
     "英文": {"英文", "英语"},
     "法文": {"法文", "法语"},
     "德文": {"德文", "德语"},
+    "阿拉伯语": {"阿拉伯语", "阿语", "阿文"},
+    "越南语": {"越南语", "越语", "越文"},
+    "西班牙语": {"西班牙语", "西语", "西文"},
+    "葡萄牙语": {"葡萄牙语", "葡语", "葡文"},
+    "日语": {"日语", "日文", "日本语"},
+    "韩语": {"韩语", "韩文", "韩国语", "朝鲜语"},
     "柬埔寨语（高棉语）": {"柬埔寨语（高棉语）", "柬埔寨语", "高棉语"},
     "菲律宾语（他加禄语）": {"菲律宾语（他加禄语）", "菲律宾语", "他加禄语"},
     "印度尼西亚语": {"印度尼西亚语", "印尼语"},
+    "马来语": {"马来语", "马来文"},
+    "泰语": {"泰语", "泰文"},
+    "波斯语": {"波斯语", "波斯文", "法尔西语"},
+    "荷兰语": {"荷兰语", "荷语", "荷文"},
     "缅甸语": {"缅甸语", "缅语"},
 }
 
@@ -137,6 +147,36 @@ def _iter_language_name_aliases(display_name: str) -> set[str]:
         aliases.update(_EXPLICIT_CANONICAL_TO_ALIASES.get(explicit_canonical, set()))
         aliases.add(explicit_canonical)
     return aliases
+
+
+def get_language_search_aliases(display_name: str) -> list[str]:
+    """Return searchable aliases for one language display name."""
+    aliases = _iter_language_name_aliases(display_name)
+    return sorted(aliases, key=lambda value: (value.casefold() != display_name.casefold(), value))
+
+
+def build_language_alias_map(supported_map: Mapping[str, str]) -> dict[str, str]:
+    """Return alias/code lookup keys for a display-name -> code language map."""
+    alias_map: dict[str, str] = {}
+    for display_name, lang_code in supported_map.items():
+        code = str(lang_code or "").strip()
+        if not code:
+            continue
+        alias_map[code.casefold()] = code
+        for alias in _iter_language_name_aliases(display_name):
+            alias_map[alias.casefold()] = code
+    return alias_map
+
+
+def resolve_language_code(
+    language_or_code: str,
+    supported_map: Mapping[str, str],
+) -> str | None:
+    """Resolve a language code, display name or known alias to a language code."""
+    candidate = str(language_or_code or "").strip()
+    if not candidate:
+        return None
+    return build_language_alias_map(supported_map).get(candidate.casefold())
 
 
 def _build_builtin_language_alias_to_canonical() -> dict[str, str]:
@@ -516,6 +556,25 @@ def get_target_lang_description(
     if entry is None:
         return ""
     return entry.description
+
+
+def get_target_lang_search_aliases(
+    target_lang: str,
+    custom_target_langs: Iterable[object] | None = None,
+    *,
+    include_optional: bool = False,
+) -> list[str]:
+    """Return searchable aliases for a built-in or custom target/source language code."""
+    display_name = get_target_lang_display(
+        target_lang,
+        custom_target_langs,
+        include_optional=include_optional,
+    )
+    aliases = get_language_search_aliases(display_name)
+    code = str(target_lang or "").strip()
+    if code:
+        aliases.append(code)
+    return list(dict.fromkeys(alias for alias in aliases if alias))
 
 
 def get_target_lang_display_from_lang_pair(

@@ -42,6 +42,18 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.split_paragraph_chars, 3000)
         self.assertEqual(settings.strict_retry_attempts, 3)
 
+    def test_language_aliases_are_normalized_without_falling_back_to_chinese(self) -> None:
+        settings = AppSettings(source_lang="汉语", target_lang="法语")
+
+        self.assertEqual(settings.source_lang, "zh")
+        self.assertEqual(settings.target_lang, "fr")
+
+    def test_same_chinese_source_and_target_repairs_to_recent_non_chinese_target(self) -> None:
+        settings = AppSettings(source_lang="zh", target_lang="zh", recent_target_langs=["fr", "zh"])
+
+        self.assertEqual(settings.source_lang, "zh")
+        self.assertEqual(settings.target_lang, "fr")
+
     def test_word_conversion_legacy_native_preference_maps_to_preprocessing(self) -> None:
         settings = AppSettings(word_conversion={"prefer_native_word": False})
 
@@ -137,6 +149,20 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(migrated["settings_version"], SETTINGS_SCHEMA_VERSION)
         self.assertTrue(migrated["excel_review"]["mark_review_items"])
         self.assertEqual(migrated["excel_review"]["existing_fill_policy"], "skip")
+
+    def test_schema_v24_migration_normalizes_language_aliases(self) -> None:
+        migrated = _migrate_settings_payload(
+            {
+                "settings_version": 23,
+                "source_lang": "汉语",
+                "target_lang": "法语",
+            },
+            source_version=23,
+        )
+
+        self.assertEqual(migrated["settings_version"], SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(migrated["source_lang"], "zh")
+        self.assertEqual(migrated["target_lang"], "fr")
 
 
 if __name__ == "__main__":

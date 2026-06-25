@@ -13,6 +13,7 @@ COVERAGE_AMBIGUOUS = "ambiguous"
 COVERAGE_IGNORED = "ignored"
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_NON_CJK_LETTER_RUN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
 @dataclass
@@ -47,6 +48,17 @@ def contains_cjk(text: str) -> bool:
 
 def contains_non_cjk_letters(text: str) -> bool:
     return any(char.isalpha() and not contains_cjk(char) for char in str(text or ""))
+
+
+def contains_meaningful_non_cjk_word(text: str) -> bool:
+    """Return whether text contains a likely natural-language target word."""
+    for match in _NON_CJK_LETTER_RUN_RE.finditer(str(text or "")):
+        token = match.group(0)
+        if contains_cjk(token):
+            continue
+        if sum(1 for char in token if char.isalpha()) >= 3:
+            return True
+    return False
 
 
 def looks_like_source_text(
@@ -94,7 +106,7 @@ def looks_like_target_text(
 
     if contains_cjk(cleaned):
         return False
-    return contains_non_cjk_letters(cleaned)
+    return contains_meaningful_non_cjk_word(cleaned)
 
 
 def split_existing_bilingual_text(

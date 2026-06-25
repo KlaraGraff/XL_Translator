@@ -55,6 +55,7 @@ from core.diagnostics import (
 from core.language_registry import (
     get_ordered_target_lang_codes,
     get_target_lang_display,
+    get_target_lang_search_aliases,
     is_supported_target_lang,
     remember_recent_target_lang,
 )
@@ -100,6 +101,7 @@ from native_app.widgets import (
     is_live_widget,
     refresh_combo_completer,
     select_combo_text_match,
+    set_combo_item_search_aliases,
 )
 from settings import AppSettings, save_settings
 
@@ -289,6 +291,8 @@ class WordTranslatePage(QWidget):
         self._render_action_card()
 
     def refresh_settings(self) -> None:
+        self._load_target_options()
+        self._load_source_options()
         self._refresh_header()
         self._render_action_card()
 
@@ -823,6 +827,7 @@ class WordTranslatePage(QWidget):
             self.settings.custom_target_langs,
             include_optional=True,
         )
+        self.target_combo.blockSignals(True)
         self.target_combo.clear()
         for code in target_codes:
             self.target_combo.addItem(
@@ -833,9 +838,19 @@ class WordTranslatePage(QWidget):
                 ),
                 code,
             )
+            set_combo_item_search_aliases(
+                self.target_combo,
+                self.target_combo.count() - 1,
+                get_target_lang_search_aliases(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
+            )
         index = self.target_combo.findData(self.settings.target_lang)
         self.target_combo.setCurrentIndex(index if index >= 0 else 0)
         refresh_combo_completer(self.target_combo)
+        self.target_combo.blockSignals(False)
 
     def _load_source_options(self) -> None:
         source_codes = get_ordered_target_lang_codes(
@@ -843,6 +858,7 @@ class WordTranslatePage(QWidget):
             self.settings.custom_target_langs,
             include_optional=True,
         )
+        self.source_lang_combo.blockSignals(True)
         self.source_lang_combo.clear()
         for code in source_codes:
             self.source_lang_combo.addItem(
@@ -853,9 +869,19 @@ class WordTranslatePage(QWidget):
                 ),
                 code,
             )
+            set_combo_item_search_aliases(
+                self.source_lang_combo,
+                self.source_lang_combo.count() - 1,
+                get_target_lang_search_aliases(
+                    code,
+                    self.settings.custom_target_langs,
+                    include_optional=True,
+                ),
+            )
         index = self.source_lang_combo.findData(self.settings.source_lang)
         self.source_lang_combo.setCurrentIndex(index if index >= 0 else 0)
         refresh_combo_completer(self.source_lang_combo)
+        self.source_lang_combo.blockSignals(False)
 
     def _pill(
         self,

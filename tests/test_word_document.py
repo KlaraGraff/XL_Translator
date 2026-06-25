@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt
 
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
@@ -28,6 +30,7 @@ from core.word_document import (
 )
 from core.word_task_runner import _needs_word_translation_retry
 from core.word_task_runner import (
+    _append_post_write_coverage_issues,
     _WordRecoveryPool,
     _build_source_excerpt,
     _run_word_strict_retries,
@@ -154,6 +157,93 @@ class WordDocumentTests(unittest.TestCase):
                     for paragraph in out_doc.tables[0].cell(0, 0).paragraphs
                     if paragraph.text.strip()
                 )
+            )
+
+    def test_word_table_iteration_keeps_all_unmerged_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "table.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            table = doc.add_table(rows=7, cols=3)
+            expected_sources = []
+            translations = {}
+            for row_index, row in enumerate(table.rows):
+                for col_index, cell in enumerate(row.cells):
+                    source = f"表格项目{row_index}列{col_index}"
+                    expected_sources.append(source)
+                    translations[source] = f"Table item {row_index}-{col_index}"
+                    cell.text = source
+            doc.save(str(source_path))
+
+            segments = extract_word_segments(
+                source_path,
+                target_lang="en",
+                source_lang="zh",
+            )
+            table_sources = [segment.source for segment in segments if segment.kind == "table_cell"]
+            self.assertEqual(table_sources, expected_sources)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations=translations,
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            for row_index, row in enumerate(out_doc.tables[0].rows):
+                for col_index, cell in enumerate(row.cells):
+                    self.assertIn(
+                        f"Table item {row_index}-{col_index}",
+                        cell.text,
+                    )
+
+    def test_nested_table_cells_are_extracted_and_written_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "nested-table.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            outer_table = doc.add_table(rows=1, cols=1)
+            outer_cell = outer_table.cell(0, 0)
+            outer_cell.text = "外层说明"
+            nested_table = outer_cell.add_table(rows=1, cols=1)
+            nested_table.cell(0, 0).text = "内部表格内容"
+            doc.save(str(source_path))
+
+            segments = extract_word_segments(
+                source_path,
+                target_lang="en",
+                source_lang="zh",
+            )
+            table_sources = [segment.source for segment in segments if segment.kind == "table_cell"]
+
+            self.assertIn("外层说明", table_sources)
+            self.assertIn("内部表格内容", table_sources)
+            self.assertNotIn("外层说明\n内部表格内容", table_sources)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "外层说明": "Outer note",
+                    "内部表格内容": "Nested table content",
+                },
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            out_outer_cell = out_doc.tables[0].cell(0, 0)
+            self.assertIn("外层说明", out_outer_cell.text)
+            self.assertIn("Outer note", out_outer_cell.text)
+            self.assertEqual(
+                out_outer_cell.tables[0].cell(0, 0).text,
+                "内部表格内容\nNested table content",
             )
 
     def test_word_review_marks_use_configured_color_map(self) -> None:
@@ -358,6 +448,302 @@ class WordDocumentTests(unittest.TestCase):
             paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
             self.assertIn("   Indented translation", paragraph_texts)
             self.assertIn("\u3000\u3000Full-width indented translation", paragraph_texts)
+
+    def test_translation_trims_trailing_empty_body_paragraphs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "trailing-empty.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            doc.add_paragraph("正文结束段落。")
+            doc.add_paragraph("")
+            doc.add_paragraph("")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"正文结束段落。": "Final body translation."},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertEqual(paragraph_texts[-1], "Final body translation.")
+            self.assertNotIn("", paragraph_texts[-2:])
+
+    def test_translation_preserves_style_character_first_line_indent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "style-indent.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            style = doc.styles.add_style("施工正文", WD_STYLE_TYPE.PARAGRAPH)
+            style.font.size = Pt(12)
+            p_pr = style.element.get_or_add_pPr()
+            ind = OxmlElement("w:ind")
+            ind.set(qn("w:firstLineChars"), "200")
+            p_pr.append(ind)
+            doc.add_paragraph("这是首行缩进正文段落。", style=style)
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"这是首行缩进正文段落。": "Indented body translation."},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Indented body translation."
+            )
+            self.assertEqual(translation.style.name, "施工正文")
+            self.assertEqual(self._paragraph_first_line_chars(translation), "")
+            self.assertEqual(self._paragraph_first_line_indent(translation), "480")
+            self.assertEqual(self._style_first_line_chars(translation), "200")
+
+    def test_translation_materializes_default_style_character_indent_without_source_ppr(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "normal-style-indent.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            doc.styles["Normal"].font.size = Pt(12)
+            p_pr = doc.styles["Normal"].element.get_or_add_pPr()
+            ind = OxmlElement("w:ind")
+            ind.set(qn("w:firstLineChars"), "200")
+            p_pr.append(ind)
+            paragraph = doc.add_paragraph("这是普通样式首行缩进正文。")
+            self.assertIsNone(getattr(paragraph._p, "pPr", None))
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"这是普通样式首行缩进正文。": "Indented normal-style translation."},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Indented normal-style translation."
+            )
+            self.assertEqual(self._paragraph_first_line_chars(translation), "")
+            self.assertEqual(self._paragraph_first_line_indent(translation), "480")
+
+    def test_translation_keeps_style_character_indent_when_direct_indent_has_zero_first_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "direct-zero-style-indent.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            style = doc.styles.add_style("方案正文", WD_STYLE_TYPE.PARAGRAPH)
+            style.font.size = Pt(12)
+            style_p_pr = style.element.get_or_add_pPr()
+            style_ind = OxmlElement("w:ind")
+            style_ind.set(qn("w:firstLineChars"), "200")
+            style_p_pr.append(style_ind)
+            paragraph = doc.add_paragraph("地坪裂缝风险：受开挖影响。", style=style)
+            paragraph_p_pr = paragraph._p.get_or_add_pPr()
+            direct_ind = OxmlElement("w:ind")
+            direct_ind.set(qn("w:left"), "420")
+            direct_ind.set(qn("w:firstLine"), "0")
+            paragraph_p_pr.append(direct_ind)
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"地坪裂缝风险：受开挖影响。": "Risk of slab cracking: affected by excavation."},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Risk of slab cracking: affected by excavation."
+            )
+            self.assertEqual(translation.style.name, "方案正文")
+            self.assertEqual(self._paragraph_left_indent(translation), "420")
+            self.assertEqual(self._paragraph_first_line_chars(translation), "")
+            self.assertEqual(self._paragraph_first_line_indent(translation), "480")
+
+    def test_translation_child_style_zero_character_indent_clears_base_first_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "child-style-zero-indent.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            body_style = doc.styles.add_style("方案正文", WD_STYLE_TYPE.PARAGRAPH)
+            body_style.font.size = Pt(12)
+            body_p_pr = body_style.element.get_or_add_pPr()
+            body_ind = OxmlElement("w:ind")
+            body_ind.set(qn("w:firstLine"), "200")
+            body_ind.set(qn("w:firstLineChars"), "200")
+            body_p_pr.append(body_ind)
+
+            heading_style = doc.styles.add_style("方案三级", WD_STYLE_TYPE.PARAGRAPH)
+            heading_style.base_style = body_style
+            heading_p_pr = heading_style.element.get_or_add_pPr()
+            heading_ind = OxmlElement("w:ind")
+            heading_ind.set(qn("w:firstLineChars"), "0")
+            heading_p_pr.append(heading_ind)
+
+            doc.add_paragraph("现场施工条件现状分析", style=heading_style)
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"现场施工条件现状分析": "Analysis of site construction conditions"},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Analysis of site construction conditions"
+            )
+            self.assertEqual(translation.style.name, "方案三级")
+            self.assertEqual(self._paragraph_first_line_chars(translation), "")
+            self.assertEqual(self._paragraph_first_line_indent(translation), "")
+
+    def test_translation_does_not_expand_partial_bold_prefix_to_whole_paragraph(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "partial-bold.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            paragraph = doc.add_paragraph()
+            paragraph.add_run("地坪裂缝风险：").bold = True
+            paragraph.add_run("受开挖边坡变形及施工扰动影响。")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "地坪裂缝风险：受开挖边坡变形及施工扰动影响。": (
+                        "Risques de fissures dans le dallage : sous l'effet des travaux."
+                    )
+                },
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text.startswith("Risques de fissures")
+            )
+            self.assertIsNone(translation.runs[0].bold)
+
+    def test_translation_does_not_repeat_direct_page_or_section_breaks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "direct-page-break.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            paragraph = doc.add_paragraph("分页标题")
+            paragraph.paragraph_format.page_break_before = True
+            paragraph._p.get_or_add_pPr().append(OxmlElement("w:sectPr"))
+            doc.add_paragraph("后续正文")
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"分页标题": "Paged heading"},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            source = next(paragraph for paragraph in out_doc.paragraphs if paragraph.text == "分页标题")
+            translation = next(paragraph for paragraph in out_doc.paragraphs if paragraph.text == "Paged heading")
+
+            self.assertTrue(self._paragraph_page_break_before(source))
+            self.assertTrue(self._paragraph_has_section_properties(source))
+            self.assertIsNone(self._paragraph_page_break_before(translation))
+            self.assertFalse(self._paragraph_has_section_properties(translation))
+
+    def test_translation_overrides_style_page_break_before(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "style-page-break.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            style = doc.styles.add_style("分页样式", WD_STYLE_TYPE.PARAGRAPH)
+            style.paragraph_format.page_break_before = True
+            doc.add_paragraph("样式分页标题", style=style)
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"样式分页标题": "Styled paged heading"},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Styled paged heading"
+            )
+            self.assertEqual(translation.style.name, "分页样式")
+            self.assertFalse(self._paragraph_page_break_before(translation))
+
+    def test_heading_translation_keeps_visual_emphasis_without_heading_style(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "heading.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            heading = doc.add_heading("第一节 工程概况分析", level=1)
+            heading.style.font.bold = True
+            heading.style.font.size = None
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"第一节 工程概况分析": "Section 1: Project overview"},
+                target_lang="en",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            translation = next(
+                paragraph
+                for paragraph in out_doc.paragraphs
+                if paragraph.text == "Section 1: Project overview"
+            )
+            self.assertFalse(translation.style.name.casefold().startswith("heading"))
+            self.assertTrue(translation.runs[0].bold)
 
     def test_word_automatic_chapter_number_is_not_duplicated_when_text_already_has_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -755,6 +1141,41 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn(issue["snippet"], content)
             self.assertIn("问题片段：承包0商", content)
 
+    def test_post_write_coverage_reports_untranslated_table_cells(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "table.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            table = doc.add_table(rows=1, cols=2)
+            table.cell(0, 0).text = "砂浆名称"
+            table.cell(0, 1).text = "专用砌筑砂浆"
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={"砂浆名称": "Nom du mortier"},
+                target_lang="fr",
+                source_lang="zh",
+            )
+            issues: list[dict] = []
+
+            residual_count = _append_post_write_coverage_issues(
+                issues=issues,
+                file_name="砂浆",
+                output_path=out_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            self.assertEqual(residual_count, 1)
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues[0]["problem"], "输出文档仍存在未译源文")
+            self.assertEqual(issues[0]["location_label"], "表格 1 / 单元格 2")
+            self.assertIn("专用砌筑砂浆", issues[0]["snippet"])
+
     @staticmethod
     def _build_sample_docx(path: Path) -> None:
         doc = Document()
@@ -862,6 +1283,62 @@ class WordDocumentTests(unittest.TestCase):
             return ""
         num_id = num_pr.find(qn("w:numId"))
         return num_id.get(qn("w:val")) if num_id is not None else ""
+
+    @staticmethod
+    def _paragraph_first_line_indent(paragraph) -> str:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        if p_pr is None:
+            return ""
+        ind = p_pr.find(qn("w:ind"))
+        if ind is None:
+            return ""
+        return str(ind.get(qn("w:firstLine")) or "").strip()
+
+    @staticmethod
+    def _paragraph_first_line_chars(paragraph) -> str:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        if p_pr is None:
+            return ""
+        ind = p_pr.find(qn("w:ind"))
+        if ind is None:
+            return ""
+        return str(ind.get(qn("w:firstLineChars")) or "").strip()
+
+    @staticmethod
+    def _paragraph_left_indent(paragraph) -> str:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        if p_pr is None:
+            return ""
+        ind = p_pr.find(qn("w:ind"))
+        if ind is None:
+            return ""
+        return str(ind.get(qn("w:left")) or "").strip()
+
+    @staticmethod
+    def _paragraph_page_break_before(paragraph) -> bool | None:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        if p_pr is None:
+            return None
+        page_break_before = p_pr.find(qn("w:pageBreakBefore"))
+        if page_break_before is None:
+            return None
+        value = str(page_break_before.get(qn("w:val")) or "1").lower()
+        return value not in {"0", "false", "off", "none"}
+
+    @staticmethod
+    def _paragraph_has_section_properties(paragraph) -> bool:
+        p_pr = getattr(paragraph._p, "pPr", None)
+        return p_pr is not None and p_pr.find(qn("w:sectPr")) is not None
+
+    @staticmethod
+    def _style_first_line_chars(paragraph) -> str:
+        p_pr = paragraph.style.element.pPr
+        if p_pr is None:
+            return ""
+        ind = p_pr.find(qn("w:ind"))
+        if ind is None:
+            return ""
+        return str(ind.get(qn("w:firstLineChars")) or "").strip()
 
     @staticmethod
     def _paragraph_shading_fill(paragraph) -> str:

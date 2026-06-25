@@ -108,6 +108,7 @@ _WORD_REVIEW_MARK_PRIORITY = {
     MIXED_MARK_UNRESOLVED: 2,
     MIXED_MARK_FOREIGN_NOISE: 3,
 }
+_POST_WRITE_COVERAGE_ISSUE_LIMIT = 50
 
 
 @dataclass(frozen=True)
@@ -860,6 +861,21 @@ class WordTaskRunner:
                             log_callback=lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO",
                                 msg,
+                            ),
+                        )
+                    residual_count = _append_post_write_coverage_issues(
+                        issues=quality_issues,
+                        file_name=file_item.name,
+                        output_path=out_path,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                    )
+                    if residual_count:
+                        self._log(
+                            "WARN",
+                            (
+                                f"{file_item.name}：输出文档仍发现 {residual_count} "
+                                "处疑似未翻译源文，已写入质量报告。"
                             ),
                         )
                     elapsed = (datetime.now() - t0).total_seconds()
@@ -1910,6 +1926,73 @@ def _add_quality_issues(
                 continue
             seen_keys.add(key)
             issues.append(issue)
+
+
+def _append_post_write_coverage_issues(
+    *,
+    issues: list[dict],
+    file_name: str,
+    output_path: Path,
+    target_lang: str,
+    source_lang: str,
+) -> int:
+    plan = build_word_coverage_plan(
+        output_path,
+        target_lang=target_lang,
+        source_lang=source_lang,
+    )
+    source_units = plan.source_units
+    if not source_units:
+        return 0
+
+    existing_keys = {
+        (
+            issue.get("file"),
+            issue.get("location"),
+            issue.get("problem"),
+            issue.get("severity"),
+        )
+        for issue in issues
+    }
+    for unit in source_units[:_POST_WRITE_COVERAGE_ISSUE_LIMIT]:
+        issue = {
+            "file": file_name,
+            "kind": unit.kind,
+            "location": unit.location,
+            "location_label": _format_location_label(unit.location),
+            "section_path": unit.section_path or "正文",
+            "snippet": _build_source_excerpt(unit.source_text),
+            "problem": "输出文档仍存在未译源文",
+            "status": "该位置未识别到目标语言译文。",
+            "severity": "needs_review",
+        }
+        key = (
+            issue.get("file"),
+            issue.get("location"),
+            issue.get("problem"),
+            issue.get("severity"),
+        )
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        issues.append(issue)
+
+    if len(source_units) > _POST_WRITE_COVERAGE_ISSUE_LIMIT:
+        issues.append(
+            {
+                "file": file_name,
+                "kind": "document",
+                "location": "output.coverage",
+                "location_label": "输出文档",
+                "section_path": "正文",
+                "snippet": f"共发现 {len(source_units)} 处未译源文，已仅列出前 {_POST_WRITE_COVERAGE_ISSUE_LIMIT} 处。",
+                "problem": "输出文档仍存在未译源文",
+                "status": "其余未译位置过多，已截断展示。",
+                "severity": "needs_review",
+            }
+        )
+
+    return len(source_units)
 
 
 def _apply_mixed_language_word_results(

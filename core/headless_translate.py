@@ -17,6 +17,7 @@ from core.language_registry import (
     get_target_lang_display,
     is_supported_source_lang,
     is_supported_target_lang,
+    resolve_language_code,
 )
 from core.task_runner import (
     DoneMsg,
@@ -254,8 +255,7 @@ def _resolve_target_lang(
         settings.custom_target_langs,
         include_optional=True,
     )
-    alias_map = _build_alias_map(supported_map)
-    resolved = alias_map.get(candidate.casefold())
+    resolved = resolve_language_code(candidate, supported_map)
     if resolved is not None:
         return resolved
 
@@ -273,18 +273,9 @@ def _resolve_source_lang(
         return candidate
 
     supported_map = get_supported_source_languages()
-    alias_map = _build_alias_map(supported_map)
-    resolved = alias_map.get(candidate.casefold())
+    resolved = resolve_language_code(candidate, supported_map)
     if resolved is not None:
         return resolved
 
     supported_labels = ", ".join(sorted(supported_map))
     raise ValueError(f"不支持的源语言：{candidate}。可用项：{supported_labels}")
-
-
-def _build_alias_map(supported_map: dict[str, str]) -> dict[str, str]:
-    alias_map: dict[str, str] = {}
-    for display_name, lang_code in supported_map.items():
-        alias_map[display_name.casefold()] = lang_code
-        alias_map[lang_code.casefold()] = lang_code
-    return alias_map
