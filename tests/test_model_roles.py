@@ -47,6 +47,7 @@ class ModelRoleTests(unittest.TestCase):
         self.assertEqual(settings.image_model_role.source_role, ROLE_TRANSLATION)
         self.assertEqual(settings.pdf_review_model_role.source_role, ROLE_TRANSLATION)
         self.assertEqual(settings.pdf.page_retry_attempts, 3)
+        self.assertEqual(settings.pdf.target_lang, "zh")
         self.assertIsNone(settings.pdf.page_generation_concurrency)
         self.assertFalse(settings.pdf.review_enabled)
         self.assertFalse(settings.update.ignore_updates)

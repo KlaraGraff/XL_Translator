@@ -10,6 +10,7 @@ from config import (
     CHUNK_LOCAL_MAX,
     CHUNK_LOCAL_MIN,
     CONCURRENCY_DEFAULT,
+    PDF_PAGE_CONCURRENCY_DEFAULT,
     PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     get_cloud_concurrency_bounds,
     get_local_concurrency_bounds,
@@ -102,7 +103,7 @@ def _default_concurrency(settings: AppSettings, config: EffectiveModelConfig) ->
         raw = (
             settings.pdf.page_generation_concurrency
             if settings.pdf.page_generation_concurrency is not None
-            else settings.engine.concurrency
+            else PDF_PAGE_CONCURRENCY_DEFAULT
         )
     elif config.role == ROLE_PDF_REVIEW:
         raw = 1

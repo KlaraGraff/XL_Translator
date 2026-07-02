@@ -48,7 +48,6 @@ from core.language_registry import (
     get_target_lang_display,
     get_target_lang_search_aliases,
     is_supported_target_lang,
-    remember_recent_target_lang,
 )
 from core.model_roles import (
     ROLE_IMAGE,
@@ -473,7 +472,7 @@ class PdfTranslatePage(QWidget):
                     include_optional=True,
                 ),
             )
-        index = self.target_combo.findData(self.settings.target_lang)
+        index = self.target_combo.findData(self.settings.pdf.target_lang)
         self.target_combo.setCurrentIndex(index if index >= 0 else 0)
         refresh_combo_completer(self.target_combo)
         self.target_combo.blockSignals(False)
@@ -1337,10 +1336,14 @@ class PdfTranslatePage(QWidget):
             != self.target_combo.itemText(self.target_combo.currentIndex()).strip()
         ):
             select_combo_text_match(self.target_combo)
-        return str(self.target_combo.currentData() or self.settings.target_lang or "")
+        return str(self.target_combo.currentData() or self.settings.pdf.target_lang or "")
 
     def _selected_target_label(self) -> str:
-        target_lang = str(self.target_combo.currentData()) if hasattr(self, "target_combo") else self.settings.target_lang
+        target_lang = (
+            str(self.target_combo.currentData())
+            if hasattr(self, "target_combo")
+            else self.settings.pdf.target_lang
+        )
         if not is_supported_target_lang(target_lang, self.settings.custom_target_langs, include_optional=True):
             return "未选择"
         return get_target_lang_display(target_lang, self.settings.custom_target_langs, include_optional=True)
@@ -1385,13 +1388,7 @@ class PdfTranslatePage(QWidget):
     def _on_target_changed(self) -> None:
         target_lang = self._selected_target_lang()
         if target_lang:
-            self.settings.target_lang = target_lang
-            self.settings.recent_target_langs = remember_recent_target_lang(
-                self.settings.recent_target_langs,
-                target_lang,
-                self.settings.custom_target_langs,
-                include_optional=True,
-            )
+            self.settings.pdf.target_lang = target_lang
         save_settings(self.settings)
         self._refresh_header()
         self._render_action_card()
@@ -1497,7 +1494,7 @@ class PdfTranslatePage(QWidget):
             if not self._handle_pdf_review_model_history_prompt():
                 return
 
-        self.settings.target_lang = target_lang
+        self.settings.pdf.target_lang = target_lang
         self._on_output_changed()
         self._on_params_changed()
         self._begin_runner(
@@ -1515,6 +1512,7 @@ class PdfTranslatePage(QWidget):
     ) -> None:
         effective_source_root = source_root if source_root is not None else self.source_root or None
         task_settings = settings.model_copy(deep=True)
+        task_settings.target_lang = task_settings.pdf.target_lang
         try:
             api_context = task_api_context_for_page(task_settings, "pdf_translate")
         except Exception as exc:  # noqa: BLE001 - converted to UI message.

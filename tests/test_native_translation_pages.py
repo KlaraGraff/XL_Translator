@@ -217,7 +217,7 @@ class NativeTranslationPageTests(unittest.TestCase):
             self.addCleanup(fresh_page.deleteLater)
             self.assertFalse(fresh_page.untranslated_only_check.isChecked())
 
-    def test_language_pages_keep_french_target_after_rebuild(self) -> None:
+    def test_language_pages_keep_french_target_after_rebuild_and_pdf_defaults_chinese(self) -> None:
         settings = AppSettings(source_lang="zh", target_lang="fr", recent_target_langs=["fr"])
 
         with (
@@ -236,9 +236,26 @@ class NativeTranslationPageTests(unittest.TestCase):
 
         self.assertEqual(excel_page.target_combo.currentData(), "fr")
         self.assertEqual(word_page.target_combo.currentData(), "fr")
-        self.assertEqual(pdf_page.target_combo.currentData(), "fr")
+        self.assertEqual(pdf_page.target_combo.currentData(), "zh")
         self.assertEqual(tm_page.target_combo.currentData(), "fr")
         self.assertEqual(settings.target_lang, "fr")
+        self.assertEqual(settings.pdf.target_lang, "zh")
+
+    def test_pdf_target_language_is_remembered_independently(self) -> None:
+        settings = AppSettings(source_lang="zh", target_lang="en", recent_target_langs=["fr"])
+
+        with patch("native_app.pages.pdf_translate.save_settings"):
+            pdf_page = PdfTranslatePage(settings)
+
+            index = pdf_page.target_combo.findData("fr")
+            self.assertGreaterEqual(index, 0)
+            pdf_page.target_combo.setCurrentIndex(index)
+            pdf_page._on_target_changed()
+        self.addCleanup(pdf_page.close)
+        self.addCleanup(pdf_page.deleteLater)
+
+        self.assertEqual(settings.pdf.target_lang, "fr")
+        self.assertEqual(settings.target_lang, "en")
 
     def test_delayed_reset_keeps_start_action_and_allows_empty_scan(self) -> None:
         with (

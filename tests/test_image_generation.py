@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from PIL import Image
 
 from core.image_generation import (
@@ -14,9 +16,71 @@ from core.image_generation import (
     _pdf_page_image_size_for_model,
     build_pdf_image_translation_prompt,
     check_image_generation_connectivity,
+    OpenAICompatibleImageGenerationClient,
 )
-from core.model_roles import SOURCE_INDEPENDENT
+from core.model_roles import EffectiveModelConfig, ROLE_IMAGE, SOURCE_INDEPENDENT
 from settings import AppSettings
+
+
+class _FakeImageEditResponse:
+    def __init__(self, payload=None, *, status_code: int = 200, text: str = "") -> None:
+        self._payload = payload if payload is not None else {}
+        self.status_code = status_code
+        self.text = text
+        self.request = httpx.Request("POST", "https://images.example/v1/images/edits")
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"Client error '{self.status_code}'",
+                request=self.request,
+                response=httpx.Response(
+                    self.status_code,
+                    request=self.request,
+                    text=self.text,
+                ),
+            )
+
+    def json(self):
+        return self._payload
+
+
+class _FakeImageEditClient:
+    def __init__(self, responses: list[_FakeImageEditResponse]) -> None:
+        self.responses = list(responses)
+        self.post_calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def post(self, url: str, *, headers=None, data=None, files=None):
+        self.post_calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "data": dict(data or {}),
+                "files": files,
+            }
+        )
+        if not self.responses:
+            raise AssertionError("unexpected image edit request")
+        return self.responses.pop(0)
+
+
+def _image_model_config() -> EffectiveModelConfig:
+    return EffectiveModelConfig(
+        role=ROLE_IMAGE,
+        label="PDF 翻译模型",
+        capability="image",
+        mode="cloud",
+        provider="custom_openai",
+        model="gpt-image-2",
+        base_url="https://images.example/v1",
+        api_key="secret-token",
+    )
 
 
 class ImageGenerationTests(unittest.TestCase):
@@ -99,6 +163,81 @@ class ImageGenerationTests(unittest.TestCase):
 
         self.assertEqual(portrait_size, "1024x1536")
         self.assertEqual(landscape_size, "1536x1024")
+
+    def test_gpt_image_edit_retries_with_minimal_payload_after_400(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "page.png"
+            Image.new("RGB", (1200, 1600), "white").save(source, format="PNG")
+            output = Path(tmp) / "out.png"
+            Image.new("RGB", (1200, 1600), "white").save(output, format="PNG")
+            expected_bytes = output.read_bytes()
+            fake_client = _FakeImageEditClient(
+                [
+                    _FakeImageEditResponse(
+                        status_code=400,
+                        text='{"error":"unsupported parameter: quality"}',
+                    ),
+                    _FakeImageEditResponse(
+                        {
+                            "data": [
+                                {
+                                    "b64_json": base64.b64encode(expected_bytes).decode(
+                                        "ascii"
+                                    )
+                                }
+                            ]
+                        }
+                    ),
+                ]
+            )
+
+            with patch(
+                "core.image_generation.httpx.Client",
+                autospec=True,
+                return_value=fake_client,
+            ):
+                image_bytes = OpenAICompatibleImageGenerationClient().generate_page(
+                    source_image_path=source,
+                    target_language="中文",
+                    target_lang_code="zh",
+                    model_config=_image_model_config(),
+                )
+
+        self.assertEqual(image_bytes, expected_bytes)
+        self.assertEqual(len(fake_client.post_calls), 2)
+        self.assertIn("quality", fake_client.post_calls[0]["data"])
+        self.assertNotIn("quality", fake_client.post_calls[1]["data"])
+        self.assertIn("size", fake_client.post_calls[1]["data"])
+
+    def test_gpt_image_edit_error_includes_response_body_after_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "page.png"
+            Image.new("RGB", (1200, 1600), "white").save(source, format="PNG")
+            fake_client = _FakeImageEditClient(
+                [
+                    _FakeImageEditResponse(status_code=400, text='{"error":"bad quality"}'),
+                    _FakeImageEditResponse(status_code=400, text='{"error":"bad size"}'),
+                    _FakeImageEditResponse(status_code=400, text='{"error":"bad image"}'),
+                ]
+            )
+
+            with patch(
+                "core.image_generation.httpx.Client",
+                autospec=True,
+                return_value=fake_client,
+            ), self.assertRaisesRegex(RuntimeError, "bad image"):
+                OpenAICompatibleImageGenerationClient().generate_page(
+                    source_image_path=source,
+                    target_language="中文",
+                    target_lang_code="zh",
+                    model_config=_image_model_config(),
+                )
+
+        self.assertEqual(len(fake_client.post_calls), 3)
+        self.assertEqual(
+            set(fake_client.post_calls[-1]["data"].keys()),
+            {"model", "prompt"},
+        )
 
     def test_image_connectivity_retries_model_level_errors_three_times(self) -> None:
         class FailingClient:

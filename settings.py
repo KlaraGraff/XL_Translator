@@ -571,6 +571,7 @@ class ModelRoleSettings(BaseModel):
 
 
 class PdfSettings(BaseModel):
+    target_lang: str = "zh"
     page_retry_attempts: int = Field(
         default=PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
         ge=PDF_PAGE_RETRY_ATTEMPTS_MIN,
@@ -755,6 +756,7 @@ class AppSettings(BaseModel):
         self.custom_target_langs = normalize_custom_target_langs(self.custom_target_langs)
         default_source_lang = get_default_source_lang()
         default_target_lang = get_default_target_lang()
+        default_pdf_target_lang = "zh"
         target_supported_map = get_supported_languages(
             self.custom_target_langs,
             include_optional=True,
@@ -775,6 +777,12 @@ class AppSettings(BaseModel):
         )
         if resolved_target_lang:
             self.target_lang = resolved_target_lang
+        resolved_pdf_target_lang = resolve_language_code(
+            self.pdf.target_lang,
+            target_supported_map,
+        )
+        if resolved_pdf_target_lang:
+            self.pdf.target_lang = resolved_pdf_target_lang
 
         self.recent_target_langs = normalize_recent_target_langs(
             self.recent_target_langs,
@@ -807,6 +815,13 @@ class AppSettings(BaseModel):
                 (lang for lang in self.recent_target_langs if lang != self.source_lang),
                 default_target_lang,
             )
+
+        if not is_supported_target_lang(
+            self.pdf.target_lang,
+            self.custom_target_langs,
+            include_optional=True,
+        ):
+            self.pdf.target_lang = default_pdf_target_lang
 
         self.recent_target_langs = remember_recent_target_lang(
             self.recent_target_langs,

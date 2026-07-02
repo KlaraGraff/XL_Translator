@@ -361,7 +361,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             self.assertEqual(next_path.name, "译文(英文)_[source]_R2.pdf")
 
-    def test_page_quality_order_decode_ratio_then_resolution(self) -> None:
+    def test_page_quality_checks_decode_and_ratio_only(self) -> None:
         decode = check_page_quality(b"not an image", source_width=1600, source_height=1200)
         self.assertEqual(decode.status, "decode_error")
 
@@ -372,12 +372,12 @@ class PdfImageTranslationTests(unittest.TestCase):
         )
         self.assertEqual(ratio.status, "ratio_error")
 
-        low_resolution = check_page_quality(
-            _png_bytes(1199, 1600),
-            source_width=1200,
-            source_height=1601,
+        low_pixel_but_same_ratio = check_page_quality(
+            _png_bytes(1055, 1491),
+            source_width=2479,
+            source_height=3508,
         )
-        self.assertEqual(low_resolution.status, "low_resolution")
+        self.assertTrue(low_pixel_but_same_ratio.ok)
 
         ok = check_page_quality(
             _png_bytes(1608, 1200),
@@ -915,6 +915,18 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(image_client.max_active, 2)
             self.assertEqual(len(done.file_results), 2)
             self.assertTrue(all(item.get("success") for item in done.file_results))
+
+    def test_runner_uses_conservative_pdf_concurrency_default(self) -> None:
+        settings = AppSettings(target_lang="en")
+        settings.engine.concurrency = 20
+        settings.pdf.page_generation_concurrency = None
+        runner = PdfImageTranslationRunner(
+            [],
+            settings,
+            task_logger_enabled=False,
+        )
+
+        self.assertEqual(runner._resolve_pdf_concurrency(), 2)
 
     def test_stopped_runner_assembles_completed_pdf_but_not_partial_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

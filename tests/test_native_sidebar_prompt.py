@@ -645,6 +645,22 @@ class NativeSidebarPromptTests(unittest.TestCase):
         self.assertEqual(get_model_throughput(settings, config).concurrency, 9)
         self.assertEqual(settings.pdf.page_generation_concurrency, 9)
 
+    def test_sidebar_image_role_defaults_to_conservative_pdf_concurrency(self) -> None:
+        settings = AppSettings()
+        settings.engine.concurrency = 20
+        settings.pdf.page_generation_concurrency = None
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_base_url = "https://images.example.test/v1"
+        settings.image_model_role.cloud_model = "gpt-image-2"
+        sidebar = self._make_sidebar(settings)
+        sidebar.model_role_combo.setCurrentIndex(sidebar.model_role_combo.findData(ROLE_IMAGE))
+        self.app.processEvents()
+
+        config = resolve_effective_model_config(settings, ROLE_IMAGE)
+        self.assertEqual(get_model_throughput(settings, config).concurrency, 2)
+        self.assertEqual(sidebar.concurrency_input.value(), 2)
+
     def test_fetch_image_models_prefers_gpt_image_2_when_available(self) -> None:
         settings = AppSettings()
         settings.image_model_role.source_role = "independent"

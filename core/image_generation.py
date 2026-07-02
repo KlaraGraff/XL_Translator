@@ -199,33 +199,48 @@ def _generate_page_with_images_edit(
     base_url: str,
     timeout_seconds: float,
 ) -> bytes:
-    data = {
+    sized_data = {
         "model": model_config.model,
         "prompt": prompt,
-        "n": "1",
         "size": _pdf_page_image_size_for_model(source_image_path, model_config.model),
-        "quality": "medium",
-        "output_format": "png",
     }
+    request_variants = (
+        {
+            **sized_data,
+            "n": "1",
+            "quality": "medium",
+            "output_format": "png",
+        },
+        sized_data,
+        {
+            "model": model_config.model,
+            "prompt": prompt,
+        },
+    )
     headers = {"Authorization": f"Bearer {model_config.api_key}"}
+    last_http_error: httpx.HTTPStatusError | None = None
     try:
-        with source_image_path.open("rb") as image_file:
-            files = {
-                "image": (
-                    source_image_path.name,
-                    image_file,
-                    "image/png",
-                )
-            }
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(
-                    f"{base_url}/images/edits",
-                    headers=headers,
-                    data=data,
-                    files=files,
-                )
-                response.raise_for_status()
-                response_payload = response.json()
+        with httpx.Client(timeout=timeout_seconds) as client:
+            for index, data in enumerate(request_variants, start=1):
+                try:
+                    response_payload = _post_images_edit(
+                        client=client,
+                        url=f"{base_url}/images/edits",
+                        headers=headers,
+                        data=data,
+                        source_image_path=source_image_path,
+                    )
+                    break
+                except httpx.HTTPStatusError as exc:
+                    last_http_error = exc
+                    status_code = getattr(exc.response, "status_code", None)
+                    if status_code != 400 or index >= len(request_variants):
+                        raise _image_edit_http_error(exc) from exc
+                    continue
+            else:  # pragma: no cover - defensive, loop should break or raise.
+                if last_http_error is not None:
+                    raise _image_edit_http_error(last_http_error) from last_http_error
+                raise RuntimeError("图像编辑接口请求失败。")
     except Exception as exc:  # noqa: BLE001 - caller classifies page/model errors.
         if is_model_unavailable_error(exc):
             raise ImageModelUnavailableError(str(exc)) from exc
@@ -235,6 +250,50 @@ def _generate_page_with_images_edit(
     if not image_bytes:
         raise ValueError("图像编辑接口已响应，但没有返回可用图片。")
     return image_bytes
+
+
+def _post_images_edit(
+    *,
+    client: httpx.Client,
+    url: str,
+    headers: dict[str, str],
+    data: dict[str, str],
+    source_image_path: Path,
+) -> Any:
+    with source_image_path.open("rb") as image_file:
+        files = {
+            "image": (
+                source_image_path.name,
+                image_file,
+                "image/png",
+            )
+        }
+        response = client.post(
+            url,
+            headers=headers,
+            data=data,
+            files=files,
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+def _image_edit_http_error(exc: httpx.HTTPStatusError) -> RuntimeError:
+    response = exc.response
+    detail = _response_error_detail(response)
+    message = str(exc)
+    if detail:
+        message = f"{message}\n接口返回：{detail}"
+    return RuntimeError(message)
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    text = str(getattr(response, "text", "") or "").strip()
+    if not text:
+        return ""
+    if len(text) > 1200:
+        return text[:1197] + "..."
+    return text
 
 
 def build_pdf_image_translation_prompt(

@@ -20,12 +20,10 @@ from loguru import logger
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from config import (
-    CONCURRENCY_DEFAULT,
     PDF_ASPECT_RATIO_TOLERANCE,
     PDF_COMPRESSED_JPEG_QUALITY_DEFAULT,
     PDF_COMPRESSED_MAX_LONG_EDGE_PX,
-    PDF_MIN_READABLE_LONG_EDGE_PX,
-    PDF_MIN_READABLE_SHORT_EDGE_PX,
+    PDF_PAGE_CONCURRENCY_DEFAULT,
     PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     PDF_PAGE_RENDER_AHEAD_COUNT,
     PDF_PAGE_RETRY_ATTEMPTS_DEFAULT,
@@ -303,8 +301,6 @@ def check_page_quality(
     source_width: int,
     source_height: int,
     ratio_tolerance: float = PDF_ASPECT_RATIO_TOLERANCE,
-    min_short_edge: int = PDF_MIN_READABLE_SHORT_EDGE_PX,
-    min_long_edge: int = PDF_MIN_READABLE_LONG_EDGE_PX,
 ) -> PageQualityResult:
     try:
         with Image.open(BytesIO(image_bytes)) as image:
@@ -322,17 +318,6 @@ def check_page_quality(
             False,
             "ratio_error",
             f"页面比例超出 {ratio_tolerance:.0%} 容差",
-            width,
-            height,
-        )
-
-    short_edge = min(width, height)
-    long_edge = max(width, height)
-    if short_edge < min_short_edge or long_edge < min_long_edge:
-        return PageQualityResult(
-            False,
-            "low_resolution",
-            f"分辨率过低：{width}x{height}",
             width,
             height,
         )
@@ -2290,11 +2275,11 @@ class PdfImageTranslationRunner:
     def _resolve_pdf_concurrency(self) -> int:
         raw = self._settings.pdf.page_generation_concurrency
         if raw is None:
-            raw = self._settings.engine.concurrency or CONCURRENCY_DEFAULT
+            raw = PDF_PAGE_CONCURRENCY_DEFAULT
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            value = CONCURRENCY_DEFAULT
+            value = PDF_PAGE_CONCURRENCY_DEFAULT
         return max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
 
     def _build_summary(
