@@ -416,11 +416,39 @@ class WordDocumentTests(unittest.TestCase):
             paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
 
             self.assertIn("", paragraph_texts)
-            self.assertIn("第一节 裂缝开裂现状及成因分析", paragraph_texts)
-            self.assertIn("第二节 修复总体原则与目标", paragraph_texts)
+            self.assertIn("第一章 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertIn("第二章 修复总体原则与目标", paragraph_texts)
             self.assertNotIn("第1节 裂缝开裂现状及成因分析", paragraph_texts)
             self.assertNotIn("第2节 裂缝开裂现状及成因分析", paragraph_texts)
             self.assertTrue(all(self._paragraph_num_id(paragraph) == "0" for paragraph in out_doc.paragraphs))
+
+    def test_decimal_chinese_section_fallback_uses_chinese_numerals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "decimal-chinese-section.docx"
+            self._build_decimal_chinese_section_numbered_docx(source_path)
+
+            normalized = normalize_docx_automatic_numbering(source_path)
+            out_doc = Document(str(normalized.path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+
+            self.assertIn("第一章 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertIn("第二章 修复总体原则与目标", paragraph_texts)
+            self.assertNotIn("第1节 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertNotIn("第2节 修复总体原则与目标", paragraph_texts)
+
+    def test_nested_chinese_section_fallback_keeps_section_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "nested-chinese-section.docx"
+            self._build_nested_chinese_section_numbered_docx(source_path)
+
+            normalized = normalize_docx_automatic_numbering(source_path)
+            out_doc = Document(str(normalized.path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+
+            self.assertIn("第一章 工程概况", paragraph_texts)
+            self.assertIn("第一节 裂缝开裂现状及成因分析", paragraph_texts)
 
     def test_translation_inherits_manual_leading_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1229,11 +1257,48 @@ class WordDocumentTests(unittest.TestCase):
         doc.save(str(path))
 
     @staticmethod
+    def _build_decimal_chinese_section_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_default_num_id_9_level(
+            doc,
+            number_format="decimal",
+            level_text_value="第 %1 节",
+        )
+        first = doc.add_paragraph("裂缝开裂现状及成因分析")
+        second = doc.add_paragraph("修复总体原则与目标")
+        for paragraph in (first, second):
+            WordDocumentTests._set_paragraph_num_pr(paragraph, num_id="9", ilvl="0")
+        doc.save(str(path))
+
+    @staticmethod
+    def _build_nested_chinese_section_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_num_id_9_levels(
+            doc,
+            {
+                0: ("decimal", "第%1节"),
+                1: ("decimal", "第%2节"),
+            },
+        )
+        chapter = doc.add_paragraph("工程概况")
+        section = doc.add_paragraph("裂缝开裂现状及成因分析")
+        WordDocumentTests._set_paragraph_num_pr(chapter, num_id="9", ilvl="0")
+        WordDocumentTests._set_paragraph_num_pr(section, num_id="9", ilvl="1")
+        doc.save(str(path))
+
+    @staticmethod
     def _set_default_num_id_9_level(
         doc: Document,
         *,
         number_format: str,
         level_text_value: str,
+    ) -> None:
+        WordDocumentTests._set_num_id_9_levels(doc, {0: (number_format, level_text_value)})
+
+    @staticmethod
+    def _set_num_id_9_levels(
+        doc: Document,
+        levels: dict[int, tuple[str, str]],
     ) -> None:
         numbering_root = doc.part.numbering_part.element
         target_abstract_id = None
@@ -1247,19 +1312,27 @@ class WordDocumentTests(unittest.TestCase):
         for abstract_num in numbering_root.findall(qn("w:abstractNum")):
             if abstract_num.get(qn("w:abstractNumId")) != target_abstract_id:
                 continue
-            level = abstract_num.find(qn("w:lvl"))
-            if level is None:
-                return
-            num_format = level.find(qn("w:numFmt"))
-            if num_format is None:
-                num_format = OxmlElement("w:numFmt")
-                level.append(num_format)
-            num_format.set(qn("w:val"), number_format)
-            level_text = level.find(qn("w:lvlText"))
-            if level_text is None:
-                level_text = OxmlElement("w:lvlText")
-                level.append(level_text)
-            level_text.set(qn("w:val"), level_text_value)
+            existing_levels = {
+                int(level.get(qn("w:ilvl")) or 0): level
+                for level in abstract_num.findall(qn("w:lvl"))
+            }
+            for ilvl, (number_format, level_text_value) in levels.items():
+                level = existing_levels.get(ilvl)
+                if level is None:
+                    level = OxmlElement("w:lvl")
+                    level.set(qn("w:ilvl"), str(ilvl))
+                    abstract_num.append(level)
+                num_format = level.find(qn("w:numFmt"))
+                if num_format is None:
+                    num_format = OxmlElement("w:numFmt")
+                    level.append(num_format)
+                num_format.set(qn("w:val"), number_format)
+                level_text = level.find(qn("w:lvlText"))
+                if level_text is None:
+                    level_text = OxmlElement("w:lvlText")
+                    level.append(level_text)
+                level_text.set(qn("w:val"), level_text_value)
+            return
 
     @staticmethod
     def _set_paragraph_num_pr(paragraph, *, num_id: str, ilvl: str) -> None:

@@ -1084,9 +1084,44 @@ def _format_numbering_label(
         level = max(0, _to_int(match.group(1), fallback=1) - 1)
         level_counter = counters.get((num_id, level), 0)
         level_definition = level_definitions.get((num_id, level), definition)
-        return _format_number(level_counter, level_definition.number_format)
+        number_format = _number_format_for_level_text_placeholder(
+            label,
+            match,
+            level_definition.number_format,
+        )
+        return _format_number(level_counter, number_format)
 
-    return re.sub(r"%(\d+)", replace_placeholder, label).strip()
+    formatted = re.sub(r"%(\d+)", replace_placeholder, label).strip()
+    return _normalize_chinese_ordinal_numbering_label(formatted, top_level=ilvl == 0)
+
+
+def _normalize_chinese_ordinal_numbering_label(label: str, *, top_level: bool = False) -> str:
+    def replace_match(match: re.Match[str]) -> str:
+        unit = match.group(2)
+        if top_level and unit == "节":
+            unit = "章"
+        return f"第{match.group(1)}{unit}"
+
+    return re.sub(
+        rf"^第\s*([{_CHINESE_NUMBER_CHARS}]+)\s*([章节篇卷部])",
+        replace_match,
+        label,
+    )
+
+
+def _number_format_for_level_text_placeholder(
+    level_text: str,
+    match: re.Match[str],
+    number_format: str,
+) -> str:
+    if number_format != "decimal":
+        return number_format
+
+    before = level_text[: match.start()]
+    after = level_text[match.end() :]
+    if before.rstrip().endswith("第") and after.lstrip().startswith(("章", "节", "篇", "卷", "部")):
+        return "chineseCounting"
+    return number_format
 
 
 def _format_number(number: int, number_format: str) -> str:
