@@ -3,6 +3,7 @@ User-editable settings persisted to local JSON files.
 API keys are stored separately in keys.json with OS-level permissions.
 """
 import json
+import os
 import platform
 import stat
 import threading
@@ -1448,7 +1449,35 @@ def get_key(provider: str, base_url: str = "") -> str:
         value = str(keys.get(scope) or "").strip()
         if value:
             return value
+
+    for env_name in _api_key_env_names(normalized_provider):
+        value = str(os.environ.get(env_name) or "").strip()
+        if value:
+            return value
     return ""
+
+
+def _api_key_env_names(provider: str) -> tuple[str, ...]:
+    normalized_provider = _normalize_api_key_provider(provider)
+    if normalized_provider == "openai":
+        return ("OPENAI_API_KEY",)
+    if normalized_provider == "claude":
+        return ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY")
+    if normalized_provider == "dashscope":
+        return ("DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY_ID")
+    if normalized_provider == "zhipu":
+        return ("ZHIPUAI_API_KEY", "ZHIPU_API_KEY")
+    if normalized_provider == "siliconflow":
+        return ("SILICONFLOW_API_KEY",)
+    if normalized_provider == "custom_openai":
+        return (
+            "CUSTOM_OPENAI_API_KEY",
+            "OPENAI_COMPATIBLE_API_KEY",
+            "TRANSLATOR_API_KEY",
+        )
+    if normalized_provider == "lanyi":
+        return ("LANYI_API_KEY",)
+    return ()
 
 
 def delete_key(provider: str, base_url: str = "") -> None:

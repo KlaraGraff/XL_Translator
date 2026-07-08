@@ -1,0 +1,4 @@
+interface:
+  display_name: "Translator 直连"
+  short_description: "按路径直接分流翻译 Excel、Word 和 PDF"
+  default_prompt: "Use $translator-direct to translate this file or folder, auto-route by file type, and return the generated output paths."

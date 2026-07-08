@@ -25,7 +25,7 @@ from config import (  # noqa: E402
 )
 from core.headless_translate import build_runtime_settings  # noqa: E402
 from core.headless_word_translate import run_word_translation_path  # noqa: E402
-from settings import load_settings  # noqa: E402
+from settings import load_settings, set_cloud_provider_config  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -116,10 +116,19 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
         settings.engine.mode = args.engine_mode
     if args.cloud_provider:
         settings.engine.cloud_provider = args.cloud_provider.strip()
+        if not args.cloud_base_url:
+            settings.engine.cloud_base_url = ""
     if args.cloud_model:
         settings.engine.cloud_model = args.cloud_model.strip()
     if args.cloud_base_url:
         settings.engine.cloud_base_url = args.cloud_base_url.strip()
+    if args.cloud_provider or args.cloud_model or args.cloud_base_url:
+        set_cloud_provider_config(
+            settings.engine,
+            settings.engine.cloud_provider,
+            cloud_model=settings.engine.cloud_model,
+            cloud_base_url=settings.engine.cloud_base_url,
+        )
     if args.ollama_model:
         settings.engine.ollama_model = args.ollama_model.strip()
     if args.concurrency is not None:

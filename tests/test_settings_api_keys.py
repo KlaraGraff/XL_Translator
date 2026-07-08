@@ -50,6 +50,21 @@ class SettingsApiKeyTests(unittest.TestCase):
                 "stored-secret",
             )
 
+    def test_env_key_used_when_no_saved_key_exists(self) -> None:
+        with (
+            patch("settings.load_keys", return_value={}),
+            patch.dict("os.environ", {"OPENAI_COMPATIBLE_API_KEY": "env-secret"}, clear=False),
+        ):
+            self.assertEqual(get_key("custom_openai", "https://api.example.test/v1"), "env-secret")
+
+    def test_openai_key_does_not_fall_back_to_custom_openai(self) -> None:
+        with (
+            patch("settings.load_keys", return_value={}),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "openai-secret"}, clear=True),
+        ):
+            self.assertEqual(get_key("custom_openai", "https://api.example.test/v1"), "")
+            self.assertEqual(get_key("openai", ""), "openai-secret")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

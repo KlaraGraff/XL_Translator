@@ -916,7 +916,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(len(done.file_results), 2)
             self.assertTrue(all(item.get("success") for item in done.file_results))
 
-    def test_runner_uses_conservative_pdf_concurrency_default(self) -> None:
+    def test_runner_uses_direct_mode_pdf_concurrency_default(self) -> None:
         settings = AppSettings(target_lang="en")
         settings.engine.concurrency = 20
         settings.pdf.page_generation_concurrency = None
@@ -926,7 +926,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             task_logger_enabled=False,
         )
 
-        self.assertEqual(runner._resolve_pdf_concurrency(), 2)
+        self.assertEqual(runner._resolve_pdf_concurrency(), 3)
 
     def test_stopped_runner_assembles_completed_pdf_but_not_partial_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
