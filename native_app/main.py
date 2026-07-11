@@ -11,6 +11,7 @@ from app_meta import APP_NAME
 from core.data_migration import inspect_data_migration, migrate_non_conflicting_legacy_data
 from core.tm_manager import init_db
 from native_app.main_window import NativeMainWindow
+from native_app.single_instance import SingleInstanceCoordinator
 from native_app.style import APP_QSS
 from native_app.widgets import install_in_app_tooltips, install_scroll_wheel_focus_guard
 from settings import load_settings, save_settings
@@ -35,6 +36,22 @@ def main() -> int:
     install_scroll_wheel_focus_guard(app)
     install_in_app_tooltips(app)
 
+    window_holder: list[NativeMainWindow] = []
+
+    def activate_window() -> None:
+        if not window_holder:
+            return
+        window = window_holder[0]
+        if window.isMinimized():
+            window.showNormal()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    instance = SingleInstanceCoordinator(activate_window, app)
+    if not instance.claim_or_notify():
+        return 0
+
     try:
         plan = inspect_data_migration()
         migrate_non_conflicting_legacy_data(plan)
@@ -45,10 +62,12 @@ def main() -> int:
     init_db()
 
     window = NativeMainWindow(settings)
+    window_holder.append(window)
     window.apply_initial_window_layout()
     window.show()
 
     exit_code = app.exec()
+    instance.close()
     save_settings(window.settings)
     return exit_code
 

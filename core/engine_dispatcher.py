@@ -22,6 +22,7 @@ from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
     API_REQUEST_CATEGORY_NORMAL,
     ApiConcurrencyLimitDecision,
+    ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
 from core.api_concurrency_control import (
@@ -394,8 +395,14 @@ def _translate_batch_with_fallback(
                 source_lang=source_lang,
             )
         else:
-            with api_scheduler.slot(request_weight, category=request_category) as lease:
+            with api_scheduler.slot(
+                request_weight,
+                category=request_category,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
+                if should_stop and should_stop():
+                    return {text: text for text in batch}
                 partial = engine.translate_batch(
                     batch,
                     target_lang,
@@ -405,6 +412,8 @@ def _translate_batch_with_fallback(
         _validate_batch_integrity(batch, partial)
         return partial
     except Exception as exc:  # noqa: BLE001 - fallback decides the safest degradation
+        if isinstance(exc, ApiSchedulerAcquireCancelled):
+            return {text: text for text in batch}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
         if api_scheduler is not None:
@@ -431,6 +440,15 @@ def _translate_batch_with_fallback(
                     error_callback=error_callback,
                     stats=stats,
                 )
+
+        if _is_permanent_request_error(exc):
+            message = f"Excel 翻译请求不可重试，已停止拆分批次：{exc}"
+            logger.error(message)
+            if error_callback:
+                error_callback(message)
+            for text in batch:
+                stats.record_failed_batch(str(text), str(exc))
+            return {text: text for text in batch}
 
         if len(batch) > 1 and not (should_stop and should_stop()):
             midpoint = max(1, len(batch) // 2)
@@ -475,6 +493,37 @@ def _translate_batch_with_fallback(
         if error_callback:
             error_callback(err_msg)
         return {text: text for text in batch}
+
+
+def _is_permanent_request_error(exc: BaseException) -> bool:
+    """Return True when shrinking a batch cannot change the upstream outcome."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    try:
+        status = int(status_code)
+    except (TypeError, ValueError):
+        status = 0
+    if status in {400, 401, 402, 403, 404, 405, 410, 422}:
+        return True
+
+    message = str(exc or "").casefold()
+    permanent_markers = (
+        "invalid api key",
+        "incorrect api key",
+        "unauthorized",
+        "forbidden",
+        "insufficient_quota",
+        "billing hard limit",
+        "model not found",
+        "does not exist",
+        "余额不足",
+        "额度不足",
+        "未授权",
+        "模型不存在",
+    )
+    return any(marker in message for marker in permanent_markers)
 
 
 def _validate_batch_integrity(batch: list[str], results: dict[str, str]) -> None:

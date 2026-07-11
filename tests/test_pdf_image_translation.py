@@ -70,6 +70,42 @@ def _jpeg_bytes(width: int, height: int, color: str = "white") -> bytes:
 
 
 class PdfImageTranslationTests(unittest.TestCase):
+    def test_stop_after_lease_acquire_releases_exactly_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_image = root / "source.png"
+            source_image.write_bytes(_png_bytes(1200, 1600))
+            settings = AppSettings(target_lang="en")
+            runner = PdfImageTranslationRunner(
+                [],
+                settings,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                task_logger_enabled=False,
+            )
+            scheduler = _StopAfterAcquireScheduler(runner)
+            page = PdfPageRecord(
+                page_number=1,
+                source_image_path=str(source_image),
+                source_width_px=1200,
+                source_height_px=1600,
+            )
+
+            result = runner._generate_page_with_retries(
+                page,
+                1,
+                root / "translated",
+                root / "review",
+                1,
+                scheduler,
+                WeightedApiScheduler(1),
+                None,
+                None,
+            )
+
+            self.assertEqual(scheduler.release_count, 1)
+            self.assertEqual(scheduler.snapshot().active_total_weight, 0)
+            self.assertEqual(result.status, "placeholder_pending")
+
     def test_scan_skips_generated_dirs_and_non_pdf_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -778,6 +814,62 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(image_client.calls[0]["target_lang_code"], "en")
             self.assertIn("编号标签误译", image_client.calls[1]["review_feedback"])
 
+    def test_review_request_error_keeps_candidate_without_regeneration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            output_dir = root / "out"
+            settings = AppSettings(target_lang="en")
+            settings.pdf.review_enabled = True
+            settings.image_model_role.source_role = SOURCE_INDEPENDENT
+            settings.image_model_role.cloud_provider = "custom_openai"
+            settings.image_model_role.cloud_model = "image-model"
+            settings.image_model_role.cloud_base_url = "https://images.example/v1"
+            settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+            settings.pdf_review_model_role.cloud_provider = "custom_openai"
+            settings.pdf_review_model_role.cloud_model = "vision-review-model"
+            settings.pdf_review_model_role.cloud_base_url = "https://images.example/v1"
+            image_client = _RecordingImageClient(_png_bytes(1200, 1600))
+            review_client = _ReviewRequestErrorClient()
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                review_client=review_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+                "core.model_roles.get_key",
+                return_value="secret",
+            ):
+                record = runner._process_file(
+                    runner._files[0],
+                    output_dir=output_dir,
+                    app_managed=True,
+                    max_attempts=max_page_generation_attempts(3),
+                    scheduler=WeightedApiScheduler(1),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=resolve_effective_model_config(
+                        settings,
+                        ROLE_PDF_REVIEW,
+                    ),
+                    concurrency=1,
+                    processed_page_offset=0,
+                    total_pages=1,
+                )
+
+            page = record.pages[0]
+            self.assertEqual(len(image_client.calls), 1)
+            self.assertEqual(review_client.calls, 1)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+            self.assertEqual(page.status, "success")
+            self.assertEqual(page.review_status, "failed")
+            self.assertIn("审核请求失败", page.error)
+            self.assertTrue(Path(page.translated_image_path).exists())
+
     def test_single_page_all_generation_failures_do_not_create_placeholder_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -926,7 +1018,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             task_logger_enabled=False,
         )
 
-        self.assertEqual(runner._resolve_pdf_concurrency(), 3)
+        self.assertEqual(runner._resolve_pdf_concurrency(), 2)
 
     def test_stopped_runner_assembles_completed_pdf_but_not_partial_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1352,12 +1444,37 @@ class _AlwaysFailReviewClient:
         )
 
 
+class _ReviewRequestErrorClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def review_page(self, **_kwargs):
+        self.calls += 1
+        raise TimeoutError("review timeout")
+
+
 class _FakeImageClient:
     def __init__(self, image_bytes: bytes):
         self.image_bytes = image_bytes
 
     def generate_page(self, **_kwargs):
         return self.image_bytes
+
+
+class _StopAfterAcquireScheduler(WeightedApiScheduler):
+    def __init__(self, runner: PdfImageTranslationRunner) -> None:
+        super().__init__(1)
+        self.runner = runner
+        self.release_count = 0
+
+    def acquire_lease(self, *args, **kwargs):
+        lease = super().acquire_lease(*args, **kwargs)
+        self.runner.stop()
+        return lease
+
+    def release(self, *args, **kwargs) -> None:
+        self.release_count += 1
+        super().release(*args, **kwargs)
 
 
 class _FailThenPassImageClient(_FakeImageClient):

@@ -6,7 +6,7 @@ import math
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 API_REQUEST_CATEGORY_NORMAL = "normal"
@@ -14,6 +14,10 @@ API_REQUEST_CATEGORY_RECOVERY = "recovery"
 API_CONCURRENCY_ACTION_REDUCED = "reduced"
 API_CONCURRENCY_ACTION_RETRY_CURRENT = "retry_current"
 API_CONCURRENCY_ACTION_UNAVAILABLE = "unavailable"
+
+
+class ApiSchedulerAcquireCancelled(RuntimeError):
+    """Raised when a queued request is cancelled before acquiring a slot."""
 
 
 @dataclass(frozen=True)
@@ -93,8 +97,13 @@ class WeightedApiScheduler:
         weight: int | float | None = 1,
         *,
         category: str = API_REQUEST_CATEGORY_NORMAL,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Iterator[ApiSchedulerLease]:
-        lease = self.acquire_lease(weight, category=category)
+        lease = self.acquire_lease(
+            weight,
+            category=category,
+            should_stop=should_stop,
+        )
         try:
             yield lease
         finally:
@@ -113,6 +122,7 @@ class WeightedApiScheduler:
         weight: int | float | None = 1,
         *,
         category: str = API_REQUEST_CATEGORY_NORMAL,
+        should_stop: Callable[[], bool] | None = None,
     ) -> ApiSchedulerLease:
         normalized_weight = self.normalize_weight(weight)
         normalized_category = _normalize_category(category)
@@ -122,7 +132,15 @@ class WeightedApiScheduler:
                 self._waiting_recovery_count += 1
             try:
                 while not self._can_acquire(normalized_weight, normalized_category):
-                    self._condition.wait()
+                    if should_stop is not None and should_stop():
+                        raise ApiSchedulerAcquireCancelled(
+                            "API 请求在等待并发槽位期间已取消"
+                        )
+                    self._condition.wait(timeout=0.1 if should_stop is not None else None)
+                if should_stop is not None and should_stop():
+                    raise ApiSchedulerAcquireCancelled(
+                        "API 请求在获得并发槽位前已取消"
+                    )
                 self._active_total_weight += normalized_weight
                 if normalized_category == API_REQUEST_CATEGORY_NORMAL:
                     self._active_normal_weight += normalized_weight

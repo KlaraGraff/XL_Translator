@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,10 @@ from core.word_document import (
     _sanitize_filename_fragment,
 )
 
+_SCHEME_KEYWORD = "方案"
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
+
 
 @dataclass
 class WordCoveragePlan:
@@ -65,16 +70,19 @@ def build_word_coverage_plan(
     *,
     target_lang: str,
     source_lang: str = "zh",
+    protect_scheme_cover: bool = False,
 ) -> WordCoveragePlan:
     """Classify app-style bilingual Word content by coverage status."""
     source_path = Path(path)
     doc = Document(str(source_path))
+    scheme_cover = _detect_scheme_cover(doc) if protect_scheme_cover else None
     units: list[CoverageUnit] = []
     units.extend(
         _classify_body_paragraphs(
             doc,
             target_lang=target_lang,
             source_lang=source_lang,
+            scheme_cover=scheme_cover,
         )
     )
     units.extend(
@@ -82,6 +90,7 @@ def build_word_coverage_plan(
             doc,
             target_lang=target_lang,
             source_lang=source_lang,
+            scheme_cover=scheme_cover,
         )
     )
     return WordCoveragePlan(path=source_path, units=units)
@@ -166,6 +175,7 @@ def _classify_body_paragraphs(
     *,
     target_lang: str,
     source_lang: str,
+    scheme_cover: "_SchemeCoverInfo | None" = None,
 ) -> list[CoverageUnit]:
     units: list[CoverageUnit] = []
     paragraphs = list(doc.paragraphs)
@@ -193,6 +203,57 @@ def _classify_body_paragraphs(
             index += 1
             continue
         if index in consumed_targets:
+            index += 1
+            continue
+        if _is_scheme_cover_foreign_title(paragraph, index, scheme_cover):
+            next_index = index + 1
+            next_text = (
+                _paragraph_source_text(paragraphs[next_index])
+                if next_index < len(paragraphs)
+                else ""
+            )
+            if next_text and looks_like_target_text(
+                next_text,
+                source_lang=source_lang,
+                target_lang=target_lang,
+            ):
+                units.append(
+                    CoverageUnit(
+                        source_text=text,
+                        target_text=next_text,
+                        status=COVERAGE_COVERED,
+                        location=location,
+                        kind="paragraph",
+                        reason="方案封面外文标题已有紧邻目标语言译文。",
+                        data=data,
+                    )
+                )
+                consumed_targets.add(next_index)
+                index += 2
+                continue
+            units.append(
+                CoverageUnit(
+                    source_text=text,
+                    status=COVERAGE_SOURCE_ONLY,
+                    location=location,
+                    kind="paragraph",
+                    reason="方案封面中文标题下方外文标题例外：始终重新补译。",
+                    data=data,
+                )
+            )
+            index += 1
+            continue
+        if _is_protected_scheme_cover_paragraph(paragraph, index, scheme_cover):
+            units.append(
+                CoverageUnit(
+                    source_text=text,
+                    status=COVERAGE_IGNORED,
+                    location=location,
+                    kind="paragraph",
+                    reason="方案封面保护：普通封面内容默认跳过。",
+                    data=data,
+                )
+            )
             index += 1
             continue
         if looks_like_source_text(text, source_lang=source_lang, target_lang=target_lang):
@@ -261,30 +322,149 @@ def _classify_body_paragraphs(
     return units
 
 
+@dataclass(frozen=True)
+class _SchemeCoverInfo:
+    protected_until: int
+    foreign_title_index: int | None = None
+
+
+def _detect_scheme_cover(doc: Document) -> _SchemeCoverInfo | None:
+    paragraphs = list(doc.paragraphs)
+    non_empty = [
+        (index, _paragraph_source_text(paragraph))
+        for index, paragraph in enumerate(paragraphs)
+        if _paragraph_source_text(paragraph)
+    ]
+    if not non_empty:
+        return None
+
+    title_position: int | None = None
+    foreign_title_index: int | None = None
+    for position, (index, text) in enumerate(non_empty[:6]):
+        if _SCHEME_KEYWORD not in text or not _CJK_RE.search(text):
+            continue
+        title_position = position
+        for next_index, next_text in non_empty[position + 1 : min(position + 4, len(non_empty))]:
+            if _looks_like_foreign_title(next_text):
+                foreign_title_index = next_index
+                break
+        break
+    if title_position is None:
+        return None
+
+    first_body_index = _first_body_heading_index(non_empty)
+    protected_until = first_body_index if first_body_index is not None else non_empty[min(len(non_empty), 12) - 1][0] + 1
+    return _SchemeCoverInfo(
+        protected_until=protected_until,
+        foreign_title_index=foreign_title_index,
+    )
+
+
+def _first_body_heading_index(non_empty: list[tuple[int, str]]) -> int | None:
+    for index, text in non_empty:
+        if re.match(r"^第[一二三四五六七八九十百]+章\b", text):
+            return index
+        if re.match(r"^\d+(?:\.\d+){1,4}(?:\s+|$)", text):
+            return index
+    return None
+
+
+def _looks_like_foreign_title(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value and not _CJK_RE.search(value) and _LATIN_RE.search(value))
+
+
+def _is_scheme_cover_foreign_title(
+    paragraph,
+    index: int,
+    scheme_cover: _SchemeCoverInfo | None,
+) -> bool:
+    return bool(
+        scheme_cover is not None
+        and scheme_cover.foreign_title_index is not None
+        and index == scheme_cover.foreign_title_index
+        and _looks_like_foreign_title(_paragraph_source_text(paragraph))
+    )
+
+
+def _is_protected_scheme_cover_paragraph(
+    paragraph,
+    index: int,
+    scheme_cover: _SchemeCoverInfo | None,
+) -> bool:
+    if scheme_cover is None:
+        return False
+    if index >= scheme_cover.protected_until:
+        return False
+    if scheme_cover.foreign_title_index is not None and index == scheme_cover.foreign_title_index:
+        return False
+    return True
+
+
 def _classify_table_cells(
     doc: Document,
     *,
     target_lang: str,
     source_lang: str,
+    scheme_cover: _SchemeCoverInfo | None = None,
 ) -> list[CoverageUnit]:
     units: list[CoverageUnit] = []
     cell_index = 0
     for table_index, table in enumerate(doc.tables):
+        protect_table = _is_protected_scheme_cover_table(table, table_index, scheme_cover)
         for cell in _iter_unique_table_cells(table):
             text = _cell_source_text(cell)
             location = f"table[{table_index}].cell[{cell_index}]"
             data = {"cell_index": cell_index, "table_index": table_index}
-            unit = _classify_cell_text(
-                text,
-                location=location,
-                data=data,
-                source_lang=source_lang,
-                target_lang=target_lang,
-            )
+            if protect_table and clean_coverage_text(text):
+                unit = CoverageUnit(
+                    source_text=text,
+                    status=COVERAGE_IGNORED,
+                    location=location,
+                    kind="table_cell",
+                    section_path="表格",
+                    reason="方案封面保护：封面元数据表格默认跳过。",
+                    data=data,
+                )
+            else:
+                unit = _classify_cell_text(
+                    text,
+                    location=location,
+                    data=data,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
             if unit is not None:
                 units.append(unit)
             cell_index += 1
     return units
+
+
+def _is_protected_scheme_cover_table(
+    table,
+    table_index: int,
+    scheme_cover: _SchemeCoverInfo | None,
+) -> bool:
+    if scheme_cover is None or table_index != 0:
+        return False
+    texts = [
+        _cell_source_text(cell)
+        for cell in _iter_unique_table_cells(table)
+        if _cell_source_text(cell)
+    ]
+    combined = "\n".join(texts).casefold()
+    markers = (
+        "文件编号",
+        "docno",
+        "日期",
+        "date",
+        "编制",
+        "preparedby",
+        "审核",
+        "approvedby",
+        "批准",
+    )
+    return any(marker in combined for marker in markers)
 
 
 def _classify_cell_text(

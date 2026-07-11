@@ -15,6 +15,17 @@ COVERAGE_IGNORED = "ignored"
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _NON_CJK_LETTER_RUN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
+_FRENCH_MARKER_WORDS = {
+    "avec", "aux", "ce", "ces", "cette", "dans", "des", "du", "est",
+    "et", "la", "le", "les", "pour", "sans", "sur", "une",
+}
+_ENGLISH_MARKER_WORDS = {
+    "and", "are", "for", "from", "in", "is", "of", "on", "the", "this",
+    "to", "with", "without",
+}
+_FRENCH_ELISION_RE = re.compile(r"\b(?:[cdjlmnstqu]|jusqu|lorsqu)['’]", re.IGNORECASE)
+_FRENCH_DIACRITIC_RE = re.compile(r"[àâçéèêëîïôùûüÿœæ]", re.IGNORECASE)
+
 
 @dataclass
 class CoverageUnit:
@@ -61,6 +72,25 @@ def contains_meaningful_non_cjk_word(text: str) -> bool:
     return False
 
 
+def _language_evidence(text: str, language: str) -> bool | None:
+    """Return positive/negative evidence for the supported Latin pair, else unknown."""
+    normalized = str(language or "").strip().lower()
+    if normalized not in {"en", "fr"}:
+        return None
+    words = {match.group(0).casefold() for match in _NON_CJK_LETTER_RUN_RE.finditer(text)}
+    french_score = len(words & _FRENCH_MARKER_WORDS)
+    english_score = len(words & _ENGLISH_MARKER_WORDS)
+    if _FRENCH_DIACRITIC_RE.search(text) or _FRENCH_ELISION_RE.search(text):
+        french_score += 2
+    own_score = french_score if normalized == "fr" else english_score
+    other_score = english_score if normalized == "fr" else french_score
+    if own_score > other_score:
+        return True
+    if other_score > own_score:
+        return False
+    return None
+
+
 def looks_like_source_text(
     text: str,
     *,
@@ -81,6 +111,9 @@ def looks_like_source_text(
         )
 
     if contains_cjk(cleaned):
+        return False
+    source_evidence = _language_evidence(cleaned, source)
+    if source_evidence is False:
         return False
     return contains_non_cjk_letters(cleaned) and should_translate(
         cleaned,
@@ -105,6 +138,9 @@ def looks_like_target_text(
         return contains_cjk(cleaned)
 
     if contains_cjk(cleaned):
+        return False
+    target_evidence = _language_evidence(cleaned, target)
+    if target_evidence is False:
         return False
     return contains_meaningful_non_cjk_word(cleaned)
 

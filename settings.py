@@ -4,8 +4,8 @@ API keys are stored separately in keys.json with OS-level permissions.
 """
 import json
 import os
-import platform
 import stat
+import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -76,6 +76,8 @@ from core.language_registry import (
 )
 
 _KEY_OVERRIDE_LOCAL = threading.local()
+_LOCAL_FILE_LOCKS: dict[str, threading.RLock] = {}
+_LOCAL_FILE_LOCKS_GUARD = threading.Lock()
 API_KEY_SCOPE_SEPARATOR = "::"
 
 
@@ -843,11 +845,87 @@ def _seed_packaged_default_api_key() -> None:
     save_key(DEFAULT_CLOUD_PROVIDER, default_api_key)
 
 
-def _write_text_atomic(path: Path, content: str) -> None:
-    """Atomically replace a text file to reduce partial-write risk."""
-    temp_path = path.with_name(f"{path.name}.tmp")
-    temp_path.write_text(content, encoding="utf-8")
-    temp_path.replace(path)
+def _local_file_lock(path: Path) -> threading.RLock:
+    """Return the in-process lock paired with one inter-process lock file."""
+    lock_key = str(path.resolve())
+    with _LOCAL_FILE_LOCKS_GUARD:
+        return _LOCAL_FILE_LOCKS.setdefault(lock_key, threading.RLock())
+
+
+@contextmanager
+def _exclusive_file_lock(path: Path):
+    """Serialize a short file transaction across threads and app processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    local_lock = _local_file_lock(path)
+    with local_lock, path.open("a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+
+            if lock_file.seek(0, os.SEEK_END) == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _write_text_atomic(
+    path: Path,
+    content: str,
+    *,
+    file_mode: int | None = None,
+) -> None:
+    """Flush and atomically replace a text file using a unique sibling temp file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw_temp_path = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temp_path = Path(raw_temp_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
+            fd = -1
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        if file_mode is not None and os.name != "nt":
+            temp_path.chmod(file_mode)
+        os.replace(temp_path, path)
+        if os.name != "nt":
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                pass
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temp_path.unlink(missing_ok=True)
+
+
+def write_private_text_file(path: Path, content: str) -> None:
+    """Atomically write sensitive text with owner-only POSIX permissions."""
+    _write_text_atomic(
+        path,
+        content,
+        file_mode=stat.S_IRUSR | stat.S_IWUSR,
+    )
 
 
 def _extract_settings_version(data: dict) -> int:
@@ -864,10 +942,10 @@ def _backup_settings_snapshot(raw_text: str, source_version: int | None, reason:
     """Backup the pre-migration settings.json to a timestamped backup file."""
     backup_dir = BACKUPS_DIR / "settings"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     version_tag = f"v{source_version}" if source_version is not None else "unknown"
     backup_path = backup_dir / f"settings_{reason}_{version_tag}_{timestamp}.json"
-    backup_path.write_text(raw_text, encoding="utf-8")
+    _write_text_atomic(backup_path, raw_text)
     return backup_path
 
 
@@ -1321,27 +1399,8 @@ def load_settings() -> AppSettings:
 
             source_version = _extract_settings_version(data)
             if source_version < SETTINGS_SCHEMA_VERSION:
-                backup_path = _backup_settings_snapshot(
-                    raw_text,
-                    source_version=source_version,
-                    reason=f"upgrade_to_v{SETTINGS_SCHEMA_VERSION}",
-                )
                 data = _migrate_settings_payload(data, source_version)
-                settings = AppSettings.model_validate(data)
-                save_settings(settings)
-                logger.info(
-                    "检测到旧版 settings，已完成迁移并备份："
-                    f"v{source_version} -> v{SETTINGS_SCHEMA_VERSION} | backup={backup_path}"
-                )
-                _seed_packaged_default_api_key()
-                return settings
-
             settings = AppSettings.model_validate(data)
-            if settings.model_dump() != data:
-                save_settings(settings)
-                logger.info("检测到 settings 内容已归一化，已自动回写最新格式")
-            _seed_packaged_default_api_key()
-            return settings
         except Exception as exc:
             if raw_text:
                 try:
@@ -1354,8 +1413,53 @@ def load_settings() -> AppSettings:
                 except Exception as backup_exc:
                     logger.warning(f"配置文件解析失败，且备份旧文件失败：{backup_exc}")
             logger.warning(f"配置文件解析失败，回退至默认配置：{exc}")
+        else:
+            if source_version < SETTINGS_SCHEMA_VERSION:
+                backup_path: Path | None = None
+                try:
+                    backup_path = _backup_settings_snapshot(
+                        raw_text,
+                        source_version=source_version,
+                        reason=f"upgrade_to_v{SETTINGS_SCHEMA_VERSION}",
+                    )
+                except Exception as backup_exc:
+                    logger.warning(f"旧版 settings 已读取，但迁移备份失败：{backup_exc}")
+
+                if backup_path is not None:
+                    try:
+                        save_settings(settings)
+                    except Exception as save_exc:
+                        logger.warning(
+                            "旧版 settings 已在本次会话中迁移，但自动回写失败；"
+                            f"继续使用已加载配置：{save_exc}"
+                        )
+                    else:
+                        logger.info(
+                            "检测到旧版 settings，已完成迁移并备份："
+                            f"v{source_version} -> v{SETTINGS_SCHEMA_VERSION} | "
+                            f"backup={backup_path}"
+                        )
+            elif settings.model_dump() != data:
+                try:
+                    save_settings(settings)
+                except Exception as save_exc:
+                    logger.warning(
+                        "settings 已成功读取，但归一化内容自动回写失败；"
+                        f"继续使用已加载配置：{save_exc}"
+                    )
+                else:
+                    logger.info("检测到 settings 内容已归一化，已自动回写最新格式")
+
+            try:
+                _seed_packaged_default_api_key()
+            except Exception as seed_exc:
+                logger.warning(f"默认 API Key 初始化失败，已保留当前设置：{seed_exc}")
+            return settings
     settings = AppSettings()
-    _seed_packaged_default_api_key()
+    try:
+        _seed_packaged_default_api_key()
+    except Exception as seed_exc:
+        logger.warning(f"默认 API Key 初始化失败，已使用默认设置：{seed_exc}")
     return settings
 
 
@@ -1363,32 +1467,34 @@ def save_settings(settings: AppSettings) -> None:
     """Persist settings to local JSON."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     settings.settings_version = SETTINGS_SCHEMA_VERSION
-    _write_text_atomic(
-        SETTINGS_PATH,
-        settings.model_dump_json(indent=2),
-    )
+    lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        _write_text_atomic(
+            SETTINGS_PATH,
+            settings.model_dump_json(indent=2),
+        )
     logger.debug(f"配置已保存：{SETTINGS_PATH}")
 
 
-def _apply_key_file_permissions(path: Path) -> None:
-    """Restrict keys.json permissions to the current user when possible."""
-    system = platform.system()
+def _load_keys_unlocked(*, strict: bool) -> dict[str, str]:
+    if not KEYS_PATH.exists():
+        return {}
     try:
-        if system in ("Darwin", "Linux"):
-            path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        payload = json.loads(KEYS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("keys.json 顶层必须是 JSON 对象")
+        return payload
     except Exception as exc:
-        logger.warning(f"无法锁定 keys.json 权限：{exc}（可继续运行，但建议手动检查）")
+        if strict:
+            raise ValueError(f"keys.json 无法安全更新：{exc}") from exc
+        logger.warning(f"keys.json 解析失败：{exc}")
+        return {}
 
 
 def load_keys() -> dict[str, str]:
     """Load API keys; return an empty dict if the file is missing."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if KEYS_PATH.exists():
-        try:
-            return json.loads(KEYS_PATH.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning(f"keys.json 解析失败：{exc}")
-    return {}
+    return _load_keys_unlocked(strict=False)
 
 
 def save_key(provider: str, api_key: str, base_url: str = "") -> None:
@@ -1397,13 +1503,17 @@ def save_key(provider: str, api_key: str, base_url: str = "") -> None:
     scope = api_key_scope(provider, base_url)
     if not scope:
         return
-    keys = load_keys()
-    if api_key:
-        keys[scope] = api_key
-    else:
-        keys.pop(scope, None)
-    KEYS_PATH.write_text(json.dumps(keys, indent=2, ensure_ascii=False), encoding="utf-8")
-    _apply_key_file_permissions(KEYS_PATH)
+    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        keys = _load_keys_unlocked(strict=True)
+        if api_key:
+            keys[scope] = api_key
+        else:
+            keys.pop(scope, None)
+        write_private_text_file(
+            KEYS_PATH,
+            json.dumps(keys, indent=2, ensure_ascii=False),
+        )
     logger.debug(f"API Key 已更新：scope={scope}")
 
 

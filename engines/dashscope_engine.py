@@ -5,7 +5,7 @@ import json
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
+from config import CLOUD_REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -19,8 +19,7 @@ from engines.base_engine import (
 class DashscopeEngine(TranslationEngine):
 
     def __init__(self, api_key: str, model: str = "qwen-max"):
-        import dashscope
-        dashscope.api_key = api_key
+        self._api_key = api_key
         self._model = model
 
     @property
@@ -59,11 +58,13 @@ class DashscopeEngine(TranslationEngine):
         from dashscope import Generation
         response = Generation.call(
             model=self._model,
+            api_key=self._api_key,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user",   "content": user_msg},
             ],
             result_format="message",
+            timeout=CLOUD_REQUEST_TIMEOUT,
         )
         if response.status_code == 200:
             return response.output.choices[0].message.content or ""

@@ -9,6 +9,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $DistDir = Join-Path $Root "dist"
 $SpecPath = Join-Path $Root "packaging/windows/app_windows.spec"
 $InstallerScript = Join-Path $Root "packaging/windows/app_windows.iss"
+$ConstraintsPath = Join-Path $Root "constraints-release-py311.txt"
 
 function Resolve-Python {
     param([string]$ExplicitPython)
@@ -76,12 +77,21 @@ function Invoke-Step {
 
 $Python = Resolve-Python -ExplicitPython $PythonExe
 Set-Location $Root
+
+$PythonVersion = (& $Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+if ($PythonVersion -ne "3.11") {
+    throw "Python 3.11 is required for release builds; got $PythonVersion from $Python."
+}
+
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $Root ".runtime/pyinstaller-config"
 New-Item -ItemType Directory -Force -Path $env:PYINSTALLER_CONFIG_DIR | Out-Null
 
 Invoke-Step "Verify build dependencies" {
     & $Python -c "import PyInstaller, PIL; from PySide6 import QtWidgets; print('ok')"
+}
+Invoke-Step "Verify release dependency versions" {
+    & $Python "scripts/verify_release_dependencies.py" --constraints $ConstraintsPath
 }
 
 $Version = (& $Python -c "import app_meta; print(app_meta.APP_VERSION)").Trim()
@@ -132,6 +142,47 @@ if (-not (Test-Path $ExePath)) {
     throw "Expected executable was not produced: $ExePath"
 }
 
+Invoke-Step "Verify frozen executable startup" {
+    & $Python "scripts/run_frozen_smoke.py" $ExePath --timeout 60
+}
+
+function Invoke-OptionalAuthenticodeSign {
+    param([string]$Path)
+
+    $certificateSha1 = $env:XL_TRANSLATOR_WINDOWS_SIGN_CERT_SHA1
+    if (-not $certificateSha1) {
+        Write-Host "[INFO] No Windows signing certificate configured; leaving $Path unsigned."
+        return
+    }
+
+    $signToolCommand = if ($env:XL_TRANSLATOR_WINDOWS_SIGNTOOL) {
+        Get-Command $env:XL_TRANSLATOR_WINDOWS_SIGNTOOL -ErrorAction Stop
+    } else {
+        Get-Command signtool.exe -ErrorAction Stop
+    }
+    $arguments = @(
+        "sign",
+        "/sha1", $certificateSha1,
+        "/fd", "SHA256"
+    )
+    if ($env:XL_TRANSLATOR_WINDOWS_TIMESTAMP_URL) {
+        $arguments += @(
+            "/tr", $env:XL_TRANSLATOR_WINDOWS_TIMESTAMP_URL,
+            "/td", "SHA256"
+        )
+    }
+    $arguments += $Path
+    Invoke-Step "Sign $Path" {
+        & $signToolCommand.Source @arguments
+    }
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Authenticode verification failed for $Path`: $($signature.StatusMessage)"
+    }
+}
+
+Invoke-OptionalAuthenticodeSign -Path $ExePath
+
 $Iscc = Resolve-Iscc
 Invoke-Step "Build Windows installer" {
     & $Iscc "/DAppVersion=$Version" "/DAppName=$AppName" "/DAppExeName=$ExeName" "/DWindowsPackageName=$PackageName" "/DOutputBaseName=$SetupBaseName" $InstallerScript
@@ -140,6 +191,8 @@ Invoke-Step "Build Windows installer" {
 if (-not (Test-Path $SetupPath)) {
     throw "Expected installer was not produced: $SetupPath"
 }
+
+Invoke-OptionalAuthenticodeSign -Path $SetupPath
 
 $Hash = (Get-FileHash -Algorithm SHA256 $SetupPath).Hash.ToLowerInvariant()
 "$Hash  $SetupName" | Set-Content -Encoding ascii $ChecksumPath

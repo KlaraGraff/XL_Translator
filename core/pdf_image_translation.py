@@ -32,7 +32,11 @@ from config import (
 )
 from core import bilingual_writer
 from core.api_concurrency_control import handle_api_concurrency_limit
-from core.api_scheduler import API_REQUEST_CATEGORY_RECOVERY, WeightedApiScheduler
+from core.api_scheduler import (
+    API_REQUEST_CATEGORY_RECOVERY,
+    ApiSchedulerAcquireCancelled,
+    WeightedApiScheduler,
+)
 from core.image_generation import (
     ImageGenerationClient,
     ImageModelUnavailableError,
@@ -1804,8 +1808,16 @@ class PdfImageTranslationRunner:
         page_record.review_enabled = review_enabled
         attempt = 1
         while attempt <= max_attempts:
-            lease = scheduler.acquire_lease(1)
             try:
+                lease = scheduler.acquire_lease(
+                    1,
+                    should_stop=self._stop_event.is_set,
+                )
+            except ApiSchedulerAcquireCancelled:
+                break
+            try:
+                if self._stop_event.is_set():
+                    break
                 self._api_call_count += 1
                 image_bytes = self._image_client.generate_page(
                     source_image_path=Path(page_record.source_image_path),
@@ -1815,7 +1827,6 @@ class PdfImageTranslationRunner:
                     review_feedback=review_feedback or None,
                 )
             except Exception as exc:  # noqa: BLE001 - page/model classification.
-                scheduler.release(lease)
                 if isinstance(exc, ImageModelUnavailableError) or is_model_unavailable_error(exc):
                     raise ImageModelUnavailableError(str(exc)) from exc
                 decision = handle_api_concurrency_limit(
@@ -1837,7 +1848,7 @@ class PdfImageTranslationRunner:
                 page_record.attempts = attempt
                 attempt += 1
                 continue
-            else:
+            finally:
                 scheduler.release(lease)
 
             quality = check_page_quality(
@@ -1870,11 +1881,13 @@ class PdfImageTranslationRunner:
                 if review_enabled and candidate_path is not None and candidate_artifact is not None:
                     page_record.review_attempts = attempt
                     self._begin_page_review(attempt)
+                    review_request_error: Exception | None = None
                     try:
                         self._review_api_call_count += 1
                         with review_scheduler.slot(
                             1,
                             category=API_REQUEST_CATEGORY_RECOVERY,
+                            should_stop=self._stop_event.is_set,
                         ):
                             review_result = self._review_client.review_page(
                                 source_image_path=Path(page_record.source_image_path),
@@ -1882,10 +1895,14 @@ class PdfImageTranslationRunner:
                                 target_language=target_language,
                                 model_config=review_model_config,
                             )
+                    except ApiSchedulerAcquireCancelled:
+                        self._finish_page_review()
+                        break
                     except Exception as exc:  # noqa: BLE001 - review participates in page recovery.
                         self._finish_page_review()
                         if isinstance(exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(exc):
                             raise PdfReviewModelUnavailableError(str(exc)) from exc
+                        review_request_error = exc
                         review_result = PdfPageReviewResult(
                             passed=False,
                             blocking_issues=[
@@ -1904,6 +1921,33 @@ class PdfImageTranslationRunner:
                     _write_review_json(review_path, review_result)
                     self._mark_pdf_review_model_success()
                     candidate_artifact["review_path"] = str(review_path)
+                    if review_request_error is not None:
+                        candidate_artifact["review_status"] = "error"
+                        candidate_artifact["summary"] = review_result.summary
+                        page_record.review_status = "failed"
+                        page_record.review_issues = [
+                            issue.__dict__ for issue in review_result.blocking_issues
+                        ]
+                        page_record.error = review_result.summary
+                        _write_translated_page_image(
+                            image_bytes,
+                            output_path,
+                            preserve_model_format=preserve_model_format,
+                        )
+                        page_record.status = "success"
+                        page_record.translated_image_path = str(output_path)
+                        page_record.output_width_px = quality.width
+                        page_record.output_height_px = quality.height
+                        page_record.final_candidate_attempt = attempt
+                        self._record_page_review_failed()
+                        self._mark_image_model_success()
+                        self._record_page_recovered(page_record)
+                        self._log(
+                            "WARN",
+                            f"{self._page_log_prefix(page_record)}审核接口异常，"
+                            "已保留本次候选译图并标记人工复核，未重新生成页面。",
+                        )
+                        return page_record
                     candidate_artifact["review_status"] = (
                         "passed" if review_result.passed else "failed"
                     )

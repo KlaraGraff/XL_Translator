@@ -84,9 +84,14 @@ from core.task_runner import (
 )
 from native_app.result_view import ResultIssueRow, format_elapsed, render_translation_result
 from native_app.task_page_lifecycle import (
+    RUNNER_MESSAGE_DRAIN_LIMIT,
     begin_workspace_render,
+    detach_running_qobject,
     invalidate_workspace_generation,
+    request_background_stop,
     schedule_workspace_callback,
+    silent_runner_exit,
+    wait_for_background_task,
 )
 from native_app.task_page_models import FileSelectionModel
 from native_app.widgets import (
@@ -103,7 +108,11 @@ from native_app.widgets import (
     select_combo_text_match,
     set_combo_item_search_aliases,
 )
-from native_app.workers import PdfScanWorker
+from native_app.workers import (
+    PdfScanWorker,
+    TaskResourceLease,
+    TaskResourceRegistry,
+)
 from settings import AppSettings, save_settings
 
 
@@ -177,7 +186,11 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
 class PdfTranslatePage(QWidget):
     """Qt implementation of the PDF image-layout translation workspace."""
 
-    def __init__(self, settings: AppSettings):
+    def __init__(
+        self,
+        settings: AppSettings,
+        task_resource_registry: TaskResourceRegistry | None = None,
+    ):
         super().__init__()
         self.settings = settings
         self.phase = "idle"
@@ -210,6 +223,8 @@ class PdfTranslatePage(QWidget):
         self.external_task_lock = False
         self.external_task_owner_label = ""
         self.external_task_lock_reason = ""
+        self._task_resource_registry = task_resource_registry or TaskResourceRegistry()
+        self._task_resource_lease: TaskResourceLease | None = None
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(800)
@@ -269,8 +284,23 @@ class PdfTranslatePage(QWidget):
         invalidate_workspace_generation(self)
         self.poll_timer.stop()
         self._stop_ui_sync_guard()
-        self._dispose_scan_worker(wait=True)
+        self.shutdown_background_tasks()
         super().closeEvent(event)
+
+    def shutdown_background_tasks(self, timeout_ms: int = 250) -> None:
+        runner = self.runner
+        request_background_stop(runner, "stop")
+        wait_for_background_task(runner, timeout_ms)
+        self.runner = None
+        self.phase = "stopped" if self.phase == "running" else self.phase
+        self._release_task_resource()
+        self._dispose_scan_worker(wait=True, timeout_ms=timeout_ms)
+
+    def _release_task_resource(self) -> None:
+        lease = self._task_resource_lease
+        self._task_resource_lease = None
+        if lease is not None:
+            lease.release()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -1111,6 +1141,7 @@ class PdfTranslatePage(QWidget):
             return
         self.phase = terminal_phase
         self.runner = None
+        self._release_task_resource()
         self.poll_timer.stop()
         self._lock_inputs(False)
         button_texts = self._visible_action_button_texts()
@@ -1151,11 +1182,13 @@ class PdfTranslatePage(QWidget):
     def _normalize_terminal_state(self) -> None:
         if self.phase in {"done", "error", "stopped"}:
             self.runner = None
+            self._release_task_resource()
             self.poll_timer.stop()
             self._lock_inputs(False)
             return
         if self.done is not None:
             self.runner = None
+            self._release_task_resource()
             self.phase = "done"
             self.poll_timer.stop()
             self._lock_inputs(False)
@@ -1240,7 +1273,12 @@ class PdfTranslatePage(QWidget):
         self._render_workspace()
         self._render_action_card()
 
-    def _dispose_scan_worker(self, *, wait: bool = False) -> None:
+    def _dispose_scan_worker(
+        self,
+        *,
+        wait: bool = False,
+        timeout_ms: int = 250,
+    ) -> None:
         worker = self.scan_worker
         self.scan_worker = None
         if worker is None:
@@ -1249,13 +1287,13 @@ class PdfTranslatePage(QWidget):
             worker.finished.disconnect(self._on_scan_finished)
         except (RuntimeError, TypeError):
             pass
-        if wait and worker.isRunning():
-            worker.quit()
-            worker.wait(5000)
+        request_background_stop(worker, "cancel", "requestInterruption", "quit")
+        if wait:
+            wait_for_background_task(worker, timeout_ms)
         if worker.isRunning():
-            worker.setParent(None)
+            detach_running_qobject(worker)
             try:
-                worker.finished.connect(lambda *_args, worker=worker: worker.deleteLater())
+                worker.threadFinished.connect(worker.deleteLater)
             except (RuntimeError, TypeError):
                 pass
             return
@@ -1518,12 +1556,32 @@ class PdfTranslatePage(QWidget):
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
             QMessageBox.warning(self, APP_NAME, f"PDF 翻译 API 配置不可用：{exc}")
             return
-        self.runner = PdfImageTranslationRunner(
-            selected,
-            task_settings,
-            source_root=effective_source_root,
-            key_overrides=api_context.key_overrides,
+        lease = self._task_resource_registry.acquire(
+            owner_key="pdf_translate",
+            owner_label="PDF 翻译",
+            resources=api_context.api_groups,
         )
+        if lease is None:
+            self.set_external_task_lock(
+                True,
+                "其他任务",
+                "其他任务正在使用当前 API，请等待任务结束或切换到不同 API。",
+            )
+            QMessageBox.warning(self, APP_NAME, self.external_task_lock_reason)
+            return
+        self._task_resource_lease = lease
+        try:
+            self.runner = PdfImageTranslationRunner(
+                selected,
+                task_settings,
+                source_root=effective_source_root,
+                key_overrides=api_context.key_overrides,
+            )
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            self.runner = None
+            self._release_task_resource()
+            QMessageBox.warning(self, APP_NAME, f"PDF 翻译任务初始化失败：{exc}")
+            return
         self.task_files = list(selected)
         self.current_task_source_root = str(effective_source_root or "")
         self.current_task_id = self.runner.task_id
@@ -1547,7 +1605,19 @@ class PdfTranslatePage(QWidget):
         self._render_workspace()
         self._render_action_card()
         self.poll_timer.start()
-        self.runner.start()
+        try:
+            self.runner.start()
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            self.runner = None
+            self._release_task_resource()
+            self.phase = "idle"
+            self._workspace_render_phase = self.phase
+            self.poll_timer.stop()
+            self._stop_ui_sync_guard()
+            self._lock_inputs(False)
+            self._render_workspace()
+            self._render_action_card()
+            QMessageBox.warning(self, APP_NAME, f"PDF 翻译任务启动失败：{exc}")
 
     def _handle_image_model_history_prompt(self) -> bool:
         role_settings = self.settings.image_model_role
@@ -1659,9 +1729,15 @@ class PdfTranslatePage(QWidget):
         runner = self.runner
         if runner is None:
             self.poll_timer.stop()
+            self._release_task_resource()
             return
-        while True:
-            msg = runner.get_message(timeout=0.0)
+        poll_error = None
+        for _ in range(RUNNER_MESSAGE_DRAIN_LIMIT):
+            try:
+                msg = runner.get_message(timeout=0.0)
+            except Exception as exc:  # noqa: BLE001 - recover the page state.
+                poll_error = exc
+                break
             if msg is None:
                 break
             if isinstance(msg, LogMsg):
@@ -1685,6 +1761,7 @@ class PdfTranslatePage(QWidget):
                 self._terminal_report_path = msg.report_path
                 self._terminal_manifest_path = str(Path(msg.output_dir) / "pdf_translation_manifest.json") if msg.output_dir else ""
                 self.runner = None
+                self._release_task_resource()
                 self.phase = "done"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
@@ -1700,6 +1777,7 @@ class PdfTranslatePage(QWidget):
                 self._terminal_report_path = msg.report_path
                 self._terminal_manifest_path = msg.manifest_path
                 self.runner = None
+                self._release_task_resource()
                 self.phase = "error"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
@@ -1720,6 +1798,7 @@ class PdfTranslatePage(QWidget):
                 self._terminal_report_path = msg.report_path
                 self._terminal_manifest_path = msg.manifest_path
                 self.runner = None
+                self._release_task_resource()
                 self.phase = "stopped"
                 self.poll_timer.stop()
                 self._lock_inputs(False)
@@ -1733,9 +1812,28 @@ class PdfTranslatePage(QWidget):
                 self._render_action_card()
                 self._schedule_action_card_resync()
                 return
-        if not runner.needs_poll():
+        silent_exit = silent_runner_exit(runner, poll_error)
+        if silent_exit is not None:
             self.runner = None
+            self._release_task_resource()
+            self.phase = silent_exit.phase
+            self.stop_message = silent_exit.message if silent_exit.phase == "stopped" else ""
             self.poll_timer.stop()
+            self._lock_inputs(False)
+            self._append_runtime_log(
+                "WARN" if silent_exit.phase == "stopped" else "ERROR",
+                silent_exit.message,
+            )
+            self._persist_runtime_settings()
+            self._archive_current_task(
+                phase=silent_exit.phase,
+                error_message=silent_exit.message,
+                status="任务已中止" if silent_exit.phase == "stopped" else "任务异常",
+            )
+            self._render_workspace()
+            self._render_action_card()
+            self._schedule_action_card_resync()
+            return
         self._refresh_running_widgets()
 
     def _schedule_action_card_resync(self) -> None:
@@ -1943,7 +2041,10 @@ class PdfTranslatePage(QWidget):
         return errors[-1] if errors else ""
 
     def _reset_task(self) -> None:
+        if self.runner is not None:
+            return
         invalidate_workspace_generation(self)
+        self._release_task_resource()
         self.phase = "idle"
         self._workspace_render_phase = self.phase
         self._stop_ui_sync_guard()

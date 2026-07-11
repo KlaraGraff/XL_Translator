@@ -19,6 +19,7 @@ from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
     API_REQUEST_CATEGORY_NORMAL,
     ApiConcurrencyLimitDecision,
+    ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
 from core.translation_filter import (
@@ -294,8 +295,14 @@ def _translate_units_with_fallback(
                 source_lang=source_lang,
             )
         else:
-            with api_scheduler.slot(request_weight, category=request_category) as lease:
+            with api_scheduler.slot(
+                request_weight,
+                category=request_category,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
+                if should_stop and should_stop():
+                    return {}
                 raw_results = engine.translate_batch(
                     payloads,
                     target_lang,
@@ -315,6 +322,8 @@ def _translate_units_with_fallback(
             for unit in units
         }
     except Exception as exc:  # noqa: BLE001 - fallback decides how to recover the batch
+        if isinstance(exc, ApiSchedulerAcquireCancelled):
+            return {}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):

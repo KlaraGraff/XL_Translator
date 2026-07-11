@@ -51,7 +51,17 @@ from core.model_roles import (
     LocalModelFollowNotAllowedError,
     resolve_effective_model_config,
 )
-from native_app.workers import TmCleanWorker
+from core.model_api_identity import api_group_signature_from_config
+from native_app.workers import (
+    TaskResourceLease,
+    TaskResourceRegistry,
+    TmCleanWorker,
+)
+from native_app.task_page_lifecycle import (
+    detach_running_qobject,
+    request_background_stop,
+    wait_for_background_task,
+)
 from native_app.widgets import (
     build_app_tooltip_html,
     configure_app_table,
@@ -346,7 +356,11 @@ def _update_lang_prompt_map(prompt_map: dict[str, str], lang_pair: str, prompt: 
 class TmManagerPage(QWidget):
     """Qt implementation of the translation-memory workbench."""
 
-    def __init__(self, settings: AppSettings):
+    def __init__(
+        self,
+        settings: AppSettings,
+        task_resource_registry: TaskResourceRegistry | None = None,
+    ):
         super().__init__()
         self.settings = settings
         self.keyword = ""
@@ -364,6 +378,8 @@ class TmManagerPage(QWidget):
         self._clean_session_lang_pair = ""
         self._clean_session_target_lang = ""
         self._clean_session_source_lang = ""
+        self._task_resource_registry = task_resource_registry or TaskResourceRegistry()
+        self._task_resource_lease: TaskResourceLease | None = None
         self._clean_notice_timer = QTimer(self)
         self._clean_notice_timer.setSingleShot(True)
         self._clean_notice_timer.timeout.connect(self._hide_clean_notice)
@@ -383,6 +399,55 @@ class TmManagerPage(QWidget):
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt API name.
         self.set_page_active(False)
         super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
+        self._clean_notice_timer.stop()
+        self.shutdown_background_tasks()
+        super().closeEvent(event)
+
+    def shutdown_background_tasks(self, timeout_ms: int = 250) -> None:
+        worker = self.clean_worker
+        self.clean_worker = None
+        if worker is None:
+            self._release_task_resource()
+            return
+        for signal, slot in (
+            (worker.progress, self._on_clean_progress),
+            (worker.finished, self._on_clean_finished),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        request_background_stop(worker, "cancel", "requestInterruption", "quit")
+        wait_for_background_task(worker, timeout_ms)
+        if worker.isRunning():
+            detach_running_qobject(worker)
+            try:
+                worker.threadFinished.connect(worker.deleteLater)
+            except (RuntimeError, TypeError):
+                pass
+        else:
+            worker.deleteLater()
+        self._release_task_resource()
+        if self.phase == "cleaning":
+            self.phase = "idle"
+            self.clean_progress = None
+            self.clean_suggestions = []
+            self._clean_session_lang_pair = ""
+            self._clean_session_target_lang = ""
+            self._clean_session_source_lang = ""
+
+    def _release_task_resource(self) -> None:
+        lease = self._task_resource_lease
+        self._task_resource_lease = None
+        if lease is not None:
+            lease.release()
+
+    def _release_specific_task_resource(self, lease: TaskResourceLease) -> None:
+        if self._task_resource_lease is lease:
+            self._task_resource_lease = None
+        lease.release()
 
     def set_page_active(self, active: bool) -> None:
         self._is_page_active = active
@@ -1618,10 +1683,23 @@ class TmManagerPage(QWidget):
             QMessageBox.information(self, APP_NAME, "当前语言对没有可清洗的未固定词条。")
             return
         try:
-            resolve_effective_model_config(self.settings, ROLE_CLEANER)
+            cleaner_config = resolve_effective_model_config(self.settings, ROLE_CLEANER)
         except LocalModelFollowNotAllowedError as exc:
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
+        lease = self._task_resource_registry.acquire(
+            owner_key="tm",
+            owner_label="术语库清洗",
+            resources={api_group_signature_from_config(cleaner_config)},
+        )
+        if lease is None:
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                "其他任务正在使用清洗模型的 API，请等待任务结束或切换到不同 API。",
+            )
+            return
+        self._task_resource_lease = lease
         self._on_cleaner_settings_changed()
         self._clear_clean_notice()
         self.phase = "cleaning"
@@ -1632,15 +1710,34 @@ class TmManagerPage(QWidget):
         self._clean_session_lang_pair = self.lang_pair
         self.clean_progress_bar.setValue(0)
         self.clean_status.setText("清洗任务正在启动...")
-        self.clean_worker = TmCleanWorker(
-            lang_pair=self._clean_session_lang_pair,
-            settings=self.settings.model_copy(deep=True),
-            overwrite=self.settings.cleaner_mode == "overwrite",
-            parent=self,
-        )
+        try:
+            self.clean_worker = TmCleanWorker(
+                lang_pair=self._clean_session_lang_pair,
+                settings=self.settings.model_copy(deep=True),
+                overwrite=self.settings.cleaner_mode == "overwrite",
+                parent=self,
+            )
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            self.phase = "idle"
+            self._release_task_resource()
+            QMessageBox.warning(self, APP_NAME, f"清洗任务初始化失败：{exc}")
+            self._finish_clean_session()
+            return
         self.clean_worker.progress.connect(self._on_clean_progress)
         self.clean_worker.finished.connect(self._on_clean_finished)
-        self.clean_worker.start()
+        self.clean_worker.threadFinished.connect(self.clean_worker.deleteLater)
+        self.clean_worker.threadFinished.connect(
+            lambda lease=lease: self._release_specific_task_resource(lease)
+        )
+        try:
+            self.clean_worker.start()
+        except Exception as exc:  # noqa: BLE001 - converted to UI message.
+            self.clean_worker = None
+            self.phase = "idle"
+            self._release_task_resource()
+            QMessageBox.warning(self, APP_NAME, f"清洗任务启动失败：{exc}")
+            self._finish_clean_session()
+            return
         self._refresh_all()
 
     def _on_clean_progress(self, payload: object) -> None:
@@ -1654,6 +1751,7 @@ class TmManagerPage(QWidget):
 
     def _on_clean_finished(self, suggestions: object, message: str, ok: bool) -> None:
         self.clean_worker = None
+        self._release_task_resource()
         self.clean_progress_bar.setValue(0)
         if not ok:
             self.phase = "idle"

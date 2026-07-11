@@ -126,7 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_human_summary(result.to_dict())
 
-    return 0
+    return _result_exit_code(result.file_results)
+
+
+def _result_exit_code(file_results: list[dict[str, object]]) -> int:
+    return 0 if any(item.get("success") for item in file_results) else 1
 
 
 def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:

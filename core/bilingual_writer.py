@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from copy import copy
@@ -37,6 +38,14 @@ from core.translation_filter import should_translate
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _EXCEL_REVIEW_RISK_FONT_COLOR = "FF0000"
 _EXCEL_REVIEW_MARK_COLORS = dict(REVIEW_MARK_COLOR_DEFAULTS)
+
+
+def _is_wps_dispimg_formula(cell) -> bool:
+    value = cell.value
+    if not isinstance(value, str) or not value.lstrip().startswith("="):
+        return False
+    formula = value.lstrip()[1:].lstrip()
+    return formula.upper().startswith(("DISPIMG(", "_XLFN.DISPIMG("))
 
 
 def _ensure_owner_writable(path: Path) -> None:
@@ -107,8 +116,10 @@ def build_output_dir(source_dir: str | Path, custom_output_dir: str | Path | Non
     自定义行为：在指定目录内创建 {源文件夹名}_翻译输出_{时间戳}
     """
     source_dir = Path(source_dir)
-    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_subdir_name = f"{source_dir.name}_翻译输出_{timestamp}"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    output_subdir_name = (
+        f"{source_dir.name}_翻译输出_{timestamp}_{uuid.uuid4().hex[:8]}"
+    )
     
     custom_output_root = resolve_custom_output_dir(custom_output_dir)
     if custom_output_root is not None:
@@ -254,8 +265,8 @@ def _write_with_openpyxl(
 
             for row in ws.iter_rows():
                 for cell in row:
-                    # ── 前置拦截：强力清除 WPS DISPIMG 公式 ──────────────────
-                    if cell.value is not None and "DISPIMG" in str(cell.value).upper():
+                    # WPS 图片公式没有可移植的显示值，只清理真实公式。
+                    if _is_wps_dispimg_formula(cell):
                         cell.value = ""
                         continue
 

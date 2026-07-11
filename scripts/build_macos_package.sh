@@ -5,8 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 SPEC_PATH="$ROOT_DIR/packaging/macos/app_macos.spec"
 STAGING_DIR="$ROOT_DIR/.runtime/package/macos-dmg"
-
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+CONSTRAINTS_PATH="$ROOT_DIR/constraints-release-py311.txt"
 
 resolve_python() {
   if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN:-}" ]]; then
@@ -46,13 +45,20 @@ if sys.version_info[:2] != (3, 11):
 PY
 fi
 
+DEFAULT_MACOS_MINIMUM_SYSTEM_VERSION="$(
+  "$PYTHON" -c "import app_meta; print(app_meta.MACOS_MINIMUM_SYSTEM_VERSION)"
+)"
+export XL_TRANSLATOR_MACOS_MINIMUM_SYSTEM_VERSION="${XL_TRANSLATOR_MACOS_MINIMUM_SYSTEM_VERSION:-$DEFAULT_MACOS_MINIMUM_SYSTEM_VERSION}"
+export MACOSX_DEPLOYMENT_TARGET="$XL_TRANSLATOR_MACOS_MINIMUM_SYSTEM_VERSION"
+
 mkdir -p "$DIST_DIR"
 export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/.runtime/pyinstaller-config"
 mkdir -p "$PYINSTALLER_CONFIG_DIR"
 
 echo "[INFO] Verify build dependencies"
 "$PYTHON" -c "import PyInstaller, PIL; from PySide6 import QtWidgets; print('ok')"
-"$PYTHON" -c "import numpy; print(f'numpy {numpy.__version__}: {numpy.__file__}')"
+"$PYTHON" scripts/verify_release_dependencies.py \
+  --constraints "$CONSTRAINTS_PATH"
 
 VERSION="$("$PYTHON" -c "import app_meta; print(app_meta.APP_VERSION)")"
 if [[ -z "$VERSION" ]]; then
@@ -90,24 +96,32 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  shopt -s nullglob
-  numpy_extensions=( "$APP_PATH"/Contents/Frameworks/numpy/_core/_multiarray_umath.cpython-*-darwin.so )
-  shopt -u nullglob
+echo "[INFO] Verify frozen executable startup"
+"$PYTHON" scripts/run_frozen_smoke.py \
+  "$APP_PATH/Contents/MacOS/$APP_NAME" \
+  --timeout 60
 
-  if (( ${#numpy_extensions[@]} == 0 )); then
-    echo "[WARN] NumPy extension was not found in the app bundle; skipping Monterey compatibility check."
-  else
-    for numpy_extension in "${numpy_extensions[@]}"; do
-      if nm -u "$numpy_extension" 2>/dev/null | grep -q 'NEWLAPACK.*ILP64'; then
-        echo "Incompatible NumPy wheel detected: $numpy_extension" >&2
-        echo "The app would fail on macOS Monterey because it references NEWLAPACK ILP64 Accelerate symbols." >&2
-        echo "Run scripts/install_macos_dependencies.sh before packaging to force a Monterey-compatible NumPy wheel." >&2
-        exit 1
-      fi
-    done
-    echo "[INFO] NumPy Monterey compatibility check passed"
+echo "[INFO] Verify declared macOS minimum version"
+"$PYTHON" scripts/verify_macos_minimum_version.py \
+  "$APP_PATH" \
+  --declared "$XL_TRANSLATOR_MACOS_MINIMUM_SYSTEM_VERSION"
+
+if [[ -n "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+  echo "[INFO] Sign macOS app bundle"
+  codesign_args=(
+    --force
+    --deep
+    --options runtime
+    --timestamp
+    --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY"
+  )
+  if [[ -n "${XL_TRANSLATOR_MACOS_ENTITLEMENTS:-}" ]]; then
+    codesign_args+=(--entitlements "$XL_TRANSLATOR_MACOS_ENTITLEMENTS")
   fi
+  codesign "${codesign_args[@]}" "$APP_PATH"
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+else
+  echo "[INFO] No Developer ID identity configured; app has no trusted release signature."
 fi
 
 echo "[INFO] Build macOS dmg"
@@ -120,6 +134,32 @@ hdiutil create \
   -ov \
   -format UDZO \
   "$DMG_PATH"
+
+if [[ -n "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+  echo "[INFO] Sign macOS dmg"
+  codesign \
+    --force \
+    --timestamp \
+    --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY" \
+    "$DMG_PATH"
+  codesign --verify --strict --verbose=2 "$DMG_PATH"
+fi
+
+if [[ -n "${XL_TRANSLATOR_MACOS_NOTARY_PROFILE:-}" ]]; then
+  if [[ -z "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+    echo "Notarization requires XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY." >&2
+    exit 1
+  fi
+  echo "[INFO] Submit dmg for notarization"
+  xcrun notarytool submit \
+    "$DMG_PATH" \
+    --keychain-profile "$XL_TRANSLATOR_MACOS_NOTARY_PROFILE" \
+    --wait
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+else
+  echo "[INFO] No notarization profile configured; dmg is not notarized."
+fi
 
 shasum -a 256 "$DMG_PATH" | sed "s|$DMG_PATH|$DMG_NAME|" > "$CHECKSUM_PATH"
 

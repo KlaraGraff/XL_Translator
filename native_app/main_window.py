@@ -81,6 +81,11 @@ from native_app.pages.excel_translate import ExcelTranslatePage
 from native_app.pages.pdf_translate import PdfTranslatePage
 from native_app.pages.tm_manager import TmManagerPage
 from native_app.pages.word_translate import WordTranslatePage
+from native_app.task_page_lifecycle import (
+    detach_running_qobject,
+    request_background_stop,
+    wait_for_background_task,
+)
 from native_app.widgets import (
     build_app_tooltip_html,
     create_centered_option_combo,
@@ -90,7 +95,11 @@ from native_app.widgets import (
     refresh_combo_completer,
     select_combo_text_match,
 )
-from native_app.workers import UpdateCheckWorker
+from native_app.workers import (
+    CallableWorker,
+    TaskResourceRegistry,
+    UpdateCheckWorker,
+)
 from settings import (
     AppSettings,
     api_key_scope,
@@ -101,6 +110,7 @@ from settings import (
     save_settings,
     select_cloud_provider_config,
     set_cloud_provider_config,
+    write_private_text_file,
 )
 
 
@@ -384,6 +394,15 @@ class Sidebar(QFrame):
         self._model_catalog_models: list[str] = []
         self._updating_prompt_edit = False
         self._update_notice_result: UpdateCheckResult | None = None
+        self._connectivity_worker: CallableWorker | None = None
+        self._model_fetch_worker: CallableWorker | None = None
+        self._review_model_fetch_worker: CallableWorker | None = None
+        self._model_fetch_generation = 0
+        self._review_model_fetch_generation = 0
+        self._background_closing = False
+        self._connectivity_on_finished: Callable[[], None] | None = None
+        self._model_fetch_context: tuple[int, str, str, str] | None = None
+        self._review_model_fetch_context: tuple[int, str, str] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
@@ -1070,13 +1089,13 @@ class Sidebar(QFrame):
         if path.suffix.lower() != ".json":
             path = path.with_suffix(".json")
         try:
-            path.write_text(
+            write_private_text_file(
+                path,
                 json.dumps(
                     self._build_model_config_export_payload(),
                     indent=2,
                     ensure_ascii=False,
                 ),
-                encoding="utf-8",
             )
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
             QMessageBox.warning(self, APP_NAME, f"导出配置失败：\n{exc}")
@@ -1314,9 +1333,9 @@ class Sidebar(QFrame):
         layout.addWidget(self.model_catalog_status)
 
         model_buttons = QHBoxLayout()
-        fetch_models = QPushButton("获取模型")
+        self.fetch_models_button = QPushButton("获取模型")
         _set_tooltip(
-            fetch_models,
+            self.fetch_models_button,
             "获取模型",
             "从当前服务商读取模型列表。",
             [
@@ -1324,8 +1343,8 @@ class Sidebar(QFrame):
                 "仅支持兼容模型列表接口的服务商。",
             ],
         )
-        fetch_models.clicked.connect(self._fetch_models)
-        model_buttons.addWidget(fetch_models)
+        self.fetch_models_button.clicked.connect(self._fetch_models)
+        model_buttons.addWidget(self.fetch_models_button)
         test_conn = QPushButton("测试连接")
         _set_tooltip(
             test_conn,
@@ -1476,9 +1495,9 @@ class Sidebar(QFrame):
         layout.addWidget(self.review_model_status)
 
         buttons = QHBoxLayout()
-        fetch_models = QPushButton("获取审核模型")
-        fetch_models.clicked.connect(self._fetch_review_models)
-        buttons.addWidget(fetch_models)
+        self.fetch_review_models_button = QPushButton("获取审核模型")
+        self.fetch_review_models_button.clicked.connect(self._fetch_review_models)
+        buttons.addWidget(self.fetch_review_models_button)
         test_conn = QPushButton("测试审核连接")
         test_conn.clicked.connect(self._test_review_connectivity)
         buttons.addWidget(test_conn)
@@ -2263,13 +2282,68 @@ class Sidebar(QFrame):
         self._sync_review_model_visibility()
         self._sync_throughput_fields()
 
-    def _with_busy_cursor(self, fn: Callable[[], str]) -> None:
+    def _with_busy_cursor(
+        self,
+        fn: Callable[[], str],
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
+        if self._background_closing or self._connectivity_worker is not None:
+            return
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            message = fn()
-        finally:
-            QApplication.restoreOverrideCursor()
+        worker = CallableWorker(fn, self)
+        self._connectivity_worker = worker
+        self._connectivity_on_finished = on_finished
+        worker.resultReady.connect(self._on_connectivity_result)
+        worker.threadFinished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_connectivity_result(self, result: object) -> None:
+        if self._connectivity_worker is None:
+            return
+        self._connectivity_worker = None
+        on_finished = self._connectivity_on_finished
+        self._connectivity_on_finished = None
+        QApplication.restoreOverrideCursor()
+        if self._background_closing:
+            return
+        message = str(result) if isinstance(result, Exception) else str(result)
         QMessageBox.information(self, APP_NAME, message)
+        if on_finished is not None:
+            on_finished()
+
+    def shutdown_background_tasks(self, timeout_ms: int = 100) -> None:
+        self._background_closing = True
+        self._model_fetch_generation += 1
+        self._review_model_fetch_generation += 1
+        self._connectivity_on_finished = None
+        self._model_fetch_context = None
+        self._review_model_fetch_context = None
+        had_connectivity_worker = self._connectivity_worker is not None
+        for attr_name in (
+            "_connectivity_worker",
+            "_model_fetch_worker",
+            "_review_model_fetch_worker",
+        ):
+            worker = getattr(self, attr_name, None)
+            setattr(self, attr_name, None)
+            if worker is None:
+                continue
+            try:
+                worker.resultReady.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            request_background_stop(worker, "cancel")
+            wait_for_background_task(worker, timeout_ms)
+            if worker.isRunning():
+                detach_running_qobject(worker)
+                try:
+                    worker.threadFinished.connect(worker.deleteLater)
+                except (RuntimeError, TypeError):
+                    pass
+            else:
+                worker.deleteLater()
+        if had_connectivity_worker:
+            QApplication.restoreOverrideCursor()
 
     def _test_connectivity(self) -> None:
         def run() -> str:
@@ -2284,8 +2358,7 @@ class Sidebar(QFrame):
             except LocalModelFollowNotAllowedError as exc:
                 return str(exc)
 
-        self._with_busy_cursor(run)
-        self._refresh_role_status()
+        self._with_busy_cursor(run, self._refresh_role_status)
 
     def _test_review_connectivity(self) -> None:
         def run() -> str:
@@ -2296,8 +2369,7 @@ class Sidebar(QFrame):
             except LocalModelFollowNotAllowedError as exc:
                 return str(exc)
 
-        self._with_busy_cursor(run)
-        self._sync_review_model_fields()
+        self._with_busy_cursor(run, self._sync_review_model_fields)
 
     def _current_model_catalog_signature(self) -> str:
         try:
@@ -2358,6 +2430,8 @@ class Sidebar(QFrame):
         self.model_combo.blockSignals(False)
 
     def _fetch_models(self) -> None:
+        if self._background_closing or self._model_fetch_worker is not None:
+            return
         try:
             config = resolve_effective_model_config(self.settings, self._current_role())
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
@@ -2368,28 +2442,61 @@ class Sidebar(QFrame):
             self._set_model_catalog_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            result = fetch_openai_compatible_models(
+        role = config.role
+        signature = build_model_catalog_signature(
+            provider=config.provider,
+            api_key=config.api_key,
+            base_url=config.base_url,
+        )
+        previous_model = self.model_combo.currentText().strip()
+        self._model_fetch_generation += 1
+        generation = self._model_fetch_generation
+        self._model_fetch_context = (generation, role, signature, previous_model)
+        self.fetch_models_button.setEnabled(False)
+        self._set_model_catalog_status("正在获取模型列表...")
+        worker = CallableWorker(
+            lambda: fetch_openai_compatible_models(
                 provider=config.provider,
                 api_key=config.api_key,
                 base_url=config.base_url,
-            )
-        finally:
-            QApplication.restoreOverrideCursor()
+            ),
+            self,
+        )
+        self._model_fetch_worker = worker
+        worker.resultReady.connect(self._on_model_fetch_result)
+        worker.threadFinished.connect(worker.deleteLater)
+        worker.start()
 
+    def _on_model_fetch_result(self, result: object) -> None:
+        if self._model_fetch_worker is None:
+            return
+        self._model_fetch_worker = None
+        context = self._model_fetch_context
+        self._model_fetch_context = None
+        self.fetch_models_button.setEnabled(True)
+        if self._background_closing or context is None:
+            return
+        generation, role, signature, previous_model = context
+        if generation != self._model_fetch_generation:
+            return
+        if role != self._current_role() or signature != self._current_model_catalog_signature():
+            self._set_model_catalog_status("API 配置已变化，请重新获取模型列表。")
+            return
+        if isinstance(result, Exception):
+            message = str(result)
+            self._set_model_catalog_status(message)
+            QMessageBox.warning(self, APP_NAME, message)
+            return
         if not result.ok or not result.models:
             message = f"{result.message}\n{result.detail}".strip()
             self._set_model_catalog_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
-
-        previous_model = self.model_combo.currentText().strip()
-        if config.role == ROLE_IMAGE and "gpt-image-2" in result.models:
+        if role == ROLE_IMAGE and "gpt-image-2" in result.models:
             selected_model = "gpt-image-2"
         else:
             selected_model = previous_model if previous_model in result.models else result.models[0]
-        self._model_catalog_signature = self._current_model_catalog_signature()
+        self._model_catalog_signature = signature
         self._model_catalog_models = list(result.models)
         self._set_model_combo_items(result.models, include_current=False)
         self.model_combo.setCurrentText(selected_model)
@@ -2399,6 +2506,8 @@ class Sidebar(QFrame):
         self.model_combo.showPopup()
 
     def _fetch_review_models(self) -> None:
+        if self._background_closing or self._review_model_fetch_worker is not None:
+            return
         try:
             config = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
         except Exception as exc:  # noqa: BLE001 - converted to UI message.
@@ -2409,23 +2518,65 @@ class Sidebar(QFrame):
             self._set_review_model_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            result = fetch_openai_compatible_models(
+        signature = build_model_catalog_signature(
+            provider=config.provider,
+            api_key=config.api_key,
+            base_url=config.base_url,
+        )
+        previous_model = self.review_model_combo.currentText().strip()
+        self._review_model_fetch_generation += 1
+        generation = self._review_model_fetch_generation
+        self._review_model_fetch_context = (generation, signature, previous_model)
+        self.fetch_review_models_button.setEnabled(False)
+        self._set_review_model_status("正在获取审核模型列表...")
+        worker = CallableWorker(
+            lambda: fetch_openai_compatible_models(
                 provider=config.provider,
                 api_key=config.api_key,
                 base_url=config.base_url,
-            )
-        finally:
-            QApplication.restoreOverrideCursor()
+            ),
+            self,
+        )
+        self._review_model_fetch_worker = worker
+        worker.resultReady.connect(self._on_review_model_fetch_result)
+        worker.threadFinished.connect(worker.deleteLater)
+        worker.start()
 
+    def _on_review_model_fetch_result(self, result: object) -> None:
+        if self._review_model_fetch_worker is None:
+            return
+        self._review_model_fetch_worker = None
+        context = self._review_model_fetch_context
+        self._review_model_fetch_context = None
+        self.fetch_review_models_button.setEnabled(True)
+        if self._background_closing or context is None:
+            return
+        generation, signature, previous_model = context
+        if generation != self._review_model_fetch_generation:
+            return
+        try:
+            current = resolve_effective_model_config(self.settings, ROLE_PDF_REVIEW)
+            current_signature = build_model_catalog_signature(
+                provider=current.provider,
+                api_key=current.api_key,
+                base_url=current.base_url,
+            )
+        except Exception:
+            self._set_review_model_status("审核模型配置已变化，请重新获取模型列表。")
+            return
+        if signature != current_signature:
+            self._set_review_model_status("审核模型配置已变化，请重新获取模型列表。")
+            return
+        if isinstance(result, Exception):
+            message = str(result)
+            self._set_review_model_status(message)
+            QMessageBox.warning(self, APP_NAME, message)
+            return
         if not result.ok or not result.models:
             message = f"{result.message}\n{result.detail}".strip()
             self._set_review_model_status(message)
             QMessageBox.warning(self, APP_NAME, message)
             return
-
-        previous_model = self.review_model_combo.currentText().strip()
         selected_model = previous_model if previous_model in result.models else result.models[0]
         self._set_review_model_combo_items(result.models)
         self.review_model_combo.setCurrentText(selected_model)
@@ -2433,7 +2584,6 @@ class Sidebar(QFrame):
         self._on_review_model_changed()
         self._set_review_model_status(f"{result.message} 可从下拉列表选择。")
         self.review_model_combo.showPopup()
-
 
 class CompactNavRail(QFrame):
     """Small-screen navigation rail that keeps the work area wide."""
@@ -2512,6 +2662,7 @@ class NativeMainWindow(QMainWindow):
         self._closing = False
         self._current_page = "excel_translate"
         self._compact_shell = False
+        self._task_resource_registry = TaskResourceRegistry()
 
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -2523,10 +2674,10 @@ class NativeMainWindow(QMainWindow):
         self.sidebar = Sidebar(settings)
         self.stack = QStackedWidget()
         self.pages = {
-            "excel_translate": ExcelTranslatePage(settings),
-            "word_translate": WordTranslatePage(settings),
-            "pdf_translate": PdfTranslatePage(settings),
-            "tm": TmManagerPage(settings),
+            "excel_translate": ExcelTranslatePage(settings, self._task_resource_registry),
+            "word_translate": WordTranslatePage(settings, self._task_resource_registry),
+            "pdf_translate": PdfTranslatePage(settings, self._task_resource_registry),
+            "tm": TmManagerPage(settings, self._task_resource_registry),
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
@@ -2651,7 +2802,7 @@ class NativeMainWindow(QMainWindow):
         worker = UpdateCheckWorker(self)
         self._update_worker = worker
         worker.resultReady.connect(self._on_update_check_finished)
-        worker.finished.connect(worker.deleteLater)
+        worker.threadFinished.connect(worker.deleteLater)
         worker.start()
 
     def _on_update_check_finished(self, result: object) -> None:
@@ -2889,9 +3040,24 @@ class NativeMainWindow(QMainWindow):
 
     def _running_translation_tasks(self) -> list[dict[str, object]]:
         tasks: list[dict[str, object]] = []
+        reserved_owner_keys: set[str] = set()
+        for reservation in self._task_resource_registry.reservations():
+            reserved_owner_keys.add(reservation.owner_key)
+            tasks.append(
+                {
+                    "page_key": reservation.owner_key,
+                    "label": reservation.owner_label,
+                    "api_groups": reservation.resources,
+                    "api_error": "" if reservation.resources else "API 资源无法识别",
+                }
+            )
         for page_key in self.TRANSLATION_PAGE_LABELS:
             page = self.pages.get(page_key)
-            if page is None or not self._is_translation_page_running(page_key):
+            if (
+                page is None
+                or page_key in reserved_owner_keys
+                or not self._is_translation_page_running(page_key)
+            ):
                 continue
             groups = frozenset(
                 getattr(page, "current_task_api_groups", set()) or set()
@@ -2975,6 +3141,15 @@ class NativeMainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name.
         self._closing = True
         self._task_lock_timer.stop()
+        self.sidebar.shutdown_background_tasks(timeout_ms=100)
+        for page in self.pages.values():
+            shutdown = getattr(page, "shutdown_background_tasks", None)
+            if callable(shutdown):
+                try:
+                    shutdown(timeout_ms=100)
+                except Exception:  # noqa: BLE001 - one task must not block app exit.
+                    pass
+        self._task_resource_registry.release_all()
         worker = self._update_worker
         self._update_worker = None
         self._update_check_source = ""
@@ -2983,13 +3158,12 @@ class NativeMainWindow(QMainWindow):
                 worker.resultReady.disconnect(self._on_update_check_finished)
             except (RuntimeError, TypeError):
                 pass
+            request_background_stop(worker, "cancel", "requestInterruption", "quit")
+            wait_for_background_task(worker, 100)
             if worker.isRunning():
-                worker.quit()
-                worker.wait(5000)
-            if worker.isRunning():
-                worker.setParent(None)
+                detach_running_qobject(worker)
                 try:
-                    worker.finished.connect(worker.deleteLater)
+                    worker.threadFinished.connect(worker.deleteLater)
                 except (RuntimeError, TypeError):
                     pass
             else:

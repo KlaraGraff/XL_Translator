@@ -48,6 +48,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--word-batch-chars", type=int, help="Override Word character budget per request batch.")
     parser.add_argument("--word-split-chars", type=int, help="Override the long-paragraph split threshold.")
     parser.add_argument("--word-retry-attempts", type=int, help="Override Word strict retry attempts for unresolved paragraphs.")
+    parser.add_argument(
+        "--word-untranslated-only",
+        action="store_true",
+        help="Only insert translations at source-only positions in an already bilingual Word document.",
+    )
+    parser.add_argument(
+        "--word-protect-scheme-cover",
+        action="store_true",
+        help="Protect method-statement covers while allowing the foreign title below the Chinese scheme title to be translated.",
+    )
     highlight_group = parser.add_mutually_exclusive_group()
     highlight_group.add_argument(
         "--word-highlight-review",
@@ -97,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_word_translation_path(
             args.source,
             settings=settings,
+            untranslated_only=args.word_untranslated_only or args.word_protect_scheme_cover,
+            protect_scheme_cover=args.word_protect_scheme_cover,
             event_handler=None if args.quiet else _print_event,
         )
     except Exception as exc:
@@ -108,7 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_human_summary(result.to_dict())
 
-    return 0
+    return _result_exit_code(result.file_results)
+
+
+def _result_exit_code(file_results: list[dict[str, object]]) -> int:
+    return 0 if any(item.get("success") for item in file_results) else 1
 
 
 def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:

@@ -199,6 +199,48 @@ class NativeMainWindowTaskLockTests(unittest.TestCase):
         self.assertFalse(pdf_page.external_task_lock)
         self.assertFalse(word_page.external_task_lock)
 
+    def test_registry_reservation_locks_conflicting_page_before_runner_exists(self) -> None:
+        window = self._make_window()
+        word_page = window.pages["word_translate"]
+        lease = window._task_resource_registry.acquire(
+            owner_key="excel_translate",
+            owner_label="Excel 翻译",
+            resources={API_A},
+        )
+        self.addCleanup(lease.release)
+
+        def groups_for_page(_settings, page_key: str):
+            return {
+                "excel_translate": frozenset({API_A}),
+                "word_translate": frozenset({API_A}),
+                "pdf_translate": frozenset({API_B}),
+            }[page_key]
+
+        with patch("native_app.main_window.task_api_groups_for_page", side_effect=groups_for_page):
+            window._sync_translation_task_locks()
+
+        self.assertTrue(word_page.external_task_lock)
+        self.assertIn("Excel 翻译", word_page.external_task_owner_label)
+
+        lease.release()
+        with patch("native_app.main_window.task_api_groups_for_page", side_effect=groups_for_page):
+            window._sync_translation_task_locks()
+        self.assertFalse(word_page.external_task_lock)
+
+    def test_close_requests_bounded_shutdown_for_every_page(self) -> None:
+        window = self._make_window()
+        shutdowns = []
+        for page in window.pages.values():
+            patcher = patch.object(page, "shutdown_background_tasks")
+            shutdowns.append(patcher.start())
+            self.addCleanup(patcher.stop)
+
+        window.close()
+        self.app.processEvents()
+
+        for shutdown in shutdowns:
+            shutdown.assert_called_once_with(timeout_ms=100)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

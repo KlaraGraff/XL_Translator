@@ -25,6 +25,7 @@ from core.api_concurrency_control import (
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_NORMAL,
     API_REQUEST_CATEGORY_RECOVERY,
+    ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
 from core.language_registry import get_source_lang_display, get_target_lang_display
@@ -394,8 +395,14 @@ def _translate_mixed_batch_with_fallback(
                 retry_hint=False,
             )
         else:
-            with api_scheduler.slot(request_weight, category=request_category) as lease:
+            with api_scheduler.slot(
+                request_weight,
+                category=request_category,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
+                if should_stop and should_stop():
+                    return {text: _uncertain_result(text, note="stopped") for text in batch}
                 raw_results = _translate_mixed_batch_once(
                     batch,
                     engine=engine,
@@ -406,6 +413,8 @@ def _translate_mixed_batch_with_fallback(
                 )
         return _validate_mixed_results(raw_results, target_lang=target_lang, source_lang=source_lang)
     except Exception as exc:  # noqa: BLE001 - fallback controls degradation
+        if isinstance(exc, ApiSchedulerAcquireCancelled):
+            return {text: _uncertain_result(text, note="stopped") for text in batch}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
         if api_scheduler is not None:
@@ -637,6 +646,7 @@ def _recover_one_mixed_result(
                     source_lang=source_lang,
                     api_scheduler=api_scheduler,
                     stats=stats,
+                    should_stop=should_stop,
                 )
             )
         pending = set(futures)
@@ -691,7 +701,11 @@ def _retry_one_mixed_source(
                     retry_hint=True,
                 )
             else:
-                with api_scheduler.slot(1, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+                with api_scheduler.slot(
+                    1,
+                    category=API_REQUEST_CATEGORY_RECOVERY,
+                    should_stop=should_stop,
+                ) as lease:
                     request_generation = lease.generation
                     raw_results = _translate_mixed_batch_once(
                         [source],
@@ -734,7 +748,10 @@ def _semantic_review_mixed_result(
     source_lang: str,
     api_scheduler: WeightedApiScheduler | None,
     stats: MixedLanguageRunStats,
+    should_stop=None,
 ) -> MixedLanguageResult | None:
+    if should_stop and should_stop():
+        return None
     if not _engine_supports_chat(engine):
         return None
     stats.semantic_check_count += 1
@@ -751,7 +768,13 @@ def _semantic_review_mixed_result(
     if api_scheduler is None:
         raw = engine.chat(prompt, user_payload)
     else:
-        with api_scheduler.slot(1, category=API_REQUEST_CATEGORY_RECOVERY):
+        with api_scheduler.slot(
+            1,
+            category=API_REQUEST_CATEGORY_RECOVERY,
+            should_stop=should_stop,
+        ):
+            if should_stop and should_stop():
+                return None
             raw = engine.chat(prompt, user_payload)
     payload = _loads_json(raw)
     if not isinstance(payload, dict):

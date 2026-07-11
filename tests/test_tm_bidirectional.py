@@ -86,6 +86,27 @@ class BidirectionalTmTests(unittest.TestCase):
             "楼梯",
         )
 
+    def test_direct_upsert_removes_old_reverse_entry(self) -> None:
+        tm_manager.insert_batch(
+            [("楼梯", "Stair")],
+            "zh-en",
+            max_len=25,
+            engine_name="engine",
+        )
+
+        tm_manager.insert_batch(
+            [("楼梯", "Staircase")],
+            "zh-en",
+            max_len=25,
+            engine_name="engine",
+        )
+
+        self.assertIsNone(tm_manager.lookup_batch(["Stair"], "en-zh")["Stair"])
+        self.assertEqual(
+            tm_manager.lookup_batch(["Staircase"], "en-zh")["Staircase"],
+            "楼梯",
+        )
+
     def test_auto_write_does_not_overwrite_manual_or_pinned_entries(self) -> None:
         tm_manager.insert_manual_entry("Contract", "合同文本", "en-zh")
         written = tm_manager.insert_batch(

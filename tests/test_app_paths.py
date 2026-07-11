@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.app_paths import get_app_data_dir, get_legacy_app_data_dir
 
 
 class AppPathTests(unittest.TestCase):
+    def setUp(self) -> None:
+        override = patch.dict(os.environ, {"TRANSLATOR_APP_DATA_DIR": ""})
+        override.start()
+        self.addCleanup(override.stop)
+
     def test_macos_uses_application_support(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

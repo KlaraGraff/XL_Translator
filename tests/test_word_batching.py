@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import threading
+import time
 
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -142,6 +144,39 @@ class WordBatchingTests(unittest.TestCase):
         self.assertEqual(stale.current_capacity, 4)
         self.assertEqual(scheduler.snapshot().capacity, 4)
         self.assertEqual(scheduler.snapshot().active_total_weight, 0)
+
+    def test_scheduler_wait_can_be_cancelled_before_provider_call(self) -> None:
+        scheduler = WeightedApiScheduler(1)
+        held_lease = scheduler.acquire_lease(1)
+        stopped = threading.Event()
+        engine = FakeWordEngine()
+        settings = WordBatchSettings()
+        result_box: list[dict[str, str]] = []
+
+        thread = threading.Thread(
+            target=lambda: result_box.append(
+                translate_word_texts(
+                    ["待翻译"],
+                    engine,
+                    "fr",
+                    "system",
+                    settings,
+                    concurrency=1,
+                    source_lang="zh",
+                    should_stop=stopped.is_set,
+                    api_scheduler=scheduler,
+                )
+            )
+        )
+        thread.start()
+        time.sleep(0.05)
+        stopped.set()
+        thread.join(1)
+        scheduler.release(held_lease)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(engine.calls, [])
+        self.assertEqual(result_box, [{"待翻译": "待翻译"}])
 
 
 if __name__ == "__main__":

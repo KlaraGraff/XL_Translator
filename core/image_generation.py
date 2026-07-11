@@ -31,7 +31,7 @@ from core.model_roles import (
 from settings import AppSettings
 
 IMAGE_TEST_MAX_ATTEMPTS = 3
-IMAGE_GENERATION_TIMEOUT_SECONDS = 900.0
+IMAGE_GENERATION_TIMEOUT_SECONDS = 180.0
 GPT_IMAGE_MODEL_PREFIX = "gpt-image-"
 GPT_IMAGE_2_MODEL = "gpt-image-2"
 GPT_IMAGE_2_MIN_PIXELS = 655_360

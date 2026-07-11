@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
@@ -261,6 +264,8 @@ class NativeSidebarPromptTests(unittest.TestCase):
                 sidebar._export_model_config()
 
             payload = json.loads(target.read_text(encoding="utf-8"))
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
 
         self.assertEqual(payload["type"], "translator_model_config")
         self.assertEqual(payload["version"], 2)
@@ -688,9 +693,95 @@ class NativeSidebarPromptTests(unittest.TestCase):
                 message="已获取 2 个模型。",
             )
             sidebar._fetch_models()
+            worker = sidebar._model_fetch_worker
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.wait(500))
+            self.app.processEvents()
 
         self.assertEqual(settings.image_model_role.cloud_model, "gpt-image-2")
         self.assertEqual(sidebar.model_combo.currentText(), "gpt-image-2")
+
+    def test_fetch_models_returns_immediately_and_ignores_repeat_click(self) -> None:
+        settings = AppSettings()
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_base_url = "https://models.example/v1"
+        sidebar = self._make_sidebar(settings)
+        release = threading.Event()
+
+        def blocked_fetch(**_kwargs):
+            release.wait(2)
+            return ModelCatalogResult(ok=True, models=["async-model"], message="已获取。")
+
+        with patch("native_app.main_window.fetch_openai_compatible_models", side_effect=blocked_fetch) as fetch:
+            started_at = time.monotonic()
+            sidebar._fetch_models()
+            sidebar._fetch_models()
+            elapsed = time.monotonic() - started_at
+
+            self.assertLess(elapsed, 0.25)
+            self.assertFalse(sidebar.fetch_models_button.isEnabled())
+            self.assertEqual(fetch.call_count, 1)
+            release.set()
+            self.assertTrue(sidebar._model_fetch_worker.wait(500))
+            self.app.processEvents()
+
+        self.assertTrue(sidebar.fetch_models_button.isEnabled())
+        self.assertEqual(sidebar.model_combo.currentText(), "async-model")
+
+    def test_fetch_models_discards_result_after_role_changes(self) -> None:
+        settings = AppSettings()
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_base_url = "https://models.example/v1"
+        sidebar = self._make_sidebar(settings)
+        release = threading.Event()
+
+        def blocked_fetch(**_kwargs):
+            release.wait(2)
+            return ModelCatalogResult(ok=True, models=["stale-model"], message="已获取。")
+
+        with patch("native_app.main_window.fetch_openai_compatible_models", side_effect=blocked_fetch):
+            sidebar._fetch_models()
+            worker = sidebar._model_fetch_worker
+            sidebar.model_role_combo.setCurrentIndex(
+                sidebar.model_role_combo.findData(ROLE_CLEANER)
+            )
+            release.set()
+            self.assertTrue(worker.wait(500))
+            self.app.processEvents()
+
+        self.assertNotEqual(sidebar.model_combo.currentText(), "stale-model")
+        self.assertIn("重新获取", sidebar.model_catalog_status.text())
+
+    def test_fetch_review_models_runs_off_gui_thread(self) -> None:
+        settings = AppSettings()
+        settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+        settings.pdf_review_model_role.cloud_provider = "custom_openai"
+        settings.pdf_review_model_role.cloud_base_url = "https://review.example/v1"
+        sidebar = self._make_sidebar(settings)
+        gui_thread_id = threading.get_ident()
+        fetch_thread_ids: list[int] = []
+
+        def fetch_review(**_kwargs):
+            fetch_thread_ids.append(threading.get_ident())
+            return ModelCatalogResult(
+                ok=True,
+                models=["review-model"],
+                message="已获取。",
+            )
+
+        with patch(
+            "native_app.main_window.fetch_openai_compatible_models",
+            side_effect=fetch_review,
+        ):
+            sidebar._fetch_review_models()
+            worker = sidebar._review_model_fetch_worker
+            self.assertIsNotNone(worker)
+            self.assertTrue(worker.wait(500))
+            self.app.processEvents()
+
+        self.assertNotEqual(fetch_thread_ids, [gui_thread_id])
+        self.assertEqual(sidebar.review_model_combo.currentText(), "review-model")
+        self.assertTrue(sidebar.fetch_review_models_button.isEnabled())
 
     def test_pdf_review_model_can_follow_image_model_in_sidebar(self) -> None:
         settings = AppSettings()

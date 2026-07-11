@@ -9,7 +9,7 @@ import httpx
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
+from config import CLOUD_REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -83,7 +83,11 @@ class OpenAIEngine(TranslationEngine):
         engine_name_prefix: str = "openai",
     ):
         import openai
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {
+            "api_key": api_key,
+            "timeout": CLOUD_REQUEST_TIMEOUT,
+            "max_retries": 0,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._client = openai.OpenAI(**kwargs)
@@ -175,7 +179,7 @@ class OpenAIEngine(TranslationEngine):
             "include": ["reasoning.encrypted_content"],
         }
 
-        with httpx.Client(timeout=120) as client:
+        with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
             with client.stream(
                 "POST",
                 f"{self._base_url}/responses",

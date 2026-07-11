@@ -54,6 +54,27 @@ class ConcurrencyLimitExcelEngine(TranslationEngine):
         return {text: f"translated:{text}" for text in texts}
 
 
+class PermanentFailureExcelEngine(TranslationEngine):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/permanent-failure"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        exc = RuntimeError("401 unauthorized: invalid API key")
+        exc.status_code = 401
+        raise exc
+
+
 class EngineDispatcherTests(unittest.TestCase):
     def test_translate_texts_splits_large_payloads_by_character_budget(self) -> None:
         engine = FakeExcelEngine()
@@ -138,6 +159,25 @@ class EngineDispatcherTests(unittest.TestCase):
                 source_lang="en",
             )
 
+    def test_permanent_auth_failure_does_not_recursively_split_batch(self) -> None:
+        engine = PermanentFailureExcelEngine()
+        stats = TranslationBatchRunStats()
+
+        result = translate_texts(
+            ["alpha", "beta", "gamma"],
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=1,
+            source_lang="en",
+            stats=stats,
+        )
+
+        self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
+        self.assertEqual(result, {text: text for text in ("alpha", "beta", "gamma")})
+        self.assertEqual(stats.failed_batch_count, 3)
+
     def test_build_engine_uses_lm_studio_as_local_openai_provider(self) -> None:
         settings = AppSettings(
             engine=EngineSettings(
@@ -161,6 +201,22 @@ class EngineDispatcherTests(unittest.TestCase):
             engine_cls.call_args.kwargs["engine_name_prefix"],
             "local_openai/lm_studio",
         )
+
+    def test_openai_engine_disables_sdk_retry_layer(self) -> None:
+        with patch("openai.OpenAI") as client_cls:
+            from engines.openai_engine import OpenAIEngine
+
+            OpenAIEngine(api_key="key", model="model")
+
+        self.assertEqual(client_cls.call_args.kwargs["max_retries"], 0)
+
+    def test_claude_engine_disables_sdk_retry_layer(self) -> None:
+        with patch("anthropic.Anthropic") as client_cls:
+            from engines.claude_engine import ClaudeEngine
+
+            ClaudeEngine(api_key="key", model="model")
+
+        self.assertEqual(client_cls.call_args.kwargs["max_retries"], 0)
 
 
 if __name__ == "__main__":

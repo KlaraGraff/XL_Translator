@@ -150,6 +150,71 @@ class ExcelApiSchedulingTests(unittest.TestCase):
         self.assertEqual(done_messages[0].api_call_count, 2)
         self.assertEqual(done_messages[0].file_results[0]["success"], True)
 
+    def test_read_failure_does_not_skip_same_named_file_in_other_folder(self) -> None:
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="cloud",
+                cloud_provider="custom_openai",
+                cloud_model="fake-model",
+                cloud_base_url="https://example.invalid/v1",
+                concurrency=1,
+                batch_size=20,
+            ),
+            target_lang="fr",
+            source_lang="zh",
+        )
+        first_path = Path("first") / "source.xlsx"
+        second_path = Path("second") / "source.xlsx"
+
+        def collect(real_path, *_args, **_kwargs):
+            if real_path == first_path:
+                raise ValueError("broken workbook")
+            return ["施工内容"], 1
+
+        with (
+            patch("core.task_runner.TaskLogger", return_value=MagicMock(task_id="same-name")),
+            patch("core.task_runner.check_translation_api_config", return_value=ApiConfigCheckResult(ok=True)),
+            patch("core.task_runner.build_engine", return_value=FakeExcelSchedulingEngine()),
+            patch("core.task_runner.get_system_prompt", return_value="system"),
+            patch("core.task_runner.resolve_effective_model_config", return_value=object()),
+            patch(
+                "core.task_runner.get_model_throughput",
+                return_value=EffectiveModelThroughput(
+                    profile_key="test",
+                    batch_size=20,
+                    concurrency=1,
+                ),
+            ),
+            patch.object(TaskRunner, "_collect_texts", side_effect=collect),
+            patch("core.task_runner.tm_manager.lookup_batch", return_value={"施工内容": None}),
+            patch("core.task_runner.tm_manager.insert_batch", return_value=0),
+            patch("core.task_runner.translate_texts", return_value={"施工内容": "Travaux"}),
+            patch("core.task_runner.bilingual_writer.build_output_dir", return_value=Path("/tmp/same-name")),
+            patch(
+                "core.task_runner.bilingual_writer.write_bilingual_file",
+                return_value=Path("/tmp/same-name/out.xlsx"),
+            ) as writer,
+        ):
+            runner = TaskRunner(
+                [
+                    FileItem(path=first_path, name="source", size_kb=1.0),
+                    FileItem(path=second_path, name="source", size_kb=1.0),
+                ],
+                settings,
+                source_root=Path("."),
+            )
+            runner._run()
+
+        writer.assert_called_once()
+        done = [
+            message
+            for message in list(runner._queue.queue)
+            if isinstance(message, DoneMsg)
+        ][0]
+        by_path = {item["source_path"]: item for item in done.file_results}
+        self.assertFalse(by_path[str(first_path)]["success"])
+        self.assertTrue(by_path[str(second_path)]["success"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

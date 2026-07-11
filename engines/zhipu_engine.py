@@ -5,7 +5,7 @@ import json
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
+from config import CLOUD_REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -20,7 +20,11 @@ class ZhipuEngine(TranslationEngine):
 
     def __init__(self, api_key: str, model: str = "glm-4"):
         from zhipuai import ZhipuAI
-        self._client = ZhipuAI(api_key=api_key)
+        self._client = ZhipuAI(
+            api_key=api_key,
+            timeout=CLOUD_REQUEST_TIMEOUT,
+            max_retries=0,
+        )
         self._model  = model
 
     @property

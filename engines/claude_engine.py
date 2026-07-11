@@ -6,7 +6,7 @@ import json
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
+from config import CLOUD_REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -21,7 +21,11 @@ class ClaudeEngine(TranslationEngine):
 
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str = ""):
         import anthropic
-        kwargs: dict = {"api_key": api_key}
+        kwargs: dict = {
+            "api_key": api_key,
+            "timeout": CLOUD_REQUEST_TIMEOUT,
+            "max_retries": 0,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._client = anthropic.Anthropic(**kwargs)

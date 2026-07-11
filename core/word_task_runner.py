@@ -200,6 +200,7 @@ class WordTaskRunner:
         key_overrides: dict[str, str] | None = None,
         api_scheduler: WeightedApiScheduler | None = None,
         untranslated_only: bool = False,
+        protect_scheme_cover: bool = False,
     ):
         self._files = file_items
         self._settings = settings
@@ -208,6 +209,7 @@ class WordTaskRunner:
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler_override = api_scheduler
         self._untranslated_only = bool(untranslated_only)
+        self._protect_scheme_cover = bool(protect_scheme_cover)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -323,6 +325,8 @@ class WordTaskRunner:
         self._log("INFO", f"扫描到 {len(self._files)} 个 Word 文件")
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
+        if self._protect_scheme_cover:
+            self._log("INFO", "[封面保护] 检测方案封面：普通封面内容跳过，方案标题下方外文标题允许补译。")
 
         phase_total = 3
         file_texts: list[set[str]] = []
@@ -397,11 +401,12 @@ class WordTaskRunner:
                             process_path,
                             target_lang=target_lang,
                             source_lang=source_lang,
+                            protect_scheme_cover=self._protect_scheme_cover,
                         )
                         coverage_plans.append(coverage_plan)
                         _remember_coverage_unit_locations(
                             segment_locations,
-                            file_item.name,
+                            _file_result_identity(file_item, self._source_root),
                             coverage_plan.source_units,
                         )
                         text_set = set(coverage_plan.source_texts)
@@ -422,7 +427,11 @@ class WordTaskRunner:
                             source_lang=source_lang,
                         )
                         coverage_plans.append(None)
-                        _remember_segment_locations(segment_locations, file_item.name, segments)
+                        _remember_segment_locations(
+                            segment_locations,
+                            _file_result_identity(file_item, self._source_root),
+                            segments,
+                        )
                         text_set = {segment.source for segment in segments}
                     file_texts.append(text_set)
                     global_unique_texts.update(text_set)
@@ -442,6 +451,7 @@ class WordTaskRunner:
                     file_results.append(
                         {
                             "name": file_item.name,
+                            "source_path": str(file_item.path),
                             "success": False,
                             "error": f"Word 文件读取失败: {exc}",
                         }
@@ -802,7 +812,8 @@ class WordTaskRunner:
             for index, file_item in enumerate(self._files):
                 _raise_if_stopped()
                 already_failed = any(
-                    result["name"] == file_item.name and not result.get("success")
+                    result.get("source_path") == str(file_item.path)
+                    and not result.get("success")
                     for result in file_results
                 )
                 if already_failed:
@@ -865,10 +876,11 @@ class WordTaskRunner:
                         )
                     residual_count = _append_post_write_coverage_issues(
                         issues=quality_issues,
-                        file_name=file_item.name,
+                        file_name=_file_result_identity(file_item, source_root),
                         output_path=out_path,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        protect_scheme_cover=self._protect_scheme_cover,
                     )
                     if residual_count:
                         self._log(
@@ -891,6 +903,7 @@ class WordTaskRunner:
                     file_results.append(
                         {
                             "name": file_item.name,
+                            "source_path": str(file_item.path),
                             "output": str(out_path),
                             "success": True,
                             "preprocess": (
@@ -901,7 +914,8 @@ class WordTaskRunner:
                             "issues": [
                                 issue
                                 for issue in quality_issues
-                                if issue.get("file") == file_item.name
+                                if issue.get("file")
+                                == _file_result_identity(file_item, source_root)
                             ],
                         }
                     )
@@ -912,6 +926,7 @@ class WordTaskRunner:
                     file_results.append(
                         {
                             "name": file_item.name,
+                            "source_path": str(file_item.path),
                             "success": False,
                             "error": str(exc),
                         }
@@ -1028,6 +1043,15 @@ def _prepare_word_source_for_translation(
 
 def _word_output_source_name(path: Path) -> str:
     return f"{path.stem}.docx" if is_legacy_word_doc(path) else path.name
+
+
+def _file_result_identity(file_item: WordFileItem, source_root: Path | None) -> str:
+    if source_root is not None:
+        try:
+            return str(file_item.path.relative_to(source_root))
+        except ValueError:
+            pass
+    return str(file_item.path)
 
 
 def _cleanup_converted_word_paths(
@@ -1935,11 +1959,13 @@ def _append_post_write_coverage_issues(
     output_path: Path,
     target_lang: str,
     source_lang: str,
+    protect_scheme_cover: bool = False,
 ) -> int:
     plan = build_word_coverage_plan(
         output_path,
         target_lang=target_lang,
         source_lang=source_lang,
+        protect_scheme_cover=protect_scheme_cover,
     )
     source_units = plan.source_units
     if not source_units:

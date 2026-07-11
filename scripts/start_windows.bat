@@ -56,7 +56,7 @@ if not exist "%VENV_PYTHON%" (
 )
 
 if not exist "%BOOTSTRAP_MARKER%" goto install_deps
-"%VENV_PYTHON%" -c "import PySide6, anthropic, dashscope, docx, dotenv, httpx, loguru, openai, openpyxl, pandas, psutil, pydantic, rich, tenacity, xlrd, zhipuai" >nul 2>nul
+"%VENV_PYTHON%" -c "import PySide6, anthropic, dashscope, docx, httpx, loguru, openai, openpyxl, psutil, pydantic, tenacity, xlrd, zhipuai" >nul 2>nul
 if errorlevel 1 goto install_deps
 goto deps_ready
 

@@ -6,7 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -26,6 +26,7 @@ from native_app.pages.tm_manager import TM_LANG_PAIR_TILE_MAX_WIDTH, TmManagerPa
 from native_app.pages.word_translate import WordTranslatePage
 from native_app.result_view import ResultIssueRow, render_translation_result
 from native_app.style import APP_QSS
+from native_app.workers import TaskResourceRegistry
 from native_app.widgets import AlignedComboBox, CurrentTextOverrideComboBox, MiddleElideLabel, MiddleElideLineEdit
 from settings import AppSettings
 
@@ -573,6 +574,98 @@ class NativeTranslationPageTests(unittest.TestCase):
             )
 
         self.assertTrue(captured_kwargs["untranslated_only"])
+
+    def test_translation_pages_atomically_reject_same_api_before_second_runner(self) -> None:
+        registry = TaskResourceRegistry()
+        settings = AppSettings()
+        excel = ExcelTranslatePage(settings, registry)
+        word = WordTranslatePage(settings, registry)
+        self.addCleanup(excel.close)
+        self.addCleanup(excel.deleteLater)
+        self.addCleanup(word.close)
+        self.addCleanup(word.deleteLater)
+
+        class FakeRunner:
+            task_id = "fake"
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def needs_poll(self) -> bool:
+                return True
+
+        with (
+            patch("native_app.pages.excel_translate.TaskRunner", return_value=FakeRunner()),
+            patch("native_app.pages.word_translate.WordTaskRunner") as word_runner,
+            patch("native_app.pages.word_translate.QMessageBox.warning"),
+        ):
+            excel._begin_runner(
+                [FileItem(path=Path("source.xlsx"), name="source", size_kb=1.0)],
+                settings,
+                source_lang="zh",
+            )
+            word._begin_runner(
+                [WordFileItem(path=Path("source.docx"), name="source", size_kb=1.0)],
+                settings,
+                source_lang="zh",
+            )
+
+        self.assertIsNotNone(excel.runner)
+        word_runner.assert_not_called()
+        self.assertIsNone(word.runner)
+        self.assertTrue(word.external_task_lock)
+        excel.shutdown_background_tasks(timeout_ms=0)
+        self.assertEqual(registry.reservations(), ())
+
+    def test_runner_start_failure_releases_resource_for_next_task(self) -> None:
+        registry = TaskResourceRegistry()
+        settings = AppSettings()
+        page = ExcelTranslatePage(settings, registry)
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+
+        class FailingRunner:
+            task_id = "failing"
+
+            def start(self) -> None:
+                raise RuntimeError("boom")
+
+        with (
+            patch("native_app.pages.excel_translate.TaskRunner", return_value=FailingRunner()),
+            patch("native_app.pages.excel_translate.QMessageBox.warning"),
+        ):
+            page._begin_runner(
+                [FileItem(path=Path("source.xlsx"), name="source", size_kb=1.0)],
+                settings,
+                source_lang="zh",
+            )
+
+        self.assertIsNone(page.runner)
+        self.assertEqual(registry.reservations(), ())
+
+    def test_terminal_workspace_repair_releases_resource_lease(self) -> None:
+        registry = TaskResourceRegistry()
+        page = WordTranslatePage(AppSettings(), registry)
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+        lease = registry.acquire(
+            owner_key="word_translate",
+            owner_label="Word 翻译",
+            resources={"api"},
+        )
+        page._task_resource_lease = lease
+        page.phase = "running"
+        page.runner = object()
+        page.done = self._done_msg()
+
+        page._sync_action_card_with_workspace()
+
+        self.assertIsNone(page.runner)
+        self.assertEqual(page.phase, "done")
+        self.assertEqual(registry.reservations(), ())
 
     def test_word_review_color_options_show_highlight_background(self) -> None:
         with patch("native_app.pages.word_translate.count_diagnostic_records", return_value=0):
@@ -1531,6 +1624,185 @@ class NativeTranslationPageTests(unittest.TestCase):
         self.assertEqual(table.columnCount(), 3)
         self.assertEqual(table.horizontalHeaderItem(2).text(), "错误原因")
         self.assertEqual(table.item(0, 2).text(), "源文件读取失败")
+
+    def test_silent_runner_exit_recovers_all_pages_to_restartable_terminal_state(self) -> None:
+        class SilentRunner:
+            task_id = "silent-runner"
+
+            def get_message(self, timeout: float = 0.0):
+                return None
+
+            def needs_poll(self) -> bool:
+                return False
+
+            def stop_requested(self) -> bool:
+                return False
+
+        cases = (
+            (
+                ExcelTranslatePage,
+                "native_app.pages.excel_translate.archive_task_diagnostics",
+                "native_app.pages.excel_translate.save_settings",
+            ),
+            (
+                WordTranslatePage,
+                "native_app.pages.word_translate.archive_task_diagnostics",
+                "native_app.pages.word_translate.save_settings",
+            ),
+            (
+                PdfTranslatePage,
+                "native_app.pages.pdf_translate.archive_task_diagnostics",
+                "native_app.pages.pdf_translate.save_settings",
+            ),
+        )
+        for page_type, archive_target, save_target in cases:
+            with (
+                self.subTest(page=page_type.__name__),
+                patch(archive_target),
+                patch(save_target),
+            ):
+                page = page_type(AppSettings())
+                self.addCleanup(page.close)
+                self.addCleanup(page.deleteLater)
+                page.phase = "running"
+                page.runner = SilentRunner()
+                page.poll_timer.start()
+
+                page._poll_runner()
+
+                self.assertEqual(page.phase, "error")
+                self.assertIsNone(page.runner)
+                self.assertFalse(page.poll_timer.isActive())
+                self.assertIn("返回并开始新任务", self._visible_button_texts(page))
+
+    def test_silent_exit_after_stop_is_stopped_and_can_start_new_task(self) -> None:
+        class StoppedSilentRunner:
+            task_id = "stopped-silent-runner"
+
+            def get_message(self, timeout: float = 0.0):
+                return None
+
+            def needs_poll(self) -> bool:
+                return False
+
+            def stop_requested(self) -> bool:
+                return True
+
+        with patch("native_app.pages.excel_translate.archive_task_diagnostics"):
+            page = ExcelTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+            page.phase = "running"
+            page.runner = StoppedSilentRunner()
+
+            page._poll_runner()
+
+            self.assertEqual(page.phase, "stopped")
+            self.assertIn("中止", page.stop_message)
+            self.assertIn("返回并开始新任务", self._visible_button_texts(page))
+
+            page._reset_task()
+            self.assertEqual(page.phase, "idle")
+            self.assertTrue(
+                any(
+                    text.startswith("开始翻译（")
+                    for text in self._visible_button_texts(page)
+                )
+            )
+
+    def test_runner_message_failure_recovers_page_instead_of_breaking_poll_timer(self) -> None:
+        class BrokenRunner:
+            task_id = "broken-runner"
+
+            def get_message(self, timeout: float = 0.0):
+                raise RuntimeError("queue unavailable")
+
+            def needs_poll(self) -> bool:
+                return True
+
+        with patch("native_app.pages.word_translate.archive_task_diagnostics"):
+            page = WordTranslatePage(AppSettings())
+            self.addCleanup(page.close)
+            self.addCleanup(page.deleteLater)
+            page.phase = "running"
+            page.runner = BrokenRunner()
+            page.poll_timer.start()
+
+            page._poll_runner()
+
+            self.assertEqual(page.phase, "error")
+            self.assertFalse(page.poll_timer.isActive())
+            self.assertIn("返回并开始新任务", self._visible_button_texts(page))
+
+    def test_page_shutdown_stops_runner_and_scan_without_unbounded_wait(self) -> None:
+        class FakeRunner:
+            def __init__(self) -> None:
+                self.stop_calls = 0
+                self.wait_calls: list[int] = []
+
+            def stop(self) -> None:
+                self.stop_calls += 1
+
+            def wait(self, timeout_ms: int) -> bool:
+                self.wait_calls.append(timeout_ms)
+                return False
+
+        class FakeScanWorker:
+            def __init__(self) -> None:
+                self.cancel_calls = 0
+                self.wait_calls: list[int] = []
+                self.finished = MagicMock()
+                self.threadFinished = MagicMock()
+                self.deleteLater = MagicMock()
+
+            def cancel(self) -> None:
+                self.cancel_calls += 1
+
+            def wait(self, timeout_ms: int) -> bool:
+                self.wait_calls.append(timeout_ms)
+                return False
+
+            def isRunning(self) -> bool:  # noqa: N802 - worker compatibility.
+                return True
+
+        page = ExcelTranslatePage(AppSettings())
+        self.addCleanup(page.close)
+        self.addCleanup(page.deleteLater)
+        runner = FakeRunner()
+        scan = FakeScanWorker()
+        page.runner = runner
+        page.scan_worker = scan
+        page.phase = "running"
+
+        with patch("native_app.pages.excel_translate.detach_running_qobject") as detach:
+            scan.finished.disconnect.side_effect = TypeError
+            page.shutdown_background_tasks(timeout_ms=37)
+
+        self.assertEqual(runner.stop_calls, 1)
+        self.assertEqual(runner.wait_calls, [37])
+        self.assertEqual(scan.cancel_calls, 1)
+        self.assertEqual(scan.wait_calls, [37])
+        self.assertIsNone(page.runner)
+        self.assertIsNone(page.scan_worker)
+        self.assertEqual(page.phase, "stopped")
+        detach.assert_called_once_with(scan)
+
+    def test_tm_shutdown_cancels_cleaning_and_unlocks_session(self) -> None:
+        worker = MagicMock()
+        worker.isRunning.return_value = True
+        worker.wait.return_value = False
+        page = self._make_tm_page(AppSettings())
+        page.phase = "cleaning"
+        page.clean_worker = worker
+
+        with patch("native_app.pages.tm_manager.detach_running_qobject") as detach:
+            page.shutdown_background_tasks(timeout_ms=41)
+
+        worker.cancel.assert_called_once_with()
+        worker.wait.assert_called_once_with(41)
+        detach.assert_called_once_with(worker)
+        self.assertIsNone(page.clean_worker)
+        self.assertEqual(page.phase, "idle")
 
 
 if __name__ == "__main__":

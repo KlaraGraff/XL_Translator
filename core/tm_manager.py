@@ -268,6 +268,7 @@ def _upsert_entry(
     source_engine: str = "",
     pinned: int = 0,
     protect_higher_priority: bool = True,
+    cleanup_changed_reverse: bool = True,
 ) -> bool:
     word_type = _normalize_word_type(word_type)
     pinned = 1 if int(pinned or 0) else 0
@@ -278,6 +279,8 @@ def _upsert_entry(
     if existing is not None:
         if protect_higher_priority and _entry_priority(existing) > incoming_priority:
             return False
+        if cleanup_changed_reverse and existing["target_text"] != target_text:
+            _delete_matching_reverse(conn, existing)
         conn.execute(
             """
             UPDATE tm_entries
@@ -348,6 +351,7 @@ def _sync_reverse_upsert(
         source_engine=source_engine,
         pinned=pinned,
         protect_higher_priority=True,
+        cleanup_changed_reverse=False,
     )
 
 

@@ -519,7 +519,12 @@ class TaskRunner:
                     except Exception as e:
                         self._log("ERROR", f"源文件转换失败 {file_item.name}: {e}")
                         self._task_logger.file_error(file_item.name, str(e))
-                        file_results.append({"name": file_item.name, "success": False, "error": f"源文件转换失败: {e}"})
+                        file_results.append({
+                            "name": file_item.name,
+                            "source_path": str(file_item.path),
+                            "success": False,
+                            "error": f"源文件转换失败: {e}",
+                        })
                         process_paths.append(process_path)
                         file_texts.append(set())
                         coverage_plans.append(None)
@@ -564,7 +569,12 @@ class TaskRunner:
                 except Exception as e:
                     self._log("ERROR", f"源文件读取失败 {file_item.name}: {e}")
                     self._task_logger.file_error(file_item.name, f"源文件读取失败: {e}")
-                    file_results.append({"name": file_item.name, "success": False, "error": f"源文件读取失败: {e}"})
+                    file_results.append({
+                        "name": file_item.name,
+                        "source_path": str(file_item.path),
+                        "success": False,
+                        "error": f"源文件读取失败: {e}",
+                    })
                     if len(coverage_plans) < len(process_paths):
                         coverage_plans.append(None)
                     file_texts.append(set())
@@ -886,7 +896,7 @@ class TaskRunner:
 
                 # 跳过阶段 1 已失败的文件
                 already_failed = any(
-                    r["name"] == file_item.name and not r.get("success")
+                    r.get("source_path") == str(file_item.path) and not r.get("success")
                     for r in file_results
                 )
                 if already_failed:
@@ -968,6 +978,7 @@ class TaskRunner:
 
                     file_results.append({
                         "name":    file_item.name,
+                        "source_path": str(file_item.path),
                         "output":  str(out_path),
                         "success": True,
                     })
@@ -975,7 +986,12 @@ class TaskRunner:
                 except Exception as e:
                     self._log("ERROR", f"文件写入失败 {file_item.name}：{e}")
                     self._task_logger.file_error(file_item.name, str(e))
-                    file_results.append({"name": file_item.name, "success": False, "error": str(e)})
+                    file_results.append({
+                        "name": file_item.name,
+                        "source_path": str(file_item.path),
+                        "success": False,
+                        "error": str(e),
+                    })
                 finally:
                     # 清理 .xls 转换后的临时 .xlsx 文件
                     if process_path != file_item.path:

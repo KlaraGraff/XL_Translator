@@ -38,6 +38,19 @@ class CleanSuggestion:
     accepted:    bool = True   # UI 中用户可逐条切换
 
 
+class TmCleaningBatchError(RuntimeError):
+    """One or more TM cleaning batches failed and must not look successful."""
+
+    def __init__(self, failed_batches: int, total_batches: int, first_error: str):
+        self.failed_batches = max(1, int(failed_batches))
+        self.total_batches = max(self.failed_batches, int(total_batches))
+        self.first_error = str(first_error or "未知错误")
+        super().__init__(
+            f"{self.failed_batches}/{self.total_batches} 个清洗批次失败；"
+            f"首个错误：{self.first_error}"
+        )
+
+
 DEFAULT_CLEAN_SYSTEM_PROMPT_TEMPLATE = (
     "你是一名土木工程与建筑工程术语词库清洗助手。"
     "输入为 JSON 数组，每项包含 id、source（原文）和 current（当前译文）。\n"
@@ -382,6 +395,7 @@ async def _clean_async_impl(
     total_batches = len(batches)
     done_count = [0]  # 使用列表以便在闭包中修改
     done_batches = [0]
+    batch_errors: list[str] = []
     lock = asyncio.Lock()
 
     # 获取引擎的并发数（Ollama 引擎有 _concurrency 属性）
@@ -407,6 +421,7 @@ async def _clean_async_impl(
                 partial = await _clean_batch_async(batch, engine, system_prompt)
             except Exception as e:
                 logger.error(f"清洗批次失败（{len(batch)} 条）：{e}")
+                batch_errors.append(str(e))
                 partial = []
 
             async with lock:
@@ -432,6 +447,13 @@ async def _clean_async_impl(
     suggestions: list[CleanSuggestion] = []
     for partial in results:
         suggestions.extend(partial)
+
+    if batch_errors:
+        raise TmCleaningBatchError(
+            len(batch_errors),
+            total_batches,
+            batch_errors[0],
+        )
 
     _emit_clean_progress(
         progress_callback,
@@ -522,16 +544,13 @@ def _run_cleaning_threaded(
     suggestions: list[CleanSuggestion] = []
     done_count = 0
     done_batches = 0
+    batch_errors: list[str] = []
     lock = threading.Lock()
     max_workers = max(1, int(concurrency))
 
     def _submit_batch(batch: list[dict]) -> list[CleanSuggestion]:
-        """单批次执行，返回建议列表，异常时返回空列表。"""
-        try:
-            return _clean_batch_sync(batch, engine, system_prompt)
-        except Exception as e:
-            logger.error(f"清洗批次失败（{len(batch)} 条）：{e}")
-            return []
+        """单批次执行，异常由汇总层转换为清晰的任务失败。"""
+        return _clean_batch_sync(batch, engine, system_prompt)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map: dict = {}
@@ -564,7 +583,12 @@ def _run_cleaning_threaded(
             done_futures, _ = wait(tuple(future_map.keys()), return_when=FIRST_COMPLETED)
             for future in done_futures:
                 batch = future_map.pop(future)
-                partial = future.result()
+                try:
+                    partial = future.result()
+                except Exception as exc:  # noqa: BLE001 - aggregate batch failures.
+                    logger.error(f"清洗批次失败（{len(batch)} 条）：{exc}")
+                    batch_errors.append(str(exc))
+                    partial = []
                 with lock:
                     suggestions.extend(partial)
                     done_count += len(batch)
@@ -580,6 +604,13 @@ def _run_cleaning_threaded(
                     )
                 if not (cancel_event and cancel_event.is_set()):
                     _submit_next()
+
+    if batch_errors:
+        raise TmCleaningBatchError(
+            len(batch_errors),
+            total_batches,
+            batch_errors[0],
+        )
 
     _emit_clean_progress(
         progress_callback,

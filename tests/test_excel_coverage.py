@@ -95,6 +95,28 @@ class ExcelCoverageTests(unittest.TestCase):
             finally:
                 wb.close()
 
+    def test_english_to_french_does_not_treat_french_line_as_new_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(
+                Path(tmp),
+                "source.xlsx",
+                {
+                    "A1": "The concrete slab is ready\nLa dalle de béton est prête",
+                    "A2": "The concrete wall is ready",
+                    "A3": "Project name",
+                },
+            )
+
+            plan = build_excel_coverage_plan(source, target_lang="fr", source_lang="en")
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(by_location["Sheet!A1"].status, COVERAGE_COVERED)
+            self.assertEqual(by_location["Sheet!A2"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(
+                plan.source_texts,
+                ["The concrete wall is ready", "Project name"],
+            )
+
     @staticmethod
     def _workbook(root: Path, name: str, cells: dict[str, str]) -> Path:
         path = root / name

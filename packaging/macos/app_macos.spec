@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import os
 import sys
 
 from PyInstaller.utils.hooks import collect_submodules, copy_metadata
@@ -15,9 +16,14 @@ from app_meta import (  # noqa: E402
     APP_VERSION,
     MACOS_APP_BUNDLE_NAME,
     MACOS_COLLECT_NAME,
+    MACOS_MINIMUM_SYSTEM_VERSION as DEFAULT_MACOS_MINIMUM_SYSTEM_VERSION,
 )
 
 ICON_PATH = ROOT / "packaging" / "macos" / "assets" / "app-icon.icns"
+MACOS_MINIMUM_SYSTEM_VERSION = os.environ.get(
+    "XL_TRANSLATOR_MACOS_MINIMUM_SYSTEM_VERSION",
+    DEFAULT_MACOS_MINIMUM_SYSTEM_VERSION,
+).strip()
 
 datas = [
     (str(ROOT / "app_meta.py"), "."),
@@ -33,14 +39,12 @@ metadata_packages = [
     "loguru",
     "openai",
     "openpyxl",
-    "pandas",
     "Pillow",
     "psutil",
     "pydantic",
+    "PyMuPDF",
     "PySide6_Essentials",
     "python-docx",
-    "python-dotenv",
-    "rich",
     "shiboken6",
     "tenacity",
     "xlrd",
@@ -58,16 +62,15 @@ hiddenimports += [
     "anthropic",
     "dashscope",
     "docx",
-    "dotenv",
     "httpx",
     "loguru",
     "openai",
     "openpyxl",
-    "pandas",
     "PIL",
     "psutil",
     "PySide6.QtCore",
     "PySide6.QtGui",
+    "PySide6.QtNetwork",
     "PySide6.QtWidgets",
     "pydantic",
     "tenacity",
@@ -85,7 +88,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["numpy", "pandas"],
     noarchive=False,
     optimize=0,
 )
@@ -131,7 +134,7 @@ app = BUNDLE(
         "CFBundleName": APP_NAME,
         "CFBundleShortVersionString": APP_VERSION,
         "CFBundleVersion": APP_VERSION,
-        "LSMinimumSystemVersion": "11.0",
+        "LSMinimumSystemVersion": MACOS_MINIMUM_SYSTEM_VERSION,
         "NSHighResolutionCapable": True,
     },
 )

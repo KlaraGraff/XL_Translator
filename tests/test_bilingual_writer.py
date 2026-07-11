@@ -187,6 +187,48 @@ class BilingualWriterTests(unittest.TestCase):
             finally:
                 wb.close()
 
+    def test_plain_text_containing_dispimg_is_not_erased(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(Path(tmp), "source.xlsx", "DISPIMG operating note")
+            out_path = write_bilingual_file(
+                source_path=source,
+                output_dir=Path(tmp) / "out",
+                translations={"DISPIMG operating note": "Note de fonctionnement DISPIMG"},
+                target_lang="fr",
+                source_lang="en",
+                keep_original_sheets=False,
+                formula_display_value_backfill=True,
+                enable_print_guard=False,
+            )
+
+            wb = load_workbook(out_path)
+            try:
+                self.assertEqual(
+                    wb.active["A1"].value,
+                    "DISPIMG operating note\nNote de fonctionnement DISPIMG",
+                )
+            finally:
+                wb.close()
+
+    def test_wps_dispimg_formula_is_still_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(Path(tmp), "source.xlsx", '=DISPIMG("ID_1",1)')
+            out_path = write_bilingual_file(
+                source_path=source,
+                output_dir=Path(tmp) / "out",
+                translations={},
+                target_lang="fr",
+                keep_original_sheets=False,
+                formula_display_value_backfill=False,
+                enable_print_guard=False,
+            )
+
+            wb = load_workbook(out_path, data_only=False)
+            try:
+                self.assertIsNone(wb.active["A1"].value)
+            finally:
+                wb.close()
+
     @staticmethod
     def _workbook(
         root: Path,

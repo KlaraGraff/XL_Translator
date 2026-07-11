@@ -8,6 +8,7 @@ from docx import Document
 
 from core.translation_coverage import (
     COVERAGE_COVERED,
+    COVERAGE_IGNORED,
     COVERAGE_SOURCE_ONLY,
 )
 from core.word_coverage import (
@@ -109,6 +110,94 @@ class WordCoverageTests(unittest.TestCase):
             self.assertEqual(by_location["table[0].cell[0]"].status, COVERAGE_SOURCE_ONLY)
             self.assertEqual(by_location["table[0].cell[1]"].status, COVERAGE_COVERED)
 
+    def test_scheme_cover_protects_cover_but_translates_foreign_title_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "固化地面专项施工方案.docx"
+            doc = Document()
+            doc.add_paragraph("贝特瑞地中海负极项目")
+            doc.add_paragraph("固化地面专项施工方案")
+            doc.add_paragraph("Specific construction plan for hardened floors")
+            doc.add_paragraph("编制 PREPARED BY")
+            table = doc.add_table(rows=2, cols=3)
+            table.cell(0, 0).text = "文件编号 DOCNO."
+            table.cell(0, 2).text = "ONEBTR-MS-035 Rev_A"
+            table.cell(1, 0).text = "编制 PREPARED BY"
+            doc.add_paragraph("第一章 编制依据")
+            doc.add_paragraph("施工内容")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_scheme_cover=True,
+            )
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[2]"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(by_location["body.paragraph[3]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[4]"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(by_location["body.paragraph[5]"].status, COVERAGE_SOURCE_ONLY)
+            table_units = [
+                unit for unit in plan.units if unit.location.startswith("table[0].")
+            ]
+            self.assertTrue(table_units)
+            self.assertTrue(all(unit.status == COVERAGE_IGNORED for unit in table_units))
+            self.assertEqual(
+                plan.source_texts,
+                [
+                    "Specific construction plan for hardened floors",
+                    "第一章 编制依据",
+                    "施工内容",
+                ],
+            )
+
+    def test_scheme_cover_foreign_title_with_existing_translation_is_covered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "固化地面专项施工方案.docx"
+            doc = Document()
+            doc.add_paragraph("固化地面专项施工方案")
+            doc.add_paragraph("Specific construction plan for hardened floors")
+            doc.add_paragraph("Plan d'exécution spécifique pour sols durcis")
+            doc.add_paragraph("第一章 编制依据")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_scheme_cover=True,
+            )
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_COVERED)
+            self.assertEqual(
+                by_location["body.paragraph[1]"].target_text,
+                "Plan d'exécution spécifique pour sols durcis",
+            )
+
+    def test_scheme_filename_without_cover_title_does_not_hide_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "施工方案修订说明.docx"
+            doc = Document()
+            doc.add_paragraph("项目背景")
+            doc.add_paragraph("施工内容")
+            doc.add_paragraph("1.1 作业范围")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_scheme_cover=True,
+            )
+
+            self.assertEqual(
+                [unit.source_text for unit in plan.source_units],
+                ["项目背景", "施工内容", "1.1 作业范围"],
+            )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
