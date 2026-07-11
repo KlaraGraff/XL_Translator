@@ -11,11 +11,40 @@ from app_meta import APP_BUNDLE_IDENTIFIER
 
 
 ACTIVATE_MESSAGE = b"activate\n"
+ACTIVATE_ACK = b"activated\n"
 DEFAULT_CONNECT_TIMEOUT_MS = 750
 
 
 def default_server_name() -> str:
     return f"{APP_BUNDLE_IDENTIFIER}.native"
+
+
+def notify_existing_instance(server_name: str, timeout_ms: int) -> bool:
+    """Notify a listening instance and close only after a graceful handshake."""
+
+    timeout_ms = max(0, int(timeout_ms))
+    socket = QLocalSocket()
+    socket.connectToServer(server_name)
+    if not socket.waitForConnected(timeout_ms):
+        socket.abort()
+        return False
+
+    if socket.write(QByteArray(ACTIVATE_MESSAGE)) < 0:
+        socket.abort()
+        return False
+    socket.flush()
+    if socket.bytesToWrite() > 0 and not socket.waitForBytesWritten(timeout_ms):
+        socket.abort()
+        return False
+
+    # V7.4.1+ primaries acknowledge receipt. A successful write remains enough
+    # for compatibility with an already-running V7.4 primary that has no ACK.
+    if socket.waitForReadyRead(timeout_ms):
+        bytes(socket.readAll())
+    socket.disconnectFromServer()
+    if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
+        socket.waitForDisconnected(timeout_ms)
+    return True
 
 
 class SingleInstanceCoordinator(QObject):
@@ -34,6 +63,7 @@ class SingleInstanceCoordinator(QObject):
         self._server = QLocalServer(self)
         self._server.newConnection.connect(self._accept_connections)
         self._sockets: set[QLocalSocket] = set()
+        self._socket_buffers: dict[QLocalSocket, bytearray] = {}
 
     @property
     def server_name(self) -> str:
@@ -64,18 +94,7 @@ class SingleInstanceCoordinator(QObject):
             self._server.close()
 
     def _notify_existing(self, timeout_ms: int) -> bool:
-        socket = QLocalSocket(self)
-        self._track_socket(socket)
-        socket.connectToServer(self._server_name)
-        if not socket.waitForConnected(max(0, int(timeout_ms))):
-            self._dispose_socket(socket, abort=True)
-            return False
-        socket.write(QByteArray(ACTIVATE_MESSAGE))
-        socket.flush()
-        socket.waitForBytesWritten(max(0, int(timeout_ms)))
-        socket.disconnectFromServer()
-        self._dispose_socket(socket, abort=True)
-        return True
+        return notify_existing_instance(self._server_name, timeout_ms)
 
     def _accept_connections(self) -> None:
         while self._server.hasPendingConnections():
@@ -87,6 +106,7 @@ class SingleInstanceCoordinator(QObject):
 
     def _track_socket(self, socket: QLocalSocket) -> None:
         self._sockets.add(socket)
+        self._socket_buffers[socket] = bytearray()
         socket.readyRead.connect(self._read_sender_socket)
         socket.disconnected.connect(self._drop_sender_socket)
 
@@ -103,8 +123,16 @@ class SingleInstanceCoordinator(QObject):
             self._dispose_socket(socket)
 
     def _read_socket(self, socket: QLocalSocket) -> None:
-        if ACTIVATE_MESSAGE.strip() in bytes(socket.readAll()).splitlines():
+        buffer = self._socket_buffers.setdefault(socket, bytearray())
+        buffer.extend(bytes(socket.readAll()))
+        while b"\n" in buffer:
+            line, _, remainder = buffer.partition(b"\n")
+            buffer[:] = remainder
+            if line != ACTIVATE_MESSAGE.strip():
+                continue
             self._on_activate()
+            socket.write(QByteArray(ACTIVATE_ACK))
+            socket.flush()
 
     def _dispose_socket(self, socket: QLocalSocket, *, abort: bool = False) -> None:
         """Schedule one deletion even when ``abort`` emits ``disconnected`` inline."""
@@ -112,6 +140,7 @@ class SingleInstanceCoordinator(QObject):
         if socket not in self._sockets:
             return
         self._sockets.remove(socket)
+        self._socket_buffers.pop(socket, None)
         try:
             socket.readyRead.disconnect(self._read_sender_socket)
         except (RuntimeError, TypeError):
