@@ -24,6 +24,10 @@ build/
 dist/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/resources/sidecar/*
+!src-tauri/resources/sidecar/translator-sidecar/
+src-tauri/resources/sidecar/translator-sidecar/*
+!src-tauri/resources/sidecar/translator-sidecar/.gitkeep
 *.zip
 *.dmg
 *.pkg

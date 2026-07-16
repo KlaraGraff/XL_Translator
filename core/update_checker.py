@@ -96,14 +96,15 @@ def _select_platform_asset(
         candidates = [
             asset
             for asset in assets
-            if "macos" in asset.name.lower() and asset.name.lower().endswith(".dmg")
+            if asset.name.lower().endswith(".dmg")
+            and ("macos" in asset.name.lower() or "translator_" in asset.name.lower())
         ]
     elif system == "windows":
         candidates = [
             asset
             for asset in assets
-            if "windows" in asset.name.lower()
-            and asset.name.lower().endswith("_setup.exe")
+            if asset.name.lower().endswith(".exe")
+            and ("windows" in asset.name.lower() or "setup" in asset.name.lower())
         ]
 
     if candidates:

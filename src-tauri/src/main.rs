@@ -63,13 +63,46 @@ fn python_command(root: &Path) -> PathBuf {
     PathBuf::from("python3")
 }
 
-fn spawn_sidecar() -> Result<RunningSidecar, String> {
+fn bundled_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Could not resolve bundled resources: {error}"))?;
+    let executable_name = if cfg!(target_os = "windows") {
+        "translator-sidecar.exe"
+    } else {
+        "translator-sidecar"
+    };
+    let executable = resource_dir
+        .join("sidecar")
+        .join("translator-sidecar")
+        .join(executable_name);
+    if executable.is_file() {
+        Ok(executable)
+    } else {
+        Err(format!(
+            "Bundled Translator engine sidecar is missing: {}",
+            executable.display()
+        ))
+    }
+}
+
+fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
     let root = project_root();
-    let python = python_command(&root);
-    let mut child = Command::new(python)
-        .args(["-m", "api.launcher"])
-        .current_dir(root)
-        .env("PYTHONUNBUFFERED", "1")
+    let mut command = if cfg!(debug_assertions) {
+        let python = python_command(&root);
+        let mut command = Command::new(python);
+        command.args(["-m", "api.launcher"]);
+        command.current_dir(&root);
+        command.env("PYTHONUNBUFFERED", "1");
+        command
+    } else {
+        let executable = bundled_sidecar_path(app)?;
+        let mut command = Command::new(executable);
+        command.current_dir(&root);
+        command
+    };
+    let mut child = command
         .env("TRANSLATOR_SIDECAR_PARENT_PID", std::process::id().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -164,7 +197,7 @@ fn main() {
             }
         }))
         .setup(|app| {
-            let sidecar = spawn_sidecar().map_err(std::io::Error::other)?;
+            let sidecar = spawn_sidecar(app.handle()).map_err(std::io::Error::other)?;
             app.manage(SidecarState(Mutex::new(Some(sidecar))));
             Ok(())
         })

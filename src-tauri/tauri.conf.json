@@ -28,6 +28,21 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../assets/branding/app-icon-original.png"]
+    "icon": ["../assets/branding/app-icon-original.png"],
+    "resources": {
+      "resources/sidecar": "sidecar"
+    },
+    "macOS": {
+      "minimumSystemVersion": "15.0"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

@@ -3,6 +3,7 @@ name = "translator"
 version = "8.0.0"
 description = "Translator desktop shell"
 authors = ["KlaraGraff"]
+license = "MIT"
 edition = "2021"
 
 [build-dependencies]

@@ -1,10 +1,10 @@
 # Translator
 
-Translator 是一个面向 Excel 和 Word 文档的本地翻译器，支持批量翻译、术语库管理和双语结果输出。
+Translator 是一个面向 Excel、Word 和 PDF 文档的本地翻译器，支持批量翻译、术语库管理和双语结果输出。
 
 ## 版本说明
 
-当前主线从 V5.0 起只维护 PySide6 原生桌面版本，不再维护旧的网页包装 / Streamlit 版本。仍需要旧网页包装版本的用户，请在 GitHub Releases 中下载 V4.6 旧版。
+当前主线使用 Tauri 2 原生窗口、系统 WebView 和 Python 文档引擎 sidecar。旧 PySide6 和 Streamlit 壳层均已退役。
 
 ## 下载最新版
 

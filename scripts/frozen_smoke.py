@@ -9,24 +9,21 @@ from importlib.metadata import PackageNotFoundError, version
 
 _CRITICAL_IMPORTS = (
     "app_meta",
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-    "PySide6.QtNetwork",
-    "PySide6.QtWidgets",
     "PIL.Image",
+    "fastapi",
     "openpyxl",
     "docx",
     "pypdfium2",
     "httpx",
+    "api.launcher",
     "core.task_runner",
     "core.word_task_runner",
     "core.pdf_image_translation",
-    "native_app.main",
 )
 
 _CRITICAL_DISTRIBUTIONS = (
-    "PySide6-Essentials",
     "Pillow",
+    "fastapi",
     "openpyxl",
     "python-docx",
     "pypdfium2",
