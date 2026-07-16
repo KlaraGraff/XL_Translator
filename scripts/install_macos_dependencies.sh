@@ -50,5 +50,9 @@ echo "[INFO] Install macOS build dependencies"
 "$PYTHON" -m pip install \
   --constraint "$CONSTRAINTS_PATH" \
   --requirement requirements-build.txt
+# The verifier checks every locked release dependency, including transitive
+# packages that modern pip may omit when they are optional on a platform.
+"$PYTHON" -m pip install \
+  --requirement "$CONSTRAINTS_PATH"
 "$PYTHON" scripts/verify_release_dependencies.py \
   --constraints "$CONSTRAINTS_PATH"
