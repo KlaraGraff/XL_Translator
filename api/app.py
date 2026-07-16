@@ -164,9 +164,15 @@ def create_app(
     @app.middleware("http")
     async def require_loopback_token(request, call_next):
         expected = app.state.auth_token
-        if expected and request.url.path != "/health":
-            if request.headers.get("X-Translator-Token") != expected:
-                return Response(status_code=401)
+        # CORS preflight requests never carry the custom token. They do not
+        # invoke an API handler; CORSMiddleware answers them before a browser
+        # may issue the authenticated request.
+        if (
+            expected
+            and request.method != "OPTIONS"
+            and request.headers.get("X-Translator-Token") != expected
+        ):
+            return Response(status_code=401)
         return await call_next(request)
 
     @app.exception_handler(TaskNotFoundError)

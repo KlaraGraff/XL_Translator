@@ -103,7 +103,10 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         command
     };
     let mut child = command
-        .env("TRANSLATOR_SIDECAR_PARENT_PID", std::process::id().to_string())
+        .env(
+            "TRANSLATOR_SIDECAR_PARENT_PID",
+            std::process::id().to_string(),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -132,7 +135,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
     let info = receiver
         .recv_timeout(SIDECAR_START_TIMEOUT)
         .map_err(|_| "Translator engine startup timed out.".to_string())??;
-    if let Err(error) = wait_for_health(info.port) {
+    if let Err(error) = wait_for_health(info.port, &info.token) {
         let _ = child.kill();
         return Err(error);
     }
@@ -156,18 +159,20 @@ fn parse_handshake(line: &str) -> Result<SidecarInfo, String> {
     }
 }
 
-fn wait_for_health(port: u16) -> Result<(), String> {
+fn wait_for_health(port: u16, token: &str) -> Result<(), String> {
     let deadline = std::time::Instant::now() + SIDECAR_HEALTH_TIMEOUT;
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     while std::time::Instant::now() < deadline {
         if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-            if stream
-                .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-                .is_ok()
-            {
+            let request = format!(
+                "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Translator-Token: {token}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(request.as_bytes()).is_ok() {
                 let mut response = String::new();
-                if stream.read_to_string(&mut response).is_ok() && response.starts_with("HTTP/1.1 200") {
+                if stream.read_to_string(&mut response).is_ok()
+                    && response.starts_with("HTTP/1.1 200")
+                {
                     return Ok(());
                 }
             }

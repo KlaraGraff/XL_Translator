@@ -280,9 +280,16 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(migration.status_code, 200)
         self.assertEqual(migration.json()["status"], "skipped")
 
-    def test_token_protects_api_routes_but_not_health(self) -> None:
+    def test_token_protects_every_api_route_including_health(self) -> None:
         client = TestClient(create_app(auth_token="sidecar-token"))
-        self.assertEqual(client.get("/health").status_code, 200)
+        self.assertEqual(client.get("/health").status_code, 401)
+        self.assertEqual(
+            client.get(
+                "/health",
+                headers={"X-Translator-Token": "sidecar-token"},
+            ).status_code,
+            200,
+        )
         self.assertEqual(client.get("/api/settings").status_code, 401)
         self.assertEqual(
             client.get(
@@ -298,6 +305,7 @@ class ApiAppTests(unittest.TestCase):
             headers={
                 "Origin": "tauri://localhost",
                 "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "content-type,x-translator-token",
             },
         )
 
