@@ -16,6 +16,7 @@ if (-not $python) {
 $targets = @(
     "config.py",
     "settings.py",
+    "api",
     "core",
     "native_app",
     "engines",

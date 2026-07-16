@@ -46,6 +46,12 @@ from config import (
 from core.connectivity_check import check_connectivity
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import build_model_catalog_signature, fetch_openai_compatible_models
+from core.model_config import (
+    ImportedModelConfig,
+    apply_model_config_import,
+    build_model_config_export_payload,
+    parse_model_config_import,
+)
 from core.model_roles import (
     FOLLOW_SOURCE_LABELS,
     ROLE_CLEANER,
@@ -789,63 +795,23 @@ class Sidebar(QFrame):
     def _build_model_config_export_payload(self) -> dict:
         self._save_current_model_role_fields()
         self._save_review_model_fields()
-        return {
-            "type": MODEL_CONFIG_EXPORT_TYPE,
-            "version": MODEL_CONFIG_EXPORT_VERSION,
-            "app": APP_NAME,
-            "app_version": APP_VERSION,
-            "model_profiles": self._model_profiles_for_export(),
-        }
+        return build_model_config_export_payload(
+            self.settings,
+            get_api_key=get_key,
+        )
 
     def _extract_imported_model_config(
         self,
         raw: object,
     ) -> tuple[dict, dict[str, str], list[dict[str, str]], dict, dict[str, dict]]:
-        if not isinstance(raw, dict):
-            raise ValueError("导入文件必须是 JSON 对象。")
-        if isinstance(raw.get("model_profiles"), dict):
-            return self._extract_imported_model_profiles(raw)
-
-        source = raw.get("model_config")
-        if not isinstance(source, dict):
-            settings_payload = raw.get("settings")
-            source = settings_payload if isinstance(settings_payload, dict) else raw
-
-        model_config = {}
-        for key in MODEL_CONFIG_SETTING_KEYS:
-            value = source.get(key)
-            if not isinstance(value, dict):
-                continue
-            allowed_fields = (
-                MODEL_CONFIG_CLOUD_FIELDS
-                if key == "engine"
-                else MODEL_CONFIG_ROLE_CLOUD_FIELDS
-            )
-            cloud_values = {
-                field: value[field]
-                for field in allowed_fields
-                if field in value
-            }
-            if cloud_values:
-                model_config[key] = cloud_values
-        if not model_config:
-            raise ValueError("未找到可导入的云端模型配置。")
-
-        keys_raw = raw.get("api_keys", {})
-        if keys_raw in (None, ""):
-            keys_raw = {}
-        if not isinstance(keys_raw, dict):
-            raise ValueError("api_keys 必须是 JSON 对象。")
-        cloud_providers = set(CLOUD_ENGINES.values())
-        api_keys = {
-            str(provider or "").strip(): str(api_key or "").strip()
-            for provider, api_key in keys_raw.items()
-            if str(provider or "").strip() in cloud_providers
-            and str(api_key or "").strip()
-        }
-        scoped_api_keys = self._extract_imported_scoped_api_keys(raw)
-        throughput_profiles = self._extract_imported_throughput_profiles(raw)
-        return model_config, api_keys, scoped_api_keys, throughput_profiles, {}
+        imported = parse_model_config_import(raw)
+        return (
+            imported.model_config,
+            imported.api_keys,
+            imported.scoped_api_keys,
+            imported.throughput_profiles,
+            imported.profile_throughputs,
+        )
 
     def _extract_imported_model_profiles(
         self,
@@ -1036,37 +1002,20 @@ class Sidebar(QFrame):
         throughput_profiles: dict,
         profile_throughputs: dict[str, dict],
     ) -> None:
-        payload = self.settings.model_dump(mode="json")
+        updated = apply_model_config_import(
+            self.settings,
+            ImportedModelConfig(
+                model_config=model_config,
+                api_keys=api_keys,
+                scoped_api_keys=scoped_api_keys,
+                throughput_profiles=throughput_profiles,
+                profile_throughputs=profile_throughputs,
+            ),
+            save_api_key=save_key,
+        )
         for key in MODEL_CONFIG_SETTING_KEYS:
-            if key in model_config:
-                current = dict(payload.get(key) or {})
-                current.update(model_config[key])
-                if key == "engine" and "mode" not in model_config[key]:
-                    current["mode"] = "cloud"
-                payload[key] = current
-        if throughput_profiles:
-            current_profiles = dict(payload.get("model_throughput_profiles") or {})
-            current_profiles.update(throughput_profiles)
-            payload["model_throughput_profiles"] = current_profiles
-
-        imported = AppSettings.model_validate(payload)
-        for key in MODEL_CONFIG_SETTING_KEYS:
-            setattr(self.settings, key, getattr(imported, key))
-        for provider, api_key in api_keys.items():
-            save_key(provider, api_key)
-        for entry in scoped_api_keys:
-            save_key(entry["provider"], entry["api_key"], entry["base_url"])
-        for role, throughput in profile_throughputs.items():
-            try:
-                config = resolve_effective_model_config(self.settings, role)
-                set_model_throughput(
-                    self.settings,
-                    config,
-                    batch_size=throughput.get("batch_size"),
-                    concurrency=throughput.get("concurrency"),
-                )
-            except Exception:
-                continue
+            setattr(self.settings, key, getattr(updated, key))
+        self.settings.model_throughput_profiles = updated.model_throughput_profiles
 
         self._model_catalog_signature = ""
         self._model_catalog_models = []

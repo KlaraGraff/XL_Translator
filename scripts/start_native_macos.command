@@ -94,7 +94,7 @@ if ! PYTHON_BIN="$(find_project_python)"; then
   fi
 fi
 
-if [[ ! -f "$BOOTSTRAP_MARKER" ]] || ! "$PYTHON_BIN" -c "import PySide6, anthropic, dashscope, docx, httpx, loguru, openai, openpyxl, psutil, pydantic, tenacity, xlrd, zhipuai" >/dev/null 2>&1; then
+if [[ ! -f "$BOOTSTRAP_MARKER" ]] || ! "$PYTHON_BIN" -c "import PySide6, docx, fastapi, httpx, loguru, openpyxl, psutil, pydantic, pypdfium2, tenacity, uvicorn, xlrd" >/dev/null 2>&1; then
   echo "[INFO] Installing native app dependencies"
   "$PYTHON_BIN" -m pip install -r "$PROJECT_ROOT/requirements.txt"
   if [[ "$?" -ne 0 ]]; then
