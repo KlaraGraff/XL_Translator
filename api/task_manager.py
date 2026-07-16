@@ -111,6 +111,7 @@ class TranslationTaskManager:
         *,
         surface: TaskSurface,
         source_path: str,
+        selected_paths: list[str] | None = None,
         options: TaskOptions | None = None,
     ) -> dict[str, Any]:
         normalized_surface = _normalize_surface(surface)
@@ -121,6 +122,17 @@ class TranslationTaskManager:
         selected_options = options or TaskOptions()
         settings = self._settings_loader().model_copy(deep=True)
         files = self._scan(root, normalized_surface, selected_options)
+        selected = {
+            str(Path(path).expanduser().resolve())
+            for path in (selected_paths or [])
+            if str(path or "").strip()
+        }
+        if selected:
+            files = [
+                item
+                for item in files
+                if str(Path(item.path).expanduser().resolve()) in selected
+            ]
         if not files:
             raise TaskInputError(
                 f"No supported {normalized_surface} files were found at: {root}"

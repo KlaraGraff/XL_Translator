@@ -1,0 +1,15 @@
+[package]
+name = "translator"
+version = "8.0.0"
+description = "Translator desktop shell"
+authors = ["KlaraGraff"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-single-instance = "2.4.3"

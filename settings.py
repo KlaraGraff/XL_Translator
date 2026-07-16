@@ -639,6 +639,19 @@ class UpdateSettings(BaseModel):
         return migrated
 
 
+class AppearanceSettings(BaseModel):
+    """Persisted Tauri shell preferences shared across desktop launches."""
+
+    theme: str = "system"
+    model_config_panel_open: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_theme(self):
+        if self.theme not in {"system", "light", "dark"}:
+            self.theme = "system"
+        return self
+
+
 class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
@@ -659,6 +672,7 @@ class AppSettings(BaseModel):
     pdf: PdfSettings = Field(default_factory=PdfSettings)
     model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
+    appearance: AppearanceSettings = Field(default_factory=AppearanceSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
     target_lang: str = Field(default_factory=get_default_target_lang)
@@ -1323,6 +1337,14 @@ def _migrate_settings_to_v24(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v25(data: dict) -> dict:
+    """Add persisted Tauri shell preferences without changing legacy behavior."""
+    migrated = dict(data)
+    migrated.setdefault("appearance", AppearanceSettings().model_dump())
+    migrated["settings_version"] = 25
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -1378,6 +1400,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v23(migrated)
         elif next_version == 24:
             migrated = _migrate_settings_to_v24(migrated)
+        elif next_version == 25:
+            migrated = _migrate_settings_to_v25(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version
