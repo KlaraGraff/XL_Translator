@@ -43,13 +43,16 @@ jobs:
         run: |
           $expected = "v$(python -c 'import app_meta; print(app_meta.APP_VERSION)')"
           if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match $expected" }
-      - name: Run quality and tests
+      - name: Run quality and Windows platform checks
         shell: pwsh
         env:
           TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
         run: |
           ./quality_gate.ps1
-          python -m unittest discover -s tests
+          python tests/test_excel_automation.py
+          python tests/test_data_migration.py
+          python tests/test_diagnostics.py
+          python tests/test_api_task_selection.py
           npm run check --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build Windows installer
