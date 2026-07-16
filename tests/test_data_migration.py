@@ -6,8 +6,10 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from core.data_migration import (
+    _restrict_user_permissions,
     inspect_data_migration,
     mark_migration_skipped,
     migrate_legacy_data,
@@ -30,6 +32,19 @@ def _read_sqlite_value(path: Path) -> str:
 
 
 class DataMigrationTests(unittest.TestCase):
+    def test_windows_key_permissions_skip_platform_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            key_file = Path(tmp) / "keys.json"
+            key_file.write_text('{"custom_openai":"secret"}', encoding="utf-8")
+
+            with (
+                patch("core.data_migration.os.name", "nt"),
+                patch("core.data_migration.platform.system") as system,
+            ):
+                _restrict_user_permissions(key_file)
+
+            system.assert_not_called()
+
     def test_migrates_primary_files_and_sqlite_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

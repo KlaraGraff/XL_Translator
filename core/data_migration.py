@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import sqlite3
@@ -421,6 +422,8 @@ def _unique_target(target: Path) -> Path:
 
 
 def _restrict_user_permissions(path: Path) -> None:
+    if os.name == "nt":
+        return
     if platform.system() not in {"Darwin", "Linux"}:
         return
     try:
