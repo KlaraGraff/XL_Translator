@@ -54,7 +54,9 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build Windows installer
         shell: pwsh
-        run: ./scripts/build_windows_package.ps1
+        run: |
+          $pythonExe = (Get-Command python).Source
+          ./scripts/build_windows_package.ps1 -PythonExe $pythonExe
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: Translator_Windows_Setup
@@ -101,7 +103,7 @@ jobs:
           npm run check --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build macOS dmg
-        run: bash ./scripts/build_macos_package.sh
+        run: PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: Translator_macOS_DMG

@@ -44,12 +44,16 @@ class ApiTaskSelectionTests(unittest.TestCase):
             )
             context = TaskApiContext(frozenset(), {})
 
-            with patch("api.task_manager.task_api_context_for_page", return_value=context):
+            with (
+                patch("api.task_manager.task_api_context_for_page", return_value=context),
+                patch("api.task_manager.threading.Thread") as thread_type,
+            ):
                 manager.start_task(
                     surface="excel",
                     source_path=str(root),
                     selected_paths=[str(second)],
                 )
+                thread_type.return_value.start.assert_called_once_with()
 
         selected = captured["files"]
         self.assertEqual([item.path for item in selected], [second])
