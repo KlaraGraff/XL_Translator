@@ -292,6 +292,21 @@ class ApiAppTests(unittest.TestCase):
             200,
         )
 
+    def test_tauri_origins_receive_cors_headers(self) -> None:
+        response = self.client.options(
+            "/api/settings",
+            headers={
+                "Origin": "tauri://localhost",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["access-control-allow-origin"],
+            "tauri://localhost",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

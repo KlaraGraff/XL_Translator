@@ -22,7 +22,8 @@ tmp*/
 # Build and distribution artifacts
 build/
 dist/
-src-tauri/
+src-tauri/target/
+src-tauri/gen/
 *.zip
 *.dmg
 *.pkg

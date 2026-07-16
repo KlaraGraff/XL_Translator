@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -72,6 +73,7 @@ class ScanRequest(BaseModel):
 class TaskStartRequest(BaseModel):
     source_path: str = Field(min_length=1)
     surface: Literal["excel", "word", "pdf"]
+    selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_scheme_cover: bool = False
     allow_xls_fallback: bool = False
@@ -149,6 +151,13 @@ def create_app(
 ) -> FastAPI:
     """Create a local API app; an empty token keeps in-process tests simple."""
     app = FastAPI(title="Translator Sidecar API", version="1")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["tauri://localhost", "http://tauri.localhost"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.task_manager = task_manager or TranslationTaskManager()
     app.state.auth_token = str(auth_token or "")
 
@@ -240,6 +249,7 @@ def create_app(
         return app.state.task_manager.start_task(
             surface=request.surface,
             source_path=request.source_path,
+            selected_paths=request.selected_paths,
             options=TaskOptions(
                 untranslated_only=request.untranslated_only,
                 protect_scheme_cover=request.protect_scheme_cover,
