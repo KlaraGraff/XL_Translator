@@ -1064,17 +1064,14 @@ class PdfImageTranslationRunner:
                 continue
 
             try:
-                import fitz  # type: ignore
-
-                with fitz.open(str(item.path)) as doc:
-                    if getattr(doc, "needs_pass", False):
-                        record.status = PDF_OUTPUT_STATE_FAILED
-                        record.error = "受保护 PDF 暂不在本轮支持范围内。"
-                    else:
-                        record.page_count = int(doc.page_count)
+                doc = _open_pdf_document(item.path)
+                try:
+                    record.page_count = len(doc)
+                finally:
+                    doc.close()
             except Exception as exc:  # noqa: BLE001 - dependency/file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
-                record.error = f"PDF 读取失败：{exc}"
+                record.error = _pdf_read_error_message(exc)
 
             prepared_files.append(
                 self._prepared_file_shell(
@@ -1253,17 +1250,14 @@ class PdfImageTranslationRunner:
             and prepared.record.page_count > 0
             for prepared in prepared_files
         )
-        fitz = None
         if needs_pdf_rendering:
             try:
-                import fitz as fitz_module  # type: ignore
-
-                fitz = fitz_module
+                _load_pdfium()
             except Exception as exc:  # noqa: BLE001 - dependency failure.
                 for prepared in prepared_files:
                     if prepared.record.source_type != SOURCE_TYPE_IMAGE and prepared.record.page_count:
                         prepared.record.status = PDF_OUTPUT_STATE_FAILED
-                        prepared.record.error = f"PyMuPDF 未安装或不可用：{exc}"
+                        prepared.record.error = f"pypdfium2 未安装或不可用：{exc}"
                 return
 
         for prepared in prepared_files:
@@ -1289,7 +1283,8 @@ class PdfImageTranslationRunner:
                     self._log("ERROR", f"[{record.name}] {record.error}")
                 continue
             try:
-                with fitz.open(str(prepared.item.path)) as doc:
+                doc = _open_pdf_document(prepared.item.path)
+                try:
                     existing_pages = {page.page_number for page in record.pages}
                     if existing_pages:
                         remaining_count = max(0, record.page_count - len(existing_pages))
@@ -1311,6 +1306,8 @@ class PdfImageTranslationRunner:
                                 file_name=record.name,
                             ),
                         )
+                finally:
+                    doc.close()
             except Exception as exc:  # noqa: BLE001 - file-level render failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 record.error = f"PDF 渲染失败：{exc}"
@@ -1539,10 +1536,10 @@ class PdfImageTranslationRunner:
         self._log("INFO", f"[{item.path.name}] 已复制源 PDF 到输出目录")
 
         try:
-            import fitz  # type: ignore
+            _load_pdfium()
         except Exception as exc:  # noqa: BLE001 - dependency may be absent in dev env.
             record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = f"PyMuPDF 未安装或不可用：{exc}"
+            record.error = f"pypdfium2 未安装或不可用：{exc}"
             return record
 
         source_pages_dir, translated_pages_dir = resolve_pdf_page_archive_dirs(
@@ -1563,12 +1560,9 @@ class PdfImageTranslationRunner:
         )
 
         try:
-            with fitz.open(str(item.path)) as doc:
-                if getattr(doc, "needs_pass", False):
-                    record.status = PDF_OUTPUT_STATE_FAILED
-                    record.error = "受保护 PDF 暂不在本轮支持范围内。"
-                    return record
-                page_count = int(doc.page_count)
+            doc = _open_pdf_document(item.path)
+            try:
+                page_count = len(doc)
                 record.page_count = page_count
                 futures: dict[Any, PdfPageRecord] = {}
                 max_pending = max(1, concurrency + PDF_PAGE_RENDER_AHEAD_COUNT)
@@ -1639,6 +1633,8 @@ class PdfImageTranslationRunner:
                             self._log("WARN", f"[{item.path.name}] 已收到中止请求，不再提交新页")
                             wait(list(futures.keys()), timeout=20)
                             break
+            finally:
+                doc.close()
         except ImageModelUnavailableError as exc:
             self._fatal_model_error = str(exc)
             record.status = PDF_OUTPUT_STATE_FAILED
@@ -1736,22 +1732,30 @@ class PdfImageTranslationRunner:
         source_pages_dir: Path,
         file_name: str = "",
     ) -> PdfPageRecord:
-        page = doc.load_page(page_index)
-        page_number = page_index + 1
-        matrix = _render_matrix()
-        pix = page.get_pixmap(matrix=matrix, alpha=False)
-        source_path = source_pages_dir / page_image_name(page_number, page_count)
-        pix.save(str(source_path))
-        rect = page.rect
+        page = doc.get_page(page_index)
+        try:
+            page_width_pt, page_height_pt = page.get_size()
+            bitmap = page.render(scale=_pdf_render_scale(), rev_byteorder=True)
+            try:
+                source_path = source_pages_dir / page_image_name(page_index + 1, page_count)
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                image = bitmap.to_pil()
+                image.save(source_path, format="PNG")
+                source_width_px, source_height_px = image.size
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+
         return PdfPageRecord(
-            page_number=page_number,
+            page_number=page_index + 1,
             source_image_path=str(source_path),
             file_name=file_name,
             status="rendered",
-            source_width_px=int(pix.width),
-            source_height_px=int(pix.height),
-            page_width_pt=float(rect.width),
-            page_height_pt=float(rect.height),
+            source_width_px=int(source_width_px),
+            source_height_px=int(source_height_px),
+            page_width_pt=float(page_width_pt),
+            page_height_pt=float(page_height_pt),
         )
 
     def _render_source_image(
@@ -2280,13 +2284,9 @@ class PdfImageTranslationRunner:
         *,
         compressed: bool = False,
     ) -> None:
-        try:
-            import fitz  # type: ignore
-        except Exception as exc:  # noqa: BLE001 - dependency may be absent in dev env.
-            raise RuntimeError(f"PyMuPDF 未安装或不可用：{exc}") from exc
-
+        pdfium = _load_pdfium()
         output_pdf.parent.mkdir(parents=True, exist_ok=True)
-        out_doc = fitz.open()
+        out_doc = pdfium.PdfDocument.new()
         try:
             with tempfile.TemporaryDirectory(prefix="xl-translator-pdf-") as tmp_dir:
                 temp_dir = Path(tmp_dir)
@@ -2306,13 +2306,14 @@ class PdfImageTranslationRunner:
                                 f"第 {page.page_number} 页压缩失败，已回退高清页：{exc}",
                             )
                             image_path = Path(page.translated_image_path)
-                    pdf_page = out_doc.new_page(
-                        width=page.page_width_pt,
-                        height=page.page_height_pt,
+                    _append_pdf_image_page(
+                        pdfium,
+                        out_doc,
+                        image_path=image_path,
+                        page_width_pt=page.page_width_pt,
+                        page_height_pt=page.page_height_pt,
                     )
-                    rect = fitz.Rect(0, 0, page.page_width_pt, page.page_height_pt)
-                    pdf_page.insert_image(rect, filename=str(image_path))
-                _save_pdf_document(out_doc, output_pdf)
+                out_doc.save(output_pdf)
         finally:
             out_doc.close()
 
@@ -2424,13 +2425,13 @@ def _build_image_file_item(path: Path) -> PdfFileItem:
 
 def _read_pdf_page_count(path: Path) -> int:
     try:
-        import fitz  # type: ignore
+        doc = _open_pdf_document(path)
     except Exception:
         return 0
-    with fitz.open(str(path)) as doc:
-        if getattr(doc, "needs_pass", False):
-            return 0
-        return int(doc.page_count)
+    try:
+        return len(doc)
+    finally:
+        doc.close()
 
 
 def _validate_source_image(path: Path) -> None:
@@ -2473,11 +2474,56 @@ def _page_archive_stem(relative_pdf: Path) -> Path:
     return relative_pdf.with_suffix("")
 
 
-def _render_matrix():
-    import fitz  # type: ignore
+def _load_pdfium():
+    try:
+        import pypdfium2 as pdfium  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - installed dependency may be unusable.
+        raise RuntimeError(f"pypdfium2 未安装或不可用：{exc}") from exc
+    return pdfium
 
-    zoom = PDF_RENDER_DPI_DEFAULT / 72.0
-    return fitz.Matrix(zoom, zoom)
+
+def _open_pdf_document(path: Path):
+    return _load_pdfium().PdfDocument(str(path))
+
+
+def _pdf_render_scale() -> float:
+    return PDF_RENDER_DPI_DEFAULT / 72.0
+
+
+def _pdf_read_error_message(exc: Exception) -> str:
+    if "password" in str(exc).lower():
+        return "受保护 PDF 暂不在本轮支持范围内。"
+    return f"PDF 读取失败：{exc}"
+
+
+def _append_pdf_image_page(
+    pdfium,
+    document,
+    *,
+    image_path: Path,
+    page_width_pt: float,
+    page_height_pt: float,
+) -> None:
+    image_object = pdfium.PdfImage.new(document)
+    bitmap = None
+    page = None
+    try:
+        if image_path.suffix.lower() in {".jpg", ".jpeg"}:
+            image_object.load_jpeg(image_path, inline=True)
+        else:
+            with Image.open(image_path) as source:
+                normalized = _to_white_rgb(ImageOps.exif_transpose(source))
+                bitmap = pdfium.PdfBitmap.from_pil(normalized)
+            image_object.set_bitmap(bitmap)
+        image_object.set_matrix(pdfium.PdfMatrix().scale(page_width_pt, page_height_pt))
+        page = document.new_page(page_width_pt, page_height_pt)
+        page.insert_obj(image_object)
+        page.gen_content()
+    finally:
+        if bitmap is not None:
+            bitmap.close()
+        if page is not None:
+            page.close()
 
 
 def _safe_ratio(width: int, height: int) -> float:
@@ -2563,20 +2609,6 @@ def _to_white_rgb(image: Image.Image) -> Image.Image:
         canvas.alpha_composite(rgba)
         return canvas.convert("RGB")
     return image.convert("RGB")
-
-
-def _save_pdf_document(doc, output_pdf: Path) -> None:
-    try:
-        doc.save(
-            str(output_pdf),
-            garbage=4,
-            deflate=True,
-            deflate_images=True,
-            deflate_fonts=True,
-            use_objstms=1,
-        )
-    except TypeError:
-        doc.save(str(output_pdf))
 
 
 def _load_placeholder_font(size: int, *, bold: bool = False):

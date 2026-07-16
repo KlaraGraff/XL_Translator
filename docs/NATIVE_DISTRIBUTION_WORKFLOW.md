@@ -32,8 +32,8 @@
 
 运行依赖以 `requirements.txt` 为准。主线 UI 依赖为
 `PySide6-Essentials`，不再安装 Streamlit、streamlit-extras 或 pywebview。
-PyInstaller 配置还显式排除上游 SDK 的可选 pandas/NumPy 代理，避免开发环境中
-残留的非运行依赖被误收集进安装包。
+PyInstaller 配置会显式收集 `pypdfium2_raw` 的 PDFium 动态库，并排除无运行调用的
+NumPy/Pandas，避免开发环境残留的非运行依赖被误收集进安装包。
 
 发布构建固定使用 Python 3.11，并通过
 `constraints-release-py311.txt` 锁定完整依赖图。更新依赖时应在 macOS 和
@@ -71,9 +71,9 @@ GitHub Actions 当前没有内置证书或公证凭据，所以 tag workflow 产
 
 ## 第三方许可
 
-PDF 功能使用的 `PyMuPDF` 为 AGPL-3.0 / Artifex 商业许可双许可依赖。发布者必须
-在对外分发前根据产品的源码披露方式和使用场景选择合适许可，并完成相应义务；
-构建脚本只能验证技术依赖，不能替代该许可决策。
+PDF 功能使用 `pypdfium2`（Apache-2.0 或 BSD-3-Clause）。仓库自身采用 MIT
+许可证，完整条款见根目录 `LICENSE`；构建脚本只能验证技术依赖，不能替代第三方
+许可合规审查。
 
 ## 验证
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parents[1]
 if str(ROOT) not in sys.path:
@@ -21,16 +21,13 @@ datas = [
 ]
 
 metadata_packages = [
-    "anthropic",
-    "dashscope",
     "httpx",
     "loguru",
-    "openai",
     "openpyxl",
     "Pillow",
+    "pypdfium2",
     "psutil",
     "pydantic",
-    "PyMuPDF",
     "PySide6_Essentials",
     "python-docx",
     "pywin32",
@@ -38,7 +35,6 @@ metadata_packages = [
     "tenacity",
     "xlrd",
     "xlwings",
-    "zhipuai",
 ]
 for package_name in metadata_packages:
     datas += copy_metadata(package_name)
@@ -48,13 +44,13 @@ hiddenimports += collect_submodules("core")
 hiddenimports += collect_submodules("engines")
 hiddenimports += collect_submodules("native_app")
 hiddenimports += [
-    "anthropic",
-    "dashscope",
     "httpx",
-    "openai",
     "openpyxl",
     "docx",
     "PIL",
+    "pypdfium2",
+    "pypdfium2.raw",
+    "pypdfium2_raw",
     "psutil",
     "PySide6.QtCore",
     "PySide6.QtGui",
@@ -69,13 +65,14 @@ hiddenimports += [
     "xlwings",
     "win32com",
     "win32com.client",
-    "zhipuai",
 ]
+
+binaries = collect_dynamic_libs("pypdfium2_raw")
 
 a = Analysis(
     [str(ROOT / "scripts" / "launch_native.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -84,6 +81,39 @@ a = Analysis(
     excludes=["numpy", "pandas"],
     noarchive=False,
     optimize=0,
+)
+
+
+def _exclude_unused_qt_bundle_entries(entries, prefixes):
+    normalized_prefixes = tuple(prefix.replace("\\", "/") for prefix in prefixes)
+    return [
+        entry
+        for entry in entries
+        if not str(entry[0]).replace("\\", "/").startswith(normalized_prefixes)
+    ]
+
+
+pruned_binaries = _exclude_unused_qt_bundle_entries(
+    a.binaries,
+    (
+        "PySide6/QtDBus.",
+        "PySide6/Qt/plugins/generic/",
+        "PySide6/Qt/plugins/networkinformation/",
+        "PySide6/Qt/plugins/imageformats/qgif",
+        "PySide6/Qt/plugins/imageformats/qicns",
+        "PySide6/Qt/plugins/imageformats/qico",
+        "PySide6/Qt/plugins/imageformats/qjpeg",
+        "PySide6/Qt/plugins/imageformats/qmacheif",
+        "PySide6/Qt/plugins/imageformats/qmacjp2",
+        "PySide6/Qt/plugins/imageformats/qtga",
+        "PySide6/Qt/plugins/imageformats/qtiff",
+        "PySide6/Qt/plugins/imageformats/qwbmp",
+        "PySide6/Qt/plugins/imageformats/qwebp",
+    ),
+)
+pruned_datas = _exclude_unused_qt_bundle_entries(
+    a.datas,
+    ("PySide6/Qt/translations/",),
 )
 
 pyz = PYZ(a.pure)
@@ -109,8 +139,8 @@ exe = EXE(
 
 coll = COLLECT(
     exe,
-    a.binaries,
-    a.datas,
+    pruned_binaries,
+    pruned_datas,
     strip=False,
     upx=True,
     upx_exclude=[],

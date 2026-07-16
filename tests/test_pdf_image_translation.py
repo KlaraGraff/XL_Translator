@@ -176,7 +176,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
-            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
@@ -219,6 +219,55 @@ class PdfImageTranslationTests(unittest.TestCase):
                     / "page_001.png"
                 ).exists()
             )
+
+    def test_real_pdfium_pipeline_preserves_page_dimensions(self) -> None:
+        import pypdfium2 as pdfium
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            Image.new("RGB", (1224, 1584), "white").save(
+                source_pdf,
+                format="PDF",
+                resolution=144.0,
+            )
+            settings = AppSettings(target_lang="en")
+            settings.image_model_role.source_role = SOURCE_INDEPENDENT
+            settings.image_model_role.cloud_provider = "custom_openai"
+            settings.image_model_role.cloud_model = "image-model"
+            settings.image_model_role.cloud_base_url = "https://images.example/v1"
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1224, 1584)),
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                record = runner._process_file(
+                    runner._files[0],
+                    output_dir=root / "out",
+                    app_managed=True,
+                    max_attempts=max_page_generation_attempts(0),
+                    scheduler=WeightedApiScheduler(1),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=None,
+                    concurrency=1,
+                    processed_page_offset=0,
+                    total_pages=1,
+                )
+
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            output = Path(record.translated_pdf_path)
+            document = pdfium.PdfDocument(output)
+            try:
+                self.assertEqual(len(document), 1)
+                width, height = document.get_page_size(0)
+            finally:
+                document.close()
+            self.assertAlmostEqual(width, 612.0, places=1)
+            self.assertAlmostEqual(height, 792.0, places=1)
 
     def test_image_pipeline_outputs_model_image_format_without_pdf_variants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -722,7 +771,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
-            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
@@ -772,7 +821,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
-            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
@@ -841,7 +890,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
-            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
@@ -893,7 +942,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -936,7 +985,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
-            with patch.dict(sys.modules, {"fitz": _fake_fitz_module()}), patch(
+            with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
@@ -998,7 +1047,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -1049,7 +1098,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"first.pdf": 1, "second.pdf": 3})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"first.pdf": 1, "second.pdf": 3})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -1087,7 +1136,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 2})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
             ), patch("core.model_roles.get_key", return_value="secret"), patch(
                 "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
                 0,
@@ -1134,7 +1183,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 3})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 3})},
             ), patch("core.model_roles.get_key", return_value="secret"), patch(
                 "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
                 0,
@@ -1192,7 +1241,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"), patch(
                 "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
                 0,
@@ -1251,7 +1300,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"first.pdf": 1, "second.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"), patch(
                 "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
                 0,
@@ -1300,7 +1349,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -1340,7 +1389,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -1379,7 +1428,7 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             with patch.dict(
                 sys.modules,
-                {"fitz": _fake_fitz_module_by_page_count({"source.pdf": 1})},
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
             ), patch("core.model_roles.get_key", return_value="secret"):
                 runner._run()
 
@@ -1633,124 +1682,92 @@ def _drain_last_message(runner: PdfImageTranslationRunner, message_type):
     return messages[-1] if messages else None
 
 
-def _fake_fitz_module():
-    class FakeRect:
-        def __init__(self, x0=0, y0=0, x1=288, y1=384):
-            self.x0 = x0
-            self.y0 = y0
-            self.x1 = x1
-            self.y1 = y1
-            self.width = x1 - x0
-            self.height = y1 - y0
+def _fake_pdfium_module(page_counts: dict[str, int] | None = None):
+    resolved_page_counts = page_counts or {}
 
-    class FakePix:
-        width = 1200
-        height = 1600
-
-        def save(self, path: str) -> None:
-            Path(path).write_bytes(_png_bytes(self.width, self.height))
-
-    class FakePage:
-        rect = FakeRect()
-
-        def get_pixmap(self, matrix=None, alpha=False):  # noqa: ARG002
-            return FakePix()
-
-        def insert_image(self, rect, filename: str) -> None:  # noqa: ARG002
-            return
-
-    class FakeInputDoc:
-        page_count = 1
-        needs_pass = False
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-            return False
-
-        def load_page(self, page_index: int):  # noqa: ARG002
-            return FakePage()
-
-    class FakeOutputDoc:
-        def new_page(self, *, width: float, height: float):  # noqa: ARG002
-            return FakePage()
-
-        def save(self, path: str) -> None:
-            Path(path).write_bytes(b"%PDF-1.4\n% fake translated pdf\n")
+    class FakeBitmap:
+        def to_pil(self):
+            return Image.new("RGB", (1200, 1600), "white")
 
         def close(self) -> None:
             return
 
-    def fake_open(path: str | None = None):
-        return FakeInputDoc() if path else FakeOutputDoc()
-
-    return types.SimpleNamespace(
-        open=fake_open,
-        Matrix=lambda x, y: (x, y),
-        Rect=FakeRect,
-    )
-
-
-def _fake_fitz_module_by_page_count(page_counts: dict[str, int]):
-    class FakeRect:
-        def __init__(self, x0=0, y0=0, x1=288, y1=384):
-            self.x0 = x0
-            self.y0 = y0
-            self.x1 = x1
-            self.y1 = y1
-            self.width = x1 - x0
-            self.height = y1 - y0
-
-    class FakePix:
-        width = 1200
-        height = 1600
-
-        def save(self, path: str) -> None:
-            Path(path).write_bytes(_png_bytes(self.width, self.height))
-
     class FakePage:
-        rect = FakeRect()
+        def get_size(self) -> tuple[float, float]:
+            return (288.0, 384.0)
 
-        def get_pixmap(self, matrix=None, alpha=False):  # noqa: ARG002
-            return FakePix()
+        def render(self, **_kwargs):
+            return FakeBitmap()
 
-        def insert_image(self, rect, filename: str) -> None:  # noqa: ARG002
+        def insert_obj(self, _image_object) -> None:
             return
 
-    class FakeInputDoc:
-        needs_pass = False
+        def gen_content(self) -> None:
+            return
 
+        def close(self) -> None:
+            return
+
+    class FakeInputDocument:
         def __init__(self, path: str):
-            self.page_count = page_counts.get(Path(path).name, 1)
+            self.page_count = resolved_page_counts.get(Path(path).name, 1)
 
-        def __enter__(self):
-            return self
+        def __len__(self) -> int:
+            return self.page_count
 
-        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
-            return False
-
-        def load_page(self, page_index: int):  # noqa: ARG002
+        def get_page(self, _page_index: int) -> FakePage:
             return FakePage()
 
-    class FakeOutputDoc:
-        def new_page(self, *, width: float, height: float):  # noqa: ARG002
+        def close(self) -> None:
+            return
+
+    class FakeOutputDocument:
+        def new_page(self, _width: float, _height: float) -> FakePage:
             return FakePage()
 
-        def save(self, path: str) -> None:
+        def save(self, path: Path) -> None:
             Path(path).write_bytes(b"%PDF-1.4\n% fake translated pdf\n")
 
         def close(self) -> None:
             return
 
-    def fake_open(path: str | None = None):
-        return FakeInputDoc(path) if path else FakeOutputDoc()
+    class FakePdfDocument:
+        def __new__(cls, path: str):
+            return FakeInputDocument(path)
+
+        @staticmethod
+        def new() -> FakeOutputDocument:
+            return FakeOutputDocument()
+
+    class FakePdfImage:
+        @staticmethod
+        def new(_document):
+            return types.SimpleNamespace(
+                load_jpeg=lambda *_args, **_kwargs: None,
+                set_bitmap=lambda *_args, **_kwargs: None,
+                set_matrix=lambda *_args, **_kwargs: None,
+                close=lambda: None,
+            )
+
+    class FakePdfBitmap:
+        @staticmethod
+        def from_pil(_image) -> FakeBitmap:
+            return FakeBitmap()
+
+    class FakePdfMatrix:
+        def scale(self, _width: float, _height: float):
+            return self
 
     return types.SimpleNamespace(
-        open=fake_open,
-        Matrix=lambda x, y: (x, y),
-        Rect=FakeRect,
+        PdfDocument=FakePdfDocument,
+        PdfImage=FakePdfImage,
+        PdfBitmap=FakePdfBitmap,
+        PdfMatrix=FakePdfMatrix,
     )
+
+
+def _fake_pdfium_module_by_page_count(page_counts: dict[str, int]):
+    return _fake_pdfium_module(page_counts)
 
 
 if __name__ == "__main__":
