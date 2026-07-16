@@ -58,8 +58,8 @@ format behind its own small adapter.
 - `core.word_task_runner`: Word pipeline mirroring the Excel runner:
   scan/extract, TM/API translate, write output.
 - `core.headless_word_translate`: CLI-friendly runner wrapper.
-- `native_app.pages.word_translate`: PySide6 page using the same visual language
-  as the Excel page but with Word-specific file scanning and options.
+- Historical V7 note: the PySide6 page described here was retired in V8; the
+  maintained Word surface is the Tauri UI in `ui/`.
 
 ## Hermes Word Notes Applied
 

@@ -1,4 +1,4 @@
-# ADR 0001: Native-only mainline
+# ADR 0001: Native-only mainline (historical)
 
 Date: 2026-05-24
 
@@ -6,7 +6,11 @@ Updated: 2026-05-25 for the V5.0 native release line.
 
 ## Status
 
-Accepted
+Superseded by ADR 0003 (2026-07-16)
+
+> Historical record: this decision governed the V5 PySide6 release line. It
+> was superseded by the Tauri + Python sidecar architecture in ADR 0003; the
+> legacy paths named below no longer exist on the maintained V8 mainline.
 
 ## Context
 

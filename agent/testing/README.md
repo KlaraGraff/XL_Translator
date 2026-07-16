@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
   -ScriptPath .runtime/self-tests/tm-import-header/check_tm_import.py
 ```
 
-3. 如果要测原生页面，脚本里优先设置 `QT_QPA_PLATFORM=offscreen`，再直接实例化目标 PySide6 页面或主窗口并断言控件状态。
+3. 如果要测 Tauri 页面，先用隔离应用数据启动开发壳，再对页面导航、主题、配置面板和关键 DOM 状态做断言。
 
 ## 复用到新项目时怎么搬
 

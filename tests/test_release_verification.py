@@ -23,9 +23,8 @@ class ReleaseVerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as app_data:
             environment = os.environ.copy()
             environment["TRANSLATOR_APP_DATA_DIR"] = app_data
-            environment["QT_QPA_PLATFORM"] = "offscreen"
             result = subprocess.run(
-                [sys.executable, "scripts/launch_native.py", "--smoke-test"],
+                [sys.executable, "scripts/launch_sidecar.py", "--smoke-test"],
                 cwd=ROOT,
                 env=environment,
                 check=False,

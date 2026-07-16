@@ -1,9 +1,10 @@
-"""Launch the experimental native Qt desktop interface."""
+"""Entrypoint used by the frozen Python translation-engine sidecar."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -16,9 +17,10 @@ def _run() -> int:
 
         return run_smoke_test()
 
-    from native_app.main import main
+    from api.launcher import main
 
-    return main()
+    main()
+    return 0
 
 
 if __name__ == "__main__":
