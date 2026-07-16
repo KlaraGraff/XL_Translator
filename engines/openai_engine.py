@@ -9,7 +9,13 @@ import httpx
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import CLOUD_REQUEST_TIMEOUT, RETRY_MAX_ATTEMPTS, RETRY_WAIT_MIN, RETRY_WAIT_MAX
+from config import (
+    CLOUD_REQUEST_TIMEOUT,
+    OPENAI_BASE_URL,
+    RETRY_MAX_ATTEMPTS,
+    RETRY_WAIT_MIN,
+    RETRY_WAIT_MAX,
+)
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
@@ -81,21 +87,14 @@ class OpenAIEngine(TranslationEngine):
         base_url: str = "",
         api_mode: str = "",
         engine_name_prefix: str = "openai",
+        response_label: str = "OpenAI",
     ):
-        import openai
-        kwargs: dict = {
-            "api_key": api_key,
-            "timeout": CLOUD_REQUEST_TIMEOUT,
-            "max_retries": 0,
-        }
-        if base_url:
-            kwargs["base_url"] = base_url
-        self._client = openai.OpenAI(**kwargs)
         self._model = model
         self._api_key = api_key
-        self._base_url = str(base_url or "").rstrip("/")
+        self._base_url = str(base_url or OPENAI_BASE_URL).rstrip("/")
         self._api_mode = str(api_mode or "").strip()
         self._engine_name_prefix = str(engine_name_prefix or "openai").strip()
+        self._response_label = str(response_label or "OpenAI").strip()
 
     @property
     def engine_name(self) -> str:
@@ -122,7 +121,7 @@ class OpenAIEngine(TranslationEngine):
         user_msg    = json.dumps(texts, ensure_ascii=False)
 
         raw = self._call_api(full_system, user_msg)
-        return parse_response(texts, raw, "OpenAI")
+        return parse_response(texts, raw, self._response_label)
 
     def _use_responses_api(self) -> bool:
         if self._api_mode == "codex_responses":
@@ -142,14 +141,21 @@ class OpenAIEngine(TranslationEngine):
         return self._call_chat_completions_api(system, user_msg)
 
     def _call_chat_completions_api(self, system: str, user_msg: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user",   "content": user_msg},
-            ],
+        response = _post_json(
+            f"{self._base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": self._model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+            },
         )
-        return response.choices[0].message.content or ""
+        return _extract_chat_completion_text(response)
 
     def _call_responses_api(self, system: str, user_msg: str) -> str:
         if not self._base_url:
@@ -195,3 +201,26 @@ class OpenAIEngine(TranslationEngine):
 
     def chat(self, system: str, user: str) -> str:
         return self._call_api(system, user)
+
+
+def _post_json(url: str, *, headers: dict[str, str], payload: dict) -> object:
+    with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
+        response = client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+def _extract_chat_completion_text(payload: object) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError("Chat Completions API 返回格式异常")
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("Chat Completions API 返回未包含 choices")
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise ValueError("Chat Completions API 返回 choice 格式异常")
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("Chat Completions API 返回未包含 message")
+    content = message.get("content")
+    return content if isinstance(content, str) else ""

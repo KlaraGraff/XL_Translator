@@ -202,21 +202,21 @@ class EngineDispatcherTests(unittest.TestCase):
             "local_openai/lm_studio",
         )
 
-    def test_openai_engine_disables_sdk_retry_layer(self) -> None:
-        with patch("openai.OpenAI") as client_cls:
-            from engines.openai_engine import OpenAIEngine
+    def test_openai_engine_uses_httpx_without_sdk_client(self) -> None:
+        from engines.openai_engine import OpenAIEngine
 
-            OpenAIEngine(api_key="key", model="model")
+        engine = OpenAIEngine(api_key="key", model="model")
 
-        self.assertEqual(client_cls.call_args.kwargs["max_retries"], 0)
+        self.assertEqual(engine._base_url, "https://api.openai.com/v1")
+        self.assertFalse(hasattr(engine, "_client"))
 
-    def test_claude_engine_disables_sdk_retry_layer(self) -> None:
-        with patch("anthropic.Anthropic") as client_cls:
-            from engines.claude_engine import ClaudeEngine
+    def test_claude_engine_uses_httpx_without_sdk_client(self) -> None:
+        from engines.claude_engine import ClaudeEngine
 
-            ClaudeEngine(api_key="key", model="model")
+        engine = ClaudeEngine(api_key="key", model="model")
 
-        self.assertEqual(client_cls.call_args.kwargs["max_retries"], 0)
+        self.assertEqual(engine._base_url, "https://api.anthropic.com/v1")
+        self.assertFalse(hasattr(engine, "_client"))
 
 
 if __name__ == "__main__":

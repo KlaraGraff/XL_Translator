@@ -16,12 +16,8 @@ _CRITICAL_IMPORTS = (
     "PIL.Image",
     "openpyxl",
     "docx",
-    "fitz",
+    "pypdfium2",
     "httpx",
-    "anthropic",
-    "openai",
-    "dashscope",
-    "zhipuai",
     "core.task_runner",
     "core.word_task_runner",
     "core.pdf_image_translation",
@@ -33,7 +29,7 @@ _CRITICAL_DISTRIBUTIONS = (
     "Pillow",
     "openpyxl",
     "python-docx",
-    "PyMuPDF",
+    "pypdfium2",
 )
 
 

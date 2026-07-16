@@ -49,6 +49,8 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 CLAUDE_BASE_URL = "https://api.anthropic.com/v1"
 SILICONFLOW_BASE_URL = "https://api.siliconflow.com/v1"
 LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
+ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
+DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "openai": OPENAI_BASE_URL,
     "claude": CLAUDE_BASE_URL,

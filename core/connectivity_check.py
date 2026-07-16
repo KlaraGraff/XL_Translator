@@ -8,8 +8,10 @@ from urllib.parse import urlparse
 import httpx
 
 from config import (
+    DASHSCOPE_OPENAI_BASE_URL,
     LM_STUDIO_BASE_URL,
     OLLAMA_BASE_URL,
+    ZHIPU_OPENAI_BASE_URL,
     normalize_cloud_base_url,
 )
 from settings import AppSettings, get_cloud_provider_config, get_key
@@ -320,7 +322,7 @@ def _check_zhipu(
             provider="zhipu",
         )
 
-    url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    url = _append_url_path(ZHIPU_OPENAI_BASE_URL, "/chat/completions")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -377,7 +379,7 @@ def _check_dashscope(
             provider="dashscope",
         )
 
-    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    url = _append_url_path(DASHSCOPE_OPENAI_BASE_URL, "/chat/completions")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
