@@ -5,9 +5,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
+import sys
 import zipfile
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -446,10 +448,20 @@ def _build_pdf_diagnostic_summary(
 def _build_runtime_payload() -> dict[str, Any]:
     return {
         "app_version": APP_VERSION,
-        "platform": platform.platform(),
+        "platform": _runtime_platform_label(),
         "python_version": platform.python_version(),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def _runtime_platform_label() -> str:
+    if os.name == "nt":
+        get_windows_version = getattr(sys, "getwindowsversion", None)
+        if get_windows_version is None:
+            return "Windows"
+        version = get_windows_version()
+        return f"Windows-{version.major}.{version.minor}.{version.build}"
+    return platform.platform()
 
 
 def _build_summary(

@@ -4,6 +4,7 @@ import unittest
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from openpyxl import Workbook
@@ -15,6 +16,22 @@ from settings import AppSettings
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_windows_runtime_label_avoids_shell_platform_probe(self) -> None:
+        with (
+            patch.object(diagnostics.os, "name", "nt"),
+            patch.object(
+                diagnostics.sys,
+                "getwindowsversion",
+                return_value=SimpleNamespace(major=10, minor=0, build=26100),
+                create=True,
+            ),
+            patch.object(diagnostics.platform, "platform") as platform_name,
+        ):
+            runtime = diagnostics._build_runtime_payload()
+
+        self.assertEqual(runtime["platform"], "Windows-10.0.26100")
+        platform_name.assert_not_called()
+
     def test_archive_redacts_secrets_and_records_excel_location(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
