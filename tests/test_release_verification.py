@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,6 +69,63 @@ class ReleaseVerificationTests(unittest.TestCase):
         self.assertLess(_version_tuple("9.10"), _version_tuple("15.0"))
         self.assertEqual(_version_tuple("15"), _version_tuple("15.0.0"))
         self.assertGreater(_version_tuple("15.1"), _version_tuple("15.0"))
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS codesign")
+    def test_macos_signing_helper_seals_unsigned_app_bundle(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = Path(temp_dir) / "Fixture.app"
+            executable = app / "Contents" / "MacOS" / "fixture"
+            resources = app / "Contents" / "Resources"
+            executable.parent.mkdir(parents=True)
+            resources.mkdir(parents=True)
+            shutil.copyfile("/usr/bin/true", executable)
+            executable.chmod(0o755)
+            (resources / "fixture.txt").write_text("sealed\n", encoding="utf-8")
+            with (app / "Contents" / "Info.plist").open("wb") as stream:
+                plistlib.dump(
+                    {
+                        "CFBundleExecutable": "fixture",
+                        "CFBundleIdentifier": "com.klara-graff.translator.fixture",
+                        "CFBundleName": "Fixture",
+                        "CFBundlePackageType": "APPL",
+                    },
+                    stream,
+                )
+
+            unsigned = subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(app)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(unsigned.returncode, 0)
+
+            environment = os.environ.copy()
+            environment.pop("XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY", None)
+            subprocess.run(
+                ["bash", "scripts/sign_macos_app.sh", str(app)],
+                cwd=ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            verified = subprocess.run(
+                ["codesign", "--verify", "--deep", "--strict", str(app)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            details = subprocess.run(
+                ["codesign", "-dv", "--verbose=4", str(app)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(details.returncode, 0, details.stderr)
+            self.assertIn("Signature=adhoc", details.stderr)
+            self.assertIn("Sealed Resources version=2", details.stderr)
 
 
 if __name__ == "__main__":

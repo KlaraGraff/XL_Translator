@@ -5,6 +5,7 @@
 - Python 文档处理与引擎逻辑保留为受随机端口和启动 token 保护的 FastAPI sidecar；任务进度和日志通过 SSE 实时传递。
 - 移除 PySide6/Qt 原生界面与旧打包路径，标准发布物改为 Tauri macOS dmg 和 Windows NSIS 安装器；Python sidecar 使用无 Qt 的 PyInstaller onedir 包。
 - 继续兼容既有应用数据目录、设置 schema、密钥、翻译记忆库和模型配置导入导出格式。
+- 修复未配置 Developer ID 时 Tauri 应用包缺少完整资源签名、被 macOS 误报为“已损坏”的问题；打包阶段现在会执行 ad-hoc 应用签名和严格校验。
 
 ## V7.4.2
 - 将单实例回归测试改为真实独立进程，覆盖 Windows named pipe 的实际线程和事件循环语义，避免用同进程后台线程产生错误结论。

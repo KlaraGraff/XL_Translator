@@ -30,13 +30,7 @@ if [[ ! -d "$APP_PATH" || ! -x "$SIDECAR_PATH" ]]; then
   exit 1
 fi
 
-if [[ -n "${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:-}" ]]; then
-  codesign --force --options runtime --timestamp --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY" "$SIDECAR_PATH"
-  codesign --force --deep --options runtime --timestamp --sign "$XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY" "$APP_PATH"
-  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
-else
-  echo "[INFO] No Developer ID identity configured; producing an unsigned verification build."
-fi
+bash "$ROOT_DIR/scripts/sign_macos_app.sh" "$APP_PATH" "$SIDECAR_PATH"
 
 rm -rf "$STAGING_DIR"
 rm -f "$DMG_PATH" "$DMG_PATH.sha256"
