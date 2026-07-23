@@ -784,14 +784,15 @@ class AppSettings(BaseModel):
             include_optional=True,
         )
         source_supported_map = get_supported_source_languages()
-        source_supported_map.update(target_supported_map)
 
-        resolved_source_lang = resolve_language_code(
-            self.source_lang,
-            source_supported_map,
-        )
-        if resolved_source_lang and not is_auto_source_lang(self.source_lang):
-            self.source_lang = resolved_source_lang
+        if is_auto_source_lang(self.source_lang):
+            self.source_lang = "auto"
+        else:
+            resolved_source_lang = resolve_language_code(
+                self.source_lang,
+                source_supported_map,
+            )
+            self.source_lang = resolved_source_lang or default_source_lang
 
         for field_name in ("excel_source_lang", "word_source_lang"):
             value = getattr(self, field_name, "auto")
@@ -825,13 +826,8 @@ class AppSettings(BaseModel):
             include_optional=True,
         )
 
-        if not (
-            is_supported_source_lang(self.source_lang)
-            or is_supported_target_lang(
-                self.source_lang,
-                self.custom_target_langs,
-                include_optional=True,
-            )
+        if not is_auto_source_lang(self.source_lang) and not is_supported_source_lang(
+            self.source_lang
         ):
             self.source_lang = default_source_lang
 
@@ -1320,10 +1316,12 @@ def _migrate_settings_to_v24(data: dict) -> dict:
     custom_target_langs = normalize_custom_target_langs(migrated.get("custom_target_langs"))
     target_supported_map = get_supported_languages(custom_target_langs, include_optional=True)
     source_supported_map = get_supported_source_languages()
-    source_supported_map.update(target_supported_map)
 
+    source_value = str(migrated.get("source_lang") or "").strip()
     source_lang = (
-        resolve_language_code(str(migrated.get("source_lang") or ""), source_supported_map)
+        "auto"
+        if is_auto_source_lang(source_value)
+        else resolve_language_code(source_value, source_supported_map)
         or get_default_source_lang()
     )
     target_lang = resolve_language_code(
