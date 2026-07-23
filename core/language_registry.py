@@ -12,15 +12,88 @@ from pydantic import BaseModel, Field
 from config import OPTIONAL_TARGET_LANGS, SUPPORTED_LANGS, SUPPORTED_SOURCE_LANGS
 
 
+# English names are kept in the registry rather than in UI code so API clients
+# and all future selectors resolve the same search terms.  Codes remain the
+# stable identity of built-in languages.
+BUILTIN_LANGUAGE_ENGLISH_NAMES: dict[str, set[str]] = {
+    "en": {"English"},
+    "fr": {"French"},
+    "ar": {"Arabic"},
+    "vi": {"Vietnamese"},
+    "km": {"Khmer", "Cambodian"},
+    "es": {"Spanish"},
+    "pt": {"Portuguese"},
+    "de": {"German"},
+    "it": {"Italian"},
+    "ru": {"Russian"},
+    "ja": {"Japanese"},
+    "ko": {"Korean"},
+    "th": {"Thai"},
+    "id": {"Indonesian"},
+    "ms": {"Malay"},
+    "tl": {"Filipino", "Tagalog"},
+    "hi": {"Hindi"},
+    "bn": {"Bengali"},
+    "ur": {"Urdu"},
+    "fa": {"Persian", "Farsi"},
+    "tr": {"Turkish"},
+    "he": {"Hebrew"},
+    "el": {"Greek"},
+    "pl": {"Polish"},
+    "nl": {"Dutch"},
+    "sv": {"Swedish"},
+    "da": {"Danish"},
+    "no": {"Norwegian"},
+    "fi": {"Finnish"},
+    "cs": {"Czech"},
+    "sk": {"Slovak"},
+    "sl": {"Slovenian"},
+    "hu": {"Hungarian"},
+    "ro": {"Romanian"},
+    "bg": {"Bulgarian"},
+    "uk": {"Ukrainian"},
+    "sr": {"Serbian"},
+    "hr": {"Croatian"},
+    "lt": {"Lithuanian"},
+    "lv": {"Latvian"},
+    "et": {"Estonian"},
+    "sw": {"Swahili"},
+    "am": {"Amharic"},
+    "ta": {"Tamil"},
+    "te": {"Telugu"},
+    "ml": {"Malayalam"},
+    "kn": {"Kannada"},
+    "mr": {"Marathi"},
+    "gu": {"Gujarati"},
+    "pa": {"Punjabi"},
+    "ne": {"Nepali"},
+    "si": {"Sinhala", "Sinhalese"},
+    "my": {"Burmese", "Myanmar"},
+    "lo": {"Lao"},
+    "mn": {"Mongolian"},
+    "kk": {"Kazakh"},
+    "uz": {"Uzbek"},
+    "az": {"Azerbaijani"},
+    "zh": {"Chinese", "Mandarin"},
+}
+
+
 class CustomTargetLang(BaseModel):
     name: str = Field(default="")
     description: str = Field(default="")
+    # Assigned on creation and retained when the display name is edited.
+    # Empty values are normalized for callers constructing the model directly.
+    code: str = Field(default="")
 
 
 CUSTOM_TARGET_LANG_PREFIX = "x-custom-"
 CUSTOM_TARGET_LANG_ACTION = "__custom_target_lang_action__"
 CUSTOM_TARGET_LANG_ACTION_LABEL = "＋ 自定义语言"
 CUSTOM_TARGET_LANG_MAX_LENGTH = 32
+# UI-only source selector sentinel.  It must never be serialized into a TM
+# language pair; the preflight protocol resolves it to one or two ISO codes.
+AUTO_SOURCE_LANG = "auto"
+AUTO_DETECT_SOURCE_LANG = AUTO_SOURCE_LANG
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _INLINE_WHITESPACE_RE = re.compile(r"[^\S\n]+")
@@ -77,6 +150,20 @@ def _extract_custom_target_lang_description(value: object) -> str:
         candidate = getattr(value, "description")
         if candidate is not None:
             return str(candidate)
+    return ""
+
+
+def _extract_custom_target_lang_code(value: object) -> str:
+    if isinstance(value, CustomTargetLang):
+        return str(value.code or "").strip()
+    if isinstance(value, Mapping):
+        candidate = value.get("code") or value.get("id")
+        if candidate is not None:
+            return str(candidate).strip()
+    if hasattr(value, "code"):
+        candidate = getattr(value, "code")
+        if candidate is not None:
+            return str(candidate).strip()
     return ""
 
 
@@ -163,6 +250,12 @@ def build_language_alias_map(supported_map: Mapping[str, str]) -> dict[str, str]
         if not code:
             continue
         alias_map[code.casefold()] = code
+        alias_map.update(
+            {
+                alias.casefold(): code
+                for alias in BUILTIN_LANGUAGE_ENGLISH_NAMES.get(code, set())
+            }
+        )
         for alias in _iter_language_name_aliases(display_name):
             alias_map[alias.casefold()] = code
     return alias_map
@@ -264,6 +357,11 @@ def _find_custom_target_lang_entry(
     custom_target_langs: Iterable[object] | None,
     target_lang_or_display: str,
 ) -> CustomTargetLang | None:
+    raw_target = str(target_lang_or_display or "").strip()
+    if raw_target:
+        for entry in normalize_custom_target_langs(custom_target_langs):
+            if entry.code and entry.code == raw_target:
+                return entry
     target_name = _resolve_custom_target_lang_name(target_lang_or_display)
     if not target_name:
         return None
@@ -342,7 +440,16 @@ def normalize_custom_target_langs(
                     )
             continue
 
-        entry = CustomTargetLang(name=display_name, description=description)
+        # Once a custom language exists, its opaque code is its identity.  A
+        # missing code only occurs for a newly-created in-memory payload.
+        entry_code = _extract_custom_target_lang_code(item)
+        if not entry_code or not entry_code.startswith(CUSTOM_TARGET_LANG_PREFIX):
+            entry_code = build_custom_target_lang_code(display_name)
+        entry = CustomTargetLang(
+            name=display_name,
+            description=description,
+            code=entry_code,
+        )
         normalized.append(entry)
         entry_index = len(normalized) - 1
         seen_alias_keys.update(alias_keys)
@@ -408,6 +515,7 @@ def append_custom_target_lang(
         CustomTargetLang(
             name=normalized_display,
             description=normalized_description,
+            code=build_custom_target_lang_code(normalized_display),
         )
     )
     return normalized_langs, build_custom_target_lang_code(normalized_display)
@@ -436,11 +544,53 @@ def update_custom_target_lang_description(
     return updated_langs
 
 
+def update_custom_target_lang_display(
+    custom_target_langs: Iterable[object] | None,
+    target_lang_or_code: str,
+    display_name: str,
+    description: str | None = None,
+) -> list[CustomTargetLang]:
+    """Rename a custom target language without changing its opaque code."""
+    normalized_langs = normalize_custom_target_langs(custom_target_langs)
+    existing = _find_custom_target_lang_entry(normalized_langs, target_lang_or_code)
+    if existing is None:
+        raise ValueError("自定义语言不存在。")
+
+    normalized_display = normalize_custom_target_lang_display(display_name)
+    if normalized_display.casefold() != existing.name.casefold():
+        error = get_custom_target_lang_display_error(
+            normalized_display,
+            [entry for entry in normalized_langs if entry.code != existing.code],
+        )
+        if error is not None:
+            raise ValueError(error)
+
+    normalized_description = (
+        existing.description
+        if description is None
+        else normalize_custom_target_lang_description(description)
+    )
+    return [
+        entry.model_copy(
+            update={
+                "name": normalized_display if entry.code == existing.code else entry.name,
+                "description": normalized_description
+                if entry.code == existing.code
+                else entry.description,
+            }
+        )
+        for entry in normalized_langs
+    ]
+
+
 def remove_custom_target_lang(
     custom_target_langs: Iterable[object] | None,
     target_lang_or_display: str,
 ) -> list[CustomTargetLang]:
     normalized_langs = normalize_custom_target_langs(custom_target_langs)
+    raw_target = str(target_lang_or_display or "").strip()
+    if raw_target.startswith(CUSTOM_TARGET_LANG_PREFIX):
+        return [entry for entry in normalized_langs if entry.code != raw_target]
     display_name = _resolve_custom_target_lang_name(target_lang_or_display)
     if not display_name:
         return normalized_langs
@@ -454,7 +604,7 @@ def get_saved_custom_target_lang_entries(
 ) -> list[tuple[str, str, str]]:
     return [
         (
-            build_custom_target_lang_code(entry.name),
+            entry.code or build_custom_target_lang_code(entry.name),
             entry.name,
             entry.description,
         )
@@ -481,6 +631,23 @@ def get_default_source_lang() -> str:
     return "zh"
 
 
+def get_default_source_selection() -> str:
+    """Return the source-selector default for Excel/Word (not a TM code)."""
+    return AUTO_SOURCE_LANG
+
+
+def is_auto_source_lang(source_lang: str | None) -> bool:
+    return str(source_lang or "").strip().casefold() == AUTO_SOURCE_LANG
+
+
+def normalize_source_selection(source_lang: str | None) -> str | None:
+    """Normalize a source selector while keeping custom targets out."""
+    candidate = str(source_lang or "").strip()
+    if is_auto_source_lang(candidate):
+        return AUTO_SOURCE_LANG
+    return resolve_language_code(candidate, get_supported_source_languages())
+
+
 def get_supported_source_languages() -> dict[str, str]:
     return dict(SUPPORTED_SOURCE_LANGS)
 
@@ -491,6 +658,22 @@ def get_source_lang_codes() -> list[str]:
 
 def is_supported_source_lang(source_lang: str) -> bool:
     return source_lang in set(get_source_lang_codes())
+
+
+def is_builtin_language_code(language_code: str | None) -> bool:
+    code = str(language_code or "").strip().casefold()
+    return code in {str(value).casefold() for value in SUPPORTED_LANGS.values()}
+
+
+def is_valid_language_pair(source_lang: str, target_lang: str) -> bool:
+    """Validate a real source-target pair; ``auto`` is never a TM identity."""
+    source = str(source_lang or "").strip()
+    target = str(target_lang or "").strip()
+    if not source or not target or is_auto_source_lang(source) or source == target:
+        return False
+    if not is_supported_source_lang(source):
+        return False
+    return is_builtin_language_code(target) or is_custom_target_lang(target)
 
 
 def get_source_lang_display(source_lang: str) -> str:
@@ -574,6 +757,7 @@ def get_target_lang_search_aliases(
     code = str(target_lang or "").strip()
     if code:
         aliases.append(code)
+        aliases.extend(sorted(BUILTIN_LANGUAGE_ENGLISH_NAMES.get(code, set())))
     return list(dict.fromkeys(alias for alias in aliases if alias))
 
 
@@ -756,7 +940,95 @@ def get_first_available_target_lang(
     return get_default_target_lang()
 
 
-def build_lang_pair(target_lang: str, source_lang: str = "zh") -> str:
+def build_lang_pair(
+    target_lang: str,
+    source_lang: str = "zh",
+    *,
+    custom_target_langs: Iterable[object] | None = None,
+) -> str:
+    del custom_target_langs
     normalized_source_lang = str(source_lang or "zh").strip() or "zh"
     normalized_target_lang = str(target_lang or "").strip()
+    if is_auto_source_lang(normalized_source_lang):
+        raise ValueError("自动识别必须先解析为实际源语言，不能用于 TM 语言对。")
+    if not normalized_source_lang or not normalized_target_lang:
+        raise ValueError("源语言和目标语言不能为空。")
     return f"{normalized_source_lang}-{normalized_target_lang}"
+
+
+def get_language_catalog(
+    custom_target_langs: Iterable[object] | None = None,
+) -> list[dict[str, object]]:
+    """Return the canonical directory consumed by API clients and selectors."""
+    catalog: list[dict[str, object]] = []
+    for display_name, code in SUPPORTED_LANGS.items():
+        aliases = get_language_search_aliases(display_name)
+        aliases.extend(sorted(BUILTIN_LANGUAGE_ENGLISH_NAMES.get(code, set())))
+        aliases.append(code)
+        catalog.append(
+            {
+                "code": code,
+                "display_name": display_name,
+                "aliases": list(dict.fromkeys(aliases)),
+                "builtin": True,
+                "can_source": True,
+                "can_target": True,
+            }
+        )
+    for code, display_name, description in get_saved_custom_target_lang_entries(
+        custom_target_langs
+    ):
+        catalog.append(
+            {
+                "code": code,
+                "display_name": display_name,
+                "description": description,
+                "aliases": [display_name, code],
+                "builtin": False,
+                "can_source": False,
+                "can_target": True,
+            }
+        )
+    return catalog
+
+
+def get_source_language_options(
+    custom_target_langs: Iterable[object] | None = None,
+) -> list[dict[str, object]]:
+    """Return source selector options with automatic detection first."""
+    del custom_target_langs
+    options = [
+        {
+            "code": AUTO_SOURCE_LANG,
+            "display_name": "自动识别",
+            "aliases": [AUTO_SOURCE_LANG, "auto-detect", "自动检测"],
+            "builtin": False,
+            "can_source": True,
+            "can_target": False,
+        }
+    ]
+    options.extend(item for item in get_language_catalog() if item["can_source"])
+    return options
+
+
+def get_target_language_options(
+    custom_target_langs: Iterable[object] | None = None,
+) -> list[dict[str, object]]:
+    return [item for item in get_language_catalog(custom_target_langs) if item["can_target"]]
+
+
+def get_tm_language_pairs(
+    source_langs: Iterable[str],
+    target_lang: str,
+) -> list[str]:
+    """Build de-duplicated real TM pairs for one preflight result."""
+    target = str(target_lang or "").strip()
+    pairs: list[str] = []
+    for source in source_langs:
+        source_code = str(source or "").strip().lower()
+        if not is_valid_language_pair(source_code, target):
+            continue
+        pair = build_lang_pair(target, source_code)
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs

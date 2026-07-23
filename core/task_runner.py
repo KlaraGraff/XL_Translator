@@ -25,7 +25,17 @@ from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
 from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
 from core.file_scanner import FileItem
-from core.language_registry import build_lang_pair
+from core.language_registry import (
+    build_lang_pair,
+    get_default_source_lang,
+    get_tm_language_pairs,
+    is_auto_source_lang,
+)
+from core.language_preflight import (
+    LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    build_language_preflight_prompt,
+    preflight_files,
+)
 from core.mixed_language import (
     DEFAULT_MIXED_MAX_BATCH_CHARS,
     MIXED_ACTION_EXISTING_BILINGUAL,
@@ -247,8 +257,15 @@ class TaskRunner:
         start_ts     = datetime.now()
         settings     = self._settings
         source_lang  = self._source_lang
+        auto_source_lang = is_auto_source_lang(source_lang)
         target_lang  = settings.target_lang
-        lang_pair    = build_lang_pair(target_lang, source_lang=source_lang)
+        # ``auto`` is a selector state only; it is resolved after each file's
+        # one-shot preflight and never becomes a TM pair.
+        lang_pair    = (
+            None
+            if auto_source_lang
+            else build_lang_pair(target_lang, source_lang=source_lang)
+        )
         max_len      = settings.tm.max_len
         tm_hit_count = 0
         api_call_count = 0
@@ -267,7 +284,7 @@ class TaskRunner:
             system_prompt = get_system_prompt(
                 settings,
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
             )
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             throughput = get_model_throughput(settings, model_config)
@@ -471,6 +488,9 @@ class TaskRunner:
             file_texts: list[set[str]] = []
             coverage_plans = []
             global_unique_texts: set[str] = set()
+            file_language_preflights = {}
+            tm_language_pairs: list[str] = []
+            text_source_candidates: dict[str, set[str]] = {}
 
             t_phase1 = datetime.now()
 
@@ -609,6 +629,69 @@ class TaskRunner:
                 elapsed=phase1_elapsed,
             )
 
+            if auto_source_lang:
+                self._queue.put(
+                    StatusMsg(
+                        phase_desc=(
+                            "状态：自动识别模式，正在对每个有候选文本的文件执行一次语言预检..."
+                        )
+                    )
+                )
+
+                detector_calls = {"count": 0}
+
+                def _detect_file_language(samples, detected_target):
+                    detector_calls["count"] += 1
+                    raw = engine.chat(
+                        LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+                        build_language_preflight_prompt(
+                            samples,
+                            target_lang=detected_target,
+                        ),
+                    )
+                    return raw
+
+                file_payloads = {
+                    str(file_item.path): texts
+                    for file_item, texts in zip(self._files, file_texts)
+                }
+                file_language_preflights = preflight_files(
+                    file_payloads,
+                    _detect_file_language,
+                    target_lang=target_lang,
+                )
+                detected_sources: list[str] = []
+                for result in file_language_preflights.values():
+                    for detected in result.source_langs:
+                        if detected not in detected_sources:
+                            detected_sources.append(detected)
+                if detected_sources:
+                    source_lang = detected_sources[0]
+                    system_prompt = get_system_prompt(
+                        settings,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                    )
+                else:
+                    source_lang = get_default_source_lang()
+                tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+                for file_item, text_set in zip(self._files, file_texts):
+                    result = file_language_preflights.get(str(file_item.path))
+                    if result is None:
+                        continue
+                    for text in text_set:
+                        text_source_candidates.setdefault(text, set()).update(result.source_langs)
+                self._log(
+                    "INFO",
+                    (
+                        f"自动语言预检完成：{detector_calls['count']} 次请求，"
+                        f"实际源语言={','.join(detected_sources) or '未确定'}，"
+                        f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+                    ),
+                )
+            else:
+                tm_language_pairs = [lang_pair] if lang_pair else []
+
             excel_policy, excel_policy_reason = self._decide_excel_policy(
                 need_autofit=need_autofit,
                 xls_file_count=xls_file_count,
@@ -669,10 +752,22 @@ class TaskRunner:
                     f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
                 )
 
-            # TM 批量查询
-            tm_result = tm_manager.lookup_batch(normal_texts, lang_pair)
-            hits   = {t: v for t, v in tm_result.items() if v is not None}
-            misses = [t for t, v in tm_result.items() if v is None]
+            # TM 批量查询：自动模式只查询预检产生的真实语言对；同一
+            # 原文在多个语言对中命中不同译文时留给模型，不做猜测复用。
+            tm_values_by_text: dict[str, list[str]] = {
+                text: [] for text in normal_texts
+            }
+            for pair in tm_language_pairs:
+                tm_result = tm_manager.lookup_batch(normal_texts, pair)
+                for text, value in tm_result.items():
+                    if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
+                        tm_values_by_text[text].append(str(value))
+            hits = {
+                text: values[0]
+                for text, values in tm_values_by_text.items()
+                if len(values) == 1
+            }
+            misses = [text for text in normal_texts if text not in hits]
 
             tm_hit_count   = len(hits)
             api_call_count = len(misses) + len(mixed_texts)
@@ -852,12 +947,36 @@ class TaskRunner:
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
 
                 # 将 API 结果写入 TM
-                new_pairs = [
-                    (k, v)
-                    for k, v in normal_api_translations.items()
-                    if should_store_translation_in_tm(k, v)
-                ]
-                written = tm_manager.insert_batch(new_pairs, lang_pair, max_len, engine.engine_name)
+                if auto_source_lang:
+                    pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
+                    for source_text, translation in normal_api_translations.items():
+                        candidates = text_source_candidates.get(source_text, set())
+                        # A file-level preflight with two substantive languages
+                        # is intentionally not auto-written: no per-item
+                        # model source report exists to disambiguate it.
+                        if len(candidates) != 1 or not should_store_translation_in_tm(
+                            source_text,
+                            translation,
+                        ):
+                            continue
+                        pair = build_lang_pair(target_lang, source_lang=next(iter(candidates)))
+                        pairs_to_insert.setdefault(pair, []).append((source_text, translation))
+                    written = sum(
+                        tm_manager.insert_batch(entries, pair, max_len, engine.engine_name)
+                        for pair, entries in pairs_to_insert.items()
+                    )
+                else:
+                    new_pairs = [
+                        (k, v)
+                        for k, v in normal_api_translations.items()
+                        if should_store_translation_in_tm(k, v)
+                    ]
+                    written = tm_manager.insert_batch(
+                        new_pairs,
+                        lang_pair,
+                        max_len,
+                        engine.engine_name,
+                    )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")
 

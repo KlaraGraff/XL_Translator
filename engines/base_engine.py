@@ -14,6 +14,7 @@ import re
 from abc import ABC, abstractmethod
 
 from core.language_registry import get_source_lang_display, get_target_lang_display
+from core.language_preflight import TranslationLanguageResult, normalize_translation_language_result
 
 
 # ── 公共常量 ──────────────────────────────────────────────
@@ -76,6 +77,39 @@ def parse_response(originals: list[str], raw: str, engine_label: str = "") -> di
         pass
     label = f"{engine_label} " if engine_label else ""
     raise ValueError(f"{label}响应解析失败 (无法匹配为包含 {len(originals)} 条记录的数组)，大模型原始内容：{raw[:200]}")
+
+
+def parse_response_with_sources(
+    originals: list[str],
+    raw: str,
+    engine_label: str = "",
+    *,
+    target_lang: str | None = None,
+) -> list[TranslationLanguageResult]:
+    """Parse the Phase 1 per-item response including ``source_lang``.
+
+    The legacy engines continue to call :func:`parse_response` and return a
+    source-to-translation mapping.  New adapters can opt into this parser;
+    plain string entries remain accepted but deliberately carry no source
+    language, which prevents automatic TM insertion until a model reports it.
+    """
+    cleaned = strip_markdown_json(raw)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        label = f"{engine_label} " if engine_label else ""
+        raise ValueError(f"{label}响应解析失败：不是 JSON 数组") from exc
+    if not isinstance(payload, list) or len(payload) != len(originals):
+        label = f"{engine_label} " if engine_label else ""
+        raise ValueError(f"{label}响应解析失败：数组长度必须为 {len(originals)}")
+    return [
+        normalize_translation_language_result(
+            source,
+            item,
+            target_lang=target_lang,
+        )
+        for source, item in zip(originals, payload)
+    ]
 
 
 # ── 抽象基类 ──────────────────────────────────────────────

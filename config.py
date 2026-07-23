@@ -269,7 +269,10 @@ def get_default_concurrency(mode: str) -> int:
         return CONCURRENCY_LOCAL_DEFAULT
     return CONCURRENCY_CLOUD_DEFAULT
 
-# ── 目标语言（第二阶段内置扩容）──────────────────────────
+# ── 统一语言目录（Phase 1）────────────────────────────────
+#
+# This is the single built-in language directory used by source and target
+# selectors.  Keep English first because it is the new-install target default.
 SUPPORTED_LANGS: dict[str, str] = {
     "英文": "en",
     "法文": "fr",
@@ -329,17 +332,15 @@ SUPPORTED_LANGS: dict[str, str] = {
     "哈萨克语": "kk",
     "乌兹别克语": "uz",
     "阿塞拜疆语": "az",
-}
-
-# 中文仅作为“可选目标语言补充项”提供给特定场景使用，
-# 不进入默认目标语言顺序，避免改变现有默认值与旧流程体验。
-OPTIONAL_TARGET_LANGS: dict[str, str] = {
     "中文": "zh",
 }
+
+# Kept as an extension point for callers that still pass include_optional;
+# Phase 1 makes all built-ins available as targets, so this map is empty.
+OPTIONAL_TARGET_LANGS: dict[str, str] = {}
 
 # 源语言候选集合允许中文 + 当前所有内置语种。
 SUPPORTED_SOURCE_LANGS: dict[str, str] = {
-    "中文": "zh",
     **SUPPORTED_LANGS,
 }
 

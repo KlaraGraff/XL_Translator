@@ -19,6 +19,22 @@ from api.task_manager import (
     TranslationTaskManager,
 )
 from core import data_migration, diagnostics, tm_manager
+from core.language_preflight import (
+    build_language_preflight_prompt,
+    extract_language_probe_texts,
+    parse_preflight_languages,
+)
+from core.language_registry import (
+    append_custom_target_lang,
+    get_language_catalog,
+    get_default_source_selection,
+    get_default_target_lang,
+    get_source_language_options,
+    get_target_language_options,
+    get_tm_language_pairs,
+    remove_custom_target_lang,
+    update_custom_target_lang_display,
+)
 from core.connectivity_check import check_connectivity
 from core.file_scanner import scan_path
 from core.image_generation import check_image_generation_connectivity
@@ -78,6 +94,8 @@ class TaskStartRequest(BaseModel):
     protect_scheme_cover: bool = False
     allow_xls_fallback: bool = False
     include_images: bool = False
+    source_lang: str | None = None
+    target_lang: str | None = None
 
 
 class TmEntryPayload(BaseModel):
@@ -116,6 +134,18 @@ class TmSuggestionPayload(BaseModel):
 class TmApplySuggestionsPayload(BaseModel):
     suggestions: list[TmSuggestionPayload]
     auto_pin: bool = False
+
+
+class CustomTargetLanguagePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+    description: str = Field(default="", max_length=2_000)
+
+
+class LanguagePreflightRequest(BaseModel):
+    file_id: str = Field(min_length=1)
+    texts: list[str] = Field(default_factory=list)
+    target_lang: str = Field(min_length=2)
+    detected_languages: list[str] | None = None
 
 
 class TmCleanRequest(BaseModel):
@@ -191,6 +221,104 @@ def create_app(
     def health() -> dict[str, Any]:
         return {"ok": True, "service": "translator-sidecar"}
 
+    @app.get("/api/languages")
+    def get_languages() -> dict[str, Any]:
+        """Return the single language directory used by every selector."""
+        settings = load_settings()
+        custom = settings.custom_target_langs
+        return {
+            "languages": get_language_catalog(custom),
+            "source_options": get_source_language_options(custom),
+            "target_options": get_target_language_options(custom),
+            "defaults": {
+                "source_lang": get_default_source_selection(),
+                "target_lang": get_default_target_lang(),
+                "pdf_target_lang": settings.pdf.target_lang,
+            },
+            "recent_target_langs": list(settings.recent_target_langs),
+        }
+
+    @app.post("/api/languages/custom", status_code=201)
+    def create_custom_language(payload: CustomTargetLanguagePayload) -> dict[str, Any]:
+        settings = load_settings()
+        try:
+            custom, code = append_custom_target_lang(
+                settings.custom_target_langs,
+                payload.name,
+                payload.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        settings.custom_target_langs = custom
+        save_settings(settings)
+        return {"code": code, "name": payload.name.strip(), "description": payload.description.strip()}
+
+    @app.put("/api/languages/custom/{language_code}")
+    def update_custom_language(
+        language_code: str,
+        payload: CustomTargetLanguagePayload,
+    ) -> dict[str, Any]:
+        settings = load_settings()
+        existing = next(
+            (entry for entry in settings.custom_target_langs if entry.code == language_code),
+            None,
+        )
+        if existing is None:
+            raise HTTPException(404, "自定义语言不存在。")
+        try:
+            settings.custom_target_langs = update_custom_target_lang_display(
+                settings.custom_target_langs,
+                language_code,
+                payload.name,
+                payload.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        updated = next(
+            item for item in settings.custom_target_langs if item.code == language_code
+        )
+        return {
+            "code": language_code,
+            "name": updated.name,
+            "description": updated.description,
+        }
+
+    @app.delete("/api/languages/custom/{language_code}", status_code=204)
+    def delete_custom_language(language_code: str) -> Response:
+        settings = load_settings()
+        existing = next(
+            (entry for entry in settings.custom_target_langs if entry.code == language_code),
+            None,
+        )
+        if existing is None:
+            raise HTTPException(404, "自定义语言不存在。")
+        if hasattr(tm_manager, "count_entries_referencing_language") and tm_manager.count_entries_referencing_language(language_code):
+            raise HTTPException(409, "该自定义语言仍被 TM 条目引用，请先导出或清空相关语言对。")
+        settings.custom_target_langs = remove_custom_target_lang(
+            settings.custom_target_langs,
+            language_code,
+        )
+        if settings.target_lang == language_code:
+            settings.target_lang = "en"
+        if settings.pdf.target_lang == language_code:
+            settings.pdf.target_lang = "zh"
+        save_settings(settings)
+        return Response(status_code=204)
+
+    @app.post("/api/languages/preflight")
+    def language_preflight(payload: LanguagePreflightRequest) -> dict[str, Any]:
+        samples = extract_language_probe_texts(payload.texts)
+        detected = parse_preflight_languages(payload.detected_languages or [])
+        return {
+            "file_id": payload.file_id,
+            "candidate_count": len(samples),
+            "requested": bool(samples),
+            "source_langs": list(detected),
+            "tm_pairs": get_tm_language_pairs(detected, payload.target_lang),
+            "prompt": build_language_preflight_prompt(samples) if samples else "",
+        }
+
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return load_settings().model_dump(mode="json")
@@ -261,6 +389,8 @@ def create_app(
                 protect_scheme_cover=request.protect_scheme_cover,
                 allow_xls_fallback=request.allow_xls_fallback,
                 include_images=request.include_images,
+                source_lang=request.source_lang,
+                target_lang=request.target_lang,
             ),
         )
 

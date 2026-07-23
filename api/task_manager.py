@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol
 from core import tm_manager
 from core.file_scanner import scan_path
 from core.model_api_identity import task_api_context_for_page
+from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
 from core.task_resources import TaskResourceLease, TaskResourceRegistry
 from core.task_runner import (
@@ -74,6 +75,8 @@ class TaskOptions:
     protect_scheme_cover: bool = False
     allow_xls_fallback: bool = False
     include_images: bool = False
+    source_lang: str | None = None
+    target_lang: str | None = None
 
 
 @dataclass
@@ -121,6 +124,29 @@ class TranslationTaskManager:
 
         selected_options = options or TaskOptions()
         settings = self._settings_loader().model_copy(deep=True)
+        default_surface_source = getattr(
+            settings,
+            f"{normalized_surface}_source_lang",
+            settings.source_lang,
+        )
+        source_selection = normalize_source_selection(
+            selected_options.source_lang
+            if selected_options.source_lang is not None
+            else default_surface_source
+        )
+        if source_selection is None:
+            raise TaskInputError("源语言必须是内置语言或自动识别；自定义语言只能作为目标语言。")
+        if selected_options.target_lang:
+            if normalized_surface == "pdf":
+                settings.pdf.target_lang = selected_options.target_lang
+            else:
+                settings.target_lang = selected_options.target_lang
+        elif normalized_surface in {"excel", "word"}:
+            settings.target_lang = getattr(
+                settings,
+                f"{normalized_surface}_target_lang",
+                settings.target_lang,
+            )
         files = self._scan(root, normalized_surface, selected_options)
         selected = {
             str(Path(path).expanduser().resolve())
@@ -160,6 +186,7 @@ class TranslationTaskManager:
                 settings=settings,
                 source_root=root if root.is_dir() else root.parent,
                 options=selected_options,
+                source_lang=source_selection,
                 key_overrides=api_context.key_overrides,
             )
             task = ApiTask(
@@ -279,6 +306,7 @@ class TranslationTaskManager:
         settings: AppSettings,
         source_root: Path,
         options: TaskOptions,
+        source_lang: str,
         key_overrides: dict[str, str],
     ) -> Runner:
         if surface == "excel":
@@ -287,7 +315,7 @@ class TranslationTaskManager:
                 settings,
                 source_root=source_root,
                 allow_xls_fallback=options.allow_xls_fallback,
-                source_lang=settings.source_lang,
+                source_lang=source_lang,
                 key_overrides=key_overrides,
                 untranslated_only=options.untranslated_only,
             )
@@ -296,7 +324,7 @@ class TranslationTaskManager:
                 files,
                 settings,
                 source_root=source_root,
-                source_lang=settings.source_lang,
+                source_lang=source_lang,
                 key_overrides=key_overrides,
                 untranslated_only=options.untranslated_only,
                 protect_scheme_cover=options.protect_scheme_cover,
