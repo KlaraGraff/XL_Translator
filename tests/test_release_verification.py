@@ -9,11 +9,12 @@ import tempfile
 import unittest
 from importlib.metadata import version
 from pathlib import Path
+from unittest.mock import patch
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
-from scripts.verify_macos_minimum_version import _version_tuple
+from scripts.verify_macos_minimum_version import _architectures, _version_tuple
 from scripts.verify_release_dependencies import verify_constraints
 
 
@@ -69,6 +70,22 @@ class ReleaseVerificationTests(unittest.TestCase):
         self.assertLess(_version_tuple("9.10"), _version_tuple("15.0"))
         self.assertEqual(_version_tuple("15"), _version_tuple("15.0.0"))
         self.assertGreater(_version_tuple("15.1"), _version_tuple("15.0"))
+
+    def test_macos_architecture_parser_accepts_fat_binary_slices(self):
+        completed = subprocess.CompletedProcess(
+            ["lipo", "-archs", "fixture"],
+            0,
+            stdout="arm64 x86_64\n",
+            stderr="",
+        )
+        with patch(
+            "scripts.verify_macos_minimum_version.subprocess.run",
+            return_value=completed,
+        ):
+            self.assertEqual(
+                _architectures(Path("fixture")),
+                {"arm64", "x86_64"},
+            )
 
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS codesign")
     def test_macos_signing_helper_seals_unsigned_app_bundle(self):

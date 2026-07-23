@@ -3,6 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONSTRAINTS_PATH="$ROOT_DIR/constraints-release-py311.txt"
+DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+
+if [[ "$DEPLOYMENT_TARGET" != "12.0" ]]; then
+  echo "macOS release dependencies require MACOSX_DEPLOYMENT_TARGET=12.0; got $DEPLOYMENT_TARGET" >&2
+  exit 1
+fi
+export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 
 resolve_python() {
   if [[ -n "${PYTHON_BIN:-}" && -x "${PYTHON_BIN:-}" ]]; then
@@ -29,8 +36,7 @@ resolve_python() {
 PYTHON="$(resolve_python)"
 cd "$ROOT_DIR"
 
-if [[ "${XL_TRANSLATOR_ALLOW_UNSUPPORTED_PYTHON:-}" != "1" ]]; then
-  "$PYTHON" - <<'PY'
+"$PYTHON" - <<'PY'
 import sys
 
 if sys.version_info[:2] != (3, 11):
@@ -40,7 +46,6 @@ if sys.version_info[:2] != (3, 11):
         "Set PYTHON_BIN to a Python 3.11 interpreter."
     )
 PY
-fi
 
 echo "[INFO] Install macOS build dependencies"
 "$PYTHON" -m pip install \

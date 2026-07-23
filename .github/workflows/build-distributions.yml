@@ -1,4 +1,4 @@
-name: Build Tauri distributions
+name: Build Tauri macOS distributions
 
 on:
   workflow_dispatch:
@@ -10,10 +10,23 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Windows NSIS installer
-    runs-on: windows-2022
+  macos:
+    name: macOS ${{ matrix.architecture }} DMG
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-14 is an Apple Silicon runner; macos-13 is Intel.
+          - architecture: arm64
+            runner: macos-14
+          - architecture: x86_64
+            runner: macos-13
+    env:
+      MACOS_ARCH: ${{ matrix.architecture }}
+      MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: actions/setup-python@v6.2.0
@@ -30,74 +43,20 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install dependencies
+      - name: Install macOS release dependencies
         run: |
-          python -m pip install --upgrade --constraint constraints-release-py311.txt pip
-          python -m pip install --constraint constraints-release-py311.txt --requirement requirements-build.txt
-          python -m pip install --requirement constraints-release-py311.txt
-          python scripts/verify_release_dependencies.py --constraints constraints-release-py311.txt
+          python --version
+          bash ./scripts/install_macos_dependencies.sh
           npm ci --prefix ui
       - name: Verify tagged version
         if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
         run: |
-          $expected = "v$(python -c 'import app_meta; print(app_meta.APP_VERSION)')"
-          if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag $env:GITHUB_REF_NAME does not match $expected" }
-      - name: Run quality and Windows platform checks
-        shell: pwsh
-        env:
-          TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
-        run: |
-          ./quality_gate.ps1
-          python tests/test_excel_automation.py
-          python tests/test_data_migration.py
-          python tests/test_diagnostics.py
-          python tests/test_api_task_selection.py
-          npm run check --prefix ui
-          cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Build Windows installer
-        shell: pwsh
-        run: |
-          $pythonExe = (Get-Command python).Source
-          ./scripts/build_windows_package.ps1 -PythonExe $pythonExe
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: Translator_Windows_Setup
-          path: |
-            ${{ env.WINDOWS_SETUP }}
-            ${{ env.WINDOWS_SETUP_SHA256 }}
-      - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
-        with:
-          files: |
-            ${{ env.WINDOWS_SETUP }}
-            ${{ env.WINDOWS_SETUP_SHA256 }}
-
-  macos:
-    name: macOS dmg
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: actions/setup-python@v6.2.0
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-build.txt
-            constraints-release-py311.txt
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install dependencies
-        run: |
-          bash ./scripts/install_macos_dependencies.sh
-          npm ci --prefix ui
-      - name: Run quality and tests
+          expected="v$(python -c 'import app_meta; print(app_meta.APP_VERSION)')"
+          if [[ "$GITHUB_REF_NAME" != "$expected" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match $expected" >&2
+            exit 1
+          fi
+      - name: Run quality and macOS platform checks
         env:
           TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
         run: |
@@ -105,11 +64,12 @@ jobs:
           python -m unittest discover -s tests
           npm run check --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Build macOS dmg
-        run: PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
+      - name: Build and verify macOS DMG
+        run: |
+          PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: Translator_macOS_DMG
+          name: Translator_macOS_${{ matrix.architecture }}
           path: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}

@@ -70,10 +70,28 @@ def _minimum_versions(path: Path) -> list[str]:
     return versions
 
 
+def _architectures(path: Path) -> set[str]:
+    """Return the architecture slices present in a Mach-O file."""
+    result = subprocess.run(
+        ["lipo", "-archs", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"lipo failed for {path}")
+    return set(result.stdout.split())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("app_bundle", type=Path)
     parser.add_argument("--declared", required=True)
+    parser.add_argument(
+        "--architecture",
+        choices=("arm64", "x86_64"),
+        help="Require every Mach-O to contain this architecture slice.",
+    )
     args = parser.parse_args()
 
     try:
@@ -109,6 +127,17 @@ def main() -> int:
         except RuntimeError as exc:
             errors.append(str(exc))
             continue
+        if args.architecture:
+            try:
+                architectures = _architectures(path)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                continue
+            if args.architecture not in architectures:
+                errors.append(
+                    f"{path}: architectures {sorted(architectures)!r} do not include "
+                    f"required {args.architecture}"
+                )
         if not versions:
             errors.append(f"no macOS minimum load command found: {path}")
             continue
