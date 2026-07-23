@@ -63,7 +63,9 @@ jobs:
           pwsh ./quality_gate.ps1
           python -m unittest discover -s tests
           npm run check --prefix ui
+          npm run build --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/Cargo.toml
       - name: Build and verify macOS DMG
         run: |
           PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
@@ -73,9 +75,31 @@ jobs:
           path: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}
-      - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3.0.0
+
+  release:
+    name: Publish macOS release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: macos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8.0.0
         with:
-          files: |
-            ${{ env.MACOS_DMG }}
-            ${{ env.MACOS_DMG_SHA256 }}
+          pattern: Translator_macOS_*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify both macOS assets are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          arm_dmg=(release-assets/Translator_macOS_arm64_*.dmg)
+          arm_sha=(release-assets/Translator_macOS_arm64_*.dmg.sha256)
+          x64_dmg=(release-assets/Translator_macOS_x64_*.dmg)
+          x64_sha=(release-assets/Translator_macOS_x64_*.dmg.sha256)
+          test "${#arm_dmg[@]}" -eq 1
+          test "${#arm_sha[@]}" -eq 1
+          test "${#x64_dmg[@]}" -eq 1
+          test "${#x64_sha[@]}" -eq 1
+      - uses: softprops/action-gh-release@v3.0.0
+        with:
+          files: release-assets/*

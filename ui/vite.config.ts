@@ -7,6 +7,9 @@ export default defineConfig({
     port: 1420,
   },
   build: {
-    target: ["es2022", "chrome110", "safari16"],
+    // Monterey's system WKWebView is based on Safari 15.1. Keep the
+    // generated JavaScript within that baseline instead of relying on the
+    // user's separately installed Safari version.
+    target: "safari15.1",
   },
 });

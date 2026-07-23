@@ -12,17 +12,17 @@
   --line: #e7ebf5;
   --line-2: #d9dfee;
   --accent: var(--accent-base);
-  --accent-strong: color-mix(in srgb, var(--accent-base) 80%, #000);
+  --accent-strong: #4353cc;
   --on-accent: #fff;
-  --tint: color-mix(in srgb, var(--accent-base) 9%, var(--surface));
-  --tint-line: color-mix(in srgb, var(--accent-base) 30%, var(--surface));
-  --tint-ink: color-mix(in srgb, var(--accent-base) 76%, #000);
+  --tint: #f0f1ff;
+  --tint-line: #ccd2ff;
+  --tint-ink: #404fc2;
   --ok: #12a366;
-  --ok-t: color-mix(in srgb, var(--ok) 12%, var(--surface));
-  --ok-l: color-mix(in srgb, var(--ok) 32%, var(--surface));
+  --ok-t: #e2f4ed;
+  --ok-l: #b3e2ce;
   --warn: #c77a00;
-  --warn-t: color-mix(in srgb, var(--warn) 13%, var(--surface));
-  --warn-l: color-mix(in srgb, var(--warn) 32%, var(--surface));
+  --warn-t: #f8eede;
+  --warn-l: #edd4ad;
   --danger: #e5484d;
   --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
   --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
@@ -45,16 +45,81 @@
   --ink-3: #6b7590;
   --line: #242c3e;
   --line-2: #313a50;
-  --accent: color-mix(in srgb, var(--accent-base) 74%, #fff);
+  --accent: #8090ff;
   --accent-strong: var(--accent-base);
   --on-accent: #0b0f1a;
-  --tint-ink: color-mix(in srgb, var(--accent-base) 55%, #fff);
+  --tint: #1b223b;
+  --tint-line: #283268;
+  --tint-ink: #a0acff;
   --ok: #3dd68c;
+  --ok-t: #192e2a;
+  --ok-l: #2d594c;
   --warn: #e8a33d;
+  --warn-t: #31281d;
+  --warn-l: #655039;
   --danger: #ff6369;
   --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 14px 30px -16px rgb(0 0 0 / 70%);
   --sh-lg: 0 2px 4px rgb(0 0 0 / 40%), 0 28px 54px -24px rgb(0 0 0 / 80%);
+}
+
+/* Keep the fallback tokens above usable in Monterey's Safari 15.1 WebView.
+   Newer WebViews opt into the original dynamic color calculations here. */
+@supports (color: color-mix(in srgb, red, blue)) {
+  :root {
+    --accent-strong: color-mix(in srgb, var(--accent-base) 80%, #000);
+    --tint: color-mix(in srgb, var(--accent-base) 9%, var(--surface));
+    --tint-line: color-mix(in srgb, var(--accent-base) 30%, var(--surface));
+    --tint-ink: color-mix(in srgb, var(--accent-base) 76%, #000);
+    --ok-t: color-mix(in srgb, var(--ok) 12%, var(--surface));
+    --ok-l: color-mix(in srgb, var(--ok) 32%, var(--surface));
+    --warn-t: color-mix(in srgb, var(--warn) 13%, var(--surface));
+    --warn-l: color-mix(in srgb, var(--warn) 32%, var(--surface));
+  }
+
+  :root[data-theme="dark"] {
+    --accent: color-mix(in srgb, var(--accent-base) 74%, #fff);
+    --tint: color-mix(in srgb, var(--accent-base) 9%, var(--surface));
+    --tint-line: color-mix(in srgb, var(--accent-base) 30%, var(--surface));
+    --tint-ink: color-mix(in srgb, var(--accent-base) 55%, #fff);
+    --ok-t: color-mix(in srgb, var(--ok) 12%, var(--surface));
+    --ok-l: color-mix(in srgb, var(--ok) 32%, var(--surface));
+    --warn-t: color-mix(in srgb, var(--warn) 13%, var(--surface));
+    --warn-l: color-mix(in srgb, var(--warn) 32%, var(--surface));
+  }
+
+  .logo {
+    background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--accent) 68%, #fff), var(--accent) 55%, var(--accent-strong));
+  }
+
+  .topbar {
+    background: color-mix(in srgb, var(--surface) 60%, var(--ground));
+  }
+
+  .button.primary {
+    box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--accent) 75%, transparent);
+  }
+
+  .field:focus, select:focus, input:focus, textarea:focus {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+
+  .status.error, .status.stopped {
+    border-color: color-mix(in srgb, var(--danger) 35%, var(--surface));
+    background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  }
+
+  .led {
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentcolor 20%, transparent);
+  }
+
+  .progress > i {
+    background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #fff));
+  }
+
+  .toast.error {
+    border-color: color-mix(in srgb, var(--danger) 38%, var(--surface));
+  }
 }
 
 * { box-sizing: border-box; }
@@ -100,6 +165,7 @@ button { cursor: pointer; }
   place-items: center;
   border-radius: 12px;
   color: #fff;
+  background: radial-gradient(120% 120% at 30% 20%, #8d97ff, var(--accent) 55%, var(--accent-strong));
   background: radial-gradient(120% 120% at 30% 20%, color-mix(in srgb, var(--accent) 68%, #fff), var(--accent) 55%, var(--accent-strong));
   box-shadow: var(--sh-sm), inset 0 1px 0 rgb(255 255 255 / 35%);
 }
@@ -149,7 +215,7 @@ button { cursor: pointer; }
 .section-label { color: var(--ink-3); letter-spacing: .1em; text-transform: uppercase; }
 
 .stage { display: flex; min-width: 0; flex: 1; flex-direction: column; }
-.topbar { display: flex; min-height: 70px; align-items: center; gap: 14px; padding: 11px 20px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 60%, var(--ground)); }
+.topbar { display: flex; min-height: 70px; align-items: center; gap: 14px; padding: 11px 20px; border-bottom: 1px solid var(--line); background: var(--surface); background: color-mix(in srgb, var(--surface) 60%, var(--ground)); }
 .topbar-copy { min-width: 0; }
 .topbar-title-row { display: flex; align-items: center; gap: 10px; }
 .topbar h1 { margin: 0; font-size: 19px; font-weight: 750; letter-spacing: -.025em; }
@@ -198,7 +264,7 @@ tr:hover td { background: var(--surface-2); }
 .button, .icon-button, .model-button, .field, select, input, textarea { border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--ink); background: var(--surface); }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; font-size: 12px; font-weight: 650; white-space: nowrap; }
 .button:hover, .icon-button:hover, .model-button:hover { border-color: var(--ink-3); background: var(--surface-2); }
-.button.primary { border-color: var(--accent); color: var(--on-accent); background: var(--accent); box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--accent) 75%, transparent); }
+.button.primary { border-color: var(--accent); color: var(--on-accent); background: var(--accent); box-shadow: 0 8px 20px -10px rgba(84, 104, 255, .55); box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--accent) 75%, transparent); }
 .button.primary:hover { border-color: var(--accent-strong); background: var(--accent-strong); }
 .button.danger { border-color: var(--danger); color: #fff; background: var(--danger); }
 .button.ghost { background: var(--surface-2); }
@@ -211,7 +277,7 @@ tr:hover td { background: var(--surface-2); }
 .model-button { display: inline-flex; height: 36px; align-items: center; gap: 7px; padding: 0 12px; border-radius: 10px; color: var(--ink-2); font-size: 11.5px; font-weight: 650; }
 .model-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
 .field, select, input, textarea { width: 100%; min-height: 36px; padding: 8px 10px; outline: none; font-size: 12px; }
-.field:focus, select:focus, input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.field:focus, select:focus, input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(84, 104, 255, .15); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
 textarea { min-height: 90px; resize: vertical; }
 .field-row { display: flex; gap: 8px; }
 .field-row > * { min-width: 0; flex: 1; }
@@ -219,8 +285,8 @@ textarea { min-height: 90px; resize: vertical; }
 .status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--tint-line); border-radius: 999px; color: var(--tint-ink); background: var(--tint); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
 .status.running { border-color: var(--warn-l); color: var(--warn); background: var(--warn-t); }
 .status.done { border-color: var(--ok-l); color: var(--ok); background: var(--ok-t); }
-.status.error, .status.stopped { border-color: color-mix(in srgb, var(--danger) 35%, var(--surface)); color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
-.led { width: 6px; height: 6px; border-radius: 999px; background: currentcolor; box-shadow: 0 0 0 3px color-mix(in srgb, currentcolor 20%, transparent); }
+.status.error, .status.stopped { border-color: rgba(229, 72, 77, .35); color: var(--danger); background: rgba(229, 72, 77, .12); border-color: color-mix(in srgb, var(--danger) 35%, var(--surface)); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
+.led { width: 6px; height: 6px; border-radius: 999px; background: currentcolor; box-shadow: 0 0 0 3px rgba(84, 104, 255, .2); box-shadow: 0 0 0 3px color-mix(in srgb, currentcolor 20%, transparent); }
 
 .setting-card { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--tint-line); border-radius: var(--r-md); background: var(--tint); }
 .setting-card .field-label { color: var(--tint-ink); }
@@ -236,7 +302,7 @@ textarea { min-height: 90px; resize: vertical; }
 .review-colors input[type="color"] { min-height: 30px; padding: 3px; }
 
 .progress { height: 9px; overflow: hidden; margin: 12px 0; border-radius: 999px; background: var(--ground-2); }
-.progress > i { display: block; width: var(--progress, 0%); height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #fff)); transition: width 200ms ease; }
+.progress > i { display: block; width: var(--progress, 0%); height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #aab5ff); background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #fff)); transition: width 200ms ease; }
 .run-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 650; }
 .logbox { min-height: 170px; flex: 1; overflow: auto; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink-2); background: var(--ground-2); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.75; }
 .log-ok { color: var(--ok); }.log-warn { color: var(--warn); }.log-error { color: var(--danger); }
@@ -252,7 +318,7 @@ textarea { min-height: 90px; resize: vertical; }
 .suggestion-list { display: flex; flex-direction: column; gap: 8px; }
 .suggestion-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; }
 .suggestion-row input[type="checkbox"] { width: 16px; min-height: 16px; margin: 2px 0 0; accent-color: var(--accent); }.suggestion-row b { font-weight: 650; }.suggestion-row p { display: flex; align-items: center; gap: 5px; margin: 5px 0 0; color: var(--ink-2); }.suggestion-row p input { min-height: 30px; padding: 4px 6px; }
-.toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 440px; padding: 10px 13px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; }.toast.error { border-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); color: var(--danger); }
+.toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 440px; padding: 10px 13px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; }.toast.error { border-color: rgba(229, 72, 77, .38); border-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); color: var(--danger); }
 [data-tip] { position: relative; } [data-tip]:hover::after { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 50%; width: max-content; max-width: 250px; padding: 7px 9px; border-radius: 7px; color: var(--surface); background: var(--ink); box-shadow: var(--sh-md); content: attr(data-tip); font-size: 11px; line-height: 1.35; transform: translateX(-50%); }
 
 .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }.icon.small { width: 15px; height: 15px; }.icon.large { width: 24px; height: 24px; }
