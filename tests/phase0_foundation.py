@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
+from fastapi import FastAPI, HTTPException
 from openpyxl import Workbook
 from PIL import Image
 
@@ -146,3 +147,31 @@ class MockTranslationProvider:
             "source_lang": source_lang,
             "target_lang": target_lang,
         }
+
+
+def create_mock_translation_api(
+    provider: MockTranslationProvider | None = None,
+) -> FastAPI:
+    """Build a local-only HTTP mock for API/UI contract tests."""
+
+    mock_provider = provider or MockTranslationProvider()
+    app = FastAPI(title="Phase 0 Mock Translation API")
+
+    @app.get("/health")
+    def health() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/v1/translate")
+    def translate(payload: dict[str, Any]) -> dict[str, str]:
+        text = payload.get("text")
+        source_lang = payload.get("source_lang")
+        target_lang = payload.get("target_lang")
+        if not all(isinstance(value, str) and value.strip() for value in (text, source_lang, target_lang)):
+            raise HTTPException(422, "text, source_lang and target_lang are required")
+        return mock_provider.translate(
+            text,
+            source_lang=source_lang,
+            target_lang=target_lang,
+        )
+
+    return app

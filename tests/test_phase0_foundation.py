@@ -9,9 +9,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from core.app_paths import get_app_data_dir
 from scripts.verify_macos_minimum_version import _architectures, _version_tuple
-from tests.phase0_foundation import MockTranslationProvider, create_phase0_fixtures
+from tests.phase0_foundation import (
+    MockTranslationProvider,
+    create_mock_translation_api,
+    create_phase0_fixtures,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +46,25 @@ class Phase0FoundationTests(unittest.TestCase):
         self.assertEqual(result["target_lang"], "zh")
         self.assertEqual(result["translation"], "[zh] Hello")
         self.assertEqual(provider.calls, [{"text": "Hello", "source_lang": "en", "target_lang": "zh"}])
+
+    def test_mock_http_api_exposes_health_and_translation_contract(self) -> None:
+        provider = MockTranslationProvider()
+        client = TestClient(create_mock_translation_api(provider))
+
+        self.assertEqual(client.get("/health").json(), {"ok": True})
+        response = client.post(
+            "/v1/translate",
+            json={"text": "Hello", "source_lang": "en", "target_lang": "zh"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["source_lang"], "en")
+        self.assertEqual(response.json()["target_lang"], "zh")
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(
+            client.post("/v1/translate", json={"text": "missing pair"}).status_code,
+            422,
+        )
 
     def test_isolated_app_data_does_not_touch_legacy_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
