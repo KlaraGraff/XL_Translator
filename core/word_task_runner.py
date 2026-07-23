@@ -32,7 +32,17 @@ from core.engine_dispatcher import (
     get_system_prompt,
     is_local_engine_name,
 )
-from core.language_registry import build_lang_pair
+from core.language_registry import (
+    build_lang_pair,
+    get_default_source_lang,
+    get_tm_language_pairs,
+    is_auto_source_lang,
+)
+from core.language_preflight import (
+    LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    build_language_preflight_prompt,
+    preflight_files,
+)
 from core.mixed_language import (
     DEFAULT_MIXED_MAX_BATCH_CHARS,
     MIXED_ACTION_EXISTING_BILINGUAL,
@@ -254,8 +264,13 @@ class WordTaskRunner:
         start_ts = datetime.now()
         settings = self._settings
         source_lang = self._source_lang
+        auto_source_lang = is_auto_source_lang(source_lang)
         target_lang = settings.target_lang
-        lang_pair = build_lang_pair(target_lang, source_lang=source_lang)
+        lang_pair = (
+            None
+            if auto_source_lang
+            else build_lang_pair(target_lang, source_lang=source_lang)
+        )
         max_len = settings.tm.max_len
         tm_hit_count = 0
         api_call_count = 0
@@ -273,7 +288,7 @@ class WordTaskRunner:
             system_prompt = get_system_prompt(
                 settings,
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
             )
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             concurrency = get_model_throughput(settings, model_config).concurrency
@@ -330,6 +345,9 @@ class WordTaskRunner:
 
         phase_total = 3
         file_texts: list[set[str]] = []
+        file_language_preflights = {}
+        tm_language_pairs: list[str] = []
+        text_source_candidates: dict[str, set[str]] = {}
         coverage_plans: list = []
         global_unique_texts: set[str] = set()
         segment_locations: dict[str, list[dict]] = {}
@@ -400,7 +418,11 @@ class WordTaskRunner:
                         coverage_plan = build_word_coverage_plan(
                             process_path,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
                             protect_scheme_cover=self._protect_scheme_cover,
                         )
                         coverage_plans.append(coverage_plan)
@@ -424,7 +446,11 @@ class WordTaskRunner:
                         segments = extract_word_segments(
                             process_path,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
                         )
                         coverage_plans.append(None)
                         _remember_segment_locations(
@@ -474,6 +500,66 @@ class WordTaskRunner:
                 elapsed=phase1_elapsed,
             )
 
+            if auto_source_lang:
+                self._queue.put(
+                    StatusMsg(
+                        phase_desc="状态：自动识别模式，正在对每个有候选文本的 Word 文件执行一次语言预检..."
+                    )
+                )
+
+                detector_calls = {"count": 0}
+
+                def _detect_file_language(samples, detected_target):
+                    detector_calls["count"] += 1
+                    return engine.chat(
+                        LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+                        build_language_preflight_prompt(
+                            samples,
+                            target_lang=detected_target,
+                        ),
+                    )
+
+                file_payloads = {
+                    str(file_item.path): texts
+                    for file_item, texts in zip(self._files, file_texts)
+                }
+                file_language_preflights = preflight_files(
+                    file_payloads,
+                    _detect_file_language,
+                    target_lang=target_lang,
+                )
+                detected_sources: list[str] = []
+                for result in file_language_preflights.values():
+                    for detected in result.source_langs:
+                        if detected not in detected_sources:
+                            detected_sources.append(detected)
+                if detected_sources:
+                    source_lang = detected_sources[0]
+                    system_prompt = get_system_prompt(
+                        settings,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                    )
+                else:
+                    source_lang = get_default_source_lang()
+                tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+                for file_item, text_set in zip(self._files, file_texts):
+                    result = file_language_preflights.get(str(file_item.path))
+                    if result is None:
+                        continue
+                    for text in text_set:
+                        text_source_candidates.setdefault(text, set()).update(result.source_langs)
+                self._log(
+                    "INFO",
+                    (
+                        f"自动语言预检完成：{detector_calls['count']} 次请求，"
+                        f"实际源语言={','.join(detected_sources) or '未确定'}，"
+                        f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+                    ),
+                )
+            else:
+                tm_language_pairs = [lang_pair] if lang_pair else []
+
             _raise_if_stopped()
 
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在比对翻译记忆库..."))
@@ -489,9 +575,18 @@ class WordTaskRunner:
                     "INFO",
                     f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
                 )
-            tm_result = tm_manager.lookup_batch(normal_texts, lang_pair)
-            hits = {text: value for text, value in tm_result.items() if value is not None}
-            misses = [text for text, value in tm_result.items() if value is None]
+            tm_values_by_text: dict[str, list[str]] = {text: [] for text in normal_texts}
+            for pair in tm_language_pairs:
+                tm_result = tm_manager.lookup_batch(normal_texts, pair)
+                for text, value in tm_result.items():
+                    if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
+                        tm_values_by_text[text].append(str(value))
+            hits = {
+                text: values[0]
+                for text, values in tm_values_by_text.items()
+                if len(values) == 1
+            }
+            misses = [text for text in normal_texts if text not in hits]
             tm_hit_count = len(hits)
             api_call_count = len(misses) + len(mixed_texts)
             self._log(
@@ -776,17 +871,48 @@ class WordTaskRunner:
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=elapsed)
 
-                new_pairs = [
-                    (source, translated)
-                    for source, translated in api_translations.items()
-                    if (
-                        source not in mixed_texts
-                        and source not in recovery_review_sources
-                        and source not in unresolved_review_sources
-                        and should_store_translation_in_tm(source, translated)
+                if auto_source_lang:
+                    pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
+                    for source, translated in api_translations.items():
+                        candidates = text_source_candidates.get(source, set())
+                        if (
+                            len(candidates) != 1
+                            or source in mixed_texts
+                            or source in recovery_review_sources
+                            or source in unresolved_review_sources
+                            or not should_store_translation_in_tm(source, translated)
+                        ):
+                            continue
+                        pair = build_lang_pair(target_lang, source_lang=next(iter(candidates)))
+                        pairs_to_insert.setdefault(pair, []).append((source, translated))
+                    written = sum(
+                        tm_manager.insert_batch(
+                            entries,
+                            pair,
+                            max_len,
+                            engine.engine_name,
+                            sync_reverse=False,
+                        )
+                        for pair, entries in pairs_to_insert.items()
                     )
-                ]
-                written = tm_manager.insert_batch(new_pairs, lang_pair, max_len, engine.engine_name)
+                else:
+                    new_pairs = [
+                        (source, translated)
+                        for source, translated in api_translations.items()
+                        if (
+                            source not in mixed_texts
+                            and source not in recovery_review_sources
+                            and source not in unresolved_review_sources
+                            and should_store_translation_in_tm(source, translated)
+                        )
+                    ]
+                    written = tm_manager.insert_batch(
+                        new_pairs,
+                        lang_pair,
+                        max_len,
+                        engine.engine_name,
+                        sync_reverse=False,
+                    )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")
 
