@@ -22,6 +22,15 @@ type TmEntry = {
   pinned: number;
   word_type: string;
 };
+type LanguageOption = {
+  code: string;
+  display_name: string;
+  aliases?: string[];
+  description?: string;
+  builtin?: boolean;
+  can_source?: boolean;
+  can_target?: boolean;
+};
 type RunningTask = {
   task: TaskStatus;
   logs: Array<{ level: string; message: string }>;
@@ -29,7 +38,7 @@ type RunningTask = {
   stepDone: number;
   stepTotal: number;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "migration" | "source-picker" | "stop-task" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "custom-language" | "migration" | "source-picker" | "stop-task" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -58,6 +67,13 @@ const state: {
   tmSuggestions: JsonObject[];
   modalNotice: ModalNotice | null;
   updateResult: JsonObject | null;
+  customLanguageEditing: LanguageOption | null;
+  languages: LanguageOption[];
+  sourceOptions: LanguageOption[];
+  targetOptions: LanguageOption[];
+  languageSearch: Record<Surface, string>;
+  sourceSelections: Record<Surface, string>;
+  targetSelections: Record<Surface, string>;
 } = {
   connected: false,
   view: "excel",
@@ -77,6 +93,13 @@ const state: {
   tmSuggestions: [],
   modalNotice: null,
   updateResult: null,
+  customLanguageEditing: null,
+  languages: [],
+  sourceOptions: [],
+  targetOptions: [],
+  languageSearch: { excel: "", word: "", pdf: "" },
+  sourceSelections: { excel: "auto", word: "auto", pdf: "" },
+  targetSelections: { excel: "en", word: "en", pdf: "zh" },
 };
 
 const pageMeta: Record<View, { title: string; description: string }> = {
@@ -285,10 +308,10 @@ function renderTranslateView(surface: Surface): string {
   const selectedPaths = state.selectedPaths[surface];
   const sourcePath = state.sourcePaths[surface];
   const isPdf = surface === "pdf";
-  const target = isPdf
+  const target = state.targetSelections[surface] || (isPdf
     ? text(record(state.settings?.pdf).target_lang, "zh")
-    : text(state.settings?.target_lang, "en");
-  const source = text(state.settings?.source_lang, "zh");
+    : text(state.settings?.target_lang, "en"));
+  const source = state.sourceSelections[surface] || "auto";
   const running = state.running?.task.surface === surface ? state.running : null;
   const activeTask = Boolean(running && !running.task.terminal);
   const percent = running && running.stepTotal > 0
@@ -312,8 +335,8 @@ function renderTranslateView(surface: Surface): string {
     </div>
     <aside class="card right-column">
       <span class="section-label">运行设置</span>
-      <div class="setting-card"><label class="field-label" for="target-${surface}">目标语言</label><select id="target-${surface}" data-target="${surface}" ${activeTask ? "disabled" : ""}>${languageOptions(target)}</select></div>
-      ${isPdf ? `<p class="note">PDF 目标语言独立保存；页图翻译由模型识别原文，无需指定源语言。</p>` : `<label class="field-label" style="margin-top:10px" for="source-${surface}">源语言</label><select id="source-${surface}" data-source-language ${activeTask ? "disabled" : ""}>${sourceLanguageOptions(source)}</select><p class="note">Excel 与 Word 共用同一组源/目标语言设置。</p>`}
+      <div class="setting-card"><label class="field-label" for="language-search-${surface}">搜索语言</label><input id="language-search-${surface}" data-language-search="${surface}" value="${escapeHtml(state.languageSearch[surface])}" placeholder="中文名、English、ISO 代码" ${activeTask ? "disabled" : ""}/><label class="field-label" for="target-${surface}" style="margin-top:8px">目标语言</label><select id="target-${surface}" data-target="${surface}" ${activeTask ? "disabled" : ""}>${languageOptions(target, state.languageSearch[surface])}</select><div class="field-row" style="margin-top:8px"><button class="mini-button" data-action="custom-language-add" ${activeTask ? "disabled" : ""}>＋ 自定义语言</button><button class="mini-button" data-action="custom-language-manage" ${activeTask ? "disabled" : ""}>管理自定义</button></div></div>
+      ${isPdf ? `<p class="note">PDF 目标语言独立保存；页图翻译由模型识别原文，无需指定源语言。</p>` : `<label class="field-label" style="margin-top:10px" for="source-${surface}">源语言</label><select id="source-${surface}" data-source-language="${surface}" ${activeTask ? "disabled" : ""}>${sourceLanguageOptions(source, state.languageSearch[surface])}</select><p class="note">自动识别会在每个有候选文本的文件开始翻译前发送一次抽样预检。</p>`}
       ${isPdf ? `<div class="toggle-row"><input id="pdfReview" type="checkbox" ${record(state.settings?.pdf).review_enabled ? "checked" : ""} data-pdf-review ${activeTask ? "disabled" : ""}/><label for="pdfReview">启用逐页审核模型</label></div>` : `<div class="toggle-row"><input id="untranslated-${surface}" type="checkbox" data-untranslated ${activeTask ? "disabled" : ""}/><label for="untranslated-${surface}">仅补译未翻译内容</label></div>`}
       ${renderDetailedSettings(surface, activeTask)}
       <hr class="divider" />
@@ -378,6 +401,10 @@ function renderTmEntries(): string {
 }
 
 function renderModal(): string {
+  if (state.modal === "custom-language") {
+    const editing = state.customLanguageEditing;
+    return `<div class="modal-backdrop"><section class="modal"><h2>${editing ? "编辑自定义语言" : "新增自定义目标语言"}</h2><p class="note">自定义语言只能作为目标语言使用；内部代码创建后不可变。</p><label class="field-label" for="customLanguageName">显示名称</label><input id="customLanguageName" value="${escapeHtml(editing?.display_name)}" ${editing ? "disabled" : ""} autofocus/><label class="field-label" for="customLanguageDescription" style="margin-top:10px">语言说明</label><textarea id="customLanguageDescription">${escapeHtml(editing?.description)}</textarea><div class="modal-actions"><button class="button" data-action="close-modal">取消</button>${editing ? `<button class="button danger" data-action="custom-language-delete">删除</button>` : ""}<button class="button primary" data-action="${editing ? "custom-language-update" : "custom-language-create"}">保存</button></div></section></div>`;
+  }
   if (state.modal === "tm-add" || state.modal === "tm-edit") {
     const editing = state.tmEditing;
     const isEdit = state.modal === "tm-edit";
@@ -414,15 +441,21 @@ function stat(iconName: IconName, label: string, value: string): string {
   return `<div class="stat"><div class="stat-icon">${icon(iconName, "small")}</div><div><div class="stat-label">${label}</div><div class="stat-value">${escapeHtml(value)}</div></div></div>`;
 }
 
-function languageOptions(selected: string): string {
-  return [
-    ["zh", "简体中文"], ["en", "English"], ["fr", "Français"], ["ar", "العربية"], ["ja", "日本語"],
-  ].map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+function languageMatches(option: LanguageOption, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return [option.code, option.display_name, ...(option.aliases ?? [])]
+    .some((value) => value.toLocaleLowerCase().includes(needle));
 }
 
-function sourceLanguageOptions(selected: string): string {
-  return [["zh", "中文"], ["en", "English"], ["fr", "Français"], ["ar", "العربية"]]
-    .map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+function languageOptions(selected: string, query = ""): string {
+  const options = state.targetOptions.filter((option) => languageMatches(option, query));
+  return options.map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === selected ? "selected" : ""}>${escapeHtml(option.display_name)}${option.builtin === false ? "（自定义）" : ""}</option>`).join("");
+}
+
+function sourceLanguageOptions(selected: string, query = ""): string {
+  const options = state.sourceOptions.filter((option) => languageMatches(option, query));
+  return options.map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === selected ? "selected" : ""}>${escapeHtml(option.display_name)}</option>`).join("");
 }
 
 function providerLabel(provider: string): string {
@@ -458,7 +491,23 @@ function showToast(message: string, error = false): void {
 async function refreshSettings(): Promise<void> {
   state.settings = await client.request<JsonObject>("/api/settings");
   state.panelOpen = Boolean(appearance().model_config_panel_open);
+  state.targetSelections.excel = text(state.settings?.excel_target_lang, text(state.settings?.target_lang, "en"));
+  state.targetSelections.word = text(state.settings?.word_target_lang, text(state.settings?.target_lang, "en"));
+  state.targetSelections.pdf = text(record(state.settings?.pdf).target_lang, "zh");
+  state.sourceSelections.excel = text(state.settings?.excel_source_lang, "auto");
+  state.sourceSelections.word = text(state.settings?.word_source_lang, "auto");
   applyTheme(selectedTheme());
+}
+
+async function refreshLanguages(): Promise<void> {
+  const payload = await client.request<{
+    languages: LanguageOption[];
+    source_options: LanguageOption[];
+    target_options: LanguageOption[];
+  }>("/api/languages");
+  state.languages = payload.languages;
+  state.sourceOptions = payload.source_options;
+  state.targetOptions = payload.target_options;
 }
 
 async function refreshTm(): Promise<void> {
@@ -526,6 +575,8 @@ async function startTask(surface: Surface): Promise<void> {
       untranslated_only: untranslated,
       protect_scheme_cover: protectSchemeCover,
       include_images: includeImages,
+      source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
+      target_lang: state.targetSelections[surface],
     }),
   });
   state.running = { task: payload, logs: [], phaseName: "正在准备任务", stepDone: 0, stepTotal: 0 };
@@ -625,18 +676,69 @@ async function testModel(): Promise<void> {
 }
 
 async function saveLanguage(surface: Surface, target: string): Promise<void> {
-  await persistSettings(surface === "pdf" ? { pdf: { target_lang: target } } : { target_lang: target });
+  state.targetSelections[surface] = target;
+  const patch = surface === "pdf"
+    ? { pdf: { target_lang: target } }
+    : surface === "excel" ? { excel_target_lang: target } : { word_target_lang: target };
+  await persistSettings(patch);
   render();
 }
 
-async function saveSourceLanguage(value: string): Promise<void> {
-  await persistSettings({ source_lang: value });
+async function saveSourceLanguage(surface: Surface, value: string): Promise<void> {
+  if (surface === "pdf") return;
+  state.sourceSelections[surface] = value;
+  await persistSettings(surface === "excel" ? { excel_source_lang: value } : { word_source_lang: value });
   render();
 }
 
 async function savePdfReview(enabled: boolean): Promise<void> {
   await persistSettings({ pdf: { review_enabled: enabled } });
   render();
+}
+
+async function refreshLanguageCatalog(): Promise<void> {
+  await refreshLanguages();
+  await refreshSettings();
+}
+
+async function createCustomLanguage(): Promise<void> {
+  const name = inputValue("customLanguageName");
+  const description = document.querySelector<HTMLTextAreaElement>("#customLanguageDescription")?.value.trim() ?? "";
+  if (!name) throw new Error("请输入自定义语言名称。");
+  await client.request("/api/languages/custom", {
+    method: "POST",
+    body: JSON.stringify({ name, description }),
+  });
+  await refreshLanguageCatalog();
+  state.modal = null;
+  render();
+  showToast("自定义目标语言已添加。");
+}
+
+async function updateCustomLanguage(): Promise<void> {
+  const editing = state.customLanguageEditing;
+  if (!editing) return;
+  const description = document.querySelector<HTMLTextAreaElement>("#customLanguageDescription")?.value.trim() ?? "";
+  await client.request(`/api/languages/custom/${encodeURIComponent(editing.code)}`, {
+    method: "PUT",
+    body: JSON.stringify({ name: editing.display_name, description }),
+  });
+  await refreshLanguageCatalog();
+  state.modal = null;
+  state.customLanguageEditing = null;
+  render();
+  showToast("自定义语言说明已更新。");
+}
+
+async function deleteCustomLanguage(): Promise<void> {
+  const editing = state.customLanguageEditing;
+  if (!editing) return;
+  await client.request(`/api/languages/custom/${encodeURIComponent(editing.code)}`, { method: "DELETE" });
+  await refreshLanguageCatalog();
+  state.modal = null;
+  state.customLanguageEditing = null;
+  render();
+  showToast("自定义目标语言已删除。");
 }
 
 async function tmPin(entryId: number, pinned: boolean): Promise<void> {
@@ -872,8 +974,19 @@ app.addEventListener("change", (event) => {
     void persistSettings({ domain_preset: target.value }).then(render).catch((error) => showToast(errorMessage(error), true));
   }
   if (target.dataset.target) void saveLanguage(target.dataset.target as Surface, target.value).catch((error) => showToast(errorMessage(error), true));
-  if (target.dataset.sourceLanguage !== undefined) void saveSourceLanguage(target.value).catch((error) => showToast(errorMessage(error), true));
+  if (target.dataset.sourceLanguage !== undefined) void saveSourceLanguage(target.dataset.sourceLanguage as Surface, target.value).catch((error) => showToast(errorMessage(error), true));
   if (target.dataset.pdfReview !== undefined) void savePdfReview((target as HTMLInputElement).checked).catch((error) => showToast(errorMessage(error), true));
+});
+
+app.addEventListener("input", (event) => {
+  const target = event.target as HTMLInputElement;
+  if (!target.dataset.languageSearch) return;
+  const surface = target.dataset.languageSearch as Surface;
+  state.languageSearch[surface] = target.value;
+  render();
+  const next = document.querySelector<HTMLInputElement>(`#language-search-${surface}`);
+  next?.focus();
+  next?.setSelectionRange(target.value.length, target.value.length);
 });
 
 async function handleAction(target: HTMLElement): Promise<void> {
@@ -905,9 +1018,20 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "tm-pin") return tmPin(Number(target.dataset.entryId), target.dataset.pinned === "1");
   if (action === "tm-clean") return tmClean();
   if (action === "tm-clean-apply") return applyTmCleanSuggestions();
+  if (action === "custom-language-add") { state.customLanguageEditing = null; state.modal = "custom-language"; render(); return; }
+  if (action === "custom-language-manage") {
+    state.customLanguageEditing = state.targetOptions.find((option) => option.builtin === false) ?? null;
+    if (!state.customLanguageEditing) throw new Error("当前还没有自定义目标语言。");
+    state.modal = "custom-language";
+    render();
+    return;
+  }
+  if (action === "custom-language-create") return createCustomLanguage();
+  if (action === "custom-language-update") return updateCustomLanguage();
+  if (action === "custom-language-delete") return deleteCustomLanguage();
   if (action === "tm-import") return importTm();
   if (action === "tm-export") return exportTm();
-  if (action === "close-modal") { state.modal = null; state.sourcePickerSurface = null; state.tmEditing = null; state.modalNotice = null; render(); return; }
+  if (action === "close-modal") { state.modal = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; render(); return; }
   if (action === "export-model-config") return exportModelConfig();
   if (action === "import-model-config") return importModelConfig();
   if (action === "check-update") return checkUpdate();
@@ -923,6 +1047,7 @@ async function bootstrap(): Promise<void> {
     await client.connect();
     state.connected = true;
     await refreshSettings();
+    await refreshLanguages();
     await refreshTm();
   } catch (error) {
     showToast(`无法连接翻译引擎：${errorMessage(error)}`, true);

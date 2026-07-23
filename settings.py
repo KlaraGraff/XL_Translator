@@ -73,6 +73,7 @@ from core.language_registry import (
     normalize_recent_target_langs,
     remember_recent_target_lang,
     resolve_language_code,
+    is_auto_source_lang,
 )
 
 _KEY_OVERRIDE_LOCAL = threading.local()
@@ -676,6 +677,10 @@ class AppSettings(BaseModel):
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
     target_lang: str = Field(default_factory=get_default_target_lang)
+    excel_source_lang: str = "auto"
+    word_source_lang: str = "auto"
+    excel_target_lang: str = Field(default_factory=get_default_target_lang)
+    word_target_lang: str = Field(default_factory=get_default_target_lang)
     custom_target_langs: list[CustomTargetLang] = Field(default_factory=list)
     recent_target_langs: list[str] = Field(default_factory=list)
     domain_preset: str = "同步工程场景"
@@ -785,8 +790,21 @@ class AppSettings(BaseModel):
             self.source_lang,
             source_supported_map,
         )
-        if resolved_source_lang:
+        if resolved_source_lang and not is_auto_source_lang(self.source_lang):
             self.source_lang = resolved_source_lang
+
+        for field_name in ("excel_source_lang", "word_source_lang"):
+            value = getattr(self, field_name, "auto")
+            if is_auto_source_lang(value):
+                setattr(self, field_name, "auto")
+            else:
+                resolved = resolve_language_code(value, source_supported_map)
+                setattr(self, field_name, resolved or default_source_lang)
+
+        for field_name in ("excel_target_lang", "word_target_lang"):
+            value = getattr(self, field_name, default_target_lang)
+            resolved = resolve_language_code(value, target_supported_map)
+            setattr(self, field_name, resolved or default_target_lang)
 
         resolved_target_lang = resolve_language_code(
             self.target_lang,

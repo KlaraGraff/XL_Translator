@@ -301,6 +301,10 @@ def create_app(
         )
         if settings.target_lang == language_code:
             settings.target_lang = "en"
+        if settings.excel_target_lang == language_code:
+            settings.excel_target_lang = "en"
+        if settings.word_target_lang == language_code:
+            settings.word_target_lang = "en"
         if settings.pdf.target_lang == language_code:
             settings.pdf.target_lang = "zh"
         save_settings(settings)

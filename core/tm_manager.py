@@ -977,6 +977,23 @@ def get_stats(lang_pair: str) -> dict[str, int]:
     }
 
 
+def count_entries_referencing_language(language_code: str) -> int:
+    """Count TM entries whose directed pair references a language code."""
+    code = str(language_code or "").strip()
+    if not code:
+        return 0
+    with _get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM tm_entries
+            WHERE lang_pair = ? OR lang_pair LIKE ? OR lang_pair LIKE ?
+            """,
+            [code, f"{code}-%", f"%-{code}"],
+        ).fetchone()
+    return int(row["total"] or 0)
+
+
 def get_pin_count(lang_pair: str, keyword: str = "") -> dict[str, int]:
     """返回指定范围内 {pinned: N, unpinned: M} 统计。"""
     base_where = "WHERE lang_pair = ?"
