@@ -54,6 +54,8 @@
 2. Apple Developer ID 签名、Hardened Runtime、notarize、staple、Gatekeeper 验证凭据及结果。
 3. macOS 12 arm64 与 x86_64 上的安装、首次启动、sidecar、Mock 标准 Excel/Word/PDF/图片流程、Apple Events 允许/拒绝路径的实机证据。
 
+阻断条件的当前环境证据：`security find-identity -v -p codesigning` 返回 `0 valid identities found`；`gh secret list` 没有配置 Developer ID 或 Apple notarization secrets；本机没有可用的 Parallels、UTM、VMware 或 QEMU macOS 12 虚拟化运行时。上述检查不读取或输出任何凭据值。
+
 真实 API Key 和真实翻译验收仍按已确认例外暂缓；本阶段没有将 Mock 结果表述为真实服务验收。
 
 ## 结论与放行
