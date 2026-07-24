@@ -1,6 +1,6 @@
 # Phase 8 开工记录：更新、帮助、维护、诊断与 macOS 发布
 
-状态：`in_progress`
+状态：`completed; blocked-by-gate`
 
 ## 前置放行
 
