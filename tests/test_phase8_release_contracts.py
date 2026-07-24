@@ -46,6 +46,9 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("needs.validate-release.outputs.formal_release == '1'", workflow)
         self.assertIn("artifact_channel=unsigned-test", workflow)
         self.assertIn("shasum -a 256 -c", workflow)
+        self.assertIn("python -m venv .venv", workflow)
+        self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
+        self.assertIn("./.venv/bin/python3 -m unittest discover -s tests", workflow)
 
     def test_build_script_scans_before_signing_and_marks_manual_artifacts(self) -> None:
         script = (ROOT / "scripts" / "build_macos_package.sh").read_text(encoding="utf-8")

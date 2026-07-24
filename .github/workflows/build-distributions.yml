@@ -84,6 +84,13 @@ jobs:
             requirements.txt
             requirements-build.txt
             constraints-release-py311.txt
+      - name: Create the controlled Python 3.11 release environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          python -m venv .venv
+          ./.venv/bin/python3 --version
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -131,22 +138,21 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Install macOS release dependencies
         run: |
-          python --version
-          PYTHON_BIN="$(command -v python)" bash ./scripts/install_macos_dependencies.sh
+          PYTHON_BIN=./.venv/bin/python3 bash ./scripts/install_macos_dependencies.sh
           npm ci --prefix ui
       - name: Run quality and macOS platform checks
         env:
           TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
         run: |
           pwsh ./quality_gate.ps1
-          python -m unittest discover -s tests
+          ./.venv/bin/python3 -m unittest discover -s tests
           npm run check --prefix ui
           npm run build --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml
       - name: Build, scan, sign, notarize, and verify the macOS DMG
         run: |
-          PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
+          PYTHON_BIN=./.venv/bin/python3 bash ./scripts/build_macos_package.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: Translator_macOS_${{ matrix.architecture }}_${{ needs.validate-release.outputs.artifact_channel }}
