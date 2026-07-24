@@ -114,6 +114,66 @@ class PdfFileItem:
     size_kb: float
     page_count: int = 0
     source_type: str = SOURCE_TYPE_PDF
+    relative_path: str = ""
+    format: str = "pdf"
+    width_px: int = 0
+    height_px: int = 0
+
+
+@dataclass(frozen=True)
+class PdfScanSkippedItem:
+    """A PDF/image-looking input that must remain visible but unselectable."""
+
+    path: Path
+    relative_path: str
+    reason: str
+    format: str = ""
+    source_type: str = ""
+
+
+@dataclass
+class PdfScanResult:
+    """Typed PDF/image scan contract consumed by the local API and Tauri UI."""
+
+    root: Path
+    include_images: bool
+    items: list[PdfFileItem] = field(default_factory=list)
+    skipped: list[PdfScanSkippedItem] = field(default_factory=list)
+
+    @property
+    def summary(self) -> dict[str, int]:
+        pdf_count = sum(1 for item in self.items if item.source_type == SOURCE_TYPE_PDF)
+        image_count = sum(1 for item in self.items if item.source_type == SOURCE_TYPE_IMAGE)
+        total_units = sum(
+            1 if item.source_type == SOURCE_TYPE_IMAGE else max(0, int(item.page_count))
+            for item in self.items
+        )
+        return {
+            "scanned_count": len(self.items),
+            "selected_count": len(self.items),
+            "pdf_count": pdf_count,
+            "image_count": image_count,
+            "total_page_or_image_count": total_units,
+            "skipped_count": len(self.skipped),
+        }
+
+    @property
+    def risk(self) -> dict[str, object]:
+        skipped_count = len(self.skipped)
+        return {
+            "include_images": self.include_images,
+            "mixed_input_supported": bool(
+                self.summary["pdf_count"] and self.summary["image_count"]
+            ),
+            "generated_output_excluded": True,
+            "has_skipped": bool(skipped_count),
+            "skipped_count": skipped_count,
+            "message": (
+                "部分 PDF/图片不可读或不受支持，已列入跳过项目；其余文件仍可继续。"
+                if skipped_count
+                else ""
+            ),
+        }
 
 
 @dataclass
@@ -216,6 +276,7 @@ class PdfTaskSummary:
     image_model_signature: str = ""
     pdf_review_model_signature: str = ""
     stopped: bool = False
+    stop_reason: str = ""
     files: list[PdfFileRecord] = field(default_factory=list)
 
 
@@ -255,42 +316,110 @@ def is_supported_pdf_or_image_file(path: str | Path, *, include_images: bool = F
 
 
 def scan_pdf_path(path: str | Path, *, include_images: bool = False) -> list[PdfFileItem]:
-    path = Path(path).expanduser()
-    if not path.exists():
-        logger.warning(f"路径不存在：{path}")
-        return []
-    if path.is_file():
-        if is_supported_pdf_file(path):
-            return [_build_pdf_file_item(path)]
-        if include_images and is_supported_image_file(path):
-            try:
-                return [_build_image_file_item(path)]
-            except Exception as exc:  # noqa: BLE001 - scanning should return no usable item.
-                logger.warning(f"扫描图片失败 {path.name}：{exc}")
-                return []
-        else:
-            return []
-    items: list[PdfFileItem] = []
-    for candidate in path.rglob("*"):
-        if not candidate.is_file():
-            continue
-        rel = candidate.relative_to(path)
-        if _should_skip_scanned_input(rel):
-            continue
-        if is_supported_pdf_file(candidate):
-            try:
-                items.append(_build_pdf_file_item(candidate))
-            except Exception as exc:  # noqa: BLE001 - scanning should continue.
-                logger.warning(f"扫描 PDF 失败 {candidate.name}：{exc}")
-            continue
-        if not include_images or not is_supported_image_file(candidate):
-            continue
-        try:
-            items.append(_build_image_file_item(candidate))
-        except Exception as exc:  # noqa: BLE001 - scanning should continue.
-            logger.warning(f"扫描图片失败 {candidate.name}：{exc}")
-    items.sort(key=lambda item: item.path)
-    return items
+    """Compatibility entry point returning only selectable PDF/image inputs."""
+    return scan_pdf_sources(path, include_images=include_images).items
+
+
+def scan_pdf_sources(path: str | Path, *, include_images: bool = False) -> PdfScanResult:
+    """Scan PDF and optional standalone images without hiding bad inputs.
+
+    Generated output and operating-system temporary files are deliberately
+    excluded before the source contract.  Files that look selectable but are
+    malformed, animated, empty or unsupported remain in ``skipped`` with a
+    reason so a valid neighbour never gets blocked by them.
+    """
+    source = Path(path).expanduser()
+    root = source if source.is_dir() else source.parent
+    result = PdfScanResult(root=root, include_images=bool(include_images))
+    if not source.exists():
+        reason = f"路径不存在：{source}"
+        logger.warning(reason)
+        result.skipped.append(PdfScanSkippedItem(source, source.name, reason))
+        return result
+
+    if source.is_file():
+        if not _should_skip_scanned_input(Path(source.name)):
+            _scan_one_pdf_source(source, source.parent, result)
+    elif source.is_dir():
+        for candidate in sorted(source.rglob("*")):
+            if not candidate.is_file():
+                continue
+            relative = _relative_scan_path(candidate, source)
+            if _should_skip_scanned_input(Path(relative)):
+                continue
+            suffix = candidate.suffix.lower()
+            if suffix in SUPPORTED_PDF_SUFFIXES:
+                _scan_one_pdf_source(candidate, source, result)
+                continue
+            if include_images and suffix in SUPPORTED_IMAGE_SUFFIXES:
+                _scan_one_pdf_source(candidate, source, result)
+                continue
+            if include_images and suffix in {".gif", ".avif", ".heic", ".heif", ".svg"}:
+                result.skipped.append(
+                    PdfScanSkippedItem(
+                        candidate,
+                        relative,
+                        "不支持的图片格式；可选择 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。",
+                        suffix.lstrip("."),
+                        SOURCE_TYPE_IMAGE,
+                    )
+                )
+    else:
+        result.skipped.append(
+            PdfScanSkippedItem(source, source.name, f"路径既不是文件也不是目录：{source}")
+        )
+
+    result.items.sort(key=lambda item: str(item.path))
+    result.skipped.sort(key=lambda item: str(item.path))
+    logger.info(
+        "PDF/图片扫描完成：{}，可选 {}，跳过 {}，图片输入 {}".format(
+            source,
+            len(result.items),
+            len(result.skipped),
+            "开启" if include_images else "关闭",
+        )
+    )
+    return result
+
+
+def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
+    relative = _relative_scan_path(path, root)
+    suffix = path.suffix.lower()
+    source_type = SOURCE_TYPE_PDF if suffix in SUPPORTED_PDF_SUFFIXES else SOURCE_TYPE_IMAGE
+    supported = is_supported_pdf_file(path) or (
+        result.include_images and is_supported_image_file(path)
+    )
+    if not supported:
+        result.skipped.append(
+            PdfScanSkippedItem(
+                path,
+                relative,
+                "不支持的 PDF/图片文件或系统临时文件。",
+                suffix.lstrip("."),
+                source_type,
+            )
+        )
+        return
+    try:
+        item = (
+            _build_pdf_file_item(path, root=root)
+            if source_type == SOURCE_TYPE_PDF
+            else _build_image_file_item(path, root=root)
+        )
+        result.items.append(item)
+    except Exception as exc:  # noqa: BLE001 - one broken input must not block its peers.
+        reason = f"读取失败：{exc}"
+        logger.warning(f"扫描 PDF/图片失败 {path.name}：{exc}")
+        result.skipped.append(
+            PdfScanSkippedItem(path, relative, reason, suffix.lstrip("."), source_type)
+        )
+
+
+def _relative_scan_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return path.name
 
 
 def page_image_name(page_number: int, total_pages: int, *, failed: bool = False) -> str:
@@ -671,6 +800,8 @@ class PdfImageTranslationRunner:
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._stop_reason = ""
         self._task_logger = TaskLogger(enabled=task_logger_enabled)
         self._rate_limit_reduction_count = 0
         self._api_call_count = 0
@@ -698,15 +829,52 @@ class PdfImageTranslationRunner:
 
     def start(self) -> None:
         self._stop_event.clear()
+        self._pause_event.clear()
+        self._stop_reason = ""
         self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        """Request a normal terminal stop after currently submitted pages settle."""
+        if not self._stop_reason:
+            self._stop_reason = "user_stopped"
         self._stop_event.set()
 
-    def resume(self) -> None:
+    def end_paused(self) -> None:
+        """End a paused task while preserving its partial output package."""
+        if not self._pause_event.is_set() or self._stop_event.is_set():
+            return
+        self._stop_reason = "end_paused"
+        self._pause_event.clear()
+        self._stop_event.set()
+
+    def pause(self) -> None:
+        """Stop adding new pages while completed submissions settle safely."""
         if self._stop_event.is_set():
+            return
+        self._pause_event.set()
+        self._log("INFO", "已暂停提交新页面；正在等待已提交页面安全完成。")
+
+    def _wait_while_paused(self) -> bool:
+        """Return false when pause turned into a terminal stop request."""
+        if not self._pause_event.is_set():
+            return not self._stop_event.is_set()
+        self._queue.put(StatusMsg("状态：已暂停提交，等待继续或结束暂停任务。"))
+        while self._pause_event.is_set() and not self._stop_event.is_set():
+            time.sleep(0.05)
+        return not self._stop_event.is_set()
+
+    def resume(self) -> None:
+        if self._stop_event.is_set() and self._stop_reason != "end_paused":
+            # Preserve the runner-level soft-stop/resume behavior used by
+            # headless callers. API end-paused is terminal and cannot take
+            # this branch.
             self._stop_event.clear()
+            self._pause_event.clear()
+            self._stop_reason = ""
+            self._log("INFO", "已继续翻译：继续提交后续页面。")
+        elif self._pause_event.is_set() and not self._stop_event.is_set():
+            self._pause_event.clear()
             self._log("INFO", "已继续翻译：继续提交后续页面。")
 
     def stop_requested(self) -> bool:
@@ -816,9 +984,10 @@ class PdfImageTranslationRunner:
                 return
 
         root_for_output = self._source_root if self._source_root else self._files[0].path.parent
+        pdf_output = self._settings.pdf_output
         custom_output_dir = (
-            self._settings.output.custom_output_dir
-            if self._settings.output.use_custom_output_dir
+            pdf_output.custom_output_dir
+            if pdf_output.use_custom_output_dir
             else None
         )
 
@@ -890,6 +1059,10 @@ class PdfImageTranslationRunner:
                         total_pages=total_pages,
                     )
 
+                if self._pause_event.is_set() and not self._stop_event.is_set():
+                    if self._wait_while_paused():
+                        continue
+
                 if self._fatal_model_error:
                     fatal_error = self._fatal_model_error
                     if self._fatal_review_model_error:
@@ -902,7 +1075,13 @@ class PdfImageTranslationRunner:
                         )
 
                 has_unfinished_pages = self._has_unfinished_pages(file_records)
-                stopped = self._stop_event.is_set() and has_unfinished_pages and not fatal_error
+                # Ending a paused task is terminal even if its last submitted
+                # page settled while the user made that choice.
+                stopped = (
+                    self._stop_event.is_set()
+                    and (has_unfinished_pages or self._stop_reason == "end_paused")
+                    and not fatal_error
+                )
                 if not fatal_error:
                     resume_requested = False
                     self._queue.put(ProgressMsg(3, 4, "生成最终产物", 0, max(1, len(file_records))))
@@ -973,7 +1152,11 @@ class PdfImageTranslationRunner:
             if stopped:
                 self._queue.put(
                     StoppedMsg(
-                        message=f"PDF 翻译已中止（用户主动中止），已保留页面素材和报告：{output_dir}",
+                        message=(
+                            f"PDF 翻译已结束暂停任务，已保留页面素材和报告：{output_dir}"
+                            if self._stop_reason == "end_paused"
+                            else f"PDF 翻译已中止（用户主动中止），已保留页面素材和报告：{output_dir}"
+                        ),
                         output_dir=str(output_dir),
                         report_path=str(report_path),
                         manifest_path=str(manifest_path),
@@ -1107,7 +1290,7 @@ class PdfImageTranslationRunner:
         translated_pdf_path, compressed_pdf_path = resolve_translated_pdf_variant_paths(
             source_copy_path.parent,
             item.path.name,
-            self._settings.target_lang,
+            self._settings.pdf.target_lang,
             self._settings,
             app_managed=app_managed,
         )
@@ -1148,6 +1331,7 @@ class PdfImageTranslationRunner:
                 while (
                     not producer_done
                     and not self._stop_event.is_set()
+                    and not self._pause_event.is_set()
                     and len(futures) < max_pending
                 ):
                     try:
@@ -1190,6 +1374,9 @@ class PdfImageTranslationRunner:
                     self._queue.put(StatusMsg(self._stop_wait_status()))
                 elif not self._stop_event.is_set() and stop_logged:
                     stop_logged = False
+
+                if self._pause_event.is_set() and not futures:
+                    return
 
                 if not futures:
                     break
@@ -1404,7 +1591,7 @@ class PdfImageTranslationRunner:
         output_path = resolve_translated_image_path(
             Path(record.source_copy_path).parent,
             record.name,
-            self._settings.target_lang,
+            self._settings.pdf.target_lang,
             self._settings,
             app_managed=prepared.app_managed,
             output_suffix=source_path.suffix or ".png",
@@ -1554,7 +1741,7 @@ class PdfImageTranslationRunner:
         translated_pdf_path, compressed_pdf_path = resolve_translated_pdf_variant_paths(
             source_copy_path.parent,
             item.path.name,
-            self._settings.target_lang,
+            self._settings.pdf.target_lang,
             self._settings,
             app_managed=app_managed,
         )
@@ -1804,7 +1991,7 @@ class PdfImageTranslationRunner:
         last_review_failed = False
         review_feedback = ""
         target_language = get_target_lang_display(
-            self._settings.target_lang,
+            self._settings.pdf.target_lang,
             self._settings.custom_target_langs,
             include_optional=True,
         )
@@ -1826,7 +2013,7 @@ class PdfImageTranslationRunner:
                 image_bytes = self._image_client.generate_page(
                     source_image_path=Path(page_record.source_image_path),
                     target_language=target_language,
-                    target_lang_code=self._settings.target_lang,
+                    target_lang_code=self._settings.pdf.target_lang,
                     model_config=model_config,
                     review_feedback=review_feedback or None,
                 )
@@ -2362,9 +2549,9 @@ class PdfImageTranslationRunner:
         return PdfTaskSummary(
             status=status,
             output_dir=str(output_dir),
-            target_lang=self._settings.target_lang,
+            target_lang=self._settings.pdf.target_lang,
             target_lang_label=get_target_lang_display(
-                self._settings.target_lang,
+                self._settings.pdf.target_lang,
                 self._settings.custom_target_langs,
                 include_optional=True,
             ),
@@ -2398,28 +2585,38 @@ class PdfImageTranslationRunner:
                 else ""
             ),
             stopped=stopped,
+            stop_reason=self._stop_reason if stopped else "",
             files=file_records,
         )
 
 
-def _build_pdf_file_item(path: Path) -> PdfFileItem:
+def _build_pdf_file_item(path: Path, *, root: Path | None = None) -> PdfFileItem:
+    page_count = _read_pdf_page_count(path)
+    if page_count <= 0:
+        raise ValueError("PDF 无可读页面或文件已损坏。")
     return PdfFileItem(
         path=path,
         name=path.stem,
         size_kb=round(path.stat().st_size / 1024, 1),
-        page_count=_read_pdf_page_count(path),
+        page_count=page_count,
         source_type=SOURCE_TYPE_PDF,
+        relative_path=_relative_scan_path(path, root or path.parent),
+        format="pdf",
     )
 
 
-def _build_image_file_item(path: Path) -> PdfFileItem:
-    _validate_source_image(path)
+def _build_image_file_item(path: Path, *, root: Path | None = None) -> PdfFileItem:
+    width, height = _validate_source_image(path)
     return PdfFileItem(
         path=path,
         name=path.stem,
         size_kb=round(path.stat().st_size / 1024, 1),
         page_count=1,
         source_type=SOURCE_TYPE_IMAGE,
+        relative_path=_relative_scan_path(path, root or path.parent),
+        format=path.suffix.lower().lstrip("."),
+        width_px=width,
+        height_px=height,
     )
 
 
@@ -2434,11 +2631,16 @@ def _read_pdf_page_count(path: Path) -> int:
         doc.close()
 
 
-def _validate_source_image(path: Path) -> None:
+def _validate_source_image(path: Path) -> tuple[int, int]:
     with Image.open(path) as image:
         if bool(getattr(image, "is_animated", False)) or int(getattr(image, "n_frames", 1) or 1) > 1:
             raise ValueError("暂不支持动图或多页图片。")
-        ImageOps.exif_transpose(image).load()
+        normalized = ImageOps.exif_transpose(image)
+        normalized.load()
+        width, height = normalized.size
+    if width <= 0 or height <= 0:
+        raise ValueError("图片尺寸无效。")
+    return int(width), int(height)
 
 
 def _should_skip_scanned_input(relative_path: Path) -> bool:
@@ -2779,9 +2981,25 @@ def _image_format_from_path(path: str | Path) -> str:
 
 
 def _write_review_json(output_path: Path, result: PdfPageReviewResult) -> None:
+    # Keep only structured review conclusions. Raw provider responses must not
+    # be persisted into local result evidence.
+    payload = {
+        "pass": bool(result.passed),
+        "blocking_issues": [
+            {
+                "type": issue.type,
+                "location": issue.location,
+                "problem": issue.problem,
+                "suggestion": issue.suggestion,
+            }
+            for issue in result.blocking_issues
+        ],
+        "minor_suggestions": list(result.minor_suggestions),
+        "summary": result.summary,
+    }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(result.to_manifest(), ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -2843,7 +3061,7 @@ def _unfinished_image_file_count(summary: PdfTaskSummary) -> int:
 
 def _summary_terminal_reason(summary: PdfTaskSummary) -> str:
     if summary.stopped or summary.status == PDF_OUTPUT_STATE_STOPPED:
-        return "user_stopped"
+        return summary.stop_reason or "user_stopped"
     if summary.status == PDF_OUTPUT_STATE_FAILED:
         return "failed"
     if summary.status == PDF_OUTPUT_STATE_NEEDS_REVIEW:
@@ -2854,6 +3072,7 @@ def _summary_terminal_reason(summary: PdfTaskSummary) -> str:
 def _summary_terminal_reason_label(summary: PdfTaskSummary) -> str:
     reason = _summary_terminal_reason(summary)
     return {
+        "end_paused": "用户结束暂停任务",
         "user_stopped": "用户主动中止",
         "failed": "异常失败",
         "completed_needs_review": "已完成，存在需复核页面",

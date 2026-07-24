@@ -71,12 +71,12 @@ def build_pdf_runtime_settings(
     settings.target_lang = settings.pdf.target_lang
 
     if output_dir is None:
-        settings.output.use_custom_output_dir = False
-        settings.output.custom_output_dir = ""
+        settings.pdf_output.use_custom_output_dir = False
+        settings.pdf_output.custom_output_dir = ""
     else:
         resolved_output = Path(output_dir).expanduser()
-        settings.output.use_custom_output_dir = True
-        settings.output.custom_output_dir = str(resolved_output)
+        settings.pdf_output.use_custom_output_dir = True
+        settings.pdf_output.custom_output_dir = str(resolved_output)
 
     if page_concurrency is not None:
         settings.pdf.page_generation_concurrency = int(page_concurrency)

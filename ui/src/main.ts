@@ -22,6 +22,13 @@ type FileItem = JsonObject & {
   stats_pending_conversion?: boolean;
   statistics_status?: string;
   page_count?: number;
+  source_type?: "pdf" | "image" | string;
+  width?: number;
+  height?: number;
+  width_px?: number;
+  height_px?: number;
+  image_width?: number;
+  image_height?: number;
   paragraph_count?: number;
   table_count?: number;
 };
@@ -34,6 +41,7 @@ type ScanSkippedItem = {
 type ScanReport = {
   skipped: ScanSkippedItem[];
   summary: JsonObject;
+  risk?: JsonObject;
 };
 type OutputDirectoryInspection = {
   state: "idle" | "empty" | "available" | "will_create" | "blocked";
@@ -101,7 +109,7 @@ type RunningTask = {
   stepDone: number;
   stepTotal: number;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "doc-compatibility" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "doc-compatibility" | "pdf-review-unavailable" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -127,6 +135,10 @@ const state: {
   wordFileProgress: Record<string, JsonObject>;
   wordRecovery: JsonObject;
   pendingWordStart: "high_fidelity" | "compatibility" | null;
+  pdfOutputInspection: OutputDirectoryInspection;
+  pdfFileProgress: Record<string, JsonObject>;
+  pdfPageRecovery: JsonObject;
+  pdfReview: JsonObject;
   running: RunningTask | null;
   tmEntries: TmEntry[];
   tmStats: JsonObject;
@@ -186,6 +198,10 @@ const state: {
   wordFileProgress: {},
   wordRecovery: {},
   pendingWordStart: null,
+  pdfOutputInspection: { state: "idle", path: "", message: "选择自定义目录后会在开始前检查；检查不会创建目录。" },
+  pdfFileProgress: {},
+  pdfPageRecovery: {},
+  pdfReview: {},
   running: null,
   tmEntries: [],
   tmStats: {},
@@ -357,6 +373,51 @@ function wordOutputSettingPath(key: string): string {
   return hasOwn(state.settings, "word_output") ? `word_output.${key}` : `output.${key}`;
 }
 
+function pdfOutputSettings(): JsonObject {
+  return record(state.settings?.pdf_output);
+}
+
+function pdfOutputSettingPath(key: string): string {
+  return `pdf_output.${key}`;
+}
+
+function pdfSettings(): JsonObject {
+  return record(state.settings?.pdf);
+}
+
+function pdfIncludeImagesEnabled(): boolean {
+  // "include_images" controls only independent image inputs.  It must not be
+  // coupled to the visual translation protocol for pages inside a PDF.
+  return Boolean(pdfSettings().include_images);
+}
+
+function pdfFileType(file: FileItem): "pdf" | "image" {
+  if (text(file.source_type).toLowerCase() === "image") return "image";
+  const format = fileFormat(file);
+  return ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"].includes(format) ? "image" : "pdf";
+}
+
+function pdfImageDimensions(file: FileItem): string {
+  const width = firstNumber(file, ["width", "width_px", "image_width"]);
+  const height = firstNumber(file, ["height", "height_px", "image_height"]);
+  return width !== null && height !== null ? `${width} × ${height}` : "尺寸未返回";
+}
+
+function pdfPageUnits(file: FileItem): number {
+  return pdfFileType(file) === "image" ? 1 : Math.max(0, number(file.page_count));
+}
+
+function pdfScanSummary(): { files: number; selected: number; pdfs: number; images: number; units: number } {
+  const files = state.files.pdf;
+  return {
+    files: files.length,
+    selected: state.selectedPaths.pdf.length,
+    pdfs: files.filter((file) => pdfFileType(file) === "pdf").length,
+    images: files.filter((file) => pdfFileType(file) === "image").length,
+    units: files.reduce((total, file) => total + pdfPageUnits(file), 0),
+  };
+}
+
 function fileFormat(file: FileItem): string {
   const supplied = text(file.format).trim().replace(/^\./, "");
   if (supplied) return supplied.toLowerCase();
@@ -517,6 +578,7 @@ function taskStatus(): { label: string; tone: string } {
   const current = running.task.state;
   const labels: Record<string, string> = {
     running: "执行中",
+    paused: "已暂停提交",
     stopping: "正在终止",
     done: "已完成",
     error: "发生错误",
@@ -659,6 +721,7 @@ function renderTranslateView(surface: Surface): string {
   const isPdf = surface === "pdf";
   const excelSummary = excelScanSummary();
   const wordSummary = wordScanSummary();
+  const pdfSummary = pdfScanSummary();
   const target = state.targetSelections[surface] || (isPdf
     ? text(record(state.settings?.pdf).target_lang, "zh")
     : text(state.settings?.target_lang, "en"));
@@ -688,14 +751,15 @@ function renderTranslateView(surface: Surface): string {
                ${stat("word", "已知正文段落", String(wordSummary.paragraphs))}
                ${stat("file", "已知表格", String(wordSummary.tables))}
                ${stat("warn", ".doc 待转换", String(wordSummary.docs))}`
-          : `${stat("file", "已扫描", String(files.length))}
-             ${stat("translate", "已选择", String(selectedPaths.length))}
-             ${stat("memory", "TM 命中", activeTask ? "进行中" : "—")}
-             ${stat("refresh", "API 请求", activeTask ? "进行中" : "—")}`}
+          : `${stat("pdf", "PDF 文件", String(pdfSummary.pdfs))}
+             ${stat("file", "独立图片", String(pdfSummary.images))}
+             ${stat("translate", "页 / 图片", String(pdfSummary.units))}
+             ${stat("warn", "扫描跳过", String(state.scanReports.pdf.skipped.length))}`}
       </div>
       <div class="card table-card"><div class="table-header"><h2>任务清单</h2><span class="table-count">已选 ${selectedPaths.length} / ${files.length}</span><span class="header-spacer"></span><button class="mini-button" data-action="select-all-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全选</button><button class="mini-button" data-action="select-no-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全不选</button></div><div class="table-scroll">${renderFiles(files, surface, selectedPaths, activeTask)}</div></div>
       ${isExcel ? renderExcelSkippedItems() : ""}
       ${isWord ? renderWordSkippedItems() : ""}
+      ${isPdf ? renderPdfScanReport() : ""}
     </div>
     <aside class="card right-column">
       <span class="section-label">运行设置</span>
@@ -706,6 +770,7 @@ function renderTranslateView(surface: Surface): string {
       ${renderDetailedSettings(surface, activeTask)}
       ${isExcel ? renderExcelStartPreflight(source, target) : ""}
       ${isWord ? renderWordStartPreflight(source, target) : ""}
+      ${isPdf ? renderPdfStartPreflight() : ""}
       <hr class="divider" />
       ${running ? renderRunningPanel(running, percent) : `<div class="push"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button><p class="note">可执行 ${selectedPaths.length} / ${files.length} 个文件；任务启动后，日志与进度将通过 SSE 实时显示。</p></div>`}
     </aside>
@@ -717,7 +782,7 @@ function renderDetailedSettings(surface: Surface, disabled: boolean): string {
     ? excelOutputSettings()
     : surface === "word"
       ? wordOutputSettings()
-      : record(state.settings?.output);
+      : pdfOutputSettings();
   const excelReview = excelReviewSettings();
   const wordBatch = record(state.settings?.word_batch);
   const wordReview = record(state.settings?.word_review);
@@ -730,23 +795,27 @@ function renderDetailedSettings(surface: Surface, disabled: boolean): string {
     ? excelOutputSettingPath
     : surface === "word"
       ? wordOutputSettingPath
-      : (key: string) => `output.${key}`;
-  const outputInspectionState = surface === "excel" ? state.excelOutputInspection : state.wordOutputInspection;
-  const outputInspection = (surface === "excel" || surface === "word") && outputMode === "custom"
+      : pdfOutputSettingPath;
+  const outputInspectionState = surface === "excel"
+    ? state.excelOutputInspection
+    : surface === "word"
+      ? state.wordOutputInspection
+      : state.pdfOutputInspection;
+  const outputInspection = outputMode === "custom"
     ? `<p id="${surface}-output-state" class="output-path-state ${outputInspectionState.state}">${escapeHtml(outputInspectionState.message)}</p>`
     : "";
-  const outputPicker = surface === "excel" || surface === "word"
+  const outputPicker = surface === "excel" || surface === "word" || surface === "pdf"
     ? `<button class="mini-button" type="button" data-action="choose-${surface}-output" ${inputDisabled}>${icon("folder", "small")}选择文件夹</button>`
     : "";
   const inspectionAttribute = surface === "excel"
     ? "data-excel-output-inspect"
     : surface === "word"
       ? "data-word-output-inspect"
-      : "";
+      : "data-pdf-output-inspect";
   const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="${surface}-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${inspectionAttribute} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
   const excel = `<div class="toggle-row"><input type="checkbox" id="keepOriginal" data-setting-path="${outputPrefix("keep_original_sheets")}" ${checked(output.keep_original_sheets)} ${inputDisabled}/><label for="keepOriginal">保留每个工作表的“_原文”副本</label></div><div class="toggle-row"><input type="checkbox" id="formulaBackfill" data-setting-path="${outputPrefix("formula_display_value_backfill")}" ${checked(output.formula_display_value_backfill)} ${inputDisabled}/><label for="formulaBackfill">公式显示值按静态双语文本回填</label></div><div class="toggle-row"><input type="checkbox" id="excelAutofit" data-setting-path="${outputPrefix("enable_excel_autofit")}" ${checked(output.enable_excel_autofit)} ${inputDisabled}/><label for="excelAutofit">使用 Excel 精调行高（需本机 Excel）</label></div><div class="toggle-row"><input type="checkbox" id="lockRowHeight" data-setting-path="${outputPrefix("lock_row_height")}" ${checked(output.lock_row_height)} ${inputDisabled}/><label for="lockRowHeight">锁定行高并缩小字号（与精调行高互斥）</label></div><p class="note">默认使用 Python 估算行高；精调不可用时保留该结果并在文件结果中提示。最小字号仍可能溢出的单元格会进入复核。</p><div class="toggle-row"><input type="checkbox" id="reviewMark" data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}/><label for="reviewMark">标记需复核内容</label></div><label class="field-label">已有底色处理</label><select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖已有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字（默认）</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖底色</option></select>${renderReviewColors(inputDisabled)}`;
   const word = `<div class="toggle-row"><input type="checkbox" id="wordNativePreprocessing" data-setting-path="word_conversion.use_native_preprocessing" ${checked(wordConversion.use_native_preprocessing)} ${inputDisabled}/><label for="wordNativePreprocessing">启用本地 Word / LibreOffice 自动编号预处理</label></div><p class="note">开启时依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动以 Python 保守物化编号。关闭时全程只使用 Python。所有预处理都发生在临时副本。</p><div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">标记需复核内容</label></div><label class="field-label">已有高亮处理</label><select data-setting-path="word_review.existing_highlight_policy" ${inputDisabled}><option value="skip" ${text(wordReview.existing_highlight_policy) === "skip" ? "selected" : ""}>不覆盖已有高亮</option><option value="red_underline" ${text(wordReview.existing_highlight_policy) === "red_underline" ? "selected" : ""}>保留已有高亮并使用红字下划线（默认）</option><option value="overwrite" ${text(wordReview.existing_highlight_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖已有高亮</option></select>${renderWordReviewColors(inputDisabled)}<div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">补译时保护方案封面与目录</label></div><p class="note">仅在“仅补译未翻译内容”开启时生效；默认关闭。目录和域代码始终保护，不作为普通正文翻译。</p><label class="field-label" for="wordBatchParagraphs">每批最大段落数</label><input id="wordBatchParagraphs" type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label" for="wordBatchChars">每批字符上限</label><input id="wordBatchChars" type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/><label class="field-label" for="wordSplitThreshold">长段拆分阈值</label><input id="wordSplitThreshold" type="number" min="1" data-setting-path="word_batch.split_paragraph_chars" data-value-kind="number" value="${number(wordBatch.split_paragraph_chars, 3000)}" ${inputDisabled}/><p class="note">拆分只发生在模型请求层，响应后按原顺序回写，不会新增 Word 段落或破坏编号、数字和单位。拆分阈值会自动校正为不低于字符上限。</p><label class="field-label" for="wordStrictRetry">单段严格重试次数</label><input id="wordStrictRetry" type="number" min="1" max="8" data-setting-path="word_batch.strict_retry_attempts" data-value-kind="number" value="${number(wordBatch.strict_retry_attempts, 3)}" ${inputDisabled}/><p class="note">仅对空译文、明显不完整或质量校验失败段落重试；合格内容不会重复请求。未恢复内容保留原文并进入复核。</p>`;
-  const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.image_translation_enabled" ${checked(pdf.image_translation_enabled)} ${inputDisabled}/><label for="pdfImages">翻译页内图片文字</label></div><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
+  const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.include_images" ${checked(pdf.include_images)} ${inputDisabled}/><label for="pdfImages">允许选择独立图片文件</label></div><p class="note">此开关只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。</p><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
   return `<details class="advanced-settings"><summary>更多参数</summary><div class="advanced-settings-body">${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
 }
 
@@ -799,10 +868,18 @@ function renderRunningPanel(running: RunningTask, percent: number): string {
       ? renderExcelResultDetails(running.task.result ?? {}, running.task.state)
       : running.task.surface === "word"
         ? renderWordResultDetails(running.task.result ?? {}, running.task.state)
-        : ""
+        : renderPdfResultDetails(running.task.result ?? {}, running.task.state)
     : "";
   const recovery = !terminal && running.task.surface === "word" ? renderWordRecoveryPanel() : "";
-  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${recovery}${resultDetail}${terminal ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>` : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`}</div>`;
+  const pdfStatus = !terminal && running.task.surface === "pdf" ? `${renderPdfRecoveryPanel()}${renderPdfReviewPanel()}` : "";
+  const controls = terminal
+    ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>`
+    : running.task.surface === "pdf" && running.task.state === "paused"
+      ? `<div class="field-row" style="margin-top:10px"><button class="button primary" data-action="resume-pdf-task">${icon("refresh", "small")}继续翻译</button><button class="button danger" data-action="end-paused-pdf-task">${icon("stop", "small")}结束暂停</button></div><p class="note">结束暂停会保留已完成页面、页面素材、清单和报告，任务不能再次继续。</p>`
+      : running.task.surface === "pdf"
+        ? `<div class="field-row" style="margin-top:10px"><button class="button" data-action="pause-pdf-task">暂停提交</button><button class="button danger" data-action="stop-task">${icon("stop", "small")}终止翻译</button></div>`
+        : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`;
+  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
 }
 
 function firstNumber(payload: JsonObject, keys: string[]): number | null {
@@ -892,6 +969,77 @@ function renderWordRecoveryPanel(): string {
     ["仲裁不确定", String(firstNumber(recovery, ["semantic_uncertain_count"]) ?? 0)],
   ];
   return `<details class="word-recovery" open><summary>恢复与语义仲裁</summary><div class="result-kpis">${cards.map(([label, value]) => `<span><b>${escapeHtml(value)}</b>${escapeHtml(label)}</span>`).join("")}</div><p class="note">严格重试只处理空译文、明显不完整或质量校验失败内容；语义仲裁接受的边界译文不会自动写入记忆库。</p></details>`;
+}
+
+function renderPdfRecoveryPanel(): string {
+  const recovery = state.pdfPageRecovery;
+  const total = firstNumber(recovery, ["total_pages"]);
+  const completed = firstNumber(recovery, ["completed_pages"]);
+  const submitted = firstNumber(recovery, ["submitted_page_count"]);
+  const pending = firstNumber(recovery, ["pending_submitted_page_count"]);
+  const cards: Array<[string, string]> = [
+    ["页面进度", total !== null ? `${completed ?? 0} / ${total}` : "等待"],
+    ["已提交", String(submitted ?? 0)],
+    ["待收尾", String(pending ?? 0)],
+    ["重试中", String(firstNumber(recovery, ["retrying_page_count"]) ?? 0)],
+    ["已重试", String(firstNumber(recovery, ["retried_page_count"]) ?? 0)],
+    ["已恢复", String(firstNumber(recovery, ["recovered_page_count"]) ?? 0)],
+    ["失败占位", String(firstNumber(recovery, ["placeholder_page_count"]) ?? 0)],
+  ];
+  return `<details class="word-recovery pdf-recovery" open><summary>页面恢复状态</summary><div class="result-kpis">${cards.map(([label, value]) => `<span><b>${escapeHtml(value)}</b>${escapeHtml(label)}</span>`).join("")}</div><p class="note">暂停时不会再提交新页；“待收尾”归零后可继续同一任务，或结束暂停并写入部分结果证据。</p></details>`;
+}
+
+function renderPdfReviewPanel(): string {
+  const review = state.pdfReview;
+  if (!Object.keys(review).length && !pdfSettings().review_enabled) return "";
+  const enabled = review.enabled === true || Boolean(pdfSettings().review_enabled);
+  const cards: Array<[string, string]> = [
+    ["审核", enabled ? "已开启" : "未开启"],
+    ["当前轮次", String(firstNumber(review, ["review_round"]) ?? 0)],
+    ["处理中", String(firstNumber(review, ["review_processing_count"]) ?? 0)],
+    ["通过", String(firstNumber(review, ["review_passed_count"]) ?? 0)],
+    ["未通过", String(firstNumber(review, ["review_failed_count"]) ?? 0)],
+  ];
+  return `<details class="word-recovery pdf-review-status" open><summary>逐页审核状态</summary><div class="result-kpis">${cards.map(([label, value]) => `<span><b>${escapeHtml(value)}</b>${escapeHtml(label)}</span>`).join("")}</div><p class="note">审核候选图与页面结论将随本次任务写入输出目录；模型响应正文不会显示或保存到界面结果。</p></details>`;
+}
+
+function renderPdfResultDetails(result: JsonObject, taskState = ""): string {
+  const summary = record(result.summary);
+  const source = { ...result, ...summary };
+  const files = resultEntries(result, ["files", "file_results", "file_records"]);
+  const outputPath = firstText(source, ["output_dir", "output_directory"]);
+  const reportPath = firstText(source, ["report_path"]);
+  const manifestPath = firstText(source, ["manifest_path"]);
+  const duration = firstNumber(source, ["elapsed_sec", "elapsed_seconds", "duration_seconds"]);
+  const terminalLabel = taskState === "stopped" || result.stopped
+    ? "任务已停止，已完成页面和证据已保留"
+    : taskState === "error"
+      ? "任务失败，保留已知输出和诊断信息"
+      : "任务已完成";
+  const kpis: Array<[string, number | null]> = [
+    ["文件", firstNumber(source, ["file_count", "selected_file_count"])],
+    ["页 / 图片", firstNumber(source, ["total_page_count", "page_count"])],
+    ["高清 PDF", firstNumber(source, ["generated_pdf_count"])],
+    ["译图", firstNumber(source, ["generated_image_count"])],
+    ["失败占位", firstNumber(source, ["placeholder_page_count"])],
+    ["审核未通过", firstNumber(source, ["review_failed_page_count"])],
+  ].filter((item): item is [string, number] => item[1] !== null);
+  const rows = files.map((entry) => {
+    const kind = firstText(entry, ["source_type"]) === "image" ? "图片" : "PDF";
+    const status = firstText(entry, ["status", "state"]) || (entry.success === true ? "completed" : entry.success === false ? "failed" : "结果未知");
+    const output = firstText(entry, ["output", "output_path", "translated_image_path"]);
+    const compressed = firstText(entry, ["compressed_output"]);
+    const review = [
+      firstNumber(entry, ["reviewed_page_count"]),
+      firstNumber(entry, ["review_passed_page_count"]),
+      firstNumber(entry, ["review_failed_page_count"]),
+    ].some((value) => value !== null)
+      ? `${firstNumber(entry, ["reviewed_page_count"]) ?? 0} 审核 / ${firstNumber(entry, ["review_passed_page_count"]) ?? 0} 通过 / ${firstNumber(entry, ["review_failed_page_count"]) ?? 0} 未通过`
+      : "—";
+    const pageState = `${firstNumber(entry, ["page_count"]) ?? 0} 页；占位 ${firstNumber(entry, ["placeholder_page_count"]) ?? 0}；应急比例 ${firstNumber(entry, ["emergency_ratio_normalized_count"]) ?? 0}`;
+    return `<tr><td>${escapeHtml(firstText(entry, ["name", "relative_path", "source_path"]))}</td><td>${kind}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(pageState)}</td><td>${escapeHtml(review)}</td><td>${escapeHtml(output || "—")}${compressed ? `<small class="file-location">压缩版：${escapeHtml(compressed)}</small>` : ""}</td><td>${escapeHtml(firstText(entry, ["error", "error_message", "detail"]) || "—")}</td></tr>`;
+  }).join("");
+  return `<details class="word-result-details pdf-result-details" open><summary>PDF / 图片结果详情 · ${escapeHtml(terminalLabel)}</summary>${outputPath ? `<p class="result-output">输出目录：<code>${escapeHtml(outputPath)}</code>${duration !== null ? ` · 耗时 ${duration.toFixed(1)} 秒` : ""}</p>` : ""}${reportPath ? `<p class="result-output">报告：<code>${escapeHtml(reportPath)}</code></p>` : ""}${manifestPath ? `<p class="result-output">清单：<code>${escapeHtml(manifestPath)}</code></p>` : ""}${kpis.length ? `<div class="result-kpis">${kpis.map(([label, value]) => `<span><b>${value}</b>${label}</span>`).join("")}</div>` : ""}${files.length ? `<div class="result-table"><table><thead><tr><th>源文件</th><th>类型</th><th>状态</th><th>页面结果</th><th>审核</th><th>输出</th><th>问题</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="note">终态未返回文件级清单；请查看输出目录中的清单与报告。</p>`}</details>`;
 }
 
 function renderWordResultDetails(result: JsonObject, taskState = ""): string {
@@ -1011,7 +1159,21 @@ function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[
       return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("word", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${conversionPending ? "legacy" : ""}">.${escapeHtml(format)}${conversionPending ? " · 需转换" : ""}</span></td><td class="number">${conversionPending ? "转换后统计" : number(file.paragraph_count)}</td><td class="number">${conversionPending ? "转换后统计" : number(file.table_count)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
     }).join("")}</tbody></table>`;
   }
-  return `<table><thead><tr><th class="selection-column">选择</th><th>文件名</th><th class="number">大小</th><th class="number">页数</th></tr></thead><tbody>${files.map((file) => `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("pdf", "small")}${escapeHtml(file.name)}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${number(file.page_count)}</td></tr>`).join("")}</tbody></table>`;
+  return `<table class="pdf-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th>类型</th><th class="number">大小</th><th class="number">页 / 图片</th><th>尺寸</th><th>执行状态</th></tr></thead><tbody>${files.map((file) => {
+    const progress = record(state.pdfFileProgress[file.path]);
+    const sourceType = pdfFileType(file);
+    const status = text(progress.status) || text(progress.stage) || text(progress.phase_name) || "待启动";
+    const statusTone = /失败|错误|error|failed/i.test(status)
+      ? "error"
+      : /完成|成功|done|translated|completed/i.test(status)
+        ? "ok"
+        : /预处理|处理|翻译|审核|写入|running/i.test(status)
+          ? "running"
+          : "";
+    const sourceLabel = sourceType === "image" ? "图片" : "PDF";
+    const size = sourceType === "image" ? pdfImageDimensions(file) : "—";
+    return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon(sourceType === "image" ? "file" : "pdf", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small></td><td><span class="format-pill">${sourceLabel} · .${escapeHtml(fileFormat(file) || (sourceType === "image" ? "png" : "pdf"))}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${sourceType === "image" ? "1 图" : `${pdfPageUnits(file)} 页`}</td><td>${escapeHtml(size)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
+  }).join("")}</tbody></table>`;
 }
 
 function renderExcelSkippedItems(): string {
@@ -1034,6 +1196,26 @@ function renderWordSkippedItems(): string {
     return `<li><span>${escapeHtml(path)}</span><small>${escapeHtml(text(item.reason, "扫描时无法读取"))}</small></li>`;
   }).join("");
   return `<details class="scan-skipped"><summary>${icon("warn", "small")}跳过项目（${skipped.length}）</summary><ul>${rows}</ul></details>`;
+}
+
+function renderPdfScanReport(): string {
+  const report = state.scanReports.pdf;
+  const summary = record(report.summary);
+  const risk = record(report.risk);
+  const skipped = report.skipped;
+  const pdfs = firstNumber(summary, ["pdf_count"]) ?? pdfScanSummary().pdfs;
+  const images = firstNumber(summary, ["image_count"]) ?? pdfScanSummary().images;
+  const units = firstNumber(summary, ["total_page_or_image_count"]) ?? pdfScanSummary().units;
+  const includeImages = typeof risk.include_images === "boolean"
+    ? risk.include_images
+    : pdfIncludeImagesEnabled();
+  const skippedRows = skipped.map((item) => {
+    const path = text(item.relative_path) || text(item.path) || text(item.name, "未命名文件");
+    return `<li><span>${escapeHtml(path)}</span><small>${escapeHtml(text(item.reason, "扫描时无法读取"))}</small></li>`;
+  }).join("");
+  const riskMessage = text(risk.message);
+  const mixed = risk.mixed_input_supported === true;
+  return `${state.files.pdf.length || skipped.length ? `<details class="word-recovery pdf-scan-overview" open><summary>PDF / 图片扫描概况</summary><div class="result-kpis"><span><b>${pdfs}</b>PDF</span><span><b>${images}</b>独立图片</span><span><b>${units}</b>页 / 图片</span><span><b>${skipped.length}</b>跳过</span></div><p class="note">独立图片输入：${includeImages ? "已开启" : "未开启"}；${mixed ? "当前清单包含 PDF 与图片，会在同一任务中按各自输出规则处理。" : "PDF 与独立图片均可扫描，图片需在更多参数中开启。"}</p>${riskMessage ? `<p class="note">${escapeHtml(riskMessage)}</p>` : ""}</details>` : ""}${skipped.length ? `<details class="scan-skipped" open><summary>${icon("warn", "small")}PDF / 图片跳过项目（${skipped.length}）</summary><ul>${skippedRows}</ul></details>` : ""}`;
 }
 
 function renderExcelStartPreflight(source: string, target: string): string {
@@ -1064,6 +1246,22 @@ function renderWordStartPreflight(source: string, target: string): string {
     ${docCount ? `<li class="warn">已选 ${docCount} 个 .doc：最终产物始终为 .docx。开始前必须明确选择“优先高保真”或“允许兼容转换”；选择高保真后，单文件失败不会静默降级。</li>` : ""}
     <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
   </ul></details>`;
+}
+
+function renderPdfStartPreflight(): string {
+  const output = pdfOutputSettings();
+  const reviewEnabled = Boolean(pdfSettings().review_enabled);
+  const outputState = Boolean(output.use_custom_output_dir)
+    ? state.pdfOutputInspection.message
+    : "将在源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
+  const reviewRole = record(state.modelRoles.pdf_review);
+  const availability = text(reviewRole.availability_status, "unknown");
+  const reviewWarning = reviewEnabled && availability === "unavailable"
+    ? "审核模型当前配置已测试失败；开始时必须明确确认继续，或关闭审核。"
+    : reviewEnabled
+      ? "逐页审核已开启，审核模型的配置、连接状态与本次任务一同冻结。"
+      : "逐页审核未开启。";
+  return `<details class="word-preflight pdf-preflight" open><summary>启动前检查</summary><ul><li>PDF/图片不读写记忆库；页图翻译由模型识别原文，目标语言、输出策略与模型配置均在启动时冻结。</li><li>${escapeHtml(outputState)}</li><li class="${reviewEnabled && availability === "unavailable" ? "warn" : ""}">${escapeHtml(reviewWarning)}</li><li>暂停只停止提交新页面，已提交页面会安全收尾；可继续同一任务，或结束暂停并保留素材、清单和报告。</li></ul></details>`;
 }
 
 function renderTmView(): string {
@@ -1278,6 +1476,10 @@ async function refreshSettings(): Promise<void> {
   if (wordOutput.use_custom_output_dir) {
     void inspectWordOutputDirectory(text(wordOutput.custom_output_dir));
   }
+  const pdfOutput = pdfOutputSettings();
+  if (pdfOutput.use_custom_output_dir) {
+    void inspectPdfOutputDirectory(text(pdfOutput.custom_output_dir));
+  }
   await refreshModelRoles();
 }
 
@@ -1376,6 +1578,7 @@ async function persistSettings(patch: JsonObject): Promise<void> {
 
 let excelOutputInspectionSequence = 0;
 let wordOutputInspectionSequence = 0;
+let pdfOutputInspectionSequence = 0;
 
 async function inspectExcelOutputDirectory(path: string): Promise<void> {
   const sequence = ++excelOutputInspectionSequence;
@@ -1437,12 +1640,45 @@ async function chooseWordOutputDirectory(): Promise<void> {
   render();
 }
 
+async function inspectPdfOutputDirectory(path: string): Promise<void> {
+  const sequence = ++pdfOutputInspectionSequence;
+  try {
+    const inspection = await invoke<OutputDirectoryInspection>("inspect_output_directory", { path });
+    if (sequence !== pdfOutputInspectionSequence) return;
+    state.pdfOutputInspection = inspection;
+  } catch (error) {
+    if (sequence !== pdfOutputInspectionSequence) return;
+    state.pdfOutputInspection = {
+      state: "blocked",
+      path,
+      message: `无法检查输出目录：${errorMessage(error)}`,
+    };
+  }
+  const status = document.querySelector<HTMLElement>("#pdf-output-state");
+  if (status) {
+    status.className = `output-path-state ${state.pdfOutputInspection.state}`;
+    status.textContent = state.pdfOutputInspection.message;
+  }
+}
+
+async function choosePdfOutputDirectory(): Promise<void> {
+  const selected = await open({ title: "选择 PDF / 图片输出根目录", directory: true, multiple: false });
+  if (typeof selected !== "string") return;
+  await persistSettings(nestedPatch(pdfOutputSettingPath("custom_output_dir"), selected));
+  await persistSettings(nestedPatch(pdfOutputSettingPath("use_custom_output_dir"), true));
+  await inspectPdfOutputDirectory(selected);
+  render();
+}
+
 async function chooseSource(surface: Surface, directory: boolean): Promise<void> {
+  const pdfExtensions = pdfIncludeImagesEnabled()
+    ? ["pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"]
+    : ["pdf"];
   const selected = await open({
     title: directory ? `选择${surfaceLabel(surface)}文件夹` : `选择${surfaceLabel(surface)}文件`,
     directory,
     multiple: false,
-    filters: directory ? undefined : [{ name: surfaceLabel(surface), extensions: surface === "excel" ? ["xlsx", "xls"] : surface === "word" ? ["docx", "doc"] : ["pdf"] }],
+    filters: directory ? undefined : [{ name: surface === "pdf" ? "PDF / 图片" : surfaceLabel(surface), extensions: surface === "excel" ? ["xlsx", "xls"] : surface === "word" ? ["docx", "doc"] : pdfExtensions }],
   });
   if (typeof selected === "string") {
     state.sourcePaths[surface] = selected;
@@ -1459,25 +1695,30 @@ async function scan(surface: Surface): Promise<void> {
     items?: FileItem[];
     skipped?: ScanSkippedItem[];
     summary?: JsonObject;
-    result?: { items?: FileItem[]; skipped?: ScanSkippedItem[]; summary?: JsonObject };
+    risk?: JsonObject;
+    result?: { items?: FileItem[]; skipped?: ScanSkippedItem[]; summary?: JsonObject; risk?: JsonObject };
   };
   const payload = await client.request<SourceScanPayload>("/api/sources/scan", {
     method: "POST",
-    body: JSON.stringify({ surface, path, include_images: false }),
+    body: JSON.stringify({ surface, path, include_images: surface === "pdf" && pdfIncludeImagesEnabled() }),
   });
   const grouped = payload.result ?? {};
   const items = Array.isArray(payload.items) ? payload.items : Array.isArray(grouped.items) ? grouped.items : [];
   const skipped = Array.isArray(payload.skipped) ? payload.skipped : Array.isArray(grouped.skipped) ? grouped.skipped : [];
   const summary = record(payload.summary ?? grouped.summary);
+  const risk = record(payload.risk ?? grouped.risk);
   state.files[surface] = items;
   state.scanReports[surface] = {
     skipped: skipped.map((item) => record(item) as ScanSkippedItem),
     summary,
+    risk,
   };
   state.selectedPaths[surface] = items.map((item) => item.path);
   await persistSettings({ [`last_${surface}_source_folder`]: path });
   render();
-  showToast(`已扫描到 ${items.length} 个${surfaceLabel(surface)}文件。`);
+  showToast(surface === "pdf"
+    ? `已扫描到 ${items.length} 个 PDF / 图片输入，跳过 ${skipped.length} 个。`
+    : `已扫描到 ${items.length} 个${surfaceLabel(surface)}文件。`);
 }
 
 async function startTask(
@@ -1528,7 +1769,15 @@ async function startTask(
   const protectSchemeCover = surface === "word" && untranslated
     ? Boolean(document.querySelector<HTMLInputElement>("#protectSchemeCover")?.checked)
     : false;
-  const includeImages = Boolean(record(state.settings?.pdf).image_translation_enabled);
+  const includeImages = surface === "pdf" && pdfIncludeImagesEnabled();
+  const reviewRole = record(state.modelRoles.pdf_review);
+  const reviewKnownUnavailable = surface === "pdf"
+    && Boolean(pdfSettings().review_enabled)
+    && text(reviewRole.availability_status) === "unavailable";
+  const allowKnownReviewFailure = reviewKnownUnavailable
+    ? window.confirm("PDF 审核模型当前配置已经测试失败。继续会使用本次冻结配置尝试审核；失败页面会保留为可复核结果。是否继续？")
+    : false;
+  if (reviewKnownUnavailable && !allowKnownReviewFailure) return;
   const payload = await client.request<TaskStatus>("/api/tasks", {
     method: "POST",
     body: JSON.stringify({
@@ -1542,11 +1791,15 @@ async function startTask(
       include_images: includeImages,
       source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
       target_lang: state.targetSelections[surface],
+      allow_known_review_failure: allowKnownReviewFailure,
     }),
   });
   state.excelFileProgress = surface === "excel" ? {} : state.excelFileProgress;
   state.wordFileProgress = surface === "word" ? {} : state.wordFileProgress;
   state.wordRecovery = surface === "word" ? {} : state.wordRecovery;
+  state.pdfFileProgress = surface === "pdf" ? {} : state.pdfFileProgress;
+  state.pdfPageRecovery = surface === "pdf" ? {} : state.pdfPageRecovery;
+  state.pdfReview = surface === "pdf" ? {} : state.pdfReview;
   state.running = { task: payload, logs: [], phaseName: "正在准备任务", stepDone: 0, stepTotal: 0 };
   render();
   try {
@@ -1584,8 +1837,22 @@ function handleTaskEvent(event: SseEvent): void {
   if (event.type === "stopping") {
     state.running.task = { ...state.running.task, state: "stopping" };
   }
+  if (event.type === "paused") {
+    state.running.task = { ...state.running.task, state: "paused" };
+    state.running.phaseName = "已暂停提交新页面";
+  }
+  if (event.type === "resumed") {
+    state.running.task = { ...state.running.task, state: "running" };
+    state.running.phaseName = "正在继续提交页面";
+  }
   if (event.type === "word_recovery" && state.running.task.surface === "word") {
     state.wordRecovery = { ...data };
+  }
+  if (event.type === "pdf_page_recovery" && state.running.task.surface === "pdf") {
+    state.pdfPageRecovery = { ...data };
+  }
+  if (event.type === "pdf_review" && state.running.task.surface === "pdf") {
+    state.pdfReview = { ...data };
   }
   if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
     const surface = state.running.task.surface;
@@ -1594,6 +1861,13 @@ function handleTaskEvent(event: SseEvent): void {
       const knownPath = state.files[surface].find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
       const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
       progress[knownPath] = { ...progress[knownPath], ...data };
+    }
+  }
+  if (state.running.task.surface === "pdf") {
+    const filePath = firstText(data, ["file_path", "source_path", "path", "relative_path"]);
+    if (filePath && ["file", "file_status", "preflight", "progress", "result"].includes(event.type)) {
+      const knownPath = state.files.pdf.find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
+      state.pdfFileProgress[knownPath] = { ...state.pdfFileProgress[knownPath], ...data };
     }
   }
   if (["done", "error", "stopped"].includes(event.type)) {
@@ -1607,10 +1881,19 @@ function handleTaskEvent(event: SseEvent): void {
         if (knownPath) progress[knownPath] = { ...progress[knownPath], ...entry };
       }
     }
+    if (state.running.task.surface === "pdf") {
+      for (const entry of resultEntries(data, ["files", "file_results", "file_records"])) {
+        const filePath = firstText(entry, ["source_path", "path", "source_relative_path", "relative_path"]);
+        const knownPath = state.files.pdf.find((file) => file.path === filePath || displayPath(file) === filePath)?.path;
+        if (knownPath) state.pdfFileProgress[knownPath] = { ...state.pdfFileProgress[knownPath], ...entry };
+      }
+    }
     if (event.type === "done") {
       showToast(state.running.task.surface === "word"
         ? "Word 翻译任务已完成。文件级结果、质量报告和输出目录已显示。"
-        : "翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
+        : state.running.task.surface === "pdf"
+          ? "PDF / 图片翻译任务已完成。文件结果、页面复核与输出证据已显示。"
+          : "翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
     } else {
       showToast(text(data.message, "任务未完成。"), true);
     }
@@ -1621,6 +1904,25 @@ function handleTaskEvent(event: SseEvent): void {
 async function stopTask(): Promise<void> {
   if (!state.running) return;
   state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/stop`, { method: "POST" });
+  render();
+}
+
+async function pausePdfTask(): Promise<void> {
+  if (!state.running || state.running.task.surface !== "pdf") return;
+  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/pause`, { method: "POST" });
+  render();
+}
+
+async function resumePdfTask(): Promise<void> {
+  if (!state.running || state.running.task.surface !== "pdf") return;
+  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/resume`, { method: "POST" });
+  render();
+}
+
+async function endPausedPdfTask(): Promise<void> {
+  if (!state.running || state.running.task.surface !== "pdf") return;
+  if (!window.confirm("结束暂停任务将不再提交未处理页面，但会写入并保留已完成页面、素材、清单和报告。是否结束？")) return;
+  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/end-paused`, { method: "POST" });
   render();
 }
 
@@ -2462,6 +2764,12 @@ app.addEventListener("change", (event) => {
             : target.value;
           await inspectWordOutputDirectory(path);
         }
+        if (target.dataset.pdfOutputInspect !== undefined || target.id === "output-pdf") {
+          const path = target.id === "output-pdf"
+            ? text(pdfOutputSettings().custom_output_dir)
+            : target.value;
+          await inspectPdfOutputDirectory(path);
+        }
       })
       .catch((error) => showToast(errorMessage(error), true));
   }
@@ -2481,6 +2789,7 @@ app.addEventListener("change", (event) => {
 
 let excelOutputInspectionTimer: number | undefined;
 let wordOutputInspectionTimer: number | undefined;
+let pdfOutputInspectionTimer: number | undefined;
 
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement;
@@ -2494,6 +2803,12 @@ app.addEventListener("input", (event) => {
     if (wordOutputInspectionTimer !== undefined) window.clearTimeout(wordOutputInspectionTimer);
     wordOutputInspectionTimer = window.setTimeout(() => {
       void inspectWordOutputDirectory(target.value);
+    }, 180);
+  }
+  if (target.dataset.pdfOutputInspect !== undefined) {
+    if (pdfOutputInspectionTimer !== undefined) window.clearTimeout(pdfOutputInspectionTimer);
+    pdfOutputInspectionTimer = window.setTimeout(() => {
+      void inspectPdfOutputDirectory(target.value);
     }, 180);
   }
   if (!target.dataset.languageSearch) return;
@@ -2516,6 +2831,7 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "choose-source-folder" && surface) { await chooseSource(surface, true); state.sourcePickerSurface = null; state.modal = null; render(); return; }
   if (action === "choose-excel-output") return chooseExcelOutputDirectory();
   if (action === "choose-word-output") return chooseWordOutputDirectory();
+  if (action === "choose-pdf-output") return choosePdfOutputDirectory();
   if (action === "scan" && surface) return scan(surface);
   if (action === "start-task" && surface) return startTask(surface);
   if (action === "excel-start-high-fidelity") { state.modal = null; return startTask("excel", false, true); }
@@ -2524,6 +2840,9 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "word-start-compatibility") { state.modal = null; return startTask("word", false, false, true, true); }
   if (action === "stop-task") { state.modal = "stop-task"; render(); return; }
   if (action === "stop-task-confirm") { state.modal = null; return stopTask(); }
+  if (action === "pause-pdf-task") return pausePdfTask();
+  if (action === "resume-pdf-task") return resumePdfTask();
+  if (action === "end-paused-pdf-task") return endPausedPdfTask();
   if (action === "reset-task") { state.running = null; render(); return; }
   if (action === "select-all-files" && surface) { state.selectedPaths[surface] = state.files[surface].map((file) => file.path); render(); return; }
   if (action === "select-no-files" && surface) { state.selectedPaths[surface] = []; render(); return; }

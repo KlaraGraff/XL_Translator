@@ -9,7 +9,7 @@ export type TaskStatus = {
   task_id: string;
   surface: "excel" | "word" | "pdf";
   source_path: string;
-  state: "running" | "stopping" | "done" | "error" | "stopped";
+  state: "running" | "paused" | "stopping" | "done" | "error" | "stopped";
   terminal: boolean;
   result: Record<string, unknown> | null;
 };

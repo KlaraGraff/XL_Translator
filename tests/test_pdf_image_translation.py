@@ -157,6 +157,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             (source_dir / "note.txt").write_text("not copied", encoding="utf-8")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
             settings.image_model_role.cloud_model = "image-model"
@@ -278,6 +279,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_image.write_bytes(_png_bytes(1200, 1600))
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
             settings.image_model_role.cloud_model = "image-model"
@@ -801,6 +803,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             source_pdf.write_bytes(b"%PDF-1.4\n")
             output_dir = root / "out"
             settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
             settings.pdf.review_enabled = True
             settings.image_model_role.source_role = SOURCE_INDEPENDENT
             settings.image_model_role.cloud_provider = "custom_openai"
@@ -1026,6 +1029,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 2
@@ -1077,6 +1081,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             first.write_bytes(b"%PDF-1.4\n")
             second.write_bytes(b"%PDF-1.4\n")
             settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
             settings.output.use_custom_output_dir = True
             settings.output.custom_output_dir = str(root / "out")
             settings.pdf.page_generation_concurrency = 1

@@ -19,6 +19,12 @@ from core.file_scanner import scan_path
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
 from core.language_registry import normalize_source_selection
+from core.model_roles import (
+    ROLE_IMAGE,
+    ROLE_PDF_REVIEW,
+    provider_supports_capability,
+    resolve_effective_model_config,
+)
 from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
 from core.task_resources import TaskResourceLease, TaskResourceRegistry
 from core.task_runner import (
@@ -84,6 +90,7 @@ class TaskOptions:
     include_images: bool = False
     source_lang: str | None = None
     target_lang: str | None = None
+    allow_known_review_failure: bool = False
 
     @property
     def xls_conversion_mode(self) -> str:
@@ -193,6 +200,12 @@ class TranslationTaskManager:
                 settings=settings,
                 options=selected_options,
             )
+        else:
+            self._validate_pdf_preflight(
+                files=files,
+                settings=settings,
+                options=selected_options,
+            )
         if normalized_surface in {"excel", "word"}:
             tm_manager.init_db()
 
@@ -266,6 +279,25 @@ class TranslationTaskManager:
                         ),
                     }
                 )
+            else:
+                task_snapshot.update(
+                    {
+                        "pdf": settings.pdf.model_dump(mode="json"),
+                        "pdf_output": settings.pdf_output.model_dump(mode="json"),
+                        "selected_file_count": len(files),
+                        "pdf_file_count": sum(
+                            1
+                            for item in files
+                            if getattr(item, "source_type", "pdf") == "pdf"
+                        ),
+                        "image_file_count": sum(
+                            1
+                            for item in files
+                            if getattr(item, "source_type", "pdf") == "image"
+                        ),
+                        "tm": {"enabled": False},
+                    }
+                )
             runner = self._build_runner(
                 surface=normalized_surface,
                 files=files,
@@ -333,6 +365,60 @@ class TranslationTaskManager:
             task.state = "stopping"
         task.runner.stop()
         self._append_event(task, "stopping", {"state": "stopping"})
+        return self.task_status(task_id)
+
+    def pause_task(self, task_id: str) -> dict[str, Any]:
+        """Pause PDF page submission while its sidecar and snapshot remain alive."""
+        task = self._get_task(task_id)
+        if task.surface != "pdf":
+            raise TaskInputError("只有 PDF/图片任务支持暂停提交。")
+        with task.condition:
+            if task.terminal:
+                return self.task_status(task_id)
+            if not hasattr(task.runner, "pause"):
+                raise TaskInputError("当前 PDF 任务不支持暂停提交。")
+            if task.state == "paused":
+                return self.task_status(task_id)
+            if task.state != "running":
+                raise TaskInputError("当前 PDF/图片任务不处于可暂停状态。")
+            task.state = "paused"
+            self._append_event(task, "paused", {"state": "paused"})
+        task.runner.pause()  # type: ignore[attr-defined]
+        return self.task_status(task_id)
+
+    def resume_task(self, task_id: str) -> dict[str, Any]:
+        """Resume a same-sidecar PDF task with its frozen settings."""
+        task = self._get_task(task_id)
+        if task.surface != "pdf":
+            raise TaskInputError("只有 PDF/图片任务支持继续。")
+        with task.condition:
+            if task.terminal:
+                raise TaskInputError("任务已经结束，不能继续。")
+            if not hasattr(task.runner, "resume"):
+                raise TaskInputError("当前 PDF 任务不支持继续。")
+            if task.state != "paused":
+                raise TaskInputError("只有暂停提交的 PDF/图片任务可以继续。")
+            task.state = "running"
+            self._append_event(task, "resumed", {"state": "running"})
+        task.runner.resume()  # type: ignore[attr-defined]
+        return self.task_status(task_id)
+
+    def end_paused_task(self, task_id: str) -> dict[str, Any]:
+        """End an intentionally paused PDF task and retain its partial evidence."""
+        task = self._get_task(task_id)
+        if task.surface != "pdf":
+            raise TaskInputError("只有 PDF/图片任务支持结束暂停任务。")
+        with task.condition:
+            if task.terminal:
+                return self.task_status(task_id)
+            if task.state != "paused":
+                raise TaskInputError("只有暂停提交的 PDF/图片任务可以结束。")
+            task.state = "stopping"
+            self._append_event(task, "stopping", {"state": "stopping", "reason": "end_paused"})
+        if hasattr(task.runner, "end_paused"):
+            task.runner.end_paused()  # type: ignore[attr-defined]
+        else:
+            task.runner.stop()
         return self.task_status(task_id)
 
     def reservations(self) -> list[dict[str, Any]]:
@@ -514,6 +600,57 @@ class TranslationTaskManager:
             "请取消任务，安装/授权 Microsoft Word 后重试，或明确确认兼容转换；"
             "兼容转换可能改变版式、域、图文和宏。"
         )
+
+    @staticmethod
+    def _validate_pdf_preflight(
+        *,
+        files: list[Any],
+        settings: AppSettings,
+        options: TaskOptions,
+    ) -> None:
+        """Validate PDF/image-specific settings before allocating a task lease."""
+        if not files:
+            raise TaskInputError("请至少选择一个 PDF 或图片文件。")
+        if not str(settings.pdf.target_lang or "").strip():
+            raise TaskInputError("请先选择 PDF/图片目标语言。")
+        pdf_output = settings.pdf_output
+        if pdf_output.use_custom_output_dir:
+            output_error = bilingual_writer.get_custom_output_dir_error(
+                pdf_output.custom_output_dir
+            )
+            if output_error:
+                raise TaskInputError(output_error)
+        try:
+            image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
+        except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
+            raise TaskInputError(f"PDF 翻译模型配置不可用：{exc}") from exc
+        if not image_model.model:
+            raise TaskInputError("请先填写 PDF 翻译模型名称。")
+        if not provider_supports_capability(image_model.provider, "image"):
+            raise TaskInputError(
+                f"当前 PDF 翻译模型服务商不支持图像生成能力：{image_model.provider}"
+            )
+        if image_model.mode == "cloud" and not image_model.api_key:
+            raise TaskInputError("PDF 翻译模型尚未配置 API Key。")
+        if not settings.pdf.review_enabled:
+            return
+        try:
+            review_model = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
+        except Exception as exc:  # noqa: BLE001
+            raise TaskInputError(f"PDF 翻译审核模型配置不可用：{exc}") from exc
+        if not review_model.model:
+            raise TaskInputError("已启用逐页审核，请先填写 PDF 翻译审核模型名称。")
+        if not provider_supports_capability(review_model.provider, "vision_text"):
+            raise TaskInputError(
+                f"当前 PDF 翻译审核模型服务商不支持视觉理解能力：{review_model.provider}"
+            )
+        if review_model.mode == "cloud" and not review_model.api_key:
+            raise TaskInputError("已启用逐页审核，请先配置审核模型 API Key。")
+        availability = str(settings.pdf_review_model_role.availability_status or "unknown")
+        if availability == "unavailable" and not options.allow_known_review_failure:
+            raise TaskInputError(
+                "PDF 翻译审核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。"
+            )
 
     def _pump_runner(self, task: ApiTask) -> None:
         try:

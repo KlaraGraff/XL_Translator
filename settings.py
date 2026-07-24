@@ -471,6 +471,18 @@ class WordOutputSettings(BaseModel):
     custom_output_dir: str = ""
 
 
+class PdfOutputSettings(BaseModel):
+    """Output and evidence retention owned only by PDF/image translation.
+
+    PDF/image tasks generate a package of page evidence in addition to final
+    files.  They must not inherit Excel/Word's output root or mutate it.
+    """
+
+    use_custom_output_dir: bool = False
+    custom_output_dir: str = ""
+    retain_page_materials: bool = True
+
+
 class ExcelReviewSettings(BaseModel):
     mark_review_items: bool = EXCEL_REVIEW_MARK_DEFAULT
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
@@ -632,7 +644,9 @@ class PdfSettings(BaseModel):
     )
     review_enabled: bool = False
     generate_compressed_pdf: bool = True
-    image_translation_enabled: bool = False
+    # This controls independent image *inputs* only.  It never changes the
+    # visual translation protocol for pages contained in a PDF.
+    include_images: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -703,6 +717,7 @@ class AppSettings(BaseModel):
     output: OutputSettings = Field(default_factory=OutputSettings)
     excel_output: ExcelOutputSettings = Field(default_factory=ExcelOutputSettings)
     word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
+    pdf_output: PdfOutputSettings = Field(default_factory=PdfOutputSettings)
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
@@ -1445,6 +1460,14 @@ def _migrate_settings_to_v25(data: dict) -> dict:
     return migrated
 
 
+def _migrate_settings_to_v26(data: dict) -> dict:
+    """Add the PDF/image-owned output root for the current data baseline."""
+    migrated = dict(data)
+    migrated.setdefault("pdf_output", PdfOutputSettings().model_dump())
+    migrated["settings_version"] = 26
+    return migrated
+
+
 def _migrate_settings_payload(data: dict, source_version: int) -> dict:
     """Apply sequential settings schema migrations until the latest version."""
     migrated = dict(data)
@@ -1502,6 +1525,8 @@ def _migrate_settings_payload(data: dict, source_version: int) -> dict:
             migrated = _migrate_settings_to_v24(migrated)
         elif next_version == 25:
             migrated = _migrate_settings_to_v25(migrated)
+        elif next_version == 26:
+            migrated = _migrate_settings_to_v26(migrated)
         else:
             raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
         current_version = next_version

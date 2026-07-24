@@ -66,7 +66,7 @@ from core.model_throughput import (
     reset_model_throughput,
     set_model_throughput,
 )
-from core.pdf_image_translation import scan_pdf_path
+from core.pdf_image_translation import scan_pdf_sources
 from core.pdf_review import check_pdf_review_connectivity
 from core.tm_cleaner import CleanSuggestion, apply_suggestions, run_cleaning
 from core.word_document import scan_word_sources
@@ -107,6 +107,7 @@ class TaskStartRequest(BaseModel):
     include_images: bool = False
     source_lang: str | None = None
     target_lang: str | None = None
+    allow_known_review_failure: bool = False
 
 
 class TmEntryPayload(BaseModel):
@@ -551,8 +552,15 @@ def create_app(
             payload["result"] = dict(payload)
             return payload
         else:
-            items = scan_pdf_path(root, include_images=request.include_images)
-        return {"items": [_json_safe(item) for item in items]}
+            result = scan_pdf_sources(root, include_images=request.include_images)
+            payload = {
+                "items": [_json_safe(item) for item in result.items],
+                "skipped": [_json_safe(item) for item in result.skipped],
+                "summary": result.summary,
+                "risk": result.risk,
+            }
+            payload["result"] = dict(payload)
+            return payload
 
     @app.post("/api/tasks", status_code=202)
     def start_task(request: TaskStartRequest) -> dict[str, Any]:
@@ -568,6 +576,7 @@ def create_app(
                 include_images=request.include_images,
                 source_lang=request.source_lang,
                 target_lang=request.target_lang,
+                allow_known_review_failure=request.allow_known_review_failure,
             ),
         )
 
@@ -578,6 +587,18 @@ def create_app(
     @app.post("/api/tasks/{task_id}/stop")
     def stop_task(task_id: str) -> dict[str, Any]:
         return app.state.task_manager.stop_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/pause")
+    def pause_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.pause_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/resume")
+    def resume_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.resume_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/end-paused")
+    def end_paused_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.end_paused_task(task_id)
 
     @app.get("/api/tasks/{task_id}/events")
     def task_events(
