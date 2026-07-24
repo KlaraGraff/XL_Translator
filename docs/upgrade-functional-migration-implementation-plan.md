@@ -1,6 +1,6 @@
 # 升级功能迁移分阶段实施方案
 
-状态：`实施中；Phase 0–4 已通过，Phase 5 尚未开工；以最终决策文档为唯一产品范围依据`
+状态：`实施中；Phase 0–5 已通过，Phase 6 尚未开工；以最终决策文档为唯一产品范围依据`
 
 > 版本：`1.1`　|　更新日期：`2026-07-24`　|　范围基线：[upgrade-functional-migration-decisions.md](./upgrade-functional-migration-decisions.md)
 
@@ -12,7 +12,7 @@
 
 本文件覆盖模块 1–8 以及跨模块决定 X-01 至 X-13。旧的 Route B 交接文档、旧版 UI 原型和历史验收记录只作为实现线索，不得覆盖本文件与最终决策文档中的新基线。
 
-当前执行位置：Phase 0–4 均已完成并有独立验收记录；Phase 5 可在本记录保持 `passed` 且阻断项为空的前提下，按四线模型开工。
+当前执行位置：Phase 0–5 均已完成并有独立验收记录；Phase 6 仅可在建立开工记录并启动新一轮三条子 Agent 线后开始。
 
 ### 1.1 阶段状态登记
 
@@ -23,7 +23,8 @@
 | Phase 2 | `passed` | [2026-07-24_phase-02-tm_acceptance.md](validation/2026-07-24_phase-02-tm_acceptance.md) |
 | Phase 3 | `passed` | [2026-07-24_phase-03-models_acceptance.md](validation/2026-07-24_phase-03-models_acceptance.md) |
 | Phase 4 | `passed` | [2026-07-24_phase-04-excel_acceptance.md](validation/2026-07-24_phase-04-excel_acceptance.md) |
-| Phase 5–9 | `pending` | 仅在前一阶段验收状态为 `passed` 后，才创建本阶段三个子 Agent 任务 |
+| Phase 5 | `passed` | [2026-07-24_phase-05-word_acceptance.md](validation/2026-07-24_phase-05-word_acceptance.md)；实现提交 `e196cf7` |
+| Phase 6–9 | `pending` | 仅在前一阶段验收状态为 `passed` 后，才创建本阶段三个子 Agent 任务 |
 
 状态登记是执行指针，不是产品范围变更；产品行为仍以最终决策文档为准。Phase 0–2 已在本模板建立前完成，历史记录采用补录方式；从 Phase 3 起，启动时间、完成时间、提交 SHA、验证命令和未覆盖项必须逐线登记，缺一项不得通过阶段门。
 
