@@ -47,6 +47,8 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("needs.validate-release.outputs.temporary_signing == '1'", workflow)
         self.assertIn("prerelease:", workflow)
         self.assertIn("TEMP_SIGNED_TEST.dmg", workflow)
+        self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
+        self.assertIn('shasum -a 256 -c "${expected[3]}"', workflow)
         self.assertIn("artifact_channel=unsigned-test", workflow)
         self.assertIn("artifact_channel=temporary-test", workflow)
         self.assertIn("temporary_signing=1", workflow)

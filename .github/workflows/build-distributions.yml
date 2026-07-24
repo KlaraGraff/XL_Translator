@@ -228,8 +228,8 @@ jobs:
           test "$(find release-assets -maxdepth 1 -name '*.dmg.sha256' -type f | wc -l | tr -d ' ')" -eq 2
           (
             cd release-assets
-            shasum -a 256 -c "Translator_macOS_arm64_${version}.dmg.sha256"
-            shasum -a 256 -c "Translator_macOS_x64_${version}.dmg.sha256"
+            shasum -a 256 -c "${expected[1]}"
+            shasum -a 256 -c "${expected[3]}"
           )
       - uses: softprops/action-gh-release@v3.0.0
         with:

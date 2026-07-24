@@ -57,6 +57,17 @@
 
 复核所用的已下载工件位于隔离目录 `.runtime/self-tests/phase-08-temporary-signing/github-run-30108715239/`，并使用只读 `hdiutil` 挂载。该回退验证的是双架构 DMG、完整性与 ad-hoc 签名封装；它不包含 Developer ID 身份、Apple 公证、staple 或 Gatekeeper 放行，因此不能称为正式 Release，也不能代替 macOS 12 实机验收。
 
+## GitHub 临时签名 Pre-release 发布
+
+按确认的临时签名发布策略，`v8.0.1` 已创建为 [GitHub Pre-release](https://github.com/KlaraGraff/XL_Translator/releases/tag/v8.0.1)，标题为 `Translator v8.0.1 (temporary-test)`，不标记为 stable/latest。该 Release 包含且仅包含以下四个资产：
+
+| 架构 | DMG | SHA-256 |
+| --- | --- | --- |
+| arm64 | `Translator_macOS_arm64_8.0.1_TEMP_SIGNED_TEST.dmg` | `1d3128e258281cc4d22f53471234335fa7f1135a73179e2736c1bb67f830cfcf` |
+| x86_64 | `Translator_macOS_x64_8.0.1_TEMP_SIGNED_TEST.dmg` | `6d941113193d4a3e856d7bf87087608f68599508466c588dfa550a69ff2136a8` |
+
+两份工件来自 GitHub Actions 运行 [`30112996512`](https://github.com/KlaraGraff/XL_Translator/actions/runs/30112996512) 的原生 arm64/x86_64 成功构建。下载后在隔离目录 `.runtime/self-tests/release-pre-release-publish/` 中完成 `.sha256`、只读 DMG 挂载和应用/sidecar `codesign --verify --strict` 复核；两种架构均显示 `Signature=adhoc`、`TeamIdentifier=not set`。本次 CI 的 Release job 首次因临时通道仍引用正式包校验和文件名而失败，工作流已修正为按当前通道选择校验和，并在下载的实际工件上用同一 Bash 校验块通过；在修正进入后续发布路径前，以上已验证的四个资产由 `gh release create --prerelease` 创建到该 Release。
+
 ## 外部门禁与阻断原因
 
 本机为 macOS `26.5.2` / `arm64`，项目虚拟环境为 Python `3.13.13`。CI 已提供原生 arm64/x86_64 的受控 Python 3.11 未签名构建证据，但这不能替代正式门要求的签名发布、公证和 macOS 12.0 实机。以下正式证据尚不存在：
@@ -71,4 +82,4 @@
 
 ## 结论与放行
 
-本地实现和可重复 Mock 验收均通过，但 Phase 8 的正式发布门未通过，状态必须保持 `blocked-by-gate`。依据实施方案，不创建 Phase 9 的三个子 Agent 任务、不进入 Phase 9 编码、不创建 Release tag 或发布资产。待上述三类外部证据齐备后，重跑 Phase 8 发布门；只有验收更新为 `passed`，才允许建立 Phase 9 开工记录。
+本地实现和可重复 Mock 验收均通过；临时签名双架构 Pre-release 已按确认例外发布，但 Phase 8 的正式发布门仍未通过，状态必须保持 `blocked-by-gate`。依据实施方案，不创建 Phase 9 的三个子 Agent 任务、不进入 Phase 9 编码。待上述三类外部证据齐备后，重跑 Phase 8 正式发布门；只有验收更新为 `passed`，才允许建立 Phase 9 开工记录。
