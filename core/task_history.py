@@ -5,10 +5,22 @@ from __future__ import annotations
 import json
 import os
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
 from config import APP_DATA_DIR
+
+
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for_path(path: Path) -> threading.RLock:
+    """Share a lock between stores targeting the same history file."""
+    normalized = path.expanduser().resolve()
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(normalized, threading.RLock())
 
 
 class TaskHistoryStore:
@@ -22,7 +34,7 @@ class TaskHistoryStore:
     def __init__(self, path: Path | None = None, *, limit: int = 200) -> None:
         self._path = path or APP_DATA_DIR / "task_history.json"
         self._limit = max(1, int(limit))
-        self._lock = threading.RLock()
+        self._lock = _lock_for_path(self._path)
 
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -80,14 +92,19 @@ class TaskHistoryStore:
 
     def _write_locked(self, records: list[dict[str, Any]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(".tmp")
+        temporary = self._path.with_name(
+            f".{self._path.name}.{uuid.uuid4().hex}.tmp"
+        )
         payload = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
-        temporary.write_text(payload, encoding="utf-8")
         try:
-            os.chmod(temporary, 0o600)
-        except OSError:
-            pass
-        temporary.replace(self._path)
+            temporary.write_text(payload, encoding="utf-8")
+            try:
+                os.chmod(temporary, 0o600)
+            except OSError:
+                pass
+            temporary.replace(self._path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _now_epoch() -> float:
