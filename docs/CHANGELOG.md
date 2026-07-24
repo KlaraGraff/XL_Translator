@@ -1,5 +1,9 @@
 # Translator 版本更新日志
 
+## V8.0.1
+- 补齐 macOS 12 原生 arm64 与 x86_64 自动打包矩阵，发布前执行全量质量、架构和最低系统版本扫描。
+- 完成维护、更新、帮助和诊断能力的 macOS-only 发布准备；正式签名、公证和 macOS 12 实机验收按发布门执行。
+
 ## V8.0.0
 - 桌面壳层改为 Tauri 2，前端以原型同源的 vanilla TypeScript 落地 Excel、Word、PDF、记忆库与模型配置页面。
 - Python 文档处理与引擎逻辑保留为受随机端口和启动 token 保护的 FastAPI sidecar；任务进度和日志通过 SSE 实时传递。

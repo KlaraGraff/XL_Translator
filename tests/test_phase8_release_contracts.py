@@ -25,9 +25,9 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             self.assertFalse(is_stable_tag(invalid), invalid)
 
     def test_release_metadata_rejects_mismatched_or_prerelease_tags(self) -> None:
-        self.assertEqual(release_metadata_errors(ROOT, tag="v8.0.0"), [])
-        self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.1"))
-        self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.0-rc.1"))
+        self.assertEqual(release_metadata_errors(ROOT, tag="v8.0.1"), [])
+        self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.0"))
+        self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.1-rc.1"))
 
     def test_workflow_is_macos_only_and_fails_closed_for_official_tags(self) -> None:
         workflow = (
