@@ -93,10 +93,16 @@ class ReleaseVerificationTests(unittest.TestCase):
             app = Path(temp_dir) / "Fixture.app"
             executable = app / "Contents" / "MacOS" / "fixture"
             resources = app / "Contents" / "Resources"
+            sidecar = resources / "sidecar" / "translator-sidecar"
+            nested_library = sidecar.parent / "_internal" / "Python"
             executable.parent.mkdir(parents=True)
-            resources.mkdir(parents=True)
+            nested_library.parent.mkdir(parents=True)
             shutil.copyfile("/usr/bin/true", executable)
+            shutil.copyfile("/usr/bin/true", sidecar)
+            shutil.copyfile("/usr/bin/true", nested_library)
             executable.chmod(0o755)
+            sidecar.chmod(0o755)
+            nested_library.chmod(0o755)
             (resources / "fixture.txt").write_text("sealed\n", encoding="utf-8")
             with (app / "Contents" / "Info.plist").open("wb") as stream:
                 plistlib.dump(
@@ -120,7 +126,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             environment = os.environ.copy()
             environment.pop("XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY", None)
             subprocess.run(
-                ["bash", "scripts/sign_macos_app.sh", str(app)],
+                ["bash", "scripts/sign_macos_app.sh", str(app), str(sidecar)],
                 cwd=ROOT,
                 env=environment,
                 check=True,
@@ -143,6 +149,24 @@ class ReleaseVerificationTests(unittest.TestCase):
             self.assertEqual(details.returncode, 0, details.stderr)
             self.assertIn("Signature=adhoc", details.stderr)
             self.assertIn("Sealed Resources version=2", details.stderr)
+            nested_verified = subprocess.run(
+                ["codesign", "--verify", "--strict", str(nested_library)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(nested_verified.returncode, 0, nested_verified.stderr)
+            sidecar_entitlements = subprocess.run(
+                ["codesign", "-d", "--entitlements", ":-", str(sidecar)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(sidecar_entitlements.returncode, 0)
+            self.assertIn(
+                "com.apple.security.cs.disable-library-validation",
+                sidecar_entitlements.stdout,
+            )
 
 
 if __name__ == "__main__":

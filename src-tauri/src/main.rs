@@ -212,8 +212,8 @@ fn bundled_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
-    let root = project_root();
     let mut command = if cfg!(debug_assertions) {
+        let root = project_root();
         let python = python_command(&root);
         let mut command = Command::new(python);
         command.args(["-m", "api.launcher"]);
@@ -222,8 +222,14 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         command
     } else {
         let executable = bundled_sidecar_path(app)?;
-        let mut command = Command::new(executable);
-        command.current_dir(&root);
+        let working_directory = executable.parent().ok_or_else(|| {
+            format!(
+                "Bundled Translator engine has no parent directory: {}",
+                executable.display()
+            )
+        })?;
+        let mut command = Command::new(&executable);
+        command.current_dir(working_directory);
         command
     };
     let mut child = command

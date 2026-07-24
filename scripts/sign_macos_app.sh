@@ -7,6 +7,7 @@ SIGNING_IDENTITY="${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:--}"
 REQUIRE_DEVELOPER_ID="${XL_TRANSLATOR_REQUIRE_DEVELOPER_ID:-0}"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENTITLEMENTS_PATH="${XL_TRANSLATOR_MACOS_ENTITLEMENTS:-$ROOT_DIR/packaging/macos/translator.entitlements}"
+ADHOC_ENTITLEMENTS_PATH="$ROOT_DIR/packaging/macos/translator-adhoc.entitlements"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Application bundle was not found: $APP_PATH" >&2
@@ -20,6 +21,10 @@ if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
   echo "Apple Events entitlements file was not found: $ENTITLEMENTS_PATH" >&2
   exit 1
 fi
+if [[ "$SIGNING_IDENTITY" == "-" && ! -f "$ADHOC_ENTITLEMENTS_PATH" ]]; then
+  echo "Ad-hoc entitlements file was not found: $ADHOC_ENTITLEMENTS_PATH" >&2
+  exit 1
+fi
 if [[ "$REQUIRE_DEVELOPER_ID" != "0" && "$REQUIRE_DEVELOPER_ID" != "1" ]]; then
   echo "XL_TRANSLATOR_REQUIRE_DEVELOPER_ID must be 0 or 1." >&2
   exit 1
@@ -31,12 +36,25 @@ fi
 
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   echo "[INFO] No Developer ID identity configured; applying a complete ad-hoc test signature."
+  ENTITLEMENTS_PATH="$ADHOC_ENTITLEMENTS_PATH"
 fi
 SIGN_OPTIONS=(--force --options runtime --entitlements "$ENTITLEMENTS_PATH")
+NESTED_SIGN_OPTIONS=(--force --options runtime)
 if [[ "$SIGNING_IDENTITY" != "-" ]]; then
   SIGN_OPTIONS+=(--timestamp)
+  NESTED_SIGN_OPTIONS+=(--timestamp)
 fi
 if [[ -n "$SIDECAR_PATH" ]]; then
+  SIDECAR_DIR="$(dirname "$SIDECAR_PATH")"
+  while IFS= read -r -d '' NESTED_PATH; do
+    if [[ "$NESTED_PATH" != "$SIDECAR_PATH" ]] \
+      && /usr/bin/file -b "$NESTED_PATH" | grep -q '^Mach-O'; then
+      codesign \
+        "${NESTED_SIGN_OPTIONS[@]}" \
+        --sign "$SIGNING_IDENTITY" \
+        "$NESTED_PATH"
+    fi
+  done < <(find "$SIDECAR_DIR" -type f -print0)
   codesign \
     "${SIGN_OPTIONS[@]}" \
     --sign "$SIGNING_IDENTITY" \

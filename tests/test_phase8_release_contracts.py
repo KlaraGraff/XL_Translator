@@ -79,12 +79,17 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         signing_script = (ROOT / "scripts" / "sign_macos_app.sh").read_text(
             encoding="utf-8"
         )
+        adhoc_entitlements = (
+            ROOT / "packaging" / "macos" / "translator-adhoc.entitlements"
+        ).read_text(encoding="utf-8")
         info_plist = (ROOT / "src-tauri" / "Info.plist").read_text(encoding="utf-8")
         self.assertIn("com.apple.security.automation.apple-events", entitlements)
         self.assertIn("--options runtime", signing_script)
         self.assertIn("--entitlements \"$ENTITLEMENTS_PATH\"", signing_script)
         self.assertIn("Developer ID Application", signing_script)
         self.assertIn("Apple Events automation entitlement", signing_script)
+        self.assertIn("find \"$SIDECAR_DIR\" -type f -print0", signing_script)
+        self.assertIn("com.apple.security.cs.disable-library-validation", adhoc_entitlements)
         self.assertIn("NSAppleEventsUsageDescription", info_plist)
 
     def test_readme_and_release_guide_are_macos_only(self) -> None:
