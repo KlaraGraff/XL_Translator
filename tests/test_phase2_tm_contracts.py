@@ -229,7 +229,6 @@ class Phase2TmContractTests(unittest.TestCase):
         self.assertEqual(imported["inserted"], 1)
         self.assertEqual(tm_manager.lookup_batch(["新增"], "zh-en")["新增"], "New")
 
-    @unittest.expectedFailure
     def test_keep_both_does_not_create_pseudo_backup_source(self) -> None:
         """T2A-08/T2B-07: conflicts become candidates, not '[导入备份]' rows."""
         tm_manager.insert_manual_entry("same", "existing", "en-fr", sync_reverse=False)
@@ -252,7 +251,6 @@ class Phase2TmContractTests(unittest.TestCase):
         self.assertEqual(tm_manager.count_entries_referencing_language(code), 1)
         self.assertEqual(tm_manager.count_entries_referencing_language("fr"), 0)
 
-    @unittest.expectedFailure
     def test_cleaning_scope_excludes_manual_and_pinned_rows(self) -> None:
         """T2C-01: only ordinary automatic rows enter routine cleaning."""
         tm_manager.insert_batch(
