@@ -4,7 +4,7 @@
 
 执行日期：`2026-07-24`
 
-实现提交：`0bdc2ea feat: complete phase 8 macOS release maintenance`；CI 环境修复：`87c054a`、`c2a8e6d`
+实现提交：`0bdc2ea feat: complete phase 8 macOS release maintenance`；CI 环境修复：`87c054a`、`c2a8e6d`；临时签名回退：`f4b4ac3 ci: fall back to temporary ad-hoc signing`
 
 ## 范围与四线证据
 
@@ -45,6 +45,17 @@
 | x86_64 | `Translator_macOS_x64_8.0.0_UNSIGNED_TEST.dmg` | 通过 `.sha256` 复核 | `ok=true`，119 个，架构仅 `x86_64`，`minos` 为 `10.9/10.10/10.12/10.13/12.0` |
 
 两份 DMG 均通过本机 `hdiutil imageinfo` 的 UDZO 镜像检查。完整工件和报告保存在隔离目录 `.runtime/self-tests/phase-08-release/github-run-30090148206/`；这些证据证明 CI 原生构建与二进制下限门通过，但不等同于签名发布或 macOS 12 实机安装验收。
+
+## GitHub 原生双架构临时 ad-hoc 签名构建证据
+
+稳定标签 `v8.0.1` 指向 `f4b4ac3` 后，GitHub Actions 运行 [`30108715239`](https://github.com/KlaraGraff/XL_Translator/actions/runs/30108715239) 成功。由于仓库没有配置完整的 Apple Developer ID 和公证 Secrets，资格检查将该标签明确分类为 `temporary-test`：arm64 与 x86_64 构建任务均成功，正式发布任务按设计跳过。`gh release view v8.0.1` 返回 `release not found`，因此不存在 GitHub Release 或正式下载资产。
+
+| 架构 | 临时工件 | 本机复核 |
+| --- | --- | --- |
+| arm64 | `Translator_macOS_arm64_8.0.1_TEMP_SIGNED_TEST.dmg` | `.sha256` 通过；挂载后 `codesign --verify --deep --strict Translator.app` 通过；主应用和 `translator-sidecar` 均显示 `Signature=adhoc`、`TeamIdentifier=not set` |
+| x86_64 | `Translator_macOS_x64_8.0.1_TEMP_SIGNED_TEST.dmg` | `.sha256` 通过；挂载后 `codesign --verify --deep --strict Translator.app` 通过；主应用和 `translator-sidecar` 均显示 `Signature=adhoc`、`TeamIdentifier=not set` |
+
+复核所用的已下载工件位于隔离目录 `.runtime/self-tests/phase-08-temporary-signing/github-run-30108715239/`，并使用只读 `hdiutil` 挂载。该回退验证的是双架构 DMG、完整性与 ad-hoc 签名封装；它不包含 Developer ID 身份、Apple 公证、staple 或 Gatekeeper 放行，因此不能称为正式 Release，也不能代替 macOS 12 实机验收。
 
 ## 外部门禁与阻断原因
 
