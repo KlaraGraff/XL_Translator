@@ -1,6 +1,6 @@
 # 升级功能迁移分阶段实施方案
 
-状态：`实施中；Phase 0–7 已通过，Phase 8 本地实现已验收但正式发布门 blocked-by-gate；以最终决策文档为唯一产品范围依据`
+状态：`实施中；Phase 0–7 已通过，Phase 8 本地实现与原生双架构未签名 CI 构建已验收，但正式签名/公证/实机发布门 blocked-by-gate；以最终决策文档为唯一产品范围依据`
 
 > 版本：`1.4`　|　更新日期：`2026-07-24`　|　范围基线：[upgrade-functional-migration-decisions.md](./upgrade-functional-migration-decisions.md)
 
@@ -26,7 +26,7 @@
 | Phase 5 | `passed` | [2026-07-24_phase-05-word_acceptance.md](validation/2026-07-24_phase-05-word_acceptance.md)；实现提交 `e196cf7` |
 | Phase 6 | `passed` | [2026-07-24_phase-06-pdf_acceptance.md](validation/2026-07-24_phase-06-pdf_acceptance.md)；实现提交 `d5a9d61` |
 | Phase 7 | `passed` | [2026-07-24_phase-07-scheduler_acceptance.md](validation/2026-07-24_phase-07-scheduler_acceptance.md) |
-| Phase 8 | `blocked-by-gate` | [2026-07-24_phase-08-release_acceptance.md](validation/2026-07-24_phase-08-release_acceptance.md)；本地四线完成，缺正式 macOS 12 双架构发布证据 |
+| Phase 8 | `blocked-by-gate` | [2026-07-24_phase-08-release_acceptance.md](validation/2026-07-24_phase-08-release_acceptance.md)；本地四线和原生双架构未签名 CI 完成，缺 Developer ID/公证及 macOS 12 实机证据 |
 | Phase 9 | `pending` | 仅在 Phase 8 验收状态为 `passed` 后，才创建本阶段三个子 Agent 任务 |
 
 状态登记是执行指针，不是产品范围变更；产品行为仍以最终决策文档为准。Phase 0–2 已在本模板建立前完成，历史记录采用补录方式；从 Phase 3 起，启动时间、完成时间、提交 SHA、验证命令和未覆盖项必须逐线登记，缺一项不得通过阶段门。
