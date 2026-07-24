@@ -49,7 +49,7 @@ jobs:
               echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
               echo "temporary_signing=0" >> "$GITHUB_OUTPUT"
             else
-              echo "::warning::Apple signing/notarization secrets are unavailable; building temporary ad-hoc signed test artifacts only. No GitHub Release will be created."
+              echo "::warning::Apple signing/notarization secrets are unavailable; building and publishing temporary ad-hoc signed test artifacts as a GitHub Pre-release."
               echo "formal_release=0" >> "$GITHUB_OUTPUT"
               echo "artifact_channel=temporary-test" >> "$GITHUB_OUTPUT"
               echo "temporary_signing=1" >> "$GITHUB_OUTPUT"
@@ -185,8 +185,8 @@ jobs:
             ${{ env.MACOS_RELEASE_REPORT }}
 
   release:
-    name: Publish signed and notarized macOS release
-    if: needs.validate-release.outputs.formal_release == '1'
+    name: Publish macOS release
+    if: needs.validate-release.outputs.formal_release == '1' || needs.validate-release.outputs.temporary_signing == '1'
     needs:
       - validate-release
       - macos
@@ -194,7 +194,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8.0.0
         with:
-          pattern: Translator_macOS_*_formal-release
+          pattern: Translator_macOS_*_${{ needs.validate-release.outputs.artifact_channel }}
           path: release-assets
           merge-multiple: true
       - name: Verify exactly two complete native DMGs
@@ -202,12 +202,25 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          expected=(
-            "Translator_macOS_arm64_${version}.dmg"
-            "Translator_macOS_arm64_${version}.dmg.sha256"
-            "Translator_macOS_x64_${version}.dmg"
-            "Translator_macOS_x64_${version}.dmg.sha256"
-          )
+          channel="${{ needs.validate-release.outputs.artifact_channel }}"
+          if [[ "$channel" == "formal-release" ]]; then
+            expected=(
+              "Translator_macOS_arm64_${version}.dmg"
+              "Translator_macOS_arm64_${version}.dmg.sha256"
+              "Translator_macOS_x64_${version}.dmg"
+              "Translator_macOS_x64_${version}.dmg.sha256"
+            )
+          elif [[ "$channel" == "temporary-test" ]]; then
+            expected=(
+              "Translator_macOS_arm64_${version}_TEMP_SIGNED_TEST.dmg"
+              "Translator_macOS_arm64_${version}_TEMP_SIGNED_TEST.dmg.sha256"
+              "Translator_macOS_x64_${version}_TEMP_SIGNED_TEST.dmg"
+              "Translator_macOS_x64_${version}_TEMP_SIGNED_TEST.dmg.sha256"
+            )
+          else
+            echo "Unsupported release channel: $channel" >&2
+            exit 1
+          fi
           for asset in "${expected[@]}"; do
             test -f "release-assets/$asset"
           done
@@ -220,6 +233,13 @@ jobs:
           )
       - uses: softprops/action-gh-release@v3.0.0
         with:
+          prerelease: ${{ needs.validate-release.outputs.formal_release != '1' }}
+          name: Translator ${{ github.ref_name }} (${{ needs.validate-release.outputs.artifact_channel }})
+          body: |
+            macOS dual-architecture distribution for `${{ github.ref_name }}`.
+
+            Channel: `${{ needs.validate-release.outputs.artifact_channel }}`.
+            When the channel is `temporary-test`, assets use ad-hoc signing and are not notarized; they are provided for testing and are not a stable/latest release.
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.sha256
