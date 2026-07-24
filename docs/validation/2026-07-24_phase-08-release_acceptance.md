@@ -4,7 +4,7 @@
 
 执行日期：`2026-07-24`
 
-实现提交：`0bdc2ea feat: complete phase 8 macOS release maintenance`
+实现提交：`0bdc2ea feat: complete phase 8 macOS release maintenance`；CI 环境修复：`87c054a`、`c2a8e6d`
 
 ## 范围与四线证据
 
@@ -35,11 +35,22 @@
 | `cd src-tauri && cargo test && cargo check` | 通过，3 Rust tests | sidecar 握手、外链限制与 Rust 编译 |
 | 隔离当前源码 `tauri dev` | 通过 | 关闭旧项目进程后启动 `target/debug/translator` PID `89609`（`2026-07-24 11:54:30`），sidecar PID `89617`（`11:54:32`），工作目录为仓库 `src-tauri`；监听 `127.0.0.1:59916`，无 token 的 `/health` 返回 `401`，启动时的内部 token 健康门已通过 |
 
+## GitHub 原生双架构未签名构建证据
+
+手动运行 `30090148206`（提交 `c2a8e6d`）在原生 `macos-14` arm64 和 `macos-15-intel` x86_64 runner 上均成功；两个任务均通过 Python 3.11 受控虚拟环境、全量 Python 回归、UI/Rust 检查、原生打包和签名前 Mach-O 扫描。手动运行的正式签名/公证发布 job 按设计跳过。
+
+| 架构 | 工件 | SHA-256 | Mach-O 报告 |
+| --- | --- | --- | --- |
+| arm64 | `Translator_macOS_arm64_8.0.0_UNSIGNED_TEST.dmg` | 通过 `.sha256` 复核 | `ok=true`，119 个，架构仅 `arm64`，`minos` 为 `11.0/12.0` |
+| x86_64 | `Translator_macOS_x64_8.0.0_UNSIGNED_TEST.dmg` | 通过 `.sha256` 复核 | `ok=true`，119 个，架构仅 `x86_64`，`minos` 为 `10.9/10.10/10.12/10.13/12.0` |
+
+两份 DMG 均通过本机 `hdiutil imageinfo` 的 UDZO 镜像检查。完整工件和报告保存在隔离目录 `.runtime/self-tests/phase-08-release/github-run-30090148206/`；这些证据证明 CI 原生构建与二进制下限门通过，但不等同于签名发布或 macOS 12 实机安装验收。
+
 ## 外部门禁与阻断原因
 
-本机为 macOS `26.5.2` / `arm64`，项目虚拟环境为 Python `3.13.13`。这不能替代正式门要求的 macOS 12.0 原生 `arm64` 与原生 `x86_64` 实机，以及受控 Python 3.11 发布环境。以下证据尚不存在：
+本机为 macOS `26.5.2` / `arm64`，项目虚拟环境为 Python `3.13.13`。CI 已提供原生 arm64/x86_64 的受控 Python 3.11 未签名构建证据，但这不能替代正式门要求的签名发布、公证和 macOS 12.0 实机。以下正式证据尚不存在：
 
-1. 两架构的正式 DMG、每个二进制的 `minos <= 12.0` 和目标架构扫描记录。
+1. 两架构的 Developer ID 签名正式 DMG 及其签名状态；未签名 CI 工件的 `minos <= 12.0` 和目标架构扫描记录已具备，但不能替代签名包。
 2. Apple Developer ID 签名、Hardened Runtime、notarize、staple、Gatekeeper 验证凭据及结果。
 3. macOS 12 arm64 与 x86_64 上的安装、首次启动、sidecar、Mock 标准 Excel/Word/PDF/图片流程、Apple Events 允许/拒绝路径的实机证据。
 
