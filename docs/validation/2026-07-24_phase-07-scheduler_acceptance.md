@@ -4,7 +4,7 @@
 
 执行日期：`2026-07-24`
 
-实现提交：`待本记录随实现提交创建`
+实现提交：`bd8521f feat: add multi-task scheduler and task center`
 
 ## 范围与四线证据
 
