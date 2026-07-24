@@ -241,6 +241,10 @@ class Phase2TmContractTests(unittest.TestCase):
         rows, _ = tm_manager.search_entries("en-fr", keyword="same", page=1, page_size=50)
         self.assertEqual(len(rows), 1)
         self.assertNotIn("[导入备份]", rows[0]["source_text"])
+        candidates = tm_manager.list_conflict_candidates("en-fr")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["existing_target"], "existing")
+        self.assertEqual(candidates[0]["candidate_target"], "candidate")
 
     def test_custom_language_reference_count_is_isolated_by_pair(self) -> None:
         """T2B-02: a custom target reference can be detected before deletion."""
