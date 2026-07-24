@@ -12,6 +12,7 @@ SIDECAR_PATH="$APP_PATH/Contents/Resources/sidecar/translator-sidecar/translator
 STAGING_DIR="$ROOT_DIR/.runtime/package/macos-dmg"
 REPORT_DIR="$ROOT_DIR/.runtime/package/macos-reports"
 FORMAL_RELEASE="${XL_TRANSLATOR_FORMAL_RELEASE:-0}"
+TEMPORARY_SIGNING="${XL_TRANSLATOR_TEMPORARY_SIGNING:-0}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python was not found: $PYTHON_BIN" >&2
@@ -27,6 +28,14 @@ if [[ "$DEPLOYMENT_TARGET" != "12.0" ]]; then
 fi
 if [[ "$FORMAL_RELEASE" != "0" && "$FORMAL_RELEASE" != "1" ]]; then
   echo "XL_TRANSLATOR_FORMAL_RELEASE must be 0 or 1; got $FORMAL_RELEASE" >&2
+  exit 1
+fi
+if [[ "$TEMPORARY_SIGNING" != "0" && "$TEMPORARY_SIGNING" != "1" ]]; then
+  echo "XL_TRANSLATOR_TEMPORARY_SIGNING must be 0 or 1; got $TEMPORARY_SIGNING" >&2
+  exit 1
+fi
+if [[ "$FORMAL_RELEASE" == "1" && "$TEMPORARY_SIGNING" == "1" ]]; then
+  echo "Temporary signing cannot be used for a formal release." >&2
   exit 1
 fi
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
@@ -82,6 +91,8 @@ cd "$ROOT_DIR"
 VERSION="$($PYTHON_BIN -c 'import app_meta; print(app_meta.APP_VERSION)')"
 if [[ "$FORMAL_RELEASE" == "1" ]]; then
   DMG_NAME="Translator_macOS_${ARCH_LABEL}_${VERSION}.dmg"
+elif [[ "$TEMPORARY_SIGNING" == "1" ]]; then
+  DMG_NAME="Translator_macOS_${ARCH_LABEL}_${VERSION}_TEMP_SIGNED_TEST.dmg"
 else
   DMG_NAME="Translator_macOS_${ARCH_LABEL}_${VERSION}_UNSIGNED_TEST.dmg"
 fi

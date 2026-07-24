@@ -45,6 +45,8 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("xcrun notarytool store-credentials", workflow)
         self.assertIn("needs.validate-release.outputs.formal_release == '1'", workflow)
         self.assertIn("artifact_channel=unsigned-test", workflow)
+        self.assertIn("artifact_channel=temporary-test", workflow)
+        self.assertIn("temporary_signing=1", workflow)
         self.assertIn("shasum -a 256 -c", workflow)
         self.assertIn("python -m venv .venv", workflow)
         self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
@@ -53,6 +55,8 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
     def test_build_script_scans_before_signing_and_marks_manual_artifacts(self) -> None:
         script = (ROOT / "scripts" / "build_macos_package.sh").read_text(encoding="utf-8")
         self.assertIn("XL_TRANSLATOR_FORMAL_RELEASE", script)
+        self.assertIn("XL_TRANSLATOR_TEMPORARY_SIGNING", script)
+        self.assertIn("_TEMP_SIGNED_TEST.dmg", script)
         self.assertIn("_UNSIGNED_TEST.dmg", script)
         self.assertIn("MACOSX_DEPLOYMENT_TARGET=12.0", script)
         self.assertIn("Native macOS release build required", script)
@@ -90,6 +94,7 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertNotIn("build_windows_package", guide)
         self.assertIn("Apple 公证", guide)
         self.assertIn("UNSIGNED_TEST", guide)
+        self.assertIn("TEMP_SIGNED_TEST", guide)
         self.assertFalse((ROOT / "启动应用.bat").exists())
         self.assertFalse((ROOT / "分发应用.bat").exists())
 

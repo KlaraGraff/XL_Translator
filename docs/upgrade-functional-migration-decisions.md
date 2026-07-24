@@ -495,9 +495,9 @@
 | --- | --- | --- | --- | --- | --- |
 | U8A-01 | macOS-only 发布 | M6—删除或下线 | 已确认 | 删除 Windows CI job、NSIS 配置和新版 Windows 安装说明；GitHub 只产出 macOS DMG 与 SHA-256。 | 新版本发布不再构建、上传或宣传 Windows 安装器。 |
 | U8A-02 | 双架构 DMG | M7—新增或替代 | 已确认 | 同一 Release 提供 Apple Silicon `arm64` 与 Intel `x64` 两个原生 DMG，各自附带 SHA-256；更新检查严格匹配本机架构。 | 不选择任意第一个 Release 资产，Intel 与 Apple Silicon 均取得适配安装包。 |
-| U8A-03 | 原子发布 | M3—重构迁移 | 已确认 | 仅推送稳定标签 `vX.Y.Z` 创建正式 Release；全部 macOS 构建、校验和签名完成后才发布。手动 CI 仅生成测试 artifact。 | 用户不会看到资产不完整的正式 Release。 |
+| U8A-03 | 原子发布 | M3—重构迁移 | 已确认 | 仅推送稳定标签 `vX.Y.Z` 尝试创建正式 Release；全部 macOS 构建、校验和签名完成后才发布。缺少签名凭据时只生成明确标记的临时测试 artifact，不创建 Release；手动 CI 仍仅生成测试 artifact。 | 用户不会看到资产不完整的正式 Release。 |
 | U8A-04 | 版本一致性 | M3—重构迁移 | 已确认 | 标签、`app_meta.py`、Tauri、Cargo、UI 包版本必须完全一致，否则失败。 | 每个 Release、DMG 与应用内版本可唯一对应。 |
-| U8A-05 | 签名与公证 | M7—新增或替代 | 已确认 | 正式标签必须使用 CI Secret 中的 Apple Developer ID 和公证凭据；缺失或公证失败即终止发布。 | 不发布仅 ad-hoc 签名的正式 DMG。 |
+| U8A-05 | 签名与公证 | M7—新增或替代 | 已确认 | 正式 Release 必须使用 CI Secret 中的 Apple Developer ID 和公证凭据；凭据缺失时稳定标签降级为 ad-hoc 临时签名测试 artifact，禁止创建正式 Release；公证失败仍终止正式发布。 | 不把 ad-hoc 签名的临时 DMG 当作正式下载资产或公证版本。 |
 | U8A-06 | 后台更新检查 | M3—重构迁移 | 已确认 | 应用界面可用且首次快速开始已完成或跳过后再后台检查，不阻塞启动或翻译；最多每 24 小时一次。 | 欢迎引导不会与更新弹窗叠加；当前版本、网络失败和版本格式异常均不打扰用户。 |
 | U8A-07 | 手动检查更新 | M2—优化迁移 | 已确认 | 顶栏保留手动检查；每次立即检查并显示当前/新版/失败的可读结果。 | 用户无需等待后台周期，也能明确知道检查结果。 |
 | U8A-08 | 更新信息与下载 | M3—重构迁移 | 已确认 | 仅在有可用且完整的本机架构 DMG 时显示版本、发布日期、Release notes、DMG 名称和 SHA-256；提供“下载 DMG”“查看 Release”。 | 用户取得可验证的官方安装包。 |

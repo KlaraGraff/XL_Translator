@@ -13,9 +13,17 @@ jobs:
   validate-release:
     name: Validate release eligibility
     runs-on: ubuntu-latest
+    env:
+      APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+      APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
     outputs:
       formal_release: ${{ steps.classify.outputs.formal_release }}
       artifact_channel: ${{ steps.classify.outputs.artifact_channel }}
+      temporary_signing: ${{ steps.classify.outputs.temporary_signing }}
     steps:
       - uses: actions/checkout@v6.0.3
       - uses: actions/setup-python@v6.2.0
@@ -31,13 +39,27 @@ jobs:
               echo "Only stable vX.Y.Z tags can create a formal release; got $GITHUB_REF_NAME." >&2
               exit 1
             fi
-            echo "formal_release=1" >> "$GITHUB_OUTPUT"
-            echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
+            if [[ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" \
+              && -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+              && -n "$APPLE_KEYCHAIN_PASSWORD" \
+              && -n "$APPLE_NOTARY_KEY_ID" \
+              && -n "$APPLE_NOTARY_ISSUER_ID" \
+              && -n "$APPLE_NOTARY_PRIVATE_KEY_BASE64" ]]; then
+              echo "formal_release=1" >> "$GITHUB_OUTPUT"
+              echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
+              echo "temporary_signing=0" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Apple signing/notarization secrets are unavailable; building temporary ad-hoc signed test artifacts only. No GitHub Release will be created."
+              echo "formal_release=0" >> "$GITHUB_OUTPUT"
+              echo "artifact_channel=temporary-test" >> "$GITHUB_OUTPUT"
+              echo "temporary_signing=1" >> "$GITHUB_OUTPUT"
+            fi
           else
             # A manual run is intentionally an unsigned test artifact.  It
             # never reaches the release job, even when dispatched from a tag.
             echo "formal_release=0" >> "$GITHUB_OUTPUT"
             echo "artifact_channel=unsigned-test" >> "$GITHUB_OUTPUT"
+            echo "temporary_signing=0" >> "$GITHUB_OUTPUT"
           fi
       - name: Verify version alignment
         shell: bash
@@ -68,6 +90,7 @@ jobs:
       MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
       MACOSX_DEPLOYMENT_TARGET: "12.0"
       XL_TRANSLATOR_FORMAL_RELEASE: ${{ needs.validate-release.outputs.formal_release }}
+      XL_TRANSLATOR_TEMPORARY_SIGNING: ${{ needs.validate-release.outputs.temporary_signing }}
     steps:
       - uses: actions/checkout@v6.0.3
       - name: Confirm the runner is the requested native architecture
