@@ -827,7 +827,10 @@ class WordDocumentTests(unittest.TestCase):
             items = scan_word_path(root)
 
             self.assertEqual([item.path for item in items], [legacy_path, source_path])
-            self.assertEqual(items[0].paragraph_count, 0)
+            self.assertIsNone(items[0].paragraph_count)
+            self.assertIsNone(items[0].table_count)
+            self.assertTrue(items[0].needs_conversion)
+            self.assertEqual(items[0].statistics_status, "conversion_required")
 
     def test_write_bilingual_docx_uses_docx_output_name_for_legacy_doc(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

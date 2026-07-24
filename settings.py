@@ -458,6 +458,19 @@ class ExcelOutputSettings(BaseModel):
     lock_row_height: bool = False
 
 
+class WordOutputSettings(BaseModel):
+    """Output settings owned solely by the Word translation surface.
+
+    Word always writes a new bilingual ``.docx`` into a task-unique output
+    directory.  Keeping its output-root choice separate from the legacy
+    shared output object and the Excel page prevents a future edit on either
+    page from changing an already-configured Word task.
+    """
+
+    use_custom_output_dir: bool = False
+    custom_output_dir: str = ""
+
+
 class ExcelReviewSettings(BaseModel):
     mark_review_items: bool = EXCEL_REVIEW_MARK_DEFAULT
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
@@ -511,7 +524,9 @@ class WordReviewSettings(BaseModel):
     highlight_unresolved: bool = WORD_REVIEW_HIGHLIGHT_DEFAULT
     highlight_color: str = WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
     mark_colors: dict[str, str] = Field(default_factory=_default_review_mark_colors)
-    existing_highlight_policy: str = WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT
+    # Word must preserve a user's existing highlight by default while still
+    # making a machine review item visible.  Excel owns a different policy.
+    existing_highlight_policy: str = "red_underline"
 
     @model_validator(mode="before")
     @classmethod
@@ -537,7 +552,7 @@ class WordReviewSettings(BaseModel):
         allowed = {"skip", "overwrite", "red_underline"}
         policy = str(self.existing_highlight_policy or "").strip()
         if policy not in allowed:
-            policy = WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT
+            policy = "red_underline"
         self.existing_highlight_policy = policy
         return self
 
@@ -687,6 +702,7 @@ class AppSettings(BaseModel):
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     excel_output: ExcelOutputSettings = Field(default_factory=ExcelOutputSettings)
+    word_output: WordOutputSettings = Field(default_factory=WordOutputSettings)
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)

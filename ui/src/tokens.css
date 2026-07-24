@@ -304,10 +304,10 @@ textarea { min-height: 90px; resize: vertical; }
 .output-path-state.available { border-color: var(--ok-l); color: var(--ok); background: var(--ok-t); }
 .output-path-state.will_create { border-color: var(--tint-line); color: var(--tint-ink); background: var(--tint); }
 .output-path-state.empty, .output-path-state.blocked { border-color: var(--warn-l); color: var(--warn); background: var(--warn-t); }
-.excel-preflight, .scan-skipped, .excel-result-details { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
-.excel-preflight summary, .scan-skipped summary, .excel-result-details > summary, .result-section > summary, .permission-help > summary { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; color: var(--ink-2); cursor: pointer; font-size: 12px; font-weight: 650; }
-.excel-preflight ul, .scan-skipped ul, .result-section ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0 12px 10px 28px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
-.excel-preflight li.error { color: var(--danger); }.excel-preflight li.warn { color: var(--warn); }
+.excel-preflight, .word-preflight, .scan-skipped, .excel-result-details, .word-result-details, .word-recovery { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.excel-preflight summary, .word-preflight summary, .scan-skipped summary, .excel-result-details > summary, .word-result-details > summary, .word-recovery > summary, .result-section > summary, .permission-help > summary { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; color: var(--ink-2); cursor: pointer; font-size: 12px; font-weight: 650; }
+.excel-preflight ul, .word-preflight ul, .scan-skipped ul, .result-section ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0 12px 10px 28px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
+.excel-preflight li.error, .word-preflight li.error { color: var(--danger); }.excel-preflight li.warn, .word-preflight li.warn { color: var(--warn); }
 .scan-skipped { border-color: var(--warn-l); background: var(--warn-t); }
 .scan-skipped li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
 .scan-skipped small { color: var(--ink-2); }

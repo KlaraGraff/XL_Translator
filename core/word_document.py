@@ -8,7 +8,7 @@ import stat
 import tempfile
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from docx import Document
@@ -96,10 +96,69 @@ class WordFileItem:
     path: Path
     name: str
     size_kb: float
-    paragraph_count: int = 0
-    table_count: int = 0
+    # Legacy .doc files cannot be inspected faithfully before conversion.
+    # ``None`` is intentional: a zero here would misrepresent an unknown
+    # document as an empty one.
+    paragraph_count: int | None = None
+    table_count: int | None = None
     translatable_count: int = 0
     original_path: Path | None = None
+    relative_path: str = ""
+    format: str = "docx"
+    needs_conversion: bool = False
+    statistics_status: str = "known"
+    risk: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WordScanSkippedItem:
+    """A selectable-looking Word source which failed scan-time inspection."""
+
+    path: Path
+    relative_path: str
+    reason: str
+    format: str = ""
+
+
+@dataclass
+class WordScanResult:
+    """Typed Word source scan used by the API/UI task-start contract."""
+
+    root: Path
+    items: list[WordFileItem] = field(default_factory=list)
+    skipped: list[WordScanSkippedItem] = field(default_factory=list)
+
+    @property
+    def summary(self) -> dict[str, int]:
+        known_items = [item for item in self.items if item.statistics_status == "known"]
+        doc_count = sum(1 for item in self.items if item.format == "doc")
+        return {
+            "scanned_count": len(self.items),
+            "selected_count": len(self.items),
+            "paragraph_count": sum(int(item.paragraph_count or 0) for item in known_items),
+            "table_count": sum(int(item.table_count or 0) for item in known_items),
+            "doc_count": doc_count,
+            "doc_unknown_count": sum(
+                1 for item in self.items if item.statistics_status != "known"
+            ),
+            "skipped_count": len(self.skipped),
+        }
+
+    @property
+    def risk(self) -> dict[str, object]:
+        doc_count = self.summary["doc_count"]
+        return {
+            "has_doc": bool(doc_count),
+            "doc_count": doc_count,
+            "requires_explicit_compatibility_confirmation": bool(doc_count),
+            "message": (
+                "检测到 .doc 文件：优先使用本机 Microsoft Word 高保真转换；"
+                "只有明确确认兼容转换后才会改用 LibreOffice 或 macOS textutil，"
+                "后者可能改变版式、域、图文或宏。"
+                if doc_count
+                else ""
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -147,54 +206,58 @@ def is_supported_word_file(path: str | Path) -> bool:
 
 
 def scan_word_path(path: str | Path) -> list[WordFileItem]:
-    """Scan a folder or single supported Word file."""
-    path = Path(path)
-    if not path.exists():
-        logger.warning(f"路径不存在：{path}")
-        return []
+    """Compatibility entry point returning only selectable Word files."""
+    return scan_word_sources(path).items
 
-    if path.is_dir():
-        return scan_word_folder(path)
 
-    if path.is_file():
-        if not is_supported_word_file(path):
-            logger.warning(f"不支持的 Word 文件类型：{path}")
-            return []
-        try:
-            return [_build_word_file_item(path)]
-        except Exception as exc:
-            logger.warning(f"扫描 Word 文件失败 {path.name}：{exc}")
-            return []
+def scan_word_sources(path: str | Path) -> WordScanResult:
+    """Scan Word input while preserving skipped-file and unknown-stat evidence."""
+    source = Path(path).expanduser()
+    root = source if source.is_dir() else source.parent
+    result = WordScanResult(root=root)
+    if not source.exists():
+        reason = f"路径不存在：{source}"
+        logger.warning(reason)
+        result.skipped.append(WordScanSkippedItem(source, source.name, reason))
+        return result
 
-    logger.warning(f"路径既不是文件也不是目录：{path}")
-    return []
+    if source.is_file():
+        _scan_one_word_file(source, source.parent, result)
+    elif source.is_dir():
+        for candidate in sorted(source.rglob("*")):
+            if not candidate.is_file():
+                continue
+            # Office lock files and Translator's own output folders are not
+            # user-visible failed inputs: they are deliberately excluded from
+            # the selectable source boundary.
+            if candidate.name.startswith("~"):
+                continue
+            relative = _relative_word_path(candidate, source)
+            if _is_generated_output(Path(relative)):
+                continue
+            if candidate.suffix.lower() not in SUPPORTED_WORD_SUFFIXES:
+                continue
+            _scan_one_word_file(candidate, source, result)
+    else:
+        result.skipped.append(
+            WordScanSkippedItem(
+                source,
+                source.name,
+                f"路径既不是文件也不是目录：{source}",
+            )
+        )
+
+    result.items.sort(key=lambda item: str(item.path))
+    result.skipped.sort(key=lambda item: str(item.path))
+    logger.info(
+        f"Word 扫描完成：{source}，可选 {len(result.items)}，跳过 {len(result.skipped)}"
+    )
+    return result
 
 
 def scan_word_folder(root: str | Path) -> list[WordFileItem]:
     """Recursively scan a folder for supported Word files."""
-    root = Path(root)
-    if not root.exists():
-        logger.warning(f"文件夹不存在：{root}")
-        return []
-
-    items: list[WordFileItem] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.name.startswith("~"):
-            continue
-        if path.suffix.lower() not in SUPPORTED_WORD_SUFFIXES:
-            continue
-        if _is_generated_output(path.relative_to(root)):
-            continue
-        try:
-            items.append(_build_word_file_item(path))
-        except Exception as exc:
-            logger.warning(f"扫描 Word 文件失败 {path.name}：{exc}")
-
-    items.sort(key=lambda item: item.path)
-    logger.info(f"Word 扫描完成：{root}，共发现 {len(items)} 个文件")
-    return items
+    return scan_word_sources(root).items
 
 
 def extract_word_segments(
@@ -476,13 +539,57 @@ def normalize_docx_automatic_numbering(
     return WordNumberingNormalizationResult(path=target_path, stats=stats)
 
 
-def _build_word_file_item(path: Path) -> WordFileItem:
+def _scan_one_word_file(path: Path, root: Path, result: WordScanResult) -> None:
+    if not is_supported_word_file(path):
+        result.skipped.append(
+            WordScanSkippedItem(
+                path=path,
+                relative_path=_relative_word_path(path, root),
+                reason="不支持的 Word 文件或 Office 临时文件",
+                format=path.suffix.lower().lstrip("."),
+            )
+        )
+        return
+    try:
+        result.items.append(_build_word_file_item(path, root=root))
+    except Exception as exc:  # scan errors must remain visible and non-fatal
+        reason = f"读取失败：{exc}"
+        logger.warning(f"扫描 Word 文件失败 {path.name}：{exc}")
+        result.skipped.append(
+            WordScanSkippedItem(
+                path=path,
+                relative_path=_relative_word_path(path, root),
+                reason=reason,
+                format=path.suffix.lower().lstrip("."),
+            )
+        )
+
+
+def _relative_word_path(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return path.name
+
+
+def _build_word_file_item(path: Path, *, root: Path | None = None) -> WordFileItem:
     if is_legacy_word_doc(path):
         return WordFileItem(
             path=path,
             name=path.stem,
             size_kb=round(path.stat().st_size / 1024, 1),
             original_path=path,
+            relative_path=_relative_word_path(path, root or path.parent),
+            format="doc",
+            needs_conversion=True,
+            statistics_status="conversion_required",
+            risk={
+                "compatibility_required": True,
+                "message": (
+                    ".doc 的段落和表格数需在转换为临时 .docx 后统计；"
+                    "高保真不可用时必须先确认兼容转换风险。"
+                ),
+            },
         )
 
     doc = Document(str(path))
@@ -494,6 +601,10 @@ def _build_word_file_item(path: Path) -> WordFileItem:
         paragraph_count=len(doc.paragraphs),
         table_count=len(doc.tables),
         translatable_count=len(segments),
+        relative_path=_relative_word_path(path, root or path.parent),
+        format="docx",
+        needs_conversion=False,
+        statistics_status="known",
     )
 
 

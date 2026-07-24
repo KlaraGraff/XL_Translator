@@ -16,7 +16,7 @@ class WordDefaultSettingsTests(unittest.TestCase):
         settings = AppSettings()
 
         self.assertTrue(settings.word_review.highlight_unresolved)
-        self.assertEqual(settings.word_review.existing_highlight_policy, "skip")
+        self.assertEqual(settings.word_review.existing_highlight_policy, "red_underline")
         self.assertEqual(
             settings.word_review.mark_colors,
             {

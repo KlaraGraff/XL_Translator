@@ -15,7 +15,7 @@ from core.word_converter import (
 
 
 class WordConverterTests(unittest.TestCase):
-    def test_doc_conversion_falls_back_after_native_word_failure(self) -> None:
+    def test_doc_conversion_falls_back_only_after_explicit_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_path = root / "source.doc"
@@ -40,7 +40,17 @@ class WordConverterTests(unittest.TestCase):
                     return_value="Windows",
                 ),
             ):
-                result = convert_doc_to_docx(source_path, prefer_native_word=True)
+                with self.assertRaises(WordConversionError):
+                    convert_doc_to_docx(
+                        source_path,
+                        prefer_native_word=True,
+                        allow_compatibility_fallback=False,
+                    )
+                result = convert_doc_to_docx(
+                    source_path,
+                    prefer_native_word=True,
+                    allow_compatibility_fallback=True,
+                )
 
             self.assertEqual(result.path, converted_path)
             self.assertEqual(result.method, "LibreOffice")
@@ -74,7 +84,11 @@ class WordConverterTests(unittest.TestCase):
                     return_value="Windows",
                 ),
             ):
-                result = convert_doc_to_docx(source_path, prefer_native_word=False)
+                result = convert_doc_to_docx(
+                    source_path,
+                    prefer_native_word=False,
+                    allow_compatibility_fallback=True,
+                )
 
             self.assertEqual(result.method, "LibreOffice")
             self.assertEqual(native_calls, [])

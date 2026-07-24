@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from api.task_manager import TranslationTaskManager
 from core.model_api_identity import TaskApiContext
-from settings import AppSettings
+from settings import AppSettings, EngineSettings
 
 
 class _FinishedRunner:
@@ -34,7 +34,15 @@ class ApiTaskSelectionTests(unittest.TestCase):
             first.touch()
             second.touch()
             captured: dict[str, object] = {}
-            manager = TranslationTaskManager(settings_loader=AppSettings)
+            manager = TranslationTaskManager(
+                settings_loader=lambda: AppSettings(
+                    engine=EngineSettings(
+                        mode="local",
+                        local_provider="ollama",
+                        local_model="test-model",
+                    )
+                )
+            )
             manager._scan = lambda *_args: [
                 SimpleNamespace(path=first),
                 SimpleNamespace(path=second),

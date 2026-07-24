@@ -35,6 +35,7 @@ from core.task_runner import (
 )
 from core.word_document import scan_word_path
 from core.word_task_runner import WordTaskRunner
+from core.word_converter import get_local_word_automation_availability
 from core.xls_converter import get_local_excel_availability
 from settings import AppSettings, load_settings
 
@@ -79,6 +80,7 @@ class TaskOptions:
     untranslated_only: bool = False
     protect_scheme_cover: bool = False
     allow_xls_fallback: bool = False
+    allow_doc_fallback: bool = False
     include_images: bool = False
     source_lang: str | None = None
     target_lang: str | None = None
@@ -86,6 +88,10 @@ class TaskOptions:
     @property
     def xls_conversion_mode(self) -> str:
         return "compatibility" if self.allow_xls_fallback else "high_fidelity"
+
+    @property
+    def doc_conversion_mode(self) -> str:
+        return "compatibility" if self.allow_doc_fallback else "high_fidelity"
 
 
 @dataclass
@@ -181,6 +187,12 @@ class TranslationTaskManager:
                 settings=settings,
                 options=selected_options,
             )
+        elif normalized_surface == "word":
+            self._validate_word_preflight(
+                files=files,
+                settings=settings,
+                options=selected_options,
+            )
         if normalized_surface in {"excel", "word"}:
             tm_manager.init_db()
 
@@ -234,6 +246,23 @@ class TranslationTaskManager:
                             1
                             for item in files
                             if _excel_file_format(item) == "xls"
+                        ),
+                    }
+                )
+            elif normalized_surface == "word":
+                task_snapshot.update(
+                    {
+                        "word_output": settings.word_output.model_dump(mode="json"),
+                        "word_batch": settings.word_batch.model_dump(mode="json"),
+                        "word_review": settings.word_review.model_dump(mode="json"),
+                        "word_conversion": settings.word_conversion.model_dump(mode="json"),
+                        "tm": {"max_len": settings.tm.max_len},
+                        "doc_conversion_mode": selected_options.doc_conversion_mode,
+                        "selected_file_count": len(files),
+                        "doc_file_count": sum(
+                            1
+                            for item in files
+                            if _word_file_format(item) == "doc"
                         ),
                     }
                 )
@@ -397,6 +426,7 @@ class TranslationTaskManager:
                 key_overrides=key_overrides,
                 untranslated_only=options.untranslated_only,
                 protect_scheme_cover=options.protect_scheme_cover,
+                allow_doc_fallback=options.allow_doc_fallback,
             )
         return PdfImageTranslationRunner(
             files,
@@ -442,6 +472,47 @@ class TranslationTaskManager:
             f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
             "请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换；"
             "兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
+        )
+
+    @staticmethod
+    def _validate_word_preflight(
+        *,
+        files: list[Any],
+        settings: AppSettings,
+        options: TaskOptions,
+    ) -> None:
+        """Fail Word startup before allocating a task for known bad input.
+
+        A selected legacy document is never silently routed through a
+        compatibility converter.  The task either has a native Word path or a
+        task-level, explicit ``allow_doc_fallback`` confirmation captured in
+        its frozen snapshot.
+        """
+        if not str(settings.target_lang or "").strip():
+            raise TaskInputError("请先选择 Word 目标语言。")
+        model_check = check_translation_api_config(settings)
+        if not model_check.ok:
+            detail = f"（{model_check.detail}）" if model_check.detail else ""
+            raise TaskInputError(f"{model_check.message}{detail}")
+        word_output = settings.word_output
+        if word_output.use_custom_output_dir:
+            output_error = bilingual_writer.get_custom_output_dir_error(
+                word_output.custom_output_dir
+            )
+            if output_error:
+                raise TaskInputError(output_error)
+
+        doc_files = [item for item in files if _word_file_format(item) == "doc"]
+        if not doc_files or options.allow_doc_fallback:
+            return
+        available, reason = get_local_word_automation_availability()
+        if available:
+            return
+        raise TaskInputError(
+            "检测到 "
+            f"{len(doc_files)} 个 .doc 文件，但本机 Microsoft Word 高保真自动化不可用：{reason}。"
+            "请取消任务，安装/授权 Microsoft Word 后重试，或明确确认兼容转换；"
+            "兼容转换可能改变版式、域、图文和宏。"
         )
 
     def _pump_runner(self, task: ApiTask) -> None:
@@ -533,6 +604,15 @@ def _excel_file_format(item: Any) -> str:
     startup preflight must therefore treat absent metadata as non-legacy
     rather than crash before acquiring the task resource.
     """
+    explicit = str(getattr(item, "format", "") or "").strip().lower()
+    if explicit:
+        return explicit.lstrip(".")
+    path = getattr(item, "path", None)
+    return Path(path).suffix.lower().lstrip(".") if path else ""
+
+
+def _word_file_format(item: Any) -> str:
+    """Return a normalized Word format without assuming a concrete scanner type."""
     explicit = str(getattr(item, "format", "") or "").strip().lower()
     if explicit:
         return explicit.lstrip(".")

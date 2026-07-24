@@ -40,6 +40,7 @@ from core.language_registry import (
 )
 from core.language_preflight import (
     LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    TranslationLanguageResult,
     build_language_preflight_prompt,
     preflight_files,
 )
@@ -156,6 +157,10 @@ class _PreparedWordSource:
     fallback_messages: tuple[str, ...] = ()
     labels_seen: int = 0
     labels_prepended: int = 0
+    conversion_method: str = "not_required"
+    conversion_fidelity: str = "not_required"
+    numbering_method: str = "python_conservative"
+    numbering_fallback_messages: tuple[str, ...] = ()
 
 
 def _source_position_count(
@@ -211,6 +216,7 @@ class WordTaskRunner:
         api_scheduler: WeightedApiScheduler | None = None,
         untranslated_only: bool = False,
         protect_scheme_cover: bool = False,
+        allow_doc_fallback: bool = False,
     ):
         self._files = file_items
         self._settings = settings
@@ -220,6 +226,7 @@ class WordTaskRunner:
         self._api_scheduler_override = api_scheduler
         self._untranslated_only = bool(untranslated_only)
         self._protect_scheme_cover = bool(protect_scheme_cover)
+        self._allow_doc_fallback = bool(allow_doc_fallback)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -312,9 +319,12 @@ class WordTaskRunner:
             return
 
         root_for_output = self._source_root if self._source_root else self._files[0].path.parent
-        custom_output_dir = settings.output.custom_output_dir if settings.output.use_custom_output_dir else None
+        word_output = settings.word_output
+        custom_output_dir = (
+            word_output.custom_output_dir if word_output.use_custom_output_dir else None
+        )
         try:
-            if settings.output.use_custom_output_dir:
+            if word_output.use_custom_output_dir:
                 output_error = get_custom_output_dir_error(custom_output_dir)
                 if output_error is not None:
                     raise ValueError(output_error)
@@ -359,6 +369,17 @@ class WordTaskRunner:
         process_paths: list[Path] = []
         converted_temp_paths: list[Path] = []
         preprocess_summaries: list[dict] = []
+        word_batch_stats = WordBatchRunStats()
+        model_source_results: dict[str, list[TranslationLanguageResult]] = {}
+        model_source_results_lock = threading.Lock()
+        recovery_outcome = _WordRecoveryOutcome(
+            fixed_sources=[],
+            unresolved_sources=[],
+            accepted_translations={},
+            recovery_review_results={},
+            semantic_review_results={},
+            unresolved_validation_results={},
+        )
 
         try:
             _raise_if_stopped()
@@ -392,6 +413,7 @@ class WordTaskRunner:
                         use_native_preprocessing=(
                             settings.word_conversion.use_native_preprocessing
                         ),
+                        allow_doc_fallback=self._allow_doc_fallback,
                     )
                     process_path = prepared.path
                     converted_temp_paths.extend(prepared.temp_paths)
@@ -413,6 +435,15 @@ class WordTaskRunner:
                             "method": prepared.method,
                             "labels_seen": prepared.labels_seen,
                             "labels_prepended": prepared.labels_prepended,
+                            "conversion_method": prepared.conversion_method,
+                            "conversion_fidelity": prepared.conversion_fidelity,
+                            "conversion_fallback_messages": list(
+                                prepared.fallback_messages
+                            ),
+                            "numbering_method": prepared.numbering_method,
+                            "numbering_fallback_messages": list(
+                                prepared.numbering_fallback_messages
+                            ),
                         }
                     )
                     if self._untranslated_only:
@@ -622,7 +653,6 @@ class WordTaskRunner:
                     )
 
                 t0 = datetime.now()
-                word_batch_stats = WordBatchRunStats()
                 word_prompt = _build_word_batch_prompt(system_prompt)
                 retry_prompt = _build_word_retry_prompt(system_prompt)
                 retry_batch_settings = settings.word_batch.model_copy(
@@ -659,6 +689,15 @@ class WordTaskRunner:
                     ):
                         recovery_pool.add_candidate(source, candidate)
 
+                def model_source_result_cb(
+                    source: str,
+                    result: TranslationLanguageResult,
+                ) -> None:
+                    if not auto_source_lang:
+                        return
+                    with model_source_results_lock:
+                        model_source_results.setdefault(source, []).append(result)
+
                 self._log(
                     "INFO",
                     (
@@ -692,6 +731,8 @@ class WordTaskRunner:
                         api_scheduler=api_scheduler,
                         request_category=API_REQUEST_CATEGORY_NORMAL,
                         candidate_callback=recovery_candidate_cb,
+                        report_source_languages=auto_source_lang,
+                        source_result_callback=model_source_result_cb,
                         drained_callback=main_drain_gate.queue_drained,
                     )
 
@@ -877,15 +918,25 @@ class WordTaskRunner:
                     pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
                     for source, translated in api_translations.items():
                         candidates = text_source_candidates.get(source, set())
+                        reported_codes = {
+                            result.source_lang
+                            for result in model_source_results.get(source, [])
+                            if result.tm_eligible
+                        }
                         if (
                             len(candidates) != 1
+                            or len(reported_codes) != 1
+                            or next(iter(reported_codes)) not in candidates
                             or source in mixed_texts
                             or source in recovery_review_sources
                             or source in unresolved_review_sources
                             or not should_store_translation_in_tm(source, translated)
                         ):
                             continue
-                        pair = build_lang_pair(target_lang, source_lang=next(iter(candidates)))
+                        pair = build_lang_pair(
+                            target_lang,
+                            source_lang=next(iter(reported_codes)),
+                        )
                         pairs_to_insert.setdefault(pair, []).append((source, translated))
                     written = sum(
                         tm_manager.insert_batch(
@@ -1078,25 +1129,68 @@ class WordTaskRunner:
 
         elapsed_sec = (datetime.now() - start_ts).total_seconds()
         self._task_logger.task_end(elapsed_sec=elapsed_sec, file_results=file_results)
-        report_path = _write_word_quality_report(
-            output_dir=output_dir,
+        report_path = None
+        report_warning = ""
+        if any(item.get("success") for item in file_results):
+            try:
+                report_path = _write_word_quality_report(
+                    output_dir=output_dir,
+                    file_results=file_results,
+                    issues=quality_issues,
+                    elapsed_sec=elapsed_sec,
+                    tm_hit_count=tm_hit_count,
+                    api_call_count=api_call_count,
+                )
+            except Exception as exc:  # report output must not fail a usable task
+                self._log("WARN", f"Word 翻译质量报告写入失败：{exc}")
+                report_warning = (
+                    f"Word 翻译质量报告未能写入：{exc}。"
+                    "已生成的翻译文件仍可使用。"
+                )
+        _cleanup_converted_word_paths(converted_temp_paths, self._log)
+
+        result_contract = self._build_result_contract(
             file_results=file_results,
-            issues=quality_issues,
+            output_dir=str(output_dir),
             elapsed_sec=elapsed_sec,
             tm_hit_count=tm_hit_count,
-            api_call_count=api_call_count,
+            api_text_count=api_call_count,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            preflights=file_language_preflights,
+            file_texts=file_texts,
+            quality_issues=quality_issues,
+            recovery_outcome=recovery_outcome,
+            word_batch_stats=word_batch_stats,
+            model_source_results=model_source_results,
+            stopped=stopped_message is not None,
+            error_message=fatal_error_message or "",
+            report_warning=report_warning,
         )
-        _cleanup_converted_word_paths(converted_temp_paths, self._log)
 
         if stopped_message is not None:
             self._log("WARN", stopped_message)
-            self._queue.put(StoppedMsg(message=stopped_message))
+            self._queue.put(
+                StoppedMsg(
+                    message=stopped_message,
+                    output_dir=str(output_dir),
+                    report_path=str(report_path) if report_path else "",
+                    **result_contract,
+                )
+            )
             return
 
         if fatal_error_message is not None:
             self._log("ERROR", fatal_error_message)
             self._task_logger.error(fatal_error_message)
-            self._queue.put(ErrorMsg(message=fatal_error_message))
+            self._queue.put(
+                ErrorMsg(
+                    message=fatal_error_message,
+                    output_dir=str(output_dir),
+                    report_path=str(report_path) if report_path else "",
+                    **result_contract,
+                )
+            )
             return
 
         self._queue.put(
@@ -1108,27 +1202,233 @@ class WordTaskRunner:
                 api_call_count=api_call_count,
                 issues=quality_issues,
                 report_path=str(report_path) if report_path else "",
+                **result_contract,
             )
         )
+
+    def _build_result_contract(
+        self,
+        *,
+        file_results: list[dict],
+        output_dir: str,
+        elapsed_sec: float,
+        tm_hit_count: int,
+        api_text_count: int,
+        source_lang: str,
+        target_lang: str,
+        preflights: dict,
+        file_texts: list[set[str]],
+        quality_issues: list[dict],
+        recovery_outcome: _WordRecoveryOutcome,
+        word_batch_stats: WordBatchRunStats,
+        model_source_results: dict[str, list[TranslationLanguageResult]],
+        stopped: bool,
+        error_message: str = "",
+        report_warning: str = "",
+    ) -> dict[str, object]:
+        """Build the W5D terminal result without exposing prompts or raw replies."""
+        raw_by_source = {
+            str(item.get("source_path") or ""): dict(item)
+            for item in file_results
+            if isinstance(item, dict)
+        }
+        files: list[dict[str, object]] = []
+        for index, item in enumerate(self._files):
+            raw = raw_by_source.get(str(item.path), {})
+            success = bool(raw.get("success"))
+            preprocess = dict(raw.get("preprocess") or {})
+            if raw:
+                status = "succeeded" if success else "failed"
+                readable_error = str(raw.get("error") or "")
+            elif stopped:
+                status = "unstarted"
+                readable_error = "任务在开始该文件前已停止。"
+            else:
+                status = "unstarted"
+                readable_error = "该文件未开始处理。"
+
+            original_format = str(
+                getattr(item, "format", "") or item.path.suffix.lstrip(".")
+            ).lower()
+            conversion_required = original_format == "doc"
+            files.append(
+                {
+                    "name": item.name,
+                    "source_path": str(item.path),
+                    "source_relative_path": _file_result_identity(item, self._source_root),
+                    "format": original_format,
+                    "status": status,
+                    "success": success,
+                    "output": str(raw.get("output") or ""),
+                    "conversion": {
+                        "required": conversion_required,
+                        "path": "temporary_docx" if conversion_required else "not_required",
+                        "method": str(
+                            preprocess.get("conversion_method")
+                            or ("not_started" if conversion_required else "not_required")
+                        ),
+                        "fidelity": str(
+                            preprocess.get("conversion_fidelity")
+                            or ("not_started" if conversion_required else "not_required")
+                        ),
+                        "fallback_messages": list(
+                            preprocess.get("conversion_fallback_messages") or []
+                        ),
+                    },
+                    "numbering": {
+                        "method": str(preprocess.get("numbering_method") or "not_started"),
+                        "fallback_messages": list(
+                            preprocess.get("numbering_fallback_messages") or []
+                        ),
+                        "labels_seen": int(preprocess.get("labels_seen") or 0),
+                        "labels_materialized": int(
+                            preprocess.get("labels_prepended") or 0
+                        ),
+                    },
+                    "review_items": list(raw.get("issues") or []),
+                    "error": readable_error,
+                }
+            )
+
+        review_items: list[dict[str, object]] = []
+        review_counts: dict[str, int] = {}
+        for issue in quality_issues:
+            if not isinstance(issue, dict):
+                continue
+            severity = str(issue.get("severity") or "needs_review")
+            review_counts[severity] = review_counts.get(severity, 0) + 1
+            review_items.append(
+                {
+                    "file": str(issue.get("file") or ""),
+                    "section_path": str(issue.get("section_path") or "正文"),
+                    "location": str(issue.get("location_label") or "未知位置"),
+                    "snippet": str(issue.get("snippet") or ""),
+                    "problem": str(issue.get("problem") or ""),
+                    "action": str(issue.get("status") or ""),
+                    "severity": severity,
+                }
+            )
+
+        language_files: list[dict[str, object]] = []
+        for index, item in enumerate(self._files):
+            preflight = preflights.get(str(item.path))
+            if preflight is not None:
+                preflight_payload = preflight.to_dict(target_lang)
+            else:
+                preflight_payload = {
+                    "source_langs": [source_lang] if self._source_lang != "auto" else [],
+                    "requested": False,
+                    "request_count": 0,
+                }
+            actual_counts: dict[str, int] = {}
+            for text in file_texts[index] if index < len(file_texts) else ():
+                codes = {
+                    result.source_lang
+                    for result in model_source_results.get(text, [])
+                    if result.tm_eligible
+                }
+                if len(codes) == 1:
+                    code = next(iter(codes))
+                    actual_counts[code] = actual_counts.get(code, 0) + 1
+            language_files.append(
+                {
+                    "source_path": _file_result_identity(item, self._source_root),
+                    "preflight": preflight_payload,
+                    "candidate_text_count": len(file_texts[index]) if index < len(file_texts) else 0,
+                    "actual_source_counts": actual_counts,
+                    "model_source_reports": (
+                        "per_item" if self._source_lang == "auto" else "manual_authority"
+                    ),
+                }
+            )
+
+        succeeded = sum(1 for item in files if item["status"] == "succeeded")
+        failed = sum(1 for item in files if item["status"] == "failed")
+        unstarted = sum(1 for item in files if item["status"] == "unstarted")
+        recovered_count = _sources_position_count(
+            recovery_outcome.fixed_sources,
+            None,
+        )
+        unresolved_count = _sources_position_count(
+            recovery_outcome.unresolved_sources,
+            None,
+        )
+        semantic_accepted_count = _sources_position_count(
+            recovery_outcome.semantic_review_results,
+            None,
+        )
+        semantic_checked_count = max(
+            semantic_accepted_count,
+            int(recovery_outcome.semantic_check_count or 0),
+        )
+        return {
+            "files": files,
+            "kpi": {
+                "selected_file_count": len(self._files),
+                "succeeded_file_count": succeeded,
+                "failed_file_count": failed,
+                "unstarted_file_count": unstarted,
+                "output_dir": output_dir,
+                "elapsed_sec": elapsed_sec,
+                "tm_hit_count": tm_hit_count,
+                "model_translation_text_count": api_text_count,
+                "review_text_count": len(review_items),
+                "auto_recovered_text_count": recovered_count,
+            },
+            "recovery": {
+                "strict_retry_attempts": self._settings.word_batch.strict_retry_attempts,
+                "recovered_count": recovered_count,
+                "unresolved_count": unresolved_count,
+                "semantic_checked_count": semantic_checked_count,
+                "semantic_accepted_count": semantic_accepted_count,
+                "semantic_unaccepted_count": max(
+                    0, semantic_checked_count - semantic_accepted_count
+                ),
+                "request_batch_count": word_batch_stats.batch_count,
+                "request_unit_count": word_batch_stats.unit_count,
+                "split_source_count": word_batch_stats.split_source_count,
+                "batch_retry_count": word_batch_stats.retry_count,
+            },
+            "review": {
+                "counts": review_counts,
+                "total_count": len(review_items),
+                "items": review_items,
+            },
+            "language": {
+                "mode": "automatic" if self._source_lang == "auto" else "manual",
+                "selected_source_lang": self._source_lang,
+                "target_lang": target_lang,
+                "files": language_files,
+            },
+            "error": {"message": error_message} if error_message else {},
+            "report_warning": report_warning,
+        }
 
 
 def _prepare_word_source_for_translation(
     source_path: Path,
     *,
     use_native_preprocessing: bool,
+    allow_doc_fallback: bool = False,
 ) -> _PreparedWordSource:
     temp_paths: list[Path] = []
     fallback_messages: list[str] = []
     process_path = source_path
-    conversion_method = ""
+    conversion_method = "not_required"
+    conversion_fidelity = "not_required"
+    numbering_fallback_messages: list[str] = []
 
     if is_legacy_word_doc(source_path):
         conversion = convert_doc_to_docx(
             source_path,
-            prefer_native_word=use_native_preprocessing,
+            # Numbering pre-processing is independently configurable.  A
+            # legacy .doc must still try Microsoft Word first for fidelity.
+            prefer_native_word=True,
+            allow_compatibility_fallback=allow_doc_fallback,
         )
         process_path = conversion.path
-        conversion_method = f".doc 转换：{conversion.method}"
+        conversion_method = conversion.method
+        conversion_fidelity = conversion.fidelity
         temp_paths.append(conversion.path)
         fallback_messages.extend(conversion.fallback_messages)
 
@@ -1143,15 +1443,17 @@ def _prepare_word_source_for_translation(
             temp_paths.append(native_result.path)
             fallback_messages.extend(native_result.fallback_messages)
         except WordConversionError as exc:
-            fallback_messages.append(f"本地 Office 编号预处理不可用：{exc}")
+            message = f"本地 Office 编号预处理不可用：{exc}"
+            fallback_messages.append(message)
+            numbering_fallback_messages.append(message)
 
     normalized = normalize_docx_automatic_numbering(process_path)
     process_path = normalized.path
     temp_paths.append(normalized.path)
 
     method_parts: list[str] = []
-    if conversion_method:
-        method_parts.append(conversion_method)
+    if conversion_method != "not_required":
+        method_parts.append(f".doc 转换：{conversion_method}")
     if native_result is not None:
         method_parts.append(f"编号预处理：{native_result.method}")
         if normalized.stats.labels_seen:
@@ -1166,6 +1468,12 @@ def _prepare_word_source_for_translation(
         fallback_messages=tuple(fallback_messages),
         labels_seen=normalized.stats.labels_seen,
         labels_prepended=normalized.stats.labels_prepended,
+        conversion_method=conversion_method,
+        conversion_fidelity=conversion_fidelity,
+        numbering_method=(
+            native_result.method if native_result is not None else "python_conservative"
+        ),
+        numbering_fallback_messages=tuple(numbering_fallback_messages),
     )
 
 
@@ -2316,6 +2624,11 @@ def _write_word_quality_report(
 
         report_path.write_text("\n".join(lines), encoding="utf-8")
         return report_path
-    except Exception as exc:  # noqa: BLE001 - report generation must not fail the translation task
+    except Exception as exc:  # noqa: BLE001 - the caller records a non-fatal warning.
+        # Do not swallow the exception here.  ``WordTaskRunner._run`` owns the
+        # task-level result contract and converts this into ``report_warning``
+        # while preserving usable Word output.  Returning ``None`` here would
+        # make a real filesystem failure indistinguishable from no report and
+        # hide its reason from the UI.
         logger.warning(f"Word 翻译质量报告写入失败：{exc}")
-        return None
+        raise OSError(f"Word 翻译质量报告写入失败：{exc}") from exc

@@ -18,6 +18,9 @@ type FileItem = JsonObject & {
   conversion_risks?: string[];
   risk_flags?: string[];
   risk?: JsonObject;
+  needs_conversion?: boolean;
+  stats_pending_conversion?: boolean;
+  statistics_status?: string;
   page_count?: number;
   paragraph_count?: number;
   table_count?: number;
@@ -98,7 +101,7 @@ type RunningTask = {
   stepDone: number;
   stepTotal: number;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "doc-compatibility" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -120,6 +123,10 @@ const state: {
   excelOutputInspection: OutputDirectoryInspection;
   excelFileProgress: Record<string, JsonObject>;
   pendingExcelStart: "high_fidelity" | "compatibility" | null;
+  wordOutputInspection: OutputDirectoryInspection;
+  wordFileProgress: Record<string, JsonObject>;
+  wordRecovery: JsonObject;
+  pendingWordStart: "high_fidelity" | "compatibility" | null;
   running: RunningTask | null;
   tmEntries: TmEntry[];
   tmStats: JsonObject;
@@ -175,6 +182,10 @@ const state: {
   excelOutputInspection: { state: "idle", path: "", message: "选择自定义目录后会在开始前检查；检查不会创建目录。" },
   excelFileProgress: {},
   pendingExcelStart: null,
+  wordOutputInspection: { state: "idle", path: "", message: "选择自定义目录后会在开始前检查；检查不会创建目录。" },
+  wordFileProgress: {},
+  wordRecovery: {},
+  pendingWordStart: null,
   running: null,
   tmEntries: [],
   tmStats: {},
@@ -334,6 +345,18 @@ function excelReviewSettings(): JsonObject {
   return record(state.settings?.excel_review);
 }
 
+function wordOutputSettings(): JsonObject {
+  const isolated = record(state.settings?.word_output);
+  // Phase 5 moves Word away from the shared legacy output object.  The
+  // fallback keeps the current new baseline usable until the isolated object
+  // has been persisted for the first time.
+  return Object.keys(isolated).length ? isolated : record(state.settings?.output);
+}
+
+function wordOutputSettingPath(key: string): string {
+  return hasOwn(state.settings, "word_output") ? `word_output.${key}` : `output.${key}`;
+}
+
 function fileFormat(file: FileItem): string {
   const supplied = text(file.format).trim().replace(/^\./, "");
   if (supplied) return supplied.toLowerCase();
@@ -366,6 +389,41 @@ function selectedExcelFiles(): FileItem[] {
 
 function selectedExcelXlsCount(): number {
   return selectedExcelFiles().filter((file) => fileFormat(file) === "xls").length;
+}
+
+function wordFileFormat(file: FileItem): string {
+  return fileFormat(file) || "docx";
+}
+
+function wordNeedsConversion(file: FileItem): boolean {
+  return Boolean(
+    file.needs_conversion
+    || file.stats_pending_conversion
+    || text(file.statistics_status) === "conversion_required"
+    || wordFileFormat(file) === "doc",
+  );
+}
+
+function wordScanSummary(): { files: number; selected: number; paragraphs: number; tables: number; docs: number } {
+  const files = state.files.word;
+  const knownFiles = files.filter((file) => !wordNeedsConversion(file));
+  const reported = state.scanReports.word.summary;
+  return {
+    files: files.length,
+    selected: state.selectedPaths.word.length,
+    paragraphs: number(reported.paragraph_count, knownFiles.reduce((total, file) => total + number(file.paragraph_count), 0)),
+    tables: number(reported.table_count, knownFiles.reduce((total, file) => total + number(file.table_count), 0)),
+    docs: number(reported.doc_unknown_count, files.filter(wordNeedsConversion).length),
+  };
+}
+
+function selectedWordFiles(): FileItem[] {
+  const selected = new Set(state.selectedPaths.word);
+  return state.files.word.filter((file) => selected.has(file.path));
+}
+
+function selectedWordDocCount(): number {
+  return selectedWordFiles().filter(wordNeedsConversion).length;
 }
 
 function modelCatalogConnectionKey({
@@ -597,8 +655,10 @@ function renderTranslateView(surface: Surface): string {
   const selectedPaths = state.selectedPaths[surface];
   const sourcePath = state.sourcePaths[surface];
   const isExcel = surface === "excel";
+  const isWord = surface === "word";
   const isPdf = surface === "pdf";
   const excelSummary = excelScanSummary();
+  const wordSummary = wordScanSummary();
   const target = state.targetSelections[surface] || (isPdf
     ? text(record(state.settings?.pdf).target_lang, "zh")
     : text(state.settings?.target_lang, "en"));
@@ -622,6 +682,12 @@ function renderTranslateView(surface: Surface): string {
              ${stat("translate", "已选文件", String(excelSummary.selected))}
              ${stat("excel", "总工作表", String(excelSummary.sheets))}
              ${stat("warn", ".xls 文件", String(excelSummary.xls))}`
+          : isWord
+            ? `${stat("file", "已扫描文件", String(wordSummary.files))}
+               ${stat("translate", "已选文件", String(wordSummary.selected))}
+               ${stat("word", "已知正文段落", String(wordSummary.paragraphs))}
+               ${stat("file", "已知表格", String(wordSummary.tables))}
+               ${stat("warn", ".doc 待转换", String(wordSummary.docs))}`
           : `${stat("file", "已扫描", String(files.length))}
              ${stat("translate", "已选择", String(selectedPaths.length))}
              ${stat("memory", "TM 命中", activeTask ? "进行中" : "—")}
@@ -629,6 +695,7 @@ function renderTranslateView(surface: Surface): string {
       </div>
       <div class="card table-card"><div class="table-header"><h2>任务清单</h2><span class="table-count">已选 ${selectedPaths.length} / ${files.length}</span><span class="header-spacer"></span><button class="mini-button" data-action="select-all-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全选</button><button class="mini-button" data-action="select-no-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全不选</button></div><div class="table-scroll">${renderFiles(files, surface, selectedPaths, activeTask)}</div></div>
       ${isExcel ? renderExcelSkippedItems() : ""}
+      ${isWord ? renderWordSkippedItems() : ""}
     </div>
     <aside class="card right-column">
       <span class="section-label">运行设置</span>
@@ -638,6 +705,7 @@ function renderTranslateView(surface: Surface): string {
       ${isPdf ? `<div class="toggle-row"><input id="pdfReview" type="checkbox" ${record(state.settings?.pdf).review_enabled ? "checked" : ""} data-pdf-review ${activeTask ? "disabled" : ""}/><label for="pdfReview">启用逐页审核模型</label></div>` : `<div class="toggle-row"><input id="untranslated-${surface}" type="checkbox" data-untranslated ${activeTask ? "disabled" : ""}/><label for="untranslated-${surface}">仅补译未翻译内容</label></div>`}
       ${renderDetailedSettings(surface, activeTask)}
       ${isExcel ? renderExcelStartPreflight(source, target) : ""}
+      ${isWord ? renderWordStartPreflight(source, target) : ""}
       <hr class="divider" />
       ${running ? renderRunningPanel(running, percent) : `<div class="push"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button><p class="note">可执行 ${selectedPaths.length} / ${files.length} 个文件；任务启动后，日志与进度将通过 SSE 实时显示。</p></div>`}
     </aside>
@@ -645,24 +713,39 @@ function renderTranslateView(surface: Surface): string {
 }
 
 function renderDetailedSettings(surface: Surface, disabled: boolean): string {
-  const output = surface === "excel" ? excelOutputSettings() : record(state.settings?.output);
+  const output = surface === "excel"
+    ? excelOutputSettings()
+    : surface === "word"
+      ? wordOutputSettings()
+      : record(state.settings?.output);
   const excelReview = excelReviewSettings();
   const wordBatch = record(state.settings?.word_batch);
   const wordReview = record(state.settings?.word_review);
+  const wordConversion = record(state.settings?.word_conversion);
   const pdf = record(state.settings?.pdf);
   const inputDisabled = disabled ? "disabled" : "";
   const checked = (value: unknown) => value ? "checked" : "";
   const outputMode = output.use_custom_output_dir ? "custom" : "source";
-  const outputPrefix = surface === "excel" ? excelOutputSettingPath : (key: string) => `output.${key}`;
-  const outputInspection = surface === "excel" && outputMode === "custom"
-    ? `<p id="excel-output-state" class="output-path-state ${state.excelOutputInspection.state}">${escapeHtml(state.excelOutputInspection.message)}</p>`
+  const outputPrefix = surface === "excel"
+    ? excelOutputSettingPath
+    : surface === "word"
+      ? wordOutputSettingPath
+      : (key: string) => `output.${key}`;
+  const outputInspectionState = surface === "excel" ? state.excelOutputInspection : state.wordOutputInspection;
+  const outputInspection = (surface === "excel" || surface === "word") && outputMode === "custom"
+    ? `<p id="${surface}-output-state" class="output-path-state ${outputInspectionState.state}">${escapeHtml(outputInspectionState.message)}</p>`
     : "";
-  const outputPicker = surface === "excel"
-    ? `<button class="mini-button" type="button" data-action="choose-excel-output" ${inputDisabled}>${icon("folder", "small")}选择文件夹</button>`
+  const outputPicker = surface === "excel" || surface === "word"
+    ? `<button class="mini-button" type="button" data-action="choose-${surface}-output" ${inputDisabled}>${icon("folder", "small")}选择文件夹</button>`
     : "";
-  const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="excel-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${surface === "excel" ? "data-excel-output-inspect" : ""} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
+  const inspectionAttribute = surface === "excel"
+    ? "data-excel-output-inspect"
+    : surface === "word"
+      ? "data-word-output-inspect"
+      : "";
+  const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="${surface}-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${inspectionAttribute} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
   const excel = `<div class="toggle-row"><input type="checkbox" id="keepOriginal" data-setting-path="${outputPrefix("keep_original_sheets")}" ${checked(output.keep_original_sheets)} ${inputDisabled}/><label for="keepOriginal">保留每个工作表的“_原文”副本</label></div><div class="toggle-row"><input type="checkbox" id="formulaBackfill" data-setting-path="${outputPrefix("formula_display_value_backfill")}" ${checked(output.formula_display_value_backfill)} ${inputDisabled}/><label for="formulaBackfill">公式显示值按静态双语文本回填</label></div><div class="toggle-row"><input type="checkbox" id="excelAutofit" data-setting-path="${outputPrefix("enable_excel_autofit")}" ${checked(output.enable_excel_autofit)} ${inputDisabled}/><label for="excelAutofit">使用 Excel 精调行高（需本机 Excel）</label></div><div class="toggle-row"><input type="checkbox" id="lockRowHeight" data-setting-path="${outputPrefix("lock_row_height")}" ${checked(output.lock_row_height)} ${inputDisabled}/><label for="lockRowHeight">锁定行高并缩小字号（与精调行高互斥）</label></div><p class="note">默认使用 Python 估算行高；精调不可用时保留该结果并在文件结果中提示。最小字号仍可能溢出的单元格会进入复核。</p><div class="toggle-row"><input type="checkbox" id="reviewMark" data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}/><label for="reviewMark">标记需复核内容</label></div><label class="field-label">已有底色处理</label><select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖已有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字（默认）</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖底色</option></select>${renderReviewColors(inputDisabled)}`;
-  const word = `<div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">高亮未解决内容</label></div><div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">保护封面与目录</label></div><label class="field-label">批处理段落上限</label><input type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label">批处理字符上限</label><input type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/>`;
+  const word = `<div class="toggle-row"><input type="checkbox" id="wordNativePreprocessing" data-setting-path="word_conversion.use_native_preprocessing" ${checked(wordConversion.use_native_preprocessing)} ${inputDisabled}/><label for="wordNativePreprocessing">启用本地 Word / LibreOffice 自动编号预处理</label></div><p class="note">开启时依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动以 Python 保守物化编号。关闭时全程只使用 Python。所有预处理都发生在临时副本。</p><div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">标记需复核内容</label></div><label class="field-label">已有高亮处理</label><select data-setting-path="word_review.existing_highlight_policy" ${inputDisabled}><option value="skip" ${text(wordReview.existing_highlight_policy) === "skip" ? "selected" : ""}>不覆盖已有高亮</option><option value="red_underline" ${text(wordReview.existing_highlight_policy) === "red_underline" ? "selected" : ""}>保留已有高亮并使用红字下划线（默认）</option><option value="overwrite" ${text(wordReview.existing_highlight_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖已有高亮</option></select>${renderWordReviewColors(inputDisabled)}<div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">补译时保护方案封面与目录</label></div><p class="note">仅在“仅补译未翻译内容”开启时生效；默认关闭。目录和域代码始终保护，不作为普通正文翻译。</p><label class="field-label" for="wordBatchParagraphs">每批最大段落数</label><input id="wordBatchParagraphs" type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label" for="wordBatchChars">每批字符上限</label><input id="wordBatchChars" type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/><label class="field-label" for="wordSplitThreshold">长段拆分阈值</label><input id="wordSplitThreshold" type="number" min="1" data-setting-path="word_batch.split_paragraph_chars" data-value-kind="number" value="${number(wordBatch.split_paragraph_chars, 3000)}" ${inputDisabled}/><p class="note">拆分只发生在模型请求层，响应后按原顺序回写，不会新增 Word 段落或破坏编号、数字和单位。拆分阈值会自动校正为不低于字符上限。</p><label class="field-label" for="wordStrictRetry">单段严格重试次数</label><input id="wordStrictRetry" type="number" min="1" max="8" data-setting-path="word_batch.strict_retry_attempts" data-value-kind="number" value="${number(wordBatch.strict_retry_attempts, 3)}" ${inputDisabled}/><p class="note">仅对空译文、明显不完整或质量校验失败段落重试；合格内容不会重复请求。未恢复内容保留原文并进入复核。</p>`;
   const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.image_translation_enabled" ${checked(pdf.image_translation_enabled)} ${inputDisabled}/><label for="pdfImages">翻译页内图片文字</label></div><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
   return `<details class="advanced-settings"><summary>更多参数</summary><div class="advanced-settings-body">${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
 }
@@ -698,14 +781,28 @@ function renderReviewColors(disabled: string): string {
   return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
 }
 
+function renderWordReviewColors(disabled: string): string {
+  const colors = record(record(state.settings?.word_review).mark_colors);
+  const colorField = (mark: string, label: string, fallback: string) => {
+    const value = text(colors[mark], fallback).replace(/^#/, "");
+    return `<label class="field-label">${label}（Word 高亮）</label><input type="color" value="#${escapeHtml(value)}" data-word-review-color="${mark}" ${disabled}/>`;
+  };
+  return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
+}
+
 function renderRunningPanel(running: RunningTask, percent: number): string {
   const logs = running.logs.slice(-10).map((item) => `<div class="log-${logTone(item.level)}">› ${escapeHtml(item.message)}</div>`).join("");
   const terminal = running.task.terminal;
   const resultMessage = text(running.task.result?.message, terminal ? "任务已结束。" : "");
-  const resultDetail = terminal && running.task.surface === "excel"
-    ? renderExcelResultDetails(running.task.result ?? {}, running.task.state)
+  const resultDetail = terminal
+    ? running.task.surface === "excel"
+      ? renderExcelResultDetails(running.task.result ?? {}, running.task.state)
+      : running.task.surface === "word"
+        ? renderWordResultDetails(running.task.result ?? {}, running.task.state)
+        : ""
     : "";
-  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${resultDetail}${terminal ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>` : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`}</div>`;
+  const recovery = !terminal && running.task.surface === "word" ? renderWordRecoveryPanel() : "";
+  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${recovery}${resultDetail}${terminal ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>` : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`}</div>`;
 }
 
 function firstNumber(payload: JsonObject, keys: string[]): number | null {
@@ -776,6 +873,103 @@ function renderExcelResultDetails(result: JsonObject, taskState = ""): string {
   return `<details class="excel-result-details" open><summary>Excel 结果详情${terminalLabel ? ` · ${escapeHtml(terminalLabel)}` : ""}</summary>${outputPath ? `<p class="result-output">输出目录：<code>${escapeHtml(outputPath)}</code>${duration !== null ? ` · 耗时 ${duration.toFixed(1)} 秒` : ""}</p>` : ""}${kpis.length ? `<div class="result-kpis">${kpis.map(([label, value]) => `<span><b>${value}</b>${label}</span>`).join("")}</div>` : ""}${files.length ? `<div class="result-table"><table><thead><tr><th>源相对路径</th><th>格式</th><th>状态</th><th>转换方式</th><th>输出</th><th>复核</th><th>错误原因</th></tr></thead><tbody>${fileRows}</tbody></table></div>` : `<p class="note">终态未返回文件明细；请查看结构化诊断记录定位文件级结果。</p>`}${languageRows ? `<details class="result-section"><summary>语言识别与实际语言统计</summary><ul>${languageRows}</ul></details>` : ""}${reviewRows ? `<details class="result-section"><summary>复核定位（${reviews.length}）</summary><div class="result-table"><table><thead><tr><th>文件</th><th>工作表</th><th>单元格</th><th>类别</th><th>采取动作</th></tr></thead><tbody>${reviewRows}</tbody></table></div></details>` : ""}</details>`;
 }
 
+function wordKpi(source: JsonObject, label: string, keys: string[]): [string, number | null] {
+  return [label, firstNumber(source, keys)];
+}
+
+function renderWordRecoveryPanel(): string {
+  const recovery = state.wordRecovery;
+  const retryRound = firstNumber(recovery, ["retry_round"]);
+  const retryTotal = firstNumber(recovery, ["retry_total"]);
+  const cards: Array<[string, string]> = [
+    ["严格重试", retryRound !== null || retryTotal !== null ? `${retryRound ?? 0} / ${retryTotal ?? 0} 轮` : "等待"],
+    ["正在恢复", String(firstNumber(recovery, ["retry_processing_count", "processing_count"]) ?? 0)],
+    ["已恢复", String(firstNumber(recovery, ["retry_recovered_count", "recovered_count"]) ?? 0)],
+    ["未恢复", String(firstNumber(recovery, ["retry_unresolved_count", "unresolved_count"]) ?? 0)],
+    ["仲裁处理中", String(firstNumber(recovery, ["semantic_processing_count"]) ?? 0)],
+    ["仲裁已检查", String(firstNumber(recovery, ["semantic_checked_count"]) ?? 0)],
+    ["仲裁已接受", String(firstNumber(recovery, ["semantic_accepted_count"]) ?? 0)],
+    ["仲裁不确定", String(firstNumber(recovery, ["semantic_uncertain_count"]) ?? 0)],
+  ];
+  return `<details class="word-recovery" open><summary>恢复与语义仲裁</summary><div class="result-kpis">${cards.map(([label, value]) => `<span><b>${escapeHtml(value)}</b>${escapeHtml(label)}</span>`).join("")}</div><p class="note">严格重试只处理空译文、明显不完整或质量校验失败内容；语义仲裁接受的边界译文不会自动写入记忆库。</p></details>`;
+}
+
+function renderWordResultDetails(result: JsonObject, taskState = ""): string {
+  const summary = record(result.summary);
+  const kpi = record(result.kpi);
+  const recovery = record(result.recovery);
+  const coverage = record(result.coverage);
+  const reviewPayload = record(result.review);
+  const languagePayload = record(result.language);
+  const source = { ...result, ...summary, ...kpi };
+  const files = resultEntries(result, ["files", "file_results", "file_records"]);
+  const reviews = resultEntries(result, ["review_items", "review_locations", "review_details", "issues"])
+    .concat(resultEntries(reviewPayload, ["items", "locations", "details", "issues"]));
+  const languages = resultEntries(result, ["language_preflights", "language_reports", "language_statistics"])
+    .concat(resultEntries(languagePayload, ["files", "preflights", "reports", "statistics"]));
+  const kpis = [
+    wordKpi(source, "已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]),
+    wordKpi(source, "成功", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]),
+    wordKpi(source, "失败", ["failed_count", "error_count", "failed_files", "failed_file_count"]),
+    wordKpi(source, "未开始", ["unstarted_count", "not_started_count", "unstarted_file_count"]),
+    wordKpi(source, "TM 命中", ["tm_hit_count", "tm_hits"]),
+    wordKpi(source, "送模型文本", ["model_translation_text_count", "model_text_count", "translated_text_count", "api_call_count"]),
+    wordKpi(source, "需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]),
+    wordKpi({ ...source, ...recovery }, "严格恢复", ["retry_recovered_count", "recovered_count"]),
+    wordKpi({ ...source, ...recovery }, "仲裁接受", ["semantic_accepted_count"]),
+  ].filter((item): item is [string, number] => item[1] !== null);
+  const duration = firstNumber(source, ["duration_seconds", "elapsed_seconds", "elapsed_sec"]);
+  const outputPath = firstText(source, ["output_dir", "output_directory"]);
+  const reportPath = firstText(source, ["report_path", "word_translation_report_path"]);
+  const reportWarning = firstText(source, ["report_warning", "report_error"]);
+  const terminalLabel = taskState === "stopped" || result.stopped
+    ? "用户中止（已完成产物已保留）"
+    : taskState === "error"
+      ? "任务失败（保留已知输出和文件结果）"
+      : firstNumber(source, ["failed_file_count", "failed_count", "error_count"])
+        ? "完成但部分文件失败"
+        : "全部完成";
+  const fileRows = files.map((entry) => {
+    const preprocess = record(entry.preprocess);
+    const conversionPayload = record(entry.conversion);
+    const numberingPayload = record(entry.numbering);
+    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "source_path", "path", "name"]);
+    const format = firstText(entry, ["format", "source_format", "original_format"]);
+    const status = firstText(entry, ["status", "state", "terminal_state"]) || (entry.success === true ? "成功" : entry.success === false ? "失败" : "结果未知");
+    const output = firstText(entry, ["output_path", "result_path", "output"]);
+    const conversion = firstText({ ...entry, ...preprocess, ...conversionPayload }, ["conversion_method", "conversion", "conversion_mode", "method"]);
+    const conversionFidelity = firstText(conversionPayload, ["fidelity"]);
+    const conversionFallback = strings(conversionPayload.fallback_messages).concat(strings(preprocess.conversion_fallback_messages)).join("；") || firstText({ ...entry, ...preprocess }, ["conversion_fallback_reason", "fallback_reason", "conversion_warning"]);
+    const numbering = firstText({ ...entry, ...preprocess, ...numberingPayload }, ["numbering_method", "numbering_preprocess_method", "preprocess_method", "method"]);
+    const numberingFallback = strings(numberingPayload.fallback_messages).concat(strings(preprocess.numbering_fallback_messages)).join("；") || firstText({ ...entry, ...preprocess }, ["numbering_fallback_reason", "numbering_warning"]);
+    const labelsFound = firstNumber({ ...entry, ...preprocess, ...numberingPayload }, ["numbering_found_count", "labels_seen", "numbering_labels_seen"]);
+    const labelsMaterialized = firstNumber({ ...entry, ...preprocess, ...numberingPayload }, ["numbering_materialized_count", "labels_prepended", "numbering_labels_prepended", "labels_materialized"]);
+    const error = firstText(entry, ["error", "error_message", "message"]);
+    const conversionDetail = [conversion, conversionFidelity && `保真：${conversionFidelity}`, conversionFallback && `回退：${conversionFallback}`].filter(Boolean).join("；") || "—";
+    const numberingDetail = [numbering, numberingFallback && `回退：${numberingFallback}`, labelsFound !== null ? `发现 ${labelsFound}` : "", labelsMaterialized !== null ? `物化 ${labelsMaterialized}` : ""].filter(Boolean).join("；") || "—";
+    return `<tr><td>${escapeHtml(sourcePath)}</td><td>${escapeHtml(format || "—")}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(conversionDetail)}</td><td>${escapeHtml(numberingDetail)}</td><td>${escapeHtml(output || "—")}</td><td>${escapeHtml(error || "—")}</td></tr>`;
+  }).join("");
+  const reviewRows = reviews.slice(0, 50).map((entry) => {
+    const excerpt = firstText(entry, ["excerpt", "snippet", "source_excerpt", "text", "source_text"]);
+    const boundedExcerpt = excerpt.length > 160 ? `${excerpt.slice(0, 157)}…` : excerpt;
+    return `<tr><td>${escapeHtml(firstText(entry, ["file", "source_relative_path", "relative_path", "path"]))}</td><td>${escapeHtml(firstText(entry, ["section", "chapter", "section_path", "heading"]))}</td><td>${escapeHtml(firstText(entry, ["location", "paragraph", "paragraph_index", "cell", "table_cell"]))}</td><td>${escapeHtml(boundedExcerpt || "—")}</td><td>${escapeHtml(firstText(entry, ["issue", "category", "mark", "type", "problem"]) || "—")}</td><td>${escapeHtml(firstText(entry, ["action", "applied_action", "review_status", "message"]) || "—")}</td></tr>`;
+  }).join("");
+  const languageRows = languages.slice(0, 50).map((entry) => {
+    const preflight = record(entry.preflight);
+    const detected = strings(entry.detected_languages).concat(strings(preflight.source_langs));
+    const actual = record(entry.actual_source_counts);
+    const actualLabel = Object.keys(actual).length ? Object.entries(actual).map(([language, count]) => `${language} ${count}`).join("；") : firstText(entry, ["actual_source_lang", "source_lang", "language"]);
+    return `<li>${escapeHtml(firstText(entry, ["file", "source_relative_path", "relative_path", "path", "name"]))}：预检 ${escapeHtml(detected.join(" / ") || firstText(entry, ["source_lang", "language"]) || "未返回")}；实际 ${escapeHtml(actualLabel || "未返回")}</li>`;
+  }).join("");
+  const recoveryRows = [
+    ["严格重试", firstNumber({ ...source, ...recovery }, ["retry_round"]), firstNumber({ ...source, ...recovery }, ["retry_total"])],
+    ["已恢复", firstNumber({ ...source, ...recovery }, ["retry_recovered_count", "recovered_count"]), firstNumber({ ...source, ...recovery }, ["retry_unresolved_count", "unresolved_count"])],
+    ["语义仲裁", firstNumber({ ...source, ...recovery }, ["semantic_accepted_count"]), firstNumber({ ...source, ...recovery }, ["semantic_uncertain_count", "semantic_unaccepted_count"])],
+  ].filter(([, first, second]) => first !== null || second !== null).map(([label, first, second]) => `<li>${escapeHtml(label)}：${first ?? 0} / ${second ?? 0}</li>`).join("");
+  const coverageRows = Object.entries(coverage).filter(([, value]) => typeof value === "number").map(([key, value]) => `<li>${escapeHtml(key)}：${escapeHtml(String(value))}</li>`).join("");
+  return `<details class="word-result-details" open><summary>Word 结果详情 · ${escapeHtml(terminalLabel)}</summary>${outputPath ? `<p class="result-output">输出目录：<code>${escapeHtml(outputPath)}</code>${duration !== null ? ` · 耗时 ${duration.toFixed(1)} 秒` : ""}</p>` : ""}${reportPath ? `<p class="result-output">质量报告：<code>${escapeHtml(reportPath)}</code></p>` : reportWarning ? `<p class="note">质量报告未能写入：${escapeHtml(reportWarning)}（不影响已生成的 Word 文件）</p>` : ""}${kpis.length ? `<div class="result-kpis">${kpis.map(([label, value]) => `<span><b>${value}</b>${label}</span>`).join("")}</div>` : ""}${files.length ? `<div class="result-table"><table><thead><tr><th>源相对路径</th><th>原格式</th><th>状态</th><th>.doc 转换</th><th>编号预处理</th><th>输出</th><th>错误原因</th></tr></thead><tbody>${fileRows}</tbody></table></div>` : `<p class="note">终态未返回文件明细；请查看结构化诊断记录定位文件级结果。</p>`}${languageRows ? `<details class="result-section"><summary>语言预检与实际语言统计</summary><ul>${languageRows}</ul></details>` : ""}${recoveryRows ? `<details class="result-section"><summary>恢复与语义仲裁汇总</summary><ul>${recoveryRows}</ul></details>` : ""}${coverageRows ? `<details class="result-section"><summary>补译覆盖与封面保护</summary><ul>${coverageRows}</ul></details>` : ""}${reviewRows ? `<details class="result-section"><summary>质量问题定位（${reviews.length}）</summary><div class="result-table"><table><thead><tr><th>文件</th><th>章节</th><th>位置</th><th>短摘录</th><th>问题</th><th>动作 / 复核</th></tr></thead><tbody>${reviewRows}</tbody></table></div></details>` : ""}</details>`;
+}
+
 function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[], disabled: boolean): string {
   if (!files.length) {
     return `<div class="card-pad muted">选择源路径后点击“扫描”，这里会显示可处理文件。</div>`;
@@ -794,11 +988,45 @@ function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[
       return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("excel", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${fileFormat(file) === "xls" ? "legacy" : ""}">.${escapeHtml(fileFormat(file) || "xlsx")}</span></td><td class="number">${excelSheetCount(file)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
     }).join("")}</tbody></table>`;
   }
-  return `<table><thead><tr><th class="selection-column">选择</th><th>文件名</th><th class="number">大小</th><th class="number">${surface === "pdf" ? "页数" : "段落"}</th></tr></thead><tbody>${files.map((file) => `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon(surface === "word" ? "word" : "pdf", "small")}${escapeHtml(file.name)}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${surface === "pdf" ? number(file.page_count) : number(file.paragraph_count)}</td></tr>`).join("")}</tbody></table>`;
+  if (surface === "word") {
+    return `<table class="word-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th class="number">大小</th><th>格式</th><th class="number">正文段落</th><th class="number">表格</th><th>预检/执行状态</th></tr></thead><tbody>${files.map((file) => {
+      const progress = record(state.wordFileProgress[file.path]);
+      const status = text(progress.status) || text(progress.stage) || text(progress.phase_name) || "待启动";
+      const statusTone = /失败|错误|error|failed|未恢复/i.test(status)
+        ? "error"
+        : /完成|成功|done|translated|已恢复/i.test(status)
+          ? "ok"
+          : /预检|处理|转换|翻译|写入|编号|恢复|仲裁|running/i.test(status)
+            ? "running"
+            : "";
+      const conversionPending = wordNeedsConversion(file);
+      const risks = [...new Set([
+        ...strings(file.conversion_risks),
+        ...strings(file.risk_flags),
+        ...strings(progress.risks),
+        text(record(file.risk).message),
+        conversionPending ? ".doc 需在执行时转换后统计" : "",
+      ].filter(Boolean))];
+      const format = wordFileFormat(file);
+      return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("word", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${conversionPending ? "legacy" : ""}">.${escapeHtml(format)}${conversionPending ? " · 需转换" : ""}</span></td><td class="number">${conversionPending ? "转换后统计" : number(file.paragraph_count)}</td><td class="number">${conversionPending ? "转换后统计" : number(file.table_count)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
+    }).join("")}</tbody></table>`;
+  }
+  return `<table><thead><tr><th class="selection-column">选择</th><th>文件名</th><th class="number">大小</th><th class="number">页数</th></tr></thead><tbody>${files.map((file) => `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("pdf", "small")}${escapeHtml(file.name)}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${number(file.page_count)}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderExcelSkippedItems(): string {
   const report = state.scanReports.excel;
+  const skipped = report.skipped;
+  if (!skipped.length) return "";
+  const rows = skipped.map((item) => {
+    const path = text(item.relative_path) || text(item.path) || text(item.name, "未命名文件");
+    return `<li><span>${escapeHtml(path)}</span><small>${escapeHtml(text(item.reason, "扫描时无法读取"))}</small></li>`;
+  }).join("");
+  return `<details class="scan-skipped"><summary>${icon("warn", "small")}跳过项目（${skipped.length}）</summary><ul>${rows}</ul></details>`;
+}
+
+function renderWordSkippedItems(): string {
+  const report = state.scanReports.word;
   const skipped = report.skipped;
   if (!skipped.length) return "";
   const rows = skipped.map((item) => {
@@ -819,6 +1047,21 @@ function renderExcelStartPreflight(source: string, target: string): string {
     <li class="${manualSameLanguage ? "error" : ""}">${manualSameLanguage ? "源语言与目标语言相同，不能启动翻译。" : source === "auto" ? "自动模式会对每个有候选文本的文件单独抽样预检一次；仅发送去重的代表性文本，不上传完整工作簿。" : "手动源语言不发送预检，并以当前选择作为 TM 查询和正常自动入库的权威语言。"}</li>
     <li>${escapeHtml(outputState)}</li>
     ${xlsCount ? `<li class="warn">已选 ${xlsCount} 个 .xls：启动时会优先使用 Excel 自动化高保真转换；若不可用，必须由你明确确认兼容转换，绝不会静默降级。</li>` : ""}
+    <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
+  </ul></details>`;
+}
+
+function renderWordStartPreflight(source: string, target: string): string {
+  const docCount = selectedWordDocCount();
+  const manualSameLanguage = source !== "auto" && source === target;
+  const output = wordOutputSettings();
+  const outputState = Boolean(output.use_custom_output_dir)
+    ? state.wordOutputInspection.message
+    : "将在每次任务的源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
+  return `<details class="word-preflight" open><summary>启动前检查</summary><ul>
+    <li class="${manualSameLanguage ? "error" : ""}">${manualSameLanguage ? "源语言与目标语言相同，不能启动翻译。" : source === "auto" ? "自动模式会在每个有候选文本的 Word 文件开始前发送一次代表性文本预检；不上传完整文档，预检语言会作为 TM 查询与自动入库边界。" : "手动源语言不发送预检，并以当前选择作为 TM 查询和正常自动入库的权威语言。"}</li>
+    <li>${escapeHtml(outputState)}</li>
+    ${docCount ? `<li class="warn">已选 ${docCount} 个 .doc：最终产物始终为 .docx。开始前必须明确选择“优先高保真”或“允许兼容转换”；选择高保真后，单文件失败不会静默降级。</li>` : ""}
     <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
   </ul></details>`;
 }
@@ -881,6 +1124,10 @@ function renderModal(): string {
   if (state.modal === "xls-compatibility") {
     const count = selectedExcelXlsCount();
     return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>.xls 转换方式确认</h2><p class="note">已选择 ${count} 个旧版 .xls 文件。最终结果统一输出为 .xlsx，源文件不会被改写。</p><div class="risk-callout"><strong>${icon("warn", "small")}高保真与兼容模式</strong><p>优先高保真会通过本机 Microsoft Excel 自动化转换；若 Excel 未安装、自动化被拒绝或单文件转换失败，该文件会明确失败，其他文件仍可继续，绝不静默改用兼容模式。</p><p>允许兼容转换会在高保真不可用时继续处理，但复杂样式、合并单元格、图片、图表和宏可能无法完整保留；这项选择只冻结到本次任务。</p></div><details class="permission-help"><summary>Excel 自动化权限说明</summary><p>macOS 12 Monterey：打开“系统偏好设置 → 安全性与隐私 → 隐私 → 自动化”，允许 Translator 控制 Microsoft Excel。</p><p>macOS 13 及以上：打开“系统设置 → 隐私与安全性 → 自动化”，允许 Translator 控制 Microsoft Excel。</p><p>若 Excel 未安装或权限已拒绝，可取消后完成授权，或明确选择兼容转换。</p></details><div class="modal-actions modal-actions-spread"><button class="button" data-action="close-modal">取消</button><span><button class="button" data-action="excel-start-high-fidelity">优先高保真</button><button class="button primary" data-action="excel-start-compatibility">允许兼容转换</button></span></div></section></div>`;
+  }
+  if (state.modal === "doc-compatibility") {
+    const count = selectedWordDocCount();
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>.doc 转换方式确认</h2><p class="note">已选择 ${count} 个旧版 .doc 文件。它们会先在临时位置转换为 .docx；最终产物始终为 .docx，源文件不会被改写。</p><div class="risk-callout"><strong>${icon("warn", "small")}高保真与兼容模式</strong><p>优先高保真会通过本机 Microsoft Word 自动化转换。若 Word 未安装、自动化被拒绝或单文件转换失败，该文件会明确失败，其他文件仍可继续，绝不静默改用兼容模式。</p><p>允许兼容转换会在高保真不可用时尝试 LibreOffice 或 macOS textutil；复杂版式、域、图文内容和宏可能无法完整保留。这项选择只冻结到本次任务。</p></div><details class="permission-help"><summary>Word 自动化权限说明</summary><p>macOS 12 Monterey：打开“系统偏好设置 → 安全性与隐私 → 隐私 → 自动化”，允许 Translator 控制 Microsoft Word。</p><p>macOS 13 及以上：打开“系统设置 → 隐私与安全性 → 自动化”，允许 Translator 控制 Microsoft Word。</p><p>若 Word 未安装或权限已拒绝，可取消后完成授权，或明确选择兼容转换。</p></details><div class="modal-actions modal-actions-spread"><button class="button" data-action="close-modal">取消</button><span><button class="button" data-action="word-start-high-fidelity">优先高保真</button><button class="button primary" data-action="word-start-compatibility">允许兼容转换</button></span></div></section></div>`;
   }
   if (state.modal === "tm-clean") {
     const rows = state.tmSuggestions.map((suggestion, index) => `<div class="suggestion-row"><input id="tmSuggestion-${index}" type="checkbox" checked/><div><b>${escapeHtml(text(suggestion.source_text))}</b><p>${escapeHtml(text(suggestion.old_target))} → <input id="tmSuggestedTarget-${index}" value="${escapeHtml(text(suggestion.new_target))}"/></p></div></div>`).join("");
@@ -1027,6 +1274,10 @@ async function refreshSettings(): Promise<void> {
   if (excelOutput.use_custom_output_dir) {
     void inspectExcelOutputDirectory(text(excelOutput.custom_output_dir));
   }
+  const wordOutput = wordOutputSettings();
+  if (wordOutput.use_custom_output_dir) {
+    void inspectWordOutputDirectory(text(wordOutput.custom_output_dir));
+  }
   await refreshModelRoles();
 }
 
@@ -1124,6 +1375,7 @@ async function persistSettings(patch: JsonObject): Promise<void> {
 }
 
 let excelOutputInspectionSequence = 0;
+let wordOutputInspectionSequence = 0;
 
 async function inspectExcelOutputDirectory(path: string): Promise<void> {
   const sequence = ++excelOutputInspectionSequence;
@@ -1155,6 +1407,36 @@ async function chooseExcelOutputDirectory(): Promise<void> {
   render();
 }
 
+async function inspectWordOutputDirectory(path: string): Promise<void> {
+  const sequence = ++wordOutputInspectionSequence;
+  try {
+    const inspection = await invoke<OutputDirectoryInspection>("inspect_output_directory", { path });
+    if (sequence !== wordOutputInspectionSequence) return;
+    state.wordOutputInspection = inspection;
+  } catch (error) {
+    if (sequence !== wordOutputInspectionSequence) return;
+    state.wordOutputInspection = {
+      state: "blocked",
+      path,
+      message: `无法检查输出目录：${errorMessage(error)}`,
+    };
+  }
+  const status = document.querySelector<HTMLElement>("#word-output-state");
+  if (status) {
+    status.className = `output-path-state ${state.wordOutputInspection.state}`;
+    status.textContent = state.wordOutputInspection.message;
+  }
+}
+
+async function chooseWordOutputDirectory(): Promise<void> {
+  const selected = await open({ title: "选择 Word 输出根目录", directory: true, multiple: false });
+  if (typeof selected !== "string") return;
+  await persistSettings(nestedPatch(wordOutputSettingPath("custom_output_dir"), selected));
+  await persistSettings(nestedPatch(wordOutputSettingPath("use_custom_output_dir"), true));
+  await inspectWordOutputDirectory(selected);
+  render();
+}
+
 async function chooseSource(surface: Surface, directory: boolean): Promise<void> {
   const selected = await open({
     title: directory ? `选择${surfaceLabel(surface)}文件夹` : `选择${surfaceLabel(surface)}文件`,
@@ -1173,25 +1455,37 @@ async function scan(surface: Surface): Promise<void> {
   if (!path) {
     throw new Error("请先选择源文件或文件夹。");
   }
-  const payload = await client.request<{ items: FileItem[]; skipped?: ScanSkippedItem[]; summary?: JsonObject }>("/api/sources/scan", {
+  type SourceScanPayload = {
+    items?: FileItem[];
+    skipped?: ScanSkippedItem[];
+    summary?: JsonObject;
+    result?: { items?: FileItem[]; skipped?: ScanSkippedItem[]; summary?: JsonObject };
+  };
+  const payload = await client.request<SourceScanPayload>("/api/sources/scan", {
     method: "POST",
     body: JSON.stringify({ surface, path, include_images: false }),
   });
-  state.files[surface] = payload.items;
+  const grouped = payload.result ?? {};
+  const items = Array.isArray(payload.items) ? payload.items : Array.isArray(grouped.items) ? grouped.items : [];
+  const skipped = Array.isArray(payload.skipped) ? payload.skipped : Array.isArray(grouped.skipped) ? grouped.skipped : [];
+  const summary = record(payload.summary ?? grouped.summary);
+  state.files[surface] = items;
   state.scanReports[surface] = {
-    skipped: Array.isArray(payload.skipped) ? payload.skipped.map((item) => record(item) as ScanSkippedItem) : [],
-    summary: record(payload.summary),
+    skipped: skipped.map((item) => record(item) as ScanSkippedItem),
+    summary,
   };
-  state.selectedPaths[surface] = payload.items.map((item) => item.path);
+  state.selectedPaths[surface] = items.map((item) => item.path);
   await persistSettings({ [`last_${surface}_source_folder`]: path });
   render();
-  showToast(`已扫描到 ${payload.items.length} 个${surfaceLabel(surface)}文件。`);
+  showToast(`已扫描到 ${items.length} 个${surfaceLabel(surface)}文件。`);
 }
 
 async function startTask(
   surface: Surface,
   allowXlsFallback = false,
   xlsConfirmed = false,
+  allowDocFallback = false,
+  docConfirmed = false,
 ): Promise<void> {
   if (surface === "excel" || surface === "word") {
     // A task snapshot must receive the prompt the user can currently see, not
@@ -1218,8 +1512,22 @@ async function startTask(
       return;
     }
   }
+  if (surface === "word") {
+    const source = state.sourceSelections.word;
+    const target = state.targetSelections.word;
+    if (source !== "auto" && source === target) {
+      throw new Error("源语言与目标语言相同，不能启动翻译。");
+    }
+    if (selectedWordDocCount() > 0 && !docConfirmed) {
+      state.modal = "doc-compatibility";
+      render();
+      return;
+    }
+  }
   const untranslated = Boolean(document.querySelector<HTMLInputElement>(`#untranslated-${surface}`)?.checked);
-  const protectSchemeCover = Boolean(document.querySelector<HTMLInputElement>("#protectSchemeCover")?.checked);
+  const protectSchemeCover = surface === "word" && untranslated
+    ? Boolean(document.querySelector<HTMLInputElement>("#protectSchemeCover")?.checked)
+    : false;
   const includeImages = Boolean(record(state.settings?.pdf).image_translation_enabled);
   const payload = await client.request<TaskStatus>("/api/tasks", {
     method: "POST",
@@ -1230,12 +1538,15 @@ async function startTask(
       untranslated_only: untranslated,
       protect_scheme_cover: protectSchemeCover,
       allow_xls_fallback: surface === "excel" && allowXlsFallback,
+      allow_doc_fallback: surface === "word" && allowDocFallback,
       include_images: includeImages,
       source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
       target_lang: state.targetSelections[surface],
     }),
   });
   state.excelFileProgress = surface === "excel" ? {} : state.excelFileProgress;
+  state.wordFileProgress = surface === "word" ? {} : state.wordFileProgress;
+  state.wordRecovery = surface === "word" ? {} : state.wordRecovery;
   state.running = { task: payload, logs: [], phaseName: "正在准备任务", stepDone: 0, stepTotal: 0 };
   render();
   try {
@@ -1258,11 +1569,13 @@ function handleTaskEvent(event: SseEvent): void {
   }
   if (event.type === "status") {
     state.running.phaseName = text(data.phase_desc, state.running.phaseName);
-    if (state.running.task.surface === "excel") {
-      const current = state.files.excel.find((file) => state.running?.phaseName.includes(file.name));
+    if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
+      const surface = state.running.task.surface;
+      const current = state.files[surface].find((file) => state.running?.phaseName.includes(file.name));
       if (current) {
-        state.excelFileProgress[current.path] = {
-          ...state.excelFileProgress[current.path],
+        const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
+        progress[current.path] = {
+          ...progress[current.path],
           stage: state.running.phaseName,
         };
       }
@@ -1271,24 +1584,33 @@ function handleTaskEvent(event: SseEvent): void {
   if (event.type === "stopping") {
     state.running.task = { ...state.running.task, state: "stopping" };
   }
-  if (state.running.task.surface === "excel") {
+  if (event.type === "word_recovery" && state.running.task.surface === "word") {
+    state.wordRecovery = { ...data };
+  }
+  if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
+    const surface = state.running.task.surface;
     const filePath = firstText(data, ["file_path", "source_path", "path", "relative_path"]);
     if (filePath && ["file", "file_status", "preflight", "progress", "result"].includes(event.type)) {
-      const knownPath = state.files.excel.find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
-      state.excelFileProgress[knownPath] = { ...state.excelFileProgress[knownPath], ...data };
+      const knownPath = state.files[surface].find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
+      const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
+      progress[knownPath] = { ...progress[knownPath], ...data };
     }
   }
   if (["done", "error", "stopped"].includes(event.type)) {
     state.running.task = { ...state.running.task, state: event.type as TaskStatus["state"], terminal: true, result: data };
-    if (state.running.task.surface === "excel") {
+    if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
+      const surface = state.running.task.surface;
+      const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
       for (const entry of resultEntries(data, ["files", "file_results", "file_records"])) {
         const filePath = firstText(entry, ["source_path", "path", "source_relative_path", "relative_path"]);
-        const knownPath = state.files.excel.find((file) => file.path === filePath || displayPath(file) === filePath)?.path;
-        if (knownPath) state.excelFileProgress[knownPath] = { ...state.excelFileProgress[knownPath], ...entry };
+        const knownPath = state.files[surface].find((file) => file.path === filePath || displayPath(file) === filePath)?.path;
+        if (knownPath) progress[knownPath] = { ...progress[knownPath], ...entry };
       }
     }
     if (event.type === "done") {
-      showToast("翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
+      showToast(state.running.task.surface === "word"
+        ? "Word 翻译任务已完成。文件级结果、质量报告和输出目录已显示。"
+        : "翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
     } else {
       showToast(text(data.message, "任务未完成。"), true);
     }
@@ -1390,6 +1712,13 @@ async function restoreDomainPrompt(surface: TranslationSurface): Promise<void> {
 async function saveReviewColor(mark: string, color: string): Promise<void> {
   const colors = record(excelReviewSettings().mark_colors);
   await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
+  render();
+}
+
+async function saveWordReviewColor(mark: string, color: string): Promise<void> {
+  const wordReview = record(state.settings?.word_review);
+  const colors = record(wordReview.mark_colors);
+  await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
   render();
 }
 
@@ -2087,6 +2416,30 @@ app.addEventListener("change", (event) => {
     })().catch((error) => showToast(errorMessage(error), true));
     return;
   }
+  if ((target.id === "wordBatchChars" || target.id === "wordSplitThreshold") && target instanceof HTMLInputElement) {
+    const wordBatch = record(state.settings?.word_batch);
+    const maxChars = target.id === "wordBatchChars"
+      ? Math.max(1, Number(target.value) || 1)
+      : Math.max(1, number(wordBatch.max_chars_per_batch, 3000));
+    const requestedSplit = target.id === "wordSplitThreshold"
+      ? Math.max(1, Number(target.value) || 1)
+      : Math.max(1, number(wordBatch.split_paragraph_chars, maxChars));
+    const split = Math.max(maxChars, requestedSplit);
+    if (target.id === "wordSplitThreshold") target.value = String(split);
+    void persistSettings({
+      word_batch: {
+        max_chars_per_batch: maxChars,
+        split_paragraph_chars: split,
+      },
+    }).then(render).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
+  if (target.id === "wordStrictRetry" && target instanceof HTMLInputElement) {
+    const attempts = Math.min(8, Math.max(1, Number(target.value) || 1));
+    target.value = String(attempts);
+    void saveSettingPath("word_batch.strict_retry_attempts", attempts).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
   if (target.dataset.settingPath) {
     const kind = target.dataset.valueKind;
     let value: string | number | boolean | null;
@@ -2103,11 +2456,20 @@ app.addEventListener("change", (event) => {
             : target.value;
           await inspectExcelOutputDirectory(path);
         }
+        if (target.dataset.wordOutputInspect !== undefined || target.id === "output-word") {
+          const path = target.id === "output-word"
+            ? text(wordOutputSettings().custom_output_dir)
+            : target.value;
+          await inspectWordOutputDirectory(path);
+        }
       })
       .catch((error) => showToast(errorMessage(error), true));
   }
   if (target.dataset.reviewColor) {
     void saveReviewColor(target.dataset.reviewColor, target.value).catch((error) => showToast(errorMessage(error), true));
+  }
+  if (target.dataset.wordReviewColor) {
+    void saveWordReviewColor(target.dataset.wordReviewColor, target.value).catch((error) => showToast(errorMessage(error), true));
   }
   if (target.dataset.setting === "domain_preset") {
     void persistSettings({ domain_preset: target.value }).then(render).catch((error) => showToast(errorMessage(error), true));
@@ -2118,6 +2480,7 @@ app.addEventListener("change", (event) => {
 });
 
 let excelOutputInspectionTimer: number | undefined;
+let wordOutputInspectionTimer: number | undefined;
 
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement;
@@ -2125,6 +2488,12 @@ app.addEventListener("input", (event) => {
     if (excelOutputInspectionTimer !== undefined) window.clearTimeout(excelOutputInspectionTimer);
     excelOutputInspectionTimer = window.setTimeout(() => {
       void inspectExcelOutputDirectory(target.value);
+    }, 180);
+  }
+  if (target.dataset.wordOutputInspect !== undefined) {
+    if (wordOutputInspectionTimer !== undefined) window.clearTimeout(wordOutputInspectionTimer);
+    wordOutputInspectionTimer = window.setTimeout(() => {
+      void inspectWordOutputDirectory(target.value);
     }, 180);
   }
   if (!target.dataset.languageSearch) return;
@@ -2146,10 +2515,13 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "choose-source-file" && surface) { await chooseSource(surface, false); state.sourcePickerSurface = null; state.modal = null; render(); return; }
   if (action === "choose-source-folder" && surface) { await chooseSource(surface, true); state.sourcePickerSurface = null; state.modal = null; render(); return; }
   if (action === "choose-excel-output") return chooseExcelOutputDirectory();
+  if (action === "choose-word-output") return chooseWordOutputDirectory();
   if (action === "scan" && surface) return scan(surface);
   if (action === "start-task" && surface) return startTask(surface);
   if (action === "excel-start-high-fidelity") { state.modal = null; return startTask("excel", false, true); }
   if (action === "excel-start-compatibility") { state.modal = null; return startTask("excel", true, true); }
+  if (action === "word-start-high-fidelity") { state.modal = null; return startTask("word", false, false, false, true); }
+  if (action === "word-start-compatibility") { state.modal = null; return startTask("word", false, false, true, true); }
   if (action === "stop-task") { state.modal = "stop-task"; render(); return; }
   if (action === "stop-task-confirm") { state.modal = null; return stopTask(); }
   if (action === "reset-task") { state.running = null; render(); return; }

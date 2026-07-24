@@ -69,7 +69,7 @@ from core.model_throughput import (
 from core.pdf_image_translation import scan_pdf_path
 from core.pdf_review import check_pdf_review_connectivity
 from core.tm_cleaner import CleanSuggestion, apply_suggestions, run_cleaning
-from core.word_document import scan_word_path
+from core.word_document import scan_word_sources
 from core.engine_dispatcher import build_engine
 from config import DOMAIN_PRESETS
 from settings import (
@@ -103,6 +103,7 @@ class TaskStartRequest(BaseModel):
     untranslated_only: bool = False
     protect_scheme_cover: bool = False
     allow_xls_fallback: bool = False
+    allow_doc_fallback: bool = False
     include_images: bool = False
     source_lang: str | None = None
     target_lang: str | None = None
@@ -540,7 +541,15 @@ def create_app(
             payload["result"] = dict(payload)
             return payload
         elif request.surface == "word":
-            items = scan_word_path(root)
+            result = scan_word_sources(root)
+            payload = {
+                "items": [_json_safe(item) for item in result.items],
+                "skipped": [_json_safe(item) for item in result.skipped],
+                "summary": result.summary,
+                "risk": result.risk,
+            }
+            payload["result"] = dict(payload)
+            return payload
         else:
             items = scan_pdf_path(root, include_images=request.include_images)
         return {"items": [_json_safe(item) for item in items]}
@@ -555,6 +564,7 @@ def create_app(
                 untranslated_only=request.untranslated_only,
                 protect_scheme_cover=request.protect_scheme_cover,
                 allow_xls_fallback=request.allow_xls_fallback,
+                allow_doc_fallback=request.allow_doc_fallback,
                 include_images=request.include_images,
                 source_lang=request.source_lang,
                 target_lang=request.target_lang,

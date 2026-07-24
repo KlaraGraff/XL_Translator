@@ -30,6 +30,10 @@ class WordConversionResult:
     path: Path
     method: str
     fallback_messages: list[str] = field(default_factory=list)
+    # A legacy .doc converted with Microsoft Word is the only high-fidelity
+    # path.  LibreOffice and textutil are useful, but are compatibility paths
+    # which must never be selected without an explicit task-level approval.
+    fidelity: str = "high_fidelity"
 
 
 def is_legacy_word_doc(path: str | Path) -> bool:
@@ -41,21 +45,33 @@ def convert_doc_to_docx(
     doc_path: str | Path,
     *,
     prefer_native_word: bool = True,
+    allow_compatibility_fallback: bool = False,
 ) -> WordConversionResult:
-    """Convert a .doc file to a temporary .docx, with quiet fallback strategies."""
+    """Convert a legacy ``.doc`` to a temporary ``.docx``.
+
+    Microsoft Word is the high-fidelity path.  LibreOffice and macOS
+    ``textutil`` can alter layout, fields, drawings or macros, so they are
+    considered only when the caller has already recorded the user's explicit
+    compatibility-mode confirmation.  This boundary is intentionally here,
+    rather than merely in the UI, so a future API/CLI caller cannot silently
+    degrade a document.
+    """
     source_path = Path(doc_path)
     if not is_legacy_word_doc(source_path):
         raise WordConversionError(f"不是旧版 .doc 文件：{source_path}")
 
-    attempts: list[tuple[str, object]] = []
+    high_fidelity_attempts: list[tuple[str, object]] = []
     if prefer_native_word:
-        attempts.append(("本地 Word", convert_with_native_word))
-    attempts.append(("LibreOffice", convert_with_libreoffice))
-    if platform.system() == "Darwin":
-        attempts.append(("macOS textutil", convert_with_textutil))
+        high_fidelity_attempts.append(("本地 Word", convert_with_native_word))
+
+    compatibility_attempts: list[tuple[str, object]] = []
+    if allow_compatibility_fallback:
+        compatibility_attempts.append(("LibreOffice", convert_with_libreoffice))
+        if platform.system() == "Darwin":
+            compatibility_attempts.append(("macOS textutil", convert_with_textutil))
 
     errors: list[str] = []
-    for method_name, converter in attempts:
+    for method_name, converter in high_fidelity_attempts:
         try:
             output_path = converter(source_path)
             _validate_docx(output_path)
@@ -64,10 +80,35 @@ def convert_doc_to_docx(
                 path=output_path,
                 method=method_name,
                 fallback_messages=list(errors),
+                fidelity="high_fidelity",
             )
-        except Exception as exc:  # noqa: BLE001 - each strategy falls through.
+        except Exception as exc:  # noqa: BLE001 - later path requires consent.
             errors.append(f"{method_name} 不可用：{exc}")
             logger.info(f".doc 转换策略不可用 {source_path.name} ({method_name}): {exc}")
+
+    if not allow_compatibility_fallback:
+        detail = "；".join(errors) if errors else "未启用本机 Microsoft Word 高保真自动化"
+        raise WordConversionError(
+            "无法使用本机 Microsoft Word 高保真转换 .doc。"
+            "未取得兼容转换确认，因此不会自动改用 LibreOffice 或 macOS textutil。"
+            "请安装/授权 Microsoft Word 后重试，或在确认可能损失版式、域、图文和宏后明确允许兼容转换。"
+            f" 详情：{detail}"
+        )
+
+    for method_name, converter in compatibility_attempts:
+        try:
+            output_path = converter(source_path)
+            _validate_docx(output_path)
+            logger.info(f".doc 兼容转换成功：{source_path.name} -> {output_path.name} ({method_name})")
+            return WordConversionResult(
+                path=output_path,
+                method=method_name,
+                fallback_messages=list(errors),
+                fidelity="compatibility",
+            )
+        except Exception as exc:  # noqa: BLE001 - each opted-in strategy falls through.
+            errors.append(f"{method_name} 不可用：{exc}")
+            logger.info(f".doc 兼容转换策略不可用 {source_path.name} ({method_name}): {exc}")
 
     detail = "；".join(errors) if errors else "没有可用的转换策略"
     raise WordConversionError(
@@ -76,6 +117,45 @@ def convert_doc_to_docx(
         "或手动另存为 .docx 后再翻译。"
         f" 详情：{detail}"
     )
+
+
+def macos_word_automation_privacy_path() -> str:
+    """Return the correct user-visible Apple Events permission route."""
+    if platform.system() != "Darwin":
+        return "系统的自动化隐私设置"
+    try:
+        major = int(str(platform.mac_ver()[0]).split(".", 1)[0])
+    except (TypeError, ValueError):
+        major = 13
+    if major <= 12:
+        return "系统偏好设置 > 安全性与隐私 > 隐私 > 自动化"
+    return "系统设置 > 隐私与安全性 > 自动化"
+
+
+def get_local_word_automation_availability() -> tuple[bool, str]:
+    """Check for a local high-fidelity Word automation path without prompting.
+
+    This is deliberately a conservative availability probe.  TCC permission is
+    still checked by the actual conversion, where its failure can be recorded
+    against the individual file instead of being mistaken for a successful
+    preflight.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        osascript_path = shutil.which("osascript") or "/usr/bin/osascript"
+        if not Path(osascript_path).exists():
+            return False, "未找到 macOS osascript。"
+        if not Path("/Applications/Microsoft Word.app").exists():
+            return False, "未找到 Microsoft Word.app。"
+        return True, "已检测到 Microsoft Word；实际转换仍可能要求自动化权限。"
+    if system == "Windows":
+        try:
+            import pythoncom  # noqa: F401
+            import win32com.client  # noqa: F401
+        except ImportError:
+            return False, "未安装 pywin32，无法连接本地 Microsoft Word。"
+        return True, "已检测到 Windows Word 自动化依赖；实际转换仍会验证 Word 安装状态。"
+    return False, f"当前平台 {system} 不支持本机 Microsoft Word 自动化。"
 
 
 def convert_with_native_word(doc_path: str | Path) -> Path:

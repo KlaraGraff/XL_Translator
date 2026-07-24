@@ -152,8 +152,10 @@ class DoneMsg:
     api_call_count: int
     issues: list[dict] = field(default_factory=list)
     report_path: str = ""
+    report_warning: str = ""
     files: list[dict] = field(default_factory=list)
     kpi: dict[str, object] = field(default_factory=dict)
+    recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
@@ -164,9 +166,11 @@ class ErrorMsg:
     message: str
     output_dir: str = ""
     report_path: str = ""
+    report_warning: str = ""
     manifest_path: str = ""
     files: list[dict] = field(default_factory=list)
     kpi: dict[str, object] = field(default_factory=dict)
+    recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
@@ -177,9 +181,11 @@ class StoppedMsg:
     message: str
     output_dir: str = ""
     report_path: str = ""
+    report_warning: str = ""
     manifest_path: str = ""
     files: list[dict] = field(default_factory=list)
     kpi: dict[str, object] = field(default_factory=dict)
+    recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
