@@ -34,7 +34,7 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "build-distributions.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("macos-14", workflow)
-        self.assertIn("macos-13", workflow)
+        self.assertIn("macos-15-intel", workflow)
         self.assertIn("architecture: arm64", workflow)
         self.assertIn("architecture: x86_64", workflow)
         self.assertNotIn("windows-latest", workflow.lower())

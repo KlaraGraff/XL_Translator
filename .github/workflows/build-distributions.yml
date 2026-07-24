@@ -62,7 +62,7 @@ jobs:
           - architecture: arm64
             runner: macos-14
           - architecture: x86_64
-            runner: macos-13
+            runner: macos-15-intel
     env:
       MACOS_ARCH: ${{ matrix.architecture }}
       MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
