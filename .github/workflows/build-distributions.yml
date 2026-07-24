@@ -1,4 +1,4 @@
-name: Build Tauri macOS distributions
+name: Build Translator macOS distributions
 
 on:
   workflow_dispatch:
@@ -10,15 +10,55 @@ permissions:
   contents: write
 
 jobs:
+  validate-release:
+    name: Validate release eligibility
+    runs-on: ubuntu-latest
+    outputs:
+      formal_release: ${{ steps.classify.outputs.formal_release }}
+      artifact_channel: ${{ steps.classify.outputs.artifact_channel }}
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - id: classify
+        name: Accept only stable version tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            if [[ "$GITHUB_REF_TYPE" != "tag" || ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Only stable vX.Y.Z tags can create a formal release; got $GITHUB_REF_NAME." >&2
+              exit 1
+            fi
+            echo "formal_release=1" >> "$GITHUB_OUTPUT"
+            echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
+          else
+            # A manual run is intentionally an unsigned test artifact.  It
+            # never reaches the release job, even when dispatched from a tag.
+            echo "formal_release=0" >> "$GITHUB_OUTPUT"
+            echo "artifact_channel=unsigned-test" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify version alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            python scripts/verify_release_metadata.py --tag "$GITHUB_REF_NAME"
+          else
+            python scripts/verify_release_metadata.py
+          fi
+
   macos:
-    name: macOS ${{ matrix.architecture }} DMG
+    name: macOS ${{ matrix.architecture }} native DMG
+    needs: validate-release
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macos-14 is an Apple Silicon runner; macos-13 is Intel.
+          # These runners are native, not cross-compiled or Rosetta builds.
           - architecture: arm64
             runner: macos-14
           - architecture: x86_64
@@ -27,8 +67,15 @@ jobs:
       MACOS_ARCH: ${{ matrix.architecture }}
       MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
       MACOSX_DEPLOYMENT_TARGET: "12.0"
+      XL_TRANSLATOR_FORMAL_RELEASE: ${{ needs.validate-release.outputs.formal_release }}
     steps:
       - uses: actions/checkout@v6.0.3
+      - name: Confirm the runner is the requested native architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = "Darwin"
+          test "$(uname -m)" = "$MACOS_ARCH"
       - uses: actions/setup-python@v6.2.0
         with:
           python-version: "3.11"
@@ -43,19 +90,50 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - name: Configure Developer ID and notarization for an official tag
+        if: needs.validate-release.outputs.formal_release == '1'
+        env:
+          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_DEVELOPER_ID_CERTIFICATE_BASE64:?Missing Developer ID certificate secret}"
+          : "${APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD:?Missing Developer ID certificate password secret}"
+          : "${APPLE_KEYCHAIN_PASSWORD:?Missing temporary keychain password secret}"
+          : "${APPLE_NOTARY_KEY_ID:?Missing Apple notarization key ID secret}"
+          : "${APPLE_NOTARY_ISSUER_ID:?Missing Apple notarization issuer ID secret}"
+          : "${APPLE_NOTARY_PRIVATE_KEY_BASE64:?Missing Apple notarization private key secret}"
+
+          keychain="$RUNNER_TEMP/translator-signing.keychain-db"
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          api_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          printf '%s' "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 -D > "$certificate"
+          printf '%s' "$APPLE_NOTARY_PRIVATE_KEY_BASE64" | base64 -D > "$api_key"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F '"' '/Developer ID Application/ {print $2; exit}')"
+          test -n "$identity"
+          profile="translator-notary-${GITHUB_RUN_ID}-${MACOS_ARCH}"
+          xcrun notarytool store-credentials "$profile" --key "$api_key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID"
+          {
+            echo "XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY=$identity"
+            echo "XL_TRANSLATOR_MACOS_NOTARY_PROFILE=$profile"
+          } >> "$GITHUB_ENV"
       - name: Install macOS release dependencies
         run: |
           python --version
-          bash ./scripts/install_macos_dependencies.sh
+          PYTHON_BIN="$(command -v python)" bash ./scripts/install_macos_dependencies.sh
           npm ci --prefix ui
-      - name: Verify tagged version
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          expected="v$(python -c 'import app_meta; print(app_meta.APP_VERSION)')"
-          if [[ "$GITHUB_REF_NAME" != "$expected" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match $expected" >&2
-            exit 1
-          fi
       - name: Run quality and macOS platform checks
         env:
           TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
@@ -66,40 +144,53 @@ jobs:
           npm run build --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml
-      - name: Build and verify macOS DMG
+      - name: Build, scan, sign, notarize, and verify the macOS DMG
         run: |
           PYTHON_BIN="$(command -v python)" bash ./scripts/build_macos_package.sh
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: Translator_macOS_${{ matrix.architecture }}
+          name: Translator_macOS_${{ matrix.architecture }}_${{ needs.validate-release.outputs.artifact_channel }}
           path: |
             ${{ env.MACOS_DMG }}
             ${{ env.MACOS_DMG_SHA256 }}
+            ${{ env.MACOS_RELEASE_REPORT }}
 
   release:
-    name: Publish macOS release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: macos
+    name: Publish signed and notarized macOS release
+    if: needs.validate-release.outputs.formal_release == '1'
+    needs:
+      - validate-release
+      - macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8.0.0
         with:
-          pattern: Translator_macOS_*
+          pattern: Translator_macOS_*_formal-release
           path: release-assets
           merge-multiple: true
-      - name: Verify both macOS assets are present
+      - name: Verify exactly two complete native DMGs
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          arm_dmg=(release-assets/Translator_macOS_arm64_*.dmg)
-          arm_sha=(release-assets/Translator_macOS_arm64_*.dmg.sha256)
-          x64_dmg=(release-assets/Translator_macOS_x64_*.dmg)
-          x64_sha=(release-assets/Translator_macOS_x64_*.dmg.sha256)
-          test "${#arm_dmg[@]}" -eq 1
-          test "${#arm_sha[@]}" -eq 1
-          test "${#x64_dmg[@]}" -eq 1
-          test "${#x64_sha[@]}" -eq 1
+          version="${GITHUB_REF_NAME#v}"
+          expected=(
+            "Translator_macOS_arm64_${version}.dmg"
+            "Translator_macOS_arm64_${version}.dmg.sha256"
+            "Translator_macOS_x64_${version}.dmg"
+            "Translator_macOS_x64_${version}.dmg.sha256"
+          )
+          for asset in "${expected[@]}"; do
+            test -f "release-assets/$asset"
+          done
+          test "$(find release-assets -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" -eq 2
+          test "$(find release-assets -maxdepth 1 -name '*.dmg.sha256' -type f | wc -l | tr -d ' ')" -eq 2
+          (
+            cd release-assets
+            shasum -a 256 -c "Translator_macOS_arm64_${version}.dmg.sha256"
+            shasum -a 256 -c "Translator_macOS_x64_${version}.dmg.sha256"
+          )
       - uses: softprops/action-gh-release@v3.0.0
         with:
-          files: release-assets/*
+          files: |
+            release-assets/*.dmg
+            release-assets/*.dmg.sha256

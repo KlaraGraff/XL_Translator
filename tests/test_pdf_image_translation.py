@@ -752,7 +752,8 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             self.assertFalse(any(name.endswith((".pdf", ".png")) for name in names))
             self.assertNotIn(b"secret-token", payload)
-            self.assertTrue(any(name.endswith("task/pdf_summary.json") for name in names))
+            self.assertFalse(any("source" in name or "task/" in name for name in names))
+            self.assertTrue(any(name.endswith("manifest.json") for name in names))
 
     def test_model_unavailable_keeps_current_file_artifacts_in_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

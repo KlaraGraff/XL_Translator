@@ -21,10 +21,12 @@ from scripts.build_tauri_sidecar import build_sidecar  # noqa: E402
 def target_platform(raw: str) -> str:
     value = raw.strip().lower()
     if value == "current":
-        value = "windows" if platform.system() == "Windows" else "macos"
-    if value not in {"macos", "windows"}:
-        raise ValueError("platform must be macos, windows, or current")
-    return value
+        value = "macos" if platform.system() == "Darwin" else "unsupported"
+    if value != "macos":
+        raise ValueError("the new release pipeline supports native macOS builds only")
+    if platform.system() != "Darwin":
+        raise RuntimeError("a macOS bundle must be built on a native macOS host")
+    return "macos"
 
 
 def tauri_cli() -> list[str]:
@@ -43,9 +45,8 @@ def tauri_cli() -> list[str]:
 def build_package(*, selected_platform: str, python: Path, skip_sidecar: bool = False) -> None:
     if not skip_sidecar:
         build_sidecar(python=python)
-    bundle = "app" if selected_platform == "macos" else "nsis"
     subprocess.run(
-        [*tauri_cli(), "build", "--bundles", bundle],
+        [*tauri_cli(), "build", "--bundles", "app"],
         cwd=SRC_TAURI,
         check=True,
     )

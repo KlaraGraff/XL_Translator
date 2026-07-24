@@ -32,7 +32,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(runtime["platform"], "Windows-10.0.26100")
         platform_name.assert_not_called()
 
-    def test_archive_redacts_secrets_and_records_excel_location(self) -> None:
+    def test_archive_is_anonymous_and_redacts_excel_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workbook_path = root / "source.xlsx"
@@ -96,34 +96,27 @@ class DiagnosticsTests(unittest.TestCase):
                     source_root=root,
                 )
 
-                quality_text = (record_dir / "task" / "quality_issues.json").read_text(
-                    encoding="utf-8",
-                )
-                log_text = (record_dir / "logs" / "ui_runtime_log.jsonl").read_text(
-                    encoding="utf-8",
-                )
-                settings_text = (
-                    record_dir / "task" / "settings.redacted.json"
-                ).read_text(encoding="utf-8")
-                self.assertNotIn("secret-token", quality_text)
-                self.assertNotIn("secret-token", log_text)
-                self.assertNotIn("secret-token", settings_text)
-
-                location_text = (
-                    record_dir / "locate" / "excel_cell_locations.csv"
-                ).read_text(encoding="utf-8-sig")
-                self.assertIn("SheetA", location_text)
-                self.assertIn("A1", location_text)
-
                 manifest = json.loads((record_dir / "manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(manifest["quality_issue_count"], 1)
-                self.assertEqual(manifest["excel_location_count"], 1)
+                self.assertEqual(manifest["file_count"], 1)
+                self.assertNotIn("task_id", manifest)
+                self.assertNotIn("source_root", manifest)
 
                 data, filename = diagnostics.build_diagnostic_zip_bytes(record_dir)
                 self.assertTrue(filename.endswith(".zip"))
                 with zipfile.ZipFile(BytesIO(data)) as archive:
                     names = set(archive.namelist())
+                    payload = b"".join(archive.read(name) for name in names)
                 self.assertIn(f"{record_dir.name}/manifest.json", names)
+                for prohibited in (
+                    b"secret-token",
+                    b"source.xlsx",
+                    b"SheetA",
+                    b"A1",
+                    "需要定位的失败文本".encode("utf-8"),
+                    str(root).encode("utf-8"),
+                ):
+                    self.assertNotIn(prohibited, payload)
 
                 history_data, history_filename, count = diagnostics.build_diagnostics_history_zip_bytes()
                 self.assertEqual(count, 1)
@@ -131,7 +124,7 @@ class DiagnosticsTests(unittest.TestCase):
                 with zipfile.ZipFile(BytesIO(history_data)) as archive:
                     self.assertIn("history_summary.csv", archive.namelist())
 
-    def test_word_archive_records_runtime_events_and_locations(self) -> None:
+    def test_word_archive_keeps_only_anonymous_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source_path = root / "方案.docx"
@@ -192,20 +185,19 @@ class DiagnosticsTests(unittest.TestCase):
 
                 manifest = json.loads((record_dir / "manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(manifest["runtime_log_count"], 2)
-                self.assertEqual(manifest["word_location_count"], 1)
-                self.assertEqual(manifest["word_runtime_event_count"], 2)
+                self.assertEqual(manifest["quality_issue_count"], 1)
 
-                runtime_text = (
-                    record_dir / "locate" / "word_runtime_events.csv"
-                ).read_text(encoding="utf-8-sig")
-                self.assertIn("正文段落 8", runtime_text)
-                self.assertIn("正在语义仲裁", runtime_text)
-                self.assertIn("语义仲裁接受", runtime_text)
-
-                location_text = (
-                    record_dir / "locate" / "word_segment_locations.csv"
-                ).read_text(encoding="utf-8-sig")
-                self.assertIn("规则校验未通过，语义仲裁自动接受", location_text)
+                data, _ = diagnostics.build_diagnostic_zip_bytes(record_dir)
+                with zipfile.ZipFile(BytesIO(data)) as archive:
+                    payload = b"".join(archive.read(name) for name in archive.namelist())
+                for prohibited in (
+                    "方案.docx".encode("utf-8"),
+                    "正文段落 8".encode("utf-8"),
+                    "一、工程概况".encode("utf-8"),
+                    "需要语义仲裁的段落".encode("utf-8"),
+                    str(root).encode("utf-8"),
+                ):
+                    self.assertNotIn(prohibited, payload)
 
 
 if __name__ == "__main__":

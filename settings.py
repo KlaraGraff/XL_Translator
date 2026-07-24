@@ -8,7 +8,6 @@ import stat
 import tempfile
 import threading
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -16,7 +15,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from config import (
     APP_DATA_DIR,
-    BACKUPS_DIR,
     CONCURRENCY_DEFAULT,
     DEFAULT_CLOUD_MODEL,
     DEFAULT_CLOUD_PROVIDER,
@@ -34,8 +32,6 @@ from config import (
     PDF_PAGE_RETRY_ATTEMPTS_MAX,
     PDF_PAGE_RETRY_ATTEMPTS_MIN,
     REVIEW_MARK_COLOR_DEFAULTS,
-    REVIEW_MARK_FOREIGN_NOISE,
-    REVIEW_MARK_UNRESOLVED,
     get_cloud_concurrency_bounds,
     get_concurrency_cap,
     get_default_concurrency,
@@ -54,7 +50,6 @@ from config import (
     WORD_BATCH_SPLIT_CHARS_MIN,
     WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
-    WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
@@ -679,9 +674,12 @@ class ModelThroughputSettings(BaseModel):
 
 
 class UpdateSettings(BaseModel):
-    ignore_updates: bool = False
+    # Update reminders are deliberately independent from a manual update
+    # check.  A user can pause background notices without losing the ability
+    # to check a release from the title bar.
+    notifications_paused: bool = False
     ignored_release_version: str = ""
-    last_prompted_major_version: str = ""
+    last_background_check_at: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -692,10 +690,17 @@ class UpdateSettings(BaseModel):
         migrated["ignored_release_version"] = str(
             migrated.get("ignored_release_version") or ""
         ).strip()
-        migrated["last_prompted_major_version"] = str(
-            migrated.get("last_prompted_major_version") or ""
+        migrated["notifications_paused"] = bool(migrated.get("notifications_paused", False))
+        migrated["last_background_check_at"] = str(
+            migrated.get("last_background_check_at") or ""
         ).strip()
         return migrated
+
+
+class OnboardingSettings(BaseModel):
+    """State for the local quick-start flow; no legacy data is consulted."""
+
+    quick_start_completed: bool = False
 
 
 class AppearanceSettings(BaseModel):
@@ -734,6 +739,7 @@ class AppSettings(BaseModel):
     pdf: PdfSettings = Field(default_factory=PdfSettings)
     model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
+    onboarding: OnboardingSettings = Field(default_factory=OnboardingSettings)
     appearance: AppearanceSettings = Field(default_factory=AppearanceSettings)
     settings_version: int = SETTINGS_SCHEMA_VERSION
     source_lang: str = Field(default_factory=get_default_source_lang)
@@ -1065,540 +1071,88 @@ def _extract_settings_version(data: dict) -> int:
     return max(version, 0)
 
 
-def _backup_settings_snapshot(raw_text: str, source_version: int | None, reason: str) -> Path:
-    """Backup the pre-migration settings.json to a timestamped backup file."""
-    backup_dir = BACKUPS_DIR / "settings"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    version_tag = f"v{source_version}" if source_version is not None else "unknown"
-    backup_path = backup_dir / f"settings_{reason}_{version_tag}_{timestamp}.json"
-    _write_text_atomic(backup_path, raw_text)
-    return backup_path
+class SettingsSchemaError(ValueError):
+    """The persisted new-baseline settings cannot be safely opened or changed."""
 
 
-def _migrate_settings_to_v1(data: dict) -> dict:
-    """Migrate legacy settings payloads to schema version 1."""
-    migrated = dict(data)
-    migrated.setdefault("recent_target_langs", [])
-    migrated["settings_version"] = 1
-    return migrated
+def get_settings_schema_status() -> dict[str, object]:
+    """Inspect the current settings file without repairing or rewriting it.
 
-
-def _migrate_settings_to_v2(data: dict) -> dict:
-    """Migrate settings payloads to schema version 2."""
-    migrated = dict(data)
-    migrated.setdefault("custom_target_langs", [])
-    migrated["settings_version"] = 2
-    return migrated
-
-
-def _migrate_settings_to_v3(data: dict) -> dict:
-    """Migrate settings payloads to schema version 3."""
-    migrated = dict(data)
-    migrated["custom_target_langs"] = [
-        entry.model_dump()
-        for entry in normalize_custom_target_langs(migrated.get("custom_target_langs"))
-    ]
-    migrated["settings_version"] = 3
-    return migrated
-
-
-def _migrate_settings_to_v4(data: dict) -> dict:
-    """Migrate settings payloads to schema version 4."""
-    migrated = dict(data)
-    tm_payload = dict(migrated.get("tm") or {})
-    tm_payload.pop("short_len", None)
-    migrated["tm"] = tm_payload
-    migrated["settings_version"] = 4
-    return migrated
-
-
-def _migrate_settings_to_v5(data: dict) -> dict:
-    """Migrate settings payloads to schema version 5."""
-    migrated = dict(data)
-    engine_payload = dict(migrated.get("engine") or {})
-    engine_payload.setdefault("concurrency_unlocked", False)
-    migrated["engine"] = engine_payload
-    migrated["settings_version"] = 5
-    return migrated
-
-
-def _migrate_settings_to_v6(data: dict) -> dict:
-    """Migrate settings payloads to schema version 6."""
-    migrated = dict(data)
-    output_payload = dict(migrated.get("output") or {})
-    output_payload.setdefault("formula_display_value_backfill", True)
-    migrated["output"] = output_payload
-    migrated["settings_version"] = 6
-    return migrated
-
-
-def _migrate_settings_to_v7(data: dict) -> dict:
-    """Migrate settings payloads to schema version 7."""
-    migrated = dict(data)
-    migrated.setdefault("word_batch", WordBatchSettings().model_dump())
-    migrated["settings_version"] = 7
-    return migrated
-
-
-def _migrate_settings_to_v8(data: dict) -> dict:
-    """Migrate settings payloads to schema version 8."""
-    migrated = dict(data)
-    word_batch_payload = dict(migrated.get("word_batch") or {})
-    word_batch_payload.setdefault(
-        "strict_retry_attempts",
-        WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
-    )
-    migrated["word_batch"] = word_batch_payload
-    migrated["settings_version"] = 8
-    return migrated
-
-
-def _migrate_settings_to_v9(data: dict) -> dict:
-    """Migrate settings payloads to schema version 9."""
-    migrated = dict(data)
-    migrated.setdefault("word_review", WordReviewSettings().model_dump())
-    migrated["settings_version"] = 9
-    return migrated
-
-
-def _migrate_settings_to_v10(data: dict) -> dict:
-    """Migrate settings payloads to schema version 10."""
-    migrated = dict(data)
-    word_review_payload = dict(migrated.get("word_review") or {})
-    word_review_payload["highlight_unresolved"] = WORD_REVIEW_HIGHLIGHT_DEFAULT
-    migrated["word_review"] = word_review_payload
-    migrated["settings_version"] = 10
-    return migrated
-
-
-def _migrate_settings_to_v11(data: dict) -> dict:
-    """Migrate settings payloads to schema version 11."""
-    migrated = dict(data)
-    migrated.setdefault("word_conversion", WordConversionSettings().model_dump())
-    migrated["settings_version"] = 11
-    return migrated
-
-
-def _migrate_settings_to_v12(data: dict) -> dict:
-    """Migrate settings payloads to schema version 12."""
-    migrated = dict(data)
-    engine_payload = dict(migrated.get("engine") or {})
-    cleaner_provider = str(
-        migrated.get("cleaner_engine")
-        or engine_payload.get("cloud_provider")
-        or DEFAULT_CLOUD_PROVIDER
-    ).strip()
-    cleaner_model = str(migrated.get("cleaner_model") or "").strip()
-    translation_provider = str(
-        engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
-    ).strip()
-    follows_translation = not cleaner_model and cleaner_provider == translation_provider
-    migrated.setdefault(
-        "cleaner_model_role",
-        ModelRoleSettings(
-            source_role="translation" if follows_translation else "independent",
-            cloud_provider=cleaner_provider or DEFAULT_CLOUD_PROVIDER,
-            cloud_model=cleaner_model
-            or str(engine_payload.get("cloud_model") or DEFAULT_CLOUD_MODEL).strip(),
-            cloud_base_url=str(
-                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
-            ).strip(),
-        ).model_dump(),
-    )
-    migrated.setdefault(
-        "image_model_role",
-        ModelRoleSettings(
-            source_role="translation",
-            cloud_provider=translation_provider or DEFAULT_CLOUD_PROVIDER,
-            cloud_model="",
-            cloud_base_url=str(
-                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
-            ).strip(),
-            availability_status="unknown",
-        ).model_dump(),
-    )
-    migrated.setdefault("pdf", PdfSettings().model_dump())
-    migrated["settings_version"] = 12
-    return migrated
-
-
-def _migrate_settings_to_v13(data: dict) -> dict:
-    """Migrate settings payloads to schema version 13."""
-    migrated = dict(data)
-    engine_payload = dict(migrated.get("engine") or {})
-    translation_provider = str(
-        engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
-    ).strip()
-    migrated.setdefault(
-        "pdf_review_model_role",
-        ModelRoleSettings(
-            source_role="translation",
-            cloud_provider=translation_provider or DEFAULT_CLOUD_PROVIDER,
-            cloud_model="",
-            cloud_base_url=str(
-                engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
-            ).strip(),
-            availability_status="unknown",
-        ).model_dump(),
-    )
-    pdf_payload = dict(migrated.get("pdf") or {})
-    pdf_payload.setdefault("review_enabled", False)
-    migrated["pdf"] = pdf_payload
-    migrated["settings_version"] = 13
-    return migrated
-
-
-def _migrate_settings_to_v14(data: dict) -> dict:
-    """Migrate settings payloads to schema version 14."""
-    migrated = dict(data)
-    engine_payload = dict(migrated.get("engine") or {})
-    local_provider = _normalize_local_provider(engine_payload.get("local_provider"))
-    engine_payload.setdefault("local_provider", local_provider)
-    engine_payload.setdefault(
-        "local_model",
-        str(engine_payload.get("ollama_model") or "").strip(),
-    )
-    engine_payload.setdefault("local_base_url", _default_local_base_url(local_provider))
-    engine_payload.setdefault("ollama_model", engine_payload.get("local_model", ""))
-    migrated["engine"] = engine_payload
-    migrated["settings_version"] = 14
-    return migrated
-
-
-def _seed_provider_config_payload(payload: dict) -> dict:
-    seeded = dict(payload or {})
-    provider = str(seeded.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER).strip()
-    configs = dict(seeded.get("cloud_provider_configs") or {})
-    if provider and provider not in configs:
-        configs[provider] = {
-            "cloud_model": str(seeded.get("cloud_model") or "").strip(),
-            "cloud_base_url": normalize_cloud_base_url(
-                provider,
-                str(seeded.get("cloud_base_url") or "").strip(),
-            ),
+    Version 26 is the v8 new-data baseline.  This function intentionally does
+    not read legacy directories and does not apply any historical migration.
+    A later release can add an explicit forward migration and backup step here.
+    """
+    if not SETTINGS_PATH.exists():
+        return {
+            "state": "missing",
+            "current_version": SETTINGS_SCHEMA_VERSION,
+            "stored_version": None,
+            "can_write": True,
         }
-    seeded["cloud_provider_configs"] = configs
-    return seeded
-
-
-def _migrate_settings_to_v15(data: dict) -> dict:
-    """Migrate settings payloads to schema version 15."""
-    migrated = dict(data)
-    migrated["engine"] = _seed_provider_config_payload(dict(migrated.get("engine") or {}))
-    for key in (
-        "cleaner_model_role",
-        "image_model_role",
-        "pdf_review_model_role",
-    ):
-        if key in migrated:
-            migrated[key] = _seed_provider_config_payload(dict(migrated.get(key) or {}))
-    migrated["settings_version"] = 15
-    return migrated
-
-
-def _migrate_settings_to_v16(data: dict) -> dict:
-    """Migrate settings payloads to schema version 16."""
-    migrated = dict(data)
-    migrated.setdefault("update", UpdateSettings().model_dump())
-    migrated["settings_version"] = 16
-    return migrated
-
-
-def _migrate_settings_to_v17(data: dict) -> dict:
-    """Split the legacy source path into page-specific source histories."""
-    migrated = dict(data)
-    legacy_source = str(migrated.get("last_source_folder") or "").strip().strip('"')
-    source_keys = {
-        "excel": "last_excel_source_folder",
-        "word": "last_word_source_folder",
-        "pdf": "last_pdf_source_folder",
+    try:
+        payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("settings.json 顶层必须是 JSON 对象")
+        stored_version = _extract_settings_version(payload)
+    except Exception:
+        return {
+            "state": "invalid",
+            "current_version": SETTINGS_SCHEMA_VERSION,
+            "stored_version": None,
+            "can_write": False,
+        }
+    if stored_version > SETTINGS_SCHEMA_VERSION:
+        return {
+            "state": "future",
+            "current_version": SETTINGS_SCHEMA_VERSION,
+            "stored_version": stored_version,
+            "can_write": False,
+        }
+    if stored_version < SETTINGS_SCHEMA_VERSION:
+        return {
+            "state": "incompatible",
+            "current_version": SETTINGS_SCHEMA_VERSION,
+            "stored_version": stored_version,
+            "can_write": False,
+        }
+    try:
+        AppSettings.model_validate(payload)
+    except Exception:
+        return {
+            "state": "invalid",
+            "current_version": SETTINGS_SCHEMA_VERSION,
+            "stored_version": stored_version,
+            "can_write": False,
+        }
+    return {
+        "state": "current",
+        "current_version": SETTINGS_SCHEMA_VERSION,
+        "stored_version": stored_version,
+        "can_write": True,
     }
-    for key in source_keys.values():
-        migrated[key] = str(migrated.get(key) or "").strip().strip('"')
-
-    if legacy_source:
-        suffix = Path(legacy_source).suffix.lower()
-        if suffix in {".xlsx", ".xls"}:
-            target_keys = [source_keys["excel"]]
-        elif suffix in {".docx", ".doc"}:
-            target_keys = [source_keys["word"]]
-        elif suffix == ".pdf":
-            target_keys = [source_keys["pdf"]]
-        else:
-            target_keys = list(source_keys.values())
-
-        for key in target_keys:
-            if not str(migrated.get(key) or "").strip():
-                migrated[key] = legacy_source
-
-    migrated["settings_version"] = 17
-    return migrated
-
-
-def _migrate_settings_to_v18(data: dict) -> dict:
-    """Add per-model throughput profiles."""
-    migrated = dict(data)
-    migrated.setdefault("model_throughput_profiles", {})
-    migrated["settings_version"] = 18
-    return migrated
-
-
-def _migrate_settings_to_v19(data: dict) -> dict:
-    """Add Word existing-highlight handling policy."""
-    migrated = dict(data)
-    word_review_payload = dict(migrated.get("word_review") or {})
-    word_review_payload.setdefault(
-        "existing_highlight_policy",
-        WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT,
-    )
-    migrated["word_review"] = word_review_payload
-    migrated["settings_version"] = 19
-    return migrated
-
-
-def _migrate_settings_to_v20(data: dict) -> dict:
-    """Add Excel existing-fill handling policy."""
-    migrated = dict(data)
-    migrated.setdefault("excel_review", ExcelReviewSettings().model_dump())
-    migrated["settings_version"] = 20
-    return migrated
-
-
-def _migrate_settings_to_v21(data: dict) -> dict:
-    """Add configurable Word/Excel review mark colors."""
-    migrated = dict(data)
-    word_review_payload = dict(migrated.get("word_review") or {})
-    word_review_payload["mark_colors"] = _review_mark_colors_from_payload(
-        word_review_payload
-    )
-    migrated["word_review"] = word_review_payload
-    migrated["settings_version"] = 21
-    return migrated
-
-
-def _migrate_settings_to_v22(data: dict) -> dict:
-    """Swap unresolved and foreign-noise default review colors."""
-    migrated = dict(data)
-    word_review_payload = dict(migrated.get("word_review") or {})
-    mark_colors = _review_mark_colors_from_payload(word_review_payload)
-    unresolved = _normalize_hex_color(
-        mark_colors.get(REVIEW_MARK_UNRESOLVED, ""),
-        fallback="",
-    )
-    foreign_noise = _normalize_hex_color(
-        mark_colors.get(REVIEW_MARK_FOREIGN_NOISE, ""),
-        fallback="",
-    )
-    if unresolved == "F4CCCC" and foreign_noise == "FCE4D6":
-        mark_colors[REVIEW_MARK_UNRESOLVED] = "FCE4D6"
-        mark_colors[REVIEW_MARK_FOREIGN_NOISE] = "F4CCCC"
-    word_review_payload["mark_colors"] = mark_colors
-    migrated["word_review"] = word_review_payload
-    migrated["settings_version"] = 22
-    return migrated
-
-
-def _migrate_settings_to_v23(data: dict) -> dict:
-    """Add Excel review-mark toggle."""
-    migrated = dict(data)
-    excel_review_payload = dict(migrated.get("excel_review") or {})
-    excel_review_payload.setdefault("mark_review_items", EXCEL_REVIEW_MARK_DEFAULT)
-    migrated["excel_review"] = excel_review_payload
-    migrated["settings_version"] = 23
-    return migrated
-
-
-def _migrate_settings_to_v24(data: dict) -> dict:
-    """Normalize language aliases and repair accidental zh -> zh state."""
-    migrated = dict(data)
-    custom_target_langs = normalize_custom_target_langs(migrated.get("custom_target_langs"))
-    target_supported_map = get_supported_languages(custom_target_langs, include_optional=True)
-    source_supported_map = get_supported_source_languages()
-
-    source_value = str(migrated.get("source_lang") or "").strip()
-    source_lang = (
-        "auto"
-        if is_auto_source_lang(source_value)
-        else resolve_language_code(source_value, source_supported_map)
-        or get_default_source_lang()
-    )
-    target_lang = resolve_language_code(
-        str(migrated.get("target_lang") or ""),
-        target_supported_map,
-    )
-    recent_target_langs = normalize_recent_target_langs(
-        migrated.get("recent_target_langs"),
-        custom_target_langs,
-        include_optional=True,
-    )
-    if not target_lang:
-        target_lang = recent_target_langs[0] if recent_target_langs else get_default_target_lang()
-    if source_lang == get_default_source_lang() and target_lang == source_lang:
-        target_lang = next(
-            (lang for lang in recent_target_langs if lang != source_lang),
-            get_default_target_lang(),
-        )
-
-    migrated["source_lang"] = source_lang
-    migrated["target_lang"] = target_lang
-    migrated["recent_target_langs"] = remember_recent_target_lang(
-        recent_target_langs,
-        target_lang,
-        custom_target_langs,
-        include_optional=True,
-    )
-    migrated["settings_version"] = 24
-    return migrated
-
-
-def _migrate_settings_to_v25(data: dict) -> dict:
-    """Add persisted Tauri shell preferences without changing legacy behavior."""
-    migrated = dict(data)
-    migrated.setdefault("appearance", AppearanceSettings().model_dump())
-    migrated["settings_version"] = 25
-    return migrated
-
-
-def _migrate_settings_to_v26(data: dict) -> dict:
-    """Add the PDF/image-owned output root for the current data baseline."""
-    migrated = dict(data)
-    migrated.setdefault("pdf_output", PdfOutputSettings().model_dump())
-    migrated["settings_version"] = 26
-    return migrated
-
-
-def _migrate_settings_payload(data: dict, source_version: int) -> dict:
-    """Apply sequential settings schema migrations until the latest version."""
-    migrated = dict(data)
-    current_version = max(source_version, 0)
-
-    while current_version < SETTINGS_SCHEMA_VERSION:
-        next_version = current_version + 1
-        if next_version == 1:
-            migrated = _migrate_settings_to_v1(migrated)
-        elif next_version == 2:
-            migrated = _migrate_settings_to_v2(migrated)
-        elif next_version == 3:
-            migrated = _migrate_settings_to_v3(migrated)
-        elif next_version == 4:
-            migrated = _migrate_settings_to_v4(migrated)
-        elif next_version == 5:
-            migrated = _migrate_settings_to_v5(migrated)
-        elif next_version == 6:
-            migrated = _migrate_settings_to_v6(migrated)
-        elif next_version == 7:
-            migrated = _migrate_settings_to_v7(migrated)
-        elif next_version == 8:
-            migrated = _migrate_settings_to_v8(migrated)
-        elif next_version == 9:
-            migrated = _migrate_settings_to_v9(migrated)
-        elif next_version == 10:
-            migrated = _migrate_settings_to_v10(migrated)
-        elif next_version == 11:
-            migrated = _migrate_settings_to_v11(migrated)
-        elif next_version == 12:
-            migrated = _migrate_settings_to_v12(migrated)
-        elif next_version == 13:
-            migrated = _migrate_settings_to_v13(migrated)
-        elif next_version == 14:
-            migrated = _migrate_settings_to_v14(migrated)
-        elif next_version == 15:
-            migrated = _migrate_settings_to_v15(migrated)
-        elif next_version == 16:
-            migrated = _migrate_settings_to_v16(migrated)
-        elif next_version == 17:
-            migrated = _migrate_settings_to_v17(migrated)
-        elif next_version == 18:
-            migrated = _migrate_settings_to_v18(migrated)
-        elif next_version == 19:
-            migrated = _migrate_settings_to_v19(migrated)
-        elif next_version == 20:
-            migrated = _migrate_settings_to_v20(migrated)
-        elif next_version == 21:
-            migrated = _migrate_settings_to_v21(migrated)
-        elif next_version == 22:
-            migrated = _migrate_settings_to_v22(migrated)
-        elif next_version == 23:
-            migrated = _migrate_settings_to_v23(migrated)
-        elif next_version == 24:
-            migrated = _migrate_settings_to_v24(migrated)
-        elif next_version == 25:
-            migrated = _migrate_settings_to_v25(migrated)
-        elif next_version == 26:
-            migrated = _migrate_settings_to_v26(migrated)
-        else:
-            raise ValueError(f"未实现的 settings 迁移版本：v{current_version} -> v{next_version}")
-        current_version = next_version
-
-    migrated["settings_version"] = SETTINGS_SCHEMA_VERSION
-    return migrated
 
 
 def load_settings() -> AppSettings:
-    """Load settings; fall back to defaults if the file is missing or broken."""
+    """Load only the current baseline; preserve incompatible data untouched."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     if SETTINGS_PATH.exists():
-        raw_text = ""
         try:
-            raw_text = SETTINGS_PATH.read_text(encoding="utf-8")
-            data = json.loads(raw_text)
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("settings.json 顶层必须是 JSON 对象")
-
             source_version = _extract_settings_version(data)
-            if source_version < SETTINGS_SCHEMA_VERSION:
-                data = _migrate_settings_payload(data, source_version)
+            if source_version != SETTINGS_SCHEMA_VERSION:
+                raise SettingsSchemaError(
+                    f"settings schema v{source_version} 与当前 v{SETTINGS_SCHEMA_VERSION} 不兼容"
+                )
             settings = AppSettings.model_validate(data)
         except Exception as exc:
-            if raw_text:
-                try:
-                    backup_path = _backup_settings_snapshot(
-                        raw_text,
-                        source_version=None,
-                        reason="load_failed",
-                    )
-                    logger.warning(f"配置文件解析失败，已备份旧文件：{backup_path}")
-                except Exception as backup_exc:
-                    logger.warning(f"配置文件解析失败，且备份旧文件失败：{backup_exc}")
-            logger.warning(f"配置文件解析失败，回退至默认配置：{exc}")
+            logger.warning(
+                "settings 未被读取或修复；保留原文件并以临时默认值启动：%s",
+                type(exc).__name__,
+            )
+            return AppSettings()
         else:
-            if source_version < SETTINGS_SCHEMA_VERSION:
-                backup_path: Path | None = None
-                try:
-                    backup_path = _backup_settings_snapshot(
-                        raw_text,
-                        source_version=source_version,
-                        reason=f"upgrade_to_v{SETTINGS_SCHEMA_VERSION}",
-                    )
-                except Exception as backup_exc:
-                    logger.warning(f"旧版 settings 已读取，但迁移备份失败：{backup_exc}")
-
-                if backup_path is not None:
-                    try:
-                        save_settings(settings)
-                    except Exception as save_exc:
-                        logger.warning(
-                            "旧版 settings 已在本次会话中迁移，但自动回写失败；"
-                            f"继续使用已加载配置：{save_exc}"
-                        )
-                    else:
-                        logger.info(
-                            "检测到旧版 settings，已完成迁移并备份："
-                            f"v{source_version} -> v{SETTINGS_SCHEMA_VERSION} | "
-                            f"backup={backup_path}"
-                        )
-            elif settings.model_dump() != data:
-                try:
-                    save_settings(settings)
-                except Exception as save_exc:
-                    logger.warning(
-                        "settings 已成功读取，但归一化内容自动回写失败；"
-                        f"继续使用已加载配置：{save_exc}"
-                    )
-                else:
-                    logger.info("检测到 settings 内容已归一化，已自动回写最新格式")
-
             try:
                 _seed_packaged_default_api_key()
             except Exception as seed_exc:
@@ -1612,9 +1166,14 @@ def load_settings() -> AppSettings:
     return settings
 
 
-def save_settings(settings: AppSettings) -> None:
-    """Persist settings to local JSON."""
+def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) -> None:
+    """Persist current-baseline settings without overwriting unsafe data by default."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    status = get_settings_schema_status()
+    if not bool(status["can_write"]) and not replace_incompatible:
+        raise SettingsSchemaError(
+            "settings.json 不是当前可写 schema；请在维护页明确重置设置。"
+        )
     settings.settings_version = SETTINGS_SCHEMA_VERSION
     lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
     with _exclusive_file_lock(lock_path):
@@ -1742,3 +1301,15 @@ def _api_key_env_names(provider: str) -> tuple[str, ...]:
 def delete_key(provider: str, base_url: str = "") -> None:
     """Delete the API key for one provider/Base URL scope."""
     save_key(provider, "", base_url)
+
+
+def delete_all_keys() -> int:
+    """Delete every locally persisted API key without exposing their values."""
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        keys = _load_keys_unlocked(strict=True)
+        removed = len(keys)
+        KEYS_PATH.unlink(missing_ok=True)
+    logger.info("已删除全部本地 API Key：count=%s", removed)
+    return removed

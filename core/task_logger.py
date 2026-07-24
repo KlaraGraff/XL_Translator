@@ -76,6 +76,25 @@ def setup_file_handler() -> None:
     _handler_installed = True
 
 
+def clear_log_files() -> int:
+    """Close active rotating handlers and remove only Translator log rotations."""
+    global _handler_installed
+    root_logger = logging.getLogger(_LOGGER_NAME)
+    for handler in list(root_logger.handlers):
+        if not isinstance(handler, logging.handlers.RotatingFileHandler):
+            continue
+        root_logger.removeHandler(handler)
+        handler.close()
+    _handler_installed = False
+    removed = 0
+    for path in LOG_PATH.parent.glob(f"{LOG_PATH.name}*"):
+        if not path.is_file():
+            continue
+        path.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
 # ── TaskLogger ───────────────────────────────────────────────────────────
 
 class TaskLogger:
@@ -182,9 +201,8 @@ class TaskLogger:
             f"ExcelAutoFit={enable_excel_autofit} | "
             f"锁定行高缩字号={lock_row_height}"
         )
-        for i, f in enumerate(files, 1):
-            name = getattr(f, 'name', str(f))
-            self.info(f"  [{i}] {name}")
+        for index, _file in enumerate(files, 1):
+            self.info(f"  [文件 {index}] 已加入任务")
 
     def task_end(
         self,
@@ -204,27 +222,33 @@ class TaskLogger:
 
     def file_collected(self, filename: str, count: int, elapsed: float) -> None:
         """词条收集完成。"""
-        self.info(f"[{filename}] 词条收集完成 | 词条数={count} | 耗时={elapsed:.3f}s")
+        del filename
+        self.info(f"文件词条收集完成 | 词条数={count} | 耗时={elapsed:.3f}s")
 
     def file_tm_result(self, filename: str, hits: int, misses: int) -> None:
         """TM 查询结果。"""
-        self.info(f"[{filename}] TM命中={hits} | 待API翻译={misses}")
+        del filename
+        self.info(f"文件 TM命中={hits} | 待API翻译={misses}")
 
     def file_api_done(self, filename: str, returned: int, elapsed: float) -> None:
         """API 翻译完成。"""
-        self.info(f"[{filename}] API翻译完成 | 返回={returned}条 | 耗时={elapsed:.3f}s")
+        del filename
+        self.info(f"文件 API翻译完成 | 返回={returned}条 | 耗时={elapsed:.3f}s")
 
     def file_write_done(self, filename: str, elapsed: float) -> None:
         """回填写入完成。"""
-        self.info(f"[{filename}] 回填写入完成 | 耗时={elapsed:.3f}s")
+        del filename
+        self.info(f"文件回填写入完成 | 耗时={elapsed:.3f}s")
 
     def file_autofit_done(self, filename: str, elapsed: float) -> None:
         """AutoFit 完成。"""
-        self.info(f"[{filename}] Excel AutoFit完成 | 耗时={elapsed:.3f}s")
+        del filename
+        self.info(f"文件 Excel AutoFit完成 | 耗时={elapsed:.3f}s")
 
     def file_autofit_skipped(self, filename: str, reason: str) -> None:
         """AutoFit 跳过。"""
-        self.warning(f"[{filename}] AutoFit跳过 | 原因={reason}")
+        del filename, reason
+        self.warning("文件 Excel AutoFit 跳过")
 
     def file_done(
         self,
@@ -234,11 +258,12 @@ class TaskLogger:
         api_calls: int,
     ) -> None:
         """单文件处理完成。"""
+        del filename
         self.info(
-            f"[{filename}] 完成 ✓ | 总耗时={elapsed:.3f}s "
-            f"| TM命中={tm_hits} | API调用={api_calls}"
+            f"文件完成 | 总耗时={elapsed:.3f}s | TM命中={tm_hits} | API调用={api_calls}"
         )
 
     def file_error(self, filename: str, error: str) -> None:
         """单文件处理失败。"""
-        self.error(f"[{filename}] 处理失败 | {error}", exc_info=True)
+        del filename, error
+        self.error("文件处理失败", exc_info=True)

@@ -3,9 +3,9 @@
 ## V8.0.0
 - 桌面壳层改为 Tauri 2，前端以原型同源的 vanilla TypeScript 落地 Excel、Word、PDF、记忆库与模型配置页面。
 - Python 文档处理与引擎逻辑保留为受随机端口和启动 token 保护的 FastAPI sidecar；任务进度和日志通过 SSE 实时传递。
-- 移除 PySide6/Qt 原生界面与旧打包路径，标准发布物改为 Tauri macOS dmg 和 Windows NSIS 安装器；Python sidecar 使用无 Qt 的 PyInstaller onedir 包。
-- 继续兼容既有应用数据目录、设置 schema、密钥、翻译记忆库和模型配置导入导出格式。
-- 修复未配置 Developer ID 时 Tauri 应用包缺少完整资源签名、被 macOS 误报为“已损坏”的问题；打包阶段现在会执行 ad-hoc 应用签名和严格校验。
+- 移除 PySide6/Qt 原生界面与旧打包路径；新版标准发布物为 macOS 原生 DMG，Python sidecar 使用无 Qt 的 PyInstaller onedir 包。
+- 新版从独立数据基线开始，不读取、迁移、修复或删除旧版本设置、密钥、翻译记忆库或自定义语言数据。
+- 正式 macOS 发布要求 Developer ID 签名、Apple 公证、staple 和 Gatekeeper 验证；手动构建只作为明确标记的未签名测试 artifact。
 
 ## V7.4.2
 - 将单实例回归测试改为真实独立进程，覆盖 Windows named pipe 的实际线程和事件循环语义，避免用同进程后台线程产生错误结论。

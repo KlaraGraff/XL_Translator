@@ -684,6 +684,15 @@ class TranslationTaskManager:
             ]
         return {"active": active, "recent": self._history.records()}
 
+    def active_task_count(self) -> int:
+        """Return the number of live task snapshots for maintenance guards."""
+        with self._lock:
+            return sum(1 for task in self._tasks.values() if not task.terminal)
+
+    def clear_history(self) -> int:
+        """Clear persisted task summaries only after the caller enforces its guard."""
+        return self._history.clear()
+
     def task_results(self, task_id: str) -> dict[str, Any]:
         try:
             task = self._get_task(task_id)
@@ -1257,7 +1266,10 @@ _ARTIFACT_PATH_KEYS = {
     "manifest_path",
     "custom_output_dir",
 }
-_ABSOLUTE_PATH_RE = re.compile(r"(?:(?:[A-Za-z]:)?[/\\])(?:[^\s'\"<>]+[/\\])*[^\s'\"<>]+")
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z][A-Za-z0-9+.-]:)(?:(?:[A-Za-z]:)?[/\\])(?:[^\s'\"<>]+[/\\])*[^\s'\"<>]+"
+)
+_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s'\"<>]+", re.IGNORECASE)
 _API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
 
 
@@ -1277,7 +1289,10 @@ def _sanitize_task_data(value: Any, *, key: str = "") -> Any:
             lowered = child_name.lower()
             if lowered in _SENSITIVE_VALUE_KEYS:
                 continue
-            if lowered in {"source", "original", "translation", "translated", "content", "text"}:
+            if (
+                normalized_key != "model_snapshot"
+                and lowered in {"source", "original", "translation", "translated", "content", "text"}
+            ):
                 continue
             if "prompt" in lowered or "response" in lowered and lowered != "response_status":
                 continue
@@ -1298,9 +1313,24 @@ def _sanitize_task_data(value: Any, *, key: str = "") -> Any:
         if normalized_key in _ARTIFACT_PATH_KEYS:
             return value
         text = _API_SECRET_RE.sub("[redacted]", value)
-        text = _ABSOLUTE_PATH_RE.sub("[path]", text)
+        text = _redact_absolute_paths(text)
         return text[:300]
     return _json_safe(value)
+
+
+def _redact_absolute_paths(value: str) -> str:
+    """Hide filesystem paths without corrupting public API URLs in snapshots."""
+    urls: list[str] = []
+
+    def protect_url(match: re.Match[str]) -> str:
+        urls.append(match.group(0))
+        return f"__TRANSLATOR_URL_{len(urls) - 1}__"
+
+    protected = _URL_RE.sub(protect_url, value)
+    redacted = _ABSOLUTE_PATH_RE.sub("[path]", protected)
+    for index, url in enumerate(urls):
+        redacted = redacted.replace(f"__TRANSLATOR_URL_{index}__", url)
+    return redacted
 
 
 def _local_operation_descriptors(result: dict[str, Any]) -> list[dict[str, str]]:

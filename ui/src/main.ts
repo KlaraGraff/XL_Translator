@@ -6,7 +6,7 @@ import "./tokens.css";
 
 type Surface = "excel" | "word" | "pdf";
 type TaskSurface = TaskStatus["surface"];
-type View = Surface | "tm" | "tasks";
+type View = Surface | "tm" | "tasks" | "help" | "maintenance";
 type JsonObject = Record<string, unknown>;
 type FileItem = JsonObject & {
   path: string;
@@ -118,8 +118,20 @@ type PendingTaskRisk = {
   payload: JsonObject;
   preflight: TaskPreflight;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "task-risk" | "xls-compatibility" | "doc-compatibility" | "pdf-review-unavailable" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "source-picker" | "stop-task" | "task-risk" | "xls-compatibility" | "doc-compatibility" | "pdf-review-unavailable" | "notice" | "update" | "quick-start" | "maintenance-confirm" | null;
 type ModalNotice = { title: string; message: string };
+type MaintenanceConfirmation = {
+  category: "task_history" | "logs" | "diagnostics" | "keys" | "settings" | "tm" | "full_reset";
+  langPair?: string;
+};
+type MaintenanceCategory = {
+  id: string;
+  label: string;
+  size_bytes?: number;
+  count?: number;
+  clearable?: boolean;
+  contains_user_output?: boolean;
+};
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
@@ -176,6 +188,11 @@ const state: {
   tmSuggestions: JsonObject[];
   modalNotice: ModalNotice | null;
   updateResult: JsonObject | null;
+  updateState: JsonObject | null;
+  maintenanceOverview: JsonObject | null;
+  diagnostics: JsonObject[];
+  diagnosticsOverview: JsonObject | null;
+  maintenanceConfirmation: MaintenanceConfirmation | null;
   customLanguageEditing: LanguageOption | null;
   languages: LanguageOption[];
   sourceOptions: LanguageOption[];
@@ -244,6 +261,11 @@ const state: {
   tmSuggestions: [],
   modalNotice: null,
   updateResult: null,
+  updateState: null,
+  maintenanceOverview: null,
+  diagnostics: [],
+  diagnosticsOverview: null,
+  maintenanceConfirmation: null,
   customLanguageEditing: null,
   languages: [],
   sourceOptions: [],
@@ -282,6 +304,14 @@ const pageMeta: Record<View, { title: string; description: string }> = {
   tasks: {
     title: "任务中心",
     description: "集中查看运行、暂停和最近任务；任务离开原页面后仍会持续监控。",
+  },
+  help: {
+    title: "帮助与快速开始",
+    description: "离线查看操作说明、隐私边界与 macOS 兼容提示。",
+  },
+  maintenance: {
+    title: "维护与诊断",
+    description: "查看本地应用数据，按类别清理或导出脱敏诊断。",
   },
 };
 
@@ -333,6 +363,10 @@ const iconPaths = {
   play: '<path d="M8 5.5v13l10-6.5z"/>',
   copy: '<rect x="8" y="8" width="11" height="11" rx="1.5"/><path d="M5 15V5a1.5 1.5 0 0 1 1.5-1.5H15"/>',
   reveal: '<path d="M4 12s2.7-5 8-5 8 5 8 5-2.7 5-8 5-8-5-8-5z"/><circle cx="12" cy="12" r="2.1"/>',
+  help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.7 9.2a2.45 2.45 0 0 1 4.7 1c0 1.8-2.4 2.1-2.4 3.8M12 17.1h.01"/>',
+  wrench: '<path d="M14.8 5.1a4.5 4.5 0 0 0-5.7 5.7l-5.4 5.4a1.7 1.7 0 1 0 2.4 2.4l5.4-5.4a4.5 4.5 0 0 0 5.7-5.7l-2.8 2.8-2.5-.7-.7-2.5z"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v5.2A1.8 1.8 0 0 1 16.2 20H5.8A1.8 1.8 0 0 1 4 18.2V7.8A1.8 1.8 0 0 1 5.8 6H11"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V4.5h5V7M7.2 7l.8 13h8l.8-13M10 10.5v5.8M14 10.5v5.8"/>',
 } as const;
 type IconName = keyof typeof iconPaths;
 
@@ -696,6 +730,8 @@ function render(): void {
         ${navButton("tasks", "任务", "tasks")}
         <button class="rail-button ${state.panelOpen ? "active" : ""}" data-action="toggle-panel" data-tip="模型配置：全局应用于所有翻译页面">${icon("sliders")}<span>配置</span></button>
         <div class="rail-spacer"></div>
+        ${navButton("help", "帮助", "help")}
+        ${navButton("maintenance", "维护", "wrench")}
         <button class="rail-button utility" data-action="cycle-theme" data-tip="主题：浅色、深色或跟随系统">${icon(selectedTheme() === "dark" ? "sun" : "moon")}</button>
       </nav>
       ${renderConfigPanel()}
@@ -708,12 +744,13 @@ function render(): void {
           <div class="topbar-actions">
             <button class="model-button ${activeTasks().length ? "task-activity" : ""}" data-action="open-task-center" data-tip="任务中心：查看运行、暂停和最近任务"><span class="model-dot ${activeTasks().length ? "active" : ""}"></span>${activeTasks().length ? `${activeTasks().length} 个活动任务` : "任务中心"}</button>
             <button class="model-button" data-action="toggle-panel" data-tip="当前翻译模型；点击展开配置"><span class="model-dot"></span>${escapeHtml(model)}</button>
+            <button class="icon-button" data-action="navigate" data-view="help" data-tip="帮助与快速开始">${icon("help", "small")}</button>
             <button class="icon-button" data-action="check-update" data-tip="检查 GitHub 最新版本">${icon("refresh", "small")}</button>
             <button class="icon-button" data-action="cycle-theme" data-tip="切换主题">${icon(selectedTheme() === "dark" ? "sun" : "moon", "small")}</button>
           </div>
         </header>
         <div class="content">
-          ${state.view === "tm" ? renderTmView() : state.view === "tasks" ? renderTaskCenter() : renderTranslateView(state.view)}
+          ${state.view === "tm" ? renderTmView() : state.view === "tasks" ? renderTaskCenter() : state.view === "help" ? renderHelpView() : state.view === "maintenance" ? renderMaintenanceView() : renderTranslateView(state.view)}
         </div>
       </main>
     </div>
@@ -794,8 +831,8 @@ function renderConfigPanel(): string {
           <div class="field-row"><button class="button" data-action="export-model-config">导出（不含 Key）</button><button class="button" data-action="export-model-config-sensitive">导出含 Key</button><button class="button" data-action="import-model-config">导入 v3</button></div><p class="note">导入只接受 v3，先预览；导入后所有角色需重新测试。含 Key 导出会显示二次确认。</p>
         </div>
         <div class="config-group">
-          <span class="field-label">维护</span>
-          <div class="field-row"><button class="button" data-action="download-diagnostics">诊断归档</button><button class="button" data-action="migration">数据迁移</button></div>
+          <span class="field-label">维护与支持</span>
+          <div class="field-row"><button class="button" data-action="navigate" data-view="maintenance">维护与诊断</button><button class="button" data-action="navigate" data-view="help">本地帮助</button></div>
         </div>
         <div class="config-group">
           <span class="field-label">并发风险</span>
@@ -1085,6 +1122,81 @@ function renderTaskCenter(): string {
     .filter((entry) => state.taskCenterFilter === "all" || (state.taskCenterFilter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task)));
   const cards = entries.map(renderTaskCard).join("");
   return `<section class="view active task-center"><div class="task-center-header card card-pad"><div><span class="section-label">统一任务中心</span><h2>活动任务 ${active}</h2><p class="note">事件按任务 ID 独立补拉。页面切换、重新聚焦和短断流不会停止其他任务。</p></div><div class="task-filter" role="group" aria-label="任务筛选"><button class="mini-button ${state.taskCenterFilter === "all" ? "active" : ""}" data-action="task-filter" data-filter="all">全部</button><button class="mini-button ${state.taskCenterFilter === "active" ? "active" : ""}" data-action="task-filter" data-filter="active">活动</button><button class="mini-button ${state.taskCenterFilter === "terminal" ? "active" : ""}" data-action="task-filter" data-filter="terminal">最近结果</button></div></div><div class="task-grid">${cards || `<div class="card card-pad muted">当前没有可显示的任务。启动 Excel、Word、PDF/图片或 TM 深度清洗后，状态会保留在这里。</div>`}</div></section>`;
+}
+
+function renderHelpView(): string {
+  return `<section class="help-view">
+    <div class="help-hero">
+      <div><span class="section-label">本地离线帮助</span><h2>从模型配置到结果文件</h2><p>帮助内容随应用提供，不需要联网。实际开始翻译前，模型配置与文件扫描都由你主动触发。</p></div>
+      <div class="help-hero-actions"><button class="button primary" data-action="show-quick-start">重新查看快速开始</button><button class="button" data-action="check-update">检查更新</button></div>
+    </div>
+    <div class="help-grid">
+      <article class="card help-card"><div class="help-card-icon">${icon("sliders")}</div><h3>1. 配置翻译模型</h3><p>选择服务商、Base URL、模型和 API Key。引导不会自动测试连接或发送请求。</p><button class="mini-button" data-action="quick-start-go" data-destination="config">打开模型配置</button></article>
+      <article class="card help-card"><div class="help-card-icon">${icon("translate")}</div><h3>2. 选择文件与语言</h3><p>Excel 和 Word 默认自动识别；每个有候选文本的文件会在翻译前进行一次抽样预检，最多确认两种实际源语言。</p><div class="help-links"><button class="mini-button" data-action="navigate" data-view="excel">Excel</button><button class="mini-button" data-action="navigate" data-view="word">Word</button><button class="mini-button" data-action="navigate" data-view="pdf">PDF / 图片</button></div></article>
+      <article class="card help-card"><div class="help-card-icon">${icon("memory")}</div><h3>3. 记忆库与语言识别</h3><p>自动模式只按预检得到的实际语言对查询 TM；混合或不确定内容可以翻译，但不会自动写入普通 TM。</p><button class="mini-button" data-action="navigate" data-view="tm">打开记忆库</button></article>
+      <article class="card help-card"><div class="help-card-icon">${icon("tasks")}</div><h3>任务、停止与并行</h3><p>不同类型任务可并行。同一 API 连接会先显示 429、排队、超时和费用风险，确认后才会启动第二个任务。</p><button class="mini-button" data-action="navigate" data-view="tasks">打开任务中心</button></article>
+      <article class="card help-card"><div class="help-card-icon">${icon("folder")}</div><h3>输出与兼容格式</h3><p>标准 .xlsx、.docx、PDF 和图片不依赖 Office。.xls / .doc 的高保真转换可使用本机 Office；没有授权或软件时会明确提示或按你的选择回退。</p><details class="help-details"><summary>macOS 自动化权限</summary><p>macOS 12：系统偏好设置 → 安全性与隐私 → 隐私 → 自动化。macOS 13 及以上：系统设置 → 隐私与安全性 → 自动化。允许 Translator 控制 Microsoft Excel 或 Word 后再重试。</p></details></article>
+      <article class="card help-card"><div class="help-card-icon">${icon("wrench")}</div><h3>更新、支持与隐私</h3><p>更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启。诊断由你主动导出，不包含 API Key、原文、译文、完整 Prompt 或文件路径。</p><div class="help-links"><button class="mini-button" data-action="navigate" data-view="maintenance">维护与诊断</button><button class="mini-button" data-action="open-external-url" data-url="https://github.com/KlaraGraff/XL_Translator/issues">反馈问题 ${icon("external", "small")}</button></div></article>
+    </div>
+  </section>`;
+}
+
+function formatBytes(value: unknown): string {
+  const bytes = Math.max(0, number(value));
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function maintenanceCategories(): MaintenanceCategory[] {
+  const categories = state.maintenanceOverview?.categories;
+  return Array.isArray(categories) ? categories.filter((item): item is MaintenanceCategory => Boolean(item) && typeof item === "object") : [];
+}
+
+function maintenanceCategory(id: string): MaintenanceCategory | undefined {
+  return maintenanceCategories().find((item) => item.id === id);
+}
+
+function renderMaintenanceView(): string {
+  const overview = state.maintenanceOverview;
+  const categories = maintenanceCategories();
+  const active = number(overview?.active_task_count, activeTasks().length);
+  const appDataDir = text(overview?.app_data_dir, "正在读取本地数据目录…");
+  const limits = record(overview?.limits);
+  const diagnostics = state.diagnostics;
+  const categoryCards = categories.length
+    ? categories.map((category) => `<article class="card maintenance-card"><div><h3>${escapeHtml(category.label)}</h3><p>${formatBytes(category.size_bytes)}${category.count !== undefined ? ` · ${category.count} 项` : ""}</p></div><div>${category.contains_user_output ? `<span class="format-pill">受保护</span>` : category.clearable ? `<button class="mini-button danger-text" data-action="request-maintenance-clear" data-category="${escapeHtml(category.id)}">清理</button>` : `<span class="muted">自动维护</span>`}</div></article>`).join("")
+    : `<div class="card empty-state"><strong>尚未读取本地数据概览</strong><p>点击刷新后查看当前新版应用数据目录和各类别占用。</p></div>`;
+  const diagnosticRows = diagnostics.length
+    ? diagnostics.map((item) => {
+      const id = text(item.record_id);
+      const title = text(item.created_at, "诊断记录");
+      const type = [text(item.surface), text(item.phase)].filter(Boolean).join(" · ") || "应用";
+      return `<tr><td>${escapeHtml(title)}</td><td>${escapeHtml(type)}</td><td>${formatBytes(item.size_bytes)}</td><td class="table-actions"><button class="mini-button" data-action="download-diagnostic" data-record-id="${escapeHtml(id)}">导出</button><button class="mini-button danger-text" data-action="delete-diagnostic" data-record-id="${escapeHtml(id)}">删除</button></td></tr>`;
+    }).join("")
+    : `<tr><td colspan="4" class="muted">没有诊断记录。</td></tr>`;
+  const taskHistory = maintenanceCategory("task_history");
+  const logs = maintenanceCategory("logs");
+  const tm = maintenanceCategory("tm");
+  const keyCategory = maintenanceCategory("keys");
+  const taskHistoryMeta = record(taskHistory);
+  const logsMeta = record(logs);
+  const keyMeta = record(keyCategory);
+  const diagnosticsLimit = state.diagnosticsOverview ?? record(limits.diagnostics);
+  const historyLimit = number(taskHistoryMeta.retention_limit, number(limits.task_history_max_records, 200));
+  const logsLimit = record(logsMeta.retention);
+  return `<section class="maintenance-view">
+    <div class="maintenance-header"><div><span class="section-label">当前新版应用数据</span><h2>维护与诊断</h2><p class="path-value">${escapeHtml(appDataDir)}</p></div><div class="maintenance-actions"><button class="button" data-action="refresh-maintenance">刷新</button><button class="button" data-action="open-app-data">在 Finder 中显示</button></div></div>
+    ${active ? `<div class="risk-callout"><strong>${icon("warn", "small")}有 ${active} 个活动任务</strong><p>会影响任务记录或认证状态的清理、删除全部 Key 和完整重置当前不可用。任务完成后再执行这些操作。</p></div>` : ""}
+    <div class="maintenance-grid">${categoryCards}</div>
+    <div class="maintenance-limits card"><h3>自动留存边界</h3><div><span>任务摘要</span><b>最近 ${historyLimit} 条</b></div><div><span>应用日志</span><b>${number(logsLimit.max_files, 5)} 个 × ${formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024)}</b></div><div><span>诊断</span><b>${number(diagnosticsLimit.max_records, 80)} 条 / ${formatBytes(diagnosticsLimit.max_total_bytes || 256 * 1024 * 1024)}</b></div><p>维护操作不会删除源文件、用户输出目录或已生成的翻译文件。</p></div>
+    <div class="maintenance-sections">
+      <article class="card maintenance-section"><h3>诊断</h3><p>诊断仅含版本、系统、任务阶段、脱敏连接摘要、计数和错误码。不会自动上传。</p><div class="field-row"><button class="button" data-action="download-diagnostics">导出全部诊断</button><button class="button danger" data-action="request-maintenance-clear" data-category="diagnostics" ${active ? "disabled" : ""}>清空诊断</button></div><div class="table-scroll maintenance-diagnostics"><table><thead><tr><th>记录</th><th>类型</th><th>大小</th><th></th></tr></thead><tbody>${diagnosticRows}</tbody></table></div></article>
+      <article class="card maintenance-section"><h3>单类重置</h3><p>每一项只作用于当前新版数据基线，输出文件始终受保护。</p><div class="maintenance-action-list"><div><span><b>任务摘要</b><small>${taskHistory ? `${formatBytes(taskHistory.size_bytes)} · ${number(taskHistory.count)} 项` : ""}</small></span><button class="mini-button danger-text" data-action="request-maintenance-clear" data-category="task_history" ${active ? "disabled" : ""}>清空</button></div><div><span><b>结构化日志</b><small>${logs ? formatBytes(logs.size_bytes) : ""}</small></span><button class="mini-button danger-text" data-action="request-maintenance-clear" data-category="logs" ${active ? "disabled" : ""}>清空</button></div><div><span><b>保存的 API Key</b><small>${keyCategory ? `${number(keyMeta.key_count, number(keyCategory.count))} 个作用域` : "仅显示作用域，不显示 Key 值"}</small></span><button class="mini-button danger-text" data-action="request-maintenance-clear" data-category="keys" ${active ? "disabled" : ""}>删除全部 Key</button></div><div><span><b>设置</b><small>保留 Key 与记忆库</small></span><button class="mini-button" data-action="request-maintenance-clear" data-category="settings">重置设置</button></div><div><span><b>快速开始</b><small>重新显示欢迎引导</small></span><button class="mini-button" data-action="show-quick-start">重新显示</button></div></div></article>
+      <article class="card maintenance-section"><h3>翻译记忆库</h3><p>先导出再删除。可以只清空当前语言对，或清空全部 TM；不会删除任何翻译输出。</p><div class="field-row"><button class="button" data-action="navigate" data-view="tm">前往导出</button><button class="button danger" data-action="request-maintenance-clear" data-category="tm" data-lang-pair="${escapeHtml(tmLangPair())}" ${active ? "disabled" : ""}>清空 ${escapeHtml(tmLangPair())}</button><button class="button danger" data-action="request-maintenance-clear" data-category="tm" ${active ? "disabled" : ""}>清空全部</button></div><p class="note">当前总占用：${tm ? formatBytes(tm.size_bytes) : "--"}。</p></article>
+      <article class="card maintenance-section danger-section"><h3>完整本地重置</h3><p>只删除 Translator 当前应用数据，不删除应用、DMG、源码、旧版目录、源文件或输出目录。完成后需重新打开应用。</p><button class="button danger" data-action="request-maintenance-clear" data-category="full_reset" ${active ? "disabled" : ""}>完整重置</button></article>
+    </div>
+  </section>`;
 }
 
 function renderTaskCard(entry: ManagedTask): string {
@@ -1523,7 +1635,31 @@ function renderTmEntries(): string {
   return `<table><thead><tr><th class="selection-column"><input type="checkbox" class="file-check" data-tm-select-page ${state.tmSelectedIds.length === state.tmEntries.length ? "checked" : ""} aria-label="选择本页" /></th><th>原文</th><th>译文</th><th>来源</th><th class="number">操作</th></tr></thead><tbody>${state.tmEntries.map((entry) => `<tr><td><input type="checkbox" class="file-check" data-tm-entry-id="${entry.id}" ${state.tmSelectedIds.includes(entry.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(entry.source_text)}" /></td><td>${escapeHtml(entry.source_text)}</td><td>${escapeHtml(entry.target_text)}</td><td class="muted">${escapeHtml(entry.word_type)}</td><td class="number"><span class="table-actions"><button class="mini-button" data-action="tm-edit" data-entry-id="${entry.id}">编辑</button><button class="pin-button ${entry.pinned ? "pinned" : ""}" data-action="tm-pin" data-entry-id="${entry.id}" data-pinned="${entry.pinned ? "0" : "1"}" data-tip="${entry.pinned ? "解除固定" : "固定词条"}">${icon("pin", "small")}</button><button class="mini-button danger-text" data-action="tm-delete" data-entry-id="${entry.id}">删除</button></span></td></tr>`).join("")}</tbody></table>`;
 }
 
+function renderMaintenanceConfirmation(): string {
+  const pending = state.maintenanceConfirmation;
+  if (!pending) return "";
+  const labels: Record<MaintenanceConfirmation["category"], { title: string; message: string; confirm: string }> = {
+    task_history: { title: "清空任务摘要？", message: "将删除当前应用保存的任务摘要，不删除任何输出文件。", confirm: "清空任务摘要" },
+    logs: { title: "清空结构化日志？", message: "将删除当前应用日志，不删除诊断、源文件或翻译输出。", confirm: "清空日志" },
+    diagnostics: { title: "清空全部诊断？", message: "将删除所有本地诊断记录。导出过的 ZIP 不会被删除。", confirm: "清空诊断" },
+    keys: { title: "删除全部 API Key？", message: "将删除当前应用保存的所有服务商 Key。活动任务期间不能执行此操作。", confirm: "删除全部 Key" },
+    settings: { title: "重置设置？", message: "将恢复设置默认值，但保留 API Key、记忆库和翻译输出。", confirm: "重置设置" },
+    tm: { title: "清空翻译记忆库？", message: "此操作不会删除翻译输出。建议先在记忆库页面导出 JSON 备份。", confirm: "清空 TM" },
+    full_reset: { title: "完整重置本地数据？", message: "只删除 Translator 当前应用数据。应用、DMG、源码、旧版目录、源文件和输出目录不会被触及。", confirm: "完整重置" },
+  };
+  const detail = labels[pending.category];
+  const pairDetail = pending.category === "tm" && pending.langPair
+    ? `<p class="risk-callout">范围：仅清空语言对 <strong>${escapeHtml(pending.langPair)}</strong>。</p>`
+    : "";
+  const fullReset = pending.category === "full_reset";
+  return `<div class="modal-backdrop"><section class="modal"><h2>${detail.title}</h2><p class="note">${detail.message}</p>${pairDetail}${fullReset ? `<div class="toggle-row"><input id="fullResetAcknowledge" type="checkbox"/><label for="fullResetAcknowledge">我了解这不会删除输出文件，但会删除当前应用数据。</label></div><label class="field-label" for="fullResetPhrase">输入 RESET 以继续</label><input id="fullResetPhrase" autocomplete="off" placeholder="RESET"/>` : ""}<div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button danger" data-action="confirm-maintenance-clear">${detail.confirm}</button></div></section></div>`;
+}
+
 function renderModal(): string {
+  if (state.modal === "quick-start") {
+    return `<div class="modal-backdrop"><section class="modal wide-modal quick-start-modal"><span class="section-label">欢迎使用 Translator</span><h2>快速开始</h2><p class="note">这是全新的应用数据基线。不会读取、导入、迁移或删除任何旧版本数据；本引导也不会自动测试 API Key 或发送服务请求。</p><ol class="quick-start-list"><li><b>配置翻译模型</b><span>保存服务商、Base URL、模型和 Key；连接测试仅在你主动点击时执行。</span><button class="mini-button" data-action="quick-start-go" data-destination="config">打开配置</button></li><li><b>选择工作流与语言</b><span>进入 Excel、Word 或 PDF / 图片页面。Excel 和 Word 默认使用自动识别，PDF 只选择目标语言。</span><span class="help-links"><button class="mini-button" data-action="quick-start-go" data-destination="excel">Excel</button><button class="mini-button" data-action="quick-start-go" data-destination="word">Word</button><button class="mini-button" data-action="quick-start-go" data-destination="pdf">PDF / 图片</button></span></li><li><b>扫描文件并开始</b><span>选择文件或文件夹，检查输出选项后启动。任务会冻结本次语言、模型、Key 和吞吐快照。</span></li></ol><div class="modal-actions"><button class="button" data-action="quick-start-finish">跳过</button><button class="button primary" data-action="quick-start-finish">完成</button></div></section></div>`;
+  }
+  if (state.modal === "maintenance-confirm") return renderMaintenanceConfirmation();
   if (state.modal === "custom-language") {
     const editing = state.customLanguageEditing;
     return `<div class="modal-backdrop"><section class="modal"><h2>${editing ? "编辑自定义语言" : "新增自定义目标语言"}</h2><p class="note">自定义语言只能作为目标语言使用；内部代码创建后不可变。</p><label class="field-label" for="customLanguageName">显示名称</label><input id="customLanguageName" value="${escapeHtml(editing?.display_name)}" ${editing ? "disabled" : ""} autofocus/><label class="field-label" for="customLanguageDescription" style="margin-top:10px">语言说明</label><textarea id="customLanguageDescription">${escapeHtml(editing?.description)}</textarea><div class="modal-actions"><button class="button" data-action="close-modal">取消</button>${editing ? `<button class="button danger" data-action="custom-language-delete">删除</button>` : ""}<button class="button primary" data-action="${editing ? "custom-language-update" : "custom-language-create"}">保存</button></div></section></div>`;
@@ -1594,12 +1730,15 @@ function renderModal(): string {
     const roleRows = preview.roles.map((item) => `<li><strong>${escapeHtml(item.role)}</strong>：${escapeHtml(item.fields.join("、") || "无显式字段")}</li>`).join("");
     return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>预览导入 v3 模型配置</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · 仅合并文件明确字段，不删除未提及配置。</p><ul class="import-summary">${roleRows || "<li>没有角色配置变更。</li>"}</ul><p class="note">吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="model-import-confirm">确认合并</button></div></section></div>`;
   }
-  if (state.modal === "migration") {
-    return `<div class="modal-backdrop"><section class="modal"><h2>旧数据迁移</h2><p class="note">检查旧版数据目录，并且只在你确认后迁移不冲突的数据。</p><div id="migrationResult" class="note">准备检查…</div><div class="modal-actions"><button class="button" data-action="close-modal">关闭</button><button class="button primary" data-action="migration-apply">迁移不冲突数据</button></div></section></div>`;
-  }
   if (state.modal === "update") {
     const result = state.updateResult ?? {};
-    return `<div class="modal-backdrop"><section class="modal"><h2>${escapeHtml(text(result.message, "检查更新"))}</h2><p class="note">当前版本：${escapeHtml(text(result.current_version, "V8.0.0"))}</p><p class="note">${escapeHtml(text(result.release_notes, text(result.detail, "没有可用的更新说明。")))}</p><div class="modal-actions"><button class="button" data-action="close-modal">关闭</button><button class="button" data-action="ignore-update" ${text(result.latest_version) ? "" : "disabled"}>忽略此版本</button></div></section></div>`;
+    const status = text(result.status);
+    const available = status === "available";
+    const version = text(result.latest_version, text(result.tag));
+    const releaseUrl = text(result.release_url);
+    const downloadUrl = text(result.download_url);
+    const paused = Boolean(record(state.updateState?.preferences).notifications_paused);
+    return `<div class="modal-backdrop"><section class="modal wide-modal update-modal"><span class="section-label">GitHub Release</span><h2>${escapeHtml(text(result.message, "检查更新"))}</h2><p class="note">当前版本：${escapeHtml(text(result.current_version, "V8.0.0"))}${version ? ` · 最新版本：${escapeHtml(version)}` : ""}</p>${available ? `<dl class="update-details"><dt>适配安装包</dt><dd>${escapeHtml(text(result.asset_name))}</dd><dt>发布日期</dt><dd>${escapeHtml(text(result.release_date, "未提供"))}</dd><dt>SHA-256</dt><dd><code>${escapeHtml(text(result.sha256))}</code></dd></dl>` : ""}<p class="note update-notes">${escapeHtml(text(result.release_notes, text(result.detail, "没有可用的更新说明。")))}</p>${status === "release_not_ready" ? `<div class="risk-callout"><strong>${icon("warn", "small")}发布包未就绪</strong><p>当前 Release 缺少本机架构的 DMG 或 SHA-256，应用不会推荐下载错误安装包。</p></div>` : ""}<div class="modal-actions modal-actions-spread"><button class="button" data-action="set-update-notifications" data-paused="${paused ? "false" : "true"}">${paused ? "恢复后台提醒" : "暂停后台提醒"}</button><span><button class="button" data-action="close-modal">关闭</button><button class="button" data-action="ignore-update" ${available && version ? "" : "disabled"}>忽略此版本</button>${releaseUrl ? `<button class="button" data-action="open-external-url" data-url="${escapeHtml(releaseUrl)}">查看 Release ${icon("external", "small")}</button>` : ""}${available && downloadUrl ? `<button class="button primary" data-action="open-external-url" data-url="${escapeHtml(downloadUrl)}">下载 DMG ${icon("download", "small")}</button>` : ""}</span></div></section></div>`;
   }
   if (state.modal === "notice" && state.modalNotice) {
     return `<div class="modal-backdrop"><section class="modal"><h2>${escapeHtml(state.modalNotice.title)}</h2><p class="note">${escapeHtml(state.modalNotice.message)}</p><div class="modal-actions"><button class="button primary" data-action="close-modal">知道了</button></div></section></div>`;
@@ -2917,48 +3056,170 @@ async function confirmModelConfigImport(): Promise<void> {
   render();
 }
 
-async function checkUpdate(): Promise<void> {
-  state.updateResult = await client.request<JsonObject>("/api/updates/check");
+async function refreshUpdateState(): Promise<void> {
+  state.updateState = await client.request<JsonObject>("/api/updates/state");
+}
+
+async function updatePreferences(patch: JsonObject): Promise<void> {
+  state.updateState = await client.request<JsonObject>("/api/updates/preferences", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
+async function checkUpdate(mode: "manual" | "background" = "manual"): Promise<void> {
+  const result = await client.request<JsonObject>(`/api/updates/check?mode=${mode}`);
+  if (mode === "background") {
+    if (text(result.status) !== "available" || Boolean(result.notification_suppressed)) return;
+    state.updateResult = result;
+    state.modal = "update";
+    render();
+    return;
+  }
+  state.updateResult = result;
   state.modal = "update";
   render();
 }
 
 async function ignoreCurrentUpdate(): Promise<void> {
-  const release = text(state.updateResult?.latest_version);
+  const release = text(state.updateResult?.latest_version, text(state.updateResult?.tag));
   if (!release) return;
-  await client.request("/api/updates/preferences", {
-    method: "PUT",
-    body: JSON.stringify({ ignore_updates: true, ignored_release_version: release }),
-  });
+  await updatePreferences({ ignored_release_version: release });
   state.modal = null;
   state.updateResult = null;
   render();
-  showToast(`已忽略版本 ${release}。`);
+  showToast(`已忽略版本 ${release}；后续版本仍会提示。`);
 }
 
-async function downloadDiagnostics(): Promise<void> {
-  const response = await fetchWithToken("/api/diagnostics/history.zip");
+async function setUpdateNotifications(paused: boolean): Promise<void> {
+  await updatePreferences({ notifications_paused: paused });
+  render();
+  showToast(paused ? "已暂停后台更新提醒；手动检查仍然可用。" : "已恢复后台更新提醒。 ");
+}
+
+async function finishQuickStart(destination?: string): Promise<void> {
+  await updatePreferences({ quick_start_completed: true });
+  state.modal = null;
+  if (destination === "config") {
+    state.view = "excel";
+    state.panelOpen = true;
+    await persistSettings({ appearance: { ...appearance(), model_config_panel_open: true } });
+  } else if (destination === "excel" || destination === "word" || destination === "pdf") {
+    state.view = destination;
+  }
+  render();
+  void checkUpdate("background").catch(() => undefined);
+}
+
+async function showQuickStart(): Promise<void> {
+  await updatePreferences({ quick_start_completed: false });
+  state.modal = "quick-start";
+  render();
+}
+
+async function refreshMaintenance(): Promise<void> {
+  const [overview, diagnostics] = await Promise.all([
+    client.request<JsonObject>("/api/maintenance/overview"),
+    client.request<JsonObject>("/api/diagnostics"),
+  ]);
+  state.maintenanceOverview = overview;
+  state.diagnostics = Array.isArray(diagnostics.records)
+    ? diagnostics.records.filter((item): item is JsonObject => Boolean(item) && typeof item === "object")
+    : [];
+  state.diagnosticsOverview = record(diagnostics.overview);
+}
+
+function safeMaintenanceCategory(value: string): MaintenanceConfirmation["category"] {
+  const allowed: MaintenanceConfirmation["category"][] = ["task_history", "logs", "diagnostics", "keys", "settings", "tm", "full_reset"];
+  if (!allowed.includes(value as MaintenanceConfirmation["category"])) {
+    throw new Error("无法识别维护操作。");
+  }
+  return value as MaintenanceConfirmation["category"];
+}
+
+async function requestMaintenanceClear(category: string, langPair?: string): Promise<void> {
+  if (category !== "settings" && activeTasks().length) {
+    throw new Error("存在活动任务时不能执行该维护操作。");
+  }
+  state.maintenanceConfirmation = { category: safeMaintenanceCategory(category), langPair };
+  state.modal = "maintenance-confirm";
+  render();
+}
+
+async function confirmMaintenanceClear(): Promise<void> {
+  const pending = state.maintenanceConfirmation;
+  if (!pending) return;
+  if (pending.category === "full_reset") {
+    const acknowledged = document.querySelector<HTMLInputElement>("#fullResetAcknowledge")?.checked;
+    const phrase = inputValue("fullResetPhrase");
+    if (!acknowledged || phrase !== "RESET") throw new Error("请勾选确认并准确输入 RESET。 ");
+    await client.request<JsonObject>("/api/maintenance/reset-full", {
+      method: "POST",
+      body: JSON.stringify({ confirmation: true, phrase }),
+    });
+    state.maintenanceConfirmation = null;
+    state.modal = "notice";
+    state.modalNotice = { title: "本地数据已重置", message: "当前新版应用数据已删除。请关闭并重新打开 Translator，以全新状态继续使用。" };
+    render();
+    return;
+  }
+  await client.request<JsonObject>("/api/maintenance/clear", {
+    method: "POST",
+    body: JSON.stringify({ category: pending.category, lang_pair: pending.langPair, confirmation: true }),
+  });
+  state.maintenanceConfirmation = null;
+  state.modal = null;
+  if (pending.category === "settings") await refreshSettings();
+  if (pending.category === "tm") {
+    await refreshTm();
+    await refreshTmConflicts();
+  }
+  await refreshMaintenance();
+  render();
+  showToast("维护操作已完成；翻译输出未受影响。 ");
+}
+
+async function downloadBinary(path: string, fallbackFilename: string): Promise<void> {
+  const response = await fetchWithToken(path);
   if (!response.ok) throw new Error("导出诊断归档失败。");
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filename = disposition.match(/filename=\"?([^\";]+)\"?/i)?.[1] || fallbackFilename;
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "translator-diagnostics.zip";
+  anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-async function inspectMigration(): Promise<void> {
-  const payload = await client.request<JsonObject>("/api/migration/inspect");
-  const node = document.querySelector<HTMLElement>("#migrationResult");
-  if (node) node.textContent = `状态：${text(payload.status)}；可迁移主数据：${Array.isArray(payload.primary_items) ? payload.primary_items.length : 0} 项。`;
+async function downloadDiagnostics(): Promise<void> {
+  await downloadBinary("/api/diagnostics/history.zip", "translator-diagnostics.zip");
 }
 
-async function applyMigration(): Promise<void> {
-  const payload = await client.request<JsonObject>("/api/migration/apply", { method: "POST", body: JSON.stringify({ action: "non_conflicting", include_support_files: false }) });
-  showToast(`迁移完成：${Array.isArray(payload.migrated) ? payload.migrated.length : 0} 项。`);
-  state.modal = null;
+async function downloadDiagnostic(recordId: string): Promise<void> {
+  if (!recordId) throw new Error("未找到诊断记录。 ");
+  await downloadBinary(`/api/diagnostics/${encodeURIComponent(recordId)}.zip`, "translator-diagnostic.zip");
+}
+
+async function deleteDiagnostic(recordId: string): Promise<void> {
+  if (!recordId) throw new Error("未找到诊断记录。 ");
+  if (activeTasks().length) throw new Error("存在活动任务时不能删除诊断记录。 ");
+  await client.request(`/api/diagnostics/${encodeURIComponent(recordId)}`, { method: "DELETE" });
+  await refreshMaintenance();
   render();
+  showToast("诊断记录已删除。 ");
+}
+
+async function openAppDataDirectory(): Promise<void> {
+  const path = text(state.maintenanceOverview?.app_data_dir);
+  if (!path) throw new Error("本地数据目录尚未加载。 ");
+  await invoke("open_local_path", { path, reveal: false });
+}
+
+async function openExternalUrl(url: string): Promise<void> {
+  if (!url) throw new Error("没有可打开的链接。 ");
+  await invoke("open_external_url", { url });
 }
 
 async function fetchWithToken(path: string): Promise<Response> {
@@ -3210,7 +3471,14 @@ async function handleAction(target: HTMLElement): Promise<void> {
   const action = target.dataset.action;
   const surface = target.dataset.surface as Surface | undefined;
   const taskId = text(target.dataset.taskId);
-  if (action === "navigate" && target.dataset.view) { state.view = target.dataset.view as View; if (state.view === "tm") { await refreshTmLanguagePairs(); await refreshTm(); await refreshTmConflicts(); } if (state.view === "tasks") await refreshTaskRegistry(); render(); return; }
+  if (action === "navigate" && target.dataset.view) {
+    state.view = target.dataset.view as View;
+    if (state.view === "tm") { await refreshTmLanguagePairs(); await refreshTm(); await refreshTmConflicts(); }
+    if (state.view === "tasks") await refreshTaskRegistry();
+    if (state.view === "maintenance") await refreshMaintenance();
+    render();
+    return;
+  }
   if (action === "open-task-center") { state.view = "tasks"; if (taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") state.workspaceTaskIds[task.surface] = taskId; } await refreshTaskRegistry(); render(); return; }
   if (action === "task-filter") { state.taskCenterFilter = (target.dataset.filter as typeof state.taskCenterFilter) || "all"; render(); return; }
   if (action === "show-task-workspace" && taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") { state.workspaceTaskIds[task.surface] = taskId; state.view = task.surface; render(); } return; }
@@ -3295,16 +3563,25 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "tm-export" || action === "tm-export-json") return exportTm("json");
   if (action === "tm-export-csv") return exportTm("csv");
   if (action === "tm-export-full") return exportFullTm();
-  if (action === "close-modal") { state.modal = null; state.pendingExcelStart = null; state.pendingStopTaskId = null; state.pendingTaskRisk = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
+  if (action === "close-modal") { state.modal = null; state.pendingExcelStart = null; state.pendingStopTaskId = null; state.pendingTaskRisk = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.maintenanceConfirmation = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
   if (action === "export-model-config") return exportModelConfig();
   if (action === "export-model-config-sensitive") return exportModelConfig(true);
   if (action === "import-model-config") return importModelConfig();
   if (action === "model-import-confirm") return confirmModelConfigImport();
   if (action === "check-update") return checkUpdate();
   if (action === "ignore-update") return ignoreCurrentUpdate();
+  if (action === "set-update-notifications") return setUpdateNotifications(target.dataset.paused === "true");
+  if (action === "show-quick-start") return showQuickStart();
+  if (action === "quick-start-finish") return finishQuickStart();
+  if (action === "quick-start-go") return finishQuickStart(text(target.dataset.destination));
+  if (action === "open-external-url") return openExternalUrl(text(target.dataset.url));
+  if (action === "refresh-maintenance") { await refreshMaintenance(); render(); return; }
+  if (action === "open-app-data") return openAppDataDirectory();
+  if (action === "request-maintenance-clear") return requestMaintenanceClear(text(target.dataset.category), text(target.dataset.langPair));
+  if (action === "confirm-maintenance-clear") return confirmMaintenanceClear();
   if (action === "download-diagnostics") return downloadDiagnostics();
-  if (action === "migration") { state.modal = "migration"; render(); await inspectMigration(); return; }
-  if (action === "migration-apply") return applyMigration();
+  if (action === "download-diagnostic") return downloadDiagnostic(text(target.dataset.recordId));
+  if (action === "delete-diagnostic") return deleteDiagnostic(text(target.dataset.recordId));
 }
 
 async function bootstrap(): Promise<void> {
@@ -3318,6 +3595,12 @@ async function bootstrap(): Promise<void> {
     await refreshTm();
     await refreshTmConflicts();
     await refreshTaskRegistry();
+    await refreshUpdateState();
+    if (!Boolean(record(state.updateState?.preferences).quick_start_completed)) {
+      state.modal = "quick-start";
+    } else {
+      void checkUpdate("background").catch(() => undefined);
+    }
   } catch (error) {
     showToast(`无法连接翻译引擎：${errorMessage(error)}`, true);
   }

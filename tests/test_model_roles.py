@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from config import SETTINGS_SCHEMA_VERSION
 from core.model_roles import (
     ROLE_CLEANER,
     ROLE_IMAGE,
@@ -19,30 +18,22 @@ from core.model_roles import (
     resolve_effective_model_config,
     settings_for_text_role,
 )
-from settings import AppSettings, EngineSettings, _migrate_settings_payload
+from settings import AppSettings, EngineSettings
 
 
 class ModelRoleTests(unittest.TestCase):
-    def test_settings_migration_adds_model_roles_pdf_defaults_and_local_defaults(self) -> None:
-        migrated = _migrate_settings_payload(
-            {
-                "settings_version": 11,
-                "cleaner_engine": "custom_openai",
-                "cleaner_model": "",
-                "engine": {
-                    "mode": "cloud",
-                    "cloud_provider": "custom_openai",
-                    "cloud_model": "gpt-5.4",
-                    "cloud_base_url": "https://example.test/v1",
-                    "ollama_model": "qwen2.5:14b",
-                },
-            },
-            11,
+    def test_current_baseline_has_model_roles_pdf_defaults_and_local_defaults(self) -> None:
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="cloud",
+                cloud_provider="custom_openai",
+                cloud_model="gpt-5.4",
+                cloud_base_url="https://example.test/v1",
+                local_provider="ollama",
+                local_model="qwen2.5:14b",
+            )
         )
 
-        settings = AppSettings.model_validate(migrated)
-
-        self.assertEqual(settings.settings_version, SETTINGS_SCHEMA_VERSION)
         self.assertEqual(settings.cleaner_model_role.source_role, ROLE_TRANSLATION)
         self.assertEqual(settings.image_model_role.source_role, ROLE_TRANSLATION)
         self.assertEqual(settings.pdf_review_model_role.source_role, ROLE_TRANSLATION)
@@ -50,9 +41,9 @@ class ModelRoleTests(unittest.TestCase):
         self.assertEqual(settings.pdf.target_lang, "zh")
         self.assertIsNone(settings.pdf.page_generation_concurrency)
         self.assertFalse(settings.pdf.review_enabled)
-        self.assertFalse(settings.update.ignore_updates)
+        self.assertFalse(settings.update.notifications_paused)
         self.assertEqual(settings.update.ignored_release_version, "")
-        self.assertEqual(settings.update.last_prompted_major_version, "")
+        self.assertEqual(settings.update.last_background_check_at, "")
         self.assertEqual(settings.engine.local_provider, "ollama")
         self.assertEqual(settings.engine.local_model, "qwen2.5:14b")
 

@@ -1,6 +1,6 @@
 # 升级功能迁移分阶段实施方案
 
-状态：`实施中；Phase 0–7 已通过，Phase 8 尚未开工；以最终决策文档为唯一产品范围依据`
+状态：`实施中；Phase 0–7 已通过，Phase 8 执行中；以最终决策文档为唯一产品范围依据`
 
 > 版本：`1.4`　|　更新日期：`2026-07-24`　|　范围基线：[upgrade-functional-migration-decisions.md](./upgrade-functional-migration-decisions.md)
 
@@ -12,7 +12,7 @@
 
 本文件覆盖模块 1–8 以及跨模块决定 X-01 至 X-13。旧的 Route B 交接文档、旧版 UI 原型和历史验收记录只作为实现线索，不得覆盖本文件与最终决策文档中的新基线。
 
-当前执行位置：Phase 0–7 均已完成并有独立验收记录；Phase 7 已通过 L4 阶段门，因此允许建立 Phase 8 开工记录；在该记录建立前，Phase 8 不得开始编码。
+当前执行位置：Phase 0–7 均已完成并有独立验收记录；Phase 7 已通过 L4 阶段门，Phase 8 开工记录已建立，三条子 Agent 线与 L4 正在并行执行；Phase 8 验收为 `passed` 前不得开始 Phase 9 编码。
 
 ### 1.1 阶段状态登记
 
@@ -26,7 +26,8 @@
 | Phase 5 | `passed` | [2026-07-24_phase-05-word_acceptance.md](validation/2026-07-24_phase-05-word_acceptance.md)；实现提交 `e196cf7` |
 | Phase 6 | `passed` | [2026-07-24_phase-06-pdf_acceptance.md](validation/2026-07-24_phase-06-pdf_acceptance.md)；实现提交 `d5a9d61` |
 | Phase 7 | `passed` | [2026-07-24_phase-07-scheduler_acceptance.md](validation/2026-07-24_phase-07-scheduler_acceptance.md) |
-| Phase 8–9 | `pending` | 仅在前一阶段验收状态为 `passed` 后，才创建本阶段三个子 Agent 任务 |
+| Phase 8 | `in_progress` | [2026-07-24_phase-08-release_opening.md](validation/2026-07-24_phase-08-release_opening.md)；上一阶段为 `passed`，四线并行中 |
+| Phase 9 | `pending` | 仅在 Phase 8 验收状态为 `passed` 后，才创建本阶段三个子 Agent 任务 |
 
 状态登记是执行指针，不是产品范围变更；产品行为仍以最终决策文档为准。Phase 0–2 已在本模板建立前完成，历史记录采用补录方式；从 Phase 3 起，启动时间、完成时间、提交 SHA、验证命令和未覆盖项必须逐线登记，缺一项不得通过阶段门。
 

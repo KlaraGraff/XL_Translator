@@ -27,22 +27,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "dmg",
     "icon": ["../assets/branding/app-icon-original.png"],
     "resources": {
       "resources/sidecar": "sidecar"
     },
     "macOS": {
-      "minimumSystemVersion": "12.0"
-    },
-    "windows": {
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper",
-        "silent": true
-      },
-      "nsis": {
-        "installMode": "currentUser"
-      }
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist"
     }
   }
 }

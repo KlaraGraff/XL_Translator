@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import plistlib
 import re
 import subprocess
@@ -83,6 +84,94 @@ def _architectures(path: Path) -> set[str]:
     return set(result.stdout.split())
 
 
+def verify_app_bundle(
+    app_bundle: Path,
+    *,
+    declared: str,
+    architecture: str | None = None,
+) -> dict[str, object]:
+    """Scan every Mach-O inside an app and return an auditable verification report."""
+    report: dict[str, object] = {
+        "app_bundle": str(app_bundle),
+        "declared_macos_minimum": declared,
+        "required_architecture": architecture,
+        "checked_macho_count": 0,
+        "binaries": [],
+        "errors": [],
+    }
+    errors = report["errors"]
+    binaries = report["binaries"]
+    assert isinstance(errors, list)
+    assert isinstance(binaries, list)
+    try:
+        declared_version = _version_tuple(declared)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return report
+
+    info_plist = app_bundle / "Contents" / "Info.plist"
+    try:
+        with info_plist.open("rb") as stream:
+            plist = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException) as exc:
+        errors.append(f"Cannot read {info_plist}: {exc}")
+        return report
+    plist_minimum = str(plist.get("LSMinimumSystemVersion", "")).strip()
+    report["info_plist_minimum"] = plist_minimum
+    if plist_minimum != declared:
+        errors.append(
+            "Info.plist LSMinimumSystemVersion "
+            f"is {plist_minimum!r}, expected {declared!r}"
+        )
+
+    for path in sorted(app_bundle.rglob("*")):
+        if path.is_symlink() or not path.is_file() or not _is_macho(path):
+            continue
+        report["checked_macho_count"] = int(report["checked_macho_count"]) + 1
+        relative = str(path.relative_to(app_bundle))
+        binary: dict[str, object] = {"path": relative, "minos": [], "architectures": []}
+        binaries.append(binary)
+        try:
+            versions = _minimum_versions(path)
+            binary["minos"] = versions
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            continue
+        if architecture:
+            try:
+                architectures = _architectures(path)
+                binary["architectures"] = sorted(architectures)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                continue
+            if architecture not in architectures:
+                errors.append(
+                    f"{path}: architectures {sorted(architectures)!r} do not include "
+                    f"required {architecture}"
+                )
+        if not versions:
+            errors.append(f"no macOS minimum load command found: {path}")
+            continue
+        for actual_text in versions:
+            if _version_tuple(actual_text) > declared_version:
+                errors.append(
+                    f"{path}: Mach-O minos {actual_text} exceeds declared {declared}"
+                )
+
+    if report["checked_macho_count"] == 0:
+        errors.append(f"no Mach-O binaries found in {app_bundle}")
+    report["ok"] = not errors
+    return report
+
+
+def _write_report(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("app_bundle", type=Path)
@@ -92,69 +181,25 @@ def main() -> int:
         choices=("arm64", "x86_64"),
         help="Require every Mach-O to contain this architecture slice.",
     )
+    parser.add_argument("--report", type=Path, help="Write the full Mach-O scan report as JSON.")
     args = parser.parse_args()
 
-    try:
-        declared = _version_tuple(args.declared)
-    except ValueError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
-        return 1
-
-    info_plist = args.app_bundle / "Contents" / "Info.plist"
-    try:
-        with info_plist.open("rb") as stream:
-            plist = plistlib.load(stream)
-    except (OSError, plistlib.InvalidFileException) as exc:
-        print(f"[ERROR] Cannot read {info_plist}: {exc}", file=sys.stderr)
-        return 1
-    plist_minimum = str(plist.get("LSMinimumSystemVersion", "")).strip()
-    if plist_minimum != args.declared:
-        print(
-            "[ERROR] Info.plist LSMinimumSystemVersion "
-            f"is {plist_minimum!r}, expected {args.declared!r}",
-            file=sys.stderr,
-        )
-        return 1
-
-    errors: list[str] = []
-    checked = 0
-    for path in sorted(args.app_bundle.rglob("*")):
-        if path.is_symlink() or not path.is_file() or not _is_macho(path):
-            continue
-        checked += 1
-        try:
-            versions = _minimum_versions(path)
-        except RuntimeError as exc:
-            errors.append(str(exc))
-            continue
-        if args.architecture:
-            try:
-                architectures = _architectures(path)
-            except RuntimeError as exc:
-                errors.append(str(exc))
-                continue
-            if args.architecture not in architectures:
-                errors.append(
-                    f"{path}: architectures {sorted(architectures)!r} do not include "
-                    f"required {args.architecture}"
-                )
-        if not versions:
-            errors.append(f"no macOS minimum load command found: {path}")
-            continue
-        for actual_text in versions:
-            if _version_tuple(actual_text) > declared:
-                errors.append(
-                    f"{path}: Mach-O minos {actual_text} exceeds declared {args.declared}"
-                )
-
-    if checked == 0:
-        errors.append(f"no Mach-O binaries found in {args.app_bundle}")
+    report = verify_app_bundle(
+        args.app_bundle,
+        declared=args.declared,
+        architecture=args.architecture,
+    )
+    if args.report:
+        _write_report(args.report, report)
+    errors = report["errors"]
+    assert isinstance(errors, list)
     if errors:
         for error in errors:
             print(f"[ERROR] {error}", file=sys.stderr)
         return 1
     print(
-        f"[INFO] Verified {checked} Mach-O binaries against macOS {args.declared}"
+        "[INFO] Verified "
+        f"{report['checked_macho_count']} Mach-O binaries against macOS {args.declared}"
     )
     return 0
 

@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import settings as settings_module
 from config import SETTINGS_SCHEMA_VERSION
-from settings import AppSettings
+from settings import AppSettings, SettingsSchemaError
 
 
 def _save_keys_in_process(root: str, worker_index: int, start_event) -> None:
@@ -117,7 +117,7 @@ class SettingsPersistenceTests(unittest.TestCase):
             if os.name != "nt":
                 self.assertEqual(stat.S_IMODE(keys_path.stat().st_mode), 0o600)
 
-    def test_load_keeps_valid_migrated_settings_when_rewrite_fails(self) -> None:
+    def test_incompatible_settings_are_not_migrated_or_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app_data_dir = Path(tmp)
             settings_path = app_data_dir / "settings.json"
@@ -138,18 +138,20 @@ class SettingsPersistenceTests(unittest.TestCase):
                     APP_DATA_DIR=app_data_dir,
                     SETTINGS_PATH=settings_path,
                     KEYS_PATH=app_data_dir / "keys.json",
-                    BACKUPS_DIR=app_data_dir / "backups",
-                ),
-                patch.object(
-                    settings_module,
-                    "save_settings",
-                    side_effect=OSError("read-only filesystem"),
                 ),
             ):
                 loaded = settings_module.load_settings()
+                status = settings_module.get_settings_schema_status()
+                with self.assertRaises(SettingsSchemaError):
+                    settings_module.save_settings(AppSettings())
 
-            self.assertEqual(loaded.target_lang, "fr")
-            self.assertEqual(loaded.custom_prompt, "keep-me")
+            self.assertEqual(status["state"], "incompatible")
+            self.assertEqual(loaded.target_lang, AppSettings().target_lang)
+            self.assertEqual(loaded.custom_prompt, "")
+            self.assertEqual(
+                json.loads(settings_path.read_text(encoding="utf-8"))["custom_prompt"],
+                "keep-me",
+            )
 
     def test_load_keeps_valid_normalized_settings_when_rewrite_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,7 +174,6 @@ class SettingsPersistenceTests(unittest.TestCase):
                     APP_DATA_DIR=app_data_dir,
                     SETTINGS_PATH=settings_path,
                     KEYS_PATH=app_data_dir / "keys.json",
-                    BACKUPS_DIR=app_data_dir / "backups",
                 ),
                 patch.object(
                     settings_module,

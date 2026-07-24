@@ -12,7 +12,7 @@ from openpyxl import Workbook
 import settings as settings_module
 from api.app import create_app
 from api.task_manager import TranslationTaskManager
-from core import data_migration, diagnostics, tm_manager
+from core import diagnostics, tm_manager
 from core.api_config_check import ApiConfigCheckResult
 from core.model_api_identity import TaskApiContext
 from core.model_catalog import ModelCatalogResult
@@ -72,7 +72,6 @@ class ApiAppTests(unittest.TestCase):
                 APP_DATA_DIR=self.root / "app-data",
                 SETTINGS_PATH=self.root / "app-data" / "settings.json",
                 KEYS_PATH=self.root / "app-data" / "keys.json",
-                BACKUPS_DIR=self.root / "app-data" / "backups",
             ),
             patch.object(tm_manager, "DB_PATH", self.root / "app-data" / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics"),
@@ -246,7 +245,7 @@ class ApiAppTests(unittest.TestCase):
         ):
             self.assertEqual(self.client.post(endpoint).status_code, 200)
 
-    def test_model_config_update_diagnostics_and_migration_endpoints(self) -> None:
+    def test_model_config_update_and_diagnostics_endpoints(self) -> None:
         imported = self.client.post(
             "/api/model-config/import",
             json={
@@ -293,7 +292,7 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(
             self.client.put(
                 "/api/updates/preferences",
-                json={"ignore_updates": True, "ignored_release_version": "9.0.0"},
+                json={"notifications_paused": True, "ignored_release_version": "9.0.0"},
             ).status_code,
             200,
         )
@@ -301,18 +300,11 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/diagnostics").status_code, 200)
         self.assertEqual(self.client.get("/api/diagnostics/history.zip").status_code, 200)
 
-        plan = data_migration.inspect_data_migration(
-            app_data_dir=self.root / "migration-target",
-            legacy_data_dir=self.root / "legacy",
-            legacy_launcher_dir=self.root / "legacy-launcher",
+        self.assertEqual(self.client.get("/api/migration/status").status_code, 404)
+        self.assertEqual(
+            self.client.post("/api/migration/apply", json={"action": "skip"}).status_code,
+            404,
         )
-        with patch("api.app.data_migration.inspect_data_migration", return_value=plan):
-            migration = self.client.post(
-                "/api/migration/apply",
-                json={"action": "skip"},
-            )
-        self.assertEqual(migration.status_code, 200)
-        self.assertEqual(migration.json()["status"], "skipped")
 
     def test_token_protects_every_api_route_including_health(self) -> None:
         client = TestClient(create_app(auth_token="sidecar-token"))

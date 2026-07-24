@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.app_paths import get_app_data_dir, get_legacy_app_data_dir
+from core.app_paths import get_app_data_dir
 
 
 class AppPathTests(unittest.TestCase):
@@ -46,12 +46,6 @@ class AppPathTests(unittest.TestCase):
                 ),
                 xdg / "Translator",
             )
-
-    def test_legacy_path_stays_dot_xl_translator(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            self.assertEqual(get_legacy_app_data_dir(home=home), home / ".xl_translator")
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

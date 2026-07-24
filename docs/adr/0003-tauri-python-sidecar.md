@@ -4,7 +4,7 @@ Date: 2026-07-16
 
 ## Status
 
-Accepted
+Accepted, amended 2026-07-24 by the final functional-migration decisions.
 
 ## Context
 
@@ -27,13 +27,17 @@ shell with Tauri 2 and a system WebView.
   include that token. SSE carries task logs and progress.
 - Release bundles include a PyInstaller onedir sidecar without PySide6. The
   sidecar is packaged as a Tauri resource so its colocated native dependencies
-  remain resolvable on macOS and Windows.
-- Existing app-data locations, settings migrations, `keys.json`, TM databases
-  and model-configuration import/export remain the compatibility boundary.
+  remain resolvable on macOS.
+- The current release baseline is macOS 12.0+ only. It produces separate native
+  arm64 and Intel x64 DMGs, with Python 3.11, a macOS 12 deployment target,
+  full Mach-O scans, Developer ID signing, notarization and Gatekeeper checks.
+- This release starts a new application-data baseline. It does not read,
+  migrate, repair or delete data from earlier releases; subsequent releases
+  must explicitly protect and migrate this new baseline forward.
 
 ## Consequences
 
 `native_app/`, PySide6 dependencies and the Qt launcher/spec files are retired.
 The product still has two executables at release time, so macOS signing and
-notarization must cover both the Tauri app and the embedded sidecar. Windows
-packages use NSIS with the WebView2 download bootstrapper.
+notarization cover both the Tauri app and the embedded sidecar. Apple Events
+automation is declared in the app usage description and signing entitlements.

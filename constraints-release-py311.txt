@@ -1,5 +1,5 @@
 # Reproducible release environment for Python 3.11.
-# Update deliberately and validate both macOS and Windows frozen builds.
+# Update deliberately and validate native macOS frozen builds.
 altgraph==0.17.5
 annotated-types==0.7.0
 annotated-doc==0.0.4

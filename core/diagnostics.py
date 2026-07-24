@@ -65,135 +65,55 @@ def archive_task_diagnostics(
     progress: Any | None = None,
     task_artifacts: dict[str, Any] | None = None,
 ) -> Path:
-    """Persist a lightweight diagnostic record and return its directory."""
+    """Persist a strictly anonymous support record.
+
+    Diagnostics deliberately do not contain document names, paths, cell or
+    paragraph locations, source/target content, prompts, model responses, API
+    keys, or a copied ``app.log``.  User-facing reports remain the only local
+    files that may retain document-specific positioning information.
+    """
+    del source_root, task_artifacts
     record_dir = _unique_record_dir(surface=surface, task_id=task_id)
-    (record_dir / "logs").mkdir(parents=True, exist_ok=True)
-    (record_dir / "task").mkdir(parents=True, exist_ok=True)
-    (record_dir / "locate").mkdir(parents=True, exist_ok=True)
     (record_dir / "environment").mkdir(parents=True, exist_ok=True)
 
     done_payload = _json_safe(done)
     file_results = list(done_payload.get("file_results") or []) if isinstance(done_payload, dict) else []
     quality_issues = list(done_payload.get("issues") or []) if isinstance(done_payload, dict) else []
-    output_dir = str(done_payload.get("output_dir") or "") if isinstance(done_payload, dict) else ""
-    artifact_payload = _redact(_json_safe(task_artifacts or {}))
-    if not output_dir and isinstance(artifact_payload, dict):
-        output_dir = str(artifact_payload.get("output_dir") or "")
-    failure_count = sum(1 for item in file_results if not item.get("success"))
-
-    selected_file_payload = [_serialize_file_item(item) for item in selected_files]
-    source_texts = _extract_failed_source_texts(quality_issues)
-    excel_locations = (
-        _collect_excel_locations(selected_files, source_texts)
-        if surface == "excel" and source_texts
-        else []
-    )
-    word_locations = _extract_word_locations(quality_issues) if surface == "word" else []
-    word_runtime_events = _extract_word_runtime_events(logs) if surface == "word" else []
-    pdf_summary: dict[str, Any] = {}
-
-    created_at = datetime.now().isoformat(timespec="seconds")
-    manifest = {
-        "record_id": record_dir.name,
-        "created_at": created_at,
-        "surface": surface,
-        "phase": phase,
-        "task_id": str(task_id or ""),
-        "source_root": str(source_root or ""),
-        "output_dir": output_dir,
-        "status": status,
-        "error_message": _redact(error_message),
-        "file_count": len(selected_file_payload),
+    failure_count = sum(1 for item in file_results if not bool(item.get("success")))
+    metrics = {
+        "file_count": len(selected_files),
         "failed_file_count": failure_count,
         "quality_issue_count": len(quality_issues),
         "runtime_log_count": len(logs),
-        "excel_location_count": len(excel_locations),
-        "word_location_count": len(word_locations),
-        "word_runtime_event_count": len(word_runtime_events),
+        "progress_event_count": 1 if progress is not None else 0,
+        "log_levels": _count_log_levels(logs),
     }
-    if surface == "pdf":
-        pdf_summary = _build_pdf_diagnostic_summary(
-            output_dir=output_dir,
-            file_results=file_results,
-            quality_issues=quality_issues,
-            artifacts=artifact_payload if isinstance(artifact_payload, dict) else {},
-        )
-        manifest.update(
-            {
-                "pdf_status": pdf_summary.get("status", ""),
-                "pdf_manifest_path": pdf_summary.get("manifest_path", ""),
-                "pdf_report_path": pdf_summary.get("report_path", ""),
-                "pdf_total_page_count": pdf_summary.get("total_page_count", 0),
-                "pdf_placeholder_page_count": pdf_summary.get("placeholder_page_count", 0),
-                "pdf_emergency_ratio_normalized_count": pdf_summary.get(
-                    "emergency_ratio_normalized_count",
-                    0,
-                ),
-            }
-        )
+    manifest = {
+        "record_id": record_dir.name,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "surface": _safe_category(surface, fallback="task"),
+        "phase": _safe_category(phase, fallback="unknown"),
+        "anonymous_locator": _anonymous_locator(task_id),
+        "status": _safe_category(status, fallback="unknown"),
+        "error_code": _safe_error_code(error_message),
+        **metrics,
+        "content_categories": [
+            "runtime",
+            "task_type_and_stage",
+            "anonymous_counts",
+            "redacted_connection_summary",
+        ],
+    }
 
     _write_json(record_dir / "manifest.json", manifest)
-    _write_text(record_dir / "summary.md", _build_summary(manifest, file_results, quality_issues))
-    _write_json(record_dir / "task" / "settings.redacted.json", _redact(_json_safe(settings)))
-    _write_json(record_dir / "task" / "selected_files.json", selected_file_payload)
-    _write_json(record_dir / "task" / "file_results.json", _redact(_json_safe(file_results)))
+    _write_json(record_dir / "metrics.json", metrics)
     _write_json(
-        record_dir / "task" / "quality_issues.json",
-        _sanitize_quality_issues(quality_issues),
+        record_dir / "environment" / "runtime.json",
+        {
+            **_build_runtime_payload(),
+            "connection_summary": _connection_summary(settings),
+        },
     )
-    _write_json(record_dir / "task" / "progress.json", _redact(_json_safe(progress)))
-    if surface == "pdf":
-        _write_json(record_dir / "task" / "pdf_summary.json", pdf_summary)
-    _write_json(record_dir / "environment" / "runtime.json", _build_runtime_payload())
-    _write_jsonl(record_dir / "logs" / "ui_runtime_log.jsonl", logs)
-    _write_text(
-        record_dir / "logs" / "app_log_excerpt.txt",
-        _read_app_log_excerpt(task_id=str(task_id or "")),
-    )
-    _write_failed_items_csv(record_dir / "locate" / "failed_items.csv", file_results, quality_issues)
-    if surface == "excel":
-        _write_csv(
-            record_dir / "locate" / "excel_cell_locations.csv",
-            excel_locations,
-            [
-                "file",
-                "sheet",
-                "cell",
-                "row",
-                "column",
-                "source_hash",
-                "source_excerpt",
-            ],
-        )
-    if surface == "word":
-        _write_csv(
-            record_dir / "locate" / "word_segment_locations.csv",
-            word_locations,
-            [
-                "file",
-                "kind",
-                "location",
-                "location_label",
-                "section_path",
-                "severity",
-                "problem",
-                "status",
-                "snippet",
-            ],
-        )
-        _write_csv(
-            record_dir / "locate" / "word_runtime_events.csv",
-            word_runtime_events,
-            [
-                "ts",
-                "level",
-                "file",
-                "section_path",
-                "location_label",
-                "event",
-                "message",
-            ],
-        )
 
     prune_diagnostic_records()
 
@@ -211,6 +131,11 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        if not _is_current_safe_manifest(payload):
+            # A prior format may contain document-specific locations.  Keep
+            # it on disk until the user explicitly clears diagnostics, but
+            # never surface or export it through the current application.
+            continue
         payload["record_dir"] = str(manifest_path.parent)
         payload["size_bytes"] = estimate_record_size(manifest_path.parent)
         records.append(payload)
@@ -222,6 +147,104 @@ def list_diagnostic_records() -> list[dict[str, Any]]:
 def count_diagnostic_records() -> int:
     """Return the number of persisted diagnostic records."""
     return len(list_diagnostic_records())
+
+
+def public_diagnostic_records() -> list[dict[str, Any]]:
+    """Return diagnostic summaries that are safe to render or expose over API."""
+    allowed = {
+        "record_id",
+        "created_at",
+        "surface",
+        "phase",
+        "anonymous_locator",
+        "status",
+        "error_code",
+        "file_count",
+        "failed_file_count",
+        "quality_issue_count",
+        "runtime_log_count",
+        "size_bytes",
+        "content_categories",
+    }
+    return [
+        {key: value for key, value in record.items() if key in allowed}
+        for record in list_diagnostic_records()
+    ]
+
+
+def diagnostic_overview() -> dict[str, Any]:
+    records = list_diagnostic_records()
+    return {
+        "count": len(records),
+        "total_size_bytes": sum(int(item.get("size_bytes") or 0) for item in records),
+        "max_records": _DIAGNOSTIC_MAX_RECORDS,
+        "max_total_bytes": _DIAGNOSTIC_MAX_TOTAL_BYTES,
+        "content_categories": [
+            "runtime",
+            "task_type_and_stage",
+            "anonymous_counts",
+            "redacted_connection_summary",
+        ],
+    }
+
+
+def find_diagnostic_record(record_id: str) -> dict[str, Any] | None:
+    return next(
+        (item for item in list_diagnostic_records() if item.get("record_id") == record_id),
+        None,
+    )
+
+
+def delete_diagnostic_record(record_id: str) -> bool:
+    record = find_diagnostic_record(record_id)
+    if record is None:
+        return False
+    record_dir = Path(str(record.get("record_dir") or ""))
+    if not _is_record_directory(record_dir):
+        return False
+    shutil.rmtree(record_dir, ignore_errors=False)
+    return True
+
+
+def clear_diagnostic_records() -> int:
+    removed = 0
+    if not DIAGNOSTIC_RECORDS_DIR.exists():
+        return removed
+    for candidate in DIAGNOSTIC_RECORDS_DIR.iterdir():
+        if not candidate.is_dir() or not _is_record_directory(candidate):
+            continue
+        shutil.rmtree(candidate, ignore_errors=False)
+        removed += 1
+    return removed
+
+
+def _is_current_safe_manifest(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    required = {"record_id", "anonymous_locator", "content_categories"}
+    forbidden = {
+        "source_root",
+        "output_dir",
+        "error_message",
+        "task_id",
+        "pdf_manifest_path",
+        "pdf_report_path",
+    }
+    return required.issubset(payload) and not any(key in payload for key in forbidden)
+
+
+def record_system_diagnostic(*, phase: str, error_code: str) -> Path:
+    """Record a non-task failure such as a release check without raw details."""
+    return archive_task_diagnostics(
+        surface="system",
+        phase=phase,
+        task_id=f"system-{phase}",
+        settings={},
+        selected_files=[],
+        logs=[],
+        status="error",
+        error_message=error_code,
+    )
 
 
 def prune_diagnostic_records(
@@ -322,8 +345,7 @@ def _unique_record_dir(*, surface: str, task_id: str) -> Path:
     DIAGNOSTIC_RECORDS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_surface = _safe_filename(surface or "task")
-    safe_task_id = _safe_filename(task_id or "runtime")
-    base = f"{timestamp}_{safe_surface}_{safe_task_id}"
+    base = f"{timestamp}_{safe_surface}_{_anonymous_locator(task_id)}"
     candidate = DIAGNOSTIC_RECORDS_DIR / base
     suffix = 2
     while candidate.exists():
@@ -336,6 +358,74 @@ def _unique_record_dir(*, surface: str, task_id: str) -> Path:
 def _safe_filename(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
     return cleaned.strip("._")[:80] or "diagnostic"
+
+
+def _safe_category(value: object, *, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip().lower())
+    return cleaned.strip("_")[:48] or fallback
+
+
+def _anonymous_locator(task_id: object) -> str:
+    raw = str(task_id or "").encode("utf-8", errors="ignore")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _safe_error_code(message: object) -> str:
+    """Persist a bounded category instead of an exception or provider response."""
+    raw = str(message or "").strip().lower()
+    if not raw:
+        return "none"
+    if "429" in raw or "rate" in raw:
+        return "rate_limited"
+    if "timeout" in raw or "timed out" in raw:
+        return "timeout"
+    if "auth" in raw or "401" in raw or "403" in raw:
+        return "authentication"
+    if "network" in raw or "connect" in raw:
+        return "network"
+    if "schema" in raw or "json" in raw:
+        return "data_validation"
+    return "task_failed"
+
+
+def _count_log_levels(logs: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for log in logs:
+        level = _safe_category(log.get("level") if isinstance(log, dict) else "", fallback="info")
+        counts[level] = counts.get(level, 0) + 1
+    return counts
+
+
+def _connection_summary(settings: Any) -> list[dict[str, str]]:
+    """Keep provider role labels, never model names, endpoints, or credentials."""
+    result: list[dict[str, str]] = []
+    roles = (
+        ("translation", getattr(settings, "engine", None)),
+        ("cleaner", getattr(settings, "cleaner_model_role", None)),
+        ("image", getattr(settings, "image_model_role", None)),
+        ("pdf_review", getattr(settings, "pdf_review_model_role", None)),
+    )
+    for role, value in roles:
+        if value is None:
+            continue
+        result.append(
+            {
+                "role": role,
+                "mode": _safe_category(getattr(value, "mode", "cloud"), fallback="unknown"),
+                "provider": _safe_category(
+                    getattr(value, "cloud_provider", ""),
+                    fallback="unknown",
+                ),
+            }
+        )
+    return result
+
+
+def _is_record_directory(path: Path) -> bool:
+    try:
+        return path.resolve().parent == DIAGNOSTIC_RECORDS_DIR.resolve()
+    except OSError:
+        return False
 
 
 def _json_safe(value: Any) -> Any:

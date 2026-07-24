@@ -11,15 +11,13 @@
 """
 import hashlib
 import sqlite3
-import shutil
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
 
 from loguru import logger
 
-from config import BACKUPS_DIR, DB_PATH
+from config import BACKUPS_DIR as DEFAULT_BACKUPS_DIR, DB_PATH
 from core.language_registry import is_custom_target_lang
 from core.tm_text import normalize_tm_text_for_storage
 
@@ -99,12 +97,16 @@ CREATE TABLE IF NOT EXISTS tm_cleaning_suggestions (
 
 TM_SCHEMA_VERSION = 3
 TM_SCHEMA_VERSION_KEY = "tm_schema_version"
-BIDIRECTIONAL_BACKFILL_KEY = "tm_bidirectional_backfill_v1"
 AUTO_WORD_TYPE = "auto"
 REVIEWED_AUTO_WORD_TYPE = "reviewed_auto"
 CLEANING_LOCKED_WORD_TYPE = "cleaning_locked"
 MANUAL_WORD_TYPE = "manual"
 IMPORT_WORD_TYPE = "import"
+
+# This remains an injectable test-isolation path for existing TM contract
+# fixtures.  The current baseline does not create, restore, or migrate backups
+# automatically.
+BACKUPS_DIR = DEFAULT_BACKUPS_DIR
 
 
 # ── 连接管理 ──────────────────────────────────────────────────────────────────
@@ -125,14 +127,43 @@ def _get_conn():
 
 
 def init_db() -> None:
-    """应用启动时调用一次，确保表结构存在。"""
+    """Open only the current TM baseline; do not import or repair older data."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DB_PATH.exists() and _read_schema_version(DB_PATH) != TM_SCHEMA_VERSION:
-        _migrate_legacy_db()
+        raise TmSchemaError(
+            "TM 数据不是当前 schema；请在维护页明确清空该类别。"
+        )
 
     _ensure_current_schema()
     _backfill_source_hashes()
     logger.info(f"TM 数据库就绪：{DB_PATH}")
+
+
+class TmSchemaError(ValueError):
+    """Persisted TM data is not safe for this new baseline to open."""
+
+
+def get_schema_status() -> dict[str, object]:
+    if not DB_PATH.exists():
+        return {
+            "state": "missing",
+            "current_version": TM_SCHEMA_VERSION,
+            "stored_version": None,
+            "can_write": True,
+        }
+    version = _read_schema_version(DB_PATH)
+    if version > TM_SCHEMA_VERSION:
+        state = "future"
+    elif version < TM_SCHEMA_VERSION:
+        state = "incompatible"
+    else:
+        state = "current"
+    return {
+        "state": state,
+        "current_version": TM_SCHEMA_VERSION,
+        "stored_version": version,
+        "can_write": state in {"missing", "current"},
+    }
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -198,15 +229,6 @@ def _backfill_source_hashes() -> None:
                 [_make_hash(row["source_text"], row["lang_pair"]), row["id"]],
             )
         logger.info(f"TM 数据库修复：source_hash 回填完成，共 {len(rows)} 条")
-
-
-def _backup_legacy_db() -> str:
-    backup_dir = BACKUPS_DIR / "tm"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = backup_dir / f"tm_legacy_{timestamp}.db"
-    shutil.copy2(DB_PATH, backup_path)
-    return str(backup_path)
 
 
 def _normalize_word_type(word_type: str | None) -> str:
@@ -574,187 +596,6 @@ def _select_scope_rows(
         """,
         params,
     ).fetchall()
-
-
-def _is_bidirectional_backfill_done(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT meta_value FROM tm_meta WHERE meta_key = ?",
-        [BIDIRECTIONAL_BACKFILL_KEY],
-    ).fetchone()
-    return row is not None and row["meta_value"] == "1"
-
-
-def _mark_bidirectional_backfill_done(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        INSERT INTO tm_meta (meta_key, meta_value)
-        VALUES (?, '1')
-        ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value
-        """,
-        [BIDIRECTIONAL_BACKFILL_KEY],
-    )
-
-
-def _backfill_reverse_entries() -> None:
-    with _get_conn() as conn:
-        if _is_bidirectional_backfill_done(conn):
-            return
-        rows = conn.execute(
-            """
-            SELECT id, source_text, target_text, lang_pair, word_type, source_engine, pinned
-            FROM tm_entries
-            ORDER BY id
-            """
-        ).fetchall()
-        if not rows:
-            _mark_bidirectional_backfill_done(conn)
-            return
-
-    backup_path = _backup_legacy_db()
-    logger.info(f"TM 双向词库补录前已备份数据库：{backup_path}")
-
-    inserted_or_updated = 0
-    skipped = 0
-    with _get_conn() as conn:
-        for row in rows:
-            source_text = normalize_tm_text_for_storage(row["source_text"])
-            target_text = normalize_tm_text_for_storage(row["target_text"])
-            lang_pair = str(row["lang_pair"] or "").strip()
-            if not source_text or not target_text or not lang_pair:
-                continue
-            if _sync_reverse_upsert(
-                conn,
-                source_text,
-                target_text,
-                lang_pair,
-                word_type=row["word_type"],
-                source_engine=row["source_engine"],
-                pinned=1 if row["pinned"] else 0,
-            ):
-                inserted_or_updated += 1
-            else:
-                skipped += 1
-        _mark_bidirectional_backfill_done(conn)
-    logger.info(
-        "TM 双向词库补录完成："
-        f"新增或更新反向词条 {inserted_or_updated} 条，跳过 {skipped} 条"
-    )
-
-
-def _load_legacy_entries(legacy_db_path: str) -> list[sqlite3.Row]:
-    conn = sqlite3.connect(legacy_db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    try:
-        if not _table_exists(conn, "tm_entries"):
-            return []
-
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(tm_entries)").fetchall()
-        }
-
-        def _select_expr(column: str, fallback: str) -> str:
-            return column if column in columns else f"{fallback} AS {column}"
-
-        rows = conn.execute(
-            f"""
-            SELECT
-                source_text,
-                target_text,
-                lang_pair,
-                {_select_expr("word_type", "'term'")},
-                {_select_expr("source_engine", "''")},
-                {_select_expr("pinned", "0")}
-            FROM tm_entries
-            ORDER BY id
-            """
-        ).fetchall()
-        return rows
-    finally:
-        conn.close()
-
-
-def _rewrite_from_legacy_rows(rows: list[sqlite3.Row]) -> int:
-    if not rows:
-        return 0
-
-    to_insert: list[tuple] = []
-    for row in rows:
-        source_text = normalize_tm_text_for_storage(row["source_text"])
-        target_text = normalize_tm_text_for_storage(row["target_text"])
-        lang_pair = str(row["lang_pair"] or "").strip()
-        if not source_text or not target_text or not lang_pair:
-            continue
-
-        to_insert.append(
-            (
-                source_text,
-                _make_hash(source_text, lang_pair),
-                target_text,
-                lang_pair,
-                _normalize_word_type(row["word_type"]),
-                str(row["source_engine"] or ""),
-                1 if bool(row["pinned"]) else 0,
-            )
-        )
-
-    if not to_insert:
-        return 0
-
-    with _get_conn() as conn:
-        conn.executemany(
-            """
-            INSERT INTO tm_entries (
-                source_text,
-                source_hash,
-                target_text,
-                lang_pair,
-                word_type,
-                source_engine,
-                pinned
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source_text, lang_pair) DO UPDATE SET
-                source_hash   = excluded.source_hash,
-                target_text   = excluded.target_text,
-                word_type     = excluded.word_type,
-                source_engine = excluded.source_engine,
-                pinned        = excluded.pinned,
-                updated_at    = CURRENT_TIMESTAMP
-            """,
-            to_insert,
-        )
-    return len(to_insert)
-
-
-def _migrate_legacy_db() -> None:
-    backup_path = _backup_legacy_db()
-    logger.info(f"检测到旧版 TM 数据库，已备份到：{backup_path}")
-
-    legacy_rows: list[sqlite3.Row] = []
-    try:
-        legacy_rows = _load_legacy_entries(backup_path)
-    except Exception as exc:
-        logger.warning(f"旧版 TM 数据读取失败，将直接重建新库：{exc}")
-
-    try:
-        DB_PATH.unlink(missing_ok=True)
-    except Exception as exc:
-        logger.warning(f"清理旧版 TM 数据库失败，将尝试覆盖重建：{exc}")
-
-    _ensure_current_schema()
-
-    if not legacy_rows:
-        logger.warning("未读取到可迁移的旧词条，已直接启用全新 TM 数据库。")
-        return
-
-    try:
-        migrated = _rewrite_from_legacy_rows(legacy_rows)
-        logger.info(f"TM 数据库迁移完成：共迁移 {migrated} 条词条。")
-    except Exception as exc:
-        logger.warning(f"TM 数据库迁移失败，已丢弃旧词条并启用新库：{exc}")
-        DB_PATH.unlink(missing_ok=True)
-        _ensure_current_schema()
 
 
 # ── 核心 CRUD ─────────────────────────────────────────────────────────────────
@@ -1181,6 +1022,32 @@ def delete_all_entries(lang_pair: str, keyword: str = "") -> int:
         for row in rows:
             conn.execute("DELETE FROM tm_entries WHERE id = ?", [row["id"]])
         return len(rows)
+
+
+def clear_entries(*, lang_pair: str | None = None) -> int:
+    """Delete all entries in an explicitly confirmed maintenance scope.
+
+    This intentionally includes pinned/manual rows.  It is separate from the
+    ordinary entry-management deletes, which still protect pinned terminology.
+    """
+    with _get_conn() as conn:
+        if lang_pair:
+            cursor = conn.execute("DELETE FROM tm_entries WHERE lang_pair = ?", [lang_pair])
+            conn.execute("DELETE FROM tm_conflict_candidates WHERE lang_pair = ?", [lang_pair])
+            conn.execute("DELETE FROM tm_cleaning_suggestions WHERE lang_pair = ?", [lang_pair])
+        else:
+            cursor = conn.execute("DELETE FROM tm_entries")
+            conn.execute("DELETE FROM tm_conflict_candidates")
+            conn.execute("DELETE FROM tm_cleaning_suggestions")
+        return int(cursor.rowcount)
+
+
+def count_entries() -> int:
+    """Return a scalar for maintenance UI without exposing any TM text."""
+    init_db()
+    with _get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS total FROM tm_entries").fetchone()
+    return int(row["total"] or 0)
 
 
 def bulk_update(

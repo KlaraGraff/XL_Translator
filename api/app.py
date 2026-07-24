@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,7 +19,7 @@ from api.task_manager import (
     TaskOptions,
     TranslationTaskManager,
 )
-from core import data_migration, diagnostics, tm_manager
+from core import diagnostics, maintenance, tm_manager
 from core.language_preflight import (
     build_language_preflight_prompt,
     extract_language_probe_texts,
@@ -72,6 +73,7 @@ from core.word_document import scan_word_sources
 from config import DOMAIN_PRESETS
 from settings import (
     AppSettings,
+    SettingsSchemaError,
     delete_key,
     get_key,
     load_keys,
@@ -218,14 +220,21 @@ class ThroughputPayload(BaseModel):
     concurrency: int | None = None
 
 
-class MigrationApplyRequest(BaseModel):
-    action: Literal["full", "non_conflicting", "skip"]
-    include_support_files: bool = False
+class UpdatePreferencesRequest(BaseModel):
+    notifications_paused: bool | None = None
+    ignored_release_version: str | None = Field(default=None, max_length=64)
+    quick_start_completed: bool | None = None
 
 
-class UpdateIgnoreRequest(BaseModel):
-    ignored_release_version: str = ""
-    ignore_updates: bool = True
+class MaintenanceClearRequest(BaseModel):
+    category: Literal["task_history", "logs", "diagnostics", "keys", "settings", "tm", "workspaces"]
+    confirmation: bool = False
+    lang_pair: str | None = Field(default=None, max_length=128)
+
+
+class FullResetRequest(BaseModel):
+    confirmation: bool = False
+    phrase: str = ""
 
 
 def create_app(
@@ -270,6 +279,18 @@ def create_app(
     @app.exception_handler(TaskInputError)
     async def task_input_error(_request, exc):
         return _json_error(422, str(exc))
+
+    @app.exception_handler(SettingsSchemaError)
+    async def settings_schema_error(_request, _exc):
+        return _json_error(
+            409,
+            "设置不是当前可写格式；请在维护页明确重置设置。",
+            reason="settings_schema_requires_reset",
+        )
+
+    @app.exception_handler(maintenance.MaintenanceError)
+    async def maintenance_error(_request, exc):
+        return _json_error(422, str(exc), reason="maintenance_operation_rejected")
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -608,6 +629,16 @@ def create_app(
     @app.get("/api/tasks/resources")
     def task_resource_groups() -> dict[str, Any]:
         return {"groups": app.state.task_manager.resource_groups()}
+
+    @app.delete("/api/tasks/history")
+    def clear_task_history() -> dict[str, Any]:
+        _require_no_active_tasks(app, category="task_history")
+        return {
+            "category": "task_history",
+            "removed_count": app.state.task_manager.clear_history(),
+            "outputs_affected": False,
+            "restart_required": False,
+        }
 
     @app.get("/api/tasks/{task_id}/results")
     def get_task_results(task_id: str) -> dict[str, Any]:
@@ -1150,23 +1181,102 @@ def create_app(
             "imported_key_count": len(imported.api_keys) + len(imported.scoped_api_keys),
         }
 
+    @app.get("/api/updates/state")
+    def update_state() -> dict[str, Any]:
+        settings = load_settings()
+        return _update_state_payload(settings)
+
     @app.get("/api/updates/check")
-    def check_updates() -> dict[str, Any]:
+    def check_updates(mode: Literal["manual", "background"] = "manual") -> dict[str, Any]:
+        settings = load_settings()
+        if mode == "background":
+            deferred = _background_update_deferred(settings)
+            if deferred:
+                return {
+                    "ok": True,
+                    "status": "deferred",
+                    "message": "后台更新检查暂不执行。",
+                    "reason": deferred,
+                    **_update_state_payload(settings),
+                }
         from core.update_checker import check_for_updates
 
-        return _json_safe(check_for_updates())
+        result = check_for_updates()
+        if mode == "background":
+            settings.update.last_background_check_at = datetime.now(timezone.utc).isoformat()
+            save_settings(settings)
+        if result.status == "error":
+            diagnostics.record_system_diagnostic(
+                phase="update_check",
+                error_code=result.diagnostic_code or "update_check_failed",
+            )
+        payload = _json_safe(result)
+        if mode == "background":
+            payload["notification_suppressed"] = _background_notice_suppressed(settings, payload)
+        return payload
 
     @app.put("/api/updates/preferences")
-    def update_preferences(payload: UpdateIgnoreRequest) -> dict[str, Any]:
+    def update_preferences(payload: UpdatePreferencesRequest) -> dict[str, Any]:
         settings = load_settings()
-        settings.update.ignore_updates = payload.ignore_updates
-        settings.update.ignored_release_version = payload.ignored_release_version.strip()
+        changed = payload.model_fields_set
+        if "notifications_paused" in changed:
+            settings.update.notifications_paused = bool(payload.notifications_paused)
+        if "ignored_release_version" in changed:
+            settings.update.ignored_release_version = str(
+                payload.ignored_release_version or ""
+            ).strip()
+        if "quick_start_completed" in changed:
+            settings.onboarding.quick_start_completed = bool(payload.quick_start_completed)
         save_settings(settings)
-        return settings.update.model_dump(mode="json")
+        return _update_state_payload(settings)
+
+    @app.get("/api/maintenance/overview")
+    def maintenance_overview() -> dict[str, Any]:
+        return maintenance.data_overview(
+            active_task_count=app.state.task_manager.active_task_count(),
+        )
+
+    @app.post("/api/maintenance/clear")
+    def maintenance_clear(payload: MaintenanceClearRequest) -> dict[str, Any]:
+        category = payload.category
+        if category in {"task_history", "logs", "diagnostics", "keys", "tm"}:
+            _require_no_active_tasks(app, category=category)
+        if category in {"keys", "settings", "tm", "workspaces"} and not payload.confirmation:
+            raise HTTPException(422, "此操作需要明确确认。")
+        if category == "task_history":
+            return {
+                "category": "task_history",
+                "removed_count": app.state.task_manager.clear_history(),
+                "outputs_affected": False,
+                "restart_required": False,
+            }
+        if category == "logs":
+            return maintenance.clear_logs().as_dict()
+        if category == "diagnostics":
+            return maintenance.clear_diagnostics().as_dict()
+        if category == "keys":
+            return maintenance.clear_keys().as_dict()
+        if category == "settings":
+            return maintenance.reset_settings().as_dict()
+        if category == "tm":
+            return maintenance.clear_tm(lang_pair=payload.lang_pair).as_dict()
+        if category == "workspaces":
+            return maintenance.clear_owned_workspaces().as_dict()
+        raise HTTPException(422, "不支持的维护类别。")
+
+    @app.post("/api/maintenance/reset-full")
+    def reset_full_local_data(payload: FullResetRequest) -> dict[str, Any]:
+        _require_no_active_tasks(app, category="reset_full")
+        if not payload.confirmation or payload.phrase != "RESET":
+            raise HTTPException(422, "完整重置需要勾选确认并输入 RESET。")
+        return maintenance.reset_all_local_data().as_dict()
 
     @app.get("/api/diagnostics")
     def list_diagnostics() -> dict[str, Any]:
-        return {"records": diagnostics.list_diagnostic_records()}
+        return {
+            "records": diagnostics.public_diagnostic_records(),
+            "overview": diagnostics.diagnostic_overview(),
+        }
 
     @app.get("/api/diagnostics/history.zip")
     def download_diagnostics_history() -> StreamingResponse:
@@ -1175,42 +1285,65 @@ def create_app(
 
     @app.get("/api/diagnostics/{record_id}.zip")
     def download_diagnostic_record(record_id: str) -> StreamingResponse:
-        record = next(
-            (
-                item
-                for item in diagnostics.list_diagnostic_records()
-                if item.get("record_id") == record_id
-            ),
-            None,
-        )
+        record = diagnostics.find_diagnostic_record(record_id)
         if record is None:
             raise HTTPException(404, "Diagnostic record not found.")
         payload, filename = diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
         return _zip_response(payload, filename)
 
-    @app.get("/api/migration/inspect")
-    def inspect_migration() -> dict[str, Any]:
-        return _json_safe(data_migration.inspect_data_migration())
-
-    @app.post("/api/migration/apply")
-    def apply_migration(payload: MigrationApplyRequest) -> dict[str, Any]:
-        plan = data_migration.inspect_data_migration()
-        if payload.action == "skip":
-            marker = data_migration.mark_migration_skipped(plan)
-            return {"marker_path": str(marker), "status": "skipped"}
-        if payload.action == "full":
-            result = data_migration.migrate_legacy_data(
-                plan,
-                include_support_files=payload.include_support_files,
-            )
-        else:
-            result = data_migration.migrate_non_conflicting_legacy_data(
-                plan,
-                include_support_files=payload.include_support_files,
-            )
-        return _json_safe(result)
+    @app.delete("/api/diagnostics/{record_id}")
+    def delete_diagnostic_record(record_id: str) -> dict[str, Any]:
+        _require_no_active_tasks(app, category="diagnostics")
+        return maintenance.delete_diagnostic(record_id).as_dict()
 
     return app
+
+
+def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
+    active_count = app.state.task_manager.active_task_count()
+    if active_count:
+        raise HTTPException(
+            409,
+            "存在活动任务，不能清理会影响其记录或冻结凭据的数据。",
+            headers={"X-Translator-Reason": f"active_tasks_block_{category}"},
+        )
+
+
+def _update_state_payload(settings: AppSettings) -> dict[str, Any]:
+    return {
+        "preferences": {
+            "notifications_paused": settings.update.notifications_paused,
+            "ignored_release_version": settings.update.ignored_release_version,
+            "last_background_check_at": settings.update.last_background_check_at,
+            "quick_start_completed": settings.onboarding.quick_start_completed,
+        },
+        "background_due": _background_update_deferred(settings) is None,
+    }
+
+
+def _background_update_deferred(settings: AppSettings) -> str | None:
+    if not settings.onboarding.quick_start_completed:
+        return "quick_start_incomplete"
+    if settings.update.notifications_paused:
+        return "notifications_paused"
+    raw_timestamp = str(settings.update.last_background_check_at or "").strip()
+    if not raw_timestamp:
+        return None
+    try:
+        previous = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+        if previous.tzinfo is None:
+            previous = previous.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if datetime.now(timezone.utc) - previous < timedelta(hours=24):
+        return "interval_not_elapsed"
+    return None
+
+
+def _background_notice_suppressed(settings: AppSettings, result: dict[str, Any]) -> bool:
+    if result.get("status") != "available":
+        return True
+    return str(result.get("latest_version") or "") == settings.update.ignored_release_version
 
 
 def _json_error(status_code: int, detail: str, *, reason: str | None = None) -> Response:

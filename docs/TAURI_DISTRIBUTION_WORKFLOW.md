@@ -1,36 +1,40 @@
-# Tauri V8 分发流程
+# Tauri macOS 分发流程
 
-标准发布物：
+新版只发布 macOS 12.0 Monterey 及以上版本，正式 Release 仅有两个原生资产：
 
-- Windows：`Translator_Windows_<version>_Setup.exe`（NSIS，WebView2 download bootstrapper）
-- macOS：`Translator_macOS_<version>.dmg`
+- `Translator_macOS_arm64_<version>.dmg` 及同名 `.sha256`
+- `Translator_macOS_x64_<version>.dmg` 及同名 `.sha256`
 
-两者均包含 Tauri 主程序和无 Qt 的 PyInstaller onedir Python sidecar。sidecar 位于
-Tauri 资源目录，不能拆出其中的动态库或 Python 运行时文件。
+不得交叉编译、以 Rosetta 替代原生构建，或上传 Windows/NSIS 安装器。`arm64` 必须在 Apple Silicon 原生构建机上生成；`x86_64` 必须在 Intel 原生构建机上生成，面向用户的文件名采用 `x64`。
 
-## 构建
+## 本地测试构建
+
+手动执行只生成明确标记为 `UNSIGNED_TEST` 的 GitHub artifact，不得作为正式下载资产：
 
 ```bash
-# macOS
-PYTHON_BIN=./.venv/bin/python3 bash scripts/build_macos_package.sh
-
-# Windows PowerShell
-./scripts/build_windows_package.ps1 -PythonExe .\.venv\Scripts\python.exe
+MACOS_ARCH="$(uname -m)" \
+MACOSX_DEPLOYMENT_TARGET=12.0 \
+PYTHON_BIN=./.venv/bin/python3 \
+bash scripts/build_macos_package.sh
 ```
 
-构建前先在 `ui/` 执行 `npm ci`。macOS 需要 Rust、Node、Xcode Command Line
-Tools 和 Python/PyInstaller；Windows 需要 Rust、Node、Python/PyInstaller 与 NSIS。
+构建机必须是 macOS，并且 `MACOS_ARCH` 必须等于 `uname -m`。脚本固定使用 Python 3.11 和 `MACOSX_DEPLOYMENT_TARGET=12.0`，在签名与 DMG 生成前扫描整个 `.app`：`LSMinimumSystemVersion` 必须为 `12.0`，所有 Mach-O 的 `minos` 必须不高于 12.0，并且都必须包含当前原生架构。扫描报告保存在 `.runtime/package/macos-reports/`。
 
-脚本会在安装包超过 80MB 时失败，要求先做人工裁剪评估。目标为不超过 70MB。
+构建前需要在 `ui/` 执行 `npm ci`，并具备 Rust、Node、Xcode Command Line Tools 和受控 Python 3.11。标准发布依赖不允许通过“不受支持 Python”开关绕过。
 
-## 签名与公证
+## 正式发布
 
-macOS 设置 `XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY` 后会先签名 sidecar、再签名
-`Translator.app`；设置 `XL_TRANSLATOR_MACOS_NOTARY_PROFILE` 后再提交 dmg 公证。
-Windows 设置 `XL_TRANSLATOR_WINDOWS_SIGN_CERT_SHA1` 后会签名 sidecar 和 NSIS 安装器。
+GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `ui/package.json` 的版本必须完全一致；任一不一致即失败。
 
-未配置 Developer ID 时，macOS 构建仍会对完整 `.app` 执行 ad-hoc 签名并校验资源
-封印，避免 Gatekeeper 将仅带链接器签名的 Tauri 应用误报为“已损坏”。ad-hoc 构建
-没有 Apple 公证，首次启动仍需按 README 的说明在 Finder 中右键选择“打开”。
+正式 tag 必须同时提供以下 GitHub Actions Secrets，缺少任一项会在构建前失败：
 
-任何正式发布前都应在对应平台执行安装、卸载、重装和启动冒烟验证。
+- `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
+- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `APPLE_KEYCHAIN_PASSWORD`
+- `APPLE_NOTARY_KEY_ID`
+- `APPLE_NOTARY_ISSUER_ID`
+- `APPLE_NOTARY_PRIVATE_KEY_BASE64`
+
+CI 将证书导入临时 keychain，签名 sidecar、应用和 DMG，提交 Apple 公证，staple 后用 Gatekeeper 评估。两个原生构建均成功、各自校验和通过且资产完整后，才会创建 GitHub Release。`workflow_dispatch` 永远只上传未签名测试 artifact，不创建或修改 Release。
+
+正式发布仍需分别在 macOS 12 arm64 与 macOS 12 x86_64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。

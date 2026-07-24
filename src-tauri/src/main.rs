@@ -144,6 +144,27 @@ fn open_local_path(path: String, reveal: bool) -> Result<(), String> {
         .map_err(|error| format!("Could not open the local output: {error}"))
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let supplied = url.trim();
+    let is_allowed_github_url = [
+        "https://github.com/",
+        "https://www.github.com/",
+        "https://objects.githubusercontent.com/",
+        "https://github-releases.githubusercontent.com/",
+    ]
+    .iter()
+    .any(|prefix| supplied.starts_with(prefix));
+    if !is_allowed_github_url {
+        return Err("Only official GitHub release and support links can be opened.".to_string());
+    }
+    Command::new("open")
+        .arg(supplied)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the external link: {error}"))
+}
+
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -312,7 +333,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             sidecar_info,
             inspect_output_directory,
-            open_local_path
+            open_local_path,
+            open_external_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building Translator shell")
@@ -325,7 +347,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_handshake;
+    use super::{open_external_url, parse_handshake};
 
     #[test]
     fn parses_launcher_handshake() {
@@ -339,5 +361,10 @@ mod tests {
     fn rejects_incomplete_launcher_handshake() {
         assert!(parse_handshake("PORT=43123\n").is_err());
         assert!(parse_handshake("TOKEN=one-time-token\n").is_err());
+    }
+
+    #[test]
+    fn rejects_non_github_external_urls() {
+        assert!(open_external_url("https://example.invalid/download".to_string()).is_err());
     }
 }

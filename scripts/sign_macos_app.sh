@@ -4,6 +4,9 @@ set -euo pipefail
 APP_PATH="${1:?Usage: sign_macos_app.sh APP_PATH [SIDECAR_PATH]}"
 SIDECAR_PATH="${2:-}"
 SIGNING_IDENTITY="${XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY:--}"
+REQUIRE_DEVELOPER_ID="${XL_TRANSLATOR_REQUIRE_DEVELOPER_ID:-0}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENTITLEMENTS_PATH="${XL_TRANSLATOR_MACOS_ENTITLEMENTS:-$ROOT_DIR/packaging/macos/translator.entitlements}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Application bundle was not found: $APP_PATH" >&2
@@ -13,29 +16,61 @@ if [[ -n "$SIDECAR_PATH" && ! -x "$SIDECAR_PATH" ]]; then
   echo "Bundled sidecar was not found or is not executable: $SIDECAR_PATH" >&2
   exit 1
 fi
+if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
+  echo "Apple Events entitlements file was not found: $ENTITLEMENTS_PATH" >&2
+  exit 1
+fi
+if [[ "$REQUIRE_DEVELOPER_ID" != "0" && "$REQUIRE_DEVELOPER_ID" != "1" ]]; then
+  echo "XL_TRANSLATOR_REQUIRE_DEVELOPER_ID must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "$REQUIRE_DEVELOPER_ID" == "1" && "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "Formal releases require a Developer ID Application signing identity." >&2
+  exit 1
+fi
 
 if [[ "$SIGNING_IDENTITY" == "-" ]]; then
-  echo "[INFO] No Developer ID identity configured; applying a complete ad-hoc bundle signature."
-  codesign --force --deep --sign - "$APP_PATH"
-else
-  if [[ -n "$SIDECAR_PATH" ]]; then
-    codesign \
-      --force \
-      --options runtime \
-      --timestamp \
-      --sign "$SIGNING_IDENTITY" \
-      "$SIDECAR_PATH"
-  fi
-  codesign \
-    --force \
-    --deep \
-    --options runtime \
-    --timestamp \
-    --sign "$SIGNING_IDENTITY" \
-    "$APP_PATH"
+  echo "[INFO] No Developer ID identity configured; applying a complete ad-hoc test signature."
 fi
+SIGN_OPTIONS=(--force --options runtime --entitlements "$ENTITLEMENTS_PATH")
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+  SIGN_OPTIONS+=(--timestamp)
+fi
+if [[ -n "$SIDECAR_PATH" ]]; then
+  codesign \
+    "${SIGN_OPTIONS[@]}" \
+    --sign "$SIGNING_IDENTITY" \
+    "$SIDECAR_PATH"
+fi
+codesign \
+  --deep \
+  "${SIGN_OPTIONS[@]}" \
+  --sign "$SIGNING_IDENTITY" \
+  "$APP_PATH"
 
 # Tauri's unsigned app bundle otherwise contains only the linker's signature on
 # the main executable. Gatekeeper reports that malformed bundle as "damaged".
 # Always verify that Info.plist and resources are sealed before creating a dmg.
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+if [[ "$REQUIRE_DEVELOPER_ID" == "1" ]]; then
+  SIGNATURE_DETAILS="$(codesign -dv --verbose=4 "$APP_PATH" 2>&1)"
+  if ! grep -Fq "Authority=Developer ID Application:" <<<"$SIGNATURE_DETAILS"; then
+    echo "The formal release app is not signed by a Developer ID Application certificate." >&2
+    exit 1
+  fi
+  if ! grep -Fq "runtime" <<<"$SIGNATURE_DETAILS"; then
+    echo "The formal release app is missing the Hardened Runtime signature option." >&2
+    exit 1
+  fi
+  for signed_target in "$APP_PATH" "$SIDECAR_PATH"; do
+    [[ -n "$signed_target" ]] || continue
+    entitlements_file="$(mktemp)"
+    codesign -d --entitlements :- "$signed_target" > "$entitlements_file" 2>/dev/null
+    entitlement_value="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.automation.apple-events' "$entitlements_file" 2>/dev/null || true)"
+    rm -f "$entitlements_file"
+    if [[ "$entitlement_value" != "true" ]]; then
+      echo "The formal release target is missing Apple Events automation entitlement: $signed_target" >&2
+      exit 1
+    fi
+  done
+fi

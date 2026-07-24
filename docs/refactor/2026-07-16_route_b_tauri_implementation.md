@@ -1,8 +1,10 @@
 # 方案 B 实施交接文档：Tauri 2 壳 + Python 引擎 Sidecar
 
 - **日期**：2026-07-16
-- **读者**：执行本次重构的 agent。本文档自包含，不依赖任何历史对话。
-- **性质**：以下所有架构与设计选择**已经用户拍板**。执行时不要重开辩论、不要"优化"决策；拿不准的情况见 §7「何时停下来问用户」。
+- **读者**：原始 Route B 重构执行记录的维护者。
+- **性质**：本文件保留 2026-07-16 的路线背景。其后续功能、数据基线、平台与发布要求已由 [升级后功能迁移决策](../upgrade-functional-migration-decisions.md) 和 [分阶段实施计划](../upgrade-functional-migration-implementation-plan.md) 覆盖；两份最终文档优先级更高。
+
+> 2026-07-24 修订：本文件中关于 Windows 新版、旧数据迁移、旧 Qt 验收和真实 Key 发布门的表述均已失效，不得据此恢复代码、API、UI 或发布流程。新版仅发布 macOS 12+ 的 arm64/x64 原生 DMG，且不读取、迁移、修复或删除本次新基线之前的数据。
 
 ---
 
@@ -120,7 +122,7 @@ TRANSLATOR_APP_DATA_DIR=/tmp/xlt-test .venv/bin/python scripts/launch_native.py 
 | TM：搜索/增删改/固定/清洗/导入导出/指标 | `core/tm_manager.py` |
 | 模型列表 / 连通性×3 / 吞吐上下界 | `core/model_catalog.py`、`core/connectivity_check.py`、`core/image_generation.py`、`core/pdf_review.py`、`core/model_throughput.py` |
 | 模型配置导入/导出 | 从 `main_window.py` 迁出的纯函数（见 §3） |
-| 更新检查 / 诊断导出 / 数据迁移 inspect+apply | `core/update_checker.py`、`core/diagnostics.py`、`core/data_migration.py` |
+| 更新检查 / 诊断导出 / 维护与重置 | `core/update_checker.py`、`core/diagnostics.py`、`core/maintenance.py` |
 
 **验收门**：FastAPI TestClient 覆盖每个端点族（含 SSE 至少一条全生命周期流：start→progress→log→done）；一次真实 Excel 小文件翻译经 curl 全程走通;Qt 应用零回归（`pytest tests/ -q` 全绿）。
 
@@ -132,10 +134,10 @@ TRANSLATOR_APP_DATA_DIR=/tmp/xlt-test .venv/bin/python scripts/launch_native.py 
 
 **Phase 验收门**：五页全过页级验收；开发模式（`tauri dev`）下从扫描到产出双语文件的三种翻译全流程各走通一次。
 
-### Phase 3 · 打包、迁移、下线 Qt
+### Phase 3 · 打包、建立新基线、下线 Qt
 
-- Tauri bundler：Windows（NSIS + WebView2 `downloadBootstrapper`）、macOS（dmg；**壳与 sidecar 两个可执行体都要签名+公证**）。sidecar 以 external binary 打进资源，注意 onedir 在 `.app/Contents/Resources` 下的路径解析。
-- 升级演练：用一份真实 V7.4 数据目录启动 V8.0，设置/TM/密钥全在；`core/data_migration.py` 弹窗流程在新壳可用。
+- Tauri bundler：仅 macOS 原生 DMG（Apple Silicon `arm64` 与 Intel `x64`）；**壳与 sidecar 两个可执行体都要签名、公证并通过 Gatekeeper 验证**。sidecar 以 external binary 打进资源，注意 onedir 在 `.app/Contents/Resources` 下的路径解析。
+- 新版建立独立数据基线：不得读取、复制、迁移、修复或删除旧版本的设置、TM、Key、模型或自定义语言数据。
 - `core/update_checker.py` 资产命名适配新安装包文件名。
 - 删除 `native_app/`、PySide6 依赖、旧 spec 中 Qt 相关项;`scripts/launch_native.py` 改指新入口或移除;随之退役 native_app 相关测试。
 - `docs/CHANGELOG.md` 记 V8.0.0；ADR 新增一条记录壳层更换决策（引用 assessment 文档）。

@@ -95,7 +95,6 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
                 APP_DATA_DIR=self.root / "app-data",
                 SETTINGS_PATH=self.root / "app-data" / "settings.json",
                 KEYS_PATH=self.root / "app-data" / "keys.json",
-                BACKUPS_DIR=self.root / "app-data" / "backups",
             ),
             patch.object(tm_manager, "DB_PATH", self.root / "app-data" / "tm.db"),
             patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.root / "diagnostics"),
@@ -424,6 +423,8 @@ class Phase3SnapshotAndExchangeAcceptanceTests(unittest.TestCase):
             with (
                 patch("api.task_manager.tm_manager.init_db"),
                 patch("api.task_manager.threading.Thread") as thread_type,
+                patch("core.api_config_check.get_key", return_value="mock-snapshot-key"),
+                patch("core.model_roles.get_key", return_value="mock-snapshot-key"),
             ):
                 started = manager.start_task(surface="excel", source_path=str(root))
                 thread_type.return_value.start.assert_called_once_with()
