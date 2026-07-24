@@ -442,9 +442,26 @@ class OutputSettings(BaseModel):
     enable_task_log: bool = False
 
 
+class ExcelOutputSettings(BaseModel):
+    """Settings owned solely by the Excel translation surface.
+
+    The previous ``output`` object remains for non-Excel callers while new
+    Excel tasks always freeze this object.  This avoids a Word/PDF edit
+    changing a future Excel task (E4B-01/E4B-11).
+    """
+
+    keep_original_sheets: bool = True
+    formula_display_value_backfill: bool = True
+    use_custom_output_dir: bool = False
+    custom_output_dir: str = ""
+    enable_excel_autofit: bool = False
+    lock_row_height: bool = False
+
+
 class ExcelReviewSettings(BaseModel):
     mark_review_items: bool = EXCEL_REVIEW_MARK_DEFAULT
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
+    mark_colors: dict[str, str] = Field(default_factory=_default_review_mark_colors)
 
     @model_validator(mode="after")
     def _normalize_existing_fill_policy(self):
@@ -453,6 +470,9 @@ class ExcelReviewSettings(BaseModel):
         if policy not in allowed:
             policy = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
         self.existing_fill_policy = policy
+        self.mark_colors = _review_mark_colors_from_payload(
+            {"mark_colors": self.mark_colors}
+        )
         return self
 
 
@@ -666,6 +686,7 @@ class AppSettings(BaseModel):
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
+    excel_output: ExcelOutputSettings = Field(default_factory=ExcelOutputSettings)
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)

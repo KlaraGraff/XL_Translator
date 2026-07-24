@@ -39,7 +39,7 @@ from core.language_registry import (
     update_custom_target_lang_display,
 )
 from core.connectivity_check import check_connectivity
-from core.file_scanner import scan_path
+from core.file_scanner import scan_excel_sources
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
 from core.model_config import (
@@ -527,7 +527,18 @@ def create_app(
     def scan_sources(request: ScanRequest) -> dict[str, Any]:
         root = Path(request.path).expanduser()
         if request.surface == "excel":
-            items = scan_path(root)
+            result = scan_excel_sources(root)
+            payload = {
+                "items": [_json_safe(item) for item in result.items],
+                "skipped": [_json_safe(item) for item in result.skipped],
+                "summary": result.summary,
+                "risk": result.risk,
+            }
+            # ``result`` is a stable grouped alias for callers that consume
+            # one typed scan object; top-level fields keep the Phase 1 route
+            # backward compatible.
+            payload["result"] = dict(payload)
+            return payload
         elif request.surface == "word":
             items = scan_word_path(root)
         else:

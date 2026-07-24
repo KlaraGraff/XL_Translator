@@ -298,6 +298,28 @@ textarea { min-height: 90px; resize: vertical; }
 .advanced-settings summary { display: flex; align-items: center; min-height: 38px; padding: 0 11px; color: var(--ink-2); cursor: pointer; font-size: 12px; font-weight: 650; }
 .advanced-settings-body { display: flex; flex-direction: column; gap: 7px; padding: 2px 11px 12px; }
 .advanced-settings-body .field-label { margin-top: 3px; }
+.output-path-row { display: flex; align-items: center; gap: 7px; }
+.output-path-row input { min-width: 0; flex: 1; }
+.output-path-state { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); background: var(--surface); font-size: 11px; line-height: 1.45; }
+.output-path-state.available { border-color: var(--ok-l); color: var(--ok); background: var(--ok-t); }
+.output-path-state.will_create { border-color: var(--tint-line); color: var(--tint-ink); background: var(--tint); }
+.output-path-state.empty, .output-path-state.blocked { border-color: var(--warn-l); color: var(--warn); background: var(--warn-t); }
+.excel-preflight, .scan-skipped, .excel-result-details { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.excel-preflight summary, .scan-skipped summary, .excel-result-details > summary, .result-section > summary, .permission-help > summary { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; color: var(--ink-2); cursor: pointer; font-size: 12px; font-weight: 650; }
+.excel-preflight ul, .scan-skipped ul, .result-section ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0 12px 10px 28px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
+.excel-preflight li.error { color: var(--danger); }.excel-preflight li.warn { color: var(--warn); }
+.scan-skipped { border-color: var(--warn-l); background: var(--warn-t); }
+.scan-skipped li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.scan-skipped small { color: var(--ink-2); }
+.file-location, .file-risk { display: flex; align-items: center; gap: 4px; max-width: 300px; margin: 3px 0 0 22px; overflow: hidden; color: var(--ink-3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.file-risk { color: var(--warn); }
+.format-pill, .file-status { display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px; border: 1px solid var(--line-2); border-radius: 999px; color: var(--ink-2); background: var(--surface-2); font-size: 10px; white-space: nowrap; }
+.format-pill.legacy { border-color: var(--warn-l); color: var(--warn); background: var(--warn-t); }.file-status.running { border-color: var(--tint-line); color: var(--tint-ink); background: var(--tint); }.file-status.ok { border-color: var(--ok-l); color: var(--ok); background: var(--ok-t); }.file-status.error { border-color: var(--warn-l); color: var(--danger); background: var(--warn-t); }
+.risk-callout { margin: 12px 0; padding: 11px; border: 1px solid var(--warn-l); border-radius: var(--r-sm); background: var(--warn-t); color: var(--ink-2); font-size: 12px; line-height: 1.55; }.risk-callout strong { display: flex; align-items: center; gap: 6px; color: var(--warn); }.risk-callout p { margin: 7px 0 0; }
+.permission-help { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }.permission-help p { margin: 0; padding: 0 10px 9px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
+.excel-result-details { padding-bottom: 9px; }.excel-result-details > summary { border-bottom: 1px solid var(--line); }.result-output { margin: 9px 10px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }.result-output code { overflow-wrap: anywhere; color: var(--tint-ink); }
+.result-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 9px 10px; }.result-kpis span { display: flex; flex-direction: column; gap: 2px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); background: var(--surface); font-size: 10px; }.result-kpis b { color: var(--ink); font-size: 14px; }
+.result-table { overflow: auto; margin: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }.result-table table { min-width: 800px; }.result-table td { max-width: 210px; overflow-wrap: anywhere; vertical-align: top; }.result-section { margin: 9px 10px 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .review-colors { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .review-colors input[type="color"] { min-height: 30px; padding: 3px; }
 

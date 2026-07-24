@@ -55,6 +55,7 @@ from core.engine_dispatcher import (
     build_engine,
     get_system_prompt,
     translate_texts,
+    translate_texts_with_sources,
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from core.model_throughput import get_model_throughput
@@ -151,6 +152,11 @@ class DoneMsg:
     api_call_count: int
     issues: list[dict] = field(default_factory=list)
     report_path: str = ""
+    files: list[dict] = field(default_factory=list)
+    kpi: dict[str, object] = field(default_factory=dict)
+    review: dict[str, object] = field(default_factory=dict)
+    language: dict[str, object] = field(default_factory=dict)
+    error: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -159,6 +165,11 @@ class ErrorMsg:
     output_dir: str = ""
     report_path: str = ""
     manifest_path: str = ""
+    files: list[dict] = field(default_factory=list)
+    kpi: dict[str, object] = field(default_factory=dict)
+    review: dict[str, object] = field(default_factory=dict)
+    language: dict[str, object] = field(default_factory=dict)
+    error: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -167,6 +178,11 @@ class StoppedMsg:
     output_dir: str = ""
     report_path: str = ""
     manifest_path: str = ""
+    files: list[dict] = field(default_factory=list)
+    kpi: dict[str, object] = field(default_factory=dict)
+    review: dict[str, object] = field(default_factory=dict)
+    language: dict[str, object] = field(default_factory=dict)
+    error: dict[str, object] = field(default_factory=dict)
 
 
 class TaskStopped(Exception):
@@ -256,6 +272,7 @@ class TaskRunner:
     def _run(self) -> None:
         start_ts     = datetime.now()
         settings     = self._settings
+        excel_output = settings.excel_output
         source_lang  = self._source_lang
         auto_source_lang = is_auto_source_lang(source_lang)
         target_lang  = settings.target_lang
@@ -273,6 +290,10 @@ class TaskRunner:
         stopped_message: str | None = None
         fatal_error_message: str | None = None
         quality_issues: list[dict] = []
+        file_language_preflights: dict = {}
+        file_texts: list[set[str]] = []
+        normal_api_language_results: dict = {}
+        excel_review_marks: dict[str, str] = {}
 
         try:
             config_check = check_translation_api_config(settings)
@@ -300,9 +321,13 @@ class TaskRunner:
                 raise TaskStopped(message)
 
         root_for_output = self._source_root if self._source_root else self._files[0].path.parent
-        custom_output_dir = self._settings.output.custom_output_dir if self._settings.output.use_custom_output_dir else None
+        custom_output_dir = (
+            excel_output.custom_output_dir
+            if excel_output.use_custom_output_dir
+            else None
+        )
         try:
-            if self._settings.output.use_custom_output_dir:
+            if excel_output.use_custom_output_dir:
                 output_dir_error = bilingual_writer.get_custom_output_dir_error(custom_output_dir)
                 if output_dir_error is not None:
                     raise ValueError(output_dir_error)
@@ -318,10 +343,10 @@ class TaskRunner:
             files                = self._files,
             engine_name          = engine.engine_name,
             target_lang          = target_lang,
-            keep_original_sheets = settings.output.keep_original_sheets,
-            formula_display_value_backfill = settings.output.formula_display_value_backfill,
-            enable_excel_autofit = settings.output.enable_excel_autofit,
-            lock_row_height      = settings.output.lock_row_height,
+            keep_original_sheets = excel_output.keep_original_sheets,
+            formula_display_value_backfill = excel_output.formula_display_value_backfill,
+            enable_excel_autofit = excel_output.enable_excel_autofit,
+            lock_row_height      = excel_output.lock_row_height,
         )
 
         self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
@@ -329,7 +354,7 @@ class TaskRunner:
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
 
-        need_autofit = self._settings.output.enable_excel_autofit and not self._settings.output.lock_row_height
+        need_autofit = excel_output.enable_excel_autofit and not excel_output.lock_row_height
         phase_total = 4 if need_autofit else 3
 
         excel_app = None
@@ -486,12 +511,16 @@ class TaskRunner:
             # process_paths[i] 对应 self._files[i]，若 .xls 则指向转换后的临时 .xlsx
             process_paths: list[Path] = []
             # file_texts[i] 对应 self._files[i] 的本文件词条集合
-            file_texts: list[set[str]] = []
+            file_texts = []
             coverage_plans = []
             global_unique_texts: set[str] = set()
             file_language_preflights = {}
             tm_language_pairs: list[str] = []
-            text_source_candidates: dict[str, set[str]] = {}
+            text_source_scopes: dict[str, list[frozenset[str]]] = {}
+            file_conversion_modes: dict[str, str] = {
+                str(item.path): "native_xlsx"
+                for item in self._files
+            }
 
             t_phase1 = datetime.now()
 
@@ -513,29 +542,18 @@ class TaskRunner:
                 if source_is_xls:
                     self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
                     from core.xls_converter import (
-                        XlwingsUnavailableError,
                         convert_with_excel,
                         convert_with_fallback,
-                        is_excel_automation_permission_denied,
                     )
                     t_conv = datetime.now()
                     try:
                         if not self._allow_xls_fallback:
                             app = _get_excel_app()
-                            try:
-                                process_path = convert_with_excel(app, process_path)
-                            except XlwingsUnavailableError as conversion_error:
-                                if not is_excel_automation_permission_denied(conversion_error):
-                                    raise
-                                self._log(
-                                    "WARN",
-                                    "本机 Excel 自动化权限被 macOS 拒绝，已自动改用 .xls 兼容模式继续；"
-                                    "复杂格式、图片或图表可能无法完整保留。可在系统设置的“隐私与安全性 > 自动化”"
-                                    "中允许 Translator 控制 Microsoft Excel。",
-                                )
-                                process_path = convert_with_fallback(file_item.path)
+                            process_path = convert_with_excel(app, process_path)
+                            file_conversion_modes[str(file_item.path)] = "excel_automation"
                         else:
                             process_path = convert_with_fallback(process_path)
+                            file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
                         self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")
                     except Exception as e:
                         self._log("ERROR", f"源文件转换失败 {file_item.name}: {e}")
@@ -543,6 +561,12 @@ class TaskRunner:
                         file_results.append({
                             "name": file_item.name,
                             "source_path": str(file_item.path),
+                            "source_relative_path": self._relative_source_path(file_item.path),
+                            "format": file_item.format,
+                            "conversion_mode": file_conversion_modes.get(
+                                str(file_item.path), "high_fidelity_failed"
+                            ),
+                            "status": "failed",
                             "success": False,
                             "error": f"源文件转换失败: {e}",
                         })
@@ -563,7 +587,7 @@ class TaskRunner:
                             target_lang=target_lang,
                             source_lang=source_lang,
                             formula_display_value_backfill=(
-                                settings.output.formula_display_value_backfill
+                                excel_output.formula_display_value_backfill
                             ),
                         )
                         coverage_plans.append(coverage_plan)
@@ -593,6 +617,10 @@ class TaskRunner:
                     file_results.append({
                         "name": file_item.name,
                         "source_path": str(file_item.path),
+                        "source_relative_path": self._relative_source_path(file_item.path),
+                        "format": file_item.format,
+                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                        "status": "failed",
                         "success": False,
                         "error": f"源文件读取失败: {e}",
                     })
@@ -682,7 +710,9 @@ class TaskRunner:
                     if result is None:
                         continue
                     for text in text_set:
-                        text_source_candidates.setdefault(text, set()).update(result.source_langs)
+                        text_source_scopes.setdefault(text, []).append(
+                            frozenset(result.source_langs)
+                        )
                 self._log(
                     "INFO",
                     (
@@ -754,13 +784,32 @@ class TaskRunner:
                     f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
                 )
 
-            # TM 批量查询：自动模式只查询预检产生的真实语言对；同一
-            # 原文在多个语言对中命中不同译文时留给模型，不做猜测复用。
+            # TM 查询按“文件预检 -> 该文件文本 -> 实际语言对”分组。不能
+            # 将全局词池交叉查到每一个语言对，否则 zh 文件会误命中 en-*。
+            text_tm_pairs: dict[str, set[str]] = {}
+            if auto_source_lang:
+                for file_item, text_set in zip(self._files, file_texts):
+                    result = file_language_preflights.get(str(file_item.path))
+                    allowed_pairs = (
+                        set(result.tm_lang_pairs(target_lang)) if result is not None else set()
+                    )
+                    for text in text_set:
+                        if text in normal_texts and allowed_pairs:
+                            text_tm_pairs.setdefault(text, set()).update(allowed_pairs)
+            elif lang_pair:
+                text_tm_pairs = {text: {lang_pair} for text in normal_texts}
+
+            # Same-value hits across two permitted pairs are usable, but a
+            # conflicting value remains a model miss and is never guessed.
             tm_values_by_text: dict[str, list[str]] = {
                 text: [] for text in normal_texts
             }
-            for pair in tm_language_pairs:
-                tm_result = tm_manager.lookup_batch(normal_texts, pair)
+            tm_texts_by_pair: dict[str, list[str]] = {}
+            for text, pairs in text_tm_pairs.items():
+                for pair in pairs:
+                    tm_texts_by_pair.setdefault(pair, []).append(text)
+            for pair, pair_texts in tm_texts_by_pair.items():
+                tm_result = tm_manager.lookup_batch(pair_texts, pair)
                 for text, value in tm_result.items():
                     if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
                         tm_values_by_text[text].append(str(value))
@@ -790,7 +839,8 @@ class TaskRunner:
             # API 翻译未命中词条
             api_translations: dict[str, str] = {}
             normal_api_translations: dict[str, str] = {}
-            excel_review_marks: dict[str, str] = {}
+            normal_api_language_results = {}
+            excel_review_marks = {}
             if (misses or mixed_texts) and not self._stop_event.is_set():
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
                 self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
@@ -832,6 +882,25 @@ class TaskRunner:
                 def run_normal_api_translation() -> dict[str, str]:
                     if not misses:
                         return {}
+                    if auto_source_lang:
+                        language_results = translate_texts_with_sources(
+                            misses,
+                            engine,
+                            target_lang,
+                            system_prompt,
+                            batch_size,
+                            concurrency,
+                            progress_cb,
+                            api_error_cb,
+                            should_stop=self.stop_requested,
+                            api_scheduler=shared_scheduler,
+                            stats=batch_stats,
+                        )
+                        normal_api_language_results.update(language_results)
+                        return {
+                            source: result.translation
+                            for source, result in language_results.items()
+                        }
                     return translate_texts(
                         misses,
                         engine,
@@ -950,28 +1019,32 @@ class TaskRunner:
 
                 # 将 API 结果写入 TM
                 if auto_source_lang:
-                    pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
-                    for source_text, translation in normal_api_translations.items():
-                        candidates = text_source_candidates.get(source_text, set())
-                        # A file-level preflight with two substantive languages
-                        # is intentionally not auto-written: no per-item
-                        # model source report exists to disambiguate it.
-                        if len(candidates) != 1 or not should_store_translation_in_tm(
-                            source_text,
-                            translation,
-                        ):
-                            continue
-                        pair = build_lang_pair(target_lang, source_lang=next(iter(candidates)))
-                        pairs_to_insert.setdefault(pair, []).append((source_text, translation))
-                    written = sum(
-                        tm_manager.insert_batch(
-                            entries,
-                            pair,
-                            max_len,
-                            engine.engine_name,
-                            sync_reverse=False,
+                    # The model-reported item source language is the final
+                    # gate. ``mixed``/``und``/``auto`` and anything outside
+                    # that file's preflight scope are rejected by TM manager.
+                    tm_entries = []
+                    for source_text, item in normal_api_language_results.items():
+                        translation = item.translation
+                        source_scopes = text_source_scopes.get(source_text, [])
+                        source_in_every_file_scope = bool(source_scopes) and all(
+                            item.source_lang in scope for scope in source_scopes
                         )
-                        for pair, entries in pairs_to_insert.items()
+                        tm_entries.append(
+                            {
+                                "source_text": source_text,
+                                "translation": translation,
+                                "source_lang": item.source_lang,
+                                "tm_eligible": item.tm_eligible
+                                and source_in_every_file_scope
+                                and should_store_translation_in_tm(source_text, translation),
+                            }
+                        )
+                    written = tm_manager.insert_auto_entries(
+                        tm_entries,
+                        target_lang,
+                        max_len,
+                        engine.engine_name,
+                        task_id=self.task_id,
                     )
                 else:
                     new_pairs = [
@@ -1046,6 +1119,7 @@ class TaskRunner:
 
                 try:
                     t0 = datetime.now()
+                    file_review_positions: list[dict[str, str]] = []
                     # KNOWN-ISSUE-VAL-006:
                     # The current write path intentionally stays text-only.
                     # See docs/KNOWN_ISSUES.md before reintroducing image flow.
@@ -1060,11 +1134,11 @@ class TaskRunner:
                             translations=global_translations,
                             target_lang=target_lang,
                             source_lang=source_lang,
-                            keep_original_sheets=self._settings.output.keep_original_sheets,
+                            keep_original_sheets=excel_output.keep_original_sheets,
                             formula_display_value_backfill=(
-                                self._settings.output.formula_display_value_backfill
+                                excel_output.formula_display_value_backfill
                             ),
-                            lock_row_height=self._settings.output.lock_row_height,
+                            lock_row_height=excel_output.lock_row_height,
                             log_callback=lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
@@ -1077,14 +1151,17 @@ class TaskRunner:
                             translations         = global_translations,
                             target_lang          = target_lang,
                             source_lang          = source_lang,
-                            keep_original_sheets = self._settings.output.keep_original_sheets,
-                            formula_display_value_backfill = self._settings.output.formula_display_value_backfill,
-                            enable_print_guard   = self._settings.output.enable_print_guard,
-                            lock_row_height      = self._settings.output.lock_row_height,
+                            keep_original_sheets = excel_output.keep_original_sheets,
+                            formula_display_value_backfill = excel_output.formula_display_value_backfill,
+                            # E4B-10 deliberately removes the legacy print-guard
+                            # toggle from Excel behavior.
+                            enable_print_guard   = False,
+                            lock_row_height      = excel_output.lock_row_height,
                             review_marks         = excel_review_marks,
-                            review_mark_colors   = self._settings.word_review.mark_colors,
+                            review_mark_colors   = self._settings.excel_review.mark_colors,
                             mark_review_items    = self._settings.excel_review.mark_review_items,
                             existing_fill_policy = self._settings.excel_review.existing_fill_policy,
+                            review_positions     = file_review_positions,
                             log_callback         = lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
@@ -1107,7 +1184,14 @@ class TaskRunner:
                     file_results.append({
                         "name":    file_item.name,
                         "source_path": str(file_item.path),
+                        "source_relative_path": self._relative_source_path(file_item.path),
+                        "format": file_item.format,
+                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
                         "output":  str(out_path),
+                        "output_path": str(out_path),
+                        "status": "succeeded",
+                        "review_count": len(file_review_positions),
+                        "review_items": file_review_positions,
                         "success": True,
                     })
                     self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
@@ -1117,6 +1201,10 @@ class TaskRunner:
                     file_results.append({
                         "name": file_item.name,
                         "source_path": str(file_item.path),
+                        "source_relative_path": self._relative_source_path(file_item.path),
+                        "format": file_item.format,
+                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                        "status": "failed",
                         "success": False,
                         "error": str(e),
                     })
@@ -1221,7 +1309,7 @@ class TaskRunner:
                         step_total=1,
                     ))
 
-            if self._settings.output.lock_row_height and self._settings.output.enable_excel_autofit:
+            if excel_output.lock_row_height and excel_output.enable_excel_autofit:
                 self._log("INFO", '已启用"锁定行高，缩小字号"，跳过 Excel AutoFit。')
         except TaskStopped as e:
             stopped_message = str(e)
@@ -1240,7 +1328,27 @@ class TaskRunner:
                 elapsed_sec=elapsed,
                 file_results=file_results,
             )
-            self._queue.put(StoppedMsg(message=stopped_message))
+            contract = self._build_result_contract(
+                file_results=file_results,
+                output_dir=str(output_dir),
+                tm_hit_count=tm_hit_count,
+                api_text_count=api_call_count,
+                elapsed_sec=elapsed,
+                stopped=True,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                preflights=file_language_preflights,
+                file_texts=file_texts,
+                actual_results=normal_api_language_results,
+                review_marks=excel_review_marks,
+            )
+            self._queue.put(
+                StoppedMsg(
+                    message=stopped_message,
+                    output_dir=str(output_dir),
+                    **contract,
+                )
+            )
             return
 
         if fatal_error_message is not None:
@@ -1251,7 +1359,28 @@ class TaskRunner:
                 elapsed_sec=elapsed,
                 file_results=file_results,
             )
-            self._queue.put(ErrorMsg(message=fatal_error_message))
+            contract = self._build_result_contract(
+                file_results=file_results,
+                output_dir=str(output_dir),
+                tm_hit_count=tm_hit_count,
+                api_text_count=api_call_count,
+                elapsed_sec=elapsed,
+                stopped=False,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                preflights=file_language_preflights,
+                file_texts=file_texts,
+                actual_results=normal_api_language_results,
+                review_marks=excel_review_marks,
+                error_message=fatal_error_message,
+            )
+            self._queue.put(
+                ErrorMsg(
+                    message=fatal_error_message,
+                    output_dir=str(output_dir),
+                    **contract,
+                )
+            )
             return
 
         elapsed = (datetime.now() - start_ts).total_seconds()
@@ -1261,6 +1390,20 @@ class TaskRunner:
             elapsed_sec  = elapsed,
             file_results = file_results,
         )
+        contract = self._build_result_contract(
+            file_results=file_results,
+            output_dir=str(output_dir),
+            tm_hit_count=tm_hit_count,
+            api_text_count=api_call_count,
+            elapsed_sec=elapsed,
+            stopped=False,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            preflights=file_language_preflights,
+            file_texts=file_texts,
+            actual_results=normal_api_language_results,
+            review_marks=excel_review_marks,
+        )
         self._queue.put(DoneMsg(
             output_dir     = str(output_dir),
             file_results   = file_results,
@@ -1268,6 +1411,7 @@ class TaskRunner:
             tm_hit_count   = tm_hit_count,
             api_call_count = api_call_count,
             issues         = quality_issues,
+            **contract,
         ))
 
     @staticmethod
@@ -1300,6 +1444,130 @@ class TaskRunner:
         if risk_votes >= 2:
             return "split", "mid_load_vote"
         return "reuse", "mid_load_vote"
+
+    def _relative_source_path(self, path: Path) -> str:
+        """Return a stable, user-facing relative path for a file result."""
+        root = self._source_root
+        if root is not None:
+            try:
+                return str(path.relative_to(root))
+            except ValueError:
+                pass
+        return path.name
+
+    def _build_result_contract(
+        self,
+        *,
+        file_results: list[dict],
+        output_dir: str,
+        tm_hit_count: int,
+        api_text_count: int,
+        elapsed_sec: float,
+        stopped: bool,
+        source_lang: str,
+        target_lang: str,
+        preflights: dict,
+        file_texts: list[set[str]],
+        actual_results: dict,
+        review_marks: dict[str, str],
+        error_message: str = "",
+    ) -> dict[str, object]:
+        """Build the Phase 4 result contract without exposing document text."""
+        files = [dict(item) for item in file_results]
+        terminal_sources = {str(item.get("source_path") or "") for item in files}
+        if stopped:
+            for item in self._files:
+                if str(item.path) in terminal_sources:
+                    continue
+                files.append(
+                    {
+                        "name": item.name,
+                        "source_path": str(item.path),
+                        "source_relative_path": self._relative_source_path(item.path),
+                        "format": getattr(item, "format", item.path.suffix.lstrip(".")),
+                        "conversion_mode": "not_started",
+                        "status": "unstarted",
+                        "success": False,
+                        "error": "任务在开始该文件前已停止。",
+                    }
+                )
+
+        actual_by_file: list[dict[str, object]] = []
+        for index, item in enumerate(self._files):
+            preflight = preflights.get(str(item.path))
+            counts: dict[str, int] = {}
+            for text in file_texts[index] if index < len(file_texts) else ():
+                actual = actual_results.get(text)
+                code = str(getattr(actual, "source_lang", "") or "")
+                if code:
+                    counts[code] = counts.get(code, 0) + 1
+            actual_by_file.append(
+                {
+                    "source_path": self._relative_source_path(item.path),
+                    "preflight": (
+                        preflight.to_dict(target_lang)
+                        if preflight is not None
+                        else {
+                            "source_langs": [source_lang]
+                            if source_lang != "auto"
+                            else [],
+                            "requested": False,
+                            "request_count": 0,
+                        }
+                    ),
+                    "actual_source_counts": counts,
+                }
+            )
+
+        review_counts: dict[str, int] = {}
+        review_items: list[dict[str, object]] = []
+        for file_item in files:
+            for item in file_item.get("review_items", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                category = str(item.get("category") or "")
+                if category:
+                    review_counts[category] = review_counts.get(category, 0) + 1
+                review_items.append(
+                    {
+                        "file": file_item.get("source_relative_path", ""),
+                        "worksheet": item.get("worksheet", ""),
+                        "cell": item.get("cell", ""),
+                        "category": category,
+                        "action": item.get("action", ""),
+                    }
+                )
+        if not review_items:
+            for mark in review_marks.values():
+                review_counts[mark] = review_counts.get(mark, 0) + 1
+        succeeded = sum(1 for item in files if item.get("status") == "succeeded")
+        failed = sum(1 for item in files if item.get("status") == "failed")
+        unstarted = sum(1 for item in files if item.get("status") == "unstarted")
+        return {
+            "files": files,
+            "kpi": {
+                "selected_file_count": len(self._files),
+                "succeeded_file_count": succeeded,
+                "failed_file_count": failed,
+                "unstarted_file_count": unstarted,
+                "output_dir": output_dir,
+                "elapsed_sec": elapsed_sec,
+                "tm_hit_count": tm_hit_count,
+                "model_translation_text_count": api_text_count,
+            },
+            "review": {
+                "counts": review_counts,
+                "total_count": sum(review_counts.values()),
+                "items": review_items,
+            },
+            "language": {
+                "mode": "automatic" if self._source_lang == "auto" else "manual",
+                "selected_source_lang": self._source_lang,
+                "target_lang": target_lang,
+                "files": actual_by_file,
+            },
+            "error": {"message": error_message} if error_message else {},
+        }
 
     @staticmethod
     def _collect_texts(

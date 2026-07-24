@@ -13,6 +13,7 @@ import settings as settings_module
 from api.app import create_app
 from api.task_manager import TranslationTaskManager
 from core import data_migration, diagnostics, tm_manager
+from core.api_config_check import ApiConfigCheckResult
 from core.model_api_identity import TaskApiContext
 from core.model_catalog import ModelCatalogResult
 from core.task_runner import DoneMsg, LogMsg, ProgressMsg
@@ -122,7 +123,13 @@ class ApiAppTests(unittest.TestCase):
         manager._scan = lambda *_args: [object()]
         manager._build_runner = lambda **_kwargs: _FinishedRunner()
         client = TestClient(create_app(task_manager=manager))
-        with patch("api.task_manager.task_api_context_for_page", return_value=context):
+        with (
+            patch("api.task_manager.task_api_context_for_page", return_value=context),
+            patch(
+                "api.task_manager.check_translation_api_config",
+                return_value=ApiConfigCheckResult(ok=True),
+            ),
+        ):
             started = client.post(
                 "/api/tasks",
                 json={"surface": "excel", "source_path": str(self.root)},
@@ -142,7 +149,13 @@ class ApiAppTests(unittest.TestCase):
         blocking_manager._scan = lambda *_args: [object()]
         blocking_manager._build_runner = lambda **_kwargs: _BlockingRunner()
         blocked_client = TestClient(create_app(task_manager=blocking_manager))
-        with patch("api.task_manager.task_api_context_for_page", return_value=context):
+        with (
+            patch("api.task_manager.task_api_context_for_page", return_value=context),
+            patch(
+                "api.task_manager.check_translation_api_config",
+                return_value=ApiConfigCheckResult(ok=True),
+            ),
+        ):
             first = blocked_client.post(
                 "/api/tasks",
                 json={"surface": "excel", "source_path": str(self.root)},

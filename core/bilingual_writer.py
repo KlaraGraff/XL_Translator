@@ -145,6 +145,7 @@ def write_bilingual_file(
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
     original_path: Path | None = None,
+    review_positions: list[dict[str, str]] | None = None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -196,6 +197,7 @@ def write_bilingual_file(
         mark_review_items=mark_review_items,
         existing_fill_policy=existing_fill_policy,
         log_callback=log_callback,
+        review_positions=review_positions,
     )
 
     if log_callback:
@@ -223,6 +225,7 @@ def _write_with_openpyxl(
     mark_review_items: bool = True,
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
+    review_positions: list[dict[str, str]] | None = None,
 ) -> None:
     """使用 openpyxl 回填（纯文本模式，不处理图片）。"""
     # KNOWN-ISSUE-VAL-006:
@@ -298,6 +301,7 @@ def _write_with_openpyxl(
                                     mark_kind,
                                     review_mark_colors=review_color_map,
                                     existing_fill_policy=fill_policy,
+                                    review_positions=review_positions,
                                 )
                                 if applied:
                                     review_mark_count += 1
@@ -313,6 +317,7 @@ def _write_with_openpyxl(
                                     mark_kind,
                                     review_mark_colors=review_color_map,
                                     existing_fill_policy=fill_policy,
+                                    review_positions=review_positions,
                                 )
                                 if applied:
                                     review_mark_count += 1
@@ -329,6 +334,7 @@ def _write_with_openpyxl(
                                     mark_kind,
                                     review_mark_colors=review_color_map,
                                     existing_fill_policy=fill_policy,
+                                    review_positions=review_positions,
                                 )
                                 if applied:
                                     review_mark_count += 1
@@ -345,6 +351,7 @@ def _write_with_openpyxl(
                             mark_kind,
                             review_mark_colors=review_color_map,
                             existing_fill_policy=fill_policy,
+                            review_positions=review_positions,
                         )
                         if applied:
                             review_mark_count += 1
@@ -430,6 +437,7 @@ def _apply_excel_review_mark(
     *,
     review_mark_colors: dict[str, str],
     existing_fill_policy: str,
+    review_positions: list[dict[str, str]] | None = None,
 ) -> bool:
     fill_color = review_mark_colors.get(mark_kind)
     if not fill_color:
@@ -437,13 +445,39 @@ def _apply_excel_review_mark(
 
     has_existing_fill = _cell_has_existing_fill(cell)
     if has_existing_fill and existing_fill_policy == "skip":
+        _record_review_position(
+            review_positions,
+            cell,
+            mark_kind,
+            "preserved_existing_fill",
+        )
         return False
     if has_existing_fill and existing_fill_policy == "red_font":
         _set_cell_font_color(cell, _EXCEL_REVIEW_RISK_FONT_COLOR)
+        _record_review_position(review_positions, cell, mark_kind, "marked_red_font")
         return True
 
     _set_cell_fill(cell, fill_color)
+    _record_review_position(review_positions, cell, mark_kind, "marked_fill")
     return True
+
+
+def _record_review_position(
+    collector: list[dict[str, str]] | None,
+    cell,
+    category: str,
+    action: str,
+) -> None:
+    if collector is None:
+        return
+    collector.append(
+        {
+            "worksheet": str(getattr(cell.parent, "title", "")),
+            "cell": str(getattr(cell, "coordinate", "")),
+            "category": str(category),
+            "action": str(action),
+        }
+    )
 
 
 def _cell_has_existing_fill(cell) -> bool:

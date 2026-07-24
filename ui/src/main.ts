@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { ApiClient, type SseEvent, type TaskStatus } from "./api-client";
@@ -11,9 +12,30 @@ type FileItem = JsonObject & {
   name: string;
   size_kb?: number;
   sheets?: string[];
+  sheet_count?: number;
+  relative_path?: string;
+  format?: string;
+  conversion_risks?: string[];
+  risk_flags?: string[];
+  risk?: JsonObject;
   page_count?: number;
   paragraph_count?: number;
   table_count?: number;
+};
+type ScanSkippedItem = {
+  path?: string;
+  relative_path?: string;
+  name?: string;
+  reason?: string;
+};
+type ScanReport = {
+  skipped: ScanSkippedItem[];
+  summary: JsonObject;
+};
+type OutputDirectoryInspection = {
+  state: "idle" | "empty" | "available" | "will_create" | "blocked";
+  path: string;
+  message: string;
 };
 type TmEntry = {
   id: number;
@@ -76,7 +98,7 @@ type RunningTask = {
   stepDone: number;
   stepTotal: number;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -92,8 +114,12 @@ const state: {
   settings: JsonObject | null;
   panelOpen: boolean;
   files: Record<Surface, FileItem[]>;
+  scanReports: Record<Surface, ScanReport>;
   selectedPaths: Record<Surface, string[]>;
   sourcePaths: Record<Surface, string>;
+  excelOutputInspection: OutputDirectoryInspection;
+  excelFileProgress: Record<string, JsonObject>;
+  pendingExcelStart: "high_fidelity" | "compatibility" | null;
   running: RunningTask | null;
   tmEntries: TmEntry[];
   tmStats: JsonObject;
@@ -139,8 +165,16 @@ const state: {
   settings: null,
   panelOpen: false,
   files: { excel: [], word: [], pdf: [] },
+  scanReports: {
+    excel: { skipped: [], summary: {} },
+    word: { skipped: [], summary: {} },
+    pdf: { skipped: [], summary: {} },
+  },
   selectedPaths: { excel: [], word: [], pdf: [] },
   sourcePaths: { excel: "", word: "", pdf: "" },
+  excelOutputInspection: { state: "idle", path: "", message: "选择自定义目录后会在开始前检查；检查不会创建目录。" },
+  excelFileProgress: {},
+  pendingExcelStart: null,
   running: null,
   tmEntries: [],
   tmStats: {},
@@ -231,6 +265,7 @@ const iconPaths = {
   folder: '<path d="M3.5 6.8A1.6 1.6 0 0 1 5.1 5.2h3.6l2 2.4h8.2a1.6 1.6 0 0 1 1.6 1.6v8.2a1.6 1.6 0 0 1-1.6 1.6H5.1a1.6 1.6 0 0 1-1.6-1.6z"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/>',
   stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
+  warn: '<path d="M12 3.7l9 16H3l9-16z"/><path d="M12 9v4.7M12 17.1h.01"/>',
   check: '<path d="M5 12.5l4.6 4.5L19 7"/>',
   chevron: '<path d="M6 9.5l6 6 6-6"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>',
@@ -271,6 +306,66 @@ function text(value: unknown, fallback = ""): string {
 
 function number(value: unknown, fallback = 0): number {
   return typeof value === "number" ? value : fallback;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function hasOwn(value: JsonObject | null | undefined, key: string): boolean {
+  return Boolean(value && Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function excelOutputSettings(): JsonObject {
+  const isolated = record(state.settings?.excel_output);
+  // The Phase 4 core contract introduces excel_output.  Keep this fallback
+  // while opening an existing new-baseline settings file before it has been
+  // persisted once, so the Excel page never shows a blank form.
+  return Object.keys(isolated).length ? isolated : record(state.settings?.output);
+}
+
+function excelOutputSettingPath(key: string): string {
+  return hasOwn(state.settings, "excel_output") ? `excel_output.${key}` : `output.${key}`;
+}
+
+function excelReviewSettings(): JsonObject {
+  return record(state.settings?.excel_review);
+}
+
+function fileFormat(file: FileItem): string {
+  const supplied = text(file.format).trim().replace(/^\./, "");
+  if (supplied) return supplied.toLowerCase();
+  const extension = file.path.split(".").pop()?.toLowerCase() || "";
+  return extension;
+}
+
+function excelSheetCount(file: FileItem): number {
+  return number(file.sheet_count, file.sheets?.length ?? 0);
+}
+
+function excelScanSummary(): { files: number; selected: number; sheets: number; xls: number } {
+  const files = state.files.excel;
+  return {
+    files: files.length,
+    selected: state.selectedPaths.excel.length,
+    sheets: files.reduce((total, file) => total + excelSheetCount(file), 0),
+    xls: files.filter((file) => fileFormat(file) === "xls").length,
+  };
+}
+
+function displayPath(file: FileItem): string {
+  return text(file.relative_path) || file.path;
+}
+
+function selectedExcelFiles(): FileItem[] {
+  const selected = new Set(state.selectedPaths.excel);
+  return state.files.excel.filter((file) => selected.has(file.path));
+}
+
+function selectedExcelXlsCount(): number {
+  return selectedExcelFiles().filter((file) => fileFormat(file) === "xls").length;
 }
 
 function modelCatalogConnectionKey({
@@ -501,7 +596,9 @@ function renderTranslateView(surface: Surface): string {
   const files = state.files[surface];
   const selectedPaths = state.selectedPaths[surface];
   const sourcePath = state.sourcePaths[surface];
+  const isExcel = surface === "excel";
   const isPdf = surface === "pdf";
+  const excelSummary = excelScanSummary();
   const target = state.targetSelections[surface] || (isPdf
     ? text(record(state.settings?.pdf).target_lang, "zh")
     : text(state.settings?.target_lang, "en"));
@@ -520,12 +617,18 @@ function renderTranslateView(surface: Surface): string {
         <button class="button primary" data-action="scan" data-surface="${surface}" ${activeTask ? "disabled" : ""}>${icon("search", "small")}扫描</button>
       </div>
       <div class="stats">
-        ${stat("file", "已扫描", String(files.length))}
-        ${stat("translate", "已选择", String(selectedPaths.length))}
-        ${stat("memory", "TM 命中", activeTask ? "进行中" : "—")}
-        ${stat("refresh", "API 请求", activeTask ? "进行中" : "—")}
+        ${isExcel
+          ? `${stat("file", "已扫描文件", String(excelSummary.files))}
+             ${stat("translate", "已选文件", String(excelSummary.selected))}
+             ${stat("excel", "总工作表", String(excelSummary.sheets))}
+             ${stat("warn", ".xls 文件", String(excelSummary.xls))}`
+          : `${stat("file", "已扫描", String(files.length))}
+             ${stat("translate", "已选择", String(selectedPaths.length))}
+             ${stat("memory", "TM 命中", activeTask ? "进行中" : "—")}
+             ${stat("refresh", "API 请求", activeTask ? "进行中" : "—")}`}
       </div>
       <div class="card table-card"><div class="table-header"><h2>任务清单</h2><span class="table-count">已选 ${selectedPaths.length} / ${files.length}</span><span class="header-spacer"></span><button class="mini-button" data-action="select-all-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全选</button><button class="mini-button" data-action="select-no-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全不选</button></div><div class="table-scroll">${renderFiles(files, surface, selectedPaths, activeTask)}</div></div>
+      ${isExcel ? renderExcelSkippedItems() : ""}
     </div>
     <aside class="card right-column">
       <span class="section-label">运行设置</span>
@@ -534,6 +637,7 @@ function renderTranslateView(surface: Surface): string {
       ${isPdf ? `<p class="note">PDF 目标语言独立保存；页图翻译由模型识别原文，无需指定源语言。</p>` : `<label class="field-label" style="margin-top:10px" for="source-${surface}">源语言</label><select id="source-${surface}" data-source-language="${surface}" ${activeTask ? "disabled" : ""}>${sourceLanguageOptions(source, state.languageSearch[surface])}</select><p class="note">自动识别会在每个有候选文本的文件开始翻译前发送一次抽样预检。</p>`}
       ${isPdf ? `<div class="toggle-row"><input id="pdfReview" type="checkbox" ${record(state.settings?.pdf).review_enabled ? "checked" : ""} data-pdf-review ${activeTask ? "disabled" : ""}/><label for="pdfReview">启用逐页审核模型</label></div>` : `<div class="toggle-row"><input id="untranslated-${surface}" type="checkbox" data-untranslated ${activeTask ? "disabled" : ""}/><label for="untranslated-${surface}">仅补译未翻译内容</label></div>`}
       ${renderDetailedSettings(surface, activeTask)}
+      ${isExcel ? renderExcelStartPreflight(source, target) : ""}
       <hr class="divider" />
       ${running ? renderRunningPanel(running, percent) : `<div class="push"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button><p class="note">可执行 ${selectedPaths.length} / ${files.length} 个文件；任务启动后，日志与进度将通过 SSE 实时显示。</p></div>`}
     </aside>
@@ -541,16 +645,23 @@ function renderTranslateView(surface: Surface): string {
 }
 
 function renderDetailedSettings(surface: Surface, disabled: boolean): string {
-  const output = record(state.settings?.output);
-  const excelReview = record(state.settings?.excel_review);
+  const output = surface === "excel" ? excelOutputSettings() : record(state.settings?.output);
+  const excelReview = excelReviewSettings();
   const wordBatch = record(state.settings?.word_batch);
   const wordReview = record(state.settings?.word_review);
   const pdf = record(state.settings?.pdf);
   const inputDisabled = disabled ? "disabled" : "";
   const checked = (value: unknown) => value ? "checked" : "";
   const outputMode = output.use_custom_output_dir ? "custom" : "source";
-  const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="output.use_custom_output_dir" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><input value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出目录（不存在会创建）" data-setting-path="output.custom_output_dir" ${inputDisabled}/>`;
-  const excel = `<div class="toggle-row"><input type="checkbox" id="keepOriginal" data-setting-path="output.keep_original_sheets" ${checked(output.keep_original_sheets)} ${inputDisabled}/><label for="keepOriginal">保留原始表格</label></div><div class="toggle-row"><input type="checkbox" id="formulaBackfill" data-setting-path="output.formula_display_value_backfill" ${checked(output.formula_display_value_backfill)} ${inputDisabled}/><label for="formulaBackfill">公式文本按显示值回填</label></div><div class="toggle-row"><input type="checkbox" id="excelAutofit" data-setting-path="output.enable_excel_autofit" ${checked(output.enable_excel_autofit)} ${inputDisabled}/><label for="excelAutofit">Excel 精调行高</label></div><div class="toggle-row"><input type="checkbox" id="lockRowHeight" data-setting-path="output.lock_row_height" ${checked(output.lock_row_height)} ${inputDisabled}/><label for="lockRowHeight">锁定行高，缩小字号</label></div><div class="toggle-row"><input type="checkbox" id="reviewMark" data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}/><label for="reviewMark">标记需复核内容</label></div><label class="field-label">已有底色处理</label><select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖原有底色</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>覆盖原有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字</option></select>${renderReviewColors(inputDisabled)}`;
+  const outputPrefix = surface === "excel" ? excelOutputSettingPath : (key: string) => `output.${key}`;
+  const outputInspection = surface === "excel" && outputMode === "custom"
+    ? `<p id="excel-output-state" class="output-path-state ${state.excelOutputInspection.state}">${escapeHtml(state.excelOutputInspection.message)}</p>`
+    : "";
+  const outputPicker = surface === "excel"
+    ? `<button class="mini-button" type="button" data-action="choose-excel-output" ${inputDisabled}>${icon("folder", "small")}选择文件夹</button>`
+    : "";
+  const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="excel-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${surface === "excel" ? "data-excel-output-inspect" : ""} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
+  const excel = `<div class="toggle-row"><input type="checkbox" id="keepOriginal" data-setting-path="${outputPrefix("keep_original_sheets")}" ${checked(output.keep_original_sheets)} ${inputDisabled}/><label for="keepOriginal">保留每个工作表的“_原文”副本</label></div><div class="toggle-row"><input type="checkbox" id="formulaBackfill" data-setting-path="${outputPrefix("formula_display_value_backfill")}" ${checked(output.formula_display_value_backfill)} ${inputDisabled}/><label for="formulaBackfill">公式显示值按静态双语文本回填</label></div><div class="toggle-row"><input type="checkbox" id="excelAutofit" data-setting-path="${outputPrefix("enable_excel_autofit")}" ${checked(output.enable_excel_autofit)} ${inputDisabled}/><label for="excelAutofit">使用 Excel 精调行高（需本机 Excel）</label></div><div class="toggle-row"><input type="checkbox" id="lockRowHeight" data-setting-path="${outputPrefix("lock_row_height")}" ${checked(output.lock_row_height)} ${inputDisabled}/><label for="lockRowHeight">锁定行高并缩小字号（与精调行高互斥）</label></div><p class="note">默认使用 Python 估算行高；精调不可用时保留该结果并在文件结果中提示。最小字号仍可能溢出的单元格会进入复核。</p><div class="toggle-row"><input type="checkbox" id="reviewMark" data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}/><label for="reviewMark">标记需复核内容</label></div><label class="field-label">已有底色处理</label><select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖已有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字（默认）</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖底色</option></select>${renderReviewColors(inputDisabled)}`;
   const word = `<div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">高亮未解决内容</label></div><div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">保护封面与目录</label></div><label class="field-label">批处理段落上限</label><input type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label">批处理字符上限</label><input type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/>`;
   const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.image_translation_enabled" ${checked(pdf.image_translation_enabled)} ${inputDisabled}/><label for="pdfImages">翻译页内图片文字</label></div><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
   return `<details class="advanced-settings"><summary>更多参数</summary><div class="advanced-settings-body">${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
@@ -579,7 +690,7 @@ function renderDomainSettings(surface: TranslationSurface, disabled: boolean): s
 }
 
 function renderReviewColors(disabled: string): string {
-  const colors = record(record(state.settings?.word_review).mark_colors);
+  const colors = record(excelReviewSettings().mark_colors);
   const colorField = (mark: string, label: string, fallback: string) => {
     const value = text(colors[mark], fallback).replace(/^#/, "");
     return `<label class="field-label">${label}</label><input type="color" value="#${escapeHtml(value)}" data-review-color="${mark}" ${disabled}/>`;
@@ -591,14 +702,125 @@ function renderRunningPanel(running: RunningTask, percent: number): string {
   const logs = running.logs.slice(-10).map((item) => `<div class="log-${logTone(item.level)}">› ${escapeHtml(item.message)}</div>`).join("");
   const terminal = running.task.terminal;
   const resultMessage = text(running.task.result?.message, terminal ? "任务已结束。" : "");
-  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${terminal ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>` : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`}</div>`;
+  const resultDetail = terminal && running.task.surface === "excel"
+    ? renderExcelResultDetails(running.task.result ?? {}, running.task.state)
+    : "";
+  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${resultDetail}${terminal ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>` : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`}</div>`;
+}
+
+function firstNumber(payload: JsonObject, keys: string[]): number | null {
+  for (const key of keys) {
+    if (typeof payload[key] === "number") return payload[key] as number;
+  }
+  return null;
+}
+
+function firstText(payload: JsonObject, keys: string[]): string {
+  for (const key of keys) {
+    const value = text(payload[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function resultEntries(result: JsonObject, keys: string[]): JsonObject[] {
+  for (const key of keys) {
+    const value = result[key];
+    if (Array.isArray(value) && value.length) return value.map(record);
+  }
+  return [];
+}
+
+function renderExcelResultDetails(result: JsonObject, taskState = ""): string {
+  const summary = record(result.summary);
+  const kpi = record(result.kpi);
+  const source = { ...result, ...summary, ...kpi };
+  const files = resultEntries(result, ["files", "file_results", "file_records"]);
+  const reviewPayload = record(result.review);
+  const languagePayload = record(result.language);
+  const reviews = resultEntries(result, ["review_items", "review_locations", "review_details"])
+    .concat(resultEntries(reviewPayload, ["items", "locations", "details"]));
+  const kpis: Array<[string, number | null]> = [
+    ["已选", firstNumber(source, ["selected_count", "selected_files", "selected_file_count", "total_files"])],
+    ["成功", firstNumber(source, ["success_count", "completed_count", "successful_files", "succeeded_file_count"])],
+    ["失败", firstNumber(source, ["failed_count", "error_count", "failed_files", "failed_file_count"])],
+    ["未开始", firstNumber(source, ["unstarted_count", "not_started_count", "unstarted_file_count"])],
+    ["TM 命中", firstNumber(source, ["tm_hit_count", "tm_hits"])],
+    ["送模型文本", firstNumber(source, ["model_translation_text_count", "model_text_count", "translated_text_count"])],
+  ].filter((item): item is [string, number] => item[1] !== null);
+  const outputPath = firstText(source, ["output_dir", "output_directory"]);
+  const duration = firstNumber(source, ["duration_seconds", "elapsed_seconds", "elapsed_sec"]);
+  const languages = resultEntries(result, ["language_preflights", "language_reports", "language_statistics"])
+    .concat(resultEntries(languagePayload, ["files", "preflights", "reports", "statistics"]));
+  const fileRows = files.map((entry) => {
+    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "source_path", "path", "name"]);
+    const format = firstText(entry, ["format", "source_format"]);
+    const status = firstText(entry, ["status", "state", "terminal_state"]) || "结果未知";
+    const output = firstText(entry, ["output_path", "result_path"]);
+    const conversion = firstText(entry, ["conversion_method", "conversion", "conversion_mode"]);
+    const reviewCount = firstNumber(entry, ["review_count", "review_items_count", "review_total"]);
+    const error = firstText(entry, ["error", "error_message", "message"]);
+    return `<tr><td>${escapeHtml(sourcePath)}</td><td>${escapeHtml(format)}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(conversion || "—")}</td><td>${escapeHtml(output || "—")}</td><td>${reviewCount ?? 0}</td><td>${escapeHtml(error || "—")}</td></tr>`;
+  }).join("");
+  const reviewRows = reviews.slice(0, 30).map((entry) => `<tr><td>${escapeHtml(firstText(entry, ["file", "source_relative_path", "relative_path"]))}</td><td>${escapeHtml(firstText(entry, ["worksheet", "sheet", "sheet_name"]))}</td><td>${escapeHtml(firstText(entry, ["cell", "cell_reference", "location"]))}</td><td>${escapeHtml(firstText(entry, ["category", "mark", "type"]))}</td><td>${escapeHtml(firstText(entry, ["action", "applied_action", "message"]))}</td></tr>`).join("");
+  const languageRows = languages.slice(0, 30).map((entry) => {
+    const preflight = record(entry.preflight);
+    const languages = strings(entry.detected_languages).concat(strings(preflight.source_langs));
+    return `<li>${escapeHtml(firstText(entry, ["file", "source_relative_path", "relative_path", "path"]))}：${escapeHtml(languages.join(" / ") || firstText(entry, ["source_lang", "language"]) || "未返回")}</li>`;
+  }).join("");
+  const terminalLabel = taskState === "stopped" || result.stopped
+    ? "用户中止（已完成产物已保留）"
+    : taskState === "error"
+      ? "任务失败（保留已知输出和文件结果）"
+      : firstNumber(source, ["failed_file_count", "failed_count"]) ? "完成但部分文件失败" : "全部完成";
+  return `<details class="excel-result-details" open><summary>Excel 结果详情${terminalLabel ? ` · ${escapeHtml(terminalLabel)}` : ""}</summary>${outputPath ? `<p class="result-output">输出目录：<code>${escapeHtml(outputPath)}</code>${duration !== null ? ` · 耗时 ${duration.toFixed(1)} 秒` : ""}</p>` : ""}${kpis.length ? `<div class="result-kpis">${kpis.map(([label, value]) => `<span><b>${value}</b>${label}</span>`).join("")}</div>` : ""}${files.length ? `<div class="result-table"><table><thead><tr><th>源相对路径</th><th>格式</th><th>状态</th><th>转换方式</th><th>输出</th><th>复核</th><th>错误原因</th></tr></thead><tbody>${fileRows}</tbody></table></div>` : `<p class="note">终态未返回文件明细；请查看结构化诊断记录定位文件级结果。</p>`}${languageRows ? `<details class="result-section"><summary>语言识别与实际语言统计</summary><ul>${languageRows}</ul></details>` : ""}${reviewRows ? `<details class="result-section"><summary>复核定位（${reviews.length}）</summary><div class="result-table"><table><thead><tr><th>文件</th><th>工作表</th><th>单元格</th><th>类别</th><th>采取动作</th></tr></thead><tbody>${reviewRows}</tbody></table></div></details>` : ""}</details>`;
 }
 
 function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[], disabled: boolean): string {
   if (!files.length) {
     return `<div class="card-pad muted">选择源路径后点击“扫描”，这里会显示可处理文件。</div>`;
   }
-  return `<table><thead><tr><th class="selection-column">选择</th><th>文件名</th><th class="number">大小</th><th class="number">${surface === "pdf" ? "页数" : surface === "word" ? "段落" : "工作表"}</th></tr></thead><tbody>${files.map((file) => `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon(surface === "excel" ? "excel" : surface === "word" ? "word" : "pdf", "small")}${escapeHtml(file.name)}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${surface === "pdf" ? number(file.page_count) : surface === "word" ? number(file.paragraph_count) : (file.sheets?.length ?? 0)}</td></tr>`).join("")}</tbody></table>`;
+  if (surface === "excel") {
+    return `<table class="excel-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th class="number">大小</th><th>格式</th><th class="number">工作表</th><th>预检/执行状态</th></tr></thead><tbody>${files.map((file) => {
+      const progress = record(state.excelFileProgress[file.path]);
+      const status = text(progress.status) || text(progress.stage) || text(progress.phase_name) || "待启动";
+      const statusTone = /失败|错误|error|failed/i.test(status) ? "error" : /完成|成功|done|translated/i.test(status) ? "ok" : /预检|处理|转换|翻译|写入|running/i.test(status) ? "running" : "";
+      const risks = [...new Set([
+        ...strings(file.conversion_risks),
+        ...strings(file.risk_flags),
+        ...strings(progress.risks),
+        text(record(file.risk).message),
+      ].filter(Boolean))];
+      return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("excel", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${fileFormat(file) === "xls" ? "legacy" : ""}">.${escapeHtml(fileFormat(file) || "xlsx")}</span></td><td class="number">${excelSheetCount(file)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
+    }).join("")}</tbody></table>`;
+  }
+  return `<table><thead><tr><th class="selection-column">选择</th><th>文件名</th><th class="number">大小</th><th class="number">${surface === "pdf" ? "页数" : "段落"}</th></tr></thead><tbody>${files.map((file) => `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon(surface === "word" ? "word" : "pdf", "small")}${escapeHtml(file.name)}</span></td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td class="number">${surface === "pdf" ? number(file.page_count) : number(file.paragraph_count)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderExcelSkippedItems(): string {
+  const report = state.scanReports.excel;
+  const skipped = report.skipped;
+  if (!skipped.length) return "";
+  const rows = skipped.map((item) => {
+    const path = text(item.relative_path) || text(item.path) || text(item.name, "未命名文件");
+    return `<li><span>${escapeHtml(path)}</span><small>${escapeHtml(text(item.reason, "扫描时无法读取"))}</small></li>`;
+  }).join("");
+  return `<details class="scan-skipped"><summary>${icon("warn", "small")}跳过项目（${skipped.length}）</summary><ul>${rows}</ul></details>`;
+}
+
+function renderExcelStartPreflight(source: string, target: string): string {
+  const xlsCount = selectedExcelXlsCount();
+  const manualSameLanguage = source !== "auto" && source === target;
+  const output = excelOutputSettings();
+  const outputState = Boolean(output.use_custom_output_dir)
+    ? state.excelOutputInspection.message
+    : "将在每次任务的源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
+  return `<details class="excel-preflight" open><summary>启动前检查</summary><ul>
+    <li class="${manualSameLanguage ? "error" : ""}">${manualSameLanguage ? "源语言与目标语言相同，不能启动翻译。" : source === "auto" ? "自动模式会对每个有候选文本的文件单独抽样预检一次；仅发送去重的代表性文本，不上传完整工作簿。" : "手动源语言不发送预检，并以当前选择作为 TM 查询和正常自动入库的权威语言。"}</li>
+    <li>${escapeHtml(outputState)}</li>
+    ${xlsCount ? `<li class="warn">已选 ${xlsCount} 个 .xls：启动时会优先使用 Excel 自动化高保真转换；若不可用，必须由你明确确认兼容转换，绝不会静默降级。</li>` : ""}
+    <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
+  </ul></details>`;
 }
 
 function renderTmView(): string {
@@ -655,6 +877,10 @@ function renderModal(): string {
   }
   if (state.modal === "stop-task") {
     return `<div class="modal-backdrop"><section class="modal"><h2>终止翻译任务？</h2><p class="note">已生成的文件会保留在输出目录；当前任务将发送安全停止请求。</p><div class="modal-actions"><button class="button" data-action="close-modal">继续执行</button><button class="button danger" data-action="stop-task-confirm">终止翻译</button></div></section></div>`;
+  }
+  if (state.modal === "xls-compatibility") {
+    const count = selectedExcelXlsCount();
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>.xls 转换方式确认</h2><p class="note">已选择 ${count} 个旧版 .xls 文件。最终结果统一输出为 .xlsx，源文件不会被改写。</p><div class="risk-callout"><strong>${icon("warn", "small")}高保真与兼容模式</strong><p>优先高保真会通过本机 Microsoft Excel 自动化转换；若 Excel 未安装、自动化被拒绝或单文件转换失败，该文件会明确失败，其他文件仍可继续，绝不静默改用兼容模式。</p><p>允许兼容转换会在高保真不可用时继续处理，但复杂样式、合并单元格、图片、图表和宏可能无法完整保留；这项选择只冻结到本次任务。</p></div><details class="permission-help"><summary>Excel 自动化权限说明</summary><p>macOS 12 Monterey：打开“系统偏好设置 → 安全性与隐私 → 隐私 → 自动化”，允许 Translator 控制 Microsoft Excel。</p><p>macOS 13 及以上：打开“系统设置 → 隐私与安全性 → 自动化”，允许 Translator 控制 Microsoft Excel。</p><p>若 Excel 未安装或权限已拒绝，可取消后完成授权，或明确选择兼容转换。</p></details><div class="modal-actions modal-actions-spread"><button class="button" data-action="close-modal">取消</button><span><button class="button" data-action="excel-start-high-fidelity">优先高保真</button><button class="button primary" data-action="excel-start-compatibility">允许兼容转换</button></span></div></section></div>`;
   }
   if (state.modal === "tm-clean") {
     const rows = state.tmSuggestions.map((suggestion, index) => `<div class="suggestion-row"><input id="tmSuggestion-${index}" type="checkbox" checked/><div><b>${escapeHtml(text(suggestion.source_text))}</b><p>${escapeHtml(text(suggestion.old_target))} → <input id="tmSuggestedTarget-${index}" value="${escapeHtml(text(suggestion.new_target))}"/></p></div></div>`).join("");
@@ -786,6 +1012,9 @@ function showToast(message: string, error = false): void {
 async function refreshSettings(): Promise<void> {
   state.settings = await client.request<JsonObject>("/api/settings");
   state.panelOpen = Boolean(appearance().model_config_panel_open);
+  state.sourcePaths.excel = text(state.settings?.last_excel_source_folder, state.sourcePaths.excel);
+  state.sourcePaths.word = text(state.settings?.last_word_source_folder, state.sourcePaths.word);
+  state.sourcePaths.pdf = text(state.settings?.last_pdf_source_folder, state.sourcePaths.pdf);
   state.targetSelections.excel = text(state.settings?.excel_target_lang, text(state.settings?.target_lang, "en"));
   state.targetSelections.word = text(state.settings?.word_target_lang, text(state.settings?.target_lang, "en"));
   state.targetSelections.pdf = text(record(state.settings?.pdf).target_lang, "zh");
@@ -794,6 +1023,10 @@ async function refreshSettings(): Promise<void> {
   state.tmSourceLang = text(state.settings?.tm_source_lang, "zh");
   state.tmTargetLang = text(state.settings?.tm_target_lang, "en");
   applyTheme(selectedTheme());
+  const excelOutput = excelOutputSettings();
+  if (excelOutput.use_custom_output_dir) {
+    void inspectExcelOutputDirectory(text(excelOutput.custom_output_dir));
+  }
   await refreshModelRoles();
 }
 
@@ -890,6 +1123,38 @@ async function persistSettings(patch: JsonObject): Promise<void> {
   });
 }
 
+let excelOutputInspectionSequence = 0;
+
+async function inspectExcelOutputDirectory(path: string): Promise<void> {
+  const sequence = ++excelOutputInspectionSequence;
+  try {
+    const inspection = await invoke<OutputDirectoryInspection>("inspect_output_directory", { path });
+    if (sequence !== excelOutputInspectionSequence) return;
+    state.excelOutputInspection = inspection;
+  } catch (error) {
+    if (sequence !== excelOutputInspectionSequence) return;
+    state.excelOutputInspection = {
+      state: "blocked",
+      path,
+      message: `无法检查输出目录：${errorMessage(error)}`,
+    };
+  }
+  const status = document.querySelector<HTMLElement>("#excel-output-state");
+  if (status) {
+    status.className = `output-path-state ${state.excelOutputInspection.state}`;
+    status.textContent = state.excelOutputInspection.message;
+  }
+}
+
+async function chooseExcelOutputDirectory(): Promise<void> {
+  const selected = await open({ title: "选择 Excel 输出根目录", directory: true, multiple: false });
+  if (typeof selected !== "string") return;
+  await persistSettings(nestedPatch(excelOutputSettingPath("custom_output_dir"), selected));
+  await persistSettings(nestedPatch(excelOutputSettingPath("use_custom_output_dir"), true));
+  await inspectExcelOutputDirectory(selected);
+  render();
+}
+
 async function chooseSource(surface: Surface, directory: boolean): Promise<void> {
   const selected = await open({
     title: directory ? `选择${surfaceLabel(surface)}文件夹` : `选择${surfaceLabel(surface)}文件`,
@@ -908,18 +1173,26 @@ async function scan(surface: Surface): Promise<void> {
   if (!path) {
     throw new Error("请先选择源文件或文件夹。");
   }
-  const payload = await client.request<{ items: FileItem[] }>("/api/sources/scan", {
+  const payload = await client.request<{ items: FileItem[]; skipped?: ScanSkippedItem[]; summary?: JsonObject }>("/api/sources/scan", {
     method: "POST",
     body: JSON.stringify({ surface, path, include_images: false }),
   });
   state.files[surface] = payload.items;
+  state.scanReports[surface] = {
+    skipped: Array.isArray(payload.skipped) ? payload.skipped.map((item) => record(item) as ScanSkippedItem) : [],
+    summary: record(payload.summary),
+  };
   state.selectedPaths[surface] = payload.items.map((item) => item.path);
   await persistSettings({ [`last_${surface}_source_folder`]: path });
   render();
   showToast(`已扫描到 ${payload.items.length} 个${surfaceLabel(surface)}文件。`);
 }
 
-async function startTask(surface: Surface): Promise<void> {
+async function startTask(
+  surface: Surface,
+  allowXlsFallback = false,
+  xlsConfirmed = false,
+): Promise<void> {
   if (surface === "excel" || surface === "word") {
     // A task snapshot must receive the prompt the user can currently see, not
     // a stale settings value left behind by an unsaved textarea edit.
@@ -933,6 +1206,18 @@ async function startTask(surface: Surface): Promise<void> {
   if (!selectedPaths.length) {
     throw new Error("请至少选择一个待翻译文件。");
   }
+  if (surface === "excel") {
+    const source = state.sourceSelections.excel;
+    const target = state.targetSelections.excel;
+    if (source !== "auto" && source === target) {
+      throw new Error("源语言与目标语言相同，不能启动翻译。");
+    }
+    if (selectedExcelXlsCount() > 0 && !xlsConfirmed) {
+      state.modal = "xls-compatibility";
+      render();
+      return;
+    }
+  }
   const untranslated = Boolean(document.querySelector<HTMLInputElement>(`#untranslated-${surface}`)?.checked);
   const protectSchemeCover = Boolean(document.querySelector<HTMLInputElement>("#protectSchemeCover")?.checked);
   const includeImages = Boolean(record(state.settings?.pdf).image_translation_enabled);
@@ -944,11 +1229,13 @@ async function startTask(surface: Surface): Promise<void> {
       selected_paths: selectedPaths,
       untranslated_only: untranslated,
       protect_scheme_cover: protectSchemeCover,
+      allow_xls_fallback: surface === "excel" && allowXlsFallback,
       include_images: includeImages,
       source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
       target_lang: state.targetSelections[surface],
     }),
   });
+  state.excelFileProgress = surface === "excel" ? {} : state.excelFileProgress;
   state.running = { task: payload, logs: [], phaseName: "正在准备任务", stepDone: 0, stepTotal: 0 };
   render();
   try {
@@ -969,10 +1256,39 @@ function handleTaskEvent(event: SseEvent): void {
     state.running.stepDone = number(data.step_done);
     state.running.stepTotal = number(data.step_total);
   }
+  if (event.type === "status") {
+    state.running.phaseName = text(data.phase_desc, state.running.phaseName);
+    if (state.running.task.surface === "excel") {
+      const current = state.files.excel.find((file) => state.running?.phaseName.includes(file.name));
+      if (current) {
+        state.excelFileProgress[current.path] = {
+          ...state.excelFileProgress[current.path],
+          stage: state.running.phaseName,
+        };
+      }
+    }
+  }
+  if (event.type === "stopping") {
+    state.running.task = { ...state.running.task, state: "stopping" };
+  }
+  if (state.running.task.surface === "excel") {
+    const filePath = firstText(data, ["file_path", "source_path", "path", "relative_path"]);
+    if (filePath && ["file", "file_status", "preflight", "progress", "result"].includes(event.type)) {
+      const knownPath = state.files.excel.find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
+      state.excelFileProgress[knownPath] = { ...state.excelFileProgress[knownPath], ...data };
+    }
+  }
   if (["done", "error", "stopped"].includes(event.type)) {
     state.running.task = { ...state.running.task, state: event.type as TaskStatus["state"], terminal: true, result: data };
+    if (state.running.task.surface === "excel") {
+      for (const entry of resultEntries(data, ["files", "file_results", "file_records"])) {
+        const filePath = firstText(entry, ["source_path", "path", "source_relative_path", "relative_path"]);
+        const knownPath = state.files.excel.find((file) => file.path === filePath || displayPath(file) === filePath)?.path;
+        if (knownPath) state.excelFileProgress[knownPath] = { ...state.excelFileProgress[knownPath], ...entry };
+      }
+    }
     if (event.type === "done") {
-      showToast("翻译任务已完成。输出目录可在诊断归档中查看。");
+      showToast("翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
     } else {
       showToast(text(data.message, "任务未完成。"), true);
     }
@@ -1072,8 +1388,8 @@ async function restoreDomainPrompt(surface: TranslationSurface): Promise<void> {
 }
 
 async function saveReviewColor(mark: string, color: string): Promise<void> {
-  const colors = record(record(state.settings?.word_review).mark_colors);
-  await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
+  const colors = record(excelReviewSettings().mark_colors);
+  await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
   render();
 }
 
@@ -1757,6 +2073,20 @@ app.addEventListener("change", (event) => {
     render();
     return;
   }
+  if ((target.id === "excelAutofit" || target.id === "lockRowHeight") && target instanceof HTMLInputElement) {
+    const selected = target.checked;
+    const primaryPath = target.id === "excelAutofit"
+      ? excelOutputSettingPath("enable_excel_autofit")
+      : excelOutputSettingPath("lock_row_height");
+    const conflictingPath = target.id === "excelAutofit"
+      ? excelOutputSettingPath("lock_row_height")
+      : excelOutputSettingPath("enable_excel_autofit");
+    void (async () => {
+      await saveSettingPath(primaryPath, selected);
+      if (selected) await saveSettingPath(conflictingPath, false);
+    })().catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
   if (target.dataset.settingPath) {
     const kind = target.dataset.valueKind;
     let value: string | number | boolean | null;
@@ -1765,7 +2095,16 @@ app.addEventListener("change", (event) => {
     else if (kind === "optional-number") value = target.value.trim() ? Number(target.value) : null;
     else if (target instanceof HTMLInputElement && target.type === "checkbox") value = target.checked;
     else value = target.value;
-    void saveSettingPath(target.dataset.settingPath, value).catch((error) => showToast(errorMessage(error), true));
+    void saveSettingPath(target.dataset.settingPath, value)
+      .then(async () => {
+        if (target.dataset.excelOutputInspect !== undefined || target.id === "output-excel") {
+          const path = target.id === "output-excel"
+            ? text(excelOutputSettings().custom_output_dir)
+            : target.value;
+          await inspectExcelOutputDirectory(path);
+        }
+      })
+      .catch((error) => showToast(errorMessage(error), true));
   }
   if (target.dataset.reviewColor) {
     void saveReviewColor(target.dataset.reviewColor, target.value).catch((error) => showToast(errorMessage(error), true));
@@ -1778,8 +2117,16 @@ app.addEventListener("change", (event) => {
   if (target.dataset.pdfReview !== undefined) void savePdfReview((target as HTMLInputElement).checked).catch((error) => showToast(errorMessage(error), true));
 });
 
+let excelOutputInspectionTimer: number | undefined;
+
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement;
+  if (target.dataset.excelOutputInspect !== undefined) {
+    if (excelOutputInspectionTimer !== undefined) window.clearTimeout(excelOutputInspectionTimer);
+    excelOutputInspectionTimer = window.setTimeout(() => {
+      void inspectExcelOutputDirectory(target.value);
+    }, 180);
+  }
   if (!target.dataset.languageSearch) return;
   const surface = target.dataset.languageSearch as Surface;
   state.languageSearch[surface] = target.value;
@@ -1798,8 +2145,11 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "choose-source" && surface) { state.sourcePickerSurface = surface; state.modal = "source-picker"; render(); return; }
   if (action === "choose-source-file" && surface) { await chooseSource(surface, false); state.sourcePickerSurface = null; state.modal = null; render(); return; }
   if (action === "choose-source-folder" && surface) { await chooseSource(surface, true); state.sourcePickerSurface = null; state.modal = null; render(); return; }
+  if (action === "choose-excel-output") return chooseExcelOutputDirectory();
   if (action === "scan" && surface) return scan(surface);
   if (action === "start-task" && surface) return startTask(surface);
+  if (action === "excel-start-high-fidelity") { state.modal = null; return startTask("excel", false, true); }
+  if (action === "excel-start-compatibility") { state.modal = null; return startTask("excel", true, true); }
   if (action === "stop-task") { state.modal = "stop-task"; render(); return; }
   if (action === "stop-task-confirm") { state.modal = null; return stopTask(); }
   if (action === "reset-task") { state.running = null; render(); return; }
@@ -1860,7 +2210,7 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "tm-export" || action === "tm-export-json") return exportTm("json");
   if (action === "tm-export-csv") return exportTm("csv");
   if (action === "tm-export-full") return exportFullTm();
-  if (action === "close-modal") { state.modal = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
+  if (action === "close-modal") { state.modal = null; state.pendingExcelStart = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
   if (action === "export-model-config") return exportModelConfig();
   if (action === "export-model-config-sensitive") return exportModelConfig(true);
   if (action === "import-model-config") return importModelConfig();

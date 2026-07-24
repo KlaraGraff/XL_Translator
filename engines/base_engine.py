@@ -32,6 +32,14 @@ TASK_INSTRUCTION = (
     "  6. JSON 数组中的每一项都必须是字符串，严禁返回 null。"
 )
 
+TASK_INSTRUCTION_WITH_SOURCE = (
+    "你的任务是将以下 JSON 数组中的每个词条翻译为{target_lang_name}，并识别每项实际原文语言。\n"
+    "请严格只输出 JSON 数组，不要输出解释或 markdown。输出长度和输入顺序必须完全一致。\n"
+    "每一项必须是对象：{\"translation\":\"译文\",\"source_lang\":\"ISO-639-1 代码\"}。\n"
+    "source_lang 必须是实际语言的受支持 ISO 代码；无法确定时填 und，内容实质混杂且无法归属时填 mixed，绝不能填 auto。\n"
+    "保留所有数字、单位、型号、标准号、专名和符号；不得截断或省略。"
+)
+
 
 def get_source_lang_name(source_lang: str) -> str:
     return get_source_lang_display(source_lang)
@@ -140,6 +148,35 @@ class TranslationEngine(ABC):
         子类可按需覆盖；默认抛出 NotImplementedError。
         """
         raise NotImplementedError(f"{self.__class__.__name__} 不支持 chat() 方法")
+
+    def translate_batch_with_sources(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "auto",
+    ) -> list[TranslationLanguageResult]:
+        """Translate with model-reported per-item source languages.
+
+        The ordinary ``translate_batch`` protocol intentionally remains a
+        string-array contract for existing consumers.  Automatic Excel/Word
+        flows use this opt-in protocol so TM never has to invent an ``auto-*``
+        language pair.
+        """
+        if not texts:
+            return []
+        target_lang_name = get_target_lang_name(target_lang)
+        instruction = TASK_INSTRUCTION_WITH_SOURCE.format(
+            target_lang_name=target_lang_name,
+        )
+        full_system = f"{system_prompt}\n\n{instruction}".strip()
+        raw = self.chat(full_system, json.dumps(texts, ensure_ascii=False))
+        return parse_response_with_sources(
+            texts,
+            raw,
+            self.engine_name,
+            target_lang=target_lang,
+        )
 
     @property
     def engine_name(self) -> str:

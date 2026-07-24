@@ -5,6 +5,7 @@ XLS 格式转换器模块。
 1. xlwings（优先复用本地 Excel 链路）：保真度更高，但运行前提取决于本机实际环境。
 2. xlrd + openpyxl（纯 Python）：降级转换，可能丢失复杂格式（合并单元格样式、图片、宏等）。
 """
+import platform
 import tempfile
 from pathlib import Path
 
@@ -35,10 +36,23 @@ def _format_excel_conversion_error(exc: BaseException) -> str:
 
     return (
         "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。"
-        "可在「系统设置 > 隐私与安全性 > 自动化」中允许 Translator 控制 Microsoft Excel，"
-        "或将 .xls 手动另存为 .xlsx 后再翻译。"
+        f"请在「{macos_excel_automation_privacy_path()}」中允许 Translator 控制 Microsoft Excel，"
+        "或返回任务设置并明确选择兼容转换；兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
         f" 原始错误：{message}"
     )
+
+
+def macos_excel_automation_privacy_path() -> str:
+    """Return the user-visible automation permission path for this macOS."""
+    if platform.system() != "Darwin":
+        return "系统的自动化隐私设置"
+    try:
+        major = int(str(platform.mac_ver()[0]).split(".", 1)[0])
+    except (TypeError, ValueError):
+        major = 13
+    if major <= 12:
+        return "系统偏好设置 > 安全性与隐私 > 隐私 > 自动化"
+    return "系统设置 > 隐私与安全性 > 自动化"
 
 
 def get_local_excel_availability() -> tuple[bool, str]:

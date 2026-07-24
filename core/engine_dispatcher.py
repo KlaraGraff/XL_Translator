@@ -30,6 +30,7 @@ from core.api_concurrency_control import (
     handle_api_concurrency_limit,
 )
 from core.language_registry import append_prompt_block, build_target_lang_note_block
+from core.language_preflight import TranslationLanguageResult
 from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, get_cloud_provider_config, get_key
@@ -378,6 +379,63 @@ def translate_texts(
     return results
 
 
+def translate_texts_with_sources(
+    texts: list[str],
+    engine: TranslationEngine,
+    target_lang: str,
+    system_prompt: str,
+    batch_size: int,
+    concurrency: int,
+    progress_callback=None,
+    error_callback=None,
+    should_stop=None,
+    api_scheduler: WeightedApiScheduler | None = None,
+    request_category: str = API_REQUEST_CATEGORY_NORMAL,
+    stats: TranslationBatchRunStats | None = None,
+) -> dict[str, TranslationLanguageResult]:
+    """Translate bounded batches while retaining model-reported source codes.
+
+    This path is deliberately used only by automatic-language workflows.  It
+    keeps the normal legacy string protocol intact and gives automatic TM
+    insertion a real per-item language rather than an inferred ``auto-*``.
+    """
+    if not texts:
+        return {}
+    is_local = is_local_engine_name(engine.engine_name)
+    item_limit = (
+        max(CHUNK_LOCAL_MIN, min(CHUNK_LOCAL_MAX, batch_size))
+        if is_local
+        else max(CHUNK_CLOUD_MIN, min(CHUNK_CLOUD_MAX, batch_size))
+    )
+    char_budget = _EXCEL_LOCAL_BATCH_CHAR_BUDGET if is_local else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
+    batches = _build_text_batches(texts, max_items=item_limit, max_chars=char_budget)
+    run_stats = stats or TranslationBatchRunStats()
+    run_stats.original_count = len(texts)
+    run_stats.batch_count = len(batches)
+    scheduler = None if is_local else (api_scheduler or WeightedApiScheduler(max(1, concurrency)))
+    results: dict[str, TranslationLanguageResult] = {}
+    done = 0
+    for batch in batches:
+        if should_stop and should_stop():
+            break
+        partial = _translate_batch_with_sources_fallback(
+            batch,
+            engine=engine,
+            target_lang=target_lang,
+            system_prompt=system_prompt,
+            api_scheduler=scheduler,
+            request_category=request_category,
+            should_stop=should_stop,
+            error_callback=error_callback,
+            stats=run_stats,
+        )
+        results.update(partial)
+        done += len(batch)
+        if progress_callback:
+            progress_callback(min(done, len(texts)), len(texts))
+    return results
+
+
 def _build_text_batches(
     texts: list[str],
     *,
@@ -433,17 +491,13 @@ def _translate_batch_with_fallback(
         return {}
     if should_stop and should_stop():
         return {text: text for text in batch}
-
     request_generation: int | None = None
     try:
         request_weight = _estimate_api_request_weight(batch, system_prompt)
         stats.record_request_weight(request_weight)
         if api_scheduler is None:
             partial = engine.translate_batch(
-                batch,
-                target_lang,
-                system_prompt,
-                source_lang=source_lang,
+                batch, target_lang, system_prompt, source_lang=source_lang
             )
         else:
             with api_scheduler.slot(
@@ -455,10 +509,7 @@ def _translate_batch_with_fallback(
                 if should_stop and should_stop():
                     return {text: text for text in batch}
                 partial = engine.translate_batch(
-                    batch,
-                    target_lang,
-                    system_prompt,
-                    source_lang=source_lang,
+                    batch, target_lang, system_prompt, source_lang=source_lang
                 )
         _validate_batch_integrity(batch, partial)
         return partial
@@ -491,7 +542,6 @@ def _translate_batch_with_fallback(
                     error_callback=error_callback,
                     stats=stats,
                 )
-
         if _is_permanent_request_error(exc):
             message = f"Excel 翻译请求不可重试，已停止拆分批次：{exc}"
             logger.error(message)
@@ -512,31 +562,18 @@ def _translate_batch_with_fallback(
             if error_callback:
                 error_callback(message)
             left = _translate_batch_with_fallback(
-                batch[:midpoint],
-                engine=engine,
-                target_lang=target_lang,
-                system_prompt=system_prompt,
-                source_lang=source_lang,
-                api_scheduler=api_scheduler,
-                request_category=request_category,
-                should_stop=should_stop,
-                error_callback=error_callback,
-                stats=stats,
+                batch[:midpoint], engine=engine, target_lang=target_lang,
+                system_prompt=system_prompt, source_lang=source_lang,
+                api_scheduler=api_scheduler, request_category=request_category,
+                should_stop=should_stop, error_callback=error_callback, stats=stats,
             )
             right = _translate_batch_with_fallback(
-                batch[midpoint:],
-                engine=engine,
-                target_lang=target_lang,
-                system_prompt=system_prompt,
-                source_lang=source_lang,
-                api_scheduler=api_scheduler,
-                request_category=request_category,
-                should_stop=should_stop,
-                error_callback=error_callback,
-                stats=stats,
+                batch[midpoint:], engine=engine, target_lang=target_lang,
+                system_prompt=system_prompt, source_lang=source_lang,
+                api_scheduler=api_scheduler, request_category=request_category,
+                should_stop=should_stop, error_callback=error_callback, stats=stats,
             )
             return {**left, **right}
-
         stats.record_failed_batch(str(batch[0] if batch else ""), str(exc))
         head = str(batch[0] if batch else "")[:40]
         err_msg = f"Excel 单条翻译仍失败，已保留原文：{head}... | {exc}"
@@ -544,6 +581,105 @@ def _translate_batch_with_fallback(
         if error_callback:
             error_callback(err_msg)
         return {text: text for text in batch}
+
+
+def _translate_batch_with_sources_fallback(
+    batch: list[str],
+    *,
+    engine: TranslationEngine,
+    target_lang: str,
+    system_prompt: str,
+    api_scheduler: WeightedApiScheduler | None,
+    request_category: str,
+    should_stop,
+    error_callback,
+    stats: TranslationBatchRunStats,
+) -> dict[str, TranslationLanguageResult]:
+    if not batch:
+        return {}
+    if should_stop and should_stop():
+        return {
+            text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
+            for text in batch
+        }
+    request_generation: int | None = None
+    try:
+        weight = _estimate_api_request_weight(batch, system_prompt)
+        stats.record_request_weight(weight)
+        if api_scheduler is None:
+            items = engine.translate_batch_with_sources(
+                batch, target_lang, system_prompt, source_lang="auto"
+            )
+        else:
+            with api_scheduler.slot(
+                weight,
+                category=request_category,
+                should_stop=should_stop,
+            ) as lease:
+                request_generation = lease.generation
+                if should_stop and should_stop():
+                    return {
+                        text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
+                        for text in batch
+                    }
+                items = engine.translate_batch_with_sources(
+                    batch, target_lang, system_prompt, source_lang="auto"
+                )
+        if len(items) != len(batch):
+            raise ValueError(f"返回条数不足：输入 {len(batch)}，返回 {len(items)}")
+        return {item.source_text: item for item in items}
+    except Exception as exc:  # noqa: BLE001 - retain a safe non-TM fallback
+        if isinstance(exc, ApiSchedulerAcquireCancelled):
+            return {
+                text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
+                for text in batch
+            }
+        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
+            raise
+        if api_scheduler is not None:
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Excel",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                stats.record_adaptive_concurrency_decision(decision)
+                return _translate_batch_with_sources_fallback(
+                    batch,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    api_scheduler=api_scheduler,
+                    request_category=request_category,
+                    should_stop=should_stop,
+                    error_callback=error_callback,
+                    stats=stats,
+                )
+        if len(batch) > 1 and not (should_stop and should_stop()):
+            stats.record_retry()
+            midpoint = max(1, len(batch) // 2)
+            left = _translate_batch_with_sources_fallback(
+                batch[:midpoint], engine=engine, target_lang=target_lang,
+                system_prompt=system_prompt, api_scheduler=api_scheduler,
+                request_category=request_category, should_stop=should_stop,
+                error_callback=error_callback, stats=stats,
+            )
+            right = _translate_batch_with_sources_fallback(
+                batch[midpoint:], engine=engine, target_lang=target_lang,
+                system_prompt=system_prompt, api_scheduler=api_scheduler,
+                request_category=request_category, should_stop=should_stop,
+                error_callback=error_callback, stats=stats,
+            )
+            return {**left, **right}
+        stats.record_failed_batch(str(batch[0]), str(exc))
+        if error_callback:
+            error_callback(f"Excel 单条语言回报翻译失败，已保留原文：{exc}")
+        return {
+            text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
+            for text in batch
+        }
 
 
 def _is_permanent_request_error(exc: BaseException) -> bool:

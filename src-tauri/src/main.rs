@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
+    fs,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
@@ -30,6 +31,14 @@ struct RunningSidecar {
 
 struct SidecarState(Mutex<Option<RunningSidecar>>);
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutputDirectoryInspection {
+    state: String,
+    path: String,
+    message: String,
+}
+
 #[tauri::command]
 fn sidecar_info(state: State<'_, SidecarState>) -> Result<SidecarInfo, String> {
     state
@@ -39,6 +48,79 @@ fn sidecar_info(state: State<'_, SidecarState>) -> Result<SidecarInfo, String> {
         .as_ref()
         .map(|sidecar| sidecar.info.clone())
         .ok_or_else(|| "Translator engine sidecar is not running.".to_string())
+}
+
+#[tauri::command]
+fn inspect_output_directory(path: String) -> OutputDirectoryInspection {
+    let supplied = path.trim();
+    if supplied.is_empty() {
+        return OutputDirectoryInspection {
+            state: "empty".to_string(),
+            path: String::new(),
+            message: "自定义输出目录不能为空。".to_string(),
+        };
+    }
+
+    let expanded = if supplied == "~" || supplied.starts_with("~/") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(supplied.strip_prefix("~/").unwrap_or("")))
+            .unwrap_or_else(|| PathBuf::from(supplied))
+    } else {
+        PathBuf::from(supplied)
+    };
+    let display_path = expanded.display().to_string();
+
+    match fs::metadata(&expanded) {
+        Ok(metadata) if metadata.is_dir() => {
+            if metadata.permissions().readonly() {
+                OutputDirectoryInspection {
+                    state: "blocked".to_string(),
+                    path: display_path,
+                    message: "该目录没有可用写入权限。".to_string(),
+                }
+            } else {
+                OutputDirectoryInspection {
+                    state: "available".to_string(),
+                    path: display_path,
+                    message: "目录当前可用；任务仍会在其中创建唯一时间戳子目录。".to_string(),
+                }
+            }
+        }
+        Ok(_) => OutputDirectoryInspection {
+            state: "blocked".to_string(),
+            path: display_path,
+            message: "输出路径是文件，不能作为目录使用。".to_string(),
+        },
+        Err(_) => {
+            let mut ancestor = expanded.as_path();
+            while !ancestor.exists() {
+                let Some(parent) = ancestor.parent() else {
+                    break;
+                };
+                ancestor = parent;
+            }
+            match fs::metadata(ancestor) {
+                Ok(metadata) if metadata.is_dir() && !metadata.permissions().readonly() => {
+                    OutputDirectoryInspection {
+                        state: "will_create".to_string(),
+                        path: display_path,
+                        message: "目录将在任务启动后创建；当前检查不会产生任何目录。".to_string(),
+                    }
+                }
+                Ok(metadata) if !metadata.is_dir() => OutputDirectoryInspection {
+                    state: "blocked".to_string(),
+                    path: display_path,
+                    message: "上级路径被文件占用，无法创建输出目录。".to_string(),
+                },
+                _ => OutputDirectoryInspection {
+                    state: "blocked".to_string(),
+                    path: display_path,
+                    message: "无法确认上级目录的写入权限；请更换输出目录。".to_string(),
+                },
+            }
+        }
+    }
 }
 
 fn project_root() -> PathBuf {
@@ -206,7 +288,7 @@ fn main() {
             app.manage(SidecarState(Mutex::new(Some(sidecar))));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![sidecar_info])
+        .invoke_handler(tauri::generate_handler![sidecar_info, inspect_output_directory])
         .build(tauri::generate_context!())
         .expect("error while building Translator shell")
         .run(|app, event| {

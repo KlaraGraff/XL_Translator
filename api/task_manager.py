@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from core import tm_manager
+from core import bilingual_writer
+from core.api_config_check import check_translation_api_config
 from core.file_scanner import scan_path
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
@@ -33,6 +35,7 @@ from core.task_runner import (
 )
 from core.word_document import scan_word_path
 from core.word_task_runner import WordTaskRunner
+from core.xls_converter import get_local_excel_availability
 from settings import AppSettings, load_settings
 
 TaskSurface = Literal["excel", "word", "pdf"]
@@ -79,6 +82,10 @@ class TaskOptions:
     include_images: bool = False
     source_lang: str | None = None
     target_lang: str | None = None
+
+    @property
+    def xls_conversion_mode(self) -> str:
+        return "compatibility" if self.allow_xls_fallback else "high_fidelity"
 
 
 @dataclass
@@ -168,6 +175,12 @@ class TranslationTaskManager:
             raise TaskInputError(
                 f"No supported {normalized_surface} files were found at: {root}"
             )
+        if normalized_surface == "excel":
+            self._validate_excel_preflight(
+                files=files,
+                settings=settings,
+                options=selected_options,
+            )
         if normalized_surface in {"excel", "word"}:
             tm_manager.init_db()
 
@@ -209,6 +222,21 @@ class TranslationTaskManager:
                     prompt_source.encode("utf-8")
                 ).hexdigest()[:12],
             }
+            if normalized_surface == "excel":
+                task_snapshot.update(
+                    {
+                        "excel_output": settings.excel_output.model_dump(mode="json"),
+                        "excel_review": settings.excel_review.model_dump(mode="json"),
+                        "tm": {"max_len": settings.tm.max_len},
+                        "xls_conversion_mode": selected_options.xls_conversion_mode,
+                        "selected_file_count": len(files),
+                        "xls_file_count": sum(
+                            1
+                            for item in files
+                            if _excel_file_format(item) == "xls"
+                        ),
+                    }
+                )
             runner = self._build_runner(
                 surface=normalized_surface,
                 files=files,
@@ -377,6 +405,45 @@ class TranslationTaskManager:
             key_overrides=key_overrides,
         )
 
+    @staticmethod
+    def _validate_excel_preflight(
+        *,
+        files: list[Any],
+        settings: AppSettings,
+        options: TaskOptions,
+    ) -> None:
+        """Fail before task creation for deterministic Excel input/settings issues."""
+        if not str(settings.target_lang or "").strip():
+            raise TaskInputError("请先选择 Excel 目标语言。")
+        model_check = check_translation_api_config(settings)
+        if not model_check.ok:
+            detail = f"（{model_check.detail}）" if model_check.detail else ""
+            raise TaskInputError(f"{model_check.message}{detail}")
+        excel_output = settings.excel_output
+        if excel_output.use_custom_output_dir:
+            output_error = bilingual_writer.get_custom_output_dir_error(
+                excel_output.custom_output_dir
+            )
+            if output_error:
+                raise TaskInputError(output_error)
+
+        xls_files = [
+            item
+            for item in files
+            if _excel_file_format(item) == "xls"
+        ]
+        if not xls_files or options.allow_xls_fallback:
+            return
+        available, reason = get_local_excel_availability()
+        if available:
+            return
+        raise TaskInputError(
+            "检测到 "
+            f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
+            "请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换；"
+            "兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
+        )
+
     def _pump_runner(self, task: ApiTask) -> None:
         try:
             while task.runner.needs_poll():
@@ -456,6 +523,21 @@ def _normalize_surface(surface: str) -> TaskSurface:
     if normalized not in _PAGE_BY_SURFACE:
         raise TaskInputError(f"Unsupported translation surface: {surface}")
     return normalized  # type: ignore[return-value]
+
+
+def _excel_file_format(item: Any) -> str:
+    """Return a normalized Excel format without assuming a concrete item class.
+
+    The public scanner returns ``FileItem`` instances, but task-manager unit
+    tests and future adapters may provide a minimal file-like object.  The
+    startup preflight must therefore treat absent metadata as non-legacy
+    rather than crash before acquiring the task resource.
+    """
+    explicit = str(getattr(item, "format", "") or "").strip().lower()
+    if explicit:
+        return explicit.lstrip(".")
+    path = getattr(item, "path", None)
+    return Path(path).suffix.lower().lstrip(".") if path else ""
 
 
 def _event_type_for_message(message: Any) -> str:
