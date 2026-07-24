@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config import normalize_cloud_base_url
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
+    ROLE_CLEANER,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
     resolve_effective_model_config,
@@ -27,6 +28,12 @@ class TaskApiContext:
     # JSON-safe metadata frozen at task start.  Keys are represented only by
     # their scoped API identity and never by secret values.
     model_snapshot: dict[str, dict[str, object]] | None = None
+    # The frozen role-to-connection mapping and the total request pressure for
+    # each connection are required by the Phase 7 group scheduler.  They are
+    # intentionally derived from the effective configuration, never from a
+    # mutable settings object after a task has started.
+    role_groups: dict[str, ApiGroupSignature] = field(default_factory=dict)
+    group_concurrency: dict[ApiGroupSignature, int] = field(default_factory=dict)
 
 
 def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSignature:
@@ -47,6 +54,8 @@ def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str
     normalized_page = str(page_key or "").strip()
     if normalized_page in {"excel_translate", "word_translate"}:
         return (ROLE_TRANSLATION,)
+    if normalized_page == "tm_clean":
+        return (ROLE_CLEANER,)
     if normalized_page == "pdf_translate":
         roles = [ROLE_IMAGE]
         if bool(settings.pdf.review_enabled):
@@ -67,8 +76,15 @@ def task_api_context_for_page(
     api_groups = frozenset(api_group_signature_from_config(config) for config in configs)
     key_overrides: dict[str, str] = {}
     model_snapshot: dict[str, dict[str, object]] = {}
+    role_groups: dict[str, ApiGroupSignature] = {}
+    group_concurrency: dict[ApiGroupSignature, int] = {}
     for config in configs:
         throughput = get_model_throughput(settings, config)
+        group = api_group_signature_from_config(config)
+        role_groups[config.role] = group
+        group_concurrency[group] = (
+            group_concurrency.get(group, 0) + max(1, int(throughput.concurrency))
+        )
         if config.mode == "cloud":
             base_url = normalize_cloud_base_url(
                 config.provider,
@@ -91,6 +107,12 @@ def task_api_context_for_page(
                 if config.mode == "cloud"
                 else ""
             ),
+            # This is a one-way identifier used solely to compare frozen
+            # credential scopes.  It is not the API key or a recoverable form
+            # of one.
+            "connection_id": hashlib.sha256(
+                repr(group).encode("utf-8")
+            ).hexdigest()[:16],
             "throughput": {
                 "profile_key": throughput.profile_key,
                 "batch_size": throughput.batch_size,
@@ -111,6 +133,8 @@ def task_api_context_for_page(
         api_groups=api_groups,
         key_overrides=key_overrides,
         model_snapshot=model_snapshot,
+        role_groups=role_groups,
+        group_concurrency=group_concurrency,
     )
 
 

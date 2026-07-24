@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, type SseEvent, type TaskStatus } from "./api-client";
+import { ApiClient, type SseEvent, type TaskPreflight, type TaskStatus } from "./api-client";
 import "./tokens.css";
 
 type Surface = "excel" | "word" | "pdf";
-type View = Surface | "tm";
+type TaskSurface = TaskStatus["surface"];
+type View = Surface | "tm" | "tasks";
 type JsonObject = Record<string, unknown>;
 type FileItem = JsonObject & {
   path: string;
@@ -102,14 +103,22 @@ type LanguageOption = {
   can_source?: boolean;
   can_target?: boolean;
 };
-type RunningTask = {
+type ManagedTask = {
   task: TaskStatus;
   logs: Array<{ level: string; message: string }>;
   phaseName: string;
   stepDone: number;
   stepTotal: number;
+  lastEventId: number;
+  streamState: "idle" | "connected" | "reconnecting" | "interrupted";
+  watcherActive: boolean;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "xls-compatibility" | "doc-compatibility" | "pdf-review-unavailable" | "notice" | "update" | null;
+type PendingTaskRisk = {
+  surface: TaskSurface;
+  payload: JsonObject;
+  preflight: TaskPreflight;
+};
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "task-risk" | "xls-compatibility" | "doc-compatibility" | "pdf-review-unavailable" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -139,7 +148,12 @@ const state: {
   pdfFileProgress: Record<string, JsonObject>;
   pdfPageRecovery: JsonObject;
   pdfReview: JsonObject;
-  running: RunningTask | null;
+  tasks: Record<string, ManagedTask>;
+  taskOrder: string[];
+  workspaceTaskIds: Record<Surface, string | null>;
+  taskCenterFilter: "all" | "active" | "terminal";
+  pendingTaskRisk: PendingTaskRisk | null;
+  pendingStopTaskId: string | null;
   tmEntries: TmEntry[];
   tmStats: JsonObject;
   tmKeyword: string;
@@ -202,7 +216,12 @@ const state: {
   pdfFileProgress: {},
   pdfPageRecovery: {},
   pdfReview: {},
-  running: null,
+  tasks: {},
+  taskOrder: [],
+  workspaceTaskIds: { excel: null, word: null, pdf: null },
+  taskCenterFilter: "all",
+  pendingTaskRisk: null,
+  pendingStopTaskId: null,
   tmEntries: [],
   tmStats: {},
   tmKeyword: "",
@@ -260,6 +279,10 @@ const pageMeta: Record<View, { title: string; description: string }> = {
     title: "记忆库管理",
     description: "搜索、固定与清理译文，提升复用与一致性。",
   },
+  tasks: {
+    title: "任务中心",
+    description: "集中查看运行、暂停和最近任务；任务离开原页面后仍会持续监控。",
+  },
 };
 
 // The server remains the source of truth for the final prompt.  These copies
@@ -306,6 +329,10 @@ const iconPaths = {
   sparkle: '<path d="M10 3.5l1.4 4 4 1.4-4 1.4L10 14.3l-1.4-4-4-1.4 4-1.4z"/><path d="M17.5 13l.8 2.3 2.3.8-2.3.8-.8 2.3-.8-2.3-2.3-.8 2.3-.8z"/>',
   download: '<path d="M12 4v10M8.2 10.4l3.8 3.8 3.8-3.8M5 19h14"/>',
   file: '<path d="M7 3.5h6l4 4V19a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M12.5 3.5V8H17"/>',
+  tasks: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  play: '<path d="M8 5.5v13l10-6.5z"/>',
+  copy: '<rect x="8" y="8" width="11" height="11" rx="1.5"/><path d="M5 15V5a1.5 1.5 0 0 1 1.5-1.5H15"/>',
+  reveal: '<path d="M4 12s2.7-5 8-5 8 5 8 5-2.7 5-8 5-8-5-8-5z"/><circle cx="12" cy="12" r="2.1"/>',
 } as const;
 type IconName = keyof typeof iconPaths;
 
@@ -570,21 +597,86 @@ function applyTheme(theme: string): void {
   document.documentElement.dataset.theme = resolved;
 }
 
-function taskStatus(): { label: string; tone: string } {
-  const running = state.running;
-  if (!running) {
-    return { label: "待执行", tone: "" };
-  }
-  const current = running.task.state;
+function isTaskActive(task: TaskStatus): boolean {
+  return !task.terminal && !["done", "completed_with_issues", "error", "stopped", "interrupted"].includes(task.state);
+}
+
+function taskSurfaceLabel(surface: TaskSurface): string {
+  return surface === "cleaner" || surface === "tm_clean" ? "TM 清洗" : surfaceLabel(surface);
+}
+
+function taskStateMeta(task: TaskStatus, streamState?: ManagedTask["streamState"]): { label: string; tone: string } {
   const labels: Record<string, string> = {
+    preflight: "等待确认",
     running: "执行中",
+    pausing: "暂停提交中",
     paused: "已暂停提交",
-    stopping: "正在终止",
+    stopping: "安全停止中",
+    finalizing: "正在收尾",
     done: "已完成",
+    completed_with_issues: "完成但有问题",
     error: "发生错误",
-    stopped: "已终止",
+    stopped: "已中止",
+    interrupted: "应用中断",
   };
-  return { label: labels[current] ?? current, tone: current };
+  if (streamState === "reconnecting" && isTaskActive(task)) {
+    return { label: "正在补拉事件", tone: "running" };
+  }
+  if (streamState === "interrupted") {
+    return { label: "应用中断", tone: "error" };
+  }
+  const tone = task.state === "completed_with_issues" ? "warn" : task.state;
+  return { label: labels[task.state] ?? task.state, tone };
+}
+
+function activeTasks(): ManagedTask[] {
+  return state.taskOrder
+    .map((taskId) => state.tasks[taskId])
+    .filter((entry): entry is ManagedTask => Boolean(entry) && isTaskActive(entry.task));
+}
+
+function workspaceTask(surface: Surface): ManagedTask | null {
+  const taskId = state.workspaceTaskIds[surface];
+  const selected = taskId ? state.tasks[taskId] : null;
+  if (selected) return selected;
+  const fallback = state.taskOrder
+    .map((id) => state.tasks[id])
+    .find((entry) => entry && entry.task.surface === surface);
+  return fallback ?? null;
+}
+
+function taskStatus(): { label: string; tone: string } {
+  const active = activeTasks();
+  if (!active.length) return { label: "待执行", tone: "" };
+  if (active.length === 1) return taskStateMeta(active[0].task, active[0].streamState);
+  return { label: `${active.length} 个活动任务`, tone: "running" };
+}
+
+function newManagedTask(task: TaskStatus): ManagedTask {
+  const previous = state.tasks[task.task_id];
+  return {
+    task: { ...previous?.task, ...task },
+    logs: previous?.logs ?? (task.logs ?? []).map((entry) => ({
+      level: text(entry.level, "INFO"),
+      message: text(entry.message),
+    })),
+    phaseName: previous?.phaseName ?? "正在准备任务",
+    stepDone: previous?.stepDone ?? 0,
+    stepTotal: previous?.stepTotal ?? 0,
+    lastEventId: previous?.lastEventId ?? 0,
+    streamState: previous?.streamState ?? "idle",
+    watcherActive: previous?.watcherActive ?? false,
+  };
+}
+
+function upsertTask(task: TaskStatus, focusWorkspace = false): ManagedTask {
+  const entry = newManagedTask(task);
+  state.tasks[task.task_id] = entry;
+  state.taskOrder = [task.task_id, ...state.taskOrder.filter((id) => id !== task.task_id)];
+  if ((task.surface === "excel" || task.surface === "word" || task.surface === "pdf") && focusWorkspace) {
+    state.workspaceTaskIds[task.surface] = task.task_id;
+  }
+  return entry;
 }
 
 function render(): void {
@@ -601,6 +693,7 @@ function render(): void {
         ${navButton("pdf", "PDF", "pdf")}
         <div class="rail-divider"></div>
         ${navButton("tm", "记忆库", "memory")}
+        ${navButton("tasks", "任务", "tasks")}
         <button class="rail-button ${state.panelOpen ? "active" : ""}" data-action="toggle-panel" data-tip="模型配置：全局应用于所有翻译页面">${icon("sliders")}<span>配置</span></button>
         <div class="rail-spacer"></div>
         <button class="rail-button utility" data-action="cycle-theme" data-tip="主题：浅色、深色或跟随系统">${icon(selectedTheme() === "dark" ? "sun" : "moon")}</button>
@@ -613,13 +706,14 @@ function render(): void {
             <p>${meta.description}</p>
           </div>
           <div class="topbar-actions">
+            <button class="model-button ${activeTasks().length ? "task-activity" : ""}" data-action="open-task-center" data-tip="任务中心：查看运行、暂停和最近任务"><span class="model-dot ${activeTasks().length ? "active" : ""}"></span>${activeTasks().length ? `${activeTasks().length} 个活动任务` : "任务中心"}</button>
             <button class="model-button" data-action="toggle-panel" data-tip="当前翻译模型；点击展开配置"><span class="model-dot"></span>${escapeHtml(model)}</button>
             <button class="icon-button" data-action="check-update" data-tip="检查 GitHub 最新版本">${icon("refresh", "small")}</button>
             <button class="icon-button" data-action="cycle-theme" data-tip="切换主题">${icon(selectedTheme() === "dark" ? "sun" : "moon", "small")}</button>
           </div>
         </header>
         <div class="content">
-          ${state.view === "tm" ? renderTmView() : renderTranslateView(state.view)}
+          ${state.view === "tm" ? renderTmView() : state.view === "tasks" ? renderTaskCenter() : renderTranslateView(state.view)}
         </div>
       </main>
     </div>
@@ -726,8 +820,8 @@ function renderTranslateView(surface: Surface): string {
     ? text(record(state.settings?.pdf).target_lang, "zh")
     : text(state.settings?.target_lang, "en"));
   const source = state.sourceSelections[surface] || "auto";
-  const running = state.running?.task.surface === surface ? state.running : null;
-  const activeTask = Boolean(running && !running.task.terminal);
+  const running = workspaceTask(surface);
+  const activeTask = Boolean(running && isTaskActive(running.task));
   const percent = running && running.stepTotal > 0
     ? Math.round((running.stepDone / running.stepTotal) * 100)
     : 0;
@@ -859,7 +953,7 @@ function renderWordReviewColors(disabled: string): string {
   return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
 }
 
-function renderRunningPanel(running: RunningTask, percent: number): string {
+function renderRunningPanel(running: ManagedTask, percent: number): string {
   const logs = running.logs.slice(-10).map((item) => `<div class="log-${logTone(item.level)}">› ${escapeHtml(item.message)}</div>`).join("");
   const terminal = running.task.terminal;
   const resultMessage = text(running.task.result?.message, terminal ? "任务已结束。" : "");
@@ -872,14 +966,145 @@ function renderRunningPanel(running: RunningTask, percent: number): string {
     : "";
   const recovery = !terminal && running.task.surface === "word" ? renderWordRecoveryPanel() : "";
   const pdfStatus = !terminal && running.task.surface === "pdf" ? `${renderPdfRecoveryPanel()}${renderPdfReviewPanel()}` : "";
+  const taskId = running.task.task_id;
   const controls = terminal
-    ? `<button class="button primary block large" style="margin-top:10px" data-action="reset-task">${icon("refresh", "small")}返回并开始新任务</button>`
+    ? `<div class="field-row" style="margin-top:10px"><button class="button" data-action="open-task-center" data-task-id="${escapeHtml(taskId)}">${icon("tasks", "small")}在任务中心查看</button><button class="button primary" data-action="reset-task" data-task-id="${escapeHtml(taskId)}">${icon("refresh", "small")}开始新任务</button></div>`
     : running.task.surface === "pdf" && running.task.state === "paused"
-      ? `<div class="field-row" style="margin-top:10px"><button class="button primary" data-action="resume-pdf-task">${icon("refresh", "small")}继续翻译</button><button class="button danger" data-action="end-paused-pdf-task">${icon("stop", "small")}结束暂停</button></div><p class="note">结束暂停会保留已完成页面、页面素材、清单和报告，任务不能再次继续。</p>`
+      ? `<div class="field-row" style="margin-top:10px"><button class="button primary" data-action="resume-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("refresh", "small")}继续翻译</button><button class="button danger" data-action="end-paused-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}结束暂停</button></div><p class="note">结束暂停会保留已完成页面、页面素材、清单和报告，任务不能再次继续。</p>`
       : running.task.surface === "pdf"
-        ? `<div class="field-row" style="margin-top:10px"><button class="button" data-action="pause-pdf-task">暂停提交</button><button class="button danger" data-action="stop-task">${icon("stop", "small")}终止翻译</button></div>`
-        : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task">${icon("stop", "small")}终止翻译</button>`;
-  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
+        ? `<button class="button block large" style="margin-top:10px" data-action="pause-pdf-task" data-task-id="${escapeHtml(taskId)}">暂停提交</button>`
+        : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}安全停止</button>`;
+  const streamNote = running.streamState === "reconnecting" ? `<p class="note">事件流暂时断开，正在从事件 ${running.lastEventId} 补拉，不会重复处理已有进度。</p>` : "";
+  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${streamNote}${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
+}
+
+function redactedText(value: unknown, fallback = ""): string {
+  const raw = text(value, fallback);
+  if (!raw) return raw;
+  return raw
+    .replace(/(authorization\s*[:=]\s*)([^\s,;]+)/ig, "$1[redacted]")
+    .replace(/\b(sk|rk|pk|api)[-_][a-z0-9_-]{8,}\b/ig, "[redacted]")
+    .replace(/\bBearer\s+[^\s,;]+/ig, "Bearer [redacted]");
+}
+
+function taskResultReferences(task: TaskStatus): Array<{ label: string; path: string; reveal: boolean }> {
+  const result = record(task.result);
+  const summary = record(result.summary);
+  const source = { ...summary, ...result };
+  const refs: Array<{ label: string; path: string; reveal: boolean }> = [];
+  const actionLabels: Record<string, string> = {
+    open_output: "打开输出目录",
+    reveal_output: "在 Finder 中显示主输出",
+    open_report: "打开报告",
+    open_manifest: "打开清单",
+    copy_output_path: "复制输出路径",
+  };
+  for (const operation of resultEntries(result, ["local_operations"])) {
+    const action = text(operation.action);
+    const path = firstText(operation, ["path"]);
+    if (path && path !== "[path]" && !refs.some((entry) => entry.path === path)) {
+      refs.push({ label: actionLabels[action] ?? "打开本地结果", path, reveal: action === "reveal_output" });
+    }
+  }
+  const add = (label: string, keys: string[], reveal = false) => {
+    const path = firstText(source, keys);
+    if (path && !refs.some((entry) => entry.path === path)) refs.push({ label, path, reveal });
+  };
+  add("打开输出目录", ["output_dir", "output_directory"], false);
+  add("在 Finder 中显示主输出", ["output_path", "result_path", "output"], true);
+  add("打开报告", ["report_path", "word_translation_report_path", "pdf_translation_report_path"], false);
+  add("打开清单", ["manifest_path", "pdf_translation_manifest_path"], false);
+  add("打开诊断", ["diagnostics_path", "diagnostic_path"], false);
+  return refs;
+}
+
+function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
+  const snapshot = record(task.task_snapshot);
+  const modelSnapshot = record(task.model_snapshot);
+  const language = record(snapshot.language);
+  const output = record(snapshot.output);
+  const resources = [
+    ...(Array.isArray(task.resource_groups) ? task.resource_groups : []),
+    ...(Array.isArray(snapshot.connections) ? snapshot.connections : []),
+  ];
+  const models = Object.entries(modelSnapshot)
+    .map(([role, value]) => `${role}: ${redactedText(record(value).model, "已冻结")}`)
+    .filter(Boolean)
+    .join("；");
+  const sourceLang = firstText({ ...snapshot, ...language }, ["source_lang", "source_selection"]);
+  const targetLang = firstText({ ...snapshot, ...language }, ["target_lang"]);
+  const domain = firstText(snapshot, ["domain_preset", "domain"]);
+  const promptVersion = firstText(snapshot, ["prompt_version", "domain_prompt_version"]);
+  const configuredOutput = record(snapshot.excel_output || snapshot.word_output || snapshot.pdf_output);
+  const outputPath = firstText({ ...snapshot, ...output, ...configuredOutput }, ["output_dir", "output_directory", "custom_output_dir"])
+    || (configuredOutput.use_custom_output_dir === false ? "与源文件相邻的唯一输出目录" : "任务唯一输出目录");
+  const throughput = record(snapshot.throughput);
+  const connectionSummary = resources
+    .map((group) => {
+      const value = record(group);
+      const summary = record(value.summary);
+      return redactedText(value.label || value.connection_summary || value.id || [summary.provider || value.provider, summary.base_url || value.base_url].filter(Boolean).join(" @ "));
+    })
+    .filter(Boolean)
+    .join("；");
+  const rows: Array<[string, string]> = [
+    ["语言", [sourceLang, targetLang].filter(Boolean).join(" → ")],
+    ["模型角色", models],
+    ["连接摘要", connectionSummary],
+    ["领域 / Prompt", [domain, promptVersion].filter(Boolean).join(" · ")],
+    ["输出位置", outputPath],
+    ["吞吐", Object.keys(throughput).length ? Object.entries(throughput).map(([key, value]) => `${key} ${value}`).join("；") : Object.entries(modelSnapshot).map(([role, value]) => `${role} ${number(record(record(value).throughput).concurrency, 1)}`).join("；")],
+  ];
+  return rows.filter(([, value]) => Boolean(value));
+}
+
+function taskKpiRows(task: TaskStatus): Array<[string, string]> {
+  const result = record(task.result);
+  const summary = record(result.summary);
+  const source = { ...summary, ...result };
+  const pairs: Array<[string, string[], string]> = [
+    ["已选", ["selected_count", "selected_file_count", "file_count", "total_files"], ""],
+    ["成功", ["success_count", "successful_files", "succeeded_file_count", "completed_count"], ""],
+    ["失败", ["failed_count", "failed_file_count", "error_count"], ""],
+    ["未开始", ["unstarted_count", "unstarted_file_count", "not_started_count"], ""],
+    ["耗时", ["elapsed_sec", "elapsed_seconds", "duration_seconds"], " 秒"],
+  ];
+  return pairs
+    .map(([label, keys, suffix]) => {
+      const value = firstNumber(source, keys);
+      return value === null ? null : [label, `${value}${suffix}`] as [string, string];
+    })
+    .filter((item): item is [string, string] => item !== null);
+}
+
+function renderTaskCenter(): string {
+  const active = activeTasks().length;
+  const entries = state.taskOrder
+    .map((id) => state.tasks[id])
+    .filter((entry): entry is ManagedTask => Boolean(entry))
+    .filter((entry) => state.taskCenterFilter === "all" || (state.taskCenterFilter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task)));
+  const cards = entries.map(renderTaskCard).join("");
+  return `<section class="view active task-center"><div class="task-center-header card card-pad"><div><span class="section-label">统一任务中心</span><h2>活动任务 ${active}</h2><p class="note">事件按任务 ID 独立补拉。页面切换、重新聚焦和短断流不会停止其他任务。</p></div><div class="task-filter" role="group" aria-label="任务筛选"><button class="mini-button ${state.taskCenterFilter === "all" ? "active" : ""}" data-action="task-filter" data-filter="all">全部</button><button class="mini-button ${state.taskCenterFilter === "active" ? "active" : ""}" data-action="task-filter" data-filter="active">活动</button><button class="mini-button ${state.taskCenterFilter === "terminal" ? "active" : ""}" data-action="task-filter" data-filter="terminal">最近结果</button></div></div><div class="task-grid">${cards || `<div class="card card-pad muted">当前没有可显示的任务。启动 Excel、Word、PDF/图片或 TM 深度清洗后，状态会保留在这里。</div>`}</div></section>`;
+}
+
+function renderTaskCard(entry: ManagedTask): string {
+  const { task } = entry;
+  const stateMeta = taskStateMeta(task, entry.streamState);
+  const percent = entry.stepTotal > 0 ? Math.round((entry.stepDone / entry.stepTotal) * 100) : 0;
+  const references = taskResultReferences(task);
+  const snapshots = taskSnapshotRows(task);
+  const kpis = taskKpiRows(task);
+  const logRows = entry.logs.map((item) => `<div class="log-${logTone(item.level)}">› ${escapeHtml(redactedText(item.message))}</div>`).join("");
+  const taskId = task.task_id;
+  const canOpenWorkspace = task.surface === "excel" || task.surface === "word" || task.surface === "pdf";
+  const controls = task.terminal
+    ? `<div class="task-card-actions">${canOpenWorkspace ? `<button class="mini-button" data-action="show-task-workspace" data-task-id="${escapeHtml(taskId)}">${icon("play", "small")}打开工作区</button>` : ""}${references.map((reference) => `<button class="mini-button" data-action="task-local-file" data-path="${escapeHtml(reference.path)}" data-reveal="${reference.reveal ? "1" : "0"}">${icon(reference.reveal ? "reveal" : "folder", "small")}${escapeHtml(reference.label)}</button><button class="mini-button" data-action="task-copy-path" data-path="${escapeHtml(reference.path)}" data-tip="复制此产物路径">${icon("copy", "small")}</button>`).join("")}</div>`
+    : task.surface === "pdf" && task.state === "paused"
+      ? `<div class="task-card-actions"><button class="mini-button primary" data-action="resume-pdf-task" data-task-id="${escapeHtml(taskId)}">继续</button><button class="mini-button danger-text" data-action="end-paused-pdf-task" data-task-id="${escapeHtml(taskId)}">结束暂停</button></div>`
+      : task.surface === "pdf"
+        ? `<div class="task-card-actions"><button class="mini-button" data-action="pause-pdf-task" data-task-id="${escapeHtml(taskId)}">暂停提交</button></div>`
+        : `<div class="task-card-actions"><button class="mini-button danger-text" data-action="stop-task" data-task-id="${escapeHtml(taskId)}">安全停止</button></div>`;
+  return `<article class="card task-card"><header><div><span class="section-label">${escapeHtml(taskSurfaceLabel(task.surface))}</span><h3>${escapeHtml(text(task.source_label, `任务 ${taskId.slice(0, 8)}`))}</h3></div><span class="status ${stateMeta.tone}"><span class="led"></span>${escapeHtml(stateMeta.label)}</span></header><div class="task-progress"><div class="run-summary"><span>${escapeHtml(entry.phaseName || "等待事件")}</span><span>${percent}%</span></div><div class="progress" style="--progress:${percent}%"><i></i></div></div>${snapshots.length ? `<dl class="task-snapshot">${snapshots.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>` : ""}${kpis.length ? `<div class="result-kpis task-kpis">${kpis.map(([label, value]) => `<span><b>${escapeHtml(value)}</b>${escapeHtml(label)}</span>`).join("")}</div>` : ""}<details class="task-log" ${isTaskActive(task) ? "open" : ""}><summary>脱敏事件日志（${entry.logs.length}）</summary><div class="logbox">${logRows || "尚未收到可见事件。"}</div></details>${controls}</article>`;
 }
 
 function firstNumber(payload: JsonObject, keys: string[]): number | null {
@@ -927,7 +1152,7 @@ function renderExcelResultDetails(result: JsonObject, taskState = ""): string {
   const languages = resultEntries(result, ["language_preflights", "language_reports", "language_statistics"])
     .concat(resultEntries(languagePayload, ["files", "preflights", "reports", "statistics"]));
   const fileRows = files.map((entry) => {
-    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "source_path", "path", "name"]);
+    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "name"]);
     const format = firstText(entry, ["format", "source_format"]);
     const status = firstText(entry, ["status", "state", "terminal_state"]) || "结果未知";
     const output = firstText(entry, ["output_path", "result_path"]);
@@ -1037,7 +1262,7 @@ function renderPdfResultDetails(result: JsonObject, taskState = ""): string {
       ? `${firstNumber(entry, ["reviewed_page_count"]) ?? 0} 审核 / ${firstNumber(entry, ["review_passed_page_count"]) ?? 0} 通过 / ${firstNumber(entry, ["review_failed_page_count"]) ?? 0} 未通过`
       : "—";
     const pageState = `${firstNumber(entry, ["page_count"]) ?? 0} 页；占位 ${firstNumber(entry, ["placeholder_page_count"]) ?? 0}；应急比例 ${firstNumber(entry, ["emergency_ratio_normalized_count"]) ?? 0}`;
-    return `<tr><td>${escapeHtml(firstText(entry, ["name", "relative_path", "source_path"]))}</td><td>${kind}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(pageState)}</td><td>${escapeHtml(review)}</td><td>${escapeHtml(output || "—")}${compressed ? `<small class="file-location">压缩版：${escapeHtml(compressed)}</small>` : ""}</td><td>${escapeHtml(firstText(entry, ["error", "error_message", "detail"]) || "—")}</td></tr>`;
+    return `<tr><td>${escapeHtml(firstText(entry, ["name", "relative_path", "source_relative_path"]))}</td><td>${kind}</td><td>${escapeHtml(status)}</td><td>${escapeHtml(pageState)}</td><td>${escapeHtml(review)}</td><td>${escapeHtml(output || "—")}${compressed ? `<small class="file-location">压缩版：${escapeHtml(compressed)}</small>` : ""}</td><td>${escapeHtml(firstText(entry, ["error", "error_message", "detail"]) || "—")}</td></tr>`;
   }).join("");
   return `<details class="word-result-details pdf-result-details" open><summary>PDF / 图片结果详情 · ${escapeHtml(terminalLabel)}</summary>${outputPath ? `<p class="result-output">输出目录：<code>${escapeHtml(outputPath)}</code>${duration !== null ? ` · 耗时 ${duration.toFixed(1)} 秒` : ""}</p>` : ""}${reportPath ? `<p class="result-output">报告：<code>${escapeHtml(reportPath)}</code></p>` : ""}${manifestPath ? `<p class="result-output">清单：<code>${escapeHtml(manifestPath)}</code></p>` : ""}${kpis.length ? `<div class="result-kpis">${kpis.map(([label, value]) => `<span><b>${value}</b>${label}</span>`).join("")}</div>` : ""}${files.length ? `<div class="result-table"><table><thead><tr><th>源文件</th><th>类型</th><th>状态</th><th>页面结果</th><th>审核</th><th>输出</th><th>问题</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<p class="note">终态未返回文件级清单；请查看输出目录中的清单与报告。</p>`}</details>`;
 }
@@ -1081,7 +1306,7 @@ function renderWordResultDetails(result: JsonObject, taskState = ""): string {
     const preprocess = record(entry.preprocess);
     const conversionPayload = record(entry.conversion);
     const numberingPayload = record(entry.numbering);
-    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "source_path", "path", "name"]);
+    const sourcePath = firstText(entry, ["source_relative_path", "relative_path", "name"]);
     const format = firstText(entry, ["format", "source_format", "original_format"]);
     const status = firstText(entry, ["status", "state", "terminal_state"]) || (entry.success === true ? "成功" : entry.success === false ? "失败" : "结果未知");
     const output = firstText(entry, ["output_path", "result_path", "output"]);
@@ -1316,8 +1541,28 @@ function renderModal(): string {
     const surface = state.sourcePickerSurface;
     return `<div class="modal-backdrop"><section class="modal"><h2>选择源路径</h2><p class="note">可扫描整个文件夹，或仅处理单个 ${surfaceLabel(surface)} 文件。</p><div class="modal-actions modal-actions-spread"><button class="button" data-action="close-modal">取消</button><span><button class="button" data-action="choose-source-file" data-surface="${surface}">选择单个文件</button><button class="button primary" data-action="choose-source-folder" data-surface="${surface}">选择文件夹</button></span></div></section></div>`;
   }
+  if (state.modal === "task-risk" && state.pendingTaskRisk) {
+    const { preflight, surface } = state.pendingTaskRisk;
+    const risk = record(preflight.risk);
+    const sharedConnections = Array.isArray(risk.shared_connections) ? risk.shared_connections.map(record) : [];
+    const active = Array.isArray(risk.active_tasks) ? risk.active_tasks.map(record) : [];
+    const warnings = strings(risk.warnings);
+    const candidate = record(preflight.candidate_snapshot);
+    const connectionRows = sharedConnections.map((item) => {
+      const summary = record(item.summary);
+      const label = redactedText(item.label || item.connection_summary || item.resource_group || [summary.provider, summary.base_url].filter(Boolean).join(" @ "), "共享连接");
+      return `<li><strong>${escapeHtml(label)}</strong> · 角色 ${escapeHtml(strings(item.roles).join("、") || "未返回")} · 活动 / 新任务并发 ${escapeHtml(String(number(item.active_concurrency, 0)))} / ${escapeHtml(String(number(item.candidate_concurrency, 0)))} · 合计潜在 ${escapeHtml(String(number(item.total_potential_concurrency, number(item.potential_concurrency, 0))))}</li>`;
+    }).join("");
+    const activeRows = active.map((item) => `<li>${escapeHtml(taskSurfaceLabel(text(item.surface, "excel") as TaskSurface))} · ${escapeHtml(redactedText(item.source_label || item.task_label || item.task_id, "活动任务"))} · 并发 ${escapeHtml(String(number(item.concurrency, 0)))}</li>`).join("");
+    const candidateRows = [
+      ["任务类型", taskSurfaceLabel(surface)],
+      ["目标语言", firstText(candidate, ["target_lang"])],
+      ["冻结吞吐", Object.entries(record(candidate.throughput)).map(([key, value]) => `${key} ${value}`).join("；")],
+    ].filter(([, value]) => Boolean(value));
+    return `<div class="modal-backdrop"><section class="modal wide-modal task-risk-modal"><h2>共享 API 并行风险</h2><p class="note">此任务将与现有活动任务共用至少一个实际 API 连接。继续后会按新任务自己的默认吞吐启动，不会自动减半；服务端会在启动时用一次性令牌原子复检。</p><div class="risk-callout"><strong>${icon("warn", "small")}可能出现 429、排队、超时、失败或额外费用</strong><p>同一连接的并发会累加。上游返回并发限制时，只会降低当前共享组的运行时容量，不会修改长期模型吞吐设置。</p></div>${connectionRows ? `<div class="task-risk-section"><h3>共同连接与预算</h3><ul>${connectionRows}</ul></div>` : ""}${activeRows ? `<div class="task-risk-section"><h3>活动任务</h3><ul>${activeRows}</ul></div>` : ""}${candidateRows.length ? `<dl class="task-snapshot">${candidateRows.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`).join("")}</dl>` : ""}${warnings.length ? `<div class="task-risk-section"><h3>额外提示</h3><ul>${warnings.map((warning) => `<li>${escapeHtml(redactedText(warning))}</li>`).join("")}</ul></div>` : ""}<div class="modal-actions"><button class="button" data-action="cancel-task-risk">取消</button><button class="button primary" data-action="confirm-task-risk">仍要并行启动</button></div></section></div>`;
+  }
   if (state.modal === "stop-task") {
-    return `<div class="modal-backdrop"><section class="modal"><h2>终止翻译任务？</h2><p class="note">已生成的文件会保留在输出目录；当前任务将发送安全停止请求。</p><div class="modal-actions"><button class="button" data-action="close-modal">继续执行</button><button class="button danger" data-action="stop-task-confirm">终止翻译</button></div></section></div>`;
+    return `<div class="modal-backdrop"><section class="modal"><h2>安全停止任务？</h2><p class="note">已生成的文件会保留在输出目录；Excel、Word 会结束为终态。PDF/图片应先“暂停提交”，再选择继续或结束暂停。</p><div class="modal-actions"><button class="button" data-action="close-modal">继续执行</button><button class="button danger" data-action="stop-task-confirm">安全停止</button></div></section></div>`;
   }
   if (state.modal === "xls-compatibility") {
     const count = selectedExcelXlsCount();
@@ -1778,21 +2023,38 @@ async function startTask(
     ? window.confirm("PDF 审核模型当前配置已经测试失败。继续会使用本次冻结配置尝试审核；失败页面会保留为可复核结果。是否继续？")
     : false;
   if (reviewKnownUnavailable && !allowKnownReviewFailure) return;
-  const payload = await client.request<TaskStatus>("/api/tasks", {
+  const payload: JsonObject = {
+    surface,
+    source_path: path,
+    selected_paths: selectedPaths,
+    untranslated_only: untranslated,
+    protect_scheme_cover: protectSchemeCover,
+    allow_xls_fallback: surface === "excel" && allowXlsFallback,
+    allow_doc_fallback: surface === "word" && allowDocFallback,
+    include_images: includeImages,
+    source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
+    target_lang: state.targetSelections[surface],
+    allow_known_review_failure: allowKnownReviewFailure,
+  };
+  const preflight = await client.preflightTask(payload);
+  if (preflight.requires_confirmation) {
+    state.pendingTaskRisk = { surface, payload, preflight };
+    state.modal = "task-risk";
+    render();
+    return;
+  }
+  await submitTaskStart(surface, payload);
+}
+
+async function submitTaskStart(
+  surface: TaskSurface,
+  payload: JsonObject,
+  confirmationToken = "",
+): Promise<void> {
+  const requestPayload = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;
+  const task = await client.request<TaskStatus>("/api/tasks", {
     method: "POST",
-    body: JSON.stringify({
-      surface,
-      source_path: path,
-      selected_paths: selectedPaths,
-      untranslated_only: untranslated,
-      protect_scheme_cover: protectSchemeCover,
-      allow_xls_fallback: surface === "excel" && allowXlsFallback,
-      allow_doc_fallback: surface === "word" && allowDocFallback,
-      include_images: includeImages,
-      source_lang: surface === "pdf" ? undefined : state.sourceSelections[surface],
-      target_lang: state.targetSelections[surface],
-      allow_known_review_failure: allowKnownReviewFailure,
-    }),
+    body: JSON.stringify(requestPayload),
   });
   state.excelFileProgress = surface === "excel" ? {} : state.excelFileProgress;
   state.wordFileProgress = surface === "word" ? {} : state.wordFileProgress;
@@ -1800,62 +2062,112 @@ async function startTask(
   state.pdfFileProgress = surface === "pdf" ? {} : state.pdfFileProgress;
   state.pdfPageRecovery = surface === "pdf" ? {} : state.pdfPageRecovery;
   state.pdfReview = surface === "pdf" ? {} : state.pdfReview;
-  state.running = { task: payload, logs: [], phaseName: "正在准备任务", stepDone: 0, stepTotal: 0 };
+  state.tmCleaningState = surface === "tm_clean" || surface === "cleaner" ? "running" : state.tmCleaningState;
+  const entry = upsertTask(task, true);
+  entry.phaseName = "正在准备任务";
+  state.pendingTaskRisk = null;
   render();
+  void watchTask(task.task_id);
+}
+
+async function watchTask(taskId: string): Promise<void> {
+  const running = state.tasks[taskId];
+  if (!running || running.watcherActive || running.task.terminal) return;
+  running.watcherActive = true;
   try {
-    await client.streamTask(payload.task_id, handleTaskEvent);
+    running.lastEventId = await client.streamTask(
+      taskId,
+      (event) => handleTaskEvent(taskId, event),
+      {
+        lastEventId: running.lastEventId,
+        onConnectionState: (streamState) => {
+          const entry = state.tasks[taskId];
+          if (!entry) return;
+          entry.streamState = streamState;
+          render();
+        },
+      },
+    );
+    const latest = state.tasks[taskId];
+    if (latest && !latest.task.terminal) {
+      const refreshed = await client.getTask(taskId);
+      const entry = upsertTask(refreshed);
+      entry.streamState = "connected";
+    }
   } catch (error) {
+    const latest = state.tasks[taskId];
+    if (!latest) return;
+    try {
+      const refreshed = await client.getTask(taskId);
+      const entry = upsertTask(refreshed);
+      entry.streamState = "connected";
+      if (!refreshed.terminal) {
+        window.setTimeout(() => void watchTask(taskId), 0);
+        return;
+      }
+    } catch {
+      latest.task = { ...latest.task, state: "interrupted", terminal: true };
+      latest.streamState = "interrupted";
+      latest.phaseName = "sidecar 已重启或应用异常退出；本任务不能继续，请依据已生成产物或清单新建任务。";
+      showToast("任务监控无法恢复，已标记为应用中断。", true);
+    }
     showToast(`任务事件流中断：${errorMessage(error)}`, true);
+  } finally {
+    const latest = state.tasks[taskId];
+    if (latest) latest.watcherActive = false;
+    render();
   }
 }
 
-function handleTaskEvent(event: SseEvent): void {
-  if (!state.running) return;
+function handleTaskEvent(taskId: string, event: SseEvent): void {
+  const running = state.tasks[taskId];
+  if (!running) return;
+  running.lastEventId = Math.max(running.lastEventId, event.id);
   const data = event.data;
   if (event.type === "log") {
-    state.running.logs.push({ level: text(data.level, "INFO"), message: text(data.message) });
+    running.logs.push({ level: text(data.level, "INFO"), message: redactedText(data.message) });
   }
   if (event.type === "progress") {
-    state.running.phaseName = text(data.phase_name, "正在处理");
-    state.running.stepDone = number(data.step_done);
-    state.running.stepTotal = number(data.step_total);
+    running.phaseName = text(data.phase_name, "正在处理");
+    running.stepDone = number(data.step_done);
+    running.stepTotal = number(data.step_total);
   }
   if (event.type === "status") {
-    state.running.phaseName = text(data.phase_desc, state.running.phaseName);
-    if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
-      const surface = state.running.task.surface;
-      const current = state.files[surface].find((file) => state.running?.phaseName.includes(file.name));
+    running.phaseName = text(data.phase_desc, running.phaseName);
+    if (running.task.surface === "excel" || running.task.surface === "word") {
+      const surface = running.task.surface;
+      const current = state.files[surface].find((file) => running.phaseName.includes(file.name));
       if (current) {
         const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
         progress[current.path] = {
           ...progress[current.path],
-          stage: state.running.phaseName,
+          stage: running.phaseName,
         };
       }
     }
   }
   if (event.type === "stopping") {
-    state.running.task = { ...state.running.task, state: "stopping" };
+    running.task = { ...running.task, state: "stopping" };
   }
   if (event.type === "paused") {
-    state.running.task = { ...state.running.task, state: "paused" };
-    state.running.phaseName = "已暂停提交新页面";
+    running.task = { ...running.task, state: "paused" };
+    running.phaseName = "已暂停提交新页面";
   }
   if (event.type === "resumed") {
-    state.running.task = { ...state.running.task, state: "running" };
-    state.running.phaseName = "正在继续提交页面";
+    running.task = { ...running.task, state: "running" };
+    running.phaseName = "正在继续提交页面";
   }
-  if (event.type === "word_recovery" && state.running.task.surface === "word") {
+  if (event.type === "word_recovery" && running.task.surface === "word") {
     state.wordRecovery = { ...data };
   }
-  if (event.type === "pdf_page_recovery" && state.running.task.surface === "pdf") {
+  if (event.type === "pdf_page_recovery" && running.task.surface === "pdf") {
     state.pdfPageRecovery = { ...data };
   }
-  if (event.type === "pdf_review" && state.running.task.surface === "pdf") {
+  if (event.type === "pdf_review" && running.task.surface === "pdf") {
     state.pdfReview = { ...data };
   }
-  if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
-    const surface = state.running.task.surface;
+  if (running.task.surface === "excel" || running.task.surface === "word") {
+    const surface = running.task.surface;
     const filePath = firstText(data, ["file_path", "source_path", "path", "relative_path"]);
     if (filePath && ["file", "file_status", "preflight", "progress", "result"].includes(event.type)) {
       const knownPath = state.files[surface].find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
@@ -1863,17 +2175,17 @@ function handleTaskEvent(event: SseEvent): void {
       progress[knownPath] = { ...progress[knownPath], ...data };
     }
   }
-  if (state.running.task.surface === "pdf") {
+  if (running.task.surface === "pdf") {
     const filePath = firstText(data, ["file_path", "source_path", "path", "relative_path"]);
     if (filePath && ["file", "file_status", "preflight", "progress", "result"].includes(event.type)) {
       const knownPath = state.files.pdf.find((file) => file.path === filePath || displayPath(file) === filePath)?.path || filePath;
       state.pdfFileProgress[knownPath] = { ...state.pdfFileProgress[knownPath], ...data };
     }
   }
-  if (["done", "error", "stopped"].includes(event.type)) {
-    state.running.task = { ...state.running.task, state: event.type as TaskStatus["state"], terminal: true, result: data };
-    if (state.running.task.surface === "excel" || state.running.task.surface === "word") {
-      const surface = state.running.task.surface;
+  if (["done", "completed_with_issues", "error", "stopped", "interrupted"].includes(event.type)) {
+    running.task = { ...running.task, state: event.type as TaskStatus["state"], terminal: true, result: data };
+    if (running.task.surface === "excel" || running.task.surface === "word") {
+      const surface = running.task.surface;
       const progress = surface === "excel" ? state.excelFileProgress : state.wordFileProgress;
       for (const entry of resultEntries(data, ["files", "file_results", "file_records"])) {
         const filePath = firstText(entry, ["source_path", "path", "source_relative_path", "relative_path"]);
@@ -1881,7 +2193,7 @@ function handleTaskEvent(event: SseEvent): void {
         if (knownPath) progress[knownPath] = { ...progress[knownPath], ...entry };
       }
     }
-    if (state.running.task.surface === "pdf") {
+    if (running.task.surface === "pdf") {
       for (const entry of resultEntries(data, ["files", "file_results", "file_records"])) {
         const filePath = firstText(entry, ["source_path", "path", "source_relative_path", "relative_path"]);
         const knownPath = state.files.pdf.find((file) => file.path === filePath || displayPath(file) === filePath)?.path;
@@ -1889,41 +2201,77 @@ function handleTaskEvent(event: SseEvent): void {
       }
     }
     if (event.type === "done") {
-      showToast(state.running.task.surface === "word"
+      showToast(running.task.surface === "word"
         ? "Word 翻译任务已完成。文件级结果、质量报告和输出目录已显示。"
-        : state.running.task.surface === "pdf"
+        : running.task.surface === "pdf"
           ? "PDF / 图片翻译任务已完成。文件结果、页面复核与输出证据已显示。"
+          : running.task.surface === "tm_clean"
+            ? "TM 清洗已完成，正在载入建议审核。"
           : "翻译任务已完成。文件级结果和输出目录已显示在 Excel 页面。 ");
+      if (running.task.surface === "tm_clean") void loadTmCleanSuggestions(taskId);
     } else {
+      if (running.task.surface === "tm_clean") state.tmCleaningState = "error";
       showToast(text(data.message, "任务未完成。"), true);
     }
   }
   render();
 }
 
-async function stopTask(): Promise<void> {
-  if (!state.running) return;
-  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/stop`, { method: "POST" });
+async function stopTask(taskId: string): Promise<void> {
+  const entry = state.tasks[taskId];
+  if (!entry) return;
+  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/stop`, { method: "POST" });
   render();
 }
 
-async function pausePdfTask(): Promise<void> {
-  if (!state.running || state.running.task.surface !== "pdf") return;
-  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/pause`, { method: "POST" });
+async function pausePdfTask(taskId: string): Promise<void> {
+  const entry = state.tasks[taskId];
+  if (!entry || entry.task.surface !== "pdf") return;
+  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/pause`, { method: "POST" });
   render();
 }
 
-async function resumePdfTask(): Promise<void> {
-  if (!state.running || state.running.task.surface !== "pdf") return;
-  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/resume`, { method: "POST" });
+async function resumePdfTask(taskId: string): Promise<void> {
+  const entry = state.tasks[taskId];
+  if (!entry || entry.task.surface !== "pdf") return;
+  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/resume`, { method: "POST" });
   render();
 }
 
-async function endPausedPdfTask(): Promise<void> {
-  if (!state.running || state.running.task.surface !== "pdf") return;
+async function endPausedPdfTask(taskId: string): Promise<void> {
+  const entry = state.tasks[taskId];
+  if (!entry || entry.task.surface !== "pdf") return;
   if (!window.confirm("结束暂停任务将不再提交未处理页面，但会写入并保留已完成页面、素材、清单和报告。是否结束？")) return;
-  state.running.task = await client.request<TaskStatus>(`/api/tasks/${state.running.task.task_id}/end-paused`, { method: "POST" });
+  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
   render();
+}
+
+async function refreshTaskRegistry(): Promise<void> {
+  const payload = await client.listTasks();
+  const entries = [...(Array.isArray(payload.active) ? payload.active : []), ...(Array.isArray(payload.recent) ? payload.recent : [])];
+  for (const task of entries) {
+    const entry = upsertTask(task);
+    if (isTaskActive(task)) void watchTask(task.task_id);
+    else entry.watcherActive = false;
+  }
+}
+
+function reconnectActiveTasks(): void {
+  for (const entry of activeTasks()) {
+    if (!entry.watcherActive) void watchTask(entry.task.task_id);
+  }
+}
+
+async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
+  if (!path.trim()) throw new Error("任务没有可用的本地文件引用。");
+  await invoke("open_local_path", { path, reveal });
+}
+
+async function copyTaskPath(path: string): Promise<void> {
+  if (!path.trim()) throw new Error("没有可复制的路径。");
+  if (!navigator.clipboard?.writeText) throw new Error("当前系统 WebView 不支持复制路径。");
+  await navigator.clipboard.writeText(path);
+  showToast("路径已复制。");
 }
 
 function nestedPatch(path: string, value: unknown): JsonObject {
@@ -2268,16 +2616,54 @@ async function tmClean(): Promise<void> {
   state.tmConflictMessage = "";
   render();
   try {
-    const payload = await client.request<{ suggestions: JsonObject[] }>("/api/tm/clean", { method: "POST", body: JSON.stringify({ lang_pair: tmLangPair() }) });
-    state.tmSuggestions = payload.suggestions;
-    state.tmCleaningState = "ready";
-    state.modal = "tm-clean";
-    render();
+    const payload: JsonObject = {
+      surface: "tm_clean",
+      source_path: tmLangPair(),
+      lang_pair: tmLangPair(),
+    };
+    const preflight = await client.preflightTask(payload);
+    if (preflight.requires_confirmation) {
+      state.pendingTaskRisk = { surface: "tm_clean", payload, preflight };
+      state.modal = "task-risk";
+      render();
+      return;
+    }
+    await submitTaskStart("tm_clean", payload);
   } catch (error) {
     state.tmCleaningState = "error";
     render();
     throw error;
   }
+}
+
+async function loadTmCleanSuggestions(taskId: string): Promise<void> {
+  const task = state.tasks[taskId]?.task;
+  const snapshot = record(task?.task_snapshot);
+  const result = record(task?.result);
+  const language = record(result.language);
+  const langPair = firstText({ ...snapshot, ...language, ...result }, ["lang_pair"]) || tmLangPair();
+  let suggestions: JsonObject[] = [];
+  try {
+    const resultStatus = await client.getTaskResult(taskId);
+    const payload = record(resultStatus.result);
+    suggestions = resultEntries(payload, ["suggestions", "tm_suggestions", "review_suggestions"]);
+  } catch {
+    // A task result may deliberately exclude TM content from the persisted
+    // summary.  The dedicated review route is allowed to return it only for
+    // the live local review workflow.
+  }
+  if (!suggestions.length) {
+    try {
+      const payload = await client.request<JsonObject>(`/api/tm/clean/suggestions?lang_pair=${encodeURIComponent(langPair)}`);
+      suggestions = resultEntries(payload, ["suggestions", "items"]);
+    } catch {
+      // The task may have produced no suggestions, which is a valid outcome.
+    }
+  }
+  state.tmSuggestions = suggestions;
+  state.tmCleaningState = "ready";
+  state.modal = "tm-clean";
+  render();
 }
 
 async function applyTmCleanSuggestions(): Promise<void> {
@@ -2823,7 +3209,13 @@ app.addEventListener("input", (event) => {
 async function handleAction(target: HTMLElement): Promise<void> {
   const action = target.dataset.action;
   const surface = target.dataset.surface as Surface | undefined;
-  if (action === "navigate" && target.dataset.view) { state.view = target.dataset.view as View; if (state.view === "tm") { await refreshTmLanguagePairs(); await refreshTm(); await refreshTmConflicts(); } render(); return; }
+  const taskId = text(target.dataset.taskId);
+  if (action === "navigate" && target.dataset.view) { state.view = target.dataset.view as View; if (state.view === "tm") { await refreshTmLanguagePairs(); await refreshTm(); await refreshTmConflicts(); } if (state.view === "tasks") await refreshTaskRegistry(); render(); return; }
+  if (action === "open-task-center") { state.view = "tasks"; if (taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") state.workspaceTaskIds[task.surface] = taskId; } await refreshTaskRegistry(); render(); return; }
+  if (action === "task-filter") { state.taskCenterFilter = (target.dataset.filter as typeof state.taskCenterFilter) || "all"; render(); return; }
+  if (action === "show-task-workspace" && taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") { state.workspaceTaskIds[task.surface] = taskId; state.view = task.surface; render(); } return; }
+  if (action === "task-local-file") return openTaskLocalFile(text(target.dataset.path), target.dataset.reveal === "1");
+  if (action === "task-copy-path") return copyTaskPath(text(target.dataset.path));
   if (action === "toggle-panel") { state.panelOpen = !state.panelOpen; await persistSettings({ appearance: { model_config_panel_open: state.panelOpen } }); render(); return; }
   if (action === "cycle-theme") { const next = selectedTheme() === "system" ? "light" : selectedTheme() === "light" ? "dark" : "system"; await persistSettings({ appearance: { theme: next } }); render(); return; }
   if (action === "choose-source" && surface) { state.sourcePickerSurface = surface; state.modal = "source-picker"; render(); return; }
@@ -2838,12 +3230,14 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "excel-start-compatibility") { state.modal = null; return startTask("excel", true, true); }
   if (action === "word-start-high-fidelity") { state.modal = null; return startTask("word", false, false, false, true); }
   if (action === "word-start-compatibility") { state.modal = null; return startTask("word", false, false, true, true); }
-  if (action === "stop-task") { state.modal = "stop-task"; render(); return; }
-  if (action === "stop-task-confirm") { state.modal = null; return stopTask(); }
-  if (action === "pause-pdf-task") return pausePdfTask();
-  if (action === "resume-pdf-task") return resumePdfTask();
-  if (action === "end-paused-pdf-task") return endPausedPdfTask();
-  if (action === "reset-task") { state.running = null; render(); return; }
+  if (action === "stop-task" && taskId) { state.pendingStopTaskId = taskId; state.modal = "stop-task"; render(); return; }
+  if (action === "stop-task-confirm") { const id = state.pendingStopTaskId; state.pendingStopTaskId = null; state.modal = null; if (id) return stopTask(id); return; }
+  if (action === "pause-pdf-task" && taskId) return pausePdfTask(taskId);
+  if (action === "resume-pdf-task" && taskId) return resumePdfTask(taskId);
+  if (action === "end-paused-pdf-task" && taskId) return endPausedPdfTask(taskId);
+  if (action === "reset-task" && taskId) { const task = state.tasks[taskId]?.task; if (task && (task.surface === "excel" || task.surface === "word" || task.surface === "pdf")) state.workspaceTaskIds[task.surface] = null; render(); return; }
+  if (action === "cancel-task-risk") { state.pendingTaskRisk = null; state.modal = null; render(); return; }
+  if (action === "confirm-task-risk") { const pending = state.pendingTaskRisk; state.modal = null; if (!pending?.preflight.confirmation_token) throw new Error("风险确认令牌已失效，请重新启动任务。"); return submitTaskStart(pending.surface, pending.payload, pending.preflight.confirmation_token); }
   if (action === "select-all-files" && surface) { state.selectedPaths[surface] = state.files[surface].map((file) => file.path); render(); return; }
   if (action === "select-no-files" && surface) { state.selectedPaths[surface] = []; render(); return; }
   if (action === "save-model") return saveModel();
@@ -2901,7 +3295,7 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "tm-export" || action === "tm-export-json") return exportTm("json");
   if (action === "tm-export-csv") return exportTm("csv");
   if (action === "tm-export-full") return exportFullTm();
-  if (action === "close-modal") { state.modal = null; state.pendingExcelStart = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
+  if (action === "close-modal") { state.modal = null; state.pendingExcelStart = null; state.pendingStopTaskId = null; state.pendingTaskRisk = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
   if (action === "export-model-config") return exportModelConfig();
   if (action === "export-model-config-sensitive") return exportModelConfig(true);
   if (action === "import-model-config") return importModelConfig();
@@ -2923,10 +3317,14 @@ async function bootstrap(): Promise<void> {
     await refreshTmLanguagePairs();
     await refreshTm();
     await refreshTmConflicts();
+    await refreshTaskRegistry();
   } catch (error) {
     showToast(`无法连接翻译引擎：${errorMessage(error)}`, true);
   }
   render();
 }
+
+window.addEventListener("focus", reconnectActiveTasks);
+window.addEventListener("online", reconnectActiveTasks);
 
 void bootstrap();

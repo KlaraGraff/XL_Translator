@@ -7,10 +7,16 @@ export type SidecarInfo = {
 
 export type TaskStatus = {
   task_id: string;
-  surface: "excel" | "word" | "pdf";
-  source_path: string;
-  state: "running" | "paused" | "stopping" | "done" | "error" | "stopped";
+  surface: "excel" | "word" | "pdf" | "cleaner" | "tm_clean";
+  source_label?: string;
+  state: "preflight" | "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
   terminal: boolean;
+  created_at?: number;
+  updated_at?: number;
+  model_snapshot?: Record<string, unknown>;
+  task_snapshot?: Record<string, unknown>;
+  resource_groups?: Array<Record<string, unknown>>;
+  logs?: Array<Record<string, unknown>>;
   result: Record<string, unknown> | null;
 };
 
@@ -18,6 +24,24 @@ export type SseEvent = {
   id: number;
   type: string;
   data: Record<string, unknown>;
+};
+
+export type TaskPreflight = {
+  requires_confirmation: boolean;
+  confirmation_token?: string;
+  risk?: Record<string, unknown>;
+  candidate_snapshot?: Record<string, unknown>;
+};
+
+export type TaskList = {
+  active: TaskStatus[];
+  recent: TaskStatus[];
+};
+
+export type StreamOptions = {
+  lastEventId?: number;
+  onConnectionState?: (state: "connected" | "reconnecting") => void;
+  signal?: AbortSignal;
 };
 
 export class ApiClient {
@@ -58,9 +82,11 @@ export class ApiClient {
   async streamTask(
     taskId: string,
     onEvent: (event: SseEvent) => void,
-  ): Promise<void> {
-    let lastEventId = 0;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+    options: StreamOptions = {},
+  ): Promise<number> {
+    let lastEventId = options.lastEventId ?? 0;
+    let attempt = 0;
+    while (!options.signal?.aborted) {
       const headers = new Headers({ "X-Translator-Token": this.#token });
       if (lastEventId) {
         headers.set("Last-Event-ID", String(lastEventId));
@@ -72,6 +98,9 @@ export class ApiClient {
         if (!response.ok || !response.body) {
           throw new Error("Could not open the task event stream.");
         }
+
+        options.onConnectionState?.("connected");
+        attempt = 0;
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -91,7 +120,7 @@ export class ApiClient {
           };
           lastEventId = Math.max(lastEventId, event.id);
           onEvent(event);
-          terminal = ["done", "error", "stopped"].includes(event.type);
+          terminal = ["done", "completed_with_issues", "error", "stopped", "interrupted"].includes(event.type);
           eventId = 0;
           eventType = "message";
           dataLines = [];
@@ -120,15 +149,39 @@ export class ApiClient {
           }
         }
         if (terminal) {
-          return;
+          return lastEventId;
         }
       } catch (error) {
-        if (attempt === 3) {
+        if (options.signal?.aborted) {
+          return lastEventId;
+        }
+        if (attempt >= 7) {
           throw error;
         }
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+      options.onConnectionState?.("reconnecting");
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(5_000, 300 * (2 ** attempt))));
+      attempt += 1;
     }
-    throw new Error("Task event stream closed before a terminal event.");
+    return lastEventId;
+  }
+
+  async preflightTask(payload: Record<string, unknown>): Promise<TaskPreflight> {
+    return this.request<TaskPreflight>("/api/tasks/preflight", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async listTasks(): Promise<TaskList> {
+    return this.request<TaskList>("/api/tasks");
+  }
+
+  async getTask(taskId: string): Promise<TaskStatus> {
+    return this.request<TaskStatus>(`/api/tasks/${taskId}`);
+  }
+
+  async getTaskResult(taskId: string): Promise<TaskStatus> {
+    return this.request<TaskStatus>(`/api/tasks/${taskId}/results`);
   }
 }

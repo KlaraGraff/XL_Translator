@@ -56,7 +56,6 @@ from core.model_roles import (
     provider_supports_capability,
     reset_model_role_availability,
     resolve_effective_model_config,
-    settings_for_text_role,
     validate_all_model_roles,
 )
 from core.model_throughput import (
@@ -68,9 +67,8 @@ from core.model_throughput import (
 )
 from core.pdf_image_translation import scan_pdf_sources
 from core.pdf_review import check_pdf_review_connectivity
-from core.tm_cleaner import CleanSuggestion, apply_suggestions, run_cleaning
+from core.tm_cleaner import CleanSuggestion, apply_suggestions
 from core.word_document import scan_word_sources
-from core.engine_dispatcher import build_engine
 from config import DOMAIN_PRESETS
 from settings import (
     AppSettings,
@@ -97,8 +95,8 @@ class ScanRequest(BaseModel):
 
 
 class TaskStartRequest(BaseModel):
-    source_path: str = Field(min_length=1)
-    surface: Literal["excel", "word", "pdf"]
+    source_path: str = ""
+    surface: Literal["excel", "word", "pdf", "tm_clean"]
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_scheme_cover: bool = False
@@ -108,6 +106,8 @@ class TaskStartRequest(BaseModel):
     source_lang: str | None = None
     target_lang: str | None = None
     allow_known_review_failure: bool = False
+    lang_pair: str | None = None
+    confirmation_token: str | None = None
 
 
 class TmEntryPayload(BaseModel):
@@ -180,6 +180,7 @@ class LanguagePreflightRequest(BaseModel):
 
 class TmCleanRequest(BaseModel):
     lang_pair: str = Field(min_length=3)
+    confirmation_token: str | None = None
 
 
 class ModelFetchRequest(BaseModel):
@@ -264,7 +265,7 @@ def create_app(
 
     @app.exception_handler(TaskConflictError)
     async def task_conflict(_request, exc):
-        return _json_error(409, str(exc))
+        return _json_error(409, str(exc), reason=exc.reason)
 
     @app.exception_handler(TaskInputError)
     async def task_input_error(_request, exc):
@@ -562,23 +563,55 @@ def create_app(
             payload["result"] = dict(payload)
             return payload
 
+    def _task_options(request: TaskStartRequest) -> TaskOptions:
+        return TaskOptions(
+            untranslated_only=request.untranslated_only,
+            protect_scheme_cover=request.protect_scheme_cover,
+            allow_xls_fallback=request.allow_xls_fallback,
+            allow_doc_fallback=request.allow_doc_fallback,
+            include_images=request.include_images,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang,
+            allow_known_review_failure=request.allow_known_review_failure,
+            lang_pair=request.lang_pair,
+        )
+
+    @app.post("/api/tasks/preflight")
+    def preflight_task(request: TaskStartRequest) -> dict[str, Any]:
+        return app.state.task_manager.preflight_task(
+            surface=request.surface,
+            source_path=request.source_path,
+            selected_paths=request.selected_paths,
+            options=_task_options(request),
+        )
+
     @app.post("/api/tasks", status_code=202)
     def start_task(request: TaskStartRequest) -> dict[str, Any]:
         return app.state.task_manager.start_task(
             surface=request.surface,
             source_path=request.source_path,
             selected_paths=request.selected_paths,
-            options=TaskOptions(
-                untranslated_only=request.untranslated_only,
-                protect_scheme_cover=request.protect_scheme_cover,
-                allow_xls_fallback=request.allow_xls_fallback,
-                allow_doc_fallback=request.allow_doc_fallback,
-                include_images=request.include_images,
-                source_lang=request.source_lang,
-                target_lang=request.target_lang,
-                allow_known_review_failure=request.allow_known_review_failure,
-            ),
+            options=_task_options(request),
+            confirmation_token=request.confirmation_token,
         )
+
+    @app.get("/api/tasks")
+    def list_tasks() -> dict[str, Any]:
+        return app.state.task_manager.list_tasks()
+
+    # Static task-center routes must be registered before the parameterized
+    # task-id routes below; Starlette matches routes in declaration order.
+    @app.get("/api/tasks/locks/current")
+    def current_task_locks() -> dict[str, Any]:
+        return {"reservations": app.state.task_manager.reservations()}
+
+    @app.get("/api/tasks/resources")
+    def task_resource_groups() -> dict[str, Any]:
+        return {"groups": app.state.task_manager.resource_groups()}
+
+    @app.get("/api/tasks/{task_id}/results")
+    def get_task_results(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.task_results(task_id)
 
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str) -> dict[str, Any]:
@@ -617,10 +650,6 @@ def create_app(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-
-    @app.get("/api/tasks/locks/current")
-    def current_task_locks() -> dict[str, Any]:
-        return {"reservations": app.state.task_manager.reservations()}
 
     @app.get("/api/tm/entries")
     def list_tm_entries(
@@ -816,28 +845,24 @@ def create_app(
             raise HTTPException(409, "冲突候选不存在、已处理或当前词条已发生变化。")
         return {"resolved": True}
 
-    @app.post("/api/tm/clean")
-    def clean_tm_entries(payload: TmCleanRequest) -> dict[str, Any]:
+    @app.get("/api/tm/clean/suggestions")
+    def list_tm_clean_suggestions(lang_pair: str | None = None) -> dict[str, Any]:
         tm_manager.init_db()
-        settings = load_settings()
-        clean_settings = settings_for_text_role(settings, ROLE_CLEANER)
-        config = resolve_effective_model_config(settings, ROLE_CLEANER)
-        throughput = get_model_throughput(settings, config)
-        suggestions = run_cleaning(
-            payload.lang_pair,
-            build_engine(clean_settings),
-            batch_size=throughput.batch_size or clean_settings.engine.batch_size,
-            concurrency=throughput.concurrency,
-            extra_prompt=settings.cleaner_prompt_extras.get(payload.lang_pair, ""),
-            full_override_prompt=settings.cleaner_full_prompt_overrides.get(
-                payload.lang_pair,
-                "",
-            ),
-            custom_target_langs=settings.custom_target_langs,
+        return {"suggestions": tm_manager.list_cleaning_suggestions(lang_pair)}
+
+    @app.post("/api/tm/clean", status_code=202)
+    def clean_tm_entries(payload: TmCleanRequest) -> dict[str, Any]:
+        """Compatibility wrapper for the unified scheduled TM-clean task.
+
+        The former synchronous endpoint could bypass resource risk checks.  It
+        now has identical token semantics to the task-center route.
+        """
+        return app.state.task_manager.start_task(
+            surface="tm_clean",
+            source_path=payload.lang_pair,
+            options=TaskOptions(lang_pair=payload.lang_pair),
+            confirmation_token=payload.confirmation_token,
         )
-        # Cleaning is suggestion-only.  Applying a suggestion always requires
-        # the explicit /clean/apply confirmation route.
-        return {"suggestions": [_json_safe(item) for item in suggestions]}
 
     @app.post("/api/tm/clean/apply")
     def apply_tm_suggestions(payload: TmApplySuggestionsPayload) -> dict[str, int]:
@@ -1188,8 +1213,11 @@ def create_app(
     return app
 
 
-def _json_error(status_code: int, detail: str) -> Response:
-    return JSONResponse(status_code=status_code, content={"detail": detail})
+def _json_error(status_code: int, detail: str, *, reason: str | None = None) -> Response:
+    payload: dict[str, Any] = {"detail": detail}
+    if reason:
+        payload["reason"] = reason
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:

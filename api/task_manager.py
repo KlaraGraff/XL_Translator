@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import threading
 import time
 import uuid
@@ -26,7 +27,9 @@ from core.model_roles import (
     resolve_effective_model_config,
 )
 from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
-from core.task_resources import TaskResourceLease, TaskResourceRegistry
+from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
+from core.task_history import TaskHistoryStore
+from core.tm_cleaning_task_runner import TmCleaningTaskRunner
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -45,17 +48,19 @@ from core.word_converter import get_local_word_automation_availability
 from core.xls_converter import get_local_excel_availability
 from settings import AppSettings, load_settings
 
-TaskSurface = Literal["excel", "word", "pdf"]
+TaskSurface = Literal["excel", "word", "pdf", "tm_clean"]
 
 _PAGE_BY_SURFACE = {
     "excel": "excel_translate",
     "word": "word_translate",
     "pdf": "pdf_translate",
+    "tm_clean": "tm_clean",
 }
 _LABEL_BY_SURFACE = {
     "excel": "Excel translation",
     "word": "Word translation",
     "pdf": "PDF translation",
+    "tm_clean": "TM cleaning",
 }
 
 
@@ -74,7 +79,11 @@ class TaskNotFoundError(KeyError):
 
 
 class TaskConflictError(RuntimeError):
-    """Raised when a task would share an upstream API resource."""
+    """Raised when the scheduler cannot admit a candidate task."""
+
+    def __init__(self, message: str, *, reason: str = "conflict") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class TaskInputError(ValueError):
@@ -91,6 +100,7 @@ class TaskOptions:
     source_lang: str | None = None
     target_lang: str | None = None
     allow_known_review_failure: bool = False
+    lang_pair: str | None = None
 
     @property
     def xls_conversion_mode(self) -> str:
@@ -106,17 +116,48 @@ class ApiTask:
     task_id: str
     surface: TaskSurface
     source_path: str
+    source_label: str
     runner: Runner
-    lease: TaskResourceLease
+    lease: ScheduledTaskLease
     created_at: float
     model_snapshot: dict[str, dict[str, object]] = field(default_factory=dict)
+    role_groups: dict[str, object] = field(default_factory=dict)
     task_snapshot: dict[str, object] = field(default_factory=dict)
     state: str = "running"
     result: dict[str, Any] | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     next_event_id: int = 1
     terminal: bool = False
+    updated_at: float = field(default_factory=time.time)
+    logs: list[dict[str, Any]] = field(default_factory=list)
     condition: threading.Condition = field(default_factory=threading.Condition)
+
+
+@dataclass(frozen=True)
+class PreparedTask:
+    """Validated, immutable start input used by preflight and atomic start."""
+
+    surface: TaskSurface
+    source_path: str
+    source_label: str
+    files: list[Any]
+    settings: AppSettings
+    options: TaskOptions
+    source_lang: str
+    task_snapshot: dict[str, object]
+    model_snapshot: dict[str, dict[str, object]]
+    key_overrides: dict[str, str]
+    role_groups: dict[str, object]
+    group_capacities: dict[object, int]
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class ConfirmationToken:
+    token: str
+    prepared: PreparedTask
+    registry_revision: int
+    expires_at: float
 
 
 class TranslationTaskManager:
@@ -127,28 +168,148 @@ class TranslationTaskManager:
         *,
         settings_loader: Callable[[], AppSettings] = load_settings,
         registry: TaskResourceRegistry | None = None,
+        history_store: TaskHistoryStore | None = None,
     ) -> None:
         self._settings_loader = settings_loader
         self._registry = registry or TaskResourceRegistry()
+        self._history = history_store or TaskHistoryStore()
         self._tasks: dict[str, ApiTask] = {}
+        self._confirmation_tokens: dict[str, ConfirmationToken] = {}
         self._lock = threading.RLock()
+        # A complete sidecar restart cannot safely resume a frozen runner.  A
+        # prior process may have recorded an active summary, so close that
+        # state before this manager accepts fresh work.
+        self._history.mark_active_interrupted()
+
+    def preflight_task(
+        self,
+        *,
+        surface: TaskSurface,
+        source_path: str = "",
+        selected_paths: list[str] | None = None,
+        options: TaskOptions | None = None,
+    ) -> dict[str, Any]:
+        """Validate a candidate and issue a short-lived shared-risk token."""
+        prepared = self._prepare_task(
+            surface=surface,
+            source_path=source_path,
+            selected_paths=selected_paths,
+            options=options,
+        )
+        risk = self._registry.scheduling_risk(
+            task_type=prepared.surface,
+            group_capacities=prepared.group_capacities,
+        )
+        if bool(risk["surface_busy"]):
+            raise TaskConflictError(
+                "同类型任务仍在运行、暂停或安全停止中。",
+                reason="surface_busy",
+            )
+        response: dict[str, Any] = {
+            "requires_confirmation": bool(risk["shared_groups"]),
+            "risk": self._risk_payload(prepared, risk),
+            "candidate_snapshot": _json_safe(prepared.task_snapshot),
+        }
+        if response["requires_confirmation"]:
+            token = uuid.uuid4().hex
+            with self._lock:
+                self._purge_expired_tokens_locked()
+                self._confirmation_tokens[token] = ConfirmationToken(
+                    token=token,
+                    prepared=prepared,
+                    registry_revision=int(risk["revision"]),
+                    expires_at=time.time() + 120,
+                )
+            response["confirmation_token"] = token
+        return response
 
     def start_task(
         self,
         *,
         surface: TaskSurface,
-        source_path: str,
+        source_path: str = "",
         selected_paths: list[str] | None = None,
         options: TaskOptions | None = None,
+        confirmation_token: str | None = None,
     ) -> dict[str, Any]:
-        normalized_surface = _normalize_surface(surface)
-        root = Path(source_path).expanduser().resolve()
-        if not root.exists():
-            raise TaskInputError(f"Source path does not exist: {root}")
+        prepared = self._prepare_task(
+            surface=surface,
+            source_path=source_path,
+            selected_paths=selected_paths,
+            options=options,
+        )
+        expected_revision: int | None = None
+        if confirmation_token:
+            with self._lock:
+                self._purge_expired_tokens_locked()
+                token = self._confirmation_tokens.pop(str(confirmation_token), None)
+            if token is None:
+                raise TaskConflictError(
+                    "风险确认令牌已过期或已使用，请重新预检。",
+                    reason="expired_or_consumed",
+                )
+            if token.prepared.fingerprint != prepared.fingerprint:
+                raise TaskConflictError(
+                    "预检后的任务设置已变化，请重新确认风险。",
+                    reason="stale",
+                )
+            expected_revision = token.registry_revision
+        else:
+            risk = self._registry.scheduling_risk(
+                task_type=prepared.surface,
+                group_capacities=prepared.group_capacities,
+            )
+            if bool(risk["surface_busy"]):
+                raise TaskConflictError("同类型任务仍处于活动状态。", reason="surface_busy")
+            if risk["shared_groups"]:
+                raise TaskConflictError(
+                    "此任务与活动任务共用模型/API，请先完成风险确认。",
+                    reason="confirmation_required",
+                )
+            expected_revision = int(risk["revision"])
+        return self._start_prepared(prepared, expected_revision=expected_revision)
 
+    def _prepare_task(
+        self,
+        *,
+        surface: TaskSurface,
+        source_path: str,
+        selected_paths: list[str] | None,
+        options: TaskOptions | None,
+    ) -> PreparedTask:
+        normalized_surface = _normalize_surface(surface)
         selected_options = options or TaskOptions()
         settings = self._settings_loader().model_copy(deep=True)
         activate_translation_surface(settings, normalized_surface)
+
+        if normalized_surface == "tm_clean":
+            lang_pair = str(selected_options.lang_pair or source_path or "").strip()
+            if "-" not in lang_pair or not all(part.strip() for part in lang_pair.split("-", 1)):
+                raise TaskInputError("TM 清洗任务必须选择有效的定向语言对。")
+            tm_manager.init_db()
+            context = task_api_context_for_page(settings, _PAGE_BY_SURFACE[normalized_surface])
+            task_snapshot: dict[str, object] = {
+                "surface": normalized_surface,
+                "lang_pair": lang_pair,
+                "tm": {"mode": "suggestion_only", "writes_on_start": False},
+                "selected_file_count": 0,
+                "connections": self._connection_summaries(context),
+            }
+            return self._prepared_from_context(
+                surface=normalized_surface,
+                source_path="",
+                source_label="TM language-pair task",
+                files=[],
+                settings=settings,
+                options=TaskOptions(**{**selected_options.__dict__, "lang_pair": lang_pair}),
+                source_lang="",
+                task_snapshot=task_snapshot,
+                context=context,
+            )
+
+        root = Path(source_path).expanduser().resolve()
+        if not root.exists():
+            raise TaskInputError(f"Source path does not exist: {root}")
         default_surface_source = getattr(
             settings,
             f"{normalized_surface}_source_lang",
@@ -172,6 +333,7 @@ class TranslationTaskManager:
                 f"{normalized_surface}_target_lang",
                 settings.target_lang,
             )
+
         files = self._scan(root, normalized_surface, selected_options)
         selected = {
             str(Path(path).expanduser().resolve())
@@ -189,133 +351,195 @@ class TranslationTaskManager:
                 f"No supported {normalized_surface} files were found at: {root}"
             )
         if normalized_surface == "excel":
-            self._validate_excel_preflight(
-                files=files,
-                settings=settings,
-                options=selected_options,
-            )
+            self._validate_excel_preflight(files=files, settings=settings, options=selected_options)
         elif normalized_surface == "word":
-            self._validate_word_preflight(
-                files=files,
-                settings=settings,
-                options=selected_options,
-            )
+            self._validate_word_preflight(files=files, settings=settings, options=selected_options)
         else:
-            self._validate_pdf_preflight(
-                files=files,
-                settings=settings,
-                options=selected_options,
-            )
+            self._validate_pdf_preflight(files=files, settings=settings, options=selected_options)
         if normalized_surface in {"excel", "word"}:
             tm_manager.init_db()
 
-        page_key = _PAGE_BY_SURFACE[normalized_surface]
-        api_context = task_api_context_for_page(settings, page_key)
-        task_id = uuid.uuid4().hex
-        lease = self._registry.acquire(
-            owner_key=task_id,
-            owner_label=_LABEL_BY_SURFACE[normalized_surface],
-            resources=api_context.api_groups,
+        context = task_api_context_for_page(settings, _PAGE_BY_SURFACE[normalized_surface])
+        prompt_source = "|".join(
+            (
+                str(getattr(settings, "domain_preset", "") or ""),
+                str(getattr(settings, "custom_prompt", "") or ""),
+                str(getattr(settings, "domain_prompt_overrides", {}) or {}),
+            )
         )
-        if lease is None:
-            raise TaskConflictError(
-                "Another running translation task uses the same upstream API."
+        task_snapshot = {
+            "surface": normalized_surface,
+            "source_lang": source_selection,
+            "target_lang": settings.pdf.target_lang if normalized_surface == "pdf" else settings.target_lang,
+            "domain_preset": (
+                getattr(settings, f"{normalized_surface}_domain_preset", "")
+                if normalized_surface in {"excel", "word"}
+                else ""
+            ),
+            "prompt_signature": hashlib.sha256(prompt_source.encode("utf-8")).hexdigest()[:12],
+            "connections": self._connection_summaries(context),
+        }
+        if normalized_surface == "excel":
+            task_snapshot.update(
+                {
+                    "excel_output": settings.excel_output.model_dump(mode="json"),
+                    "excel_review": settings.excel_review.model_dump(mode="json"),
+                    "tm": {"max_len": settings.tm.max_len},
+                    "xls_conversion_mode": selected_options.xls_conversion_mode,
+                    "selected_file_count": len(files),
+                    "xls_file_count": sum(1 for item in files if _excel_file_format(item) == "xls"),
+                }
             )
+        elif normalized_surface == "word":
+            task_snapshot.update(
+                {
+                    "word_output": settings.word_output.model_dump(mode="json"),
+                    "word_batch": settings.word_batch.model_dump(mode="json"),
+                    "word_review": settings.word_review.model_dump(mode="json"),
+                    "word_conversion": settings.word_conversion.model_dump(mode="json"),
+                    "tm": {"max_len": settings.tm.max_len},
+                    "doc_conversion_mode": selected_options.doc_conversion_mode,
+                    "selected_file_count": len(files),
+                    "doc_file_count": sum(1 for item in files if _word_file_format(item) == "doc"),
+                }
+            )
+        else:
+            task_snapshot.update(
+                {
+                    "pdf": settings.pdf.model_dump(mode="json"),
+                    "pdf_output": settings.pdf_output.model_dump(mode="json"),
+                    "selected_file_count": len(files),
+                    "pdf_file_count": sum(1 for item in files if getattr(item, "source_type", "pdf") == "pdf"),
+                    "image_file_count": sum(1 for item in files if getattr(item, "source_type", "pdf") == "image"),
+                    "tm": {"enabled": False},
+                }
+            )
+        return self._prepared_from_context(
+            surface=normalized_surface,
+            source_path=str(root),
+            source_label=f"{len(files)} selected input file(s)",
+            files=files,
+            settings=settings,
+            options=selected_options,
+            source_lang=source_selection,
+            task_snapshot=task_snapshot,
+            context=context,
+        )
 
-        try:
-            prompt_source = "|".join(
-                (
-                    str(getattr(settings, "domain_preset", "") or ""),
-                    str(getattr(settings, "custom_prompt", "") or ""),
-                    str(getattr(settings, "domain_prompt_overrides", {}) or {}),
-                )
-            )
-            task_snapshot = {
-                "surface": normalized_surface,
-                "source_lang": source_selection,
-                "target_lang": (
-                    settings.pdf.target_lang
-                    if normalized_surface == "pdf"
-                    else settings.target_lang
-                ),
-                "domain_preset": (
-                    getattr(settings, f"{normalized_surface}_domain_preset", "")
-                    if normalized_surface in {"excel", "word"}
-                    else ""
-                ),
-                "prompt_signature": hashlib.sha256(
-                    prompt_source.encode("utf-8")
-                ).hexdigest()[:12],
+    def _prepared_from_context(
+        self,
+        *,
+        surface: TaskSurface,
+        source_path: str,
+        source_label: str,
+        files: list[Any],
+        settings: AppSettings,
+        options: TaskOptions,
+        source_lang: str,
+        task_snapshot: dict[str, object],
+        context: Any,
+    ) -> PreparedTask:
+        role_groups = dict(getattr(context, "role_groups", {}) or {})
+        group_capacities = dict(getattr(context, "group_concurrency", {}) or {})
+        if not group_capacities:
+            groups = tuple(getattr(context, "api_groups", ()) or ())
+            group_capacities = {group: 1 for group in groups}
+        # A configuration that cannot identify a connection must never be
+        # silently considered independent of all other unknown connections.
+        if not group_capacities:
+            group_capacities = {("unknown", "connection"): 1}
+        fingerprint_payload = {
+            "surface": surface,
+            "snapshot": task_snapshot,
+            "models": dict(getattr(context, "model_snapshot", {}) or {}),
+            "groups": sorted((repr(key), value) for key, value in group_capacities.items()),
+            "options": {
+                "untranslated_only": options.untranslated_only,
+                "protect_scheme_cover": options.protect_scheme_cover,
+                "allow_xls_fallback": options.allow_xls_fallback,
+                "allow_doc_fallback": options.allow_doc_fallback,
+                "include_images": options.include_images,
+                "source_lang": source_lang,
+                "target_lang": options.target_lang,
+                "lang_pair": options.lang_pair,
+            },
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return PreparedTask(
+            surface=surface,
+            source_path=source_path,
+            source_label=source_label,
+            files=files,
+            settings=settings,
+            options=options,
+            source_lang=source_lang,
+            task_snapshot=task_snapshot,
+            model_snapshot=dict(getattr(context, "model_snapshot", {}) or {}),
+            key_overrides=dict(getattr(context, "key_overrides", {}) or {}),
+            role_groups=role_groups,
+            group_capacities=group_capacities,
+            fingerprint=fingerprint,
+        )
+
+    def _start_prepared(
+        self,
+        prepared: PreparedTask,
+        *,
+        expected_revision: int | None,
+    ) -> dict[str, Any]:
+        task_id = uuid.uuid4().hex
+        attempted = self._registry.reserve_task(
+            owner_key=task_id,
+            owner_label=_LABEL_BY_SURFACE[prepared.surface],
+            task_type=prepared.surface,
+            group_capacities=prepared.group_capacities,
+            expected_revision=expected_revision,
+        )
+        if attempted.lease is None:
+            reason = attempted.reason or "conflict"
+            messages = {
+                "surface_busy": "同类型任务仍处于活动状态。",
+                "stale": "风险确认期间任务资源已变化，请重新预检。",
             }
-            if normalized_surface == "excel":
-                task_snapshot.update(
-                    {
-                        "excel_output": settings.excel_output.model_dump(mode="json"),
-                        "excel_review": settings.excel_review.model_dump(mode="json"),
-                        "tm": {"max_len": settings.tm.max_len},
-                        "xls_conversion_mode": selected_options.xls_conversion_mode,
-                        "selected_file_count": len(files),
-                        "xls_file_count": sum(
-                            1
-                            for item in files
-                            if _excel_file_format(item) == "xls"
-                        ),
-                    }
-                )
-            elif normalized_surface == "word":
-                task_snapshot.update(
-                    {
-                        "word_output": settings.word_output.model_dump(mode="json"),
-                        "word_batch": settings.word_batch.model_dump(mode="json"),
-                        "word_review": settings.word_review.model_dump(mode="json"),
-                        "word_conversion": settings.word_conversion.model_dump(mode="json"),
-                        "tm": {"max_len": settings.tm.max_len},
-                        "doc_conversion_mode": selected_options.doc_conversion_mode,
-                        "selected_file_count": len(files),
-                        "doc_file_count": sum(
-                            1
-                            for item in files
-                            if _word_file_format(item) == "doc"
-                        ),
-                    }
+            raise TaskConflictError(messages.get(reason, "任务资源预约失败。"), reason=reason)
+        lease = attempted.lease
+        try:
+            api_schedulers = {
+                role: lease.scheduler_for(group)
+                for role, group in prepared.role_groups.items()
+            }
+            if prepared.surface == "tm_clean":
+                runner = self._build_clean_runner(
+                    lang_pair=str(prepared.options.lang_pair or ""),
+                    settings=prepared.settings,
+                    key_overrides=prepared.key_overrides,
+                    api_scheduler=api_schedulers.get("cleaner"),
                 )
             else:
-                task_snapshot.update(
-                    {
-                        "pdf": settings.pdf.model_dump(mode="json"),
-                        "pdf_output": settings.pdf_output.model_dump(mode="json"),
-                        "selected_file_count": len(files),
-                        "pdf_file_count": sum(
-                            1
-                            for item in files
-                            if getattr(item, "source_type", "pdf") == "pdf"
-                        ),
-                        "image_file_count": sum(
-                            1
-                            for item in files
-                            if getattr(item, "source_type", "pdf") == "image"
-                        ),
-                        "tm": {"enabled": False},
-                    }
+                source = Path(prepared.source_path)
+                runner = self._build_runner(
+                    surface=prepared.surface,
+                    files=prepared.files,
+                    settings=prepared.settings,
+                    source_root=source if source.is_dir() else source.parent,
+                    options=prepared.options,
+                    source_lang=prepared.source_lang,
+                    key_overrides=prepared.key_overrides,
+                    api_schedulers=api_schedulers,
                 )
-            runner = self._build_runner(
-                surface=normalized_surface,
-                files=files,
-                settings=settings,
-                source_root=root if root.is_dir() else root.parent,
-                options=selected_options,
-                source_lang=source_selection,
-                key_overrides=api_context.key_overrides,
-            )
             task = ApiTask(
                 task_id=task_id,
-                surface=normalized_surface,
-                source_path=str(root),
+                surface=prepared.surface,
+                source_path=prepared.source_path,
+                source_label=prepared.source_label,
                 runner=runner,
                 lease=lease,
                 created_at=time.time(),
-                model_snapshot=dict(api_context.model_snapshot or {}),
-                task_snapshot=task_snapshot,
+                model_snapshot=prepared.model_snapshot,
+                role_groups=prepared.role_groups,
+                task_snapshot=prepared.task_snapshot,
             )
             with self._lock:
                 self._tasks[task_id] = task
@@ -324,8 +548,8 @@ class TranslationTaskManager:
                 "start",
                 {
                     "state": "running",
-                    "model_snapshot": _json_safe(task.model_snapshot),
-                    "task_snapshot": _json_safe(task.task_snapshot),
+                    "model_snapshot": task.model_snapshot,
+                    "task_snapshot": task.task_snapshot,
                 },
             )
             runner.start()
@@ -342,20 +566,155 @@ class TranslationTaskManager:
                 self._tasks.pop(task_id, None)
             raise
 
+    def _build_clean_runner(self, **kwargs: Any) -> Runner:
+        return TmCleaningTaskRunner(**kwargs)
+
+    def _connection_summaries(self, context: Any) -> list[dict[str, object]]:
+        values: list[dict[str, object]] = []
+        for role, snapshot in dict(getattr(context, "model_snapshot", {}) or {}).items():
+            if not isinstance(snapshot, dict):
+                continue
+            values.append(
+                {
+                    "role": role,
+                    "connection_id": str(snapshot.get("connection_id") or "unknown"),
+                    "mode": str(snapshot.get("mode") or ""),
+                    "provider": str(snapshot.get("provider") or ""),
+                    "base_url": str(snapshot.get("base_url") or ""),
+                    "throughput": _json_safe(snapshot.get("throughput") or {}),
+                }
+            )
+        return values
+
+    def _risk_payload(self, prepared: PreparedTask, risk: dict[str, object]) -> dict[str, object]:
+        active_by_id = {task.task_id: task for task in self._tasks.values() if not task.terminal}
+        shared_connections: list[dict[str, object]] = []
+        for item in list(risk.get("shared_groups") or []):
+            if not isinstance(item, dict):
+                continue
+            resource = item.get("resource")
+            roles = [role for role, group in prepared.role_groups.items() if group == resource]
+            matching = [
+                snapshot
+                for role, snapshot in prepared.model_snapshot.items()
+                if role in roles and isinstance(snapshot, dict)
+            ]
+            snapshot = matching[0] if matching else {}
+            shared_connections.append(
+                {
+                    "connection_id": str(snapshot.get("connection_id") or "unknown"),
+                    "summary": {
+                        "mode": str(snapshot.get("mode") or "unknown"),
+                        "provider": str(snapshot.get("provider") or "unknown"),
+                        "base_url": str(snapshot.get("base_url") or ""),
+                    },
+                    "roles": roles,
+                    "active_concurrency": int(item.get("active_capacity") or 0),
+                    "candidate_concurrency": int(item.get("candidate_capacity") or 0),
+                    "total_potential_concurrency": int(item.get("total_potential_capacity") or 0),
+                }
+            )
+        active_tasks = [
+            {
+                "task_id": task.task_id,
+                "surface": task.surface,
+                "state": task.state,
+                "source_label": task.source_label,
+                "frozen_connections": task.task_snapshot.get("connections", []),
+            }
+            for task in active_by_id.values()
+        ]
+        return {
+            "active_tasks": active_tasks,
+            "shared_connections": shared_connections,
+            "warnings": (
+                ["共享 API 可能触发 429、排队、超时、失败或额外费用。"]
+                if shared_connections
+                else []
+            ),
+        }
+
+    def _purge_expired_tokens_locked(self) -> None:
+        now = time.time()
+        self._confirmation_tokens = {
+            token: value
+            for token, value in self._confirmation_tokens.items()
+            if value.expires_at > now
+        }
+
     def task_status(self, task_id: str) -> dict[str, Any]:
         task = self._get_task(task_id)
         with task.condition:
-            return {
-                "task_id": task.task_id,
-                "surface": task.surface,
-                "source_path": task.source_path,
-                "state": task.state,
-                "terminal": task.terminal,
-                "created_at": task.created_at,
-                "model_snapshot": _json_safe(task.model_snapshot),
-                "task_snapshot": _json_safe(task.task_snapshot),
-                "result": task.result,
-            }
+            return self._status_payload(task, include_result=True)
+
+    def _status_payload(self, task: ApiTask, *, include_result: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "task_id": task.task_id,
+            "surface": task.surface,
+            # Source paths are never exposed through task-center APIs.  The
+            # UI receives an anonymous count/label and can use output refs for
+            # local operations after completion.
+            "source_label": task.source_label,
+            "state": task.state,
+            "terminal": task.terminal,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "model_snapshot": task.model_snapshot,
+            "task_snapshot": task.task_snapshot,
+            "logs": list(task.logs),
+        }
+        if include_result:
+            result = _sanitize_task_data(task.result or {})
+            if isinstance(result, dict):
+                result["local_operations"] = _local_operation_descriptors(result)
+            payload["result"] = result
+        return _sanitize_task_data(payload)
+
+    def _persist_task(self, task: ApiTask) -> None:
+        with task.condition:
+            record = self._status_payload(task, include_result=True)
+        self._history.upsert(record)
+
+    def list_tasks(self) -> dict[str, list[dict[str, Any]]]:
+        with self._lock:
+            active = [
+                self._status_payload(task, include_result=False)
+                for task in self._tasks.values()
+                if not task.terminal
+            ]
+        return {"active": active, "recent": self._history.records()}
+
+    def task_results(self, task_id: str) -> dict[str, Any]:
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            for item in self._history.records():
+                if str(item.get("task_id") or "") == str(task_id):
+                    return item
+            raise
+        with task.condition:
+            return self._status_payload(task, include_result=True)
+
+    def mark_active_tasks_interrupted(self) -> list[str]:
+        """Mark live sidecar state non-resumable before a hard restart."""
+        with self._lock:
+            tasks = [task for task in self._tasks.values() if not task.terminal]
+        interrupted: list[str] = []
+        for task in tasks:
+            with task.condition:
+                if task.terminal:
+                    continue
+                task.state = "interrupted"
+                task.terminal = True
+                task.updated_at = time.time()
+                task.result = {
+                    "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
+                    "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
+                }
+            task.lease.release()
+            self._append_event(task, "interrupted", task.result)
+            interrupted.append(task.task_id)
+        return interrupted
 
     def stop_task(self, task_id: str) -> dict[str, Any]:
         task = self._get_task(task_id)
@@ -422,15 +781,58 @@ class TranslationTaskManager:
         return self.task_status(task_id)
 
     def reservations(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "owner_key": item.owner_key,
-                "owner_label": item.owner_label,
-                "resources": [list(resource) if isinstance(resource, tuple) else str(resource) for resource in item.resources],
-                "conservative": item.conservative,
-            }
-            for item in self._registry.reservations()
-        ]
+        return self.resource_groups()
+
+    def resource_groups(self) -> list[dict[str, Any]]:
+        """Expose live group budgets without raw tuples or credential hashes."""
+        groups: dict[object, dict[str, Any]] = {}
+        with self._lock:
+            active = [task for task in self._tasks.values() if not task.terminal]
+        for task in active:
+            for role, snapshot in task.model_snapshot.items():
+                if not isinstance(snapshot, dict):
+                    continue
+                connection_id = str(snapshot.get("connection_id") or "unknown")
+                key = connection_id
+                entry = groups.setdefault(
+                    key,
+                    {
+                        "connection_id": connection_id,
+                        "summary": {
+                            "mode": str(snapshot.get("mode") or "unknown"),
+                            "provider": str(snapshot.get("provider") or "unknown"),
+                            "base_url": str(snapshot.get("base_url") or ""),
+                        },
+                        "capacity": 0,
+                        "active_weight": 0,
+                        "tasks": [],
+                    },
+                )
+                scheduler = task.lease.scheduler_for(task.role_groups.get(role))
+                if scheduler is not None:
+                    snapshot_value = scheduler.snapshot()
+                    entry["capacity"] = snapshot_value.capacity
+                    entry["active_weight"] = snapshot_value.active_total_weight
+                entry["tasks"].append({"task_id": task.task_id, "surface": task.surface, "role": role})
+            if not task.model_snapshot:
+                # Test doubles and malformed legacy configurations can lack a
+                # resolved role snapshot.  They remain conservative/visible
+                # without publishing the underlying opaque resource tuple.
+                for scheduler in task.lease._schedulers.values():  # noqa: SLF001
+                    snapshot_value = scheduler.snapshot()
+                    key = f"unknown-{task.task_id[:12]}"
+                    entry = groups.setdefault(
+                        key,
+                        {
+                            "connection_id": "unknown",
+                            "summary": {"mode": "unknown", "provider": "unknown", "base_url": ""},
+                            "capacity": snapshot_value.capacity,
+                            "active_weight": snapshot_value.active_total_weight,
+                            "tasks": [],
+                        },
+                    )
+                    entry["tasks"].append({"task_id": task.task_id, "surface": task.surface, "role": "unknown"})
+        return list(groups.values())
 
     def iter_sse(
         self,
@@ -492,7 +894,9 @@ class TranslationTaskManager:
         options: TaskOptions,
         source_lang: str,
         key_overrides: dict[str, str],
+        api_schedulers: dict[str, Any] | None = None,
     ) -> Runner:
+        api_schedulers = dict(api_schedulers or {})
         if surface == "excel":
             return TaskRunner(
                 files,
@@ -501,6 +905,7 @@ class TranslationTaskManager:
                 allow_xls_fallback=options.allow_xls_fallback,
                 source_lang=source_lang,
                 key_overrides=key_overrides,
+                api_scheduler=api_schedulers.get("translation"),
                 untranslated_only=options.untranslated_only,
             )
         if surface == "word":
@@ -513,12 +918,15 @@ class TranslationTaskManager:
                 untranslated_only=options.untranslated_only,
                 protect_scheme_cover=options.protect_scheme_cover,
                 allow_doc_fallback=options.allow_doc_fallback,
+                api_scheduler=api_schedulers.get("translation"),
             )
         return PdfImageTranslationRunner(
             files,
             settings,
             source_root=source_root,
             key_overrides=key_overrides,
+            api_scheduler=api_schedulers.get("image"),
+            review_api_scheduler=api_schedulers.get("pdf_review"),
         )
 
     @staticmethod
@@ -679,7 +1087,14 @@ class TranslationTaskManager:
         event_type = _event_type_for_message(message)
         payload = _json_safe(asdict(message) if is_dataclass(message) else message)
         if isinstance(message, DoneMsg):
-            self._finish_if_needed(task, "done", event_type, payload)
+            issues = payload.get("issues") if isinstance(payload, dict) else None
+            has_issues = bool(issues)
+            self._finish_if_needed(
+                task,
+                "completed_with_issues" if has_issues else "done",
+                "completed_with_issues" if has_issues else event_type,
+                payload,
+            )
             return
         if isinstance(message, ErrorMsg):
             self._finish_if_needed(task, "error", event_type, payload)
@@ -701,22 +1116,49 @@ class TranslationTaskManager:
                 return
             task.state = state
             task.terminal = True
-            task.result = result
+            task.updated_at = time.time()
+            task.result = _sanitize_task_data(result)
         task.lease.release()
-        self._append_event(task, event_type, result)
+        self._append_event(task, event_type, task.result)
 
-    @staticmethod
-    def _append_event(task: ApiTask, event_type: str, data: Any) -> None:
+    def _append_event(self, task: ApiTask, event_type: str, data: Any) -> None:
+        safe_data = _sanitize_task_data(data)
+        if event_type == "log":
+            level = "INFO"
+            if isinstance(safe_data, dict):
+                level = str(safe_data.get("level") or level)
+            # A runner log line may contain a filename or model-supplied text.
+            # Do not expose it via the replayable SSE buffer at all.
+            safe_data = {
+                "level": level,
+                "stage": "runner",
+                "message": "任务运行日志已脱敏。",
+            }
         with task.condition:
             task.events.append(
                 {
                     "id": task.next_event_id,
                     "type": event_type,
-                    "data": _json_safe(data),
+                    "data": safe_data,
                 }
             )
+            if event_type == "log":
+                # Runner strings may contain file names, source fragments or
+                # provider output.  Keep only structured observability here.
+                task.logs.append(
+                    {
+                        "event_id": task.next_event_id,
+                        "level": str(safe_data.get("level") or "INFO")
+                        if isinstance(safe_data, dict)
+                        else "INFO",
+                        "stage": "runner",
+                        "message": "任务运行日志已脱敏。",
+                    }
+                )
+            task.updated_at = time.time()
             task.next_event_id += 1
             task.condition.notify_all()
+        self._persist_task(task)
 
     def _get_task(self, task_id: str) -> ApiTask:
         with self._lock:
@@ -787,3 +1229,114 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return str(value)
+
+
+_SENSITIVE_VALUE_KEYS = {
+    "api_key",
+    "key_overrides",
+    "source_text",
+    "target_text",
+    "old_target",
+    "new_target",
+    "raw_text",
+    "raw_response",
+    "model_response",
+    "prompt",
+    "system_prompt",
+    "user_prompt",
+    "source_path",
+    "original_path",
+    "input_path",
+    "source_file",
+}
+_ARTIFACT_PATH_KEYS = {
+    "output_dir",
+    "output_path",
+    "translated_path",
+    "report_path",
+    "manifest_path",
+    "custom_output_dir",
+}
+_ABSOLUTE_PATH_RE = re.compile(r"(?:(?:[A-Za-z]:)?[/\\])(?:[^\s'\"<>]+[/\\])*[^\s'\"<>]+")
+_API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
+
+
+def _sanitize_task_data(value: Any, *, key: str = "") -> Any:
+    """Remove content/credential/source-path fields from task-center data."""
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key in _SENSITIVE_VALUE_KEYS:
+        return None
+    if isinstance(value, Path):
+        return str(value) if normalized_key in _ARTIFACT_PATH_KEYS else None
+    if is_dataclass(value):
+        return _sanitize_task_data(asdict(value), key=key)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for child_key, child_value in value.items():
+            child_name = str(child_key)
+            lowered = child_name.lower()
+            if lowered in _SENSITIVE_VALUE_KEYS:
+                continue
+            if lowered in {"source", "original", "translation", "translated", "content", "text"}:
+                continue
+            if "prompt" in lowered or "response" in lowered and lowered != "response_status":
+                continue
+            if lowered == "local_operations":
+                result[child_name] = _sanitize_local_operations(child_value)
+                continue
+            sanitized = _sanitize_task_data(child_value, key=lowered)
+            if sanitized is not None:
+                result[child_name] = sanitized
+        return result
+    if isinstance(value, (list, tuple, set)):
+        return [
+            item
+            for item in (_sanitize_task_data(item, key=key) for item in value)
+            if item is not None
+        ]
+    if isinstance(value, str):
+        if normalized_key in _ARTIFACT_PATH_KEYS:
+            return value
+        text = _API_SECRET_RE.sub("[redacted]", value)
+        text = _ABSOLUTE_PATH_RE.sub("[path]", text)
+        return text[:300]
+    return _json_safe(value)
+
+
+def _local_operation_descriptors(result: dict[str, Any]) -> list[dict[str, str]]:
+    """Return declarative operations for the Tauri shell; never execute them."""
+    operations: list[dict[str, str]] = []
+    mappings = (
+        ("open_output", "output_dir"),
+        ("reveal_output", "output_path"),
+        ("open_report", "report_path"),
+        ("open_manifest", "manifest_path"),
+        ("copy_output_path", "output_dir"),
+    )
+    for action, field_name in mappings:
+        path = str(result.get(field_name) or "").strip()
+        if path:
+            operations.append({"action": action, "path": path})
+    return operations
+
+
+def _sanitize_local_operations(value: Any) -> list[dict[str, str]]:
+    """Preserve only task-generated output artifact refs for Tauri actions."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    allowed_actions = {
+        "open_output",
+        "reveal_output",
+        "open_report",
+        "open_manifest",
+        "copy_output_path",
+    }
+    operations: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "")
+        path = str(item.get("path") or "")
+        if action in allowed_actions and path:
+            operations.append({"action": action, "path": path})
+    return operations

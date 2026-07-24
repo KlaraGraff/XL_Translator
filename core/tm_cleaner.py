@@ -24,6 +24,8 @@ from core.language_registry import (
     get_target_lang_display_from_lang_pair,
 )
 from core.engine_dispatcher import is_local_engine_name
+from core.api_concurrency_control import handle_api_concurrency_limit
+from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL
 from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
 from engines.base_engine import TranslationEngine, strip_markdown_json
 
@@ -314,6 +316,7 @@ def run_cleaning(
     full_override_prompt: str = "",
     custom_target_langs=None,
     cancel_event: threading.Event | None = None,
+    api_scheduler=None,
 ) -> list[CleanSuggestion]:
     """
     对指定语言对的所有 TM 词条发起清洗请求。
@@ -370,6 +373,7 @@ def run_cleaning(
             concurrency=concurrency,
             system_prompt=clean_system_prompt,
             cancel_event=cancel_event,
+            api_scheduler=api_scheduler,
         )
 
 
@@ -562,6 +566,7 @@ def _run_cleaning_threaded(
     concurrency: int = 5,
     system_prompt: str = "",
     cancel_event: threading.Event | None = None,
+    api_scheduler=None,
 ) -> list[CleanSuggestion]:
     """
     云端引擎的线程池并发清洗。
@@ -579,7 +584,33 @@ def _run_cleaning_threaded(
 
     def _submit_batch(batch: list[dict]) -> list[CleanSuggestion]:
         """单批次执行，异常由汇总层转换为清晰的任务失败。"""
-        return _clean_batch_sync(batch, engine, system_prompt)
+        while True:
+            generation = None
+            try:
+                if api_scheduler is None:
+                    return _clean_batch_sync(batch, engine, system_prompt)
+                with api_scheduler.slot(
+                    1,
+                    category=API_REQUEST_CATEGORY_NORMAL,
+                    should_stop=(
+                        (lambda: bool(cancel_event and cancel_event.is_set()))
+                        if cancel_event is not None
+                        else None
+                    ),
+                ) as lease:
+                    generation = lease.generation
+                    return _clean_batch_sync(batch, engine, system_prompt)
+            except Exception as exc:
+                if api_scheduler is None:
+                    raise
+                decision = handle_api_concurrency_limit(
+                    exc,
+                    scheduler=api_scheduler,
+                    request_generation=generation,
+                    context_label="TM 清洗",
+                )
+                if decision is None or not decision.should_retry:
+                    raise
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map: dict = {}

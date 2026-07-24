@@ -123,6 +123,27 @@ fn inspect_output_directory(path: String) -> OutputDirectoryInspection {
     }
 }
 
+#[tauri::command]
+fn open_local_path(path: String, reveal: bool) -> Result<(), String> {
+    let supplied = path.trim();
+    if supplied.is_empty() {
+        return Err("No local path was supplied.".to_string());
+    }
+    let candidate = PathBuf::from(supplied);
+    if !candidate.exists() {
+        return Err("The referenced output no longer exists on this Mac.".to_string());
+    }
+    let mut command = Command::new("open");
+    if reveal && candidate.is_file() {
+        command.arg("-R");
+    }
+    command
+        .arg(candidate)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the local output: {error}"))
+}
+
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -288,7 +309,11 @@ fn main() {
             app.manage(SidecarState(Mutex::new(Some(sidecar))));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![sidecar_info, inspect_output_directory])
+        .invoke_handler(tauri::generate_handler![
+            sidecar_info,
+            inspect_output_directory,
+            open_local_path
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Translator shell")
         .run(|app, event| {

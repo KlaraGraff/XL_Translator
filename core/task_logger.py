@@ -9,7 +9,7 @@
 """
 import logging
 import logging.handlers
-import traceback
+import re
 from datetime import datetime
 
 from config import APP_DATA_DIR, LOG_PATH
@@ -21,6 +21,23 @@ LOG_DIR = APP_DATA_DIR
 # ── 全局 logger（仅初始化一次）───────────────────────────────────────────
 _LOGGER_NAME = "xl_translator.task"
 _handler_installed = False
+
+_ABSOLUTE_PATH_RE = re.compile(r"(?:(?:[A-Za-z]:)?[/\\\\])(?:[^\s'\"<>]+[/\\\\])*[^\s'\"<>]+")
+_API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
+_CONTENT_MARKER_RE = re.compile(
+    r"(?i)(?:source(?:_text)?|target(?:_text)?|translation|translated|"
+    r"prompt|response|content|text)\s*[:=]"
+)
+
+
+def _sanitize_task_log_message(message: str) -> str:
+    """Retain operational events without persisting user/model payloads."""
+    sanitized = _API_SECRET_RE.sub("[redacted]", str(message or ""))
+    sanitized = _ABSOLUTE_PATH_RE.sub("[path]", sanitized)
+    sanitized = " ".join(sanitized.split())[:500]
+    if _CONTENT_MARKER_RE.search(sanitized):
+        return "任务事件已记录；正文、译文、提示词和模型响应未写入日志。"
+    return sanitized or "任务事件已记录。"
 
 
 def setup_file_handler() -> None:
@@ -90,19 +107,19 @@ class TaskLogger:
 
     def info(self, msg: str) -> None:
         if self.enabled and self._adapter:
-            self._adapter.info(msg)
+            self._adapter.info(_sanitize_task_log_message(msg))
 
     def warning(self, msg: str) -> None:
         if self.enabled and self._adapter:
-            self._adapter.warning(msg)
+            self._adapter.warning(_sanitize_task_log_message(msg))
 
     def error(self, msg: str, exc_info: bool = False) -> None:
         if not self.enabled or not self._adapter:
             return
-        if exc_info:
-            self._adapter.error(msg + "\n" + traceback.format_exc())
-        else:
-            self._adapter.error(msg)
+        # Exceptions may embed source text, prompts, raw provider responses,
+        # credentials, and absolute paths.  Keep an event, never that detail.
+        suffix = "；异常堆栈未写入日志。" if exc_info else "。"
+        self._adapter.error("任务处理发生错误，原始错误详情未写入日志" + suffix)
 
     # ── 结构化埋点方法（全局阶段）─────────────────────────────────────────
 
