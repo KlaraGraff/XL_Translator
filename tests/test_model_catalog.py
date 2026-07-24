@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from core.model_catalog import (
     build_model_catalog_signature,
+    clear_model_catalog_cache,
     fetch_openai_compatible_models,
 )
 
@@ -40,6 +41,9 @@ class _FakeClient:
 
 
 class ModelCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        clear_model_catalog_cache()
+
     def _patch_client(self, fake_client: _FakeClient):
         return patch(
             "core.model_catalog.httpx.Client",
@@ -202,6 +206,55 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertIn("https://api.example.test/v1", signature)
         self.assertNotIn("secret-token", signature)
         self.assertRegex(signature.split("|")[-1], r"^[0-9a-f]{12}$")
+
+    def test_successful_model_list_is_cached_per_connection(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "cached-model"}]}))
+
+        with self._patch_client(fake_client):
+            first = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret",
+                base_url="https://api.example.test/v1",
+            )
+            second = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret",
+                base_url="https://api.example.test/v1",
+            )
+
+        self.assertTrue(first.ok)
+        self.assertEqual(second.models, ["cached-model"])
+        self.assertEqual(len(fake_client.get_calls), 1)
+
+        # Results are defensive copies, so a caller cannot corrupt the cache.
+        second.models.append("caller-only")
+        with self._patch_client(fake_client):
+            third = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret",
+                base_url="https://api.example.test/v1",
+            )
+        self.assertEqual(third.models, ["cached-model"])
+
+    def test_connection_change_bypasses_session_cache(self) -> None:
+        fake_client = _FakeClient(_FakeResponse({"data": [{"id": "model-a"}]}))
+        with self._patch_client(fake_client):
+            first = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret-a",
+                base_url="https://api.example.test/v1",
+            )
+        fake_client.response = _FakeResponse({"data": [{"id": "model-b"}]})
+        with self._patch_client(fake_client):
+            second = fetch_openai_compatible_models(
+                provider="custom_openai",
+                api_key="secret-b",
+                base_url="https://api.example.test/v1",
+            )
+
+        self.assertEqual(first.models, ["model-a"])
+        self.assertEqual(second.models, ["model-b"])
+        self.assertEqual(len(fake_client.get_calls), 2)
 
     def test_openai_signature_includes_configured_base_url(self) -> None:
         first = build_model_catalog_signature(

@@ -202,7 +202,10 @@ class ApiAppTests(unittest.TestCase):
             200,
         )
 
-        self.assertEqual(self.client.get("/api/models/roles").status_code, 200)
+        roles = self.client.get("/api/models/roles")
+        self.assertEqual(roles.status_code, 200)
+        self.assertIn("throughput_bounds", roles.json()["roles"]["translation"])
+        self.assertIn("has_api_key", roles.json()["roles"]["translation"])
         throughput = self.client.put(
             "/api/models/throughput/translation",
             json={"batch_size": 12, "concurrency": 3},
@@ -218,6 +221,7 @@ class ApiAppTests(unittest.TestCase):
                     "provider": "custom_openai",
                     "base_url": "https://api.example.test/v1",
                     "api_key": "test-secret",
+                    "refresh": True,
                 },
             )
         self.assertEqual(fetched.status_code, 200)
@@ -233,17 +237,34 @@ class ApiAppTests(unittest.TestCase):
         imported = self.client.post(
             "/api/model-config/import",
             json={
-                "model_config": {
-                    "engine": {
-                        "cloud_provider": "custom_openai",
-                        "cloud_model": "imported-model",
-                        "cloud_base_url": "https://import.example/v1",
+                "type": "translator_model_config",
+                "version": 3,
+                "model_profiles": {
+                    "translation": {
+                        "mode": "cloud",
+                        "source_role": "independent",
+                        "cloud": {
+                            "provider": "custom_openai",
+                            "model": "imported-model",
+                            "base_url": "https://import.example/v1",
+                        }
                     }
                 },
-                "api_keys": {"custom_openai": "imported-secret"},
             },
         )
         self.assertEqual(imported.status_code, 200)
+        legacy_import = self.client.post(
+            "/api/model-config/import",
+            json={
+                "model_config": {
+                    "engine": {
+                        "cloud_provider": "custom_openai",
+                        "cloud_model": "legacy-model",
+                    }
+                }
+            },
+        )
+        self.assertEqual(legacy_import.status_code, 422)
         exported = self.client.get("/api/model-config/export")
         self.assertEqual(exported.status_code, 200)
         self.assertEqual(

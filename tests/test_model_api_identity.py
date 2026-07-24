@@ -4,6 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from core.model_api_identity import task_api_context_for_page
+from core.model_throughput import set_model_throughput
+from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from settings import AppSettings, api_key_scope, set_cloud_provider_config
 
 
@@ -12,6 +14,31 @@ def _fake_key(provider: str, base_url: str = "") -> str:
 
 
 class ModelApiIdentityTests(unittest.TestCase):
+    def test_task_context_contains_frozen_role_and_throughput_snapshot_without_secret(self) -> None:
+        settings = AppSettings()
+        settings.engine.mode = "cloud"
+        settings.engine.cloud_provider = "custom_openai"
+        set_cloud_provider_config(
+            settings.engine,
+            "custom_openai",
+            cloud_model="snapshot-model",
+            cloud_base_url="https://snapshot.example/v1",
+        )
+        with patch("core.model_roles.get_key", return_value="snapshot-secret"):
+            config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            set_model_throughput(settings, config, batch_size=11, concurrency=3)
+            context = task_api_context_for_page(settings, "excel_translate")
+
+        snapshot = context.model_snapshot[ROLE_TRANSLATION]
+        self.assertEqual(snapshot["model"], "snapshot-model")
+        self.assertEqual(snapshot["throughput"]["batch_size"], 11)
+        self.assertEqual(snapshot["throughput"]["concurrency"], 3)
+        self.assertEqual(
+            snapshot["api_scope"],
+            api_key_scope("custom_openai", "https://snapshot.example/v1"),
+        )
+        self.assertNotIn("snapshot-secret", repr(snapshot))
+
     def test_text_task_context_captures_translation_api_and_key(self) -> None:
         settings = AppSettings()
         settings.engine.mode = "cloud"

@@ -158,6 +158,7 @@ def get_system_prompt(
     settings: AppSettings,
     target_lang: str = "",
     source_lang: str = "zh",
+    page_key: str = "",
 ) -> str:
     """
     根据领域预设和目标语言生成最终 System Prompt。
@@ -166,20 +167,46 @@ def get_system_prompt(
       - dict[str, str]：单语言（旧格式，向下兼容）
       - dict[str, dict[str, str]]：多语言，内层 key 为 lang 代码 或 "_base"
     """
-    if settings.domain_preset == "自定义":
-        prompt = settings.custom_prompt
+    normalized_page = str(page_key or "").strip().lower()
+    if normalized_page in {"excel", "word"}:
+        prefix = f"{normalized_page}_"
+        domain_preset = str(
+            getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+            or settings.domain_preset
+        ).strip()
+        custom_prompt = str(
+            getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt)
+            or ""
+        )
+        domain_prompt_overrides = dict(
+            getattr(
+                settings,
+                f"{prefix}domain_prompt_overrides",
+                settings.domain_prompt_overrides,
+            )
+            or {}
+        )
+    else:
+        domain_preset = str(settings.domain_preset or "").strip()
+        custom_prompt = str(settings.custom_prompt or "")
+        domain_prompt_overrides = dict(settings.domain_prompt_overrides or {})
+
+    if domain_preset == "自定义":
+        if not custom_prompt.strip():
+            raise ValueError("自定义领域 Prompt 不能为空")
+        prompt = custom_prompt
         return append_prompt_block(
             prompt,
             build_target_lang_note_block(target_lang, settings.custom_target_langs),
         )
     # 用户自定义覆盖优先于内置预设
-    if settings.domain_preset in settings.domain_prompt_overrides:
-        prompt = settings.domain_prompt_overrides[settings.domain_preset]
+    if domain_preset in domain_prompt_overrides:
+        prompt = domain_prompt_overrides[domain_preset]
         return append_prompt_block(
             prompt,
             build_target_lang_note_block(target_lang, settings.custom_target_langs),
         )
-    preset = DOMAIN_PRESETS.get(settings.domain_preset, "")
+    preset = DOMAIN_PRESETS.get(domain_preset, "")
     prompt = ""
     if isinstance(preset, dict):
         prompt = preset.get(target_lang) or preset.get("_base", "")
@@ -189,6 +216,30 @@ def get_system_prompt(
         prompt,
         build_target_lang_note_block(target_lang, settings.custom_target_langs),
     )
+
+
+def activate_translation_surface(settings: AppSettings, surface: str) -> AppSettings:
+    """Select the page-owned domain/Prompt state for a frozen task copy."""
+    normalized = str(surface or "").strip().lower()
+    if normalized not in {"excel", "word"}:
+        return settings
+    prefix = f"{normalized}_"
+    settings.domain_preset = str(
+        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        or "同步工程场景"
+    ).strip()
+    settings.custom_prompt = str(
+        getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or ""
+    )
+    settings.domain_name_overrides = dict(
+        getattr(settings, f"{prefix}domain_name_overrides", settings.domain_name_overrides)
+        or {}
+    )
+    settings.domain_prompt_overrides = dict(
+        getattr(settings, f"{prefix}domain_prompt_overrides", settings.domain_prompt_overrides)
+        or {}
+    )
+    return settings
 
 
 def get_batch_size(settings: AppSettings) -> int:

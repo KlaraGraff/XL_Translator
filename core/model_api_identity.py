@@ -13,6 +13,7 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     resolve_effective_model_config,
 )
+from core.model_throughput import get_model_throughput
 from settings import AppSettings, api_key_scope
 
 
@@ -23,6 +24,9 @@ ApiGroupSignature = tuple[str, str, str, str]
 class TaskApiContext:
     api_groups: frozenset[ApiGroupSignature]
     key_overrides: dict[str, str]
+    # JSON-safe metadata frozen at task start.  Keys are represented only by
+    # their scoped API identity and never by secret values.
+    model_snapshot: dict[str, dict[str, object]] | None = None
 
 
 def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSignature:
@@ -62,7 +66,37 @@ def task_api_context_for_page(
     ]
     api_groups = frozenset(api_group_signature_from_config(config) for config in configs)
     key_overrides: dict[str, str] = {}
+    model_snapshot: dict[str, dict[str, object]] = {}
     for config in configs:
+        throughput = get_model_throughput(settings, config)
+        if config.mode == "cloud":
+            base_url = normalize_cloud_base_url(
+                config.provider,
+                config.base_url,
+            ).rstrip("/")
+        else:
+            base_url = str(config.base_url or "").strip().rstrip("/")
+        model_snapshot[config.role] = {
+            "role": config.role,
+            "label": config.label,
+            "capability": config.capability,
+            "mode": config.mode,
+            "provider": config.provider,
+            "model": config.model,
+            "base_url": base_url,
+            "source_role": config.source_role,
+            "follows": config.follows,
+            "api_scope": (
+                api_key_scope(config.provider, base_url)
+                if config.mode == "cloud"
+                else ""
+            ),
+            "throughput": {
+                "profile_key": throughput.profile_key,
+                "batch_size": throughput.batch_size,
+                "concurrency": throughput.concurrency,
+            },
+        }
         if config.mode != "cloud":
             continue
         api_key = str(config.api_key or "").strip()
@@ -73,7 +107,11 @@ def task_api_context_for_page(
         scope = api_key_scope(provider, base_url)
         if scope:
             key_overrides[scope] = api_key
-    return TaskApiContext(api_groups=api_groups, key_overrides=key_overrides)
+    return TaskApiContext(
+        api_groups=api_groups,
+        key_overrides=key_overrides,
+        model_snapshot=model_snapshot,
+    )
 
 
 def task_api_groups_for_page(

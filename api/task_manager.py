@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 import time
 import uuid
@@ -14,6 +15,7 @@ from typing import Any, Literal, Protocol
 from core import tm_manager
 from core.file_scanner import scan_path
 from core.model_api_identity import task_api_context_for_page
+from core.engine_dispatcher import activate_translation_surface
 from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
 from core.task_resources import TaskResourceLease, TaskResourceRegistry
@@ -87,6 +89,8 @@ class ApiTask:
     runner: Runner
     lease: TaskResourceLease
     created_at: float
+    model_snapshot: dict[str, dict[str, object]] = field(default_factory=dict)
+    task_snapshot: dict[str, object] = field(default_factory=dict)
     state: str = "running"
     result: dict[str, Any] | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -124,6 +128,7 @@ class TranslationTaskManager:
 
         selected_options = options or TaskOptions()
         settings = self._settings_loader().model_copy(deep=True)
+        activate_translation_surface(settings, normalized_surface)
         default_surface_source = getattr(
             settings,
             f"{normalized_surface}_source_lang",
@@ -180,6 +185,30 @@ class TranslationTaskManager:
             )
 
         try:
+            prompt_source = "|".join(
+                (
+                    str(getattr(settings, "domain_preset", "") or ""),
+                    str(getattr(settings, "custom_prompt", "") or ""),
+                    str(getattr(settings, "domain_prompt_overrides", {}) or {}),
+                )
+            )
+            task_snapshot = {
+                "surface": normalized_surface,
+                "source_lang": source_selection,
+                "target_lang": (
+                    settings.pdf.target_lang
+                    if normalized_surface == "pdf"
+                    else settings.target_lang
+                ),
+                "domain_preset": (
+                    getattr(settings, f"{normalized_surface}_domain_preset", "")
+                    if normalized_surface in {"excel", "word"}
+                    else ""
+                ),
+                "prompt_signature": hashlib.sha256(
+                    prompt_source.encode("utf-8")
+                ).hexdigest()[:12],
+            }
             runner = self._build_runner(
                 surface=normalized_surface,
                 files=files,
@@ -196,10 +225,20 @@ class TranslationTaskManager:
                 runner=runner,
                 lease=lease,
                 created_at=time.time(),
+                model_snapshot=dict(api_context.model_snapshot or {}),
+                task_snapshot=task_snapshot,
             )
             with self._lock:
                 self._tasks[task_id] = task
-            self._append_event(task, "start", {"state": "running"})
+            self._append_event(
+                task,
+                "start",
+                {
+                    "state": "running",
+                    "model_snapshot": _json_safe(task.model_snapshot),
+                    "task_snapshot": _json_safe(task.task_snapshot),
+                },
+            )
             runner.start()
             threading.Thread(
                 target=self._pump_runner,
@@ -224,6 +263,8 @@ class TranslationTaskManager:
                 "state": task.state,
                 "terminal": task.terminal,
                 "created_at": task.created_at,
+                "model_snapshot": _json_safe(task.model_snapshot),
+                "task_snapshot": _json_safe(task.task_snapshot),
                 "result": task.result,
             }
 

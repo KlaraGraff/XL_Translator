@@ -1,7 +1,9 @@
 """Lightweight connectivity checks for configured translation backends."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,6 +22,13 @@ from settings import AppSettings, get_cloud_provider_config, get_key
 DEFAULT_TIMEOUT_SECONDS = 12.0
 TEST_SYSTEM_PROMPT = "你是连接测试助手。"
 TEST_USER_PROMPT = "请只回复 OK，用于确认当前 API 配置可用。"
+CLEANER_TEST_SYSTEM_PROMPT = (
+    "你是模型连通性测试助手。严格只输出 JSON 数组，不要输出解释。"
+    "数组中必须保留输入 id，并提供 suggested 字符串。"
+)
+CLEANER_TEST_USER_PROMPT = (
+    '[{"id":"connectivity-probe","source":"Concrete","current":"Concrete"}]'
+)
 
 OPENAI_COMPATIBLE_PROVIDERS = {
     "openai",
@@ -443,7 +452,7 @@ def _check_local_openai_compatible(
     )
 
 
-def check_connectivity(
+def _check_connectivity(
     settings: AppSettings,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -517,3 +526,115 @@ def check_connectivity(
         provider=provider,
         model=model,
     )
+
+
+def _check_cleaner_json_protocol(
+    settings: AppSettings,
+    *,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> ConnectivityResult:
+    """Verify that the cleaner model can return its required JSON contract.
+
+    A generic ``OK`` text reply proves only transport.  TM cleaning also
+    depends on a machine-readable item id and suggestion field, so its active
+    user-initiated test sends one minimal synthetic item and validates that
+    response shape before reporting success.
+    """
+    del timeout_seconds  # Engine adapters own their request timeout settings.
+    from core.api_config_check import check_translation_api_config
+    from core.engine_dispatcher import build_engine
+    from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
+    from engines.base_engine import strip_markdown_json
+
+    config = resolve_effective_model_config(settings, ROLE_CLEANER)
+    cleaner_settings = settings_for_text_role(settings, ROLE_CLEANER)
+    preflight = check_translation_api_config(cleaner_settings)
+    if not preflight.ok:
+        return ConnectivityResult(
+            ok=False,
+            status=preflight.status,
+            message=preflight.message,
+            provider=config.provider,
+            model=config.model,
+            detail=preflight.detail,
+        )
+    try:
+        raw = build_engine(cleaner_settings).chat(
+            CLEANER_TEST_SYSTEM_PROMPT,
+            CLEANER_TEST_USER_PROMPT,
+        )
+        payload = json.loads(strip_markdown_json(str(raw or "")))
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 1
+            or not isinstance(payload[0], dict)
+            or str(payload[0].get("id") or "") != "connectivity-probe"
+            or not isinstance(payload[0].get("suggested"), str)
+        ):
+            raise ValueError("清洗测试响应未满足 JSON 数组、id 与 suggested 字段协议。")
+    except Exception as exc:  # noqa: BLE001 - converted to UI-safe result.
+        return ConnectivityResult(
+            ok=False,
+            status="invalid_cleaner_protocol",
+            message=(
+                "深度清洗连接测试失败："
+                f"{_sanitize_error_message(exc, secret=config.api_key)}"
+            ),
+            provider=config.provider,
+            model=config.model,
+            detail=normalize_cloud_base_url(config.provider, config.base_url),
+        )
+    return ConnectivityResult(
+        ok=True,
+        status="ok",
+        message=f"{config.label}连接与 JSON 清洗协议测试通过。",
+        provider=config.provider,
+        model=config.model,
+        detail=normalize_cloud_base_url(config.provider, config.base_url),
+    )
+
+
+def check_connectivity(
+    settings: AppSettings,
+    *,
+    role: str = "translation",
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> ConnectivityResult:
+    """Run a text-role test and persist it on that role's owning settings.
+
+    ``cleaner`` shares the text transport surface but has an additional JSON
+    contract.  Its effective engine configuration is constructed from a
+    temporary copy, while the availability result is deliberately written back
+    to the original cleaner role instead of the copied translation engine.
+    """
+    from core.model_roles import (
+        ROLE_CLEANER,
+        ROLE_TRANSLATION,
+        model_config_signature,
+        record_model_role_availability,
+        resolve_effective_model_config,
+    )
+
+    normalized_role = str(role or ROLE_TRANSLATION).strip()
+    if normalized_role not in {ROLE_TRANSLATION, ROLE_CLEANER}:
+        raise ValueError("连接测试只支持翻译模型或深度清洗模型。")
+    config = resolve_effective_model_config(settings, normalized_role)
+    result = (
+        _check_cleaner_json_protocol(settings, timeout_seconds=timeout_seconds)
+        if normalized_role == ROLE_CLEANER
+        else _check_connectivity(settings, timeout_seconds=timeout_seconds)
+    )
+    try:
+        record_model_role_availability(
+            settings,
+            normalized_role,
+            ok=result.ok,
+            message=result.message,
+            signature=model_config_signature(config),
+            checked_at=datetime.now().isoformat(timespec="seconds"),
+        )
+    except Exception:
+        # A connectivity result is still useful even if status bookkeeping
+        # cannot be updated for malformed settings.
+        pass
+    return result

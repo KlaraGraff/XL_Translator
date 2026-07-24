@@ -6,10 +6,13 @@ from dataclasses import dataclass
 
 from config import (
     CHUNK_CLOUD_MAX,
+    CHUNK_CLOUD_DEFAULT,
     CHUNK_CLOUD_MIN,
     CHUNK_LOCAL_MAX,
+    CHUNK_LOCAL_DEFAULT,
     CHUNK_LOCAL_MIN,
-    CONCURRENCY_DEFAULT,
+    CONCURRENCY_CLOUD_DEFAULT,
+    CONCURRENCY_LOCAL_DEFAULT,
     PDF_PAGE_CONCURRENCY_DEFAULT,
     PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     get_cloud_concurrency_bounds,
@@ -84,12 +87,13 @@ def _default_batch_size(
     settings: AppSettings,
     config: EffectiveModelConfig,
 ) -> int | None:
+    del settings
     bounds = batch_size_bounds(config)
     if bounds is None:
         return None
     minimum, maximum = bounds
     return _clamp_int(
-        settings.engine.batch_size,
+        CHUNK_LOCAL_DEFAULT if config.mode == "local" else CHUNK_CLOUD_DEFAULT,
         minimum=minimum,
         maximum=maximum,
         fallback=minimum,
@@ -97,24 +101,21 @@ def _default_batch_size(
 
 
 def _default_concurrency(settings: AppSettings, config: EffectiveModelConfig) -> int:
+    del settings
     if config.mode == "local":
-        raw = settings.engine.ollama_concurrency
+        raw = CONCURRENCY_LOCAL_DEFAULT
     elif config.role == ROLE_IMAGE:
-        raw = (
-            settings.pdf.page_generation_concurrency
-            if settings.pdf.page_generation_concurrency is not None
-            else PDF_PAGE_CONCURRENCY_DEFAULT
-        )
+        raw = PDF_PAGE_CONCURRENCY_DEFAULT
     elif config.role == ROLE_PDF_REVIEW:
         raw = 1
     else:
-        raw = settings.engine.concurrency
+        raw = CONCURRENCY_CLOUD_DEFAULT
     minimum, maximum = concurrency_bounds(config)
     return _clamp_int(
         raw,
         minimum=minimum,
         maximum=maximum,
-        fallback=CONCURRENCY_DEFAULT,
+        fallback=CONCURRENCY_CLOUD_DEFAULT,
     )
 
 
@@ -189,22 +190,18 @@ def set_model_throughput(
         )
 
     settings.model_throughput_profiles[key] = profile
-    _sync_legacy_fields(settings, config, profile)
     return get_model_throughput(settings, config)
 
 
-def _sync_legacy_fields(
+def reset_model_throughput(
     settings: AppSettings,
     config: EffectiveModelConfig,
-    profile: ModelThroughputSettings,
-) -> None:
-    if config.role == ROLE_TRANSLATION:
-        if profile.batch_size is not None:
-            settings.engine.batch_size = profile.batch_size
-        if profile.concurrency is not None:
-            if config.mode == "local":
-                settings.engine.ollama_concurrency = profile.concurrency
-            else:
-                settings.engine.concurrency = profile.concurrency
-    elif config.role == ROLE_IMAGE and profile.concurrency is not None:
-        settings.pdf.page_generation_concurrency = profile.concurrency
+) -> EffectiveModelThroughput:
+    """Discard one saved profile and return deterministic recommended values.
+
+    Runtime changes are always profile-scoped.  Removing a profile must not
+    inherit a tuning choice from another model through legacy global fields,
+    so the fallback is the role/mode recommendation computed above.
+    """
+    settings.model_throughput_profiles.pop(model_throughput_key(config), None)
+    return get_model_throughput(settings, config)

@@ -289,6 +289,7 @@ class WordTaskRunner:
                 settings,
                 target_lang=target_lang,
                 source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
+                page_key="word",
             )
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             concurrency = get_model_throughput(settings, model_config).concurrency
@@ -539,6 +540,7 @@ class WordTaskRunner:
                         settings,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        page_key="word",
                     )
                 else:
                     source_lang = get_default_source_lang()

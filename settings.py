@@ -344,6 +344,10 @@ class EngineSettings(BaseModel):
     )
     concurrency_unlocked: bool = False
     batch_size: int = Field(default=20, ge=5, le=30)
+    availability_status: str = "unknown"
+    availability_message: str = ""
+    availability_checked_at: str = ""
+    availability_signature: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -415,6 +419,11 @@ class EngineSettings(BaseModel):
         self.ollama_model = self.local_model if self.local_provider == "ollama" else str(
             self.ollama_model or ""
         ).strip()
+        if self.availability_status not in {"unknown", "available", "unavailable"}:
+            self.availability_status = "unknown"
+        self.availability_message = str(self.availability_message or "").strip()
+        self.availability_checked_at = str(self.availability_checked_at or "").strip()
+        self.availability_signature = str(self.availability_signature or "").strip()
         return self
 
 
@@ -681,15 +690,29 @@ class AppSettings(BaseModel):
     word_source_lang: str = "auto"
     excel_target_lang: str = Field(default_factory=get_default_target_lang)
     word_target_lang: str = Field(default_factory=get_default_target_lang)
+    tm_source_lang: str = "zh"
+    tm_target_lang: str = Field(default_factory=get_default_target_lang)
+    recent_tm_lang_pairs: list[str] = Field(default_factory=list)
     custom_target_langs: list[CustomTargetLang] = Field(default_factory=list)
     recent_target_langs: list[str] = Field(default_factory=list)
     domain_preset: str = "同步工程场景"
     custom_prompt: str = ""
+    # Excel and Word intentionally own separate domain/prompt state.  The
+    # legacy global fields remain as an inert compatibility surface for CLI
+    # callers; page-aware task code reads the fields below.
+    excel_domain_preset: str = "同步工程场景"
+    excel_custom_prompt: str = ""
+    excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
+    excel_domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    word_domain_preset: str = "同步工程场景"
+    word_custom_prompt: str = ""
+    word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
+    word_domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
     last_pdf_source_folder: str = ""
-    cleaner_mode: str = "diff"  # "diff" | "overwrite"
+    cleaner_mode: str = "diff"  # 清洗始终先生成建议，确认后才写入
     cleaner_engine: str = DEFAULT_CLOUD_PROVIDER
     cleaner_model: str = ""
     auto_pin_after_clean: bool = False
@@ -704,6 +727,20 @@ class AppSettings(BaseModel):
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
+        # Preserve pre-page-split settings while giving Excel and Word
+        # independent domain/Prompt state going forward.
+        if "domain_preset" in migrated:
+            migrated.setdefault("excel_domain_preset", migrated.get("domain_preset"))
+            migrated.setdefault("word_domain_preset", migrated.get("domain_preset"))
+        if "custom_prompt" in migrated:
+            migrated.setdefault("excel_custom_prompt", migrated.get("custom_prompt"))
+            migrated.setdefault("word_custom_prompt", migrated.get("custom_prompt"))
+        if "domain_name_overrides" in migrated:
+            migrated.setdefault("excel_domain_name_overrides", migrated.get("domain_name_overrides"))
+            migrated.setdefault("word_domain_name_overrides", migrated.get("domain_name_overrides"))
+        if "domain_prompt_overrides" in migrated:
+            migrated.setdefault("excel_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))
+            migrated.setdefault("word_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))
         engine_payload = dict(migrated.get("engine") or {})
 
         if "cleaner_model_role" not in migrated:
@@ -806,6 +843,16 @@ class AppSettings(BaseModel):
             value = getattr(self, field_name, default_target_lang)
             resolved = resolve_language_code(value, target_supported_map)
             setattr(self, field_name, resolved or default_target_lang)
+
+        resolved_tm_source = resolve_language_code(self.tm_source_lang, source_supported_map)
+        self.tm_source_lang = resolved_tm_source or default_source_lang
+        resolved_tm_target = resolve_language_code(self.tm_target_lang, target_supported_map)
+        self.tm_target_lang = resolved_tm_target or default_target_lang
+        self.recent_tm_lang_pairs = [
+            str(pair).strip()
+            for pair in self.recent_tm_lang_pairs
+            if isinstance(pair, str) and "-" in pair
+        ][:20]
 
         resolved_target_lang = resolve_language_code(
             self.target_lang,

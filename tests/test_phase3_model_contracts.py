@@ -62,7 +62,7 @@ class Phase3ModelContractTests(unittest.TestCase):
         self.assertEqual(allowed_source_roles(ROLE_CLEANER), [SOURCE_INDEPENDENT, ROLE_TRANSLATION])
         self.assertEqual(
             allowed_source_roles(ROLE_IMAGE),
-            [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_CLEANER],
+            [SOURCE_INDEPENDENT, ROLE_TRANSLATION],
         )
         self.assertEqual(
             allowed_source_roles(ROLE_PDF_REVIEW),
@@ -184,11 +184,21 @@ class Phase3ModelContractTests(unittest.TestCase):
 
     def test_excel_and_word_domain_state_is_independent(self) -> None:
         """M3B-02: each translation page needs its own domain state."""
-        settings = AppSettings()
-        self.assertTrue(hasattr(settings, "excel_domain_preset"))
-        self.assertTrue(hasattr(settings, "word_domain_preset"))
+        settings = AppSettings(
+            excel_domain_preset="资料管理场景",
+            word_domain_preset="行政生活化场景",
+        )
+        excel_prompt = get_system_prompt(settings, target_lang="en", page_key="excel")
+        word_prompt = get_system_prompt(settings, target_lang="en", page_key="word")
+        self.assertIn("资料管理", excel_prompt)
+        self.assertIn("行政", word_prompt)
+        self.assertNotEqual(excel_prompt, word_prompt)
 
-    @unittest.expectedFailure
+    def test_empty_custom_domain_prompt_is_rejected(self) -> None:
+        settings = AppSettings(excel_domain_preset="自定义", excel_custom_prompt="")
+        with self.assertRaises(ValueError):
+            get_system_prompt(settings, target_lang="en", page_key="excel")
+
     def test_cleaning_full_override_cannot_remove_json_protocol(self) -> None:
         """M3B-07: full cleaner overrides must retain protocol boundaries."""
         from core.tm_cleaner import build_clean_system_prompt
@@ -291,6 +301,15 @@ class Phase3ModelContractTests(unittest.TestCase):
         for profile in payload["model_profiles"].values():
             self.assertNotIn("api_key", json.dumps(profile, ensure_ascii=False))
 
+    def test_model_config_export_can_include_keys_only_when_explicit(self) -> None:
+        payload = build_model_config_export_payload(
+            AppSettings(),
+            get_api_key=lambda *_: "secret-token",
+            include_api_keys=True,
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("secret-token", serialized)
+
     def test_model_config_import_round_trip_preserves_roles_and_scoped_key(self) -> None:
         raw = {
             "type": "translator_model_config",
@@ -326,6 +345,19 @@ class Phase3ModelContractTests(unittest.TestCase):
         self.assertEqual(updated.cleaner_model_role.cloud_model, "imported-cleaner")
         self.assertTrue(save_key.called)
         self.assertIn("import-secret", repr(save_key.call_args))
+
+    def test_model_config_import_rejects_unversioned_payload(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_model_config_import(
+                {
+                    "model_config": {
+                        "engine": {
+                            "cloud_provider": "custom_openai",
+                            "cloud_model": "legacy-model",
+                        }
+                    }
+                }
+            )
 
 
 if __name__ == "__main__":

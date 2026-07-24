@@ -285,6 +285,7 @@ class TaskRunner:
                 settings,
                 target_lang=target_lang,
                 source_lang=source_lang if not auto_source_lang else get_default_source_lang(),
+                page_key="excel",
             )
             model_config = resolve_effective_model_config(settings, ROLE_TRANSLATION)
             throughput = get_model_throughput(settings, model_config)
@@ -671,6 +672,7 @@ class TaskRunner:
                         settings,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        page_key="excel",
                     )
                 else:
                     source_lang = get_default_source_lang()
@@ -962,7 +964,13 @@ class TaskRunner:
                         pair = build_lang_pair(target_lang, source_lang=next(iter(candidates)))
                         pairs_to_insert.setdefault(pair, []).append((source_text, translation))
                     written = sum(
-                        tm_manager.insert_batch(entries, pair, max_len, engine.engine_name)
+                        tm_manager.insert_batch(
+                            entries,
+                            pair,
+                            max_len,
+                            engine.engine_name,
+                            sync_reverse=False,
+                        )
                         for pair, entries in pairs_to_insert.items()
                     )
                 else:
@@ -976,6 +984,7 @@ class TaskRunner:
                         lang_pair,
                         max_len,
                         engine.engine_name,
+                        sync_reverse=False,
                     )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")

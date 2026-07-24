@@ -25,7 +25,10 @@ from core.language_preflight import (
     parse_preflight_languages,
 )
 from core.language_registry import (
+    CustomTargetLang,
     append_custom_target_lang,
+    is_custom_target_lang,
+    normalize_custom_target_langs,
     get_language_catalog,
     get_default_source_selection,
     get_default_target_lang,
@@ -49,13 +52,18 @@ from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    model_config_signature,
+    provider_supports_capability,
+    reset_model_role_availability,
     resolve_effective_model_config,
     settings_for_text_role,
+    validate_all_model_roles,
 )
 from core.model_throughput import (
     batch_size_bounds,
     concurrency_bounds,
     get_model_throughput,
+    reset_model_throughput,
     set_model_throughput,
 )
 from core.pdf_image_translation import scan_pdf_path
@@ -63,6 +71,7 @@ from core.pdf_review import check_pdf_review_connectivity
 from core.tm_cleaner import CleanSuggestion, apply_suggestions, run_cleaning
 from core.word_document import scan_word_path
 from core.engine_dispatcher import build_engine
+from config import DOMAIN_PRESETS
 from settings import (
     AppSettings,
     delete_key,
@@ -72,6 +81,7 @@ from settings import (
     parse_api_key_scope,
     save_key,
     save_settings,
+    set_cloud_provider_config,
 )
 
 
@@ -102,11 +112,13 @@ class TmEntryPayload(BaseModel):
     source_text: str = Field(min_length=1)
     target_text: str = Field(min_length=1)
     lang_pair: str = Field(min_length=3)
+    sync_reverse: bool = False
 
 
 class TmEntryUpdatePayload(BaseModel):
     source_text: str = Field(min_length=1)
     target_text: str = Field(min_length=1)
+    sync_reverse: bool = False
 
 
 class TmPinPayload(BaseModel):
@@ -117,10 +129,25 @@ class TmBulkPinPayload(TmPinPayload):
     ids: list[int] = Field(min_length=1)
 
 
+class TmBulkDeletePayload(BaseModel):
+    ids: list[int] = Field(min_length=1)
+
+
 class TmImportPayload(BaseModel):
     lang_pair: str = Field(min_length=3)
     mode: Literal["skip", "overwrite", "keep_both"] = "skip"
     entries: list[dict[str, Any]]
+    sync_reverse: bool = False
+
+
+class TmFullImportPayload(BaseModel):
+    format_version: Literal["tm-full-v1"]
+    custom_target_langs: list[dict[str, Any]] = Field(default_factory=list)
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+    conflict_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    mode: Literal["skip", "overwrite", "keep_both"] = "skip"
+    code_map: dict[str, str] = Field(default_factory=dict)
+    sync_reverse: bool = False
 
 
 class TmSuggestionPayload(BaseModel):
@@ -134,6 +161,7 @@ class TmSuggestionPayload(BaseModel):
 class TmApplySuggestionsPayload(BaseModel):
     suggestions: list[TmSuggestionPayload]
     auto_pin: bool = False
+    sync_reverse: bool = False
 
 
 class CustomTargetLanguagePayload(BaseModel):
@@ -150,13 +178,36 @@ class LanguagePreflightRequest(BaseModel):
 
 class TmCleanRequest(BaseModel):
     lang_pair: str = Field(min_length=3)
-    overwrite: bool = False
 
 
 class ModelFetchRequest(BaseModel):
     provider: str = Field(min_length=1)
     base_url: str = ""
     api_key: str = ""
+    refresh: bool = False
+
+
+class ModelCatalogRefreshPayload(BaseModel):
+    refresh: bool = False
+
+
+class ModelRoleUpdatePayload(BaseModel):
+    source_role: str | None = None
+    mode: Literal["cloud", "local"] | None = None
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+
+
+class ModelRoleTestPayload(BaseModel):
+    role: str
+
+
+class DomainSettingsPayload(BaseModel):
+    preset: str = "同步工程场景"
+    custom_prompt: str = ""
+    prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    name_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class ThroughputPayload(BaseModel):
@@ -323,6 +374,24 @@ def create_app(
             "prompt": build_language_preflight_prompt(samples) if samples else "",
         }
 
+    @app.get("/api/tm/language-pairs")
+    def get_tm_language_pairs_catalog() -> dict[str, Any]:
+        settings = load_settings()
+        source_options = [
+            option for option in get_source_language_options(settings.custom_target_langs)
+            if option.get("code") != "auto"
+        ]
+        target_options = get_target_language_options(settings.custom_target_langs)
+        return {
+            "source_options": source_options,
+            "target_options": target_options,
+            "selected": {
+                "source_lang": settings.tm_source_lang,
+                "target_lang": settings.tm_target_lang,
+            },
+            "recent": list(settings.recent_tm_lang_pairs),
+        }
+
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return load_settings().model_dump(mode="json")
@@ -331,14 +400,81 @@ def create_app(
     def put_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise HTTPException(422, "Settings payload must be a JSON object.")
-        current = load_settings().model_dump(mode="json")
+        before_settings = load_settings()
+        before_signatures: dict[str, str] = {}
+        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+            try:
+                before_signatures[role] = model_config_signature(
+                    resolve_effective_model_config(before_settings, role)
+                )
+            except Exception:
+                continue
+        current = before_settings.model_dump(mode="json")
         merged = _deep_merge(current, payload)
         try:
             settings = AppSettings.model_validate(merged)
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
+        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+            try:
+                resolve_effective_model_config(settings, role)
+            except Exception as exc:
+                raise HTTPException(422, str(exc)) from exc
+        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+            try:
+                changed = before_signatures.get(role) != model_config_signature(
+                    resolve_effective_model_config(settings, role)
+                )
+            except Exception:
+                changed = True
+            if not changed:
+                continue
+            owner = settings.engine if role == ROLE_TRANSLATION else {
+                ROLE_CLEANER: settings.cleaner_model_role,
+                ROLE_IMAGE: settings.image_model_role,
+                ROLE_PDF_REVIEW: settings.pdf_review_model_role,
+            }[role]
+            owner.availability_status = "unknown"
+            owner.availability_message = "当前配置尚未测试。"
+            owner.availability_signature = ""
+            owner.availability_checked_at = ""
         save_settings(settings)
         return settings.model_dump(mode="json")
+
+    @app.get("/api/domains/{surface}")
+    def get_domain_settings(surface: str) -> dict[str, Any]:
+        normalized = str(surface or "").strip().lower()
+        if normalized not in {"excel", "word"}:
+            raise HTTPException(404, "Unknown translation surface.")
+        settings = load_settings()
+        prefix = f"{normalized}_"
+        return {
+            "surface": normalized,
+            "presets": sorted(DOMAIN_PRESETS),
+            "preset": getattr(settings, f"{prefix}domain_preset"),
+            "custom_prompt": getattr(settings, f"{prefix}custom_prompt"),
+            "prompt_overrides": getattr(settings, f"{prefix}domain_prompt_overrides"),
+            "name_overrides": getattr(settings, f"{prefix}domain_name_overrides"),
+        }
+
+    @app.put("/api/domains/{surface}")
+    def put_domain_settings(surface: str, payload: DomainSettingsPayload) -> dict[str, Any]:
+        normalized = str(surface or "").strip().lower()
+        if normalized not in {"excel", "word"}:
+            raise HTTPException(404, "Unknown translation surface.")
+        preset = str(payload.preset or "").strip()
+        if preset not in DOMAIN_PRESETS:
+            raise HTTPException(422, "未知专业领域预设。")
+        if preset == "自定义" and not str(payload.custom_prompt or "").strip():
+            raise HTTPException(422, "自定义领域必须填写完整 Prompt。")
+        settings = load_settings()
+        prefix = f"{normalized}_"
+        setattr(settings, f"{prefix}domain_preset", preset)
+        setattr(settings, f"{prefix}custom_prompt", str(payload.custom_prompt or ""))
+        setattr(settings, f"{prefix}domain_prompt_overrides", dict(payload.prompt_overrides))
+        setattr(settings, f"{prefix}domain_name_overrides", dict(payload.name_overrides))
+        save_settings(settings)
+        return get_domain_settings(normalized)
 
     @app.get("/api/keys")
     def list_keys() -> dict[str, list[dict[str, str | bool]]]:
@@ -359,7 +495,15 @@ def create_app(
     def put_key(provider: str, payload: ApiKeyPayload) -> dict[str, Any]:
         if not provider.strip():
             raise HTTPException(422, "Provider is required.")
+        settings = load_settings()
+        before_signatures = _effective_role_signatures(settings)
         save_key(provider, payload.api_key, payload.base_url)
+        _reset_roles_with_changed_effective_signature(
+            settings,
+            before_signatures,
+            message="API Key 已变化，请重新测试当前配置。",
+        )
+        save_settings(settings)
         return {
             "provider": provider,
             "base_url": payload.base_url,
@@ -368,7 +512,15 @@ def create_app(
 
     @app.delete("/api/keys/{provider}", status_code=204)
     def remove_key(provider: str, base_url: str = "") -> Response:
+        settings = load_settings()
+        before_signatures = _effective_role_signatures(settings)
         delete_key(provider, base_url)
+        _reset_roles_with_changed_effective_signature(
+            settings,
+            before_signatures,
+            message="API Key 已变化，请重新测试当前配置。",
+        )
+        save_settings(settings)
         return Response(status_code=204)
 
     @app.post("/api/sources/scan")
@@ -457,6 +609,7 @@ def create_app(
                 payload.source_text,
                 payload.target_text,
                 payload.lang_pair,
+                sync_reverse=payload.sync_reverse,
             )
         }
 
@@ -467,16 +620,19 @@ def create_app(
             entry_id,
             payload.source_text,
             payload.target_text,
+            sync_reverse=payload.sync_reverse,
         )
         if not changed:
             raise HTTPException(409, "Entry is missing or conflicts with an existing source.")
         return {"changed": True}
 
-    @app.delete("/api/tm/entries/{entry_id}", status_code=204)
-    def delete_tm_entry(entry_id: int) -> Response:
+    @app.delete("/api/tm/entries/{entry_id}")
+    def delete_tm_entry(entry_id: int) -> dict[str, bool]:
         tm_manager.init_db()
-        tm_manager.delete_entry(entry_id)
-        return Response(status_code=204)
+        deleted = tm_manager.delete_entry(entry_id)
+        if not deleted:
+            raise HTTPException(409, "固定或不存在的词条不能删除；请先解除固定。")
+        return {"deleted": True}
 
     @app.post("/api/tm/entries/{entry_id}/pin")
     def pin_tm_entry(entry_id: int, payload: TmPinPayload) -> dict[str, bool]:
@@ -490,15 +646,133 @@ def create_app(
         tm_manager.bulk_pin_entries(payload.ids, payload.pinned)
         return {"count": len(payload.ids)}
 
+    @app.post("/api/tm/entries/bulk/delete")
+    def bulk_delete_tm_entries(payload: TmBulkDeletePayload) -> dict[str, int]:
+        tm_manager.init_db()
+        return tm_manager.delete_entries(payload.ids)
+
     @app.get("/api/tm/export")
     def export_tm_entries(lang_pair: str) -> dict[str, Any]:
         tm_manager.init_db()
         return {"lang_pair": lang_pair, "entries": tm_manager.get_all_entries_for_export(lang_pair)}
 
+    @app.get("/api/tm/export/full")
+    def export_full_tm() -> dict[str, Any]:
+        tm_manager.init_db()
+        settings = load_settings()
+        return tm_manager.get_full_export(settings.custom_target_langs)
+
     @app.post("/api/tm/import")
     def import_tm_entries(payload: TmImportPayload) -> dict[str, int]:
         tm_manager.init_db()
-        return tm_manager.import_entries(payload.entries, payload.lang_pair, payload.mode)
+        return tm_manager.import_entries(
+            payload.entries,
+            payload.lang_pair,
+            payload.mode,
+            sync_reverse=payload.sync_reverse,
+        )
+
+    @app.post("/api/tm/import/full")
+    def import_full_tm(payload: TmFullImportPayload) -> dict[str, int]:
+        tm_manager.init_db()
+        settings = load_settings()
+        current = normalize_custom_target_langs(settings.custom_target_langs)
+        by_code = {entry.code: entry for entry in current}
+        code_map = {str(key).strip(): str(value).strip() for key, value in payload.code_map.items()}
+
+        for raw in payload.custom_target_langs:
+            incoming = CustomTargetLang.model_validate(raw)
+            source_code = incoming.code.strip()
+            if not source_code:
+                raise HTTPException(422, "完整 TM 备份中的自定义语言缺少内部代码。")
+            target_code = code_map.get(source_code, source_code)
+            if not is_custom_target_lang(source_code) or not is_custom_target_lang(target_code):
+                raise HTTPException(
+                    422,
+                    "完整 TM 备份中的自定义语言代码必须是有效的 x-custom-* 内部代码。",
+                )
+            existing = by_code.get(target_code)
+            if existing is not None:
+                mapped_explicitly = source_code in code_map
+                if not mapped_explicitly and (
+                    existing.name != incoming.name or existing.description != incoming.description
+                ):
+                    raise HTTPException(
+                        409,
+                        f"自定义语言代码 {source_code} 已存在且定义不同；请提供 code_map 后重试。",
+                    )
+                continue
+            if target_code != source_code:
+                incoming = incoming.model_copy(update={"code": target_code})
+            by_code[target_code] = incoming
+            current.append(incoming)
+
+        custom_codes = set(by_code)
+
+        def remap_pair(pair: object) -> str:
+            parsed = tm_manager.split_lang_pair(str(pair or ""))
+            if parsed is None:
+                raise HTTPException(422, f"无效的 TM 语言对：{pair}")
+            source, target = parsed
+            source = code_map.get(source, source)
+            target = code_map.get(target, target)
+            if source.startswith("x-custom-"):
+                raise HTTPException(422, "自定义语言只能作为目标语言，不能恢复为 TM 源语言。")
+            if target.startswith("x-custom-") and target not in custom_codes:
+                raise HTTPException(422, f"TM 语言对引用了未定义的自定义目标语言：{target}")
+            return f"{source}-{target}"
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for entry in payload.entries:
+            mapped = dict(entry)
+            mapped["lang_pair"] = remap_pair(mapped.get("lang_pair"))
+            grouped.setdefault(mapped["lang_pair"], []).append(mapped)
+        mapped_conflicts = []
+        for candidate in payload.conflict_candidates:
+            mapped = dict(candidate)
+            mapped["lang_pair"] = remap_pair(mapped.get("lang_pair"))
+            mapped_conflicts.append(mapped)
+
+        settings.custom_target_langs = current
+        save_settings(settings)
+        inserted = skipped = duplicates = 0
+        for pair, entries in grouped.items():
+            result = tm_manager.import_entries(
+                entries,
+                pair,
+                payload.mode,
+                sync_reverse=payload.sync_reverse and not pair.split("-", 1)[1].startswith("x-custom-"),
+                preserve_status=True,
+            )
+            inserted += result.get("inserted", 0)
+            skipped += result.get("skipped", 0)
+            duplicates += result.get("duplicates", 0)
+        restored_conflicts = tm_manager.import_conflict_candidates(
+            mapped_conflicts,
+        )
+        return {
+            "inserted": inserted,
+            "skipped": skipped,
+            "duplicates": duplicates,
+            "custom_languages": len(current),
+            "conflicts": restored_conflicts,
+        }
+
+    @app.get("/api/tm/conflicts")
+    def list_tm_conflicts(lang_pair: str | None = None) -> dict[str, Any]:
+        tm_manager.init_db()
+        return {"conflicts": tm_manager.list_conflict_candidates(lang_pair)}
+
+    @app.post("/api/tm/conflicts/{candidate_id}/resolve")
+    def resolve_tm_conflict(candidate_id: int, payload: dict[str, str]) -> dict[str, bool]:
+        action = str(payload.get("action") or "").strip()
+        try:
+            resolved = tm_manager.resolve_conflict_candidate(candidate_id, action)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if not resolved:
+            raise HTTPException(409, "冲突候选不存在、已处理或当前词条已发生变化。")
+        return {"resolved": True}
 
     @app.post("/api/tm/clean")
     def clean_tm_entries(payload: TmCleanRequest) -> dict[str, Any]:
@@ -519,13 +793,9 @@ def create_app(
             ),
             custom_target_langs=settings.custom_target_langs,
         )
-        result = {"suggestions": [_json_safe(item) for item in suggestions]}
-        if payload.overwrite:
-            result["applied"] = apply_suggestions(
-                suggestions,
-                auto_pin=settings.auto_pin_after_clean,
-            )
-        return result
+        # Cleaning is suggestion-only.  Applying a suggestion always requires
+        # the explicit /clean/apply confirmation route.
+        return {"suggestions": [_json_safe(item) for item in suggestions]}
 
     @app.post("/api/tm/clean/apply")
     def apply_tm_suggestions(payload: TmApplySuggestionsPayload) -> dict[str, int]:
@@ -540,7 +810,13 @@ def create_app(
             )
             for item in payload.suggestions
         ]
-        return {"applied": apply_suggestions(suggestions, auto_pin=payload.auto_pin)}
+        return {
+            "applied": apply_suggestions(
+                suggestions,
+                auto_pin=payload.auto_pin,
+                sync_reverse=payload.sync_reverse,
+            )
+        }
 
     @app.get("/api/models/roles")
     def get_model_roles() -> dict[str, Any]:
@@ -552,8 +828,133 @@ def create_app(
             }
         }
 
+    @app.put("/api/models/roles/{role}")
+    def update_model_role(role: str, payload: ModelRoleUpdatePayload) -> dict[str, Any]:
+        settings = load_settings()
+        if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
+            raise HTTPException(404, "Unknown model role.")
+        before_signatures = _effective_role_signatures(settings)
+        changed = False
+        if role == ROLE_TRANSLATION:
+            engine = settings.engine
+            if payload.mode is not None and engine.mode != payload.mode:
+                engine.mode = payload.mode
+                changed = True
+            if payload.provider is not None:
+                field = "local_provider" if engine.mode == "local" else "cloud_provider"
+                if getattr(engine, field) != payload.provider:
+                    setattr(engine, field, payload.provider)
+                    changed = True
+            if payload.model is not None:
+                field = "local_model" if engine.mode == "local" else "cloud_model"
+                if getattr(engine, field) != payload.model:
+                    setattr(engine, field, payload.model)
+                    changed = True
+            if payload.base_url is not None:
+                field = "local_base_url" if engine.mode == "local" else "cloud_base_url"
+                if getattr(engine, field) != payload.base_url:
+                    setattr(engine, field, payload.base_url)
+                    changed = True
+            if engine.mode == "cloud":
+                set_cloud_provider_config(
+                    engine,
+                    engine.cloud_provider,
+                    cloud_model=engine.cloud_model,
+                    cloud_base_url=engine.cloud_base_url,
+                )
+        else:
+            role_settings = {
+                ROLE_CLEANER: settings.cleaner_model_role,
+                ROLE_IMAGE: settings.image_model_role,
+                ROLE_PDF_REVIEW: settings.pdf_review_model_role,
+            }[role]
+            for field, value in (
+                ("source_role", payload.source_role),
+                ("cloud_provider", payload.provider),
+                ("cloud_model", payload.model),
+                ("cloud_base_url", payload.base_url),
+            ):
+                if value is not None and getattr(role_settings, field) != value:
+                    setattr(role_settings, field, value)
+                    changed = True
+            if role_settings.source_role == "independent":
+                set_cloud_provider_config(
+                    role_settings,
+                    role_settings.cloud_provider,
+                    cloud_model=role_settings.cloud_model,
+                    cloud_base_url=role_settings.cloud_base_url,
+                )
+        try:
+            # A changed translation connection can make a following image or
+            # review role illegal.  Do not persist an invalid shared graph.
+            after_configs = validate_all_model_roles(settings)
+        except Exception as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if changed:
+            for candidate_role, effective in after_configs.items():
+                if before_signatures.get(candidate_role) != model_config_signature(effective):
+                    reset_model_role_availability(settings, candidate_role)
+        save_settings(settings)
+        return _model_role_payload(settings, role)
+
+    @app.post("/api/models/connectivity/{role}")
+    def check_model_role_connectivity(role: str) -> dict[str, Any]:
+        settings = load_settings()
+        role = {
+            "text": ROLE_TRANSLATION,
+            "image": ROLE_IMAGE,
+            "pdf-review": ROLE_PDF_REVIEW,
+        }.get(role, role)
+        if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
+            raise HTTPException(404, "Unknown model role.")
+        try:
+            config = resolve_effective_model_config(settings, role)
+            if not provider_supports_capability(config.provider, config.capability):
+                raise ValueError(f"服务商 {config.provider} 不支持 {config.capability} 能力。")
+            if role == ROLE_TRANSLATION:
+                result = check_connectivity(settings)
+            elif role == ROLE_CLEANER:
+                result = check_connectivity(settings, role=ROLE_CLEANER)
+            elif role == ROLE_IMAGE:
+                result = check_image_generation_connectivity(settings)
+            else:
+                result = check_pdf_review_connectivity(settings)
+        except Exception as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        return _json_safe(result)
+
+    @app.post("/api/models/catalog/{role}")
+    def fetch_saved_role_models(
+        role: str,
+        payload: ModelCatalogRefreshPayload | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one role's session-only directory from saved effective config.
+
+        The route intentionally receives no provider, base URL, model, or key
+        draft values.  A directory is a suggestion for a *saved* connection;
+        the model name remains manually editable and catalog success never
+        counts as an ability test.
+        """
+        settings = load_settings()
+        config = _model_config_or_422(settings, role)
+        if payload is not None and payload.refresh:
+            from core.model_catalog import clear_model_catalog_cache
+
+            clear_model_catalog_cache()
+        result = fetch_openai_compatible_models(
+            provider=config.provider,
+            api_key=config.api_key,
+            base_url=config.base_url,
+        )
+        return _json_safe(result)
+
     @app.post("/api/models/fetch")
     def fetch_models(request: ModelFetchRequest) -> dict[str, Any]:
+        if request.refresh:
+            from core.model_catalog import clear_model_catalog_cache
+
+            clear_model_catalog_cache()
         api_key = request.api_key or get_key(request.provider, request.base_url)
         result = fetch_openai_compatible_models(
             provider=request.provider,
@@ -592,9 +993,27 @@ def create_app(
             "concurrency": throughput.concurrency,
         }
 
+    @app.delete("/api/models/throughput/{role}")
+    def reset_throughput(role: str) -> dict[str, Any]:
+        """Restore one role/model's recommended throughput profile."""
+        settings = load_settings()
+        config = _model_config_or_422(settings, role)
+        throughput = reset_model_throughput(settings, config)
+        save_settings(settings)
+        return {
+            "profile_key": throughput.profile_key,
+            "batch_size": throughput.batch_size,
+            "concurrency": throughput.concurrency,
+            "batch_size_bounds": batch_size_bounds(config),
+            "concurrency_bounds": concurrency_bounds(config),
+        }
+
     @app.post("/api/models/connectivity/text")
     def check_text_connectivity() -> dict[str, Any]:
-        return _json_safe(check_connectivity(load_settings()))
+        settings = load_settings()
+        result = check_connectivity(settings)
+        save_settings(settings)
+        return _json_safe(result)
 
     @app.post("/api/models/connectivity/image")
     def check_image_connectivity() -> dict[str, Any]:
@@ -611,8 +1030,45 @@ def create_app(
         return _json_safe(result)
 
     @app.get("/api/model-config/export")
-    def export_model_config() -> dict[str, Any]:
-        return build_model_config_export_payload(load_settings())
+    def export_model_config(
+        include_api_key: bool = False,
+        include_api_keys: bool | None = None,
+        confirm_sensitive: bool = False,
+    ) -> dict[str, Any]:
+        if include_api_keys is not None:
+            include_api_key = bool(include_api_keys)
+        if include_api_key and not confirm_sensitive:
+            raise HTTPException(422, "导出 API Key 前必须明确确认敏感配置导出。")
+        return build_model_config_export_payload(
+            load_settings(),
+            include_api_key=include_api_key,
+        )
+
+    @app.post("/api/model-config/import/preview")
+    def preview_model_config_import(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            imported = parse_model_config_import(payload)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        role_names = {
+            "engine": ROLE_TRANSLATION,
+            "cleaner_model_role": ROLE_CLEANER,
+            "image_model_role": ROLE_IMAGE,
+            "pdf_review_model_role": ROLE_PDF_REVIEW,
+        }
+        return {
+            "version": 3,
+            "roles": [
+                {
+                    "role": role_names.get(setting_key, setting_key),
+                    "fields": sorted(values),
+                }
+                for setting_key, values in imported.model_config.items()
+            ],
+            "throughput_profile_count": len(imported.profile_throughputs)
+            + len(imported.throughput_profiles),
+            "api_key_count": len(imported.api_keys) + len(imported.scoped_api_keys),
+        }
 
     @app.post("/api/model-config/import")
     def import_model_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -697,6 +1153,11 @@ def _json_error(status_code: int, detail: str) -> Response:
 def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
     config = _model_config_or_422(settings, role)
     throughput = get_model_throughput(settings, config)
+    owner = settings.engine if role == ROLE_TRANSLATION else {
+        ROLE_CLEANER: settings.cleaner_model_role,
+        ROLE_IMAGE: settings.image_model_role,
+        ROLE_PDF_REVIEW: settings.pdf_review_model_role,
+    }[role]
     return {
         "role": config.role,
         "label": config.label,
@@ -709,10 +1170,17 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "follows": config.follows,
         "availability_status": config.availability_status,
         "availability_message": config.availability_message,
+        "availability_checked_at": getattr(owner, "availability_checked_at", ""),
+        "availability_signature": config.availability_signature,
+        "has_api_key": bool(config.api_key),
         "throughput": {
             "profile_key": throughput.profile_key,
             "batch_size": throughput.batch_size,
             "concurrency": throughput.concurrency,
+        },
+        "throughput_bounds": {
+            "batch_size": batch_size_bounds(config),
+            "concurrency": concurrency_bounds(config),
         },
     }
 
@@ -724,6 +1192,39 @@ def _model_config_or_422(settings: AppSettings, role: str):
         return resolve_effective_model_config(settings, role)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _effective_role_signatures(settings: AppSettings) -> dict[str, str]:
+    """Return currently resolvable role signatures for mutation invalidation."""
+    signatures: dict[str, str] = {}
+    for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        try:
+            signatures[role] = model_config_signature(
+                resolve_effective_model_config(settings, role)
+            )
+        except Exception:
+            # The following validation will return the useful configuration
+            # error.  Missing signatures must still cause a reset if repaired.
+            continue
+    return signatures
+
+
+def _reset_roles_with_changed_effective_signature(
+    settings: AppSettings,
+    before_signatures: dict[str, str],
+    *,
+    message: str,
+) -> None:
+    """Invalidate only role tests whose effective connection identity changed."""
+    for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        try:
+            after_signature = model_config_signature(
+                resolve_effective_model_config(settings, role)
+            )
+        except Exception:
+            after_signature = ""
+        if before_signatures.get(role) != after_signature:
+            reset_model_role_availability(settings, role, message=message)
 
 
 def _zip_response(payload: bytes, filename: str, *, count: int | None = None) -> StreamingResponse:

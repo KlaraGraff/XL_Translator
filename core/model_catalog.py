@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from dataclasses import dataclass
 
 import httpx
@@ -20,6 +21,12 @@ OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "custom_local",
 }
 
+# Model discovery is intentionally a process-local cache.  It is keyed by the
+# effective connection identity (provider, normalized base URL and a
+# non-secret API-key fingerprint), never persisted to settings or exports.
+_MODEL_CATALOG_CACHE: dict[str, "ModelCatalogResult"] = {}
+_MODEL_CATALOG_CACHE_LOCK = threading.RLock()
+
 
 @dataclass(frozen=True)
 class ModelCatalogResult:
@@ -28,6 +35,40 @@ class ModelCatalogResult:
     message: str
     detail: str = ""
     status: str = "ok"
+
+
+def clear_model_catalog_cache() -> None:
+    """Drop the session-only model catalog cache.
+
+    Callers use this after an explicit connection change or in isolated tests.
+    No user settings or on-disk data are touched.
+    """
+    with _MODEL_CATALOG_CACHE_LOCK:
+        _MODEL_CATALOG_CACHE.clear()
+
+
+def _copy_result(result: ModelCatalogResult) -> ModelCatalogResult:
+    """Return a defensive copy so callers cannot mutate cached model names."""
+    return ModelCatalogResult(
+        ok=result.ok,
+        models=list(result.models),
+        message=result.message,
+        detail=result.detail,
+        status=result.status,
+    )
+
+
+def _get_cached_result(signature: str) -> ModelCatalogResult | None:
+    with _MODEL_CATALOG_CACHE_LOCK:
+        result = _MODEL_CATALOG_CACHE.get(signature)
+    return _copy_result(result) if result is not None else None
+
+
+def _cache_success(signature: str, result: ModelCatalogResult) -> None:
+    if not result.ok:
+        return
+    with _MODEL_CATALOG_CACHE_LOCK:
+        _MODEL_CATALOG_CACHE[signature] = _copy_result(result)
 
 
 def _hash_secret(secret: str) -> str:
@@ -115,6 +156,14 @@ def fetch_ollama_models(
 ) -> ModelCatalogResult:
     """Fetch locally installed Ollama model names from `/api/tags`."""
     normalized_base_url = _normalize_base_url("ollama", base_url)
+    signature = build_model_catalog_signature(
+        provider="ollama",
+        api_key="",
+        base_url=normalized_base_url,
+    )
+    cached = _get_cached_result(signature)
+    if cached is not None:
+        return cached
     url = _append_url_path(normalized_base_url, "/api/tags")
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
@@ -139,13 +188,15 @@ def fetch_ollama_models(
             message="Ollama 已响应，但没有读取到已安装模型。",
             detail=url,
         )
-    return ModelCatalogResult(
+    result = ModelCatalogResult(
         ok=True,
         models=models,
         status="ok",
         message=f"已获取 {len(models)} 个本地模型。",
         detail=url,
     )
+    _cache_success(signature, result)
+    return result
 
 
 def fetch_openai_compatible_models(
@@ -188,6 +239,15 @@ def fetch_openai_compatible_models(
             message="请先填写 Base URL，再获取模型列表。",
         )
 
+    signature = build_model_catalog_signature(
+        provider=provider_name,
+        api_key=key,
+        base_url=normalized_base_url,
+    )
+    cached = _get_cached_result(signature)
+    if cached is not None:
+        return cached
+
     url = _append_url_path(normalized_base_url, "/models")
     headers = {"Authorization": f"Bearer {key}"} if key else {}
 
@@ -215,10 +275,12 @@ def fetch_openai_compatible_models(
             detail=url,
         )
 
-    return ModelCatalogResult(
+    result = ModelCatalogResult(
         ok=True,
         models=models,
         status="ok",
         message=f"已获取 {len(models)} 个模型。",
         detail=url,
     )
+    _cache_success(signature, result)
+    return result

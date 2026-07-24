@@ -1,9 +1,4 @@
-"""Phase 2 TM contracts against an isolated SQLite database.
-
-These tests intentionally describe the frozen T2A/T2B/T2C behavior.  A small
-set of ``expectedFailure`` cases records known gaps in the current migration;
-they should be removed when the corresponding production contract lands.
-"""
+"""Phase 2 TM contracts against an isolated SQLite database."""
 
 from __future__ import annotations
 
@@ -100,7 +95,6 @@ class Phase2TmContractTests(unittest.TestCase):
         tm_manager.insert_manual_entry("墙", "Wall", "zh-en")
         self.assertIsNone(tm_manager.lookup_batch(["Wall"], "en-zh")["Wall"])
 
-    @unittest.expectedFailure
     def test_reverse_conflict_never_overwrites_existing_translation(self) -> None:
         """T2A-03: a different existing reverse value wins over synchronization."""
         tm_manager.insert_manual_entry("Contract", "旧译", "en-zh", sync_reverse=False)

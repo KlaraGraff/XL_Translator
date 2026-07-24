@@ -19,14 +19,16 @@ from core.model_roles import (
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
     SOURCE_INDEPENDENT,
+    reset_all_model_role_availability,
     resolve_effective_model_config,
     role_label,
+    validate_all_model_roles,
 )
 from core.model_throughput import get_model_throughput, set_model_throughput
 from settings import AppSettings, get_key, parse_api_key_scope, save_key
 
 MODEL_CONFIG_EXPORT_TYPE = "translator_model_config"
-MODEL_CONFIG_EXPORT_VERSION = 2
+MODEL_CONFIG_EXPORT_VERSION = 3
 MODEL_CONFIG_SETTING_KEYS = (
     "engine",
     "cleaner_model_role",
@@ -78,68 +80,34 @@ def build_model_config_export_payload(
     settings: AppSettings,
     *,
     get_api_key: ApiKeyGetter = get_key,
+    include_api_key: bool = False,
+    include_api_keys: bool | None = None,
 ) -> dict[str, Any]:
-    """Build the current versioned, credential-inclusive export payload."""
+    """Build the current v3 export payload, omitting secrets by default."""
+    if include_api_keys is not None:
+        include_api_key = bool(include_api_keys)
     return {
         "type": MODEL_CONFIG_EXPORT_TYPE,
         "version": MODEL_CONFIG_EXPORT_VERSION,
         "app": APP_NAME,
         "app_version": APP_VERSION,
-        "model_profiles": _model_profiles_for_export(settings, get_api_key=get_api_key),
+        "model_profiles": _model_profiles_for_export(
+            settings,
+            get_api_key=get_api_key,
+            include_api_key=include_api_key,
+        ),
     }
 
 
 def parse_model_config_import(raw: object) -> ImportedModelConfig:
-    """Parse legacy and current model-configuration JSON payloads."""
+    """Parse only the current v3 model-configuration payload."""
     if not isinstance(raw, dict):
         raise ValueError("Imported configuration must be a JSON object.")
+    if raw.get("type") != MODEL_CONFIG_EXPORT_TYPE or raw.get("version") != MODEL_CONFIG_EXPORT_VERSION:
+        raise ValueError("仅支持当前 translator_model_config v3；旧格式不兼容。")
     if isinstance(raw.get("model_profiles"), dict):
         return _parse_model_profiles(raw)
-
-    source = raw.get("model_config")
-    if not isinstance(source, dict):
-        settings_payload = raw.get("settings")
-        source = settings_payload if isinstance(settings_payload, dict) else raw
-
-    model_config: dict[str, dict[str, Any]] = {}
-    for key in MODEL_CONFIG_SETTING_KEYS:
-        value = source.get(key)
-        if not isinstance(value, dict):
-            continue
-        allowed_fields = (
-            MODEL_CONFIG_CLOUD_FIELDS
-            if key == "engine"
-            else MODEL_CONFIG_ROLE_CLOUD_FIELDS
-        )
-        cloud_values = {
-            field: value[field]
-            for field in allowed_fields
-            if field in value
-        }
-        if cloud_values:
-            model_config[key] = cloud_values
-    if not model_config:
-        raise ValueError("No cloud model configuration was found in the import.")
-
-    keys_raw = raw.get("api_keys", {})
-    if keys_raw in (None, ""):
-        keys_raw = {}
-    if not isinstance(keys_raw, dict):
-        raise ValueError("api_keys must be a JSON object.")
-    cloud_providers = set(CLOUD_ENGINES.values())
-    api_keys = {
-        str(provider or "").strip(): str(api_key or "").strip()
-        for provider, api_key in keys_raw.items()
-        if str(provider or "").strip() in cloud_providers
-        and str(api_key or "").strip()
-    }
-    return ImportedModelConfig(
-        model_config=model_config,
-        api_keys=api_keys,
-        scoped_api_keys=_parse_scoped_api_keys(raw),
-        throughput_profiles=_parse_throughput_profiles(raw),
-        profile_throughputs={},
-    )
+    raise ValueError("model_profiles must be a JSON object.")
 
 
 def apply_model_config_import(
@@ -158,9 +126,14 @@ def apply_model_config_import(
         if key not in imported.model_config:
             continue
         current = dict(payload.get(key) or {})
-        current.update(imported.model_config[key])
+        imported_fields = imported.model_config[key]
+        current = _merge_imported_fields(current, imported_fields)
+        _synchronize_selected_provider_memory(current, imported_fields)
         if key == "engine" and "mode" not in imported.model_config[key]:
-            current["mode"] = "cloud"
+            # Existing local mode remains local when an import does not
+            # explicitly choose a mode.  A sparse v3 file must never silently
+            # replace an unmentioned setting.
+            current.setdefault("mode", "cloud")
         payload[key] = current
     if imported.throughput_profiles:
         profiles = dict(payload.get("model_throughput_profiles") or {})
@@ -168,6 +141,11 @@ def apply_model_config_import(
         payload["model_throughput_profiles"] = profiles
 
     updated = AppSettings.model_validate(payload)
+    # A shared connection can make an untouched follower invalid.  Verify the
+    # complete effective graph before writing any imported secret, then reset
+    # all role test states because no imported result is trustworthy.
+    validate_all_model_roles(updated)
+    reset_all_model_role_availability(updated)
     for provider, api_key in imported.api_keys.items():
         save_api_key(provider, api_key)
     for entry in imported.scoped_api_keys:
@@ -186,10 +164,57 @@ def apply_model_config_import(
     return updated
 
 
+def _merge_imported_fields(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge only v3 fields explicitly present in an import payload.
+
+    Model configuration import is additive: absent role fields, provider
+    entries, and per-provider fields must remain untouched.  This recursive
+    merge deliberately has no deletion semantics, which also keeps an empty
+    object from erasing a user's stored connection memory.
+    """
+    merged = dict(current)
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_imported_fields(dict(merged[key]), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _synchronize_selected_provider_memory(
+    owner: dict[str, Any], imported_fields: dict[str, Any]
+) -> None:
+    """Keep explicit selected connection values authoritative after a merge.
+
+    Settings keep a remembered ``cloud_provider_configs`` entry for every
+    provider.  Its normalization intentionally wins over the legacy/current
+    fields, so importing a new selected model would otherwise be shadowed by
+    an old entry for the same provider.  Mirror only explicitly imported
+    selected values into that one provider entry; all other remembered
+    connections remain untouched.
+    """
+    selected_fields = {
+        field: imported_fields[field]
+        for field in ("cloud_model", "cloud_base_url")
+        if field in imported_fields
+    }
+    if not selected_fields:
+        return
+    provider = str(owner.get("cloud_provider") or "").strip()
+    if not provider:
+        return
+    configs = dict(owner.get("cloud_provider_configs") or {})
+    entry = dict(configs.get(provider) or {})
+    entry.update(selected_fields)
+    configs[provider] = entry
+    owner["cloud_provider_configs"] = configs
+
+
 def _model_profiles_for_export(
     settings: AppSettings,
     *,
     get_api_key: ApiKeyGetter,
+    include_api_key: bool,
 ) -> dict[str, dict[str, Any]]:
     payload = settings.model_dump(mode="json")
     profiles: dict[str, dict[str, Any]] = {}
@@ -199,8 +224,16 @@ def _model_profiles_for_export(
         profile: dict[str, Any] = {
             "role": role,
             "label": role_label(role),
-            "cloud": _cloud_profile_for_export(owner, get_api_key=get_api_key),
-            "effective": _effective_profile_for_export(settings, role),
+            "cloud": _cloud_profile_for_export(
+                owner,
+                get_api_key=get_api_key,
+                include_api_key=include_api_key,
+            ),
+            "effective": _effective_profile_for_export(
+                settings,
+                role,
+                include_api_key=include_api_key,
+            ),
             "throughput": _throughput_profile_for_export(settings, role),
         }
         if role == ROLE_TRANSLATION:
@@ -219,6 +252,7 @@ def _cloud_profile_for_export(
     owner: dict[str, Any],
     *,
     get_api_key: ApiKeyGetter,
+    include_api_key: bool,
 ) -> dict[str, Any]:
     provider = str(owner.get("cloud_provider") or "").strip()
     base_url = normalize_cloud_base_url(
@@ -229,9 +263,13 @@ def _cloud_profile_for_export(
         "provider": provider,
         "model": str(owner.get("cloud_model") or "").strip(),
         "base_url": base_url,
-        "provider_configs": _provider_configs_for_export(owner, get_api_key=get_api_key),
+        "provider_configs": _provider_configs_for_export(
+            owner,
+            get_api_key=get_api_key,
+            include_api_key=include_api_key,
+        ),
     }
-    api_key = str(get_api_key(provider, base_url) or "").strip()
+    api_key = str(get_api_key(provider, base_url) or "").strip() if include_api_key else ""
     if api_key:
         profile["api_key"] = api_key
     return profile
@@ -241,6 +279,7 @@ def _provider_configs_for_export(
     owner: dict[str, Any],
     *,
     get_api_key: ApiKeyGetter,
+    include_api_key: bool,
 ) -> dict[str, dict[str, str]]:
     cloud_providers = set(CLOUD_ENGINES.values())
     provider_configs = dict(owner.get("cloud_provider_configs") or {})
@@ -267,7 +306,7 @@ def _provider_configs_for_export(
             "model": str(raw_config.get("cloud_model") or "").strip(),
             "base_url": base_url,
         }
-        api_key = str(get_api_key(provider, base_url) or "").strip()
+        api_key = str(get_api_key(provider, base_url) or "").strip() if include_api_key else ""
         if api_key:
             entry["api_key"] = api_key
         profiles[provider] = entry
@@ -299,7 +338,12 @@ def _throughput_profile_for_export(settings: AppSettings, role: str) -> dict[str
     return profile
 
 
-def _effective_profile_for_export(settings: AppSettings, role: str) -> dict[str, Any]:
+def _effective_profile_for_export(
+    settings: AppSettings,
+    role: str,
+    *,
+    include_api_key: bool,
+) -> dict[str, Any]:
     try:
         config = resolve_effective_model_config(settings, role)
     except Exception:
@@ -312,7 +356,7 @@ def _effective_profile_for_export(settings: AppSettings, role: str) -> dict[str,
         "source_role": config.source_role,
         "follows": config.follows,
     }
-    if config.api_key:
+    if include_api_key and config.api_key:
         profile["api_key"] = config.api_key
     return profile
 
@@ -341,23 +385,51 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
             }
         )
 
-    def cloud_values(profile: dict[str, Any]) -> dict[str, Any]:
-        cloud = profile.get("cloud", {})
-        if not isinstance(cloud, dict):
-            cloud = {}
-        provider = str(
-            cloud.get("provider") or cloud.get("cloud_provider") or ""
-        ).strip()
-        model = str(cloud.get("model") or cloud.get("cloud_model") or "").strip()
-        base_url = normalize_cloud_base_url(
-            provider,
-            str(cloud.get("base_url") or cloud.get("cloud_base_url") or "").strip(),
-        )
-        add_key(provider, base_url, str(cloud.get("api_key") or ""))
+    def _first_present(mapping: dict[str, Any], *keys: str) -> tuple[bool, Any]:
+        for key in keys:
+            if key in mapping:
+                return True, mapping[key]
+        return False, None
 
-        provider_configs: dict[str, dict[str, str]] = {}
-        configs_raw = cloud.get("provider_configs") or cloud.get("cloud_provider_configs")
-        if isinstance(configs_raw, dict):
+    def cloud_values(profile: dict[str, Any]) -> dict[str, Any]:
+        """Extract only fields that are explicitly present in ``cloud``.
+
+        v3 configuration imports are merging imports.  In particular, a
+        sparse file which names only ``source_role`` must not clear the
+        recipient's remembered provider, model, Base URL, or provider history.
+        """
+        cloud = profile.get("cloud")
+        if not isinstance(cloud, dict):
+            return {}
+
+        values: dict[str, Any] = {}
+        has_provider, raw_provider = _first_present(cloud, "provider", "cloud_provider")
+        provider = str(raw_provider or "").strip() if has_provider else ""
+        if has_provider:
+            values["cloud_provider"] = provider
+
+        has_model, raw_model = _first_present(cloud, "model", "cloud_model")
+        if has_model:
+            values["cloud_model"] = str(raw_model or "").strip()
+
+        has_base_url, raw_base_url = _first_present(cloud, "base_url", "cloud_base_url")
+        base_url = str(raw_base_url or "").strip() if has_base_url else ""
+        if has_base_url:
+            values["cloud_base_url"] = (
+                normalize_cloud_base_url(provider, base_url) if provider else base_url
+            )
+
+        has_api_key, raw_api_key = _first_present(cloud, "api_key")
+        if has_api_key:
+            add_key(provider, base_url, str(raw_api_key or ""))
+
+        has_provider_configs, configs_raw = _first_present(
+            cloud,
+            "provider_configs",
+            "cloud_provider_configs",
+        )
+        if has_provider_configs and isinstance(configs_raw, dict):
+            provider_configs: dict[str, dict[str, str]] = {}
             for raw_provider, raw_config in configs_raw.items():
                 config_provider = str(raw_provider or "").strip()
                 if (
@@ -365,31 +437,33 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                     or not isinstance(raw_config, dict)
                 ):
                     continue
-                config_base_url = normalize_cloud_base_url(
-                    config_provider,
-                    str(
-                        raw_config.get("base_url")
-                        or raw_config.get("cloud_base_url")
-                        or ""
-                    ).strip(),
+                entry: dict[str, str] = {}
+                has_config_model, raw_config_model = _first_present(
+                    raw_config,
+                    "model",
+                    "cloud_model",
                 )
-                provider_configs[config_provider] = {
-                    "cloud_model": str(
-                        raw_config.get("model") or raw_config.get("cloud_model") or ""
-                    ).strip(),
-                    "cloud_base_url": config_base_url,
-                }
-                add_key(
-                    config_provider,
-                    config_base_url,
-                    str(raw_config.get("api_key") or ""),
+                if has_config_model:
+                    entry["cloud_model"] = str(raw_config_model or "").strip()
+                has_config_base, raw_config_base = _first_present(
+                    raw_config,
+                    "base_url",
+                    "cloud_base_url",
                 )
-        return {
-            "cloud_provider": provider,
-            "cloud_model": model,
-            "cloud_base_url": base_url,
-            "cloud_provider_configs": provider_configs,
-        }
+                config_base_url = str(raw_config_base or "").strip()
+                if has_config_base:
+                    entry["cloud_base_url"] = normalize_cloud_base_url(
+                        config_provider,
+                        config_base_url,
+                    )
+                has_config_key, raw_config_key = _first_present(raw_config, "api_key")
+                if has_config_key:
+                    add_key(config_provider, config_base_url, str(raw_config_key or ""))
+                if entry:
+                    provider_configs[config_provider] = entry
+            if provider_configs:
+                values["cloud_provider_configs"] = provider_configs
+        return values
 
     for profile_key, profile in profiles_raw.items():
         normalized_key = str(profile_key or "").strip()
@@ -402,28 +476,37 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
         setting_key = MODEL_PROFILE_SETTING_KEY_BY_ROLE[role]
         values = cloud_values(profile)
         if role == ROLE_TRANSLATION:
-            mode = str(profile.get("mode") or "cloud").strip()
-            values["mode"] = mode if mode in {"cloud", "local"} else "cloud"
-            local = profile.get("local", {})
+            if "mode" in profile:
+                mode = str(profile.get("mode") or "").strip()
+                if mode not in {"cloud", "local"}:
+                    raise ValueError("translation mode must be 'cloud' or 'local'.")
+                values["mode"] = mode
+            local = profile.get("local")
             if isinstance(local, dict):
-                values.update(
-                    {
-                        "local_provider": str(local.get("provider") or "").strip(),
-                        "local_model": str(local.get("model") or "").strip(),
-                        "local_base_url": str(local.get("base_url") or "").strip(),
-                    }
-                )
-                values["ollama_model"] = values["local_model"]
+                has_local_provider, raw_local_provider = _first_present(local, "provider")
+                if has_local_provider:
+                    values["local_provider"] = str(raw_local_provider or "").strip()
+                has_local_model, raw_local_model = _first_present(local, "model")
+                if has_local_model:
+                    values["local_model"] = str(raw_local_model or "").strip()
+                    values["ollama_model"] = values["local_model"]
+                has_local_base, raw_local_base = _first_present(local, "base_url")
+                if has_local_base:
+                    values["local_base_url"] = str(raw_local_base or "").strip()
         else:
-            source_role = str(profile.get("source_role") or SOURCE_INDEPENDENT).strip()
-            values["source_role"] = ROLE_IMAGE if source_role == "pdf_translation" else source_role
-        model_config[setting_key] = values
+            if "source_role" in profile:
+                source_role = str(profile.get("source_role") or "").strip()
+                values["source_role"] = (
+                    ROLE_IMAGE if source_role == "pdf_translation" else source_role
+                )
+        if values:
+            model_config[setting_key] = values
 
         throughput = profile.get("throughput")
         if isinstance(throughput, dict):
             profile_throughputs[role] = throughput
 
-    if not model_config:
+    if not model_config and not profile_throughputs and not scoped_api_keys:
         raise ValueError("No model configuration was found in the import.")
     return ImportedModelConfig(
         model_config=model_config,

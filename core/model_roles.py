@@ -9,7 +9,7 @@ to duplicate sidebar behavior.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 
 from config import (
     DEFAULT_CLOUD_MODEL,
@@ -46,6 +46,13 @@ MODEL_ROLE_CAPABILITIES = {
     ROLE_PDF_REVIEW: "vision_text",
 }
 
+MODEL_ROLES = (
+    ROLE_TRANSLATION,
+    ROLE_CLEANER,
+    ROLE_IMAGE,
+    ROLE_PDF_REVIEW,
+)
+
 FOLLOW_SOURCE_LABELS = {
     SOURCE_INDEPENDENT: "独立配置",
     ROLE_TRANSLATION: "跟随翻译模型",
@@ -64,6 +71,10 @@ class ChainedModelFollowError(ModelRoleConfigError):
 
 class LocalModelFollowNotAllowedError(ModelRoleConfigError):
     """Raised when a cloud-only role tries to follow a local translation model."""
+
+
+class ModelCapabilityError(ModelRoleConfigError):
+    """Raised when a provider cannot satisfy a role's required capability."""
 
 
 @dataclass(frozen=True)
@@ -107,11 +118,86 @@ def get_role_settings(settings: AppSettings, role: str) -> ModelRoleSettings | N
     return None
 
 
+def model_role_owner(settings: AppSettings, role: str):
+    """Return the settings object that owns one role's test state.
+
+    The translation role is stored on ``engine`` while the other roles have
+    their own settings objects.  Keeping this mapping here prevents callers
+    that construct a temporary text-engine settings copy from accidentally
+    persisting its test result on the translation role.
+    """
+    if role == ROLE_TRANSLATION:
+        return settings.engine
+    owner = get_role_settings(settings, role)
+    if owner is None:
+        raise ModelRoleConfigError(f"未知模型用途：{role}")
+    return owner
+
+
+def reset_model_role_availability(
+    settings: AppSettings,
+    role: str,
+    *,
+    message: str = "当前配置尚未测试。",
+) -> None:
+    """Mark one role as requiring an explicit connectivity re-test."""
+    owner = model_role_owner(settings, role)
+    owner.availability_status = "unknown"
+    owner.availability_message = str(message or "当前配置尚未测试。").strip()
+    owner.availability_signature = ""
+    owner.availability_checked_at = ""
+
+
+def reset_all_model_role_availability(
+    settings: AppSettings,
+    *,
+    message: str = "当前配置尚未测试。",
+) -> None:
+    """Reset all four role test states after a configuration import."""
+    for role in MODEL_ROLES:
+        reset_model_role_availability(settings, role, message=message)
+
+
+def record_model_role_availability(
+    settings: AppSettings,
+    role: str,
+    *,
+    ok: bool,
+    message: str,
+    signature: str | None = None,
+    checked_at: str = "",
+) -> None:
+    """Persist an explicit test result on the role that was actually tested."""
+    owner = model_role_owner(settings, role)
+    owner.availability_status = "available" if ok else "unavailable"
+    owner.availability_message = str(message or "").strip()
+    owner.availability_signature = signature or model_config_signature(
+        resolve_effective_model_config(settings, role)
+    )
+    owner.availability_checked_at = str(checked_at or "").strip()
+
+
+def validate_all_model_roles(
+    settings: AppSettings,
+) -> dict[str, EffectiveModelConfig]:
+    """Resolve all roles before saving a shared configuration edit.
+
+    A translation connection can be reused by cleaner/image/review roles.
+    Therefore changing one role may invalidate another role even when its own
+    settings block was untouched.  Saving only after this full validation
+    keeps an impossible reuse graph out of persistent settings.
+    """
+    return {
+        role: resolve_effective_model_config(settings, role)
+        for role in MODEL_ROLES
+    }
+
+
 def allowed_source_roles(role: str) -> list[str]:
     if role == ROLE_CLEANER:
         return [SOURCE_INDEPENDENT, ROLE_TRANSLATION]
     if role == ROLE_IMAGE:
-        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_CLEANER]
+        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION]
     if role == ROLE_PDF_REVIEW:
         return [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_IMAGE]
     return [SOURCE_INDEPENDENT]
@@ -119,6 +205,10 @@ def allowed_source_roles(role: str) -> list[str]:
 
 def normalize_source_role(role: str, source_role: str) -> str:
     source = str(source_role or SOURCE_INDEPENDENT).strip()
+    if source not in allowed_source_roles(role) and source != SOURCE_INDEPENDENT:
+        raise ChainedModelFollowError(
+            f"{role_label(role)}不能跟随{role_label(source)}，请直接选择翻译模型或独立连接。"
+        )
     return source if source in allowed_source_roles(role) else SOURCE_INDEPENDENT
 
 
@@ -189,6 +279,49 @@ def provider_supports_capability(provider: str, capability: str) -> bool:
     }
 
 
+def validate_model_capability(config: EffectiveModelConfig) -> None:
+    """Reject a role/provider combination before a task or test can start.
+
+    Model names are intentionally not treated as a capability guarantee.  The
+    provider allow-list is the early, deterministic guard; the role-specific
+    connectivity test remains the authoritative protocol check.
+    """
+    if config.mode == "local" and config.capability != "text":
+        raise ModelCapabilityError(
+            f"{config.label}只支持云端{config.capability}能力，不能使用本地模型。"
+        )
+    if config.mode == "cloud" and not provider_supports_capability(
+        config.provider,
+        config.capability,
+    ):
+        raise ModelCapabilityError(
+            f"服务商 {config.provider or '未配置'} 不支持{config.label}所需的"
+            f" {config.capability} 能力，请改用具备该能力的连接。"
+        )
+
+
+def _availability_for_config(
+    config: EffectiveModelConfig,
+    role_settings: ModelRoleSettings | None,
+) -> EffectiveModelConfig:
+    if role_settings is None:
+        return config
+    current_signature = model_config_signature(config)
+    if role_settings.availability_signature != current_signature:
+        return dataclass_replace(
+            config,
+            availability_status="unknown",
+            availability_message="当前配置尚未测试。",
+            availability_signature=current_signature,
+        )
+    return dataclass_replace(
+        config,
+        availability_status=str(role_settings.availability_status or "unknown"),
+        availability_message=str(role_settings.availability_message or ""),
+        availability_signature=current_signature,
+    )
+
+
 def resolve_effective_model_config(
     settings: AppSettings,
     role: str,
@@ -202,7 +335,7 @@ def resolve_effective_model_config(
     if normalized_role == ROLE_TRANSLATION:
         if settings.engine.mode == "local":
             provider = str(settings.engine.local_provider or "ollama").strip()
-            return EffectiveModelConfig(
+            config = EffectiveModelConfig(
                 role=ROLE_TRANSLATION,
                 label=role_label(ROLE_TRANSLATION),
                 capability="text",
@@ -212,9 +345,11 @@ def resolve_effective_model_config(
                 base_url=str(settings.engine.local_base_url or "").strip(),
                 api_key="",
             )
+            validate_model_capability(config)
+            return _availability_for_config(config, settings.engine)
         provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
         provider_config = get_cloud_provider_config(settings.engine, provider)
-        return EffectiveModelConfig(
+        config = EffectiveModelConfig(
             role=ROLE_TRANSLATION,
             label=role_label(ROLE_TRANSLATION),
             capability="text",
@@ -224,6 +359,8 @@ def resolve_effective_model_config(
             base_url=provider_config.cloud_base_url,
             api_key=get_key(provider, provider_config.cloud_base_url),
         )
+        validate_model_capability(config)
+        return _availability_for_config(config, settings.engine)
 
     role_settings = get_role_settings(settings, normalized_role)
     if role_settings is None:
@@ -253,7 +390,7 @@ def resolve_effective_model_config(
             provider = source_config.provider
             base_url = source_config.base_url
             api_key = source_config.api_key
-        return EffectiveModelConfig(
+        config = EffectiveModelConfig(
             role=normalized_role,
             label=role_label(normalized_role),
             capability=role_capability(normalized_role),
@@ -268,10 +405,12 @@ def resolve_effective_model_config(
             availability_message=role_settings.availability_message,
             availability_signature=role_settings.availability_signature,
         )
+        validate_model_capability(config)
+        return _availability_for_config(config, role_settings)
 
     provider = str(role_settings.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
     provider_config = get_cloud_provider_config(role_settings, provider)
-    return EffectiveModelConfig(
+    config = EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
         capability=role_capability(normalized_role),
@@ -286,6 +425,8 @@ def resolve_effective_model_config(
         availability_message=role_settings.availability_message,
         availability_signature=role_settings.availability_signature,
     )
+    validate_model_capability(config)
+    return _availability_for_config(config, role_settings)
 
 
 def _local_follow_not_allowed_message(role: str) -> str:
@@ -332,11 +473,14 @@ def record_image_model_availability(
     signature: str | None = None,
     checked_at: str = "",
 ) -> None:
-    role_settings = settings.image_model_role
-    role_settings.availability_status = "available" if ok else "unavailable"
-    role_settings.availability_message = str(message or "").strip()
-    role_settings.availability_signature = signature or image_model_signature(settings)
-    role_settings.availability_checked_at = checked_at
+    record_model_role_availability(
+        settings,
+        ROLE_IMAGE,
+        ok=ok,
+        message=message,
+        signature=signature or image_model_signature(settings),
+        checked_at=checked_at,
+    )
 
 
 def record_pdf_review_model_availability(
@@ -347,8 +491,11 @@ def record_pdf_review_model_availability(
     signature: str | None = None,
     checked_at: str = "",
 ) -> None:
-    role_settings = settings.pdf_review_model_role
-    role_settings.availability_status = "available" if ok else "unavailable"
-    role_settings.availability_message = str(message or "").strip()
-    role_settings.availability_signature = signature or pdf_review_model_signature(settings)
-    role_settings.availability_checked_at = checked_at
+    record_model_role_availability(
+        settings,
+        ROLE_PDF_REVIEW,
+        ok=ok,
+        message=message,
+        signature=signature or pdf_review_model_signature(settings),
+        checked_at=checked_at,
+    )

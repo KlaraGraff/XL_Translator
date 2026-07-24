@@ -22,6 +22,44 @@ type TmEntry = {
   pinned: number;
   word_type: string;
 };
+type TmImportEntry = {
+  source_text: string;
+  target_text: string;
+  word_type?: string;
+  pinned?: number | boolean | string;
+  updated_at?: string;
+};
+type TmImportPreview = {
+  fileName: string;
+  format: "json" | "csv";
+  langPair: string;
+  entries: TmImportEntry[];
+  mode: "skip" | "overwrite" | "keep_both";
+  syncReverse: boolean;
+};
+type TmFullImportPreview = {
+  fileName: string;
+  payload: JsonObject;
+  mode: "skip" | "overwrite" | "keep_both";
+  codeMap: Record<string, string>;
+};
+type TmConflict = {
+  id: number;
+  source_text: string;
+  existing_target: string;
+  candidate_target: string;
+  lang_pair: string;
+  source_engine?: string;
+  status: string;
+};
+type ModelImportPreview = {
+  fileName: string;
+  payload: JsonObject;
+  roles: Array<{ role: string; fields: string[] }>;
+  throughput_profile_count: number;
+  api_key_count: number;
+};
+type TranslationSurface = "excel" | "word";
 type LanguageOption = {
   code: string;
   display_name: string;
@@ -38,7 +76,7 @@ type RunningTask = {
   stepDone: number;
   stepTotal: number;
 };
-type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "custom-language" | "migration" | "source-picker" | "stop-task" | "notice" | "update" | null;
+type Modal = "tm-add" | "tm-edit" | "tm-delete" | "tm-clean" | "tm-import" | "tm-full-import" | "custom-language" | "model-import" | "migration" | "source-picker" | "stop-task" | "notice" | "update" | null;
 type ModalNotice = { title: string; message: string };
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
@@ -60,6 +98,18 @@ const state: {
   tmEntries: TmEntry[];
   tmStats: JsonObject;
   tmKeyword: string;
+  tmTotal: number;
+  tmPage: number;
+  tmPageSize: number;
+  tmSelectedIds: number[];
+  tmRecentPairs: string[];
+  tmSourceOptions: LanguageOption[];
+  tmTargetOptions: LanguageOption[];
+  tmImportPreview: TmImportPreview | null;
+  tmFullImportPreview: TmFullImportPreview | null;
+  tmConflicts: TmConflict[];
+  tmCleaningState: "idle" | "running" | "ready" | "error";
+  tmConflictMessage: string;
   toast: { message: string; error: boolean } | null;
   modal: Modal;
   sourcePickerSurface: Surface | null;
@@ -74,6 +124,15 @@ const state: {
   languageSearch: Record<Surface, string>;
   sourceSelections: Record<Surface, string>;
   targetSelections: Record<Surface, string>;
+  tmSourceLang: string;
+  tmTargetLang: string;
+  modelRole: string;
+  modelRoles: Record<string, JsonObject>;
+  modelCatalog: Record<string, string[]>;
+  modelCatalogMessage: Record<string, string>;
+  modelCatalogConnection: Record<string, string>;
+  modelThroughput: Record<string, JsonObject>;
+  modelImportPreview: ModelImportPreview | null;
 } = {
   connected: false,
   view: "excel",
@@ -86,6 +145,18 @@ const state: {
   tmEntries: [],
   tmStats: {},
   tmKeyword: "",
+  tmTotal: 0,
+  tmPage: 1,
+  tmPageSize: 25,
+  tmSelectedIds: [],
+  tmRecentPairs: [],
+  tmSourceOptions: [],
+  tmTargetOptions: [],
+  tmImportPreview: null,
+  tmFullImportPreview: null,
+  tmConflicts: [],
+  tmCleaningState: "idle",
+  tmConflictMessage: "",
   toast: null,
   modal: null,
   sourcePickerSurface: null,
@@ -100,6 +171,15 @@ const state: {
   languageSearch: { excel: "", word: "", pdf: "" },
   sourceSelections: { excel: "auto", word: "auto", pdf: "" },
   targetSelections: { excel: "en", word: "en", pdf: "zh" },
+  tmSourceLang: "zh",
+  tmTargetLang: "en",
+  modelRole: "translation",
+  modelRoles: {},
+  modelCatalog: {},
+  modelCatalogMessage: {},
+  modelCatalogConnection: {},
+  modelThroughput: {},
+  modelImportPreview: null,
 };
 
 const pageMeta: Record<View, { title: string; description: string }> = {
@@ -118,6 +198,26 @@ const pageMeta: Record<View, { title: string; description: string }> = {
   tm: {
     title: "记忆库管理",
     description: "搜索、固定与清理译文，提升复用与一致性。",
+  },
+};
+
+// The server remains the source of truth for the final prompt.  These copies
+// are deliberately limited to the visible, editable built-in domain text so a
+// user can inspect it before creating a page+domain override.  The protected
+// JSON, placeholder, target-language, and source-language protocol is never
+// exposed here and is appended by the translation engine.
+const BUILTIN_DOMAIN_PROMPTS: Record<string, Record<string, string>> = {
+  "同步工程场景": {
+    _base: "你是一名面向工程同步场景的专业翻译助手。\n请优先采用工程资料与项目沟通中的常用表达，保持术语前后一致。\n原文中的编号、日期、计量单位、规格参数、版本号与符号必须原样保留。\n输出应简洁、准确、可直接用于工程过程文件、往来沟通与进度同步材料。",
+    fr: "Tu es un assistant de traduction professionnel pour la synchronisation de projets d’ingénierie.\nUtiliser des formulations courantes dans les documents techniques et la communication de projet, avec une terminologie cohérente.\nConserver strictement inchangés les numéros, dates, unités, paramètres, versions et symboles du texte source.\nLa traduction doit être concise, précise et directement exploitable dans les documents de suivi et de coordination.",
+  },
+  "资料管理场景": {
+    _base: "你是一名面向资料管理场景的专业翻译助手。\n请使用资料整理、归档、送审、台账与表单语境下的规范表达，保证字段名称一致。\n涉及编号、文号、日期、版本、附件标识时必须完整保留，不得改写结构。\n输出应便于资料员直接用于整理、流转、归档与审查。",
+    fr: "Tu es un assistant de traduction professionnel pour la gestion documentaire.\nEmployer des formulations normalisées adaptées au classement, à l’archivage, à la soumission, aux registres et aux formulaires, avec cohérence des champs.\nConserver intégralement les numéros, références, dates, versions et identifiants de pièces jointes sans modifier la structure.\nLe résultat doit être directement réutilisable pour le tri, la circulation, l’archivage et la revue documentaire.",
+  },
+  "行政生活化场景": {
+    _base: "你是一名面向行政与日常办公场景的翻译助手。\n请使用自然、清晰、礼貌且易理解的通用表达，避免过强行业术语。\n保留原文中的数字、时间、地址、联系人、编号等关键信息，不改变事实含义。\n输出应适用于通知、邮件、流程说明、日常沟通与生活化文本。",
+    fr: "Tu es un assistant de traduction pour l’administration et le bureau au quotidien.\nUtiliser un style naturel, clair, poli et facile à comprendre, sans surcharge de jargon technique.\nConserver les informations clés du texte source (chiffres, dates, heures, adresses, contacts, références) sans altérer le sens factuel.\nLa traduction doit convenir aux notifications, e-mails, consignes de processus, communications courantes et contenus de vie quotidienne.",
   },
 };
 
@@ -171,6 +271,70 @@ function text(value: unknown, fallback = ""): string {
 
 function number(value: unknown, fallback = 0): number {
   return typeof value === "number" ? value : fallback;
+}
+
+function modelCatalogConnectionKey({
+  role,
+  mode,
+  provider,
+  baseUrl,
+}: {
+  role: string;
+  mode: string;
+  provider: string;
+  baseUrl: string;
+}): string {
+  // The secret fingerprint deliberately stays server-side.  The UI keeps only
+  // enough non-sensitive identity to avoid showing a directory from a prior
+  // provider/Base URL while the process-local server cache handles key scope.
+  return [role, mode, provider, baseUrl.trim().replace(/\/$/, "")].join("|");
+}
+
+function modelCatalogConnectionForRole(role: string): string {
+  const payload = record(state.modelRoles[role]);
+  return modelCatalogConnectionKey({
+    role,
+    mode: text(payload.mode, "cloud"),
+    provider: text(payload.provider),
+    baseUrl: text(payload.base_url),
+  });
+}
+
+function formatCheckedAt(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return `测试于 ${new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(parsed)}`;
+}
+
+function domainBuiltInPrompt(preset: string, targetLang: string): string {
+  const prompts = BUILTIN_DOMAIN_PROMPTS[preset];
+  if (!prompts) return "";
+  return prompts[targetLang] || prompts._base || "";
+}
+
+function domainSettings(surface: TranslationSurface): {
+  preset: string;
+  customPrompt: string;
+  promptOverrides: Record<string, string>;
+  nameOverrides: Record<string, string>;
+} {
+  const prefix = surface === "excel" ? "excel" : "word";
+  return {
+    preset: text(state.settings?.[`${prefix}_domain_preset`], "同步工程场景"),
+    customPrompt: text(state.settings?.[`${prefix}_custom_prompt`]),
+    promptOverrides: Object.fromEntries(
+      Object.entries(record(state.settings?.[`${prefix}_domain_prompt_overrides`]))
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+    nameOverrides: Object.fromEntries(
+      Object.entries(record(state.settings?.[`${prefix}_domain_name_overrides`]))
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  };
 }
 
 function engineSettings(): JsonObject {
@@ -254,49 +418,79 @@ function navButton(view: View, label: string, iconName: IconName): string {
 }
 
 function renderConfigPanel(): string {
+  const role = state.modelRole;
+  const rolePayload = record(state.modelRoles[role]);
   const engine = engineSettings();
-  const cloudMode = text(engine.mode, "cloud") === "cloud";
-  const provider = cloudMode
-    ? text(engine.cloud_provider, "custom_openai")
-    : text(engine.local_provider, "ollama");
-  const baseUrl = cloudMode
-    ? text(engine.cloud_base_url)
-    : text(engine.local_base_url);
-  const model = cloudMode
-    ? text(engine.cloud_model)
-    : text(engine.local_model);
+  const cloudMode = role !== "translation" || text(engine.mode, "cloud") === "cloud";
+  const provider = role === "translation"
+    ? (cloudMode ? text(engine.cloud_provider, "custom_openai") : text(engine.local_provider, "ollama"))
+    : text(rolePayload.provider, "custom_openai");
+  const baseUrl = role === "translation"
+    ? (cloudMode ? text(engine.cloud_base_url) : text(engine.local_base_url))
+    : text(rolePayload.base_url);
+  const model = role === "translation"
+    ? (cloudMode ? text(engine.cloud_model) : text(engine.local_model))
+    : text(rolePayload.model);
   const providers = cloudMode
     ? ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow"]
     : ["ollama", "lm_studio", "custom_local"];
+  const roleLabels: Record<string, string> = { translation: "翻译模型（Excel / Word）", cleaner: "深度清洗模型", image: "PDF 翻译模型（图像生成）", pdf_review: "PDF 翻译审核模型" };
+  const sourceRoles: Record<string, string[]> = { cleaner: ["independent", "translation"], image: ["independent", "translation"], pdf_review: ["independent", "translation", "image"] };
+  const sourceRole = text(rolePayload.source_role, "independent");
+  const availability = text(rolePayload.availability_status, "unknown");
+  const availabilityMessage = text(rolePayload.availability_message, "当前配置尚未测试。");
+  const throughput = record(state.modelThroughput[role] || rolePayload.throughput);
+  const bounds = record(rolePayload.throughput_bounds);
+  const batchBounds = Array.isArray(bounds.batch_size) ? bounds.batch_size as unknown[] : [];
+  const concurrencyBounds = Array.isArray(bounds.concurrency) ? bounds.concurrency as unknown[] : [];
+  const catalogConnection = modelCatalogConnectionForRole(role);
+  const catalogMatchesConnection = state.modelCatalogConnection[role] === catalogConnection;
+  const catalog = catalogMatchesConnection ? state.modelCatalog[role] || [] : [];
+  const catalogMessage = catalogMatchesConnection
+    ? state.modelCatalogMessage[role] || "尚未读取当前连接的模型目录。"
+    : "当前连接尚未读取模型目录。保存连接后可手动刷新。";
+  const hasApiKey = Boolean(rolePayload.has_api_key);
+  const checkedAt = formatCheckedAt(text(rolePayload.availability_checked_at));
+  const modelListId = `model-catalog-${role}`;
+  const throughputControls = role === "translation" || role === "cleaner"
+    ? `<div class="field-row throughput-row"><div><label class="field-label" for="throughputBatch">批次大小</label><input id="throughputBatch" type="number" data-throughput="batch_size" value="${number(throughput.batch_size, 8)}" min="${number(batchBounds[0], 1)}" max="${number(batchBounds[1], 128)}"/></div><div><label class="field-label" for="throughputConcurrency">并发数</label><input id="throughputConcurrency" type="number" data-throughput="concurrency" value="${number(throughput.concurrency, 1)}" min="${number(concurrencyBounds[0], 1)}" max="${number(concurrencyBounds[1], 32)}"/></div></div>`
+    : `<label class="field-label" for="throughputConcurrency">并发数</label><input id="throughputConcurrency" type="number" data-throughput="concurrency" value="${number(throughput.concurrency, 1)}" min="${number(concurrencyBounds[0], 1)}" max="${number(concurrencyBounds[1], 32)}"/>`;
   return `<aside class="config-panel ${state.panelOpen ? "" : "closed"}">
     <div class="config-inner">
-      <div class="config-header"><div class="config-icon">${icon("sliders", "small")}</div><div><h2>模型配置</h2><p>全局 · 应用于所有页面</p></div><button class="icon-button" data-action="toggle-panel" data-tip="折叠模型配置">${icon("chevron", "small")}</button></div>
+      <div class="config-header"><div class="config-icon">${icon("sliders", "small")}</div><div><h2>模型配置</h2><p>四个角色 · ${escapeHtml(roleLabels[role] || role)}</p></div><button class="icon-button" data-action="toggle-panel" data-tip="折叠模型配置">${icon("chevron", "small")}</button></div>
       <div class="config-body">
+        <div class="config-group"><label class="field-label" for="modelRole">模型角色</label><select id="modelRole" data-model-role>${Object.entries(roleLabels).map(([key, label]) => `<option value="${key}" ${key === role ? "selected" : ""}>${label}</option>`).join("")}</select></div>
         <div class="config-group">
-          <label class="field-label" for="domainPreset">专业领域</label>
-          <input id="domainPreset" value="${escapeHtml(text(state.settings?.domain_preset, "同步工程场景"))}" data-setting="domain_preset" />
+          <p class="note">Excel 与 Word 的专业领域和 Prompt 在各自页面独立保存；PDF 使用固定版式协议。</p>
         </div>
         <div class="config-group">
           <span class="field-label">接入方式</span>
-          <select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>
+          ${role === "translation" ? `<select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>` : `<select id="roleSource" data-role-source>${(sourceRoles[role] || ["independent"]).map((item) => `<option value="${item}" ${sourceRole === item ? "selected" : ""}>${item === "independent" ? "独立配置" : `跟随${roleLabels[item] || item}`}</option>`).join("")}</select>`}
+          ${role !== "translation" ? `<p class="note">复用只共享服务商、Base URL 和 Key；本角色的模型名称、吞吐和测试状态始终独立。不能链式复用。</p>` : ""}
           <label class="field-label" for="provider" style="margin-top:9px">${cloudMode ? "服务商" : "本地运行器"}</label>
-          <select id="provider" data-engine="cloud_provider">
+          <select id="provider" data-engine="cloud_provider" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}>
             ${providers.map((item) => `<option value="${item}" ${provider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
           </select>
           <label class="field-label" for="baseUrl" style="margin-top:9px">Base URL</label>
-          <input id="baseUrl" value="${escapeHtml(baseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" />
+          <input id="baseUrl" value="${escapeHtml(baseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
           <label class="field-label" for="modelName" style="margin-top:9px">模型名称</label>
-          <input id="modelName" value="${escapeHtml(model)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
+          <input id="modelName" list="${modelListId}" value="${escapeHtml(model)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
+          <datalist id="${modelListId}">${catalog.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
           ${cloudMode ? `<label class="field-label" for="apiKey" style="margin-top:9px">API Key</label><input id="apiKey" type="password" placeholder="留空则保留当前密钥" />` : `<p class="note">本地模型不保存云端 API Key；请确认本地服务已启动。</p>`}
-          <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存</button><button class="button" data-action="fetch-models">获取模型</button><button class="button" data-action="test-model">测试连接</button></div>
+          <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存角色</button><button class="button" data-action="fetch-models">${icon("refresh", "small")}刷新模型目录</button><button class="button" data-action="test-model">测试当前角色</button></div><p class="note">模型目录：${escapeHtml(catalogMessage)}${catalog.length ? `（${catalog.length} 个，可手动填写未列出的模型）` : ""}</p><p class="note">测试状态：${escapeHtml(availability === "available" ? "通过" : availability === "unavailable" ? "失败" : "未测试")} · ${escapeHtml(availabilityMessage)}${checkedAt ? ` · ${escapeHtml(checkedAt)}` : ""}${hasApiKey ? " · 已保存连接密钥" : " · 未检测到连接密钥"}。未测试不会阻止启动任务。</p>
+          <div class="config-subgroup"><span class="field-label">角色吞吐</span>${throughputControls}<div class="field-row"><button class="button" data-action="save-throughput">保存吞吐设置</button><button class="button" data-action="restore-throughput">恢复推荐值</button></div><p class="note">运行时 429/超时降速只影响当前任务，不会修改此长期档案。</p></div>
         </div>
         <div class="config-group">
           <span class="field-label">配置文件</span>
-          <div class="field-row"><button class="button" data-action="export-model-config">导出</button><button class="button" data-action="import-model-config">导入</button></div>
+          <div class="field-row"><button class="button" data-action="export-model-config">导出（不含 Key）</button><button class="button" data-action="export-model-config-sensitive">导出含 Key</button><button class="button" data-action="import-model-config">导入 v3</button></div><p class="note">导入只接受 v3，先预览；导入后所有角色需重新测试。含 Key 导出会显示二次确认。</p>
         </div>
         <div class="config-group">
           <span class="field-label">维护</span>
           <div class="field-row"><button class="button" data-action="download-diagnostics">诊断归档</button><button class="button" data-action="migration">数据迁移</button></div>
+        </div>
+        <div class="config-group">
+          <span class="field-label">并发风险</span>
+          <p class="note">不同类型任务可能共用同一 API 连接，并发会叠加，可能触发服务商限流或费用增长。此面板不会全局锁定其他页面；已启动任务保留自己的配置快照，后续任务会在任务中心进行风险确认。</p>
         </div>
       </div>
     </div>
@@ -336,6 +530,7 @@ function renderTranslateView(surface: Surface): string {
     <aside class="card right-column">
       <span class="section-label">运行设置</span>
       <div class="setting-card"><label class="field-label" for="language-search-${surface}">搜索语言</label><input id="language-search-${surface}" data-language-search="${surface}" value="${escapeHtml(state.languageSearch[surface])}" placeholder="中文名、English、ISO 代码" ${activeTask ? "disabled" : ""}/><label class="field-label" for="target-${surface}" style="margin-top:8px">目标语言</label><select id="target-${surface}" data-target="${surface}" ${activeTask ? "disabled" : ""}>${languageOptions(target, state.languageSearch[surface])}</select><div class="field-row" style="margin-top:8px"><button class="mini-button" data-action="custom-language-add" ${activeTask ? "disabled" : ""}>＋ 自定义语言</button><button class="mini-button" data-action="custom-language-manage" ${activeTask ? "disabled" : ""}>管理自定义</button></div></div>
+      ${surface === "excel" || surface === "word" ? renderDomainSettings(surface, activeTask) : ""}
       ${isPdf ? `<p class="note">PDF 目标语言独立保存；页图翻译由模型识别原文，无需指定源语言。</p>` : `<label class="field-label" style="margin-top:10px" for="source-${surface}">源语言</label><select id="source-${surface}" data-source-language="${surface}" ${activeTask ? "disabled" : ""}>${sourceLanguageOptions(source, state.languageSearch[surface])}</select><p class="note">自动识别会在每个有候选文本的文件开始翻译前发送一次抽样预检。</p>`}
       ${isPdf ? `<div class="toggle-row"><input id="pdfReview" type="checkbox" ${record(state.settings?.pdf).review_enabled ? "checked" : ""} data-pdf-review ${activeTask ? "disabled" : ""}/><label for="pdfReview">启用逐页审核模型</label></div>` : `<div class="toggle-row"><input id="untranslated-${surface}" type="checkbox" data-untranslated ${activeTask ? "disabled" : ""}/><label for="untranslated-${surface}">仅补译未翻译内容</label></div>`}
       ${renderDetailedSettings(surface, activeTask)}
@@ -359,6 +554,28 @@ function renderDetailedSettings(surface: Surface, disabled: boolean): string {
   const word = `<div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">高亮未解决内容</label></div><div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">保护封面与目录</label></div><label class="field-label">批处理段落上限</label><input type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label">批处理字符上限</label><input type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/>`;
   const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.image_translation_enabled" ${checked(pdf.image_translation_enabled)} ${inputDisabled}/><label for="pdfImages">翻译页内图片文字</label></div><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
   return `<details class="advanced-settings"><summary>更多参数</summary><div class="advanced-settings-body">${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
+}
+
+function renderDomainSettings(surface: TranslationSurface, disabled: boolean): string {
+  const prefix = surface === "excel" ? "excel" : "word";
+  const preset = text(state.settings?.[`${prefix}_domain_preset`], "同步工程场景");
+  const customPrompt = text(state.settings?.[`${prefix}_custom_prompt`]);
+  const overrides = record(state.settings?.[`${prefix}_domain_prompt_overrides`]);
+  const targetLang = state.targetSelections[surface];
+  const builtInPrompt = domainBuiltInPrompt(preset, targetLang);
+  const isCustom = preset === "自定义";
+  const hasOverride = !isCustom && Object.prototype.hasOwnProperty.call(overrides, preset);
+  const prompt = isCustom ? customPrompt : hasOverride ? text(overrides[preset]) : builtInPrompt;
+  const disabledAttr = disabled ? "disabled" : "";
+  const options = ["同步工程场景", "资料管理场景", "行政生活化场景", "自定义"];
+  const promptLabel = isCustom
+    ? "自定义领域 Prompt"
+    : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）";
+  const saveLabel = isCustom ? "保存自定义 Prompt" : "保存覆盖";
+  const restore = !isCustom
+    ? `<button class="mini-button" data-action="restore-domain-prompt" data-surface="${surface}" ${disabledAttr}>恢复内置默认</button>`
+    : "";
+  return `<div class="setting-card domain-settings"><label class="field-label" for="${prefix}DomainPreset">专业领域（${surface === "excel" ? "Excel" : "Word"} 独立）</label><select id="${prefix}DomainPreset" data-domain-preset="${surface}" ${disabledAttr}>${options.map((item) => `<option value="${item}" ${item === preset ? "selected" : ""}>${item}</option>`).join("")}</select><label class="field-label" for="${prefix}DomainPrompt" style="margin-top:8px">${promptLabel}</label><textarea id="${prefix}DomainPrompt" data-domain-prompt="${surface}" ${disabledAttr} placeholder="${isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示"}">${escapeHtml(prompt)}</textarea><div class="field-row domain-actions"><button class="mini-button primary" data-action="save-domain-prompt" data-surface="${surface}" ${disabledAttr}>${saveLabel}</button>${restore}</div><p class="note">固定输出 JSON、格式/占位符保护、目标语言与逐条原文语言回报由应用追加，不能被领域 Prompt 覆盖。</p></div>`;
 }
 
 function renderReviewColors(disabled: string): string {
@@ -386,10 +603,28 @@ function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[
 
 function renderTmView(): string {
   const stats = state.tmStats;
+  const totalPages = Math.max(1, Math.ceil(state.tmTotal / state.tmPageSize));
+  const customTarget = tmTargetIsCustom();
+  const cleaningState = state.tmCleaningState === "running"
+    ? `<div class="tm-state running"><span class="led"></span>正在分析未固定条目…</div>`
+    : state.tmCleaningState === "ready"
+      ? `<div class="tm-state ready"><span class="led"></span>清洗建议已生成，请复核后写入。</div>`
+      : state.tmCleaningState === "error"
+        ? `<div class="tm-state error"><span class="led"></span>清洗失败，请检查模型连接后重试。</div>`
+        : "";
+  const conflictState = state.tmConflictMessage
+    ? `<div class="tm-state error"><span class="led"></span>${escapeHtml(state.tmConflictMessage)}<button class="mini-button" data-action="tm-clear-conflict">关闭</button></div>`
+    : "";
+  const conflictRows = state.tmConflicts.map((item) => `<div class="tm-conflict-row"><div><strong>${escapeHtml(item.source_text)}</strong><span class="muted">${escapeHtml(item.lang_pair)} · ${escapeHtml(item.existing_target)} → ${escapeHtml(item.candidate_target)}</span></div><span class="table-actions"><button class="mini-button" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="keep_existing">保留当前</button><button class="mini-button primary" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="use_candidate">采用候选</button><button class="mini-button danger-text" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="reject">拒绝</button></span></div>`).join("");
   return `<section class="view active"><div class="left-column">
-    <div class="card source-bar"><div class="source-icon">${icon("search")}</div><div class="source-meta"><div class="source-key">搜索</div><input class="source-input" id="tmKeyword" value="${escapeHtml(state.tmKeyword)}" placeholder="按原文或译文筛选" /></div><button class="button" data-action="tm-search">搜索</button><button class="button" data-action="tm-add">${icon("plus", "small")}新增</button><button class="button" data-action="tm-import">导入</button><button class="button" data-action="tm-export">导出</button><button class="button primary" data-action="tm-clean">${icon("sparkle", "small")}深度清洗</button></div>
+    <div class="card tm-controls">
+      <div class="tm-pair-row"><div class="tm-pair-field"><label class="field-label" for="tmSourceLang">源语言</label><select id="tmSourceLang" data-tm-source-lang>${tmSourceLanguageOptions()}</select></div><div class="tm-pair-arrow" aria-hidden="true">→</div><div class="tm-pair-field"><label class="field-label" for="tmTargetLang">目标语言</label><select id="tmTargetLang" data-tm-target-lang>${tmTargetLanguageOptions()}</select></div><div class="tm-pair-current"><span class="field-label">当前语言对</span><strong>${escapeHtml(tmPairLabel(tmLangPair()))}</strong>${customTarget ? `<small>自定义目标语言</small>` : ""}</div></div>
+      ${state.tmRecentPairs.length ? `<div class="tm-recent-row"><span class="field-label">最近使用</span>${state.tmRecentPairs.slice(0, 8).map((pair) => `<button class="mini-button ${pair === tmLangPair() ? "active" : ""}" data-action="tm-recent-pair" data-pair="${escapeHtml(pair)}">${escapeHtml(tmPairLabel(pair))}</button>`).join("")}</div>` : ""}
+      <div class="tm-search-row"><div class="source-icon">${icon("search")}</div><input class="source-input" id="tmKeyword" value="${escapeHtml(state.tmKeyword)}" placeholder="按原文或译文筛选" /><button class="button" data-action="tm-search">搜索</button><button class="button" data-action="tm-add">${icon("plus", "small")}新增</button><button class="button" data-action="tm-import">导入</button><button class="button" data-action="tm-export-json">导出 JSON</button><button class="button" data-action="tm-export-csv">导出 CSV</button><button class="button" data-action="tm-export-full">导出全库</button><button class="button" data-action="tm-import-full">恢复全库</button><button class="button primary" data-action="tm-clean" ${state.tmCleaningState === "running" ? "disabled" : ""}>${icon("sparkle", "small")}深度清洗</button></div>
+      ${cleaningState}${conflictState}${state.tmConflicts.length ? `<div class="tm-conflicts"><div class="tm-conflicts-header"><strong>待裁决冲突 ${state.tmConflicts.length}</strong><button class="mini-button" data-action="tm-refresh-conflicts">刷新</button></div>${conflictRows}</div>` : ""}
+    </div>
     <div class="stats">${stat("memory", "总条目", String(number(stats.total)))}${stat("pin", "已固定", String(number(stats.pinned)))}${stat("check", "手动维护", String(number(stats.manual)))}${stat("translate", "未固定", String(number(stats.unpinned)))}</div>
-    <div class="card table-card"><div class="table-header"><h2>记忆条目</h2><span class="table-count">${state.tmEntries.length} 条</span></div><div class="table-scroll">${renderTmEntries()}</div></div>
+    <div class="card table-card"><div class="table-header"><h2>记忆条目</h2><span class="table-count">${state.tmTotal} 条 · 第 ${state.tmPage} / ${totalPages} 页</span><span class="header-spacer"></span><button class="mini-button" data-action="tm-select-page">${state.tmSelectedIds.length === state.tmEntries.length && state.tmEntries.length ? "取消全选" : "全选本页"}</button><button class="mini-button" data-action="tm-bulk-pin" ${state.tmSelectedIds.length ? "" : "disabled"}>固定</button><button class="mini-button" data-action="tm-bulk-unpin" ${state.tmSelectedIds.length ? "" : "disabled"}>解除固定</button><button class="mini-button danger-text" data-action="tm-bulk-delete" ${state.tmSelectedIds.length ? "" : "disabled"}>删除</button></div><div class="table-scroll">${renderTmEntries()}</div><div class="tm-pagination"><span class="muted">已选 ${state.tmSelectedIds.length} 条</span><span class="header-spacer"></span><select class="tm-page-size" data-tm-page-size aria-label="每页条数"><option value="25" ${state.tmPageSize === 25 ? "selected" : ""}>25 / 页</option><option value="50" ${state.tmPageSize === 50 ? "selected" : ""}>50 / 页</option><option value="100" ${state.tmPageSize === 100 ? "selected" : ""}>100 / 页</option></select><button class="mini-button" data-action="tm-page-prev" ${state.tmPage <= 1 ? "disabled" : ""}>上一页</button><button class="mini-button" data-action="tm-page-next" ${state.tmPage >= totalPages ? "disabled" : ""}>下一页</button></div></div>
   </div></section>`;
 }
 
@@ -397,7 +632,7 @@ function renderTmEntries(): string {
   if (!state.tmEntries.length) {
     return `<div class="card-pad muted">当前语言对没有记忆条目。</div>`;
   }
-  return `<table><thead><tr><th>原文</th><th>译文</th><th>来源</th><th class="number">操作</th></tr></thead><tbody>${state.tmEntries.map((entry) => `<tr><td>${escapeHtml(entry.source_text)}</td><td>${escapeHtml(entry.target_text)}</td><td class="muted">${escapeHtml(entry.word_type)}</td><td class="number"><span class="table-actions"><button class="mini-button" data-action="tm-edit" data-entry-id="${entry.id}">编辑</button><button class="pin-button ${entry.pinned ? "pinned" : ""}" data-action="tm-pin" data-entry-id="${entry.id}" data-pinned="${entry.pinned ? "0" : "1"}" data-tip="${entry.pinned ? "解除固定" : "固定词条"}">${icon("pin", "small")}</button><button class="mini-button danger-text" data-action="tm-delete" data-entry-id="${entry.id}">删除</button></span></td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr><th class="selection-column"><input type="checkbox" class="file-check" data-tm-select-page ${state.tmSelectedIds.length === state.tmEntries.length ? "checked" : ""} aria-label="选择本页" /></th><th>原文</th><th>译文</th><th>来源</th><th class="number">操作</th></tr></thead><tbody>${state.tmEntries.map((entry) => `<tr><td><input type="checkbox" class="file-check" data-tm-entry-id="${entry.id}" ${state.tmSelectedIds.includes(entry.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(entry.source_text)}" /></td><td>${escapeHtml(entry.source_text)}</td><td>${escapeHtml(entry.target_text)}</td><td class="muted">${escapeHtml(entry.word_type)}</td><td class="number"><span class="table-actions"><button class="mini-button" data-action="tm-edit" data-entry-id="${entry.id}">编辑</button><button class="pin-button ${entry.pinned ? "pinned" : ""}" data-action="tm-pin" data-entry-id="${entry.id}" data-pinned="${entry.pinned ? "0" : "1"}" data-tip="${entry.pinned ? "解除固定" : "固定词条"}">${icon("pin", "small")}</button><button class="mini-button danger-text" data-action="tm-delete" data-entry-id="${entry.id}">删除</button></span></td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderModal(): string {
@@ -408,7 +643,8 @@ function renderModal(): string {
   if (state.modal === "tm-add" || state.modal === "tm-edit") {
     const editing = state.tmEditing;
     const isEdit = state.modal === "tm-edit";
-    return `<div class="modal-backdrop"><section class="modal"><h2>${isEdit ? "编辑记忆条目" : "新增记忆条目"}</h2><label class="field-label" for="tmSource">原文</label><input id="tmSource" autofocus value="${escapeHtml(editing?.source_text)}" /><label class="field-label" for="tmTarget" style="margin-top:10px">译文</label><input id="tmTarget" value="${escapeHtml(editing?.target_text)}" /><label class="field-label" for="tmPair" style="margin-top:10px">语言对</label><input id="tmPair" value="${escapeHtml(tmLangPair())}" ${isEdit ? "disabled" : ""}/><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="${isEdit ? "tm-update" : "tm-create"}">保存</button></div></section></div>`;
+    const reverseAllowed = tmPairAllowsReverse();
+    return `<div class="modal-backdrop"><section class="modal"><h2>${isEdit ? "编辑记忆条目" : "新增记忆条目"}</h2><label class="field-label" for="tmSource">原文</label><input id="tmSource" autofocus value="${escapeHtml(editing?.source_text)}" /><label class="field-label" for="tmTarget" style="margin-top:10px">译文</label><input id="tmTarget" value="${escapeHtml(editing?.target_text)}" /><label class="field-label" for="tmPair" style="margin-top:10px">语言对</label><input id="tmPair" value="${escapeHtml(tmLangPair())}" ${isEdit ? "disabled" : ""}/><div class="toggle-row" style="margin-top:10px"><input id="tmSyncReverse" type="checkbox" ${reverseAllowed ? "" : "disabled"}/><label for="tmSyncReverse">同时创建/更新反向术语（默认关闭）</label></div>${reverseAllowed ? "" : `<p class="note">自定义目标语言不能生成反向语言对。</p>`}<div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="${isEdit ? "tm-update" : "tm-create"}">保存</button></div></section></div>`;
   }
   if (state.modal === "tm-delete" && state.tmEditing) {
     return `<div class="modal-backdrop"><section class="modal"><h2>删除记忆条目</h2><p class="note">将永久删除“${escapeHtml(state.tmEditing.source_text)}”。此操作不能撤销。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button danger" data-action="tm-delete-confirm">删除</button></div></section></div>`;
@@ -423,6 +659,24 @@ function renderModal(): string {
   if (state.modal === "tm-clean") {
     const rows = state.tmSuggestions.map((suggestion, index) => `<div class="suggestion-row"><input id="tmSuggestion-${index}" type="checkbox" checked/><div><b>${escapeHtml(text(suggestion.source_text))}</b><p>${escapeHtml(text(suggestion.old_target))} → <input id="tmSuggestedTarget-${index}" value="${escapeHtml(text(suggestion.new_target))}"/></p></div></div>`).join("");
     return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>清洗建议</h2><p class="note">检查建议译文，取消勾选的条目不会写回。固定策略沿用当前设置。</p><div class="suggestion-list">${rows || "未生成可写入的建议。"}</div><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="tm-clean-apply" ${state.tmSuggestions.length ? "" : "disabled"}>写入已勾选建议</button></div></section></div>`;
+  }
+  if (state.modal === "tm-import" && state.tmImportPreview) {
+    const preview = state.tmImportPreview;
+    const rows = preview.entries.slice(0, 8).map((entry) => `<tr><td>${escapeHtml(entry.source_text)}</td><td>${escapeHtml(entry.target_text)}</td><td>${escapeHtml(text(entry.word_type, "-"))}</td></tr>`).join("");
+    const customTarget = tmPairTargetIsCustom(preview.langPair);
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>导入预览</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · ${preview.format.toUpperCase()} · 共 ${preview.entries.length} 条。请确认字段映射和重复项策略后再写入。</p><label class="field-label" for="tmImportPair">目标语言对</label><input id="tmImportPair" value="${escapeHtml(preview.langPair)}" placeholder="例如 zh-en"/><div class="field-row" style="margin-top:10px"><div><label class="field-label" for="tmImportMode">重复项</label><select id="tmImportMode" data-tm-import-mode><option value="skip" ${preview.mode === "skip" ? "selected" : ""}>跳过重复项</option><option value="overwrite" ${preview.mode === "overwrite" ? "selected" : ""}>覆盖重复项</option><option value="keep_both" ${preview.mode === "keep_both" ? "selected" : ""}>保留两份</option></select></div><div><label class="field-label">同步</label><div class="toggle-row"><input id="tmImportSyncReverse" type="checkbox" ${preview.syncReverse ? "checked" : ""} ${customTarget ? "disabled" : ""}/><label for="tmImportSyncReverse">同时写入反向语言对</label></div></div></div>${customTarget ? `<p class="note">当前目标语言为自定义语言，反向同步已禁用。</p>` : ""}<div class="table-scroll tm-preview-table"><table><thead><tr><th>原文</th><th>译文</th><th>来源</th></tr></thead><tbody>${rows || `<tr><td colspan="3" class="muted">没有可导入的有效行。</td></tr>`}</tbody></table></div>${preview.entries.length > 8 ? `<p class="note">仅显示前 8 条预览。</p>` : ""}<div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="tm-import-confirm" ${preview.entries.length ? "" : "disabled"}>确认导入</button></div></section></div>`;
+  }
+  if (state.modal === "tm-full-import" && state.tmFullImportPreview) {
+    const preview = state.tmFullImportPreview;
+    const entries = Array.isArray(preview.payload.entries) ? preview.payload.entries.length : 0;
+    const conflicts = Array.isArray(preview.payload.conflict_candidates) ? preview.payload.conflict_candidates.length : 0;
+    const customLanguages = Array.isArray(preview.payload.custom_target_langs) ? preview.payload.custom_target_langs.length : 0;
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>恢复完整记忆库</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · 当前格式 tm-full-v1。将校验并恢复 ${entries} 条词条、${conflicts} 条冲突候选和 ${customLanguages} 个自定义目标语言。</p><label class="field-label" for="tmFullImportMode">重复项</label><select id="tmFullImportMode"><option value="skip" ${preview.mode === "skip" ? "selected" : ""}>跳过重复项</option><option value="overwrite" ${preview.mode === "overwrite" ? "selected" : ""}>覆盖低等级重复项</option><option value="keep_both" ${preview.mode === "keep_both" ? "selected" : ""}>保留冲突候选</option></select><label class="field-label" for="tmFullCodeMap" style="margin-top:10px">自定义代码映射（可选 JSON）</label><input id="tmFullCodeMap" value="${escapeHtml(JSON.stringify(preview.codeMap))}" placeholder='例如 {"x-custom-old":"x-custom-new"}'/><p class="note">完整备份包含原文和译文；代码定义冲突时必须填写映射，无法映射则取消恢复。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="tm-full-import-confirm" ${entries ? "" : "disabled"}>确认恢复</button></div></section></div>`;
+  }
+  if (state.modal === "model-import" && state.modelImportPreview) {
+    const preview = state.modelImportPreview;
+    const roleRows = preview.roles.map((item) => `<li><strong>${escapeHtml(item.role)}</strong>：${escapeHtml(item.fields.join("、") || "无显式字段")}</li>`).join("");
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>预览导入 v3 模型配置</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · 仅合并文件明确字段，不删除未提及配置。</p><ul class="import-summary">${roleRows || "<li>没有角色配置变更。</li>"}</ul><p class="note">吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="model-import-confirm">确认合并</button></div></section></div>`;
   }
   if (state.modal === "migration") {
     return `<div class="modal-backdrop"><section class="modal"><h2>旧数据迁移</h2><p class="note">检查旧版数据目录，并且只在你确认后迁移不冲突的数据。</p><div id="migrationResult" class="note">准备检查…</div><div class="modal-actions"><button class="button" data-action="close-modal">关闭</button><button class="button primary" data-action="migration-apply">迁移不冲突数据</button></div></section></div>`;
@@ -474,7 +728,48 @@ function logTone(level: string): string {
 }
 
 function tmLangPair(): string {
-  return `${text(state.settings?.source_lang, "zh")}-${text(state.settings?.target_lang, "en")}`;
+  return `${state.tmSourceLang || "zh"}-${state.tmTargetLang || "en"}`;
+}
+
+function tmPairAllowsReverse(): boolean {
+  return !tmTargetIsCustom();
+}
+
+function tmTargetIsCustom(): boolean {
+  return state.tmTargetOptions.find((option) => option.code === state.tmTargetLang)?.builtin === false || state.tmTargetLang.startsWith("x-custom-");
+}
+
+function tmPairTargetIsCustom(pair: string): boolean {
+  const parsed = splitTmPair(pair);
+  return parsed ? state.tmTargetOptions.find((option) => option.code === parsed.target)?.builtin === false || parsed.target.startsWith("x-custom-") : false;
+}
+
+function tmSourceLanguageOptions(): string {
+  return state.tmSourceOptions
+    .filter((option) => option.builtin !== false && option.can_source !== false)
+    .map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === state.tmSourceLang ? "selected" : ""}>${escapeHtml(option.display_name)}</option>`)
+    .join("");
+}
+
+function tmTargetLanguageOptions(): string {
+  return state.tmTargetOptions
+    .filter((option) => option.can_target !== false)
+    .map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === state.tmTargetLang ? "selected" : ""}>${escapeHtml(option.display_name)}${option.builtin === false ? "（自定义）" : ""}</option>`)
+    .join("");
+}
+
+function tmPairLabel(pair: string): string {
+  const [source, ...targetParts] = pair.split("-");
+  const target = targetParts.join("-");
+  const sourceOption = state.tmSourceOptions.find((option) => option.code === source);
+  const targetOption = state.tmTargetOptions.find((option) => option.code === target);
+  return `${sourceOption?.display_name ?? source} → ${targetOption?.display_name ?? target}`;
+}
+
+function splitTmPair(pair: string): { source: string; target: string } | null {
+  const [source, ...targetParts] = pair.split("-");
+  const target = targetParts.join("-");
+  return source && target ? { source, target } : null;
 }
 
 function showToast(message: string, error = false): void {
@@ -496,7 +791,24 @@ async function refreshSettings(): Promise<void> {
   state.targetSelections.pdf = text(record(state.settings?.pdf).target_lang, "zh");
   state.sourceSelections.excel = text(state.settings?.excel_source_lang, "auto");
   state.sourceSelections.word = text(state.settings?.word_source_lang, "auto");
+  state.tmSourceLang = text(state.settings?.tm_source_lang, "zh");
+  state.tmTargetLang = text(state.settings?.tm_target_lang, "en");
   applyTheme(selectedTheme());
+  await refreshModelRoles();
+}
+
+async function refreshModelRoles(): Promise<void> {
+  const payload = await client.request<{ roles: Record<string, JsonObject> }>("/api/models/roles");
+  state.modelRoles = payload.roles || {};
+  await Promise.all(Object.keys(state.modelRoles).map((role) => refreshModelThroughput(role)));
+}
+
+async function refreshModelThroughput(role: string): Promise<void> {
+  try {
+    state.modelThroughput[role] = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`);
+  } catch {
+    state.modelThroughput[role] = record(state.modelRoles[role]?.throughput);
+  }
 }
 
 async function refreshLanguages(): Promise<void> {
@@ -510,12 +822,65 @@ async function refreshLanguages(): Promise<void> {
   state.targetOptions = payload.target_options;
 }
 
+async function refreshTmLanguagePairs(): Promise<void> {
+  const payload = await client.request<{
+    source_options: LanguageOption[];
+    target_options: LanguageOption[];
+    selected?: { source_lang?: string; target_lang?: string };
+    recent?: string[];
+  }>("/api/tm/language-pairs");
+  state.tmSourceOptions = payload.source_options.filter((option) => option.builtin !== false && option.can_source !== false);
+  state.tmTargetOptions = payload.target_options.filter((option) => option.can_target !== false);
+  state.tmRecentPairs = Array.isArray(payload.recent) ? payload.recent.filter((pair): pair is string => typeof pair === "string") : [];
+  const source = text(payload.selected?.source_lang, state.tmSourceLang);
+  const target = text(payload.selected?.target_lang, state.tmTargetLang);
+  state.tmSourceLang = state.tmSourceOptions.some((option) => option.code === source)
+    ? source
+    : (state.tmSourceOptions[0]?.code ?? "zh");
+  state.tmTargetLang = state.tmTargetOptions.some((option) => option.code === target)
+    ? target
+    : (state.tmTargetOptions[0]?.code ?? "en");
+}
+
 async function refreshTm(): Promise<void> {
-  const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject }>(
-    `/api/tm/entries?lang_pair=${encodeURIComponent(tmLangPair())}&keyword=${encodeURIComponent(state.tmKeyword)}`,
+  const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number }>(
+    `/api/tm/entries?lang_pair=${encodeURIComponent(tmLangPair())}&keyword=${encodeURIComponent(state.tmKeyword)}&page=${state.tmPage}&page_size=${state.tmPageSize}`,
   );
   state.tmEntries = payload.entries;
   state.tmStats = payload.stats;
+  state.tmTotal = number(payload.total, state.tmEntries.length);
+  const totalPages = Math.max(1, Math.ceil(state.tmTotal / state.tmPageSize));
+  if (state.tmPage > totalPages) {
+    state.tmPage = totalPages;
+    await refreshTm();
+  }
+}
+
+async function refreshTmConflicts(): Promise<void> {
+  const payload = await client.request<{ conflicts: TmConflict[] }>(
+    `/api/tm/conflicts?lang_pair=${encodeURIComponent(tmLangPair())}`,
+  );
+  state.tmConflicts = Array.isArray(payload.conflicts) ? payload.conflicts : [];
+}
+
+async function saveTmLanguagePair(source: string, target: string): Promise<void> {
+  if (source === target) throw new Error("TM 源语言和目标语言不能相同。");
+  state.tmSourceLang = source;
+  state.tmTargetLang = target;
+  state.tmPage = 1;
+  state.tmSelectedIds = [];
+  state.tmCleaningState = "idle";
+  state.tmConflictMessage = "";
+  const pair = tmLangPair();
+  state.tmRecentPairs = [pair, ...state.tmRecentPairs.filter((item) => item !== pair)].slice(0, 8);
+  await persistSettings({
+    tm_source_lang: source,
+    tm_target_lang: target,
+    recent_tm_lang_pairs: state.tmRecentPairs,
+  });
+  await refreshTm();
+  await refreshTmConflicts();
+  render();
 }
 
 async function persistSettings(patch: JsonObject): Promise<void> {
@@ -555,6 +920,11 @@ async function scan(surface: Surface): Promise<void> {
 }
 
 async function startTask(surface: Surface): Promise<void> {
+  if (surface === "excel" || surface === "word") {
+    // A task snapshot must receive the prompt the user can currently see, not
+    // a stale settings value left behind by an unsaved textarea edit.
+    await saveDomainPrompt(surface, false);
+  }
   const path = state.sourcePaths[surface];
   if (!path) {
     throw new Error("请先选择源文件或文件夹。");
@@ -639,6 +1009,68 @@ async function saveSettingPath(
   render();
 }
 
+async function saveDomainPreset(surface: TranslationSurface, preset: string): Promise<void> {
+  const prefix = surface === "excel" ? "excel" : "word";
+  await persistSettings({ [`${prefix}_domain_preset`]: preset });
+  render();
+}
+
+async function saveDomainPrompt(surface: TranslationSurface, showMessage = true): Promise<void> {
+  const prefix = surface === "excel" ? "excel" : "word";
+  const current = domainSettings(surface);
+  const preset = inputValue(`${prefix}DomainPreset`, current.preset);
+  const prompt = document.querySelector<HTMLTextAreaElement>(`#${prefix}DomainPrompt`)?.value ?? "";
+  const promptOverrides = { ...current.promptOverrides };
+  let customPrompt = current.customPrompt;
+
+  if (preset === "自定义") {
+    if (!prompt.trim()) {
+      throw new Error("自定义领域必须填写完整 Prompt，不能启动任务或保存空配置。");
+    }
+    customPrompt = prompt;
+  } else {
+    const defaultPrompt = domainBuiltInPrompt(preset, state.targetSelections[surface]);
+    if (prompt === defaultPrompt) delete promptOverrides[preset];
+    else promptOverrides[preset] = prompt;
+  }
+
+  await client.request(`/api/domains/${surface}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      preset,
+      custom_prompt: customPrompt,
+      prompt_overrides: promptOverrides,
+      name_overrides: current.nameOverrides,
+    }),
+  });
+  await refreshSettings();
+  if (showMessage) {
+    render();
+    showToast(preset === "自定义" ? "自定义领域 Prompt 已保存。" : "当前页面的领域 Prompt 覆盖已保存。");
+  }
+}
+
+async function restoreDomainPrompt(surface: TranslationSurface): Promise<void> {
+  const prefix = surface === "excel" ? "excel" : "word";
+  const current = domainSettings(surface);
+  const preset = inputValue(`${prefix}DomainPreset`, current.preset);
+  if (preset === "自定义") return;
+  const promptOverrides = { ...current.promptOverrides };
+  delete promptOverrides[preset];
+  await client.request(`/api/domains/${surface}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      preset,
+      custom_prompt: current.customPrompt,
+      prompt_overrides: promptOverrides,
+      name_overrides: current.nameOverrides,
+    }),
+  });
+  await refreshSettings();
+  render();
+  showToast("已恢复当前页面与领域的内置 Prompt。 ");
+}
+
 async function saveReviewColor(mark: string, color: string): Promise<void> {
   const colors = record(record(state.settings?.word_review).mark_colors);
   await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
@@ -646,33 +1078,97 @@ async function saveReviewColor(mark: string, color: string): Promise<void> {
 }
 
 async function saveModel(): Promise<void> {
+  const role = state.modelRole;
   const mode = inputValue("engineMode", "cloud");
   const provider = inputValue("provider", mode === "cloud" ? "custom_openai" : "ollama");
   const baseUrl = inputValue("baseUrl");
   const model = inputValue("modelName");
   const key = inputValue("apiKey");
-  const engine = mode === "cloud"
-    ? { mode, cloud_provider: provider, cloud_base_url: baseUrl, cloud_model: model }
-    : { mode, local_provider: provider, local_base_url: baseUrl, local_model: model };
-  await persistSettings({ engine });
+  const roleSource = document.querySelector<HTMLSelectElement>("#roleSource")?.value;
+  const payload = role === "translation"
+    ? { mode, provider, base_url: baseUrl, model }
+    : { source_role: roleSource || "independent", provider, base_url: baseUrl, model };
+  await client.request(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
   if (key && mode === "cloud") {
     await client.request(`/api/keys/${provider}`, { method: "PUT", body: JSON.stringify({ api_key: key, base_url: baseUrl }) });
   }
+  clearModelCatalog(role, "连接已变更，请刷新模型目录。 ");
+  await refreshSettings();
   render();
-  showToast("模型配置已保存。密钥仅写入本机密钥存储。" );
+  showToast("模型角色配置已保存。密钥仅写入本机密钥存储。" );
+}
+
+function clearModelCatalog(role: string, message = "尚未读取当前连接的模型目录。 "): void {
+  delete state.modelCatalog[role];
+  delete state.modelCatalogConnection[role];
+  state.modelCatalogMessage[role] = message;
+}
+
+function ensureSavedModelForm(): void {
+  const role = state.modelRole;
+  const saved = record(state.modelRoles[role]);
+  const mode = role === "translation" ? inputValue("engineMode", text(saved.mode, "cloud")) : text(saved.mode, "cloud");
+  const provider = inputValue("provider", text(saved.provider));
+  const baseUrl = inputValue("baseUrl", text(saved.base_url));
+  const sourceRole = document.querySelector<HTMLSelectElement>("#roleSource")?.value;
+  if (
+    mode !== text(saved.mode, "cloud")
+    || provider !== text(saved.provider)
+    || baseUrl !== text(saved.base_url)
+    || (role !== "translation" && sourceRole !== text(saved.source_role, "independent"))
+    || Boolean(inputValue("apiKey"))
+  ) {
+    throw new Error("请先保存当前角色配置，再刷新目录或测试连接。");
+  }
 }
 
 async function fetchModels(): Promise<void> {
-  const result = await client.request<{ models: string[]; message: string }>("/api/models/fetch", {
+  const role = state.modelRole;
+  ensureSavedModelForm();
+  const result = await client.request<{ ok: boolean; models: string[]; message: string }>(`/api/models/catalog/${encodeURIComponent(role)}`, {
     method: "POST",
-    body: JSON.stringify({ provider: inputValue("provider", "custom_openai"), base_url: inputValue("baseUrl"), api_key: inputValue("apiKey") }),
+    body: JSON.stringify({ refresh: true }),
   });
-  showToast(result.models.length ? `可用模型：${result.models.slice(0, 6).join("、")}` : result.message);
+  state.modelCatalog[role] = result.models;
+  state.modelCatalogMessage[role] = result.message;
+  state.modelCatalogConnection[role] = modelCatalogConnectionForRole(role);
+  render();
+  showToast(result.models.length ? `已刷新 ${result.models.length} 个模型，可从模型名称输入框选择。` : result.message, !result.ok);
 }
 
 async function testModel(): Promise<void> {
-  const result = await client.request<{ ok: boolean; message: string }>("/api/models/connectivity/text", { method: "POST" });
+  ensureSavedModelForm();
+  const result = await client.request<{ ok: boolean; message: string }>(`/api/models/connectivity/${state.modelRole}`, { method: "POST" });
   showToast(result.message, !result.ok);
+  await refreshModelRoles();
+  render();
+}
+
+async function saveThroughput(): Promise<void> {
+  const role = state.modelRole;
+  const payload: JsonObject = {
+    concurrency: Number(inputValue("throughputConcurrency", "1")),
+  };
+  if (role === "translation" || role === "cleaner") {
+    payload.batch_size = Number(inputValue("throughputBatch", "8"));
+  }
+  const result = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  state.modelThroughput[role] = result;
+  render();
+  showToast("当前角色吞吐设置已保存。运行中的任务不受影响。");
+}
+
+async function restoreThroughput(): Promise<void> {
+  const role = state.modelRole;
+  const result = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, {
+    method: "DELETE",
+  });
+  state.modelThroughput[role] = result;
+  render();
+  showToast("已恢复当前角色与有效模型的推荐吞吐值。运行中的任务不受影响。");
 }
 
 async function saveLanguage(surface: Surface, target: string): Promise<void> {
@@ -747,23 +1243,62 @@ async function tmPin(entryId: number, pinned: boolean): Promise<void> {
   render();
 }
 
+async function tmBulkPin(pinned: boolean): Promise<void> {
+  if (!state.tmSelectedIds.length) return;
+  await client.request("/api/tm/entries/bulk/pin", {
+    method: "POST",
+    body: JSON.stringify({ ids: state.tmSelectedIds, pinned }),
+  });
+  state.tmSelectedIds = [];
+  await refreshTm();
+  render();
+  showToast(pinned ? "已固定所选记忆条目。" : "已解除所选记忆条目的固定。 ");
+}
+
+async function tmBulkDelete(): Promise<void> {
+  if (!state.tmSelectedIds.length) return;
+  const ids = [...state.tmSelectedIds];
+  const result = await client.request<{ deleted: number; protected: number; missing: number }>("/api/tm/entries/bulk/delete", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+  state.tmSelectedIds = [];
+  await refreshTm();
+  render();
+  const detail = result.protected ? `，${result.protected} 条固定词条未删除` : "";
+  showToast(`已删除 ${result.deleted} 条记忆条目${detail}。`, Boolean(result.protected));
+}
+
+function toggleTmPageSelection(): void {
+  const pageIds = state.tmEntries.map((entry) => entry.id);
+  const allSelected = pageIds.length > 0 && pageIds.every((id) => state.tmSelectedIds.includes(id));
+  state.tmSelectedIds = allSelected
+    ? state.tmSelectedIds.filter((id) => !pageIds.includes(id))
+    : [...new Set([...state.tmSelectedIds, ...pageIds])];
+  render();
+}
+
 async function tmCreate(): Promise<void> {
+  const syncReverse = tmPairAllowsReverse() && Boolean(document.querySelector<HTMLInputElement>("#tmSyncReverse")?.checked);
   await client.request("/api/tm/entries", {
     method: "POST",
-    body: JSON.stringify({ source_text: inputValue("tmSource"), target_text: inputValue("tmTarget"), lang_pair: inputValue("tmPair", tmLangPair()) }),
+    body: JSON.stringify({ source_text: inputValue("tmSource"), target_text: inputValue("tmTarget"), lang_pair: inputValue("tmPair", tmLangPair()), sync_reverse: syncReverse }),
   });
+  state.tmConflictMessage = "";
   state.modal = null;
   await refreshTm();
   render();
-  showToast("记忆条目已保存，并同步反向语言对。" );
+  showToast(syncReverse ? "记忆条目已保存，并同步反向语言对。" : "记忆条目已保存。" );
 }
 
 async function tmUpdate(): Promise<void> {
   if (!state.tmEditing) return;
+  const syncReverse = tmPairAllowsReverse() && Boolean(document.querySelector<HTMLInputElement>("#tmSyncReverse")?.checked);
   await client.request(`/api/tm/entries/${state.tmEditing.id}`, {
     method: "PUT",
-    body: JSON.stringify({ source_text: inputValue("tmSource"), target_text: inputValue("tmTarget") }),
+    body: JSON.stringify({ source_text: inputValue("tmSource"), target_text: inputValue("tmTarget"), sync_reverse: syncReverse }),
   });
+  state.tmConflictMessage = "";
   state.modal = null;
   state.tmEditing = null;
   await refreshTm();
@@ -782,10 +1317,20 @@ async function tmDelete(): Promise<void> {
 }
 
 async function tmClean(): Promise<void> {
-  const payload = await client.request<{ suggestions: JsonObject[] }>("/api/tm/clean", { method: "POST", body: JSON.stringify({ lang_pair: tmLangPair(), overwrite: false }) });
-  state.tmSuggestions = payload.suggestions;
-  state.modal = "tm-clean";
+  state.tmCleaningState = "running";
+  state.tmConflictMessage = "";
   render();
+  try {
+    const payload = await client.request<{ suggestions: JsonObject[] }>("/api/tm/clean", { method: "POST", body: JSON.stringify({ lang_pair: tmLangPair() }) });
+    state.tmSuggestions = payload.suggestions;
+    state.tmCleaningState = "ready";
+    state.modal = "tm-clean";
+    render();
+  } catch (error) {
+    state.tmCleaningState = "error";
+    render();
+    throw error;
+  }
 }
 
 async function applyTmCleanSuggestions(): Promise<void> {
@@ -801,16 +1346,30 @@ async function applyTmCleanSuggestions(): Promise<void> {
     body: JSON.stringify({ suggestions, auto_pin: false }),
   });
   state.tmSuggestions = [];
+  state.tmCleaningState = "idle";
   state.modal = null;
   await refreshTm();
   render();
   showToast(`已写入 ${result.applied} 条清洗建议。`);
 }
 
-async function exportTm(): Promise<void> {
+async function exportTm(format: "json" | "csv" = "json"): Promise<void> {
   const payload = await client.request<JsonObject>(`/api/tm/export?lang_pair=${encodeURIComponent(tmLangPair())}`);
-  downloadJson(`translator-tm-${tmLangPair()}.json`, payload);
-  state.modalNotice = { title: "记忆库已导出", message: "导出文件已交给系统下载目录。请妥善保存含有专有术语的文件。" };
+  if (format === "csv") {
+    const entries = Array.isArray(payload.entries) ? payload.entries as JsonObject[] : [];
+    downloadBlob(`translator-tm-${tmLangPair()}.csv`, toTmCsv(entries), "text/csv;charset=utf-8");
+  } else {
+    downloadJson(`translator-tm-${tmLangPair()}.json`, payload);
+  }
+  state.modalNotice = { title: "记忆库已导出", message: `已导出当前语言对的 ${format.toUpperCase()} 文件，共 ${Array.isArray(payload.entries) ? payload.entries.length : 0} 条。` };
+  state.modal = "notice";
+  render();
+}
+
+async function exportFullTm(): Promise<void> {
+  const payload = await client.request<JsonObject>("/api/tm/export/full");
+  downloadJson("translator-tm-full.json", payload);
+  state.modalNotice = { title: "完整记忆库已导出", message: "已导出当前新基线的全部语言对、可信等级、冲突候选和自定义目标语言定义。" };
   state.modal = "notice";
   render();
 }
@@ -818,29 +1377,174 @@ async function exportTm(): Promise<void> {
 async function importTm(): Promise<void> {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "application/json,.json";
+  input.accept = "application/json,.json,text/csv,.csv";
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    const payload = JSON.parse(await file.text()) as JsonObject;
-    const entries = Array.isArray(payload.entries) ? payload.entries : [];
-    const langPair = text(payload.lang_pair, tmLangPair());
-    const result = await client.request<{ inserted?: number; skipped?: number; overwritten?: number }>("/api/tm/import", {
-      method: "POST",
-      body: JSON.stringify({ lang_pair: langPair, mode: "skip", entries }),
-    });
-    await refreshTm();
-    state.modalNotice = { title: "记忆库已导入", message: `已按“跳过重复项”导入：新增 ${number(result.inserted)}，跳过 ${number(result.skipped)}。` };
-    state.modal = "notice";
-    render();
+    try {
+      const raw = await file.text();
+      const isCsv = file.name.toLocaleLowerCase().endsWith(".csv") || file.type.includes("csv");
+      let entries: TmImportEntry[];
+      let langPair = tmLangPair();
+      if (isCsv) {
+        entries = parseTmCsv(raw);
+      } else {
+        const payload = JSON.parse(raw) as JsonObject;
+        if (text(payload.format_version) === "tm-full-v1") {
+          state.tmFullImportPreview = { fileName: file.name, payload, mode: "skip", codeMap: {} };
+          state.modal = "tm-full-import";
+          render();
+          return;
+        }
+        entries = Array.isArray(payload.entries) ? payload.entries.filter((entry): entry is TmImportEntry => Boolean(entry && typeof entry === "object")) : [];
+        langPair = text(payload.lang_pair, tmLangPair());
+      }
+      state.tmImportPreview = { fileName: file.name, format: isCsv ? "csv" : "json", langPair, entries, mode: "skip", syncReverse: false };
+      state.modal = "tm-import";
+      render();
+    } catch (error) {
+      showToast(`无法读取 TM 导入文件：${errorMessage(error)}`, true);
+    }
   };
   input.click();
 }
 
-async function exportModelConfig(): Promise<void> {
-  const payload = await client.request<JsonObject>("/api/model-config/export");
+async function importFullTm(): Promise<void> {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/json,.json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text()) as JsonObject;
+      if (text(payload.format_version) !== "tm-full-v1") throw new Error("这不是当前格式的完整 TM 备份。");
+      state.tmFullImportPreview = { fileName: file.name, payload, mode: "skip", codeMap: {} };
+      state.modal = "tm-full-import";
+      render();
+    } catch (error) {
+      showToast(`无法读取完整 TM 备份：${errorMessage(error)}`, true);
+    }
+  };
+  input.click();
+}
+
+async function confirmTmFullImport(): Promise<void> {
+  const preview = state.tmFullImportPreview;
+  if (!preview) return;
+  let codeMap: Record<string, string> = {};
+  const rawMap = inputValue("tmFullCodeMap", "{}");
+  try {
+    const parsed = JSON.parse(rawMap) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("代码映射必须是 JSON 对象。");
+    codeMap = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [key, String(value)]));
+  } catch (error) {
+    throw new Error(`代码映射格式无效：${errorMessage(error)}`);
+  }
+  const result = await client.request<{ inserted?: number; skipped?: number; duplicates?: number; conflicts?: number }>("/api/tm/import/full", {
+    method: "POST",
+    body: JSON.stringify({ ...preview.payload, mode: preview.mode, code_map: codeMap, sync_reverse: false }),
+  });
+  state.tmFullImportPreview = null;
+  state.modal = "notice";
+  await refreshTm();
+  await refreshTmConflicts();
+  state.modalNotice = { title: "完整记忆库已恢复", message: `新增或更新 ${number(result.inserted)} 条，跳过 ${number(result.skipped)} 条，重复 ${number(result.duplicates)} 条，恢复冲突候选 ${number(result.conflicts)} 条。` };
+  render();
+}
+
+async function resolveTmConflict(candidateId: number, action: string): Promise<void> {
+  await client.request(`/api/tm/conflicts/${candidateId}/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+  await refreshTmConflicts();
+  await refreshTm();
+  render();
+}
+
+async function confirmTmImport(): Promise<void> {
+  const preview = state.tmImportPreview;
+  if (!preview) return;
+  const pairInput = inputValue("tmImportPair", preview.langPair);
+  const syncReverse = !tmPairTargetIsCustom(pairInput) && Boolean(document.querySelector<HTMLInputElement>("#tmImportSyncReverse")?.checked);
+  const result = await client.request<{ inserted?: number; skipped?: number; duplicates?: number }>("/api/tm/import", {
+    method: "POST",
+    body: JSON.stringify({ lang_pair: pairInput, mode: preview.mode, entries: preview.entries, sync_reverse: syncReverse }),
+  });
+  state.tmImportPreview = null;
+  state.modal = "notice";
+  await refreshTm();
+  state.modalNotice = { title: "记忆库已导入", message: `已完成导入：新增或更新 ${number(result.inserted)}，跳过 ${number(result.skipped)}，重复 ${number(result.duplicates)}。` };
+  render();
+}
+
+function parseTmCsv(raw: string): TmImportEntry[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '"') {
+      if (quoted && raw[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      row.push(field);
+      field = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && raw[index + 1] === "\n") index += 1;
+      row.push(field);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+  if (field || row.length) {
+    row.push(field);
+    if (row.some((value) => value.trim())) rows.push(row);
+  }
+  if (!rows.length) return [];
+  const headers = rows.shift()!.map((header) => header.trim().toLocaleLowerCase());
+  const findColumn = (names: string[]) => headers.findIndex((header) => names.includes(header));
+  const sourceIndex = findColumn(["source_text", "source", "原文"]);
+  const targetIndex = findColumn(["target_text", "target", "译文"]);
+  const wordTypeIndex = findColumn(["word_type", "type", "来源"]);
+  const pinnedIndex = findColumn(["pinned", "固定"]);
+  return rows.map((values) => ({
+    source_text: values[sourceIndex >= 0 ? sourceIndex : 0]?.trim() ?? "",
+    target_text: values[targetIndex >= 0 ? targetIndex : 1]?.trim() ?? "",
+    ...(wordTypeIndex >= 0 ? { word_type: values[wordTypeIndex]?.trim() } : {}),
+    ...(pinnedIndex >= 0 ? { pinned: values[pinnedIndex]?.trim() } : {}),
+  })).filter((entry) => entry.source_text && entry.target_text);
+}
+
+function csvCell(value: unknown): string {
+  const textValue = String(value ?? "");
+  return /[",\r\n]/.test(textValue) ? `"${textValue.replaceAll('"', '""')}"` : textValue;
+}
+
+function toTmCsv(entries: JsonObject[]): string {
+  const headers = ["source_text", "target_text", "word_type", "pinned", "updated_at"];
+  const lines = [headers.join(",")];
+  for (const entry of entries) {
+    lines.push(headers.map((header) => csvCell(entry[header])).join(","));
+  }
+  return `\ufeff${lines.join("\r\n")}\r\n`;
+}
+
+async function exportModelConfig(includeApiKey = false): Promise<void> {
+  if (includeApiKey && !window.confirm("导出的文件将包含 API Key。请确认只保存到受保护的位置。")) return;
+  const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
+  const payload = await client.request<JsonObject>(`/api/model-config/export${query}`);
   downloadJson("translator-model-config.json", payload);
-  state.modalNotice = { title: "模型配置已导出", message: "文件可能包含 API Key，请保存到受保护的位置。" };
+  state.modalNotice = { title: "模型配置已导出", message: includeApiKey ? "已导出 v3 模型配置和明确勾选的 API Key，请立即移入受保护的位置。" : "已导出 v3 模型配置；默认不包含 API Key。" };
   state.modal = "notice";
   render();
 }
@@ -852,14 +1556,32 @@ async function importModelConfig(): Promise<void> {
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    const payload = JSON.parse(await file.text()) as JsonObject;
-    const result = await client.request<{ imported_key_count: number }>("/api/model-config/import", { method: "POST", body: JSON.stringify(payload) });
-    await refreshSettings();
-    state.modalNotice = { title: "模型配置已导入", message: `已恢复模型设置与 ${result.imported_key_count} 个密钥作用域。` };
-    state.modal = "notice";
-    render();
+    try {
+      const payload = JSON.parse(await file.text()) as JsonObject;
+      const preview = await client.request<Omit<ModelImportPreview, "fileName" | "payload">>("/api/model-config/import/preview", { method: "POST", body: JSON.stringify(payload) });
+      state.modelImportPreview = { fileName: file.name, payload, ...preview };
+      state.modal = "model-import";
+      render();
+    } catch (error) {
+      showToast(`模型配置导入预览失败：${errorMessage(error)}`, true);
+    }
   };
   input.click();
+}
+
+async function confirmModelConfigImport(): Promise<void> {
+  const preview = state.modelImportPreview;
+  if (!preview) return;
+  const result = await client.request<{ imported_key_count: number }>("/api/model-config/import", {
+    method: "POST",
+    body: JSON.stringify(preview.payload),
+  });
+  state.modelImportPreview = null;
+  state.modal = "notice";
+  await refreshSettings();
+  for (const role of Object.keys(state.modelRoles)) clearModelCatalog(role, "导入后请刷新当前连接的模型目录。 ");
+  state.modalNotice = { title: "模型配置已导入", message: `已合并 v3 配置与 ${result.imported_key_count} 个密钥作用域；所有受影响角色均需重新测试。` };
+  render();
 }
 
 async function checkUpdate(): Promise<void> {
@@ -912,7 +1634,11 @@ async function fetchWithToken(path: string): Promise<Response> {
 }
 
 function downloadJson(filename: string, payload: JsonObject): void {
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  downloadBlob(filename, JSON.stringify(payload, null, 2), "application/json");
+}
+
+function downloadBlob(filename: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -932,7 +1658,14 @@ function errorMessage(error: unknown): string {
 app.addEventListener("click", (event) => {
   const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
   if (!target) return;
-  void handleAction(target).catch((error) => showToast(errorMessage(error), true));
+  void handleAction(target).catch((error) => {
+    const message = errorMessage(error);
+    if (state.view === "tm" && (/409|conflict|冲突|重复/i.test(message))) {
+      state.tmConflictMessage = message;
+      render();
+    }
+    showToast(message, true);
+  });
 });
 
 app.addEventListener("change", (event) => {
@@ -942,8 +1675,30 @@ app.addEventListener("change", (event) => {
       ...(state.settings ?? {}),
       engine: { ...engineSettings(), mode: target.value },
     };
+    clearModelCatalog("translation", "接入方式草稿已变更；保存后可刷新目录。 ");
     render();
     return;
+  }
+  if (target.dataset.modelRole) {
+    state.modelRole = target.value;
+    void refreshModelThroughput(state.modelRole).then(render).catch(() => render());
+    return;
+  }
+  if (target.dataset.roleSource) {
+    const independent = target.value === "independent";
+    const provider = document.querySelector<HTMLSelectElement>("#provider");
+    const baseUrl = document.querySelector<HTMLInputElement>("#baseUrl");
+    if (provider) provider.disabled = !independent;
+    if (baseUrl) baseUrl.disabled = !independent;
+    clearModelCatalog(state.modelRole, "连接复用方式已变更；保存后可刷新目录。 ");
+    return;
+  }
+  if (target.dataset.domainPreset) {
+    void saveDomainPreset(target.dataset.domainPreset as TranslationSurface, target.value).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
+  if (["provider", "baseUrl", "apiKey"].includes(target.id)) {
+    clearModelCatalog(state.modelRole, "连接草稿已变更；保存后可刷新目录。 ");
   }
   if (target.dataset.source) {
     state.sourcePaths[target.dataset.source as Surface] = target.value;
@@ -954,6 +1709,51 @@ app.addEventListener("change", (event) => {
     if ((target as HTMLInputElement).checked) current.add(target.dataset.filePath);
     else current.delete(target.dataset.filePath);
     state.selectedPaths[surface] = [...current];
+    render();
+    return;
+  }
+  if (target.dataset.tmEntryId) {
+    const entryId = Number(target.dataset.tmEntryId);
+    const selected = new Set(state.tmSelectedIds);
+    if ((target as HTMLInputElement).checked) selected.add(entryId);
+    else selected.delete(entryId);
+    state.tmSelectedIds = [...selected];
+    render();
+    return;
+  }
+  if (target.dataset.tmSelectPage !== undefined) {
+    toggleTmPageSelection();
+    return;
+  }
+  if (target.dataset.tmSourceLang) {
+    void saveTmLanguagePair(target.value, state.tmTargetLang).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
+  if (target.dataset.tmTargetLang) {
+    void saveTmLanguagePair(state.tmSourceLang, target.value).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
+  if (target.dataset.tmPageSize) {
+    state.tmPageSize = Number(target.value) || 25;
+    state.tmPage = 1;
+    state.tmSelectedIds = [];
+    void refreshTm().then(render).catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
+  if (target.dataset.tmImportMode && state.tmImportPreview) {
+    state.tmImportPreview.mode = target.value as TmImportPreview["mode"];
+    return;
+  }
+  if (target.id === "tmFullImportMode" && state.tmFullImportPreview) {
+    state.tmFullImportPreview.mode = target.value as TmFullImportPreview["mode"];
+    return;
+  }
+  if (target.id === "tmImportSyncReverse" && state.tmImportPreview) {
+    state.tmImportPreview.syncReverse = (target as HTMLInputElement).checked;
+    return;
+  }
+  if (target.id === "tmImportPair" && state.tmImportPreview) {
+    state.tmImportPreview.langPair = target.value.trim() || tmLangPair();
     render();
     return;
   }
@@ -992,7 +1792,7 @@ app.addEventListener("input", (event) => {
 async function handleAction(target: HTMLElement): Promise<void> {
   const action = target.dataset.action;
   const surface = target.dataset.surface as Surface | undefined;
-  if (action === "navigate" && target.dataset.view) { state.view = target.dataset.view as View; if (state.view === "tm") await refreshTm(); render(); return; }
+  if (action === "navigate" && target.dataset.view) { state.view = target.dataset.view as View; if (state.view === "tm") { await refreshTmLanguagePairs(); await refreshTm(); await refreshTmConflicts(); } render(); return; }
   if (action === "toggle-panel") { state.panelOpen = !state.panelOpen; await persistSettings({ appearance: { model_config_panel_open: state.panelOpen } }); render(); return; }
   if (action === "cycle-theme") { const next = selectedTheme() === "system" ? "light" : selectedTheme() === "light" ? "dark" : "system"; await persistSettings({ appearance: { theme: next } }); render(); return; }
   if (action === "choose-source" && surface) { state.sourcePickerSurface = surface; state.modal = "source-picker"; render(); return; }
@@ -1008,7 +1808,31 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "save-model") return saveModel();
   if (action === "fetch-models") return fetchModels();
   if (action === "test-model") return testModel();
-  if (action === "tm-search") { state.tmKeyword = inputValue("tmKeyword"); await refreshTm(); render(); return; }
+  if (action === "save-throughput") return saveThroughput();
+  if (action === "restore-throughput") return restoreThroughput();
+  if (action === "save-domain-prompt" && (surface === "excel" || surface === "word")) return saveDomainPrompt(surface);
+  if (action === "restore-domain-prompt" && (surface === "excel" || surface === "word")) return restoreDomainPrompt(surface);
+  if (action === "tm-search") { state.tmKeyword = inputValue("tmKeyword"); state.tmPage = 1; state.tmSelectedIds = []; await refreshTm(); render(); return; }
+  if (action === "tm-recent-pair") {
+    const pair = splitTmPair(text(target.dataset.pair));
+    if (pair) await saveTmLanguagePair(pair.source, pair.target);
+    return;
+  }
+  if (action === "tm-select-page") {
+    const pageIds = state.tmEntries.map((entry) => entry.id);
+    const allSelected = pageIds.length > 0 && pageIds.every((id) => state.tmSelectedIds.includes(id));
+    state.tmSelectedIds = allSelected ? state.tmSelectedIds.filter((id) => !pageIds.includes(id)) : [...new Set([...state.tmSelectedIds, ...pageIds])];
+    render();
+    return;
+  }
+  if (action === "tm-page-prev") { state.tmPage = Math.max(1, state.tmPage - 1); state.tmSelectedIds = []; await refreshTm(); render(); return; }
+  if (action === "tm-page-next") { state.tmPage += 1; state.tmSelectedIds = []; await refreshTm(); render(); return; }
+  if (action === "tm-bulk-pin") return tmBulkPin(true);
+  if (action === "tm-bulk-unpin") return tmBulkPin(false);
+  if (action === "tm-bulk-delete") return tmBulkDelete();
+  if (action === "tm-clear-conflict") { state.tmConflictMessage = ""; render(); return; }
+  if (action === "tm-refresh-conflicts") { await refreshTmConflicts(); render(); return; }
+  if (action === "tm-conflict-resolve") return resolveTmConflict(Number(target.dataset.conflictId), text(target.dataset.conflictResolution));
   if (action === "tm-add") { state.modal = "tm-add"; render(); return; }
   if (action === "tm-create") return tmCreate();
   if (action === "tm-edit") { state.tmEditing = state.tmEntries.find((entry) => entry.id === Number(target.dataset.entryId)) ?? null; state.modal = "tm-edit"; render(); return; }
@@ -1030,10 +1854,17 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "custom-language-update") return updateCustomLanguage();
   if (action === "custom-language-delete") return deleteCustomLanguage();
   if (action === "tm-import") return importTm();
-  if (action === "tm-export") return exportTm();
-  if (action === "close-modal") { state.modal = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; render(); return; }
+  if (action === "tm-import-full") return importFullTm();
+  if (action === "tm-import-confirm") return confirmTmImport();
+  if (action === "tm-full-import-confirm") return confirmTmFullImport();
+  if (action === "tm-export" || action === "tm-export-json") return exportTm("json");
+  if (action === "tm-export-csv") return exportTm("csv");
+  if (action === "tm-export-full") return exportFullTm();
+  if (action === "close-modal") { state.modal = null; state.sourcePickerSurface = null; state.tmEditing = null; state.customLanguageEditing = null; state.modalNotice = null; state.tmImportPreview = null; state.tmFullImportPreview = null; state.modelImportPreview = null; render(); return; }
   if (action === "export-model-config") return exportModelConfig();
+  if (action === "export-model-config-sensitive") return exportModelConfig(true);
   if (action === "import-model-config") return importModelConfig();
+  if (action === "model-import-confirm") return confirmModelConfigImport();
   if (action === "check-update") return checkUpdate();
   if (action === "ignore-update") return ignoreCurrentUpdate();
   if (action === "download-diagnostics") return downloadDiagnostics();
@@ -1048,7 +1879,9 @@ async function bootstrap(): Promise<void> {
     state.connected = true;
     await refreshSettings();
     await refreshLanguages();
+    await refreshTmLanguagePairs();
     await refreshTm();
+    await refreshTmConflicts();
   } catch (error) {
     showToast(`无法连接翻译引擎：${errorMessage(error)}`, true);
   }

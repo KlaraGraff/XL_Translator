@@ -1,9 +1,8 @@
 """
 TM 深度清洗模块。
 将 TM 库中的词条批量送入高质量 LLM（默认 Claude Opus），
-对专业术语进行校正，支持两种写入模式：
-  - diff：生成差异列表，用户逐条确认后写入
-  - overwrite：直接覆写（无需确认）
+对专业术语进行校正。清洗策略固定为“先生成建议、后由用户确认写入”，
+不存在后台直接覆写模式。
 
 并发策略与翻译流程保持一致：
   - 云端引擎：ThreadPoolExecutor（可配置 workers）并发提交所有批次
@@ -36,6 +35,8 @@ class CleanSuggestion:
     old_target:  str
     new_target:  str
     accepted:    bool = True   # UI 中用户可逐条切换
+    lang_pair:   str = ""
+    expected_version: str = ""
 
 
 class TmCleaningBatchError(RuntimeError):
@@ -68,6 +69,18 @@ DEFAULT_CLEAN_SYSTEM_PROMPT_TEMPLATE = (
 )
 DEFAULT_CLEAN_SYSTEM_PROMPT = DEFAULT_CLEAN_SYSTEM_PROMPT_TEMPLATE.format(
     target_lang_name="目标语言"
+)
+
+# A full user override may replace the built-in terminology/judgement rules,
+# but it cannot remove the machine-readable response contract or the
+# suggestion-only safety boundary.  This block is deliberately appended after
+# user text so an override cannot supersede it by ordering alone.
+_CLEAN_IMMUTABLE_PROTOCOL = (
+    "[程序固定约束]\n"
+    "严格输出 JSON 数组，不要附加任何解释。每一项必须包含与输入对应的 id 和 suggested 字段；"
+    "suggested 只能是单一清洗建议，禁止输出备注、理由或多版本。\n"
+    "这是建议确认流程：只生成建议，不得直接写入、覆盖或确认 TM 词条。"
+    "必须保护原文事实、术语等级、编号、规格参数、单位、括号和其他工程标识；无法确定时返回空字符串。"
 )
 
 
@@ -111,7 +124,8 @@ def build_clean_system_prompt(
     )
     full_override = str(full_override_prompt or "").strip()
     if full_override:
-        return append_prompt_block(full_override, target_lang_note_block)
+        prompt = append_prompt_block(full_override, target_lang_note_block)
+        return append_prompt_block(prompt, _CLEAN_IMMUTABLE_PROTOCOL)
 
     builtin_prompt = get_clean_builtin_system_prompt(
         lang_pair,
@@ -285,6 +299,8 @@ def _build_clean_suggestion(item: dict, id_to_entry: dict[int, dict]) -> CleanSu
         source_text=entry["source_text"],
         old_target=current_target,
         new_target=suggested,
+        lang_pair=str(entry.get("lang_pair") or ""),
+        expected_version=str(entry.get("version") or ""),
     )
 
 
@@ -464,6 +480,19 @@ async def _clean_async_impl(
         completed_batches=total_batches,
         submitted_batches=total_batches,
     )
+    tm_manager.persist_cleaning_suggestions(
+        [
+            {
+                "entry_id": item.entry_id,
+                "source_text": item.source_text,
+                "old_target": item.old_target,
+                "new_target": item.new_target,
+                "lang_pair": item.lang_pair,
+                "version": item.expected_version,
+            }
+            for item in suggestions
+        ]
+    )
     logger.info(f"清洗完成，发现 {len(suggestions)} 处建议修改")
     return suggestions
 
@@ -621,6 +650,19 @@ def _run_cleaning_threaded(
         completed_batches=total_batches,
         submitted_batches=total_batches,
     )
+    tm_manager.persist_cleaning_suggestions(
+        [
+            {
+                "entry_id": item.entry_id,
+                "source_text": item.source_text,
+                "old_target": item.old_target,
+                "new_target": item.new_target,
+                "lang_pair": item.lang_pair,
+                "version": item.expected_version,
+            }
+            for item in suggestions
+        ]
+    )
     logger.info(f"清洗完成，发现 {len(suggestions)} 处建议修改")
     return suggestions
 
@@ -666,18 +708,47 @@ def _clean_batch_sync(
 def apply_suggestions(
     suggestions: list[CleanSuggestion],
     auto_pin: bool = False,
+    *,
+    sync_reverse: bool = False,
 ) -> int:
     """
     将用户接受的建议写入 TM 数据库。
     若 auto_pin=True，写入后同时固定这些词条（防止重复清洗）。
     返回实际写入条数。
     """
-    accepted = [(s.entry_id, s.new_target) for s in suggestions if s.accepted]
+    accepted_suggestions = [s for s in suggestions if s.accepted]
+    accepted = [(s.entry_id, s.new_target) for s in accepted_suggestions]
     if not accepted:
         return 0
-    count = tm_manager.bulk_update(accepted)
-    if auto_pin and accepted:
-        ids = [eid for eid, _ in accepted]
-        tm_manager.bulk_pin_entries(ids, pinned=True)
-        logger.info(f"清洗后自动固定 {len(ids)} 条词条")
+    expected_versions = {
+        s.entry_id: s.expected_version
+        for s in accepted_suggestions
+        if s.expected_version
+    }
+    count = tm_manager.bulk_update(
+        accepted,
+        sync_reverse=sync_reverse,
+        expected_versions=expected_versions or None,
+        word_type=(
+            tm_manager.CLEANING_LOCKED_WORD_TYPE
+            if auto_pin
+            else tm_manager.REVIEWED_AUTO_WORD_TYPE
+        ),
+    )
+    if expected_versions:
+        stale_ids = set(expected_versions)
+        applied_ids = {
+            s.entry_id
+            for s in accepted_suggestions
+            if not expected_versions.get(s.entry_id)
+            or tm_manager.lookup_batch([s.source_text], s.lang_pair).get(s.source_text) == s.new_target
+        }
+        stale_ids -= applied_ids
+        if stale_ids:
+            logger.warning(f"清洗建议已过期并跳过 {len(stale_ids)} 条")
+    if count:
+        logger.info(
+            f"清洗确认写入 {count} 条，状态升级为 "
+            f"{'cleaning_locked' if auto_pin else 'reviewed_auto'}"
+        )
     return count
