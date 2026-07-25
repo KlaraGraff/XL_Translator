@@ -6,7 +6,12 @@ from unittest.mock import patch
 from core.model_api_identity import task_api_context_for_page
 from core.model_throughput import set_model_throughput
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
-from settings import AppSettings, api_key_scope, set_cloud_provider_config
+from settings import (
+    AppSettings,
+    api_key_scope,
+    connection_key_scope,
+    set_cloud_provider_config,
+)
 
 
 def _fake_key(provider: str, base_url: str = "") -> str:
@@ -57,15 +62,15 @@ class ModelApiIdentityTests(unittest.TestCase):
         group = next(iter(context.api_groups))
         self.assertEqual(group[:3], ("cloud", "custom_openai", "https://text-api.example/v1"))
         self.assertTrue(group[3])
-        self.assertEqual(
-            context.key_overrides,
-            {
-                api_key_scope(
-                    "custom_openai",
-                    "https://text-api.example/v1",
-                ): "key::custom_openai::https://text-api.example/v1"
-            },
-        )
+        expected_key = "key::custom_openai::https://text-api.example/v1"
+        provider_scope = api_key_scope("custom_openai", "https://text-api.example/v1")
+        pool_scope = connection_key_scope(context.role_connection_ids[ROLE_TRANSLATION])
+        # The provider scope stays so anything still resolving that way keeps
+        # working; the connection scope is what keeps two pool entries on one
+        # endpoint from overwriting each other for the duration of the task.
+        self.assertEqual(context.key_overrides[provider_scope], expected_key)
+        self.assertEqual(context.key_overrides[pool_scope], expected_key)
+        self.assertEqual(set(context.key_overrides), {provider_scope, pool_scope})
 
     def test_pdf_context_includes_review_api_when_enabled(self) -> None:
         settings = AppSettings()
@@ -102,6 +107,10 @@ class ModelApiIdentityTests(unittest.TestCase):
             {
                 api_key_scope("custom_openai", "https://image-api.example/v1"),
                 api_key_scope("custom_openai", "https://review-api.example/v1"),
+                *(
+                    connection_key_scope(connection_id)
+                    for connection_id in context.role_connection_ids.values()
+                ),
             },
         )
 

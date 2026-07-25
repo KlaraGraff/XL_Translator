@@ -163,7 +163,7 @@ def _phase7_manager(root: Path, *, runners: list[object]) -> TranslationTaskMana
     return manager
 
 
-def _context_side_effect(_settings: AppSettings, page: str) -> TaskApiContext:
+def _context_side_effect(_settings: AppSettings, page: str, **_kwargs) -> TaskApiContext:
     return _context_for(
         {
             "excel_translate": "excel",

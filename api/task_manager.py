@@ -287,7 +287,11 @@ class TranslationTaskManager:
             if "-" not in lang_pair or not all(part.strip() for part in lang_pair.split("-", 1)):
                 raise TaskInputError("TM 清洗任务必须选择有效的定向语言对。")
             tm_manager.init_db()
-            context = task_api_context_for_page(settings, _PAGE_BY_SURFACE[normalized_surface])
+            context = task_api_context_for_page(
+                settings,
+                _PAGE_BY_SURFACE[normalized_surface],
+                busy_connection_ids=self._busy_connection_ids(),
+            )
             task_snapshot: dict[str, object] = {
                 "surface": normalized_surface,
                 "lang_pair": lang_pair,
@@ -359,7 +363,11 @@ class TranslationTaskManager:
         if normalized_surface in {"excel", "word"}:
             tm_manager.init_db()
 
-        context = task_api_context_for_page(settings, _PAGE_BY_SURFACE[normalized_surface])
+        context = task_api_context_for_page(
+                settings,
+                _PAGE_BY_SURFACE[normalized_surface],
+                busy_connection_ids=self._busy_connection_ids(),
+            )
         prompt_source = "|".join(
             (
                 str(getattr(settings, "domain_preset", "") or ""),
@@ -568,6 +576,25 @@ class TranslationTaskManager:
 
     def _build_clean_runner(self, **kwargs: Any) -> Runner:
         return TmCleaningTaskRunner(**kwargs)
+
+    def _busy_connection_ids(self) -> frozenset[str]:
+        """Return the pool entries active tasks are already running on.
+
+        Read from the frozen snapshots rather than from settings, so a task
+        that started before the pool was edited still counts as occupying the
+        connection it actually uses.
+        """
+        busy: set[str] = set()
+        with self._lock:
+            active = [task for task in self._tasks.values() if not task.terminal]
+        for task in active:
+            for snapshot in (task.model_snapshot or {}).values():
+                if not isinstance(snapshot, dict):
+                    continue
+                connection_id = str(snapshot.get("pool_connection_id") or "").strip()
+                if connection_id:
+                    busy.add(connection_id)
+        return frozenset(busy)
 
     def _connection_summaries(self, context: Any) -> list[dict[str, object]]:
         values: list[dict[str, object]] = []

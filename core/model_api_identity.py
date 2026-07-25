@@ -6,16 +6,18 @@ import hashlib
 from dataclasses import dataclass, field
 
 from config import normalize_cloud_base_url
+from core.connection_pool import allocate_connection
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_IMAGE,
     ROLE_CLEANER,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    list_role_connections,
     resolve_effective_model_config,
 )
 from core.model_throughput import get_model_throughput
-from settings import AppSettings, api_key_scope
+from settings import AppSettings, api_key_scope, connection_key_scope
 
 
 ApiGroupSignature = tuple[str, str, str, str]
@@ -34,6 +36,14 @@ class TaskApiContext:
     # mutable settings object after a task has started.
     role_groups: dict[str, ApiGroupSignature] = field(default_factory=dict)
     group_concurrency: dict[ApiGroupSignature, int] = field(default_factory=dict)
+    # The pool entry each role was allocated, plus the ordered fallback chain
+    # frozen with it.  A task keeps its chain so a runtime switch stays inside
+    # the set of connections that existed when it started.
+    role_connection_ids: dict[str, str] = field(default_factory=dict)
+    role_connection_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # True when a role had to share a connection that another task already
+    # occupies, which is what the concurrency warning is really about.
+    shared_connection_roles: frozenset[str] = frozenset()
 
 
 def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSignature:
@@ -67,12 +77,47 @@ def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str
 def task_api_context_for_page(
     settings: AppSettings,
     page_key: str,
+    *,
+    busy_connection_ids: frozenset[str] = frozenset(),
+    spread: bool | None = None,
 ) -> TaskApiContext:
-    """Resolve the API footprint and credential snapshot for one page."""
-    configs = [
-        resolve_effective_model_config(settings, role)
-        for role in task_model_roles_for_page(settings, page_key)
-    ]
+    """Resolve the API footprint and credential snapshot for one page.
+
+    ``busy_connection_ids`` are the pool entries other active tasks already
+    occupy.  Defaults keep the pre-pool behaviour: no spreading, primary
+    connection, so callers that do not care are unaffected.
+    """
+    if spread is None:
+        spread = bool(getattr(settings, "spread_tasks_across_connections", False))
+
+    role_connection_ids: dict[str, str] = {}
+    role_connection_chains: dict[str, tuple[str, ...]] = {}
+    shared_roles: set[str] = set()
+    configs: list[EffectiveModelConfig] = []
+    taken: set[str] = set(busy_connection_ids)
+    for role in task_model_roles_for_page(settings, page_key):
+        allocation = allocate_connection(
+            list_role_connections(settings, role),
+            busy_connection_ids=frozenset(taken),
+            spread=spread,
+        )
+        # A task holding several roles must not hand the same connection to
+        # two of them when the pool could have separated them.
+        taken.add(allocation.connection.id)
+        role_connection_ids[role] = allocation.connection.id
+        role_connection_chains[role] = tuple(
+            conn.id for conn in allocation.candidates
+        )
+        if allocation.shared:
+            shared_roles.add(role)
+        configs.append(
+            resolve_effective_model_config(
+                settings,
+                role,
+                connection_id=allocation.connection.id,
+            )
+        )
+
     api_groups = frozenset(api_group_signature_from_config(config) for config in configs)
     key_overrides: dict[str, str] = {}
     model_snapshot: dict[str, dict[str, object]] = {}
@@ -113,6 +158,14 @@ def task_api_context_for_page(
             "connection_id": hashlib.sha256(
                 repr(group).encode("utf-8")
             ).hexdigest()[:16],
+            # The pool entry this role ran on, and the chain it may fall back
+            # to.  Distinct from "connection_id" above, which identifies the
+            # upstream API rather than the configured entry.
+            "pool_connection_id": role_connection_ids.get(config.role, ""),
+            "pool_connection_label": config.connection_label,
+            "pool_connection_chain": list(
+                role_connection_chains.get(config.role, ())
+            ),
             "throughput": {
                 "profile_key": throughput.profile_key,
                 "batch_size": throughput.batch_size,
@@ -126,15 +179,24 @@ def task_api_context_for_page(
             continue
         provider = str(config.provider or "").strip()
         base_url = normalize_cloud_base_url(provider, config.base_url).rstrip("/")
+        # Freeze under the connection scope first: two pool entries can share a
+        # provider and Base URL, so the provider scope alone would let one
+        # entry's key overwrite the other's for the whole task.
+        pool_scope = connection_key_scope(config.connection_id)
+        if pool_scope:
+            key_overrides[pool_scope] = api_key
         scope = api_key_scope(provider, base_url)
         if scope:
-            key_overrides[scope] = api_key
+            key_overrides.setdefault(scope, api_key)
     return TaskApiContext(
         api_groups=api_groups,
         key_overrides=key_overrides,
         model_snapshot=model_snapshot,
         role_groups=role_groups,
         group_concurrency=group_concurrency,
+        role_connection_ids=role_connection_ids,
+        role_connection_chains=role_connection_chains,
+        shared_connection_roles=frozenset(shared_roles),
     )
 
 
