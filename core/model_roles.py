@@ -19,8 +19,10 @@ from config import (
 )
 from settings import (
     AppSettings,
+    ModelConnection,
     ModelRoleSettings,
     get_cloud_provider_config,
+    get_connection_scoped_key,
     get_key,
     set_cloud_provider_config,
 )
@@ -92,6 +94,10 @@ class EffectiveModelConfig:
     availability_status: str = "unknown"
     availability_message: str = ""
     availability_signature: str = ""
+    # Which pool entry produced this config, so a task can record and log the
+    # connection it actually ran on rather than just "the role's connection".
+    connection_id: str = ""
+    connection_label: str = ""
 
     @property
     def engine_label(self) -> str:
@@ -106,6 +112,56 @@ def role_label(role: str) -> str:
 
 def role_capability(role: str) -> str:
     return MODEL_ROLE_CAPABILITIES.get(role, "text")
+
+
+def _connection_api_key(connection: ModelConnection, provider: str, base_url: str) -> str:
+    """Resolve a connection's key, falling back to this module's get_key.
+
+    The fallback deliberately goes through the module-level ``get_key`` so the
+    provider/Base URL lookup stays one substitutable seam for callers and tests.
+    """
+    return get_connection_scoped_key(connection.id) or get_key(provider, base_url)
+
+
+def role_pool_owner(settings: AppSettings, role: str):
+    """Return the settings object that owns one role's connection pool."""
+    if role == ROLE_TRANSLATION:
+        return settings.engine
+    owner = get_role_settings(settings, role)
+    if owner is None:
+        raise ModelRoleConfigError(f"未知模型用途：{role}")
+    return owner
+
+
+def list_role_connections(settings: AppSettings, role: str) -> list[ModelConnection]:
+    """Return one role's ordered pool.
+
+    Entry 0 is the primary.  The pool always has at least one entry because
+    the settings validator seeds it from the legacy single connection.
+    """
+    return list(role_pool_owner(settings, role).connections or [])
+
+
+def find_role_connection(
+    settings: AppSettings,
+    role: str,
+    connection_id: str = "",
+) -> ModelConnection:
+    """Return the requested pool entry, or the primary when unspecified.
+
+    An unknown id falls back to the primary rather than raising: a pool entry
+    can be removed while a task still holds its id, and degrading to the
+    primary is safer than failing the task outright.
+    """
+    connections = list_role_connections(settings, role)
+    if not connections:
+        raise ModelRoleConfigError(f"{role_label(role)}没有可用的连接。")
+    wanted = str(connection_id or "").strip()
+    if wanted:
+        for connection in connections:
+            if connection.id == wanted:
+                return connection
+    return connections[0]
 
 
 def get_role_settings(settings: AppSettings, role: str) -> ModelRoleSettings | None:
@@ -326,8 +382,15 @@ def resolve_effective_model_config(
     settings: AppSettings,
     role: str,
     *,
+    connection_id: str = "",
     _seen: tuple[str, ...] = (),
 ) -> EffectiveModelConfig:
+    """Resolve one role's effective connection.
+
+    ``connection_id`` selects a pool entry; omitting it resolves the primary,
+    which is mirrored onto the legacy fields and therefore behaves exactly as
+    it did before pools existed.
+    """
     normalized_role = role if role in MODEL_ROLE_LABELS else ROLE_TRANSLATION
     if normalized_role in _seen:
         raise ChainedModelFollowError("模型配置来源存在循环，请改为独立配置。")
@@ -347,17 +410,30 @@ def resolve_effective_model_config(
             )
             validate_model_capability(config)
             return _availability_for_config(config, settings.engine)
-        provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-        provider_config = get_cloud_provider_config(settings.engine, provider)
+        connection = find_role_connection(settings, ROLE_TRANSLATION, connection_id)
+        is_primary = connection.id == list_role_connections(settings, ROLE_TRANSLATION)[0].id
+        if is_primary:
+            # The primary keeps reading through cloud_provider_configs so that
+            # switching provider still restores that provider's saved model.
+            provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+            provider_config = get_cloud_provider_config(settings.engine, provider)
+            model = provider_config.cloud_model or DEFAULT_CLOUD_MODEL
+            base_url = provider_config.cloud_base_url
+        else:
+            provider = connection.provider or DEFAULT_CLOUD_PROVIDER
+            model = connection.model or DEFAULT_CLOUD_MODEL
+            base_url = connection.base_url
         config = EffectiveModelConfig(
             role=ROLE_TRANSLATION,
             label=role_label(ROLE_TRANSLATION),
             capability="text",
             mode="cloud",
             provider=provider,
-            model=provider_config.cloud_model or DEFAULT_CLOUD_MODEL,
-            base_url=provider_config.cloud_base_url,
-            api_key=get_key(provider, provider_config.cloud_base_url),
+            model=model,
+            base_url=base_url,
+            api_key=_connection_api_key(connection, provider, base_url),
+            connection_id=connection.id,
+            connection_label=connection.display_label,
         )
         validate_model_capability(config)
         return _availability_for_config(config, settings.engine)
@@ -408,17 +484,27 @@ def resolve_effective_model_config(
         validate_model_capability(config)
         return _availability_for_config(config, role_settings)
 
-    provider = str(role_settings.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-    provider_config = get_cloud_provider_config(role_settings, provider)
+    connection = find_role_connection(settings, normalized_role, connection_id)
+    if connection.id == list_role_connections(settings, normalized_role)[0].id:
+        provider = str(role_settings.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+        provider_config = get_cloud_provider_config(role_settings, provider)
+        model = provider_config.cloud_model or _role_model_name(role_settings, normalized_role)
+        base_url = provider_config.cloud_base_url
+    else:
+        provider = connection.provider or DEFAULT_CLOUD_PROVIDER
+        model = connection.model or _role_model_name(role_settings, normalized_role)
+        base_url = connection.base_url
     config = EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
         capability=role_capability(normalized_role),
         mode="cloud",
         provider=provider,
-        model=provider_config.cloud_model or _role_model_name(role_settings, normalized_role),
-        base_url=provider_config.cloud_base_url,
-        api_key=get_key(provider, provider_config.cloud_base_url),
+        model=model,
+        base_url=base_url,
+        api_key=_connection_api_key(connection, provider, base_url),
+        connection_id=connection.id,
+        connection_label=connection.display_label,
         source_role=SOURCE_INDEPENDENT,
         follows=False,
         availability_status=role_settings.availability_status,

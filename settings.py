@@ -7,6 +7,7 @@ import os
 import stat
 import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -102,10 +103,50 @@ def api_key_scope(provider: str, base_url: str = "") -> str:
     return f"{normalized_provider}{API_KEY_SCOPE_SEPARATOR}{normalized_base_url}"
 
 
+CONNECTION_KEY_SCOPE_PREFIX = "conn"
+
+
+def connection_key_scope(connection_id: str) -> str:
+    """Return the storage key for one connection's credential.
+
+    Connections inside one pool routinely point at the same provider and Base
+    URL with different accounts, so the provider/Base URL scope cannot tell
+    them apart.  Keys for connections are therefore stored under their own
+    stable id and only fall back to the provider scope for data written before
+    pools existed.
+    """
+    normalized = str(connection_id or "").strip()
+    if not normalized:
+        return ""
+    return f"{CONNECTION_KEY_SCOPE_PREFIX}{API_KEY_SCOPE_SEPARATOR}{normalized}"
+
+
+def is_connection_key_scope(scope: str) -> bool:
+    """Return whether a stored scope belongs to one pool connection."""
+    raw_scope = str(scope or "").strip()
+    return raw_scope.startswith(
+        f"{CONNECTION_KEY_SCOPE_PREFIX}{API_KEY_SCOPE_SEPARATOR}"
+    )
+
+
+def connection_id_from_key_scope(scope: str) -> str:
+    """Return the connection id carried by a connection-scoped key."""
+    if not is_connection_key_scope(scope):
+        return ""
+    return str(scope).strip().split(API_KEY_SCOPE_SEPARATOR, 1)[1]
+
+
 def parse_api_key_scope(scope: str) -> tuple[str, str]:
-    """Split a persisted credential scope into provider and Base URL."""
+    """Split a persisted credential scope into provider and Base URL.
+
+    Connection-scoped keys carry an opaque id instead of a provider, so they
+    resolve to an empty pair; callers that need them must ask for the
+    connection id explicitly rather than inventing a "conn" provider.
+    """
     raw_scope = str(scope or "").strip()
     if not raw_scope:
+        return "", ""
+    if is_connection_key_scope(raw_scope):
         return "", ""
     if API_KEY_SCOPE_SEPARATOR not in raw_scope:
         return raw_scope, ""
@@ -202,6 +243,85 @@ def _default_local_base_url(provider: str) -> str:
     if normalized == "ollama":
         return OLLAMA_BASE_URL
     return ""
+
+
+def new_connection_id() -> str:
+    """Return a stable id for one pool connection."""
+    return uuid.uuid4().hex
+
+
+class ModelConnection(BaseModel):
+    """One cloud connection inside a model role's pool.
+
+    A pool is an ordered list: entry 0 is the primary and is kept mirrored
+    onto the role's legacy single-connection fields, so configuration written
+    by this version stays readable by the previous one.
+    """
+
+    id: str = Field(default_factory=new_connection_id)
+    label: str = ""
+    provider: str = DEFAULT_CLOUD_PROVIDER
+    model: str = ""
+    base_url: str = ""
+    availability_status: str = "unknown"
+    availability_message: str = ""
+    availability_checked_at: str = ""
+    availability_signature: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_connection(self):
+        self.id = str(self.id or "").strip() or new_connection_id()
+        self.label = str(self.label or "").strip()
+        self.provider = str(self.provider or DEFAULT_CLOUD_PROVIDER).strip()
+        self.model = str(self.model or "").strip()
+        self.base_url = str(self.base_url or "").strip().rstrip("/")
+        if self.availability_status not in {"unknown", "available", "unavailable"}:
+            self.availability_status = "unknown"
+        return self
+
+    @property
+    def display_label(self) -> str:
+        if self.label:
+            return self.label
+        return self.base_url or self.provider
+
+
+def _sync_connection_pool(owner) -> None:
+    """Keep a pool and its owner's legacy single-connection fields in step.
+
+    Entry 0 *is* the legacy connection.  Mirroring it both ways means settings
+    written by this version stay loadable by the version before pools existed,
+    so rolling the app back does not strand a configured connection.
+    """
+    connections = [conn for conn in (owner.connections or []) if conn is not None]
+    if not connections:
+        connections = [
+            ModelConnection(
+                provider=owner.cloud_provider,
+                model=owner.cloud_model,
+                base_url=owner.cloud_base_url,
+                availability_status=owner.availability_status,
+                availability_message=owner.availability_message,
+                availability_checked_at=owner.availability_checked_at,
+                availability_signature=owner.availability_signature,
+            )
+        ]
+    else:
+        primary = connections[0]
+        primary.provider = owner.cloud_provider
+        primary.model = owner.cloud_model
+        primary.base_url = owner.cloud_base_url
+        primary.availability_status = owner.availability_status
+        primary.availability_message = owner.availability_message
+        primary.availability_checked_at = owner.availability_checked_at
+        primary.availability_signature = owner.availability_signature
+
+    seen: set[str] = set()
+    for conn in connections:
+        if conn.id in seen:
+            conn.id = new_connection_id()
+        seen.add(conn.id)
+    owner.connections = connections
 
 
 class CloudProviderConfig(BaseModel):
@@ -343,6 +463,7 @@ class EngineSettings(BaseModel):
     availability_message: str = ""
     availability_checked_at: str = ""
     availability_signature: str = ""
+    connections: list[ModelConnection] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -419,6 +540,7 @@ class EngineSettings(BaseModel):
         self.availability_message = str(self.availability_message or "").strip()
         self.availability_checked_at = str(self.availability_checked_at or "").strip()
         self.availability_signature = str(self.availability_signature or "").strip()
+        _sync_connection_pool(self)
         return self
 
 
@@ -598,6 +720,7 @@ class ModelRoleSettings(BaseModel):
     availability_message: str = ""
     availability_checked_at: str = ""
     availability_signature: str = ""
+    connections: list[ModelConnection] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _normalize_role(self):
@@ -622,6 +745,7 @@ class ModelRoleSettings(BaseModel):
             else:
                 self.cloud_model = existing.cloud_model
                 self.cloud_base_url = existing.cloud_base_url
+        _sync_connection_pool(self)
         return self
 
 
@@ -737,6 +861,8 @@ class AppSettings(BaseModel):
         default_factory=lambda: ModelRoleSettings(source_role="translation", cloud_model="")
     )
     pdf: PdfSettings = Field(default_factory=PdfSettings)
+    # 关闭时多余的连接只作故障切换备用；打开后并行任务才会分散到不同连接上。
+    spread_tasks_across_connections: bool = False
     model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
     onboarding: OnboardingSettings = Field(default_factory=OnboardingSettings)
@@ -1249,6 +1375,59 @@ def provider_key_overrides(overrides: dict[str, str] | None):
                 pass
         else:
             _KEY_OVERRIDE_LOCAL.overrides = previous
+
+
+def save_connection_key(connection_id: str, api_key: str) -> None:
+    """Save or remove the API key owned by one pool connection."""
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    scope = connection_key_scope(connection_id)
+    if not scope:
+        return
+    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        keys = _load_keys_unlocked(strict=True)
+        if api_key:
+            keys[scope] = api_key
+        else:
+            keys.pop(scope, None)
+        write_private_text_file(
+            KEYS_PATH,
+            json.dumps(keys, indent=2, ensure_ascii=False),
+        )
+    logger.debug(f"API Key 已更新：scope={scope}")
+
+
+def delete_connection_key(connection_id: str) -> None:
+    """Delete the API key owned by one pool connection."""
+    save_connection_key(connection_id, "")
+
+
+def get_connection_scoped_key(connection_id: str) -> str:
+    """Get only the key stored under one connection's own scope.
+
+    Kept separate from the provider fallback so callers can decide where the
+    fallback comes from; ``core.model_roles`` needs it to stay on its own
+    ``get_key`` reference.
+    """
+    scope = connection_key_scope(connection_id)
+    if not scope:
+        return ""
+    overrides = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
+    if isinstance(overrides, dict):
+        value = str(overrides.get(scope) or "").strip()
+        if value:
+            return value
+    return str(load_keys().get(scope) or "").strip()
+
+
+def get_connection_key(connection_id: str, provider: str, base_url: str = "") -> str:
+    """Get one connection's API key, falling back to the provider scope.
+
+    The fallback is what keeps configurations written before pools existed
+    working: their single connection has no connection-scoped key yet, so it
+    still resolves through provider/Base URL.
+    """
+    return get_connection_scoped_key(connection_id) or get_key(provider, base_url)
 
 
 def get_key(provider: str, base_url: str = "") -> str:
