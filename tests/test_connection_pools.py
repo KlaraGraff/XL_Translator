@@ -51,6 +51,29 @@ def test_primary_mirrors_legacy_fields_so_a_downgrade_still_reads_the_connection
     assert dumped["cloud_base_url"] == "https://api.deepseek.com/v1"
 
 
+def test_seeded_connection_ids_are_stable_across_loads():
+    """A fresh install is not persisted, so the seeded id must not be random."""
+    first = AppSettings()
+    second = AppSettings()
+    assert first.engine.connections[0].id == second.engine.connections[0].id
+    assert (
+        first.cleaner_model_role.connections[0].id
+        == second.cleaner_model_role.connections[0].id
+    )
+
+
+def test_stored_connection_ids_survive_a_reload():
+    app = AppSettings()
+    app.engine.connections = [
+        *app.engine.connections,
+        ModelConnection(provider="custom_openai", base_url="https://b.example/v1"),
+    ]
+    reloaded = AppSettings(**app.model_dump())
+    assert [conn.id for conn in reloaded.engine.connections] == [
+        conn.id for conn in app.engine.connections
+    ]
+
+
 def test_role_pools_are_independent_between_roles():
     app = AppSettings()
     pools = {

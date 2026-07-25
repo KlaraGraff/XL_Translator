@@ -164,6 +164,119 @@ def find_role_connection(
     return connections[0]
 
 
+def _apply_primary_to_legacy_fields(owner) -> None:
+    """Copy entry 0 onto the legacy single-connection fields.
+
+    The settings validator syncs legacy fields *onto* entry 0, so any edit that
+    changes which entry is primary has to push the new primary outwards first
+    or the validator will put the old values straight back.
+    """
+    primary = owner.connections[0]
+    owner.cloud_provider = primary.provider
+    owner.cloud_model = primary.model
+    owner.cloud_base_url = primary.base_url
+    # The per-provider stash outranks the flat fields inside the validator, so
+    # promoting an entry has to update it too or the old endpoint comes back.
+    set_cloud_provider_config(
+        owner,
+        primary.provider,
+        cloud_model=primary.model,
+        cloud_base_url=primary.base_url,
+    )
+    owner.availability_status = primary.availability_status
+    owner.availability_message = primary.availability_message
+    owner.availability_checked_at = primary.availability_checked_at
+    owner.availability_signature = primary.availability_signature
+
+
+def add_role_connection(
+    settings: AppSettings,
+    role: str,
+    *,
+    label: str = "",
+    provider: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> ModelConnection:
+    """Append a new entry to one role's pool and return it."""
+    owner = role_pool_owner(settings, role)
+    primary = owner.connections[0]
+    connection = ModelConnection(
+        label=label,
+        provider=provider or primary.provider,
+        model=model or primary.model,
+        base_url=base_url,
+    )
+    owner.connections = [*owner.connections, connection]
+    return connection
+
+
+def update_role_connection(
+    settings: AppSettings,
+    role: str,
+    connection_id: str,
+    *,
+    label: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> ModelConnection:
+    """Edit one pool entry in place."""
+    owner = role_pool_owner(settings, role)
+    connection = find_role_connection(settings, role, connection_id)
+    if connection.id != str(connection_id or "").strip():
+        raise ModelRoleConfigError("找不到要修改的连接。")
+    if label is not None:
+        connection.label = str(label).strip()
+    changed_endpoint = False
+    for field_name, value in (
+        ("provider", provider),
+        ("model", model),
+        ("base_url", base_url),
+    ):
+        if value is None:
+            continue
+        setattr(connection, field_name, str(value).strip())
+        changed_endpoint = True
+    if changed_endpoint:
+        # The endpoint moved, so any prior test result no longer describes it.
+        connection.availability_status = "unknown"
+        connection.availability_message = "当前配置尚未测试。"
+        connection.availability_signature = ""
+        connection.availability_checked_at = ""
+    if owner.connections[0].id == connection.id:
+        _apply_primary_to_legacy_fields(owner)
+    return connection
+
+
+def remove_role_connection(settings: AppSettings, role: str, connection_id: str) -> None:
+    """Remove one pool entry; a role must keep at least one."""
+    owner = role_pool_owner(settings, role)
+    wanted = str(connection_id or "").strip()
+    remaining = [conn for conn in owner.connections if conn.id != wanted]
+    if len(remaining) == len(owner.connections):
+        raise ModelRoleConfigError("找不到要删除的连接。")
+    if not remaining:
+        raise ModelRoleConfigError(f"{role_label(role)}至少要保留一条连接。")
+    owner.connections = remaining
+    _apply_primary_to_legacy_fields(owner)
+
+
+def reorder_role_connections(
+    settings: AppSettings,
+    role: str,
+    ordered_ids: list[str],
+) -> None:
+    """Reorder a pool; entry 0 becomes the new primary."""
+    owner = role_pool_owner(settings, role)
+    by_id = {conn.id: conn for conn in owner.connections}
+    wanted = [str(value or "").strip() for value in ordered_ids]
+    if sorted(wanted) != sorted(by_id):
+        raise ModelRoleConfigError("排序必须包含且只包含当前的全部连接。")
+    owner.connections = [by_id[connection_id] for connection_id in wanted]
+    _apply_primary_to_legacy_fields(owner)
+
+
 def get_role_settings(settings: AppSettings, role: str) -> ModelRoleSettings | None:
     if role == ROLE_CLEANER:
         return settings.cleaner_model_role

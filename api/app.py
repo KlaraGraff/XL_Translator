@@ -53,7 +53,13 @@ from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    ModelRoleConfigError,
+    add_role_connection,
+    list_role_connections,
     model_config_signature,
+    remove_role_connection,
+    reorder_role_connections,
+    update_role_connection,
     provider_supports_capability,
     reset_model_role_availability,
     resolve_effective_model_config,
@@ -74,11 +80,14 @@ from config import DOMAIN_PRESETS
 from settings import (
     AppSettings,
     SettingsSchemaError,
+    delete_connection_key,
     delete_key,
+    get_connection_scoped_key,
     get_key,
     load_keys,
     load_settings,
     parse_api_key_scope,
+    save_connection_key,
     save_key,
     save_settings,
     set_cloud_provider_config,
@@ -202,6 +211,18 @@ class ModelRoleUpdatePayload(BaseModel):
     provider: str | None = None
     model: str | None = None
     base_url: str | None = None
+
+
+class ConnectionUpsertPayload(BaseModel):
+    label: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
+class ConnectionReorderPayload(BaseModel):
+    ordered_ids: list[str]
 
 
 class ModelRoleTestPayload(BaseModel):
@@ -995,6 +1016,87 @@ def create_app(
         save_settings(settings)
         return _model_role_payload(settings, role)
 
+    def _role_or_404(role: str) -> str:
+        if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
+            raise HTTPException(404, "Unknown model role.")
+        return role
+
+    @app.post("/api/models/roles/{role}/connections")
+    def create_role_connection(
+        role: str,
+        payload: ConnectionUpsertPayload,
+    ) -> dict[str, Any]:
+        _role_or_404(role)
+        settings = load_settings()
+        try:
+            connection = add_role_connection(
+                settings,
+                role,
+                label=payload.label or "",
+                provider=payload.provider or "",
+                model=payload.model or "",
+                base_url=payload.base_url or "",
+            )
+        except ModelRoleConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        if payload.api_key:
+            save_connection_key(connection.id, payload.api_key)
+        return _model_role_payload(load_settings(), role)
+
+    @app.put("/api/models/roles/{role}/connections/{connection_id}")
+    def edit_role_connection(
+        role: str,
+        connection_id: str,
+        payload: ConnectionUpsertPayload,
+    ) -> dict[str, Any]:
+        _role_or_404(role)
+        settings = load_settings()
+        try:
+            update_role_connection(
+                settings,
+                role,
+                connection_id,
+                label=payload.label,
+                provider=payload.provider,
+                model=payload.model,
+                base_url=payload.base_url,
+            )
+        except ModelRoleConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        # An empty string means "leave the stored key alone", matching the
+        # placeholder shown in the panel; only a non-empty value replaces it.
+        if payload.api_key:
+            save_connection_key(connection_id, payload.api_key)
+        return _model_role_payload(load_settings(), role)
+
+    @app.delete("/api/models/roles/{role}/connections/{connection_id}")
+    def drop_role_connection(role: str, connection_id: str) -> dict[str, Any]:
+        _role_or_404(role)
+        settings = load_settings()
+        try:
+            remove_role_connection(settings, role, connection_id)
+        except ModelRoleConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        delete_connection_key(connection_id)
+        return _model_role_payload(load_settings(), role)
+
+    @app.post("/api/models/roles/{role}/connections/reorder")
+    def sort_role_connections(
+        role: str,
+        payload: ConnectionReorderPayload,
+    ) -> dict[str, Any]:
+        _role_or_404(role)
+        settings = load_settings()
+        try:
+            reorder_role_connections(settings, role, list(payload.ordered_ids))
+        except ModelRoleConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        save_settings(settings)
+        return _model_role_payload(load_settings(), role)
+
     @app.post("/api/models/connectivity/{role}")
     def check_model_role_connectivity(role: str) -> dict[str, Any]:
         settings = load_settings()
@@ -1369,6 +1471,25 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "provider": config.provider,
         "model": config.model,
         "base_url": config.base_url,
+        "connections": [
+            {
+                "id": connection.id,
+                "label": connection.label,
+                "display_label": connection.display_label,
+                "provider": connection.provider,
+                "model": connection.model,
+                "base_url": connection.base_url,
+                "availability_status": connection.availability_status,
+                "availability_message": connection.availability_message,
+                "availability_checked_at": connection.availability_checked_at,
+                "has_api_key": bool(
+                    get_connection_scoped_key(connection.id)
+                    or (index == 0 and config.api_key)
+                ),
+                "primary": index == 0,
+            }
+            for index, connection in enumerate(list_role_connections(settings, role))
+        ],
         "source_role": config.source_role,
         "follows": config.follows,
         "availability_status": config.availability_status,

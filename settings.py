@@ -286,6 +286,9 @@ class ModelConnection(BaseModel):
         return self.base_url or self.provider
 
 
+_SEEDED_CONNECTION_PREFIX = "seed-"
+
+
 def _sync_connection_pool(owner) -> None:
     """Keep a pool and its owner's legacy single-connection fields in step.
 
@@ -295,8 +298,12 @@ def _sync_connection_pool(owner) -> None:
     """
     connections = [conn for conn in (owner.connections or []) if conn is not None]
     if not connections:
+        # Marked so AppSettings can give it an id derived from its role.  A
+        # random id here would differ on every load until something saved,
+        # and any key stored against it would be orphaned on the next read.
         connections = [
             ModelConnection(
+                id=f"{_SEEDED_CONNECTION_PREFIX}{uuid.uuid4().hex}",
                 provider=owner.cloud_provider,
                 model=owner.cloud_model,
                 base_url=owner.cloud_base_url,
@@ -993,6 +1000,26 @@ class AppSettings(BaseModel):
             for entry in normalize_custom_target_langs(migrated.get("custom_target_langs"))
         ]
         return migrated
+
+    @model_validator(mode="after")
+    def _stabilize_seeded_connection_ids(self):
+        """Give a freshly seeded pool an id derived from its role.
+
+        load_settings() does not persist on a fresh install, so a random id
+        would differ on every read and any key saved against it would be
+        orphaned by the next one.  Ids that came from stored JSON are left
+        untouched.
+        """
+        for role_key, owner in (
+            ("translation", self.engine),
+            ("cleaner", self.cleaner_model_role),
+            ("image", self.image_model_role),
+            ("pdf_review", self.pdf_review_model_role),
+        ):
+            for connection in owner.connections:
+                if connection.id.startswith(_SEEDED_CONNECTION_PREFIX):
+                    connection.id = f"pool-{role_key}"
+        return self
 
     @model_validator(mode="after")
     def _normalize_target_lang_state(self):
