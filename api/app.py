@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -258,6 +260,20 @@ class FullResetRequest(BaseModel):
     phrase: str = ""
 
 
+def _allowed_origins() -> list[str]:
+    """Origins the local UI may call from.
+
+    Production is the Tauri webview only.  `tauri dev` serves the UI from a
+    vite server instead, so debug builds pass that origin in explicitly; a
+    release build never sets the variable, leaving the allowlist unchanged.
+    """
+    origins = ["tauri://localhost", "http://tauri.localhost"]
+    dev_origin = str(os.environ.get("TRANSLATOR_DEV_ORIGIN") or "").strip()
+    if dev_origin.startswith(("http://127.0.0.1:", "http://localhost:")):
+        origins.append(dev_origin)
+    return origins
+
+
 def create_app(
     *,
     task_manager: TranslationTaskManager | None = None,
@@ -267,7 +283,7 @@ def create_app(
     app = FastAPI(title="Translator Sidecar API", version="1")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["tauri://localhost", "http://tauri.localhost"],
+        allow_origins=_allowed_origins(),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

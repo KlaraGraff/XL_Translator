@@ -211,6 +211,13 @@ fn bundled_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
+/// Origin the dev server serves the UI from, taken from tauri.conf.json's devUrl.
+fn dev_server_origin() -> String {
+    option_env!("TAURI_DEV_ORIGIN")
+        .unwrap_or("http://127.0.0.1:1420")
+        .to_string()
+}
+
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
     let mut command = if cfg!(debug_assertions) {
         let root = project_root();
@@ -219,6 +226,10 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         command.args(["-m", "api.launcher"]);
         command.current_dir(&root);
         command.env("PYTHONUNBUFFERED", "1");
+        // `tauri dev` serves the UI from the vite server, so every request to
+        // the sidecar is cross-origin and the production allowlist rejects it.
+        // Only debug builds pass this through; release builds never set it.
+        command.env("TRANSLATOR_DEV_ORIGIN", dev_server_origin());
         command
     } else {
         let executable = bundled_sidecar_path(app)?;
