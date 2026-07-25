@@ -140,6 +140,7 @@ button { cursor: pointer; }
 
 /* 外壳锁定视口高度，滚动交给各自的内部区域，整页不再上下滑动。 */
 .app-shell {
+  position: relative;
   display: flex;
   height: 100vh;
   overflow: hidden;
@@ -189,6 +190,8 @@ button { cursor: pointer; }
   font-weight: 650;
 }
 
+/* 标签必须留在按钮内：字体回退或系统放大文字时，原来会溢出到导航栏外。 */
+.rail-button > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-button:hover { color: var(--ink); background: var(--surface-2); }
 .rail-button.active { color: var(--accent); background: var(--tint); }
 .rail-button.active::before { position: absolute; top: 50%; left: -10px; width: 3px; height: 21px; border-radius: 0 3px 3px 0; background: var(--accent); content: ""; transform: translateY(-50%); }
@@ -196,15 +199,25 @@ button { cursor: pointer; }
 .rail-divider { width: 34px; height: 1px; margin: 6px 0; background: var(--line-2); }
 .rail-spacer { flex: 1; }
 
+/* 始终浮在内容之上，而不是把工作区推窄。
+   之前用 max-width 断点做这件事是错的：挤压取决于面板是否展开，跟窗口宽度无关，
+   窗口一宽断点就失效，面板又变回推挤。 */
 .config-panel {
+  position: absolute;
+  z-index: 50;
+  top: 0;
+  bottom: 0;
+  left: 76px;
   display: flex;
   width: 292px;
   flex: none;
   overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--surface);
+  box-shadow: var(--sh-lg);
   transition: width 260ms cubic-bezier(.32, .72, 0, 1), border-color 260ms;
 }
+.config-panel.closed { box-shadow: none; }
 .config-panel.closed { width: 0; border-right-color: transparent; }
 .config-inner { display: flex; width: 292px; min-width: 292px; flex-direction: column; }
 .config-header { display: flex; align-items: center; gap: 10px; padding: 15px; border-bottom: 1px solid var(--line); }
@@ -235,7 +248,11 @@ button { cursor: pointer; }
 .right-column { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; padding: 15px; }
 .right-scroll { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .right-footer { flex: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.run-panel { padding-top: 12px; }
+/* 运行进度、日志和结果放在左侧宽区：结果表格 min-width 是 800px，
+   右侧 300px 的设置栏根本装不下。 */
+.run-panel-card { display: flex; min-height: 0; flex: 1 1 55%; flex-direction: column; overflow-y: auto; padding: 15px; }
+.left-column.running .table-card { flex: 0 1 auto; max-height: 34%; }
+.run-panel { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
 
 .card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-md); }
 .card-pad { padding: 15px; }
@@ -285,7 +302,9 @@ tr:hover td { background: var(--surface-2); }
 .mini-button:hover { border-color: var(--ink-3); color: var(--ink); background: var(--surface-2); }
 .danger-text { color: var(--danger); }
 .icon-button { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 10px; color: var(--ink-2); }
-.model-button { display: inline-flex; height: 36px; align-items: center; gap: 7px; padding: 0 12px; border-radius: 10px; color: var(--ink-2); font-size: 11.5px; font-weight: 650; }
+/* flex:none + nowrap：窗口变窄时这颗按钮原来会被压扁，把模型名整段挤掉只剩圆点。 */
+.model-button { display: inline-flex; height: 36px; flex: none; align-items: center; gap: 7px; padding: 0 12px; border-radius: 10px; color: var(--ink-2); background: var(--surface); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
+.topbar-actions .icon-button { flex: none; }
 .model-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
 .field, select, input, textarea { width: 100%; min-height: 36px; padding: 8px 10px; outline: none; font-size: 12px; }
 .field:focus, select:focus, input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(84, 104, 255, .15); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
@@ -497,13 +516,9 @@ textarea { min-height: 90px; resize: vertical; }
 
 .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }.icon.small { width: 15px; height: 15px; }.icon.large { width: 24px; height: 24px; }
 
-/* 13" / 12" 笔记本：模型配置改成浮层，不再挤压工作区。
-   右栏最窄内容需 272px，收到 300px 仍有余量。 */
 @media (max-width: 1280px) {
-  .app-shell { position: relative; }
+  /* 右栏最窄内容需 272px，收到 300px 仍有余量。 */
   .two-column { grid-template-columns: minmax(0, 1fr) 300px; }
-  .config-panel { position: absolute; z-index: 50; top: 0; bottom: 0; left: 76px; box-shadow: var(--sh-lg); }
-  .config-panel.closed { box-shadow: none; }
 }
 
 @media (max-width: 1160px) {

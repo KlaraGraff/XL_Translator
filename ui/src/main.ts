@@ -719,7 +719,8 @@ function render(): void {
   applyTheme(selectedTheme());
   const meta = pageMeta[state.view];
   const task = taskStatus();
-  const model = text(engineSettings().cloud_model, "未选择模型");
+  // text() 只在值不是字符串时才回退，空串会原样返回，按钮就只剩一个圆点。
+  const model = text(engineSettings().cloud_model) || "未选择模型";
   app.innerHTML = `
     <div class="app-shell">
       <nav class="rail" aria-label="主导航">
@@ -865,7 +866,7 @@ function renderTranslateView(surface: Surface): string {
     ? Math.round((running.stepDone / running.stepTotal) * 100)
     : 0;
   return `<section class="view active"><div class="two-column">
-    <div class="left-column">
+    <div class="left-column ${running ? "running" : ""}">
       <div class="card source-bar">
         <div class="source-icon">${icon("folder")}</div>
         <div class="source-meta"><div class="source-key">源路径</div><input class="source-input" data-source="${surface}" value="${escapeHtml(sourcePath)}" placeholder="选择文件或文件夹" /></div>
@@ -893,6 +894,7 @@ function renderTranslateView(surface: Surface): string {
       ${isExcel ? renderExcelSkippedItems() : ""}
       ${isWord ? renderWordSkippedItems() : ""}
       ${isPdf ? renderPdfScanReport() : ""}
+      ${running ? `<div class="card run-panel-card">${renderRunningPanel(running, percent)}</div>` : ""}
     </div>
     <aside class="card right-column">
       <div class="right-scroll">
@@ -904,7 +906,6 @@ function renderTranslateView(surface: Surface): string {
         ${renderLanguageAlert(surface, source, target)}
         ${renderSurfaceToggles(surface, activeTask)}
         ${renderDetailedSettings(surface, activeTask)}
-        ${running ? renderRunningPanel(running, percent) : ""}
       </div>
       ${running ? "" : `<div class="right-footer"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button></div>`}
     </aside>
