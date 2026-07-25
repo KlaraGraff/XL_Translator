@@ -569,3 +569,22 @@ textarea { min-height: 90px; resize: vertical; }
   .help-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .maintenance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* 连接池列表：面板只有 262px，一行放下状态点、名称、标签和操作。 */
+.pool-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); overflow: hidden; }
+.pool-row { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px; cursor: pointer; font-size: 11.5px; }
+.pool-row + .pool-row { border-top: 1px solid var(--line); }
+.pool-row:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.pool-row.selected { background: var(--tint); }
+.pool-dot { width: 6px; height: 6px; flex: none; border-radius: 999px; background: var(--ink-3); }
+.pool-dot.done { background: var(--ok); }
+.pool-dot.error { background: var(--danger); }
+.pool-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pool-tag { flex: none; padding: 1px 5px; border-radius: 999px; background: var(--ground-2); color: var(--ink-3); font-size: 9.5px; }
+.pool-tag.busy { background: var(--warn-t); color: var(--warn); }
+.pool-actions { display: flex; flex: none; align-items: center; gap: 2px; }
+.pool-icon { display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); font-size: 13px; line-height: 1; }
+.pool-icon:hover { background: var(--surface); color: var(--ink); }
+/* 主用按钮指向列表顶部。 */
+.pool-icon .icon { transform: rotate(180deg); }
+.pool-add { width: 100%; margin-top: 7px; }

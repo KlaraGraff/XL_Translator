@@ -1014,7 +1014,9 @@ def create_app(
                 if before_signatures.get(candidate_role) != model_config_signature(effective):
                     reset_model_role_availability(settings, candidate_role)
         save_settings(settings)
-        return _model_role_payload(settings, role)
+        # Re-read: the pool is only re-synced when settings are constructed, so
+        # the in-memory object still carries the pre-edit connection list.
+        return _model_role_payload(load_settings(), role)
 
     def _role_or_404(role: str) -> str:
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:

@@ -135,6 +135,23 @@ def test_pools_are_per_role(client):
     assert len(roles["translation"]["connections"]) == 1
 
 
+def test_saving_the_role_returns_a_fresh_pool_not_a_stale_one(client):
+    """The pool is only re-synced on construction, so the response must re-read."""
+    response = client.put(
+        "/api/models/roles/translation",
+        json={
+            "mode": "cloud",
+            "provider": "custom_openai",
+            "base_url": "https://vendor-a.example/v1",
+            "model": "model-a",
+        },
+    )
+    assert response.status_code == 200
+    primary = response.json()["connections"][0]
+    assert primary["base_url"] == "https://vendor-a.example/v1"
+    assert primary["model"] == "model-a"
+
+
 def test_unknown_role_is_rejected(client):
     response = client.post(
         "/api/models/roles/nope/connections", json={"label": "x"}

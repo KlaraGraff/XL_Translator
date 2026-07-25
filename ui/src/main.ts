@@ -209,6 +209,7 @@ const state: {
   modelCatalogConnection: Record<string, string>;
   modelThroughput: Record<string, JsonObject>;
   modelImportPreview: ModelImportPreview | null;
+  selectedConnection: Record<string, string>;
 } = {
   connected: false,
   view: "excel",
@@ -282,6 +283,7 @@ const state: {
   modelCatalogConnection: {},
   modelThroughput: {},
   modelImportPreview: null,
+  selectedConnection: {},
 };
 
 const pageMeta: Record<View, { title: string; description: string }> = {
@@ -767,6 +769,71 @@ function navButton(view: View, label: string, iconName: IconName): string {
   return `<button class="rail-button ${state.view === view ? "active" : ""}" data-action="navigate" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`;
 }
 
+type PoolConnection = {
+  id: string;
+  label: string;
+  display_label: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  availability_status: string;
+  availability_message: string;
+  has_api_key: boolean;
+  primary: boolean;
+};
+
+function roleConnections(role: string): PoolConnection[] {
+  const raw = record(state.modelRoles[role]).connections;
+  return Array.isArray(raw) ? (raw as PoolConnection[]) : [];
+}
+
+/* 没有选中或选中的已被删除时，回到主连接，避免面板指向一个不存在的条目。 */
+function activeConnection(role: string): PoolConnection | null {
+  const connections = roleConnections(role);
+  if (!connections.length) return null;
+  const wanted = state.selectedConnection[role];
+  return connections.find((item) => item.id === wanted) ?? connections[0];
+}
+
+function connectionBusyLabel(connectionId: string): string {
+  const holders = activeTasks().filter((entry) => {
+    const models = record(entry.task.model_snapshot);
+    return Object.values(models).some(
+      (snapshot) => text(record(snapshot).pool_connection_id) === connectionId,
+    );
+  });
+  return holders.length ? `占用中 · ${holders.length}` : "";
+}
+
+function renderConnectionList(role: string): string {
+  const connections = roleConnections(role);
+  if (connections.length < 1) return "";
+  const selected = activeConnection(role);
+  const rows = connections.map((connection, index) => {
+    const tone = connection.availability_status === "available"
+      ? "done"
+      : connection.availability_status === "unavailable"
+        ? "error"
+        : "";
+    const busy = connectionBusyLabel(connection.id);
+    return `<div class="pool-row ${selected && selected.id === connection.id ? "selected" : ""}" data-action="select-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}">
+      <span class="pool-dot ${tone}"></span>
+      <span class="pool-name">${escapeHtml(connection.display_label || `连接 ${index + 1}`)}</span>
+      ${index === 0 ? `<span class="pool-tag">主用</span>` : ""}
+      ${busy ? `<span class="pool-tag busy">${escapeHtml(busy)}</span>` : ""}
+      <span class="pool-actions">
+        ${index > 0 ? `<button class="pool-icon" data-action="promote-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="设为主用">${icon("chevron", "small")}</button>` : ""}
+        ${connections.length > 1 ? `<button class="pool-icon danger-text" data-action="delete-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="删除这条连接">×</button>` : ""}
+      </span>
+    </div>`;
+  }).join("");
+  return `<div class="config-field">
+    <div class="label-row"><span class="field-label">连接列表</span>${hintMark("按顺序使用：主用连接排在最前。某条连接的服务端不可用时会跳过同一 Base URL 的其余连接，直接换到下一个服务商；密钥被拒绝或额度耗尽时只跳过该条。")}</div>
+    <div class="pool-list">${rows}</div>
+    <button class="mini-button pool-add" data-action="add-connection" data-role="${escapeHtml(role)}">＋ 新增连接</button>
+  </div>`;
+}
+
 function renderConfigPanel(): string {
   const role = state.modelRole;
   const rolePayload = record(state.modelRoles[role]);
@@ -807,6 +874,14 @@ function renderConfigPanel(): string {
     : `<label class="field-label" for="throughputConcurrency">并发数</label><input id="throughputConcurrency" type="number" data-throughput="concurrency" value="${number(throughput.concurrency, 1)}" min="${number(concurrencyBounds[0], 1)}" max="${number(concurrencyBounds[1], 32)}"/>`;
   /* 常驻说明一律收进问号，和其余页面一致；只有“会变”的目录与测试结果留在面板上，
      并压缩成状态胶囊，长文本移到胶囊旁边的问号里。 */
+  // 选中的是非主用连接时，表单显示它自己的值；主用连接沿用原有的解析结果。
+  const selectedConnection = activeConnection(role);
+  const editingSecondary = Boolean(
+    selectedConnection && !selectedConnection.primary && cloudMode,
+  );
+  const formProvider = editingSecondary ? selectedConnection!.provider : provider;
+  const formBaseUrl = editingSecondary ? selectedConnection!.base_url : baseUrl;
+  const formModel = editingSecondary ? selectedConnection!.model : model;
   const catalogTone = catalog.length ? "done" : "";
   const catalogLabel = catalog.length ? `${catalog.length} 个可用模型` : "未获取列表";
   const catalogTip = `${catalogMessage}${catalog.length ? `当前连接返回 ${catalog.length} 个模型，也可以手动填写列表里没有的模型。` : ""}`;
@@ -826,22 +901,24 @@ function renderConfigPanel(): string {
             ${fieldLabel("连接方式", accessTip, role === "translation" ? "engineMode" : "roleSource")}
             ${role === "translation" ? `<select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>` : `<select id="roleSource" data-role-source>${(sourceRoles[role] || ["independent"]).map((item) => `<option value="${item}" ${sourceRole === item ? "selected" : ""}>${item === "independent" ? "独立配置" : `跟随${roleLabels[item] || item}`}</option>`).join("")}</select>`}
           </div>
+          ${cloudMode ? renderConnectionList(role) : ""}
           <div class="config-field">
             <label class="field-label" for="provider">${cloudMode ? "服务商" : "本地运行器"}</label>
             <select id="provider" data-engine="cloud_provider" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}>
-              ${providers.map((item) => `<option value="${item}" ${provider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
+              ${providers.map((item) => `<option value="${item}" ${formProvider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
             </select>
           </div>
           <div class="config-field">
             <label class="field-label" for="baseUrl">Base URL</label>
-            <input id="baseUrl" value="${escapeHtml(baseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
+            <input id="baseUrl" value="${escapeHtml(formBaseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
           </div>
           <div class="config-field">
             ${fieldLabel("模型名称", "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。", "modelName")}
-            <input id="modelName" list="${modelListId}" value="${escapeHtml(model)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
+            <input id="modelName" list="${modelListId}" value="${escapeHtml(formModel)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
             <datalist id="${modelListId}">${catalog.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
           </div>
-          ${cloudMode ? `<div class="config-field">${fieldLabel("API 密钥", "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。", "apiKey")}<input id="apiKey" type="password" placeholder="留空则保留当前密钥" /></div>` : ""}
+          ${cloudMode ? `<div class="config-field">${fieldLabel("连接名称", "只用于在列表里区分连接，留空就显示 Base URL。", "connectionLabel")}<input id="connectionLabel" value="${escapeHtml(selectedConnection?.label ?? "")}" placeholder="例如 主账号 / 备用厂商" /></div>` : ""}
+          ${cloudMode ? `<div class="config-field">${fieldLabel("API 密钥", "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。", "apiKey")}<input id="apiKey" type="password" placeholder="${selectedConnection?.has_api_key ? "留空则保留当前密钥" : "尚未设置密钥"}" /></div>` : ""}
           <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存配置</button><button class="button" data-action="fetch-models">${icon("refresh", "small")}获取模型列表</button><button class="button" data-action="test-model">测试连接</button></div>
           <div class="config-status-row"><span class="status ${catalogTone}"><span class="led"></span>${escapeHtml(catalogLabel)}</span>${hintMark(catalogTip)}<span class="status ${availabilityTone}"><span class="led"></span>${escapeHtml(availabilityLabel)}</span>${hintMark(availabilityTip)}</div>
           <div class="config-subgroup">
@@ -860,6 +937,7 @@ function renderConfigPanel(): string {
         </div>
         <div class="config-group">
           <div class="label-row"><span class="field-label">并发提醒</span>${hintMark("不同类型任务可能共用同一 API 连接，并发会叠加，可能触发服务商限流或费用增长。此面板不会全局锁定其他页面；已启动任务保留自己的配置快照，后续任务会在任务中心进行风险确认。")}</div>
+          ${toggleRow("spreadConnections", "并行任务分散到不同连接", `data-spread ${record(state.settings?.appearance) ? "" : ""} ${state.settings?.spread_tasks_across_connections ? "checked" : ""}`, "关闭时所有任务都用主用连接，多余的连接只作故障切换备用。打开后同时运行的任务会各自占用一条空闲连接，单独运行时仍然用主用连接。")}
           <p class="note">同一 API 连接的并发会叠加，可能触发限流或费用增长。</p>
         </div>
       </div>
@@ -2554,6 +2632,28 @@ async function saveWordReviewColor(mark: string, color: string): Promise<void> {
 
 async function saveModel(): Promise<void> {
   const role = state.modelRole;
+  const selected = activeConnection(role);
+  // Editing a secondary entry only touches that entry; the role-level PUT is
+  // reserved for the primary, which is what the legacy fields mirror.
+  if (selected && !selected.primary) {
+    state.modelRoles[role] = await client.request<JsonObject>(
+      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(selected.id)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          label: inputValue("connectionLabel"),
+          provider: inputValue("provider"),
+          model: inputValue("modelName"),
+          base_url: inputValue("baseUrl"),
+          api_key: inputValue("apiKey"),
+        }),
+      },
+    );
+    clearModelCatalog(role, "连接已变更，请重新获取模型列表。 ");
+    render();
+    showToast("连接已保存。密钥仅写入本机密钥存储。");
+    return;
+  }
   const mode = inputValue("engineMode", "cloud");
   const provider = inputValue("provider", mode === "cloud" ? "custom_openai" : "ollama");
   const baseUrl = inputValue("baseUrl");
@@ -2566,6 +2666,13 @@ async function saveModel(): Promise<void> {
   await client.request(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
   if (key && mode === "cloud") {
     await client.request(`/api/keys/${provider}`, { method: "PUT", body: JSON.stringify({ api_key: key, base_url: baseUrl }) });
+  }
+  const label = inputValue("connectionLabel");
+  if (selected && label !== (selected.label || "")) {
+    await client.request(
+      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(selected.id)}`,
+      { method: "PUT", body: JSON.stringify({ label }) },
+    );
   }
   clearModelCatalog(role, "连接已变更，请重新获取模型列表。 ");
   await refreshSettings();
@@ -3368,6 +3475,14 @@ app.addEventListener("change", (event) => {
   }
   /* 这些标记属性是无值的（`data-model-role`），dataset 读出来是空串。
      用真值判断会永远为假，下拉框点了没反应；和下面 data-tm-select-page 一样按存在性判断。 */
+  if (target.dataset.spread !== undefined) {
+    void persistSettings({
+      spread_tasks_across_connections: (target as HTMLInputElement).checked,
+    })
+      .then(render)
+      .catch((error) => showToast(errorMessage(error), true));
+    return;
+  }
   if (target.dataset.modelRole !== undefined) {
     state.modelRole = target.value;
     void refreshModelThroughput(state.modelRole).then(render).catch(() => render());
@@ -3604,6 +3719,55 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "confirm-task-risk") { const pending = state.pendingTaskRisk; state.modal = null; if (!pending?.preflight.confirmation_token) throw new Error("风险确认令牌已失效，请重新启动任务。"); return submitTaskStart(pending.surface, pending.payload, pending.preflight.confirmation_token); }
   if (action === "select-all-files" && surface) { state.selectedPaths[surface] = state.files[surface].map((file) => file.path); render(); return; }
   if (action === "select-no-files" && surface) { state.selectedPaths[surface] = []; render(); return; }
+  if (action === "select-connection") {
+    const role = text(target.dataset.role);
+    state.selectedConnection[role] = text(target.dataset.connectionId);
+    render();
+    return;
+  }
+  if (action === "add-connection") {
+    const role = text(target.dataset.role);
+    const payload = await client.request<JsonObject>(
+      `/api/models/roles/${encodeURIComponent(role)}/connections`,
+      { method: "POST", body: JSON.stringify({ label: "", base_url: "" }) },
+    );
+    state.modelRoles[role] = payload;
+    const added = Array.isArray(payload.connections) ? payload.connections : [];
+    // Jump straight to the new entry: it is empty and needs filling in.
+    if (added.length) {
+      state.selectedConnection[role] = text(record(added[added.length - 1]).id);
+    }
+    render();
+    showToast("已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。");
+    return;
+  }
+  if (action === "delete-connection") {
+    const role = text(target.dataset.role);
+    const connectionId = text(target.dataset.connectionId);
+    state.modelRoles[role] = await client.request<JsonObject>(
+      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(connectionId)}`,
+      { method: "DELETE" },
+    );
+    delete state.selectedConnection[role];
+    clearModelCatalog(role, "连接已变更，请重新获取模型列表。 ");
+    render();
+    showToast("连接已删除，其密钥也已从本机移除。");
+    return;
+  }
+  if (action === "promote-connection") {
+    const role = text(target.dataset.role);
+    const connectionId = text(target.dataset.connectionId);
+    const current = roleConnections(role).map((item) => item.id);
+    const ordered = [connectionId, ...current.filter((item) => item !== connectionId)];
+    state.modelRoles[role] = await client.request<JsonObject>(
+      `/api/models/roles/${encodeURIComponent(role)}/connections/reorder`,
+      { method: "POST", body: JSON.stringify({ ordered_ids: ordered }) },
+    );
+    await refreshSettings();
+    render();
+    showToast("已设为主用连接。");
+    return;
+  }
   if (action === "save-model") return saveModel();
   if (action === "fetch-models") return fetchModels();
   if (action === "test-model") return testModel();
