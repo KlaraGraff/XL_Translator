@@ -197,7 +197,7 @@ const state: {
   languages: LanguageOption[];
   sourceOptions: LanguageOption[];
   targetOptions: LanguageOption[];
-  languageSearch: Record<Surface, string>;
+  advancedOpen: Record<Surface, boolean>;
   sourceSelections: Record<Surface, string>;
   targetSelections: Record<Surface, string>;
   tmSourceLang: string;
@@ -270,7 +270,7 @@ const state: {
   languages: [],
   sourceOptions: [],
   targetOptions: [],
-  languageSearch: { excel: "", word: "", pdf: "" },
+  advancedOpen: { excel: false, word: false, pdf: false },
   sourceSelections: { excel: "auto", word: "auto", pdf: "" },
   targetSelections: { excel: "en", word: "en", pdf: "zh" },
   tmSourceLang: "zh",
@@ -714,6 +714,8 @@ function upsertTask(task: TaskStatus, focusWorkspace = false): ManagedTask {
 }
 
 function render(): void {
+  closeLanguageCombo();
+  hideTooltip(true);
   applyTheme(selectedTheme());
   const meta = pageMeta[state.view];
   const task = taskStatus();
@@ -726,9 +728,9 @@ function render(): void {
         ${navButton("word", "Word", "word")}
         ${navButton("pdf", "PDF", "pdf")}
         <div class="rail-divider"></div>
-        ${navButton("tm", "记忆库", "memory")}
         ${navButton("tasks", "任务", "tasks")}
-        <button class="rail-button ${state.panelOpen ? "active" : ""}" data-action="toggle-panel" data-tip="模型配置：全局应用于所有翻译页面">${icon("sliders")}<span>配置</span></button>
+        ${navButton("tm", "记忆库", "memory")}
+        <button class="rail-button ${state.panelOpen ? "active" : ""}" data-action="toggle-panel" data-tip="模型配置：打开时自动定位到当前板块使用的角色；保存后对所有页面生效。">${icon("sliders")}<span>配置</span></button>
         <div class="rail-spacer"></div>
         ${navButton("help", "帮助", "help")}
         ${navButton("maintenance", "维护", "wrench")}
@@ -760,7 +762,7 @@ function render(): void {
 }
 
 function navButton(view: View, label: string, iconName: IconName): string {
-  return `<button class="rail-button ${state.view === view ? "active" : ""}" data-action="navigate" data-view="${view}" data-tip="${label}">${icon(iconName)}<span>${label}</span></button>`;
+  return `<button class="rail-button ${state.view === view ? "active" : ""}" data-action="navigate" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`;
 }
 
 function renderConfigPanel(): string {
@@ -893,20 +895,65 @@ function renderTranslateView(surface: Surface): string {
       ${isPdf ? renderPdfScanReport() : ""}
     </div>
     <aside class="card right-column">
-      <span class="section-label">运行设置</span>
-      <div class="setting-card"><label class="field-label" for="language-search-${surface}">搜索语言</label><input id="language-search-${surface}" data-language-search="${surface}" value="${escapeHtml(state.languageSearch[surface])}" placeholder="中文名、English、ISO 代码" ${activeTask ? "disabled" : ""}/><label class="field-label" for="target-${surface}" style="margin-top:8px">目标语言</label><select id="target-${surface}" data-target="${surface}" ${activeTask ? "disabled" : ""}>${languageOptions(target, state.languageSearch[surface])}</select><div class="field-row" style="margin-top:8px"><button class="mini-button" data-action="custom-language-add" ${activeTask ? "disabled" : ""}>＋ 自定义语言</button><button class="mini-button" data-action="custom-language-manage" ${activeTask ? "disabled" : ""}>管理自定义</button></div></div>
-      ${surface === "excel" || surface === "word" ? renderDomainSettings(surface, activeTask) : ""}
-      ${isPdf ? `<p class="note">PDF 目标语言独立保存；页图翻译由模型识别原文，无需指定源语言。</p>` : `<label class="field-label" style="margin-top:10px" for="source-${surface}">源语言</label><select id="source-${surface}" data-source-language="${surface}" ${activeTask ? "disabled" : ""}>${sourceLanguageOptions(source, state.languageSearch[surface])}</select><p class="note">自动识别会在每个有候选文本的文件开始翻译前发送一次抽样预检。</p>`}
-      ${isPdf ? `<div class="toggle-row"><input id="pdfReview" type="checkbox" ${record(state.settings?.pdf).review_enabled ? "checked" : ""} data-pdf-review ${activeTask ? "disabled" : ""}/><label for="pdfReview">启用逐页审核模型</label></div>` : `<div class="toggle-row"><input id="untranslated-${surface}" type="checkbox" data-untranslated ${activeTask ? "disabled" : ""}/><label for="untranslated-${surface}">仅补译未翻译内容</label></div>`}
-      ${renderDetailedSettings(surface, activeTask)}
-      ${isExcel ? renderExcelStartPreflight(source, target) : ""}
-      ${isWord ? renderWordStartPreflight(source, target) : ""}
-      ${isPdf ? renderPdfStartPreflight() : ""}
-      <hr class="divider" />
-      ${running ? renderRunningPanel(running, percent) : `<div class="push"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button><p class="note">可执行 ${selectedPaths.length} / ${files.length} 个文件；任务启动后，日志与进度将通过 SSE 实时显示。</p></div>`}
+      <div class="right-scroll">
+        <span class="section-label">运行设置</span>
+        <div class="setting-card language-card">
+          ${renderLanguageField(surface, "target", target, activeTask)}
+          ${isPdf ? "" : renderLanguageField(surface, "source", source, activeTask)}
+        </div>
+        ${renderLanguageAlert(surface, source, target)}
+        ${renderSurfaceToggles(surface, activeTask)}
+        ${renderDetailedSettings(surface, activeTask)}
+        ${running ? renderRunningPanel(running, percent) : ""}
+      </div>
+      ${running ? "" : `<div class="right-footer"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button></div>`}
     </aside>
   </div></section>`;
 }
+
+/* 只有问号本身是热区，标题文字不再触发，避免鼠标扫过就弹提示。 */
+function hintMark(tip: string): string {
+  return tip ? `<button type="button" class="field-hint" data-tip="${escapeHtml(tip)}" aria-label="查看说明">?</button>` : "";
+}
+
+function fieldLabel(label: string, tip = "", forId = ""): string {
+  const element = `<label class="field-label"${forId ? ` for="${forId}"` : ""}>${escapeHtml(label)}</label>`;
+  return tip ? `<div class="label-row">${element}${hintMark(tip)}</div>` : element;
+}
+
+function toggleRow(id: string, label: string, attributes: string, tip = ""): string {
+  return `<div class="toggle-row"><input type="checkbox" id="${id}" ${attributes}/><label for="${id}">${escapeHtml(label)}</label>${hintMark(tip)}</div>`;
+}
+
+/* 语言目录要连上引擎才拿得到，首屏和离线时用这张表兜底，不然会露出 en / auto 这种代码。 */
+const LANGUAGE_FALLBACK_NAMES: Record<string, string> = {
+  auto: "自动识别", zh: "中文", en: "英文", ja: "日语", ko: "韩语", fr: "法文", de: "德文",
+  es: "西班牙语", pt: "葡萄牙语", ru: "俄语", it: "意大利语", ar: "阿拉伯语", vi: "越南语",
+  th: "泰语", id: "印度尼西亚语", km: "柬埔寨语（高棉语）", my: "缅甸语", si: "僧伽罗语",
+  et: "爱沙尼亚语", nl: "荷兰语", pl: "波兰语", tr: "土耳其语", hi: "印地语",
+};
+
+/* 只有目标语言会出现自定义语言，源语言列表不加这个后缀。 */
+function languageDisplay(options: LanguageOption[], code: string, markCustom = true): string {
+  const option = options.find((item) => item.code === code);
+  if (option) return `${option.display_name}${markCustom && option.builtin === false ? "（自定义）" : ""}`;
+  return LANGUAGE_FALLBACK_NAMES[code] ?? code;
+}
+
+function renderLanguageField(surface: Surface, kind: LanguageComboKind, selected: string, disabled: boolean): string {
+  const label = kind === "target" ? "目标语言" : "源语言";
+  const tip = kind === "target"
+    ? "直接输入中文名、English 或 ISO 代码即可筛选，也可点右侧箭头展开完整列表。"
+    : "选择“自动识别”时，每个有候选文本的文件会在开始翻译前抽样预检一次，只发送去重的代表性文本；手动指定源语言则不发送预检。";
+  const id = `lang-${kind}-${surface}`;
+  return `<div class="lang-field">${fieldLabel(label, tip, id)}<div class="combo"><input id="${id}" class="combo-input" type="text" role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false" data-lang-combo="${kind}" data-surface="${surface}" data-code="${escapeHtml(selected)}" value="${escapeHtml(languageDisplay(languageComboOptions(kind), selected, kind === "target"))}" placeholder="中/英文名或 ISO 代码" ${disabled ? "disabled" : ""}/><button type="button" class="combo-toggle" tabindex="-1" aria-label="展开${label}列表" ${disabled ? "disabled" : ""}>${icon("chevron", "small")}</button><div class="combo-list" role="listbox" hidden></div></div></div>`;
+}
+
+function renderLanguageAlert(surface: Surface, source: string, target: string): string {
+  if (surface === "pdf" || source === "auto" || source !== target) return "";
+  return `<p class="inline-alert">${icon("warn", "small")}源语言与目标语言相同，不能启动翻译。</p>`;
+}
+
 
 function renderDetailedSettings(surface: Surface, disabled: boolean): string {
   const output = surface === "excel"
@@ -917,10 +964,8 @@ function renderDetailedSettings(surface: Surface, disabled: boolean): string {
   const excelReview = excelReviewSettings();
   const wordBatch = record(state.settings?.word_batch);
   const wordReview = record(state.settings?.word_review);
-  const wordConversion = record(state.settings?.word_conversion);
   const pdf = record(state.settings?.pdf);
   const inputDisabled = disabled ? "disabled" : "";
-  const checked = (value: unknown) => value ? "checked" : "";
   const outputMode = output.use_custom_output_dir ? "custom" : "source";
   const outputPrefix = surface === "excel"
     ? excelOutputSettingPath
@@ -943,11 +988,41 @@ function renderDetailedSettings(surface: Surface, disabled: boolean): string {
     : surface === "word"
       ? "data-word-output-inspect"
       : "data-pdf-output-inspect";
-  const common = `<label class="field-label" for="output-${surface}">输出位置</label><select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="${surface}-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${inspectionAttribute} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
-  const excel = `<div class="toggle-row"><input type="checkbox" id="keepOriginal" data-setting-path="${outputPrefix("keep_original_sheets")}" ${checked(output.keep_original_sheets)} ${inputDisabled}/><label for="keepOriginal">保留每个工作表的“_原文”副本</label></div><div class="toggle-row"><input type="checkbox" id="formulaBackfill" data-setting-path="${outputPrefix("formula_display_value_backfill")}" ${checked(output.formula_display_value_backfill)} ${inputDisabled}/><label for="formulaBackfill">公式显示值按静态双语文本回填</label></div><div class="toggle-row"><input type="checkbox" id="excelAutofit" data-setting-path="${outputPrefix("enable_excel_autofit")}" ${checked(output.enable_excel_autofit)} ${inputDisabled}/><label for="excelAutofit">使用 Excel 精调行高（需本机 Excel）</label></div><div class="toggle-row"><input type="checkbox" id="lockRowHeight" data-setting-path="${outputPrefix("lock_row_height")}" ${checked(output.lock_row_height)} ${inputDisabled}/><label for="lockRowHeight">锁定行高并缩小字号（与精调行高互斥）</label></div><p class="note">默认使用 Python 估算行高；精调不可用时保留该结果并在文件结果中提示。最小字号仍可能溢出的单元格会进入复核。</p><div class="toggle-row"><input type="checkbox" id="reviewMark" data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}/><label for="reviewMark">标记需复核内容</label></div><label class="field-label">已有底色处理</label><select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖已有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字（默认）</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖底色</option></select>${renderReviewColors(inputDisabled)}`;
-  const word = `<div class="toggle-row"><input type="checkbox" id="wordNativePreprocessing" data-setting-path="word_conversion.use_native_preprocessing" ${checked(wordConversion.use_native_preprocessing)} ${inputDisabled}/><label for="wordNativePreprocessing">启用本地 Word / LibreOffice 自动编号预处理</label></div><p class="note">开启时依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动以 Python 保守物化编号。关闭时全程只使用 Python。所有预处理都发生在临时副本。</p><div class="toggle-row"><input type="checkbox" id="wordHighlight" data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}/><label for="wordHighlight">标记需复核内容</label></div><label class="field-label">已有高亮处理</label><select data-setting-path="word_review.existing_highlight_policy" ${inputDisabled}><option value="skip" ${text(wordReview.existing_highlight_policy) === "skip" ? "selected" : ""}>不覆盖已有高亮</option><option value="red_underline" ${text(wordReview.existing_highlight_policy) === "red_underline" ? "selected" : ""}>保留已有高亮并使用红字下划线（默认）</option><option value="overwrite" ${text(wordReview.existing_highlight_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖已有高亮</option></select>${renderWordReviewColors(inputDisabled)}<div class="toggle-row"><input type="checkbox" id="protectSchemeCover" ${inputDisabled}/><label for="protectSchemeCover">补译时保护方案封面与目录</label></div><p class="note">仅在“仅补译未翻译内容”开启时生效；默认关闭。目录和域代码始终保护，不作为普通正文翻译。</p><label class="field-label" for="wordBatchParagraphs">每批最大段落数</label><input id="wordBatchParagraphs" type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/><label class="field-label" for="wordBatchChars">每批字符上限</label><input id="wordBatchChars" type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/><label class="field-label" for="wordSplitThreshold">长段拆分阈值</label><input id="wordSplitThreshold" type="number" min="1" data-setting-path="word_batch.split_paragraph_chars" data-value-kind="number" value="${number(wordBatch.split_paragraph_chars, 3000)}" ${inputDisabled}/><p class="note">拆分只发生在模型请求层，响应后按原顺序回写，不会新增 Word 段落或破坏编号、数字和单位。拆分阈值会自动校正为不低于字符上限。</p><label class="field-label" for="wordStrictRetry">单段严格重试次数</label><input id="wordStrictRetry" type="number" min="1" max="8" data-setting-path="word_batch.strict_retry_attempts" data-value-kind="number" value="${number(wordBatch.strict_retry_attempts, 3)}" ${inputDisabled}/><p class="note">仅对空译文、明显不完整或质量校验失败段落重试；合格内容不会重复请求。未恢复内容保留原文并进入复核。</p>`;
-  const pdfControls = `<div class="toggle-row"><input type="checkbox" id="pdfCompressed" data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}/><label for="pdfCompressed">生成压缩 PDF</label></div><div class="toggle-row"><input type="checkbox" id="pdfImages" data-setting-path="pdf.include_images" ${checked(pdf.include_images)} ${inputDisabled}/><label for="pdfImages">允许选择独立图片文件</label></div><p class="note">此开关只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。</p><label class="field-label">单页重试次数</label><input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/><label class="field-label">页图并发（留空自动）</label><input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
-  return `<details class="advanced-settings"><summary>更多参数</summary><div class="advanced-settings-body">${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
+  const common = `${fieldLabel("输出位置", "“源目录内”会在每次任务的源目录根下新建唯一时间戳子目录，不覆盖源文件或历史结果；“自定义目录”写入你指定的根目录，同样在运行时才创建。", `output-${surface}`)}<select id="output-${surface}" data-setting-path="${outputPrefix("use_custom_output_dir")}" data-value-kind="custom-output" ${inputDisabled}><option value="source" ${outputMode === "source" ? "selected" : ""}>源目录内</option><option value="custom" ${outputMode === "custom" ? "selected" : ""}>自定义目录</option></select><div class="output-path-row"><input id="${surface}-output-path" value="${escapeHtml(text(output.custom_output_dir))}" placeholder="自定义输出根目录（运行时才创建）" data-setting-path="${outputPrefix("custom_output_dir")}" ${inspectionAttribute} ${inputDisabled}/>${outputPicker}</div>${outputInspection}`;
+  const languageExtras = `${fieldLabel("自定义目标语言", "自定义语言只能作为目标语言使用；创建后内部代码不可更改。")}<div class="field-row"><button class="mini-button" data-action="custom-language-add" ${inputDisabled}>＋ 自定义语言</button><button class="mini-button" data-action="custom-language-manage" ${inputDisabled}>管理自定义</button></div>`;
+  const domain = surface === "excel" || surface === "word" ? renderDomainSettings(surface, disabled) : "";
+  const excel = `${fieldLabel("已有底色处理", "单元格本身已有底色时，复核标记的处理方式。")}<select data-setting-path="excel_review.existing_fill_policy" ${inputDisabled}><option value="skip" ${text(excelReview.existing_fill_policy) === "skip" ? "selected" : ""}>不覆盖已有底色</option><option value="red_font" ${text(excelReview.existing_fill_policy) === "red_font" ? "selected" : ""}>保留底色并使用红字（默认）</option><option value="overwrite" ${text(excelReview.existing_fill_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖底色</option></select>${renderReviewColors(inputDisabled)}`;
+  const word = `${fieldLabel("已有高亮处理", "段落本身已有高亮时，复核标记的处理方式。")}<select data-setting-path="word_review.existing_highlight_policy" ${inputDisabled}><option value="skip" ${text(wordReview.existing_highlight_policy) === "skip" ? "selected" : ""}>不覆盖已有高亮</option><option value="red_underline" ${text(wordReview.existing_highlight_policy) === "red_underline" ? "selected" : ""}>保留已有高亮并使用红字下划线（默认）</option><option value="overwrite" ${text(wordReview.existing_highlight_policy) === "overwrite" ? "selected" : ""}>以复核色覆盖已有高亮</option></select>${renderWordReviewColors(inputDisabled)}${fieldLabel("每批最大段落数", "单次模型请求最多包含的段落数量。", "wordBatchParagraphs")}<input id="wordBatchParagraphs" type="number" min="1" data-setting-path="word_batch.max_paragraphs_per_batch" data-value-kind="number" value="${number(wordBatch.max_paragraphs_per_batch, 30)}" ${inputDisabled}/>${fieldLabel("每批字符上限", "单次模型请求的字符上限，超出会自动分批。", "wordBatchChars")}<input id="wordBatchChars" type="number" min="1" data-setting-path="word_batch.max_chars_per_batch" data-value-kind="number" value="${number(wordBatch.max_chars_per_batch, 3000)}" ${inputDisabled}/>${fieldLabel("长段拆分阈值", "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位。阈值会自动校正为不低于字符上限。", "wordSplitThreshold")}<input id="wordSplitThreshold" type="number" min="1" data-setting-path="word_batch.split_paragraph_chars" data-value-kind="number" value="${number(wordBatch.split_paragraph_chars, 3000)}" ${inputDisabled}/>${fieldLabel("单段严格重试次数", "仅对空译文、明显不完整或质量校验失败的段落重试；合格内容不会重复请求，未恢复内容保留原文并进入复核。", "wordStrictRetry")}<input id="wordStrictRetry" type="number" min="1" max="8" data-setting-path="word_batch.strict_retry_attempts" data-value-kind="number" value="${number(wordBatch.strict_retry_attempts, 3)}" ${inputDisabled}/>`;
+  const pdfControls = `${fieldLabel("单页重试次数", "单页翻译失败后的重试次数。")}<input type="number" min="0" max="10" data-setting-path="pdf.page_retry_attempts" data-value-kind="number" value="${number(pdf.page_retry_attempts, 2)}" ${inputDisabled}/>${fieldLabel("页图并发（留空自动）", "同时生成页图的并发数；留空由应用按机器性能决定。")}<input type="number" min="1" data-setting-path="pdf.page_generation_concurrency" data-value-kind="optional-number" value="${escapeHtml(text(pdf.page_generation_concurrency === null ? "" : pdf.page_generation_concurrency))}" ${inputDisabled}/>`;
+  return `<details class="advanced-settings" data-advanced="${surface}" ${state.advancedOpen[surface] ? "open" : ""}><summary>更多参数</summary><div class="advanced-settings-body">${languageExtras}${domain}${common}${surface === "excel" ? excel : surface === "word" ? word : pdfControls}</div></details>`;
+}
+
+/* 勾选项和语言一样留在面板外层，不收进“更多参数”。 */
+function renderSurfaceToggles(surface: Surface, disabled: boolean): string {
+  const output = surface === "excel"
+    ? excelOutputSettings()
+    : surface === "word"
+      ? wordOutputSettings()
+      : pdfOutputSettings();
+  const inputDisabled = disabled ? "disabled" : "";
+  const checked = (value: unknown) => value ? "checked" : "";
+  const outputPrefix = surface === "excel"
+    ? excelOutputSettingPath
+    : surface === "word"
+      ? wordOutputSettingPath
+      : pdfOutputSettingPath;
+  if (surface === "pdf") {
+    const pdf = record(state.settings?.pdf);
+    return `<div class="toggle-group">${toggleRow("pdfReview", "启用逐页审核模型", `${checked(pdf.review_enabled)} data-pdf-review ${inputDisabled}`, "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。")}${toggleRow("pdfCompressed", "生成压缩 PDF", `data-setting-path="pdf.generate_compressed_pdf" ${checked(pdf.generate_compressed_pdf)} ${inputDisabled}`, "在原始输出之外额外生成一份体积更小的 PDF。")}${toggleRow("pdfImages", "允许选择独立图片文件", `data-setting-path="pdf.include_images" ${checked(pdf.include_images)} ${inputDisabled}`, "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。")}</div>`;
+  }
+  const scope = toggleRow(`untranslated-${surface}`, "仅补译未翻译内容", `data-untranslated ${inputDisabled}`, "只翻译还没有译文的内容，已翻译部分保持不变。");
+  if (surface === "excel") {
+    const excelReview = excelReviewSettings();
+    return `<div class="toggle-group">${scope}${toggleRow("keepOriginal", "保留每个工作表的“_原文”副本", `data-setting-path="${outputPrefix("keep_original_sheets")}" ${checked(output.keep_original_sheets)} ${inputDisabled}`, "输出文件里为每个工作表额外保留一份未翻译的原始副本。")}${toggleRow("formulaBackfill", "公式显示值按静态双语文本回填", `data-setting-path="${outputPrefix("formula_display_value_backfill")}" ${checked(output.formula_display_value_backfill)} ${inputDisabled}`, "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。")}${toggleRow("excelAutofit", "使用 Excel 精调行高", `data-setting-path="${outputPrefix("enable_excel_autofit")}" ${checked(output.enable_excel_autofit)} ${inputDisabled}`, "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。")}${toggleRow("lockRowHeight", "锁定行高并缩小字号", `data-setting-path="${outputPrefix("lock_row_height")}" ${checked(output.lock_row_height)} ${inputDisabled}`, "与“使用 Excel 精调行高”互斥。缩到最小字号仍会溢出的单元格将进入复核。")}${toggleRow("reviewMark", "标记需复核内容", `data-setting-path="excel_review.mark_review_items" ${checked(excelReview.mark_review_items)} ${inputDisabled}`, "为语义校验接受、保留原文和疑似原文异常的单元格标注底色，便于人工复核。")}</div>`;
+  }
+  const wordReview = record(state.settings?.word_review);
+  const wordConversion = record(state.settings?.word_conversion);
+  return `<div class="toggle-group">${scope}${toggleRow("wordNativePreprocessing", "启用本地自动编号预处理", `data-setting-path="word_conversion.use_native_preprocessing" ${checked(wordConversion.use_native_preprocessing)} ${inputDisabled}`, "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。")}${toggleRow("wordHighlight", "标记需复核内容", `data-setting-path="word_review.highlight_unresolved" ${checked(wordReview.highlight_unresolved)} ${inputDisabled}`, "为保留原文或质量校验未通过的段落加高亮，便于人工复核。")}${toggleRow("protectSchemeCover", "补译时保护方案封面与目录", inputDisabled, "仅在“仅补译未翻译内容”开启时生效，默认关闭。目录和域代码始终受保护，不会作为普通正文翻译。")}</div>`;
 }
 
 function renderDomainSettings(surface: TranslationSurface, disabled: boolean): string {
@@ -969,14 +1044,14 @@ function renderDomainSettings(surface: TranslationSurface, disabled: boolean): s
   const restore = !isCustom
     ? `<button class="mini-button" data-action="restore-domain-prompt" data-surface="${surface}" ${disabledAttr}>恢复内置默认</button>`
     : "";
-  return `<div class="setting-card domain-settings"><label class="field-label" for="${prefix}DomainPreset">专业领域（${surface === "excel" ? "Excel" : "Word"} 独立）</label><select id="${prefix}DomainPreset" data-domain-preset="${surface}" ${disabledAttr}>${options.map((item) => `<option value="${item}" ${item === preset ? "selected" : ""}>${item}</option>`).join("")}</select><label class="field-label" for="${prefix}DomainPrompt" style="margin-top:8px">${promptLabel}</label><textarea id="${prefix}DomainPrompt" data-domain-prompt="${surface}" ${disabledAttr} placeholder="${isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示"}">${escapeHtml(prompt)}</textarea><div class="field-row domain-actions"><button class="mini-button primary" data-action="save-domain-prompt" data-surface="${surface}" ${disabledAttr}>${saveLabel}</button>${restore}</div><p class="note">固定输出 JSON、格式/占位符保护、目标语言与逐条原文语言回报由应用追加，不能被领域 Prompt 覆盖。</p></div>`;
+  return `<div class="domain-settings">${fieldLabel(`专业领域（${surface === "excel" ? "Excel" : "Word"} 独立）`, "领域 Prompt 只决定用词风格。固定输出 JSON、格式与占位符保护、目标语言和逐条原文语言回报由应用追加，不能被覆盖。", `${prefix}DomainPreset`)}<select id="${prefix}DomainPreset" data-domain-preset="${surface}" ${disabledAttr}>${options.map((item) => `<option value="${item}" ${item === preset ? "selected" : ""}>${item}</option>`).join("")}</select>${fieldLabel(promptLabel, isCustom ? "自定义 Prompt 完全由你决定，保存后立即对该页面生效。" : "可直接编辑内置 Prompt 并保存为覆盖，随时可恢复内置默认。", `${prefix}DomainPrompt`)}<textarea id="${prefix}DomainPrompt" data-domain-prompt="${surface}" ${disabledAttr} placeholder="${isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示"}">${escapeHtml(prompt)}</textarea><div class="field-row domain-actions"><button class="mini-button primary" data-action="save-domain-prompt" data-surface="${surface}" ${disabledAttr}>${saveLabel}</button>${restore}</div></div>`;
 }
 
 function renderReviewColors(disabled: string): string {
   const colors = record(excelReviewSettings().mark_colors);
   const colorField = (mark: string, label: string, fallback: string) => {
     const value = text(colors[mark], fallback).replace(/^#/, "");
-    return `<label class="field-label">${label}</label><input type="color" value="#${escapeHtml(value)}" data-review-color="${mark}" ${disabled}/>`;
+    return `<div class="color-row"><span class="field-label">${label}</span><input type="color" value="#${escapeHtml(value)}" data-review-color="${mark}" ${disabled}/></div>`;
   };
   return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
 }
@@ -985,7 +1060,7 @@ function renderWordReviewColors(disabled: string): string {
   const colors = record(record(state.settings?.word_review).mark_colors);
   const colorField = (mark: string, label: string, fallback: string) => {
     const value = text(colors[mark], fallback).replace(/^#/, "");
-    return `<label class="field-label">${label}（Word 高亮）</label><input type="color" value="#${escapeHtml(value)}" data-word-review-color="${mark}" ${disabled}/>`;
+    return `<div class="color-row"><span class="field-label">${label}</span><input type="color" value="#${escapeHtml(value)}" data-word-review-color="${mark}" ${disabled}/></div>`;
   };
   return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
 }
@@ -1012,7 +1087,7 @@ function renderRunningPanel(running: ManagedTask, percent: number): string {
         ? `<button class="button block large" style="margin-top:10px" data-action="pause-pdf-task" data-task-id="${escapeHtml(taskId)}">暂停提交</button>`
         : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}安全停止</button>`;
   const streamNote = running.streamState === "reconnecting" ? `<p class="note">事件流暂时断开，正在从事件 ${running.lastEventId} 补拉，不会重复处理已有进度。</p>` : "";
-  return `<div class="push"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${streamNote}${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
+  return `<div class="run-panel"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${streamNote}${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
 }
 
 function redactedText(value: unknown, fallback = ""): string {
@@ -1555,52 +1630,6 @@ function renderPdfScanReport(): string {
   return `${state.files.pdf.length || skipped.length ? `<details class="word-recovery pdf-scan-overview" open><summary>PDF / 图片扫描概况</summary><div class="result-kpis"><span><b>${pdfs}</b>PDF</span><span><b>${images}</b>独立图片</span><span><b>${units}</b>页 / 图片</span><span><b>${skipped.length}</b>跳过</span></div><p class="note">独立图片输入：${includeImages ? "已开启" : "未开启"}；${mixed ? "当前清单包含 PDF 与图片，会在同一任务中按各自输出规则处理。" : "PDF 与独立图片均可扫描，图片需在更多参数中开启。"}</p>${riskMessage ? `<p class="note">${escapeHtml(riskMessage)}</p>` : ""}</details>` : ""}${skipped.length ? `<details class="scan-skipped" open><summary>${icon("warn", "small")}PDF / 图片跳过项目（${skipped.length}）</summary><ul>${skippedRows}</ul></details>` : ""}`;
 }
 
-function renderExcelStartPreflight(source: string, target: string): string {
-  const xlsCount = selectedExcelXlsCount();
-  const manualSameLanguage = source !== "auto" && source === target;
-  const output = excelOutputSettings();
-  const outputState = Boolean(output.use_custom_output_dir)
-    ? state.excelOutputInspection.message
-    : "将在每次任务的源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
-  return `<details class="excel-preflight" open><summary>启动前检查</summary><ul>
-    <li class="${manualSameLanguage ? "error" : ""}">${manualSameLanguage ? "源语言与目标语言相同，不能启动翻译。" : source === "auto" ? "自动模式会对每个有候选文本的文件单独抽样预检一次；仅发送去重的代表性文本，不上传完整工作簿。" : "手动源语言不发送预检，并以当前选择作为 TM 查询和正常自动入库的权威语言。"}</li>
-    <li>${escapeHtml(outputState)}</li>
-    ${xlsCount ? `<li class="warn">已选 ${xlsCount} 个 .xls：启动时会优先使用 Excel 自动化高保真转换；若不可用，必须由你明确确认兼容转换，绝不会静默降级。</li>` : ""}
-    <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
-  </ul></details>`;
-}
-
-function renderWordStartPreflight(source: string, target: string): string {
-  const docCount = selectedWordDocCount();
-  const manualSameLanguage = source !== "auto" && source === target;
-  const output = wordOutputSettings();
-  const outputState = Boolean(output.use_custom_output_dir)
-    ? state.wordOutputInspection.message
-    : "将在每次任务的源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
-  return `<details class="word-preflight" open><summary>启动前检查</summary><ul>
-    <li class="${manualSameLanguage ? "error" : ""}">${manualSameLanguage ? "源语言与目标语言相同，不能启动翻译。" : source === "auto" ? "自动模式会在每个有候选文本的 Word 文件开始前发送一次代表性文本预检；不上传完整文档，预检语言会作为 TM 查询与自动入库边界。" : "手动源语言不发送预检，并以当前选择作为 TM 查询和正常自动入库的权威语言。"}</li>
-    <li>${escapeHtml(outputState)}</li>
-    ${docCount ? `<li class="warn">已选 ${docCount} 个 .doc：最终产物始终为 .docx。开始前必须明确选择“优先高保真”或“允许兼容转换”；选择高保真后，单文件失败不会静默降级。</li>` : ""}
-    <li>模型未测试只会显示提醒，不阻断专业用户启动；无效语言对、输出目录或模型基本配置会在任务创建前阻止请求。</li>
-  </ul></details>`;
-}
-
-function renderPdfStartPreflight(): string {
-  const output = pdfOutputSettings();
-  const reviewEnabled = Boolean(pdfSettings().review_enabled);
-  const outputState = Boolean(output.use_custom_output_dir)
-    ? state.pdfOutputInspection.message
-    : "将在源目录根下创建唯一时间戳输出子目录，不会覆盖源文件或历史结果。";
-  const reviewRole = record(state.modelRoles.pdf_review);
-  const availability = text(reviewRole.availability_status, "unknown");
-  const reviewWarning = reviewEnabled && availability === "unavailable"
-    ? "审核模型当前配置已测试失败；开始时必须明确确认继续，或关闭审核。"
-    : reviewEnabled
-      ? "逐页审核已开启，审核模型的配置、连接状态与本次任务一同冻结。"
-      : "逐页审核未开启。";
-  return `<details class="word-preflight pdf-preflight" open><summary>启动前检查</summary><ul><li>PDF/图片不读写记忆库；页图翻译由模型识别原文，目标语言、输出策略与模型配置均在启动时冻结。</li><li>${escapeHtml(outputState)}</li><li class="${reviewEnabled && availability === "unavailable" ? "warn" : ""}">${escapeHtml(reviewWarning)}</li><li>暂停只停止提交新页面，已提交页面会安全收尾；可继续同一任务，或结束暂停并保留素材、清单和报告。</li></ul></details>`;
-}
-
 function renderTmView(): string {
   const stats = state.tmStats;
   const totalPages = Math.max(1, Math.ceil(state.tmTotal / state.tmPageSize));
@@ -1757,22 +1786,17 @@ function languageMatches(option: LanguageOption, query: string): boolean {
     .some((value) => value.toLocaleLowerCase().includes(needle));
 }
 
-function languageOptions(selected: string, query = ""): string {
-  const options = state.targetOptions.filter((option) => languageMatches(option, query));
-  return options.map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === selected ? "selected" : ""}>${escapeHtml(option.display_name)}${option.builtin === false ? "（自定义）" : ""}</option>`).join("");
-}
-
-function sourceLanguageOptions(selected: string, query = ""): string {
-  const options = state.sourceOptions.filter((option) => languageMatches(option, query));
-  return options.map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === selected ? "selected" : ""}>${escapeHtml(option.display_name)}</option>`).join("");
-}
-
 function providerLabel(provider: string): string {
   return ({ custom_openai: "OpenAI 兼容", openai: "OpenAI", claude: "Claude", zhipu: "智谱 GLM", dashscope: "阿里百炼", siliconflow: "硅基流动", ollama: "Ollama", lm_studio: "LM Studio", custom_local: "自定义本地服务" } as Record<string, string>)[provider] ?? provider;
 }
 
 function surfaceLabel(surface: Surface): string {
   return ({ excel: "Excel", word: "Word", pdf: "PDF" } as Record<Surface, string>)[surface];
+}
+
+/* Excel 和 Word 共用翻译模型；PDF 走图像生成模型。其余页面不改当前角色。 */
+function surfaceModelRole(view: View): string {
+  return ({ excel: "translation", word: "translation", pdf: "image" } as Record<string, string>)[view] ?? "";
 }
 
 function logTone(level: string): string {
@@ -3429,8 +3453,6 @@ app.addEventListener("change", (event) => {
   if (target.dataset.setting === "domain_preset") {
     void persistSettings({ domain_preset: target.value }).then(render).catch((error) => showToast(errorMessage(error), true));
   }
-  if (target.dataset.target) void saveLanguage(target.dataset.target as Surface, target.value).catch((error) => showToast(errorMessage(error), true));
-  if (target.dataset.sourceLanguage !== undefined) void saveSourceLanguage(target.dataset.sourceLanguage as Surface, target.value).catch((error) => showToast(errorMessage(error), true));
   if (target.dataset.pdfReview !== undefined) void savePdfReview((target as HTMLInputElement).checked).catch((error) => showToast(errorMessage(error), true));
 });
 
@@ -3440,6 +3462,11 @@ let pdfOutputInspectionTimer: number | undefined;
 
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement;
+  if (target.dataset.langCombo) {
+    const combo = readLanguageCombo(target);
+    if (combo) openLanguageCombo(combo, target.value);
+    return;
+  }
   if (target.dataset.excelOutputInspect !== undefined) {
     if (excelOutputInspectionTimer !== undefined) window.clearTimeout(excelOutputInspectionTimer);
     excelOutputInspectionTimer = window.setTimeout(() => {
@@ -3458,13 +3485,6 @@ app.addEventListener("input", (event) => {
       void inspectPdfOutputDirectory(target.value);
     }, 180);
   }
-  if (!target.dataset.languageSearch) return;
-  const surface = target.dataset.languageSearch as Surface;
-  state.languageSearch[surface] = target.value;
-  render();
-  const next = document.querySelector<HTMLInputElement>(`#language-search-${surface}`);
-  next?.focus();
-  next?.setSelectionRange(target.value.length, target.value.length);
 });
 
 async function handleAction(target: HTMLElement): Promise<void> {
@@ -3484,7 +3504,20 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "show-task-workspace" && taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") { state.workspaceTaskIds[task.surface] = taskId; state.view = task.surface; render(); } return; }
   if (action === "task-local-file") return openTaskLocalFile(text(target.dataset.path), target.dataset.reveal === "1");
   if (action === "task-copy-path") return copyTaskPath(text(target.dataset.path));
-  if (action === "toggle-panel") { state.panelOpen = !state.panelOpen; await persistSettings({ appearance: { model_config_panel_open: state.panelOpen } }); render(); return; }
+  if (action === "toggle-panel") {
+    state.panelOpen = !state.panelOpen;
+    // 从某个翻译板块打开时，直接定位到该板块实际使用的模型角色。
+    if (state.panelOpen) {
+      const role = surfaceModelRole(state.view);
+      if (role && role !== state.modelRole) {
+        state.modelRole = role;
+        void refreshModelThroughput(role).then(render).catch(() => render());
+      }
+    }
+    await persistSettings({ appearance: { model_config_panel_open: state.panelOpen } });
+    render();
+    return;
+  }
   if (action === "cycle-theme") { const next = selectedTheme() === "system" ? "light" : selectedTheme() === "light" ? "dark" : "system"; await persistSettings({ appearance: { theme: next } }); render(); return; }
   if (action === "choose-source" && surface) { state.sourcePickerSurface = surface; state.modal = "source-picker"; render(); return; }
   if (action === "choose-source-file" && surface) { await chooseSource(surface, false); state.sourcePickerSurface = null; state.modal = null; render(); return; }
@@ -3609,5 +3642,240 @@ async function bootstrap(): Promise<void> {
 
 window.addEventListener("focus", reconnectActiveTasks);
 window.addEventListener("online", reconnectActiveTasks);
+
+/* ---------- 悬浮说明 ---------- */
+/* 说明文字统一收进 data-tip；浮层挂在 body 上，避免被右栏和“更多参数”的滚动容器裁掉。 */
+
+const tooltipLayer = document.createElement("div");
+tooltipLayer.className = "tooltip-layer";
+tooltipLayer.setAttribute("role", "tooltip");
+tooltipLayer.hidden = true;
+document.body.appendChild(tooltipLayer);
+const TOOLTIP_DELAY_MS = 500;
+let tooltipAnchor: HTMLElement | null = null;
+let tooltipTimer: number | undefined;
+let tooltipPinned = false;
+
+function showTooltip(anchor: HTMLElement): void {
+  const tip = text(anchor.dataset.tip);
+  if (!tip) return;
+  tooltipAnchor = anchor;
+  tooltipLayer.textContent = tip;
+  tooltipLayer.hidden = false;
+  const box = anchor.getBoundingClientRect();
+  const size = tooltipLayer.getBoundingClientRect();
+  const above = box.top - size.height - 8;
+  tooltipLayer.style.left = `${Math.min(Math.max(8, box.left + box.width / 2 - size.width / 2), Math.max(8, window.innerWidth - size.width - 8))}px`;
+  tooltipLayer.style.top = `${above >= 8 ? above : box.bottom + 8}px`;
+  tooltipLayer.classList.add("visible");
+}
+
+/* 悬停要停留一会儿才弹，点击则钉住不放，方便读完长句。 */
+function hideTooltip(force = false): void {
+  if (tooltipTimer !== undefined) { window.clearTimeout(tooltipTimer); tooltipTimer = undefined; }
+  if (tooltipPinned && !force) return;
+  tooltipPinned = false;
+  if (!tooltipAnchor) return;
+  tooltipAnchor = null;
+  tooltipLayer.classList.remove("visible");
+  tooltipLayer.hidden = true;
+}
+
+function tooltipTarget(event: Event): HTMLElement | null {
+  return (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-tip]") ?? null;
+}
+
+document.addEventListener("pointerover", (event) => {
+  if (tooltipPinned) return;
+  const anchor = tooltipTarget(event);
+  if (anchor === tooltipAnchor) return;
+  hideTooltip();
+  if (anchor) tooltipTimer = window.setTimeout(() => showTooltip(anchor), TOOLTIP_DELAY_MS);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  const anchor = tooltipTarget(event);
+  if (!anchor) { hideTooltip(true); return; }
+  // 问号嵌在 label / 卡片里，别让点击顺带触发外层控件。
+  event.preventDefault();
+  event.stopPropagation();
+  const wasPinned = tooltipPinned && tooltipAnchor === anchor;
+  hideTooltip(true);
+  if (wasPinned) return;
+  showTooltip(anchor);
+  tooltipPinned = true;
+}, true);
+
+document.addEventListener("focusin", (event) => {
+  const anchor = tooltipTarget(event);
+  hideTooltip(true);
+  if (anchor) showTooltip(anchor);
+});
+
+window.addEventListener("scroll", () => hideTooltip(true), true);
+window.addEventListener("resize", () => hideTooltip(true));
+
+/* ---------- 语言选择框 ---------- */
+/* 输入即筛选，不触发整页重绘：输入法组合期间 DOM 不被替换，中文可以正常输入。 */
+
+type LanguageComboKind = "target" | "source";
+type LanguageCombo = { input: HTMLInputElement; list: HTMLDivElement; kind: LanguageComboKind; surface: Surface };
+
+let activeCombo: LanguageCombo | null = null;
+let comboIndex = -1;
+
+function languageComboOptions(kind: LanguageComboKind): LanguageOption[] {
+  return kind === "target" ? state.targetOptions : state.sourceOptions;
+}
+
+function readLanguageCombo(element: HTMLElement | null): LanguageCombo | null {
+  const root = element?.closest<HTMLElement>(".combo") ?? null;
+  const input = root?.querySelector<HTMLInputElement>("input[data-lang-combo]") ?? null;
+  const list = root?.querySelector<HTMLDivElement>(".combo-list") ?? null;
+  if (!input || !list) return null;
+  return { input, list, kind: input.dataset.langCombo as LanguageComboKind, surface: input.dataset.surface as Surface };
+}
+
+function comboItems(combo: LanguageCombo): HTMLElement[] {
+  return [...combo.list.querySelectorAll<HTMLElement>(".combo-option")];
+}
+
+function positionComboList(combo: LanguageCombo): void {
+  const box = combo.input.getBoundingClientRect();
+  const below = window.innerHeight - box.bottom - 12;
+  const above = box.top - 12;
+  const dropUp = below < 180 && above > below;
+  combo.list.style.left = `${box.left}px`;
+  combo.list.style.width = `${box.width}px`;
+  combo.list.style.maxHeight = `${Math.max(120, Math.min(280, dropUp ? above : below))}px`;
+  combo.list.style.top = dropUp ? "auto" : `${box.bottom + 4}px`;
+  combo.list.style.bottom = dropUp ? `${window.innerHeight - box.top + 4}px` : "auto";
+}
+
+function paintComboList(combo: LanguageCombo, query: string): void {
+  const selected = text(combo.input.dataset.code);
+  const options = languageComboOptions(combo.kind).filter((option) => languageMatches(option, query));
+  combo.list.innerHTML = options.length
+    ? options.map((option) => `<div class="combo-option${option.code === selected ? " selected" : ""}" role="option" aria-selected="${option.code === selected}" data-code="${escapeHtml(option.code)}"><span>${escapeHtml(option.display_name)}${combo.kind === "target" && option.builtin === false ? "（自定义）" : ""}</span><small>${escapeHtml(option.code)}</small></div>`).join("")
+    : `<div class="combo-empty">没有匹配的语言</div>`;
+  comboIndex = options.findIndex((option) => option.code === selected);
+  const items = comboItems(combo);
+  if (comboIndex >= 0 && items[comboIndex]) {
+    items[comboIndex].classList.add("active");
+    items[comboIndex].scrollIntoView({ block: "nearest" });
+  }
+  positionComboList(combo);
+}
+
+function openLanguageCombo(combo: LanguageCombo, query = ""): void {
+  if (combo.input.disabled) return;
+  if (activeCombo && activeCombo.input !== combo.input) closeLanguageCombo();
+  activeCombo = combo;
+  combo.list.hidden = false;
+  combo.input.setAttribute("aria-expanded", "true");
+  paintComboList(combo, query);
+}
+
+function closeLanguageCombo(): void {
+  if (!activeCombo) return;
+  activeCombo.list.hidden = true;
+  activeCombo.input.setAttribute("aria-expanded", "false");
+  activeCombo = null;
+  comboIndex = -1;
+}
+
+function restoreComboText(combo: LanguageCombo): void {
+  combo.input.value = languageDisplay(languageComboOptions(combo.kind), text(combo.input.dataset.code), combo.kind === "target");
+}
+
+function commitLanguageCombo(combo: LanguageCombo, code: string): void {
+  const changed = code !== text(combo.input.dataset.code);
+  combo.input.dataset.code = code;
+  closeLanguageCombo();
+  restoreComboText(combo);
+  if (!changed) return;
+  const saved = combo.kind === "target"
+    ? saveLanguage(combo.surface, code)
+    : saveSourceLanguage(combo.surface, code);
+  void saved.catch((error) => showToast(errorMessage(error), true));
+}
+
+function highlightComboItem(combo: LanguageCombo, next: number): void {
+  const items = comboItems(combo);
+  if (!items.length) return;
+  comboIndex = (next + items.length) % items.length;
+  items.forEach((item, index) => item.classList.toggle("active", index === comboIndex));
+  items[comboIndex].scrollIntoView({ block: "nearest" });
+}
+
+app.addEventListener("pointerdown", (event) => {
+  const element = event.target as HTMLElement | null;
+  const option = element?.closest<HTMLElement>(".combo-option") ?? null;
+  if (option) {
+    event.preventDefault();
+    const combo = readLanguageCombo(option);
+    if (combo) commitLanguageCombo(combo, text(option.dataset.code));
+    return;
+  }
+  const toggle = element?.closest<HTMLElement>(".combo-toggle") ?? null;
+  if (!toggle) return;
+  event.preventDefault();
+  const combo = readLanguageCombo(toggle);
+  if (!combo) return;
+  if (activeCombo?.input === combo.input) { closeLanguageCombo(); return; }
+  combo.input.focus();
+  combo.input.select();
+  openLanguageCombo(combo);
+});
+
+app.addEventListener("focusin", (event) => {
+  const element = event.target as HTMLElement;
+  const combo = readLanguageCombo(element);
+  if (combo && element === combo.input) {
+    openLanguageCombo(combo);
+    combo.input.select();
+    return;
+  }
+  closeLanguageCombo();
+});
+
+app.addEventListener("focusout", (event) => {
+  const combo = readLanguageCombo(event.target as HTMLElement);
+  if (!combo) return;
+  window.setTimeout(() => {
+    if (document.activeElement === combo.input) return;
+    restoreComboText(combo);
+    if (activeCombo?.input === combo.input) closeLanguageCombo();
+  }, 0);
+});
+
+app.addEventListener("keydown", (event) => {
+  const element = event.target as HTMLElement;
+  const combo = readLanguageCombo(element);
+  if (!combo || element !== combo.input || event.isComposing) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!activeCombo) { openLanguageCombo(combo, combo.input.value); return; }
+    highlightComboItem(combo, event.key === "ArrowDown" ? comboIndex + 1 : comboIndex - 1);
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    const chosen = comboItems(combo)[comboIndex] ?? comboItems(combo)[0];
+    if (chosen) commitLanguageCombo(combo, text(chosen.dataset.code));
+    return;
+  }
+  if (event.key === "Escape") {
+    closeLanguageCombo();
+    restoreComboText(combo);
+  }
+});
+
+/* “更多参数”的展开状态要跨重绘保留，否则改一个选项就会整块收起。 */
+app.addEventListener("toggle", (event) => {
+  const element = event.target as HTMLElement;
+  const surface = element.dataset?.advanced as Surface | undefined;
+  if (surface) state.advancedOpen[surface] = (element as HTMLDetailsElement).open;
+}, true);
 
 void bootstrap();

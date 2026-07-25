@@ -127,7 +127,8 @@
 body {
   margin: 0;
   min-width: 980px;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: var(--ground);
   color: var(--ink);
   font-family: var(--font);
@@ -137,9 +138,10 @@ body {
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 
+/* 外壳锁定视口高度，滚动交给各自的内部区域，整页不再上下滑动。 */
 .app-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -214,7 +216,7 @@ button { cursor: pointer; }
 .field-label, .section-label { display: block; margin: 0 0 5px; color: var(--ink-2); font-size: 11px; font-weight: 650; }
 .section-label { color: var(--ink-3); letter-spacing: .1em; text-transform: uppercase; }
 
-.stage { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.stage { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
 .topbar { display: flex; min-height: 70px; align-items: center; gap: 14px; padding: 11px 20px; border-bottom: 1px solid var(--line); background: var(--surface); background: color-mix(in srgb, var(--surface) 60%, var(--ground)); }
 .topbar-copy { min-width: 0; }
 .topbar-title-row { display: flex; align-items: center; gap: 10px; }
@@ -222,26 +224,35 @@ button { cursor: pointer; }
 .topbar p { margin: 3px 0 0; color: var(--ink-3); font-size: 12px; }
 .topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
-.content { min-height: 0; flex: 1; padding: 16px 18px 18px; }
+/* 翻译页自身能放下时不滚动；记忆库、任务等长页面在这里滚动。 */
+.content { min-height: 0; flex: 1; overflow: auto; padding: 16px 18px 18px; }
 .view { display: none; height: 100%; }
 .view.active { display: block; }
-.two-column { display: grid; height: 100%; grid-template-columns: minmax(0, 1fr) 316px; gap: 14px; }
+.two-column { display: grid; height: 100%; grid-template-columns: minmax(0, 1fr) 372px; gap: 14px; }
 .left-column { display: flex; min-height: 0; flex-direction: column; gap: 12px; }
-.right-column { display: flex; height: 100%; flex-direction: column; overflow: auto; padding: 15px; }
-.push { margin-top: auto; padding-top: 12px; }
+/* 右栏自身不滚动：可变高度全部交给“更多参数”内部滚动。 */
+/* 只有“开始翻译”固定在底部，其余内容整块滚动：窗口再矮也不会把“更多参数”压没。 */
+.right-column { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; padding: 15px; }
+.right-scroll { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
+.right-footer { flex: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.run-panel { padding-top: 12px; }
 
 .card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-md); }
 .card-pad { padding: 15px; }
 .source-bar { display: flex; align-items: center; gap: 11px; padding: 12px 14px; }
 .source-icon, .stat-icon { display: grid; width: 36px; height: 36px; flex: none; place-items: center; border-radius: 10px; color: var(--accent); background: var(--tint); }
-.source-meta { min-width: 0; flex: 1; }
-.source-key { color: var(--ink-3); font-size: 10px; font-weight: 650; }
+/* 标签改为行内：标签在上会把输入框顶下去，跟左侧图标和右侧按钮对不齐。 */
+.source-meta { display: flex; min-width: 0; flex: 1; align-items: center; gap: 9px; }
+.source-key { flex: none; color: var(--ink-3); font-size: 11px; font-weight: 650; }
+.source-bar .source-input { min-height: 34px; padding: 0; }
 .source-value { overflow: hidden; margin-top: 1px; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .source-input { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; }
 
-.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.stat { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: linear-gradient(180deg, var(--surface-2), var(--surface)); }
-.stat-label { color: var(--ink-3); font-size: 10px; font-weight: 600; }
+/* 按实际数量分列，Excel/PDF 是 4 个、Word 是 5 个，都保持单行。 */
+.stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+.stat { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 9px 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: linear-gradient(180deg, var(--surface-2), var(--surface)); }
+.stat > div { min-width: 0; }
+.stat-label { overflow: hidden; color: var(--ink-3); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .stat-value { margin-top: 1px; font-size: 19px; font-weight: 750; letter-spacing: -.02em; }
 
 .table-card { display: flex; min-height: 180px; flex: 1; flex-direction: column; overflow: hidden; }
@@ -294,11 +305,51 @@ textarea { min-height: 90px; resize: vertical; }
 .note { margin: 7px 0 0; color: var(--ink-3); font-size: 11px; line-height: 1.5; }
 .divider { height: 1px; margin: 12px 0; border: 0; background: var(--line); }
 .toggle-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; font-size: 12px; }
-.toggle-row input { width: 34px; min-height: 20px; accent-color: var(--accent); }
-.advanced-settings { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.toggle-row input { width: 16px; min-height: 16px; flex: none; accent-color: var(--accent); }
+.toggle-row label { min-width: 0; cursor: pointer; }
+
+/* 只有问号是热区：悬停 0.5 秒弹出，点击则钉住。 */
+.label-row { display: flex; align-items: center; gap: 5px; }
+.label-row .field-label { margin: 0; }
+.field-hint { display: inline-grid; width: 14px; height: 14px; flex: none; padding: 0; place-items: center; border: 1px solid var(--line-2); border-radius: 999px; color: var(--ink-3); background: transparent; cursor: help; font-size: 9px; font-weight: 700; line-height: 1; }
+.field-hint:hover, .field-hint:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+.toggle-row .field-hint { margin-left: -3px; }
+
+/* 勾选项留在面板外层，但要和上下的卡片同一套语言：带边框、行间有分隔、逐行悬停反馈。 */
+.toggle-group { display: flex; flex-direction: column; margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
+.toggle-group .toggle-row { gap: 10px; padding: 9px 11px; border-radius: 0; }
+.toggle-group .toggle-row + .toggle-row { border-top: 1px solid var(--line); }
+.toggle-group .toggle-row:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+.toggle-group .toggle-row:first-child { border-radius: var(--r-sm) var(--r-sm) 0 0; }
+.toggle-group .toggle-row:last-child { border-radius: 0 0 var(--r-sm) var(--r-sm); }
+
+.language-card { display: flex; flex-direction: column; gap: 10px; }
+.lang-field { min-width: 0; }
+.inline-alert { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); border-color: color-mix(in srgb, var(--danger) 35%, var(--surface)); color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); font-size: 11.5px; line-height: 1.45; }
+
+/* 语言选择框：可输入筛选，也可点箭头展开列表。 */
+.combo { position: relative; display: flex; align-items: center; }
+.combo-input { padding-right: 32px; }
+.combo-toggle { position: absolute; right: 5px; display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; color: var(--ink-3); background: transparent; cursor: pointer; }
+.combo-toggle:hover:not(:disabled) { color: var(--ink); background: var(--ground-2); }
+.combo-toggle:disabled { cursor: not-allowed; opacity: .5; }
+.combo-list { position: fixed; z-index: 70; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); box-shadow: var(--sh-lg); }
+.combo-list[hidden] { display: none; }
+.combo-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; color: var(--ink-2); cursor: pointer; font-size: 12px; }
+.combo-option small { flex: none; color: var(--ink-3); font-size: 10px; }
+.combo-option:hover, .combo-option.active { color: var(--ink); background: var(--tint); }
+.combo-option.selected { color: var(--tint-ink); font-weight: 650; }
+.combo-empty { padding: 9px; color: var(--ink-3); font-size: 11px; text-align: center; }
+/* 展开后占满右栏剩余高度，内容只在内部滚动，整页不动。
+   正文用绝对定位撑满：details 的内容槽不会把子元素当成 flex 项，
+   只靠 flex 收缩的话正文会溢出面板。 */
+/* 自然高度即可：右栏整体滚动，这里不再嵌套滚动条。 */
+.advanced-settings { flex: none; margin-top: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); }
 .advanced-settings summary { display: flex; align-items: center; min-height: 38px; padding: 0 11px; color: var(--ink-2); cursor: pointer; font-size: 12px; font-weight: 650; }
 .advanced-settings-body { display: flex; flex-direction: column; gap: 7px; padding: 2px 11px 12px; }
 .advanced-settings-body .field-label { margin-top: 3px; }
+.advanced-settings-body > .domain-settings { margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+.advanced-settings-body textarea { min-height: 104px; }
 .output-path-row { display: flex; align-items: center; gap: 7px; }
 .output-path-row input { min-width: 0; flex: 1; }
 .output-path-state { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); background: var(--surface); font-size: 11px; line-height: 1.45; }
@@ -321,8 +372,11 @@ textarea { min-height: 90px; resize: vertical; }
 .excel-result-details { padding-bottom: 9px; }.excel-result-details > summary { border-bottom: 1px solid var(--line); }.result-output { margin: 9px 10px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }.result-output code { overflow-wrap: anywhere; color: var(--tint-ink); }
 .result-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 9px 10px; }.result-kpis span { display: flex; flex-direction: column; gap: 2px; padding: 7px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); background: var(--surface); font-size: 10px; }.result-kpis b { color: var(--ink); font-size: 14px; }
 .result-table { overflow: auto; margin: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }.result-table table { min-width: 800px; }.result-table td { max-width: 210px; overflow-wrap: anywhere; vertical-align: top; }.result-section { margin: 9px 10px 0; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
-.review-colors { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
-.review-colors input[type="color"] { min-height: 30px; padding: 3px; }
+/* 每个复核色独立成行：色块和名称并排，不再挤成三列。 */
+.review-colors { display: flex; flex-direction: column; gap: 6px; }
+.review-colors .color-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.review-colors .color-row .field-label { margin: 0; }
+.review-colors input[type="color"] { width: 64px; min-height: 28px; flex: none; padding: 3px; }
 
 .progress { height: 9px; overflow: hidden; margin: 12px 0; border-radius: 999px; background: var(--ground-2); }
 .progress > i { display: block; width: var(--progress, 0%); height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #aab5ff); background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #fff)); transition: width 200ms ease; }
@@ -437,13 +491,24 @@ textarea { min-height: 90px; resize: vertical; }
 .suggestion-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; }
 .suggestion-row input[type="checkbox"] { width: 16px; min-height: 16px; margin: 2px 0 0; accent-color: var(--accent); }.suggestion-row b { font-weight: 650; }.suggestion-row p { display: flex; align-items: center; gap: 5px; margin: 5px 0 0; color: var(--ink-2); }.suggestion-row p input { min-height: 30px; padding: 4px 6px; }
 .toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 440px; padding: 10px 13px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; }.toast.error { border-color: rgba(229, 72, 77, .38); border-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); color: var(--danger); }
-[data-tip] { position: relative; } [data-tip]:hover::after { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 50%; width: max-content; max-width: 250px; padding: 7px 9px; border-radius: 7px; color: var(--surface); background: var(--ink); box-shadow: var(--sh-md); content: attr(data-tip); font-size: 11px; line-height: 1.35; transform: translateX(-50%); }
+/* 说明浮层挂在 body 上并用 fixed 定位，滚动容器不会把它裁掉。 */
+.tooltip-layer { position: fixed; z-index: 90; max-width: 264px; padding: 7px 9px; border-radius: 7px; color: var(--surface); background: var(--ink); box-shadow: var(--sh-md); font-size: 11px; line-height: 1.45; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+.tooltip-layer.visible { opacity: 1; }
 
 .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }.icon.small { width: 15px; height: 15px; }.icon.large { width: 24px; height: 24px; }
 
+/* 13" / 12" 笔记本：模型配置改成浮层，不再挤压工作区。
+   右栏最窄内容需 272px，收到 300px 仍有余量。 */
+@media (max-width: 1280px) {
+  .app-shell { position: relative; }
+  .two-column { grid-template-columns: minmax(0, 1fr) 300px; }
+  .config-panel { position: absolute; z-index: 50; top: 0; bottom: 0; left: 76px; box-shadow: var(--sh-lg); }
+  .config-panel.closed { box-shadow: none; }
+}
+
 @media (max-width: 1160px) {
-  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .two-column { grid-template-columns: minmax(0, 1fr) 286px; }
+  /* 窄窗口放不下单行，退回两列换行。 */
+  .stats { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .help-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .maintenance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
