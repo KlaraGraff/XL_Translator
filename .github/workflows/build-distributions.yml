@@ -176,13 +176,19 @@ jobs:
       - name: Build, scan, sign, notarize, and verify the macOS DMG
         run: |
           PYTHON_BIN=./.venv/bin/python3 bash ./scripts/build_macos_package.sh
+      # Stage into one directory first: uploading dist/ and .runtime/ paths
+      # together makes the repo root the common ancestor, so the artifact keeps
+      # a dist/ prefix and the release job cannot find the DMGs.
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-upload
+          cp "$MACOS_DMG" "$MACOS_DMG_SHA256" "$MACOS_RELEASE_REPORT" release-upload/
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: Translator_macOS_${{ matrix.architecture }}_${{ needs.validate-release.outputs.artifact_channel }}
-          path: |
-            ${{ env.MACOS_DMG }}
-            ${{ env.MACOS_DMG_SHA256 }}
-            ${{ env.MACOS_RELEASE_REPORT }}
+          path: release-upload
 
   release:
     name: Publish macOS release
