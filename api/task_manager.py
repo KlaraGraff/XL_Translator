@@ -617,6 +617,15 @@ class TranslationTaskManager:
                     "mode": str(snapshot.get("mode") or ""),
                     "provider": str(snapshot.get("provider") or ""),
                     "base_url": str(snapshot.get("base_url") or ""),
+                    # Which configured entry this run took, so a finished task
+                    # can still say which connection produced its output.
+                    "pool_connection_id": str(snapshot.get("pool_connection_id") or ""),
+                    "pool_connection_label": str(
+                        snapshot.get("pool_connection_label") or ""
+                    ),
+                    "pool_connection_count": len(
+                        list(snapshot.get("pool_connection_chain") or [])
+                    ),
                     "throughput": _json_safe(snapshot.get("throughput") or {}),
                 }
             )
