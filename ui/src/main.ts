@@ -807,7 +807,11 @@ function connectionBusyLabel(connectionId: string): string {
 
 function renderConnectionList(role: string): string {
   const connections = roleConnections(role);
-  if (connections.length < 1) return "";
+  const header = `<div class="label-row"><span class="field-label">连接列表</span>${hintMark("按顺序使用：主用连接排在最前。某条连接的服务端不可用时会跳过同一 Base URL 的其余连接，直接换到下一个服务商；密钥被拒绝或额度耗尽时只跳过该条。")}</div>`;
+  if (!connections.length) {
+    // 后端还没连上时不要把整块藏掉：那样看起来就像这个功能不存在。
+    return `<div class="config-field">${header}<p class="note">连接信息尚未载入，请检查本地服务是否在运行，或点右上角刷新。</p></div>`;
+  }
   const selected = activeConnection(role);
   const rows = connections.map((connection, index) => {
     const tone = connection.availability_status === "available"
@@ -828,7 +832,7 @@ function renderConnectionList(role: string): string {
     </div>`;
   }).join("");
   return `<div class="config-field">
-    <div class="label-row"><span class="field-label">连接列表</span>${hintMark("按顺序使用：主用连接排在最前。某条连接的服务端不可用时会跳过同一 Base URL 的其余连接，直接换到下一个服务商；密钥被拒绝或额度耗尽时只跳过该条。")}</div>
+    ${header}
     <div class="pool-list">${rows}</div>
     <button class="mini-button pool-add" data-action="add-connection" data-role="${escapeHtml(role)}">＋ 新增连接</button>
   </div>`;
