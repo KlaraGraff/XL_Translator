@@ -150,6 +150,8 @@ class PreparedTask:
     role_groups: dict[str, object]
     group_capacities: dict[object, int]
     fingerprint: str
+    # Frozen per-role fallback chain handed to the runner.
+    connection_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -489,6 +491,12 @@ class TranslationTaskManager:
             role_groups=role_groups,
             group_capacities=group_capacities,
             fingerprint=fingerprint,
+            connection_chains={
+                role: tuple(chain)
+                for role, chain in dict(
+                    getattr(context, "role_connection_chains", {}) or {}
+                ).items()
+            },
         )
 
     def _start_prepared(
@@ -536,6 +544,7 @@ class TranslationTaskManager:
                     source_lang=prepared.source_lang,
                     key_overrides=prepared.key_overrides,
                     api_schedulers=api_schedulers,
+                    connection_chains=prepared.connection_chains,
                 )
             task = ApiTask(
                 task_id=task_id,
@@ -931,8 +940,11 @@ class TranslationTaskManager:
         source_lang: str,
         key_overrides: dict[str, str],
         api_schedulers: dict[str, Any] | None = None,
+        connection_chains: dict[str, tuple[str, ...]] | None = None,
     ) -> Runner:
         api_schedulers = dict(api_schedulers or {})
+        chains = dict(connection_chains or {})
+        translation_chain = tuple(chains.get("translation") or ())
         if surface == "excel":
             return TaskRunner(
                 files,
@@ -943,6 +955,7 @@ class TranslationTaskManager:
                 key_overrides=key_overrides,
                 api_scheduler=api_schedulers.get("translation"),
                 untranslated_only=options.untranslated_only,
+                connection_chain=translation_chain,
             )
         if surface == "word":
             return WordTaskRunner(

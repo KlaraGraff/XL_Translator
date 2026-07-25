@@ -5,6 +5,7 @@
 """
 import math
 import threading
+from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 
@@ -153,6 +154,53 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
         return DashscopeEngine(api_key=api_key, model=cloud_model)
 
     raise ValueError(f"未知翻译引擎：{provider}")
+
+
+def build_role_engine(
+    settings: AppSettings,
+    role: str,
+    *,
+    connection_ids: Sequence[str] = (),
+    on_switch=None,
+) -> TranslationEngine:
+    """Build an engine for one role, with failover when a chain is supplied.
+
+    With fewer than two usable connections this returns the plain engine, so
+    the common single-connection setup keeps exactly the behaviour it had.
+    """
+    from core.model_roles import find_role_connection, settings_for_text_role
+
+    def _engine_for(connection) -> TranslationEngine:
+        role_settings = settings_for_text_role(
+            settings,
+            role,
+            connection_id=connection.id,
+        )
+        return build_engine(role_settings)
+
+    chain = [
+        find_role_connection(settings, role, connection_id)
+        for connection_id in connection_ids
+        if str(connection_id or "").strip()
+    ]
+    # Drop repeats caused by ids that no longer exist and fell back to primary.
+    unique: list = []
+    seen: set[str] = set()
+    for connection in chain:
+        if connection.id not in seen:
+            seen.add(connection.id)
+            unique.append(connection)
+
+    if len(unique) < 2:
+        return build_engine(settings_for_text_role(settings, role))
+
+    from core.failover_engine import FailoverTranslationEngine
+
+    return FailoverTranslationEngine(
+        build_engine_for=_engine_for,
+        candidates=unique,
+        on_switch=on_switch,
+    )
 
 
 def get_system_prompt(

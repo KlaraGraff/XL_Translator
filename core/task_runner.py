@@ -53,6 +53,7 @@ from core.translation_filter import should_translate
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
+    build_role_engine,
     get_system_prompt,
     translate_texts,
     translate_texts_with_sources,
@@ -222,6 +223,7 @@ class TaskRunner:
         key_overrides: dict[str, str] | None = None,
         api_scheduler=None,
         untranslated_only: bool = False,
+        connection_chain: tuple[str, ...] | list[str] | None = None,
     ):
         self._files       = file_items
         self._settings    = settings
@@ -231,6 +233,8 @@ class TaskRunner:
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler = api_scheduler
         self._untranslated_only = bool(untranslated_only)
+        # The pool entries this task may fall back to, frozen at start.
+        self._connection_chain = tuple(connection_chain or ())
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -268,6 +272,17 @@ class TaskRunner:
     def _log(self, level: str, msg: str) -> None:
         self._queue.put(LogMsg(level=level, message=msg))
         logger.info(f"[{level}] {msg}")
+
+    def _report_connection_switch(self, previous, current, failure_kind, error) -> None:
+        """Surface a runtime connection switch in the task's own event log."""
+        reason = {
+            "endpoint": "服务端不可用",
+            "credential": "密钥被拒绝或额度耗尽",
+        }.get(failure_kind, failure_kind)
+        self._log(
+            "WARN",
+            f"已切换连接：{previous.display_label} → {current.display_label}（{reason}）",
+        )
 
     # ── 全局聚合流水线主入口 ──────────────────────────────────────────────
 
@@ -307,7 +322,18 @@ class TaskRunner:
                 detail = f"（{config_check.detail}）" if config_check.detail else ""
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
-            engine        = build_engine(settings)
+            # Only take the failover path when there is somewhere to fail over
+            # to; a single-connection setup keeps exactly its previous engine.
+            engine        = (
+                build_role_engine(
+                    settings,
+                    ROLE_TRANSLATION,
+                    connection_ids=self._connection_chain,
+                    on_switch=self._report_connection_switch,
+                )
+                if len(self._connection_chain) > 1
+                else build_engine(settings)
+            )
             system_prompt = get_system_prompt(
                 settings,
                 target_lang=target_lang,

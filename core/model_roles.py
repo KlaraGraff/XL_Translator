@@ -528,8 +528,13 @@ def _local_follow_not_allowed_message(role: str) -> str:
     )
 
 
-def settings_for_text_role(settings: AppSettings, role: str) -> AppSettings:
-    config = resolve_effective_model_config(settings, role)
+def settings_for_text_role(
+    settings: AppSettings,
+    role: str,
+    *,
+    connection_id: str = "",
+) -> AppSettings:
+    config = resolve_effective_model_config(settings, role, connection_id=connection_id)
     copy_settings = settings.model_copy(deep=True)
     if config.mode == "local":
         copy_settings.engine.mode = "local"
