@@ -104,7 +104,8 @@ def parse_model_config_import(raw: object) -> ImportedModelConfig:
     if not isinstance(raw, dict):
         raise ValueError("Imported configuration must be a JSON object.")
     if raw.get("type") != MODEL_CONFIG_EXPORT_TYPE or raw.get("version") != MODEL_CONFIG_EXPORT_VERSION:
-        raise ValueError("仅支持当前 translator_model_config v3；旧格式不兼容。")
+        # 按钮上不再写版本号，所以这里必须自己说清楚“文件不对”，而不是丢一个内部代号。
+        raise ValueError("这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。")
     if isinstance(raw.get("model_profiles"), dict):
         return _parse_model_profiles(raw)
     raise ValueError("model_profiles must be a JSON object.")

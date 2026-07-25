@@ -348,6 +348,7 @@ const iconPaths = {
   warn: '<path d="M12 3.7l9 16H3l9-16z"/><path d="M12 9v4.7M12 17.1h.01"/>',
   check: '<path d="M5 12.5l4.6 4.5L19 7"/>',
   chevron: '<path d="M6 9.5l6 6 6-6"/>',
+  chevronLeft: '<path d="M14.5 6l-6 6 6 6"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/>',
   moon: '<path d="M20 13.6A7.5 7.5 0 0 1 10.4 4 7.5 7.5 0 1 0 20 13.6z"/>',
   refresh: '<path d="M4.6 12a7.4 7.4 0 0 1 12.6-5.2L20 9"/><path d="M20 4.6V9h-4.4M19.4 12a7.4 7.4 0 0 1-12.6 5.2L4 15"/>',
@@ -783,7 +784,7 @@ function renderConfigPanel(): string {
   const providers = cloudMode
     ? ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow"]
     : ["ollama", "lm_studio", "custom_local"];
-  const roleLabels: Record<string, string> = { translation: "翻译模型（Excel / Word）", cleaner: "深度清洗模型", image: "PDF 翻译模型（图像生成）", pdf_review: "PDF 翻译审核模型" };
+  const roleLabels: Record<string, string> = { translation: "文档翻译（Excel / Word）", cleaner: "记忆库清洗", image: "PDF 翻译（图像生成）", pdf_review: "PDF 译文审核" };
   const sourceRoles: Record<string, string[]> = { cleaner: ["independent", "translation"], image: ["independent", "translation"], pdf_review: ["independent", "translation", "image"] };
   const sourceRole = text(rolePayload.source_role, "independent");
   const availability = text(rolePayload.availability_status, "unknown");
@@ -796,50 +797,70 @@ function renderConfigPanel(): string {
   const catalogMatchesConnection = state.modelCatalogConnection[role] === catalogConnection;
   const catalog = catalogMatchesConnection ? state.modelCatalog[role] || [] : [];
   const catalogMessage = catalogMatchesConnection
-    ? state.modelCatalogMessage[role] || "尚未读取当前连接的模型目录。"
-    : "当前连接尚未读取模型目录。保存连接后可手动刷新。";
+    ? state.modelCatalogMessage[role] || "尚未获取当前连接的模型列表。"
+    : "当前连接尚未获取模型列表。保存配置后可手动获取。";
   const hasApiKey = Boolean(rolePayload.has_api_key);
   const checkedAt = formatCheckedAt(text(rolePayload.availability_checked_at));
   const modelListId = `model-catalog-${role}`;
   const throughputControls = role === "translation" || role === "cleaner"
     ? `<div class="field-row throughput-row"><div><label class="field-label" for="throughputBatch">批次大小</label><input id="throughputBatch" type="number" data-throughput="batch_size" value="${number(throughput.batch_size, 8)}" min="${number(batchBounds[0], 1)}" max="${number(batchBounds[1], 128)}"/></div><div><label class="field-label" for="throughputConcurrency">并发数</label><input id="throughputConcurrency" type="number" data-throughput="concurrency" value="${number(throughput.concurrency, 1)}" min="${number(concurrencyBounds[0], 1)}" max="${number(concurrencyBounds[1], 32)}"/></div></div>`
     : `<label class="field-label" for="throughputConcurrency">并发数</label><input id="throughputConcurrency" type="number" data-throughput="concurrency" value="${number(throughput.concurrency, 1)}" min="${number(concurrencyBounds[0], 1)}" max="${number(concurrencyBounds[1], 32)}"/>`;
+  /* 常驻说明一律收进问号，和其余页面一致；只有“会变”的目录与测试结果留在面板上，
+     并压缩成状态胶囊，长文本移到胶囊旁边的问号里。 */
+  const catalogTone = catalog.length ? "done" : "";
+  const catalogLabel = catalog.length ? `${catalog.length} 个可用模型` : "未获取列表";
+  const catalogTip = `${catalogMessage}${catalog.length ? `当前连接返回 ${catalog.length} 个模型，也可以手动填写列表里没有的模型。` : ""}`;
+  const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
+  const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
+  const availabilityTip = `${availabilityMessage}${checkedAt ? ` · ${checkedAt}` : ""} · ${hasApiKey ? "已保存连接密钥" : "未检测到连接密钥"}。未测试不会阻止启动任务。`;
+  const accessTip = role === "translation"
+    ? "云端 API 通过服务商接口调用；本地模型直接连接本机运行器，不保存云端 API 密钥，请先确认本地服务已启动。"
+    : "复用只共享服务商、Base URL 和 Key；本角色的模型名称、吞吐和测试状态始终独立，也不能链式复用。";
   return `<aside class="config-panel ${state.panelOpen ? "" : "closed"}">
     <div class="config-inner">
-      <div class="config-header"><div class="config-icon">${icon("sliders", "small")}</div><div><h2>模型配置</h2><p>四个角色 · ${escapeHtml(roleLabels[role] || role)}</p></div><button class="icon-button" data-action="toggle-panel" data-tip="折叠模型配置">${icon("chevron", "small")}</button></div>
+      <div class="config-header"><div class="config-icon">${icon("sliders", "small")}</div><div><h2>模型配置</h2><p>四个角色 · ${escapeHtml(roleLabels[role] || role)}</p></div><button class="icon-button" data-action="toggle-panel" data-tip="收起模型配置">${icon("chevronLeft", "small")}</button></div>
       <div class="config-body">
-        <div class="config-group"><label class="field-label" for="modelRole">模型角色</label><select id="modelRole" data-model-role>${Object.entries(roleLabels).map(([key, label]) => `<option value="${key}" ${key === role ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+        <div class="config-group">${fieldLabel("模型角色", "Excel 与 Word 的专业领域和 Prompt 在各自页面独立保存，PDF 使用固定版式协议；这里保存的连接对所有页面生效。", "modelRole")}<select id="modelRole" data-model-role>${Object.entries(roleLabels).map(([key, label]) => `<option value="${key}" ${key === role ? "selected" : ""}>${label}</option>`).join("")}</select></div>
         <div class="config-group">
-          <p class="note">Excel 与 Word 的专业领域和 Prompt 在各自页面独立保存；PDF 使用固定版式协议。</p>
+          <div class="config-field">
+            ${fieldLabel("连接方式", accessTip, role === "translation" ? "engineMode" : "roleSource")}
+            ${role === "translation" ? `<select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>` : `<select id="roleSource" data-role-source>${(sourceRoles[role] || ["independent"]).map((item) => `<option value="${item}" ${sourceRole === item ? "selected" : ""}>${item === "independent" ? "独立配置" : `跟随${roleLabels[item] || item}`}</option>`).join("")}</select>`}
+          </div>
+          <div class="config-field">
+            <label class="field-label" for="provider">${cloudMode ? "服务商" : "本地运行器"}</label>
+            <select id="provider" data-engine="cloud_provider" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}>
+              ${providers.map((item) => `<option value="${item}" ${provider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="config-field">
+            <label class="field-label" for="baseUrl">Base URL</label>
+            <input id="baseUrl" value="${escapeHtml(baseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
+          </div>
+          <div class="config-field">
+            ${fieldLabel("模型名称", "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。", "modelName")}
+            <input id="modelName" list="${modelListId}" value="${escapeHtml(model)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
+            <datalist id="${modelListId}">${catalog.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
+          </div>
+          ${cloudMode ? `<div class="config-field">${fieldLabel("API 密钥", "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。", "apiKey")}<input id="apiKey" type="password" placeholder="留空则保留当前密钥" /></div>` : ""}
+          <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存配置</button><button class="button" data-action="fetch-models">${icon("refresh", "small")}获取模型列表</button><button class="button" data-action="test-model">测试连接</button></div>
+          <div class="config-status-row"><span class="status ${catalogTone}"><span class="led"></span>${escapeHtml(catalogLabel)}</span>${hintMark(catalogTip)}<span class="status ${availabilityTone}"><span class="led"></span>${escapeHtml(availabilityLabel)}</span>${hintMark(availabilityTip)}</div>
+          <div class="config-subgroup">
+            <div class="label-row"><span class="field-label">速率设置</span>${hintMark("该角色的长期档案：决定每批处理量和并发数。运行时 429 或超时触发的降速只影响当前任务，不会改写这里。")}</div>
+            ${throughputControls}
+            <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-throughput">保存速率</button><button class="button" data-action="restore-throughput">恢复推荐值</button></div>
+          </div>
         </div>
         <div class="config-group">
-          <span class="field-label">接入方式</span>
-          ${role === "translation" ? `<select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>` : `<select id="roleSource" data-role-source>${(sourceRoles[role] || ["independent"]).map((item) => `<option value="${item}" ${sourceRole === item ? "selected" : ""}>${item === "independent" ? "独立配置" : `跟随${roleLabels[item] || item}`}</option>`).join("")}</select>`}
-          ${role !== "translation" ? `<p class="note">复用只共享服务商、Base URL 和 Key；本角色的模型名称、吞吐和测试状态始终独立。不能链式复用。</p>` : ""}
-          <label class="field-label" for="provider" style="margin-top:9px">${cloudMode ? "服务商" : "本地运行器"}</label>
-          <select id="provider" data-engine="cloud_provider" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}>
-            ${providers.map((item) => `<option value="${item}" ${provider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
-          </select>
-          <label class="field-label" for="baseUrl" style="margin-top:9px">Base URL</label>
-          <input id="baseUrl" value="${escapeHtml(baseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
-          <label class="field-label" for="modelName" style="margin-top:9px">模型名称</label>
-          <input id="modelName" list="${modelListId}" value="${escapeHtml(model)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
-          <datalist id="${modelListId}">${catalog.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
-          ${cloudMode ? `<label class="field-label" for="apiKey" style="margin-top:9px">API Key</label><input id="apiKey" type="password" placeholder="留空则保留当前密钥" />` : `<p class="note">本地模型不保存云端 API Key；请确认本地服务已启动。</p>`}
-          <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存角色</button><button class="button" data-action="fetch-models">${icon("refresh", "small")}刷新模型目录</button><button class="button" data-action="test-model">测试当前角色</button></div><p class="note">模型目录：${escapeHtml(catalogMessage)}${catalog.length ? `（${catalog.length} 个，可手动填写未列出的模型）` : ""}</p><p class="note">测试状态：${escapeHtml(availability === "available" ? "通过" : availability === "unavailable" ? "失败" : "未测试")} · ${escapeHtml(availabilityMessage)}${checkedAt ? ` · ${escapeHtml(checkedAt)}` : ""}${hasApiKey ? " · 已保存连接密钥" : " · 未检测到连接密钥"}。未测试不会阻止启动任务。</p>
-          <div class="config-subgroup"><span class="field-label">角色吞吐</span>${throughputControls}<div class="field-row"><button class="button" data-action="save-throughput">保存吞吐设置</button><button class="button" data-action="restore-throughput">恢复推荐值</button></div><p class="note">运行时 429/超时降速只影响当前任务，不会修改此长期档案。</p></div>
-        </div>
-        <div class="config-group">
-          <span class="field-label">配置文件</span>
-          <div class="field-row"><button class="button" data-action="export-model-config">导出（不含 Key）</button><button class="button" data-action="export-model-config-sensitive">导出含 Key</button><button class="button" data-action="import-model-config">导入 v3</button></div><p class="note">导入只接受 v3，先预览；导入后所有角色需重新测试。含 Key 导出会显示二次确认。</p>
+          <div class="label-row"><span class="field-label">配置文件</span>${hintMark("导入会先预览，只接受本应用导出的配置文件；导入后所有角色需要重新测试。含 Key 导出会显示二次确认。")}</div>
+          <div class="field-row"><button class="button" data-action="export-model-config">导出（不含 Key）</button><button class="button" data-action="export-model-config-sensitive">导出含 Key</button><button class="button" data-action="import-model-config">导入配置</button></div>
         </div>
         <div class="config-group">
           <span class="field-label">维护与支持</span>
           <div class="field-row"><button class="button" data-action="navigate" data-view="maintenance">维护与诊断</button><button class="button" data-action="navigate" data-view="help">本地帮助</button></div>
         </div>
         <div class="config-group">
-          <span class="field-label">并发风险</span>
-          <p class="note">不同类型任务可能共用同一 API 连接，并发会叠加，可能触发服务商限流或费用增长。此面板不会全局锁定其他页面；已启动任务保留自己的配置快照，后续任务会在任务中心进行风险确认。</p>
+          <div class="label-row"><span class="field-label">并发提醒</span>${hintMark("不同类型任务可能共用同一 API 连接，并发会叠加，可能触发服务商限流或费用增长。此面板不会全局锁定其他页面；已启动任务保留自己的配置快照，后续任务会在任务中心进行风险确认。")}</div>
+          <p class="note">同一 API 连接的并发会叠加，可能触发限流或费用增长。</p>
         </div>
       </div>
     </div>
@@ -869,7 +890,8 @@ function renderTranslateView(surface: Surface): string {
     <div class="left-column ${running ? "running" : ""}">
       <div class="card source-bar">
         <div class="source-icon">${icon("folder")}</div>
-        <div class="source-meta"><div class="source-key">源路径</div><input class="source-input" data-source="${surface}" value="${escapeHtml(sourcePath)}" placeholder="选择文件或文件夹" /></div>
+        <input class="source-input" data-source="${surface}" value="${escapeHtml(sourcePath)}" placeholder="选择或直接输入文件 / 文件夹的完整路径" aria-label="源路径" />
+        ${hintMark(`除了点“浏览”，也可以把完整路径直接输入或粘贴到这里，例如 /Users/你的用户名/Documents/项目。单个 ${surfaceLabel(surface)} 文件和整个文件夹都支持，填好后点“扫描”。`)}
         <button class="button" data-action="choose-source" data-surface="${surface}" data-tip="选择${surfaceLabel(surface)}文件或文件夹" ${activeTask ? "disabled" : ""}>${icon("folder", "small")}浏览</button>
         <button class="button primary" data-action="scan" data-surface="${surface}" ${activeTask ? "disabled" : ""}>${icon("search", "small")}扫描</button>
       </div>
@@ -947,7 +969,15 @@ function renderLanguageField(surface: Surface, kind: LanguageComboKind, selected
     ? "直接输入中文名、English 或 ISO 代码即可筛选，也可点右侧箭头展开完整列表。"
     : "选择“自动识别”时，每个有候选文本的文件会在开始翻译前抽样预检一次，只发送去重的代表性文本；手动指定源语言则不发送预检。";
   const id = `lang-${kind}-${surface}`;
-  return `<div class="lang-field">${fieldLabel(label, tip, id)}<div class="combo"><input id="${id}" class="combo-input" type="text" role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false" data-lang-combo="${kind}" data-surface="${surface}" data-code="${escapeHtml(selected)}" value="${escapeHtml(languageDisplay(languageComboOptions(kind), selected, kind === "target"))}" placeholder="中/英文名或 ISO 代码" ${disabled ? "disabled" : ""}/><button type="button" class="combo-toggle" tabindex="-1" aria-label="展开${label}列表" ${disabled ? "disabled" : ""}>${icon("chevron", "small")}</button><div class="combo-list" role="listbox" hidden></div></div></div>`;
+  return `<div class="lang-field">${fieldLabel(label, tip, id)}<div class="combo"><input id="${id}" class="combo-input" type="text" role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false" data-lang-combo="${kind}" data-surface="${surface}" data-code="${escapeHtml(selected)}" value="${escapeHtml(languageDisplay(languageComboOptions(kind, surface), selected, kind === "target"))}" placeholder="中/英文名或 ISO 代码" ${disabled ? "disabled" : ""}/><button type="button" class="combo-toggle" tabindex="-1" aria-label="展开${label}列表" ${disabled ? "disabled" : ""}>${icon("chevron", "small")}</button><div class="combo-list" role="listbox" hidden></div></div></div>`;
+}
+
+/* 记忆库沿用翻译页的语言控件：可以直接打字筛选，也可以点箭头展开列表。 */
+function renderTmLanguageField(kind: LanguageComboKind, selected: string): string {
+  const label = kind === "target" ? "目标语言" : "源语言";
+  const id = `tm-lang-${kind}`;
+  const display = languageDisplay(languageComboOptions(kind, "tm"), selected, kind === "target");
+  return `<div class="tm-pair-field"><label class="field-label" for="${id}">${label}</label><div class="combo"><input id="${id}" class="combo-input" type="text" role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false" data-lang-combo="${kind}" data-surface="tm" data-code="${escapeHtml(selected)}" value="${escapeHtml(display)}" placeholder="中/英文名或 ISO 代码" /><button type="button" class="combo-toggle" tabindex="-1" aria-label="展开${label}列表">${icon("chevron", "small")}</button><div class="combo-list" role="listbox" hidden></div></div></div>`;
 }
 
 function renderLanguageAlert(surface: Surface, source: string, target: string): string {
@@ -1197,7 +1227,7 @@ function renderTaskCenter(): string {
     .filter((entry): entry is ManagedTask => Boolean(entry))
     .filter((entry) => state.taskCenterFilter === "all" || (state.taskCenterFilter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task)));
   const cards = entries.map(renderTaskCard).join("");
-  return `<section class="view active task-center"><div class="task-center-header card card-pad"><div><span class="section-label">统一任务中心</span><h2>活动任务 ${active}</h2><p class="note">事件按任务 ID 独立补拉。页面切换、重新聚焦和短断流不会停止其他任务。</p></div><div class="task-filter" role="group" aria-label="任务筛选"><button class="mini-button ${state.taskCenterFilter === "all" ? "active" : ""}" data-action="task-filter" data-filter="all">全部</button><button class="mini-button ${state.taskCenterFilter === "active" ? "active" : ""}" data-action="task-filter" data-filter="active">活动</button><button class="mini-button ${state.taskCenterFilter === "terminal" ? "active" : ""}" data-action="task-filter" data-filter="terminal">最近结果</button></div></div><div class="task-grid">${cards || `<div class="card card-pad muted">当前没有可显示的任务。启动 Excel、Word、PDF/图片或 TM 深度清洗后，状态会保留在这里。</div>`}</div></section>`;
+  return `<section class="view active task-center"><div class="task-center-header card card-pad"><div><span class="section-label">统一任务中心</span><h2>活动任务 ${active}</h2><p class="note">事件按任务 ID 独立补拉。页面切换、重新聚焦和短断流不会停止其他任务。</p></div><div class="task-filter" role="group" aria-label="任务筛选"><button class="mini-button ${state.taskCenterFilter === "all" ? "active" : ""}" data-action="task-filter" data-filter="all">全部</button><button class="mini-button ${state.taskCenterFilter === "active" ? "active" : ""}" data-action="task-filter" data-filter="active">活动</button><button class="mini-button ${state.taskCenterFilter === "terminal" ? "active" : ""}" data-action="task-filter" data-filter="terminal">最近结果</button></div></div><div class="task-grid">${cards || `<div class="card empty-state"><div class="empty-icon">${icon("tasks")}</div><strong>当前没有可显示的任务</strong><p>启动 Excel、Word、PDF / 图片或 TM 深度清洗后，状态会保留在这里。</p></div>`}</div></section>`;
 }
 
 function renderHelpView(): string {
@@ -1242,7 +1272,7 @@ function renderMaintenanceView(): string {
   const diagnostics = state.diagnostics;
   const categoryCards = categories.length
     ? categories.map((category) => `<article class="card maintenance-card"><div><h3>${escapeHtml(category.label)}</h3><p>${formatBytes(category.size_bytes)}${category.count !== undefined ? ` · ${category.count} 项` : ""}</p></div><div>${category.contains_user_output ? `<span class="format-pill">受保护</span>` : category.clearable ? `<button class="mini-button danger-text" data-action="request-maintenance-clear" data-category="${escapeHtml(category.id)}">清理</button>` : `<span class="muted">自动维护</span>`}</div></article>`).join("")
-    : `<div class="card empty-state"><strong>尚未读取本地数据概览</strong><p>点击刷新后查看当前新版应用数据目录和各类别占用。</p></div>`;
+    : `<div class="card empty-state"><div class="empty-icon">${icon("wrench")}</div><strong>尚未读取本地数据概览</strong><p>点击刷新后查看当前新版应用数据目录和各类别占用。</p></div>`;
   const diagnosticRows = diagnostics.length
     ? diagnostics.map((item) => {
       const id = text(item.record_id);
@@ -1533,7 +1563,7 @@ function renderWordResultDetails(result: JsonObject, taskState = ""): string {
 
 function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[], disabled: boolean): string {
   if (!files.length) {
-    return `<div class="card-pad muted">选择源路径后点击“扫描”，这里会显示可处理文件。</div>`;
+    return `<div class="empty-state"><div class="empty-icon">${icon("folder")}</div><strong>还没有可处理的文件</strong><p>在上方选择文件或文件夹后点击“扫描”，这里会列出可处理文件。</p></div>`;
   }
   if (surface === "excel") {
     return `<table class="excel-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th class="number">大小</th><th>格式</th><th class="number">工作表</th><th>预检/执行状态</th></tr></thead><tbody>${files.map((file) => {
@@ -1648,9 +1678,9 @@ function renderTmView(): string {
   const conflictRows = state.tmConflicts.map((item) => `<div class="tm-conflict-row"><div><strong>${escapeHtml(item.source_text)}</strong><span class="muted">${escapeHtml(item.lang_pair)} · ${escapeHtml(item.existing_target)} → ${escapeHtml(item.candidate_target)}</span></div><span class="table-actions"><button class="mini-button" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="keep_existing">保留当前</button><button class="mini-button primary" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="use_candidate">采用候选</button><button class="mini-button danger-text" data-action="tm-conflict-resolve" data-conflict-id="${item.id}" data-conflict-resolution="reject">拒绝</button></span></div>`).join("");
   return `<section class="view active"><div class="left-column">
     <div class="card tm-controls">
-      <div class="tm-pair-row"><div class="tm-pair-field"><label class="field-label" for="tmSourceLang">源语言</label><select id="tmSourceLang" data-tm-source-lang>${tmSourceLanguageOptions()}</select></div><div class="tm-pair-arrow" aria-hidden="true">→</div><div class="tm-pair-field"><label class="field-label" for="tmTargetLang">目标语言</label><select id="tmTargetLang" data-tm-target-lang>${tmTargetLanguageOptions()}</select></div><div class="tm-pair-current"><span class="field-label">当前语言对</span><strong>${escapeHtml(tmPairLabel(tmLangPair()))}</strong>${customTarget ? `<small>自定义目标语言</small>` : ""}</div></div>
+      <div class="tm-pair-row">${renderTmLanguageField("source", state.tmSourceLang)}<div class="tm-pair-arrow" aria-hidden="true">→</div>${renderTmLanguageField("target", state.tmTargetLang)}<div class="tm-pair-field"><span class="field-label">当前语言对</span><div class="tm-pair-current"><strong>${escapeHtml(tmPairLabel(tmLangPair()))}</strong>${customTarget ? `<small>自定义</small>` : ""}</div></div></div>
       ${state.tmRecentPairs.length ? `<div class="tm-recent-row"><span class="field-label">最近使用</span>${state.tmRecentPairs.slice(0, 8).map((pair) => `<button class="mini-button ${pair === tmLangPair() ? "active" : ""}" data-action="tm-recent-pair" data-pair="${escapeHtml(pair)}">${escapeHtml(tmPairLabel(pair))}</button>`).join("")}</div>` : ""}
-      <div class="tm-search-row"><div class="source-icon">${icon("search")}</div><input class="source-input" id="tmKeyword" value="${escapeHtml(state.tmKeyword)}" placeholder="按原文或译文筛选" /><button class="button" data-action="tm-search">搜索</button><button class="button" data-action="tm-add">${icon("plus", "small")}新增</button><button class="button" data-action="tm-import">导入</button><button class="button" data-action="tm-export-json">导出 JSON</button><button class="button" data-action="tm-export-csv">导出 CSV</button><button class="button" data-action="tm-export-full">导出全库</button><button class="button" data-action="tm-import-full">恢复全库</button><button class="button primary" data-action="tm-clean" ${state.tmCleaningState === "running" ? "disabled" : ""}>${icon("sparkle", "small")}深度清洗</button></div>
+      <div class="tm-search-row"><div class="input-shell">${icon("search", "small")}<input class="source-input" id="tmKeyword" value="${escapeHtml(state.tmKeyword)}" placeholder="按原文或译文筛选" aria-label="按原文或译文筛选" /></div><button class="button" data-action="tm-search">搜索</button><button class="button" data-action="tm-add">${icon("plus", "small")}新增</button><button class="button" data-action="tm-import">导入</button><button class="button" data-action="tm-export-json">导出 JSON</button><button class="button" data-action="tm-export-csv">导出 CSV</button><button class="button" data-action="tm-export-full">导出全库</button><button class="button" data-action="tm-import-full">恢复全库</button><button class="button primary" data-action="tm-clean" ${state.tmCleaningState === "running" ? "disabled" : ""}>${icon("sparkle", "small")}深度清洗</button></div>
       ${cleaningState}${conflictState}${state.tmConflicts.length ? `<div class="tm-conflicts"><div class="tm-conflicts-header"><strong>待裁决冲突 ${state.tmConflicts.length}</strong><button class="mini-button" data-action="tm-refresh-conflicts">刷新</button></div>${conflictRows}</div>` : ""}
     </div>
     <div class="stats">${stat("memory", "总条目", String(number(stats.total)))}${stat("pin", "已固定", String(number(stats.pinned)))}${stat("check", "手动维护", String(number(stats.manual)))}${stat("translate", "未固定", String(number(stats.unpinned)))}</div>
@@ -1660,7 +1690,7 @@ function renderTmView(): string {
 
 function renderTmEntries(): string {
   if (!state.tmEntries.length) {
-    return `<div class="card-pad muted">当前语言对没有记忆条目。</div>`;
+    return `<div class="empty-state"><div class="empty-icon">${icon("memory")}</div><strong>当前语言对没有记忆条目</strong><p>翻译任务会自动写入记忆，也可以点上方“新增”或“导入”手动补充。</p></div>`;
   }
   return `<table><thead><tr><th class="selection-column"><input type="checkbox" class="file-check" data-tm-select-page ${state.tmSelectedIds.length === state.tmEntries.length ? "checked" : ""} aria-label="选择本页" /></th><th>原文</th><th>译文</th><th>来源</th><th class="number">操作</th></tr></thead><tbody>${state.tmEntries.map((entry) => `<tr><td><input type="checkbox" class="file-check" data-tm-entry-id="${entry.id}" ${state.tmSelectedIds.includes(entry.id) ? "checked" : ""} aria-label="选择 ${escapeHtml(entry.source_text)}" /></td><td>${escapeHtml(entry.source_text)}</td><td>${escapeHtml(entry.target_text)}</td><td class="muted">${escapeHtml(entry.word_type)}</td><td class="number"><span class="table-actions"><button class="mini-button" data-action="tm-edit" data-entry-id="${entry.id}">编辑</button><button class="pin-button ${entry.pinned ? "pinned" : ""}" data-action="tm-pin" data-entry-id="${entry.id}" data-pinned="${entry.pinned ? "0" : "1"}" data-tip="${entry.pinned ? "解除固定" : "固定词条"}">${icon("pin", "small")}</button><button class="mini-button danger-text" data-action="tm-delete" data-entry-id="${entry.id}">删除</button></span></td></tr>`).join("")}</tbody></table>`;
 }
@@ -1758,7 +1788,7 @@ function renderModal(): string {
   if (state.modal === "model-import" && state.modelImportPreview) {
     const preview = state.modelImportPreview;
     const roleRows = preview.roles.map((item) => `<li><strong>${escapeHtml(item.role)}</strong>：${escapeHtml(item.fields.join("、") || "无显式字段")}</li>`).join("");
-    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>预览导入 v3 模型配置</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · 仅合并文件明确字段，不删除未提及配置。</p><ul class="import-summary">${roleRows || "<li>没有角色配置变更。</li>"}</ul><p class="note">吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="model-import-confirm">确认合并</button></div></section></div>`;
+    return `<div class="modal-backdrop"><section class="modal wide-modal"><h2>预览导入模型配置</h2><p class="note"><strong>${escapeHtml(preview.fileName)}</strong> · 仅合并文件明确字段，不删除未提及配置。</p><ul class="import-summary">${roleRows || "<li>没有角色配置变更。</li>"}</ul><p class="note">吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。</p><div class="modal-actions"><button class="button" data-action="close-modal">取消</button><button class="button primary" data-action="model-import-confirm">确认合并</button></div></section></div>`;
   }
   if (state.modal === "update") {
     const result = state.updateResult ?? {};
@@ -1822,20 +1852,6 @@ function tmTargetIsCustom(): boolean {
 function tmPairTargetIsCustom(pair: string): boolean {
   const parsed = splitTmPair(pair);
   return parsed ? state.tmTargetOptions.find((option) => option.code === parsed.target)?.builtin === false || parsed.target.startsWith("x-custom-") : false;
-}
-
-function tmSourceLanguageOptions(): string {
-  return state.tmSourceOptions
-    .filter((option) => option.builtin !== false && option.can_source !== false)
-    .map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === state.tmSourceLang ? "selected" : ""}>${escapeHtml(option.display_name)}</option>`)
-    .join("");
-}
-
-function tmTargetLanguageOptions(): string {
-  return state.tmTargetOptions
-    .filter((option) => option.can_target !== false)
-    .map((option) => `<option value="${escapeHtml(option.code)}" ${option.code === state.tmTargetLang ? "selected" : ""}>${escapeHtml(option.display_name)}${option.builtin === false ? "（自定义）" : ""}</option>`)
-    .join("");
 }
 
 function tmPairLabel(pair: string): string {
@@ -2551,13 +2567,53 @@ async function saveModel(): Promise<void> {
   if (key && mode === "cloud") {
     await client.request(`/api/keys/${provider}`, { method: "PUT", body: JSON.stringify({ api_key: key, base_url: baseUrl }) });
   }
-  clearModelCatalog(role, "连接已变更，请刷新模型目录。 ");
+  clearModelCatalog(role, "连接已变更，请重新获取模型列表。 ");
   await refreshSettings();
   render();
-  showToast("模型角色配置已保存。密钥仅写入本机密钥存储。" );
+  showToast("模型配置已保存。密钥仅写入本机密钥存储。" );
 }
 
-function clearModelCatalog(role: string, message = "尚未读取当前连接的模型目录。 "): void {
+/* 只有表单确实和已保存档案不一致时才自动保存：否则每点一次面板外面都会重复 PUT、
+   清掉刚拉到的模型目录并弹一次提示。inputValue 的空串回退在这里是有意的——
+   把字段清空不会被当成改动，避免误点空白就把 Base URL 抹掉。 */
+function modelFormDirty(): boolean {
+  if (!document.querySelector(".config-panel .config-body")) return false;
+  const role = state.modelRole;
+  const saved = record(state.modelRoles[role]);
+  const savedMode = text(saved.mode, "cloud");
+  if (role === "translation" && inputValue("engineMode", savedMode) !== savedMode) return true;
+  if (inputValue("apiKey")) return true;
+  if (inputValue("provider", text(saved.provider)) !== text(saved.provider)) return true;
+  if (inputValue("baseUrl", text(saved.base_url)) !== text(saved.base_url)) return true;
+  if (inputValue("modelName", text(saved.model)) !== text(saved.model)) return true;
+  if (role !== "translation") {
+    const savedSource = text(saved.source_role, "independent");
+    if ((document.querySelector<HTMLSelectElement>("#roleSource")?.value || savedSource) !== savedSource) return true;
+  }
+  return false;
+}
+
+/* 面板浮在工作区上方，点到别处就该让位；先把改过的连接存好，草稿不会因为收起而丢失。 */
+async function collapseConfigPanel(): Promise<void> {
+  if (modelFormDirty()) {
+    try {
+      await saveModel();
+    } catch (error) {
+      // 保存失败就留在原地，让用户看到错误并自己处理，不要连面板一起收走。
+      showToast(errorMessage(error), true);
+      return;
+    }
+  }
+  state.panelOpen = false;
+  try {
+    await persistSettings({ appearance: { model_config_panel_open: false } });
+  } catch {
+    // 展开状态没写进设置不影响这一次交互，下次启动再按默认值来。
+  }
+  render();
+}
+
+function clearModelCatalog(role: string, message = "尚未获取当前连接的模型列表。 "): void {
   delete state.modelCatalog[role];
   delete state.modelCatalogConnection[role];
   state.modelCatalogMessage[role] = message;
@@ -2577,7 +2633,7 @@ function ensureSavedModelForm(): void {
     || (role !== "translation" && sourceRole !== text(saved.source_role, "independent"))
     || Boolean(inputValue("apiKey"))
   ) {
-    throw new Error("请先保存当前角色配置，再刷新目录或测试连接。");
+    throw new Error("请先保存当前配置，再获取模型列表或测试连接。");
   }
 }
 
@@ -2592,7 +2648,7 @@ async function fetchModels(): Promise<void> {
   state.modelCatalogMessage[role] = result.message;
   state.modelCatalogConnection[role] = modelCatalogConnectionForRole(role);
   render();
-  showToast(result.models.length ? `已刷新 ${result.models.length} 个模型，可从模型名称输入框选择。` : result.message, !result.ok);
+  showToast(result.models.length ? `已获取 ${result.models.length} 个模型，可从模型名称输入框选择。` : result.message, !result.ok);
 }
 
 async function testModel(): Promise<void> {
@@ -2617,7 +2673,7 @@ async function saveThroughput(): Promise<void> {
   });
   state.modelThroughput[role] = result;
   render();
-  showToast("当前角色吞吐设置已保存。运行中的任务不受影响。");
+  showToast("速率设置已保存。运行中的任务不受影响。");
 }
 
 async function restoreThroughput(): Promise<void> {
@@ -3041,7 +3097,7 @@ async function exportModelConfig(includeApiKey = false): Promise<void> {
   const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
   const payload = await client.request<JsonObject>(`/api/model-config/export${query}`);
   downloadJson("translator-model-config.json", payload);
-  state.modalNotice = { title: "模型配置已导出", message: includeApiKey ? "已导出 v3 模型配置和明确勾选的 API Key，请立即移入受保护的位置。" : "已导出 v3 模型配置；默认不包含 API Key。" };
+  state.modalNotice = { title: "模型配置已导出", message: includeApiKey ? "已导出模型配置和明确勾选的 API 密钥，请立即移入受保护的位置。" : "已导出 v3 模型配置；默认不包含 API Key。" };
   state.modal = "notice";
   render();
 }
@@ -3076,8 +3132,8 @@ async function confirmModelConfigImport(): Promise<void> {
   state.modelImportPreview = null;
   state.modal = "notice";
   await refreshSettings();
-  for (const role of Object.keys(state.modelRoles)) clearModelCatalog(role, "导入后请刷新当前连接的模型目录。 ");
-  state.modalNotice = { title: "模型配置已导入", message: `已合并 v3 配置与 ${result.imported_key_count} 个密钥作用域；所有受影响角色均需重新测试。` };
+  for (const role of Object.keys(state.modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。 ");
+  state.modalNotice = { title: "模型配置已导入", message: `已合并配置与 ${result.imported_key_count} 个密钥作用域；所有受影响角色均需重新测试。` };
   render();
 }
 
@@ -3287,6 +3343,18 @@ app.addEventListener("click", (event) => {
   });
 });
 
+/* 挂在 document 上：app 里的 data-action 处理器先跑完（可能已经重渲染），
+   这里再判断“点的是不是面板外面”。事件目标即使已经脱离文档，closest 仍能沿着旧树上溯。 */
+document.addEventListener("click", (event) => {
+  if (!state.panelOpen || state.modal) return;
+  const target = event.target as HTMLElement | null;
+  if (!target || target.closest(".config-panel")) return;
+  // 折叠按钮和顶栏模型按钮本身就是开关，交给 toggle-panel，别在这里抢着收起又被它重新打开。
+  if (target.closest("[data-action='toggle-panel']")) return;
+  if (target.closest(".modal-backdrop, .tooltip-layer, .combo-list")) return;
+  void collapseConfigPanel().catch((error) => showToast(errorMessage(error), true));
+});
+
 app.addEventListener("change", (event) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
   if (target.id === "engineMode") {
@@ -3294,22 +3362,24 @@ app.addEventListener("change", (event) => {
       ...(state.settings ?? {}),
       engine: { ...engineSettings(), mode: target.value },
     };
-    clearModelCatalog("translation", "接入方式草稿已变更；保存后可刷新目录。 ");
+    clearModelCatalog("translation", "连接方式草稿已变更；保存后可获取模型列表。 ");
     render();
     return;
   }
-  if (target.dataset.modelRole) {
+  /* 这些标记属性是无值的（`data-model-role`），dataset 读出来是空串。
+     用真值判断会永远为假，下拉框点了没反应；和下面 data-tm-select-page 一样按存在性判断。 */
+  if (target.dataset.modelRole !== undefined) {
     state.modelRole = target.value;
     void refreshModelThroughput(state.modelRole).then(render).catch(() => render());
     return;
   }
-  if (target.dataset.roleSource) {
+  if (target.dataset.roleSource !== undefined) {
     const independent = target.value === "independent";
     const provider = document.querySelector<HTMLSelectElement>("#provider");
     const baseUrl = document.querySelector<HTMLInputElement>("#baseUrl");
     if (provider) provider.disabled = !independent;
     if (baseUrl) baseUrl.disabled = !independent;
-    clearModelCatalog(state.modelRole, "连接复用方式已变更；保存后可刷新目录。 ");
+    clearModelCatalog(state.modelRole, "连接复用方式已变更；保存后可获取模型列表。 ");
     return;
   }
   if (target.dataset.domainPreset) {
@@ -3317,7 +3387,7 @@ app.addEventListener("change", (event) => {
     return;
   }
   if (["provider", "baseUrl", "apiKey"].includes(target.id)) {
-    clearModelCatalog(state.modelRole, "连接草稿已变更；保存后可刷新目录。 ");
+    clearModelCatalog(state.modelRole, "连接草稿已变更；保存后可获取模型列表。 ");
   }
   if (target.dataset.source) {
     state.sourcePaths[target.dataset.source as Surface] = target.value;
@@ -3344,22 +3414,14 @@ app.addEventListener("change", (event) => {
     toggleTmPageSelection();
     return;
   }
-  if (target.dataset.tmSourceLang) {
-    void saveTmLanguagePair(target.value, state.tmTargetLang).catch((error) => showToast(errorMessage(error), true));
-    return;
-  }
-  if (target.dataset.tmTargetLang) {
-    void saveTmLanguagePair(state.tmSourceLang, target.value).catch((error) => showToast(errorMessage(error), true));
-    return;
-  }
-  if (target.dataset.tmPageSize) {
+  if (target.dataset.tmPageSize !== undefined) {
     state.tmPageSize = Number(target.value) || 25;
     state.tmPage = 1;
     state.tmSelectedIds = [];
     void refreshTm().then(render).catch((error) => showToast(errorMessage(error), true));
     return;
   }
-  if (target.dataset.tmImportMode && state.tmImportPreview) {
+  if (target.dataset.tmImportMode !== undefined && state.tmImportPreview) {
     state.tmImportPreview.mode = target.value as TmImportPreview["mode"];
     return;
   }
@@ -3506,16 +3568,16 @@ async function handleAction(target: HTMLElement): Promise<void> {
   if (action === "task-local-file") return openTaskLocalFile(text(target.dataset.path), target.dataset.reveal === "1");
   if (action === "task-copy-path") return copyTaskPath(text(target.dataset.path));
   if (action === "toggle-panel") {
-    state.panelOpen = !state.panelOpen;
+    // 收起走同一条路径：不管是点面板外面还是点这颗按钮，填了一半的连接都不该被丢掉。
+    if (state.panelOpen) return collapseConfigPanel();
+    state.panelOpen = true;
     // 从某个翻译板块打开时，直接定位到该板块实际使用的模型角色。
-    if (state.panelOpen) {
-      const role = surfaceModelRole(state.view);
-      if (role && role !== state.modelRole) {
-        state.modelRole = role;
-        void refreshModelThroughput(role).then(render).catch(() => render());
-      }
+    const role = surfaceModelRole(state.view);
+    if (role && role !== state.modelRole) {
+      state.modelRole = role;
+      void refreshModelThroughput(role).then(render).catch(() => render());
     }
-    await persistSettings({ appearance: { model_config_panel_open: state.panelOpen } });
+    await persistSettings({ appearance: { model_config_panel_open: true } });
     render();
     return;
   }
@@ -3720,12 +3782,20 @@ window.addEventListener("resize", () => hideTooltip(true));
 /* 输入即筛选，不触发整页重绘：输入法组合期间 DOM 不被替换，中文可以正常输入。 */
 
 type LanguageComboKind = "target" | "source";
-type LanguageCombo = { input: HTMLInputElement; list: HTMLDivElement; kind: LanguageComboKind; surface: Surface };
+/* 记忆库和翻译页共用同一套语言选择控件，但取值来源和保存目标不同，用 scope 区分。 */
+type LanguageComboScope = Surface | "tm";
+type LanguageCombo = { input: HTMLInputElement; list: HTMLDivElement; kind: LanguageComboKind; scope: LanguageComboScope };
 
 let activeCombo: LanguageCombo | null = null;
 let comboIndex = -1;
 
-function languageComboOptions(kind: LanguageComboKind): LanguageOption[] {
+function languageComboOptions(kind: LanguageComboKind, scope: LanguageComboScope): LanguageOption[] {
+  if (scope === "tm") {
+    // 和原来的下拉保持同样的可选范围：源语言不收自定义语言，目标语言允许自定义。
+    return kind === "target"
+      ? state.tmTargetOptions.filter((option) => option.can_target !== false)
+      : state.tmSourceOptions.filter((option) => option.builtin !== false && option.can_source !== false);
+  }
   return kind === "target" ? state.targetOptions : state.sourceOptions;
 }
 
@@ -3734,7 +3804,7 @@ function readLanguageCombo(element: HTMLElement | null): LanguageCombo | null {
   const input = root?.querySelector<HTMLInputElement>("input[data-lang-combo]") ?? null;
   const list = root?.querySelector<HTMLDivElement>(".combo-list") ?? null;
   if (!input || !list) return null;
-  return { input, list, kind: input.dataset.langCombo as LanguageComboKind, surface: input.dataset.surface as Surface };
+  return { input, list, kind: input.dataset.langCombo as LanguageComboKind, scope: input.dataset.surface as LanguageComboScope };
 }
 
 function comboItems(combo: LanguageCombo): HTMLElement[] {
@@ -3755,7 +3825,7 @@ function positionComboList(combo: LanguageCombo): void {
 
 function paintComboList(combo: LanguageCombo, query: string): void {
   const selected = text(combo.input.dataset.code);
-  const options = languageComboOptions(combo.kind).filter((option) => languageMatches(option, query));
+  const options = languageComboOptions(combo.kind, combo.scope).filter((option) => languageMatches(option, query));
   combo.list.innerHTML = options.length
     ? options.map((option) => `<div class="combo-option${option.code === selected ? " selected" : ""}" role="option" aria-selected="${option.code === selected}" data-code="${escapeHtml(option.code)}"><span>${escapeHtml(option.display_name)}${combo.kind === "target" && option.builtin === false ? "（自定义）" : ""}</span><small>${escapeHtml(option.code)}</small></div>`).join("")
     : `<div class="combo-empty">没有匹配的语言</div>`;
@@ -3786,7 +3856,7 @@ function closeLanguageCombo(): void {
 }
 
 function restoreComboText(combo: LanguageCombo): void {
-  combo.input.value = languageDisplay(languageComboOptions(combo.kind), text(combo.input.dataset.code), combo.kind === "target");
+  combo.input.value = languageDisplay(languageComboOptions(combo.kind, combo.scope), text(combo.input.dataset.code), combo.kind === "target");
 }
 
 function commitLanguageCombo(combo: LanguageCombo, code: string): void {
@@ -3795,9 +3865,15 @@ function commitLanguageCombo(combo: LanguageCombo, code: string): void {
   closeLanguageCombo();
   restoreComboText(combo);
   if (!changed) return;
-  const saved = combo.kind === "target"
-    ? saveLanguage(combo.surface, code)
-    : saveSourceLanguage(combo.surface, code);
+  const saved = combo.scope === "tm"
+    // 语言对要成对提交，另一侧沿用当前值；同源同目标会被拒绝，失败后重渲染把输入框拨回去。
+    ? saveTmLanguagePair(
+      combo.kind === "source" ? code : state.tmSourceLang,
+      combo.kind === "target" ? code : state.tmTargetLang,
+    ).catch((error) => { render(); throw error; })
+    : combo.kind === "target"
+      ? saveLanguage(combo.scope, code)
+      : saveSourceLanguage(combo.scope, code);
   void saved.catch((error) => showToast(errorMessage(error), true));
 }
 

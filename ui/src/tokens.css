@@ -226,6 +226,16 @@ button { cursor: pointer; }
 .config-icon { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 9px; color: var(--accent); background: var(--tint); }
 .config-body { display: flex; flex: 1; flex-direction: column; gap: 12px; overflow: auto; padding: 14px 15px; }
 .config-group + .config-group { padding-top: 12px; border-top: 1px solid var(--line); }
+.config-field + .config-field { margin-top: 9px; }
+.config-subgroup { margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line); }
+/* 面板正文只有 262px：按钮按自身宽度换行，不再被压到文字溢出边框外面。 */
+.config-body .field-row { flex-wrap: wrap; }
+.config-body .field-row > .button { flex: 1 1 auto; }
+.config-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
+.config-status-row .status { font-size: 11px; }
+/* label-row 会把标签自带的下边距清掉，面板里这些标签下面直接跟着控件，需要补回来。 */
+.config-body .label-row { margin-bottom: 5px; }
+.config-body .config-subgroup .label-row { margin-bottom: 7px; }
 .field-label, .section-label { display: block; margin: 0 0 5px; color: var(--ink-2); font-size: 11px; font-weight: 650; }
 .section-label { color: var(--ink-3); letter-spacing: .1em; text-transform: uppercase; }
 
@@ -258,12 +268,8 @@ button { cursor: pointer; }
 .card-pad { padding: 15px; }
 .source-bar { display: flex; align-items: center; gap: 11px; padding: 12px 14px; }
 .source-icon, .stat-icon { display: grid; width: 36px; height: 36px; flex: none; place-items: center; border-radius: 10px; color: var(--accent); background: var(--tint); }
-/* 标签改为行内：标签在上会把输入框顶下去，跟左侧图标和右侧按钮对不齐。 */
-.source-meta { display: flex; min-width: 0; flex: 1; align-items: center; gap: 9px; }
-.source-key { flex: none; color: var(--ink-3); font-size: 11px; font-weight: 650; }
-.source-bar .source-input { min-height: 34px; padding: 0; }
-.source-value { overflow: hidden; margin-top: 1px; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.source-input { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; }
+/* 输入框自己就是可见字段，不再需要“源路径”行内标签来说明这块是干什么的。 */
+.source-bar .source-input { min-width: 0; flex: 1; }
 
 /* 按实际数量分列，Excel/PDF 是 4 个、Word 是 5 个，都保持单行。 */
 .stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
@@ -289,7 +295,7 @@ tr:hover td { background: var(--surface-2); }
 .table-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .muted { color: var(--ink-3); }
 
-.button, .icon-button, .model-button, .field, select, input, textarea { border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--ink); background: var(--surface); }
+.button, .icon-button, .model-button { border: 1px solid var(--line-2); border-radius: var(--r-sm); color: var(--ink); background: var(--surface); }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; font-size: 12px; font-weight: 650; white-space: nowrap; }
 .button:hover, .icon-button:hover, .model-button:hover { border-color: var(--ink-3); background: var(--surface-2); }
 .button.primary { border-color: var(--accent); color: var(--on-accent); background: var(--accent); box-shadow: 0 8px 20px -10px rgba(84, 104, 255, .55); box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--accent) 75%, transparent); }
@@ -298,7 +304,8 @@ tr:hover td { background: var(--surface-2); }
 .button.ghost { background: var(--surface-2); }
 .button.block { width: 100%; }
 .button.large { padding: 12px; font-size: 13.5px; }
-.mini-button { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 11px; font-weight: 650; }
+/* nowrap：放进网格的 auto 列时，可换行的按钮会被压到 min-content，文字变成竖排一列。 */
+.mini-button { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 8px; color: var(--ink-2); background: var(--surface); font-size: 11px; font-weight: 650; white-space: nowrap; }
 .mini-button:hover { border-color: var(--ink-3); color: var(--ink); background: var(--surface-2); }
 .danger-text { color: var(--danger); }
 .icon-button { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 10px; color: var(--ink-2); }
@@ -306,9 +313,23 @@ tr:hover td { background: var(--surface-2); }
 .model-button { display: inline-flex; height: 36px; flex: none; align-items: center; gap: 7px; padding: 0 12px; border-radius: 10px; color: var(--ink-2); background: var(--surface); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
 .topbar-actions .icon-button { flex: none; }
 .model-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); }
-.field, select, input, textarea { width: 100%; min-height: 36px; padding: 8px 10px; outline: none; font-size: 12px; }
-.field:focus, select:focus, input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(84, 104, 255, .15); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+/* 全站输入控件共用一套“内凹字段”外观：底色比所在容器低一档、描边比卡片边框实一档，
+   放在白卡、浅蓝设置卡还是深色面板里都看得见边界；聚焦时提亮底色并换成强调色描边。
+   之前只有部分输入框带边框，源路径和记忆库搜索是透明的，同一套界面里出现两种字段语言。 */
+.field, select, input, textarea, .source-input { width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--r-sm); outline: none; color: var(--ink); background: var(--surface-2); font-size: 12px; transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease; }
+.field::placeholder, input::placeholder, textarea::placeholder { color: var(--ink-3); }
+.field:focus, select:focus, input:focus, textarea:focus { border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px rgba(84, 104, 255, .15); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+.field:disabled, select:disabled, input:disabled, textarea:disabled { color: var(--ink-3); background: var(--ground-2); cursor: not-allowed; }
+/* 勾选类控件不吃上面那套字段外观。Chromium 对 appearance:auto 的 checkbox 会忽略作者
+   底色和描边，看不出差别；但本项目还要跑 Monterey 的 Safari 15.1 WebView，那里不保证
+   同样忽略，留着 8px 内边距和字段底色有把 16px 方框画歪的风险。尺寸仍由
+   .file-check / .toggle-row input 决定，勾选色继续走 accent-color。 */
+input[type="checkbox"], input[type="radio"] { padding: 0; border: 0; background: none; }
 textarea { min-height: 90px; resize: vertical; }
+/* 带前置图标的字段：图标画在输入框内部，不再在字段旁边另放一块色卡。 */
+.input-shell { position: relative; display: flex; min-width: 0; flex: 1; align-items: center; }
+.input-shell > .icon { position: absolute; top: 50%; left: 10px; color: var(--ink-3); pointer-events: none; transform: translateY(-50%); }
+.input-shell > input { min-width: 0; flex: 1; padding-left: 32px; }
 .field-row { display: flex; gap: 8px; }
 .field-row > * { min-width: 0; flex: 1; }
 
@@ -403,7 +424,15 @@ textarea { min-height: 90px; resize: vertical; }
 .logbox { min-height: 170px; flex: 1; overflow: auto; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink-2); background: var(--ground-2); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.75; }
 .log-ok { color: var(--ok); }.log-warn { color: var(--warn); }.log-error { color: var(--danger); }
 
-.task-center { display: flex; min-height: 0; flex-direction: column; gap: 14px; }
+/* 必须带上 .view：这个 section 同时是 .view.active（0,2,0），单靠 .task-center（0,1,0）
+   压不过它的 display:block，gap 会被整个忽略，标题卡和下面的网格就贴在一起。
+   间距对齐帮助页和维护页的 14px。 */
+.view.task-center { display: flex; min-height: 0; flex-direction: column; gap: 14px; }
+/* 空态自己要站得住：居中、留白、带图标，不然它跟上面的标题卡看起来像同一块被切成两半。 */
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 38px 20px; text-align: center; }
+.empty-state .empty-icon { display: grid; width: 42px; height: 42px; margin-bottom: 5px; place-items: center; border-radius: 13px; color: var(--accent); background: var(--tint); }
+.empty-state strong { color: var(--ink-2); font-size: 13px; }
+.empty-state p { max-width: 460px; margin: 0; color: var(--ink-3); font-size: 11.5px; line-height: 1.6; }
 .task-center-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .task-center-header h2 { margin: 3px 0 0; font-size: 18px; }
 .task-center-header .note { max-width: 650px; }
@@ -433,29 +462,32 @@ textarea { min-height: 90px; resize: vertical; }
 .tm-controls { display: flex; flex-direction: column; gap: 10px; padding: 13px 14px; }
 .tm-pair-row { display: grid; grid-template-columns: minmax(160px, 1fr) 24px minmax(160px, 1fr) minmax(180px, 1.35fr); align-items: end; gap: 9px; }
 .tm-pair-field { min-width: 0; }
-.tm-pair-arrow { align-self: center; padding-top: 17px; color: var(--ink-3); text-align: center; }
-.tm-pair-current { min-width: 0; padding: 8px 10px; border: 1px solid var(--tint-line); border-radius: var(--r-sm); background: var(--tint); }
-.tm-pair-current strong { display: block; overflow: hidden; margin-top: 3px; color: var(--tint-ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.tm-pair-current small { display: block; margin-top: 2px; color: var(--ink-3); font-size: 10px; }
+.tm-pair-arrow { align-self: center; padding-top: 17px; color: var(--ink-3); font-size: 13px; text-align: center; }
+/* 只读回显：跟左边两个下拉同高、同描边、同底色，不该比可操作的控件更抢眼。
+   原来是一块 tint 色卡，在一排普通字段里显得突兀。 */
+.tm-pair-current { display: flex; min-width: 0; min-height: 36px; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface-2); }
+.tm-pair-current strong { min-width: 0; overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.tm-pair-current small { flex: none; margin-left: auto; color: var(--ink-3); font-size: 10px; }
 .tm-recent-row, .tm-search-row, .tm-pagination { display: flex; align-items: center; gap: 8px; }
 .tm-recent-row { overflow: auto; padding-top: 1px; }
 .tm-recent-row .field-label { flex: none; }
 .tm-recent-row .mini-button.active { border-color: var(--accent); color: var(--tint-ink); background: var(--tint); }
 .tm-search-row { min-width: 0; }
-.tm-search-row .source-icon { width: 30px; height: 30px; }
-.tm-search-row .source-input { min-width: 100px; }
+.tm-search-row .input-shell { min-width: 150px; }
 .tm-state { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--tint-line); border-radius: var(--r-sm); color: var(--tint-ink); background: var(--tint); font-size: 11px; }
 .tm-state .led { flex: none; }
 .tm-state.ready { border-color: var(--ok-l); color: var(--ok); background: var(--ok-t); }
 .tm-state.running { border-color: var(--warn-l); color: var(--warn); background: var(--warn-t); }
 .tm-state.error { border-color: color-mix(in srgb, var(--danger) 35%, var(--surface)); color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
 .tm-state .mini-button { margin-left: auto; }
-.tm-conflicts { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px solid var(--warn-l); border-radius: var(--r-sm); background: var(--warn-t); }
+/* 同上：冲突标题原来也会退回 16px，比同一块里的按钮和条目大一圈。 */
+.tm-conflicts { display: flex; flex-direction: column; gap: 7px; padding: 9px; border: 1px solid var(--warn-l); border-radius: var(--r-sm); background: var(--warn-t); font-size: 12px; }
 .tm-conflicts-header, .tm-conflict-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .tm-conflict-row { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 11px; }
 .tm-conflict-row > div { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
 .tm-conflict-row .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tm-pagination { min-height: 46px; padding: 8px 15px; border-top: 1px solid var(--line); }
+/* 不给字号就会退回 body 的 16px，跟同一行的按钮和下拉差一大截。 */
+.tm-pagination { min-height: 46px; padding: 8px 15px; border-top: 1px solid var(--line); font-size: 11.5px; }
 .tm-page-size { width: auto; min-height: 28px; padding: 4px 8px; }
 .tm-preview-table { max-height: 260px; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .tm-preview-table table { min-width: 560px; }
@@ -476,7 +508,9 @@ textarea { min-height: 90px; resize: vertical; }
 .help-details p { margin: 0; padding: 0 10px 9px; font-size: 11px; }
 .path-value { overflow-wrap: anywhere; color: var(--tint-ink) !important; }
 .maintenance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.maintenance-card { display: flex; min-height: 84px; align-items: center; justify-content: space-between; gap: 12px; padding: 13px; }
+.maintenance-grid .empty-state { grid-column: 1 / -1; }
+/* 卡里的“自动维护”是裸文本，不给基准字号就会退回 16px，比旁边的按钮和标签大一圈。 */
+.maintenance-card { display: flex; min-height: 84px; align-items: center; justify-content: space-between; gap: 12px; padding: 13px; font-size: 11px; }
 .maintenance-card h3, .maintenance-section h3, .maintenance-limits h3 { margin: 0; font-size: 13px; }
 .maintenance-card p { margin: 5px 0 0; color: var(--ink-3); font-size: 11px; }
 .maintenance-limits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 14px; }
@@ -485,7 +519,8 @@ textarea { min-height: 90px; resize: vertical; }
 .maintenance-limits b { color: var(--ink); font-size: 12px; }
 .maintenance-limits p, .maintenance-section > p { margin: 0; color: var(--ink-3); font-size: 11px; line-height: 1.5; }
 .maintenance-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.maintenance-section { display: flex; min-height: 190px; flex-direction: column; gap: 11px; padding: 15px; }
+/* 不再给固定最低高度：底部两张卡内容本来就短，190px 会在按钮下面留出一大片空白。 */
+.maintenance-section { display: flex; flex-direction: column; gap: 11px; padding: 15px; }
 .maintenance-diagnostics { max-height: 206px; margin-top: 2px; border: 1px solid var(--line); border-radius: var(--r-sm); }
 .maintenance-action-list { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
 .maintenance-action-list > div { display: flex; min-height: 45px; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
@@ -494,7 +529,9 @@ textarea { min-height: 90px; resize: vertical; }
 .maintenance-action-list b { font-size: 11.5px; }.maintenance-action-list small { overflow: hidden; color: var(--ink-3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .danger-section { border-color: var(--warn-l); background: var(--warn-t); }
 .quick-start-list { display: flex; flex-direction: column; gap: 9px; margin: 16px 0 0; padding: 0; list-style: none; counter-reset: quickstart; }
-.quick-start-list li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); counter-increment: quickstart; }
+/* 四列对应四个子项：序号、标题、说明、操作。原来只声明三列，
+   第四个子项（按钮）会掉到下一行的 22px 序号列里，被压成竖排文字。 */
+.quick-start-list li { display: grid; grid-template-columns: 22px max-content minmax(0, 1fr) auto; align-items: center; gap: 8px 11px; padding: 10px 11px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); counter-increment: quickstart; }
 .quick-start-list li::before { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; color: var(--tint-ink); background: var(--tint); content: counter(quickstart); font-size: 11px; font-weight: 700; }
 .quick-start-list b { font-size: 12px; }.quick-start-list span { color: var(--ink-2); font-size: 11px; line-height: 1.45; }
 .quick-start-list .help-links { justify-content: flex-end; }
@@ -506,10 +543,15 @@ textarea { min-height: 90px; resize: vertical; }
 .modal { width: min(520px, 100%); max-height: calc(100vh - 48px); overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-lg); }
 .wide-modal { width: min(760px, 100%); }
 .modal h2 { margin: 0 0 12px; font-size: 16px; }.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }.modal-actions-spread { justify-content: space-between; }.modal-actions-spread span { display: inline-flex; gap: 8px; }
+/* 导入预览里的角色清单：原来没有任何规则，落到 .modal 上就是 16px。 */
+.import-summary { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
 .suggestion-list { display: flex; flex-direction: column; gap: 8px; }
 .suggestion-row { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 9px; padding: 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2); font-size: 12px; }
 .suggestion-row input[type="checkbox"] { width: 16px; min-height: 16px; margin: 2px 0 0; accent-color: var(--accent); }.suggestion-row b { font-weight: 650; }.suggestion-row p { display: flex; align-items: center; gap: 5px; margin: 5px 0 0; color: var(--ink-2); }.suggestion-row p input { min-height: 30px; padding: 4px 6px; }
-.toast { position: fixed; right: 20px; bottom: 20px; z-index: 20; max-width: 440px; padding: 10px 13px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; }.toast.error { border-color: rgba(229, 72, 77, .38); border-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); color: var(--danger); }
+/* 顶栏正下方居中：原来在右下角，既贴着“开始翻译”按钮，又在视线之外，保存成功这类
+   反馈经常被整个忽略。z-index 要高于浮动的模型配置面板（50），否则面板展开时看不到。 */
+.toast { position: fixed; top: 84px; left: 50%; z-index: 80; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; transform: translateX(-50%); animation: toast-in 180ms ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }.toast.error { border-color: rgba(229, 72, 77, .38); border-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); color: var(--danger); }
 /* 说明浮层挂在 body 上并用 fixed 定位，滚动容器不会把它裁掉。 */
 .tooltip-layer { position: fixed; z-index: 90; max-width: 264px; padding: 7px 9px; border-radius: 7px; color: var(--surface); background: var(--ink); box-shadow: var(--sh-md); font-size: 11px; line-height: 1.45; opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
 .tooltip-layer.visible { opacity: 1; }
