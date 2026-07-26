@@ -608,9 +608,31 @@ class WordTaskRunner:
                     "INFO",
                     f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
                 )
+            # TM lookups are scoped per file preflight, like the Excel runner:
+            # querying the global pool against every detected pair lets a text
+            # from a zh file hit an entry stored under another source language
+            # (the same string can mean different things per language).
+            normal_text_set = set(normal_texts)
+            text_tm_pairs: dict[str, set[str]] = {}
+            if auto_source_lang:
+                for file_item, text_set in zip(self._files, file_texts):
+                    result = file_language_preflights.get(str(file_item.path))
+                    allowed_pairs = (
+                        set(result.tm_lang_pairs(target_lang)) if result is not None else set()
+                    )
+                    for text in text_set:
+                        if text in normal_text_set and allowed_pairs:
+                            text_tm_pairs.setdefault(text, set()).update(allowed_pairs)
+            elif lang_pair:
+                text_tm_pairs = {text: {lang_pair} for text in normal_texts}
+
             tm_values_by_text: dict[str, list[str]] = {text: [] for text in normal_texts}
-            for pair in tm_language_pairs:
-                tm_result = tm_manager.lookup_batch(normal_texts, pair)
+            tm_texts_by_pair: dict[str, list[str]] = {}
+            for text, pairs in text_tm_pairs.items():
+                for pair in pairs:
+                    tm_texts_by_pair.setdefault(pair, []).append(text)
+            for pair, pair_texts in tm_texts_by_pair.items():
+                tm_result = tm_manager.lookup_batch(pair_texts, pair)
                 for text, value in tm_result.items():
                     if value is not None and str(value) not in tm_values_by_text.setdefault(text, []):
                         tm_values_by_text[text].append(str(value))
