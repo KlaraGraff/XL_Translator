@@ -1,11 +1,10 @@
 # Tauri macOS 分发流程
 
-新版只发布 macOS 12.0 Monterey 及以上版本，正式 Release 仅有两个原生资产：
+新版只发布 macOS 12.0 Monterey 及以上版本，正式 Release 仅有一个原生资产：
 
 - `Translator_macOS_arm64_<version>.dmg` 及同名 `.sha256`
-- `Translator_macOS_x64_<version>.dmg` 及同名 `.sha256`
 
-不得交叉编译、以 Rosetta 替代原生构建，或上传 Windows/NSIS 安装器。`arm64` 必须在 Apple Silicon 原生构建机上生成；`x86_64` 必须在 Intel 原生构建机上生成，面向用户的文件名采用 `x64`。
+不得交叉编译、以 Rosetta 替代原生构建，或上传 Windows/NSIS 安装器。`arm64` 必须在 Apple Silicon 原生构建机上生成；不再发布 Intel（x86_64）安装包。
 
 ## 本地测试构建
 
@@ -35,8 +34,8 @@ GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-ta
 - `APPLE_NOTARY_ISSUER_ID`
 - `APPLE_NOTARY_PRIVATE_KEY_BASE64`
 
-CI 将证书导入临时 keychain，签名 sidecar、应用和 DMG，提交 Apple 公证，staple 后用 Gatekeeper 评估。两个原生构建均成功、各自校验和通过且资产完整后，才会创建正式 stable GitHub Release。
+CI 将证书导入临时 keychain，签名 sidecar、应用和 DMG，提交 Apple 公证，staple 后用 Gatekeeper 评估。arm64 原生构建成功、校验和通过且资产完整后，才会创建正式 stable GitHub Release。
 
-如果稳定 tag 缺少任一 Apple Secret，工作流会自动降级为两个原生 `TEMP_SIGNED_TEST` artifact，并创建明确标注为 Pre-release 的 GitHub Release：应用和 sidecar 使用 ad-hoc 临时签名，DMG 不公证，不标记为 stable/latest。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
+如果稳定 tag 缺少任一 Apple Secret，工作流会自动降级为原生 `TEMP_SIGNED_TEST` artifact，并创建明确标注为 Pre-release 的 GitHub Release：应用和 sidecar 使用 ad-hoc 临时签名，DMG 不公证，不标记为 stable/latest。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
 
-正式发布仍需分别在 macOS 12 arm64 与 macOS 12 x86_64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。
+正式发布仍需在 macOS 12 arm64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。

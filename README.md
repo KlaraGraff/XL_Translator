@@ -4,21 +4,20 @@ Translator 是面向 Excel、Word、PDF 和图片的本地文档翻译器，支�
 
 ## 系统与下载
 
-新版仅支持 **macOS 12.0 Monterey 及以上版本**，并在每个正式 Release 提供两个原生安装包：
+新版仅支持 **macOS 12.0 Monterey 及以上版本**，且仅面向 Apple Silicon（M 系列芯片）提供原生安装包：
 
 - Apple Silicon：`Translator_macOS_arm64_<版本>.dmg`
-- Intel Mac：`Translator_macOS_x64_<版本>.dmg`
 
-打开[最新版发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)，按“关于本机”显示的芯片类型选择对应 DMG；不要在 Apple Silicon 上把 Intel 包当作原生包使用。每个 DMG 都有同名的 `.sha256` 文件。下载后可在终端验证：
+打开[最新版发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)下载 DMG；每个 DMG 都有同名的 `.sha256` 文件。下载后可在终端验证：
 
 ```bash
 cd ~/Downloads
 shasum -a 256 -c Translator_macOS_arm64_<版本>.dmg.sha256
 ```
 
-将命令中的 `arm64` 换为 Intel Mac 使用的 `x64`。校验结果必须显示 `OK`。
+校验结果必须显示 `OK`。
 
-新版不提供 Windows 安装包或 Windows 更新。Windows 用户请继续使用旧版。
+新版不提供 Intel Mac 或 Windows 安装包与更新。Intel Mac 与 Windows 用户请继续使用旧版。
 
 ## 安装与首次打开
 

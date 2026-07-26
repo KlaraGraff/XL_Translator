@@ -34,9 +34,11 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "build-distributions.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("macos-14", workflow)
-        self.assertIn("macos-15-intel", workflow)
         self.assertIn("architecture: arm64", workflow)
-        self.assertIn("architecture: x86_64", workflow)
+        # Distribution is Apple Silicon only; the Intel matrix leg must not
+        # come back silently.
+        self.assertNotIn("macos-15-intel", workflow)
+        self.assertNotIn("architecture: x86_64", workflow)
         self.assertNotIn("windows-latest", workflow.lower())
         self.assertNotIn("nsis", workflow.lower())
         self.assertIn("Only stable vX.Y.Z tags", workflow)
@@ -48,7 +50,7 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("prerelease:", workflow)
         self.assertIn("TEMP_SIGNED_TEST.dmg", workflow)
         self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
-        self.assertIn('shasum -a 256 -c "${expected[3]}"', workflow)
+        self.assertNotIn('shasum -a 256 -c "${expected[3]}"', workflow)
         self.assertIn("artifact_channel=unsigned-test", workflow)
         self.assertIn("artifact_channel=temporary-test", workflow)
         self.assertIn("temporary_signing=1", workflow)
@@ -99,7 +101,7 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         )
         self.assertIn("macOS 12.0 Monterey", readme)
         self.assertIn("Translator_macOS_arm64_<版本>.dmg", readme)
-        self.assertIn("Translator_macOS_x64_<版本>.dmg", readme)
+        self.assertNotIn("Translator_macOS_x64_<版本>.dmg", readme)
         self.assertNotIn("### Windows", readme)
         self.assertNotIn("build_windows_package", guide)
         self.assertIn("Apple 公证", guide)

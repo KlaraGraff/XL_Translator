@@ -80,11 +80,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # These runners are native, not cross-compiled or Rosetta builds.
+          # Apple Silicon only: the runner is native, not cross-compiled or
+          # a Rosetta build. Intel (x86_64) DMGs are no longer distributed.
           - architecture: arm64
             runner: macos-14
-          - architecture: x86_64
-            runner: macos-15-intel
     env:
       MACOS_ARCH: ${{ matrix.architecture }}
       MACOS_MINIMUM_SYSTEM_VERSION: "12.0"
@@ -203,7 +202,7 @@ jobs:
           pattern: Translator_macOS_*_${{ needs.validate-release.outputs.artifact_channel }}
           path: release-assets
           merge-multiple: true
-      - name: Verify exactly two complete native DMGs
+      - name: Verify exactly one complete native DMG
         shell: bash
         run: |
           set -euo pipefail
@@ -213,15 +212,11 @@ jobs:
             expected=(
               "Translator_macOS_arm64_${version}.dmg"
               "Translator_macOS_arm64_${version}.dmg.sha256"
-              "Translator_macOS_x64_${version}.dmg"
-              "Translator_macOS_x64_${version}.dmg.sha256"
             )
           elif [[ "$channel" == "temporary-test" ]]; then
             expected=(
               "Translator_macOS_arm64_${version}_TEMP_SIGNED_TEST.dmg"
               "Translator_macOS_arm64_${version}_TEMP_SIGNED_TEST.dmg.sha256"
-              "Translator_macOS_x64_${version}_TEMP_SIGNED_TEST.dmg"
-              "Translator_macOS_x64_${version}_TEMP_SIGNED_TEST.dmg.sha256"
             )
           else
             echo "Unsupported release channel: $channel" >&2
@@ -230,19 +225,18 @@ jobs:
           for asset in "${expected[@]}"; do
             test -f "release-assets/$asset"
           done
-          test "$(find release-assets -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" -eq 2
-          test "$(find release-assets -maxdepth 1 -name '*.dmg.sha256' -type f | wc -l | tr -d ' ')" -eq 2
+          test "$(find release-assets -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -name '*.dmg.sha256' -type f | wc -l | tr -d ' ')" -eq 1
           (
             cd release-assets
             shasum -a 256 -c "${expected[1]}"
-            shasum -a 256 -c "${expected[3]}"
           )
       - uses: softprops/action-gh-release@v3.0.0
         with:
           prerelease: ${{ needs.validate-release.outputs.formal_release != '1' }}
           name: Translator ${{ github.ref_name }} (${{ needs.validate-release.outputs.artifact_channel }})
           body: |
-            macOS dual-architecture distribution for `${{ github.ref_name }}`.
+            macOS Apple Silicon (arm64) distribution for `${{ github.ref_name }}`.
 
             Channel: `${{ needs.validate-release.outputs.artifact_channel }}`.
             When the channel is `temporary-test`, assets use ad-hoc signing and are not notarized; they are provided for testing and are not a stable/latest release.
