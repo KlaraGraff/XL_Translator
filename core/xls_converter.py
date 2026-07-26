@@ -93,15 +93,23 @@ def convert_with_excel(app, xls_path: Path) -> Path:
     out_path = _get_temp_xlsx_path(xls_path)
     logger.info(f"使用 xlwings 将 {xls_path.name} 转换为临时 .xlsx")
     
+    wb = None
     try:
         wb = app.books.open(str(xls_path))
         # 统一通过 xlwings 的跨平台 save() 触发 Save As，
         # 由目标扩展名 .xlsx 决定输出格式，避免写死 Windows COM 风格接口。
         wb.save(str(out_path))
-        wb.close()
     except Exception as e:
         raise XlwingsUnavailableError(_format_excel_conversion_error(e)) from e
-        
+    finally:
+        # A failed save must still close the book, or it lingers open in the
+        # shared Excel automation process and poisons later conversions.
+        if wb is not None:
+            try:
+                wb.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup only
+                pass
+
     return out_path
 
 
@@ -119,27 +127,30 @@ def convert_with_fallback(xls_path: Path) -> Path:
     logger.info(f"使用降级方案将 {xls_path.name} 转换为临时 .xlsx")
 
     wb_in = xlrd.open_workbook(str(xls_path), formatting_info=False)
-    wb_out = Workbook()
-    
-    # 删除默认创建的第一个 sheet
-    if wb_out.sheetnames:
-        del wb_out[wb_out.sheetnames[0]]
+    try:
+        wb_out = Workbook()
+        try:
+            # 删除默认创建的第一个 sheet
+            if wb_out.sheetnames:
+                del wb_out[wb_out.sheetnames[0]]
 
-    for sheet_idx in range(wb_in.nsheets):
-        ws_in = wb_in.sheet_by_index(sheet_idx)
-        # 防止重名限制 (最大31字符等 openpyxl 自身会校验，这里直接传递)
-        ws_out = wb_out.create_sheet(title=ws_in.name)
-        
-        for rowx in range(ws_in.nrows):
-            # openpyxl 行和列是从 1 开始的
-            row_data = ws_in.row_values(rowx)
-            for colx, value in enumerate(row_data):
-                # 简单值拷贝，忽略单元格上的任何样式、合并和图片
-                if value != "":
-                    ws_out.cell(row=rowx + 1, column=colx + 1, value=value)
+            for sheet_idx in range(wb_in.nsheets):
+                ws_in = wb_in.sheet_by_index(sheet_idx)
+                # 防止重名限制 (最大31字符等 openpyxl 自身会校验，这里直接传递)
+                ws_out = wb_out.create_sheet(title=ws_in.name)
 
-    wb_out.save(str(out_path))
-    wb_out.close()
-    wb_in.release_resources()
-    
+                for rowx in range(ws_in.nrows):
+                    # openpyxl 行和列是从 1 开始的
+                    row_data = ws_in.row_values(rowx)
+                    for colx, value in enumerate(row_data):
+                        # 简单值拷贝，忽略单元格上的任何样式、合并和图片
+                        if value != "":
+                            ws_out.cell(row=rowx + 1, column=colx + 1, value=value)
+
+            wb_out.save(str(out_path))
+        finally:
+            wb_out.close()
+    finally:
+        wb_in.release_resources()
+
     return out_path

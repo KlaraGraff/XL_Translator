@@ -392,7 +392,16 @@ on run argv
         end try
         open inputPath
         set activeDoc to active document
-        save as activeDoc file name outputPath file format format XML document
+        try
+            save as activeDoc file name outputPath file format format XML document
+        on error errMsg
+            -- A failed save must still close the document, or it lingers in
+            -- Word and breaks the next conversion of the same file name.
+            try
+                close activeDoc saving no
+            end try
+            error errMsg
+        end try
         close activeDoc saving no
     end tell
 end run
@@ -478,7 +487,14 @@ on run argv
                 error errMsg2
             end try
         end try
-        save as activeDoc file name outputPath file format format XML document
+        try
+            save as activeDoc file name outputPath file format format XML document
+        on error errMsg3
+            try
+                close activeDoc saving no
+            end try
+            error errMsg3
+        end try
         close activeDoc saving no
     end tell
 end run
