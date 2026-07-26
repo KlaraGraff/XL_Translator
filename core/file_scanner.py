@@ -81,7 +81,7 @@ class ExcelScanResult:
                 "检测到 .xls 文件：优先使用本机 Microsoft Excel 高保真转换；"
                 "若选择兼容转换，复杂样式、合并单元格、图片、图表和宏可能无法完整保留。"
                 if xls_count
-                else "",
+                else ""
             ),
         }
 

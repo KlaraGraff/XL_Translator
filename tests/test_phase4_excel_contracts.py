@@ -162,6 +162,25 @@ class ExcelScanningContractTests(unittest.TestCase):
 
 
 class ExcelCompatibilityContractTests(unittest.TestCase):
+    def test_scan_risk_message_is_a_string_in_both_states(self) -> None:
+        from core.file_scanner import ExcelScanResult
+        from core.file_scanner import FileItem as ScanFileItem
+
+        # A dangling comma once turned the message into a 1-tuple, so the
+        # frontend received an array and the empty state was still truthy.
+        empty = ExcelScanResult(root=Path("."))
+        self.assertIsInstance(empty.risk["message"], str)
+        self.assertEqual(empty.risk["message"], "")
+
+        with_xls = ExcelScanResult(
+            root=Path("."),
+            items=[
+                ScanFileItem(path=Path("legacy.xls"), name="legacy", size_kb=1.0, format="xls")
+            ],
+        )
+        self.assertIsInstance(with_xls.risk["message"], str)
+        self.assertIn(".xls", with_xls.risk["message"])
+
     def test_macos_automation_help_uses_the_real_monterey_settings_path(self) -> None:
         with (
             patch.object(xls_converter.platform, "system", return_value="Darwin"),
