@@ -1,6 +1,6 @@
 [package]
 name = "translator"
-version = "8.1.0"
+version = "8.1.1"
 description = "Translator desktop shell"
 authors = ["KlaraGraff"]
 license = "MIT"
