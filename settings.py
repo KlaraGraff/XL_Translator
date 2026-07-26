@@ -1433,6 +1433,17 @@ def provider_key_overrides(overrides: dict[str, str] | None):
             _KEY_OVERRIDE_LOCAL.overrides = previous
 
 
+def current_key_overrides() -> dict[str, str] | None:
+    """Return the API key overrides active on the calling thread, if any.
+
+    The overrides live in a thread-local, so worker threads never see them.
+    Anything that may build engines on another thread has to capture this
+    snapshot first and re-enter ``provider_key_overrides`` over there.
+    """
+    overrides = getattr(_KEY_OVERRIDE_LOCAL, "overrides", None)
+    return dict(overrides) if isinstance(overrides, dict) else None
+
+
 def save_connection_key(connection_id: str, api_key: str) -> None:
     """Save or remove the API key owned by one pool connection."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,7 @@ keeps a running task insulated from edits made in the panel meanwhile.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 
 from loguru import logger
@@ -15,6 +16,7 @@ from loguru import logger
 from core.connection_pool import (
     FAILURE_ENDPOINT,
     classify_connection_failure,
+    endpoint_identity,
     failover_candidates,
     should_switch_connection,
 )
@@ -43,16 +45,23 @@ class FailoverTranslationEngine(TranslationEngine):
         self._candidates = list(usable)
         self._on_switch = on_switch
         self._exhausted: set[str] = set()
+        # Batches run on a thread pool, so failures on one connection arrive
+        # from several threads at once; every switch decision happens under
+        # this lock and is attributed to the connection the call actually used.
+        self._lock = threading.Lock()
         self._current = self._candidates[0]
         self._engine = build_engine_for(self._current)
 
     @property
     def current_connection(self) -> ModelConnection:
-        return self._current
+        with self._lock:
+            return self._current
 
     @property
     def engine_name(self) -> str:
-        return getattr(self._engine, "engine_name", "")
+        with self._lock:
+            engine = self._engine
+        return getattr(engine, "engine_name", "")
 
     def __getattr__(self, item: str):
         # Anything the wrapper does not define belongs to the live engine.
@@ -66,8 +75,11 @@ class FailoverTranslationEngine(TranslationEngine):
         source_lang: str = "zh",
     ) -> dict[str, str]:
         while True:
+            with self._lock:
+                engine = self._engine
+                connection = self._current
             try:
-                return self._engine.translate_batch(
+                return engine.translate_batch(
                     texts,
                     target_lang,
                     system_prompt,
@@ -79,18 +91,37 @@ class FailoverTranslationEngine(TranslationEngine):
                     # Rate limits and blips stay with the caller's own retry
                     # and backoff; burning a connection would not help.
                     raise
-                if not self._switch_after(exc, failure_kind):
+                if not self._switch_after(connection, exc, failure_kind):
                     raise
 
-    def _switch_after(self, exc: BaseException, failure_kind: str) -> bool:
-        """Move to the next viable connection; return False when none is left."""
-        failed = self._current
+    def _switch_after(
+        self,
+        failed: ModelConnection,
+        exc: BaseException,
+        failure_kind: str,
+    ) -> bool:
+        """Move off ``failed``; return False when no viable connection is left."""
+        with self._lock:
+            return self._switch_from_locked(failed, exc, failure_kind)
+
+    def _switch_from_locked(
+        self,
+        failed: ModelConnection,
+        exc: BaseException,
+        failure_kind: str,
+    ) -> bool:
         self._exhausted.add(failed.id)
         if failure_kind == FAILURE_ENDPOINT:
             # The server is down, so every account on it is out, not just this one.
+            dead_endpoint = endpoint_identity(failed)
             for candidate in self._candidates:
-                if candidate.base_url == failed.base_url:
+                if endpoint_identity(candidate) == dead_endpoint:
                     self._exhausted.add(candidate.id)
+
+        if self._current.id != failed.id and self._current.id not in self._exhausted:
+            # Another thread already moved off the connection this call was
+            # using; retry on the one it picked instead of burning it too.
+            return True
 
         remaining = failover_candidates(
             self._candidates,
@@ -109,17 +140,17 @@ class FailoverTranslationEngine(TranslationEngine):
 
         target = remaining[0]
         try:
-            self._engine = self._build_engine_for(target)
+            engine = self._build_engine_for(target)
         except Exception as build_error:  # noqa: BLE001 - try the next candidate
             logger.warning(
                 "切换连接失败，继续尝试下一条：target={} error={}",
                 target.display_label,
                 build_error,
             )
-            self._current = target
-            return self._switch_after(build_error, FAILURE_ENDPOINT)
+            return self._switch_from_locked(target, build_error, FAILURE_ENDPOINT)
 
         previous, self._current = self._current, target
+        self._engine = engine
         logger.warning(
             "已切换连接：{} -> {}（原因：{}）",
             previous.display_label,

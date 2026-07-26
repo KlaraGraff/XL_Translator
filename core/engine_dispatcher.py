@@ -168,7 +168,14 @@ def build_role_engine(
     With fewer than two usable connections this returns the plain engine, so
     the common single-connection setup keeps exactly the behaviour it had.
     """
-    from core.model_roles import find_role_connection, settings_for_text_role
+    from core.model_roles import list_effective_role_connections, settings_for_text_role
+    from settings import current_key_overrides, provider_key_overrides
+
+    # A runtime switch builds the next engine on a pool worker thread, where
+    # the task's thread-local key snapshot is invisible; capture it here and
+    # re-enter it around every build so a running task keeps the credentials
+    # it started with.
+    key_overrides = current_key_overrides()
 
     def _engine_for(connection) -> TranslationEngine:
         role_settings = settings_for_text_role(
@@ -176,10 +183,19 @@ def build_role_engine(
             role,
             connection_id=connection.id,
         )
-        return build_engine(role_settings)
+        with provider_key_overrides(key_overrides):
+            return build_engine(role_settings)
 
+    # The chain ids were generated from the effective (follow-resolved) pool,
+    # so resolve them there too: a following role's own pool holds ids nothing
+    # ever dialed, and resolving against it degraded every entry to the
+    # primary, silently disabling failover.  An id that has since been removed
+    # from the pool still degrades to the primary.
+    pool = list_effective_role_connections(settings, role)
+    by_id = {connection.id: connection for connection in pool}
+    primary = pool[0] if pool else None
     chain = [
-        find_role_connection(settings, role, connection_id)
+        by_id.get(str(connection_id or "").strip()) or primary
         for connection_id in connection_ids
         if str(connection_id or "").strip()
     ]
@@ -187,7 +203,7 @@ def build_role_engine(
     unique: list = []
     seen: set[str] = set()
     for connection in chain:
-        if connection.id not in seen:
+        if connection is not None and connection.id not in seen:
             seen.add(connection.id)
             unique.append(connection)
 

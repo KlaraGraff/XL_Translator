@@ -90,12 +90,24 @@ def should_switch_connection(failure_kind: str) -> bool:
     return failure_kind in {FAILURE_ENDPOINT, FAILURE_CREDENTIAL}
 
 
-def _endpoint_identity(connection: ModelConnection) -> str:
-    """Return what "the same server" means when skipping a dead endpoint."""
-    return normalize_cloud_base_url(
+def endpoint_identity(connection: ModelConnection) -> str:
+    """Return what "the same server" means when skipping a dead endpoint.
+
+    Raw Base URLs cannot be compared: two providers with SDK-owned endpoints
+    both leave the field empty without sharing a server, and one server can be
+    written several ways.  Resolve the URL first and fall back to the provider
+    name when no URL exists at all.
+    """
+    normalized = normalize_cloud_base_url(
         connection.provider,
         connection.base_url,
     ).rstrip("/")
+    if normalized:
+        return normalized
+    raw = str(connection.base_url or "").strip().rstrip("/")
+    if raw:
+        return raw
+    return f"provider:{str(connection.provider or '').strip()}"
 
 
 @dataclass(frozen=True)
@@ -178,7 +190,7 @@ def failover_candidates(
         None,
     )
     dead_endpoint = (
-        _endpoint_identity(failed)
+        endpoint_identity(failed)
         if failed is not None and failure_kind == FAILURE_ENDPOINT
         else None
     )
@@ -189,7 +201,7 @@ def failover_candidates(
             continue
         if connection.id in exhausted_connection_ids:
             continue
-        if dead_endpoint and _endpoint_identity(connection) == dead_endpoint:
+        if dead_endpoint and endpoint_identity(connection) == dead_endpoint:
             continue
         remaining.append(connection)
     return remaining
