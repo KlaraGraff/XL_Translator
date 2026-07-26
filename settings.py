@@ -444,8 +444,21 @@ def select_cloud_provider_config(owner, provider: str) -> CloudProviderConfig:
     return config
 
 
+MODEL_ROLE_SOURCE_VALUES = {
+    "independent",
+    "translation",
+    "cleaner",
+    "image",
+    "pdf_review",
+}
+
+
 class EngineSettings(BaseModel):
     mode: str = "cloud"  # "cloud" | "local"
+    # Translation used to be the only follow *source*.  It can now follow a
+    # role that is itself independent, so it needs the same field as the rest;
+    # "independent" keeps every existing settings file behaving as before.
+    source_role: str = "independent"
     cloud_provider: str = DEFAULT_CLOUD_PROVIDER
     cloud_model: str = DEFAULT_CLOUD_MODEL
     cloud_base_url: str = DEFAULT_CUSTOM_OPENAI_BASE_URL
@@ -519,6 +532,9 @@ class EngineSettings(BaseModel):
         local_min, local_max = get_local_concurrency_bounds(self.concurrency_unlocked)
         self.ollama_concurrency = max(local_min, min(local_max, self.ollama_concurrency))
         self.local_provider = _normalize_local_provider(self.local_provider)
+        # A role can never follow itself; core enforces the rest of the graph.
+        if self.source_role not in MODEL_ROLE_SOURCE_VALUES - {"translation"}:
+            self.source_role = "independent"
         self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
         self.cloud_model = str(self.cloud_model or "").strip()
         self.cloud_base_url = normalize_cloud_base_url(
@@ -719,10 +735,17 @@ class ModelRoleSettings(BaseModel):
     """Cloud access settings owned by one model role."""
 
     source_role: str = "independent"
+    # Only a text-capability role can actually run locally; the capability
+    # guard in core.model_roles is what rejects local for the image and review
+    # roles, so these fields exist on the shared class without offering it.
+    mode: str = "cloud"  # "cloud" | "local"
     cloud_provider: str = DEFAULT_CLOUD_PROVIDER
     cloud_model: str = DEFAULT_CLOUD_MODEL
     cloud_base_url: str = DEFAULT_CUSTOM_OPENAI_BASE_URL
     cloud_provider_configs: dict[str, CloudProviderConfig] = Field(default_factory=dict)
+    local_provider: str = DEFAULT_LOCAL_MODEL_PROVIDER
+    local_model: str = ""
+    local_base_url: str = OLLAMA_BASE_URL
     availability_status: str = "unknown"
     availability_message: str = ""
     availability_checked_at: str = ""
@@ -731,8 +754,14 @@ class ModelRoleSettings(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_role(self):
-        if self.source_role not in {"independent", "translation", "cleaner", "image"}:
+        if self.source_role not in MODEL_ROLE_SOURCE_VALUES:
             self.source_role = "independent"
+        if self.mode not in {"cloud", "local"}:
+            self.mode = "cloud"
+        self.local_provider = _normalize_local_provider(self.local_provider)
+        if not str(self.local_base_url or "").strip():
+            self.local_base_url = _default_local_base_url(self.local_provider)
+        self.local_model = str(self.local_model or "").strip()
         if self.availability_status not in {"unknown", "available", "unavailable"}:
             self.availability_status = "unknown"
         self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
@@ -1455,6 +1484,21 @@ def get_connection_key(connection_id: str, provider: str, base_url: str = "") ->
     still resolves through provider/Base URL.
     """
     return get_connection_scoped_key(connection_id) or get_key(provider, base_url)
+
+
+def mask_api_key(api_key: str) -> str:
+    """Return a display-only hint for a saved key: first and last few characters.
+
+    An empty API Key field cannot tell "nothing saved" apart from "saved but
+    hidden", so the panel needs something to show.  Only the head and tail are
+    kept, and the middle is a fixed-width mask so the real length never leaks.
+    """
+    value = str(api_key or "").strip()
+    if not value:
+        return ""
+    if len(value) <= 12:
+        return "•" * len(value)
+    return f"{value[:4]}{'•' * 6}{value[-4:]}"
 
 
 def get_key(provider: str, base_url: str = "") -> str:

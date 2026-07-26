@@ -59,15 +59,44 @@ class Phase3ModelContractTests(unittest.TestCase):
                 ROLE_PDF_REVIEW,
             )},
         )
-        self.assertEqual(allowed_source_roles(ROLE_CLEANER), [SOURCE_INDEPENDENT, ROLE_TRANSLATION])
-        self.assertEqual(
-            allowed_source_roles(ROLE_IMAGE),
-            [SOURCE_INDEPENDENT, ROLE_TRANSLATION],
-        )
-        self.assertEqual(
-            allowed_source_roles(ROLE_PDF_REVIEW),
-            [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_IMAGE],
-        )
+        # The four roles are symmetric: any role may follow any other, and a
+        # role may never follow itself.  Chains stay banned, which is what the
+        # settings-aware form of this call narrows down.
+        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+            with self.subTest(role=role):
+                sources = allowed_source_roles(role)
+                assert sources[0] == SOURCE_INDEPENDENT
+                assert role not in sources
+                assert set(sources[1:]) == {
+                    ROLE_TRANSLATION,
+                    ROLE_CLEANER,
+                    ROLE_IMAGE,
+                    ROLE_PDF_REVIEW,
+                } - {role}
+
+    def test_allowed_sources_drop_roles_that_already_follow(self) -> None:
+        settings = AppSettings()
+        # Out of the box all three secondary roles follow translation, so it is
+        # the only role anyone may follow: following a follower is a chain.
+        assert allowed_source_roles(ROLE_IMAGE, settings) == [
+            SOURCE_INDEPENDENT,
+            ROLE_TRANSLATION,
+        ]
+        assert allowed_source_roles(ROLE_TRANSLATION, settings) == [SOURCE_INDEPENDENT]
+
+        # Freeing one role makes it selectable, including by translation.
+        settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+        assert allowed_source_roles(ROLE_TRANSLATION, settings) == [
+            SOURCE_INDEPENDENT,
+            ROLE_PDF_REVIEW,
+        ]
+        assert ROLE_PDF_REVIEW in allowed_source_roles(ROLE_IMAGE, settings)
+
+    def test_a_role_cannot_follow_itself(self) -> None:
+        settings = AppSettings()
+        settings.image_model_role.source_role = ROLE_IMAGE
+        with self.assertRaises(ChainedModelFollowError):
+            resolve_effective_model_config(settings, ROLE_IMAGE)
 
     def test_connection_reuse_shares_access_but_keeps_role_model_name(self) -> None:
         settings = AppSettings(
@@ -100,15 +129,33 @@ class Phase3ModelContractTests(unittest.TestCase):
                 local_model="qwen2.5:14b",
             )
         )
-        for role in (ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        # Cleaner is a text role and may run locally, so it is deliberately not
+        # in this list; only the image and review capabilities are cloud-only.
+        for role in (ROLE_IMAGE, ROLE_PDF_REVIEW):
             settings_for_role = settings.model_copy(deep=True)
             getattr(settings_for_role, {
-                ROLE_CLEANER: "cleaner_model_role",
                 ROLE_IMAGE: "image_model_role",
                 ROLE_PDF_REVIEW: "pdf_review_model_role",
             }[role]).source_role = ROLE_TRANSLATION
             with self.subTest(role=role), self.assertRaises(LocalModelFollowNotAllowedError):
                 resolve_effective_model_config(settings_for_role, role)
+
+    def test_a_text_role_may_follow_a_local_translation_model(self) -> None:
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="local",
+                local_provider="ollama",
+                local_model="qwen2.5:14b",
+            )
+        )
+        settings.cleaner_model_role.source_role = ROLE_TRANSLATION
+        settings.cleaner_model_role.local_model = "qwen2.5:7b"
+        config = resolve_effective_model_config(settings, ROLE_CLEANER)
+        assert config.mode == "local"
+        assert config.provider == "ollama"
+        # Following shares the runner, never the model name.
+        assert config.model == "qwen2.5:7b"
+        assert config.api_key == ""
 
     def test_chained_following_is_rejected_before_resolution(self) -> None:
         settings = AppSettings()

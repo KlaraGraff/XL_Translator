@@ -60,7 +60,13 @@ FOLLOW_SOURCE_LABELS = {
     ROLE_TRANSLATION: "跟随翻译模型",
     ROLE_CLEANER: "跟随深度清洗模型",
     ROLE_IMAGE: "跟随PDF翻译模型",
+    ROLE_PDF_REVIEW: "跟随PDF翻译审核模型",
 }
+
+# Only a text role can run against a local runner.  Image generation and image
+# understanding are cloud-only in this app, so offering them a local mode would
+# just be a dropdown entry that always fails the capability guard.
+LOCAL_CAPABLE_CAPABILITIES = frozenset({"text"})
 
 
 class ModelRoleConfigError(ValueError):
@@ -138,8 +144,36 @@ def list_role_connections(settings: AppSettings, role: str) -> list[ModelConnect
 
     Entry 0 is the primary.  The pool always has at least one entry because
     the settings validator seeds it from the legacy single connection.
+
+    This is the *owned* pool: the entries a panel edit would write to.  A role
+    that follows another still owns a pool nobody dials, so callers that want
+    the connections actually used must go through ``pool_role`` /
+    ``list_effective_role_connections``.
     """
     return list(role_pool_owner(settings, role).connections or [])
+
+
+def pool_role(settings: AppSettings, role: str) -> str:
+    """Return the role whose pool a given role actually dials.
+
+    A following role reuses its source's provider, Base URL and key, so the
+    source's pool is the one that describes its connections.  Follow chains are
+    rejected elsewhere, so resolving one hop is enough.
+    """
+    normalized_role = role if role in MODEL_ROLE_LABELS else ROLE_TRANSLATION
+    source = normalize_source_role(
+        normalized_role,
+        role_source_role(settings, normalized_role),
+    )
+    return normalized_role if source == SOURCE_INDEPENDENT else source
+
+
+def list_effective_role_connections(
+    settings: AppSettings,
+    role: str,
+) -> list[ModelConnection]:
+    """Return the pool that describes one role's real connections."""
+    return list_role_connections(settings, pool_role(settings, role))
 
 
 def find_role_connection(
@@ -362,23 +396,55 @@ def validate_all_model_roles(
     }
 
 
-def allowed_source_roles(role: str) -> list[str]:
-    if role == ROLE_CLEANER:
-        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION]
-    if role == ROLE_IMAGE:
-        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION]
-    if role == ROLE_PDF_REVIEW:
-        return [SOURCE_INDEPENDENT, ROLE_TRANSLATION, ROLE_IMAGE]
-    return [SOURCE_INDEPENDENT]
+def role_source_role(settings: AppSettings, role: str) -> str:
+    """Return one role's stored follow source, for any of the four roles.
+
+    Translation keeps its configuration on ``engine`` rather than in a
+    ``ModelRoleSettings``, so callers that reason about the follow graph need
+    this instead of ``get_role_settings``, which returns ``None`` for it.
+    """
+    if role == ROLE_TRANSLATION:
+        return str(settings.engine.source_role or SOURCE_INDEPENDENT).strip()
+    role_settings = get_role_settings(settings, role)
+    if role_settings is None:
+        return SOURCE_INDEPENDENT
+    return str(role_settings.source_role or SOURCE_INDEPENDENT).strip()
+
+
+def allowed_source_roles(
+    role: str,
+    settings: AppSettings | None = None,
+) -> list[str]:
+    """Return the follow sources a role may select.
+
+    Any role may follow any *other* role, which is what makes the four roles
+    symmetric.  Chains stay banned, so with ``settings`` the answer narrows to
+    the roles that are currently independent — those are the only ones that can
+    legally be followed right now.
+    """
+    candidates = [item for item in MODEL_ROLES if item != role]
+    if settings is not None:
+        candidates = [
+            item
+            for item in candidates
+            if role_source_role(settings, item) == SOURCE_INDEPENDENT
+        ]
+    return [SOURCE_INDEPENDENT, *candidates]
 
 
 def normalize_source_role(role: str, source_role: str) -> str:
     source = str(source_role or SOURCE_INDEPENDENT).strip()
-    if source not in allowed_source_roles(role) and source != SOURCE_INDEPENDENT:
+    if source == SOURCE_INDEPENDENT:
+        return SOURCE_INDEPENDENT
+    if source == role:
         raise ChainedModelFollowError(
-            f"{role_label(role)}不能跟随{role_label(source)}，请直接选择翻译模型或独立连接。"
+            f"{role_label(role)}不能跟随自己，请选择其他角色或独立配置。"
         )
-    return source if source in allowed_source_roles(role) else SOURCE_INDEPENDENT
+    if source not in allowed_source_roles(role):
+        raise ChainedModelFollowError(
+            f"{role_label(role)}不能跟随{role_label(source)}，请改为独立配置。"
+        )
+    return source
 
 
 def source_label(source_role: str) -> str:
@@ -392,6 +458,27 @@ def _role_model_name(role_settings: ModelRoleSettings, role: str) -> str:
     if role in {ROLE_IMAGE, ROLE_PDF_REVIEW}:
         return ""
     return DEFAULT_CLOUD_MODEL
+
+
+def _own_model_name(settings: AppSettings, role: str, mode: str) -> str:
+    """Return the model name a role contributes itself.
+
+    Following shares the provider, endpoint and key but never the model name:
+    a cleaning or image role reusing a translation connection still runs its
+    own model against it.
+    """
+    if role == ROLE_TRANSLATION:
+        if mode == "local":
+            return str(
+                settings.engine.local_model or settings.engine.ollama_model or ""
+            ).strip()
+        return str(settings.engine.cloud_model or DEFAULT_CLOUD_MODEL).strip()
+    role_settings = get_role_settings(settings, role)
+    if role_settings is None:
+        raise ModelRoleConfigError(f"未知模型用途：{role}")
+    if mode == "local":
+        return str(role_settings.local_model or "").strip()
+    return _role_model_name(role_settings, role)
 
 
 def _hash_secret(value: str) -> str:
@@ -508,109 +595,101 @@ def resolve_effective_model_config(
     if normalized_role in _seen:
         raise ChainedModelFollowError("模型配置来源存在循环，请改为独立配置。")
 
-    if normalized_role == ROLE_TRANSLATION:
-        if settings.engine.mode == "local":
-            provider = str(settings.engine.local_provider or "ollama").strip()
-            config = EffectiveModelConfig(
-                role=ROLE_TRANSLATION,
-                label=role_label(ROLE_TRANSLATION),
-                capability="text",
-                mode="local",
-                provider=provider,
-                model=str(settings.engine.local_model or settings.engine.ollama_model or "").strip(),
-                base_url=str(settings.engine.local_base_url or "").strip(),
-                api_key="",
-            )
-            validate_model_capability(config)
-            return _availability_for_config(config, settings.engine)
-        connection = find_role_connection(settings, ROLE_TRANSLATION, connection_id)
-        is_primary = connection.id == list_role_connections(settings, ROLE_TRANSLATION)[0].id
-        if is_primary:
-            # The primary keeps reading through cloud_provider_configs so that
-            # switching provider still restores that provider's saved model.
-            provider = str(settings.engine.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-            provider_config = get_cloud_provider_config(settings.engine, provider)
-            model = provider_config.cloud_model or DEFAULT_CLOUD_MODEL
-            base_url = provider_config.cloud_base_url
-        else:
-            provider = connection.provider or DEFAULT_CLOUD_PROVIDER
-            model = connection.model or DEFAULT_CLOUD_MODEL
-            base_url = connection.base_url
-        config = EffectiveModelConfig(
-            role=ROLE_TRANSLATION,
-            label=role_label(ROLE_TRANSLATION),
-            capability="text",
-            mode="cloud",
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=_connection_api_key(connection, provider, base_url),
-            connection_id=connection.id,
-            connection_label=connection.display_label,
-        )
-        validate_model_capability(config)
-        return _availability_for_config(config, settings.engine)
-
-    role_settings = get_role_settings(settings, normalized_role)
-    if role_settings is None:
-        raise ModelRoleConfigError(f"未知模型用途：{role}")
-
-    source = normalize_source_role(normalized_role, role_settings.source_role)
-    if source != role_settings.source_role:
-        role_settings.source_role = source
+    # All four roles resolve the same way now: follow first, then a local
+    # runner, then the role's own pool.  Translation only differs in storing its
+    # values on ``engine`` instead of a ModelRoleSettings.
+    owner = model_role_owner(settings, normalized_role)
+    capability = role_capability(normalized_role)
+    source = normalize_source_role(
+        normalized_role,
+        role_source_role(settings, normalized_role),
+    )
+    if source != owner.source_role:
+        owner.source_role = source
 
     if source != SOURCE_INDEPENDENT:
-        source_settings = get_role_settings(settings, source)
-        if source_settings is not None and source_settings.source_role != SOURCE_INDEPENDENT:
+        if role_source_role(settings, source) != SOURCE_INDEPENDENT:
             raise ChainedModelFollowError(
                 f"{role_label(normalized_role)}不能跟随已经跟随其他模型的{role_label(source)}，"
                 "请直接选择最终来源。"
             )
+        # The pool entry belongs to the source, so the id has to be resolved
+        # against the source's pool; an id this role no longer matches degrades
+        # to the source's primary, which is what following has always meant.
         source_config = resolve_effective_model_config(
             settings,
             source,
+            connection_id=connection_id,
             _seen=(*_seen, normalized_role),
         )
-        if source_config.mode == "local":
+        if (
+            source_config.mode == "local"
+            and capability not in LOCAL_CAPABLE_CAPABILITIES
+        ):
             raise LocalModelFollowNotAllowedError(
-                _local_follow_not_allowed_message(normalized_role)
+                _local_follow_not_allowed_message(normalized_role, source),
             )
-        else:
-            provider = source_config.provider
-            base_url = source_config.base_url
-            api_key = source_config.api_key
         config = EffectiveModelConfig(
             role=normalized_role,
             label=role_label(normalized_role),
-            capability=role_capability(normalized_role),
-            mode="cloud",
-            provider=provider,
-            model=_role_model_name(role_settings, normalized_role),
-            base_url=base_url,
-            api_key=api_key,
+            capability=capability,
+            # Following a local runner is legal for a text role, so the mode
+            # comes from the source rather than being pinned to cloud.
+            mode=source_config.mode,
+            provider=source_config.provider,
+            model=_own_model_name(settings, normalized_role, source_config.mode),
+            base_url=source_config.base_url,
+            api_key=source_config.api_key,
+            # Report the connection actually dialed rather than an entry from
+            # this role's own idle pool, which is what made the panel label a
+            # followed connection with a stale name.
+            connection_id=source_config.connection_id,
+            connection_label=source_config.connection_label,
             source_role=source,
             follows=True,
-            availability_status=role_settings.availability_status,
-            availability_message=role_settings.availability_message,
-            availability_signature=role_settings.availability_signature,
+            availability_status=owner.availability_status,
+            availability_message=owner.availability_message,
+            availability_signature=owner.availability_signature,
         )
         validate_model_capability(config)
-        return _availability_for_config(config, role_settings)
+        return _availability_for_config(config, owner)
+
+    if str(getattr(owner, "mode", "cloud") or "cloud") == "local":
+        config = EffectiveModelConfig(
+            role=normalized_role,
+            label=role_label(normalized_role),
+            capability=capability,
+            mode="local",
+            provider=str(getattr(owner, "local_provider", "") or "ollama").strip(),
+            model=_own_model_name(settings, normalized_role, "local"),
+            base_url=str(getattr(owner, "local_base_url", "") or "").strip(),
+            api_key="",
+            source_role=SOURCE_INDEPENDENT,
+            follows=False,
+        )
+        validate_model_capability(config)
+        return _availability_for_config(config, owner)
 
     connection = find_role_connection(settings, normalized_role, connection_id)
     if connection.id == list_role_connections(settings, normalized_role)[0].id:
-        provider = str(role_settings.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-        provider_config = get_cloud_provider_config(role_settings, provider)
-        model = provider_config.cloud_model or _role_model_name(role_settings, normalized_role)
+        # The primary keeps reading through cloud_provider_configs so that
+        # switching provider still restores that provider's saved model.
+        provider = str(owner.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+        provider_config = get_cloud_provider_config(owner, provider)
+        model = provider_config.cloud_model or _own_model_name(
+            settings,
+            normalized_role,
+            "cloud",
+        )
         base_url = provider_config.cloud_base_url
     else:
         provider = connection.provider or DEFAULT_CLOUD_PROVIDER
-        model = connection.model or _role_model_name(role_settings, normalized_role)
+        model = connection.model or _own_model_name(settings, normalized_role, "cloud")
         base_url = connection.base_url
     config = EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
-        capability=role_capability(normalized_role),
+        capability=capability,
         mode="cloud",
         provider=provider,
         model=model,
@@ -620,23 +699,24 @@ def resolve_effective_model_config(
         connection_label=connection.display_label,
         source_role=SOURCE_INDEPENDENT,
         follows=False,
-        availability_status=role_settings.availability_status,
-        availability_message=role_settings.availability_message,
-        availability_signature=role_settings.availability_signature,
+        availability_status=owner.availability_status,
+        availability_message=owner.availability_message,
+        availability_signature=owner.availability_signature,
     )
     validate_model_capability(config)
-    return _availability_for_config(config, role_settings)
+    return _availability_for_config(config, owner)
 
 
-def _local_follow_not_allowed_message(role: str) -> str:
+def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
     role_name = role_label(role)
     reason = {
         ROLE_CLEANER: "深度清洗需要云端文本模型。",
         ROLE_IMAGE: "PDF 翻译需要云端图像生成模型。",
         ROLE_PDF_REVIEW: "翻译审核需要云端图像理解模型。",
     }.get(role, f"{role_name}只支持云端模型。")
+    source_name = role_label(source_role) if source_role else "跟随来源"
     return (
-        "跟随来源不可用：翻译模型当前是本地模型，请改为独立云端配置。"
+        f"跟随来源不可用：{source_name}当前是本地模型，请改为独立云端配置。"
         f"\n原因：{reason}"
     )
 

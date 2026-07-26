@@ -14,6 +14,7 @@ type FileItem = JsonObject & {
   size_kb?: number;
   sheets?: string[];
   sheet_count?: number;
+  text_cell_count?: number;
   relative_path?: string;
   format?: string;
   conversion_risks?: string[];
@@ -210,6 +211,9 @@ const state: {
   modelThroughput: Record<string, JsonObject>;
   modelImportPreview: ModelImportPreview | null;
   selectedConnection: Record<string, string>;
+  /* 连接方式的未保存草稿（"cloud" / "local" / "follow:<role>"）。切到本地或跟随
+     会换掉整块表单，所以选择必须先落到状态里再重绘，不能只改 DOM 的 disabled。 */
+  modelAccessDraft: Record<string, string>;
 } = {
   connected: false,
   view: "excel",
@@ -284,6 +288,7 @@ const state: {
   modelThroughput: {},
   modelImportPreview: null,
   selectedConnection: {},
+  modelAccessDraft: {},
 };
 
 const pageMeta: Record<View, { title: string; description: string }> = {
@@ -493,11 +498,15 @@ function excelSheetCount(file: FileItem): number {
   return number(file.sheet_count, file.sheets?.length ?? 0);
 }
 
-function excelScanSummary(): { files: number; selected: number; sheets: number; xls: number } {
+function excelScanSummary(): { files: number; textCells: number; sheets: number; xls: number } {
   const files = state.files.excel;
+  const reported = state.scanReports.excel.summary;
   return {
     files: files.length,
-    selected: state.selectedPaths.excel.length,
+    textCells: number(
+      reported.text_cell_count,
+      files.reduce((total, file) => total + number(file.text_cell_count), 0),
+    ),
     sheets: files.reduce((total, file) => total + excelSheetCount(file), 0),
     xls: files.filter((file) => fileFormat(file) === "xls").length,
   };
@@ -529,13 +538,12 @@ function wordNeedsConversion(file: FileItem): boolean {
   );
 }
 
-function wordScanSummary(): { files: number; selected: number; paragraphs: number; tables: number; docs: number } {
+function wordScanSummary(): { files: number; paragraphs: number; tables: number; docs: number } {
   const files = state.files.word;
   const knownFiles = files.filter((file) => !wordNeedsConversion(file));
   const reported = state.scanReports.word.summary;
   return {
     files: files.length,
-    selected: state.selectedPaths.word.length,
     paragraphs: number(reported.paragraph_count, knownFiles.reduce((total, file) => total + number(file.paragraph_count), 0)),
     tables: number(reported.table_count, knownFiles.reduce((total, file) => total + number(file.table_count), 0)),
     docs: number(reported.doc_unknown_count, files.filter(wordNeedsConversion).length),
@@ -672,14 +680,23 @@ function activeTasks(): ManagedTask[] {
     .filter((entry): entry is ManagedTask => Boolean(entry) && isTaskActive(entry.task));
 }
 
+/* 只认本次显式聚焦的任务，或该板块仍在运行的任务。历史记录不能自动占住工作区：
+   否则每次启动都会看到上一次的结果页、开始按钮消失，而“开始新任务”清掉聚焦后
+   又会被同一条历史记录重新占住。看历史请去任务中心。 */
 function workspaceTask(surface: Surface): ManagedTask | null {
   const taskId = state.workspaceTaskIds[surface];
   const selected = taskId ? state.tasks[taskId] : null;
   if (selected) return selected;
-  const fallback = state.taskOrder
+  const active = state.taskOrder
     .map((id) => state.tasks[id])
-    .find((entry) => entry && entry.task.surface === surface);
-  return fallback ?? null;
+    .find((entry) => entry && entry.task.surface === surface && isTaskActive(entry.task));
+  return active ?? null;
+}
+
+/* 结果页只是“上一次任务的收尾”，任何重新开始的动作都应该让它退场。 */
+function releaseFinishedWorkspaceTask(surface: Surface): void {
+  const current = workspaceTask(surface);
+  if (current && current.task.terminal) state.workspaceTaskIds[surface] = null;
 }
 
 function taskStatus(): { label: string; tone: string } {
@@ -779,8 +796,55 @@ type PoolConnection = {
   availability_status: string;
   availability_message: string;
   has_api_key: boolean;
+  api_key_preview: string;
   primary: boolean;
 };
+
+const MODEL_ROLE_LABELS: Record<string, string> = {
+  translation: "文档翻译（Excel / Word）",
+  cleaner: "记忆库清洗",
+  image: "PDF 翻译（图像生成）",
+  pdf_review: "PDF 译文审核",
+};
+
+const FOLLOW_PREFIX = "follow:";
+
+/* 连接方式把三类选择压成一个下拉：云端 API、本地模型、跟随某个角色。
+   跟随和「本地/云端」是互斥的，用一个控件表达比两个能减少无效组合。 */
+function savedAccessMode(role: string): string {
+  const saved = record(state.modelRoles[role]);
+  const source = text(saved.source_role, "independent");
+  if (source !== "independent") return `${FOLLOW_PREFIX}${source}`;
+  return text(saved.mode, "cloud");
+}
+
+function accessMode(role: string): string {
+  return state.modelAccessDraft[role] ?? savedAccessMode(role);
+}
+
+function accessFollowSource(role: string): string {
+  const value = accessMode(role);
+  return value.startsWith(FOLLOW_PREFIX) ? value.slice(FOLLOW_PREFIX.length) : "independent";
+}
+
+function accessModeOptions(role: string): { value: string; label: string }[] {
+  const saved = record(state.modelRoles[role]);
+  const sources = Array.isArray(saved.source_role_options)
+    ? (saved.source_role_options as unknown[]).map((item) => text(item))
+    : ["independent"];
+  const options = [{ value: "cloud", label: "云端 API" }];
+  if (saved.supports_local !== false) {
+    options.push({ value: "local", label: "本地模型" });
+  }
+  for (const source of sources) {
+    if (source === "independent") continue;
+    options.push({
+      value: `${FOLLOW_PREFIX}${source}`,
+      label: `跟随${MODEL_ROLE_LABELS[source] || source}`,
+    });
+  }
+  return options;
+}
 
 function roleConnections(role: string): PoolConnection[] {
   const raw = record(state.modelRoles[role]).connections;
@@ -807,7 +871,14 @@ function connectionBusyLabel(connectionId: string): string {
 
 function renderConnectionList(role: string): string {
   const connections = roleConnections(role);
-  const header = `<div class="label-row"><span class="field-label">连接列表</span>${hintMark("按顺序使用：主用连接排在最前。某条连接的服务端不可用时会跳过同一 Base URL 的其余连接，直接换到下一个服务商；密钥被拒绝或额度耗尽时只跳过该条。")}</div>`;
+  /* 跟随时列表来自被跟随的角色，编辑要回到那个角色去做；这里只读显示，
+     否则会看起来像是可以在本角色下改动别人的连接。 */
+  const ownerRole = text(record(state.modelRoles[role]).connection_pool_role, role);
+  const borrowed = ownerRole !== role;
+  const ownerLabel = MODEL_ROLE_LABELS[ownerRole] || ownerRole;
+  const header = `<div class="label-row"><span class="field-label">连接列表</span>${borrowed ? `<span class="pool-tag">来自${escapeHtml(ownerLabel)}</span>` : ""}${hintMark(borrowed
+    ? `跟随时直接使用${ownerLabel}的连接，包括它的故障切换顺序。要增删或调整顺序，请在“模型角色”里切到${ownerLabel}，或先把本角色改成独立配置。`
+    : "按顺序使用：主用连接排在最前。某条连接的服务端不可用时会跳过同一 Base URL 的其余连接，直接换到下一个服务商；密钥被拒绝或额度耗尽时只跳过该条。")}</div>`;
   if (!connections.length) {
     // 后端还没连上时不要把整块藏掉：那样看起来就像这个功能不存在。
     return `<div class="config-field">${header}<p class="note">连接信息尚未载入，请检查本地服务是否在运行，或点右上角刷新。</p></div>`;
@@ -824,25 +895,46 @@ function renderConnectionList(role: string): string {
       <span class="pool-dot ${tone}"></span>
       <span class="pool-name">${escapeHtml(connection.display_label || `连接 ${index + 1}`)}</span>
       ${index === 0 ? `<span class="pool-tag">主用</span>` : ""}
+      ${connection.has_api_key ? "" : `<span class="pool-tag missing">无密钥</span>`}
       ${busy ? `<span class="pool-tag busy">${escapeHtml(busy)}</span>` : ""}
       <span class="pool-actions">
-        ${index > 0 ? `<button class="pool-icon" data-action="promote-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="设为主用">${icon("chevron", "small")}</button>` : ""}
-        ${connections.length > 1 ? `<button class="pool-icon danger-text" data-action="delete-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="删除这条连接">×</button>` : ""}
+        ${!borrowed && index > 0 ? `<button class="pool-icon" data-action="promote-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="设为主用">${icon("chevron", "small")}</button>` : ""}
+        ${!borrowed && connections.length > 1 ? `<button class="pool-icon danger-text" data-action="delete-connection" data-role="${escapeHtml(role)}" data-connection-id="${escapeHtml(connection.id)}" data-tip="删除这条连接">×</button>` : ""}
       </span>
     </div>`;
   }).join("");
   return `<div class="config-field">
     ${header}
-    <div class="pool-list">${rows}</div>
-    <button class="mini-button pool-add" data-action="add-connection" data-role="${escapeHtml(role)}">＋ 新增连接</button>
+    <div class="pool-list ${borrowed ? "borrowed" : ""}">${rows}</div>
+    ${borrowed
+      ? `<p class="note">这些连接由${escapeHtml(ownerLabel)}维护，本角色只使用它们。</p>`
+      : `<button class="mini-button pool-add" data-action="add-connection" data-role="${escapeHtml(role)}">＋ 新增连接</button>`}
   </div>`;
+}
+
+/* 空输入框看不出密钥到底存没存，容易被当成没填而重复粘贴一遍；这里显示
+   首尾几位的掩码，既能确认已保存，也能分辨这条连接用的是哪一个 Key。 */
+function renderApiKeyField(connection: PoolConnection | null, borrowed = false): string {
+  const label = fieldLabel("API 密钥", "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。", "apiKey");
+  const preview = text(connection?.api_key_preview);
+  const status = connection?.has_api_key
+    ? `<p class="note key-state">已保存：<code>${escapeHtml(preview || "••••••")}</code><span>只显示首尾几位</span></p>`
+    : `<p class="note key-state missing">${icon("warn", "small")}这条连接还没有保存密钥。</p>`;
+  const placeholder = borrowed
+    ? "跟随时使用来源角色的密钥"
+    : connection?.has_api_key ? "留空则保留当前密钥" : "粘贴该连接的 API 密钥";
+  return `<div class="config-field">${label}<input id="apiKey" type="password" placeholder="${placeholder}" ${borrowed ? "disabled" : ""}/>${status}</div>`;
 }
 
 function renderConfigPanel(): string {
   const role = state.modelRole;
   const rolePayload = record(state.modelRoles[role]);
   const engine = engineSettings();
-  const cloudMode = role !== "translation" || text(engine.mode, "cloud") === "cloud";
+  const access = accessMode(role);
+  const sourceRole = accessFollowSource(role);
+  const following = sourceRole !== "independent";
+  // 跟随时端点来自来源角色，本角色不再区分云端/本地；表单按云端布局显示只读值。
+  const cloudMode = following || access === "cloud";
   const provider = role === "translation"
     ? (cloudMode ? text(engine.cloud_provider, "custom_openai") : text(engine.local_provider, "ollama"))
     : text(rolePayload.provider, "custom_openai");
@@ -855,9 +947,7 @@ function renderConfigPanel(): string {
   const providers = cloudMode
     ? ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow"]
     : ["ollama", "lm_studio", "custom_local"];
-  const roleLabels: Record<string, string> = { translation: "文档翻译（Excel / Word）", cleaner: "记忆库清洗", image: "PDF 翻译（图像生成）", pdf_review: "PDF 译文审核" };
-  const sourceRoles: Record<string, string[]> = { cleaner: ["independent", "translation"], image: ["independent", "translation"], pdf_review: ["independent", "translation", "image"] };
-  const sourceRole = text(rolePayload.source_role, "independent");
+  const roleLabels = MODEL_ROLE_LABELS;
   const availability = text(rolePayload.availability_status, "unknown");
   const availabilityMessage = text(rolePayload.availability_message, "当前配置尚未测试。");
   const throughput = record(state.modelThroughput[role] || rolePayload.throughput);
@@ -892,9 +982,21 @@ function renderConfigPanel(): string {
   const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
   const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
   const availabilityTip = `${availabilityMessage}${checkedAt ? ` · ${checkedAt}` : ""} · ${hasApiKey ? "已保存连接密钥" : "未检测到连接密钥"}。未测试不会阻止启动任务。`;
-  const accessTip = role === "translation"
-    ? "云端 API 通过服务商接口调用；本地模型直接连接本机运行器，不保存云端 API 密钥，请先确认本地服务已启动。"
-    : "复用只共享服务商、Base URL 和 Key；本角色的模型名称、吞吐和测试状态始终独立，也不能链式复用。";
+  const supportsLocal = rolePayload.supports_local !== false;
+  const followOptions = accessModeOptions(role).filter((option) => option.value.startsWith(FOLLOW_PREFIX));
+  const accessTip = [
+    "云端 API 通过服务商接口调用；本地模型直接连接本机运行器，不保存云端 API 密钥，请先确认本地服务已启动。",
+    "跟随只共享服务商、Base URL 和 Key；本角色的模型名称、吞吐和测试状态始终独立。",
+    "已经在跟随别人的角色不会出现在跟随列表里——那会形成链式复用。",
+    supportsLocal ? "" : `${roleLabels[role] || role}需要云端${text(rolePayload.capability) === "image" ? "图像生成" : "图像理解"}能力，本机运行器无法提供，因此没有本地模型选项。`,
+  ].filter(Boolean).join(" ");
+  /* 跟随列表为空时要说清是「没人可跟随」而不是「不支持跟随」：截图里正是这一点
+     让人以为功能缺失。 */
+  const accessNote = followOptions.length
+    ? ""
+    : `<p class="note">其他三个角色目前都在跟随别人，没有可跟随的对象。把其中一个改成独立配置或本地模型后，这里就会出现它。</p>`;
+  // 跟随时连接（含名称与 Key）归被跟随的角色所有，这里不该提供改动入口。
+  const borrowedPool = following;
   return `<aside class="config-panel ${state.panelOpen ? "" : "closed"}">
     <div class="config-inner">
       <div class="config-header"><div class="config-icon">${icon("sliders", "small")}</div><div><h2>模型配置</h2><p>四个角色 · ${escapeHtml(roleLabels[role] || role)}</p></div><button class="icon-button" data-action="toggle-panel" data-tip="收起模型配置">${icon("chevronLeft", "small")}</button></div>
@@ -902,27 +1004,28 @@ function renderConfigPanel(): string {
         <div class="config-group">${fieldLabel("模型角色", "Excel 与 Word 的专业领域和 Prompt 在各自页面独立保存，PDF 使用固定版式协议；这里保存的连接对所有页面生效。", "modelRole")}<select id="modelRole" data-model-role>${Object.entries(roleLabels).map(([key, label]) => `<option value="${key}" ${key === role ? "selected" : ""}>${label}</option>`).join("")}</select></div>
         <div class="config-group">
           <div class="config-field">
-            ${fieldLabel("连接方式", accessTip, role === "translation" ? "engineMode" : "roleSource")}
-            ${role === "translation" ? `<select id="engineMode" data-engine="mode"><option value="cloud" ${cloudMode ? "selected" : ""}>云端 API</option><option value="local" ${cloudMode ? "" : "selected"}>本地模型</option></select>` : `<select id="roleSource" data-role-source>${(sourceRoles[role] || ["independent"]).map((item) => `<option value="${item}" ${sourceRole === item ? "selected" : ""}>${item === "independent" ? "独立配置" : `跟随${roleLabels[item] || item}`}</option>`).join("")}</select>`}
+            ${fieldLabel("连接方式", accessTip, "accessMode")}
+            <select id="accessMode" data-access-mode>${accessModeOptions(role).map((option) => `<option value="${escapeHtml(option.value)}" ${access === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select>
+            ${accessNote}
           </div>
           ${cloudMode ? renderConnectionList(role) : ""}
           <div class="config-field">
             <label class="field-label" for="provider">${cloudMode ? "服务商" : "本地运行器"}</label>
-            <select id="provider" data-engine="cloud_provider" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}>
+            <select id="provider" data-engine="cloud_provider" ${following ? "disabled" : ""}>
               ${providers.map((item) => `<option value="${item}" ${formProvider === item ? "selected" : ""}>${providerLabel(item)}</option>`).join("")}
             </select>
           </div>
           <div class="config-field">
             <label class="field-label" for="baseUrl">Base URL</label>
-            <input id="baseUrl" value="${escapeHtml(formBaseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${role !== "translation" && sourceRole !== "independent" ? "disabled" : ""}/>
+            <input id="baseUrl" value="${escapeHtml(formBaseUrl)}" placeholder="https://.../v1" data-engine="cloud_base_url" ${following ? "disabled" : ""}/>
           </div>
           <div class="config-field">
             ${fieldLabel("模型名称", "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。", "modelName")}
             <input id="modelName" list="${modelListId}" value="${escapeHtml(formModel)}" placeholder="例如 ${cloudMode ? "gpt-4o-mini" : "qwen2.5:7b"}" data-engine="cloud_model" />
             <datalist id="${modelListId}">${catalog.map((item) => `<option value="${escapeHtml(item)}"></option>`).join("")}</datalist>
           </div>
-          ${cloudMode ? `<div class="config-field">${fieldLabel("连接名称", "只用于在列表里区分连接，留空就显示 Base URL。", "connectionLabel")}<input id="connectionLabel" value="${escapeHtml(selectedConnection?.label ?? "")}" placeholder="例如 主账号 / 备用厂商" /></div>` : ""}
-          ${cloudMode ? `<div class="config-field">${fieldLabel("API 密钥", "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。", "apiKey")}<input id="apiKey" type="password" placeholder="${selectedConnection?.has_api_key ? "留空则保留当前密钥" : "尚未设置密钥"}" /></div>` : ""}
+          ${cloudMode ? `<div class="config-field">${fieldLabel("连接名称", "只用于在列表里区分连接，留空就显示 Base URL。", "connectionLabel")}<input id="connectionLabel" value="${escapeHtml(selectedConnection?.label ?? "")}" placeholder="例如 主账号 / 备用厂商" ${borrowedPool ? "disabled" : ""}/></div>` : ""}
+          ${cloudMode ? renderApiKeyField(selectedConnection, borrowedPool) : ""}
           <div class="field-row" style="margin-top:10px"><button class="button" data-action="save-model">${icon("check", "small")}保存配置</button><button class="button" data-action="fetch-models">${icon("refresh", "small")}获取模型列表</button><button class="button" data-action="test-model">测试连接</button></div>
           <div class="config-status-row"><span class="status ${catalogTone}"><span class="led"></span>${escapeHtml(catalogLabel)}</span>${hintMark(catalogTip)}<span class="status ${availabilityTone}"><span class="led"></span>${escapeHtml(availabilityLabel)}</span>${hintMark(availabilityTip)}</div>
           <div class="config-subgroup">
@@ -969,7 +1072,7 @@ function renderTranslateView(surface: Surface): string {
     ? Math.round((running.stepDone / running.stepTotal) * 100)
     : 0;
   return `<section class="view active"><div class="two-column">
-    <div class="left-column ${running ? "running" : ""}">
+    <div class="left-column">
       <div class="card source-bar">
         <div class="source-icon">${icon("folder")}</div>
         <input class="source-input" data-source="${surface}" value="${escapeHtml(sourcePath)}" placeholder="选择或直接输入文件 / 文件夹的完整路径" aria-label="源路径" />
@@ -980,12 +1083,11 @@ function renderTranslateView(surface: Surface): string {
       <div class="stats">
         ${isExcel
           ? `${stat("file", "已扫描文件", String(excelSummary.files))}
-             ${stat("translate", "已选文件", String(excelSummary.selected))}
+             ${stat("translate", "文本单元格", String(excelSummary.textCells))}
              ${stat("excel", "总工作表", String(excelSummary.sheets))}
              ${stat("warn", ".xls 文件", String(excelSummary.xls))}`
           : isWord
             ? `${stat("file", "已扫描文件", String(wordSummary.files))}
-               ${stat("translate", "已选文件", String(wordSummary.selected))}
                ${stat("word", "已知正文段落", String(wordSummary.paragraphs))}
                ${stat("file", "已知表格", String(wordSummary.tables))}
                ${stat("warn", ".doc 待转换", String(wordSummary.docs))}`
@@ -994,11 +1096,12 @@ function renderTranslateView(surface: Surface): string {
              ${stat("translate", "页 / 图片", String(pdfSummary.units))}
              ${stat("warn", "扫描跳过", String(state.scanReports.pdf.skipped.length))}`}
       </div>
-      <div class="card table-card"><div class="table-header"><h2>任务清单</h2><span class="table-count">已选 ${selectedPaths.length} / ${files.length}</span><span class="header-spacer"></span><button class="mini-button" data-action="select-all-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全选</button><button class="mini-button" data-action="select-no-files" data-surface="${surface}" ${activeTask ? "disabled" : ""}>全不选</button></div><div class="table-scroll">${renderFiles(files, surface, selectedPaths, activeTask)}</div></div>
+      ${running
+        ? `<div class="card run-panel-card">${renderRunningPanel(surface, running, percent)}</div>`
+        : `<div class="card table-card"><div class="table-header"><h2>任务清单</h2><span class="table-count">已选 ${selectedPaths.length} / ${files.length}</span><span class="header-spacer"></span><button class="mini-button" data-action="select-all-files" data-surface="${surface}">全选</button><button class="mini-button" data-action="select-no-files" data-surface="${surface}">全不选</button></div><div class="table-scroll">${renderFiles(files, surface, selectedPaths, false)}</div></div>
       ${isExcel ? renderExcelSkippedItems() : ""}
       ${isWord ? renderWordSkippedItems() : ""}
-      ${isPdf ? renderPdfScanReport() : ""}
-      ${running ? `<div class="card run-panel-card">${renderRunningPanel(running, percent)}</div>` : ""}
+      ${isPdf ? renderPdfScanReport() : ""}`}
     </div>
     <aside class="card right-column">
       <div class="right-scroll">
@@ -1011,7 +1114,12 @@ function renderTranslateView(surface: Surface): string {
         ${renderSurfaceToggles(surface, activeTask)}
         ${renderDetailedSettings(surface, activeTask)}
       </div>
-      ${running ? "" : `<div class="right-footer"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button></div>`}
+      ${activeTask
+        ? ""
+        : running
+          // 结果页可能很长，出口按钮再固定放一颗在底栏，不用滚到最后才找得到。
+          ? `<div class="right-footer"><button class="button block large" data-action="reset-task" data-task-id="${escapeHtml(running.task.task_id)}">${icon("refresh", "small")}开始新任务</button></div>`
+          : `<div class="right-footer"><button class="button primary block large" data-action="start-task" data-surface="${surface}" ${selectedPaths.length ? "" : "disabled"}>${icon("translate", "small")}开始${surfaceLabel(surface)}翻译</button></div>`}
     </aside>
   </div></section>`;
 }
@@ -1178,29 +1286,53 @@ function renderWordReviewColors(disabled: string): string {
   return `<div class="review-colors">${colorField("semantic", "语义校验接受", "FFF2CC")}${colorField("unresolved", "保留原文复核", "FCE4D6")}${colorField("foreign_noise", "疑似原文异常", "F4CCCC")}</div>`;
 }
 
-function renderRunningPanel(running: ManagedTask, percent: number): string {
+/* 一个板块同时只有一种运行态视图：运行中显示进度和日志，终态换成结果页。
+   进度条和日志在终态没有信息量，留着只会把结果挤到看不见的地方。 */
+function renderRunningPanel(surface: Surface, running: ManagedTask, percent: number): string {
+  if (running.task.terminal) return renderTaskResultPanel(surface, running);
   const logs = running.logs.slice(-10).map((item) => `<div class="log-${logTone(item.level)}">› ${escapeHtml(item.message)}</div>`).join("");
-  const terminal = running.task.terminal;
-  const resultMessage = text(running.task.result?.message, terminal ? "任务已结束。" : "");
-  const resultDetail = terminal
-    ? running.task.surface === "excel"
-      ? renderExcelResultDetails(running.task.result ?? {}, running.task.state)
-      : running.task.surface === "word"
-        ? renderWordResultDetails(running.task.result ?? {}, running.task.state)
-        : renderPdfResultDetails(running.task.result ?? {}, running.task.state)
-    : "";
-  const recovery = !terminal && running.task.surface === "word" ? renderWordRecoveryPanel() : "";
-  const pdfStatus = !terminal && running.task.surface === "pdf" ? `${renderPdfRecoveryPanel()}${renderPdfReviewPanel()}` : "";
+  const recovery = surface === "word" ? renderWordRecoveryPanel() : "";
+  const pdfStatus = surface === "pdf" ? `${renderPdfRecoveryPanel()}${renderPdfReviewPanel()}` : "";
   const taskId = running.task.task_id;
-  const controls = terminal
-    ? `<div class="field-row" style="margin-top:10px"><button class="button" data-action="open-task-center" data-task-id="${escapeHtml(taskId)}">${icon("tasks", "small")}在任务中心查看</button><button class="button primary" data-action="reset-task" data-task-id="${escapeHtml(taskId)}">${icon("refresh", "small")}开始新任务</button></div>`
-    : running.task.surface === "pdf" && running.task.state === "paused"
-      ? `<div class="field-row" style="margin-top:10px"><button class="button primary" data-action="resume-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("refresh", "small")}继续翻译</button><button class="button danger" data-action="end-paused-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}结束暂停</button></div><p class="note">结束暂停会保留已完成页面、页面素材、清单和报告，任务不能再次继续。</p>`
-      : running.task.surface === "pdf"
-        ? `<button class="button block large" style="margin-top:10px" data-action="pause-pdf-task" data-task-id="${escapeHtml(taskId)}">暂停提交</button>`
-        : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}安全停止</button>`;
+  const controls = surface === "pdf" && running.task.state === "paused"
+    ? `<div class="field-row" style="margin-top:10px"><button class="button primary" data-action="resume-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("refresh", "small")}继续翻译</button><button class="button danger" data-action="end-paused-pdf-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}结束暂停</button></div><p class="note">结束暂停会保留已完成页面、页面素材、清单和报告，任务不能再次继续。</p>`
+    : surface === "pdf"
+      ? `<button class="button block large" style="margin-top:10px" data-action="pause-pdf-task" data-task-id="${escapeHtml(taskId)}">暂停提交</button>`
+      : `<button class="button danger block large" style="margin-top:10px" data-action="stop-task" data-task-id="${escapeHtml(taskId)}">${icon("stop", "small")}安全停止</button>`;
   const streamNote = running.streamState === "reconnecting" ? `<p class="note">事件流暂时断开，正在从事件 ${running.lastEventId} 补拉，不会重复处理已有进度。</p>` : "";
-  return `<div class="run-panel"><div class="run-summary"><span>${escapeHtml(running.phaseName || (terminal ? resultMessage : "正在准备任务"))}</span><span>${terminal && running.task.state === "done" ? "100" : percent}%</span></div><div class="progress" style="--progress:${terminal && running.task.state === "done" ? 100 : percent}%"><i></i></div><div class="logbox">${logs || (terminal ? escapeHtml(resultMessage) : "等待引擎事件…")}</div>${streamNote}${recovery}${pdfStatus}${resultDetail}${controls}</div>`;
+  return `<div class="run-panel"><div class="run-summary"><span>${escapeHtml(running.phaseName || "正在准备任务")}</span><span>${percent}%</span></div><div class="progress" style="--progress:${percent}%"><i></i></div><div class="logbox">${logs || "等待引擎事件…"}</div>${streamNote}${recovery}${pdfStatus}${renderRunningFileStatus(surface)}${controls}</div>`;
+}
+
+/* 任务清单在运行时让位给进度和日志，但逐文件状态仍然是实时的，收进折叠区
+   随时可查，默认关闭。 */
+function renderRunningFileStatus(surface: Surface): string {
+  const files = state.files[surface];
+  const selectedPaths = state.selectedPaths[surface];
+  if (!files.length) return "";
+  return `<details class="result-section run-file-status"><summary>逐文件执行状态（${selectedPaths.length}）</summary><div class="result-table">${renderFiles(files, surface, selectedPaths, true)}</div></details>`;
+}
+
+function renderTaskResultPanel(surface: Surface, running: ManagedTask): string {
+  const { task } = running;
+  const stateMeta = taskStateMeta(task, running.streamState);
+  const resultMessage = text(task.result?.message, "任务已结束。");
+  const detail = surface === "excel"
+    ? renderExcelResultDetails(task.result ?? {}, task.state)
+    : surface === "word"
+      ? renderWordResultDetails(task.result ?? {}, task.state)
+      : renderPdfResultDetails(task.result ?? {}, task.state);
+  const snapshots = taskSnapshotRows(task);
+  const references = taskResultReferences(task);
+  // 结果页的第一件事是打开产物；没有产物路径时才退回任务中心。
+  const outputs = references.length
+    ? references.map((reference) => `<button class="button" data-action="task-local-file" data-path="${escapeHtml(reference.path)}" data-reveal="${reference.reveal ? "1" : "0"}">${icon(reference.reveal ? "reveal" : "folder", "small")}${escapeHtml(reference.label)}</button>`).join("")
+    : `<button class="button" data-action="open-task-center">${icon("tasks", "small")}在任务中心查看</button>`;
+  return `<div class="run-panel terminal">
+    <div class="run-summary"><span>${escapeHtml(resultMessage)}</span><span class="status ${stateMeta.tone}"><span class="led"></span>${escapeHtml(stateMeta.label)}</span></div>
+    ${snapshots.length ? `<dl class="task-snapshot">${snapshots.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>` : ""}
+    ${detail}
+    <div class="field-row result-actions">${outputs}<button class="button primary" data-action="reset-task" data-task-id="${escapeHtml(task.task_id)}">${icon("refresh", "small")}开始新任务</button></div>
+  </div>`;
 }
 
 function redactedText(value: unknown, fallback = ""): string {
@@ -1648,7 +1780,7 @@ function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[
     return `<div class="empty-state"><div class="empty-icon">${icon("folder")}</div><strong>还没有可处理的文件</strong><p>在上方选择文件或文件夹后点击“扫描”，这里会列出可处理文件。</p></div>`;
   }
   if (surface === "excel") {
-    return `<table class="excel-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th class="number">大小</th><th>格式</th><th class="number">工作表</th><th>预检/执行状态</th></tr></thead><tbody>${files.map((file) => {
+    return `<table class="excel-file-table"><thead><tr><th class="selection-column">选择</th><th>文件与相对位置</th><th class="number">大小</th><th>格式</th><th class="number">工作表</th><th class="number">文本单元格</th><th>预检/执行状态</th></tr></thead><tbody>${files.map((file) => {
       const progress = record(state.excelFileProgress[file.path]);
       const status = text(progress.status) || text(progress.stage) || text(progress.phase_name) || "待启动";
       const statusTone = /失败|错误|error|failed/i.test(status) ? "error" : /完成|成功|done|translated/i.test(status) ? "ok" : /预检|处理|转换|翻译|写入|running/i.test(status) ? "running" : "";
@@ -1658,7 +1790,7 @@ function renderFiles(files: FileItem[], surface: Surface, selectedPaths: string[
         ...strings(progress.risks),
         text(record(file.risk).message),
       ].filter(Boolean))];
-      return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("excel", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${fileFormat(file) === "xls" ? "legacy" : ""}">.${escapeHtml(fileFormat(file) || "xlsx")}</span></td><td class="number">${excelSheetCount(file)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
+      return `<tr><td><input class="file-check" type="checkbox" data-file-path="${escapeHtml(file.path)}" data-surface="${surface}" ${selectedPaths.includes(file.path) ? "checked" : ""} ${disabled ? "disabled" : ""}/></td><td><span class="file-name">${icon("excel", "small")}${escapeHtml(file.name)}</span><small class="file-location">${escapeHtml(displayPath(file))}</small>${risks.length ? `<small class="file-risk">${icon("warn", "small")}${escapeHtml(risks.join("；"))}</small>` : ""}</td><td class="number">${number(file.size_kb).toFixed(1)} KB</td><td><span class="format-pill ${fileFormat(file) === "xls" ? "legacy" : ""}">.${escapeHtml(fileFormat(file) || "xlsx")}</span></td><td class="number">${excelSheetCount(file)}</td><td class="number">${number(file.text_cell_count)}</td><td><span class="file-status ${statusTone}">${escapeHtml(status)}</span></td></tr>`;
     }).join("")}</tbody></table>`;
   }
   if (surface === "word") {
@@ -2221,6 +2353,8 @@ async function scan(surface: Surface): Promise<void> {
     risk,
   };
   state.selectedPaths[surface] = items.map((item) => item.path);
+  // 重新扫描就是重新开始：上一轮的结果页让位给新的任务清单。
+  releaseFinishedWorkspaceTask(surface);
   await persistSettings({ [`last_${surface}_source_folder`]: path });
   render();
   showToast(surface === "pdf"
@@ -2658,16 +2792,20 @@ async function saveModel(): Promise<void> {
     showToast("连接已保存。密钥仅写入本机密钥存储。");
     return;
   }
-  const mode = inputValue("engineMode", "cloud");
+  const access = accessMode(role);
+  const sourceRole = accessFollowSource(role);
+  const following = sourceRole !== "independent";
+  // 跟随时端点归来源角色，这里只提交跟随关系和本角色自己的模型名称。
+  const mode = following ? text(record(state.modelRoles[role]).mode, "cloud") : access;
   const provider = inputValue("provider", mode === "cloud" ? "custom_openai" : "ollama");
   const baseUrl = inputValue("baseUrl");
   const model = inputValue("modelName");
   const key = inputValue("apiKey");
-  const roleSource = document.querySelector<HTMLSelectElement>("#roleSource")?.value;
-  const payload = role === "translation"
-    ? { mode, provider, base_url: baseUrl, model }
-    : { source_role: roleSource || "independent", provider, base_url: baseUrl, model };
+  const payload = following
+    ? { source_role: sourceRole, model }
+    : { source_role: "independent", mode, provider, base_url: baseUrl, model };
   await client.request(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
+  delete state.modelAccessDraft[role];
   if (key && mode === "cloud") {
     await client.request(`/api/keys/${provider}`, { method: "PUT", body: JSON.stringify({ api_key: key, base_url: baseUrl }) });
   }
@@ -2691,16 +2829,11 @@ function modelFormDirty(): boolean {
   if (!document.querySelector(".config-panel .config-body")) return false;
   const role = state.modelRole;
   const saved = record(state.modelRoles[role]);
-  const savedMode = text(saved.mode, "cloud");
-  if (role === "translation" && inputValue("engineMode", savedMode) !== savedMode) return true;
+  if (accessMode(role) !== savedAccessMode(role)) return true;
   if (inputValue("apiKey")) return true;
   if (inputValue("provider", text(saved.provider)) !== text(saved.provider)) return true;
   if (inputValue("baseUrl", text(saved.base_url)) !== text(saved.base_url)) return true;
   if (inputValue("modelName", text(saved.model)) !== text(saved.model)) return true;
-  if (role !== "translation") {
-    const savedSource = text(saved.source_role, "independent");
-    if ((document.querySelector<HTMLSelectElement>("#roleSource")?.value || savedSource) !== savedSource) return true;
-  }
   return false;
 }
 
@@ -2733,15 +2866,12 @@ function clearModelCatalog(role: string, message = "尚未获取当前连接的�
 function ensureSavedModelForm(): void {
   const role = state.modelRole;
   const saved = record(state.modelRoles[role]);
-  const mode = role === "translation" ? inputValue("engineMode", text(saved.mode, "cloud")) : text(saved.mode, "cloud");
   const provider = inputValue("provider", text(saved.provider));
   const baseUrl = inputValue("baseUrl", text(saved.base_url));
-  const sourceRole = document.querySelector<HTMLSelectElement>("#roleSource")?.value;
   if (
-    mode !== text(saved.mode, "cloud")
+    accessMode(role) !== savedAccessMode(role)
     || provider !== text(saved.provider)
     || baseUrl !== text(saved.base_url)
-    || (role !== "translation" && sourceRole !== text(saved.source_role, "independent"))
     || Boolean(inputValue("apiKey"))
   ) {
     throw new Error("请先保存当前配置，再获取模型列表或测试连接。");
@@ -3468,12 +3598,17 @@ document.addEventListener("click", (event) => {
 
 app.addEventListener("change", (event) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
-  if (target.id === "engineMode") {
-    state.settings = {
-      ...(state.settings ?? {}),
-      engine: { ...engineSettings(), mode: target.value },
-    };
-    clearModelCatalog("translation", "连接方式草稿已变更；保存后可获取模型列表。 ");
+  if (target.dataset.accessMode !== undefined) {
+    const role = state.modelRole;
+    state.modelAccessDraft[role] = target.value;
+    // 翻译角色的本地/云端字段是从 engine 草稿读出来的，所以这里也要同步一份。
+    if (role === "translation" && !target.value.startsWith(FOLLOW_PREFIX)) {
+      state.settings = {
+        ...(state.settings ?? {}),
+        engine: { ...engineSettings(), mode: target.value },
+      };
+    }
+    clearModelCatalog(role, "连接方式草稿已变更；保存后可获取模型列表。 ");
     render();
     return;
   }
@@ -3490,15 +3625,6 @@ app.addEventListener("change", (event) => {
   if (target.dataset.modelRole !== undefined) {
     state.modelRole = target.value;
     void refreshModelThroughput(state.modelRole).then(render).catch(() => render());
-    return;
-  }
-  if (target.dataset.roleSource !== undefined) {
-    const independent = target.value === "independent";
-    const provider = document.querySelector<HTMLSelectElement>("#provider");
-    const baseUrl = document.querySelector<HTMLInputElement>("#baseUrl");
-    if (provider) provider.disabled = !independent;
-    if (baseUrl) baseUrl.disabled = !independent;
-    clearModelCatalog(state.modelRole, "连接复用方式已变更；保存后可获取模型列表。 ");
     return;
   }
   if (target.dataset.domainPreset) {
@@ -3681,7 +3807,7 @@ async function handleAction(target: HTMLElement): Promise<void> {
     render();
     return;
   }
-  if (action === "open-task-center") { state.view = "tasks"; if (taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") state.workspaceTaskIds[task.surface] = taskId; } await refreshTaskRegistry(); render(); return; }
+  if (action === "open-task-center") { state.view = "tasks"; await refreshTaskRegistry(); render(); return; }
   if (action === "task-filter") { state.taskCenterFilter = (target.dataset.filter as typeof state.taskCenterFilter) || "all"; render(); return; }
   if (action === "show-task-workspace" && taskId && state.tasks[taskId]) { const task = state.tasks[taskId].task; if (task.surface === "excel" || task.surface === "word" || task.surface === "pdf") { state.workspaceTaskIds[task.surface] = taskId; state.view = task.surface; render(); } return; }
   if (action === "task-local-file") return openTaskLocalFile(text(target.dataset.path), target.dataset.reveal === "1");

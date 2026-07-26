@@ -130,10 +130,11 @@ def apply_model_config_import(
         imported_fields = imported.model_config[key]
         current = _merge_imported_fields(current, imported_fields)
         _synchronize_selected_provider_memory(current, imported_fields)
-        if key == "engine" and "mode" not in imported.model_config[key]:
+        if "mode" not in imported_fields:
             # Existing local mode remains local when an import does not
             # explicitly choose a mode.  A sparse v3 file must never silently
-            # replace an unmentioned setting.
+            # replace an unmentioned setting.  Every role has a mode now, so
+            # this is no longer only the engine's concern.
             current.setdefault("mode", "cloud")
         payload[key] = current
     if imported.throughput_profiles:
@@ -237,14 +238,14 @@ def _model_profiles_for_export(
             ),
             "throughput": _throughput_profile_for_export(settings, role),
         }
-        if role == ROLE_TRANSLATION:
-            profile["mode"] = str(owner.get("mode") or "cloud").strip() or "cloud"
-            profile["source_role"] = SOURCE_INDEPENDENT
-            profile["local"] = _local_profile_for_export(owner)
-        else:
-            profile["source_role"] = str(
-                owner.get("source_role") or SOURCE_INDEPENDENT
-            ).strip()
+        # All four roles carry mode/source_role/local now, so the export is
+        # uniform; a file written before that still imports because the reader
+        # defaults every missing key.
+        profile["mode"] = str(owner.get("mode") or "cloud").strip() or "cloud"
+        profile["source_role"] = str(
+            owner.get("source_role") or SOURCE_INDEPENDENT
+        ).strip()
+        profile["local"] = _local_profile_for_export(owner)
         profiles[profile_key] = profile
     return profiles
 
@@ -476,30 +477,33 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
 
         setting_key = MODEL_PROFILE_SETTING_KEY_BY_ROLE[role]
         values = cloud_values(profile)
-        if role == ROLE_TRANSLATION:
-            if "mode" in profile:
-                mode = str(profile.get("mode") or "").strip()
-                if mode not in {"cloud", "local"}:
-                    raise ValueError("translation mode must be 'cloud' or 'local'.")
-                values["mode"] = mode
-            local = profile.get("local")
-            if isinstance(local, dict):
-                has_local_provider, raw_local_provider = _first_present(local, "provider")
-                if has_local_provider:
-                    values["local_provider"] = str(raw_local_provider or "").strip()
-                has_local_model, raw_local_model = _first_present(local, "model")
-                if has_local_model:
-                    values["local_model"] = str(raw_local_model or "").strip()
+        # All four roles export mode/source_role/local, so all four have to read
+        # them back.  Reading them per role is what keeps a round-trip lossless
+        # now that translation can follow and the cleaner can run locally.
+        if "mode" in profile:
+            mode = str(profile.get("mode") or "").strip()
+            if mode not in {"cloud", "local"}:
+                raise ValueError(f"{role} mode must be 'cloud' or 'local'.")
+            values["mode"] = mode
+        local = profile.get("local")
+        if isinstance(local, dict):
+            has_local_provider, raw_local_provider = _first_present(local, "provider")
+            if has_local_provider:
+                values["local_provider"] = str(raw_local_provider or "").strip()
+            has_local_model, raw_local_model = _first_present(local, "model")
+            if has_local_model:
+                values["local_model"] = str(raw_local_model or "").strip()
+                if role == ROLE_TRANSLATION:
+                    # Only the engine carries the pre-rename Ollama field.
                     values["ollama_model"] = values["local_model"]
-                has_local_base, raw_local_base = _first_present(local, "base_url")
-                if has_local_base:
-                    values["local_base_url"] = str(raw_local_base or "").strip()
-        else:
-            if "source_role" in profile:
-                source_role = str(profile.get("source_role") or "").strip()
-                values["source_role"] = (
-                    ROLE_IMAGE if source_role == "pdf_translation" else source_role
-                )
+            has_local_base, raw_local_base = _first_present(local, "base_url")
+            if has_local_base:
+                values["local_base_url"] = str(raw_local_base or "").strip()
+        if "source_role" in profile:
+            source_role = str(profile.get("source_role") or "").strip()
+            values["source_role"] = (
+                ROLE_IMAGE if source_role == "pdf_translation" else source_role
+            )
         if values:
             model_config[setting_key] = values
 

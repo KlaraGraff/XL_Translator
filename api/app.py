@@ -55,12 +55,18 @@ from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    LOCAL_CAPABLE_CAPABILITIES,
+    EffectiveModelConfig,
     ModelRoleConfigError,
     add_role_connection,
-    list_role_connections,
+    allowed_source_roles,
+    list_effective_role_connections,
     model_config_signature,
+    model_role_owner,
+    pool_role,
     remove_role_connection,
     reorder_role_connections,
+    role_label,
     update_role_connection,
     provider_supports_capability,
     reset_model_role_availability,
@@ -81,6 +87,7 @@ from core.word_document import scan_word_sources
 from config import DOMAIN_PRESETS
 from settings import (
     AppSettings,
+    ModelConnection,
     SettingsSchemaError,
     delete_connection_key,
     delete_key,
@@ -88,6 +95,7 @@ from settings import (
     get_key,
     load_keys,
     load_settings,
+    mask_api_key,
     parse_api_key_scope,
     save_connection_key,
     save_key,
@@ -970,55 +978,32 @@ def create_app(
             raise HTTPException(404, "Unknown model role.")
         before_signatures = _effective_role_signatures(settings)
         changed = False
-        if role == ROLE_TRANSLATION:
-            engine = settings.engine
-            if payload.mode is not None and engine.mode != payload.mode:
-                engine.mode = payload.mode
+        # All four roles now carry the same fields, so one branch serves them
+        # all: translation just happens to keep its copy on ``engine``.
+        owner = model_role_owner(settings, role)
+        for field, value in (
+            ("source_role", payload.source_role),
+            ("mode", payload.mode),
+        ):
+            if value is not None and getattr(owner, field) != value:
+                setattr(owner, field, value)
                 changed = True
-            if payload.provider is not None:
-                field = "local_provider" if engine.mode == "local" else "cloud_provider"
-                if getattr(engine, field) != payload.provider:
-                    setattr(engine, field, payload.provider)
-                    changed = True
-            if payload.model is not None:
-                field = "local_model" if engine.mode == "local" else "cloud_model"
-                if getattr(engine, field) != payload.model:
-                    setattr(engine, field, payload.model)
-                    changed = True
-            if payload.base_url is not None:
-                field = "local_base_url" if engine.mode == "local" else "cloud_base_url"
-                if getattr(engine, field) != payload.base_url:
-                    setattr(engine, field, payload.base_url)
-                    changed = True
-            if engine.mode == "cloud":
-                set_cloud_provider_config(
-                    engine,
-                    engine.cloud_provider,
-                    cloud_model=engine.cloud_model,
-                    cloud_base_url=engine.cloud_base_url,
-                )
-        else:
-            role_settings = {
-                ROLE_CLEANER: settings.cleaner_model_role,
-                ROLE_IMAGE: settings.image_model_role,
-                ROLE_PDF_REVIEW: settings.pdf_review_model_role,
-            }[role]
-            for field, value in (
-                ("source_role", payload.source_role),
-                ("cloud_provider", payload.provider),
-                ("cloud_model", payload.model),
-                ("cloud_base_url", payload.base_url),
-            ):
-                if value is not None and getattr(role_settings, field) != value:
-                    setattr(role_settings, field, value)
-                    changed = True
-            if role_settings.source_role == "independent":
-                set_cloud_provider_config(
-                    role_settings,
-                    role_settings.cloud_provider,
-                    cloud_model=role_settings.cloud_model,
-                    cloud_base_url=role_settings.cloud_base_url,
-                )
+        local = owner.mode == "local"
+        for field, value in (
+            ("local_provider" if local else "cloud_provider", payload.provider),
+            ("local_model" if local else "cloud_model", payload.model),
+            ("local_base_url" if local else "cloud_base_url", payload.base_url),
+        ):
+            if value is not None and getattr(owner, field) != value:
+                setattr(owner, field, value)
+                changed = True
+        if not local and owner.source_role == "independent":
+            set_cloud_provider_config(
+                owner,
+                owner.cloud_provider,
+                cloud_model=owner.cloud_model,
+                cloud_base_url=owner.cloud_base_url,
+            )
         try:
             # A changed translation connection can make a following image or
             # review role illegal.  Do not persist an invalid shared graph.
@@ -1039,6 +1024,22 @@ def create_app(
             raise HTTPException(404, "Unknown model role.")
         return role
 
+    def _own_pool_or_422(settings: AppSettings, role: str) -> None:
+        """Reject pool edits on a role that is following another one.
+
+        The panel shows the source's pool while following, so an edit here would
+        either miss (ids belong to the source) or silently change a pool the user
+        is not looking at.  Both are worse than saying which role owns it.
+        """
+        owner_role = pool_role(settings, role)
+        if owner_role != role:
+            raise HTTPException(
+                422,
+                f"{role_label(role)}正在跟随{role_label(owner_role)}，"
+                f"连接列表属于{role_label(owner_role)}。"
+                "请切换到该角色编辑，或先改为独立配置。",
+            )
+
     @app.post("/api/models/roles/{role}/connections")
     def create_role_connection(
         role: str,
@@ -1046,6 +1047,7 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        _own_pool_or_422(settings, role)
         try:
             connection = add_role_connection(
                 settings,
@@ -1070,6 +1072,7 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        _own_pool_or_422(settings, role)
         try:
             update_role_connection(
                 settings,
@@ -1093,6 +1096,7 @@ def create_app(
     def drop_role_connection(role: str, connection_id: str) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        _own_pool_or_422(settings, role)
         try:
             remove_role_connection(settings, role, connection_id)
         except ModelRoleConfigError as exc:
@@ -1108,6 +1112,7 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        _own_pool_or_422(settings, role)
         try:
             reorder_role_connections(settings, role, list(payload.ordered_ids))
         except ModelRoleConfigError as exc:
@@ -1473,6 +1478,31 @@ def _json_error(status_code: int, detail: str, *, reason: str | None = None) -> 
     return JSONResponse(status_code=status_code, content=payload)
 
 
+def _connection_payload(
+    connection: ModelConnection,
+    index: int,
+    config: EffectiveModelConfig,
+) -> dict[str, Any]:
+    """Describe one pool connection, including a masked hint of its saved key."""
+    api_key = get_connection_scoped_key(connection.id) or (
+        config.api_key if index == 0 else ""
+    )
+    return {
+        "id": connection.id,
+        "label": connection.label,
+        "display_label": connection.display_label,
+        "provider": connection.provider,
+        "model": connection.model,
+        "base_url": connection.base_url,
+        "availability_status": connection.availability_status,
+        "availability_message": connection.availability_message,
+        "availability_checked_at": connection.availability_checked_at,
+        "has_api_key": bool(api_key),
+        "api_key_preview": mask_api_key(api_key),
+        "primary": index == 0,
+    }
+
+
 def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
     config = _model_config_or_422(settings, role)
     throughput = get_model_throughput(settings, config)
@@ -1489,32 +1519,29 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "provider": config.provider,
         "model": config.model,
         "base_url": config.base_url,
+        # A following role reuses its source's credentials, so the source's
+        # pool is what it dials.  Serving its own idle pool here made the panel
+        # label a followed connection with a name nothing was connecting to.
         "connections": [
-            {
-                "id": connection.id,
-                "label": connection.label,
-                "display_label": connection.display_label,
-                "provider": connection.provider,
-                "model": connection.model,
-                "base_url": connection.base_url,
-                "availability_status": connection.availability_status,
-                "availability_message": connection.availability_message,
-                "availability_checked_at": connection.availability_checked_at,
-                "has_api_key": bool(
-                    get_connection_scoped_key(connection.id)
-                    or (index == 0 and config.api_key)
-                ),
-                "primary": index == 0,
-            }
-            for index, connection in enumerate(list_role_connections(settings, role))
+            _connection_payload(connection, index, config)
+            for index, connection in enumerate(
+                list_effective_role_connections(settings, role)
+            )
         ],
+        "connection_pool_role": pool_role(settings, role),
         "source_role": config.source_role,
+        # Which follow sources are legal *right now*: a role that already
+        # follows something cannot be followed, or it would form a chain.  The
+        # panel builds its 连接方式 list from this instead of hardcoding pairs.
+        "source_role_options": allowed_source_roles(role, settings),
+        "supports_local": config.capability in LOCAL_CAPABLE_CAPABILITIES,
         "follows": config.follows,
         "availability_status": config.availability_status,
         "availability_message": config.availability_message,
         "availability_checked_at": getattr(owner, "availability_checked_at", ""),
         "availability_signature": config.availability_signature,
         "has_api_key": bool(config.api_key),
+        "api_key_preview": mask_api_key(config.api_key),
         "throughput": {
             "profile_key": throughput.profile_key,
             "batch_size": throughput.batch_size,

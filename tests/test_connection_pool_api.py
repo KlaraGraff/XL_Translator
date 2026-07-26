@@ -63,6 +63,39 @@ class ConnectionPoolApiTests(unittest.TestCase):
         assert connections[1]["primary"] is False
 
 
+    def test_a_saved_key_is_reported_only_as_a_masked_preview(self) -> None:
+        secret = "sk-vendor-b-secret-value-0987"
+        response = self.client.post(
+            "/api/models/roles/translation/connections",
+            json={
+                "label": "厂商 B",
+                "provider": "custom_openai",
+                "model": "model-b",
+                "base_url": "https://vendor-b.example/v1",
+                "api_key": secret,
+            },
+        )
+        assert response.status_code == 200
+        assert secret not in response.text
+        added = response.json()["connections"][1]
+        assert added["has_api_key"] is True
+        assert added["api_key_preview"] == "sk-v••••••0987"
+
+        listed = self._pool()[1]
+        assert listed["api_key_preview"] == "sk-v••••••0987"
+
+
+    def test_a_connection_without_a_key_reports_an_empty_preview(self) -> None:
+        response = self.client.post(
+            "/api/models/roles/translation/connections",
+            json={"label": "无密钥", "base_url": "https://vendor-c.example/v1", "model": "model-c"},
+        )
+        assert response.status_code == 200
+        added = response.json()["connections"][1]
+        assert added["has_api_key"] is False
+        assert added["api_key_preview"] == ""
+
+
     def test_reordering_promotes_a_different_primary(self) -> None:
         self.client.post(
             "/api/models/roles/translation/connections",
@@ -135,6 +168,12 @@ class ConnectionPoolApiTests(unittest.TestCase):
 
 
     def test_pools_are_per_role(self) -> None:
+        # Cleaner follows translation out of the box, and a following role
+        # borrows the source's pool instead of owning one, so an independent
+        # cleaner is what makes this about per-role separation.
+        self.client.put(
+            "/api/models/roles/cleaner", json={"source_role": "independent"}
+        )
         self.client.post(
             "/api/models/roles/cleaner/connections",
             json={"label": "清洗备用", "base_url": "https://cleaner-b.example/v1"},

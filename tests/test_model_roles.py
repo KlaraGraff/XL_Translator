@@ -119,11 +119,12 @@ class ModelRoleTests(unittest.TestCase):
                 local_model="qwen2.5:14b",
             )
         )
-        settings.cleaner_model_role.source_role = ROLE_TRANSLATION
         settings.image_model_role.source_role = ROLE_TRANSLATION
         settings.pdf_review_model_role.source_role = ROLE_TRANSLATION
 
-        for role in (ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        # Cleaner is excluded on purpose: it is a text role, so a local runner
+        # satisfies its capability and following one is legal.
+        for role in (ROLE_IMAGE, ROLE_PDF_REVIEW):
             with self.subTest(role=role):
                 with self.assertRaises(LocalModelFollowNotAllowedError):
                     resolve_effective_model_config(settings, role)

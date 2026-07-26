@@ -106,7 +106,7 @@ The cloud service access configuration used by cloud-backed model roles. It iden
 _Avoid_: 翻译引擎, 模型配置
 
 **本地模型配置**:
-The local model access configuration used only by the translation model when it runs through a local provider such as Ollama, LM Studio, or a custom local OpenAI-compatible service.
+The local model access configuration used by a text-capability model role — the translation model or deep TM cleaning — when it runs through a local provider such as Ollama, LM Studio, or a custom local OpenAI-compatible service. Image generation and PDF review stay cloud-only because this product has no local implementation of those capabilities.
 _Avoid_: 云端 API 配置
 
 **模型用途**:
@@ -160,15 +160,16 @@ _Avoid_: 图片引擎, 生图引擎
 
 **配置跟随**:
 A relationship where one model role continuously uses another role's cloud API configuration instead of keeping a copied snapshot. Changing the source configuration changes every role that follows it.
-Model roles can only follow earlier source roles in the product's configuration order; the translation model is the default source role and does not follow another role.
-For cloud-only model roles, following applies only to cloud API configuration, not to local Ollama mode.
+Any model role may follow any other role that is itself independently configured; the translation model is the usual source but is not privileged, and it may follow another role as well.
+For cloud-only model roles (PDF 版式翻译 and PDF 译文审核), following applies only to cloud API configuration: following a source that runs locally is rejected with the reason. A text-capability role may follow a local source and runs locally with it.
 Followed configurations should be visibly marked in the shared model configuration area, such as with a subtle highlight or status marker.
 When a role follows another role, service provider, API key, and Base URL are read-only for that role; the model name remains editable. Changing those cloud access fields requires switching the role to independent configuration.
 _Avoid_: 一键复制, 同步一次, 循环跟随
 
 **配置来源**:
-The control used only for model roles that can follow another role, such as deep TM cleaning and image generation. The translation model does not show this control because it is always independently configured.
-Chained following is not allowed. If a user selects a source role that already follows another role, the app should warn them and ask them to choose the final source role directly.
+The control every model role uses to pick where its cloud access comes from. All four roles share one 连接方式 control whose options are 云端 API, 本地模型 (text-capability roles only), and one 跟随 entry per followable role. The translation model is no longer special: it can follow another role too.
+A role may follow any *other* role that is itself independently configured, so the dropdown lists only those. Self-following and chained following are both rejected; selecting a source that already follows another role produces an error asking for the final source. Saving validates the whole graph, because changing one role can invalidate an untouched follower.
+While following, the connection pool belongs to the followed role: it is shown read-only under the follower, and connections are added, renamed, reordered or deleted only under the role that owns them.
 _Avoid_: 翻译模型来源选择
 
 **共用模型操作**:

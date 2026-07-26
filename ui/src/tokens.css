@@ -259,10 +259,14 @@ button { cursor: pointer; }
 .right-scroll { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 .right-footer { flex: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 /* 运行进度、日志和结果放在左侧宽区：结果表格 min-width 是 800px，
-   右侧 300px 的设置栏根本装不下。 */
-.run-panel-card { display: flex; min-height: 0; flex: 1 1 55%; flex-direction: column; overflow-y: auto; padding: 15px; }
-.left-column.running .table-card { flex: 0 1 auto; max-height: 34%; }
+   右侧 300px 的设置栏根本装不下。任务清单在运行时整块让位给这里，两者不并存。 */
+.run-panel-card { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow-y: auto; padding: 15px; }
 .run-panel { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+/* 终态没有进度条和日志，内容按自身高度堆叠，长结果由卡片滚动。 */
+.run-panel.terminal { flex: 0 0 auto; gap: 2px; }
+.run-panel.terminal .result-actions { margin-top: 12px; }
+.run-file-status { flex: none; margin-top: 10px; }
+.run-file-status .result-table { margin: 0 9px 9px; }
 
 .card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-md); }
 .card-pad { padding: 15px; }
@@ -575,6 +579,9 @@ textarea { min-height: 90px; resize: vertical; }
 .pool-row { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 9px; cursor: pointer; font-size: 11.5px; }
 .pool-row + .pool-row { border-top: 1px solid var(--line); }
 .pool-row:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+/* 跟随来源的连接只读：仍然要能看清用的是哪一条，所以只弱化背景，不改字色。 */
+.pool-list.borrowed { background: var(--ground-2); }
+.pool-list.borrowed .pool-row { cursor: default; }
 .pool-row.selected { background: var(--tint); }
 .pool-dot { width: 6px; height: 6px; flex: none; border-radius: 999px; background: var(--ink-3); }
 .pool-dot.done { background: var(--ok); }
@@ -582,6 +589,13 @@ textarea { min-height: 90px; resize: vertical; }
 .pool-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pool-tag { flex: none; padding: 1px 5px; border-radius: 999px; background: var(--ground-2); color: var(--ink-3); font-size: 9.5px; }
 .pool-tag.busy { background: var(--warn-t); color: var(--warn); }
+.pool-tag.missing { background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
+/* 已保存的密钥只露首尾几位，中间固定宽度，长度也不外泄。 */
+.key-state { display: flex; align-items: center; gap: 6px; }
+.key-state code { color: var(--ink-2); font-size: 11px; letter-spacing: .02em; }
+.key-state span { color: var(--ink-3); font-size: 10px; }
+.key-state.missing { color: var(--danger); }
+.key-state.missing .icon { flex: none; }
 .pool-actions { display: flex; flex: none; align-items: center; gap: 2px; }
 .pool-icon { display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); font-size: 13px; line-height: 1; }
 .pool-icon:hover { background: var(--surface); color: var(--ink); }

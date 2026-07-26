@@ -13,7 +13,7 @@ from core.model_roles import (
     ROLE_CLEANER,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
-    list_role_connections,
+    list_effective_role_connections,
     resolve_effective_model_config,
 )
 from core.model_throughput import get_model_throughput
@@ -96,8 +96,13 @@ def task_api_context_for_page(
     configs: list[EffectiveModelConfig] = []
     taken: set[str] = set(busy_connection_ids)
     for role in task_model_roles_for_page(settings, page_key):
+        # A following role dials its source's pool, so allocate from that pool.
+        # Allocating from its own idle pool recorded a connection id nothing
+        # connected to, which both mislabelled the panel's "occupied" markers
+        # and let a follower and its source double-book one endpoint while
+        # spreading.
         allocation = allocate_connection(
-            list_role_connections(settings, role),
+            list_effective_role_connections(settings, role),
             busy_connection_ids=frozenset(taken),
             spread=spread,
         )
