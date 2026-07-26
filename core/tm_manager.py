@@ -116,6 +116,10 @@ def _get_conn():
     """线程安全的连接上下文管理器（每次调用独立连接）。"""
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # Concurrent tasks flush TM batches on their own connections; without a
+    # busy timeout the second writer fails instantly with "database is locked"
+    # and its whole batch rolls back.
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -405,6 +409,7 @@ def _upsert_entry(
     protect_higher_priority: bool = True,
     cleanup_changed_reverse: bool = True,
     task_id: str = "",
+    _allow_insert_retry: bool = True,
 ) -> bool:
     word_type = _normalize_word_type(word_type)
     pinned = 1 if int(pinned or 0) else 0
@@ -463,29 +468,50 @@ def _upsert_entry(
         )
         return True
 
-    conn.execute(
-        """
-        INSERT INTO tm_entries (
-            source_text,
-            source_hash,
-            target_text,
-            lang_pair,
-            word_type,
-            source_engine,
-            pinned
+    try:
+        conn.execute(
+            """
+            INSERT INTO tm_entries (
+                source_text,
+                source_hash,
+                target_text,
+                lang_pair,
+                word_type,
+                source_engine,
+                pinned
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                source_text,
+                source_hash,
+                target_text,
+                lang_pair,
+                word_type,
+                str(source_engine or ""),
+                pinned,
+            ],
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
+    except sqlite3.IntegrityError:
+        if not _allow_insert_retry:
+            raise
+        # A concurrent task committed the same (source_text, lang_pair)
+        # between our existence check and this INSERT. Re-run against the
+        # winner so the normal priority/conflict rules decide, instead of
+        # failing the caller's whole batch after a successful translation.
+        return _upsert_entry(
+            conn,
             source_text,
-            source_hash,
             target_text,
             lang_pair,
-            word_type,
-            str(source_engine or ""),
-            pinned,
-        ],
-    )
+            word_type=word_type,
+            source_engine=source_engine,
+            pinned=pinned,
+            protect_higher_priority=protect_higher_priority,
+            cleanup_changed_reverse=cleanup_changed_reverse,
+            task_id=task_id,
+            _allow_insert_retry=False,
+        )
     return True
 
 
