@@ -11,16 +11,25 @@ import logging
 import logging.handlers
 import re
 from datetime import datetime
+from pathlib import Path
 
-from config import APP_DATA_DIR, LOG_PATH
+import settings as app_settings
 from core.language_registry import get_target_lang_display
 
+
 # ── 日志路径：统一写入用户数据目录 app.log ───────────────────────────────
-LOG_DIR = APP_DATA_DIR
+def task_log_path() -> Path:
+    """Resolve app.log when a handler is installed, not at import time.
+
+    Tests isolate app data by patching ``settings.APP_DATA_DIR``; a path bound
+    at import would write, rotate and delete the real user's app.log.
+    """
+    return Path(app_settings.APP_DATA_DIR) / "app.log"
 
 # ── 全局 logger（仅初始化一次）───────────────────────────────────────────
 _LOGGER_NAME = "xl_translator.task"
 _handler_installed = False
+_installed_log_path: Path | None = None
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?:(?:[A-Za-z]:)?[/\\\\])(?:[^\s'\"<>]+[/\\\\])*[^\s'\"<>]+")
 _API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
@@ -45,11 +54,17 @@ def setup_file_handler() -> None:
     初始化 RotatingFileHandler，应用启动时调用一次。
     重复调用安全（幂等）。
     """
-    global _handler_installed
-    if _handler_installed:
+    global _handler_installed, _installed_log_path
+    log_path = task_log_path()
+    if _handler_installed and _installed_log_path == log_path:
         return
 
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # 数据目录变了就换文件：应用运行期不会发生，但测试隔离时第一个装上的
+    # handler 否则会把后续所有任务日志钉死在它当初解析到的那个文件上。
+    if _handler_installed:
+        _remove_file_handlers()
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
     root_logger = logging.getLogger(_LOGGER_NAME)
     root_logger.setLevel(logging.DEBUG)
@@ -57,10 +72,11 @@ def setup_file_handler() -> None:
     # 避免重复添加 handler（热重载场景）
     if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root_logger.handlers):
         _handler_installed = True
+        _installed_log_path = log_path
         return
 
     handler = logging.handlers.RotatingFileHandler(
-        filename=str(LOG_PATH),
+        filename=str(log_path),
         maxBytes=5 * 1024 * 1024,   # 5 MB
         backupCount=4,               # 保留 4 个备份，加当前共 5 个
         encoding="utf-8",
@@ -74,11 +90,12 @@ def setup_file_handler() -> None:
     root_logger.addHandler(handler)
     root_logger.propagate = False   # 不向上冒泡，避免与 loguru 重复
     _handler_installed = True
+    _installed_log_path = log_path
 
 
-def clear_log_files() -> int:
-    """Close active rotating handlers and remove only Translator log rotations."""
-    global _handler_installed
+def _remove_file_handlers() -> None:
+    """Detach and close the rotating handlers this module installed."""
+    global _handler_installed, _installed_log_path
     root_logger = logging.getLogger(_LOGGER_NAME)
     for handler in list(root_logger.handlers):
         if not isinstance(handler, logging.handlers.RotatingFileHandler):
@@ -86,8 +103,15 @@ def clear_log_files() -> int:
         root_logger.removeHandler(handler)
         handler.close()
     _handler_installed = False
+    _installed_log_path = None
+
+
+def clear_log_files() -> int:
+    """Close active rotating handlers and remove only Translator log rotations."""
+    _remove_file_handlers()
     removed = 0
-    for path in LOG_PATH.parent.glob(f"{LOG_PATH.name}*"):
+    log_path = task_log_path()
+    for path in log_path.parent.glob(f"{log_path.name}*"):
         if not path.is_file():
             continue
         path.unlink(missing_ok=True)

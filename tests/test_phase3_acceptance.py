@@ -38,6 +38,7 @@ from core.pdf_review import (
     check_pdf_review_connectivity,
 )
 from settings import AppSettings, api_key_scope, set_cloud_provider_config
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
 class _MockResponse:
@@ -302,7 +303,7 @@ class Phase3RoleMockProviderTests(unittest.TestCase):
         self.assertNotIn("mock-role-secret", settings.pdf_review_model_role.availability_signature)
 
 
-class Phase3SnapshotAndExchangeAcceptanceTests(unittest.TestCase):
+class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
     def test_v3_import_rejects_invalid_effective_role_before_key_persistence(self) -> None:
         """M3A-02/M3C-11: import rejects an unusable role before saving keys."""
         imported = parse_model_config_import(

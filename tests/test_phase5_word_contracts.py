@@ -35,6 +35,7 @@ from core.word_converter import WordConversionError, convert_doc_to_docx
 from core.word_document import WordFileItem, WordSegment, extract_word_segments, write_bilingual_docx
 from core.word_task_runner import WordTaskRunner
 from settings import AppSettings, WordBatchSettings
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
 class _DormantRunner:
@@ -171,7 +172,7 @@ class WordBatchingContractTests(unittest.TestCase):
             WordBatchSettings(strict_retry_attempts=9)
 
 
-class WordSettingsAndTaskSnapshotContractTests(unittest.TestCase):
+class WordSettingsAndTaskSnapshotContractTests(IsolatedAppDataTestCase):
     def test_word_output_settings_are_independent_and_frozen_in_the_task_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -256,7 +257,7 @@ class WordSettingsAndTaskSnapshotContractTests(unittest.TestCase):
             self.assertTrue(captured["options"].allow_doc_fallback)
 
 
-class WordScanAndEventContractTests(unittest.TestCase):
+class WordScanAndEventContractTests(IsolatedAppDataTestCase):
     def test_scan_keeps_doc_unknown_statistics_visible_and_separate_from_docx_totals(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -322,7 +323,7 @@ class WordScanAndEventContractTests(unittest.TestCase):
             self.assertIn("event: done", stream)
 
 
-class WordTaskResultContractTests(unittest.TestCase):
+class WordTaskResultContractTests(IsolatedAppDataTestCase):
     @staticmethod
     def _settings() -> AppSettings:
         return AppSettings(source_lang="zh", target_lang="en")

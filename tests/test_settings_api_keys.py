@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from settings import api_key_scope, get_key, provider_key_overrides
+from settings import api_key_scope, get_key, mask_api_key, provider_key_overrides
 
 
 class SettingsApiKeyTests(unittest.TestCase):
@@ -64,6 +64,16 @@ class SettingsApiKeyTests(unittest.TestCase):
         ):
             self.assertEqual(get_key("custom_openai", "https://api.example.test/v1"), "")
             self.assertEqual(get_key("openai", ""), "openai-secret")
+
+    def test_masked_key_shows_only_head_and_tail_with_a_fixed_middle(self) -> None:
+        self.assertEqual(mask_api_key(""), "")
+        self.assertEqual(mask_api_key("   "), "")
+        # 短到掩不住首尾的密钥整段隐去，不给出任何可用片段。
+        self.assertEqual(mask_api_key("sk-1234"), "•" * 7)
+        masked = mask_api_key("sk-abcdefghijklmnopqrstuvwxyz012345")
+        self.assertEqual(masked, "sk-a••••••2345")
+        # 中间是固定宽度，真实长度也不外泄。
+        self.assertEqual(mask_api_key("sk-abcdefghij" + "z" * 200), masked[:4] + "••••••" + "zzzz")
 
 
 if __name__ == "__main__":

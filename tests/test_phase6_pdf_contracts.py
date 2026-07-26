@@ -41,6 +41,7 @@ from core.pdf_image_translation import (
 from core.pdf_review import PDF_PAGE_REVIEW_PROMPT, PdfPageReviewResult, PdfReviewIssue
 from core.task_runner import DoneMsg, PdfPageRecoveryStatusMsg, PdfReviewStatusMsg, StoppedMsg
 from settings import AppSettings, set_cloud_provider_config
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
 def _write_png(path: Path, *, size: tuple[int, int] = (120, 160)) -> None:
@@ -228,7 +229,7 @@ class PdfScanApiContractTests(unittest.TestCase):
             self.assertIn("读取失败", payload["skipped"][0]["reason"])
 
 
-class PdfTaskSnapshotAndPreflightContractTests(unittest.TestCase):
+class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
     def test_pdf_task_freezes_its_own_output_settings_and_never_enables_tm(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -340,7 +341,7 @@ class PdfTaskSnapshotAndPreflightContractTests(unittest.TestCase):
                     )
 
 
-class PdfPauseAndSseContractTests(unittest.TestCase):
+class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
     def _start_real_paused_runner(self, root: Path):
         source = root / "source.pdf"
         _write_three_page_pdf(source)

@@ -31,6 +31,9 @@ class FileItem:
     relative_path: str = ""
     format: str = "xlsx"
     risk: dict[str, object] = field(default_factory=dict)
+    # 非空文本单元格总数，与 Word 的 paragraph_count 同为不去重、不过滤的结构计数；
+    # 运行时真正送模型的词条数会在全局去重和语种过滤后小得多。
+    text_cell_count: int = 0
 
 
 @dataclass
@@ -62,6 +65,7 @@ class ExcelScanResult:
             "scanned_count": len(self.items),
             "selected_count": len(self.items),
             "sheet_count": sum(len(item.sheets) for item in self.items),
+            "text_cell_count": sum(item.text_cell_count for item in self.items),
             "xls_count": sum(1 for item in self.items if item.format == "xls"),
             "skipped_count": len(self.skipped),
         }
@@ -181,6 +185,33 @@ def _scan_one_excel_file(
         )
 
 
+def _count_xlsx_text_cells(wb) -> int:
+    """统计 .xlsx 内的非空文本单元格总数（不去重、不按语种过滤）。"""
+    total = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            for value in row:
+                if isinstance(value, str) and value.strip():
+                    total += 1
+    return total
+
+
+def _count_xls_text_cells(wb) -> int:
+    """统计 .xls 内的非空文本单元格总数，无需先转换为 .xlsx。"""
+    total = 0
+    for index in range(wb.nsheets):
+        sheet = wb.sheet_by_index(index)
+        try:
+            for row in range(sheet.nrows):
+                for value in sheet.row_values(row):
+                    if isinstance(value, str) and value.strip():
+                        total += 1
+        finally:
+            # on_demand 打开时逐表释放，避免大文件把整本工作簿留在内存里
+            wb.unload_sheet(index)
+    return total
+
+
 def _relative_path(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root))
@@ -194,6 +225,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         wb = xlrd.open_workbook(str(path), on_demand=True)
         try:
             sheets = wb.sheet_names()
+            text_cell_count = _count_xls_text_cells(wb)
         finally:
             wb.release_resources()
     else:
@@ -201,6 +233,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         wb = load_workbook(str(path), read_only=True, data_only=True)
         try:
             sheets = wb.sheetnames
+            text_cell_count = _count_xlsx_text_cells(wb)
         finally:
             wb.close()
 
@@ -216,6 +249,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         original_path=original_path,
         relative_path=_relative_path(path, root or path.parent),
         format=path.suffix.lower().lstrip("."),
+        text_cell_count=text_cell_count,
         risk=(
             {
                 "compatibility_required": True,

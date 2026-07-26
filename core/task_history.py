@@ -9,11 +9,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from config import APP_DATA_DIR
+import settings as app_settings
 
 
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+
+
+def default_history_path() -> Path:
+    """Resolve the history file when a store is created, not at import time.
+
+    Tests isolate app data by patching ``settings.APP_DATA_DIR``.  A path bound
+    at import ignores that patch, so fixture tasks end up in the real user data
+    directory and then show up as phantom results in the shipped app.
+    """
+    return Path(app_settings.APP_DATA_DIR) / "task_history.json"
 
 
 def _lock_for_path(path: Path) -> threading.RLock:
@@ -32,7 +42,7 @@ class TaskHistoryStore:
     """
 
     def __init__(self, path: Path | None = None, *, limit: int = 200) -> None:
-        self._path = path or APP_DATA_DIR / "task_history.json"
+        self._path = path or default_history_path()
         self._limit = max(1, int(limit))
         self._lock = _lock_for_path(self._path)
 

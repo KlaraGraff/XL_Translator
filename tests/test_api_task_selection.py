@@ -9,6 +9,7 @@ from unittest.mock import patch
 from api.task_manager import TranslationTaskManager
 from core.model_api_identity import TaskApiContext
 from settings import AppSettings, EngineSettings
+from tests.app_data_isolation import IsolatedAppDataTestCase
 
 
 class _FinishedRunner:
@@ -25,7 +26,7 @@ class _FinishedRunner:
         return None
 
 
-class ApiTaskSelectionTests(unittest.TestCase):
+class ApiTaskSelectionTests(IsolatedAppDataTestCase):
     def test_selected_paths_limit_files_passed_to_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

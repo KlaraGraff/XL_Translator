@@ -23,14 +23,23 @@ from fastapi.testclient import TestClient
 import core.task_logger as task_logger_module
 from api.app import create_app
 from api.task_manager import TaskConflictError, TaskInputError, TaskOptions, TranslationTaskManager
-from config import LOG_PATH
 from core.api_scheduler import API_CONCURRENCY_ACTION_REDUCED
 from core.model_api_identity import TaskApiContext
 from core.task_history import TaskHistoryStore
 from core.task_logger import TaskLogger
 from core.task_resources import TaskResourceRegistry
 from core.task_runner import DoneMsg, LogMsg
+import settings as settings_module
 from settings import AppSettings
+
+
+def _release_task_log_handlers() -> None:
+    """Detach rotating handlers so no isolated log file stays open or reused."""
+    root_logger = logging.getLogger(task_logger_module._LOGGER_NAME)
+    for handler in list(root_logger.handlers):
+        root_logger.removeHandler(handler)
+        handler.close()
+    task_logger_module._handler_installed = False
 
 
 SHARED_TEXT_CONNECTION = (
@@ -669,21 +678,25 @@ class Phase7SseAndPrivacyContracts(unittest.TestCase):
             )
 
     def test_persistent_task_log_does_not_write_sensitive_runner_details(self) -> None:
-        root_logger = logging.getLogger(task_logger_module._LOGGER_NAME)
-        for handler in list(root_logger.handlers):
-            root_logger.removeHandler(handler)
-            handler.close()
-        task_logger_module._handler_installed = False
-        LOG_PATH.unlink(missing_ok=True)
+        _release_task_log_handlers()
+        self.addCleanup(_release_task_log_handlers)
 
-        logger = TaskLogger(enabled=True, task_id="phase7-log-sanitization")
-        logger.info("source_text=private source sentence")
-        logger.warning("Authorization: Bearer real-secret-token /private/input.docx")
-        logger.error("raw_response=private provider response", exc_info=True)
-        for handler in logging.getLogger(task_logger_module._LOGGER_NAME).handlers:
-            handler.flush()
+        # 日志断言必须在隔离目录里做：写、轮转和删除都不能碰真实用户的 app.log。
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(settings_module, "APP_DATA_DIR", root):
+                log_path = task_logger_module.task_log_path()
+                self.assertEqual(log_path.parent, root)
 
-        persisted = LOG_PATH.read_text(encoding="utf-8")
+                logger = TaskLogger(enabled=True, task_id="phase7-log-sanitization")
+                logger.info("source_text=private source sentence")
+                logger.warning("Authorization: Bearer real-secret-token /private/input.docx")
+                logger.error("raw_response=private provider response", exc_info=True)
+                for handler in logging.getLogger(task_logger_module._LOGGER_NAME).handlers:
+                    handler.flush()
+
+                persisted = log_path.read_text(encoding="utf-8")
+                _release_task_log_handlers()
         for sensitive in (
             "private source sentence",
             "real-secret-token",
