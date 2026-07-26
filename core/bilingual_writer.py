@@ -693,10 +693,18 @@ def autofit_files_batch(
                             f"[INFO] Excel AutoFit 打开临时副本：{staged_path}（原文件：{original_path}）"
                         )
                     wb = current_app.books.open(str(staged_path))
-                    for ws in wb.sheets:
-                        ws.used_range.rows.autofit()
-                    wb.save()
-                    wb.close()
+                    try:
+                        for ws in wb.sheets:
+                            ws.used_range.rows.autofit()
+                        wb.save()
+                    finally:
+                        # A failed autofit/save must still close the book, or
+                        # it lingers in the shared Excel process and keeps the
+                        # staged copy locked so the temp cleanup fails too.
+                        try:
+                            wb.close()
+                        except Exception:  # noqa: BLE001 - best-effort cleanup only
+                            pass
                     shutil.copy2(staged_path, original_path)
                     _ensure_owner_writable(original_path)
                     if log_callback:
