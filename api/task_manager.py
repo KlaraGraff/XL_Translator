@@ -595,7 +595,8 @@ class TranslationTaskManager:
                     task.result = _sanitize_task_data(
                         {"message": str(exc) or exc.__class__.__name__}
                     )
-                self._append_event(task, "error", task.result)
+                    # Terminal flag and terminal event must be visible together.
+                    self._append_event(task, "error", task.result)
             raise
 
     def _build_clean_runner(self, **kwargs: Any) -> Runner:
@@ -783,8 +784,9 @@ class TranslationTaskManager:
                     "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
                     "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
                 }
+                # Terminal flag and terminal event must become visible together.
+                self._append_event(task, "interrupted", task.result)
             task.lease.release()
-            self._append_event(task, "interrupted", task.result)
             interrupted.append(task.task_id)
         return interrupted
 
@@ -1205,8 +1207,11 @@ class TranslationTaskManager:
             task.terminal = True
             task.updated_at = time.time()
             task.result = _sanitize_task_data(result)
+            # Append while still holding the condition (it is reentrant): a
+            # reader that observes terminal=True must also see the terminal
+            # event, or an SSE stream ends cleanly without ever carrying it.
+            self._append_event(task, event_type, task.result)
         task.lease.release()
-        self._append_event(task, event_type, task.result)
 
     def _append_event(self, task: ApiTask, event_type: str, data: Any) -> None:
         safe_data = _sanitize_task_data(data)
@@ -1244,8 +1249,12 @@ class TranslationTaskManager:
                 )
             task.updated_at = time.time()
             task.next_event_id += 1
+            # Persist before anyone can observe the event (the condition is an
+            # RLock, so the nested acquire in _persist_task is fine).  Waking
+            # readers first let an SSE consumer see the terminal event, tear
+            # down, and race the history write still in flight on this thread.
+            self._persist_task(task)
             task.condition.notify_all()
-        self._persist_task(task)
 
     def _get_task(self, task_id: str) -> ApiTask:
         with self._lock:
