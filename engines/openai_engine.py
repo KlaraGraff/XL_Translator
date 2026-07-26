@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from config import (
     CLOUD_REQUEST_TIMEOUT,
@@ -22,6 +22,7 @@ from engines.base_engine import (
     TranslationEngine,
     get_source_lang_name,
     get_target_lang_name,
+    is_retryable_engine_error,
     parse_response,
 )
 
@@ -133,6 +134,7 @@ class OpenAIEngine(TranslationEngine):
     @retry(
         stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
         wait=wait_exponential(min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
+        retry=retry_if_exception(is_retryable_engine_error),
         reraise=True,
     )
     def _call_api(self, system: str, user_msg: str) -> str:

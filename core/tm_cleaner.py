@@ -534,11 +534,11 @@ async def _clean_batch_ollama_async(
     ]
     user_msg = json.dumps(payload, ensure_ascii=False)
 
-    try:
-        raw = await engine._call_ollama(system_prompt, user_msg)
-    except Exception as e:
-        logger.error(f"Ollama 清洗调用失败：{e}")
-        return []
+    # Let engine failures propagate: _process_batch aggregates them into
+    # batch_errors and the task ends in TmCleaningBatchError. Swallowing them
+    # here reported a half-failed run as a clean completion, exactly like the
+    # sync path would not.
+    raw = await engine._call_ollama(system_prompt, user_msg)
 
     raw = strip_markdown_json(raw)
 

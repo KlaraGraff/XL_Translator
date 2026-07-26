@@ -84,11 +84,20 @@ class OllamaEngine(TranslationEngine):
             self._translate_chunk(chunk, target_lang, full_system, semaphore)
             for chunk in chunks
         ]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         merged: dict[str, str] = {}
+        errors: list[BaseException] = []
         for partial in results:
-            merged.update(partial)
+            if isinstance(partial, BaseException):
+                errors.append(partial)
+            else:
+                merged.update(partial)
+        if errors:
+            # A failed chunk must surface to the dispatcher, which shrinks the
+            # batch and records per-item failures. Filling in originals here
+            # would report the task as successful with untranslated output.
+            raise errors[0]
         return merged
 
     async def _translate_chunk(
@@ -99,16 +108,18 @@ class OllamaEngine(TranslationEngine):
         semaphore: asyncio.Semaphore,
     ) -> dict[str, str]:
         user_msg = json.dumps(texts, ensure_ascii=False)
+        last_error: Exception | None = None
         async with semaphore:
             for attempt in range(RETRY_MAX_ATTEMPTS):
                 try:
                     raw = await self._call_ollama(full_system, user_msg)
                     return parse_response(texts, raw, "Ollama")
                 except Exception as e:
+                    last_error = e
                     logger.warning(f"Ollama 第 {attempt + 1} 次重试：{e}")
                     await asyncio.sleep(1.5 ** attempt)
-        logger.error("Ollama 重试耗尽，降级返回原文")
-        return {t: t for t in texts}
+        logger.error(f"Ollama 重试耗尽：{last_error}")
+        raise last_error if last_error is not None else RuntimeError("Ollama 重试耗尽")
 
     async def _call_ollama(self, system: str, user_msg: str) -> str:
         url = f"{self._base_url}/api/chat"

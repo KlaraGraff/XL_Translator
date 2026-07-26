@@ -44,6 +44,25 @@ TASK_INSTRUCTION_WITH_SOURCE = (
 )
 
 
+# Auth, permission, and validation failures cannot change on retry; backing
+# off through the full retry budget only delays the user's feedback about a
+# misconfigured key or model. Mirrors engine_dispatcher's permanent-error set.
+_NON_RETRYABLE_STATUS = {400, 401, 402, 403, 404, 405, 410, 422}
+
+
+def is_retryable_engine_error(exc: BaseException) -> bool:
+    """Return whether an engine API failure is worth another attempt."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    try:
+        status = int(status_code)
+    except (TypeError, ValueError):
+        return True
+    return status not in _NON_RETRYABLE_STATUS
+
+
 def get_source_lang_name(source_lang: str) -> str:
     return get_source_lang_display(source_lang)
 
