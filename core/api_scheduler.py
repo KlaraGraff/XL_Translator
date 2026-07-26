@@ -131,12 +131,17 @@ class WeightedApiScheduler:
             if normalized_category == API_REQUEST_CATEGORY_RECOVERY:
                 self._waiting_recovery_count += 1
             try:
+                # Adaptive reduction can shrink the capacity while we wait, so
+                # the weight must be re-clamped on every check: a waiter sized
+                # for the old capacity could otherwise never be admitted again.
+                normalized_weight = min(normalized_weight, self.capacity)
                 while not self._can_acquire(normalized_weight, normalized_category):
                     if should_stop is not None and should_stop():
                         raise ApiSchedulerAcquireCancelled(
                             "API 请求在等待并发槽位期间已取消"
                         )
                     self._condition.wait(timeout=0.1 if should_stop is not None else None)
+                    normalized_weight = min(normalized_weight, self.capacity)
                 if should_stop is not None and should_stop():
                     raise ApiSchedulerAcquireCancelled(
                         "API 请求在获得并发槽位前已取消"

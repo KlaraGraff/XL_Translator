@@ -226,12 +226,22 @@ class FairApiGroupScheduler:
                 self._waiting_recovery_count += 1
             self._add_waiter_locked(owner_key)
             try:
+                # Capacity can shrink while we wait (429 feedback); re-clamp
+                # the weight on every check or a waiter sized for the old
+                # capacity can never be admitted again.
+                normalized_weight = min(normalized_weight, max(1, self.capacity))
                 while not self._can_acquire_locked(owner_key, normalized_weight):
                     if should_stop is not None and should_stop():
                         raise ApiSchedulerAcquireCancelled("API 请求在等待并发槽位期间已取消")
                     self._condition.wait(timeout=0.1 if should_stop is not None else None)
                     if owner_key not in self._task_capacities:
                         raise ApiSchedulerAcquireCancelled("任务资源预约已释放")
+                    # A sibling thread of the same task that just acquired its
+                    # slot removed the shared queue entry on the way out; put
+                    # the owner back or this waiter can never reach the
+                    # front-of-queue check again.
+                    self._add_waiter_locked(owner_key)
+                    normalized_weight = min(normalized_weight, max(1, self.capacity))
                 if should_stop is not None and should_stop():
                     raise ApiSchedulerAcquireCancelled("API 请求在获得并发槽位前已取消")
                 self._remove_waiter_locked(owner_key)
