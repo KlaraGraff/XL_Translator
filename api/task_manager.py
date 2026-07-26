@@ -313,6 +313,9 @@ class TranslationTaskManager:
                 context=context,
             )
 
+        if not str(source_path or "").strip():
+            # Path("").resolve() is the process cwd; never scan that.
+            raise TaskInputError("Source path is required.")
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
             raise TaskInputError(f"Source path does not exist: {root}")
@@ -577,10 +580,22 @@ class TranslationTaskManager:
                 name=f"api-task-{task_id[:8]}",
             ).start()
             return self.task_status(task_id)
-        except Exception:
+        except Exception as exc:
             lease.release()
             with self._lock:
-                self._tasks.pop(task_id, None)
+                task = self._tasks.pop(task_id, None)
+            if task is not None:
+                # The "start" event has already been persisted with
+                # state="running"; leave a terminal record instead of a ghost
+                # forever-running task in the history.
+                with task.condition:
+                    task.state = "error"
+                    task.terminal = True
+                    task.updated_at = time.time()
+                    task.result = _sanitize_task_data(
+                        {"message": str(exc) or exc.__class__.__name__}
+                    )
+                self._append_event(task, "error", task.result)
             raise
 
     def _build_clean_runner(self, **kwargs: Any) -> Runner:
@@ -632,7 +647,10 @@ class TranslationTaskManager:
         return values
 
     def _risk_payload(self, prepared: PreparedTask, risk: dict[str, object]) -> dict[str, object]:
-        active_by_id = {task.task_id: task for task in self._tasks.values() if not task.terminal}
+        with self._lock:
+            active_by_id = {
+                task.task_id: task for task in self._tasks.values() if not task.terminal
+            }
         shared_connections: list[dict[str, object]] = []
         for item in list(risk.get("shared_groups") or []):
             if not isinstance(item, dict):
@@ -894,7 +912,18 @@ class TranslationTaskManager:
         *,
         after_event_id: int = 0,
     ) -> Generator[str, None, None]:
+        # Look up the task eagerly: inside the generator the failure would only
+        # surface after the 200 response headers are already on the wire, where
+        # the TaskNotFoundError -> 404 handler can no longer run.
         task = self._get_task(task_id)
+        return self._iter_task_sse(task, after_event_id=after_event_id)
+
+    def _iter_task_sse(
+        self,
+        task: ApiTask,
+        *,
+        after_event_id: int,
+    ) -> Generator[str, None, None]:
         last_id = max(0, int(after_event_id or 0))
         while True:
             with task.condition:

@@ -8,6 +8,7 @@ import os
 import threading
 import time
 
+import psutil
 import uvicorn
 
 from api.app import create_app
@@ -17,13 +18,12 @@ def _parent_process_is_alive(parent_pid: int) -> bool:
     """Return whether the desktop shell that spawned this sidecar still exists."""
     if parent_pid <= 1:
         return True
+    # os.kill(pid, 0) is a POSIX liveness probe, but on Windows any signal
+    # other than CTRL_C/CTRL_BREAK calls TerminateProcess and kills the shell.
     try:
-        os.kill(parent_pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        return psutil.pid_exists(parent_pid)
+    except Exception:
         return True
-    return True
 
 
 def _start_parent_watchdog() -> None:

@@ -100,7 +100,6 @@ export class ApiClient {
         }
 
         options.onConnectionState?.("connected");
-        attempt = 0;
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -131,6 +130,12 @@ export class ApiClient {
           if (chunk.done) {
             emit();
             break;
+          }
+          // Only actual stream data counts as progress. Resetting on any 200
+          // would turn a stream that dies right after the headers (e.g. the
+          // task is gone server-side) into an infinite fast reconnect loop.
+          if (chunk.value?.length) {
+            attempt = 0;
           }
           buffer += decoder.decode(chunk.value, { stream: true });
           const lines = buffer.split("\n");

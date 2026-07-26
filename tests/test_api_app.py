@@ -61,6 +61,20 @@ class _BlockingRunner:
         return None
 
 
+class _ExplodingRunner:
+    def start(self) -> None:
+        raise RuntimeError("runner refused to start")
+
+    def stop(self) -> None:
+        return None
+
+    def needs_poll(self) -> bool:
+        return False
+
+    def get_message(self, timeout: float = 0.05):
+        return None
+
+
 class ApiAppTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
@@ -169,6 +183,41 @@ class ApiAppTests(unittest.TestCase):
             self.assertEqual(len(locks.json()["reservations"]), 1)
             stopped = blocked_client.post(f"/api/tasks/{first.json()['task_id']}/stop")
             self.assertEqual(stopped.status_code, 200)
+
+    def test_failed_runner_start_leaves_terminal_history_record(self) -> None:
+        context = TaskApiContext(
+            frozenset({("cloud", "custom_openai", "https://api.test/v1", "hash")} ),
+            {},
+        )
+        manager = TranslationTaskManager(settings_loader=AppSettings)
+        manager._scan = lambda *_args: [object()]
+        manager._build_runner = lambda **_kwargs: _ExplodingRunner()
+        client = TestClient(create_app(task_manager=manager), raise_server_exceptions=False)
+        with (
+            patch("api.task_manager.task_api_context_for_page", return_value=context),
+            patch(
+                "api.task_manager.check_translation_api_config",
+                return_value=ApiConfigCheckResult(ok=True),
+            ),
+        ):
+            started = client.post(
+                "/api/tasks",
+                json={"surface": "excel", "source_path": str(self.root)},
+            )
+        self.assertGreaterEqual(started.status_code, 500)
+        listed = client.get("/api/tasks").json()
+        # The persisted "start" event must not survive as a ghost running task.
+        self.assertEqual(listed["active"], [])
+        self.assertTrue(listed["recent"])
+        for record in listed["recent"]:
+            self.assertTrue(record["terminal"])
+            self.assertEqual(record["state"], "error")
+
+    def test_events_for_unknown_task_return_404(self) -> None:
+        # The lookup must fail before the streaming response starts; inside the
+        # stream the 404 handler can no longer run and clients see a 200.
+        response = self.client.get("/api/tasks/no-such-task/events")
+        self.assertEqual(response.status_code, 404)
 
     def test_tm_models_and_connectivity_endpoints(self) -> None:
         created = self.client.post(

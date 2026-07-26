@@ -12,7 +12,7 @@ from typing import Any, Literal
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.task_manager import (
     TaskConflictError,
@@ -129,6 +129,14 @@ class TaskStartRequest(BaseModel):
     allow_known_review_failure: bool = False
     lang_pair: str | None = None
     confirmation_token: str | None = None
+
+    @model_validator(mode="after")
+    def _require_source_path(self) -> "TaskStartRequest":
+        # An empty path would resolve to the process cwd and trigger a
+        # recursive scan there. Only tm_clean runs without a source path.
+        if self.surface != "tm_clean" and not self.source_path.strip():
+            raise ValueError("source_path is required for document tasks")
+        return self
 
 
 class TmEntryPayload(BaseModel):
@@ -1328,6 +1336,9 @@ def create_app(
 
         result = check_for_updates()
         if mode == "background":
+            # The network check can take seconds; reload before stamping the
+            # timestamp so settings saved meanwhile are not clobbered.
+            settings = load_settings()
             settings.update.last_background_check_at = datetime.now(timezone.utc).isoformat()
             save_settings(settings)
         if result.status == "error":
