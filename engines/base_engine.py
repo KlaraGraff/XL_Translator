@@ -35,7 +35,10 @@ TASK_INSTRUCTION = (
 TASK_INSTRUCTION_WITH_SOURCE = (
     "你的任务是将以下 JSON 数组中的每个词条翻译为{target_lang_name}，并识别每项实际原文语言。\n"
     "请严格只输出 JSON 数组，不要输出解释或 markdown。输出长度和输入顺序必须完全一致。\n"
-    "每一项必须是对象：{\"translation\":\"译文\",\"source_lang\":\"ISO-639-1 代码\"}。\n"
+    # The literal JSON braces must stay doubled or str.format on this
+    # template raises KeyError and the whole auto-source-language path dies
+    # before any request is sent.
+    "每一项必须是对象：{{\"translation\":\"译文\",\"source_lang\":\"ISO-639-1 代码\"}}。\n"
     "source_lang 必须是实际语言的受支持 ISO 代码；无法确定时填 und，内容实质混杂且无法归属时填 mixed，绝不能填 auto。\n"
     "保留所有数字、单位、型号、标准号、专名和符号；不得截断或省略。"
 )
