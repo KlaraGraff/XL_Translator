@@ -302,9 +302,15 @@ def _extract_response_text(payload: Any) -> str:
 
 def _walk_values(value: Any):
     if isinstance(value, dict):
-        for key in ("output_text", "text", "content"):
+        # Follow only the best payload key and stop: also walking the other
+        # values would yield the same text a second time plus id/role/type
+        # metadata, and the doubled JSON never parses again.  Container keys
+        # ("output", "choices") must outrank "text" because the Responses API
+        # top level also has a "text" field that only holds format options.
+        for key in ("output_text", "output", "choices", "message", "content", "text"):
             if key in value:
-                yield value[key]
+                yield from _walk_values(value[key])
+                return
         for item in value.values():
             yield from _walk_values(item)
     elif isinstance(value, list):

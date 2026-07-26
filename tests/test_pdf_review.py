@@ -1,12 +1,52 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from core.pdf_review import (
     PdfPageReviewResult,
     PdfReviewIssue,
+    _extract_json_object,
+    _extract_response_text,
     parse_pdf_review_result,
 )
+
+
+class ResponseTextExtractionTests(unittest.TestCase):
+    def test_openai_responses_payload_yields_the_text_exactly_once(self) -> None:
+        review_json = json.dumps(
+            {"pass": True, "blocking_issues": [], "minor_suggestions": [], "summary": "ok"},
+            ensure_ascii=False,
+        )
+        # A faithful Responses API shape: metadata strings everywhere, the
+        # model text nested in output[].content[].text, and a top-level
+        # "text" field that only holds format options.
+        payload = {
+            "id": "resp_123",
+            "object": "response",
+            "model": "gpt-5.4",
+            "status": "completed",
+            "output": [
+                {"type": "reasoning", "id": "rs_1", "summary": []},
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": review_json, "annotations": []}
+                    ],
+                },
+            ],
+            "text": {"format": {"type": "text"}},
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }
+
+        text = _extract_response_text(payload)
+        # The old walker yielded the text twice (preferred key + generic
+        # recursion) and mixed in id/role/status strings, so the doubled JSON
+        # never parsed and every compliant page was judged unparseable.
+        self.assertEqual(text.count('"summary"'), 1)
+        self.assertEqual(_extract_json_object(text), json.loads(review_json))
 
 
 class PdfReviewTests(unittest.TestCase):
