@@ -357,6 +357,59 @@ class Phase3ModelContractTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertIn("secret-token", serialized)
 
+    def test_with_keys_export_carries_the_connection_scoped_key(self) -> None:
+        settings = AppSettings()
+        primary_id = settings.engine.connections[0].id
+        payload = build_model_config_export_payload(
+            settings,
+            get_api_key=lambda *_: "",
+            get_scoped_api_key=lambda cid: "conn-secret" if cid == primary_id else "",
+            include_api_keys=True,
+        )
+        translation = payload["model_profiles"]["translation"]
+        # The importer only reads keys from the cloud block, so this is the
+        # only place a connection-scoped key survives a round trip.
+        self.assertEqual(translation["cloud"]["api_key"], "conn-secret")
+
+    def test_effective_block_never_carries_a_key(self) -> None:
+        payload = build_model_config_export_payload(
+            AppSettings(),
+            get_api_key=lambda *_: "provider-secret",
+            get_scoped_api_key=lambda _cid: "conn-secret",
+            include_api_keys=True,
+        )
+        for profile in payload["model_profiles"].values():
+            # No importer ever reads effective.api_key; exporting one there is
+            # pure plaintext exposure.
+            self.assertNotIn("api_key", profile.get("effective", {}))
+
+    def test_import_reports_throughput_profiles_it_could_not_apply(self) -> None:
+        raw = {
+            "type": "translator_model_config",
+            "version": 3,
+            "model_profiles": {
+                "translation": {
+                    "cloud": {"provider": "custom_openai", "model": "m"},
+                    "throughput": {"batch_size": 6, "concurrency": 2},
+                },
+            },
+        }
+        imported = parse_model_config_import(raw)
+        errors: list[str] = []
+        with (
+            patch("core.model_config.save_key"),
+            patch(
+                "core.model_config.set_model_throughput",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            apply_model_config_import(
+                AppSettings(),
+                imported,
+                throughput_errors=errors,
+            )
+        self.assertEqual(errors, [ROLE_TRANSLATION])
+
     def test_model_config_import_round_trip_preserves_roles_and_scoped_key(self) -> None:
         raw = {
             "type": "translator_model_config",

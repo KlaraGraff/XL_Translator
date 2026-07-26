@@ -1303,15 +1303,23 @@ def create_app(
 
     @app.post("/api/model-config/import")
     def import_model_config(payload: dict[str, Any]) -> dict[str, Any]:
+        throughput_errors: list[str] = []
         try:
             imported = parse_model_config_import(payload)
-            settings = apply_model_config_import(load_settings(), imported)
+            settings = apply_model_config_import(
+                load_settings(),
+                imported,
+                throughput_errors=throughput_errors,
+            )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         save_settings(settings)
         return {
             "settings": settings.model_dump(mode="json"),
             "imported_key_count": len(imported.api_keys) + len(imported.scoped_api_keys),
+            # Roles whose imported batch_size/concurrency could not be applied;
+            # the rest of the import still succeeded.
+            "skipped_throughput_roles": throughput_errors,
         }
 
     @app.get("/api/updates/state")

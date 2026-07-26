@@ -11,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from app_meta import APP_NAME, APP_VERSION
 from config import CLOUD_ENGINES, normalize_cloud_base_url
 from core.model_roles import (
@@ -25,7 +27,13 @@ from core.model_roles import (
     validate_all_model_roles,
 )
 from core.model_throughput import get_model_throughput, set_model_throughput
-from settings import AppSettings, get_key, parse_api_key_scope, save_key
+from settings import (
+    AppSettings,
+    get_connection_scoped_key,
+    get_key,
+    parse_api_key_scope,
+    save_key,
+)
 
 MODEL_CONFIG_EXPORT_TYPE = "translator_model_config"
 MODEL_CONFIG_EXPORT_VERSION = 3
@@ -80,6 +88,7 @@ def build_model_config_export_payload(
     settings: AppSettings,
     *,
     get_api_key: ApiKeyGetter = get_key,
+    get_scoped_api_key: Callable[[str], str] = get_connection_scoped_key,
     include_api_key: bool = False,
     include_api_keys: bool | None = None,
 ) -> dict[str, Any]:
@@ -94,6 +103,7 @@ def build_model_config_export_payload(
         "model_profiles": _model_profiles_for_export(
             settings,
             get_api_key=get_api_key,
+            get_scoped_api_key=get_scoped_api_key,
             include_api_key=include_api_key,
         ),
     }
@@ -116,6 +126,7 @@ def apply_model_config_import(
     imported: ImportedModelConfig,
     *,
     save_api_key: ApiKeySaver = save_key,
+    throughput_errors: list[str] | None = None,
 ) -> AppSettings:
     """Apply an import to a copied settings model and persist supplied keys.
 
@@ -161,8 +172,12 @@ def apply_model_config_import(
                 batch_size=throughput.get("batch_size"),
                 concurrency=throughput.get("concurrency"),
             )
-        except Exception:
-            continue
+        except Exception as exc:  # noqa: BLE001 - one role must not sink the import
+            # The rest of the import still applies, but a silently dropped
+            # batch_size/concurrency looks identical to a successful one.
+            logger.warning("导入吞吐配置失败：role={} error={}", role, exc)
+            if throughput_errors is not None:
+                throughput_errors.append(role)
     return updated
 
 
@@ -216,6 +231,7 @@ def _model_profiles_for_export(
     settings: AppSettings,
     *,
     get_api_key: ApiKeyGetter,
+    get_scoped_api_key: Callable[[str], str],
     include_api_key: bool,
 ) -> dict[str, dict[str, Any]]:
     payload = settings.model_dump(mode="json")
@@ -229,13 +245,15 @@ def _model_profiles_for_export(
             "cloud": _cloud_profile_for_export(
                 owner,
                 get_api_key=get_api_key,
+                # The importer only reads keys from the cloud block, so a
+                # connection-scoped key must be exported here or a with-keys
+                # round-trip loses it.
+                scoped_api_key=_owner_primary_scoped_key(owner, get_scoped_api_key)
+                if include_api_key
+                else "",
                 include_api_key=include_api_key,
             ),
-            "effective": _effective_profile_for_export(
-                settings,
-                role,
-                include_api_key=include_api_key,
-            ),
+            "effective": _effective_profile_for_export(settings, role),
             "throughput": _throughput_profile_for_export(settings, role),
         }
         # All four roles carry mode/source_role/local now, so the export is
@@ -250,10 +268,25 @@ def _model_profiles_for_export(
     return profiles
 
 
+def _owner_primary_scoped_key(
+    owner: dict[str, Any],
+    get_scoped_api_key: Callable[[str], str],
+) -> str:
+    """Return the key owned by the role's primary pool connection, if any."""
+    connections = list(owner.get("connections") or [])
+    if not connections or not isinstance(connections[0], dict):
+        return ""
+    connection_id = str(connections[0].get("id") or "").strip()
+    if not connection_id:
+        return ""
+    return str(get_scoped_api_key(connection_id) or "").strip()
+
+
 def _cloud_profile_for_export(
     owner: dict[str, Any],
     *,
     get_api_key: ApiKeyGetter,
+    scoped_api_key: str = "",
     include_api_key: bool,
 ) -> dict[str, Any]:
     provider = str(owner.get("cloud_provider") or "").strip()
@@ -271,7 +304,11 @@ def _cloud_profile_for_export(
             include_api_key=include_api_key,
         ),
     }
-    api_key = str(get_api_key(provider, base_url) or "").strip() if include_api_key else ""
+    api_key = ""
+    if include_api_key:
+        # The connection-scoped key is what the primary actually resolves, so
+        # it outranks the provider-scoped store here.
+        api_key = scoped_api_key or str(get_api_key(provider, base_url) or "").strip()
     if api_key:
         profile["api_key"] = api_key
     return profile
@@ -343,14 +380,17 @@ def _throughput_profile_for_export(settings: AppSettings, role: str) -> dict[str
 def _effective_profile_for_export(
     settings: AppSettings,
     role: str,
-    *,
-    include_api_key: bool,
 ) -> dict[str, Any]:
+    """Describe the resolved configuration, never carrying a secret.
+
+    The importer only reads keys from the ``cloud`` block, so a key here
+    would be plaintext that no round-trip ever reads back.
+    """
     try:
         config = resolve_effective_model_config(settings, role)
     except Exception:
         return {}
-    profile: dict[str, Any] = {
+    return {
         "mode": config.mode,
         "provider": config.provider,
         "model": config.model,
@@ -358,9 +398,6 @@ def _effective_profile_for_export(
         "source_role": config.source_role,
         "follows": config.follows,
     }
-    if include_api_key and config.api_key:
-        profile["api_key"] = config.api_key
-    return profile
 
 
 def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
