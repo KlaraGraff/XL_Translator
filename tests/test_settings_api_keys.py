@@ -69,7 +69,9 @@ class SettingsApiKeyTests(unittest.TestCase):
         self.assertEqual(mask_api_key(""), "")
         self.assertEqual(mask_api_key("   "), "")
         # 短到掩不住首尾的密钥整段隐去，不给出任何可用片段。
-        self.assertEqual(mask_api_key("sk-1234"), "•" * 7)
+        self.assertEqual(mask_api_key("sk-1234"), "•" * 6)
+        # Short keys must not leak their length through the mask width.
+        self.assertEqual(mask_api_key("ab"), mask_api_key("abcdefghijkl"))
         masked = mask_api_key("sk-abcdefghijklmnopqrstuvwxyz012345")
         self.assertEqual(masked, "sk-a••••••2345")
         # 中间是固定宽度，真实长度也不外泄。

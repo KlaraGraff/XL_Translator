@@ -1330,7 +1330,7 @@ def load_settings() -> AppSettings:
             settings = AppSettings.model_validate(data)
         except Exception as exc:
             logger.warning(
-                "settings 未被读取或修复；保留原文件并以临时默认值启动：%s",
+                "settings 未被读取或修复；保留原文件并以临时默认值启动：{}",
                 type(exc).__name__,
             )
             return AppSettings()
@@ -1497,7 +1497,9 @@ def mask_api_key(api_key: str) -> str:
     if not value:
         return ""
     if len(value) <= 12:
-        return "•" * len(value)
+        # No head/tail for short keys, and a fixed-width mask so even their
+        # exact length stays hidden.
+        return "•" * 6
     return f"{value[:4]}{'•' * 6}{value[-4:]}"
 
 
@@ -1561,5 +1563,5 @@ def delete_all_keys() -> int:
         keys = _load_keys_unlocked(strict=True)
         removed = len(keys)
         KEYS_PATH.unlink(missing_ok=True)
-    logger.info("已删除全部本地 API Key：count=%s", removed)
+    logger.info("已删除全部本地 API Key：count={}", removed)
     return removed
