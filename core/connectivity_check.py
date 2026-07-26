@@ -613,6 +613,7 @@ def check_connectivity(
         model_config_signature,
         record_model_role_availability,
         resolve_effective_model_config,
+        settings_for_text_role,
     )
 
     normalized_role = str(role or ROLE_TRANSLATION).strip()
@@ -622,7 +623,13 @@ def check_connectivity(
     result = (
         _check_cleaner_json_protocol(settings, timeout_seconds=timeout_seconds)
         if normalized_role == ROLE_CLEANER
-        else _check_connectivity(settings, timeout_seconds=timeout_seconds)
+        else _check_connectivity(
+            # Test the effective (follow-resolved) configuration — the raw
+            # engine fields describe this role's idle own pool, while the
+            # availability signature below is recorded for the resolved one.
+            settings_for_text_role(settings, ROLE_TRANSLATION),
+            timeout_seconds=timeout_seconds,
+        )
     )
     try:
         record_model_role_availability(

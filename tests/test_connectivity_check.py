@@ -7,7 +7,7 @@ from core.connectivity_check import (
     _check_ollama_model,
     _check_openai_compatible,
 )
-from settings import AppSettings, EngineSettings
+from settings import AppSettings, EngineSettings, ModelRoleSettings
 
 
 class _FakeResponse:
@@ -97,6 +97,45 @@ class ConnectivityCheckTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "missing_api_key")
+
+    def test_translation_check_probes_the_followed_source_endpoint(self) -> None:
+        from core.connectivity_check import check_connectivity
+
+        # Translation follows the cleaner, so its own idle engine fields must
+        # not be what the probe dials: the availability signature is recorded
+        # for the resolved configuration, and testing anything else records a
+        # result for a connection nobody uses.
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="cloud",
+                source_role="cleaner",
+                cloud_provider="custom_openai",
+                cloud_model="own-idle-model",
+                cloud_base_url="https://own-idle.example.test/v1",
+            ),
+            cleaner_model_role=ModelRoleSettings(
+                source_role="independent",
+                mode="cloud",
+                cloud_provider="custom_openai",
+                cloud_model="cleaner-model",
+                cloud_base_url="https://cleaner.example.test/v1",
+            ),
+        )
+        fake_client = _FakeClient(post_response=_FakeResponse({"id": "chatcmpl_1"}))
+
+        with (
+            self._patch_client(fake_client),
+            patch("core.connectivity_check.get_key", return_value="key"),
+        ):
+            result = check_connectivity(settings)
+
+        self.assertTrue(result.ok, result.message)
+        self.assertTrue(
+            fake_client.post_calls[0]["url"].startswith(
+                "https://cleaner.example.test/v1"
+            ),
+            fake_client.post_calls[0]["url"],
+        )
 
     def test_local_lm_studio_connectivity_does_not_require_api_key(self) -> None:
         from core.connectivity_check import check_connectivity
