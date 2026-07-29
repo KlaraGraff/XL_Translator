@@ -47,7 +47,9 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("xcrun notarytool store-credentials", workflow)
         self.assertIn("needs.validate-release.outputs.formal_release == '1'", workflow)
         self.assertIn("needs.validate-release.outputs.temporary_signing == '1'", workflow)
-        self.assertIn("prerelease:", workflow)
+        # 每个稳定 tag 都按正式发布出去，不再因为缺少签名密钥而降级成 Pre-release。
+        self.assertIn("prerelease: false", workflow)
+        self.assertNotIn("prerelease: ${{", workflow)
         self.assertIn("TEMP_SIGNED_TEST.dmg", workflow)
         self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
         self.assertNotIn('shasum -a 256 -c "${expected[3]}"', workflow)

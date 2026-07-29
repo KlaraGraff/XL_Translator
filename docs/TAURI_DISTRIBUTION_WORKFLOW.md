@@ -36,6 +36,6 @@ GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-ta
 
 CI 将证书导入临时 keychain，签名 sidecar、应用和 DMG，提交 Apple 公证，staple 后用 Gatekeeper 评估。arm64 原生构建成功、校验和通过且资产完整后，才会创建正式 stable GitHub Release。
 
-如果稳定 tag 缺少任一 Apple Secret，工作流会自动降级为原生 `TEMP_SIGNED_TEST` artifact，并创建明确标注为 Pre-release 的 GitHub Release：应用和 sidecar 使用 ad-hoc 临时签名，DMG 不公证，不标记为 stable/latest。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
+如果稳定 tag 缺少任一 Apple Secret，工作流仍然照常发布正式 Release（不再标注 Pre-release），只是产物降级为原生 `TEMP_SIGNED_TEST`：应用和 sidecar 使用 ad-hoc 临时签名、DMG 不公证，首次打开需要右键“打开”。Release 说明里会写明这一点，构建日志也会给出 warning。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
 
 正式发布仍需在 macOS 12 arm64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。

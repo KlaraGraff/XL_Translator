@@ -49,7 +49,7 @@ jobs:
               echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
               echo "temporary_signing=0" >> "$GITHUB_OUTPUT"
             else
-              echo "::warning::Apple signing/notarization secrets are unavailable; building and publishing temporary ad-hoc signed test artifacts as a GitHub Pre-release."
+              echo "::warning::Apple signing/notarization secrets are unavailable; publishing a normal release whose assets are ad-hoc signed and not notarized."
               echo "formal_release=0" >> "$GITHUB_OUTPUT"
               echo "artifact_channel=temporary-test" >> "$GITHUB_OUTPUT"
               echo "temporary_signing=1" >> "$GITHUB_OUTPUT"
@@ -233,13 +233,15 @@ jobs:
           )
       - uses: softprops/action-gh-release@v3.0.0
         with:
-          prerelease: ${{ needs.validate-release.outputs.formal_release != '1' }}
-          name: Translator ${{ github.ref_name }} (${{ needs.validate-release.outputs.artifact_channel }})
+          # 每个 vX.Y.Z tag 都是正式发布：没有 Apple 密钥时仍然照常发布，
+          # 只是在说明里讲清楚这次的安装包是 ad-hoc 签名、未公证。
+          prerelease: false
+          name: Translator ${{ github.ref_name }}
           body: |
             macOS Apple Silicon (arm64) distribution for `${{ github.ref_name }}`.
 
             Channel: `${{ needs.validate-release.outputs.artifact_channel }}`.
-            When the channel is `temporary-test`, assets use ad-hoc signing and are not notarized; they are provided for testing and are not a stable/latest release.
+            When the channel is `temporary-test`, assets use ad-hoc signing and are not notarized: macOS Gatekeeper asks for a right-click → Open on first launch.
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.sha256
