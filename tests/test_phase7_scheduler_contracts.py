@@ -793,7 +793,17 @@ class Phase7HttpContracts(unittest.TestCase):
             root = Path(temporary)
             message_runner = _MessageRunner(
                 [
-                    LogMsg(level="INFO", message="source phrase must not reach SSE"),
+                    LogMsg(
+                        level="INFO",
+                        message=(
+                            "[阶段 1] 提取词汇：fixture.xlsx（1/3）"
+                            f" | source_root={root / 'input'}"
+                        ),
+                    ),
+                    LogMsg(
+                        level="INFO",
+                        message="source_text: 混凝土工程量 must not reach SSE",
+                    ),
                     DoneMsg(
                         output_dir=str(root / "output"),
                         report_path=str(root / "output" / "report.md"),
@@ -849,9 +859,14 @@ class Phase7HttpContracts(unittest.TestCase):
                 for line in resumed_stream.text.splitlines()
                 if line.startswith("id:")
             ]
-            self.assertEqual(first_ids, [1, 2, 3])
-            self.assertEqual(resumed_ids, [2, 3])
-            self.assertNotIn("source phrase must not reach SSE", first_stream.text)
+            self.assertEqual(first_ids, [1, 2, 3, 4])
+            self.assertEqual(resumed_ids, [2, 3, 4])
+            # 进度要真的送到面板：阶段、文件名和计数保留，绝对路径换成 [path]。
+            self.assertIn("[阶段 1] 提取词汇：fixture.xlsx（1/3）", first_stream.text)
+            self.assertIn("source_root=[path]", first_stream.text)
+            self.assertNotIn(str(root / "input"), first_stream.text)
+            # 引用了原文的行整条不下发。
+            self.assertNotIn("混凝土工程量", first_stream.text)
             self.assertEqual(result.status_code, 200, result.text)
             actions = [item["action"] for item in result.json()["result"]["local_operations"]]
             self.assertEqual(actions, ["open_output", "open_report", "copy_output_path"])

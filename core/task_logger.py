@@ -31,21 +31,49 @@ _LOGGER_NAME = "xl_translator.task"
 _handler_installed = False
 _installed_log_path: Path | None = None
 
-_ABSOLUTE_PATH_RE = re.compile(r"(?:(?:[A-Za-z]:)?[/\\\\])(?:[^\s'\"<>]+[/\\\\])*[^\s'\"<>]+")
+# 路径要以盘符、UNC 或“前面不是词字符”的斜杠开头：否则 “（1/3）”“3/9 批”
+# 这类进度计数会被整段当成路径吃掉，日志面板就只剩下 [path]。
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:])(?:[A-Za-z]:[\\/]|\\\\[^\s'\"<>]+[\\/]|/)"
+    r"(?:[^\s'\"<>]+[\\/])*[^\s'\"<>]*"
+)
+_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s'\"<>]+", re.IGNORECASE)
 _API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
 _CONTENT_MARKER_RE = re.compile(
     r"(?i)(?:source(?:_text)?|target(?:_text)?|translation|translated|"
     r"prompt|response|content|text)\s*[:=]"
 )
+CONTENT_WITHHELD_MESSAGE = "任务事件已记录；正文、译文、提示词和模型响应未写入日志。"
 
 
-def _sanitize_task_log_message(message: str) -> str:
-    """Retain operational events without persisting user/model payloads."""
+def redact_absolute_paths(message: str) -> str:
+    """Hide filesystem paths while leaving provider URLs readable."""
+    urls: list[str] = []
+
+    def protect_url(match: re.Match[str]) -> str:
+        urls.append(match.group(0))
+        return f"__TRANSLATOR_URL_{len(urls) - 1}__"
+
+    protected = _URL_RE.sub(protect_url, message)
+    redacted = _ABSOLUTE_PATH_RE.sub("[path]", protected)
+    for index, url in enumerate(urls):
+        redacted = redacted.replace(f"__TRANSLATOR_URL_{index}__", url)
+    return redacted
+
+
+def sanitize_task_log_message(message: str) -> str:
+    """Keep an operational event readable while dropping user/model payloads.
+
+    Only the parts that can carry private data are removed — credentials,
+    absolute paths, and lines that quote source/target text or model output.
+    Phase names, file names, counts and timings survive, because a log panel
+    that shows nothing but "已脱敏" tells the user nothing about progress.
+    """
     sanitized = _API_SECRET_RE.sub("[redacted]", str(message or ""))
-    sanitized = _ABSOLUTE_PATH_RE.sub("[path]", sanitized)
+    sanitized = redact_absolute_paths(sanitized)
     sanitized = " ".join(sanitized.split())[:500]
     if _CONTENT_MARKER_RE.search(sanitized):
-        return "任务事件已记录；正文、译文、提示词和模型响应未写入日志。"
+        return CONTENT_WITHHELD_MESSAGE
     return sanitized or "任务事件已记录。"
 
 
@@ -150,11 +178,11 @@ class TaskLogger:
 
     def info(self, msg: str) -> None:
         if self.enabled and self._adapter:
-            self._adapter.info(_sanitize_task_log_message(msg))
+            self._adapter.info(sanitize_task_log_message(msg))
 
     def warning(self, msg: str) -> None:
         if self.enabled and self._adapter:
-            self._adapter.warning(_sanitize_task_log_message(msg))
+            self._adapter.warning(sanitize_task_log_message(msg))
 
     def error(self, msg: str, exc_info: bool = False) -> None:
         if not self.enabled or not self._adapter:

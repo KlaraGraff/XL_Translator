@@ -27,6 +27,7 @@ from core.model_roles import (
     resolve_effective_model_config,
 )
 from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
+from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
 from core.task_history import TaskHistoryStore
 from core.tm_cleaning_task_runner import TmCleaningTaskRunner
@@ -1217,14 +1218,16 @@ class TranslationTaskManager:
         safe_data = _sanitize_task_data(data)
         if event_type == "log":
             level = "INFO"
-            if isinstance(safe_data, dict):
-                level = str(safe_data.get("level") or level)
-            # A runner log line may contain a filename or model-supplied text.
-            # Do not expose it via the replayable SSE buffer at all.
+            raw_message = ""
+            if isinstance(data, dict):
+                level = str(data.get("level") or level)
+                raw_message = str(data.get("message") or "")
+            # 逐条脱敏，而不是整条丢弃：凭据、绝对路径和引用了原文/译文/模型输出
+            # 的行会被替换掉，阶段、文件名、计数和耗时保留下来，运行面板才有进度可看。
             safe_data = {
                 "level": level,
                 "stage": "runner",
-                "message": "任务运行日志已脱敏。",
+                "message": sanitize_task_log_message(raw_message),
             }
         with task.condition:
             task.events.append(
@@ -1235,16 +1238,13 @@ class TranslationTaskManager:
                 }
             )
             if event_type == "log":
-                # Runner strings may contain file names, source fragments or
-                # provider output.  Keep only structured observability here.
+                # 任务中心的历史日志与 SSE 事件用同一条脱敏结果，两处不会不一致。
                 task.logs.append(
                     {
                         "event_id": task.next_event_id,
-                        "level": str(safe_data.get("level") or "INFO")
-                        if isinstance(safe_data, dict)
-                        else "INFO",
+                        "level": str(safe_data.get("level") or "INFO"),
                         "stage": "runner",
-                        "message": "任务运行日志已脱敏。",
+                        "message": str(safe_data.get("message") or ""),
                     }
                 )
             task.updated_at = time.time()
@@ -1353,10 +1353,6 @@ _ARTIFACT_PATH_KEYS = {
     "manifest_path",
     "custom_output_dir",
 }
-_ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![A-Za-z][A-Za-z0-9+.-]:)(?:(?:[A-Za-z]:)?[/\\])(?:[^\s'\"<>]+[/\\])*[^\s'\"<>]+"
-)
-_URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s'\"<>]+", re.IGNORECASE)
 _API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
 
 
@@ -1400,24 +1396,9 @@ def _sanitize_task_data(value: Any, *, key: str = "") -> Any:
         if normalized_key in _ARTIFACT_PATH_KEYS:
             return value
         text = _API_SECRET_RE.sub("[redacted]", value)
-        text = _redact_absolute_paths(text)
+        text = redact_absolute_paths(text)
         return text[:300]
     return _json_safe(value)
-
-
-def _redact_absolute_paths(value: str) -> str:
-    """Hide filesystem paths without corrupting public API URLs in snapshots."""
-    urls: list[str] = []
-
-    def protect_url(match: re.Match[str]) -> str:
-        urls.append(match.group(0))
-        return f"__TRANSLATOR_URL_{len(urls) - 1}__"
-
-    protected = _URL_RE.sub(protect_url, value)
-    redacted = _ABSOLUTE_PATH_RE.sub("[path]", protected)
-    for index, url in enumerate(urls):
-        redacted = redacted.replace(f"__TRANSLATOR_URL_{index}__", url)
-    return redacted
 
 
 def _local_operation_descriptors(result: dict[str, Any]) -> list[dict[str, str]]:
