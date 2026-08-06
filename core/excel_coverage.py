@@ -6,8 +6,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from config import BILINGUAL_SEPARATOR
-from core import bilingual_writer
+from core import bilingual_writer, xlsx_patcher
 from core.language_registry import get_target_lang_display
 from core.translation_coverage import (
     COVERAGE_AMBIGUOUS,
@@ -112,10 +111,13 @@ def write_untranslated_excel_file(
     log_callback=None,
     original_path: Path | None = None,
 ) -> Path:
-    """Copy an Excel file and append translations only at source-only positions."""
-    from openpyxl import load_workbook
-    from openpyxl.styles import Alignment
+    """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
+    坐标限定 + 文本匹配双重守卫都交给 ``xlsx_patcher.write_bilingual_workbook`` 的
+    ``allowed_positions`` 机制完成：只有 ``plan.source_units`` 里的 (sheet, coordinate)
+    才允许改写，且写入时会用当前单元格的实际文本重新核对是否仍匹配 ``translations``
+    的键，防止误伤已经变化的单元格或同文本的其它位置。
+    """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -131,56 +133,35 @@ def write_untranslated_excel_file(
     shutil.copy2(source_path, out_path)
     bilingual_writer._ensure_owner_writable(out_path)
 
-    wb = load_workbook(str(out_path))
-    wb_values = (
-        load_workbook(str(out_path), data_only=True)
-        if formula_display_value_backfill
-        else None
+    allowed_positions: dict[str, set[str]] = {}
+    scoped_translations: dict[str, str] = {}
+    for unit in plan.source_units:
+        sheet_name = str(unit.data.get("sheet") or "")
+        coordinate = str(unit.data.get("coordinate") or "")
+        if not sheet_name or not coordinate:
+            continue
+        source_key = unit.source_text.strip()
+        translation = str(translations.get(source_key) or "").strip()
+        if not translation:
+            continue
+        allowed_positions.setdefault(sheet_name, set()).add(coordinate)
+        scoped_translations[source_key] = translation
+
+    stats: dict[str, int] = {}
+    xlsx_patcher.write_bilingual_workbook(
+        out_path,
+        translations=scoped_translations,
+        target_lang=target_lang,
+        source_lang=source_lang,
+        keep_original_sheets=keep_original_sheets,
+        formula_display_value_backfill=formula_display_value_backfill,
+        lock_row_height=lock_row_height,
+        mark_review_items=False,
+        log_callback=log_callback,
+        allowed_positions=allowed_positions,
+        stats=stats,
     )
-    write_count = 0
-    try:
-        sheet_names = list(wb.sheetnames)
-        if keep_original_sheets:
-            for name in sheet_names:
-                new_ws = wb.copy_worksheet(wb[name])
-                new_ws.title = f"{name}_原文"
-
-        for unit in plan.source_units:
-            sheet_name = str(unit.data.get("sheet") or "")
-            coordinate = str(unit.data.get("coordinate") or "")
-            if sheet_name not in wb.sheetnames or not coordinate:
-                continue
-            ws = wb[sheet_name]
-            ws_values = wb_values[sheet_name] if wb_values is not None else None
-            cell = ws[coordinate]
-            current_text = _resolve_cell_text(cell, ws_values, formula_display_value_backfill)
-            if clean_coverage_text(current_text) != unit.source_text.strip():
-                continue
-            translation = str(translations.get(unit.source_text.strip()) or "").strip()
-            if not translation or translation.casefold() == unit.source_text.strip().casefold():
-                continue
-            cell.value = unit.source_text + BILINGUAL_SEPARATOR + translation
-            existing = cell.alignment
-            cell.alignment = Alignment(
-                wrap_text=True,
-                horizontal=existing.horizontal,
-                vertical=existing.vertical,
-                text_rotation=existing.text_rotation,
-                indent=existing.indent,
-                shrink_to_fit=existing.shrink_to_fit,
-            )
-            if lock_row_height:
-                bilingual_writer._shrink_font_to_fit_locked_row(cell, ws)
-            write_count += 1
-
-        if not lock_row_height:
-            for name in sheet_names:
-                bilingual_writer._auto_adjust_row_heights(wb[name])
-        wb.save(str(out_path))
-    finally:
-        wb.close()
-        if wb_values is not None:
-            wb_values.close()
+    write_count = stats.get("mutated_cells", 0)
 
     if log_callback:
         log_callback(f"[OK] 已输出：{out_path.name}（补译 {write_count} 个单元格）")

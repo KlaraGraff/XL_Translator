@@ -18,22 +18,12 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from copy import copy
 
 from loguru import logger
 
-from config import (
-    EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
-    PRINT_GUARD_FONT_STEP,
-    PRINT_GUARD_FONT_FLOOR,
-)
+from config import EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
 from core.language_registry import get_target_lang_display
-from core.xlsx_patcher import (
-    estimate_chars_per_line,
-    estimate_max_visible_lines,
-    estimate_required_lines,
-    write_bilingual_workbook,
-)
+from core.xlsx_patcher import write_bilingual_workbook
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
@@ -200,96 +190,6 @@ def _sanitize_filename_fragment(value: str) -> str:
     """Remove Windows-illegal filename characters from user-facing fragments."""
     cleaned = _INVALID_FILENAME_FRAGMENT_RE.sub("_", str(value or "")).strip().rstrip(". ")
     return cleaned or "目标语言"
-
-
-def _shrink_font_to_fit_locked_row(cell, ws) -> bool:
-    """锁定行高模式：逐步缩小字号适配当前行高。返回是否触底。
-
-    仅供 ``core.excel_coverage`` 的补译写入路径使用；主双语写入已改走
-    ``core.xlsx_patcher`` 的补丁式实现，两边共用同一套估算公式。
-    """
-    default_col_width = 8.43
-    default_row_height = 15.0
-
-    col_dim = ws.column_dimensions.get(cell.column_letter)
-    col_width = col_dim.width if (col_dim and col_dim.width) else default_col_width
-
-    row_dim = ws.row_dimensions.get(cell.row)
-    row_height = row_dim.height if (row_dim and row_dim.height) else default_row_height
-
-    original_font = cell.font
-    current_size = float(original_font.size or 11.0)
-    min_size = float(PRINT_GUARD_FONT_FLOOR)
-    step = float(PRINT_GUARD_FONT_STEP)
-
-    while True:
-        chars_per_line = estimate_chars_per_line(col_width, current_size)
-        required_lines = estimate_required_lines(str(cell.value), chars_per_line)
-        visible_lines = estimate_max_visible_lines(row_height, current_size)
-
-        if required_lines <= visible_lines:
-            break
-
-        if current_size <= min_size:
-            current_size = min_size
-            break
-
-        current_size = max(min_size, round(current_size - step, 2))
-
-    if original_font.size != current_size:
-        new_font = copy(original_font)
-        new_font.size = current_size
-        cell.font = new_font
-
-    return current_size <= min_size and estimate_required_lines(
-        str(cell.value), estimate_chars_per_line(col_width, current_size)
-    ) > estimate_max_visible_lines(row_height, current_size)
-
-
-def _auto_adjust_row_heights(ws) -> None:
-    """自动调整行高以适配双语内容（对所有行统一处理）。
-
-    仅供 ``core.excel_coverage`` 的补译写入路径使用；主双语写入已改走
-    ``core.xlsx_patcher``。
-
-    算法：
-      - 遍历每一行，计算所有单元格中最多换行行数
-      - 行高 = 最大行数 × 默认字号 × 行距系数
-      - 仅当内容超过 1 行时才调整（避免压缩原本宽松的行）
-
-    :param ws: openpyxl Worksheet 对象
-    """
-    BASE_FONT_SIZE_PT = 11.0   # 默认字号（磅）
-    LINE_HEIGHT_RATIO = 1.4    # 行距系数
-    DEFAULT_COL_WIDTH = 8.43   # Excel 默认列宽（字符数）
-    CHARS_PER_WIDTH   = 1.2    # 每列宽单位对应的字符数（近似值）
-
-    for row in ws.iter_rows():
-        row_num = row[0].row
-        max_lines = 1
-
-        for cell in row:
-            if not cell.value or not isinstance(cell.value, str):
-                continue
-
-            # 获取列宽（字符数）
-            col_letter = cell.column_letter
-            col_dim = ws.column_dimensions.get(col_letter)
-            col_width = col_dim.width if (col_dim and col_dim.width) else DEFAULT_COL_WIDTH
-
-            # 估算每行可容纳的字符数
-            # 中文字符宽度约为英文的 2 倍，取折中近似
-            chars_per_line = max(1, int(col_width * CHARS_PER_WIDTH))
-
-            # 统计换行符 + 估算自动换行行数
-            lines = 0
-            for segment in cell.value.split("\n"):
-                lines += max(1, -(-len(segment) // chars_per_line))  # ceiling division
-            max_lines = max(max_lines, lines)
-
-        # 只有内容超过 1 行时才调整行高
-        if max_lines > 1:
-            ws.row_dimensions[row_num].height = max_lines * BASE_FONT_SIZE_PT * LINE_HEIGHT_RATIO
 
 
 def autofit_files_batch(

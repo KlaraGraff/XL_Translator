@@ -960,6 +960,7 @@ class _SheetOutcome:
     review_marked: int = 0
     review_skipped: int = 0
     shrunk_cells: int = 0
+    mutated_cells: int = 0
     removed_formula: bool = False
 
 
@@ -980,6 +981,7 @@ def _process_sheet(
     fill_policy: str,
     review_positions: list[dict[str, str]] | None,
     log_callback,
+    allowed_coordinates: set[str] | None = None,
 ) -> _SheetOutcome:
     data = package.read(entry.part)
     if data is None:
@@ -1025,13 +1027,21 @@ def _process_sheet(
                 shared_strings,
                 formula_display_value_backfill,
             )
-            mutation = _plan_cell_mutation(
-                source_text,
-                translations=translations,
-                target_lang=target_lang,
-                source_lang=source_lang,
-                review_enabled=review_enabled,
-                review_mark_map=review_mark_map,
+            position_allowed = (
+                allowed_coordinates is None
+                or f"{_column_letter(col_index)}{row_num}" in allowed_coordinates
+            )
+            mutation = (
+                _plan_cell_mutation(
+                    source_text,
+                    translations=translations,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    review_enabled=review_enabled,
+                    review_mark_map=review_mark_map,
+                )
+                if position_allowed
+                else None
             )
 
             if mutation is not None:
@@ -1071,6 +1081,7 @@ def _process_sheet(
                         outcome.removed_formula = True
                     final_text = new_text
                     dirty = True
+                    outcome.mutated_cells += 1
 
                     if lock_row_height:
                         size, reached_floor = _shrink_font_for_locked_row(
@@ -1606,8 +1617,19 @@ def write_bilingual_workbook(
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
     log_callback=None,
     review_positions: list[dict[str, str]] | None = None,
+    allowed_positions: dict[str, set[str]] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> None:
-    """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。"""
+    """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
+
+    ``allowed_positions``：``None`` 表示不限制（默认，逐字节等价于旧行为）；
+    传入 ``{分表名: {坐标, ...}}`` 时，只有落在该集合内的坐标才会被回填，
+    未列出的分表视为坐标集合为空（该分表任何单元格都不会被改写）。
+    供 ``core.excel_coverage`` 的按位置补译写入路径使用。
+
+    ``stats``：可选的输出统计字典，写入后会写入 ``stats["mutated_cells"]``
+    （本次实际回填的单元格数），供调用方生成日志。
+    """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
     review_mark_map = (
@@ -1678,7 +1700,13 @@ def write_bilingual_workbook(
 
         removed_formula = False
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
+        total_mutated_cells = 0
         for entry in entries:
+            sheet_allowed = (
+                allowed_positions.get(entry.name, set())
+                if allowed_positions is not None
+                else None
+            )
             outcome = _process_sheet(
                 package,
                 entry,
@@ -1695,8 +1723,10 @@ def write_bilingual_workbook(
                 fill_policy=fill_policy,
                 review_positions=review_positions,
                 log_callback=log_callback,
+                allowed_coordinates=sheet_allowed,
             )
             removed_formula = removed_formula or outcome.removed_formula
+            total_mutated_cells += outcome.mutated_cells
 
             if log_callback:
                 if lock_row_height and outcome.shrunk_cells:
@@ -1735,6 +1765,9 @@ def write_bilingual_workbook(
             package.write(workbook_rels_path, _serialize(workbook_rels_root))
         if content_types.dirty:
             package.write("[Content_Types].xml", content_types.serialize())
+
+        if stats is not None:
+            stats["mutated_cells"] = total_mutated_cells
 
         package.save()
     finally:
