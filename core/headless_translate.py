@@ -73,13 +73,17 @@ def build_runtime_settings(
         fallback=settings.source_lang,
     )
 
+    # Excel/Word 运行器各自读 settings.excel_output / settings.word_output，
+    # 通用 settings.output 无人消费；两个 CLI 共用本函数，所以两处一起写。
     if output_dir is None:
-        settings.output.use_custom_output_dir = False
-        settings.output.custom_output_dir = ""
+        for surface_output in (settings.excel_output, settings.word_output):
+            surface_output.use_custom_output_dir = False
+            surface_output.custom_output_dir = ""
     else:
         resolved_output = Path(output_dir).expanduser()
-        settings.output.use_custom_output_dir = True
-        settings.output.custom_output_dir = str(resolved_output)
+        for surface_output in (settings.excel_output, settings.word_output):
+            surface_output.use_custom_output_dir = True
+            surface_output.custom_output_dir = str(resolved_output)
 
     return settings
 
