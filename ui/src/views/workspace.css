@@ -1,0 +1,86 @@
+/*
+ * 工作区页面专属样式 —— app.css 已经覆盖了样张定义的几乎全部组件类
+ * （.srcbar/.stats/.tablecard/.tbl/.fmt/.runpanel/.prog-stage/.bar/.mon/.log/.filerow…），
+ * 这里只补两类 app.css 没有、但 workspace.ts 用到的东西：
+ *   1. .ws-note —— 运行中卡片/底部按钮下方的小字提示行（main.ts 里的 .note，
+ *      样张里以纯 <p> 出现、没有单独命名类，这里给它一个明确类名）。
+ *   2. .tc-head 在“扫描跳过”提示行里被复用时的图标间距微调。
+ */
+
+.ws-note {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.tc-head svg.ic {
+  flex: none;
+}
+
+/*
+ * PDF 逐页面板（页恢复 / 逐页审核）专属样式：
+ *   .linklike.disabled     —— actionable=false 时的操作链接，保留常驻但不可点。
+ *   .pdf-file-group        —— 逐页审核表按 relative_path 分组的文件小标题行（多文件时才出现）。
+ *   .pdf-compare*          —— 对比模态里原文/译文页图并排的两栏布局。
+ *   .modal:has(.pdf-compare) —— app.css 把 .modal 定死 400px，页对比需要更宽，用 :has() 局部加宽，
+ *                                不改 components.ts 的通用模态结构。
+ */
+
+.linklike.disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+.linklike.disabled:hover {
+  text-decoration: none;
+}
+
+.pdf-file-group td {
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.modal:has(.pdf-compare) {
+  width: min(920px, 92vw);
+}
+
+.pdf-compare {
+  display: flex;
+  gap: 14px;
+}
+.pdf-compare-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pdf-compare-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.pdf-compare-imgwrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--ground-2);
+  min-height: 180px;
+  max-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pdf-compare-imgwrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.pdf-compare-imgwrap .ph {
+  font-size: 12px;
+  color: var(--ink-3);
+  padding: 40px 10px;
+  text-align: center;
+}

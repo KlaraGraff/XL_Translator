@@ -1,6 +1,7 @@
 // V9 应用入口 —— 注入图标 sprite、挂载外壳、注册七个视图、初始化主题、默认进入 Excel。
-// 旧的 ui/src/main.ts 暂时保留在原位（未接入 index.html），供后续代理迁移逻辑参考；
-// 迁移完成后由主会话统一删除。
+
+// 必须最先导入：纯浏览器 dev 走查时垫掉 Tauri IPC（生产构建整体剔除）。
+import "./dev-tauri-shim";
 
 import "./styles/tokens.css";
 import "./styles/app.css";
@@ -8,6 +9,7 @@ import "./styles/app.css";
 import { injectIconSprite } from "./icons";
 import { mountShell } from "./shell";
 import { mountRouter, navigate, registerView } from "./router";
+import { checkFirstLaunch } from "./quickstart";
 
 import * as excelView from "./views/excel";
 import * as wordView from "./views/word";
@@ -73,6 +75,10 @@ function main(): void {
   registerView("help", helpView);
 
   navigate("excel");
+
+  // 首次启动检查（main.ts:3989 等价逻辑）：不阻塞首屏渲染，读取到
+  // quick_start_completed === false 时自动弹出快速开始向导。
+  void checkFirstLaunch().catch(() => undefined);
 }
 
 main();

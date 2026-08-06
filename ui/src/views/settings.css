@@ -1,0 +1,88 @@
+/*
+ * 设置页补充样式 —— app.css 已经从样张搬来了 .set-nav/.set-body/.seg/.conn/.grid2/
+ * .swatch/.tabs/.field(select,input[type=text]) 等设置页专属类，这里只补三类缺口：
+ *   1. app.css 的 .field 只给 select 和 input[type=text] 定过样式，密码框/数字框/
+ *      文本域要跟它们视觉一致。
+ *   2. 原生 <input type="color"> 的默认浏览器 UI 和样张里 26×26 的 .swatch 展示框
+ *      对不上，需要用 -webkit-appearance 系列属性重置成同款瓷片。
+ *   3. 几个本文件自造的小工具类（.field-row 按钮行、.field 内的「?」提示角标、
+ *      .note 说明小字、.conn.selected 选中态、.danger-section 危险区卡片）。
+ * 没有发明新的板式系统——数据与维护/外观与语言/更新与关于三个子页刻意复用
+ * .card/.tc-head/.conn/.chip/table.tbl 这套已有词汇，见 IA 方案的版式说明。
+ */
+
+.set-body .field input[type="password"],
+.set-body .field input[type="number"] {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 0 9px;
+}
+
+.set-body .field input:disabled,
+.set-body .field select:disabled,
+.set-body .field textarea:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.set-body textarea.domain-prompt {
+  width: 100%;
+  min-height: 128px;
+  resize: vertical;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 8px 10px;
+}
+
+/* 复核三色选择器：把原生 color input 重置成 .swatch 同款瓷片。 */
+.set-body input.swatch-input {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+}
+.set-body input.swatch-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 6px; }
+.set-body input.swatch-input::-webkit-color-swatch { border: 0; border-radius: 6px; }
+
+/* .field label 里追加的「?」提示角标；跟 .swrow .hint 视觉一致，换个类名避免撞车。 */
+.set-body .field label { display: flex; align-items: center; gap: 6px; }
+.swrow-hint {
+  color: var(--ink-3);
+  cursor: help;
+  font-size: 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 99px;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.field-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+
+.note { font-size: 12px; color: var(--ink-3); }
+.note.missing { color: var(--danger); display: flex; align-items: center; gap: 6px; }
+
+.conn.selected { background: var(--tint); }
+.conn .key-state code { font-family: var(--mono); }
+
+/* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */
+.card.danger-section { border-color: var(--danger-l); background: var(--danger-t); }

@@ -1,0 +1,38 @@
+/* 快速开始向导专属样式 —— 弹窗结构对照 main.ts:1934 的 quick-start-modal。
+   .modal 本身宽度固定 400px（见 app.css），这里只补三步列表的排版，不改模态外壳。 */
+
+.qs-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.qs-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.qs-step b {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.qs-step span {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.qs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}

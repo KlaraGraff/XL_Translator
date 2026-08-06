@@ -1,0 +1,107 @@
+/* 帮助视图专属样式 —— 样张未画出这一页，沿用设计令牌自建一套卡片网格。
+   结构对照 main.ts 旧版 renderHelpView() 的 .help-hero / .help-grid / .help-card。 */
+
+.help-hero {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.help-hero .section-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.help-hero h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.help-hero p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  max-width: 640px;
+  line-height: 1.6;
+}
+.help-hero-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .help-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .help-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.help-card {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.help-card-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  background: var(--tint);
+  color: var(--tint-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.help-card-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.help-card h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.help-card p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  flex: 1;
+}
+
+.help-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.help-details {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.help-details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--tint-ink);
+  font-weight: 500;
+}
+.help-details p {
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
