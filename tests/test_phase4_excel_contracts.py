@@ -629,6 +629,19 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
                     texts_by_path={source: ["施工内容"]},
                     writer_side_effect=writer_with_anchor_stats,
                 )
+                # 打开精调会让任务真的去拉起本机 Microsoft Excel。这条用例查的是
+                # 「写入器报上来的统计有没有原样进到结果里」，不是 AutoFit 本身，
+                # 所以把启动 Excel 和批量精调这两步换掉——否则在没装 Excel 的
+                # 构建机上必然报 ApplicationNotFoundError。
+                stack.enter_context(
+                    patch("core.task_runner.create_excel_app", return_value=MagicMock())
+                )
+                stack.enter_context(
+                    patch(
+                        "core.task_runner.bilingual_writer.autofit_files_batch",
+                        return_value=True,
+                    )
+                )
                 settings = _settings()
                 # 界面上「Excel 精调行高」默认就是开的（ui/src/views/workspace.ts）
                 settings.excel_output.enable_excel_autofit = True

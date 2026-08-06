@@ -386,22 +386,20 @@ def write_bilingual_docx(
     front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
     protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
     # 表格没有"下标即位置"这种便利——_iter_unique_table_cells 会递归展开嵌套表格，
-    # 所以用被保护表格产出的单元格 id 集合来判断，而不是重新按表格下标过滤。
-    protected_table_cell_ids = (
-        {
-            id(cell)
-            for table_index, table in enumerate(doc.tables)
-            if table_index in front_matter.protected_table_indices
-            for cell in _iter_unique_table_cells(table)
-        }
-        if front_matter
-        else set()
-    )
-    table_cells = [
-        cell
-        for table in doc.tables
-        for cell in _iter_unique_table_cells(table)
-    ]
+    # 所以按表格下标挑出受保护的表，再记下它产出的单元格。这里必须和下面遍历用的是
+    # 同一批 _Cell 对象、并且由 table_cells 一直持有强引用：python-docx 每次访问都新建
+    # 一个包装对象（doc.tables[0].cell(0, 0) is doc.tables[0].cell(0, 0) 为 False），
+    # 先单独建一份 id 集合、再另建一份列表的话，集合里存的全是随即被回收的对象地址，
+    # 命中与否只看内存分配器的运气——漏保护和误保护正文单元格都会发生。
+    protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
+    table_cells: list = []
+    protected_table_cell_ids: set[int] = set()
+    for table_index, table in enumerate(doc.tables):
+        table_protected = table_index in protected_tables
+        for cell in _iter_unique_table_cells(table):
+            table_cells.append(cell)
+            if table_protected:
+                protected_table_cell_ids.add(id(cell))
     all_paragraphs = [
         *body_paragraphs,
         *(paragraph for cell in table_cells for paragraph in cell.paragraphs),

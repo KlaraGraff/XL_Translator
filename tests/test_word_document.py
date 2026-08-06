@@ -165,16 +165,23 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("某某工程施工方案", unprotected_sources)
 
     def test_write_bilingual_docx_skips_front_matter_paragraphs_and_table(self) -> None:
+        # 封面表格故意做得宽（16 格），正文表格也不止一格。判断"这个单元格属于被保护的
+        # 表格吗"一旦退化成比对 python-docx 临时包装对象的 id()，命中与否就只看内存
+        # 分配器把新对象放在哪——只有一两格时它可能整轮蒙对（本地 3.13 就是这样放过了
+        # 一版真 bug，到 CI 的 3.11 上才炸）。格子多了，蒙对和误伤都会立刻显形。
+        cover_cells = {f"封面字段{i:02d}": f"COVER-{i:02d}" for i in range(16)}
+        body_cells = {f"工程量清单{i}": f"Bill of quantities {i}" for i in range(4)}
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "cover_table_before_chapter.docx"
             doc = Document()
             doc.add_paragraph("某某工程施工方案")
-            cover_table = doc.add_table(rows=1, cols=2)
-            cover_table.cell(0, 0).text = "文件编号"
-            cover_table.cell(0, 1).text = "ONEBTR-MS-035"
+            cover_table = doc.add_table(rows=4, cols=4)
+            for index, source in enumerate(cover_cells):
+                cover_table.cell(index // 4, index % 4).text = source
             doc.add_paragraph("第一章 工程概况")
-            body_table = doc.add_table(rows=1, cols=1)
-            body_table.cell(0, 0).text = "工程量清单"
+            body_table = doc.add_table(rows=2, cols=2)
+            for index, source in enumerate(body_cells):
+                body_table.cell(index // 2, index % 2).text = source
             doc.save(source_path)
 
             out_path = write_bilingual_docx(
@@ -182,9 +189,9 @@ class WordDocumentTests(unittest.TestCase):
                 output_dir=Path(temp_dir) / "out",
                 translations={
                     "某某工程施工方案": "COVER SHOULD NOT APPEAR",
-                    "文件编号": "COVER SHOULD NOT APPEAR",
                     "第一章 工程概况": "Chapter 1 Project Overview",
-                    "工程量清单": "Bill of quantities",
+                    **dict.fromkeys(cover_cells, "COVER SHOULD NOT APPEAR"),
+                    **body_cells,
                 },
                 target_lang="en",
                 source_lang="zh",
@@ -196,8 +203,16 @@ class WordDocumentTests(unittest.TestCase):
             self.assertEqual(paragraph_texts.count("某某工程施工方案"), 1)
             self.assertNotIn("COVER SHOULD NOT APPEAR", paragraph_texts)
             self.assertIn("Chapter 1 Project Overview", paragraph_texts)
-            self.assertEqual(out_doc.tables[0].cell(0, 0).text, "文件编号")
-            self.assertEqual(out_doc.tables[1].cell(0, 0).text, "工程量清单\nBill of quantities")
+            # 封面表格：一格都不许动
+            self.assertEqual(
+                [cell.text for row in out_doc.tables[0].rows for cell in row.cells],
+                list(cover_cells),
+            )
+            # 正文表格：每一格都要拿到译文，不能被"顺手"保护掉
+            self.assertEqual(
+                [cell.text for row in out_doc.tables[1].rows for cell in row.cells],
+                [f"{source}\n{translated}" for source, translated in body_cells.items()],
+            )
 
     def test_find_word_front_matter_boundary_reports_no_protection_without_heading(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
