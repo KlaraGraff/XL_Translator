@@ -105,16 +105,23 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("com.apple.security.cs.disable-library-validation", adhoc_entitlements)
         self.assertIn("NSAppleEventsUsageDescription", info_plist)
 
-    def test_readme_and_release_guide_are_macos_only(self) -> None:
+    def test_readme_and_release_guide_cover_both_platforms(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         guide = (ROOT / "docs" / "TAURI_DISTRIBUTION_WORKFLOW.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("macOS 12.0 Monterey", readme)
         self.assertIn("Translator_macOS_arm64_<版本>.dmg", readme)
+        self.assertIn("Translator_Windows_x64_<版本>_Setup.exe", readme)
+        self.assertIn("Windows 10", readme)
+        self.assertIn("### Windows 安装与首次打开", readme)
+        self.assertIn("Get-FileHash", readme)
+        self.assertIn("SmartScreen", readme)
+        self.assertIn("WebView2", readme)
         self.assertNotIn("Translator_macOS_x64_<版本>.dmg", readme)
-        self.assertNotIn("### Windows", readme)
-        self.assertNotIn("build_windows_package", guide)
+        self.assertIn("Translator_Windows_x64_<version>_Setup.exe", guide)
+        self.assertIn("--platform windows", guide)
+        self.assertIn("PROCESSOR_ARCHITECTURE", guide)
         self.assertIn("Apple 公证", guide)
         self.assertIn("UNSIGNED_TEST", guide)
         self.assertIn("TEMP_SIGNED_TEST", guide)
