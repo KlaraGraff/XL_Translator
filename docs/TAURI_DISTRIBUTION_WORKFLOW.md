@@ -41,16 +41,15 @@ GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-ta
 
 ### macOS 签名与公证
 
-正式 Release 路径必须同时提供以下 GitHub Actions Secrets。全部存在时，稳定 tag 才会进入签名、公证和 Release 发布路径：
+正式 Release 路径必须同时提供以下 GitHub Actions Secrets（名字与 lantern 仓库一致，同一套值可直接复用；注意 secrets 按仓库隔离，需要在每个仓库分别配置）。全部存在时，稳定 tag 才会进入签名、公证和 Release 发布路径：
 
-- `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
-- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
-- `APPLE_KEYCHAIN_PASSWORD`
-- `APPLE_NOTARY_KEY_ID`
-- `APPLE_NOTARY_ISSUER_ID`
-- `APPLE_NOTARY_PRIVATE_KEY_BASE64`
+- `APPLE_CERTIFICATE` — Developer ID Application 证书 .p12 的 base64
+- `APPLE_CERTIFICATE_PASSWORD` — 导出 .p12 时设置的密码
+- `APPLE_ID` — Apple 开发者账号邮箱
+- `APPLE_PASSWORD` — 该账号的 App 专用密码（appleid.apple.com 生成）
+- `APPLE_TEAM_ID` — 开发者团队 ID
 
-CI 将证书导入临时 keychain，签名 sidecar、应用和 DMG，提交 Apple 公证，staple 后用 Gatekeeper 评估。
+CI 将证书导入临时 keychain（钥匙串密码 run 内随机生成），签名 sidecar、应用和 DMG，用 `notarytool`（Apple ID + App 专用密码 + Team ID）提交 Apple 公证，staple 后用 Gatekeeper 评估。
 
 如果稳定 tag 缺少任一 Apple Secret，工作流仍然照常发布正式 Release（不再标注 Pre-release），只是 macOS 产物降级为原生 `TEMP_SIGNED_TEST`：应用和 sidecar 使用 ad-hoc 临时签名、DMG 不公证，首次打开需要右键“打开”。Release 说明里会写明这一点，构建日志也会给出 warning。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
 

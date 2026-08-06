@@ -14,12 +14,13 @@ jobs:
     name: Validate release eligibility
     runs-on: ubuntu-latest
     env:
-      APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-      APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-      APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-      APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+      # Secret 名与 lantern 仓库保持一致：证书走 .p12（base64），公证走
+      # Apple ID + App 专用密码 + Team ID，同一套值可在两个仓库直接复用。
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     outputs:
       formal_release: ${{ steps.classify.outputs.formal_release }}
       artifact_channel: ${{ steps.classify.outputs.artifact_channel }}
@@ -39,12 +40,11 @@ jobs:
               echo "Only stable vX.Y.Z tags can create a formal release; got $GITHUB_REF_NAME." >&2
               exit 1
             fi
-            if [[ -n "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" \
-              && -n "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
-              && -n "$APPLE_KEYCHAIN_PASSWORD" \
-              && -n "$APPLE_NOTARY_KEY_ID" \
-              && -n "$APPLE_NOTARY_ISSUER_ID" \
-              && -n "$APPLE_NOTARY_PRIVATE_KEY_BASE64" ]]; then
+            if [[ -n "$APPLE_CERTIFICATE" \
+              && -n "$APPLE_CERTIFICATE_PASSWORD" \
+              && -n "$APPLE_ID" \
+              && -n "$APPLE_PASSWORD" \
+              && -n "$APPLE_TEAM_ID" ]]; then
               echo "formal_release=1" >> "$GITHUB_OUTPUT"
               echo "artifact_channel=formal-release" >> "$GITHUB_OUTPUT"
               echo "temporary_signing=0" >> "$GITHUB_OUTPUT"
@@ -122,38 +122,36 @@ jobs:
       - name: Configure Developer ID and notarization for an official tag
         if: needs.validate-release.outputs.formal_release == '1'
         env:
-          APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
-          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-          APPLE_NOTARY_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY_BASE64 }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          : "${APPLE_DEVELOPER_ID_CERTIFICATE_BASE64:?Missing Developer ID certificate secret}"
-          : "${APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD:?Missing Developer ID certificate password secret}"
-          : "${APPLE_KEYCHAIN_PASSWORD:?Missing temporary keychain password secret}"
-          : "${APPLE_NOTARY_KEY_ID:?Missing Apple notarization key ID secret}"
-          : "${APPLE_NOTARY_ISSUER_ID:?Missing Apple notarization issuer ID secret}"
-          : "${APPLE_NOTARY_PRIVATE_KEY_BASE64:?Missing Apple notarization private key secret}"
+          : "${APPLE_CERTIFICATE:?Missing Developer ID certificate secret}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?Missing Developer ID certificate password secret}"
+          : "${APPLE_ID:?Missing Apple ID secret}"
+          : "${APPLE_PASSWORD:?Missing Apple app-specific password secret}"
+          : "${APPLE_TEAM_ID:?Missing Apple Team ID secret}"
 
+          # 临时钥匙串密码只在本 run 内有效，随机生成即可，不必占一个 secret。
+          keychain_password="$(uuidgen)"
           keychain="$RUNNER_TEMP/translator-signing.keychain-db"
           certificate="$RUNNER_TEMP/developer-id.p12"
-          api_key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          printf '%s' "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 -D > "$certificate"
-          printf '%s' "$APPLE_NOTARY_PRIVATE_KEY_BASE64" | base64 -D > "$api_key"
-          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
-          security import "$certificate" -k "$keychain" -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security list-keychains -d user -s "$keychain"
           security default-keychain -s "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           identity="$(security find-identity -v -p codesigning "$keychain" | awk -F '"' '/Developer ID Application/ {print $2; exit}')"
           test -n "$identity"
           profile="translator-notary-${GITHUB_RUN_ID}-${MACOS_ARCH}"
-          xcrun notarytool store-credentials "$profile" --key "$api_key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID"
+          xcrun notarytool store-credentials "$profile" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
           {
             echo "XL_TRANSLATOR_MACOS_CODESIGN_IDENTITY=$identity"
             echo "XL_TRANSLATOR_MACOS_NOTARY_PROFILE=$profile"

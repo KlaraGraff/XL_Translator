@@ -50,9 +50,13 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("Translator_Windows_x64_${version}_Setup.exe", workflow)
         self.assertIn("Translator_Windows_x64_${version}_Setup.exe.sha256", workflow)
         self.assertIn("Only stable vX.Y.Z tags", workflow)
-        self.assertIn("APPLE_DEVELOPER_ID_CERTIFICATE_BASE64", workflow)
-        self.assertIn("APPLE_NOTARY_PRIVATE_KEY_BASE64", workflow)
+        # Secret 名与 lantern 仓库对齐：证书 .p12 + Apple ID/App 专用密码公证。
+        self.assertIn("APPLE_CERTIFICATE", workflow)
+        self.assertIn("APPLE_TEAM_ID", workflow)
+        self.assertNotIn("APPLE_DEVELOPER_ID_CERTIFICATE_BASE64", workflow)
+        self.assertNotIn("APPLE_NOTARY_KEY_ID", workflow)
         self.assertIn("xcrun notarytool store-credentials", workflow)
+        self.assertIn('--apple-id "$APPLE_ID"', workflow)
         self.assertIn("needs.validate-release.outputs.formal_release == '1'", workflow)
         self.assertIn("needs.validate-release.outputs.temporary_signing == '1'", workflow)
         # 每个稳定 tag 都按正式发布出去，不再因为缺少签名密钥而降级成 Pre-release。
