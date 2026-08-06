@@ -1,4 +1,4 @@
-name: Build Translator macOS distributions
+name: Build Translator distributions
 
 on:
   workflow_dispatch:
@@ -189,20 +189,90 @@ jobs:
           name: Translator_macOS_${{ matrix.architecture }}_${{ needs.validate-release.outputs.artifact_channel }}
           path: release-upload
 
+  windows:
+    name: Windows x64 NSIS installer
+    needs: validate-release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - name: Confirm the runner is x64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PROCESSOR_ARCHITECTURE" = "AMD64"
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+            constraints-release-py311.txt
+      - name: Create the controlled Python 3.11 release environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          python -m venv .venv
+          ./.venv/Scripts/python.exe --version
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install Windows release dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN=./.venv/Scripts/python.exe
+          "$PYTHON_BIN" -m pip install --upgrade --constraint constraints-release-py311.txt pip
+          "$PYTHON_BIN" -m pip install --constraint constraints-release-py311.txt --requirement requirements-build.txt
+          # The verifier checks every locked release dependency, including
+          # transitive packages that modern pip may omit when they are
+          # optional on a platform.
+          "$PYTHON_BIN" -m pip install --requirement constraints-release-py311.txt
+          "$PYTHON_BIN" scripts/verify_release_dependencies.py --constraints constraints-release-py311.txt
+          npm ci --prefix ui
+      - name: Build the sidecar and package the NSIS installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.venv/Scripts/python.exe scripts/build_tauri_package.py \
+            --platform windows \
+            --python ./.venv/Scripts/python.exe
+      # Stage into one directory first: uploading dist/ paths directly makes
+      # the repo root the common ancestor, so the artifact would keep a
+      # dist/ prefix and the release job could not find the installer.
+      - name: Stage release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-upload
+          cp "$WINDOWS_INSTALLER" "$WINDOWS_INSTALLER_SHA256" release-upload/
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Translator_Windows_x64_${{ needs.validate-release.outputs.artifact_channel }}
+          path: release-upload
+
   release:
-    name: Publish macOS release
+    name: Publish release
     if: needs.validate-release.outputs.formal_release == '1' || needs.validate-release.outputs.temporary_signing == '1'
     needs:
       - validate-release
       - macos
+      - windows
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8.0.0
         with:
-          pattern: Translator_macOS_*_${{ needs.validate-release.outputs.artifact_channel }}
+          pattern: Translator_*_${{ needs.validate-release.outputs.artifact_channel }}
           path: release-assets
           merge-multiple: true
-      - name: Verify exactly one complete native DMG
+      - name: Verify exactly one complete native DMG and one Windows installer
         shell: bash
         run: |
           set -euo pipefail
@@ -222,14 +292,23 @@ jobs:
             echo "Unsupported release channel: $channel" >&2
             exit 1
           fi
+          # The Windows installer has no signing-state variant: it is never
+          # ad-hoc signed or notarized, so its name does not change by channel.
+          expected+=(
+            "Translator_Windows_x64_${version}_Setup.exe"
+            "Translator_Windows_x64_${version}_Setup.exe.sha256"
+          )
           for asset in "${expected[@]}"; do
             test -f "release-assets/$asset"
           done
           test "$(find release-assets -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" -eq 1
           test "$(find release-assets -maxdepth 1 -name '*.dmg.sha256' -type f | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -name '*.exe' -type f | wc -l | tr -d ' ')" -eq 1
+          test "$(find release-assets -maxdepth 1 -name '*.exe.sha256' -type f | wc -l | tr -d ' ')" -eq 1
           (
             cd release-assets
             shasum -a 256 -c "${expected[1]}"
+            shasum -a 256 -c "${expected[3]}"
           )
       - uses: softprops/action-gh-release@v3.0.0
         with:
@@ -238,10 +317,14 @@ jobs:
           prerelease: false
           name: Translator ${{ github.ref_name }}
           body: |
-            macOS Apple Silicon (arm64) distribution for `${{ github.ref_name }}`.
+            macOS Apple Silicon (arm64) and Windows x64 distributions for `${{ github.ref_name }}`.
 
             Channel: `${{ needs.validate-release.outputs.artifact_channel }}`.
-            When the channel is `temporary-test`, assets use ad-hoc signing and are not notarized: macOS Gatekeeper asks for a right-click → Open on first launch.
+            When the channel is `temporary-test`, macOS assets use ad-hoc signing and are not notarized: Gatekeeper asks for a right-click → Open on first launch.
+
+            The Windows installer is unsigned (no code signing in this pipeline) and requires Windows 10 or later. It installs per-user (no administrator rights needed) and downloads the WebView2 runtime automatically if it is missing.
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.sha256
+            release-assets/*.exe
+            release-assets/*.exe.sha256

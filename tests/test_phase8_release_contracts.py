@@ -1,4 +1,4 @@
-"""Static and fixture-level contracts for the macOS-only release pipeline."""
+"""Static and fixture-level contracts for the macOS + Windows release pipeline."""
 
 from __future__ import annotations
 
@@ -29,18 +29,26 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.0"))
         self.assertTrue(release_metadata_errors(ROOT, tag="v8.1.2-rc.1"))
 
-    def test_workflow_is_macos_only_and_fails_closed_for_official_tags(self) -> None:
+    def test_workflow_builds_both_platforms_and_fails_closed_for_official_tags(
+        self,
+    ) -> None:
         workflow = (
             ROOT / ".github" / "workflows" / "build-distributions.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("macos-14", workflow)
         self.assertIn("architecture: arm64", workflow)
-        # Distribution is Apple Silicon only; the Intel matrix leg must not
-        # come back silently.
+        # macOS distribution is Apple Silicon only; the Intel matrix leg must
+        # not come back silently.
         self.assertNotIn("macos-15-intel", workflow)
         self.assertNotIn("architecture: x86_64", workflow)
-        self.assertNotIn("windows-latest", workflow.lower())
-        self.assertNotIn("nsis", workflow.lower())
+        # Windows distribution is a native x64 NSIS installer, unsigned, and
+        # the release job refuses to publish without both platform assets.
+        self.assertIn("windows-latest", workflow)
+        self.assertIn("Windows x64 NSIS installer", workflow)
+        self.assertIn("--platform windows", workflow)
+        self.assertIn('test "$PROCESSOR_ARCHITECTURE" = "AMD64"', workflow)
+        self.assertIn("Translator_Windows_x64_${version}_Setup.exe", workflow)
+        self.assertIn("Translator_Windows_x64_${version}_Setup.exe.sha256", workflow)
         self.assertIn("Only stable vX.Y.Z tags", workflow)
         self.assertIn("APPLE_DEVELOPER_ID_CERTIFICATE_BASE64", workflow)
         self.assertIn("APPLE_NOTARY_PRIVATE_KEY_BASE64", workflow)
@@ -51,14 +59,15 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         self.assertIn("prerelease: false", workflow)
         self.assertNotIn("prerelease: ${{", workflow)
         self.assertIn("TEMP_SIGNED_TEST.dmg", workflow)
+        # The release job checksums both platform assets before publishing.
         self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
-        self.assertNotIn('shasum -a 256 -c "${expected[3]}"', workflow)
+        self.assertIn('shasum -a 256 -c "${expected[3]}"', workflow)
         self.assertIn("artifact_channel=unsigned-test", workflow)
         self.assertIn("artifact_channel=temporary-test", workflow)
         self.assertIn("temporary_signing=1", workflow)
-        self.assertIn("shasum -a 256 -c", workflow)
         self.assertIn("python -m venv .venv", workflow)
         self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
+        self.assertIn("PYTHON_BIN=./.venv/Scripts/python.exe", workflow)
         self.assertIn("./.venv/bin/python3 -m unittest discover -s tests", workflow)
 
     def test_build_script_scans_before_signing_and_marks_manual_artifacts(self) -> None:

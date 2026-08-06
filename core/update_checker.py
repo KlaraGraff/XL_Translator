@@ -1,4 +1,4 @@
-"""macOS-only, architecture-safe checks against official GitHub releases."""
+"""macOS(arm64) + Windows(x64), architecture-safe checks against official GitHub releases."""
 
 from __future__ import annotations
 
@@ -93,23 +93,37 @@ def normalized_architecture(
     *,
     platform_name: str | None = None,
 ) -> str | None:
-    """Return the release architecture label for a supported macOS host."""
-    if (platform_name or platform.system()).lower() != "darwin":
-        return None
+    """Return the release architecture label for a supported macOS or Windows host.
+
+    macOS only ships Apple Silicon builds: Intel Macs (x86_64) get no update
+    asset and return None. Windows only ships x64 builds.
+    """
+    system = (platform_name or platform.system()).lower()
     raw = str(machine or platform.machine()).strip().lower()
-    if raw in {"arm64", "aarch64"}:
-        return "arm64"
-    if raw in {"x86_64", "amd64", "x64"}:
-        return "x86_64"
+    if system == "darwin":
+        if raw in {"arm64", "aarch64"}:
+            return "arm64"
+        return None
+    if system == "windows":
+        if raw in {"amd64", "x86_64", "x64"}:
+            return "x64"
+        return None
     return None
 
 
-def _public_asset_architecture(architecture: str) -> str:
-    return "x64" if architecture == "x86_64" else architecture
-
-
-def _expected_dmg_name(version: str, architecture: str) -> str:
-    return f"{APP_SAFE_NAME}_macOS_{_public_asset_architecture(architecture)}_{version}.dmg"
+def _expected_asset_name(
+    version: str,
+    *,
+    platform_name: str | None,
+    architecture: str,
+) -> str | None:
+    """Return the exact release asset filename for a supported platform/arch pair."""
+    system = (platform_name or platform.system()).lower()
+    if system == "darwin":
+        return f"{APP_SAFE_NAME}_macOS_{architecture}_{version}.dmg"
+    if system == "windows":
+        return f"{APP_SAFE_NAME}_Windows_{architecture}_{version}_Setup.exe"
+    return None
 
 
 def _select_platform_asset(
@@ -119,20 +133,23 @@ def _select_platform_asset(
     platform_name: str | None = None,
     machine: str | None = None,
 ) -> ReleaseAsset | None:
-    """Choose exactly one native DMG; never fall back to an arbitrary asset."""
+    """Choose exactly one native installer asset; never fall back to an arbitrary asset."""
     architecture = normalized_architecture(machine, platform_name=platform_name)
     if architecture is None:
         return None
-    expected = _expected_dmg_name(version, architecture).lower()
+    expected = _expected_asset_name(version, platform_name=platform_name, architecture=architecture)
+    if expected is None:
+        return None
+    expected = expected.lower()
     candidates = [asset for asset in assets if asset.name.lower() == expected]
     return candidates[0] if len(candidates) == 1 else None
 
 
 def _select_checksum_asset(
     assets: list[ReleaseAsset],
-    dmg_asset: ReleaseAsset,
+    platform_asset: ReleaseAsset,
 ) -> ReleaseAsset | None:
-    expected = f"{dmg_asset.name}.sha256".lower()
+    expected = f"{platform_asset.name}.sha256".lower()
     matches = [asset for asset in assets if asset.name.lower() == expected]
     return matches[0] if len(matches) == 1 else None
 
@@ -204,7 +221,7 @@ def build_update_result_from_release_payload(
         return UpdateCheckResult(
             ok=True,
             status="unsupported_platform",
-            message="仅 macOS 原生版本支持检查更新。",
+            message="仅 macOS(Apple Silicon) 与 Windows(x64) 原生版本支持检查更新。",
             current_version=current_version,
             latest_version=latest_version,
             latest_tag=tag_name,
@@ -229,14 +246,14 @@ def build_update_result_from_release_payload(
         )
 
     assets = _parse_release_assets(payload)
-    dmg_asset = _select_platform_asset(
+    platform_asset = _select_platform_asset(
         assets,
         version=latest_version,
         platform_name=platform_name,
         machine=machine,
     )
-    checksum_asset = _select_checksum_asset(assets, dmg_asset) if dmg_asset else None
-    if dmg_asset is None or checksum_asset is None:
+    checksum_asset = _select_checksum_asset(assets, platform_asset) if platform_asset else None
+    if platform_asset is None or checksum_asset is None:
         return UpdateCheckResult(
             ok=True,
             status="release_not_ready",
@@ -251,7 +268,7 @@ def build_update_result_from_release_payload(
             diagnostic_code="native_asset_or_checksum_missing",
         )
 
-    checksum = _sha256_from_digest(dmg_asset.digest)
+    checksum = _sha256_from_digest(platform_asset.digest)
     base = UpdateCheckResult(
         ok=True,
         status="available" if is_newer_version(latest_version, current_version) else "current",
@@ -265,8 +282,8 @@ def build_update_result_from_release_payload(
         latest_tag=tag_name,
         release_url=release_url,
         release_date=release_date,
-        asset_name=dmg_asset.name,
-        download_url=dmg_asset.download_url,
+        asset_name=platform_asset.name,
+        download_url=platform_asset.download_url,
         sha256=checksum,
         checksum_asset_name=checksum_asset.name,
         checksum_url=checksum_asset.download_url,

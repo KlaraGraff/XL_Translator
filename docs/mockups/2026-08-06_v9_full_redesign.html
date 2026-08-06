@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Translator V9 全面重设计 · 样张</title>
+<style>
+/* ========== 设计 token（沿用已定稿色板） ========== */
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff; --ground:#f4f6fc; --ground-2:#ebeef8; --rail:#fbfcfe;
+  --surface:#ffffff; --surface-2:#f8fafe; --ink:#141a2e; --ink-2:#556080; --ink-3:#8a93ac;
+  --line:#e7ebf5; --line-2:#d9dfee; --accent:var(--accent-base); --accent-strong:#4353cc;
+  --on-accent:#fff; --tint:#f0f1ff; --tint-line:#ccd2ff; --tint-ink:#404fc2;
+  --ok:#12a366; --ok-t:#e2f4ed; --ok-l:#b3e2ce;
+  --warn:#c77a00; --warn-t:#f8eede; --warn-l:#edd4ad;
+  --danger:#e5484d; --danger-t:#fdebec; --danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66/5%);
+  --sh-md:0 1px 2px rgb(24 34 66/5%),0 10px 26px -14px rgb(30 45 90/20%);
+  --sh-lg:0 2px 4px rgb(24 34 66/6%),0 24px 48px -22px rgb(30 45 90/30%);
+  --r-lg:15px; --r-md:12px; --r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019; --ground-2:#090d15; --rail:#10151f; --surface:#151b28; --surface-2:#1a2130;
+  --ink:#eaedf7; --ink-2:#a4aec7; --ink-3:#6b7590; --line:#242c3e; --line-2:#313a50;
+  --accent:#8090ff; --accent-strong:var(--accent-base); --on-accent:#0b0f1a;
+  --tint:#1b223b; --tint-line:#283268; --tint-ink:#a0acff;
+  --ok:#3dd68c; --ok-t:#192e2a; --ok-l:#2d594c;
+  --warn:#e8a33d; --warn-t:#31281d; --warn-l:#655039;
+  --danger:#ff6369; --danger-t:#331b20; --danger-l:#5e3038;
+  --sh-sm:0 1px 2px rgb(0 0 0/40%);
+  --sh-md:0 1px 2px rgb(0 0 0/40%),0 10px 26px -14px rgb(0 0 0/55%);
+  --sh-lg:0 2px 4px rgb(0 0 0/45%),0 24px 48px -22px rgb(0 0 0/65%);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--font);background:var(--ground-2);color:var(--ink);font-size:13.5px;line-height:1.55}
+svg.ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.ic.sm{width:15px;height:15px}
+svg.ic.lg{width:22px;height:22px}
+
+/* ========== 看板骨架 ========== */
+.board-bar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--surface) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:12px 28px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.board-bar h1{font-size:15px;font-weight:650}
+.board-bar .sub{color:var(--ink-2);font-size:12px}
+.jump{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.jump a{font-size:12px;color:var(--ink-2);text-decoration:none;border:1px solid var(--line-2);border-radius:99px;padding:3px 10px;background:var(--surface)}
+.jump a:hover{color:var(--tint-ink);border-color:var(--tint-line);background:var(--tint)}
+.theme-btn{border:1px solid var(--line-2);background:var(--surface);color:var(--ink);border-radius:99px;padding:5px 14px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.theme-btn:hover{border-color:var(--tint-line);color:var(--tint-ink)}
+.frame{max-width:1360px;margin:0 auto;padding:44px 28px 8px}
+.frame>h2{font-size:16px;font-weight:650;margin-bottom:4px}
+.frame>.fdesc{color:var(--ink-2);font-size:12.5px;margin-bottom:14px}
+.notes{max-width:1360px;margin:10px auto 0;padding:0 28px;color:var(--ink-2);font-size:12.5px}
+.notes li{margin:2px 0 2px 18px}
+.screen{width:1300px;height:840px;background:var(--ground);border:1px solid var(--line-2);border-radius:18px;box-shadow:var(--sh-lg);display:flex;overflow:hidden;position:relative}
+
+/* ========== 侧栏 ========== */
+.side{width:210px;flex:none;background:var(--rail);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 10px 12px}
+.brand{display:flex;align-items:center;gap:9px;padding:2px 8px 16px;font-size:14.5px;font-weight:650;letter-spacing:.2px}
+.brand-mark{width:27px;height:27px;border-radius:8px;background:linear-gradient(135deg,#6b7dff,#4353cc);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;box-shadow:var(--sh-sm)}
+.side-label{font-size:10.5px;font-weight:600;letter-spacing:.12em;color:var(--ink-3);text-transform:uppercase;padding:14px 10px 5px}
+.side-item{display:flex;align-items:center;gap:9px;padding:7.5px 10px;border-radius:var(--r-sm);color:var(--ink-2);font-size:13px;cursor:default;position:relative}
+.side-item:hover{background:var(--ground-2);color:var(--ink)}
+.side-item.on{background:var(--tint);color:var(--tint-ink);font-weight:600}
+.side-badge{margin-left:auto;background:var(--accent);color:var(--on-accent);font-size:10.5px;font-weight:700;border-radius:99px;min-width:17px;height:17px;display:flex;align-items:center;justify-content:center;padding:0 5px}
+.side-dot{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:7px;height:7px;border-radius:99px;background:var(--danger)}
+.side-spacer{flex:1}
+
+/* ========== 顶栏与主区 ========== */
+.stage{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:62px;flex:none;display:flex;align-items:center;gap:14px;padding:0 22px;background:var(--surface);border-bottom:1px solid var(--line)}
+.topbar h1{font-size:16.5px;font-weight:650}
+.tb-sub{color:var(--ink-3);font-size:12px;margin-top:1px}
+.tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.pill{display:flex;align-items:center;gap:7px;border:1px solid var(--line-2);border-radius:99px;padding:5.5px 13px;font-size:12.5px;color:var(--ink-2);background:var(--surface)}
+.pill .dot{width:7px;height:7px;border-radius:99px;background:var(--ink-3)}
+.pill.live{border-color:var(--tint-line);color:var(--tint-ink);background:var(--tint)}
+.pill.live .dot{background:var(--accent)}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;border-radius:99px;padding:3px 10px}
+.status .led{width:6px;height:6px;border-radius:99px;background:currentColor}
+.status.idle{background:var(--ground-2);color:var(--ink-2)}
+.status.run{background:var(--tint);color:var(--tint-ink)}
+.status.ok{background:var(--ok-t);color:var(--ok)}
+.status.warn{background:var(--warn-t);color:var(--warn)}
+.status.pause{background:var(--warn-t);color:var(--warn)}
+.content{flex:1;min-height:0;padding:18px 22px;display:flex;gap:16px}
+
+/* ========== 通用组件 ========== */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.col-l{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
+.col-r{width:322px;flex:none;display:flex;flex-direction:column}
+.srcbar{display:flex;gap:8px;padding:12px 14px;align-items:center}
+.srcbar input{flex:1;height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:0 12px;font:inherit;font-size:13px;background:var(--surface);color:var(--ink)}
+.srcbar input::placeholder{color:var(--ink-3)}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn:hover{border-color:var(--line-2);background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600;box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:var(--accent-strong)}
+.btn.pri:disabled,.btn.pri.off{background:var(--ground-2);color:var(--ink-3);box-shadow:none;cursor:default}
+.btn.dgr{background:transparent;border-color:var(--danger-l);color:var(--danger)}
+.btn.dgr:hover{background:var(--danger-t)}
+.btn.dgr-solid{background:var(--danger);border-color:transparent;color:#fff;font-weight:600}
+.btn.big{height:40px;width:100%;font-size:13.5px;border-radius:10px}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 15px;box-shadow:var(--sh-sm)}
+.stat b{display:block;font-size:21px;font-weight:650;letter-spacing:-.3px;margin-top:2px}
+.stat span{font-size:11.5px;color:var(--ink-2)}
+.stat.dim b{color:var(--ink-3)}
+.tablecard{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.tc-head{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.tc-head b{color:var(--ink);font-weight:600;font-size:13px}
+.tc-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.linklike{color:var(--tint-ink);font-size:12.5px;cursor:pointer;text-decoration:none}
+.linklike:hover{text-decoration:underline}
+table.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{font-size:11.5px;font-weight:600;color:var(--ink-3);text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:0}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tr:hover td{background:var(--surface-2)}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.ck{width:15px;height:15px;accent-color:var(--accent);vertical-align:-2px}
+.fmt{display:inline-flex;font-size:10.5px;font-weight:700;letter-spacing:.04em;border-radius:5px;padding:1.5px 6px;border:1px solid var(--line-2);color:var(--ink-2)}
+.fmt.warn{border-color:var(--warn-l);background:var(--warn-t);color:var(--warn)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}
+.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+.chip.dgr{background:var(--danger-t);color:var(--danger)}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--ink-3);padding:30px}
+.empty .art{width:104px;height:84px;margin-bottom:8px}
+.empty b{color:var(--ink-2);font-weight:600;font-size:14px}
+.empty p{font-size:12.5px;max-width:300px;text-align:center}
+
+/* 右栏运行面板 */
+.runpanel{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.rp-scroll{flex:1;overflow:auto;padding:16px 16px 6px}
+.rp-title{font-size:13px;font-weight:650;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.rp-sec{font-size:11px;font-weight:650;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;margin:16px 0 8px}
+.rp-sec:first-of-type{margin-top:2px}
+.field{margin-bottom:11px}
+.field label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:4px;font-weight:550}
+.field select,.field input[type=text]{width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 9px}
+.swrow{display:flex;align-items:center;gap:9px;padding:6.5px 0;font-size:12.5px;color:var(--ink)}
+.swrow .hint{color:var(--ink-3);cursor:help;font-size:11px;border:1px solid var(--line-2);border-radius:99px;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.sw{margin-left:auto;width:32px;height:19px;border-radius:99px;background:var(--line-2);position:relative;flex:none;transition:.15s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:99px;background:#fff;box-shadow:0 1px 2px rgb(0 0 0/25%)}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:15px}
+.dis .swrow,.dis .field{opacity:.45;pointer-events:none}
+.fold{border:1px solid var(--line);border-radius:var(--r-md);margin-top:14px;overflow:hidden}
+.fold-h{display:flex;align-items:center;gap:8px;padding:9px 12px;font-size:12.5px;font-weight:600;background:var(--surface-2);cursor:pointer;color:var(--ink-2)}
+.fold-h svg{margin-left:auto}
+.fold-b{padding:11px 12px 4px;border-top:1px solid var(--line)}
+.rp-foot{flex:none;padding:13px 16px;border-top:1px solid var(--line);background:var(--surface);display:flex;flex-direction:column;gap:8px}
+.radio-row{display:flex;gap:12px;font-size:12.5px;align-items:center;color:var(--ink)}
+.radio-row input{accent-color:var(--accent)}
+
+/* 进度 / 日志 / 监控 */
+.prog-stage{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.prog-stage b{font-size:14px;font-weight:650}
+.prog-stage span{color:var(--ink-2);font-size:12.5px}
+.prog-stage .pct{margin-left:auto;font-size:19px;font-weight:650;font-variant-numeric:tabular-nums;color:var(--tint-ink)}
+.bar{height:7px;border-radius:99px;background:var(--ground-2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7d8cff)}
+.mon{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
+.log{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:10px 13px;font-family:var(--mono);font-size:11.6px;line-height:1.85;color:var(--ink-2);overflow:auto}
+.log .t{color:var(--ink-3);margin-right:9px}
+.log .w{color:var(--warn)}
+.log .g{color:var(--ok)}
+.log .a{color:var(--tint-ink)}
+.filerow{display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid var(--line);font-size:12.5px}
+.filerow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 完成横幅 */
+.banner{border:1px solid var(--ok-l);background:var(--ok-t);border-radius:var(--r-md);padding:13px 16px;display:flex;align-items:center;gap:12px}
+.banner .bi{width:30px;height:30px;border-radius:99px;background:var(--ok);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.banner b{font-weight:650}
+.banner .sub{font-size:12.5px;color:var(--ink-2);margin-top:1px}
+.banner .acts{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+/* 任务中心 */
+.tk-list{width:340px;flex:none;display:flex;flex-direction:column;gap:10px;overflow:auto}
+.tk-filters{display:flex;gap:6px}
+.tk-filters .f{font-size:12px;padding:4.5px 12px;border-radius:99px;border:1px solid var(--line-2);color:var(--ink-2);cursor:pointer;background:var(--surface)}
+.tk-filters .f.on{background:var(--tint);border-color:var(--tint-line);color:var(--tint-ink);font-weight:600}
+.tkcard{padding:13px 15px;cursor:pointer}
+.tkcard.sel{border-color:var(--tint-line);box-shadow:0 0 0 1px var(--tint-line),var(--sh-sm)}
+.tkcard .r1{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px}
+.tkcard .r2{color:var(--ink-3);font-size:11.5px;margin-top:3px}
+.tk-detail{flex:1;min-width:0;display:flex;flex-direction:column;overflow:auto;padding:18px 20px}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:5px 14px;font-size:12.5px;margin:10px 0}
+.kv dt{color:var(--ink-3)}
+.kv dd{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+.kpi{border:1px solid var(--line);border-radius:var(--r-md);padding:10px 13px;background:var(--surface-2)}
+.kpi b{display:block;font-size:19px;font-weight:650}
+.kpi span{font-size:11.5px;color:var(--ink-2)}
+.kpi.warn{border-color:var(--warn-l);background:var(--warn-t)}
+.kpi.warn b{color:var(--warn)}
+
+/* 设置页 */
+.set-nav{width:188px;flex:none;display:flex;flex-direction:column;gap:3px}
+.set-nav .si{padding:8px 12px;border-radius:var(--r-sm);font-size:13px;color:var(--ink-2);display:flex;gap:9px;align-items:center;cursor:pointer}
+.set-nav .si:hover{background:var(--ground-2)}
+.set-nav .si.on{background:var(--tint);color:var(--tint-ink);font-weight:600}
+.set-body{flex:1;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:14px}
+.seg{display:flex;gap:8px}
+.segc{flex:1;border:1px solid var(--line);border-radius:var(--r-md);padding:11px 14px;cursor:pointer;background:var(--surface)}
+.segc b{display:block;font-size:13px;font-weight:600}
+.segc span{font-size:11.5px;color:var(--ink-3)}
+.segc.on{border-color:var(--tint-line);background:var(--tint)}
+.segc.on b{color:var(--tint-ink)}
+.conn{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);font-size:13px}
+.conn:first-child{border-top:0}
+.conn .cdot{width:8px;height:8px;border-radius:99px;flex:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+.swatch{width:26px;height:26px;border-radius:7px;border:1px solid var(--line-2);display:inline-block;vertical-align:middle}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:0 4px}
+.tab{padding:8px 16px;font-size:13px;color:var(--ink-2);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--tint-ink);font-weight:600;border-color:var(--accent)}
+
+/* 模态 */
+.overlay{position:absolute;inset:0;background:rgb(10 14 26/45%);display:flex;align-items:center;justify-content:center;gap:36px;z-index:10}
+.modal{width:400px;background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:22px 22px 18px}
+.modal .mi{width:38px;height:38px;border-radius:99px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+.modal .mi.dgr{background:var(--danger-t);color:var(--danger)}
+.modal .mi.warn{background:var(--warn-t);color:var(--warn)}
+.modal h3{font-size:15px;font-weight:650;margin-bottom:7px}
+.modal p{font-size:13px;color:var(--ink-2);margin-bottom:8px}
+.modal .macts{display:flex;justify-content:flex-end;gap:9px;margin-top:16px}
+.modal input[type=text]{width:100%;height:34px;border:1px solid var(--line-2);border-radius:8px;padding:0 11px;font:inherit;background:var(--surface);color:var(--ink);margin-top:4px}
+.mlabel{position:absolute;font-size:11.5px;font-weight:650;letter-spacing:.06em;color:#fff;background:rgb(10 14 26/55%);border-radius:99px;padding:3px 12px}
+</style>
+</head>
+<body>
+
+<!-- 图标库 -->
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="i-excel" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="2.5"/><path d="M3.5 9.5h17M3.5 14.5h17M9 4.5V19.5M15 4.5V19.5"/></symbol>
+<symbol id="i-word" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5M7.5 13h7M7.5 16.5h5"/></symbol>
+<symbol id="i-pdf" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><circle cx="9" cy="13" r="1.6"/><path d="m16.5 17-2.8-3.6-2.2 2.6-1.3-1.4L7 18"/></symbol>
+<symbol id="i-tasks" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6.5" rx="2"/><rect x="3.5" y="14" width="17" height="6.5" rx="2"/><path d="m6.5 7.7 1.2 1.2 2-2.2"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.75A2.75 2.75 0 0 0 4 21.25Z"/><path d="M4 18.5V21M8.5 7.5h7"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.9c-.8.4-1 1-1 1.8"/><path d="M12 17h.01"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7A2.5 2.5 0 0 1 6 4.5h3.5l2 2.5H18A2.5 2.5 0 0 1 20.5 9.5V17A2.5 2.5 0 0 1 18 19.5H6A2.5 2.5 0 0 1 3.5 17Z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4-4"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 5.5 18 12 7.5 18.5Z"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3Z"/><path d="M12 10v4.2M12 17h.01"/></symbol>
+<symbol id="i-chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4.5h6l-.7 6.2 2.7 3.3H7l2.7-3.3ZM12 14v5.5"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M14.5 5.5 18.5 9.5 8.5 19.5H4.5V15.5Z"/><path d="m12.5 7.5 4 4"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 6.5h15M9.5 6V4.5h5V6M6.5 6.5l1 13h9l1-13M10 10.5v5.5M14 10.5v5.5"/></symbol>
+<symbol id="i-ext" viewBox="0 0 24 24"><path d="M13.5 5.5H18.5V10.5M18.5 5.5 11 13M9 6.5H6A1.5 1.5 0 0 0 4.5 8v10A1.5 1.5 0 0 0 6 19.5h10a1.5 1.5 0 0 0 1.5-1.5v-3"/></symbol>
+<symbol id="i-doc-file" viewBox="0 0 24 24"><path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5"/></symbol>
+</defs></svg>
+
+<header class="board-bar">
+  <div><h1>Translator V9 全面重设计 · 样张</h1><div class="sub">2026-08-06 · 信息架构重排 + 组件精修 · 浅/深主题一键切换 · 拍板后按此实现</div></div>
+  <nav class="jump">
+    <a href="#s1">①空态</a><a href="#s2">②待开始</a><a href="#s3">③运行中</a><a href="#s4">④PDF暂停</a><a href="#s5">⑤完成横幅</a><a href="#s6">⑥任务中心</a><a href="#s7">⑦记忆库</a><a href="#s8">⑧模型服务</a><a href="#s9">⑨翻译参数</a><a href="#s10">⑩危险确认</a>
+  </nav>
+  <button class="theme-btn" onclick="toggleTheme()">🌗 切换深色</button>
+</header>
+
+<!-- ═══════════ ① Excel 空态 ═══════════ -->
+<section class="frame" id="s1">
+<h2>① Excel 工作区 · 空态</h2>
+<div class="fdesc">新侧栏（图标+文字+分组）· 顶栏只剩任务与模型两个药丸 · 右栏未就绪时整体禁用</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>Excel 表格翻译</h1><span class="status idle"><span class="led"></span>待选择来源</span></div>
+      <div class="tb-sub">选择文件或文件夹，扫描后勾选要翻译的表格</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot"></span>任务中心</span>
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="col-l">
+        <div class="card srcbar">
+          <input type="text" placeholder="选择或粘贴文件、文件夹路径…"/>
+          <button class="btn"><svg class="ic sm"><use href="#i-folder"/></svg>浏览</button>
+          <button class="btn pri off">扫描</button>
+        </div>
+        <div class="stats">
+          <div class="stat dim"><span>已扫描文件</span><b>—</b></div>
+          <div class="stat dim"><span>文本单元格</span><b>—</b></div>
+          <div class="stat dim"><span>工作表</span><b>—</b></div>
+          <div class="stat dim"><span>旧版 .xls</span><b>—</b></div>
+        </div>
+        <div class="card tablecard">
+          <div class="tc-head"><b>任务清单</b></div>
+          <div class="empty">
+            <svg class="art" viewBox="0 0 104 84" fill="none">
+              <rect x="14" y="18" width="76" height="54" rx="9" stroke="var(--line-2)" stroke-width="2"/>
+              <path d="M14 32h76" stroke="var(--line-2)" stroke-width="2"/>
+              <circle cx="23" cy="25" r="2.2" fill="var(--line-2)"/><circle cx="31" cy="25" r="2.2" fill="var(--line-2)"/>
+              <rect x="24" y="42" width="26" height="5" rx="2.5" fill="var(--ground-2)"/>
+              <rect x="24" y="54" width="40" height="5" rx="2.5" fill="var(--ground-2)"/>
+              <circle cx="74" cy="52" r="13" stroke="var(--tint-line)" stroke-width="2.4" fill="var(--tint)"/>
+              <path d="m83 61 7 7" stroke="var(--tint-line)" stroke-width="2.4" stroke-linecap="round"/>
+            </svg>
+            <b>还没有可翻译的文件</b>
+            <p>选择来源并点击「扫描」，找到的表格会列在这里，可逐个勾选。</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-r">
+        <div class="card runpanel dis">
+          <div class="rp-scroll">
+            <div class="rp-title">运行设置</div>
+            <div class="rp-sec">语言</div>
+            <div class="field"><label>目标语言</label><select><option>English</option></select></div>
+            <div class="field"><label>源语言</label><select><option>自动检测</option></select></div>
+            <div class="rp-sec">本类型选项 · Excel</div>
+            <div class="swrow">仅补译未翻译内容<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">保留「_原文」副本<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="swrow">公式显示值回填<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">Excel 精调行高<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="swrow">锁定行高时缩字号<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">标记需复核内容<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="fold">
+              <div class="fold-h">本次任务<svg class="ic sm"><use href="#i-chev"/></svg></div>
+            </div>
+          </div>
+          <div class="rp-foot"><button class="btn pri big off">开始翻译</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>侧栏从纯图标窄栏改为「图标+文字」，按 <b>翻译 / 资源 / 系统</b> 三组；帮助、更新、主题的重复入口从顶栏移除。</li>
+  <li>顶栏右侧只剩两个药丸：任务中心（有活动任务时点亮并计数）、当前翻译模型。</li>
+  <li>右栏瘦身：只保留语言、本类型开关和「本次任务」折叠组；批次、复核色这类设一次不动的参数全部移到 设置 → 翻译参数。</li>
+</ul>
+
+<!-- ═══════════ ② Excel 已扫描 ═══════════ -->
+<section class="frame" id="s2">
+<h2>② Excel 工作区 · 已扫描待开始</h2>
+<div class="fdesc">指标块点亮 · 文件表格含格式徽章与风险标记 · 主按钮带已选计数</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>Excel 表格翻译</h1><span class="status tint chip tint">已扫描 · 待开始</span></div>
+      <div class="tb-sub">已找到 6 个表格文件，勾选后开始翻译</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot"></span>任务中心</span>
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="col-l">
+        <div class="card srcbar">
+          <input type="text" value="~/Documents/2025年报翻译素材"/>
+          <button class="btn"><svg class="ic sm"><use href="#i-folder"/></svg>浏览</button>
+          <button class="btn pri">重新扫描</button>
+        </div>
+        <div class="stats">
+          <div class="stat"><span>已扫描文件</span><b>6</b></div>
+          <div class="stat"><span>文本单元格</span><b>12,480</b></div>
+          <div class="stat"><span>工作表</span><b>23</b></div>
+          <div class="stat"><span>旧版 .xls</span><b style="color:var(--warn)">1</b></div>
+        </div>
+        <div class="card tablecard">
+          <div class="tc-head"><b>任务清单</b><span>已选 5 / 6</span>
+            <div class="tc-tools"><span class="linklike">全选</span><span class="linklike">全不选</span></div>
+          </div>
+          <div style="flex:1;overflow:auto">
+          <table class="tbl">
+            <tr><th style="width:34px"></th><th>文件</th><th>格式</th><th class="num">工作表</th><th class="num">文本单元格</th><th>状态</th></tr>
+            <tr><td><input class="ck" type="checkbox" checked></td><td>2025年报_财务附注.xlsx</td><td><span class="fmt">XLSX</span></td><td class="num">4</td><td class="num">3,204</td><td></td></tr>
+            <tr><td><input class="ck" type="checkbox" checked></td><td>供应商清单_Q3.xlsx</td><td><span class="fmt">XLSX</span></td><td class="num">2</td><td class="num">1,876</td><td></td></tr>
+            <tr><td><input class="ck" type="checkbox" checked></td><td>产品目录_2024.xls</td><td><span class="fmt warn">XLS</span></td><td class="num">6</td><td class="num">4,090</td><td><span class="chip warn"><svg class="ic sm"><use href="#i-warn"/></svg>需先转换</span></td></tr>
+            <tr><td><input class="ck" type="checkbox" checked></td><td>渠道价格表_0801.xlsx</td><td><span class="fmt">XLSX</span></td><td class="num">3</td><td class="num">1,530</td><td></td></tr>
+            <tr><td><input class="ck" type="checkbox" checked></td><td>组织架构_人员名录.xlsx</td><td><span class="fmt">XLSX</span></td><td class="num">5</td><td class="num">1,266</td><td></td></tr>
+            <tr><td><input class="ck" type="checkbox"></td><td>宏配置_勿动.xlsx</td><td><span class="fmt">XLSX</span></td><td class="num">3</td><td class="num">514</td><td><span class="chip mute">已排除</span></td></tr>
+          </table>
+          </div>
+          <div class="tc-head" style="border-top:1px solid var(--line);border-bottom:0">
+            <svg class="ic sm" style="color:var(--warn)"><use href="#i-warn"/></svg>
+            <span>扫描时跳过 2 项：隐藏工作表「宏配置」、空表「Sheet3」</span>
+            <div class="tc-tools"><span class="linklike">查看扫描报告</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-r">
+        <div class="card runpanel">
+          <div class="rp-scroll">
+            <div class="rp-title">运行设置</div>
+            <div class="rp-sec">语言</div>
+            <div class="field"><label>目标语言</label><select><option>English</option></select></div>
+            <div class="field"><label>源语言</label><select><option>中文（简体）· 自动检测</option></select></div>
+            <div class="rp-sec">本类型选项 · Excel</div>
+            <div class="swrow">仅补译未翻译内容<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">保留「_原文」副本<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="swrow">公式显示值回填<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">Excel 精调行高<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="swrow">锁定行高时缩字号<span class="hint">?</span><span class="sw"></span></div>
+            <div class="swrow">标记需复核内容<span class="hint">?</span><span class="sw on"></span></div>
+            <div class="fold">
+              <div class="fold-h" style="color:var(--tint-ink)">本次任务<svg class="ic sm" style="transform:rotate(180deg)"><use href="#i-chev"/></svg></div>
+              <div class="fold-b">
+                <div class="field"><label>专业领域 <span class="linklike" style="font-size:11px">编辑 Prompt ↗ 设置</span></label><select><option>金融财报</option></select></div>
+                <div class="field"><label>输出位置</label>
+                  <div class="radio-row" style="margin:4px 0 6px"><label><input type="radio" name="out1" checked> 源目录内</label><label><input type="radio" name="out1"> 自定义</label></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="rp-foot"><button class="btn pri big"><svg class="ic sm"><use href="#i-play"/></svg>开始翻译（5 个文件）</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>旧版 .xls 在指标块和行内双重提示；点开始时才弹兼容转换确认（模态见⑩同款样式）。</li>
+  <li>「本次任务」折叠组只装每次会变的：专业领域选择（编辑入口跳设置）和输出位置。</li>
+  <li>主按钮始终锚在右栏底部，带已选文件数。</li>
+</ul>
+
+<!-- ═══════════ ③ Word 运行中 ═══════════ -->
+<section class="frame" id="s3">
+<h2>③ Word 工作区 · 运行中</h2>
+<div class="fdesc">执行监控摘要（不滚动）+ 运行日志（滚动）+ 逐文件状态 · 设置锁定 · 安全停止在主按钮位</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心<span class="side-badge">1</span></div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>Word 文档翻译</h1><span class="status run"><span class="led"></span>翻译中</span></div>
+      <div class="tb-sub">4 个文档 · 中文（简体）→ English · 金融财报</div></div>
+      <div class="tb-right">
+        <span class="pill live"><span class="dot"></span>1 个任务运行中</span>
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="col-l">
+        <div class="card" style="padding:16px 18px 14px">
+          <div class="prog-stage"><b>翻译正文段落</b><span>第 2 / 4 个文档 · 董事会报告_定稿.docx</span><span class="pct">62%</span></div>
+          <div class="bar"><i style="width:62%"></i></div>
+          <div class="mon">
+            <span class="chip tint">重试轮次 1</span>
+            <span class="chip tint">语义仲裁 3</span>
+            <span class="chip ok">已接受 214</span>
+            <span class="chip warn">待定 9</span>
+            <span class="chip mute">记忆库命中 87</span>
+          </div>
+        </div>
+        <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+          <div class="tc-head"><b>运行日志</b><span>保留最近 10 条 · 完整日志随诊断归档</span></div>
+          <div class="log" style="flex:1;border:0;border-radius:0">
+            <div><span class="t">14:32:05</span>正文 ¶128 翻译完成，校验通过</div>
+            <div><span class="t">14:32:08</span><span class="a">表格 2 · R4C2</span> 触发单段重试（1/2）：术语一致性未过</div>
+            <div><span class="t">14:32:11</span><span class="g">表格 2 · R4C2 单段重试恢复，已接受</span></div>
+            <div><span class="t">14:32:14</span>正文 ¶131–¶136 批次提交（6 段 · 2,480 字符）</div>
+            <div><span class="t">14:32:19</span><span class="a">正文 ¶133</span> 进入语义仲裁：数字格式差异</div>
+            <div><span class="t">14:32:22</span><span class="g">正文 ¶133 语义仲裁接受</span></div>
+            <div><span class="t">14:32:24</span><span class="w">正文 ¶135 保留原文，转入需复核（重试 2/2 未通过）</span></div>
+            <div><span class="t">14:32:24</span><span class="w">同内容另见 ¶141、表格 3 · R2C1，共 3 处一并标记</span></div>
+            <div><span class="t">14:32:27</span>正文 ¶137 记忆库命中（固定词条），直接回填</div>
+            <div><span class="t">14:32:30</span>正文 ¶138–¶143 批次提交（6 段 · 2,712 字符）</div>
+          </div>
+          <div>
+            <div class="filerow"><span class="chip ok"><svg class="ic sm"><use href="#i-check"/></svg>已生成</span><span class="nm">公司简介_2025.docx</span><span style="color:var(--ink-3);font-size:12px">全部通过 · 96 段</span></div>
+            <div class="filerow"><span class="chip tint">进行中</span><span class="nm">董事会报告_定稿.docx</span><span style="color:var(--ink-3);font-size:12px">62% · 待定 9</span></div>
+            <div class="filerow"><span class="chip mute">排队中</span><span class="nm">审计意见书.docx</span><span style="color:var(--ink-3);font-size:12px">—</span></div>
+            <div class="filerow"><span class="chip mute">排队中</span><span class="nm">合并报表附注.doc</span><span style="color:var(--ink-3);font-size:12px">已确认兼容转换</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-r">
+        <div class="card runpanel">
+          <div class="rp-scroll dis">
+            <div class="rp-title">运行设置 <span class="chip mute" style="margin-left:auto">任务中锁定</span></div>
+            <div class="rp-sec">语言</div>
+            <div class="field"><label>目标语言</label><select disabled><option>English</option></select></div>
+            <div class="field"><label>源语言</label><select disabled><option>中文（简体）</option></select></div>
+            <div class="rp-sec">本类型选项 · Word</div>
+            <div class="swrow">仅补译未翻译内容<span class="sw"></span></div>
+            <div class="swrow">本地自动编号预处理<span class="sw on"></span></div>
+            <div class="swrow">标记需复核内容<span class="sw on"></span></div>
+            <div class="swrow">补译时保护封面与目录<span class="sw on"></span></div>
+          </div>
+          <div class="rp-foot">
+            <button class="btn dgr big"><svg class="ic sm"><use href="#i-stop"/></svg>安全停止</button>
+            <div style="font-size:11.5px;color:var(--ink-3);text-align:center">已完成的文件会保留，当前文件回滚为未开始</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>监控摘要固定不滚动，日志区吃满剩余高度——沿用已拍板的「执行监控布局」。</li>
+  <li>日志逐条带段落位置；重复段落一次列出全部位置（旧决策保留）。</li>
+  <li>安全停止占主按钮位并注明后果，防误点的确认模态见⑩。</li>
+</ul>
+
+<!-- ═══════════ ④ PDF 暂停 ═══════════ -->
+<section class="frame" id="s4">
+<h2>④ PDF 工作区 · 暂停提交中</h2>
+<div class="fdesc">PDF 特有三键控制 · 页恢复面板 + 逐页审核面板</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心<span class="side-badge">1</span></div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>PDF 与图片翻译</h1><span class="status pause"><span class="led"></span>已暂停提交</span></div>
+      <div class="tb-sub">产品手册_v3.pdf · 20 页 · → English</div></div>
+      <div class="tb-right">
+        <span class="pill live"><span class="dot"></span>1 个任务暂停中</span>
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>nano-banana-pro</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="col-l">
+        <div class="card" style="padding:16px 18px 14px">
+          <div class="prog-stage"><b>已暂停提交</b><span>已完成 8 / 20 页 · 进行中的页会跑完，不再提交新页</span><span class="pct" style="color:var(--warn)">40%</span></div>
+          <div class="bar"><i style="width:40%;background:linear-gradient(90deg,var(--warn),#e8a33d)"></i></div>
+          <div class="mon">
+            <span class="chip ok">已生成 7 页</span>
+            <span class="chip tint">进行中 1 页</span>
+            <span class="chip warn">页重试 1</span>
+            <span class="chip mute">页图并发 2</span>
+          </div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <div class="tc-head"><b>页恢复</b><span>失败页在此重试，不影响其他页</span></div>
+          <div class="filerow" style="border-top:0"><span class="chip warn">重试 1/2</span><span class="nm">第 6 页 · 页图生成超时</span><button class="btn mini">立即重试</button><button class="btn mini">跳过该页</button></div>
+        </div>
+        <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+          <div class="tc-head"><b>逐页审核</b><span>审核模型逐页检查版式与译文完整性</span></div>
+          <div style="flex:1;overflow:auto">
+          <table class="tbl">
+            <tr><th>页</th><th>审核结果</th><th>说明</th><th style="width:150px"></th></tr>
+            <tr><td>第 3 页</td><td><span class="chip ok">通过</span></td><td style="color:var(--ink-2)">版式一致，文本完整</td><td><span class="linklike">查看对比</span> · <span class="linklike">重新生成</span></td></tr>
+            <tr><td>第 5 页</td><td><span class="chip warn">待复核</span></td><td style="color:var(--ink-2)">右下角图表文字疑似截断</td><td><span class="linklike">查看对比</span> · <span class="linklike">重新生成</span></td></tr>
+            <tr><td>第 7 页</td><td><span class="chip ok">通过</span></td><td style="color:var(--ink-2)">版式一致，文本完整</td><td><span class="linklike">查看对比</span> · <span class="linklike">重新生成</span></td></tr>
+          </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-r">
+        <div class="card runpanel">
+          <div class="rp-scroll dis">
+            <div class="rp-title">运行设置 <span class="chip mute" style="margin-left:auto">任务中锁定</span></div>
+            <div class="rp-sec">语言</div>
+            <div class="field"><label>目标语言</label><select disabled><option>English</option></select></div>
+            <div class="rp-sec">本类型选项 · PDF</div>
+            <div class="swrow">逐页审核模型<span class="sw on"></span></div>
+            <div class="swrow">生成压缩 PDF<span class="sw on"></span></div>
+            <div class="swrow">允许独立图片<span class="sw"></span></div>
+          </div>
+          <div class="rp-foot">
+            <button class="btn pri big"><svg class="ic sm"><use href="#i-play"/></svg>继续翻译</button>
+            <button class="btn big"><svg class="ic sm"><use href="#i-stop"/></svg>结束暂停并收尾</button>
+            <div style="font-size:11.5px;color:var(--ink-3);text-align:center">收尾会保存已完成页并生成部分结果报告</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>PDF 三键按状态互斥呈现：运行中显示「暂停提交」，暂停中显示「继续翻译 / 结束暂停并收尾」。</li>
+  <li>页恢复与逐页审核从日志流升格为独立卡片，行内直接给操作。</li>
+  <li>「查看对比 / 重新生成」对每一页可用——已通过的页同样可以一键复核，不限于待复核页。</li>
+</ul>
+
+<!-- ═══════════ ⑤ 完成横幅 ═══════════ -->
+<section class="frame" id="s5">
+<h2>⑤ Excel 工作区 · 完成横幅</h2>
+<div class="fdesc">结果不再占住工作区：横幅给摘要，完整报告在任务中心，下方立即可开新任务</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>Excel 表格翻译</h1><span class="status warn"><span class="led"></span>已完成 · 2 处需复核</span></div>
+      <div class="tb-sub">任务已归档到任务中心，可随时回看完整报告</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot"></span>任务中心</span>
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content" style="flex-direction:column">
+      <div class="banner">
+        <div class="bi"><svg class="ic"><use href="#i-check"/></svg></div>
+        <div><b>已生成 5 个文件</b><div class="sub">2 处需复核 · 14 处已自动处理 · 其余全部通过 · 输出至 ~/Documents/2025年报翻译素材/译文_0806</div></div>
+        <div class="acts">
+          <button class="btn"><svg class="ic sm"><use href="#i-folder"/></svg>打开输出目录</button>
+          <button class="btn"><svg class="ic sm"><use href="#i-ext"/></svg>查看完整报告</button>
+          <button class="btn mini" style="border:0;color:var(--ink-3)">✕</button>
+        </div>
+      </div>
+      <div style="flex:1;display:flex;gap:16px;min-height:0">
+        <div class="col-l">
+          <div class="card srcbar">
+            <input type="text" placeholder="选择或粘贴文件、文件夹路径…"/>
+            <button class="btn"><svg class="ic sm"><use href="#i-folder"/></svg>浏览</button>
+            <button class="btn pri off">扫描</button>
+          </div>
+          <div class="card tablecard">
+            <div class="tc-head"><b>任务清单</b></div>
+            <div class="empty"><b>可以开始下一批了</b><p>上一任务的结果已归档，选择新来源即可继续。</p></div>
+          </div>
+        </div>
+        <div class="col-r">
+          <div class="card runpanel dis">
+            <div class="rp-scroll">
+              <div class="rp-title">运行设置</div>
+              <div class="rp-sec">语言</div>
+              <div class="field"><label>目标语言</label><select><option>English</option></select></div>
+              <div class="rp-sec">本类型选项 · Excel</div>
+              <div class="swrow">仅补译未翻译内容<span class="sw"></span></div>
+              <div class="swrow">保留「_原文」副本<span class="sw on"></span></div>
+              <div class="swrow">标记需复核内容<span class="sw on"></span></div>
+            </div>
+            <div class="rp-foot"><button class="btn pri big off">开始翻译</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>终态口径沿用既有语言规范：文件级「已生成」，内容级「需复核 / 已自动处理 / 全部通过」，摘要只报非零项。</li>
+  <li>「查看完整报告」跳任务中心详情（⑥），横幅可关；工作区立即复位。</li>
+</ul>
+
+<!-- ═══════════ ⑥ 任务中心 ═══════════ -->
+<section class="frame" id="s6">
+<h2>⑥ 任务中心 · 列表 + 任务详情</h2>
+<div class="fdesc">任务与历史的唯一全量视图 · 详情页承接原结果页全部内容（快照 / KPI / 结果定位清单 / 产物）</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-tasks"/></svg>任务中心<span class="side-badge">1</span></div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>任务中心</h1><span class="status run"><span class="led"></span>1 个活动任务</span></div>
+      <div class="tb-sub">运行中的任务与最近结果都在这里</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="tk-list">
+        <div class="tk-filters"><span class="f on">全部</span><span class="f">活动</span><span class="f">最近结果</span></div>
+        <div class="card tkcard">
+          <div class="r1"><svg class="ic sm" style="color:var(--tint-ink)"><use href="#i-word"/></svg>Word · 年报四件套<span class="chip tint" style="margin-left:auto">62%</span></div>
+          <div class="r2">运行中 · 董事会报告_定稿.docx · 14:32 开始</div>
+          <div class="bar" style="margin-top:9px"><i style="width:62%"></i></div>
+        </div>
+        <div class="card tkcard sel">
+          <div class="r1"><svg class="ic sm" style="color:var(--ink-2)"><use href="#i-excel"/></svg>Excel · 2025年报素材<span class="chip warn" style="margin-left:auto">需复核 2</span></div>
+          <div class="r2">已完成 · 5 个文件已生成 · 13:58</div>
+        </div>
+        <div class="card tkcard">
+          <div class="r1"><svg class="ic sm" style="color:var(--ink-2)"><use href="#i-pdf"/></svg>PDF · 产品手册_v3<span class="chip mute" style="margin-left:auto">已停止</span></div>
+          <div class="r2">昨天 18:21 · 已保留 12/20 页部分结果</div>
+        </div>
+      </div>
+      <div class="card tk-detail">
+        <div style="display:flex;align-items:center;gap:10px">
+          <h2 style="font-size:15px;font-weight:650">Excel · 2025年报素材</h2>
+          <span class="chip warn">已完成 · 需复核 2</span>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button class="btn mini"><svg class="ic sm"><use href="#i-folder"/></svg>打开输出目录</button>
+            <button class="btn mini">打开报告</button>
+            <button class="btn mini">导出诊断</button>
+          </div>
+        </div>
+        <dl class="kv">
+          <dt>语言</dt><dd>中文（简体）→ English</dd>
+          <dt>模型</dt><dd>glm-4.7-air · 连接「智谱主用」</dd>
+          <dt>专业领域</dt><dd>金融财报</dd>
+          <dt>输出位置</dt><dd>~/Documents/2025年报翻译素材/译文_0806 <span class="linklike">复制路径</span></dd>
+          <dt>吞吐</dt><dd>批次 8 · 并发 4 · 用时 11 分 24 秒</dd>
+        </dl>
+        <div class="kpis">
+          <div class="kpi"><span>已生成</span><b>5</b></div>
+          <div class="kpi"><span>全部通过</span><b>3</b></div>
+          <div class="kpi warn"><span>需复核</span><b>2</b></div>
+          <div class="kpi"><span>已自动处理</span><b>14</b></div>
+        </div>
+        <div style="font-size:13px;font-weight:650;margin:6px 0 8px">结果定位清单 <span style="font-weight:400;color:var(--ink-3);font-size:12px">需复核在前 · 点行号可在输出文件中定位</span></div>
+        <table class="tbl">
+          <tr><th>文件</th><th>位置</th><th>原文摘录</th><th>问题</th><th>处理</th></tr>
+          <tr><td>2025年报_财务附注.xlsx</td><td>附注三 · C18</td><td style="color:var(--ink-2)">递延所得税资产明细表（续）…</td><td>重试 2 次未通过</td><td><span class="chip dgr">保留原文</span></td></tr>
+          <tr><td>渠道价格表_0801.xlsx</td><td>华东区 · F7</td><td style="color:var(--ink-2)">阶梯返点说明：满 500 件…</td><td>术语不一致</td><td><span class="chip warn">需复核</span></td></tr>
+          <tr><td>供应商清单_Q3.xlsx</td><td>主表 · B12</td><td style="color:var(--ink-2)">宁波保税区仓储服务有限公司</td><td>数字格式差异</td><td><span class="chip ok">语义仲裁接受</span></td></tr>
+          <tr><td>组织架构_人员名录.xlsx</td><td>名录 · D3</td><td style="color:var(--ink-2)">首席风控官（兼合规负责人）</td><td>初次校验未过</td><td><span class="chip ok">单段重试恢复</span></td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>原「结果页」的全部内容（任务快照 / KPI / 结果定位清单 / 产物按钮）搬到这里，历史任务随时回看。</li>
+  <li>运行中任务的卡片带实时进度，点进详情可停止/暂停（控制按钮随状态出现）。</li>
+</ul>
+
+<!-- ═══════════ ⑦ 记忆库 ═══════════ -->
+<section class="frame" id="s7">
+<h2>⑦ 记忆库</h2>
+<div class="fdesc">通栏版式 · 工具栏一行收纳语言对/搜索/增删导入导出/深度清洗 · 批量操作浮条</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>记忆库</h1><span class="status idle"><span class="led"></span>1,842 条</span></div>
+      <div class="tb-sub">翻译过的内容自动入库，固定词条优先复用</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content" style="flex-direction:column">
+      <div class="card" style="display:flex;gap:8px;padding:11px 14px;align-items:center">
+        <select style="height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 8px"><option>中文（简体）</option></select>
+        <span style="color:var(--ink-3)">→</span>
+        <select style="height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 8px"><option>English</option></select>
+        <div style="flex:1;position:relative;max-width:340px">
+          <input type="text" placeholder="搜索原文或译文…" style="width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 10px 0 32px"/>
+          <svg class="ic sm" style="position:absolute;left:10px;top:8px;color:var(--ink-3)"><use href="#i-search"/></svg>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:7px">
+          <button class="btn"><svg class="ic sm"><use href="#i-plus"/></svg>新增词条</button>
+          <button class="btn">导入 <svg class="ic sm"><use href="#i-chev"/></svg></button>
+          <button class="btn">导出 <svg class="ic sm"><use href="#i-chev"/></svg></button>
+          <button class="btn pri">深度清洗</button>
+        </div>
+      </div>
+      <div class="card tablecard">
+        <div style="flex:1;overflow:auto">
+        <table class="tbl">
+          <tr><th style="width:34px"><input class="ck" type="checkbox"></th><th>原文</th><th>译文</th><th style="width:64px">固定</th><th style="width:120px">更新时间</th><th style="width:118px">操作</th></tr>
+          <tr><td><input class="ck" type="checkbox" checked></td><td>归属于母公司所有者的净利润</td><td>Net profit attributable to owners of the parent</td><td><svg class="ic sm" style="color:var(--accent)"><use href="#i-pin"/></svg></td><td class="num">08-06 13:58</td><td><span class="linklike">编辑</span> · <span class="linklike" style="color:var(--danger)">删除</span></td></tr>
+          <tr><td><input class="ck" type="checkbox" checked></td><td>递延所得税资产</td><td>Deferred tax assets</td><td><svg class="ic sm" style="color:var(--accent)"><use href="#i-pin"/></svg></td><td class="num">08-06 13:58</td><td><span class="linklike">编辑</span> · <span class="linklike" style="color:var(--danger)">删除</span></td></tr>
+          <tr><td><input class="ck" type="checkbox" checked></td><td>阶梯返点</td><td>Tiered rebate</td><td style="color:var(--line-2)"><svg class="ic sm"><use href="#i-pin"/></svg></td><td class="num">08-06 13:57</td><td><span class="linklike">编辑</span> · <span class="linklike" style="color:var(--danger)">删除</span></td></tr>
+          <tr><td><input class="ck" type="checkbox"></td><td>首席风控官</td><td>Chief Risk Officer</td><td style="color:var(--line-2)"><svg class="ic sm"><use href="#i-pin"/></svg></td><td class="num">08-05 17:22</td><td><span class="linklike">编辑</span> · <span class="linklike" style="color:var(--danger)">删除</span></td></tr>
+          <tr><td><input class="ck" type="checkbox"></td><td>保税区仓储服务</td><td>Bonded-zone warehousing services</td><td style="color:var(--line-2)"><svg class="ic sm"><use href="#i-pin"/></svg></td><td class="num">08-05 16:40</td><td><span class="linklike">编辑</span> · <span class="linklike" style="color:var(--danger)">删除</span></td></tr>
+        </table>
+        </div>
+        <div class="tc-head" style="border-top:1px solid var(--line);border-bottom:0">
+          <span class="chip tint">已选 3</span>
+          <button class="btn mini"><svg class="ic sm"><use href="#i-pin"/></svg>批量固定</button>
+          <button class="btn mini" style="color:var(--danger);border-color:var(--danger-l)"><svg class="ic sm"><use href="#i-trash"/></svg>批量删除</button>
+          <span class="linklike">本页全选</span>
+          <div class="tc-tools"><span style="color:var(--ink-3);font-size:12px">第 1 / 37 页</span><button class="btn mini">‹</button><button class="btn mini">›</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>导入/导出收成两个下拉（JSON / CSV / 全量，导入含冲突策略与反向同步），不再平铺六个按钮。</li>
+  <li>深度清洗入口保留在工具栏最右；起任务后进任务中心，与其他任务同一套监控。</li>
+</ul>
+
+<!-- ═══════════ ⑧ 设置·模型服务 ═══════════ -->
+<section class="frame" id="s8">
+<h2>⑧ 设置 · 模型服务</h2>
+<div class="fdesc">模型配置从抽屉升级为设置页第一子页 · 角色卡片 + 连接列表 + 表单分区</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item on"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>设置</h1></div>
+      <div class="tb-sub">模型、参数、外观与数据都在这里</div></div>
+      <div class="tb-right">
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span>
+      </div>
+    </header>
+    <div class="content">
+      <div class="set-nav">
+        <div class="si on"><svg class="ic sm"><use href="#i-gear"/></svg>模型服务</div>
+        <div class="si"><svg class="ic sm"><use href="#i-doc-file"/></svg>翻译参数</div>
+        <div class="si"><svg class="ic sm"><use href="#i-book"/></svg>外观与语言</div>
+        <div class="si"><svg class="ic sm"><use href="#i-folder"/></svg>数据与维护</div>
+        <div class="si"><svg class="ic sm"><use href="#i-help"/></svg>更新与关于</div>
+      </div>
+      <div class="set-body">
+        <div class="seg">
+          <div class="segc on"><b>翻译</b><span>云端 · glm-4.7-air</span></div>
+          <div class="segc"><b>TM 深度清洗</b><span>跟随「翻译」</span></div>
+          <div class="segc"><b>图像生成</b><span>云端 · nano-banana-pro</span></div>
+          <div class="segc"><b>PDF 审核</b><span>云端 · glm-4.6v</span></div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <div class="tc-head"><b>连接列表</b><span>多条连接自动主备切换</span><div class="tc-tools"><button class="btn mini"><svg class="ic sm"><use href="#i-plus"/></svg>新增连接</button></div></div>
+          <div class="conn"><span class="cdot" style="background:var(--ok)"></span><b>智谱主用</b><span class="chip tint">主用</span><span style="color:var(--ink-3);font-size:12px">glm-4.7-air · 上次测试 08-05 22:14 通过</span><div style="margin-left:auto;display:flex;gap:6px"><button class="btn mini">测试</button><button class="btn mini" style="color:var(--danger);border-color:var(--danger-l)">删除</button></div></div>
+          <div class="conn"><span class="cdot" style="background:var(--ink-3)"></span><b>DeepSeek 备用</b><span class="chip warn">无密钥</span><span style="color:var(--ink-3);font-size:12px">deepseek-v3.2 · 未测试</span><div style="margin-left:auto;display:flex;gap:6px"><button class="btn mini">设为主用</button><button class="btn mini">测试</button><button class="btn mini" style="color:var(--danger);border-color:var(--danger-l)">删除</button></div></div>
+        </div>
+        <div class="card" style="padding:16px 18px">
+          <div style="font-size:13px;font-weight:650;margin-bottom:12px">连接详情 · 智谱主用</div>
+          <div class="grid2">
+            <div class="field"><label>连接方式</label>
+              <div class="radio-row" style="height:32px"><label><input type="radio" name="cm" checked> 云端 API</label><label><input type="radio" name="cm"> 本地模型</label><label><input type="radio" name="cm"> 跟随其他角色</label></div>
+            </div>
+            <div class="field"><label>服务商</label><select><option>智谱 AI（OpenAI 兼容）</option></select></div>
+            <div class="field"><label>Base URL</label><input type="text" value="https://open.bigmodel.cn/api/paas/v4"/></div>
+            <div class="field"><label>API Key</label><input type="text" value="sk-••••••••••••3f8a" readonly/><div style="font-size:11.5px;color:var(--ink-3);margin-top:3px">已保存，只显示首尾几位</div></div>
+            <div class="field"><label>模型名</label><div style="display:flex;gap:7px"><input type="text" value="glm-4.7-air" style="flex:1"/><button class="btn" style="height:32px">拉取目录</button></div></div>
+            <div class="field"><label>吞吐</label><div style="display:flex;gap:7px;align-items:center"><input type="text" value="8" style="width:70px"/><span style="font-size:12px;color:var(--ink-3)">批次</span><input type="text" value="4" style="width:70px"/><span style="font-size:12px;color:var(--ink-3)">并发</span></div></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button class="btn pri">测试连接</button>
+            <span class="chip ok" style="align-self:center"><svg class="ic sm"><use href="#i-check"/></svg>08-05 22:14 测试通过</span>
+            <div style="margin-left:auto;display:flex;gap:8px"><button class="btn">导出配置</button><button class="btn">导入配置</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>四个模型角色改为卡片切换，卡片上直接显示当前连接方式与模型，不用点进去才知道。</li>
+  <li>顶栏模型药丸点击后直达本页（替代旧抽屉的快捷入口）。</li>
+</ul>
+
+<!-- ═══════════ ⑨ 设置·翻译参数 ═══════════ -->
+<section class="frame" id="s9">
+<h2>⑨ 设置 · 翻译参数（Word 分页）</h2>
+<div class="fdesc">原右栏「更多参数」里设一次不动的项集中于此 · 按 Excel / Word / PDF 分页</div>
+<div class="screen">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-label">资源</div>
+    <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+    <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+    <div class="side-spacer"></div>
+    <div class="side-item on"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+    <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+  </aside>
+  <div class="stage">
+    <header class="topbar">
+      <div><div style="display:flex;align-items:center;gap:10px"><h1>设置</h1></div>
+      <div class="tb-sub">模型、参数、外观与数据都在这里</div></div>
+      <div class="tb-right"><span class="pill"><span class="dot" style="background:var(--ok)"></span>glm-4.7-air</span></div>
+    </header>
+    <div class="content">
+      <div class="set-nav">
+        <div class="si"><svg class="ic sm"><use href="#i-gear"/></svg>模型服务</div>
+        <div class="si on"><svg class="ic sm"><use href="#i-doc-file"/></svg>翻译参数</div>
+        <div class="si"><svg class="ic sm"><use href="#i-book"/></svg>外观与语言</div>
+        <div class="si"><svg class="ic sm"><use href="#i-folder"/></svg>数据与维护</div>
+        <div class="si"><svg class="ic sm"><use href="#i-help"/></svg>更新与关于</div>
+      </div>
+      <div class="set-body">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div class="tabs"><span class="tab">Excel</span><span class="tab on">Word</span><span class="tab">PDF</span></div>
+          <div style="padding:16px 18px">
+            <div style="font-size:12px;font-weight:650;letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase;margin-bottom:10px">批次与重试</div>
+            <div class="grid2" style="max-width:640px">
+              <div class="field"><label>每批段落数</label><input type="text" value="8"/></div>
+              <div class="field"><label>每批字符上限</label><input type="text" value="4,000"/></div>
+              <div class="field"><label>长段拆分阈值（字符）</label><input type="text" value="1,800"/></div>
+              <div class="field"><label>单段重试次数</label><input type="text" value="2"/></div>
+            </div>
+            <div style="font-size:12px;font-weight:650;letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase;margin:14px 0 10px">复核标记</div>
+            <div class="grid2" style="max-width:640px">
+              <div class="field"><label>已有高亮处理</label><select><option>保留原高亮并跳过标记</option></select></div>
+              <div class="field"><label>复核三色</label>
+                <div style="display:flex;gap:14px;align-items:center;height:32px;font-size:12px;color:var(--ink-2)">
+                  <span><span class="swatch" style="background:#ffe28a"></span> 需复核</span>
+                  <span><span class="swatch" style="background:#f5a9ad"></span> 保留原文</span>
+                  <span><span class="swatch" style="background:#b9e8cf"></span> 已自动处理</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <div class="tc-head"><b>专业领域 Prompt</b><span>三种文档类型共用领域库，Prompt 可按类型覆盖</span><div class="tc-tools"><button class="btn mini"><svg class="ic sm"><use href="#i-plus"/></svg>新增领域</button></div></div>
+          <div class="conn"><b>通用</b><span class="chip mute">内置</span><div style="margin-left:auto;display:flex;gap:6px"><button class="btn mini">查看</button></div></div>
+          <div class="conn"><b>金融财报</b><span class="chip tint">已自定义</span><span style="color:var(--ink-3);font-size:12px">覆盖 Word · 08-02 修改</span><div style="margin-left:auto;display:flex;gap:6px"><button class="btn mini">编辑</button><button class="btn mini">恢复内置</button></div></div>
+          <div class="conn"><b>法律合同</b><span class="chip mute">内置</span><div style="margin-left:auto;display:flex;gap:6px"><button class="btn mini">查看</button><button class="btn mini">编辑</button></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>工作区右栏「本次任务」里的领域下拉选的就是这里维护的领域库；编辑入口互相跳转。</li>
+  <li>外观与语言、数据与维护、更新与关于三个子页版式同款（表单卡 + 列表卡），不单独出图；数据与维护完整收编原维护页（含危险区，样式见⑩）。</li>
+</ul>
+
+<!-- ═══════════ ⑩ 危险确认 ═══════════ -->
+<section class="frame" id="s10">
+<h2>⑩ 危险操作确认（两例）</h2>
+<div class="fdesc">全部 18 类模态统一此视觉语言：图标定性 + 后果先行 + 危险按钮右置；不可逆操作要求输入确认</div>
+<div class="screen" style="height:560px">
+  <aside class="side" style="filter:blur(1px);opacity:.7">
+    <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+    <div class="side-label">翻译</div>
+    <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+    <div class="side-item on"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+    <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+    <div class="side-spacer"></div>
+    <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置</div>
+  </aside>
+  <div class="stage" style="filter:blur(1px);opacity:.7">
+    <header class="topbar"><h1>Word 文档翻译</h1></header>
+    <div class="content"></div>
+  </div>
+  <div class="overlay">
+    <div class="modal">
+      <span class="mlabel" style="transform:translateY(-46px)">停止运行中的任务</span>
+      <div class="mi warn"><svg class="ic"><use href="#i-stop"/></svg></div>
+      <h3>安全停止当前任务？</h3>
+      <p>已生成的 1 个文件会保留。正在翻译的「董事会报告_定稿.docx」将回滚为未开始，本轮已消耗的 API 调用不会退回。</p>
+      <div class="macts"><button class="btn">继续翻译</button><button class="btn dgr-solid">安全停止</button></div>
+    </div>
+    <div class="modal">
+      <span class="mlabel" style="transform:translateY(-46px)">设置 · 数据与维护 · 完整本地重置</span>
+      <div class="mi dgr"><svg class="ic"><use href="#i-trash"/></svg></div>
+      <h3>完整本地重置</h3>
+      <p>将永久删除<b style="color:var(--ink)">所有设置、API Key、记忆库（1,842 条）与任务历史</b>，应用回到首次启动状态。此操作无法恢复。</p>
+      <p style="font-size:12.5px">输入 <b style="color:var(--danger)">RESET</b> 以确认：</p>
+      <input type="text" placeholder="RESET"/>
+      <div class="macts"><button class="btn">取消</button><button class="btn dgr-solid" style="opacity:.45">永久删除</button></div>
+    </div>
+  </div>
+</div>
+</section>
+<ul class="notes">
+  <li>普通确认（如兼容转换）用警示黄图标 + 单按钮确认；不可逆删除用红图标 + 输入确认，按钮在输入匹配前禁用。</li>
+  <li>模态标题上方的小标签标出触发来源，避免「这弹窗从哪来的」。</li>
+</ul>
+
+<div style="max-width:1360px;margin:26px auto 60px;padding:0 28px;color:var(--ink-3);font-size:12px">
+  样张说明：数据均为示意；窗口按 1300×840 绘制；浅/深主题用右上角按钮切换，实现时按系统偏好自动跟随。帮助页、外观与语言、数据与维护、更新与关于沿用⑧⑨的版式语言，不另出图。
+</div>
+
+<script>
+function toggleTheme(){
+  const r=document.documentElement;
+  const dark=r.dataset.theme==="dark";
+  r.dataset.theme=dark?"light":"dark";
+  document.querySelector(".theme-btn").textContent=dark?"🌗 切换深色":"☀️ 切换浅色";
+}
+</script>
+</body>
+</html>

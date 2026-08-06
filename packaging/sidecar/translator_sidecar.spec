@@ -72,13 +72,59 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PySide6", "PySide6_Essentials", "native_app", "numpy", "pandas", "shiboken6"],
+    excludes=[
+        "PySide6", "PySide6_Essentials", "native_app", "numpy", "pandas", "shiboken6",
+        # GUI toolkits nobody imports in this headless sidecar (already absent from the
+        # build, kept as an explicit guard against future accidental pulls).
+        "tkinter", "_tkinter", "tcl", "tk",
+        # Packaging tooling not needed at runtime. pip/wheel were never collected in the
+        # first place; setuptools (~40KB) was pulled in transitively but grepping every
+        # reachable dependency (docx/openpyxl/xlwings/appscript/httpx/fastapi/starlette/
+        # uvicorn/pydantic/psutil/h11/loguru/tenacity/xlrd/pypdfium2/anyio/click, plus our
+        # own api/core/engines) found zero pkg_resources/setuptools imports. Verified via
+        # full rebuild + frozen smoke test after excluding it.
+        "pip", "wheel", "setuptools",
+        # cryptography (~11MB, dominated by hazmat/bindings/_rust.abi3.so) is pulled in
+        # solely because xlwings/pro/utils.py does `from cryptography.fernet import
+        # Fernet` for its PRO license-key check, guarded by try/except ImportError. We
+        # only use the free xlwings API (xw.App/xw.Book via the mac AppleScript engine),
+        # never xlwings PRO features, so xlwings degrades to __pro__ = False cleanly.
+        "cryptography",
+        # AVIF is explicitly on the *unsupported* image format list in
+        # core/pdf_image_translation.py (rejected before reaching PIL). Pillow's
+        # Image.init() imports every *ImagePlugin submodule PyInstaller's own
+        # hook-PIL.Image.py force-collects, but wraps each import in try/except
+        # ImportError, so dropping this plugin (and its 2.9MB libavif.dylib + native
+        # _avif extension, pulled in transitively once nothing imports the plugin) is
+        # a clean no-op for every format we actually support (PNG/JPEG/WebP/BMP/TIFF).
+        "PIL.AvifImagePlugin",
+        # lxml is a hard runtime dependency of python-docx (lxml.etree, kept), but
+        # PyInstaller's hook-lxml.py force-collects every lxml submodule via
+        # collect_submodules('lxml') to work around pyinstaller/pyinstaller#5306. None
+        # of python-docx/openpyxl/xlwings/appscript touch objectify/html/isoschematron/
+        # sax/builder (grepped their installed sources directly) -- only lxml.etree and
+        # its lxml._elementpath helper are actually used.
+        "lxml.objectify", "lxml.html", "lxml.isoschematron", "lxml.sax", "lxml.builder",
+    ],
     noarchive=False,
     optimize=0,
 )
 
 pyz = PYZ(a.pure)
 
+# Symbol stripping is POSIX-only: PyInstaller's strip step shells out to the Unix
+# `strip` utility, which Windows runners don't have (PyInstaller itself marks the
+# option "not recommended on Windows").
+#
+# On macOS this is safe with signing: PyInstaller's COLLECT step already rewrites every
+# collected binary's @rpath and unconditionally re-signs it afterwards (ad-hoc, since
+# codesign_identity=None), regardless of whether strip is enabled -- see
+# PyInstaller/building/utils.py's checkCache(), which always calls osxutils.sign_binary()
+# after the strip/rpath-rewrite steps. So enabling strip does not introduce any new
+# code-signing risk beyond what this build already does on every run. Verified with
+# `codesign --verify --deep --strict` on the main executable plus a sample of stripped
+# .so/.dylib files, and a full frozen smoke test, both passing.
+STRIP_BINARIES = sys.platform != "win32"
 exe = EXE(
     pyz,
     a.scripts,
@@ -87,7 +133,7 @@ exe = EXE(
     name="translator-sidecar",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=STRIP_BINARIES,
     upx=False,
     console=True,
     disable_windowed_traceback=False,
@@ -101,7 +147,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=False,
+    strip=STRIP_BINARIES,
     upx=False,
     upx_exclude=[],
     name="translator-sidecar",

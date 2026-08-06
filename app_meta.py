@@ -11,6 +11,7 @@ APP_UPDATE_USER_AGENT = f"{APP_SAFE_NAME}-Updater"
 MACOS_COLLECT_NAME = APP_NAME
 MACOS_APP_BUNDLE_NAME = f"{APP_NAME}.app"
 MACOS_MINIMUM_SYSTEM_VERSION = "12.0"
+WINDOWS_MINIMUM_SYSTEM_VERSION = "10.0"
 
 
 def macos_dmg_basename(architecture: str) -> str:
@@ -20,6 +21,11 @@ def macos_dmg_basename(architecture: str) -> str:
         raise ValueError("macOS DMG architecture must be arm64 or x86_64")
     asset_architecture = "x64" if normalized == "x86_64" else normalized
     return f"{APP_SAFE_NAME}_macOS_{asset_architecture}_{APP_VERSION}"
+
+
+def windows_installer_basename() -> str:
+    """Return the native Windows x64 release asset name (no extension)."""
+    return f"{APP_SAFE_NAME}_Windows_x64_{APP_VERSION}_Setup"
 
 DEFAULT_DISTRIBUTION_OUTPUT_NAME = f"{APP_SAFE_NAME}_Distribution"
 
