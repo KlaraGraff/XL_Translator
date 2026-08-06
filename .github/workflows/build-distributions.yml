@@ -314,13 +314,17 @@ jobs:
           # 只是在说明里讲清楚这次的安装包是 ad-hoc 签名、未公证。
           prerelease: false
           name: Translator ${{ github.ref_name }}
+          # 正文只放一句占位，发布后由人手工写成面向普通用户的说明。
+          # 这里刻意不去拼 changelog：changelog 是写给开发者看的，直接搬上来
+          # 就是一堆术语，普通用户看不懂。占位句必须一眼看得出没写完——
+          # 之前这里是一段讲渠道和签名的固定模板，看起来像正文，于是每一版
+          # 的说明都长一个样，还出现过说明写着已签名、实物其实没签的情况。
+          # 保留渠道一行，是为了事后写说明时能查到这次到底签没签、公证没公证。
           body: |
-            macOS Apple Silicon (arm64) and Windows x64 distributions for `${{ github.ref_name }}`.
+            ⚠️ 发布说明整理中，稍后补上。Release notes are being written.
 
-            Channel: `${{ needs.validate-release.outputs.artifact_channel }}`.
-            When the channel is `temporary-test`, macOS assets use ad-hoc signing and are not notarized: Gatekeeper asks for a right-click → Open on first launch.
-
-            The Windows installer is unsigned (no code signing in this pipeline) and requires Windows 10 or later. It installs per-user (no administrator rights needed) and downloads the WebView2 runtime automatically if it is missing.
+            构建渠道 / Channel: `${{ needs.validate-release.outputs.artifact_channel }}`
+            （`formal-release` = Developer ID 签名并通过 Apple 公证；`temporary-test` = ad-hoc 签名、未公证）
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.sha256
