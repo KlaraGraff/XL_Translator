@@ -7,7 +7,8 @@ openpyxl 的「load → 改 cell → save」是整本重建，保存时会丢弃
 
 会被重写的部件：
   - ``xl/worksheets/sheetN.xml``  译文回填、复核标色、自动换行、行高
-  - ``xl/drawings/drawingN.xml``  行高变化后把 twoCellAnchor 改写成定尺寸 oneCellAnchor
+  - ``xl/drawings/drawingN.xml``  行高变化后把 twoCellAnchor / absoluteAnchor 改写成
+                                  定尺寸 oneCellAnchor
   - ``xl/styles.xml``             追加 fill / font / xf 条目
   - ``xl/workbook.xml``、``xl/_rels/workbook.xml.rels``、``[Content_Types].xml``
                                   仅在 keep_original_sheets 克隆原文分表时
@@ -77,6 +78,10 @@ MAX_SHEET_TITLE_LEN = 31        # Excel 分表名长度上限
 EMU_PER_PIXEL = 9525
 EMU_PER_POINT = 12700
 MAX_DIGIT_WIDTH = 7             # Calibri 11 的最大数字宽度（像素）
+
+# Excel 行列号上限（0-based），absoluteAnchor 坐标外推越过这个界才算坏数据。
+EXCEL_MAX_ROW_INDEX = 1_048_575
+EXCEL_MAX_COL_INDEX = 16_383
 
 _EXCEL_REVIEW_RISK_FONT_COLOR = "FF0000"
 _EXCEL_REVIEW_MARK_COLORS = dict(REVIEW_MARK_COLOR_DEFAULTS)
@@ -595,6 +600,11 @@ class _SheetGeometry:
     """从 worksheet XML 直接读行高列宽，供行高估算与图片尺寸换算共用。"""
 
     def __init__(self, root):
+        # absoluteAnchor 反查坐标要用到整表范围，但那是少数情况，按需算，见 extent()。
+        self._root = root
+        self._extent: tuple[int, int] | None = None
+        self._extent_ready = False
+
         fmt = root.find(_m("sheetFormatPr"))
         self.default_row_height = _to_float(
             fmt.get("defaultRowHeight") if fmt is not None else None,
@@ -639,6 +649,24 @@ class _SheetGeometry:
     def row_height(self, row_num: int) -> float:
         return self._row_heights.get(row_num, self.default_row_height)
 
+    def last_sized_col(self) -> int:
+        """最后一个尺寸被显式定义过的列号（1-based）；一个都没有返回 0。
+
+        绝对坐标反查要靠它划定「必须逐格累加」的范围。不能拿 ``<dimension>``
+        代替：``<dimension>`` 只覆盖有内容的单元格，设了列宽并不会把它撑大，
+        而「把数据区右边几列拉宽好摆一张图」恰恰是最常见的写法。隐藏列也算
+        显式定义——它的 EMU 是 0，同样不能拿默认列宽顶替。
+        """
+        return max((*self._col_widths, *self._hidden_cols), default=0)
+
+    def last_sized_row(self) -> int:
+        """最后一个尺寸被显式定义过的行号（1-based）；一个都没有返回 0。
+
+        理由同 :meth:`last_sized_col`：为了放图片把数据区下面几行拉高，行高
+        就落在 ``<dimension>`` 之外了。
+        """
+        return max((*self._row_heights, *self._hidden_rows), default=0)
+
     def col_emu(self, col_index: int) -> int:
         if col_index in self._hidden_cols:
             return 0
@@ -650,6 +678,56 @@ class _SheetGeometry:
         if row_num in self._hidden_rows:
             return 0
         return int(round(self.row_height(row_num) * EMU_PER_POINT))
+
+    def default_col_emu(self) -> int:
+        """没有 ``<col>`` 定义的列，Excel 按这个宽度渲染。"""
+        width = self.default_col_width
+        pixels = int((256 * width + int(128 / MAX_DIGIT_WIDTH)) / 256 * MAX_DIGIT_WIDTH)
+        return pixels * EMU_PER_PIXEL
+
+    def default_row_emu(self) -> int:
+        """没有 ``<row>`` 定义的行，Excel 按这个高度渲染。"""
+        return int(round(self.default_row_height * EMU_PER_POINT))
+
+    def extent(self) -> tuple[int, int] | None:
+        """整表的 ``(最大行号, 最大列号)``（都是 1-based）；拿不到返回 ``None``。
+
+        优先读 ``<dimension ref>``（Excel / WPS / openpyxl 都会写），缺失或写坏了
+        才退回扫描 sheetData。只有 absoluteAnchor 换算需要它，所以延迟计算并缓存，
+        避免给没有绝对锚点的分表白白加一趟全表遍历。
+        """
+        if self._extent_ready:
+            return self._extent
+        self._extent_ready = True
+        self._extent = _compute_sheet_extent(self._root)
+        return self._extent
+
+
+def _compute_sheet_extent(root) -> tuple[int, int] | None:
+    max_row = 0
+    max_col = 0
+
+    node = root.find(_m("dimension"))
+    ref = str(node.get("ref") or "") if node is not None else ""
+    if ref:
+        for corner in ref.split(":"):
+            coordinate = _split_coordinate(corner.strip())
+            if coordinate is None:
+                max_row = max_col = 0
+                break
+            row_num, col_index = coordinate
+            max_row = max(max_row, row_num)
+            max_col = max(max_col, col_index)
+    if max_row > 0 and max_col > 0:
+        return max_row, max_col
+
+    for row_num, row in _iter_rows(root):
+        for _, col_index, _cell in _iter_cells(row, row_num):
+            max_col = max(max_col, col_index)
+            max_row = max(max_row, row_num)
+    if max_row > 0 and max_col > 0:
+        return max_row, max_col
+    return None
 
 
 def _to_float(value, fallback):
@@ -872,58 +950,217 @@ def _anchor_position(anchor, tag: str) -> tuple[int, int, int, int] | None:
     return col, col_off, row, row_off
 
 
+def _anchor_absolute_pos(anchor) -> tuple[int, int] | None:
+    """``<xdr:pos x= y=>`` 的绝对 EMU 坐标。"""
+    node = anchor.find(_xdr("pos"))
+    if node is None:
+        return None
+    try:
+        return int(node.get("x") or 0), int(node.get("y") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _locate_emu(
+    value: int, span, limit: int, default_size: int, max_index: int
+) -> tuple[int, int] | None:
+    """把一维绝对 EMU 坐标换算成 ``(0-based 行/列下标, 格内偏移)``。
+
+    ``span(index)`` 取 1-based 下标那一行/列的 EMU 尺寸，``limit`` 是逐格累加的
+    上界（1-based，含）。调用方必须把 ``limit`` 取到「``<dimension>`` 边界」和
+    「最后一个有显式尺寸定义的行/列」两者的较大值：显式行高/列宽完全可以落在
+    ``<dimension>`` 之外——为了摆一张图把数据区下面几行拉高、右边几列拉宽是最
+    普通的写法，而 ``<dimension>`` 只覆盖有内容的单元格，不会跟着变大。只累加
+    到 ``<dimension>`` 就会把那些真实尺寸当成默认尺寸，图片被算到别的格子里。
+
+    坐标落在 ``limit`` 之外也不能当成没依据——浮在数据区下方/右侧的图片（页脚
+    logo、说明图）并不罕见，Excel 自己渲染时这些没有显式定义的行/列一律按
+    ``sheetFormatPr`` 的默认尺寸算，我们照做即可：越过 ``limit`` 之后每格尺寸
+    都相同（``default_size``），直接整除/取余闭式定位，不再逐格累加——坐标可能
+    来自任意远的绝对定位，累加到 Excel 行列号上限（百万级）会是几十万次循环。
+
+    ``default_size`` 为 0 或负数（异常工作簿，量不出默认尺寸）时不能拿它做除
+    数，只能放弃外推。定位结果越过 ``max_index``（Excel 本身的行/列号上限，
+    0-based）说明坐标本身是坏数据，一并放弃。这两种情况、以及 ``value`` 为负
+    时，都返回 ``None``——交还调用方保持原样，好过瞎猜一个位置。
+    """
+    if value < 0:
+        return None
+    # <dimension ref> 是外部数据，行号位数不设限（畸形的 "A1:A99999999" 照收），
+    # 循环内那条路径会直接把下标交出去，越界检查只拦得住外推那条。先夹住上界，
+    # 两条路径就都不可能吐出 Excel 打不开的行列号。
+    limit = min(limit, max_index + 1)
+    cursor = 0
+    for index in range(1, limit + 1):
+        size = span(index)
+        # 隐藏行/列尺寸为 0，直接跳过，坐标只会落在可见的那一格里。
+        if size > 0 and cursor + size > value:
+            return index - 1, value - cursor
+        cursor += size
+
+    if default_size <= 0:
+        return None
+    steps, offset = divmod(value - cursor, default_size)
+    # limit 之内的下标用的是 index - 1；紧接着 limit 之后第一格的 0-based 下标
+    # 正好是 limit 本身，所以外推起点直接从 limit 开始加 steps。
+    located_index = limit + steps
+    if located_index > max_index:
+        return None
+    return located_index, offset
+
+
 def fix_drawing_anchors(
     drawing_root,
     geometry: _SheetGeometry,
     changed_rows: set[int],
-) -> bool:
-    """把受行高变化影响的 twoCellAnchor 改写成定尺寸 oneCellAnchor。
+    *,
+    freeze_all: bool = False,
+) -> int:
+    """把受行高变化影响的悬浮图片锚点改写成定尺寸 / 定位置的 oneCellAnchor。
 
     ``geometry`` 必须是**调整行高之前**的几何，这样算出的 ext 才是原渲染尺寸。
+
+    两类锚点各有各的病：
+
+    * ``twoCellAnchor`` 左上右下各钉一格，行一变高就被两个角拽着拉伸变形；
+    * ``absoluteAnchor`` 钉的是相对整表原点的绝对坐标，上方行变高后格子整体下移，
+      图片却纹丝不动，最后盖到不相干的内容上。
+
+    两者都改写成 ``oneCellAnchor``（只钉左上角 + 写死尺寸），图片跟着所在单元格
+    走，既不拉伸也不错位。
+
+    ``freeze_all=True`` 表示调用方之后还要交给 Excel COM 做整表 autofit——那一刀
+    会重排 used range 里的**所有**行高，我们无从预知哪些行会变，只能把整张表的悬浮
+    图片全部冻结。代价是没人动过的行上的图片从此也不随行高缩放，这是预期语义。
+
+    返回被冻结/改写的锚点数量。
     """
-    if not changed_rows:
-        return False
+    if not changed_rows and not freeze_all:
+        return 0
 
-    modified = False
+    frozen = 0
     for anchor in list(drawing_root):
-        if _local(anchor) != "twoCellAnchor":
+        tag = _local(anchor)
+        if tag == "twoCellAnchor":
+            frozen += _freeze_two_cell_anchor(
+                anchor, geometry, changed_rows, freeze_all=freeze_all
+            )
+        elif tag == "absoluteAnchor":
+            frozen += _freeze_absolute_anchor(
+                anchor, geometry, changed_rows, freeze_all=freeze_all
+            )
+    return frozen
+
+
+def _freeze_two_cell_anchor(
+    anchor,
+    geometry: _SheetGeometry,
+    changed_rows: set[int],
+    *,
+    freeze_all: bool,
+) -> int:
+    start = _anchor_position(anchor, "from")
+    end = _anchor_position(anchor, "to")
+    if start is None or end is None:
+        return 0
+    from_col, from_col_off, from_row, from_row_off = start
+    to_col, to_col_off, to_row, to_row_off = end
+    # drawing 里的行列是 0-based；图片高度只取决于 [from_row, to_row) 这些行。
+    if not freeze_all and not any(
+        (row + 1) in changed_rows for row in range(from_row, to_row)
+    ):
+        return 0
+
+    cx = sum(geometry.col_emu(col + 1) for col in range(from_col, to_col))
+    cx += to_col_off - from_col_off
+    cy = sum(geometry.row_emu(row + 1) for row in range(from_row, to_row))
+    cy += to_row_off - from_row_off
+    cx = max(int(cx), 1)
+    cy = max(int(cy), 1)
+
+    one_cell = etree.Element(_xdr("oneCellAnchor"))
+    from_node = anchor.find(_xdr("from"))
+    to_node = anchor.find(_xdr("to"))
+    one_cell.append(from_node)
+    ext = etree.SubElement(one_cell, _xdr("ext"))
+    ext.set("cx", str(cx))
+    ext.set("cy", str(cy))
+    for child in list(anchor):
+        if child is to_node:
             continue
-        start = _anchor_position(anchor, "from")
-        end = _anchor_position(anchor, "to")
-        if start is None or end is None:
+        one_cell.append(child)
+
+    _sync_shape_extent(one_cell, cx, cy)
+
+    parent = anchor.getparent()
+    parent.replace(anchor, one_cell)
+    return 1
+
+
+def _freeze_absolute_anchor(
+    anchor,
+    geometry: _SheetGeometry,
+    changed_rows: set[int],
+    *,
+    freeze_all: bool,
+) -> int:
+    """把 absoluteAnchor 按**调整前**的几何反查成 oneCellAnchor，尺寸原样保留。"""
+    position = _anchor_absolute_pos(anchor)
+    ext_node = anchor.find(_xdr("ext"))
+    if position is None or ext_node is None:
+        return 0
+    extent = geometry.extent()
+    if extent is None:
+        return 0  # 几何信息不全，不瞎猜
+    max_row, max_col = extent
+
+    # 逐格累加的范围要盖住最后一个显式定义过尺寸的行/列，而不是止步于
+    # <dimension>——两者谁大用谁，理由见 _SheetGeometry.last_sized_row()。
+    row_limit = max(max_row, geometry.last_sized_row())
+    col_limit = max(max_col, geometry.last_sized_col())
+
+    x_emu, y_emu = position
+    located_col = _locate_emu(
+        x_emu,
+        geometry.col_emu,
+        col_limit,
+        geometry.default_col_emu(),
+        EXCEL_MAX_COL_INDEX,
+    )
+    located_row = _locate_emu(
+        y_emu,
+        geometry.row_emu,
+        row_limit,
+        geometry.default_row_emu(),
+        EXCEL_MAX_ROW_INDEX,
+    )
+    if located_col is None or located_row is None:
+        return 0  # 坐标是负数，或外推后仍越过 Excel 行列号上限，坏数据，保持原样
+    col_index, col_off = located_col
+    row_index, row_off = located_row
+
+    # 只有当**上方**有行变高时绝对坐标才会漂移；同一行内变高不影响该行的顶边。
+    if not freeze_all and not any(row < row_index + 1 for row in changed_rows):
+        return 0
+
+    one_cell = etree.Element(_xdr("oneCellAnchor"))
+    from_node = etree.SubElement(one_cell, _xdr("from"))
+    for tag, value in (
+        ("col", col_index),
+        ("colOff", col_off),
+        ("row", row_index),
+        ("rowOff", row_off),
+    ):
+        etree.SubElement(from_node, _xdr(tag)).text = str(value)
+    pos_node = anchor.find(_xdr("pos"))
+    for child in list(anchor):
+        if child is pos_node:
             continue
-        from_col, from_col_off, from_row, from_row_off = start
-        to_col, to_col_off, to_row, to_row_off = end
-        # drawing 里的行列是 0-based；图片高度只取决于 [from_row, to_row) 这些行。
-        if not any((row + 1) in changed_rows for row in range(from_row, to_row)):
-            continue
+        one_cell.append(child)  # ext 原样搬过来，尺寸不动
 
-        cx = sum(geometry.col_emu(col + 1) for col in range(from_col, to_col))
-        cx += to_col_off - from_col_off
-        cy = sum(geometry.row_emu(row + 1) for row in range(from_row, to_row))
-        cy += to_row_off - from_row_off
-        cx = max(int(cx), 1)
-        cy = max(int(cy), 1)
-
-        one_cell = etree.Element(_xdr("oneCellAnchor"))
-        from_node = anchor.find(_xdr("from"))
-        to_node = anchor.find(_xdr("to"))
-        one_cell.append(from_node)
-        ext = etree.SubElement(one_cell, _xdr("ext"))
-        ext.set("cx", str(cx))
-        ext.set("cy", str(cy))
-        for child in list(anchor):
-            if child is to_node:
-                continue
-            one_cell.append(child)
-
-        _sync_shape_extent(one_cell, cx, cy)
-
-        parent = anchor.getparent()
-        parent.replace(anchor, one_cell)
-        modified = True
-
-    return modified
+    parent = anchor.getparent()
+    parent.replace(anchor, one_cell)
+    return 1
 
 
 def _sync_shape_extent(anchor, cx: int, cy: int) -> None:
@@ -962,6 +1199,7 @@ class _SheetOutcome:
     shrunk_cells: int = 0
     mutated_cells: int = 0
     removed_formula: bool = False
+    anchor_frozen_count: int = 0
 
 
 def _process_sheet(
@@ -982,6 +1220,7 @@ def _process_sheet(
     review_positions: list[dict[str, str]] | None,
     log_callback,
     allowed_coordinates: set[str] | None = None,
+    external_autofit_planned: bool = False,
 ) -> _SheetOutcome:
     data = package.read(entry.part)
     if data is None:
@@ -1127,8 +1366,14 @@ def _process_sheet(
         changed_rows, touched_rows = _auto_adjust_row_heights(root, geometry, row_texts)
         dirty = dirty or touched_rows
 
-    if changed_rows:
-        _patch_sheet_drawing(package, entry, root, geometry, changed_rows)
+    # 锁定行高时行高压根不变，没有任何锚点需要动。
+    # 否则：调用方若还要跑 Excel COM 的整表 autofit，我们预知不了它会改哪些行，
+    # 只能整表冻结；不跑 autofit 时仍然只冻结自己改过的那些行。
+    freeze_all = external_autofit_planned and not lock_row_height
+    if changed_rows or freeze_all:
+        outcome.anchor_frozen_count = _patch_sheet_drawing(
+            package, entry, root, geometry, changed_rows, freeze_all=freeze_all
+        )
 
     if dirty:
         package.write(entry.part, _serialize(root))
@@ -1322,17 +1567,20 @@ def _patch_sheet_drawing(
     root,
     geometry: _SheetGeometry,
     changed_rows: set[int],
-) -> None:
+    *,
+    freeze_all: bool = False,
+) -> int:
+    """返回本分表被冻结/改写的悬浮图片锚点数量。"""
     drawing_el = root.find(_m("drawing"))
     if drawing_el is None:
-        return
+        return 0
     rel_id = drawing_el.get(_r("id"))
     if not rel_id:
-        return
+        return 0
 
     rels_data = package.read(_rels_path(entry.part))
     if rels_data is None:
-        return
+        return 0
     rels_root = _parse(rels_data)
     target = None
     for rel in rels_root:
@@ -1340,16 +1588,20 @@ def _patch_sheet_drawing(
             target = rel.get("Target")
             break
     if not target:
-        return
+        return 0
 
     drawing_part = _resolve_part(entry.part, target)
     drawing_data = package.read(drawing_part)
     if drawing_data is None:
-        return
+        return 0
 
     drawing_root = _parse(drawing_data)
-    if fix_drawing_anchors(drawing_root, geometry, changed_rows):
+    frozen = fix_drawing_anchors(
+        drawing_root, geometry, changed_rows, freeze_all=freeze_all
+    )
+    if frozen:
         package.write(drawing_part, _serialize(drawing_root))
+    return frozen
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1402,10 +1654,19 @@ def _clone_original_sheets(
     workbook_part: str,
     workbook_rels_root,
     snapshots: list[_SheetSnapshot],
-) -> None:
+    *,
+    freeze_all_anchors: bool = False,
+) -> int:
+    """克隆原文分表；返回克隆件里被冻结的悬浮图片锚点数量。
+
+    ``freeze_all_anchors``：克隆分表的行高虽然是原样照抄的，但之后 Excel COM 的
+    autofit 是对**整本工作簿的每张表**跑的，克隆件也会被重排行高、把图片拉变形。
+    所以这里也要冻结。克隆件用的是快照自己的几何——它就是「调整前」的几何。
+    """
     sheets_el = workbook_root.find(_m("sheets"))
     if sheets_el is None:
-        return
+        return 0
+    frozen_total = 0
 
     used_names = {
         str(el.get("name") or "")
@@ -1442,6 +1703,9 @@ def _clone_original_sheets(
                 data = snapshot.owned_parts.get(source_part)
                 if data is None:
                     continue
+                if freeze_all_anchors and rel_type == REL_TYPE_DRAWING:
+                    data, frozen = _freeze_snapshot_drawing(snapshot, data)
+                    frozen_total += frozen
                 cloned_part = _clone_owned_part(
                     package,
                     content_types,
@@ -1472,6 +1736,25 @@ def _clone_original_sheets(
         sheet_el.set("sheetId", str(next_sheet_id))
         sheet_el.set(_r("id"), rel_id)
         next_sheet_id += 1
+
+    return frozen_total
+
+
+def _freeze_snapshot_drawing(
+    snapshot: _SheetSnapshot, drawing_data: bytes
+) -> tuple[bytes, int]:
+    """按快照自己的几何冻结克隆分表的悬浮图片锚点。"""
+    try:
+        geometry = _SheetGeometry(_parse(snapshot.sheet_xml))
+        drawing_root = _parse(drawing_data)
+    except etree.XMLSyntaxError as error:  # pragma: no cover - 坏包才会走到
+        logger.warning(f"克隆分表 {snapshot.name} 的 drawing 无法解析，原样照抄：{error}")
+        return drawing_data, 0
+
+    frozen = fix_drawing_anchors(drawing_root, geometry, set(), freeze_all=True)
+    if not frozen:
+        return drawing_data, 0
+    return _serialize(drawing_root), frozen
 
 
 def _unique_sheet_title(title: str, used_names: set[str]) -> str:
@@ -1618,6 +1901,7 @@ def write_bilingual_workbook(
     log_callback=None,
     review_positions: list[dict[str, str]] | None = None,
     allowed_positions: dict[str, set[str]] | None = None,
+    external_autofit_planned: bool = False,
     stats: dict[str, int] | None = None,
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
@@ -1627,8 +1911,16 @@ def write_bilingual_workbook(
     未列出的分表视为坐标集合为空（该分表任何单元格都不会被改写）。
     供 ``core.excel_coverage`` 的按位置补译写入路径使用。
 
+    ``external_autofit_planned``：调用方在本次写入之后还会用 Excel COM 对整表跑
+    autofit（``enable_excel_autofit and not lock_row_height``）。为 True 时会把整张表
+    的悬浮图片锚点全部冻结——Excel 那一刀重排的是整个 used range 的行高，只冻结我们
+    自己改过的行挡不住它。这是**调用方**的决定，本模块不去猜。
+
     ``stats``：可选的输出统计字典，写入后会写入 ``stats["mutated_cells"]``
-    （本次实际回填的单元格数），供调用方生成日志。
+    （本次实际回填的单元格数）与 ``stats["anchor_frozen_count"]``
+    （被冻结/改写的悬浮图片锚点数），供调用方生成日志与任务结果。
+    ``anchor_frozen_count`` 只数译文分表，不含 ``keep_original_sheets`` 克隆出来的
+    原文分表——那上面是同一批图片，两边都算会让面向用户的计数翻倍。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -1701,6 +1993,7 @@ def write_bilingual_workbook(
         removed_formula = False
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
         total_mutated_cells = 0
+        total_anchor_frozen = 0
         for entry in entries:
             sheet_allowed = (
                 allowed_positions.get(entry.name, set())
@@ -1724,11 +2017,18 @@ def write_bilingual_workbook(
                 review_positions=review_positions,
                 log_callback=log_callback,
                 allowed_coordinates=sheet_allowed,
+                external_autofit_planned=external_autofit_planned,
             )
             removed_formula = removed_formula or outcome.removed_formula
             total_mutated_cells += outcome.mutated_cells
+            total_anchor_frozen += outcome.anchor_frozen_count
 
             if log_callback:
+                if outcome.anchor_frozen_count:
+                    log_callback(
+                        f"[INFO] 分表已固定悬浮图片锚点：{entry.name}"
+                        f"（{outcome.anchor_frozen_count} 处）"
+                    )
                 if lock_row_height and outcome.shrunk_cells:
                     log_callback(
                         f"[INFO] 分表已锁定行高并缩字号：{entry.name}"
@@ -1743,14 +2043,25 @@ def write_bilingual_workbook(
                 log_callback(f"[INFO] 分表已处理：{entry.name}{review_summary}")
 
         if keep_original_sheets and snapshots:
-            _clone_original_sheets(
+            cloned_frozen = _clone_original_sheets(
                 package,
                 content_types,
                 workbook_root,
                 workbook_part,
                 workbook_rels_root,
                 snapshots,
+                # Excel 的 autofit 是对整本工作簿每张表跑的，克隆出来的原文分表
+                # 也逃不掉，它上面的图片同样要先冻结。
+                freeze_all_anchors=external_autofit_planned and not lock_row_height,
             )
+            # 故意**不**计入 total_anchor_frozen：克隆件上的图片和译文分表上的是同一张，
+            # 用户在原文件里只看得见一张。两边都算会让「N 张悬浮图片已固定尺寸」在开了
+            # 「保留原文表」时凭空翻倍，那个数字就谁也对不上了。只记日志。
+            if cloned_frozen and log_callback:
+                log_callback(
+                    f"[INFO] 原文分表克隆件已固定悬浮图片锚点：{cloned_frozen} 处"
+                    "（与译文分表是同一批图片，不计入汇总）"
+                )
             workbook_dirty = True
 
         if removed_formula and _drop_calc_chain(
@@ -1768,6 +2079,7 @@ def write_bilingual_workbook(
 
         if stats is not None:
             stats["mutated_cells"] = total_mutated_cells
+            stats["anchor_frozen_count"] = total_anchor_frozen
 
         package.save()
     finally:

@@ -607,6 +607,44 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
             )
             self.assertEqual(done.review["counts"], {MIXED_MARK_UNRESOLVED: 1})
 
+    def test_result_contract_exposes_anchor_frozen_count(self) -> None:
+        """写入器报上来的锚点冻结数要原样进到文件级结果里，供界面展示。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.xlsx"
+            source.touch()
+            engine = _PreflightEngine()
+            seen_kwargs: dict = {}
+
+            def writer_with_anchor_stats(**kwargs):
+                seen_kwargs.update(kwargs)
+                kwargs["stats"]["anchor_frozen_count"] = 7
+                return root / "out" / "source.xlsx"
+
+            with ExitStack() as stack:
+                self._run_patches(
+                    stack,
+                    root=root,
+                    engine=engine,
+                    texts_by_path={source: ["施工内容"]},
+                    writer_side_effect=writer_with_anchor_stats,
+                )
+                settings = _settings()
+                # 界面上「Excel 精调行高」默认就是开的（ui/src/views/workspace.ts）
+                settings.excel_output.enable_excel_autofit = True
+                settings.excel_output.lock_row_height = False
+                runner = TaskRunner(
+                    [FileItem(path=source, name="source", size_kb=1.0)],
+                    settings,
+                    source_root=root,
+                )
+                runner._run()
+
+            done = _done_message(runner)
+            self.assertEqual(done.file_results[0]["anchor_frozen_count"], 7)
+            # 开着 Excel 精调、没锁行高 → 必须告诉写入器整表冻结
+            self.assertIs(seen_kwargs["external_autofit_planned"], True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

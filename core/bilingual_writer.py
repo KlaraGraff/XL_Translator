@@ -126,6 +126,8 @@ def write_bilingual_file(
     log_callback=None,
     original_path: Path | None = None,
     review_positions: list[dict[str, str]] | None = None,
+    external_autofit_planned: bool = False,
+    stats: dict[str, int] | None = None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -145,6 +147,11 @@ def write_bilingual_file(
     :param existing_fill_policy: 已有底色处理策略：skip/overwrite/red_font
     :param log_callback:         日志回调 log_callback(msg: str)
     :param original_path:        原 .xls 路径（如果是经过转换的临时文件）
+    :param external_autofit_planned:
+                                 写完之后调用方还会跑 Excel COM 的整表 AutoFit。
+                                 为 True 时写入器会把整张表的悬浮图片锚点全部固定，
+                                 否则 Excel 重排行高会把没冻结的图片拉变形
+    :param stats:                可选统计出参，写入 mutated_cells / anchor_frozen_count
     :return:                     输出文件路径
     """
     lang_display = _sanitize_filename_fragment(
@@ -178,6 +185,8 @@ def write_bilingual_file(
         existing_fill_policy=existing_fill_policy,
         log_callback=log_callback,
         review_positions=review_positions,
+        external_autofit_planned=external_autofit_planned,
+        stats=stats,
     )
 
     if log_callback:

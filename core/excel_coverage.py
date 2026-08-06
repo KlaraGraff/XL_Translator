@@ -110,6 +110,8 @@ def write_untranslated_excel_file(
     lock_row_height: bool = False,
     log_callback=None,
     original_path: Path | None = None,
+    external_autofit_planned: bool = False,
+    stats: dict[str, int] | None = None,
 ) -> Path:
     """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
@@ -147,7 +149,9 @@ def write_untranslated_excel_file(
         allowed_positions.setdefault(sheet_name, set()).add(coordinate)
         scoped_translations[source_key] = translation
 
-    stats: dict[str, int] = {}
+    # 调用方传了 stats 就直接写进去，省一次拷贝；没传就用本地临时字典。
+    if stats is None:
+        stats = {}
     xlsx_patcher.write_bilingual_workbook(
         out_path,
         translations=scoped_translations,
@@ -159,6 +163,7 @@ def write_untranslated_excel_file(
         mark_review_items=False,
         log_callback=log_callback,
         allowed_positions=allowed_positions,
+        external_autofit_planned=external_autofit_planned,
         stats=stats,
     )
     write_count = stats.get("mutated_cells", 0)

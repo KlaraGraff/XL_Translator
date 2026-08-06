@@ -1152,6 +1152,9 @@ class TaskRunner:
                 try:
                     t0 = datetime.now()
                     file_review_positions: list[dict[str, str]] = []
+                    # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
+                    # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
+                    write_stats: dict[str, int] = {}
                     # KNOWN-ISSUE-VAL-006:
                     # The current write path intentionally stays text-only.
                     # See docs/KNOWN_ISSUES.md before reintroducing image flow.
@@ -1175,6 +1178,8 @@ class TaskRunner:
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
                             original_path=file_item.original_path,
+                            external_autofit_planned=need_autofit,
+                            stats=write_stats,
                         )
                     else:
                         out_path = bilingual_writer.write_bilingual_file(
@@ -1198,6 +1203,8 @@ class TaskRunner:
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
                             original_path        = file_item.original_path,
+                            external_autofit_planned = need_autofit,
+                            stats                = write_stats,
                         )
                     write_elapsed = (datetime.now() - t0).total_seconds()
                     self._task_logger.file_write_done(file_item.name, write_elapsed)
@@ -1224,6 +1231,10 @@ class TaskRunner:
                         "status": "succeeded",
                         "review_count": len(file_review_positions),
                         "review_items": file_review_positions,
+                        # 悬浮图片/形状里被我们固定住锚点的数量（0 表示没动过）
+                        "anchor_frozen_count": int(
+                            write_stats.get("anchor_frozen_count", 0)
+                        ),
                         "success": True,
                     })
                     self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
