@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app_meta import APP_VERSION
 from scripts.verify_macos_minimum_version import verify_app_bundle
 from scripts.verify_release_metadata import is_stable_tag, release_metadata_errors
 
@@ -25,9 +26,15 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
             self.assertFalse(is_stable_tag(invalid), invalid)
 
     def test_release_metadata_rejects_mismatched_or_prerelease_tags(self) -> None:
-        self.assertEqual(release_metadata_errors(ROOT, tag="v9.0.0"), [])
-        self.assertTrue(release_metadata_errors(ROOT, tag="v8.0.0"))
-        self.assertTrue(release_metadata_errors(ROOT, tag="v9.0.0-rc.1"))
+        # Derive the tags from APP_VERSION rather than hardcoding one: the assertion
+        # is about tag-vs-app-version agreement, not about any particular release, and
+        # a literal here turns every version bump into an unrelated test failure.
+        current = f"v{APP_VERSION}"
+        stale = "v8.0.0"
+        self.assertNotEqual(stale, current, "pick a different stale tag for this test")
+        self.assertEqual(release_metadata_errors(ROOT, tag=current), [])
+        self.assertTrue(release_metadata_errors(ROOT, tag=stale))
+        self.assertTrue(release_metadata_errors(ROOT, tag=f"{current}-rc.1"))
 
     def test_workflow_builds_both_platforms_and_fails_closed_for_official_tags(
         self,
