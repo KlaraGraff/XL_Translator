@@ -55,3 +55,7 @@ andrej-karpathy-skills/
 
 # Accidental shell/temp artifact
 nul`r`nexit
+
+# Claude Code 本机状态（.claude/agents/ 与 .claude/launch.json 是共享配置，纳入版本控制）
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
