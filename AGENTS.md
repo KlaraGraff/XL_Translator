@@ -15,6 +15,12 @@
 5. 动态测试产物统一放到 `.runtime\self-tests\<task-slug>\`。
 6. Tauri/vanilla TypeScript 界面改动优先执行 `ui/` TypeScript 构建、`src-tauri/` Rust 检查，并以隔离应用数据启动开发壳验证；必要时补充截图或 DOM 状态断言。
 7. 如果无法完成测试，交付前必须明确说明未执行项、阻塞原因和风险范围。
+8. 打发布标签前，必须先运行 `bash scripts/run_release_env_tests.sh`（热跑约 8 秒）。
+   日常改动不强制。构建机是 Python 3.11 且没有装 Microsoft Office，开发机两者
+   通常都不同——`.venv` 全绿不等于构建机能过：依赖对象生命周期的写法（典型是
+   拿 `id()` 当身份用）在不同版本的内存分配器下表现可以完全相反，而任何真去
+   拉起 Excel 的测试在本地有 Office 的机器上会悄悄通过。V9.1.0 就是各栽了一次
+   才发现的。
 
 本地 Tauri 界面测试收尾动作：
 - 只要本地修改了 `ui/`、`src-tauri/`、Tauri 启动路径或会影响界面状态的代码，完成自测后必须主动关闭旧的 `Translator` / `tauri dev` / `api.launcher` 进程，再用当前源码启动一个新进程。
