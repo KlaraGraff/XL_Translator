@@ -12,11 +12,16 @@ import {
   createButton,
   createSwitchRow,
   createField,
+  createHintBadge,
   createEmptyState,
+  closeLanguagePopover,
+  closeMenu,
+  hideHint,
   openModal,
   showToast,
   clearElement,
   type ChipTone,
+  type LanguageOption,
   type ModalHandle,
 } from "../components";
 import { icon, type IconName } from "../icons";
@@ -45,15 +50,6 @@ type PoolConnection = {
   has_api_key: boolean;
   api_key_preview: string;
   primary: boolean;
-};
-
-type LanguageOption = {
-  code: string;
-  display_name: string;
-  description?: string;
-  builtin?: boolean;
-  can_source?: boolean;
-  can_target?: boolean;
 };
 
 type MaintenanceCategoryInfo = {
@@ -196,7 +192,14 @@ const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
 async function ensureConnected(): Promise<void> {
   if (!connectPromise) {
-    connectPromise = client.connect();
+    const attempt = client.connect();
+    // 失败不进缓存：connect() 里那记 /health 撞上还没起来的后端就 reject，缓存住之后
+    // 这个视图的每一个请求都会立刻失败，而且再也不会自己好，只能重启 app。
+    // （library.ts / tasks.ts 里的同名函数本来就是这么写的，这里补齐。）
+    attempt.catch(() => {
+      if (connectPromise === attempt) connectPromise = null;
+    });
+    connectPromise = attempt;
   }
   return connectPromise;
 }
@@ -288,6 +291,10 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
 export function unmount(): void {
   mountToken += 1; // 让任何仍在飞行中的异步回调失效
+  // 同 workspace：这些浮层挂在 document.body 上，视图切走不会自动消失。
+  hideHint();
+  closeLanguagePopover();
+  closeMenu();
   bodyHost = null;
   navEls = null;
 }
@@ -484,11 +491,7 @@ function sectionLabel(labelText: string): HTMLDivElement {
 }
 
 function hintBadge(hint: string): HTMLSpanElement {
-  const span = document.createElement("span");
-  span.className = "swrow-hint";
-  span.textContent = "?";
-  span.title = hint;
-  return span;
+  return createHintBadge(hint, "swrow-hint");
 }
 
 function fieldWithHint(labelText: string, control: HTMLElement, hint?: string): HTMLDivElement {

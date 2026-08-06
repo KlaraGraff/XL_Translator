@@ -22,7 +22,15 @@ type QuickStartDestination = "config" | "excel" | "word" | "pdf";
 const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
 async function ensureConnected(): Promise<void> {
-  if (!connectPromise) connectPromise = client.connect();
+  if (!connectPromise) {
+    const attempt = client.connect();
+    // 失败不进缓存，理由同 views/settings.ts：这是首启向导，正好是后端最可能还没就绪的
+    // 时刻，缓存住一次失败会让向导整个卡死。
+    attempt.catch(() => {
+      if (connectPromise === attempt) connectPromise = null;
+    });
+    connectPromise = attempt;
+  }
   return connectPromise;
 }
 

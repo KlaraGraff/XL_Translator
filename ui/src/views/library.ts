@@ -12,11 +12,16 @@ import {
   createButton,
   createTextField,
   createSelectField,
+  createLanguagePicker,
   createSwitchRow,
   createEmptyState,
   openModal,
   showToast,
+  hideHint,
+  closeLanguagePopover,
+  closeMenu,
   type ChipTone,
+  type LanguageOption,
 } from "../components";
 import { icon } from "../icons";
 import { ApiClient } from "../api-client";
@@ -26,14 +31,6 @@ import { ApiClient } from "../api-client";
 // ---------------------------------------------------------------------------
 
 type JsonObject = Record<string, unknown>;
-
-interface LanguageOption {
-  code: string;
-  display_name: string;
-  builtin?: boolean;
-  can_source?: boolean;
-  can_target?: boolean;
-}
 
 interface TmEntry {
   id: number;
@@ -191,6 +188,10 @@ let stateRowEl: HTMLDivElement | null = null;
 let tableScrollEl: HTMLDivElement | null = null;
 let tcHeadEl: HTMLDivElement | null = null;
 let searchDebounce: number | null = null;
+// 加载中 / 加载失败时占位卡片：语言对、TM 条目、冲突三个请求任何一个失败都不构建下面
+// 的工具条 / 表格结构（否则会出现空 select + 空表格，且永远没有重试入口），而是把这张
+// 卡片留在容器里，成功后再整体替换成真正的版式。
+let placeholderEl: HTMLDivElement | null = null;
 
 let connectPromise: Promise<ApiClient> | null = null;
 async function getClient(): Promise<ApiClient> {
@@ -1021,19 +1022,19 @@ function openMenu(anchor: HTMLElement, items: Array<{ label: string; onClick: ()
 // 渲染
 // ---------------------------------------------------------------------------
 
-function langSelect(options: LanguageOption[], value: string, onChange: (next: string) => void): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.style.cssText =
-    "height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 8px";
-  for (const option of options) {
-    const optionEl = document.createElement("option");
-    optionEl.value = option.code;
-    optionEl.textContent = option.display_name;
-    select.append(optionEl);
-  }
-  select.value = value;
-  select.addEventListener("change", () => onChange(select.value));
-  return select;
+/**
+ * 工具条上的语言框。原来是个固定 32px 高、宽度随内容压缩的原生 select，长语言名
+ * （「柬埔寨语（高棉语）」这种）在这条挤满按钮的工具条里显示不全——换成共享的可搜索
+ * 选择器后，按钮按样张给的 min-width:150px 起步、随内容变宽，长名能完整显示，
+ * 挑语言也不用再从 59 项里滚。
+ */
+function langPicker(
+  options: LanguageOption[],
+  value: string,
+  recentKey: string,
+  onChange: (next: string) => void,
+): HTMLDivElement {
+  return createLanguagePicker({ options, value, recentKey, onChange }).root;
 }
 
 function rebuildToolbar(): void {
@@ -1045,14 +1046,14 @@ function rebuildToolbar(): void {
   row.style.cssText = "display:flex;gap:8px;align-items:center";
 
   row.append(
-    langSelect(sourceOptions, sourceLang, (next) => void saveLangPair(next, targetLang)),
+    langPicker(sourceOptions, sourceLang, "tm-source", (next) => void saveLangPair(next, targetLang)),
   );
   const arrow = document.createElement("span");
   arrow.style.color = "var(--ink-3)";
   arrow.textContent = "→";
   row.append(arrow);
   row.append(
-    langSelect(targetOptions, targetLang, (next) => void saveLangPair(sourceLang, next)),
+    langPicker(targetOptions, targetLang, "tm-target", (next) => void saveLangPair(sourceLang, next)),
   );
 
   const searchWrap = document.createElement("div");
@@ -1419,12 +1420,28 @@ function buildTcHead(): HTMLDivElement {
 // View 生命周期
 // ---------------------------------------------------------------------------
 
-export function mount(container: HTMLElement, params: ViewParams): void {
-  mounted = true;
-  container.style.flexDirection = "column";
+/** 加载中占位：内容区不能提前画出空工具条 / 空表格，否则用户会误以为语言选择是空的。 */
+function renderLoadingPlaceholder(container: HTMLElement): void {
+  placeholderEl?.remove();
+  placeholderEl = createCard([createEmptyState({ title: "正在加载记忆库…", icon: "book" })]);
+  container.append(placeholderEl);
+}
 
-  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+/** 加载失败：沿用 settings.ts「无法连接本地翻译引擎」那张卡片的标题/副标题/图标用法，
+ * 额外挂一个「重试」按钮——记忆库最常见的失败场景是桌面应用刚启动、Python sidecar 还没
+ * 起来，用户手快点进来，稍等重试往往就能成功，不该逼用户切页面再切回来。 */
+function renderLoadFailure(container: HTMLElement, message: string, onRetry: () => void): void {
+  placeholderEl?.remove();
+  const empty = createEmptyState({ title: "记忆库加载失败", description: message, icon: "warn" });
+  const retryBtn = createButton({ label: "重试", variant: "primary", onClick: onRetry });
+  retryBtn.style.marginTop = "4px";
+  empty.append(retryBtn);
+  placeholderEl = createCard([empty]);
+  container.append(placeholderEl);
+}
 
+/** 三个加载请求都成功后才搭建工具条 / 统计条 / 表格的容器结构。 */
+function buildLayout(container: HTMLElement): void {
   toolbarCardEl = createCard();
   container.append(toolbarCardEl);
 
@@ -1439,32 +1456,61 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   tcHeadEl = buildTcHead();
   tableCard.append(tcHeadEl);
   container.append(tableCard);
+}
+
+async function loadLibrary(container: HTMLElement, reviewTaskId: string | null): Promise<void> {
+  try {
+    await refreshLanguagePairs();
+    await Promise.all([refreshTm(), refreshConflicts()]);
+  } catch (error) {
+    if (!mounted) return;
+    setTopbar({ title: "记忆库", status: { label: "加载失败", tone: "warn" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+    renderLoadFailure(container, errorMessage(error), () => {
+      if (!mounted) return;
+      setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+      renderLoadingPlaceholder(container);
+      void loadLibrary(container, reviewTaskId);
+    });
+    return;
+  }
+  if (!mounted) return;
+  placeholderEl?.remove();
+  placeholderEl = null;
+  buildLayout(container);
+  rebuildToolbar();
+  renderStatsRow();
+  renderTable();
+  renderTopbarStatus();
+  if (reviewTaskId) {
+    cleaningState = "ready";
+    renderStateRow();
+    await loadCleanSuggestions(reviewTaskId);
+  }
+}
+
+export function mount(container: HTMLElement, params: ViewParams): void {
+  mounted = true;
+  container.style.flexDirection = "column";
+
+  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+
+  renderLoadingPlaceholder(container);
 
   const reviewTaskId = typeof params.reviewCleanTaskId === "string" ? params.reviewCleanTaskId : null;
-
-  void (async () => {
-    try {
-      await refreshLanguagePairs();
-      await Promise.all([refreshTm(), refreshConflicts()]);
-    } catch (error) {
-      showToast({ message: `记忆库加载失败：${errorMessage(error)}`, error: true });
-    }
-    if (!mounted) return;
-    rebuildToolbar();
-    renderStatsRow();
-    renderTable();
-    renderTopbarStatus();
-    if (reviewTaskId) {
-      cleaningState = "ready";
-      renderStateRow();
-      await loadCleanSuggestions(reviewTaskId);
-    }
-  })();
+  void loadLibrary(container, reviewTaskId);
 }
 
 export function unmount(): void {
   mounted = false;
+  // closeMenus() 关的是本文件自己的「导入 ▾ / 导出 ▾」下拉（.v9-tm-menu，本文件独立实现，
+  // 没有借用 components.ts 的 openMenu）；closeMenu() 关的是 components.ts 里锚定菜单的
+  // 模块级单例——本文件目前不触发它，纯粹是防御性收尾，两者管的是各自独立的浮层，不冲突。
   closeMenus();
+  // 提示浮层和语言选择器的浮层都挂在 document.body 上，视图切走时不会随 container 一起被清掉，
+  // 不主动关就会变成孤儿面板，还会让模块级的“当前展开项”指针继续指向已死的闭包。
+  hideHint();
+  closeLanguagePopover();
+  closeMenu();
   if (searchDebounce !== null) {
     window.clearTimeout(searchDebounce);
     searchDebounce = null;
@@ -1474,4 +1520,5 @@ export function unmount(): void {
   stateRowEl = null;
   tableScrollEl = null;
   tcHeadEl = null;
+  placeholderEl = null;
 }
