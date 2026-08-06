@@ -57,14 +57,12 @@
 - 首次推 v9.0.0 tag 的发布 run 在 Publish 的校验步骤失败：Windows 上 Python 文本模式把 sha256 文件的换行写成 CRLF，macOS 端 `shasum -c` 找不到带 `\r` 的文件名。两次演练没暴露它，因为该校验只在 tag 通道运行。
 - 已修复（写文件固定 LF）并新增字节级回归测试；tag 重新指向修复后的提交再次发布。
 
-## 六、发布结果（已完成）
+## 六、发布结果（已撤回，待重发）
 
-用户确认文案与偏差后推 tag，v9.0.0 已正式发布（非 Pre-release）：
-<https://github.com/KlaraGraff/XL_Translator/releases/tag/v9.0.0>
+发布经历了三个阶段，当前对外最新版本回到 **v8.1.2**：
 
-| 资产 | 大小 |
-| --- | --- |
-| Translator_macOS_arm64_9.0.0_TEMP_SIGNED_TEST.dmg（+ .sha256） | 42.6 MB |
-| Translator_Windows_x64_9.0.0_Setup.exe（+ .sha256） | 27.6 MB |
+1. **临时签名版曾短暂发布**：用户确认文案与偏差后推 tag，v9.0.0 以 temporary-test 通道发布（当时仓库没有 Apple 签名 secrets，macOS 资产为 ad-hoc 临时签名的 `TEMP_SIGNED_TEST.dmg`，42.6 MB；Windows 安装包 27.6 MB，双 sha256 交叉校验通过）。
+2. **签名凭据重建完成**：用户对临时签名提出疑问后，重建了整套 Apple 签名凭据——新 Developer ID Application 证书（Team ID J622D6994N，2031-08-07 到期）、legacy 格式 .p12、五个 GitHub secrets（与 lantern 仓库同名同值）。CI 实测验证：证书导入、签名身份识别、notarytool 凭据校验全部通过；凭据已双重备份（本机 `~/Documents/AppleSigning-Translator/` + iCloud 云盘，.p12 密码存于「密码」App）。
+3. **正式签名重发两次都撞上 GitHub Actions 官方事故**（2026-08-06 晚）：第一次 runner 在等待苹果公证结果约 50 分钟后断网（签名与公证上传均已成功，故障纯属平台侧）；第二次重跑在 job 启动阶段就遇到 Service Unavailable，GitHub 状态页确认 Actions partial outage。用户随即决定暂缓发布，等待下一批改动完成后一并发布。
 
-macOS 资产按 temporary-test 通道命名（无 Apple 签名密钥，ad-hoc 临时签名未公证，首次打开需右键「打开」，发布说明已写明）；Windows 安装包无签名，首启会有 SmartScreen 提示。双 sha256 已在发布 job 内用 `shasum -c` 交叉校验通过。
+当前状态：v9.0.0 tag 与临时签名 Release 均已撤回删除（对外从未露出正式签名版）；苹果侧的公证提交记录无法撤回但对外不可见、无影响。**重发路径已完全就绪**：改动完成后重打 v9.0.0 tag 推送即可，CI 会自动走正式签名+公证通道，macOS 产物名为 `Translator_macOS_arm64_9.0.0.dmg`（无 TEMP 后缀）。
