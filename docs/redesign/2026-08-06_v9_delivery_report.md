@@ -57,9 +57,14 @@
 - 首次推 v9.0.0 tag 的发布 run 在 Publish 的校验步骤失败：Windows 上 Python 文本模式把 sha256 文件的换行写成 CRLF，macOS 端 `shasum -c` 找不到带 `\r` 的文件名。两次演练没暴露它，因为该校验只在 tag 通道运行。
 - 已修复（写文件固定 LF）并新增字节级回归测试；tag 重新指向修复后的提交再次发布。
 
-## 六、发布步骤（待你确认后执行）
+## 六、发布结果（已完成）
 
-1. 你过目第三节各项 → 有要改的我改完重新全绿。
-2. 推 `v9.0.0` tag → CI 自动出双平台正式发布物（macOS 为 ad-hoc 临时签名，发布说明已写明右键打开）。
+用户确认文案与偏差后推 tag，v9.0.0 已正式发布（非 Pre-release）：
+<https://github.com/KlaraGraff/XL_Translator/releases/tag/v9.0.0>
 
-**推 tag 是唯一等你确认的动作。**
+| 资产 | 大小 |
+| --- | --- |
+| Translator_macOS_arm64_9.0.0_TEMP_SIGNED_TEST.dmg（+ .sha256） | 42.6 MB |
+| Translator_Windows_x64_9.0.0_Setup.exe（+ .sha256） | 27.6 MB |
+
+macOS 资产按 temporary-test 通道命名（无 Apple 签名密钥，ad-hoc 临时签名未公证，首次打开需右键「打开」，发布说明已写明）；Windows 安装包无签名，首启会有 SmartScreen 提示。双 sha256 已在发布 job 内用 `shasum -c` 交叉校验通过。
