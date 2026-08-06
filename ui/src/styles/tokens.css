@@ -1,0 +1,90 @@
+/*
+ * V9 设计 token —— 逐一对应 docs/mockups/2026-08-06_v9_full_redesign.html 的
+ * :root / [data-theme="dark"] 声明，数值未作修改。
+ *
+ * 与旧的 ui/src/tokens.css 是两套独立文件：旧文件仍被 ui/src/main.ts 引用，
+ * 在 main.ts 被页面代理迁移、由主会话删除之前不能动它。这里的新 token 只喂给
+ * 新外壳（app.ts → styles/app.css → shell.ts / components.ts / views/*）。
+ *
+ * 均为字面量色值，没有用 color-mix()：目标运行时含 macOS Monterey 的 WKWebView
+ * （Safari 15.1），color-mix() 到 Safari 16.4 才可用；样张本来就是字面量写法，
+ * 天然兼容，不需要像旧文件那样为 color-mix 加 @supports 兜底。
+ */
+
+:root {
+  color-scheme: light;
+
+  --accent-base: #5468ff;
+  --ground: #f4f6fc;
+  --ground-2: #ebeef8;
+  --rail: #fbfcfe;
+  --surface: #ffffff;
+  --surface-2: #f8fafe;
+  --ink: #141a2e;
+  --ink-2: #556080;
+  --ink-3: #8a93ac;
+  --line: #e7ebf5;
+  --line-2: #d9dfee;
+  --accent: var(--accent-base);
+  --accent-strong: #4353cc;
+  --on-accent: #fff;
+  --tint: #f0f1ff;
+  --tint-line: #ccd2ff;
+  --tint-ink: #404fc2;
+
+  --ok: #12a366;
+  --ok-t: #e2f4ed;
+  --ok-l: #b3e2ce;
+  --warn: #c77a00;
+  --warn-t: #f8eede;
+  --warn-l: #edd4ad;
+  --danger: #e5484d;
+  --danger-t: #fdebec;
+  --danger-l: #f5bfc1;
+
+  --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
+  --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
+  --sh-lg: 0 2px 4px rgb(24 34 66 / 6%), 0 24px 48px -22px rgb(30 45 90 / 30%);
+
+  --r-lg: 15px;
+  --r-md: 12px;
+  --r-sm: 9px;
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ground: #0c1019;
+  --ground-2: #090d15;
+  --rail: #10151f;
+  --surface: #151b28;
+  --surface-2: #1a2130;
+  --ink: #eaedf7;
+  --ink-2: #a4aec7;
+  --ink-3: #6b7590;
+  --line: #242c3e;
+  --line-2: #313a50;
+  --accent: #8090ff;
+  --accent-strong: var(--accent-base);
+  --on-accent: #0b0f1a;
+  --tint: #1b223b;
+  --tint-line: #283268;
+  --tint-ink: #a0acff;
+
+  --ok: #3dd68c;
+  --ok-t: #192e2a;
+  --ok-l: #2d594c;
+  --warn: #e8a33d;
+  --warn-t: #31281d;
+  --warn-l: #655039;
+  --danger: #ff6369;
+  --danger-t: #331b20;
+  --danger-l: #5e3038;
+
+  --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);
+  --sh-lg: 0 2px 4px rgb(0 0 0 / 45%), 0 24px 48px -22px rgb(0 0 0 / 65%);
+}
