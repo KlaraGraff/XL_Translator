@@ -88,7 +88,9 @@ def package_windows_installer(*, dist_dir: Path = DIST_DIR) -> Path:
 
     digest = hashlib.sha256(installer_path.read_bytes()).hexdigest()
     sha256_path = dist_dir / f"{installer_name}.sha256"
-    sha256_path.write_text(f"{digest}  {installer_name}\n", encoding="utf-8")
+    # newline="\n" 固定 LF：Windows 上默认文本模式会把 \n 写成 \r\n，
+    # 发布 job 在 macOS 用 `shasum -c` 交叉校验时会去找带 \r 的文件名而失败。
+    sha256_path.write_text(f"{digest}  {installer_name}\n", encoding="utf-8", newline="\n")
 
     github_env = os.environ.get("GITHUB_ENV")
     if github_env:
