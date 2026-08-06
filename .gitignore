@@ -8,6 +8,8 @@ __pycache__/
 # Virtual environments
 .venv
 .venv/
+# 复刻发布构建机的 Python 3.11 环境，由 scripts/run_release_env_tests.sh 维护
+.venv311/
 venv/
 env/
 node_modules/
