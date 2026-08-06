@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>样张 · Word 保护封面和目录 · PDF 跳过大幅面页</title>
+<style>
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff;--ground:#f4f6fc;--ground-2:#ebeef8;--rail:#fbfcfe;--surface:#fff;--surface-2:#f8fafe;
+  --ink:#141a2e;--ink-2:#556080;--ink-3:#8a93ac;--line:#e7ebf5;--line-2:#d9dfee;
+  --accent:var(--accent-base);--accent-strong:#4353cc;--on-accent:#fff;--tint:#f0f1ff;--tint-line:#ccd2ff;--tint-ink:#404fc2;
+  --ok:#12a366;--ok-t:#e2f4ed;--ok-l:#b3e2ce;--warn:#c77a00;--warn-t:#f8eede;--warn-l:#edd4ad;
+  --danger:#e5484d;--danger-t:#fdebec;--danger-l:#f5bfc1;
+  --ring:#a9b3ff;--ring-soft:rgb(84 104 255 / 18%);
+  --sh-sm:0 1px 2px rgb(24 34 66 / 5%);
+  --sh-md:0 1px 2px rgb(24 34 66 / 5%),0 10px 26px -14px rgb(30 45 90 / 20%);
+  --sh-lg:0 2px 4px rgb(24 34 66 / 6%),0 24px 48px -22px rgb(30 45 90 / 30%);
+  --r-lg:15px;--r-md:12px;--r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019;--ground-2:#090d15;--rail:#10151f;--surface:#151b28;--surface-2:#1a2130;
+  --ink:#eaedf7;--ink-2:#a4aec7;--ink-3:#6b7590;--line:#242c3e;--line-2:#313a50;
+  --accent:#8090ff;--accent-strong:var(--accent-base);--on-accent:#0b0f1a;--tint:#1b223b;--tint-line:#283268;--tint-ink:#a0acff;
+  --ok:#3dd68c;--ok-t:#192e2a;--ok-l:#2d594c;--warn:#e8a33d;--warn-t:#31281d;--warn-l:#655039;
+  --danger:#ff6369;--danger-t:#331b20;--danger-l:#5e3038;
+  --ring:#5b6bd6;--ring-soft:rgb(128 144 255 / 22%);
+  --sh-sm:0 1px 2px rgb(0 0 0 / 40%);
+  --sh-md:0 1px 2px rgb(0 0 0 / 40%),0 10px 26px -14px rgb(0 0 0 / 55%);
+  --sh-lg:0 2px 4px rgb(0 0 0 / 45%),0 24px 48px -22px rgb(0 0 0 / 65%);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font);background:var(--ground);color:var(--ink);font-size:13px;line-height:1.5}
+.page{max-width:1240px;margin:0 auto;padding:26px 24px 80px}
+.top{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+h1{font-size:20px;font-weight:650;letter-spacing:-.3px;margin:0}
+.lead{color:var(--ink-2);font-size:13px;margin:0 0 26px;max-width:760px}
+h2{font-size:15px;font-weight:650;margin:34px 0 4px;padding-top:22px;border-top:1px solid var(--line)}
+h2 .n{display:inline-flex;align-items:center;justify-content:center;width:21px;height:21px;border-radius:6px;background:var(--tint);color:var(--tint-ink);font-size:12px;margin-right:8px;vertical-align:1px}
+.sub{color:var(--ink-2);font-size:12.5px;margin:0 0 16px;max-width:820px}
+.grid{display:grid;gap:16px}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:1000px){.g3,.g2{grid-template-columns:1fr}}
+.cap{font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin:0 0 7px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.pad{padding:14px 16px}
+.rp-sec{font-size:11px;font-weight:650;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;margin:16px 0 8px}
+.rp-sec:first-child{margin-top:0}
+.swrow{display:flex;align-items:center;gap:9px;padding:6.5px 0;font-size:12.5px;color:var(--ink)}
+.swrow .hint{color:var(--ink-3);cursor:help;font-size:11px;border:1px solid var(--line-2);border-radius:99px;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.sw{appearance:none;border:0;padding:0;margin-left:auto;width:32px;height:19px;border-radius:99px;background:var(--line-2);position:relative;flex:none;cursor:pointer;transition:.15s}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:99px;background:#fff;box-shadow:0 1px 2px rgb(0 0 0 / 25%);transition:left .15s}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:15px}
+.sw:disabled{cursor:default;opacity:.5}
+.swrow.off{opacity:.45}
+.note{margin:2px 0 6px 0;padding:8px 11px;border-radius:var(--r-sm);font-size:11.8px;line-height:1.65;background:var(--tint);border:1px solid var(--tint-line);color:var(--tint-ink)}
+.note.warn{background:var(--warn-t);border-color:var(--warn-l);color:var(--warn)}
+.note.mute{background:var(--surface-2);border-color:var(--line);color:var(--ink-2)}
+.note b{font-weight:650}
+.note code{font-family:var(--mono);font-size:11px}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 15px;box-shadow:var(--sh-sm)}
+.stat b{display:block;font-size:21px;font-weight:650;letter-spacing:-.3px;margin-top:2px}
+.stat span{font-size:11.5px;color:var(--ink-2)}
+.stat.dim b{color:var(--ink-3)}
+.stat.warn{border-color:var(--warn-l);background:var(--warn-t)}
+.stat.warn b{color:var(--warn)}
+.tc-head{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.tc-head b{color:var(--ink);font-weight:600;font-size:13px}
+table.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{font-size:11.5px;font-weight:600;color:var(--ink-3);text-align:left;padding:8px 12px;border-bottom:1px solid var(--line)}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.ck{width:15px;height:15px;accent-color:var(--accent);vertical-align:-2px}
+.fmt{display:inline-flex;font-size:10.5px;font-weight:700;letter-spacing:.04em;border-radius:5px;padding:1.5px 6px;border:1px solid var(--line-2);color:var(--ink-2)}
+.fmt.warn{border-color:var(--warn-l);background:var(--warn-t);color:var(--warn)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}
+.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+.log{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:10px 13px;font-family:var(--mono);font-size:11.6px;line-height:1.85;color:var(--ink-2);overflow:auto}
+.log .t{color:var(--ink-3);margin-right:9px}
+.log .w{color:var(--warn)}
+.log .g{color:var(--ok)}
+.log .a{color:var(--tint-ink)}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.filerow{display:flex;align-items:center;gap:10px;padding:9px 14px;border-top:1px solid var(--line);font-size:12.5px}
+.filerow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ask{margin-top:8px;padding:10px 13px;border-left:3px solid var(--accent);background:var(--surface-2);border-radius:0 var(--r-sm) var(--r-sm) 0;font-size:12.3px;color:var(--ink-2)}
+.ask b{color:var(--ink)}
+.dot{width:6px;height:6px;border-radius:99px;flex:none}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.mute{background:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="top">
+  <h1>样张 · 「保护封面和目录」与「跳过 A3 及更大的页面」</h1>
+  <button class="btn mini" id="themebtn" type="button">切换深色</button>
+</div>
+<p class="lead">左边 Word、右边 PDF，各自覆盖：选项默认态、开启后的说明、扫描结果读数、识别失败的兜底、运行中日志、完成后的文件结果。截图里的数字都是示意值。</p>
+
+<!-- ===================== 1. Word 选项区 ===================== -->
+<h2><span class="n">1</span>Word 右栏 · 翻译选项</h2>
+<p class="sub">原来的「补译时保护方案封面与目录」整条删掉，换成一个不依赖任何前置开关的「保护封面和目录」，全译和补译两种模式都生效。</p>
+
+<div class="grid g3">
+  <div>
+    <p class="cap">A · 默认（关闭）</p>
+    <div class="card pad">
+      <div class="rp-sec">翻译选项</div>
+      <div class="swrow">仅补译未翻译内容<span class="hint">?</span><button class="sw" type="button"></button></div>
+      <div class="swrow">本地自动编号预处理<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">标记需复核内容<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">保护封面和目录<span class="hint">?</span><button class="sw" type="button"></button></div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">B · 打开后</p>
+    <div class="card pad">
+      <div class="rp-sec">翻译选项</div>
+      <div class="swrow">仅补译未翻译内容<span class="hint">?</span><button class="sw" type="button"></button></div>
+      <div class="swrow">本地自动编号预处理<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">标记需复核内容<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">保护封面和目录<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="note">正文第一个章节标题之前的内容全部保留原文，包括封面、批准页、目录和前言。<b>识别不到正文起点时不会启用保护</b>，会在日志里说明。</div>
+    </div>
+    <div class="ask"><b>「?」气泡完整文案：</b>从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。全译和补译都生效。</div>
+  </div>
+
+  <div>
+    <p class="cap">C · 任务运行中（右栏锁定）</p>
+    <div class="card pad" style="opacity:.45">
+      <div class="rp-sec">翻译选项</div>
+      <div class="swrow">仅补译未翻译内容<span class="hint">?</span><button class="sw" type="button" disabled></button></div>
+      <div class="swrow">本地自动编号预处理<span class="hint">?</span><button class="sw on" type="button" disabled></button></div>
+      <div class="swrow">标记需复核内容<span class="hint">?</span><button class="sw on" type="button" disabled></button></div>
+      <div class="swrow">保护封面和目录<span class="hint">?</span><button class="sw on" type="button" disabled></button></div>
+    </div>
+    <div class="ask">和其它开关一致：任务期间不可改，但「?」说明仍可查看。</div>
+  </div>
+</div>
+
+<!-- ===================== 2. Word 结果读数 ===================== -->
+<h2><span class="n">2</span>Word · 保护范围划在哪儿，必须能核对</h2>
+<p class="sub">规则再合理也得让人验证。每个文件在完成后报告实际跳过了多少段、正文判定从哪一句开始。三种结果必须长得不一样。</p>
+
+<div class="grid g2">
+  <div>
+    <p class="cap">D · 完成后的文件结果列表</p>
+    <div class="card">
+      <div class="tc-head"><b>文件结果</b><span>3 个文档</span></div>
+      <div class="filerow">
+        <span class="dot ok"></span>
+        <span class="nm">2026年XX大桥施工组织设计.docx</span>
+        <span class="chip tint">跳过开头 23 段</span>
+        <span class="chip ok">已完成</span>
+      </div>
+      <div class="filerow">
+        <span class="dot ok"></span>
+        <span class="nm">附件三_技术规格书.docx</span>
+        <span class="chip tint">跳过开头 8 段</span>
+        <span class="chip ok">已完成</span>
+      </div>
+      <div class="filerow">
+        <span class="dot warn"></span>
+        <span class="nm">会议纪要_20260712.docx</span>
+        <span class="chip warn">未识别到正文起点</span>
+        <span class="chip ok">已完成</span>
+      </div>
+    </div>
+    <div class="ask">第三行是关键状态：<b>没识别到章节标题就一段都不保护</b>，整篇照常翻译，并且明说了。绝不能默默把整个文档当成封面跳过——那种失败用户要等到打开成品才发现。</div>
+  </div>
+
+  <div>
+    <p class="cap">E · 展开某个文件，看具体边界</p>
+    <div class="card pad">
+      <div style="font-weight:600;font-size:13px;margin-bottom:9px">2026年XX大桥施工组织设计.docx</div>
+      <div class="note mute" style="margin-bottom:9px">
+        <b>保护范围</b>　开头 23 段 + 2 个表格<br>
+        <b>正文起点</b>　「第一章　工程概况」（第 24 段）<br>
+        <b>已排除的目录条目</b>　11 段（自动目录 8 段，手打目录 3 段）
+      </div>
+      <div class="log">
+<span class="t">10:42:07</span><span class="a">保护封面和目录：</span>正文起点判定为「第一章　工程概况」<br>
+<span class="t">10:42:07</span>已保留开头 23 段与 2 个表格，不参与翻译<br>
+<span class="t">10:42:07</span>其中 11 段按目录条目排除（3 段为手打目录，按点线+页码识别）
+      </div>
+    </div>
+    <div class="ask">「手打目录 3 段」这一行是有意露出来的：手打目录没有 Word 的目录样式和域代码，是这个功能最容易翻车的地方，明说出来才好在实际文件上验证。</div>
+  </div>
+</div>
+
+<div style="margin-top:16px">
+  <p class="cap">F · 识别失败时的日志（对应上面第三行）</p>
+  <div class="card pad">
+    <div class="log">
+<span class="t">10:43:15</span><span class="w">保护封面和目录：</span>未能在文档中识别到正文章节标题<br>
+<span class="t">10:43:15</span><span class="w">本次未启用封面与目录保护，全文照常翻译</span><br>
+<span class="t">10:43:15</span>如需保护，可在原文档中为正文首个标题套用「标题 1」样式后重新翻译
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 3. PDF 选项区 ===================== -->
+<h2><span class="n">3</span>PDF 右栏 · 新增「跳过 A3 及更大的页面」</h2>
+<p class="sub">两个方向都明显超过 A4 的页面不送模型翻译，并且<b>原样保留矢量内容</b>——不转成图片，线宽和文字不会糊。</p>
+
+<div class="grid g3">
+  <div>
+    <p class="cap">G · 默认（关闭）</p>
+    <div class="card pad">
+      <div class="rp-sec">翻译选项</div>
+      <div class="swrow">逐页审核模型<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">生成压缩 PDF<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">允许独立图片<span class="hint">?</span><button class="sw" type="button"></button></div>
+      <div class="swrow">跳过 A3 及更大的页面<span class="hint">?</span><button class="sw" type="button"></button></div>
+    </div>
+  </div>
+
+  <div>
+    <p class="cap">H · 打开后</p>
+    <div class="card pad">
+      <div class="rp-sec">翻译选项</div>
+      <div class="swrow">逐页审核模型<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">生成压缩 PDF<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="swrow">允许独立图片<span class="hint">?</span><button class="sw" type="button"></button></div>
+      <div class="swrow">跳过 A3 及更大的页面<span class="hint">?</span><button class="sw on" type="button"></button></div>
+      <div class="note">工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。开启后这些页不送翻译模型，按原始矢量内容整页保留在输出里，不会被转成图片。</div>
+    </div>
+    <div class="ask"><b>「?」气泡完整文案：</b>工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。</div>
+  </div>
+
+  <div>
+    <p class="cap">I · 判定尺度示意</p>
+    <div class="card pad">
+      <table class="tbl" style="font-size:12.3px">
+        <tr><th>页面</th><th>尺寸</th><th style="text-align:right">判定</th></tr>
+        <tr><td>A4 竖</td><td class="num" style="text-align:left">210 × 297</td><td style="text-align:right"><span class="chip mute">翻译</span></td></tr>
+        <tr><td>A4 横</td><td class="num" style="text-align:left">297 × 210</td><td style="text-align:right"><span class="chip mute">翻译</span></td></tr>
+        <tr><td>A4 略大</td><td class="num" style="text-align:left">216 × 303</td><td style="text-align:right"><span class="chip mute">翻译</span></td></tr>
+        <tr><td>A3 横</td><td class="num" style="text-align:left">420 × 297</td><td style="text-align:right"><span class="chip warn">大幅面</span></td></tr>
+        <tr><td>A3 竖（标了旋转）</td><td class="num" style="text-align:left">297 × 420</td><td style="text-align:right"><span class="chip warn">大幅面</span></td></tr>
+        <tr><td>A1 横</td><td class="num" style="text-align:left">841 × 594</td><td style="text-align:right"><span class="chip warn">大幅面</span></td></tr>
+      </table>
+    </div>
+    <div class="ask">这张表不进界面，是给你核对规则用的。<b>A4 横放不能被当成大幅面页</b>——这是最容易写错的一条。</div>
+  </div>
+</div>
+
+<!-- ===================== 4. PDF 扫描预览 ===================== -->
+<h2><span class="n">4</span>PDF · 扫描阶段就告诉你有几页大幅面</h2>
+<p class="sub">开始翻译之前就能看到会跳过多少页，不用等跑完才发现判错了。</p>
+
+<p class="cap">J · 统计条</p>
+<div class="stats">
+  <div class="stat"><span>已扫描文件</span><b>6</b></div>
+  <div class="stat"><span>总页数</span><b>148</b></div>
+  <div class="stat warn"><span>大幅面页</span><b>17</b></div>
+  <div class="stat"><span>独立图片</span><b>0</b></div>
+  <div class="stat dim"><span>跳过项</span><b>0</b></div>
+</div>
+
+<p class="cap" style="margin-top:18px">K · 文件表 · 「页数 / 尺寸」列</p>
+<div class="card">
+  <div class="tc-head"><b>扫描结果</b><span>已选 6 / 6</span></div>
+  <table class="tbl">
+    <tr><th style="width:34px"></th><th>文件</th><th>类型</th><th>大小</th><th>页数 / 尺寸</th><th>状态</th></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>01_施工图设计说明.pdf</td><td><span class="fmt">PDF</span></td><td>12.4 MB</td><td>42 页 · <span style="color:var(--warn);font-weight:600">9 页 A3+</span></td><td><span class="chip ok">可翻译</span></td></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>02_结构计算书.pdf</td><td><span class="fmt">PDF</span></td><td>3.1 MB</td><td>28 页</td><td><span class="chip ok">可翻译</span></td></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>03_桥型布置图.pdf</td><td><span class="fmt">PDF</span></td><td>28.7 MB</td><td>8 页 · <span style="color:var(--warn);font-weight:600">8 页 A3+</span></td><td><span class="chip warn">整份均为大幅面</span></td></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>04_材料清单.pdf</td><td><span class="fmt">PDF</span></td><td>0.9 MB</td><td>11 页</td><td><span class="chip ok">可翻译</span></td></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>05_环评报告_加密.pdf</td><td><span class="fmt">PDF</span></td><td>5.6 MB</td><td>34 页 · <span style="color:var(--ink-3)">幅面未知</span></td><td><span class="chip ok">可翻译</span></td></tr>
+    <tr><td><input class="ck" type="checkbox" checked></td><td>06_会议纪要汇编.pdf</td><td><span class="fmt">PDF</span></td><td>1.8 MB</td><td>25 页</td><td><span class="chip ok">可翻译</span></td></tr>
+  </table>
+</div>
+<div class="ask" style="max-width:900px">
+两个专门做出来的状态：<br>
+<b>「整份均为大幅面」</b>——开着这个开关选这份文件，等于什么都不会翻。提前说，别让人白等。<br>
+<b>「幅面未知」</b>——扫描阶段读不到页面尺寸（加密、结构损坏）。这里<b>绝不能显示成 0</b>，「数不出来」和「一张都没有」是两回事，写 0 就是撒谎。统计条对应会多一行小字：「其中 1 个文件无法确认幅面」。
+</div>
+
+<!-- ===================== 5. PDF 运行与完成 ===================== -->
+<h2><span class="n">5</span>PDF · 运行中与完成后</h2>
+
+<div class="grid g2">
+  <div>
+    <p class="cap">L · 运行日志</p>
+    <div class="card pad">
+      <div class="log">
+<span class="t">14:20:03</span>01_施工图设计说明.pdf　共 42 页<br>
+<span class="t">14:20:03</span><span class="a">跳过大幅面页：</span>第 12 页 420×297 mm（A3 横）<br>
+<span class="t">14:20:03</span><span class="a">跳过大幅面页：</span>第 13 页 420×297 mm（A3 横）<br>
+<span class="t">14:20:03</span><span class="a">跳过大幅面页：</span>第 14 页 594×841 mm（A1 竖）<br>
+<span class="t">14:20:04</span>本文件 9 页判定为大幅面，将原样保留；33 页参与翻译<br>
+<span class="t">14:22:41</span><span class="g">01_施工图设计说明.pdf 完成　33/33 页已翻译</span>
+      </div>
+    </div>
+    <div class="ask">进度按 <b>33/33</b> 走而不是 33/42——被跳过的页不进翻译分母，否则进度条永远卡在 79% 不动。</div>
+  </div>
+
+  <div>
+    <p class="cap">M · 完成后的文件结果</p>
+    <div class="card">
+      <div class="tc-head"><b>文件结果</b><span>3 个文件</span></div>
+      <div class="filerow">
+        <span class="dot ok"></span><span class="nm">01_施工图设计说明.pdf</span>
+        <span class="chip tint">跳过 9 页 A3+</span><span class="chip ok">已完成</span>
+      </div>
+      <div class="filerow">
+        <span class="dot ok"></span><span class="nm">02_结构计算书.pdf</span>
+        <span class="chip warn">3 页待复核</span><span class="chip ok">已完成</span>
+      </div>
+      <div class="filerow">
+        <span class="dot mute"></span><span class="nm">03_桥型布置图.pdf</span>
+        <span class="chip tint">跳过 8 页 A3+</span><span class="chip mute">全部跳过</span>
+      </div>
+    </div>
+    <div class="ask">被跳过的页<b>不能显示成「待复核」</b>。它不是翻译失败，是按设定不翻——混在一起会让人以为出了问题，去点开看一堆没必要看的页。第三行整份未翻，状态单独标成「全部跳过」。</div>
+  </div>
+</div>
+
+</div>
+<script>
+document.getElementById("themebtn").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = root.getAttribute("data-theme") === "dark";
+  root.setAttribute("data-theme", dark ? "light" : "dark");
+  document.getElementById("themebtn").textContent = dark ? "切换深色" : "切换浅色";
+});
+</script>
+</body>
+</html>

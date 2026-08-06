@@ -56,6 +56,21 @@ _ALPHA_LIST_PREFIX_RE = re.compile(r"^[A-Za-z][.)）]")
 _BULLET_PREFIX_RE = re.compile(r"^[•·▪▫●○◆◇■□]\s+")
 _ARABIC_DECIMAL_PREFIX_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3})+)(.*)$")
 _LEADING_INLINE_WHITESPACE_RE = re.compile(r"^[ \t\u3000]+")
+# 无小数点的顶层数字标题，例如「1 概述」「1. 概述」「1、概述」。孤立的前导数字本身有
+# 歧义——普通编号列表项（如「1. 检查产品合格证」）也是这个形状，所以额外要求分隔符后
+# 的标题正文不含句末标点且长度受限，把典型的长句列表项挡在外面。这仍然是启发式规则，
+# 挡不住「1 检查工作面清洁情况」这种又短又不带标点的列表项，代价见
+# find_word_front_matter_boundary 的注释。
+_BARE_NUMERIC_HEADING_RE = re.compile(r"^(\d{1,2})[ \u3000、.．](?!\d)([^。！？；;]{1,20})$")
+# 手打目录条目：标题文字 + 点划线（或中圆点）+ 页码，例如「第一章 工程概况 ...... 1」。
+# 自动生成的目录段落靠 _is_toc_or_field_paragraph 就能认出来，但工程文档的目录很多是
+# 手工敲的，没有任何样式或域标记——扫描正文标题时若不排除它，目录里抄的那行「第一章
+# ……」会被当成正文标题本身，结果只保护了封面、整份目录反倒被当正文翻译，与这个选项的
+# 初衷正好相反。省略号「…」「⋯」单个字符就已经代表三个点，出现一个即可；两点引导符
+# 「‥」信息量弱一些，要求 2 个以上才采信。
+_HAND_TYPED_TOC_LEADER_RE = re.compile(
+    r"(?:(?:[.．]\s*){3,}|(?:[·]\s*){3,}|(?:[…⋯]\s*){1,}|(?:[‥]\s*){2,})\s*\d+\s*$"
+)
 
 _WORD_HIGHLIGHT_RGB = {
     "black": (0x00, 0x00, 0x00),
@@ -265,14 +280,20 @@ def extract_word_segments(
     *,
     target_lang: str,
     source_lang: str = "zh",
+    protect_front_matter: bool = False,
 ) -> list[WordSegment]:
     """Extract unique body-paragraph and table-cell texts that need translation."""
     doc = Document(str(path))
+    front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
+    protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
+    protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
     seen: set[str] = set()
     segments: list[WordSegment] = []
     section_stack: dict[int, str] = {}
 
     for index, paragraph in enumerate(doc.paragraphs):
+        if index in protected_paragraphs:
+            continue
         source = _paragraph_source_text(paragraph)
         heading_level = _detect_heading_level(paragraph)
         if heading_level is not None and source:
@@ -299,6 +320,8 @@ def extract_word_segments(
         )
 
     for table_index, table in enumerate(doc.tables):
+        if table_index in protected_tables:
+            continue
         for cell_index, cell in enumerate(_iter_unique_table_cells(table)):
             source = _cell_source_text(cell)
             if not _is_translatable_source(
@@ -336,6 +359,7 @@ def write_bilingual_docx(
     review_mark_colors: dict[str, str] | None = None,
     existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
+    protect_front_matter: bool = False,
 ) -> Path:
     """Write a bilingual Word document to the output directory."""
     source_path = Path(source_path)
@@ -359,6 +383,20 @@ def write_bilingual_docx(
 
     doc = Document(str(out_path))
     body_paragraphs = list(doc.paragraphs)
+    front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
+    protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
+    # 表格没有"下标即位置"这种便利——_iter_unique_table_cells 会递归展开嵌套表格，
+    # 所以用被保护表格产出的单元格 id 集合来判断，而不是重新按表格下标过滤。
+    protected_table_cell_ids = (
+        {
+            id(cell)
+            for table_index, table in enumerate(doc.tables)
+            if table_index in front_matter.protected_table_indices
+            for cell in _iter_unique_table_cells(table)
+        }
+        if front_matter
+        else set()
+    )
     table_cells = [
         cell
         for table in doc.tables
@@ -388,7 +426,9 @@ def write_bilingual_docx(
     highlight_count = 0
     highlight_skip_count = 0
 
-    for paragraph in body_paragraphs:
+    for paragraph_index, paragraph in enumerate(body_paragraphs):
+        if paragraph_index in protected_paragraphs:
+            continue
         paragraph_key = id(paragraph)
         source = original_paragraph_sources.get(
             paragraph_key,
@@ -449,6 +489,8 @@ def write_bilingual_docx(
         paragraph_insertions += 1
 
     for cell in table_cells:
+        if id(cell) in protected_table_cell_ids:
+            continue
         source = original_cell_sources.get(id(cell), _cell_source_text(cell))
         if not _is_translatable_source(
             source,
@@ -1009,8 +1051,111 @@ def _detect_heading_level(paragraph: Paragraph) -> int | None:
         return 2
     if _NUMBERED_SECTION_RE.match(text):
         return min(text.split(maxsplit=1)[0].count(".") + 1, 6)
+    if _BARE_NUMERIC_HEADING_RE.match(text):
+        return 1
 
     return None
+
+
+def _iter_body_block_items(doc: Document):
+    """按 XML 文档流顺序交替产出顶层段落 / 表格及其各自的下标。
+
+    python-docx 的 doc.paragraphs 和 doc.tables 各自独立编号，互相之间不保留
+    "谁在文档里排在前面"的信息。要判断一张表格是否落在正文标题之前（从而应当被
+    前置内容一并保护），必须按 body 元素的真实先后顺序重建这个交错序列。
+    """
+    body = doc.element.body
+    paragraph_index = 0
+    table_index = 0
+    for child in body.iterchildren():
+        if child.tag == qn("w:p"):
+            yield "paragraph", paragraph_index
+            paragraph_index += 1
+        elif child.tag == qn("w:tbl"):
+            yield "table", table_index
+            table_index += 1
+
+
+@dataclass(frozen=True)
+class WordFrontMatterBoundary:
+    """"保护封面和目录"选项划定出的正文起点。
+
+    body_start_index 为 None 表示全文找不到任何可识别的正文标题——这种情况下调用方
+    必须保持"不保护任何内容"，绝不能因为找不到边界就把整篇文档当成前置内容吞掉。
+    """
+
+    body_start_index: int | None
+    heading_text: str = ""
+    protected_paragraph_indices: frozenset[int] = frozenset()
+    protected_table_indices: frozenset[int] = frozenset()
+
+    @property
+    def found(self) -> bool:
+        return self.body_start_index is not None
+
+    @property
+    def protected_paragraph_count(self) -> int:
+        return len(self.protected_paragraph_indices)
+
+
+def find_word_front_matter_boundary(doc: Document) -> WordFrontMatterBoundary:
+    """定位正文标题，划定其之前的封面 / 目录 / 前言范围。
+
+    正文标题的判定直接复用 _detect_heading_level 的全部启发式（样式 + 三条正则 +
+    无小数点的顶层数字标题），与 extract_word_segments 拆分章节路径时是同一套规则，
+    避免出现两处"什么算标题"的定义分叉。扫描时必须先跳过：
+    1. 自动生成的目录域段落（_is_toc_or_field_paragraph）；
+    2. 手打目录条目（_HAND_TYPED_TOC_LEADER_RE）——否则目录里抄录的
+       "第一章 工程概况 ...... 1" 会被误认成正文标题本身，导致只保护了封面、
+       整份目录反而被当正文翻译。
+    """
+    paragraphs = list(doc.paragraphs)
+    block_order = list(_iter_body_block_items(doc))
+
+    body_start_block_index: int | None = None
+    body_start_paragraph_index: int | None = None
+    heading_text = ""
+    for block_index, (kind, item_index) in enumerate(block_order):
+        if kind != "paragraph":
+            continue
+        paragraph = paragraphs[item_index]
+        text = _paragraph_source_text(paragraph)
+        if not text:
+            continue
+        if _is_toc_or_field_paragraph(paragraph):
+            continue
+        if _HAND_TYPED_TOC_LEADER_RE.search(text):
+            continue
+        if _detect_heading_level(paragraph) is None:
+            continue
+        body_start_block_index = block_index
+        body_start_paragraph_index = item_index
+        heading_text = text
+        break
+
+    if body_start_block_index is None:
+        return WordFrontMatterBoundary(body_start_index=None)
+
+    preceding_blocks = block_order[:body_start_block_index]
+    protected_paragraph_indices = frozenset(
+        item_index
+        for kind, item_index in preceding_blocks
+        if kind == "paragraph" and _paragraph_source_text(paragraphs[item_index])
+    )
+    protected_table_indices = frozenset(
+        item_index for kind, item_index in preceding_blocks if kind == "table"
+    )
+    return WordFrontMatterBoundary(
+        body_start_index=body_start_paragraph_index,
+        heading_text=heading_text,
+        protected_paragraph_indices=protected_paragraph_indices,
+        protected_table_indices=protected_table_indices,
+    )
+
+
+def find_word_front_matter_boundary_for_path(path: str | Path) -> WordFrontMatterBoundary:
+    """便于只有源文件路径、尚未持有 Document 对象的调用方（如任务编排层）查询边界。"""
+    return find_word_front_matter_boundary(Document(str(path)))
 
 
 def _update_section_stack(section_stack: dict[int, str], level: int, text: str) -> None:

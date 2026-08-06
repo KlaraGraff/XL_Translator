@@ -65,6 +65,10 @@ type FileItem = JsonObject & {
   paragraph_count?: number;
   table_count?: number;
   page_count?: number;
+  /** PDF「大幅面页」计数（两个方向都超过 A4 约 15%）。null 是后端明确表达的「这个文件数不出来」
+   *  （加密、结构损坏），不是 0；字段缺失表示这个 surface / 这版后端不产出。三态含义见
+   *  oversizedPageStats() 上方的整段说明，处理方式与 Excel 的 image_count 完全一致。 */
+  oversized_page_count?: number | null;
   source_type?: string;
   needs_conversion?: boolean;
   // 以下三个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
@@ -88,8 +92,6 @@ interface ToggleDef {
   path?: string;
   /** 与另一个开关互斥：本开关打开时另一个自动关闭，反之亦然（Excel 的行高精调/锁定缩字号）。 */
   exclusiveWith?: string;
-  /** 只有当另一个开关为 true 时本开关才可用（Word 的「补译时保护封面与目录」依赖「仅补译未翻译内容」）。 */
-  requiresKey?: string;
 }
 
 const EXCEL_TOGGLES: ToggleDef[] = [
@@ -105,13 +107,16 @@ const WORD_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "wordNativePreprocessing", label: "本地自动编号预处理", hint: "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
   { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
-  { key: "protectSchemeCover", label: "补译时保护方案封面与目录", hint: "仅在「仅补译未翻译内容」开启时生效，默认关闭。目录和域代码始终受保护，不会作为普通正文翻译。", default: false, pathKind: "none", requiresKey: "untranslated" },
+  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: false, pathKind: "none" },
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
   { key: "pdfReview", label: "逐页审核模型", hint: "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。", default: true, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: "生成压缩 PDF", hint: "在原始输出之外额外生成一份体积更小的 PDF。", default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: "允许独立图片", hint: "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。", default: false, pathKind: "flat", path: "pdf.include_images" },
+  // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
+  // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
+  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: false, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES };
@@ -755,12 +760,16 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   }
   const pages = files.reduce((sum, f) => sum + num(f.page_count), 0);
   const images = files.filter((f) => f.source_type === "image").length;
-  return [
+  // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，
+  // 过滤掉即可——.five 修饰类靠的就是过滤后的实际格数。
+  const pdfStats: (StatCell | null)[] = [
     { label: "已扫描文件", value: String(files.length) },
     { label: "总页数", value: String(pages) },
+    oversizedPageStat(oversizedPageStats(files)),
     { label: "独立图片", value: String(images) },
     { label: "跳过项", value: String(st.skipped.length) },
   ];
+  return pdfStats.filter((stat): stat is StatCell => stat !== null);
 }
 
 function isRisky(surface: Surface, f: FileItem): boolean {
@@ -790,7 +799,7 @@ function fileLabel(f: FileItem): string {
 
 type MaybeCount = number | "unknown" | "n/a";
 
-function maybeCount(file: FileItem, key: "image_count" | "shape_text_count"): MaybeCount {
+function maybeCount(file: FileItem, key: "image_count" | "shape_text_count" | "oversized_page_count"): MaybeCount {
   if (!hasOwn(file, key)) return "n/a";
   const value = file[key];
   return typeof value === "number" && Number.isFinite(value) ? value : "unknown";
@@ -929,6 +938,82 @@ function buildOutsideCellChips(file: FileItem): HTMLElement[] {
   const dash = el("span", "dash");
   dash.textContent = "—";
   return [dash];
+}
+
+// ---------------------------------------------------------------------------
+// PDF「大幅面页」——两个方向都超过 A4 约 15% 的页面（A3 及以上）
+//
+// 「跳过 A3 及更大的页面」开着时这些页不送翻译模型，原始矢量内容整页直传到输出 PDF。
+// 判定只看纸张尺寸，跟页面内容是不是图纸无关——界面上的措辞一律用尺寸口径，不要写成
+// 「图纸」，否则 A3 的宣传册被跳过时用户只会当成程序判错了。
+//
+// 三态和 Excel 的 image_count 完全同一套规矩，不再重复解释：数字 / null（数不出来，
+// 例如加密或结构损坏的 PDF）/ 字段缺失（不适用）。「数不出来」永远不能渲染成 0。
+// ---------------------------------------------------------------------------
+
+interface OversizedPageStats {
+  /** 已数清的大幅面页总数（数不出来的文件不参与求和）。 */
+  pages: number;
+  /** 幅面数不出来的文件数——对应后端 summary 的 oversized_page_count_unknown_files。 */
+  unknownFiles: number;
+  /** 产出了该字段的文件数。为 0 说明这批文件根本不产出（不是「数出来是 0」），整格不渲染。 */
+  presentFiles: number;
+}
+
+/** 独立图片输入没有「页」的概念，后端给的 oversized_page_count 恒为 null（就是字段默认值，
+ *  不是「数不出来」）。不排掉的话每张图片都会被记成一个「幅面未知的文件」。后端 summary
+ *  里 pdf_items 那层过滤就是同一件事，两边必须一致。 */
+function hasOversizedPageInfo(file: FileItem): boolean {
+  return file.source_type !== "image" && hasOwn(file, "oversized_page_count");
+}
+
+function oversizedPageStats(files: FileItem[]): OversizedPageStats {
+  const stats: OversizedPageStats = { pages: 0, unknownFiles: 0, presentFiles: 0 };
+  for (const file of files) {
+    if (!hasOversizedPageInfo(file)) continue;
+    const count = maybeCount(file, "oversized_page_count");
+    if (count === "n/a") continue;
+    stats.presentFiles += 1;
+    if (count === "unknown") stats.unknownFiles += 1;
+    else stats.pages += count;
+  }
+  return stats;
+}
+
+/** 扫描统计条里的「大幅面页」格。字段整批缺失时返回 null，由 computeStats 过滤掉。 */
+function oversizedPageStat(stats: OversizedPageStats): StatCell | null {
+  if (stats.presentFiles === 0) return null;
+  const label = "大幅面页";
+  const unknownNote = stats.unknownFiles > 0 ? `其中 ${stats.unknownFiles} 个文件无法确认幅面` : "";
+  if (stats.pages > 0) {
+    return {
+      label,
+      value: stats.pages.toLocaleString("zh-CN"),
+      attn: true,
+      sub: unknownNote || "开启跳过后不翻译，原样保留",
+    };
+  }
+  // 一页都没数出来时不能写 0——那是「确认没有」的说法。
+  if (stats.unknownFiles > 0) return { label, value: "—", dim: true, sub: unknownNote };
+  return { label, value: "0", dim: true, sub: "全部为 A4 及以下" };
+}
+
+/** 文件表「页数 / 尺寸」列里跟在页数后面的那半句；没什么可说时返回空串。 */
+function oversizedPageNote(file: FileItem): { text: string; warn: boolean } | null {
+  if (!hasOversizedPageInfo(file)) return null;
+  const count = maybeCount(file, "oversized_page_count");
+  if (count === "n/a") return null;
+  if (count === "unknown") return { text: "幅面未知", warn: false };
+  if (count <= 0) return null;
+  return { text: `${count} 页 A3+`, warn: true };
+}
+
+/** 整份文件都是大幅面页——开着跳过开关选它等于什么都不会翻，扫描阶段就得说。 */
+function isAllOversized(file: FileItem): boolean {
+  if (!hasOversizedPageInfo(file)) return false;
+  const count = maybeCount(file, "oversized_page_count");
+  const pages = num(file.page_count);
+  return typeof count === "number" && pages > 0 && count >= pages;
 }
 
 /** 接入点 4 · 翻译完成后的结果说明所需的数据快照。 */
@@ -1127,7 +1212,20 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
     sizeCell.textContent = formatSizeKb(file.size_kb);
     row.append(sizeCell);
     const dimCell = el("td");
-    dimCell.textContent = file.source_type === "image" ? "—" : `${num(file.page_count)} 页`;
+    if (file.source_type === "image") {
+      dimCell.textContent = "—";
+    } else {
+      dimCell.append(document.createTextNode(`${num(file.page_count)} 页`));
+      const note = oversizedPageNote(file);
+      if (note) {
+        dimCell.append(document.createTextNode(" · "));
+        const span = el("span");
+        span.style.color = note.warn ? "var(--warn)" : "var(--ink-3)";
+        if (note.warn) span.style.fontWeight = "600";
+        span.textContent = note.text;
+        dimCell.append(span);
+      }
+    }
     row.append(dimCell);
   }
 
@@ -1136,6 +1234,10 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
     statusCell.append(createChip({ label: "已排除", tone: "mute" }));
   } else if (isRisky(surface, file)) {
     statusCell.append(createChip({ label: "需先转换", tone: "warn", icon: "warn" }));
+  } else if (surface === "pdf" && isAllOversized(file)) {
+    // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
+    // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
+    statusCell.append(createChip({ label: "整份均为大幅面", tone: "warn", icon: "warn" }));
   }
   row.append(statusCell);
   return row;
@@ -1400,6 +1502,9 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
 }
 
 function reviewResultChip(page: PdfPage): HTMLElement {
+  // 按尺寸跳过的页必须排在最前面判断，而且不能落到「待复核」上：它没有译文也没有页图，
+  // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
+  if (page.skipped_oversize) return createChip({ label: "按幅面跳过", tone: "mute" });
   if (page.status === "failed" || page.placeholder) {
     return createChip({ label: page.user_skipped ? "已跳过占位" : "生成失败", tone: "dgr" });
   }
@@ -1410,6 +1515,7 @@ function reviewResultChip(page: PdfPage): HTMLElement {
 }
 
 function reviewNote(page: PdfPage): string {
+  if (page.skipped_oversize) return "幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。";
   if (page.pending_action === "regenerate") return "已排队重新生成，继续翻译后生效。";
   if (page.pending_action === "skip") return "已排队跳过，继续翻译后生效。";
   if (page.review_summary) return redactedText(page.review_summary);
@@ -1439,11 +1545,26 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   const notFinished = page.status === "pending";
   const needsSkip = page.status === "failed" || page.placeholder;
 
-  actionsCell.append(buildActionLink("查看对比", false, undefined, () => openPdfPageCompareModal(surface, taskId, file, page)));
+  // 按幅面跳过的页既没有原页图也没有译文页图（压根没渲染过），重新生成也只会按同一条尺寸
+  // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
+  const oversizeSkipped = page.skipped_oversize;
+  const oversizeReason = "该页按幅面跳过，没有生成页图；如需翻译请关闭「跳过 A3 及更大的页面」后重跑。";
+
+  actionsCell.append(
+    buildActionLink("查看对比", oversizeSkipped, oversizeSkipped ? oversizeReason : undefined, () =>
+      openPdfPageCompareModal(surface, taskId, file, page),
+    ),
+  );
   actionsCell.append(document.createTextNode(" · "));
 
-  const regenDisabled = !actionable || notFinished;
-  const regenReason = !actionable ? reason : notFinished ? "该页还没跑完，暂时不能重新生成。" : undefined;
+  const regenDisabled = !actionable || notFinished || oversizeSkipped;
+  const regenReason = oversizeSkipped
+    ? oversizeReason
+    : !actionable
+      ? reason
+      : notFinished
+        ? "该页还没跑完，暂时不能重新生成。"
+        : undefined;
   actionsCell.append(buildActionLink("重新生成", regenDisabled, regenReason, () => void runPdfPageAction(surface, taskId, file, page, "regenerate")));
 
   if (needsSkip) {
@@ -1573,6 +1694,67 @@ async function fetchPdfPagesSnapshot(surface: Surface, taskId: string): Promise<
   }
 }
 
+// ---------------------------------------------------------------------------
+// 运行卡片文件列表上的「这个文件到底跳过了什么」标签
+//
+// 两个功能都在悄悄地少翻内容，用户看到「已完成」时默认理解是「整个文件都翻了」。跳了
+// 多少必须逐文件说出来，而且失败要跟成功长得不一样——「开了保护但没找到正文起点」和
+// 「开了保护跳过了 23 段」都表现为「已完成」，含义却相反。
+//
+// 不按 surface 分支，改看 payload 里有没有对应字段：Word 的条目带 front_matter，PDF 的
+// 带 skipped_oversize_page_count。字段哪天没了标签自己消失，不会显示旧值。
+// ---------------------------------------------------------------------------
+
+/** file_results 里对应某个源文件的那一条。Word 给 source_path（全路径），PDF 只给 name。 */
+function fileResultFor(result: JsonObject, path: string): JsonObject | null {
+  const entries = result.file_results;
+  if (!Array.isArray(entries)) return null;
+  const base = path.split("/").pop() ?? path;
+  for (const entry of entries) {
+    const item = record(entry);
+    if (text(item.source_path) === path || text(item.name) === base) return item;
+  }
+  return null;
+}
+
+/** file_results 上某个数值字段的合计。字段不存在的条目按 0 计——不猜别的字段名。 */
+function fileResultTotal(result: JsonObject, key: string): number {
+  const entries = result.file_results;
+  if (!Array.isArray(entries)) return 0;
+  return entries.reduce((sum: number, entry) => sum + num(record(entry)[key]), 0);
+}
+
+/** 所有文件实际被「保护封面和目录」跳过的段落合计；没找到正文起点的文件本来就是 0。 */
+function frontMatterTotal(result: JsonObject): number {
+  const entries = result.file_results;
+  if (!Array.isArray(entries)) return 0;
+  return entries.reduce((sum: number, entry) => {
+    const fm = record(record(entry).front_matter);
+    return fm.requested && fm.found ? sum + num(fm.protected_paragraph_count) : sum;
+  }, 0);
+}
+
+function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
+  const item = fileResultFor(result, path);
+  if (!item) return [];
+  const chips: HTMLElement[] = [];
+
+  const frontMatter = record(item.front_matter);
+  if (frontMatter.requested) {
+    if (frontMatter.found) {
+      chips.push(createChip({ label: `跳过开头 ${num(frontMatter.protected_paragraph_count)} 段`, tone: "tint" }));
+    } else {
+      // 一段都没保护，全文照常翻译了。这不是错误，但和用户开这个开关的预期不符，必须显眼。
+      chips.push(createChip({ label: "未识别到正文起点", tone: "warn", icon: "warn" }));
+    }
+  }
+
+  const oversized = num(item.skipped_oversize_page_count);
+  if (oversized > 0) chips.push(createChip({ label: `跳过 ${oversized} 页 A3+`, tone: "tint" }));
+
+  return chips;
+}
+
 function buildLogCard(local: LocalTask): HTMLElement {
   const card = el("div", "card");
   card.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden";
@@ -1607,6 +1789,7 @@ function buildLogCard(local: LocalTask): HTMLElement {
   card.append(log);
 
   const fileList = el("div");
+  const result = record(local.task.result);
   for (const [path, stage] of local.fileStage) {
     const row = el("div", "filerow");
     const meta: Record<string, { label: string; tone: ChipTone }> = {
@@ -1619,6 +1802,8 @@ function buildLogCard(local: LocalTask): HTMLElement {
     const nm = el("span", "nm");
     nm.textContent = path.split("/").pop() ?? path;
     row.append(nm);
+    // 跳过标签只在文件跑完后才有数据（file_results 是终态才产出的），跑的过程中自然为空。
+    for (const chip of buildFileSkipChips(result, path)) row.append(chip);
     fileList.append(row);
   }
   card.append(fileList);
@@ -1691,12 +1876,11 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   scroll.append(typeSec);
 
   for (const toggle of TOGGLES[surface]) {
-    const dependsOff = toggle.requiresKey ? !st.toggles.get(toggle.requiresKey) : false;
     const row = createSwitchRow({
       label: toggle.label,
       hint: toggle.hint,
       checked: Boolean(st.toggles.get(toggle.key)),
-      disabled: active || dependsOff,
+      disabled: active,
       onChange: (checked) => void handleToggleChange(surface, st, toggle, checked),
     });
     scroll.append(row);
@@ -1718,12 +1902,6 @@ async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: To
   st.toggles.set(toggle.key, checked);
   if (toggle.exclusiveWith && checked) {
     st.toggles.set(toggle.exclusiveWith, false);
-  }
-  if (toggle.key === "untranslated" && !checked) {
-    // 依赖「仅补译未翻译内容」的开关（Word 的保护封面）一并复位。
-    for (const other of TOGGLES[surface]) {
-      if (other.requiresKey === toggle.key) st.toggles.set(other.key, false);
-    }
   }
   if (toggle.pathKind === "flat" && toggle.path) {
     await persistSettings(nestedPatch(toggle.path, checked));
@@ -1886,7 +2064,7 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   if (surface === "excel") payload.allow_xls_fallback = st.allowXlsFallback;
   if (surface === "word") {
     payload.allow_doc_fallback = st.allowDocFallback;
-    payload.protect_scheme_cover = Boolean(st.toggles.get("protectSchemeCover"));
+    payload.protect_front_matter = Boolean(st.toggles.get("protectFrontMatter"));
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   return payload;
@@ -2169,6 +2347,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const outputPath = text(summary.output_dir, text(result.output_dir, st.sourcePath));
   st.lastOutputPath = outputPath;
   const clauses: string[] = [];
+  // 「按设定没翻的内容」要跟在生成结果后面一起说。横幅只给总数，逐文件的明细在运行卡片
+  // 的文件列表上（buildFileSkipChips），完整边界在任务日志和报告里。
+  const skippedOversizePages = fileResultTotal(result, "skipped_oversize_page_count");
+  const protectedParagraphs = frontMatterTotal(result);
+  if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
+  if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
   if (review > 0) clauses.push(`${review} 处需复核`);
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
   clauses.push(review > 0 || autoFixed > 0 ? "其余全部通过" : "全部通过");

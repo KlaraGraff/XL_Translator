@@ -20,9 +20,12 @@ from loguru import logger
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from config import (
+    PDF_A4_LONG_EDGE_PT,
+    PDF_A4_SHORT_EDGE_PT,
     PDF_ASPECT_RATIO_TOLERANCE,
     PDF_COMPRESSED_JPEG_QUALITY_DEFAULT,
     PDF_COMPRESSED_MAX_LONG_EDGE_PX,
+    PDF_OVERSIZED_PAGE_EDGE_FACTOR,
     PDF_PAGE_CONCURRENCY_DEFAULT,
     PDF_PAGE_CONCURRENCY_SAFETY_CAP,
     PDF_PAGE_RENDER_AHEAD_COUNT,
@@ -95,6 +98,10 @@ PDF_PAGE_ACTION_REGENERATE = "regenerate"
 PDF_PAGE_ACTION_SKIP = "skip"
 PDF_PAGE_IMAGE_KIND_SOURCE = "source"
 PDF_PAGE_IMAGE_KIND_TRANSLATED = "translated"
+# 「跳过大幅面页」功能专用的页面终态：页面判定为超出 A4 的大幅面页，从未提交给
+# 翻译模型，装订时从源 PDF 矢量直传。语义上和 request_page_skip 的用户手动跳过
+# （发生在失败之后）完全不同，不要合并成同一个状态。
+PDF_PAGE_STATUS_SKIPPED_OVERSIZE = "skipped_oversize"
 # A page may only be re-run or skipped once its own processing unit settled.
 # Everything else is still owned by an in-flight future.
 _PDF_PAGE_REGENERABLE_STATUSES = frozenset(
@@ -146,6 +153,11 @@ class PdfFileItem:
     format: str = "pdf"
     width_px: int = 0
     height_px: int = 0
+    # 扫描阶段的大幅面页（超出 A4 尺寸）预估，仅读 /MediaBox 等元数据，不渲染。
+    # None 表示「读不出来」（例如某一页损坏），不是「确认没有大幅面页」——两者
+    # 不能用 0 混在一起，否则界面会把「无法判断」显示成「零大幅面页」。与
+    # file_scanner 里 image_count / image_count_unknown_files 的三态写法保持一致。
+    oversized_page_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +188,12 @@ class PdfScanResult:
             1 if item.source_type == SOURCE_TYPE_IMAGE else max(0, int(item.page_count))
             for item in self.items
         )
+        # 大幅面页计数只对 PDF 有意义；独立图片输入没有「页」的概念，不参与
+        # 已知/未知的统计，否则会把「单张图片」错记成「零大幅面页的 PDF」。
+        pdf_items = [item for item in self.items if item.source_type == SOURCE_TYPE_PDF]
+        known_oversized_page_counts = [
+            item.oversized_page_count for item in pdf_items if item.oversized_page_count is not None
+        ]
         return {
             "scanned_count": len(self.items),
             "selected_count": len(self.items),
@@ -183,6 +201,10 @@ class PdfScanResult:
             "image_count": image_count,
             "total_page_or_image_count": total_units,
             "skipped_count": len(self.skipped),
+            "oversized_page_count": sum(known_oversized_page_counts),
+            "oversized_page_count_unknown_files": sum(
+                1 for item in pdf_items if item.oversized_page_count is None
+            ),
         }
 
     @property
@@ -231,6 +253,9 @@ class PdfPageRecord:
     output_height_px: int = 0
     page_width_pt: float = 0.0
     page_height_pt: float = 0.0
+    # 「跳过大幅面页」命中的页面：从未提交给翻译模型，装订时从源 PDF 矢量直传。
+    # UI 需要靠这个字段和别的终态区分开，单独给张「未翻译，原样保留」的角标。
+    skipped_oversize: bool = False
     review_enabled: bool = False
     review_status: str = "skipped"
     review_attempts: int = 0
@@ -256,6 +281,7 @@ class PdfFileRecord:
     generated_page_count: int = 0
     placeholder_page_count: int = 0
     emergency_ratio_normalized_count: int = 0
+    skipped_oversize_page_count: int = 0
     retry_count: int = 0
     review_enabled: bool = False
     reviewed_page_count: int = 0
@@ -287,6 +313,7 @@ class PdfTaskSummary:
     placeholder_page_count: int
     emergency_ratio_normalized_count: int
     retry_count: int
+    skipped_oversize_page_count: int = 0
     compressed_pdf_enabled: bool = False
     compressed_pdf_count: int = 0
     generated_image_count: int = 0
@@ -454,6 +481,33 @@ def page_image_name(page_number: int, total_pages: int, *, failed: bool = False)
     width = max(3, len(str(max(1, int(total_pages or 1)))))
     suffix = "_failed" if failed else ""
     return f"page_{int(page_number):0{width}d}{suffix}.png"
+
+
+def is_oversized_page(page_width_pt: float, page_height_pt: float) -> bool:
+    """判断一页是否是「跳过大幅面页」要抓的超大页（A3 及以上）。
+
+    这是纯尺寸判定，跟页面内容是不是图纸无关——只是工程 PDF 里超出 A4 的页
+    绝大多数确实是 CAD 图纸，这也是设这道尺寸门槛的原始动机。
+
+    比较规则是长边比长边、短边比短边，绝不能直接比宽比高——横版 A4
+    （842×595pt）宽度比竖版 A4 的高度还大，直接比宽会把横版 A4 正文页
+    误判成超大页。
+
+    传入的 page_width_pt / page_height_pt 应该来自 pypdfium2 的
+    page.get_size()：实测过它已经把 /Rotate 和 CropBox 都换算进去了
+    （旋转 90°的 A3 会直接返回宽高互换后的尺寸），这里不需要再单独查
+    /Rotate 归一化一次。
+    """
+    long_edge_pt = max(page_width_pt, page_height_pt)
+    short_edge_pt = min(page_width_pt, page_height_pt)
+    return (
+        long_edge_pt > PDF_A4_LONG_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
+        and short_edge_pt > PDF_A4_SHORT_EDGE_PT * PDF_OVERSIZED_PAGE_EDGE_FACTOR
+    )
+
+
+def _pt_to_mm(value_pt: float) -> float:
+    return value_pt / 72.0 * 25.4
 
 
 def check_page_quality(
@@ -1114,6 +1168,9 @@ class PdfImageTranslationRunner:
             "review_status": review_status,
             "attempts": int(page.attempts) if page is not None else 0,
             "placeholder": bool(page.placeholder) if page is not None else False,
+            # 「跳过大幅面页」命中的页面：前端要能区分「未翻译，原样保留」和普通
+            # 失败/占位页，不能只靠 status 字符串。
+            "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
             "error": _short_review_text(page.error if page is not None else ""),
             "review_summary": _page_review_summary(page),
             "pending_action": pending_action,
@@ -1729,6 +1786,25 @@ class PdfImageTranslationRunner:
                     if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
                         continue
                     prepared.record.pages.append(page_record)
+                    if page_record.skipped_oversize:
+                        # 大幅面页：不进 executor.submit，直接按「已提交且已
+                        # 完成」记账，否则「N/M 已完成」的进度会永远差这几页。
+                        long_mm = _pt_to_mm(
+                            max(page_record.page_width_pt, page_record.page_height_pt)
+                        )
+                        short_mm = _pt_to_mm(
+                            min(page_record.page_width_pt, page_record.page_height_pt)
+                        )
+                        self._log(
+                            "INFO",
+                            f"[{prepared.record.name}] 跳过大幅面页：第 "
+                            f"{page_record.page_number} 页 {short_mm:.0f}×{long_mm:.0f} mm，"
+                            "已跳过翻译，原页将矢量直传到输出 PDF。",
+                        )
+                        self._record_page_submitted()
+                        self._record_page_completed(page_record)
+                        self._push_translation_progress(total_pages)
+                        continue
                     self._log(
                         "INFO",
                         f"[{prepared.record.name}] 第 {page_record.page_number} 页已渲染",
@@ -1800,22 +1876,27 @@ class PdfImageTranslationRunner:
                         page_record.attempts = max_attempts
                         self._record_page_placeholder(page_record)
                     self._record_page_completed(page_record)
-                    self._queue.put(
-                        ProgressMsg(
-                            2,
-                            4,
-                            "翻译页面",
-                            self._completed_page_count,
-                            max(1, total_pages),
-                        )
-                    )
-                    self._queue.put(
-                        StatusMsg(
-                            self._stop_wait_status()
-                            if self._stop_event.is_set()
-                            else f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
-                        )
-                    )
+                    self._push_translation_progress(total_pages)
+
+    def _push_translation_progress(self, total_pages: int) -> None:
+        """Emit the "N / total 已完成" progress pair used by both the normal
+        future-completion path and the skipped-oversize-page fast path."""
+        self._queue.put(
+            ProgressMsg(
+                2,
+                4,
+                "翻译页面",
+                self._completed_page_count,
+                max(1, total_pages),
+            )
+        )
+        self._queue.put(
+            StatusMsg(
+                self._stop_wait_status()
+                if self._stop_event.is_set()
+                else f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
+            )
+        )
 
     def _iter_rendered_pages(self, prepared_files: list[_PreparedPdfFile]):
         needs_pdf_rendering = any(
@@ -2009,6 +2090,9 @@ class PdfImageTranslationRunner:
         record.emergency_ratio_normalized_count = sum(
             1 for page in record.pages if page.emergency_ratio_normalized
         )
+        record.skipped_oversize_page_count = sum(
+            1 for page in record.pages if page.skipped_oversize
+        )
         record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
         record.review_enabled = bool(self._settings.pdf.review_enabled)
         record.reviewed_page_count = sum(
@@ -2039,6 +2123,7 @@ class PdfImageTranslationRunner:
             "placeholder",
             "placeholder_pending",
             PDF_OUTPUT_STATE_FAILED,
+            PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
         }
         return (
             len(record.pages) == record.page_count
@@ -2309,6 +2394,21 @@ class PdfImageTranslationRunner:
         page = doc.get_page(page_index)
         try:
             page_width_pt, page_height_pt = page.get_size()
+            if self._settings.pdf.skip_oversized_pages and is_oversized_page(
+                page_width_pt, page_height_pt
+            ):
+                # 大幅面页从不进入模型翻译流程：不渲染栅格化预览（A3 在
+                # 300dpi 下是十来兆的位图，渲染纯属浪费），装配阶段会直接
+                # 从源 PDF 把这一页矢量导入，栅格化只会拖慢流程、拉低质量。
+                return PdfPageRecord(
+                    page_number=page_index + 1,
+                    source_image_path="",
+                    file_name=file_name,
+                    status=PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
+                    skipped_oversize=True,
+                    page_width_pt=float(page_width_pt),
+                    page_height_pt=float(page_height_pt),
+                )
             bitmap = page.render(scale=_pdf_render_scale(), rev_byteorder=True)
             try:
                 source_path = source_pages_dir / page_image_name(page_index + 1, page_count)
@@ -2861,10 +2961,23 @@ class PdfImageTranslationRunner:
         pdfium = _load_pdfium()
         output_pdf.parent.mkdir(parents=True, exist_ok=True)
         out_doc = pdfium.PdfDocument.new()
+        # 大幅面页矢量直传要从「复制到输出目录的源 PDF」按需打开一次，而不是
+        # 每页都开一次；大多数文件根本没有大幅面页，绝大多数情况下这个文档
+        # 永远不会被打开。
+        source_doc = None
         try:
             with tempfile.TemporaryDirectory(prefix="xl-translator-pdf-") as tmp_dir:
                 temp_dir = Path(tmp_dir)
                 for page in sorted(record.pages, key=lambda item: item.page_number):
+                    if page.skipped_oversize:
+                        # 装订顺序靠的是这个循环本身按页码顺序、逐页 append——
+                        # 无论这一页是矢量导入还是栅格化图片页，只要在这里按
+                        # 顺序处理，输出页序就和原文档一致，不需要额外记录
+                        # 插入位置。压缩版也走这条分支：大幅面页不能被有损压缩。
+                        if source_doc is None:
+                            source_doc = _open_pdf_document(Path(record.source_copy_path))
+                        out_doc.import_pages(source_doc, pages=[page.page_number - 1])
+                        continue
                     if not page.translated_image_path:
                         raise RuntimeError(f"第 {page.page_number} 页缺少译后页图像")
                     image_path = Path(page.translated_image_path)
@@ -2889,6 +3002,8 @@ class PdfImageTranslationRunner:
                     )
                 out_doc.save(output_pdf)
         finally:
+            if source_doc is not None:
+                source_doc.close()
             out_doc.close()
 
     def _resolve_pdf_concurrency(self) -> int:
@@ -2923,6 +3038,9 @@ class PdfImageTranslationRunner:
         placeholder_count = sum(record.placeholder_page_count for record in file_records)
         emergency_count = sum(record.emergency_ratio_normalized_count for record in file_records)
         retry_count = sum(record.retry_count for record in file_records)
+        skipped_oversize_count = sum(
+            record.skipped_oversize_page_count for record in file_records
+        )
         review_enabled = bool(self._settings.pdf.review_enabled)
         reviewed_page_count = sum(record.reviewed_page_count for record in file_records)
         review_passed_page_count = sum(record.review_passed_page_count for record in file_records)
@@ -2952,6 +3070,7 @@ class PdfImageTranslationRunner:
             placeholder_page_count=placeholder_count,
             emergency_ratio_normalized_count=emergency_count,
             retry_count=retry_count,
+            skipped_oversize_page_count=skipped_oversize_count,
             compressed_pdf_enabled=bool(self._settings.pdf.generate_compressed_pdf),
             compressed_pdf_count=compressed_pdfs,
             compression_quality=PDF_COMPRESSED_JPEG_QUALITY_DEFAULT,
@@ -2989,6 +3108,7 @@ def _build_pdf_file_item(path: Path, *, root: Path | None = None) -> PdfFileItem
         source_type=SOURCE_TYPE_PDF,
         relative_path=_relative_scan_path(path, root or path.parent),
         format="pdf",
+        oversized_page_count=_read_pdf_oversized_page_count(path),
     )
 
 
@@ -3014,6 +3134,38 @@ def _read_pdf_page_count(path: Path) -> int:
         return 0
     try:
         return len(doc)
+    finally:
+        doc.close()
+
+
+def _read_pdf_oversized_page_count(path: Path) -> int | None:
+    """扫描阶段统计一份 PDF 里有多少页会被「跳过大幅面页」命中。
+
+    只读每页的 /MediaBox 尺寸（page.get_size()），不渲染、不解码内容流，
+    量级和 _read_pdf_page_count 一样便宜，可以在扫描时对每个文件都跑一遍。
+
+    任何异常（文件整体打不开、某一页读不出尺寸）都直接返回 None，绝不能把
+    「读了一半」的部分计数当成确定值返回——调用方要靠 None 和
+    PdfFileItem.oversized_page_count 一起维持「未知 vs 零」的三态语义，
+    半成品计数一旦被当成 0，就会在界面上显示成「确认没有大幅面页」。
+    """
+    try:
+        doc = _open_pdf_document(path)
+    except Exception:
+        return None
+    try:
+        count = 0
+        for index in range(len(doc)):
+            page = doc.get_page(index)
+            try:
+                width_pt, height_pt = page.get_size()
+            finally:
+                page.close()
+            if is_oversized_page(width_pt, height_pt):
+                count += 1
+        return count
+    except Exception:
+        return None
     finally:
         doc.close()
 
@@ -3553,9 +3705,15 @@ def _pdf_file_material_paths(summary: PdfTaskSummary, record: PdfFileRecord) -> 
 
 def _record_has_usable_translated_pages(record: PdfFileRecord) -> bool:
     return any(
-        page.translated_image_path
-        and not page.placeholder
-        and page.status in {"success", "emergency_normalized"}
+        (
+            page.translated_image_path
+            and not page.placeholder
+            and page.status in {"success", "emergency_normalized"}
+        )
+        # 跳过大幅面页的页面没有 translated_image_path（矢量直传，不走栅格化），
+        # 但它本身就是一份有效产物；一份全是大幅面页的 PDF 不该被判定成「零
+        # 可用页面」而整份失败。
+        or page.skipped_oversize
         for page in record.pages
     )
 
@@ -3580,7 +3738,7 @@ def _finished_page_numbers(record: PdfFileRecord) -> list[int]:
     numbers: list[int] = []
     for page in record.pages:
         if (
-            page.status in {"success", "emergency_normalized", "placeholder"}
+            page.status in {"success", "emergency_normalized", "placeholder", PDF_PAGE_STATUS_SKIPPED_OVERSIZE}
             or (
                 page.translated_image_path
                 and page.status not in {"pending", "failed", PDF_OUTPUT_STATE_FAILED}
@@ -3679,6 +3837,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
         f"- 压缩 JPEG 质量：{summary.compression_quality}",
         f"- 压缩最大长边：{summary.compression_max_long_edge_px}px",
         f"- 失败占位页：{summary.placeholder_page_count}",
+        f"- 跳过大幅面页（矢量直传）：{summary.skipped_oversize_page_count}",
         f"- 应急比例归一化页：{summary.emergency_ratio_normalized_count}",
         f"- 页级重试次数：{summary.retry_count}",
         f"- 翻译审核：{'开启' if summary.review_enabled else '关闭'}",
@@ -3717,6 +3876,9 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['source_pages']}",
                 f"- 译后{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['translated_pages']}",
                 f"- 失败占位页：{file_record.placeholder_page_count}",
+                f"- 大幅面页处理：本文件 {file_record.skipped_oversize_page_count} 页判定为大幅面，"
+                f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
+                "页参与翻译",
                 f"- 应急比例归一化页：{file_record.emergency_ratio_normalized_count}",
                 f"- 翻译审核：{'开启' if file_record.review_enabled else '关闭'}",
                 f"- 审核通过页：{file_record.review_passed_page_count}",
@@ -3800,6 +3962,7 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "translated_image_format": record.translated_image_format,
         "page_count": record.page_count,
         "placeholder_page_count": record.placeholder_page_count,
+        "skipped_oversize_page_count": record.skipped_oversize_page_count,
         "emergency_ratio_normalized_count": record.emergency_ratio_normalized_count,
         "review_enabled": record.review_enabled,
         "reviewed_page_count": record.reviewed_page_count,

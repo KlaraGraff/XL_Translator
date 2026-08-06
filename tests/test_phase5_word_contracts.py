@@ -491,6 +491,133 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
                 source_hashes,
             )
 
+    def test_front_matter_protection_reaches_done_files_in_full_translate_mode(self) -> None:
+        # guardrail E：跑一遍完整流水线（不 mock extract_word_segments /
+        # find_word_front_matter_boundary_for_path），确认 front_matter 字段真的能从
+        # phase 1 的 front_matter_summaries 一路走到 _build_result_contract 再到
+        # DoneMsg.files——而不是只在 word_document.py 单元测试里"看起来"生效。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("某某工程施工方案")
+            document.add_paragraph("编制单位：某某公司")
+            document.add_paragraph("第一章 工程概况")
+            document.add_paragraph("施工内容")
+            document.save(source)
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+                protect_front_matter=True,
+            )
+            with ExitStack() as stack:
+                self._runner_patches(stack, root=root, prepared_by_path={source: prepared})
+                runner._run()
+
+            done = self._terminal_message(runner, DoneMsg)
+            front_matter = done.files[0]["front_matter"]
+            self.assertTrue(front_matter["requested"])
+            self.assertTrue(front_matter["found"])
+            self.assertEqual(front_matter["protected_paragraph_count"], 2)
+            self.assertEqual(front_matter["heading_text"], "第一章 工程概况")
+
+    def test_front_matter_protection_reaches_done_files_in_untranslated_only_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("某某工程施工方案")
+            document.add_paragraph("第一章 工程概况")
+            document.save(source)
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+                untranslated_only=True,
+                protect_front_matter=True,
+            )
+            with ExitStack() as stack:
+                self._runner_patches(stack, root=root, prepared_by_path={source: prepared})
+                runner._run()
+
+            done = self._terminal_message(runner, DoneMsg)
+            front_matter = done.files[0]["front_matter"]
+            self.assertTrue(front_matter["requested"])
+            self.assertTrue(front_matter["found"])
+            self.assertEqual(front_matter["protected_paragraph_count"], 1)
+            self.assertEqual(front_matter["heading_text"], "第一章 工程概况")
+
+    def test_front_matter_not_found_logs_warning_and_reports_unprotected(self) -> None:
+        from core.task_runner import LogMsg
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("项目背景")
+            document.add_paragraph("施工内容")
+            document.save(source)
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+                protect_front_matter=True,
+            )
+            with ExitStack() as stack:
+                self._runner_patches(stack, root=root, prepared_by_path={source: prepared})
+                runner._run()
+
+            done = self._terminal_message(runner, DoneMsg)
+            front_matter = done.files[0]["front_matter"]
+            self.assertTrue(front_matter["requested"])
+            self.assertFalse(front_matter["found"])
+            self.assertEqual(front_matter["protected_paragraph_count"], 0)
+            warning_logs = [
+                message.message
+                for message in list(runner._queue.queue)
+                if isinstance(message, LogMsg) and message.level == "WARNING"
+            ]
+            self.assertTrue(
+                any("未能识别出正文标题" in message for message in warning_logs)
+            )
+
     def test_stop_before_word_scanning_records_each_file_as_unstarted(self) -> None:
         from core.task_runner import StoppedMsg
 

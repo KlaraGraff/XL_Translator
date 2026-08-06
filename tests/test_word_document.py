@@ -23,6 +23,7 @@ from core.translation_filter import (
 )
 from core.word_document import (
     extract_word_segments,
+    find_word_front_matter_boundary,
     scan_word_path,
     _has_visible_numbering_prefix,
     normalize_docx_automatic_numbering,
@@ -130,6 +131,85 @@ class WordDocumentTests(unittest.TestCase):
 
             cell_text = out_doc.tables[0].cell(0, 0).text
             self.assertEqual(cell_text, "设备\n安装\nEquipment installation")
+
+    def test_extract_word_segments_protects_front_matter_before_body_heading(self) -> None:
+        # 补译模式之外，全文翻译模式（extract_word_segments 直接抽取全部段落/表格）
+        # 也必须支持"保护封面和目录"——这是与旧版 protect_scheme_cover 最大的行为差异。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "cover_before_chapter.docx"
+            doc = Document()
+            doc.add_paragraph("某某工程施工方案")
+            doc.add_paragraph("编制单位：某某公司")
+            doc.add_paragraph("第一章 工程概况")
+            doc.add_paragraph("施工内容")
+            doc.save(source_path)
+
+            protected_segments = extract_word_segments(
+                source_path,
+                target_lang="en",
+                source_lang="zh",
+                protect_front_matter=True,
+            )
+            protected_sources = {segment.source for segment in protected_segments}
+            self.assertNotIn("某某工程施工方案", protected_sources)
+            self.assertNotIn("编制单位：某某公司", protected_sources)
+            self.assertIn("第一章 工程概况", protected_sources)
+            self.assertIn("施工内容", protected_sources)
+
+            unprotected_segments = extract_word_segments(
+                source_path,
+                target_lang="en",
+                source_lang="zh",
+            )
+            unprotected_sources = {segment.source for segment in unprotected_segments}
+            self.assertIn("某某工程施工方案", unprotected_sources)
+
+    def test_write_bilingual_docx_skips_front_matter_paragraphs_and_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "cover_table_before_chapter.docx"
+            doc = Document()
+            doc.add_paragraph("某某工程施工方案")
+            cover_table = doc.add_table(rows=1, cols=2)
+            cover_table.cell(0, 0).text = "文件编号"
+            cover_table.cell(0, 1).text = "ONEBTR-MS-035"
+            doc.add_paragraph("第一章 工程概况")
+            body_table = doc.add_table(rows=1, cols=1)
+            body_table.cell(0, 0).text = "工程量清单"
+            doc.save(source_path)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=Path(temp_dir) / "out",
+                translations={
+                    "某某工程施工方案": "COVER SHOULD NOT APPEAR",
+                    "文件编号": "COVER SHOULD NOT APPEAR",
+                    "第一章 工程概况": "Chapter 1 Project Overview",
+                    "工程量清单": "Bill of quantities",
+                },
+                target_lang="en",
+                source_lang="zh",
+                protect_front_matter=True,
+            )
+
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertEqual(paragraph_texts.count("某某工程施工方案"), 1)
+            self.assertNotIn("COVER SHOULD NOT APPEAR", paragraph_texts)
+            self.assertIn("Chapter 1 Project Overview", paragraph_texts)
+            self.assertEqual(out_doc.tables[0].cell(0, 0).text, "文件编号")
+            self.assertEqual(out_doc.tables[1].cell(0, 0).text, "工程量清单\nBill of quantities")
+
+    def test_find_word_front_matter_boundary_reports_no_protection_without_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "no_heading.docx"
+            doc = Document()
+            doc.add_paragraph("项目背景")
+            doc.add_paragraph("施工内容")
+            doc.save(source_path)
+
+            boundary = find_word_front_matter_boundary(Document(str(source_path)))
+            self.assertFalse(boundary.found)
+            self.assertEqual(boundary.protected_paragraph_count, 0)
 
     def test_word_review_highlight_marks_unresolved_paragraph_and_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

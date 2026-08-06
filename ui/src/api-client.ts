@@ -50,6 +50,9 @@ export type PdfPage = {
   review_summary: string;
   pending_action: "" | "regenerate" | "skip";
   user_skipped: boolean;
+  /** 按「跳过 A3 及更大的页面」的尺寸判定被跳过——原始矢量内容整页直传到输出，没有译文也没有页图。
+   *  和 user_skipped（用户在逐页面板里手动跳过）是两回事，展示上也必须分开：这个不是异常。 */
+  skipped_oversize: boolean;
   has_source_image: boolean;
   has_translated_image: boolean;
 };

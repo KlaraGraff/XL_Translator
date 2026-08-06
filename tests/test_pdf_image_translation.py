@@ -29,6 +29,7 @@ from core.pdf_image_translation import (
     PDF_OUTPUT_STATE_FAILED,
     PDF_OUTPUT_STATE_NEEDS_REVIEW,
     PDF_OUTPUT_STATE_STOPPED,
+    PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
     PDF_REPORT_FILENAME,
     SOURCE_TYPE_IMAGE,
     SOURCE_TYPE_PDF,
@@ -41,14 +42,17 @@ from core.pdf_image_translation import (
     check_page_quality,
     create_failure_placeholder_page,
     determine_pdf_task_status,
+    is_oversized_page,
     _file_record_to_result,
     _localized_pdf_placeholder_problem,
+    _read_pdf_oversized_page_count,
     max_page_generation_attempts,
     page_image_name,
     resolve_pdf_page_archive_dirs,
     resolve_translated_pdf_variant_paths,
     resolve_translated_pdf_path,
     scan_pdf_path,
+    scan_pdf_sources,
     translated_image_base_name,
     translated_pdf_base_name,
     write_pdf_manifest_and_report,
@@ -68,6 +72,55 @@ def _jpeg_bytes(width: int, height: int, color: str = "white") -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (width, height), color).save(buffer, format="JPEG")
     return buffer.getvalue()
+
+
+# ISO 216 精确 pt 尺寸，跟 config.PDF_A4_LONG_EDGE_PT / PDF_A4_SHORT_EDGE_PT 用的是
+# 同一组数字——测试要卡在 1.15 倍阈值附近做断言，必须用和生产代码一致的精确值，
+# 不能用四舍五入后的近似值（PIL 生成的 PDF 达不到这个精度，所以这里手搓字节）。
+_A4_W_PT, _A4_H_PT = 595.276, 841.89
+_A3_W_PT, _A3_H_PT = 841.89, 1190.551
+
+
+def _write_multi_page_pdf(path: Path, page_specs: list[dict]) -> None:
+    """手搓一份多页 PDF，每页可以指定精确的 /MediaBox 和可选的 /Rotate。
+
+    没有 reportlab 之类的库可用，PIL 生成的多页 PDF 每页尺寸只是像素/DPI
+    换算出来的近似值，达不到「4% 超出阈值」这种测试需要的精度，所以直接手写
+    PDF 对象/xref/trailer。每页内容流留空（``BT ET``），这样输出页除了尺寸
+    和 /Rotate 以外什么都不携带，方便后面用「页面对象数是不是 0」来判断一页
+    在装订产物里到底是矢量原样导入，还是被换成了栅格图片页。
+    """
+    n = len(page_specs)
+    content = b"BT ET"
+    content_obj_nums = [4 + 2 * i for i in range(n)]
+    kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(n))
+
+    objs: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode(),
+    ]
+    for i, spec in enumerate(page_specs):
+        x0, y0, x1, y1 = spec["media_box"]
+        page_dict = f"<< /Type /Page /Parent 2 0 R /MediaBox [{x0} {y0} {x1} {y1}]"
+        if spec.get("rotate") is not None:
+            page_dict += f" /Rotate {spec['rotate']}"
+        page_dict += f" /Resources << >> /Contents {content_obj_nums[i]} 0 R >>"
+        objs.append(page_dict.encode())
+        objs.append(f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"\nendstream")
+
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for i, obj in enumerate(objs, start=1):
+        offsets.append(len(buf))
+        buf += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(buf)
+    total = len(objs) + 1
+    buf += f"xref\n0 {total}\n".encode()
+    buf += b"0000000000 65535 f \n"
+    for off in offsets[1:]:
+        buf += f"{off:010d} 00000 n \n".encode()
+    buf += f"trailer\n<< /Size {total} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode()
+    path.write_bytes(bytes(buf))
 
 
 class PdfImageTranslationTests(unittest.TestCase):
@@ -1727,6 +1780,145 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(snapshot["files"][0]["relative_path"], "source.pdf")
             self.assertEqual(len(snapshot["files"][0]["pages"]), 1)
             self.assertNotIn(str(root), json.dumps(snapshot, ensure_ascii=False))
+
+    def test_is_oversized_page_compares_long_and_short_edges_not_width_height(self) -> None:
+        # 竖版 A4：远低于阈值。
+        self.assertFalse(is_oversized_page(_A4_W_PT, _A4_H_PT))
+        # 横版 A4：宽度（841.89pt）本身超过 A4 短边阈值，如果误用「宽比宽」
+        # 就会被错判成超大页；用长边比长边、短边比短边就不会。
+        self.assertFalse(is_oversized_page(_A4_H_PT, _A4_W_PT))
+        # 竖版/横版 A3：都应该命中。
+        self.assertTrue(is_oversized_page(_A3_W_PT, _A3_H_PT))
+        self.assertTrue(is_oversized_page(_A3_H_PT, _A3_W_PT))
+        # 旋转 90 度的 A3：pypdfium2 的 page.get_size() 已经把宽高互换，
+        # 传进来的就是横版尺寸，判定函数不需要再关心 /Rotate。
+        self.assertTrue(is_oversized_page(_A3_H_PT, _A3_W_PT))
+        # 超出 A4 4%：明显小于 1.15 倍阈值，不能被当成大幅面页。
+        self.assertFalse(is_oversized_page(_A4_W_PT * 1.04, _A4_H_PT * 1.04))
+
+    def test_skip_oversized_pages_end_to_end_preserves_order_and_vector_page(self) -> None:
+        import pypdfium2 as pdfium
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            _write_multi_page_pdf(
+                source_pdf,
+                [
+                    {"media_box": (0, 0, _A4_W_PT, _A4_H_PT)},
+                    {"media_box": (0, 0, _A3_W_PT, _A3_H_PT)},
+                ],
+            )
+            output_dir = root / "out"
+            settings = AppSettings(target_lang="en")
+            settings.pdf.target_lang = "en"
+            settings.pdf.skip_oversized_pages = True
+            settings.image_model_role.source_role = SOURCE_INDEPENDENT
+            settings.image_model_role.cloud_provider = "custom_openai"
+            settings.image_model_role.cloud_model = "image-model"
+            settings.image_model_role.cloud_base_url = "https://images.example/v1"
+            image_client = _RecordingImageClient(_png_bytes(2481, 3508))
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                prepared = runner._prepare_pdf_files(output_dir=output_dir, app_managed=True)[0]
+                runner._total_page_count = 2
+                runner._process_prepared_pages(
+                    [prepared],
+                    max_attempts=max_page_generation_attempts(0),
+                    scheduler=WeightedApiScheduler(1),
+                    review_scheduler=WeightedApiScheduler(1),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=None,
+                    concurrency=1,
+                    total_pages=2,
+                )
+                runner._finalize_file_record(prepared, should_assemble=True)
+
+            record = prepared.record
+            # 大幅面页从未被送进翻译模型：录制客户端只应该收到 1 次调用。
+            self.assertEqual(len(image_client.calls), 1)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            self.assertEqual(record.page_count, 2)
+            self.assertEqual(record.skipped_oversize_page_count, 1)
+            self.assertEqual(runner._completed_page_count, 2)
+            self.assertTrue(runner._record_has_all_pages_finished(record))
+
+            pages = sorted(record.pages, key=lambda item: item.page_number)
+            self.assertEqual(pages[0].status, "success")
+            self.assertFalse(pages[0].skipped_oversize)
+            self.assertEqual(pages[1].status, PDF_PAGE_STATUS_SKIPPED_OVERSIZE)
+            self.assertTrue(pages[1].skipped_oversize)
+
+            # 逐字段确认 skipped_oversize 能到达序列化给前端的页面快照。
+            # pdf_page_snapshot() 读的是 runner._prepared_files，这里绕开了
+            # _run() 的整体调度，所以要手动装填，跟其它同样绕开 _run() 的
+            # 测试（如上面的 resolve_page_image_path 用例）做法一致。
+            runner._prepared_files = [prepared]
+            snapshot = runner.pdf_page_snapshot()
+            snapshot_pages = snapshot["files"][0]["pages"]
+            self.assertEqual(snapshot_pages[0]["skipped_oversize"], False)
+            self.assertEqual(snapshot_pages[1]["skipped_oversize"], True)
+
+            output = Path(record.translated_pdf_path)
+            document = pdfium.PdfDocument(output)
+            try:
+                self.assertEqual(len(document), 2)
+                translated_page = document.get_page(0)
+                try:
+                    # 第 1 页是模型译图：至少带一个插入的图片对象。
+                    self.assertGreaterEqual(len(list(translated_page.get_objects())), 1)
+                finally:
+                    translated_page.close()
+                vector_page = document.get_page(1)
+                try:
+                    # 第 2 页是矢量直传：内容流原样保留（空），没有被换成栅格图片，
+                    # 尺寸也跟原始 A3 页完全一致（不是渲染后近似值）。
+                    self.assertEqual(len(list(vector_page.get_objects())), 0)
+                    width, height = vector_page.get_size()
+                    self.assertAlmostEqual(width, _A3_W_PT, places=1)
+                    self.assertAlmostEqual(height, _A3_H_PT, places=1)
+                finally:
+                    vector_page.close()
+            finally:
+                document.close()
+
+    def test_scan_time_oversized_page_count_is_tri_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mixed_pdf = root / "mixed.pdf"
+            _write_multi_page_pdf(
+                mixed_pdf,
+                [
+                    {"media_box": (0, 0, _A4_W_PT, _A4_H_PT)},
+                    {"media_box": (0, 0, _A3_W_PT, _A3_H_PT)},
+                    {"media_box": (0, 0, _A3_H_PT, _A3_W_PT)},
+                ],
+            )
+            plain_pdf = root / "plain.pdf"
+            _write_multi_page_pdf(plain_pdf, [{"media_box": (0, 0, _A4_W_PT, _A4_H_PT)}])
+
+            result = scan_pdf_sources(root)
+            items_by_name = {item.name: item for item in result.items}
+            self.assertEqual(items_by_name["mixed"].oversized_page_count, 2)
+            self.assertEqual(items_by_name["plain"].oversized_page_count, 0)
+            self.assertEqual(result.summary["oversized_page_count"], 2)
+            self.assertEqual(result.summary["oversized_page_count_unknown_files"], 0)
+
+    def test_read_pdf_oversized_page_count_is_none_not_zero_when_unreadable(self) -> None:
+        # 「读不出来」和「确认没有大幅面页」必须是两个不同的值：前者是 None，
+        # 不能悄悄退化成 0，否则界面会把「无法判断」误显示成「零大幅面页」。
+        with patch(
+            "core.pdf_image_translation._open_pdf_document",
+            side_effect=RuntimeError("corrupt pdf"),
+        ):
+            self.assertIsNone(_read_pdf_oversized_page_count(Path("/nonexistent/does-not-matter.pdf")))
 
 
 class _FailThenPassReviewClient:

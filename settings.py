@@ -802,6 +802,10 @@ class PdfSettings(BaseModel):
     # This controls independent image *inputs* only.  It never changes the
     # visual translation protocol for pages contained in a PDF.
     include_images: bool = False
+    # 「跳过大幅面页」：工程 PDF 里 A3 及以上的大幅面页（多为 CAD 图纸）不送
+    # 翻译模型，直接从源 PDF 矢量原样导入输出——这类页经不起栅格化，且大多数
+    # 也不需要翻译。判定规则见 core.pdf_image_translation.is_oversized_page。
+    skip_oversized_pages: bool = False
 
     @model_validator(mode="before")
     @classmethod

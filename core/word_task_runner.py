@@ -93,8 +93,10 @@ from core.word_converter import (
 )
 from core.word_document import (
     WordFileItem,
+    WordFrontMatterBoundary,
     build_word_output_dir,
     extract_word_segments,
+    find_word_front_matter_boundary_for_path,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
@@ -120,6 +122,31 @@ _WORD_REVIEW_MARK_PRIORITY = {
     MIXED_MARK_FOREIGN_NOISE: 3,
 }
 _POST_WRITE_COVERAGE_ISSUE_LIMIT = 50
+# 「保护封面和目录」上报到前端的标题文字截断长度——正常标题（如「第一章 工程概况」）
+# 远短于这个长度，只有正文标题识别跑偏、把整段正文当标题时才会触顶，截断避免把大段
+# 文字塞进任务日志/结果面板。
+_FRONT_MATTER_HEADING_DISPLAY_LIMIT = 60
+
+
+def _truncate_front_matter_heading(text: str, limit: int = _FRONT_MATTER_HEADING_DISPLAY_LIMIT) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1] + "…"
+
+
+def _front_matter_report(front_matter: WordFrontMatterBoundary, *, requested: bool) -> dict:
+    """把 WordFrontMatterBoundary 转成可以原样塞进 file_results / DoneMsg.files 的展示结构。
+
+    requested 单独保留，是因为前端要能区分"这个文件没开保护"和"开了保护但没找到正文
+    标题"——两者都表现为 protected_paragraph_count == 0，但对用户的含义完全不同。
+    """
+    return {
+        "requested": bool(requested),
+        "found": bool(front_matter.found),
+        "protected_paragraph_count": front_matter.protected_paragraph_count,
+        "heading_text": _truncate_front_matter_heading(front_matter.heading_text),
+    }
 
 
 @dataclass(frozen=True)
@@ -215,7 +242,7 @@ class WordTaskRunner:
         key_overrides: dict[str, str] | None = None,
         api_scheduler: WeightedApiScheduler | None = None,
         untranslated_only: bool = False,
-        protect_scheme_cover: bool = False,
+        protect_front_matter: bool = False,
         allow_doc_fallback: bool = False,
     ):
         self._files = file_items
@@ -225,7 +252,7 @@ class WordTaskRunner:
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler_override = api_scheduler
         self._untranslated_only = bool(untranslated_only)
-        self._protect_scheme_cover = bool(protect_scheme_cover)
+        self._protect_front_matter = bool(protect_front_matter)
         self._allow_doc_fallback = bool(allow_doc_fallback)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -262,6 +289,30 @@ class WordTaskRunner:
     def _log(self, level: str, message: str) -> None:
         self._queue.put(LogMsg(level=level, message=message))
         logger.info(f"[{level}] {message}")
+
+    def _log_front_matter_boundary(
+        self, file_name: str, front_matter: WordFrontMatterBoundary
+    ) -> None:
+        """按文件汇报「保护封面和目录」的判定结果——找不到正文标题绝不能默默生效。"""
+        if not self._protect_front_matter:
+            return
+        if front_matter.found:
+            self._log(
+                "INFO",
+                (
+                    f"  → [前置内容保护] {file_name}：跳过开头 "
+                    f"{front_matter.protected_paragraph_count} 段，正文从"
+                    f"「{_truncate_front_matter_heading(front_matter.heading_text)}」开始。"
+                ),
+            )
+        else:
+            self._log(
+                "WARNING",
+                (
+                    f"  → [前置内容保护] {file_name}：未能识别出正文标题，"
+                    "前置内容保护未生效，本文件将按未保护方式正常处理。"
+                ),
+            )
 
     def _run_with_overrides(self) -> None:
         with provider_key_overrides(self._key_overrides):
@@ -351,8 +402,12 @@ class WordTaskRunner:
         self._log("INFO", f"扫描到 {len(self._files)} 个 Word 文件")
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
-        if self._protect_scheme_cover:
-            self._log("INFO", "[封面保护] 检测方案封面：普通封面内容跳过，方案标题下方外文标题允许补译。")
+        if self._protect_front_matter:
+            self._log(
+                "INFO",
+                "[前置内容保护] 已启用：每个文件从开头到第一个正文标题之前的内容"
+                "（封面、目录、前言等）默认不翻译，找不到正文标题的文件不受影响。",
+            )
 
         phase_total = 3
         file_texts: list[set[str]] = []
@@ -369,6 +424,7 @@ class WordTaskRunner:
         process_paths: list[Path] = []
         converted_temp_paths: list[Path] = []
         preprocess_summaries: list[dict] = []
+        front_matter_summaries: list[dict] = []
         word_batch_stats = WordBatchRunStats()
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
@@ -455,7 +511,7 @@ class WordTaskRunner:
                                 if not auto_source_lang
                                 else get_default_source_lang()
                             ),
-                            protect_scheme_cover=self._protect_scheme_cover,
+                            protect_front_matter=self._protect_front_matter,
                         )
                         coverage_plans.append(coverage_plan)
                         _remember_coverage_unit_locations(
@@ -474,6 +530,13 @@ class WordTaskRunner:
                                 f"不确定跳过 {summary.get('ambiguous', 0)}"
                             ),
                         )
+                        front_matter_summaries.append(
+                            _front_matter_report(
+                                coverage_plan.front_matter,
+                                requested=self._protect_front_matter,
+                            )
+                        )
+                        self._log_front_matter_boundary(file_item.name, coverage_plan.front_matter)
                     else:
                         segments = extract_word_segments(
                             process_path,
@@ -483,6 +546,7 @@ class WordTaskRunner:
                                 if not auto_source_lang
                                 else get_default_source_lang()
                             ),
+                            protect_front_matter=self._protect_front_matter,
                         )
                         coverage_plans.append(None)
                         _remember_segment_locations(
@@ -491,6 +555,21 @@ class WordTaskRunner:
                             segments,
                         )
                         text_set = {segment.source for segment in segments}
+                        # extract_word_segments 只返回抽取好的词条，不携带边界信息；
+                        # 全文翻译模式下要单独查一次正文边界才能把保护结果上报给前端，
+                        # 这与补译模式下 coverage_plan.front_matter 已经"顺手"带出来不同。
+                        front_matter = (
+                            find_word_front_matter_boundary_for_path(process_path)
+                            if self._protect_front_matter
+                            else WordFrontMatterBoundary(body_start_index=None)
+                        )
+                        front_matter_summaries.append(
+                            _front_matter_report(
+                                front_matter,
+                                requested=self._protect_front_matter,
+                            )
+                        )
+                        self._log_front_matter_boundary(file_item.name, front_matter)
                     file_texts.append(text_set)
                     global_unique_texts.update(text_set)
                     elapsed = (datetime.now() - t0).total_seconds()
@@ -503,6 +582,8 @@ class WordTaskRunner:
                         preprocess_summaries.append({})
                     if len(coverage_plans) < index + 1:
                         coverage_plans.append(None)
+                    if len(front_matter_summaries) < index + 1:
+                        front_matter_summaries.append({})
                     file_texts.append(set())
                     self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {exc}")
                     self._task_logger.file_error(file_item.name, f"Word 文件读取失败: {exc}")
@@ -1074,6 +1155,7 @@ class WordTaskRunner:
                                 "OK" if msg.startswith("[OK]") else "INFO",
                                 msg,
                             ),
+                            protect_front_matter=self._protect_front_matter,
                         )
                     residual_count = _append_post_write_coverage_issues(
                         issues=quality_issues,
@@ -1081,7 +1163,7 @@ class WordTaskRunner:
                         output_path=out_path,
                         target_lang=target_lang,
                         source_lang=source_lang,
-                        protect_scheme_cover=self._protect_scheme_cover,
+                        protect_front_matter=self._protect_front_matter,
                     )
                     if residual_count:
                         self._log(
@@ -1110,6 +1192,11 @@ class WordTaskRunner:
                             "preprocess": (
                                 preprocess_summaries[index]
                                 if index < len(preprocess_summaries)
+                                else {}
+                            ),
+                            "front_matter": (
+                                front_matter_summaries[index]
+                                if index < len(front_matter_summaries)
                                 else {}
                             ),
                             "issues": [
@@ -1259,6 +1346,7 @@ class WordTaskRunner:
             raw = raw_by_source.get(str(item.path), {})
             success = bool(raw.get("success"))
             preprocess = dict(raw.get("preprocess") or {})
+            front_matter = dict(raw.get("front_matter") or {})
             if raw:
                 status = "succeeded" if success else "failed"
                 readable_error = str(raw.get("error") or "")
@@ -1306,6 +1394,14 @@ class WordTaskRunner:
                         "labels_materialized": int(
                             preprocess.get("labels_prepended") or 0
                         ),
+                    },
+                    "front_matter": {
+                        "requested": bool(front_matter.get("requested")),
+                        "found": bool(front_matter.get("found")),
+                        "protected_paragraph_count": int(
+                            front_matter.get("protected_paragraph_count") or 0
+                        ),
+                        "heading_text": str(front_matter.get("heading_text") or ""),
                     },
                     "review_items": list(raw.get("issues") or []),
                     "error": readable_error,
@@ -2417,13 +2513,13 @@ def _append_post_write_coverage_issues(
     output_path: Path,
     target_lang: str,
     source_lang: str,
-    protect_scheme_cover: bool = False,
+    protect_front_matter: bool = False,
 ) -> int:
     plan = build_word_coverage_plan(
         output_path,
         target_lang=target_lang,
         source_lang=source_lang,
-        protect_scheme_cover=protect_scheme_cover,
+        protect_front_matter=protect_front_matter,
     )
     source_units = plan.source_units
     if not source_units:

@@ -50,7 +50,7 @@ def run_word_translation_path(
     *,
     settings: AppSettings | None = None,
     untranslated_only: bool = False,
-    protect_scheme_cover: bool = False,
+    protect_front_matter: bool = False,
     poll_interval: float = 0.1,
     event_handler: HeadlessWordEventHandler | None = None,
 ) -> HeadlessWordTranslationResult:
@@ -85,7 +85,7 @@ def run_word_translation_path(
         source_root=source_root,
         source_lang=runtime_settings.source_lang,
         untranslated_only=untranslated_only,
-        protect_scheme_cover=protect_scheme_cover,
+        protect_front_matter=protect_front_matter,
     )
     runner.start()
 

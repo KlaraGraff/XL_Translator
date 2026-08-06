@@ -125,7 +125,7 @@ class TaskStartRequest(BaseModel):
     surface: Literal["excel", "word", "pdf", "tm_clean"]
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
-    protect_scheme_cover: bool = False
+    protect_front_matter: bool = False
     allow_xls_fallback: bool = False
     allow_doc_fallback: bool = False
     include_images: bool = False
@@ -660,7 +660,7 @@ def create_app(
     def _task_options(request: TaskStartRequest) -> TaskOptions:
         return TaskOptions(
             untranslated_only=request.untranslated_only,
-            protect_scheme_cover=request.protect_scheme_cover,
+            protect_front_matter=request.protect_front_matter,
             allow_xls_fallback=request.allow_xls_fallback,
             allow_doc_fallback=request.allow_doc_fallback,
             include_images=request.include_images,

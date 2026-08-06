@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from core.translation_coverage import (
     COVERAGE_COVERED,
@@ -15,6 +17,21 @@ from core.word_coverage import (
     build_word_coverage_plan,
     write_untranslated_docx,
 )
+
+
+def _append_auto_toc_field(paragraph) -> None:
+    """把一个空跑（run）标记为 Word 自动生成的 TOC 域，模拟 Insert TOC 之后的段落。"""
+    paragraph.add_run()
+    field_start = OxmlElement("w:fldChar")
+    field_start.set(qn("w:fldCharType"), "begin")
+    instruction = OxmlElement("w:instrText")
+    instruction.set(qn("xml:space"), "preserve")
+    instruction.text = ' TOC \\o "1-3" '
+    field_end = OxmlElement("w:fldChar")
+    field_end.set(qn("w:fldCharType"), "end")
+    paragraph._p.append(field_start)
+    paragraph._p.append(instruction)
+    paragraph._p.append(field_end)
 
 
 class WordCoverageTests(unittest.TestCase):
@@ -110,19 +127,14 @@ class WordCoverageTests(unittest.TestCase):
             self.assertEqual(by_location["table[0].cell[0]"].status, COVERAGE_SOURCE_ONLY)
             self.assertEqual(by_location["table[0].cell[1]"].status, COVERAGE_COVERED)
 
-    def test_scheme_cover_protects_cover_but_translates_foreign_title_exception(self) -> None:
+    def test_front_matter_protects_cover_and_auto_toc_before_first_chapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "固化地面专项施工方案.docx"
+            source = Path(tmp) / "封面加自动目录.docx"
             doc = Document()
-            doc.add_paragraph("贝特瑞地中海负极项目")
-            doc.add_paragraph("固化地面专项施工方案")
-            doc.add_paragraph("Specific construction plan for hardened floors")
-            doc.add_paragraph("编制 PREPARED BY")
-            table = doc.add_table(rows=2, cols=3)
-            table.cell(0, 0).text = "文件编号 DOCNO."
-            table.cell(0, 2).text = "ONEBTR-MS-035 Rev_A"
-            table.cell(1, 0).text = "编制 PREPARED BY"
-            doc.add_paragraph("第一章 编制依据")
+            doc.add_paragraph("某某工程施工方案")
+            doc.add_paragraph("编制单位：某某公司")
+            _append_auto_toc_field(doc.add_paragraph())
+            doc.add_paragraph("第一章 工程概况")
             doc.add_paragraph("施工内容")
             doc.save(source)
 
@@ -130,74 +142,163 @@ class WordCoverageTests(unittest.TestCase):
                 source,
                 target_lang="fr",
                 source_lang="zh",
-                protect_scheme_cover=True,
+                protect_front_matter=True,
             )
-            by_location = {unit.location: unit for unit in plan.units}
 
+            self.assertTrue(plan.front_matter.found)
+            self.assertEqual(plan.front_matter.heading_text, "第一章 工程概况")
+            self.assertEqual(plan.front_matter.protected_paragraph_count, 2)
+            by_location = {unit.location: unit for unit in plan.units}
             self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_IGNORED)
             self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_IGNORED)
-            self.assertEqual(by_location["body.paragraph[2]"].status, COVERAGE_SOURCE_ONLY)
-            self.assertEqual(by_location["body.paragraph[3]"].status, COVERAGE_IGNORED)
+            # 域段落本身没有可见文字，_classify_body_paragraphs 从不为空段落生成 unit，
+            # 这里不用断言 paragraph[2]；重点是它前后的边界判断没有被打乱。
+            self.assertEqual(by_location["body.paragraph[3]"].status, COVERAGE_SOURCE_ONLY)
             self.assertEqual(by_location["body.paragraph[4]"].status, COVERAGE_SOURCE_ONLY)
-            self.assertEqual(by_location["body.paragraph[5]"].status, COVERAGE_SOURCE_ONLY)
-            table_units = [
-                unit for unit in plan.units if unit.location.startswith("table[0].")
-            ]
-            self.assertTrue(table_units)
-            self.assertTrue(all(unit.status == COVERAGE_IGNORED for unit in table_units))
-            self.assertEqual(
-                plan.source_texts,
-                [
-                    "Specific construction plan for hardened floors",
-                    "第一章 编制依据",
-                    "施工内容",
-                ],
-            )
 
-    def test_scheme_cover_foreign_title_with_existing_translation_is_covered(self) -> None:
+    def test_front_matter_hand_typed_toc_leader_is_not_mistaken_for_body_heading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "固化地面专项施工方案.docx"
+            source = Path(tmp) / "封面加手打目录.docx"
             doc = Document()
-            doc.add_paragraph("固化地面专项施工方案")
-            doc.add_paragraph("Specific construction plan for hardened floors")
-            doc.add_paragraph("Plan d'exécution spécifique pour sols durcis")
-            doc.add_paragraph("第一章 编制依据")
+            doc.add_paragraph("某某工程施工方案")
+            # 手打目录条目本身以"第一章"开头——这正是 guardrail A 要防的假阳性：
+            # 不带这条正则的话，扫描会在这里就误判成正文标题，导致目录本身反而被当正文翻译。
+            doc.add_paragraph("第一章 工程概况 ...... 1")
+            doc.add_paragraph("第二章 施工部署 ...... 5")
+            doc.add_paragraph("第一章 工程概况")
+            doc.add_paragraph("施工内容")
             doc.save(source)
 
             plan = build_word_coverage_plan(
                 source,
                 target_lang="fr",
                 source_lang="zh",
-                protect_scheme_cover=True,
+                protect_front_matter=True,
             )
+
+            self.assertTrue(plan.front_matter.found)
+            self.assertEqual(plan.front_matter.heading_text, "第一章 工程概况")
+            self.assertEqual(plan.front_matter.protected_paragraph_count, 3)
             by_location = {unit.location: unit for unit in plan.units}
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[2]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[3]"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(by_location["body.paragraph[4]"].status, COVERAGE_SOURCE_ONLY)
 
-            self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_COVERED)
-            self.assertEqual(
-                by_location["body.paragraph[1]"].target_text,
-                "Plan d'exécution spécifique pour sols durcis",
+    def test_front_matter_bare_numeric_heading_without_decimal_point(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "无点号标题.docx"
+            doc = Document()
+            doc.add_paragraph("某某工程施工方案")
+            doc.add_paragraph("1 概述")
+            doc.add_paragraph("施工内容")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_front_matter=True,
             )
 
-    def test_scheme_filename_without_cover_title_does_not_hide_body(self) -> None:
+            self.assertTrue(plan.front_matter.found)
+            self.assertEqual(plan.front_matter.heading_text, "1 概述")
+            by_location = {unit.location: unit for unit in plan.units}
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[1]"].status, COVERAGE_SOURCE_ONLY)
+            self.assertEqual(by_location["body.paragraph[2]"].status, COVERAGE_SOURCE_ONLY)
+
+    def test_front_matter_word_heading_style_without_recognizable_text_pattern(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "施工方案修订说明.docx"
+            source = Path(tmp) / "样式标题.docx"
+            doc = Document()
+            doc.add_paragraph("某某工程施工方案")
+            # Word 内置"标题 1"样式，但文字本身既不带章节前缀也不带数字——只能靠样式识别。
+            doc.add_heading("工程概况说明", level=1)
+            doc.add_paragraph("施工内容")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_front_matter=True,
+            )
+
+            self.assertTrue(plan.front_matter.found)
+            self.assertEqual(plan.front_matter.heading_text, "工程概况说明")
+            by_location = {unit.location: unit for unit in plan.units}
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_IGNORED)
+            self.assertEqual(by_location["body.paragraph[2]"].status, COVERAGE_SOURCE_ONLY)
+
+    def test_front_matter_protects_nothing_when_no_heading_is_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "无标题文档.docx"
             doc = Document()
             doc.add_paragraph("项目背景")
             doc.add_paragraph("施工内容")
-            doc.add_paragraph("1.1 作业范围")
+            doc.add_paragraph("验收标准")
             doc.save(source)
 
             plan = build_word_coverage_plan(
                 source,
                 target_lang="fr",
                 source_lang="zh",
-                protect_scheme_cover=True,
+                protect_front_matter=True,
             )
 
+            # 找不到正文标题时绝不能把整份文档当封面吞掉：断言"没保护任何内容"。
+            self.assertFalse(plan.front_matter.found)
+            self.assertEqual(plan.front_matter.protected_paragraph_count, 0)
             self.assertEqual(
                 [unit.source_text for unit in plan.source_units],
-                ["项目背景", "施工内容", "1.1 作业范围"],
+                ["项目背景", "施工内容", "验收标准"],
             )
+
+    def test_front_matter_protects_cover_table_before_first_chapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "表格封面.docx"
+            doc = Document()
+            cover_table = doc.add_table(rows=2, cols=2)
+            cover_table.cell(0, 0).text = "文件编号"
+            cover_table.cell(0, 1).text = "ONEBTR-MS-035"
+            cover_table.cell(1, 0).text = "编制人"
+            cover_table.cell(1, 1).text = "张三"
+            doc.add_paragraph("第一章 工程概况")
+            body_table = doc.add_table(rows=1, cols=1)
+            body_table.cell(0, 0).text = "工程量清单"
+            doc.save(source)
+
+            plan = build_word_coverage_plan(
+                source,
+                target_lang="fr",
+                source_lang="zh",
+                protect_front_matter=True,
+            )
+
+            self.assertTrue(plan.front_matter.found)
+            cover_units = [unit for unit in plan.units if unit.location.startswith("table[0].")]
+            body_table_units = [unit for unit in plan.units if unit.location.startswith("table[1].")]
+            self.assertTrue(cover_units)
+            self.assertTrue(all(unit.status == COVERAGE_IGNORED for unit in cover_units))
+            self.assertTrue(body_table_units)
+            self.assertTrue(all(unit.status == COVERAGE_SOURCE_ONLY for unit in body_table_units))
+
+    def test_front_matter_disabled_by_default_leaves_cover_translatable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "默认不保护.docx"
+            doc = Document()
+            doc.add_paragraph("某某工程施工方案")
+            doc.add_paragraph("第一章 工程概况")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+
+            self.assertFalse(plan.front_matter.found)
+            by_location = {unit.location: unit for unit in plan.units}
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_SOURCE_ONLY)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

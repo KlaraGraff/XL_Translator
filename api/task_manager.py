@@ -98,7 +98,7 @@ class TaskInputError(ValueError):
 @dataclass(frozen=True)
 class TaskOptions:
     untranslated_only: bool = False
-    protect_scheme_cover: bool = False
+    protect_front_matter: bool = False
     allow_xls_fallback: bool = False
     allow_doc_fallback: bool = False
     include_images: bool = False
@@ -473,7 +473,7 @@ class TranslationTaskManager:
             "groups": sorted((repr(key), value) for key, value in group_capacities.items()),
             "options": {
                 "untranslated_only": options.untranslated_only,
-                "protect_scheme_cover": options.protect_scheme_cover,
+                "protect_front_matter": options.protect_front_matter,
                 "allow_xls_fallback": options.allow_xls_fallback,
                 "allow_doc_fallback": options.allow_doc_fallback,
                 "include_images": options.include_images,
@@ -1107,7 +1107,7 @@ class TranslationTaskManager:
                 source_lang=source_lang,
                 key_overrides=key_overrides,
                 untranslated_only=options.untranslated_only,
-                protect_scheme_cover=options.protect_scheme_cover,
+                protect_front_matter=options.protect_front_matter,
                 allow_doc_fallback=options.allow_doc_fallback,
                 api_scheduler=api_schedulers.get("translation"),
             )

@@ -225,6 +225,18 @@ PDF_MIN_READABLE_LONG_EDGE_PX = 1600
 PDF_COMPRESSED_JPEG_QUALITY_DEFAULT = 85
 PDF_COMPRESSED_MAX_LONG_EDGE_PX = 2200
 
+# ── 跳过大幅面页（超大页判定）────────────────────────────────
+# ISO 216 A4 物理尺寸，单位 pt（1/72 in）。工程 PDF 里的说明书正文几乎总是
+# A4，附带的 CAD 图纸多为 A3 及以上；这是本判定纯按纸张尺寸识别「大幅面页」
+# 的原始动机，但判定本身只看页面尺寸和 A4 的倍数关系，跟页面内容是不是图纸
+# 无关——不送模型、原样矢量保留。
+PDF_A4_LONG_EDGE_PT = 841.89
+PDF_A4_SHORT_EDGE_PT = 595.276
+# A3 相对 A4 长边、短边都精确放大 1.414 倍；真实 A4 导出（打印留边、扫描时
+# 多出来的白边）实测常见超出也就几个百分点。1.15 卡在两者正中间，能吃掉正常的
+# A4 超出，又不会把「稍大一点的 A4」误判成大幅面页。
+PDF_OVERSIZED_PAGE_EDGE_FACTOR = 1.15
+
 # ── 全局并发控制（输入框按模式限制区间）────────────────────
 CONCURRENCY_UNLOCK_CODE      = "OA"
 CONCURRENCY_CLOUD_DEFAULT    = 20

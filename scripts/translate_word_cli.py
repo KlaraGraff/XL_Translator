@@ -54,9 +54,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Only insert translations at source-only positions in an already bilingual Word document.",
     )
     parser.add_argument(
-        "--word-protect-scheme-cover",
+        "--word-protect-front-matter",
         action="store_true",
-        help="Protect method-statement covers while allowing the foreign title below the Chinese scheme title to be translated.",
+        help="Leave everything before the first body chapter heading untranslated (cover, TOC, preface).",
     )
     highlight_group = parser.add_mutually_exclusive_group()
     highlight_group.add_argument(
@@ -107,8 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         result = run_word_translation_path(
             args.source,
             settings=settings,
-            untranslated_only=args.word_untranslated_only or args.word_protect_scheme_cover,
-            protect_scheme_cover=args.word_protect_scheme_cover,
+            untranslated_only=args.word_untranslated_only,
+            protect_front_matter=args.word_protect_front_matter,
             event_handler=None if args.quiet else _print_event,
         )
     except Exception as exc:
