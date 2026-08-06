@@ -23,29 +23,19 @@ from copy import copy
 from loguru import logger
 
 from config import (
-    BILINGUAL_SEPARATOR,
     EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
-    PRINT_GUARD_LINE_HEIGHT_MULTIPLIER,
     PRINT_GUARD_FONT_STEP,
     PRINT_GUARD_FONT_FLOOR,
-    REVIEW_MARK_COLOR_DEFAULTS,
 )
 from core.language_registry import get_target_lang_display
-from core.mixed_language import MIXED_MARK_UNRESOLVED
-from core.translation_protocol import extract_replace_translation, is_replace_translation
-from core.translation_filter import should_translate
+from core.xlsx_patcher import (
+    estimate_chars_per_line,
+    estimate_max_visible_lines,
+    estimate_required_lines,
+    write_bilingual_workbook,
+)
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
-_EXCEL_REVIEW_RISK_FONT_COLOR = "FF0000"
-_EXCEL_REVIEW_MARK_COLORS = dict(REVIEW_MARK_COLOR_DEFAULTS)
-
-
-def _is_wps_dispimg_formula(cell) -> bool:
-    value = cell.value
-    if not isinstance(value, str) or not value.lstrip().startswith("="):
-        return False
-    formula = value.lstrip()[1:].lstrip()
-    return formula.upper().startswith(("DISPIMG(", "_XLFN.DISPIMG("))
 
 
 def _ensure_owner_writable(path: Path) -> None:
@@ -184,8 +174,8 @@ def write_bilingual_file(
     shutil.copy2(source_path, out_path)
     _ensure_owner_writable(out_path)
 
-    _write_with_openpyxl(
-        file_path=out_path,
+    write_bilingual_workbook(
+        out_path,
         translations=translations,
         target_lang=target_lang,
         source_lang=source_lang,
@@ -212,358 +202,12 @@ def _sanitize_filename_fragment(value: str) -> str:
     return cleaned or "目标语言"
 
 
-def _write_with_openpyxl(
-    file_path: Path,
-    translations: dict[str, str],
-    target_lang: str,
-    keep_original_sheets: bool,
-    formula_display_value_backfill: bool,
-    source_lang: str = "zh",
-    lock_row_height: bool = False,
-    review_marks: dict[str, str] | None = None,
-    review_mark_colors: dict[str, str] | None = None,
-    mark_review_items: bool = True,
-    existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT,
-    log_callback=None,
-    review_positions: list[dict[str, str]] | None = None,
-) -> None:
-    """使用 openpyxl 回填（纯文本模式，不处理图片）。"""
-    # KNOWN-ISSUE-VAL-006:
-    # Image-related handling is intentionally offline in the current main flow.
-    # See docs/KNOWN_ISSUES.md for the retained-but-disabled rationale.
-    from openpyxl import load_workbook
-    from openpyxl.styles import Alignment
-
-    review_enabled = bool(mark_review_items)
-    review_color_map = _normalize_review_mark_colors(review_mark_colors)
-    review_mark_map = (
-        _normalize_review_marks(review_marks, review_color_map)
-        if review_enabled
-        else {}
-    )
-    fill_policy = _normalize_existing_fill_policy(existing_fill_policy)
-
-    wb = load_workbook(str(file_path))
-    wb_values = (
-        load_workbook(str(file_path), data_only=True)
-        if formula_display_value_backfill else None
-    )
-
-    try:
-        sheet_names = list(wb.sheetnames)
-
-        # ── 第一遍：先统一复制原文副本（保存原始内容，不含回填）────────
-        if keep_original_sheets:
-            for name in sheet_names:
-                new_ws = wb.copy_worksheet(wb[name])
-                new_ws.title = f"{name}_原文"
-
-        # ── 第二遍：对原始 sheet 执行双语回填 ────────────────────────────
-        for name in sheet_names:
-            ws = wb[name]
-            ws_values = wb_values[name] if wb_values is not None else None
-            adjusted_cell_count = 0
-            review_mark_count = 0
-            review_skip_count = 0
-
-            for row in ws.iter_rows():
-                for cell in row:
-                    # WPS 图片公式没有可移植的显示值，只清理真实公式。
-                    if _is_wps_dispimg_formula(cell):
-                        cell.value = ""
-                        continue
-
-                    source_text = _resolve_cell_source_text(
-                        cell,
-                        ws_values,
-                        formula_display_value_backfill,
-                    )
-                    if source_text is None:
-                        continue
-                    if not should_translate(
-                        source_text,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                    ):
-                        continue
-
-                    source_key = source_text.strip()
-                    tgt = translations.get(source_key)
-                    if tgt is None:
-                        continue
-                    mark_kind = review_mark_map.get(source_key)
-                    if is_replace_translation(tgt):
-                        final_text = extract_replace_translation(tgt).strip()
-                        if not final_text:
-                            if mark_kind:
-                                applied = _apply_excel_review_mark(
-                                    cell,
-                                    mark_kind,
-                                    review_mark_colors=review_color_map,
-                                    existing_fill_policy=fill_policy,
-                                    review_positions=review_positions,
-                                )
-                                if applied:
-                                    review_mark_count += 1
-                                else:
-                                    review_skip_count += 1
-                            continue
-                        cell.value = final_text
-                    else:
-                        if not tgt:
-                            if mark_kind:
-                                applied = _apply_excel_review_mark(
-                                    cell,
-                                    mark_kind,
-                                    review_mark_colors=review_color_map,
-                                    existing_fill_policy=fill_policy,
-                                    review_positions=review_positions,
-                                )
-                                if applied:
-                                    review_mark_count += 1
-                                else:
-                                    review_skip_count += 1
-                            continue
-                        retained_original = source_key.lower() == tgt.strip().lower()
-                        if review_enabled and retained_original and not mark_kind:
-                            mark_kind = MIXED_MARK_UNRESOLVED
-                        if retained_original:
-                            if mark_kind:
-                                applied = _apply_excel_review_mark(
-                                    cell,
-                                    mark_kind,
-                                    review_mark_colors=review_color_map,
-                                    existing_fill_policy=fill_policy,
-                                    review_positions=review_positions,
-                                )
-                                if applied:
-                                    review_mark_count += 1
-                                else:
-                                    review_skip_count += 1
-                            continue
-
-                        # ── 双语回填 ──────────────────────────────────────────────
-                        cell.value = source_text + BILINGUAL_SEPARATOR + tgt
-
-                    if mark_kind:
-                        applied = _apply_excel_review_mark(
-                            cell,
-                            mark_kind,
-                            review_mark_colors=review_color_map,
-                            existing_fill_policy=fill_policy,
-                            review_positions=review_positions,
-                        )
-                        if applied:
-                            review_mark_count += 1
-                        else:
-                            review_skip_count += 1
-
-                    # ── 自动换行 ──────────────────────────────────────────────
-                    existing = cell.alignment
-                    cell.alignment = Alignment(
-                        wrap_text=True,
-                        horizontal=existing.horizontal,
-                        vertical=existing.vertical,
-                        text_rotation=existing.text_rotation,
-                        indent=existing.indent,
-                        shrink_to_fit=existing.shrink_to_fit,
-                    )
-
-                    if lock_row_height:
-                        reached_floor = _shrink_font_to_fit_locked_row(cell, ws)
-                        adjusted_cell_count += 1
-                        if reached_floor and log_callback:
-                            log_callback(
-                                f"[WARN] {ws.title}!{cell.coordinate} 缩至最小字号 {PRINT_GUARD_FONT_FLOOR:.1f}pt 仍可能无法完全显示"
-                            )
-
-            # ── 行高策略 ────────────────────────────────────────────────
-            if not lock_row_height:
-                # 默认模式 / Excel 精调模式：先用 Python 自动调行高
-                _auto_adjust_row_heights(ws)
-            elif log_callback and adjusted_cell_count:
-                log_callback(f"[INFO] 分表已锁定行高并缩字号：{name}（{adjusted_cell_count} 个单元格）")
-
-            if log_callback:
-                review_summary = ""
-                if review_mark_count or review_skip_count:
-                    review_summary = f"（风险标记 {review_mark_count}"
-                    if review_skip_count:
-                        review_summary += f"，保留原底色未改 {review_skip_count}"
-                    review_summary += "）"
-                log_callback(f"[INFO] 分表已处理：{name}{review_summary}")
-
-        wb.save(str(file_path))
-    finally:
-        wb.close()
-        if wb_values is not None:
-            wb_values.close()
-
-
-def _normalize_review_mark_colors(colors: dict[str, str] | None) -> dict[str, str]:
-    raw_colors = dict(colors or {})
-    normalized: dict[str, str] = {}
-    for mark, default_color in _EXCEL_REVIEW_MARK_COLORS.items():
-        normalized[mark] = _normalize_excel_rgb(
-            raw_colors.get(mark, ""),
-            fallback=default_color,
-        )
-    return normalized
-
-
-def _normalize_review_marks(
-    review_marks: dict[str, str] | None,
-    review_mark_colors: dict[str, str],
-) -> dict[str, str]:
-    normalized: dict[str, str] = {}
-    for source, mark in (review_marks or {}).items():
-        source_key = str(source or "").strip()
-        mark_key = str(mark or "").strip()
-        if source_key and mark_key in review_mark_colors:
-            normalized[source_key] = mark_key
-    return normalized
-
-
-def _normalize_existing_fill_policy(policy: str) -> str:
-    normalized = str(policy or "").strip()
-    if normalized not in {"skip", "overwrite", "red_font"}:
-        return EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
-    return normalized
-
-
-def _apply_excel_review_mark(
-    cell,
-    mark_kind: str,
-    *,
-    review_mark_colors: dict[str, str],
-    existing_fill_policy: str,
-    review_positions: list[dict[str, str]] | None = None,
-) -> bool:
-    fill_color = review_mark_colors.get(mark_kind)
-    if not fill_color:
-        return False
-
-    has_existing_fill = _cell_has_existing_fill(cell)
-    if has_existing_fill and existing_fill_policy == "skip":
-        _record_review_position(
-            review_positions,
-            cell,
-            mark_kind,
-            "preserved_existing_fill",
-        )
-        return False
-    if has_existing_fill and existing_fill_policy == "red_font":
-        _set_cell_font_color(cell, _EXCEL_REVIEW_RISK_FONT_COLOR)
-        _record_review_position(review_positions, cell, mark_kind, "marked_red_font")
-        return True
-
-    _set_cell_fill(cell, fill_color)
-    _record_review_position(review_positions, cell, mark_kind, "marked_fill")
-    return True
-
-
-def _record_review_position(
-    collector: list[dict[str, str]] | None,
-    cell,
-    category: str,
-    action: str,
-) -> None:
-    if collector is None:
-        return
-    collector.append(
-        {
-            "worksheet": str(getattr(cell.parent, "title", "")),
-            "cell": str(getattr(cell, "coordinate", "")),
-            "category": str(category),
-            "action": str(action),
-        }
-    )
-
-
-def _cell_has_existing_fill(cell) -> bool:
-    fill = getattr(cell, "fill", None)
-    if fill is None:
-        return False
-    pattern = str(
-        getattr(fill, "fill_type", None)
-        or getattr(fill, "patternType", None)
-        or ""
-    ).strip().lower()
-    return bool(pattern and pattern != "none")
-
-
-def _set_cell_fill(cell, rgb: str) -> None:
-    from openpyxl.styles import PatternFill
-
-    argb = _to_excel_argb(rgb)
-    cell.fill = PatternFill(fill_type="solid", fgColor=argb, start_color=argb, end_color=argb)
-
-
-def _set_cell_font_color(cell, rgb: str) -> None:
-    new_font = copy(cell.font)
-    new_font.color = _to_excel_argb(rgb)
-    cell.font = new_font
-
-
-def _to_excel_argb(value: str) -> str:
-    cleaned = _normalize_excel_rgb(value, fallback="")
-    if cleaned:
-        return f"FF{cleaned}"
-    return "FFFF0000"
-
-
-def _normalize_excel_rgb(value: str, *, fallback: str) -> str:
-    cleaned = re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
-    if len(cleaned) == 8:
-        return cleaned[-6:]
-    if len(cleaned) == 6:
-        return cleaned
-    return fallback
-
-
-def _resolve_cell_source_text(
-    cell,
-    ws_values,
-    formula_display_value_backfill: bool,
-) -> str | None:
-    value = cell.value
-    if not isinstance(value, str):
-        return None
-    if not formula_display_value_backfill or not _is_formula_cell(cell):
-        return value
-    if ws_values is None:
-        return None
-
-    display_value = ws_values[cell.coordinate].value
-    return display_value if isinstance(display_value, str) else None
-
-
-def _is_formula_cell(cell) -> bool:
-    return getattr(cell, "data_type", None) == "f"
-
-
-def _estimate_chars_per_line(col_width: float, font_size_pt: float) -> int:
-    """按列宽+字号估算每行容纳字符数。"""
-    # 以 11pt 为基准：字号越小，每行可容纳字符越多
-    base_chars_per_width = 1.2
-    scale = 11.0 / max(font_size_pt, 0.1)
-    return max(1, int(col_width * base_chars_per_width * scale))
-
-
-def _estimate_required_lines(text: str, chars_per_line: int) -> int:
-    total_lines = 0
-    for segment in text.split("\n"):
-        total_lines += max(1, -(-len(segment) // max(chars_per_line, 1)))
-    return max(1, total_lines)
-
-
-def _estimate_max_visible_lines(row_height: float, font_size_pt: float) -> int:
-    line_height = max(1.0, font_size_pt * PRINT_GUARD_LINE_HEIGHT_MULTIPLIER)
-    return max(1, int(row_height / line_height))
-
-
 def _shrink_font_to_fit_locked_row(cell, ws) -> bool:
-    """锁定行高模式：逐步缩小字号适配当前行高。返回是否触底。"""
+    """锁定行高模式：逐步缩小字号适配当前行高。返回是否触底。
+
+    仅供 ``core.excel_coverage`` 的补译写入路径使用；主双语写入已改走
+    ``core.xlsx_patcher`` 的补丁式实现，两边共用同一套估算公式。
+    """
     default_col_width = 8.43
     default_row_height = 15.0
 
@@ -579,9 +223,9 @@ def _shrink_font_to_fit_locked_row(cell, ws) -> bool:
     step = float(PRINT_GUARD_FONT_STEP)
 
     while True:
-        chars_per_line = _estimate_chars_per_line(col_width, current_size)
-        required_lines = _estimate_required_lines(str(cell.value), chars_per_line)
-        visible_lines = _estimate_max_visible_lines(row_height, current_size)
+        chars_per_line = estimate_chars_per_line(col_width, current_size)
+        required_lines = estimate_required_lines(str(cell.value), chars_per_line)
+        visible_lines = estimate_max_visible_lines(row_height, current_size)
 
         if required_lines <= visible_lines:
             break
@@ -597,13 +241,16 @@ def _shrink_font_to_fit_locked_row(cell, ws) -> bool:
         new_font.size = current_size
         cell.font = new_font
 
-    return current_size <= min_size and _estimate_required_lines(
-        str(cell.value), _estimate_chars_per_line(col_width, current_size)
-    ) > _estimate_max_visible_lines(row_height, current_size)
+    return current_size <= min_size and estimate_required_lines(
+        str(cell.value), estimate_chars_per_line(col_width, current_size)
+    ) > estimate_max_visible_lines(row_height, current_size)
 
 
 def _auto_adjust_row_heights(ws) -> None:
     """自动调整行高以适配双语内容（对所有行统一处理）。
+
+    仅供 ``core.excel_coverage`` 的补译写入路径使用；主双语写入已改走
+    ``core.xlsx_patcher``。
 
     算法：
       - 遍历每一行，计算所有单元格中最多换行行数

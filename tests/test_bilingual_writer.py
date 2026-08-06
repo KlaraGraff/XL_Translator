@@ -210,7 +210,8 @@ class BilingualWriterTests(unittest.TestCase):
             finally:
                 wb.close()
 
-    def test_wps_dispimg_formula_is_still_cleared(self) -> None:
+    def test_wps_dispimg_formula_is_preserved(self) -> None:
+        # 补丁式写入器保留 WPS 嵌入图片公式，图片不再随翻译丢失。
         with tempfile.TemporaryDirectory() as tmp:
             source = self._workbook(Path(tmp), "source.xlsx", '=DISPIMG("ID_1",1)')
             out_path = write_bilingual_file(
@@ -225,7 +226,7 @@ class BilingualWriterTests(unittest.TestCase):
 
             wb = load_workbook(out_path, data_only=False)
             try:
-                self.assertIsNone(wb.active["A1"].value)
+                self.assertEqual(wb.active["A1"].value, '=DISPIMG("ID_1",1)')
             finally:
                 wb.close()
 
