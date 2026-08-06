@@ -35,6 +35,7 @@ from core.pdf_image_translation import (
     PdfFileItem,
     PdfFileRecord,
     PdfImageTranslationRunner,
+    PdfPageActionError,
     PdfPageRecord,
     PdfTaskSummary,
     check_page_quality,
@@ -1447,6 +1448,286 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue(any("生成成功，质检通过" in msg.message for msg in success_logs))
             self.assertTrue(all("1/" not in msg.message for msg in success_logs))
 
+    def test_paused_page_regenerate_reruns_the_page_without_duplicate_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            image_client = _PauseOnCallImageClient(
+                _png_bytes(1200, 1600),
+                pause_calls={1},
+                payloads={2: _png_bytes(1200, 1600, "red")},
+            )
+            runner = _PauseAwarePdfRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+            image_client.runner = runner
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"), patch(
+                "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
+                0,
+            ):
+                thread = threading.Thread(target=runner._run)
+                thread.start()
+                try:
+                    self.assertTrue(runner.pause_wait_entered.wait(3))
+                    paused_snapshot = runner.pdf_page_snapshot()
+                    accepted = runner.request_page_regenerate(
+                        relative_path="source.pdf",
+                        page_number=1,
+                    )
+                    runner.resume()
+                    thread.join(5)
+                finally:
+                    runner.resume()
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(accepted["action"], "regenerate")
+            self.assertEqual(accepted["applies_on"], "resume")
+            paused_page = paused_snapshot["files"][0]["pages"][0]
+            self.assertEqual(paused_page["status"], "success")
+            self.assertTrue(paused_page["has_translated_image"])
+
+            messages = _drain_all_messages(runner)
+            self.assertTrue(any(isinstance(msg, DoneMsg) for msg in messages))
+            self.assertFalse(any(isinstance(msg, StoppedMsg) for msg in messages))
+            self.assertEqual(image_client.calls, 2)
+
+            prepared = runner._prepared_files[0]
+            record = prepared.record
+            self.assertEqual([page.page_number for page in record.pages], [1])
+            self.assertEqual(record.pages[0].status, "success")
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            self.assertEqual(runner._completed_page_count, 1)
+            self.assertEqual(runner._total_page_count, 1)
+            translated = Path(record.pages[0].translated_image_path)
+            self.assertTrue(translated.is_file())
+            with Image.open(translated) as image:
+                # The second payload proves the page really ran again and the
+                # stale translated image was replaced rather than kept.
+                self.assertEqual(image.convert("RGB").getpixel((0, 0)), (255, 0, 0))
+
+    def test_paused_page_skip_accepts_the_failed_page_as_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            settings.pdf.page_retry_attempts = 0
+            image_client = _PauseOnCallImageClient(
+                _png_bytes(1200, 1600),
+                pause_calls={1},
+                fail_calls={1},
+            )
+            runner = _PauseAwarePdfRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+            image_client.runner = runner
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"), patch(
+                "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
+                0,
+            ):
+                thread = threading.Thread(target=runner._run)
+                thread.start()
+                try:
+                    self.assertTrue(runner.pause_wait_entered.wait(3))
+                    paused_snapshot = runner.pdf_page_snapshot()
+                    with self.assertRaises(PdfPageActionError):
+                        # The second page has not been generated yet.
+                        runner.request_page_skip(relative_path="source.pdf", page_number=2)
+                    accepted = runner.request_page_skip(
+                        relative_path="source.pdf",
+                        page_number=1,
+                    )
+                    queued_snapshot = runner.pdf_page_snapshot()
+                    runner.resume()
+                    thread.join(5)
+                finally:
+                    runner.resume()
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(accepted["action"], "skip")
+            paused_page = paused_snapshot["files"][0]["pages"][0]
+            self.assertEqual(paused_page["status"], "placeholder_pending")
+            self.assertFalse(paused_page["has_translated_image"])
+            self.assertFalse(paused_page["user_skipped"])
+            self.assertEqual(queued_snapshot["files"][0]["pages"][0]["pending_action"], "skip")
+
+            messages = _drain_all_messages(runner)
+            self.assertTrue(any(isinstance(msg, DoneMsg) for msg in messages))
+            self.assertEqual(image_client.calls, 2)
+
+            record = runner._prepared_files[0].record
+            self.assertEqual(
+                sorted(page.page_number for page in record.pages),
+                [1, 2],
+            )
+            skipped_page = next(page for page in record.pages if page.page_number == 1)
+            self.assertEqual(skipped_page.status, "placeholder")
+            self.assertTrue(skipped_page.placeholder)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+
+            final_page = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+            self.assertTrue(final_page["user_skipped"])
+            self.assertEqual(final_page["pending_action"], "")
+            self.assertTrue(final_page["has_translated_image"])
+
+    def test_page_action_requests_reject_pages_that_cannot_be_touched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                task_logger_enabled=False,
+            )
+
+            output_dir = root / "out" / "pages"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                prepared_files = runner._prepare_pdf_files(
+                    output_dir=output_dir,
+                    app_managed=True,
+                )
+            runner._prepared_files = list(prepared_files)
+            record = prepared_files[0].record
+
+            # No page record yet: the page is still owned by the pipeline.
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(relative_path="source.pdf", page_number=1)
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(relative_path="missing.pdf", page_number=1)
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(
+                    relative_path="../../etc/passwd",
+                    page_number=1,
+                )
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(relative_path="source.pdf", page_number=0)
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(relative_path="source.pdf", page_number=9)
+
+            record.pages.append(
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path=str(prepared_files[0].source_pages_dir / "page_1.png"),
+                    file_name=record.name,
+                    status="success",
+                )
+            )
+            self.assertEqual(
+                runner.request_page_regenerate(
+                    relative_path="source.pdf",
+                    page_number=1,
+                )["page_number"],
+                1,
+            )
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_skip(relative_path="source.pdf", page_number=1)
+
+            record.pages[0].status = "placeholder_pending"
+            self.assertEqual(
+                runner.request_page_skip(
+                    relative_path="source.pdf",
+                    page_number=1,
+                )["action"],
+                "skip",
+            )
+            # The later request replaces the earlier one for the same page.
+            self.assertEqual(len(runner._pending_page_actions), 1)
+            self.assertEqual(runner._pending_page_actions[0].kind, "skip")
+
+            record.status = PDF_OUTPUT_STATE_FAILED
+            with self.assertRaises(PdfPageActionError):
+                runner.request_page_regenerate(relative_path="source.pdf", page_number=1)
+
+    def test_page_image_paths_stay_inside_the_task_archive_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+            prepared = runner._prepared_files[0]
+            source_image = runner.resolve_page_image_path(
+                relative_path="source.pdf",
+                page_number=1,
+                kind="source",
+            )
+            translated_image = runner.resolve_page_image_path(
+                relative_path="source.pdf",
+                page_number=1,
+                kind="translated",
+            )
+            self.assertIsNotNone(source_image)
+            self.assertIsNotNone(translated_image)
+            self.assertEqual(source_image.parent, prepared.source_pages_dir)
+            self.assertEqual(translated_image.parent, prepared.translated_pages_dir)
+
+            for traversal_key in ("../../etc/passwd", "/etc/passwd", "", "source.pdf/../x"):
+                self.assertIsNone(
+                    runner.resolve_page_image_path(
+                        relative_path=traversal_key,
+                        page_number=1,
+                        kind="source",
+                    )
+                )
+            self.assertIsNone(
+                runner.resolve_page_image_path(
+                    relative_path="source.pdf",
+                    page_number=2,
+                    kind="source",
+                )
+            )
+            with self.assertRaises(PdfPageActionError):
+                runner.resolve_page_image_path(
+                    relative_path="source.pdf",
+                    page_number=1,
+                    kind="../secrets",
+                )
+
+            snapshot = runner.pdf_page_snapshot()
+            self.assertEqual(len(snapshot["files"]), 1)
+            self.assertEqual(snapshot["files"][0]["relative_path"], "source.pdf")
+            self.assertEqual(len(snapshot["files"][0]["pages"]), 1)
+            self.assertNotIn(str(root), json.dumps(snapshot, ensure_ascii=False))
+
 
 class _FailThenPassReviewClient:
     def __init__(self) -> None:
@@ -1644,6 +1925,59 @@ class _StopOnCallsImageClient(_FakeImageClient):
             self.stop_events[call].set()
             self.release_events[call].wait(2)
         return super().generate_page(**kwargs)
+
+
+def _page_review_settings(root: Path) -> AppSettings:
+    """Minimal single-model PDF settings writing into a temporary output root."""
+    settings = AppSettings(target_lang="en")
+    settings.output.use_custom_output_dir = True
+    settings.output.custom_output_dir = str(root / "out")
+    settings.pdf.page_generation_concurrency = 1
+    settings.image_model_role.source_role = SOURCE_INDEPENDENT
+    settings.image_model_role.cloud_provider = "custom_openai"
+    settings.image_model_role.cloud_model = "image-model"
+    settings.image_model_role.cloud_base_url = "https://images.example/v1"
+    return settings
+
+
+class _PauseAwarePdfRunner(PdfImageTranslationRunner):
+    """Signals the exact moment the run parks inside its pause loop."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.pause_wait_entered = threading.Event()
+
+    def _wait_while_paused(self) -> bool:
+        self.pause_wait_entered.set()
+        return super()._wait_while_paused()
+
+
+class _PauseOnCallImageClient(_FakeImageClient):
+    """Pauses the runner from inside a page unit, optionally failing that page."""
+
+    def __init__(
+        self,
+        image_bytes: bytes,
+        *,
+        pause_calls: set[int],
+        fail_calls: set[int] | None = None,
+        payloads: dict[int, bytes] | None = None,
+    ) -> None:
+        super().__init__(image_bytes)
+        self.calls = 0
+        self.runner: PdfImageTranslationRunner | None = None
+        self.pause_calls = set(pause_calls)
+        self.fail_calls = set(fail_calls or ())
+        self.payloads = dict(payloads or {})
+
+    def generate_page(self, **_kwargs):
+        self.calls += 1
+        call = self.calls
+        if call in self.pause_calls and self.runner is not None:
+            self.runner.pause()
+        if call in self.fail_calls:
+            raise RuntimeError("page generation failed")
+        return self.payloads.get(call, self.image_bytes)
 
 
 class _SlowAssemblePdfRunner(PdfImageTranslationRunner):

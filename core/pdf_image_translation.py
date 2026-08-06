@@ -62,7 +62,7 @@ from core.pdf_review import (
     PdfPageReviewResult,
     PdfReviewModelUnavailableError,
 )
-from core.task_logger import TaskLogger
+from core.task_logger import TaskLogger, redact_absolute_paths
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -91,7 +91,35 @@ PDF_OUTPUT_STATE_NEEDS_REVIEW = "needs_review"
 PDF_OUTPUT_STATE_STOPPED = "stopped"
 PDF_OUTPUT_STATE_FAILED = "failed"
 
+PDF_PAGE_ACTION_REGENERATE = "regenerate"
+PDF_PAGE_ACTION_SKIP = "skip"
+PDF_PAGE_IMAGE_KIND_SOURCE = "source"
+PDF_PAGE_IMAGE_KIND_TRANSLATED = "translated"
+# A page may only be re-run or skipped once its own processing unit settled.
+# Everything else is still owned by an in-flight future.
+_PDF_PAGE_REGENERABLE_STATUSES = frozenset(
+    {
+        "success",
+        "emergency_normalized",
+        "placeholder_pending",
+        "placeholder",
+        PDF_OUTPUT_STATE_FAILED,
+    }
+)
+_PDF_PAGE_SKIPPABLE_STATUSES = frozenset({"placeholder_pending", PDF_OUTPUT_STATE_FAILED})
+
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
+
+
+class PdfPageActionError(ValueError):
+    """Raised when a single-page review action cannot be accepted."""
+
+
+@dataclass(frozen=True)
+class _PdfPageAction:
+    kind: str
+    relative_path: str
+    page_number: int
 
 
 def _api_group_signature_from_config(config: Any) -> tuple[str, str, str] | None:
@@ -822,6 +850,14 @@ class PdfImageTranslationRunner:
         self._retried_pages: set[str] = set()
         self._recovered_pages: set[str] = set()
         self._placeholder_pages: set[str] = set()
+        # Per-page review panel state.  The prepared files are published here
+        # so a reader thread can build a snapshot without touching ``_run``
+        # locals, and page actions are queued here until the single-threaded
+        # pause boundary applies them.
+        self._page_action_lock = threading.Lock()
+        self._prepared_files: list[_PreparedPdfFile] = []
+        self._pending_page_actions: list[_PdfPageAction] = []
+        self._user_skipped_pages: set[tuple[str, int]] = set()
 
     @property
     def task_id(self) -> str:
@@ -892,6 +928,347 @@ class PdfImageTranslationRunner:
         except queue.Empty:
             return None
 
+    # ---- per-page review panel -------------------------------------------------
+    #
+    # The panel needs a page-level view that would bloat the SSE event log if it
+    # were pushed, so it is pulled instead.  Reads are lock-guarded snapshots and
+    # never hand out filesystem paths; page actions are queued and applied at the
+    # pause boundary in ``_run``, which is the only moment no page future exists.
+
+    def pdf_page_snapshot(self) -> dict[str, Any]:
+        """Return a JSON-safe per-file, per-page snapshot for the review panel."""
+        with self._page_action_lock:
+            prepared_files = list(self._prepared_files)
+            pending = {
+                (action.relative_path, action.page_number): action.kind
+                for action in self._pending_page_actions
+            }
+            skipped = set(self._user_skipped_pages)
+        files: list[dict[str, Any]] = []
+        for prepared in prepared_files:
+            record = prepared.record
+            by_number = {page.page_number: page for page in list(record.pages)}
+            pages: list[dict[str, Any]] = []
+            for page_number in range(1, max(0, int(record.page_count)) + 1):
+                page = by_number.get(page_number)
+                key = (record.relative_path, page_number)
+                pages.append(
+                    self._page_snapshot_entry(
+                        prepared,
+                        page_number=page_number,
+                        page=page,
+                        pending_action=pending.get(key, ""),
+                        user_skipped=key in skipped,
+                    )
+                )
+            files.append(
+                {
+                    "name": record.name,
+                    "relative_path": record.relative_path,
+                    "source_type": record.source_type,
+                    "status": record.status,
+                    "error": _short_review_text(record.error),
+                    "page_count": int(record.page_count),
+                    "pages": pages,
+                }
+            )
+        return {"files": files}
+
+    def resolve_page_image_path(
+        self,
+        *,
+        relative_path: str,
+        page_number: int,
+        kind: str,
+    ) -> Path | None:
+        """Resolve one page image strictly inside this task's archive folders."""
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind not in {
+            PDF_PAGE_IMAGE_KIND_SOURCE,
+            PDF_PAGE_IMAGE_KIND_TRANSLATED,
+        }:
+            raise PdfPageActionError("页图类型只能是 source 或 translated。")
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+        if prepared is None:
+            return None
+        record = prepared.record
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError):
+            return None
+        if page_number < 1 or (record.page_count and page_number > record.page_count):
+            return None
+        page = next(
+            (item for item in list(record.pages) if item.page_number == page_number),
+            None,
+        )
+        return self._page_image_file(prepared, page_number, page, normalized_kind)
+
+    def request_page_regenerate(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+        """Queue one finished page for a full re-run on the next resume."""
+        return self._queue_page_action(
+            PDF_PAGE_ACTION_REGENERATE,
+            relative_path=relative_path,
+            page_number=page_number,
+        )
+
+    def request_page_skip(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+        """Queue one failed page to be accepted as a placeholder page."""
+        return self._queue_page_action(
+            PDF_PAGE_ACTION_SKIP,
+            relative_path=relative_path,
+            page_number=page_number,
+        )
+
+    def _queue_page_action(
+        self,
+        kind: str,
+        *,
+        relative_path: str,
+        page_number: int,
+    ) -> dict[str, Any]:
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise PdfPageActionError("页码必须是整数。") from exc
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+            if prepared is None:
+                raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+            record = prepared.record
+            if page_number < 1 or page_number > max(0, int(record.page_count)):
+                raise PdfPageActionError(
+                    f"页码超出范围：{record.name} 共 {record.page_count} 页。"
+                )
+            if record.status == PDF_OUTPUT_STATE_FAILED:
+                raise PdfPageActionError(
+                    f"{record.name} 整体处理失败，不能单页操作；请重新建立任务。"
+                )
+            page = next(
+                (item for item in list(record.pages) if item.page_number == page_number),
+                None,
+            )
+            if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
+                raise PdfPageActionError(
+                    f"{record.name} 第 {page_number} 页还没有跑完，暂时不能操作。"
+                )
+            if kind == PDF_PAGE_ACTION_SKIP:
+                if record.source_type == SOURCE_TYPE_IMAGE:
+                    raise PdfPageActionError("图片任务不会生成占位页，不能跳过。")
+                if page.status not in _PDF_PAGE_SKIPPABLE_STATUSES:
+                    raise PdfPageActionError(
+                        f"{record.name} 第 {page_number} 页没有失败，不能跳过；"
+                        "如需改动请选择重新生成。"
+                    )
+            self._pending_page_actions = [
+                action
+                for action in self._pending_page_actions
+                if not (
+                    action.relative_path == record.relative_path
+                    and action.page_number == page_number
+                )
+            ]
+            self._pending_page_actions.append(
+                _PdfPageAction(
+                    kind=kind,
+                    relative_path=record.relative_path,
+                    page_number=page_number,
+                )
+            )
+            file_name = record.name
+        return {
+            "action": kind,
+            "relative_path": relative_path,
+            "name": file_name,
+            "page_number": page_number,
+            "applies_on": "resume",
+        }
+
+    def _find_prepared_file(self, relative_path: str) -> _PreparedPdfFile | None:
+        """Match a caller-supplied key against known records; never join paths."""
+        wanted = str(relative_path or "").strip()
+        if not wanted:
+            return None
+        normalized = wanted.replace("\\", "/")
+        for prepared in self._prepared_files:
+            known = str(prepared.record.relative_path)
+            if known == wanted or known.replace("\\", "/") == normalized:
+                return prepared
+        return None
+
+    def _page_snapshot_entry(
+        self,
+        prepared: _PreparedPdfFile,
+        *,
+        page_number: int,
+        page: PdfPageRecord | None,
+        pending_action: str,
+        user_skipped: bool,
+    ) -> dict[str, Any]:
+        status = page.status if page is not None else "pending"
+        review_status = page.review_status if page is not None else "skipped"
+        entry = {
+            "page_number": page_number,
+            "status": status,
+            "review_status": review_status,
+            "attempts": int(page.attempts) if page is not None else 0,
+            "placeholder": bool(page.placeholder) if page is not None else False,
+            "error": _short_review_text(page.error if page is not None else ""),
+            "review_summary": _page_review_summary(page),
+            "pending_action": pending_action,
+            "user_skipped": user_skipped,
+            "has_source_image": bool(
+                self._page_image_file(
+                    prepared,
+                    page_number,
+                    page,
+                    PDF_PAGE_IMAGE_KIND_SOURCE,
+                )
+            ),
+            "has_translated_image": bool(
+                self._page_image_file(
+                    prepared,
+                    page_number,
+                    page,
+                    PDF_PAGE_IMAGE_KIND_TRANSLATED,
+                )
+            ),
+        }
+        return entry
+
+    def _page_image_file(
+        self,
+        prepared: _PreparedPdfFile,
+        page_number: int,
+        page: PdfPageRecord | None,
+        kind: str,
+    ) -> Path | None:
+        """Return an existing page image contained by this task's archive dir."""
+        source_kind = kind == PDF_PAGE_IMAGE_KIND_SOURCE
+        base_dir = prepared.source_pages_dir if source_kind else prepared.translated_pages_dir
+        page_count = max(1, int(prepared.record.page_count or 1))
+        candidates: list[Path] = []
+        if page is not None:
+            recorded = page.source_image_path if source_kind else page.translated_image_path
+            if recorded:
+                candidates.append(Path(recorded))
+        candidates.append(base_dir / page_image_name(page_number, page_count))
+        if not source_kind:
+            candidates.append(base_dir / page_image_name(page_number, page_count, failed=True))
+            stem = page_image_name(page_number, page_count).removesuffix(".png")
+            candidates.extend(sorted(base_dir.glob(f"{stem}.*")) if base_dir.is_dir() else [])
+        for candidate in candidates:
+            if not _path_is_within(candidate, base_dir):
+                continue
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _apply_pending_page_actions(self, prepared_files: list[_PreparedPdfFile]) -> None:
+        """Apply queued page actions while no page future can be in flight."""
+        with self._page_action_lock:
+            actions = list(self._pending_page_actions)
+            self._pending_page_actions = []
+        if not actions:
+            return
+        by_path = {prepared.record.relative_path: prepared for prepared in prepared_files}
+        for action in actions:
+            prepared = by_path.get(action.relative_path)
+            if prepared is None:
+                continue
+            record = prepared.record
+            if record.status == PDF_OUTPUT_STATE_FAILED:
+                continue
+            page = next(
+                (item for item in record.pages if item.page_number == action.page_number),
+                None,
+            )
+            if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
+                # The page changed hands between the request and this point.
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 第 {action.page_number} 页状态已变化，已放弃本次单页操作。",
+                )
+                continue
+            if action.kind == PDF_PAGE_ACTION_REGENERATE:
+                self._apply_page_regenerate(prepared, page)
+            elif action.kind == PDF_PAGE_ACTION_SKIP:
+                self._apply_page_skip(prepared, page)
+
+    def _apply_page_regenerate(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
+        record = prepared.record
+        # Dropping the record is what makes ``_iter_rendered_pages`` yield this
+        # page again on re-entry, and it is also what keeps the re-yielded page
+        # from becoming a duplicate entry at ``record.pages.append``.
+        record.pages.remove(page)
+        with self._page_action_lock:
+            self._user_skipped_pages.discard((record.relative_path, page.page_number))
+        self._forget_page_progress(page)
+        self._remove_translated_page_images(prepared, page)
+        # A file that already produced a PDF must be assembled again after the
+        # page is regenerated.
+        self._clear_generated_pdf_outputs([prepared])
+        self._log(
+            "INFO",
+            f"[{record.name}] 第 {page.page_number} 页已按用户要求重新排队生成。",
+        )
+
+    def _apply_page_skip(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
+        record = prepared.record
+        if record.source_type == SOURCE_TYPE_IMAGE:
+            return
+        if page.status not in _PDF_PAGE_SKIPPABLE_STATUSES:
+            self._log(
+                "WARN",
+                f"[{record.name}] 第 {page.page_number} 页已不是失败页，已放弃跳过。",
+            )
+            return
+        page.status = "placeholder_pending"
+        page.placeholder = True
+        page.error = page.error or "用户已选择跳过该页。"
+        with self._page_action_lock:
+            self._user_skipped_pages.add((record.relative_path, page.page_number))
+        self._record_page_placeholder(page)
+        self._log(
+            "WARN",
+            f"[{record.name}] 第 {page.page_number} 页已按用户选择跳过，将生成失败占位页。",
+        )
+
+    def _forget_page_progress(self, page_record: PdfPageRecord) -> None:
+        """Undo the aggregate counters of a page that is about to run again."""
+        key = self._page_status_key(page_record)
+        with self._page_status_lock:
+            self._completed_page_count = max(0, self._completed_page_count - 1)
+            self._submitted_page_count = max(0, self._submitted_page_count - 1)
+            self._retrying_pages.discard(key)
+            self._retried_pages.discard(key)
+            self._recovered_pages.discard(key)
+            self._placeholder_pages.discard(key)
+            self._emit_page_status_locked()
+
+    def _remove_translated_page_images(
+        self,
+        prepared: _PreparedPdfFile,
+        page: PdfPageRecord,
+    ) -> None:
+        """Drop stale translated page images so the panel cannot show them."""
+        base_dir = prepared.translated_pages_dir
+        if not base_dir.is_dir():
+            return
+        page_count = max(1, int(prepared.record.page_count or 1))
+        stem = page_image_name(page.page_number, page_count).removesuffix(".png")
+        for candidate in sorted(base_dir.glob(f"{stem}*")):
+            if not _path_is_within(candidate, base_dir) or not candidate.is_file():
+                continue
+            try:
+                candidate.unlink()
+            except Exception as exc:  # noqa: BLE001 - cleanup must not block resume.
+                self._log(
+                    "WARN",
+                    f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}：{exc}",
+                )
+
     def _log(self, level: str, message: str, *, visible: bool = True) -> None:
         self._queue.put(LogMsg(level=level, message=message, visible=visible))
         task_logger_method = {
@@ -920,6 +1297,10 @@ class PdfImageTranslationRunner:
         self._retried_pages.clear()
         self._recovered_pages.clear()
         self._placeholder_pages.clear()
+        with self._page_action_lock:
+            self._prepared_files = []
+            self._pending_page_actions = []
+            self._user_skipped_pages = set()
         model_signature = _safe_image_model_signature(self._settings)
         review_model_config = None
         review_concurrency = 1
@@ -1034,6 +1415,8 @@ class PdfImageTranslationRunner:
                 app_managed=app_managed,
             )
             file_records = [prepared.record for prepared in prepared_files]
+            with self._page_action_lock:
+                self._prepared_files = list(prepared_files)
             total_pages = sum(record.page_count for record in file_records)
             self._total_page_count = total_pages
             self._emit_page_status()
@@ -1061,6 +1444,10 @@ class PdfImageTranslationRunner:
 
                 if self._pause_event.is_set() and not self._stop_event.is_set():
                     if self._wait_while_paused():
+                        # Every submitted page has settled by now and no new
+                        # page is in flight, so this is the only point where a
+                        # per-page request can rewrite page records safely.
+                        self._apply_pending_page_actions(prepared_files)
                         continue
 
                 if self._fatal_model_error:
@@ -2922,6 +3309,35 @@ def _write_image_candidate(image_bytes: bytes, output_path: Path) -> None:
             image.save(output_path, format="PNG")
     except Exception:
         output_path.write_bytes(image_bytes)
+
+
+def _path_is_within(candidate: Path, base_dir: Path) -> bool:
+    """Return whether a resolved path really lives under a resolved base dir."""
+    try:
+        resolved = candidate.resolve(strict=False)
+        base = base_dir.resolve(strict=False)
+    except OSError:
+        return False
+    return resolved == base or base in resolved.parents
+
+
+def _short_review_text(value: str, *, limit: int = 200) -> str:
+    """Return panel-safe text: no absolute paths, no unbounded model prose."""
+    text = redact_absolute_paths(str(value or "")).strip()
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _page_review_summary(page: PdfPageRecord | None) -> str:
+    if page is None:
+        return ""
+    problems = [
+        str(issue.get("problem") or "").strip()
+        for issue in page.review_issues
+        if isinstance(issue, dict) and str(issue.get("problem") or "").strip()
+    ]
+    if problems:
+        return _short_review_text("；".join(problems[:3]))
+    return _short_review_text(page.error)
 
 
 def _translated_page_output_path(

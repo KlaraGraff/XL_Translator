@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from api.task_manager import (
@@ -113,6 +113,11 @@ class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
     surface: Literal["excel", "word", "pdf"]
     include_images: bool = False
+
+
+class PdfPageActionRequest(BaseModel):
+    file: str = Field(min_length=1, max_length=1_024)
+    page: int = Field(ge=1)
 
 
 class TaskStartRequest(BaseModel):
@@ -274,6 +279,21 @@ class MaintenanceClearRequest(BaseModel):
 class FullResetRequest(BaseModel):
     confirmation: bool = False
     phrase: str = ""
+
+
+_PAGE_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+
+def _page_image_media_type(path: Path) -> str:
+    return _PAGE_IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
 
 
 def _allowed_origins() -> list[str]:
@@ -716,6 +736,51 @@ def create_app(
     @app.post("/api/tasks/{task_id}/end-paused")
     def end_paused_task(task_id: str) -> dict[str, Any]:
         return app.state.task_manager.end_paused_task(task_id)
+
+    @app.get("/api/tasks/{task_id}/pdf-pages")
+    def pdf_page_review(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.pdf_page_review(task_id)
+
+    @app.get("/api/tasks/{task_id}/pdf-pages/image")
+    def pdf_page_image(
+        task_id: str,
+        file: str,
+        page: int,
+        kind: str = "translated",
+    ) -> FileResponse:
+        path = app.state.task_manager.pdf_page_image_path(
+            task_id,
+            relative_path=file,
+            page_number=page,
+            kind=kind,
+        )
+        if path is None:
+            raise HTTPException(404, "该页图不存在。")
+        return FileResponse(
+            path,
+            media_type=_page_image_media_type(path),
+            # The page image is rewritten in place when a page is regenerated,
+            # so a cached copy would show the previous run's output.
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/regenerate")
+    def regenerate_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        return app.state.task_manager.request_pdf_page_action(
+            task_id,
+            action="regenerate",
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/skip")
+    def skip_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        return app.state.task_manager.request_pdf_page_action(
+            task_id,
+            action="skip",
+            relative_path=request.file,
+            page_number=request.page,
+        )
 
     @app.get("/api/tasks/{task_id}/events")
     def task_events(

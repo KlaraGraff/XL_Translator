@@ -26,7 +26,11 @@ from core.model_roles import (
     provider_supports_capability,
     resolve_effective_model_config,
 )
-from core.pdf_image_translation import PdfImageTranslationRunner, scan_pdf_path
+from core.pdf_image_translation import (
+    PdfImageTranslationRunner,
+    PdfPageActionError,
+    scan_pdf_path,
+)
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
 from core.task_history import TaskHistoryStore
@@ -854,6 +858,103 @@ class TranslationTaskManager:
         else:
             task.runner.stop()
         return self.task_status(task_id)
+
+    def pdf_page_review(self, task_id: str) -> dict[str, Any]:
+        """Return the pull-only per-page snapshot backing the review panel."""
+        task = self._get_task(task_id)
+        runner = self._pdf_review_runner(task)
+        snapshot = runner.pdf_page_snapshot()
+        with task.condition:
+            state = task.state
+            terminal = task.terminal
+        return {
+            "task_id": task.task_id,
+            "state": state,
+            "terminal": terminal,
+            "actionable": state == "paused" and not terminal,
+            "files": _json_safe(snapshot.get("files") or []),
+        }
+
+    def pdf_page_image_path(
+        self,
+        task_id: str,
+        *,
+        relative_path: str,
+        page_number: int,
+        kind: str,
+    ) -> Path | None:
+        """Resolve one page image; comparison stays available after the run."""
+        task = self._get_task(task_id)
+        runner = self._pdf_review_runner(task)
+        try:
+            return runner.resolve_page_image_path(
+                relative_path=relative_path,
+                page_number=page_number,
+                kind=kind,
+            )
+        except PdfPageActionError as exc:
+            raise TaskInputError(str(exc)) from exc
+
+    def request_pdf_page_action(
+        self,
+        task_id: str,
+        *,
+        action: str,
+        relative_path: str,
+        page_number: int,
+    ) -> dict[str, Any]:
+        """Queue a single-page action; only a paused task may accept one."""
+        normalized = str(action or "").strip().lower()
+        if normalized not in {"regenerate", "skip"}:
+            raise TaskInputError("单页操作只支持 regenerate 或 skip。")
+        task = self._get_task(task_id)
+        runner = self._pdf_review_runner(task)
+        method = (
+            runner.request_page_regenerate
+            if normalized == "regenerate"
+            else runner.request_page_skip
+        )
+        # The state check and the queueing happen under the same task condition
+        # that ``resume_task`` uses to flip the state.  Either this request is
+        # queued while the runner still waits inside its pause loop, or the task
+        # is already running again and the request is rejected outright.
+        with task.condition:
+            if task.terminal:
+                raise TaskConflictError("任务已经结束，不能再做单页操作。", reason="task_terminal")
+            if task.state != "paused":
+                raise TaskConflictError(
+                    "只有暂停中的 PDF/图片任务可以做单页操作。",
+                    reason="task_not_paused",
+                )
+            try:
+                accepted = method(relative_path=relative_path, page_number=page_number)
+            except PdfPageActionError as exc:
+                raise TaskInputError(str(exc)) from exc
+            self._append_event(
+                task,
+                "pdf_page_action",
+                {
+                    "action": normalized,
+                    "page_number": int(accepted.get("page_number") or page_number),
+                    "name": str(accepted.get("name") or ""),
+                },
+            )
+        return {"task_id": task.task_id, "state": "paused", "accepted": accepted}
+
+    @staticmethod
+    def _pdf_review_runner(task: ApiTask) -> Any:
+        if task.surface != "pdf":
+            raise TaskInputError("只有 PDF/图片任务提供逐页审核数据。")
+        runner = task.runner
+        required = (
+            "pdf_page_snapshot",
+            "resolve_page_image_path",
+            "request_page_regenerate",
+            "request_page_skip",
+        )
+        if not all(callable(getattr(runner, name, None)) for name in required):
+            raise TaskInputError("当前 PDF 任务不支持逐页审核。")
+        return runner
 
     def reservations(self) -> list[dict[str, Any]]:
         return self.resource_groups()
