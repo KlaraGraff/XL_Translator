@@ -211,11 +211,19 @@ fn bundled_sidecar_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// Origin the dev server serves the UI from, taken from tauri.conf.json's devUrl.
-fn dev_server_origin() -> String {
-    option_env!("TAURI_DEV_ORIGIN")
-        .unwrap_or("http://127.0.0.1:1420")
-        .to_string()
+/// Origin the dev server serves the UI from, read out of tauri.conf.json's `devUrl`.
+///
+/// This has to match the webview's origin byte for byte: to a browser
+/// `http://localhost:1420` and `http://127.0.0.1:1420` are two different origins,
+/// so hardcoding one while devUrl says the other makes the sidecar's CORS allowlist
+/// reject every request the app sends — silently, and only in dev.
+fn dev_server_origin(app: &tauri::AppHandle) -> String {
+    app.config()
+        .build
+        .dev_url
+        .as_ref()
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| "http://127.0.0.1:1420".to_string())
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
@@ -229,7 +237,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         // `tauri dev` serves the UI from the vite server, so every request to
         // the sidecar is cross-origin and the production allowlist rejects it.
         // Only debug builds pass this through; release builds never set it.
-        command.env("TRANSLATOR_DEV_ORIGIN", dev_server_origin());
+        command.env("TRANSLATOR_DEV_ORIGIN", dev_server_origin(app));
         command
     } else {
         let executable = bundled_sidecar_path(app)?;

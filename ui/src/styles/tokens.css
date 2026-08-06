@@ -42,6 +42,12 @@
   --danger-t: #fdebec;
   --danger-l: #f5bfc1;
 
+  /* 键盘焦点圈。系统默认的高饱和蓝框和这套配色不搭，统一换成低饱和的 accent 淡化色：
+     --ring 用于「描边式」焦点（outline），--ring-soft 用于输入框那种「外发光式」焦点
+     （box-shadow）。故意不用 color-mix()，理由同文件头。 */
+  --ring: #a9b3ff;
+  --ring-soft: rgb(84 104 255 / 18%);
+
   --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
   --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
   --sh-lg: 0 2px 4px rgb(24 34 66 / 6%), 0 24px 48px -22px rgb(30 45 90 / 30%);
@@ -83,6 +89,10 @@
   --danger: #ff6369;
   --danger-t: #331b20;
   --danger-l: #5e3038;
+
+  /* 深色下 #a9b3ff 太亮会晃眼，压到中调；发光色则相反，要提亮才看得见。 */
+  --ring: #5b6bd6;
+  --ring-soft: rgb(128 144 255 / 22%);
 
   --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);

@@ -56,6 +56,23 @@ button {
   cursor: pointer;
 }
 
+/*
+ * 键盘焦点。WKWebView 默认的焦点圈是高饱和实心蓝框，和这套低饱和配色冲突（用户原话：
+ * 「太明显，和整体风格不符」）。全局关掉默认圈，换成 --ring 描边，且只在 :focus-visible
+ * 下出现——鼠标点击不显示，键盘 Tab 才显示，可访问性不受影响。
+ *
+ * 这里刻意不设 border-radius：outline 会自动跟随元素自身圆角，强行统一成 --r-sm 反而
+ * 会把 .chip / .status / .tk-filters .f 这类 99px 胶囊的焦点圈压成方角。
+ */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 svg.ic {
   width: 18px;
   height: 18px;
@@ -176,7 +193,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .sw.on { background: var(--accent); }
 .sw.on::after { left: 15px; }
 .sw:disabled { cursor: default; opacity: .5; }
+/* 运行中锁定右栏：控件不可点，但「?」说明依旧要能看（否则用户在任务期间连开关的
+ * 含义都查不到——这正是原生 title 在锁定态彻底失效的那个坑）。 */
 .dis .swrow, .dis .field { opacity: .45; pointer-events: none; }
+.dis .hint, .dis .swrow-hint { pointer-events: auto; }
 .fold { border: 1px solid var(--line); border-radius: var(--r-md); margin-top: 14px; overflow: hidden; }
 .fold-h { display: flex; align-items: center; gap: 8px; padding: 9px 12px; font-size: 12.5px; font-weight: 600; background: var(--surface-2); cursor: pointer; color: var(--ink-2); }
 .fold-h svg { margin-left: auto; transition: transform .15s; }
@@ -263,7 +283,208 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .modal input[type="text"] { width: 100%; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; padding: 0 11px; font: inherit; background: var(--surface); color: var(--ink); margin-top: 4px; }
 .mlabel { position: absolute; top: -34px; left: 22px; font-size: 11.5px; font-weight: 650; letter-spacing: .06em; color: #fff; background: rgb(10 14 26 / 55%); border-radius: 99px; padding: 3px 12px; white-space: nowrap; }
 
+/* ========== 「?」提示浮层（样张未覆盖，新增） ==========
+ * 原生 title tooltip 在 WKWebView 里出得慢、位置不可控，父级 pointer-events:none 时
+ * 干脆不出，所以换成自绘浮层。z-index 夹在模态(200)与 toast(300) 之间，模态里的
+ * 提示也能盖住模态本身。--tip-arrow 由 JS 写入，让箭头始终指向「?」角标。 */
+.tip {
+  position: fixed; z-index: 260; max-width: 260px; padding: 8px 11px;
+  background: var(--surface); color: var(--ink-2); border: 1px solid var(--line-2);
+  border-radius: 10px; box-shadow: var(--sh-lg);
+  font-size: 12px; line-height: 1.6; text-align: left; white-space: normal;
+  pointer-events: none; animation: tip-in 120ms ease-out;
+}
+.tip::after {
+  content: ""; position: absolute; left: var(--tip-arrow, 50%); margin-left: -5px;
+  width: 9px; height: 9px; background: var(--surface);
+  border-right: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2);
+  transform: rotate(45deg);
+}
+.tip::after { bottom: -5.5px; }
+.tip.below::after { bottom: auto; top: -5.5px; transform: rotate(225deg); }
+@keyframes tip-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ========== 锚定小菜单（「浏览」的文件夹/文件二选一） ========== */
+.menu {
+  position: fixed; z-index: 210; min-width: 216px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); box-shadow: var(--sh-lg);
+}
+.menu-item {
+  display: block; width: 100%; text-align: left; padding: 7px 10px;
+  border: 0; border-radius: var(--r-sm); background: none; color: var(--ink);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.menu-item b { display: block; font-weight: 550; }
+.menu-item span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
+.menu-item:hover { background: var(--surface-2); }
+
+/* ========== 可搜索语言选择器 ==========
+ * 迁移自 docs/mockups/2026-08-06_lang-picker-focus-excel-notice.html 第 ② 节。
+ * 类名、尺寸、配色与样张逐条对齐；样张里 `.lang.static` 那组「强制展开陈列」的规则
+ * 属于陈列脚手架，没有搬过来。
+ *
+ * 唯一的结构性改动：样张的 .lang-pop 是 position:absolute 的子节点，靠 .lang 的
+ * position:relative 定位。应用里两个落点的祖先都会裁剪它——右栏的 .rp-scroll 是
+ * overflow:auto 的滚动容器（浮层会被切掉下半截），.runpanel 还额外 overflow:hidden。
+ * 提 z-index 治不了 overflow 裁剪，所以浮层改成挂在 document.body 上的 position:fixed，
+ * 位置由 JS 按按钮的 getBoundingClientRect 算，与本文件里 .tip / .menu 已有的做法一致。
+ * .lang 的 position:relative 保留：它不再承担定位，但样张的 [data-open] 焦点态还挂在
+ * 这一层，留着结构对照更清楚。 */
+.lang { position: relative; display: inline-block; }
+/* 右栏那种一列铺满的用法（样张 B 屏）；工具条里的行内用法不加这个类。 */
+.lang.block { display: block; }
+.lang-btn {
+  height: 34px; min-width: 150px; width: 100%; display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--ink);
+  font: inherit; font-size: 13px; padding: 0 9px 0 11px; cursor: pointer; text-align: left;
+  transition: border-color .12s, box-shadow .12s;
+}
+.lang-btn:hover { border-color: var(--ink-3); }
+.lang-btn:disabled { cursor: default; opacity: .6; }
+.lang[data-open="true"] .lang-btn { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.lang-btn .val { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lang-btn .code {
+  font: 11px/1 var(--mono); color: var(--ink-3); background: var(--ground-2); border-radius: 5px;
+  padding: 3px 5px; flex: none;
+}
+:root[data-theme="dark"] .lang-btn .code { background: var(--ground); }
+.lang-btn .chev { width: 14px; height: 14px; flex: none; color: var(--ink-3); }
+
+.lang-pop {
+  position: fixed; width: 288px; background: var(--surface);
+  border: 1px solid var(--line-2); border-radius: var(--r-md); box-shadow: var(--sh-lg);
+  /* 与 .menu 同层：盖得住普通内容，但仍在模态(200 起)之下。 */
+  z-index: 210; overflow: hidden;
+}
+.lang-search { padding: 9px; border-bottom: 1px solid var(--line); }
+/* 样张里搜索框复用它自己的 .inp；应用没有这个全局类，就地写一份等价样式。
+   聚焦态交给 app.css 顶部的全局 input:focus 规则，这里不重复定义焦点色。 */
+.lang-search input {
+  width: 100%; height: 34px; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; padding: 0 11px;
+  transition: border-color .12s, box-shadow .12s;
+}
+.lang-search input::placeholder { color: var(--ink-3); }
+.lang-list { max-height: 264px; overflow: auto; padding: 5px; }
+.lang-group {
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3);
+  font-weight: 700; padding: 8px 9px 5px;
+}
+.lang-item {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; color: var(--ink);
+}
+/* .cur = 键盘上下键走到的那一项，视觉上与 hover 同级。 */
+.lang-item:hover, .lang-item.cur { background: var(--surface-2); }
+.lang-item[aria-selected="true"] { background: var(--tint); color: var(--tint-ink); font-weight: 600; }
+.lang-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lang-item .nm b { color: var(--accent); font-weight: 700; }
+.lang-item .cd { font: 11px/1 var(--mono); color: var(--ink-3); flex: none; }
+.lang-item .tag {
+  font-size: 10.5px; padding: 2px 6px; border-radius: 5px; background: var(--warn-t);
+  color: var(--warn); border: 1px solid var(--warn-l); flex: none;
+}
+.lang-empty { padding: 22px 14px; text-align: center; color: var(--ink-3); font-size: 12.5px; }
+.lang-empty b { display: block; color: var(--ink-2); font-size: 13px; margin-bottom: 3px; font-weight: 600; }
+.lang-retry {
+  /* 空态的说明文字是直接跟在 <b> 后面的文本节点，按钮不设成 block 会被卷进那段文字里
+     跟最后一行并排。 */
+  display: block; margin: 10px auto 0;
+  font: 600 12.5px var(--font); color: var(--tint-ink); background: var(--tint);
+  border: 1px solid var(--tint-line); border-radius: var(--r-sm); padding: 6px 16px; cursor: pointer;
+}
+.lang-retry:hover { background: var(--surface-2); }
+.lang-foot {
+  border-top: 1px solid var(--line); padding: 7px 10px; display: flex; justify-content: space-between;
+  align-items: center; font-size: 11.5px; color: var(--ink-3);
+}
+.kbd {
+  font: 10.5px/1 var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px;
+  padding: 3px 4px; color: var(--ink-2); background: var(--surface-2);
+}
+
+/* ========== Excel「单元格外内容」提示 ==========
+ * 迁移自 docs/mockups/2026-08-06_lang-picker-focus-excel-notice.html 第 ③ 节。
+ * 只有 Excel 工作区用得上：嵌入图片里的字、文本框/形状里的字目前一律不翻译，写入器
+ * 逐字节原样保留。界面必须把这件事说出来，否则用户会把「没翻」当成程序漏翻。
+ *
+ * 与样张的两处类名差异（不是审美取舍，是硬冲突）：
+ *   1. .banner 已被上面的「完成横幅」占用（绿色 ok 调，结构是 .bi/.sub/.acts）。样张这条
+ *      是黄色警示条，直接覆盖 .banner 会把完成横幅一起染黄，所以降级成修饰类 .banner.warn。
+ *   2. .chip 已被结果态徽标占用（无描边，靠 .ok/.warn/... 上色）。样张的 .chip 基础规则
+ *      自带描边和更小的字号，会污染现有全部徽标，所以降级成修饰类 .chip.oob
+ *      （oob = out of band，单元格「之外」的内容），样张的 .mut 变体挂在它下面。
+ * 除类名外，配色、尺寸、间距、结构与样张逐条对齐，颜色全部走 tokens.css，无 color-mix()。
+ */
+
+/* A · 扫描统计格。样张比现在多出第 5 格；.stats 原本是写死的 4 列，五格时换成样张
+   那套自适应列宽。最小列宽取 112px 而不是样张的 148px：样张的陈列台是整页宽（1120），
+   应用里这一行只占左栏（常见 700 上下），按 148px 算只排得下 4 列，第 5 格会孤零零
+   掉到第二行。112px 保证常见宽度下五格同排，窗口再窄才折行。 */
+.stats.five { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
+.stat .sub { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+/* 有内容才变黄：确认为 0 或「数不出来」时保持中性色，不制造无谓的警示。 */
+.stat.attn { background: var(--warn-t); border-color: var(--warn-l); }
+.stat.attn span, .stat.attn b { color: var(--warn); }
+.stat.attn .sub { color: var(--warn); opacity: .85; }
+/* 「—」「0 / 0」这类无信息量的取值压成弱色，别和真实数字抢注意力。 */
+.dash { color: var(--ink-3); }
+
+/* B · 扫描完成后的说明横幅（只在真有图片/文本框、或有文件数不出来时出现）。 */
+.banner.warn {
+  align-items: flex-start; gap: 11px; padding: 12px 14px;
+  background: var(--warn-t); border-color: var(--warn-l); color: var(--warn);
+}
+.banner.warn .ico { flex: none; margin-top: 1px; }
+.banner.warn .tx { flex: 1; min-width: 0; }
+.banner.warn .tt { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+.banner.warn .bd { font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.banner.warn .btn { height: 28px; font-size: 12px; background: var(--surface); flex: none; }
+
+/* C · 任务清单里的逐行标记。
+   多出「单元格外内容」这一列后，表头被挤得换行（「工作 / 表」拆成两行），补上样张
+   table.tl th 本来就有的 white-space:nowrap；表头是短词，不换行反而更省纵向空间。 */
+.tbl th { white-space: nowrap; }
+.chip.oob {
+  font-size: 11px; font-weight: 600; gap: 4px; padding: 2px 7px; white-space: nowrap;
+  background: var(--warn-t); color: var(--warn); border: 1px solid var(--warn-l);
+}
+/* .mut = 「数不出来」，灰色而不是黄色：未知不是风险，只是还没看到。 */
+.chip.oob.mut { background: var(--ground-2); color: var(--ink-3); border-color: var(--line-2); }
+:root[data-theme="dark"] .chip.oob.mut { background: var(--ground); }
+.chip.oob + .chip.oob { margin-left: 5px; }
+
+/* D · 翻译完成后的结果说明。绿底说「做完了」，句子里的黄字说「这些没做」。 */
+.done {
+  display: flex; gap: 11px; align-items: flex-start; padding: 13px 15px;
+  border-radius: var(--r-md); background: var(--ok-t); border: 1px solid var(--ok-l);
+}
+.done .ico { color: var(--ok); flex: none; margin-top: 1px; }
+.done .tt { font-weight: 700; font-size: 13px; color: var(--ok); margin-bottom: 3px; }
+.done .bd { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+.done .bd em { font-style: normal; color: var(--warn); font-weight: 600; }
+
 /* ========== Toast（适配点 5：样张未覆盖，新增） ========== */
 .toast { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 300; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; animation: toast-in 180ms ease-out; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .toast.error { border-color: var(--danger-l); color: var(--danger); }
+
+/* ==========================================================================
+ * 输入控件的聚焦态（状态层，必须留在文件最末）
+ *
+ * 走「边框变色 + 外发光」，比外描边更贴合表单的视觉语言。用 :focus 而不是
+ * :focus-visible——鼠标点进去也要看得出光标在哪个框里。
+ *
+ * 位置不能往上挪：`input:focus` 的权重是 (0,1,1)，和 `.srcbar input`、
+ * `.field select`、`.lang-search input` 这些控件自身的规则同级甚至更低，同级时
+ * 后写的赢。放在文件开头的话 border-color 会被它们的静态边框色压掉（踩过一次：
+ * 只剩外发光、边框不变色）。新增控件样式请写在这一段之前。
+ * ========================================================================== */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring-soft);
+}

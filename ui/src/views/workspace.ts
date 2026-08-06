@@ -23,13 +23,19 @@ import {
   createEmptyState,
   createField,
   createFold,
+  createLanguageField,
   createProgressBar,
   createSelectField,
   createSwitchRow,
   createTextField,
+  closeLanguagePopover,
+  closeMenu,
+  hideHint,
+  openMenu,
   openModal,
   showToast,
   type ChipTone,
+  type LanguageOption,
   type StatusTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
@@ -61,6 +67,11 @@ type FileItem = JsonObject & {
   page_count?: number;
   source_type?: string;
   needs_conversion?: boolean;
+  // 以下三个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
+  // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
+  image_count?: number | null;
+  shape_text_count?: number | null;
+  anchor_frozen_count?: number;
 };
 
 type ScanSkippedItem = { path?: string; relative_path?: string; name?: string; reason?: string };
@@ -224,6 +235,9 @@ interface SurfaceState {
   hasEverCompleted: boolean;
   showBanner: boolean;
   bannerInfo: { title: string; subtitle: string } | null;
+  /** Excel 完成汇总里那句「哪些内容没被翻译」。finishTask 会清空 st.files，
+   *  所以必须在清空前把要说的数据快照下来，跟着完成横幅一起展示。 */
+  excelDoneNotice: ExcelDoneNotice | null;
   allowXlsFallback: boolean;
   allowDocFallback: boolean;
   renderer: (() => void) | null;
@@ -254,6 +268,7 @@ function freshState(surface: Surface): SurfaceState {
     hasEverCompleted: false,
     showBanner: false,
     bannerInfo: null,
+    excelDoneNotice: null,
     allowXlsFallback: false,
     allowDocFallback: false,
     renderer: null,
@@ -274,30 +289,66 @@ const states: Record<Surface, SurfaceState> = {
 const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
 async function getClient(): Promise<ApiClient> {
-  if (!connectPromise) connectPromise = client.connect();
+  if (!connectPromise) {
+    const attempt = client.connect();
+    // 与 ensureBootstrap 同理，而且这一层更致命：connect() 里那记 /health 撞上还没起来的
+    // 后端就会 reject，缓存住之后**整个工作区的每一个请求**都会立刻失败，连「重试」也修不好
+    // ——重试第一步就是 getClient()。失败即置空，让下一次调用真的重连。
+    attempt.catch(() => {
+      if (connectPromise === attempt) connectPromise = null;
+    });
+    connectPromise = attempt;
+  }
   await connectPromise;
   return client;
 }
 
 let settings: JsonObject = {};
-let languageOptions: { source: Array<{ code: string; display_name: string }>; target: Array<{ code: string; display_name: string }> } = { source: [], target: [] };
+// 语言目录整条留着（含后端给的 aliases），可搜索选择器要靠 aliases 匹配英文名。
+let languageOptions: { source: LanguageOption[]; target: LanguageOption[] } = { source: [], target: [] };
 let bootstrapPromise: Promise<void> | null = null;
 let bootstrapAdopted = new Set<Surface>();
 
 async function ensureBootstrap(): Promise<void> {
   if (!bootstrapPromise) {
-    bootstrapPromise = (async () => {
+    const attempt = (async () => {
       const c = await getClient();
       const [settingsPayload, languagesPayload] = await Promise.all([
         c.request<JsonObject>("/api/settings"),
-        c.request<{ source_options: Array<{ code: string; display_name: string }>; target_options: Array<{ code: string; display_name: string }> }>("/api/languages"),
+        c.request<{ source_options: LanguageOption[]; target_options: LanguageOption[] }>("/api/languages"),
       ]);
       settings = settingsPayload;
       languageOptions = { source: languagesPayload.source_options ?? [], target: languagesPayload.target_options ?? [] };
       applySettingsToStates();
     })();
+    // 失败的 promise 绝不能留在缓存里。设置和语言目录都靠这一趟拿，缓存住一个 rejected
+    // promise，等于把「后端冷启动慢了一秒」变成「这个窗口的语言选择器永久瘫痪」——而且
+    // 瘫得很像功能本身有毛病：按钮回落成裸代码（en 而不是「英文」），浮层过滤空目录后
+    // 显示「没有匹配的语言，换个说法试试」，把加载失败说成用户搜错了词。
+    // 置空之后，下一次挂载（切个页面再切回来）或空态里的「重试」会重新拉。
+    attempt.catch(() => {
+      if (bootstrapPromise === attempt) bootstrapPromise = null;
+    });
+    bootstrapPromise = attempt;
   }
   await bootstrapPromise;
+}
+
+/** 丢掉已缓存的引导结果，下一次 ensureBootstrap 重新拉设置与语言目录。 */
+function resetBootstrap(): void {
+  bootstrapPromise = null;
+}
+
+/** 语言目录空态里「重试」的动作：重新引导，成功就把这一片重画出来。 */
+async function reloadBootstrap(surface: Surface): Promise<void> {
+  resetBootstrap();
+  try {
+    await ensureBootstrap();
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "重新加载语言列表失败。"), error: true });
+    return;
+  }
+  states[surface].renderer?.();
 }
 
 function applySettingsToStates(): void {
@@ -378,6 +429,11 @@ export function mountWorkspace(container: HTMLElement, _params: ViewParams, surf
 
 export function unmountWorkspace(surface: Surface): void {
   states[surface].renderer = null;
+  // 提示气泡、语言选择器浮层、「浏览」按钮的锚定菜单都挂在 document.body 上，不随 container
+  // 一起被清掉。不主动关就会留下一个悬在半空的面板，而且模块级的「当前展开项」指针还指着已死的闭包。
+  hideHint();
+  closeLanguagePopover();
+  closeMenu();
 }
 
 function renderLoading(container: HTMLElement, surface: Surface): void {
@@ -423,6 +479,8 @@ function renderInto(container: HTMLElement, surface: Surface): void {
   if (st.showBanner && st.bannerInfo) {
     container.style.flexDirection = "column";
     container.append(buildBanner(surface, st));
+    // 完成横幅之下再补一句「哪些内容没被翻译」——横幅只说做了什么，这句说没做什么。
+    if (surface === "excel" && st.excelDoneNotice) container.append(buildExcelDoneCard(st.excelDoneNotice));
     const row = el("div");
     row.style.cssText = "flex:1;display:flex;gap:16px;min-height:0";
     row.append(buildColLeft(surface, st, active), buildColRight(surface, st, active));
@@ -543,6 +601,11 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
   } else {
     col.append(buildSrcBar(surface, st));
     col.append(buildStatsRow(surface, st));
+    // 单元格外内容的说明只属于 Excel：Word / PDF 没有这条限制，不该出现这段提示。
+    if (surface === "excel") {
+      const notice = buildOutsideCellBanner(st);
+      if (notice) col.append(notice);
+    }
     col.append(buildTableCard(surface, st));
   }
   return col;
@@ -550,12 +613,20 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
 
 function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   const bar = el("div", "card srcbar");
+  const scanBtn = createButton({
+    label: st.files.length > 0 ? "重新扫描" : "扫描",
+    variant: "primary",
+    disabled: !st.sourcePath.trim(),
+    onClick: () => void runScan(surface),
+  });
   const { root, input } = createTextField({
     label: "",
     value: st.sourcePath,
     placeholder: "选择或粘贴文件、文件夹路径…",
     onInput: (value) => {
       st.sourcePath = value;
+      // 手输/粘贴路径时同步解锁「扫描」——这一栏不整页重建，按钮得自己更新。
+      scanBtn.disabled = !value.trim();
     },
   });
   root.style.margin = "0";
@@ -564,62 +635,112 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     void persistSettings({ [`last_${surface}_source_folder`]: st.sourcePath });
   });
   bar.append(input);
-  bar.append(createButton({
+  const browseBtn = createButton({
     label: "浏览",
     icon: "folder",
-    onClick: async () => {
-      try {
-        const filters = surface === "pdf"
-          ? [{ name: "PDF 与图片", extensions: ["pdf", ...(st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [])] }]
-          : undefined;
-        const picked = await open({ title: "选择来源", directory: true, multiple: false, filters });
-        if (typeof picked === "string") {
-          st.sourcePath = picked;
-          input.value = picked;
-          await persistSettings({ [`last_${surface}_source_folder`]: picked });
-        }
-      } catch (error) {
-        showToast({ message: redactedText((error as Error)?.message, "选择来源失败。"), error: true });
-      }
+    onClick: () => {
+      openMenu(browseBtn, [
+        { label: "选择文件夹…", description: "递归扫描目录下所有可翻译文件", onSelect: () => void pickSource(surface, st, input, true) },
+        { label: `选择单个${SURFACE_FILE_NOUN[surface]}…`, description: "只扫描并翻译这一个文件", onSelect: () => void pickSource(surface, st, input, false) },
+      ]);
     },
-  }));
-  bar.append(createButton({
-    label: st.files.length > 0 ? "重新扫描" : "扫描",
-    variant: "primary",
-    disabled: !st.sourcePath.trim(),
-    onClick: () => void runScan(surface),
-  }));
+  });
+  bar.append(browseBtn);
+  bar.append(scanBtn);
   return bar;
 }
 
+/** 单文件选择时的扩展名过滤，与后端 scanner 的 SUPPORTED_*_SUFFIXES 一一对应。 */
+function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; extensions: string[] } {
+  if (surface === "excel") return { name: "Excel 表格", extensions: ["xlsx", "xls"] };
+  if (surface === "word") return { name: "Word 文档", extensions: ["docx", "doc"] };
+  const images = st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [];
+  return { name: images.length ? "PDF 与图片" : "PDF", extensions: ["pdf", ...images] };
+}
+
+/**
+ * 打开系统选择框。Tauri 的 dialog 插件把「选目录」和「选文件」做成两个互斥模式
+ * （directory:true 时 filters 直接被忽略），所以这里由「浏览」菜单先定模式再调用；
+ * 后端 scan 两种路径都支持，单文件走 Path.is_file() 分支。
+ */
+async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputElement, directory: boolean): Promise<void> {
+  let picked: unknown;
+  try {
+    picked = directory
+      ? await open({ title: "选择来源文件夹", directory: true, multiple: false })
+      : await open({ title: `选择${SURFACE_FILE_NOUN[surface]}`, directory: false, multiple: false, filters: [sourceFileFilter(surface, st)] });
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "选择来源失败。"), error: true });
+    return;
+  }
+  if (typeof picked !== "string") return;
+  // 先落地到界面（含解锁「扫描」），再去写设置：记住上次目录失败不该把刚选好的路径丢掉。
+  st.sourcePath = picked;
+  input.value = picked;
+  rerender(surface);
+  try {
+    await persistSettings({ [`last_${surface}_source_folder`]: picked });
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "已选择来源，但记住上次目录失败。"), error: true });
+  }
+}
+
+interface StatCell {
+  label: string;
+  value: string;
+  /** 数字标红（既有用法：旧版 .xls 计数）。 */
+  warn?: boolean;
+  /** 整格变黄（样张 .stat.attn）：这一格里的东西需要用户知道。 */
+  attn?: boolean;
+  /** 数字压成弱色（样张 .v.dash）：取值为 0 或「—」，没有信息量。 */
+  dim?: boolean;
+  /** 数字下面的一行小字（样张 .stat .sub）。 */
+  sub?: string;
+}
+
 function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
-  const wrap = el("div", "stats");
   const stats = computeStats(surface, st);
+  // 四格以内沿用固定 4 列；Excel 多出「图片 / 文本框」那一格后改自适应列宽，
+  // 否则窄窗口下五格会被压得看不清标签。
+  const wrap = el("div", stats.length > 4 ? "stats five" : "stats");
   for (const stat of stats) {
-    const cell = el("div", st.files.length ? "stat" : "stat dim");
+    const classes = ["stat"];
+    if (!st.files.length) classes.push("dim");
+    else if (stat.attn) classes.push("attn");
+    const cell = el("div", classes.join(" "));
     const span = el("span");
     span.textContent = stat.label;
     const b = el("b");
     b.textContent = st.files.length ? stat.value : "—";
     if (stat.warn && st.files.length) b.style.color = "var(--warn)";
+    if (stat.dim && st.files.length) b.className = "dash";
     cell.append(span, b);
+    if (stat.sub && st.files.length) {
+      const sub = el("div", "sub");
+      sub.textContent = stat.sub;
+      cell.append(sub);
+    }
     wrap.append(cell);
   }
   return wrap;
 }
 
-function computeStats(surface: Surface, st: SurfaceState): Array<{ label: string; value: string; warn?: boolean }> {
+function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   const files = st.files;
   if (surface === "excel") {
     const cells = files.reduce((sum, f) => sum + num(f.text_cell_count), 0);
     const sheets = files.reduce((sum, f) => sum + num(f.sheet_count, f.sheets?.length ?? 0), 0);
     const xls = files.filter((f) => isRisky(surface, f)).length;
-    return [
+    // outsideCellStat 在字段整批缺失时返回 null（不占版面），过滤掉——.five 修饰类挂在
+    // buildStatsRow 里，靠的就是这里过滤后的实际格数,不需要另外同步。
+    const cellStats: (StatCell | null)[] = [
       { label: "已扫描文件", value: String(files.length) },
       { label: "文本单元格", value: cells.toLocaleString("zh-CN") },
       { label: "工作表", value: String(sheets) },
+      outsideCellStat(outsideCellStats(files)),
       { label: "旧版 .xls", value: String(xls), warn: xls > 0 },
     ];
+    return cellStats.filter((stat): stat is StatCell => stat !== null);
   }
   if (surface === "word") {
     const paragraphs = files.reduce((sum, f) => sum + num(f.paragraph_count), 0);
@@ -650,6 +771,225 @@ function isRisky(surface: Surface, f: FileItem): boolean {
 
 function fileLabel(f: FileItem): string {
   return text(f.name, f.relative_path ?? f.path.split("/").pop() ?? f.path);
+}
+
+// ---------------------------------------------------------------------------
+// Excel「单元格外内容」——嵌入图片里的字、文本框/形状里的字
+//
+// 这些内容目前一律不翻译：写入器逐字节原样保留它们。本节不改变这个行为，只负责把它
+// 说出来——用户看到「翻译完成」时，默认理解是「整个文件都翻了」，而实际上图片里的字
+// 一个都没动，不说清楚就是误导。
+//
+// 三种状态必须区分开，绝不能合并：
+//   数字   —— 扫描阶段数清楚了，例如 6 张图片；
+//   null   —— 后端明说「数不出来」。目前只有 .xls：这些部件要先经 Excel COM 转成
+//             .xlsx 才看得见，扫描阶段够不着。显示成「0」或「没有图片」是撒谎。
+//   字段缺失 —— 这一版后端/这个 surface 根本不产出该字段，按「不适用」处理：不显示，
+//             也不计入「未知」，免得在 Word/PDF 或老后端上凭空冒出一片「未知」。
+// ---------------------------------------------------------------------------
+
+type MaybeCount = number | "unknown" | "n/a";
+
+function maybeCount(file: FileItem, key: "image_count" | "shape_text_count"): MaybeCount {
+  if (!hasOwn(file, key)) return "n/a";
+  const value = file[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : "unknown";
+}
+
+interface OutsideCellStats {
+  /** 已数清的图片总数（未知的文件不参与求和）。 */
+  images: number;
+  /** 已数清的含文字文本框/形状总数。 */
+  shapes: number;
+  /** 至少有一项数不出来的文件数——对应后端 summary 的 *_unknown_files，不能吞掉。 */
+  unknownFiles: number;
+  /** 两个字段里至少有一个不是 n/a 的文件数。全批次都是 0，说明这批文件根本不产出这两个
+   *  字段（不是「数出来是 0」），outsideCellStat 靠它把「字段缺失」跟「确认为 0」分开，
+   *  不能像现在这样合并成同一个分支。 */
+  presentFiles: number;
+}
+
+function outsideCellStats(files: FileItem[]): OutsideCellStats {
+  const stats: OutsideCellStats = { images: 0, shapes: 0, unknownFiles: 0, presentFiles: 0 };
+  for (const file of files) {
+    const images = maybeCount(file, "image_count");
+    const shapes = maybeCount(file, "shape_text_count");
+    if (typeof images === "number") stats.images += images;
+    if (typeof shapes === "number") stats.shapes += shapes;
+    if (images === "unknown" || shapes === "unknown") stats.unknownFiles += 1;
+    if (images !== "n/a" || shapes !== "n/a") stats.presentFiles += 1;
+  }
+  return stats;
+}
+
+/** 有没有确凿数出来的东西。为 false 时可能是「确认没有」，也可能是「全都没数出来」。 */
+function hasKnownOutside(stats: OutsideCellStats): boolean {
+  return stats.images > 0 || stats.shapes > 0;
+}
+
+/** 「9 张图片、4 个文本框」；两项都是 0 时返回空串。 */
+function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes">): string {
+  const parts: string[] = [];
+  if (stats.images > 0) parts.push(`${stats.images.toLocaleString("zh-CN")} 张图片`);
+  if (stats.shapes > 0) parts.push(`${stats.shapes.toLocaleString("zh-CN")} 个文本框`);
+  return parts.join("、");
+}
+
+/** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。字段在整批文件上都缺失时返回 null——
+ *  这一格不该出现，不是「确认为 0」。调用方（computeStats）负责把 null 从数组里滤掉。 */
+function outsideCellStat(stats: OutsideCellStats): StatCell | null {
+  const label = "图片 / 文本框";
+  const unknownNote = stats.unknownFiles > 0 ? `${stats.unknownFiles} 个 .xls 未统计` : "";
+  if (hasKnownOutside(stats)) {
+    return {
+      label,
+      value: `${stats.images.toLocaleString("zh-CN")} / ${stats.shapes.toLocaleString("zh-CN")}`,
+      attn: true,
+      sub: unknownNote ? `不翻译，原样保留 · ${unknownNote}` : "不翻译，原样保留",
+    };
+  }
+  // 一个都没数出来时不能写「0 / 0」——那是「确认没有」的说法。留「—」并说明原因。
+  if (stats.unknownFiles > 0) {
+    return { label, value: "—", dim: true, sub: `${stats.unknownFiles} 个 .xls 需转换后才能统计` };
+  }
+  // 两个字段在整批文件上都不存在（不是数出来是 0）——这个 surface/这版后端根本不产出
+  // 这项信息，不该显示「0 / 0」把「不知道」说成「没有」，整格直接不渲染。
+  if (stats.presentFiles === 0) return null;
+  return { label, value: "0 / 0", dim: true, sub: "无" };
+}
+
+/** 接入点 2 · 扫描后、任务清单上方的说明横幅。没有可说的就返回 null，不占版面。 */
+function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
+  if (!st.files.length) return null;
+  const stats = outsideCellStats(st.files);
+  const known = hasKnownOutside(stats);
+  if (!known && stats.unknownFiles === 0) return null;
+
+  const banner = el("div", "banner warn");
+  banner.append(icon("warn", { className: "ico" }));
+  const tx = el("div", "tx");
+  const title = el("div", "tt");
+  title.textContent = known
+    ? `这批文件里有 ${outsideCellPhrase(stats)}不会被翻译`
+    : `有 ${stats.unknownFiles} 个 .xls 文件暂时数不出图片和文本框`;
+  const body = el("div", "bd");
+  body.textContent = known
+    ? "翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框和形状里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。"
+    : "翻译只覆盖单元格里的文字，图片和文本框里的字会原样保留。";
+  if (stats.unknownFiles > 0) {
+    body.textContent += `另有 ${stats.unknownFiles} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有图片或文本框，同样不会被翻译。`;
+  }
+  tx.append(title, body);
+  banner.append(tx);
+  banner.append(createButton({ label: "查看是哪些文件", onClick: () => showOutsideCellModal(st) }));
+  return banner;
+}
+
+function showOutsideCellModal(st: SurfaceState): void {
+  const lines: string[] = [];
+  for (const file of st.files) {
+    const images = maybeCount(file, "image_count");
+    const shapes = maybeCount(file, "shape_text_count");
+    if (images === "unknown" || shapes === "unknown") {
+      lines.push(`${fileLabel(file)} — 未知（.xls 需转换后才能统计）`);
+      continue;
+    }
+    const phrase = outsideCellPhrase({
+      images: typeof images === "number" ? images : 0,
+      shapes: typeof shapes === "number" ? shapes : 0,
+    });
+    if (phrase) lines.push(`${fileLabel(file)} — ${phrase}`);
+  }
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    sourceLabel: "扫描结果 · 单元格外内容",
+    title: "这些文件里有不参与翻译的内容",
+    body: lines.length ? lines : ["没有检测到图片或文本框。"],
+    actions: [{ label: "关闭" }],
+  });
+}
+
+/** 接入点 3 · 任务清单每行的「单元格外内容」标记。 */
+function buildOutsideCellChips(file: FileItem): HTMLElement[] {
+  const images = maybeCount(file, "image_count");
+  const shapes = maybeCount(file, "shape_text_count");
+  const chips: HTMLElement[] = [];
+  if (typeof images === "number" && images > 0) {
+    chips.push(createChip({ label: `🖼 ${images.toLocaleString("zh-CN")} 张图片`, className: "oob" }));
+  }
+  if (typeof shapes === "number" && shapes > 0) {
+    chips.push(createChip({ label: `▭ ${shapes.toLocaleString("zh-CN")} 个文本框`, className: "oob" }));
+  }
+  // 未知和已知可以并存（真出现时两条都要说），所以是追加而不是二选一。
+  if (images === "unknown" || shapes === "unknown") {
+    chips.push(createChip({ label: "? 未知（.xls 需转换后才能统计）", className: "oob mut" }));
+  }
+  if (chips.length) return chips;
+  const dash = el("span", "dash");
+  dash.textContent = "—";
+  return [dash];
+}
+
+/** 接入点 4 · 翻译完成后的结果说明所需的数据快照。 */
+interface ExcelDoneNotice {
+  fileCount: number;
+  cellCount: number;
+  stats: OutsideCellStats;
+  anchorFrozen: number;
+}
+
+/**
+ * anchor_frozen_count（调行高时被冻结锚点、改成固定尺寸的悬浮图片数）只有一个真实来源：
+ * file_results[].anchor_frozen_count（core/task_runner.py 约 1235 行产出，经
+ * _sanitize_task_data 后 int 0 也完整保留)。不对不存在的异形 payload 形状（summary/kpi/
+ * 结果根/files/results/items）做兜底——分发前不写没有对应真实用户的兼容代码，这些位置
+ * 在这个仓库里本来就不产出该字段；真缺失时按 0 处理（那句话不出现),不要猜别的字段名,
+ * 免得字段哪天改名时 UI 悄悄挪到别处继续显示旧值、把改名的问题藏起来。
+ */
+function anchorFrozenTotal(result: JsonObject): number {
+  const entries = result.file_results;
+  if (!Array.isArray(entries)) return 0;
+  return entries.reduce((sum: number, entry) => sum + num(record(entry).anchor_frozen_count), 0);
+}
+
+function buildExcelDoneNotice(st: SurfaceState, result: JsonObject): ExcelDoneNotice | null {
+  // 只统计真正送去翻译的那些文件；用户取消勾选的不该出现在完成汇总里。
+  const files = st.files.filter((f) => st.selected.has(f.path));
+  const stats = outsideCellStats(files);
+  const anchorFrozen = anchorFrozenTotal(result);
+  if (!hasKnownOutside(stats) && stats.unknownFiles === 0 && anchorFrozen === 0) return null;
+  return {
+    fileCount: files.length,
+    cellCount: files.reduce((sum, f) => sum + num(f.text_cell_count), 0),
+    stats,
+    anchorFrozen,
+  };
+}
+
+function buildExcelDoneCard(notice: ExcelDoneNotice): HTMLElement {
+  const box = el("div", "done");
+  box.append(icon("check", { className: "ico" }));
+  const tx = el("div");
+  const title = el("div", "tt");
+  title.textContent = `翻译完成 · ${notice.fileCount} 个文件，${notice.cellCount.toLocaleString("zh-CN")} 个单元格`;
+  const body = el("div", "bd");
+  const phrase = outsideCellPhrase(notice.stats);
+  if (phrase) {
+    body.append(document.createTextNode("另有 "));
+    const em = el("em");
+    em.textContent = phrase;
+    body.append(em, document.createTextNode("中的文字未翻译，已原样保留。"));
+  }
+  if (notice.stats.unknownFiles > 0) {
+    body.append(document.createTextNode(`${notice.stats.unknownFiles} 个 .xls 文件的图片和文本框未能统计，其中的文字同样没有翻译。`));
+  }
+  if (notice.anchorFrozen > 0) {
+    body.append(document.createTextNode(`${notice.anchorFrozen.toLocaleString("zh-CN")} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。`));
+  }
+  tx.append(title, body);
+  box.append(tx);
+  return box;
 }
 
 function buildFmtBadge(label: string, warn: boolean): HTMLElement {
@@ -737,7 +1077,7 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     return cell;
   };
   if (surface === "excel") {
-    row.append(th("文件"), th("格式"), th("工作表", true), th("文本单元格", true), th("状态"));
+    row.append(th("文件"), th("格式"), th("工作表", true), th("文本单元格", true), th("单元格外内容"), th("状态"));
   } else if (surface === "word") {
     row.append(th("文件"), th("格式"), th("段落", true), th("表格", true), th("状态"));
   } else {
@@ -774,6 +1114,11 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
     const numCell2 = el("td", "num");
     numCell2.textContent = surface === "excel" ? num(file.text_cell_count).toLocaleString("zh-CN") : String(num(file.table_count));
     row.append(numCell1, numCell2);
+    if (surface === "excel") {
+      const outsideCell = el("td");
+      for (const chip of buildOutsideCellChips(file)) outsideCell.append(chip);
+      row.append(outsideCell);
+    }
   } else {
     const typeCell = el("td");
     typeCell.append(buildFmtBadge((file.format ?? file.source_type ?? "").toUpperCase(), false));
@@ -1286,7 +1631,9 @@ function buildLogCard(local: LocalTask): HTMLElement {
 
 function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
   const col = el("div", "col-r");
-  const card = el("div", active ? "card runpanel" : st.files.length ? "card runpanel" : "card runpanel dis");
+  // 只有「运行中」才锁定右栏。未扫描不是锁定理由：这些开关写的是长期设置，
+  // 用户本来就该在挑文件之前先把它们调好。
+  const card = el("div", "card runpanel");
   const scroll = el("div", active ? "rp-scroll dis" : "rp-scroll");
 
   const title = el("div", "rp-title");
@@ -1302,31 +1649,41 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   langSec.textContent = "语言";
   scroll.append(langSec);
 
-  const targetSelect = createSelectField({
+  // recentKey 按 surface + 方向分开：Excel 的目标语言和 Word 的目标语言是两套习惯，
+  // 混在一起会让「最近使用」总是显示另一个页面刚选过的语种。
+  const targetField = createLanguageField({
     label: "目标语言",
-    options: languageOptions.target.map((o) => ({ value: o.code, label: o.display_name })),
+    options: languageOptions.target,
     value: st.targetLang,
     disabled: active,
+    recentKey: `${surface}-target`,
+    onReload: () => void reloadBootstrap(surface),
     onChange: (value) => {
       st.targetLang = value;
       void persistSettings(surface === "pdf" ? nestedPatch("pdf.target_lang", value) : { [`${surface}_target_lang`]: value });
     },
   });
-  scroll.append(targetSelect.root);
+  scroll.append(targetField.root);
 
   if (surface !== "pdf") {
-    const sourceOptions = [{ value: "auto", label: "自动检测" }, ...languageOptions.source.map((o) => ({ value: o.code, label: o.display_name }))];
-    const sourceSelect = createSelectField({
+    // /api/languages 的 source_options 头一项本来就是「自动识别」，只有后端没给时才补。
+    // （旧的原生 select 无条件在前面插一条「自动检测」，结果两条 auto 并排出现。）
+    const sourceLangOptions: LanguageOption[] = languageOptions.source.some((o) => o.code === "auto")
+      ? languageOptions.source
+      : [{ code: "auto", display_name: "自动识别", aliases: ["auto", "自动识别", "自动检测"] }, ...languageOptions.source];
+    const sourceField = createLanguageField({
       label: "源语言",
-      options: sourceOptions,
+      options: sourceLangOptions,
       value: st.sourceLang,
       disabled: active,
+      recentKey: `${surface}-source`,
+      onReload: () => void reloadBootstrap(surface),
       onChange: (value) => {
         st.sourceLang = value;
         void persistSettings({ [`${surface}_source_lang`]: value });
       },
     });
-    scroll.append(sourceSelect.root);
+    scroll.append(sourceField.root);
   }
 
   const typeSec = el("div", "rp-sec");
@@ -1817,6 +2174,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   clauses.push(review > 0 || autoFixed > 0 ? "其余全部通过" : "全部通过");
   clauses.push(`输出至 ${outputPath}`);
   const isError = task.state === "error" || task.state === "interrupted";
+  // 完成汇总要用扫描期的图片/文本框计数，而本函数末尾会把 st.files 清空——必须先取快照。
+  // 任务中断时不出这张卡：那种情况下「哪些没翻」根本说不准，横幅已经说了任务未完成。
+  st.excelDoneNotice = surface === "excel" && !isError ? buildExcelDoneNotice(st, result) : null;
   st.bannerInfo = isError
     ? { title: "任务未完成", subtitle: redactedText(result.message, "任务在结束前中断，已生成的文件仍保留在输出目录。") }
     : { title: `已生成 ${generated} 个文件`, subtitle: clauses.join(" · ") };

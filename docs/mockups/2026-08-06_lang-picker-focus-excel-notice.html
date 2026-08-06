@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>样张 · 可搜索语言选择器 / 焦点样式 / Excel 图片提示</title>
+<style>
+:root{
+  color-scheme: light;
+  --accent-base:#5468ff; --ground:#f4f6fc; --ground-2:#ebeef8; --rail:#fbfcfe;
+  --surface:#fff; --surface-2:#f8fafe; --ink:#141a2e; --ink-2:#556080; --ink-3:#8a93ac;
+  --line:#e7ebf5; --line-2:#d9dfee; --accent:var(--accent-base); --accent-strong:#4353cc;
+  --on-accent:#fff; --tint:#f0f1ff; --tint-line:#ccd2ff; --tint-ink:#404fc2;
+  --ok:#12a366; --ok-t:#e2f4ed; --ok-l:#b3e2ce;
+  --warn:#c77a00; --warn-t:#f8eede; --warn-l:#edd4ad;
+  --danger:#e5484d; --danger-t:#fdebec; --danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66 / 5%);
+  --sh-md:0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
+  --sh-lg:0 2px 4px rgb(24 34 66 / 6%), 0 24px 48px -22px rgb(30 45 90 / 30%);
+  --r-lg:15px; --r-md:12px; --r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+  /* 新增：焦点环 token */
+  --ring:#a9b3ff;
+  --ring-soft:rgb(84 104 255 / 18%);
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --ground:#0c1019; --ground-2:#090d15; --rail:#10151f; --surface:#151b28; --surface-2:#1a2130;
+  --ink:#eaedf7; --ink-2:#a4aec7; --ink-3:#6b7590; --line:#242c3e; --line-2:#313a50;
+  --accent:#8090ff; --accent-strong:var(--accent-base); --on-accent:#0b0f1a;
+  --tint:#1b223b; --tint-line:#283268; --tint-ink:#a0acff;
+  --ok:#3dd68c; --ok-t:#192e2a; --ok-l:#2d594c;
+  --warn:#e8a33d; --warn-t:#31281d; --warn-l:#655039;
+  --danger:#ff6369; --danger-t:#331b20; --danger-l:#5e3038;
+  --sh-sm:0 1px 2px rgb(0 0 0 / 40%);
+  --sh-md:0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);
+  --sh-lg:0 2px 4px rgb(0 0 0 / 45%), 0 24px 48px -22px rgb(0 0 0 / 65%);
+  --ring:#5b6bd6; --ring-soft:rgb(128 144 255 / 22%);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+
+/* ── 样张外壳（不属于产品，仅用于陈列） ────────────────────── */
+.sheet{max-width:1120px;margin:0 auto;padding:28px 24px 90px}
+.sheet > header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:6px}
+.sheet h1{font-size:21px;margin:0 0 4px}
+.sheet .lede{color:var(--ink-2);font-size:13px;margin:0 0 26px;max-width:70ch}
+.sec{margin:0 0 34px}
+.sec > h2{font-size:15px;margin:0 0 4px;display:flex;align-items:center;gap:9px}
+.sec > h2 .n{width:20px;height:20px;border-radius:6px;background:var(--tint);color:var(--tint-ink);
+  font-size:11px;font-weight:700;display:grid;place-items:center;flex:none}
+.sec > .note{color:var(--ink-2);font-size:12.5px;margin:0 0 14px;max-width:74ch}
+.stage{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px;box-shadow:var(--sh-sm)}
+.stage + .stage{margin-top:12px}
+.cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);font-weight:700;margin:0 0 11px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}}
+.themebtn{border:1px solid var(--line-2);background:var(--surface);color:var(--ink-2);border-radius:999px;
+  height:32px;padding:0 14px;font:inherit;font-size:12.5px;cursor:pointer;flex:none}
+
+/* ── ① 焦点样式（产品级规则） ─────────────────────────────── */
+/* 关掉系统那圈跟随 macOS 强调色的粗焦点环，统一成产品自己的靛蓝细环。
+   只用 :focus-visible：鼠标点击不出环，键盘 Tab 才出，符合系统习惯。 */
+.demo :focus{outline:none}
+.demo :focus-visible{
+  outline:2px solid var(--ring);
+  outline-offset:2px;
+  border-radius:var(--r-sm);
+}
+/* 输入类控件额外给一层极淡的内层光晕 + 主色描边，让「正在编辑这里」更明确，
+   不靠加粗外环去喊。 */
+.demo .inp:focus,.demo .inp:focus-visible{
+  outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring-soft);
+}
+/* 对照组：故意保留系统默认，用来和上面比 */
+.native :focus{outline:auto}
+
+/* ── 通用控件 ─────────────────────────────────────────────── */
+.inp{height:34px;border:1px solid var(--line-2);border-radius:var(--r-sm);background:var(--surface);
+  color:var(--ink);font:inherit;font-size:13px;padding:0 11px;width:100%;transition:border-color .12s,box-shadow .12s}
+.inp::placeholder{color:var(--ink-3)}
+.btn{height:34px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);
+  border-radius:var(--r-sm);padding:0 14px;font:inherit;font-size:13px;cursor:pointer;display:inline-flex;
+  align-items:center;gap:7px}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.pri:hover{background:var(--accent-strong);border-color:var(--accent-strong)}
+.sw{width:38px;height:22px;border-radius:999px;background:var(--line-2);position:relative;border:none;
+  cursor:pointer;flex:none;padding:0}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;
+  background:#fff;transition:left .15s;box-shadow:var(--sh-sm)}
+.sw[aria-checked="true"]{background:var(--accent)}
+.sw[aria-checked="true"]::after{left:19px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.lbl{font-size:12px;color:var(--ink-2);margin:0 0 6px;font-weight:600}
+
+/* ── ② 可搜索语言选择器 ───────────────────────────────────── */
+.lang{position:relative;display:inline-block}
+.lang.block{display:block}
+.lang-btn{height:34px;min-width:150px;width:100%;display:flex;align-items:center;gap:8px;
+  border:1px solid var(--line-2);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);
+  font:inherit;font-size:13px;padding:0 9px 0 11px;cursor:pointer;text-align:left;
+  transition:border-color .12s,box-shadow .12s}
+.lang-btn:hover{border-color:var(--ink-3)}
+.lang[data-open="true"] .lang-btn{border-color:var(--accent);box-shadow:0 0 0 3px var(--ring-soft)}
+.lang-btn .val{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lang-btn .code{font:11px/1 var(--mono);color:var(--ink-3);background:var(--ground-2);border-radius:5px;
+  padding:3px 5px;flex:none}
+:root[data-theme="dark"] .lang-btn .code{background:var(--ground)}
+.lang-btn .chev{width:14px;height:14px;flex:none;color:var(--ink-3)}
+
+.lang-pop{position:absolute;top:calc(100% + 6px);left:0;width:288px;background:var(--surface);
+  border:1px solid var(--line-2);border-radius:var(--r-md);box-shadow:var(--sh-lg);z-index:40;
+  overflow:hidden;display:none}
+.lang[data-open="true"] .lang-pop{display:block}
+/* 陈列态：三个状态并排展示，弹层回到文档流里，互相不遮挡 */
+.lang.static{display:block}
+.lang.static .lang-pop{position:static;margin-top:6px;box-shadow:var(--sh-md)}
+.lang.static .lang-btn{min-width:288px;width:288px}
+.lang-search{padding:9px;border-bottom:1px solid var(--line)}
+.lang-list{max-height:264px;overflow:auto;padding:5px}
+.lang-group{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:700;padding:8px 9px 5px}
+.lang-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;
+  font-size:13px;color:var(--ink)}
+.lang-item:hover,.lang-item.cur{background:var(--surface-2)}
+.lang-item[aria-selected="true"]{background:var(--tint);color:var(--tint-ink);font-weight:600}
+.lang-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lang-item .nm b{color:var(--accent);font-weight:700}
+.lang-item .cd{font:11px/1 var(--mono);color:var(--ink-3);flex:none}
+.lang-item .tag{font-size:10.5px;padding:2px 6px;border-radius:5px;background:var(--warn-t);
+  color:var(--warn);border:1px solid var(--warn-l);flex:none}
+.lang-empty{padding:22px 14px;text-align:center;color:var(--ink-3);font-size:12.5px}
+.lang-empty b{display:block;color:var(--ink-2);font-size:13px;margin-bottom:3px;font-weight:600}
+.lang-foot{border-top:1px solid var(--line);padding:7px 10px;display:flex;justify-content:space-between;
+  align-items:center;font-size:11.5px;color:var(--ink-3)}
+.kbd{font:10.5px/1 var(--mono);border:1px solid var(--line-2);border-bottom-width:2px;border-radius:4px;
+  padding:3px 4px;color:var(--ink-2);background:var(--surface-2)}
+
+/* ── 陈列用的容器：记忆库工具条 / 右栏运行设置 ───────────── */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.tmbar{display:flex;align-items:center;gap:9px;padding:11px 13px}
+.arrow{color:var(--ink-3);flex:none}
+.searchwrap{flex:1;min-width:120px;max-width:330px;position:relative}
+.rp{width:305px;padding:15px}
+.rp h3{font-size:14px;margin:0 0 13px}
+.rp .grp{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:700;margin:0 0 8px}
+.rp .fld{margin-bottom:13px}
+
+/* ── ③ Excel 图片 / 文本框提示 ───────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:11px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px}
+.stat .k{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:6px}
+.stat .v{font-size:23px;font-weight:700;margin-top:5px;letter-spacing:-.01em}
+.stat.attn{background:var(--warn-t);border-color:var(--warn-l)}
+.stat.attn .k,.stat.attn .v{color:var(--warn)}
+.stat .sub{font-size:11px;color:var(--ink-3);margin-top:2px}
+.stat.attn .sub{color:var(--warn);opacity:.85}
+
+.banner{display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--r-md);
+  background:var(--warn-t);border:1px solid var(--warn-l);color:var(--warn)}
+.banner .ico{flex:none;margin-top:1px}
+.banner .tx{flex:1;min-width:0}
+.banner .tt{font-weight:700;font-size:13px;margin-bottom:2px}
+.banner .bd{font-size:12.5px;line-height:1.6;color:var(--ink-2)}
+:root[data-theme="dark"] .banner .bd{color:var(--ink-2)}
+.banner .btn{height:28px;font-size:12px;background:var(--surface);flex:none}
+
+table.tl{width:100%;border-collapse:collapse;font-size:13px}
+table.tl th{text-align:left;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);
+  font-weight:700;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.tl td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.tl tr:last-child td{border-bottom:none}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 7px;border-radius:999px;
+  background:var(--warn-t);color:var(--warn);border:1px solid var(--warn-l);white-space:nowrap}
+.chip.mut{background:var(--ground-2);color:var(--ink-3);border-color:var(--line-2)}
+:root[data-theme="dark"] .chip.mut{background:var(--ground)}
+.chip + .chip{margin-left:5px}
+.fname{display:flex;align-items:center;gap:8px}
+.fname .ic{color:var(--ink-3);flex:none}
+.dash{color:var(--ink-3)}
+.done{display:flex;gap:11px;align-items:flex-start;padding:13px 15px;border-radius:var(--r-md);
+  background:var(--ok-t);border:1px solid var(--ok-l)}
+.done .ico{color:var(--ok);flex:none;margin-top:1px}
+.done .tt{font-weight:700;font-size:13px;color:var(--ok);margin-bottom:3px}
+.done .bd{font-size:12.5px;color:var(--ink-2);line-height:1.6}
+.done .bd em{font-style:normal;color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <header>
+    <div>
+      <h1>样张 · 可搜索语言选择器 / 焦点样式 / Excel 图片提示</h1>
+    </div>
+    <button class="themebtn" onclick="toggleTheme()">切换深/浅色</button>
+  </header>
+  <p class="lede">三块改动的静态样张，语言选择器是<strong>真能用的</strong>——点开、打字、上下键、回车，都试一下。焦点样式请用 <span class="kbd">Tab</span> 键走一遍，鼠标点击是不出焦点环的（这是刻意的）。</p>
+
+  <!-- ══ ① 焦点样式 ═════════════════════════════════════════ -->
+  <section class="sec">
+    <h2><span class="n">1</span>选中方框的焦点样式</h2>
+    <p class="note">现在那圈橙色不是我们写的，是 macOS 系统默认焦点环，跟着你系统的强调色走，所以又粗又跳。下面左边是现状，右边是新样式：2px 靛蓝细环 + 2px 外间距；输入类控件另给一层极淡的光晕，靠「贴合」而不是「加粗」来表示焦点。用 <span class="kbd">Tab</span> 在两组里各走一遍对比。</p>
+    <div class="grid2">
+      <div class="stage native">
+        <p class="cap">现状 · 系统默认焦点环</p>
+        <div class="row" style="gap:11px">
+          <input class="inp" style="width:190px" placeholder="选择或粘贴路径…">
+          <button class="btn">浏览</button>
+          <button class="btn pri">扫描</button>
+          <button class="sw" aria-checked="true" role="switch" aria-label="开关"></button>
+        </div>
+      </div>
+      <div class="stage demo">
+        <p class="cap">新样式 · 产品靛蓝细环</p>
+        <div class="row" style="gap:11px">
+          <input class="inp" style="width:190px" placeholder="选择或粘贴路径…">
+          <button class="btn">浏览</button>
+          <button class="btn pri">扫描</button>
+          <button class="sw" aria-checked="true" role="switch" aria-label="开关"></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ ② 语言选择器 ═══════════════════════════════════════ -->
+  <section class="sec demo">
+    <h2><span class="n">2</span>可搜索语言选择器</h2>
+    <p class="note">替换掉原生 <code>&lt;select&gt;</code>。59 种语言不再只能滚动找：打开就能打字过滤，中文名、英文名、语言代码都能匹配（试试 <code>越</code>、<code>viet</code>、<code>vi</code>）。「最近使用」置顶，自定义语言带黄色标记。按钮有 <code>min-width</code> 且长名称省略号截断，不会再出现挤成一条缝的情况。</p>
+
+    <div class="stage">
+      <p class="cap">A · 记忆库工具条（源 → 目标）</p>
+      <div class="card tmbar">
+        <div class="lang" data-lang="tm-src" data-value="zh"></div>
+        <span class="arrow">→</span>
+        <div class="lang" data-lang="tm-tgt" data-value="en"></div>
+        <div class="searchwrap"><input class="inp" placeholder="搜索原文或译文…"></div>
+        <button class="btn">＋ 新增词条</button>
+        <button class="btn">导入</button>
+        <button class="btn">导出</button>
+        <button class="btn pri">深度清洗</button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="cap">B · 右栏运行设置（窄栏，块级铺满）</p>
+      <div class="card rp">
+        <h3>运行设置</h3>
+        <p class="grp">语言</p>
+        <div class="fld">
+          <p class="lbl">目标语言</p>
+          <div class="lang block" data-lang="rp-tgt" data-value="en"></div>
+        </div>
+        <div class="fld" style="margin-bottom:0">
+          <p class="lbl">源语言</p>
+          <div class="lang block" data-lang="rp-src" data-value="auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="cap">C · 三种状态并排（已强制展开，方便一眼看全）</p>
+      <div class="row" style="align-items:flex-start;gap:22px">
+        <div>
+          <p class="lbl">展开 · 空输入</p>
+          <div class="lang static" data-lang="s1" data-value="en" data-open="true" data-q=""></div>
+        </div>
+        <div>
+          <p class="lbl">输入过滤 · 「vi」</p>
+          <div class="lang static" data-lang="s2" data-value="en" data-open="true" data-q="vi"></div>
+        </div>
+        <div>
+          <p class="lbl">无结果</p>
+          <div class="lang static" data-lang="s3" data-value="en" data-open="true" data-q="zzz"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ ③ Excel 图片提示 ═══════════════════════════════════ -->
+  <section class="sec demo">
+    <h2><span class="n">3</span>Excel 图片 / 文本框未翻译提示</h2>
+    <p class="note">单元格之外的文字——图片里的字、文本框和形状里的字——现在不翻译，但界面上一句话都没说，用户只会以为程序漏翻了。提示分三处落：扫描后的统计条、任务清单每行的标记、翻译完成后的结果说明。<strong>.xls 老格式在扫描阶段数不出来</strong>（要先经 Excel 转换），如实显示「未知」，不冒充「没有」。</p>
+
+    <div class="stage">
+      <p class="cap">A · 扫描统计条 —— 多出一格，有内容才变黄</p>
+      <div class="stats" style="margin-bottom:11px">
+        <div class="stat"><div class="k">已扫描文件</div><div class="v">12</div></div>
+        <div class="stat"><div class="k">文本单元格</div><div class="v">3,481</div></div>
+        <div class="stat"><div class="k">工作表</div><div class="v">27</div></div>
+        <div class="stat attn"><div class="k">图片 / 文本框</div><div class="v">9 / 4</div><div class="sub">不翻译，原样保留</div></div>
+        <div class="stat"><div class="k">旧版 .xls</div><div class="v">2</div></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="k">已扫描文件</div><div class="v">6</div></div>
+        <div class="stat"><div class="k">文本单元格</div><div class="v">902</div></div>
+        <div class="stat"><div class="k">工作表</div><div class="v">9</div></div>
+        <div class="stat"><div class="k">图片 / 文本框</div><div class="v dash">0 / 0</div><div class="sub">无</div></div>
+        <div class="stat"><div class="k">旧版 .xls</div><div class="v dash">—</div></div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="cap">B · 扫描后的说明横幅（只在真有图片/文本框时出现）</p>
+      <div class="banner">
+        <svg class="ico" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <div class="tx">
+          <div class="tt">这批文件里有 9 张图片、4 个文本框不会被翻译</div>
+          <div class="bd">翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框和形状里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。</div>
+        </div>
+        <button class="btn">查看是哪些文件</button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="cap">C · 任务清单 —— 逐行标记，点开就知道是哪个文件</p>
+      <div class="card" style="overflow:hidden">
+        <table class="tl">
+          <thead><tr><th style="width:34px"></th><th>文件</th><th>工作表</th><th>文本单元格</th><th>单元格外内容</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><input type="checkbox" checked></td>
+              <td><div class="fname"><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>设备清单_2026Q1.xlsx</div></td>
+              <td>4</td><td>612</td>
+              <td><span class="chip">🖼 6 张图片</span><span class="chip">▭ 2 个文本框</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" checked></td>
+              <td><div class="fname"><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>进度同步表.xlsx</div></td>
+              <td>2</td><td>238</td>
+              <td><span class="dash">—</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" checked></td>
+              <td><div class="fname"><svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>旧版报价单.xls</div></td>
+              <td>3</td><td>417</td>
+              <td><span class="chip mut">? 未知（.xls 需转换后才能统计）</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="stage">
+      <p class="cap">D · 翻译完成后的结果说明</p>
+      <div class="done">
+        <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <div>
+          <div class="tt">翻译完成 · 12 个文件，3,481 个单元格</div>
+          <div class="bd">另有 <em>9 张图片、4 个文本框</em>中的文字未翻译，已原样保留。2 个 .xls 文件转换后新发现 <em>3 个文本框</em>。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+function toggleTheme(){
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "" : "dark";
+}
+
+/* ── 语言目录（节选自后端 /api/languages 的真实数据） ────────── */
+const LANGS = [
+  {code:"auto", name:"自动识别", en:"Auto detect", auto:true},
+  {code:"en", name:"英文", en:"English"},
+  {code:"zh", name:"中文", en:"Chinese"},
+  {code:"ja", name:"日文", en:"Japanese"},
+  {code:"ko", name:"韩文", en:"Korean"},
+  {code:"fr", name:"法文", en:"French"},
+  {code:"de", name:"德文", en:"German"},
+  {code:"es", name:"西班牙语", en:"Spanish"},
+  {code:"pt", name:"葡萄牙语", en:"Portuguese"},
+  {code:"ru", name:"俄语", en:"Russian"},
+  {code:"ar", name:"阿拉伯语", en:"Arabic"},
+  {code:"vi", name:"越南语", en:"Vietnamese"},
+  {code:"km", name:"高棉语", en:"Khmer"},
+  {code:"th", name:"泰语", en:"Thai"},
+  {code:"id", name:"印尼语", en:"Indonesian"},
+  {code:"ms", name:"马来语", en:"Malay"},
+  {code:"it", name:"意大利语", en:"Italian"},
+  {code:"nl", name:"荷兰语", en:"Dutch"},
+  {code:"tr", name:"土耳其语", en:"Turkish"},
+  {code:"pl", name:"波兰语", en:"Polish"},
+  {code:"x-custom-mn-trad", name:"蒙古语（传统蒙文）", en:"Mongolian (Traditional)", custom:true},
+];
+const RECENT = ["en","vi","km"];
+
+const ICON_CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+
+function matches(lang, q){
+  if(!q) return true;
+  const n = q.toLowerCase();
+  return lang.name.toLowerCase().includes(n) || lang.en.toLowerCase().includes(n) || lang.code.toLowerCase().includes(n);
+}
+function mark(text, q){
+  if(!q) return text;
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if(i < 0) return text;
+  return text.slice(0,i) + "<b>" + text.slice(i, i+q.length) + "</b>" + text.slice(i+q.length);
+}
+function itemHtml(lang, q, selected){
+  return '<div class="lang-item" role="option" data-code="' + lang.code + '" aria-selected="' + (selected?"true":"false") + '">'
+    + '<span class="nm">' + mark(lang.name, q) + '</span>'
+    + (lang.custom ? '<span class="tag">自定义</span>' : '')
+    + '<span class="cd">' + (lang.auto ? "" : lang.code) + '</span>'
+    + '</div>';
+}
+
+function render(host){
+  const value = host.dataset.value;
+  const q = host.dataset.q || "";
+  const isStatic = host.classList.contains("static");
+  const cur = LANGS.find(l => l.code === value) || LANGS[0];
+  const pool = LANGS.filter(l => matches(l, q));
+  const recent = q ? [] : pool.filter(l => RECENT.includes(l.code));
+  const rest = pool.filter(l => !recent.includes(l));
+
+  let list = "";
+  if(!pool.length){
+    list = '<div class="lang-empty"><b>没有匹配的语言</b>换个说法试试，中文名、英文名、语言代码都能搜。</div>';
+  } else {
+    if(recent.length){
+      list += '<div class="lang-group">最近使用</div>' + recent.map(l => itemHtml(l, q, l.code===value)).join("");
+      list += '<div class="lang-group">全部语言</div>';
+    }
+    list += rest.map(l => itemHtml(l, q, l.code===value)).join("");
+  }
+
+  host.innerHTML =
+    '<button class="lang-btn" type="button" aria-haspopup="listbox">'
+      + '<span class="val">' + cur.name + '</span>'
+      + (cur.auto ? '' : '<span class="code">' + cur.code + '</span>')
+      + ICON_CHEV
+    + '</button>'
+    + '<div class="lang-pop" role="listbox">'
+      + '<div class="lang-search"><input class="inp" type="text" placeholder="搜索语言、代码…" value="' + q.replace(/"/g,"&quot;") + '"></div>'
+      + '<div class="lang-list">' + list + '</div>'
+      + '<div class="lang-foot"><span>共 ' + pool.length + ' 项</span><span><span class="kbd">↑↓</span> 选择 <span class="kbd">↵</span> 确认 <span class="kbd">esc</span> 关闭</span></div>'
+    + '</div>';
+
+  const btn = host.querySelector(".lang-btn");
+  const search = host.querySelector(".lang-search .inp");
+
+  if(isStatic){
+    // 陈列用，不接交互；输入框设为只读，免得看的人以为打字没反应
+    search.readOnly = true;
+    search.tabIndex = -1;
+  } else {
+    btn.addEventListener("click", () => {
+      const open = host.dataset.open === "true";
+      document.querySelectorAll('.lang:not(.static)').forEach(o => o.dataset.open = "false");
+      host.dataset.open = open ? "false" : "true";
+      if(!open) setTimeout(() => host.querySelector(".lang-search .inp")?.focus(), 0);
+    });
+    search.addEventListener("input", () => {
+      host.dataset.q = search.value;
+      render(host);
+      host.querySelector(".lang-search .inp").focus();
+    });
+    search.addEventListener("keydown", (e) => {
+      const items = [...host.querySelectorAll(".lang-item")];
+      let i = items.findIndex(x => x.classList.contains("cur"));
+      if(e.key === "ArrowDown" || e.key === "ArrowUp"){
+        e.preventDefault();
+        if(!items.length) return;
+        if(i < 0) i = e.key === "ArrowDown" ? -1 : 0;
+        i = (i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        items.forEach(x => x.classList.remove("cur"));
+        items[i].classList.add("cur");
+        items[i].scrollIntoView({block:"nearest"});
+      } else if(e.key === "Enter"){
+        e.preventDefault();
+        const pick = items.find(x => x.classList.contains("cur")) || items[0];
+        if(pick) choose(host, pick.dataset.code);
+      } else if(e.key === "Escape"){
+        host.dataset.open = "false";
+      }
+    });
+    host.querySelectorAll(".lang-item").forEach(it => {
+      it.addEventListener("click", () => choose(host, it.dataset.code));
+    });
+  }
+}
+
+function choose(host, code){
+  host.dataset.value = code;
+  host.dataset.q = "";
+  host.dataset.open = "false";
+  render(host);
+}
+
+document.addEventListener("pointerdown", (e) => {
+  document.querySelectorAll('.lang:not(.static)[data-open="true"]').forEach(host => {
+    if(!host.contains(e.target)) host.dataset.open = "false";
+  });
+});
+
+document.querySelectorAll(".lang").forEach(render);
+</script>
+</body>
+</html>
