@@ -7,8 +7,13 @@ import unittest
 from unittest.mock import patch
 
 from core.engine_dispatcher import build_role_engine
-from core.failover_engine import FailoverTranslationEngine
+from core.failover_engine import (
+    FailoverTranslationEngine,
+    concrete_base_engine_members,
+)
+from core.language_preflight import TranslationLanguageResult
 from core.model_roles import ROLE_TRANSLATION, add_role_connection
+from engines.base_engine import TranslationEngine
 from settings import (
     AppSettings,
     ModelConnection,
@@ -28,12 +33,38 @@ class _StubEngine:
         self.label = label
         self.error = error
         self.calls = 0
+        self.chat_calls: list[tuple[str, str]] = []
+        self.source_calls: list[list[str]] = []
 
     def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
         self.calls += 1
         if self.error is not None:
             raise self.error
         return {text: f"{self.label}:{text}" for text in texts}
+
+    def chat(self, system: str, user: str) -> str:
+        self.calls += 1
+        self.chat_calls.append((system, user))
+        if self.error is not None:
+            raise self.error
+        return f"{self.label}:chat"
+
+    def translate_batch_with_sources(
+        self, texts, target_lang, system_prompt, source_lang="auto"
+    ):
+        self.calls += 1
+        self.source_calls.append(list(texts))
+        if self.error is not None:
+            raise self.error
+        return [
+            TranslationLanguageResult(
+                text,
+                f"{self.label}:{text}",
+                source_lang="en",
+                target_lang=target_lang,
+            )
+            for text in texts
+        ]
 
 
 def _pool(*specs: tuple[str, str]) -> list[ModelConnection]:
@@ -138,6 +169,107 @@ class FailoverEngineTests(unittest.TestCase):
         self.assertEqual(_run(engine), {"hello": "C:hello"})
         self.assertEqual(engines[pool[0].id].calls, 1)
         self.assertEqual(engines[pool[1].id].calls, 1)
+
+    def test_chat_reaches_the_live_engine_instead_of_the_base_stub(self) -> None:
+        # ``chat`` has a body on ``TranslationEngine``, so ordinary attribute
+        # lookup found it before ``__getattr__`` could delegate and the wrapper
+        # answered every call with NotImplementedError.
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {pool[0].id: _StubEngine("A"), pool[1].id: _StubEngine("B")}
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        self.assertEqual(engine.chat("system", "user"), "A:chat")
+        self.assertEqual(engines[pool[0].id].chat_calls, [("system", "user")])
+
+    def test_chat_moves_to_the_next_connection_when_one_dies(self) -> None:
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {
+            pool[0].id: _StubEngine("A", _HttpError(401)),
+            pool[1].id: _StubEngine("B"),
+        }
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        self.assertEqual(engine.chat("system", "user"), "B:chat")
+        self.assertEqual(engine.current_connection.label, "B")
+
+    def test_chat_rate_limiting_stays_with_the_caller(self) -> None:
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {
+            pool[0].id: _StubEngine("A", _HttpError(429)),
+            pool[1].id: _StubEngine("B"),
+        }
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        with self.assertRaises(_HttpError):
+            engine.chat("system", "user")
+        self.assertEqual(engines[pool[1].id].calls, 0)
+        self.assertEqual(engine.current_connection.label, "A")
+
+    def test_translate_batch_with_sources_reaches_the_live_engine(self) -> None:
+        # The automatic-source-language Excel path calls only this method; when
+        # it hit the base class the fallback returned source text as translation.
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {pool[0].id: _StubEngine("A"), pool[1].id: _StubEngine("B")}
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        items = engine.translate_batch_with_sources(["hello"], "en", "prompt")
+
+        self.assertEqual([item.translation for item in items], ["A:hello"])
+        self.assertEqual([item.source_lang for item in items], ["en"])
+        self.assertEqual(engines[pool[0].id].source_calls, [["hello"]])
+
+    def test_translate_batch_with_sources_switches_on_a_dead_connection(self) -> None:
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {
+            pool[0].id: _StubEngine("A", _HttpError(401)),
+            pool[1].id: _StubEngine("B"),
+        }
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        items = engine.translate_batch_with_sources(["hello"], "en", "prompt")
+
+        self.assertEqual([item.translation for item in items], ["B:hello"])
+        self.assertEqual(engine.current_connection.label, "B")
+
+    def test_every_concrete_base_member_is_reimplemented_on_the_wrapper(self) -> None:
+        # ``__getattr__`` cannot see through a base-class body, so any concrete
+        # member added to ``TranslationEngine`` later must also be overridden
+        # here or it silently stops reaching the real engine.
+        missing = [
+            name
+            for name in concrete_base_engine_members()
+            if name not in vars(FailoverTranslationEngine)
+        ]
+        self.assertEqual(missing, [])
+        self.assertEqual(
+            concrete_base_engine_members(),
+            frozenset({"chat", "translate_batch_with_sources", "engine_name"}),
+        )
+
+    def test_the_wrapper_reports_chat_capability_like_a_real_engine(self) -> None:
+        # ``_engine_supports_chat`` in mixed_language / word_task_runner probes
+        # the class, so a wrapper that left ``chat`` on the base silently
+        # disabled mixed-language handling and semantic review.
+        from core.mixed_language import _engine_supports_chat
+
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engines = {pool[0].id: _StubEngine("A"), pool[1].id: _StubEngine("B")}
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: engines[conn.id], candidates=pool
+        )
+
+        self.assertIsNot(FailoverTranslationEngine.chat, TranslationEngine.chat)
+        self.assertTrue(_engine_supports_chat(engine))
 
     def test_an_empty_chain_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

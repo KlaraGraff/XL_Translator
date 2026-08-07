@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -12,11 +13,18 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from config import PDF_RENDER_DPI_DEFAULT
 from core import diagnostics
 from core.api_scheduler import WeightedApiScheduler
-from core.image_generation import ImageModelUnavailableError
+from core.image_generation import (
+    GPT_IMAGE_2_MODEL,
+    ImageModelUnavailableError,
+    pdf_page_ratio_tolerance,
+    pdf_page_request_size,
+)
+from core.model_throughput import EffectiveModelThroughput
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -29,6 +37,8 @@ from core.pdf_image_translation import (
     PDF_OUTPUT_STATE_FAILED,
     PDF_OUTPUT_STATE_NEEDS_REVIEW,
     PDF_OUTPUT_STATE_STOPPED,
+    PDF_PAGE_MAX_RENDER_PIXELS,
+    PDF_PAGE_MIN_RENDER_DPI,
     PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
     PDF_REPORT_FILENAME,
     SOURCE_TYPE_IMAGE,
@@ -42,10 +52,15 @@ from core.pdf_image_translation import (
     check_page_quality,
     create_failure_placeholder_page,
     determine_pdf_task_status,
+    fully_skipped_oversize_message,
     is_oversized_page,
     _file_record_to_result,
+    _load_placeholder_font,
     _localized_pdf_placeholder_problem,
+    _open_pdf_document,
+    _pdf_render_scale_for_page,
     _read_pdf_oversized_page_count,
+    _summary_issues,
     max_page_generation_attempts,
     page_image_name,
     resolve_pdf_page_archive_dirs,
@@ -2300,6 +2315,702 @@ def _fake_pdfium_module(page_counts: dict[str, int] | None = None):
 
 def _fake_pdfium_module_by_page_count(page_counts: dict[str, int]):
     return _fake_pdfium_module(page_counts)
+
+
+# --------------------------------------------------------------------------
+# 以下为 2026-08-07 代码审计（docs/CODE_AUDIT_2026-08-07.md 第 1.4/1.5/2.4/3.12/
+# 4.13/4.14/4.15 节）确认缺陷的回归测试。所有图像模型调用都用假客户端，
+# 任何一条用例都不会真的打到收费 API。
+# --------------------------------------------------------------------------
+
+# 300 DPI 下的实测页面像素尺寸（审计里量出 1% 容差必然失败的那几种幅面）。
+_PAGE_PIXEL_SIZES: dict[str, tuple[int, int]] = {
+    "A4": (2480, 3508),
+    "Letter": (2550, 3300),
+    "Legal": (2550, 4200),
+    "A3": (3508, 4961),
+    # 窄长页：gpt-image-2 的 16px 量化在 0.60 附近的比例误差超过 1%。
+    "Narrow": (1200, 2000),
+}
+
+
+def _inked_png_bytes(width: int, height: int, *, ink_fraction: float = 0.25) -> bytes:
+    """白底 + 一块黑色区域的 PNG：`_measure_page_ink` 会把它判成「有内容」。"""
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    ink_height = max(1, int(height * ink_fraction))
+    draw.rectangle([0, 0, width - 1, ink_height - 1], fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _find_real_font_file() -> Path | None:
+    for candidate in (
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ):
+        path = Path(candidate)
+        if path.exists():
+            return path
+    return None
+
+
+class _SizedImageClient:
+    """按调用方要求的尺寸返回一张有内容的图，并记录调用次数。"""
+
+    def __init__(self, width: int, height: int) -> None:
+        self.image_bytes = _inked_png_bytes(width, height)
+        self.calls = 0
+
+    def generate_page(self, **_kwargs):
+        self.calls += 1
+        return self.image_bytes
+
+
+class _BrokenPageRunner(PdfImageTranslationRunner):
+    """让指定页的渲染抛异常，模拟 PDF 里单页对象损坏。"""
+
+    broken_page_index = 1
+
+    def _render_source_page(self, doc, *, page_index: int, **kwargs):
+        if page_index == self.broken_page_index:
+            raise RuntimeError("page object is corrupt")
+        return super()._render_source_page(doc, page_index=page_index, **kwargs)
+
+
+class PdfDefectRegressionTests(unittest.TestCase):
+    """审计确认缺陷的回归测试（每条对应清单里的一项）。"""
+
+    def _pdf_settings(self, root: Path, *, model: str = "image-model") -> AppSettings:
+        settings = AppSettings(target_lang="en")
+        settings.pdf.target_lang = "en"
+        settings.output.use_custom_output_dir = True
+        settings.output.custom_output_dir = str(root / "out")
+        settings.pdf.page_generation_concurrency = 1
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_model = model
+        settings.image_model_role.cloud_base_url = "https://images.example/v1"
+        return settings
+
+    # ---------------- 问题 1：质检只比宽高比 ----------------
+
+    def test_blank_output_against_inked_source_is_flagged_but_still_shipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.png"
+            source.write_bytes(_inked_png_bytes(1200, 1600))
+
+            quality = check_page_quality(
+                _png_bytes(1200, 1600),
+                source_width=1200,
+                source_height=1600,
+                source_image_path=source,
+            )
+
+            # 关键契约：疑似空白页依然 ok=True——它照常入册、不消耗重试、
+            # 不会被丢掉，只是把疑点挂到页面上让文件转 needs_review。
+            self.assertTrue(quality.ok)
+            self.assertEqual(quality.status, "ok")
+            self.assertIn("blank_page", quality.review_reasons)
+            self.assertIn("疑似空白页", quality.review_message)
+
+    def test_blank_output_against_blank_source_is_not_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.png"
+            source.write_bytes(_png_bytes(1200, 1600))
+
+            quality = check_page_quality(
+                _png_bytes(1200, 1600),
+                source_width=1200,
+                source_height=1600,
+                source_image_path=source,
+            )
+
+            # 源页本来就是空白页，输出空白是正确结果，绝不能报警。
+            self.assertTrue(quality.ok)
+            self.assertEqual(quality.review_reasons, [])
+
+    def test_blank_output_without_readable_source_is_not_flagged(self) -> None:
+        # 源页读不出来 = 不确定，按「不报警」处理，宁可漏判也不误杀。
+        quality = check_page_quality(
+            _png_bytes(1200, 1600),
+            source_width=1200,
+            source_height=1600,
+            source_image_path=None,
+        )
+        self.assertTrue(quality.ok)
+        self.assertEqual(quality.review_reasons, [])
+
+        missing = check_page_quality(
+            _png_bytes(1200, 1600),
+            source_width=1200,
+            source_height=1600,
+            source_image_path=Path("/nonexistent/source.png"),
+        )
+        self.assertTrue(missing.ok)
+        self.assertEqual(missing.review_reasons, [])
+
+    def test_low_resolution_output_is_flagged_but_fixed_size_model_output_is_not(self) -> None:
+        tiny = check_page_quality(
+            _inked_png_bytes(600, 800),
+            source_width=2480,
+            source_height=3307,
+        )
+        self.assertTrue(tiny.ok)
+        self.assertIn("low_resolution", tiny.review_reasons)
+
+        # 分辨率下限刻意压在 700×1000：gpt-image-1 的固定 1024×1536 必须干净
+        # 通过，否则每一页都会被标复核，标记就没有信息量了。
+        fixed_size = check_page_quality(
+            _inked_png_bytes(1024, 1536),
+            source_width=2048,
+            source_height=3072,
+        )
+        self.assertTrue(fixed_size.ok)
+        self.assertEqual(fixed_size.review_reasons, [])
+
+    def test_decode_and_ratio_failures_still_fail_and_do_not_leak_flags(self) -> None:
+        decode = check_page_quality(b"not an image", source_width=1600, source_height=1200)
+        self.assertFalse(decode.ok)
+        self.assertEqual(decode.status, "decode_error")
+        self.assertEqual(decode.review_reasons, [])
+
+        ratio = check_page_quality(
+            _inked_png_bytes(1600, 1000),
+            source_width=1600,
+            source_height=1200,
+        )
+        self.assertFalse(ratio.ok)
+        self.assertEqual(ratio.status, "ratio_error")
+
+    def test_quality_flags_reach_task_status_and_file_result(self) -> None:
+        record = PdfFileRecord(
+            name="doc",
+            source_path="/tmp/doc.pdf",
+            relative_path="doc.pdf",
+            status=PDF_OUTPUT_STATE_COMPLETED,
+            page_count=3,
+            translated_pdf_path="/tmp/out/doc_en.pdf",
+            quality_flagged_page_count=1,
+        )
+
+        self.assertEqual(
+            determine_pdf_task_status(stopped=False, file_records=[record]),
+            PDF_OUTPUT_STATE_NEEDS_REVIEW,
+        )
+        result = _file_record_to_result(record)
+        # 质检疑点不否定产物：文件仍然成功，但必须在结果里显式说出来。
+        self.assertTrue(result["success"])
+        self.assertEqual(result["quality_flagged_page_count"], 1)
+        self.assertIn("内容质检待复核", result["detail"])
+
+        issues = _summary_issues([record])
+        self.assertEqual(issues, [])  # 页级疑点靠页记录汇报，这里没有页记录
+
+    def test_quality_flagged_page_appears_in_summary_issues(self) -> None:
+        record = PdfFileRecord(
+            name="doc",
+            source_path="/tmp/doc.pdf",
+            relative_path="doc.pdf",
+            status=PDF_OUTPUT_STATE_NEEDS_REVIEW,
+            page_count=1,
+            translated_pdf_path="/tmp/out/doc_en.pdf",
+            quality_flagged_page_count=1,
+            pages=[
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path="/tmp/src/page_001.png",
+                    file_name="doc",
+                    status="success",
+                    quality_flags=["blank_page"],
+                    quality_message="译图非背景像素仅 0.000%，源页为 20.00%，疑似空白页或内容丢失",
+                )
+            ],
+        )
+
+        issues = _summary_issues([record])
+        self.assertEqual(len(issues), 1)
+        self.assertIn("疑似空白页", issues[0]["problem"])
+        self.assertIn("内容质检待复核", issues[0]["status"])
+
+    # ---------------- 问题 2：固定尺寸模型 × 1% 容差 = 必然失败 ----------------
+
+    def test_fixed_size_models_get_a_tolerance_they_can_actually_meet(self) -> None:
+        for model in ("gpt-image-1", GPT_IMAGE_2_MODEL):
+            for label, (width, height) in _PAGE_PIXEL_SIZES.items():
+                with self.subTest(model=model, page=label):
+                    size = pdf_page_request_size(width, height, model)
+                    self.assertIsNotNone(size)
+                    tolerance = pdf_page_ratio_tolerance(
+                        source_width=width,
+                        source_height=height,
+                        model=model,
+                    )
+                    source_ratio = width / height
+                    requested_ratio = size[0] / size[1]
+                    unavoidable = abs(source_ratio - requested_ratio) / source_ratio
+                    # 我们自己请求的尺寸，必须能通过我们自己的那道门。
+                    self.assertLessEqual(unavoidable, tolerance)
+                    # 放宽之后仍然保留原本 1% 的质量余量，不是把门拆了。
+                    self.assertAlmostEqual(tolerance - unavoidable, 0.01, places=9)
+
+    def test_free_form_size_models_keep_the_strict_base_tolerance(self) -> None:
+        # 不协商 size 的模型（/responses 路线）可以精确还原比例，容差不放宽。
+        self.assertIsNone(pdf_page_request_size(2480, 3508, "gemini-2.5-flash-image"))
+        self.assertAlmostEqual(
+            pdf_page_ratio_tolerance(
+                source_width=2480,
+                source_height=3508,
+                model="gemini-2.5-flash-image",
+            ),
+            0.01,
+            places=9,
+        )
+
+    def test_fixed_size_model_pages_succeed_on_the_first_attempt(self) -> None:
+        """问题 2 的核心断言：一次成功，不烧重试预算（每次重试都是真金白银）。"""
+        for model in ("gpt-image-1", GPT_IMAGE_2_MODEL):
+            for label, (width, height) in _PAGE_PIXEL_SIZES.items():
+                with self.subTest(model=model, page=label):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        requested = pdf_page_request_size(width, height, model)
+                        self.assertIsNotNone(requested)
+                        image_client = _SizedImageClient(*requested)
+                        settings = self._pdf_settings(root, model=model)
+                        runner = PdfImageTranslationRunner(
+                            [],
+                            settings,
+                            source_root=root,
+                            image_client=image_client,
+                            task_logger_enabled=False,
+                        )
+
+                        source_path = root / "page_001.png"
+                        source_path.write_bytes(_inked_png_bytes(width, height))
+                        page_record = PdfPageRecord(
+                            page_number=1,
+                            source_image_path=str(source_path),
+                            file_name="doc",
+                            status="rendered",
+                            source_width_px=width,
+                            source_height_px=height,
+                            page_width_pt=width * 72 / 300,
+                            page_height_pt=height * 72 / 300,
+                        )
+
+                        with patch("core.model_roles.get_key", return_value="secret"):
+                            model_config = resolve_effective_model_config(settings, ROLE_IMAGE)
+                            runner._generate_page_with_retries(
+                                page_record,
+                                1,
+                                root / "translated",
+                                root / "candidates",
+                                3,
+                                WeightedApiScheduler(1),
+                                WeightedApiScheduler(1),
+                                model_config,
+                                None,
+                            )
+
+                        self.assertEqual(page_record.status, "success")
+                        self.assertEqual(page_record.attempts, 1)
+                        self.assertEqual(image_client.calls, 1)
+                        self.assertFalse(page_record.placeholder)
+                        # 补边是这类模型的已知代价，不是「应急归一化」，
+                        # 也不该把页面标成待复核。
+                        self.assertFalse(page_record.emergency_ratio_normalized)
+                        self.assertEqual(page_record.quality_flags, [])
+                        self.assertTrue(Path(page_record.translated_image_path).exists())
+
+                        source_ratio = width / height
+                        requested_ratio = requested[0] / requested[1]
+                        expect_letterbox = abs(source_ratio - requested_ratio) / source_ratio > 0.02
+                        self.assertEqual(page_record.ratio_letterboxed, expect_letterbox)
+                        if expect_letterbox:
+                            # 补白边之后，入册尺寸回到源页比例，装配阶段不会拉伸。
+                            self.assertAlmostEqual(
+                                page_record.output_width_px / page_record.output_height_px,
+                                source_ratio,
+                                places=2,
+                            )
+
+    def test_letterboxing_alone_does_not_mark_a_file_needs_review(self) -> None:
+        record = PdfFileRecord(
+            name="doc",
+            source_path="/tmp/doc.pdf",
+            relative_path="doc.pdf",
+            status=PDF_OUTPUT_STATE_COMPLETED,
+            page_count=2,
+            translated_pdf_path="/tmp/out/doc_en.pdf",
+            ratio_letterboxed_page_count=2,
+        )
+        self.assertEqual(
+            determine_pdf_task_status(stopped=False, file_records=[record]),
+            PDF_OUTPUT_STATE_COMPLETED,
+        )
+        self.assertTrue(_file_record_to_result(record)["success"])
+
+    # ---------------- 问题 3：「页图并发」设置从未被读取 ----------------
+
+    def test_explicit_page_concurrency_setting_beats_the_auto_recommendation(self) -> None:
+        settings = AppSettings(target_lang="en")
+        settings.pdf.page_generation_concurrency = 5
+        runner = PdfImageTranslationRunner([], settings, task_logger_enabled=False)
+        self.assertEqual(runner._resolve_pdf_concurrency(2), 5)
+
+        settings.pdf.page_generation_concurrency = None
+        self.assertEqual(runner._resolve_pdf_concurrency(7), 7)
+        self.assertEqual(runner._resolve_pdf_concurrency(None), 2)
+
+        settings.pdf.page_generation_concurrency = 999
+        self.assertEqual(runner._resolve_pdf_concurrency(2), 20)
+        settings.pdf.page_generation_concurrency = 0
+        self.assertEqual(runner._resolve_pdf_concurrency(2), 1)
+
+    def test_run_honours_the_user_page_concurrency_over_model_throughput(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            names = ["a", "b", "c", "d"]
+            for name in names:
+                (root / f"{name}.pdf").write_bytes(b"%PDF-1.4\n")
+            settings = self._pdf_settings(root)
+            settings.pdf.page_generation_concurrency = 3
+            image_client = _ConcurrentImageClient(_png_bytes(1200, 1600), sleep_seconds=0.05)
+            runner = PdfImageTranslationRunner(
+                [
+                    PdfFileItem(path=root / f"{name}.pdf", name=name, size_kb=1.0, page_count=1)
+                    for name in names
+                ],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({f"{n}.pdf": 1 for n in names})},
+            ), patch("core.model_roles.get_key", return_value="secret"), patch(
+                "core.pdf_image_translation.get_model_throughput",
+                return_value=EffectiveModelThroughput(
+                    profile_key="test", batch_size=None, concurrency=1
+                ),
+            ):
+                runner._run()
+
+            messages = _drain_all_messages(runner)
+            done = [item for item in messages if isinstance(item, DoneMsg)]
+            self.assertTrue(done)
+            # 吞吐档案建议 1，用户设置 3——跑起来必须是 3。
+            self.assertEqual(image_client.max_active, 3)
+            logs = [item.message for item in messages if isinstance(item, LogMsg)]
+            self.assertTrue(any("页图并发：3（用户在设置中指定）" in line for line in logs))
+
+    # ---------------- 问题 4：一页坏掉拖垮整份文件 ----------------
+
+    def test_one_broken_page_becomes_a_placeholder_and_the_rest_still_assemble(self) -> None:
+        import pypdfium2 as pdfium
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            _write_multi_page_pdf(
+                source_pdf,
+                [{"media_box": (0, 0, _A4_W_PT, _A4_H_PT)} for _ in range(3)],
+            )
+            settings = self._pdf_settings(root)
+            image_client = _RecordingImageClient(_png_bytes(2481, 3508))
+            runner = _BrokenPageRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=3)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
+                runner._total_page_count = 3
+                runner._process_prepared_pages(
+                    [prepared],
+                    max_attempts=max_page_generation_attempts(0),
+                    scheduler=WeightedApiScheduler(1),
+                    review_scheduler=WeightedApiScheduler(1),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=None,
+                    concurrency=1,
+                    total_pages=3,
+                )
+                runner._finalize_file_record(prepared, should_assemble=True)
+
+            record = prepared.record
+            # 坏页从来没送进模型，好页一个都不能少。
+            self.assertEqual(len(image_client.calls), 2)
+            self.assertNotEqual(record.status, PDF_OUTPUT_STATE_FAILED)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+            self.assertEqual(record.page_count, 3)
+            self.assertEqual(record.placeholder_page_count, 1)
+
+            pages = sorted(record.pages, key=lambda item: item.page_number)
+            self.assertEqual([page.page_number for page in pages], [1, 2, 3])
+            self.assertEqual(pages[0].status, "success")
+            self.assertEqual(pages[1].status, "placeholder")
+            self.assertTrue(pages[1].placeholder)
+            self.assertIn("页面读取/渲染失败", pages[1].error)
+            self.assertEqual(pages[2].status, "success")
+
+            # 页序和页数都不能因为坏页而错位。
+            output = Path(record.translated_pdf_path)
+            self.assertTrue(output.exists())
+            document = pdfium.PdfDocument(output)
+            try:
+                self.assertEqual(len(document), 3)
+            finally:
+                document.close()
+
+            issues = _summary_issues([record])
+            self.assertTrue(any(issue.get("location_label") == "第 2 页" for issue in issues))
+
+    def test_broken_page_record_falls_back_to_a_plausible_page_size(self) -> None:
+        class _NoSizeDoc:
+            def get_page(self, _index):
+                raise RuntimeError("page object is corrupt")
+
+        runner = PdfImageTranslationRunner([], AppSettings(target_lang="en"), task_logger_enabled=False)
+        page_record = runner._broken_page_record(
+            _NoSizeDoc(),
+            page_index=4,
+            file_name="doc",
+            error=RuntimeError("boom"),
+        )
+
+        self.assertEqual(page_record.page_number, 5)
+        self.assertEqual(page_record.status, "placeholder_pending")
+        self.assertTrue(page_record.placeholder)
+        # 几何必须是可用的，否则装配阶段会画出一张 0×0 的页。
+        self.assertGreater(page_record.page_width_pt, 0)
+        self.assertGreater(page_record.page_height_pt, 0)
+        self.assertGreater(page_record.source_width_px, 0)
+        self.assertGreater(page_record.source_height_px, 0)
+
+    # ---------------- 问题 5：渲染无像素上限 ----------------
+
+    def test_render_scale_is_untouched_for_normal_pages_and_capped_for_huge_ones(self) -> None:
+        scale, dpi = _pdf_render_scale_for_page(_A4_W_PT, _A4_H_PT)
+        self.assertAlmostEqual(scale, PDF_RENDER_DPI_DEFAULT / 72.0, places=9)
+        self.assertAlmostEqual(dpi, float(PDF_RENDER_DPI_DEFAULT), places=9)
+
+        # A3 也在上限之内：常见工程幅面不许被降级。
+        _, a3_dpi = _pdf_render_scale_for_page(_A3_W_PT, _A3_H_PT)
+        self.assertAlmostEqual(a3_dpi, float(PDF_RENDER_DPI_DEFAULT), places=9)
+
+        # A0 图纸：300 DPI 下约 1.4 亿像素，必须降档而不是拒绝。
+        a0_w, a0_h = 2383.94, 3370.39
+        a0_scale, a0_dpi = _pdf_render_scale_for_page(a0_w, a0_h)
+        self.assertLess(a0_dpi, PDF_RENDER_DPI_DEFAULT)
+        self.assertGreaterEqual(a0_dpi, PDF_PAGE_MIN_RENDER_DPI)
+        self.assertLessEqual(
+            (a0_w * a0_scale) * (a0_h * a0_scale),
+            PDF_PAGE_MAX_RENDER_PIXELS * 1.001,
+        )
+
+        # 上限压到荒谬的小值时，DPI 停在 72 的地板上，不会掉到 0。
+        floor_scale, floor_dpi = _pdf_render_scale_for_page(a0_w, a0_h, max_pixels=1000)
+        self.assertAlmostEqual(floor_dpi, PDF_PAGE_MIN_RENDER_DPI, places=9)
+        self.assertGreater(floor_scale, 0)
+
+    def test_downscaled_render_is_recorded_on_the_page_and_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "big.pdf"
+            _write_multi_page_pdf(source_pdf, [{"media_box": (0, 0, _A4_W_PT, _A4_H_PT)}])
+            settings = self._pdf_settings(root)
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="big", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                task_logger_enabled=False,
+            )
+
+            source_pages_dir = root / "src"
+            with patch("core.pdf_image_translation.PDF_PAGE_MAX_RENDER_PIXELS", 1_000_000):
+                document = _open_pdf_document(source_pdf)
+                try:
+                    page_record = runner._render_source_page(
+                        document,
+                        page_index=0,
+                        page_count=1,
+                        source_pages_dir=source_pages_dir,
+                        file_name="big",
+                    )
+                finally:
+                    document.close()
+
+            self.assertLess(page_record.render_dpi, PDF_RENDER_DPI_DEFAULT)
+            self.assertGreaterEqual(page_record.render_dpi, PDF_PAGE_MIN_RENDER_DPI)
+            self.assertLessEqual(
+                page_record.source_width_px * page_record.source_height_px,
+                1_010_000,
+            )
+            logs = [item.message for item in _drain_messages(runner, LogMsg)]
+            self.assertTrue(any("渲染 DPI 已从 300 自动降到" in line for line in logs))
+
+            record = PdfFileRecord(
+                name="big",
+                source_path=str(source_pdf),
+                relative_path="big.pdf",
+                page_count=1,
+                pages=[page_record],
+            )
+            runner._refresh_file_record_counts(record)
+            self.assertEqual(record.render_downscaled_page_count, 1)
+            self.assertEqual(_file_record_to_result(record)["render_downscaled_page_count"], 1)
+
+    # ---------------- 问题 6：Windows 占位页中文渲染成方框 ----------------
+
+    def test_placeholder_font_prefers_windows_cjk_fonts_when_present(self) -> None:
+        real_font = _find_real_font_file()
+        if real_font is None:
+            self.skipTest("本机没有可复制的真实字体文件")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            windir = Path(tmp) / "Windows"
+            fonts_dir = windir / "Fonts"
+            fonts_dir.mkdir(parents=True)
+            font_bytes = real_font.read_bytes()
+            (fonts_dir / "simhei.ttf").write_bytes(font_bytes)
+
+            with patch.dict(os.environ, {"WINDIR": str(windir)}):
+                font = _load_placeholder_font(24)
+
+            # Windows 候选必须排在 macOS/Linux 候选前面，否则在 Windows 上
+            # 整页中文说明会掉到 load_default() 变成方框。
+            self.assertEqual(Path(getattr(font, "path", "")), fonts_dir / "simhei.ttf")
+
+            (fonts_dir / "msyh.ttc").write_bytes(font_bytes)
+            (fonts_dir / "msyhbd.ttc").write_bytes(font_bytes)
+            with patch.dict(os.environ, {"WINDIR": str(windir)}):
+                regular = _load_placeholder_font(24)
+                bold = _load_placeholder_font(24, bold=True)
+            self.assertEqual(Path(getattr(regular, "path", "")).name, "msyh.ttc")
+            self.assertEqual(Path(getattr(bold, "path", "")).name, "msyhbd.ttc")
+
+    def test_placeholder_font_still_resolves_when_windows_fonts_are_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"WINDIR": str(Path(tmp) / "nowhere")}):
+                self.assertIsNotNone(_load_placeholder_font(24))
+
+    # ---------------- 问题 7：全部页面被跳过仍报「翻译完成」 ----------------
+
+    def test_all_pages_skipped_oversize_is_not_reported_as_a_success(self) -> None:
+        import pypdfium2 as pdfium
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "drawings.pdf"
+            _write_multi_page_pdf(
+                source_pdf,
+                [
+                    {"media_box": (0, 0, _A3_W_PT, _A3_H_PT)},
+                    {"media_box": (0, 0, _A3_H_PT, _A3_W_PT)},
+                ],
+            )
+            settings = self._pdf_settings(root)
+            settings.pdf.skip_oversized_pages = True
+            image_client = _RecordingImageClient(_png_bytes(2481, 3508))
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="drawings", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=True)[0]
+                runner._total_page_count = 2
+                runner._process_prepared_pages(
+                    [prepared],
+                    max_attempts=max_page_generation_attempts(0),
+                    scheduler=WeightedApiScheduler(1),
+                    review_scheduler=WeightedApiScheduler(1),
+                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                    review_model_config=None,
+                    concurrency=1,
+                    total_pages=2,
+                )
+                runner._finalize_file_record(prepared, should_assemble=True)
+
+            record = prepared.record
+            self.assertEqual(len(image_client.calls), 0)
+            self.assertEqual(record.skipped_oversize_page_count, 2)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+            self.assertEqual(record.error, fully_skipped_oversize_message(record))
+            self.assertEqual(
+                determine_pdf_task_status(stopped=False, file_records=[record]),
+                PDF_OUTPUT_STATE_NEEDS_REVIEW,
+            )
+
+            result = _file_record_to_result(record)
+            # 产物只是源文件的逐页副本，一个字都没翻——不能算成功。
+            self.assertFalse(result["success"])
+            self.assertTrue(result["all_pages_skipped_oversize"])
+            self.assertIn("全部页面因幅面过大被跳过，未翻译", result["detail"])
+            self.assertIn("未产生任何翻译内容", result["error"])
+
+            issues = _summary_issues([record])
+            self.assertTrue(
+                any(issue.get("location_label") == "整份文件" for issue in issues),
+                issues,
+            )
+
+            # 已验证健康的行为不能被这次改动带偏：页序和矢量直传照旧。
+            output = Path(record.translated_pdf_path)
+            document = pdfium.PdfDocument(output)
+            try:
+                self.assertEqual(len(document), 2)
+                first = document.get_page(0)
+                try:
+                    self.assertEqual(len(list(first.get_objects())), 0)
+                    width, height = first.get_size()
+                    self.assertAlmostEqual(width, _A3_W_PT, places=1)
+                    self.assertAlmostEqual(height, _A3_H_PT, places=1)
+                finally:
+                    first.close()
+                second = document.get_page(1)
+                try:
+                    width, height = second.get_size()
+                    self.assertAlmostEqual(width, _A3_H_PT, places=1)
+                    self.assertAlmostEqual(height, _A3_W_PT, places=1)
+                finally:
+                    second.close()
+            finally:
+                document.close()
+
+    def test_partially_skipped_file_still_counts_as_a_success(self) -> None:
+        # 只跳过一部分页面时行为不变：这是「翻译了一些内容」，仍算成功。
+        record = PdfFileRecord(
+            name="mixed",
+            source_path="/tmp/mixed.pdf",
+            relative_path="mixed.pdf",
+            status=PDF_OUTPUT_STATE_COMPLETED,
+            page_count=3,
+            skipped_oversize_page_count=1,
+            translated_pdf_path="/tmp/out/mixed_en.pdf",
+        )
+        result = _file_record_to_result(record)
+        self.assertTrue(result["success"])
+        self.assertFalse(result["all_pages_skipped_oversize"])
+        self.assertEqual(
+            determine_pdf_task_status(stopped=False, file_records=[record]),
+            PDF_OUTPUT_STATE_COMPLETED,
+        )
 
 
 if __name__ == "__main__":

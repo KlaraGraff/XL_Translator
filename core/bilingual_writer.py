@@ -11,6 +11,7 @@
   - 文件名前缀：双语({语言})_{原文件名}.xlsx
   - 可选：保留原始中文分表（sheet 名称加 _原文 后缀）
 """
+import os
 import re
 import shutil
 import stat
@@ -34,6 +35,28 @@ def _ensure_owner_writable(path: Path) -> None:
     if current_mode & stat.S_IWUSR:
         return
     path.chmod(current_mode | stat.S_IWUSR)
+
+
+def patch_into_output(source_path: Path, out_path: Path, patch) -> Path:
+    """先在临时文件上打补丁，成功了才让它占用最终文件名。
+
+    输出副本是在打补丁**之前**拷过去的。若直接拷成最终文件名，补丁中途失败
+    （译文含非法 XML 字符、包结构异常、磁盘写满……）就会在输出目录里留下一个
+    文件名完全正常的「双语(xx)_xxx.xlsx」，内容却一个字没翻。用户看不出区别，
+    极可能直接发出去。所以：要么产出一个翻译好的文件，要么什么都不留。
+
+    ``patch`` 接收临时文件路径，就地改写它。
+    """
+    staging = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex[:8]}.partial")
+    shutil.copy2(source_path, staging)
+    _ensure_owner_writable(staging)
+    try:
+        patch(staging)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
+    os.replace(staging, out_path)
+    return out_path
 
 
 def resolve_custom_output_dir(custom_output_dir: str | Path | None) -> Path | None:
@@ -127,7 +150,7 @@ def write_bilingual_file(
     original_path: Path | None = None,
     review_positions: list[dict[str, str]] | None = None,
     external_autofit_planned: bool = False,
-    stats: dict[str, int] | None = None,
+    stats: dict[str, object] | None = None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -168,25 +191,27 @@ def write_bilingual_file(
     out_path     = output_dir / out_name
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_path, out_path)
-    _ensure_owner_writable(out_path)
 
-    write_bilingual_workbook(
+    patch_into_output(
+        source_path,
         out_path,
-        translations=translations,
-        target_lang=target_lang,
-        source_lang=source_lang,
-        keep_original_sheets=keep_original_sheets,
-        formula_display_value_backfill=formula_display_value_backfill,
-        lock_row_height=lock_row_height,
-        review_marks=review_marks,
-        review_mark_colors=review_mark_colors,
-        mark_review_items=mark_review_items,
-        existing_fill_policy=existing_fill_policy,
-        log_callback=log_callback,
-        review_positions=review_positions,
-        external_autofit_planned=external_autofit_planned,
-        stats=stats,
+        lambda staging: write_bilingual_workbook(
+            staging,
+            translations=translations,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            keep_original_sheets=keep_original_sheets,
+            formula_display_value_backfill=formula_display_value_backfill,
+            lock_row_height=lock_row_height,
+            review_marks=review_marks,
+            review_mark_colors=review_mark_colors,
+            mark_review_items=mark_review_items,
+            existing_fill_policy=existing_fill_policy,
+            log_callback=log_callback,
+            review_positions=review_positions,
+            external_autofit_planned=external_autofit_planned,
+            stats=stats,
+        ),
     )
 
     if log_callback:

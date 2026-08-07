@@ -27,6 +27,7 @@ import {
 import { icon, type IconName } from "../icons";
 import { ApiClient } from "../api-client";
 import { showQuickStart } from "../quickstart";
+import { version as PACKAGE_VERSION } from "../../package.json";
 import "./settings.css";
 
 // ---------------------------------------------------------------------------
@@ -840,7 +841,7 @@ function renderModelsPage(host: HTMLElement): void {
   baseUrlField.input.id = "settings-model-base-url";
   detailBody.append(baseUrlField.root);
 
-  const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "例如 gpt-4o-mini" : "例如 qwen2.5:7b", hint: "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。" });
+  const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。" });
   modelNameField.input.id = "settings-model-name";
   const catalogConnection = modelCatalogConnectionForRole(role);
   const catalogMatches = modelCatalogConnection[role] === catalogConnection;
@@ -2041,7 +2042,13 @@ async function openExternalUrl(url: string): Promise<void> {
 // 子页⑤：更新与关于
 // ---------------------------------------------------------------------------
 
-const APP_VERSION_FALLBACK = "8.1.2";
+// 「更新与关于」在用户点击「检查更新」前默认停在这个未检查状态，此时唯一能显示的版本号
+// 就是这个兜底值——它必须和真实构建版本一致，因此从 ui/package.json 的 version 字段在
+// 编译期读入，而不是手抄一个字符串。package.json 的版本号由
+// scripts/verify_release_metadata.py 与 app_meta.py / tauri.conf.json / Cargo.toml
+// 一并做发布前一致性校验。检查更新之后，真实来源始终是后端返回的
+// updateResult.current_version，这个常量只在那之前或那个字段缺失时兜底。
+const APP_VERSION_FALLBACK = PACKAGE_VERSION;
 
 function renderAboutPage(host: HTMLElement): void {
   const prefs = record(updateState?.preferences);

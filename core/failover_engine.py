@@ -8,8 +8,10 @@ keeps a running task insulated from edits made in the panel meanwhile.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from loguru import logger
 
@@ -21,11 +23,34 @@ from core.connection_pool import (
     should_switch_connection,
 )
 from engines.base_engine import TranslationEngine
+from core.language_preflight import TranslationLanguageResult
 from settings import ModelConnection
+
+_T = TypeVar("_T")
 
 
 class AllConnectionsExhaustedError(RuntimeError):
     """Raised when every connection in the chain has been ruled out."""
+
+
+def concrete_base_engine_members() -> frozenset[str]:
+    """Public members ``TranslationEngine`` already defines with a body.
+
+    ``__getattr__`` only fires for names ordinary lookup fails to find, so
+    every one of these shadows the wrapper's delegation and must be
+    re-implemented on :class:`FailoverTranslationEngine`.  The test-suite
+    asserts on this set, which turns a future concrete helper on the base
+    class into a red test instead of a document that silently ships untouched
+    source text.
+    """
+    abstract = getattr(TranslationEngine, "__abstractmethods__", frozenset())
+    members: set[str] = set()
+    for name, value in vars(TranslationEngine).items():
+        if name.startswith("_") or name in abstract:
+            continue
+        if inspect.isfunction(value) or isinstance(value, (property, staticmethod, classmethod)):
+            members.add(name)
+    return frozenset(members)
 
 
 class FailoverTranslationEngine(TranslationEngine):
@@ -67,24 +92,14 @@ class FailoverTranslationEngine(TranslationEngine):
         # Anything the wrapper does not define belongs to the live engine.
         return getattr(self.__dict__["_engine"], item)
 
-    def translate_batch(
-        self,
-        texts: list[str],
-        target_lang: str,
-        system_prompt: str,
-        source_lang: str = "zh",
-    ) -> dict[str, str]:
+    def _call_with_failover(self, invoke: Callable[[TranslationEngine], _T]) -> _T:
+        """Run ``invoke`` on the live engine, moving down the chain on failure."""
         while True:
             with self._lock:
                 engine = self._engine
                 connection = self._current
             try:
-                return engine.translate_batch(
-                    texts,
-                    target_lang,
-                    system_prompt,
-                    source_lang=source_lang,
-                )
+                return invoke(engine)
             except Exception as exc:  # noqa: BLE001 - the failure is classified below
                 failure_kind = classify_connection_failure(exc)
                 if not should_switch_connection(failure_kind):
@@ -93,6 +108,48 @@ class FailoverTranslationEngine(TranslationEngine):
                     raise
                 if not self._switch_after(connection, exc, failure_kind):
                     raise
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        return self._call_with_failover(
+            lambda engine: engine.translate_batch(
+                texts,
+                target_lang,
+                system_prompt,
+                source_lang=source_lang,
+            )
+        )
+
+    # ``chat`` and ``translate_batch_with_sources`` carry a body on
+    # ``TranslationEngine``, so attribute lookup resolves them on the base class
+    # and ``__getattr__`` never runs.  Without these overrides the wrapper
+    # answered every automatic-language batch with the base class'
+    # NotImplementedError, and the Excel fallback turned that into source text
+    # presented as translation.  They must delegate to the *live* engine rather
+    # than reuse the base implementation, because concrete engines override both.
+    def chat(self, system: str, user: str) -> str:
+        return self._call_with_failover(lambda engine: engine.chat(system, user))
+
+    def translate_batch_with_sources(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "auto",
+    ) -> list[TranslationLanguageResult]:
+        return self._call_with_failover(
+            lambda engine: engine.translate_batch_with_sources(
+                texts,
+                target_lang,
+                system_prompt,
+                source_lang=source_lang,
+            )
+        )
 
     def _switch_after(
         self,

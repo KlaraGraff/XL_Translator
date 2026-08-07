@@ -2265,15 +2265,15 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "progress": {
-      if (data.phase !== undefined || data.stage !== undefined) local.phaseName = redactedText(data.phase ?? data.stage, local.phaseName);
-      const done = num(data.step_done, num(data.done));
-      const total = num(data.step_total, num(data.total));
+      if (data.phase_name !== undefined) local.phaseName = redactedText(data.phase_name, local.phaseName);
+      const done = num(data.step_done);
+      const total = num(data.step_total);
       if (total > 0) local.percent = Math.min(100, (done / total) * 100);
       markActiveFile(local, st);
       break;
     }
     case "status": {
-      local.phaseName = redactedText(data.message ?? data.phase, local.phaseName);
+      local.phaseName = redactedText(data.phase_desc, local.phaseName);
       markActiveFile(local, st);
       break;
     }
@@ -2340,11 +2340,21 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
   st.hasEverCompleted = true;
   const result = record(task.result);
-  const summary = record(result.summary);
-  const generated = num(summary.generated_count, num(result.generated_count, st.selected.size));
-  const review = num(summary.review_count, num(result.review_count, 0));
-  const autoFixed = num(summary.auto_fixed_count, num(result.auto_fixed_count, 0));
-  const outputPath = text(summary.output_dir, text(result.output_dir, st.sourcePath));
+  // 终态结果契约（core/*_task_runner.py 的 DoneMsg/ErrorMsg/StoppedMsg）没有 `summary`
+  // 对象，也没有顶层 generated_count/review_count/auto_fixed_count——这些字段名在后端
+  // 从未存在过。真实字段：`file_results[].success`（逐文件是否成功写出，三个 surface
+  // 都有）、`review.total_count`（Excel/Word 才有；PDF 的 review 契约字段留空）、
+  // `kpi.auto_recovered_text_count`（仅 Word 的严格重试/语义复核有这个概念）。缺失的
+  // 字段一律按 0 处理，不用占位数字冒充「全部通过」。
+  const fileResults = Array.isArray(result.file_results) ? result.file_results : [];
+  const succeededFileCount = fileResults.reduce(
+    (sum: number, entry) => sum + (record(entry).success === true ? 1 : 0),
+    0,
+  );
+  const generated = fileResults.length > 0 ? succeededFileCount : st.selected.size;
+  const review = num(record(result.review).total_count);
+  const autoFixed = num(record(result.kpi).auto_recovered_text_count);
+  const outputPath = text(result.output_dir, st.sourcePath);
   st.lastOutputPath = outputPath;
   const clauses: string[] = [];
   // 「按设定没翻的内容」要跟在生成结果后面一起说。横幅只给总数，逐文件的明细在运行卡片

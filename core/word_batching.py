@@ -580,13 +580,21 @@ def _split_into_safe_sentences(text: str) -> list[str]:
             should_split = not is_decimal_dot and (not next_char or next_char.isspace())
 
         if should_split:
-            _append_sentence(sentences, buffer)
+            _append_raw_sentence(sentences, buffer)
 
-    _append_sentence(sentences, buffer)
+    _append_raw_sentence(sentences, buffer)
     return sentences or [text]
 
 
 def _pack_sentences(sentences: list[str], part_char_budget: int) -> list[str]:
+    """把切好的句子重新打包成不超预算的 part，**保留句间的原始分隔符**。
+
+    分隔符（空格、换行）是句与句之间的边界信息，模型靠它判断哪里是一句话的结束、
+    哪里是新的一行。原来逐句 strip 后 ``"".join`` 会把 ``'A.\\nB.\\nC.'`` 送成
+    ``'A.B.C.'``——被破坏的是喂给模型的原文，译文质量下降却完全看不出来。这里的句子
+    自带前导分隔符（切分点落在终止符之后），原样拼接即可复原原文，只在 part 的首尾
+    去空白。
+    """
     parts: list[str] = []
     current: list[str] = []
     current_len = 0
@@ -594,17 +602,23 @@ def _pack_sentences(sentences: list[str], part_char_budget: int) -> list[str]:
     def flush() -> None:
         nonlocal current, current_len
         if current:
-            parts.append("".join(current).strip())
+            merged = "".join(current).strip()
+            if merged:
+                parts.append(merged)
         current = []
         current_len = 0
 
     for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
+        stripped = sentence.strip()
+        if not stripped:
+            # 纯空白片段本身不是内容，但若正处在一个 part 中间，它就是句间分隔符。
+            if current:
+                current.append(sentence)
+                current_len += len(sentence)
             continue
-        if len(sentence) > part_char_budget:
+        if len(stripped) > part_char_budget:
             flush()
-            parts.extend(_split_oversized_sentence(sentence, part_char_budget))
+            parts.extend(_split_oversized_sentence(stripped, part_char_budget))
             continue
         if current and current_len + len(sentence) > part_char_budget:
             flush()
@@ -644,6 +658,16 @@ def _split_by_delimiters(
     if len(chunks) <= 1 or any(len(chunk) > part_char_budget for chunk in chunks):
         return []
     return chunks
+
+
+def _append_raw_sentence(target: list[str], buffer: list[str]) -> None:
+    """原样收下这一段（含前后空白），保证 ``"".join(sentences)`` 能还原原文。"""
+    if not buffer:
+        return
+    value = "".join(buffer)
+    buffer.clear()
+    if value:
+        target.append(value)
 
 
 def _append_sentence(target: list[str], buffer: list[str]) -> None:

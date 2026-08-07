@@ -16,6 +16,7 @@ import httpx
 from PIL import Image
 
 from config import (
+    PDF_ASPECT_RATIO_TOLERANCE,
     PDF_MIN_READABLE_LONG_EDGE_PX,
     PDF_MIN_READABLE_SHORT_EDGE_PX,
     normalize_cloud_base_url,
@@ -436,16 +437,21 @@ def _is_gpt_image_model(model: str) -> bool:
 def _pdf_page_image_size_for_model(source_image_path: Path, model: str) -> str:
     with Image.open(source_image_path) as image:
         width, height = image.size
+    target_width, target_height = _pdf_page_size_for_model(width, height, model)
+    return f"{target_width}x{target_height}"
 
+
+def _pdf_page_size_for_model(width: int, height: int, model: str) -> tuple[int, int]:
+    """The pixel size one page of `width`×`height` will actually be requested at."""
     if model != GPT_IMAGE_2_MODEL:
         if width > height:
-            return "1536x1024"
+            return 1536, 1024
         if height > width:
-            return "1024x1536"
-        return "1024x1024"
+            return 1024, 1536
+        return 1024, 1024
 
     if max(width, height) <= 512:
-        return "1024x1024"
+        return 1024, 1024
 
     ratio = max(width, 1) / max(height, 1)
     if ratio >= 1:
@@ -455,8 +461,65 @@ def _pdf_page_image_size_for_model(source_image_path: Path, model: str) -> str:
         target_height = GPT_IMAGE_2_PDF_TARGET_LONG_EDGE
         target_width = target_height * ratio
 
-    target_width, target_height = _fit_gpt_image_2_size(target_width, target_height)
-    return f"{target_width}x{target_height}"
+    return _fit_gpt_image_2_size(target_width, target_height)
+
+
+def pdf_page_request_size(
+    source_width: int,
+    source_height: int,
+    model: str,
+) -> tuple[int, int] | None:
+    """Return the size this model will be asked for, or ``None`` when free-form.
+
+    ``None`` means no ``size`` is negotiated at all (the ``/responses`` route),
+    so the model may legitimately return any resolution.
+    """
+    if not _is_gpt_image_model(model):
+        return None
+    try:
+        width = int(source_width)
+        height = int(source_height)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return _pdf_page_size_for_model(width, height, model)
+
+
+def pdf_page_ratio_tolerance(
+    *,
+    source_width: int,
+    source_height: int,
+    model: str,
+    base_tolerance: float = PDF_ASPECT_RATIO_TOLERANCE,
+) -> float:
+    """Aspect-ratio tolerance that this model can actually satisfy for this page.
+
+    The page QC gate and the size request have to come from the same place, or
+    the gate turns into a judgement no answer can pass.  ``gpt-image-1`` (and
+    every non-``gpt-image-2`` member of the family) only accepts three fixed
+    sizes: asking it for an A4 page and then demanding the reply match A4's
+    aspect ratio within 1% is arithmetically impossible — every page burns the
+    full retry budget and every retry is a paid API call.  ``gpt-image-2`` has
+    the same problem in miniature: its 16px size quantization is worth up to
+    ~1.3% on a narrow page, which also exceeds a flat 1%.
+
+    So the tolerance is the *unavoidable* error of the size we are about to
+    request, plus the base tolerance on top as the real quality margin.  A model
+    that can hit the page ratio exactly is still held to `base_tolerance`; a
+    model that cannot is only held to "return what we asked for".  Pages whose
+    accepted output still differs from the source shape are letterboxed by the
+    caller instead of retried.
+    """
+    size = pdf_page_request_size(source_width, source_height, model)
+    if size is None:
+        return base_tolerance
+    source_ratio = float(source_width) / float(source_height)
+    requested_ratio = float(size[0]) / float(size[1])
+    if source_ratio <= 0 or requested_ratio <= 0:
+        return base_tolerance
+    unavoidable = abs(source_ratio - requested_ratio) / source_ratio
+    return base_tolerance + unavoidable
 
 
 def _fit_gpt_image_2_size(width: float, height: float) -> tuple[int, int]:

@@ -15,6 +15,19 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 STABLE_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
+# A UI constant named like ``APP_VERSION_FALLBACK`` (or ``appVersion``, etc.)
+# hand-copied to a literal "X.Y.Z" string is exactly how the "About" page once
+# drifted to a stale version (it showed "8.1.2" while the app had moved on to
+# 9.1.0, and nothing caught it because this script only checked app_meta.py /
+# tauri.conf.json / Cargo.toml / package.json, never the UI source). Ban the
+# pattern outright: any *VERSION*-named binding in ui/src must be sourced from
+# ui/package.json (already one of the four files checked above) at build time,
+# not typed out by hand.
+_UI_HARDCODED_VERSION_RE = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]*version[A-Za-z0-9_]*\b[^=\n]*=\s*[\"'](\d+\.\d+\.\d+)[\"']",
+    re.IGNORECASE,
+)
+
 
 def is_stable_tag(value: str) -> bool:
     """Return whether *value* is the only tag form eligible for a release."""
@@ -41,6 +54,36 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"expected an object in {path}")
     return payload
+
+
+def ui_source_version_literal_errors(root: Path) -> list[str]:
+    """Flag any hand-copied "X.Y.Z" version literal in the UI TypeScript source.
+
+    The UI has no build step that cross-checks a literal against app_meta.py,
+    so any such literal is one release away from going stale. The fix is
+    always the same: derive it from ui/package.json instead (whose version is
+    already gated against app_meta.py by ``release_metadata_errors`` above).
+    """
+    ui_src_root = root / "ui" / "src"
+    errors: list[str] = []
+    if not ui_src_root.is_dir():
+        return errors
+    for path in sorted(ui_src_root.rglob("*.ts")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            errors.append(f"cannot read UI source for version scan: {path}: {exc}")
+            continue
+        relative = path.relative_to(root)
+        for line_number, line in enumerate(lines, start=1):
+            match = _UI_HARDCODED_VERSION_RE.search(line)
+            if match:
+                errors.append(
+                    f"hardcoded version literal {match.group(1)!r} in {relative}:{line_number} — "
+                    "source it from ui/package.json (import or build-time inject) instead of "
+                    "hand-copying it, or it will drift on the next release"
+                )
+    return errors
 
 
 def release_metadata_errors(root: Path = ROOT, *, tag: str | None = None) -> list[str]:
@@ -91,6 +134,8 @@ def release_metadata_errors(root: Path = ROOT, *, tag: str | None = None) -> lis
         errors.append("tauri bundle must not contain a Windows release configuration")
     if "safari15.1" not in paths["ui/vite.config.ts"].read_text(encoding="utf-8"):
         errors.append("Vite build target must retain the Safari 15.1 Monterey baseline")
+
+    errors.extend(ui_source_version_literal_errors(root))
 
     if tag is not None:
         normalized_tag = tag.strip()

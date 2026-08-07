@@ -2,9 +2,11 @@
 User-editable settings persisted to local JSON files.
 API keys are stored separately in keys.json with OS-level permissions.
 """
+import getpass
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import threading
 import uuid
@@ -12,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from loguru import logger
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from config import (
     APP_DATA_DIR,
@@ -945,6 +947,12 @@ class AppSettings(BaseModel):
     domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
 
+    # What was on disk when this object was loaded.  ``save_settings`` diffs
+    # against it so a write only touches the fields this caller changed; see
+    # ``_settings_delta``.  Private attributes never take part in validation
+    # or ``model_dump``, so this stays invisible to the API surface.
+    _persisted_snapshot: dict | None = PrivateAttr(default=None)
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_model_role_payload(cls, data):
@@ -1200,6 +1208,53 @@ def _exclusive_file_lock(path: Path):
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def restrict_windows_file_to_owner(path: Path) -> bool:
+    """Give only the current account access to one file on Windows.
+
+    Windows has no equivalent of ``chmod 0600``: the POSIX mode is ignored, so
+    a secrets file inherits whatever the parent directory grants.  ``icacls``
+    is the one tool always present on a stock install — drop inherited entries
+    and grant full access to this account alone.
+
+    Best effort by design.  The user data directory is already per-account
+    (``%LOCALAPPDATA%``), so a failure here narrows nothing that was open
+    before; it just means the file keeps the directory's inherited ACL.
+    Returns whether the tightening was applied.
+    """
+    if os.name != "nt":
+        return False
+    account = (os.environ.get("USERNAME") or "").strip()
+    if not account:
+        try:
+            account = getpass.getuser().strip()
+        except Exception:
+            return False
+    if not account:
+        return False
+    domain = (os.environ.get("USERDOMAIN") or "").strip()
+    principal = f"{domain}\\{account}" if domain else account
+    try:
+        completed = subprocess.run(
+            [
+                "icacls",
+                str(path),
+                "/inheritance:r",
+                "/grant:r",
+                f"{principal}:F",
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        logger.warning(f"未能收紧文件权限（icacls 不可用）：{type(exc).__name__}")
+        return False
+    if completed.returncode != 0:
+        logger.warning(f"未能收紧文件权限：icacls 退出码 {completed.returncode}")
+        return False
+    return True
+
+
 def _write_text_atomic(
     path: Path,
     content: str,
@@ -1220,8 +1275,13 @@ def _write_text_atomic(
             temp_file.write(content)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        if file_mode is not None and os.name != "nt":
-            temp_path.chmod(file_mode)
+        if file_mode is not None:
+            if os.name == "nt":
+                # Tighten before the rename so the destination never exists
+                # with a looser ACL; a DACL set here survives ``os.replace``.
+                restrict_windows_file_to_owner(temp_path)
+            else:
+                temp_path.chmod(file_mode)
         os.replace(temp_path, path)
         if os.name != "nt":
             try:
@@ -1318,6 +1378,110 @@ def get_settings_schema_status() -> dict[str, object]:
     }
 
 
+def _remember_persisted_snapshot(settings: AppSettings) -> AppSettings:
+    """Record what this object looked like when it came off disk.
+
+    ``save_settings`` needs a "before" picture to work out which fields the
+    caller actually edited.  Taking it here — once per load — keeps every
+    read-modify-write caller unaware of the mechanism.
+    """
+    settings._persisted_snapshot = settings.model_dump(mode="json")
+    return settings
+
+
+def carry_settings_baseline(source: AppSettings, target: AppSettings) -> AppSettings:
+    """Hand one object's load-time snapshot to its replacement.
+
+    Endpoints that rebuild settings through ``model_validate`` (whole-payload
+    PUT, model-config import) end up with a fresh object that has no snapshot
+    of its own.  Without this the merge in ``save_settings`` degrades to a full
+    overwrite for exactly the endpoints most likely to race.
+    """
+    target._persisted_snapshot = source._persisted_snapshot
+    return target
+
+
+_SETTINGS_FIELD_DELETED = "delete"
+_SETTINGS_FIELD_SET = "set"
+_SETTINGS_FIELD_MERGE = "merge"
+
+
+def _settings_delta(baseline: dict, updated: dict) -> dict:
+    """Describe what changed between two settings snapshots.
+
+    Entries are tagged rather than stored bare so a nested change can be told
+    apart from a whole-value replacement that happens to be a dict.
+    """
+    delta: dict[str, tuple[str, object]] = {}
+    for key, new_value in updated.items():
+        if key not in baseline:
+            delta[key] = (_SETTINGS_FIELD_SET, new_value)
+            continue
+        old_value = baseline[key]
+        if isinstance(new_value, dict) and isinstance(old_value, dict):
+            nested = _settings_delta(old_value, new_value)
+            if nested:
+                delta[key] = (_SETTINGS_FIELD_MERGE, nested)
+        elif old_value != new_value:
+            delta[key] = (_SETTINGS_FIELD_SET, new_value)
+    for key in baseline:
+        if key not in updated:
+            delta[key] = (_SETTINGS_FIELD_DELETED, None)
+    return delta
+
+
+def _apply_settings_delta(target: dict, delta: dict) -> dict:
+    """Replay one caller's edits on top of the current file contents."""
+    merged = dict(target)
+    for key, (action, value) in delta.items():
+        if action == _SETTINGS_FIELD_DELETED:
+            merged.pop(key, None)
+        elif action == _SETTINGS_FIELD_MERGE:
+            current = merged.get(key)
+            merged[key] = _apply_settings_delta(
+                current if isinstance(current, dict) else {},
+                value,
+            )
+        else:
+            merged[key] = value
+    return merged
+
+
+def _adopt_settings_state(target: AppSettings, source: AppSettings) -> None:
+    """Make an in-memory settings object match what was just persisted.
+
+    The endpoint that called ``save_settings`` returns its own object to the
+    UI.  After a merge that object is missing whatever a concurrent request
+    changed, and echoing that back would invite the UI to write the stale
+    value again on its next save.
+    """
+    target.__dict__.update(source.__dict__)
+    target.__pydantic_fields_set__.update(source.__pydantic_fields_set__)
+
+
+def _merged_settings_payload(settings: AppSettings) -> AppSettings | None:
+    """Fold this caller's edits into the settings file as it stands now.
+
+    Returns ``None`` when there is nothing to merge against (no load-time
+    snapshot) or when the merged result would not validate, in which case the
+    caller falls back to writing its own object wholesale.
+    """
+    baseline = settings._persisted_snapshot
+    if baseline is None:
+        return None
+    updated = settings.model_dump(mode="json")
+    delta = _settings_delta(baseline, updated)
+    current = load_settings().model_dump(mode="json")
+    merged = _apply_settings_delta(current, delta)
+    try:
+        return AppSettings.model_validate(merged)
+    except Exception as exc:
+        # Two independent edits should not be able to make settings
+        # unsavable.  Fall back to this caller's own view instead.
+        logger.warning(f"设置合并结果未通过校验，已按本次调用的完整内容保存：{exc}")
+        return None
+
+
 def load_settings() -> AppSettings:
     """Load only the current baseline; preserve incompatible data untouched."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1343,30 +1507,47 @@ def load_settings() -> AppSettings:
                 _seed_packaged_default_api_key()
             except Exception as seed_exc:
                 logger.warning(f"默认 API Key 初始化失败，已保留当前设置：{seed_exc}")
-            return settings
+            return _remember_persisted_snapshot(settings)
     settings = AppSettings()
     try:
         _seed_packaged_default_api_key()
     except Exception as seed_exc:
         logger.warning(f"默认 API Key 初始化失败，已使用默认设置：{seed_exc}")
-    return settings
+    return _remember_persisted_snapshot(settings)
 
 
 def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) -> None:
-    """Persist current-baseline settings without overwriting unsafe data by default."""
+    """Persist one caller's edits without discarding a concurrent writer's.
+
+    Every settings endpoint is a read-modify-write and FastAPI runs the
+    synchronous handlers in a thread pool, so two of them overlap whenever the
+    user flips two switches quickly.  Writing the whole model back would drop
+    whatever the other request changed in between (a lost update: the file
+    itself stays valid, the content does not).
+
+    So the schema gate, the re-read and the write all happen inside the same
+    cross-process lock, and only the fields that changed since ``load_settings``
+    are replayed on top of the file as it stands at that moment.
+    """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    status = get_settings_schema_status()
-    if not bool(status["can_write"]) and not replace_incompatible:
-        raise SettingsSchemaError(
-            "settings.json 不是当前可写 schema；请在维护页明确重置设置。"
-        )
-    settings.settings_version = SETTINGS_SCHEMA_VERSION
     lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
     with _exclusive_file_lock(lock_path):
+        status = get_settings_schema_status()
+        if not bool(status["can_write"]) and not replace_incompatible:
+            raise SettingsSchemaError(
+                "settings.json 不是当前可写 schema；请在维护页明确重置设置。"
+            )
+        # An explicit reset deliberately discards whatever is on disk, so it
+        # must never be merged with it.
+        merged = None if replace_incompatible else _merged_settings_payload(settings)
+        if merged is not None:
+            _adopt_settings_state(settings, merged)
+        settings.settings_version = SETTINGS_SCHEMA_VERSION
         _write_text_atomic(
             SETTINGS_PATH,
             settings.model_dump_json(indent=2),
         )
+        _remember_persisted_snapshot(settings)
     logger.debug(f"配置已保存：{SETTINGS_PATH}")
 
 

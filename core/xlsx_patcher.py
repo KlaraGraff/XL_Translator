@@ -67,6 +67,9 @@ REL_TYPES_SHEET_OWNED = (REL_TYPE_DRAWING, REL_TYPE_VML_DRAWING, REL_TYPE_COMMEN
 
 CT_WORKSHEET = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
 
+# 锚点的直接子元素里，只有这些是形状容器（各自带 xfrm/ext）。
+_SHAPE_TAGS = frozenset({"sp", "pic", "grpSp", "graphicFrame", "cxnSp", "contentPart"})
+
 # ── 排版估算常量（与旧 openpyxl 写入路径保持同一套数值）────────────────────────
 DEFAULT_COL_WIDTH = 8.43        # Excel 默认列宽（字符数）
 DEFAULT_ROW_HEIGHT = 15.0       # Excel 默认行高（磅）
@@ -74,6 +77,10 @@ BASE_FONT_SIZE_PT = 11.0        # 行高估算用的基准字号
 LINE_HEIGHT_RATIO = 1.4         # 行高估算用的行距系数
 CHARS_PER_WIDTH = 1.2           # 每单位列宽约可容纳的字符数
 MAX_SHEET_TITLE_LEN = 31        # Excel 分表名长度上限
+ORIGINAL_SHEET_SUFFIX = "_原文"  # keep_original_sheets 克隆分表的名字后缀
+_DEDUP_SUFFIX_RE = re.compile(r"(_\d+)$")  # 重名时补的 _2 / _3 …
+MAX_CELL_TEXT_LEN = 32767       # Excel 单元格文本硬上限，超一个字符整份文件就打不开
+CELL_TRUNCATION_MARK = "…"      # 截断处留一个可见记号，便于用户在表里定位
 
 EMU_PER_PIXEL = 9525
 EMU_PER_POINT = 12700
@@ -82,6 +89,14 @@ MAX_DIGIT_WIDTH = 7             # Calibri 11 的最大数字宽度（像素）
 # Excel 行列号上限（0-based），absoluteAnchor 坐标外推越过这个界才算坏数据。
 EXCEL_MAX_ROW_INDEX = 1_048_575
 EXCEL_MAX_COL_INDEX = 16_383
+
+# XML 1.0 不允许出现的码点：C0 控制符（\t \n \r 除外）、代理区、以及非字符码点。
+# 译文里混进 \x0b 之类字符时 lxml 会直接抛 ValueError，写入中途失败。
+_ILLEGAL_XML_CHAR_RE = re.compile(
+    "[\x00-\x08\x0b\x0c\x0e-\x1f"  # C0 控制符，但保留 \t \n \r
+    "\ud800-\udfff"                 # 落单的代理码点
+    "\ufdd0-\ufdef\ufffe\uffff]"     # BMP 内的非字符码点
+)
 
 _EXCEL_REVIEW_RISK_FONT_COLOR = "FF0000"
 _EXCEL_REVIEW_MARK_COLORS = dict(REVIEW_MARK_COLOR_DEFAULTS)
@@ -204,23 +219,32 @@ class _Package:
     def save(self) -> None:
         """把包写到临时文件再整体替换，避免半成品覆盖原文件。"""
         temp_path = self._path.with_name(self._path.name + ".patching")
-        with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
-            for name in self._order:
-                if name in self._removed:
-                    continue
-                source_info = self._infos[name]
-                if name in self._overrides:
-                    target.writestr(_clone_zipinfo(source_info), self._overrides[name])
-                else:
-                    target.writestr(_clone_zipinfo(source_info), self._zip.read(name))
-            for name in self._added:
-                if name in self._removed:
-                    continue
-                target.writestr(
-                    zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)),
-                    self._overrides[name],
-                    zipfile.ZIP_DEFLATED,
-                )
+        try:
+            with zipfile.ZipFile(temp_path, "w", zipfile.ZIP_DEFLATED) as target:
+                for name in self._order:
+                    if name in self._removed:
+                        continue
+                    source_info = self._infos[name]
+                    if name in self._overrides:
+                        target.writestr(
+                            _clone_zipinfo(source_info), self._overrides[name]
+                        )
+                    else:
+                        target.writestr(
+                            _clone_zipinfo(source_info), self._zip.read(name)
+                        )
+                for name in self._added:
+                    if name in self._removed:
+                        continue
+                    target.writestr(
+                        zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)),
+                        self._overrides[name],
+                        zipfile.ZIP_DEFLATED,
+                    )
+        except BaseException:
+            # 半成品 zip 不能留在磁盘上，它和成品同名只差一个后缀。
+            temp_path.unlink(missing_ok=True)
+            raise
         self._zip.close()
         os.replace(temp_path, self._path)
 
@@ -857,6 +881,28 @@ def _cell_static_text(cell, shared_strings: list[str]) -> str | None:
 # ══════════════════════════════════════════════════════════════════════════════
 # 写入单元格文本
 # ══════════════════════════════════════════════════════════════════════════════
+def sanitize_cell_text(text: str) -> tuple[str, int, int]:
+    """把要写进单元格的文本收拾成 Excel 与 XML 都能接受的样子。
+
+    返回 ``(处理后的文本, 被剔除的非法字符数, 被截掉的字符数)``。
+
+    两件事都必须在写入**之前**做完：
+
+    * 非法 XML 字符（``\\x0b`` 之类）会让 lxml 在赋值时抛 ``ValueError``，
+      整个打补丁流程中途夭折；
+    * 超过 ``MAX_CELL_TEXT_LEN`` 的单元格能写进 XML，但 Excel 打开时会判定
+      文件损坏、要求「修复」——比中途失败更难察觉。
+
+    截断不是静默的：调用方拿到返回的字符数后要报出分表名与坐标。
+    """
+    cleaned, removed = _ILLEGAL_XML_CHAR_RE.subn("", text)
+    if len(cleaned) <= MAX_CELL_TEXT_LEN:
+        return cleaned, removed, 0
+    dropped = len(cleaned) - MAX_CELL_TEXT_LEN
+    kept = cleaned[: MAX_CELL_TEXT_LEN - len(CELL_TRUNCATION_MARK)]
+    return kept + CELL_TRUNCATION_MARK, removed, dropped
+
+
 def _set_cell_inline_text(cell, text: str) -> bool:
     """把单元格改写成 inlineStr。返回是否删掉了公式。"""
     removed_formula = False
@@ -1164,13 +1210,38 @@ def _freeze_absolute_anchor(
 
 
 def _sync_shape_extent(anchor, cx: int, cy: int) -> None:
-    """oneCellAnchor 下的形状 xfrm/ext 也要跟着改，避免渲染器读到 0 尺寸。"""
-    for ext in anchor.iter(f"{{{NS_A}}}ext"):
-        parent = ext.getparent()
-        if parent is None or etree.QName(parent).localname != "xfrm":
+    """oneCellAnchor 下**顶层**形状的 xfrm/ext 跟着改，避免渲染器读到 0 尺寸。
+
+    只认锚点的直接子元素。组合图形（``xdr:grpSp``）内部每个子形状都有自己的
+    ``a:xfrm/a:ext``，递归下钻会把它们统统覆盖成整组的尺寸——组里所有子形状
+    被撑成一样大、叠在一起，图彻底毁掉。组的 ``a:chExt`` 也不动：改外框 ext
+    而保留 chExt，正是 DrawingML 里「整组等比缩放」的写法，子形状的相对位置
+    与大小由渲染器按两者的比例算出来。
+    """
+    for shape in anchor:
+        for ext in _top_level_shape_extents(shape):
+            ext.set("cx", str(cx))
+            ext.set("cy", str(cy))
+
+
+def _top_level_shape_extents(shape) -> list:
+    """取一个顶层形状自己的 ``a:ext``（不含它内部嵌套的任何形状）。"""
+    if _local(shape) not in _SHAPE_TAGS:
+        return []
+    extents = []
+    # xdr:graphicFrame 的变换直挂在 xdr:xfrm 上，其余形状挂在 spPr/grpSpPr 里。
+    xfrms = [shape.find(_xdr("xfrm"))]
+    for props_tag in ("spPr", "grpSpPr"):
+        props = shape.find(_xdr(props_tag))
+        if props is not None:
+            xfrms.append(props.find(f"{{{NS_A}}}xfrm"))
+    for xfrm in xfrms:
+        if xfrm is None:
             continue
-        ext.set("cx", str(cx))
-        ext.set("cy", str(cy))
+        ext = xfrm.find(f"{{{NS_A}}}ext")
+        if ext is not None:
+            extents.append(ext)
+    return extents
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1200,6 +1271,7 @@ class _SheetOutcome:
     mutated_cells: int = 0
     removed_formula: bool = False
     anchor_frozen_count: int = 0
+    truncated_positions: list[str] = field(default_factory=list)
 
 
 def _process_sheet(
@@ -1233,6 +1305,8 @@ def _process_sheet(
 
     # 行高估算需要整表的最终文本，未改动的单元格也要算进去。
     row_texts: dict[int, list[tuple[int, str]]] = {}
+    # 但只有本次真被改写过的行才允许动行高，见 _auto_adjust_row_heights。
+    mutated_rows: set[int] = set()
 
     for row_num, row in _iter_rows(root):
         collected: list[tuple[int, str]] = []
@@ -1253,8 +1327,10 @@ def _process_sheet(
                     collected.append((col_index, text))
                 continue
 
+            # 这里取的是「屏幕上显示成什么样」，只服务于行高估算。公式单元格显示的是
+            # 计算结果，不是 "=SUMIFS(...)" 那一长串源码——拿源码去算换行会把行撑高。
             if formula_el is not None:
-                current_text = "=" + (formula_el.text or "")
+                current_text = _cell_display_text(cell, shared_strings)
             else:
                 current_text = _cell_static_text(cell, shared_strings)
 
@@ -1316,11 +1392,29 @@ def _process_sheet(
                         new_text = None
 
                 if new_text is not None:
+                    coordinate = f"{_column_letter(col_index)}{row_num}"
+                    new_text, illegal_removed, truncated = sanitize_cell_text(new_text)
+                    if illegal_removed and log_callback:
+                        log_callback(
+                            f"[WARN] {entry.name}!{coordinate} 译文含 {illegal_removed} 个"
+                            "XML 非法字符，已剔除后写入"
+                        )
+                    if truncated:
+                        outcome.truncated_positions.append(
+                            f"{entry.name}!{coordinate}"
+                        )
+                        if log_callback:
+                            log_callback(
+                                f"[WARN] {entry.name}!{coordinate} 双语文本超过 Excel 单元格"
+                                f"上限 {MAX_CELL_TEXT_LEN} 字符，已截断 {truncated} 字符"
+                                "（不截断的话整个文件 Excel 会判为损坏）"
+                            )
                     if _set_cell_inline_text(cell, new_text):
                         outcome.removed_formula = True
                     final_text = new_text
                     dirty = True
                     outcome.mutated_cells += 1
+                    mutated_rows.add(row_num)
 
                     if lock_row_height:
                         size, reached_floor = _shrink_font_for_locked_row(
@@ -1363,7 +1457,9 @@ def _process_sheet(
 
     changed_rows: set[int] = set()
     if not lock_row_height:
-        changed_rows, touched_rows = _auto_adjust_row_heights(root, geometry, row_texts)
+        changed_rows, touched_rows = _auto_adjust_row_heights(
+            root, geometry, row_texts, mutated_rows
+        )
         dirty = dirty or touched_rows
 
     # 锁定行高时行高压根不变，没有任何锚点需要动。
@@ -1531,8 +1627,13 @@ def _auto_adjust_row_heights(
     root,
     geometry: _SheetGeometry,
     row_texts: dict[int, list[tuple[int, str]]],
+    mutated_rows: set[int],
 ) -> tuple[set[int], bool]:
     """自动调整行高以适配双语内容。
+
+    只动 ``mutated_rows`` —— 本次真的写过译文的那些行。原文里手工设过行高、
+    这次一个字都没翻的行必须原样留着：它现在的高度是用户自己排的版，我们凭
+    「估算出会换行」就改写它，等于拿翻译任务去破坏未翻译区域的排版。
 
     返回 ``(高度真的变了的行号集合, 是否写过行属性)``。前者用于判断哪些悬浮图片
     需要固定尺寸；后者只是用来决定要不要重写分表 XML。
@@ -1540,6 +1641,8 @@ def _auto_adjust_row_heights(
     changed: set[int] = set()
     touched = False
     for row_num, row in _iter_rows(root):
+        if row_num not in mutated_rows:
+            continue
         max_lines = 1
         for col_index, text in row_texts.get(row_num, ()):
             chars_per_line = max(1, int(geometry.col_width(col_index) * CHARS_PER_WIDTH))
@@ -1729,7 +1832,9 @@ def _clone_original_sheets(
             _relative_part(workbook_part, new_part),
         )
 
-        title = _unique_sheet_title(f"{snapshot.name}_原文", used_names)
+        title = _unique_sheet_title(
+            f"{snapshot.name}{ORIGINAL_SHEET_SUFFIX}", used_names
+        )
         used_names.add(title)
         sheet_el = etree.SubElement(sheets_el, _m("sheet"))
         sheet_el.set("name", title)
@@ -1769,6 +1874,31 @@ def _unique_sheet_title(title: str, used_names: set[str]) -> str:
         if candidate not in used_names:
             return candidate
         index += 1
+
+
+def is_generated_original_sheet_title(title: str, workbook_sheet_names) -> bool:
+    """``title`` 是否是本模块从 ``workbook_sheet_names`` 里某张分表克隆出来的原文分表。
+
+    必须和上面 ``_unique_sheet_title`` 的规则严格对应，所以放在一起：先拼
+    ``{原名}_原文``、截到 31 字符、重名再退一步加 ``_2``/``_3`` 后缀。
+
+    不能反过来用 ``title[:-3]`` 去掉「_原文」猜原名——原名一长，「_原文」这三个字
+    本身就被 31 字符上限截掉了（30 字符的原名只剩一个下划线），反推必然落空。
+    这里改成正推：对现存的每个分表名算出它可能生成的克隆名，再看 ``title`` 是否命中。
+    """
+    dedup = _DEDUP_SUFFIX_RE.search(title)
+    dedup_suffix = dedup.group(1) if dedup else ""
+    for other in workbook_sheet_names:
+        if other == title:
+            continue
+        base = f"{other}{ORIGINAL_SHEET_SUFFIX}"
+        if title == base[:MAX_SHEET_TITLE_LEN]:
+            return True
+        if dedup_suffix and title == (
+            base[: MAX_SHEET_TITLE_LEN - len(dedup_suffix)] + dedup_suffix
+        ):
+            return True
+    return False
 
 
 def _clone_owned_part(
@@ -1902,7 +2032,7 @@ def write_bilingual_workbook(
     review_positions: list[dict[str, str]] | None = None,
     allowed_positions: dict[str, set[str]] | None = None,
     external_autofit_planned: bool = False,
-    stats: dict[str, int] | None = None,
+    stats: dict[str, object] | None = None,
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
 
@@ -1921,6 +2051,9 @@ def write_bilingual_workbook(
     （被冻结/改写的悬浮图片锚点数），供调用方生成日志与任务结果。
     ``anchor_frozen_count`` 只数译文分表，不含 ``keep_original_sheets`` 克隆出来的
     原文分表——那上面是同一批图片，两边都算会让面向用户的计数翻倍。
+    另有 ``stats["truncated_cells"]``（因超 32767 字符被截断的单元格数）与
+    ``stats["truncated_positions"]``（``分表名!坐标`` 列表），同样的信息也会
+    通过 ``log_callback`` 报出来——截断绝不能是静默的。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -1994,6 +2127,7 @@ def write_bilingual_workbook(
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
         total_mutated_cells = 0
         total_anchor_frozen = 0
+        truncated_positions: list[str] = []
         for entry in entries:
             sheet_allowed = (
                 allowed_positions.get(entry.name, set())
@@ -2022,6 +2156,7 @@ def write_bilingual_workbook(
             removed_formula = removed_formula or outcome.removed_formula
             total_mutated_cells += outcome.mutated_cells
             total_anchor_frozen += outcome.anchor_frozen_count
+            truncated_positions.extend(outcome.truncated_positions)
 
             if log_callback:
                 if outcome.anchor_frozen_count:
@@ -2080,6 +2215,20 @@ def write_bilingual_workbook(
         if stats is not None:
             stats["mutated_cells"] = total_mutated_cells
             stats["anchor_frozen_count"] = total_anchor_frozen
+            stats["truncated_cells"] = len(truncated_positions)
+            stats["truncated_positions"] = truncated_positions
+
+        if truncated_positions and log_callback:
+            shown = "、".join(truncated_positions[:5])
+            more = (
+                f" 等 {len(truncated_positions)} 处"
+                if len(truncated_positions) > 5
+                else ""
+            )
+            log_callback(
+                f"[WARN] 共 {len(truncated_positions)} 个单元格超过 Excel 的 "
+                f"{MAX_CELL_TEXT_LEN} 字符上限已被截断：{shown}{more}"
+            )
 
         package.save()
     finally:

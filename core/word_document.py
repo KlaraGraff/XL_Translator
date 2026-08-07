@@ -17,6 +17,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 from loguru import logger
 
 from config import REVIEW_MARK_COLOR_DEFAULTS
@@ -210,6 +211,43 @@ class WordNumberingNormalizationResult:
     stats: WordNumberingNormalizationStats
 
 
+@dataclass(frozen=True)
+class WordHiddenContentReport:
+    """python-docx 看不见、因而必然漏译的正文内容统计。
+
+    python-docx 只把 ``w:p`` / ``w:tbl`` 的直接子节点当成文档内容，段落文本又只由
+    ``w:r`` 与 ``w:hyperlink`` 拼成。被内容控件（``w:sdt``）或未接受的修订插入
+    （``w:ins``）包住的文字因此完全不在扫描范围内——不报错、不计数，用户拿到的译文
+    里就是缺了这几段，没有任何线索。这个报告的唯一职责是把"缺了多少"变成可见信息。
+    """
+
+    content_control_count: int = 0
+    tracked_insertion_count: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.content_control_count + self.tracked_insertion_count
+
+    @property
+    def found(self) -> bool:
+        return self.total > 0
+
+    def describe(self) -> str:
+        parts = []
+        if self.content_control_count:
+            parts.append(f"内容控件 {self.content_control_count} 处")
+        if self.tracked_insertion_count:
+            parts.append(f"未接受的修订插入 {self.tracked_insertion_count} 处")
+        return "、".join(parts)
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "content_control_count": self.content_control_count,
+            "tracked_insertion_count": self.tracked_insertion_count,
+            "total": self.total,
+        }
+
+
 def is_supported_word_file(path: str | Path) -> bool:
     """Return whether a path points to a supported Word file."""
     path = Path(path)
@@ -345,6 +383,60 @@ def extract_word_segments(
     return segments
 
 
+def detect_hidden_word_content(source: str | Path) -> WordHiddenContentReport:
+    """统计文档里 python-docx 扫不到、因而会被静默漏译的内容。
+
+    只看 body：页眉页脚本来就不在翻译范围内，把它们算进来只会制造无从处理的告警。
+    """
+    try:
+        doc = Document(str(Path(source)))
+    except Exception as exc:  # detection must never break a translatable file
+        logger.warning(f"检测 Word 隐藏内容失败 {Path(source).name}：{exc}")
+        return WordHiddenContentReport()
+    return _detect_hidden_word_content(doc)
+
+
+def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
+    body = doc.element.body
+    return WordHiddenContentReport(
+        content_control_count=sum(
+            1
+            for element in _iter_outermost_elements(body, "w:sdt")
+            if _element_has_visible_text(element)
+        ),
+        tracked_insertion_count=sum(
+            1
+            for element in _iter_outermost_elements(body, "w:ins")
+            # w:ins 也用来标记"这一段的段落标记是新插入的"（w:pPr/w:rPr/w:ins），
+            # 那种节点一个 w:t 都没有，不代表任何漏译的正文。
+            if _element_has_visible_text(element)
+            and not _has_ancestor_tag(element, "w:sdt", body)
+        ),
+    )
+
+
+def _iter_outermost_elements(root, tag: str):
+    """产出 root 下同名嵌套里最外层的那一个，避免嵌套结构被重复计数。"""
+    qualified = qn(tag)
+    for element in root.iter(qualified):
+        if not _has_ancestor_tag(element, tag, root):
+            yield element
+
+
+def _has_ancestor_tag(element, tag: str, root) -> bool:
+    qualified = qn(tag)
+    parent = element.getparent()
+    while parent is not None and parent is not root:
+        if parent.tag == qualified:
+            return True
+        parent = parent.getparent()
+    return False
+
+
+def _element_has_visible_text(element) -> bool:
+    return any((node.text or "").strip() for node in element.iter(qn("w:t")))
+
+
 def write_bilingual_docx(
     *,
     source_path: str | Path,
@@ -394,18 +486,35 @@ def write_bilingual_docx(
     protected_tables = front_matter.protected_table_indices if front_matter else frozenset()
     table_cells: list = []
     protected_table_cell_ids: set[int] = set()
+    # 段落身份同理：cell.paragraphs 每次访问都新建包装对象，必须把这一批留在列表里
+    # 一直持有强引用，下面按 id() 判定"是否受保护"才有意义。
+    cell_paragraphs: list[Paragraph] = []
+    protected_paragraph_ids: set[int] = set()
     for table_index, table in enumerate(doc.tables):
         table_protected = table_index in protected_tables
         for cell in _iter_unique_table_cells(table):
             table_cells.append(cell)
+            own_paragraphs = list(cell.paragraphs)
+            cell_paragraphs.extend(own_paragraphs)
             if table_protected:
                 protected_table_cell_ids.add(id(cell))
-    all_paragraphs = [
-        *body_paragraphs,
-        *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
-    ]
+                protected_paragraph_ids.update(id(item) for item in own_paragraphs)
+    for protected_index in protected_paragraphs:
+        if 0 <= protected_index < len(body_paragraphs):
+            protected_paragraph_ids.add(id(body_paragraphs[protected_index]))
+    all_paragraphs = _order_paragraphs_by_document_position(
+        doc,
+        [*body_paragraphs, *cell_paragraphs],
+    )
     numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
-    _flatten_automatic_numbering(all_paragraphs, numbering_labels)
+    # 编号标签仍然按整篇文档统计（受保护段落也要参与计数，否则正文的序号会从头开始），
+    # 但真正落笔改写只允许发生在保护边界之外——"保护封面和目录"承诺的是不改写，
+    # 把封面的自动编号扁平化成正文文字并删掉 numPr 同样是改写。
+    _flatten_automatic_numbering(
+        all_paragraphs,
+        numbering_labels,
+        protected_paragraph_ids=protected_paragraph_ids,
+    )
     original_paragraph_sources = {
         id(paragraph): _paragraph_source_text(paragraph)
         for paragraph in all_paragraphs
@@ -511,7 +620,7 @@ def write_bilingual_docx(
                     highlight_skip_count += 1
             continue
         if resolved.replace_only:
-            cell.text = resolved.text
+            _replace_cell_text(cell, resolved.text, target_lang=target_lang)
         else:
             _append_translation_to_cell(
                 cell,
@@ -569,10 +678,13 @@ def normalize_docx_automatic_numbering(
         for table in doc.tables
         for cell in _iter_unique_table_cells(table)
     ]
-    all_paragraphs = [
-        *list(doc.paragraphs),
-        *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
-    ]
+    all_paragraphs = _order_paragraphs_by_document_position(
+        doc,
+        [
+            *list(doc.paragraphs),
+            *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
+        ],
+    )
     numbering_labels = _collect_numbering_labels(doc, all_paragraphs)
     stats = _flatten_automatic_numbering(all_paragraphs, numbering_labels)
     doc.save(str(target_path))
@@ -684,6 +796,85 @@ def _iter_cell_direct_paragraphs(cell: _Cell):
     for child in cell._tc.iterchildren():
         if child.tag == qn("w:p"):
             yield Paragraph(child, cell)
+
+
+def _order_paragraphs_by_document_position(
+    doc: Document,
+    paragraphs: list[Paragraph],
+) -> list[Paragraph]:
+    """把正文段落与表格内段落重排成 XML 里的真实先后顺序。
+
+    ``doc.paragraphs`` 与 ``doc.tables`` 是两条互不相干的序列，把它们首尾相接等于
+    断言"所有表格都排在全部正文之后"。自动编号的计数器正是按这个顺序推进的，于是
+    "正文列表 → 表格里的列表 → 正文列表"（共用同一个 numId）算出来的序号会整体错位。
+    body 的文档序才是 Word 自己的计数顺序。
+
+    返回的是传入的同一批包装对象——上层用 ``id(paragraph)`` 关联原文、编号标签与保护
+    边界，这里换新对象会让那些映射全部落空。
+    """
+    wrapper_by_element: dict = {}
+    for paragraph in paragraphs:
+        wrapper_by_element.setdefault(paragraph._p, paragraph)
+
+    ordered: list[Paragraph] = []
+    for element in doc.element.body.iter(qn("w:p")):
+        wrapper = wrapper_by_element.pop(element, None)
+        if wrapper is not None:
+            ordered.append(wrapper)
+
+    if wrapper_by_element:
+        # 理论上不会发生（传进来的段落都取自这棵树）。真发生了也绝不能把这些段落丢掉
+        # ——丢一个就是漏译一段，宁可让它们保持原有相对次序排在末尾。
+        located = {id(item) for item in ordered}
+        ordered.extend(item for item in paragraphs if id(item) not in located)
+    return ordered
+
+
+def _paragraph_content_runs(paragraph: Paragraph) -> list:
+    """段落里所有承载可见文字的 run，按文档顺序，**包含 w:hyperlink 内部的 run**。
+
+    python-docx 的 ``Paragraph.runs`` 只取 ``w:p`` 的直接 ``w:r`` 子元素，而
+    ``Paragraph.text`` 是 ``w:r | w:hyperlink`` 拼出来的——读一套、写另一套。段落
+    含超链接时改写译文就会漏掉超链接那截原文：译文写进第一个普通 run，超链接文字
+    原封不动留在段落里，用户看到的是中英混排。段落文本的读与写必须共用这一个视图。
+    """
+    runs: list = []
+    for child in paragraph._p.iterchildren():
+        if child.tag == qn("w:r"):
+            runs.append(Run(child, paragraph))
+        elif child.tag == qn("w:hyperlink"):
+            runs.extend(
+                Run(nested, paragraph)
+                for nested in child.iterchildren(qn("w:r"))
+            )
+    return runs
+
+
+def _paragraph_text_anchor_run(paragraph: Paragraph, runs: list):
+    """挑出（必要时新建）承载整段文字的那个 run。
+
+    段落以超链接开头时不能直接写进超链接内部的 run：那样整段译文都会变成可点击的
+    链接。改为在该超链接之前插入一个段落级的普通 run。
+    """
+    first_run = runs[0]
+    holder = first_run._r.getparent()
+    if holder is paragraph._p:
+        return first_run
+    new_r = OxmlElement("w:r")
+    holder.addprevious(new_r)
+    return Run(new_r, paragraph)
+
+
+def _drop_emptied_hyperlinks(paragraph: Paragraph) -> None:
+    """删掉已经不含任何文字的超链接元素。
+
+    改写整段文本后残留的空 ``w:hyperlink`` 是一个零长度的可点击区域：看不见、
+    却仍然是链接。既然这一段的文字已经整体被译文取代，链接锚点也就无处附着了。
+    """
+    for hyperlink in list(paragraph._p.iterchildren(qn("w:hyperlink"))):
+        if _element_has_visible_text(hyperlink):
+            continue
+        paragraph._p.remove(hyperlink)
 
 
 def _paragraph_source_text(paragraph: Paragraph) -> str:
@@ -1473,11 +1664,16 @@ def _normalize_bullet_label(label: str) -> str:
 def _flatten_automatic_numbering(
     paragraphs: list[Paragraph],
     numbering_labels: dict[int, str],
+    *,
+    protected_paragraph_ids: set[int] | frozenset[int] | None = None,
 ) -> WordNumberingNormalizationStats:
+    protected_ids = protected_paragraph_ids or frozenset()
     labels_seen = 0
     labels_prepended = 0
     numbering_removed = 0
     for paragraph in paragraphs:
+        if id(paragraph) in protected_ids:
+            continue
         label = numbering_labels.get(id(paragraph), "")
         if not label:
             if not _paragraph_source_text(paragraph) and _get_paragraph_numbering_info(paragraph):
@@ -1502,10 +1698,18 @@ def _prepend_paragraph_text(paragraph: Paragraph, label: str) -> bool:
         return False
 
     prefix = f"{label} "
-    if paragraph.runs:
-        paragraph.runs[0].text = prefix + paragraph.runs[0].text.lstrip()
+    runs = _paragraph_content_runs(paragraph)
+    if not runs:
+        paragraph.add_run(prefix + source)
         return True
-    paragraph.add_run(prefix + source)
+    first_run = runs[0]
+    if first_run._r.getparent() is paragraph._p:
+        first_run.text = prefix + first_run.text.lstrip()
+        return True
+    # 段落以超链接开头：编号标签写进 paragraph.runs[0] 会落到超链接之后，序号掉进
+    # 段落中间；直接 add_run 又会追加到末尾。必须在超链接之前插入一个新的普通 run。
+    label_run = _paragraph_text_anchor_run(paragraph, runs)
+    label_run.text = prefix
     return True
 
 
@@ -1627,15 +1831,57 @@ def _replace_paragraph_text(
     *,
     target_lang: str,
 ) -> None:
-    if paragraph.runs:
-        first_run = paragraph.runs[0]
-        first_run.text = text
-        _set_latin_run_font(first_run, target_lang=target_lang)
-        for run in paragraph.runs[1:]:
-            run.text = ""
-    else:
+    runs = _paragraph_content_runs(paragraph)
+    if not runs:
         run = paragraph.add_run(text)
         _set_latin_run_font(run, target_lang=target_lang)
+        return
+
+    anchor = _paragraph_text_anchor_run(paragraph, runs)
+    anchor.text = text
+    _set_latin_run_font(anchor, target_lang=target_lang)
+    for run in runs:
+        if run._r is anchor._r:
+            continue
+        run.text = ""
+    _drop_emptied_hyperlinks(paragraph)
+
+
+def _clear_paragraph_text(paragraph: Paragraph) -> None:
+    for run in _paragraph_content_runs(paragraph):
+        run.text = ""
+    _drop_emptied_hyperlinks(paragraph)
+
+
+def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> None:
+    """逐段改写单元格文本，保留嵌套表格、多段落与段落内的局部格式。
+
+    ``cell.text = ...`` 会把整个 ``w:tc`` 清空、只留下一个纯文本段落：单元格里的
+    嵌套表格、其余段落、局部加粗全部被压平，而这只是"把原文换成译文"而已。单元格
+    原文本身就是各直接子段落的文本用换行拼起来的（见 ``_cell_source_text``），所以
+    译文也按换行拆回去、一段对一段地写。
+    """
+    paragraphs = [
+        paragraph
+        for paragraph in _iter_cell_direct_paragraphs(cell)
+        if _paragraph_source_text(paragraph)
+    ]
+    if not paragraphs:
+        target = next(iter(_iter_cell_direct_paragraphs(cell)), None) or cell.add_paragraph()
+        _replace_paragraph_text(target, text, target_lang=target_lang)
+        return
+
+    lines = str(text or "").split("\n")
+    if len(lines) == len(paragraphs):
+        for paragraph, line in zip(paragraphs, lines):
+            _replace_paragraph_text(paragraph, line, target_lang=target_lang)
+        return
+
+    # 行数对不上（模型合并或拆分了换行）时不再猜哪一行对应哪一段：整段译文写进第一
+    # 段，其余原文段清空。留下空段落好过让原文残留在译文旁边。
+    _replace_paragraph_text(paragraphs[0], text, target_lang=target_lang)
+    for paragraph in paragraphs[1:]:
+        _clear_paragraph_text(paragraph)
 
 
 def _trim_trailing_empty_body_paragraphs(doc) -> None:

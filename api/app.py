@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
+import secrets
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -89,6 +92,7 @@ from settings import (
     AppSettings,
     ModelConnection,
     SettingsSchemaError,
+    carry_settings_baseline,
     delete_connection_key,
     delete_key,
     get_connection_scoped_key,
@@ -316,7 +320,17 @@ def create_app(
     auth_token: str = "",
 ) -> FastAPI:
     """Create a local API app; an empty token keeps in-process tests simple."""
-    app = FastAPI(title="Translator Sidecar API", version="1")
+
+    @asynccontextmanager
+    async def lifespan(instance: FastAPI):
+        yield
+        # Closing the window used to kill running tasks outright, leaving the
+        # LibreOffice profile, the Word temp docx directory and PDF page
+        # workspaces behind and the history stuck on "running".  Give the
+        # runners their chance to unwind instead.
+        await run_in_threadpool(instance.state.task_manager.shutdown)
+
+    app = FastAPI(title="Translator Sidecar API", version="1", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
@@ -336,7 +350,14 @@ def create_app(
         if (
             expected
             and request.method != "OPTIONS"
-            and request.headers.get("X-Translator-Token") != expected
+            # Constant-time comparison: a plain ``!=`` leaks how many leading
+            # characters of the loopback token a guess got right.
+            # Compare bytes: ``compare_digest`` rejects non-ASCII ``str``
+            # inputs, and a header is only latin-1 decoded on the way in.
+            and not secrets.compare_digest(
+                str(request.headers.get("X-Translator-Token") or "").encode("utf-8"),
+                str(expected).encode("utf-8"),
+            )
         ):
             return Response(status_code=401)
         return await call_next(request)
@@ -512,6 +533,10 @@ def create_app(
             settings = AppSettings.model_validate(merged)
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
+        # Rebuilding through model_validate produces an object with no
+        # load-time snapshot, which would make the save a full overwrite for
+        # the one endpoint the UI hits on every switch flip.
+        carry_settings_baseline(before_settings, settings)
         for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
             try:
                 resolve_effective_model_config(settings, role)
@@ -833,6 +858,21 @@ def create_app(
             )
         }
 
+    # Literal segments must be declared before the parameterised sibling.
+    # Starlette matches routes in declaration order, so ``/entries/bulk/pin``
+    # placed after ``/entries/{entry_id}/pin`` never runs: the router tries to
+    # parse "bulk" as an int and answers 422 instead.
+    @app.post("/api/tm/entries/bulk/pin")
+    def bulk_pin_tm_entries(payload: TmBulkPinPayload) -> dict[str, int]:
+        tm_manager.init_db()
+        tm_manager.bulk_pin_entries(payload.ids, payload.pinned)
+        return {"count": len(payload.ids)}
+
+    @app.post("/api/tm/entries/bulk/delete")
+    def bulk_delete_tm_entries(payload: TmBulkDeletePayload) -> dict[str, int]:
+        tm_manager.init_db()
+        return tm_manager.delete_entries(payload.ids)
+
     @app.put("/api/tm/entries/{entry_id}")
     def update_tm_entry(entry_id: int, payload: TmEntryUpdatePayload) -> dict[str, bool]:
         tm_manager.init_db()
@@ -859,17 +899,6 @@ def create_app(
         tm_manager.init_db()
         tm_manager.pin_entry(entry_id, payload.pinned)
         return {"changed": True}
-
-    @app.post("/api/tm/entries/bulk/pin")
-    def bulk_pin_tm_entries(payload: TmBulkPinPayload) -> dict[str, int]:
-        tm_manager.init_db()
-        tm_manager.bulk_pin_entries(payload.ids, payload.pinned)
-        return {"count": len(payload.ids)}
-
-    @app.post("/api/tm/entries/bulk/delete")
-    def bulk_delete_tm_entries(payload: TmBulkDeletePayload) -> dict[str, int]:
-        tm_manager.init_db()
-        return tm_manager.delete_entries(payload.ids)
 
     @app.get("/api/tm/export")
     def export_tm_entries(lang_pair: str) -> dict[str, Any]:
@@ -955,7 +984,7 @@ def create_app(
 
         settings.custom_target_langs = current
         save_settings(settings)
-        inserted = skipped = duplicates = 0
+        inserted = updated = skipped = duplicates = 0
         for pair, entries in grouped.items():
             result = tm_manager.import_entries(
                 entries,
@@ -965,6 +994,9 @@ def create_app(
                 preserve_status=True,
             )
             inserted += result.get("inserted", 0)
+            # overwrite 模式下有多少条是盖掉了库里已有的词条。恢复备份时
+            # 用户就是靠这个数字判断到底恢复了没有。
+            updated += result.get("updated", 0)
             skipped += result.get("skipped", 0)
             duplicates += result.get("duplicates", 0)
         restored_conflicts = tm_manager.import_conflict_candidates(
@@ -972,6 +1004,7 @@ def create_app(
         )
         return {
             "inserted": inserted,
+            "updated": updated,
             "skipped": skipped,
             "duplicates": duplicates,
             "custom_languages": len(current),
@@ -1193,6 +1226,30 @@ def create_app(
         save_settings(settings)
         return _model_role_payload(load_settings(), role)
 
+    # Same declaration-order rule as the TM bulk routes: these three literal
+    # paths would otherwise be swallowed by ``/connectivity/{role}`` below and
+    # never run at all.
+    @app.post("/api/models/connectivity/text")
+    def check_text_connectivity() -> dict[str, Any]:
+        settings = load_settings()
+        result = check_connectivity(settings)
+        save_settings(settings)
+        return _json_safe(result)
+
+    @app.post("/api/models/connectivity/image")
+    def check_image_connectivity() -> dict[str, Any]:
+        settings = load_settings()
+        result = check_image_generation_connectivity(settings)
+        save_settings(settings)
+        return _json_safe(result)
+
+    @app.post("/api/models/connectivity/pdf-review")
+    def check_review_connectivity() -> dict[str, Any]:
+        settings = load_settings()
+        result = check_pdf_review_connectivity(settings)
+        save_settings(settings)
+        return _json_safe(result)
+
     @app.post("/api/models/connectivity/{role}")
     def check_model_role_connectivity(role: str) -> dict[str, Any]:
         settings = load_settings()
@@ -1304,27 +1361,6 @@ def create_app(
             "concurrency_bounds": concurrency_bounds(config),
         }
 
-    @app.post("/api/models/connectivity/text")
-    def check_text_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
-    @app.post("/api/models/connectivity/image")
-    def check_image_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_image_generation_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
-    @app.post("/api/models/connectivity/pdf-review")
-    def check_review_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_pdf_review_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
     @app.get("/api/model-config/export")
     def export_model_config(
         include_api_key: bool = False,
@@ -1369,15 +1405,19 @@ def create_app(
     @app.post("/api/model-config/import")
     def import_model_config(payload: dict[str, Any]) -> dict[str, Any]:
         throughput_errors: list[str] = []
+        before_settings = load_settings()
         try:
             imported = parse_model_config_import(payload)
             settings = apply_model_config_import(
-                load_settings(),
+                before_settings,
                 imported,
                 throughput_errors=throughput_errors,
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        # ``apply_model_config_import`` returns a rebuilt model; keep the
+        # load-time snapshot so the save stays a merge, not an overwrite.
+        carry_settings_baseline(before_settings, settings)
         save_settings(settings)
         return {
             "settings": settings.model_dump(mode="json"),

@@ -13,9 +13,29 @@ use std::{
 
 use serde::Serialize;
 use tauri::{Manager, RunEvent, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-const SIDECAR_START_TIMEOUT: Duration = Duration::from_secs(12);
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+// First launch is the slow case: Gatekeeper (macOS) and Defender/AV real-time
+// scanning (Windows) both scan the entire freshly-extracted PyInstaller onedir
+// before letting the sidecar's first instruction execute, and 12s was tight
+// enough to trip on ordinary hardware. A failed launch is no longer a silent
+// crash (see the `setup` error path below), so trading a longer worst-case
+// wait for fewer false "engine failed to start" reports is a clear win.
+const SIDECAR_START_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_secs(8);
+
+// Prevents Windows from allocating a console window for the sidecar, which is
+// a console-subsystem executable (see packaging/sidecar/translator_sidecar.spec's
+// `console=True`) started from this GUI-subsystem (`windows_subsystem = "windows"`)
+// parent. This only suppresses the *window*; it does not affect the piped
+// stdout / inherited stderr handles set up in `spawn_sidecar` below, since those
+// are wired up via explicit handles in the process's STARTUPINFO regardless of
+// whether a console is allocated.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,21 +147,69 @@ fn inspect_output_directory(path: String) -> OutputDirectoryInspection {
 fn open_local_path(path: String, reveal: bool) -> Result<(), String> {
     let supplied = path.trim();
     if supplied.is_empty() {
-        return Err("No local path was supplied.".to_string());
+        return Err("未提供本地路径。".to_string());
     }
     let candidate = PathBuf::from(supplied);
     if !candidate.exists() {
-        return Err("The referenced output no longer exists on this Mac.".to_string());
+        return Err("引用的输出内容已不存在，可能已被移动或删除。".to_string());
     }
-    let mut command = Command::new("open");
-    if reveal && candidate.is_file() {
-        command.arg("-R");
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        if reveal && candidate.is_file() {
+            command.arg("-R");
+        }
+        command
+            .arg(candidate)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开本地路径：{error}"))
     }
-    command
-        .arg(candidate)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the local output: {error}"))
+
+    #[cfg(target_os = "windows")]
+    {
+        // `explorer /select,<path>` highlights the file in its parent folder;
+        // plain `explorer <path>` opens a directory, or launches a file with
+        // its associated app (mirroring macOS `open`'s dual behaviour).
+        // `explorer.exe` commonly exits non-zero even on success, so only the
+        // spawn itself is treated as the success/failure signal.
+        let mut command = Command::new("explorer");
+        if reveal && candidate.is_file() {
+            command.arg(format!("/select,{}", candidate.display()));
+        } else {
+            command.arg(&candidate);
+        }
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开本地路径：{error}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // No universal "reveal in file manager" verb exists across Linux file
+        // managers, so fall back to opening the containing directory.
+        let target = if reveal && candidate.is_file() {
+            candidate
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(candidate)
+        } else {
+            candidate
+        };
+        Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开本地路径：{error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = reveal;
+        Err("当前操作系统不支持打开本地路径。".to_string())
+    }
 }
 
 #[tauri::command]
@@ -156,13 +224,45 @@ fn open_external_url(url: String) -> Result<(), String> {
     .iter()
     .any(|prefix| supplied.starts_with(prefix));
     if !is_allowed_github_url {
-        return Err("Only official GitHub release and support links can be opened.".to_string());
+        return Err("只能打开官方 GitHub Release 与支持链接。".to_string());
     }
-    Command::new("open")
-        .arg(supplied)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the external link: {error}"))
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(supplied)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开外部链接：{error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Routed through `rundll32 url.dll,FileProtocolHandler` rather than
+        // `cmd /c start`: it hands the URL to the system default browser
+        // without any shell/`cmd.exe` involved, so there is no metacharacter
+        // or quoting surface for command injection -- on top of `supplied`
+        // already being constrained to the GitHub prefixes checked above.
+        Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", supplied])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开外部链接：{error}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(supplied)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开外部链接：{error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        Err("当前操作系统不支持打开外部链接。".to_string())
+    }
 }
 
 fn project_root() -> PathBuf {
@@ -251,6 +351,8 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         command.current_dir(working_directory);
         command
     };
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
         .env(
             "TRANSLATOR_SIDECAR_PARENT_PID",
@@ -351,8 +453,38 @@ fn main() {
             }
         }))
         .setup(|app| {
-            let sidecar = spawn_sidecar(app.handle()).map_err(std::io::Error::other)?;
-            app.manage(SidecarState(Mutex::new(Some(sidecar))));
+            match spawn_sidecar(app.handle()) {
+                Ok(sidecar) => {
+                    app.manage(SidecarState(Mutex::new(Some(sidecar))));
+                }
+                Err(error) => {
+                    // No running sidecar to hand out, but commands that pull
+                    // `State<'_, SidecarState>` still need the type managed or
+                    // Tauri rejects the IPC call outright.
+                    app.manage(SidecarState(Mutex::new(None)));
+                    let handle = app.handle().clone();
+                    // `blocking_show()` hops the actual dialog work onto the main
+                    // thread via `run_on_main_thread` and blocks the *calling*
+                    // thread until that hop finishes. `setup` runs on the main
+                    // thread itself, before the event loop starts, so calling it
+                    // here directly would have the main thread post a task to
+                    // itself and then wait forever for a loop that never got a
+                    // chance to start. Doing it from a background thread instead
+                    // lets `.run()` below start the event loop normally, so the
+                    // hop has somewhere to land.
+                    thread::spawn(move || {
+                        handle
+                            .dialog()
+                            .message(format!(
+                                "翻译引擎未能启动，Translator 即将退出。\n\n{error}\n\n可以尝试：重新打开应用；确认安全软件或杀毒软件未拦截、隔离本应用的安装目录；如果仍反复出现，请到帮助页查看支持渠道。"
+                            ))
+                            .kind(MessageDialogKind::Error)
+                            .title("Translator 无法启动")
+                            .blocking_show();
+                        std::process::exit(1);
+                    });
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

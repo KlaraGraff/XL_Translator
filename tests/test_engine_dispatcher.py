@@ -4,7 +4,13 @@ import unittest
 from unittest.mock import patch
 
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
-from core.engine_dispatcher import TranslationBatchRunStats, build_engine, translate_texts
+from core.engine_dispatcher import (
+    TranslationBatchRunStats,
+    build_engine,
+    translate_texts,
+    translate_texts_with_sources,
+)
+from core.language_preflight import TranslationLanguageResult
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, EngineSettings
 
@@ -73,6 +79,89 @@ class PermanentFailureExcelEngine(TranslationEngine):
         exc = RuntimeError("401 unauthorized: invalid API key")
         exc.status_code = 401
         raise exc
+
+
+class AlwaysFailingExcelEngine(TranslationEngine):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/always-failing"
+
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        raise RuntimeError("upstream 503: service unavailable")
+
+
+class AlwaysFailingSourcesEngine(TranslationEngine):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/always-failing-sources"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        raise AssertionError("the automatic-language path must not call translate_batch")
+
+    def translate_batch_with_sources(
+        self, texts, target_lang, system_prompt, source_lang="auto"
+    ):
+        self.calls.append(list(texts))
+        raise RuntimeError("upstream 503: service unavailable")
+
+
+class PermanentFailureSourcesEngine(TranslationEngine):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/permanent-sources"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        raise AssertionError("the automatic-language path must not call translate_batch")
+
+    def translate_batch_with_sources(
+        self, texts, target_lang, system_prompt, source_lang="auto"
+    ):
+        self.calls.append(list(texts))
+        exc = RuntimeError("401 unauthorized: invalid API key")
+        exc.status_code = 401
+        raise exc
+
+
+class SourcesReportingEngine(TranslationEngine):
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    @property
+    def engine_name(self) -> str:
+        return "fake/sources"
+
+    def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+        raise AssertionError("the automatic-language path must not call translate_batch")
+
+    def translate_batch_with_sources(
+        self, texts, target_lang, system_prompt, source_lang="auto"
+    ):
+        self.calls.append(list(texts))
+        return [
+            TranslationLanguageResult(
+                text,
+                f"{target_lang}:{text}",
+                source_lang="en",
+                target_lang=target_lang,
+            )
+            for text in texts
+        ]
 
 
 class EngineDispatcherTests(unittest.TestCase):
@@ -145,10 +234,34 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertEqual(stats.adaptive_lowest_concurrency, 4)
         self.assertTrue(any("降至 4" in message for message in errors))
 
-    def test_translate_texts_reports_key_unavailable_at_minimum_capacity(self) -> None:
+    def test_translate_texts_waits_out_a_limit_at_minimum_capacity(self) -> None:
+        # A key already walked down to the minimum cap is the normal state of a
+        # busy account; the run must wait rather than throw away every request
+        # already paid for.
         engine = ConcurrencyLimitExcelEngine(fail_count=2)
 
-        with self.assertRaises(ApiKeyTemporarilyUnavailableError):
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_BASE_DELAY", 0.01), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_MAX_DELAY", 0.01):
+            result = translate_texts(
+                ["alpha"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                source_lang="en",
+            )
+
+        self.assertEqual(result, {"alpha": "translated:alpha"})
+        self.assertEqual(len(engine.calls), 3)
+
+    def test_translate_texts_reports_key_unavailable_after_the_grace_window(self) -> None:
+        engine = ConcurrencyLimitExcelEngine(fail_count=10**6)
+
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_BASE_DELAY", 0.01), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_MAX_DELAY", 0.01), \
+             patch("core.api_concurrency_control.MINIMUM_CAPACITY_GRACE_SECONDS", 0.05), \
+             self.assertRaises(ApiKeyTemporarilyUnavailableError):
             translate_texts(
                 ["alpha"],
                 engine,
@@ -158,6 +271,9 @@ class EngineDispatcherTests(unittest.TestCase):
                 concurrency=1,
                 source_lang="en",
             )
+
+        # It kept trying instead of dying on the first at-minimum 429.
+        self.assertGreater(len(engine.calls), 1)
 
     def test_permanent_auth_failure_does_not_recursively_split_batch(self) -> None:
         engine = PermanentFailureExcelEngine()
@@ -177,6 +293,152 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
         self.assertEqual(result, {text: text for text in ("alpha", "beta", "gamma")})
         self.assertEqual(stats.failed_batch_count, 3)
+
+    def test_a_batch_that_always_fails_is_reported_as_untranslated(self) -> None:
+        # The file still gets the source text so the run can finish, but the
+        # count must reach the task result: a user must never receive source
+        # text presented as translation with no warning anywhere.
+        engine = AlwaysFailingExcelEngine()
+        stats = TranslationBatchRunStats()
+        errors: list[str] = []
+
+        with patch("core.engine_dispatcher._SPLIT_RETRY_BASE_DELAY", 0.0), \
+             patch("core.engine_dispatcher._SPLIT_RETRY_MAX_DELAY", 0.0):
+            result = translate_texts(
+                ["alpha", "beta"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                error_callback=errors.append,
+                source_lang="en",
+                stats=stats,
+            )
+
+        self.assertEqual(result, {"alpha": "alpha", "beta": "beta"})
+        self.assertEqual(stats.untranslated_count, 2)
+        self.assertEqual(
+            sorted(item["source"] for item in stats.failed_items),
+            ["alpha", "beta"],
+        )
+        self.assertTrue(any("未能翻译" in message for message in errors))
+
+    def test_bisecting_stops_at_the_depth_cap(self) -> None:
+        # 30 items used to bisect down to singletons: 59 nodes, each with its
+        # own tenacity budget. The cap keeps the tree at 15 nodes.
+        engine = AlwaysFailingExcelEngine()
+        stats = TranslationBatchRunStats()
+        texts = [f"item-{index:02d}" for index in range(30)]
+
+        with patch("core.engine_dispatcher._SPLIT_RETRY_BASE_DELAY", 0.0), \
+             patch("core.engine_dispatcher._SPLIT_RETRY_MAX_DELAY", 0.0):
+            result = translate_texts(
+                texts,
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=30,
+                concurrency=1,
+                source_lang="en",
+                stats=stats,
+            )
+
+        self.assertEqual(len(engine.calls), 15)
+        self.assertEqual(stats.untranslated_count, 30)
+        self.assertEqual(result, {text: text for text in texts})
+        self.assertTrue(all(len(call) > 1 for call in engine.calls[-8:]))
+
+    def test_split_retries_back_off_before_recursing(self) -> None:
+        engine = AlwaysFailingExcelEngine()
+        delays: list[float] = []
+
+        with patch("core.engine_dispatcher.time.sleep", side_effect=delays.append):
+            translate_texts(
+                ["alpha", "beta"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                source_lang="en",
+            )
+
+        self.assertTrue(delays)
+        self.assertGreater(sum(delays), 0.0)
+
+    def test_with_sources_marks_untranslated_items_and_keeps_them_out_of_tm(self) -> None:
+        engine = AlwaysFailingSourcesEngine()
+        stats = TranslationBatchRunStats()
+
+        with patch("core.engine_dispatcher._SPLIT_RETRY_BASE_DELAY", 0.0), \
+             patch("core.engine_dispatcher._SPLIT_RETRY_MAX_DELAY", 0.0):
+            result = translate_texts_with_sources(
+                ["alpha", "beta"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                stats=stats,
+            )
+
+        self.assertEqual(stats.untranslated_count, 2)
+        self.assertEqual({item.source_lang for item in result.values()}, {"und"})
+        self.assertFalse(any(item.tm_eligible for item in result.values()))
+
+    def test_with_sources_does_not_split_a_permanent_failure(self) -> None:
+        # This variant never consulted _is_permanent_request_error, so a
+        # rejected key still cost a full bisection tree of requests.
+        engine = PermanentFailureSourcesEngine()
+        stats = TranslationBatchRunStats()
+
+        result = translate_texts_with_sources(
+            ["alpha", "beta", "gamma"],
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=1,
+            stats=stats,
+        )
+
+        self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
+        self.assertEqual(stats.untranslated_count, 3)
+        self.assertEqual(stats.retry_count, 0)
+        self.assertEqual(set(result), {"alpha", "beta", "gamma"})
+
+    def test_a_failover_wrapper_translates_the_automatic_language_path(self) -> None:
+        # Regression for the multi-connection + auto-source-language path that
+        # returned an entire document untouched while reporting success.
+        from core.failover_engine import FailoverTranslationEngine
+        from settings import ModelConnection
+
+        pool = [
+            ModelConnection(label="A", provider="custom_openai", base_url="https://a.example/v1"),
+            ModelConnection(label="B", provider="custom_openai", base_url="https://b.example/v1"),
+        ]
+        real = SourcesReportingEngine()
+        stats = TranslationBatchRunStats()
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: real, candidates=pool
+        )
+
+        result = translate_texts_with_sources(
+            ["alpha", "beta"],
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=1,
+            stats=stats,
+        )
+
+        self.assertEqual(
+            {source: item.translation for source, item in result.items()},
+            {"alpha": "fr:alpha", "beta": "fr:beta"},
+        )
+        self.assertEqual(stats.untranslated_count, 0)
 
     def test_build_engine_uses_lm_studio_as_local_openai_provider(self) -> None:
         settings = AppSettings(

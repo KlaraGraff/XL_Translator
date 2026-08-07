@@ -4,7 +4,9 @@
 云端引擎使用 ThreadPoolExecutor 并发发送批次，Ollama 保持原有 asyncio 逻辑不变。
 """
 import math
+import random
 import threading
+import time
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -43,6 +45,46 @@ _API_WEIGHT_CHARS_PER_SLOT = 4000
 _API_WEIGHT_PROMPT_CHAR_CAP = 900
 _API_WEIGHT_OUTPUT_MULTIPLIER = 1.15
 
+# A batch of 30 used to bisect all the way down to singletons: 59 nodes, each
+# with its own tenacity budget, so one upstream wobble turned into ~177
+# requests.  Three levels isolate a poison item well enough while capping the
+# tree at 15 nodes, and every retry now waits instead of hammering.
+_MAX_BATCH_SPLIT_DEPTH = 3
+_SPLIT_RETRY_BASE_DELAY = 0.5
+_SPLIT_RETRY_MAX_DELAY = 8.0
+# Retries triggered by adaptive concurrency reduction: bounded so a key that
+# keeps answering 429 cannot spin the same batch forever.
+_MAX_CONCURRENCY_RETRY_ROUNDS = 8
+_CONCURRENCY_RETRY_BASE_DELAY = 0.5
+_CONCURRENCY_RETRY_MAX_DELAY = 8.0
+# Failed source samples are attached to the task result for the UI; the counts
+# stay exact while the sample list stays bounded.
+_FAILED_ITEM_SAMPLE_LIMIT = 200
+
+
+def _backoff_sleep(
+    attempt: int,
+    *,
+    base: float,
+    cap: float,
+    should_stop=None,
+) -> None:
+    """Sleep for an exponentially growing, jittered delay.
+
+    The wait is sliced so a stop request is honoured promptly instead of after
+    the full backoff.
+    """
+    delay = min(cap, base * (2 ** max(0, int(attempt))))
+    delay *= 0.75 + random.random() * 0.5
+    deadline = time.monotonic() + delay
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if should_stop and should_stop():
+            return
+        time.sleep(min(0.25, remaining))
+
 
 @dataclass
 class TranslationBatchRunStats:
@@ -50,6 +92,7 @@ class TranslationBatchRunStats:
     batch_count: int = 0
     retry_count: int = 0
     failed_batch_count: int = 0
+    untranslated_count: int = 0
     failed_items: list[dict[str, str]] = field(default_factory=list)
     max_request_weight: int = 1
     weighted_scheduler_used: bool = False
@@ -68,13 +111,27 @@ class TranslationBatchRunStats:
     def record_failed_batch(self, source_text: str = "", error: str = "") -> None:
         with self._lock:
             self.failed_batch_count += 1
-            if source_text:
+            if source_text and len(self.failed_items) < _FAILED_ITEM_SAMPLE_LIMIT:
                 self.failed_items.append(
                     {
                         "source": source_text,
                         "error": error,
                     }
                 )
+
+    def record_untranslated(self, texts: Sequence[str], error: str = "") -> None:
+        """Mark every entry of a batch as returned without a translation.
+
+        The fallback still hands the source text back so the rest of the run
+        can finish and the file gets written, but the run must never present
+        that as a translation: these counts drive the task-level "N 条未翻译"
+        warning, so a batch that silently degraded is impossible.
+        """
+        items = list(texts)
+        for text in items:
+            self.record_failed_batch(str(text or ""), error)
+        with self._lock:
+            self.untranslated_count += len(items)
 
     def record_adaptive_concurrency_decision(
         self,
@@ -550,6 +607,8 @@ def _translate_batch_with_fallback(
     should_stop,
     error_callback,
     stats: TranslationBatchRunStats,
+    split_depth: int = 0,
+    concurrency_round: int = 0,
 ) -> dict[str, str]:
     if not batch:
         return {}
@@ -582,16 +641,27 @@ def _translate_batch_with_fallback(
             return {text: text for text in batch}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
-        if api_scheduler is not None:
+        if api_scheduler is not None and concurrency_round < _MAX_CONCURRENCY_RETRY_ROUNDS:
             decision = handle_api_concurrency_limit(
                 exc,
                 scheduler=api_scheduler,
                 request_generation=request_generation,
                 context_label="Excel",
                 error_callback=error_callback,
+                should_stop=should_stop,
             )
             if decision is not None:
                 stats.record_adaptive_concurrency_decision(decision)
+                if should_stop and should_stop():
+                    return {text: text for text in batch}
+                # Retrying the identical batch the instant the cap dropped is
+                # what turned upstream 429 jitter into a local request storm.
+                _backoff_sleep(
+                    concurrency_round,
+                    base=_CONCURRENCY_RETRY_BASE_DELAY,
+                    cap=_CONCURRENCY_RETRY_MAX_DELAY,
+                    should_stop=should_stop,
+                )
                 if should_stop and should_stop():
                     return {text: text for text in batch}
                 return _translate_batch_with_fallback(
@@ -605,17 +675,23 @@ def _translate_batch_with_fallback(
                     should_stop=should_stop,
                     error_callback=error_callback,
                     stats=stats,
+                    split_depth=split_depth,
+                    concurrency_round=concurrency_round + 1,
                 )
         if _is_permanent_request_error(exc):
             message = f"Excel 翻译请求不可重试，已停止拆分批次：{exc}"
             logger.error(message)
             if error_callback:
                 error_callback(message)
-            for text in batch:
-                stats.record_failed_batch(str(text), str(exc))
+            stats.record_untranslated(batch, str(exc))
             return {text: text for text in batch}
 
-        if len(batch) > 1 and not (should_stop and should_stop()):
+        can_split = (
+            len(batch) > 1
+            and split_depth < _MAX_BATCH_SPLIT_DEPTH
+            and not (should_stop and should_stop())
+        )
+        if can_split:
             midpoint = max(1, len(batch) // 2)
             stats.record_retry()
             message = (
@@ -625,22 +701,33 @@ def _translate_batch_with_fallback(
             logger.warning(message)
             if error_callback:
                 error_callback(message)
+            _backoff_sleep(
+                split_depth,
+                base=_SPLIT_RETRY_BASE_DELAY,
+                cap=_SPLIT_RETRY_MAX_DELAY,
+                should_stop=should_stop,
+            )
             left = _translate_batch_with_fallback(
                 batch[:midpoint], engine=engine, target_lang=target_lang,
                 system_prompt=system_prompt, source_lang=source_lang,
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
+                split_depth=split_depth + 1,
             )
             right = _translate_batch_with_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
                 system_prompt=system_prompt, source_lang=source_lang,
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
+                split_depth=split_depth + 1,
             )
             return {**left, **right}
-        stats.record_failed_batch(str(batch[0] if batch else ""), str(exc))
+        stats.record_untranslated(batch, str(exc))
         head = str(batch[0] if batch else "")[:40]
-        err_msg = f"Excel 单条翻译仍失败，已保留原文：{head}... | {exc}"
+        err_msg = (
+            f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数："
+            f"{head}... | {exc}"
+        )
         logger.error(err_msg)
         if error_callback:
             error_callback(err_msg)
@@ -658,6 +745,8 @@ def _translate_batch_with_sources_fallback(
     should_stop,
     error_callback,
     stats: TranslationBatchRunStats,
+    split_depth: int = 0,
+    concurrency_round: int = 0,
 ) -> dict[str, TranslationLanguageResult]:
     if not batch:
         return {}
@@ -700,16 +789,27 @@ def _translate_batch_with_sources_fallback(
             }
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
-        if api_scheduler is not None:
+        if api_scheduler is not None and concurrency_round < _MAX_CONCURRENCY_RETRY_ROUNDS:
             decision = handle_api_concurrency_limit(
                 exc,
                 scheduler=api_scheduler,
                 request_generation=request_generation,
                 context_label="Excel",
                 error_callback=error_callback,
+                should_stop=should_stop,
             )
             if decision is not None:
                 stats.record_adaptive_concurrency_decision(decision)
+                if should_stop and should_stop():
+                    return _untranslated_language_results(batch, target_lang)
+                _backoff_sleep(
+                    concurrency_round,
+                    base=_CONCURRENCY_RETRY_BASE_DELAY,
+                    cap=_CONCURRENCY_RETRY_MAX_DELAY,
+                    should_stop=should_stop,
+                )
+                if should_stop and should_stop():
+                    return _untranslated_language_results(batch, target_lang)
                 return _translate_batch_with_sources_fallback(
                     batch,
                     engine=engine,
@@ -720,30 +820,75 @@ def _translate_batch_with_sources_fallback(
                     should_stop=should_stop,
                     error_callback=error_callback,
                     stats=stats,
+                    split_depth=split_depth,
+                    concurrency_round=concurrency_round + 1,
                 )
-        if len(batch) > 1 and not (should_stop and should_stop()):
+        # Splitting a batch cannot fix a rejected key or a missing model, and
+        # the sources variant used to keep bisecting anyway — mirror the plain
+        # path so a permanent failure costs one request, not fifteen.
+        if _is_permanent_request_error(exc):
+            message = f"Excel 语言回报请求不可重试，已停止拆分批次：{exc}"
+            logger.error(message)
+            if error_callback:
+                error_callback(message)
+            stats.record_untranslated(batch, str(exc))
+            return _untranslated_language_results(batch, target_lang)
+
+        can_split = (
+            len(batch) > 1
+            and split_depth < _MAX_BATCH_SPLIT_DEPTH
+            and not (should_stop and should_stop())
+        )
+        if can_split:
             stats.record_retry()
             midpoint = max(1, len(batch) // 2)
+            _backoff_sleep(
+                split_depth,
+                base=_SPLIT_RETRY_BASE_DELAY,
+                cap=_SPLIT_RETRY_MAX_DELAY,
+                should_stop=should_stop,
+            )
             left = _translate_batch_with_sources_fallback(
                 batch[:midpoint], engine=engine, target_lang=target_lang,
                 system_prompt=system_prompt, api_scheduler=api_scheduler,
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
+                split_depth=split_depth + 1,
             )
             right = _translate_batch_with_sources_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
                 system_prompt=system_prompt, api_scheduler=api_scheduler,
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
+                split_depth=split_depth + 1,
             )
             return {**left, **right}
-        stats.record_failed_batch(str(batch[0]), str(exc))
+        stats.record_untranslated(batch, str(exc))
+        err_msg = f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}"
+        logger.error(err_msg)
         if error_callback:
-            error_callback(f"Excel 单条语言回报翻译失败，已保留原文：{exc}")
-        return {
-            text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
-            for text in batch
-        }
+            error_callback(err_msg)
+        return _untranslated_language_results(batch, target_lang)
+
+
+def _untranslated_language_results(
+    batch: Sequence[str],
+    target_lang: str,
+) -> dict[str, TranslationLanguageResult]:
+    """Hand the source text back, tagged so nothing downstream calls it a translation.
+
+    ``source_lang="und"`` keeps these entries out of TM, and the run stats
+    carry the matching untranslated count for the task result.
+    """
+    return {
+        text: TranslationLanguageResult(
+            text,
+            text,
+            source_lang="und",
+            target_lang=target_lang,
+        )
+        for text in batch
+    }
 
 
 def _is_permanent_request_error(exc: BaseException) -> bool:

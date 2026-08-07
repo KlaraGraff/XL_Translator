@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import shutil
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageStat
 
 from config import (
     PDF_A4_LONG_EDGE_PT,
@@ -45,6 +46,7 @@ from core.image_generation import (
     ImageModelUnavailableError,
     OpenAICompatibleImageGenerationClient,
     is_model_unavailable_error,
+    pdf_page_ratio_tolerance,
 )
 from core.language_registry import get_target_lang_display
 from core.model_roles import (
@@ -114,6 +116,34 @@ _PDF_PAGE_REGENERABLE_STATUSES = frozenset(
     }
 )
 _PDF_PAGE_SKIPPABLE_STATUSES = frozenset({"placeholder_pending", PDF_OUTPUT_STATE_FAILED})
+
+# --- 页面内容质检的阈值 ------------------------------------------------------
+# 这些判据只用来「标记待复核」，永远不会丢页、也不会触发重试，所以全部按
+# 「宁可漏判也不误杀」定：命中的必须是任何人一眼都会说「这页坏了」的输出。
+#
+# 分辨率下限刻意压在 1000×700 而不是 config 里那对 1600×1200 的目标值——
+# gpt-image-1 的固定尺寸就是 1024×1536，用目标值当下限会把它每一页都标红。
+PDF_QC_LOW_RESOLUTION_LONG_EDGE_PX = 1000
+PDF_QC_LOW_RESOLUTION_SHORT_EDGE_PX = 700
+# 非背景像素占比：正文页通常 3%~8%，只有插图或标题的稀疏页也有 0.2%~0.5%，
+# 0.1% 已经是「整页几乎什么都没有」。再叠加一条亮度标准差 < 3（近乎纯色）
+# 才判定，两个条件都满足的正常页实际上不存在。
+PDF_QC_BLANK_INK_RATIO = 0.001
+PDF_QC_BLANK_STDDEV = 3.0
+# 只有源页本身有内容（≥0.5% 非背景像素）时，空白输出才算异常。
+PDF_QC_SOURCE_INK_RATIO_FLOOR = 0.005
+PDF_QC_INK_LUMA_DELTA = 24
+PDF_QC_SAMPLE_LONG_EDGE_PX = 512
+# 输出比例与源页差到这个程度就补白边而不是直接拉伸铺满页面。低于它的偏差
+# （典型是 gpt-image-2 的 16px 量化，最多约 1.3%）拉伸后肉眼不可见，补边
+# 反而多一次重采样。
+PDF_RATIO_LETTERBOX_THRESHOLD = 0.02
+
+# 单页渲染的总像素封顶。A4@300dpi 是 8.7MP、A3@300dpi 是 17.4MP，都不受影响；
+# A0 图纸@300dpi 是 139MP（pdfium 位图约 558MB + PIL 副本约 418MB），会被自动
+# 降到约 160dpi。降级只发生在超限页上，并且会记进日志和页记录。
+PDF_PAGE_MAX_RENDER_PIXELS = 40_000_000
+PDF_PAGE_MIN_RENDER_DPI = 72.0
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 
@@ -233,6 +263,11 @@ class PageQualityResult:
     message: str = ""
     width: int = 0
     height: int = 0
+    # 内容维度的疑点。故意不参与 `ok`：这些判据是启发式的，误杀一张正常页
+    # 的代价（丢掉一页真译文、白烧一轮重试）比放过一张可疑页大得多，所以
+    # 命中的页照样进产物，只是打上「请复核」并在报告里点名。
+    review_reasons: list[str] = field(default_factory=list)
+    review_message: str = ""
 
 
 @dataclass
@@ -245,6 +280,14 @@ class PdfPageRecord:
     attempts: int = 0
     error: str = ""
     emergency_ratio_normalized: bool = False
+    # 模型只支持固定尺寸时，输出比例注定和源页不同，这一页按源页比例补白边
+    # 后再入册。这是该模型的已知代价，不是异常，不进 needs_review。
+    ratio_letterboxed: bool = False
+    # 内容质检的疑点（near-blank / 分辨率过低）。页面照常进产物，文件标 needs_review。
+    quality_flags: list[str] = field(default_factory=list)
+    quality_message: str = ""
+    # 实际渲染 DPI；低于 PDF_RENDER_DPI_DEFAULT 表示这一页因为像素上限被降级。
+    render_dpi: float = 0.0
     placeholder: bool = False
     failure_ordinal: str = ""
     source_width_px: int = 0
@@ -281,6 +324,9 @@ class PdfFileRecord:
     generated_page_count: int = 0
     placeholder_page_count: int = 0
     emergency_ratio_normalized_count: int = 0
+    ratio_letterboxed_page_count: int = 0
+    quality_flagged_page_count: int = 0
+    render_downscaled_page_count: int = 0
     skipped_oversize_page_count: int = 0
     retry_count: int = 0
     review_enabled: bool = False
@@ -516,11 +562,29 @@ def check_page_quality(
     source_width: int,
     source_height: int,
     ratio_tolerance: float = PDF_ASPECT_RATIO_TOLERANCE,
+    source_image_path: Path | str | None = None,
 ) -> PageQualityResult:
+    """Gate one model-returned page image.
+
+    Two very different kinds of verdict come out of here:
+
+    * ``ok=False`` — the image is structurally unusable (undecodable, or a
+      shape the model was never asked for).  The caller retries.
+    * ``ok=True`` with ``review_reasons`` — the image is usable but suspicious
+      on content (near-blank, or far below any readable resolution).  These are
+      heuristics, so they must never trigger a retry or drop the page: the page
+      ships and the file is marked needs-review.
+
+    ``ratio_tolerance`` must come from
+    :func:`core.image_generation.pdf_page_ratio_tolerance` for the model in
+    play — a fixed tolerance and a fixed request size are how you build a gate
+    that nothing can pass.
+    """
     try:
         with Image.open(BytesIO(image_bytes)) as image:
             image.load()
             width, height = image.size
+            ink_ratio, luma_stddev = _measure_page_ink(image)
     except Exception as exc:  # noqa: BLE001 - user-facing QC result.
         return PageQualityResult(False, "decode_error", f"图片无法解码：{exc}")
 
@@ -532,12 +596,85 @@ def check_page_quality(
         return PageQualityResult(
             False,
             "ratio_error",
-            f"页面比例超出 {ratio_tolerance:.0%} 容差",
+            f"页面比例超出 {ratio_tolerance:.1%} 容差",
             width,
             height,
         )
 
-    return PageQualityResult(True, "ok", "", width, height)
+    reasons: list[str] = []
+    messages: list[str] = []
+    if (
+        min(width, height) < PDF_QC_LOW_RESOLUTION_SHORT_EDGE_PX
+        or max(width, height) < PDF_QC_LOW_RESOLUTION_LONG_EDGE_PX
+    ):
+        reasons.append("low_resolution")
+        messages.append(
+            f"译图分辨率仅 {width}×{height}px，明显低于可读下限"
+            f"（{PDF_QC_LOW_RESOLUTION_SHORT_EDGE_PX}×{PDF_QC_LOW_RESOLUTION_LONG_EDGE_PX}px），"
+            "文字可能不可读"
+        )
+
+    if ink_ratio < PDF_QC_BLANK_INK_RATIO and luma_stddev < PDF_QC_BLANK_STDDEV:
+        source_ink = _measure_source_ink_ratio(source_image_path)
+        # 源页本身就是空白页时，输出空白是正确结果，绝不能报警。只有在源页
+        # 确实有内容、输出却几乎全空时才判「疑似空白」。源页不可读（取不到
+        # 比例）时按「不确定」处理，同样不报警。
+        if source_ink is not None and source_ink >= PDF_QC_SOURCE_INK_RATIO_FLOOR:
+            reasons.append("blank_page")
+            messages.append(
+                f"译图非背景像素仅 {ink_ratio:.3%}，源页为 {source_ink:.2%}，疑似空白页或内容丢失"
+            )
+
+    return PageQualityResult(
+        True,
+        "ok",
+        "",
+        width,
+        height,
+        review_reasons=reasons,
+        review_message="；".join(messages),
+    )
+
+
+def _measure_page_ink(image: Image.Image) -> tuple[float, float]:
+    """Return (non-background pixel ratio, luminance stddev) of one page image.
+
+    Downsampled first: this runs on every returned page and the answer only
+    needs to separate "a page with text on it" from "a blank sheet".
+    """
+    try:
+        gray = image.convert("L")
+        gray.thumbnail(
+            (PDF_QC_SAMPLE_LONG_EDGE_PX, PDF_QC_SAMPLE_LONG_EDGE_PX),
+            Image.Resampling.BILINEAR,
+        )
+        histogram = gray.histogram()[:256]
+        total = sum(histogram)
+        if total <= 0:
+            return 1.0, 255.0
+        background_level = histogram.index(max(histogram))
+        ink = sum(
+            count
+            for level, count in enumerate(histogram)
+            if abs(level - background_level) > PDF_QC_INK_LUMA_DELTA
+        )
+        stddev = ImageStat.Stat(gray).stddev[0]
+        return ink / total, float(stddev)
+    except Exception:  # noqa: BLE001 - QC must never fail the page on its own.
+        # 量不出来就当作「有内容」，宁可漏判也不误杀。
+        return 1.0, 255.0
+
+
+def _measure_source_ink_ratio(source_image_path: Path | str | None) -> float | None:
+    if not source_image_path:
+        return None
+    try:
+        with Image.open(Path(source_image_path)) as image:
+            image.load()
+            ink_ratio, _ = _measure_page_ink(image)
+        return ink_ratio
+    except Exception:  # noqa: BLE001 - missing source page just means "unknown".
+        return None
 
 
 def normalize_image_to_source_ratio(
@@ -804,14 +941,38 @@ def determine_pdf_task_status(
         return PDF_OUTPUT_STATE_FAILED
     if not file_records or any(record.status == PDF_OUTPUT_STATE_FAILED for record in file_records):
         return PDF_OUTPUT_STATE_FAILED
-    if any(
+    if any(_record_needs_review(record) for record in file_records):
+        return PDF_OUTPUT_STATE_NEEDS_REVIEW
+    return PDF_OUTPUT_STATE_COMPLETED
+
+
+def _record_needs_review(record: PdfFileRecord) -> bool:
+    return bool(
         record.placeholder_page_count
         or record.emergency_ratio_normalized_count
         or record.review_failed_page_count
-        for record in file_records
-    ):
-        return PDF_OUTPUT_STATE_NEEDS_REVIEW
-    return PDF_OUTPUT_STATE_COMPLETED
+        or record.quality_flagged_page_count
+        or _record_is_fully_skipped_oversize(record)
+    )
+
+
+def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
+    """A file where every single page was skipped for being oversized.
+
+    The artifact is then byte-for-byte the source content — not one word was
+    translated — so it must never be reported as a completed translation.
+    """
+    return bool(
+        record.page_count > 0
+        and record.skipped_oversize_page_count >= record.page_count
+    )
+
+
+def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
+    return (
+        f"本文件全部 {record.page_count} 页因幅面过大被「跳过大幅面页」跳过，未产生任何翻译内容："
+        "输出 PDF 与源文件内容一致。如需翻译这些图纸页，请在设置中关闭「跳过大幅面页」后重跑。"
+    )
 
 
 def max_page_generation_attempts(retry_count: int | None) -> int:
@@ -1436,7 +1597,7 @@ class PdfImageTranslationRunner:
             max_attempts = max_page_generation_attempts(
                 self._settings.pdf.page_retry_attempts
             )
-            concurrency = image_throughput.concurrency
+            concurrency = self._resolve_pdf_concurrency(image_throughput.concurrency)
             self._review_total = max_attempts
             scheduler = self._api_scheduler_override or WeightedApiScheduler(concurrency)
             same_review_group = (
@@ -1456,6 +1617,10 @@ class PdfImageTranslationRunner:
             self._log("INFO", f"扫描到 {pdf_file_count} 个 PDF 文件、{image_file_count} 个图片文件")
             self._log("INFO", f"输出目录：{output_dir}")
             self._log("INFO", f"PDF 页固定以 {PDF_RENDER_DPI_DEFAULT} DPI 渲染为 PNG，图片按模型返回格式输出")
+            if self._settings.pdf.page_generation_concurrency is None:
+                self._log("INFO", f"页图并发：{concurrency}（自动，按模型吞吐档案推算）")
+            else:
+                self._log("INFO", f"页图并发：{concurrency}（用户在设置中指定）")
             if self._settings.pdf.generate_compressed_pdf:
                 self._log(
                     "INFO",
@@ -1805,6 +1970,14 @@ class PdfImageTranslationRunner:
                         self._record_page_completed(page_record)
                         self._push_translation_progress(total_pages)
                         continue
+                    if page_record.status == "placeholder_pending":
+                        # 渲染阶段就坏掉的页：没有源页图可以交给模型，直接按
+                        # 「已提交且已失败」记账，走占位页流程，不占用重试和配额。
+                        self._record_page_submitted()
+                        self._record_page_placeholder(page_record)
+                        self._record_page_completed(page_record)
+                        self._push_translation_progress(total_pages)
+                        continue
                     self._log(
                         "INFO",
                         f"[{prepared.record.name}] 第 {page_record.page_number} 页已渲染",
@@ -1951,22 +2124,74 @@ class PdfImageTranslationRunner:
                         page_number = page_index + 1
                         if page_number in existing_pages:
                             continue
-                        yield (
-                            prepared,
-                            self._render_source_page(
+                        try:
+                            page_record = self._render_source_page(
                                 doc,
                                 page_index=page_index,
                                 page_count=record.page_count,
                                 source_pages_dir=prepared.source_pages_dir,
                                 file_name=record.name,
-                            ),
-                        )
+                            )
+                        except Exception as exc:  # noqa: BLE001 - one broken page only costs that page.
+                            # 一页对象损坏绝不能拖垮整份文件：第 180 页读不出来，
+                            # 前 179 页已经翻译好的结果照样要装配成 PDF。坏页走
+                            # 占位页流程，文件整体标 needs_review。
+                            page_record = self._broken_page_record(
+                                doc,
+                                page_index=page_index,
+                                file_name=record.name,
+                                error=exc,
+                            )
+                            self._log(
+                                "ERROR",
+                                f"[{record.name}] 第 {page_number} 页读取/渲染失败，"
+                                f"已改为失败占位页，其余页面继续：{exc}",
+                            )
+                        yield (prepared, page_record)
                 finally:
                     doc.close()
             except Exception as exc:  # noqa: BLE001 - file-level render failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 record.error = f"PDF 渲染失败：{exc}"
                 self._log("ERROR", f"[{record.name}] {record.error}")
+
+    def _broken_page_record(
+        self,
+        doc,
+        *,
+        page_index: int,
+        file_name: str,
+        error: BaseException,
+    ) -> PdfPageRecord:
+        """Build the placeholder-bound record for a page that would not render.
+
+        The page geometry still has to be plausible, or assembly would emit a
+        0×0 page: try the page's own size first, fall back to A4 portrait.
+        """
+        width_pt, height_pt = PDF_A4_SHORT_EDGE_PT, PDF_A4_LONG_EDGE_PT
+        try:
+            page = doc.get_page(page_index)
+            try:
+                size = page.get_size()
+            finally:
+                page.close()
+            if size and float(size[0]) > 0 and float(size[1]) > 0:
+                width_pt, height_pt = float(size[0]), float(size[1])
+        except Exception:  # noqa: BLE001 - the page is broken; defaults are the point.
+            pass
+        scale = _pdf_render_scale()
+        return PdfPageRecord(
+            page_number=page_index + 1,
+            source_image_path="",
+            file_name=file_name,
+            status="placeholder_pending",
+            placeholder=True,
+            error=f"页面读取/渲染失败：{error}",
+            source_width_px=int(max(1, round(width_pt * scale))),
+            source_height_px=int(max(1, round(height_pt * scale))),
+            page_width_pt=float(width_pt),
+            page_height_pt=float(height_pt),
+        )
 
     def _finalize_file_record(
         self,
@@ -2022,13 +2247,14 @@ class PdfImageTranslationRunner:
                         "WARN",
                         f"[{record.name}] 压缩 PDF 生成失败，已保留高清版：{exc}",
                     )
+            if _record_is_fully_skipped_oversize(record):
+                # 产物只是源文件的原样副本，一个字都没翻。这种情况下报
+                # 「翻译完成」是在骗用户，必须直说。
+                record.error = fully_skipped_oversize_message(record)
+                self._log("WARN", f"[{record.name}] {record.error}")
             record.status = (
                 PDF_OUTPUT_STATE_NEEDS_REVIEW
-                if (
-                    record.placeholder_page_count
-                    or record.emergency_ratio_normalized_count
-                    or record.review_failed_page_count
-                )
+                if _record_needs_review(record)
                 else PDF_OUTPUT_STATE_COMPLETED
             )
             self._log("OK", f"[{record.name}] 已生成高清 PDF：{prepared.translated_pdf_path.name}")
@@ -2071,7 +2297,7 @@ class PdfImageTranslationRunner:
             record.high_quality_pdf_size_bytes = _safe_file_size(output_path)
             record.status = (
                 PDF_OUTPUT_STATE_NEEDS_REVIEW
-                if record.review_failed_page_count
+                if (record.review_failed_page_count or record.quality_flagged_page_count)
                 else PDF_OUTPUT_STATE_COMPLETED
             )
             self._log("OK", f"[{record.name}] 已生成译图：{output_path.name}")
@@ -2089,6 +2315,17 @@ class PdfImageTranslationRunner:
         record.placeholder_page_count = sum(1 for page in record.pages if page.placeholder)
         record.emergency_ratio_normalized_count = sum(
             1 for page in record.pages if page.emergency_ratio_normalized
+        )
+        record.ratio_letterboxed_page_count = sum(
+            1 for page in record.pages if page.ratio_letterboxed
+        )
+        record.quality_flagged_page_count = sum(
+            1 for page in record.pages if page.quality_flags
+        )
+        record.render_downscaled_page_count = sum(
+            1
+            for page in record.pages
+            if page.render_dpi and page.render_dpi < PDF_RENDER_DPI_DEFAULT
         )
         record.skipped_oversize_page_count = sum(
             1 for page in record.pages if page.skipped_oversize
@@ -2409,7 +2646,17 @@ class PdfImageTranslationRunner:
                     page_width_pt=float(page_width_pt),
                     page_height_pt=float(page_height_pt),
                 )
-            bitmap = page.render(scale=_pdf_render_scale(), rev_byteorder=True)
+            scale, render_dpi = _pdf_render_scale_for_page(page_width_pt, page_height_pt)
+            if render_dpi < PDF_RENDER_DPI_DEFAULT:
+                self._log(
+                    "WARN",
+                    f"[{file_name}] 第 {page_index + 1} 页幅面过大（"
+                    f"{_pt_to_mm(min(page_width_pt, page_height_pt)):.0f}×"
+                    f"{_pt_to_mm(max(page_width_pt, page_height_pt)):.0f} mm），"
+                    f"渲染 DPI 已从 {PDF_RENDER_DPI_DEFAULT} 自动降到 {render_dpi:.0f} "
+                    f"以控制内存占用（单页像素上限 {PDF_PAGE_MAX_RENDER_PIXELS // 1_000_000} MP）。",
+                )
+            bitmap = page.render(scale=scale, rev_byteorder=True)
             try:
                 source_path = source_pages_dir / page_image_name(page_index + 1, page_count)
                 source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2430,6 +2677,7 @@ class PdfImageTranslationRunner:
             source_height_px=int(source_height_px),
             page_width_pt=float(page_width_pt),
             page_height_pt=float(page_height_pt),
+            render_dpi=float(render_dpi),
         )
 
     def _render_source_image(
@@ -2484,6 +2732,20 @@ class PdfImageTranslationRunner:
         )
         review_enabled = bool(self._settings.pdf.review_enabled and review_model_config is not None)
         page_record.review_enabled = review_enabled
+        # 质检容差必须跟着「这一页会被请求成什么尺寸」走，否则对只支持固定
+        # 尺寸的模型（gpt-image-1）来说这道门谁都过不去，每页都跑满重试。
+        ratio_tolerance = pdf_page_ratio_tolerance(
+            source_width=page_record.source_width_px,
+            source_height=page_record.source_height_px,
+            model=str(getattr(model_config, "model", "") or ""),
+        )
+        if ratio_tolerance > PDF_ASPECT_RATIO_TOLERANCE + 1e-9:
+            self._log(
+                "INFO",
+                f"{self._page_log_prefix(page_record)}当前图像模型只支持固定输出尺寸，"
+                f"本页比例容差按其可达比例放宽到 {ratio_tolerance:.1%}，超出部分改为补白边、不重试。",
+                visible=False,
+            )
         attempt = 1
         while attempt <= max_attempts:
             try:
@@ -2533,9 +2795,12 @@ class PdfImageTranslationRunner:
                 image_bytes,
                 source_width=page_record.source_width_px,
                 source_height=page_record.source_height_px,
+                ratio_tolerance=ratio_tolerance,
+                source_image_path=page_record.source_image_path or None,
             )
             page_record.attempts = attempt
             last_quality = quality
+            self._apply_quality_flags(page_record, quality)
             last_image_bytes = image_bytes
             candidate_artifact: dict[str, Any] | None = None
             candidate_path: Path | None = None
@@ -2607,15 +2872,17 @@ class PdfImageTranslationRunner:
                             issue.__dict__ for issue in review_result.blocking_issues
                         ]
                         page_record.error = review_result.summary
-                        _write_translated_page_image(
+                        width, height = self._write_accepted_page_image(
                             image_bytes,
                             output_path,
+                            page_record=page_record,
+                            quality=quality,
                             preserve_model_format=preserve_model_format,
                         )
                         page_record.status = "success"
                         page_record.translated_image_path = str(output_path)
-                        page_record.output_width_px = quality.width
-                        page_record.output_height_px = quality.height
+                        page_record.output_width_px = width
+                        page_record.output_height_px = height
                         page_record.final_candidate_attempt = attempt
                         self._record_page_review_failed()
                         self._mark_image_model_success()
@@ -2645,17 +2912,19 @@ class PdfImageTranslationRunner:
                             image_bytes=image_bytes,
                             preserve_model_format=preserve_model_format,
                         )
-                        _write_translated_page_image(
+                        width, height = self._write_accepted_page_image(
                             image_bytes,
                             output_path,
+                            page_record=page_record,
+                            quality=quality,
                             preserve_model_format=preserve_model_format,
                         )
                         self._record_page_review_passed()
                         page_record.status = "success"
                         page_record.review_status = "passed"
                         page_record.translated_image_path = str(output_path)
-                        page_record.output_width_px = quality.width
-                        page_record.output_height_px = quality.height
+                        page_record.output_width_px = width
+                        page_record.output_height_px = height
                         page_record.final_candidate_attempt = attempt
                         self._mark_image_model_success()
                         self._log(
@@ -2692,16 +2961,18 @@ class PdfImageTranslationRunner:
                     image_bytes=image_bytes,
                     preserve_model_format=preserve_model_format,
                 )
-                _write_translated_page_image(
+                width, height = self._write_accepted_page_image(
                     image_bytes,
                     output_path,
+                    page_record=page_record,
+                    quality=quality,
                     preserve_model_format=preserve_model_format,
                 )
                 self._mark_image_model_success()
                 page_record.status = "success"
                 page_record.translated_image_path = str(output_path)
-                page_record.output_width_px = quality.width
-                page_record.output_height_px = quality.height
+                page_record.output_width_px = width
+                page_record.output_height_px = height
                 self._log(
                     "OK",
                     self._page_success_log(
@@ -2769,6 +3040,71 @@ class PdfImageTranslationRunner:
         page_record.error = last_error or "图像生成失败"
         self._record_page_placeholder(page_record)
         return page_record
+
+    def _apply_quality_flags(
+        self,
+        page_record: PdfPageRecord,
+        quality: PageQualityResult,
+    ) -> None:
+        """Carry the content-QC verdict of the latest attempt onto the page."""
+        page_record.quality_flags = list(quality.review_reasons)
+        page_record.quality_message = quality.review_message
+        if quality.review_reasons:
+            self._log(
+                "WARN",
+                f"{self._page_log_prefix(page_record)}内容质检提示，已保留本页并标记人工复核："
+                f"{quality.review_message}",
+            )
+
+    def _write_accepted_page_image(
+        self,
+        image_bytes: bytes,
+        output_path: Path,
+        *,
+        page_record: PdfPageRecord,
+        quality: PageQualityResult,
+        preserve_model_format: bool,
+    ) -> tuple[int, int]:
+        """Write one accepted page, letterboxing it when the model's own size
+        policy makes an exact aspect match impossible.
+
+        Assembly scales the page image onto the PDF page rectangle, so an output
+        whose shape differs from the source would be stretched.  Up to
+        ``PDF_RATIO_LETTERBOX_THRESHOLD`` that stretch is invisible; beyond it
+        (the fixed-size models are off by 5%~14%) the page is padded to the
+        source shape instead.  This is a known, deterministic cost of that
+        model — it does not consume a retry and does not mark the file for review.
+        """
+        source_ratio = _safe_ratio(page_record.source_width_px, page_record.source_height_px)
+        output_ratio = _safe_ratio(quality.width, quality.height)
+        needs_letterbox = (
+            not preserve_model_format
+            and source_ratio > 0
+            and output_ratio > 0
+            and abs(source_ratio - output_ratio) / source_ratio > PDF_RATIO_LETTERBOX_THRESHOLD
+        )
+        if not needs_letterbox:
+            _write_translated_page_image(
+                image_bytes,
+                output_path,
+                preserve_model_format=preserve_model_format,
+            )
+            return quality.width, quality.height
+
+        width, height = normalize_image_to_source_ratio(
+            image_bytes,
+            source_width=page_record.source_width_px,
+            source_height=page_record.source_height_px,
+            output_path=output_path,
+        )
+        page_record.ratio_letterboxed = True
+        self._log(
+            "INFO",
+            f"{self._page_log_prefix(page_record)}模型固定输出 {quality.width}×{quality.height}px，"
+            "与源页比例不同，已按源页比例补白边后入册（该模型的已知代价，未重试）。",
+            visible=False,
+        )
+        return width, height
 
     def _page_status_key(self, page_record: PdfPageRecord) -> str:
         return str(page_record.source_image_path or f"{page_record.file_name}:{page_record.page_number}")
@@ -2938,7 +3274,7 @@ class PdfImageTranslationRunner:
                 page_number=page.page_number,
                 failure_ordinal=failure_ordinal,
                 error_summary=page.error,
-                source_image_path=page.source_image_path,
+                source_image_path=page.source_image_path or "（本页渲染失败，未生成源页图）",
                 placeholder_path=placeholder_path,
                 width=page.source_width_px,
                 height=page.source_height_px,
@@ -3006,10 +3342,26 @@ class PdfImageTranslationRunner:
                 source_doc.close()
             out_doc.close()
 
-    def _resolve_pdf_concurrency(self) -> int:
+    def _resolve_pdf_concurrency(self, auto_concurrency: int | None = None) -> int:
+        """Runtime page concurrency: the explicit setting wins, blank means auto.
+
+        「页图并发（留空自动）」and `--pdf-page-concurrency` both write
+        `pdf.page_generation_concurrency`.  When it is set, it is the user
+        saying a number out loud and it has to be the number we run; only a
+        blank value falls back to the per-model throughput recommendation.
+        """
         raw = self._settings.pdf.page_generation_concurrency
         if raw is None:
-            raw = PDF_PAGE_CONCURRENCY_DEFAULT
+            fallback = (
+                auto_concurrency
+                if auto_concurrency is not None
+                else PDF_PAGE_CONCURRENCY_DEFAULT
+            )
+            try:
+                value = int(fallback)
+            except (TypeError, ValueError):
+                value = PDF_PAGE_CONCURRENCY_DEFAULT
+            return max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
         try:
             value = int(raw)
         except (TypeError, ValueError):
@@ -3231,6 +3583,40 @@ def _pdf_render_scale() -> float:
     return PDF_RENDER_DPI_DEFAULT / 72.0
 
 
+def _pdf_render_scale_for_page(
+    page_width_pt: float,
+    page_height_pt: float,
+    *,
+    max_pixels: int | None = None,
+) -> tuple[float, float]:
+    """Return (pdfium scale, effective DPI) for one page, capped by total pixels.
+
+    A fixed 300 DPI with no ceiling is fine right up until someone feeds in an
+    A0 drawing with "skip oversized pages" off (it is off by default): that page
+    alone is ~139 megapixels, i.e. a ~558MB pdfium bitmap plus a ~418MB PIL copy.
+    Refusing the page would be worse than a soft answer, so the DPI drops for
+    that page only, and the caller records the downgrade.
+    """
+    # 上限在调用时才解析，测试要能把它临时压小来验证降级路径。
+    ceiling = PDF_PAGE_MAX_RENDER_PIXELS if max_pixels is None else int(max_pixels)
+    scale = _pdf_render_scale()
+    try:
+        width_pt = float(page_width_pt)
+        height_pt = float(page_height_pt)
+    except (TypeError, ValueError):
+        return scale, float(PDF_RENDER_DPI_DEFAULT)
+    if width_pt <= 0 or height_pt <= 0:
+        return scale, float(PDF_RENDER_DPI_DEFAULT)
+
+    pixels = (width_pt * scale) * (height_pt * scale)
+    if pixels <= ceiling:
+        return scale, float(PDF_RENDER_DPI_DEFAULT)
+
+    capped_scale = scale * (ceiling / pixels) ** 0.5
+    dpi = max(PDF_PAGE_MIN_RENDER_DPI, capped_scale * 72.0)
+    return dpi / 72.0, dpi
+
+
 def _pdf_read_error_message(exc: Exception) -> str:
     if "password" in str(exc).lower():
         return "受保护 PDF 暂不在本轮支持范围内。"
@@ -3353,7 +3739,19 @@ def _to_white_rgb(image: Image.Image) -> Image.Image:
 
 
 def _load_placeholder_font(size: int, *, bold: bool = False):
+    # 占位页整页都是中文说明。Windows 上没有 CJK 字体候选时会掉到
+    # ImageFont.load_default()，整段说明渲染成方框——用户根本读不到失败原因，
+    # 所以 Windows 的常见 CJK 字体必须排在候选列表里。
+    windows_fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     candidates = [
+        # Windows：微软雅黑（Vista 起随系统安装）→ 黑体 → 宋体 → 等线。
+        str(windows_fonts / ("msyhbd.ttc" if bold else "msyh.ttc")),
+        str(windows_fonts / ("msyhbd.ttf" if bold else "msyh.ttf")),
+        str(windows_fonts / "msyh.ttc"),
+        str(windows_fonts / "simhei.ttf"),
+        str(windows_fonts / "simsun.ttc"),
+        str(windows_fonts / ("Deng b.ttf" if bold else "Deng.ttf")),
+        str(windows_fonts / ("arialbd.ttf" if bold else "arial.ttf")),
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Supplemental/Songti.ttc",
@@ -3880,6 +4278,9 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
                 "页参与翻译",
                 f"- 应急比例归一化页：{file_record.emergency_ratio_normalized_count}",
+                f"- 内容质检待复核页：{file_record.quality_flagged_page_count}",
+                f"- 按源页比例补边页：{file_record.ratio_letterboxed_page_count}",
+                f"- 渲染 DPI 降级页（幅面过大）：{file_record.render_downscaled_page_count}",
                 f"- 翻译审核：{'开启' if file_record.review_enabled else '关闭'}",
                 f"- 审核通过页：{file_record.review_passed_page_count}",
                 f"- 审核修复页：{file_record.review_repaired_page_count}",
@@ -3899,6 +4300,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
             if page.placeholder
             or page.emergency_ratio_normalized
             or page.error
+            or page.quality_flags
             or page.review_issues
             or page.review_minor_suggestions
         ]
@@ -3916,7 +4318,11 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                             page.status,
                             _escape_table(review_note),
                             page.failure_ordinal,
-                            _escape_table(page.error or _page_review_issue_text(page)),
+                            _escape_table(
+                                page.error
+                                or page.quality_message
+                                or _page_review_issue_text(page)
+                            ),
                             _escape_table(page.source_image_path),
                             _escape_table(page.translated_image_path),
                         ]
@@ -3945,8 +4351,15 @@ def _page_review_issue_text(page: PdfPageRecord) -> str:
 
 
 def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
-    success = bool(record.translated_pdf_path or record.translated_image_path)
+    fully_skipped = _record_is_fully_skipped_oversize(record)
+    # 全部页面都被大幅面跳过时产物只是源文件副本：文件确实生成了，但翻译
+    # 一个字都没有，所以这里不能算 success。
+    success = bool(record.translated_pdf_path or record.translated_image_path) and not fully_skipped
     detail_parts = []
+    if fully_skipped:
+        detail_parts.append("全部页面因幅面过大被跳过，未翻译")
+    if record.quality_flagged_page_count:
+        detail_parts.append(f"{record.quality_flagged_page_count} 页内容质检待复核")
     if record.compression_error:
         detail_parts.append("压缩版生成失败")
     return {
@@ -3955,7 +4368,14 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "success": success,
         "status": record.status,
         "detail": "，".join(detail_parts),
-        "error": record.error,
+        "error": (
+            record.error
+            or (fully_skipped_oversize_message(record) if fully_skipped else "")
+        ),
+        "all_pages_skipped_oversize": fully_skipped,
+        "quality_flagged_page_count": record.quality_flagged_page_count,
+        "ratio_letterboxed_page_count": record.ratio_letterboxed_page_count,
+        "render_downscaled_page_count": record.render_downscaled_page_count,
         "output": record.translated_pdf_path or record.translated_image_path,
         "compressed_output": record.compressed_pdf_path,
         "translated_image_path": record.translated_image_path,
@@ -3979,11 +4399,24 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
 def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for file_record in file_records:
+        if _record_is_fully_skipped_oversize(file_record):
+            issues.append(
+                {
+                    "file": file_record.name,
+                    "location_label": "整份文件",
+                    "severity": "needs_review",
+                    "problem": fully_skipped_oversize_message(file_record),
+                    "status": "全部页面按幅面跳过，未翻译",
+                    "source_image_path": file_record.source_path,
+                    "translated_image_path": "",
+                }
+            )
         for page in file_record.pages:
             if not (
                 page.placeholder
                 or page.emergency_ratio_normalized
                 or page.error
+                or page.quality_flags
                 or page.review_status == "failed"
             ):
                 continue
@@ -3996,7 +4429,12 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         else f"第 {page.page_number} 页"
                     ),
                     "severity": "needs_review",
-                    "problem": page.error or _page_review_issue_text(page) or page.status,
+                    "problem": (
+                        page.error
+                        or page.quality_message
+                        or _page_review_issue_text(page)
+                        or page.status
+                    ),
                     "status": (
                         "审核未通过，占位待人工复核"
                         if page.review_status == "failed"
@@ -4004,6 +4442,8 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         if page.placeholder
                         else "应急比例归一化"
                         if page.emergency_ratio_normalized
+                        else "内容质检待复核"
+                        if page.quality_flags
                         else page.status
                     ),
                     "source_image_path": page.source_image_path,

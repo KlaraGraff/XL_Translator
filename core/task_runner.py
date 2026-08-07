@@ -899,7 +899,7 @@ class TaskRunner:
                     _emit_api_progress("normal", done)
 
                 def api_error_cb(msg: str) -> None:
-                    level = "ERROR" if "单条翻译仍失败" in msg else "WARN"
+                    level = "ERROR" if "未能翻译" in msg else "WARN"
                     self._log(level, msg)
 
                 t0 = datetime.now()
@@ -1024,7 +1024,7 @@ class TaskRunner:
                         "Excel 实际请求："
                         f"{batch_stats.batch_count} 批，"
                         f"缩小重试 {batch_stats.retry_count} 次，"
-                        f"单条失败 {batch_stats.failed_batch_count} 条，"
+                        f"未翻译 {batch_stats.untranslated_count} 条，"
                         f"最大请求权重 {batch_stats.max_request_weight}"
                         + (
                             f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
@@ -1034,62 +1034,53 @@ class TaskRunner:
                         )
                     ),
                 )
-                if batch_stats.failed_batch_count:
+                untranslated_count = (
+                    batch_stats.untranslated_count or batch_stats.failed_batch_count
+                )
+                if untranslated_count:
+                    # The file still gets written with the source text in place,
+                    # so the count has to travel with the result: an unflagged
+                    # run must never hand back source text dressed as translation.
                     quality_issues.append(
                         {
                             "type": "api_unavailable",
                             "severity": "needs_action",
+                            "count": untranslated_count,
                             "message": (
-                                "部分内容未能从 API 获得译文，已按安全策略保留原文。"
+                                f"有 {untranslated_count} 条内容未能从 API 获得译文，"
+                                "文件中这些位置保留的是原文，不是译文。"
                                 "请检查 API Key、Base URL、模型名称或服务状态，重新配置后再试。"
                             ),
                             "failed_sources": list(batch_stats.failed_items),
                         }
                     )
+                    self._log(
+                        "ERROR",
+                        f"本次有 {untranslated_count} 条内容未获得译文，已在结果中标记为未翻译。",
+                    )
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
 
                 # 将 API 结果写入 TM
-                if auto_source_lang:
-                    # The model-reported item source language is the final
-                    # gate. ``mixed``/``und``/``auto`` and anything outside
-                    # that file's preflight scope are rejected by TM manager.
-                    tm_entries = []
-                    for source_text, item in normal_api_language_results.items():
-                        translation = item.translation
-                        source_scopes = text_source_scopes.get(source_text, [])
-                        source_in_every_file_scope = bool(source_scopes) and all(
-                            item.source_lang in scope for scope in source_scopes
-                        )
-                        tm_entries.append(
-                            {
-                                "source_text": source_text,
-                                "translation": translation,
-                                "source_lang": item.source_lang,
-                                "tm_eligible": item.tm_eligible
-                                and source_in_every_file_scope
-                                and should_store_translation_in_tm(source_text, translation),
-                            }
-                        )
-                    written = tm_manager.insert_auto_entries(
-                        tm_entries,
-                        target_lang,
-                        max_len,
-                        engine.engine_name,
-                        task_id=self.task_id,
-                    )
-                else:
-                    new_pairs = [
-                        (k, v)
-                        for k, v in normal_api_translations.items()
-                        if should_store_translation_in_tm(k, v)
-                    ]
-                    written = tm_manager.insert_batch(
-                        new_pairs,
-                        lang_pair,
-                        max_len,
-                        engine.engine_name,
-                        sync_reverse=False,
+                written, tm_write_error = self.store_api_results_in_tm(
+                    auto_source_lang=auto_source_lang,
+                    normal_api_language_results=normal_api_language_results,
+                    normal_api_translations=normal_api_translations,
+                    text_source_scopes=text_source_scopes,
+                    target_lang=target_lang,
+                    lang_pair=lang_pair,
+                    max_len=max_len,
+                    engine_name=engine.engine_name,
+                )
+                if tm_write_error:
+                    self._log("WARN", tm_write_error)
+                    self._task_logger.warning(tm_write_error)
+                    quality_issues.append(
+                        {
+                            "type": "tm_write_failed",
+                            "severity": "info",
+                            "message": tm_write_error,
+                        }
                     )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")
@@ -1154,7 +1145,7 @@ class TaskRunner:
                     file_review_positions: list[dict[str, str]] = []
                     # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
                     # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
-                    write_stats: dict[str, int] = {}
+                    write_stats: dict[str, object] = {}
                     # KNOWN-ISSUE-VAL-006:
                     # The current write path intentionally stays text-only.
                     # See docs/KNOWN_ISSUES.md before reintroducing image flow.
@@ -1233,10 +1224,44 @@ class TaskRunner:
                         "review_items": file_review_positions,
                         # 悬浮图片/形状里被我们固定住锚点的数量（0 表示没动过）
                         "anchor_frozen_count": int(
-                            write_stats.get("anchor_frozen_count", 0)
+                            write_stats.get("anchor_frozen_count", 0) or 0
+                        ),
+                        # 超过 Excel 32767 字符上限、被截断的单元格。用户必须看得见，
+                        # 否则那几格译文是残缺的而界面上毫无痕迹。
+                        "truncated_cells": int(
+                            write_stats.get("truncated_cells", 0) or 0
+                        ),
+                        "truncated_positions": list(
+                            write_stats.get("truncated_positions") or []
                         ),
                         "success": True,
                     })
+                    truncated_positions = list(
+                        write_stats.get("truncated_positions") or []
+                    )
+                    if truncated_positions:
+                        # 截断的单元格里译文是残缺的。只写日志不够——日志会被滚过去，
+                        # 用户拿到的是一份看起来正常的文件。
+                        shown = "、".join(truncated_positions[:5])
+                        more = (
+                            f" 等 {len(truncated_positions)} 处"
+                            if len(truncated_positions) > 5
+                            else ""
+                        )
+                        quality_issues.append(
+                            {
+                                "type": "cell_text_truncated",
+                                "severity": "needs_action",
+                                "count": len(truncated_positions),
+                                "file": file_item.name,
+                                "message": (
+                                    f"{file_item.name} 有 {len(truncated_positions)} 个单元格"
+                                    "超过 Excel 的 32767 字符上限，译文已被截断"
+                                    f"（{shown}{more}）。这些格子的内容是不完整的。"
+                                ),
+                                "positions": truncated_positions,
+                            }
+                        )
                     self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
                 except Exception as e:
                     self._log("ERROR", f"文件写入失败 {file_item.name}：{e}")
@@ -1456,6 +1481,80 @@ class TaskRunner:
             issues         = quality_issues,
             **contract,
         ))
+
+    def store_api_results_in_tm(self, **kwargs) -> tuple[int, str | None]:
+        """Write TM without ever letting that write kill a finished translation.
+
+        TM insertion is bookkeeping that runs *after* every API call has been
+        paid for and *before* the translated files are written.  A locked
+        database — someone running a long write on the glossary page — used to
+        raise straight out of the worker thread and take the whole task with
+        it, so any failure here becomes a warning plus a result note instead.
+        """
+        try:
+            return self._write_api_results_to_tm(**kwargs), None
+        except Exception as tm_error:  # noqa: BLE001 - never lose finished work
+            message = (
+                "翻译记忆库写入失败，本次译文不受影响，"
+                f"但这批词条没有存入词库：{tm_error}"
+            )
+            logger.warning(message)
+            return 0, message
+
+    def _write_api_results_to_tm(
+        self,
+        *,
+        auto_source_lang: bool,
+        normal_api_language_results: dict,
+        normal_api_translations: dict,
+        text_source_scopes: dict,
+        target_lang: str,
+        lang_pair,
+        max_len: int,
+        engine_name: str,
+    ) -> int:
+        """Store this run's API results in TM and return the entry count."""
+        if auto_source_lang:
+            # The model-reported item source language is the final gate.
+            # ``mixed``/``und``/``auto`` and anything outside that file's
+            # preflight scope are rejected by TM manager.
+            tm_entries = []
+            for source_text, item in normal_api_language_results.items():
+                translation = item.translation
+                source_scopes = text_source_scopes.get(source_text, [])
+                source_in_every_file_scope = bool(source_scopes) and all(
+                    item.source_lang in scope for scope in source_scopes
+                )
+                tm_entries.append(
+                    {
+                        "source_text": source_text,
+                        "translation": translation,
+                        "source_lang": item.source_lang,
+                        "tm_eligible": item.tm_eligible
+                        and source_in_every_file_scope
+                        and should_store_translation_in_tm(source_text, translation),
+                    }
+                )
+            return tm_manager.insert_auto_entries(
+                tm_entries,
+                target_lang,
+                max_len,
+                engine_name,
+                task_id=self.task_id,
+            )
+
+        new_pairs = [
+            (k, v)
+            for k, v in normal_api_translations.items()
+            if should_store_translation_in_tm(k, v)
+        ]
+        return tm_manager.insert_batch(
+            new_pairs,
+            lang_pair,
+            max_len,
+            engine_name,
+            sync_reverse=False,
+        )
 
     @staticmethod
     def _decide_excel_policy(

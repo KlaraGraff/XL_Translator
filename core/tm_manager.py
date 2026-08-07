@@ -111,6 +111,39 @@ BACKUPS_DIR = DEFAULT_BACKUPS_DIR
 
 # ── 连接管理 ──────────────────────────────────────────────────────────────────
 
+_wal_unavailable_logged = False
+
+
+def _enable_wal(conn: sqlite3.Connection) -> str:
+    """Put the TM database in WAL mode and report the mode actually in force.
+
+    ``journal_mode`` is a persistent property of the database file, so the
+    switch really happens once, on the first connection that finds a rollback
+    journal.  That first switch needs a brief exclusive lock, which is why it
+    runs *after* ``busy_timeout``: a concurrent reader makes it wait instead of
+    failing outright.  Re-issuing the pragma on later connections is a no-op
+    check that neither writes nor locks.
+
+    WAL is what lets a reader (the library page paging through entries) and a
+    writer (a task flushing its TM batch) proceed at the same time.  It is also
+    what creates ``tm.db-wal`` / ``tm.db-shm``, which the maintenance module
+    already lists as TM files to clear.
+    """
+    global _wal_unavailable_logged
+    try:
+        row = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+    except sqlite3.Error as exc:
+        if not _wal_unavailable_logged:
+            _wal_unavailable_logged = True
+            logger.warning(f"TM 数据库无法切换到 WAL，将按默认日志模式运行：{exc}")
+        return ""
+    mode = str(row[0] if row is not None else "").strip().lower()
+    if mode != "wal" and not _wal_unavailable_logged:
+        _wal_unavailable_logged = True
+        logger.warning(f"TM 数据库未能切换到 WAL（当前 journal_mode={mode or '未知'}）。")
+    return mode
+
+
 @contextmanager
 def _get_conn():
     """线程安全的连接上下文管理器（每次调用独立连接）。"""
@@ -120,6 +153,7 @@ def _get_conn():
     # busy timeout the second writer fails instantly with "database is locked"
     # and its whole batch rolls back.
     conn.execute("PRAGMA busy_timeout = 5000")
+    _enable_wal(conn)
     try:
         yield conn
         conn.commit()
@@ -244,6 +278,24 @@ def _normalize_word_type(word_type: str | None) -> str:
     if normalized in {CLEANING_LOCKED_WORD_TYPE, "cleaning_locked_auto"}:
         return CLEANING_LOCKED_WORD_TYPE
     return AUTO_WORD_TYPE
+
+
+def _coerce_pinned(value: object) -> int:
+    """Read an imported ``pinned`` field without inventing a pin.
+
+    External JSON regularly omits the field or carries an explicit ``null``.
+    Anything that is not a recognisable "yes" means not pinned — a wrongly
+    pinned entry is protected from deletion and from cleaning, so guessing
+    "pinned" would quietly turn an ordinary import into permanent data.
+    """
+    if value is None or isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if int(value) else 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "pinned"}:
+        return 1
+    return 0
 
 
 def _split_lang_pair(lang_pair: str) -> tuple[str, str] | None:
@@ -408,9 +460,18 @@ def _upsert_entry(
     pinned: int = 0,
     protect_higher_priority: bool = True,
     cleanup_changed_reverse: bool = True,
+    force_overwrite: bool = False,
     task_id: str = "",
     _allow_insert_retry: bool = True,
 ) -> bool:
+    """Write one entry, or reroute it through the conflict rules.
+
+    ``force_overwrite`` is the explicit "the user asked for this value to win"
+    path (import/restore with mode='overwrite').  It bypasses the trust
+    ranking entirely and rewrites the row even when the translation already
+    matches, so word_type / pinned / source_engine end up exactly as requested
+    instead of keeping whatever the current row happened to carry.
+    """
     word_type = _normalize_word_type(word_type)
     pinned = 1 if int(pinned or 0) else 0
     existing = _fetch_entry_by_source(conn, source_text, lang_pair)
@@ -418,32 +479,33 @@ def _upsert_entry(
     source_hash = _make_hash(source_text, lang_pair)
 
     if existing is not None:
-        if existing["target_text"] == target_text:
+        if existing["target_text"] == target_text and not force_overwrite:
             return False
-        # Ordinary automatic results never silently replace an existing value.
-        # Keep the active entry and persist a reviewable candidate instead.
-        if incoming_priority <= _entry_priority({"word_type": AUTO_WORD_TYPE, "pinned": 0}):
-            _record_conflict_candidate(
-                conn,
-                existing=existing,
-                source_text=source_text,
-                candidate_target=target_text,
-                lang_pair=lang_pair,
-                source_engine=source_engine,
-                task_id=task_id,
-            )
-            return False
-        if protect_higher_priority and _entry_priority(existing) > incoming_priority:
-            _record_conflict_candidate(
-                conn,
-                existing=existing,
-                source_text=source_text,
-                candidate_target=target_text,
-                lang_pair=lang_pair,
-                source_engine=source_engine,
-                task_id=task_id,
-            )
-            return False
+        if not force_overwrite:
+            # Ordinary automatic results never silently replace an existing
+            # value.  Keep the active entry and persist a reviewable candidate.
+            if incoming_priority <= _entry_priority({"word_type": AUTO_WORD_TYPE, "pinned": 0}):
+                _record_conflict_candidate(
+                    conn,
+                    existing=existing,
+                    source_text=source_text,
+                    candidate_target=target_text,
+                    lang_pair=lang_pair,
+                    source_engine=source_engine,
+                    task_id=task_id,
+                )
+                return False
+            if protect_higher_priority and _entry_priority(existing) > incoming_priority:
+                _record_conflict_candidate(
+                    conn,
+                    existing=existing,
+                    source_text=source_text,
+                    candidate_target=target_text,
+                    lang_pair=lang_pair,
+                    source_engine=source_engine,
+                    task_id=task_id,
+                )
+                return False
         if cleanup_changed_reverse and existing["target_text"] != target_text:
             _delete_matching_reverse(conn, existing)
         conn.execute(
@@ -509,6 +571,7 @@ def _upsert_entry(
             pinned=pinned,
             protect_higher_priority=protect_higher_priority,
             cleanup_changed_reverse=cleanup_changed_reverse,
+            force_overwrite=force_overwrite,
             task_id=task_id,
             _allow_insert_retry=False,
         )
@@ -1040,11 +1103,12 @@ def delete_unpinned_entries(lang_pair: str, keyword: str = "") -> int:
 
 def delete_all_entries(lang_pair: str, keyword: str = "") -> int:
     """
-    删除指定语言对下（可按关键词过滤）的所有词条。
+    删除指定语言对下（可按关键词过滤）的所有词条，**包括固定词条**。
+    与 ``delete_unpinned_entries`` 的区别就在这里：这是用户明确确认过的清空动作。
     返回删除条数。
     """
     with _get_conn() as conn:
-        rows = _select_scope_rows(conn, lang_pair, keyword, only_unpinned=True)
+        rows = _select_scope_rows(conn, lang_pair, keyword, only_unpinned=False)
         for row in rows:
             conn.execute("DELETE FROM tm_entries WHERE id = ?", [row["id"]])
         return len(rows)
@@ -1469,6 +1533,12 @@ def get_full_export(custom_target_langs=None) -> dict[str, object]:
     language-pair references.
     """
     with _get_conn() as conn:
+        # Both SELECTs must see one moment in time.  Read separately, a task
+        # committing between them can leave the backup self-contradictory —
+        # e.g. a conflict candidate pointing at an entry the file does not
+        # contain.  An explicit deferred transaction pins the snapshot at the
+        # first read and (in WAL mode) still lets writers proceed meanwhile.
+        conn.execute("BEGIN DEFERRED")
         entries = conn.execute(
             """
             SELECT source_text, source_hash, target_text, lang_pair,
@@ -1510,7 +1580,14 @@ def import_entries(
     """
     从外部数据导入词条。
     mode: 'skip'（跳过重复）| 'overwrite'（覆盖重复）| 'keep_both'（保留双份）
-    返回 {inserted, skipped, duplicates}。
+
+    返回 {inserted, updated, skipped, duplicates}，四个数字都按实际发生的写入统计：
+      inserted   实际写入的条数（新建 + 覆盖），也就是界面上的「新增或更新」；
+      updated    其中覆盖已有词条的条数（inserted 的子集）；
+      skipped    最终没有写入的条数；
+      duplicates 原文在库中已存在的条数。
+    'overwrite' 模式下备份里的每一条都会真正落库，用户不会看到「全是重复」却
+    什么也没恢复。
     """
     normalized_entries: list[tuple[str, str, str, int, str, str, str]] = []
     for entry in entries:
@@ -1518,7 +1595,7 @@ def import_entries(
         tgt = normalize_tm_text_for_storage(entry.get("target_text", ""))
         if not src or not tgt:
             continue
-        pinned = 1 if str(entry.get("pinned", "0")) not in ("0", "False", "false", "") else 0
+        pinned = _coerce_pinned(entry.get("pinned"))
         normalized_entries.append(
             (
                 src,
@@ -1532,8 +1609,10 @@ def import_entries(
         )
 
     inserted = 0
+    updated = 0
     skipped = 0
     duplicates = 0
+    overwrite = mode == "overwrite"
     with _get_conn() as conn:
         for (
             src,
@@ -1564,6 +1643,11 @@ def import_entries(
                     continue
 
             effective_word_type = word_type if preserve_status else MANUAL_WORD_TYPE
+            # 'overwrite' is an explicit user instruction: the imported value
+            # wins over whatever is in the library, whatever its word_type.
+            # Routing it through the trust ranking instead is how restoring a
+            # backup into a non-empty library used to leave the old values in
+            # place while reporting only "duplicates".
             changed = _upsert_entry(
                 conn,
                 write_source,
@@ -1572,11 +1656,14 @@ def import_entries(
                 word_type=effective_word_type,
                 source_engine=source_engine,
                 pinned=pinned,
+                force_overwrite=overwrite,
             )
             if not changed:
                 skipped += 1
                 continue
             inserted += 1
+            if existing is not None:
+                updated += 1
 
             if preserve_status:
                 # Recompute the hash after any API-level language code map;
@@ -1612,11 +1699,16 @@ def import_entries(
                 inserted += 1
 
     logger.info(
-        f"TM 导入：新增或更新 {inserted} 条"
+        f"TM 导入：写入 {inserted} 条（其中覆盖 {updated} 条）"
         f"{'' if not sync_reverse else '（按显式请求同步反向）'}，"
         f"重复 {duplicates} 条，跳过 {skipped} 条（模式={mode}）"
     )
-    return {"inserted": inserted, "skipped": skipped, "duplicates": duplicates}
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "duplicates": duplicates,
+    }
 
 
 def import_conflict_candidates(

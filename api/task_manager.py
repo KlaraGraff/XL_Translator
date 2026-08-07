@@ -68,6 +68,19 @@ _LABEL_BY_SURFACE = {
     "tm_clean": "TM cleaning",
 }
 
+# Shortest gap between two history writes for the same task while it runs.
+# Every event used to trigger a full sanitize + read + rewrite of the history
+# file, so a task emitting thousands of events paid O(n^2) for a summary that
+# only has to be roughly current until the task ends.
+HISTORY_WRITE_INTERVAL_SECONDS = 1.0
+# How many finished tasks keep an in-memory record.  Older ones are dropped:
+# their summary, result and logs are already on disk, and the task center
+# falls back to that record.
+MAX_RETAINED_TERMINAL_TASKS = 12
+# Events kept for replay after a task ends.  The terminal event is the last
+# one, so a late SSE consumer still sees how the task finished.
+TERMINAL_EVENT_TAIL = 300
+
 
 class Runner(Protocol):
     def start(self) -> None: ...
@@ -136,6 +149,32 @@ class ApiTask:
     updated_at: float = field(default_factory=time.time)
     logs: list[dict[str, Any]] = field(default_factory=list)
     condition: threading.Condition = field(default_factory=threading.Condition)
+    # History throttling bookkeeping; only touched under ``condition``.
+    last_persisted_at: float = 0.0
+    last_persisted_state: str = ""
+    history_dirty: bool = False
+
+
+class RetiredRunner:
+    """Stand-in left behind when a finished task's runner is released.
+
+    Keeping the real runner alive is what made ``_tasks`` leak: it holds the
+    scanned file list, a deep copy of settings and every PDF page record.
+    Nothing reads a runner once a task is terminal, but the attribute must
+    stay callable so a stray ``stop()`` cannot raise.
+    """
+
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+    def needs_poll(self) -> bool:
+        return False
+
+    def get_message(self, timeout: float = 0.05) -> Any:
+        return None
 
 
 @dataclass(frozen=True)
@@ -183,6 +222,9 @@ class TranslationTaskManager:
         self._tasks: dict[str, ApiTask] = {}
         self._confirmation_tokens: dict[str, ConfirmationToken] = {}
         self._lock = threading.RLock()
+        # Set once the process is on its way out; SSE loops check it so an
+        # open stream cannot hold up a graceful shutdown.
+        self._shutdown = threading.Event()
         # A complete sidecar restart cannot safely resume a frozen runner.  A
         # prior process may have recorded an active summary, so close that
         # state before this manager accepts fresh work.
@@ -712,9 +754,24 @@ class TranslationTaskManager:
         }
 
     def task_status(self, task_id: str) -> dict[str, Any]:
-        task = self._get_task(task_id)
+        try:
+            task = self._get_task(task_id)
+        except TaskNotFoundError:
+            # The in-memory record of a long-finished task is dropped to bound
+            # memory; its persisted summary still answers the task center.
+            record = self._history_record(task_id)
+            if record is None:
+                raise
+            return record
         with task.condition:
             return self._status_payload(task, include_result=True)
+
+    def _history_record(self, task_id: str) -> dict[str, Any] | None:
+        wanted = str(task_id or "")
+        for item in self._history.records():
+            if str(item.get("task_id") or "") == wanted:
+                return item
+        return None
 
     def _status_payload(self, task: ApiTask, *, include_result: bool) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -742,6 +799,9 @@ class TranslationTaskManager:
     def _persist_task(self, task: ApiTask) -> None:
         with task.condition:
             record = self._status_payload(task, include_result=True)
+            task.last_persisted_at = time.time()
+            task.last_persisted_state = task.state
+            task.history_dirty = False
         self._history.upsert(record)
 
     def list_tasks(self) -> dict[str, list[dict[str, Any]]]:
@@ -766,10 +826,10 @@ class TranslationTaskManager:
         try:
             task = self._get_task(task_id)
         except TaskNotFoundError:
-            for item in self._history.records():
-                if str(item.get("task_id") or "") == str(task_id):
-                    return item
-            raise
+            record = self._history_record(task_id)
+            if record is None:
+                raise
+            return record
         with task.condition:
             return self._status_payload(task, include_result=True)
 
@@ -792,6 +852,7 @@ class TranslationTaskManager:
                 # Terminal flag and terminal event must become visible together.
                 self._append_event(task, "interrupted", task.result)
             task.lease.release()
+            self._retire_terminal_task(task)
             interrupted.append(task.task_id)
         return interrupted
 
@@ -1038,7 +1099,7 @@ class TranslationTaskManager:
                     pending = [event for event in task.events if event["id"] > last_id]
                     terminal = task.terminal
             if not pending:
-                if terminal:
+                if terminal or self._shutdown.is_set():
                     return
                 yield ": keepalive\n\n"
                 continue
@@ -1049,15 +1110,54 @@ class TranslationTaskManager:
             if terminal:
                 return
 
-    def shutdown(self) -> None:
+    def begin_shutdown(self) -> None:
+        """Ask every live runner to stop, without waiting for any of them.
+
+        Safe to call from a signal handler: it only flips flags, wakes the SSE
+        loops so a graceful HTTP shutdown is not blocked by an open stream, and
+        signals the runners.  The waiting happens in ``shutdown``.
+        """
+        self._shutdown.set()
         with self._lock:
             tasks = list(self._tasks.values())
         for task in tasks:
             with task.condition:
-                if task.terminal:
-                    continue
-                task.state = "stopping"
-            task.runner.stop()
+                terminal = task.terminal
+                if not terminal and task.state != "stopping":
+                    task.state = "stopping"
+                task.condition.notify_all()
+            if terminal:
+                continue
+            try:
+                task.runner.stop()
+            except Exception:
+                # A runner that cannot be asked to stop is handled by the
+                # interrupted bookkeeping in ``shutdown``.
+                pass
+
+    def shutdown(self, *, timeout: float = 12.0) -> None:
+        """Let live tasks unwind before the process goes away.
+
+        Runners delete their own scratch state on the way out — the
+        LibreOffice profile, the ``word_translator_temp`` docx directory, the
+        PDF page workspaces — but only if they are allowed to unwind instead
+        of being killed mid-run.  Whatever is still alive at the deadline is
+        recorded as interrupted, so the task center never keeps showing a task
+        that is running in no process.
+        """
+        self.begin_shutdown()
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._lock:
+            tasks = list(self._tasks.values())
+        for task in tasks:
+            with task.condition:
+                while not task.terminal:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    task.condition.wait(timeout=min(remaining, 0.25))
+        self.mark_active_tasks_interrupted()
+        self.flush_history()
 
     def _scan(
         self,
@@ -1314,6 +1414,37 @@ class TranslationTaskManager:
             # event, or an SSE stream ends cleanly without ever carrying it.
             self._append_event(task, event_type, task.result)
         task.lease.release()
+        self._retire_terminal_task(task)
+
+    def _retire_terminal_task(self, task: ApiTask) -> None:
+        """Release a finished task's heavy references and bound how many stay.
+
+        ``_tasks`` never dropped a finished entry, and every entry pinned its
+        runner — the scanned file list, a deep copy of settings and, for PDF,
+        one record per page.  A day of ordinary use grew the sidecar
+        monotonically.  What the task center still needs (summary, result,
+        logs, the tail of the event stream) is kept here and on disk.
+        """
+        with task.condition:
+            if task.surface != "pdf":
+                # PDF is the exception: page comparison images stay browsable
+                # after the run and are resolved through the runner.  Those
+                # runners are bounded by the retention cap below instead.
+                task.runner = RetiredRunner()
+            if len(task.events) > TERMINAL_EVENT_TAIL:
+                del task.events[: len(task.events) - TERMINAL_EVENT_TAIL]
+        self._evict_retired_tasks()
+
+    def _evict_retired_tasks(self) -> None:
+        """Keep only the most recent finished tasks in memory."""
+        with self._lock:
+            terminal = [item for item in self._tasks.values() if item.terminal]
+            excess = len(terminal) - MAX_RETAINED_TERMINAL_TASKS
+            if excess <= 0:
+                return
+            terminal.sort(key=lambda item: item.updated_at)
+            for stale in terminal[:excess]:
+                self._tasks.pop(stale.task_id, None)
 
     def _append_event(self, task: ApiTask, event_type: str, data: Any) -> None:
         safe_data = _sanitize_task_data(data)
@@ -1330,6 +1461,7 @@ class TranslationTaskManager:
                 "stage": "runner",
                 "message": sanitize_task_log_message(raw_message),
             }
+        pending_record: dict[str, Any] | None = None
         with task.condition:
             task.events.append(
                 {
@@ -1348,14 +1480,57 @@ class TranslationTaskManager:
                         "message": str(safe_data.get("message") or ""),
                     }
                 )
-            task.updated_at = time.time()
+            now = time.time()
+            task.updated_at = now
             task.next_event_id += 1
-            # Persist before anyone can observe the event (the condition is an
-            # RLock, so the nested acquire in _persist_task is fine).  Waking
-            # readers first let an SSE consumer see the terminal event, tear
-            # down, and race the history write still in flight on this thread.
-            self._persist_task(task)
+            if task.terminal:
+                # Persist before anyone can observe the event (the condition is
+                # an RLock, so the nested acquire in _persist_task is fine).
+                # Waking readers first let an SSE consumer see the terminal
+                # event, tear down, and race the history write still in flight
+                # on this thread.  This happens once per task, so the cost the
+                # throttle below exists to avoid does not apply.
+                self._persist_task(task)
+            elif self._history_write_due(task, now):
+                # Build the record under the condition so it is a consistent
+                # snapshot, but keep the file read/rewrite outside: that is the
+                # part that blocks this task's SSE stream and status endpoint.
+                pending_record = self._status_payload(task, include_result=True)
+                task.last_persisted_at = now
+                task.last_persisted_state = task.state
+                task.history_dirty = False
+            else:
+                task.history_dirty = True
             task.condition.notify_all()
+        if pending_record is not None:
+            self._history.upsert(pending_record)
+
+    @staticmethod
+    def _history_write_due(task: ApiTask, now: float) -> bool:
+        """Decide whether this event is worth a full history rewrite.
+
+        A state change is always worth it — the task center reads state from
+        the persisted record.  Everything else (progress ticks, log lines) can
+        wait for the interval, because it only makes the summary slightly
+        stale, never wrong.
+        """
+        if task.state != task.last_persisted_state:
+            return True
+        return (now - task.last_persisted_at) >= HISTORY_WRITE_INTERVAL_SECONDS
+
+    def flush_history(self) -> None:
+        """Write out summaries whose last events were held back by the throttle."""
+        with self._lock:
+            tasks = list(self._tasks.values())
+        for task in tasks:
+            with task.condition:
+                if not task.history_dirty:
+                    continue
+                record = self._status_payload(task, include_result=True)
+                task.last_persisted_at = time.time()
+                task.last_persisted_state = task.state
+                task.history_dirty = False
+            self._history.upsert(record)
 
     def _get_task(self, task_id: str) -> ApiTask:
         with self._lock:

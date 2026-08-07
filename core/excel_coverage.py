@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,10 +70,17 @@ def build_excel_coverage_plan(
         for ws in wb.worksheets:
             if _is_generated_original_sheet(ws.title, workbook_sheet_names):
                 continue
-            ws_values = wb_values[ws.title] if wb_values is not None else None
+            # 公式格的显示值一次性读成内存映射。read_only 工作表的
+            # ``ws[coord]`` 每次都要重新解析整张 sheet XML，逐格去问是 O(n²)：
+            # 实测 1600 个公式格就要 7.7s，万级公式表直接卡到分钟级。
+            values_by_coordinate = (
+                _DisplayValues(wb_values[ws.title]) if wb_values is not None else None
+            )
             for row in ws.iter_rows():
                 for cell in row:
-                    raw = _resolve_cell_text(cell, ws_values, formula_display_value_backfill)
+                    raw = _resolve_cell_text(
+                        cell, values_by_coordinate, formula_display_value_backfill
+                    )
                     if raw is None:
                         continue
                     unit = _classify_excel_cell(
@@ -111,7 +117,7 @@ def write_untranslated_excel_file(
     log_callback=None,
     original_path: Path | None = None,
     external_autofit_planned: bool = False,
-    stats: dict[str, int] | None = None,
+    stats: dict[str, object] | None = None,
 ) -> Path:
     """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
@@ -132,9 +138,6 @@ def write_untranslated_excel_file(
         basename = basename[:-4] + ".xlsx"
     out_path = output_dir / f"双语({lang_display})_{basename}"
 
-    shutil.copy2(source_path, out_path)
-    bilingual_writer._ensure_owner_writable(out_path)
-
     allowed_positions: dict[str, set[str]] = {}
     scoped_translations: dict[str, str] = {}
     for unit in plan.source_units:
@@ -152,19 +155,25 @@ def write_untranslated_excel_file(
     # 调用方传了 stats 就直接写进去，省一次拷贝；没传就用本地临时字典。
     if stats is None:
         stats = {}
-    xlsx_patcher.write_bilingual_workbook(
+    # 补丁失败时不能在输出目录里留下一个「看起来正常」的未翻译副本，
+    # 所以先在临时文件上打补丁，成功了再改名。见 bilingual_writer.patch_into_output。
+    bilingual_writer.patch_into_output(
+        source_path,
         out_path,
-        translations=scoped_translations,
-        target_lang=target_lang,
-        source_lang=source_lang,
-        keep_original_sheets=keep_original_sheets,
-        formula_display_value_backfill=formula_display_value_backfill,
-        lock_row_height=lock_row_height,
-        mark_review_items=False,
-        log_callback=log_callback,
-        allowed_positions=allowed_positions,
-        external_autofit_planned=external_autofit_planned,
-        stats=stats,
+        lambda staging: xlsx_patcher.write_bilingual_workbook(
+            staging,
+            translations=scoped_translations,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            keep_original_sheets=keep_original_sheets,
+            formula_display_value_backfill=formula_display_value_backfill,
+            lock_row_height=lock_row_height,
+            mark_review_items=False,
+            log_callback=log_callback,
+            allowed_positions=allowed_positions,
+            external_autofit_planned=external_autofit_planned,
+            stats=stats,
+        ),
     )
     write_count = stats.get("mutated_cells", 0)
 
@@ -245,19 +254,51 @@ def _classify_excel_cell(
     )
 
 
-def _resolve_cell_text(cell, ws_values, formula_display_value_backfill: bool) -> str | None:
+class _DisplayValues:
+    """一张分表的公式显示值，整表读一次、之后按坐标查表。
+
+    openpyxl 的 read_only 工作表不缓存单元格：``ws["B7"]`` 每次都从头重新解析
+    这张分表的 XML。逐个公式格去问就成了 O(n²)。这里在第一次真正需要显示值时
+    整表遍历一遍，之后都是字典查询。没有公式格的分表连这一遍都不会跑。
+    """
+
+    def __init__(self, worksheet) -> None:
+        self._worksheet = worksheet
+        self._values: dict[str, str] | None = None
+
+    def get(self, coordinate: str) -> str | None:
+        if self._values is None:
+            self._values = {
+                cell.coordinate: cell.value
+                for row in self._worksheet.iter_rows()
+                for cell in row
+                if isinstance(cell.value, str)
+            }
+        return self._values.get(coordinate)
+
+
+def _resolve_cell_text(
+    cell,
+    display_values: _DisplayValues | None,
+    formula_display_value_backfill: bool,
+) -> str | None:
     value = cell.value
     if not isinstance(value, str):
         return None
     if not formula_display_value_backfill or getattr(cell, "data_type", None) != "f":
         return value
-    if ws_values is None:
+    if display_values is None:
         return None
-    display_value = ws_values[cell.coordinate].value
-    return display_value if isinstance(display_value, str) else None
+    return display_values.get(cell.coordinate)
 
 
 def _is_generated_original_sheet(sheet_name: str, workbook_sheet_names: set[str]) -> bool:
-    if not sheet_name.endswith("_原文"):
-        return False
-    return sheet_name[:-3] in workbook_sheet_names
+    """这张分表是不是我们自己上一轮克隆出来的「_原文」分表（补译时要跳过）。
+
+    判据交给生成方 ``xlsx_patcher``，它才知道分表名是怎么被 31 字符上限截断、
+    怎么加去重后缀的。这里不做任何字符串反推——原名超 27 字符时「_原文」会被
+    截没，反推必然落空，结果就是把自己生成的原文分表当成待译内容重翻一遍。
+    """
+    return xlsx_patcher.is_generated_original_sheet_title(
+        sheet_name, workbook_sheet_names
+    )

@@ -95,6 +95,7 @@ from core.word_document import (
     WordFileItem,
     WordFrontMatterBoundary,
     build_word_output_dir,
+    detect_hidden_word_content,
     extract_word_segments,
     find_word_front_matter_boundary_for_path,
     normalize_docx_automatic_numbering,
@@ -428,6 +429,7 @@ class WordTaskRunner:
         word_batch_stats = WordBatchRunStats()
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
+        recovery_pool: _WordRecoveryPool | None = None
         recovery_outcome = _WordRecoveryOutcome(
             fixed_sources=[],
             unresolved_sources=[],
@@ -486,8 +488,38 @@ class WordTaskRunner:
                         ),
                     )
                     process_paths.append(process_path)
+                    hidden_content = detect_hidden_word_content(process_path)
+                    if hidden_content.found:
+                        # 这部分内容 python-docx 根本看不见，本次一定漏译。做不到翻译，
+                        # 至少不能让它静悄悄地漏掉。
+                        self._log(
+                            "WARN",
+                            (
+                                f"  → [未翻译内容] {file_item.name}：检测到"
+                                f"{hidden_content.describe()}，"
+                                "这些内容不在本次翻译范围内，输出文档中会保持原文。"
+                                "建议在 Word 里接受全部修订、或把内容控件转换为普通文本后重试。"
+                            ),
+                        )
+                        quality_issues.append(
+                            {
+                                "file": _file_result_identity(file_item, self._source_root),
+                                "kind": "hidden_content",
+                                "location": "document",
+                                "location_label": "整篇文档",
+                                "section_path": "正文",
+                                "snippet": "",
+                                "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
+                                "status": (
+                                    "这些内容被内容控件或未接受的修订包裹，未参与翻译，"
+                                    "输出文档中保持原文。"
+                                ),
+                                "severity": "needs_review",
+                            }
+                        )
                     preprocess_summaries.append(
                         {
+                            "hidden_content": hidden_content.as_dict(),
                             "method": prepared.method,
                             "labels_seen": prepared.labels_seen,
                             "labels_prepended": prepared.labels_prepended,
@@ -1235,85 +1267,125 @@ class WordTaskRunner:
             stopped_message = str(exc)
         except ApiKeyTemporarilyUnavailableError as exc:
             fatal_error_message = str(exc)
-
-        elapsed_sec = (datetime.now() - start_ts).total_seconds()
-        self._task_logger.task_end(elapsed_sec=elapsed_sec, file_results=file_results)
-        report_path = None
-        report_warning = ""
-        if any(item.get("success") for item in file_results):
+        except Exception as exc:  # noqa: BLE001 - 兜底：没有它线程会静默死亡
+            # 写回阶段任何未预期的异常（doc.save 权限失败、磁盘满、第三方库崩溃）
+            # 原来都会直接冲出工作线程：清理不做、终止消息不发，UI 侧的任务永远停在
+            # "运行中"。这里把它降级成一次可见的失败。
+            logger.exception("Word 翻译任务异常中止")
+            fatal_error_message = f"Word 翻译任务异常中止：{exc}"
+        finally:
+            # 无论走哪条路径，线程池与临时 docx 都必须被回收。
+            if recovery_pool is not None:
+                try:
+                    recovery_pool.shutdown(cancel_futures=True)
+                except Exception as exc:  # noqa: BLE001 - 清理失败不得掩盖原始结果
+                    logger.warning(f"Word 恢复线程池关停失败：{exc}")
             try:
-                report_path = _write_word_quality_report(
-                    output_dir=output_dir,
+                _cleanup_converted_word_paths(converted_temp_paths, self._log)
+            except Exception as exc:  # noqa: BLE001 - 同上
+                logger.warning(f"Word 临时文件清理失败：{exc}")
+
+        # 收尾同样要有兜底：结果契约的组装、报告路径、DoneMsg 构造里任何一处抛出，
+        # 都不能让队列收不到终止消息——UI 只认终止消息，收不到就是永久"运行中"。
+        terminal_sent = False
+
+        def _emit_terminal(message) -> None:
+            nonlocal terminal_sent
+            terminal_sent = True
+            self._queue.put(message)
+
+        try:
+            elapsed_sec = (datetime.now() - start_ts).total_seconds()
+            self._task_logger.task_end(elapsed_sec=elapsed_sec, file_results=file_results)
+            report_path = None
+            report_warning = ""
+            if any(item.get("success") for item in file_results):
+                try:
+                    report_path = _write_word_quality_report(
+                        output_dir=output_dir,
+                        file_results=file_results,
+                        issues=quality_issues,
+                        elapsed_sec=elapsed_sec,
+                        tm_hit_count=tm_hit_count,
+                        api_call_count=api_call_count,
+                    )
+                except Exception as exc:  # report output must not fail a usable task
+                    self._log("WARN", f"Word 翻译质量报告写入失败：{exc}")
+                    report_warning = (
+                        f"Word 翻译质量报告未能写入：{exc}。"
+                        "已生成的翻译文件仍可使用。"
+                    )
+
+            result_contract = self._build_result_contract(
+                file_results=file_results,
+                output_dir=str(output_dir),
+                elapsed_sec=elapsed_sec,
+                tm_hit_count=tm_hit_count,
+                api_text_count=api_call_count,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                preflights=file_language_preflights,
+                file_texts=file_texts,
+                quality_issues=quality_issues,
+                recovery_outcome=recovery_outcome,
+                word_batch_stats=word_batch_stats,
+                model_source_results=model_source_results,
+                stopped=stopped_message is not None,
+                error_message=fatal_error_message or "",
+                report_warning=report_warning,
+            )
+
+            if stopped_message is not None:
+                self._log("WARN", stopped_message)
+                _emit_terminal(
+                    StoppedMsg(
+                        message=stopped_message,
+                        output_dir=str(output_dir),
+                        report_path=str(report_path) if report_path else "",
+                        **result_contract,
+                    )
+                )
+                return
+
+            if fatal_error_message is not None:
+                self._log("ERROR", fatal_error_message)
+                self._task_logger.error(fatal_error_message)
+                _emit_terminal(
+                    ErrorMsg(
+                        message=fatal_error_message,
+                        output_dir=str(output_dir),
+                        report_path=str(report_path) if report_path else "",
+                        **result_contract,
+                    )
+                )
+                return
+
+            _emit_terminal(
+                DoneMsg(
+                    output_dir=str(output_dir),
                     file_results=file_results,
-                    issues=quality_issues,
                     elapsed_sec=elapsed_sec,
                     tm_hit_count=tm_hit_count,
                     api_call_count=api_call_count,
-                )
-            except Exception as exc:  # report output must not fail a usable task
-                self._log("WARN", f"Word 翻译质量报告写入失败：{exc}")
-                report_warning = (
-                    f"Word 翻译质量报告未能写入：{exc}。"
-                    "已生成的翻译文件仍可使用。"
-                )
-        _cleanup_converted_word_paths(converted_temp_paths, self._log)
-
-        result_contract = self._build_result_contract(
-            file_results=file_results,
-            output_dir=str(output_dir),
-            elapsed_sec=elapsed_sec,
-            tm_hit_count=tm_hit_count,
-            api_text_count=api_call_count,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            preflights=file_language_preflights,
-            file_texts=file_texts,
-            quality_issues=quality_issues,
-            recovery_outcome=recovery_outcome,
-            word_batch_stats=word_batch_stats,
-            model_source_results=model_source_results,
-            stopped=stopped_message is not None,
-            error_message=fatal_error_message or "",
-            report_warning=report_warning,
-        )
-
-        if stopped_message is not None:
-            self._log("WARN", stopped_message)
-            self._queue.put(
-                StoppedMsg(
-                    message=stopped_message,
-                    output_dir=str(output_dir),
+                    issues=quality_issues,
                     report_path=str(report_path) if report_path else "",
                     **result_contract,
                 )
             )
-            return
-
-        if fatal_error_message is not None:
-            self._log("ERROR", fatal_error_message)
-            self._task_logger.error(fatal_error_message)
-            self._queue.put(
-                ErrorMsg(
-                    message=fatal_error_message,
-                    output_dir=str(output_dir),
-                    report_path=str(report_path) if report_path else "",
-                    **result_contract,
+        except Exception as exc:  # noqa: BLE001 - 终止消息必须发出去
+            logger.exception("Word 翻译任务收尾失败")
+            fatal_error_message = fatal_error_message or f"Word 翻译任务收尾失败：{exc}"
+        finally:
+            if not terminal_sent:
+                self._queue.put(
+                    ErrorMsg(
+                        message=(
+                            fatal_error_message
+                            or "Word 翻译任务异常中止，未能生成结果摘要。"
+                        ),
+                        output_dir=str(output_dir),
+                    )
                 )
-            )
-            return
-
-        self._queue.put(
-            DoneMsg(
-                output_dir=str(output_dir),
-                file_results=file_results,
-                elapsed_sec=elapsed_sec,
-                tm_hit_count=tm_hit_count,
-                api_call_count=api_call_count,
-                issues=quality_issues,
-                report_path=str(report_path) if report_path else "",
-                **result_contract,
-            )
-        )
 
     def _build_result_contract(
         self,
@@ -1773,6 +1845,10 @@ class _WordRecoveryPool:
         self._futures = set()
         self._condition = threading.Condition()
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1)))
+        # ThreadPoolExecutor 的 worker 不是守护线程。没人 shutdown 就等于每次泄漏
+        # concurrency 个永久阻塞在队列上的线程，进程也退不干净。
+        self._shutdown_lock = threading.Lock()
+        self._executor_shutdown = False
         self._semantic_check_count = 0
         self._semantic_checked_sources: set[str] = set()
         self._semantic_accepted_sources: set[str] = set()
@@ -1897,20 +1973,39 @@ class _WordRecoveryPool:
             self._emit_status_locked()
             self._condition.notify_all()
 
+    def shutdown(self, *, cancel_futures: bool = False) -> None:
+        """幂等地关停线程池。异常路径下也必须走到这里，否则 worker 线程永久泄漏。"""
+        with self._shutdown_lock:
+            if self._executor_shutdown:
+                return
+            self._executor_shutdown = True
+            self._executor.shutdown(wait=True, cancel_futures=cancel_futures)
+
+    def __enter__(self) -> _WordRecoveryPool:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.shutdown(cancel_futures=True)
+
     def wait_for_completion(self) -> _WordRecoveryOutcome:
-        self.start()
-        with self._condition:
-            while self._fatal_error is None and not self._all_complete_locked():
-                self._condition.wait(timeout=0.1)
+        try:
+            self.start()
+            with self._condition:
+                while self._fatal_error is None and not self._all_complete_locked():
+                    self._condition.wait(timeout=0.1)
 
-            fatal_error = self._fatal_error
+                fatal_error = self._fatal_error
 
-        if fatal_error is not None:
-            self._executor.shutdown(wait=True, cancel_futures=True)
-            raise fatal_error
+            if fatal_error is not None:
+                self.shutdown(cancel_futures=True)
+                raise fatal_error
 
-        self._executor.shutdown(wait=True)
-        return self._build_outcome()
+            self.shutdown()
+            return self._build_outcome()
+        finally:
+            # start()、等待循环、_build_outcome 里任何一处抛出（含 KeyboardInterrupt）
+            # 都不能让线程池活下来。已经关停时这里是空操作。
+            self.shutdown(cancel_futures=True)
 
     def _all_complete_locked(self) -> bool:
         return all(
