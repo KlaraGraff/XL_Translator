@@ -26,7 +26,7 @@ shasum -a 256 -c Translator_macOS_arm64_<版本>.dmg.sha256
 
 1. 打开已校验的 DMG，将 `Translator.app` 拖到 `Applications`。
 2. 从“应用程序”启动 Translator。
-3. 正式 Release 均使用 Developer ID 签名和 Apple 公证。若 Gatekeeper 仍因本机策略阻止启动，请在“系统设置 → 隐私与安全性”中确认“仍要打开”；不要从非官方来源下载替代安装包。
+3. 每一版的签名状态写在该版本的发布说明里。若说明写的是 Developer ID 签名并已通过 Apple 公证，双击即可打开；若写的是 ad-hoc 签名、未公证，macOS 会提示“无法验证开发者”，需要在“系统设置 → 隐私与安全性”中确认“仍要打开”。无论哪种情况，都只安装从官方发布页下载并通过上一步校验的 DMG，不要从其他来源找替代安装包。
 
 macOS 的数据目录是 `~/Library/Application Support/Translator`。
 
