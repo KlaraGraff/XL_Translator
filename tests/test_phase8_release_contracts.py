@@ -69,6 +69,11 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         # 每个稳定 tag 都按正式发布出去，不再因为缺少签名密钥而降级成 Pre-release。
         self.assertIn("prerelease: false", workflow)
         self.assertNotIn("prerelease: ${{", workflow)
+        # 工作流只产出草稿：正文那句「整理中」的占位不能出现在公开的 Release 上。
+        # 写完手工说明的人执行 `gh release edit <tag> --draft=false` 才算发布。
+        self.assertIn("draft: true", workflow)
+        self.assertNotIn("draft: ${{", workflow)
+        self.assertIn("发布说明整理中", workflow)
         self.assertIn("TEMP_SIGNED_TEST.dmg", workflow)
         # The release job checksums both platform assets before publishing.
         self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
