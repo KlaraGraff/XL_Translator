@@ -6,7 +6,7 @@ from engines.openai_engine import OpenAIEngine
 
 class DashscopeEngine(OpenAIEngine):
 
-    def __init__(self, api_key: str, model: str = "qwen-max"):
+    def __init__(self, api_key: str, model: str):
         super().__init__(
             api_key=api_key,
             model=model,

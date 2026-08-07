@@ -84,7 +84,9 @@ class OpenAIEngine(TranslationEngine):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o",
+        # 没有默认模型：模型 ID 只能来自用户选择（实时从 /models 拉取）。
+        # 写死一个默认值会随时间过期，而且永远轮不到它生效——调度层一律显式传入。
+        model: str,
         base_url: str = "",
         api_mode: str = "",
         engine_name_prefix: str = "openai",

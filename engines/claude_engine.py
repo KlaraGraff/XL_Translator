@@ -27,7 +27,7 @@ from engines.base_engine import (
 
 class ClaudeEngine(TranslationEngine):
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6", base_url: str = ""):
+    def __init__(self, api_key: str, model: str, base_url: str = ""):
         self._api_key = api_key
         self._model = model
         self._base_url = str(base_url or CLAUDE_BASE_URL).rstrip("/")

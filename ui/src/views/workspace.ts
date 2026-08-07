@@ -1982,9 +1982,12 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
 function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
   const foot = el("div", "rp-foot");
   if (!active) {
-    const disabled = st.selected.size === 0;
+    const busy = submittingSurfaces.has(surface);
+    const disabled = st.selected.size === 0 || busy;
     foot.append(createButton({
-      label: disabled ? "开始翻译" : `开始翻译（${st.selected.size} 个文件）`,
+      label: busy
+        ? "正在启动…"
+        : disabled ? "开始翻译" : `开始翻译（${st.selected.size} 个文件）`,
       icon: disabled ? undefined : "play",
       variant: "primary",
       size: "big",
@@ -2129,18 +2132,30 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
   });
 }
 
+/** 预检加提交合起来要跑好几个来回，这段时间里按钮还是可点的。第二次点击最终会被
+ *  后端的串行化挡下来返回 409，用户看到的是一条看不懂的报错——所以在这里就拦住。 */
+const submittingSurfaces = new Set<Surface>();
+
 async function preflightAndSubmit(surface: Surface, st: SurfaceState): Promise<void> {
+  if (submittingSurfaces.has(surface)) return;
+  submittingSurfaces.add(surface);
+  rerender(surface);
   const payload = buildPayload(surface, st);
   try {
     const c = await getClient();
     const preflight = await c.preflightTask(payload);
     if (preflight.requires_confirmation) {
+      // 风险确认弹窗是一个决策点：这里必须放开，否则用户在弹窗上点「仍要并行启动」
+      // 会被自己的这把锁挡住。弹窗那条路径由 submitTaskStart 自己守。
       showTaskRiskModal(surface, st, payload, preflight.confirmation_token ?? "");
       return;
     }
-    await submitTaskStart(surface, st, payload);
+    await sendTaskStart(surface, st, payload);
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "任务准备失败。"), error: true });
+  } finally {
+    submittingSurfaces.delete(surface);
+    rerender(surface);
   }
 }
 
@@ -2162,7 +2177,20 @@ function showTaskRiskModal(surface: Surface, st: SurfaceState, payload: JsonObje
   });
 }
 
+/** 弹窗按钮走这条：自己守一次，避免连点弹窗上的确认键。 */
 async function submitTaskStart(surface: Surface, st: SurfaceState, payload: JsonObject, confirmationToken = ""): Promise<void> {
+  if (submittingSurfaces.has(surface)) return;
+  submittingSurfaces.add(surface);
+  rerender(surface);
+  try {
+    await sendTaskStart(surface, st, payload, confirmationToken);
+  } finally {
+    submittingSurfaces.delete(surface);
+    rerender(surface);
+  }
+}
+
+async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonObject, confirmationToken = ""): Promise<void> {
   try {
     const c = await getClient();
     const body = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;

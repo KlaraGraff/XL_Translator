@@ -6,7 +6,7 @@ from engines.openai_engine import OpenAIEngine
 
 class ZhipuEngine(OpenAIEngine):
 
-    def __init__(self, api_key: str, model: str = "glm-4"):
+    def __init__(self, api_key: str, model: str):
         super().__init__(
             api_key=api_key,
             model=model,
