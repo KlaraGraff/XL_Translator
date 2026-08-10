@@ -3881,7 +3881,7 @@ dependencies = [
 
 [[package]]
 name = "translator"
-version = "9.2.0"
+version = "9.2.1"
 dependencies = [
  "serde",
  "tauri",
