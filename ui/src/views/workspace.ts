@@ -210,7 +210,10 @@ function formatSizeKb(kb: unknown): string {
 
 interface LocalTask {
   task: TaskStatus;
-  logs: Array<{ time: string; level: string; message: string }>;
+  /** seq 是全局单调递增的行号，只用来在整页重建后认出「重建前顶在视口口沿的是哪一行」
+   *  （见 captureLogScroll / restoreLogScroll）。数组索引不行——满 200 条后每来一条
+   *  就从头部丢一条，同一条日志的索引会一直变小。 */
+  logs: Array<{ seq: number; time: string; level: string; message: string }>;
   phaseName: string;
   percent: number;
   streamState: "connected" | "reconnecting";
@@ -479,19 +482,68 @@ async function adoptExistingTask(surface: Surface): Promise<void> {
 // 否则原样恢复重建前的位置。
 const LOG_SCROLL_STICK_TOLERANCE = 8;
 
-function captureLogScroll(container: HTMLElement): { atBottom: boolean; scrollTop: number } | null {
+/**
+ * 还原滚动位置不能直接照抄 scrollTop。日志攒到 LOG_VIEW_LIMIT 条以后，每来一条新日志
+ * 就同时丢掉最旧一条、追加最新一条：scrollHeight 一点没变，可整段内容却往上挪了一行。
+ * 这时把 scrollTop 原样写回去，用户看到的内容就一行一行往上漂——他往上翻历史，日志
+ * 每来一条就把他顶走一行，等于「不抢滚动位置」这条规矩在满 200 条之后彻底失效。
+ * 距离底部（scrollHeight - scrollTop - clientHeight）同样救不了，因为它在这种情况下
+ * 也完全不变。
+ *
+ * 所以改成锚点还原：记下重建前顶在视口口沿的那一行是第几条（seq 全局单调递增）、以及
+ * 它的上沿相对视口上沿差多少像素；重建后把同一条日志摆回同样的位置。行高不一致
+ * （长消息会折行）也不影响，因为量的是这一行本身的实际位置，不是「几行 × 行高」。
+ */
+interface LogScrollState {
+  atBottom: boolean;
+  scrollTop: number;
+  /** 视口顶部那一行的日志序号；日志为空时为 null。 */
+  anchorSeq: number | null;
+  /** 锚点行上沿减去视口上沿，通常是 0 或负数（这一行被视口切掉了一截）。 */
+  anchorOffset: number;
+}
+
+function captureLogScroll(container: HTMLElement): LogScrollState | null {
   const prev = container.querySelector<HTMLElement>(".log");
   if (!prev) return null;
   const distanceFromBottom = prev.scrollHeight - prev.scrollTop - prev.clientHeight;
-  return { atBottom: distanceFromBottom <= LOG_SCROLL_STICK_TOLERANCE, scrollTop: prev.scrollTop };
+  let anchorSeq: number | null = null;
+  let anchorOffset = 0;
+  const viewTop = prev.getBoundingClientRect().top;
+  for (const line of Array.from(prev.children) as HTMLElement[]) {
+    const seq = line.dataset.seq;
+    if (seq === undefined) continue;
+    const rect = line.getBoundingClientRect();
+    // 第一条下沿还在视口里的行，就是用户眼下看到的最上面那行。
+    if (rect.bottom > viewTop) {
+      anchorSeq = Number(seq);
+      anchorOffset = rect.top - viewTop;
+      break;
+    }
+  }
+  return { atBottom: distanceFromBottom <= LOG_SCROLL_STICK_TOLERANCE, scrollTop: prev.scrollTop, anchorSeq, anchorOffset };
 }
 
-function restoreLogScroll(container: HTMLElement, prevScroll: { atBottom: boolean; scrollTop: number } | null): void {
+function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | null): void {
   const next = container.querySelector<HTMLElement>(".log");
   if (!next) return;
   // 没有旧状态（比如第一次渲染日志卡片）按贴底处理，最新的日志本来就该先看到。
-  if (!prevScroll || prevScroll.atBottom) next.scrollTop = next.scrollHeight;
-  else next.scrollTop = prevScroll.scrollTop;
+  if (!prevScroll || prevScroll.atBottom) {
+    next.scrollTop = next.scrollHeight;
+    return;
+  }
+  if (prevScroll.anchorSeq !== null) {
+    const anchor = next.querySelector<HTMLElement>(`[data-seq="${prevScroll.anchorSeq}"]`);
+    if (anchor) {
+      next.scrollTop += anchor.getBoundingClientRect().top - next.getBoundingClientRect().top - prevScroll.anchorOffset;
+      return;
+    }
+    // 锚点行已经被 200 条上限挤掉了：用户正在看的那段日志已经不在缓冲区里，
+    // 退到现存最旧的一条，而不是沿用旧 scrollTop——那会把他丢到一段没看过的位置。
+    next.scrollTop = 0;
+    return;
+  }
+  next.scrollTop = prevScroll.scrollTop;
 }
 
 function renderInto(container: HTMLElement, surface: Surface): void {
@@ -641,10 +693,13 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
 
 function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   const bar = el("div", "card srcbar");
+  const scanning = scanBusy[surface];
   const scanBtn = createButton({
-    label: st.files.length > 0 ? "重新扫描" : "扫描",
+    // 扫描在飞时两个入口都锁住：再点一次只会多一个在途请求，
+    // 而先发后到的那个会把清单换成上一个路径的内容（见 runScan 的请求序号）。
+    label: scanning ? "扫描中…" : st.files.length > 0 ? "重新扫描" : "扫描",
     variant: "primary",
-    disabled: !st.sourcePath.trim(),
+    disabled: scanning || !st.sourcePath.trim(),
     onClick: () => void runScan(surface),
   });
   const { root, input } = createTextField({
@@ -654,7 +709,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     onInput: (value) => {
       st.sourcePath = value;
       // 手输/粘贴路径时同步解锁「扫描」——这一栏不整页重建，按钮得自己更新。
-      scanBtn.disabled = !value.trim();
+      // 扫描在飞时仍然保持锁定，光有路径不算能点。
+      scanBtn.disabled = scanBusy[surface] || !value.trim();
     },
   });
   root.style.margin = "0";
@@ -666,6 +722,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   const browseBtn = createButton({
     label: "浏览",
     icon: "folder",
+    disabled: scanning,
+    title: scanning ? "正在扫描当前路径，完成后再选新的来源。" : undefined,
     onClick: () => {
       openMenu(browseBtn, [
         { label: "选择文件夹…", description: "递归扫描目录下所有可翻译文件", onSelect: () => void pickSource(surface, st, input, true) },
@@ -1785,6 +1843,9 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
 // 完整记录另外随诊断归档，不靠这里兜底。
 const LOG_VIEW_LIMIT = 200;
 
+/** 日志行号发号器（模块级、跨 surface 共用，只要不重号就够用）。 */
+let nextLogSeq = 1;
+
 function buildLogCard(local: LocalTask): HTMLElement {
   const card = el("div", "card");
   card.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden";
@@ -1802,6 +1863,8 @@ function buildLogCard(local: LocalTask): HTMLElement {
   log.style.cssText = "flex:1;min-height:0;border:0;border-radius:0;overflow-y:auto";
   for (const entry of local.logs.slice(-LOG_VIEW_LIMIT)) {
     const line = el("div");
+    // 整页重建后靠这个属性把滚动位置对回原来那一行，见 restoreLogScroll。
+    line.dataset.seq = String(entry.seq);
     const t = el("span", "t");
     t.textContent = entry.time;
     line.append(t);
@@ -2063,14 +2126,29 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
 // 扫描
 // ---------------------------------------------------------------------------
 
+/**
+ * 扫描请求序号。换目录时上一次扫描往往还在路上（「浏览」选完就自动扫，用户又点了一次
+ * 「扫描」也一样），两个响应谁后到谁覆盖 st.files；先发的那个后到，界面就变成
+ * 「路径栏显示 B、文件清单是 A」。用户点开始翻译，后端按 B 重扫再和前端交上来的选中
+ * 路径取交集，结果只翻了两边都有的那一部分，界面上不报任何错。
+ * 只有序号仍等于最新一次的响应才允许写回状态。
+ */
+const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+/** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
+const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false };
+
 async function runScan(surface: Surface): Promise<void> {
   const st = states[surface];
   const path = st.sourcePath.trim();
   if (!path) return;
+  const token = ++scanTokens[surface];
+  scanBusy[surface] = true;
+  rerender(surface);
   try {
     const c = await getClient();
     const payload = { surface, path, include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")) };
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
+    if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
     const result = record(response.result) && Object.keys(record(response.result)).length ? record(response.result) : response;
     const items = Array.isArray(result.items) ? (result.items as FileItem[]) : [];
     const skipped = Array.isArray(result.skipped) ? (result.skipped as ScanSkippedItem[]) : [];
@@ -2079,14 +2157,30 @@ async function runScan(surface: Surface): Promise<void> {
     st.scanSummary = record(result.summary);
     st.selected = new Set(items.map((f) => f.path));
     st.showBanner = false;
-    await persistSettings({ [`last_${surface}_source_folder`]: path });
+    // 「记住上次目录」失败不能牵连扫描结果：清单已经拿到了，没道理因为写设置出错就清空它。
+    try {
+      await persistSettings({ [`last_${surface}_source_folder`]: path });
+    } catch {
+      // 下次进入这个界面得重新选路径而已，不值得打断当前流程。
+    }
     const toastMessage = surface === "pdf"
       ? `已扫描到 ${items.length} 个 PDF / 图片输入，跳过 ${skipped.length} 个。`
       : `已扫描到 ${items.length} 个${SURFACE_LABEL[surface]}文件。`;
     showToast({ message: toastMessage });
-    rerender(surface);
   } catch (error) {
+    if (token !== scanTokens[surface]) return;
+    // 扫描失败必须把上一次的清单清掉：留着旧结果，用户看到的是「路径 B + B 之外的文件」，
+    // 会当成 B 目录的内容直接开翻。宁可空着让他重扫，也不能拿上一次的结果冒充这一次。
+    st.files = [];
+    st.skipped = [];
+    st.scanSummary = {};
+    st.selected = new Set();
     showToast({ message: redactedText((error as Error)?.message, "扫描失败。"), error: true });
+  } finally {
+    if (token === scanTokens[surface]) {
+      scanBusy[surface] = false;
+      rerender(surface);
+    }
   }
 }
 
@@ -2328,7 +2422,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
   const data = event.data;
   switch (event.type) {
     case "log": {
-      local.logs.push({ time: formatTime(num(data.ts, 0) || undefined), level: text(data.level, "info"), message: redactedText(data.message ?? data.text, "") });
+      local.logs.push({ seq: nextLogSeq++, time: formatTime(num(data.ts, 0) || undefined), level: text(data.level, "info"), message: redactedText(data.message ?? data.text, "") });
       // 数组本身也要封顶，不然长任务跑几个小时会攒出一条越来越长的内存记录——界面只展示
       // 最近 LOG_VIEW_LIMIT 条，这里索性同步截断，省得两处上限不一致。
       if (local.logs.length > LOG_VIEW_LIMIT) local.logs.splice(0, local.logs.length - LOG_VIEW_LIMIT);

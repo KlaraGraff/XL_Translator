@@ -267,6 +267,11 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
   if (task.surface === "word") {
     const recovery = record(result.recovery);
     const withRecovery = { ...source, ...recovery };
+    // 「需复核」这一格和列表徽章必须是同一个数。后端的 review_text_count 数的是全部
+    // review_items，里面混着已经自动恢复好、用户不用管的条目（severity=resolved）——
+    // 照抄就会在这一格报出比实际待办多得多的数字。reviewCount() 只数 needs_review 桶。
+    const pending = reviewCount(task);
+    const reviewSource = pending === null ? source : { ...source, review_count: pending };
     return pickKpis(
       [
         ["已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]],
@@ -275,7 +280,7 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
         ["TM 命中", ["tm_hit_count", "tm_hits"]],
       ],
-      source,
+      reviewSource,
     ).concat(
       pickKpis(
         [
@@ -317,9 +322,37 @@ interface ReviewRow {
   location: string;
   excerpt: string;
   issue: string;
+  /** 给用户看的整句处理说明（Excel 已换成中文，Word 就是后端原句）。 */
   action: string;
+  /** Excel 复核项的英文枚举原值；Word 没有这个概念，留空。 */
+  actionCode: string;
+  /** 后端每条复核项自带的严重度：resolved / needs_review。空字符串表示这一路没给。 */
+  severity: string;
   needsReview: boolean;
 }
+
+/** Excel 复核项的 category（core/config.py 的 REVIEW_MARK_*）。后端存的是英文枚举，
+ *  直接摆到界面上等于让用户去猜 unresolved 和 foreign_noise 差在哪；这里只做展示层
+ *  翻译，不动后端契约。取不到映射就原样显示，将来后端加了新枚举也不会显示成空白。 */
+const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
+  unresolved: "混合语言未能确认",
+  semantic: "经语义校验后接受",
+  foreign_noise: "原文疑似夹杂错误外文",
+};
+
+/** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`）。
+ *  这三个值说的是「复核标记有没有真的写进 xlsx」，全都不是「这条问题已经解决」——
+ *  尤其 preserved_existing_fill 是「单元格本来就有底色，标记没写进去」，
+ *  之前一律显示灰色「已处理」，等于告诉用户文件里能找到标记，实际上找不到。 */
+const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: ChipTone }> = {
+  marked_fill: { label: "已标底色", note: "已在该单元格填入复核底色，请在文件中按底色复核。", tone: "warn" },
+  marked_red_font: { label: "已标红字", note: "单元格原有底色已保留，改用红色字体标出，请按红字复核。", tone: "warn" },
+  preserved_existing_fill: {
+    label: "未写入标记",
+    note: "单元格已有底色，按现有底色保留策略跳过了标记；文件里看不到这处复核提示，只能按本行定位。",
+    tone: "dgr",
+  },
+};
 
 /** 结果定位清单：合并 Excel（工作表/单元格）与 Word（章节/位置/摘录）两种复核行形状。
  *  main.ts 里 Excel 复核行本没有摘录列，这里仍尝试常见摘录键，取不到就留空——
@@ -340,26 +373,55 @@ function reviewRows(task: TaskStatus): ReviewRow[] {
       .join(" · ");
     const excerptRaw = firstText(entry, ["excerpt", "snippet", "source_excerpt", "text", "source_text"]);
     const excerpt = excerptRaw.length > 80 ? `${excerptRaw.slice(0, 77)}…` : excerptRaw;
-    const issue = firstText(entry, ["category", "mark", "type", "issue", "problem"]) || "—";
-    const action = firstText(entry, ["action", "applied_action", "review_status", "message"]) || "—";
-    const needsReview = /复核|未通过|待/.test(action) || /复核|未通过|待/.test(issue);
-    return { file, location, excerpt, issue, action, needsReview };
+    const issueRaw = firstText(entry, ["category", "mark", "type", "issue", "problem"]);
+    const issue = EXCEL_REVIEW_CATEGORY_LABELS[issueRaw] ?? issueRaw;
+    const actionRaw = firstText(entry, ["action", "applied_action", "review_status", "message"]);
+    const excelAction = EXCEL_REVIEW_ACTIONS[actionRaw];
+    const actionCode = excelAction ? actionRaw : "";
+    const action = excelAction ? excelAction.note : actionRaw;
+    const severity = firstText(entry, ["severity"]);
+    // 是不是「还没解决」优先信后端：Word 每条复核项都带 severity，正则读整句中文读不出
+    // 否定（「未参与翻译」里没有任何一个词能被 /复核|未通过|待/ 命中）。
+    // Excel 那一路没有 severity，但它写进 review_positions 的每一格本来就是复核标记，
+    // 一律算需复核。两者都没有时才退回正则，只用来兜住将来新增的第三种数据形状。
+    const needsReview = severity
+      ? severity !== "resolved"
+      : actionCode
+        ? true
+        : /复核|未通过|待/.test(action) || /复核|未通过|待/.test(issue);
+    return { file, location, excerpt, issue: issue || "—", action: action || "—", actionCode, severity, needsReview };
   });
   return rows.sort((a, b) => Number(b.needsReview) - Number(a.needsReview));
 }
 
 /** 「处理」列的短结论标签 + 配色。
- *  措辞只从后端实际写下的 action 文案里归纳，标签与颜色同一处产出，
- *  避免两套规则各说各话；action 为空或「—」时返回 null，只显示一个「—」。 */
-function reviewActionMeta(action: string): { label: string; tone: ChipTone } | null {
-  const value = action.trim();
+ *  配色只认后端的 severity，绝不让正则决定颜色：action 是一整句中文，正则不认否定，
+ *  「…被未接受的修订包裹，未参与翻译」会同时命中「接受」和「参与」，之前就被染成绿色
+ *  「已接受」——一条明确要人去看的问题，界面上写着「没事了」。正则现在只用来在同一个
+ *  颜色档里挑一句更短的措辞，挑不出就退回中性说法。
+ *  action 为空或「—」时返回 null，只显示一个「—」。 */
+function reviewActionMeta(row: ReviewRow): { label: string; tone: ChipTone } | null {
+  // Excel 那一路的 action 是固定枚举，标签和配色都已经在映射表里定死，不用猜。
+  const excelAction = EXCEL_REVIEW_ACTIONS[row.actionCode];
+  if (excelAction) return { label: excelAction.label, tone: excelAction.tone };
+
+  const value = row.action.trim();
   if (!value || value === "—") return null;
-  if (/保留原文/.test(value)) return { label: "已保留原文", tone: "dgr" };
+  if (row.severity === "needs_review") {
+    if (/保留原文|保持原文|保留原内容/.test(value)) return { label: "保留原文，待复核", tone: "warn" };
+    return { label: "需复核", tone: "warn" };
+  }
+  if (row.severity === "resolved") {
+    if (/保留原内容|保留原文/.test(value)) return { label: "已保留原文", tone: "ok" };
+    if (/恢复/.test(value)) return { label: "已恢复译文", tone: "ok" };
+    if (/接受|通过/.test(value)) return { label: "已接受", tone: "ok" };
+    if (/写入|输出/.test(value)) return { label: "已写入译文", tone: "ok" };
+    return { label: "已自动处理", tone: "ok" };
+  }
+  // severity 缺失：这条数据的来路不明，只报事实（失败是 action 里唯一能确定的词面），
+  // 其余一律中性——宁可少说一句，也不能替后端下「已处理」的结论。
   if (/失败|拒绝/.test(value)) return { label: "未处理", tone: "dgr" };
-  if (/复核|未通过|待/.test(value)) return { label: "建议复核", tone: "warn" };
-  if (/接受|通过|恢复|采用/.test(value)) return { label: "已接受", tone: "ok" };
-  if (/写入|应用/.test(value)) return { label: "已写入", tone: "ok" };
-  return { label: "已处理", tone: "mute" };
+  return { label: "已记录", tone: "mute" };
 }
 
 interface FileRow {
@@ -423,7 +485,22 @@ async function getClient(): Promise<ApiClient> {
   return connectPromise;
 }
 
-function upsert(task: TaskStatus): TaskEntry {
+/**
+ * 已删除任务的墓碑集合。DELETE 往返期间，4s 前台轮询和 12s 后台巡检可能已经发出
+ * listTasks()，快照里还带着这条记录；等它回来时 upsert 又把记录塞回列表最上方，
+ * 而 refreshRegistry 只做加法，从此这条记录再也不会消失。
+ *
+ * 另一条路——在 refreshRegistry 里以服务端快照为准、把不在快照里的 terminal 记录裁掉
+ * ——不能用：GET /api/tasks 只回 active + recent 的有限窗口，滚出窗口的历史任务本来就
+ * 不在快照里，按快照裁剪会把用户正在看的旧记录一起抹掉，比原来的问题更糟。
+ *
+ * 墓碑只存 id（字符串），进程内有界增长：一次会话里手动删的记录不会有几百条，
+ * 不做淘汰反而更安全——淘汰早了迟到的快照又能把记录塞回来。
+ */
+const deletedTaskIds = new Set<string>();
+
+function upsert(task: TaskStatus): TaskEntry | null {
+  if (deletedTaskIds.has(task.task_id)) return null;
   const previous = tasks.get(task.task_id);
   const entry: TaskEntry = {
     task: { ...previous?.task, ...task },
@@ -495,8 +572,8 @@ async function watchTask(taskId: string): Promise<void> {
     const latest = tasks.get(taskId);
     if (latest && !latest.task.terminal) {
       const refreshed = await client.getTask(taskId);
-      upsert(refreshed);
-      tasks.get(taskId)!.streamState = "connected";
+      const revived = upsert(refreshed);
+      if (revived) revived.streamState = "connected";
     }
   } catch (error) {
     const latest = tasks.get(taskId);
@@ -504,9 +581,9 @@ async function watchTask(taskId: string): Promise<void> {
     try {
       const client = await getClient();
       const refreshed = await client.getTask(taskId);
-      upsert(refreshed);
-      tasks.get(taskId)!.streamState = "connected";
-      if (!refreshed.terminal) {
+      const revived = upsert(refreshed);
+      if (revived) revived.streamState = "connected";
+      if (revived && !refreshed.terminal) {
         window.setTimeout(() => void watchTask(taskId), 0);
         return;
       }
@@ -564,10 +641,15 @@ async function refreshRegistry(): Promise<void> {
     const payload = await client.listTasks();
     const combined = [...(Array.isArray(payload.active) ? payload.active : []), ...(Array.isArray(payload.recent) ? payload.recent : [])];
     for (const task of combined) {
-      upsert(task);
+      // upsert 返回 null 表示这条记录已经被用户删掉（墓碑命中），这次快照只是在途的旧成像，
+      // 不能让它复活，更不能给它挂事件流监听。
+      if (!upsert(task)) continue;
       if (isTaskActive(task)) void watchTask(task.task_id);
     }
-    if (!selectedId && order.length) selectedId = order[0];
+    // 只能选当前筛选下看得见的任务。用 order[0]（全量顺序）的话，「最近结果」筛选下删掉
+    // 最后一条记录、列表进入空态之后，12 秒后的这次巡检会把选中项挪到一个运行中的任务上：
+    // 左边列表空空如也，右边详情却显示着另一条任务的内容。
+    if (!selectedId) selectedId = visibleOrder()[0] ?? null;
     touch();
   } catch {
     // sidecar 尚未就绪或临时不可达；下一次巡检自然会重试，这里不打扰用户。
@@ -686,9 +768,13 @@ async function deleteTaskRecord(taskId: string): Promise<void> {
   }
   // 只有终态任务能删（后端 409 挡住运行中的），所以这里没有事件流要收——
   // watchTask() 对 terminal 任务直接返回，不会有 watcher 把记录 upsert 回来。
+  // 但轮询快照可能是 DELETE 之前成的像，所以还要立个墓碑（见 deletedTaskIds）。
+  deletedTaskIds.add(taskId);
   tasks.delete(taskId);
   order = order.filter((id) => id !== taskId);
-  if (selectedId === taskId) selectedId = order[0] ?? null;
+  // 选中项要落在「当前筛选下看得见」的任务上：order 是全量顺序，删完直接取 order[0]
+  // 会在「活动」筛选下选中一条已完成的任务——左边列表没有高亮项，右边详情却换了内容。
+  if (selectedId === taskId) selectedId = visibleOrder()[0] ?? null;
   renderList();
   renderDetail();
   showToast({ message: "记录已删除；输出文件没有被动过。" });
@@ -717,11 +803,34 @@ function visibleOrder(): string[] {
  * completed_with_issues 这一个状态的统一措辞：一律「需复核」，数得出条数就带上条数。
  * 之前列表卡片有条目时说「需复核 11」、没条目时说「完成但有问题」，详情页又说
  * 「完成但有问题 · 需复核 11」——同一个状态在三处三种说法，用户没法判断是不是三件事。
+ *
+ * 条数也只认一个来源：后端的 `review` 段，不在前端用正则重数一遍。
+ *
+ * 但不能直接用 `review.total_count`：Word 的 review_items 里混着 severity=resolved 的条目
+ * （首次没出译文、严格重试已经把译文补回来了，用户不用管），把它们算进「需复核 N」，
+ * 徽章说 8 条待办、点进去 8 行全是绿色「已自动处理」。所以 Word 只数 needs_review 桶。
+ * Excel 的 counts 按 category 分桶、没有 severity 概念，它写进 review_positions 的每一格
+ * 本来就是复核标记，仍取总数。
  */
+function reviewCount(task: TaskStatus): number | null {
+  const result = record(task.result);
+  const review = record(result.review);
+  const counts = record(review.counts);
+  // severity 分桶（Word）认这两个键；只要出现过其中之一，总数就不是「待办数」。
+  if ("needs_review" in counts || "resolved" in counts) {
+    return firstNumber(counts, ["needs_review"]) ?? 0;
+  }
+  const merged = { ...result, ...record(result.summary), ...record(result.kpi) };
+  return (
+    firstNumber(review, ["total_count"]) ??
+    firstNumber(merged, ["review_count", "review_items_count", "review_total", "review_text_count"])
+  );
+}
+
 function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null {
   if (task.state !== "completed_with_issues") return null;
-  const count = reviewRows(task).filter((row) => row.needsReview).length;
-  return { label: count > 0 ? `需复核 ${count}` : "需复核", tone: "warn" };
+  const count = reviewCount(task);
+  return { label: count !== null && count > 0 ? `需复核 ${count}` : "需复核", tone: "warn" };
 }
 
 function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
@@ -761,11 +870,15 @@ function renderCard(id: string): HTMLDivElement {
   r1.className = "r1";
   const ic = icon(surfaceIcon(entry.task.surface), { size: "sm" });
   r1.append(ic);
-  r1.append(
-    document.createTextNode(
-      `${taskSurfaceLabel(entry.task.surface)} · ${text(entry.task.source_label, `任务 ${entry.task.task_id.slice(0, 8)}`)}`,
-    ),
-  );
+  // 标题挂在独立的 .ttl 上（不是裸文本节点）才能省略号截断：source_label 现在是文件名，
+  // 下划线连写的长英文名是不可断 token，直接铺出去会把状态徽章顶出 340px 的列表宽度，
+  // 用户看不见这条任务到底成没成。完整名字放 title，悬停可看全。
+  const titleText = `${taskSurfaceLabel(entry.task.surface)} · ${text(entry.task.source_label, `任务 ${entry.task.task_id.slice(0, 8)}`)}`;
+  const titleEl = document.createElement("span");
+  titleEl.className = "ttl";
+  titleEl.textContent = titleText;
+  titleEl.title = titleText;
+  r1.append(titleEl);
   const chipInfo = cardChip(entry);
   const chip = createChip({ label: chipInfo.label, tone: chipInfo.tone });
   chip.style.marginLeft = "auto";
@@ -841,7 +954,16 @@ function renderDetail(): void {
   const title = document.createElement("h2");
   title.style.fontSize = "15px";
   title.style.fontWeight = "650";
-  title.textContent = `${taskSurfaceLabel(task.surface)} · ${text(task.source_label, `任务 ${task.task_id.slice(0, 8)}`)}`;
+  // 同卡片标题：长文件名不截断会把右侧「删除记录」「导出诊断」推到可视区外，
+  // 详情页横向不滚动，那几个按钮就彻底点不到了。
+  title.style.flex = "1 1 200px";
+  title.style.minWidth = "0";
+  title.style.overflow = "hidden";
+  title.style.textOverflow = "ellipsis";
+  title.style.whiteSpace = "nowrap";
+  const titleText = `${taskSurfaceLabel(task.surface)} · ${text(task.source_label, `任务 ${task.task_id.slice(0, 8)}`)}`;
+  title.textContent = titleText;
+  title.title = titleText;
   header.append(title);
 
   const meta = taskStateMeta(task, entry.streamState);
@@ -993,7 +1115,7 @@ function renderDetail(): void {
         tr.append(td);
       }
       const actionTd = document.createElement("td");
-      const actionMeta = reviewActionMeta(row.action);
+      const actionMeta = reviewActionMeta(row);
       if (!actionMeta) {
         actionTd.textContent = "—";
       } else {
@@ -1022,6 +1144,16 @@ function renderDetail(): void {
       note.textContent = `仅显示前 50 条，共 ${reviews.length} 条。`;
       detailRootEl.append(note);
     }
+  } else if ((reviewCount(task) ?? 0) > 0) {
+    // 关掉「标记需复核内容」时后端仍然数得出条数，但没有一条能逐格定位（Excel 那一路会
+    // 用 review_marks 回填计数，见 core/task_runner.py）。什么都不显示的话，徽章上的
+    // 「需复核 37」在详情页里无处可查，用户只能以为界面漏了内容。
+    const note = document.createElement("p");
+    note.style.fontSize = "12px";
+    note.style.color = "var(--ink-3)";
+    note.style.margin = "6px 0 0";
+    note.textContent = "本次没有把复核标记写进输出文件，因此无法逐格定位。想要逐格定位，请在开始翻译前打开「标记需复核内容」。";
+    detailRootEl.append(note);
   }
 
   const files = fileRows(task);

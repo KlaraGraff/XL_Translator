@@ -517,7 +517,17 @@ function openDeleteModal(entryToDelete: TmEntry): void {
           variant: "danger-solid",
           onClick: async () => {
             const client = await getClient();
-            await client.request(`/api/tm/entries/${entryToDelete.id}`, { method: "DELETE" });
+            try {
+              await client.request(`/api/tm/entries/${entryToDelete.id}`, { method: "DELETE" });
+            } catch (error) {
+              // 固定词条后端回 409。不接住就只剩一个不关也不报错的弹窗，
+              // 用户点「删除」什么都不发生（openModal 现在兜底，这里再补上「删除失败」前缀）。
+              showToast({ message: `删除失败：${errorMessage(error)}`, error: true });
+              return;
+            }
+            // 条目没了，选中集也得跟着少一个：不删的话「已选 xx / xx」的分子会大于分母，
+            // 而且后续批量操作会带上一个已经不存在的 id。
+            selectedIds.delete(entryToDelete.id);
             await refreshTm();
             renderTable();
             renderStatsRow();
@@ -1383,9 +1393,19 @@ function renderTable(): void {
       const sep = document.createTextNode(" · ");
       const deleteLink = document.createElement("span");
       deleteLink.className = "linklike";
-      deleteLink.style.color = "var(--danger)";
       deleteLink.textContent = "删除";
-      deleteLink.addEventListener("click", () => openDeleteModal(entry));
+      if (entry.pinned) {
+        // 固定词条后端一定回 409。与其让用户点开弹窗、确认、再看一条失败提示，
+        // 不如在这一行就说清楚下一步该做什么（先解除固定）。
+        deleteLink.style.color = "var(--ink-3)";
+        deleteLink.title = "固定词条不能直接删除，请先解除固定。";
+        deleteLink.addEventListener("click", () => {
+          showToast({ message: "固定词条不能直接删除，请先点这一行的固定图标解除固定。", error: true });
+        });
+      } else {
+        deleteLink.style.color = "var(--danger)";
+        deleteLink.addEventListener("click", () => openDeleteModal(entry));
+      }
       actionsTd.append(editLink, sep, deleteLink);
       tr.append(actionsTd);
 

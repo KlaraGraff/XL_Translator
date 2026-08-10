@@ -1107,8 +1107,19 @@ export function openModal(options: ModalOptions): ModalHandle {
     const button = createButton({
       label: action.label,
       variant: action.variant,
+      // 回调里抛出的异常必须在这里落地。之前是裸 `await action.onClick()`，回调一抛错
+      // （典型是后端 409，例如删除固定词条）就变成 unhandled rejection：close() 不执行、
+      // 没有任何提示，用户点了「确认」什么都不发生，只能以为界面卡死。
+      // 失败一律保持弹窗打开——用户看得见错误原因，也能改完再点一次。
+      // 注意：各视图里自己 try/catch 并 showToast 的回调不会走到这里（它们不 rethrow），
+      // 不会出现双份 toast。
       onClick: async () => {
-        await action.onClick?.();
+        try {
+          await action.onClick?.();
+        } catch (error) {
+          showToast({ message: error instanceof Error ? error.message : String(error), error: true });
+          return;
+        }
         if (!action.keepOpen) {
           close();
         }

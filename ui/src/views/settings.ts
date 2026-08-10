@@ -204,6 +204,17 @@ let providerModelDefaults: Record<string, string> = {};
 let providerBaseUrlDisabled = new Set<string>();
 let disabledBaseUrlPlaceholder = "当前服务商无需填写 Base URL";
 
+// 本地运行器的 Base URL 预填表。上面「不留第二份硬编码」的约定只对云端成立——
+// /api/models/provider-defaults 下发的是 CLOUD_PROVIDER_BASE_URL_DEFAULTS，本地运行器
+// 一个都不发。没有这张表，「本地模型」下把运行器从 Ollama 换成 LM Studio 时 Base URL
+// 会原样停在 Ollama 的端口上，还会被失焦自动保存原样存进去，之后每次测试连接都失败，
+// 而界面上没有任何地方提示地址不对。值照抄 config.py 的 OLLAMA_BASE_URL /
+// LM_STUDIO_BASE_URL；custom_local 的端点本来就要用户自己填，没有预设。
+const LOCAL_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
+  ollama: "http://localhost:11434",
+  lm_studio: "http://localhost:1234/v1",
+};
+
 const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = {
   task_history: { title: "清空任务摘要？", message: "将删除当前应用保存的任务摘要，不删除任何输出文件。", confirm: "清空任务摘要" },
   logs: { title: "清空结构化日志？", message: "将删除当前应用日志，不删除诊断、源文件或翻译输出。", confirm: "清空日志" },
@@ -346,6 +357,12 @@ export function unmount(): void {
   hideHint();
   closeLanguagePopover();
   closeMenu();
+  // 离开设置页 = 放弃还没提交的「连接方式」草稿。这份草稿是模块级状态，不清就会跨挂载
+  // 活下来：用户切到「本地模型」没保存、走开、过一会儿回来只改了个模型名，失焦自动保存
+  // 会连着那份陈年草稿一起交上去，把角色静默切成本地模式——用户从头到尾没同意过这件事。
+  // 放在 unmount 而不是 mount：清理必须发生在**离开**的那一刻。放在 mount 里，草稿会在
+  // 页面不可见期间一直挂着，此间任何一次从别处触发的保存仍会把它带上去。
+  modelAccessDraft = {};
   bodyHost = null;
   bannerHost = null;
   navEls = null;
@@ -547,6 +564,9 @@ type ModelFormSubmission = {
   access: string;
   sourceRole: string;
   secondaryId: string;
+  // 这个池子是不是本角色自己的。保存时不能现读全局：草稿刚从「跟随」切回「云端」时，
+  // selectedId 指的还是**来源角色**的连接，拿它去 PUT 本角色的连接路由必然 422。
+  ownsPool: boolean;
   selectedId: string;
   selectedLabel: string;
   provider: string;
@@ -975,6 +995,10 @@ function editableSecondaryConnection(role: string): PoolConnection | null {
   const following = accessFollowSource(role) !== "independent";
   const cloudMode = following || accessMode(role) === "cloud";
   if (!cloudMode || following) return null;
+  // 还有没提交的连接方式变更时，一律不认非主用连接。走连接路由会把唯一写 mode 的角色级
+  // PUT 整段 return 掉：toast 说「连接已保存」，角色却仍停在旧模式上，翻译继续拨旧端点。
+  // 角色级的改动必须先落地，之后才谈得上编辑池子里的某一条。
+  if (modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role)) return null;
   if (text(record(modelRoles[role]).connection_pool_role, role) !== role) return null;
   const selected = activeConnection(role);
   return selected && !selected.primary ? selected : null;
@@ -1057,7 +1081,13 @@ function renderModelsPage(host: HTMLElement): void {
   const providers = cloudMode ? CLOUD_PROVIDERS : LOCAL_PROVIDERS;
 
   const selected = activeConnection(role);
-  const editingSecondary = editableSecondaryConnection(role) !== null;
+  // 和其余表单字段一样在渲染这一刻算死（见 ModelFormSubmission）。以前它是在排队回调
+  // **内部**才求值的：前一笔保存还在飞、用户又点了另一行时，第二笔提交会重新读全局状态
+  // 拿到 null，本该写进 B 的服务商/Base URL/模型名改走角色级 PUT，被后端同步到 entry 0，
+  // 等于把 B 的端点覆盖到主用连接 A 上。
+  const secondaryConnection = editableSecondaryConnection(role);
+  const secondaryId = secondaryConnection?.id ?? "";
+  const editingSecondary = secondaryConnection !== null;
   const formProvider = editingSecondary ? selected!.provider : provider;
   const formBaseUrl = editingSecondary ? selected!.base_url : baseUrl;
   const formModel = editingSecondary ? selected!.model : model;
@@ -1069,8 +1099,11 @@ function renderModelsPage(host: HTMLElement): void {
 
   // ---- 连接列表卡 ----
   if (cloudMode) {
-    const ownerRole = text(rolePayload.connection_pool_role, role);
-    const borrowed = ownerRole !== role;
+    // 整张卡的可操作性只认 ownsPool，不认服务端的 connection_pool_role。后者在草稿刚切到
+    // 「跟随」时还停在旧值：那一刻「新增连接」还能点，加出来的是一条所有输入框都灰掉、
+    // 永远填不了的空连接；非主用行的「测试」也还能点，结论记在连接上，详情卡却因为
+    // ownsPool=false 回读角色级状态——圆点变绿，胶囊仍写着「未测试」。
+    const borrowed = !ownsPool;
     const connections = roleConnections(role);
     const addBtn = createButton({
       label: "新增连接", size: "mini", icon: "plus",
@@ -1168,6 +1201,10 @@ function renderModelsPage(host: HTMLElement): void {
     input.checked = access === option.value;
     input.addEventListener("change", () => {
       modelAccessDraft[role] = option.value;
+      // 切换连接方式是角色级动作，面板必须同时退回主用连接。停在某条非主用连接上时，
+      // 界面显示的字段（那条连接的端点）和这一改动该走的路由（角色级 PUT）必然对不上，
+      // 保存要么写错对象、要么把角色级改动整个吞掉。
+      delete selectedConnection[role];
       renderBody();
     });
     label.append(input, document.createTextNode(option.label));
@@ -1223,7 +1260,15 @@ function renderModelsPage(host: HTMLElement): void {
     baseUrlField.input.placeholder = "https://.../v1";
   };
   onProviderChange = (value) => {
-    if (!cloudMode) return;
+    if (!cloudMode) {
+      // 本地运行器换人时 Base URL 也得跟着换：Ollama 和 LM Studio 监听的是不同端口，
+      // 留着旧地址会被失焦自动保存原样存下去，之后每次「测试连接」都失败，而界面上
+      // 没有一处提示地址不对。语义和云端那支一致——只在切换动作真的发生时重填，
+      // 没有预设的自定义本地服务保持原样，不拿空字符串洗掉用户填的值。
+      const localDefault = LOCAL_PROVIDER_BASE_URL_DEFAULTS[value];
+      if (localDefault) baseUrlField.input.value = localDefault;
+      return;
+    }
     applyProviderDerivedState(value);
     baseUrlField.input.value = providerBaseUrlDisabled.has(value)
       ? ""
@@ -1247,7 +1292,11 @@ function renderModelsPage(host: HTMLElement): void {
 
   let connectionLabelField: HTMLInputElement | null = null;
   if (cloudMode) {
-    const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商", disabled: borrowedPool });
+    // 可填性看 ownsPool，不是 borrowedPool（后者只看草稿是否跟随）。草稿刚从「跟随」切回
+    // 「云端」、本角色还没有自己的池子时，框里摆的是**来源角色**那条连接的名字：改了它，
+    // 自动保存会拿来源池的 id 去 PUT 本角色的连接路由，后端一句「找不到要修改的连接」422，
+    // 名字丢了，用户只看到一声报错。
+    const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商", disabled: !ownsPool });
     connectionLabelField = labelField.input;
     connectionLabelField.id = "settings-model-connection-label";
     detailBody.append(labelField.root);
@@ -1261,9 +1310,14 @@ function renderModelsPage(host: HTMLElement): void {
     keyInput.autocomplete = "off";
     // 已保存的密钥直接以掩码当占位符摆在框里，不再在下面挂一行注释：注释和输入框
     // 中间隔着一段空白，「已保存」和「这个框是空的」看上去像在说两件互相矛盾的事。
+    // 掩码只在池子是本角色自己的时候才作数：草稿刚切回「云端」时 selected 是**来源角色**
+    // 的主连接，照它的掩码显示等于用别人的 Key 冒充「本角色已经存过密钥了」，用户会以为
+    // 留空即可，结果这个角色一个 Key 都没有。
     keyInput.placeholder = borrowedPool
       ? "跟随时使用来源角色的密钥"
-      : selected?.has_api_key ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
+      : ownsPool && selected?.has_api_key ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
+    // 这里刻意保持 borrowedPool 而不是 !ownsPool：草稿切回云端时用户应该能顺手把 Key 填上，
+    // 那条路径按 provider 作用域存（见 saveModel），不需要本角色先有自己的池子。
     keyInput.disabled = borrowedPool;
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
@@ -1345,7 +1399,8 @@ function renderModelsPage(host: HTMLElement): void {
     role,
     access,
     sourceRole,
-    secondaryId: editableSecondaryConnection(role)?.id ?? "",
+    secondaryId,
+    ownsPool,
     selectedId: selected?.id ?? "",
     selectedLabel: selected?.label ?? "",
     provider: providerSelectEl.value,
@@ -1497,17 +1552,42 @@ async function saveModel(
   const payload = following
     ? { source_role: sourceRole, model: form.model }
     : { source_role: "independent", mode, provider: form.provider, base_url: form.baseUrl, model: form.model };
-  await client.request(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
+  const roleAfter = await client.request<JsonObject>(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
   delete modelAccessDraft[role];
+  // 目标连接必须从**这一次写入之后**的角色状态里读，不能用渲染时算下来的 form.ownsPool /
+  // form.selectedId。草稿刚从「跟随」切回「云端」时那两个值说的还是来源角色的池子：拿
+  // 来源池的 id 去 PUT 本角色必然 422，而本角色自己那条旧连接（后端会原样取回，见
+  // settings.py::_sync_connection_pool）上可能还留着早年的 conn:: 密钥，会把这一次输入的
+  // 新 Key 整个遮住——面板显示「已保存」，拨号用的却是旧 Key。
+  const poolAfter = Array.isArray(roleAfter.connections) ? roleAfter.connections.map(record) : [];
+  const ownsPoolAfter = text(roleAfter.connection_pool_role, role) === role;
+  const primaryIdAfter = ownsPoolAfter ? text(poolAfter[0]?.id, "") : "";
+  // 密钥永远属于连接。后端取 Key 时连接作用域压过 provider 作用域
+  // （core/model_roles.py::_connection_api_key），主用连接却一直只写 provider 作用域：
+  // 「在第二条连接上存过 Key → 把它设为主用 → 再改 Key」之后，新 Key 永远被那条连接
+  // 早年留下的 conn:: 作用域遮住，应用照旧拿旧 Key 拨号，用户怎么改都改不动。
+  // 连接名称和它一起走同一条连接路由，省掉一次多余的请求。
+  if (!following && mode === "cloud" && primaryIdAfter) {
+    const body: JsonObject = {};
+    // 连接名称输入框只在云端且拥有自己的池子时才可填；其余情况 form.connectionLabel 恒等于
+    // form.selectedLabel，不会误提交——尤其不能把主用连接的名字清掉。
+    if (form.ownsPool && form.connectionLabel !== form.selectedLabel) body.label = form.connectionLabel;
+    // 空串在后端表示「不动已保存的密钥」，和输入框的占位符说的是同一件事。
+    if (form.apiKey) body.api_key = form.apiKey;
+    // 端点三件套已经由上面的角色级 PUT 写进主用连接了，这里再送一遍只会白白把
+    // 「测试通过」打回「未测试」，所以只送真正改了的字段。
+    if (Object.keys(body).length) {
+      await client.request(`/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(primaryIdAfter)}`, {
+        method: "PUT", body: JSON.stringify(body),
+      });
+    }
+  }
+  // provider 作用域照旧要写，不是二选一。同一个服务商下的另一个独立角色（常见：翻译和
+  // PDF 审阅都用 deepseek，只是模型不同）自己那条连接从没单独存过 Key，解析时落到
+  // provider 作用域上。只写连接作用域的话，用户在厂商后台轮换 Key、在「翻译」面板改一次，
+  // 另一个角色就会静默 401，而它的面板因为同一条回退仍显示「已保存」。
   if (form.apiKey && mode === "cloud") {
     await client.request(`/api/keys/${form.provider}`, { method: "PUT", body: JSON.stringify({ api_key: form.apiKey, base_url: form.baseUrl }) });
-  }
-  // 连接名称输入框只在云端且不跟随时才渲染；其余情况 form.connectionLabel 恒为空串，
-  // 拿它去比对就会把主用连接的名字清掉。
-  if (!following && mode === "cloud" && form.selectedId && form.connectionLabel !== form.selectedLabel) {
-    await client.request(`/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.selectedId)}`, {
-      method: "PUT", body: JSON.stringify({ label: form.connectionLabel }),
-    });
   }
   clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
   await refreshSettings();
@@ -1603,7 +1683,9 @@ function openImportPreviewModal(): void {
     actions: [
       { label: "取消", variant: "default" },
       {
-        label: "确认合并", variant: "primary", keepOpen: true,
+        // 按钮和 toast 都跟着正文的口径走：连接列表是整份替换的，再说「合并」会让用户
+        // 以为本机自己加的连接还在，而它们连同已保存的 Key 已经没了。
+        label: "确认替换并导入", variant: "primary", keepOpen: true,
         onClick: async () => {
           try {
             const result = await client.request<{ imported_key_count: number }>("/api/model-config/import", {
@@ -1614,7 +1696,7 @@ function openImportPreviewModal(): void {
             for (const role of Object.keys(modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。");
             renderBody();
             handle.close();
-            showToast({ message: `已合并配置与 ${result.imported_key_count} 个密钥作用域；所有受影响角色均需重新测试。` });
+            showToast({ message: `已导入配置，文件提到的角色其连接列表已整份替换；同时写入 ${result.imported_key_count} 个密钥作用域。所有受影响角色均需重新测试。` });
           } catch (error) {
             showToast({ message: errorMessage(error), error: true });
           }
