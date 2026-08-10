@@ -74,34 +74,38 @@ class RouteOrderingTests(unittest.TestCase):
         response = self.client.post("/api/tm/entries/not-a-number/pin", json={"pinned": True})
         self.assertEqual(response.status_code, 422)
 
-    def test_literal_connectivity_routes_reach_their_own_handlers(self) -> None:
-        """The literal handlers skip the role resolution that ``/{role}`` runs.
+    def test_connectivity_aliases_forward_the_panel_connection_id(self) -> None:
+        """``image`` is a role key, not just a legacy alias.
 
-        That difference is what makes the routing observable: with role
-        resolution broken, only a request that really lands on the literal
-        handler can still answer 200.
+        The three spellings used to be literal routes declared ahead of
+        ``/{role}``, and one of them collided with the panel's own role key for
+        the PDF 翻译模型.  Those handlers took no payload, so testing a
+        non-primary connection of that role dialled the primary instead and
+        wrote the verdict onto it.  The aliases must now land on the
+        parameterised handler and carry the connection through.
         """
         checks = {
             "text": "check_connectivity",
+            "translation": "check_connectivity",
             "image": "check_image_generation_connectivity",
             "pdf-review": "check_pdf_review_connectivity",
         }
         for path_segment, function_name in checks.items():
             with self.subTest(role=path_segment):
-                with (
-                    patch(
-                        f"api.app.{function_name}",
-                        return_value={"ok": True, "which": path_segment},
-                    ) as checker,
-                    patch(
-                        "api.app.resolve_effective_model_config",
-                        side_effect=AssertionError("role resolution belongs to /{role}"),
-                    ),
-                ):
-                    response = self.client.post(f"/api/models/connectivity/{path_segment}")
+                seen: dict[str, str] = {}
+
+                def _spy(_settings, *, connection_id="", **_kwargs):
+                    seen["connection_id"] = connection_id
+                    return {"ok": True, "which": path_segment}
+
+                with patch(f"api.app.{function_name}", _spy):
+                    response = self.client.post(
+                        f"/api/models/connectivity/{path_segment}",
+                        json={"connection_id": "conn-77"},
+                    )
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["which"], path_segment)
-                self.assertEqual(checker.call_count, 1)
+                self.assertEqual(seen["connection_id"], "conn-77")
 
     def test_parameterised_connectivity_route_still_serves_other_roles(self) -> None:
         with patch("api.app.check_connectivity", return_value={"ok": True}):

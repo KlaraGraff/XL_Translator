@@ -71,6 +71,7 @@ from core.model_roles import (
     add_role_connection,
     allowed_source_roles,
     list_effective_role_connections,
+    list_role_connections,
     model_config_signature,
     model_role_owner,
     pool_role,
@@ -78,10 +79,11 @@ from core.model_roles import (
     reorder_role_connections,
     role_label,
     update_role_connection,
-    provider_supports_capability,
     reset_model_role_availability,
+    reset_role_connection_availability,
     resolve_effective_model_config,
     validate_all_model_roles,
+    validate_model_capability,
 )
 from core.model_throughput import (
     batch_size_bounds,
@@ -659,10 +661,16 @@ def create_app(
             raise HTTPException(422, "Provider is required.")
         settings = load_settings()
         before_signatures = _effective_role_signatures(settings)
+        before_credentials = _connection_credentials(settings)
         save_key(provider, payload.api_key, payload.base_url)
         _reset_roles_with_changed_effective_signature(
             settings,
             before_signatures,
+            message="API Key 已变化，请重新测试当前配置。",
+        )
+        _reset_connections_with_changed_credential(
+            settings,
+            before_credentials,
             message="API Key 已变化，请重新测试当前配置。",
         )
         save_settings(settings)
@@ -676,10 +684,16 @@ def create_app(
     def remove_key(provider: str, base_url: str = "") -> Response:
         settings = load_settings()
         before_signatures = _effective_role_signatures(settings)
+        before_credentials = _connection_credentials(settings)
         delete_key(provider, base_url)
         _reset_roles_with_changed_effective_signature(
             settings,
             before_signatures,
+            message="API Key 已变化，请重新测试当前配置。",
+        )
+        _reset_connections_with_changed_credential(
+            settings,
+            before_credentials,
             message="API Key 已变化，请重新测试当前配置。",
         )
         save_settings(settings)
@@ -1257,9 +1271,16 @@ def create_app(
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
-        save_settings(settings)
         # An empty string means "leave the stored key alone", matching the
         # placeholder shown in the panel; only a non-empty value replaces it.
+        if payload.api_key:
+            reset_role_connection_availability(
+                settings,
+                role,
+                connection_id,
+                message="API Key 已变化，请重新测试当前配置。",
+            )
+        save_settings(settings)
         if payload.api_key:
             save_connection_key(connection_id, payload.api_key)
         return _model_role_payload(load_settings(), role)
@@ -1292,30 +1313,15 @@ def create_app(
         save_settings(settings)
         return _model_role_payload(load_settings(), role)
 
-    # Same declaration-order rule as the TM bulk routes: these three literal
-    # paths would otherwise be swallowed by ``/connectivity/{role}`` below and
-    # never run at all.
-    @app.post("/api/models/connectivity/text")
-    def check_text_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
-    @app.post("/api/models/connectivity/image")
-    def check_image_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_image_generation_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
-    @app.post("/api/models/connectivity/pdf-review")
-    def check_review_connectivity() -> dict[str, Any]:
-        settings = load_settings()
-        result = check_pdf_review_connectivity(settings)
-        save_settings(settings)
-        return _json_safe(result)
-
+    # ``text`` / ``image`` / ``pdf-review`` used to be three literal routes
+    # declared ahead of ``/connectivity/{role}``.  Declaration order made them
+    # win — and one of them collided with a real role key: the panel calls the
+    # PDF 翻译模型 role ``image`` (ui/src/views/settings.ts), so every test of
+    # that role landed on a handler that took no payload, dropped the panel's
+    # ``connection_id`` and dialled the primary instead.  A non-primary
+    # connection could never be tested, and its verdict silently overwrote the
+    # primary's.  The parameterised route already accepts all three spellings
+    # as aliases below, so the literals are gone rather than reordered.
     @app.post("/api/models/connectivity/{role}")
     def check_model_role_connectivity(
         role: str,
@@ -1342,8 +1348,12 @@ def create_app(
                 role,
                 connection_id=connection_id,
             )
-            if not provider_supports_capability(config.provider, config.capability):
-                raise ValueError(f"服务商 {config.provider} 不支持 {config.capability} 能力。")
+            # 用 validate_model_capability 而不是裸 provider_supports_capability：
+            # 后者的白名单只列云端服务商，本地运行器（ollama / lm_studio）永远不在
+            # 里面，于是「本地模型 → 测试连接」一律 422「服务商 ollama 不支持 text
+            # 能力」——用户根本没法从面板验证本机运行器是否连得上。本地模式的能力
+            # 规则（只支持 text）由 validate_model_capability 统一裁定。
+            validate_model_capability(config)
             if role == ROLE_TRANSLATION:
                 result = check_connectivity(settings, connection_id=connection_id)
             elif role == ROLE_CLEANER:
@@ -1780,8 +1790,12 @@ def _connection_payload(
     config: EffectiveModelConfig,
 ) -> dict[str, Any]:
     """Describe one pool connection, including a masked hint of its saved key."""
+    # 必须和拨号时的取值顺序一致（core/model_roles.py::_connection_api_key）：连接
+    # 作用域优先，取不到就回落到 provider + Base URL 作用域。以前非主用连接不做这个
+    # 回落，于是任何靠 provider 作用域拿密钥的第二条连接（带 Key 导入进来的、老配置
+    # 升上来的）都被标成「无密钥」，密钥框也不显示已保存掩码——它其实翻译得好好的。
     api_key = get_connection_scoped_key(connection.id) or (
-        config.api_key if index == 0 else ""
+        config.api_key if index == 0 else get_key(connection.provider, connection.base_url)
     )
     return {
         "id": connection.id,
@@ -1872,6 +1886,51 @@ def _effective_role_signatures(settings: AppSettings) -> dict[str, str]:
             # error.  Missing signatures must still cause a reset if repaired.
             continue
     return signatures
+
+
+def _connection_credentials(settings: AppSettings) -> dict[tuple[str, str], str]:
+    """按 (角色, 连接 id) 记下每条连接**实际会用到**的密钥。
+
+    角色级签名只覆盖四条主用连接，非主用连接靠 provider + Base URL 作用域回落取
+    密钥（``core/model_roles.py::_connection_api_key``）。轮换那个作用域下的密钥
+    时，它们的「测试通过」不属于任何角色签名，于是原样留着——面板上仍是绿点，可
+    那把测出绿点的密钥已经不存在了。
+    """
+    snapshot: dict[tuple[str, str], str] = {}
+    for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        try:
+            connections = list_role_connections(settings, role)
+        except Exception:
+            continue
+        for connection in connections:
+            snapshot[(role, connection.id)] = get_connection_scoped_key(
+                connection.id
+            ) or get_key(connection.provider, connection.base_url)
+    return snapshot
+
+
+def _reset_connections_with_changed_credential(
+    settings: AppSettings,
+    before: dict[tuple[str, str], str],
+    *,
+    message: str,
+) -> None:
+    """Invalidate pool entries whose resolved key is no longer the tested one."""
+    for (role, connection_id), previous in before.items():
+        try:
+            connections = list_role_connections(settings, role)
+        except Exception:
+            continue
+        for connection in connections:
+            if connection.id != connection_id:
+                continue
+            current = get_connection_scoped_key(connection.id) or get_key(
+                connection.provider, connection.base_url
+            )
+            if current != previous:
+                reset_role_connection_availability(
+                    settings, role, connection_id, message=message
+                )
 
 
 def _reset_roles_with_changed_effective_signature(

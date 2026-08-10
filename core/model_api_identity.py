@@ -94,6 +94,11 @@ def task_api_context_for_page(
     role_connection_chains: dict[str, tuple[str, ...]] = {}
     shared_roles: set[str] = set()
     configs: list[EffectiveModelConfig] = []
+    # The entries a running task may switch to.  Kept apart from ``configs``
+    # because only the allocated entry describes what the task is using now:
+    # the API footprint, the model snapshot and the concurrency budget must not
+    # count connections nothing has dialled.
+    fallback_configs: list[EffectiveModelConfig] = []
     taken: set[str] = set(busy_connection_ids)
     for role in task_model_roles_for_page(settings, page_key):
         # A following role dials its source's pool, so allocate from that pool.
@@ -122,6 +127,16 @@ def task_api_context_for_page(
                 connection_id=allocation.connection.id,
             )
         )
+        for candidate in allocation.candidates:
+            if candidate.id == allocation.connection.id:
+                continue
+            fallback_configs.append(
+                resolve_effective_model_config(
+                    settings,
+                    role,
+                    connection_id=candidate.id,
+                )
+            )
 
     api_groups = frozenset(api_group_signature_from_config(config) for config in configs)
     key_overrides: dict[str, str] = {}
@@ -193,6 +208,22 @@ def task_api_context_for_page(
         scope = api_key_scope(provider, base_url)
         if scope:
             key_overrides.setdefault(scope, api_key)
+
+    # A task that switches connections mid-run builds the next engine from this
+    # snapshot, on a worker thread where nothing else is visible.  Without the
+    # candidates' own keys in it, that build resolved through the provider scope
+    # — which the allocated entry just pinned to its own key — so failing over
+    # to a second account on the same service replayed the credential that had
+    # already failed.  Only the ``conn::`` scopes are added: the provider scope
+    # still belongs to the entry the task started on.
+    for config in fallback_configs:
+        if config.mode != "cloud":
+            continue
+        api_key = str(config.api_key or "").strip()
+        scope = connection_key_scope(config.connection_id)
+        if api_key and scope:
+            key_overrides.setdefault(scope, api_key)
+
     return TaskApiContext(
         api_groups=api_groups,
         key_overrides=key_overrides,

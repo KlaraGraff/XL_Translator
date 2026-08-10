@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import settings as settings_module
 from core.engine_dispatcher import build_role_engine
 from core.failover_engine import (
     FailoverTranslationEngine,
     concrete_base_engine_members,
 )
 from core.language_preflight import TranslationLanguageResult
+from core.model_api_identity import task_api_context_for_page
 from core.model_roles import ROLE_TRANSLATION, add_role_connection
 from engines.base_engine import TranslationEngine
 from settings import (
     AppSettings,
     ModelConnection,
+    connection_key_scope,
     current_key_overrides,
     provider_key_overrides,
 )
@@ -351,7 +356,22 @@ class FailoverEngineTests(unittest.TestCase):
         self.assertEqual(engine.current_connection.label, "B")
 
 
-class RoleEngineChainTests(unittest.TestCase):
+class _IsolatedKeyStore(unittest.TestCase):
+    """Point the key store at a throwaway directory for the whole test."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for patcher in (
+            patch.object(settings_module, "APP_DATA_DIR", root),
+            patch.object(settings_module, "KEYS_PATH", root / "keys.json"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class RoleEngineChainTests(_IsolatedKeyStore):
     """build_role_engine must honour follow resolution and frozen keys."""
 
     def _settings_with_backup(self) -> tuple[AppSettings, list[str]]:
@@ -376,11 +396,7 @@ class RoleEngineChainTests(unittest.TestCase):
             built.append(role_settings)
             return _StubEngine("stub")
 
-        with (
-            patch("core.engine_dispatcher.build_engine", side_effect=_fake_build_engine),
-            patch("core.model_roles.get_key", return_value="secret"),
-            patch("core.model_roles.get_connection_scoped_key", return_value=""),
-        ):
+        with patch("core.engine_dispatcher.build_engine", side_effect=_fake_build_engine):
             engine = build_role_engine(settings, "cleaner", connection_ids=chain)
         self.assertIsInstance(engine, FailoverTranslationEngine)
 
@@ -394,11 +410,9 @@ class RoleEngineChainTests(unittest.TestCase):
                 return _StubEngine("B")
             return _StubEngine("A", _HttpError(401))
 
-        with (
-            patch("core.engine_dispatcher.build_engine", side_effect=_fake_build_engine),
-            patch("core.model_roles.get_key", return_value="secret"),
-            patch("core.model_roles.get_connection_scoped_key", return_value=""),
-        ):
+        # No key patches: the key store is a throwaway empty directory, so the
+        # only credential in play is the frozen one — which is the point.
+        with patch("core.engine_dispatcher.build_engine", side_effect=_fake_build_engine):
             with provider_key_overrides({"custom_openai": "frozen-key"}):
                 engine = build_role_engine(
                     settings,
@@ -415,10 +429,88 @@ class RoleEngineChainTests(unittest.TestCase):
             worker.join(timeout=10)
 
         self.assertEqual(outcome.get("value"), {"hello": "B:hello"})
-        self.assertEqual(
-            overrides_seen,
-            [{"custom_openai": "frozen-key"}, {"custom_openai": "frozen-key"}],
+        # Each build layers the candidate's own resolved key on top of the
+        # snapshot, so the map is no longer the snapshot verbatim — what matters
+        # is that the frozen entry survived onto the worker thread both times.
+        self.assertEqual(len(overrides_seen), 2)
+        for overrides in overrides_seen:
+            self.assertEqual((overrides or {}).get("custom_openai"), "frozen-key")
+
+
+class FailoverCredentialTests(_IsolatedKeyStore):
+    """两条连接可以是同一家服务、同一个 Base URL，但用两个账号的 Key。
+
+    这正是「一个账号额度用完了就切到另一个账号」的配置。切换后如果还拿着上一个
+    账号的 Key 去拨，换来的只会是同一个拒绝——备用连接等于形同虚设。
+    """
+
+    def _two_accounts_on_one_endpoint(self) -> tuple[AppSettings, list[str]]:
+        settings = AppSettings()
+        settings.engine.mode = "cloud"
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_base_url = "https://vendor.example/v1"
+        settings.engine.cloud_model = "vendor-model"
+        settings = AppSettings(**settings.model_dump())
+        add_role_connection(
+            settings,
+            ROLE_TRANSLATION,
+            label="账号 B",
+            provider="custom_openai",
+            model="vendor-model",
+            base_url="https://vendor.example/v1",
         )
+        settings = AppSettings(**settings.model_dump())
+        ids = [conn.id for conn in settings.engine.connections]
+        settings_module.save_connection_key(ids[0], "sk-ACCOUNT-A")
+        settings_module.save_connection_key(ids[1], "sk-ACCOUNT-B")
+        return settings, ids
+
+    def test_the_task_snapshot_carries_every_candidates_key(self) -> None:
+        settings, ids = self._two_accounts_on_one_endpoint()
+
+        context = task_api_context_for_page(settings, "excel_translate")
+
+        self.assertEqual(list(context.role_connection_chains[ROLE_TRANSLATION]), ids)
+        self.assertEqual(
+            context.key_overrides.get(connection_key_scope(ids[1])),
+            "sk-ACCOUNT-B",
+        )
+
+    def test_a_switch_dials_the_second_account_with_its_own_key(self) -> None:
+        settings, ids = self._two_accounts_on_one_endpoint()
+        context = task_api_context_for_page(settings, "excel_translate")
+        chain = context.role_connection_chains[ROLE_TRANSLATION]
+        keys_seen: list[str] = []
+
+        def _fake_build_engine(role_settings):
+            engine_settings = role_settings.engine
+            # What the real engine constructors ask for, on the thread and in
+            # the override context the build actually happens in.
+            keys_seen.append(
+                settings_module.get_key(
+                    engine_settings.cloud_provider,
+                    engine_settings.cloud_base_url,
+                )
+            )
+            if len(keys_seen) == 1:
+                return _StubEngine("A", _HttpError(401))
+            return _StubEngine("B")
+
+        with patch("core.engine_dispatcher.build_engine", side_effect=_fake_build_engine):
+            with provider_key_overrides(context.key_overrides):
+                engine = build_role_engine(
+                    settings,
+                    ROLE_TRANSLATION,
+                    connection_ids=chain,
+                )
+            # The switch builds on a pool worker thread, outside the snapshot.
+            outcome: dict[str, dict[str, str]] = {}
+            worker = threading.Thread(target=lambda: outcome.update(value=_run(engine)))
+            worker.start()
+            worker.join(timeout=10)
+
+        self.assertEqual(outcome.get("value"), {"hello": "B:hello"})
+        self.assertEqual(keys_seen, ["sk-ACCOUNT-A", "sk-ACCOUNT-B"])
 
 
 if __name__ == "__main__":

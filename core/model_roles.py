@@ -289,6 +289,36 @@ def update_role_connection(
     return connection
 
 
+def reset_role_connection_availability(
+    settings: AppSettings,
+    role: str,
+    connection_id: str,
+    *,
+    message: str = "当前配置尚未测试。",
+) -> bool:
+    """把一条连接的测试结论打回「未测试」，返回是否真的动过。
+
+    换密钥不改 provider / model / base_url，所以 ``update_role_connection`` 的
+    值比对看不到任何变化，那条连接会顶着上一把密钥测出来的「测试通过」继续显示绿
+    点，连提示语都还是旧的成功消息。密钥换了，上一次的结论就不再描述这条连接。
+    """
+    owner = role_pool_owner(settings, role)
+    wanted = str(connection_id or "").strip()
+    for connection in owner.connections:
+        if connection.id != wanted:
+            continue
+        connection.availability_status = "unknown"
+        connection.availability_message = message
+        connection.availability_signature = ""
+        connection.availability_checked_at = ""
+        # 校验器是「owner 的旧字段 → entry 0」单向覆盖的，主用连接只改连接对象上的
+        # 那几个字段，下次载入就被旧结论原样盖回来。
+        if owner.connections and owner.connections[0].id == connection.id:
+            _apply_primary_to_legacy_fields(owner)
+        return True
+    return False
+
+
 def remove_role_connection(settings: AppSettings, role: str, connection_id: str) -> None:
     """Remove one pool entry; a role must keep at least one."""
     owner = role_pool_owner(settings, role)

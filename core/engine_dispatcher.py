@@ -225,7 +225,12 @@ def build_role_engine(
     With fewer than two usable connections this returns the plain engine, so
     the common single-connection setup keeps exactly the behaviour it had.
     """
-    from core.model_roles import list_effective_role_connections, settings_for_text_role
+    from core.model_roles import (
+        connection_key_overrides,
+        list_effective_role_connections,
+        resolve_effective_model_config,
+        settings_for_text_role,
+    )
     from settings import current_key_overrides, provider_key_overrides
 
     # A runtime switch builds the next engine on a pool worker thread, where
@@ -241,6 +246,22 @@ def build_role_engine(
             connection_id=connection.id,
         )
         with provider_key_overrides(key_overrides):
+            # Resolve inside the snapshot so a running task keeps the credentials
+            # it started with; the connection's own ``conn::`` key wins there too.
+            config = resolve_effective_model_config(
+                settings,
+                role,
+                connection_id=connection.id,
+            )
+        # ``build_engine`` only ever asks ``get_key(provider, base_url)``, and the
+        # snapshot pins that scope to the connection the task started on.  Two pool
+        # entries on one provider and Base URL — the same service, two accounts —
+        # therefore both dialled the first entry's key, so failing over after a
+        # quota rejection replayed the credential that had just been rejected.
+        # Layer this candidate's own key over that scope for its own build.
+        merged = dict(key_overrides or {})
+        merged.update(connection_key_overrides(config))
+        with provider_key_overrides(merged):
             return build_engine(role_settings)
 
     # The chain ids were generated from the effective (follow-resolved) pool,
