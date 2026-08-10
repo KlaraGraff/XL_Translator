@@ -136,8 +136,16 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
             "这个文件不是文档翻译配置，无法导入。模型服务的配置请在「模型服务」页导入。"
         )
     version = raw.get("version")
-    if not isinstance(version, int) or version > DOCUMENT_CONFIG_EXPORT_VERSION:
-        raise ValueError("这个文档翻译配置来自更高版本的应用，当前版本读不了。")
+    if not isinstance(version, int) or isinstance(version, bool):
+        # 缺版本号说的是「这文件不对」，不是「你的应用太旧」。原来两种情况共用
+        # 一句话，用户照着提示去升级应用，升完还是导不进来。
+        raise ValueError(
+            "这个文件缺少版本号，不像是本应用导出的文档翻译配置。请重新导出一份。"
+        )
+    if version > DOCUMENT_CONFIG_EXPORT_VERSION:
+        raise ValueError(
+            "这个文档翻译配置来自更高版本的应用，当前版本读不了。请先把应用升级到最新版再导入。"
+        )
     document = raw.get("document")
     if not isinstance(document, dict):
         raise ValueError("文件里没有 document 段，没有可导入的内容。")
@@ -176,6 +184,16 @@ def apply_document_config_import(
             current = dict(payload.get(key) or {})
             current.update(value)
             payload[key] = current
+            continue
+        if key == "custom_target_langs":
+            # 自定义语言取并集，本机已有的一条都不删。翻译记忆库的词条是按语言存
+            # 的，删掉一门自定义语言，那门语言下的全部译文当场从库里消失——而用户
+            # 做的只是「导入同事的文档配置」。本机的排在前面：重名时校验器保留先
+            # 出现的那条，也就保住了它原来的语言代码，TM 才对得上。
+            payload[key] = [
+                *(payload.get(key) or []),
+                *(value if isinstance(value, list) else []),
+            ]
             continue
         payload[key] = value
     # Validation is what turns a bad colour string or an out-of-range batch size

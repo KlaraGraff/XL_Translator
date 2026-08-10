@@ -355,6 +355,49 @@ class ApiAppTests(unittest.TestCase):
             404,
         )
 
+    def test_a_pruned_diagnostic_record_is_a_404_not_a_500(self) -> None:
+        """记录轮转清理掉之后，索引里还留着条目，下载不该报「服务器内部错误」。"""
+        record = {
+            "record_id": "gone",
+            "record_dir": str(self.root / "diagnostics" / "gone"),
+        }
+        with patch.object(diagnostics, "find_diagnostic_record", return_value=record):
+            response = self.client.get("/api/diagnostics/gone.zip")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("清理", response.json()["detail"])
+
+    def test_a_failed_settings_save_leaves_no_imported_key_behind(self) -> None:
+        """密钥文件和设置文件是两个文件，不能一个写了另一个没写。
+
+        先写密钥的话，设置存不下去时界面报「导入失败」，密钥文件里却已经躺着一份
+        没有任何配置指向的凭据。
+        """
+        payload = {
+            "type": "translator_model_config",
+            "version": 3,
+            "model_profiles": {
+                "translation": {
+                    "mode": "cloud",
+                    "source_role": "independent",
+                    "cloud": {
+                        "provider": "custom_openai",
+                        "model": "imported-model",
+                        "base_url": "https://import.example/v1",
+                        "api_key": "sk-IMPORTED",
+                    },
+                }
+            },
+        }
+        with patch("api.app.save_settings", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.client.post("/api/model-config/import", json=payload)
+
+        self.assertEqual(
+            settings_module.get_key("custom_openai", "https://import.example/v1"),
+            "",
+        )
+
     def test_token_protects_every_api_route_including_health(self) -> None:
         client = TestClient(create_app(auth_token="sidecar-token"))
         self.assertEqual(client.get("/health").status_code, 401)

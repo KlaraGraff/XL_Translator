@@ -114,9 +114,17 @@ def parse_model_config_import(raw: object) -> ImportedModelConfig:
     """Parse only the current v3 model-configuration payload."""
     if not isinstance(raw, dict):
         raise ValueError("Imported configuration must be a JSON object.")
-    if raw.get("type") != MODEL_CONFIG_EXPORT_TYPE or raw.get("version") != MODEL_CONFIG_EXPORT_VERSION:
+    if raw.get("type") != MODEL_CONFIG_EXPORT_TYPE:
         # 按钮上不再写版本号，所以这里必须自己说清楚“文件不对”，而不是丢一个内部代号。
         raise ValueError("这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。")
+    try:
+        version = int(raw.get("version"))
+    except (TypeError, ValueError):
+        raise ValueError("这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。") from None
+    if version > MODEL_CONFIG_EXPORT_VERSION:
+        # 更新的版本才是真读不了；旧版本必须读得进来，否则一次格式升级就等于把
+        # 用户手里所有导出文件作废，而这些文件常常是他唯一的一份配置备份。
+        raise ValueError("这个文件由更新版本的应用导出，当前版本读不了。请先把应用升级到最新版再导入。")
     if isinstance(raw.get("model_profiles"), dict):
         return _parse_model_profiles(raw)
     raise ValueError("model_profiles must be a JSON object.")
@@ -129,11 +137,19 @@ def apply_model_config_import(
     save_api_key: ApiKeySaver = save_key,
     delete_scoped_api_key: Callable[[str], None] = delete_connection_key,
     throughput_errors: list[str] | None = None,
+    defer_key_writes: list[Callable[[], None]] | None = None,
 ) -> AppSettings:
     """Apply an import to a copied settings model and persist supplied keys.
 
     The caller owns persistence of the returned settings object. This lets the
     API and the native UI preserve their existing save timing and error UX.
+
+    Pass ``defer_key_writes`` to receive the key mutations as one callable
+    instead of having them applied here: the key store and the settings file
+    are two files, and writing the secrets first means a failed settings save
+    leaves credentials on disk that no stored configuration points at.  Callers
+    that persist the returned settings should run the collected callables only
+    after that write succeeds.
     """
     payload = settings.model_dump(mode="json")
     dropped_connection_ids: list[str] = []
@@ -143,14 +159,19 @@ def apply_model_config_import(
         current = dict(payload.get(key) or {})
         imported_fields = imported.model_config[key]
         if isinstance(imported_fields.get("connections"), list):
-            # 连接池是整份替换的（见 ``connection_values``），本机原来那几条连接连同
-            # 它们的 id 一起消失。密钥是按 ``conn::<id>`` 存的，没人再指得到它们：不
-            # 顺手删掉的话，keys.json 会随每次导入越堆越多，而且堆着的是已经没有任何
-            # 界面能看见、能改、能删的凭据。
-            dropped_connection_ids.extend(
-                str(connection.get("id") or "").strip()
-                for connection in (current.get("connections") or [])
-                if isinstance(connection, dict)
+            imported_fields = dict(imported_fields)
+            imported_fields["connections"] = _rebind_imported_connections(
+                [
+                    connection
+                    for connection in (current.get("connections") or [])
+                    if isinstance(connection, dict)
+                ],
+                [
+                    connection
+                    for connection in imported_fields["connections"]
+                    if isinstance(connection, dict)
+                ],
+                dropped_connection_ids,
             )
         current = _merge_imported_fields(current, imported_fields)
         _synchronize_selected_provider_memory(current, imported_fields)
@@ -172,15 +193,21 @@ def apply_model_config_import(
     # all role test states because no imported result is trustworthy.
     validate_all_model_roles(updated)
     reset_all_model_role_availability(updated)
-    for provider, api_key in imported.api_keys.items():
-        save_api_key(provider, api_key)
-    for entry in imported.scoped_api_keys:
-        save_api_key(entry["provider"], entry["api_key"], entry["base_url"])
-    # 清理放在写入之后：导入的密钥全部落在 provider + Base URL 作用域下，和这里删的
-    # conn::<id> 作用域互不相干，但万一上面抛错，旧密钥还留着，配置也还是旧的。
-    for connection_id in dropped_connection_ids:
-        if connection_id:
-            delete_scoped_api_key(connection_id)
+    def _commit_keys() -> None:
+        for provider, api_key in imported.api_keys.items():
+            save_api_key(provider, api_key)
+        for entry in imported.scoped_api_keys:
+            save_api_key(entry["provider"], entry["api_key"], entry["base_url"])
+        # 清理放在写入之后：导入的密钥全部落在 provider + Base URL 作用域下，和这里删的
+        # conn::<id> 作用域互不相干，但万一上面抛错，旧密钥还留着，配置也还是旧的。
+        for connection_id in dropped_connection_ids:
+            if connection_id:
+                delete_scoped_api_key(connection_id)
+
+    if defer_key_writes is None:
+        _commit_keys()
+    else:
+        defer_key_writes.append(_commit_keys)
     for role, throughput in imported.profile_throughputs.items():
         try:
             config = resolve_effective_model_config(updated, role)
@@ -197,6 +224,54 @@ def apply_model_config_import(
             if throughput_errors is not None:
                 throughput_errors.append(role)
     return updated
+
+
+def _connection_endpoint(connection: dict[str, Any]) -> tuple[str, str]:
+    """What "the same connection" means when a pool is replaced wholesale."""
+    provider = str(connection.get("provider") or "").strip()
+    base_url = str(connection.get("base_url") or "").strip()
+    normalized = (
+        normalize_cloud_base_url(provider, base_url) if provider else base_url
+    ).rstrip("/")
+    return provider, normalized
+
+
+def _rebind_imported_connections(
+    local: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+    dropped_connection_ids: list[str],
+) -> list[dict[str, str]]:
+    """Keep a slot's connection id when the imported entry is the same endpoint.
+
+    连接池是整份替换的（见 ``connection_values``），而导出文件里从来不带 id——id 是
+    本机的密钥作用域，换台机器就指不到东西。于是导入一次，本机每条连接都换了新 id，
+    ``conn::<id>`` 下存的密钥全成了没人指得到的孤儿。最刺眼的是「导出（不含 Key）→
+    原样导入回来」：配置一个字没变，密钥却被清空了，用户得把每条连接的 Key 重新粘一遍。
+
+    所以按位置认领：同一个槽位上服务商和 Base URL 都没变，就是同一条连接，沿用本机
+    原来的 id，密钥原地留着。端点变了（换了服务商或换了服务器）或者槽位在新池子里
+    根本不存在了，那条 id 才真的没了主人——照旧删掉它的密钥，不然 keys.json 会随每
+    次导入越堆越多，堆的还是没有任何界面能看见、能改、能删的凭据。
+    """
+    rebound: list[dict[str, str]] = []
+    for index, connection in enumerate(incoming):
+        entry = dict(connection)
+        local_entry = local[index] if index < len(local) else None
+        local_id = str((local_entry or {}).get("id") or "").strip()
+        if (
+            local_entry is not None
+            and local_id
+            and _connection_endpoint(local_entry) == _connection_endpoint(entry)
+        ):
+            entry["id"] = local_id
+        elif local_id:
+            dropped_connection_ids.append(local_id)
+        rebound.append(entry)
+    for local_entry in local[len(incoming):]:
+        local_id = str(local_entry.get("id") or "").strip()
+        if local_id:
+            dropped_connection_ids.append(local_id)
+    return rebound
 
 
 def _merge_imported_fields(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
@@ -308,8 +383,9 @@ def _connections_for_export(
 
     Ids are deliberately not exported: they scope the local key store, and
     reusing one machine's id on another would point at a key that is not there.
-    The importing side mints fresh ids and resolves keys through the
-    provider/Base URL scope written below.
+    The importing side keeps its own id wherever the endpoint at that slot is
+    unchanged (see ``_rebind_imported_connections``) and mints a fresh one
+    otherwise, resolving keys through the provider/Base URL scope written below.
     """
     entries: list[dict[str, str]] = []
     for raw in owner.get("connections") or []:
@@ -613,8 +689,13 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
             continue
 
         setting_key = MODEL_PROFILE_SETTING_KEY_BY_ROLE[role]
-        values = cloud_values(profile)
+        # 池里的连接先读，``cloud`` 块后读：文件不带 id，密钥只能落在
+        # provider + Base URL 作用域下，同作用域后写的覆盖先写的。备用连接和主用
+        # 连接指向同一台服务器时（同一家服务的两个账号），备用那把 Key 会盖掉主用
+        # 的——「导出含 Key 再导入」之后主用连接拿着别人的账号去拨。``cloud`` 块
+        # 描述的就是主用连接，让它最后落地。
         connections = connection_values(profile)
+        values = cloud_values(profile)
         if connections is not None:
             # A pool is a list, so this replaces rather than merges: the file
             # describes a complete pool, and appending would leave the reader

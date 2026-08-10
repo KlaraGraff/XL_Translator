@@ -21,6 +21,7 @@ from core.document_config import (
     parse_document_config_import,
     summarize_document_config_import,
 )
+from core.language_registry import CustomTargetLang
 from settings import AppSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -132,6 +133,45 @@ class DocumentConfigImportTests(unittest.TestCase):
             parse_document_config_import(
                 {"type": DOCUMENT_CONFIG_EXPORT_TYPE, "version": 99, "document": {}}
             )
+
+    def test_a_file_without_a_version_says_the_file_is_wrong(self) -> None:
+        """缺版本号不等于「你的应用太旧」，提示不能把用户支去升级。"""
+        with self.assertRaises(ValueError) as raised:
+            parse_document_config_import(
+                {"type": DOCUMENT_CONFIG_EXPORT_TYPE, "document": {"pdf": {}}}
+            )
+
+        message = str(raised.exception)
+        self.assertIn("版本号", message)
+        self.assertNotIn("更高版本", message)
+
+    def test_import_never_removes_a_custom_language(self) -> None:
+        """TM 的译文按语言存，导入把本机语言删了等于把那批译文弄丢。"""
+        current = AppSettings()
+        current.custom_target_langs = [CustomTargetLang(name="闽南语")]
+        current = AppSettings(**current.model_dump())
+        local_code = current.custom_target_langs[0].code
+
+        merged = apply_document_config_import(
+            current,
+            parse_document_config_import(
+                {
+                    "type": DOCUMENT_CONFIG_EXPORT_TYPE,
+                    "version": 1,
+                    "document": {
+                        "custom_target_langs": [
+                            {"name": "粤语", "description": "", "code": "x-custom-yue"}
+                        ]
+                    },
+                }
+            ),
+        )
+
+        names = [entry.name for entry in merged.custom_target_langs]
+        self.assertIn("闽南语", names)
+        self.assertIn("粤语", names)
+        # 本机那条的语言代码必须原样保留，否则库里的词条对不上任何语言对。
+        self.assertEqual(merged.custom_target_langs[0].code, local_code)
 
     def test_summary_names_the_areas_a_file_would_change(self) -> None:
         imported = parse_document_config_import(

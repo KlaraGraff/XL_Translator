@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -1509,6 +1510,7 @@ def create_app(
     @app.post("/api/model-config/import")
     def import_model_config(payload: dict[str, Any]) -> dict[str, Any]:
         throughput_errors: list[str] = []
+        key_writes: list[Callable[[], None]] = []
         before_settings = load_settings()
         try:
             imported = parse_model_config_import(payload)
@@ -1516,6 +1518,7 @@ def create_app(
                 before_settings,
                 imported,
                 throughput_errors=throughput_errors,
+                defer_key_writes=key_writes,
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -1523,6 +1526,11 @@ def create_app(
         # load-time snapshot so the save stays a merge, not an overwrite.
         carry_settings_baseline(before_settings, settings)
         save_settings(settings)
+        # 密钥留到设置落盘之后再写：两者是两个文件。先写密钥的话，设置一旦存不下去
+        # （磁盘满、权限不对、被别的进程占着），界面报的是「导入失败」，而密钥文件
+        # 里已经躺着一份没有任何配置指向的凭据——下次谁用到那个作用域就用错账号。
+        for commit_keys in key_writes:
+            commit_keys()
         return {
             "settings": settings.model_dump(mode="json"),
             "imported_key_count": len(imported.api_keys) + len(imported.scoped_api_keys),
@@ -1689,16 +1697,14 @@ def create_app(
         record = _task_diagnostic_record(task_id)
         if record is None:
             raise HTTPException(404, "本次任务没有生成诊断记录，没有可导出的内容。")
-        payload, filename = diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
-        return _zip_response(payload, filename)
+        return _zip_response(*_diagnostic_zip_or_404(record))
 
     @app.get("/api/diagnostics/{record_id}.zip")
     def download_diagnostic_record(record_id: str) -> StreamingResponse:
         record = diagnostics.find_diagnostic_record(record_id)
         if record is None:
             raise HTTPException(404, "Diagnostic record not found.")
-        payload, filename = diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
-        return _zip_response(payload, filename)
+        return _zip_response(*_diagnostic_zip_or_404(record))
 
     @app.delete("/api/diagnostics/{record_id}")
     def delete_diagnostic_record(record_id: str) -> dict[str, Any]:
@@ -1706,6 +1712,22 @@ def create_app(
         return maintenance.delete_diagnostic(record_id).as_dict()
 
     return app
+
+
+def _diagnostic_zip_or_404(record: dict[str, Any]) -> tuple[bytes, str]:
+    """Zip one diagnostic record, or say it is gone rather than crashing.
+
+    诊断记录会按数量和总体积轮转清理，索引里的条目可能指向一个已经被删掉的目录
+    （也可能是用户在下载弹窗开着的时候清理了诊断数据）。原来这里直接抛
+    ``FileNotFoundError``，界面收到 500「服务器内部错误」，读起来像是应用坏了；
+    实际上只是这份记录不在了，说清楚就行。
+    """
+    try:
+        return diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            404, "这条诊断记录的文件已经被清理掉了，没有可导出的内容。"
+        ) from exc
 
 
 def _task_diagnostic_record(task_id: str) -> dict[str, Any] | None:
