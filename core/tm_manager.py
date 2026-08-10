@@ -10,10 +10,12 @@
   pinned=1 的词条不参与深度清洗，保护手动校对结果。
 """
 import hashlib
+import shutil
 import sqlite3
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 
 from loguru import logger
 
@@ -55,8 +57,21 @@ CREATE TABLE IF NOT EXISTS tm_entries (
 _INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_source_lang "
     "ON tm_entries(source_text, lang_pair)",
+)
+
+# Kept apart from the plain indexes: it is unique, so it can only be built once
+# every row has a hash.  A legacy database carries ``source_hash`` at its column
+# default of '', which collides on the second row.
+_UNIQUE_HASH_INDEX_SQL = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_hash_lang "
-    "ON tm_entries(source_hash, lang_pair)",
+    "ON tm_entries(source_hash, lang_pair)"
+)
+# The same index without the guarantee, for a table that already holds
+# duplicate source rows.  Lookups still use it; only the "cannot happen twice"
+# assertion is dropped, and dropping rows to keep it would be the worse trade.
+_PLAIN_HASH_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_hash_lang "
+    "ON tm_entries(source_hash, lang_pair)"
 )
 
 _CREATE_META_TABLE_SQL = """
@@ -103,9 +118,8 @@ CLEANING_LOCKED_WORD_TYPE = "cleaning_locked"
 MANUAL_WORD_TYPE = "manual"
 IMPORT_WORD_TYPE = "import"
 
-# This remains an injectable test-isolation path for existing TM contract
-# fixtures.  The current baseline does not create, restore, or migrate backups
-# automatically.
+# Injectable so tests never write into the developer's own data directory.
+# A backup is taken only when a database has to be set aside and rebuilt.
 BACKUPS_DIR = DEFAULT_BACKUPS_DIR
 
 
@@ -165,74 +179,344 @@ def _get_conn():
 
 
 def init_db() -> None:
-    """Open only the current TM baseline; do not import or repair older data."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DB_PATH.exists() and _read_schema_version(DB_PATH) != TM_SCHEMA_VERSION:
-        raise TmSchemaError(
-            "TM 数据不是当前 schema；请在维护页明确清空该类别。"
-        )
+    """Bring the TM database to the current schema, keeping every entry it can.
 
-    _ensure_current_schema()
-    _backfill_source_hashes()
+    Every schema bump so far has been additive — new tables and indexes beside
+    the untouched ``tm_entries``.  So an older database is upgraded in place by
+    re-running the ``IF NOT EXISTS`` DDL and restamping the version; the user's
+    entries are never the price of a version number.
+
+    Only a database this build cannot work with — one missing columns the
+    current DDL requires, one written by a newer build, or one that is not a
+    database at all — is backed up and replaced.  Refusing to open it and
+    leaving the memory locked is not an option: that is a dead end with no way
+    out.  Neither is rebuilding a database that was merely *busy* at the moment
+    we looked: a lock is another writer working, not a broken file.
+
+    A file the OS will not hand over at all is the one case that is refused
+    instead: it cannot be copied, so replacing it would destroy the only copy
+    of the memory.  The maintenance page's explicit clear is the way out.
+
+    The order below is load-bearing.  Tables first, then the hash backfill,
+    then the unique hash index — building that index before the backfill would
+    fail on a legacy database, where every row still carries the column default.
+    """
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    state, stored_version = _inspect_db()
+    if state == "unreadable":
+        raise TmSchemaError(
+            f"翻译记忆库 {DB_PATH} 暂时读不到（可能是权限或被其他程序占用），"
+            "无法备份，因此不会覆盖它。原文件已原样保留；"
+            "如确定要放弃它，请在维护页执行「清空翻译记忆库」。"
+        )
+    if state == "unusable":
+        _recreate_db(stored_version)
+    elif state == "upgraded":
+        logger.info(
+            f"TM 数据库为 v{stored_version}，按加法升级到 v{TM_SCHEMA_VERSION}，词条保留。"
+        )
+    elif state == "busy":
+        logger.info("TM 数据库当前被占用，本次跳过版本判定，直接按现有结构打开。")
+
+    try:
+        _ensure_current_schema()
+        _backfill_source_hashes()
+        _ensure_hash_index()
+    except sqlite3.OperationalError as exc:
+        # A lock that outlasts the probe *and* the writers' own timeout.  Say
+        # so; the bare SQLite message would surface as a 500 with nothing the
+        # user could act on.
+        if not _is_lock_error(exc):
+            raise
+        raise TmSchemaError(
+            "翻译记忆库正被其他任务占用，本次没有改动它。请等当前任务结束后重试。"
+        ) from exc
     logger.info(f"TM 数据库就绪：{DB_PATH}")
 
 
 class TmSchemaError(ValueError):
-    """Persisted TM data is not safe for this new baseline to open."""
+    """Persisted TM data could not be opened *and* could not be replaced."""
 
 
 def get_schema_status() -> dict[str, object]:
-    if not DB_PATH.exists():
-        return {
-            "state": "missing",
-            "current_version": TM_SCHEMA_VERSION,
-            "stored_version": None,
-            "can_write": True,
-        }
-    version = _read_schema_version(DB_PATH)
-    if version > TM_SCHEMA_VERSION:
-        state = "future"
-    elif version < TM_SCHEMA_VERSION:
-        state = "incompatible"
-    else:
-        state = "current"
+    """Report the database on disk without opening it for writing.
+
+    ``can_write`` is False for ``unusable`` and ``unreadable``, and only the
+    second of those actually turns a write away: for ``unusable`` ``init_db``
+    clears the way by backing the file up rather than refusing to run.  A
+    ``busy`` database is writable — the caller just has to wait for the lock.
+    """
+    state, stored_version = _inspect_db()
     return {
         "state": state,
         "current_version": TM_SCHEMA_VERSION,
-        "stored_version": version,
-        "can_write": state in {"missing", "current"},
+        "stored_version": stored_version,
+        "can_write": state not in {"unusable", "unreadable"},
     }
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-        [table_name],
-    ).fetchone()
-    return row is not None
+def _current_entry_columns() -> dict[str, tuple[str, bool, object]]:
+    """Columns the current ``tm_entries`` DDL declares, with enough to re-add one.
 
-
-def _read_schema_version(db_path) -> int:
-    if not db_path.exists():
-        return 0
-
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    Derived by building the table in memory and reflecting it, rather than
+    hand-listed, so a future column cannot be added to the DDL without this
+    check noticing it.  Returns ``name -> (type, not_null, default)``.
+    """
+    probe = sqlite3.connect(":memory:")
     try:
-        if not _table_exists(conn, "tm_meta"):
-            return 0
-        row = conn.execute(
-            "SELECT meta_value FROM tm_meta WHERE meta_key = ?",
-            [TM_SCHEMA_VERSION_KEY],
-        ).fetchone()
-        if row is None:
-            return 0
-        return int(row["meta_value"])
-    except Exception as exc:
-        logger.warning(f"TM 数据库版本检测失败，将按旧库处理：{exc}")
-        return 0
+        probe.executescript(_CREATE_TABLE_SQL)
+        return {
+            row[1]: (str(row[2] or ""), bool(row[3]), row[4])
+            for row in probe.execute("PRAGMA table_info(tm_entries)")
+        }
     finally:
-        conn.close()
+        probe.close()
+
+
+def _is_constant_default(default: object) -> bool:
+    """Whether SQLite will accept this default on an ``ADD COLUMN``.
+
+    It only takes literals there: anything time-based or parenthesised would
+    have to be evaluated per existing row, which is exactly what it refuses.
+    """
+    text = str(default).strip().upper()
+    return not text.startswith("CURRENT_") and "(" not in text
+
+
+def _add_column_sql(name: str, spec: tuple[str, bool, object]) -> str | None:
+    """Build the ``ALTER TABLE`` that grafts one missing column onto an old table.
+
+    Returns ``None`` when SQLite could not accept the column after the fact.
+    It refuses two shapes: ``NOT NULL`` without a default (the existing rows
+    would have nothing to hold), and a default that is not a constant —
+    ``CURRENT_TIMESTAMP`` and friends, because the value would differ per row.
+    Those are the only schema gaps this build cannot repair in place; they are
+    backed up and rebuilt instead, so the rows are still recoverable from the
+    backup rather than silently gone.
+    """
+    column_type, not_null, default = spec
+    if not_null and default is None:
+        return None
+    if default is not None and not _is_constant_default(default):
+        return None
+    clause = f'"{name}" {column_type}'.strip()
+    if default is not None:
+        clause += f" DEFAULT {default}"
+    if not_null:
+        clause += " NOT NULL"
+    return f"ALTER TABLE tm_entries ADD COLUMN {clause}"
+
+
+def _missing_entry_columns(columns: set[str]) -> dict[str, tuple[str, bool, object]]:
+    return {
+        name: spec
+        for name, spec in _current_entry_columns().items()
+        if name not in columns
+    }
+
+
+def _add_missing_entry_columns() -> None:
+    """Graft any columns a newer DDL added onto the existing table.
+
+    A column the user's database has not heard of is the most common shape of
+    schema bump, and ``ALTER TABLE ADD COLUMN`` keeps every row.  Rebuilding
+    the database over a missing column would spend the user's whole memory on
+    a change that costs one statement.
+    """
+    with _get_conn() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(tm_entries)")}
+        if not columns:
+            return
+        for name, spec in _missing_entry_columns(columns).items():
+            sql = _add_column_sql(name, spec)
+            if sql is None:
+                continue
+            logger.info(f"TM 数据库补列：{name}")
+            conn.execute(sql)
+
+
+# The companion files that belong with the database: WAL mode keeps the first
+# two, rollback-journal mode (what a filesystem that cannot do WAL falls back
+# to) keeps the third.  Copying a database without its journal would preserve a
+# torn snapshot, so all three travel together.
+_DB_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
+# How long the probe waits for another writer to finish before giving up.  It
+# must be *longer* than the writers' own timeout (_get_conn, 5s): the probe
+# concluding "unreadable" is what triggers a rebuild, so it has to be the last
+# one to lose patience, not the first.
+_INSPECT_BUSY_TIMEOUT_MS = 15000
+
+
+def db_sidecar_paths(db_path) -> tuple:
+    return tuple(
+        db_path.with_name(f"{db_path.name}{suffix}") for suffix in _DB_SIDECAR_SUFFIXES
+    )
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    """Tell "someone else is writing" apart from "this file is broken"."""
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _inspect_db(db_path=None) -> tuple[str, int | None]:
+    """Classify the TM database without modifying it.
+
+    ``missing``  no file yet.
+    ``current``  already at the current schema version.
+    ``upgraded`` older, but ``tm_entries`` already has every column the
+                 current DDL needs, so the gap is pure addition.
+    ``busy``     a real database that another writer is holding right now.
+    ``unusable`` newer than this build, missing required columns, or not a
+                 database at all — its content is already lost, so backing it
+                 up and rebuilding costs nothing that still existed.
+    ``unreadable`` the file is there but the OS will not open it: a permission
+                 problem, or Windows AV/backup software holding it.  Told
+                 apart from ``unusable`` because the content is very likely
+                 intact, and a file that cannot be read cannot be backed up
+                 either — so it must not be replaced.
+
+    ``busy`` exists to keep a lock from being mistaken for corruption.
+    ``unusable`` costs the user their memory (backed up, then rebuilt), and a
+    contended database is the most ordinary thing in this app — every task
+    flushes TM batches — so answering "unreadable" to a held lock would delete
+    a perfectly good database at the worst possible moment.
+    """
+    path = db_path or DB_PATH
+    if not path.exists():
+        return "missing", None
+    try:
+        # Ask the filesystem before asking SQLite.  "unable to open database
+        # file" covers both a permission wall and a corrupt header, and only
+        # the first of those must be kept.
+        with path.open("rb"):
+            pass
+    except OSError as exc:
+        logger.warning(f"TM 数据库暂时读不到（不会覆盖，原文件保留）：{exc}")
+        return "unreadable", None
+    try:
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {_INSPECT_BUSY_TIMEOUT_MS}")
+        try:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            version = 0
+            if "tm_meta" in tables:
+                row = conn.execute(
+                    "SELECT meta_value FROM tm_meta WHERE meta_key = ?",
+                    [TM_SCHEMA_VERSION_KEY],
+                ).fetchone()
+                if row is not None:
+                    version = int(row["meta_value"])
+            columns = (
+                {row["name"] for row in conn.execute("PRAGMA table_info(tm_entries)")}
+                if "tm_entries" in tables
+                else None
+            )
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if _is_lock_error(exc):
+            logger.info(f"TM 数据库正被占用，本次不做版本判定：{exc}")
+            return "busy", None
+        logger.warning(f"TM 数据库无法读取，将备份后重建：{exc}")
+        return "unusable", None
+    except Exception as exc:
+        logger.warning(f"TM 数据库无法读取，将备份后重建：{exc}")
+        return "unusable", None
+
+    if version > TM_SCHEMA_VERSION:
+        return "unusable", version
+    if version == TM_SCHEMA_VERSION:
+        return "current", version
+    # An absent ``tm_entries`` has no rows to lose, so creating it is still
+    # additive.  A table that exists but lacks columns is repaired in place
+    # whenever SQLite will accept them after the fact; only a column it cannot
+    # graft on (NOT NULL with no default) forces a rebuild.
+    if columns is not None:
+        missing = _missing_entry_columns(columns)
+        if any(_add_column_sql(name, spec) is None for name, spec in missing.items()):
+            return "unusable", version
+    return "upgraded", version
+
+
+def _backup_db() -> str:
+    """Copy the unusable database (and its WAL sidecars) aside; return the path."""
+    target_dir = BACKUPS_DIR / "tm"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    target = target_dir / f"tm_unusable_{stamp}.db"
+    shutil.copy2(DB_PATH, target)
+    for suffix in _DB_SIDECAR_SUFFIXES:
+        sidecar = DB_PATH.with_name(f"{DB_PATH.name}{suffix}")
+        if sidecar.exists():
+            shutil.copy2(sidecar, target.with_name(f"{target.name}{suffix}"))
+    return str(target)
+
+
+def _recreate_db(stored_version: int | None) -> None:
+    """Set the unusable database aside and let ``init_db`` build a fresh one.
+
+    The backup is a precondition, not a courtesy: without it the rebuild is
+    indistinguishable from deleting the user's whole translation memory.  If
+    the copy cannot be made the rebuild is refused and the file left exactly
+    as it is — the maintenance page's explicit clear is the way out, and that
+    one goes through file deletion rather than through here.
+    """
+    try:
+        backup_path = _backup_db()
+    except OSError as exc:
+        raise TmSchemaError(
+            f"翻译记忆库无法打开，也无法备份到 {BACKUPS_DIR / 'tm'}（{exc}）。"
+            "原文件已原样保留，不会被覆盖；如确定要放弃它，"
+            "请在维护页执行「清空翻译记忆库」。"
+        ) from exc
+    DB_PATH.unlink(missing_ok=True)
+    for sidecar in db_sidecar_paths(DB_PATH):
+        sidecar.unlink(missing_ok=True)
+    logger.warning(
+        "TM 数据库无法使用（stored_version={}），已备份到 {} 并重建空库。",
+        stored_version,
+        backup_path,
+    )
+    from settings import TM_RECOVERY_SCOPE, record_recovery_event
+
+    record_recovery_event(
+        TM_RECOVERY_SCOPE,
+        stored_version=stored_version,
+        current_version=TM_SCHEMA_VERSION,
+        backup_path=backup_path,
+    )
+
+
+def discard_database() -> None:
+    """Delete the database file outright, backup or no backup.
+
+    This is what the maintenance page's explicit clear falls back to when the
+    database cannot even be opened.  Every automatic path refuses to destroy a
+    file it could not copy first; this one is the user pressing the button
+    that says the old memory is expendable, so it goes ahead either way — a
+    file whose contents are unreachable still has to be removable, or the app
+    has no way out of a broken TM at all.
+    """
+    try:
+        backup_path = _backup_db()
+    except OSError as exc:
+        backup_path = ""
+        logger.warning(f"TM 数据库备份失败，按显式清空继续删除：{exc}")
+    DB_PATH.unlink(missing_ok=True)
+    for sidecar in db_sidecar_paths(DB_PATH):
+        sidecar.unlink(missing_ok=True)
+    logger.warning(
+        "已按用户要求删除翻译记忆库，备份：{}",
+        backup_path or "（备份失败）",
+    )
 
 
 def _ensure_current_schema() -> None:
@@ -240,6 +524,8 @@ def _ensure_current_schema() -> None:
         conn.executescript(_CREATE_TABLE_SQL)
         conn.executescript(_CREATE_META_TABLE_SQL)
         conn.executescript(_CREATE_CONFLICT_TABLE_SQL)
+    _add_missing_entry_columns()
+    with _get_conn() as conn:
         for sql in _INDEX_SQL:
             conn.execute(sql)
         conn.execute(
@@ -267,6 +553,52 @@ def _backfill_source_hashes() -> None:
                 [_make_hash(row["source_text"], row["lang_pair"]), row["id"]],
             )
         logger.info(f"TM 数据库修复：source_hash 回填完成，共 {len(rows)} 条")
+
+
+def _ensure_hash_index() -> None:
+    """Build the unique hash index, repairing stale hashes if it will not take.
+
+    Runs after the backfill, never before: on a legacy database every row
+    carries ``source_hash`` at its column default, and a unique index over a
+    column that is '' everywhere fails on the second row.
+
+    A database can still hold hashes that disagree with their text — an older
+    build's hashing, or a hand-edited row.  Recomputing them all is cheap and
+    normally produces distinct values, because ``tm_entries`` has enforced
+    ``UNIQUE(source_text, lang_pair)`` since the first release and the hash is
+    taken from exactly that pair.
+
+    A table that never had that constraint — a hand-built or restored dump —
+    can hold two rows with the same source, and then no recomputation will
+    make the hashes distinct.  That falls back to a plain index: the index is
+    only ever a lookup shortcut here (writes already resolve duplicates with
+    their own select-then-insert retry), so the alternative — refusing to open
+    the memory, or deleting the duplicate rows — would cost the user far more
+    than the missing guarantee is worth.
+    """
+    try:
+        with _get_conn() as conn:
+            conn.execute(_UNIQUE_HASH_INDEX_SQL)
+        return
+    except sqlite3.IntegrityError as exc:
+        logger.warning(f"TM 数据库哈希索引冲突，将按原文重算全部哈希：{exc}")
+
+    with _get_conn() as conn:
+        rows = conn.execute("SELECT id, source_text, lang_pair FROM tm_entries").fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE tm_entries SET source_hash = ? WHERE id = ?",
+                [_make_hash(row["source_text"], row["lang_pair"]), row["id"]],
+            )
+    try:
+        with _get_conn() as conn:
+            conn.execute(_UNIQUE_HASH_INDEX_SQL)
+    except sqlite3.IntegrityError as exc:
+        logger.warning(
+            f"TM 数据库存在重复原文，改建普通哈希索引（词条全部保留）：{exc}"
+        )
+        with _get_conn() as conn:
+            conn.execute(_PLAIN_HASH_INDEX_SQL)
 
 
 def _normalize_word_type(word_type: str | None) -> str:

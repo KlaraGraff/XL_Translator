@@ -7,11 +7,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from config import APP_DATA_DIR, KEYS_PATH, LOG_PATH, SETTINGS_PATH
 from core import diagnostics, tm_manager
 from core.task_history import TaskHistoryStore
 from core.task_logger import clear_log_files
-from settings import AppSettings, get_settings_schema_status, save_settings
+import settings as settings_module
+from settings import (
+    SETTINGS_RECOVERY_SCOPE,
+    TM_RECOVERY_SCOPE,
+    AppSettings,
+    clear_recovery_record,
+    get_settings_schema_status,
+    load_settings,
+    read_recovery_record,
+    recover_settings_file_if_needed,
+    save_settings,
+)
 
 
 TASK_HISTORY_PATH = APP_DATA_DIR / "task_history.json"
@@ -79,6 +92,92 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
     }
 
 
+def data_health() -> dict[str, Any]:
+    """Report how the local data files were opened, and repair them if needed.
+
+    Reading this is what guarantees the three reported states are true rather
+    than guessed: it inspects first, then runs the same idempotent open path
+    the rest of the app uses, so a settings file or memory database that would
+    otherwise block every write is fixed the moment the UI asks about it.
+
+    Two states are worth a banner.  ``recreated`` is where the user lost the
+    contents of a file and needs to be told where the backup is.
+    ``unreadable`` is where the file is still there but the app cannot open
+    it — nothing was destroyed, and nothing can be saved either, so saying
+    "current" would leave the user watching every write fail with a healthy
+    looking page in front of them.  ``adopted`` and ``upgraded`` kept
+    everything and need no attention.
+    """
+    settings_before = get_settings_schema_status()
+    tm_before = tm_manager.get_schema_status()
+
+    # Inspect before repairing: the TM upgrade lands immediately, so asking
+    # afterwards would only ever answer "current".
+    try:
+        recover_settings_file_if_needed()
+    except Exception as exc:  # noqa: BLE001 - health must not fail on settings trouble
+        logger.warning(f"设置文件自检失败：{exc}")
+    try:
+        tm_manager.init_db()
+    except Exception as exc:  # noqa: BLE001 - health must not fail on TM trouble
+        logger.warning(f"翻译记忆库自检失败：{exc}")
+
+    record = read_recovery_record()
+    return {
+        "settings": _health_entry(
+            settings_before,
+            record.get(SETTINGS_RECOVERY_SCOPE),
+            kept_state="adopted",
+            after=get_settings_schema_status(),
+        ),
+        "tm": _health_entry(
+            tm_before,
+            record.get(TM_RECOVERY_SCOPE),
+            kept_state="upgraded",
+            after=tm_manager.get_schema_status(),
+        ),
+    }
+
+
+def dismiss_recovery_notice() -> dict[str, Any]:
+    """Clear the recovery notice after the user acknowledges it."""
+    return {"cleared": clear_recovery_record()}
+
+
+def _health_entry(
+    status: dict[str, object],
+    event: object,
+    *,
+    kept_state: str,
+    after: dict[str, object],
+) -> dict[str, Any]:
+    current_version = status.get("current_version")
+    if isinstance(event, dict):
+        return {
+            "state": "recreated",
+            "stored_version": event.get("stored_version"),
+            "current_version": current_version,
+            "backup_path": str(event.get("backup_path") or ""),
+        }
+    # Read the state *after* the repair attempt for this one: a file that is
+    # still unreadable is the case where the repair could not run, and it is
+    # the only remaining state the user has to be told about.
+    if str(after.get("state") or "") == "unreadable":
+        return {
+            "state": "unreadable",
+            "stored_version": after.get("stored_version"),
+            "current_version": current_version,
+            "backup_path": "",
+        }
+    state = str(status.get("state") or "")
+    return {
+        "state": kept_state if state == kept_state else "current",
+        "stored_version": status.get("stored_version"),
+        "current_version": current_version,
+        "backup_path": "",
+    }
+
+
 def reset_settings() -> MaintenanceResult:
     """Replace settings only, leaving keys and TM untouched."""
     save_settings(AppSettings(), replace_incompatible=True)
@@ -118,7 +217,18 @@ def delete_diagnostic(record_id: str) -> MaintenanceResult:
 
 
 def clear_tm(*, lang_pair: str | None = None) -> MaintenanceResult:
-    tm_manager.init_db()
+    try:
+        tm_manager.init_db()
+    except tm_manager.TmSchemaError:
+        # A database that cannot be opened is exactly what this button is the
+        # way out of, so clearing all of it deletes the file instead of
+        # failing on it.  One language pair still needs a readable database —
+        # there is no way to keep the rest of it otherwise.
+        if lang_pair:
+            raise
+        tm_manager.discard_database()
+        tm_manager.init_db()
+        return MaintenanceResult(category="tm", removed_count=0)
     removed = tm_manager.clear_entries(lang_pair=lang_pair)
     return MaintenanceResult(category="tm", removed_count=removed)
 
@@ -154,8 +264,6 @@ def reset_all_local_data() -> MaintenanceResult:
 
 def load_current_settings_or_default() -> dict[str, object]:
     """Use a normal current read, never copy old/incompatible settings into reset state."""
-    from settings import load_settings
-
     return load_settings().model_dump(mode="json")
 
 
@@ -178,7 +286,11 @@ def _category(
 
 def _tm_paths() -> list[Path]:
     base = tm_manager.DB_PATH
-    return [base, base.with_name(f"{base.name}-wal"), base.with_name(f"{base.name}-shm")]
+    # Same sidecar list the TM itself backs up and removes: WAL mode leaves the
+    # first two behind, rollback-journal mode (the fallback on a filesystem
+    # that cannot do WAL) the third.  Missing one here would leave it behind
+    # after a reset and under-report the size on the maintenance page.
+    return [base, *tm_manager.db_sidecar_paths(base)]
 
 
 def _log_paths() -> list[Path]:
@@ -198,6 +310,11 @@ def _reset_paths() -> list[Path]:
         diagnostics.DIAGNOSTICS_DIR,
         WORKSPACES_DIR,
         API_HEALTH_STATE_PATH,
+        # Read late: tests point the settings module at a temporary directory.
+        settings_module.RECOVERY_PATH,
+        settings_module.RECOVERY_PATH.with_name(
+            f".{settings_module.RECOVERY_PATH.name}.lock"
+        ),
     ]
 
 

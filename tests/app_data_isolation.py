@@ -30,6 +30,9 @@ class IsolatedAppDataTestCase(unittest.TestCase):
             patch.object(settings_module, "APP_DATA_DIR", self.app_data_dir),
             patch.object(settings_module, "SETTINGS_PATH", self.app_data_dir / "settings.json"),
             patch.object(settings_module, "KEYS_PATH", self.app_data_dir / "keys.json"),
+            patch.object(settings_module, "RECOVERY_PATH", self.app_data_dir / "recovery.json"),
+            patch.object(settings_module, "BACKUPS_DIR", self.app_data_dir / "backups"),
+            patch.object(tm_manager, "BACKUPS_DIR", self.app_data_dir / "backups"),
             patch.object(tm_manager, "DB_PATH", self.app_data_dir / "tm.db"),
         ):
             patcher.start()

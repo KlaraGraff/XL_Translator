@@ -86,3 +86,7 @@
 
 /* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */
 .card.danger-section { border-color: var(--danger-l); background: var(--danger-t); }
+
+/* 数据恢复横幅复用 app.css 的 .banner.warn（黄色警示条），那边已经给全了底色和描边。
+   只差一条：.banner .bi 那个圆形图标底色写死在 ok 绿上，警示态要跟着换成 warn。 */
+.banner.warn .bi { background: var(--warn); }

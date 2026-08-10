@@ -26,6 +26,7 @@ CLOUD_ENGINES = {
     "智谱 GLM":                    "zhipu",
     "阿里百炼 (通义)":             "dashscope",
     "硅基流动":                    "siliconflow",
+    "DeepSeek":                    "deepseek",
 }
 
 IMAGE_GENERATION_MODEL_PROVIDERS = {
@@ -51,11 +52,13 @@ SILICONFLOW_BASE_URL = "https://api.siliconflow.com/v1"
 LANYI_BASE_URL = "http://1.95.142.151:3000/v1"
 ZHIPU_OPENAI_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 DASHSCOPE_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
     "openai": OPENAI_BASE_URL,
     "claude": CLAUDE_BASE_URL,
     "siliconflow": SILICONFLOW_BASE_URL,
     "lanyi": LANYI_BASE_URL,
+    "deepseek": DEEPSEEK_BASE_URL,
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"

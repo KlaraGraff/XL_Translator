@@ -17,6 +17,7 @@ OPENAI_COMPATIBLE_MODEL_PROVIDERS = {
     "custom_openai",
     "lanyi",
     "siliconflow",
+    "deepseek",
     "lm_studio",
     "custom_local",
 }

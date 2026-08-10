@@ -5,12 +5,14 @@ API keys are stored separately in keys.json with OS-level permissions.
 import getpass
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
@@ -18,6 +20,7 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from config import (
     APP_DATA_DIR,
+    BACKUPS_DIR,
     CONCURRENCY_DEFAULT,
     DEFAULT_CLOUD_MODEL,
     DEFAULT_CLOUD_PROVIDER,
@@ -1318,64 +1321,219 @@ def _extract_settings_version(data: dict) -> int:
 
 
 class SettingsSchemaError(ValueError):
-    """The persisted new-baseline settings cannot be safely opened or changed."""
+    """The settings file could not be read *and* could not be backed up.
+
+    Recovery is automatic now, so a merely old or malformed file never reaches
+    here.  What does is the one case where recovering would destroy something
+    unrecoverable: a file this build cannot read but that is still there and
+    still, for all we know, the user's whole configuration.  Overwriting it
+    without a copy set aside is the one outcome worse than an error message,
+    so this is raised instead — and the maintenance page's explicit reset
+    overrides it, which is the way out.
+    """
 
 
-def get_settings_schema_status() -> dict[str, object]:
-    """Inspect the current settings file without repairing or rewriting it.
+# ── 数据恢复记录 ──────────────────────────────────────────
+# One small file records the last time Translator had to back a data file up
+# and start over.  Only that path needs telling the user about: adopting an
+# older settings file or upgrading the TM in place keeps their data, so it
+# stays silent.
+RECOVERY_PATH = APP_DATA_DIR / "recovery.json"
+SETTINGS_RECOVERY_SCOPE = "settings"
+TM_RECOVERY_SCOPE = "tm"
 
-    Version 26 is the v8 new-data baseline.  This function intentionally does
-    not read legacy directories and does not apply any historical migration.
-    A later release can add an explicit forward migration and backup step here.
+
+def read_recovery_record() -> dict[str, dict]:
+    """Return the last recovery event per scope; empty when nothing happened."""
+    try:
+        payload = json.loads(RECOVERY_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning(f"recovery.json 无法读取，按无恢复记录处理：{exc}")
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(scope): event
+        for scope, event in payload.items()
+        if isinstance(event, dict)
+    }
+
+
+def record_recovery_event(
+    scope: str,
+    *,
+    stored_version: int | None,
+    current_version: int,
+    backup_path: str,
+) -> None:
+    """Remember one backup-and-rebuild so the UI can point at the backup.
+
+    Best effort on purpose: failing to record the notice must never turn into
+    a failure to recover, which is the very dead end this change removes.
+    """
+    lock_path = RECOVERY_PATH.with_name(f".{RECOVERY_PATH.name}.lock")
+    event = {
+        "stored_version": stored_version,
+        "current_version": int(current_version),
+        "backup_path": str(backup_path or ""),
+        "recorded_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    try:
+        with _exclusive_file_lock(lock_path):
+            record = read_recovery_record()
+            record[str(scope)] = event
+            _write_text_atomic(
+                RECOVERY_PATH,
+                json.dumps(record, indent=2, ensure_ascii=False),
+            )
+    except Exception as exc:
+        logger.warning(f"恢复记录写入失败（不影响已完成的恢复）：{exc}")
+
+
+def clear_recovery_record() -> bool:
+    """Drop the recovery notice once the user has acknowledged it."""
+    lock_path = RECOVERY_PATH.with_name(f".{RECOVERY_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        existed = RECOVERY_PATH.exists()
+        RECOVERY_PATH.unlink(missing_ok=True)
+    return existed
+
+
+def _timestamped_backup_name(prefix: str, suffix: str) -> str:
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{suffix}"
+
+
+def _backup_settings_file() -> str:
+    """Copy the unusable settings file aside; return the backup path."""
+    target_dir = BACKUPS_DIR / "settings"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / _timestamped_backup_name("settings_unusable", ".json")
+    # Copy rather than move: a rename that fails halfway would take the only
+    # copy of the user's configuration with it.
+    shutil.copy2(SETTINGS_PATH, target)
+    return str(target)
+
+
+def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
+    """Classify settings.json without changing it.
+
+    ``missing``  no file yet — defaults are correct.
+    ``current``  version matches and the content validates.
+    ``adopted``  an older version whose content still validates: it is taken
+                 over as-is and restamped on the next write.  A version bump
+                 on its own is not a reason to refuse the user's data.
+    ``unusable`` invalid content, or written by a newer build (a downgrade) —
+                 backed up, then replaced.
+    ``unreadable`` the file is there but the OS would not hand it over: a
+                 permission problem, or Windows AV/backup software holding it
+                 open.  Told apart from ``unusable`` on purpose — the content
+                 is very likely intact, and it cannot be backed up while it
+                 cannot be read, so it must not be overwritten either.
     """
     if not SETTINGS_PATH.exists():
-        return {
-            "state": "missing",
-            "current_version": SETTINGS_SCHEMA_VERSION,
-            "stored_version": None,
-            "can_write": True,
-        }
+        return "missing", None, None
     try:
-        payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        raw = SETTINGS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"settings.json 暂时读不到（不会覆盖，原文件保留）：{exc}")
+        return "unreadable", None, None
+    try:
+        payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("settings.json 顶层必须是 JSON 对象")
-        stored_version = _extract_settings_version(payload)
     except Exception:
-        return {
-            "state": "invalid",
-            "current_version": SETTINGS_SCHEMA_VERSION,
-            "stored_version": None,
-            "can_write": False,
-        }
+        return "unusable", None, None
+    stored_version = _extract_settings_version(payload)
     if stored_version > SETTINGS_SCHEMA_VERSION:
-        return {
-            "state": "future",
-            "current_version": SETTINGS_SCHEMA_VERSION,
-            "stored_version": stored_version,
-            "can_write": False,
-        }
-    if stored_version < SETTINGS_SCHEMA_VERSION:
-        return {
-            "state": "incompatible",
-            "current_version": SETTINGS_SCHEMA_VERSION,
-            "stored_version": stored_version,
-            "can_write": False,
-        }
+        return "unusable", stored_version, payload
     try:
         AppSettings.model_validate(payload)
     except Exception:
-        return {
-            "state": "invalid",
-            "current_version": SETTINGS_SCHEMA_VERSION,
-            "stored_version": stored_version,
-            "can_write": False,
-        }
+        return "unusable", stored_version, payload
+    if stored_version < SETTINGS_SCHEMA_VERSION:
+        return "adopted", stored_version, payload
+    return "current", stored_version, payload
+
+
+def _recreate_settings_file(
+    stored_version: int | None, *, force: bool = False
+) -> AppSettings:
+    """Back the unusable settings file up and put a working default in place.
+
+    The backup is a precondition, not a courtesy: without it the rebuild is
+    indistinguishable from deleting the user's configuration.  If the copy
+    cannot be made the rebuild is refused — except under ``force``, which is
+    the maintenance page's explicit reset, where discarding the old file is
+    the whole point of the button the user pressed.
+    """
+    backup_path = ""
+    try:
+        backup_path = _backup_settings_file()
+    except OSError as exc:
+        if not force:
+            raise SettingsSchemaError(
+                f"settings.json 无法读取，也无法备份到 {BACKUPS_DIR / 'settings'}"
+                f"（{exc}）。原文件已原样保留；如确定要放弃它，请在维护页执行"
+                "「重置设置」。"
+            ) from exc
+        # An explicit reset says the old file is expendable, so a failed
+        # backup is not a reason to leave the app unable to save anything.
+        logger.warning(f"settings.json 备份失败，按显式重置继续重建：{exc}")
+    fresh = AppSettings()
+    _write_text_atomic(SETTINGS_PATH, fresh.model_dump_json(indent=2))
+    logger.warning(
+        "settings.json 无法使用（stored_version={}），已备份到 {} 并重建默认配置。",
+        stored_version,
+        backup_path or "（备份失败）",
+    )
+    record_recovery_event(
+        SETTINGS_RECOVERY_SCOPE,
+        stored_version=stored_version,
+        current_version=SETTINGS_SCHEMA_VERSION,
+        backup_path=backup_path,
+    )
+    return fresh
+
+
+def get_settings_schema_status() -> dict[str, object]:
+    """Report what the settings file on disk is, without touching it.
+
+    ``can_write`` answers "can this file be written to as it stands".  It is
+    False only for ``unusable`` and ``unreadable``, and for ``unusable`` the
+    write still is not refused: the writer backs the file up and rebuilds it
+    first.  Only ``unreadable`` can actually turn a save away, because there
+    the alternative is overwriting a file we could not copy.
+    """
+    state, stored_version, _payload = _inspect_settings_file()
     return {
-        "state": "current",
+        "state": state,
         "current_version": SETTINGS_SCHEMA_VERSION,
         "stored_version": stored_version,
-        "can_write": True,
+        "can_write": state not in {"unusable", "unreadable"},
     }
+
+
+def recover_settings_file_if_needed() -> bool:
+    """Back up and rebuild the settings file if it cannot be used as it stands.
+
+    Deliberately separate from ``load_settings``.  Reading is something a
+    dozen call sites do, several of them concurrently and one of them from
+    inside ``save_settings``'s own lock; letting a *read* rewrite the file made
+    the repair race with a save that had just completed, and could leave two
+    backups and two notices behind for one broken file.  So the repair lives
+    here, always under the lock, and is called at startup and from the health
+    check — never as a side effect of loading.
+    """
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        state, stored_version, _payload = _inspect_settings_file()
+        if state not in {"unusable", "unreadable"}:
+            return False
+        _recreate_settings_file(stored_version)
+        return True
 
 
 def _remember_persisted_snapshot(settings: AppSettings) -> AppSettings:
@@ -1483,36 +1641,38 @@ def _merged_settings_payload(settings: AppSettings) -> AppSettings | None:
 
 
 def load_settings() -> AppSettings:
-    """Load only the current baseline; preserve incompatible data untouched."""
+    """Load the settings file, adopting an older one and never writing to it.
+
+    A schema version that has moved on is not by itself a reason to ignore the
+    user's configuration: almost every bump is additive, so if the content
+    still validates it is taken over unchanged and simply restamped the next
+    time anything is saved.
+
+    A file this build cannot use yields defaults *in memory* only.  Repairing
+    it is ``recover_settings_file_if_needed``'s job, so that a read can never
+    overwrite anything and can never race a concurrent save.
+    """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if SETTINGS_PATH.exists():
-        try:
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("settings.json 顶层必须是 JSON 对象")
-            source_version = _extract_settings_version(data)
-            if source_version != SETTINGS_SCHEMA_VERSION:
-                raise SettingsSchemaError(
-                    f"settings schema v{source_version} 与当前 v{SETTINGS_SCHEMA_VERSION} 不兼容"
-                )
-            settings = AppSettings.model_validate(data)
-        except Exception as exc:
-            logger.warning(
-                "settings 未被读取或修复；保留原文件并以临时默认值启动：{}",
-                type(exc).__name__,
+    state, stored_version, payload = _inspect_settings_file()
+    if state in {"unusable", "unreadable"}:
+        logger.warning(
+            f"settings.json 当前无法使用（{state}，stored_version={stored_version}），"
+            "本次按默认设置运行，原文件未改动。"
+        )
+        settings = AppSettings()
+    elif payload is None:
+        settings = AppSettings()
+    else:
+        settings = AppSettings.model_validate(payload)
+        if state == "adopted":
+            logger.info(
+                f"settings.json 为 v{stored_version}，内容与当前 "
+                f"v{SETTINGS_SCHEMA_VERSION} 兼容，已直接接管。"
             )
-            return AppSettings()
-        else:
-            try:
-                _seed_packaged_default_api_key()
-            except Exception as seed_exc:
-                logger.warning(f"默认 API Key 初始化失败，已保留当前设置：{seed_exc}")
-            return _remember_persisted_snapshot(settings)
-    settings = AppSettings()
     try:
         _seed_packaged_default_api_key()
     except Exception as seed_exc:
-        logger.warning(f"默认 API Key 初始化失败，已使用默认设置：{seed_exc}")
+        logger.warning(f"默认 API Key 初始化失败，已保留当前设置：{seed_exc}")
     return _remember_persisted_snapshot(settings)
 
 
@@ -1525,18 +1685,25 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
     whatever the other request changed in between (a lost update: the file
     itself stays valid, the content does not).
 
-    So the schema gate, the re-read and the write all happen inside the same
-    cross-process lock, and only the fields that changed since ``load_settings``
-    are replayed on top of the file as it stands at that moment.
+    So the recovery check, the re-read and the write all happen inside the
+    same cross-process lock, and only the fields that changed since
+    ``load_settings`` are replayed on top of the file as it stands at that
+    moment.
+
+    A write is never refused over a schema version.  If the file on disk turns
+    out to be broken it is backed up and rebuilt here first — an app that
+    answers every save with an error and offers no way out is worse than one
+    that starts the configuration over and says where the old copy went.  The
+    single exception is a file that cannot even be copied, where the rebuild
+    would be an unrecoverable loss; ``replace_incompatible`` (the maintenance
+    page's reset) overrides that.
     """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
     with _exclusive_file_lock(lock_path):
-        status = get_settings_schema_status()
-        if not bool(status["can_write"]) and not replace_incompatible:
-            raise SettingsSchemaError(
-                "settings.json 不是当前可写 schema；请在维护页明确重置设置。"
-            )
+        state, stored_version, _payload = _inspect_settings_file()
+        if state in {"unusable", "unreadable"}:
+            _recreate_settings_file(stored_version, force=replace_incompatible)
         # An explicit reset deliberately discards whatever is on disk, so it
         # must never be merged with it.
         merged = None if replace_incompatible else _merged_settings_payload(settings)
@@ -1743,6 +1910,8 @@ def _api_key_env_names(provider: str) -> tuple[str, ...]:
         )
     if normalized_provider == "lanyi":
         return ("LANYI_API_KEY",)
+    if normalized_provider == "deepseek":
+        return ("DEEPSEEK_API_KEY",)
     return ()
 
 

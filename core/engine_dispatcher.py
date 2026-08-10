@@ -194,7 +194,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
             base_url=cloud_base_url,
         )
 
-    if provider in ("openai", "siliconflow", "custom_openai", "lanyi"):
+    if provider in ("openai", "siliconflow", "custom_openai", "lanyi", "deepseek"):
         from engines.openai_engine import OpenAIEngine
         return OpenAIEngine(
             api_key=api_key,

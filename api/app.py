@@ -15,6 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from loguru import logger
 from pydantic import BaseModel, Field, model_validator
 
 from api.task_manager import (
@@ -87,7 +88,12 @@ from core.pdf_image_translation import scan_pdf_sources
 from core.pdf_review import check_pdf_review_connectivity
 from core.tm_cleaner import CleanSuggestion, apply_suggestions
 from core.word_document import scan_word_sources
-from config import DOMAIN_PRESETS
+from config import (
+    CLOUD_PROVIDER_BASE_URL_DEFAULTS,
+    CLOUD_PROVIDER_BASE_URL_DISABLED,
+    DISABLED_BASE_URL_PLACEHOLDER,
+    DOMAIN_PRESETS,
+)
 from settings import (
     AppSettings,
     ModelConnection,
@@ -101,6 +107,7 @@ from settings import (
     load_settings,
     mask_api_key,
     parse_api_key_scope,
+    recover_settings_file_if_needed,
     save_connection_key,
     save_key,
     save_settings,
@@ -323,6 +330,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(instance: FastAPI):
+        # Repair the settings file once, here, before any request can read it.
+        # Loading deliberately never writes, so without this a file that had
+        # to be rebuilt would stay broken until the user happened to save.
+        try:
+            await run_in_threadpool(recover_settings_file_if_needed)
+        except Exception as exc:  # noqa: BLE001 - never block startup on this
+            logger.warning(f"启动时的设置文件自检失败：{exc}")
         yield
         # Closing the window used to kill running tasks outright, leaving the
         # LibreOffice profile, the Word temp docx directory and PDF page
@@ -375,12 +389,21 @@ def create_app(
         return _json_error(422, str(exc))
 
     @app.exception_handler(SettingsSchemaError)
-    async def settings_schema_error(_request, _exc):
-        return _json_error(
-            409,
-            "设置不是当前可写格式；请在维护页明确重置设置。",
-            reason="settings_schema_requires_reset",
-        )
+    async def settings_schema_error(_request, exc):
+        # An old or malformed settings file is recovered automatically now, so
+        # the only way to land here is a file that can be neither read nor
+        # copied.  The exception carries the path it failed on, which is the
+        # part the user can actually act on — do not replace it with a
+        # generic sentence.
+        return _json_error(409, str(exc), reason="settings_file_unreadable")
+
+    @app.exception_handler(tm_manager.TmSchemaError)
+    async def tm_schema_error(_request, exc):
+        # Same shape as the settings one: an old memory database is upgraded
+        # in place now, so what reaches here is a file that can be neither
+        # opened nor copied, or one another task is still holding.  Both carry
+        # their own actionable sentence.
+        return _json_error(409, str(exc), reason="tm_database_unreadable")
 
     @app.exception_handler(maintenance.MaintenanceError)
     async def maintenance_error(_request, exc):
@@ -1067,6 +1090,23 @@ def create_app(
             )
         }
 
+    @app.get("/api/models/provider-defaults")
+    def get_provider_defaults() -> dict[str, Any]:
+        """Serve the Base URL presets so the form can prefill them on select.
+
+        The panel used to leave Base URL untouched when the user picked a
+        provider: the default was only applied server-side at save time, so a
+        preset that existed in ``config.py`` looked like it did not exist at
+        all.  Prefilling needs these values *before* the save, and a second
+        copy of the table in the UI would drift the first time a provider's
+        endpoint moves.
+        """
+        return {
+            "base_url_defaults": dict(CLOUD_PROVIDER_BASE_URL_DEFAULTS),
+            "base_url_disabled": sorted(CLOUD_PROVIDER_BASE_URL_DISABLED),
+            "disabled_placeholder": DISABLED_BASE_URL_PLACEHOLDER,
+        }
+
     @app.get("/api/models/roles")
     def get_model_roles() -> dict[str, Any]:
         settings = load_settings()
@@ -1478,6 +1518,15 @@ def create_app(
             settings.onboarding.quick_start_completed = bool(payload.quick_start_completed)
         save_settings(settings)
         return _update_state_payload(settings)
+
+    @app.get("/api/data/health")
+    def data_health() -> dict[str, Any]:
+        """Tell the UI whether local data was kept, upgraded, or rebuilt."""
+        return maintenance.data_health()
+
+    @app.delete("/api/data/health/notice")
+    def dismiss_data_health_notice() -> dict[str, Any]:
+        return maintenance.dismiss_recovery_notice()
 
     @app.get("/api/maintenance/overview")
     def maintenance_overview() -> dict[str, Any]:

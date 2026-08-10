@@ -532,6 +532,7 @@ def provider_supports_capability(provider: str, capability: str) -> bool:
         "dashscope",
         "siliconflow",
         "lanyi",
+        "deepseek",
     }
 
 

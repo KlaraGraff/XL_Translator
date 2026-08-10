@@ -14,6 +14,7 @@ import {
   createField,
   createHintBadge,
   createEmptyState,
+  createBanner,
   closeLanguagePopover,
   closeMenu,
   hideHint,
@@ -70,6 +71,19 @@ type ModelImportPreview = {
   roles: { role: string; fields: string[] }[];
   throughput_profile_count: number;
   api_key_count: number;
+};
+
+// GET /api/data/health 的字段名是另一路改动定死的契约，这里原样对照，不要改名。
+type DataHealthEntry = {
+  state: "current" | "adopted" | "recreated" | "upgraded" | "unreadable" | string;
+  // 全新安装时磁盘上还没有文件，服务端这里给的是 null。
+  stored_version: number | null;
+  current_version: number;
+  backup_path: string;
+};
+type DataHealthPayload = {
+  settings: DataHealthEntry;
+  tm: DataHealthEntry;
 };
 
 // ---------------------------------------------------------------------------
@@ -158,7 +172,7 @@ const MODEL_ROLE_LABELS: Record<string, string> = {
 const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 const FOLLOW_PREFIX = "follow:";
 
-const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow"];
+const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek"];
 const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
 const PROVIDER_LABELS: Record<string, string> = {
   custom_openai: "OpenAI 兼容",
@@ -167,6 +181,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   zhipu: "智谱 GLM",
   dashscope: "阿里百炼",
   siliconflow: "硅基流动",
+  deepseek: "DeepSeek",
   ollama: "Ollama",
   lm_studio: "LM Studio",
   custom_local: "自定义本地服务",
@@ -174,6 +189,13 @@ const PROVIDER_LABELS: Record<string, string> = {
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
+
+// 服务商切换时的 Base URL 预填表，来自 GET /api/models/provider-defaults。这里不留
+// 第二份硬编码：URL 一旦在前后端各存一份，服务商换了端点就会有一边是错的，而错的那
+// 一边正好是用户看得见的那份。接口没回来之前预填表为空 —— 只是不预填，不会挡住手填。
+let providerBaseUrlDefaults: Record<string, string> = {};
+let providerBaseUrlDisabled = new Set<string>();
+let disabledBaseUrlPlaceholder = "当前服务商无需填写 Base URL";
 
 const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = {
   task_history: { title: "清空任务摘要？", message: "将删除当前应用保存的任务摘要，不删除任何输出文件。", confirm: "清空任务摘要" },
@@ -206,9 +228,11 @@ async function ensureConnected(): Promise<void> {
 }
 
 let bodyHost: HTMLElement | null = null;
+let bannerHost: HTMLElement | null = null;
 let navEls: Map<SettingsPage, HTMLDivElement> | null = null;
 let currentPage: SettingsPage = "models";
 let mountToken = 0;
+let dataHealth: DataHealthPayload | null = null;
 
 let settings: JsonObject | null = null;
 let modelRoles: Record<string, JsonObject> = {};
@@ -281,7 +305,26 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   body.className = "set-body";
   bodyHost = body;
 
-  container.append(nav, body);
+  // .content（父容器的类）本来是一行 flex（nav + body 并排）。数据恢复横幅要
+  // 铺满页面顶部、盖在 nav 和 body 之上，所以这里把 container 改成纵向 flex，
+  // 原来那行 nav+body 移进一个新的行容器里，横幅作为纵向的第一个子项。
+  // unmount 时不用手动复原：router.ts 每次挂载视图前都会先 removeAttribute("style")。
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+  container.style.gap = "12px";
+  container.style.minHeight = "0";
+
+  const banner = document.createElement("div");
+  bannerHost = banner;
+
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.gap = "16px";
+  row.style.flex = "1";
+  row.style.minHeight = "0";
+  row.append(nav, body);
+
+  container.append(banner, row);
   highlightNav();
 
   clearElement(body);
@@ -297,6 +340,7 @@ export function unmount(): void {
   closeLanguagePopover();
   closeMenu();
   bodyHost = null;
+  bannerHost = null;
   navEls = null;
 }
 
@@ -316,6 +360,7 @@ function highlightNav(): void {
 }
 
 async function bootstrap(token: number): Promise<void> {
+  void refreshDataHealth(token); // 不阻塞主流程；接口不存在或失败时静默不显示横幅
   try {
     await ensureConnected();
     await refreshSettings();
@@ -331,6 +376,89 @@ async function bootstrap(token: number): Promise<void> {
       createEmptyState({ title: "无法连接本地翻译引擎", description: errorMessage(error), icon: "warn" }),
     ]));
   }
+}
+
+// GET /api/data/health / DELETE /api/data/health/notice：另一路改动的接口契约，字段
+// 名称不能改。接口暂时可能还不存在（404/连接失败都算），失败就静默不显示横幅——不弹
+// toast，因为这条横幅本来就是「有异常才出现」，接口缺失不算异常。
+async function refreshDataHealth(token: number): Promise<void> {
+  try {
+    const result = await client.request<DataHealthPayload>("/api/data/health");
+    if (token !== mountToken) return;
+    dataHealth = result;
+  } catch {
+    if (token !== mountToken) return;
+    dataHealth = null;
+  }
+  // 挂载令牌变了说明页面已经被换掉，横幅要挂的宿主元素已经不是当前那个了。
+  if (token !== mountToken) return;
+  renderDataHealthBanner();
+}
+
+function dataHealthRecreatedMessages(payload: DataHealthPayload | null): string[] {
+  if (!payload) return [];
+  const messages: string[] = [];
+  if (payload.settings?.state === "recreated") {
+    messages.push(
+      `旧的配置无法读取，已备份到 ${payload.settings.backup_path || "备份目录"}，已新建一份可用的。`,
+    );
+  }
+  if (payload.tm?.state === "recreated") {
+    messages.push(
+      `旧的翻译记忆库无法读取，已备份到 ${payload.tm.backup_path || "备份目录"}，已新建一份可用的。`,
+    );
+  }
+  return messages;
+}
+
+// unreadable：文件还在，但系统不让打开（权限，或被杀毒/备份软件占着）。什么都没丢，
+// 但也什么都存不进去——不报出来的话，用户看到的是一个正常的设置页，然后每次保存都失败。
+function dataHealthBlockedMessages(payload: DataHealthPayload | null): string[] {
+  if (!payload) return [];
+  const messages: string[] = [];
+  if (payload.settings?.state === "unreadable") {
+    messages.push("配置文件读不出来，本次按默认设置运行，改动无法保存。原文件没有被覆盖。");
+  }
+  if (payload.tm?.state === "unreadable") {
+    messages.push("翻译记忆库读不出来，本次翻译不会读写它。原文件没有被删除。");
+  }
+  if (messages.length) {
+    messages.push("多为权限问题或被杀毒/备份软件占用：关掉占用它的程序后重启本应用即可；确定要放弃旧数据时，可在「数据与维护」里明确重置。");
+  }
+  return messages;
+}
+
+function renderDataHealthBanner(): void {
+  if (!bannerHost) return;
+  clearElement(bannerHost);
+  const blocked = dataHealthBlockedMessages(dataHealth);
+  const messages = blocked.length ? blocked : dataHealthRecreatedMessages(dataHealth);
+  if (!messages.length) return;
+  // .banner 默认是任务完成用的绿色底色；这条是警示，挂 .warn 换成 app.css 里那套黄色。
+  const banner = createBanner({
+    title: blocked.length ? "有数据暂时无法读取" : "有数据被重新创建",
+    subtitle: messages.join(" "),
+    icon: "warn",
+    actions: [
+      createButton({
+        label: "知道了", size: "mini",
+        onClick: () => void (async () => {
+          const token = mountToken;
+          try {
+            await client.request("/api/data/health/notice", { method: "DELETE" });
+          } catch (error) {
+            if (token === mountToken) showToast({ message: errorMessage(error), error: true });
+            return;
+          }
+          if (token !== mountToken) return;
+          dataHealth = null;
+          renderDataHealthBanner();
+        })(),
+      }),
+    ],
+  });
+  banner.classList.add("warn");
+  bannerHost.append(banner);
 }
 
 async function loadAndRenderPage(token: number): Promise<void> {
@@ -364,14 +492,72 @@ function renderBody(): void {
   }
 }
 
+// 模型表单里几个「点了按钮但没提交表单」的输入框——获取模型列表 / 测试连接这类操作
+// 之前会靠 renderBody() 把它们连同用户刚敲的字一起重建成服务端状态。这里按 id 存草稿、
+// 重画后填回去；表单真正提交时（保存配置）应该改显示服务端回填的最新值，所以那条路径
+// 用 { preserveDraft: false } 跳过。
+//
+// 草稿连同「它属于哪条连接」一起存（scope）。有些按钮（设为主用、新增、删除）会让重画
+// 后的表单换成另一条连接，这时把草稿填回去等于把 A 的 Base URL 和刚粘进去的密钥搬到
+// B 头上，下一次「保存配置」就真写进 B 了。scope 对不上就整份丢弃。
+const MODEL_FORM_DRAFT_FIELD_IDS = [
+  "settings-model-provider",
+  "settings-model-base-url",
+  "settings-model-name",
+  "settings-model-connection-label",
+  "settings-model-api-key",
+];
+const MODEL_FORM_SCOPE_FIELD_ID = "settings-model-provider";
+
+// 由模型表单在渲染时接上；页面不是模型页时是空操作。
+let applyProviderDerivedState: (value: string) => void = () => {};
+
+type ModelFormDraft = { scope: string; values: Record<string, string> };
+
+function modelFormScope(): string | null {
+  const el = document.getElementById(MODEL_FORM_SCOPE_FIELD_ID) as HTMLSelectElement | null;
+  return el?.dataset.formScope ?? null;
+}
+
+function snapshotModelFormDraft(): ModelFormDraft | null {
+  const scope = modelFormScope();
+  if (scope === null) return null;
+  const values: Record<string, string> = {};
+  for (const id of MODEL_FORM_DRAFT_FIELD_IDS) {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    if (el) values[id] = el.value;
+  }
+  return { scope, values };
+}
+
+function restoreModelFormDraft(draft: ModelFormDraft): void {
+  if (modelFormScope() !== draft.scope) return;
+  for (const [id, value] of Object.entries(draft.values)) {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    if (el) el.value = value;
+  }
+  // 服务商是草稿的一部分，Base URL 的禁用态和占位符却是重画时按服务端值算的，
+  // 两者会对不上（切到智谱后点「获取模型列表」，回来 Base URL 又变成可填了）。
+  // 按填回去的服务商重放一次，让联动状态跟草稿一致。
+  const provider = draft.values[MODEL_FORM_SCOPE_FIELD_ID];
+  if (provider !== undefined) applyProviderDerivedState(provider);
+}
+
 // 注意：调用方几乎都以 `void reRenderAfter(...)` 触发（不等待返回值），因此这里
 // 内部吞掉错误并转成 toast，不再向外 rethrow —— 否则会在控制台产生一堆无人处理的
 // unhandled promise rejection（toast 已经把错误讲给用户了，rethrow 没有实际接收方）。
-async function reRenderAfter<T>(action: () => Promise<T>): Promise<T | undefined> {
+async function reRenderAfter<T>(
+  action: () => Promise<T>,
+  opts: { preserveDraft?: boolean } = {},
+): Promise<T | undefined> {
   const token = mountToken;
+  const draft = opts.preserveDraft === false ? null : snapshotModelFormDraft();
   try {
     const result = await action();
-    if (token === mountToken) renderBody();
+    if (token === mountToken) {
+      renderBody();
+      if (draft) restoreModelFormDraft(draft);
+    }
     return result;
   } catch (error) {
     if (token === mountToken) showToast({ message: errorMessage(error), error: true });
@@ -385,7 +571,26 @@ async function reRenderAfter<T>(action: () => Promise<T>): Promise<T | undefined
 
 async function refreshSettings(): Promise<void> {
   settings = await client.request<JsonObject>("/api/settings");
+  await refreshProviderDefaults();
   await refreshModelRoles();
+}
+
+async function refreshProviderDefaults(): Promise<void> {
+  // 拿不到就不预填，绝不因此把整个设置页变成错误页——预填是便利，手填才是主路径。
+  try {
+    const payload = await client.request<{
+      base_url_defaults: Record<string, string>;
+      base_url_disabled: string[];
+      disabled_placeholder: string;
+    }>("/api/models/provider-defaults");
+    providerBaseUrlDefaults = payload.base_url_defaults || {};
+    providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
+    if (payload.disabled_placeholder) disabledBaseUrlPlaceholder = payload.disabled_placeholder;
+  } catch (error) {
+    providerBaseUrlDefaults = {};
+    providerBaseUrlDisabled = new Set();
+    console.warn("服务商预设读取失败，本次不预填 Base URL：", error);
+  }
 }
 
 async function refreshModelRoles(): Promise<void> {
@@ -736,7 +941,7 @@ function renderModelsPage(host: HTMLElement): void {
         const added = Array.isArray(payload.connections) ? payload.connections : [];
         if (added.length) selectedConnection[role] = text(record(added[added.length - 1]).id);
         showToast({ message: "已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。" });
-      }),
+      }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
     });
     const listCard = createCard([tcHead("连接列表", [addBtn])]);
     if (!connections.length) {
@@ -825,21 +1030,59 @@ function renderModelsPage(host: HTMLElement): void {
   radioWrap.append(radioRow);
   grid.append(radioWrap);
 
+  // onChange 需要拿到下面才创建的 baseUrlField，用可变引用打个转 —— select 的 change
+  // 事件只会在用户真的切换了选项时触发一次，天然满足「只在切换动作发生时重填，不覆盖
+  // 用户已手填内容」的要求（初次渲染、其他按钮触发的重画都不会 fire change）。
+  let onProviderChange: (value: string) => void = () => {};
+  applyProviderDerivedState = () => {};
   const providerFieldHandle = selectField(
     cloudMode ? "服务商" : "本地运行器",
     providers.map((item) => ({ value: item, label: providerLabel(item) })),
     formProvider,
-    () => { /* 随「保存配置」一起提交，见下方保存按钮 */ },
+    (value) => onProviderChange(value),
     { disabled: following },
   );
   const providerSelectEl = providerFieldHandle.select;
+  providerSelectEl.id = "settings-model-provider";
+  // Whose form this is.  The draft restore compares it, so a re-render that
+  // lands on a different connection drops the draft instead of transplanting
+  // it — see MODEL_FORM_DRAFT_FIELD_IDS.
+  providerSelectEl.dataset.formScope = `${role}|${cloudMode ? "cloud" : "local"}|${selected?.id ?? ""}`;
   grid.append(providerFieldHandle.root);
 
   detailBody.append(grid);
 
-  const baseUrlField = textField("Base URL", formBaseUrl, () => undefined, { placeholder: "https://.../v1", disabled: following });
+  const baseUrlDisabledByProvider = cloudMode && providerBaseUrlDisabled.has(formProvider);
+  const baseUrlField = textField(
+    "Base URL",
+    baseUrlDisabledByProvider ? "" : formBaseUrl,
+    () => undefined,
+    {
+      placeholder: baseUrlDisabledByProvider ? disabledBaseUrlPlaceholder : "https://.../v1",
+      disabled: following || baseUrlDisabledByProvider,
+    },
+  );
   baseUrlField.input.id = "settings-model-base-url";
   detailBody.append(baseUrlField.root);
+  // 只改 Base URL 的可填性和占位符，不动它的值——草稿回填时要按服务商重放这段联动，
+  // 但绝不能把用户刚敲的 Base URL 冲掉。
+  applyProviderDerivedState = (value) => {
+    if (!cloudMode) return;
+    if (providerBaseUrlDisabled.has(value)) {
+      baseUrlField.input.disabled = true;
+      baseUrlField.input.placeholder = disabledBaseUrlPlaceholder;
+      return;
+    }
+    baseUrlField.input.disabled = following;
+    baseUrlField.input.placeholder = "https://.../v1";
+  };
+  onProviderChange = (value) => {
+    if (!cloudMode) return;
+    applyProviderDerivedState(value);
+    baseUrlField.input.value = providerBaseUrlDisabled.has(value)
+      ? ""
+      : providerBaseUrlDefaults[value] ?? "";
+  };
 
   const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。" });
   modelNameField.input.id = "settings-model-name";
@@ -864,6 +1107,7 @@ function renderModelsPage(host: HTMLElement): void {
   if (cloudMode) {
     const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商", disabled: borrowedPool });
     connectionLabelField = labelField.input;
+    connectionLabelField.id = "settings-model-connection-label";
     detailBody.append(labelField.root);
   }
 
@@ -877,6 +1121,7 @@ function renderModelsPage(host: HTMLElement): void {
       ? "跟随时使用来源角色的密钥"
       : selected?.has_api_key ? "留空则保留当前密钥" : "粘贴该连接的 API 密钥";
     keyInput.disabled = borrowedPool;
+    keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
     const keyField = fieldWithHint("API 密钥", keyInput, "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。");
     const status = document.createElement("p");
@@ -955,7 +1200,7 @@ function renderModelsPage(host: HTMLElement): void {
     model: modelNameField.input.value,
     apiKey: apiKeyField?.value ?? "",
     connectionLabel: connectionLabelField?.value ?? "",
-  }));
+  }), { preserveDraft: false }); // 表单确实提交了，重画后应显示服务端回填的最新值
   detailBody.append(fieldRow([
     createButton({ label: "保存配置", icon: "check", onClick: doSaveModel }),
     createButton({ label: "获取模型列表", onClick: () => void reRenderAfter(async () => {
@@ -1049,14 +1294,13 @@ async function saveModel(form: { provider: string; baseUrl: string; model: strin
 
 async function testConnectionRow(role: string, connectionId: string): Promise<void> {
   selectedConnection[role] = connectionId;
-  try {
+  // 走 reRenderAfter 而不是裸 renderBody()：测试这条连接不该把用户刚敲的字冲掉。
+  // 若这一下同时切换了连接，草稿的 scope 对不上，会自动丢弃而不是搬到新连接上。
+  await reRenderAfter(async () => {
     const result = await client.request<{ ok: boolean; message: string }>(`/api/models/connectivity/${encodeURIComponent(role)}`, { method: "POST" });
     showToast({ message: result.message, error: !result.ok });
     await refreshModelRoles();
-  } catch (error) {
-    showToast({ message: errorMessage(error), error: true });
-  }
-  renderBody();
+  });
 }
 
 async function promoteConnection(role: string, connectionId: string): Promise<void> {
@@ -1069,7 +1313,7 @@ async function promoteConnection(role: string, connectionId: string): Promise<vo
     );
     await refreshSettings();
     showToast({ message: "已设为主用连接。" });
-  });
+  }, { preserveDraft: false }); // 主用连接换人，表单跟着切到新连接，旧连接的草稿（含刚粘的密钥）绝不能糊过去
 }
 
 async function deleteConnection(role: string, connectionId: string): Promise<void> {
@@ -1081,7 +1325,7 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
     delete selectedConnection[role];
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
     showToast({ message: "连接已删除，其密钥也已从本机移除。" });
-  });
+  }, { preserveDraft: false }); // 表单会切回默认连接，不该把被删连接的草稿糊上去
 }
 
 async function exportModelConfig(includeApiKey: boolean): Promise<void> {

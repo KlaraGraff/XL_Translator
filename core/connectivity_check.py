@@ -35,6 +35,7 @@ OPENAI_COMPATIBLE_PROVIDERS = {
     "custom_openai",
     "lanyi",
     "siliconflow",
+    "deepseek",
 }
 
 @dataclass(frozen=True)
