@@ -14,6 +14,7 @@ from core.model_config import (
     build_model_config_export_payload,
     parse_model_config_import,
 )
+from core.model_roles import ROLE_TRANSLATION, add_role_connection
 from settings import AppSettings
 
 
@@ -98,6 +99,109 @@ class ModelConfigRoundTripTests(unittest.TestCase):
             save_api_key=lambda *_args, **_kwargs: None,
         )
         assert restored.cleaner_model_role.mode == "local"
+
+    def test_every_connection_in_a_pool_travels_with_the_bundle(self) -> None:
+        """The bundle promises the whole model service, pools included."""
+        settings = AppSettings()
+        settings.engine.cloud_provider = "custom_openai"
+        settings.engine.cloud_base_url = "https://primary.example/v1"
+        settings.engine.cloud_model = "model-primary"
+        settings = AppSettings(**settings.model_dump())
+        add_role_connection(
+            settings,
+            ROLE_TRANSLATION,
+            label="备用",
+            provider="custom_openai",
+            model="model-second",
+            base_url="https://second.example/v1",
+        )
+        settings = AppSettings(**settings.model_dump())
+
+        restored = _round_trip(settings)
+
+        pool = restored.engine.connections
+        assert [conn.base_url for conn in pool] == [
+            "https://primary.example/v1",
+            "https://second.example/v1",
+        ]
+        assert pool[1].label == "备用"
+        assert pool[1].model == "model-second"
+        # Ids are machine-local key scopes and must not be carried over.
+        assert pool[1].id != settings.engine.connections[1].id
+        # Nothing in the file was ever tested on this machine.
+        assert all(conn.availability_status == "unknown" for conn in pool)
+
+    def test_a_file_without_a_pool_leaves_the_readers_own_pool_alone(self) -> None:
+        """Bundles written before pools travelled must not collapse one."""
+        reader = AppSettings()
+        add_role_connection(reader, ROLE_TRANSLATION, label="本机备用")
+        reader = AppSettings(**reader.model_dump())
+
+        payload = build_model_config_export_payload(
+            AppSettings(), get_api_key=lambda *_: ""
+        )
+        for profile in payload["model_profiles"].values():
+            del profile["connections"]
+
+        restored = apply_model_config_import(
+            reader,
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        assert [conn.label for conn in restored.engine.connections] == ["", "本机备用"]
+
+
+class ReplacedConnectionKeyCleanupTests(unittest.TestCase):
+    """被整份替换掉的连接，它们的 ``conn::<id>`` 密钥不能留在密钥文件里。
+
+    池是整份替换的，本机原来那几条连接的 id 在导入后不复存在。没有任何界面还
+    能看见、能改、能删这些作用域下的密钥，留着就是一堆随每次导入不断增长、且
+    属于别人的凭据。
+    """
+
+    def _import_with_a_pool(self, *, include_pool: bool) -> list[str]:
+        reader = AppSettings()
+        add_role_connection(reader, ROLE_TRANSLATION, label="本机备用")
+        reader = AppSettings(**reader.model_dump())
+        # 文件带着全部四个角色的池，所以四个角色的旧连接都会被替换掉。
+        old_ids = [
+            conn.id
+            for owner in (
+                reader.engine,
+                reader.cleaner_model_role,
+                reader.image_model_role,
+                reader.pdf_review_model_role,
+            )
+            for conn in owner.connections
+        ]
+
+        payload = build_model_config_export_payload(
+            AppSettings(), get_api_key=lambda *_: ""
+        )
+        if not include_pool:
+            for profile in payload["model_profiles"].values():
+                del profile["connections"]
+        deleted: list[str] = []
+        apply_model_config_import(
+            reader,
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+            delete_scoped_api_key=deleted.append,
+        )
+        self.old_ids = old_ids
+        return deleted
+
+    def test_keys_of_replaced_connections_are_purged(self) -> None:
+        deleted = self._import_with_a_pool(include_pool=True)
+
+        self.assertEqual(sorted(deleted), sorted(self.old_ids))
+
+    def test_nothing_is_purged_when_the_pool_is_left_alone(self) -> None:
+        # 老文件不带 connections，池原封不动，密钥当然一个都不能动。
+        deleted = self._import_with_a_pool(include_pool=False)
+
+        self.assertEqual(deleted, [])
 
 
 if __name__ == "__main__":

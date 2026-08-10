@@ -473,7 +473,29 @@ async function adoptExistingTask(surface: Surface): Promise<void> {
 // 顶部渲染入口：整页按当前 phase 重建（DOM 规模很小，重建比增量 patch 更简单可靠）。
 // ---------------------------------------------------------------------------
 
+// 运行日志的滚动位置：旧版本没有这套逻辑，这里是新写的。整页每次重建都会把 .log
+// 连同其它 DOM 一起扔掉重建，浏览器不会替你记滚动条——不记就记，不然用户往上翻看历史时
+// 一来新日志就被强制拽回底部。只有「用户本来就停在底部」（容差 8px）才在重建后继续贴底，
+// 否则原样恢复重建前的位置。
+const LOG_SCROLL_STICK_TOLERANCE = 8;
+
+function captureLogScroll(container: HTMLElement): { atBottom: boolean; scrollTop: number } | null {
+  const prev = container.querySelector<HTMLElement>(".log");
+  if (!prev) return null;
+  const distanceFromBottom = prev.scrollHeight - prev.scrollTop - prev.clientHeight;
+  return { atBottom: distanceFromBottom <= LOG_SCROLL_STICK_TOLERANCE, scrollTop: prev.scrollTop };
+}
+
+function restoreLogScroll(container: HTMLElement, prevScroll: { atBottom: boolean; scrollTop: number } | null): void {
+  const next = container.querySelector<HTMLElement>(".log");
+  if (!next) return;
+  // 没有旧状态（比如第一次渲染日志卡片）按贴底处理，最新的日志本来就该先看到。
+  if (!prevScroll || prevScroll.atBottom) next.scrollTop = next.scrollHeight;
+  else next.scrollTop = prevScroll.scrollTop;
+}
+
 function renderInto(container: HTMLElement, surface: Surface): void {
+  const logScroll = captureLogScroll(container);
   while (container.firstChild) container.removeChild(container.firstChild);
   container.removeAttribute("style");
   const st = states[surface];
@@ -493,6 +515,7 @@ function renderInto(container: HTMLElement, surface: Surface): void {
   } else {
     container.append(buildColLeft(surface, st, active), buildColRight(surface, st, active));
   }
+  restoreLogScroll(container, logScroll);
 }
 
 function rerender(surface: Surface): void {
@@ -688,6 +711,9 @@ async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputEl
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "已选择来源，但记住上次目录失败。"), error: true });
   }
+  // 走「浏览」选完路径就直接扫描，不用用户再点一次——手输/粘贴路径的场景不走这个函数，
+  // 不受影响。复用 runScan 本身，扫描失败的提示和点按钮时完全一样。
+  await runScan(surface);
 }
 
 interface StatCell {
@@ -1755,6 +1781,10 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
   return chips;
 }
 
+// 界面上只需要滚动查看，不需要把整条历史都塞进 DOM——200 条封顶，够回溯最近的操作，
+// 完整记录另外随诊断归档，不靠这里兜底。
+const LOG_VIEW_LIMIT = 200;
+
 function buildLogCard(local: LocalTask): HTMLElement {
   const card = el("div", "card");
   card.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden";
@@ -1762,13 +1792,15 @@ function buildLogCard(local: LocalTask): HTMLElement {
   const b = el("b");
   b.textContent = "运行日志";
   const span = el("span");
-  span.textContent = "保留最近 10 条 · 完整日志随诊断归档";
+  span.textContent = "保留最近 200 条 · 完整日志随诊断归档";
   head.append(b, span);
   card.append(head);
 
   const log = el("div", "log");
-  log.style.cssText = "flex:1;border:0;border-radius:0";
-  for (const entry of local.logs.slice(-10)) {
+  // flex:1 撑满卡片剩余空间；min-height:0 让它在内容超高时收缩而不是把卡片顶大，
+  // overflow-y:auto 才能真的滚起来——否则 flex 子项默认会按内容高度撑开父容器。
+  log.style.cssText = "flex:1;min-height:0;border:0;border-radius:0;overflow-y:auto";
+  for (const entry of local.logs.slice(-LOG_VIEW_LIMIT)) {
     const line = el("div");
     const t = el("span", "t");
     t.textContent = entry.time;
@@ -1917,19 +1949,26 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
     const domainField = el("div", "field");
     const label = el("label");
     label.textContent = "专业领域 ";
-    const link = el("span", "linklike");
-    link.style.fontSize = "11px";
-    link.textContent = "编辑 Prompt ↗ 设置";
-    link.addEventListener("click", () => navigate("settings", { page: "params" }));
-    label.append(link);
+    // 「无」= 不指定领域，不会拼进任何领域 Prompt，也就没有可编辑的段落——
+    // 选中「无」时不出「编辑 Prompt」入口，避免用户点进设置页给一个本该
+    // 保持空的领域挂上覆盖文本。
+    if (st.domainPreset !== "无") {
+      const link = el("span", "linklike");
+      link.style.fontSize = "11px";
+      link.textContent = "编辑 Prompt ↗ 设置";
+      link.addEventListener("click", () => navigate("settings", { page: "params" }));
+      label.append(link);
+    }
     domainField.append(label);
     const select = createSelectField({
       label: "",
-      options: ["同步工程场景", "资料管理场景", "行政生活化场景", "自定义"].map((v) => ({ value: v, label: v })),
+      // 「无」放在第一项，让「不加任何领域限定」一眼可见。
+      options: ["无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"].map((v) => ({ value: v, label: v })),
       value: st.domainPreset,
       onChange: (value) => {
         st.domainPreset = value;
         void persistSettings({ [`${surface}_domain_preset`]: value });
+        rerender(surface);
       },
     });
     domainField.append(select.select);
@@ -2290,6 +2329,9 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
   switch (event.type) {
     case "log": {
       local.logs.push({ time: formatTime(num(data.ts, 0) || undefined), level: text(data.level, "info"), message: redactedText(data.message ?? data.text, "") });
+      // 数组本身也要封顶，不然长任务跑几个小时会攒出一条越来越长的内存记录——界面只展示
+      // 最近 LOG_VIEW_LIMIT 条，这里索性同步截断，省得两处上限不一致。
+      if (local.logs.length > LOG_VIEW_LIMIT) local.logs.splice(0, local.logs.length - LOG_VIEW_LIMIT);
       break;
     }
     case "progress": {

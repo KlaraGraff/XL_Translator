@@ -62,6 +62,19 @@ CLOUD_PROVIDER_BASE_URL_DEFAULTS = {
 }
 CLOUD_PROVIDER_BASE_URL_DISABLED = {"zhipu", "dashscope"}
 DISABLED_BASE_URL_PLACEHOLDER = "当前服务商无需填写 Base URL"
+
+# 选中服务商时预填的型号。一律取各家的轻量/快速档：翻译是逐段高频调用，
+# 默认给重型号会让第一次试用既慢又贵。这只是预填，用户可以直接改写，
+# 「获取模型列表」拉到的才是该账号真正可用的清单。
+# custom_openai / lanyi 没有默认值——端点由用户自己填，型号无从猜测。
+CLOUD_PROVIDER_MODEL_DEFAULTS = {
+    "openai": "gpt-5.6-luna",
+    "claude": "claude-haiku-4-5-20251001",
+    "deepseek": "deepseek-v4-flash",
+    "zhipu": "glm-4-flash",
+    "dashscope": "qwen-turbo",
+    "siliconflow": "Qwen/Qwen2.5-7B-Instruct",
+}
 LOCAL_MODEL_PROVIDERS = {
     "Ollama": "ollama",
     "LM Studio": "lm_studio",
@@ -113,6 +126,11 @@ OLLAMA_RECOMMENDED_MODELS = [
 #   lang key：目标语言代码（如 "en"/"fr"/"ar"）或 "_base"（通用基础指令，兜底使用）
 #   get_system_prompt() 优先取 target_lang，缺失时回退到 "_base"
 DOMAIN_PRESETS: dict[str, dict[str, str]] = {
+    # 「无」= 不指定领域：不向模型注入任何领域提示词。空字典使
+    # get_system_prompt() 里 preset.get(target_lang) / .get("_base", "") 都取到
+    # ""，走到 append_prompt_block() 时这一段直接被跳过，而不是拼进一句
+    # 「无特殊领域」之类的话术。放在字典首位，配合前端下拉把它排在第一项。
+    "无": {},
     "同步工程场景": {
         "_base": (
             "你是一名面向工程同步场景的专业翻译助手。\n"

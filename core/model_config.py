@@ -29,6 +29,7 @@ from core.model_roles import (
 from core.model_throughput import get_model_throughput, set_model_throughput
 from settings import (
     AppSettings,
+    delete_connection_key,
     get_connection_scoped_key,
     get_key,
     parse_api_key_scope,
@@ -126,6 +127,7 @@ def apply_model_config_import(
     imported: ImportedModelConfig,
     *,
     save_api_key: ApiKeySaver = save_key,
+    delete_scoped_api_key: Callable[[str], None] = delete_connection_key,
     throughput_errors: list[str] | None = None,
 ) -> AppSettings:
     """Apply an import to a copied settings model and persist supplied keys.
@@ -134,11 +136,22 @@ def apply_model_config_import(
     API and the native UI preserve their existing save timing and error UX.
     """
     payload = settings.model_dump(mode="json")
+    dropped_connection_ids: list[str] = []
     for key in MODEL_CONFIG_SETTING_KEYS:
         if key not in imported.model_config:
             continue
         current = dict(payload.get(key) or {})
         imported_fields = imported.model_config[key]
+        if isinstance(imported_fields.get("connections"), list):
+            # 连接池是整份替换的（见 ``connection_values``），本机原来那几条连接连同
+            # 它们的 id 一起消失。密钥是按 ``conn::<id>`` 存的，没人再指得到它们：不
+            # 顺手删掉的话，keys.json 会随每次导入越堆越多，而且堆着的是已经没有任何
+            # 界面能看见、能改、能删的凭据。
+            dropped_connection_ids.extend(
+                str(connection.get("id") or "").strip()
+                for connection in (current.get("connections") or [])
+                if isinstance(connection, dict)
+            )
         current = _merge_imported_fields(current, imported_fields)
         _synchronize_selected_provider_memory(current, imported_fields)
         if "mode" not in imported_fields:
@@ -163,6 +176,11 @@ def apply_model_config_import(
         save_api_key(provider, api_key)
     for entry in imported.scoped_api_keys:
         save_api_key(entry["provider"], entry["api_key"], entry["base_url"])
+    # 清理放在写入之后：导入的密钥全部落在 provider + Base URL 作用域下，和这里删的
+    # conn::<id> 作用域互不相干，但万一上面抛错，旧密钥还留着，配置也还是旧的。
+    for connection_id in dropped_connection_ids:
+        if connection_id:
+            delete_scoped_api_key(connection_id)
     for role, throughput in imported.profile_throughputs.items():
         try:
             config = resolve_effective_model_config(updated, role)
@@ -259,6 +277,12 @@ def _model_profiles_for_export(
         # All four roles carry mode/source_role/local now, so the export is
         # uniform; a file written before that still imports because the reader
         # defaults every missing key.
+        profile["connections"] = _connections_for_export(
+            owner,
+            get_api_key=get_api_key,
+            get_scoped_api_key=get_scoped_api_key,
+            include_api_key=include_api_key,
+        )
         profile["mode"] = str(owner.get("mode") or "cloud").strip() or "cloud"
         profile["source_role"] = str(
             owner.get("source_role") or SOURCE_INDEPENDENT
@@ -266,6 +290,50 @@ def _model_profiles_for_export(
         profile["local"] = _local_profile_for_export(owner)
         profiles[profile_key] = profile
     return profiles
+
+
+def _connections_for_export(
+    owner: dict[str, Any],
+    *,
+    get_api_key: ApiKeyGetter,
+    get_scoped_api_key: Callable[[str], str],
+    include_api_key: bool,
+) -> list[dict[str, str]]:
+    """Export a role's whole connection pool, not only its primary.
+
+    The ``cloud`` block already describes entry 0, but a role can own several
+    connections for failover and parallel spreading.  A bundle that carried
+    only the primary would quietly halve the recipient's setup, which is
+    exactly what a one-click whole-service bundle must not do.
+
+    Ids are deliberately not exported: they scope the local key store, and
+    reusing one machine's id on another would point at a key that is not there.
+    The importing side mints fresh ids and resolves keys through the
+    provider/Base URL scope written below.
+    """
+    entries: list[dict[str, str]] = []
+    for raw in owner.get("connections") or []:
+        if not isinstance(raw, dict):
+            continue
+        provider = str(raw.get("provider") or "").strip()
+        base_url = normalize_cloud_base_url(
+            provider,
+            str(raw.get("base_url") or "").strip(),
+        )
+        entry = {
+            "label": str(raw.get("label") or "").strip(),
+            "provider": provider,
+            "model": str(raw.get("model") or "").strip(),
+            "base_url": base_url,
+        }
+        if include_api_key:
+            api_key = str(
+                get_scoped_api_key(str(raw.get("id") or "").strip()) or ""
+            ).strip() or str(get_api_key(provider, base_url) or "").strip()
+            if api_key:
+                entry["api_key"] = api_key
+        entries.append(entry)
+    return entries
 
 
 def _owner_primary_scoped_key(
@@ -504,6 +572,38 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                 values["cloud_provider_configs"] = provider_configs
         return values
 
+    def connection_values(profile: dict[str, Any]) -> list[dict[str, str]] | None:
+        """Read a pool back, or ``None`` when the file does not describe one.
+
+        Files written before pools were exported have no ``connections`` key at
+        all; those must leave the reader's own pool alone rather than collapse
+        it to a single entry.
+        """
+        raw_connections = profile.get("connections")
+        if not isinstance(raw_connections, list):
+            return None
+        entries: list[dict[str, str]] = []
+        for raw in raw_connections:
+            if not isinstance(raw, dict):
+                continue
+            provider = str(raw.get("provider") or "").strip()
+            base_url = str(raw.get("base_url") or "").strip()
+            if "api_key" in raw:
+                add_key(provider, base_url, str(raw.get("api_key") or ""))
+            entries.append(
+                {
+                    "label": str(raw.get("label") or "").strip(),
+                    "provider": provider,
+                    "model": str(raw.get("model") or "").strip(),
+                    "base_url": (
+                        normalize_cloud_base_url(provider, base_url)
+                        if provider
+                        else base_url
+                    ),
+                }
+            )
+        return entries or None
+
     for profile_key, profile in profiles_raw.items():
         normalized_key = str(profile_key or "").strip()
         role = MODEL_PROFILE_ROLE_BY_KEY.get(normalized_key)
@@ -514,6 +614,12 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
 
         setting_key = MODEL_PROFILE_SETTING_KEY_BY_ROLE[role]
         values = cloud_values(profile)
+        connections = connection_values(profile)
+        if connections is not None:
+            # A pool is a list, so this replaces rather than merges: the file
+            # describes a complete pool, and appending would leave the reader
+            # with both machines' connections mixed together.
+            values["connections"] = connections
         # All four roles export mode/source_role/local, so all four have to read
         # them back.  Reading them per role is what keeps a round-trip lossless
         # now that translation can follow and the cleaner can run locally.

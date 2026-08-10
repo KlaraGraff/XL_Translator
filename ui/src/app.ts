@@ -10,6 +10,7 @@ import { injectIconSprite } from "./icons";
 import { mountShell } from "./shell";
 import { mountRouter, navigate, registerView } from "./router";
 import { checkFirstLaunch } from "./quickstart";
+import { refreshModelPill } from "./model-pill";
 
 import * as excelView from "./views/excel";
 import * as wordView from "./views/word";
@@ -75,6 +76,9 @@ function main(): void {
   registerView("help", helpView);
 
   navigate("excel");
+
+  // 顶栏「当前模型」药丸：先按已保存的配置点亮一次，之后由设置页每次保存/测试后刷新。
+  void refreshModelPill();
 
   // 首次启动检查（main.ts:3989 等价逻辑）：不阻塞首屏渲染，读取到
   // quick_start_completed === false 时自动弹出快速开始向导。

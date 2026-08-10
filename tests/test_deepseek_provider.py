@@ -17,6 +17,7 @@ from api.app import create_app
 from config import (
     CLOUD_ENGINES,
     CLOUD_PROVIDER_BASE_URL_DEFAULTS,
+    CLOUD_PROVIDER_MODEL_DEFAULTS,
     DEEPSEEK_BASE_URL,
     cloud_provider_base_url_default,
     normalize_cloud_base_url,
@@ -101,6 +102,22 @@ class ProviderDefaultsRouteTests(unittest.TestCase):
 
         self.assertEqual(payload["base_url_disabled"], ["dashscope", "zhipu"])
         self.assertTrue(payload["disabled_placeholder"])
+
+    def test_serves_a_light_tier_model_name_for_every_named_provider(self) -> None:
+        """选中服务商要连型号一起预填，否则用户还得自己猜一个能用的名字。"""
+        payload = self.client.get("/api/models/provider-defaults").json()
+
+        self.assertEqual(payload["model_defaults"], CLOUD_PROVIDER_MODEL_DEFAULTS)
+        self.assertEqual(payload["model_defaults"]["deepseek"], "deepseek-v4-flash")
+        self.assertEqual(payload["model_defaults"]["openai"], "gpt-5.6-luna")
+        self.assertEqual(
+            payload["model_defaults"]["claude"], "claude-haiku-4-5-20251001"
+        )
+        # 端点由用户自填的服务商猜不出型号，宁可不预填也不能填一个不存在的。
+        self.assertNotIn("custom_openai", payload["model_defaults"])
+        # 除自定义端点外，下拉里能选到的服务商都得有默认型号。
+        named = set(CLOUD_ENGINES.values()) - {"custom_openai"}
+        self.assertEqual(named - set(payload["model_defaults"]), set())
 
 
 if __name__ == "__main__":

@@ -266,6 +266,62 @@ async function refreshTm(): Promise<void> {
   }
 }
 
+// 「选择全部」跨页拿全量 id：复用 /api/tm/entries 本身（不新建后端接口），把
+// page_size 顶到服务端允许的上限（api/app.py list_tm_entries 里 min(page_size, 200)）
+// 分批并发拉完。SELECT_ALL_CAP 是前端自设的上限，避免语言对里条目多到失控时
+// 一次发几十个请求；超过时如实告知只选中了前 N 条，不做静默截断。
+const SELECT_ALL_PAGE_SIZE = 200;
+const SELECT_ALL_CAP = 5000;
+let selectAllBusy = false;
+
+async function fetchAllMatchingTmIds(): Promise<{ ids: number[]; truncated: boolean }> {
+  const targetCount = Math.min(total, SELECT_ALL_CAP);
+  if (targetCount <= 0) return { ids: [], truncated: false };
+  const client = await getClient();
+  const pageCount = Math.ceil(targetCount / SELECT_ALL_PAGE_SIZE);
+  const pagePayloads = await Promise.all(
+    Array.from({ length: pageCount }, (_, index) =>
+      client.request<{ entries: TmEntry[] }>(
+        `/api/tm/entries?lang_pair=${encodeURIComponent(tmLangPair())}&keyword=${encodeURIComponent(keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}`,
+      ),
+    ),
+  );
+  const ids = pagePayloads.flatMap((payload) => payload.entries.map((entry) => entry.id)).slice(0, targetCount);
+  return { ids, truncated: total > SELECT_ALL_CAP };
+}
+
+/** 「选择全部」/「取消全选」：选中的是当前语言对 + 搜索关键词过滤后的完整结果集
+ * （跨页），不是无视筛选的整个记忆库。已经选满一次可达上限时再点会直接清空，
+ * 不必重新发请求。 */
+async function handleSelectAllTm(): Promise<void> {
+  if (selectAllBusy || total <= 0) return;
+  const reachable = Math.min(total, SELECT_ALL_CAP);
+  if (selectedIds.size > 0 && selectedIds.size === reachable) {
+    selectedIds.clear();
+    renderTable();
+    return;
+  }
+  selectAllBusy = true;
+  updateSelectionUi();
+  try {
+    const { ids, truncated } = await fetchAllMatchingTmIds();
+    selectedIds.clear();
+    for (const id of ids) selectedIds.add(id);
+    renderTable();
+    if (truncated) {
+      showToast({
+        message: `已选择前 ${ids.length} 条（共 ${total} 条，超过单次全选上限 ${SELECT_ALL_CAP} 条）。请缩小搜索范围后分批处理剩余条目。`,
+        error: true,
+      });
+    }
+  } catch (error) {
+    showToast({ message: `选择全部失败：${errorMessage(error)}`, error: true });
+  } finally {
+    selectAllBusy = false;
+    updateSelectionUi();
+  }
+}
+
 async function refreshConflicts(): Promise<void> {
   const client = await getClient();
   const payload = await client.request<{ conflicts: TmConflict[] }>(`/api/tm/conflicts?lang_pair=${encodeURIComponent(tmLangPair())}`);
@@ -1069,6 +1125,9 @@ function rebuildToolbar(): void {
     if (searchDebounce !== null) window.clearTimeout(searchDebounce);
     searchDebounce = window.setTimeout(() => {
       page = 1;
+      // 搜索关键词变了，「选择全部」圈定的结果集也跟着变——旧的选中集合可能包含
+      // 现在已经看不见的条目，继续留着容易误批量删除，所以筛选条件一变就清空。
+      selectedIds.clear();
       void refreshTm().then(() => {
         renderTable();
         renderTopbarStatus();
@@ -1223,16 +1282,20 @@ function renderStatsRow(): void {
 function updateSelectionUi(): void {
   if (!tcHeadEl) return;
   const chip = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=sel-chip]");
-  if (chip) chip.textContent = `已选 ${selectedIds.size}`;
+  // 「已选 x / xx」：分母是当前语言对 + 搜索关键词过滤后的匹配总数（与「选择全部」
+  // 圈定的范围一致），不是当前页的条数，避免用户误以为只有一页那么多可选。
+  if (chip) chip.textContent = `已选 ${selectedIds.size} / ${total}`;
   const pinBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-pin]");
-  const unpinBtnHost = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
+  const deleteBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
   if (pinBtn) pinBtn.disabled = selectedIds.size === 0;
-  if (unpinBtnHost) unpinBtnHost.disabled = selectedIds.size === 0;
+  if (deleteBtn) deleteBtn.disabled = selectedIds.size === 0;
   const selectAllLink = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=select-all]");
   if (selectAllLink) {
-    const pageIds = entries.map((entry) => entry.id);
-    const allSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
-    selectAllLink.textContent = allSelected ? "取消全选" : "本页全选";
+    const reachable = Math.min(total, SELECT_ALL_CAP);
+    const allSelected = reachable > 0 && selectedIds.size === reachable;
+    selectAllLink.textContent = selectAllBusy ? "选取中…" : allSelected ? "取消全选" : "选择全部";
+    selectAllLink.style.opacity = selectAllBusy ? "0.5" : "1";
+    selectAllLink.style.pointerEvents = selectAllBusy ? "none" : "auto";
   }
 }
 
@@ -1256,6 +1319,9 @@ function renderTable(): void {
     selectAllCheckbox.type = "checkbox";
     selectAllCheckbox.className = "ck";
     selectAllCheckbox.checked = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
+    // 用户实测反馈：这个复选框看起来像「全选所有页」，实际只勾选当前页——行为不改
+    // （改了会打乱现有习惯），但补一句悬停说明，让人一眼看懂它管的范围。
+    selectAllCheckbox.title = "只勾选当前页显示的条目，不包括其他页；跨页请用下方“选择全部”。";
     selectAllCheckbox.addEventListener("change", () => {
       if (selectAllCheckbox.checked) entries.forEach((entry) => selectedIds.add(entry.id));
       else entries.forEach((entry) => selectedIds.delete(entry.id));
@@ -1348,9 +1414,19 @@ function buildTcHead(): HTMLDivElement {
   bar.style.borderTop = "1px solid var(--line)";
   bar.style.borderBottom = "0";
 
-  const chip = createChip({ label: `已选 ${selectedIds.size}`, tone: "tint" });
+  const chip = createChip({ label: `已选 ${selectedIds.size} / ${total}`, tone: "tint" });
   chip.dataset.role = "sel-chip";
   bar.append(chip);
+
+  // 「选择全部」紧挨着「已选」徽章，跟它组成一组（已选 x / xx · 选择全部），
+  // 「批量固定」「批量删除」留在右边——原来在最右边的「本页全选」按钮挪到这里，
+  // 语义也从「只选本页」换成「选中当前筛选条件下的全部匹配项（跨页）」。
+  const selectAllLink = document.createElement("span");
+  selectAllLink.className = "linklike";
+  selectAllLink.dataset.role = "select-all";
+  selectAllLink.textContent = "选择全部";
+  selectAllLink.addEventListener("click", () => void handleSelectAllTm());
+  bar.append(document.createTextNode(" · "), selectAllLink);
 
   const pinBtn = createButton({ label: "批量固定", icon: "pin", size: "mini", onClick: () => void tmBulkPin(true) });
   pinBtn.dataset.role = "bulk-pin";
@@ -1359,19 +1435,6 @@ function buildTcHead(): HTMLDivElement {
   const deleteBtn = createButton({ label: "批量删除", icon: "trash", size: "mini", variant: "danger", onClick: () => confirmBulkDelete() });
   deleteBtn.dataset.role = "bulk-delete";
   bar.append(deleteBtn);
-
-  const selectAllLink = document.createElement("span");
-  selectAllLink.className = "linklike";
-  selectAllLink.dataset.role = "select-all";
-  selectAllLink.textContent = "本页全选";
-  selectAllLink.addEventListener("click", () => {
-    const pageIds = entries.map((entry) => entry.id);
-    const allSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
-    if (allSelected) pageIds.forEach((id) => selectedIds.delete(id));
-    else pageIds.forEach((id) => selectedIds.add(id));
-    renderTable();
-  });
-  bar.append(selectAllLink);
 
   const tools = document.createElement("div");
   tools.className = "tc-tools";

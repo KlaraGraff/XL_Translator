@@ -358,22 +358,44 @@ export function closeMenu(): void {
   closeActiveMenu?.();
 }
 
-/** 在 anchor 正下方弹出一个小菜单；点外面、Esc、滚动都会关掉。 */
-export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
+/**
+ * 在 anchor 正下方弹出一个小菜单；点外面、Esc、滚动都会关掉。
+ *
+ * `width` 用来让菜单和触发它的输入框同宽（模型名称下拉就靠这个），`maxHeight` 给
+ * 条目数量不可控的菜单封顶——服务商返回上百个模型 ID 时，不封顶的菜单会长过屏幕，
+ * 而定位逻辑只会把它整个往上顶，顶端照样被切掉。
+ */
+export function openMenu(
+  anchor: HTMLElement,
+  items: MenuItem[],
+  opts: { width?: number; maxHeight?: number } = {},
+): void {
   hideHint();
   // 连点两次触发按钮之前必须先关掉上一个，否则会在 body 下叠出两份重合的菜单，
   // 各自带一套全局监听，要等下一次外部 pointerdown 才一起清掉。
   closeActiveMenu?.();
   const menu = el("div", { className: "menu" });
   menu.setAttribute("role", "menu");
+  if (opts.width) menu.style.width = `${Math.round(opts.width)}px`;
+  if (opts.maxHeight) {
+    menu.style.maxHeight = `${Math.round(opts.maxHeight)}px`;
+    menu.style.overflowY = "auto";
+  }
 
   const close = () => {
     menu.remove();
     document.removeEventListener("pointerdown", onOutside, true);
     document.removeEventListener("keydown", onKey);
-    window.removeEventListener("scroll", close, true);
+    window.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", close);
     if (closeActiveMenu === close) closeActiveMenu = null;
+  };
+  // 菜单自己滚动不算「页面滚走了」：捕获阶段的 scroll 监听收得到菜单内部的滚动事件，
+  // 不排除掉的话，可滚动的长菜单刚一滑就把自己关了。
+  const onScroll = (event: Event) => {
+    const target = event.target as Node | null;
+    if (target && menu.contains(target)) return;
+    close();
   };
   const onOutside = (event: PointerEvent) => {
     const target = event.target as Node | null;
@@ -413,7 +435,7 @@ export function openMenu(anchor: HTMLElement, items: MenuItem[]): void {
 
   document.addEventListener("pointerdown", onOutside, true);
   document.addEventListener("keydown", onKey);
-  window.addEventListener("scroll", close, true);
+  window.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", close);
   closeActiveMenu = close;
 }

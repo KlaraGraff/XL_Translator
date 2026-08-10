@@ -533,6 +533,7 @@ def _check_cleaner_json_protocol(
     settings: AppSettings,
     *,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    connection_id: str = "",
 ) -> ConnectivityResult:
     """Verify that the cleaner model can return its required JSON contract.
 
@@ -547,8 +548,8 @@ def _check_cleaner_json_protocol(
     from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
     from engines.base_engine import strip_markdown_json
 
-    config = resolve_effective_model_config(settings, ROLE_CLEANER)
-    cleaner_settings = settings_for_text_role(settings, ROLE_CLEANER)
+    config = resolve_effective_model_config(settings, ROLE_CLEANER, connection_id=connection_id)
+    cleaner_settings = settings_for_text_role(settings, ROLE_CLEANER, connection_id=connection_id)
     preflight = check_translation_api_config(cleaner_settings)
     if not preflight.ok:
         return ConnectivityResult(
@@ -600,6 +601,7 @@ def check_connectivity(
     *,
     role: str = "translation",
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    connection_id: str = "",
 ) -> ConnectivityResult:
     """Run a text-role test and persist it on that role's owning settings.
 
@@ -611,27 +613,50 @@ def check_connectivity(
     from core.model_roles import (
         ROLE_CLEANER,
         ROLE_TRANSLATION,
+        connection_key_overrides,
         model_config_signature,
         record_model_role_availability,
         resolve_effective_model_config,
         settings_for_text_role,
     )
+    from settings import current_key_overrides, provider_key_overrides
 
     normalized_role = str(role or ROLE_TRANSLATION).strip()
     if normalized_role not in {ROLE_TRANSLATION, ROLE_CLEANER}:
         raise ValueError("连接测试只支持翻译模型或深度清洗模型。")
-    config = resolve_effective_model_config(settings, normalized_role)
-    result = (
-        _check_cleaner_json_protocol(settings, timeout_seconds=timeout_seconds)
-        if normalized_role == ROLE_CLEANER
-        else _check_connectivity(
-            # Test the effective (follow-resolved) configuration — the raw
-            # engine fields describe this role's idle own pool, while the
-            # availability signature below is recorded for the resolved one.
-            settings_for_text_role(settings, ROLE_TRANSLATION),
-            timeout_seconds=timeout_seconds,
-        )
+    config = resolve_effective_model_config(
+        settings,
+        normalized_role,
+        connection_id=connection_id,
     )
+    # 拨号前把**这条连接自己的**密钥钉在 get_key 会查的作用域上。底下的探测和引擎只
+    # 认 provider + Base URL，看不见 conn::<id> 作用域：不钉的话，同一家两个账号会拿
+    # 主用连接的 Key 去测第二条（测通了也毫无意义），换一家网关则直接报「缺少 API Key」。
+    key_overrides = dict(current_key_overrides() or {})
+    key_overrides.update(connection_key_overrides(config))
+    with provider_key_overrides(key_overrides):
+        result = (
+            _check_cleaner_json_protocol(
+                settings,
+                timeout_seconds=timeout_seconds,
+                connection_id=connection_id,
+            )
+            if normalized_role == ROLE_CLEANER
+            else _check_connectivity(
+                # Test the effective (follow-resolved) configuration — the raw
+                # engine fields describe this role's idle own pool, while the
+                # availability signature below is recorded for the resolved one.
+                # ``connection_id`` picks the pool entry the panel has selected;
+                # without it the test dialled the primary no matter which entry
+                # the user was looking at.
+                settings_for_text_role(
+                    settings,
+                    ROLE_TRANSLATION,
+                    connection_id=connection_id,
+                ),
+                timeout_seconds=timeout_seconds,
+            )
+        )
     try:
         record_model_role_availability(
             settings,
@@ -640,6 +665,7 @@ def check_connectivity(
             message=result.message,
             signature=model_config_signature(config),
             checked_at=datetime.now().isoformat(timespec="seconds"),
+            connection_id=connection_id,
         )
     except Exception:
         # A connectivity result is still useful even if status bookkeeping

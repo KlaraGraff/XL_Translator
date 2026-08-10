@@ -17,6 +17,7 @@ import {
   createBanner,
   closeLanguagePopover,
   closeMenu,
+  openMenu,
   hideHint,
   openModal,
   showToast,
@@ -28,6 +29,7 @@ import {
 import { icon, type IconName } from "../icons";
 import { ApiClient } from "../api-client";
 import { showQuickStart } from "../quickstart";
+import { applyModelPillFromRoles } from "../model-pill";
 import { version as PACKAGE_VERSION } from "../../package.json";
 import "./settings.css";
 
@@ -49,6 +51,7 @@ type PoolConnection = {
   base_url: string;
   availability_status: string;
   availability_message: string;
+  availability_checked_at: string;
   has_api_key: boolean;
   api_key_preview: string;
   primary: boolean;
@@ -161,7 +164,10 @@ function domainBuiltInPrompt(preset: string, targetLang: string): string {
   return prompts[targetLang] || prompts._base || "";
 }
 
-const DOMAIN_PRESET_OPTIONS = ["同步工程场景", "资料管理场景", "行政生活化场景", "自定义"];
+// 顺序必须和 config.py 的 DOMAIN_PRESETS 一致：「无」排第一，表示不注入任何领域提示词。
+// 少列一项不是「少个选项」而已——下拉里找不到当前值时浏览器会静默选中第 0 项，保存时
+// 就把用户当前的领域改掉，还会把空白 Prompt 当成覆盖写进另一个领域里。
+const DOMAIN_PRESET_OPTIONS = ["无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"];
 
 const MODEL_ROLE_LABELS: Record<string, string> = {
   translation: "文档翻译（Excel / Word）",
@@ -194,6 +200,7 @@ function providerLabel(provider: string): string {
 // 第二份硬编码：URL 一旦在前后端各存一份，服务商换了端点就会有一边是错的，而错的那
 // 一边正好是用户看得见的那份。接口没回来之前预填表为空 —— 只是不预填，不会挡住手填。
 let providerBaseUrlDefaults: Record<string, string> = {};
+let providerModelDefaults: Record<string, string> = {};
 let providerBaseUrlDisabled = new Set<string>();
 let disabledBaseUrlPlaceholder = "当前服务商无需填写 Base URL";
 
@@ -483,6 +490,10 @@ async function loadAndRenderPage(token: number): Promise<void> {
 function renderBody(): void {
   if (!bodyHost) return;
   clearElement(bodyHost);
+  // 上一轮渲染留下的表单钩子指向的是已经被 clearElement 摘掉的 DOM。模型页会在下面
+  // 重新接上；其他页面就该是空的，否则「获取模型列表」那条路径可能提交一份幽灵表单。
+  submitModelForm = null;
+  applyProviderDerivedState = () => {};
   switch (currentPage) {
     case "models": renderModelsPage(bodyHost); break;
     case "params": renderParamsPage(bodyHost); break;
@@ -511,6 +522,39 @@ const MODEL_FORM_SCOPE_FIELD_ID = "settings-model-provider";
 
 // 由模型表单在渲染时接上；页面不是模型页时是空操作。
 let applyProviderDerivedState: (value: string) => void = () => {};
+
+// 同上，由模型表单渲染时接上：把当前表单里的值提交给后端。
+// 「获取模型列表」「测试连接」和字段失焦自动保存都走它——这三处以前用的都是**服务端
+// 已保存的那份配置**，用户刚改完密钥点「测试连接」，测的是改之前那把旧密钥，永远失败。
+let submitModelForm: (() => Promise<void>) | null = null;
+// 表单提交串行化：失焦自动保存和按钮触发的保存可能挨得很近（点按钮先触发 blur 再触发
+// click），两个 PUT 并行发出去时后端最后落哪份取决于响应顺序。所有提交排进同一条链。
+let modelFormSaveChain: Promise<void> = Promise.resolve();
+
+function queueModelFormSave(run: () => Promise<void>): Promise<void> {
+  const next = modelFormSaveChain.then(run, run);
+  // 链上任何一环失败都不能让后续提交全部短路，所以这里吞掉错误只用于排队；
+  // 错误照常沿 next 抛给真正的调用方处理。
+  modelFormSaveChain = next.catch(() => undefined);
+  return next;
+}
+
+// 一次提交所需的全部信息：输入框里的值，加上「这份表单是在哪个角色、哪种连接方式、
+// 选中哪条连接的情况下填的」。后者在渲染时就固定下来，排队等待期间界面怎么变都不影响
+// 这一份该怎么存。
+type ModelFormSubmission = {
+  role: string;
+  access: string;
+  sourceRole: string;
+  secondaryId: string;
+  selectedId: string;
+  selectedLabel: string;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  connectionLabel: string;
+};
 
 type ModelFormDraft = { scope: string; values: Record<string, string> };
 
@@ -553,6 +597,9 @@ async function reRenderAfter<T>(
   const token = mountToken;
   const draft = opts.preserveDraft === false ? null : snapshotModelFormDraft();
   try {
+    // 点按钮的顺序是 blur → click：失焦自动保存已经发出去了，动作必须排在它后面，
+    // 否则「改完密钥直接点删除/切连接」会变成两个请求抢同一条记录。
+    await modelFormSaveChain;
     const result = await action();
     if (token === mountToken) {
       renderBody();
@@ -580,14 +627,17 @@ async function refreshProviderDefaults(): Promise<void> {
   try {
     const payload = await client.request<{
       base_url_defaults: Record<string, string>;
+      model_defaults?: Record<string, string>;
       base_url_disabled: string[];
       disabled_placeholder: string;
     }>("/api/models/provider-defaults");
     providerBaseUrlDefaults = payload.base_url_defaults || {};
+    providerModelDefaults = payload.model_defaults || {};
     providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
     if (payload.disabled_placeholder) disabledBaseUrlPlaceholder = payload.disabled_placeholder;
   } catch (error) {
     providerBaseUrlDefaults = {};
+    providerModelDefaults = {};
     providerBaseUrlDisabled = new Set();
     console.warn("服务商预设读取失败，本次不预填 Base URL：", error);
   }
@@ -596,6 +646,8 @@ async function refreshProviderDefaults(): Promise<void> {
 async function refreshModelRoles(): Promise<void> {
   const payload = await client.request<{ roles: Record<string, JsonObject> }>("/api/models/roles");
   modelRoles = payload.roles || {};
+  // 顶栏药丸跟着同一份数据走：保存、切换连接、测试连通性之后都会经过这里。
+  applyModelPillFromRoles(modelRoles);
   await Promise.all(Object.keys(modelRoles).map((role) => refreshModelThroughput(role)));
 }
 
@@ -800,6 +852,68 @@ function tcHead(title: string, tools: HTMLElement[] = []): HTMLDivElement {
   return head;
 }
 
+/**
+ * 把「模型名称」输入框包成一个可下拉的组合框：输入框照旧可以随便打字，右侧箭头把候选
+ * 展开成锚定菜单。候选优先用刚获取到的模型列表；还没获取时退回服务商的推荐型号，让这
+ * 个箭头在新建连接的第一分钟就有东西可给——否则它只是个点了没反应的装饰。
+ */
+function attachModelNameDropdown(
+  input: HTMLInputElement,
+  catalog: string[],
+  currentProvider: () => string,
+): void {
+  const host = input.parentElement;
+  if (!host) return;
+  const wrap = document.createElement("div");
+  wrap.className = "combo";
+  host.insertBefore(wrap, input);
+  wrap.append(input);
+
+  const caret = document.createElement("button");
+  caret.type = "button";
+  caret.className = "combo-caret";
+  caret.setAttribute("aria-label", "展开模型候选");
+  caret.append(icon("chev", { size: "sm" }));
+  wrap.append(caret);
+
+  const candidates = (): { list: string[]; fallback: boolean } => {
+    if (catalog.length) return { list: catalog, fallback: false };
+    const recommended = providerModelDefaults[currentProvider()];
+    return recommended ? { list: [recommended], fallback: true } : { list: [], fallback: false };
+  };
+
+  const paint = () => {
+    const { list } = candidates();
+    caret.disabled = input.disabled || !list.length;
+    caret.title = caret.disabled
+      ? "还没有候选模型。点下面的「获取模型列表」向服务商要一份。"
+      : "从候选里选一个";
+  };
+  paint();
+  // 服务商换了、输入框禁用态变了，可选项跟着变；没有事件能覆盖全部来源，直接在每次
+  // 点开前重算一遍最省事，也不会漏。
+  caret.addEventListener("pointerenter", paint);
+
+  caret.addEventListener("click", () => {
+    const { list, fallback } = candidates();
+    if (!list.length) return;
+    openMenu(
+      // 锚在整条输入框而不是箭头上：openMenu 按 anchor 的左边缘定位，锚在右侧的小
+      // 箭头上会把一条和输入框同宽的菜单顶到窗口外面去。
+      wrap,
+      list.map((item) => ({
+        label: item,
+        description: fallback ? "服务商推荐型号" : undefined,
+        onSelect: () => {
+          input.value = item;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        },
+      })),
+      { width: input.getBoundingClientRect().width, maxHeight: 280 },
+    );
+  });
+}
+
 function statusChip(label: string, tone: "done" | "error" | ""): HTMLSpanElement {
   const chipTone: ChipTone | undefined = tone === "done" ? "ok" : tone === "error" ? "warn" : "mute";
   return createChip({ label, tone: chipTone });
@@ -853,12 +967,37 @@ function activeConnection(role: string): PoolConnection | null {
   return connections.find((item) => item.id === wanted) ?? connections[0];
 }
 
+// 面板此刻编辑的是不是「本角色自己池子里的一条非主用连接」。三个条件缺一不可：
+// 本地模式没有连接列表（activeConnection 会兜底返回云端主连接）；跟随时列表里摆的是
+// 来源角色的池子，往那上面写等于改翻译模型的连接；主用连接走的是角色级路由。
+// 渲染和保存必须用同一个判断，否则会出现「看到的是 A，存进去的是 B」。
+function editableSecondaryConnection(role: string): PoolConnection | null {
+  const following = accessFollowSource(role) !== "independent";
+  const cloudMode = following || accessMode(role) === "cloud";
+  if (!cloudMode || following) return null;
+  if (text(record(modelRoles[role]).connection_pool_role, role) !== role) return null;
+  const selected = activeConnection(role);
+  return selected && !selected.primary ? selected : null;
+}
+
 function modelCatalogConnectionKey(args: { role: string; mode: string; provider: string; baseUrl: string }): string {
   return [args.role, args.mode, args.provider, args.baseUrl.trim().replace(/\/$/, "")].join("|");
 }
 
 function modelCatalogConnectionForRole(role: string): string {
   const payload = record(modelRoles[role]);
+  // 模型列表是按端点缓存的，而拉列表用的是**面板选中的那条连接**（connection_id 一路
+  // 传到后端）。键里只写主用连接的端点，第二条连接拉回来的列表就会被当成主用连接的，
+  // 切回主用时照样展示——用户会拿 B 家的模型名去填 A 家的连接。
+  const secondary = editableSecondaryConnection(role);
+  if (secondary) {
+    return modelCatalogConnectionKey({
+      role,
+      mode: "cloud",
+      provider: secondary.provider,
+      baseUrl: secondary.base_url,
+    });
+  }
   return modelCatalogConnectionKey({
     role,
     mode: text(payload.mode, "cloud"),
@@ -918,11 +1057,15 @@ function renderModelsPage(host: HTMLElement): void {
   const providers = cloudMode ? CLOUD_PROVIDERS : LOCAL_PROVIDERS;
 
   const selected = activeConnection(role);
-  const editingSecondary = Boolean(selected && !selected.primary && cloudMode);
+  const editingSecondary = editableSecondaryConnection(role) !== null;
   const formProvider = editingSecondary ? selected!.provider : provider;
   const formBaseUrl = editingSecondary ? selected!.base_url : baseUrl;
   const formModel = editingSecondary ? selected!.model : model;
   const borrowedPool = following;
+  // 这个池子到底是不是本角色自己的。两个条件都要看：草稿刚切到「跟随」时后端返回的
+  // connection_pool_role 还停在旧值，草稿刚切回「云端」时它又还指着来源角色。只看一边，
+  // 就会出现「界面上写着跟随，却顶着自己池子的测试通过」这类对不上的状态。
+  const ownsPool = !following && text(rolePayload.connection_pool_role, role) === role;
 
   // ---- 连接列表卡 ----
   if (cloudMode) {
@@ -983,7 +1126,10 @@ function renderModelsPage(host: HTMLElement): void {
         }
         const row = connRow([dot, name, ...chips, actions], {
           selected: Boolean(selected && selected.id === connection.id),
-          onClick: () => {
+          // 借来的池子不许选：跟随角色只有一份测试结论的存放位置，按行去测会把某一行
+          // 的签名写进去，而面板回读的是这个角色实际会拨的那条，两边对不上，测完仍旧
+          // 显示「未测试」。这里的行只是告诉用户「来源有哪些连接」。
+          onClick: borrowed ? undefined : () => {
             selectedConnection[role] = connection.id;
             renderBody();
           },
@@ -1082,25 +1228,21 @@ function renderModelsPage(host: HTMLElement): void {
     baseUrlField.input.value = providerBaseUrlDisabled.has(value)
       ? ""
       : providerBaseUrlDefaults[value] ?? "";
+    // 模型名称跟着服务商一起重填：A 家的模型 ID 拿到 B 家去必定报错，留着它比清掉更坏。
+    // 没有预设的服务商（OpenAI 兼容、各家自建网关）保持原样，不拿空字符串去洗掉用户填的值。
+    const recommended = providerModelDefaults[value];
+    if (recommended) modelNameField.input.value = recommended;
   };
 
-  const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "获取模型列表后可直接从候选里选；列表里没有的模型也可以手动填写。" });
+  const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "右侧箭头可以展开候选；列表里没有的模型也可以手动填写。" });
   modelNameField.input.id = "settings-model-name";
   const catalogConnection = modelCatalogConnectionForRole(role);
   const catalogMatches = modelCatalogConnection[role] === catalogConnection;
   const catalog = catalogMatches ? modelCatalog[role] || [] : [];
-  if (catalog.length) {
-    const listId = "settings-model-catalog";
-    const datalist = document.createElement("datalist");
-    datalist.id = listId;
-    for (const item of catalog) {
-      const opt = document.createElement("option");
-      opt.value = item;
-      datalist.append(opt);
-    }
-    modelNameField.input.setAttribute("list", listId);
-    modelNameField.root.append(datalist);
-  }
+  // 原来挂的是原生 <datalist>：候选只在输入框获得焦点且内容匹配时才冒出来，长得像一
+  // 条灰色系统条，跟这一页其余的下拉完全不是一套东西，用户也找不到「怎么把它调出来」。
+  // 改成输入框右侧一个箭头按钮，点开走 openMenu，和「浏览」那类锚定菜单同一套外观。
+  attachModelNameDropdown(modelNameField.input, catalog, () => providerSelectEl.value);
   detailBody.append(modelNameField.root);
 
   let connectionLabelField: HTMLInputElement | null = null;
@@ -1117,24 +1259,15 @@ function renderModelsPage(host: HTMLElement): void {
     const keyInput = document.createElement("input");
     keyInput.type = "password";
     keyInput.autocomplete = "off";
+    // 已保存的密钥直接以掩码当占位符摆在框里，不再在下面挂一行注释：注释和输入框
+    // 中间隔着一段空白，「已保存」和「这个框是空的」看上去像在说两件互相矛盾的事。
     keyInput.placeholder = borrowedPool
       ? "跟随时使用来源角色的密钥"
-      : selected?.has_api_key ? "留空则保留当前密钥" : "粘贴该连接的 API 密钥";
+      : selected?.has_api_key ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
     keyInput.disabled = borrowedPool;
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
     const keyField = fieldWithHint("API 密钥", keyInput, "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。");
-    const status = document.createElement("p");
-    status.className = "note";
-    status.style.fontSize = "12px";
-    status.style.color = "var(--ink-3)";
-    status.style.marginTop = "2px";
-    if (selected?.has_api_key) {
-      status.textContent = `已保存：${preview || "••••••"}（只显示首尾几位）`;
-    } else {
-      status.textContent = "这条连接还没有保存密钥。";
-    }
-    keyField.append(status);
     detailBody.append(keyField);
   }
 
@@ -1176,11 +1309,21 @@ function renderModelsPage(host: HTMLElement): void {
     }) }),
   ]));
 
-  // 状态胶囊
-  const availability = text(rolePayload.availability_status, "unknown");
+  // 状态胶囊。取的是**当前选中那条连接**的测试结果，不是角色级的那份——角色级状态
+  // 是主用连接的镜像（core/model_roles.py 里照抄 primary 的三个字段），拿它当详情卡的
+  // 状态，新建的第二条连接一挂上来就顶着主用连接的「测试通过」，用户会以为它已经验过。
+  // 两种情况必须回到角色自己那份状态，不能读连接行：跟随时列表里摆的是**来源角色**的
+  // 池子（后端 list_effective_role_connections），照抄就会让一次都没测过的跟随角色顶着
+  // 翻译模型的「测试通过」；本地模式下压根没有连接列表，activeConnection 兜底给出的是
+  // 云端主连接，读它等于把云端的结论安到本地运行器头上。
+  const connectionOwnsVerdict = cloudMode && ownsPool && Boolean(selected);
+  const availabilitySource: JsonObject = connectionOwnsVerdict
+    ? { availability_status: selected!.availability_status, availability_message: selected!.availability_message, availability_checked_at: selected!.availability_checked_at }
+    : rolePayload;
+  const availability = text(availabilitySource.availability_status, "unknown");
   const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
   const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
-  const checkedAt = formatCheckedAt(text(rolePayload.availability_checked_at));
+  const checkedAt = formatCheckedAt(text(availabilitySource.availability_checked_at));
   const statusRow = document.createElement("div");
   statusRow.style.display = "flex";
   statusRow.style.gap = "8px";
@@ -1189,43 +1332,87 @@ function renderModelsPage(host: HTMLElement): void {
   const catalogChip = statusChip(catalog.length ? `${catalog.length} 个可用模型` : "未获取列表", catalog.length ? "done" : "");
   catalogChip.title = catalogMatches ? (modelCatalogMessage[role] || "尚未获取当前连接的模型列表。") : "当前连接尚未获取模型列表。保存配置后可手动获取。";
   const availChip = statusChip(availabilityLabel, availabilityTone);
-  availChip.title = `${text(rolePayload.availability_message, "当前配置尚未测试。")}${checkedAt ? ` · ${checkedAt}` : ""}`;
+  availChip.title = `${text(availabilitySource.availability_message, "当前配置尚未测试。")}${checkedAt ? ` · ${checkedAt}` : ""}`;
   statusRow.append(catalogChip, availChip);
   detailBody.append(statusRow);
 
   // 保存 / 获取模型 / 测试连接 / 导出导入
-  const doSaveModel = () => void reRenderAfter(() => saveModel({
+  // 提交是串行排队的，真正发出去时可能已经隔了一次重画：用户切了角色卡、切了
+  // 云端/本地、换了选中的连接。所以「这份表单属于谁、该走哪条路由」必须在渲染这一刻
+  // 就定死，随表单一起排队；到执行时再去读全局状态，会把这一份值写到另一个角色头上，
+  // 或者带着云端服务商发出一个 mode=local。
+  const readModelForm = (): ModelFormSubmission => ({
+    role,
+    access,
+    sourceRole,
+    secondaryId: editableSecondaryConnection(role)?.id ?? "",
+    selectedId: selected?.id ?? "",
+    selectedLabel: selected?.label ?? "",
     provider: providerSelectEl.value,
     baseUrl: baseUrlField.input.value,
     model: modelNameField.input.value,
     apiKey: apiKeyField?.value ?? "",
     connectionLabel: connectionLabelField?.value ?? "",
-  }), { preserveDraft: false }); // 表单确实提交了，重画后应显示服务端回填的最新值
+  });
+  submitModelForm = () => queueModelFormSave(() => saveModel(readModelForm(), { silent: true }));
+
+  const autoSaveNote = document.createElement("span");
+  autoSaveNote.style.fontSize = "12px";
+  autoSaveNote.style.color = "var(--ink-3)";
+  statusRow.append(autoSaveNote);
+
+  // 失焦即保存。用户的原话：「任何离开焦点的行为都应该自动保存」。change 事件只在值
+  // 真的变了之后失焦才触发，所以不会出现「点进去又点出来也发一次请求」。这里刻意不
+  // 重画：重画会把焦点从用户正要去的下一个字段上抢走。
+  const autoSaveOnBlur = (event: Event) => {
+    const field = event.currentTarget as HTMLInputElement | HTMLSelectElement;
+    if (field.disabled) return;
+    void queueModelFormSave(async () => {
+      try {
+        await saveModel(readModelForm(), { silent: true });
+        autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+      } catch (error) {
+        autoSaveNote.textContent = "";
+        showToast({ message: `自动保存失败：${errorMessage(error)}`, error: true });
+      }
+    });
+  };
+  for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField]) {
+    field?.addEventListener("change", autoSaveOnBlur);
+  }
+
+  const doSaveModel = () => void reRenderAfter(
+    () => queueModelFormSave(() => saveModel(readModelForm())),
+    { preserveDraft: false }, // 表单确实提交了，重画后应显示服务端回填的最新值
+  );
   detailBody.append(fieldRow([
     createButton({ label: "保存配置", icon: "check", onClick: doSaveModel }),
     createButton({ label: "获取模型列表", onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
       const result = await client.request<{ ok: boolean; models: string[]; message: string }>(
-        `/api/models/catalog/${encodeURIComponent(role)}`, { method: "POST", body: JSON.stringify({ refresh: true }) },
+        `/api/models/catalog/${encodeURIComponent(role)}`,
+        { method: "POST", body: JSON.stringify({ refresh: true, connection_id: selected?.id ?? "" }) },
       );
       modelCatalog[role] = result.models;
       modelCatalogMessage[role] = result.message;
       modelCatalogConnection[role] = modelCatalogConnectionForRole(role);
-      showToast({ message: result.models.length ? `已获取 ${result.models.length} 个模型，可从模型名称输入框选择。` : result.message, error: !result.ok });
-    }) }),
+      showToast({ message: result.models.length ? `已获取 ${result.models.length} 个模型，可从模型名称右侧的箭头里选择。` : result.message, error: !result.ok });
+      // 表单已经被 ensureFormSavedBeforeCatalog 提交了，重画该显示服务端回填的值，
+      // 再把草稿盖回去只会让「已保存的密钥」以明文停在框里。
+    }, { preserveDraft: false }) }),
     createButton({ label: "测试连接", onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
-      const result = await client.request<{ ok: boolean; message: string }>(`/api/models/connectivity/${encodeURIComponent(role)}`, { method: "POST" });
+      // 测的必须是面板正在显示的这条连接：不带 id 时后端一律拨主连接，
+      // 用户看着新加的连接，拿到的却是主连接的结论。跟随角色例外——它只有一份结论
+      // 的存放位置，测哪条就得回读哪条，否则测完还是「未测试」；它实际拨的就是来源
+      // 的主连接，所以不带 id 正是「测它真正在用的那条」。
+      const result = await client.request<{ ok: boolean; message: string }>(
+        `/api/models/connectivity/${encodeURIComponent(role)}`,
+        { method: "POST", body: JSON.stringify({ connection_id: ownsPool ? (selected?.id ?? "") : "" }) },
+      );
       showToast({ message: result.message, error: !result.ok });
       await refreshModelRoles();
-    }) }),
-  ]));
-
-  detailBody.append(sectionLabel("配置文件"));
-  detailBody.append(fieldRow([
-    createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
-    createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
-    createButton({ label: "导入配置", size: "mini", onClick: () => importModelConfig() }),
+    }, { preserveDraft: false }) }),
   ]));
 
   detailCard.append(detailBody);
@@ -1250,28 +1437,61 @@ function renderModelsPage(host: HTMLElement): void {
   spreadBody.append(spreadNote);
   spreadCard.append(spreadBody);
   host.append(spreadCard);
+
+  // 整包导出导入。以前这三个按钮挂在每个模型的详情卡里，看起来像是「这个模型的配置」，
+  // 实际上导的一直是四个角色的全部配置。挪到页面底部单独成卡，名字也照实写。
+  host.append(bundleCard({
+    title: "整个模型服务打包",
+    description: "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。密钥默认不导出，导入后所有连接都要重新测试。",
+    buttons: [
+      createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
+      createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
+      createButton({ label: "导入配置", size: "mini", onClick: () => importModelConfig() }),
+    ],
+  }));
+}
+
+function bundleCard(opts: { title: string; description: string; buttons: HTMLElement[] }): HTMLElement {
+  const card = createCard([tcHead(opts.title, opts.buttons)]);
+  const note = document.createElement("p");
+  note.className = "note";
+  note.style.margin = "0";
+  note.style.padding = "0 16px 14px";
+  note.style.fontSize = "12px";
+  note.style.color = "var(--ink-3)";
+  note.textContent = opts.description;
+  card.append(note);
+  return card;
 }
 
 async function ensureFormSavedBeforeCatalog(): Promise<void> {
-  // 简化版一致性检查：新架构下表单没有“脏检查”草稿态，获取模型/测试连接前
-  // 统一先刷新一次角色数据，保证使用的是已保存的连接。
+  // 「获取模型列表」和「测试连接」两个后端路由都只认**已保存**的配置（api/app.py 里
+  // 明写着不接收表单草稿）。所以这里必须先把表单交上去，再去调它们——这个函数以前只
+  // 做了 refreshModelRoles()，等于把服务端的旧值又拉了一遍，用户刚换的密钥根本没上去，
+  // 「测试连接」测的是旧密钥，永远失败。
+  if (submitModelForm) await submitModelForm();
   await refreshModelRoles();
 }
 
-async function saveModel(form: { provider: string; baseUrl: string; model: string; apiKey: string; connectionLabel: string }): Promise<void> {
-  const role = modelRole;
-  const selected = activeConnection(role);
-  if (selected && !selected.primary) {
+async function saveModel(
+  form: ModelFormSubmission,
+  opts: { silent?: boolean } = {},
+): Promise<void> {
+  const role = form.role;
+  // 只有「自己池子里的非主用连接」才走连接路由。以前这里只看 !primary：切到本地模型
+  // 后失焦自动保存，会把本机运行器的地址 PUT 到那条云端连接上（连名字一起清掉），
+  // 而「改成本地」这件事本身一次都没存进去。
+  if (form.secondaryId) {
     modelRoles[role] = await client.request<JsonObject>(
-      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(selected.id)}`,
+      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.secondaryId)}`,
       { method: "PUT", body: JSON.stringify({ label: form.connectionLabel, provider: form.provider, model: form.model, base_url: form.baseUrl, api_key: form.apiKey }) },
     );
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
-    showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
+    if (!opts.silent) showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
     return;
   }
-  const access = accessMode(role);
-  const sourceRole = accessFollowSource(role);
+  const access = form.access;
+  const sourceRole = form.sourceRole;
   const following = sourceRole !== "independent";
   const mode = following ? text(record(modelRoles[role]).mode, "cloud") : access;
   const payload = following
@@ -1282,14 +1502,16 @@ async function saveModel(form: { provider: string; baseUrl: string; model: strin
   if (form.apiKey && mode === "cloud") {
     await client.request(`/api/keys/${form.provider}`, { method: "PUT", body: JSON.stringify({ api_key: form.apiKey, base_url: form.baseUrl }) });
   }
-  if (selected && form.connectionLabel !== (selected.label || "")) {
-    await client.request(`/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(selected.id)}`, {
+  // 连接名称输入框只在云端且不跟随时才渲染；其余情况 form.connectionLabel 恒为空串，
+  // 拿它去比对就会把主用连接的名字清掉。
+  if (!following && mode === "cloud" && form.selectedId && form.connectionLabel !== form.selectedLabel) {
+    await client.request(`/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.selectedId)}`, {
       method: "PUT", body: JSON.stringify({ label: form.connectionLabel }),
     });
   }
   clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
   await refreshSettings();
-  showToast({ message: "模型配置已保存。密钥仅写入本机密钥存储。" });
+  if (!opts.silent) showToast({ message: "模型配置已保存。密钥仅写入本机密钥存储。" });
 }
 
 async function testConnectionRow(role: string, connectionId: string): Promise<void> {
@@ -1297,7 +1519,10 @@ async function testConnectionRow(role: string, connectionId: string): Promise<vo
   // 走 reRenderAfter 而不是裸 renderBody()：测试这条连接不该把用户刚敲的字冲掉。
   // 若这一下同时切换了连接，草稿的 scope 对不上，会自动丢弃而不是搬到新连接上。
   await reRenderAfter(async () => {
-    const result = await client.request<{ ok: boolean; message: string }>(`/api/models/connectivity/${encodeURIComponent(role)}`, { method: "POST" });
+    const result = await client.request<{ ok: boolean; message: string }>(
+      `/api/models/connectivity/${encodeURIComponent(role)}`,
+      { method: "POST", body: JSON.stringify({ connection_id: connectionId }) },
+    );
     showToast({ message: result.message, error: !result.ok });
     await refreshModelRoles();
   });
@@ -1337,22 +1562,11 @@ async function exportModelConfig(includeApiKey: boolean): Promise<void> {
 }
 
 function importModelConfig(): void {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "application/json,.json";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    try {
-      const payload = JSON.parse(await file.text()) as JsonObject;
-      const preview = await client.request<Omit<ModelImportPreview, "fileName" | "payload">>("/api/model-config/import/preview", { method: "POST", body: JSON.stringify(payload) });
-      modelImportPreview = { fileName: file.name, payload, ...preview };
-      openImportPreviewModal();
-    } catch (error) {
-      showToast({ message: `模型配置导入预览失败：${errorMessage(error)}`, error: true });
-    }
-  };
-  input.click();
+  pickJsonFile(async (fileName, payload) => {
+    const preview = await client.request<Omit<ModelImportPreview, "fileName" | "payload">>("/api/model-config/import/preview", { method: "POST", body: JSON.stringify(payload) });
+    modelImportPreview = { fileName, payload, ...preview };
+    openImportPreviewModal();
+  }, "模型配置导入预览失败");
 }
 
 function openImportPreviewModal(): void {
@@ -1380,7 +1594,9 @@ function openImportPreviewModal(): void {
     sourceLabel: "设置 · 模型服务 · 导入配置",
     title: "预览导入模型配置",
     body: [
-      `${preview.fileName} · 仅合并文件明确字段，不删除未提及配置。`,
+      // 别再写「不删除未提及配置」：连接池是整份替换的，本机在这些角色下自己加的
+      // 连接会连同它们保存的 Key 一起消失，说成「只合并」等于骗人。
+      `${preview.fileName} · 文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。`,
       list,
       `吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。`,
     ],
@@ -1406,6 +1622,79 @@ function openImportPreviewModal(): void {
       },
     ],
   });
+}
+
+async function exportDocumentConfig(): Promise<void> {
+  const payload = await client.request<JsonObject>("/api/document-config/export");
+  downloadJson("translator-document-config.json", payload);
+  showToast({ message: "已导出文档翻译配置；不含模型、密钥和本机输出目录。" });
+}
+
+function importDocumentConfig(): void {
+  pickJsonFile(async (fileName, payload) => {
+    const preview = await client.request<{ areas: string[]; app_version: string }>(
+      "/api/document-config/import/preview",
+      { method: "POST", body: JSON.stringify(payload) },
+    );
+    openDocumentImportPreviewModal(fileName, payload, preview.areas);
+  }, "文档翻译配置导入预览失败");
+}
+
+function openDocumentImportPreviewModal(fileName: string, payload: JsonObject, areas: string[]): void {
+  const list = document.createElement("ul");
+  list.style.margin = "0 0 8px";
+  list.style.paddingLeft = "18px";
+  list.style.fontSize = "12.5px";
+  for (const area of areas.length ? areas : ["没有可识别的配置变更。"]) {
+    const li = document.createElement("li");
+    li.textContent = area;
+    list.append(li);
+  }
+  let handle: ModalHandle;
+  handle = openModal({
+    tone: "warn",
+    icon: "gear",
+    sourceLabel: "设置 · 翻译参数 · 导入配置",
+    title: "预览导入文档翻译配置",
+    body: [
+      `${fileName} · 只覆盖文件里写明的项，没提到的设置保持不变。`,
+      list,
+      "模型、密钥和本机输出目录不在这个包里，导入后不会被改动。",
+    ],
+    actions: [
+      { label: "取消", variant: "default" },
+      {
+        label: "确认导入", variant: "primary", keepOpen: true,
+        onClick: async () => {
+          try {
+            await client.request("/api/document-config/import", { method: "POST", body: JSON.stringify(payload) });
+            await refreshSettings();
+            renderBody();
+            handle.close();
+            showToast({ message: "文档翻译配置已导入。" });
+          } catch (error) {
+            showToast({ message: errorMessage(error), error: true });
+          }
+        },
+      },
+    ],
+  });
+}
+
+function pickJsonFile(onPicked: (fileName: string, payload: JsonObject) => Promise<void>, failureLabel: string): void {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/json,.json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      await onPicked(file.name, JSON.parse(await file.text()) as JsonObject);
+    } catch (error) {
+      showToast({ message: `${failureLabel}：${errorMessage(error)}`, error: true });
+    }
+  };
+  input.click();
 }
 
 function downloadJson(filename: string, payload: JsonObject): void {
@@ -1573,6 +1862,16 @@ function renderParamsPage(host: HTMLElement): void {
   if (paramsTab === "excel" || paramsTab === "word") {
     host.append(renderDomainPromptCard(paramsTab));
   }
+
+  // 一个大包覆盖三个页面：分页签导出会让「换台电脑继续用」变成来回导三次。
+  host.append(bundleCard({
+    title: "文档翻译打包",
+    description: "一次导出 Excel、Word、PDF 三个页面的全部翻译参数、语言设置和领域提示词。不含模型和密钥，也不含本机的输出目录。",
+    buttons: [
+      createButton({ label: "导出配置", size: "mini", onClick: () => void exportDocumentConfig() }),
+      createButton({ label: "导入配置", size: "mini", onClick: () => importDocumentConfig() }),
+    ],
+  }));
 }
 
 function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color: string) => void): HTMLDivElement {
@@ -1619,7 +1918,8 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   const targetLang = targetLangForDomain(surface);
   const builtInPrompt = domainBuiltInPrompt(current.preset, targetLang);
   const isCustom = current.preset === "自定义";
-  const hasOverride = !isCustom && Object.prototype.hasOwnProperty.call(current.promptOverrides, current.preset);
+  const isNone = current.preset === "无";
+  const hasOverride = !isCustom && !isNone && Object.prototype.hasOwnProperty.call(current.promptOverrides, current.preset);
   const prompt = isCustom ? current.customPrompt : hasOverride ? current.promptOverrides[current.preset] : builtInPrompt;
 
   const card = createCard([]);
@@ -1648,24 +1948,37 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   promptArea.value = prompt;
   promptArea.rows = 6;
   promptArea.placeholder = isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示";
-  body.append(fieldWithHint(isCustom ? "自定义领域 Prompt" : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）", promptArea));
+  const promptField = fieldWithHint(isCustom ? "自定义领域 Prompt" : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）", promptArea);
+  body.append(promptField);
+
+  // 「无」没有可编辑的 Prompt——它的全部含义就是一个字都不追加。把编辑框留在那里，
+  // 用户改两句话再点保存，只会存下一段谁都不会用到的文本。
+  const applyNoneState = (preset: string) => {
+    const none = preset === "无";
+    promptField.style.display = none ? "none" : "";
+    return none;
+  };
+  applyNoneState(current.preset);
 
   presetSelect.addEventListener("change", () => {
     // 切换预设时刷新文本框内容（不立即保存，需点“保存”）。
     const nextPreset = presetSelect.value;
+    const nextIsNone = applyNoneState(nextPreset);
     const nextIsCustom = nextPreset === "自定义";
-    const nextOverride = !nextIsCustom && Object.prototype.hasOwnProperty.call(current.promptOverrides, nextPreset);
+    const nextOverride = !nextIsCustom && !nextIsNone && Object.prototype.hasOwnProperty.call(current.promptOverrides, nextPreset);
     promptArea.value = nextIsCustom
       ? current.customPrompt
       : nextOverride ? current.promptOverrides[nextPreset] : domainBuiltInPrompt(nextPreset, targetLang);
-    saveBtn.textContent = nextIsCustom ? "保存自定义 Prompt" : "保存覆盖";
+    saveBtn.textContent = nextIsNone ? "保存领域选择" : nextIsCustom ? "保存自定义 Prompt" : "保存覆盖";
   });
 
   const doSave = () => void reRenderAfter(async () => {
     const preset = presetSelect.value;
     const promptOverrides = { ...current.promptOverrides };
     let customPrompt = current.customPrompt;
-    if (preset === "自定义") {
+    if (preset === "无") {
+      // 只改「当前选哪个领域」，其他领域已存的覆盖原样带回去。
+    } else if (preset === "自定义") {
       if (!promptArea.value.trim()) throw new Error("自定义领域必须填写完整 Prompt，不能保存空配置。");
       customPrompt = promptArea.value;
     } else {
@@ -1678,11 +1991,18 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       body: JSON.stringify({ preset, custom_prompt: customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides }),
     });
     await refreshSettings();
-    showToast({ message: preset === "自定义" ? "自定义领域 Prompt 已保存。" : "当前页面的领域 Prompt 覆盖已保存。" });
+    showToast({
+      message: preset === "无"
+        ? "已改为不使用领域提示词。"
+        : preset === "自定义" ? "自定义领域 Prompt 已保存。" : "当前页面的领域 Prompt 覆盖已保存。",
+    });
   });
-  const saveBtn = createButton({ label: isCustom ? "保存自定义 Prompt" : "保存覆盖", variant: "primary", size: "mini", onClick: doSave });
+  const saveBtn = createButton({
+    label: isNone ? "保存领域选择" : isCustom ? "保存自定义 Prompt" : "保存覆盖",
+    variant: "primary", size: "mini", onClick: doSave,
+  });
   const actions = [saveBtn];
-  if (!isCustom) {
+  if (!isCustom && !isNone) {
     actions.push(createButton({
       label: "恢复内置默认", size: "mini",
       onClick: () => void reRenderAfter(async () => {

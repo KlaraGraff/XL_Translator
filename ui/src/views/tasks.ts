@@ -348,11 +348,18 @@ function reviewRows(task: TaskStatus): ReviewRow[] {
   return rows.sort((a, b) => Number(b.needsReview) - Number(a.needsReview));
 }
 
-function reviewActionTone(action: string): ChipTone {
-  if (/保留原文|失败|拒绝/.test(action)) return "dgr";
-  if (/复核|未通过|待/.test(action)) return "warn";
-  if (/接受|通过|恢复|采用/.test(action)) return "ok";
-  return "mute";
+/** 「处理」列的短结论标签 + 配色。
+ *  措辞只从后端实际写下的 action 文案里归纳，标签与颜色同一处产出，
+ *  避免两套规则各说各话；action 为空或「—」时返回 null，只显示一个「—」。 */
+function reviewActionMeta(action: string): { label: string; tone: ChipTone } | null {
+  const value = action.trim();
+  if (!value || value === "—") return null;
+  if (/保留原文/.test(value)) return { label: "已保留原文", tone: "dgr" };
+  if (/失败|拒绝/.test(value)) return { label: "未处理", tone: "dgr" };
+  if (/复核|未通过|待/.test(value)) return { label: "建议复核", tone: "warn" };
+  if (/接受|通过|恢复|采用/.test(value)) return { label: "已接受", tone: "ok" };
+  if (/写入|应用/.test(value)) return { label: "已写入", tone: "ok" };
+  return { label: "已处理", tone: "mute" };
 }
 
 interface FileRow {
@@ -625,6 +632,18 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
   }
 }
 
+async function exportTaskDiagnostic(taskId: string): Promise<void> {
+  try {
+    const client = await getClient();
+    await client.downloadBinary(
+      `/api/diagnostics/task/${encodeURIComponent(taskId)}.zip`,
+      `translator-diagnostic-${taskId.slice(0, 8)}.zip`,
+    );
+  } catch (error) {
+    showToast({ message: `导出诊断失败：${error instanceof Error ? error.message : String(error)}`, error: true });
+  }
+}
+
 async function copyTaskPath(path: string): Promise<void> {
   if (!path.trim() || !navigator.clipboard?.writeText) return;
   await navigator.clipboard.writeText(path);
@@ -642,6 +661,37 @@ function confirmStopTask(taskId: string): void {
       { label: "安全停止", variant: "danger-solid", onClick: () => stopTask(taskId) },
     ],
   });
+}
+
+function confirmDeleteTask(taskId: string): void {
+  openModal({
+    tone: "warn",
+    icon: "trash",
+    title: "删除这条任务记录？",
+    body: ["只从任务中心移除这条记录。已经生成的译文、报告和诊断包都留在原处，不会被删除。"],
+    actions: [
+      { label: "取消", variant: "default" },
+      { label: "删除记录", variant: "danger-solid", onClick: () => void deleteTaskRecord(taskId) },
+    ],
+  });
+}
+
+async function deleteTaskRecord(taskId: string): Promise<void> {
+  try {
+    const client = await getClient();
+    await client.request(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+  } catch (error) {
+    showToast({ message: `删除失败：${error instanceof Error ? error.message : String(error)}`, error: true });
+    return;
+  }
+  // 只有终态任务能删（后端 409 挡住运行中的），所以这里没有事件流要收——
+  // watchTask() 对 terminal 任务直接返回，不会有 watcher 把记录 upsert 回来。
+  tasks.delete(taskId);
+  order = order.filter((id) => id !== taskId);
+  if (selectedId === taskId) selectedId = order[0] ?? null;
+  renderList();
+  renderDetail();
+  showToast({ message: "记录已删除；输出文件没有被动过。" });
 }
 
 // ---------------------------------------------------------------------------
@@ -663,17 +713,24 @@ function visibleOrder(): string[] {
   });
 }
 
+/**
+ * completed_with_issues 这一个状态的统一措辞：一律「需复核」，数得出条数就带上条数。
+ * 之前列表卡片有条目时说「需复核 11」、没条目时说「完成但有问题」，详情页又说
+ * 「完成但有问题 · 需复核 11」——同一个状态在三处三种说法，用户没法判断是不是三件事。
+ */
+function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null {
+  if (task.state !== "completed_with_issues") return null;
+  const count = reviewRows(task).filter((row) => row.needsReview).length;
+  return { label: count > 0 ? `需复核 ${count}` : "需复核", tone: "warn" };
+}
+
 function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
   const meta = taskStateMeta(entry.task, entry.streamState);
   if (isTaskActive(entry.task)) {
     const percent = entry.stepTotal > 0 ? Math.round((entry.stepDone / entry.stepTotal) * 100) : null;
     return { label: percent !== null ? `${percent}%` : meta.label, tone: "tint" };
   }
-  const reviews = reviewRows(entry.task).filter((row) => row.needsReview).length;
-  if (entry.task.state === "completed_with_issues" && reviews > 0) {
-    return { label: `需复核 ${reviews}`, tone: "warn" };
-  }
-  return meta;
+  return reviewChip(entry.task) ?? meta;
 }
 
 function cardSubtitle(entry: TaskEntry): string {
@@ -789,12 +846,7 @@ function renderDetail(): void {
 
   const meta = taskStateMeta(task, entry.streamState);
   const reviews = reviewRows(task);
-  const needReview = reviews.filter((row) => row.needsReview).length;
-  const headerChip = createChip({
-    label: needReview > 0 ? `${meta.label} · 需复核 ${needReview}` : meta.label,
-    tone: needReview > 0 ? "warn" : meta.tone,
-  });
-  header.append(headerChip);
+  header.append(createChip(reviewChip(task) ?? meta));
 
   const actions = document.createElement("div");
   actions.style.marginLeft = "auto";
@@ -810,10 +862,9 @@ function renderDetail(): void {
       createButton({
         label: "导出诊断",
         size: "mini",
-        onClick: () => {
-          showToast({ message: "诊断从设置 · 数据与维护统一导出，已为你跳转。" });
-          navigate("settings");
-        },
+        // 详情页上的这个按钮说的是「这一次任务」，就该直接把这一次的诊断包存下来。
+        // 之前它把人扔到设置页去自己找——找的还是全部任务的合集。
+        onClick: () => void exportTaskDiagnostic(task.task_id),
       }),
     );
   }
@@ -847,6 +898,10 @@ function renderDetail(): void {
     } else {
       actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id) }));
     }
+  }
+  if (task.terminal) {
+    // 只删任务中心的这条记录；译文、报告、诊断包都在磁盘上原样留着。
+    actions.append(createButton({ label: "删除记录", icon: "trash", variant: "danger", size: "mini", onClick: () => confirmDeleteTask(task.task_id) }));
   }
   header.append(actions);
   detailRootEl.append(header);
@@ -908,7 +963,15 @@ function renderDetail(): void {
     detailRootEl.append(sectionTitle);
 
     const table = document.createElement("table");
-    table.className = "tbl";
+    table.className = "tbl review-tbl";
+    // 固定列宽：任务详情是窄面板，交给浏览器按最小内容宽度分配会把文件名压成竖排单字。
+    const cols = document.createElement("colgroup");
+    for (const width of ["20%", "14%", "26%", "12%", "28%"]) {
+      const col = document.createElement("col");
+      col.style.width = width;
+      cols.append(col);
+    }
+    table.append(cols);
     const headRow = document.createElement("tr");
     for (const label of ["文件", "位置", "原文摘录", "问题", "处理"]) {
       const th = document.createElement("th");
@@ -918,14 +981,35 @@ function renderDetail(): void {
     table.append(headRow);
     for (const row of reviews.slice(0, 50)) {
       const tr = document.createElement("tr");
-      const cells = [row.file || "—", row.location || "—", row.excerpt || "—", row.issue];
-      for (const value of cells) {
+      // 文件名单行显示、超出省略；完整名字放 title，悬停可看全。
+      const fileTd = document.createElement("td");
+      fileTd.className = "fname";
+      fileTd.textContent = row.file || "—";
+      if (row.file) fileTd.title = row.file;
+      tr.append(fileTd);
+      for (const value of [row.location || "—", row.excerpt || "—", row.issue]) {
         const td = document.createElement("td");
         td.textContent = value;
         tr.append(td);
       }
       const actionTd = document.createElement("td");
-      actionTd.append(createChip({ label: row.action, tone: reviewActionTone(row.action) }));
+      const actionMeta = reviewActionMeta(row.action);
+      if (!actionMeta) {
+        actionTd.textContent = "—";
+      } else {
+        // 徽章按两三个字设计，整句说明塞进去会直接溢出：
+        // 第一行只放短结论，完整说明降级成第二行的灰色小字。
+        const stack = document.createElement("div");
+        stack.className = "review-act";
+        stack.append(createChip({ label: actionMeta.label, tone: actionMeta.tone }));
+        if (row.action.trim() !== actionMeta.label) {
+          const note = document.createElement("div");
+          note.className = "note";
+          note.textContent = row.action;
+          stack.append(note);
+        }
+        actionTd.append(stack);
+      }
       tr.append(actionTd);
       table.append(tr);
     }

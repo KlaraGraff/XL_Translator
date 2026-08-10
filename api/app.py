@@ -46,6 +46,12 @@ from core.language_registry import (
     update_custom_target_lang_display,
 )
 from core.connectivity_check import check_connectivity
+from core.document_config import (
+    apply_document_config_import,
+    build_document_config_export_payload,
+    parse_document_config_import,
+    summarize_document_config_import,
+)
 from core.file_scanner import scan_excel_sources
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
@@ -91,6 +97,7 @@ from core.word_document import scan_word_sources
 from config import (
     CLOUD_PROVIDER_BASE_URL_DEFAULTS,
     CLOUD_PROVIDER_BASE_URL_DISABLED,
+    CLOUD_PROVIDER_MODEL_DEFAULTS,
     DISABLED_BASE_URL_PLACEHOLDER,
     DOMAIN_PRESETS,
 )
@@ -237,6 +244,14 @@ class ModelFetchRequest(BaseModel):
 
 class ModelCatalogRefreshPayload(BaseModel):
     refresh: bool = False
+    # 面板当前展示的连接；不给就取主连接。
+    connection_id: str = ""
+
+
+class ModelConnectivityPayload(BaseModel):
+    """Which pool entry the panel wants tested; empty means the primary."""
+
+    connection_id: str = ""
 
 
 class ModelRoleUpdatePayload(BaseModel):
@@ -595,7 +610,9 @@ def create_app(
         prefix = f"{normalized}_"
         return {
             "surface": normalized,
-            "presets": sorted(DOMAIN_PRESETS),
+            # 声明顺序就是展示顺序：「无」写在字典首位，排序会把它按拼音丢到中间去，
+            # 和 config.py 里「排在第一项」的约定打架。
+            "presets": list(DOMAIN_PRESETS),
             "preset": getattr(settings, f"{prefix}domain_preset"),
             "custom_prompt": getattr(settings, f"{prefix}custom_prompt"),
             "prompt_overrides": getattr(settings, f"{prefix}domain_prompt_overrides"),
@@ -768,6 +785,11 @@ def create_app(
     @app.get("/api/tasks/{task_id}")
     def get_task(task_id: str) -> dict[str, Any]:
         return app.state.task_manager.task_status(task_id)
+
+    @app.delete("/api/tasks/{task_id}")
+    def delete_task_record(task_id: str) -> dict[str, Any]:
+        # 只删任务中心的这条记录；运行中的任务由 task manager 拒绝（409）。
+        return app.state.task_manager.delete_task_record(task_id)
 
     @app.post("/api/tasks/{task_id}/stop")
     def stop_task(task_id: str) -> dict[str, Any]:
@@ -1100,11 +1122,15 @@ def create_app(
         all.  Prefilling needs these values *before* the save, and a second
         copy of the table in the UI would drift the first time a provider's
         endpoint moves.
+
+        ``model_defaults`` follows the same rule for the model name, and is the
+        only source the model-name dropdown has before a catalog is fetched.
         """
         return {
             "base_url_defaults": dict(CLOUD_PROVIDER_BASE_URL_DEFAULTS),
             "base_url_disabled": sorted(CLOUD_PROVIDER_BASE_URL_DISABLED),
             "disabled_placeholder": DISABLED_BASE_URL_PLACEHOLDER,
+            "model_defaults": dict(CLOUD_PROVIDER_MODEL_DEFAULTS),
         }
 
     @app.get("/api/models/roles")
@@ -1291,8 +1317,18 @@ def create_app(
         return _json_safe(result)
 
     @app.post("/api/models/connectivity/{role}")
-    def check_model_role_connectivity(role: str) -> dict[str, Any]:
+    def check_model_role_connectivity(
+        role: str,
+        payload: ModelConnectivityPayload | None = None,
+    ) -> dict[str, Any]:
+        """Test one role's connection and record the verdict on that entry.
+
+        The panel sends the connection it is showing.  Without it the test
+        always dialled the primary, so selecting a second connection and
+        pressing 测试连接 reported on a configuration nobody was looking at.
+        """
         settings = load_settings()
+        connection_id = str(getattr(payload, "connection_id", "") or "").strip()
         role = {
             "text": ROLE_TRANSLATION,
             "image": ROLE_IMAGE,
@@ -1301,17 +1337,31 @@ def create_app(
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
             raise HTTPException(404, "Unknown model role.")
         try:
-            config = resolve_effective_model_config(settings, role)
+            config = resolve_effective_model_config(
+                settings,
+                role,
+                connection_id=connection_id,
+            )
             if not provider_supports_capability(config.provider, config.capability):
                 raise ValueError(f"服务商 {config.provider} 不支持 {config.capability} 能力。")
             if role == ROLE_TRANSLATION:
-                result = check_connectivity(settings)
+                result = check_connectivity(settings, connection_id=connection_id)
             elif role == ROLE_CLEANER:
-                result = check_connectivity(settings, role=ROLE_CLEANER)
+                result = check_connectivity(
+                    settings,
+                    role=ROLE_CLEANER,
+                    connection_id=connection_id,
+                )
             elif role == ROLE_IMAGE:
-                result = check_image_generation_connectivity(settings)
+                result = check_image_generation_connectivity(
+                    settings,
+                    connection_id=connection_id,
+                )
             else:
-                result = check_pdf_review_connectivity(settings)
+                result = check_pdf_review_connectivity(
+                    settings,
+                    connection_id=connection_id,
+                )
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
         save_settings(settings)
@@ -1330,7 +1380,11 @@ def create_app(
         counts as an ability test.
         """
         settings = load_settings()
-        config = _model_config_or_422(settings, role)
+        config = _model_config_or_422(
+            settings,
+            role,
+            str(getattr(payload, "connection_id", "") or "").strip(),
+        )
         if payload is not None and payload.refresh:
             from core.model_catalog import clear_model_catalog_cache
 
@@ -1467,6 +1521,45 @@ def create_app(
             "skipped_throughput_roles": throughput_errors,
         }
 
+    @app.get("/api/document-config/export")
+    def export_document_config() -> dict[str, Any]:
+        """Export every document-translation setting as one bundle.
+
+        There is no with-keys variant and no per-page variant: this bundle
+        carries no secrets, and splitting it per page is exactly the friction
+        the two-bundle design removes.
+        """
+        return build_document_config_export_payload(load_settings())
+
+    @app.post("/api/document-config/import/preview")
+    def preview_document_config_import(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            imported = parse_document_config_import(payload)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {
+            "version": payload.get("version"),
+            "app_version": str(payload.get("app_version") or ""),
+            "areas": summarize_document_config_import(imported),
+        }
+
+    @app.post("/api/document-config/import")
+    def import_document_config(payload: dict[str, Any]) -> dict[str, Any]:
+        before_settings = load_settings()
+        try:
+            imported = parse_document_config_import(payload)
+            settings = apply_document_config_import(before_settings, imported)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        # ``apply_document_config_import`` rebuilds the model, so the load-time
+        # snapshot has to be carried over or the save stops being a merge.
+        carry_settings_baseline(before_settings, settings)
+        save_settings(settings)
+        return {
+            "settings": settings.model_dump(mode="json"),
+            "areas": summarize_document_config_import(imported),
+        }
+
     @app.get("/api/updates/state")
     def update_state() -> dict[str, Any]:
         settings = load_settings()
@@ -1581,6 +1674,14 @@ def create_app(
         payload, filename, count = diagnostics.build_diagnostics_history_zip_bytes()
         return _zip_response(payload, filename, count=count)
 
+    @app.get("/api/diagnostics/task/{task_id}.zip")
+    def download_task_diagnostic(task_id: str) -> StreamingResponse:
+        record = _task_diagnostic_record(task_id)
+        if record is None:
+            raise HTTPException(404, "本次任务没有生成诊断记录，没有可导出的内容。")
+        payload, filename = diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
+        return _zip_response(payload, filename)
+
     @app.get("/api/diagnostics/{record_id}.zip")
     def download_diagnostic_record(record_id: str) -> StreamingResponse:
         record = diagnostics.find_diagnostic_record(record_id)
@@ -1595,6 +1696,28 @@ def create_app(
         return maintenance.delete_diagnostic(record_id).as_dict()
 
     return app
+
+
+def _task_diagnostic_record(task_id: str) -> dict[str, Any] | None:
+    """Resolve the newest diagnostic record belonging to one task.
+
+    Records deliberately never store the task id — only the anonymous locator
+    derived from it.  Reuse ``core.diagnostics`` own derivation instead of
+    copying the hashing detail, so the two can never drift apart.
+    """
+    key = str(task_id or "").strip()
+    if not key:
+        return None
+    locator = diagnostics._anonymous_locator(key)
+    # list_diagnostic_records() 已按创建时间倒序，取第一条即最新一次归档。
+    return next(
+        (
+            item
+            for item in diagnostics.list_diagnostic_records()
+            if str(item.get("anonymous_locator") or "") == locator
+        ),
+        None,
+    )
 
 
 def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
@@ -1727,11 +1850,11 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
     }
 
 
-def _model_config_or_422(settings: AppSettings, role: str):
+def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = ""):
     if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
         raise HTTPException(404, "Unknown model role.")
     try:
-        return resolve_effective_model_config(settings, role)
+        return resolve_effective_model_config(settings, role, connection_id=connection_id)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
 

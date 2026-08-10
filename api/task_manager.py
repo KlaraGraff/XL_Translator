@@ -351,7 +351,7 @@ class TranslationTaskManager:
             return self._prepared_from_context(
                 surface=normalized_surface,
                 source_path="",
-                source_label="TM language-pair task",
+                source_label=f"语言对 {lang_pair}",
                 files=[],
                 settings=settings,
                 options=TaskOptions(**{**selected_options.__dict__, "lang_pair": lang_pair}),
@@ -477,7 +477,7 @@ class TranslationTaskManager:
         return self._prepared_from_context(
             surface=normalized_surface,
             source_path=str(root),
-            source_label=f"{len(files)} selected input file(s)",
+            source_label=_selected_files_label(files),
             files=files,
             settings=settings,
             options=selected_options,
@@ -821,6 +821,39 @@ class TranslationTaskManager:
     def clear_history(self) -> int:
         """Clear persisted task summaries only after the caller enforces its guard."""
         return self._history.clear()
+
+    def delete_task_record(self, task_id: str) -> dict[str, Any]:
+        """删除单条任务记录本身。
+
+        只动任务中心的记录：已经生成的译文、报告和诊断包都不属于这里，
+        任何情况下都不删。运行中的任务不能删——它的记录还在被事件流改写，
+        删掉只会在下一个事件里重新长出来。
+        """
+        key = str(task_id or "").strip()
+        with self._lock:
+            live = self._tasks.get(key)
+            if live is not None and not live.terminal:
+                raise TaskConflictError(
+                    "任务仍在运行，请先安全停止，再删除这条记录。",
+                    reason="task_active",
+                )
+        # 其它任务可能仍在运行并写历史，先把内存里挂着的脏记录落盘，
+        # 免得下面的整表重写把它们回退成更旧的版本。
+        self.flush_history()
+        # 一次加锁内读改写，历史文件不会出现「只剩一半」的中间态：以前是先 clear 再
+        # 逐条 upsert 回填，整表最多 200 条就是 201 次落盘（实测约 0.4 秒），这段时间里
+        # 别的任务写进来的记录要么被挤到表尾，要么直接丢失。
+        removed_from_history = self._history.remove(key)
+        with self._lock:
+            removed_from_memory = self._tasks.pop(key, None) is not None
+        if not removed_from_history and not removed_from_memory:
+            raise TaskNotFoundError(key)
+        return {
+            "task_id": key,
+            "removed_count": 1,
+            "outputs_affected": False,
+            "restart_required": False,
+        }
 
     def task_results(self, task_id: str) -> dict[str, Any]:
         try:
@@ -1569,6 +1602,30 @@ def _word_file_format(item: Any) -> str:
         return explicit.lstrip(".")
     path = getattr(item, "path", None)
     return Path(path).suffix.lower().lstrip(".") if path else ""
+
+
+def _scanned_file_name(item: Any) -> str:
+    """Return one scanned entry's file name without assuming a scanner type.
+
+    Each surface returns its own item class (``FileItem`` / ``WordFileItem`` /
+    the PDF scanner entry), and task-manager tests hand in bare objects.  Only
+    the file name is taken: the task title must not leak a full local path.
+    """
+    raw = getattr(item, "path", None) or getattr(item, "name", "")
+    value = str(raw or "").strip()
+    return Path(value).name if value else ""
+
+
+def _selected_files_label(files: list[Any]) -> str:
+    """任务标题里的来源说明：单文件报文件名，多文件报「首个文件名 等 N 个文件」。"""
+    names = [name for name in (_scanned_file_name(item) for item in files) if name]
+    if not names:
+        # 扫描条目没有可读路径（测试替身或今后新增的条目形状）时退回计数说明，
+        # 标题宁可粗略，也不能报错或落回英文占位串。
+        return f"{len(files)} 个文件"
+    if len(files) == 1:
+        return names[0]
+    return f"{names[0]} 等 {len(files)} 个文件"
 
 
 def _event_type_for_message(message: Any) -> str:

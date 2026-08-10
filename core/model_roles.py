@@ -21,6 +21,8 @@ from settings import (
     AppSettings,
     ModelConnection,
     ModelRoleSettings,
+    api_key_scope,
+    connection_key_scope,
     get_cloud_provider_config,
     get_connection_scoped_key,
     get_key,
@@ -270,8 +272,12 @@ def update_role_connection(
     ):
         if value is None:
             continue
-        setattr(connection, field_name, str(value).strip())
-        changed_endpoint = True
+        normalized = str(value).strip()
+        # 只在值真的变了时才作数。面板每次保存都会把这三个字段整份提交，按「传了就算改」
+        # 判定的话，光改个连接名字都会把「测试通过」打回「未测试」。
+        if normalized != getattr(connection, field_name):
+            changed_endpoint = True
+        setattr(connection, field_name, normalized)
     if changed_endpoint:
         # The endpoint moved, so any prior test result no longer describes it.
         connection.availability_status = "unknown"
@@ -369,15 +375,40 @@ def record_model_role_availability(
     message: str,
     signature: str | None = None,
     checked_at: str = "",
+    connection_id: str = "",
 ) -> None:
-    """Persist an explicit test result on the role that was actually tested."""
-    owner = model_role_owner(settings, role)
-    owner.availability_status = "available" if ok else "unavailable"
-    owner.availability_message = str(message or "").strip()
-    owner.availability_signature = signature or model_config_signature(
-        resolve_effective_model_config(settings, role)
+    """Persist an explicit test result on the connection that was tested.
+
+    Without ``connection_id`` the result belongs to the role's primary, whose
+    fields the settings validator mirrors both ways.  With one, it belongs to
+    that pool entry alone: a second connection must not inherit the primary's
+    「测试通过」, and testing it must not overwrite the primary's verdict.
+    """
+    target = _availability_record_target(settings, role, connection_id)
+    target.availability_status = "available" if ok else "unavailable"
+    target.availability_message = str(message or "").strip()
+    target.availability_signature = signature or model_config_signature(
+        resolve_effective_model_config(settings, role, connection_id=connection_id)
     )
-    owner.availability_checked_at = str(checked_at or "").strip()
+    target.availability_checked_at = str(checked_at or "").strip()
+
+
+def _availability_record_target(settings: AppSettings, role: str, connection_id: str):
+    """Return whichever object owns the test verdict for one connection."""
+    owner = model_role_owner(settings, role)
+    wanted = str(connection_id or "").strip()
+    if not wanted:
+        return owner
+    # 跟随其他角色时，拨的虽然是来源的端点，验的却是**本角色自己的模型名**，结果只能
+    # 记在自己身上：写到来源那条连接上，等于用清洗模型的测试结论覆盖翻译模型的结论，
+    # 而且跟随角色自己那份状态（resolve_effective_model_config 的 follow 分支读的是
+    # owner）永远也刷不新。四个角色里有三个默认跟随翻译，这条路径是常态而非边角。
+    if pool_role(settings, role) != role:
+        return owner
+    connections = list_role_connections(settings, role)
+    if not connections or connections[0].id == wanted:
+        return owner
+    return next((conn for conn in connections if conn.id == wanted), owner)
 
 
 def validate_all_model_roles(
@@ -502,12 +533,20 @@ def model_config_signature(config: EffectiveModelConfig) -> str:
     )
 
 
-def image_model_signature(settings: AppSettings) -> str:
-    return model_config_signature(resolve_effective_model_config(settings, ROLE_IMAGE))
+def image_model_signature(settings: AppSettings, connection_id: str = "") -> str:
+    return model_config_signature(
+        resolve_effective_model_config(settings, ROLE_IMAGE, connection_id=connection_id)
+    )
 
 
-def pdf_review_model_signature(settings: AppSettings) -> str:
-    return model_config_signature(resolve_effective_model_config(settings, ROLE_PDF_REVIEW))
+def pdf_review_model_signature(settings: AppSettings, connection_id: str = "") -> str:
+    return model_config_signature(
+        resolve_effective_model_config(
+            settings,
+            ROLE_PDF_REVIEW,
+            connection_id=connection_id,
+        )
+    )
 
 
 def image_generation_provider_values() -> set[str]:
@@ -672,7 +711,11 @@ def resolve_effective_model_config(
         return _availability_for_config(config, owner)
 
     connection = find_role_connection(settings, normalized_role, connection_id)
-    if connection.id == list_role_connections(settings, normalized_role)[0].id:
+    is_primary = connection.id == list_role_connections(settings, normalized_role)[0].id
+    # 主连接的测试结果镜像在 owner 上（校验器双向同步），其余连接各记各的：
+    # 读错了这一处，新加的连接就会挂着主连接的「测试通过」。
+    availability_source = owner if is_primary else connection
+    if is_primary:
         # The primary keeps reading through cloud_provider_configs so that
         # switching provider still restores that provider's saved model.
         provider = str(owner.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
@@ -700,12 +743,12 @@ def resolve_effective_model_config(
         connection_label=connection.display_label,
         source_role=SOURCE_INDEPENDENT,
         follows=False,
-        availability_status=owner.availability_status,
-        availability_message=owner.availability_message,
-        availability_signature=owner.availability_signature,
+        availability_status=availability_source.availability_status,
+        availability_message=availability_source.availability_message,
+        availability_signature=availability_source.availability_signature,
     )
     validate_model_capability(config)
-    return _availability_for_config(config, owner)
+    return _availability_for_config(config, availability_source)
 
 
 def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
@@ -720,6 +763,32 @@ def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
         f"跟随来源不可用：{source_name}当前是本地模型，请改为独立云端配置。"
         f"\n原因：{reason}"
     )
+
+
+def connection_key_overrides(config: EffectiveModelConfig) -> dict[str, str]:
+    """Pin one resolved connection's key onto the scopes ``get_key`` will try.
+
+    A pool connection's key is stored under ``conn::<id>``, which nothing built
+    from a settings copy can find: engines and the connectivity probes only know
+    a provider and a Base URL, so they call ``get_key(provider, base_url)`` and
+    land on whatever that scope happens to hold — the primary's key, or nothing
+    at all.  Handing the already-resolved key back through
+    ``provider_key_overrides`` is how the task runners solve the same problem
+    (see ``core.model_api_identity``); this is that mapping for one connection.
+    """
+    if config.mode != "cloud":
+        return {}
+    api_key = str(config.api_key or "").strip()
+    if not api_key:
+        return {}
+    overrides: dict[str, str] = {}
+    scope = connection_key_scope(config.connection_id)
+    if scope:
+        overrides[scope] = api_key
+    provider_scope = api_key_scope(config.provider, config.base_url)
+    if provider_scope:
+        overrides.setdefault(provider_scope, api_key)
+    return overrides
 
 
 def settings_for_text_role(
@@ -757,14 +826,16 @@ def record_image_model_availability(
     message: str,
     signature: str | None = None,
     checked_at: str = "",
+    connection_id: str = "",
 ) -> None:
     record_model_role_availability(
         settings,
         ROLE_IMAGE,
         ok=ok,
         message=message,
-        signature=signature or image_model_signature(settings),
+        signature=signature or image_model_signature(settings, connection_id),
         checked_at=checked_at,
+        connection_id=connection_id,
     )
 
 
@@ -775,12 +846,14 @@ def record_pdf_review_model_availability(
     message: str,
     signature: str | None = None,
     checked_at: str = "",
+    connection_id: str = "",
 ) -> None:
     record_model_role_availability(
         settings,
         ROLE_PDF_REVIEW,
         ok=ok,
         message=message,
-        signature=signature or pdf_review_model_signature(settings),
+        signature=signature or pdf_review_model_signature(settings, connection_id),
         checked_at=checked_at,
+        connection_id=connection_id,
     )

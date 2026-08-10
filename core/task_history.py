@@ -63,6 +63,31 @@ class TaskHistoryStore:
             records.insert(0, dict(record))
             self._write_locked(records[: self._limit])
 
+    def remove(self, task_id: str) -> bool:
+        """Drop one record in a single locked read-filter-write.
+
+        Deleting used to be ``clear()`` followed by one ``upsert()`` per kept
+        record: on a full 200-record history that is 201 file rewrites (measured
+        at ~0.4s), and for the whole of that window the file holds a partial
+        list.  A task finishing meanwhile either lands in the middle of the
+        rewrite and gets re-ordered, or is written before the backfill reaches
+        its position and is dropped outright.
+        """
+        wanted = str(task_id or "").strip()
+        if not wanted:
+            return False
+        with self._lock:
+            records = self._read_locked()
+            kept = [
+                item
+                for item in records
+                if str(item.get("task_id") or "") != wanted
+            ]
+            if len(kept) == len(records):
+                return False
+            self._write_locked(kept)
+            return True
+
     def mark_active_interrupted(self) -> list[str]:
         """Mark records left active by a prior sidecar as non-resumable."""
         active_states = {"preflight", "running", "paused", "stopping", "finalizing"}

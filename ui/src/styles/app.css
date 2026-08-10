@@ -162,6 +162,17 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .tbl tr:hover td { background: var(--surface-2); }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+/* 结果定位清单。任务详情是一块窄面板，默认的 auto 布局会按「最小内容宽度」分配，
+ * 结果是文件名被挤成一列竖排单字。这里改成 fixed 布局 + colgroup 定死比例，各列
+ * 宽度只由 <col> 决定，不再受内容长度影响。 */
+table.review-tbl { table-layout: fixed; }
+.review-tbl td { vertical-align: top; word-break: break-word; }
+.review-tbl .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 「处理」列：第一行是两三个字的结论徽章，整句说明降级成第二行的灰色小字。
+ * 徽章本身不允许换行——.chip 是圆角胶囊，塞进一整句话就会撑破卡片。 */
+.review-act { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.review-act .chip { white-space: nowrap; }
+.review-act .note { font-size: 11.5px; line-height: 1.45; color: var(--ink-3); }
 .ck { width: 15px; height: 15px; accent-color: var(--accent); vertical-align: -2px; }
 .fmt { display: inline-flex; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; border-radius: 5px; padding: 1.5px 6px; border: 1px solid var(--line-2); color: var(--ink-2); }
 .fmt.warn { border-color: var(--warn-l); background: var(--warn-t); color: var(--warn); }
@@ -185,6 +196,19 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .field { margin-bottom: 11px; }
 .field label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; font-weight: 550; }
 .field select, .field input[type="text"] { width: 100%; height: 32px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; padding: 0 9px; }
+/* 带右侧下拉箭头的输入框（模型名称）：仍然是可自由输入的 input，箭头只是把候选
+ * 展开成锚定菜单。原生 <datalist> 在 WKWebView 里是一条灰条，跟这一页别的下拉不是
+ * 一套东西，用户也没法主动把它调出来。 */
+.combo { position: relative; }
+.combo input[type="text"] { padding-right: 32px; }
+.combo-caret {
+  position: absolute; right: 4px; top: 0; height: 32px; width: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-sm); background: none; color: var(--ink-3);
+  padding: 0; cursor: pointer;
+}
+.combo-caret:hover:not(:disabled) { background: var(--surface-2); color: var(--ink-2); }
+.combo-caret:disabled { cursor: default; opacity: .4; }
 .swrow { display: flex; align-items: center; gap: 9px; padding: 6.5px 0; font-size: 12.5px; color: var(--ink); }
 .swrow .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 /* .sw 在应用里用真实 <button role="switch"> 实现（样张是纯展示 div），补一份控件重置。 */

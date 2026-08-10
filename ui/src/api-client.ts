@@ -118,6 +118,29 @@ export class ApiClient {
     return (await response.json()) as T;
   }
 
+  /**
+   * 下载一个二进制响应并交给浏览器保存。文件名优先用后端 Content-Disposition 里的那个，
+   * 拿不到才退回调用方给的兜底名——诊断包的名字带时间戳和场景，是后端算出来的。
+   */
+  async downloadBinary(path: string, fallbackFilename: string): Promise<void> {
+    const response = await fetch(`${this.#baseUrl}${path}`, {
+      headers: { "X-Translator-Token": this.#token },
+    });
+    if (!response.ok) {
+      const fallback = `${response.status} ${response.statusText}`;
+      const payload = await response.json().catch(() => ({ detail: fallback }));
+      throw new Error(String(payload.detail ?? fallback));
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallbackFilename;
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   async streamTask(
     taskId: string,
     onEvent: (event: SseEvent) => void,

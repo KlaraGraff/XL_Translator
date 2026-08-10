@@ -342,9 +342,11 @@ def check_image_generation_connectivity(
     *,
     client: ImageGenerationClient | None = None,
     max_attempts: int = IMAGE_TEST_MAX_ATTEMPTS,
+    connection_id: str = "",
 ) -> ImageConnectivityResult:
-    config = resolve_effective_model_config(settings, ROLE_IMAGE)
-    signature = image_model_signature(settings)
+    # ``connection_id`` 指定要测的连接池条目；不给就还是主连接。
+    config = resolve_effective_model_config(settings, ROLE_IMAGE, connection_id=connection_id)
+    signature = image_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "image"):
         message = f"{config.label}当前服务商不支持图像生成能力：{config.provider}"
         record_image_model_availability(
@@ -353,6 +355,7 @@ def check_image_generation_connectivity(
             message=message,
             signature=signature,
             checked_at=_now_iso(),
+            connection_id=connection_id,
         )
         return ImageConnectivityResult(False, message, status="unsupported_provider")
 
@@ -377,6 +380,7 @@ def check_image_generation_connectivity(
                     message=message,
                     signature=signature,
                     checked_at=_now_iso(),
+                    connection_id=connection_id,
                 )
                 return ImageConnectivityResult(True, message)
             except Exception as exc:  # noqa: BLE001 - retry and report all image errors.
@@ -389,6 +393,7 @@ def check_image_generation_connectivity(
         message=message,
         signature=signature,
         checked_at=_now_iso(),
+        connection_id=connection_id,
     )
     return ImageConnectivityResult(False, message, detail=last_error, status="failed")
 

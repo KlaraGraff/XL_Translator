@@ -200,7 +200,7 @@ class Phase3ModelContractTests(unittest.TestCase):
     def test_domain_presets_keep_the_three_named_builtins_and_custom_mode(self) -> None:
         self.assertEqual(
             set(DOMAIN_PRESETS),
-            {"同步工程场景", "资料管理场景", "行政生活化场景", "自定义"},
+            {"无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"},
         )
         settings = AppSettings(domain_preset="资料管理场景")
         prompt = get_system_prompt(settings, target_lang="en", source_lang="zh")

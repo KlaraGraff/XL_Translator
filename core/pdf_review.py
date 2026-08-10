@@ -227,9 +227,15 @@ def check_pdf_review_connectivity(
     *,
     client: PdfPageReviewClient | None = None,
     max_attempts: int = PDF_REVIEW_TEST_MAX_ATTEMPTS,
+    connection_id: str = "",
 ) -> PdfReviewConnectivityResult:
-    config = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
-    signature = pdf_review_model_signature(settings)
+    # ``connection_id`` 指定要测的连接池条目；不给就还是主连接。
+    config = resolve_effective_model_config(
+        settings,
+        ROLE_PDF_REVIEW,
+        connection_id=connection_id,
+    )
+    signature = pdf_review_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "vision_text"):
         message = f"{config.label}当前服务商不支持图像理解审核能力：{config.provider}"
         record_pdf_review_model_availability(
@@ -238,6 +244,7 @@ def check_pdf_review_connectivity(
             message=message,
             signature=signature,
             checked_at=_now_iso(),
+            connection_id=connection_id,
         )
         return PdfReviewConnectivityResult(False, message, status="unsupported_provider")
 
@@ -263,6 +270,7 @@ def check_pdf_review_connectivity(
                     message=message,
                     signature=signature,
                     checked_at=_now_iso(),
+                    connection_id=connection_id,
                 )
                 detail = result.summary or "审核模型已返回结构化判断。"
                 return PdfReviewConnectivityResult(True, message, detail=detail)
@@ -276,6 +284,7 @@ def check_pdf_review_connectivity(
         message=message,
         signature=signature,
         checked_at=_now_iso(),
+        connection_id=connection_id,
     )
     return PdfReviewConnectivityResult(False, message, detail=last_error, status="failed")
 

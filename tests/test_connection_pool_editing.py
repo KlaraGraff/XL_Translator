@@ -109,6 +109,27 @@ class ConnectionPoolEditingTests(unittest.TestCase):
         self.assertEqual(renamed.label, "主账号")
         self.assertEqual(renamed.availability_status, "available")
 
+    def test_resubmitting_the_same_endpoint_keeps_the_test_result(self) -> None:
+        """面板每次保存都整份提交这三个字段，值没变就不该判为「换了端点」。"""
+        app = _app()
+        connection = app.engine.connections[0]
+        connection.availability_status = "available"
+        connection.availability_message = "ok"
+
+        update_role_connection(
+            app,
+            ROLE_TRANSLATION,
+            connection.id,
+            label="主账号",
+            provider=connection.provider,
+            model=connection.model,
+            base_url=connection.base_url,
+        )
+
+        self.assertEqual(connection.label, "主账号")
+        self.assertEqual(connection.availability_status, "available")
+        self.assertEqual(connection.availability_message, "ok")
+
     def test_reorder_must_cover_exactly_the_current_entries(self) -> None:
         app = _app()
         with self.assertRaises(ModelRoleConfigError):
