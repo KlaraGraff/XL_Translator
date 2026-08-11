@@ -1459,6 +1459,31 @@ function renderModelsPage(host: HTMLElement): void {
   statusRow.append(catalogChip, availChip);
   detailBody.append(statusRow);
 
+  // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
+  // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点
+  // 「测试连接」。「未获取列表」同样——光看这四个字看不出下一步该点哪里。
+  const statusReasons: string[] = [];
+  if (availability === "unavailable") {
+    const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。");
+    statusReasons.push(`测试失败：${reason}${checkedAt ? `（${checkedAt}）` : ""}`);
+  }
+  if (!catalog.length) {
+    statusReasons.push(
+      catalogMatches
+        ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
+        : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。",
+    );
+  }
+  if (statusReasons.length) {
+    const statusReasonNote = document.createElement("div");
+    statusReasonNote.style.fontSize = "12px";
+    statusReasonNote.style.lineHeight = "1.5";
+    statusReasonNote.style.marginTop = "6px";
+    statusReasonNote.style.color = availability === "unavailable" ? "var(--danger)" : "var(--ink-3)";
+    statusReasonNote.textContent = statusReasons.join(" · ");
+    detailBody.append(statusReasonNote);
+  }
+
   // 保存 / 获取模型 / 测试连接 / 导出导入
   // 提交是串行排队的，真正发出去时可能已经隔了一次重画：用户切了角色卡、切了
   // 云端/本地、换了选中的连接。所以「这份表单属于谁、该走哪条路由」必须在渲染这一刻
