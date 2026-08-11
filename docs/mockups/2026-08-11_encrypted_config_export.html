@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>样张 · 配置导出加密（全自动）</title>
+<style>
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff; --ground:#f4f6fc; --ground-2:#ebeef8; --rail:#fbfcfe;
+  --surface:#fff; --surface-2:#f8fafe; --ink:#141a2e; --ink-2:#556080; --ink-3:#8a93ac;
+  --line:#e7ebf5; --line-2:#d9dfee; --accent:var(--accent-base); --accent-strong:#4353cc;
+  --on-accent:#fff; --tint:#f0f1ff; --tint-line:#ccd2ff; --tint-ink:#404fc2;
+  --ok:#12a366; --ok-t:#e2f4ed; --ok-l:#b3e2ce;
+  --warn:#c77a00; --warn-t:#f8eede; --warn-l:#edd4ad;
+  --danger:#e5484d; --danger-t:#fdebec; --danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66/5%);
+  --sh-md:0 1px 2px rgb(24 34 66/5%),0 10px 26px -14px rgb(30 45 90/20%);
+  --sh-lg:0 2px 4px rgb(24 34 66/6%),0 24px 48px -22px rgb(30 45 90/30%);
+  --r-lg:15px; --r-md:12px; --r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019; --ground-2:#090d15; --rail:#10151f; --surface:#151b28; --surface-2:#1a2130;
+  --ink:#eaedf7; --ink-2:#a4aec7; --ink-3:#6b7590; --line:#242c3e; --line-2:#313a50;
+  --accent:#8090ff; --accent-strong:var(--accent-base); --on-accent:#0b0f1a;
+  --tint:#1b223b; --tint-line:#283268; --tint-ink:#a0acff;
+  --ok:#3dd68c; --ok-t:#192e2a; --ok-l:#2d594c;
+  --warn:#e8a33d; --warn-t:#31281d; --warn-l:#655039;
+  --danger:#ff6369; --danger-t:#331b20; --danger-l:#5e3038;
+  --sh-sm:0 1px 2px rgb(0 0 0/40%);
+  --sh-md:0 1px 2px rgb(0 0 0/40%),0 10px 26px -14px rgb(0 0 0/55%);
+  --sh-lg:0 2px 4px rgb(0 0 0/45%),0 24px 48px -22px rgb(0 0 0/65%);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--ground);color:var(--ink);-webkit-font-smoothing:antialiased;padding:0 0 80px}
+
+.page{max-width:1000px;margin:0 auto;padding:0 28px}
+.masthead{padding:40px 0 8px;display:flex;align-items:flex-start;gap:20px}
+.masthead h1{font-size:24px;font-weight:650;letter-spacing:-.3px}
+.masthead p{font-size:13.5px;color:var(--ink-2);margin-top:8px;line-height:1.65;max-width:640px}
+.masthead .meta{font-size:12px;color:var(--ink-3);margin-top:10px}
+.themebtn{margin-left:auto;flex:none}
+
+.scene{margin-top:34px}
+.scene>h2{font-size:15px;font-weight:650;display:flex;align-items:center;gap:9px}
+.scene>h2 .n{width:22px;height:22px;border-radius:99px;background:var(--tint);color:var(--tint-ink);font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.scene>.cap{font-size:12.5px;color:var(--ink-2);margin:7px 0 0;line-height:1.65;max-width:720px}
+.scene>.cap code{font-family:var(--mono);font-size:11.5px;background:var(--ground-2);border-radius:5px;padding:1px 5px}
+.frame{margin-top:14px;background:var(--ground-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:26px 24px}
+.frame.plain{background:var(--surface-2)}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.tc-head{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.tc-head b{color:var(--ink);font-weight:600;font-size:13px}
+.tc-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.note{font-size:12px;color:var(--ink-3);line-height:1.7}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600;box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:var(--accent-strong)}
+.btn.dgr{background:transparent;border-color:var(--danger-l);color:var(--danger)}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.dgr{background:var(--danger-t);color:var(--danger)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}
+.field{margin-bottom:11px}
+.field label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:4px;font-weight:550}
+.field select{width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 9px}
+
+.stack{display:flex;flex-direction:column;align-items:center;gap:0}
+.overlay{position:relative;width:100%;background:rgb(10 14 26/45%);border-radius:var(--r-md);padding:46px 20px 26px;display:flex;justify-content:center}
+.modal{position:relative;width:430px;background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:22px 22px 18px}
+.modal.wide{width:512px}
+.mlabel{position:absolute;top:-30px;left:22px;font-size:11.5px;font-weight:650;letter-spacing:.06em;color:#fff;background:rgb(10 14 26/55%);border-radius:99px;padding:3px 12px;white-space:nowrap}
+.modal .mi{width:38px;height:38px;border-radius:99px;display:flex;align-items:center;justify-content:center;margin-bottom:12px;font-size:19px}
+.modal .mi.ok{background:var(--ok-t);color:var(--ok)}
+.modal .mi.warn{background:var(--warn-t);color:var(--warn)}
+.modal .mi.dgr{background:var(--danger-t);color:var(--danger)}
+.modal .mi.tint{background:var(--tint);color:var(--tint-ink)}
+.modal h3{font-size:15px;font-weight:650;margin-bottom:7px}
+.modal p{font-size:13px;color:var(--ink-2);margin-bottom:8px;line-height:1.65}
+.modal .macts{display:flex;justify-content:flex-end;gap:9px;margin-top:16px}
+
+.kv{border:1px solid var(--line);border-radius:var(--r-sm);margin:12px 0 4px;overflow:hidden}
+.kv .row{display:flex;gap:12px;padding:8px 12px;border-top:1px solid var(--line);font-size:12.5px}
+.kv .row:first-child{border-top:0}
+.kv .row .k{color:var(--ink-3);width:96px;flex:none}
+.kv .row .v{color:var(--ink);flex:1}
+.kv .row .v.mono{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+
+.lst{margin:4px 0 0;padding:0;list-style:none}
+.lst li{font-size:12.5px;color:var(--ink-2);padding:5px 0 5px 15px;position:relative;line-height:1.55}
+.lst li:before{content:"";position:absolute;left:2px;top:11px;width:4px;height:4px;border-radius:99px;background:var(--ink-3)}
+.subhead{font-size:12px;font-weight:600;color:var(--ink);margin-top:14px;display:flex;align-items:center;gap:7px}
+
+.banner{border-radius:var(--r-sm);padding:10px 12px;font-size:12.5px;line-height:1.6;display:flex;gap:9px;margin-top:10px}
+.banner .ico{flex:none;font-size:14px;line-height:1.3}
+.banner.warn{background:var(--warn-t);border:1px solid var(--warn-l);color:var(--warn)}
+.banner.tint{background:var(--tint);border:1px solid var(--tint-line);color:var(--tint-ink)}
+.banner.dgr{background:var(--danger-t);border:1px solid var(--danger-l);color:var(--danger)}
+.banner b{font-weight:650}
+
+.toast{background:#1d2436;color:#eaedf7;border-radius:10px;padding:11px 15px;font-size:12.5px;box-shadow:var(--sh-lg);max-width:520px;line-height:1.6}
+[data-theme="dark"] .toast{background:#2b344a}
+
+.decide{margin-top:44px;border:1px solid var(--tint-line);background:var(--tint);border-radius:var(--r-lg);padding:20px 22px}
+.decide h2{font-size:14px;font-weight:650;color:var(--tint-ink)}
+.decide ol{margin:10px 0 0 18px}
+.decide li{font-size:12.5px;color:var(--ink-2);line-height:1.75;padding:2px 0}
+.decide li b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="masthead">
+    <div>
+      <h1>配置导出加密 · 全自动</h1>
+      <p>「导出含 Key」不再把密钥以明文写进文件，改为用软件内置的密钥加密。导出和导入两边都不需要输入任何东西，也不需要联网。文件默认 30 天后失效。</p>
+      <p class="meta">样张 · 2026-08-11 · 覆盖 8 个界面与状态 · 尚未实装</p>
+    </div>
+    <button class="btn mini themebtn" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">切换深色</button>
+  </div>
+
+  <!-- 1 -->
+  <section class="scene">
+    <h2><span class="n">1</span>设置 · 模型服务 · 打包卡片</h2>
+    <p class="cap">按钮不变，还是三个。只有卡片说明换了——把「加密」和「30 天失效」写在用户按下按钮之前，而不是按完之后才补一句。</p>
+    <div class="frame">
+      <div class="card">
+        <div class="tc-head">
+          <b>整个模型服务打包</b>
+          <div class="tc-tools">
+            <button class="btn mini">导出（不含 Key）</button>
+            <button class="btn mini">导出含 Key</button>
+            <button class="btn mini">导入配置</button>
+          </div>
+        </div>
+        <div style="padding:12px 16px">
+          <p class="note">一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。<br>
+          选择「导出含 Key」时，密钥会加密写入文件，对方用本软件导入自动解开，两边都不需要输入口令。文件默认 30 天后失效。<br>
+          只会带上你在这台电脑上自己填过的密钥；从别人配置文件导入进来的密钥不会再传出去，除非你自己重新填过一次。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="scene">
+    <h2><span class="n">2</span>导出含 Key · 确认</h2>
+    <p class="cap">代替现在那个只有一行字的 <code>window.confirm</code>。多了有效期选择，默认 30 天。第二段话是这条线的边界，写在这里而不是藏进帮助文档。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal">
+          <span class="mlabel">设置 · 模型服务 · 导出含 Key</span>
+          <div class="mi tint">🔒</div>
+          <h3>导出含 Key</h3>
+          <p>密钥会加密后写进文件。对方用本软件导入即可自动解开，不需要口令，也不需要联网。</p>
+          <div class="banner warn">
+            <span class="ico">!</span>
+            <span>任何持有本软件的人都能解开这份文件。请只发给应当拿到这些密钥的人，不要发到公开群或网盘。</span>
+          </div>
+          <div class="field" style="margin-top:16px">
+            <label>文件有效期</label>
+            <select>
+              <option>7 天</option>
+              <option selected>30 天（推荐）</option>
+              <option>90 天</option>
+              <option>长期有效</option>
+            </select>
+          </div>
+          <p class="note" style="margin-top:-4px">过期后文件里的密钥无法再解开，配置部分仍可导入。</p>
+          <div class="macts">
+            <button class="btn">取消</button>
+            <button class="btn pri">选择保存位置</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="scene">
+    <h2><span class="n">3</span>导出完成 · 回执</h2>
+    <p class="cap">现有的「哪些密钥被扣下」回执保留不动，只在顶部加了加密状态和到期日。回执始终走界面，不写进导出文件——写进去等于附送对方一份本机连接清单。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal wide">
+          <span class="mlabel">设置 · 模型服务 · 导出含 Key</span>
+          <div class="mi ok">✓</div>
+          <h3>已导出，密钥已加密</h3>
+          <div class="kv">
+            <div class="row"><span class="k">文件</span><span class="v mono">~/Desktop/xl-translator-models-20260811.xltcfg</span></div>
+            <div class="row"><span class="k">密钥</span><span class="v">3 条连接的密钥已加密写入 <span class="chip ok">已加密</span></span></div>
+            <div class="row"><span class="k">有效期至</span><span class="v">2026-09-10（30 天后）</span></div>
+          </div>
+
+          <div class="subhead">已随文件导出的密钥 <span class="chip ok">3 条</span></div>
+          <ul class="lst">
+            <li>翻译 · DeepSeek 主用</li>
+            <li>清洗 · 通义千问</li>
+            <li>PDF 审阅 · 智谱 GLM</li>
+          </ul>
+
+          <div class="subhead">没有导出的密钥 <span class="chip warn">2 条</span></div>
+          <p class="note" style="margin-top:5px">以下密钥是从别人的配置文件导入到这台电脑的，为避免连环传播没有写进文件。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。</p>
+          <ul class="lst">
+            <li>翻译 · Claude 备用连接</li>
+            <li>换服务商时记住的配置 · OpenAI</li>
+          </ul>
+
+          <div class="macts">
+            <button class="btn">在访达中显示</button>
+            <button class="btn pri">知道了</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="scene">
+    <h2><span class="n">4</span>导入预览 · 正常</h2>
+    <p class="cap">对方这边全程零操作：选文件，看一眼预览，点确认。解密在打开文件时已经悄悄完成，界面只用一个「已自动解开」的字样交代一下。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal wide">
+          <span class="mlabel">设置 · 模型服务 · 导入配置</span>
+          <div class="mi tint">↓</div>
+          <h3>预览导入模型配置</h3>
+          <div class="kv">
+            <div class="row"><span class="k">文件</span><span class="v mono">xl-translator-models-20260811.xltcfg</span></div>
+            <div class="row"><span class="k">包含</span><span class="v">4 个角色 · 7 条连接 · 12 项吞吐档案</span></div>
+            <div class="row"><span class="k">密钥</span><span class="v">3 个作用域 <span class="chip ok">已自动解开</span></span></div>
+            <div class="row"><span class="k">有效期至</span><span class="v">2026-09-10（还剩 26 天）</span></div>
+          </div>
+          <p class="note" style="margin-top:10px">导入后，文件提到的角色其连接列表会被整份替换，受影响角色全部变为「未测试」，不会自动请求服务。</p>
+          <div class="macts">
+            <button class="btn">取消</button>
+            <button class="btn pri">确认替换并导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 -->
+  <section class="scene">
+    <h2><span class="n">5</span>导入 · 文件已过期</h2>
+    <p class="cap">过期只锁密钥，不锁配置——配置部分本来就是明文，拦下来毫无收益，只会让对方白跑一趟。所以给的是「照常导入，密钥留空」这条出路，外加一句该找谁重发。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal wide">
+          <span class="mlabel">设置 · 模型服务 · 导入配置</span>
+          <div class="mi warn">⏱</div>
+          <h3>这份文件已过期</h3>
+          <p>文件的有效期是 2026-07-12，已经过去 30 天，里面的密钥无法再解开。</p>
+          <div class="kv">
+            <div class="row"><span class="k">包含</span><span class="v">4 个角色 · 7 条连接 · 12 项吞吐档案</span></div>
+            <div class="row"><span class="k">密钥</span><span class="v">3 个作用域 <span class="chip warn">已失效，无法解开</span></span></div>
+          </div>
+          <div class="banner tint">
+            <span class="ico">→</span>
+            <span>连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。</span>
+          </div>
+          <div class="macts">
+            <button class="btn">取消</button>
+            <button class="btn pri">仅导入配置</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section class="scene">
+    <h2><span class="n">6</span>导入 · 本机软件版本太旧</h2>
+    <p class="cap">内置密钥将来可能轮换（比如密钥外泄了要换一把）。新版导出的文件旧版打不开，这时候必须说清是「你该升级」，而不是含糊报一句解密失败。文件格式里带密钥编号就是为了这一天。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal wide">
+          <span class="mlabel">设置 · 模型服务 · 导入配置</span>
+          <div class="mi warn">↑</div>
+          <h3>需要更新软件才能解开密钥</h3>
+          <p>这份文件由更新版本的 XL Translator 导出，当前版本（9.2.4）无法解开其中的密钥。</p>
+          <div class="banner tint">
+            <span class="ico">→</span>
+            <span>更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。</span>
+          </div>
+          <div class="macts">
+            <button class="btn">仅导入配置</button>
+            <button class="btn pri">前往更新</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 -->
+  <section class="scene">
+    <h2><span class="n">7</span>导入 · 旧版明文文件</h2>
+    <p class="cap">9.2.x 及更早导出的文件密钥是明文的，必须照常能导入——升级不能让手上的旧文件变成废纸。但要提醒对方这份文件本身不安全，用完删掉。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal wide">
+          <span class="mlabel">设置 · 模型服务 · 导入配置</span>
+          <div class="mi tint">↓</div>
+          <h3>预览导入模型配置</h3>
+          <div class="kv">
+            <div class="row"><span class="k">文件</span><span class="v mono">translator-config.json</span></div>
+            <div class="row"><span class="k">包含</span><span class="v">4 个角色 · 5 条连接 · 8 项吞吐档案</span></div>
+            <div class="row"><span class="k">密钥</span><span class="v">2 个作用域 <span class="chip warn">明文</span></span></div>
+          </div>
+          <div class="banner warn">
+            <span class="ico">!</span>
+            <span>这是旧版本导出的文件，密钥以<b>明文</b>保存在文件里，任何人用记事本打开都能看到。可以正常导入，建议导入后立刻删除这个文件。</span>
+          </div>
+          <div class="macts">
+            <button class="btn">取消</button>
+            <button class="btn pri">确认替换并导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section class="scene">
+    <h2><span class="n">8</span>导入 · 文件损坏或被改过</h2>
+    <p class="cap">加密自带完整性校验，文件被改过一个字节就会校验不通过。这种情况一律拒绝导入全部内容——不是只跳过密钥，因为无法判断被改的是哪部分。</p>
+    <div class="frame">
+      <div class="overlay">
+        <div class="modal">
+          <span class="mlabel">设置 · 模型服务 · 导入配置</span>
+          <div class="mi dgr">✕</div>
+          <h3>文件校验未通过</h3>
+          <p>这份文件在传输过程中损坏，或者被修改过。为安全起见，没有导入任何内容。</p>
+          <div class="banner dgr">
+            <span class="ico">!</span>
+            <span>请让发送方重新发一次。如果重发后仍然报错，请联系发送方确认文件来源。</span>
+          </div>
+          <div class="macts">
+            <button class="btn pri">知道了</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="scene">
+    <h2><span class="n">9</span>成功提示</h2>
+    <p class="cap">导出和导入落盘后的 toast，两条各一句。</p>
+    <div class="frame plain">
+      <div class="stack" style="gap:14px;align-items:flex-start">
+        <div class="toast">已导出模型配置到 ~/Desktop/xl-translator-models-20260811.xltcfg，密钥已加密，2026-09-10 前有效。</div>
+        <div class="toast">已导入配置，文件提到的角色其连接列表已整份替换；同时解开并写入 3 个密钥作用域。所有受影响角色均需重新测试。</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="decide">
+    <h2>这份样张里已经替你定了的几件事</h2>
+    <ol>
+      <li><b>「导出（不含 Key）」按钮保留。</b> 有时候就是不想给密钥，只想给对方一套连接和参数，这个需求没消失。</li>
+      <li><b>有效期只锁密钥，不锁配置。</b> 配置部分本来就是明文，过期拦下来没有任何收益（界面 5）。</li>
+      <li><b>文件扩展名改成 <code>.xltcfg</code>。</b> 现在导出的是 <code>.json</code>，会诱使人用记事本打开——加密之后打开只有乱码，不如换个名字断了这个念头。旧的 <code>.json</code> 照常能导入。</li>
+      <li><b>文件里带密钥编号。</b> 将来内置密钥万一外泄，下个版本换一把就能补救，旧文件也还读得开（界面 6）。不现在留这个口子，以后就补不上了。</li>
+      <li><b>内置密钥不写进源码</b>，发版时从 GitHub Actions 的加密变量注入。否则密钥就直接躺在你的公开仓库里，连下载安装包这一步都省了。</li>
+    </ol>
+  </div>
+
+</div>
+</body>
+</html>
