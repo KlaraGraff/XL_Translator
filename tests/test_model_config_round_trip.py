@@ -153,6 +153,57 @@ class ModelConfigRoundTripTests(unittest.TestCase):
         assert [conn.label for conn in restored.engine.connections] == ["", "本机备用"]
 
 
+class IllegalFollowImportTests(unittest.TestCase):
+    """旧文件里 image 参与跟随：导入必须降级，不能炸。
+
+    图像角色被移出跟随机制之前导出的备份，两个方向的跟随都可能写在里面。用户手上
+    往往只有这一份配置备份，导入报错等于把它作废。
+    """
+
+    def _bundle_with_source(self, profile_key: str, source_role: str) -> dict:
+        payload = build_model_config_export_payload(
+            AppSettings(), get_api_key=lambda *_: ""
+        )
+        payload["model_profiles"][profile_key]["source_role"] = source_role
+        return payload
+
+    def test_an_image_role_that_follows_imports_as_independent(self) -> None:
+        payload = self._bundle_with_source("pdf_translation", "translation")
+
+        restored = apply_model_config_import(
+            AppSettings(),
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        assert restored.image_model_role.source_role == "independent"
+
+    def test_a_role_following_the_image_role_imports_as_independent(self) -> None:
+        payload = self._bundle_with_source("pdf_review", "pdf_translation")
+        payload["model_profiles"]["pdf_translation"]["source_role"] = "independent"
+
+        restored = apply_model_config_import(
+            AppSettings(),
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        assert restored.pdf_review_model_role.source_role == "independent"
+
+    def test_both_illegal_directions_in_one_bundle_still_import(self) -> None:
+        payload = self._bundle_with_source("pdf_translation", "translation")
+        payload["model_profiles"]["pdf_review"]["source_role"] = "pdf_translation"
+
+        restored = apply_model_config_import(
+            AppSettings(),
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        assert restored.image_model_role.source_role == "independent"
+        assert restored.pdf_review_model_role.source_role == "independent"
+
+
 class ExportVersionTests(unittest.TestCase):
     """旧版本导出的文件必须读得进来，新版本导出的才该被拒。
 

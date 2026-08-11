@@ -472,39 +472,88 @@ def role_source_role(settings: AppSettings, role: str) -> str:
     return str(role_settings.source_role or SOURCE_INDEPENDENT).strip()
 
 
+# 完全不参与跟随的角色：两个方向都禁。图像生成模型是特殊的一档——它出图，
+# 不做文本，也读不了图。让它借别人的端点，或让别人借它的端点，总有一方会落在
+# 一个服务不了自己的服务器上。跟随共用的是服务商 / Base URL / 密钥，正好是决定
+# 「这台服务器能干什么」的那三样，所以只能把这个角色整个摘出去，而不是靠能力校验
+# 事后拦截。这是全模块唯一一处按 role 名写死跟随规则的地方。
+FOLLOW_ISOLATED_ROLES = frozenset({ROLE_IMAGE})
+
+
 def allowed_source_roles(
     role: str,
     settings: AppSettings | None = None,
 ) -> list[str]:
     """Return the follow sources a role may select.
 
-    Any role may follow any *other* role, which is what makes the four roles
-    symmetric.  Chains stay banned, so with ``settings`` the answer narrows to
-    the roles that are currently independent — those are the only ones that can
-    legally be followed right now.
+    Any role may follow any *other* role, except the roles in
+    ``FOLLOW_ISOLATED_ROLES``: those can neither follow nor be followed, so they
+    drop out of both the asking side and the candidate side.  Chains stay
+    banned, so with ``settings`` the answer narrows further to the roles that
+    are currently independent — those are the only ones that can legally be
+    followed right now.
     """
-    candidates = [item for item in MODEL_ROLES if item != role]
+    if role in FOLLOW_ISOLATED_ROLES:
+        return [SOURCE_INDEPENDENT]
+    candidates = [
+        item
+        for item in MODEL_ROLES
+        if item != role and item not in FOLLOW_ISOLATED_ROLES
+    ]
     if settings is not None:
         candidates = [
             item
             for item in candidates
-            if role_source_role(settings, item) == SOURCE_INDEPENDENT
+            # 用规范化后的值判断：一条已经不合法的跟随（比如跟随了图像角色）读出来
+            # 就是独立配置，按存下来的原值算会把一个实际独立的角色排除在候选之外。
+            if normalize_source_role(item, role_source_role(settings, item))
+            == SOURCE_INDEPENDENT
         ]
     return [SOURCE_INDEPENDENT, *candidates]
 
 
-def normalize_source_role(role: str, source_role: str) -> str:
+def _follow_rejection_message(role: str, source: str) -> str:
+    isolated = role if role in FOLLOW_ISOLATED_ROLES else source
+    if isolated in FOLLOW_ISOLATED_ROLES:
+        return (
+            f"{role_label(isolated)}只能独立配置，不能和其他用途共用连接。"
+            f"\n原因：图像生成模型无法用于译文审核或文档翻译，"
+            "共用一份连接会让其中一方落在服务不了它的服务器上。"
+        )
+    return f"{role_label(role)}不能跟随{role_label(source)}，请改为独立配置。"
+
+
+def normalize_source_role(
+    role: str,
+    source_role: str,
+    *,
+    strict: bool = False,
+) -> str:
+    """Resolve one role's stored follow source into a usable value.
+
+    Read paths (the default, ``strict=False``) must never raise: a settings file
+    written by an older version can name a follow that today's rules forbid, and
+    an exception on every read would mean the app cannot start — the one outcome
+    the compatibility rule forbids.  An illegal source therefore degrades to
+    独立配置, which is exactly how it will behave from now on.
+
+    Write paths pass ``strict=True``: when the *user* is choosing this
+    combination right now, silently storing something else would be a lie, so
+    the choice is rejected with a message that says why.
+    """
     source = str(source_role or SOURCE_INDEPENDENT).strip()
     if source == SOURCE_INDEPENDENT:
         return SOURCE_INDEPENDENT
     if source == role:
+        if not strict:
+            return SOURCE_INDEPENDENT
         raise ChainedModelFollowError(
             f"{role_label(role)}不能跟随自己，请选择其他角色或独立配置。"
         )
     if source not in allowed_source_roles(role):
-        raise ChainedModelFollowError(
-            f"{role_label(role)}不能跟随{role_label(source)}，请改为独立配置。"
-        )
+        if not strict:
+            return SOURCE_INDEPENDENT
+        raise ChainedModelFollowError(_follow_rejection_message(role, source))
     return source
 
 
@@ -670,15 +719,26 @@ def resolve_effective_model_config(
     # values on ``engine`` instead of a ModelRoleSettings.
     owner = model_role_owner(settings, normalized_role)
     capability = role_capability(normalized_role)
-    source = normalize_source_role(
-        normalized_role,
-        role_source_role(settings, normalized_role),
-    )
+    stored_source = role_source_role(settings, normalized_role)
+    source = normalize_source_role(normalized_role, stored_source)
     if source != owner.source_role:
+        if source == SOURCE_INDEPENDENT and stored_source != SOURCE_INDEPENDENT:
+            # 旧配置里的一条跟随刚刚被判为不合法。降级前先把它此刻真正在用的端点
+            # 抄到自己名下，见 _adopt_stored_source_endpoint。
+            _adopt_stored_source_endpoint(
+                settings,
+                normalized_role,
+                stored_source,
+                _seen,
+            )
         owner.source_role = source
 
     if source != SOURCE_INDEPENDENT:
-        if role_source_role(settings, source) != SOURCE_INDEPENDENT:
+        # 来源自己那条跟随也要按规范化后的值看：它如果跟随的是一个已经不合法的角色，
+        # 读出来就是独立配置，按存下来的原值算会把一份能用的配置报成链式跟随。
+        if normalize_source_role(source, role_source_role(settings, source)) != (
+            SOURCE_INDEPENDENT
+        ):
             raise ChainedModelFollowError(
                 f"{role_label(normalized_role)}不能跟随已经跟随其他模型的{role_label(source)}，"
                 "请直接选择最终来源。"
@@ -779,6 +839,68 @@ def resolve_effective_model_config(
     )
     validate_model_capability(config)
     return _availability_for_config(config, availability_source)
+
+
+def _adopt_stored_source_endpoint(
+    settings: AppSettings,
+    role: str,
+    stored_source: str,
+    _seen: tuple[str, ...] = (),
+) -> None:
+    """把跟随时实际在用的端点固化到本角色自己的配置上。
+
+    降级只解决「跟随谁」，不解决「往哪拨号」。跟随期间 provider / Base URL 全部来自
+    来源，本角色自己那两份字段停在设置文件第一次迁移时抄过去的值上，用户后来换过
+    服务商的话它就是错的——直接降级会让面板显示一份用户从来没配过的端点，PDF 翻译
+    照着它拨号会打到另一家服务上。模型名不受影响：跟随从来不共用模型名，本角色自己
+    那份一直都在。
+
+    密钥抄不过来：主用连接的密钥存在 ``conn::<id>`` 作用域下，属于来源那条连接。
+    端点抄过来之后本角色会按 provider + Base URL 作用域回落找密钥，找不到就得用户
+    在面板上重填一次——这一步在界面上是看得见的（未配置密钥 + 未测试），不会静默失败。
+    """
+    if stored_source == role or stored_source not in MODEL_ROLE_LABELS:
+        return
+    try:
+        source_config = resolve_effective_model_config(
+            settings,
+            stored_source,
+            _seen=(*_seen, role),
+        )
+    except Exception:  # noqa: BLE001 - 抄不到就保留本角色自己那份，绝不因此读不出配置
+        return
+    if source_config.mode != "cloud":
+        return
+    provider = str(source_config.provider or "").strip()
+    if not provider:
+        return
+    owner = model_role_owner(settings, role)
+    if (
+        str(owner.cloud_provider or "").strip() == provider
+        and str(owner.cloud_base_url or "").strip() == source_config.base_url
+    ):
+        return
+    owner.cloud_provider = provider
+    set_cloud_provider_config(
+        owner,
+        provider,
+        # 本角色自己的模型名跟着换到新服务商名下：跟随期间它就是配着在来源那台服务器
+        # 上跑的，换个 key 存反而等于把它丢了。
+        cloud_model=str(owner.cloud_model or "").strip(),
+        cloud_base_url=source_config.base_url,
+    )
+    connections = list(owner.connections or [])
+    if connections:
+        primary = connections[0]
+        primary.provider = owner.cloud_provider
+        primary.model = owner.cloud_model
+        primary.base_url = owner.cloud_base_url
+        primary.availability_status = "unknown"
+        primary.availability_message = "当前配置尚未测试。"
+        primary.availability_signature = ""
+        primary.availability_checked_at = ""
+    # 端点变了，上一次的测试结论不再描述它。
+    reset_model_role_availability(settings, role)
 
 
 def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:

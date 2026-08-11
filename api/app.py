@@ -75,6 +75,7 @@ from core.model_roles import (
     list_role_connections,
     model_config_signature,
     model_role_owner,
+    normalize_source_role,
     pool_role,
     remove_role_connection,
     reorder_role_connections,
@@ -559,6 +560,9 @@ def create_app(
     def put_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise HTTPException(422, "Settings payload must be a JSON object.")
+        # 只查这份 payload 自己点名的角色：这个端点是「当前设置 + 补丁」合并保存，
+        # 拿合并结果去查的话，磁盘上早就存着的一条不合法跟随会让每一次保存都 422。
+        _reject_illegal_follow_payload(payload)
         before_settings = load_settings()
         before_signatures: dict[str, str] = {}
         for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
@@ -1165,6 +1169,9 @@ def create_app(
             raise HTTPException(404, "Unknown model role.")
         before_signatures = _effective_role_signatures(settings)
         changed = False
+        # 用户在面板上现选的跟随组合按严格规则判：读旧配置时不合法的跟随会静默降级为
+        # 独立配置，那是为了让老设置文件还能打开；这里再降级就成了「存了别的、还不吭声」。
+        _reject_illegal_follow_choice(role, payload.source_role)
         # All four roles now carry the same fields, so one branch serves them
         # all: translation just happens to keep its copy on ``engine``.
         owner = model_role_owner(settings, role)
@@ -1884,6 +1891,40 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
             "concurrency": concurrency_bounds(config),
         },
     }
+
+
+MODEL_ROLE_SETTING_KEYS = {
+    ROLE_TRANSLATION: "engine",
+    ROLE_CLEANER: "cleaner_model_role",
+    ROLE_IMAGE: "image_model_role",
+    ROLE_PDF_REVIEW: "pdf_review_model_role",
+}
+
+
+def _reject_illegal_follow_choice(role: str, source_role: str | None) -> None:
+    """Reject a follow combination the user is explicitly asking for.
+
+    Only an explicit choice reaches this: a value merely inherited from an old
+    settings file must keep loading (it degrades to 独立配置 on read), or the
+    user would be locked out of saving anything at all.
+    """
+    if source_role is None:
+        return
+    try:
+        normalize_source_role(role, source_role, strict=True)
+    except ModelRoleConfigError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+def _reject_illegal_follow_payload(payload: dict[str, Any]) -> None:
+    """Apply the same rule to the roles a raw settings payload names itself."""
+    if not isinstance(payload, dict):
+        return
+    for role, setting_key in MODEL_ROLE_SETTING_KEYS.items():
+        block = payload.get(setting_key)
+        if not isinstance(block, dict) or "source_role" not in block:
+            continue
+        _reject_illegal_follow_choice(role, str(block.get("source_role") or ""))
 
 
 def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = ""):

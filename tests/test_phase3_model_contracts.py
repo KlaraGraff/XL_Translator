@@ -59,26 +59,29 @@ class Phase3ModelContractTests(unittest.TestCase):
                 ROLE_PDF_REVIEW,
             )},
         )
-        # The four roles are symmetric: any role may follow any other, and a
-        # role may never follow itself.  Chains stay banned, which is what the
-        # settings-aware form of this call narrows down.
-        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW):
+        # The text/vision roles are symmetric: any of them may follow any other,
+        # and a role may never follow itself.  The image role is out of the
+        # follow mechanism entirely, in both directions: a picture generator
+        # cannot review or translate, and no other role can run on its endpoint.
+        # Chains stay banned, which is what the settings-aware form narrows down.
+        for role in (ROLE_TRANSLATION, ROLE_CLEANER, ROLE_PDF_REVIEW):
             with self.subTest(role=role):
                 sources = allowed_source_roles(role)
                 assert sources[0] == SOURCE_INDEPENDENT
                 assert role not in sources
+                assert ROLE_IMAGE not in sources
                 assert set(sources[1:]) == {
                     ROLE_TRANSLATION,
                     ROLE_CLEANER,
-                    ROLE_IMAGE,
                     ROLE_PDF_REVIEW,
                 } - {role}
+        assert allowed_source_roles(ROLE_IMAGE) == [SOURCE_INDEPENDENT]
 
     def test_allowed_sources_drop_roles_that_already_follow(self) -> None:
         settings = AppSettings()
-        # Out of the box all three secondary roles follow translation, so it is
-        # the only role anyone may follow: following a follower is a chain.
-        assert allowed_source_roles(ROLE_IMAGE, settings) == [
+        # Out of the box the secondary roles follow translation, so it is the
+        # only role anyone may follow: following a follower is a chain.
+        assert allowed_source_roles(ROLE_PDF_REVIEW, settings) == [
             SOURCE_INDEPENDENT,
             ROLE_TRANSLATION,
         ]
@@ -90,13 +93,16 @@ class Phase3ModelContractTests(unittest.TestCase):
             SOURCE_INDEPENDENT,
             ROLE_PDF_REVIEW,
         ]
-        assert ROLE_PDF_REVIEW in allowed_source_roles(ROLE_IMAGE, settings)
+        # 图像角色两个方向都不参与：它自己只有独立配置可选，别人也选不到它。
+        assert allowed_source_roles(ROLE_IMAGE, settings) == [SOURCE_INDEPENDENT]
+        assert ROLE_IMAGE not in allowed_source_roles(ROLE_PDF_REVIEW, settings)
 
-    def test_a_role_cannot_follow_itself(self) -> None:
+    def test_a_stored_self_follow_reads_as_independent(self) -> None:
         settings = AppSettings()
-        settings.image_model_role.source_role = ROLE_IMAGE
-        with self.assertRaises(ChainedModelFollowError):
-            resolve_effective_model_config(settings, ROLE_IMAGE)
+        settings.cleaner_model_role.source_role = ROLE_CLEANER
+        config = resolve_effective_model_config(settings, ROLE_CLEANER)
+        assert config.source_role == SOURCE_INDEPENDENT
+        assert not config.follows
 
     def test_connection_reuse_shares_access_but_keeps_role_model_name(self) -> None:
         settings = AppSettings(
@@ -130,15 +136,11 @@ class Phase3ModelContractTests(unittest.TestCase):
             )
         )
         # Cleaner is a text role and may run locally, so it is deliberately not
-        # in this list; only the image and review capabilities are cloud-only.
-        for role in (ROLE_IMAGE, ROLE_PDF_REVIEW):
-            settings_for_role = settings.model_copy(deep=True)
-            getattr(settings_for_role, {
-                ROLE_IMAGE: "image_model_role",
-                ROLE_PDF_REVIEW: "pdf_review_model_role",
-            }[role]).source_role = ROLE_TRANSLATION
-            with self.subTest(role=role), self.assertRaises(LocalModelFollowNotAllowedError):
-                resolve_effective_model_config(settings_for_role, role)
+        # here; the image role is excluded because it cannot follow at all.
+        settings_for_role = settings.model_copy(deep=True)
+        settings_for_role.pdf_review_model_role.source_role = ROLE_TRANSLATION
+        with self.assertRaises(LocalModelFollowNotAllowedError):
+            resolve_effective_model_config(settings_for_role, ROLE_PDF_REVIEW)
 
     def test_a_text_role_may_follow_a_local_translation_model(self) -> None:
         settings = AppSettings(
@@ -160,9 +162,9 @@ class Phase3ModelContractTests(unittest.TestCase):
     def test_chained_following_is_rejected_before_resolution(self) -> None:
         settings = AppSettings()
         settings.cleaner_model_role.source_role = ROLE_TRANSLATION
-        settings.image_model_role.source_role = ROLE_CLEANER
+        settings.pdf_review_model_role.source_role = ROLE_CLEANER
         with self.assertRaises(ChainedModelFollowError):
-            resolve_effective_model_config(settings, ROLE_IMAGE)
+            resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
 
     def test_capability_registry_does_not_overclaim_provider_features(self) -> None:
         self.assertTrue(provider_supports_capability("custom_openai", "text"))

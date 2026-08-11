@@ -106,10 +106,10 @@ class ModelRoleTests(unittest.TestCase):
     def test_chained_following_is_rejected(self) -> None:
         settings = AppSettings()
         settings.cleaner_model_role.source_role = ROLE_TRANSLATION
-        settings.image_model_role.source_role = ROLE_CLEANER
+        settings.pdf_review_model_role.source_role = ROLE_CLEANER
 
         with self.assertRaises(ChainedModelFollowError):
-            resolve_effective_model_config(settings, ROLE_IMAGE)
+            resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
 
     def test_cloud_only_roles_cannot_follow_local_translation_model(self) -> None:
         settings = AppSettings(
@@ -119,17 +119,16 @@ class ModelRoleTests(unittest.TestCase):
                 local_model="qwen2.5:14b",
             )
         )
-        settings.image_model_role.source_role = ROLE_TRANSLATION
         settings.pdf_review_model_role.source_role = ROLE_TRANSLATION
 
         # Cleaner is excluded on purpose: it is a text role, so a local runner
-        # satisfies its capability and following one is legal.
-        for role in (ROLE_IMAGE, ROLE_PDF_REVIEW):
-            with self.subTest(role=role):
-                with self.assertRaises(LocalModelFollowNotAllowedError):
-                    resolve_effective_model_config(settings, role)
+        # satisfies its capability and following one is legal.  The image role
+        # is excluded because it cannot follow anything at all.
+        with self.assertRaises(LocalModelFollowNotAllowedError):
+            resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
 
-    def test_image_follow_uses_access_config_but_not_text_model_name(self) -> None:
+    def test_image_role_reads_a_stored_follow_as_independent(self) -> None:
+        """旧配置里 image 跟随翻译模型：读得出来，且降级成独立配置。"""
         settings = AppSettings(
             engine=EngineSettings(
                 mode="cloud",
@@ -139,16 +138,46 @@ class ModelRoleTests(unittest.TestCase):
             )
         )
         settings.image_model_role.source_role = ROLE_TRANSLATION
-        settings.image_model_role.cloud_model = ""
+        settings.image_model_role.cloud_model = "gpt-image-1"
 
         with patch("core.model_roles.get_key", return_value="secret"):
             image_config = resolve_effective_model_config(settings, ROLE_IMAGE)
 
-        self.assertTrue(image_config.follows)
-        self.assertEqual(image_config.provider, "custom_openai")
-        self.assertEqual(image_config.base_url, "https://api.example/v1")
-        self.assertEqual(image_config.model, "")
+        self.assertFalse(image_config.follows)
+        self.assertEqual(image_config.source_role, SOURCE_INDEPENDENT)
+        self.assertEqual(settings.image_model_role.source_role, SOURCE_INDEPENDENT)
         self.assertEqual(image_config.capability, "image")
+        # 模型名是本角色自己的，跟随从来不共用它，降级后必须还在。
+        self.assertEqual(image_config.model, "gpt-image-1")
+
+    def test_degraded_image_role_keeps_the_endpoint_it_was_dialing(self) -> None:
+        """降级不能把用户留在一份他从没配过的端点上。"""
+        settings = AppSettings(
+            engine=EngineSettings(
+                mode="cloud",
+                cloud_provider="custom_openai",
+                cloud_model="text-model",
+                cloud_base_url="https://new.example/v1",
+            )
+        )
+        settings.image_model_role.source_role = ROLE_TRANSLATION
+        settings.image_model_role.cloud_model = "gpt-image-1"
+        # 跟随期间没人维护本角色自己的端点，它停在几个版本前的值上。
+        settings.image_model_role.cloud_base_url = "https://stale.example/v1"
+        settings.image_model_role.cloud_provider_configs = {}
+
+        with patch("core.model_roles.get_key", return_value="secret"):
+            image_config = resolve_effective_model_config(settings, ROLE_IMAGE)
+
+        self.assertEqual(image_config.base_url, "https://new.example/v1")
+        self.assertEqual(image_config.provider, "custom_openai")
+        self.assertEqual(image_config.model, "gpt-image-1")
+        self.assertEqual(
+            settings.image_model_role.connections[0].base_url,
+            "https://new.example/v1",
+        )
+        # 端点换了，旧的测试结论不再描述它。
+        self.assertEqual(image_config.availability_status, "unknown")
 
     def test_image_generation_capability_and_availability_status(self) -> None:
         settings = AppSettings()
@@ -201,7 +230,8 @@ class ModelRoleTests(unittest.TestCase):
         self.assertEqual(settings.pdf_review_model_role.availability_status, "available")
         self.assertEqual(settings.pdf_review_model_role.availability_signature, "review-signature")
 
-    def test_pdf_review_model_can_follow_independent_image_model(self) -> None:
+    def test_a_stored_follow_of_the_image_role_reads_as_independent(self) -> None:
+        """旧配置里 pdf_review 跟随 image：读得出来，且降级成独立配置。"""
         settings = AppSettings()
         settings.image_model_role.source_role = SOURCE_INDEPENDENT
         settings.image_model_role.cloud_provider = "custom_openai"
@@ -213,19 +243,26 @@ class ModelRoleTests(unittest.TestCase):
         with patch("core.model_roles.get_key", return_value="secret"):
             config = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
 
-        self.assertTrue(config.follows)
-        self.assertEqual(config.source_role, ROLE_IMAGE)
-        self.assertEqual(config.provider, "custom_openai")
-        self.assertEqual(config.base_url, "https://images.example/v1")
+        self.assertFalse(config.follows)
+        self.assertEqual(config.source_role, SOURCE_INDEPENDENT)
         self.assertEqual(config.model, "vision-review-model")
+        # 跟随时用的就是图像角色那个端点，降级后固化到自己名下。
+        self.assertEqual(config.base_url, "https://images.example/v1")
 
-    def test_pdf_review_model_cannot_follow_image_model_that_already_follows(self) -> None:
+    def test_both_illegal_follow_directions_read_without_raising(self) -> None:
+        """两个方向的非法跟随同时存在，也不能让配置读不出来。"""
         settings = AppSettings()
         settings.image_model_role.source_role = ROLE_TRANSLATION
         settings.pdf_review_model_role.source_role = ROLE_IMAGE
 
-        with self.assertRaises(ChainedModelFollowError):
-            resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
+        with patch("core.model_roles.get_key", return_value="secret"):
+            image_config = resolve_effective_model_config(settings, ROLE_IMAGE)
+            review_config = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
+
+        self.assertEqual(image_config.source_role, SOURCE_INDEPENDENT)
+        self.assertEqual(review_config.source_role, SOURCE_INDEPENDENT)
+        self.assertFalse(image_config.follows)
+        self.assertFalse(review_config.follows)
 
 
 if __name__ == "__main__":
