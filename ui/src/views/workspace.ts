@@ -42,6 +42,8 @@ import {
 import { icon, type IconName } from "../icons";
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
+// 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
+import { noteTaskStarted } from "./tasks";
 
 import "./workspace.css";
 
@@ -2471,6 +2473,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     const body = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;
     const task = await c.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify(body) });
     focusTask(surface, task);
+    noteTaskStarted(task);
     st.showBanner = false;
     st.fileOutcomes = new Map();
     initFileStages(st);

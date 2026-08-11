@@ -78,8 +78,81 @@ function redactedText(value: unknown, fallback = ""): string {
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]");
 }
 
+/** 内部位置串 → 用户照着能找到的位置。后端大多已经另给了 location_label，这里兜住两种
+ *  情况：9.2.5 之前存下的任务记录里只有 location（body.paragraph[4]，用户没法数出是第几段），
+ *  以及将来新增的位置形状。认不出来就原样返回——猜出来的位置比原值更害人。 */
+function humanizeLocation(value: string): string {
+  const raw = value.trim();
+  if (!raw) return "";
+  const paragraph = /^body\.paragraph\[(\d+)\]$/.exec(raw);
+  if (paragraph) return `正文段落 ${Number(paragraph[1]) + 1}`;
+  const cell = /^table\[(\d+)\]\.cell\[(\d+)\]$/.exec(raw);
+  if (cell) return `表格 ${Number(cell[1]) + 1} / 单元格 ${Number(cell[2]) + 1}`;
+  if (raw === "output.coverage") return "输出文档整体";
+  if (raw === "document") return "整篇文档";
+  return raw;
+}
+
+/** 上游故障原文 → 一句中文。源头已经在 core/user_facing_errors.py 收口了，但任务中心要显示
+ *  历史记录：9.2.5 之前跑的任务里，问题列和错误列还躺着整段 503 英文原文加 MDN 链接。
+ *  判定条件故意收得很紧（必须出现 URL、JSON 信封或 Server error 字样才动手），
+ *  免得把后端本来就写好的中文句子换成更含糊的说法。 */
+const HTTP_FAILURE_SENTENCES: Array<[RegExp, string]> = [
+  [/\b(503|502|504)\b|service unavailable|bad gateway|gateway ?time-?out/i, "接口所在的服务暂时不可用，请稍后重试，或在设置里换一条连接。"],
+  [/\b429\b|rate ?limit|too many requests/i, "接口这一刻拒绝了新请求（限流），自动重试后仍未成功。"],
+  [/\b40[13]\b|unauthorized|invalid api key|permission denied/i, "接口拒绝了这条连接的密钥，请在设置里检查密钥与权限。"],
+  [/timed? ?out|timeout/i, "接口超时没有返回结果。"],
+];
+
+function plainFailureText(value: string): string {
+  const raw = value.replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  if (!/https?:\/\//i.test(raw) && !/\{\s*"/.test(raw) && !/server error/i.test(raw)) return raw;
+  const matched = HTTP_FAILURE_SENTENCES.find(([pattern]) => pattern.test(raw));
+  const sentence = matched ? matched[1] : "接口调用失败，完整原文写在运行日志与诊断包里。";
+  // 后端很多句子是「我们自己的中文前缀 + 原始英文尾巴」，前缀里有用户真正需要的信息
+  // （哪一步失败、保留了什么），不能连它一起丢：只换掉从第一段英文/JSON 开始的部分。
+  const head = raw
+    .split(/(?=server error|https?:\/\/|\{\s*")/i)[0]
+    .trim()
+    .replace(/[：:，,;；、]$/, "");
+  return head && /[一-龥]/.test(head) ? `${head}：${sentence}` : sentence;
+}
+
+/** 「[path]」是任务中心记录的脱敏占位符（core/task_logger.py 的 redact_absolute_paths），
+ *  不是路径。原样渲染出去，用户看到的就是一个假路径。 */
+function realPath(value: string): string {
+  const raw = value.trim();
+  return !raw || raw === "[path]" ? "" : raw;
+}
+
+function fileNameOf(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
 function isTaskActive(task: TaskStatus): boolean {
   return !task.terminal && !TERMINAL_STATES.includes(task.state);
+}
+
+/**
+ * 逐文件产出统计。任务级状态说的是「流程走完了」，不是「拿到了文件」：上游全程 503 时
+ * PDF 任务同样收在 completed_with_issues，一个文件都没生成。列表徽章、副标题、详情徽章
+ * 都必须按这个数说话，否则界面会把「什么都没拿到」显示成「需复核」。
+ */
+function producedCounts(task: TaskStatus): { produced: number; failed: number; total: number } {
+  const entries = resultEntries(record(task.result), ["files", "file_results", "file_records"]);
+  let produced = 0;
+  let failed = 0;
+  for (const item of entries) {
+    const status = firstText(item, ["status", "state", "terminal_state"]);
+    const ok = status
+      ? status === "succeeded" || status === "needs_review" || status === "completed"
+      : item.success === true || Boolean(realPath(firstText(item, ["output_path", "output", "result_path"])));
+    if (ok) produced += 1;
+    else failed += 1;
+  }
+  return { produced, failed, total: entries.length };
 }
 
 function surfaceIcon(surface: TaskSurface): IconName {
@@ -193,10 +266,15 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     ...(Array.isArray(task.resource_groups) ? task.resource_groups : []),
     ...(Array.isArray(snapshot.connections) ? snapshot.connections : []),
   ];
+  // 角色名用后端已经给好的中文 label（model_snapshot[role].label，例如「PDF 翻译模型」）。
+  // 之前直接印 role 键，用户读到的是 image / pdf_review / translation 这些内部名字。
   const models = Object.entries(modelSnapshot)
-    .map(([role, value]) => `${role}: ${redactedText(record(value).model, "已冻结")}`)
-    .filter(Boolean)
-    .join("；");
+    .map(([role, value]) => {
+      const model = record(value);
+      const name = redactedText(model.label, ROLE_LABELS[role] ?? role);
+      return `${name} ${redactedText(model.model, "已冻结")}`;
+    })
+    .join(" · ");
   const sourceLang = firstText({ ...snapshot, ...language }, ["source_lang", "source_selection"]);
   const targetLang = firstText({ ...snapshot, ...language }, ["target_lang"]);
   const domain = firstText(snapshot, ["domain_preset", "domain"]);
@@ -206,34 +284,80 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     firstText({ ...snapshot, ...output, ...configuredOutput }, ["output_dir", "output_directory", "custom_output_dir"]) ||
     (configuredOutput.use_custom_output_dir === false ? "与源文件相邻的唯一输出目录" : "任务唯一输出目录");
   const throughput = record(snapshot.throughput);
-  const connectionSummary = resources
-    .map((group) => {
-      const value = record(group);
-      const summary = record(value.summary);
-      return redactedText(
+  // 一份任务里几个模型角色常常走同一条连接（同一个 provider、同一个 base_url），
+  // 而 resource_groups 与 task_snapshot.connections 又是同一批连接的两次成像。
+  // 逐条印出来就是「custom_openai @ https://… ；custom_openai @ https://…」，
+  // 同一个地址在同一行里出现两遍，用户会以为配了两条连接。这里按地址去重，
+  // 并且只留主机名——完整 base_url 对用户没有增量信息，还会把这一行挤爆。
+  const connectionNames: string[] = [];
+  let pooledTotal = 0;
+  for (const group of resources) {
+    const value = record(group);
+    const summary = record(value.summary);
+    const label = redactedText(
+      value.pool_connection_label ||
         value.label ||
-          value.connection_summary ||
-          value.id ||
-          [summary.provider || value.provider, summary.base_url || value.base_url].filter(Boolean).join(" @ "),
-      );
-    })
-    .filter(Boolean)
-    .join("；");
+        value.connection_summary ||
+        summary.base_url ||
+        value.base_url ||
+        summary.provider ||
+        value.provider,
+    );
+    const host = hostOf(label);
+    if (host && !connectionNames.includes(host)) connectionNames.push(host);
+    pooledTotal = Math.max(pooledTotal, num(value.pool_connection_count));
+  }
+  const connectionSummary = connectionNames.length
+    ? connectionNames.join("、") + (pooledTotal > 1 ? `（连接池共 ${pooledTotal} 个地址，会自动轮换）` : "")
+    : "";
   const rows: Array<[string, string]> = [
     ["语言", [sourceLang, targetLang].filter(Boolean).join(" → ")],
-    ["模型", [models, connectionSummary].filter(Boolean).join(" · ")],
+    ["模型", models],
+    ["连接", connectionSummary],
     ["领域 / Prompt", [domain, promptVersion].filter(Boolean).join(" · ")],
     ["输出位置", outputPath],
     [
       "吞吐",
       Object.keys(throughput).length
-        ? Object.entries(throughput).map(([key, value]) => `${key} ${value}`).join("；")
+        ? throughputPhrase("", throughput)
         : Object.entries(modelSnapshot)
-            .map(([role, value]) => `${role} ${num(record(record(value).throughput).concurrency, 1)}`)
-            .join("；"),
+            .map(([role, value]) => {
+              const model = record(value);
+              return throughputPhrase(redactedText(model.label, ROLE_LABELS[role] ?? role), record(model.throughput));
+            })
+            .filter(Boolean)
+            .join(" · "),
     ],
   ];
   return rows.filter(([, value]) => Boolean(value));
+}
+
+/** model_snapshot 里没给 label 的角色（老记录）才用得到的兜底名字。 */
+const ROLE_LABELS: Record<string, string> = {
+  translation: "翻译模型",
+  image: "图像翻译模型",
+  pdf_review: "图像审核模型",
+  review: "审核模型",
+  cleaner: "记忆库清洗模型",
+};
+
+function hostOf(value: string): string {
+  const raw = value.trim();
+  if (!raw) return "";
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(raw);
+  return match ? match[1] : raw;
+}
+
+/** 吞吐一行只说两件用户能对上设置项的事：同时几路、每批多少段。
+ *  profile_key 这类内部标识不进界面。 */
+function throughputPhrase(name: string, throughput: JsonObject): string {
+  const parts: string[] = [];
+  const concurrency = firstNumber(throughput, ["concurrency"]);
+  const batch = firstNumber(throughput, ["batch_size", "max_paragraphs_per_batch"]);
+  if (concurrency !== null) parts.push(`同时 ${concurrency} 路`);
+  if (batch !== null) parts.push(`每批 ${batch} 段`);
+  if (!parts.length) return "";
+  return [name, parts.join(" / ")].filter(Boolean).join(" ");
 }
 
 function pickKpis(pairs: Array<[string, string[]]>, source: JsonObject): Array<[string, number]> {
@@ -245,7 +369,11 @@ function pickKpis(pairs: Array<[string, string[]]>, source: JsonObject): Array<[
   return out;
 }
 
-/** 富 KPI 集合：按 surface 采用与 main.ts renderXxxResultDetails 相同的字段回退表。 */
+/** 富 KPI 集合：按 surface 采用与 main.ts renderXxxResultDetails 相同的字段回退表。
+ *
+ *  文件级那两格叫「已生成 / 未生成」，不叫「成功 / 失败」：CONTEXT.md 的词表里
+ *  「成功」是任务级标签，只有内容全部通过时才能说；一份写出来了但有需复核内容的文件，
+ *  格子写「成功 1」而徽章同屏写「需复核 5」，等于同一件事同时说成两种结论。 */
 function richKpiRows(task: TaskStatus): Array<[string, number]> {
   const result = record(task.result);
   const summary = record(result.summary);
@@ -255,8 +383,8 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
     return pickKpis(
       [
         ["已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]],
-        ["成功", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
-        ["失败", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
+        ["已生成", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
+        ["未生成", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
         ["未开始", ["unstarted_count", "not_started_count", "unstarted_file_count"]],
         ["TM 命中", ["tm_hit_count", "tm_hits"]],
         ["送模型文本", ["model_translation_text_count", "model_text_count", "translated_text_count"]],
@@ -275,8 +403,8 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
     return pickKpis(
       [
         ["已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]],
-        ["成功", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
-        ["失败", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
+        ["已生成", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
+        ["未生成", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
         ["TM 命中", ["tm_hit_count", "tm_hits"]],
       ],
@@ -307,15 +435,15 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
   return pickKpis(
     [
       ["已选", ["selected_count", "selected_file_count", "file_count", "total_files"]],
-      ["成功", ["success_count", "successful_files", "succeeded_file_count", "completed_count"]],
-      ["失败", ["failed_count", "failed_file_count", "error_count"]],
+      ["已生成", ["success_count", "successful_files", "succeeded_file_count", "completed_count"]],
+      ["未生成", ["failed_count", "failed_file_count", "error_count"]],
       ["未开始", ["unstarted_count", "unstarted_file_count", "not_started_count"]],
     ],
     source,
   );
 }
 
-const WARN_KPI_LABELS = new Set(["需复核", "失败", "审核未通过", "失败占位"]);
+const WARN_KPI_LABELS = new Set(["需复核", "未生成", "审核未通过", "失败占位"]);
 
 interface ReviewRow {
   file: string;
@@ -360,38 +488,77 @@ const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: 
 function reviewRows(task: TaskStatus): ReviewRow[] {
   const result = record(task.result);
   const reviewPayload = record(result.review);
+  // 同一批复核项在结果里躺着两份：顶层 `issues`（报告和诊断包用的原始形状，位置是
+  // body.paragraph[4]、处理说明在 `status` 键上）和 `review.items`（给界面用的中文形状）。
+  // 两份都读、又不去重，一次任务的 5 处问题就在表里排成 10 行，其中 5 行位置读不懂、
+  // 「处理」列还全是「—」。所以两份都收，但按「文件 + 位置 + 摘录 + 严重度」合并。
   const raw = resultEntries(result, ["review_items", "review_locations", "review_details", "issues"]).concat(
     resultEntries(reviewPayload, ["items", "locations", "details", "issues"]),
   );
-  const rows = raw.map((entry): ReviewRow => {
-    const file = firstText(entry, ["file", "source_relative_path", "relative_path", "path"]);
-    const location = [
-      firstText(entry, ["worksheet", "sheet", "sheet_name", "section", "chapter", "section_path", "heading"]),
-      firstText(entry, ["cell", "cell_reference", "location", "paragraph", "paragraph_index", "table_cell"]),
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const excerptRaw = firstText(entry, ["excerpt", "snippet", "source_excerpt", "text", "source_text"]);
-    const excerpt = excerptRaw.length > 80 ? `${excerptRaw.slice(0, 77)}…` : excerptRaw;
-    const issueRaw = firstText(entry, ["category", "mark", "type", "issue", "problem"]);
-    const issue = EXCEL_REVIEW_CATEGORY_LABELS[issueRaw] ?? issueRaw;
-    const actionRaw = firstText(entry, ["action", "applied_action", "review_status", "message"]);
-    const excelAction = EXCEL_REVIEW_ACTIONS[actionRaw];
-    const actionCode = excelAction ? actionRaw : "";
-    const action = excelAction ? excelAction.note : actionRaw;
-    const severity = firstText(entry, ["severity"]);
-    // 是不是「还没解决」优先信后端：Word 每条复核项都带 severity，正则读整句中文读不出
-    // 否定（「未参与翻译」里没有任何一个词能被 /复核|未通过|待/ 命中）。
-    // Excel 那一路没有 severity，但它写进 review_positions 的每一格本来就是复核标记，
-    // 一律算需复核。两者都没有时才退回正则，只用来兜住将来新增的第三种数据形状。
-    const needsReview = severity
-      ? severity !== "resolved"
-      : actionCode
-        ? true
-        : /复核|未通过|待/.test(action) || /复核|未通过|待/.test(issue);
-    return { file, location, excerpt, issue: issue || "—", action: action || "—", actionCode, severity, needsReview };
-  });
-  return rows.sort((a, b) => Number(b.needsReview) - Number(a.needsReview));
+  const merged = new Map<string, ReviewRow>();
+  for (const entry of raw) {
+    const row = toReviewRow(entry);
+    // 位置相同、判定不同的两行（「重试后仍未获得有效译文」+「输出文档仍存在未译源文」
+    // 说的是同一段的同一件事）也在这里并成一行：按判定条数报，界面会把 3 处问题说成
+    // 5 处，用户拿着 5 去文档里找第 4、第 5 处，永远找不到。CONTEXT.md 的「位置计数」
+    // 要求按文档位置计数——但每一句判定和处理说明都保留，一句都不丢。
+    const key = [row.file, row.location, row.excerpt, row.severity, row.actionCode].join(" ");
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, row);
+      continue;
+    }
+    existing.issue = mergeSentences(existing.issue, row.issue);
+    existing.action = mergeSentences(existing.action, row.action);
+    existing.needsReview = existing.needsReview || row.needsReview;
+  }
+  return [...merged.values()].sort((a, b) => Number(b.needsReview) - Number(a.needsReview));
+}
+
+/** 合并同一位置的两句判定；重复、空值和占位「—」都不参与。 */
+function mergeSentences(current: string, addition: string): string {
+  const next = addition.trim();
+  if (!next || next === "—") return current;
+  if (!current || current === "—") return next;
+  if (current.includes(next)) return current;
+  return `${current}；${next}`;
+}
+
+function toReviewRow(entry: JsonObject): ReviewRow {
+  const file = firstText(entry, ["file", "source_relative_path", "relative_path", "path"]);
+  // location_label 是后端专门为界面准备的中文位置（「正文段落 5」「第 1 页」），必须排在
+  // 内部 location 之前——PDF 那一路只给 location_label，之前整列显示「—」。
+  const location = [
+    firstText(entry, ["worksheet", "sheet", "sheet_name", "section", "chapter", "section_path", "heading"]),
+    humanizeLocation(
+      firstText(entry, ["cell", "cell_reference", "location_label", "location", "paragraph", "paragraph_index", "table_cell"]),
+    ),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const excerptRaw = firstText(entry, ["excerpt", "snippet", "source_excerpt", "text", "source_text"]);
+  const excerpt = excerptRaw.length > 80 ? `${excerptRaw.slice(0, 77)}…` : excerptRaw;
+  const issueRaw = firstText(entry, ["category", "mark", "type", "issue", "problem"]);
+  // 这张表定位的是内容问题，但 PDF 那一路会把整页失败的原因塞进 problem，历史记录里
+  // 就是整段 503 英文原文加 MDN 链接。换成一句中文，原文留在运行日志和诊断包里。
+  const issue = EXCEL_REVIEW_CATEGORY_LABELS[issueRaw] ?? plainFailureText(issueRaw);
+  // `status` 是后端原始形状里的处理说明键。不认它，「处理」列就整列是「—」，
+  // 而日志里明明写了处置结果（保留原文 / 已恢复译文）。
+  const actionRaw = firstText(entry, ["action", "applied_action", "status", "review_status", "message"]);
+  const excelAction = EXCEL_REVIEW_ACTIONS[actionRaw];
+  const actionCode = excelAction ? actionRaw : "";
+  const action = excelAction ? excelAction.note : plainFailureText(actionRaw);
+  const severity = firstText(entry, ["severity"]);
+  // 是不是「还没解决」优先信后端：Word 每条复核项都带 severity，正则读整句中文读不出
+  // 否定（「未参与翻译」里没有任何一个词能被 /复核|未通过|待/ 命中）。
+  // Excel 那一路没有 severity，但它写进 review_positions 的每一格本来就是复核标记，
+  // 一律算需复核。两者都没有时才退回正则，只用来兜住将来新增的第三种数据形状。
+  const needsReview = severity
+    ? severity !== "resolved"
+    : actionCode
+      ? true
+      : /复核|未通过|待/.test(action) || /复核|未通过|待/.test(issue);
+  return { file, location, excerpt, issue: issue || "—", action: action || "—", actionCode, severity, needsReview };
 }
 
 /** 「处理」列的短结论标签 + 配色。
@@ -427,21 +594,51 @@ function reviewActionMeta(row: ReviewRow): { label: string; tone: ChipTone } | n
 interface FileRow {
   name: string;
   status: string;
+  tone: ChipTone;
   output: string;
+  outputPath: string;
   error: string;
 }
+
+/** 后端逐文件状态枚举 → 用户读得懂的中文。文件级只说「已生成 / 未生成」（CONTEXT.md
+ *  词表：文件级不许说「成功」「失败」）。之前这一列直接印 succeeded / failed，
+ *  用户在界面上读到的是后端的内部枚举名。 */
+const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = {
+  succeeded: { label: "已生成", tone: "ok" },
+  completed: { label: "已生成", tone: "ok" },
+  needs_review: { label: "已生成 · 需复核", tone: "warn" },
+  failed: { label: "未生成", tone: "dgr" },
+  error: { label: "未生成", tone: "dgr" },
+  unstarted: { label: "未开始", tone: "mute" },
+  skipped: { label: "已跳过", tone: "mute" },
+  stopped: { label: "已中止", tone: "mute" },
+};
 
 function fileRows(task: TaskStatus): FileRow[] {
   const result = record(task.result);
   const files = resultEntries(result, ["files", "file_results", "file_records"]);
-  return files.map((entry) => ({
-    name: firstText(entry, ["source_relative_path", "relative_path", "name"]),
-    status:
-      firstText(entry, ["status", "state", "terminal_state"]) ||
-      (entry.success === true ? "成功" : entry.success === false ? "失败" : "结果未知"),
-    output: firstText(entry, ["output_path", "result_path", "output", "translated_image_path"]),
-    error: firstText(entry, ["error", "error_message", "message", "detail"]),
-  }));
+  return files.map((entry) => {
+    const statusCode = firstText(entry, ["status", "state", "terminal_state"]);
+    const known = FILE_STATUS_LABELS[statusCode];
+    const fallback: { label: string; tone: ChipTone } =
+      entry.success === true
+        ? { label: "已生成", tone: "ok" }
+        : entry.success === false
+          ? { label: "未生成", tone: "dgr" }
+          : { label: statusCode || "结果未知", tone: "mute" };
+    const meta = known ?? fallback;
+    const outputPath = realPath(firstText(entry, ["output_path", "result_path", "output", "translated_image_path"]));
+    return {
+      name: firstText(entry, ["source_relative_path", "relative_path", "name"]),
+      status: meta.label,
+      tone: meta.tone,
+      // 窄表里铺一条绝对路径会把其余三列挤没；文件名足够对上输出目录里的东西，
+      // 完整路径挂在 title 上，悬停可见。
+      output: outputPath ? fileNameOf(outputPath) : "",
+      outputPath,
+      error: plainFailureText(firstText(entry, ["error", "error_message", "message", "detail"])),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +853,17 @@ async function refreshRegistry(): Promise<void> {
   }
 }
 
+/** 工作台刚 POST 出一个任务时调用。
+ *  在这之前，新任务要等下一次巡检才进得了登记册：前台轮询 4 秒、只在任务中心挂载时跑，
+ *  后台巡检 12 秒。用户在工作台点了「开始」立刻切到任务中心，看到的是一份还没有这条任务
+ *  的列表，侧栏徽标也还是旧数字——像是没提交成功。这里直接把返回的任务塞进登记册并挂上
+ *  事件流，徽标和列表同一帧就对。 */
+export function noteTaskStarted(task: TaskStatus): void {
+  if (!upsert(task)) return;
+  if (isTaskActive(task)) void watchTask(task.task_id);
+  touch(task.task_id);
+}
+
 let backgroundStarted = false;
 
 /** 后台巡检：应用启动时立即开始（模块被 app.ts 顶层 import 时触发），
@@ -806,15 +1014,19 @@ function visibleOrder(): string[] {
  * 之前列表卡片有条目时说「需复核 11」、没条目时说「完成但有问题」，详情页又说
  * 「完成但有问题 · 需复核 11」——同一个状态在三处三种说法，用户没法判断是不是三件事。
  *
- * 条数也只认一个来源：后端的 `review` 段，不在前端用正则重数一遍。
+ * 数字只认一个来源：能列出定位清单时就数清单里的位置（reviewRows 已按位置合并，
+ * 同一段的两条判定算一处），列不出来才退回后端的 `review` 段。徽章上的数字必须能和
+ * 下面那张表一行一行对上——数字 5、表里 3 行，用户会以为界面漏了内容。
  *
- * 但不能直接用 `review.total_count`：Word 的 review_items 里混着 severity=resolved 的条目
- * （首次没出译文、严格重试已经把译文补回来了，用户不用管），把它们算进「需复核 N」，
- * 徽章说 8 条待办、点进去 8 行全是绿色「已自动处理」。所以 Word 只数 needs_review 桶。
- * Excel 的 counts 按 category 分桶、没有 severity 概念，它写进 review_positions 的每一格
- * 本来就是复核标记，仍取总数。
+ * 退回后端时也不能直接用 `review.total_count`：Word 的 review_items 里混着
+ * severity=resolved 的条目（首次没出译文、严格重试已经把译文补回来了，用户不用管），
+ * 把它们算进「需复核 N」，徽章说 8 处待办、点进去 8 行全是绿色「已自动处理」。
+ * 所以 Word 只数 needs_review 桶。Excel 的 counts 按 category 分桶、没有 severity 概念，
+ * 它写进 review_positions 的每一格本来就是复核标记，仍取总数。
  */
 function reviewCount(task: TaskStatus): number | null {
+  const rows = reviewRows(task);
+  if (rows.length) return rows.filter((row) => row.needsReview).length;
   const result = record(task.result);
   const review = record(result.review);
   const counts = record(review.counts);
@@ -829,7 +1041,19 @@ function reviewCount(task: TaskStatus): number | null {
   );
 }
 
+/**
+ * 终态徽章。「没生成任何文件」永远排在「需复核」前面：上游全程 503 的那次 PDF 任务
+ * 收在 completed_with_issues，列表里三张卡全写着「需复核」，而输出目录里一个译文 PDF
+ * 都没有——用户以为有东西可看，点进去只有报告。有文件没生成时也先说这件事，
+ * 它决定用户下一步要不要重跑。
+ */
 function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null {
+  // 中止 / 出错 / 应用中断这三种终态，状态词本身就是用户最需要的一句话（「已中止」
+  // 比「没有生成文件」更能解释为什么没有东西），交回 taskStateMeta。
+  if (task.state !== "done" && task.state !== "completed_with_issues") return null;
+  const { produced, failed, total } = producedCounts(task);
+  if (total > 0 && produced === 0) return { label: "没有生成文件", tone: "dgr" };
+  if (failed > 0) return { label: `${failed} 个文件未生成`, tone: "dgr" };
   if (task.state !== "completed_with_issues") return null;
   const count = reviewCount(task);
   return { label: count !== null && count > 0 ? `需复核 ${count}` : "需复核", tone: "warn" };
@@ -849,12 +1073,18 @@ function cardSubtitle(entry: TaskEntry): string {
   if (isTaskActive(entry.task)) {
     return `${meta.label} · ${entry.phaseName || "正在准备任务"} · ${formatClock(entry.task.created_at)} 开始`;
   }
-  const successCount = firstNumber(record({ ...record(entry.task.result), ...record(record(entry.task.result).summary) }), [
-    "success_count",
-    "completed_count",
-    "successful_files",
-  ]);
-  const detail = successCount !== null ? `${successCount} 个文件已生成` : meta.label;
+  // 逐文件结果优先于 KPI 计数：KPI 那几个键各 surface 名字不同，取不到就会退回状态词，
+  // 而 file_results 三个 surface 都有。
+  const { produced, total } = producedCounts(entry.task);
+  const successCount =
+    total > 0
+      ? produced
+      : firstNumber(record({ ...record(entry.task.result), ...record(record(entry.task.result).summary) }), [
+          "success_count",
+          "completed_count",
+          "successful_files",
+        ]);
+  const detail = successCount === null ? meta.label : successCount > 0 ? `已生成 ${successCount} 个文件` : "没有生成文件";
   return `${detail} · ${formatDay(entry.task.updated_at ?? entry.task.created_at)}`;
 }
 
@@ -1082,7 +1312,7 @@ function renderDetail(): void {
     hint.style.fontWeight = "400";
     hint.style.color = "var(--ink-3)";
     hint.style.fontSize = "12px";
-    hint.textContent = "需复核在前 · 按行定位到对应文件与位置";
+    hint.textContent = "需复核在前 · 一行一个位置，同一位置的多条判定已并成一行";
     sectionTitle.append(hint);
     detailRootEl.append(sectionTitle);
 
@@ -1143,7 +1373,7 @@ function renderDetail(): void {
       note.style.fontSize = "12px";
       note.style.color = "var(--ink-3)";
       note.style.margin = "6px 0";
-      note.textContent = `仅显示前 50 条，共 ${reviews.length} 条。`;
+      note.textContent = `仅显示前 50 处，共 ${reviews.length} 处。完整清单在运行日志与诊断包里。`;
       detailRootEl.append(note);
     }
   } else if ((reviewCount(task) ?? 0) > 0) {
@@ -1178,11 +1408,26 @@ function renderDetail(): void {
     table.append(headRow);
     for (const file of files.slice(0, 30)) {
       const tr = document.createElement("tr");
-      for (const value of [file.name || "—", file.status || "—", file.output || "—", file.error || "—"]) {
-        const td = document.createElement("td");
-        td.textContent = value;
-        tr.append(td);
-      }
+      // 文件名同样单行省略 + 悬停看全名，和上面那张表保持一致。
+      const nameTd = document.createElement("td");
+      nameTd.className = "fname";
+      nameTd.textContent = file.name || "—";
+      if (file.name) nameTd.title = file.name;
+      tr.append(nameTd);
+      // 状态是枚举，用徽章上色；纯文字的「未生成」和「已生成」在窄表里几乎分不出轻重。
+      const statusTd = document.createElement("td");
+      if (file.status) statusTd.append(createChip({ label: file.status, tone: file.tone }));
+      else statusTd.textContent = "—";
+      tr.append(statusTd);
+      // 「输出」只显示文件名；完整路径进 title，脱敏后的占位值在 fileRows 里已经被丢掉了。
+      const outputTd = document.createElement("td");
+      outputTd.className = "fname";
+      outputTd.textContent = file.output || "—";
+      if (file.outputPath) outputTd.title = file.outputPath;
+      tr.append(outputTd);
+      const errorTd = document.createElement("td");
+      errorTd.textContent = file.error || "—";
+      tr.append(errorTd);
       table.append(tr);
     }
     detailRootEl.append(table);
@@ -1191,7 +1436,7 @@ function renderDetail(): void {
       note.style.fontSize = "12px";
       note.style.color = "var(--ink-3)";
       note.style.margin = "6px 0";
-      note.textContent = `仅显示前 30 条，共 ${files.length} 条。`;
+      note.textContent = `仅显示前 30 个文件，共 ${files.length} 个文件。完整清单在运行日志与诊断包里。`;
       detailRootEl.append(note);
     }
   }
@@ -1245,6 +1490,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   renderList();
   renderDetail();
 
+  // 进入任务中心先立刻拉一次：否则第一份画面用的是上一次巡检的成像，最长能差 12 秒。
+  void refreshRegistry();
   // 前台快速轮询：任务中心可见时更快发现新任务/刷新列表；后台巡检（12s）在任何视图下都跑。
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);
 }
