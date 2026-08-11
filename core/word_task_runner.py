@@ -1526,23 +1526,45 @@ class WordTaskRunner:
                 }
             )
 
+        # One document position can collect several judgments: the batch runner records
+        # "重试后仍未获得有效译文", then the post-write coverage pass records "输出文档仍
+        # 存在未译源文" for the same paragraph. Counting judgments told the user to look
+        # for five places when the document holds three, so the count is per position
+        # (CONTEXT.md 位置计数) — every judgment sentence is kept, joined into the row.
         review_items: list[dict[str, object]] = []
         review_counts: dict[str, int] = {}
+        merged_by_position: dict[tuple[str, ...], dict[str, object]] = {}
         for issue in quality_issues:
             if not isinstance(issue, dict):
                 continue
             severity = str(issue.get("severity") or "needs_review")
-            review_counts[severity] = review_counts.get(severity, 0) + 1
-            review_items.append(
-                {
-                    "file": str(issue.get("file") or ""),
-                    "section_path": str(issue.get("section_path") or "正文"),
-                    "location": str(issue.get("location_label") or "未知位置"),
-                    "snippet": str(issue.get("snippet") or ""),
-                    "problem": str(issue.get("problem") or ""),
-                    "action": str(issue.get("status") or ""),
-                    "severity": severity,
-                }
+            item = {
+                "file": str(issue.get("file") or ""),
+                "section_path": str(issue.get("section_path") or "正文"),
+                "location": str(issue.get("location_label") or "未知位置"),
+                "snippet": str(issue.get("snippet") or ""),
+                "problem": str(issue.get("problem") or ""),
+                "action": str(issue.get("status") or ""),
+                "severity": severity,
+            }
+            key = (
+                str(item["file"]),
+                str(item["section_path"]),
+                str(item["location"]),
+                str(item["snippet"]),
+                severity,
+            )
+            existing = merged_by_position.get(key)
+            if existing is None:
+                merged_by_position[key] = item
+                review_items.append(item)
+                review_counts[severity] = review_counts.get(severity, 0) + 1
+                continue
+            existing["problem"] = _merge_sentences(
+                str(existing.get("problem") or ""), str(item["problem"])
+            )
+            existing["action"] = _merge_sentences(
+                str(existing.get("action") or ""), str(item["action"])
             )
 
         language_files: list[dict[str, object]] = []
@@ -2812,6 +2834,19 @@ def _build_source_excerpt(text: str, *, head: int = 18, tail: int = 16) -> str:
     if len(normalized) <= head + tail + 3:
         return normalized
     return f"{normalized[:head]}……{normalized[-tail:]}"
+
+
+def _merge_sentences(current: str, addition: str) -> str:
+    """Join two judgments about the same position without repeating either."""
+    nxt = " ".join(str(addition or "").split())
+    cur = " ".join(str(current or "").split())
+    if not nxt:
+        return cur
+    if not cur:
+        return nxt
+    if nxt in cur:
+        return cur
+    return f"{cur}；{nxt}"
 
 
 def _format_location_label(location: str) -> str:

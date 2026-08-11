@@ -1680,6 +1680,10 @@ _SENSITIVE_VALUE_KEYS = {
 }
 _ARTIFACT_PATH_KEYS = {
     "output_dir",
+    # Word and PDF name their per-file artifact "output" (Excel uses "output_path").
+    # Without it the redactor rewrote every Word output path to the literal
+    # "[path]", and the task center printed that placeholder as if it were a path.
+    "output",
     "output_path",
     "translated_path",
     "report_path",

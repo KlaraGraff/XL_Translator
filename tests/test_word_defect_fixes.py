@@ -24,14 +24,14 @@ from core.api_config_check import ApiConfigCheckResult
 from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import ErrorMsg
 from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
-from core.word_batching import _split_long_word_text
+from core.word_batching import WordBatchRunStats, _split_long_word_text
 from core.word_document import (
     WordFileItem,
     detect_hidden_word_content,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
-from core.word_task_runner import WordTaskRunner, _WordRecoveryPool
+from core.word_task_runner import WordTaskRunner, _WordRecoveryOutcome, _WordRecoveryPool
 from settings import AppSettings, WordBatchSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -785,6 +785,124 @@ class WordHiddenContentWarningTests(IsolatedAppDataTestCase):
                 any("未翻译内容" in text and "内容控件" in text for text in warnings),
                 f"没有发出漏译告警：{warnings}",
             )
+
+
+class WordReviewPositionCountTests(IsolatedAppDataTestCase):
+    """走查发现：同一段落的两条判定被数成两处需复核，用户拿着数字去文档里找不到第二处。"""
+
+    def _contract(self, quality_issues: list[dict], source: Path, root: Path) -> dict:
+        runner = WordTaskRunner(
+            [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+            AppSettings(source_lang="zh", target_lang="en"),
+            source_root=root,
+        )
+        return runner._build_result_contract(
+            file_results=[{"source_path": str(source), "success": True, "output": str(root / "out.docx")}],
+            output_dir=str(root / "out"),
+            elapsed_sec=1.0,
+            tm_hit_count=0,
+            api_text_count=1,
+            source_lang="zh",
+            target_lang="en",
+            preflights={},
+            file_texts=[set()],
+            quality_issues=quality_issues,
+            recovery_outcome=_WordRecoveryOutcome(
+                fixed_sources=[],
+                unresolved_sources=[],
+                accepted_translations={},
+                recovery_review_results={},
+                semantic_review_results={},
+                unresolved_validation_results={},
+            ),
+            word_batch_stats=WordBatchRunStats(),
+            model_source_results={},
+            stopped=False,
+        )
+
+    def test_two_judgments_on_one_paragraph_count_as_one_position(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("施工范围")
+            document.save(source)
+
+            issues = [
+                {
+                    "file": "source.docx",
+                    "section_path": "正文",
+                    "location_label": "正文段落 5",
+                    "snippet": "施工范围……安装",
+                    "problem": "重试后仍未获得有效译文",
+                    "status": "保留原文，待人工复核",
+                    "severity": "needs_review",
+                },
+                {
+                    # 写出之后的覆盖率复查对同一段再记一条，说的是同一件事。
+                    "file": "source.docx",
+                    "section_path": "正文",
+                    "location_label": "正文段落 5",
+                    "snippet": "施工范围……安装",
+                    "problem": "输出文档仍存在未译源文",
+                    "status": "保留原文，待人工复核",
+                    "severity": "needs_review",
+                },
+                {
+                    "file": "source.docx",
+                    "section_path": "正文",
+                    "location_label": "正文段落 9",
+                    "snippet": "设备安装",
+                    "problem": "重试后仍未获得有效译文",
+                    "status": "保留原文，待人工复核",
+                    "severity": "needs_review",
+                },
+            ]
+            contract = self._contract(issues, source, root)
+            review = contract["review"]
+
+            self.assertEqual(review["total_count"], 2)
+            self.assertEqual(review["counts"], {"needs_review": 2})
+            self.assertEqual(contract["kpi"]["review_text_count"], 2)
+            self.assertEqual(len(review["items"]), 2)
+
+            merged = next(item for item in review["items"] if item["location"] == "正文段落 5")
+            # 合并的是行数，不是内容：两句判定都要留在这一行里。
+            self.assertIn("重试后仍未获得有效译文", str(merged["problem"]))
+            self.assertIn("输出文档仍存在未译源文", str(merged["problem"]))
+            self.assertEqual(merged["action"], "保留原文，待人工复核")
+
+    def test_resolved_and_needs_review_at_one_position_stay_separate(self) -> None:
+        # 同一段既有「已自动处理」又有「待复核」时不能并成一行：颜色和结论相反，
+        # 并起来等于把一条待办涂成绿色。
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("施工范围")
+            document.save(source)
+
+            issues = [
+                {
+                    "file": "source.docx",
+                    "location_label": "正文段落 5",
+                    "snippet": "施工范围",
+                    "problem": "首次未获得译文",
+                    "status": "严格重试已恢复译文",
+                    "severity": "resolved",
+                },
+                {
+                    "file": "source.docx",
+                    "location_label": "正文段落 5",
+                    "snippet": "施工范围",
+                    "problem": "译文长度异常",
+                    "status": "保留原文，待人工复核",
+                    "severity": "needs_review",
+                },
+            ]
+            review = self._contract(issues, source, root)["review"]
+            self.assertEqual(review["total_count"], 2)
+            self.assertEqual(review["counts"], {"resolved": 1, "needs_review": 1})
 
 
 if __name__ == "__main__":

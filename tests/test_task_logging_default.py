@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from api.task_manager import _sanitize_task_data
 from core.file_scanner import FileItem
 from core.task_logger import CONTENT_WITHHELD_MESSAGE, sanitize_task_log_message
 from core.task_runner import TaskRunner
@@ -84,6 +85,31 @@ class TaskLogSanitizationTests(unittest.TestCase):
         self.assertNotIn("/private/input.docx", sanitized)
         self.assertIn("[redacted]", sanitized)
         self.assertIn("[path]", sanitized)
+
+
+class TaskDataSanitizationTests(unittest.TestCase):
+    """任务中心记录：产物路径要留住，源文件路径和内容一律不留。"""
+
+    def test_word_per_file_output_path_survives_but_source_path_does_not(self) -> None:
+        # 「output」是 Word / PDF 逐文件产物路径的键名。之前它不在产物白名单里，
+        # 被当成普通字符串脱敏成字面量「[path]」，任务中心就把这五个字符当路径显示。
+        sanitized = _sanitize_task_data(
+            {
+                "files": [
+                    {
+                        "name": "施工方案.docx",
+                        "output": "/Users/me/out/施工方案_译文.docx",
+                        "source_path": "/Users/me/docs/施工方案.docx",
+                        "error": "写出失败：/Users/me/docs/施工方案.docx 被占用",
+                    }
+                ]
+            }
+        )
+        record = sanitized["files"][0]
+        self.assertEqual(record["output"], "/Users/me/out/施工方案_译文.docx")
+        self.assertNotIn("source_path", record)
+        self.assertNotIn("/Users/me/docs", record["error"])
+        self.assertIn("[path]", record["error"])
 
 
 if __name__ == "__main__":
