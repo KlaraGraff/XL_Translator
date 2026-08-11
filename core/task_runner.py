@@ -179,6 +179,8 @@ class DoneMsg:
     kpi: dict[str, object] = field(default_factory=dict)
     recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
+    # Runtime failover history: who took over mid-run, and why.
+    connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
 
@@ -194,6 +196,8 @@ class ErrorMsg:
     kpi: dict[str, object] = field(default_factory=dict)
     recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
+    # Runtime failover history: who took over mid-run, and why.
+    connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
 
@@ -209,6 +213,8 @@ class StoppedMsg:
     kpi: dict[str, object] = field(default_factory=dict)
     recovery: dict[str, object] = field(default_factory=dict)
     review: dict[str, object] = field(default_factory=dict)
+    # Runtime failover history: who took over mid-run, and why.
+    connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
 
@@ -260,6 +266,11 @@ class TaskRunner:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
+        # Runtime connection switches, in order. A switch changes who translated
+        # the rest of the run, so it belongs in the terminal record and the
+        # report — not only in a WARN line that scrolls away.
+        self._connection_switches: list[dict[str, str]] = []
+        self._switch_lock = threading.Lock()
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -300,6 +311,16 @@ class TaskRunner:
             "endpoint": "服务端不可用",
             "credential": "密钥被拒绝或额度耗尽",
         }.get(failure_kind, failure_kind)
+        # Batches run on a thread pool, so two threads can report a switch at once.
+        with self._switch_lock:
+            self._connection_switches.append(
+                {
+                    "from_label": str(getattr(previous, "display_label", "") or ""),
+                    "to_label": str(getattr(current, "display_label", "") or ""),
+                    "reason": reason,
+                    "at": datetime.now().strftime("%H:%M:%S"),
+                }
+            )
         self._log(
             "WARN",
             f"已切换连接：{previous.display_label} → {current.display_label}（{reason}）",
@@ -1782,6 +1803,11 @@ class TaskRunner:
                 "total_count": sum(review_counts.values()),
                 "items": review_items,
             },
+            # Which connection actually did the work. A run that failed over
+            # halfway was attributed entirely to the connection frozen at start,
+            # so a user comparing two runs' quality had no way to see that the
+            # second half came from a different provider.
+            "connections": self._connection_switch_summary(),
             "language": {
                 "mode": "automatic" if self._source_lang == "auto" else "manual",
                 "selected_source_lang": self._source_lang,
@@ -1790,6 +1816,19 @@ class TaskRunner:
             },
             "error": {"message": error_message} if error_message else {},
         }
+
+    def _connection_switch_summary(self) -> dict[str, object]:
+        """The failover history, in the shape the task center and report read."""
+        with self._switch_lock:
+            switches = [dict(item) for item in self._connection_switches]
+        summary: dict[str, object] = {
+            "switch_count": len(switches),
+            "switches": switches,
+        }
+        if switches:
+            summary["final_label"] = switches[-1].get("to_label", "")
+            summary["started_with_label"] = switches[0].get("from_label", "")
+        return summary
 
     @staticmethod
     def _collect_texts(

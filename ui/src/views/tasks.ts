@@ -314,6 +314,7 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     ["语言", [sourceLang, targetLang].filter(Boolean).join(" → ")],
     ["模型", models],
     ["连接", connectionSummary],
+    ["运行中换过连接", connectionSwitchText(task)],
     ["领域 / Prompt", [domain, promptVersion].filter(Boolean).join(" · ")],
     ["输出位置", outputPath],
     [
@@ -330,6 +331,26 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     ],
   ];
   return rows.filter(([, value]) => Boolean(value));
+}
+
+/** 上一条连接顶不住时任务会自动换到备用连接，之后的译文出自另一家服务商。
+ *  这件事以前只在运行日志里闪一行 WARN，日志一滚就没了，记录里查不到——用户拿两次任务
+ *  比质量，看到的「连接」都是开跑时冻结的那一条。没换过连接就整行不出现。 */
+function connectionSwitchText(task: TaskStatus): string {
+  const connections = record(record(task.result).connections);
+  const switches = Array.isArray(connections.switches) ? connections.switches.map(record) : [];
+  if (!switches.length) return "";
+  const steps = switches.map((item) => {
+    const from = firstText(item, ["from_label"]);
+    const to = firstText(item, ["to_label"]);
+    const reason = firstText(item, ["reason"]);
+    const at = firstText(item, ["at"]);
+    return `${at ? `${at} ` : ""}${from} → ${to}${reason ? `（${reason}）` : ""}`;
+  });
+  const finalLabel = firstText(connections, ["final_label"]);
+  return [`换过 ${switches.length} 次`, steps.join("；"), finalLabel ? `此后由「${finalLabel}」完成` : ""]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** model_snapshot 里没给 label 的角色（老记录）才用得到的兜底名字。 */

@@ -2744,6 +2744,13 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
   if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
   if (review > 0) clauses.push(`${review} 处需复核`);
+  // 中途换过连接就明说：这一半译文出自另一家服务商，用户回头比质量、查账单都要知道。
+  // 详细的切换时刻和原因在任务中心的快照行里。
+  const switchCount = num(record(result.connections).switch_count);
+  if (switchCount > 0) {
+    const finalLabel = text(record(result.connections).final_label);
+    clauses.push(finalLabel ? `中途换了连接，后半程由「${finalLabel}」完成` : `中途换了 ${switchCount} 次连接`);
+  }
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
   // 「全部通过」是一句承诺，只有真的一个问题都没有才能说。有文件没生成时一个字都不提，
   // 有需复核/已自动处理时说「其余」。

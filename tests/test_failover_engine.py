@@ -513,5 +513,58 @@ class FailoverCredentialTests(_IsolatedKeyStore):
         self.assertEqual(keys_seen, ["sk-ACCOUNT-A", "sk-ACCOUNT-B"])
 
 
+class FailoverAttributionTests(unittest.TestCase):
+    """走查发现：任务换了服务商，界面和记录都只显示开跑时冻结的那条连接。"""
+
+    def _runner(self):
+        from core.file_scanner import FileItem
+        from core.task_runner import TaskRunner
+
+        with patch("core.task_runner.TaskLogger") as logger_cls:
+            logger_cls.return_value.task_id = "failover-attribution"
+            return TaskRunner(
+                [FileItem(path=Path("清单.xlsx"), name="清单.xlsx", size_kb=1.0)],
+                AppSettings(source_lang="zh", target_lang="en"),
+            )
+
+    def test_no_switch_leaves_an_empty_history(self) -> None:
+        runner = self._runner()
+        summary = runner._connection_switch_summary()
+        self.assertEqual(summary["switch_count"], 0)
+        self.assertEqual(summary["switches"], [])
+        # 没换过连接时不给 final_label：界面靠它的存在与否决定要不要出这一行。
+        self.assertNotIn("final_label", summary)
+
+    def test_each_switch_is_recorded_with_who_took_over_and_why(self) -> None:
+        runner = self._runner()
+        pool = _pool(("主账号", "https://a.example/v1"), ("备用厂商", "https://b.example/v1"))
+        runner._report_connection_switch(pool[0], pool[1], "endpoint", "503")
+
+        summary = runner._connection_switch_summary()
+        self.assertEqual(summary["switch_count"], 1)
+        self.assertEqual(summary["final_label"], pool[1].display_label)
+        self.assertEqual(summary["started_with_label"], pool[0].display_label)
+        recorded = summary["switches"][0]
+        self.assertEqual(recorded["reason"], "服务端不可用")
+        self.assertTrue(recorded["at"])
+
+        # 运行日志那一行照旧发出，两个出口互不替代。
+        logged = [
+            message.message
+            for message in runner._queue.queue
+            if getattr(message, "level", "") == "WARN"
+        ]
+        self.assertTrue(any("已切换连接" in line for line in logged), logged)
+
+    def test_credential_failures_read_as_a_rejected_key(self) -> None:
+        runner = self._runner()
+        pool = _pool(("主账号", "https://a.example/v1"), ("备用厂商", "https://b.example/v1"))
+        runner._report_connection_switch(pool[0], pool[1], "credential", "401")
+        self.assertEqual(
+            runner._connection_switch_summary()["switches"][0]["reason"],
+            "密钥被拒绝或额度耗尽",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
