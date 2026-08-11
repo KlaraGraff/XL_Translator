@@ -28,10 +28,13 @@ from core.model_roles import (
 )
 from core.model_throughput import get_model_throughput, set_model_throughput
 from settings import (
+    KEY_ORIGIN_IMPORTED,
     AppSettings,
     delete_connection_key,
     get_connection_scoped_key,
     get_key,
+    is_imported_connection_key,
+    is_imported_provider_key,
     parse_api_key_scope,
     save_key,
 )
@@ -72,6 +75,18 @@ MODEL_PROFILE_SETTING_KEY_BY_ROLE = {
 
 ApiKeyGetter = Callable[[str, str], str]
 ApiKeySaver = Callable[..., None]
+ImportedApiKeyCheck = Callable[[str, str], bool]
+ImportedScopedApiKeyCheck = Callable[[str], bool]
+
+# ── 导出回执里每条连接的密钥去向 ──────────────────────────
+# 「导出含 Key」现在会扣下从别人配置导入来的密钥（见 ``_exportable_provider_key``），
+# 界面必须能逐条说清楚哪些带走了、哪些被扣下了，只报个数字用户无从对照。
+API_KEY_EXPORT_INCLUDED = "exported"
+API_KEY_EXPORT_WITHHELD_IMPORTED = "withheld_imported"
+API_KEY_EXPORT_MISSING = "missing"
+# 回执里这一行说的是哪种东西：界面上看得见的连接，还是「这个角色记住的其他服务商配置」。
+API_KEY_EXPORT_KIND_CONNECTION = "connection"
+API_KEY_EXPORT_KIND_PROVIDER_MEMORY = "provider_memory"
 
 
 @dataclass(frozen=True)
@@ -90,10 +105,18 @@ def build_model_config_export_payload(
     *,
     get_api_key: ApiKeyGetter = get_key,
     get_scoped_api_key: Callable[[str], str] = get_connection_scoped_key,
+    is_imported_api_key: ImportedApiKeyCheck = is_imported_provider_key,
+    is_imported_scoped_api_key: ImportedScopedApiKeyCheck = is_imported_connection_key,
     include_api_key: bool = False,
     include_api_keys: bool | None = None,
+    api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Build the current v3 export payload, omitting secrets by default."""
+    """Build the current v3 export payload, omitting secrets by default.
+
+    传入 ``api_key_report`` 可以收一份「每条连接的密钥去向」回执（仅在导出含 Key 时
+    填充）。做成出参而不是改返回值，是因为返回的这份文档就是要原样写进文件的——回执
+    绝不能混进导出文件里，否则收到文件的人反而多了一份本机连接清单。
+    """
     if include_api_keys is not None:
         include_api_key = bool(include_api_keys)
     return {
@@ -105,7 +128,10 @@ def build_model_config_export_payload(
             settings,
             get_api_key=get_api_key,
             get_scoped_api_key=get_scoped_api_key,
+            is_imported_api_key=is_imported_api_key,
+            is_imported_scoped_api_key=is_imported_scoped_api_key,
             include_api_key=include_api_key,
+            api_key_report=api_key_report,
         ),
     }
 
@@ -194,10 +220,18 @@ def apply_model_config_import(
     validate_all_model_roles(updated)
     reset_all_model_role_availability(updated)
     def _commit_keys() -> None:
+        # 这里写的每一把 Key 都来自别人的配置文件，必须标成 imported：本机之后再
+        # 「导出含 Key」时它们会被扣下，免得 A 的密钥经 B 之手传到 C。用户自己在面板上
+        # 重新填一次同一个作用域的 Key，标记就会被清掉，那把新 Key 是他自己的，可以导出。
         for provider, api_key in imported.api_keys.items():
-            save_api_key(provider, api_key)
+            save_api_key(provider, api_key, origin=KEY_ORIGIN_IMPORTED)
         for entry in imported.scoped_api_keys:
-            save_api_key(entry["provider"], entry["api_key"], entry["base_url"])
+            save_api_key(
+                entry["provider"],
+                entry["api_key"],
+                entry["base_url"],
+                origin=KEY_ORIGIN_IMPORTED,
+            )
         # 清理放在写入之后：导入的密钥全部落在 provider + Base URL 作用域下，和这里删的
         # conn::<id> 作用域互不相干，但万一上面抛错，旧密钥还留着，配置也还是旧的。
         for connection_id in dropped_connection_ids:
@@ -325,7 +359,10 @@ def _model_profiles_for_export(
     *,
     get_api_key: ApiKeyGetter,
     get_scoped_api_key: Callable[[str], str],
+    is_imported_api_key: ImportedApiKeyCheck,
+    is_imported_scoped_api_key: ImportedScopedApiKeyCheck,
     include_api_key: bool,
+    api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     payload = settings.model_dump(mode="json")
     profiles: dict[str, dict[str, Any]] = {}
@@ -337,11 +374,21 @@ def _model_profiles_for_export(
             "label": role_label(role),
             "cloud": _cloud_profile_for_export(
                 owner,
+                role=role,
                 get_api_key=get_api_key,
+                is_imported_api_key=is_imported_api_key,
+                api_key_report=api_key_report,
                 # The importer only reads keys from the cloud block, so a
                 # connection-scoped key must be exported here or a with-keys
-                # round-trip loses it.
-                scoped_api_key=_owner_primary_scoped_key(owner, get_scoped_api_key)
+                # round-trip loses it.  这里拿到的已经是过滤后的结果：主用连接的
+                # Key 若是导入来的，就当作「没有可导出的 Key」。
+                scoped_api_key=_primary_key_for_export(
+                    owner,
+                    get_api_key=get_api_key,
+                    get_scoped_api_key=get_scoped_api_key,
+                    is_imported_api_key=is_imported_api_key,
+                    is_imported_scoped_api_key=is_imported_scoped_api_key,
+                )
                 if include_api_key
                 else "",
                 include_api_key=include_api_key,
@@ -354,9 +401,13 @@ def _model_profiles_for_export(
         # defaults every missing key.
         profile["connections"] = _connections_for_export(
             owner,
+            role=role,
             get_api_key=get_api_key,
             get_scoped_api_key=get_scoped_api_key,
+            is_imported_api_key=is_imported_api_key,
+            is_imported_scoped_api_key=is_imported_scoped_api_key,
             include_api_key=include_api_key,
+            api_key_report=api_key_report,
         )
         profile["mode"] = str(owner.get("mode") or "cloud").strip() or "cloud"
         profile["source_role"] = str(
@@ -367,12 +418,82 @@ def _model_profiles_for_export(
     return profiles
 
 
-def _connections_for_export(
-    owner: dict[str, Any],
+def _exportable_provider_key(
+    provider: str,
+    base_url: str,
+    *,
+    get_api_key: ApiKeyGetter,
+    is_imported_api_key: ImportedApiKeyCheck,
+) -> tuple[str, str]:
+    """返回 (可以写进导出文件的密钥, 回执状态)。
+
+    从别人的配置导入进来的密钥一律不导出。不这么做的话密钥会连环传播：A 把配置连
+    Key 一起给了 B，B 再导一份给 C，A 的 Key 就到了 C 手上，而 A 从头到尾不知情。
+    连接的其余信息（服务商、Base URL、模型名）照常导出，只是不带 Key。
+    """
+    api_key = str(get_api_key(provider, base_url) or "").strip()
+    if not api_key:
+        return "", API_KEY_EXPORT_MISSING
+    if is_imported_api_key(provider, base_url):
+        return "", API_KEY_EXPORT_WITHHELD_IMPORTED
+    return api_key, API_KEY_EXPORT_INCLUDED
+
+
+def _exportable_connection_key(
+    connection_id: str,
+    provider: str,
+    base_url: str,
     *,
     get_api_key: ApiKeyGetter,
     get_scoped_api_key: Callable[[str], str],
+    is_imported_api_key: ImportedApiKeyCheck,
+    is_imported_scoped_api_key: ImportedScopedApiKeyCheck,
+) -> tuple[str, str]:
+    """一条连接实际会导出的密钥，按它自己的解析顺序判断来源。
+
+    连接作用域的 Key 压过 provider 作用域（和拨号时的解析顺序一致）。若连接自己那把
+    Key 是导入来的，就到此为止，**不再回退**到 provider 作用域：回退等于导出一把和
+    本机这条连接实际在用的不是同一把的 Key，收到文件的人拨到的会是另一个账号。
+    """
+    scoped_id = str(connection_id or "").strip()
+    if scoped_id:
+        scoped_key = str(get_scoped_api_key(scoped_id) or "").strip()
+        if scoped_key:
+            if is_imported_scoped_api_key(scoped_id):
+                return "", API_KEY_EXPORT_WITHHELD_IMPORTED
+            return scoped_key, API_KEY_EXPORT_INCLUDED
+    return _exportable_provider_key(
+        provider,
+        base_url,
+        get_api_key=get_api_key,
+        is_imported_api_key=is_imported_api_key,
+    )
+
+
+def _connection_report_name(raw: dict[str, Any], index: int, base_url: str) -> str:
+    """回执里怎么称呼这条连接：连接名 → Base URL → 序号。
+
+    只报数字（「有 2 个密钥没导出」）用户没法对照到界面上的哪一条，所以必须给个能
+    定位的名字；连接没起名是常态，用它的地址兜底，再不行才用序号。
+    """
+    label = str(raw.get("label") or "").strip()
+    if label:
+        return label
+    if base_url:
+        return base_url
+    return f"连接 {index + 1}"
+
+
+def _connections_for_export(
+    owner: dict[str, Any],
+    *,
+    role: str = "",
+    get_api_key: ApiKeyGetter,
+    get_scoped_api_key: Callable[[str], str],
+    is_imported_api_key: ImportedApiKeyCheck,
+    is_imported_scoped_api_key: ImportedScopedApiKeyCheck,
     include_api_key: bool,
+    api_key_report: list[dict[str, str]] | None = None,
 ) -> list[dict[str, str]]:
     """Export a role's whole connection pool, not only its primary.
 
@@ -388,7 +509,7 @@ def _connections_for_export(
     otherwise, resolving keys through the provider/Base URL scope written below.
     """
     entries: list[dict[str, str]] = []
-    for raw in owner.get("connections") or []:
+    for index, raw in enumerate(owner.get("connections") or []):
         if not isinstance(raw, dict):
             continue
         provider = str(raw.get("provider") or "").strip()
@@ -403,35 +524,72 @@ def _connections_for_export(
             "base_url": base_url,
         }
         if include_api_key:
-            api_key = str(
-                get_scoped_api_key(str(raw.get("id") or "").strip()) or ""
-            ).strip() or str(get_api_key(provider, base_url) or "").strip()
+            api_key, status = _exportable_connection_key(
+                str(raw.get("id") or "").strip(),
+                provider,
+                base_url,
+                get_api_key=get_api_key,
+                get_scoped_api_key=get_scoped_api_key,
+                is_imported_api_key=is_imported_api_key,
+                is_imported_scoped_api_key=is_imported_scoped_api_key,
+            )
             if api_key:
                 entry["api_key"] = api_key
+            if api_key_report is not None:
+                api_key_report.append({
+                    "kind": API_KEY_EXPORT_KIND_CONNECTION,
+                    "role": role,
+                    "role_label": role_label(role) if role else "",
+                    "connection": _connection_report_name(raw, index, base_url),
+                    "provider": provider,
+                    "status": status,
+                })
         entries.append(entry)
     return entries
 
 
-def _owner_primary_scoped_key(
+def _primary_key_for_export(
     owner: dict[str, Any],
+    *,
+    get_api_key: ApiKeyGetter,
     get_scoped_api_key: Callable[[str], str],
+    is_imported_api_key: ImportedApiKeyCheck,
+    is_imported_scoped_api_key: ImportedScopedApiKeyCheck,
 ) -> str:
-    """Return the key owned by the role's primary pool connection, if any."""
+    """主用连接真正会被导出的那把 Key（导入来的已经在这里被过滤掉）。
+
+    导出文件的 ``cloud`` 块描述的就是连接池里的第 0 条（见 settings.py 的
+    ``_sync_connection_pool``），所以它带的 Key 必须和那条连接的判定结果一致，
+    否则会出现「连接列表里被扣下了、cloud 块里又漏出去」这种半拉子过滤。
+    """
     connections = list(owner.get("connections") or [])
-    if not connections or not isinstance(connections[0], dict):
-        return ""
-    connection_id = str(connections[0].get("id") or "").strip()
-    if not connection_id:
-        return ""
-    return str(get_scoped_api_key(connection_id) or "").strip()
+    primary = connections[0] if connections and isinstance(connections[0], dict) else {}
+    provider = str(owner.get("cloud_provider") or "").strip()
+    base_url = normalize_cloud_base_url(
+        provider,
+        str(owner.get("cloud_base_url") or "").strip(),
+    )
+    api_key, _status = _exportable_connection_key(
+        str(primary.get("id") or "").strip(),
+        provider,
+        base_url,
+        get_api_key=get_api_key,
+        get_scoped_api_key=get_scoped_api_key,
+        is_imported_api_key=is_imported_api_key,
+        is_imported_scoped_api_key=is_imported_scoped_api_key,
+    )
+    return api_key
 
 
 def _cloud_profile_for_export(
     owner: dict[str, Any],
     *,
+    role: str = "",
     get_api_key: ApiKeyGetter,
+    is_imported_api_key: ImportedApiKeyCheck,
     scoped_api_key: str = "",
     include_api_key: bool,
+    api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     provider = str(owner.get("cloud_provider") or "").strip()
     base_url = normalize_cloud_base_url(
@@ -444,15 +602,18 @@ def _cloud_profile_for_export(
         "base_url": base_url,
         "provider_configs": _provider_configs_for_export(
             owner,
+            role=role,
             get_api_key=get_api_key,
+            is_imported_api_key=is_imported_api_key,
             include_api_key=include_api_key,
+            api_key_report=api_key_report,
         ),
     }
-    api_key = ""
-    if include_api_key:
-        # The connection-scoped key is what the primary actually resolves, so
-        # it outranks the provider-scoped store here.
-        api_key = scoped_api_key or str(get_api_key(provider, base_url) or "").strip()
+    # The connection-scoped key is what the primary actually resolves, so it
+    # outranks the provider-scoped store here.  ``scoped_api_key`` 已经由
+    # ``_primary_key_for_export`` 做完来源过滤并含 provider 作用域的回退，
+    # 这里不能再自己回退一次，否则被扣下的密钥会从这条路漏出去。
+    api_key = scoped_api_key if include_api_key else ""
     if api_key:
         profile["api_key"] = api_key
     return profile
@@ -461,8 +622,11 @@ def _cloud_profile_for_export(
 def _provider_configs_for_export(
     owner: dict[str, Any],
     *,
+    role: str = "",
     get_api_key: ApiKeyGetter,
+    is_imported_api_key: ImportedApiKeyCheck,
     include_api_key: bool,
+    api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, dict[str, str]]:
     cloud_providers = set(CLOUD_ENGINES.values())
     provider_configs = dict(owner.get("cloud_provider_configs") or {})
@@ -489,7 +653,27 @@ def _provider_configs_for_export(
             "model": str(raw_config.get("cloud_model") or "").strip(),
             "base_url": base_url,
         }
-        api_key = str(get_api_key(provider, base_url) or "").strip() if include_api_key else ""
+        # 这些是「这个角色记住的其他服务商配置」，同样要按来源过滤，否则一把导入来的
+        # 密钥即使在连接列表里被扣下，也会从这条记忆里漏出去。它们不是界面上的连接，
+        # 所以只在**被扣下**时进回执：全都列出来是噪音，一条都不列就成了「悄悄扣下」，
+        # 而回执存在的意义就是不许有悄悄扣下的密钥。
+        api_key = ""
+        if include_api_key:
+            api_key, status = _exportable_provider_key(
+                provider,
+                base_url,
+                get_api_key=get_api_key,
+                is_imported_api_key=is_imported_api_key,
+            )
+            if api_key_report is not None and status == API_KEY_EXPORT_WITHHELD_IMPORTED:
+                api_key_report.append({
+                    "kind": API_KEY_EXPORT_KIND_PROVIDER_MEMORY,
+                    "role": role,
+                    "role_label": role_label(role) if role else "",
+                    "connection": base_url or provider,
+                    "provider": provider,
+                    "status": status,
+                })
         if api_key:
             entry["api_key"] = api_key
         profiles[provider] = entry

@@ -57,6 +57,11 @@ from core.file_scanner import scan_excel_sources
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
 from core.model_config import (
+    API_KEY_EXPORT_INCLUDED,
+    API_KEY_EXPORT_KIND_CONNECTION,
+    API_KEY_EXPORT_KIND_PROVIDER_MEMORY,
+    API_KEY_EXPORT_MISSING,
+    API_KEY_EXPORT_WITHHELD_IMPORTED,
     apply_model_config_import,
     build_model_config_export_payload,
     parse_model_config_import,
@@ -1483,10 +1488,52 @@ def create_app(
             include_api_key = bool(include_api_keys)
         if include_api_key and not confirm_sensitive:
             raise HTTPException(422, "导出 API Key 前必须明确确认敏感配置导出。")
-        return build_model_config_export_payload(
+        # 回执和导出文档分成两个字段：``document`` 是原样写盘的那份，格式一个字节都
+        # 没变（导入侧不受影响）；``api_key_report`` 只给界面看，绝不能混进文件里，
+        # 否则收到文件的人还附送一份本机连接清单。
+        report_rows: list[dict[str, str]] = []
+        document = build_model_config_export_payload(
             load_settings(),
             include_api_key=include_api_key,
+            api_key_report=report_rows if include_api_key else None,
         )
+        # 回执分两拨：``connections`` 是界面上看得见、能一条条对照的连接；
+        # ``provider_memories`` 是角色记住的其他服务商配置，只在密钥被扣下时才有行，
+        # 否则界面会出现「文件里少了一把 Key，可回执里一个字都没提」。
+        connection_rows = [
+            row
+            for row in report_rows
+            if row.get("kind", API_KEY_EXPORT_KIND_CONNECTION) == API_KEY_EXPORT_KIND_CONNECTION
+        ]
+        provider_memory_rows = [
+            row
+            for row in report_rows
+            if row.get("kind") == API_KEY_EXPORT_KIND_PROVIDER_MEMORY
+        ]
+        return {
+            "document": document,
+            "api_key_report": {
+                "include_api_key": include_api_key,
+                "connections": connection_rows,
+                "provider_memories": provider_memory_rows,
+                "exported_count": sum(
+                    1
+                    for row in connection_rows
+                    if row["status"] == API_KEY_EXPORT_INCLUDED
+                ),
+                "withheld_count": sum(
+                    1
+                    for row in connection_rows
+                    if row["status"] == API_KEY_EXPORT_WITHHELD_IMPORTED
+                ),
+                "missing_count": sum(
+                    1
+                    for row in connection_rows
+                    if row["status"] == API_KEY_EXPORT_MISSING
+                ),
+                "withheld_provider_memory_count": len(provider_memory_rows),
+            },
+        }
 
     @app.post("/api/model-config/import/preview")
     def preview_model_config_import(payload: dict[str, Any]) -> dict[str, Any]:

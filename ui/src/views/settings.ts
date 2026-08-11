@@ -86,6 +86,31 @@ type ModelImportPreview = {
   api_key_count: number;
 };
 
+// GET /api/model-config/export 的回执：逐条说明每个连接的密钥去向。
+// exported = 跟着导出了；withheld_imported = 有密钥但它是从别人的配置导入来的，
+// 为避免连环传播没有导出；missing = 这条连接本来就没配密钥。
+type ApiKeyExportStatus = "exported" | "withheld_imported" | "missing";
+
+type ApiKeyExportRow = {
+  role: string;
+  role_label: string;
+  connection: string;
+  provider?: string;
+  status: ApiKeyExportStatus;
+};
+
+type ApiKeyExportReport = {
+  include_api_key: boolean;
+  connections: ApiKeyExportRow[];
+  // 角色记住的其他服务商配置里被扣下的密钥。它们在界面上不是一条连接，
+  // 但密钥确实少写了一把，回执里不能一个字不提。
+  provider_memories?: ApiKeyExportRow[];
+  exported_count: number;
+  withheld_count: number;
+  missing_count: number;
+  withheld_provider_memory_count?: number;
+};
+
 // GET /api/data/health 的字段名是另一路改动定死的契约，这里原样对照，不要改名。
 type DataHealthEntry = {
   state: "current" | "adopted" | "recreated" | "upgraded" | "unreadable" | string;
@@ -1569,7 +1594,7 @@ function renderModelsPage(host: HTMLElement): void {
   // 实际上导的一直是四个角色的全部配置。挪到页面底部单独成卡，名字也照实写。
   host.append(bundleCard({
     title: "整个模型服务打包",
-    description: "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。密钥默认不导出，导入后所有连接都要重新测试。",
+    description: "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。密钥默认不导出，导入后所有连接都要重新测试。选择“导出含 Key”时，只会带上你在这台电脑上自己填过的密钥；别人的配置文件导入进来的密钥不会再传出去，除非你自己重新填过一次。",
     buttons: [
       createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
       createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
@@ -1709,14 +1734,77 @@ async function exportModelConfig(includeApiKey: boolean): Promise<void> {
   if (includeApiKey && !window.confirm("导出的文件将包含 API Key。请确认只保存到受保护的位置。")) return;
   try {
     const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
-    const payload = await client.request<JsonObject>(`/api/model-config/export${query}`);
+    const response = await client.request<{ document: JsonObject; api_key_report: ApiKeyExportReport }>(
+      `/api/model-config/export${query}`,
+    );
+    // 写进文件的只有 document。回执（哪条连接的密钥带走了、哪条被扣下了）只给本机
+    // 用户看：混进导出文件等于额外附送一份本机连接清单给对方。
     // 成功 toast 必须等真的写完盘：文件里带着密钥，谎报「已导出」比不导出更糟。
-    const saved = await saveJsonFile("translator-model-config.json", payload);
+    const saved = await saveJsonFile("translator-model-config.json", response.document);
     if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
+    const withheld = (response.api_key_report?.connections ?? []).filter((row) => row.status === "withheld_imported");
+    const withheldMemories = response.api_key_report?.provider_memories ?? [];
+    if (includeApiKey && (withheld.length || withheldMemories.length)) {
+      // 扣下密钥这件事一句 toast 说不下：既要列出是哪几条连接，又要说清后果
+      // （对方导入后得自己填这些连接的密钥），所以走弹窗。
+      openApiKeyExportReportModal(saved, response.api_key_report);
+      return;
+    }
     showToast({ message: includeApiKey ? `已导出模型配置和明确勾选的 API 密钥到 ${saved}，请立即移入受保护的位置。` : `已导出模型配置到 ${saved}；默认不包含 API Key。` });
   } catch (error) {
     showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
   }
+}
+
+/** 有密钥被扣下时的说明弹窗；一条都没被扣下时不弹，那种情况一句 toast 就够。 */
+function openApiKeyExportReportModal(savedPath: string, report: ApiKeyExportReport): void {
+  const rows = report.connections ?? [];
+  const withheld = rows.filter((row) => row.status === "withheld_imported");
+  const exported = rows.filter((row) => row.status === "exported");
+  const memories = report.provider_memories ?? [];
+  const describe = (row: ApiKeyExportRow) => `${row.role_label || row.role}：${row.connection}`;
+  const buildList = (items: ApiKeyExportRow[], describeRow: (row: ApiKeyExportRow) => string, gap: string) => {
+    const list = document.createElement("ul");
+    list.style.margin = `0 0 ${gap}`;
+    list.style.paddingLeft = "18px";
+    list.style.fontSize = "12.5px";
+    for (const row of items) {
+      const li = document.createElement("li");
+      li.textContent = describeRow(row);
+      list.append(li);
+    }
+    return list;
+  };
+
+  const body: (string | HTMLElement)[] = [`配置已导出到 ${savedPath}。`];
+  if (withheld.length) {
+    body.push(
+      `以下 ${withheld.length} 条连接的密钥没有写进文件，因为它们是从别人的配置文件导入到这台电脑的：`,
+      buildList(withheld, describe, "8px"),
+    );
+  }
+  if (memories.length) {
+    // 这些不是连接列表里的条目，而是角色换服务商时留下的记忆，用「服务商 + 地址」来指认。
+    body.push(
+      `另有 ${memories.length} 处「换服务商时记住的配置」里的密钥同样是导入来的，也没有写进文件：`,
+      buildList(memories, (row) => `${row.role_label || row.role}：${providerLabel(row.provider ?? "")}（${row.connection}）`, "8px"),
+    );
+  }
+  body.push("这样做是为了不把别人的密钥继续传出去。对方导入这份配置后，需要自己填写上面这些密钥。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。");
+  if (exported.length) {
+    body.push(`已随文件导出的密钥（${exported.length} 条连接，请把文件放到受保护的位置）：`, buildList(exported, describe, "0"));
+  } else {
+    body.push("这次导出的文件里没有任何密钥，对方导入后需要自己填写全部连接的密钥。");
+  }
+
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    sourceLabel: "设置 · 模型服务 · 导出含 Key",
+    title: "部分密钥没有导出",
+    body,
+    actions: [{ label: "知道了", variant: "primary" }],
+  });
 }
 
 function importModelConfig(): void {

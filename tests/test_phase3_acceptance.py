@@ -219,7 +219,8 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
 
         default_export = self.client.get("/api/model-config/export")
         self.assertEqual(default_export.status_code, 200)
-        self.assertEqual(default_export.json()["version"], 3)
+        # 接口返回 {document, api_key_report}：只有 document 会被写进文件。
+        self.assertEqual(default_export.json()["document"]["version"], 3)
         self.assertNotIn("mock-provider-secret", default_export.text)
 
         unconfirmed = self.client.get("/api/model-config/export?include_api_key=true")

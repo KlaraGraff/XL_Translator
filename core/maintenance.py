@@ -303,6 +303,10 @@ def _reset_paths() -> list[Path]:
         SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock"),
         KEYS_PATH,
         KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock"),
+        # 密钥的来源标记（哪些 Key 是从别人的配置导入来的）跟着密钥一起清，
+        # 不然恢复出厂后还留着一份指向不存在密钥的标记。同样读得晚：测试会把
+        # settings 模块的密钥路径指到临时目录。
+        settings_module.key_origins_path(),
         *_tm_paths(),
         TASK_HISTORY_PATH,
         TASK_HISTORY_PATH.with_suffix(".tmp"),

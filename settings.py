@@ -1739,14 +1739,147 @@ def load_keys() -> dict[str, str]:
     return _load_keys_unlocked(strict=False)
 
 
-def save_key(provider: str, api_key: str, base_url: str = "") -> None:
-    """Save or remove the API key for one provider/Base URL scope."""
+# ── 密钥来源标记 ──────────────────────────────────────────
+# 「导出含 Key」以前会把本机密钥库里的所有密钥一并带走，包括那些本来就是从别人的
+# 配置文件导入进来的。于是密钥会连环传播：A 导给 B，B 再导给 C，A 的密钥就到了 C
+# 手上，而 A 完全不知情。要挡住这条链，密钥必须能回答「这是谁的」。
+#
+# 为什么不直接改 keys.json 的格式？它是一张扁平的 {作用域: 密钥字符串} 表，读它的
+# 地方遍布引擎、连接池、诊断与维护页。把值换成 {"key": ..., "origin": ...} 这样的
+# 对象，等于要求每一个读取方同步改写，还要给老文件写一次就地迁移——而这是密钥文件，
+# 迁移写坏的代价是用户所有连接同时失效。
+#
+# 所以用一份旁路文件，只记「哪些作用域是导入来的」，密钥库本身零改动、零迁移。
+# 老用户没有这份文件 → 集合为空 → 所有密钥都算「自己的」→ 导出行为和升级前完全
+# 一致，不会有人在升级后突然发现导出的文件里少了东西。
+KEY_ORIGINS_FILENAME = "key_origins.json"
+KEY_ORIGIN_LOCAL = "local"
+KEY_ORIGIN_IMPORTED = "imported"
+_KEY_ORIGINS_VERSION = 1
+
+
+def key_origins_path() -> Path:
+    """标记文件的位置：始终跟着 keys.json 走，和它同目录、同权限。
+
+    从 ``KEYS_PATH`` 推导而不是单独定义常量，是为了让任何把密钥库指向别处的调用方
+    （测试用的临时目录就是这么做的）自动带上标记文件，不会出现「密钥进了临时目录、
+    标记写进了用户真实数据目录」这种串味。
+    """
+    return KEYS_PATH.with_name(KEY_ORIGINS_FILENAME)
+
+
+def _keys_lock_path() -> Path:
+    """密钥库和它的来源标记共用同一把锁。
+
+    两份文件必须在同一个事务里更新，否则会出现「密钥写进去了、标记没写」的半截
+    状态——那正好是最糟的一种：一把导入来的密钥被当成自己的，下次导出照样传出去。
+    """
+    return KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
+
+
+def _load_imported_key_scopes_unlocked() -> set[str]:
+    path = key_origins_path()
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        scopes = payload.get("imported_scopes") if isinstance(payload, dict) else None
+        if not isinstance(scopes, list):
+            raise ValueError("imported_scopes 必须是 JSON 数组")
+        return {str(scope).strip() for scope in scopes if str(scope).strip()}
+    except Exception as exc:
+        # 标记文件坏了不该让保存密钥失败：最坏结果只是把导入来的密钥当成自己的，
+        # 也就是退回到没有这份文件时的老行为，而不是让用户存不进 Key。
+        logger.warning(f"{KEY_ORIGINS_FILENAME} 解析失败：{exc}")
+        return set()
+
+
+def _write_imported_key_scopes_unlocked(scopes: set[str]) -> None:
+    path = key_origins_path()
+    if not scopes:
+        # 一个都不剩就把文件删掉，回到「老用户没有这份文件」的同一种状态，
+        # 免得留下一个空壳还要维护。
+        path.unlink(missing_ok=True)
+        return
+    write_private_text_file(
+        path,
+        json.dumps(
+            {"version": _KEY_ORIGINS_VERSION, "imported_scopes": sorted(scopes)},
+            indent=2,
+            ensure_ascii=False,
+        ),
+    )
+
+
+def _record_key_origin_unlocked(scope: str, origin: str, *, has_key: bool) -> None:
+    """在密钥写入的同一个事务里更新来源标记。调用方必须已持有密钥库的锁。"""
+    scopes = _load_imported_key_scopes_unlocked()
+    if not has_key:
+        # 密钥被删了，标记也得跟着走，否则将来同一个作用域上存了新 Key，
+        # 会被一条没人指得到的旧标记继续当成「导入来的」而永远导不出去。
+        changed = scope in scopes
+        scopes.discard(scope)
+    elif origin == KEY_ORIGIN_IMPORTED:
+        changed = scope not in scopes
+        scopes.add(scope)
+    else:
+        # 用户在面板上自己重新填了一次 Key，这把 Key 就是他自己的了，可以再导出。
+        # 这正是「除非 API Key 发生了改变」那一条。
+        changed = scope in scopes
+        scopes.discard(scope)
+    if changed:
+        _write_imported_key_scopes_unlocked(scopes)
+
+
+def load_imported_key_scopes() -> set[str]:
+    """返回所有「从别人的配置导入进来」的密钥作用域。"""
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return _load_imported_key_scopes_unlocked()
+
+
+def is_imported_connection_key(connection_id: str) -> bool:
+    """这条连接自己那把 Key 是不是导入来的。"""
+    scope = connection_key_scope(connection_id)
+    if not scope:
+        return False
+    return scope in load_imported_key_scopes()
+
+
+def is_imported_provider_key(provider: str, base_url: str = "") -> bool:
+    """``get_key`` 在这个 provider/Base URL 上会取到的那把 Key 是不是导入来的。
+
+    必须按 ``get_key`` 的同一套回退顺序找到「真正会被取到的那个作用域」再判断：
+    只看精确作用域的话，一把存在旧别名作用域下的导入密钥会被当成本机自己的。
+    回退到环境变量时返回 False——那是本机自己的环境，不属于别人传过来的配置。
+    """
+    normalized_provider = _normalize_api_key_provider(provider)
+    if not normalized_provider:
+        return False
+    keys = load_keys()
+    imported = load_imported_key_scopes()
+    for scope in _api_key_lookup_scopes(normalized_provider, base_url):
+        if str(keys.get(scope) or "").strip():
+            return scope in imported
+    return False
+
+
+def save_key(
+    provider: str,
+    api_key: str,
+    base_url: str = "",
+    *,
+    origin: str = KEY_ORIGIN_LOCAL,
+) -> None:
+    """Save or remove the API key for one provider/Base URL scope.
+
+    ``origin`` 只有导入配置那条路径传 ``imported``；用户自己在面板上填的、测试连接时
+    顺手保存的，全部走默认的 ``local``，因而可以随「导出含 Key」传出去。
+    """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     scope = api_key_scope(provider, base_url)
     if not scope:
         return
-    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
-    with _exclusive_file_lock(lock_path):
+    with _exclusive_file_lock(_keys_lock_path()):
         keys = _load_keys_unlocked(strict=True)
         if api_key:
             keys[scope] = api_key
@@ -1756,7 +1889,8 @@ def save_key(provider: str, api_key: str, base_url: str = "") -> None:
             KEYS_PATH,
             json.dumps(keys, indent=2, ensure_ascii=False),
         )
-    logger.debug(f"API Key 已更新：scope={scope}")
+        _record_key_origin_unlocked(scope, origin, has_key=bool(api_key))
+    logger.debug(f"API Key 已更新：scope={scope} origin={origin}")
 
 
 @contextmanager
@@ -1796,14 +1930,22 @@ def current_key_overrides() -> dict[str, str] | None:
     return dict(overrides) if isinstance(overrides, dict) else None
 
 
-def save_connection_key(connection_id: str, api_key: str) -> None:
-    """Save or remove the API key owned by one pool connection."""
+def save_connection_key(
+    connection_id: str,
+    api_key: str,
+    *,
+    origin: str = KEY_ORIGIN_LOCAL,
+) -> None:
+    """Save or remove the API key owned by one pool connection.
+
+    ``origin`` 的含义同 ``save_key``：默认是「本机自己填的」，只有导入配置那条路径
+    会传 ``imported``，从而把这把 Key 排除在下一次「导出含 Key」之外。
+    """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     scope = connection_key_scope(connection_id)
     if not scope:
         return
-    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
-    with _exclusive_file_lock(lock_path):
+    with _exclusive_file_lock(_keys_lock_path()):
         keys = _load_keys_unlocked(strict=True)
         if api_key:
             keys[scope] = api_key
@@ -1813,7 +1955,8 @@ def save_connection_key(connection_id: str, api_key: str) -> None:
             KEYS_PATH,
             json.dumps(keys, indent=2, ensure_ascii=False),
         )
-    logger.debug(f"API Key 已更新：scope={scope}")
+        _record_key_origin_unlocked(scope, origin, has_key=bool(api_key))
+    logger.debug(f"API Key 已更新：scope={scope} origin={origin}")
 
 
 def delete_connection_key(connection_id: str) -> None:
@@ -1923,10 +2066,12 @@ def delete_key(provider: str, base_url: str = "") -> None:
 def delete_all_keys() -> int:
     """Delete every locally persisted API key without exposing their values."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = KEYS_PATH.with_name(f".{KEYS_PATH.name}.lock")
-    with _exclusive_file_lock(lock_path):
+    with _exclusive_file_lock(_keys_lock_path()):
         keys = _load_keys_unlocked(strict=True)
         removed = len(keys)
         KEYS_PATH.unlink(missing_ok=True)
+        # 来源标记跟着密钥一起消失，别留下指向不存在密钥的孤儿标记：
+        # 留着的话，用户之后在同一个作用域重新填的 Key 会被当成导入来的，导不出去。
+        _write_imported_key_scopes_unlocked(set())
     logger.info("已删除全部本地 API Key：count={}", removed)
     return removed

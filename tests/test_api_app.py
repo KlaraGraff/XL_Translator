@@ -328,8 +328,9 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(legacy_import.status_code, 422)
         exported = self.client.get("/api/model-config/export")
         self.assertEqual(exported.status_code, 200)
+        # 导出接口返回的是「文档 + 回执」两段：写盘的只有 document，回执只给界面。
         self.assertEqual(
-            exported.json()["model_profiles"]["translation"]["cloud"]["model"],
+            exported.json()["document"]["model_profiles"]["translation"]["cloud"]["model"],
             "imported-model",
         )
 

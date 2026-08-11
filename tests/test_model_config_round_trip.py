@@ -272,7 +272,13 @@ class WithKeysRoundTripTests(unittest.TestCase):
         )
         saved: dict[tuple[str, str], str] = {}
 
-        def _save(provider: str, api_key: str, base_url: str = "") -> None:
+        def _save(
+            provider: str,
+            api_key: str,
+            base_url: str = "",
+            **_kwargs: object,
+        ) -> None:
+            # 导入侧现在还会带一个 origin=imported，这里一并吃掉。
             saved[(provider, base_url)] = api_key
 
         apply_model_config_import(
