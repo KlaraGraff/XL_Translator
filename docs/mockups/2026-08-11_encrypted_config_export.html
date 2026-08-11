@@ -196,8 +196,8 @@ body{font-family:var(--font);background:var(--ground);color:var(--ink);-webkit-f
           <h3>已导出，密钥已加密</h3>
           <div class="kv">
             <div class="row"><span class="k">文件</span><span class="v mono">~/Desktop/xl-translator-models-20260811.xltcfg</span></div>
-            <div class="row"><span class="k">密钥</span><span class="v">3 条连接的密钥已加密写入 <span class="chip ok">已加密</span></span></div>
-            <div class="row"><span class="k">有效期至</span><span class="v">2026-09-10（30 天后）</span></div>
+            <div class="row"><span class="k">密钥</span><span class="v">4 个作用域已加密写入 <span class="chip ok">已加密</span></span></div>
+            <div class="row"><span class="k">有效期至</span><span class="v">2026-09-10（还剩 30 天）</span></div>
           </div>
 
           <div class="subhead">已随文件导出的密钥 <span class="chip ok">3 条</span></div>
@@ -268,9 +268,10 @@ body{font-family:var(--font);background:var(--ground);color:var(--ink);-webkit-f
             <span class="ico">→</span>
             <span>连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。</span>
           </div>
+          <p>文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。</p>
           <div class="macts">
             <button class="btn">取消</button>
-            <button class="btn pri">仅导入配置</button>
+            <button class="btn pri">仅导入配置（替换现有连接）</button>
           </div>
         </div>
       </div>
@@ -292,8 +293,9 @@ body{font-family:var(--font);background:var(--ground);color:var(--ink);-webkit-f
             <span class="ico">→</span>
             <span>更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。</span>
           </div>
+          <p>文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。</p>
           <div class="macts">
-            <button class="btn">仅导入配置</button>
+            <button class="btn">仅导入配置（替换现有连接）</button>
             <button class="btn pri">前往更新</button>
           </div>
         </div>
@@ -369,7 +371,7 @@ body{font-family:var(--font);background:var(--ground);color:var(--ink);-webkit-f
     <ol>
       <li><b>「导出（不含 Key）」按钮保留。</b> 有时候就是不想给密钥，只想给对方一套连接和参数，这个需求没消失。</li>
       <li><b>有效期只锁密钥，不锁配置。</b> 配置部分本来就是明文，过期拦下来没有任何收益（界面 5）。</li>
-      <li><b>文件扩展名改成 <code>.xltcfg</code>。</b> 现在导出的是 <code>.json</code>，会诱使人用记事本打开——加密之后打开只有乱码，不如换个名字断了这个念头。旧的 <code>.json</code> 照常能导入。</li>
+      <li><b>只有「导出（含 Key）」换成 <code>.xltcfg</code>。</b> 加密之后打开只有乱码，换个扩展名断掉用记事本打开的念头。「导出（不含 Key）」仍是 <code>.json</code>——那份文件本来就是纯 JSON，而 9.2.4 及更早版本的导入选择器只接受 <code>.json</code>，换掉会让还没升级的收件人在文件框里根本选不中它。导入两种都收。</li>
       <li><b>文件里带密钥编号。</b> 将来内置密钥万一外泄，下个版本换一把就能补救，旧文件也还读得开（界面 6）。不现在留这个口子，以后就补不上了。</li>
       <li><b>内置密钥不写进源码</b>，发版时从 GitHub Actions 的加密变量注入。否则密钥就直接躺在你的公开仓库里，连下载安装包这一步都省了。</li>
     </ol>

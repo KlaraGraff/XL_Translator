@@ -313,3 +313,13 @@ def _count_plaintext_keys(document: dict[str, Any]) -> int:
     found: list[dict[str, Any]] = []
     _extract_secrets(json.loads(json.dumps(document)), [], found)
     return len(found)
+
+
+def count_api_keys(document: dict[str, Any]) -> int:
+    """密封前的文档里有几处密钥。
+
+    导出回执要告诉用户「这个文件里带走了几把密钥」，而这个数必须和收件人导入时
+    看到的作用域数是同一个数。按回执里的连接行数去数会少算——角色「换服务商时
+    记住的配置」里的密钥也会被一起加密带走，而那些行只在密钥被扣下时才生成。
+    """
+    return _count_plaintext_keys(document)

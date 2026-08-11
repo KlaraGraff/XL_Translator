@@ -62,6 +62,7 @@ from core.config_crypto import (
     UNSEAL_EXPIRED,
     UNSEAL_PLAINTEXT,
     UNSEAL_UNSUPPORTED,
+    count_api_keys,
     seal_model_config_document,
     unseal_model_config_document,
 )
@@ -1538,6 +1539,9 @@ def create_app(
             "document": sealed_document,
             "sealed": bool(seal_info),
             "expires_at": seal_info.get("expires_at"),
+            # 回执上「带走了几把密钥」必须和收件人导入时看到的作用域数一致，所以在
+            # 密封前数原文，而不是数回执里的连接行——那样会漏掉角色记住的服务商配置。
+            "sealed_key_count": count_api_keys(document) if include_api_key else 0,
             "api_key_report": {
                 "include_api_key": include_api_key,
                 "connections": connection_rows,
@@ -2013,6 +2017,14 @@ def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = 
         raise HTTPException(422, str(exc)) from exc
 
 
+# 界面靠这句原话认出「文件被改过」这条分支（ui/src/views/settings.ts 里同名常量），
+# 好弹出专门的弹窗而不是一条通用红色 toast。改动这句话必须两边一起改——
+# tests/test_config_crypto.py 会比对两个文件里的字面量，改单边会红。
+CORRUPT_IMPORT_DETAIL = (
+    "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。"
+)
+
+
 def _unseal_or_422(payload: dict[str, Any]):
     """解开导入文件的密钥段；只有「不可信」这一种情况在这里直接拒绝。
 
@@ -2023,10 +2035,7 @@ def _unseal_or_422(payload: dict[str, Any]):
     """
     result = unseal_model_config_document(payload)
     if result.status == UNSEAL_CORRUPT:
-        raise HTTPException(
-            422,
-            "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。",
-        )
+        raise HTTPException(422, CORRUPT_IMPORT_DETAIL)
     return result
 
 

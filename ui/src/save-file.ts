@@ -23,6 +23,7 @@ const FILTERS: Record<string, { name: string; extensions: string[] }> = {
   json: { name: "JSON 文件", extensions: ["json"] },
   csv: { name: "CSV 文件", extensions: ["csv"] },
   zip: { name: "ZIP 压缩包", extensions: ["zip"] },
+  xltcfg: { name: "XL Translator 配置文件", extensions: ["xltcfg"] },
 };
 
 function filtersFor(defaultFilename: string): Array<{ name: string; extensions: string[] }> {

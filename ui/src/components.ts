@@ -1024,7 +1024,7 @@ export function createEmptyState(options: EmptyStateOptions): HTMLDivElement {
 // modal（含危险操作红头样式）
 // ---------------------------------------------------------------------------
 
-export type ModalTone = "warn" | "danger";
+export type ModalTone = "warn" | "danger" | "tint" | "ok";
 
 export interface ModalAction {
   label: string;
@@ -1042,13 +1042,13 @@ export interface ModalConfirmInput {
 }
 
 export interface ModalOptions {
-  /** warn = 黄色警示图标；danger = 红色不可逆操作图标。 */
+  /** warn = 黄色警示图标；danger = 红色不可逆操作图标；tint = 中性信息；ok = 绿色完成态。 */
   tone: ModalTone;
   icon: IconName;
   /** 模态上方的小标签，标出触发来源（例如「设置 · 数据与维护 · 完整本地重置」）。 */
   sourceLabel?: string;
   title: string;
-  /** 依次渲染为若干个 <p>。 */
+  /** 依次渲染为若干个 <p>（字符串项）或原样插入（元素项，例如 <dl class="kv"> / <ul>）。 */
   body: (string | HTMLElement)[];
   /**
    * 危险操作的输入确认（对应样张「完整本地重置」的 RESET 输入框）。
@@ -1056,6 +1056,8 @@ export interface ModalOptions {
    */
   confirmInput?: ModalConfirmInput;
   actions: ModalAction[];
+  /** 内容较多（kv 表格 + 列表）时用更宽的模态，对应样张里的 .modal.wide。 */
+  wide?: boolean;
 }
 
 export interface ModalHandle {
@@ -1066,13 +1068,13 @@ export interface ModalHandle {
 /** 打开一个 .overlay > .modal，立即 append 到 document.body。 */
 export function openModal(options: ModalOptions): ModalHandle {
   const overlay = el("div", { className: "overlay" });
-  const modal = el("div", { className: "modal" });
+  const modal = el("div", { className: options.wide ? "modal wide" : "modal" });
 
   if (options.sourceLabel) {
     modal.append(el("span", { className: "mlabel", text: options.sourceLabel }));
   }
 
-  const mi = el("div", { className: `mi ${options.tone === "danger" ? "dgr" : "warn"}` });
+  const mi = el("div", { className: `mi ${options.tone === "danger" ? "dgr" : options.tone}` });
   mi.append(icon(options.icon));
   modal.append(mi);
 

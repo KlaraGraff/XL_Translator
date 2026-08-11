@@ -322,9 +322,13 @@ table.review-tbl { table-layout: fixed; }
 .overlay { position: fixed; inset: 0; background: rgb(10 14 26 / 45%); display: flex; align-items: center; justify-content: center; gap: 36px; z-index: 200; }
 /* 适配点 4：补 position:relative，配合下面 .mlabel 的显式 top/left。 */
 .modal { position: relative; width: 400px; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: 22px 22px 18px; }
+/* .modal.wide：内容较多（kv 表格 + 列表）的模态，例如导出回执、导入预览。 */
+.modal.wide { width: 512px; }
 .modal .mi { width: 38px; height: 38px; border-radius: 99px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
 .modal .mi.dgr { background: var(--danger-t); color: var(--danger); }
 .modal .mi.warn { background: var(--warn-t); color: var(--warn); }
+.modal .mi.ok { background: var(--ok-t); color: var(--ok); }
+.modal .mi.tint { background: var(--tint); color: var(--tint-ink); }
 .modal h3 { font-size: 15px; font-weight: 650; margin-bottom: 7px; }
 .modal p { font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
 .modal .macts { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
@@ -485,10 +489,21 @@ table.review-tbl { table-layout: fixed; }
   background: var(--warn-t); border-color: var(--warn-l); color: var(--warn);
 }
 .banner.warn .ico { flex: none; margin-top: 1px; }
-.banner.warn .tx { flex: 1; min-width: 0; }
+/* .tx 本身只在「无标题，图标+一段正文」的简单横幅里直接放文字（配置导出/导入弹窗）；
+   有标题的横幅（下面这处 Excel 提示）把 .tt/.bd 挂在 .tx 下面，字号在那两条规则上单独定。 */
+.banner.warn .tx { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6; }
 .banner.warn .tt { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .banner.warn .bd { font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
 .banner.warn .btn { height: 28px; font-size: 12px; background: var(--surface); flex: none; }
+
+/* B2 · 中性提示横幅（.banner.warn 的蓝色版），配置导出/导入弹窗里的说明条用。
+   结构比 .banner.warn 简单：只有图标 + 一段正文，没有独立标题/操作按钮。 */
+.banner.tint {
+  align-items: flex-start; gap: 11px; padding: 12px 14px;
+  background: var(--tint); border-color: var(--tint-line); color: var(--tint-ink);
+}
+.banner.tint .ico { flex: none; margin-top: 1px; }
+.banner.tint .tx { flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6; }
 
 /* C · 任务清单里的逐行标记。
    多出「单元格外内容」这一列后，表头被挤得换行（「工作 / 表」拆成两行），补上样张

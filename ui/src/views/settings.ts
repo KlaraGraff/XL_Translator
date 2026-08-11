@@ -78,12 +78,23 @@ type MaintenanceCategoryInfo = {
 
 type MaintenanceClearCategory = "task_history" | "logs" | "diagnostics" | "keys" | "settings" | "tm" | "full_reset";
 
+// core/config_crypto.py 的五种解封状态：unsealed=正常解开；plaintext=旧版明文文件（含「不含
+// Key」导出重新导入的边界情况，此时 sealed_key_count 恒为 0）；expired=密钥已过期；
+// unsupported=本机软件版本太旧，解不开内置密钥；corrupt=文件损坏或被篡改（这一种在预览请求
+// 阶段就会被后端拒成 422，走 openImportCorruptModal，不会进到这个类型里）。
+type SealStatus = "unsealed" | "plaintext" | "expired" | "unsupported" | "corrupt";
+
 type ModelImportPreview = {
   fileName: string;
   payload: JsonObject;
   roles: { role: string; fields: string[] }[];
   throughput_profile_count: number;
   api_key_count: number;
+  seal_status: SealStatus;
+  sealed: boolean;
+  expires_at: string | null;
+  sealed_key_count: number;
+  legacy_plaintext: boolean;
 };
 
 // GET /api/model-config/export 的回执：逐条说明每个连接的密钥去向。
@@ -109,6 +120,17 @@ type ApiKeyExportReport = {
   withheld_count: number;
   missing_count: number;
   withheld_provider_memory_count?: number;
+};
+
+// GET /api/model-config/export 的整体响应。document 是唯一写进文件的部分；sealed/
+// expires_at 只用来渲染本机的导出回执，不影响写盘内容。
+type ModelConfigExportResponse = {
+  document: JsonObject;
+  sealed: boolean;
+  expires_at: string | null;
+  // 密封前数出来的密钥处数，和收件人导入时看到的作用域数是同一个数。
+  sealed_key_count: number;
+  api_key_report: ApiKeyExportReport;
 };
 
 // GET /api/data/health 的字段名是另一路改动定死的契约，这里原样对照，不要改名。
@@ -1594,7 +1616,11 @@ function renderModelsPage(host: HTMLElement): void {
   // 实际上导的一直是四个角色的全部配置。挪到页面底部单独成卡，名字也照实写。
   host.append(bundleCard({
     title: "整个模型服务打包",
-    description: "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。密钥默认不导出，导入后所有连接都要重新测试。选择“导出含 Key”时，只会带上你在这台电脑上自己填过的密钥；别人的配置文件导入进来的密钥不会再传出去，除非你自己重新填过一次。",
+    description: [
+      "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。",
+      "选择「导出含 Key」时，密钥会加密写入文件，对方用本软件导入自动解开，两边都不需要输入口令。文件默认 30 天后失效。",
+      "只会带上你在这台电脑上自己填过的密钥；从别人配置文件导入进来的密钥不会再传出去，除非你自己重新填过一次。",
+    ].join("\n"),
     buttons: [
       createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
       createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
@@ -1611,6 +1637,8 @@ function bundleCard(opts: { title: string; description: string; buttons: HTMLEle
   note.style.padding = "0 16px 14px";
   note.style.fontSize = "12px";
   note.style.color = "var(--ink-3)";
+  // 模型服务打包卡片的说明分三段（\n 分隔），其余调用方都是单行，pre-line 对它们是无操作。
+  note.style.whiteSpace = "pre-line";
   note.textContent = opts.description;
   card.append(note);
   return card;
@@ -1730,34 +1758,217 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
   }, { preserveDraft: false }); // 表单会切回默认连接，不该把被删连接的草稿糊上去
 }
 
-async function exportModelConfig(includeApiKey: boolean): Promise<void> {
-  if (includeApiKey && !window.confirm("导出的文件将包含 API Key。请确认只保存到受保护的位置。")) return;
+// 后端 core/config_crypto.py 在文件被改过一个字节（AAD 绑定了到期日和正文哈希）时
+// 原样抛出的这句话。要求原文照抄，不能换成界面自己的措辞。
+const CORRUPT_IMPORT_DETAIL = "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。";
+
+// 三条导入路径（正常 / 过期 / 版本太旧）提交的 payload 是同一份，连接列表一律整份
+// 替换。别再写「不删除未提及配置」：本机在这些角色下自己加的连接会连同它们保存的
+// Key 一起消失，说成「只合并」等于骗人。过期与版本太旧那两条路径的按钮写着「仅导入
+// 配置」，更需要这句话——「仅」字很容易被读成「影响有限」。
+const REPLACES_CONNECTIONS_NOTICE =
+  "文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。";
+
+// 有效期选项与 core/config_crypto.py::DEFAULT_VALID_DAYS 对齐：0 = 长期有效。
+const VALID_DAYS_OPTIONS: { label: string; value: number }[] = [
+  { label: "7 天", value: 7 },
+  { label: "30 天（推荐）", value: 30 },
+  { label: "90 天", value: 90 },
+  { label: "长期有效", value: 0 },
+];
+const DEFAULT_VALID_DAYS = 30;
+
+/** 路径用等宽字体展示，和「文件」「模型」这类普通文案区分开。 */
+function monoText(value: string): HTMLElement {
+  const span = document.createElement("span");
+  span.textContent = value;
+  span.style.fontFamily = "var(--mono)";
+  span.style.fontSize = "11.5px";
+  span.style.wordBreak = "break-all";
+  return span;
+}
+
+/** kv 行的「一段文字 + 一个 chip」组合，例如「3 个作用域 [已自动解开]」。 */
+function textAndChip(prefix: string, chip: HTMLElement): HTMLElement {
+  const span = document.createElement("span");
+  span.append(document.createTextNode(prefix), chip);
+  return span;
+}
+
+/** 复用既有的 dl.kv（app.css 里已有，别处的更新检查弹窗也在用），不引入样张自带的带边框变体。 */
+function buildKvList(rows: [string, string | HTMLElement][]): HTMLDListElement {
+  const dl = document.createElement("dl");
+  dl.className = "kv";
+  for (const [key, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    // app.css 的 .kv dd 是单行加省略号，那是给短值设计的。这里的值有保存路径，
+    // 省略号从尾部砍，砍掉的正是文件名——用户最需要看到的那一段。改成换行。
+    dd.style.whiteSpace = "normal";
+    dd.style.overflow = "visible";
+    if (typeof value === "string") dd.textContent = value;
+    else dd.append(value);
+    dl.append(dt, dd);
+  }
+  return dl;
+}
+
+/** 对应样张的 .banner.warn / .banner.tint：图标 + 一段说明文字，没有独立标题。 */
+function buildInlineBanner(tone: "warn" | "tint", message: string): HTMLElement {
+  // 结构对齐既有的 .banner.warn 用法（workspace.ts::buildOutsideCellBanner）：icon() 自己
+  // 带 className "ico"，不用额外包一层 span。样张里的「→」在图标集里没有对应符号，
+  // 借「ext」（跳转/指向另一处的箭头）凑近似语义；tint 是这次新增的中性变体。
+  const banner = document.createElement("div");
+  banner.className = `banner ${tone}`;
+  banner.append(icon(tone === "warn" ? "warn" : "ext", { className: "ico" }));
+  const tx = document.createElement("span");
+  tx.className = "tx";
+  tx.textContent = message;
+  banner.append(tx);
+  return banner;
+}
+
+/** 距离某个 ISO 时间点还剩几天，向上取整：只要还没到点就至少算「还剩 1 天」，
+ *  不会在还剩 11 小时的时候显示「还剩 0 天」——那读起来像是已经过期了。 */
+function daysFromNow(iso: string): number {
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return 0;
+  return Math.max(0, Math.ceil((target - Date.now()) / 86400000));
+}
+
+/** 某个 ISO 时间点已经过去几天，向下取整；不满一天返回 0，由调用方改口说「刚刚」。 */
+function daysSince(iso: string): number {
+  const target = new Date(iso).getTime();
+  if (Number.isNaN(target)) return 0;
+  return Math.max(0, Math.floor((Date.now() - target) / 86400000));
+}
+
+/** 导出回执上的「在访达中显示」：复用「本地数据目录」按钮同款的 open_local_path 调用。 */
+async function revealSavedFile(path: string): Promise<void> {
   try {
-    const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
-    const response = await client.request<{ document: JsonObject; api_key_report: ApiKeyExportReport }>(
-      `/api/model-config/export${query}`,
-    );
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_local_path", { path, reveal: true });
+  } catch (error) {
+    showToast({ message: errorMessage(error), error: true });
+  }
+}
+
+function buildRolesList(preview: ModelImportPreview): HTMLUListElement {
+  const list = document.createElement("ul");
+  list.style.margin = "0 0 8px";
+  list.style.paddingLeft = "18px";
+  list.style.fontSize = "12.5px";
+  if (preview.roles.length) {
+    for (const item of preview.roles) {
+      const li = document.createElement("li");
+      li.textContent = `${item.role}：${item.fields.join("、") || "无显式字段"}`;
+      list.append(li);
+    }
+  } else {
+    const li = document.createElement("li");
+    li.textContent = "没有角色配置变更。";
+    list.append(li);
+  }
+  return list;
+}
+
+async function exportModelConfig(includeApiKey: boolean): Promise<void> {
+  if (includeApiKey) {
+    openExportWithKeyConfirmModal();
+    return;
+  }
+  try {
+    const response = await client.request<ModelConfigExportResponse>("/api/model-config/export");
     // 写进文件的只有 document。回执（哪条连接的密钥带走了、哪条被扣下了）只给本机
     // 用户看：混进导出文件等于额外附送一份本机连接清单给对方。
     // 成功 toast 必须等真的写完盘：文件里带着密钥，谎报「已导出」比不导出更糟。
+    // 不含 Key 的文件仍是纯 JSON，扩展名照旧留 .json。换成 .xltcfg 没有收益，代价却
+    // 是实打实的：9.2.4 及更早版本的导入选择器只接受 .json，收到 .xltcfg 的旧版用户
+    // 在文件框里根本选不中它，得自己改名——而这条路径正是发给「可能还没升级的人」用的。
+    // .xltcfg 留给含 Key 的加密文件：那种文件打开确实只有乱码，值得一个自己的扩展名。
     const saved = await saveJsonFile("translator-model-config.json", response.document);
     if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
-    const withheld = (response.api_key_report?.connections ?? []).filter((row) => row.status === "withheld_imported");
-    const withheldMemories = response.api_key_report?.provider_memories ?? [];
-    if (includeApiKey && (withheld.length || withheldMemories.length)) {
-      // 扣下密钥这件事一句 toast 说不下：既要列出是哪几条连接，又要说清后果
-      // （对方导入后得自己填这些连接的密钥），所以走弹窗。
-      openApiKeyExportReportModal(saved, response.api_key_report);
-      return;
-    }
-    showToast({ message: includeApiKey ? `已导出模型配置和明确勾选的 API 密钥到 ${saved}，请立即移入受保护的位置。` : `已导出模型配置到 ${saved}；默认不包含 API Key。` });
+    showToast({ message: `已导出模型配置到 ${saved}；默认不包含 API Key。` });
   } catch (error) {
     showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
   }
 }
 
-/** 有密钥被扣下时的说明弹窗；一条都没被扣下时不弹，那种情况一句 toast 就够。 */
-function openApiKeyExportReportModal(savedPath: string, report: ApiKeyExportReport): void {
+/** 「导出含 Key」确认弹窗：选有效期 + 明确的传播风险警告，替换掉原来那句 window.confirm。 */
+function openExportWithKeyConfirmModal(): void {
+  let validDays = DEFAULT_VALID_DAYS;
+  const select = document.createElement("select");
+  for (const option of VALID_DAYS_OPTIONS) {
+    const el = document.createElement("option");
+    el.value = String(option.value);
+    el.textContent = option.label;
+    if (option.value === DEFAULT_VALID_DAYS) el.selected = true;
+    select.append(el);
+  }
+  select.addEventListener("change", () => {
+    validDays = Number(select.value);
+  });
+  const field = createField("文件有效期", select);
+  field.style.marginTop = "16px";
+
+  const note = document.createElement("p");
+  note.className = "note";
+  note.style.marginTop = "-4px";
+  note.textContent = "过期后文件里的密钥无法再解开，配置部分仍可导入。";
+
+  let handle: ModalHandle;
+  handle = openModal({
+    tone: "tint",
+    icon: "gear",
+    sourceLabel: "设置 · 模型服务 · 导出含 Key",
+    title: "导出含 Key",
+    body: [
+      "密钥会加密后写进文件。对方用本软件导入即可自动解开，不需要口令，也不需要联网。",
+      buildInlineBanner("warn", "任何持有本软件的人都能解开这份文件。请只发给应当拿到这些密钥的人，不要发到公开群或网盘。"),
+      field,
+      note,
+    ],
+    actions: [
+      { label: "取消", variant: "default" },
+      {
+        label: "选择保存位置", variant: "primary", keepOpen: true,
+        onClick: async () => {
+          try {
+            const response = await client.request<ModelConfigExportResponse>(
+              `/api/model-config/export?include_api_key=true&confirm_sensitive=true&valid_days=${validDays}`,
+            );
+            const saved = await saveJsonFile("translator-model-config.xltcfg", response.document);
+            if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示，确认弹窗留在原地
+            // 弹窗切换到「导出完成」内容前，先关掉这一层——两个弹窗不叠放。
+            handle.close();
+            const withheld = (response.api_key_report?.connections ?? []).filter((row) => row.status === "withheld_imported");
+            const withheldMemories = response.api_key_report?.provider_memories ?? [];
+            // 加密之后回执还多担一件事：告诉用户这份文件哪天到期，这正是他要转告收件人
+            // 的信息，一句 toast 放不下。原有的「哪些密钥被扣下」触发条件一并保留——
+            // 本机的密钥全都是导入来的时，它们会被全部扣下，文件里一把密钥都不剩，
+            // sealed 因此是 false，可这恰恰是最需要逐条列清楚的一次导出。
+            if (response.sealed || withheld.length || withheldMemories.length) {
+              openApiKeyExportReportModal(saved, response);
+              return;
+            }
+            showToast({ message: `已导出模型配置到 ${saved}；本机目前没有已保存的 API Key，文件不含任何密钥。` });
+          } catch (error) {
+            // 不带前缀的话，写盘失败时弹出来的会是 Rust 那一层的系统错误原文，
+            // 用户看不出这是「导出」这件事出的错。
+            showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+          }
+        },
+      },
+    ],
+  });
+}
+
+/** 有密钥被扣下、或密钥已加密写入时的导出回执；两种情况分享同一个「已随文件导出/没有导出的
+ * 密钥」列表逻辑（这段逻辑本来就有，不动），只在顶部按是否加密加一段 kv 摘要。 */
+function openApiKeyExportReportModal(savedPath: string, response: ModelConfigExportResponse): void {
+  const report = response.api_key_report;
+  const { sealed, expires_at: expiresAt, sealed_key_count: sealedKeyCount } = response;
   const rows = report.connections ?? [];
   const withheld = rows.filter((row) => row.status === "withheld_imported");
   const exported = rows.filter((row) => row.status === "exported");
@@ -1776,7 +1987,19 @@ function openApiKeyExportReportModal(savedPath: string, report: ApiKeyExportRepo
     return list;
   };
 
-  const body: (string | HTMLElement)[] = [`配置已导出到 ${savedPath}。`];
+  const body: (string | HTMLElement)[] = [];
+  if (sealed) {
+    body.push(buildKvList([
+      ["文件", monoText(savedPath)],
+      // 数的是后端密封前实际数出来的密钥处数，不是回执里的连接行数：角色「换服务商时
+      // 记住的配置」里的密钥也会被一起加密带走，按连接行数报会少算，和收件人导入时
+      // 看到的作用域数对不上。
+      ["密钥", textAndChip(`${sealedKeyCount} 个作用域已加密写入 `, createChip({ label: "已加密", tone: "ok" }))],
+      ["有效期至", expiresAt ? `${formatReleaseDate(expiresAt)}（还剩 ${daysFromNow(expiresAt)} 天）` : "长期有效"],
+    ]));
+  } else {
+    body.push(`配置已导出到 ${savedPath}。`);
+  }
   if (withheld.length) {
     body.push(
       `以下 ${withheld.length} 条连接的密钥没有写进文件，因为它们是从别人的配置文件导入到这台电脑的：`,
@@ -1790,84 +2013,199 @@ function openApiKeyExportReportModal(savedPath: string, report: ApiKeyExportRepo
       buildList(memories, (row) => `${row.role_label || row.role}：${providerLabel(row.provider ?? "")}（${row.connection}）`, "8px"),
     );
   }
-  body.push("这样做是为了不把别人的密钥继续传出去。对方导入这份配置后，需要自己填写上面这些密钥。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。");
+  if (withheld.length || memories.length) {
+    body.push("这样做是为了不把别人的密钥继续传出去。对方导入这份配置后，需要自己填写上面这些密钥。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。");
+  }
   if (exported.length) {
     body.push(`已随文件导出的密钥（${exported.length} 条连接，请把文件放到受保护的位置）：`, buildList(exported, describe, "0"));
-  } else {
+  } else if (!sealed) {
     body.push("这次导出的文件里没有任何密钥，对方导入后需要自己填写全部连接的密钥。");
   }
 
   openModal({
-    tone: "warn",
-    icon: "warn",
+    tone: sealed ? "ok" : "warn",
+    icon: sealed ? "check" : "warn",
+    wide: true,
     sourceLabel: "设置 · 模型服务 · 导出含 Key",
-    title: "部分密钥没有导出",
+    title: sealed ? "已导出，密钥已加密" : "部分密钥没有导出",
     body,
-    actions: [{ label: "知道了", variant: "primary" }],
+    actions: [
+      { label: "在访达中显示", onClick: () => void revealSavedFile(savedPath), keepOpen: true },
+      { label: "知道了", variant: "primary" },
+    ],
   });
 }
 
 function importModelConfig(): void {
   pickJsonFile(async (fileName, payload) => {
-    const preview = await client.request<Omit<ModelImportPreview, "fileName" | "payload">>("/api/model-config/import/preview", { method: "POST", body: JSON.stringify(payload) });
+    let preview: Omit<ModelImportPreview, "fileName" | "payload">;
+    try {
+      preview = await client.request<Omit<ModelImportPreview, "fileName" | "payload">>(
+        "/api/model-config/import/preview",
+        { method: "POST", body: JSON.stringify(payload) },
+      );
+    } catch (error) {
+      // 后端在这句原话上给的是 422：文件被篡改或损坏，AAD 校验没过。这种情况有专门的
+      // 弹窗（样张界面 8），不走下面 pickJsonFile 自带的通用红色 toast。
+      if (errorMessage(error) === CORRUPT_IMPORT_DETAIL) {
+        openImportCorruptModal();
+        return;
+      }
+      throw error;
+    }
     modelImportPreview = { fileName, payload, ...preview };
     openImportPreviewModal();
-  }, "模型配置导入预览失败");
+  }, "模型配置导入预览失败", "application/json,.json,.xltcfg");
+}
+
+function openImportCorruptModal(): void {
+  openModal({
+    tone: "danger",
+    icon: "close",
+    sourceLabel: "设置 · 模型服务 · 导入配置",
+    title: "文件校验未通过",
+    // 第二句不是客套话：校验不过意味着文件可能是被人改过的（比如把某条连接的服务
+    // 地址换成别人的服务器），「确认文件来源」是这条路径上用户唯一能做的安全动作。
+    body: [CORRUPT_IMPORT_DETAIL, "如果重发后仍然报错，请联系发送方确认文件来源。"],
+    actions: [{ label: "知道了", variant: "primary" }],
+  });
+}
+
+/** 实际提交导入。四条分支路径（正常/旧版明文/过期/版本太旧）末尾都调这个，
+ * 只是「仅导入配置」两条路径提交的 payload 和「确认替换并导入」是同一份——
+ * 有效期只锁密钥，配置部分从不因为过期或版本不支持被拦下（决策见样张底部）。 */
+async function runModelConfigImport(preview: ModelImportPreview, handle: ModalHandle): Promise<void> {
+  try {
+    const result = await client.request<{ imported_key_count: number }>("/api/model-config/import", {
+      method: "POST", body: JSON.stringify(preview.payload),
+    });
+    modelImportPreview = null;
+    await refreshSettings();
+    for (const role of Object.keys(modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。");
+    renderBody();
+    handle.close();
+    const unsealedKeys = preview.seal_status === "unsealed" && result.imported_key_count > 0;
+    const keysClause = result.imported_key_count > 0
+      ? `；同时${unsealedKeys ? "解开并写入" : "写入"} ${result.imported_key_count} 个密钥作用域`
+      : "";
+    showToast({ message: `已导入配置，文件提到的角色其连接列表已整份替换${keysClause}。所有受影响角色均需重新测试。` });
+  } catch (error) {
+    showToast({ message: errorMessage(error), error: true });
+  }
 }
 
 function openImportPreviewModal(): void {
   const preview = modelImportPreview;
   if (!preview) return;
-  const list = document.createElement("ul");
-  list.style.margin = "0 0 8px";
-  list.style.paddingLeft = "18px";
-  list.style.fontSize = "12.5px";
-  if (preview.roles.length) {
-    for (const item of preview.roles) {
-      const li = document.createElement("li");
-      li.textContent = `${item.role}：${item.fields.join("、") || "无显式字段"}`;
-      list.append(li);
-    }
-  } else {
-    const li = document.createElement("li");
-    li.textContent = "没有角色配置变更。";
-    list.append(li);
+  switch (preview.seal_status) {
+    case "expired":
+      openImportExpiredModal(preview);
+      return;
+    case "unsupported":
+      openImportUnsupportedModal(preview);
+      return;
+    default:
+      // "unsealed" 和 "plaintext" 共用同一个正常预览弹窗，只是 plaintext 且确实带着
+      // 密钥时（排除「不含 Key」导出被重新导入、sealed_key_count === 0 的边界情况）
+      // 多加一条「明文」警告。
+      openImportNormalModal(preview);
   }
+}
+
+function openImportNormalModal(preview: ModelImportPreview): void {
+  const showPlaintextWarning = preview.legacy_plaintext && preview.sealed_key_count > 0;
+  const kvRows: [string, string | HTMLElement][] = [
+    ["文件", monoText(preview.fileName)],
+    ["包含", `${preview.roles.length} 个角色 · ${preview.throughput_profile_count} 项吞吐档案`],
+  ];
+  if (preview.sealed_key_count > 0) {
+    kvRows.push(["密钥", textAndChip(
+      `${preview.sealed_key_count} 个作用域 `,
+      showPlaintextWarning
+        ? createChip({ label: "明文", tone: "warn" })
+        : createChip({ label: "已自动解开", tone: "ok" }),
+    )]);
+    if (!showPlaintextWarning) {
+      kvRows.push(["有效期至", preview.expires_at
+        ? `${formatReleaseDate(preview.expires_at)}（还剩 ${daysFromNow(preview.expires_at)} 天）`
+        : "长期有效"]);
+    }
+  }
+
+  const body: (string | HTMLElement)[] = [buildKvList(kvRows)];
+  if (showPlaintextWarning) {
+    body.push(buildInlineBanner("warn", "这是旧版本导出的文件，密钥以明文保存在文件里，任何人用记事本打开都能看到。可以正常导入，建议导入后立刻删除这个文件。"));
+  }
+  body.push(
+    REPLACES_CONNECTIONS_NOTICE,
+    buildRolesList(preview),
+    "导入后受影响角色全部变为“未测试”，不会自动请求服务。",
+  );
+
   let handle: ModalHandle;
   handle = openModal({
-    tone: "warn",
-    icon: "gear",
+    tone: "tint",
+    icon: "down",
+    wide: true,
     sourceLabel: "设置 · 模型服务 · 导入配置",
     title: "预览导入模型配置",
-    body: [
-      // 别再写「不删除未提及配置」：连接池是整份替换的，本机在这些角色下自己加的
-      // 连接会连同它们保存的 Key 一起消失，说成「只合并」等于骗人。
-      `${preview.fileName} · 文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。`,
-      list,
-      `吞吐档案：${preview.throughput_profile_count} 项；文件中包含的密钥作用域：${preview.api_key_count} 个。导入后受影响角色全部变为“未测试”，不会自动请求服务。`,
-    ],
+    body,
     actions: [
       { label: "取消", variant: "default" },
       {
         // 按钮和 toast 都跟着正文的口径走：连接列表是整份替换的，再说「合并」会让用户
         // 以为本机自己加的连接还在，而它们连同已保存的 Key 已经没了。
         label: "确认替换并导入", variant: "primary", keepOpen: true,
-        onClick: async () => {
-          try {
-            const result = await client.request<{ imported_key_count: number }>("/api/model-config/import", {
-              method: "POST", body: JSON.stringify(preview.payload),
-            });
-            modelImportPreview = null;
-            await refreshSettings();
-            for (const role of Object.keys(modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。");
-            renderBody();
-            handle.close();
-            showToast({ message: `已导入配置，文件提到的角色其连接列表已整份替换；同时写入 ${result.imported_key_count} 个密钥作用域。所有受影响角色均需重新测试。` });
-          } catch (error) {
-            showToast({ message: errorMessage(error), error: true });
-          }
-        },
+        onClick: () => runModelConfigImport(preview, handle),
       },
+    ],
+  });
+}
+
+function openImportExpiredModal(preview: ModelImportPreview): void {
+  const elapsedDays = preview.expires_at ? daysSince(preview.expires_at) : 0;
+  let handle: ModalHandle;
+  handle = openModal({
+    tone: "warn",
+    icon: "warn",
+    wide: true,
+    sourceLabel: "设置 · 模型服务 · 导入配置",
+    title: "这份文件已过期",
+    body: [
+      `文件的有效期是 ${preview.expires_at ? formatReleaseDate(preview.expires_at) : "未知"}，${elapsedDays > 0 ? `已经过去 ${elapsedDays} 天` : "刚刚过期"}，里面的密钥无法再解开。`,
+      buildKvList([
+        ["包含", `${preview.roles.length} 个角色 · ${preview.throughput_profile_count} 项吞吐档案`],
+        ["密钥", textAndChip(`${preview.sealed_key_count} 个作用域 `, createChip({ label: "已失效，无法解开", tone: "warn" }))],
+      ]),
+      buildInlineBanner("tint", "连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。"),
+      // 「仅导入配置」提交的 payload 和正常导入的完全一样，连接列表照样整份替换。
+      // 不写这一句，「仅」字会让人以为影响有限，而本机自己加的连接和它们的 Key
+      // 已经没了，用户只能在事后的 toast 里第一次看到这件事。
+      REPLACES_CONNECTIONS_NOTICE,
+    ],
+    actions: [
+      { label: "取消", variant: "default" },
+      { label: "仅导入配置（替换现有连接）", variant: "primary", keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
+    ],
+  });
+}
+
+function openImportUnsupportedModal(preview: ModelImportPreview): void {
+  let handle: ModalHandle;
+  handle = openModal({
+    tone: "warn",
+    icon: "restart",
+    wide: true,
+    sourceLabel: "设置 · 模型服务 · 导入配置",
+    title: "需要更新软件才能解开密钥",
+    body: [
+      `这份文件由更新版本的 XL Translator 导出，当前版本（${PACKAGE_VERSION}）无法解开其中的密钥。`,
+      buildInlineBanner("tint", "更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。"),
+      REPLACES_CONNECTIONS_NOTICE, // 同过期弹窗：「仅」字不代表影响有限，见那边的注释
+    ],
+    actions: [
+      { label: "仅导入配置（替换现有连接）", keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
+      { label: "前往更新", variant: "primary", onClick: () => navigate("settings", { page: "about" }) },
     ],
   });
 }
@@ -1934,10 +2272,14 @@ function openDocumentImportPreviewModal(fileName: string, payload: JsonObject, a
   });
 }
 
-function pickJsonFile(onPicked: (fileName: string, payload: JsonObject) => Promise<void>, failureLabel: string): void {
+function pickJsonFile(
+  onPicked: (fileName: string, payload: JsonObject) => Promise<void>,
+  failureLabel: string,
+  accept = "application/json,.json",
+): void {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "application/json,.json";
+  input.accept = accept;
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
