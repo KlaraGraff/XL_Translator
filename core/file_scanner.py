@@ -21,6 +21,7 @@ from pathlib import Path
 from loguru import logger
 from lxml import etree
 
+from core.user_facing_errors import humanize_error
 from core.xlsx_patcher import NS_A, NS_XDR
 
 SUPPORTED_EXCEL_SUFFIXES = {".xlsx", ".xls"}
@@ -54,6 +55,9 @@ class FileItem:
     # 其 <a:t> 至少有一处非空文本的个数；纯装饰性形状（无文字）不计入。
     # None 语义同 image_count：目前仅 .xls 为 None。
     shape_text_count: int | None = None
+    # 带批注的单元格数量（批注文字不翻译，原样保留）。同一格上的多条回复算一条。
+    # None 语义同 image_count：目前仅 .xls 为 None。
+    comment_count: int | None = None
 
 
 @dataclass
@@ -106,6 +110,14 @@ class ExcelScanResult:
             "shape_text_count": sum(known_shape_text_counts),
             "shape_text_count_unknown_files": sum(
                 1 for item in self.items if item.shape_text_count is None
+            ),
+            "comment_count": sum(
+                item.comment_count
+                for item in self.items
+                if item.comment_count is not None
+            ),
+            "comment_count_unknown_files": sum(
+                1 for item in self.items if item.comment_count is None
             ),
         }
 
@@ -212,8 +224,12 @@ def _scan_one_excel_file(
     try:
         result.items.append(_build_file_item(path, root=root))
     except Exception as exc:  # scan must not hide a corrupt/unreadable file
-        message = f"读取失败：{exc}"
-        logger.warning(f"扫描文件失败 {path.name}：{exc}")
+        # 这句会原样出现在「查看扫描报告」里。原来直接拼 str(exc)，用户看到的是
+        # File is not a zip file 之类的英文库报错，既不知道是哪一类问题也不知道怎么办。
+        message = "读取失败：" + humanize_error(
+            exc, fallback="这个文件读不出来，可能已损坏或格式与后缀不符。"
+        )
+        logger.warning(f"扫描文件失败 {path.name}：{exc!r}")
         result.skipped.append(
             ScanSkippedItem(
                 path=path,
@@ -252,6 +268,13 @@ def _count_xls_text_cells(wb) -> int:
 
 
 _DRAWING_PART_RE = re.compile(r"^xl/drawings/drawing\d+\.xml$")
+# 传统批注（Excel 里的「注释」）与新版对话式批注。Excel 写新版批注时会同时留一份
+# 传统批注做兼容，两边的 ref 指的是同一个格子——按 (部件序号, ref) 去重，否则同一条
+# 批注会被数两遍。序号来自文件名：comments3.xml 与 threadedComment3.xml 对同一张表。
+_COMMENTS_PART_RE = re.compile(r"^xl/comments(\d+)\.xml$")
+_THREADED_COMMENTS_PART_RE = re.compile(
+    r"^xl/threadedComments/threadedComment(\d+)\.xml$"
+)
 _CELL_IMAGES_PART = "xl/cellimages.xml"
 _RICH_VALUE_PART = "xl/richData/rdrichvalue.xml"
 _RICH_VALUE_STRUCTURE_PART = "xl/richData/rdrichvaluestructure.xml"
@@ -334,8 +357,44 @@ def _count_rich_value_rels(data: bytes) -> int:
     return sum(1 for child in root if _local_name(child.tag) == "rel")
 
 
-def _count_xlsx_images_and_shapes(path: Path) -> tuple[int, int]:
-    """统计 .xlsx 内嵌入图片数量与含文字文本框/形状数量。
+def _count_comment_refs(data: bytes, tag: str) -> set[str]:
+    """收集一个批注部件里所有带批注的单元格地址。
+
+    按地址去重：一个格子上挂三条回复是一条批注，不是三条。
+    """
+    root = etree.fromstring(data)
+    refs: set[str] = set()
+    for node in root.iter():
+        if _local_name(node.tag) != tag:
+            continue
+        ref = (node.get("ref") or "").strip()
+        if ref:
+            refs.add(ref)
+    return refs
+
+
+def _count_xlsx_comments(archive: zipfile.ZipFile, names: list[str], label: str) -> int:
+    """统计 .xlsx 内带批注的单元格数量（传统批注 ∪ 新版对话式批注）。"""
+    per_sheet: dict[str, set[str]] = {}
+    for name in names:
+        legacy = _COMMENTS_PART_RE.match(name)
+        threaded = _THREADED_COMMENTS_PART_RE.match(name)
+        match = legacy or threaded
+        if not match:
+            continue
+        try:
+            refs = _count_comment_refs(
+                archive.read(name), "comment" if legacy else "threadedComment"
+            )
+        except Exception as exc:
+            logger.debug(f"解析 {name} 失败（{label}）：{exc}")
+            continue
+        per_sheet.setdefault(match.group(1), set()).update(refs)
+    return sum(len(refs) for refs in per_sheet.values())
+
+
+def _count_xlsx_images_and_shapes(path: Path) -> tuple[int, int, int]:
+    """统计 .xlsx 内嵌入图片数、含文字文本框/形状数、带批注单元格数。
 
     只读取需要的 zip 部件，不解压整包。任何部件缺失或解析失败都不应让扫描
     失败——按 0 处理并继续，损坏文件的判定仍然只看 _build_file_item 外层
@@ -343,9 +402,11 @@ def _count_xlsx_images_and_shapes(path: Path) -> tuple[int, int]:
     """
     image_count = 0
     shape_text_count = 0
+    comment_count = 0
     try:
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
+            comment_count = _count_xlsx_comments(archive, names, path.name)
             for name in names:
                 if not _DRAWING_PART_RE.match(name):
                     continue
@@ -389,9 +450,9 @@ def _count_xlsx_images_and_shapes(path: Path) -> tuple[int, int]:
                 except Exception as exc:
                     logger.debug(f"解析 richValueRel.xml 失败（{path.name}）：{exc}")
     except Exception as exc:
-        logger.debug(f"统计嵌入图片/文本框失败（{path.name}）：{exc}")
-        return 0, 0
-    return image_count, shape_text_count
+        logger.debug(f"统计嵌入图片/文本框/批注失败（{path.name}）：{exc}")
+        return 0, 0, 0
+    return image_count, shape_text_count, comment_count
 
 
 def _relative_path(path: Path, root: Path) -> str:
@@ -415,6 +476,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         # 「未知」，不要猜成 0（那会被误读成「确认没有」）。
         image_count = None
         shape_text_count = None
+        comment_count = None
     else:
         from openpyxl import load_workbook
         wb = load_workbook(str(path), read_only=True, data_only=True)
@@ -423,7 +485,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
             text_cell_count = _count_xlsx_text_cells(wb)
         finally:
             wb.close()
-        image_count, shape_text_count = _count_xlsx_images_and_shapes(path)
+        image_count, shape_text_count, comment_count = _count_xlsx_images_and_shapes(path)
 
     size_kb = path.stat().st_size / 1024
 
@@ -440,6 +502,7 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         text_cell_count=text_cell_count,
         image_count=image_count,
         shape_text_count=shape_text_count,
+        comment_count=comment_count,
         risk=(
             {
                 "compatibility_required": True,

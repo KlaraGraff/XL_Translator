@@ -36,6 +36,7 @@ import {
   showToast,
   type ChipTone,
   type LanguageOption,
+  type ModalHandle,
   type StatusTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
@@ -71,10 +72,11 @@ type FileItem = JsonObject & {
   oversized_page_count?: number | null;
   source_type?: string;
   needs_conversion?: boolean;
-  // 以下三个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
+  // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
   image_count?: number | null;
   shape_text_count?: number | null;
+  comment_count?: number | null;
   anchor_frozen_count?: number;
 };
 
@@ -125,6 +127,12 @@ const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", p
 const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf" };
 const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译" };
 const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件" };
+
+/** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
+function fileNounPhrase(surface: Surface, count: number): string {
+  const noun = SURFACE_FILE_NOUN[surface];
+  return `${count} 个${/^[A-Za-z]/.test(noun) ? " " : ""}${noun}`;
+}
 const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
   excel: "选择文件或文件夹，扫描后勾选要翻译的表格",
   word: "选择文件或文件夹，扫描后勾选要翻译的文档",
@@ -216,8 +224,15 @@ interface LocalTask {
   logs: Array<{ seq: number; time: string; level: string; message: string }>;
   phaseName: string;
   percent: number;
+  /** 当前阶段序号 / 总阶段数（progress 事件的 phase_index / phase_total）。用来把
+   *  阶段内进度折算成整条进度，也用来在进度卡上写明「阶段 2 / 4」。 */
+  phaseIndex: number;
+  phaseTotal: number;
   streamState: "connected" | "reconnecting";
   watcherActive: boolean;
+  /** 最后一次收到任何事件的时刻。一批请求发出去到回来之间引擎不说话，界面得自己
+   *  报一句「还在等」，否则十几秒没动静看起来和卡死一模一样。 */
+  lastEventAt: number;
   fileStage: Map<string, "queued" | "active" | "done" | "error">;
   wordRecovery?: JsonObject;
   pdfPageRecovery?: JsonObject;
@@ -225,6 +240,25 @@ interface LocalTask {
   /** 逐页拉取的快照（GET /pdf-pages）。没有逐页 SSE——收到聚合事件或任务状态变化时重新拉取一次，
    *  见 fetchPdfPagesSnapshot() 与它的调用点清单。终态后不清空，保留最后一次结果供「查看对比」使用。 */
   pdfPagesSnapshot?: PdfPagesSnapshot;
+}
+
+/** 结果的三种口气：全部产出、产出了但有事要说、没能产出。 */
+type ResultTone = "ok" | "warn" | "fail";
+
+interface BannerInfo {
+  title: string;
+  subtitle: string;
+  tone: ResultTone;
+  /** 顶栏那颗徽章的字。和横幅同一份判断，不再靠对副标题做正则猜结论。 */
+  statusLabel: string;
+  /** 没有任何产出时不给「打开输出目录」——那个目录里没有用户要的东西。 */
+  hasOutput: boolean;
+}
+
+interface FileOutcome {
+  produced: boolean;
+  label: string;
+  detail: string;
 }
 
 interface SurfaceState {
@@ -242,7 +276,10 @@ interface SurfaceState {
   task: LocalTask | null;
   hasEverCompleted: boolean;
   showBanner: boolean;
-  bannerInfo: { title: string; subtitle: string } | null;
+  bannerInfo: BannerInfo | null;
+  /** 上一次任务的逐文件结果，键是 file_results[].source_path。任务结束后清单不再清空，
+   *  这份结果用来在「状态」列上标出哪几个文件真的产出了、哪几个没有。 */
+  fileOutcomes: Map<string, FileOutcome>;
   /** Excel 完成汇总里那句「哪些内容没被翻译」。finishTask 会清空 st.files，
    *  所以必须在清空前把要说的数据快照下来，跟着完成横幅一起展示。 */
   excelDoneNotice: ExcelDoneNotice | null;
@@ -276,6 +313,7 @@ function freshState(surface: Surface): SurfaceState {
     hasEverCompleted: false,
     showBanner: false,
     bannerInfo: null,
+    fileOutcomes: new Map(),
     excelDoneNotice: null,
     allowXlsFallback: false,
     allowDocFallback: false,
@@ -423,6 +461,8 @@ async function persistSettings(patch: JsonObject): Promise<void> {
 export function mountWorkspace(container: HTMLElement, _params: ViewParams, surface: Surface): void {
   const st = states[surface];
   st.renderer = () => renderInto(container, surface);
+  // 中途切走再回来时任务还在跑（st.task 是模块级状态），静默计时器得跟着这一屏重新起。
+  if (st.task && !st.task.task.terminal) startSilenceTicker(surface);
   renderLoading(container, surface);
   ensureBootstrap()
     .then(() => adoptExistingTask(surface))
@@ -437,6 +477,9 @@ export function mountWorkspace(container: HTMLElement, _params: ViewParams, surf
 
 export function unmountWorkspace(surface: Surface): void {
   states[surface].renderer = null;
+  // 离开这一屏后没人看那句「已等待 N 秒」，计时器再走就是白转（rerender 也已经是空操作）。
+  // 任务本身不受影响：事件流由 watchTask 维护，回到这一屏时 startSilenceTicker 会重新起。
+  stopSilenceTicker(surface);
   // 提示气泡、语言选择器浮层、「浏览」按钮的锚定菜单都挂在 document.body 上，不随 container
   // 一起被清掉。不主动关就会留下一个悬在半空的面板，而且模块级的「当前展开项」指针还指着已死的闭包。
   hideHint();
@@ -577,11 +620,15 @@ function rerender(surface: Surface): void {
 
 function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void {
   if (st.showBanner && st.bannerInfo) {
-    const warn = /需复核/.test(st.bannerInfo.subtitle);
+    // 状态直接来自任务终态和逐文件结果（见 finishTask 的 resultTone）。以前这里靠
+    // 对副标题正则匹配「需复核」来决定颜色，于是失败的任务也顶着一个绿色「已完成」。
+    const info = st.bannerInfo;
     setTopbar({
       title: SURFACE_PAGE_TITLE[surface],
-      status: { label: warn ? "已完成 · 需复核" : "已完成", tone: warn ? "warn" : "ok" },
-      subtitle: "任务已归档到任务中心，可随时回看完整报告",
+      status: { label: info.statusLabel, tone: info.tone === "fail" ? "danger" : info.tone },
+      subtitle: info.tone === "fail"
+        ? "任务已归档到任务中心，可在完整报告里看失败原因"
+        : "任务已归档到任务中心，可随时回看完整报告",
     });
     return;
   }
@@ -592,7 +639,7 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     const domainSuffix = surface !== "pdf" ? ` · ${st.domainPreset}` : "";
     const subtitle = surface === "pdf"
       ? `${st.sourcePath.split("/").pop() || "PDF / 图片任务"} · → ${targetLabel(st)}`
-      : `${fileCount} 个${SURFACE_FILE_NOUN[surface]} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
+      : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
     return;
   }
@@ -600,7 +647,7 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     setTopbar({
       title: SURFACE_PAGE_TITLE[surface],
       status: { label: "已扫描 · 待开始", tone: "run" },
-      subtitle: `已找到 ${st.files.length} 个${SURFACE_FILE_NOUN[surface]}，勾选后开始翻译`,
+      subtitle: `已找到 ${fileNounPhrase(surface, st.files.length)}，勾选后开始翻译`,
     });
     return;
   }
@@ -636,21 +683,26 @@ function targetLabel(st: SurfaceState): string {
 
 function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
   const info = st.bannerInfo!;
-  const openDir = createButton({
-    label: "打开输出目录",
-    icon: "folder",
-    onClick: () => openTaskLocalFile(st.lastOutputPath, true),
-  });
-  const openReport = createButton({
-    label: "查看完整报告",
+  const actions: HTMLElement[] = [];
+  // 一个文件都没产出时不给「打开输出目录」：点进去只有空目录，等于骗他跑一趟。
+  if (info.hasOutput) {
+    actions.push(createButton({
+      label: "打开输出目录",
+      icon: "folder",
+      onClick: () => openTaskLocalFile(st.lastOutputPath, true),
+    }));
+  }
+  actions.push(createButton({
+    label: info.tone === "fail" ? "查看失败原因" : "查看完整报告",
     icon: "ext",
     onClick: () => navigate("tasks", { taskId: st.lastTaskId }),
-  });
+  }));
   return createBanner({
     title: info.title,
     subtitle: info.subtitle,
-    icon: "check",
-    actions: [openDir, openReport],
+    icon: info.tone === "ok" ? "check" : "warn",
+    tone: info.tone,
+    actions,
     onClose: () => {
       st.showBanner = false;
       rerender(surface);
@@ -727,7 +779,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     onClick: () => {
       openMenu(browseBtn, [
         { label: "选择文件夹…", description: "递归扫描目录下所有可翻译文件", onSelect: () => void pickSource(surface, st, input, true) },
-        { label: `选择单个${SURFACE_FILE_NOUN[surface]}…`, description: "只扫描并翻译这一个文件", onSelect: () => void pickSource(surface, st, input, false) },
+        { label: `选择单个 ${SURFACE_FILE_NOUN[surface]}…`, description: "只扫描并翻译这一个文件", onSelect: () => void pickSource(surface, st, input, false) },
       ]);
     },
   });
@@ -883,7 +935,7 @@ function fileLabel(f: FileItem): string {
 
 type MaybeCount = number | "unknown" | "n/a";
 
-function maybeCount(file: FileItem, key: "image_count" | "shape_text_count" | "oversized_page_count"): MaybeCount {
+function maybeCount(file: FileItem, key: "image_count" | "shape_text_count" | "comment_count" | "oversized_page_count"): MaybeCount {
   if (!hasOwn(file, key)) return "n/a";
   const value = file[key];
   return typeof value === "number" && Number.isFinite(value) ? value : "unknown";
@@ -894,6 +946,8 @@ interface OutsideCellStats {
   images: number;
   /** 已数清的含文字文本框/形状总数。 */
   shapes: number;
+  /** 已数清的带批注单元格总数。批注文字同样不翻译，原样保留。 */
+  comments: number;
   /** 至少有一项数不出来的文件数——对应后端 summary 的 *_unknown_files，不能吞掉。 */
   unknownFiles: number;
   /** 两个字段里至少有一个不是 n/a 的文件数。全批次都是 0，说明这批文件根本不产出这两个
@@ -903,52 +957,56 @@ interface OutsideCellStats {
 }
 
 function outsideCellStats(files: FileItem[]): OutsideCellStats {
-  const stats: OutsideCellStats = { images: 0, shapes: 0, unknownFiles: 0, presentFiles: 0 };
+  const stats: OutsideCellStats = { images: 0, shapes: 0, comments: 0, unknownFiles: 0, presentFiles: 0 };
   for (const file of files) {
     const images = maybeCount(file, "image_count");
     const shapes = maybeCount(file, "shape_text_count");
+    const comments = maybeCount(file, "comment_count");
     if (typeof images === "number") stats.images += images;
     if (typeof shapes === "number") stats.shapes += shapes;
-    if (images === "unknown" || shapes === "unknown") stats.unknownFiles += 1;
-    if (images !== "n/a" || shapes !== "n/a") stats.presentFiles += 1;
+    if (typeof comments === "number") stats.comments += comments;
+    if (images === "unknown" || shapes === "unknown" || comments === "unknown") stats.unknownFiles += 1;
+    if (images !== "n/a" || shapes !== "n/a" || comments !== "n/a") stats.presentFiles += 1;
   }
   return stats;
 }
 
 /** 有没有确凿数出来的东西。为 false 时可能是「确认没有」，也可能是「全都没数出来」。 */
 function hasKnownOutside(stats: OutsideCellStats): boolean {
-  return stats.images > 0 || stats.shapes > 0;
+  return stats.images > 0 || stats.shapes > 0 || stats.comments > 0;
 }
 
-/** 「9 张图片、4 个文本框」；两项都是 0 时返回空串。 */
-function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes">): string {
+/** 「9 张图片、4 个文本框、3 条批注」；全为 0 时返回空串。 */
+function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes" | "comments">): string {
   const parts: string[] = [];
   if (stats.images > 0) parts.push(`${stats.images.toLocaleString("zh-CN")} 张图片`);
   if (stats.shapes > 0) parts.push(`${stats.shapes.toLocaleString("zh-CN")} 个文本框`);
+  if (stats.comments > 0) parts.push(`${stats.comments.toLocaleString("zh-CN")} 条批注`);
   return parts.join("、");
 }
 
 /** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。字段在整批文件上都缺失时返回 null——
  *  这一格不该出现，不是「确认为 0」。调用方（computeStats）负责把 null 从数组里滤掉。 */
 function outsideCellStat(stats: OutsideCellStats): StatCell | null {
-  const label = "图片 / 文本框";
+  const label = "图片 / 文本框 / 批注";
   const unknownNote = stats.unknownFiles > 0 ? `${stats.unknownFiles} 个 .xls 未统计` : "";
+  const n = (value: number) => value.toLocaleString("zh-CN");
   if (hasKnownOutside(stats)) {
     return {
       label,
-      value: `${stats.images.toLocaleString("zh-CN")} / ${stats.shapes.toLocaleString("zh-CN")}`,
+      value: `${n(stats.images)} / ${n(stats.shapes)} / ${n(stats.comments)}`,
       attn: true,
       sub: unknownNote ? `不翻译，原样保留 · ${unknownNote}` : "不翻译，原样保留",
     };
   }
-  // 一个都没数出来时不能写「0 / 0」——那是「确认没有」的说法。留「—」并说明原因。
+  // 一个都没数出来时不能写「0 / 0 / 0」——那是「确认没有」的说法。留「—」并说明原因。
   if (stats.unknownFiles > 0) {
     return { label, value: "—", dim: true, sub: `${stats.unknownFiles} 个 .xls 需转换后才能统计` };
   }
-  // 两个字段在整批文件上都不存在（不是数出来是 0）——这个 surface/这版后端根本不产出
-  // 这项信息，不该显示「0 / 0」把「不知道」说成「没有」，整格直接不渲染。
+  // 这几个字段在整批文件上都不存在（不是数出来是 0）——这个 surface/这版后端根本不产出
+  // 这项信息，不该显示「0 / 0 / 0」把「不知道」说成「没有」，整格直接不渲染。
   if (stats.presentFiles === 0) return null;
-  return { label, value: "0 / 0", dim: true, sub: "无" };
+  return { label, value: "0 / 0 / 0", dim: true, sub: "无" };
 }
 
 /** 接入点 2 · 扫描后、任务清单上方的说明横幅。没有可说的就返回 null，不占版面。 */
@@ -964,13 +1022,13 @@ function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
   const title = el("div", "tt");
   title.textContent = known
     ? `这批文件里有 ${outsideCellPhrase(stats)}不会被翻译`
-    : `有 ${stats.unknownFiles} 个 .xls 文件暂时数不出图片和文本框`;
+    : `有 ${stats.unknownFiles} 个 .xls 文件暂时数不出图片、文本框和批注`;
   const body = el("div", "bd");
   body.textContent = known
-    ? "翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框和形状里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。"
-    : "翻译只覆盖单元格里的文字，图片和文本框里的字会原样保留。";
+    ? "翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框、形状和批注里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。"
+    : "翻译只覆盖单元格里的文字，图片、文本框和批注里的字会原样保留。";
   if (stats.unknownFiles > 0) {
-    body.textContent += `另有 ${stats.unknownFiles} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有图片或文本框，同样不会被翻译。`;
+    body.textContent += `另有 ${stats.unknownFiles} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有这些内容，同样不会被翻译。`;
   }
   tx.append(title, body);
   banner.append(tx);
@@ -983,13 +1041,15 @@ function showOutsideCellModal(st: SurfaceState): void {
   for (const file of st.files) {
     const images = maybeCount(file, "image_count");
     const shapes = maybeCount(file, "shape_text_count");
-    if (images === "unknown" || shapes === "unknown") {
+    const comments = maybeCount(file, "comment_count");
+    if (images === "unknown" || shapes === "unknown" || comments === "unknown") {
       lines.push(`${fileLabel(file)} — 未知（.xls 需转换后才能统计）`);
       continue;
     }
     const phrase = outsideCellPhrase({
       images: typeof images === "number" ? images : 0,
       shapes: typeof shapes === "number" ? shapes : 0,
+      comments: typeof comments === "number" ? comments : 0,
     });
     if (phrase) lines.push(`${fileLabel(file)} — ${phrase}`);
   }
@@ -1007,6 +1067,7 @@ function showOutsideCellModal(st: SurfaceState): void {
 function buildOutsideCellChips(file: FileItem): HTMLElement[] {
   const images = maybeCount(file, "image_count");
   const shapes = maybeCount(file, "shape_text_count");
+  const comments = maybeCount(file, "comment_count");
   const chips: HTMLElement[] = [];
   if (typeof images === "number" && images > 0) {
     chips.push(createChip({ label: `🖼 ${images.toLocaleString("zh-CN")} 张图片`, className: "oob" }));
@@ -1014,8 +1075,11 @@ function buildOutsideCellChips(file: FileItem): HTMLElement[] {
   if (typeof shapes === "number" && shapes > 0) {
     chips.push(createChip({ label: `▭ ${shapes.toLocaleString("zh-CN")} 个文本框`, className: "oob" }));
   }
+  if (typeof comments === "number" && comments > 0) {
+    chips.push(createChip({ label: `💬 ${comments.toLocaleString("zh-CN")} 条批注`, className: "oob" }));
+  }
   // 未知和已知可以并存（真出现时两条都要说），所以是追加而不是二选一。
-  if (images === "unknown" || shapes === "unknown") {
+  if (images === "unknown" || shapes === "unknown" || comments === "unknown") {
     chips.push(createChip({ label: "? 未知（.xls 需转换后才能统计）", className: "oob mut" }));
   }
   if (chips.length) return chips;
@@ -1089,7 +1153,11 @@ function oversizedPageNote(file: FileItem): { text: string; warn: boolean } | nu
   if (count === "n/a") return null;
   if (count === "unknown") return { text: "幅面未知", warn: false };
   if (count <= 0) return null;
-  return { text: `${count} 页 A3+`, warn: true };
+  // 「1 页 · 1 页 A3+」读起来像两件事。整份都是大幅面时直接说「整份都是 A3+」，
+  // 部分时说「其中 N 页 A3+」，都跟在总页数后面，语义才连得上。
+  const pages = num(file.page_count);
+  if (pages > 0 && count >= pages) return { text: "整份都是 A3+", warn: true };
+  return { text: `其中 ${count} 页 A3+`, warn: true };
 }
 
 /** 整份文件都是大幅面页——开着跳过开关选它等于什么都不会翻，扫描阶段就得说。 */
@@ -1138,10 +1206,12 @@ function buildExcelDoneNotice(st: SurfaceState, result: JsonObject): ExcelDoneNo
 
 function buildExcelDoneCard(notice: ExcelDoneNotice): HTMLElement {
   const box = el("div", "done");
-  box.append(icon("check", { className: "ico" }));
+  box.append(icon("warn", { className: "ico" }));
   const tx = el("div");
   const title = el("div", "tt");
-  title.textContent = `翻译完成 · ${notice.fileCount} 个文件，${notice.cellCount.toLocaleString("zh-CN")} 个单元格`;
+  // 「翻译完成 · N 个文件」以前写在这里，和上面那张横幅的标题说的是同一件事。这张卡
+  // 只负责一件事：说清哪些内容按设定没有翻译。
+  title.textContent = `按设定未翻译的内容 · 本批 ${notice.fileCount} 个文件、${notice.cellCount.toLocaleString("zh-CN")} 个文本单元格`;
   const body = el("div", "bd");
   const phrase = outsideCellPhrase(notice.stats);
   if (phrase) {
@@ -1151,7 +1221,7 @@ function buildExcelDoneCard(notice: ExcelDoneNotice): HTMLElement {
     body.append(em, document.createTextNode("中的文字未翻译，已原样保留。"));
   }
   if (notice.stats.unknownFiles > 0) {
-    body.append(document.createTextNode(`${notice.stats.unknownFiles} 个 .xls 文件的图片和文本框未能统计，其中的文字同样没有翻译。`));
+    body.append(document.createTextNode(`${notice.stats.unknownFiles} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样没有翻译。`));
   }
   if (notice.anchorFrozen > 0) {
     body.append(document.createTextNode(`${notice.anchorFrozen.toLocaleString("zh-CN")} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。`));
@@ -1175,9 +1245,23 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     b.textContent = "任务清单";
     head.append(b);
     card.append(head);
-    const copy = st.hasEverCompleted ? SURFACE_BANNER_EMPTY[surface] : SURFACE_FIRST_EMPTY[surface];
+    // 全部输入都被跳过时，清单是空的但原因是明摆着的——扫描到了文件，只是一个都不能翻。
+    // 这时候还说「拖入文件开始」等于把刚发生的事抹掉，人会以为路径选错了反复重扫。
+    const allSkipped = st.skipped.length > 0;
+    const copy = allSkipped
+      ? {
+          title: `扫描到的 ${st.skipped.length} 个输入都没能纳入清单`,
+          description: "下方列出了每一个的原因；处理掉原因后重新扫描即可。",
+        }
+      : !st.hasEverCompleted
+        ? SURFACE_FIRST_EMPTY[surface]
+        : st.bannerInfo?.tone === "fail"
+          ? { title: "上一个任务没有顺利完成", description: "失败原因在任务中心的完整报告里；也可以重新选择来源再试一次。" }
+          : SURFACE_BANNER_EMPTY[surface];
     const empty = createEmptyState({ title: copy.title, description: copy.description, icon: SURFACE_ICON[surface] });
     card.append(empty);
+    const skipRow = buildSkipNoticeRow(surface, st);
+    if (skipRow) card.append(skipRow);
     return card;
   }
 
@@ -1213,25 +1297,30 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
   tableWrap.append(table);
   card.append(tableWrap);
 
-  if (st.skipped.length) {
-    const skipRow = el("div", "tc-head");
-    skipRow.style.cssText = "border-top:1px solid var(--line);border-bottom:0";
-    const warnIcon = icon("warn", { size: "sm" });
-    warnIcon.style.color = "var(--warn)";
-    const label = el("span");
-    const names = st.skipped.slice(0, 2).map((s) => text(s.name, text(s.relative_path, s.path))).filter(Boolean);
-    const extra = st.skipped.length > names.length ? `等 ${st.skipped.length} 项` : names.join("、");
-    label.textContent = `扫描时跳过 ${st.skipped.length} 项${names.length ? `：${extra}` : ""}`;
-    const skipTools = el("div", "tc-tools");
-    const reportLink = el("span", "linklike");
-    reportLink.textContent = "查看扫描报告";
-    reportLink.addEventListener("click", () => showSkipReportModal(surface, st));
-    skipTools.append(reportLink);
-    skipRow.append(warnIcon, label, skipTools);
-    card.append(skipRow);
-  }
+  const skipRow = buildSkipNoticeRow(surface, st);
+  if (skipRow) card.append(skipRow);
 
   return card;
+}
+
+/** 「扫描时跳过 N 项」那一条。清单有内容和一个都没纳入时都要出现，所以单独拿出来。 */
+function buildSkipNoticeRow(surface: Surface, st: SurfaceState): HTMLElement | null {
+  if (!st.skipped.length) return null;
+  const skipRow = el("div", "tc-head");
+  skipRow.style.cssText = "border-top:1px solid var(--line);border-bottom:0";
+  const warnIcon = icon("warn", { size: "sm" });
+  warnIcon.style.color = "var(--warn)";
+  const label = el("span");
+  const names = st.skipped.slice(0, 2).map((s) => text(s.name, text(s.relative_path, s.path))).filter(Boolean);
+  const extra = st.skipped.length > names.length ? `等 ${st.skipped.length} 项` : names.join("、");
+  label.textContent = `扫描时跳过 ${st.skipped.length} 项${names.length ? `：${extra}` : ""}`;
+  const skipTools = el("div", "tc-tools");
+  const reportLink = el("span", "linklike");
+  reportLink.textContent = "查看扫描报告";
+  reportLink.addEventListener("click", () => showSkipReportModal(surface, st));
+  skipTools.append(reportLink);
+  skipRow.append(warnIcon, label, skipTools);
+  return skipRow;
 }
 
 function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
@@ -1314,14 +1403,27 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
   }
 
   const statusCell = el("td");
+  const outcome = st.fileOutcomes.get(file.path);
   if (!st.selected.has(file.path)) {
     statusCell.append(createChip({ label: "已排除", tone: "mute" }));
+  } else if (outcome) {
+    // 跑过之后这一列说的是结果，不再说开跑前的预判——那时候的「需先转换」已经成了旧闻。
+    const chip = createChip({
+      label: outcome.label,
+      tone: outcome.produced ? "ok" : "dgr",
+      icon: outcome.produced ? undefined : "warn",
+    });
+    if (outcome.detail) chip.title = outcome.detail;
+    statusCell.append(chip);
   } else if (isRisky(surface, file)) {
     statusCell.append(createChip({ label: "需先转换", tone: "warn", icon: "warn" }));
   } else if (surface === "pdf" && isAllOversized(file)) {
     // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
     // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
     statusCell.append(createChip({ label: "整份均为大幅面", tone: "warn", icon: "warn" }));
+  } else {
+    // 这一列以前对「一切正常、等着开跑」的文件是空白的，看上去像信息没加载出来。
+    statusCell.append(createChip({ label: "未开始", tone: "mute" }));
   }
   row.append(statusCell);
   return row;
@@ -1352,7 +1454,11 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
   const b = el("b");
   b.textContent = redactedText(local.phaseName, "正在准备任务");
   const pct = el("span", "pct");
-  pct.textContent = `${Math.round(local.percent)}%`;
+  // 阶段号跟着百分比一起给：只有一个百分比时，用户没法判断「45% 之后还有几个阶段」。
+  const phaseSuffix = local.phaseTotal > 0 && local.phaseIndex > 0
+    ? ` · 阶段 ${local.phaseIndex} / ${local.phaseTotal}`
+    : "";
+  pct.textContent = `${Math.round(local.percent)}%${phaseSuffix}`;
   if (local.task.state === "paused" || local.task.state === "pausing") pct.style.color = "var(--warn)";
   stage.append(b, pct);
   card.append(stage);
@@ -1372,6 +1478,20 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
     note.className = "ws-note";
     note.textContent = "事件流暂时断开，正在自动重连，不会重复处理已有进度。";
     card.append(note);
+  } else {
+    // 一批内容发去翻译、等接口返回的这段时间里引擎不产生任何事件。界面上百分比、
+    // 日志、逐文件状态全都定住不动，看起来和卡死没有区别，人只能去点停止。
+    const silence = silenceSeconds(local);
+    const waiting = !local.task.terminal
+      && local.task.state !== "paused"
+      && local.task.state !== "pausing"
+      && silence >= SILENCE_NOTICE_SECONDS;
+    if (waiting) {
+      const note = el("p");
+      note.className = "ws-note";
+      note.textContent = `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
+      card.append(note);
+    }
   }
 
   return card;
@@ -1379,22 +1499,32 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
 
 function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
   const chip = (label: string, tone: ChipTone) => createChip({ label, tone });
+  // 计数为 0 的临时状态不占位：一排「重试中 0 · 已恢复 0 · 未恢复 0」既说明不了
+  // 任何事，又让人以为程序正在做这三件事。只有真的发生过才出现。
+  const chipIfAny = (chips: HTMLElement[], value: number, label: string, tone: ChipTone) => {
+    if (value > 0) chips.push(chip(label, tone));
+  };
   if (surface === "word" && local.wordRecovery) {
     const r = local.wordRecovery;
     const chips: HTMLElement[] = [];
-    if (hasOwn(r, "retry_round")) chips.push(chip(`重试轮次 ${num(r.retry_round)}`, "tint"));
-    if (hasOwn(r, "semantic_processing_count")) chips.push(chip(`仲裁处理中 ${num(r.semantic_processing_count)}`, "tint"));
-    if (hasOwn(r, "semantic_accepted_count")) chips.push(chip(`仲裁已接受 ${num(r.semantic_accepted_count)}`, "ok"));
-    if (hasOwn(r, "retry_unresolved_count") || hasOwn(r, "unresolved_count")) chips.push(chip(`未恢复 ${num(r.retry_unresolved_count, num(r.unresolved_count))}`, "warn"));
+    chipIfAny(chips, num(r.retry_round), `重试轮次 ${num(r.retry_round)}`, "tint");
+    chipIfAny(chips, num(r.semantic_processing_count), `仲裁处理中 ${num(r.semantic_processing_count)}`, "tint");
+    chipIfAny(chips, num(r.semantic_accepted_count), `仲裁已接受 ${num(r.semantic_accepted_count)}`, "ok");
+    const unresolved = num(r.retry_unresolved_count, num(r.unresolved_count));
+    chipIfAny(chips, unresolved, `未恢复 ${unresolved}`, "warn");
     return chips;
   }
   if (surface === "pdf" && local.pdfPageRecovery) {
     const r = local.pdfPageRecovery;
     const chips: HTMLElement[] = [];
-    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${num(r.completed_pages)} / ${num(r.total_pages)} 页`, "ok"));
-    if (hasOwn(r, "submitted_page_count")) chips.push(chip(`已提交 ${num(r.submitted_page_count)}`, "tint"));
-    if (hasOwn(r, "retrying_page_count")) chips.push(chip(`重试中 ${num(r.retrying_page_count)}`, "warn"));
-    if (hasOwn(r, "recovered_page_count")) chips.push(chip(`已恢复 ${num(r.recovered_page_count)}`, "mute"));
+    // completed_pages 是「跑完的页」，占位页（生成失败后塞回原页）也算在里面。
+    // 直接拿它当「已生成」会把失败页说成生成成功，所以先扣掉占位页，失败数另开一格。
+    const failed = num(r.placeholder_page_count);
+    const generated = Math.max(0, num(r.completed_pages) - failed);
+    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${num(r.total_pages)} 页`, "ok"));
+    chipIfAny(chips, failed, `生成失败 ${failed} 页`, "dgr");
+    chipIfAny(chips, num(r.retrying_page_count), `重试中 ${num(r.retrying_page_count)}`, "warn");
+    chipIfAny(chips, num(r.recovered_page_count), `已恢复 ${num(r.recovered_page_count)}`, "mute");
     return chips;
   }
   return [];
@@ -1439,7 +1569,11 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
   return rows;
 }
 
-/** actionable=false 时按钮全部禁用但常驻显示，这句短话解释原因，挂在卡片顶部和每个按钮的 title 上。 */
+/** actionable=false 时按钮全部禁用但常驻显示，这句短话解释原因。
+ *
+ *  只在卡片顶部说一次。早先每个按钮的 title 上也挂着同一句，一张十几行的表里
+ *  就有二十多个一模一样的悬浮提示，读起来像出了二十个不同的问题。按行不同的原因
+ *  （比如按幅面跳过的页）仍然挂在该行的按钮上——那才是 title 该承担的。 */
 function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot): string {
   return snapshot.terminal ? "任务已结束，仅可查看对比页图，不能再触发操作。" : "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
 }
@@ -1495,7 +1629,6 @@ function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement |
 function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, multiFile: boolean): HTMLElement {
   const row = el("div", "filerow");
   const actionable = snapshot.actionable;
-  const reason = pdfActionsDisabledReason(snapshot);
 
   if (page.pending_action === "regenerate") {
     row.append(createChip({ label: "已排队 · 重新生成", tone: "tint" }));
@@ -1518,14 +1651,12 @@ function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSn
     label: "立即重试",
     size: "mini",
     disabled: !actionable,
-    title: actionable ? undefined : reason,
     onClick: () => void runPdfPageAction(surface, taskId, file, page, "regenerate"),
   }));
   row.append(createButton({
     label: "跳过该页",
     size: "mini",
     disabled: !actionable,
-    title: actionable ? undefined : reason,
     onClick: () => void runPdfPageAction(surface, taskId, file, page, "skip"),
   }));
   return row;
@@ -1625,7 +1756,6 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
 
   const actionsCell = el("td");
   const actionable = snapshot.actionable;
-  const reason = pdfActionsDisabledReason(snapshot);
   const notFinished = page.status === "pending";
   const needsSkip = page.status === "failed" || page.placeholder;
 
@@ -1644,16 +1774,14 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   const regenDisabled = !actionable || notFinished || oversizeSkipped;
   const regenReason = oversizeSkipped
     ? oversizeReason
-    : !actionable
-      ? reason
-      : notFinished
-        ? "该页还没跑完，暂时不能重新生成。"
-        : undefined;
+    : actionable && notFinished
+      ? "该页还没跑完，暂时不能重新生成。"
+      : undefined;
   actionsCell.append(buildActionLink("重新生成", regenDisabled, regenReason, () => void runPdfPageAction(surface, taskId, file, page, "regenerate")));
 
   if (needsSkip) {
     actionsCell.append(document.createTextNode(" · "));
-    actionsCell.append(buildActionLink("跳过该页", !actionable, actionable ? undefined : reason, () => void runPdfPageAction(surface, taskId, file, page, "skip")));
+    actionsCell.append(buildActionLink("跳过该页", !actionable, undefined, () => void runPdfPageAction(surface, taskId, file, page, "skip")));
   }
   row.append(actionsCell);
   return row;
@@ -1848,7 +1976,9 @@ let nextLogSeq = 1;
 
 function buildLogCard(local: LocalTask): HTMLElement {
   const card = el("div", "card");
-  card.style.cssText = "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden";
+  // flex:0 1 auto（不是 flex:1）：短任务只有三五行日志时，flex:1 会把这张卡撑到栏底，
+  // 留下一大片深色空白，看着像日志丢了。改成按内容高度取，超过可用空间再收缩滚动。
+  card.style.cssText = "flex:0 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden";
   const head = el("div", "tc-head");
   const b = el("b");
   b.textContent = "运行日志";
@@ -1860,7 +1990,9 @@ function buildLogCard(local: LocalTask): HTMLElement {
   const log = el("div", "log");
   // flex:1 撑满卡片剩余空间；min-height:0 让它在内容超高时收缩而不是把卡片顶大，
   // overflow-y:auto 才能真的滚起来——否则 flex 子项默认会按内容高度撑开父容器。
-  log.style.cssText = "flex:1;min-height:0;border:0;border-radius:0;overflow-y:auto";
+  // min-height 给几行的余量，免得日志只有一两条时这块比标题还矮、跳来跳去；
+  // max-height 封顶，长任务里它才是那个可滚动的区域而不是把整页顶长。
+  log.style.cssText = "flex:0 1 auto;min-height:76px;max-height:340px;border:0;border-radius:0;overflow-y:auto";
   for (const entry of local.logs.slice(-LOG_VIEW_LIMIT)) {
     const line = el("div");
     // 整页重建后靠这个属性把滚动位置对回原来那一行，见 restoreLogScroll。
@@ -2111,10 +2243,10 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   }
   if (surface === "pdf") {
     foot.append(createButton({ label: "暂停提交", icon: "pause", size: "big", onClick: () => void pausePdfTask(st) }));
-    foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", onClick: () => confirmStopTask(st) }));
+    foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", onClick: () => confirmStopTask(surface, st) }));
     return foot;
   }
-  foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", size: "big", onClick: () => confirmStopTask(st) }));
+  foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", size: "big", onClick: () => confirmStopTask(surface, st) }));
   const note = el("div", "ws-note");
   note.style.textAlign = "center";
   note.textContent = "已完成的文件会保留，当前文件回滚为未开始";
@@ -2157,15 +2289,19 @@ async function runScan(surface: Surface): Promise<void> {
     st.scanSummary = record(result.summary);
     st.selected = new Set(items.map((f) => f.path));
     st.showBanner = false;
+    // 新清单配旧结果没有意义：上一次跑的是别的文件。
+    st.fileOutcomes = new Map();
     // 「记住上次目录」失败不能牵连扫描结果：清单已经拿到了，没道理因为写设置出错就清空它。
     try {
       await persistSettings({ [`last_${surface}_source_folder`]: path });
     } catch {
       // 下次进入这个界面得重新选路径而已，不值得打断当前流程。
     }
+    // 一个都没跳过时不提「跳过 0 个」；西文名词前后都要留空格。
+    const skipSuffix = skipped.length > 0 ? `，跳过 ${skipped.length} 个` : "";
     const toastMessage = surface === "pdf"
-      ? `已扫描到 ${items.length} 个 PDF / 图片输入，跳过 ${skipped.length} 个。`
-      : `已扫描到 ${items.length} 个${SURFACE_LABEL[surface]}文件。`;
+      ? `已扫描到 ${items.length} 个 PDF / 图片输入${skipSuffix}。`
+      : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
     showToast({ message: toastMessage });
   } catch (error) {
     if (token !== scanTokens[surface]) return;
@@ -2242,22 +2378,24 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
       `优先高保真会通过本机 ${appName} 自动化转换；若 ${appName} 未安装、自动化被拒绝或单文件转换失败，该文件会明确失败，其他文件仍可继续，绝不静默改用兼容模式。`,
       "允许兼容转换会在高保真不可用时继续处理，但复杂样式、合并单元格、图片、图表和宏可能无法完整保留；这项选择只冻结到本次任务。",
     ],
+    // 主按钮给「优先高保真」：它是不会损失内容的那一个。默认高亮有损选项，等于
+    // 替用户默认接受丢样式、丢图片、丢宏——回车一按就丢了，而且事后看不出丢了什么。
     actions: [
       { label: "取消" },
       {
-        label: "优先高保真",
+        label: "允许兼容转换",
         onClick: () => {
-          if (surface === "excel") st.allowXlsFallback = false;
-          else st.allowDocFallback = false;
+          if (surface === "excel") st.allowXlsFallback = true;
+          else st.allowDocFallback = true;
           void preflightAndSubmit(surface, st);
         },
       },
       {
-        label: "允许兼容转换",
+        label: "优先高保真",
         variant: "primary",
         onClick: () => {
-          if (surface === "excel") st.allowXlsFallback = true;
-          else st.allowDocFallback = true;
+          if (surface === "excel") st.allowXlsFallback = false;
+          else st.allowDocFallback = false;
           void preflightAndSubmit(surface, st);
         },
       },
@@ -2298,10 +2436,14 @@ function showTaskRiskModal(surface: Surface, st: SurfaceState, payload: JsonObje
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "共享 API 并行风险",
+    title: "和正在跑的任务共用同一条连接",
+    // 原文写的是「按新任务自己的默认吞吐启动」「一次性令牌原子复检」「降低共享组的
+    // 运行时容量」——这些是实现细节，读的人只需要知道三件事：共用什么、可能出什么事、
+    // 自己的设置会不会被改。
     body: [
-      "此任务将与现有活动任务共用至少一个实际 API 连接。继续后会按新任务自己的默认吞吐启动，不会自动减半；服务端会在启动时用一次性令牌原子复检。",
-      "可能出现 429、排队、超时、失败或额外费用。同一连接的并发会累加。上游返回并发限制时，只会降低当前共享组的运行时容量，不会修改长期模型吞吐设置。",
+      "这个任务会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。",
+      "因此可能变慢或排队，个别文件可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。真被接口限速时，程序会自动放慢这一次的发送速度，你在设置里填的速度不会被改。",
+      "不着急的话，等前一个任务跑完再开始最稳。",
     ],
     actions: [
       { label: "取消" },
@@ -2330,6 +2472,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     const task = await c.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify(body) });
     focusTask(surface, task);
     st.showBanner = false;
+    st.fileOutcomes = new Map();
     initFileStages(st);
     rerender(surface);
     watchTask(surface);
@@ -2346,11 +2489,47 @@ function focusTask(surface: Surface, task: TaskStatus): void {
     logs: [],
     phaseName: "正在准备任务",
     percent: 0,
+    phaseIndex: 0,
+    phaseTotal: 0,
     streamState: "connected",
     watcherActive: false,
+    lastEventAt: Date.now(),
     fileStage: new Map(),
   };
   st.lastTaskId = task.task_id;
+  startSilenceTicker(surface);
+}
+
+/** 静默计时器：任务在跑但没有事件进来时，每 5 秒重画一次，让「已等待 N 秒」这句话
+ *  自己走动。任务一到终态就停——不留一个空转的 interval。 */
+const silenceTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+
+function startSilenceTicker(surface: Surface): void {
+  if (silenceTickers[surface] !== undefined) return;
+  silenceTickers[surface] = window.setInterval(() => {
+    const local = states[surface].task;
+    if (!local || local.task.terminal) {
+      stopSilenceTicker(surface);
+      return;
+    }
+    // 只有真的静默下来才重画；有事件在流动时 rerender 已经被事件驱动了。
+    if (silenceSeconds(local) >= SILENCE_NOTICE_SECONDS) rerender(surface);
+  }, 5000);
+}
+
+function stopSilenceTicker(surface: Surface): void {
+  const handle = silenceTickers[surface];
+  if (handle !== undefined) {
+    window.clearInterval(handle);
+    silenceTickers[surface] = undefined;
+  }
+}
+
+/** 多久没消息才值得说一句。低于这个数的空白属于正常节奏，报出来只是噪音。 */
+const SILENCE_NOTICE_SECONDS = 20;
+
+function silenceSeconds(local: LocalTask): number {
+  return Math.max(0, Math.round((Date.now() - local.lastEventAt) / 1000));
 }
 
 function initFileStages(st: SurfaceState): void {
@@ -2419,6 +2598,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
   const st = states[surface];
   const local = st.task;
   if (!local || local.task.task_id !== taskId) return;
+  local.lastEventAt = Date.now();
   const data = event.data;
   switch (event.type) {
     case "log": {
@@ -2432,7 +2612,19 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       if (data.phase_name !== undefined) local.phaseName = redactedText(data.phase_name, local.phaseName);
       const done = num(data.step_done);
       const total = num(data.step_total);
-      if (total > 0) local.percent = Math.min(100, (done / total) * 100);
+      // step_done/step_total 是**当前阶段**的步数。直接拿它当总进度，扫描一结束进度条
+      // 就满格，后面还有翻译和生成两个阶段要跑——用户看到 100% 却还在等，只能理解成卡住。
+      // 事件里带着 phase_index/phase_total，用它把阶段内进度折算到整条进度上。
+      const phaseIndex = num(data.phase_index);
+      const phaseTotal = num(data.phase_total);
+      if (phaseIndex > 0) local.phaseIndex = phaseIndex;
+      if (phaseTotal > 0) local.phaseTotal = phaseTotal;
+      const withinPhase = total > 0 ? Math.min(1, done / total) : 0;
+      if (phaseTotal > 0 && phaseIndex > 0) {
+        local.percent = Math.min(100, ((phaseIndex - 1 + withinPhase) / phaseTotal) * 100);
+      } else if (total > 0) {
+        local.percent = withinPhase * 100;
+      }
       markActiveFile(local, st);
       break;
     }
@@ -2503,6 +2695,7 @@ function markActiveFile(local: LocalTask, st: SurfaceState): void {
 function finishTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
   st.hasEverCompleted = true;
+  closeStopModal(surface);
   const result = record(task.result);
   // 终态结果契约（core/*_task_runner.py 的 DoneMsg/ErrorMsg/StoppedMsg）没有 `summary`
   // 对象，也没有顶层 generated_count/review_count/auto_fixed_count——这些字段名在后端
@@ -2511,11 +2704,28 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // `kpi.auto_recovered_text_count`（仅 Word 的严格重试/语义复核有这个概念）。缺失的
   // 字段一律按 0 处理，不用占位数字冒充「全部通过」。
   const fileResults = Array.isArray(result.file_results) ? result.file_results : [];
-  const succeededFileCount = fileResults.reduce(
-    (sum: number, entry) => sum + (record(entry).success === true ? 1 : 0),
-    0,
-  );
-  const generated = fileResults.length > 0 ? succeededFileCount : st.selected.size;
+  // 「产出了」不等于 success===true：需复核的文件同样写出了双语文件（后端给的
+  // status 是 needs_review、output 是真实路径），把它算成失败会让横幅报出比输出
+  // 目录里少的数字。反过来，失败的条目 output 是空字符串——这才是判断依据。
+  st.fileOutcomes = new Map();
+  let produced = 0;
+  let failed = 0;
+  for (const entry of fileResults) {
+    const item = record(entry);
+    const ok = fileResultProduced(item);
+    if (ok) produced += 1;
+    else failed += 1;
+    const sourcePath = text(item.source_path);
+    if (sourcePath) {
+      st.fileOutcomes.set(sourcePath, {
+        produced: ok,
+        label: ok ? (item.status === "needs_review" ? "已生成 · 需复核" : "已生成") : "未生成",
+        detail: ok ? "" : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
+      });
+    }
+  }
+  const stateFailed = task.state === "error" || task.state === "interrupted";
+  const generated = fileResults.length > 0 ? produced : stateFailed ? 0 : st.selected.size;
   const review = num(record(result.review).total_count);
   const autoFixed = num(record(result.kpi).auto_recovered_text_count);
   const outputPath = text(result.output_dir, st.sourcePath);
@@ -2525,44 +2735,119 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 的文件列表上（buildFileSkipChips），完整边界在任务日志和报告里。
   const skippedOversizePages = fileResultTotal(result, "skipped_oversize_page_count");
   const protectedParagraphs = frontMatterTotal(result);
+  // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
+  // 「有东西没拿到」，它决定用户下一步要不要重跑。
+  if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
   if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
   if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
   if (review > 0) clauses.push(`${review} 处需复核`);
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
-  clauses.push(review > 0 || autoFixed > 0 ? "其余全部通过" : "全部通过");
-  clauses.push(`输出至 ${outputPath}`);
-  const isError = task.state === "error" || task.state === "interrupted";
-  // 完成汇总要用扫描期的图片/文本框计数，而本函数末尾会把 st.files 清空——必须先取快照。
-  // 任务中断时不出这张卡：那种情况下「哪些没翻」根本说不准，横幅已经说了任务未完成。
-  st.excelDoneNotice = surface === "excel" && !isError ? buildExcelDoneNotice(st, result) : null;
-  st.bannerInfo = isError
-    ? { title: "任务未完成", subtitle: redactedText(result.message, "任务在结束前中断，已生成的文件仍保留在输出目录。") }
-    : { title: `已生成 ${generated} 个文件`, subtitle: clauses.join(" · ") };
+  // 「全部通过」是一句承诺，只有真的一个问题都没有才能说。有文件没生成时一个字都不提，
+  // 有需复核/已自动处理时说「其余」。
+  if (failed === 0 && generated > 0) clauses.push(review > 0 || autoFixed > 0 ? "其余全部通过" : "全部通过");
+  if (generated > 0) clauses.push(`输出至 ${outputPath}`);
+  const tone = resultTone(task.state, generated, failed, review, autoFixed);
+  // 完成汇总要用扫描期的图片/文本框计数。任务失败时不出这张卡：那种情况下
+  // 「哪些没翻」根本说不准，横幅已经说了任务未完成。
+  st.excelDoneNotice = surface === "excel" && tone !== "fail" ? buildExcelDoneNotice(st, result) : null;
+  const stateWord = terminalStateWord(task.state);
+  const reason = redactedText(result.message, "");
+  if (tone === "fail") {
+    const detail = reason || (generated > 0
+      ? "任务在结束前中断，已生成的文件仍保留在输出目录。"
+      : "任务没有产出文件，请看下方日志或完整报告里的原因。");
+    st.bannerInfo = {
+      title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
+      subtitle: generated > 0 ? [detail, ...clauses].join(" · ") : detail,
+      tone,
+      statusLabel: generated > 0 ? `${stateWord} · 部分生成` : stateWord,
+      hasOutput: generated > 0,
+    };
+  } else {
+    const suffix = failed > 0 ? "有文件未生成" : review > 0 ? "需复核" : autoFixed > 0 ? "有自动处理" : "";
+    st.bannerInfo = {
+      title: stateWord === "已完成"
+        ? `已生成 ${generated} 个文件`
+        : `${stateWord} · 已生成 ${generated} 个文件`,
+      subtitle: clauses.join(" · "),
+      tone,
+      statusLabel: suffix ? `${stateWord} · ${suffix}` : stateWord,
+      hasOutput: true,
+    };
+  }
   st.showBanner = true;
-  st.files = [];
-  st.skipped = [];
-  st.selected = new Set();
-  st.sourcePath = "";
-  if (isError) showToast({ message: redactedText(result.message, "任务未能顺利完成。"), error: true });
+  // 清单、勾选、来源路径都保留：任务结束正是用户要重跑失败文件、或换个设置再来一遍的
+  // 时候。以前这里全部清空，等于把「再来一次」的入口一起删了，他只能重新选路径重扫。
+  if (tone === "fail") {
+    showToast({ message: reason || "任务未能顺利完成。", error: true });
+  }
   rerender(surface);
+}
+
+/** 逐文件结果是否真的写出了文件。 */
+function fileResultProduced(item: JsonObject): boolean {
+  if (item.success === true) return true;
+  if (item.status === "failed") return false;
+  return Boolean(text(item.output) || text(item.compressed_output));
+}
+
+function terminalStateWord(state: TaskStatus["state"]): string {
+  switch (state) {
+    case "error":
+      return "任务失败";
+    case "interrupted":
+      return "任务中断";
+    case "stopped":
+      return "已停止";
+    case "completed_with_issues":
+      return "已完成，有问题";
+    default:
+      return "已完成";
+  }
+}
+
+/** 终态 + 逐文件结果一起决定横幅的口气；只看 state 会把「一个文件都没生成」画成绿色。 */
+function resultTone(
+  state: TaskStatus["state"],
+  generated: number,
+  failed: number,
+  review: number,
+  autoFixed: number,
+): ResultTone {
+  if (state === "error" || state === "interrupted") return "fail";
+  if (generated === 0) return "fail";
+  if (failed > 0 || state === "stopped" || state === "completed_with_issues") return "warn";
+  if (review > 0 || autoFixed > 0) return "warn";
+  return "ok";
 }
 
 // ---------------------------------------------------------------------------
 // 停止 / 暂停 / 继续 / 结束暂停
 // ---------------------------------------------------------------------------
 
-function confirmStopTask(st: SurfaceState): void {
+/** 正在展示的「安全停止」确认框。任务自己走到终态时要把它关掉——见 closeStopModal。 */
+const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null };
+
+function closeStopModal(surface: Surface): void {
+  // 任务已经结束了，再问「要不要停止当前任务」没有意义：这个框以前会一直浮在结果横幅
+  // 上面，用户只能自己去点「继续执行」把它关掉，而那个按钮的字面意思正好相反。
+  stopModals[surface]?.close();
+  stopModals[surface] = null;
+}
+
+function confirmStopTask(surface: Surface, st: SurfaceState): void {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
-  openModal({
+  closeStopModal(surface);
+  stopModals[surface] = openModal({
     tone: "warn",
     icon: "stop",
     sourceLabel: "停止运行中的任务",
     title: "安全停止当前任务？",
     body: ["已生成的文件会保留在输出目录；Excel、Word 会结束为终态。PDF / 图片应先「暂停提交」，再选择继续或结束暂停。"],
     actions: [
-      { label: "继续执行" },
-      { label: "安全停止", variant: "danger-solid", onClick: () => void stopTask(taskId) },
+      { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
+      { label: "安全停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
     ],
   });
 }

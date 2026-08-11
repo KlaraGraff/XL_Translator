@@ -74,7 +74,7 @@ export function createChip(options: ChipOptions): HTMLSpanElement {
   return chip;
 }
 
-export type StatusTone = "idle" | "run" | "ok" | "warn" | "pause";
+export type StatusTone = "idle" | "run" | "ok" | "warn" | "pause" | "danger";
 
 export interface StatusOptions {
   label: string;
@@ -745,6 +745,28 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
       options.onChange(code);
     };
 
+    /** 列表最多这么高（.lang-list 的 CSS 上限，这里要按它算行边界）。 */
+    const LIST_MAX_HEIGHT = 264;
+    /** .lang-list 的内边距，算最后一行的下边界时要把它加回去。 */
+    const LIST_PADDING = 5;
+
+    /** 把列表高度收到某一行的下边界上。
+     *
+     *  写成一个固定的 264px 时，行高（33px 上下浮动，还夹着「最近使用」这类分组标题）
+     *  除不尽，最底下那一行永远被横切一刀，只露出半个字——那不像「下面还有内容」，
+     *  像字没渲染完。改成量出每一行的实际下边界，取不超过上限的那一个。 */
+    const snapListHeight = () => {
+      list.style.maxHeight = "";
+      if (list.scrollHeight <= LIST_MAX_HEIGHT) return;
+      let height = LIST_MAX_HEIGHT;
+      for (const child of Array.from(list.children) as HTMLElement[]) {
+        const bottom = child.offsetTop - list.offsetTop + child.offsetHeight + LIST_PADDING;
+        if (bottom > LIST_MAX_HEIGHT) break;
+        height = bottom;
+      }
+      list.style.maxHeight = `${height}px`;
+    };
+
     const renderList = () => {
       const query = search.value.trim();
       clearElement(list);
@@ -807,6 +829,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
       }
 
       countLabel.textContent = `共 ${pool.length} 项`;
+      snapListHeight();
       // 条目数变了高度就变了，重算一次位置，否则贴着视口底部时会溢出。
       place();
     };
@@ -960,18 +983,25 @@ export interface BannerOptions {
   title: string;
   subtitle?: string;
   icon?: IconName;
+  /** 结果口气：绿（全部产出）/ 橙（有事要说）/ 红（没能产出）。默认绿。 */
+  tone?: "ok" | "warn" | "fail";
   actions?: HTMLElement[];
   onClose?: () => void;
 }
 
 /** .banner：任务终态摘要横幅（样张屏⑤）。 */
 export function createBanner(options: BannerOptions): HTMLDivElement {
-  const banner = el("div", { className: "banner" });
+  // res-warn / res-err 是结果横幅自己的配色类。不复用 .banner.warn——那是扫描说明
+  // 横幅的一整套布局（图标 + .tx 正文，顶部对齐），套到这里会把标题和按钮排乱。
+  const toneClass = options.tone === "fail" ? " res-err" : options.tone === "warn" ? " res-warn" : "";
+  const banner = el("div", { className: `banner${toneClass}` });
   const bi = el("div", { className: "bi" });
   bi.append(icon(options.icon ?? "check"));
   banner.append(bi);
 
-  const copy = el("div");
+  // min-width:0 + 长串可断行：副标题里带的是输出目录的绝对路径，不给它断行的余地
+  // 时整条横幅会被撑宽，右侧「打开输出目录」被挤出可视区域。
+  const copy = el("div", { className: "copy" });
   copy.append(el("b", { text: options.title }));
   if (options.subtitle) {
     copy.append(el("div", { className: "sub", text: options.subtitle }));

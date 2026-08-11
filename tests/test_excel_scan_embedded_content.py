@@ -167,6 +167,37 @@ def _rich_value_rel_xml(count: int) -> bytes:
     ).encode()
 
 
+SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+THREADED_COMMENT_NS = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+
+
+def _legacy_comments_xml(refs: list[str]) -> bytes:
+    """传统批注部件（Excel 里叫「注释」）：<comment ref="B2"> 一个格子一条。"""
+    entries = "".join(
+        f'<comment ref="{ref}" authorId="0"><text><r><t>note {ref}</t></r></text></comment>'
+        for ref in refs
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<comments xmlns="{SPREADSHEET_NS}"><authors><author>tester</author></authors>'
+        f"<commentList>{entries}</commentList></comments>"
+    ).encode()
+
+
+def _threaded_comments_xml(entries: list[tuple[str, bool]]) -> bytes:
+    """新版对话式批注部件。第二项为 True 表示这条是回复（挂在同一个格子上）。"""
+    body = "".join(
+        f'<threadedComment ref="{ref}" dT="2026-01-01T00:00:00Z" personId="{{p}}" '
+        f'id="{{c{index}}}"' + (' parentId="{c0}"' if is_reply else "") + ">"
+        f"<text>comment {index}</text></threadedComment>"
+        for index, (ref, is_reply) in enumerate(entries)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<ThreadedComments xmlns="{THREADED_COMMENT_NS}">{body}</ThreadedComments>'
+    ).encode()
+
+
 class _FakeXlsSheet:
     nrows = 0
 
@@ -292,6 +323,62 @@ class ExcelScanEmbeddedContentTests(unittest.TestCase):
         self.assertEqual(result.summary["image_count_unknown_files"], 1)
         self.assertEqual(result.summary["shape_text_count"], 0)
         self.assertEqual(result.summary["shape_text_count_unknown_files"], 1)
+
+    def test_legacy_comments_are_counted_per_cell(self) -> None:
+        path = self.root / "notes.xlsx"
+        _build_base_xlsx(path)
+        _inject_parts(path, {"xl/comments1.xml": _legacy_comments_xml(["B2", "C7"])})
+
+        item, result = self._scan_single(path)
+        self.assertEqual(item.comment_count, 2)
+        self.assertEqual(result.summary["comment_count"], 2)
+        self.assertEqual(result.summary["comment_count_unknown_files"], 0)
+
+    def test_a_threaded_comment_and_its_legacy_mirror_count_once(self) -> None:
+        # Excel 存新版对话式批注时会同时写一份传统批注做兼容。两边都数就会把
+        # 用户表里的 1 条批注报成 2 条——这个数字要出现在界面上，不能虚报。
+        path = self.root / "threaded.xlsx"
+        _build_base_xlsx(path)
+        _inject_parts(
+            path,
+            {
+                "xl/comments1.xml": _legacy_comments_xml(["B2"]),
+                "xl/threadedComments/threadedComment1.xml": _threaded_comments_xml(
+                    [("B2", False), ("B2", True), ("D4", False)],
+                ),
+            },
+        )
+
+        item, _result = self._scan_single(path)
+        # B2 一条（含一条回复）+ D4 一条 = 2
+        self.assertEqual(item.comment_count, 2)
+
+    def test_clean_workbook_has_zero_comments_not_none(self) -> None:
+        path = self.root / "clean_comments.xlsx"
+        _build_base_xlsx(path)
+
+        item, result = self._scan_single(path)
+        self.assertEqual(item.comment_count, 0)
+        self.assertEqual(result.summary["comment_count_unknown_files"], 0)
+
+    def test_xls_comment_count_is_unknown_none_not_zero(self) -> None:
+        path = self.root / "legacy_comments.xls"
+        path.write_bytes(b"legacy-xls-placeholder")
+
+        with patch("xlrd.open_workbook", return_value=_FakeXlsWorkbook()):
+            item, result = self._scan_single(path)
+
+        self.assertIsNone(item.comment_count)
+        self.assertEqual(result.summary["comment_count"], 0)
+        self.assertEqual(result.summary["comment_count_unknown_files"], 1)
+
+    def test_corrupt_comments_part_does_not_fail_the_scan(self) -> None:
+        path = self.root / "corrupt_comments.xlsx"
+        _build_base_xlsx(path)
+        _inject_parts(path, {"xl/comments1.xml": b"<not-well-formed-xml"})
+
+        item, _result = self._scan_single(path)
+        self.assertEqual(item.comment_count, 0)
 
     def test_corrupt_drawing_part_does_not_fail_the_scan(self) -> None:
         path = self.root / "corrupt_drawing.xlsx"

@@ -126,6 +126,8 @@ svg.ic.lg { width: 22px; height: 22px; }
 .status.ok { background: var(--ok-t); color: var(--ok); }
 .status.warn { background: var(--warn-t); color: var(--warn); }
 .status.pause { background: var(--warn-t); color: var(--warn); }
+/* 失败的任务顶栏要一眼看出是红的，不能和「需复核」共用橙色。 */
+.status.danger { background: var(--danger-t); color: var(--danger); }
 .notice-host { flex: none; }
 /* 顶栏下方的通栏更新提示条（shell.ts 的 setUpdateNotice）。 */
 .upnotice {
@@ -269,7 +271,15 @@ table.review-tbl { table-layout: fixed; }
 .banner .bi { width: 30px; height: 30px; border-radius: 99px; background: var(--ok); color: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
 .banner b { font-weight: 650; }
 .banner .sub { font-size: 12.5px; color: var(--ink-2); margin-top: 1px; }
-.banner .acts { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.banner .copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* flex:none —— 副标题里那串输出目录路径不许把按钮挤出可视区域（长路径实测会顶掉
+   「打开输出目录」整颗按钮）。窄下来时先折文字，按钮永远在。 */
+.banner .acts { margin-left: auto; display: flex; gap: 8px; align-items: center; flex: none; }
+/* 结果横幅的橙/红两套配色。.banner.warn 是扫描说明横幅的另一套布局，故意不复用。 */
+.banner.res-warn { border-color: var(--warn-l); background: var(--warn-t); }
+.banner.res-warn .bi { background: var(--warn); }
+.banner.res-err { border-color: var(--danger-l); background: var(--danger-t); }
+.banner.res-err .bi { background: var(--danger); }
 
 /* ========== 任务中心 ========== */
 .tk-list { width: 340px; flex: none; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
@@ -518,13 +528,15 @@ table.review-tbl { table-layout: fixed; }
 :root[data-theme="dark"] .chip.oob.mut { background: var(--ground); }
 .chip.oob + .chip.oob { margin-left: 5px; }
 
-/* D · 翻译完成后的结果说明。绿底说「做完了」，句子里的黄字说「这些没做」。 */
+/* D · 完成横幅下面那条「哪些内容没被翻译」的补充说明。
+   以前这里也是绿底加粗大标题，于是完成后连着出现两张一模一样的绿卡片，第二张的标题
+   还把「N 个文件」又报了一遍。绿色只留给上面那张横幅，这条改成中性底色的说明。 */
 .done {
-  display: flex; gap: 11px; align-items: flex-start; padding: 13px 15px;
-  border-radius: var(--r-md); background: var(--ok-t); border: 1px solid var(--ok-l);
+  display: flex; gap: 11px; align-items: flex-start; padding: 12px 15px;
+  border-radius: var(--r-md); background: var(--ground-2); border: 1px solid var(--line);
 }
-.done .ico { color: var(--ok); flex: none; margin-top: 1px; }
-.done .tt { font-weight: 700; font-size: 13px; color: var(--ok); margin-bottom: 3px; }
+.done .ico { color: var(--ink-3); flex: none; margin-top: 1px; }
+.done .tt { font-weight: 650; font-size: 12.5px; color: var(--ink); margin-bottom: 3px; }
 .done .bd { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
 .done .bd em { font-style: normal; color: var(--warn); font-weight: 600; }
 
