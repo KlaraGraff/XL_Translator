@@ -4204,7 +4204,7 @@ dependencies = [
 
 [[package]]
 name = "translator"
-version = "9.2.4"
+version = "9.2.5"
 dependencies = [
  "serde",
  "serde_json",
