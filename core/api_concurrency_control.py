@@ -19,6 +19,7 @@ from core.api_scheduler import (
     ApiConcurrencyLimitDecision,
     WeightedApiScheduler,
 )
+from core.user_facing_errors import humanize_error
 
 
 class ApiKeyTemporarilyUnavailableError(RuntimeError):
@@ -36,16 +37,42 @@ MINIMUM_CAPACITY_MAX_DELAY = 30.0
 # A quiet stretch this long means the previous limit episode is over; the next
 # 429 starts a fresh grace window instead of inheriting an old deadline.
 MINIMUM_CAPACITY_EPISODE_RESET_SECONDS = 120.0
+# While one episode is being waited out, the run log gets a progress line at
+# most this often.  Every retry used to write its own line, so a single busy
+# key buried the log under ~20 near-identical warnings and pushed the lines
+# that actually mattered out of view.
+LIMIT_WAIT_NOTICE_INTERVAL_SECONDS = 60.0
+_UPSTREAM_REASON_MAX_CHARS = 120
 
 
 @dataclass
 class _MinimumCapacityWatch:
-    """Per-scheduler record of one continuous at-minimum rate-limit episode."""
+    """Per-scheduler record of one continuous upstream rate-limit episode.
+
+    ``first_hit``/``last_hit``/``hits`` drive the at-minimum grace window and
+    are cleared whenever the caller makes progress.  The ``announced_*`` fields
+    below drive what the *user* is told, and deliberately survive that reset:
+    one limit episode is allowed to write two run-log lines (the slow-down and
+    the slowest-setting notice) plus a progress line each minute, no matter how
+    many individual retries it takes.
+    """
 
     first_hit: float = 0.0
     last_hit: float = 0.0
     hits: int = 0
+    last_signal: float = 0.0
+    last_notice_at: float = 0.0
+    announced_slowdown: bool = False
+    announced_floor: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def start_new_episode_if_quiet(self, now: float) -> None:
+        """Reset the user-visible announcements after a quiet stretch."""
+        if self.last_signal and now - self.last_signal <= MINIMUM_CAPACITY_EPISODE_RESET_SECONDS:
+            return
+        self.last_notice_at = 0.0
+        self.announced_slowdown = False
+        self.announced_floor = False
 
 
 _WATCHES: "WeakKeyDictionary[WeightedApiScheduler, _MinimumCapacityWatch]" = WeakKeyDictionary()
@@ -62,12 +89,23 @@ def _watch_for(scheduler: WeightedApiScheduler) -> _MinimumCapacityWatch:
 
 
 def reset_minimum_capacity_watch(scheduler: WeightedApiScheduler) -> None:
-    """Forget the current at-minimum episode for ``scheduler``."""
+    """Forget the current at-minimum grace window for ``scheduler``."""
     watch = _watch_for(scheduler)
     with watch.lock:
         watch.first_hit = 0.0
         watch.last_hit = 0.0
         watch.hits = 0
+
+
+def _upstream_reason(exc: BaseException) -> str:
+    """One short user-readable clause describing what upstream said."""
+    reason = humanize_error(exc, fallback="")
+    if not reason or "请求过于频繁" in reason:
+        # The humanized sentence would only repeat what we are already saying.
+        return ""
+    if len(reason) > _UPSTREAM_REASON_MAX_CHARS:
+        reason = reason[: _UPSTREAM_REASON_MAX_CHARS - 1] + "…"
+    return f"（上游反馈：{reason}）"
 
 
 def _interruptible_sleep(delay: float, should_stop: Callable[[], bool] | None) -> None:
@@ -153,13 +191,13 @@ def handle_api_concurrency_limit(
         return None
 
     decision = scheduler.register_concurrency_limit_hit(request_generation)
-    if decision.action == API_CONCURRENCY_ACTION_REDUCED and error_callback:
-        error_callback(
-            (
-                f"{context_label} 检测到上游并发/限流反馈，"
-                f"已将本次任务 API 并发上限从 {decision.previous_capacity} "
-                f"降至 {decision.current_capacity}，正在重试当前批次。"
-            )
+    if decision.action == API_CONCURRENCY_ACTION_REDUCED:
+        _announce_slowdown(
+            exc,
+            scheduler=scheduler,
+            decision=decision,
+            context_label=context_label,
+            error_callback=error_callback,
         )
 
     if decision.should_retry:
@@ -176,6 +214,59 @@ def handle_api_concurrency_limit(
         error_callback=error_callback,
         should_stop=should_stop,
     )
+
+
+def _announce_slowdown(
+    exc: BaseException,
+    *,
+    scheduler: WeightedApiScheduler,
+    decision: ApiConcurrencyLimitDecision,
+    context_label: str,
+    error_callback: Callable[[str], None] | None,
+) -> None:
+    """Report a slow-down to the user at most twice per limit episode.
+
+    Upstream limit feedback arrives once per in-flight request, so one busy
+    minute produces a whole burst of reductions.  Reporting every single step
+    told the user nothing new and wrote a number — the group-level concurrency
+    cap — that does not match anything they configured.  What they need to know
+    is that we slowed down, why, and whether we have run out of room to slow
+    down further; the exact step sizes stay in the debug log.
+    """
+    at_floor = decision.current_capacity <= decision.minimum_capacity
+    now = time.monotonic()
+    watch = _watch_for(scheduler)
+    with watch.lock:
+        watch.start_new_episode_if_quiet(now)
+        watch.last_signal = now
+        say_slowdown = not watch.announced_slowdown
+        say_floor = at_floor and not watch.announced_floor
+        watch.announced_slowdown = True
+        watch.announced_floor = watch.announced_floor or at_floor
+        if say_slowdown or say_floor:
+            watch.last_notice_at = now
+
+    logger.debug(
+        f"{context_label} 上游限流：并发 {decision.previous_capacity} → "
+        f"{decision.current_capacity}（最低 {decision.minimum_capacity}）"
+    )
+    if not error_callback:
+        return
+
+    if say_slowdown and say_floor:
+        error_callback(
+            f"{context_label} 接口反馈请求过于频繁，已直接放慢到最慢档并重试当前批次。"
+            f"{_upstream_reason(exc)}"
+        )
+    elif say_slowdown:
+        error_callback(
+            f"{context_label} 接口反馈请求过于频繁，已自动放慢发送速度并重试当前批次。"
+            f"{_upstream_reason(exc)}"
+        )
+    elif say_floor:
+        error_callback(
+            f"{context_label} 接口仍在限流，已放慢到最慢档，正在继续重试当前批次。"
+        )
 
 
 def _wait_out_minimum_capacity_limit(
@@ -200,13 +291,28 @@ def _wait_out_minimum_capacity_limit(
         watch.hits += 1
         elapsed = now - watch.first_hit
         attempt = watch.hits
+        watch.start_new_episode_if_quiet(now)
+        watch.last_signal = now
+        # The first at-minimum hit of an episode still owes the user one line:
+        # nothing was said yet if we started out at the slowest setting.
+        say_floor = not watch.announced_floor
+        # Afterwards keep a slow heartbeat so a long wait does not look like a
+        # hang, without one line per retry.
+        say_heartbeat = (
+            not say_floor
+            and watch.last_notice_at
+            and now - watch.last_notice_at >= LIMIT_WAIT_NOTICE_INTERVAL_SECONDS
+        )
+        watch.announced_slowdown = True
+        watch.announced_floor = True
+        if say_floor or say_heartbeat:
+            watch.last_notice_at = now
 
     if elapsed >= MINIMUM_CAPACITY_GRACE_SECONDS:
         raise ApiKeyTemporarilyUnavailableError(
             (
-                "当前 API Key 暂时不可用：上游在本次任务已降至最低 "
-                f"API 并发 {decision.current_capacity} 后，持续 {int(elapsed)} 秒"
-                "仍反馈并发达到上限。请稍后重试，或更换 API Key 后重新开始。"
+                f"接口持续限流：已经放慢到最慢档，{int(elapsed)} 秒内上游一直反馈"
+                "请求过多。请稍后重试，或在设置里换一条连接、更换 API Key 后重新开始。"
             )
         ) from exc
 
@@ -215,14 +321,20 @@ def _wait_out_minimum_capacity_limit(
         MINIMUM_CAPACITY_BASE_DELAY * (2 ** min(attempt - 1, 6)),
     )
     delay *= 0.75 + random.random() * 0.5
-    message = (
-        f"{context_label} API 并发已在最低档 {decision.current_capacity}，"
-        f"上游仍在限流；等待 {delay:.1f}s 后重试当前批次"
-        f"（已持续 {int(elapsed)}s，超过 {int(MINIMUM_CAPACITY_GRACE_SECONDS)}s 才判定任务失败）。"
+    logger.warning(
+        f"{context_label} 上游仍在限流（并发已在最低档 {decision.current_capacity}）；"
+        f"等待 {delay:.1f}s 后重试当前批次，已持续 {int(elapsed)}s。"
     )
-    logger.warning(message)
     if error_callback:
-        error_callback(message)
+        if say_floor:
+            error_callback(
+                f"{context_label} 接口仍在限流，已放慢到最慢档，正在等待后重试当前批次。"
+                f"{_upstream_reason(exc)}"
+            )
+        elif say_heartbeat:
+            error_callback(
+                f"{context_label} 接口仍在限流，已等待 {int(elapsed)} 秒，仍在重试当前批次。"
+            )
     _interruptible_sleep(delay, should_stop)
     return decision
 

@@ -304,6 +304,35 @@ class Phase7ResourceBudgetContracts(unittest.TestCase):
         assert group is not None
         self.assertEqual(group.snapshot().capacity, 3)
 
+    def test_a_shared_group_backs_off_in_a_few_steps_not_one_at_a_time(self) -> None:
+        """A big group must reach its floor in a handful of reductions.
+
+        Stepping down by one meant a 40-slot group needed 32 reductions, and
+        every one of them wrote its own run-log line.
+        """
+        registry = TaskResourceRegistry()
+        reservation = registry.reserve_task(
+            owner_key="excel-1",
+            owner_label="Excel translation",
+            task_type="excel",
+            group_capacities={SHARED_TEXT_CONNECTION: 40},
+        )
+        assert reservation.lease is not None
+        scheduler = reservation.lease.scheduler_for(SHARED_TEXT_CONNECTION)
+        assert scheduler is not None
+        self.assertEqual(scheduler.snapshot().capacity, 40)
+
+        steps = 0
+        while True:
+            decision = scheduler.register_concurrency_limit_hit(None)
+            if decision.action != API_CONCURRENCY_ACTION_REDUCED:
+                break
+            steps += 1
+            self.assertLessEqual(steps, 6)
+
+        self.assertLessEqual(steps, 4)
+        self.assertEqual(scheduler.snapshot().capacity, scheduler.snapshot().minimum_capacity)
+
     def test_429_reduces_only_the_live_shared_group_and_never_persists_after_release(self) -> None:
         registry = TaskResourceRegistry()
         first = registry.reserve_task(

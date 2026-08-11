@@ -19,6 +19,7 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     ApiSchedulerLease,
     ApiSchedulerSnapshot,
+    build_adaptive_capacity_levels,
 )
 
 
@@ -172,6 +173,7 @@ class FairApiGroupScheduler:
         self.capacity = 1
         self.initial_capacity = 1
         self.minimum_capacity = 1
+        self._adaptive_capacity_levels = build_adaptive_capacity_levels(1)
         self._generation = 0
         self._active_total_weight = 0
         self._active_normal_weight = 0
@@ -292,6 +294,9 @@ class FairApiGroupScheduler:
         with self._condition:
             self.capacity = max(int(capacity or 1), self._active_total_weight, 1)
             self.initial_capacity = max(self.initial_capacity, self.capacity)
+            self._adaptive_capacity_levels = build_adaptive_capacity_levels(
+                self.initial_capacity
+            )
             self.minimum_capacity = _minimum_capacity(self.initial_capacity)
             self._condition.notify_all()
 
@@ -319,7 +324,7 @@ class FairApiGroupScheduler:
                     generation=self._generation,
                     request_generation=request_generation,
                 )
-            self.capacity = max(self.minimum_capacity, previous_capacity - 1)
+            self.capacity = self._next_reduced_capacity_locked()
             self._generation += 1
             self._condition.notify_all()
             return ApiConcurrencyLimitDecision(
@@ -337,9 +342,17 @@ class FairApiGroupScheduler:
         total = max(1, sum(self._task_capacities.values()))
         self.capacity = max(total, self._active_total_weight)
         self.initial_capacity = total
+        self._adaptive_capacity_levels = build_adaptive_capacity_levels(total)
         self.minimum_capacity = _minimum_capacity(total)
         self._generation += 1
         self._condition.notify_all()
+
+    def _next_reduced_capacity_locked(self) -> int:
+        """Step down to the next adaptive level below the current capacity."""
+        for level in self._adaptive_capacity_levels:
+            if level < self.capacity:
+                return max(self.minimum_capacity, level)
+        return max(self.minimum_capacity, self.capacity - 1)
 
     def _can_acquire_locked(self, owner_key: str, weight: int) -> bool:
         if self._active_total_weight + weight > self.capacity:

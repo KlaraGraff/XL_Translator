@@ -232,7 +232,10 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertEqual(stats.retry_count, 0)
         self.assertEqual(stats.adaptive_concurrency_reductions, 1)
         self.assertEqual(stats.adaptive_lowest_concurrency, 4)
-        self.assertTrue(any("降至 4" in message for message in errors))
+        # The user is told we slowed down; the internal capacity numbers stay
+        # in the debug log, because they are group-level and match nothing the
+        # user configured.
+        self.assertTrue(any("已自动放慢发送速度" in message for message in errors), errors)
 
     def test_translate_texts_waits_out_a_limit_at_minimum_capacity(self) -> None:
         # A key already walked down to the minimum cap is the normal state of a

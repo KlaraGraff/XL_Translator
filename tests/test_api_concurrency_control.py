@@ -120,6 +120,62 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
 
+    def test_one_limit_episode_writes_at_most_two_run_log_lines(self) -> None:
+        """A burst of 429s is one event to the user, not twenty."""
+        scheduler = WeightedApiScheduler(40)
+        reset_minimum_capacity_watch(scheduler)
+        messages: list[str] = []
+
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_GRACE_SECONDS", 600.0):
+            for _ in range(30):
+                handle_api_concurrency_limit(
+                    _limit_error(),
+                    scheduler=scheduler,
+                    request_generation=None,
+                    context_label="Excel",
+                    error_callback=messages.append,
+                )
+
+        self.assertLessEqual(len(messages), 2, messages)
+        self.assertTrue(any("放慢" in message for message in messages), messages)
+        self.assertTrue(any("最慢档" in message for message in messages), messages)
+
+    def test_the_user_facing_lines_carry_no_internal_capacity_numbers(self) -> None:
+        scheduler = WeightedApiScheduler(40)
+        reset_minimum_capacity_watch(scheduler)
+        messages: list[str] = []
+
+        handle_api_concurrency_limit(
+            _limit_error(),
+            scheduler=scheduler,
+            request_generation=None,
+            context_label="Excel",
+            error_callback=messages.append,
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertNotIn("40", messages[0])
+        self.assertNotIn("32", messages[0])
+        self.assertNotIn("并发上限", messages[0])
+
+    def test_the_failure_message_does_not_leak_the_grace_window(self) -> None:
+        scheduler = WeightedApiScheduler(1)
+        reset_minimum_capacity_watch(scheduler)
+
+        with patch("core.api_concurrency_control.MINIMUM_CAPACITY_GRACE_SECONDS", 0.02):
+            with self.assertRaises(ApiKeyTemporarilyUnavailableError) as caught:
+                for _ in range(50):
+                    handle_api_concurrency_limit(
+                        _limit_error(),
+                        scheduler=scheduler,
+                        request_generation=None,
+                        context_label="Excel",
+                    )
+
+        text = str(caught.exception)
+        self.assertNotIn("120", text)
+        self.assertIn("请稍后重试", text)
+
     def test_a_non_limit_error_is_left_alone(self) -> None:
         scheduler = WeightedApiScheduler(1)
 

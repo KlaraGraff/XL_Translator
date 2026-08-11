@@ -72,7 +72,7 @@ class WeightedApiScheduler:
     ) -> None:
         self.capacity = max(1, int(capacity or 1))
         self.initial_capacity = self.capacity
-        self._adaptive_capacity_levels = _build_adaptive_capacity_levels(self.initial_capacity)
+        self._adaptive_capacity_levels = build_adaptive_capacity_levels(self.initial_capacity)
         self.minimum_capacity = self._adaptive_capacity_levels[-1]
         ratio = min(max(float(normal_soft_ratio or 0.8), 0.1), 1.0)
         self._normal_soft_ratio = ratio
@@ -198,7 +198,7 @@ class WeightedApiScheduler:
             normalized = max(1, int(capacity or 1))
             self.capacity = max(normalized, self._active_total_weight)
             self.initial_capacity = max(self.initial_capacity, self.capacity)
-            self._adaptive_capacity_levels = _build_adaptive_capacity_levels(
+            self._adaptive_capacity_levels = build_adaptive_capacity_levels(
                 self.initial_capacity
             )
             self.minimum_capacity = min(
@@ -305,7 +305,14 @@ def _normalize_release_weight(weight: int | float | None) -> int:
     return max(1, normalized)
 
 
-def _build_adaptive_capacity_levels(initial_capacity: int) -> tuple[int, ...]:
+def build_adaptive_capacity_levels(initial_capacity: int) -> tuple[int, ...]:
+    """Steps to walk concurrency down through on upstream limit feedback.
+
+    Shared with :mod:`core.task_resources` so the group scheduler backs off in
+    the same few meaningful steps.  Stepping down by one instead turned a
+    single busy minute into dozens of near-identical reductions, each of which
+    reported itself to the user.
+    """
     capacity = max(1, int(initial_capacity or 1))
     levels: list[int] = []
     for ratio in (0.8, 0.6, 0.4, 0.2):
