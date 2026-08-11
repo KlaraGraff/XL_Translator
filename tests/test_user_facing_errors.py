@@ -11,14 +11,31 @@ class HumanizeErrorTests(unittest.TestCase):
 
     def test_applescript_removed_verb_reads_as_unsupported_automation(self) -> None:
         raw = "407:413: syntax error: Expected end of line but found identifier. (-2741)"
-        self.assertEqual(
-            humanize_error(raw),
-            "本机 Office 不支持这项自动化操作，已改用内置方式处理，排版可能与 Office 略有差异。",
-        )
+        self.assertEqual(humanize_error(raw), "本机 Office 不支持这项自动化操作。")
+
+    def test_office_automation_sentences_promise_no_fallback(self) -> None:
+        # 只有真的会接手的调用方才能说「已改用内置方式处理」——.xls 转换不会接手，
+        # 共用句子替它承诺就是说谎。
+        for raw in (
+            "407:413: syntax error (-2741)",
+            "execution error: Microsoft Word got an error: Application isn’t running. (-600)",
+            "Application can’t be found. (-10814)",
+            "execution error: Not authorized to send Apple events. (-1743)",
+        ):
+            with self.subTest(raw=raw):
+                self.assertNotIn("已改用内置方式处理", humanize_error(raw))
 
     def test_automation_permission_denied_points_at_system_settings(self) -> None:
         raw = "execution error: Not authorized to send Apple events to Microsoft Word. (-1743)"
         self.assertIn("系统设置", humanize_error(raw))
+
+    def test_apple_event_permission_denial_is_not_read_as_a_busy_file(self) -> None:
+        # 这句里同时有 permission denied 和 Apple events，绝不能落到「关闭占用它的
+        # 程序后重试」——那条路走不通，人会白折腾。
+        raw = "osascript: permission denied while sending Apple events to Microsoft Word"
+        sentence = humanize_error(raw)
+        self.assertIn("系统设置", sentence)
+        self.assertNotIn("占用", sentence)
 
     def test_dns_failure_reads_as_no_network(self) -> None:
         raw = "[Errno 8] nodename nor servname provided, or not known"

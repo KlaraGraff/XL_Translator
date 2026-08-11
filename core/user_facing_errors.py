@@ -48,21 +48,34 @@ def strip_error_noise(value: object) -> str:
 # size never trips them.
 _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     # --- 本机 Office 自动化 ---
+    # 这四句只说本机 Office 那边发生了什么。是否有内置方式接手要由调用方补充：
+    # Word 编号预处理确实会接手，.xls 转换不会（不选兼容转换就是失败），
+    # 在共用句子里替所有调用方承诺「已改用内置方式处理」会当场说谎。
     (
-        (r"-1743", r"not authorized to send apple events", r"assistive access"),
-        "系统没有授权本程序控制 Office，已改用内置方式处理。可在「系统设置 › 隐私与安全性 › 自动化」里授权后重试。",
+        (
+            r"-1743",
+            r"not authorized to send apple events",
+            r"assistive access",
+            # AppleScript 的授权拒绝也可能只报一句 permission denied / declined
+            # permission，必须在下面那条「文件被占用」之前认出来，否则会把人指去
+            # 关闭无关程序。
+            r"declined permission",
+            r"apple ?events?.{0,40}(not permitted|permission denied)",
+            r"(not permitted|permission denied).{0,40}apple ?events?",
+        ),
+        "系统没有授权本程序控制 Office。可在「系统设置 › 隐私与安全性 › 自动化」里授权后重试。",
     ),
     (
         (r"-2741", r"syntax error", r"-1708", r"doesn['’]t understand"),
-        "本机 Office 不支持这项自动化操作，已改用内置方式处理，排版可能与 Office 略有差异。",
+        "本机 Office 不支持这项自动化操作。",
     ),
     (
         (r"-600\b", r"-609\b", r"application isn['’]t running"),
-        "本机 Office 没有响应，已改用内置方式处理。",
+        "本机 Office 没有响应。",
     ),
     (
         (r"-10814", r"can['’]t be found", r"no such application"),
-        "本机没有安装 Microsoft Office，已改用内置方式处理。",
+        "本机没有安装 Microsoft Office。",
     ),
     # --- 文件本身的问题 ---
     (
