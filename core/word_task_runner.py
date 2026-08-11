@@ -605,7 +605,7 @@ class WordTaskRunner:
                     file_texts.append(text_set)
                     global_unique_texts.update(text_set)
                     elapsed = (datetime.now() - t0).total_seconds()
-                    self._log("INFO", f"  → {file_item.name}：{len(text_set)} 个词条（{elapsed:.3f}s）")
+                    self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
                     self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
                 except Exception as exc:
                     if len(process_paths) < index + 1:
@@ -638,7 +638,7 @@ class WordTaskRunner:
                 )
             )
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"[阶段 1 完成] Word 去重词汇池：{len(global_unique_texts)} 个唯一词条（{phase1_elapsed:.2f}s）")
+            self._log("OK", f"[阶段 1 完成] 全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次（{phase1_elapsed:.2f}s）")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -719,7 +719,7 @@ class WordTaskRunner:
             if mixed_texts:
                 self._log(
                     "INFO",
-                    f"混合语言路径命中 {len(mixed_texts)} 个词条，已从 TM 查询中分流。",
+                    f"混合语言路径命中 {len(mixed_texts)} 处内容，已从记忆库查询中分流。",
                 )
             # TM lookups are scoped per file preflight, like the Excel runner:
             # querying the global pool against every detected pair lets a text
@@ -1633,7 +1633,7 @@ def _prepare_word_source_for_translation(
             temp_paths.append(native_result.path)
             fallback_messages.extend(native_result.fallback_messages)
         except WordConversionError as exc:
-            message = f"本地 Office 编号预处理不可用：{exc}"
+            message = f"本地 Office 编号预处理不可用，已改用内置方式处理编号：{exc}"
             fallback_messages.append(message)
             numbering_fallback_messages.append(message)
 

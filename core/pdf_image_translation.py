@@ -68,6 +68,7 @@ from core.pdf_review import (
     PdfReviewModelUnavailableError,
 )
 from core.task_logger import TaskLogger, redact_absolute_paths
+from core.user_facing_errors import humanize_error
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -2779,7 +2780,12 @@ class PdfImageTranslationRunner:
                 if decision is not None and decision.should_retry:
                     time.sleep(0.2)
                     continue
-                last_error = str(exc)
+                # 原始异常文本（含接口地址、JSON 错误体）只进 debug 日志；
+                # 用户看到的每一处都用一句中文说明。
+                logger.debug(
+                    f"[PDF] 第 {page_record.page_number} 页第 {attempt} 次生成失败原始错误：{exc!r}"
+                )
+                last_error = humanize_error(exc, fallback="图像生成失败。")
                 self._record_page_retrying(page_record)
                 self._log(
                     "WARN",

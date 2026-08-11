@@ -43,7 +43,12 @@ _CONTENT_MARKER_RE = re.compile(
     r"(?i)(?:source(?:_text)?|target(?:_text)?|translation|translated|"
     r"prompt|response|content|text)\s*[:=]"
 )
-CONTENT_WITHHELD_MESSAGE = "任务事件已记录；正文、译文、提示词和模型响应未写入日志。"
+# 这句话是对用户的承诺，必须与日志实际内容一致。运行日志**故意**保留一小段原文摘录
+# （word_batching 的重试/仲裁行），否则「哪一段出了问题」根本定位不了；所以这里不能再写
+# 「正文未写入日志」那种一刀切的说法——承诺一旦对不上，用户就再也不会信任其它承诺。
+CONTENT_WITHHELD_MESSAGE = (
+    "任务事件已记录；日志只保留用于定位问题的一小段原文摘录，完整正文、译文、提示词和模型响应都不写入。"
+)
 
 
 def redact_absolute_paths(message: str) -> str:
@@ -156,7 +161,7 @@ class TaskLogger:
     用法：
         logger = TaskLogger(enabled=True, task_id="20260329_143201")
         logger.task_start(files, settings)
-        logger.info("[文件 1/3] 词条收集完成")
+        logger.info("[文件 1/3] 待翻译文本收集完成")
         logger.task_end(elapsed=12.3, results=[...])
 
     enabled=False 时所有方法立即返回，调用方无需判断。
@@ -195,18 +200,18 @@ class TaskLogger:
     # ── 结构化埋点方法（全局阶段）─────────────────────────────────────────
 
     def global_collected(self, total_unique: int, file_count: int, elapsed: float) -> None:
-        """全局词汇提取完成。"""
+        """全局待翻译文本收集完成。"""
         self.info(
-            f"[全局] 词汇提取完成 | 文件数={file_count} | 去重词条={total_unique} | 耗时={elapsed:.3f}s"
+            f"[全局] 待翻译文本收集完成 | 文件数={file_count} | 位置计数={total_unique} | 耗时={elapsed:.3f}s"
         )
 
     def global_tm_result(self, hits: int, misses: int) -> None:
         """全局 TM 查询结果。"""
-        self.info(f"[全局] TM命中={hits} | 待API翻译={misses}")
+        self.info(f"[全局] 记忆库命中={hits} | 待接口翻译={misses}")
 
     def global_api_done(self, returned: int, elapsed: float) -> None:
-        """全局 API 翻译完成。"""
-        self.info(f"[全局] API翻译完成 | 返回={returned}条 | 耗时={elapsed:.3f}s")
+        """全局接口翻译完成。"""
+        self.info(f"[全局] 接口翻译完成 | 返回={returned} 处 | 耗时={elapsed:.3f}s")
 
     # ── 结构化埋点方法（单文件 / 任务级）──────────────────────────────────
 
@@ -273,19 +278,19 @@ class TaskLogger:
         self.info("=" * 60)
 
     def file_collected(self, filename: str, count: int, elapsed: float) -> None:
-        """词条收集完成。"""
+        """单文件待翻译文本收集完成。"""
         del filename
-        self.info(f"文件词条收集完成 | 词条数={count} | 耗时={elapsed:.3f}s")
+        self.info(f"文件待翻译文本收集完成 | 位置计数={count} | 耗时={elapsed:.3f}s")
 
     def file_tm_result(self, filename: str, hits: int, misses: int) -> None:
         """TM 查询结果。"""
         del filename
-        self.info(f"文件 TM命中={hits} | 待API翻译={misses}")
+        self.info(f"文件 记忆库命中={hits} | 待接口翻译={misses}")
 
     def file_api_done(self, filename: str, returned: int, elapsed: float) -> None:
-        """API 翻译完成。"""
+        """单文件接口翻译完成。"""
         del filename
-        self.info(f"文件 API翻译完成 | 返回={returned}条 | 耗时={elapsed:.3f}s")
+        self.info(f"文件 接口翻译完成 | 返回={returned} 处 | 耗时={elapsed:.3f}s")
 
     def file_write_done(self, filename: str, elapsed: float) -> None:
         """回填写入完成。"""

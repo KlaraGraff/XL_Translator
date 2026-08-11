@@ -704,7 +704,7 @@ class Phase7SseAndPrivacyContracts(unittest.TestCase):
             "private provider response",
         ):
             self.assertNotIn(sensitive, persisted)
-        self.assertIn("正文、译文、提示词和模型响应未写入日志", persisted)
+        self.assertIn("完整正文、译文、提示词和模型响应都不写入", persisted)
         self.assertIn("原始错误详情未写入日志", persisted)
 
 

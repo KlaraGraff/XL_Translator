@@ -7,7 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 
-from core.bilingual_writer import write_bilingual_file
+from core.bilingual_writer import build_output_dir, write_bilingual_file
 from core.mixed_language import (
     MIXED_COLOR_FOREIGN_NOISE,
     MIXED_COLOR_UNRESOLVED,
@@ -254,3 +254,35 @@ class BilingualWriterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class OutputDirNamingTests(unittest.TestCase):
+    """输出目录名要能被人读、被人复制，所以不带微秒也不带哈希。"""
+
+    def test_name_is_source_folder_plus_timestamp_to_the_second(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixtures"
+            source.mkdir()
+            name = build_output_dir(source).name
+            self.assertTrue(name.startswith("fixtures_翻译输出_"))
+            stamp = name.removeprefix("fixtures_翻译输出_")
+            self.assertRegex(stamp, r"^\d{8}_\d{6}$")
+
+    def test_same_second_rerun_still_gets_a_distinct_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixtures"
+            source.mkdir()
+            first = build_output_dir(source)
+            first.mkdir()
+            second = build_output_dir(source)
+            self.assertNotEqual(first, second)
+            self.assertEqual(second.name, f"{first.name}_2")
+
+    def test_custom_root_is_honoured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixtures"
+            source.mkdir()
+            custom = Path(tmp) / "elsewhere"
+            custom.mkdir()
+            self.assertEqual(build_output_dir(source, custom).parent, custom)
+

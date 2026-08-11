@@ -15,6 +15,8 @@ from pathlib import Path
 from docx import Document
 from loguru import logger
 
+from core.user_facing_errors import humanize_error
+
 
 DOCX_FILE_FORMAT = 16
 WORD_CONVERSION_TIMEOUT_SECONDS = 180
@@ -83,8 +85,10 @@ def convert_doc_to_docx(
                 fidelity="high_fidelity",
             )
         except Exception as exc:  # noqa: BLE001 - later path requires consent.
-            errors.append(f"{method_name} 不可用：{exc}")
-            logger.info(f".doc 转换策略不可用 {source_path.name} ({method_name}): {exc}")
+            user_message = humanize_error(exc)
+            errors.append(f"{method_name} 不可用：{user_message}")
+            logger.info(f".doc 转换策略不可用 {source_path.name} ({method_name}): {user_message}")
+            logger.debug(f".doc 转换策略不可用 {source_path.name} ({method_name})，原始信息：{exc}")
 
     if not allow_compatibility_fallback:
         detail = "；".join(errors) if errors else "未启用本机 Microsoft Word 高保真自动化"
@@ -107,8 +111,10 @@ def convert_doc_to_docx(
                 fidelity="compatibility",
             )
         except Exception as exc:  # noqa: BLE001 - each opted-in strategy falls through.
-            errors.append(f"{method_name} 不可用：{exc}")
-            logger.info(f".doc 兼容转换策略不可用 {source_path.name} ({method_name}): {exc}")
+            user_message = humanize_error(exc)
+            errors.append(f"{method_name} 不可用：{user_message}")
+            logger.info(f".doc 兼容转换策略不可用 {source_path.name} ({method_name}): {user_message}")
+            logger.debug(f".doc 兼容转换策略不可用 {source_path.name} ({method_name})，原始信息：{exc}")
 
     detail = "；".join(errors) if errors else "没有可用的转换策略"
     raise WordConversionError(
@@ -253,8 +259,10 @@ def convert_numbering_to_text_with_native_apps(
                 fallback_messages=list(errors),
             )
         except Exception as exc:  # noqa: BLE001 - each strategy falls through.
-            errors.append(f"{method_name} 不可用：{exc}")
-            logger.info(f"Word 编号预处理策略不可用 {source_path.name} ({method_name}): {exc}")
+            user_message = humanize_error(exc)
+            errors.append(f"{method_name} 不可用：{user_message}")
+            logger.info(f"Word 编号预处理策略不可用 {source_path.name} ({method_name}): {user_message}")
+            logger.debug(f"Word 编号预处理策略不可用 {source_path.name} ({method_name})，原始信息：{exc}")
 
     detail = "；".join(errors) if errors else "没有可用的预处理策略"
     raise WordConversionError(f"无法通过本地 Office 预处理 Word 自动编号。详情：{detail}")
@@ -269,8 +277,13 @@ def convert_numbering_to_text_with_native_word(docx_path: str | Path) -> Path:
         _convert_numbering_with_windows_word(source_path, output_path)
         return output_path
     if system == "Darwin":
-        _convert_numbering_with_macos_word(source_path, output_path)
-        return output_path
+        # Word for Mac 没有「把自动编号转成文本」的自动化入口：这一步在 Windows 上靠
+        # VBA 的 ConvertNumbersToText，而 Mac 版早已移除 `do Visual Basic`，AppleScript
+        # 字典里也没有对应命令。以前这里发一段 `do Visual Basic` 脚本，结果是每次都编译
+        # 失败（osascript 报 -2741），然后静默退回 Python——用户既等了一次 Word 启动，
+        # 又在日志里收到一串 AppleScript 报错。不做不可能成功的尝试，直接让位给
+        # LibreOffice / Python 兜底。
+        raise WordConversionError("Word for Mac 不提供自动编号转文本的自动化接口。")
     raise WordConversionError(f"当前平台 {system} 暂不支持本地 Word 自动编号预处理。")
 
 
@@ -456,53 +469,6 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
             except Exception:
                 pass
         pythoncom.CoUninitialize()
-
-
-def _convert_numbering_with_macos_word(source_path: Path, output_path: Path) -> None:
-    osascript_path = shutil.which("osascript") or "/usr/bin/osascript"
-    if not Path(osascript_path).exists():
-        raise WordConversionError("未找到 osascript。")
-
-    script = """
-on run argv
-    set inputPath to POSIX file (item 1 of argv)
-    set outputPath to POSIX file (item 2 of argv)
-    tell application "Microsoft Word"
-        set visible to false
-        try
-            set display alerts to false
-        end try
-        try
-            set automation security to 3
-        end try
-        open inputPath
-        set activeDoc to active document
-        try
-            do Visual Basic "ActiveDocument.ConvertNumbersToText"
-        on error errMsg
-            try
-                do Visual Basic "ActiveDocument.Range.ListFormat.ConvertNumbersToText"
-            on error errMsg2
-                close activeDoc saving no
-                error errMsg2
-            end try
-        end try
-        try
-            save as activeDoc file name outputPath file format format XML document
-        on error errMsg3
-            try
-                close activeDoc saving no
-            end try
-            error errMsg3
-        end try
-        close activeDoc saving no
-    end tell
-end run
-"""
-    _run_command(
-        [osascript_path, "-e", script, str(source_path), str(output_path)],
-        timeout=WORD_CONVERSION_TIMEOUT_SECONDS,
-    )
 
 
 _LIBREOFFICE_NUMBERING_SCRIPT = r'''

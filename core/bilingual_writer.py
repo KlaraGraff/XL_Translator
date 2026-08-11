@@ -117,19 +117,25 @@ def build_output_dir(source_dir: str | Path, custom_output_dir: str | Path | Non
     
     默认行为：在源文件夹内部创建 {源文件夹名}_翻译输出_{时间戳}
     自定义行为：在指定目录内创建 {源文件夹名}_翻译输出_{时间戳}
+
+    时间戳到秒即止。以前还带六位微秒和一段 uuid 前缀，出来的目录名长成
+    `fixtures_翻译输出_20260811_190017_854547_acb7b37a`——用户要在访达里认它、
+    在报告里读它、还要手动复制它，那两截随机数字对他毫无意义。同一秒内重跑同一个
+    源文件夹时用 `_2`、`_3` 递增避让，唯一性照旧成立。
     """
     source_dir = Path(source_dir)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    output_subdir_name = (
-        f"{source_dir.name}_翻译输出_{timestamp}_{uuid.uuid4().hex[:8]}"
-    )
-    
-    custom_output_root = resolve_custom_output_dir(custom_output_dir)
-    if custom_output_root is not None:
-        return custom_output_root / output_subdir_name
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_name = f"{source_dir.name}_翻译输出_{timestamp}"
 
-    # 默认：在源文件夹内部创建
-    return source_dir / output_subdir_name
+    custom_output_root = resolve_custom_output_dir(custom_output_dir)
+    parent = custom_output_root if custom_output_root is not None else source_dir
+
+    candidate = parent / base_name
+    suffix = 2
+    while candidate.exists():
+        candidate = parent / f"{base_name}_{suffix}"
+        suffix += 1
+    return candidate
 
 
 def write_bilingual_file(
