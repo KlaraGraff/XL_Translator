@@ -717,10 +717,12 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
 async function exportTaskDiagnostic(taskId: string): Promise<void> {
   try {
     const client = await getClient();
-    await client.downloadBinary(
+    const saved = await client.saveBinaryDownload(
       `/api/diagnostics/task/${encodeURIComponent(taskId)}.zip`,
       `translator-diagnostic-${taskId.slice(0, 8)}.zip`,
     );
+    if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
+    showToast({ message: `诊断包已保存到：${saved}` });
   } catch (error) {
     showToast({ message: `导出诊断失败：${error instanceof Error ? error.message : String(error)}`, error: true });
   }

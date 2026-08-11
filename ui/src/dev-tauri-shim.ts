@@ -11,8 +11,9 @@
  *
  * 命令覆盖范围只到「视觉与流程走查」够用为止：
  *   - sidecar_info      → 返回上面两个环境变量
- *   - plugin:dialog|open → window.prompt 手输本机路径（取消返回 null）
+ *   - plugin:dialog|open / |save → window.prompt 手输本机路径（取消返回 null）
  *   - open_external_url / open_local_path → window.open / console 提示
+ *   - save_text_file / save_binary_file → 显式 reject（浏览器里没有写盘能力）
  * 其余命令一律 reject，让缺口显式暴露而不是静默吞掉。
  */
 
@@ -47,6 +48,17 @@ function installDevShim(): void {
       case "open_local_path":
         console.info("[dev-shim] open_local_path:", args);
         return null;
+      // 导出：保存框可以照 plugin:dialog|open 的样子用 prompt 顶掉，但真正的写盘
+      // 是 Rust 命令，浏览器里没有。如实 reject，让走查里看到红色 toast——绝不能
+      // 假装成功，那正是这次改动要根除的「界面报告没发生的事」。
+      case "plugin:dialog|save": {
+        const options = (args?.options ?? {}) as { defaultPath?: string };
+        const input = window.prompt("[dev-shim] 输入导出保存路径（取消=不保存）", options.defaultPath ?? "");
+        return input === null || !input.trim() ? null : input.trim();
+      }
+      case "save_text_file":
+      case "save_binary_file":
+        throw new Error("[dev-shim] 浏览器预览不能写本机文件，请在 tauri dev 或打包后的应用里验证导出。");
       // 浏览器里没有 .app 可替换，如实回答「不支持应用内更新」，让关于页走它的
       // 降级分支（显示原因 + 下载安装包），而不是给出一个点不动的「下载并安装」。
       case "update_environment":

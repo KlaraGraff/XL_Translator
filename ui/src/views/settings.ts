@@ -29,6 +29,7 @@ import {
 } from "../components";
 import { icon, type IconName } from "../icons";
 import { ApiClient } from "../api-client";
+import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
 import { applyModelPillFromRoles } from "../model-pill";
 import { renderReleaseNotes, releaseNotesLineCount } from "../markdown";
@@ -1361,16 +1362,23 @@ function renderModelsPage(host: HTMLElement): void {
   const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;
   throughputGrid.append(concurrencyField);
   detailBody.append(sectionLabel("速率设置"));
+  // 速率原来有自己的「保存速率」按钮，是这张卡上唯一还要手动点一下才生效的一块。
+  // 速率本来就属于模型配置的一部分，现在和同卡其余字段一样失焦即保存（见下面的
+  // autoSaveThroughput）。按钮消失后，原来那句 toast 里的「运行中的任务不受影响」
+  // 没地方说了，改挂成这行常驻说明——它回答的是用户改速率时最担心的那件事。
+  const throughputNote = document.createElement("p");
+  throughputNote.className = "note";
+  throughputNote.style.margin = "0";
+  throughputNote.style.fontSize = "12px";
+  throughputNote.style.color = "var(--ink-3)";
+  throughputNote.textContent = "改动即时保存，运行中的任务不受影响。";
+  // 摆在两个输入框**下面**，和「并发提醒」里 spreadNote 相对开关的位置是同一套：
+  // 夹在小标题和输入框中间会把这一组撑开，看着像是两块无关的东西。
   detailBody.append(throughputGrid);
+  detailBody.append(throughputNote);
   detailBody.append(fieldRow([
-    createButton({ label: "保存速率", size: "mini", onClick: () => void reRenderAfter(async () => {
-      const payload: JsonObject = { concurrency: Number(concurrencyInput.value || "1") };
-      if (needsBatch && batchInput) payload.batch_size = Number(batchInput.value || "8");
-      modelThroughput[role] = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, {
-        method: "PUT", body: JSON.stringify(payload),
-      });
-      showToast({ message: "速率设置已保存。运行中的任务不受影响。" });
-    }) }),
+    // 「恢复推荐值」留着：它是重置动作（DELETE 路由），失焦语义表达不了「把我存的那份
+    // 丢掉、退回推荐值」。它照旧走 reRenderAfter 重画——重置本来就要把两个框的值整个换掉。
     createButton({ label: "恢复推荐值", size: "mini", onClick: () => void reRenderAfter(async () => {
       modelThroughput[role] = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, { method: "DELETE" });
       showToast({ message: "已恢复推荐吞吐值。运行中的任务不受影响。" });
@@ -1448,6 +1456,56 @@ function renderModelsPage(host: HTMLElement): void {
   };
   for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField]) {
     field?.addEventListener("change", autoSaveOnBlur);
+  }
+
+  // 速率两个框也失焦即保存。写在这里而不是上面那一段，只是因为 autoSaveNote 要到这一行
+  // 才存在——两处共用同一行「已自动保存 · HH:MM」，用户不必分辨「哪个字段属于哪个提示」。
+  //
+  // 三件事是刻意的：
+  // 1) 和上面共用 queueModelFormSave 这一条队列，不另起一条。「点『测试连接』会先触发
+  //    blur 再触发 click」那条时序（见 ensureFormSavedBeforeCatalog）靠的就是所有提交
+  //    排在同一条链上；吞吐另开一条队列，两个 PUT 就会并行发出去，抢的还是同一份 settings。
+  // 2) 吞吐走的是独立路由 PUT /api/models/throughput/{role}，不能塞进 saveModel 的 payload
+  //    ——后端是分开的两条路由（api/app.py::put_throughput 与 put_role）。
+  // 3) 不重画。理由和上面那段一样：重画会把焦点从用户正要去的下一个字段上抢走
+  //    （典型路径就是「改完批次大小按 Tab 去改并发数」）。
+  const writeBackThroughput = (input: HTMLInputElement, submitted: number, value: unknown) => {
+    // 回填后端返回的值。number input 的 min/max 只是浏览器给的提示，用户手打 999 照样提交
+    // 得出去，后端 core/model_throughput.py::set_model_throughput 会按 bounds 夹紧（clamp）
+    // 到 32 再存。不写回来，界面就停在 999、实际存的是 32——正是「界面报告没发生的事」
+    // （提交 cd97a4f 修的那一类）。
+    if (typeof value !== "number" || Number.isNaN(value)) return;
+    // 焦点还在这个框里、而且值已经和这次提交出去的不一样了 → 用户在等响应的这段时间里
+    // 又改了，写回去等于抢他正在敲的输入，不动。
+    // 焦点在但值没动（典型：在框里直接按回车触发 change，焦点根本没离开）仍然要回填，
+    // 否则最需要看到夹紧结果的那条路径反而看不到。
+    if (document.activeElement === input && Number(input.value) !== submitted) return;
+    input.value = String(value);
+  };
+  const autoSaveThroughput = (event: Event) => {
+    const field = event.currentTarget as HTMLInputElement;
+    if (field.disabled) return;
+    void queueModelFormSave(async () => {
+      try {
+        const sentConcurrency = Number(concurrencyInput.value || "1");
+        const sentBatch = Number(batchInput?.value || "8");
+        const payload: JsonObject = { concurrency: sentConcurrency };
+        if (needsBatch && batchInput) payload.batch_size = sentBatch;
+        const saved = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, {
+          method: "PUT", body: JSON.stringify(payload),
+        });
+        modelThroughput[role] = saved;
+        writeBackThroughput(concurrencyInput, sentConcurrency, saved.concurrency);
+        if (needsBatch && batchInput) writeBackThroughput(batchInput, sentBatch, saved.batch_size);
+        autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+      } catch (error) {
+        autoSaveNote.textContent = "";
+        showToast({ message: `自动保存失败：${errorMessage(error)}`, error: true });
+      }
+    });
+  };
+  for (const field of [batchInput, concurrencyInput]) {
+    field?.addEventListener("change", autoSaveThroughput);
   }
 
   const doSaveModel = () => void reRenderAfter(
@@ -1649,10 +1707,16 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
 
 async function exportModelConfig(includeApiKey: boolean): Promise<void> {
   if (includeApiKey && !window.confirm("导出的文件将包含 API Key。请确认只保存到受保护的位置。")) return;
-  const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
-  const payload = await client.request<JsonObject>(`/api/model-config/export${query}`);
-  downloadJson("translator-model-config.json", payload);
-  showToast({ message: includeApiKey ? "已导出模型配置和明确勾选的 API 密钥，请立即移入受保护的位置。" : "已导出模型配置；默认不包含 API Key。" });
+  try {
+    const query = includeApiKey ? "?include_api_key=true&confirm_sensitive=true" : "";
+    const payload = await client.request<JsonObject>(`/api/model-config/export${query}`);
+    // 成功 toast 必须等真的写完盘：文件里带着密钥，谎报「已导出」比不导出更糟。
+    const saved = await saveJsonFile("translator-model-config.json", payload);
+    if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
+    showToast({ message: includeApiKey ? `已导出模型配置和明确勾选的 API 密钥到 ${saved}，请立即移入受保护的位置。` : `已导出模型配置到 ${saved}；默认不包含 API Key。` });
+  } catch (error) {
+    showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+  }
 }
 
 function importModelConfig(): void {
@@ -1721,9 +1785,14 @@ function openImportPreviewModal(): void {
 }
 
 async function exportDocumentConfig(): Promise<void> {
-  const payload = await client.request<JsonObject>("/api/document-config/export");
-  downloadJson("translator-document-config.json", payload);
-  showToast({ message: "已导出文档翻译配置；不含模型、密钥和本机输出目录。" });
+  try {
+    const payload = await client.request<JsonObject>("/api/document-config/export");
+    const saved = await saveJsonFile("translator-document-config.json", payload);
+    if (!saved) return; // 用户在保存框里取消：静默返回
+    showToast({ message: `已导出文档翻译配置到 ${saved}；不含模型、密钥和本机输出目录。` });
+  } catch (error) {
+    showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+  }
 }
 
 function importDocumentConfig(): void {
@@ -1793,38 +1862,22 @@ function pickJsonFile(onPicked: (fileName: string, payload: JsonObject) => Promi
   input.click();
 }
 
-function downloadJson(filename: string, payload: JsonObject): void {
-  downloadBlob(filename, JSON.stringify(payload, null, 2), "application/json");
-}
-
-function downloadBlob(filename: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-async function fetchWithToken(path: string): Promise<Response> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  const info = await invoke<{ port: number; token: string }>("sidecar_info");
-  return fetch(`http://127.0.0.1:${info.port}${path}`, { headers: { "X-Translator-Token": info.token } });
-}
-
-async function downloadBinary(path: string, fallbackFilename: string): Promise<void> {
-  const response = await fetchWithToken(path);
-  if (!response.ok) throw new Error("导出失败。");
-  const disposition = response.headers.get("Content-Disposition") || "";
-  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallbackFilename;
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+/**
+ * 诊断包导出。落盘、取消、报错三种结局都在这里说清楚：
+ * 只有真的写进磁盘才弹成功 toast，用户按取消就什么都不弹。
+ *
+ * 原来这里另有一份自己 invoke `sidecar_info` 的 `fetchWithToken` + `downloadBinary`，
+ * 和 ApiClient 里的实现逐行重复；现在统一走 client.saveBinaryDownload()。
+ */
+async function exportDiagnostics(path: string, fallbackFilename: string): Promise<void> {
+  try {
+    await ensureConnected();
+    const saved = await client.saveBinaryDownload(path, fallbackFilename);
+    if (!saved) return; // 用户取消：静默
+    showToast({ message: `诊断包已保存到：${saved}` });
+  } catch (error) {
+    showToast({ message: `导出诊断失败：${errorMessage(error)}`, error: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2425,7 +2478,7 @@ function renderDataPage(host: HTMLElement): void {
 
   // 诊断
   const diagCard = createCard([tcHead("诊断", [
-    createButton({ label: "导出全部诊断", size: "mini", onClick: () => void downloadBinary("/api/diagnostics/history.zip", "translator-diagnostics.zip").catch((e) => showToast({ message: errorMessage(e), error: true })) }),
+    createButton({ label: "导出全部诊断", size: "mini", onClick: () => void exportDiagnostics("/api/diagnostics/history.zip", "translator-diagnostics.zip") }),
     createButton({ label: "清空诊断", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("diagnostics") }),
   ])]);
   const diagDesc = document.createElement("p");
@@ -2468,7 +2521,7 @@ function renderDataPage(host: HTMLElement): void {
       tdSize.textContent = formatBytes(item.size_bytes);
       const tdActions = document.createElement("td");
       tdActions.append(fieldRow([
-        createButton({ label: "导出", size: "mini", onClick: () => void downloadBinary(`/api/diagnostics/${encodeURIComponent(id)}.zip`, "translator-diagnostic.zip").catch((e) => showToast({ message: errorMessage(e), error: true })) }),
+        createButton({ label: "导出", size: "mini", onClick: () => void exportDiagnostics(`/api/diagnostics/${encodeURIComponent(id)}.zip`, "translator-diagnostic.zip") }),
         createButton({
           label: "删除", size: "mini", variant: "danger", disabled: activeTaskCount > 0,
           onClick: () => void reRenderAfter(async () => {

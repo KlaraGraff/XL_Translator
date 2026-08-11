@@ -12,7 +12,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{Manager, RunEvent, State};
+use tauri::{ipc::InvokeBody, Manager, RunEvent, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 #[cfg(windows)]
@@ -210,6 +210,109 @@ fn open_local_path(path: String, reveal: bool) -> Result<(), String> {
         let _ = reveal;
         Err("当前操作系统不支持打开本地路径。".to_string())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 导出落盘
+//
+// 所有「导出」按钮都走这两个命令，前端先用 plugin-dialog 的 save() 拿到用户选定
+// 的路径，再把内容交过来写。
+//
+// 为什么不能用网页那套 `URL.createObjectURL()` + `<a download>` + `anchor.click()`：
+// 那是一次真正的浏览器下载请求，而在 macOS 的 WKWebView 里下载必须由宿主应用
+// 实现下载代理（WKDownloadDelegate）来回答「存到哪里」。这个应用从未注册过下载
+// 处理器（Tauri 的 `on_download` 全项目零命中），WKWebView 于是把请求静默丢弃：
+// 不报错、不弹框、文件哪儿都不落地——正是 9.2.x 之前所有导出按钮点了没反应的原因。
+// 改回 `<a download>` 就会把这个 bug 原样带回来。
+// ---------------------------------------------------------------------------
+
+/// 原子写：先写同目录下的临时文件，再 rename 到目标路径。
+///
+/// 同一文件系统内的 rename 是原子的，所以中途失败（磁盘写满、进程被杀、断电）时
+/// 用户看到的要么是原来的文件、要么什么都没有，绝不会是一个写了一半、打开就报
+/// 损坏的导出文件——记忆库全量备份和诊断包都属于「以为存下来了」代价很大的东西。
+fn write_file_atomically(target: &Path, bytes: &[u8]) -> Result<(), String> {
+    let file_name = target
+        .file_name()
+        .ok_or_else(|| "保存路径不是有效的文件名。".to_string())?;
+    // 保存框给的一定是绝对路径；`parent()` 为空只可能出现在被手工构造的路径上。
+    let parent = target
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "保存路径缺少上级目录。".to_string())?;
+
+    // 临时文件必须和目标同目录：跨文件系统的 rename 会退化成「复制 + 删除」，
+    // 原子性也就没了（macOS 上用户完全可能把导出存到外接盘或网络卷）。
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".{}.partial", std::process::id()));
+    let temp = parent.join(temp_name);
+
+    let written = (|| -> std::io::Result<()> {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        // rename 之前先落盘：否则掉电后可能留下一个长度正确、内容是空洞的文件。
+        file.sync_all()
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("写入导出文件失败：{error}"));
+    }
+
+    fs::rename(&temp, target).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!("保存导出文件失败：{error}")
+    })
+}
+
+/// 文本类导出（JSON / CSV）。内容不大，直接走普通的 JSON 参数即可。
+#[tauri::command]
+fn save_text_file(path: String, contents: String) -> Result<(), String> {
+    let supplied = path.trim();
+    if supplied.is_empty() {
+        return Err("未提供保存路径。".to_string());
+    }
+    write_file_atomically(Path::new(supplied), contents.as_bytes())
+}
+
+/// 拆开 `save_binary_file` 的请求体：`[u32 小端 路径字节数][UTF-8 路径][文件内容]`。
+///
+/// 路径没有走 IPC header：header 值是字节串，前端 `new Headers()` 遇到码位大于 255
+/// 的字符会直接抛 TypeError，而保存路径带中文是常态（用户存到「桌面」「下载」这类
+/// 中文目录，或者自己把文件名改成中文）。塞进同一段字节里就不存在编码问题。
+fn split_save_frame(frame: &[u8]) -> Result<(&str, &[u8]), String> {
+    const PREFIX: usize = 4;
+    let header: [u8; PREFIX] = frame
+        .get(..PREFIX)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or_else(|| "导出请求体不完整。".to_string())?;
+    let path_end = PREFIX
+        .checked_add(u32::from_le_bytes(header) as usize)
+        .ok_or_else(|| "导出请求体里的路径长度越界。".to_string())?;
+    let path_bytes = frame
+        .get(PREFIX..path_end)
+        .ok_or_else(|| "导出请求体里的路径长度越界。".to_string())?;
+    let path = std::str::from_utf8(path_bytes)
+        .map_err(|_| "保存路径不是有效的 UTF-8 文本。".to_string())?;
+    if path.trim().is_empty() {
+        return Err("未提供保存路径。".to_string());
+    }
+    Ok((path.trim(), &frame[path_end..]))
+}
+
+/// 二进制导出（诊断包、任务产物，可能几十 MB）。
+///
+/// 命令签名接 `tauri::ipc::Request` 而不是 `Vec<u8>`：后者会让字节数组走 JSON
+/// 序列化，每个字节膨胀成「十进制数字 + 逗号」，两端还各做一次 JSON 编解码——
+/// 那是 Tauri IPC 上最慢的一条路，几十 MB 的诊断包能把界面卡死好几秒。前端直接
+/// invoke 一个 ArrayBuffer，body 以 `InvokeBody::Raw` 原样送达，零转码。
+#[tauri::command]
+fn save_binary_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let InvokeBody::Raw(frame) = request.body() else {
+        return Err("二进制导出需要原始字节请求体。".to_string());
+    };
+    let (path, contents) = split_save_frame(frame)?;
+    write_file_atomically(Path::new(path), contents)
 }
 
 #[derive(Serialize)]
@@ -610,6 +713,8 @@ fn main() {
             inspect_output_directory,
             open_local_path,
             open_external_url,
+            save_text_file,
+            save_binary_file,
             update_environment
         ])
         .build(tauri::generate_context!())
@@ -623,7 +728,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{directory_is_writable, open_external_url, parse_handshake, update_environment};
+    use super::{
+        directory_is_writable, open_external_url, parse_handshake, split_save_frame,
+        update_environment, write_file_atomically,
+    };
 
     #[test]
     fn parses_launcher_handshake() {
@@ -649,6 +757,53 @@ mod tests {
         let writable = std::env::temp_dir();
         assert!(directory_is_writable(&writable));
         assert!(!directory_is_writable(&writable.join("translator-missing-dir")));
+    }
+
+    #[test]
+    fn splits_the_binary_save_frame() {
+        // 路径带中文，正是这个自定义帧格式存在的理由（见 split_save_frame 的注释）。
+        let path = "/tmp/导出.zip";
+        let mut frame = (path.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(path.as_bytes());
+        frame.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+
+        let (parsed_path, contents) = split_save_frame(&frame).unwrap();
+
+        assert_eq!(parsed_path, path);
+        assert_eq!(contents, &[0x50, 0x4b, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn rejects_truncated_binary_save_frames() {
+        assert!(split_save_frame(&[1, 2]).is_err());
+        // 长度前缀声称有 64 字节路径，实际只跟了 3 个字节。
+        let mut frame = 64u32.to_le_bytes().to_vec();
+        frame.extend_from_slice(b"abc");
+        assert!(split_save_frame(&frame).is_err());
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_partial_file_on_failure() {
+        let directory = std::env::temp_dir().join("translator-atomic-write-test");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("导出.json");
+
+        write_file_atomically(&target, b"{\"ok\":true}").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"{\"ok\":true}");
+
+        // 目标是一个已存在的目录 -> rename 必然失败，临时文件不许留下来。
+        let blocked = directory.join("occupied");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(write_file_atomically(&blocked, b"x").is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".partial"))
+            .collect();
+        assert!(leftovers.is_empty());
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { saveBinaryFile } from "./save-file";
 
 export type SidecarInfo = {
   port: number;
@@ -119,10 +120,15 @@ export class ApiClient {
   }
 
   /**
-   * 下载一个二进制响应并交给浏览器保存。文件名优先用后端 Content-Disposition 里的那个，
-   * 拿不到才退回调用方给的兜底名——诊断包的名字带时间戳和场景，是后端算出来的。
+   * 取一个二进制响应，弹原生保存框写到用户选定的路径。返回写入的路径，null = 用户取消。
+   *
+   * 保存框里的默认文件名优先用后端 Content-Disposition 里的那个，拿不到才退回调用方
+   * 给的兜底名——诊断包的名字带时间戳和场景，是后端算出来的。
+   *
+   * 不能用 `<a download>` 交给 WebView 下载：macOS 的 WKWebView 会静默丢弃它，
+   * 原因见 save-file.ts 顶部注释。
    */
-  async downloadBinary(path: string, fallbackFilename: string): Promise<void> {
+  async saveBinaryDownload(path: string, fallbackFilename: string): Promise<string | null> {
     const response = await fetch(`${this.#baseUrl}${path}`, {
       headers: { "X-Translator-Token": this.#token },
     });
@@ -133,12 +139,7 @@ export class ApiClient {
     }
     const disposition = response.headers.get("Content-Disposition") || "";
     const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallbackFilename;
-    const url = URL.createObjectURL(await response.blob());
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    return saveBinaryFile(filename, await response.arrayBuffer());
   }
 
   async streamTask(

@@ -25,6 +25,7 @@ import {
 } from "../components";
 import { icon } from "../icons";
 import { ApiClient } from "../api-client";
+import { saveJsonFile, saveTextFile } from "../save-file";
 
 // ---------------------------------------------------------------------------
 // 类型 / 工具函数
@@ -88,20 +89,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function downloadBlob(filename: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-function downloadJson(filename: string, payload: JsonObject): void {
-  downloadBlob(filename, JSON.stringify(payload, null, 2), "application/json");
-}
-
-function parseTmCsv(raw: string): TmImportEntry[] {
+function parseTmCsv(input: string): TmImportEntry[] {
+  // 前导 BOM 要先剥掉，否则它会粘在第一个表头单元格上（"﻿source"），列名对不上，
+  // 整份导入变成 0 条。我们自己导出的 CSV 就带 BOM（见 exportTm），Excel 另存的
+  // UTF-8 CSV 也带，所以这是最常见的一条导入路径，不是边角情况。
+  const raw = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
@@ -787,12 +779,16 @@ async function exportTm(format: "json" | "csv"): Promise<void> {
     const client = await getClient();
     const payload = await client.request<JsonObject>(`/api/tm/export?lang_pair=${encodeURIComponent(tmLangPair())}`);
     const list = Array.isArray(payload.entries) ? (payload.entries as JsonObject[]) : [];
-    if (format === "csv") {
-      downloadBlob(`translator-tm-${tmLangPair()}.csv`, toTmCsv(list), "text/csv;charset=utf-8");
-    } else {
-      downloadJson(`translator-tm-${tmLangPair()}.json`, payload);
-    }
-    showToast({ message: `已导出当前语言对的 ${format.toUpperCase()} 文件，共 ${list.length} 条。` });
+    // 成功 toast 只能等写盘结束后再弹；saved 为 null 说明用户在保存框里按了取消，
+    // 这时候什么都不该说（旧代码是无条件弹的，于是界面报告了一件没发生的事）。
+    // CSV 前面加 UTF-8 BOM：不带 BOM 的 UTF-8 CSV 被 Excel 当成本地编码（简中 Windows
+    // 上是 GBK）打开，整份译文变乱码——而记忆库导出的第一去处就是 Excel。JSON 不能加，
+    // 那会让它不再是合法 JSON。导入侧 parseTmCsv 会把 BOM 剥掉，往返仍然成立。
+    const saved = format === "csv"
+      ? await saveTextFile(`translator-tm-${tmLangPair()}.csv`, `﻿${toTmCsv(list)}`)
+      : await saveJsonFile(`translator-tm-${tmLangPair()}.json`, payload);
+    if (!saved) return;
+    showToast({ message: `已导出当前语言对的 ${format.toUpperCase()} 文件到 ${saved}，共 ${list.length} 条。` });
   } catch (error) {
     showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
   }
@@ -802,8 +798,9 @@ async function exportFullTm(): Promise<void> {
   try {
     const client = await getClient();
     const payload = await client.request<JsonObject>("/api/tm/export/full");
-    downloadJson("translator-tm-full.json", payload);
-    showToast({ message: "已导出当前完整记忆库（全部语言对、可信等级、冲突候选和自定义目标语言定义）。" });
+    const saved = await saveJsonFile("translator-tm-full.json", payload);
+    if (!saved) return; // 用户取消保存框：静默返回
+    showToast({ message: `已导出当前完整记忆库到 ${saved}（全部语言对、可信等级、冲突候选和自定义目标语言定义）。` });
   } catch (error) {
     showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
   }
