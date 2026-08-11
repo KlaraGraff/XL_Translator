@@ -6,8 +6,10 @@ annotated-doc==0.0.4
 anyio==4.13.0
 appscript==1.4.0; platform_system == "Darwin"
 certifi==2026.5.20
+cffi==2.1.0
 colorama==0.4.6; platform_system == "Windows"
 click==8.4.2
+cryptography==49.0.0
 et-xmlfile==2.0.0
 fastapi==0.139.2
 h11==0.16.0
@@ -23,6 +25,7 @@ pefile==2024.8.26; platform_system == "Windows"
 pillow==12.2.0
 pip==26.1.2
 psutil==7.2.2
+pycparser==3.0
 pydantic==2.13.4
 pydantic-core==2.46.4
 pyinstaller==6.20.0

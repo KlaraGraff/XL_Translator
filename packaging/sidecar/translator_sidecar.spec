@@ -84,12 +84,12 @@ a = Analysis(
         # own api/core/engines) found zero pkg_resources/setuptools imports. Verified via
         # full rebuild + frozen smoke test after excluding it.
         "pip", "wheel", "setuptools",
-        # cryptography (~11MB, dominated by hazmat/bindings/_rust.abi3.so) is pulled in
-        # solely because xlwings/pro/utils.py does `from cryptography.fernet import
-        # Fernet` for its PRO license-key check, guarded by try/except ImportError. We
-        # only use the free xlwings API (xw.App/xw.Book via the mac AppleScript engine),
-        # never xlwings PRO features, so xlwings degrades to __pro__ = False cleanly.
-        "cryptography",
+        # cryptography (~11MB, dominated by hazmat/bindings/_rust.abi3.so) used to be
+        # excluded here: back then it was pulled in solely by xlwings/pro/utils.py's
+        # guarded `from cryptography.fernet import Fernet` license check, which we never
+        # exercise. Since V9.2.5 core/config_crypto.py imports it for real (X25519 +
+        # AES-GCM on exported model configs) and api/app.py imports that at module load,
+        # so excluding it now would make the frozen sidecar die on startup. Keep it in.
         # AVIF is explicitly on the *unsupported* image format list in
         # core/pdf_image_translation.py (rejected before reaching PIL). Pillow's
         # Image.init() imports every *ImagePlugin submodule PyInstaller's own

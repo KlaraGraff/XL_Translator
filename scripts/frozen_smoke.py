@@ -16,6 +16,10 @@ _CRITICAL_IMPORTS = (
     "pypdfium2",
     "httpx",
     "api.launcher",
+    # 导出配置的加密要用 cryptography 的原生扩展，而 spec 里一度把它整包排除过。
+    # 冻结后少了它，sidecar 会在启动时直接崩，本地开发环境却一切正常——所以这条
+    # 必须由冻结冒烟来守。
+    "core.config_crypto",
     "core.task_runner",
     "core.word_task_runner",
     "core.pdf_image_translation",

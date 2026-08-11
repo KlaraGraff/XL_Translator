@@ -59,9 +59,7 @@ from core.model_catalog import fetch_openai_compatible_models
 from core.config_crypto import (
     DEFAULT_VALID_DAYS,
     UNSEAL_CORRUPT,
-    UNSEAL_EXPIRED,
     UNSEAL_PLAINTEXT,
-    UNSEAL_UNSUPPORTED,
     count_api_keys,
     seal_model_config_document,
     unseal_model_config_document,
