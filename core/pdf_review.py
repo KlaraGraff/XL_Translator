@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from loguru import logger
 from PIL import Image
 
 from config import normalize_cloud_base_url
 from core.image_generation import is_model_unavailable_error
+from core.user_facing_errors import humanize_error
 from core.model_roles import (
     EffectiveModelConfig,
     ROLE_PDF_REVIEW,
@@ -156,7 +158,16 @@ class OpenAICompatiblePdfReviewClient:
                 response_payload = response.json()
         except Exception as exc:  # noqa: BLE001 - caller classifies page/model errors.
             if is_model_unavailable_error(exc):
-                raise PdfReviewModelUnavailableError(str(exc)) from exc
+                logger.debug(f"[PDF审核] 审核模型不可用原始错误：{exc!r}")
+                raise PdfReviewModelUnavailableError(
+                    humanize_error(
+                        str(exc),
+                        fallback=(
+                            "PDF 翻译审核模型当前不可用，请在设置里检查这条连接的 "
+                            "API Key、模型名和账号额度。"
+                        ),
+                    )
+                ) from exc
             raise
 
         text = _extract_response_text(response_payload)
@@ -359,6 +370,7 @@ def _normalize_issue(item: dict[str, Any]) -> PdfReviewIssue:
 
 
 def _exception_text(exc: BaseException) -> str:
+    """Full diagnostic text — for logs only; it carries the upstream JSON body."""
     parts = [str(exc), exc.__class__.__name__]
     response = getattr(exc, "response", None)
     if response is not None:
@@ -370,10 +382,18 @@ def _exception_text(exc: BaseException) -> str:
 
 
 def _sanitize_error(exc: BaseException) -> str:
-    text = _exception_text(exc).strip() or exc.__class__.__name__
-    if len(text) > 500:
-        return text[:497] + "..."
-    return text
+    """Return the one sentence the connection-test panel shows the user.
+
+    The diagnostic text — exception class, HTTP status, the provider's JSON error
+    body — goes to the debug log.  Handing it to the panel put a request URL and
+    a raw envelope in front of someone who only wanted to know whether the
+    connection works.
+    """
+    logger.debug(f"[PDF审核] 连接测试失败原始错误：{_exception_text(exc)}")
+    return humanize_error(
+        str(exc),
+        fallback="审核模型没有正常响应，请检查这条连接的地址、API Key 和模型名。",
+    )
 
 
 def _now_iso() -> str:

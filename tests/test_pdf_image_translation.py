@@ -567,9 +567,23 @@ class PdfImageTranslationTests(unittest.TestCase):
             "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502"
         )
 
-        self.assertIn("图像翻译接口返回服务器错误", problem)
-        self.assertIn("502 网关错误", problem)
-        self.assertIn("https://api.example/v1/images/edits/", problem)
+        # 占位页上印的「问题描述」是给人看的：一句中文，不带请求地址、
+        # 不带 MDN 链接、不带英文状态行。
+        self.assertIn("网关", problem)
+        self.assertNotIn("https://", problem)
+        self.assertNotIn("Bad Gateway", problem)
+        self.assertNotIn("Server error", problem)
+        self.assertNotIn("developer.mozilla.org", problem)
+
+    def test_failure_placeholder_problem_keeps_quality_verdicts_readable(self) -> None:
+        self.assertEqual(
+            _localized_pdf_placeholder_problem("low resolution"),
+            "生成图像分辨率过低。",
+        )
+        self.assertEqual(
+            _localized_pdf_placeholder_problem("ratio error"),
+            "页面比例不匹配。",
+        )
 
     def test_success_pdf_result_does_not_show_size_detail_as_error_reason(self) -> None:
         result = _file_record_to_result(
@@ -864,7 +878,10 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue(record.source_copy_path)
             self.assertEqual(len(record.pages), 1)
             self.assertTrue(record.pages[0].source_image_path.endswith("page_001.png"))
-            self.assertIn("invalid api key", record.error)
+            # 用户看到的是一句中文，不是上游那句 "invalid api key"。
+            self.assertNotIn("invalid api key", record.error)
+            self.assertIn("API Key", record.error)
+            self.assertIn("请在设置里检查", record.error)
 
     def test_review_failure_regenerates_from_source_and_keeps_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1032,6 +1049,66 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertFalse((output_dir / "译文(英文)_source_压缩.pdf").exists())
             self.assertEqual(done.issues[0]["file"], "source.pdf")
             self.assertEqual(done.issues[0]["location_label"], "第 1 页")
+
+    def test_upstream_503_failure_reaches_user_as_plain_chinese(self) -> None:
+        """A 503 from the image endpoint must not print its URL/JSON body anywhere."""
+        upstream_blob = (
+            "Server error '503 Service Unavailable' for url "
+            "'https://api.ai-pixel.online/v1/images/edits'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503\n"
+            '接口返回：{"error":{"message":"Service temporarily unavailable",'
+            '"type":"api_error"}}'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = AppSettings(target_lang="en")
+            settings.output.use_custom_output_dir = True
+            settings.output.custom_output_dir = str(root / "out")
+            settings.pdf.page_retry_attempts = 0
+            settings.image_model_role.source_role = SOURCE_INDEPENDENT
+            settings.image_model_role.cloud_provider = "custom_openai"
+            settings.image_model_role.cloud_model = "image-model"
+            settings.image_model_role.cloud_base_url = "https://images.example/v1"
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_AlwaysFailImageClient(upstream_blob),
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+            done = _drain_last_message(runner, DoneMsg)
+            self.assertIsNotNone(done)
+            result = done.file_results[0]
+            output_dir = Path(done.output_dir)
+            manifest = json.loads(
+                (output_dir / "pdf_translation_manifest.json").read_text(encoding="utf-8")
+            )
+            page_entry = manifest["files"][0]["pages"][0]
+            visible_texts = [
+                result.get("error") or "",
+                done.issues[0].get("problem") or "",
+                page_entry.get("error") or "",
+                (output_dir / "pdf_translation_report.md").read_text(encoding="utf-8"),
+            ]
+            self.assertIn("未生成译文 PDF", result.get("error") or "")
+            for text in visible_texts:
+                self.assertIn("接口所在的服务暂时不可用", text)
+                self.assertNotIn("http", text)
+                self.assertNotIn('{"error"', text)
+                self.assertNotIn("Service Unavailable", text)
+                self.assertNotIn("Server error", text)
+                self.assertNotIn("api_error", text)
+                self.assertNotIn("For more information check", text)
 
     def test_review_exhaustion_uses_placeholder_and_marks_file_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

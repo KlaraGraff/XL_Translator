@@ -70,6 +70,7 @@ from core.task_runner import (
     StoppedMsg,
     TaskStopped,
     WordRecoveryStatusMsg,
+    user_facing_reason,
 )
 from core.translation_filter import (
     VALIDATION_STATUS_SOFT_PASS_REVIEW,
@@ -363,7 +364,16 @@ class WordTaskRunner:
                     normal_soft_ratio=_WORD_RECOVERY_NORMAL_SOFT_RATIO,
                 )
         except Exception as exc:
-            self._queue.put(ErrorMsg(message=f"引擎初始化失败：{exc}"))
+            logger.debug(f"Word 引擎初始化失败原始错误：{exc!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="引擎初始化失败："
+                    + user_facing_reason(
+                        exc,
+                        fallback="请在设置里检查翻译模型这条连接。",
+                    )
+                )
+            )
             return
 
         if not self._files:
@@ -383,7 +393,16 @@ class WordTaskRunner:
             output_dir = build_word_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            self._queue.put(ErrorMsg(message=f"输出目录初始化失败：{exc}"))
+            logger.debug(f"Word 输出目录初始化失败原始错误：{exc!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="输出目录初始化失败："
+                    + user_facing_reason(
+                        exc,
+                        fallback="请换一个有写入权限的输出目录后重试。",
+                    )
+                )
+            )
             return
 
         def _raise_if_stopped(message: str = "任务已中止") -> None:
@@ -617,14 +636,22 @@ class WordTaskRunner:
                     if len(front_matter_summaries) < index + 1:
                         front_matter_summaries.append({})
                     file_texts.append(set())
-                    self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {exc}")
-                    self._task_logger.file_error(file_item.name, f"Word 文件读取失败: {exc}")
+                    logger.debug(f"Word 文件读取失败 {file_item.name} 原始错误：{exc!r}")
+                    read_reason = user_facing_reason(
+                        exc,
+                        fallback="这个文件打不开，可能已损坏或设置了打开密码。",
+                    )
+                    self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {read_reason}")
+                    self._task_logger.file_error(
+                        file_item.name,
+                        f"Word 文件读取失败: {read_reason}",
+                    )
                     file_results.append(
                         {
                             "name": file_item.name,
                             "source_path": str(file_item.path),
                             "success": False,
-                            "error": f"Word 文件读取失败: {exc}",
+                            "error": f"Word 文件读取失败: {read_reason}",
                         }
                     )
 
@@ -1241,14 +1268,19 @@ class WordTaskRunner:
                     )
                     self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
                 except Exception as exc:
-                    self._log("ERROR", f"Word 文件写入失败 {file_item.name}：{exc}")
-                    self._task_logger.file_error(file_item.name, str(exc))
+                    logger.debug(f"Word 文件写入失败 {file_item.name} 原始错误：{exc!r}")
+                    write_reason = user_facing_reason(
+                        exc,
+                        fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
+                    )
+                    self._log("ERROR", f"Word 文件写入失败 {file_item.name}：{write_reason}")
+                    self._task_logger.file_error(file_item.name, write_reason)
                     file_results.append(
                         {
                             "name": file_item.name,
                             "source_path": str(file_item.path),
                             "success": False,
-                            "error": str(exc),
+                            "error": write_reason,
                         }
                     )
 
@@ -1272,7 +1304,10 @@ class WordTaskRunner:
             # 原来都会直接冲出工作线程：清理不做、终止消息不发，UI 侧的任务永远停在
             # "运行中"。这里把它降级成一次可见的失败。
             logger.exception("Word 翻译任务异常中止")
-            fatal_error_message = f"Word 翻译任务异常中止：{exc}"
+            fatal_error_message = "Word 翻译任务异常中止：" + user_facing_reason(
+                exc,
+                fallback="出现了未预期的问题，已生成的文件仍可使用。",
+            )
         finally:
             # 无论走哪条路径，线程池与临时 docx 都必须被回收。
             if recovery_pool is not None:
@@ -1310,9 +1345,14 @@ class WordTaskRunner:
                         api_call_count=api_call_count,
                     )
                 except Exception as exc:  # report output must not fail a usable task
-                    self._log("WARN", f"Word 翻译质量报告写入失败：{exc}")
+                    logger.debug(f"Word 翻译质量报告写入失败原始错误：{exc!r}")
+                    report_reason = user_facing_reason(
+                        exc,
+                        fallback="报告文件没能写出。",
+                    )
+                    self._log("WARN", f"Word 翻译质量报告写入失败：{report_reason}")
                     report_warning = (
-                        f"Word 翻译质量报告未能写入：{exc}。"
+                        f"Word 翻译质量报告未能写入：{report_reason}"
                         "已生成的翻译文件仍可使用。"
                     )
 
@@ -1374,7 +1414,13 @@ class WordTaskRunner:
             )
         except Exception as exc:  # noqa: BLE001 - 终止消息必须发出去
             logger.exception("Word 翻译任务收尾失败")
-            fatal_error_message = fatal_error_message or f"Word 翻译任务收尾失败：{exc}"
+            fatal_error_message = fatal_error_message or (
+                "Word 翻译任务收尾失败："
+                + user_facing_reason(
+                    exc,
+                    fallback="结果摘要没能生成，已生成的翻译文件仍可使用。",
+                )
+            )
         finally:
             if not terminal_sent:
                 self._queue.put(
@@ -1633,7 +1679,14 @@ def _prepare_word_source_for_translation(
             temp_paths.append(native_result.path)
             fallback_messages.extend(native_result.fallback_messages)
         except WordConversionError as exc:
-            message = f"本地 Office 编号预处理不可用，已改用内置方式处理编号：{exc}"
+            logger.debug(f"本地 Office 编号预处理不可用原始错误：{exc!r}")
+            message = (
+                "本地 Office 编号预处理不可用，已改用内置方式处理编号："
+                + user_facing_reason(
+                    exc,
+                    fallback="本机 Office 这次没能配合，编号已由程序自行还原。",
+                )
+            )
             fallback_messages.append(message)
             numbering_fallback_messages.append(message)
 
@@ -1688,7 +1741,11 @@ def _cleanup_converted_word_paths(
         try:
             path.unlink(missing_ok=True)
         except Exception as exc:
-            log_callback("WARN", f"临时 Word 转换文件清理失败 {path.name}: {exc}")
+            log_callback(
+                "WARN",
+                f"临时 Word 转换文件清理失败 {path.name}: "
+                + user_facing_reason(exc, fallback="临时文件删不掉。"),
+            )
 
 
 def _needs_word_translation_retry(
@@ -2114,7 +2171,12 @@ class _WordRecoveryPool:
                 self._condition.notify_all()
         except Exception as exc:  # noqa: BLE001 - recovery must degrade to review
             if self._log_callback:
-                self._log_callback("WARN", f"Word 恢复池任务失败：{exc}")
+                logger.debug(f"Word 恢复池任务失败原始错误：{exc!r}")
+                self._log_callback(
+                    "WARN",
+                    "Word 恢复池任务失败："
+                    + user_facing_reason(exc, fallback="这一段的补救没能完成，已转人工复核。"),
+                )
         finally:
             with self._condition:
                 self._futures.discard(future)

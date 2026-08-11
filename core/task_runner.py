@@ -10,6 +10,7 @@
 """
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -70,7 +71,27 @@ from core.excel_automation import (
     terminate_process_tree,
 )
 from core.task_logger import TaskLogger
+from core.user_facing_errors import humanize_error
 from settings import AppSettings, provider_key_overrides
+
+# 「给用户看的一句话」的判定标准，写在这里是因为三个 runner 都要用同一条标准。
+# humanize_error 认识的原因会被换成中文；它认不出的照原样返回——那是库该有的
+# 默认，却正是我们不能端到界面上的东西。所以这里再加一道闸：句子里必须有中文，
+# 且不能带请求地址或 JSON 错误体，否则就用调用点给的兜底句，原文只留给 debug 日志。
+_USER_REASON_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_USER_REASON_URL_RE = re.compile(r"\b(?:https?|wss?)://", re.IGNORECASE)
+_USER_REASON_JSON_RE = re.compile(r"\{\s*[\"']")
+
+
+def user_facing_reason(value: object, *, fallback: str) -> str:
+    """Return one plain-Chinese sentence describing ``value`` to a user."""
+    sentence = humanize_error(value)
+    if not _USER_REASON_CJK_RE.search(sentence):
+        return fallback
+    if _USER_REASON_URL_RE.search(sentence) or _USER_REASON_JSON_RE.search(sentence):
+        return fallback
+    return sentence
+
 
 AUTOFIT_STALL_TIMEOUT_SECONDS = 180
 AUTOFIT_MONITOR_POLL_SECONDS = 0.5
@@ -345,7 +366,16 @@ class TaskRunner:
             batch_size = throughput.batch_size or 1
             concurrency = throughput.concurrency
         except Exception as e:
-            self._queue.put(ErrorMsg(message=f"引擎初始化失败：{e}"))
+            logger.debug(f"引擎初始化失败原始错误：{e!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="引擎初始化失败："
+                    + user_facing_reason(
+                        e,
+                        fallback="翻译设置里还有没填好的项，请检查所选连接和模型。",
+                    )
+                )
+            )
             return
 
         def _raise_if_stopped(message: str = "任务已中止") -> None:
@@ -367,7 +397,16 @@ class TaskRunner:
             output_dir = bilingual_writer.build_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            self._queue.put(ErrorMsg(message=f"输出目录初始化失败：{e}"))
+            logger.debug(f"输出目录初始化失败原始错误：{e!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="输出目录初始化失败："
+                    + user_facing_reason(
+                        e,
+                        fallback="输出目录不可用，请在设置里另选一个可写的目录。",
+                    )
+                )
+            )
             return
 
         # ── 任务日志：记录启动信息 ────────────────────────────────────
@@ -423,7 +462,12 @@ class TaskRunner:
                 else:
                     self._log("WARN", f"{reason}，但未能确认 Excel 进程已退出 PID={pid}")
             except Exception as e:
-                self._log("WARN", f"{reason}，但强制结束 Excel 进程失败 PID={pid}: {e}")
+                logger.debug(f"强制结束 Excel 进程失败原始错误 PID={pid}：{e!r}")
+                self._log(
+                    "WARN",
+                    f"{reason}，但强制结束 Excel 进程失败 PID={pid}："
+                    + user_facing_reason(e, fallback="请手动退出 Excel 后重试。"),
+                )
 
         def _cleanup_excel_app(status_msg: str | None = None, *, force: bool = False) -> None:
             nonlocal excel_app, excel_thread_state
@@ -440,7 +484,12 @@ class TaskRunner:
                 else:
                     excel_app.quit()
             except Exception as e:
-                self._log("WARN", f"Excel 进程清理异常: {e}")
+                logger.debug(f"Excel 进程清理异常原始错误：{e!r}")
+                self._log(
+                    "WARN",
+                    "Excel 进程清理异常："
+                    + user_facing_reason(e, fallback="程序会尝试强制结束它。"),
+                )
                 _kill_excel_pid(pid, "常规退出 Excel 失败")
             finally:
                 excel_app = None
@@ -529,8 +578,16 @@ class TaskRunner:
                 except Exception as e:
                     finalize_excel_thread(excel_thread_state)
                     excel_thread_state = None
-                    self._log("WARN", f"启动全局 Excel 进程失败: {e}")
-                    raise Exception(f"无法启动本地 Excel，请确认已正确安装并允许自动化控制: {e}")
+                    logger.debug(f"启动全局 Excel 进程失败原始错误：{e!r}")
+                    start_reason = user_facing_reason(
+                        e,
+                        fallback="本机 Excel 没能启动，可能没安装，或没有授权本程序控制它。",
+                    )
+                    self._log("WARN", f"启动全局 Excel 进程失败：{start_reason}")
+                    raise Exception(
+                        "无法启动本地 Excel，请确认已正确安装并允许自动化控制："
+                        f"{start_reason}"
+                    )
             return excel_app
 
         try:
@@ -588,8 +645,13 @@ class TaskRunner:
                             file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
                         self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")
                     except Exception as e:
-                        self._log("ERROR", f"源文件转换失败 {file_item.name}: {e}")
-                        self._task_logger.file_error(file_item.name, str(e))
+                        logger.debug(f"源文件转换失败 {file_item.name} 原始错误：{e!r}")
+                        conversion_reason = user_facing_reason(
+                            e,
+                            fallback="这个 .xls 文件没能转换成 .xlsx，请改用兼容转换后重试。",
+                        )
+                        self._log("ERROR", f"源文件转换失败 {file_item.name}: {conversion_reason}")
+                        self._task_logger.file_error(file_item.name, conversion_reason)
                         file_results.append({
                             "name": file_item.name,
                             "source_path": str(file_item.path),
@@ -600,7 +662,7 @@ class TaskRunner:
                             ),
                             "status": "failed",
                             "success": False,
-                            "error": f"源文件转换失败: {e}",
+                            "error": f"源文件转换失败: {conversion_reason}",
                         })
                         process_paths.append(process_path)
                         file_texts.append(set())
@@ -644,8 +706,13 @@ class TaskRunner:
                         )
                         coverage_plans.append(None)
                 except Exception as e:
-                    self._log("ERROR", f"源文件读取失败 {file_item.name}: {e}")
-                    self._task_logger.file_error(file_item.name, f"源文件读取失败: {e}")
+                    logger.debug(f"源文件读取失败原始错误 {file_item.name}：{e!r}")
+                    read_reason = user_facing_reason(
+                        e,
+                        fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
+                    )
+                    self._log("ERROR", f"源文件读取失败 {file_item.name}：{read_reason}")
+                    self._task_logger.file_error(file_item.name, f"源文件读取失败: {read_reason}")
                     file_results.append({
                         "name": file_item.name,
                         "source_path": str(file_item.path),
@@ -654,7 +721,7 @@ class TaskRunner:
                         "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
                         "status": "failed",
                         "success": False,
-                        "error": f"源文件读取失败: {e}",
+                        "error": f"源文件读取失败: {read_reason}",
                     })
                     if len(coverage_plans) < len(process_paths):
                         coverage_plans.append(None)
@@ -663,7 +730,11 @@ class TaskRunner:
                         try:
                             os.remove(process_path)
                         except Exception as cleanup_error:
-                            self._log("WARN", f"临时文件清理失败 {process_path.name}: {cleanup_error}")
+                            self._log(
+                                "WARN",
+                                f"临时文件清理失败 {process_path.name}: "
+                                f"{user_facing_reason(cleanup_error, fallback='临时文件删不掉。')}",
+                            )
                     continue
                 text_set = set(texts)
                 file_texts.append(text_set)
@@ -1264,8 +1335,13 @@ class TaskRunner:
                         )
                     self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
                 except Exception as e:
-                    self._log("ERROR", f"文件写入失败 {file_item.name}：{e}")
-                    self._task_logger.file_error(file_item.name, str(e))
+                    logger.debug(f"文件写入失败 {file_item.name} 原始错误：{e!r}")
+                    write_reason = user_facing_reason(
+                        e,
+                        fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
+                    )
+                    self._log("ERROR", f"文件写入失败 {file_item.name}：{write_reason}")
+                    self._task_logger.file_error(file_item.name, write_reason)
                     file_results.append({
                         "name": file_item.name,
                         "source_path": str(file_item.path),
@@ -1274,7 +1350,7 @@ class TaskRunner:
                         "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
                         "status": "failed",
                         "success": False,
-                        "error": str(e),
+                        "error": write_reason,
                     })
                 finally:
                     # 清理 .xls 转换后的临时 .xlsx 文件
@@ -1282,7 +1358,11 @@ class TaskRunner:
                         try:
                             os.remove(process_path)
                         except Exception as e:
-                            self._log("WARN", f"临时文件清理失败 {process_path.name}: {e}")
+                            self._log(
+                                "WARN",
+                                f"临时文件清理失败 {process_path.name}: "
+                                f"{user_facing_reason(e, fallback='临时文件删不掉。')}",
+                            )
 
             # 阶段 3 收尾进度
             self._queue.put(ProgressMsg(

@@ -12,6 +12,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.excel_automation import probe_local_excel_automation
+from core.user_facing_errors import humanize_error
 
 
 class XlwingsUnavailableError(Exception):
@@ -30,15 +31,24 @@ def is_excel_automation_permission_denied(exc: BaseException | str) -> bool:
 
 
 def _format_excel_conversion_error(exc: BaseException) -> str:
+    """Compose the sentence the user sees when Excel refuses to convert a .xls.
+
+    The raw AppleScript/COM text stays in the debug log: it is either an error
+    code the reader cannot act on, or — in the permission case — noise appended
+    to an explanation that already says exactly what to do.
+    """
     message = str(exc)
+    logger.debug(f"使用 Excel 转换 .xls 失败原始错误：{exc!r}")
     if not is_excel_automation_permission_denied(message):
-        return f"使用 Excel 转换失败：{message}"
+        return "使用 Excel 转换失败：" + humanize_error(
+            message,
+            fallback="本机 Excel 没能完成这次转换，可返回任务设置并选择兼容转换后重试。",
+        )
 
     return (
         "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。"
         f"请在「{macos_excel_automation_privacy_path()}」中允许 Translator 控制 Microsoft Excel，"
         "或返回任务设置并明确选择兼容转换；兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
-        f" 原始错误：{message}"
     )
 
 

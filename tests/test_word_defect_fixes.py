@@ -576,7 +576,9 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
             messages = list(runner._queue.queue)
             errors = [item for item in messages if isinstance(item, ErrorMsg)]
             self.assertEqual(len(errors), 1, "队列必须收到且只收到一条终止消息")
-            self.assertIn("disk went away", errors[0].message)
+            # 终止横幅上只出现中文说明，PermissionError 的原文留给 debug 日志。
+            self.assertIn("Word 翻译任务异常中止", errors[0].message)
+            self.assertNotIn("disk went away", errors[0].message)
             self.assertFalse(
                 leaked_temp.exists(),
                 "临时 docx 必须在 finally 里被清理，否则每次异常都留一份垃圾",
@@ -648,7 +650,8 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
             )
             errors = [item for item in runner._queue.queue if isinstance(item, ErrorMsg)]
             self.assertEqual(len(errors), 1)
-            self.assertIn("upstream exploded", errors[0].message)
+            self.assertIn("Word 翻译任务异常中止", errors[0].message)
+            self.assertNotIn("upstream exploded", errors[0].message)
 
     def test_terminal_message_survives_a_failure_while_building_the_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -712,7 +715,8 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
 
             errors = [item for item in runner._queue.queue if isinstance(item, ErrorMsg)]
             self.assertEqual(len(errors), 1)
-            self.assertIn("contract exploded", errors[0].message)
+            self.assertIn("Word 翻译任务收尾失败", errors[0].message)
+            self.assertNotIn("contract exploded", errors[0].message)
 
 
 class WordHiddenContentWarningTests(IsolatedAppDataTestCase):

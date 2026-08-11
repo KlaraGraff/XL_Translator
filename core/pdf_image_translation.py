@@ -68,7 +68,6 @@ from core.pdf_review import (
     PdfReviewModelUnavailableError,
 )
 from core.task_logger import TaskLogger, redact_absolute_paths
-from core.user_facing_errors import humanize_error
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -78,6 +77,7 @@ from core.task_runner import (
     ProgressMsg,
     StatusMsg,
     StoppedMsg,
+    user_facing_reason,
 )
 from settings import AppSettings, provider_key_overrides
 
@@ -510,7 +510,7 @@ def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
         )
         result.items.append(item)
     except Exception as exc:  # noqa: BLE001 - one broken input must not block its peers.
-        reason = f"读取失败：{exc}"
+        reason = f"读取失败：{user_facing_reason(exc, fallback='这个文件打不开。')}"
         logger.warning(f"扫描 PDF/图片失败 {path.name}：{exc}")
         result.skipped.append(
             PdfScanSkippedItem(path, relative, reason, suffix.lstrip("."), source_type)
@@ -587,7 +587,12 @@ def check_page_quality(
             width, height = image.size
             ink_ratio, luma_stddev = _measure_page_ink(image)
     except Exception as exc:  # noqa: BLE001 - user-facing QC result.
-        return PageQualityResult(False, "decode_error", f"图片无法解码：{exc}")
+        logger.debug(f"[PDF] 译图解码失败原始错误：{exc!r}")
+        return PageQualityResult(
+            False,
+            "decode_error",
+            "接口返回的这一页不是可用的图片，程序无法解码。",
+        )
 
     source_ratio = _safe_ratio(source_width, source_height)
     output_ratio = _safe_ratio(width, height)
@@ -1485,7 +1490,8 @@ class PdfImageTranslationRunner:
             except Exception as exc:  # noqa: BLE001 - cleanup must not block resume.
                 self._log(
                     "WARN",
-                    f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}：{exc}",
+                    f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}："
+                    f"{user_facing_reason(exc, fallback='文件删不掉。')}",
                 )
 
     def _log(self, level: str, message: str, *, visible: bool = True) -> None:
@@ -1548,7 +1554,16 @@ class PdfImageTranslationRunner:
             self._queue.put(ErrorMsg(message=f"PDF 翻译模型配置不可用：{message}"))
             return
         except Exception as exc:  # noqa: BLE001 - init converted to UI error.
-            self._queue.put(ErrorMsg(message=f"PDF 翻译模型配置不可用：{exc}"))
+            logger.debug(f"[PDF] 解析翻译模型配置失败原始错误：{exc!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="PDF 翻译模型配置不可用："
+                    + user_facing_reason(
+                        exc,
+                        fallback="请在设置里检查 PDF 翻译模型这条连接。",
+                    )
+                )
+            )
             return
 
         if review_enabled:
@@ -1580,7 +1595,16 @@ class PdfImageTranslationRunner:
                 self._queue.put(ErrorMsg(message=f"PDF 翻译审核模型配置不可用：{message}"))
                 return
             except Exception as exc:  # noqa: BLE001 - init converted to UI error.
-                self._queue.put(ErrorMsg(message=f"PDF 翻译审核模型配置不可用：{exc}"))
+                logger.debug(f"[PDF] 解析审核模型配置失败原始错误：{exc!r}")
+                self._queue.put(
+                    ErrorMsg(
+                        message="PDF 翻译审核模型配置不可用："
+                        + user_facing_reason(
+                            exc,
+                            fallback="请在设置里检查 PDF 翻译审核模型这条连接。",
+                        )
+                    )
+                )
                 return
 
         root_for_output = self._source_root if self._source_root else self._files[0].path.parent
@@ -1742,8 +1766,12 @@ class PdfImageTranslationRunner:
             )
             self._log("ERROR", fatal_error)
         except Exception as exc:  # noqa: BLE001 - task-level failure.
-            fatal_error = str(exc)
-            self._log("ERROR", f"PDF 翻译任务失败：{fatal_error}")
+            logger.exception("PDF 翻译任务失败")
+            fatal_error = "PDF 翻译任务失败：" + user_facing_reason(
+                exc,
+                fallback="出现了未预期的问题，已保留已生成的页面素材和报告。",
+            )
+            self._log("ERROR", fatal_error)
 
         if output_dir is not None:
             summary = self._build_summary(
@@ -1825,7 +1853,8 @@ class PdfImageTranslationRunner:
                 self._log("INFO", f"[{item.path.name}] 已复制源文件到输出目录")
             except Exception as exc:  # noqa: BLE001 - file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
-                record.error = f"复制源文件失败：{exc}"
+                logger.debug(f"[PDF] 复制源文件失败原始错误：{exc!r}")
+                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法把源文件复制到输出目录。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -1843,7 +1872,8 @@ class PdfImageTranslationRunner:
                     record.page_count = 1
                 except Exception as exc:  # noqa: BLE001 - file-level validation failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
-                    record.error = f"图片读取失败：{exc}"
+                    logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='这张图片打不开，可能已损坏或格式不受支持。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -2044,9 +2074,15 @@ class PdfImageTranslationRunner:
                         self._fatal_review_model_error = str(exc)
                         raise
                     except Exception as exc:  # noqa: BLE001 - page-level unknown failure.
+                        logger.debug(
+                            f"[PDF] 第 {page_record.page_number} 页失败原始错误：{exc!r}"
+                        )
                         page_record.status = "placeholder_pending"
                         page_record.placeholder = True
-                        page_record.error = str(exc)
+                        page_record.error = user_facing_reason(
+                            exc,
+                            fallback="这一页处理失败，已改为失败占位页。",
+                        )
                         page_record.attempts = max_attempts
                         self._record_page_placeholder(page_record)
                     self._record_page_completed(page_record)
@@ -2086,7 +2122,10 @@ class PdfImageTranslationRunner:
                 for prepared in prepared_files:
                     if prepared.record.source_type != SOURCE_TYPE_IMAGE and prepared.record.page_count:
                         prepared.record.status = PDF_OUTPUT_STATE_FAILED
-                        prepared.record.error = f"pypdfium2 未安装或不可用：{exc}"
+                        logger.debug(f"[PDF] PDF 渲染组件不可用原始错误：{exc!r}")
+                        prepared.record.error = (
+                            "程序里负责渲染 PDF 页面的组件没能加载，无法处理 PDF；请重装程序后重试。"
+                        )
                 return
 
         for prepared in prepared_files:
@@ -2108,7 +2147,8 @@ class PdfImageTranslationRunner:
                     )
                 except Exception as exc:  # noqa: BLE001 - file-level render failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
-                    record.error = f"图片读取失败：{exc}"
+                    logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='这张图片打不开，可能已损坏或格式不受支持。')}"
                     self._log("ERROR", f"[{record.name}] {record.error}")
                 continue
             try:
@@ -2146,14 +2186,16 @@ class PdfImageTranslationRunner:
                             self._log(
                                 "ERROR",
                                 f"[{record.name}] 第 {page_number} 页读取/渲染失败，"
-                                f"已改为失败占位页，其余页面继续：{exc}",
+                                f"已改为失败占位页，其余页面继续："
+                                f"{user_facing_reason(exc, fallback='这一页在源文件里读不出来。')}",
                             )
                         yield (prepared, page_record)
                 finally:
                     doc.close()
             except Exception as exc:  # noqa: BLE001 - file-level render failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
-                record.error = f"PDF 渲染失败：{exc}"
+                logger.debug(f"[PDF] PDF 渲染失败原始错误：{exc!r}")
+                record.error = f"PDF 渲染失败：{user_facing_reason(exc, fallback='这份 PDF 的页面读不出来。')}"
                 self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _broken_page_record(
@@ -2187,7 +2229,7 @@ class PdfImageTranslationRunner:
             file_name=file_name,
             status="placeholder_pending",
             placeholder=True,
-            error=f"页面读取/渲染失败：{error}",
+            error=f"页面读取/渲染失败：{user_facing_reason(error, fallback='这一页在源文件里读不出来。')}",
             source_width_px=int(max(1, round(width_pt * scale))),
             source_height_px=int(max(1, round(height_pt * scale))),
             page_width_pt=float(width_pt),
@@ -2243,10 +2285,15 @@ class PdfImageTranslationRunner:
                         f"[{record.name}] 已生成压缩 PDF：{prepared.compressed_pdf_path.name}",
                     )
                 except Exception as exc:  # noqa: BLE001 - compressed output is optional.
-                    record.compression_error = str(exc)
+                    logger.debug(f"[PDF] 压缩 PDF 生成失败原始错误：{exc!r}")
+                    record.compression_error = user_facing_reason(
+                        exc,
+                        fallback="压缩版 PDF 没能生成，高清版不受影响。",
+                    )
                     self._log(
                         "WARN",
-                        f"[{record.name}] 压缩 PDF 生成失败，已保留高清版：{exc}",
+                        f"[{record.name}] 压缩 PDF 生成失败，已保留高清版："
+                        f"{record.compression_error}",
                     )
             if _record_is_fully_skipped_oversize(record):
                 # 产物只是源文件的原样副本，一个字都没翻。这种情况下报
@@ -2261,7 +2308,8 @@ class PdfImageTranslationRunner:
             self._log("OK", f"[{record.name}] 已生成高清 PDF：{prepared.translated_pdf_path.name}")
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = f"PDF 合成失败：{exc}"
+            logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
+            record.error = f"PDF 合成失败：{user_facing_reason(exc, fallback='译文页面无法装配成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _finalize_image_record(
@@ -2304,7 +2352,8 @@ class PdfImageTranslationRunner:
             self._log("OK", f"[{record.name}] 已生成译图：{output_path.name}")
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = f"译图写入失败：{exc}"
+            logger.debug(f"[PDF] 译图写入失败原始错误：{exc!r}")
+            record.error = f"译图写入失败：{user_facing_reason(exc, fallback='译图无法写入输出目录。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _refresh_file_record_counts(self, record: PdfFileRecord) -> None:
@@ -2387,7 +2436,15 @@ class PdfImageTranslationRunner:
                     if path.exists():
                         path.unlink()
                 except Exception as exc:  # noqa: BLE001 - cleanup should not block resume.
-                    self._log("WARN", f"[{record.name}] 清除旧 PDF 产物失败：{path.name}：{exc}")
+                    logger.debug(f"[PDF] 清除旧 PDF 产物失败原始错误：{path}：{exc!r}")
+                    self._log(
+                        "WARN",
+                        f"[{record.name}] 清除旧 PDF 产物失败：{path.name}："
+                        + user_facing_reason(
+                            exc,
+                            fallback="文件可能正被其他程序打开，重新生成的文件会另存一份。",
+                        ),
+                    )
             record.translated_pdf_path = ""
             record.compressed_pdf_path = ""
             record.translated_image_path = ""
@@ -2436,7 +2493,10 @@ class PdfImageTranslationRunner:
             _load_pdfium()
         except Exception as exc:  # noqa: BLE001 - dependency may be absent in dev env.
             record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = f"pypdfium2 未安装或不可用：{exc}"
+            logger.debug(f"[PDF] PDF 渲染组件不可用原始错误：{exc!r}")
+            record.error = (
+                "程序里负责渲染 PDF 页面的组件没能加载，无法处理 PDF；请重装程序后重试。"
+            )
             return record
 
         source_pages_dir, translated_pages_dir = resolve_pdf_page_archive_dirs(
@@ -2517,8 +2577,14 @@ class PdfImageTranslationRunner:
                                 self._stop_event.set()
                                 raise
                             except Exception as exc:  # noqa: BLE001 - page-level unknown failure.
+                                logger.debug(
+                                    f"[PDF] 第 {page_record.page_number} 页失败原始错误：{exc!r}"
+                                )
                                 page_record.status = "placeholder_pending"
-                                page_record.error = str(exc)
+                                page_record.error = user_facing_reason(
+                                    exc,
+                                    fallback="这一页处理失败，已改为失败占位页。",
+                                )
                                 page_record.attempts = max_attempts
                             processed = processed_page_offset + min(
                                 page_count,
@@ -2598,10 +2664,15 @@ class PdfImageTranslationRunner:
                     record.compressed_pdf_size_bytes = _safe_file_size(compressed_pdf_path)
                     self._log("OK", f"[{item.path.name}] 已生成压缩 PDF：{compressed_pdf_path.name}")
                 except Exception as exc:  # noqa: BLE001 - compressed output is optional.
-                    record.compression_error = str(exc)
+                    logger.debug(f"[PDF] 压缩 PDF 生成失败原始错误：{exc!r}")
+                    record.compression_error = user_facing_reason(
+                        exc,
+                        fallback="压缩版 PDF 没能生成，高清版不受影响。",
+                    )
                     self._log(
                         "WARN",
-                        f"[{item.path.name}] 压缩 PDF 生成失败，已保留高清版：{exc}",
+                        f"[{item.path.name}] 压缩 PDF 生成失败，已保留高清版："
+                        f"{record.compression_error}",
                     )
             record.status = (
                 PDF_OUTPUT_STATE_NEEDS_REVIEW
@@ -2616,7 +2687,8 @@ class PdfImageTranslationRunner:
             self._queue.put(ProgressMsg(3, 3, "合成 PDF", 1, 1))
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = f"PDF 合成失败：{exc}"
+            logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
+            record.error = f"PDF 合成失败：{user_facing_reason(exc, fallback='译文页面无法装配成 PDF。')}"
             self._log("ERROR", f"[{item.path.name}] {record.error}")
         return record
 
@@ -2769,7 +2841,18 @@ class PdfImageTranslationRunner:
                 )
             except Exception as exc:  # noqa: BLE001 - page/model classification.
                 if isinstance(exc, ImageModelUnavailableError) or is_model_unavailable_error(exc):
-                    raise ImageModelUnavailableError(str(exc)) from exc
+                    # 这条消息会直接当成任务的终止提示显示出来，所以在抛出时就
+                    # 换成人话；原文留给 debug 日志。
+                    logger.debug(f"[PDF] 图像模型不可用原始错误：{exc!r}")
+                    raise ImageModelUnavailableError(
+                        user_facing_reason(
+                            exc,
+                            fallback=(
+                                "PDF 翻译模型当前不可用，请在设置里检查这条连接的 API Key、"
+                                "模型名和账号额度。"
+                            ),
+                        )
+                    ) from exc
                 decision = handle_api_concurrency_limit(
                     exc,
                     scheduler=scheduler,
@@ -2785,7 +2868,10 @@ class PdfImageTranslationRunner:
                 logger.debug(
                     f"[PDF] 第 {page_record.page_number} 页第 {attempt} 次生成失败原始错误：{exc!r}"
                 )
-                last_error = humanize_error(exc, fallback="图像生成失败。")
+                last_error = user_facing_reason(
+                    exc,
+                    fallback="图像翻译接口这一次没有返回可用结果，请稍后重试或在设置里换一条连接。",
+                )
                 self._record_page_retrying(page_record)
                 self._log(
                     "WARN",
@@ -2850,18 +2936,32 @@ class PdfImageTranslationRunner:
                     except Exception as exc:  # noqa: BLE001 - review participates in page recovery.
                         self._finish_page_review()
                         if isinstance(exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(exc):
-                            raise PdfReviewModelUnavailableError(str(exc)) from exc
+                            logger.debug(f"[PDF] 审核模型不可用原始错误：{exc!r}")
+                            raise PdfReviewModelUnavailableError(
+                                user_facing_reason(
+                                    exc,
+                                    fallback=(
+                                        "PDF 翻译审核模型当前不可用，请在设置里检查这条连接的 "
+                                        "API Key、模型名和账号额度。"
+                                    ),
+                                )
+                            ) from exc
                         review_request_error = exc
+                        logger.debug(f"[PDF] 审核请求失败原始错误：{exc!r}")
+                        review_failure_reason = user_facing_reason(
+                            exc,
+                            fallback="审核接口这一次没有返回可用结果。",
+                        )
                         review_result = PdfPageReviewResult(
                             passed=False,
                             blocking_issues=[
                                 PdfReviewIssue(
                                     type="review_request_failed",
-                                    problem=str(exc),
+                                    problem=review_failure_reason,
                                     suggestion="请重试审核或更换 PDF 翻译审核模型。",
                                 )
                             ],
-                            summary=f"审核请求失败：{exc}",
+                            summary=f"审核请求失败：{review_failure_reason}",
                         )
                     else:
                         self._finish_page_review()
@@ -3332,7 +3432,8 @@ class PdfImageTranslationRunner:
                         except Exception as exc:  # noqa: BLE001 - fall back per page.
                             self._log(
                                 "WARN",
-                                f"第 {page.page_number} 页压缩失败，已回退高清页：{exc}",
+                                f"第 {page.page_number} 页压缩失败，已回退高清页："
+                                f"{user_facing_reason(exc, fallback='这一页压缩时出错。')}",
                             )
                             image_path = Path(page.translated_image_path)
                     _append_pdf_image_page(
@@ -3626,7 +3727,8 @@ def _pdf_render_scale_for_page(
 def _pdf_read_error_message(exc: Exception) -> str:
     if "password" in str(exc).lower():
         return "受保护 PDF 暂不在本轮支持范围内。"
-    return f"PDF 读取失败：{exc}"
+    logger.debug(f"[PDF] 打开 PDF 失败原始错误：{exc!r}")
+    return f"PDF 读取失败：{user_facing_reason(exc, fallback='这份 PDF 打不开，可能已损坏或后缀名与真实格式不符。')}"
 
 
 def _append_pdf_image_page(
@@ -3816,41 +3918,26 @@ def _text_width(draw: ImageDraw.ImageDraw, text: str, font) -> int:
 
 
 def _localized_pdf_placeholder_problem(error_summary: str) -> str:
+    """Return the失败占位页's "问题描述" line — always a plain Chinese sentence."""
     raw = str(error_summary or "").strip()
     if not raw:
         return "未知错误。"
-    server_error = re.search(
-        r"Server error '([^']+)' for url '([^']+)'",
+    # 质检类判定不走 humanize_error（它只认库/接口的错误串），这几个是我们
+    # 自己产生的短代号，逐字翻过来就够。
+    quality_labels = {
+        "temporary image failure": "图像生成临时失败。",
+        "low resolution": "生成图像分辨率过低。",
+        "image generation failed": "图像生成失败。",
+        "decode error": "生成图像无法解码。",
+        "ratio error": "页面比例不匹配。",
+    }
+    for marker, sentence in quality_labels.items():
+        if marker in raw.lower():
+            return sentence
+    return user_facing_reason(
         raw,
-        flags=re.IGNORECASE,
+        fallback="图像翻译接口这一次没有返回可用结果。",
     )
-    if server_error:
-        status = server_error.group(1)
-        url = server_error.group(2)
-        status_label = status
-        if "502" in status or "bad gateway" in status.lower():
-            status_label = "502 网关错误"
-        elif "503" in status:
-            status_label = "503 服务暂不可用"
-        elif "504" in status:
-            status_label = "504 网关超时"
-        return f"图像翻译接口返回服务器错误：{status_label}。请求地址：{url}。"
-
-    replacements = [
-        ("For more information check:", "更多信息请查看："),
-        ("Server error", "服务器错误"),
-        ("Bad Gateway", "网关错误"),
-        ("temporary image failure", "图像生成临时失败"),
-        ("low resolution", "生成图像分辨率过低"),
-        ("invalid api key", "API Key 无效"),
-        ("image generation failed", "图像生成失败"),
-        ("decode error", "生成图像无法解码"),
-        ("ratio error", "页面比例不匹配"),
-    ]
-    text = raw
-    for source, target in replacements:
-        text = re.sub(re.escape(source), target, text, flags=re.IGNORECASE)
-    return text
 
 
 def _copy_page_record(source: PdfPageRecord, target: PdfPageRecord) -> None:

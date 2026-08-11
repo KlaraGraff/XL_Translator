@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import psutil
+from loguru import logger
+
+from core.user_facing_errors import humanize_error
 
 
 SUPPORTED_LOCAL_EXCEL_PLATFORMS = {"Darwin", "Windows"}
@@ -73,7 +76,11 @@ def probe_local_excel_automation() -> tuple[bool, str]:
     try:
         thread_state = initialize_excel_thread()
     except Exception as exc:
-        return False, f"无法初始化本地 Excel 自动化：{exc}"
+        logger.debug(f"初始化本地 Excel 自动化失败原始错误：{exc!r}")
+        return False, "无法初始化本地 Excel 自动化：" + humanize_error(
+            exc,
+            fallback="本机缺少连接 Excel 所需的组件。",
+        )
 
     app = None
     try:
@@ -82,7 +89,11 @@ def probe_local_excel_automation() -> tuple[bool, str]:
         except ImportError:
             return False, "未安装 xlwings，无法连接本地 Excel。"
         except Exception as exc:
-            return False, f"无法启动本地 Excel：{exc}"
+            logger.debug(f"启动本地 Excel 失败原始错误：{exc!r}")
+            return False, "无法启动本地 Excel：" + humanize_error(
+                exc,
+                fallback="本机 Excel 没能启动，可能没安装，或没有授权本程序控制它。",
+            )
 
         try:
             app.display_alerts = False

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from core.task_runner import user_facing_reason
 from core.user_facing_errors import humanize_error, strip_error_noise
 
 
@@ -63,6 +64,49 @@ class HumanizeErrorTests(unittest.TestCase):
 
     def test_strip_error_noise_collapses_whitespace(self) -> None:
         self.assertEqual(strip_error_noise("  a\n  b \t c "), "a b c")
+
+
+class UserFacingReasonTests(unittest.TestCase):
+    """The gate all three runners pass a raw cause through before showing it."""
+
+    def test_upstream_503_blob_becomes_one_chinese_sentence(self) -> None:
+        raw = (
+            "Server error '503 Service Unavailable' for url "
+            "'https://api.ai-pixel.online/v1/images/edits'\n"
+            "For more information check: "
+            "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503\n"
+            '接口返回：{"error":{"message":"Service temporarily unavailable"}}'
+        )
+        reason = user_facing_reason(RuntimeError(raw), fallback="接口没有返回结果。")
+        self.assertIn("暂时不可用", reason)
+        self.assertNotIn("http", reason)
+        self.assertNotIn('{"error"', reason)
+        self.assertNotIn("Server error", reason)
+
+    def test_missing_package_error_drops_the_absolute_path(self) -> None:
+        raw = "Package not found at '/Users/somebody/工程量清单.xlsx'"
+        reason = user_facing_reason(ValueError(raw), fallback="文件打不开。")
+        self.assertNotIn("/Users/", reason)
+        self.assertNotIn("Package not found", reason)
+
+    def test_a_message_we_wrote_ourselves_survives_untouched(self) -> None:
+        """Our own Chinese sentences are better than any fallback — keep them."""
+        ours = "第 3 页的译文比原文短很多，已标记待复核。"
+        self.assertEqual(user_facing_reason(RuntimeError(ours), fallback="出错了。"), ours)
+
+    def test_unrecognized_english_is_replaced_by_the_caller_fallback(self) -> None:
+        reason = user_facing_reason(
+            RuntimeError("weird internal state 0x1"),
+            fallback="出现了未预期的问题。",
+        )
+        self.assertEqual(reason, "出现了未预期的问题。")
+
+    def test_a_chinese_sentence_carrying_a_url_is_still_replaced(self) -> None:
+        reason = user_facing_reason(
+            RuntimeError("请求失败：https://api.example/v1/chat"),
+            fallback="接口没有响应。",
+        )
+        self.assertEqual(reason, "接口没有响应。")
 
 
 if __name__ == "__main__":

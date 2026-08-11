@@ -467,7 +467,9 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
             self.assertFalse(by_name[legacy.name]["success"])
             self.assertEqual(by_name[legacy.name]["source_relative_path"], legacy.name)
             self.assertEqual(by_name[legacy.name]["format"], "doc")
-            self.assertIn("automation", by_name[legacy.name]["error"])
+            # 任务中心的问题列只放中文说明，英文原文留给 debug 日志。
+            self.assertIn("Word 文件读取失败", by_name[legacy.name]["error"])
+            self.assertNotIn("automation", by_name[legacy.name]["error"])
             self.assertEqual(by_name[healthy.name]["status"], "succeeded")
             self.assertTrue(by_name[healthy.name]["success"])
             self.assertEqual(by_name[healthy.name]["source_relative_path"], healthy.name)
@@ -819,7 +821,9 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
             done = self._terminal_message(runner, DoneMsg)
             self.assertEqual(done.files[0]["status"], "succeeded")
             self.assertEqual(done.report_path, "")
-            self.assertIn("read-only output directory", done.report_warning)
+            # 横幅上的提示是一句中文，OSError 的英文原文只进 debug 日志。
+            self.assertNotIn("read-only output directory", done.report_warning)
+            self.assertIn("报告文件没能写出", done.report_warning)
             warnings = [
                 message.message
                 for message in list(runner._queue.queue)

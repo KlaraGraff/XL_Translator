@@ -44,7 +44,10 @@ class ExcelAutomationTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("无法初始化本地 Excel 自动化", reason)
-        self.assertIn("COM missing", reason)
+        # 这句话会出现在设置界面上，所以不能把库层的英文原文端给用户；
+        # 原文只留在 debug 日志里。
+        self.assertNotIn("COM missing", reason)
+        self.assertIn("本机缺少连接 Excel 所需的组件", reason)
 
 
 if __name__ == "__main__":
