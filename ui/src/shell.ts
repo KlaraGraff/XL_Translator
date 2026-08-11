@@ -69,6 +69,7 @@ let topbarStatusHost: HTMLDivElement | null = null;
 let topbarSubEl: HTMLDivElement | null = null;
 let taskPillHost: HTMLDivElement | null = null;
 let modelPillHost: HTMLDivElement | null = null;
+let noticeHost: HTMLDivElement | null = null;
 
 function buildSideItem(def: SideItemDef): HTMLDivElement {
   const item = document.createElement("div");
@@ -177,6 +178,12 @@ export function mountShell(root: HTMLElement): ShellHandle {
 
   stage.append(topbar);
 
+  // 顶栏与工作区之间的通栏提示位（目前只有「发现新版」用它）。常态为空，
+  // 不占高度；setUpdateNotice() 填内容时才把 .upnotice 插进来。
+  noticeHost = document.createElement("div");
+  noticeHost.className = "notice-host";
+  stage.append(noticeHost);
+
   const content = document.createElement("div");
   content.className = "content";
   stage.append(content);
@@ -216,6 +223,66 @@ export function setTaskBadge(count: number): void {
 export function setSettingsAlert(active: boolean): void {
   if (!settingsDotEl) return;
   settingsDotEl.style.display = active ? "" : "none";
+}
+
+export interface UpdateNoticeConfig {
+  /** 加粗的前半句，例如「Translator 9.3.0 可用」。 */
+  title: string;
+  /** 紧随其后的说明短句。 */
+  detail?: string;
+  /** 「查看详情」的落点；不传则不显示该按钮。 */
+  onDetails?: () => void;
+  /** 用户点 ✕ 之后的回调；提示条本身会先被移除。 */
+  onDismiss?: () => void;
+}
+
+/**
+ * 顶栏下方的通栏更新提示条（样张屏⑧）。传 null 收起。
+ *
+ * 只做「轻量告知」：不弹窗、不抢焦点，用户可能正在翻一份两百页的 PDF。
+ * 关掉它不清侧栏红点——红点是「有事没办」，提示条是「现在打断你一下」。
+ */
+export function setUpdateNotice(config: UpdateNoticeConfig | null): void {
+  if (!noticeHost) return;
+  noticeHost.innerHTML = "";
+  if (!config) return;
+
+  const bar = document.createElement("div");
+  bar.className = "upnotice";
+  bar.append(icon("down", { size: "sm", className: "ico" }));
+
+  const copy = document.createElement("span");
+  const strong = document.createElement("b");
+  strong.textContent = config.title;
+  copy.append(strong);
+  if (config.detail) {
+    copy.append(document.createTextNode(` —— ${config.detail}`));
+  }
+  bar.append(copy);
+
+  const acts = document.createElement("span");
+  acts.className = "acts";
+  if (config.onDetails) {
+    const details = document.createElement("button");
+    details.type = "button";
+    details.className = "btn mini";
+    details.textContent = "查看详情";
+    details.addEventListener("click", () => config.onDetails?.());
+    acts.append(details);
+  }
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "x";
+  close.setAttribute("aria-label", "关闭");
+  close.append(icon("close", { size: "sm" }));
+  close.addEventListener("click", () => {
+    setUpdateNotice(null);
+    config.onDismiss?.();
+  });
+  acts.append(close);
+  bar.append(acts);
+
+  noticeHost.append(bar);
 }
 
 /** 设置顶栏标题 / 状态徽章 / 副标题。每个视图 mount() 时都应调用一次。 */

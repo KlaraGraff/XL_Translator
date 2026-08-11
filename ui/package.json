@@ -1,7 +1,7 @@
 {
   "name": "translator-ui",
   "private": true,
-  "version": "9.2.2",
+  "version": "9.2.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.1"
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

@@ -126,6 +126,22 @@ svg.ic.lg { width: 22px; height: 22px; }
 .status.ok { background: var(--ok-t); color: var(--ok); }
 .status.warn { background: var(--warn-t); color: var(--warn); }
 .status.pause { background: var(--warn-t); color: var(--warn); }
+.notice-host { flex: none; }
+/* 顶栏下方的通栏更新提示条（shell.ts 的 setUpdateNotice）。 */
+.upnotice {
+  display: flex; align-items: center; gap: 11px; padding: 9px 22px;
+  background: var(--tint); border-bottom: 1px solid var(--tint-line);
+  color: var(--tint-ink); font-size: 12.5px;
+}
+.upnotice .ico { flex: none; }
+.upnotice b { font-weight: 650; }
+/* flex: none —— 窗口窄下来时先让说明文字折行，按钮不许被压。按钮高度是 .btn.mini
+   定死的，一旦「查看详情」折成两行就会被裁掉半行，所以再加一道 nowrap。 */
+.upnotice .acts { margin-left: auto; display: flex; gap: 7px; align-items: center; flex: none; }
+.upnotice .btn { white-space: nowrap; background: var(--surface); border-color: var(--tint-line); }
+.upnotice .x { border: 0; background: none; color: var(--tint-ink); cursor: pointer; opacity: .65; padding: 2px; display: flex; }
+.upnotice .x:hover { opacity: 1; }
+
 .content { flex: 1; min-height: 0; padding: 18px 22px; display: flex; gap: 16px; }
 
 /* ========== 通用组件 ========== */
@@ -236,6 +252,9 @@ table.review-tbl { table-layout: fixed; }
 .prog-stage .pct { margin-left: auto; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--tint-ink); }
 .bar { height: 7px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); }
+/* 不确定进度：解包安装拿不到字节数，用来回滑动的短条代替百分比。 */
+.bar.indet i { width: 34%; animation: bar-indet 1.35s ease-in-out infinite; }
+@keyframes bar-indet { from { margin-left: -34%; } to { margin-left: 100%; } }
 .mon { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 11px; }
 .log { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 13px; font-family: var(--mono); font-size: 11.6px; line-height: 1.85; color: var(--ink-2); overflow: auto; }
 .log .t { color: var(--ink-3); margin-right: 9px; }

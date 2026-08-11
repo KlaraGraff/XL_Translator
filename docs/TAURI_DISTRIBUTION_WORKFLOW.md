@@ -57,6 +57,21 @@ CI 将证书导入临时 keychain（钥匙串密码 run 内随机生成），签
 
 Windows 安装器暂不做代码签名，正式与测试通道产物同名（名字不随渠道变化）。用户侧以 `.sha256` 校验为准，SmartScreen 提示属预期行为，README 已写明操作路径。引入 Windows 代码签名证书后再升级此节。
 
+## 应用内更新（latest.json）
+
+应用内更新只在**正式发布**（formal-release，即 Apple 密钥齐全的稳定 tag）上产出。临时通道（`temporary-test`）的 macOS 产物是 ad-hoc 签名、未公证的，如果也生成更新包，一旦有人把那个 Release 取消草稿，所有已安装的机器会在没有任何下载动作的情况下被换成未公证版本。因此工作流对更新产物额外加了一道闸：不是正式发布就不把 minisign 私钥交给构建步骤，`build_macos_package.sh` 里还有第二道同样的判断，防止有人在本机带着密钥手动跑。
+
+各平台的更新载荷不一样，是 Tauri v2 更新器决定的，不是可选项：
+
+- macOS：已签名、已公证、已 staple 的 `.app` 打包成 `Translator_macOS_arm64_<version>.app.tar.gz`。DMG 需要人手拖拽，更新器用不了，所以另发一份 tarball。
+- Windows：**就是那个 NSIS 安装器 `.exe` 本身**（静默运行）。Tauri v2 对 NSIS 不再另出压缩包 —— 加了 `createUpdaterArtifacts` 也只会给 `.exe` 旁边多一个 `.sig`。
+
+两者都由 `TAURI_SIGNING_PRIVATE_KEY` 签名，签名以同名 `.sig` 文件随包发布。发布 job 用 `scripts/build_updater_manifest.py` 生成 `latest.json`；该脚本会比对 `.sig` 与 `tauri.conf.json` 里公钥的 key id，因为 Tauri CLI 在密钥不匹配时只打印 warning，不会让构建失败 —— 那种 Release 全绿，却在每个用户的机器上装不上。
+
+### 发布说明的写法约定
+
+Release 正文里第一条 `---` 分隔线**以上**的内容会显示在应用内的「更新与关于」页；分隔线以下的内容只出现在 GitHub 下载页。签名与 SmartScreen 提示、安装包清单、`.sha256` 校验说明一律写在分隔线以下：这些话是讲给还没装上软件的人听的，而看应用内那一页的人早就装好了，更新器也会自己下载、自己验签。
+
 ## 发布验收
 
 macOS：正式发布仍需在 macOS 12 arm64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。

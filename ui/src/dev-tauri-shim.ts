@@ -47,6 +47,10 @@ function installDevShim(): void {
       case "open_local_path":
         console.info("[dev-shim] open_local_path:", args);
         return null;
+      // 浏览器里没有 .app 可替换，如实回答「不支持应用内更新」，让关于页走它的
+      // 降级分支（显示原因 + 下载安装包），而不是给出一个点不动的「下载并安装」。
+      case "update_environment":
+        return { canSelfUpdate: false, reason: "browser_preview", installBehavior: "in_place" };
       default:
         throw new Error(`[dev-shim] 未实现的 Tauri 命令：${cmd}`);
     }

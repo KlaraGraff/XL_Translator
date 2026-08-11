@@ -116,6 +116,69 @@ fi
 XL_TRANSLATOR_REQUIRE_DEVELOPER_ID="$FORMAL_RELEASE" \
   bash "$ROOT_DIR/scripts/sign_macos_app.sh" "$APP_PATH" "$SIDECAR_PATH"
 
+# Notarize and staple the .app itself, not only the DMG that carries it.
+# An in-app update replaces the bundle directly — no DMG is ever involved —
+# so a ticket stapled only to the DMG would leave the updated app depending on
+# an online Gatekeeper check at every first launch. Stapling here also means
+# the app inside the DMG arrives pre-stapled.
+if [[ -n "${XL_TRANSLATOR_MACOS_NOTARY_PROFILE:-}" ]]; then
+  APP_NOTARY_ZIP="$ROOT_DIR/.runtime/package/macos-app-notarize.zip"
+  mkdir -p "$(dirname "$APP_NOTARY_ZIP")"
+  rm -f "$APP_NOTARY_ZIP"
+  # ditto, not zip: it is the only archiver that preserves the bundle's
+  # symlinks and resource forks intact enough for notarization.
+  ditto -c -k --keepParent "$APP_PATH" "$APP_NOTARY_ZIP"
+  xcrun notarytool submit "$APP_NOTARY_ZIP" --keychain-profile "$XL_TRANSLATOR_MACOS_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
+  rm -f "$APP_NOTARY_ZIP"
+fi
+
+# The in-app update archive: a plain tarball of the finished .app, signed with
+# the project's minisign key. The updater downloads it over HTTPS but trusts it
+# only because of this signature, so it must be produced from exactly the
+# bundle a user would otherwise install from the DMG — same signing, same
+# notarization, same stapled ticket.
+UPDATER_ARCHIVE_NAME="Translator_macOS_${ARCH_LABEL}_${VERSION}.app.tar.gz"
+UPDATER_ARCHIVE_PATH="$DIST_DIR/$UPDATER_ARCHIVE_NAME"
+# Only a formal release may produce one. A temporary/unsigned test build is
+# ad-hoc signed and never notarized, and its update archive would carry the
+# production name — un-drafting such a release would hand every installed copy
+# an unnotarized bundle with no download step in between. The CI workflow
+# already withholds the key outside a formal release; this is the second lock,
+# for anyone running the script by hand with the key in their environment.
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" && "$FORMAL_RELEASE" != "1" ]]; then
+  echo "[WARN] Not a formal release: skipping the macOS in-app update archive even though a signing key is present." >&2
+elif [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  TAURI_CLI="$ROOT_DIR/ui/node_modules/.bin/tauri"
+  if [[ ! -x "$TAURI_CLI" ]]; then
+    echo "Tauri CLI is unavailable; run npm ci in ui/ before packaging." >&2
+    exit 1
+  fi
+  rm -f "$UPDATER_ARCHIVE_PATH" "$UPDATER_ARCHIVE_PATH.sig"
+  # COPYFILE_DISABLE keeps macOS from smuggling AppleDouble "._" companions
+  # into the tarball; the updater would unpack them next to the real bundle.
+  COPYFILE_DISABLE=1 tar -czf "$UPDATER_ARCHIVE_PATH" \
+    -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+  # The key and its password come from the environment. Redirecting stdin from
+  # /dev/null turns a mis-wired secret into an immediate failure instead of a
+  # CI job that hangs on an interactive password prompt.
+  "$TAURI_CLI" signer sign "$UPDATER_ARCHIVE_PATH" < /dev/null
+  if [[ ! -s "$UPDATER_ARCHIVE_PATH.sig" ]]; then
+    echo "The macOS update archive was not signed: $UPDATER_ARCHIVE_PATH.sig is missing or empty" >&2
+    exit 1
+  fi
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    {
+      echo "MACOS_UPDATER_ARCHIVE=dist/$UPDATER_ARCHIVE_NAME"
+      echo "MACOS_UPDATER_SIGNATURE=dist/$UPDATER_ARCHIVE_NAME.sig"
+    } >> "$GITHUB_ENV"
+  fi
+  echo "[INFO] macOS update archive: $UPDATER_ARCHIVE_PATH"
+else
+  echo "[WARN] TAURI_SIGNING_PRIVATE_KEY is unset: skipping the macOS in-app update archive." >&2
+fi
+
 rm -rf "$STAGING_DIR"
 rm -f "$DMG_PATH" "$DMG_PATH.sha256"
 mkdir -p "$STAGING_DIR"

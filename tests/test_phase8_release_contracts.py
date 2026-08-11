@@ -78,9 +78,27 @@ class Phase8ReleaseContractsTests(unittest.TestCase):
         # The release job checksums both platform assets before publishing.
         self.assertIn('shasum -a 256 -c "${expected[1]}"', workflow)
         self.assertIn('shasum -a 256 -c "${expected[3]}"', workflow)
-        self.assertIn("artifact_channel=unsigned-test", workflow)
-        self.assertIn("artifact_channel=temporary-test", workflow)
+        self.assertIn("channel=unsigned-test", workflow)
+        self.assertIn("channel=temporary-test", workflow)
+        self.assertIn('echo "artifact_channel=$channel"', workflow)
         self.assertIn("temporary_signing=1", workflow)
+        # 应用内更新只跟正式发布走：临时通道的 macOS 产物没有公证，一旦也发更新包，
+        # 那个 Release 被取消草稿就会把所有已安装的机器换成未公证版本。
+        self.assertIn("Not a formal release; skipping in-app update artifacts", workflow)
+        # 正式发布缺 minisign 私钥必须整体失败，不能降级成「只发安装包」：那个
+        # Release 一旦取消草稿就成了 releases/latest，已安装的机器仍然会报出新版本，
+        # 而应用内更新永远取不到 latest.json，用户只能对着「重试」反复失败。
+        self.assertIn(
+            "TAURI_SIGNING_PRIVATE_KEY is missing on a formal release", workflow
+        )
+        self.assertIn(
+            "TAURI_SIGNING_PRIVATE_KEY: ${{ needs.validate-release.outputs.updater_enabled"
+            " == '1' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}",
+            workflow,
+        )
+        # Windows 的更新载荷就是安装器本身，Tauri v2 不再另出 .nsis.zip。
+        self.assertIn("release-assets/*.exe.sig", workflow)
+        self.assertNotIn(".nsis.zip", workflow)
         self.assertIn("python -m venv .venv", workflow)
         self.assertIn("PYTHON_BIN=./.venv/bin/python3", workflow)
         self.assertIn("PYTHON_BIN=./.venv/Scripts/python.exe", workflow)

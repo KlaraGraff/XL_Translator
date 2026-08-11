@@ -212,6 +212,122 @@ fn open_local_path(path: String, reveal: bool) -> Result<(), String> {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateEnvironment {
+    can_self_update: bool,
+    /// Machine-readable cause when `can_self_update` is false; the UI maps it to
+    /// user-facing copy and falls back to "download the installer yourself".
+    reason: String,
+    /// How the install step behaves, which decides what the UI can promise:
+    ///
+    /// * `in_place` (macOS) -- the plugin swaps the .app bundle and returns. The
+    ///   running app is untouched until the user chooses to relaunch, so a
+    ///   translation job in flight is safe and the UI can offer "restart later".
+    /// * `installer_restart` (Windows) -- the plugin hands off to the NSIS
+    ///   installer and terminates this process; the installer reopens the app.
+    ///   There is no "installed, awaiting restart" state to show, and any
+    ///   running task dies with the process, so the UI must confirm beforehand.
+    install_behavior: String,
+}
+
+#[cfg(target_os = "windows")]
+const INSTALL_BEHAVIOR: &str = "installer_restart";
+#[cfg(not(target_os = "windows"))]
+const INSTALL_BEHAVIOR: &str = "in_place";
+
+fn supported(reason: &str) -> UpdateEnvironment {
+    UpdateEnvironment {
+        can_self_update: true,
+        reason: reason.to_string(),
+        install_behavior: INSTALL_BEHAVIOR.to_string(),
+    }
+}
+
+fn unsupported(reason: &str) -> UpdateEnvironment {
+    UpdateEnvironment {
+        can_self_update: false,
+        reason: reason.to_string(),
+        install_behavior: INSTALL_BEHAVIOR.to_string(),
+    }
+}
+
+/// Probe a directory for real write access.
+///
+/// `Permissions::readonly()` only looks at mode bits, which says nothing about
+/// ownership -- /Applications is `drwxrwxr-x root:admin`, so a standard (non-admin)
+/// user sees "writable" there and would only learn otherwise when the updater
+/// fails halfway through replacing the bundle. Creating and immediately removing
+/// a dot-file is the only answer that matches what the updater will actually hit.
+fn directory_is_writable(directory: &Path) -> bool {
+    let probe = directory.join(".translator-update-probe");
+    match fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Report whether this particular installation can replace itself in place.
+///
+/// The About page needs this *before* the user clicks "download and install":
+/// showing a button that is guaranteed to fail is worse than routing the user to
+/// the manual installer up front (mockup screen ⑦).
+#[tauri::command]
+fn update_environment() -> UpdateEnvironment {
+    if cfg!(debug_assertions) {
+        // `tauri dev` runs a bare executable, not a bundle -- there is nothing
+        // for the updater to swap out.
+        return unsupported("dev_build");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if !cfg!(target_arch = "aarch64") {
+            return unsupported("unsupported_architecture");
+        }
+        let Ok(executable) = std::env::current_exe() else {
+            return unsupported("install_location_unknown");
+        };
+        let bundle = executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|ext| ext == "app"));
+        let Some(bundle) = bundle else {
+            return unsupported("not_a_bundle");
+        };
+        // A DMG is mounted read-only under /Volumes; the app has to be dragged
+        // into Applications before it can update itself.
+        if bundle.starts_with("/Volumes/") {
+            return unsupported("running_from_dmg");
+        }
+        let Some(parent) = bundle.parent() else {
+            return unsupported("install_location_unknown");
+        };
+        if !directory_is_writable(parent) {
+            return unsupported("install_location_read_only");
+        }
+        supported("ok")
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if !cfg!(target_arch = "x86_64") {
+            return unsupported("unsupported_architecture");
+        }
+        // The NSIS bundle installs per-user (tauri.windows.conf.json's
+        // `installMode: "currentUser"`), so the target directory is writable by
+        // construction and needs no elevation.
+        supported("ok")
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        unsupported("unsupported_platform")
+    }
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let supplied = url.trim();
@@ -446,6 +562,8 @@ fn stop_sidecar(app: &tauri::AppHandle) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -491,7 +609,8 @@ fn main() {
             sidecar_info,
             inspect_output_directory,
             open_local_path,
-            open_external_url
+            open_external_url,
+            update_environment
         ])
         .build(tauri::generate_context!())
         .expect("error while building Translator shell")
@@ -504,7 +623,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_external_url, parse_handshake};
+    use super::{directory_is_writable, open_external_url, parse_handshake, update_environment};
 
     #[test]
     fn parses_launcher_handshake() {
@@ -523,5 +642,22 @@ mod tests {
     #[test]
     fn rejects_non_github_external_urls() {
         assert!(open_external_url("https://example.invalid/download".to_string()).is_err());
+    }
+
+    #[test]
+    fn detects_writable_and_unwritable_directories() {
+        let writable = std::env::temp_dir();
+        assert!(directory_is_writable(&writable));
+        assert!(!directory_is_writable(&writable.join("translator-missing-dir")));
+    }
+
+    #[test]
+    fn debug_builds_never_claim_self_update_support() {
+        // The whole test suite is a debug build, so this also pins the guard
+        // that keeps `tauri dev` from offering an install that cannot work.
+        let environment = update_environment();
+
+        assert!(!environment.can_self_update);
+        assert_eq!(environment.reason, "dev_build");
     }
 }

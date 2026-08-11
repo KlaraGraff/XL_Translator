@@ -86,6 +86,61 @@ def ui_source_version_literal_errors(root: Path) -> list[str]:
     return errors
 
 
+def updater_wiring_errors(
+    root: Path,
+    *,
+    tauri: dict[str, Any],
+    cargo: dict[str, Any],
+    ui_package: dict[str, Any],
+) -> list[str]:
+    """Check that in-app updating is wired end to end, or not claimed at all.
+
+    Every piece below is individually silent when it goes missing: the app
+    still builds, still launches, and still reports "已是最新" — it just never
+    updates anyone again. The combination is what has to hold, so it is checked
+    as a unit before every release.
+    """
+    errors: list[str] = []
+    updater = tauri.get("plugins", {})
+    updater = updater.get("updater", {}) if isinstance(updater, dict) else {}
+    if not isinstance(updater, dict) or not updater:
+        return ["tauri.conf.json is missing the plugins.updater configuration"]
+
+    if not str(updater.get("pubkey") or "").strip():
+        errors.append("tauri updater config must carry a non-empty pubkey")
+    endpoints = updater.get("endpoints")
+    expected_endpoint = (
+        "https://github.com/KlaraGraff/XL_Translator/releases/latest/download/latest.json"
+    )
+    if not isinstance(endpoints, list) or endpoints != [expected_endpoint]:
+        errors.append(
+            f"tauri updater endpoints must be exactly [{expected_endpoint!r}], got {endpoints!r}"
+        )
+
+    dependencies = cargo.get("dependencies", {})
+    for crate in ("tauri-plugin-updater", "tauri-plugin-process"):
+        if crate not in dependencies:
+            errors.append(f"src-tauri/Cargo.toml must depend on {crate}")
+
+    ui_dependencies = ui_package.get("dependencies", {})
+    for package in ("@tauri-apps/plugin-updater", "@tauri-apps/plugin-process"):
+        if package not in ui_dependencies:
+            errors.append(f"ui/package.json must depend on {package}")
+
+    capabilities_path = root / "src-tauri" / "capabilities" / "default.json"
+    try:
+        capabilities = _read_json(capabilities_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [*errors, f"cannot read {capabilities_path}: {exc}"]
+    permissions = capabilities.get("permissions", [])
+    # Without these two the plugins are compiled in but every call from the UI
+    # is rejected at runtime — the button exists and does nothing.
+    for permission in ("updater:default", "process:allow-restart"):
+        if permission not in permissions:
+            errors.append(f"src-tauri/capabilities/default.json must grant {permission}")
+    return errors
+
+
 def release_metadata_errors(root: Path = ROOT, *, tag: str | None = None) -> list[str]:
     """Return all static release-metadata errors without invoking a build."""
     paths = {
@@ -135,6 +190,9 @@ def release_metadata_errors(root: Path = ROOT, *, tag: str | None = None) -> lis
     if "safari15.1" not in paths["ui/vite.config.ts"].read_text(encoding="utf-8"):
         errors.append("Vite build target must retain the Safari 15.1 Monterey baseline")
 
+    errors.extend(
+        updater_wiring_errors(root, tauri=tauri, cargo=cargo, ui_package=ui)
+    )
     errors.extend(ui_source_version_literal_errors(root))
 
     if tag is not None:

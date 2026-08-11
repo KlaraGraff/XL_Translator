@@ -24,6 +24,10 @@ export const ICON_NAMES = [
   "trash",
   "ext",
   "doc-file",
+  "down",
+  "restart",
+  "spark",
+  "close",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -115,6 +119,24 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   "doc-file": {
     viewBox: "0 0 24 24",
     body: '<path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5"/>',
+  },
+  // 更新流程用的四个（对照 docs/mockups/2026-08-11_in-app-update.html 的 <symbol>，
+  // 笔画粗细与既有图标统一为 1.6px 线框风格）。
+  down: {
+    viewBox: "0 0 24 24",
+    body: '<path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4.5 20h15"/>',
+  },
+  restart: {
+    viewBox: "0 0 24 24",
+    body: '<path d="M20.5 12a8.5 8.5 0 1 1-2.8-6.3"/><path d="M20.5 4v5h-5"/>',
+  },
+  spark: {
+    viewBox: "0 0 24 24",
+    body: '<path d="M12 3.5v3.6M12 16.9v3.6M3.5 12h3.6M16.9 12h3.6M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/>',
+  },
+  close: {
+    viewBox: "0 0 24 24",
+    body: '<path d="M18 6 6 18M6 6l12 12"/>',
   },
 };
 

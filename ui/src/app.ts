@@ -83,6 +83,13 @@ function main(): void {
   // 首次启动检查（main.ts:3989 等价逻辑）：不阻塞首屏渲染，读取到
   // quick_start_completed === false 时自动弹出快速开始向导。
   void checkFirstLaunch().catch(() => undefined);
+
+  // 启动后的后台更新检查。延后 8 秒是为了让首屏、sidecar 握手和快速开始向导先各就各位——
+  // 这件事没有任何紧迫性，唯一的输出是侧栏红点和顶栏下方一条可关掉的提示条。
+  // 真正「这次要不要联网查」由后端判断（暂停提醒 / 24 小时内查过 / 快速开始还没走完）。
+  window.setTimeout(() => {
+    void settingsView.runBackgroundUpdateCheck();
+  }, 8000);
 }
 
 main();

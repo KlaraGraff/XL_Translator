@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>应用内更新 · 样张 2026-08-11</title>
+<style>
+/* ============================================================
+ * token —— 原样取自 ui/src/styles/tokens.css
+ * ============================================================ */
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff; --ground:#f4f6fc; --ground-2:#ebeef8; --rail:#fbfcfe;
+  --surface:#fff; --surface-2:#f8fafe; --ink:#141a2e; --ink-2:#556080; --ink-3:#8a93ac;
+  --line:#e7ebf5; --line-2:#d9dfee; --accent:var(--accent-base); --accent-strong:#4353cc;
+  --on-accent:#fff; --tint:#f0f1ff; --tint-line:#ccd2ff; --tint-ink:#404fc2;
+  --ok:#12a366; --ok-t:#e2f4ed; --ok-l:#b3e2ce;
+  --warn:#c77a00; --warn-t:#f8eede; --warn-l:#edd4ad;
+  --danger:#e5484d; --danger-t:#fdebec; --danger-l:#f5bfc1;
+  --ring:#a9b3ff; --ring-soft:rgb(84 104 255/18%);
+  --sh-sm:0 1px 2px rgb(24 34 66/5%);
+  --sh-md:0 1px 2px rgb(24 34 66/5%),0 10px 26px -14px rgb(30 45 90/20%);
+  --sh-lg:0 2px 4px rgb(24 34 66/6%),0 24px 48px -22px rgb(30 45 90/30%);
+  --r-lg:15px; --r-md:12px; --r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019; --ground-2:#090d15; --rail:#10151f; --surface:#151b28; --surface-2:#1a2130;
+  --ink:#eaedf7; --ink-2:#a4aec7; --ink-3:#6b7590; --line:#242c3e; --line-2:#313a50;
+  --accent:#8090ff; --accent-strong:var(--accent-base); --on-accent:#0b0f1a;
+  --tint:#1b223b; --tint-line:#283268; --tint-ink:#aab6ff;
+  --ok:#3ddc9a; --ok-t:#12291f; --ok-l:#1d4736;
+  --warn:#e5a33a; --warn-t:#2a2013; --warn-l:#4c3a19;
+  --danger:#ff6369; --danger-t:#2c1416; --danger-l:#5a2226;
+  --ring:#5f6fd6; --ring-soft:rgb(128 144 255/22%);
+  --sh-sm:0 1px 2px rgb(0 0 0/30%);
+  --sh-lg:0 2px 4px rgb(0 0 0/35%),0 24px 48px -22px rgb(0 0 0/70%);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground-2);color:var(--ink);font-family:var(--font);font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased;padding:0 0 80px}
+svg.ic{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+svg.ic.sm{width:15px;height:15px}
+
+/* ---------- 陈列脚手架（不进产品） ---------- */
+.board-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 26px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:var(--sh-sm)}
+.board-bar b{font-size:14px;font-weight:650}
+.board-bar .sp{flex:1}
+.jump{display:flex;gap:5px;flex-wrap:wrap}
+.jump a{font-size:11.5px;color:var(--ink-2);text-decoration:none;border:1px solid var(--line-2);
+  border-radius:99px;padding:3px 10px;background:var(--surface)}
+.jump a:hover{background:var(--surface-2);color:var(--ink)}
+.theme-btn{font:inherit;font-size:12px;height:28px;padding:0 12px;border-radius:7px;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--ink);cursor:pointer}
+.sec{max-width:1180px;margin:0 auto;padding:34px 26px 0}
+.sec>h2{font-size:15.5px;font-weight:650;margin-bottom:4px}
+.sec>h2 i{font-style:normal;color:var(--ink-3);font-weight:500;font-size:12.5px;margin-left:8px}
+.sec>.desc{font-size:12.5px;color:var(--ink-2);max-width:760px;margin-bottom:14px;line-height:1.7}
+.frame{background:var(--ground);border:1px solid var(--line-2);border-radius:var(--r-lg);
+  padding:18px;box-shadow:var(--sh-md);overflow:hidden}
+.frame.narrow{max-width:720px}
+.note-x{font-size:12px;color:var(--ink-3);margin-top:9px;line-height:1.65}
+.note-x b{color:var(--ink-2);font-weight:600}
+
+/* ---------- 产品组件（取自 ui/src/styles/app.css） ---------- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.cbody{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.sec-label{font-size:11px;font-weight:650;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);
+  color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600;box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:var(--accent-strong)}
+.btn:disabled{cursor:default;opacity:.6}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px;width:fit-content}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}
+.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:5px 14px;font-size:12.5px;margin:2px 0}
+.kv dt{color:var(--ink-3)}
+.kv dd{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note{font-size:12.5px;color:var(--ink-3);line-height:1.65}
+.bar{height:7px;border-radius:99px;background:var(--ground-2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7d8cff)}
+.bar.indet i{width:34%;animation:slide 1.35s ease-in-out infinite}
+@keyframes slide{0%{margin-left:-34%}100%{margin-left:100%}}
+.banner{border:1px solid var(--ok-l);background:var(--ok-t);border-radius:var(--r-md);padding:13px 16px;display:flex;align-items:center;gap:12px}
+.banner .bi{width:30px;height:30px;border-radius:99px;background:var(--ok);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.banner b{font-weight:650}
+.banner .sub{font-size:12.5px;color:var(--ink-2);margin-top:1px}
+.banner .acts{margin-left:auto;display:flex;gap:8px;align-items:center}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--ink-3);padding:26px}
+.empty b{color:var(--ink-2);font-weight:600;font-size:14px}
+.empty p{font-size:12.5px;max-width:300px;text-align:center}
+
+/* ---------- 更新说明渲染（新增：ui/src/markdown.ts 的目标样式） ---------- */
+.rn{border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface-2);
+  padding:12px 14px;font-size:12.5px;line-height:1.75;color:var(--ink-2);
+  max-height:210px;overflow:auto}
+.rn h3{font-size:12.5px;font-weight:700;color:var(--ink);margin:12px 0 5px}
+.rn h3:first-child{margin-top:0}
+.rn p{margin:0 0 7px}
+.rn p:last-child{margin-bottom:0}
+.rn ul{margin:0 0 8px;padding-left:17px}
+.rn li{margin:2px 0}
+.rn li::marker{color:var(--ink-3)}
+.rn strong{color:var(--ink);font-weight:650}
+.rn code{font:11.5px/1.4 var(--mono);background:var(--ground-2);border-radius:4px;padding:1.5px 5px;color:var(--ink-2)}
+:root[data-theme="dark"] .rn code{background:var(--ground)}
+.rn-more{align-self:flex-start;border:0;background:none;padding:0;font:inherit;font-size:12px;
+  color:var(--tint-ink);cursor:pointer;font-weight:600}
+.rn-more:hover{text-decoration:underline}
+
+/* ---------- 更新提示条（新增，顶栏下方通栏） ---------- */
+.upnotice{display:flex;align-items:center;gap:11px;padding:9px 22px;
+  background:var(--tint);border-bottom:1px solid var(--tint-line);color:var(--tint-ink);font-size:12.5px}
+.upnotice .ico{flex:none}
+.upnotice b{font-weight:650}
+.upnotice .acts{margin-left:auto;display:flex;gap:7px;align-items:center;flex:none}
+.upnotice .btn{height:26px;font-size:12px;border-radius:7px;white-space:nowrap;background:var(--surface);border-color:var(--tint-line)}
+.upnotice .x{border:0;background:none;color:var(--tint-ink);cursor:pointer;opacity:.65;padding:2px;display:flex}
+.upnotice .x:hover{opacity:1}
+
+/* ---------- 外壳片段（侧栏 + 顶栏） ---------- */
+.shellcut{display:flex;height:290px;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--ground)}
+.side{width:210px;flex:none;background:var(--rail);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 10px 12px}
+.brand{display:flex;align-items:center;gap:9px;padding:2px 8px 16px;font-size:14.5px;font-weight:650}
+.brand-mark{width:27px;height:27px;border-radius:8px;background:linear-gradient(135deg,#6b7dff,#4353cc);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.side-label{font-size:10.5px;font-weight:600;letter-spacing:.12em;color:var(--ink-3);text-transform:uppercase;padding:14px 10px 5px}
+.side-item{display:flex;align-items:center;gap:9px;padding:7.5px 10px;border-radius:var(--r-sm);color:var(--ink-2);font-size:13px;position:relative}
+.side-item.on{background:var(--tint);color:var(--tint-ink);font-weight:600}
+.side-dot{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:7px;height:7px;border-radius:99px;background:var(--danger)}
+.stage{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:62px;flex:none;display:flex;align-items:center;gap:14px;padding:0 22px;background:var(--surface);border-bottom:1px solid var(--line)}
+.topbar h1{font-size:16.5px;font-weight:650}
+.tb-sub{color:var(--ink-3);font-size:12px;margin-top:1px}
+.stagebody{flex:1;padding:18px 22px;color:var(--ink-3);font-size:12.5px}
+
+/* ---------- 模态 ---------- */
+.overlay{position:relative;background:rgb(10 14 26/45%);border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;padding:34px 0;min-height:260px}
+.modal{width:400px;background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:22px 22px 18px}
+.modal .mi{width:38px;height:38px;border-radius:99px;display:flex;align-items:center;justify-content:center;margin-bottom:12px;background:var(--warn-t);color:var(--warn)}
+.modal h3{font-size:15px;font-weight:650;margin-bottom:7px}
+.modal p{font-size:13px;color:var(--ink-2);margin-bottom:8px}
+.modal .macts{display:flex;justify-content:flex-end;gap:9px;margin-top:16px}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:980px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></symbol>
+  <symbol id="i-excel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></symbol>
+  <symbol id="i-word" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-pdf" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 21h16"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
+<div class="board-bar">
+  <b>应用内更新 · 界面样张</b>
+  <span style="font-size:12px;color:var(--ink-3)">2026-08-11 · 设置 → 更新与关于</span>
+  <span class="sp"></span>
+  <nav class="jump">
+    <a href="#s1">① 未检查</a>
+    <a href="#s2">② 已是最新</a>
+    <a href="#s3">③ 发现新版</a>
+    <a href="#s4">④ 下载中</a>
+    <a href="#s5">⑤ 待重启</a>
+    <a href="#s6">⑥ 失败</a>
+    <a href="#s7">⑦ 不支持内更新</a>
+    <a href="#s8">⑧ 侧栏与提示条</a>
+    <a href="#s9">⑨ 重启确认</a>
+  </nav>
+  <button class="theme-btn" id="themeBtn">切换深色</button>
+</div>
+
+<!-- ============================ ① ============================ -->
+<section class="sec" id="s1">
+  <h2>① 未检查 / 检查中<i>打开设置页时的默认态</i></h2>
+  <p class="desc">
+    进入这一页时不自动发起检查——检查已经在启动时后台跑过一次了，页面只呈现结果。
+    没有结果（首次启动、或后台提醒被暂停）就停在左边这一屏，版本号来自构建期常量。
+  </p>
+  <div class="grid2">
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <p style="font-size:13px">当前版本：9.2.3</p>
+        <p class="note">应用每次启动会在后台检查一次更新；发现新版时会在左侧「设置」上点亮红点。</p>
+        <div class="row">
+          <button class="btn pri mini">检查更新</button>
+          <button class="btn mini">暂停后台提醒</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <div class="empty">
+          <svg class="ic" style="width:26px;height:26px;animation:spin 1.1s linear infinite"><use href="#i-spark"/></svg>
+          <b>正在检查更新…</b>
+        </div>
+      </div></div>
+    </div>
+  </div>
+  <p class="note-x"><b>为什么不进页就检查：</b>手动进这一页多半是想「立刻确认一次」，自动检查会让「检查更新」按钮看起来像装饰。点了才转圈，责任才清楚。</p>
+</section>
+
+<!-- ============================ ② ============================ -->
+<section class="sec" id="s2">
+  <h2>② 已是最新</h2>
+  <p class="desc">最短的一屏。除了「已是最新」，还要给出上次检查时间——否则用户无法判断这个结论是刚得出的还是三天前的。</p>
+  <div class="frame narrow">
+    <div class="card"><div class="cbody">
+      <div class="sec-label">版本</div>
+      <p style="font-size:13px">当前版本：9.2.3 · 最新版本：9.2.3</p>
+      <span class="chip ok"><svg class="ic sm"><use href="#i-check"/></svg>已是最新</span>
+      <p class="note">上次检查：今天 14:32</p>
+      <div class="row">
+        <button class="btn mini">重新检查</button>
+        <button class="btn mini">暂停后台提醒</button>
+        <button class="btn mini"><svg class="ic sm"><use href="#i-ext"/></svg>查看 Release</button>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================ ③ ============================ -->
+<section class="sec" id="s3">
+  <h2>③ 发现新版<i>可应用内更新</i></h2>
+  <p class="desc">
+    主按钮从「下载 DMG」变成「下载并安装」：不再跳浏览器、不用手动拖进「应用程序」。
+    更新说明按 Markdown 渲染（标题 / 列表 / 加粗 / 行内代码），超过四行折叠，
+    展开后最高 210px 再内部滚动——它是决策依据，不该把按钮挤出视野。
+  </p>
+  <div class="frame narrow">
+    <div class="card"><div class="cbody">
+      <div class="sec-label">版本</div>
+      <p style="font-size:13px">当前版本：9.2.3 · 最新版本：<b>9.3.0</b></p>
+      <span class="chip tint"><svg class="ic sm"><use href="#i-down"/></svg>有可用更新</span>
+      <div class="rn">
+        <h3>这一版改了什么</h3>
+        <ul>
+          <li><strong>可以在软件里直接更新了</strong>——发现新版后点「下载并安装」，装好重启即可，不用再去网页上下载。</li>
+          <li>PDF 逐页面板新增「只看有问题的页」，重跑失败页不用再翻整本。</li>
+          <li>修复了导入配置时会丢掉自定义语言的问题。</li>
+        </ul>
+        <h3>注意</h3>
+        <p>本次更新会重启一次 Translator。<strong>有任务正在运行时会先提示</strong>，不会打断正在翻的文件。</p>
+      </div>
+      <button class="rn-more">收起更新说明</button>
+      <dl class="kv">
+        <dt>安装包</dt><dd>Translator_macOS_arm64_9.3.0.dmg</dd>
+        <dt>大小</dt><dd>57.3 MB</dd>
+        <dt>发布日期</dt><dd>2026-08-11</dd>
+      </dl>
+      <div class="row">
+        <button class="btn pri mini"><svg class="ic sm"><use href="#i-down"/></svg>下载并安装</button>
+        <button class="btn mini">忽略此版本</button>
+        <button class="btn mini">暂停后台提醒</button>
+        <button class="btn mini"><svg class="ic sm"><use href="#i-ext"/></svg>查看 Release</button>
+      </div>
+    </div></div>
+  </div>
+  <p class="note-x">
+    <b>「忽略此版本」和「暂停后台提醒」的区别：</b>前者只压掉这一个版本号，下一版照常提醒；后者关掉全部后台提醒，只保留手动检查。两个都在，是因为用户想跳过的往往是「这一版」，不是「所有版本」。<br>
+    <b>SHA-256 从界面上撤掉了：</b>校验现在由更新器用签名自动完成，把 64 位十六进制摆给用户看，既不能让他做什么，也占掉了更新说明的位置。
+  </p>
+</section>
+
+<!-- ============================ ④ ============================ -->
+<section class="sec" id="s4">
+  <h2>④ 下载中 / 安装中</h2>
+  <p class="desc">
+    两个阶段分开显示。下载有确定进度（走已下载字节 / 总字节）；解包安装拿不到进度，用不确定条，
+    但必须换文案说明它在做别的事——同一根条子从 100% 退回滚动，会被读成「重来了」。
+  </p>
+  <div class="grid2">
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <p style="font-size:13px">正在更新到 <b>9.3.0</b></p>
+        <div style="display:flex;align-items:baseline;gap:10px">
+          <span style="font-size:12.5px;color:var(--ink-2)">正在下载安装包</span>
+          <b style="margin-left:auto;font-size:17px;font-variant-numeric:tabular-nums;color:var(--tint-ink)">42%</b>
+        </div>
+        <div class="bar"><i style="width:42%"></i></div>
+        <p class="note">24.1 MB / 57.3 MB</p>
+        <div class="row"><button class="btn mini" disabled>下载中…</button></div>
+      </div></div>
+    </div>
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <p style="font-size:13px">正在更新到 <b>9.3.0</b></p>
+        <div style="display:flex;align-items:baseline;gap:10px">
+          <span style="font-size:12.5px;color:var(--ink-2)">正在校验签名并安装</span>
+        </div>
+        <div class="bar indet"><i></i></div>
+        <p class="note">这一步通常几秒钟，请勿关闭窗口。</p>
+        <div class="row"><button class="btn mini" disabled>安装中…</button></div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ⑤ ============================ -->
+<section class="sec" id="s5">
+  <h2>⑤ 装好了，等重启</h2>
+  <p class="desc">
+    安装完成不自动重启。翻译任务动辄跑几十分钟，替用户做这个决定的代价太大。
+    绿条出现后一直留在页面上，直到用户自己点或下次启动生效。
+  </p>
+  <div class="frame narrow">
+    <div class="card"><div class="cbody">
+      <div class="sec-label">版本</div>
+      <div class="banner">
+        <span class="bi"><svg class="ic sm"><use href="#i-check"/></svg></span>
+        <div>
+          <b>9.3.0 已安装完成</b>
+          <div class="sub">重启 Translator 后生效。也可以稍后手动退出再打开。</div>
+        </div>
+        <div class="acts">
+          <button class="btn mini pri"><svg class="ic sm"><use href="#i-restart"/></svg>立即重启</button>
+          <button class="btn mini">稍后</button>
+        </div>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================ ⑥ ============================ -->
+<section class="sec" id="s6">
+  <h2>⑥ 失败</h2>
+  <p class="desc">
+    检查失败和安装失败分开说。安装失败要给一条能自救的路——直接下载安装包，而不是只让用户「稍后重试」。
+    诊断码保留在小字里：用户看不懂，但截图发过来时它是唯一有用的东西。
+  </p>
+  <div class="grid2">
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <p style="font-size:13px">当前版本：9.2.3</p>
+        <span class="chip warn"><svg class="ic sm"><use href="#i-warn"/></svg>检查失败</span>
+        <p class="note">连不上更新服务器，请检查网络后重试。<br><span style="font-family:var(--mono);font-size:11.5px">release_request_connecterror</span></p>
+        <div class="row">
+          <button class="btn pri mini">重试</button>
+          <button class="btn mini"><svg class="ic sm"><use href="#i-ext"/></svg>查看 Release</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="frame narrow">
+      <div class="card"><div class="cbody">
+        <div class="sec-label">版本</div>
+        <p style="font-size:13px">当前版本：9.2.3 · 最新版本：<b>9.3.0</b></p>
+        <span class="chip warn"><svg class="ic sm"><use href="#i-warn"/></svg>安装失败</span>
+        <p class="note">更新没有安装成功，当前版本没有被改动，可以正常继续使用。<br><span style="font-family:var(--mono);font-size:11.5px">install_permission_denied</span></p>
+        <div class="row">
+          <button class="btn pri mini">重试</button>
+          <button class="btn mini"><svg class="ic sm"><use href="#i-down"/></svg>改为下载安装包</button>
+          <button class="btn mini"><svg class="ic sm"><use href="#i-ext"/></svg>查看 Release</button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ ⑦ ============================ -->
+<section class="sec" id="s7">
+  <h2>⑦ 这台机器不支持应用内更新</h2>
+  <p class="desc">
+    Intel Mac、从 DMG 里直接运行没拖进「应用程序」、或者装在没有写权限的位置——这些情况下更新器装不上。
+    界面不能假装按钮能用：直接退回到手动下载，并说清是哪一种情况。
+  </p>
+  <div class="frame narrow">
+    <div class="card"><div class="cbody">
+      <div class="sec-label">版本</div>
+      <p style="font-size:13px">当前版本：9.2.3 · 最新版本：<b>9.3.0</b></p>
+      <span class="chip tint"><svg class="ic sm"><use href="#i-down"/></svg>有可用更新</span>
+      <div class="rn" style="max-height:96px">
+        <h3>这一版改了什么</h3>
+        <ul><li>可以在软件里直接更新了。</li><li>PDF 逐页面板新增「只看有问题的页」。</li></ul>
+      </div>
+      <p class="note" style="color:var(--warn)">
+        <svg class="ic sm" style="vertical-align:-3px"><use href="#i-warn"/></svg>
+        Translator 当前是从磁盘映像里运行的，没法自己替换自己。请先把它拖进「应用程序」，或直接下载新版安装包。
+      </p>
+      <div class="row">
+        <button class="btn pri mini"><svg class="ic sm"><use href="#i-down"/></svg>下载安装包</button>
+        <button class="btn mini">忽略此版本</button>
+        <button class="btn mini"><svg class="ic sm"><use href="#i-ext"/></svg>查看 Release</button>
+      </div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============================ ⑧ ============================ -->
+<section class="sec" id="s8">
+  <h2>⑧ 后台发现新版：侧栏红点 + 顶部提示条</h2>
+  <p class="desc">
+    启动 8 秒后在后台静默检查一次（错开首屏和快速开始向导）。发现新版只做两件轻量的事：
+    「设置」项点亮红点（已有的 <code style="font:11.5px var(--mono)">.side-dot</code>），顶栏下方出现一条可关闭的提示条。
+    不弹窗、不抢焦点——用户可能正在翻一份 200 页的 PDF。
+  </p>
+  <div class="frame">
+    <div class="shellcut">
+      <aside class="side">
+        <div class="brand"><span class="brand-mark">译</span>Translator</div>
+        <div class="side-label">翻译</div>
+        <div class="side-item"><svg class="ic"><use href="#i-excel"/></svg>Excel 表格</div>
+        <div class="side-item on"><svg class="ic"><use href="#i-word"/></svg>Word 文档</div>
+        <div class="side-item"><svg class="ic"><use href="#i-pdf"/></svg>PDF 与图片</div>
+        <div class="side-label">资源</div>
+        <div class="side-item"><svg class="ic"><use href="#i-tasks"/></svg>任务中心</div>
+        <div class="side-item"><svg class="ic"><use href="#i-book"/></svg>记忆库</div>
+        <div class="side-label">系统</div>
+        <div class="side-item"><svg class="ic"><use href="#i-gear"/></svg>设置<span class="side-dot"></span></div>
+        <div class="side-item"><svg class="ic"><use href="#i-help"/></svg>帮助</div>
+      </aside>
+      <div class="stage">
+        <div class="topbar">
+          <div><h1>Word 文档</h1><div class="tb-sub">保留原文排版，逐段落翻译</div></div>
+        </div>
+        <div class="upnotice">
+          <svg class="ic sm ico"><use href="#i-down"/></svg>
+          <span><b>Translator 9.3.0 可用</b> —— 现在可以在软件里直接更新了。</span>
+          <span class="acts">
+            <button class="btn mini">查看详情</button>
+            <button class="x" aria-label="关闭"><svg class="ic sm"><use href="#i-x"/></svg></button>
+          </span>
+        </div>
+        <div class="stagebody">（工作区内容）</div>
+      </div>
+    </div>
+  </div>
+  <p class="note-x">
+    <b>提示条关掉之后：</b>本次运行不再出现，但侧栏红点留着——红点是「有事没办」，提示条是「现在打断你一下」，这两件事不该一起消失。<br>
+    <b>「查看详情」跳转到设置 → 更新与关于</b>，也就是第 ③ 屏，而不是在提示条里直接开始下载：57 MB 的下载不应该由一次误点触发。
+  </p>
+</section>
+
+<!-- ============================ ⑨ ============================ -->
+<section class="sec" id="s9">
+  <h2>⑨ 有任务在跑时点「立即重启」</h2>
+  <p class="desc">重启会杀掉正在翻译的任务。这一步必须挡一道，并且默认按钮是「稍后重启」。</p>
+  <div class="frame">
+    <div class="overlay">
+      <div class="modal">
+        <span class="mi"><svg class="ic"><use href="#i-warn"/></svg></span>
+        <h3>还有 2 个任务正在运行</h3>
+        <p>现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。</p>
+        <p style="color:var(--ink-3);font-size:12.5px">更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。</p>
+        <div class="macts">
+          <button class="btn">仍然重启</button>
+          <button class="btn pri">稍后重启</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+<script>
+  const btn = document.getElementById("themeBtn");
+  btn.addEventListener("click", () => {
+    const dark = document.documentElement.dataset.theme === "dark";
+    document.documentElement.dataset.theme = dark ? "light" : "dark";
+    btn.textContent = dark ? "切换深色" : "切换浅色";
+  });
+</script>
+</body>
+</html>

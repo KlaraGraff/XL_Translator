@@ -25,6 +25,7 @@ class ReleaseAsset:
     name: str
     download_url: str
     digest: str = ""
+    size: int = 0
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,9 @@ class UpdateCheckResult:
     release_date: str = ""
     asset_name: str = ""
     download_url: str = ""
+    # Bytes, straight from the GitHub asset record. Shown on the About page so
+    # the user knows what a "download and install" is about to pull down.
+    asset_size: int = 0
     sha256: str = ""
     checksum_asset_name: str = ""
     checksum_url: str = ""
@@ -162,8 +166,12 @@ def _parse_release_assets(payload: dict[str, Any]) -> list[ReleaseAsset]:
         name = str(raw_asset.get("name") or "").strip()
         download_url = str(raw_asset.get("browser_download_url") or "").strip()
         digest = str(raw_asset.get("digest") or "").strip()
+        raw_size = raw_asset.get("size")
+        size = raw_size if isinstance(raw_size, int) and raw_size > 0 else 0
         if name and download_url:
-            assets.append(ReleaseAsset(name=name, download_url=download_url, digest=digest))
+            assets.append(
+                ReleaseAsset(name=name, download_url=download_url, digest=digest, size=size)
+            )
     return assets
 
 
@@ -284,6 +292,7 @@ def build_update_result_from_release_payload(
         release_date=release_date,
         asset_name=platform_asset.name,
         download_url=platform_asset.download_url,
+        asset_size=platform_asset.size,
         sha256=checksum,
         checksum_asset_name=checksum_asset.name,
         checksum_url=checksum_asset.download_url,
@@ -311,6 +320,7 @@ def _fetch_checksum(client: httpx.Client, result: UpdateCheckResult) -> UpdateCh
             diagnostic_code=f"checksum_request_{type(exc).__name__.lower()}",
             asset_name="",
             download_url="",
+            asset_size=0,
             sha256="",
         )
     if not checksum:
@@ -322,6 +332,7 @@ def _fetch_checksum(client: httpx.Client, result: UpdateCheckResult) -> UpdateCh
             diagnostic_code="checksum_invalid",
             asset_name="",
             download_url="",
+            asset_size=0,
             sha256="",
         )
     return replace(result, sha256=checksum)
