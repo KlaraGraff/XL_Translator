@@ -56,6 +56,15 @@ from core.document_config import (
 from core.file_scanner import scan_excel_sources
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
+from core.config_crypto import (
+    DEFAULT_VALID_DAYS,
+    UNSEAL_CORRUPT,
+    UNSEAL_EXPIRED,
+    UNSEAL_PLAINTEXT,
+    UNSEAL_UNSUPPORTED,
+    seal_model_config_document,
+    unseal_model_config_document,
+)
 from core.model_config import (
     API_KEY_EXPORT_INCLUDED,
     API_KEY_EXPORT_KIND_CONNECTION,
@@ -1483,11 +1492,15 @@ def create_app(
         include_api_key: bool = False,
         include_api_keys: bool | None = None,
         confirm_sensitive: bool = False,
+        valid_days: int = DEFAULT_VALID_DAYS,
     ) -> dict[str, Any]:
+        """``valid_days`` 传 0 表示长期有效；只在导出含 Key 时有意义。"""
         if include_api_keys is not None:
             include_api_key = bool(include_api_keys)
         if include_api_key and not confirm_sensitive:
             raise HTTPException(422, "导出 API Key 前必须明确确认敏感配置导出。")
+        if valid_days < 0 or valid_days > 3650:
+            raise HTTPException(422, "文件有效期只能在 0（长期有效）到 3650 天之间。")
         # 回执和导出文档分成两个字段：``document`` 是原样写盘的那份，格式一个字节都
         # 没变（导入侧不受影响）；``api_key_report`` 只给界面看，绝不能混进文件里，
         # 否则收到文件的人还附送一份本机连接清单。
@@ -1510,8 +1523,21 @@ def create_app(
             for row in report_rows
             if row.get("kind") == API_KEY_EXPORT_KIND_PROVIDER_MEMORY
         ]
+        # 加密只在这一层做，不进 ``build_model_config_export_payload``：那个函数同时被
+        # 原生 Qt 界面和测试当作「配置的可移植表示」在用，一旦它自己返回密文，任何
+        # 想检查导出内容的调用方都得先解密。封装是写盘前的最后一道工序，就放在这里。
+        sealed_document = (
+            seal_model_config_document(
+                document, valid_days=valid_days if valid_days > 0 else None
+            )
+            if include_api_key
+            else document
+        )
+        seal_info = sealed_document.get("sealed_keys") or {}
         return {
-            "document": document,
+            "document": sealed_document,
+            "sealed": bool(seal_info),
+            "expires_at": seal_info.get("expires_at"),
             "api_key_report": {
                 "include_api_key": include_api_key,
                 "connections": connection_rows,
@@ -1537,8 +1563,9 @@ def create_app(
 
     @app.post("/api/model-config/import/preview")
     def preview_model_config_import(payload: dict[str, Any]) -> dict[str, Any]:
+        unsealed = _unseal_or_422(payload)
         try:
-            imported = parse_model_config_import(payload)
+            imported = parse_model_config_import(unsealed.document)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         role_names = {
@@ -1559,6 +1586,7 @@ def create_app(
             "throughput_profile_count": len(imported.profile_throughputs)
             + len(imported.throughput_profiles),
             "api_key_count": len(imported.api_keys) + len(imported.scoped_api_keys),
+            **_seal_state_payload(unsealed),
         }
 
     @app.post("/api/model-config/import")
@@ -1566,8 +1594,9 @@ def create_app(
         throughput_errors: list[str] = []
         key_writes: list[Callable[[], None]] = []
         before_settings = load_settings()
+        unsealed = _unseal_or_422(payload)
         try:
-            imported = parse_model_config_import(payload)
+            imported = parse_model_config_import(unsealed.document)
             settings = apply_model_config_import(
                 before_settings,
                 imported,
@@ -1591,6 +1620,7 @@ def create_app(
             # Roles whose imported batch_size/concurrency could not be applied;
             # the rest of the import still succeeded.
             "skipped_throughput_roles": throughput_errors,
+            **_seal_state_payload(unsealed),
         }
 
     @app.get("/api/document-config/export")
@@ -1981,6 +2011,35 @@ def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = 
         return resolve_effective_model_config(settings, role, connection_id=connection_id)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+def _unseal_or_422(payload: dict[str, Any]):
+    """解开导入文件的密钥段；只有「不可信」这一种情况在这里直接拒绝。
+
+    过期、软件太旧、旧版明文这三种都还能往下走（配置照常导入、密钥留空），所以
+    它们不在这里报错，而是把状态带给界面去说人话。校验失败不一样：AAD 锁着配置
+    正文，校验不过说明正文也不可信——这时候放行等于让对方导入一份可能被人改过
+    base_url 的配置，密钥一填进去就发到别人服务器上了。
+    """
+    result = unseal_model_config_document(payload)
+    if result.status == UNSEAL_CORRUPT:
+        raise HTTPException(
+            422,
+            "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。",
+        )
+    return result
+
+
+def _seal_state_payload(result) -> dict[str, Any]:
+    """界面用来区分五种导入结果的那几个字段。"""
+    return {
+        "seal_status": result.status,
+        "sealed": result.sealed,
+        "expires_at": result.expires_at,
+        "sealed_key_count": result.key_count,
+        # 旧版明文文件要单独标出来：界面得提醒对方这份文件本身不安全、用完删掉。
+        "legacy_plaintext": result.status == UNSEAL_PLAINTEXT,
+    }
 
 
 def _effective_role_signatures(settings: AppSettings) -> dict[str, str]:

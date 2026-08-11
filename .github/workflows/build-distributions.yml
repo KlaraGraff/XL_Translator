@@ -202,6 +202,20 @@ jobs:
           npm run build --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml
+      # 私钥绝不能写进源码，所以仓库里 core/_embedded_key.py 平时放的是一把
+      # 公开的开发用兜底密钥。这一步用加密 secret 把真实密钥写进同一个文件，
+      # 必须在打包之前完成——漏掉这一步，产物里就会带着任何人都能读出来的
+      # 开发密钥，后面的 verify_release_metadata.py --require-embedded-key
+      # 会兜底拦下来。
+      # 放在测试之后：测试跑完再注入，工作区里带真钥的时间窗口最短，也不会有
+      # 任何一个测试有机会在守卫检查通过之后把真钥改掉。
+      - name: Inject the embedded model-config encryption key
+        env:
+          XLT_EMBEDDED_KEY_ID: ${{ secrets.XLT_EMBEDDED_KEY_ID }}
+          XLT_EMBEDDED_PRIVATE_KEY_B64: ${{ secrets.XLT_EMBEDDED_PRIVATE_KEY_B64 }}
+        run: ./.venv/bin/python3 scripts/inject_embedded_key.py
+      - name: Confirm the embedded key is no longer the dev fallback
+        run: ./.venv/bin/python3 scripts/verify_release_metadata.py --require-embedded-key
       - name: Build, scan, sign, notarize, and verify the macOS DMG
         env:
           # The key is withheld unless this run is a formal release, which is
@@ -277,6 +291,17 @@ jobs:
           "$PYTHON_BIN" -m pip install --requirement constraints-release-py311.txt
           "$PYTHON_BIN" scripts/verify_release_dependencies.py --constraints constraints-release-py311.txt
           npm ci --prefix ui
+      # 同 macOS：打包前必须把真实密钥注入 core/_embedded_key.py，否则产物
+      # 会带着公开的开发用兜底密钥。每个出包的平台 job 都要单独注入一次。
+      - name: Inject the embedded model-config encryption key
+        shell: bash
+        env:
+          XLT_EMBEDDED_KEY_ID: ${{ secrets.XLT_EMBEDDED_KEY_ID }}
+          XLT_EMBEDDED_PRIVATE_KEY_B64: ${{ secrets.XLT_EMBEDDED_PRIVATE_KEY_B64 }}
+        run: ./.venv/Scripts/python.exe scripts/inject_embedded_key.py
+      - name: Confirm the embedded key is no longer the dev fallback
+        shell: bash
+        run: ./.venv/Scripts/python.exe scripts/verify_release_metadata.py --require-embedded-key
       - name: Build the sidecar and package the NSIS installer
         shell: bash
         env:

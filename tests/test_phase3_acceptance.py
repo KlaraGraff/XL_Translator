@@ -8,6 +8,7 @@ listing alone.
 
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +23,7 @@ import settings as settings_module
 from api.app import create_app
 from api.task_manager import TranslationTaskManager
 from core import diagnostics, tm_manager
+from core.config_crypto import UNSEAL_OK, unseal_model_config_document
 from core.image_generation import check_image_generation_connectivity
 from core.model_config import apply_model_config_import, parse_model_config_import
 from core.model_roles import (
@@ -230,7 +232,17 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
             "/api/model-config/export?include_api_key=true&confirm_sensitive=true"
         )
         self.assertEqual(sensitive.status_code, 200)
-        self.assertIn("mock-provider-secret", sensitive.text)
+        # 导出含 Key 现在会加密密钥段，文件里再也搜不到明文——密钥是否真的带过去，
+        # 用 unseal 之后确认，而不是直接文本查找。
+        sensitive_body = sensitive.json()
+        self.assertTrue(sensitive_body["sealed"])
+        self.assertNotIn("mock-provider-secret", sensitive.text)
+        unsealed = unseal_model_config_document(sensitive_body["document"])
+        self.assertEqual(unsealed.status, UNSEAL_OK)
+        self.assertIn(
+            "mock-provider-secret",
+            json.dumps(unsealed.document, ensure_ascii=False),
+        )
 
 
 class Phase3RoleMockProviderTests(unittest.TestCase):

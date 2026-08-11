@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 import settings as settings_module
 from api.app import create_app
 from core import diagnostics, tm_manager
+from core.config_crypto import UNSEAL_OK, unseal_model_config_document
 from core.model_config import (
     API_KEY_EXPORT_INCLUDED,
     API_KEY_EXPORT_KIND_CONNECTION,
@@ -398,8 +399,13 @@ class ExportEndpointReceiptTests(unittest.TestCase):
         exported = self.client.get(
             "/api/model-config/export?include_api_key=true&confirm_sensitive=true"
         )
-        self.assertIn("sk-MINE", exported.text)
-        self.assertEqual(exported.json()["api_key_report"]["withheld_count"], 0)
+        exported_body = exported.json()
+        # 导出含 Key 现在会加密密钥段，文件里搜不到明文——用 unseal 确认密钥真的带上了。
+        self.assertNotIn("sk-MINE", exported.text)
+        unsealed = unseal_model_config_document(exported_body["document"])
+        self.assertEqual(unsealed.status, UNSEAL_OK)
+        self.assertIn("sk-MINE", json.dumps(unsealed.document, ensure_ascii=False))
+        self.assertEqual(exported_body["api_key_report"]["withheld_count"], 0)
 
     def test_the_receipt_never_rides_along_in_the_exported_document(self) -> None:
         self._import_donor_config()

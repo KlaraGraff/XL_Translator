@@ -15,6 +15,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 STABLE_TAG_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
+# 见 core/_embedded_key.py 顶部注释：这是开发用兜底密钥的标记，任何携带它的
+# 构建都没有真实的模型配置加密保护。
+_DEV_EMBEDDED_KEY_ID = "dev"
+
 # A UI constant named like ``APP_VERSION_FALLBACK`` (or ``appVersion``, etc.)
 # hand-copied to a literal "X.Y.Z" string is exactly how the "About" page once
 # drifted to a stale version (it showed "8.1.2" while the app had moved on to
@@ -141,6 +145,51 @@ def updater_wiring_errors(
     return errors
 
 
+def embedded_key_errors(root: Path) -> list[str]:
+    """Flag a release that still carries the public "dev" fallback key.
+
+    ``scripts/inject_embedded_key.py`` is supposed to overwrite
+    ``core/_embedded_key.py`` with the real key before packaging. If that step
+    was skipped — script not run, or the ``XLT_EMBEDDED_KEY_ID`` /
+    ``XLT_EMBEDDED_PRIVATE_KEY_B64`` repo secrets were never configured — the
+    build silently keeps the dev key, and every exported model config would
+    be "encrypted" with a key anyone can read out of the public source tree.
+    That is a silent security incident, so it must fail the release outright.
+    """
+    embedded_key_path = root / "core" / "_embedded_key.py"
+    if not embedded_key_path.is_file():
+        return ["missing required release metadata: core/_embedded_key.py"]
+
+    try:
+        tree = ast.parse(embedded_key_path.read_text(encoding="utf-8"), filename=str(embedded_key_path))
+    except (OSError, SyntaxError) as exc:
+        return [f"cannot read core/_embedded_key.py: {exc}"]
+
+    key_id: str | None = None
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "EMBEDDED_KEY_ID"
+            for target in statement.targets
+        ):
+            continue
+        if isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
+            key_id = statement.value.value
+
+    if key_id is None:
+        return ["core/_embedded_key.py must define EMBEDDED_KEY_ID as a string literal"]
+
+    if key_id == _DEV_EMBEDDED_KEY_ID:
+        return [
+            "core/_embedded_key.py 仍是开发用兜底密钥（EMBEDDED_KEY_ID == 'dev'）："
+            "发布产物会用任何人都能读到的密钥加密模型配置。检查构建流程是否漏跑了 "
+            "scripts/inject_embedded_key.py，或者仓库没有配置 XLT_EMBEDDED_KEY_ID / "
+            "XLT_EMBEDDED_PRIVATE_KEY_B64 这两个 secret。"
+        ]
+    return []
+
+
 def release_metadata_errors(root: Path = ROOT, *, tag: str | None = None) -> list[str]:
     """Return all static release-metadata errors without invoking a build."""
     paths = {
@@ -210,9 +259,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--tag", help="Official tag to validate, for example v8.0.0")
+    parser.add_argument(
+        "--require-embedded-key",
+        action="store_true",
+        help=(
+            "Also fail unless core/_embedded_key.py has been overwritten with a real "
+            "key by scripts/inject_embedded_key.py. Only meaningful after packaging in "
+            "a platform build job, not in the pre-build validate-release job (which "
+            "runs before injection ever happens)."
+        ),
+    )
     args = parser.parse_args()
 
-    errors = release_metadata_errors(args.root.resolve(), tag=args.tag)
+    root = args.root.resolve()
+    errors = release_metadata_errors(root, tag=args.tag)
+    if args.require_embedded_key:
+        errors.extend(embedded_key_errors(root))
     if errors:
         for error in errors:
             print(f"[ERROR] {error}", file=sys.stderr)
