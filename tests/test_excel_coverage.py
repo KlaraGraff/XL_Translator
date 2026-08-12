@@ -117,6 +117,31 @@ class ExcelCoverageTests(unittest.TestCase):
                 ["The concrete wall is ready", "Project name"],
             )
 
+    def test_auto_source_lang_still_finds_untranslated_cells(self) -> None:
+        # 源语言选「自动识别」时，语言预检要等提取完才跑，补译计划拿到的是字面量
+        # auto。以前这会把每个中文单元格都判成「不是源文」，补译清单变成 0 条，
+        # 最后输出一份一个字都没翻的文件。
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self._workbook(
+                Path(tmp),
+                "source.xlsx",
+                {
+                    "A1": "项目名称\nProject name",
+                    "A2": "施工内容",
+                },
+            )
+
+            for selector in ("auto", ""):
+                plan = build_excel_coverage_plan(
+                    source,
+                    target_lang="en",
+                    source_lang=selector,
+                )
+                by_location = {unit.location: unit for unit in plan.units}
+                self.assertEqual(by_location["Sheet!A1"].status, COVERAGE_COVERED)
+                self.assertEqual(by_location["Sheet!A2"].status, COVERAGE_SOURCE_ONLY)
+                self.assertEqual(plan.source_texts, ["施工内容"])
+
     @staticmethod
     def _workbook(root: Path, name: str, cells: dict[str, str]) -> Path:
         path = root / name

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from core.language_registry import get_default_source_lang, is_auto_source_lang
 from core.translation_filter import should_translate
 
 COVERAGE_COVERED = "covered"
@@ -142,6 +143,20 @@ def _language_evidence(text: str, language: str) -> bool | None:
     return None
 
 
+def resolve_coverage_source_lang(source_lang: str | None) -> str:
+    """Turn 「自动识别」 into a concrete source language for coverage checks.
+
+    补译判定必须先知道源语言是哪一门，才分得清「原文」和「译文」。而自动识别是在
+    提取之后才出结果的，提取阶段拿到的就是字面量 auto——它既不是 zh 也不是任何
+    受支持的语言码，于是所有中文单元格都会被判成「不是源文」，补译清单变成 0 条，
+    最后输出一份一个字都没翻的文件。这里统一落到默认源语言，不让 auto 漏进判定。
+    """
+    candidate = str(source_lang or "").strip()
+    if not candidate or is_auto_source_lang(candidate):
+        return get_default_source_lang()
+    return candidate
+
+
 def looks_like_source_text(
     text: str,
     *,
@@ -153,7 +168,8 @@ def looks_like_source_text(
     if not cleaned:
         return False
 
-    source = str(source_lang or "zh").strip().lower()
+    source_lang = resolve_coverage_source_lang(source_lang)
+    source = source_lang.lower()
     if source == "zh":
         if not contains_cjk(cleaned):
             return False
@@ -216,7 +232,7 @@ def _looks_translated_despite_cjk(
     source_lang: str,
     target_lang: str,
 ) -> bool:
-    if str(source_lang or "zh").strip().lower() != "zh":
+    if resolve_coverage_source_lang(source_lang).lower() != "zh":
         return False
     if not has_incidental_cjk(cleaned, target_lang=target_lang):
         return False

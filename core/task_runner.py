@@ -703,7 +703,13 @@ class TaskRunner:
                         coverage_plan = build_excel_coverage_plan(
                             process_path,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            # 语言预检要等提取完才跑，这里 source_lang 还可能是 auto。
+                            # 补译判定需要一个具体的源语言，先按默认的来。
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
                             formula_display_value_backfill=(
                                 excel_output.formula_display_value_backfill
                             ),
@@ -721,6 +727,15 @@ class TaskRunner:
                                 f"不确定跳过 {summary.get('ambiguous', 0)}"
                             ),
                         )
+                        # 补译模式下「一条都不用补」是合法结果，但输出文件会和原文
+                        # 一模一样。不明说的话，看上去就像翻译器什么都没干。
+                        if not summary.get("source_only", 0):
+                            self._log(
+                                "WARN",
+                                f"  → {file_item.name}：没有找到需要补译的内容，"
+                                "输出文件会和原文一致。如果这份文件其实还没翻译过，"
+                                "请关掉「仅补译未翻译内容」再跑一次。",
+                            )
                     else:
                         texts, sheet_count = self._collect_texts(
                             process_path,
