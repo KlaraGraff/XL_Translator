@@ -8,6 +8,7 @@ deterministic fake runner, so no model credentials or real PDF work is needed.
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from collections import deque
@@ -46,6 +47,13 @@ class _ReviewPanelRunner:
             ("source.pdf", 1, "translated"): translated_image,
         }
         self._statuses = {1: "success", 2: "placeholder_pending"}
+        # 终态单页重生成：跑起来后停在 release_rerun 上，用例好在「正在重生成」这个
+        # 窗口里观察路由的回答。
+        self.reruns: list[tuple[str, int]] = []
+        self.rerun_active = threading.Event()
+        self.release_rerun = threading.Event()
+        self.rerun_page_key: tuple[str, int] | None = None
+        self.rerun_error = ""
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -106,7 +114,10 @@ class _ReviewPanelRunner:
                         for number, status in sorted(self._statuses.items())
                     ],
                 }
-            ]
+            ],
+            "review_enabled": False,
+            "rerun": self.page_rerun_state(),
+            "can_rerun": self.can_rerun_pages(),
         }
 
     def resolve_page_image_path(self, *, relative_path: str, page_number: int, kind: str):
@@ -121,6 +132,52 @@ class _ReviewPanelRunner:
         if self._statuses.get(int(page_number)) == "success":
             raise PdfPageActionError("source.pdf 第 1 页没有失败，不能跳过；如需改动请选择重新生成。")
         return self._accept("skip", relative_path, page_number)
+
+    # -- single-page rerun after the task ended ----------------------------
+    def can_rerun_pages(self) -> bool:
+        return not self.rerun_active.is_set()
+
+    def page_rerun_state(self) -> dict:
+        key = self.rerun_page_key
+        return {
+            "active": self.rerun_active.is_set(),
+            "relative_path": key[0] if key else "",
+            "page_number": key[1] if key else 0,
+            "error": self.rerun_error,
+        }
+
+    def result_patch(self) -> dict:
+        return {"api_call_count": 7, "report_path": "/isolated/pdf-output/report.md"}
+
+    def rerun_page(
+        self,
+        *,
+        relative_path: str,
+        page_number: int,
+        api_scheduler=None,
+        review_api_scheduler=None,
+    ) -> dict:
+        if relative_path != "source.pdf":
+            raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+        self.reruns.append((relative_path, int(page_number)))
+        self.rerun_page_key = (relative_path, int(page_number))
+        self.rerun_active.set()
+        threading.Thread(target=self._finish_rerun, daemon=True).start()
+        return {
+            "action": "regenerate",
+            "relative_path": relative_path,
+            "name": "source.pdf",
+            "page_number": int(page_number),
+            "applies_on": "now",
+        }
+
+    def _finish_rerun(self) -> None:
+        self.release_rerun.wait(10)
+        page_number = (self.rerun_page_key or ("", 0))[1]
+        if page_number:
+            self._statuses[page_number] = "success"
+        self.rerun_page_key = None
+        self.rerun_active.clear()
 
     def _accept(self, kind: str, relative_path: str, page_number: int) -> dict:
         if relative_path != "source.pdf":
@@ -280,6 +337,89 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                 events = client.get(f"/api/tasks/{task_id}/events")
                 self.assertEqual(events.status_code, 200, events.text)
                 self.assertIn("event: pdf_page_action", events.text)
+
+    def _await_terminal(self, client: TestClient, task_id: str) -> None:
+        deadline = time.monotonic() + 2.0
+        status = client.get(f"/api/tasks/{task_id}").json()
+        while not status["terminal"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+            status = client.get(f"/api/tasks/{task_id}").json()
+        self.assertTrue(status["terminal"])
+
+    def test_finished_task_reruns_one_page_without_counting_as_a_running_task(self) -> None:
+        """终态任务重生成单页：能跑，但不许把自己算回「正在运行」。
+
+        任务中心的并发额度、忙碌连接、风险提示全都按 terminal 过滤。重生成要是把任务
+        翻回运行态，一次单页重跑就会占掉一个正式任务的位置。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = self._review_runner(root)
+            manager, client, root = self._client(root, runner)
+            preflight, context = self._patches(manager)
+            with preflight, context:
+                task_id = self._start(client, root)
+
+                while_running = client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/rerun",
+                    json={"file": "source.pdf", "page": 2},
+                )
+                self.assertEqual(while_running.status_code, 409, while_running.text)
+                self.assertEqual(while_running.json()["reason"], "task_not_terminal")
+                self.assertEqual(runner.reruns, [])
+
+                client.post(f"/api/tasks/{task_id}/pause")
+                client.post(f"/api/tasks/{task_id}/end-paused")
+                self._await_terminal(client, task_id)
+
+                ended = client.get(f"/api/tasks/{task_id}/pdf-pages").json()
+                # 「暂停中可以排队页操作」已经关了，「已结束但还能重跑一页」是另一条。
+                self.assertFalse(ended["actionable"])
+                self.assertTrue(ended["rerun_actionable"])
+                self.assertFalse(ended["rerun"]["active"])
+
+                accepted = client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/rerun",
+                    json={"file": "source.pdf", "page": 2},
+                )
+                self.assertEqual(accepted.status_code, 200, accepted.text)
+                self.assertEqual(accepted.json()["accepted"]["applies_on"], "now")
+                self.assertEqual(runner.reruns, [("source.pdf", 2)])
+
+                during = client.get(f"/api/tasks/{task_id}/pdf-pages").json()
+                self.assertTrue(during["terminal"])
+                self.assertTrue(during["rerun"]["active"])
+                self.assertEqual(during["rerun"]["page_number"], 2)
+                self.assertFalse(during["rerun_actionable"])
+                self.assertEqual(client.get("/api/tasks").json()["active"], [])
+
+                busy = client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/rerun",
+                    json={"file": "source.pdf", "page": 1},
+                )
+                self.assertEqual(busy.status_code, 409, busy.text)
+                self.assertEqual(busy.json()["reason"], "page_rerun_active")
+
+                # 这条记录正在被重写，删掉它会把重生成的输出留成孤儿。
+                deleted = client.delete(f"/api/tasks/{task_id}")
+                self.assertEqual(deleted.status_code, 409, deleted.text)
+                self.assertEqual(deleted.json()["reason"], "page_rerun_active")
+
+                runner.release_rerun.set()
+                deadline = time.monotonic() + 3.0
+                finished = client.get(f"/api/tasks/{task_id}/pdf-pages").json()
+                while finished["rerun"]["active"] and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                    finished = client.get(f"/api/tasks/{task_id}/pdf-pages").json()
+                self.assertFalse(finished["rerun"]["active"])
+                self.assertTrue(finished["rerun_actionable"])
+                self.assertEqual(finished["files"][0]["pages"][1]["status"], "success")
+
+                status = client.get(f"/api/tasks/{task_id}").json()
+                self.assertTrue(status["terminal"])
+                # 任务中心的文件表和指标读的是这份 result，不跟着刷新就永远是旧数。
+                self.assertEqual(status["result"]["api_call_count"], 7)
+                self.assertEqual(client.delete(f"/api/tasks/{task_id}").status_code, 200)
 
     def test_page_action_rejections_from_the_runner_become_input_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

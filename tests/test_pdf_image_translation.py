@@ -2004,6 +2004,180 @@ class PdfImageTranslationTests(unittest.TestCase):
             with self.assertRaises(PdfPageActionError):
                 runner.request_page_regenerate(relative_path="source.pdf", page_number=1)
 
+    def _await_page_rerun(
+        self,
+        runner: PdfImageTranslationRunner,
+        *,
+        timeout: float = 20.0,
+    ) -> None:
+        deadline = time.monotonic() + timeout
+        while runner.page_rerun_state()["active"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(
+            runner.page_rerun_state()["active"],
+            "单页重新生成没有在预期时间内结束。",
+        )
+
+    def test_finished_task_page_rerun_rebuilds_the_page_output_and_report(self) -> None:
+        """终态任务重生成单页：译文页、输出文件和报告计数都要跟着改。
+
+        只换译文页图是骗人的——输出 PDF 是页图拼出来的，报告里的占位页计数也还停在
+        旧值。这条用例盯的就是这三样一起变。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            settings.pdf.page_retry_attempts = 0
+            image_client = _FailFirstThenRerunImageClient(
+                _png_bytes(1200, 1600),
+                rerun_bytes=_png_bytes(1200, 1600, "red"),
+            )
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"), patch(
+                "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
+                0,
+            ):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_NEEDS_REVIEW)
+                self.assertEqual(record.placeholder_page_count, 1)
+                output_dir = runner._finished_output_dir
+                self.assertIsNotNone(output_dir)
+                manifest_path = output_dir / PDF_MANIFEST_FILENAME
+                report_path = output_dir / PDF_REPORT_FILENAME
+                before_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                before_report = report_path.read_text(encoding="utf-8")
+                self.assertEqual(before_manifest["placeholder_page_count"], 1)
+                self.assertTrue(Path(record.translated_pdf_path).is_file())
+
+                # 这一步之后发的消息才算重生成的：跑批自己的 DoneMsg 先清掉。
+                run_messages = _drain_all_messages(runner)
+                self.assertTrue(any(isinstance(msg, DoneMsg) for msg in run_messages))
+
+                self.assertTrue(runner.can_rerun_pages())
+                accepted = runner.rerun_page(relative_path="source.pdf", page_number=1)
+                self.assertEqual(accepted["applies_on"], "now")
+                self.assertEqual(accepted["page_number"], 1)
+                self._await_page_rerun(runner)
+
+            state = runner.page_rerun_state()
+            self.assertEqual(state["error"], "")
+            self.assertFalse(state["active"])
+            # 两页跑批 + 一次重生成，一次都不多调。
+            self.assertEqual(image_client.calls, 3)
+
+            page = next(item for item in record.pages if item.page_number == 1)
+            self.assertEqual(page.status, "success")
+            self.assertFalse(page.placeholder)
+            with Image.open(Path(page.translated_image_path)) as image:
+                # 重生成那一次才返回红色，能读到红色就说明这一页真的重跑过。
+                self.assertEqual(image.convert("RGB").getpixel((0, 0)), (255, 0, 0))
+
+            self.assertTrue(Path(record.translated_pdf_path).is_file())
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            self.assertEqual(record.placeholder_page_count, 0)
+
+            after_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(after_manifest["placeholder_page_count"], 0)
+            self.assertEqual(after_manifest["generated_page_count"], 2)
+            self.assertNotEqual(report_path.read_text(encoding="utf-8"), before_report)
+
+            result_patch = runner.result_patch()
+            self.assertEqual(result_patch["report_path"], str(report_path))
+            self.assertEqual(result_patch["manifest_path"], str(manifest_path))
+            self.assertEqual(len(result_patch["file_results"]), 1)
+            self.assertTrue(result_patch["kpi"])
+
+            # 重生成不是「任务又跑了一遍」：终态消息一条都不许再发。
+            rerun_messages = _drain_all_messages(runner)
+            self.assertFalse(
+                any(
+                    isinstance(msg, (DoneMsg, StoppedMsg))
+                    for msg in rerun_messages
+                )
+            )
+
+    def test_page_rerun_is_refused_while_the_task_or_another_rerun_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            image_client = _GateOnCallImageClient(
+                _png_bytes(1200, 1600),
+                gate_calls={1, 3},
+            )
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=2)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"), patch(
+                "core.pdf_image_translation.PDF_PAGE_RENDER_AHEAD_COUNT",
+                0,
+            ):
+                thread = threading.Thread(target=runner._run)
+                # ``start()`` is what normally publishes the thread; ``is_running``
+                # reads it, and a rerun must see a live run for what it is.
+                runner._thread = thread
+                thread.start()
+                try:
+                    self.assertTrue(image_client.entered.wait(5))
+                    self.assertFalse(runner.can_rerun_pages())
+                    with self.assertRaises(PdfPageActionError) as running:
+                        runner.rerun_page(relative_path="source.pdf", page_number=1)
+                    self.assertIn("任务还在运行", str(running.exception))
+                finally:
+                    image_client.release.set()
+                thread.join(10)
+                self.assertFalse(thread.is_alive())
+
+                image_client.entered.clear()
+                image_client.release.clear()
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+
+                with self.assertRaises(PdfPageActionError):
+                    runner.rerun_page(relative_path="missing.pdf", page_number=1)
+                with self.assertRaises(PdfPageActionError):
+                    runner.rerun_page(relative_path="source.pdf", page_number=9)
+
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                try:
+                    self.assertTrue(image_client.entered.wait(5))
+                    snapshot = runner.pdf_page_snapshot()
+                    self.assertTrue(snapshot["rerun"]["active"])
+                    self.assertEqual(snapshot["rerun"]["page_number"], 1)
+                    self.assertFalse(snapshot["can_rerun"])
+                    with self.assertRaises(PdfPageActionError) as busy:
+                        runner.rerun_page(relative_path="source.pdf", page_number=2)
+                    self.assertIn("正在重新生成", str(busy.exception))
+                finally:
+                    image_client.release.set()
+                self._await_page_rerun(runner)
+
+            self.assertEqual(runner.page_rerun_state()["error"], "")
+            self.assertTrue(runner.can_rerun_pages())
+
     def test_page_snapshot_exposes_quality_flags_even_when_review_passed(self) -> None:
         """本地质检的疑点必须单独送到前端，不能只靠 review_status。
 
@@ -2363,6 +2537,42 @@ class _FakeImageClient:
         self.image_bytes = image_bytes
 
     def generate_page(self, **_kwargs):
+        return self.image_bytes
+
+
+class _FailFirstThenRerunImageClient(_FakeImageClient):
+    """Fails page one during the run, then answers differently when it is re-run."""
+
+    def __init__(self, image_bytes: bytes, *, rerun_bytes: bytes) -> None:
+        super().__init__(image_bytes)
+        self.rerun_bytes = rerun_bytes
+        self.calls = 0
+
+    def generate_page(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary image failure")
+        if self.calls >= 3:
+            return self.rerun_bytes
+        return self.image_bytes
+
+
+class _GateOnCallImageClient(_FakeImageClient):
+    """Parks inside chosen model calls so an in-flight page can be observed."""
+
+    def __init__(self, image_bytes: bytes, *, gate_calls: set[int]) -> None:
+        super().__init__(image_bytes)
+        self.gate_calls = set(gate_calls)
+        self.calls = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def generate_page(self, **_kwargs):
+        self.calls += 1
+        if self.calls in self.gate_calls:
+            self.entered.set()
+            if not self.release.wait(15):
+                raise AssertionError("闸门一直没放开，用例自己卡住了。")
         return self.image_bytes
 
 

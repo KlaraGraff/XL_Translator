@@ -871,6 +871,16 @@ def create_app(
             page_number=request.page,
         )
 
+    @app.post("/api/tasks/{task_id}/pdf-pages/rerun")
+    def rerun_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        # 终态任务专用：/regenerate 是「排队，继续翻译时生效」，这一条是「现在就重跑
+        # 这一页，并把输出文件重新合成一遍」。
+        return app.state.task_manager.rerun_pdf_page(
+            task_id,
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
     @app.post("/api/tasks/{task_id}/pdf-pages/skip")
     def skip_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
         return app.state.task_manager.request_pdf_page_action(

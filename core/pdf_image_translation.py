@@ -1154,6 +1154,20 @@ class PdfImageTranslationRunner:
         self._prepared_files: list[_PreparedPdfFile] = []
         self._pending_page_actions: list[_PdfPageAction] = []
         self._user_skipped_pages: set[tuple[str, int]] = set()
+        # Single-page rerun of a task that already ended (see ``rerun_page``).
+        # ``_run`` is over by then, so the rerun needs its own thread and its
+        # own copy of everything that used to be a ``_run`` local.
+        self._rerun_lock = threading.Lock()
+        self._rerun_thread: threading.Thread | None = None
+        self._rerun_page_key: tuple[str, int] | None = None
+        self._rerun_error = ""
+        self._finished_output_dir: Path | None = None
+        self._finished_started_at: datetime | None = None
+        self._finished_elapsed_sec = 0.0
+        self._finished_stopped = False
+        self._finished_stop_reason = ""
+        self._finished_fatal_error = ""
+        self._result_patch: dict[str, Any] = {}
 
     @property
     def task_id(self) -> str:
@@ -1270,7 +1284,14 @@ class PdfImageTranslationRunner:
             )
         # 审核开关要跟着快照一起交出去：关着的时候，逐页审核卡片那句「审核模型逐页检查版式
         # 与译文完整性」跟同一张表里 14 行「未审核」是自相矛盾的，界面得知道该改口。
-        return {"files": files, "review_enabled": bool(self._settings.pdf.review_enabled)}
+        return {
+            "files": files,
+            "review_enabled": bool(self._settings.pdf.review_enabled),
+            # 终态任务的单页重生成没有 SSE 可用（事件流在终态就结束了），这份快照
+            # 就是界面唯一的进度来源：哪一页在重跑、上一次为什么失败都从这里读。
+            "rerun": self.page_rerun_state(),
+            "can_rerun": self.can_rerun_pages(),
+        }
 
     def resolve_page_image_path(
         self,
@@ -1318,6 +1339,307 @@ class PdfImageTranslationRunner:
             relative_path=relative_path,
             page_number=page_number,
         )
+
+    # ---- single-page rerun after the task ended --------------------------------
+    #
+    # The paused-task actions above only queue: ``_run`` is still parked inside
+    # its pause loop and applies them when it wakes up.  Once the task is over
+    # that thread is gone, so a rerun has to redo, on a thread of its own, the
+    # exact tail of ``_run`` this page touches: regenerate the page, re-assemble
+    # the file it belongs to, and rewrite the manifest and the report.
+
+    def page_rerun_state(self) -> dict[str, Any]:
+        """Report which page, if any, is being re-run after the task ended."""
+        with self._rerun_lock:
+            key = self._rerun_page_key
+            error = self._rerun_error
+        return {
+            "active": key is not None,
+            "relative_path": key[0] if key is not None else "",
+            "page_number": key[1] if key is not None else 0,
+            "error": _short_review_text(error),
+        }
+
+    def can_rerun_pages(self) -> bool:
+        """True when a single-page rerun could be started right now."""
+        if self._finished_output_dir is None or self.is_running():
+            return False
+        with self._rerun_lock:
+            return self._rerun_page_key is None
+
+    def _raise_if_rerun_active(self, *, locked: bool = False) -> None:
+        """Refuse a second rerun; one page at a time keeps the output coherent."""
+        if locked:
+            active = self._rerun_page_key
+        else:
+            with self._rerun_lock:
+                active = self._rerun_page_key
+        if active is not None:
+            raise PdfPageActionError(
+                f"第 {active[1]} 页正在重新生成，等它跑完再操作下一页。"
+            )
+
+    def result_patch(self) -> dict[str, Any]:
+        """Return refreshed task-result fields produced by the last rerun."""
+        return dict(self._result_patch)
+
+    def rerun_page(
+        self,
+        *,
+        relative_path: str,
+        page_number: int,
+        api_scheduler: WeightedApiScheduler | None = None,
+        review_api_scheduler: WeightedApiScheduler | None = None,
+    ) -> dict[str, Any]:
+        """Start re-running one page of a finished task; overwrites its output."""
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise PdfPageActionError("页码必须是整数。") from exc
+        if self.is_running():
+            raise PdfPageActionError("任务还在运行，请暂停后再做单页操作。")
+        if self._finished_output_dir is None:
+            raise PdfPageActionError("这个任务没有留下输出目录，不能重新生成单页。")
+        # Checked before the per-page checks below, not only at the claim: a
+        # rerun in flight has already reset its file's status back to pending,
+        # so the eligibility checks would otherwise answer "this file never
+        # produced an output" to someone who simply clicked a second page.
+        self._raise_if_rerun_active()
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+        if prepared is None:
+            raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+        record = prepared.record
+        if page_number < 1 or page_number > max(0, int(record.page_count)):
+            raise PdfPageActionError(
+                f"页码超出范围：{record.name} 共 {record.page_count} 页。"
+            )
+        # Regenerating drops the existing output file before it rebuilds one.
+        # A file that never produced an output has nothing to rebuild from, so
+        # the rerun would only delete evidence and then fail the same way.
+        if record.status not in {PDF_OUTPUT_STATE_COMPLETED, PDF_OUTPUT_STATE_NEEDS_REVIEW}:
+            raise PdfPageActionError(
+                f"{record.name} 这次没有生成输出文件，单页重新生成帮不上忙；请重新建立任务。"
+            )
+        page = next(
+            (item for item in list(record.pages) if item.page_number == page_number),
+            None,
+        )
+        if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
+            raise PdfPageActionError(
+                f"{record.name} 第 {page_number} 页没有可以重新生成的结果。"
+            )
+        with self._rerun_lock:
+            self._raise_if_rerun_active(locked=True)
+            self._rerun_page_key = (record.relative_path, page_number)
+            self._rerun_error = ""
+            thread = threading.Thread(
+                target=self._run_page_rerun,
+                args=(prepared, page_number, api_scheduler, review_api_scheduler),
+                daemon=True,
+                name=f"pdf-page-rerun-{page_number}",
+            )
+            self._rerun_thread = thread
+        thread.start()
+        return {
+            "action": PDF_PAGE_ACTION_REGENERATE,
+            "relative_path": record.relative_path,
+            "name": record.name,
+            "page_number": page_number,
+            "applies_on": "now",
+        }
+
+    def _run_page_rerun(
+        self,
+        prepared: _PreparedPdfFile,
+        page_number: int,
+        api_scheduler: WeightedApiScheduler | None,
+        review_api_scheduler: WeightedApiScheduler | None,
+    ) -> None:
+        record = prepared.record
+        error = ""
+        try:
+            with provider_key_overrides(self._key_overrides):
+                self._execute_page_rerun(
+                    prepared,
+                    page_number,
+                    api_scheduler,
+                    review_api_scheduler,
+                )
+        except PdfPageActionError as exc:
+            error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - rerun failure becomes a panel message.
+            logger.exception("PDF 单页重新生成失败")
+            error = user_facing_reason(
+                exc,
+                fallback="重新生成这一页时出现了未预期的问题，输出文件未更新。",
+            )
+        if error:
+            self._log(
+                "ERROR",
+                f"[{record.name}] 第 {page_number} 页重新生成失败：{error}",
+            )
+        with self._rerun_lock:
+            self._rerun_page_key = None
+            self._rerun_error = error
+            self._rerun_thread = None
+
+    def _execute_page_rerun(
+        self,
+        prepared: _PreparedPdfFile,
+        page_number: int,
+        api_scheduler: WeightedApiScheduler | None,
+        review_api_scheduler: WeightedApiScheduler | None,
+    ) -> None:
+        record = prepared.record
+        rerun_started = time.monotonic()
+        # A finished run may have left the stop flag set (user stop / end-paused).
+        # Leaving it set would make ``_process_prepared_pages`` refuse to submit
+        # the very page this rerun exists to produce.
+        self._stop_event.clear()
+        self._pause_event.clear()
+        self._stop_reason = ""
+        self._fatal_model_error = ""
+        self._fatal_review_model_error = ""
+        self._stop_wait_started_at = None
+        self._stop_wait_last_emit = 0.0
+
+        # Resolved fresh rather than cached from the run: settings may have been
+        # fixed since (a corrected API key is the common case), and a retained
+        # terminal runner should not sit on key material it does not need.
+        try:
+            model_config = resolve_effective_model_config(self._settings, ROLE_IMAGE)
+        except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
+            logger.debug(f"[PDF] 单页重生成解析翻译模型配置失败原始错误：{exc!r}")
+            raise PdfPageActionError(
+                "PDF 翻译模型配置不可用："
+                + user_facing_reason(exc, fallback="请在设置里检查 PDF 翻译模型这条连接。")
+            ) from exc
+        if not provider_supports_capability(model_config.provider, "image"):
+            raise PdfPageActionError(
+                f"当前 PDF 翻译模型服务商不支持图像生成能力：{model_config.provider}"
+            )
+        if not model_config.model:
+            raise PdfPageActionError("PDF 翻译模型名称不能为空。")
+
+        review_model_config = None
+        review_concurrency = 1
+        if self._settings.pdf.review_enabled:
+            try:
+                review_model_config = resolve_effective_model_config(
+                    self._settings,
+                    ROLE_PDF_REVIEW,
+                )
+                review_concurrency = get_model_throughput(
+                    self._settings,
+                    review_model_config,
+                ).concurrency
+            except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
+                logger.debug(f"[PDF] 单页重生成解析审核模型配置失败原始错误：{exc!r}")
+                raise PdfPageActionError(
+                    "PDF 翻译审核模型配置不可用："
+                    + user_facing_reason(
+                        exc,
+                        fallback="请在设置里检查 PDF 翻译审核模型这条连接。",
+                    )
+                ) from exc
+            if not provider_supports_capability(review_model_config.provider, "vision_text"):
+                raise PdfPageActionError(
+                    "当前 PDF 翻译审核模型服务商不支持图像理解审核能力："
+                    f"{review_model_config.provider}"
+                )
+            if not review_model_config.model:
+                raise PdfPageActionError("PDF 翻译审核模型名称不能为空。")
+
+        max_attempts = max_page_generation_attempts(self._settings.pdf.page_retry_attempts)
+        self._review_total = max_attempts
+        scheduler = api_scheduler or WeightedApiScheduler(1)
+        same_review_group = (
+            review_model_config is not None
+            and _api_group_signature_from_config(model_config)
+            == _api_group_signature_from_config(review_model_config)
+        )
+        review_scheduler = review_api_scheduler or (
+            scheduler if same_review_group else WeightedApiScheduler(review_concurrency)
+        )
+
+        page = next(
+            (item for item in record.pages if item.page_number == page_number),
+            None,
+        )
+        if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
+            raise PdfPageActionError(
+                f"{record.name} 第 {page_number} 页的结果已经变了，本次重新生成已放弃。"
+            )
+        self._log(
+            "INFO",
+            f"[{record.name}] 第 {page_number} 页开始重新生成：旧译文页和输出文件会被覆盖。",
+        )
+        self._apply_page_regenerate(prepared, page)
+        self._process_prepared_pages(
+            [prepared],
+            max_attempts=max_attempts,
+            scheduler=scheduler,
+            review_scheduler=review_scheduler,
+            model_config=model_config,
+            review_model_config=review_model_config,
+            concurrency=1,
+            total_pages=max(1, int(record.page_count)),
+        )
+        if self._fatal_model_error:
+            raise PdfPageActionError(self._fatal_model_error)
+        self._finalize_file_record(prepared, should_assemble=True)
+        self._rewrite_finished_report(extra_elapsed_sec=time.monotonic() - rerun_started)
+
+    def _remember_finished_run(
+        self,
+        *,
+        output_dir: Path,
+        started: datetime,
+        summary: PdfTaskSummary,
+        stopped: bool,
+        fatal_error: str,
+    ) -> None:
+        """Keep what ``_run`` knew, so a later single-page rerun can redo its tail."""
+        self._finished_output_dir = output_dir
+        self._finished_started_at = started
+        self._finished_elapsed_sec = float(summary.elapsed_sec)
+        self._finished_stopped = bool(stopped)
+        self._finished_stop_reason = summary.stop_reason
+        self._finished_fatal_error = fatal_error
+
+    def _rewrite_finished_report(self, *, extra_elapsed_sec: float) -> None:
+        """Rebuild the manifest, the report and the task-result payload."""
+        output_dir = self._finished_output_dir
+        if output_dir is None:
+            return
+        with self._page_action_lock:
+            file_records = [prepared.record for prepared in self._prepared_files]
+        # Wall-clock between the run ending and the user clicking 重新生成 is not
+        # time this task spent working; only the rerun itself is added.
+        self._finished_elapsed_sec += max(0.0, float(extra_elapsed_sec))
+        summary = self._build_summary(
+            output_dir=output_dir,
+            started=self._finished_started_at or datetime.now(),
+            file_records=file_records,
+            stopped=self._finished_stopped,
+            fatal_error=self._finished_fatal_error,
+            elapsed_sec=self._finished_elapsed_sec,
+            stop_reason=self._finished_stop_reason,
+        )
+        manifest_path, report_path = write_pdf_manifest_and_report(summary)
+        self._log("INFO", f"已更新 PDF 翻译清单：{manifest_path.name}")
+        self._log("INFO", f"已更新 PDF 翻译报告：{report_path.name}")
+        self._result_patch = {
+            "output_dir": str(output_dir),
+            "report_path": str(report_path),
+            "manifest_path": str(manifest_path),
+            "file_results": [_file_record_to_result(record) for record in file_records],
+            "elapsed_sec": summary.elapsed_sec,
+            "api_call_count": self._api_call_count,
+            "issues": _summary_issues(file_records),
+            "kpi": _done_kpi(summary),
+        }
 
     def _queue_page_action(
         self,
@@ -1876,6 +2198,16 @@ class PdfImageTranslationRunner:
             self._log("INFO", f"已写入 PDF 翻译清单：{manifest_path.name}")
             self._log("INFO", f"已写入 PDF 翻译报告：{report_path.name}")
             self._queue.put(ProgressMsg(4, 4, "写入报告", 1, 1))
+            # From here on the run thread is finished but the page records, the
+            # archive folders and the output directory all stay reachable, which
+            # is what lets a finished task still regenerate a single page.
+            self._remember_finished_run(
+                output_dir=output_dir,
+                started=started,
+                summary=summary,
+                stopped=stopped,
+                fatal_error=fatal_error,
+            )
 
             # 中止和失败也要把逐文件结果和指标交出去（Excel / Word 那两路一直是这么做的）：
             # 停在半路的任务恰恰是最需要看「哪几个文件已经写出来了、有多少页是占位」的时候，
@@ -3622,7 +3954,13 @@ class PdfImageTranslationRunner:
         file_records: list[PdfFileRecord],
         stopped: bool,
         fatal_error: str,
+        elapsed_sec: float | None = None,
+        stop_reason: str | None = None,
     ) -> PdfTaskSummary:
+        # ``elapsed_sec`` / ``stop_reason`` are overridden only when a finished
+        # task regenerates one page: the gap between the run ending and that
+        # click is idle time, and the original stop reason still describes how
+        # the run itself ended.
         completed = datetime.now()
         status = determine_pdf_task_status(
             stopped=stopped,
@@ -3665,7 +4003,11 @@ class PdfImageTranslationRunner:
             ),
             started_at=started.isoformat(timespec="seconds"),
             completed_at=completed.isoformat(timespec="seconds"),
-            elapsed_sec=(completed - started).total_seconds(),
+            elapsed_sec=(
+                (completed - started).total_seconds()
+                if elapsed_sec is None
+                else float(elapsed_sec)
+            ),
             file_count=len(file_records),
             total_page_count=total_pages,
             generated_pdf_count=generated_pdfs,
@@ -3697,7 +4039,11 @@ class PdfImageTranslationRunner:
                 else ""
             ),
             stopped=stopped,
-            stop_reason=self._stop_reason if stopped else "",
+            stop_reason=(
+                (self._stop_reason if stopped else "")
+                if stop_reason is None
+                else str(stop_reason)
+            ),
             files=file_records,
         )
 

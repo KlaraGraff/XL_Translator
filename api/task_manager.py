@@ -145,6 +145,10 @@ class ApiTask:
     created_at: float
     model_snapshot: dict[str, dict[str, object]] = field(default_factory=dict)
     role_groups: dict[str, object] = field(default_factory=dict)
+    # Kept so a finished PDF task can reserve the same shared API groups again
+    # for a single-page rerun.  The lease taken at start time is released the
+    # moment the task ends, and its schedulers stop working with it.
+    group_capacities: dict[object, int] = field(default_factory=dict)
     task_snapshot: dict[str, object] = field(default_factory=dict)
     state: str = "running"
     result: dict[str, Any] | None = None
@@ -158,6 +162,11 @@ class ApiTask:
     last_persisted_at: float = 0.0
     last_persisted_state: str = ""
     history_dirty: bool = False
+    # A finished PDF task regenerating one page.  Deliberately *not* a task
+    # state: every active-task query filters on ``terminal``, and flipping this
+    # task back to running would put it into the task center's concurrency
+    # accounting, the busy-connection set and the risk payload all over again.
+    rerun_active: bool = False
 
 
 class RetiredRunner:
@@ -612,6 +621,7 @@ class TranslationTaskManager:
                 created_at=time.time(),
                 model_snapshot=prepared.model_snapshot,
                 role_groups=prepared.role_groups,
+                group_capacities=dict(prepared.group_capacities),
                 task_snapshot=prepared.task_snapshot,
             )
             with self._lock:
@@ -843,6 +853,13 @@ class TranslationTaskManager:
                     "任务仍在运行，请先安全停止，再删除这条记录。",
                     reason="task_active",
                 )
+            if live is not None and live.rerun_active:
+                # Terminal, but still writing: the rerun rebuilds the output
+                # file and the report under this record.
+                raise TaskConflictError(
+                    "这个任务正在重新生成某一页，等它跑完再删除这条记录。",
+                    reason="page_rerun_active",
+                )
         # 其它任务可能仍在运行并写历史，先把内存里挂着的脏记录落盘，
         # 免得下面的整表重写把它们回退成更旧的版本。
         self.flush_history()
@@ -967,12 +984,25 @@ class TranslationTaskManager:
         with task.condition:
             state = task.state
             terminal = task.terminal
+            rerun_active = task.rerun_active
+        rerun = dict(snapshot.get("rerun") or {})
+        # The panel polls this endpoint while a rerun runs, so the two flags
+        # have to agree even in the window between the runner's thread finishing
+        # and the pump clearing the task flag.
+        rerun["active"] = bool(rerun.get("active")) or rerun_active
         return {
             "task_id": task.task_id,
             "state": state,
             "terminal": terminal,
             "actionable": state == "paused" and not terminal,
             "review_enabled": bool(snapshot.get("review_enabled")),
+            # 终态任务的单页重生成走另一条路（不排队、立刻跑），可用性也另算：
+            # actionable 说的是「暂停中可以排队页操作」，这一条说的是「已结束，
+            # 但还能把某一页重跑一遍」。
+            "rerun_actionable": bool(
+                terminal and snapshot.get("can_rerun") and not rerun["active"]
+            ),
+            "rerun": _json_safe(rerun),
             "files": _json_safe(snapshot.get("files") or []),
         }
 
@@ -1041,6 +1071,146 @@ class TranslationTaskManager:
                 },
             )
         return {"task_id": task.task_id, "state": "paused", "accepted": accepted}
+
+    def rerun_pdf_page(
+        self,
+        task_id: str,
+        *,
+        relative_path: str,
+        page_number: int,
+    ) -> dict[str, Any]:
+        """Regenerate one page of a task that already ended, output file included.
+
+        The task stays terminal throughout.  A rerun is not the task running
+        again — it is a bounded piece of extra work on an archived task, and
+        every "is anything active?" query in this file keys off ``terminal``.
+        """
+        task = self._get_task(task_id)
+        runner = self._pdf_review_runner(task)
+        if not callable(getattr(runner, "rerun_page", None)):
+            raise TaskInputError("这个任务的逐页记录已经释放，不能再重新生成单页。")
+        with task.condition:
+            if not task.terminal:
+                raise TaskConflictError(
+                    "任务还没结束；运行中的任务请先暂停再做单页操作。",
+                    reason="task_not_terminal",
+                )
+            if task.rerun_active:
+                raise TaskConflictError(
+                    "这个任务已经有一页在重新生成，等它跑完再操作下一页。",
+                    reason="page_rerun_active",
+                )
+            task.rerun_active = True
+        lease: ScheduledTaskLease | None = None
+        try:
+            # A rerun spends real API budget, so it reserves the shared groups
+            # exactly like a task does.  That also gives the right answer for
+            # free when a real PDF task is running: the same-type slot is taken.
+            attempted = self._registry.reserve_task(
+                owner_key=f"{task.task_id}:page-rerun",
+                owner_label=_LABEL_BY_SURFACE["pdf"],
+                task_type="pdf",
+                group_capacities=task.group_capacities,
+            )
+            if attempted.lease is None:
+                reason = attempted.reason or "conflict"
+                messages = {
+                    "surface_busy": "有 PDF/图片任务正在进行，等它结束后再重新生成这一页。",
+                }
+                raise TaskConflictError(
+                    messages.get(reason, "任务资源预约失败。"),
+                    reason=reason,
+                )
+            lease = attempted.lease
+            api_schedulers = {
+                role: lease.scheduler_for(group)
+                for role, group in task.role_groups.items()
+            }
+            try:
+                accepted = runner.rerun_page(
+                    relative_path=relative_path,
+                    page_number=page_number,
+                    api_scheduler=api_schedulers.get("image"),
+                    review_api_scheduler=api_schedulers.get("pdf_review"),
+                )
+            except PdfPageActionError as exc:
+                raise TaskInputError(str(exc)) from exc
+        except Exception:
+            if lease is not None:
+                lease.release()
+            with task.condition:
+                task.rerun_active = False
+            raise
+        self._append_event(
+            task,
+            "pdf_page_rerun",
+            {
+                "phase": "started",
+                "page_number": int(accepted.get("page_number") or page_number),
+                "name": str(accepted.get("name") or ""),
+            },
+        )
+        threading.Thread(
+            target=self._pump_page_rerun,
+            args=(task, runner, lease),
+            daemon=True,
+            name=f"api-rerun-{task.task_id[:8]}",
+        ).start()
+        return {"task_id": task.task_id, "state": task.state, "accepted": accepted}
+
+    def _pump_page_rerun(
+        self,
+        task: ApiTask,
+        runner: Any,
+        lease: ScheduledTaskLease,
+    ) -> None:
+        """Drain a rerun's messages without ever touching the terminal record.
+
+        ``_pump_runner`` cannot be reused: it exits the moment it sees
+        ``terminal``, and its finish path would try to give an already-finished
+        task a second terminal state.
+        """
+        error = ""
+        try:
+            while True:
+                message = runner.get_message(timeout=0.1)
+                if message is not None:
+                    self._handle_message(task, message)
+                    continue
+                if not runner.page_rerun_state().get("active"):
+                    # Drain what settled between the last read and this check.
+                    while True:
+                        message = runner.get_message(timeout=0.05)
+                        if message is None:
+                            break
+                        self._handle_message(task, message)
+                    break
+                if self._shutdown.is_set():
+                    break
+            error = str(runner.page_rerun_state().get("error") or "")
+        except Exception as exc:  # noqa: BLE001 - a broken pump must not wedge the flag.
+            error = str(exc) or exc.__class__.__name__
+        finally:
+            lease.release()
+            patch = {}
+            if not error:
+                try:
+                    patch = dict(runner.result_patch() or {})
+                except Exception:  # noqa: BLE001 - a stale result is not worth failing on.
+                    patch = {}
+            with task.condition:
+                task.rerun_active = False
+                if patch and isinstance(task.result, dict):
+                    # The task center reads its file table and metrics from the
+                    # stored result, not from the report on disk; leaving it
+                    # alone would show the pre-rerun counts forever.
+                    task.result.update(_sanitize_task_data(patch))
+            self._append_event(
+                task,
+                "pdf_page_rerun",
+                {"phase": "failed" if error else "finished", "message": error},
+            )
+            self._retire_terminal_task(task)
 
     @staticmethod
     def _pdf_review_runner(task: ApiTask) -> Any:
@@ -1528,7 +1698,14 @@ class TranslationTaskManager:
             now = time.time()
             task.updated_at = now
             task.next_event_id += 1
-            if task.terminal:
+            if task.terminal and task.rerun_active:
+                # A single-page rerun emits hundreds of log lines on a task that
+                # is already terminal.  Without this the branch below would do a
+                # full sanitize + read + rewrite of the history file for each
+                # one; the pump clears the flag and appends its closing event,
+                # which lands on the branch below and writes once.
+                task.history_dirty = True
+            elif task.terminal:
                 # Persist before anyone can observe the event (the condition is
                 # an RLock, so the nested acquire in _persist_task is fine).
                 # Waking readers first let an SSE consumer see the terminal
