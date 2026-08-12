@@ -699,17 +699,11 @@ class TaskRunner:
                 self._log("INFO", f"[阶段 1] 提取词汇：{file_item.name}（{fi+1}/{len(self._files)}）")
                 t0 = datetime.now()
                 try:
-                    if self._untranslated_only:
+                    if self._untranslated_only and not auto_source_lang:
                         coverage_plan = build_excel_coverage_plan(
                             process_path,
                             target_lang=target_lang,
-                            # 语言预检要等提取完才跑，这里 source_lang 还可能是 auto。
-                            # 补译判定需要一个具体的源语言，先按默认的来。
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
+                            source_lang=source_lang,
                             formula_display_value_backfill=(
                                 excel_output.formula_display_value_backfill
                             ),
@@ -717,25 +711,7 @@ class TaskRunner:
                         coverage_plans.append(coverage_plan)
                         texts = coverage_plan.source_texts
                         sheet_count = coverage_plan.sheet_count
-                        summary = coverage_plan.summary
-                        self._log(
-                            "INFO",
-                            (
-                                "  → 补译识别："
-                                f"待补 {summary.get('source_only', 0)}，"
-                                f"已覆盖 {summary.get('covered', 0)}，"
-                                f"不确定跳过 {summary.get('ambiguous', 0)}"
-                            ),
-                        )
-                        # 补译模式下「一条都不用补」是合法结果，但输出文件会和原文
-                        # 一模一样。不明说的话，看上去就像翻译器什么都没干。
-                        if not summary.get("source_only", 0):
-                            self._log(
-                                "WARN",
-                                f"  → {file_item.name}：没有找到需要补译的内容，"
-                                "输出文件会和原文一致。如果这份文件其实还没翻译过，"
-                                "请关掉「仅补译未翻译内容」再跑一次。",
-                            )
+                        self._log_excel_coverage_plan(file_item.name, coverage_plan)
                     else:
                         texts, sheet_count = self._collect_texts(
                             process_path,
@@ -781,7 +757,16 @@ class TaskRunner:
                 raw_text_count += len(text_set)
                 collect_elapsed = (datetime.now() - t0).total_seconds()
 
-                self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
+                if self._untranslated_only and auto_source_lang:
+                    # 这一遍取的是全量候选，只拿来给语言预检当样本。真正要补译的
+                    # 清单要等识别出源语言之后才算得出来（见下面的补译识别重建）。
+                    self._log(
+                        "INFO",
+                        f"  → {file_item.name}：{len(text_set)} 处候选文本，"
+                        f"先用于识别源语言（{collect_elapsed:.3f}s）",
+                    )
+                else:
+                    self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
                 self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
 
                 global_unique_texts.update(text_set)
@@ -863,6 +848,20 @@ class TaskRunner:
                         f"TM 语言对={','.join(tm_language_pairs) or '无'}"
                     ),
                 )
+                if self._untranslated_only:
+                    raw_text_count = self._rebuild_coverage_plans_after_preflight(
+                        process_paths=process_paths,
+                        coverage_plans=coverage_plans,
+                        file_texts=file_texts,
+                        file_results=file_results,
+                        file_conversion_modes=file_conversion_modes,
+                        global_unique_texts=global_unique_texts,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                        formula_display_value_backfill=(
+                            excel_output.formula_display_value_backfill
+                        ),
+                    )
             else:
                 tm_language_pairs = [lang_pair] if lang_pair else []
 
@@ -1674,6 +1673,100 @@ class TaskRunner:
             engine_name,
             sync_reverse=False,
         )
+
+    def _log_excel_coverage_plan(self, file_name: str, plan) -> None:
+        """Report one file's untranslated-only plan, including the empty case."""
+        summary = plan.summary
+        self._log(
+            "INFO",
+            (
+                "  → 补译识别："
+                f"待补 {summary.get('source_only', 0)}，"
+                f"已覆盖 {summary.get('covered', 0)}，"
+                f"不确定跳过 {summary.get('ambiguous', 0)}"
+            ),
+        )
+        # 「一条都不用补」是合法结果，但那样输出文件会和原文一模一样。不明说的话，
+        # 用户看到的就是一份没翻译的文件，看不出是「本来就不用翻」还是程序没干活。
+        if not summary.get("source_only", 0):
+            self._log(
+                "WARN",
+                f"  → {file_name}：没有找到需要补译的内容，输出文件会和原文一致。"
+                "如果这份文件其实还没翻译过，请关掉「仅补译未翻译内容」再跑一次。",
+            )
+
+    def _rebuild_coverage_plans_after_preflight(
+        self,
+        *,
+        process_paths: list[Path],
+        coverage_plans: list,
+        file_texts: list,
+        file_results: list[dict],
+        file_conversion_modes: dict[str, str],
+        global_unique_texts: set[str],
+        target_lang: str,
+        source_lang: str,
+        formula_display_value_backfill: bool,
+    ) -> int:
+        """Build the untranslated-only plans now that auto-detect settled the language.
+
+        补译判定得先知道源语言是哪一门，才分得清「原文」和「已经翻好的译文」；而
+        自动识别要等词条提出来、发给模型问过一轮才有答案。所以自动识别 + 补译时，
+        阶段 1 先按普通方式取一遍全量候选当预检样本，真正的待补清单留到这里重算。
+        返回重算后的候选文本总数（Excel 进程策略要用）。
+        """
+        global_unique_texts.clear()
+        raw_text_count = 0
+        self._log("INFO", f"[补译模式] 源语言已识别为 {source_lang}，开始按它重算待补清单。")
+        for fi, file_item in enumerate(self._files):
+            if fi >= len(process_paths) or fi >= len(coverage_plans):
+                continue
+            if any(
+                r.get("source_path") == str(file_item.path) and not r.get("success")
+                for r in file_results
+            ):
+                continue
+            try:
+                coverage_plan = build_excel_coverage_plan(
+                    process_paths[fi],
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    formula_display_value_backfill=formula_display_value_backfill,
+                )
+            except Exception as e:  # noqa: BLE001 - 单个文件读失败不该带走整批
+                logger.debug(f"补译识别失败原始错误 {file_item.name}：{e!r}")
+                reason = user_facing_reason(
+                    e,
+                    fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
+                )
+                self._log("ERROR", f"补译识别失败 {file_item.name}：{reason}")
+                self._task_logger.file_error(file_item.name, f"补译识别失败: {reason}")
+                file_results.append({
+                    "name": file_item.name,
+                    "source_path": str(file_item.path),
+                    "source_relative_path": self._relative_source_path(file_item.path),
+                    "format": file_item.format,
+                    "conversion_mode": file_conversion_modes.get(
+                        str(file_item.path), "native_xlsx"
+                    ),
+                    "status": "failed",
+                    "success": False,
+                    "error": f"补译识别失败: {reason}",
+                })
+                file_texts[fi] = set()
+                continue
+            coverage_plans[fi] = coverage_plan
+            text_set = set(coverage_plan.source_texts)
+            file_texts[fi] = text_set
+            raw_text_count += len(text_set)
+            global_unique_texts.update(text_set)
+            self._log("INFO", f"[补译识别] {file_item.name}")
+            self._log_excel_coverage_plan(file_item.name, coverage_plan)
+        self._log(
+            "OK",
+            f"[补译识别完成] 全部文件合计 {len(global_unique_texts)} 处待补译文本。",
+        )
+        return raw_text_count
 
     @staticmethod
     def _decide_excel_policy(
