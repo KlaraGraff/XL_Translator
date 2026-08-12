@@ -15,7 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, apiErrorReason, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
 import {
   createBanner,
   createButton,
@@ -279,8 +279,12 @@ interface SurfaceState {
   hasEverCompleted: boolean;
   showBanner: boolean;
   bannerInfo: BannerInfo | null;
-  /** 上一次任务的逐文件结果，键是 file_results[].source_path。任务结束后清单不再清空，
-   *  这份结果用来在「状态」列上标出哪几个文件真的产出了、哪几个没有。 */
+  /** 上一次任务的逐文件结果，键是文件名（扫描项的 `name` 与 file_results[].name 同源，
+   *  都来自 FileItem.name）。任务结束后清单不再清空，这份结果用来在「状态」列上标出
+   *  哪几个文件真的产出了、哪几个没有。
+   *
+   *  绝对不能用 source_path 做键：它在 api/task_manager.py 的隐私过滤里被置空，
+   *  经过 API 回来永远是 null，映射会是空的（9.2.6 就是这么错的）。 */
   fileOutcomes: Map<string, FileOutcome>;
   /** Excel 完成汇总里那句「哪些内容没被翻译」。finishTask 会清空 st.files，
    *  所以必须在清空前把要说的数据快照下来，跟着完成横幅一起展示。 */
@@ -1405,7 +1409,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
   }
 
   const statusCell = el("td");
-  const outcome = st.fileOutcomes.get(file.path);
+  const outcome = st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
     statusCell.append(createChip({ label: "已排除", tone: "mute" }));
   } else if (outcome) {
@@ -1725,10 +1729,34 @@ function reviewResultChip(page: PdfPage): HTMLElement {
   if (page.status === "failed" || page.placeholder) {
     return createChip({ label: page.user_skipped ? "已跳过占位" : "生成失败", tone: "dgr" });
   }
+  // 译文页还没出来的一律不给审核结论。后端的中间态有三个：pending 还没轮到、
+  // rendered 页图已渲染正在等模型、placeholder_pending 等着补占位页。9.2.6 只认识
+  // pending，另外两个落到了下面的 review_status 分支上，于是页面还没生成就写「待复核」。
   if (page.status === "pending") return createChip({ label: "待处理", tone: "mute" });
+  if (page.status === "rendered") return createChip({ label: "生成中", tone: "mute" });
+  if (page.status === "placeholder_pending") return createChip({ label: "待补占位", tone: "mute" });
+  // 审核结论要排在质检疑点前面：同一页可能既被质检挂了疑点又被审核判不通过，那时候
+  // 「审核未通过」信息量更大。
+  // 走到这里的页一定有译文（没输出的页在上面几个分支就被拦掉了），所以不能用「生成失败」
+  // 那种深红：小结把这一页算进「已采用但建议复核」，chip 不该看起来像「这一页没有译文」。
+  if (page.review_status === "failed") {
+    return createChip({ label: "审核未通过 · 已采用", tone: "warn" });
+  }
+  if (page.review_status === "retrying") return createChip({ label: "重试中", tone: "mute" });
+  // 本地质检的疑点必须压在 passed 前面。质检跑在送审之前，审核判「通过」不会清掉它，
+  // 所以一页可以同时是 quality_flagged 和 review_status="passed"。9.2.6 只看审核结论，
+  // 于是小结说「N 页译文有疑点」，逐页表格里却每一页都是绿色的「通过」——用户找不到
+  // 是哪一页。这两个数就是小结里 suspect_adopted 的来源，必须在这里露出来。
+  if (page.quality_flagged || page.emergency_ratio_normalized) {
+    return createChip({ label: "建议复核", tone: "warn" });
+  }
   if (page.review_status === "passed") return createChip({ label: "通过", tone: "ok" });
-  if (page.review_status) return createChip({ label: "待复核", tone: "warn" });
-  return createChip({ label: "未审核", tone: "mute" });
+  // "skipped" 是 PdfPageRecord.review_status 的默认值，意思是这一页没经过审核模型
+  // （关了逐页审核，或者还没轮到审核）。它是个真值字符串，不能当成「有审核结论」。
+  if (!page.review_status || page.review_status === "skipped") {
+    return createChip({ label: "未审核", tone: "mute" });
+  }
+  return createChip({ label: "待复核", tone: "warn" });
 }
 
 function reviewNote(page: PdfPage): string {
@@ -1738,7 +1766,23 @@ function reviewNote(page: PdfPage): string {
   if (page.review_summary) return redactedText(page.review_summary);
   if (page.status === "failed" || page.placeholder) return redactedText(page.error, "页面生成失败。");
   if (page.status === "pending") return "尚未处理。";
-  return "版式一致，文本完整";
+  if (page.status === "rendered") return "页图已渲染，正在等模型返回这一页的译文。";
+  if (page.status === "placeholder_pending") return "这一页没能生成，正在补一张占位页。";
+  // 跟 reviewResultChip 同理：质检疑点要压在「通过」前面，否则这一页会摆着一句
+  // 「版式一致，文本完整」，而小结正把它算进「有疑点仍采用」。
+  if (page.quality_flagged || page.emergency_ratio_normalized) {
+    const detail = redactedText(page.quality_message);
+    if (detail) return `译文已采用，但自动检查有疑点：${detail}`;
+    if (page.emergency_ratio_normalized) return "译文偏长，已强行缩排放进原位置，建议看一眼版面。";
+    return "译文已采用，但自动检查发现疑点，建议看一眼这一页。";
+  }
+  // 「版式一致，文本完整」是一句审核结论，只有审核模型真的判过并通过了才能写。9.2.6 把它
+  // 当成兜底文案，于是页面还没生成、审核还关着的时候，每一页都摆着这句凭空的好消息。
+  if (page.review_status === "passed") return "版式一致，文本完整";
+  if (!page.review_status || page.review_status === "skipped") {
+    return "本次没有让审核模型看这一页。";
+  }
+  return "";
 }
 
 function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage): HTMLTableRowElement {
@@ -1932,18 +1976,33 @@ function fileResultFor(result: JsonObject, path: string): JsonObject | null {
 }
 
 /** file_results 上某个数值字段的合计。字段不存在的条目按 0 计——不猜别的字段名。 */
-function fileResultTotal(result: JsonObject, key: string): number {
-  const entries = result.file_results;
-  if (!Array.isArray(entries)) return 0;
-  return entries.reduce((sum: number, entry) => sum + num(record(entry)[key]), 0);
+/** 终态结果里的逐文件行。正常完成走 `file_results`，中止和失败走 `files`——这是终态
+ *  契约的键名（core/task_runner.py 的 StoppedMsg / ErrorMsg 都只给 `files`）。只认前者
+ *  的话，一个中途停下来的任务在清单和小结里都看不出哪几个文件已经写出来、有几页是占位。 */
+function terminalFileResults(result: JsonObject): JsonObject[] {
+  for (const key of ["file_results", "files"]) {
+    const entries = result[key];
+    if (Array.isArray(entries) && entries.length) return entries.map(record);
+  }
+  return [];
 }
 
-/** 所有文件实际被「保护封面和目录」跳过的段落合计；没找到正文起点的文件本来就是 0。 */
+/** 逐文件行上某个数值字段的合计，只算真的写出了文档的文件。页级小结说的是「打开输出能看到什么」：一个整份都失败的
+ *  文件根本没有输出 PDF，它那几页占位图只作为失败素材留在报告里。把它们也算进「N 页已放失败
+ *  占位页」，用户按这个数去输出目录里数，永远差几页——这一句本来就是为了让数字对得上才改的。
+ *  没生成的文件另有「N 个文件没能生成」那一句交代，逐文件那一行还写着失败原因。 */
+function producedFileResultTotal(result: JsonObject, key: string): number {
+  return terminalFileResults(result)
+    .filter((entry) => fileResultProduced(entry))
+    .reduce((sum: number, entry) => sum + num(entry[key]), 0);
+}
+
+/** 所有文件实际被「保护封面和目录」跳过的段落合计；没找到正文起点的文件本来就是 0。
+ *  同样只算写出了文档的文件——没生成的文件里「保护了几段」没有任何意义。 */
 function frontMatterTotal(result: JsonObject): number {
-  const entries = result.file_results;
-  if (!Array.isArray(entries)) return 0;
+  const entries = terminalFileResults(result).filter((entry) => fileResultProduced(entry));
   return entries.reduce((sum: number, entry) => {
-    const fm = record(record(entry).front_matter);
+    const fm = record(entry.front_matter);
     return fm.requested && fm.found ? sum + num(fm.protected_paragraph_count) : sum;
   }, 0);
 }
@@ -2021,10 +2080,13 @@ function buildLogCard(local: LocalTask): HTMLElement {
   const result = record(local.task.result);
   for (const [path, stage] of local.fileStage) {
     const row = el("div", "filerow");
+    // done 的含义只是「阶段名里已经不提这个文件了」（见 markActiveFile），不是「产物写出来
+    // 了」：第 1 阶段刚提取完文本的文件也是 done。所以这一格不能写「已生成」——CONTEXT.md
+    // 里「已生成」的定义是输出文档已经写成功，而那会儿输出目录里一个文件都没有。
     const meta: Record<string, { label: string; tone: ChipTone }> = {
       queued: { label: "排队中", tone: "mute" },
       active: { label: "进行中", tone: "tint" },
-      done: { label: "已生成", tone: "ok" },
+      done: { label: "已进入下一步", tone: "ok" },
       error: { label: "未完成", tone: "warn" },
     };
     row.append(createChip(meta[stage]));
@@ -2409,11 +2471,15 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
  *  后端的串行化挡下来返回 409，用户看到的是一条看不懂的报错——所以在这里就拦住。 */
 const submittingSurfaces = new Set<Surface>();
 
-async function preflightAndSubmit(surface: Surface, st: SurfaceState): Promise<void> {
+async function preflightAndSubmit(
+  surface: Surface,
+  st: SurfaceState,
+  overrides: JsonObject = {},
+): Promise<void> {
   if (submittingSurfaces.has(surface)) return;
   submittingSurfaces.add(surface);
   rerender(surface);
-  const payload = buildPayload(surface, st);
+  const payload = { ...buildPayload(surface, st), ...overrides };
   try {
     const c = await getClient();
     const preflight = await c.preflightTask(payload);
@@ -2425,11 +2491,47 @@ async function preflightAndSubmit(surface: Surface, st: SurfaceState): Promise<v
     }
     await sendTaskStart(surface, st, payload);
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "任务准备失败。"), error: true });
+    showStartBlockedModal(surface, st, payload, error);
   } finally {
     submittingSurfaces.delete(surface);
     rerender(surface);
   }
+}
+
+/** 前置校验把任务拦下来时给一个弹窗，不给两秒就消失的提示：任务根本没开始这件事得留在
+ *  屏幕上。更要紧的是有些拦截本身是有出路的——审核模型上次测试失败那条就写着「或明确
+ *  确认继续」，而 9.2.6 只在提示文字里说了这句话，界面上没有任何按钮能确认，看起来就
+ *  像开始按钮坏了。 */
+function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: JsonObject, error: unknown): void {
+  if (apiErrorReason(error) === "pdf_review_model_unavailable") {
+    openModal({
+      tone: "warn",
+      icon: "warn",
+      title: "审核模型上次测试没通过",
+      body: [
+        "逐页审核是开着的，但这台机器上最近一次测试 PDF 译文审核模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。",
+        "稳妥的做法是先去「设置 → 模型 → PDF 译文审核」重测一次，或者把逐页审核关掉再开始。",
+        "也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。",
+      ],
+      actions: [
+        { label: "取消" },
+        { label: "去设置里重测", onClick: () => navigate("settings", { page: "models" }) },
+        {
+          label: "不管测试结果，开始",
+          variant: "primary",
+          onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
+        },
+      ],
+    });
+    return;
+  }
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    title: "这次任务没能开始",
+    body: [redactedText((error as Error)?.message, "任务准备失败，没有更多信息。")],
+    actions: [{ label: "知道了", variant: "primary" }],
+  });
 }
 
 /** 简化版并行风险确认：main.ts 原版还会展示共享连接明细表、活动任务列表、候选任务快照——
@@ -2481,7 +2583,9 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     watchTask(surface);
     if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "启动任务失败。"), error: true });
+    // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
+    // 「有出路的拦截」也会从这里出来，走同一个弹窗。
+    showStartBlockedModal(surface, st, payload, error);
   }
 }
 
@@ -2706,24 +2810,48 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 都有）、`review.total_count`（Excel/Word 才有；PDF 的 review 契约字段留空）、
   // `kpi.auto_recovered_text_count`（仅 Word 的严格重试/语义复核有这个概念）。缺失的
   // 字段一律按 0 处理，不用占位数字冒充「全部通过」。
-  const fileResults = Array.isArray(result.file_results) ? result.file_results : [];
+  const fileResults = terminalFileResults(result);
   // 「产出了」不等于 success===true：需复核的文件同样写出了双语文件（后端给的
   // status 是 needs_review、output 是真实路径），把它算成失败会让横幅报出比输出
   // 目录里少的数字。反过来，失败的条目 output 是空字符串——这才是判断依据。
   st.fileOutcomes = new Map();
   let produced = 0;
   let failed = 0;
+  // 同名（不同后缀）的文件会让「哪一行是哪个结果」无法判断，例如 report.xls 和
+  // report.xlsx 的 name 都是 report。这种情况下宁可让那一行留在「未开始」，也不能
+  // 在状态列上蒙一个可能张冠李戴的结论。
+  const ambiguousNames = new Set<string>();
+  const seenNames = new Set<string>();
+  for (const file of st.files) {
+    const key = fileOutcomeKey(fileLabel(file));
+    if (!key) continue;
+    if (seenNames.has(key)) ambiguousNames.add(key);
+    seenNames.add(key);
+  }
   for (const entry of fileResults) {
     const item = record(entry);
     const ok = fileResultProduced(item);
     if (ok) produced += 1;
     else failed += 1;
-    const sourcePath = text(item.source_path);
-    if (sourcePath) {
-      st.fileOutcomes.set(sourcePath, {
+    const key = fileOutcomeKey(text(item.name));
+    if (key && !ambiguousNames.has(key)) {
+      const pending = fileResultPendingReview(item);
+      // 整份未翻译的文件不能只写「已生成」：文档确实写出来了，可里面一个字都没翻。
+      // 这一行的说明沿用后端给的原话（`fully_skipped_oversize_message`）。
+      const untranslated = ok && fileResultUntranslated(item);
+      const label = !ok
+        ? "未生成"
+        : untranslated
+          ? "已生成 · 整份未翻译"
+          : pending > 0
+            ? `已生成 · ${pending} 处需复核`
+            : "已生成";
+      st.fileOutcomes.set(key, {
         produced: ok,
-        label: ok ? (item.status === "needs_review" ? "已生成 · 需复核" : "已生成") : "未生成",
-        detail: ok ? "" : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
+        label,
+        detail: ok && !untranslated
+          ? ""
+          : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
       });
     }
   }
@@ -2736,12 +2864,40 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const clauses: string[] = [];
   // 「按设定没翻的内容」要跟在生成结果后面一起说。横幅只给总数，逐文件的明细在运行卡片
   // 的文件列表上（buildFileSkipChips），完整边界在任务日志和报告里。
-  const skippedOversizePages = fileResultTotal(result, "skipped_oversize_page_count");
+  const skippedOversizePages = producedFileResultTotal(result, "skipped_oversize_page_count");
   const protectedParagraphs = frontMatterTotal(result);
+  // PDF 的问题是按页记的，而且那一路不填 review.total_count（那是 Excel / Word 的字段）。
+  // 只看 review 的话，一份「4 页全是占位页」的任务小结照样会写「全部通过」，而下面的
+  // 清单同时写着「已生成 · 4 处需复核」——同一屏上两句话互相打脸。
+  // 相加的两个数必须互不重叠。review_failed_page_count 和 quality_flagged_page_count 都会
+  // 和 placeholder_page_count 撞在同一页上（审核没通过的页有一半是直接退回占位页的，质检
+  // 标记也留在退回前的最后一次尝试上），三个一相加就会把一页坏页说成两三页。后端为此单独
+  // 给了 suspect_adopted_page_count——「有疑点但仍然采用」的页，与占位页严格互斥。
+  const placeholderPages = producedFileResultTotal(result, "placeholder_page_count");
+  const suspectPages = producedFileResultTotal(result, "suspect_adopted_page_count");
+  const pageProblems = placeholderPages + suspectPages;
+  // 同样只算真的写出了文档的文件：横幅那句是「其中 N 个文件整份都是 A3+」，「其中」指的是
+  // 已生成的那几个。一份全是 A3+ 却在合成输出时失败的文件既没生成、又满足「整份未翻译」，
+  // 不过滤就会出现「1 个文件没能生成 · 其中 1 个文件整份都是 A3+」——没有「其中」可言。
+  const untranslatedFiles = terminalFileResults(result).filter(
+    (entry) => fileResultProduced(entry) && fileResultUntranslated(entry),
+  ).length;
   // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
   // 「有东西没拿到」，它决定用户下一步要不要重跑。
   if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
+  // 占位页不是原页：那是程序自己画的一张失败占位页（白底红框、写着这一页没能生成译图），
+  // 源页内容一个像素都不在上面。说成「已保留原页」会让用户去输出 PDF 里找原文。
+  // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
+  if (placeholderPages > 0) clauses.push(`${placeholderPages} 页没能生成译文，已放失败占位页`);
+  if (suspectPages > 0) clauses.push(`${suspectPages} 页译文有疑点，已采用但建议复核`);
   if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
+  // 整份都被跳过的文件必须单独点名：它的输出文档跟源文件逐字节一样，一个字都没翻。
+  // 后端为此把这种文件的 success 判成 false（见 _file_record_to_result），也在
+  // _record_needs_review 里把它算作需复核；界面只说「跳过 N 页」的话，用户会以为
+  // 那是一份翻好的文件里少翻了几页，而实际上整份都没动。
+  if (untranslatedFiles > 0) {
+    clauses.push(`其中 ${untranslatedFiles} 个文件整份都是 A3+，一个字都没翻`);
+  }
   if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
   if (review > 0) clauses.push(`${review} 处需复核`);
   // 中途换过连接就明说：这一半译文出自另一家服务商，用户回头比质量、查账单都要知道。
@@ -2753,10 +2909,21 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   }
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
   // 「全部通过」是一句承诺，只有真的一个问题都没有才能说。有文件没生成时一个字都不提，
-  // 有需复核/已自动处理时说「其余」。
-  if (failed === 0 && generated > 0) clauses.push(review > 0 || autoFixed > 0 ? "其余全部通过" : "全部通过");
+  // 有需复核/占位页/已自动处理时说「其余」。
+  // 「其余」也得真的有其余：4 页 PDF 四页全是占位页时，前面几句已经把每一页都点了名，
+  // 再补一句「其余全部通过」是在给一个不存在的剩余部分背书。
+  // 分母跟分子取同一批文件（只算写出了文档的），否则一个整份失败的文件会把总页数抬高，
+  // 「问题页是否已覆盖全部页」就永远判不成立。
+  // 跳过的 A3+ 页也算「这一页没翻」。少了它，一份 4 页里 2 页跳过、2 页退回占位页的文件
+  // （每一页都没翻）仍会落到「其余全部通过」——正是上面这句注释要防的那件事。
+  const totalPages = producedFileResultTotal(result, "page_count");
+  const untranslatedPages = pageProblems + skippedOversizePages;
+  const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0) {
+    clauses.push(review > 0 || autoFixed > 0 || pageProblems > 0 ? "其余全部通过" : "全部通过");
+  }
   if (generated > 0) clauses.push(`输出至 ${outputPath}`);
-  const tone = resultTone(task.state, generated, failed, review, autoFixed);
+  const tone = resultTone(task.state, generated, failed, review + pageProblems + untranslatedFiles, autoFixed);
   // 完成汇总要用扫描期的图片/文本框计数。任务失败时不出这张卡：那种情况下
   // 「哪些没翻」根本说不准，横幅已经说了任务未完成。
   st.excelDoneNotice = surface === "excel" && tone !== "fail" ? buildExcelDoneNotice(st, result) : null;
@@ -2774,7 +2941,13 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       hasOutput: generated > 0,
     };
   } else {
-    const suffix = failed > 0 ? "有文件未生成" : review > 0 ? "需复核" : autoFixed > 0 ? "有自动处理" : "";
+    const suffix = failed > 0
+      ? "有文件未生成"
+      : review > 0 || pageProblems > 0
+        ? "需复核"
+        : autoFixed > 0
+          ? "有自动处理"
+          : "";
     st.bannerInfo = {
       title: stateWord === "已完成"
         ? `已生成 ${generated} 个文件`
@@ -2795,10 +2968,61 @@ function finishTask(surface: Surface, task: TaskStatus): void {
 }
 
 /** 逐文件结果是否真的写出了文件。 */
+/** 状态列的连接键：扫描项与 file_results 两边字段不一致——PDF 的 `name` 是带扩展名的
+ *  文件名，Excel / Word 的 `name` 是不含扩展名的主干名，而 Word 那一路除了 `name` 什么
+ *  都没有（source_path 会被隐私过滤置空）。所以两边统一归一成「去掉已知文档扩展名的
+ *  文件名」，只要算法一致就能对上。
+ *
+ *  只削掉认识的扩展名：`报价.v2` 这种带点的主干名不能被当成扩展名削掉，否则同一个文件
+ *  两边算出来的键会不一样。 */
+const KNOWN_DOC_EXT_RE = /\.(?:xlsx|xlsm|xls|docx|doc|pdf|png|jpe?g|webp|bmp|tiff?)$/i;
+
+function fileOutcomeKey(raw: unknown): string {
+  const value = text(raw).trim();
+  if (!value) return "";
+  let base = value.replace(/\\/g, "/").split("/").pop() ?? "";
+  // 反复削到削不动为止。两边给的字符串本来就差一层扩展名（扫描项是主干名、逐文件结果是
+  // 带扩展名的文件名），只削一次的话 `合同.doc.pdf` 一边算出「合同」、另一边算出「合同.doc」，
+  // 键对不上，那一行跑完还写着「未开始」——正是这一版要修的老毛病本身。
+  while (KNOWN_DOC_EXT_RE.test(base)) base = base.replace(KNOWN_DOC_EXT_RE, "");
+  return base.trim();
+}
+
+/** 这个文件里还有多少处需要人去看。三条路的字段各不相同：
+ *  - Excel：后端逐文件给 review_count（位置计数，见 core/task_runner.py）
+ *  - Word：issues[] 里只有 severity=needs_review 才是待办，resolved 是已经自动恢复好的
+ *  - PDF：退回占位页的页数，加上「有疑点但仍然采用」的页数（后端算好的互斥计数，
+ *    见 core/pdf_image_translation.py 的 suspect_adopted_page_count）。口径跟后端判
+ *    needs_review 的那套一致，否则一份有占位页的文件在这一行是干干净净的「已生成」，
+ *    而任务中心的同一份文件挂着「需复核」徽章。
+ *  9.2.6 判的是 `status === "needs_review"`——Excel 实际给 `succeeded`，Word 根本没有
+ *  这个字段，所以这个标签从来没出现过。 */
+function fileResultPendingReview(item: JsonObject): number {
+  const direct = num(item.review_count);
+  if (direct > 0) return direct;
+  const issues = Array.isArray(item.issues) ? item.issues : [];
+  let pending = 0;
+  for (const raw of issues) {
+    if (text(record(raw).severity) === "needs_review") pending += 1;
+  }
+  if (pending > 0) return pending;
+  return num(item.placeholder_page_count) + num(item.suspect_adopted_page_count);
+}
+
 function fileResultProduced(item: JsonObject): boolean {
   if (item.success === true) return true;
   if (item.status === "failed") return false;
   return Boolean(text(item.output) || text(item.compressed_output));
+}
+
+/** 整份都被「跳过 A3+」跳过的文件：输出文档写出来了，但内容跟源文件逐字节一样，一个字都没翻。
+ *  后端把它的 success 判成 false 并算进 needs_review（`_file_record_to_result` /
+ *  `_record_is_fully_skipped_oversize`），可它有输出路径，`fileResultProduced` 仍会算「已生成」。
+ *  不单独认出来的话，这一行就是干干净净一句「已生成」，而任务中心给同一份文件挂着「需复核」。 */
+function fileResultUntranslated(item: JsonObject): boolean {
+  if (item.all_pages_skipped_oversize === true) return true;
+  const pages = num(item.page_count);
+  return pages > 0 && num(item.skipped_oversize_page_count) >= pages;
 }
 
 function terminalStateWord(state: TaskStatus["state"]): string {

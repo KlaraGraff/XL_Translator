@@ -335,6 +335,13 @@ class PdfFileRecord:
     review_passed_page_count: int = 0
     review_repaired_page_count: int = 0
     review_failed_page_count: int = 0
+    # 「译文有疑点但仍然采用」的页数：审核没通过、本地质检有标记、或走了应急比例归一化，
+    # 而这一页没有退回失败占位页。口径跟 _record_needs_review 判 needs_review 的那半边对齐
+    # （整份跳过大幅面另有自己的说法）。
+    # 单独给这个数是因为另外几个计数两两都会重叠——审核没通过的页有一半是直接退回占位页的
+    # （见 _finalize_page_failure），质检标记也留在退回前的最后一次尝试上——界面把它们相加
+    # 就会把一页坏页说成两三页。这个数与 placeholder_page_count 严格互斥，可以直接相加。
+    suspect_adopted_page_count: int = 0
     review_retry_count: int = 0
     review_minor_suggestion_count: int = 0
     error: str = ""
@@ -371,6 +378,10 @@ class PdfTaskSummary:
     review_passed_page_count: int = 0
     review_repaired_page_count: int = 0
     review_failed_page_count: int = 0
+    # 与 placeholder_page_count 严格互斥的「有疑点但仍然采用」页数，口径见 PdfFileRecord
+    # 上的同名字段。任务中心那排指标格只能拿这个数跟占位页并列，拿 review_failed_page_count
+    # 并列会把同一页在两个格子里各数一次。
+    suspect_adopted_page_count: int = 0
     review_retry_count: int = 0
     review_minor_suggestion_count: int = 0
     rate_limit_reduction_count: int = 0
@@ -1339,6 +1350,15 @@ class PdfImageTranslationRunner:
             # 失败/占位页，不能只靠 status 字符串。
             "skipped_oversize": bool(page.skipped_oversize) if page is not None else False,
             "error": _short_review_text(page.error if page is not None else ""),
+            # 本地质检的标记要单独给前端。它跟审核结论是两件事：质检在送审之前就跑
+            # （_apply_quality_flags），审核通过并不会清掉它。不把它送出去的话，一页被
+            # 小结算进「有疑点仍采用」的页，在逐页表格里却显示成绿色的「通过 · 版式一致，
+            # 文本完整」——同一屏两句话互相打脸，而用户根本找不到是哪一页。
+            "quality_flagged": bool(page.quality_flags) if page is not None else False,
+            "quality_message": _short_review_text(page.quality_message if page is not None else ""),
+            "emergency_ratio_normalized": (
+                bool(page.emergency_ratio_normalized) if page is not None else False
+            ),
             "review_summary": _page_review_summary(page),
             "pending_action": pending_action,
             "user_skipped": user_skipped,
@@ -1640,7 +1660,9 @@ class PdfImageTranslationRunner:
             image_file_count = sum(1 for item in self._files if item.source_type == SOURCE_TYPE_IMAGE)
             pdf_file_count = len(self._files) - image_file_count
             self._log("INFO", f"扫描到 {pdf_file_count} 个 PDF 文件、{image_file_count} 个图片文件")
-            self._log("INFO", f"输出目录：{output_dir}")
+            # 只写目录名：整条路径会被日志脱敏换成「[path]」，那一行等于什么都没说，
+            # 而完整路径本来就在结果横幅和「打开输出目录」按钮上。
+            self._log("INFO", f"输出目录：{Path(output_dir).name}")
             self._log("INFO", f"PDF 页固定以 {PDF_RENDER_DPI_DEFAULT} DPI 渲染为 PNG，图片按模型返回格式输出")
             if self._settings.pdf.page_generation_concurrency is None:
                 self._log("INFO", f"页图并发：{concurrency}（自动，按模型吞吐档案推算）")
@@ -1787,6 +1809,11 @@ class PdfImageTranslationRunner:
             self._log("INFO", f"已写入 PDF 翻译报告：{report_path.name}")
             self._queue.put(ProgressMsg(4, 4, "写入报告", 1, 1))
 
+            # 中止和失败也要把逐文件结果和指标交出去（Excel / Word 那两路一直是这么做的）：
+            # 停在半路的任务恰恰是最需要看「哪几个文件已经写出来了、有多少页是占位」的时候，
+            # 而这里此前只给一句话，任务中心的文件表和指标格全是空的。
+            file_results = [_file_record_to_result(record) for record in file_records]
+            kpi = _done_kpi(summary)
             if stopped:
                 self._queue.put(
                     StoppedMsg(
@@ -1798,6 +1825,8 @@ class PdfImageTranslationRunner:
                         output_dir=str(output_dir),
                         report_path=str(report_path),
                         manifest_path=str(manifest_path),
+                        files=file_results,
+                        kpi=kpi,
                     )
                 )
                 return
@@ -1808,18 +1837,21 @@ class PdfImageTranslationRunner:
                         output_dir=str(output_dir),
                         report_path=str(report_path),
                         manifest_path=str(manifest_path),
+                        files=file_results,
+                        kpi=kpi,
                     )
                 )
                 return
             self._queue.put(
                 DoneMsg(
                     output_dir=str(output_dir),
-                    file_results=[_file_record_to_result(record) for record in file_records],
+                    file_results=file_results,
                     elapsed_sec=summary.elapsed_sec,
                     tm_hit_count=0,
                     api_call_count=self._api_call_count,
                     issues=_summary_issues(file_records),
                     report_path=str(report_path),
+                    kpi=_done_kpi(summary),
                 )
             )
             return
@@ -2396,6 +2428,20 @@ class PdfImageTranslationRunner:
         record.review_failed_page_count = sum(
             1 for page in record.pages if page.review_status == "failed"
         )
+        # 「仍然采用」要认真正采用了的状态，不能只写 `not page.placeholder`：独立图片
+        # 走的失败分支把 status 置成 failed 却把 placeholder 置成 False（没有占位图这回事），
+        # 于是一张被丢掉、连输出都没有的图会被算进「有疑点仍采用」——任务中心的逐文件表
+        # 写着「未生成」，同一屏的指标格却橙着一句「有疑点仍采用 1」。
+        record.suspect_adopted_page_count = sum(
+            1
+            for page in record.pages
+            if page.status in {"success", "emergency_normalized"}
+            and (
+                page.review_status == "failed"
+                or page.quality_flags
+                or page.emergency_ratio_normalized
+            )
+        )
         record.review_retry_count = sum(max(0, page.review_attempts - 1) for page in record.pages)
         record.review_minor_suggestion_count = sum(
             len(page.review_minor_suggestions) for page in record.pages
@@ -2615,33 +2661,10 @@ class PdfImageTranslationRunner:
             return record
 
         self._finalize_placeholders(record, translated_pages_dir)
-        record.generated_page_count = sum(
-            1 for page in record.pages if page.status in {"success", "emergency_normalized", "placeholder"}
-        )
-        record.placeholder_page_count = sum(1 for page in record.pages if page.placeholder)
-        record.emergency_ratio_normalized_count = sum(
-            1 for page in record.pages if page.emergency_ratio_normalized
-        )
-        record.retry_count = sum(max(0, page.attempts - 1) for page in record.pages)
-        record.review_enabled = bool(self._settings.pdf.review_enabled)
-        record.reviewed_page_count = sum(
-            1 for page in record.pages if page.review_status in {"passed", "failed"}
-        )
-        record.review_passed_page_count = sum(
-            1 for page in record.pages if page.review_status == "passed"
-        )
-        record.review_repaired_page_count = sum(
-            1
-            for page in record.pages
-            if page.review_status == "passed" and page.final_candidate_attempt > 1
-        )
-        record.review_failed_page_count = sum(
-            1 for page in record.pages if page.review_status == "failed"
-        )
-        record.review_retry_count = sum(max(0, page.review_attempts - 1) for page in record.pages)
-        record.review_minor_suggestion_count = sum(
-            len(page.review_minor_suggestions) for page in record.pages
-        )
+        # 逐页计数只有一处实现。这里原先手抄了一份，抄漏了 quality_flagged_page_count 和
+        # skipped_oversize_page_count，于是同一份记录走不同代码路径会给出不同的数——正是
+        # 「界面说的话跟实际不符」的源头之一。
+        self._refresh_file_record_counts(record)
         if not _record_has_usable_translated_pages(record):
             record.status = PDF_OUTPUT_STATE_FAILED
             record.error = _no_usable_translated_pages_error(record)
@@ -3505,6 +3528,9 @@ class PdfImageTranslationRunner:
         review_passed_page_count = sum(record.review_passed_page_count for record in file_records)
         review_repaired_page_count = sum(record.review_repaired_page_count for record in file_records)
         review_failed_page_count = sum(record.review_failed_page_count for record in file_records)
+        suspect_adopted_page_count = sum(
+            record.suspect_adopted_page_count for record in file_records
+        )
         review_retry_count = sum(record.review_retry_count for record in file_records)
         review_minor_suggestion_count = sum(
             record.review_minor_suggestion_count for record in file_records
@@ -3539,6 +3565,7 @@ class PdfImageTranslationRunner:
             review_passed_page_count=review_passed_page_count,
             review_repaired_page_count=review_repaired_page_count,
             review_failed_page_count=review_failed_page_count,
+            suspect_adopted_page_count=suspect_adopted_page_count,
             review_retry_count=review_retry_count,
             review_minor_suggestion_count=review_minor_suggestion_count,
             rate_limit_reduction_count=self._rate_limit_reduction_count,
@@ -4482,11 +4509,39 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
         "review_passed_page_count": record.review_passed_page_count,
         "review_repaired_page_count": record.review_repaired_page_count,
         "review_failed_page_count": record.review_failed_page_count,
+        "suspect_adopted_page_count": record.suspect_adopted_page_count,
         "review_retry_count": record.review_retry_count,
         "review_minor_suggestion_count": record.review_minor_suggestion_count,
         "high_quality_pdf_size_bytes": record.high_quality_pdf_size_bytes,
         "compressed_pdf_size_bytes": record.compressed_pdf_size_bytes,
     }
+
+
+def _done_kpi(summary: PdfTaskSummary) -> dict[str, Any]:
+    """任务中心那排指标格的数据源。
+
+    PDF 以前一个字段都不给，任务中心的 PDF 指标表因此整段是死代码：跑完点进详情，
+    页数、失败占位、审核未通过全都不显示。键名对齐 ui/src/views/tasks.ts 的 PDF 回退表。
+
+    没发生的事不占格子：没有疑点页就不报「有疑点仍采用 0」，没出译图就不报「译图 0」——
+    一排零会让人以为哪里出了问题。
+
+    跟占位页并列的那格给的是 suspect_adopted_page_count，不是 review_failed_page_count：
+    审核没通过的页有一半是直接退回失败占位页的，两个数并列会让同一页在两个格子里各数一次。
+    """
+    kpi: dict[str, Any] = {
+        "file_count": summary.file_count,
+        "total_page_count": summary.total_page_count,
+        "generated_pdf_count": summary.generated_pdf_count,
+        "placeholder_page_count": summary.placeholder_page_count,
+    }
+    if summary.generated_image_count:
+        kpi["generated_image_count"] = summary.generated_image_count
+    if summary.suspect_adopted_page_count:
+        kpi["suspect_adopted_page_count"] = summary.suspect_adopted_page_count
+    if summary.skipped_oversize_page_count:
+        kpi["skipped_oversize_page_count"] = summary.skipped_oversize_page_count
+    return kpi
 
 
 def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:

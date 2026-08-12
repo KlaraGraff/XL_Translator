@@ -396,21 +396,35 @@ function pickKpis(pairs: Array<[string, string[]]>, source: JsonObject): Array<[
  *  「成功」是任务级标签，只有内容全部通过时才能说；一份写出来了但有需复核内容的文件，
  *  格子写「成功 1」而徽章同屏写「需复核 5」，等于同一件事同时说成两种结论。 */
 function richKpiRows(task: TaskStatus): Array<[string, number]> {
+  // 任务收尾之后「未开始 0」是一句废话，还会让人以为有东西卡住没跑；只有真的剩了文件
+  // 没开始（中止、出错）才值得占一格。
+  return surfaceKpiRows(task).filter(
+    ([label, value]) => !(label === "未开始" && task.terminal && value === 0),
+  );
+}
+
+function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
   const result = record(task.result);
   const summary = record(result.summary);
   const kpi = record(result.kpi);
   const source = { ...result, ...summary, ...kpi };
   if (task.surface === "excel") {
+    // 和 Word 同一套口径：「需复核」这一格必须等于同屏结果定位清单里待办的行数，
+    // 也等于列表卡片上的徽章。9.2.6 的 Excel 详情干脆没有这一格——同屏清单列着 1 行
+    // 需复核，KPI 里一个字都没提。
+    const pending = reviewCount(task);
+    const reviewSource = pending === null ? source : { ...source, review_count: pending };
     return pickKpis(
       [
         ["已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]],
         ["已生成", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
         ["未生成", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
         ["未开始", ["unstarted_count", "not_started_count", "unstarted_file_count"]],
+        ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
         ["TM 命中", ["tm_hit_count", "tm_hits"]],
         ["送模型文本", ["model_translation_text_count", "model_text_count", "translated_text_count"]],
       ],
-      source,
+      reviewSource,
     );
   }
   if (task.surface === "word") {
@@ -448,7 +462,10 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
         ["高清 PDF", ["generated_pdf_count"]],
         ["译图", ["generated_image_count"]],
         ["失败占位", ["placeholder_page_count"]],
-        ["审核未通过", ["review_failed_page_count"]],
+        // 跟「失败占位」并列的必须是与它互斥的那个数。「审核未通过」里有一半是直接退回
+        // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。
+        ["有疑点仍采用", ["suspect_adopted_page_count"]],
+        ["跳过 A3+", ["skipped_oversize_page_count"]],
       ],
       source,
     );
@@ -464,7 +481,7 @@ function richKpiRows(task: TaskStatus): Array<[string, number]> {
   );
 }
 
-const WARN_KPI_LABELS = new Set(["需复核", "未生成", "审核未通过", "失败占位"]);
+const WARN_KPI_LABELS = new Set(["需复核", "未生成", "失败占位", "有疑点仍采用"]);
 
 interface ReviewRow {
   file: string;
@@ -523,7 +540,9 @@ function reviewRows(task: TaskStatus): ReviewRow[] {
     // 说的是同一段的同一件事）也在这里并成一行：按判定条数报，界面会把 3 处问题说成
     // 5 处，用户拿着 5 去文档里找第 4、第 5 处，永远找不到。CONTEXT.md 的「位置计数」
     // 要求按文档位置计数——但每一句判定和处理说明都保留，一句都不丢。
-    const key = [row.file, row.location, row.excerpt, row.severity, row.actionCode].join(" ");
+    // 分隔符写成转义，不要在源码里放一个真的空字节：那会让 grep 之类的工具把整个文件
+    // 判成二进制，从此在这个文件里搜任何东西都搜不到（9.2.6 就是这样）。
+    const key = [row.file, row.location, row.excerpt, row.severity, row.actionCode].join("\u0000");
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, row);
@@ -618,6 +637,9 @@ interface FileRow {
   tone: ChipTone;
   output: string;
   outputPath: string;
+  /** 压缩版 PDF（只有 PDF 那一路会有），空串表示这次没生成。 */
+  compressedOutput: string;
+  compressedOutputPath: string;
   error: string;
 }
 
@@ -649,6 +671,9 @@ function fileRows(task: TaskStatus): FileRow[] {
           : { label: statusCode || "结果未知", tone: "mute" };
     const meta = known ?? fallback;
     const outputPath = realPath(firstText(entry, ["output_path", "result_path", "output", "translated_image_path"]));
+    const compressedOutputPath = realPath(
+      firstText(entry, ["compressed_output", "compressed_output_path", "compressed_pdf_path"]),
+    );
     return {
       name: firstText(entry, ["source_relative_path", "relative_path", "name"]),
       status: meta.label,
@@ -657,6 +682,8 @@ function fileRows(task: TaskStatus): FileRow[] {
       // 完整路径挂在 title 上，悬停可见。
       output: outputPath ? fileNameOf(outputPath) : "",
       outputPath,
+      compressedOutput: compressedOutputPath ? fileNameOf(compressedOutputPath) : "",
+      compressedOutputPath,
       error: plainFailureText(firstText(entry, ["error", "error_message", "message", "detail"])),
     };
   });
@@ -1339,16 +1366,20 @@ function renderDetail(): void {
 
     const table = document.createElement("table");
     table.className = "tbl review-tbl";
+    // Excel 那一路的复核项不带原文摘录（定位靠工作表 + 单元格，文件里还有底色标记），
+    // 整列「—」只是占掉了窄面板里四分之一的宽度，还让人以为摘录没取到。一行都没有摘录
+    // 时干脆不要这一列，宽度让给「问题」和「处理」。
+    const showExcerpt = reviews.some((row) => row.excerpt.trim());
     // 固定列宽：任务详情是窄面板，交给浏览器按最小内容宽度分配会把文件名压成竖排单字。
     const cols = document.createElement("colgroup");
-    for (const width of ["20%", "14%", "26%", "12%", "28%"]) {
+    for (const width of showExcerpt ? ["20%", "14%", "26%", "12%", "28%"] : ["22%", "18%", "22%", "38%"]) {
       const col = document.createElement("col");
       col.style.width = width;
       cols.append(col);
     }
     table.append(cols);
     const headRow = document.createElement("tr");
-    for (const label of ["文件", "位置", "原文摘录", "问题", "处理"]) {
+    for (const label of showExcerpt ? ["文件", "位置", "原文摘录", "问题", "处理"] : ["文件", "位置", "问题", "处理"]) {
       const th = document.createElement("th");
       th.textContent = label;
       headRow.append(th);
@@ -1362,7 +1393,10 @@ function renderDetail(): void {
       fileTd.textContent = row.file || "—";
       if (row.file) fileTd.title = row.file;
       tr.append(fileTd);
-      for (const value of [row.location || "—", row.excerpt || "—", row.issue]) {
+      const middle = showExcerpt
+        ? [row.location || "—", row.excerpt || "—", row.issue]
+        : [row.location || "—", row.issue];
+      for (const value of middle) {
         const td = document.createElement("td");
         td.textContent = value;
         tr.append(td);
@@ -1445,6 +1479,17 @@ function renderDetail(): void {
       outputTd.className = "fname";
       outputTd.textContent = file.output || "—";
       if (file.outputPath) outputTd.title = file.outputPath;
+      // 压缩版 PDF 也是一份真产物：运行日志里写了「已生成压缩版」，这张表以前只列高清版，
+      // 用户在输出目录里看到两个 PDF，却只有一个能在界面上对上。
+      if (file.compressedOutput) {
+        const extra = document.createElement("div");
+        extra.style.fontSize = "11.5px";
+        extra.style.color = "var(--ink-3)";
+        extra.style.marginTop = "2px";
+        extra.textContent = `压缩版 ${file.compressedOutput}`;
+        if (file.compressedOutputPath) extra.title = file.compressedOutputPath;
+        outputTd.append(extra);
+      }
       tr.append(outputTd);
       const errorTd = document.createElement("td");
       errorTd.textContent = file.error || "—";

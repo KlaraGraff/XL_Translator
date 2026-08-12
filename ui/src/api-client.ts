@@ -54,6 +54,12 @@ export type PdfPage = {
   /** 按「跳过 A3 及更大的页面」的尺寸判定被跳过——原始矢量内容整页直传到输出，没有译文也没有页图。
    *  和 user_skipped（用户在逐页面板里手动跳过）是两回事，展示上也必须分开：这个不是异常。 */
   skipped_oversize: boolean;
+  /** 本地质检给这一页挂了疑点（版式/文本比例异常之类），译文仍然采用了。跟 review_status 无关：
+   *  质检在送审之前跑，审核判「通过」也不会把它清掉，所以两个信号要分别显示。 */
+  quality_flagged: boolean;
+  quality_message: string;
+  /** 译文太长、按应急比例强行缩排过。同样是「采用了但建议看一眼」，跟质检疑点并列。 */
+  emergency_ratio_normalized: boolean;
   has_source_image: boolean;
   has_translated_image: boolean;
 };
@@ -84,6 +90,25 @@ export type StreamOptions = {
   signal?: AbortSignal;
 };
 
+/** 后端的错误响应除了 detail 还可能带一个 reason（稳定的机器码）。有出路的拦截靠它区分：
+ *  比对中文句子太脆，改一个字界面就认不出来了。 */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly reason: string;
+
+  constructor(message: string, status: number, reason = "") {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.reason = reason;
+  }
+}
+
+/** 从任意 catch 到的东西里取 reason，取不到就是空串。 */
+export function apiErrorReason(error: unknown): string {
+  return error instanceof ApiError ? error.reason : "";
+}
+
 export class ApiClient {
   #baseUrl = "";
   #token = "";
@@ -111,7 +136,11 @@ export class ApiClient {
     if (!response.ok) {
       const fallback = `${response.status} ${response.statusText}`;
       const payload = await response.json().catch(() => ({ detail: fallback }));
-      throw new Error(String(payload.detail ?? fallback));
+      throw new ApiError(
+        String(payload.detail ?? fallback),
+        response.status,
+        typeof payload.reason === "string" ? payload.reason : "",
+      );
     }
     if (response.status === 204) {
       return undefined as T;

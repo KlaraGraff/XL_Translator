@@ -320,6 +320,10 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
 
             self.assertEqual(blocked.status_code, 422, blocked.text)
             self.assertIn("当前配置已测试失败", blocked.json()["detail"])
+            # 界面靠这个 reason 认出「这一条拦截是有出路的」，弹一个带「不管测试结果，
+            # 开始」按钮的窗口。丢了它就只剩一句两秒消失的提示，而提示里让人做的事
+            # 界面上没有入口。
+            self.assertEqual(blocked.json()["reason"], "pdf_review_model_unavailable")
             self.assertEqual(accepted.status_code, 202, accepted.text)
             self.assertTrue(captured["options"].allow_known_review_failure)
 

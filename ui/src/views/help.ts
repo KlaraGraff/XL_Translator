@@ -60,7 +60,8 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "tasks",
     title: "任务、停止与并行",
-    body: "不同类型任务可并行。同一 API 连接会先显示 429、排队、超时和费用风险，确认后才会启动第二个任务。",
+    // 429 是 HTTP 状态码，界面上不给用户看内部代号，说清后果就够了。
+    body: "不同类型任务可并行。两个任务用到同一条 API 连接时，会先说明可能变慢、排队、超时和产生费用，确认后才启动第二个任务。",
     footer: (host) => {
       host.append(createButton({ label: "打开任务中心", size: "mini", onClick: () => navigate("tasks") }));
     },
@@ -84,7 +85,10 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "ext",
     title: "更新、支持与隐私",
-    body: "更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启。诊断由你主动导出，不包含 API Key、原文、译文、完整 Prompt 或文件路径。",
+    // 这句话过去写的是「更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启」——
+    // 应用内更新上线之后它就不成立了（会下载、验签、就地替换），而且 Windows 上根本没有
+    // DMG。帮助页说错更新怎么工作，用户就会在真的替换应用时以为出了别的事。
+    body: "设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 走安装程序，会先提示再重开）。诊断由你主动导出，不包含 API Key、原文、译文、完整 Prompt 或文件路径。",
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";

@@ -52,6 +52,10 @@ class TaskLogSanitizationTests(unittest.TestCase):
             "→ 进度计划样例.xlsx：12 个词条（0.031s）",
             "[全局] TM命中=0 | 待API翻译=9",
             "已完成 3/9 批，耗时 4.20s",
+            # 斜杠两边带空格的计数：PDF 的主状态行就长这样，孤立的「/」曾被当成
+            # 根路径吃掉，界面上出现「已完成 0 [path] 4 页」。
+            "状态：正在翻译 PDF 页面，已完成 0 / 4 页。",
+            "已生成 4 / 4 页",
             "已切换连接：主账号 → 备用厂商（服务端不可用）",
         ):
             with self.subTest(message=message):
@@ -110,6 +114,23 @@ class TaskDataSanitizationTests(unittest.TestCase):
         self.assertNotIn("source_path", record)
         self.assertNotIn("/Users/me/docs", record["error"])
         self.assertIn("[path]", record["error"])
+
+    def test_pdf_compressed_output_path_survives(self) -> None:
+        # 压缩版 PDF 走的键是「compressed_output」。它不在白名单里的时候产物表拿到的是
+        # 字面量「[path]」，界面把这个占位符当空值——压缩版看起来根本没生成。
+        sanitized = _sanitize_task_data(
+            {
+                "file_results": [
+                    {
+                        "name": "图纸.pdf",
+                        "output": "/Users/me/out/译文(英文)_图纸_高清.pdf",
+                        "compressed_output": "/Users/me/out/译文(英文)_图纸_压缩.pdf",
+                    }
+                ]
+            }
+        )
+        record = sanitized["file_results"][0]
+        self.assertEqual(record["compressed_output"], "/Users/me/out/译文(英文)_图纸_压缩.pdf")
 
 
 if __name__ == "__main__":

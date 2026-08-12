@@ -54,6 +54,7 @@ from core.pdf_image_translation import (
     determine_pdf_task_status,
     fully_skipped_oversize_message,
     is_oversized_page,
+    _done_kpi,
     _file_record_to_result,
     _load_placeholder_font,
     _localized_pdf_placeholder_problem,
@@ -603,6 +604,53 @@ class PdfImageTranslationTests(unittest.TestCase):
         self.assertEqual(result["detail"], "")
         self.assertNotIn("节省", result["detail"])
 
+    def test_done_kpi_reports_pages_and_hides_what_did_not_happen(self) -> None:
+        # 任务中心的 PDF 指标格全靠这份 kpi；9.2.6 一个字段都不给，跑完点进详情连页数
+        # 都看不到。键名必须对上 ui/src/views/tasks.ts 的 PDF 回退表。
+        summary = PdfTaskSummary(
+            status=PDF_OUTPUT_STATE_COMPLETED,
+            output_dir="/out",
+            target_lang="en",
+            target_lang_label="英文",
+            started_at="",
+            completed_at="",
+            elapsed_sec=1.0,
+            file_count=2,
+            total_page_count=7,
+            generated_pdf_count=2,
+            placeholder_page_count=1,
+            emergency_ratio_normalized_count=0,
+            retry_count=0,
+        )
+
+        kpi = _done_kpi(summary)
+
+        self.assertEqual(kpi["file_count"], 2)
+        self.assertEqual(kpi["total_page_count"], 7)
+        self.assertEqual(kpi["generated_pdf_count"], 2)
+        self.assertEqual(kpi["placeholder_page_count"], 1)
+        # 没出译图、没有疑点页、没跳过大幅面页，就不要摆一排零出来让人以为哪里坏了。
+        self.assertNotIn("generated_image_count", kpi)
+        self.assertNotIn("suspect_adopted_page_count", kpi)
+        self.assertNotIn("skipped_oversize_page_count", kpi)
+        # 跟「失败占位」并列的那格只能是与它互斥的 suspect_adopted_page_count。
+        # review_failed_page_count 里有一半是直接退回占位页的同一批页，摆进这排指标
+        # 就会让一页坏页在两个格子里各数一次。
+        summary.review_enabled = True
+        summary.review_failed_page_count = 2
+        kpi = _done_kpi(summary)
+        self.assertNotIn("review_failed_page_count", kpi)
+
+        summary.suspect_adopted_page_count = 1
+        summary.skipped_oversize_page_count = 4
+        summary.generated_image_count = 3
+        kpi = _done_kpi(summary)
+
+        self.assertEqual(kpi["suspect_adopted_page_count"], 1)
+        self.assertEqual(kpi["skipped_oversize_page_count"], 4)
+        self.assertEqual(kpi["generated_image_count"], 3)
+        self.assertNotIn("review_failed_page_count", kpi)
+
     def test_manifest_report_and_status_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
@@ -1049,6 +1097,11 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertFalse((output_dir / "译文(英文)_source_压缩.pdf").exists())
             self.assertEqual(done.issues[0]["file"], "source.pdf")
             self.assertEqual(done.issues[0]["location_label"], "第 1 页")
+            # 指标格接的是这份 kpi。它是不是真的挂在终态消息上，只有这里能验：
+            # 单测 _done_kpi 本身通过了，也不代表有人把它交给了 DoneMsg。
+            self.assertEqual(done.kpi["file_count"], 1)
+            self.assertEqual(done.kpi["total_page_count"], 1)
+            self.assertEqual(done.kpi["placeholder_page_count"], 1)
 
     def test_upstream_503_failure_reaches_user_as_plain_chinese(self) -> None:
         """A 503 from the image endpoint must not print its URL/JSON body anywhere."""
@@ -1262,6 +1315,14 @@ class PdfImageTranslationTests(unittest.TestCase):
             report = Path(stopped.report_path).read_text(encoding="utf-8")
             self.assertIn("结束原因：用户主动中止", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
+            # 中止的任务也要交出逐文件结果和指标：停在半路正是要看「哪几个文件已经写出来了」
+            # 的时候，而这里此前只给一句话，任务中心的文件表和指标格都是空的。
+            self.assertEqual([item["name"] for item in stopped.files], ["first.pdf", "second.pdf"])
+            self.assertTrue(stopped.files[0]["output"])
+            self.assertFalse(stopped.files[1]["output"])
+            self.assertEqual(stopped.kpi["file_count"], 2)
+            self.assertEqual(stopped.kpi["total_page_count"], 4)
+            self.assertEqual(stopped.kpi["generated_pdf_count"], 1)
 
     def test_runner_resume_continues_after_soft_stop_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1808,6 +1869,48 @@ class PdfImageTranslationTests(unittest.TestCase):
             record.status = PDF_OUTPUT_STATE_FAILED
             with self.assertRaises(PdfPageActionError):
                 runner.request_page_regenerate(relative_path="source.pdf", page_number=1)
+
+    def test_page_snapshot_exposes_quality_flags_even_when_review_passed(self) -> None:
+        """本地质检的疑点必须单独送到前端，不能只靠 review_status。
+
+        质检跑在送审之前，审核判「通过」也不会清掉 quality_flags，所以一页可以同时是
+        「有疑点」和 review_status="passed"。这两个字段就是小结里「N 页译文有疑点，已采用
+        但建议复核」的来源；快照里不给，逐页表格就只能照 review_status 显示绿色的「通过」，
+        用户看到小结说有疑点却一页都找不到。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(1200, 1600)),
+                task_logger_enabled=False,
+            )
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+            page = runner._prepared_files[0].record.pages[0]
+            entry = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+            self.assertFalse(entry["quality_flagged"])
+            self.assertEqual(entry["quality_message"], "")
+            self.assertFalse(entry["emergency_ratio_normalized"])
+
+            page.review_status = "passed"
+            page.quality_flags = ["text_ratio"]
+            page.quality_message = "译文字数明显少于原文。"
+            page.emergency_ratio_normalized = True
+            entry = runner.pdf_page_snapshot()["files"][0]["pages"][0]
+            self.assertEqual(entry["review_status"], "passed")
+            self.assertTrue(entry["quality_flagged"])
+            self.assertEqual(entry["quality_message"], "译文字数明显少于原文。")
+            self.assertTrue(entry["emergency_ratio_normalized"])
 
     def test_page_image_paths_stay_inside_the_task_archive_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3088,6 +3191,86 @@ class PdfDefectRegressionTests(unittest.TestCase):
             determine_pdf_task_status(stopped=False, file_records=[record]),
             PDF_OUTPUT_STATE_COMPLETED,
         )
+
+    def test_suspect_adopted_pages_never_double_count_placeholder_pages(self) -> None:
+        # 完成小结要把「没生成译文的页」和「有疑点但仍然采用的页」相加，这两个数必须互斥。
+        # 审核没通过的页有一半是直接退回占位页的，质检标记也留在退回前的最后一次尝试上，
+        # 拿 placeholder + review_failed + quality_flagged 相加会把一页坏页说成三页。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "mixed.pdf"
+            _write_multi_page_pdf(source_pdf, [{"media_box": (0, 0, _A4_W_PT, _A4_H_PT)}])
+            settings = self._pdf_settings(root)
+            settings.pdf.review_enabled = True
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="mixed", size_kb=1.0, page_count=3)],
+                settings,
+                source_root=root,
+                image_client=_FakeImageClient(_png_bytes(600, 800)),
+                task_logger_enabled=False,
+            )
+            pages = [
+                # 审核没通过、彻底放弃 → 退回占位页；质检标记还留在最后一次尝试上。
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path="",
+                    status="placeholder_pending",
+                    placeholder=True,
+                    review_status="failed",
+                    quality_flags=["near_blank"],
+                ),
+                # 审核请求本身出错 → 译图照样采用，这一页才是「有疑点但仍然采用」。
+                PdfPageRecord(
+                    page_number=2,
+                    source_image_path="",
+                    status="success",
+                    review_status="failed",
+                ),
+                PdfPageRecord(
+                    page_number=3,
+                    source_image_path="",
+                    status="success",
+                    review_status="passed",
+                ),
+            ]
+            record = PdfFileRecord(
+                name="mixed",
+                source_path=str(source_pdf),
+                relative_path="mixed.pdf",
+                page_count=3,
+                pages=pages,
+            )
+            runner._refresh_file_record_counts(record)
+            self.assertEqual(record.placeholder_page_count, 1)
+            self.assertEqual(record.review_failed_page_count, 2)
+            self.assertEqual(record.quality_flagged_page_count, 1)
+            self.assertEqual(record.suspect_adopted_page_count, 1)
+
+            result = _file_record_to_result(record)
+            self.assertEqual(result["suspect_adopted_page_count"], 1)
+            # 界面相加的就是这两个数：3 页里 2 页有问题，不是 4 页。
+            self.assertEqual(
+                result["placeholder_page_count"] + result["suspect_adopted_page_count"],
+                2,
+            )
+
+            # 独立图片的失败分支把 status 置成 failed、placeholder 置成 False（没有占位图
+            # 这回事），这一页连输出都没有，不许算进「有疑点仍采用」——否则任务中心的逐文件
+            # 表写「未生成」，同一屏的指标格橙着一句「有疑点仍采用 1」。
+            record.pages.append(
+                PdfPageRecord(
+                    page_number=4,
+                    source_image_path="",
+                    status=PDF_OUTPUT_STATE_FAILED,
+                    placeholder=False,
+                    review_status="failed",
+                    quality_flags=["near_blank"],
+                )
+            )
+            record.page_count = 4
+            runner._refresh_file_record_counts(record)
+            self.assertEqual(record.suspect_adopted_page_count, 1)
+            self.assertEqual(record.review_failed_page_count, 3)
 
 
 if __name__ == "__main__":

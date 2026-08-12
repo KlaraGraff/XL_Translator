@@ -107,6 +107,10 @@ class TaskConflictError(RuntimeError):
 class TaskInputError(ValueError):
     """Raised when a source path has no usable files for the selected surface."""
 
+    def __init__(self, message: str, *, reason: str = "invalid_input") -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 @dataclass(frozen=True)
 class TaskOptions:
@@ -1380,8 +1384,12 @@ class TranslationTaskManager:
             raise TaskInputError("已启用逐页审核，请先配置审核模型 API Key。")
         availability = str(settings.pdf_review_model_role.availability_status or "unknown")
         if availability == "unavailable" and not options.allow_known_review_failure:
+            # 这一条是有出路的拦截（allow_known_review_failure 就是那条出路），界面必须
+            # 拿它开一个带「仍要继续」按钮的弹窗，而不是弹一句两秒就没的提示。靠比对中文
+            # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
-                "PDF 翻译审核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。"
+                "PDF 翻译审核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。",
+                reason="pdf_review_model_unavailable",
             )
 
     def _pump_runner(self, task: ApiTask) -> None:
@@ -1685,6 +1693,9 @@ _ARTIFACT_PATH_KEYS = {
     # "[path]", and the task center printed that placeholder as if it were a path.
     "output",
     "output_path",
+    # PDF 每份文件会写出两个产物：高清版走 "output"，压缩版走这个键。漏掉它的话产物表里
+    # 压缩版那一行会显示成 "[path]"（界面把这个占位符当空值，等于压缩版从来没生成过）。
+    "compressed_output",
     "translated_path",
     "report_path",
     "manifest_path",
