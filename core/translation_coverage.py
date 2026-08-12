@@ -14,6 +14,15 @@ COVERAGE_IGNORED = "ignored"
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _NON_CJK_LETTER_RUN_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+# \u8bd1\u6587\u91cc\u5939\u5e26\u7684\u4e2d\u6587\u7247\u6bb5\uff1a\u628a\u7d27\u90bb\u7684\u6570\u5b57\u4e00\u5e76\u6536\u8fdb\u6765\uff0c\u62a5\u544a\u91cc\u624d\u770b\u5f97\u51fa\u662f\u300c2026\u5e748\u67089\u65e5\u300d
+# \u8fd9\u79cd\u65e5\u671f\uff0c\u800c\u4e0d\u662f\u5b64\u96f6\u96f6\u4e00\u4e2a\u300c\u5e74\u300d\u5b57\u3002
+_CJK_FRAGMENT_RE = re.compile(r"[\u4e00-\u9fff\d\uff10-\uff19]*[\u4e00-\u9fff][\u4e00-\u9fff\d\uff10-\uff19]*")
+
+# \u300c\u8bd1\u6587\u91cc\u53ea\u5939\u5e26\u5c11\u91cf\u4e2d\u6587\u300d\u7684\u5224\u5b9a\u9608\u503c\u3002\u7f16\u53f7\u524d\u7f00\uff08\u4e00.1\uff09\u3001\u65e5\u671f\uff082026\u5e748\u67089\u65e5\uff09\u3001
+# \u4e2a\u522b\u4e13\u540d\u5c5e\u4e8e\u8fd9\u4e00\u7c7b\uff1a\u6574\u53e5\u5df2\u7ecf\u662f\u76ee\u6807\u8bed\u8a00\uff0c\u4e0d\u8be5\u5224\u6210\u300c\u672a\u8bd1\u6e90\u6587\u300d\u3002
+_INCIDENTAL_CJK_MAX_CHARS = 12
+_INCIDENTAL_CJK_MAX_RATIO = 0.2
+_INCIDENTAL_CJK_MIN_LETTERS = 12
 
 _FRENCH_MARKER_WORDS = {
     "avec", "aux", "ce", "ces", "cette", "dans", "des", "du", "est",
@@ -72,6 +81,48 @@ def contains_meaningful_non_cjk_word(text: str) -> bool:
     return False
 
 
+def count_cjk_chars(text: str) -> int:
+    return len(_CJK_RE.findall(str(text or "")))
+
+
+def count_non_cjk_letters(text: str) -> int:
+    return sum(1 for char in str(text or "") if char.isalpha() and not _CJK_RE.match(char))
+
+
+def residual_cjk_fragments(text: str, *, limit: int = 3) -> list[str]:
+    """Return the CJK fragments left inside an otherwise translated segment."""
+    fragments: list[str] = []
+    seen: set[str] = set()
+    for match in _CJK_FRAGMENT_RE.finditer(str(text or "")):
+        fragment = match.group(0).strip()
+        if not fragment or fragment in seen:
+            continue
+        seen.add(fragment)
+        fragments.append(fragment)
+        if len(fragments) >= limit:
+            break
+    return fragments
+
+
+def has_incidental_cjk(text: str, *, target_lang: str) -> bool:
+    """Return whether text is target-language prose carrying only a few CJK chars."""
+    cleaned = clean_coverage_text(text)
+    if not cleaned:
+        return False
+    if str(target_lang or "").strip().lower() in {"zh", "ja"}:
+        return False
+
+    cjk_count = count_cjk_chars(cleaned)
+    if cjk_count == 0 or cjk_count > _INCIDENTAL_CJK_MAX_CHARS:
+        return False
+    letter_count = count_non_cjk_letters(cleaned)
+    if letter_count < _INCIDENTAL_CJK_MIN_LETTERS:
+        return False
+    if cjk_count > letter_count * _INCIDENTAL_CJK_MAX_RATIO:
+        return False
+    return contains_meaningful_non_cjk_word(cleaned)
+
+
 def _language_evidence(text: str, language: str) -> bool | None:
     """Return positive/negative evidence for the supported Latin pair, else unknown."""
     normalized = str(language or "").strip().lower()
@@ -104,7 +155,15 @@ def looks_like_source_text(
 
     source = str(source_lang or "zh").strip().lower()
     if source == "zh":
-        return contains_cjk(cleaned) and should_translate(
+        if not contains_cjk(cleaned):
+            return False
+        if _looks_translated_despite_cjk(
+            cleaned,
+            source_lang=source,
+            target_lang=target_lang,
+        ):
+            return False
+        return should_translate(
             cleaned,
             target_lang=target_lang,
             source_lang=source_lang,
@@ -138,11 +197,30 @@ def looks_like_target_text(
         return contains_cjk(cleaned)
 
     if contains_cjk(cleaned):
-        return False
+        # 整句已是目标语言、只夹带编号或日期这类零星中文时，仍算译文；
+        # 残留的中文另由 residual_cjk_fragments() 单独提示，不再判成「未译源文」。
+        return _looks_translated_despite_cjk(
+            cleaned,
+            source_lang=source_lang,
+            target_lang=target,
+        )
     target_evidence = _language_evidence(cleaned, target)
     if target_evidence is False:
         return False
     return contains_meaningful_non_cjk_word(cleaned)
+
+
+def _looks_translated_despite_cjk(
+    cleaned: str,
+    *,
+    source_lang: str,
+    target_lang: str,
+) -> bool:
+    if str(source_lang or "zh").strip().lower() != "zh":
+        return False
+    if not has_incidental_cjk(cleaned, target_lang=target_lang):
+        return False
+    return _language_evidence(cleaned, str(target_lang or "").strip().lower()) is not False
 
 
 def split_existing_bilingual_text(

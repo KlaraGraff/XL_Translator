@@ -132,6 +132,72 @@ class WordDocumentTests(unittest.TestCase):
             cell_text = out_doc.tables[0].cell(0, 0).text
             self.assertEqual(cell_text, "设备\n安装\nEquipment installation")
 
+    def test_caption_with_seq_field_is_translated_but_generated_fields_are_skipped(self) -> None:
+        """题注里的 SEQ 域不该让整段被跳过；目录、页码这类域段落仍旧不翻。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "captions.docx"
+            output_dir = temp_path / "out"
+
+            doc = Document()
+            caption = doc.add_paragraph("表 ")
+            self._append_field(caption, r" SEQ 表 \* ARABIC ", result="4.31")
+            caption.add_run(" 机械设备数量及操作人员")
+            page_number = doc.add_paragraph("第 ")
+            self._append_field(page_number, " PAGE ", result="7")
+            page_number.add_run(" 页")
+            toc_entry = doc.add_paragraph("第一章 工程概况")
+            self._append_field(toc_entry, r" PAGEREF _Toc12345 \h ", result="1")
+            doc.save(str(source_path))
+
+            sources = {
+                segment.source
+                for segment in extract_word_segments(
+                    source_path,
+                    target_lang="fr",
+                    source_lang="zh",
+                )
+            }
+            self.assertIn("表 4.31 机械设备数量及操作人员", sources)
+            self.assertNotIn("第 7 页", sources)
+            self.assertNotIn("第一章 工程概况1", sources)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=output_dir,
+                translations={
+                    "表 4.31 机械设备数量及操作人员": "Tableau 4.31 Équipements et opérateurs",
+                },
+                target_lang="fr",
+                source_lang="zh",
+            )
+            out_doc = Document(str(out_path))
+            paragraph_texts = [paragraph.text for paragraph in out_doc.paragraphs]
+            self.assertIn("Tableau 4.31 Équipements et opérateurs", paragraph_texts)
+            # 源题注段落原样保留，SEQ 域没有被改写掉。
+            self.assertIn("表 4.31 机械设备数量及操作人员", paragraph_texts)
+            self.assertIn("w:instrText", out_doc.paragraphs[0]._p.xml)
+
+    @staticmethod
+    def _append_field(paragraph, instruction: str, *, result: str) -> None:
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        instr = OxmlElement("w:instrText")
+        instr.set(qn("xml:space"), "preserve")
+        instr.text = instruction
+        separate = OxmlElement("w:fldChar")
+        separate.set(qn("w:fldCharType"), "separate")
+        end = OxmlElement("w:fldChar")
+        end.set(qn("w:fldCharType"), "end")
+
+        code_run = paragraph.add_run()
+        code_run._r.append(begin)
+        code_run._r.append(instr)
+        code_run._r.append(separate)
+        paragraph.add_run(result)
+        end_run = paragraph.add_run()
+        end_run._r.append(end)
+
     def test_extract_word_segments_protects_front_matter_before_body_heading(self) -> None:
         # 补译模式之外，全文翻译模式（extract_word_segments 直接抽取全部段落/表格）
         # 也必须支持"保护封面和目录"——这是与旧版 protect_scheme_cover 最大的行为差异。
@@ -531,6 +597,22 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("第二章 修复总体原则与目标", paragraph_texts)
             self.assertNotIn("第1节 裂缝开裂现状及成因分析", paragraph_texts)
             self.assertNotIn("第2节 修复总体原则与目标", paragraph_texts)
+
+    def test_legal_numbering_levels_render_all_placeholders_as_arabic(self) -> None:
+        """带 w:isLgl 的层级必须全用阿拉伯数字：Word 显示 1.1，物化就不能写成 一.1。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "legal-numbering.docx"
+            self._build_legal_numbered_docx(source_path)
+
+            normalized = normalize_docx_automatic_numbering(source_path)
+            paragraph_texts = [
+                paragraph.text for paragraph in Document(str(normalized.path)).paragraphs
+            ]
+
+            self.assertIn("第一章 工程概况", paragraph_texts)
+            self.assertIn("1.1 裂缝开裂现状及成因分析", paragraph_texts)
+            self.assertIn("1.1.1 夜间施工管理职责", paragraph_texts)
+            self.assertNotIn("一.1 裂缝开裂现状及成因分析", paragraph_texts)
 
     def test_nested_chinese_section_fallback_keeps_section_unit(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1267,6 +1349,80 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn(issue["snippet"], content)
             self.assertIn("问题片段：承包0商", content)
 
+    def test_quality_report_states_headers_and_footers_are_not_translated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "双语(法文)_页眉.docx"
+            doc = Document()
+            doc.sections[0].header.paragraphs[0].text = "某某工程 一标段 抢工方案"
+            doc.add_paragraph("施工内容")
+            doc.save(str(output_path))
+
+            report_path = _write_word_quality_report(
+                output_dir=temp_path,
+                file_results=[
+                    {"name": "页眉.docx", "output": str(output_path), "success": True}
+                ],
+                issues=[],
+                elapsed_sec=1.0,
+                tm_hit_count=0,
+                api_call_count=1,
+            )
+
+            content = report_path.read_text(encoding="utf-8")
+            self.assertIn("## 翻译范围说明", content)
+            self.assertIn("页眉、页脚不参与翻译", content)
+            self.assertIn("页眉.docx", content)
+
+    def test_quality_report_omits_scope_note_without_header_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "双语(法文)_无页眉.docx"
+            doc = Document()
+            doc.add_paragraph("施工内容")
+            doc.save(str(output_path))
+
+            report_path = _write_word_quality_report(
+                output_dir=temp_path,
+                file_results=[
+                    {"name": "无页眉.docx", "output": str(output_path), "success": True}
+                ],
+                issues=[],
+                elapsed_sec=1.0,
+                tm_hit_count=0,
+                api_call_count=1,
+            )
+
+            self.assertNotIn("## 翻译范围说明", report_path.read_text(encoding="utf-8"))
+
+    def test_post_write_coverage_separates_residual_chinese_from_untranslated(self) -> None:
+        """译文只夹带日期/编号时算已翻译，单独给一条更轻的提示，不再报「未译源文」。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "双语(法文)_工期.docx"
+
+            doc = Document()
+            doc.add_paragraph("本工程合同约定的竣工日期为 2026 年 8 月 9 日。")
+            doc.add_paragraph(
+                "La date d’achèvement contractuelle du présent projet est fixée "
+                "au 2026年8月9日."
+            )
+            doc.save(str(output_path))
+
+            issues: list[dict] = []
+            untranslated_count = _append_post_write_coverage_issues(
+                issues=issues,
+                file_name="工期",
+                output_path=output_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            self.assertEqual(untranslated_count, 0)
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues[0]["problem"], "译文中残留少量中文")
+            self.assertEqual(issues[0]["location"], "body.paragraph[1]")
+            self.assertIn("2026年8月9日", issues[0]["status"])
+
     def test_post_write_coverage_reports_untranslated_table_cells(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -1383,6 +1539,45 @@ class WordDocumentTests(unittest.TestCase):
         WordDocumentTests._set_paragraph_num_pr(chapter, num_id="9", ilvl="0")
         WordDocumentTests._set_paragraph_num_pr(section, num_id="9", ilvl="1")
         doc.save(str(path))
+
+    @staticmethod
+    def _build_legal_numbered_docx(path: Path) -> None:
+        doc = Document()
+        WordDocumentTests._set_num_id_9_levels(
+            doc,
+            {
+                0: ("chineseCountingThousand", "第%1章"),
+                1: ("decimal", "%1.%2"),
+                2: ("decimal", "%1.%2.%3"),
+            },
+        )
+        WordDocumentTests._mark_num_id_9_levels_legal(doc, (1, 2))
+        chapter = doc.add_paragraph("工程概况")
+        section = doc.add_paragraph("裂缝开裂现状及成因分析")
+        sub_section = doc.add_paragraph("夜间施工管理职责")
+        WordDocumentTests._set_paragraph_num_pr(chapter, num_id="9", ilvl="0")
+        WordDocumentTests._set_paragraph_num_pr(section, num_id="9", ilvl="1")
+        WordDocumentTests._set_paragraph_num_pr(sub_section, num_id="9", ilvl="2")
+        doc.save(str(path))
+
+    @staticmethod
+    def _mark_num_id_9_levels_legal(doc: Document, ilvls: tuple[int, ...]) -> None:
+        numbering_root = doc.part.numbering_part.element
+        target_abstract_id = None
+        for num in numbering_root.findall(qn("w:num")):
+            if num.get(qn("w:numId")) == "9":
+                abstract_id = num.find(qn("w:abstractNumId"))
+                target_abstract_id = abstract_id.get(qn("w:val")) if abstract_id is not None else None
+                break
+        for abstract_num in numbering_root.findall(qn("w:abstractNum")):
+            if abstract_num.get(qn("w:abstractNumId")) != target_abstract_id:
+                continue
+            for level in abstract_num.findall(qn("w:lvl")):
+                if int(level.get(qn("w:ilvl")) or 0) not in ilvls:
+                    continue
+                if level.find(qn("w:isLgl")) is None:
+                    level.append(OxmlElement("w:isLgl"))
+            return
 
     @staticmethod
     def _set_default_num_id_9_level(

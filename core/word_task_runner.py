@@ -96,6 +96,7 @@ from core.word_document import (
     WordFileItem,
     WordFrontMatterBoundary,
     build_word_output_dir,
+    count_text_bearing_header_footer_parts,
     detect_hidden_word_content,
     extract_word_segments,
     find_word_front_matter_boundary_for_path,
@@ -2701,7 +2702,8 @@ def _append_post_write_coverage_issues(
         protect_front_matter=protect_front_matter,
     )
     source_units = plan.source_units
-    if not source_units:
+    residual_units = plan.residual_units
+    if not source_units and not residual_units:
         return 0
 
     existing_keys = {
@@ -2751,7 +2753,70 @@ def _append_post_write_coverage_issues(
             }
         )
 
+    _append_residual_cjk_issues(
+        issues=issues,
+        existing_keys=existing_keys,
+        file_name=file_name,
+        residual_units=residual_units,
+    )
+
     return len(source_units)
+
+
+def _append_residual_cjk_issues(
+    *,
+    issues: list[dict],
+    existing_keys: set,
+    file_name: str,
+    residual_units: list,
+) -> None:
+    """译文整体已翻好、只夹带零星中文（日期、编号）时，单独给一条更轻的提示。"""
+    for unit in residual_units[:_POST_WRITE_COVERAGE_ISSUE_LIMIT]:
+        fragments = [str(item) for item in unit.data.get("residual_cjk") or []]
+        if not fragments:
+            continue
+        location = str(unit.data.get("residual_location") or unit.location)
+        issue = {
+            "file": file_name,
+            "kind": unit.kind,
+            "location": location,
+            "location_label": _format_location_label(location),
+            "section_path": unit.section_path or "正文",
+            "snippet": _build_source_excerpt(
+                str(unit.data.get("residual_text") or unit.target_text)
+            ),
+            "problem": "译文中残留少量中文",
+            "status": f"该位置译文已完成，仅残留：{'、'.join(fragments)}，多为日期或编号，请确认是否需要改写。",
+            "severity": "needs_review",
+        }
+        key = (
+            issue.get("file"),
+            issue.get("location"),
+            issue.get("problem"),
+            issue.get("severity"),
+        )
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        issues.append(issue)
+
+    if len(residual_units) > _POST_WRITE_COVERAGE_ISSUE_LIMIT:
+        issues.append(
+            {
+                "file": file_name,
+                "kind": "document",
+                "location": "output.residual",
+                "location_label": "输出文档",
+                "section_path": "正文",
+                "snippet": (
+                    f"共发现 {len(residual_units)} 处译文残留中文，"
+                    f"已仅列出前 {_POST_WRITE_COVERAGE_ISSUE_LIMIT} 处。"
+                ),
+                "problem": "译文中残留少量中文",
+                "status": "其余位置过多，已截断展示。",
+                "severity": "needs_review",
+            }
+        )
 
 
 def _apply_mixed_language_word_results(
@@ -2861,6 +2926,33 @@ def _format_location_label(location: str) -> str:
     return location or "未知位置"
 
 
+def _build_translation_scope_lines(file_results: list[dict]) -> list[str]:
+    """报告里明写翻译范围：页眉页脚和自动目录不翻，用户不该翻到那页才发现。"""
+    header_footer_files: list[str] = []
+    for item in file_results:
+        if not item.get("success"):
+            continue
+        target = item.get("output") or item.get("source_path")
+        if not target:
+            continue
+        if count_text_bearing_header_footer_parts(target) > 0:
+            header_footer_files.append(str(item.get("name") or "未知文件"))
+
+    if not header_footer_files:
+        return []
+
+    listed = "、".join(header_footer_files[:5])
+    if len(header_footer_files) > 5:
+        listed += f" 等 {len(header_footer_files)} 个文件"
+    return [
+        "## 翻译范围说明",
+        "",
+        f"- 页眉、页脚不参与翻译，输出文档中保持原文：{listed}。如需翻译请在 Word 里手工处理。",
+        "- 自动生成的目录、索引、页码域同样不翻译：域一刷新就会覆盖译文。",
+        "",
+    ]
+
+
 def _write_word_quality_report(
     *,
     output_dir: Path,
@@ -2908,6 +3000,8 @@ def _write_word_quality_report(
             )
         if preprocess_lines:
             lines.extend(["## Word 预处理", "", *preprocess_lines, ""])
+
+        lines.extend(_build_translation_scope_lines(file_results))
 
         if not issues:
             lines.extend(["## 质量提示", "", "未发现需要提示的问题。", ""])

@@ -285,6 +285,45 @@ class WordCoverageTests(unittest.TestCase):
             self.assertTrue(body_table_units)
             self.assertTrue(all(unit.status == COVERAGE_SOURCE_ONLY for unit in body_table_units))
 
+    def test_translation_carrying_a_numbering_prefix_still_counts_as_covered(self) -> None:
+        """译文开头留着中文编号（一.1）不能让整对段落被判成未译源文。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "编号前缀.docx"
+            doc = Document()
+            doc.add_paragraph("一.1 抢工背景分析")
+            doc.add_paragraph(
+                "一.1 Analyse du contexte de l’accélération des travaux"
+            )
+            doc.save(source)
+
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_COVERED)
+            self.assertEqual(plan.source_units, [])
+            self.assertEqual(len(plan.residual_units), 1)
+            self.assertEqual(plan.residual_units[0].data["residual_cjk"], ["一"])
+            self.assertEqual(
+                plan.residual_units[0].data["residual_location"], "body.paragraph[1]"
+            )
+
+    def test_untranslated_chinese_paragraph_is_still_reported(self) -> None:
+        """放宽判定不能把真正没翻的中文段落也放过去。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "漏译.docx"
+            doc = Document()
+            doc.add_paragraph("Analyse du contexte de l’accélération des travaux")
+            doc.add_paragraph("夜间施工必须配备足够的照明设备，并落实专人值守。")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+            by_location = {unit.location: unit for unit in plan.units}
+
+            self.assertEqual(
+                by_location["body.paragraph[1]"].status, COVERAGE_SOURCE_ONLY
+            )
+            self.assertEqual(plan.residual_units, [])
+
     def test_front_matter_disabled_by_default_leaves_cover_translatable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "默认不保护.docx"

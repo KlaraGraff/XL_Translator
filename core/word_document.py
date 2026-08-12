@@ -7,6 +7,7 @@ import shutil
 import stat
 import tempfile
 import uuid
+import zipfile
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +73,19 @@ _BARE_NUMERIC_HEADING_RE = re.compile(r"^(\d{1,2})[ \u3000、.．](?!\d)([^。�
 _HAND_TYPED_TOC_LEADER_RE = re.compile(
     r"(?:(?:[.．]\s*){3,}|(?:[·]\s*){3,}|(?:[…⋯]\s*){1,}|(?:[‥]\s*){2,})\s*\d+\s*$"
 )
+
+# 整段内容都由 Word 自己生成的域：目录、索引、题录、页码。这类段落翻译了也会被域
+# 刷新覆盖，整段跳过。SEQ（题注编号）、STYLEREF（章号）、REF 不在此列——含这些域的
+# 表题注、图题注属于正文，早期版本「见到任何域就跳过」会让它们一个字不翻还不进报告。
+_GENERATED_BLOCK_FIELD_RE = re.compile(
+    r"\b(?:TOC|TOA|INDEX|XE|TC|BIBLIOGRAPHY|PAGE|PAGEREF|NUMPAGES|SECTIONPAGES)\b"
+)
+# 去掉域结果后，段落自带的文字要有这么多才算「有正文要翻译」——挡住「详见 {REF}」
+# 这种去掉域就只剩两个字的引用句。
+_FIELD_PARAGRAPH_MIN_CJK_CHARS = 4
+_FIELD_PARAGRAPH_MIN_LATIN_LETTERS = 8
+
+_HEADER_FOOTER_PART_RE = re.compile(r"word/(?:header|footer)\d*\.xml$")
 
 _WORD_HIGHLIGHT_RGB = {
     "black": (0x00, 0x00, 0x00),
@@ -196,6 +210,7 @@ class NumberingLevelDefinition:
     start: int = 1
     number_format: str = "decimal"
     level_text: str = "%1."
+    legal_numbering: bool = False
 
 
 @dataclass(frozen=True)
@@ -383,6 +398,31 @@ def extract_word_segments(
     return segments
 
 
+def count_text_bearing_header_footer_parts(source: str | Path) -> int:
+    """Count header/footer parts that carry real words (page numbers don't count).
+
+    页眉页脚不参与翻译（见 extract_word_segments 的说明），报告里要如实写明这件事，
+    但只在文档确实有页眉页脚文字时才提，避免每份报告都挂一句无关提示。直接读 zip
+    里的 XML，不用 python-docx 再解析一遍整份文档。
+    """
+    try:
+        with zipfile.ZipFile(str(source)) as archive:
+            part_names = [
+                name
+                for name in archive.namelist()
+                if _HEADER_FOOTER_PART_RE.match(name)
+            ]
+            count = 0
+            for name in part_names:
+                xml = archive.read(name).decode("utf-8", errors="ignore")
+                texts = re.findall(r"<w:t[^>]*>(.*?)</w:t>", xml, flags=re.DOTALL)
+                if any(any(char.isalpha() for char in text) for text in texts):
+                    count += 1
+            return count
+    except Exception:  # noqa: BLE001 - 报告里的说明性信息，读不到就不提。
+        return 0
+
+
 def detect_hidden_word_content(source: str | Path) -> WordHiddenContentReport:
     """统计文档里 python-docx 扫不到、因而会被静默漏译的内容。
 
@@ -567,7 +607,9 @@ def write_bilingual_docx(
             continue
         leading_prefix = original_paragraph_prefixes.get(paragraph_key, "")
         translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
-        if resolved.replace_only:
+        # 原地改写会清空非锚点 run，段落里若有域（题注的 SEQ 编号）会被抹掉，
+        # 这类段落一律改成在下一行插入译文。
+        if resolved.replace_only and not _paragraph_has_field(paragraph):
             _replace_paragraph_text(
                 paragraph,
                 translated_text,
@@ -1196,16 +1238,76 @@ def _set_highlight_value(parent_element, value: str) -> None:
 
 
 def _is_toc_or_field_paragraph(paragraph: Paragraph) -> bool:
+    """判断段落是否属于「不翻译的域段落」。
+
+    只排除结果由 Word 自己生成或指向别处的域（目录、页码、交叉引用、超链接）——
+    翻译它们没有意义，域一刷新就被覆盖。表题注、图题注用的是 SEQ 域，正文里也确实
+    需要翻译，早期版本「见到任何域就跳过」会让这些题注一个字不翻、还不进报告。
+    """
     style_name = _paragraph_style_name(paragraph).casefold()
     if "toc" in style_name or "目录" in style_name:
         return True
 
+    instructions = _paragraph_field_instructions(paragraph)
+    if not instructions:
+        return False
+    if _GENERATED_BLOCK_FIELD_RE.search(instructions):
+        return True
+    return not _has_translatable_literal_text(paragraph)
+
+
+def _has_translatable_literal_text(paragraph: Paragraph) -> bool:
+    """段落去掉域指令和域结果之后，是否还剩下值得翻译的文字。"""
+    literal = _paragraph_literal_text(paragraph)
+    cjk = 0
+    latin = 0
+    for char in literal:
+        if not char.isalpha():
+            continue
+        if "一" <= char <= "鿿":
+            cjk += 1
+        else:
+            latin += 1
+    return cjk >= _FIELD_PARAGRAPH_MIN_CJK_CHARS or latin >= _FIELD_PARAGRAPH_MIN_LATIN_LETTERS
+
+
+def _paragraph_literal_text(paragraph: Paragraph) -> str:
+    """段落里作者自己敲的文字：域指令与域结果（含缓存的编号、页码）都不计入。"""
+    element = paragraph._p
+    field_simple_texts = {
+        id(text_node)
+        for field_simple in element.iter(qn("w:fldSimple"))
+        for text_node in field_simple.iter(qn("w:t"))
+    }
+    parts: list[str] = []
+    depth = 0
+    for node in element.iter():
+        tag = node.tag
+        if tag == qn("w:fldChar"):
+            char_type = node.get(qn("w:fldCharType"))
+            if char_type == "begin":
+                depth += 1
+            elif char_type == "end":
+                depth = max(0, depth - 1)
+        elif tag == qn("w:t") and depth == 0 and id(node) not in field_simple_texts:
+            parts.append(node.text or "")
+    return "".join(parts)
+
+
+def _paragraph_field_instructions(paragraph: Paragraph) -> str:
+    """收集段落里所有域指令码，拼成一个大写串（w:instrText 常被拆到多个 run）。"""
+    parts: list[str] = []
+    for node in paragraph._p.iter():
+        if node.tag == qn("w:fldSimple"):
+            parts.append(str(node.get(qn("w:instr")) or ""))
+        elif node.tag == qn("w:instrText"):
+            parts.append(node.text or "")
+    return " ".join(parts).upper()
+
+
+def _paragraph_has_field(paragraph: Paragraph) -> bool:
     xml = paragraph._p.xml
-    if "w:fldSimple" in xml or "w:fldChar" in xml:
-        return True
-    if "TOC" in xml and "w:instrText" in xml:
-        return True
-    return False
+    return "w:fldSimple" in xml or "w:fldChar" in xml
 
 
 def _paragraph_style_name(paragraph: Paragraph) -> str:
@@ -1441,6 +1543,7 @@ def _load_numbering_level_definitions(doc: Document) -> dict[tuple[str, int], Nu
                     ),
                     number_format=existing.number_format,
                     level_text=existing.level_text,
+                    legal_numbering=existing.legal_numbering,
                 )
 
         for ilvl, definition in levels.items():
@@ -1454,6 +1557,7 @@ def _read_numbering_level_definition(level) -> NumberingLevelDefinition:
         start=_to_int(_child_val(level, "w:start"), fallback=1),
         number_format=_child_val(level, "w:numFmt", default="decimal"),
         level_text=_child_val(level, "w:lvlText", default="%1."),
+        legal_numbering=_on_off_value(level.find(qn("w:isLgl"))) is True,
     )
 
 
@@ -1528,6 +1632,9 @@ def _format_numbering_label(
     def replace_placeholder(match: re.Match[str]) -> str:
         level = max(0, _to_int(match.group(1), fallback=1) - 1)
         level_counter = counters.get((num_id, level), 0)
+        if definition.legal_numbering:
+            # w:isLgl：本层引用到的所有层级一律用阿拉伯数字，忽略被引用层自己的 numFmt。
+            return _format_number(level_counter, "decimal")
         level_definition = level_definitions.get((num_id, level), definition)
         number_format = _number_format_for_level_text_placeholder(
             label,

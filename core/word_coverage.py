@@ -17,9 +17,11 @@ from core.translation_coverage import (
     CoverageUnit,
     clean_coverage_text,
     coverage_summary,
+    has_incidental_cjk,
     join_lines,
     looks_like_source_text,
     looks_like_target_text,
+    residual_cjk_fragments,
     split_existing_bilingual_text,
 )
 from core.word_document import (
@@ -50,6 +52,11 @@ class WordCoveragePlan:
     @property
     def source_units(self) -> list[CoverageUnit]:
         return [unit for unit in self.units if unit.status == COVERAGE_SOURCE_ONLY]
+
+    @property
+    def residual_units(self) -> list[CoverageUnit]:
+        """Covered positions whose translation still carries a few CJK characters."""
+        return [unit for unit in self.units if unit.data.get("residual_cjk")]
 
     @property
     def source_texts(self) -> list[str]:
@@ -176,6 +183,24 @@ def write_untranslated_docx(
     return out_path
 
 
+def _mark_residual_cjk(
+    data: dict,
+    target_text: str,
+    *,
+    target_lang: str,
+    location: str,
+) -> None:
+    """Record the CJK left inside an accepted translation, for a softer report item."""
+    if not has_incidental_cjk(target_text, target_lang=target_lang):
+        return
+    fragments = residual_cjk_fragments(target_text)
+    if not fragments:
+        return
+    data["residual_cjk"] = fragments
+    data["residual_location"] = location
+    data["residual_text"] = clean_coverage_text(target_text)
+
+
 def _classify_body_paragraphs(
     doc: Document,
     *,
@@ -236,6 +261,12 @@ def _classify_body_paragraphs(
                 source_lang=source_lang,
                 target_lang=target_lang,
             ):
+                _mark_residual_cjk(
+                    data,
+                    next_text,
+                    target_lang=target_lang,
+                    location=f"body.paragraph[{next_index}]",
+                )
                 units.append(
                     CoverageUnit(
                         source_text=text,
@@ -263,6 +294,7 @@ def _classify_body_paragraphs(
             index += 1
             continue
         if looks_like_target_text(text, source_lang=source_lang, target_lang=target_lang):
+            _mark_residual_cjk(data, text, target_lang=target_lang, location=location)
             units.append(
                 CoverageUnit(
                     source_text="",
@@ -348,6 +380,7 @@ def _classify_cell_text(
     )
     if split is not None:
         source, target = split
+        _mark_residual_cjk(data, target, target_lang=target_lang, location=location)
         return CoverageUnit(
             source_text=source,
             target_text=target,
@@ -369,6 +402,7 @@ def _classify_cell_text(
             data=data,
         )
     if looks_like_target_text(cleaned, source_lang=source_lang, target_lang=target_lang):
+        _mark_residual_cjk(data, cleaned, target_lang=target_lang, location=location)
         return CoverageUnit(
             source_text="",
             target_text=cleaned,
