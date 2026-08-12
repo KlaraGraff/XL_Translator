@@ -84,7 +84,20 @@ export type PdfPagesSnapshot = {
   /** 这次任务有没有开逐页审核。卡片副标题按它改口，否则关着审核时会写「审核模型逐页检查」
    *  而同一张表里每一行都是「未审核」。 */
   review_enabled: boolean;
+  /** 终态任务的单页重生成走的是另一条路：不排队、立刻跑、跑完覆盖输出文件。所以可用性
+   *  也另算——actionable 说的是「暂停中可以排队页操作」，这一条说的是「已结束，但还能
+   *  把某一页重跑一遍」。两个开关不会同时为真。 */
+  rerun_actionable: boolean;
+  /** 终态没有 SSE 可用（事件流在终态就结束了），这份快照是界面唯一的重生成进度来源。 */
+  rerun: PdfPageRerunState;
   files: PdfPageFile[];
+};
+
+export type PdfPageRerunState = {
+  active: boolean;
+  relative_path: string;
+  page_number: number;
+  error: string;
 };
 
 export type StreamOptions = {
@@ -291,6 +304,15 @@ export class ApiClient {
 
   async regeneratePdfPage(taskId: string, file: string, page: number): Promise<void> {
     await this.request(`/api/tasks/${taskId}/pdf-pages/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ file, page }),
+    });
+  }
+
+  /** 终态任务专用：regeneratePdfPage 是「排队，继续翻译时生效」，这一条是「现在就重跑
+   *  这一页，并把输出文件重新合成一遍」。 */
+  async rerunPdfPage(taskId: string, file: string, page: number): Promise<void> {
+    await this.request(`/api/tasks/${taskId}/pdf-pages/rerun`, {
       method: "POST",
       body: JSON.stringify({ file, page }),
     });

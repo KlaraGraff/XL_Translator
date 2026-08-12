@@ -752,6 +752,13 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       if (notice) col.append(notice);
     }
     col.append(buildTableCard(surface, st));
+    // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
+    // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
+    // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
+    if (surface === "pdf" && local?.task.terminal) {
+      const reviewCard = buildPdfReviewCard(surface, local);
+      if (reviewCard) col.append(reviewCard);
+    }
   }
   return col;
 }
@@ -1606,7 +1613,21 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
  *  就有二十多个一模一样的悬浮提示，读起来像出了二十个不同的问题。按行不同的原因
  *  （比如按幅面跳过的页）仍然挂在该行的按钮上——那才是 title 该承担的。 */
 function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot): string {
-  return snapshot.terminal ? "任务已结束，仅可查看对比页图，不能再触发操作。" : "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
+  if (!snapshot.terminal) return "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
+  if (snapshot.rerun.active) return `第 ${snapshot.rerun.page_number} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
+  if (snapshot.rerun.error) return `上一次重新生成没有成功：${redactedText(snapshot.rerun.error, "输出文件没有改动。")}`;
+  // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
+  if (snapshot.rerun_actionable) return "任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页，并覆盖原来的译文页和输出文件。";
+  return "任务已结束，仅可查看对比页图，不能再触发操作。";
+}
+
+/** 这一页是不是正在被重新生成。终态没有逐页 SSE，这个判断只能来自快照。 */
+function isPageRerunning(snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage): boolean {
+  return (
+    snapshot.rerun.active &&
+    snapshot.rerun.relative_path === file.relative_path &&
+    snapshot.rerun.page_number === page.page_number
+  );
 }
 
 async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage, action: "regenerate" | "skip"): Promise<void> {
@@ -1618,6 +1639,61 @@ async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageF
     await fetchPdfPagesSnapshot(surface, taskId);
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "操作失败。"), error: true });
+  }
+}
+
+/** 危险操作确认：覆盖不可逆、要再花一次钱、还会改写可能已经交出去的文件，三条都得说。 */
+function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): void {
+  openModal({
+    tone: "danger",
+    icon: "warn",
+    title: `重新生成第 ${page.page_number} 页？`,
+    body: [
+      "现在这一页的译文会被覆盖，覆盖之后取不回来。重新生成要再调用一次接口，按这一页的用量计费。输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。",
+    ],
+    actions: [
+      { label: "取消" },
+      {
+        label: "覆盖并重新生成",
+        variant: "danger-solid",
+        onClick: () => void runPdfPageRerun(surface, taskId, file, page),
+      },
+    ],
+  });
+}
+
+async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): Promise<void> {
+  try {
+    const c = await getClient();
+    await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
+    showToast({ message: `第 ${page.page_number} 页正在重新生成，跑完会覆盖输出文件。` });
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "重新生成失败。"), error: true });
+  }
+  // 成功要拿到「重新生成中」这一行，失败也要把后端此刻的真实状态换上来。
+  await fetchPdfPagesSnapshot(surface, taskId);
+}
+
+/** 终态没有 SSE，重生成的进度只能靠轮询这份快照；跑完自己停，不留空转的 interval。 */
+const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+
+function startPdfRerunTicker(surface: Surface, taskId: string): void {
+  if (rerunTickers[surface] !== undefined) return;
+  rerunTickers[surface] = window.setInterval(() => {
+    const local = states[surface].task;
+    if (!local || local.task.task_id !== taskId || !local.pdfPagesSnapshot?.rerun.active) {
+      stopPdfRerunTicker(surface);
+      return;
+    }
+    void fetchPdfPagesSnapshot(surface, taskId);
+  }, 2000);
+}
+
+function stopPdfRerunTicker(surface: Surface): void {
+  const handle = rerunTickers[surface];
+  if (handle !== undefined) {
+    window.clearInterval(handle);
+    rerunTickers[surface] = undefined;
   }
 }
 
@@ -1700,7 +1776,9 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   const multiFile = snapshot.files.length > 1;
 
   const card = el("div", "card");
-  card.style.cssText = "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
+  card.style.cssText = snapshot.terminal
+    ? "flex:0 0 auto;display:flex;flex-direction:column;overflow:hidden"
+    : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
   const head = el("div", "tc-head");
   const b = el("b");
   b.textContent = "逐页审核";
@@ -1721,6 +1799,8 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   }
 
   const tableWrap = el("div");
+  // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，flex:1 会把它压成一条缝。
+  if (snapshot.terminal) tableWrap.style.maxHeight = "420px";
   tableWrap.style.cssText = "flex:1;overflow:auto";
   const table = el("table", "tbl");
   const headRow = el("tr");
@@ -1816,17 +1896,18 @@ function reviewNote(page: PdfPage): string {
 
 function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage): HTMLTableRowElement {
   const row = el("tr");
+  const rerunning = isPageRerunning(snapshot, file, page);
   const pageCell = el("td");
   pageCell.textContent = `第 ${page.page_number} 页`;
   row.append(pageCell);
 
   const resultCell = el("td");
-  resultCell.append(reviewResultChip(page));
+  resultCell.append(rerunning ? createChip({ label: "重新生成中", tone: "tint" }) : reviewResultChip(page));
   row.append(resultCell);
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = reviewNote(page);
+  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会覆盖原来的译文页" : reviewNote(page);
   row.append(noteCell);
 
   const actionsCell = el("td");
@@ -1840,11 +1921,39 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   const oversizeReason = "该页按幅面跳过，没有生成页图；如需翻译请关闭「跳过 A3 及更大的页面」后重跑。";
 
   actionsCell.append(
-    buildActionLink("查看对比", oversizeSkipped, oversizeSkipped ? oversizeReason : undefined, () =>
-      openPdfPageCompareModal(surface, taskId, file, page),
+    buildActionLink(
+      "查看对比",
+      oversizeSkipped || rerunning,
+      oversizeSkipped ? oversizeReason : rerunning ? "这一页正在重新生成，跑完再看。" : undefined,
+      () => openPdfPageCompareModal(surface, taskId, file, page),
     ),
   );
   actionsCell.append(document.createTextNode(" · "));
+
+  if (snapshot.terminal) {
+    // 终态不排队：点下去立刻重跑并覆盖输出文件，所以先过一道危险操作确认。
+    // 「跳过该页」在终态没有意义（它的含义是「接受这张失败占位页」），不给入口。
+    const rerunnable = !oversizeSkipped && !notFinished && page.status !== "rendered" && page.status !== "placeholder_pending";
+    const rerunReason = oversizeSkipped
+      ? oversizeReason
+      : !rerunnable
+        ? "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
+        : snapshot.rerun.active
+          ? "有一页正在重新生成，跑完再操作下一页。"
+          : !snapshot.rerun_actionable
+            ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
+            : undefined;
+    actionsCell.append(
+      buildActionLink(
+        rerunning ? "重新生成中" : "重新生成",
+        rerunning || !rerunnable || !snapshot.rerun_actionable,
+        rerunReason,
+        () => confirmPdfPageRerun(surface, taskId, file, page),
+      ),
+    );
+    row.append(actionsCell);
+    return row;
+  }
 
   const regenDisabled = !actionable || notFinished || oversizeSkipped;
   const regenReason = oversizeSkipped
@@ -1975,6 +2084,9 @@ async function fetchPdfPagesSnapshot(surface: Surface, taskId: string): Promise<
     const snapshot = await c.getPdfPages(taskId);
     if (st.task?.task.task_id !== taskId) return;
     st.task.pdfPagesSnapshot = snapshot;
+    // 单页重生成跑在终态任务上，SSE 那时已经收摊了；接管一个正在重生成的任务
+    // （切回页面、重开程序）也要能自己接上进度，所以起点放在这里而不是发起处。
+    if (snapshot.rerun?.active) startPdfRerunTicker(surface, taskId);
     rerender(surface);
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "刷新逐页状态失败。"), error: true });
