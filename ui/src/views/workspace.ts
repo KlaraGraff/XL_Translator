@@ -42,6 +42,7 @@ import {
 import { icon, type IconName } from "../icons";
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
+import { taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
 
@@ -3067,19 +3068,10 @@ function fileResultUntranslated(item: JsonObject): boolean {
   return pages > 0 && num(item.skipped_oversize_page_count) >= pages;
 }
 
+/** 状态词只有一份，跟任务中心共用（见 ui/src/task-state-labels.ts）。这里以前另存了一份
+ *  switch，四个终态里没有一个跟任务中心写的一样，同一个任务在两屏上是两种说法。 */
 function terminalStateWord(state: TaskStatus["state"]): string {
-  switch (state) {
-    case "error":
-      return "任务失败";
-    case "interrupted":
-      return "任务中断";
-    case "stopped":
-      return "已停止";
-    case "completed_with_issues":
-      return "已完成，有问题";
-    default:
-      return "已完成";
-  }
+  return taskStateWord(state);
 }
 
 /** 终态 + 逐文件结果一起决定横幅的口气；只看 state 会把「一个文件都没生成」画成绿色。 */

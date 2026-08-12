@@ -20,6 +20,7 @@ import {
   type ChipTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
+import { TASK_STATE_LABELS } from "../task-state-labels";
 import { ApiClient, type SseEvent, type TaskStatus } from "../api-client";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -169,19 +170,7 @@ function taskSurfaceLabel(surface: TaskSurface): string {
   return "TM 清洗";
 }
 
-const STATE_LABELS: Record<string, string> = {
-  preflight: "等待确认",
-  running: "执行中",
-  pausing: "暂停提交中",
-  paused: "已暂停提交",
-  stopping: "安全停止中",
-  finalizing: "正在收尾",
-  done: "已完成",
-  completed_with_issues: "完成但有问题",
-  error: "发生错误",
-  stopped: "已中止",
-  interrupted: "应用中断",
-};
+const STATE_LABELS = TASK_STATE_LABELS;
 
 const TONE_MAP: Record<string, ChipTone> = {
   preflight: "tint",
@@ -658,7 +647,9 @@ const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = {
   error: { label: "未生成", tone: "dgr" },
   unstarted: { label: "未开始", tone: "mute" },
   skipped: { label: "已跳过", tone: "mute" },
-  stopped: { label: "已中止", tone: "mute" },
+  // 跟任务级状态词保持同一个动词（见 task-state-labels.ts）：任务写「已停止」、
+  // 它下面的文件写「已中止」，同一屏之内就是两个说法。
+  stopped: { label: "已停止", tone: "mute" },
 };
 
 function fileRows(task: TaskStatus): FileRow[] {
@@ -1100,7 +1091,7 @@ function reviewCount(task: TaskStatus): number | null {
  * 它决定用户下一步要不要重跑。
  */
 function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null {
-  // 中止 / 出错 / 应用中断这三种终态，状态词本身就是用户最需要的一句话（「已中止」
+  // 停止 / 出错 / 应用中断这三种终态，状态词本身就是用户最需要的一句话（「已停止」
   // 比「没有生成文件」更能解释为什么没有东西），交回 taskStateMeta。
   if (task.state !== "done" && task.state !== "completed_with_issues") return null;
   const { produced, failed, total } = producedCounts(task);

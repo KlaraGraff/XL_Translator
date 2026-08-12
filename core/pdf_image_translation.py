@@ -1834,7 +1834,7 @@ class PdfImageTranslationRunner:
                 break
 
             if stopped and not fatal_error:
-                self._log("WARN", "任务已中止：完整完成的文件已生成，未完成文件保留页面素材和报告。")
+                self._log("WARN", "任务已停止：完整完成的文件已生成，未完成文件保留页面素材和报告。")
         except ImageModelUnavailableError as exc:
             fatal_error = str(exc)
             record_image_model_availability(
@@ -1888,7 +1888,7 @@ class PdfImageTranslationRunner:
                         message=(
                             f"PDF 翻译已结束暂停任务，已保留页面素材和报告：{output_dir}"
                             if self._stop_reason == "end_paused"
-                            else f"PDF 翻译已中止（用户主动中止），已保留页面素材和报告：{output_dir}"
+                            else f"PDF 翻译已停止（用户主动停止），已保留页面素材和报告：{output_dir}"
                         ),
                         output_dir=str(output_dir),
                         report_path=str(report_path),
@@ -4290,7 +4290,7 @@ def _pdf_status_label(status: str) -> str:
     return {
         PDF_OUTPUT_STATE_COMPLETED: "已完成",
         PDF_OUTPUT_STATE_NEEDS_REVIEW: "已完成，存在需复核页面",
-        PDF_OUTPUT_STATE_STOPPED: "已中止",
+        PDF_OUTPUT_STATE_STOPPED: "已停止",
         PDF_OUTPUT_STATE_FAILED: "异常失败",
     }.get(status, status or "未知")
 

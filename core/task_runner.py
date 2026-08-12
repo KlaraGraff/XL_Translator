@@ -402,7 +402,7 @@ class TaskRunner:
             )
             return
 
-        def _raise_if_stopped(message: str = "任务已中止") -> None:
+        def _raise_if_stopped(message: str = "任务已停止") -> None:
             if self._stop_event.is_set():
                 raise TaskStopped(message)
 
@@ -571,7 +571,7 @@ class TaskRunner:
                     self._task_logger.warning("收到停止请求，正在终止 Excel 精调。")
                     _kill_excel_pid(worker_state["pid"], "收到停止请求")
                     done_event.wait(timeout=5)
-                    raise TaskStopped("任务已中止，Excel 精调已终止，已保留当前已生成结果。")
+                    raise TaskStopped("任务已停止，Excel 精调已终止，已保留当前已生成结果。")
 
                 stalled_for = time.monotonic() - worker_state["last_progress_ts"]
                 if stalled_for >= AUTOFIT_STALL_TIMEOUT_SECONDS:
@@ -1125,7 +1125,7 @@ class TaskRunner:
                             f"语义校验接受 {mixed_stats.semantic_accepted_count}"
                         ),
                     )
-                _raise_if_stopped("任务已中止，未写入剩余翻译结果。")
+                _raise_if_stopped("任务已停止，未写入剩余翻译结果。")
                 api_elapsed = (datetime.now() - t0).total_seconds()
                 self._log(
                     "INFO",

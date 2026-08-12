@@ -409,7 +409,7 @@ class WordTaskRunner:
             )
             return
 
-        def _raise_if_stopped(message: str = "任务已中止") -> None:
+        def _raise_if_stopped(message: str = "任务已停止") -> None:
             if self._stop_event.is_set():
                 raise TaskStopped(message)
 
@@ -987,7 +987,7 @@ class WordTaskRunner:
                         )
                     ),
                 )
-                _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+                _raise_if_stopped("任务已停止，未写入剩余 Word 翻译结果。")
 
                 if mixed_texts:
                     _apply_mixed_language_word_results(
@@ -1022,7 +1022,7 @@ class WordTaskRunner:
                 for source in retry_sources:
                     recovery_pool.add_candidate(source, api_translations.get(source, ""))
                 recovery_outcome = recovery_pool.wait_for_completion()
-                _raise_if_stopped("任务已中止，未写入剩余 Word 翻译结果。")
+                _raise_if_stopped("任务已停止，未写入剩余 Word 翻译结果。")
                 api_translations.update(recovery_outcome.accepted_translations)
                 for source in recovery_outcome.unresolved_sources:
                     api_translations[source] = source
