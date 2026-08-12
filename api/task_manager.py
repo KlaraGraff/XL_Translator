@@ -116,6 +116,7 @@ class TaskInputError(ValueError):
 class TaskOptions:
     untranslated_only: bool = False
     protect_front_matter: bool = False
+    translate_headers_footers: bool = False
     allow_xls_fallback: bool = False
     allow_doc_fallback: bool = False
     include_images: bool = False
@@ -520,6 +521,7 @@ class TranslationTaskManager:
             "options": {
                 "untranslated_only": options.untranslated_only,
                 "protect_front_matter": options.protect_front_matter,
+                "translate_headers_footers": options.translate_headers_footers,
                 "allow_xls_fallback": options.allow_xls_fallback,
                 "allow_doc_fallback": options.allow_doc_fallback,
                 "include_images": options.include_images,
@@ -1246,6 +1248,7 @@ class TranslationTaskManager:
                 key_overrides=key_overrides,
                 untranslated_only=options.untranslated_only,
                 protect_front_matter=options.protect_front_matter,
+                translate_headers_footers=options.translate_headers_footers,
                 allow_doc_fallback=options.allow_doc_fallback,
                 api_scheduler=api_schedulers.get("translation"),
             )

@@ -58,6 +58,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Leave everything before the first body chapter heading untranslated (cover, TOC, preface).",
     )
+    parser.add_argument(
+        "--word-translate-headers-footers",
+        action="store_true",
+        help="Translate header/footer text, appended inline after the original in the same line.",
+    )
     highlight_group = parser.add_mutually_exclusive_group()
     highlight_group.add_argument(
         "--word-highlight-review",
@@ -109,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             untranslated_only=args.word_untranslated_only,
             protect_front_matter=args.word_protect_front_matter,
+            translate_headers_footers=args.word_translate_headers_footers,
             event_handler=None if args.quiet else _print_event,
         )
     except Exception as exc:

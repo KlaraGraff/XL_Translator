@@ -112,6 +112,7 @@ const WORD_TOGGLES: ToggleDef[] = [
   { key: "wordNativePreprocessing", label: "本地自动编号预处理", hint: "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
   { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
   { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: false, pathKind: "none" },
+  { key: "translateHeadersFooters", label: "翻译页眉页脚", hint: "默认不翻。开启后页眉页脚的文字也会翻译，译文用「 / 」接在同一行原文后面，不另起一行——页眉高度是固定的，多一行会把正文顶下去。只有页码、目录域的页眉页脚仍然跳过。全译和补译都生效。", default: false, pathKind: "none" },
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
@@ -2405,6 +2406,7 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   if (surface === "word") {
     payload.allow_doc_fallback = st.allowDocFallback;
     payload.protect_front_matter = Boolean(st.toggles.get("protectFrontMatter"));
+    payload.translate_headers_footers = Boolean(st.toggles.get("translateHeadersFooters"));
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
   return payload;

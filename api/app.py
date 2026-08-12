@@ -161,6 +161,7 @@ class TaskStartRequest(BaseModel):
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_front_matter: bool = False
+    translate_headers_footers: bool = False
     allow_xls_fallback: bool = False
     allow_doc_fallback: bool = False
     include_images: bool = False
@@ -758,6 +759,7 @@ def create_app(
         return TaskOptions(
             untranslated_only=request.untranslated_only,
             protect_front_matter=request.protect_front_matter,
+            translate_headers_footers=request.translate_headers_footers,
             allow_xls_fallback=request.allow_xls_fallback,
             allow_doc_fallback=request.allow_doc_fallback,
             include_images=request.include_images,

@@ -86,6 +86,16 @@ _FIELD_PARAGRAPH_MIN_CJK_CHARS = 4
 _FIELD_PARAGRAPH_MIN_LATIN_LETTERS = 8
 
 _HEADER_FOOTER_PART_RE = re.compile(r"word/(?:header|footer)\d*\.xml$")
+# 一节最多挂三个页眉、三个页脚（首页/奇数页/偶数页），attr 名就是 python-docx 的入口。
+_HEADER_FOOTER_SLOTS: tuple[tuple[str, str, str], ...] = (
+    ("first_page_header", "header", "首页页眉"),
+    ("header", "header", "页眉"),
+    ("even_page_header", "header", "偶数页页眉"),
+    ("first_page_footer", "footer", "首页页脚"),
+    ("footer", "footer", "页脚"),
+    ("even_page_footer", "footer", "偶数页页脚"),
+)
+_HEADER_FOOTER_INLINE_SEPARATOR = " / "
 
 _WORD_HIGHLIGHT_RGB = {
     "black": (0x00, 0x00, 0x00),
@@ -334,8 +344,13 @@ def extract_word_segments(
     target_lang: str,
     source_lang: str = "zh",
     protect_front_matter: bool = False,
+    include_headers_footers: bool = False,
 ) -> list[WordSegment]:
-    """Extract unique body-paragraph and table-cell texts that need translation."""
+    """Extract unique body-paragraph and table-cell texts that need translation.
+
+    页眉页脚默认不在范围内（Word 里它们是独立的 part，正文遍历根本看不到），
+    只有 include_headers_footers 打开时才追加进来。
+    """
     doc = Document(str(path))
     front_matter = find_word_front_matter_boundary(doc) if protect_front_matter else None
     protected_paragraphs = front_matter.protected_paragraph_indices if front_matter else frozenset()
@@ -395,15 +410,142 @@ def extract_word_segments(
                 )
             )
 
+    if include_headers_footers:
+        for segment in _collect_header_footer_segments(
+            doc,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        ):
+            if segment.source in seen:
+                continue
+            seen.add(segment.source)
+            segments.append(segment)
+
     return segments
+
+
+def extract_word_header_footer_segments(
+    path: str | Path,
+    *,
+    target_lang: str,
+    source_lang: str = "zh",
+) -> list[WordSegment]:
+    """Extract only the header/footer texts that need translation.
+
+    补译模式走的是覆盖率计划（只看正文和表格），页眉页脚要单独取一次才能补上。
+    """
+    doc = Document(str(path))
+    segments: list[WordSegment] = []
+    seen: set[str] = set()
+    for segment in _collect_header_footer_segments(
+        doc,
+        target_lang=target_lang,
+        source_lang=source_lang,
+    ):
+        if segment.source in seen:
+            continue
+        seen.add(segment.source)
+        segments.append(segment)
+    return segments
+
+
+def _collect_header_footer_segments(
+    doc: Document,
+    *,
+    target_lang: str,
+    source_lang: str,
+) -> list[WordSegment]:
+    segments: list[WordSegment] = []
+    for kind, location, label, paragraph in _iter_header_footer_paragraphs(doc):
+        source = _paragraph_source_text(paragraph)
+        if not _is_translatable_source(
+            source,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        ):
+            continue
+        # 只有页码域的页脚就是被这一步挡下来的：域刷新会覆盖译文。
+        if _is_toc_or_field_paragraph(paragraph):
+            continue
+        segments.append(
+            WordSegment(
+                source=source,
+                kind=kind,
+                location=location,
+                section_path=label,
+            )
+        )
+    return segments
+
+
+def _iter_header_footer_paragraphs(
+    doc: Document,
+) -> list[tuple[str, str, str, Paragraph]]:
+    """List header/footer paragraphs once per underlying part.
+
+    "链接到前一节"的页眉页脚指向同一个 part（partname 相同），不按 part 去重的话，
+    同一行会被追加好几遍译文。
+    """
+    seen_parts: set[str] = set()
+    items: list[tuple[str, str, str, Paragraph]] = []
+    for section in doc.sections:
+        for attr, kind, label in _HEADER_FOOTER_SLOTS:
+            try:
+                container = getattr(section, attr)
+                part_name = str(container.part.partname)
+            except Exception:  # noqa: BLE001 - 页眉页脚异常不该拖垮正文翻译
+                continue
+            if part_name in seen_parts:
+                continue
+            seen_parts.add(part_name)
+            paragraphs = list(container.paragraphs)
+            for table in container.tables:
+                for cell in _iter_unique_table_cells(table):
+                    paragraphs.extend(cell.paragraphs)
+            stem = Path(part_name).stem or kind
+            for index, paragraph in enumerate(paragraphs):
+                items.append((kind, f"{kind}[{stem}].paragraph[{index}]", label, paragraph))
+    return items
+
+
+def _append_translation_inline(
+    paragraph: Paragraph,
+    text: str,
+    *,
+    target_lang: str,
+) -> bool:
+    """Append the translation to the end of the same paragraph.
+
+    页眉页脚的高度由节边距固定，另起一行会把版心顶下去或让文字被裁掉，所以这里
+    只在原文后面接一个 run，不新建段落。
+    """
+    translation = (text or "").strip()
+    if not translation:
+        return False
+    raw = _paragraph_raw_text(paragraph)
+    if not raw.strip():
+        return False
+    # 重跑（补译模式）时原文后面已经有译文了，不能再接一遍。
+    if translation in raw:
+        return False
+    separator = (
+        _HEADER_FOOTER_INLINE_SEPARATOR.lstrip()
+        if raw[-1:].isspace()
+        else _HEADER_FOOTER_INLINE_SEPARATOR
+    )
+    # 先加空 run 再取格式：_copy_run_shape 只看有文字的 run，空的不会污染"是否统一"的判定。
+    run = paragraph.add_run("")
+    _copy_run_shape(paragraph, run, target_lang=target_lang)
+    run.text = f"{separator}{translation}"
+    return True
 
 
 def count_text_bearing_header_footer_parts(source: str | Path) -> int:
     """Count header/footer parts that carry real words (page numbers don't count).
 
-    页眉页脚不参与翻译（见 extract_word_segments 的说明），报告里要如实写明这件事，
-    但只在文档确实有页眉页脚文字时才提，避免每份报告都挂一句无关提示。直接读 zip
-    里的 XML，不用 python-docx 再解析一遍整份文档。
+    报告里要如实写明页眉页脚这次翻没翻，但只在文档确实有页眉页脚文字时才提，
+    避免每份报告都挂一句无关提示。直接读 zip 里的 XML，不用 python-docx 再解析
+    一遍整份文档。
     """
     try:
         with zipfile.ZipFile(str(source)) as archive:
@@ -426,7 +568,7 @@ def count_text_bearing_header_footer_parts(source: str | Path) -> int:
 def detect_hidden_word_content(source: str | Path) -> WordHiddenContentReport:
     """统计文档里 python-docx 扫不到、因而会被静默漏译的内容。
 
-    只看 body：页眉页脚本来就不在翻译范围内，把它们算进来只会制造无从处理的告警。
+    只看 body：页眉页脚有自己的开关和报告说明，把它们算进"漏译"只会制造重复告警。
     """
     try:
         doc = Document(str(Path(source)))
@@ -492,6 +634,7 @@ def write_bilingual_docx(
     existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
     protect_front_matter: bool = False,
+    translate_headers_footers: bool = False,
 ) -> Path:
     """Write a bilingual Word document to the output directory."""
     source_path = Path(source_path)
@@ -681,6 +824,31 @@ def write_bilingual_docx(
                 highlight_skip_count += 1
         table_insertions += 1
 
+    header_footer_insertions = 0
+    if translate_headers_footers:
+        for _kind, _location, _label, paragraph in _iter_header_footer_paragraphs(doc):
+            source = _paragraph_source_text(paragraph)
+            if not _is_translatable_source(
+                source,
+                target_lang=target_lang,
+                source_lang=source_lang,
+            ):
+                continue
+            if _is_toc_or_field_paragraph(paragraph):
+                continue
+            resolved = _resolve_translation(source, translations)
+            if resolved is None:
+                continue
+            if resolved.replace_only and not _paragraph_has_field(paragraph):
+                _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
+                header_footer_insertions += 1
+            elif _append_translation_inline(
+                paragraph,
+                resolved.text,
+                target_lang=target_lang,
+            ):
+                header_footer_insertions += 1
+
     _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))
     if log_callback:
@@ -689,8 +857,12 @@ def write_bilingual_docx(
             highlight_summary = f"，复核标记 {highlight_count}"
             if highlight_skip_count:
                 highlight_summary += f"，跳过已有标记 {highlight_skip_count}"
+        header_footer_summary = (
+            f"，页眉页脚 {header_footer_insertions}" if translate_headers_footers else ""
+        )
         log_callback(
-            f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，表格单元格 {table_insertions}{highlight_summary}）"
+            f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，"
+            f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
         )
     return out_path
 

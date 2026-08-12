@@ -98,6 +98,7 @@ from core.word_document import (
     build_word_output_dir,
     count_text_bearing_header_footer_parts,
     detect_hidden_word_content,
+    extract_word_header_footer_segments,
     extract_word_segments,
     find_word_front_matter_boundary_for_path,
     normalize_docx_automatic_numbering,
@@ -246,6 +247,7 @@ class WordTaskRunner:
         api_scheduler: WeightedApiScheduler | None = None,
         untranslated_only: bool = False,
         protect_front_matter: bool = False,
+        translate_headers_footers: bool = False,
         allow_doc_fallback: bool = False,
     ):
         self._files = file_items
@@ -256,6 +258,7 @@ class WordTaskRunner:
         self._api_scheduler_override = api_scheduler
         self._untranslated_only = bool(untranslated_only)
         self._protect_front_matter = bool(protect_front_matter)
+        self._translate_headers_footers = bool(translate_headers_footers)
         self._allow_doc_fallback = bool(allow_doc_fallback)
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
@@ -572,6 +575,23 @@ class WordTaskRunner:
                             coverage_plan.source_units,
                         )
                         text_set = set(coverage_plan.source_texts)
+                        # 覆盖率计划只看正文和表格，页眉页脚要单独取一次才能一起补译。
+                        if self._translate_headers_footers:
+                            header_segments = extract_word_header_footer_segments(
+                                process_path,
+                                target_lang=target_lang,
+                                source_lang=(
+                                    source_lang
+                                    if not auto_source_lang
+                                    else get_default_source_lang()
+                                ),
+                            )
+                            _remember_segment_locations(
+                                segment_locations,
+                                _file_result_identity(file_item, self._source_root),
+                                header_segments,
+                            )
+                            text_set.update(segment.source for segment in header_segments)
                         summary = coverage_plan.summary
                         self._log(
                             "INFO",
@@ -599,6 +619,7 @@ class WordTaskRunner:
                                 else get_default_source_lang()
                             ),
                             protect_front_matter=self._protect_front_matter,
+                            include_headers_footers=self._translate_headers_footers,
                         )
                         coverage_plans.append(None)
                         _remember_segment_locations(
@@ -1216,6 +1237,7 @@ class WordTaskRunner:
                                 msg,
                             ),
                             protect_front_matter=self._protect_front_matter,
+                            translate_headers_footers=self._translate_headers_footers,
                         )
                     residual_count = _append_post_write_coverage_issues(
                         issues=quality_issues,
@@ -1344,6 +1366,7 @@ class WordTaskRunner:
                         elapsed_sec=elapsed_sec,
                         tm_hit_count=tm_hit_count,
                         api_call_count=api_call_count,
+                        translate_headers_footers=self._translate_headers_footers,
                     )
                 except Exception as exc:  # report output must not fail a usable task
                     logger.debug(f"Word 翻译质量报告写入失败原始错误：{exc!r}")
@@ -2926,8 +2949,12 @@ def _format_location_label(location: str) -> str:
     return location or "未知位置"
 
 
-def _build_translation_scope_lines(file_results: list[dict]) -> list[str]:
-    """报告里明写翻译范围：页眉页脚和自动目录不翻，用户不该翻到那页才发现。"""
+def _build_translation_scope_lines(
+    file_results: list[dict],
+    *,
+    translate_headers_footers: bool = False,
+) -> list[str]:
+    """报告里明写翻译范围，用户不该翻到那一页才发现某处没翻。"""
     header_footer_files: list[str] = []
     for item in file_results:
         if not item.get("success"):
@@ -2944,10 +2971,19 @@ def _build_translation_scope_lines(file_results: list[dict]) -> list[str]:
     listed = "、".join(header_footer_files[:5])
     if len(header_footer_files) > 5:
         listed += f" 等 {len(header_footer_files)} 个文件"
+    if translate_headers_footers:
+        header_footer_line = (
+            f"- 页眉、页脚已翻译，译文接在同一行原文后面（不另起一行，避免撑高版心）：{listed}。"
+        )
+    else:
+        header_footer_line = (
+            f"- 页眉、页脚不参与翻译，输出文档中保持原文：{listed}。"
+            "如需翻译，请在 Word 选项里打开「翻译页眉页脚」后重跑。"
+        )
     return [
         "## 翻译范围说明",
         "",
-        f"- 页眉、页脚不参与翻译，输出文档中保持原文：{listed}。如需翻译请在 Word 里手工处理。",
+        header_footer_line,
         "- 自动生成的目录、索引、页码域同样不翻译：域一刷新就会覆盖译文。",
         "",
     ]
@@ -2961,6 +2997,7 @@ def _write_word_quality_report(
     elapsed_sec: float,
     tm_hit_count: int,
     api_call_count: int,
+    translate_headers_footers: bool = False,
 ) -> Path | None:
     try:
         report_path = output_dir / "word_translation_report.md"
@@ -3001,7 +3038,12 @@ def _write_word_quality_report(
         if preprocess_lines:
             lines.extend(["## Word 预处理", "", *preprocess_lines, ""])
 
-        lines.extend(_build_translation_scope_lines(file_results))
+        lines.extend(
+            _build_translation_scope_lines(
+                file_results,
+                translate_headers_footers=translate_headers_footers,
+            )
+        )
 
         if not issues:
             lines.extend(["## 质量提示", "", "未发现需要提示的问题。", ""])

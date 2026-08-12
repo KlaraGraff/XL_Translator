@@ -22,6 +22,7 @@ from core.translation_filter import (
     is_translation_redundant,
 )
 from core.word_document import (
+    extract_word_header_footer_segments,
     extract_word_segments,
     find_word_front_matter_boundary,
     scan_word_path,
@@ -197,6 +198,143 @@ class WordDocumentTests(unittest.TestCase):
         paragraph.add_run(result)
         end_run = paragraph.add_run()
         end_run._r.append(end)
+
+    def _build_header_footer_docx(self, path: Path) -> None:
+        doc = Document()
+        doc.add_paragraph("施工内容")
+        section = doc.sections[0]
+        section.header.paragraphs[0].text = "某某工程 抢工方案"
+        footer_paragraph = section.footer.paragraphs[0]
+        footer_paragraph.text = "第 "
+        self._append_field(footer_paragraph, " PAGE ", result="5")
+        footer_paragraph.add_run(" 页")
+        doc.save(str(path))
+
+    def test_headers_and_footers_stay_out_of_scope_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "header.docx"
+            self._build_header_footer_docx(source_path)
+
+            sources = {
+                segment.source
+                for segment in extract_word_segments(
+                    source_path,
+                    target_lang="fr",
+                    source_lang="zh",
+                )
+            }
+            self.assertNotIn("某某工程 抢工方案", sources)
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={"某某工程 抢工方案": "Plan de rattrapage"},
+                target_lang="fr",
+                source_lang="zh",
+            )
+            header = Document(str(out_path)).sections[0].header
+            self.assertEqual([p.text for p in header.paragraphs], ["某某工程 抢工方案"])
+
+    def test_header_translation_is_appended_inline_when_enabled(self) -> None:
+        """开关打开时页眉译文接在同一段后面：页眉高度固定，另起一行会顶掉版心。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "header.docx"
+            self._build_header_footer_docx(source_path)
+
+            segments = extract_word_segments(
+                source_path,
+                target_lang="fr",
+                source_lang="zh",
+                include_headers_footers=True,
+            )
+            header_segments = [item for item in segments if item.kind == "header"]
+            self.assertEqual([item.source for item in header_segments], ["某某工程 抢工方案"])
+            self.assertEqual(header_segments[0].section_path, "页眉")
+            # 只有 PAGE 域的页脚仍旧跳过：域一刷新就会覆盖译文。
+            self.assertEqual([item for item in segments if item.kind == "footer"], [])
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={"某某工程 抢工方案": "Plan de rattrapage"},
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            out_doc = Document(str(out_path))
+            header_paragraphs = out_doc.sections[0].header.paragraphs
+            self.assertEqual(len(header_paragraphs), 1)
+            self.assertEqual(
+                header_paragraphs[0].text,
+                "某某工程 抢工方案 / Plan de rattrapage",
+            )
+            self.assertEqual(out_doc.sections[0].footer.paragraphs[0].text, "第 5 页")
+
+    def test_header_translation_is_not_appended_twice_on_rerun(self) -> None:
+        """补译重跑会再走一次页眉：已经有译文的行不能再接一遍。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "header.docx"
+            self._build_header_footer_docx(source_path)
+            translations = {"某某工程 抢工方案": "Plan de rattrapage"}
+
+            first = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations=translations,
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            second = write_bilingual_docx(
+                source_path=first,
+                output_dir=temp_path / "out2",
+                translations=translations,
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            header = Document(str(second)).sections[0].header
+            self.assertEqual(
+                header.paragraphs[0].text,
+                "某某工程 抢工方案 / Plan de rattrapage",
+            )
+
+    def test_header_footer_segments_are_collected_once_per_part(self) -> None:
+        """链接到上一节的页眉指向同一个 part，不去重就会被追加多遍译文。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "linked.docx"
+            doc = Document()
+            doc.add_paragraph("第一节")
+            doc.sections[0].header.paragraphs[0].text = "某某工程 抢工方案"
+            doc.add_section()
+            self.assertTrue(doc.sections[1].header.is_linked_to_previous)
+            doc.save(str(source_path))
+
+            segments = extract_word_header_footer_segments(
+                source_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+            self.assertEqual([item.source for item in segments], ["某某工程 抢工方案"])
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={"某某工程 抢工方案": "Plan de rattrapage"},
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            out_doc = Document(str(out_path))
+            for section in out_doc.sections:
+                self.assertEqual(
+                    section.header.paragraphs[0].text,
+                    "某某工程 抢工方案 / Plan de rattrapage",
+                )
 
     def test_extract_word_segments_protects_front_matter_before_body_heading(self) -> None:
         # 补译模式之外，全文翻译模式（extract_word_segments 直接抽取全部段落/表格）
@@ -1373,6 +1511,31 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("## 翻译范围说明", content)
             self.assertIn("页眉、页脚不参与翻译", content)
             self.assertIn("页眉.docx", content)
+
+    def test_quality_report_says_headers_were_translated_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / "双语(法文)_页眉.docx"
+            doc = Document()
+            doc.sections[0].header.paragraphs[0].text = "某某工程 一标段 抢工方案"
+            doc.add_paragraph("施工内容")
+            doc.save(str(output_path))
+
+            report_path = _write_word_quality_report(
+                output_dir=temp_path,
+                file_results=[
+                    {"name": "页眉.docx", "output": str(output_path), "success": True}
+                ],
+                issues=[],
+                elapsed_sec=1.0,
+                tm_hit_count=0,
+                api_call_count=1,
+                translate_headers_footers=True,
+            )
+
+            content = report_path.read_text(encoding="utf-8")
+            self.assertIn("页眉、页脚已翻译", content)
+            self.assertNotIn("页眉、页脚不参与翻译", content)
 
     def test_quality_report_omits_scope_note_without_header_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
