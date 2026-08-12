@@ -183,6 +183,9 @@ class DoneMsg:
     connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
+    # 用户按了停止、但任务还是正常跑完时留下的痕迹（requested / truncated）。没有它，
+    # 小结会写「已完成 · 全部通过」，用户看不出自己那一下停止到底起没起作用。
+    stop: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass

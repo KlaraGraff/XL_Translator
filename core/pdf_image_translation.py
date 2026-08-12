@@ -86,6 +86,17 @@ SOURCE_TYPE_PDF = "pdf"
 SOURCE_TYPE_IMAGE = "image"
 SUPPORTED_PDF_SUFFIXES = {".pdf"}
 SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+# 认得出是图片、但本程序不接的格式。它们和上面那批一样要走「跳过项」，不能悄悄消失。
+UNSUPPORTED_IMAGE_SUFFIXES = {".gif", ".avif", ".heic", ".heif", ".svg"}
+SKIP_KIND_IMAGES_DISABLED = "images_disabled"
+# 中止后等待在飞页面时，状态行的重发间隔（秒）。
+STOP_WAIT_STATUS_REFRESH_SECONDS = 5.0
+# 「允许独立图片」关着时，文件夹里的图片此前是被 `continue` 直接吃掉的：扫描摘要写
+# 「独立图片 0 / 跳过项 0」，日志写「扫描到 0 个图片文件」，用户把图纸截图放进来，
+# 从头到尾没有一句话告诉他这些图根本没参与。跳过项这一格正是它该出现的地方。
+IMAGES_DISABLED_SKIP_REASON = (
+    "「允许独立图片」没有打开，这个图片文件没有纳入本次任务；要翻它就打开这个开关再扫描一次。"
+)
 PDF_PAGES_ROOT = "_pdf_pages"
 SOURCE_PAGES_DIRNAME = "source_pages"
 TRANSLATED_PAGES_DIRNAME = "translated_pages"
@@ -200,6 +211,9 @@ class PdfScanSkippedItem:
     reason: str
     format: str = ""
     source_type: str = ""
+    # 跳过原因的机器可读分类。目前只区分「开关没开」（images_disabled）和其余，
+    # 用来决定摘要那句话怎么说：图片被开关挡下不是「文件坏了」。
+    kind: str = ""
 
 
 @dataclass
@@ -241,6 +255,20 @@ class PdfScanResult:
     @property
     def risk(self) -> dict[str, object]:
         skipped_count = len(self.skipped)
+        images_disabled_count = sum(
+            1 for item in self.skipped if item.kind == SKIP_KIND_IMAGES_DISABLED
+        )
+        if not skipped_count:
+            message = ""
+        elif images_disabled_count == skipped_count:
+            message = (
+                f"文件夹里有 {images_disabled_count} 个图片文件，"
+                "「允许独立图片」没有打开，本次不会翻译它们；其余文件仍可继续。"
+            )
+        else:
+            message = (
+                "部分 PDF/图片不可读、不受支持或未纳入本次任务，已列入跳过项目；其余文件仍可继续。"
+            )
         return {
             "include_images": self.include_images,
             "mixed_input_supported": bool(
@@ -249,11 +277,8 @@ class PdfScanResult:
             "generated_output_excluded": True,
             "has_skipped": bool(skipped_count),
             "skipped_count": skipped_count,
-            "message": (
-                "部分 PDF/图片不可读或不受支持，已列入跳过项目；其余文件仍可继续。"
-                if skipped_count
-                else ""
-            ),
+            "images_disabled_count": images_disabled_count,
+            "message": message,
         }
 
 
@@ -368,6 +393,10 @@ class PdfTaskSummary:
     emergency_ratio_normalized_count: int
     retry_count: int
     skipped_oversize_page_count: int = 0
+    # 中止/失败的任务在任务中心只能靠这两个数说清楚「跑到哪了」：真正写出了译图的页数，
+    # 和连开始都没轮到的页数。（提交了但没跑出来的页在 placeholder_page_count。）
+    generated_page_count: int = 0
+    unstarted_page_count: int = 0
     compressed_pdf_enabled: bool = False
     compressed_pdf_count: int = 0
     generated_image_count: int = 0
@@ -464,10 +493,22 @@ def scan_pdf_sources(path: str | Path, *, include_images: bool = False) -> PdfSc
             if suffix in SUPPORTED_PDF_SUFFIXES:
                 _scan_one_pdf_source(candidate, source, result)
                 continue
-            if include_images and suffix in SUPPORTED_IMAGE_SUFFIXES:
-                _scan_one_pdf_source(candidate, source, result)
-                continue
-            if include_images and suffix in {".gif", ".avif", ".heic", ".heif", ".svg"}:
+            if suffix in SUPPORTED_IMAGE_SUFFIXES or suffix in UNSUPPORTED_IMAGE_SUFFIXES:
+                if not include_images:
+                    result.skipped.append(
+                        PdfScanSkippedItem(
+                            candidate,
+                            relative,
+                            IMAGES_DISABLED_SKIP_REASON,
+                            suffix.lstrip("."),
+                            SOURCE_TYPE_IMAGE,
+                            SKIP_KIND_IMAGES_DISABLED,
+                        )
+                    )
+                    continue
+                if suffix in SUPPORTED_IMAGE_SUFFIXES:
+                    _scan_one_pdf_source(candidate, source, result)
+                    continue
                 result.skipped.append(
                     PdfScanSkippedItem(
                         candidate,
@@ -477,6 +518,7 @@ def scan_pdf_sources(path: str | Path, *, include_images: bool = False) -> PdfSc
                         SOURCE_TYPE_IMAGE,
                     )
                 )
+                continue
     else:
         result.skipped.append(
             PdfScanSkippedItem(source, source.name, f"路径既不是文件也不是目录：{source}")
@@ -502,6 +544,24 @@ def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
     supported = is_supported_pdf_file(path) or (
         result.include_images and is_supported_image_file(path)
     )
+    if (
+        not supported
+        and source_type == SOURCE_TYPE_IMAGE
+        and not result.include_images
+        and (suffix in SUPPORTED_IMAGE_SUFFIXES or suffix in UNSUPPORTED_IMAGE_SUFFIXES)
+    ):
+        # 直接选中一个图片文件、而开关关着：原因是开关，不是「文件不受支持」。
+        result.skipped.append(
+            PdfScanSkippedItem(
+                path,
+                relative,
+                IMAGES_DISABLED_SKIP_REASON,
+                suffix.lstrip("."),
+                source_type,
+                SKIP_KIND_IMAGES_DISABLED,
+            )
+        )
+        return
     if not supported:
         result.skipped.append(
             PdfScanSkippedItem(
@@ -1082,6 +1142,10 @@ class PdfImageTranslationRunner:
         self._retried_pages: set[str] = set()
         self._recovered_pages: set[str] = set()
         self._placeholder_pages: set[str] = set()
+        # 「安全停止」之后的等待计时。在飞的那几页要等上游返回或读超时，实测能到四分钟；
+        # 状态行必须自己往前走，否则一句不动的话看起来像卡死。
+        self._stop_wait_started_at: float | None = None
+        self._stop_wait_last_emit: float = 0.0
         # Per-page review panel state.  The prepared files are published here
         # so a reader thread can build a snapshot without touching ``_run``
         # locals, and page actions are queued here until the single-threaded
@@ -1204,7 +1268,9 @@ class PdfImageTranslationRunner:
                     "pages": pages,
                 }
             )
-        return {"files": files}
+        # 审核开关要跟着快照一起交出去：关着的时候，逐页审核卡片那句「审核模型逐页检查版式
+        # 与译文完整性」跟同一张表里 14 行「未审核」是自相矛盾的，界面得知道该改口。
+        return {"files": files, "review_enabled": bool(self._settings.pdf.review_enabled)}
 
     def resolve_page_image_path(
         self,
@@ -1538,6 +1604,8 @@ class PdfImageTranslationRunner:
         self._total_page_count = 0
         self._completed_page_count = 0
         self._submitted_page_count = 0
+        self._stop_wait_started_at = None
+        self._stop_wait_last_emit = 0.0
         self._retrying_pages.clear()
         self._retried_pages.clear()
         self._recovered_pages.clear()
@@ -1852,6 +1920,14 @@ class PdfImageTranslationRunner:
                     issues=_summary_issues(file_records),
                     report_path=str(report_path),
                     kpi=_done_kpi(summary),
+                    # 按了停止、但在飞的页刚好全部跑完：任务是正常完成的，可小结里得留下
+                    # 这一下的痕迹，否则用户只看到「已完成 · 全部通过」，不知道自己按的那
+                    # 一下有没有截断内容。
+                    stop=(
+                        {"requested": True, "truncated": False}
+                        if self._stop_event.is_set()
+                        else {}
+                    ),
                 )
             )
             return
@@ -2069,10 +2145,15 @@ class PdfImageTranslationRunner:
 
                 if self._stop_event.is_set() and not stop_logged:
                     stop_logged = True
+                    self._stop_wait_started_at = time.monotonic()
                     self._log("WARN", "已收到中止请求：不再提交新页，等待已提交页面结束。")
-                    self._queue.put(StatusMsg(self._stop_wait_status()))
+                    self._emit_stop_wait_status(force=True)
+                elif self._stop_event.is_set() and stop_logged:
+                    # 等待期间没有任何页跑完也要让状态行往前走（见 _stop_wait_status）。
+                    self._emit_stop_wait_status()
                 elif not self._stop_event.is_set() and stop_logged:
                     stop_logged = False
+                    self._stop_wait_started_at = None
 
                 if self._pause_event.is_set() and not futures:
                     return
@@ -2132,11 +2213,12 @@ class PdfImageTranslationRunner:
                 max(1, total_pages),
             )
         )
+        if self._stop_event.is_set():
+            self._emit_stop_wait_status(force=True)
+            return
         self._queue.put(
             StatusMsg(
-                self._stop_wait_status()
-                if self._stop_event.is_set()
-                else f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
+                f"状态：正在翻译 PDF 页面，已完成 {self._completed_page_count} / {total_pages} 页。"
             )
         )
 
@@ -2275,10 +2357,15 @@ class PdfImageTranslationRunner:
         should_assemble: bool,
     ) -> None:
         record = prepared.record
+        # 中止和失败这两条路以前直接 return，逐页计数一次都没刷新过：清单里 generated_page_count
+        # 永远是 0，报告写「页面完成进度 12/14」（那其实是已提交数），而界面同一时刻写着
+        # 「已生成 9 / 14 页」——三个口径三个数。计数只有一处实现，这两条路也得走一遍。
         if record.status == PDF_OUTPUT_STATE_FAILED:
+            self._refresh_file_record_counts(record)
             return
         if not should_assemble:
             record.status = PDF_OUTPUT_STATE_STOPPED
+            self._refresh_file_record_counts(record)
             self._log(
                 "WARN",
                 f"[{record.name}] 未完成全部页面，已跳过最终产物生成。",
@@ -2658,6 +2745,7 @@ class PdfImageTranslationRunner:
 
         if self._stop_event.is_set():
             record.status = PDF_OUTPUT_STATE_STOPPED
+            self._refresh_file_record_counts(record)
             return record
 
         self._finalize_placeholders(record, translated_pages_dir)
@@ -3314,11 +3402,39 @@ class PdfImageTranslationRunner:
         )
 
     def _stop_wait_status(self) -> str:
+        """中止后的等待状态行。
+
+        这句话此前只在「检测到中止」和「又有页跑完了」两个时刻发出，而中止之后往往
+        恰恰没有页再跑完——最后那几页正卡在上游的读超时里（实测 4 分 10 秒）。屏幕上
+        于是四分钟一个字不动，看着像死掉了。现在它每隔几秒重发一次，并且明说在等什么。
+        """
         pending_submitted = max(0, self._submitted_page_count - self._completed_page_count)
+        if not pending_submitted:
+            return "状态：正在停止任务：已提交的页面都已结束，正在收尾。"
+        waited = self._stop_wait_elapsed_label()
         return (
             "状态：正在停止任务："
-            f"已提交 {self._submitted_page_count} 页，等待 {pending_submitted} 页完成。"
+            f"已提交 {self._submitted_page_count} 页，等待 {pending_submitted} 页完成"
+            f"{waited}。这几页要等模型接口返回或超时，可能要几分钟；"
+            "已生成的页面和素材都会保留。"
         )
+
+    def _stop_wait_elapsed_label(self) -> str:
+        if self._stop_wait_started_at is None:
+            return ""
+        seconds = int(max(0.0, time.monotonic() - self._stop_wait_started_at))
+        if seconds < 60:
+            return f"（已等待 {seconds} 秒）"
+        return f"（已等待 {seconds // 60} 分 {seconds % 60} 秒）"
+
+    def _emit_stop_wait_status(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if self._stop_wait_started_at is None:
+            self._stop_wait_started_at = now
+        if not force and now - self._stop_wait_last_emit < STOP_WAIT_STATUS_REFRESH_SECONDS:
+            return
+        self._stop_wait_last_emit = now
+        self._queue.put(StatusMsg(self._stop_wait_status()))
 
     def _mark_image_model_success(self) -> None:
         if self._settings.image_model_role.availability_status == "available":
@@ -3523,6 +3639,8 @@ class PdfImageTranslationRunner:
         skipped_oversize_count = sum(
             record.skipped_oversize_page_count for record in file_records
         )
+        generated_page_count = sum(_real_generated_page_count(record) for record in file_records)
+        unstarted_page_count = sum(_unstarted_page_count(record) for record in file_records)
         review_enabled = bool(self._settings.pdf.review_enabled)
         reviewed_page_count = sum(record.reviewed_page_count for record in file_records)
         review_passed_page_count = sum(record.review_passed_page_count for record in file_records)
@@ -3556,6 +3674,8 @@ class PdfImageTranslationRunner:
             emergency_ratio_normalized_count=emergency_count,
             retry_count=retry_count,
             skipped_oversize_page_count=skipped_oversize_count,
+            generated_page_count=generated_page_count,
+            unstarted_page_count=unstarted_page_count,
             compressed_pdf_enabled=bool(self._settings.pdf.generate_compressed_pdf),
             compressed_pdf_count=compressed_pdfs,
             compression_quality=PDF_COMPRESSED_JPEG_QUALITY_DEFAULT,
@@ -4257,9 +4377,13 @@ def _finished_page_numbers(record: PdfFileRecord) -> list[int]:
     for page in record.pages:
         if (
             page.status in {"success", "emergency_normalized", "placeholder", PDF_PAGE_STATUS_SKIPPED_OVERSIZE}
+            # placeholder_pending 的页要排掉：它的 translated_image_path 指着一张
+            # 「page_00N_failed.png」，那是占位图**将要**写到的位置，中止时这一步根本没跑，
+            # 文件并不存在。不排掉的话报告会把 3 页失败页算成已完成（12/14 而不是 9/14）。
             or (
                 page.translated_image_path
-                and page.status not in {"pending", "failed", PDF_OUTPUT_STATE_FAILED}
+                and page.status
+                not in {"pending", "failed", "placeholder_pending", PDF_OUTPUT_STATE_FAILED}
             )
         ):
             numbers.append(int(page.page_number))
@@ -4295,11 +4419,45 @@ def _page_progress_label(record: PdfFileRecord) -> str:
     return f"{finished}/{page_count}" if page_count else str(finished)
 
 
+def _real_generated_page_count(record: PdfFileRecord) -> int:
+    """真正生成了译图的页数。
+
+    「跑完的页」（_finished_page_count）里混着占位页和整页跳过的 A3+ 页——它们确实各自
+    留下了一张图，但都不是译文。界面上「已生成 N / M 页」这句话早就是扣掉占位页之后的数
+    （见 workspace.ts 的 pdf 进度徽标），报告和任务中心也得按同一个口径说，否则又会出现
+    「已生成页面 14/14」和「失败占位页 2」并排的自相矛盾。
+    """
+    finished = _finished_page_count(record)
+    not_translated = max(0, int(record.placeholder_page_count or 0)) + max(
+        0, int(record.skipped_oversize_page_count or 0)
+    )
+    return max(0, finished - not_translated)
+
+
+def _generated_progress_label(record: PdfFileRecord) -> str:
+    page_count = max(0, int(record.page_count or 0))
+    generated = _real_generated_page_count(record)
+    return f"{generated}/{page_count}" if page_count else str(generated)
+
+
+def _unstarted_page_count(record: PdfFileRecord) -> int:
+    """从未开始处理的页数：中止时没轮到的那几页，连页记录都还没建。
+
+    以页记录条数为准，但不能只看它：合成成功的文件可以只留下产物路径而不留页记录
+    （历史清单、测试替身都是这样），那种情况下已生成页数才是真正处理过的页数。
+    """
+    page_count = max(0, int(record.page_count or 0))
+    if not page_count:
+        return 0
+    touched = max(len(record.pages), _finished_page_count(record))
+    return max(0, page_count - touched)
+
+
 def _last_finished_page_label(record: PdfFileRecord) -> str:
     page_count = max(0, int(record.page_count or 0))
     last_page = _last_contiguous_finished_page(record)
     if not last_page:
-        return "尚未完成任何页面"
+        return "尚未处理任何页面"
     if page_count and last_page >= page_count:
         return "全部页面"
     return f"第 {last_page} 页"
@@ -4389,8 +4547,12 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"- 高清版体积：{_format_file_size(file_record.high_quality_pdf_size_bytes)}",
                 f"- 压缩版体积：{_format_file_size(file_record.compressed_pdf_size_bytes)}",
                 f"- 页数：{file_record.page_count}",
-                f"- 页面完成进度：{_page_progress_label(file_record)}",
-                f"- 已完成到页码：{_last_finished_page_label(file_record)}",
+                # 「页面完成进度」在中止的报告里被读成了「已提交」（实测写 12/14，界面同时
+                # 写着 9/14）。改成三行说清楚：真正生成了译文的页、跑到哪一页、一页都没轮到
+                # 的页——它们和「失败占位页」「大幅面页」相加正好是总页数。
+                f"- 已生成页面：{_generated_progress_label(file_record)}",
+                f"- 已连续处理到页码：{_last_finished_page_label(file_record)}",
+                f"- 未开始页面：{_unstarted_page_count(file_record)}",
                 f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['source_pages']}",
                 f"- 译后{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['translated_pages']}",
                 f"- 失败占位页：{file_record.placeholder_page_count}",
@@ -4535,6 +4697,13 @@ def _done_kpi(summary: PdfTaskSummary) -> dict[str, Any]:
         "generated_pdf_count": summary.generated_pdf_count,
         "placeholder_page_count": summary.placeholder_page_count,
     }
+    # 中止和失败的任务，「高清 PDF 0 / 失败占位 0」几乎等于什么都没说：工作区那一屏明写着
+    # 「已生成 9 / 14 页」，任务中心得给得出同一个数，否则同一份任务两屏两种说法。跑完的
+    # 任务不出这两格——那时已生成页数就是总页数，多一格只是占地方。
+    if summary.stopped or summary.status == PDF_OUTPUT_STATE_FAILED:
+        kpi["generated_page_count"] = summary.generated_page_count
+        if summary.unstarted_page_count:
+            kpi["unstarted_page_count"] = summary.unstarted_page_count
     if summary.generated_image_count:
         kpi["generated_image_count"] = summary.generated_image_count
     if summary.suspect_adopted_page_count:

@@ -970,6 +970,7 @@ class TranslationTaskManager:
             "state": state,
             "terminal": terminal,
             "actionable": state == "paused" and not terminal,
+            "review_enabled": bool(snapshot.get("review_enabled")),
             "files": _json_safe(snapshot.get("files") or []),
         }
 

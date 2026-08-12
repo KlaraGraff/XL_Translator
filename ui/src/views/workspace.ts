@@ -1680,7 +1680,11 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   const b = el("b");
   b.textContent = "逐页审核";
   const span = el("span");
-  span.textContent = "审核模型逐页检查版式与译文完整性";
+  // 审核关着的时候不能还说「审核模型逐页检查」：同一张表里每一行写的都是「未审核 · 本次
+  // 没有让审核模型看这一页」，一屏之内两句话对不上。卡片本身照常用（重试、跳过都在这里）。
+  span.textContent = snapshot.review_enabled
+    ? "审核模型逐页检查版式与译文完整性"
+    : "本次没有开启逐页审核，下面是每一页的生成结果";
   head.append(b, span);
   card.append(head);
 
@@ -2908,6 +2912,13 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     clauses.push(finalLabel ? `中途换了连接，后半程由「${finalLabel}」完成` : `中途换了 ${switchCount} 次连接`);
   }
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
+  // 按了「安全停止」、但在飞的页刚好全部跑完时，任务照常走完成分支。不点这一句的话，
+  // 屏幕上只剩「已完成 · 全部通过」，用户不知道自己那一下有没有截掉内容（只有运行日志
+  // 里有一条 WARN）。
+  const stopInfo = record(result.stop);
+  if (stopInfo.requested === true && stopInfo.truncated === false) {
+    clauses.push("你请求停止时页面都已跑完，没有内容被截断");
+  }
   // 「全部通过」是一句承诺，只有真的一个问题都没有才能说。有文件没生成时一个字都不提，
   // 有需复核/占位页/已自动处理时说「其余」。
   // 「其余」也得真的有其余：4 页 PDF 四页全是占位页时，前面几句已经把每一页都点了名，

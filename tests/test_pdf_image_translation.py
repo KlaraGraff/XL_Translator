@@ -41,6 +41,7 @@ from core.pdf_image_translation import (
     PDF_PAGE_MIN_RENDER_DPI,
     PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
     PDF_REPORT_FILENAME,
+    SKIP_KIND_IMAGES_DISABLED,
     SOURCE_TYPE_IMAGE,
     SOURCE_TYPE_PDF,
     PdfFileItem,
@@ -56,12 +57,15 @@ from core.pdf_image_translation import (
     is_oversized_page,
     _done_kpi,
     _file_record_to_result,
+    _finished_page_count,
     _load_placeholder_font,
     _localized_pdf_placeholder_problem,
     _open_pdf_document,
     _pdf_render_scale_for_page,
     _read_pdf_oversized_page_count,
+    _real_generated_page_count,
     _summary_issues,
+    _unstarted_page_count,
     max_page_generation_attempts,
     page_image_name,
     resolve_pdf_page_archive_dirs,
@@ -650,6 +654,117 @@ class PdfImageTranslationTests(unittest.TestCase):
         self.assertEqual(kpi["skipped_oversize_page_count"], 4)
         self.assertEqual(kpi["generated_image_count"], 3)
         self.assertNotIn("review_failed_page_count", kpi)
+        # 跑完的任务不出「已生成页 / 未开始页」：已生成页数就是总页数，多两格只是占地方。
+        self.assertNotIn("generated_page_count", kpi)
+        self.assertNotIn("unstarted_page_count", kpi)
+
+    def test_done_kpi_gives_page_counts_when_the_task_stopped(self) -> None:
+        # 中止的任务在任务中心此前是一排零（高清 PDF 0 / 失败占位 0），而工作区同一份任务
+        # 写着「已生成 9 / 14 页」。两屏必须给得出同一个数。
+        summary = PdfTaskSummary(
+            status=PDF_OUTPUT_STATE_STOPPED,
+            output_dir="/out",
+            target_lang="en",
+            target_lang_label="英文",
+            started_at="",
+            completed_at="",
+            elapsed_sec=1.0,
+            file_count=1,
+            total_page_count=14,
+            generated_pdf_count=0,
+            placeholder_page_count=3,
+            emergency_ratio_normalized_count=0,
+            retry_count=0,
+            generated_page_count=9,
+            unstarted_page_count=2,
+            stopped=True,
+        )
+
+        kpi = _done_kpi(summary)
+
+        self.assertEqual(kpi["generated_page_count"], 9)
+        self.assertEqual(kpi["unstarted_page_count"], 2)
+        # 失败的任务同理；已生成 0 页也照样占格子，那正是用户要看的数。
+        summary.stopped = False
+        summary.status = PDF_OUTPUT_STATE_FAILED
+        summary.generated_page_count = 0
+        summary.unstarted_page_count = 0
+        kpi = _done_kpi(summary)
+        self.assertEqual(kpi["generated_page_count"], 0)
+        self.assertNotIn("unstarted_page_count", kpi)
+
+    def test_pending_placeholder_pages_are_not_counted_as_generated(self) -> None:
+        # placeholder_pending 的页带着一个「page_00N_failed.png」路径，那是占位图**将要**
+        # 写到的位置；中止时那一步根本没跑，文件并不存在。把它算成已完成，报告就会写
+        # 「12/14」（其实是已提交数），跟界面的「已生成 9 / 14 页」对不上。
+        record = PdfFileRecord(
+            name="a.pdf",
+            source_path="/src/a.pdf",
+            relative_path="a.pdf",
+            page_count=4,
+            pages=[
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path="/s/page_001.png",
+                    translated_image_path="/t/page_001.png",
+                    status="success",
+                ),
+                PdfPageRecord(
+                    page_number=2,
+                    source_image_path="/s/page_002.png",
+                    translated_image_path="/t/page_002_failed.png",
+                    status="placeholder_pending",
+                    placeholder=True,
+                ),
+            ],
+        )
+
+        self.assertEqual(_finished_page_count(record), 1)
+        self.assertEqual(_unstarted_page_count(record), 2)
+
+    def test_placeholder_and_oversize_pages_do_not_count_as_generated(self) -> None:
+        # 界面上的「已生成 N / M 页」早就是扣掉占位页之后的数。报告和任务中心要是把占位页
+        # 也算进「已生成页面」，就会出现「已生成页面 4/4」和「失败占位页 1」并排的写法。
+        record = PdfFileRecord(
+            name="a.pdf",
+            source_path="/src/a.pdf",
+            relative_path="a.pdf",
+            page_count=4,
+            placeholder_page_count=1,
+            skipped_oversize_page_count=1,
+            pages=[
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path="/s/page_001.png",
+                    translated_image_path="/t/page_001.png",
+                    status="success",
+                ),
+                PdfPageRecord(
+                    page_number=2,
+                    source_image_path="/s/page_002.png",
+                    translated_image_path="/t/page_002.png",
+                    status="success",
+                ),
+                PdfPageRecord(
+                    page_number=3,
+                    source_image_path="/s/page_003.png",
+                    translated_image_path="/t/page_003_failed.png",
+                    status="placeholder",
+                    placeholder=True,
+                ),
+                PdfPageRecord(
+                    page_number=4,
+                    source_image_path="/s/page_004.png",
+                    translated_image_path="/t/page_004.png",
+                    status=PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
+                    skipped_oversize=True,
+                ),
+            ],
+        )
+
+        self.assertEqual(_finished_page_count(record), 4)
+        self.assertEqual(_real_generated_page_count(record), 2)
+        self.assertEqual(_unstarted_page_count(record), 0)
 
     def test_manifest_report_and_status_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -773,8 +888,14 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertIn("已完成 PDF 文件：1", report)
             self.assertIn("未完成 PDF 文件：1", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
-            self.assertIn("页面完成进度：1/3", report)
-            self.assertIn("已完成到页码：第 1 页", report)
+            # 「完成」在中止的报告里会被读成「已提交」，措辞统一到「已生成」；未开始的页
+            # 单独占一行，和「失败占位页」加起来正好补满总页数。
+            self.assertIn("已生成页面：1/3", report)
+            self.assertIn("已连续处理到页码：第 1 页", report)
+            self.assertIn("未开始页面：2", report)
+            # 跑完的那份文件没有留页记录（只有产物路径），不能被算成「未开始 1 页」。
+            self.assertIn("已生成页面：1/1", report)
+            self.assertIn("未开始页面：0", report)
             self.assertIn(
                 f"源页素材：{output_dir / '_pdf_pages' / 'source_pages' / 'partial'}",
                 report,
@@ -1323,6 +1444,19 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(stopped.kpi["file_count"], 2)
             self.assertEqual(stopped.kpi["total_page_count"], 4)
             self.assertEqual(stopped.kpi["generated_pdf_count"], 1)
+            # 中止的任务在任务中心不能只剩「高清 PDF 0 / 失败占位 0」：工作区那一屏写着
+            # 「已生成 N / M 页」，这里得给得出同一个数。中止路径此前直接 return，逐页计数
+            # 一次都没刷新过，清单里 generated_page_count 永远是 0。
+            self.assertEqual(
+                stopped.kpi["generated_page_count"],
+                sum(item["page_count"] for item in stopped.files if item["output"]),
+            )
+            self.assertGreater(stopped.kpi["unstarted_page_count"], 0)
+            manifest = json.loads(Path(stopped.manifest_path).read_text(encoding="utf-8"))
+            self.assertEqual(
+                manifest["generated_page_count"], stopped.kpi["generated_page_count"]
+            )
+            self.assertEqual(manifest["files"][0]["generated_page_count"], 1)
 
     def test_runner_resume_continues_after_soft_stop_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1971,6 +2105,11 @@ class PdfImageTranslationTests(unittest.TestCase):
                 )
 
             snapshot = runner.pdf_page_snapshot()
+            # 卡片副标题按这个字段改口：审核关着时还写「审核模型逐页检查」，跟同一张表里
+            # 每一行的「未审核」自相矛盾。
+            self.assertFalse(snapshot["review_enabled"])
+            runner._settings.pdf.review_enabled = True
+            self.assertTrue(runner.pdf_page_snapshot()["review_enabled"])
             self.assertEqual(len(snapshot["files"]), 1)
             self.assertEqual(snapshot["files"][0]["relative_path"], "source.pdf")
             self.assertEqual(len(snapshot["files"][0]["pages"]), 1)
@@ -2105,6 +2244,49 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(items_by_name["plain"].oversized_page_count, 0)
             self.assertEqual(result.summary["oversized_page_count"], 2)
             self.assertEqual(result.summary["oversized_page_count_unknown_files"], 0)
+
+    def test_scan_lists_folder_images_as_skipped_when_the_switch_is_off(self) -> None:
+        # 「允许独立图片」关着时，文件夹里的图片以前是被 continue 直接吃掉的：扫描摘要写
+        # 「独立图片 0 / 跳过项 0」，日志写「0 个图片文件」。用户把图纸截图放进来，从头到尾
+        # 没有一句话告诉他这些图根本没参与。跳过项这一格正是它该出现的地方。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_multi_page_pdf(root / "doc.pdf", [{"media_box": (0, 0, _A4_W_PT, _A4_H_PT)}])
+            (root / "img.png").write_bytes(_png_bytes(64, 64))
+            (root / "photo.heic").write_bytes(b"not really a heic file")
+
+            off = scan_pdf_sources(root, include_images=False)
+
+            self.assertEqual([item.path.name for item in off.items], ["doc.pdf"])
+            skipped = {item.relative_path: item for item in off.skipped}
+            self.assertEqual(set(skipped), {"img.png", "photo.heic"})
+            self.assertEqual(skipped["img.png"].kind, SKIP_KIND_IMAGES_DISABLED)
+            self.assertEqual(skipped["img.png"].source_type, SOURCE_TYPE_IMAGE)
+            self.assertIn("允许独立图片", skipped["img.png"].reason)
+            self.assertEqual(off.summary["skipped_count"], 2)
+            self.assertIn("2 个图片文件", str(off.risk["message"]))
+
+            on = scan_pdf_sources(root, include_images=True)
+
+            self.assertIn("img.png", {item.path.name for item in on.items})
+            # 开关打开后，认得出但不受支持的格式仍然按「格式」报，不再赖到开关头上。
+            heic = [item for item in on.skipped if item.relative_path == "photo.heic"]
+            self.assertEqual(len(heic), 1)
+            self.assertEqual(heic[0].kind, "")
+            self.assertIn("不支持的图片格式", heic[0].reason)
+
+    def test_scan_one_image_file_says_the_switch_is_why_it_was_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "img.png"
+            image.write_bytes(_png_bytes(64, 64))
+
+            result = scan_pdf_sources(image, include_images=False)
+
+            self.assertEqual(result.items, [])
+            self.assertEqual(len(result.skipped), 1)
+            self.assertEqual(result.skipped[0].kind, SKIP_KIND_IMAGES_DISABLED)
+            self.assertIn("允许独立图片", result.skipped[0].reason)
 
     def test_read_pdf_oversized_page_count_is_none_not_zero_when_unreadable(self) -> None:
         # 「读不出来」和「确认没有大幅面页」必须是两个不同的值：前者是 None，

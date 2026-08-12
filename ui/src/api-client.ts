@@ -81,6 +81,9 @@ export type PdfPagesSnapshot = {
   state: string;
   terminal: boolean;
   actionable: boolean;
+  /** 这次任务有没有开逐页审核。卡片副标题按它改口，否则关着审核时会写「审核模型逐页检查」
+   *  而同一张表里每一行都是「未审核」。 */
+  review_enabled: boolean;
   files: PdfPageFile[];
 };
 

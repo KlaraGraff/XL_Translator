@@ -459,6 +459,10 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
       [
         ["文件", ["file_count", "selected_file_count"]],
         ["页 / 图片", ["total_page_count", "page_count"]],
+        // 只有中止/失败的任务才带这两个键（见后端 _done_kpi）：跑完的任务里「已生成页」
+        // 就是总页数，没必要再占一格；中止的任务没有它就只剩一排零。
+        ["已生成页", ["generated_page_count"]],
+        ["未开始页", ["unstarted_page_count"]],
         ["高清 PDF", ["generated_pdf_count"]],
         ["译图", ["generated_image_count"]],
         ["失败占位", ["placeholder_page_count"]],
