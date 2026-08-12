@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PDF 结果页 · 样张 2026-08-12</title>
+<title>PDF 结果页 · 样张 2026-08-12（第二版：细行）</title>
 <style>
 /* ============================================================
  * token —— 原样取自 ui/src/styles/tokens.css
@@ -51,7 +51,6 @@ svg.ic.sm{width:15px;height:15px}
 .board-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   padding:12px 26px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:var(--sh-sm)}
 .board-bar b{font-size:14px;font-weight:650}
-.board-bar .sp{flex:1}
 .jump{display:flex;gap:5px;flex-wrap:wrap}
 .jump a{font-size:11.5px;color:var(--ink-2);text-decoration:none;border:1px solid var(--line-2);
   border-radius:99px;padding:3px 10px;background:var(--surface)}
@@ -61,51 +60,43 @@ svg.ic.sm{width:15px;height:15px}
 .sec{max-width:1180px;margin:0 auto;padding:34px 26px 0}
 .sec>h2{font-size:15.5px;font-weight:650;margin-bottom:4px}
 .sec>h2 i{font-style:normal;color:var(--ink-3);font-weight:500;font-size:12.5px;margin-left:8px}
-.sec>.desc{font-size:12.5px;color:var(--ink-2);max-width:820px;margin-bottom:14px;line-height:1.7}
+.sec>.desc{font-size:12.5px;color:var(--ink-2);max-width:840px;margin-bottom:14px;line-height:1.75}
 .frame{background:var(--ground);border:1px solid var(--line-2);border-radius:var(--r-lg);
   padding:18px;box-shadow:var(--sh-md);overflow:hidden}
-.note-x{font-size:12px;color:var(--ink-3);margin-top:9px;line-height:1.7}
+.note-x{font-size:12px;color:var(--ink-3);margin-top:9px;line-height:1.75}
 .note-x b{color:var(--ink-2);font-weight:600}
 .note-x code{font-family:var(--mono);font-size:11px;background:var(--surface-2);
   border:1px solid var(--line);border-radius:5px;padding:0 4px}
 
 /* ---------- 产品组件（取自 ui/src/styles/app.css） ---------- */
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
-  box-shadow:var(--sh-sm)}
 .chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:99px;
-  font-size:11px;font-weight:600;border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2)}
+  font-size:11px;font-weight:600;border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2);flex:none}
 .chip.ok{background:var(--ok-t);border-color:var(--ok-l);color:var(--ok)}
 .chip.warn{background:var(--warn-t);border-color:var(--warn-l);color:var(--warn)}
 .chip.dgr{background:var(--danger-t);border-color:var(--danger-l);color:var(--danger)}
-.chip.tint{background:var(--tint);border-color:var(--tint-line);color:var(--tint-ink)}
 .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 13px;border-radius:var(--r-sm);
   border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font-size:12.5px;
   font-weight:550;cursor:pointer}
 .btn:hover{background:var(--surface-2)}
 .btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.pri:hover{background:var(--accent-strong)}
+.btn.dgr{background:var(--danger);border-color:var(--danger);color:#fff}
 .btn.mini{height:24px;padding:0 9px;font-size:11.5px;border-radius:7px}
-.linklike{color:var(--accent);cursor:pointer;font-size:12px}
+.linklike{color:var(--accent);cursor:pointer;font-size:12px;flex:none}
 .linklike:hover{text-decoration:underline}
 .linklike.disabled{color:var(--ink-3);cursor:not-allowed}
 .linklike.disabled:hover{text-decoration:none}
 
-/* 完成横幅 */
 .banner{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:var(--r-lg);
   border:1px solid var(--ok-l);background:var(--ok-t);color:var(--ok);margin-bottom:14px}
-.banner.warn{border-color:var(--warn-l);background:var(--warn-t);color:var(--warn)}
-.banner.fail{border-color:var(--danger-l);background:var(--danger-t);color:var(--danger)}
 .banner .btxt{flex:1;min-width:0}
 .banner .btxt b{display:block;font-size:13.5px;font-weight:650;color:var(--ink)}
 .banner .btxt span{font-size:12px;color:var(--ink-2)}
 .banner .x{border:none;background:none;color:var(--ink-3);cursor:pointer;padding:2px}
 
 /* ============================================================
- * 结果页本体 —— 新增部分
+ * 结果页本体
  * ============================================================ */
-.res{display:flex;flex-direction:column;min-height:0;height:100%}
-
-/* 结果页顶部工具行：文件数小结 + 筛选 + 全部展开/收起 */
 .res-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;
   border-bottom:1px solid var(--line)}
 .res-bar .t{font-size:13px;font-weight:650}
@@ -117,16 +108,13 @@ svg.ic.sm{width:15px;height:15px}
   background:none;color:var(--ink-2);cursor:pointer}
 .filters .f.on{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:var(--sh-sm)}
 
-/* 文件列表容器：外层滚动条只有这一条 */
 .res-list{flex:1;min-height:0;overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:10px}
 
-/* 单个文件卡片 */
-/* flex:none 是必须的：.res-list 是列向 flex，弹性项默认可以被压缩到比内容还矮，
-   于是限高 5 页的展开区会被外层再压一次、页行被 overflow:hidden 裁掉半行。
-   文件卡片永远按自身高度占位，放不下由 .res-list 自己滚。 */
+/* flex:none 是必须的：.res-list 是列向 flex，弹性项默认会被压到比内容还矮，
+   限高的展开区会被外层再压一次、末行被 overflow:hidden 裁掉半行。 */
 .rfile{flex:none;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);overflow:hidden}
 .rfile.open{border-color:var(--tint-line)}
-.rfile-head{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;
+.rfile-head{display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;
   background:var(--surface);position:sticky;top:0;z-index:2}
 .rfile.open .rfile-head{background:var(--tint);border-bottom:1px solid var(--tint-line)}
 .rfile-head:hover{background:var(--surface-2)}
@@ -136,103 +124,78 @@ svg.ic.sm{width:15px;height:15px}
 .rfile-head .nm{flex:1;min-width:0;font-size:13px;font-weight:600;overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
 .rfile-head .meta{font-size:11.5px;color:var(--ink-3);white-space:nowrap}
-.rfile-chips{display:flex;gap:5px;flex-wrap:nowrap}
+.rfile-chips{display:flex;gap:5px}
 
-/* 展开区：pages 是唯一会被限高的元素 */
-.rfile-body{display:none;padding:0}
+.rfile-body{display:none}
 .rfile.open .rfile-body{display:block}
 .pages{display:flex;flex-direction:column;overscroll-behavior:contain}
-/* 「装不下」时由脚本加上 .capped —— 高度 = 5 行页高，内部自己滚 */
-.pages.capped{max-height:calc(5 * var(--pgrow));overflow-y:auto}
-.pages.capped::after{content:""}
-:root{--pgrow:126px}
+/* 空间不够时由脚本加上 .capped 并写死一个 max-height（= 分到的空间，不少于 5 行） */
+.pages.capped{overflow-y:auto}
+:root{--pgrow:32px}
 
-/* 单页行 */
-.prow{display:flex;align-items:center;gap:12px;padding:10px 12px;border-top:1px solid var(--line);
-  min-height:var(--pgrow)}
+/* 单页行 —— 一条细横条，不放缩略图 */
+.prow{display:flex;align-items:center;gap:10px;height:var(--pgrow);padding:0 12px;
+  border-top:1px solid var(--line);font-size:12.5px}
 .prow:first-child{border-top:none}
 .prow:hover{background:var(--surface-2)}
-.prow .pno{width:52px;flex:none;display:flex;flex-direction:column;gap:5px;align-items:flex-start}
-.prow .pno b{font-size:12px;font-weight:600}
-.pair{display:flex;gap:6px;flex:none;cursor:zoom-in}
-.thumb{width:74px;height:104px;border:1px solid var(--line-2);border-radius:5px;background:var(--surface);
-  overflow:hidden;position:relative;flex:none}
-.thumb .cap{position:absolute;left:0;right:0;bottom:0;font-size:9px;text-align:center;
-  background:rgb(20 26 46/62%);color:#fff;line-height:13px;letter-spacing:.3px}
-.pdesc{flex:1;min-width:0;font-size:12px;color:var(--ink-2)}
-.pdesc .r{margin-top:3px;color:var(--ink-3);font-size:11.5px}
-.pacts{flex:none;display:flex;flex-direction:column;gap:5px;align-items:flex-end;width:96px}
+.prow .pno{width:60px;flex:none;color:var(--ink);font-weight:550}
+.prow .pdesc{flex:1;min-width:0;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prow .sp{flex:1}
 
-/* 假页面内容（样张专用，产品里是真实页图） */
-.pg{padding:6px 6px 0;display:flex;flex-direction:column;gap:3px}
-.pg .ln{height:3px;border-radius:2px;background:var(--line-2)}
-.pg .ln.h{height:6px;background:var(--ink-3);opacity:.55;margin-bottom:3px}
-.pg .ln.s{background:var(--line-2);opacity:.8}
-.pg .tbl{margin-top:4px;border:1px solid var(--line-2);border-radius:2px;height:26px;
-  background:repeating-linear-gradient(to bottom,transparent 0 5px,var(--line) 5px 6px)}
-.thumb.src .ln{background:#9aa3bd}
-.thumb.dst .ln{background:#8fa7d6}
-.thumb.blank{display:flex;align-items:center;justify-content:center;color:var(--ink-3);font-size:10px;
-  text-align:center;padding:6px;background:var(--surface-2)}
-
-/* 缩略图加载态 */
-.thumb.load{background:linear-gradient(100deg,var(--surface-2) 30%,var(--line) 50%,var(--surface-2) 70%);
-  background-size:280% 100%;animation:sh 1.25s linear infinite}
-@keyframes sh{from{background-position:180% 0}to{background-position:-80% 0}}
-
-/* 限高提示条 */
-.cap-note{display:flex;align-items:center;gap:6px;padding:6px 12px;border-top:1px solid var(--line);
+.cap-note{display:flex;align-items:center;gap:6px;padding:5px 12px;border-top:1px solid var(--line);
   background:var(--surface-2);font-size:11.5px;color:var(--ink-3)}
 .cap-note .sp{flex:1}
 
-/* 结果页底部动作条 */
 .res-foot{display:flex;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line);
   background:var(--surface)}
 .res-foot .sp{flex:1}
 .res-foot .hint{font-size:11.5px;color:var(--ink-3)}
 
-/* 空态 */
-.empty{padding:46px 20px;text-align:center;color:var(--ink-3)}
+.empty{padding:40px 20px;text-align:center;color:var(--ink-3)}
 .empty b{display:block;font-size:13.5px;color:var(--ink-2);font-weight:600;margin-bottom:4px}
-.empty p{font-size:12px;max-width:420px;margin:0 auto}
+.empty p{font-size:12px;max-width:440px;margin:0 auto}
 
 /* 模态 */
-.overlay{position:fixed;inset:0;background:rgb(12 16 26/46%);display:flex;align-items:center;
-  justify-content:center;z-index:200}
 .modal{width:min(420px,92vw);background:var(--surface);border:1px solid var(--line);
-  border-radius:var(--r-lg);box-shadow:var(--sh-lg);overflow:hidden}
+  border-radius:var(--r-lg);box-shadow:var(--sh-lg);overflow:hidden;margin:0 auto}
 .modal.wide{width:min(920px,92vw)}
 .mhead{display:flex;align-items:center;gap:9px;padding:13px 16px;border-bottom:1px solid var(--line)}
-.mhead b{font-size:13.5px;font-weight:650;flex:1}
-.mbody{padding:14px 16px;font-size:12.5px;color:var(--ink-2);line-height:1.7}
-.mfoot{display:flex;justify-content:flex-end;gap:8px;padding:11px 16px;border-top:1px solid var(--line);
+.mhead b{font-size:13.5px;font-weight:650}
+.mhead .sp{flex:1}
+.mbody{padding:14px 16px;font-size:12.5px;color:var(--ink-2);line-height:1.75}
+.mfoot{display:flex;align-items:center;gap:8px;padding:11px 16px;border-top:1px solid var(--line);
   background:var(--surface-2)}
-.btn.dgr{background:var(--danger);border-color:var(--danger);color:#fff}
+.mfoot .sp{flex:1}
 .cmp{display:flex;gap:14px;padding:14px 16px}
 .cmp-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
 .cmp-col .lb{font-size:11.5px;font-weight:600;color:var(--ink-3)}
-.cmp-box{border:1px solid var(--line);border-radius:8px;background:var(--ground-2);height:360px;
-  overflow:hidden;padding:14px 16px}
-.cmp-box .pg .ln{height:6px}
-.cmp-box .pg .ln.h{height:12px}
-.cmp-box .pg .tbl{height:80px}
+.cmp-box{border:1px solid var(--line);border-radius:8px;background:var(--ground-2);height:380px;
+  overflow:hidden;padding:16px 18px}
+/* 假页面内容（样张专用，产品里是真实页图） */
+.pg{display:flex;flex-direction:column;gap:6px}
+.pg .ln{height:6px;border-radius:2px;background:#9aa3bd;opacity:.5}
+.pg .ln.h{height:12px;opacity:.75;margin-bottom:5px}
+.pg .tbl{margin-top:8px;border:1px solid var(--line-2);border-radius:3px;height:150px;
+  background:repeating-linear-gradient(to bottom,transparent 0 11px,var(--line) 11px 12px)}
+.cmp-col.dst .pg .ln{background:#8fa7d6}
 
-/* 静态陈列用：把「面板」限定成产品里的真实高度，好看出滚动条 */
-.panel{height:560px;display:flex;flex-direction:column;background:var(--surface);
+.panel{height:520px;display:flex;flex-direction:column;background:var(--surface);
   border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm);overflow:hidden}
-.panel.tall{height:640px}
+/* 第 2、3 屏要演示「装得下就全展示 / 装不下就平分」，面板必须真的有那么高，
+   否则演示的是溢出而不是规则。730px 约等于窗口最大化时左栏拿到的高度。 */
+.panel.tall{height:730px}
 </style>
 </head>
 <body>
 
 <div class="board-bar">
-  <b>PDF 结果页 · 样张</b>
-  <span style="font-size:12px;color:var(--ink-3)">2026-08-12 · 翻完不回任务清单，直接进结果页</span>
-  <div class="sp"></div>
+  <b>PDF 结果页 · 样张（第二版）</b>
+  <span style="font-size:12px;color:var(--ink-3)">2026-08-12 · 页行改成细横条，看图只走「全尺寸对比」</span>
+  <div style="flex:1"></div>
   <nav class="jump">
-    <a href="#s1">1 收起</a><a href="#s2">2 完全展示</a><a href="#s3">3 限高 5 页</a>
-    <a href="#s4">4 加载态</a><a href="#s5">5 只看疑点</a><a href="#s6">6 异常与空态</a>
-    <a href="#s7">7 确认框</a><a href="#s8">8 全尺寸对比</a>
+    <a href="#s1">1 收起</a><a href="#s2">2 全展开</a><a href="#s3">3 空间不够</a>
+    <a href="#s4">4 只看疑点</a><a href="#s5">5 异常空态</a><a href="#s6">6 全尺寸对比</a>
+    <a href="#s7">7 重新生成</a>
   </nav>
   <button class="theme-btn" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'':'dark'">切换深色</button>
 </div>
@@ -242,8 +205,7 @@ svg.ic.sm{width:15px;height:15px}
   <h2>1 · 结果页：刚翻完，全部收起<i>替代原来的「回到文件清单」</i></h2>
   <p class="desc">
     PDF 任务跑到终态后，左栏不再退回扫描出来的文件清单（那份清单说的是「准备翻什么」，翻完之后已经是旧闻），
-    直接换成这一屏：每个产出文件一行，行上先给结论——多少页、通过多少、几页建议复核。点行展开看页。
-    完成横幅和底部的「打开输出目录 / 查看完整报告」都留着，只是位置固定到了结果页里。
+    直接换成这一屏：每个产出文件一行，行上先给结论——多少页、通过多少、几页要看。点行展开。
   </p>
   <div class="frame">
     <div class="banner">
@@ -253,12 +215,9 @@ svg.ic.sm{width:15px;height:15px}
     </div>
     <div class="panel">
       <div class="res-bar">
-        <span class="t">翻译结果</span>
-        <span class="sub">3 个文件 · 96 页</span>
+        <span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页</span>
         <div class="sp"></div>
-        <div class="filters">
-          <button class="f on">全部页</button><button class="f">只看疑点 2</button>
-        </div>
+        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 3</button></div>
         <span class="linklike">全部展开</span>
       </div>
       <div class="res-list">
@@ -267,8 +226,7 @@ svg.ic.sm{width:15px;height:15px}
             <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
             <span class="nm">投标文件_技术标.pdf</span>
             <div class="rfile-chips"><span class="chip ok">42 页通过</span></div>
-            <span class="meta">42 页 · 3.8 MB</span>
-            <span class="linklike">打开</span>
+            <span class="meta">42 页 · 3.8 MB</span><span class="linklike">打开</span>
           </div>
           <div class="rfile-body"></div>
         </div>
@@ -277,8 +235,7 @@ svg.ic.sm{width:15px;height:15px}
             <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
             <span class="nm">设备清单_附表三.pdf</span>
             <div class="rfile-chips"><span class="chip ok">36 页通过</span><span class="chip warn">2 页建议复核</span></div>
-            <span class="meta">38 页 · 2.1 MB</span>
-            <span class="linklike">打开</span>
+            <span class="meta">38 页 · 2.1 MB</span><span class="linklike">打开</span>
           </div>
           <div class="rfile-body"></div>
         </div>
@@ -287,8 +244,7 @@ svg.ic.sm{width:15px;height:15px}
             <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
             <span class="nm">现场安全须知.pdf</span>
             <div class="rfile-chips"><span class="chip ok">15 页通过</span><span class="chip">1 页按幅面跳过</span></div>
-            <span class="meta">16 页 · 0.9 MB</span>
-            <span class="linklike">打开</span>
+            <span class="meta">16 页 · 0.9 MB</span><span class="linklike">打开</span>
           </div>
           <div class="rfile-body"></div>
         </div>
@@ -302,78 +258,37 @@ svg.ic.sm{width:15px;height:15px}
       </div>
     </div>
     <p class="note-x">
-      <b>关于「再翻一批」：</b>结果页盖住了原来选文件的界面，必须留一个明确的出口回去，否则翻完第一批就没法翻第二批了。
-      点它才清空结果、回到来源选择。<br>
-      <b>关于横幅：</b>横幅可以关，结果页不会跟着关——横幅是一句通知，结果页是这一屏的正文。
+      <b>「再翻一批」不能省：</b>结果页盖住了原来选文件的界面，不留出口就翻不了第二批。点它才清空结果、回到来源选择。<br>
+      <b>横幅可以关，结果页不跟着关</b>——横幅是一句通知，结果页是这一屏的正文。
     </p>
   </div>
 </section>
 
 <!-- ============================ 2 ============================ -->
 <section class="sec" id="s2">
-  <h2>2 · 展开一个文件，空间够 → 完全展示</h2>
+  <h2>2 · 展开：一页一条细横条<i>页图一律走「全尺寸对比」</i></h2>
   <p class="desc">
-    展开后每一页一行：<b>左边原文页、右边译文页</b>，并排缩略图。缩略图小到只看得出版式，看不清字——这是故意的，
-    这一屏解决的是「哪一页排版塌了 / 哪一页漏了」，真要读字点缩略图开全尺寸对比（第 8 屏）。
-    右侧是这一页的结论和操作。只展开了这一个文件、页数又装得下时，不设任何限高，全部页直接铺开，外层滚动条正常往下滚。
+    每页 32px 高：页码、结论、一句说明、一个「全尺寸对比」。不放缩略图——缩略图小到看得清版式就得 100px 以上高，
+    一页顶四行，一个 38 页的文件展开就是一面墙。要看图点「全尺寸对比」，那里是整页大图（第 6 屏）。<br>
+    这么一改，装得下的页数从 4 页变成十几页，多数文件<b>一次就能全铺开</b>，下一屏那套限高规则很少用得上。
   </p>
   <div class="frame">
-    <div class="panel">
+    <div class="panel tall">
       <div class="res-bar">
         <span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页</span>
         <div class="sp"></div>
-        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 2</button></div>
+        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 3</button></div>
         <span class="linklike">全部收起</span>
       </div>
       <div class="res-list">
         <div class="rfile open">
           <div class="rfile-head">
             <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
-            <span class="nm">现场安全须知_节选.pdf</span>
-            <div class="rfile-chips"><span class="chip ok">4 页通过</span></div>
-            <span class="meta">4 页 · 0.4 MB</span>
-            <span class="linklike">打开</span>
+            <span class="nm">现场安全须知.pdf</span>
+            <div class="rfile-chips"><span class="chip ok">15 页通过</span><span class="chip">1 页按幅面跳过</span></div>
+            <span class="meta">16 页 · 0.9 MB</span><span class="linklike">打开</span>
           </div>
-          <div class="rfile-body">
-            <div class="pages">
-              <div class="prow">
-                <div class="pno"><b>第 1 页</b><span class="chip ok">通过</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:62%"></div><div class="ln" style="width:96%"></div><div class="ln" style="width:88%"></div><div class="ln" style="width:93%"></div><div class="ln s" style="width:54%"></div><div class="tbl"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:70%"></div><div class="ln" style="width:97%"></div><div class="ln" style="width:91%"></div><div class="ln" style="width:95%"></div><div class="ln s" style="width:60%"></div><div class="tbl"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">版式一致，文本完整<div class="r">标题、正文、表格位置与原页一致</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 2 页</b><span class="chip ok">通过</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:48%"></div><div class="tbl" style="height:52px"></div><div class="ln" style="width:80%"></div><div class="ln" style="width:66%"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:56%"></div><div class="tbl" style="height:52px"></div><div class="ln" style="width:86%"></div><div class="ln" style="width:71%"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">版式一致，文本完整<div class="r">整页表格，列宽未变</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 3 页</b><span class="chip warn">建议复核</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:66%"></div><div class="ln" style="width:94%"></div><div class="ln" style="width:90%"></div><div class="ln" style="width:47%"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:78%"></div><div class="ln" style="width:99%"></div><div class="ln" style="width:99%"></div><div class="ln" style="width:99%"></div><div class="ln" style="width:99%"></div><div class="ln" style="width:82%"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">译文偏长，已强行缩排放进原位置<div class="r">建议看一眼这一页的行距</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 4 页</b><span class="chip">按幅面跳过</span></div>
-                <div class="pair" style="cursor:default">
-                  <div class="thumb blank">A3 幅面<br>未生成页图</div>
-                  <div class="thumb blank">原样保留<br>在输出文件里</div>
-                </div>
-                <div class="pdesc">幅面超过 A4，未送翻译<div class="r">如需翻译请关闭「跳过 A3 及更大的页面」后重跑</div></div>
-                <div class="pacts"><span class="linklike disabled" title="该页按幅面跳过，没有生成页图">全尺寸对比</span><span class="linklike disabled">重新生成</span></div>
-              </div>
-            </div>
-          </div>
+          <div class="rfile-body"><div class="pages" id="fullpages"></div></div>
         </div>
         <div class="rfile">
           <div class="rfile-head">
@@ -391,29 +306,28 @@ svg.ic.sm{width:15px;height:15px}
       </div>
     </div>
     <p class="note-x">
-      <b>没产出页图的页也占一行</b>（第 4 页）——不是悄悄从清单里少一行。少一行会让人以为文件只有 3 页。
-      两个操作都置灰并给出原因，而不是让人点进一个空白对比框。
+      <b>没产出页图的页也占一行</b>（第 9 页，按幅面跳过）——少一行会让人以为文件只有 15 页。
+      它的「全尺寸对比」是灰的，点上去有原因，不会打开一个空白框。
     </p>
   </div>
 </section>
 
 <!-- ============================ 3 ============================ -->
 <section class="sec" id="s3">
-  <h2>3 · 装不下 → 所有展开的文件统一限高 5 页，各自内部滚动<i>可以真的滚，试试</i></h2>
+  <h2>3 · 空间不够：展开区平分空间，最少 5 页<i>这一屏实测每个分到 7 页</i></h2>
   <p class="desc">
-    这是你说的那条规则。判定方式：展开之后量一次——所有展开区的自然高度加起来如果超过列表可视区，
-    就给<b>每一个</b>展开区套上「5 页高」的上限，超出的页在框内自己滚。只要收起一个文件、空间又够了，上限自动撤掉。
-    统一套上限而不是只压最长那个，是为了让两个文件看起来一样高，不然会以为短的那个漏页了。<br>
-    <b>先把一笔账摆在这儿：</b>一页行高 126px，5 页就是 630px，比大多数时候的面板还高一点。
-    也就是说 —— 展开<b>一个</b>文件时，5 页正好铺满面板，只在框内滚；展开<b>第二个</b>之后，
-    外层列表也会开始滚，两层滚动条同时存在。这一屏画的就是第二种情况，可以直接上手滚一滚看感觉。
+    你原来的规则是「装不下就统一限成 5 页」。行变细之后我建议把 5 页从<b>上限</b>改成<b>下限</b>：
+    装不下时几个展开区平分列表的可视空间（向下取整到整行，末行不切一半），谁也不超出面板——
+    所以<b>外层列表根本不会滚，只有各自框内在滚</b>，两层滚动条的问题就没有了。
+    5 页是保底：展开到四五个文件、平分下来不足 5 页时才让外层开始滚。<br>
+    按老规则，这两个文件在这块空位里各只显示 5 页 = 160px，各剩 64px 空着；现在各显示 7 页，空位吃干净。
   </p>
   <div class="frame">
     <div class="panel tall">
       <div class="res-bar">
         <span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页</span>
         <div class="sp"></div>
-        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 2</button></div>
+        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 3</button></div>
         <span class="linklike">全部收起</span>
       </div>
       <div class="res-list">
@@ -427,10 +341,8 @@ svg.ic.sm{width:15px;height:15px}
           <div class="rfile-body">
             <div class="pages capped" id="cap1"></div>
             <div class="cap-note">
-              <svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14"/></svg>
-              <span>面板放不下，已限制为每个文件先显示 5 页，框内可继续往下滚</span>
-              <span class="sp"></span>
-              <span class="linklike">在新窗口里看这个文件</span>
+              <span>显示 7 页 / 共 42 页 · 框内可继续往下滚</span>
+              <span class="sp"></span><span class="linklike">只看这个文件</span>
             </div>
           </div>
         </div>
@@ -444,9 +356,8 @@ svg.ic.sm{width:15px;height:15px}
           <div class="rfile-body">
             <div class="pages capped" id="cap2"></div>
             <div class="cap-note">
-              <svg class="ic sm" viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14"/></svg>
-              <span>面板放不下，已限制为每个文件先显示 5 页，框内可继续往下滚</span>
-              <span class="sp"></span><span class="linklike">在新窗口里看这个文件</span>
+              <span>显示 7 页 / 共 38 页 · 框内可继续往下滚</span>
+              <span class="sp"></span><span class="linklike">只看这个文件</span>
             </div>
           </div>
         </div>
@@ -457,84 +368,26 @@ svg.ic.sm{width:15px;height:15px}
       </div>
     </div>
     <p class="note-x">
-      <b>两层滚动条是这条规则的代价</b>，能缓解但去不掉。缓解手段：①文件标题行 <code>sticky</code> 吸顶，
-      滚到一半也知道自己在看哪个文件；②<code>overscroll-behavior:contain</code>，页框滚到底不会顺势把外层带着一起滚；
-      ③下面那条灰条常驻，说清「不是只有 5 页，是显示不下」。<br>
-      <b>如果你想彻底避开两层滚动条，有两个改法，我倾向第二个：</b>
-      一是把上限从「5 页」改成「5 页和分到的空间取小的那个」——两个文件展开时各分一半，谁也不超出面板，外层永不滚；
-      代价是展开三个以上时每个只剩一页多，缩略图区变得很窄。
-      二是走第 5 屏那个「只看疑点」——绝大多数时候要看的页就那么两三页，压根走不到限高这条规则上。
-      两个都做也不冲突：默认进「只看疑点」，切到「全部页」时才启用限高。<br>
-      <b>另外备着一条出路：</b>限高条右边那个「在新窗口里看这个文件」——一个文件独占一屏，两层滚动条彻底没有。
-      要不要做由你定，不做也不影响主流程。
+      文件标题行 <code>sticky</code> 吸顶、<code>overscroll-behavior:contain</code>（框内滚到底不会顺势把外层带着滚）都留着，
+      是给「展开太多、外层也开始滚」那种情况兜底的。
     </p>
   </div>
 </section>
 
 <!-- ============================ 4 ============================ -->
 <section class="sec" id="s4">
-  <h2>4 · 加载态：缩略图按需取<i>不是整批一次性拉完</i></h2>
+  <h2>4 · 只看疑点<i>我的建议：默认就停在这一档</i></h2>
   <p class="desc">
-    一批 96 页就是 192 张页图。展开时全部去拉，界面会卡住几秒，还白白读一堆你根本不会往下滚到的页。
-    所以缩略图只在<b>滚进可视区时才取</b>，取到之前是这个骨架条；收起文件就把已取的图释放掉。
-    页的行高、页码、结论文字都是先出来的——骨架只在图那两个格子里，行不会跳。
+    96 页里要看的就那 3 页，逐页翻是把时间花在已经没问题的地方。切过来之后只留有结论要看的页——
+    建议复核、审核未通过、生成失败、按幅面跳过。全部通过的文件<b>留在列表里但标灰</b>，不是消失：消失会让人怀疑那个文件没翻出来。
   </p>
   <div class="frame">
-    <div class="panel" style="height:340px">
-      <div class="res-bar"><span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页</span><div class="sp"></div>
-        <div class="filters"><button class="f on">全部页</button><button class="f">只看疑点 2</button></div></div>
-      <div class="res-list">
-        <div class="rfile open">
-          <div class="rfile-head">
-            <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
-            <span class="nm">投标文件_技术标.pdf</span>
-            <div class="rfile-chips"><span class="chip ok">42 页通过</span></div>
-            <span class="meta">42 页</span><span class="linklike">打开</span>
-          </div>
-          <div class="rfile-body">
-            <div class="pages">
-              <div class="prow">
-                <div class="pno"><b>第 6 页</b><span class="chip ok">通过</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:60%"></div><div class="ln" style="width:95%"></div><div class="ln" style="width:88%"></div><div class="tbl"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:68%"></div><div class="ln" style="width:96%"></div><div class="ln" style="width:90%"></div><div class="tbl"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">版式一致，文本完整</div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 7 页</b><span class="chip ok">通过</span></div>
-                <div class="pair"><div class="thumb load"></div><div class="thumb load"></div></div>
-                <div class="pdesc">版式一致，文本完整<div class="r">页图加载中…</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 8 页</b><span class="chip ok">通过</span></div>
-                <div class="pair"><div class="thumb load"></div><div class="thumb load"></div></div>
-                <div class="pdesc">版式一致，文本完整<div class="r">页图加载中…</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-            </div>
-          </div>
-        </div>
+    <div class="panel" style="height:400px">
+      <div class="res-bar">
+        <span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页 · 筛出 3 页</span>
+        <div class="sp"></div>
+        <div class="filters"><button class="f">全部页</button><button class="f on">只看疑点 3</button></div>
       </div>
-    </div>
-    <p class="note-x">页图取不到时（文件被挪走、任务目录被清理）这两格换成「页图已不在磁盘上」的静态占位，行照样在，结论文字照样在。</p>
-  </div>
-</section>
-
-<!-- ============================ 5 ============================ -->
-<section class="sec" id="s5">
-  <h2>5 · 只看疑点<i>我的建议：这才是 40 页文档最常用的入口</i></h2>
-  <p class="desc">
-    42 页里 40 页都是「通过」，逐页翻缩略图找那 2 页，是把时间花在已经没问题的地方。
-    切到「只看疑点」后，列表只留下有结论要看的页——建议复核、审核未通过、生成失败、按幅面跳过——
-    没有疑点的文件整张卡片收起并标灰。多数时候这一屏两三行就看完了，第 3 屏那套限高规则也就用不上了。
-  </p>
-  <div class="frame">
-    <div class="panel" style="height:420px">
-      <div class="res-bar"><span class="t">翻译结果</span><span class="sub">3 个文件 · 96 页 · 筛出 3 页</span><div class="sp"></div>
-        <div class="filters"><button class="f">全部页</button><button class="f on">只看疑点 3</button></div></div>
       <div class="res-list">
         <div class="rfile open">
           <div class="rfile-head">
@@ -543,28 +396,12 @@ svg.ic.sm{width:15px;height:15px}
             <div class="rfile-chips"><span class="chip warn">2 页建议复核</span></div>
             <span class="meta">38 页中的 2 页</span><span class="linklike">打开</span>
           </div>
-          <div class="rfile-body">
-            <div class="pages">
-              <div class="prow">
-                <div class="pno"><b>第 12 页</b><span class="chip warn">建议复核</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:52%"></div><div class="tbl" style="height:60px"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:74%"></div><div class="tbl" style="height:74px"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">译文已采用，但自动检查有疑点<div class="r">表格第 3 列译文溢出单元格</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-              <div class="prow">
-                <div class="pno"><b>第 27 页</b><span class="chip warn">审核未通过 · 已采用</span></div>
-                <div class="pair">
-                  <div class="thumb src"><div class="pg"><div class="ln h" style="width:58%"></div><div class="ln" style="width:92%"></div><div class="ln" style="width:44%"></div></div><div class="cap">原文</div></div>
-                  <div class="thumb dst"><div class="pg"><div class="ln h" style="width:66%"></div><div class="ln" style="width:96%"></div></div><div class="cap">译文</div></div>
-                </div>
-                <div class="pdesc">审核模型认为这一页缺了一段<div class="r">译文页比原页少一行，已按原样采用</div></div>
-                <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-              </div>
-            </div>
-          </div>
+          <div class="rfile-body"><div class="pages">
+            <div class="prow"><span class="pno">第 12 页</span><span class="chip warn">建议复核</span>
+              <span class="pdesc">译文已采用，但表格第 3 列译文溢出单元格</span><span class="linklike">全尺寸对比</span></div>
+            <div class="prow"><span class="pno">第 27 页</span><span class="chip warn">审核未通过 · 已采用</span>
+              <span class="pdesc">译文页比原页少一行，审核模型认为缺了一段</span><span class="linklike">全尺寸对比</span></div>
+          </div></div>
         </div>
         <div class="rfile open">
           <div class="rfile-head">
@@ -573,37 +410,32 @@ svg.ic.sm{width:15px;height:15px}
             <div class="rfile-chips"><span class="chip">1 页按幅面跳过</span></div>
             <span class="meta">16 页中的 1 页</span><span class="linklike">打开</span>
           </div>
-          <div class="rfile-body">
-            <div class="pages">
-              <div class="prow">
-                <div class="pno"><b>第 9 页</b><span class="chip">按幅面跳过</span></div>
-                <div class="pair" style="cursor:default"><div class="thumb blank">A3 幅面<br>未生成页图</div><div class="thumb blank">原样保留</div></div>
-                <div class="pdesc">幅面超过 A4，未送翻译<div class="r">原始内容已原样保留在输出文件中</div></div>
-                <div class="pacts"><span class="linklike disabled">全尺寸对比</span><span class="linklike disabled">重新生成</span></div>
-              </div>
-            </div>
-          </div>
+          <div class="rfile-body"><div class="pages">
+            <div class="prow"><span class="pno">第 9 页</span><span class="chip">按幅面跳过</span>
+              <span class="pdesc">幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中</span>
+              <span class="linklike disabled" title="该页按幅面跳过，没有生成页图">全尺寸对比</span></div>
+          </div></div>
         </div>
         <div class="rfile" style="opacity:.55">
           <div class="rfile-head" style="cursor:default">
             <svg class="ic sm" viewBox="0 0 24 24" style="color:var(--ink-3)"><path d="M20 6 9 17l-5-5"/></svg>
             <span class="nm">投标文件_技术标.pdf</span>
             <div class="rfile-chips"><span class="chip ok">42 页全部通过</span></div>
-            <span class="meta">没有需要复核的页</span><span class="linklike">打开</span>
+            <span class="meta">没有要看的页</span><span class="linklike">打开</span>
           </div>
         </div>
       </div>
       <div class="res-foot"><button class="btn pri">打开输出目录</button><button class="btn">查看完整报告</button>
         <div class="sp"></div><button class="btn">再翻一批</button></div>
     </div>
-    <p class="note-x">全部通过的文件<b>留在列表里但标灰</b>，不是从列表里消失——消失会让人怀疑那个文件是不是没翻出来。</p>
+    <p class="note-x">这一屏三行就看完了，第 3 屏那套限高规则在这一档下基本用不到。</p>
   </div>
 </section>
 
-<!-- ============================ 6 ============================ -->
-<section class="sec" id="s6">
-  <h2>6 · 异常与空态</h2>
-  <p class="desc">三种：某个文件一页都没产出（其他文件正常）／整批失败／任务被中止只跑了一半。结果页在这三种情况下都还是结果页，不退回文件清单。</p>
+<!-- ============================ 5 ============================ -->
+<section class="sec" id="s5">
+  <h2>5 · 异常与空态</h2>
+  <p class="desc">某个文件一页都没产出 ／ 整批失败 ／ 中止后只跑了一半。三种情况都还是结果页，不退回文件清单。</p>
   <div class="frame">
     <div style="display:flex;gap:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:330px">
@@ -626,7 +458,7 @@ svg.ic.sm{width:15px;height:15px}
                 <span class="meta">—</span><span class="linklike disabled">打开</span>
               </div>
               <div class="rfile-body">
-                <div class="empty" style="padding:26px 20px">
+                <div class="empty" style="padding:22px 20px">
                   <b>这个文件一页都没能生成</b>
                   <p>文件是加密的，程序打不开它。去掉密码后重新翻译，或在完整报告里看这一条的原始错误。</p>
                   <div style="margin-top:10px"><button class="btn mini">查看这个文件的日志</button></div>
@@ -638,7 +470,7 @@ svg.ic.sm{width:15px;height:15px}
         <p class="note-x"><b>没有产出的文件也占一行</b>，展开后是原因，不是空白。</p>
       </div>
       <div style="flex:1;min-width:330px">
-        <div class="panel" style="height:300px">
+        <div class="panel" style="height:280px">
           <div class="res-bar"><span class="t">翻译结果</span><span class="sub">没有产出</span></div>
           <div class="res-list">
             <div class="empty">
@@ -650,12 +482,12 @@ svg.ic.sm{width:15px;height:15px}
             </div>
           </div>
         </div>
-        <p class="note-x">全批失败时<b>不给「打开输出目录」</b>——点进去只有空目录，等于骗人跑一趟（这条已经是现在横幅的规则，结果页沿用）。</p>
+        <p class="note-x">全批失败时<b>不给「打开输出目录」</b>——点进去只有空目录（这条已经是现在横幅的规则，结果页沿用）。</p>
       </div>
     </div>
     <div style="margin-top:16px">
-      <div class="panel" style="height:200px">
-        <div class="res-bar"><span class="t">翻译结果 · 已中止</span><span class="sub">已完成的页仍然可以看</span></div>
+      <div class="panel" style="height:180px">
+        <div class="res-bar"><span class="t">翻译结果 · 已停止</span><span class="sub">已完成的页仍然可以看</span></div>
         <div class="res-list">
           <div class="rfile">
             <div class="rfile-head">
@@ -667,99 +499,158 @@ svg.ic.sm{width:15px;height:15px}
           </div>
         </div>
       </div>
-      <p class="note-x">中止的任务也进结果页，卡片上直接写「42 页中的 18 页」——已经翻出来的那部分是真产出，不该因为中止就看不到。</p>
+      <p class="note-x">中止的任务也进结果页，卡片上直接写「42 页中的 18 页」。（标题里的状态词用「已停止」，跟安全停止那个按钮对齐，见提交 9cbb831。）</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================ 6 ============================ -->
+<section class="sec" id="s6">
+  <h2>6 · 全尺寸对比：唯一看图的地方<i>沿用现有模态，加翻页</i></h2>
+  <p class="desc">
+    点行末的「全尺寸对比」打开它。这个模态现在已经在用（<code>openPdfPageCompareModal</code>），结果页只是多了一个入口。
+    要加的只有<b>上一页 / 下一页</b>：从结果页点进来通常要连着看好几页，每看一页关掉再点一次太笨。
+  </p>
+  <div class="frame">
+    <div class="modal wide">
+      <div class="mhead">
+        <b>设备清单_附表三.pdf · 第 12 页</b>
+        <span class="chip warn">建议复核</span>
+        <div class="sp"></div>
+        <button class="btn mini">← 上一页</button><button class="btn mini">下一页 →</button>
+        <button class="btn mini">关闭</button>
+      </div>
+      <div class="cmp">
+        <div class="cmp-col"><div class="lb">原文</div>
+          <div class="cmp-box"><div class="pg"><div class="ln h" style="width:52%"></div><div class="ln" style="width:96%"></div><div class="ln" style="width:90%"></div><div class="tbl"></div><div class="ln" style="width:70%"></div></div></div>
+        </div>
+        <div class="cmp-col dst"><div class="lb">译文</div>
+          <div class="cmp-box"><div class="pg"><div class="ln h" style="width:72%"></div><div class="ln" style="width:98%"></div><div class="ln" style="width:94%"></div><div class="tbl" style="height:170px"></div><div class="ln" style="width:84%"></div></div></div>
+        </div>
+      </div>
+      <div class="mfoot"><span style="font-size:11.5px;color:var(--ink-3)">表格第 3 列译文溢出单元格</span>
+        <span class="sp"></span><span style="font-size:11.5px;color:var(--ink-3)">12 / 38</span></div>
     </div>
   </div>
 </section>
 
 <!-- ============================ 7 ============================ -->
 <section class="sec" id="s7">
-  <h2>7 · 危险操作确认：重新生成会覆盖这一页</h2>
-  <p class="desc">「重新生成」会把已有的译文页图原地改写掉，改完退不回来，而且要再花一次这一页的接口钱。终态之后点它必须先问一句。</p>
-  <div class="frame" style="position:relative;min-height:260px;display:flex;align-items:center;justify-content:center">
-    <div style="position:static">
-      <div class="modal">
-        <div class="mhead">
-          <svg class="ic" viewBox="0 0 24 24" style="color:var(--warn)"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-          <b>重新生成第 12 页？</b>
-        </div>
-        <div class="mbody">
-          现在这一页的译文会被覆盖，覆盖之后取不回来。重新生成要再调用一次接口，按这一页的用量计费。
-        </div>
-        <div class="mfoot"><button class="btn">取消</button><button class="btn dgr">覆盖并重新生成</button></div>
-      </div>
-    </div>
-  </div>
-  <p class="note-x" style="max-width:1180px;margin-left:auto;margin-right:auto">
-    <b>只有终态之后才问。</b>任务还在跑的时候，「重新生成」是排进队列、等这一轮跑完才生效，覆盖不了正在用的东西，那时候不弹这个框（现有行为不变）。
+  <h2>7 · 「重新生成」<i>现在做不到，要不要做由你定</i></h2>
+  <p class="desc">
+    你问得对——<b>任务跑完之后「重新生成」是无效的</b>。后端只接受<b>暂停中</b>的任务的单页操作
+    （<code>api/task_manager.py</code>：任务已结束 → 拒绝；状态不是 paused → 拒绝）。
+    现在界面上那个按钮在终态是灰的、点不动，旁边挂着一句「任务已结束，仅可查看对比页图，不能再触发操作」。
+    所以它不是坏了，是这个功能压根没做。<br>
+    <b>我的建议：结果页这一版先不放这个按钮</b>——一个永远点不动的灰按钮只会让人反复去点。
+    真要做「翻完之后重生成某一页」，那是后端的一件独立的事：得把已经收尾的任务重新开出页面流水线，
+    重跑一页、覆盖页图、更新报告。工作量不小，但价值明确——结果页正是让人发现坏页的地方，发现了却只能整份重翻，很憋屈。
+    做不做、这一轮做还是下一轮做，你定。下面是真做出来会长什么样。
   </p>
-</section>
-
-<!-- ============================ 8 ============================ -->
-<section class="sec" id="s8">
-  <h2>8 · 全尺寸对比：沿用现在这个模态<i>不重做</i></h2>
-  <p class="desc">点缩略图就是打开它。现在这个模态已经在用（<code>openPdfPageCompareModal</code>），结果页只是多了一个入口。
-    唯一要加的是<b>上一页 / 下一页</b>——从结果页点进来通常是要连着看好几页，每看一页就关掉再点一次太笨。</p>
   <div class="frame">
-    <div class="modal wide" style="margin:0 auto">
-      <div class="mhead">
-        <b>设备清单_附表三.pdf · 第 12 页</b>
-        <span class="chip warn">建议复核</span>
-        <button class="btn mini">上一页</button><button class="btn mini">下一页</button>
-        <button class="btn mini">关闭</button>
-      </div>
-      <div class="cmp">
-        <div class="cmp-col"><div class="lb">原文</div>
-          <div class="cmp-box"><div class="pg"><div class="ln h" style="width:52%"></div><div class="ln" style="width:96%"></div><div class="ln" style="width:90%"></div><div class="tbl" style="height:150px"></div><div class="ln" style="width:70%"></div></div></div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1;min-width:340px">
+        <div class="panel" style="height:190px">
+          <div class="res-bar"><span class="t">做了之后：行末多一个入口</span></div>
+          <div class="res-list">
+            <div class="rfile open">
+              <div class="rfile-head" style="cursor:default">
+                <svg class="ic sm caret" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+                <span class="nm">设备清单_附表三.pdf</span>
+                <div class="rfile-chips"><span class="chip warn">2 页建议复核</span></div>
+                <span class="meta">38 页</span>
+              </div>
+              <div class="rfile-body"><div class="pages">
+                <div class="prow"><span class="pno">第 12 页</span><span class="chip warn">建议复核</span>
+                  <span class="pdesc">表格第 3 列译文溢出单元格</span>
+                  <span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
+                <div class="prow"><span class="pno">第 13 页</span><span class="chip tint" style="background:var(--tint);border-color:var(--tint-line);color:var(--tint-ink)">重新生成中</span>
+                  <span class="pdesc">正在重跑这一页，完成后会覆盖原来的译文页</span>
+                  <span class="linklike disabled">全尺寸对比</span><span class="linklike">取消</span></div>
+              </div></div>
+            </div>
+          </div>
         </div>
-        <div class="cmp-col"><div class="lb">译文</div>
-          <div class="cmp-box"><div class="pg"><div class="ln h" style="width:72%"></div><div class="ln" style="width:98%"></div><div class="ln" style="width:94%"></div><div class="tbl" style="height:170px"></div><div class="ln" style="width:84%"></div></div></div>
-        </div>
+        <p class="note-x">重生成期间这一页是「重新生成中」，别的页照常能看；不锁整屏。</p>
       </div>
-      <div class="mfoot"><span style="flex:1;font-size:11.5px;color:var(--ink-3)">表格第 3 列译文溢出单元格</span>
-        <button class="btn">重新生成这一页</button></div>
+      <div style="flex:1;min-width:340px">
+        <div class="modal">
+          <div class="mhead">
+            <svg class="ic" viewBox="0 0 24 24" style="color:var(--warn)"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+            <b>重新生成第 12 页？</b>
+          </div>
+          <div class="mbody">
+            现在这一页的译文会被覆盖，覆盖之后取不回来。重新生成要再调用一次接口，按这一页的用量计费。
+            输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。
+          </div>
+          <div class="mfoot"><span class="sp"></span><button class="btn">取消</button><button class="btn dgr">覆盖并重新生成</button></div>
+        </div>
+        <p class="note-x">这是「危险操作确认」那一档：覆盖不可逆、要再花一次钱、还会改写已经交出去的文件，三条都得说。</p>
+      </div>
     </div>
   </div>
 </section>
 
 <script>
-// 样张专用：把第 3 屏那两个限高框填满页行，好真的滚起来。
-const rows = [
-  ["通过","ok","版式一致，文本完整"],
-  ["通过","ok","版式一致，文本完整"],
-  ["建议复核","warn","译文偏长，已强行缩排放进原位置"],
-  ["通过","ok","版式一致，文本完整"],
-  ["通过","ok","版式一致，文本完整"],
-  ["通过","ok","版式一致，文本完整"],
-  ["通过","ok","版式一致，文本完整"],
-  ["通过","ok","版式一致，文本完整"],
-];
-function pageBlock(kind, seed){
-  const w = (i)=> 44 + ((seed*37 + i*23) % 56);
-  return `<div class="thumb ${kind}"><div class="pg">
-    <div class="ln h" style="width:${w(0)}%"></div>
-    <div class="ln" style="width:${w(1)}%"></div>
-    <div class="ln" style="width:${w(2)}%"></div>
-    <div class="ln" style="width:${w(3)}%"></div>
-    <div class="tbl"></div></div>
-    <div class="cap">${kind==="src"?"原文":"译文"}</div></div>`;
+// 样张专用：造页行。产品里这些数据来自 /api/tasks/{id}/pdf-pages。
+const NOTE_OK = "版式一致，文本完整";
+function rowHtml(n, label, tone, desc, disabled){
+  return `<div class="prow">
+    <span class="pno">第 ${n} 页</span>
+    <span class="chip ${tone}">${label}</span>
+    <span class="pdesc">${desc}</span>
+    <span class="linklike${disabled?" disabled":""}">全尺寸对比</span>
+  </div>`;
 }
-for (const [id, start] of [["cap1",1],["cap2",1]]) {
-  const host = document.getElementById(id);
-  if (!host) continue;
-  host.innerHTML = rows.map((r,i)=>`
-    <div class="prow">
-      <div class="pno"><b>第 ${start+i} 页</b><span class="chip ${r[1]}">${r[0]}</span></div>
-      <div class="pair">${pageBlock("src", i + (id==="cap2"?5:0))}${pageBlock("dst", i + (id==="cap2"?5:0))}</div>
-      <div class="pdesc">${r[2]}</div>
-      <div class="pacts"><span class="linklike">全尺寸对比</span><span class="linklike">重新生成</span></div>
-    </div>`).join("");
+// 第 2 屏：16 页全铺开
+const full = [];
+for (let i=1;i<=16;i++){
+  if (i===9) full.push(rowHtml(9,"按幅面跳过","","幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中",true));
+  else if (i===5) full.push(rowHtml(5,"建议复核","warn","译文偏长，已强行缩排放进原位置，建议看一眼版面"));
+  else full.push(rowHtml(i,"通过","ok",NOTE_OK));
 }
-// 文件行点一下就展开/收起，方便在样张里试
+document.getElementById("fullpages").innerHTML = full.join("");
+
+// 第 3 屏：两个长文件，各自限高 = 平分空间（这里按样张写死，产品里由脚本量出来）
+function longRows(total, warnAt){
+  const out=[];
+  for (let i=1;i<=total;i++){
+    out.push(i===warnAt
+      ? rowHtml(i,"建议复核","warn","译文偏长，已强行缩排放进原位置")
+      : rowHtml(i,"通过","ok",NOTE_OK));
+  }
+  return out.join("");
+}
+document.getElementById("cap1").innerHTML = longRows(42, 7);
+document.getElementById("cap2").innerHTML = longRows(38, 12);
+
+// 平分可视空间：两个展开区各拿一半，且不少于 5 行。
+function layoutCapped(){
+  document.querySelectorAll(".res-list").forEach((list)=>{
+    const capped=[...list.querySelectorAll(".pages.capped")];
+    if(!capped.length) return;
+    const rowH=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--pgrow"));
+    let chrome=0;
+    [...list.children].forEach((rf)=>{
+      chrome+=rf.querySelector(".rfile-head").getBoundingClientRect().height;
+      const note=rf.querySelector(".cap-note");
+      if(note) chrome+=note.getBoundingClientRect().height;
+    });
+    const gaps=(list.children.length-1)*10;
+    const pad=20;
+    const avail=list.clientHeight-chrome-gaps-pad;
+    const each=Math.max(5*rowH, Math.floor(avail/capped.length/rowH)*rowH);
+    capped.forEach((c)=>{ c.style.maxHeight=each+"px"; });
+  });
+}
+layoutCapped();
+window.addEventListener("resize", layoutCapped);
+
 document.querySelectorAll(".rfile-head").forEach((h)=>{
   h.addEventListener("click",(e)=>{
     if (e.target.classList.contains("linklike")) return;
     h.parentElement.classList.toggle("open");
+    layoutCapped();
   });
 });
 </script>
