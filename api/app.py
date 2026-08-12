@@ -148,6 +148,9 @@ class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
     surface: Literal["excel", "word", "pdf"]
     include_images: bool = False
+    # 「浏览 → 选择文件」允许一次挑多个文件（只限类型，不限数量）。给了 paths 就按这
+    # 几个路径各扫一次再合并；不给就还是按 path 扫一个文件或一整个文件夹。
+    paths: list[str] = Field(default_factory=list)
 
 
 class PdfPageActionRequest(BaseModel):
@@ -720,40 +723,31 @@ def create_app(
 
     @app.post("/api/sources/scan")
     def scan_sources(request: ScanRequest) -> dict[str, Any]:
-        root = Path(request.path).expanduser()
+        roots = [Path(item).expanduser() for item in request.paths if str(item).strip()]
+        if not roots:
+            roots = [Path(request.path).expanduser()]
         if request.surface == "excel":
-            result = scan_excel_sources(root)
-            payload = {
-                "items": [_json_safe(item) for item in result.items],
-                "skipped": [_json_safe(item) for item in result.skipped],
-                "summary": result.summary,
-                "risk": result.risk,
-            }
-            # ``result`` is a stable grouped alias for callers that consume
-            # one typed scan object; top-level fields keep the Phase 1 route
-            # backward compatible.
-            payload["result"] = dict(payload)
-            return payload
+            result = _merge_scan_results([scan_excel_sources(root) for root in roots])
         elif request.surface == "word":
-            result = scan_word_sources(root)
-            payload = {
-                "items": [_json_safe(item) for item in result.items],
-                "skipped": [_json_safe(item) for item in result.skipped],
-                "summary": result.summary,
-                "risk": result.risk,
-            }
-            payload["result"] = dict(payload)
-            return payload
+            result = _merge_scan_results([scan_word_sources(root) for root in roots])
         else:
-            result = scan_pdf_sources(root, include_images=request.include_images)
-            payload = {
-                "items": [_json_safe(item) for item in result.items],
-                "skipped": [_json_safe(item) for item in result.skipped],
-                "summary": result.summary,
-                "risk": result.risk,
-            }
-            payload["result"] = dict(payload)
-            return payload
+            result = _merge_scan_results(
+                [
+                    scan_pdf_sources(root, include_images=request.include_images)
+                    for root in roots
+                ]
+            )
+        payload = {
+            "items": [_json_safe(item) for item in result.items],
+            "skipped": [_json_safe(item) for item in result.skipped],
+            "summary": result.summary,
+            "risk": result.risk,
+        }
+        # ``result`` is a stable grouped alias for callers that consume
+        # one typed scan object; top-level fields keep the Phase 1 route
+        # backward compatible.
+        payload["result"] = dict(payload)
+        return payload
 
     def _task_options(request: TaskStartRequest) -> TaskOptions:
         return TaskOptions(
@@ -2144,6 +2138,29 @@ def _deep_merge(current: dict[str, Any], update: dict[str, Any]) -> dict[str, An
         else:
             merged[key] = value
     return merged
+
+
+def _merge_scan_results(results: list[Any]) -> Any:
+    """Fold several single-path scans into one selectable list.
+
+    多选文件时每个路径各扫一次，合并后 summary / risk 走同一个类的属性算，不会和
+    单路径扫描算出两套口径。同一个文件被扫到两次（路径互相包含）只保留第一次。
+    """
+    base = results[0]
+    for extra in results[1:]:
+        base.items.extend(extra.items)
+        base.skipped.extend(extra.skipped)
+    seen: set[str] = set()
+    unique_items = []
+    for item in base.items:
+        key = str(getattr(item, "path", "") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique_items.append(item)
+    base.items[:] = unique_items
+    return base
 
 
 def _json_safe(value: Any) -> Any:

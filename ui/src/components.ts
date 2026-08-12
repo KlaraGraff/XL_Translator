@@ -1110,6 +1110,9 @@ export function openModal(options: ModalOptions): ModalHandle {
 
   modal.append(el("h3", { text: options.title }));
 
+  // 正文单独包一层并且只让它滚动：扫描报告这种正文能有几十条，直接铺在 .modal 里
+  // 会把整个弹窗撑得比窗口还高，标题和「关闭」按钮一起被挤到视口外——看上去就是卡死。
+  const bodyWrap = el("div", { className: "mbody" });
   for (const item of options.body) {
     const p = el("p");
     if (typeof item === "string") {
@@ -1117,8 +1120,9 @@ export function openModal(options: ModalOptions): ModalHandle {
     } else {
       p.append(item);
     }
-    modal.append(p);
+    bodyWrap.append(p);
   }
+  modal.append(bodyWrap);
 
   const close = () => overlay.remove();
 

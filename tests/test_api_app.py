@@ -127,6 +127,35 @@ class ApiAppTests(unittest.TestCase):
         self.assertEqual(scan.json()["items"][0]["path"], str(workbook_path))
         self.assertEqual(scan.json()["items"][0]["sheets"], ["Sheet 1"])
 
+    def test_scan_accepts_several_picked_files(self) -> None:
+        """「选择文件」不再限制只能选一个：多个路径各扫一次，合并成一份清单。"""
+        paths = []
+        for index in range(3):
+            path = self.root / f"multi_{index}.xlsx"
+            workbook = Workbook()
+            workbook.active.title = f"Sheet {index}"
+            workbook.save(path)
+            paths.append(str(path))
+        # 第三个不选，用来证明合并结果不是"整个目录"。
+        scan = self.client.post(
+            "/api/sources/scan",
+            json={"surface": "excel", "path": paths[0], "paths": paths[:2]},
+        )
+        self.assertEqual(scan.status_code, 200)
+        body = scan.json()
+        self.assertEqual([item["path"] for item in body["items"]], paths[:2])
+        self.assertEqual(body["summary"]["scanned_count"], 2)
+
+    def test_scan_deduplicates_overlapping_picked_paths(self) -> None:
+        path = self.root / "dup.xlsx"
+        Workbook().save(path)
+        scan = self.client.post(
+            "/api/sources/scan",
+            json={"surface": "excel", "path": str(path), "paths": [str(path), str(path)]},
+        )
+        self.assertEqual(scan.status_code, 200)
+        self.assertEqual(len(scan.json()["items"]), 1)
+
     def test_tasks_sse_and_resource_locks(self) -> None:
         context = TaskApiContext(
             frozenset({("cloud", "custom_openai", "https://api.test/v1", "hash")} ),

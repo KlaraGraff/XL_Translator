@@ -266,6 +266,10 @@ interface FileOutcome {
 
 interface SurfaceState {
   sourcePath: string;
+  /** 「浏览 → 选择文件」一次挑了多个文件时的原始清单；sourcePath 存它们共同的上级
+   *  目录（任务的 source_path 要能被后端重扫，selected_paths 再收窄到这几个文件）。
+   *  手输路径、选文件夹、只选一个文件时都是空数组。 */
+  sourcePaths: string[];
   files: FileItem[];
   skipped: ScanSkippedItem[];
   scanSummary: JsonObject;
@@ -306,6 +310,7 @@ function freshToggles(surface: Surface): Map<string, boolean> {
 function freshState(surface: Surface): SurfaceState {
   return {
     sourcePath: "",
+    sourcePaths: [],
     files: [],
     skipped: [],
     scanSummary: {},
@@ -767,6 +772,8 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     placeholder: "选择或粘贴文件、文件夹路径…",
     onInput: (value) => {
       st.sourcePath = value;
+      // 手输/粘贴就不再是"刚才多选的那几个文件"了，多选清单必须一起作废。
+      st.sourcePaths = [];
       // 手输/粘贴路径时同步解锁「扫描」——这一栏不整页重建，按钮得自己更新。
       // 扫描在飞时仍然保持锁定，光有路径不算能点。
       scanBtn.disabled = scanBusy[surface] || !value.trim();
@@ -786,7 +793,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     onClick: () => {
       openMenu(browseBtn, [
         { label: "选择文件夹…", description: "递归扫描目录下所有可翻译文件", onSelect: () => void pickSource(surface, st, input, true) },
-        { label: `选择单个 ${SURFACE_FILE_NOUN[surface]}…`, description: "只扫描并翻译这一个文件", onSelect: () => void pickSource(surface, st, input, false) },
+        { label: `选择${SURFACE_FILE_NOUN[surface]}…`, description: "可多选，只扫描并翻译选中的文件", onSelect: () => void pickSource(surface, st, input, false) },
       ]);
     },
   });
@@ -803,28 +810,44 @@ function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; e
   return { name: images.length ? "PDF 与图片" : "PDF", extensions: ["pdf", ...images] };
 }
 
+/** 取路径的上级目录。系统选择框一次只能在同一个文件夹里多选，取第一个的父目录即可。 */
+function parentDirOf(path: string): string {
+  const normalized = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return cut > 0 ? normalized.slice(0, cut) : normalized;
+}
+
 /**
  * 打开系统选择框。Tauri 的 dialog 插件把「选目录」和「选文件」做成两个互斥模式
  * （directory:true 时 filters 直接被忽略），所以这里由「浏览」菜单先定模式再调用；
- * 后端 scan 两种路径都支持，单文件走 Path.is_file() 分支。
+ * 后端 scan 两种路径都支持，单文件走 Path.is_file() 分支；选文件时可以一次挑多个，
+ * 后端按每个路径各扫一次再合并成一份清单。
  */
 async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputElement, directory: boolean): Promise<void> {
   let picked: unknown;
   try {
     picked = directory
       ? await open({ title: "选择来源文件夹", directory: true, multiple: false })
-      : await open({ title: `选择${SURFACE_FILE_NOUN[surface]}`, directory: false, multiple: false, filters: [sourceFileFilter(surface, st)] });
+      // 选文件不限数量，只限类型：filters 管类型，multiple 让用户一次挑几份。
+      : await open({ title: `选择${SURFACE_FILE_NOUN[surface]}`, directory: false, multiple: true, filters: [sourceFileFilter(surface, st)] });
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "选择来源失败。"), error: true });
     return;
   }
-  if (typeof picked !== "string") return;
+  const pickedList = (Array.isArray(picked) ? picked : [picked]).filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  if (!pickedList.length) return;
+  // 多选时 sourcePath 记它们共同的上级目录：任务启动要用它重扫，selected_paths 再收窄
+  // 回这几个文件；清单和统计仍然只显示选中的这几份（扫描只扫这几个路径）。
+  st.sourcePaths = pickedList.length > 1 ? pickedList : [];
+  const displayPath = pickedList.length > 1 ? parentDirOf(pickedList[0]) : pickedList[0];
   // 先落地到界面（含解锁「扫描」），再去写设置：记住上次目录失败不该把刚选好的路径丢掉。
-  st.sourcePath = picked;
-  input.value = picked;
+  st.sourcePath = displayPath;
+  input.value = displayPath;
   rerender(surface);
   try {
-    await persistSettings({ [`last_${surface}_source_folder`]: picked });
+    await persistSettings({ [`last_${surface}_source_folder`]: displayPath });
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "已选择来源，但记住上次目录失败。"), error: true });
   }
@@ -2347,7 +2370,13 @@ async function runScan(surface: Surface): Promise<void> {
   rerender(surface);
   try {
     const c = await getClient();
-    const payload = { surface, path, include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")) };
+    const payload = {
+      surface,
+      path,
+      // 多选文件时按这几个路径各扫一次再合并；清单里就只有用户挑的那几份。
+      paths: st.sourcePaths,
+      include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
+    };
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
     if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
     const result = record(response.result) && Object.keys(record(response.result)).length ? record(response.result) : response;

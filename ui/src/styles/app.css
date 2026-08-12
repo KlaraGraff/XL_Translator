@@ -331,7 +331,12 @@ table.review-tbl { table-layout: fixed; }
 /* 适配点 3：position:absolute → fixed，z-index 10 → 200（盖过顶栏/侧栏）。 */
 .overlay { position: fixed; inset: 0; background: rgb(10 14 26 / 45%); display: flex; align-items: center; justify-content: center; gap: 36px; z-index: 200; }
 /* 适配点 4：补 position:relative，配合下面 .mlabel 的显式 top/left。 */
-.modal { position: relative; width: 400px; background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: 22px 22px 18px; }
+/* max-height + 正文滚动：正文再长，标题和底部按钮也永远留在视口内。 */
+.modal { position: relative; display: flex; flex-direction: column; width: 400px; max-height: calc(100vh - 72px); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: 22px 22px 18px; }
+.modal .mbody { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+.modal .mbody:empty { display: none; }
+/* 长路径没有可断行的位置，不给 anywhere 就会被横向裁掉一截。 */
+.modal .mbody p { overflow-wrap: anywhere; }
 /* .modal.wide：内容较多（kv 表格 + 列表）的模态，例如导出回执、导入预览。 */
 .modal.wide { width: 512px; }
 .modal .mi { width: 38px; height: 38px; border-radius: 99px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
