@@ -1621,6 +1621,74 @@ class WordDocumentTests(unittest.TestCase):
             self.assertEqual(issues[0]["location_label"], "表格 1 / 单元格 2")
             self.assertIn("专用砌筑砂浆", issues[0]["snippet"])
 
+    def test_post_write_coverage_marks_every_reported_position_in_the_file(self) -> None:
+        """报告写了几条「需人工复核」，文件里就得看得见几处标记。
+
+        真实缺陷：用户勾了「标记需复核内容」，报告报了 38 条，打开文档一个标记
+        都没有——需复核项全是写完文件之后体检出来的，写的时候还不存在。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "双语(法文)_成品.docx"
+            doc = Document()
+            doc.add_paragraph("三、质量目标")
+            doc.add_paragraph("本工程竣工日期为 2026 年 8 月 9 日。")
+            doc.add_paragraph(
+                "La date d’achèvement du présent projet est fixée au 2026年8月9日."
+            )
+            doc.save(str(output_path))
+
+            issues: list[dict] = []
+            marked_counts: list[int] = []
+            _append_post_write_coverage_issues(
+                issues=issues,
+                file_name="成品",
+                output_path=output_path,
+                target_lang="fr",
+                source_lang="zh",
+                existing_highlight_policy="skip",
+                mark_log_callback=marked_counts.append,
+            )
+
+            self.assertEqual(len(issues), 2)
+            self.assertEqual(marked_counts, [2])
+            written = Document(str(output_path))
+            marked = {
+                paragraph.text
+                for paragraph in written.paragraphs
+                if any(run.font.highlight_color for run in paragraph.runs)
+            }
+            for issue in issues:
+                index = int(issue["location"].split("[")[-1].rstrip("]"))
+                self.assertIn(written.paragraphs[index].text, marked)
+
+    def test_post_write_coverage_leaves_file_alone_when_marking_is_off(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "双语(法文)_未开标记.docx"
+            doc = Document()
+            doc.add_paragraph("三、质量目标")
+            doc.save(str(output_path))
+            before = output_path.stat().st_mtime_ns
+
+            issues: list[dict] = []
+            _append_post_write_coverage_issues(
+                issues=issues,
+                file_name="未开标记",
+                output_path=output_path,
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(output_path.stat().st_mtime_ns, before)
+            written = Document(str(output_path))
+            self.assertFalse(
+                any(
+                    run.font.highlight_color
+                    for paragraph in written.paragraphs
+                    for run in paragraph.runs
+                )
+            )
+
     @staticmethod
     def _build_sample_docx(path: Path) -> None:
         doc = Document()

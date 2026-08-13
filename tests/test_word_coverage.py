@@ -13,7 +13,9 @@ from core.translation_coverage import (
     COVERAGE_IGNORED,
     COVERAGE_SOURCE_ONLY,
 )
+from core.mixed_language import MIXED_MARK_SEMANTIC
 from core.word_coverage import (
+    apply_coverage_review_marks,
     build_word_coverage_plan,
     write_untranslated_docx,
 )
@@ -337,6 +339,171 @@ class WordCoverageTests(unittest.TestCase):
             self.assertFalse(plan.front_matter.found)
             by_location = {unit.location: unit for unit in plan.units}
             self.assertEqual(by_location["body.paragraph[0]"].status, COVERAGE_SOURCE_ONLY)
+
+
+class ReviewMarkTests(unittest.TestCase):
+    """报告里写了几条「需人工复核」，文件里就得看得见几处标记。
+
+    真实缺陷：用户勾了「标记需复核内容」，报告报了 38 条，打开文档一个标记都没有。
+    两条原因——补译模式的写入器压根没有标记参数；而且所有需复核项都是写完文件之后
+    才体检出来的，写的时候还不存在。
+    """
+
+    @staticmethod
+    def _highlighted_paragraph_texts(path: Path) -> list[str]:
+        doc = Document(str(path))
+        marked = [
+            paragraph.text
+            for paragraph in doc.paragraphs
+            if any(run.font.highlight_color for run in paragraph.runs)
+        ]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        if any(run.font.highlight_color for run in paragraph.runs):
+                            marked.append(paragraph.text)
+        return marked
+
+    def _build_sample(self, tmp: Path) -> Path:
+        source = tmp / "抢工方案.docx"
+        doc = Document()
+        doc.add_paragraph("一、工程概况")
+        doc.add_paragraph("二、施工部署")
+        table = doc.add_table(rows=1, cols=1)
+        table.cell(0, 0).text = "砂浆名称"
+        doc.save(source)
+        return source
+
+    def test_untranslated_only_writer_paints_review_marks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = self._build_sample(tmp_path)
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+
+            out_path = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=plan,
+                translations={
+                    "一、工程概况": "1. Présentation du projet",
+                    "二、施工部署": "2. Organisation des travaux",
+                    "砂浆名称": "Nom du mortier",
+                },
+                target_lang="fr",
+                source_lang="zh",
+                review_marks={
+                    "一、工程概况": MIXED_MARK_SEMANTIC,
+                    "砂浆名称": MIXED_MARK_SEMANTIC,
+                },
+            )
+
+            marked = self._highlighted_paragraph_texts(out_path)
+            # 原文段和补进去的译文段都要涂，用户翻到哪一边都看得见。
+            self.assertIn("一、工程概况", marked)
+            self.assertIn("1. Présentation du projet", marked)
+            self.assertIn("砂浆名称", marked)
+            # 没上标记的那一段不能被牵连。
+            self.assertNotIn("二、施工部署", marked)
+
+    def test_untranslated_only_writer_without_marks_paints_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = self._build_sample(tmp_path)
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+
+            out_path = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=plan,
+                translations={"一、工程概况": "1. Présentation du projet"},
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            self.assertEqual(self._highlighted_paragraph_texts(out_path), [])
+
+    def test_post_write_audit_marks_untranslated_and_residual_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "双语(法文)_成品.docx"
+            doc = Document()
+            doc.add_paragraph("三、质量目标")  # 未译源文
+            doc.add_paragraph("本工程竣工日期为 2026 年 8 月 9 日。")
+            doc.add_paragraph(
+                "La date d’achèvement du présent projet est fixée au 2026年8月9日."
+            )  # 已翻好，只残留中文日期
+            table = doc.add_table(rows=1, cols=1)
+            table.cell(0, 0).text = "专用砌筑砂浆"  # 未译单元格
+            doc.save(output_path)
+
+            plan = build_word_coverage_plan(
+                output_path, target_lang="fr", source_lang="zh"
+            )
+            marked_count = apply_coverage_review_marks(output_path, plan=plan)
+
+            self.assertEqual(marked_count, 3)
+            marked = self._highlighted_paragraph_texts(output_path)
+            self.assertIn("三、质量目标", marked)
+            self.assertIn("专用砌筑砂浆", marked)
+            self.assertIn(
+                "La date d’achèvement du présent projet est fixée au 2026年8月9日.",
+                marked,
+            )
+            # 中文原文段本身没问题，不涂。
+            self.assertNotIn("本工程竣工日期为 2026 年 8 月 9 日。", marked)
+
+    def test_post_write_audit_does_not_double_mark_what_the_writer_marked(self) -> None:
+        """写入时已经涂过的位置，体检那一趟不能按「已有底色」再叠一层红色下划线。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "重复标记.docx"
+            doc = Document()
+            doc.add_paragraph("四、应急预案")
+            doc.save(source)
+
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+            out_path = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=plan,
+                translations={"四、应急预案": "4. 应急预案 2026年"},
+                target_lang="fr",
+                source_lang="zh",
+                review_marks={"四、应急预案": MIXED_MARK_SEMANTIC},
+                existing_highlight_policy="red_underline",
+            )
+
+            post_plan = build_word_coverage_plan(
+                out_path, target_lang="fr", source_lang="zh"
+            )
+            apply_coverage_review_marks(
+                out_path, plan=post_plan, existing_highlight_policy="red_underline"
+            )
+
+            written = Document(str(out_path))
+            for paragraph in written.paragraphs:
+                for run in paragraph.runs:
+                    self.assertFalse(
+                        run.underline,
+                        f"重复涂了红色下划线：{paragraph.text}",
+                    )
+
+    def test_post_write_audit_on_clean_document_touches_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "干净.docx"
+            doc = Document()
+            doc.add_paragraph("五、竣工验收")
+            doc.add_paragraph("5. Réception des travaux")
+            doc.save(output_path)
+            before = output_path.stat().st_mtime_ns
+
+            plan = build_word_coverage_plan(
+                output_path, target_lang="fr", source_lang="zh"
+            )
+
+            self.assertEqual(apply_coverage_review_marks(output_path, plan=plan), 0)
+            self.assertEqual(output_path.stat().st_mtime_ns, before)
+            self.assertEqual(self._highlighted_paragraph_texts(output_path), [])
 
 
 if __name__ == "__main__":

@@ -1263,6 +1263,46 @@ def _review_mark_highlight(mark: str, mark_colors: dict[str, str]) -> str:
     return _highlight_value_for_hex(fill)
 
 
+def _review_mark_highlight_values(mark_colors: dict[str, str] | None) -> set[str]:
+    """本程序自己涂的复核底色（Word 高亮值）集合。
+
+    用来区分"文档原本就有的底色"和"这一趟我们刚涂上去的复核标记"：
+    写文档时已经标过的位置，写完体检那一趟不能再按"已有底色"的策略叠一层
+    红色下划线——那不是用户的底色，是我们自己的。
+    """
+    colors = _normalize_review_mark_colors(mark_colors)
+    return {
+        _review_mark_highlight(mark, colors)
+        for mark in (
+            MIXED_MARK_SEMANTIC,
+            MIXED_MARK_UNRESOLVED,
+            MIXED_MARK_FOREIGN_NOISE,
+        )
+    }
+
+
+def _paragraph_has_review_highlight(paragraph: Paragraph, values: set[str]) -> bool:
+    if not values:
+        return False
+    wanted = {str(value).strip().upper() for value in values}
+    for run in paragraph.runs:
+        r_pr = getattr(run._element, "rPr", None)
+        highlight = r_pr.find(qn("w:highlight")) if r_pr is not None else None
+        if highlight is None:
+            continue
+        value = str(highlight.get(qn("w:val")) or "").strip().upper()
+        if value in wanted:
+            return True
+    return False
+
+
+def _cell_has_review_highlight(cell: _Cell, values: set[str]) -> bool:
+    return any(
+        _paragraph_has_review_highlight(paragraph, values)
+        for paragraph in cell.paragraphs
+    )
+
+
 def _highlight_value_for_hex(value: str) -> str:
     cleaned = _normalize_hex_fill(value)
     if cleaned in _WORD_HIGHLIGHT_HEX_OVERRIDES:

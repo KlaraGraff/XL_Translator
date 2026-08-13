@@ -26,7 +26,11 @@ from core.api_scheduler import (
     WeightedApiScheduler,
 )
 from core.bilingual_writer import get_custom_output_dir_error
-from core.word_coverage import build_word_coverage_plan, write_untranslated_docx
+from core.word_coverage import (
+    apply_coverage_review_marks,
+    build_word_coverage_plan,
+    write_untranslated_docx,
+)
 from core.engine_dispatcher import (
     build_engine,
     get_system_prompt,
@@ -1212,6 +1216,13 @@ class WordTaskRunner:
                             target_lang=target_lang,
                             source_lang=source_lang,
                             output_name=_word_output_source_name(file_item.path),
+                            review_marks=(
+                                review_marks
+                                if settings.word_review.highlight_unresolved
+                                else None
+                            ),
+                            review_mark_colors=settings.word_review.mark_colors,
+                            existing_highlight_policy=settings.word_review.existing_highlight_policy,
                             log_callback=lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO",
                                 msg,
@@ -1246,6 +1257,16 @@ class WordTaskRunner:
                         target_lang=target_lang,
                         source_lang=source_lang,
                         protect_front_matter=self._protect_front_matter,
+                        review_mark_colors=settings.word_review.mark_colors,
+                        existing_highlight_policy=(
+                            settings.word_review.existing_highlight_policy
+                            if settings.word_review.highlight_unresolved
+                            else None
+                        ),
+                        mark_log_callback=lambda count, name=file_item.name: self._log(
+                            "INFO",
+                            f"{name}：已在输出文档标记 {count} 处需复核位置。",
+                        ),
                     )
                     if residual_count:
                         self._log(
@@ -2717,13 +2738,32 @@ def _append_post_write_coverage_issues(
     target_lang: str,
     source_lang: str,
     protect_front_matter: bool = False,
+    review_mark_colors: dict[str, str] | None = None,
+    existing_highlight_policy: str | None = None,
+    mark_log_callback=None,
 ) -> int:
+    """成品文档体检：先按体检结果往文档上涂复核标记，再把同一批位置写进报告。
+
+    顺序不能倒过来。以前这里只写报告，报告里几十条「需人工复核」在文件里一个标记
+    都没有——用户勾了「标记需复核内容」，拿到的却是一张要自己去几百页里对照的清单。
+    体检本来就只能在成品文档上做（要看的正是写完之后的结果），所以标记也放在这一趟。
+    传 existing_highlight_policy=None 表示用户没开标记，只写报告。
+    """
     plan = build_word_coverage_plan(
         output_path,
         target_lang=target_lang,
         source_lang=source_lang,
         protect_front_matter=protect_front_matter,
     )
+    if existing_highlight_policy is not None:
+        marked = apply_coverage_review_marks(
+            output_path,
+            plan=plan,
+            review_mark_colors=review_mark_colors,
+            existing_highlight_policy=existing_highlight_policy,
+        )
+        if marked and mark_log_callback:
+            mark_log_callback(marked)
     source_units = plan.source_units
     residual_units = plan.residual_units
     if not source_units and not residual_units:
