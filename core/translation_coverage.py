@@ -65,12 +65,32 @@ _SHORT_TARGET_TOKEN_RE = re.compile(
 )
 
 
+# 外文简称：CCTEB、ONEE、SARL、PV、BTR-ANODE-CCTEB-032 这类全大写缩写和文号。
+# 单位名称、公司名、文件编号在双语文档里大量出现，它们本身就是"译文"——法文版和
+# 中文版写的是同一串字母。这类内容既不该送去翻译，也不值得占用一次模型判定。
+# 只认全大写：小写混进来（Béton、Travaux）就不是缩写，走正常的自然语言词检测。
+_FOREIGN_ACRONYM_RE = re.compile(r"[A-Z][A-Z0-9]*(?:[.&/\-][A-Z0-9]+)*\.?")
+_FOREIGN_ACRONYM_MAX_CHARS = 24
+
+
+def looks_like_foreign_acronym(text: str) -> bool:
+    """Return whether text is a short all-caps foreign abbreviation or reference code."""
+    cleaned = clean_coverage_text(text)
+    if not cleaned or len(cleaned) > _FOREIGN_ACRONYM_MAX_CHARS:
+        return False
+    if sum(1 for char in cleaned if char.isalpha()) < 2:
+        return False
+    return bool(_FOREIGN_ACRONYM_RE.fullmatch(cleaned))
+
+
 def looks_like_short_target_token(text: str) -> bool:
-    """Return whether text is a short target-language token (N°、m²、kg、罗马数字……)."""
+    """Return whether text is a short target-language token (N°、m²、kg、罗马数字、CCTEB……)."""
     cleaned = clean_coverage_text(text)
     if not cleaned:
         return False
-    return bool(_SHORT_TARGET_TOKEN_RE.fullmatch(cleaned))
+    if _SHORT_TARGET_TOKEN_RE.fullmatch(cleaned):
+        return True
+    return looks_like_foreign_acronym(cleaned)
 
 
 @dataclass

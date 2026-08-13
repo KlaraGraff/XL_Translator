@@ -26,6 +26,12 @@ from core.api_scheduler import (
     WeightedApiScheduler,
 )
 from core.bilingual_writer import get_custom_output_dir_error
+from core.coverage_arbitration import (
+    RETRANSLATE_UNCERTAIN,
+    apply_arbitration,
+    collect_arbitration_candidates,
+    review_coverage_pairs,
+)
 from core.word_coverage import (
     apply_coverage_review_marks,
     build_word_coverage_plan,
@@ -324,6 +330,126 @@ class WordTaskRunner:
                 ),
             )
 
+    def _arbitrate_coverage_pairs(
+        self,
+        coverage_plan,
+        *,
+        engine,
+        api_scheduler,
+        target_lang: str,
+        source_lang: str,
+        lang_pair: str | None,
+        concurrency: int,
+        file_name: str,
+        file_identity: str,
+        quality_issues: list[dict],
+    ) -> None:
+        """复核「这一段中文的下一段真的是它的译文吗」，判错的打回去重新翻译。
+
+        补译模式靠启发式判断某段中文后面那段是不是译文。判成"已有译文"而其实不是，
+        那段中文就永远留在文档里，体检也发现不了（用的是同一套启发式）；判反了顶多
+        多插一条译文，看得见。所以这里宁可多翻，不可漏翻。
+        """
+        candidates = collect_arbitration_candidates(coverage_plan.units)
+        if not candidates:
+            return
+
+        known_translations: dict[str, str] = {}
+        if lang_pair:
+            try:
+                tm_result = tm_manager.lookup_batch(
+                    [unit.source_text.strip() for unit in candidates], lang_pair
+                )
+                known_translations = {
+                    text: str(value)
+                    for text, value in (tm_result or {}).items()
+                    if value
+                }
+            except Exception as exc:  # noqa: BLE001 - 记忆库只是省一次模型调用
+                logger.debug(f"补译复核读取记忆库失败：{exc!r}")
+
+        arbitrate = None
+        if _engine_supports_chat(engine):
+            def arbitrate(source: str, candidate: str) -> str:
+                if self._stop_event.is_set():
+                    return _SEMANTIC_VERDICT_EQUIVALENT
+                return _run_semantic_arbitration(
+                    engine,
+                    source,
+                    candidate,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    error_callback=lambda message: self._log("WARNING", message),
+                ).verdict
+
+        try:
+            outcome = review_coverage_pairs(
+                coverage_plan.units,
+                known_translations=known_translations,
+                arbitrate=arbitrate,
+                max_workers=max(1, int(concurrency or 4)),
+                notify_model_checks=lambda count: self._log(
+                    "INFO",
+                    f"  → 补译复核：{count} 对疑似配对送模型判定，请稍候。",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 复核只是给启发式加的一道保险。它自己出错（限流、网络、模型异常）不能连累
+            # 整个文件——外层的 per-file except 会把这个文件当成"打不开"，直接不出译文，
+            # 那比不复核严重得多。出错就退回原判：启发式说已覆盖就已覆盖。
+            self._log(
+                "WARNING",
+                f"  → {file_name}：补译复核未能完成（{exc}），本文件按原判处理。",
+            )
+            return
+        flipped = apply_arbitration(outcome)
+        if outcome.model_check_count:
+            uncertain = sum(
+                1
+                for review in outcome.retranslated
+                if review.reason == RETRANSLATE_UNCERTAIN
+            )
+            # 把"模型说不是译文"和"没问出结果"分开报：后者成批出现时说明接口在抖，
+            # 不是文档里真有那么多配错的段落。
+            detail = f"{len(flipped)} 对改为重新翻译"
+            if uncertain:
+                detail += f"（其中 {uncertain} 对因未取得判定结果而从严处理）"
+            self._log(
+                "INFO",
+                (
+                    f"  → 补译复核：{len(candidates)} 对已有译文，"
+                    f"其中 {outcome.model_check_count} 对送模型判定，{detail}。"
+                ),
+            )
+        if outcome.skipped_over_cap:
+            self._log(
+                "WARNING",
+                (
+                    f"  → 补译复核：可疑对超过单文件上限，"
+                    f"{outcome.skipped_over_cap} 对未送模型，按原判保留为已有译文。"
+                ),
+            )
+        for unit in flipped:
+            quality_issues.append(
+                {
+                    "file": file_identity,
+                    "kind": unit.kind,
+                    "location": unit.location,
+                    "location_label": _format_location_label(unit.location),
+                    "section_path": unit.section_path or "正文",
+                    "snippet": _build_source_excerpt(unit.source_text),
+                    "problem": "紧邻段落不是这一段的译文",
+                    "status": "复核判定后已改为补译，原有内容保持不变。",
+                    "severity": "resolved",
+                }
+            )
+        if flipped:
+            self._log(
+                "INFO",
+                f"  → {file_name}：{len(flipped)} 段原判「已有译文」经复核改为补译。",
+            )
+
     def _run_with_overrides(self) -> None:
         with provider_key_overrides(self._key_overrides):
             self._run()
@@ -571,6 +697,24 @@ class WordTaskRunner:
                                 else get_default_source_lang()
                             ),
                             protect_front_matter=self._protect_front_matter,
+                        )
+                        self._arbitrate_coverage_pairs(
+                            coverage_plan,
+                            engine=engine,
+                            api_scheduler=api_scheduler,
+                            target_lang=target_lang,
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
+                            lang_pair=lang_pair,
+                            concurrency=concurrency,
+                            file_name=file_item.name,
+                            file_identity=_file_result_identity(
+                                file_item, self._source_root
+                            ),
+                            quality_issues=quality_issues,
                         )
                         coverage_plans.append(coverage_plan)
                         _remember_coverage_unit_locations(
