@@ -839,7 +839,9 @@ def _build_mixed_translation_prompt(
         f"3. 外文片段若不是{target_lang_name}，不得判为 existing_bilingual；请使用 translate 或 uncertain。\n"
         "4. 外文片段疑似无意义误输入、键盘误敲或与上下文无关时，使用 foreign_noise_suspected，并返回源语言主体的目标语言译文。\n"
         "5. translate 和 foreign_noise_suspected 必须返回非空 translation；existing_bilingual 和 uncertain 的 translation 必须为空字符串。\n"
-        "6. 必须保留原文中的数字、日期、单位、编号、轴线、规格型号和工程专名，不得添加解释或多版本。\n"
+        "6. 必须保留原文中的编号、轴线、规格型号、工程专名与计量单位，一个字符都不能改动；"
+        "日期、时间等数值中的数字保持不变，但其中的中文计量用语（年、月、日等）须换成目标语言的书写习惯；"
+        "不得添加解释或多版本。\n"
         f"{retry_block}"
     ).strip()
 

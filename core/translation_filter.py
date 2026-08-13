@@ -12,6 +12,13 @@ _NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _SEMANTIC_NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)*(?:\s*[万亿])?")
 _CJK_SPAN_RE = re.compile(r"[\u4e00-\u9fa5]+")
 
+# 「数字 + 中文日期/数量单位」残留检测：编号（BTR-ANODE-CCTEB-032、Ø25、1#）与
+# 国际单位（38℃、30 %、m²）本身不含中文字符，天然不会命中；只有真正把中文计
+# 量用语原样留在非中文译文里时才会匹配。数字与单位之间允许出现空格，覆盖
+# 「2025 年 11 月」这类模型输出。较长的词（周岁/万元）排在前面，避免被更短
+# 的子串（岁/元）先行截断匹配范围。
+_CN_DATE_UNIT_RE = re.compile(r"\d+\s*(?:周岁|万元|岁|元|年|月|日|时|分)")
+
 VALIDATION_STATUS_PASS = "pass"
 VALIDATION_STATUS_FAIL = "fail"
 VALIDATION_STATUS_SOFT_PASS_REVIEW = "soft_pass_review"
@@ -429,6 +436,12 @@ def _validate_translation_strict(
 
         return _validation_result_from_issues(issues)
 
+    # 目标语言不是中文时，译文本身不应残留「数字 + 中文日期/数量单位」写法
+    # （如 "2026年8月9日"、"18周岁"）；只查译文，不查原文。
+    cn_date_unit_issue = _residual_cn_date_unit_issue(tran)
+    if cn_date_unit_issue is not None:
+        issues.append(cn_date_unit_issue)
+
     # 仅对含中文的原文执行进一步检测
     if not _contains_chinese(orig):
         return _validation_result_from_issues(issues)
@@ -479,6 +492,7 @@ def _validate_translation_word_recovery(
         "same_as_source",
         "missing_target_chinese",
         "source_non_chinese_only",
+        "residual_cn_date_unit",
     }
     if any(issue.code in hard_codes for issue in strict_result.issues):
         return strict_result
@@ -555,6 +569,24 @@ def _unique_fragments(values) -> tuple[str, ...]:
         seen.add(cleaned)
         fragments.append(cleaned)
     return tuple(fragments)
+
+
+def _residual_cn_date_unit_issue(
+    translated: str,
+) -> TranslationValidationIssue | None:
+    """
+    检测译文中是否残留「数字 + 中文日期/数量单位」组合，例如日译文中夹带的
+    "2026年8月9日"、"18周岁"、"20000元"。编号（BTR-ANODE-CCTEB-032、1#）与国际
+    单位（38℃、m²）本身不含中文字符，不会被 _CN_DATE_UNIT_RE 命中。
+    """
+    matches = _unique_fragments(_CN_DATE_UNIT_RE.findall(str(translated or "")))
+    if not matches:
+        return None
+    return TranslationValidationIssue(
+        code="residual_cn_date_unit",
+        message="译文中残留中文日期/数量单位：" + "、".join(matches),
+        fragments=matches,
+    )
 
 
 def _light_residual_chinese_issue(
