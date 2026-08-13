@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>更新提示 Toast — 样张</title>
+<style>
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff;--ground:#f4f6fc;--ground-2:#ebeef8;--rail:#fbfcfe;--surface:#fff;--surface-2:#f8fafe;
+  --ink:#141a2e;--ink-2:#556080;--ink-3:#8a93ac;--line:#e7ebf5;--line-2:#d9dfee;
+  --accent:var(--accent-base);--accent-strong:#4353cc;--on-accent:#fff;--tint:#f0f1ff;--tint-line:#ccd2ff;--tint-ink:#404fc2;
+  --ok:#12a366;--ok-t:#e2f4ed;--ok-l:#b3e2ce;--warn:#c77a00;--warn-t:#f8eede;--warn-l:#edd4ad;
+  --danger:#e5484d;--danger-t:#fdebec;--danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66 / 5%);
+  --sh-md:0 1px 2px rgb(24 34 66 / 5%),0 10px 26px -14px rgb(30 45 90 / 20%);
+  --sh-lg:0 2px 4px rgb(24 34 66 / 6%),0 24px 48px -22px rgb(30 45 90 / 30%);
+  --r-lg:15px;--r-md:12px;--r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019;--ground-2:#090d15;--rail:#10151f;--surface:#151b28;--surface-2:#1a2130;
+  --ink:#eaedf7;--ink-2:#a4aec7;--ink-3:#6b7590;--line:#242c3e;--line-2:#313a50;
+  --accent:#8090ff;--accent-strong:var(--accent-base);--on-accent:#0b0f1a;--tint:#1b223b;--tint-line:#283268;--tint-ink:#a0acff;
+  --ok:#3dd68c;--ok-t:#192e2a;--ok-l:#2d594c;--warn:#e8a33d;--warn-t:#31281d;--warn-l:#655039;
+  --danger:#ff6369;--danger-t:#331b20;--danger-l:#5e3038;
+  --sh-sm:0 1px 2px rgb(0 0 0 / 40%);
+  --sh-md:0 1px 2px rgb(0 0 0 / 40%),0 10px 26px -14px rgb(0 0 0 / 55%);
+  --sh-lg:0 2px 4px rgb(0 0 0 / 45%),0 24px 48px -22px rgb(0 0 0 / 65%);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground-2);color:var(--ink);font-family:var(--font);font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased;padding:0 0 80px}
+
+/* ---------- 展示骨架（只属于样张，不进产品） ---------- */
+.board-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;padding:13px 26px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:var(--sh-sm)}
+.board-bar h1{font-size:14.5px;font-weight:650;letter-spacing:-.2px}
+.board-bar .meta{font-size:12px;color:var(--ink-3)}
+.board-bar .sp{flex:1}
+.theme-btn{height:30px;padding:0 13px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink-2);font:inherit;font-size:12px;font-weight:550;cursor:pointer}
+.theme-btn:hover{background:var(--surface-2)}
+.wrap{max-width:1180px;margin:0 auto;padding:26px 26px 0}
+.note{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--tint-line);border-radius:var(--r-md);padding:14px 18px;font-size:12.8px;color:var(--ink-2);margin-bottom:26px;line-height:1.75}
+.note b{color:var(--ink);font-weight:620}
+.note code{font-family:var(--mono);font-size:11.6px;background:var(--ground-2);padding:1px 5px;border-radius:4px;color:var(--tint-ink)}
+.scr{margin-bottom:34px}
+.scr-h{display:flex;align-items:baseline;gap:11px;margin-bottom:11px}
+.scr-h b{font-size:13.5px;font-weight:650;letter-spacing:-.15px}
+.scr-h span{font-size:12.2px;color:var(--ink-3)}
+.scr-h .tag{font-size:10.5px;font-weight:700;letter-spacing:.04em;border-radius:5px;padding:2px 7px;background:var(--tint);color:var(--tint-ink)}
+
+/* ---------- 应用外壳（缩略背景，仅为判断浮层位置） ---------- */
+.frame{position:relative;height:400px;border:1px solid var(--line-2);border-radius:var(--r-lg);overflow:hidden;background:var(--ground);box-shadow:var(--sh-md);display:flex}
+.f-side{width:172px;flex:none;background:var(--rail);border-right:1px solid var(--line);padding:14px 11px;display:flex;flex-direction:column;gap:5px}
+.f-brand{display:flex;align-items:center;gap:8px;padding:2px 6px 13px;font-size:13px;font-weight:680;letter-spacing:-.2px}
+.f-brand i{width:19px;height:19px;border-radius:6px;background:var(--accent);display:block}
+.f-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:var(--r-sm);color:var(--ink-2);font-size:12.5px}
+.f-item.on{background:var(--tint);color:var(--tint-ink);font-weight:600}
+.f-item i{width:14px;height:14px;border-radius:4px;background:currentColor;opacity:.35;flex:none}
+.f-item .rd{margin-left:auto;width:7px;height:7px;border-radius:99px;background:var(--danger);flex:none}
+.f-main{flex:1;min-width:0;display:flex;flex-direction:column}
+.f-top{height:50px;flex:none;border-bottom:1px solid var(--line);background:var(--surface);display:flex;align-items:center;gap:11px;padding:0 20px}
+.f-top b{font-size:13.5px;font-weight:640}
+.f-top .pill{margin-left:auto;border:1px solid var(--line-2);border-radius:99px;padding:4px 12px;font-size:11.5px;color:var(--ink-2);background:var(--surface)}
+.f-body{flex:1;padding:16px 20px;display:flex;flex-direction:column;gap:11px;overflow:hidden}
+.f-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--sh-sm)}
+.f-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.f-stats .f-card{padding:11px 14px}
+.f-stats u{display:block;text-decoration:none;font-size:10.5px;color:var(--ink-3)}
+.f-stats b{font-size:19px;font-weight:650;letter-spacing:-.3px}
+.f-rows{flex:1;padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.f-row{height:11px;border-radius:4px;background:var(--ground-2)}
+.f-row:nth-child(2){width:88%}.f-row:nth-child(3){width:72%}.f-row:nth-child(4){width:81%}.f-row:nth-child(5){width:64%}.f-row:nth-child(6){width:77%}
+
+/* ---------- 更新 Toast（这才是产品要落地的部分） ---------- */
+.toast-host{position:absolute;top:0;left:0;right:0;display:flex;justify-content:center;pointer-events:none;padding-top:14px;z-index:20}
+.utoast{
+  pointer-events:auto;width:392px;background:var(--surface);border:1px solid var(--line-2);
+  border-radius:var(--r-md);box-shadow:var(--sh-lg);overflow:hidden;
+  font-size:12.8px;color:var(--ink-2);
+}
+/* 瞬态窄条（检查中 / 已是最新）不需要 392px 的版心 */
+.utoast.slim{width:auto;min-width:186px;max-width:340px}
+
+.ut-head{display:flex;align-items:flex-start;gap:10px;padding:11px 9px 11px 14px}
+.ut-ico{flex:none;width:16px;height:16px;margin-top:1px;border-radius:5px;display:flex;align-items:center;justify-content:center}
+.ut-ico svg{width:15px;height:15px}
+.ut-copy{flex:1;min-width:0;padding-top:.5px}
+.ut-copy b{display:block;color:var(--ink);font-weight:640;font-size:13px;letter-spacing:-.1px}
+.ut-copy span{display:block;font-size:11.8px;color:var(--ink-3);margin-top:1.5px}
+.ut-x{flex:none;width:26px;height:26px;border:0;border-radius:7px;background:none;color:var(--ink-3);cursor:pointer;display:flex;align-items:center;justify-content:center}
+.ut-x:hover{background:var(--ground-2);color:var(--ink-2)}
+.ut-x svg{width:13px;height:13px}
+
+/* 更新说明：默认夹到 3 行 */
+.ut-notes{padding:0 14px 11px 40px;font-size:12.4px;line-height:1.72;color:var(--ink-2)}
+.ut-notes .lbl{font-size:10.5px;font-weight:700;letter-spacing:.05em;color:var(--ink-3);margin-bottom:4px}
+.ut-notes .body{position:relative;overflow:hidden;max-height:calc(1.72em * 3)}
+.ut-notes .body.open{max-height:none}
+.ut-notes .body:not(.open)::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1.5em;background:linear-gradient(to bottom,transparent,var(--surface))}
+.ut-notes p{margin:0 0 2px}
+.ut-notes ul{margin:2px 0 0;padding-left:16px}
+.ut-notes li{margin-bottom:2px}
+
+.ut-foot{display:flex;align-items:center;gap:12px;padding:8px 11px 8px 14px;border-top:1px solid var(--line)}
+.ut-link{border:0;background:none;padding:0;font:inherit;font-size:11.8px;color:var(--ink-3);cursor:pointer;display:inline-flex;align-items:center;gap:3px}
+.ut-link:hover{color:var(--tint-ink)}
+.ut-link svg{width:10px;height:10px}
+.ut-sp{flex:1}
+.ut-btn{height:28px;padding:0 12px;border-radius:8px;border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:12px;font-weight:560;cursor:pointer;white-space:nowrap}
+.ut-btn:hover{background:var(--surface-2)}
+.ut-btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:620;box-shadow:var(--sh-sm)}
+.ut-btn.pri:hover{background:var(--accent-strong)}
+
+/* 下载进度 */
+.ut-prog{padding:0 14px 12px 40px}
+.ut-prog .bar{height:4px;border-radius:99px;background:var(--ground-2);overflow:hidden}
+.ut-prog .bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7d8cff)}
+.ut-prog .bar.indet i{width:34%;animation:slide 1.25s ease-in-out infinite alternate}
+@keyframes slide{from{margin-left:0}to{margin-left:66%}}
+.ut-prog .meta{display:flex;margin-top:5px;font-size:11.3px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+.ut-prog .meta .r{margin-left:auto}
+
+.spin{animation:sp .9s linear infinite;transform-origin:50% 50%}
+@keyframes sp{to{transform:rotate(360deg)}}
+.i-tint{color:var(--tint-ink)}.i-ok{color:var(--ok)}.i-danger{color:var(--danger)}.i-mute{color:var(--ink-3)}
+</style>
+</head>
+<body>
+
+<div class="board-bar">
+  <h1>更新提示 Toast</h1>
+  <span class="meta">2026-08-13 · 对齐 Lantern 的顶部居中浮层 · 替换现有的顶栏下方通栏条</span>
+  <span class="sp"></span>
+  <button class="theme-btn" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">切换深浅色</button>
+</div>
+
+<div class="wrap">
+
+<div class="note">
+  <b>看什么。</b>每屏的应用背景是缩略示意（只为判断浮层压在哪、挡不挡内容），<b>真正要定的是那张浮在顶部居中的卡片</b>。卡片宽 392px，不占布局高度，内容区不会像现在的通栏条那样被往下挤。侧栏「设置」上的红点保留——红点是「有事没办」，浮层是「现在打断你一下」，关掉浮层不清红点。
+  <br><br>
+  <b>更新说明哪来的。</b>直接取 GitHub Release 正文（<code>update_checker.py</code> 已经在拿了），你手写的发布说明原样显示，发布流程不用改。默认夹到 3 行，超出才出现「展开」。屏 ⑦ 是发布说明为空时的兜底。
+</div>
+
+<!-- ① 有新版 · 折叠 -->
+<div class="scr">
+  <div class="scr-h"><b>① 有新版（默认形态）</b><span>启动后自动检查查到新版，或在设置页点「检查更新」</span><span class="tag">主状态</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div>
+      <div class="f-item"><i></i>任务</div>
+      <div class="f-item"><i></i>术语库</div>
+      <div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats">
+          <div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div>
+          <div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div>
+        </div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-tint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="m7 12 5 5 5-5"/><path d="M4 21h16"/></svg></span>
+          <span class="ut-copy"><b>Translator 9.3.0 可用</b><span>当前 9.2.9 · 2026-08-13 发布 · 42.7 MB</span></span>
+          <button class="ut-x" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-notes">
+          <div class="lbl">本次更新</div>
+          <div class="body">
+            <p>本版只有一件事：PDF/图片任务翻完之后，如果只有某一页没翻好，可以单独把这一页重新生成，不用整份重翻。</p>
+            <ul><li>任务结束后会列出每一页的状态，哪页有问题一眼看得出。</li><li>重新生成的那一页会直接并回原来的成品文件。</li><li>顺手修了 Excel 长表格偶尔漏译最后一行的问题。</li></ul>
+          </div>
+        </div>
+        <div class="ut-foot">
+          <button class="ut-link">展开完整说明<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <button class="ut-link">在 GitHub 查看</button>
+          <span class="ut-sp"></span>
+          <button class="ut-btn pri">更新</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ② 展开 -->
+<div class="scr">
+  <div class="scr-h"><b>② 展开完整更新说明</b><span>点「展开」后卡片向下长，最多到窗口高度的一半，再多就卡片内部滚动</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats"><div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div><div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div></div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-tint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="m7 12 5 5 5-5"/><path d="M4 21h16"/></svg></span>
+          <span class="ut-copy"><b>Translator 9.3.0 可用</b><span>当前 9.2.9 · 2026-08-13 发布 · 42.7 MB</span></span>
+          <button class="ut-x" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-notes">
+          <div class="lbl">本次更新</div>
+          <div class="body open">
+            <p>本版只有一件事：PDF/图片任务翻完之后，如果只有某一页没翻好，可以单独把这一页重新生成，不用整份重翻。</p>
+            <ul><li>任务结束后会列出每一页的状态，哪页有问题一眼看得出。</li><li>重新生成的那一页会直接并回原来的成品文件，不用你自己拼。</li><li>顺手修了 Excel 长表格偶尔漏译最后一行的问题。</li><li>Word 页眉页脚的术语替换现在也走术语库了。</li></ul>
+          </div>
+        </div>
+        <div class="ut-foot">
+          <button class="ut-link">收起<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg></button>
+          <button class="ut-link">在 GitHub 查看</button>
+          <span class="ut-sp"></span>
+          <button class="ut-btn pri">更新</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ③ 下载中 -->
+<div class="scr">
+  <div class="scr-h"><b>③ 下载中</b><span>点「更新」后原地转成进度；更新说明收起不再占位，✕ 变成「取消」的语义（关掉即中止本次下载）</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats"><div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div><div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div></div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-tint"><svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg></span>
+          <span class="ut-copy"><b>正在下载 9.3.0</b><span>装完会告诉你，期间可以继续用</span></span>
+          <button class="ut-x" aria-label="取消"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-prog">
+          <div class="bar"><i style="width:46%"></i></div>
+          <div class="meta"><span>19.6 MB / 42.7 MB</span><span class="r">46%</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ④ 装好待重启 -->
+<div class="scr">
+  <div class="scr-h"><b>④ 装好，等重启</b><span>macOS：已就地替换，什么时候重启由你定 · Windows：走安装程序，点了会先确认再关掉当前进程</span><span class="tag">主状态</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats"><div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div><div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div></div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.8 10A10 10 0 1 1 17 3.3"/><path d="m9 11 3 3L22 4"/></svg></span>
+          <span class="ut-copy"><b>9.3.0 已装好</b><span>重启 Translator 后生效。有任务在跑就先跑完，不急。</span></span>
+          <button class="ut-x" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-foot">
+          <button class="ut-link">在 GitHub 查看</button>
+          <span class="ut-sp"></span>
+          <button class="ut-btn">稍后</button>
+          <button class="ut-btn pri">立即重启</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑤ 失败 -->
+<div class="scr">
+  <div class="scr-h"><b>⑤ 下载 / 安装失败</b><span>自动检查失败静默不报（下次启动再说）；只有你点过「更新」才会看到这条</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats"><div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div><div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div></div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <span class="ut-copy"><b>更新没装上</b><span>下载中断了。你也可以到 GitHub 手动下载安装包。</span></span>
+          <button class="ut-x" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-foot">
+          <button class="ut-link">在 GitHub 查看</button>
+          <span class="ut-sp"></span>
+          <button class="ut-btn pri">重试</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ⑥ 瞬态 + ⑦ 兜底 -->
+<div class="scr">
+  <div class="scr-h"><b>⑥ 手动检查的两个瞬态</b><span>只在设置页点「检查更新」时出现，2 秒后自动消失；启动的自动检查永远不显示这两条</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item on"><i></i>设置</div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>设置 · 更新与关于</b><span class="pill">Translator V9.2.9</span></div>
+      <div class="f-body"><div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div></div>
+    </div>
+    <div class="toast-host" style="gap:10px;flex-direction:column;align-items:center">
+      <div class="utoast slim">
+        <div class="ut-head" style="padding-right:14px">
+          <span class="ut-ico i-mute"><svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg></span>
+          <span class="ut-copy" style="padding-top:0"><b style="font-weight:560;font-size:12.8px;color:var(--ink-2)">正在检查更新…</b></span>
+        </div>
+      </div>
+      <div class="utoast slim">
+        <div class="ut-head" style="padding-right:14px">
+          <span class="ut-ico i-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="ut-copy" style="padding-top:0"><b style="font-weight:560;font-size:12.8px;color:var(--ink-2)">已经是最新版本 9.3.0</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="scr">
+  <div class="scr-h"><b>⑦ 兜底：这个版本没写发布说明</b><span>老版本的 Release 正文可能是空的或全是提交号，识别不出就退回一行式</span></div>
+  <div class="frame">
+    <div class="f-side">
+      <div class="f-brand"><i></i>Translator</div>
+      <div class="f-item on"><i></i>文件库</div><div class="f-item"><i></i>任务</div><div class="f-item"><i></i>术语库</div><div class="f-item"><i></i>设置<span class="rd"></span></div>
+    </div>
+    <div class="f-main">
+      <div class="f-top"><b>文件库</b><span class="pill">已连接 · 4 个模型</span></div>
+      <div class="f-body">
+        <div class="f-stats"><div class="f-card"><u>待翻译</u><b>12</b></div><div class="f-card"><u>进行中</u><b>1</b></div><div class="f-card"><u>已完成</u><b>86</b></div><div class="f-card"><u>需复核</u><b>3</b></div></div>
+        <div class="f-card f-rows"><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div><div class="f-row"></div></div>
+      </div>
+    </div>
+    <div class="toast-host">
+      <div class="utoast">
+        <div class="ut-head">
+          <span class="ut-ico i-tint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="m7 12 5 5 5-5"/><path d="M4 21h16"/></svg></span>
+          <span class="ut-copy"><b>Translator 9.3.0 可用</b><span>当前 9.2.9 · 2026-08-13 发布 · 42.7 MB</span></span>
+          <button class="ut-x" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+        </div>
+        <div class="ut-foot">
+          <button class="ut-link">在 GitHub 查看</button>
+          <span class="ut-sp"></span>
+          <button class="ut-btn pri">更新</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="margin-top:6px">
+  <b>没画但要一起定的两条行为。</b><br>
+  1. <b>关掉之后</b>：点 ✕ 只关这一次，下次启动照弹；设置页的「忽略此版本」才是永久静音，「暂停提醒」是全局静音。<br>
+  2. <b>不再有 24 小时节流</b>：改成每次启动查一次，应用不关就不再查。现在这个坑就是节流造成的——8-12 14:49 查过一次（那时 9.3.0 还没发），24 小时内的启动全被静默跳过。
+</div>
+
+</div>
+</body>
+</html>

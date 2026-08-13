@@ -91,32 +91,8 @@
    只差一条：.banner .bi 那个圆形图标底色写死在 ok 绿上，警示态要跟着换成 warn。 */
 .banner.warn .bi { background: var(--warn); }
 
-/* ========== 更新与关于：发布说明渲染 ========== */
-/* markdown.ts 只产出 h3 / p / ul / li / strong / code 六种节点，这里给全它们的样式。
-   210px 之后内部滚动：更新说明是决策依据，但不该把「下载并安装」挤出视野。 */
-.rn {
-  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
-  padding: 12px 14px; font-size: 12.5px; line-height: 1.75; color: var(--ink-2);
-  max-height: 210px; overflow: auto;
-}
-.rn.collapsed { max-height: 96px; overflow: hidden; }
-.rn h3 { font-size: 12.5px; font-weight: 700; color: var(--ink); margin: 12px 0 5px; }
-.rn h3:first-child { margin-top: 0; }
-.rn p { margin: 0 0 7px; }
-.rn p:last-child { margin-bottom: 0; }
-.rn ul { margin: 0 0 8px; padding-left: 17px; }
-.rn ul:last-child { margin-bottom: 0; }
-.rn li { margin: 2px 0; }
-.rn li::marker { color: var(--ink-3); }
-.rn strong { color: var(--ink); font-weight: 650; }
-.rn code { font: 11.5px/1.4 var(--mono); background: var(--ground-2); border-radius: 4px; padding: 1.5px 5px; color: var(--ink-2); }
-:root[data-theme="dark"] .rn code { background: var(--ground); }
-
-.rn-more {
-  align-self: flex-start; border: 0; background: none; padding: 0; font: inherit; font-size: 12px;
-  color: var(--tint-ink); cursor: pointer; font-weight: 600;
-}
-.rn-more:hover { text-decoration: underline; }
+/* 发布说明的 .rn / .rn-more 样式在 app.css：更新提示卡片也在渲染同一份说明，
+   两个界面共用一套样式，别再在这里各写一份。 */
 
 /* 诊断码：用户看不懂，但截图发过来时它是唯一有用的东西。 */
 .diag-code { font-family: var(--mono); font-size: 11.5px; }

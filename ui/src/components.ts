@@ -1195,10 +1195,17 @@ export interface ToastOptions {
   duration?: number;
 }
 
-/** 顶部居中的一次性提示条，追加到 document.body，超时后自动移除。 */
+/**
+ * 顶部居中的一次性提示条，超时后自动移除。
+ *
+ * 放进外壳的提示栈（shell.ts 的 .toast-stack），而不是直接扔 document.body：更新卡片
+ * 也停在顶部居中，两者各自 fixed 定位就会重叠。栈还没建好时（启动早期）退回 body，
+ * 位置略偏但不会把提示吞掉。这里用 DOM 查找而不是 import shell.ts —— shell.ts 反过来
+ * 依赖本模块，互相 import 会成环。
+ */
 export function showToast(options: ToastOptions): void {
   const toast = el("div", { className: options.error ? "toast error" : "toast", text: options.message });
-  document.body.append(toast);
+  (document.querySelector(".toast-stack .ts-toast") ?? document.body).append(toast);
   window.setTimeout(() => {
     toast.remove();
   }, options.duration ?? 3200);

@@ -8,7 +8,7 @@ import secrets
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1692,6 +1692,8 @@ def create_app(
 
         result = check_for_updates()
         if mode == "background":
+            # Display only — "last checked: ..." on the About page.  Nothing
+            # gates on this value any more (see _background_update_deferred).
             # The network check can take seconds; reload before stamping the
             # timestamp so settings saved meanwhile are not clobbered.
             settings = load_settings()
@@ -1867,21 +1869,25 @@ def _update_state_payload(settings: AppSettings) -> dict[str, Any]:
 
 
 def _background_update_deferred(settings: AppSettings) -> str | None:
+    """Say why this launch must not check, or None to go ahead and check.
+
+    There is deliberately no time-based throttle here.  There used to be one
+    ("checked within 24h → skip"), and it cached the *answer* rather than
+    rate-limiting the request: a check that ran shortly before a release was
+    published silenced every launch for the next day, invisibly — the frontend
+    shows nothing at all for a deferred check, so the failure looked like the
+    updater being broken.  Translator is opened a handful of times a day and
+    the check is one conditional GET, so the request was never worth saving.
+
+    Throttling belongs on the *notice*, not on the check: `notifications_paused`
+    mutes it globally and `ignored_release_version` mutes one release.  Those
+    are the only two reasons a launch stays quiet about an update that exists,
+    and both are things the user turned on themselves.
+    """
     if not settings.onboarding.quick_start_completed:
         return "quick_start_incomplete"
     if settings.update.notifications_paused:
         return "notifications_paused"
-    raw_timestamp = str(settings.update.last_background_check_at or "").strip()
-    if not raw_timestamp:
-        return None
-    try:
-        previous = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
-        if previous.tzinfo is None:
-            previous = previous.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-    if datetime.now(timezone.utc) - previous < timedelta(hours=24):
-        return "interval_not_elapsed"
     return None
 
 

@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -177,6 +178,56 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
             manual = client.get("/api/updates/check?mode=manual")
         self.assertEqual(manual.status_code, 200)
         check.assert_called_once()
+
+    def test_background_update_check_is_not_throttled_by_the_previous_check(self) -> None:
+        """A launch checks again even if the last check was minutes ago.
+
+        The old 24h throttle cached the *answer*: a check that ran before a
+        release was published kept every later launch silent for a day. Only
+        the two user-controlled mutes may defer a background check now.
+        """
+        settings = settings_module.load_settings()
+        settings.onboarding.quick_start_completed = True
+        settings.update.last_background_check_at = datetime.now(timezone.utc).isoformat()
+        settings_module.save_settings(settings)
+        client = TestClient(create_app(task_manager=_TaskManager(active_count=0)))
+
+        with patch(
+            "core.update_checker.check_for_updates",
+            return_value=UpdateCheckResult(True, "available", "有新版本", latest_version="9.9.9"),
+        ) as check:
+            fresh = client.get("/api/updates/check?mode=background")
+        self.assertEqual(fresh.status_code, 200)
+        self.assertEqual(fresh.json()["status"], "available")
+        self.assertFalse(fresh.json()["notification_suppressed"])
+        check.assert_called_once()
+
+        # Pausing notifications is still a reason to stay off the network.
+        settings = settings_module.load_settings()
+        settings.update.notifications_paused = True
+        settings_module.save_settings(settings)
+        with patch("core.update_checker.check_for_updates") as check:
+            paused = client.get("/api/updates/check?mode=background")
+        self.assertEqual(paused.json()["status"], "deferred")
+        self.assertEqual(paused.json()["reason"], "notifications_paused")
+        check.assert_not_called()
+
+    def test_ignored_release_is_muted_without_skipping_the_check(self) -> None:
+        settings = settings_module.load_settings()
+        settings.onboarding.quick_start_completed = True
+        settings.update.ignored_release_version = "9.9.9"
+        settings_module.save_settings(settings)
+        client = TestClient(create_app(task_manager=_TaskManager(active_count=0)))
+
+        with patch(
+            "core.update_checker.check_for_updates",
+            return_value=UpdateCheckResult(True, "available", "有新版本", latest_version="9.9.9"),
+        ) as check:
+            response = client.get("/api/updates/check?mode=background")
+
+        check.assert_called_once()
+        self.assertEqual(response.json()["status"], "available")
+        self.assertTrue(response.json()["notification_suppressed"])
 
 
 if __name__ == "__main__":

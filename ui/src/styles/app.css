@@ -110,7 +110,9 @@ svg.ic.lg { width: 22px; height: 22px; }
 .side-spacer { flex: 1; }
 
 /* ========== 顶栏与主区 ========== */
-.stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* position: relative —— 顶部提示栈（.toast-stack）以工作区为定位参照，这样它是相对
+   内容区居中，而不是相对整个窗口（那样会被侧栏推偏 105px）。 */
+.stage { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
 .topbar { height: 62px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 22px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 16.5px; font-weight: 650; }
 .tb-sub { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
@@ -128,22 +130,6 @@ svg.ic.lg { width: 22px; height: 22px; }
 .status.pause { background: var(--warn-t); color: var(--warn); }
 /* 失败的任务顶栏要一眼看出是红的，不能和「需复核」共用橙色。 */
 .status.danger { background: var(--danger-t); color: var(--danger); }
-.notice-host { flex: none; }
-/* 顶栏下方的通栏更新提示条（shell.ts 的 setUpdateNotice）。 */
-.upnotice {
-  display: flex; align-items: center; gap: 11px; padding: 9px 22px;
-  background: var(--tint); border-bottom: 1px solid var(--tint-line);
-  color: var(--tint-ink); font-size: 12.5px;
-}
-.upnotice .ico { flex: none; }
-.upnotice b { font-weight: 650; }
-/* flex: none —— 窗口窄下来时先让说明文字折行，按钮不许被压。按钮高度是 .btn.mini
-   定死的，一旦「查看详情」折成两行就会被裁掉半行，所以再加一道 nowrap。 */
-.upnotice .acts { margin-left: auto; display: flex; gap: 7px; align-items: center; flex: none; }
-.upnotice .btn { white-space: nowrap; background: var(--surface); border-color: var(--tint-line); }
-.upnotice .x { border: 0; background: none; color: var(--tint-ink); cursor: pointer; opacity: .65; padding: 2px; display: flex; }
-.upnotice .x:hover { opacity: 1; }
-
 .content { flex: 1; min-height: 0; padding: 18px 22px; display: flex; gap: 16px; }
 
 /* ========== 通用组件 ========== */
@@ -545,10 +531,117 @@ table.review-tbl { table-layout: fixed; }
 .done .bd { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
 .done .bd em { font-style: normal; color: var(--warn); font-weight: 600; }
 
+/* ==========================================================================
+ * 顶部提示栈（shell.ts 的 .toast-stack）
+ *
+ * 浮在工作区之上，不占布局高度——提示出现时内容不会被往下挤，消失时也不会跳回来。
+ * pointer-events: none 让空白区域点得穿（提示只盖住顶栏下面一小块，底下可能正是
+ * 用户要点的东西），卡片本身再把它收回来。
+ *
+ * 栈里两格：更新卡片在上，一次性提示在下，顺序在 mountShell 里定死。
+ * ========================================================================== */
+.toast-stack {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 300;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding-top: 76px; pointer-events: none;
+}
+/* display: contents —— 格子本身不生成盒子，卡片直接参与栈的 flex 布局；空格不占位。 */
+.toast-slot { display: contents; }
+
 /* ========== Toast（适配点 5：样张未覆盖，新增） ========== */
-.toast { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 300; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; animation: toast-in 180ms ease-out; }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%, -8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.toast { pointer-events: auto; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; animation: toast-in 180ms ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 .toast.error { border-color: var(--danger-l); color: var(--danger); }
+
+/* ========== 发布说明渲染（markdown.ts 的 .rn；设置页与更新卡片共用） ==========
+   markdown.ts 只产出 h3 / p / ul / li / strong / code 六种节点，这里给全它们的样式。
+   210px 之后内部滚动：更新说明是决策依据，但不该把「下载并安装」挤出视野。
+   必须写在下面 .ut-rn 之前：两者权重相同（都是单个类），卡片里的覆盖靠的是「后写的赢」。 */
+.rn {
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+  padding: 12px 14px; font-size: 12.5px; line-height: 1.75; color: var(--ink-2);
+  max-height: 210px; overflow: auto;
+}
+.rn.collapsed { max-height: 96px; overflow: hidden; }
+.rn h3 { font-size: 12.5px; font-weight: 700; color: var(--ink); margin: 12px 0 5px; }
+.rn h3:first-child { margin-top: 0; }
+.rn p { margin: 0 0 7px; }
+.rn p:last-child { margin-bottom: 0; }
+.rn ul { margin: 0 0 8px; padding-left: 17px; }
+.rn ul:last-child { margin-bottom: 0; }
+.rn li { margin: 2px 0; }
+.rn li::marker { color: var(--ink-3); }
+.rn strong { color: var(--ink); font-weight: 650; }
+.rn code { font: 11.5px/1.4 var(--mono); background: var(--ground-2); border-radius: 4px; padding: 1.5px 5px; color: var(--ink-2); }
+:root[data-theme="dark"] .rn code { background: var(--ground); }
+
+.rn-more {
+  align-self: flex-start; border: 0; background: none; padding: 0; font: inherit; font-size: 12px;
+  color: var(--tint-ink); cursor: pointer; font-weight: 600;
+}
+.rn-more:hover { text-decoration: underline; }
+
+/* ==========================================================================
+ * 更新提示卡片（update-toast.ts，样张 docs/mockups/2026-08-13_update-toast.html）
+ * ========================================================================== */
+.utoast {
+  pointer-events: auto; width: 392px; background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: var(--r-md); box-shadow: var(--sh-lg); overflow: hidden;
+  font-size: 12.8px; color: var(--ink-2); animation: toast-in 180ms ease-out;
+}
+/* 瞬态窄条（检查中 / 已是最新）不需要 392px 的版心。 */
+.utoast.slim { width: auto; min-width: 186px; max-width: 340px; }
+
+.ut-head { display: flex; align-items: flex-start; gap: 10px; padding: 11px 9px 11px 14px; }
+.ut-ico { flex: none; width: 16px; height: 16px; margin-top: 1px; display: flex; align-items: center; justify-content: center; }
+.ut-ico .ic { width: 15px; height: 15px; }
+.ut-tint { color: var(--tint-ink); }
+.ut-ok { color: var(--ok); }
+.ut-danger { color: var(--danger); }
+.ut-mute { color: var(--ink-3); }
+.ut-copy { flex: 1; min-width: 0; padding-top: .5px; }
+.ut-copy b { display: block; color: var(--ink); font-weight: 640; font-size: 13px; letter-spacing: -.1px; }
+.ut-copy span { display: block; font-size: 11.8px; color: var(--ink-3); margin-top: 1.5px; line-height: 1.55; }
+.ut-x { flex: none; width: 26px; height: 26px; border: 0; border-radius: 7px; background: none; color: var(--ink-3); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.ut-x:hover { background: var(--ground-2); color: var(--ink-2); }
+.ut-x .ic { width: 13px; height: 13px; }
+
+/* 图标位上的转圈：图标库里没有 spinner 符号，用一圈缺口边框转，比塞一个新 <symbol> 省事。 */
+.ut-spin { width: 13px; height: 13px; border-radius: 99px; border: 2px solid currentColor; border-top-color: transparent; animation: ut-sp .9s linear infinite; }
+@keyframes ut-sp { to { transform: rotate(360deg); } }
+
+/* 左侧 40px 内缩 = 图标位 14 + 16 + 间距 10，让说明和进度条与标题对齐。 */
+.ut-notes { padding: 0 14px 11px 40px; }
+.ut-notes .lbl { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; color: var(--ink-3); margin-bottom: 4px; }
+/* 卡片里的发布说明去掉自己的框：外面已经有一层卡片了，双层描边会显得很挤。 */
+.ut-rn { border: 0; background: none; padding: 0; max-height: none; overflow: visible; font-size: 12.4px; line-height: 1.72; }
+.ut-rn.clamped { position: relative; max-height: 6.4em; overflow: hidden; }
+/* 夹住时底部渐隐，明示「下面还有」。渐变终点必须是卡片底色而不是透明——Safari 会把
+   transparent 解析成 rgba(0,0,0,0)，浅色背景上会渐出一条灰边。 */
+.ut-rn.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--surface)); }
+:root[data-theme="dark"] .ut-rn.clamped::after { background: linear-gradient(to bottom, rgba(21, 27, 40, 0), var(--surface)); }
+.ut-blocked { padding: 0 14px 10px 40px; font-size: 11.6px; color: var(--warn); line-height: 1.6; }
+
+.ut-foot { display: flex; align-items: center; gap: 12px; padding: 8px 11px 8px 14px; border-top: 1px solid var(--line); }
+.ut-link { border: 0; background: none; padding: 0; font: inherit; font-size: 11.8px; color: var(--ink-3); cursor: pointer; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.ut-link:hover { color: var(--tint-ink); }
+.ut-link .ut-chev { width: 10px; height: 10px; }
+.ut-link .ut-chev.up { transform: rotate(180deg); }
+.ut-sp { flex: 1; }
+.ut-btn { height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; font-weight: 560; cursor: pointer; white-space: nowrap; }
+.ut-btn:hover { background: var(--surface-2); }
+.ut-btn.pri { background: var(--accent); border-color: transparent; color: var(--on-accent); font-weight: 620; box-shadow: var(--sh-sm); }
+.ut-btn.pri:hover { background: var(--accent-strong); }
+
+.ut-prog { padding: 0 14px 12px 40px; }
+.ut-bar { height: 4px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
+.ut-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); }
+/* 长度未知时来回滑，而不是停在 0%——一条不动的进度条读起来就是「卡住了」。 */
+.ut-bar.indet i { width: 34%; animation: ut-slide 1.25s ease-in-out infinite alternate; }
+@keyframes ut-slide { from { margin-left: 0; } to { margin-left: 66%; } }
+.ut-meta { display: flex; margin-top: 5px; font-size: 11.3px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ut-meta .r { margin-left: auto; }
+
 
 /* ==========================================================================
  * 输入控件的聚焦态（状态层，必须留在文件最末）

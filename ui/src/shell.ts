@@ -69,7 +69,10 @@ let topbarStatusHost: HTMLDivElement | null = null;
 let topbarSubEl: HTMLDivElement | null = null;
 let taskPillHost: HTMLDivElement | null = null;
 let modelPillHost: HTMLDivElement | null = null;
-let noticeHost: HTMLDivElement | null = null;
+let toastHost: HTMLDivElement | null = null;
+/** 卡片位：每个具名位是栈里的一格，一直存在（空着不占高度），所以更新卡片重画时
+ *  不会跳到临时提示的下面去。 */
+const toastSlots = new Map<string, HTMLDivElement>();
 
 function buildSideItem(def: SideItemDef): HTMLDivElement {
   const item = document.createElement("div");
@@ -178,11 +181,15 @@ export function mountShell(root: HTMLElement): ShellHandle {
 
   stage.append(topbar);
 
-  // 顶栏与工作区之间的通栏提示位（目前只有「发现新版」用它）。常态为空，
-  // 不占高度；setUpdateNotice() 填内容时才把 .upnotice 插进来。
-  noticeHost = document.createElement("div");
-  noticeHost.className = "notice-host";
-  stage.append(noticeHost);
+  // 浮在工作区之上的提示栈（顶部居中）。放在 .stage 里而不是 document.body，
+  // 是为了让它相对内容区居中而不是相对整个窗口——否则左边有侧栏时会偏。
+  // 用绝对定位不占布局高度：提示出现时工作区不会被往下挤。
+  toastHost = document.createElement("div");
+  toastHost.className = "toast-stack";
+  stage.append(toastHost);
+  // 顺序在这里定死：更新卡片在上，临时提示在下。留到各自第一次用时再建的话，
+  // 谁先说话谁在上，同一个界面两次打开可能是两个样子。
+  for (const name of ["update", "toast"]) toastHost.append(toastStackSlot(name));
 
   const content = document.createElement("div");
   content.className = "content";
@@ -225,64 +232,23 @@ export function setSettingsAlert(active: boolean): void {
   settingsDotEl.style.display = active ? "" : "none";
 }
 
-export interface UpdateNoticeConfig {
-  /** 加粗的前半句，例如「Translator 9.3.0 可用」。 */
-  title: string;
-  /** 紧随其后的说明短句。 */
-  detail?: string;
-  /** 「查看详情」的落点；不传则不显示该按钮。 */
-  onDetails?: () => void;
-  /** 用户点 ✕ 之后的回调；提示条本身会先被移除。 */
-  onDismiss?: () => void;
-}
-
 /**
- * 顶栏下方的通栏更新提示条（样张屏⑧）。传 null 收起。
+ * 取（或建）顶部提示栈里的一格。
  *
- * 只做「轻量告知」：不弹窗、不抢焦点，用户可能正在翻一份两百页的 PDF。
- * 关掉它不清侧栏红点——红点是「有事没办」，提示条是「现在打断你一下」。
+ * 更新卡片（update-toast.ts）和临时提示（components.ts 的 showToast）都往这里放，
+ * 否则两者都想占「顶部居中」，会直接叠在一起。具名格保证顺序稳定：更新卡片始终在上，
+ * 临时提示排在它下面，而且更新卡片自己重画不会因为「先删后插」掉到末尾去。
+ *
+ * 外壳还没挂载时返回一个游离节点（早期的启动错误提示），它不会被显示，但也不会崩。
  */
-export function setUpdateNotice(config: UpdateNoticeConfig | null): void {
-  if (!noticeHost) return;
-  noticeHost.innerHTML = "";
-  if (!config) return;
-
-  const bar = document.createElement("div");
-  bar.className = "upnotice";
-  bar.append(icon("down", { size: "sm", className: "ico" }));
-
-  const copy = document.createElement("span");
-  const strong = document.createElement("b");
-  strong.textContent = config.title;
-  copy.append(strong);
-  if (config.detail) {
-    copy.append(document.createTextNode(` —— ${config.detail}`));
-  }
-  bar.append(copy);
-
-  const acts = document.createElement("span");
-  acts.className = "acts";
-  if (config.onDetails) {
-    const details = document.createElement("button");
-    details.type = "button";
-    details.className = "btn mini";
-    details.textContent = "查看详情";
-    details.addEventListener("click", () => config.onDetails?.());
-    acts.append(details);
-  }
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "x";
-  close.setAttribute("aria-label", "关闭");
-  close.append(icon("close", { size: "sm" }));
-  close.addEventListener("click", () => {
-    setUpdateNotice(null);
-    config.onDismiss?.();
-  });
-  acts.append(close);
-  bar.append(acts);
-
-  noticeHost.append(bar);
+export function toastStackSlot(name: string): HTMLDivElement {
+  const existing = toastSlots.get(name);
+  if (existing) return existing;
+  const slot = document.createElement("div");
+  slot.className = `toast-slot ts-${name}`;
+  toastSlots.set(name, slot);
+  toastHost?.append(slot);
+  return slot;
 }
 
 /** 设置顶栏标题 / 状态徽章 / 副标题。每个视图 mount() 时都应调用一次。 */

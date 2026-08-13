@@ -11,6 +11,8 @@ import { mountShell } from "./shell";
 import { mountRouter, navigate, registerView } from "./router";
 import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
+import { runBackgroundUpdateCheck } from "./update-controller";
+import { mountUpdateToast } from "./update-toast";
 
 import * as excelView from "./views/excel";
 import * as wordView from "./views/word";
@@ -64,6 +66,8 @@ function main(): void {
 
   const shell = mountShell(root);
   mountRouter(shell.contentContainer);
+  // 顶部的更新提示卡片。挂载时什么都不画，等到有话说（发现新版、或用户手动检查）才出现。
+  mountUpdateToast();
 
   // 整模块注册：视图文件导出 mount（必需）与 unmount（可选，清理 SSE/定时器），
   // 这里原样接线，视图新增 unmount 时无需回来改注册代码。
@@ -84,11 +88,12 @@ function main(): void {
   // quick_start_completed === false 时自动弹出快速开始向导。
   void checkFirstLaunch().catch(() => undefined);
 
-  // 启动后的后台更新检查。延后 8 秒是为了让首屏、sidecar 握手和快速开始向导先各就各位——
-  // 这件事没有任何紧迫性，唯一的输出是侧栏红点和顶栏下方一条可关掉的提示条。
-  // 真正「这次要不要联网查」由后端判断（暂停提醒 / 24 小时内查过 / 快速开始还没走完）。
+  // 启动后的后台更新检查，每次启动查一次（没有时间节流，理由见 update-controller）。
+  // 延后 8 秒是为了让首屏、sidecar 握手和快速开始向导先各就各位——这件事没有任何紧迫性。
+  // 查到新版就在顶部弹一张提示卡片并点亮侧栏红点；没查到就一声不吭。
+  // 「这次该不该提示」由后端判断（暂停提醒 / 忽略的版本 / 快速开始还没走完）。
   window.setTimeout(() => {
-    void settingsView.runBackgroundUpdateCheck();
+    void runBackgroundUpdateCheck();
   }, 8000);
 }
 

@@ -5,7 +5,7 @@
 // 用于从右栏「编辑 Prompt ↗ 设置」、顶栏模型药丸等处深链到具体子页。
 
 import { navigate, type ViewParams } from "../router";
-import { setTopbar, setSettingsAlert, setUpdateNotice } from "../shell";
+import { setTopbar } from "../shell";
 import {
   createCard,
   createChip,
@@ -33,13 +33,24 @@ import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
 import { applyModelPillFromRoles } from "../model-pill";
 import { renderReleaseNotes, releaseNotesLineCount } from "../markdown";
+// 更新的状态和动作都在 update-controller：顶部的更新提示卡片和这一页显示的是同一件事，
+// 各存一份就会出现「卡片在下载、这一页还写着有可用更新」。这一页只负责画和触发。
 import {
-  resolveUpdate,
-  restartApp,
-  updaterEnvironment,
-  type UpdateHandle,
-  type UpdaterEnvironment,
-} from "../update-service";
+  canSelfUpdate,
+  collapseUpdateReady,
+  ensureUpdaterEnvironment,
+  ignoreVersion,
+  ignoredVersion,
+  loadUpdateState,
+  notificationsPaused,
+  requestRestart,
+  requestUpdateInstall,
+  runUpdateCheck,
+  selfUpdateBlockedCopy,
+  setNotificationsPaused,
+  subscribeUpdates,
+  updateSnapshot,
+} from "../update-controller";
 import { version as PACKAGE_VERSION } from "../../package.json";
 import "./settings.css";
 
@@ -322,9 +333,9 @@ let modelImportPreview: ModelImportPreview | null = null;
 
 let targetOptions: LanguageOption[] = [];
 
-let updateState: JsonObject | null = null;
-let updateResult: JsonObject | null = null;
-let updateChecking = false;
+/** update-controller 的退订函数；unmount 时必须调用，否则每挂载一次就多一个订阅者，
+ *  下载进度会把已经摘掉的 DOM 重画一遍。 */
+let unsubscribeUpdates: (() => void) | null = null;
 
 let maintenanceOverview: JsonObject | null = null;
 let diagnostics: JsonObject[] = [];
@@ -405,6 +416,10 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   clearElement(body);
   body.append(createCard([createEmptyState({ title: "正在加载设置…", icon: "gear" })]));
 
+  // 更新状态是共享的：顶部卡片上按的「更新」会一路改到这一页要显示的东西（下载进度、
+  // 装好等重启、失败）。订阅着重画，才不会出现「卡片在下载、这一页还写着有可用更新」。
+  unsubscribeUpdates = subscribeUpdates(renderAboutIfVisible);
+
   void bootstrap(token);
 }
 
@@ -423,6 +438,8 @@ export function unmount(): void {
   bodyHost = null;
   bannerHost = null;
   navEls = null;
+  unsubscribeUpdates?.();
+  unsubscribeUpdates = null;
 }
 
 const NAV_ITEMS: { id: SettingsPage; label: string; icon: IconName }[] = [
@@ -446,7 +463,7 @@ async function bootstrap(token: number): Promise<void> {
     await ensureConnected();
     await refreshSettings();
     await refreshLanguages();
-    await refreshUpdateState();
+    await loadUpdateState();
     if (token !== mountToken) return;
     await loadAndRenderPage(token);
   } catch (error) {
@@ -748,10 +765,6 @@ async function refreshLanguages(): Promise<void> {
     target_options: LanguageOption[];
   }>("/api/languages");
   targetOptions = payload.target_options;
-}
-
-async function refreshUpdateState(): Promise<void> {
-  updateState = await client.request<JsonObject>("/api/updates/state");
 }
 
 async function refreshMaintenance(): Promise<void> {
@@ -3218,59 +3231,9 @@ async function openExternalUrl(url: string): Promise<void> {
 // updateResult.current_version，这个常量只在那之前或那个字段缺失时兜底。
 const APP_VERSION_FALLBACK = PACKAGE_VERSION;
 
-// 更新流程的进行态。和 updateResult（「服务器怎么说」）分开存：后者会被「重新检查」
-// 整个换掉，而一个已经装好、只差重启的更新不该因为用户又点了一次检查就消失。
-type UpdateFlowPhase = "idle" | "downloading" | "installing" | "ready" | "failed";
-
-interface UpdateFlow {
-  phase: UpdateFlowPhase;
-  version: string;
-  /** 下载百分比；总长度未知时为 null（走不确定进度条）。 */
-  percent: number | null;
-  received: number;
-  total: number | null;
-  message: string;
-  /** 诊断码：用户看不懂，但截图发过来时它是唯一有用的东西。 */
-  code: string;
-  /** 失败态的标题。下载断了就说「下载失败」，别一律报「安装失败」误导排查方向。 */
-  failureTitle: string;
-}
-
-function idleUpdateFlow(): UpdateFlow {
-  return {
-    phase: "idle", version: "", percent: null, received: 0, total: null,
-    message: "", code: "", failureTitle: "",
-  };
-}
-
-let updateFlow: UpdateFlow = idleUpdateFlow();
-let updaterEnv: UpdaterEnvironment | null = null;
+// 这一页自己的显示态：更新说明默认收起。属于「这一页怎么显示」，不是更新流程的一部分，
+// 所以留在本地——顶部的提示卡片有它自己的展开状态，两边互不影响。
 let updateNotesExpanded = false;
-// 用户对「已装好，等重启」这条横幅点了「稍后」。收起的是横幅，不是事实——
-// 更新已经在磁盘上，页面必须继续提供重启入口。
-let updateReadyCollapsed = false;
-// 「下载并安装」/「立即重启」进行中。两者都会先 await 一次任务数刷新才弹确认框，
-// 那段空档里再点一次就会叠出第二个确认框、第二次下载。
-let updateActionBusy = false;
-// 最近一次检查完成的时刻（手动或后台都算）。只有「已是最新」这个结论需要它——
-// 不给时间的话，用户无法判断这句话是刚得出的还是三天前的。
-let updateCheckedAt = "";
-
-const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = {
-  running_from_dmg: "Translator 当前是从磁盘映像里运行的，没法自己替换自己。请先把它拖进「应用程序」，或直接下载新版安装包。",
-  install_location_read_only: "Translator 所在目录没有写入权限，装不上更新。请把它移到「应用程序」，或直接下载新版安装包。",
-  unsupported_architecture: "这台机器的处理器架构没有对应的应用内更新包，请直接下载安装包。",
-  unsupported_platform: "当前系统不支持应用内更新，请直接下载安装包。",
-  not_a_bundle: "没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。",
-  install_location_unknown: "没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。",
-  dev_build: "开发模式下不提供应用内更新。",
-  browser_preview: "浏览器预览模式下不提供应用内更新。",
-  environment_probe_failed: "没能确认这台机器是否支持应用内更新，请直接下载安装包。",
-};
-
-function selfUpdateBlockedCopy(reason: string): string {
-  return SELF_UPDATE_BLOCKED_COPY[reason] ?? "这台机器暂不支持应用内更新，请直接下载安装包。";
-}
 
 /** ISO 时间戳 → 「今天 14:32」/「2026-08-10 14:32」。解析不了就返回空串（调用方不显示）。 */
 function formatUpdateCheckedAt(iso: string): string {
@@ -3300,9 +3263,9 @@ function renderAboutIfVisible(): void {
 }
 
 function renderAboutPage(host: HTMLElement): void {
-  const prefs = record(updateState?.preferences);
-  const paused = Boolean(prefs.notifications_paused);
-  const ignored = text(prefs.ignored_release_version);
+  const snapshot = updateSnapshot();
+  const paused = notificationsPaused();
+  const ignored = ignoredVersion();
 
   const card = createCard([]);
   const body = document.createElement("div");
@@ -3312,13 +3275,13 @@ function renderAboutPage(host: HTMLElement): void {
   body.style.gap = "10px";
   body.append(sectionLabel("版本"));
 
-  if (updateFlow.phase === "ready") {
+  if (snapshot.flow.phase === "ready") {
     renderUpdateReady(body, { paused });
-  } else if (updateFlow.phase === "downloading" || updateFlow.phase === "installing") {
+  } else if (snapshot.flow.phase === "downloading" || snapshot.flow.phase === "installing") {
     renderUpdateProgress(body);
-  } else if (updateChecking) {
-    body.append(createEmptyState({ title: "正在检查更新…", icon: "spark" }));
-  } else if (updateResult) {
+  } else if (snapshot.result) {
+    // 「正在检查」不在这里画：顶部的提示卡片已经在转圈了，这一页再来一个空态，
+    // 同一件事说两遍，而且原来的内容会整块消失一下再回来。检查期间按钮禁用即可。
     renderUpdateResult(body, { paused, ignored });
   } else {
     renderUpdateUnchecked(body, { paused });
@@ -3363,22 +3326,29 @@ function renderUpdateUnchecked(body: HTMLElement, options: { paused: boolean }):
   body.append(hint);
 
   body.append(fieldRow([
-    createButton({ label: "检查更新", variant: "primary", size: "mini", onClick: () => void runUpdateCheck() }),
+    createButton({
+      label: updateSnapshot().checking ? "检查中…" : "检查更新",
+      variant: "primary", size: "mini",
+      disabled: updateSnapshot().checking,
+      onClick: () => void runUpdateCheck(),
+    }),
     createPauseToggle(options.paused),
   ]));
 }
 
 /** 屏②③⑥⑦：有检查结果时的四种落点。安装失败态叠加在这一层上。 */
 function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignored: string }): void {
-  const result = updateResult ?? {};
+  const snapshot = updateSnapshot();
+  const flow = snapshot.flow;
+  const result = snapshot.result ?? {};
   const status = text(result.status);
   const available = status === "available";
-  const failed = updateFlow.phase === "failed";
+  const failed = flow.phase === "failed";
   const currentVersion = text(result.current_version, APP_VERSION_FALLBACK);
   const latestVersion = text(result.latest_version, text(result.latest_tag));
   const releaseUrl = text(result.release_url);
   const downloadUrl = text(result.download_url);
-  const canSelfUpdate = Boolean(updaterEnv?.canSelfUpdate);
+  const selfUpdate = canSelfUpdate();
 
   const info = document.createElement("p");
   info.style.fontSize = "13px";
@@ -3397,7 +3367,7 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 
   if (failed) {
     body.append(
-      createChip({ label: updateFlow.failureTitle || "安装失败", tone: "warn", icon: "warn" }),
+      createChip({ label: flow.failureTitle || "安装失败", tone: "warn", icon: "warn" }),
     );
   } else if (available) {
     body.append(createChip({ label: "有可用更新", tone: "tint", icon: "down" }));
@@ -3431,19 +3401,19 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
     }
     body.append(dl);
 
-    if (!canSelfUpdate) {
+    if (!selfUpdate) {
       // 屏⑦：按钮不能假装能用。说清是哪一种情况，并退回手动下载。
       const blocked = document.createElement("p");
       blocked.className = "note";
       blocked.style.color = "var(--warn)";
       blocked.append(icon("warn", { size: "sm" }));
-      blocked.append(document.createTextNode(` ${selfUpdateBlockedCopy(text(updaterEnv?.reason, "unknown"))}`));
+      blocked.append(document.createTextNode(` ${selfUpdateBlockedCopy(text(snapshot.env?.reason, "unknown"))}`));
       body.append(blocked);
     }
   } else if (failed) {
-    body.append(diagnosticNote(updateFlow.message, updateFlow.code));
+    body.append(diagnosticNote(flow.message, flow.code));
   } else if (status === "current") {
-    const checked = formatUpdateCheckedAt(updateCheckedAt);
+    const checked = formatUpdateCheckedAt(snapshot.checkedAt);
     if (checked) {
       const note = document.createElement("p");
       note.className = "note";
@@ -3456,7 +3426,7 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 
   const actions: HTMLElement[] = [];
   if (available && !failed) {
-    actions.push(canSelfUpdate
+    actions.push(selfUpdate
       ? createButton({
         label: "下载并安装", variant: "primary", size: "mini", icon: "down",
         onClick: () => void requestUpdateInstall(),
@@ -3468,9 +3438,10 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
       }));
   } else {
     actions.push(createButton({
-      label: failed ? "重试" : "重新检查",
+      label: failed ? "重试" : snapshot.checking ? "检查中…" : "重新检查",
       variant: failed || status !== "current" ? "primary" : "default",
       size: "mini",
+      disabled: snapshot.checking,
       onClick: () => void (failed ? requestUpdateInstall() : runUpdateCheck()),
     }));
     if (failed && downloadUrl) {
@@ -3483,14 +3454,7 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
   if (available && latestVersion && options.ignored !== latestVersion) {
     actions.push(createButton({
       label: "忽略此版本", size: "mini",
-      onClick: () => void reRenderAfter(async () => {
-        updateState = await client.request<JsonObject>("/api/updates/preferences", {
-          method: "PUT", body: JSON.stringify({ ignored_release_version: latestVersion }),
-        });
-        setSettingsAlert(false);
-        setUpdateNotice(null);
-        showToast({ message: `已忽略版本 ${latestVersion}；后续版本仍会提示。` });
-      }),
+      onClick: () => void ignoreVersion(latestVersion),
     }));
   }
   if (!failed) {
@@ -3504,15 +3468,17 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 
 /** 屏④：下载有确定进度，解包安装没有——两段必须换文案，否则会被读成「重来了」。 */
 function renderUpdateProgress(body: HTMLElement): void {
+  const snapshot = updateSnapshot();
+  const flow = snapshot.flow;
   const heading = document.createElement("p");
   heading.style.fontSize = "13px";
   heading.append(document.createTextNode("正在更新到 "));
   const version = document.createElement("b");
-  version.textContent = updateFlow.version || text(updateResult?.latest_version, "新版本");
+  version.textContent = flow.version || text(snapshot.result?.latest_version, "新版本");
   heading.append(version);
   body.append(heading);
 
-  const downloading = updateFlow.phase === "downloading";
+  const downloading = flow.phase === "downloading";
   const stage = document.createElement("div");
   stage.style.display = "flex";
   stage.style.alignItems = "baseline";
@@ -3522,20 +3488,20 @@ function renderUpdateProgress(body: HTMLElement): void {
   label.style.color = "var(--ink-2)";
   label.textContent = downloading ? "正在下载安装包" : "正在校验签名并安装";
   stage.append(label);
-  if (downloading && updateFlow.percent !== null) {
+  if (downloading && flow.percent !== null) {
     const pct = document.createElement("b");
     pct.style.marginLeft = "auto";
     pct.style.fontSize = "17px";
     pct.style.fontVariantNumeric = "tabular-nums";
     pct.style.color = "var(--tint-ink)";
-    pct.textContent = `${Math.floor(updateFlow.percent)}%`;
+    pct.textContent = `${Math.floor(flow.percent)}%`;
     stage.append(pct);
   }
   body.append(stage);
 
-  const determinate = downloading && updateFlow.percent !== null;
+  const determinate = downloading && flow.percent !== null;
   if (determinate) {
-    body.append(createProgressBar({ percent: updateFlow.percent ?? 0 }).root);
+    body.append(createProgressBar({ percent: flow.percent ?? 0 }).root);
   } else {
     const bar = document.createElement("div");
     bar.className = "bar indet";
@@ -3546,9 +3512,9 @@ function renderUpdateProgress(body: HTMLElement): void {
   const note = document.createElement("p");
   note.className = "note";
   if (downloading) {
-    note.textContent = updateFlow.total
-      ? `${formatBytes(updateFlow.received)} / ${formatBytes(updateFlow.total)}`
-      : `已下载 ${formatBytes(updateFlow.received)}`;
+    note.textContent = flow.total
+      ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
+      : `已下载 ${formatBytes(flow.received)}`;
   } else {
     note.textContent = "这一步通常几秒钟，请勿关闭窗口。";
   }
@@ -3561,12 +3527,14 @@ function renderUpdateProgress(body: HTMLElement): void {
 
 /** 屏⑤：装好了但不自动重启——翻译任务动辄几十分钟，替用户做这个决定的代价太大。 */
 function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
-  if (updateReadyCollapsed) {
+  const snapshot = updateSnapshot();
+  const flow = snapshot.flow;
+  if (snapshot.readyCollapsed) {
     // 点过「稍后」。横幅收起来了，但更新包已经装在磁盘上：这里必须留一个重启入口，
     // 否则这一页会退回去重新提供「下载并安装」，等于让人把同一份包再下一遍。
     const note = document.createElement("p");
     note.className = "note";
-    note.textContent = `${updateFlow.version} 已安装完成，重启 Translator 后生效。`;
+    note.textContent = `${flow.version} 已安装完成，重启 Translator 后生效。`;
     body.append(note);
     // 更新装好之后到重启为止可能隔着一整天的工作，这一页不能只剩一个重启按钮：
     // 后台提醒的开关得一直够得着。
@@ -3580,19 +3548,12 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
     return;
   }
   body.append(createBanner({
-    title: `${updateFlow.version} 已安装完成`,
+    title: `${flow.version} 已安装完成`,
     subtitle: "重启 Translator 后生效。也可以稍后手动退出再打开。",
     icon: "check",
     actions: [
       createButton({ label: "立即重启", variant: "primary", size: "mini", icon: "restart", onClick: () => void requestRestart() }),
-      createButton({
-        label: "稍后", size: "mini",
-        onClick: () => {
-          updateReadyCollapsed = true;
-          setSettingsAlert(false);
-          renderAboutIfVisible();
-        },
-      }),
+      createButton({ label: "稍后", size: "mini", onClick: collapseUpdateReady }),
     ],
   }));
 }
@@ -3600,12 +3561,7 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
 function createPauseToggle(paused: boolean): HTMLButtonElement {
   return createButton({
     label: paused ? "恢复后台提醒" : "暂停后台提醒", size: "mini",
-    onClick: () => void reRenderAfter(async () => {
-      updateState = await client.request<JsonObject>("/api/updates/preferences", {
-        method: "PUT", body: JSON.stringify({ notifications_paused: !paused }),
-      });
-      showToast({ message: !paused ? "已暂停后台更新提醒；手动检查仍然可用。" : "已恢复后台更新提醒。" });
-    }),
+    onClick: () => void setNotificationsPaused(!paused),
   });
 }
 
@@ -3650,263 +3606,4 @@ function appendReleaseNotes(body: HTMLElement, source: string): void {
     renderAboutIfVisible();
   });
   body.append(toggle);
-}
-
-async function runUpdateCheck(): Promise<void> {
-  updateChecking = true;
-  updateNotesExpanded = false;
-  renderBody();
-  try {
-    const result = await client.request<JsonObject>("/api/updates/check?mode=manual");
-    updateResult = result;
-    updateCheckedAt = new Date().toISOString();
-    // 手动检查的结论覆盖上一次安装尝试留下的失败态：用户明确要求重新问一次。
-    if (updateFlow.phase === "failed") updateFlow = idleUpdateFlow();
-    applyUpdateAvailability(result);
-  } catch (error) {
-    showToast({ message: errorMessage(error), error: true });
-  } finally {
-    updateChecking = false;
-    renderBody();
-  }
-}
-
-/** 检查结果 → 侧栏红点。忽略过的版本不点亮。 */
-function applyUpdateAvailability(result: JsonObject): boolean {
-  const latest = text(result.latest_version);
-  const ignored = text(record(updateState?.preferences).ignored_release_version);
-  const available = text(result.status) === "available" && Boolean(latest) && latest !== ignored;
-  setSettingsAlert(available);
-  return available;
-}
-
-async function ensureUpdaterEnvironment(): Promise<void> {
-  if (updaterEnv) return;
-  updaterEnv = await updaterEnvironment();
-}
-
-/**
- * 点「下载并安装」。Windows 上安装会直接结束当前进程（NSIS 接手后重开应用），
- * 所以必须在下载之前就把「会打断正在跑的任务」这件事讲清楚；macOS 是就地替换
- * .app，装完还能继续用，那道确认留到「立即重启」再问。
- */
-async function requestUpdateInstall(): Promise<void> {
-  if (updateActionBusy) return;
-  updateActionBusy = true;
-  try {
-    await runUpdateInstallFlow();
-  } finally {
-    updateActionBusy = false;
-  }
-}
-
-async function runUpdateInstallFlow(): Promise<void> {
-  if (updaterEnv?.installBehavior === "installer_restart") {
-    await refreshActiveTaskCount();
-    const body = activeTaskCount > 0
-      ? [
-        `现在安装会中断这 ${activeTaskCount} 个任务，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。`,
-        "安装程序会在更新完成后自动重新打开 Translator。",
-      ]
-      : ["安装过程中 Translator 会关闭，安装程序完成后会自动重新打开它。"];
-    const confirmed = await confirmModal({
-      title: activeTaskCount > 0 ? `还有 ${activeTaskCount} 个任务正在运行` : "安装将关闭 Translator",
-      body,
-      confirmLabel: "仍然安装",
-      cancelLabel: "暂不安装",
-    });
-    if (!confirmed) return;
-  }
-  await startUpdateInstall();
-}
-
-/** 总长度未知时的重画间隔：够 formatBytes 的显示值真的变一次，又不至于刷爆页面。 */
-const INDETERMINATE_REDRAW_BYTES = 512 * 1024;
-
-async function startUpdateInstall(): Promise<void> {
-  const fallbackVersion = text(updateResult?.latest_version);
-  updateReadyCollapsed = false;
-  updateFlow = { ...idleUpdateFlow(), phase: "downloading", version: fallbackVersion };
-  renderAboutIfVisible();
-
-  let handle: UpdateHandle | null = null;
-  // 出错时用来决定说「取不到更新信息」「下载失败」还是「安装失败」——三者的下一步
-  // 动作完全不同：第一种多半是这一版根本没发更新包（重试永远不会成功），第二种重试
-  // 或换网络，第三种多半是磁盘/权限/签名，重试没用。
-  let stage: "resolve" | "download" | "install" = "resolve";
-  try {
-    handle = await resolveUpdate();
-    if (!handle) {
-      // latest.json 说没有可装的东西，但 GitHub Release 明明有新版：多半是这一版
-      // 还没上传更新产物。别让用户干等，直接指回手动安装包。
-      updateFlow = {
-        ...idleUpdateFlow(), phase: "failed", version: fallbackVersion,
-        failureTitle: "无法自动更新",
-        message: "更新服务器上没有这个平台的应用内更新包，请改为下载安装包。",
-        code: "updater_payload_missing",
-      };
-      return;
-    }
-    stage = "download";
-    const version = handle.version;
-    // 每个数据块都重画一次会把这一页刷爆；整数百分比变了才值得重画。
-    let renderedPercent = -1;
-    // 服务器没给 Content-Length 时百分比恒为 null，按百分比节流等于永不重画，
-    // 「已下载 x MB」会一直停在 0 —— 那种情况下改按下载字节节流。
-    let renderedReceived = 0;
-    updateFlow = { ...updateFlow, version };
-    await handle.download((percent, received, total) => {
-      updateFlow = {
-        phase: "downloading", version, percent, received, total,
-        message: "", code: "", failureTitle: "",
-      };
-      const step = percent === null ? -1 : Math.floor(percent);
-      const changed = percent === null
-        ? received - renderedReceived >= INDETERMINATE_REDRAW_BYTES
-        : step !== renderedPercent;
-      if (changed) {
-        renderedPercent = step;
-        renderedReceived = received;
-        renderAboutIfVisible();
-      }
-    });
-    stage = "install";
-    updateFlow = { ...updateFlow, phase: "installing", percent: null };
-    renderAboutIfVisible();
-    await handle.install();
-    updateFlow = { ...idleUpdateFlow(), phase: "ready", version };
-  } catch (error) {
-    updateFlow = {
-      ...idleUpdateFlow(), phase: "failed",
-      version: handle?.version || fallbackVersion,
-      failureTitle:
-        stage === "resolve" ? "无法自动更新" : stage === "download" ? "下载失败" : "安装失败",
-      message:
-        // 「取不到更新信息」不能说成「下载失败」：那句话会让人一遍遍重试一件不可能
-        // 成功的事——这一版没有提供应用内更新包时，重试到下一个版本发布为止都是失败。
-        stage === "resolve"
-          ? "没有取到这一版的更新信息：可能是网络不通，也可能是这一版没有提供应用内更新包。可以稍后再试，或改为下载安装包。当前版本没有被改动，可以正常继续使用。"
-          : stage === "download"
-            ? "安装包没有下载完，当前版本没有被改动，可以正常继续使用。"
-            : "更新没有安装成功，当前版本没有被改动，可以正常继续使用。",
-      code: updaterDiagnosticCode(error),
-    };
-  } finally {
-    if (handle) {
-      // 安装成功后句柄已经被消费掉，close() 报错属于正常路径。
-      try { await handle.close(); } catch { /* 忽略 */ }
-    }
-    renderAboutIfVisible();
-  }
-}
-
-/**
- * 把更新器抛出的原始错误压成一个短诊断码。原文往往是一整段英文（有时还带本机路径），
- * 直接摆在界面上既看不懂也可能泄露目录结构；完整信息进控制台。
- */
-function updaterDiagnosticCode(error: unknown): string {
-  console.error("[updater] 安装失败：", error);
-  const raw = errorMessage(error).toLowerCase();
-  if (raw.includes("signature")) return "install_signature_rejected";
-  if (raw.includes("permission") || raw.includes("denied")) return "install_permission_denied";
-  if (raw.includes("space")) return "install_no_disk_space";
-  if (raw.includes("network") || raw.includes("timed out") || raw.includes("timeout")) return "download_network_error";
-  return "install_failed";
-}
-
-/** 「立即重启」：会杀掉正在翻译的任务，必须挡一道，而且默认按钮是「稍后重启」。 */
-async function requestRestart(): Promise<void> {
-  if (updateActionBusy) return;
-  updateActionBusy = true;
-  try {
-    await runRestartFlow();
-  } finally {
-    updateActionBusy = false;
-  }
-}
-
-async function runRestartFlow(): Promise<void> {
-  await refreshActiveTaskCount();
-  if (activeTaskCount > 0) {
-    const confirmed = await confirmModal({
-      title: `还有 ${activeTaskCount} 个任务正在运行`,
-      body: [
-        "现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。",
-        "更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。",
-      ],
-      confirmLabel: "仍然重启",
-      cancelLabel: "稍后重启",
-    });
-    if (!confirmed) return;
-  }
-  try {
-    await restartApp();
-  } catch (error) {
-    showToast({ message: `无法自动重启，请手动退出并重新打开 Translator。（${errorMessage(error)}）`, error: true });
-  }
-}
-
-/**
- * openModal 的 Promise 包装。默认按钮（视觉上的主按钮）永远是「不做那件事」的那个：
- * 这些确认框挡的都是会打断用户工作的操作。
- */
-function confirmModal(options: {
-  title: string;
-  body: string[];
-  confirmLabel: string;
-  cancelLabel: string;
-}): Promise<boolean> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (value: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    openModal({
-      tone: "warn",
-      icon: "warn",
-      title: options.title,
-      body: options.body,
-      actions: [
-        { label: options.confirmLabel, onClick: () => settle(true) },
-        { label: options.cancelLabel, variant: "primary", onClick: () => settle(false) },
-      ],
-    });
-  });
-}
-
-/**
- * 启动后的后台检查（app.ts 在首屏之后延迟调用）。
- *
- * 后端负责判断这次该不该真的联网（暂停提醒 / 24 小时内查过 / 快速开始还没走完），
- * 前端只负责把「有新版」这件事轻量地告诉用户：侧栏红点 + 顶栏下方一条可关闭的提示条。
- * 不弹窗、不抢焦点——用户可能正在翻一份两百页的 PDF。
- */
-export async function runBackgroundUpdateCheck(): Promise<void> {
-  try {
-    await ensureConnected();
-    if (!updateState) {
-      updateState = await client.request<JsonObject>("/api/updates/state");
-    }
-    const result = await client.request<JsonObject>("/api/updates/check?mode=background");
-    if (text(result.status) === "deferred") return;
-    updateResult = result;
-    updateCheckedAt = new Date().toISOString();
-    const available = applyUpdateAvailability(result);
-    // 后台检查可能正好在用户开着「更新与关于」时返回。不重画的话这一页会停在
-    // 「尚未检查」上，而侧栏红点已经亮了——看起来像红点在骗人。
-    renderAboutIfVisible();
-    if (!available) return;
-    if (result.notification_suppressed === true) return;
-
-    const version = text(result.latest_version);
-    setUpdateNotice({
-      title: `Translator ${version} 可用`,
-      detail: text(result.message, "有新版本可以更新了。"),
-      onDetails: () => navigate("settings", { page: "about" }),
-    });
-  } catch {
-    // 后台检查失败不打扰用户：这一次没查到，下次启动再说。手动检查会把错误报出来。
-  }
 }
