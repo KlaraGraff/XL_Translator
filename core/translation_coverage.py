@@ -21,7 +21,14 @@ _CJK_FRAGMENT_RE = re.compile(r"[\u4e00-\u9fff\d\uff10-\uff19]*[\u4e00-\u9fff][\
 
 # \u300c\u8bd1\u6587\u91cc\u53ea\u5939\u5e26\u5c11\u91cf\u4e2d\u6587\u300d\u7684\u5224\u5b9a\u9608\u503c\u3002\u7f16\u53f7\u524d\u7f00\uff08\u4e00.1\uff09\u3001\u65e5\u671f\uff082026\u5e748\u67089\u65e5\uff09\u3001
 # \u4e2a\u522b\u4e13\u540d\u5c5e\u4e8e\u8fd9\u4e00\u7c7b\uff1a\u6574\u53e5\u5df2\u7ecf\u662f\u76ee\u6807\u8bed\u8a00\uff0c\u4e0d\u8be5\u5224\u6210\u300c\u672a\u8bd1\u6e90\u6587\u300d\u3002
-_INCIDENTAL_CJK_MAX_CHARS = 12
+#
+# \u4e4b\u524d\u53ea\u6309\u7edd\u5bf9\u5b57\u6570\uff0812 \u4e2a\u5b57\uff09\u5224\u5b9a\uff0c\u5b9e\u6d4b\u5750\u5b9e\u8fc7\u4e00\u6b21\u771f\u5b9e\u8bef\u62a5\uff1a1330 \u5b57\u7684\u6cd5\u6587\u8bd1\u6587\u6bb5\u843d\u91cc
+# \u5939\u4e86 15 \u4e2a\u4e2d\u6587\u5b57\uff08\u5168\u662f\u65e5\u671f\uff0c\u5982\u300c2025\u5e7412\u67088\u65e5\u300d\uff09\uff0c15 > 12\uff0c\u4e8e\u662f\u6574\u6bb5\u88ab\u5224\u6210\u4e2d\u6587
+# \u539f\u6587\uff0c\u8ddf\u5b83\u914d\u5bf9\u7684\u539f\u6587\u6bb5\u843d\u4e5f\u4e00\u8d77\u88ab\u62a5\u6210\u300c\u672a\u8bd1\u6e90\u6587\u300d\u2014\u2014\u4e24\u6761\u8bef\u62a5\uff0c\u5b9e\u9645\u4e0a\u662f\u4e00\u6bb5\u7ffb\u5b8c\u6574
+# \u7684\u8bd1\u6587\u3002\u6539\u6210\u6309\u6bd4\u4f8b\u5224\u5b9a\uff1a\u4e2d\u6587\u5b57\u6570\u5360\u5168\u6587\u957f\u5ea6\u7684\u6bd4\u4f8b\u8db3\u591f\u4f4e\uff0c\u624d\u7b97\u300c\u987a\u5e26\u5939\u5e26\u300d\uff1b\u540c\u65f6
+# \u4fdd\u7559\u4e00\u4e2a\u5bbd\u677e\u7684\u7edd\u5bf9\u4e0a\u9650\uff0c\u9632\u6b62\u6bd4\u4f8b\u7b97\u6cd5\u5728\u8d85\u957f\u6587\u6863\u91cc\u653e\u8fc7\u5927\u6bb5\u771f\u6b63\u6ca1\u7ffb\u7684\u5185\u5bb9\u3002
+_INCIDENTAL_CJK_MAX_CHARS = 60
+_INCIDENTAL_CJK_MAX_RATIO_OF_TEXT = 0.05
 _INCIDENTAL_CJK_MAX_RATIO = 0.2
 _INCIDENTAL_CJK_MIN_LETTERS = 12
 
@@ -35,6 +42,35 @@ _ENGLISH_MARKER_WORDS = {
 }
 _FRENCH_ELISION_RE = re.compile(r"\b(?:[cdjlmnstqu]|jusqu|lorsqu)['’]", re.IGNORECASE)
 _FRENCH_DIACRITIC_RE = re.compile(r"[àâçéèêëîïôùûüÿœæ]", re.IGNORECASE)
+
+# 极短的目标语言片段：编号符号、计量单位、罗马数字。这类文本天然不满足「至少 3 个
+# 字母的自然语言词」门槛（"N°" 只有一个字母），但整份双语文档里大量出现——常见于
+# 「序号 / N°」这类只有一个词的表头格。实测坐实过：8 个「序号 / N°」双语格被误判成
+# 「未译源文」，根因就是 looks_like_target_text("N°") 原先恒为 False。这里按需求列出
+# 的例子（N°、m²、kg、%、Réf.、No.、纯数字、罗马数字）加一个前置正则，命中就直接判
+# 定为有效的目标语言内容，不再送进「至少 3 个字母」的自然语言词检测。
+_SHORT_TARGET_TOKEN_RE = re.compile(
+    r"""
+    N°\.?|                                            # N° / N°.
+    N[o0]\.?|Nº\.?|                                    # No. / No / Nº
+    R[ée]f\.?|                                              # Réf. / Ref.
+    Art\.?|                                                 # Art.
+    §\s*[0-9]+(?:[.,][0-9]+)*|                         # § 3.2
+    [0-9]+(?:[.,][0-9]+)*\s*
+        (?:%|°C|°|m²|m³|km²|km|kg|g|mm|cm)?|
+    m²|m³|km²|km|kg|g|mm|cm|%|°C|
+    M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|I?V?I{0,3})
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def looks_like_short_target_token(text: str) -> bool:
+    """Return whether text is a short target-language token (N°、m²、kg、罗马数字……)."""
+    cleaned = clean_coverage_text(text)
+    if not cleaned:
+        return False
+    return bool(_SHORT_TARGET_TOKEN_RE.fullmatch(cleaned))
 
 
 @dataclass
@@ -115,6 +151,12 @@ def has_incidental_cjk(text: str, *, target_lang: str) -> bool:
 
     cjk_count = count_cjk_chars(cleaned)
     if cjk_count == 0 or cjk_count > _INCIDENTAL_CJK_MAX_CHARS:
+        return False
+    total_len = len(cleaned)
+    if total_len == 0 or cjk_count / total_len > _INCIDENTAL_CJK_MAX_RATIO_OF_TEXT:
+        # 按占比判定，而不是只看绝对字数：短标题（如「抢工方案」，4 字 100% 中文）
+        # 必须仍判成源语言；长段落里夹几个字的日期（1330 字里 15 个中文字，1.1%）
+        # 不该被这一条拦下。
         return False
     letter_count = count_non_cjk_letters(cleaned)
     if letter_count < _INCIDENTAL_CJK_MIN_LETTERS:
@@ -212,6 +254,9 @@ def looks_like_target_text(
     if target == "zh":
         return contains_cjk(cleaned)
 
+    if looks_like_short_target_token(cleaned):
+        return True
+
     if contains_cjk(cleaned):
         # 整句已是目标语言、只夹带编号或日期这类零星中文时，仍算译文；
         # 残留的中文另由 residual_cjk_fragments() 单独提示，不再判成「未译源文」。
@@ -256,19 +301,41 @@ def split_existing_bilingual_text(
     if len(lines) < 2:
         return None
 
-    for split_index in range(1, len(lines)):
+    # 边界从末尾往前扫，而不是从「只有第一行是原文」往后扫。原文本身可能有好几
+    # 行——实测坐实过一例：单元格第一行「变配电室」、第二行「专项」，第三行才是
+    # 法文译文；旧代码从 split_index=1 试起，第一次就命中「源文=变配电室，译文=
+    # 专项+法文」，把「专项」这个真正的中文原文错判成译文里的残留中文。
+    #
+    # 但也不能反过来一路贪心到底：译文同样可能有好几行（「污染/破坏/Contamination/
+    # Détérioration」），从最大源文侧试起会把 Contamination 吞进原文侧。所以先从末尾
+    # 逐行往前扩，直到某一行不再像目标语言为止——这一行就是边界候选，译文侧取到的
+    # 是最长的、整段都像目标语言的后缀。
+    boundary = len(lines)
+    while boundary > 1 and looks_like_target_text(
+        lines[boundary - 1],
+        source_lang=source_lang,
+        target_lang=target_lang,
+    ):
+        boundary -= 1
+    candidates = [boundary] if boundary < len(lines) else []
+    # 后缀扫描没收敛时（例如逐行看都不像目标语言、合起来才像），退回旧的逐位试探，
+    # 保证行为不比原来差。
+    candidates.extend(
+        index for index in range(len(lines) - 1, 0, -1) if index != boundary
+    )
+    for split_index in candidates:
         source_candidate = join_lines(lines[:split_index])
         target_candidate = join_lines(lines[split_index:])
         if not source_candidate or not target_candidate:
             continue
-        if not looks_like_source_text(
-            source_candidate,
+        if not looks_like_target_text(
+            target_candidate,
             source_lang=source_lang,
             target_lang=target_lang,
         ):
             continue
-        if not looks_like_target_text(
-            target_candidate,
+        if not looks_like_source_text(
+            source_candidate,
             source_lang=source_lang,
             target_lang=target_lang,
         ):
