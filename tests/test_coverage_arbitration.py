@@ -364,6 +364,28 @@ class RunnerGlueTests(unittest.TestCase):
             logs,
         )
 
+    def test_a_clean_document_still_says_the_check_ran(self) -> None:
+        """结论是"全都没问题"也要吭声，否则分不清是查过了还是压根没跑。"""
+        logs: list[tuple[str, str]] = []
+        plan = SimpleNamespace(units=[_pair("序号", "N°")])
+
+        self._runner(logs)._arbitrate_coverage_pairs(
+            plan,
+            engine=object(),
+            api_scheduler=None,
+            target_lang="fr",
+            source_lang="zh",
+            lang_pair=None,
+            concurrency=4,
+            file_name="方案.docx",
+            file_identity="方案.docx",
+            quality_issues=[],
+        )
+
+        self.assertTrue(
+            any("补译复核：1 对已有译文" in message for _, message in logs), logs
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

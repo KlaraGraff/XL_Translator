@@ -404,24 +404,25 @@ class WordTaskRunner:
             )
             return
         flipped = apply_arbitration(outcome)
-        if outcome.model_check_count:
-            uncertain = sum(
-                1
-                for review in outcome.retranslated
-                if review.reason == RETRANSLATE_UNCERTAIN
-            )
-            # 把"模型说不是译文"和"没问出结果"分开报：后者成批出现时说明接口在抖，
-            # 不是文档里真有那么多配错的段落。
-            detail = f"{len(flipped)} 对改为重新翻译"
-            if uncertain:
-                detail += f"（其中 {uncertain} 对因未取得判定结果而从严处理）"
-            self._log(
-                "INFO",
-                (
-                    f"  → 补译复核：{len(candidates)} 对已有译文，"
-                    f"其中 {outcome.model_check_count} 对送模型判定，{detail}。"
-                ),
-            )
+        uncertain = sum(
+            1
+            for review in outcome.retranslated
+            if review.reason == RETRANSLATE_UNCERTAIN
+        )
+        # 把"模型说不是译文"和"没问出结果"分开报：后者成批出现时说明接口在抖，
+        # 不是文档里真有那么多配错的段落。
+        detail = f"{len(flipped)} 对改为重新翻译"
+        if uncertain:
+            detail += f"（其中 {uncertain} 对因未取得判定结果而从严处理）"
+        # 有候选就报一句，哪怕结论是"全都没问题"。只在有异常时才吭声的检查，用户
+        # 无从分辨它是查过了没事，还是压根没跑。
+        self._log(
+            "INFO",
+            (
+                f"  → 补译复核：{len(candidates)} 对已有译文，"
+                f"其中 {outcome.model_check_count} 对送模型判定，{detail}。"
+            ),
+        )
         if outcome.skipped_over_cap:
             self._log(
                 "WARNING",
