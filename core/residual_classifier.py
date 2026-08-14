@@ -289,6 +289,57 @@ def detect_sibling_convention(
     return max(votes, key=lambda family: votes[family])
 
 
+_ROMAN_TO_VALUE = {
+    numeral: index for index, numeral in enumerate(_ROMAN_NUMERALS, start=1)
+}
+
+
+def align_enum_prefix_to_convention(
+    source_text: str,
+    target_text: str,
+    *,
+    convention: str,
+) -> str | None:
+    """
+    重译稿的序号前缀按文档惯例对齐（0 API）。
+
+    带反馈重译的验收只看「无残留、数字不丢」，不管前缀写法——源段
+    「（三）…」的重译稿开头写成「3.」也会通过，而全篇惯例可能是「(III)」。
+    这里做确定性收口：源段以（X）系中文序号开头、重译稿以另一族目标语
+    序号开头、且数值与源序号一致时，把前缀改写成惯例族写法。
+    数值对不上（模型改了编号）、惯例未知、或重译稿本来就是惯例写法，
+    一律返回 None——绝不猜，绝不多改。
+    """
+    source_match = _PAREN_CN_PREFIX_RE.match(str(source_text or ""))
+    if not source_match:
+        return None
+    value = parse_cn_numeral(source_match.group(2))
+    if value is None:
+        return None
+    label = format_enum_label(value, convention)
+    if label is None:
+        return None
+    text = str(target_text or "")
+    for family, pattern in _CONVENTION_PATTERNS:
+        match = pattern.match(text)
+        if match is None:
+            continue
+        if family == convention:
+            return None
+        token = match.group(1)
+        if family == CONVENTION_PAREN_ROMAN:
+            candidate_value = _ROMAN_TO_VALUE.get(token)
+        else:
+            candidate_value = int(token)
+        if candidate_value != value:
+            return None
+        leading = text[: len(text) - len(text.lstrip())]
+        rest = text[match.end():]
+        separator = "" if (not rest or rest.startswith((" ", "\t"))) else " "
+        return leading + label + separator + rest
+    return None
+
+
 def format_enum_label(value: int, convention: str) -> str | None:
     """按惯例族渲染序号：4 + paren_roman → \"(IV)\"。"""
     if value < 1:
@@ -502,13 +553,19 @@ def _observe_heading(source_text: str, target_text: str, unit_key: str) -> Headi
     )
 
 
-def check_heading_consistency(observations, *, target_lang: str = "") -> HeadingConsistencyResult:
+def check_heading_consistency(
+    observations, *, target_lang: str = "", majority_form: str | None = None
+) -> HeadingConsistencyResult:
     """
     对全篇「第X节/章」译文做写法聚类：多数派为准，离群者生成仅前缀重写稿。
 
     observations: (source_text, target_text, unit_key) 可迭代对象，调用方
     只送入 is_section_heading_source 为真的单元。逐段看每条都可能是正确
     译文，只有全文档聚在一起才看得出两套写法——所以这是独立的落盘后阶段。
+
+    majority_form：调用方已在更大范围（全篇）投出的多数派。子集（如 TM
+    入库配对）自行投票可能与全篇结论相反，把库改成与交付文件相左的写法；
+    传入后跳过本地投票，直接以它为准。
     """
     observed = [
         _observe_heading(source_text, target_text, unit_key)
@@ -518,9 +575,9 @@ def check_heading_consistency(observations, *, target_lang: str = "") -> Heading
     for item in observed:
         if item.form:
             votes[item.form] = votes.get(item.form, 0) + 1
-    if not votes:
+    majority = majority_form or (max(votes, key=lambda form: votes[form]) if votes else None)
+    if not majority:
         return HeadingConsistencyResult(observations=tuple(observed))
-    majority = max(votes, key=lambda form: votes[form])
     outliers = tuple(
         item for item in observed if item.form and item.form != majority
     )

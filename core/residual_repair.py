@@ -27,6 +27,7 @@ from core.residual_classifier import (
     CATEGORY_NUMBERING_PREFIX,
     CATEGORY_QUANTITY_UNIT,
     CATEGORY_TERM_FRAGMENT,
+    align_enum_prefix_to_convention,
     classify_residual_spans,
     extract_number_tokens,
     surgical_repair_ok,
@@ -268,6 +269,7 @@ def run_repair_ladder(
     *,
     target_lang: str,
     send,
+    convention: str = "",
     max_units: int = DEFAULT_REPAIR_MAX_UNITS,
     breaker_threshold: int = DEFAULT_REPAIR_BREAKER_THRESHOLD,
     should_stop=None,
@@ -283,6 +285,10 @@ def run_repair_ladder(
       协议外回复不算传输失败（那是模型的问题，不是通道的问题）；
     - 停止：should_stop() 为真时剩余单元原样进 remaining；
     - on_progress(done, total)：每个单元开跑前回调一次，供界面报进度。
+
+    convention 为主流程投出的文档级序号惯例：验收通过的重译稿如果把
+    「（三）」写成了另一族序号（如「3.」而全篇是「(III)」），在这里按
+    惯例做确定性对齐——数值对不上或惯例未知则原样保留，不猜。
     """
     result = RepairLadderResult()
     queue = list(units)
@@ -326,7 +332,14 @@ def run_repair_ladder(
             retranslate_send=guarded_send,
         )
         if outcome.accepted and outcome.method:
-            result.accepted[unit.source_text] = outcome.text
+            accepted_text = outcome.text
+            if outcome.method == METHOD_FEEDBACK_RETRANSLATION and convention:
+                aligned = align_enum_prefix_to_convention(
+                    unit.source_text, accepted_text, convention=convention
+                )
+                if aligned is not None:
+                    accepted_text = aligned
+            result.accepted[unit.source_text] = accepted_text
             result.method_counts[outcome.method] = (
                 result.method_counts.get(outcome.method, 0) + 1
             )

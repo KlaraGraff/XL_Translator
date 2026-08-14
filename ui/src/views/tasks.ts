@@ -497,6 +497,18 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   unresolved: "混合语言未能确认",
   semantic: "经语义校验后接受",
   foreign_noise: "原文疑似夹杂错误外文",
+  // 结果报告顶层 issues 的 type 也从这张表取名（toReviewRow 的 issueRaw
+  // 会落到 `type` 键）：core/task_runner.py 的 quality_issues 枚举
+  api_unavailable: "接口异常，部分内容未翻译",
+  quality_filter_reset: "质量校验回退为原文",
+  residual_numbering_autofixed: "中文序号残留已自动修复",
+  residual_repaired: "残留中文已自动修复",
+  residual_source_language: "译文残留中文待复核",
+  residual_quantity_unit: "保留了万/亿等数量单位",
+  heading_style_normalized: "节标题写法已自动归一",
+  heading_style_outliers: "节标题写法不一致，未自动改写",
+  tm_write_failed: "翻译记忆库写入失败",
+  cell_text_truncated: "超长单元格文本被截断",
 };
 
 /** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`）。

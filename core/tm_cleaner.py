@@ -388,6 +388,37 @@ def run_cleaning(
         logger.info(
             f"TM 清洗：节标题惯例归一规则命中 {len(convention_suggestions)} 条（0 API）"
         )
+        # 算完立刻入库：模型批次失败也不能让这批建议只活在日志里——
+        # 建议列表读的是 tm_cleaning_suggestions 表，不入库用户永远看不到。
+        # 建议是确定性的，重跑会原样再算一遍，按 (entry_id, 归一后译文)
+        # 与库里 pending 的去重，避免重复条目堆积。
+        existing_pending = {
+            (
+                int(row.get("entry_id") or 0),
+                normalize_tm_text_for_compare(str(row.get("new_target") or "")),
+            )
+            for row in tm_manager.list_cleaning_suggestions(lang_pair, status="pending")
+        }
+        fresh = [
+            s
+            for s in convention_suggestions
+            if (s.entry_id, normalize_tm_text_for_compare(s.new_target))
+            not in existing_pending
+        ]
+        if fresh:
+            tm_manager.persist_cleaning_suggestions(
+                [
+                    {
+                        "entry_id": item.entry_id,
+                        "source_text": item.source_text,
+                        "old_target": item.old_target,
+                        "new_target": item.new_target,
+                        "lang_pair": item.lang_pair,
+                        "version": item.expected_version,
+                    }
+                    for item in fresh
+                ]
+            )
     convention_covered = {s.entry_id for s in convention_suggestions}
 
     clean_system_prompt = build_clean_system_prompt(

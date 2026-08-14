@@ -34,12 +34,20 @@ class TmHygieneResult:
     rejected: tuple[tuple[str, str], ...] = ()
 
 
-def sanitize_tm_pairs(pairs, *, target_lang: str, convention: str = "") -> TmHygieneResult:
+def sanitize_tm_pairs(
+    pairs,
+    *,
+    target_lang: str,
+    convention: str = "",
+    heading_majority: str | None = None,
+) -> TmHygieneResult:
     """
     对将要写入 TM 的（源文, 译文）配对做写入前卫生处理。
 
     convention：主流程投出的文档级序号惯例。TM 只收到全篇配对的一个
     子集，让它自己投票可能与全篇结论相左——库里就会混入另一套写法。
+    heading_majority：同理，节标题写法的文档级多数派。不传时子集自投，
+    与全篇结论相反的话会把主流程刻意保留的条目改写后入库。
 
     豁免目标语言（中→日等）原样放行：译文含汉字是正常现象，
     序号/标题写法惯例也不适用。
@@ -74,7 +82,9 @@ def sanitize_tm_pairs(pairs, *, target_lang: str, convention: str = "") -> TmHyg
     ]
     if heading_observations:
         consistency = check_heading_consistency(
-            heading_observations, target_lang=target_lang
+            heading_observations,
+            target_lang=target_lang,
+            majority_form=heading_majority,
         )
         if consistency.fixes:
             kept = [(s, consistency.fixes.get(s, t)) for s, t in kept]

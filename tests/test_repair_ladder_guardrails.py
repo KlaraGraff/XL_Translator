@@ -12,6 +12,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from core.residual_classifier import align_enum_prefix_to_convention
 from core.residual_pipeline import run_residual_pass
 from core.residual_repair import (
     METHOD_FEEDBACK_RETRANSLATION,
@@ -141,6 +142,86 @@ class RepairLadderGuardrailTest(unittest.TestCase):
         self.assertIsInstance(result, RepairLadderResult)
 
 
+class AcceptedPrefixAlignmentTest(unittest.TestCase):
+    """重译稿序号前缀按文档惯例确定性对齐（第二轮评审 F6）。
+
+    带反馈重译的验收只看「无残留、数字不丢」，不管前缀写法——源段
+    「（三）」重译成「3.」也会通过，而全篇惯例可能是「(III)」。
+    对齐必须只在证据充分时动手：数值对得上、惯例已知、族确实不同。
+    """
+
+    def test_ladder_aligns_retranslated_prefix_to_convention(self):
+        unit = _Unit(
+            "（三）安全文明施工管理措施。",
+            "（三）安全文明施工管理 mesures du chantier.",
+        )
+        reply = '{"repaired": "3. Mesures de gestion du chantier."}'
+        result = run_repair_ladder(
+            [unit],
+            target_lang="fr",
+            send=lambda s, u: reply,
+            convention="paren_roman",
+        )
+        # 重译稿开头的「3.」被改写成全篇惯例的「(III)」，正文一字不动
+        self.assertEqual(
+            result.accepted[unit.source_text],
+            "(III) Mesures de gestion du chantier.",
+        )
+
+    def test_ladder_without_convention_keeps_accepted_text(self):
+        unit = _Unit(
+            "（三）安全文明施工管理措施。",
+            "（三）安全文明施工管理 mesures du chantier.",
+        )
+        reply = '{"repaired": "3. Mesures de gestion du chantier."}'
+        result = run_repair_ladder(
+            [unit], target_lang="fr", send=lambda s, u: reply
+        )
+        # 不知道全篇惯例就不动——对齐是收口，不是猜测
+        self.assertEqual(
+            result.accepted[unit.source_text],
+            "3. Mesures de gestion du chantier.",
+        )
+
+    def test_alignment_rewrites_roman_to_arabic_dot(self):
+        aligned = align_enum_prefix_to_convention(
+            "（四）监测频率。",
+            "(IV) Frequence de surveillance.",
+            convention="arabic_dot",
+        )
+        self.assertEqual(aligned, "4. Frequence de surveillance.")
+
+    def test_alignment_skips_value_mismatch(self):
+        # 模型把编号从三改成了四：数值对不上，宁可保留也不硬改
+        self.assertIsNone(
+            align_enum_prefix_to_convention(
+                "（三）安全措施。",
+                "4. Mesures de securite.",
+                convention="paren_roman",
+            )
+        )
+
+    def test_alignment_skips_matching_family(self):
+        # 重译稿本来就是惯例写法：返回 None 表示无需改动
+        self.assertIsNone(
+            align_enum_prefix_to_convention(
+                "（三）安全措施。",
+                "3. Mesures de securite.",
+                convention="arabic_dot",
+            )
+        )
+
+    def test_alignment_requires_cn_paren_source(self):
+        # 源段是阿拉伯编号（5.5.3）：数字包含验收已锁住编号，这里不管
+        self.assertIsNone(
+            align_enum_prefix_to_convention(
+                "5.5.3 混凝土养护。",
+                "5.5.3 Cure du beton.",
+                convention="arabic_dot",
+            )
+        )
+
+
 class ConventionThreadingTest(unittest.TestCase):
     """文档级序号惯例必须贯通到子集调用，不许各投各的。"""
 
@@ -175,6 +256,35 @@ class ConventionThreadingTest(unittest.TestCase):
         )
         fixed = dict(hygiene.pairs)["（三）质量控制"]
         self.assertEqual(fixed, "(3) Contrôle de la qualité")
+
+    # TM 只拿到 API 未命中子集：子集里 Section N 占多数（2:1），
+    # 但全篇多数派是序数词写法——子集自投会把库改成与交付文件相反的写法
+    _ORDINAL_MINORITY_SUBSET = [
+        ("第四节 施工部署", "Quatrième section Déploiement"),
+        ("第六节 质量控制", "Section 6 Contrôle"),
+        ("第七节 安全措施", "Section 7 Sécurité"),
+    ]
+
+    def test_sanitize_tm_pairs_follows_doc_heading_majority(self):
+        hygiene = sanitize_tm_pairs(
+            self._ORDINAL_MINORITY_SUBSET,
+            target_lang="fr",
+            heading_majority="ordinal_word",
+        )
+        stored = dict(hygiene.pairs)
+        # 全篇多数派是序数词：归一到序数词需要词形知识，一律保持原样，
+        # 库里存的必须与交付文件完全一致
+        self.assertEqual(stored["第四节 施工部署"], "Quatrième section Déploiement")
+        self.assertEqual(stored["第六节 质量控制"], "Section 6 Contrôle")
+
+    def test_sanitize_tm_pairs_subset_self_vote_without_majority(self):
+        # 反向对照：不传全篇多数派时子集自投（2 条 Section N > 1 条序数词），
+        # 序数词那条会被改写——这正是要靠贯通参数堵住的分歧
+        hygiene = sanitize_tm_pairs(
+            self._ORDINAL_MINORITY_SUBSET, target_lang="fr"
+        )
+        stored = dict(hygiene.pairs)
+        self.assertEqual(stored["第四节 施工部署"], "Section 4 Déploiement")
 
 
 class TmWriteFinalTextTest(unittest.TestCase):
@@ -267,12 +377,63 @@ class CleaningPartialSuggestionTest(unittest.TestCase):
             "core.tm_cleaner.build_convention_suggestions",
             return_value=deterministic,
         ), patch(
+            "core.tm_cleaner.tm_manager.list_cleaning_suggestions",
+            return_value=[],
+        ), patch(
+            "core.tm_cleaner.tm_manager.persist_cleaning_suggestions",
+            return_value=1,
+        ) as persist, patch(
             "core.tm_cleaner._run_cleaning_threaded",
             side_effect=TmCleaningBatchError(1, 2, "provider unavailable"),
         ):
             with self.assertRaises(TmCleaningBatchError) as ctx:
                 run_cleaning("zh-fr", _Engine())
         self.assertEqual(ctx.exception.partial_suggestions, deterministic)
+        # 惯例建议必须在批次失败前就已写进建议表：失败话术说「已保存、
+        # 可在列表中查看」，靠的就是这次落库，不是重跑
+        persist.assert_called_once()
+        persisted = persist.call_args.args[0]
+        self.assertEqual(persisted[0]["entry_id"], 7)
+        self.assertEqual(persisted[0]["new_target"], "Section 3 Contrôle")
+
+    def test_rerun_skips_already_pending_suggestions(self):
+        from core.tm_cleaner import (
+            CleanSuggestion,
+            TmCleaningBatchError,
+            run_cleaning,
+        )
+
+        class _Engine:
+            engine_name = "fake-cloud"
+
+        deterministic = [
+            CleanSuggestion(
+                entry_id=7,
+                source_text="第三节 质量控制",
+                old_target="Troisième section Contrôle",
+                new_target="Section 3 Contrôle",
+            )
+        ]
+        with patch(
+            "core.tm_cleaner.tm_manager.get_all_entries_for_cleaning",
+            return_value=[{"id": 7, "source_text": "第三节 质量控制", "translation": "x"}],
+        ), patch(
+            "core.tm_cleaner.build_convention_suggestions",
+            return_value=deterministic,
+        ), patch(
+            "core.tm_cleaner.tm_manager.list_cleaning_suggestions",
+            return_value=[{"entry_id": 7, "new_target": "Section 3 Contrôle"}],
+        ), patch(
+            "core.tm_cleaner.tm_manager.persist_cleaning_suggestions",
+            return_value=0,
+        ) as persist, patch(
+            "core.tm_cleaner._run_cleaning_threaded",
+            side_effect=TmCleaningBatchError(1, 2, "provider unavailable"),
+        ):
+            with self.assertRaises(TmCleaningBatchError):
+                run_cleaning("zh-fr", _Engine())
+        # 同一条建议已在 pending 列表里：重跑不重复入库
+        persist.assert_not_called()
 
 
 if __name__ == "__main__":

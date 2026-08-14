@@ -1203,9 +1203,11 @@ class TaskRunner:
                                 f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
                                 "已回退为原文。这些单元格里保留的是原文，"
                                 + (
-                                    # 补译模式的输出文件没有标记列，只能按清单核对
+                                    # 补译模式没有标记列；「标记需复核内容」被
+                                    # 用户关掉时文件里同样没有标记，只能按清单核对
                                     "请按下方源文清单逐条核对。"
                                     if self._untranslated_only
+                                    or not self._settings.excel_review.mark_review_items
                                     else "已标记待复核，请在输出文件中核对带标记的位置。"
                                 )
                             ),
@@ -1265,6 +1267,10 @@ class TaskRunner:
             repair_method_counts: dict[str, int] = {}
             # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
             repair_reject_reasons: dict[str, tuple[str, ...]] = {}
+            # 超限/熔断要写进结果报告：只在日志里提会被滚走，用户就不知道
+            # 「这批单元根本没尝试修复，重跑还有救」
+            repair_over_cap_count = 0
+            repair_breaker_tripped = False
             if still_needs_review and engine_supports_chat(engine):
 
                 def _on_repair_progress(done: int, total: int) -> None:
@@ -1279,6 +1285,7 @@ class TaskRunner:
                     still_needs_review,
                     target_lang=target_lang,
                     send=engine.chat,
+                    convention=residual_result.convention,
                     max_units=_RESIDUAL_REPAIR_MAX_UNITS,
                     breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
                     should_stop=self._stop_event.is_set,
@@ -1304,6 +1311,8 @@ class TaskRunner:
                 global_translations.update(ladder.accepted)
                 repair_method_counts = ladder.method_counts
                 repair_reject_reasons = ladder.reject_reasons
+                repair_over_cap_count = ladder.over_cap_count
+                repair_breaker_tripped = ladder.breaker_tripped
                 still_needs_review = ladder.remaining
             repaired_total = sum(repair_method_counts.values())
             if repaired_total:
@@ -1338,10 +1347,26 @@ class TaskRunner:
                         "message": (
                             f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
                             + (
-                                # 补译模式的输出文件不带标记列，别许诺文件里有标记
+                                # 补译模式的输出文件不带标记列；双语模式下用户
+                                # 也可能关掉「标记需复核内容」——文件里真没标记
+                                # 时不许许诺有标记
                                 "请按下方源文清单逐条核对。"
                                 if self._untranslated_only
+                                or not self._settings.excel_review.mark_review_items
                                 else "已在输出文件中标记待复核位置。"
+                            )
+                            + (
+                                f"其中 {repair_over_cap_count} 条超出单次自动修复"
+                                f"上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），本次未尝试"
+                                "修复，重新运行任务可继续修复。"
+                                if repair_over_cap_count
+                                else ""
+                            )
+                            + (
+                                "自动修复通道因连续请求失败已熔断，部分单元未尝试"
+                                "修复，确认网络与引擎可用后重新运行任务可继续修复。"
+                                if repair_breaker_tripped
+                                else ""
                             )
                         ),
                         "failed_sources": [
@@ -1389,10 +1414,14 @@ class TaskRunner:
                 for source, target in global_translations.items()
                 if is_section_heading_source(source)
             ]
+            # 全篇多数派要贯通到 TM 入库口：TM 只拿到 API 未命中子集，
+            # 让它自己投票可能与全篇结论相反，把库改成与交付文件相左的写法
+            heading_majority: str | None = None
             if heading_observations:
                 heading_consistency = check_heading_consistency(
                     heading_observations, target_lang=target_lang
                 )
+                heading_majority = heading_consistency.majority_form
                 if heading_consistency.fixes:
                     global_translations.update(heading_consistency.fixes)
                     self._log(
@@ -1431,9 +1460,10 @@ class TaskRunner:
             # ── TM 写入（从 API 返回后挪到这里）：必须存「文件最终译文」——
             # 序号确定性修复、修复阶梯、标题归一都改完之后的版本。早写会把
             # 带残留的译文固化进库，下个文档命中 TM 直接短路，永远修不到。
-            if (
-                normal_api_translations or normal_api_language_results
-            ) and not self._stop_event.is_set():
+            # 停止信号不拦这一步：能走到这里说明 API 结果已经付费拿到，写入
+            # 是本地库操作，跳过只会让下次运行整批重新付费；仍带残留的配对
+            # 由 sanitize_tm_pairs 在入库口拦下，不会因停止而混入库里。
+            if normal_api_translations or normal_api_language_results:
                 written, tm_write_error = self.store_api_results_in_tm(
                     auto_source_lang=auto_source_lang,
                     normal_api_language_results=normal_api_language_results,
@@ -1445,6 +1475,7 @@ class TaskRunner:
                     engine_name=engine.engine_name,
                     final_translations=global_translations,
                     convention=residual_result.convention,
+                    heading_majority=heading_majority,
                 )
                 if tm_write_error:
                     self._log("WARN", tm_write_error)
@@ -1887,12 +1918,15 @@ class TaskRunner:
         engine_name: str,
         final_translations: dict | None = None,
         convention: str = "",
+        heading_majority: str | None = None,
     ) -> int:
         """Store this run's API results in TM and return the entry count.
 
         ``final_translations`` 是主流程改完（序号修复/修复阶梯/标题归一）
         之后的全局词典：入库必须以它为准，API 原始返回只是兜底。
-        ``convention`` 是全篇投出的序号惯例，卫生层子集不再自行投票。
+        ``convention`` 是全篇投出的序号惯例，``heading_majority`` 是全篇
+        投出的节标题写法多数派——卫生层子集都不再自行投票，避免与交付
+        文件相左。
         """
         finals = final_translations or {}
 
@@ -1911,6 +1945,7 @@ class TaskRunner:
                 ),
                 target_lang=target_lang,
                 convention=convention,
+                heading_majority=heading_majority,
             )
             self._log_tm_hygiene(hygiene)
             normalized_targets = dict(hygiene.pairs)
@@ -1949,7 +1984,10 @@ class TaskRunner:
             if should_store_translation_in_tm(k, _final_text(k, v))
         ]
         hygiene = sanitize_tm_pairs(
-            new_pairs, target_lang=target_lang, convention=convention
+            new_pairs,
+            target_lang=target_lang,
+            convention=convention,
+            heading_majority=heading_majority,
         )
         self._log_tm_hygiene(hygiene)
         return tm_manager.insert_batch(
