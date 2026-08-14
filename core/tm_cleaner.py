@@ -49,6 +49,9 @@ class TmCleaningBatchError(RuntimeError):
         self.failed_batches = max(1, int(failed_batches))
         self.total_batches = max(self.failed_batches, int(total_batches))
         self.first_error = str(first_error or "未知错误")
+        # 批次失败前已算好的 0 API 惯例归一建议由 run_cleaning 挂在这里，
+        # 调用方可以只丢模型建议、保住确定性建议，不必整批重来
+        self.partial_suggestions: list = []
         super().__init__(
             f"{self.failed_batches}/{self.total_batches} 个清洗批次失败；"
             f"首个错误：{self.first_error}"
@@ -412,26 +415,31 @@ def run_cleaning(
     # 判断引擎类型，选择对应的并发策略
     is_local = is_local_engine_name(engine.engine_name)
 
-    if is_local:
-        # 本地引擎：使用 asyncio 并发（与翻译流程一致）
-        model_suggestions = _run_cleaning_async(
-            batches,
-            engine,
-            progress_callback,
-            clean_system_prompt,
-            cancel_event=cancel_event,
-        )
-    else:
-        # 云端引擎：使用 ThreadPoolExecutor 并发（与翻译流程一致）
-        model_suggestions = _run_cleaning_threaded(
-            batches,
-            engine,
-            progress_callback,
-            concurrency=concurrency,
-            system_prompt=clean_system_prompt,
-            cancel_event=cancel_event,
-            api_scheduler=api_scheduler,
-        )
+    try:
+        if is_local:
+            # 本地引擎：使用 asyncio 并发（与翻译流程一致）
+            model_suggestions = _run_cleaning_async(
+                batches,
+                engine,
+                progress_callback,
+                clean_system_prompt,
+                cancel_event=cancel_event,
+            )
+        else:
+            # 云端引擎：使用 ThreadPoolExecutor 并发（与翻译流程一致）
+            model_suggestions = _run_cleaning_threaded(
+                batches,
+                engine,
+                progress_callback,
+                concurrency=concurrency,
+                system_prompt=clean_system_prompt,
+                cancel_event=cancel_event,
+                api_scheduler=api_scheduler,
+            )
+    except TmCleaningBatchError as batch_error:
+        # 模型批次失败不该连累 0 API 的确定性建议：挂在异常上带出去
+        batch_error.partial_suggestions = list(convention_suggestions)
+        raise
     return convention_suggestions + [
         s for s in model_suggestions if s.entry_id not in convention_covered
     ]

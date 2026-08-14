@@ -11,7 +11,7 @@ from core.engine_dispatcher import build_engine
 from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
 from core.model_throughput import get_model_throughput
 from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
-from core.tm_cleaner import run_cleaning
+from core.tm_cleaner import TmCleaningBatchError, run_cleaning
 from settings import AppSettings, provider_key_overrides
 
 
@@ -98,6 +98,16 @@ class TmCleaningTaskRunner:
                     language={"lang_pair": self._lang_pair},
                 )
             )
+        except TmCleaningBatchError as exc:
+            message = str(exc)
+            if exc.partial_suggestions:
+                # 0 API 的惯例归一建议在批次失败前就算好了——说清楚这批
+                # 建议还在，重跑不会重复花请求，用户不必担心白烧配额
+                message += (
+                    f"（另有 {len(exc.partial_suggestions)} 条 0 API 惯例归一建议"
+                    "已生成；此类建议不走模型请求，重跑清洗即可重新拿到）"
+                )
+            self._queue.put(ErrorMsg(message=message))
         except Exception as exc:  # noqa: BLE001 - report via managed task SSE.
             self._queue.put(ErrorMsg(message=str(exc) or exc.__class__.__name__))
 

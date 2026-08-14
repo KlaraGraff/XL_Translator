@@ -16,9 +16,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from collections import Counter
+
+from loguru import logger
 
 from core.residual_classifier import (
     CATEGORY_CN_DATE_UNIT,
@@ -240,3 +242,97 @@ def repair_unit(
     return RepairOutcome(
         accepted=False, text=target, reject_reasons=tuple(reasons)
     )
+
+
+# 修复阶梯批量护栏的默认值：单次任务最多修多少个单元（超出的直接待复核，
+# 调用方必须把 over_cap_count 说出去，不许静默截断）；传输层连续失败多少
+# 次后熔断（引擎已经不通，继续逐条硬撞只会拖长任务）。
+DEFAULT_REPAIR_MAX_UNITS = 120
+DEFAULT_REPAIR_BREAKER_THRESHOLD = 4
+
+
+@dataclass
+class RepairLadderResult:
+    """一批残留单元跑完修复阶梯的汇总。remaining 保持原有单元对象。"""
+
+    accepted: dict = field(default_factory=dict)  # source_text -> 验收通过的译文
+    method_counts: dict = field(default_factory=dict)  # method -> 条数
+    remaining: list = field(default_factory=list)  # 仍需人工复核的单元
+    reject_reasons: dict = field(default_factory=dict)  # source_text -> tuple[str]
+    over_cap_count: int = 0
+    breaker_tripped: bool = False
+
+
+def run_repair_ladder(
+    units,
+    *,
+    target_lang: str,
+    send,
+    max_units: int = DEFAULT_REPAIR_MAX_UNITS,
+    breaker_threshold: int = DEFAULT_REPAIR_BREAKER_THRESHOLD,
+    should_stop=None,
+    on_progress=None,
+) -> RepairLadderResult:
+    """
+    对一批残留单元（带 source_text / target_text 属性）跑修复阶梯，
+    Word / Excel 主流程共用这一个入口，护栏只维护一处：
+
+    - 上限：超过 max_units 的单元不发请求，直接进 remaining；
+    - 熔断：send 连续 breaker_threshold 次拿不到回复（抛异常或返回
+      None）就停止后续请求——引擎已经不通，逐条硬撞只会拖长任务；
+      协议外回复不算传输失败（那是模型的问题，不是通道的问题）；
+    - 停止：should_stop() 为真时剩余单元原样进 remaining；
+    - on_progress(done, total)：每个单元开跑前回调一次，供界面报进度。
+    """
+    result = RepairLadderResult()
+    queue = list(units)
+    over_cap: list = []
+    if max_units and len(queue) > max_units:
+        over_cap = queue[max_units:]
+        queue = queue[:max_units]
+        result.over_cap_count = len(over_cap)
+
+    consecutive_failures = 0
+
+    def guarded_send(system: str, user: str):
+        nonlocal consecutive_failures
+        try:
+            reply = send(system, user)
+        except Exception as send_exc:
+            logger.debug(f"残留修复请求失败：{send_exc!r}")
+            consecutive_failures += 1
+            return None
+        if reply is None:
+            consecutive_failures += 1
+        else:
+            consecutive_failures = 0
+        return reply
+
+    for index, unit in enumerate(queue, start=1):
+        if should_stop is not None and should_stop():
+            result.remaining.append(unit)
+            continue
+        if consecutive_failures >= breaker_threshold:
+            result.breaker_tripped = True
+            result.remaining.append(unit)
+            continue
+        if on_progress is not None:
+            on_progress(index, len(queue))
+        outcome = repair_unit(
+            unit.source_text,
+            unit.target_text,
+            target_lang=target_lang,
+            surgical_send=guarded_send,
+            retranslate_send=guarded_send,
+        )
+        if outcome.accepted and outcome.method:
+            result.accepted[unit.source_text] = outcome.text
+            result.method_counts[outcome.method] = (
+                result.method_counts.get(outcome.method, 0) + 1
+            )
+        else:
+            result.remaining.append(unit)
+            if outcome.reject_reasons:
+                result.reject_reasons[unit.source_text] = outcome.reject_reasons
+    result.remaining.extend(over_cap)
+    return result

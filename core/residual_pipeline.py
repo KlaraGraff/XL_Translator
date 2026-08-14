@@ -53,11 +53,14 @@ class ResidualPassResult:
         return not (self.auto_fixed or self.needs_review or self.released_notes)
 
 
-def run_residual_pass(pairs, *, target_lang: str) -> ResidualPassResult:
+def run_residual_pass(pairs, *, target_lang: str, convention: str = "") -> ResidualPassResult:
     """
     对（源文, 译文）配对做残留体检 + 确定性修复。
 
     pairs 为 (source_text, target_text) 可迭代对象——dict.items() 即可。
+    convention 允许调用方传入已投出的文档级序号惯例——TM 卫生这类只看
+    子集的调用必须沿用全篇的投票结果，各投各的会出现同一篇文档两套
+    序号写法；不传时按本批配对自行投票。
     跳过规则（都属于「不该由残留通道管」）：
       - 译文为空 / 与源文相同（未翻译，另有告警通道）；
       - 源文本身不含中文（残留中文无从谈起）；
@@ -82,7 +85,7 @@ def run_residual_pass(pairs, *, target_lang: str) -> ResidualPassResult:
     if not usable:
         return result
 
-    convention = detect_sibling_convention(usable)
+    convention = str(convention or "") or detect_sibling_convention(usable)
     result.convention = convention
 
     for source, target in usable:

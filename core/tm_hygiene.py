@@ -34,9 +34,12 @@ class TmHygieneResult:
     rejected: tuple[tuple[str, str], ...] = ()
 
 
-def sanitize_tm_pairs(pairs, *, target_lang: str) -> TmHygieneResult:
+def sanitize_tm_pairs(pairs, *, target_lang: str, convention: str = "") -> TmHygieneResult:
     """
     对将要写入 TM 的（源文, 译文）配对做写入前卫生处理。
+
+    convention：主流程投出的文档级序号惯例。TM 只收到全篇配对的一个
+    子集，让它自己投票可能与全篇结论相左——库里就会混入另一套写法。
 
     豁免目标语言（中→日等）原样放行：译文含汉字是正常现象，
     序号/标题写法惯例也不适用。
@@ -45,7 +48,9 @@ def sanitize_tm_pairs(pairs, *, target_lang: str) -> TmHygieneResult:
     if not materialized or target_lang in RESIDUAL_EXEMPT_TARGET_LANGS:
         return TmHygieneResult(pairs=tuple(materialized))
 
-    residual = run_residual_pass(materialized, target_lang=target_lang)
+    residual = run_residual_pass(
+        materialized, target_lang=target_lang, convention=convention
+    )
     rejected = {
         unit.source_text: "译文残留中文：" + "、".join(f"«{t}»" for t in unit.spans)
         for unit in residual.needs_review

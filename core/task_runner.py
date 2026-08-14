@@ -60,11 +60,17 @@ from core.engine_dispatcher import (
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from core.model_throughput import get_model_throughput
+from core.residual_classifier import (
+    check_heading_consistency,
+    is_section_heading_source,
+)
 from core.residual_pipeline import run_residual_pass
 from core.residual_repair import (
+    DEFAULT_REPAIR_BREAKER_THRESHOLD,
+    DEFAULT_REPAIR_MAX_UNITS,
     METHOD_FEEDBACK_RETRANSLATION,
     METHOD_SURGICAL,
-    repair_unit,
+    run_repair_ladder,
 )
 from core.tm_hygiene import sanitize_tm_pairs
 from engines.base_engine import engine_supports_chat
@@ -114,6 +120,10 @@ _RESIDUAL_REPAIR_METHOD_LABELS = {
     METHOD_SURGICAL: "外科修补",
     METHOD_FEEDBACK_RETRANSLATION: "带反馈重译",
 }
+
+# 残留修复阶梯的护栏值只在 core/residual_repair 维护一份（Word 共用）
+_RESIDUAL_REPAIR_MAX_UNITS = DEFAULT_REPAIR_MAX_UNITS
+_RESIDUAL_REPAIR_BREAKER_THRESHOLD = DEFAULT_REPAIR_BREAKER_THRESHOLD
 
 
 # ── 消息类型 ──────────────────────────────────────────────────────────────────
@@ -1191,8 +1201,13 @@ class TaskRunner:
                             "count": batch_stats.quality_reset_count,
                             "message": (
                                 f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
-                                "已回退为原文并标记待复核。这些单元格里保留的是原文，"
-                                "请在输出文件中核对带标记的位置。"
+                                "已回退为原文。这些单元格里保留的是原文，"
+                                + (
+                                    # 补译模式的输出文件没有标记列，只能按清单核对
+                                    "请按下方源文清单逐条核对。"
+                                    if self._untranslated_only
+                                    else "已标记待复核，请在输出文件中核对带标记的位置。"
+                                )
                             ),
                             "failed_sources": [
                                 {"source": source, "error": "译文未通过质量校验，已回退为原文"}
@@ -1206,30 +1221,8 @@ class TaskRunner:
                     )
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
-
-                # 将 API 结果写入 TM
-                written, tm_write_error = self.store_api_results_in_tm(
-                    auto_source_lang=auto_source_lang,
-                    normal_api_language_results=normal_api_language_results,
-                    normal_api_translations=normal_api_translations,
-                    text_source_scopes=text_source_scopes,
-                    target_lang=target_lang,
-                    lang_pair=lang_pair,
-                    max_len=max_len,
-                    engine_name=engine.engine_name,
-                )
-                if tm_write_error:
-                    self._log("WARN", tm_write_error)
-                    self._task_logger.warning(tm_write_error)
-                    quality_issues.append(
-                        {
-                            "type": "tm_write_failed",
-                            "severity": "info",
-                            "message": tm_write_error,
-                        }
-                    )
-                if written:
-                    self._log("INFO", f"新增 TM 词条：{written} 条")
+                # TM 写入挪到了残留修复阶梯之后：这里写会把「修复前」的
+                # 带残留译文存进库，下个文档 TM 命中直接短路，残留就固化了。
 
             # 汇聚全局翻译词典：TM 命中覆盖 API 结果（TM 优先）
             global_translations = {**api_translations, **hits}
@@ -1266,38 +1259,52 @@ class TaskRunner:
                         ),
                     }
                 )
-            # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）
+            # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）。
+            # 上限/熔断/进度护栏在 run_repair_ladder 里，与 Word 主流程共用。
             still_needs_review = list(residual_result.needs_review)
             repair_method_counts: dict[str, int] = {}
+            # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
+            repair_reject_reasons: dict[str, tuple[str, ...]] = {}
             if still_needs_review and engine_supports_chat(engine):
 
-                def _repair_send(system: str, user: str) -> str | None:
-                    try:
-                        return engine.chat(system, user)
-                    except Exception as repair_exc:
-                        logger.debug(f"残留修复请求失败：{repair_exc!r}")
-                        return None
-
-                remaining_units = []
-                for unit in still_needs_review:
-                    if self._stop_event.is_set():
-                        remaining_units.append(unit)
-                        continue
-                    outcome = repair_unit(
-                        unit.source_text,
-                        unit.target_text,
-                        target_lang=target_lang,
-                        surgical_send=_repair_send,
-                        retranslate_send=_repair_send,
-                    )
-                    if outcome.accepted and outcome.method:
-                        global_translations[unit.source_text] = outcome.text
-                        repair_method_counts[outcome.method] = (
-                            repair_method_counts.get(outcome.method, 0) + 1
+                def _on_repair_progress(done: int, total: int) -> None:
+                    self._queue.put(StatusMsg(
+                        phase_desc=(
+                            f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
+                            f"（{done}/{total}）..."
                         )
-                    else:
-                        remaining_units.append(unit)
-                still_needs_review = remaining_units
+                    ))
+
+                ladder = run_repair_ladder(
+                    still_needs_review,
+                    target_lang=target_lang,
+                    send=engine.chat,
+                    max_units=_RESIDUAL_REPAIR_MAX_UNITS,
+                    breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
+                    should_stop=self._stop_event.is_set,
+                    on_progress=_on_repair_progress,
+                )
+                if ladder.over_cap_count:
+                    self._log(
+                        "WARN",
+                        (
+                            f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
+                            f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
+                            f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
+                        ),
+                    )
+                if ladder.breaker_tripped:
+                    self._log(
+                        "WARN",
+                        (
+                            f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
+                            "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
+                        ),
+                    )
+                global_translations.update(ladder.accepted)
+                repair_method_counts = ladder.method_counts
+                repair_reject_reasons = ladder.reject_reasons
+                still_needs_review = ladder.remaining
             repaired_total = sum(repair_method_counts.values())
             if repaired_total:
                 method_desc = "、".join(
@@ -1330,7 +1337,12 @@ class TaskRunner:
                         "count": len(still_needs_review),
                         "message": (
                             f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
-                            "已在输出文件中标记待复核位置。"
+                            + (
+                                # 补译模式的输出文件不带标记列，别许诺文件里有标记
+                                "请按下方源文清单逐条核对。"
+                                if self._untranslated_only
+                                else "已在输出文件中标记待复核位置。"
+                            )
                         ),
                         "failed_sources": [
                             {
@@ -1338,6 +1350,14 @@ class TaskRunner:
                                 "error": (
                                     "译文残留中文："
                                     + "、".join(f"«{span}»" for span in unit.spans)
+                                    + (
+                                        "；修复尝试被拒："
+                                        + "；".join(
+                                            repair_reject_reasons[unit.source_text]
+                                        )
+                                        if unit.source_text in repair_reject_reasons
+                                        else ""
+                                    )
                                 ),
                             }
                             for unit in still_needs_review
@@ -1346,7 +1366,7 @@ class TaskRunner:
                 )
                 self._log(
                     "WARN",
-                    f"检出 {len(still_needs_review)} 条译文残留中文，已标记待复核。",
+                    f"检出 {len(still_needs_review)} 条译文残留中文，已列入待复核。",
                 )
             if residual_result.released_notes:
                 # 万/亿等数量单位残留：不拦发布，但报告里留痕
@@ -1361,6 +1381,83 @@ class TaskRunner:
                         ),
                     }
                 )
+
+            # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
+            # 只有聚在一起才看得出来。多数派可确定性改写时直接改词典。
+            heading_observations = [
+                (source, target, source)
+                for source, target in global_translations.items()
+                if is_section_heading_source(source)
+            ]
+            if heading_observations:
+                heading_consistency = check_heading_consistency(
+                    heading_observations, target_lang=target_lang
+                )
+                if heading_consistency.fixes:
+                    global_translations.update(heading_consistency.fixes)
+                    self._log(
+                        "OK",
+                        (
+                            f"节标题写法归一 {len(heading_consistency.fixes)} 条"
+                            "（全篇多数派为准）。"
+                        ),
+                    )
+                    quality_issues.append(
+                        {
+                            "type": "heading_style_normalized",
+                            "severity": "info",
+                            "count": len(heading_consistency.fixes),
+                            "message": (
+                                f"有 {len(heading_consistency.fixes)} 条节标题译文的写法"
+                                "与全篇多数派不一致，已自动归一，无需人工处理。"
+                            ),
+                        }
+                    )
+                elif heading_consistency.outliers:
+                    # 多数派是序数词写法时不做词形猜测，只报告不改
+                    quality_issues.append(
+                        {
+                            "type": "heading_style_outliers",
+                            "severity": "info",
+                            "count": len(heading_consistency.outliers),
+                            "message": (
+                                f"有 {len(heading_consistency.outliers)} 条节标题译文"
+                                "与全篇多数写法不一致，因归一需要词形变化知识，"
+                                "未自动改写，如需统一可人工调整。"
+                            ),
+                        }
+                    )
+
+            # ── TM 写入（从 API 返回后挪到这里）：必须存「文件最终译文」——
+            # 序号确定性修复、修复阶梯、标题归一都改完之后的版本。早写会把
+            # 带残留的译文固化进库，下个文档命中 TM 直接短路，永远修不到。
+            if (
+                normal_api_translations or normal_api_language_results
+            ) and not self._stop_event.is_set():
+                written, tm_write_error = self.store_api_results_in_tm(
+                    auto_source_lang=auto_source_lang,
+                    normal_api_language_results=normal_api_language_results,
+                    normal_api_translations=normal_api_translations,
+                    text_source_scopes=text_source_scopes,
+                    target_lang=target_lang,
+                    lang_pair=lang_pair,
+                    max_len=max_len,
+                    engine_name=engine.engine_name,
+                    final_translations=global_translations,
+                    convention=residual_result.convention,
+                )
+                if tm_write_error:
+                    self._log("WARN", tm_write_error)
+                    self._task_logger.warning(tm_write_error)
+                    quality_issues.append(
+                        {
+                            "type": "tm_write_failed",
+                            "severity": "info",
+                            "message": tm_write_error,
+                        }
+                    )
+                if written:
+                    self._log("INFO", f"新增 TM 词条：{written} 条")
 
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
@@ -1788,25 +1885,41 @@ class TaskRunner:
         lang_pair,
         max_len: int,
         engine_name: str,
+        final_translations: dict | None = None,
+        convention: str = "",
     ) -> int:
-        """Store this run's API results in TM and return the entry count."""
+        """Store this run's API results in TM and return the entry count.
+
+        ``final_translations`` 是主流程改完（序号修复/修复阶梯/标题归一）
+        之后的全局词典：入库必须以它为准，API 原始返回只是兜底。
+        ``convention`` 是全篇投出的序号惯例，卫生层子集不再自行投票。
+        """
+        finals = final_translations or {}
+
+        def _final_text(source_text: str, fallback: str) -> str:
+            value = finals.get(source_text)
+            return value if isinstance(value, str) and value.strip() else fallback
+
         if auto_source_lang:
             # The model-reported item source language is the final gate.
             # ``mixed``/``und``/``auto`` and anything outside that file's
             # preflight scope are rejected by TM manager.
             hygiene = sanitize_tm_pairs(
                 (
-                    (source_text, item.translation)
+                    (source_text, _final_text(source_text, item.translation))
                     for source_text, item in normal_api_language_results.items()
                 ),
                 target_lang=target_lang,
+                convention=convention,
             )
             self._log_tm_hygiene(hygiene)
             normalized_targets = dict(hygiene.pairs)
             rejected_sources = {source for source, _reason in hygiene.rejected}
             tm_entries = []
             for source_text, item in normal_api_language_results.items():
-                translation = normalized_targets.get(source_text, item.translation)
+                translation = normalized_targets.get(
+                    source_text, _final_text(source_text, item.translation)
+                )
                 source_scopes = text_source_scopes.get(source_text, [])
                 source_in_every_file_scope = bool(source_scopes) and all(
                     item.source_lang in scope for scope in source_scopes
@@ -1831,11 +1944,13 @@ class TaskRunner:
             )
 
         new_pairs = [
-            (k, v)
+            (k, _final_text(k, v))
             for k, v in normal_api_translations.items()
-            if should_store_translation_in_tm(k, v)
+            if should_store_translation_in_tm(k, _final_text(k, v))
         ]
-        hygiene = sanitize_tm_pairs(new_pairs, target_lang=target_lang)
+        hygiene = sanitize_tm_pairs(
+            new_pairs, target_lang=target_lang, convention=convention
+        )
         self._log_tm_hygiene(hygiene)
         return tm_manager.insert_batch(
             list(hygiene.pairs),
