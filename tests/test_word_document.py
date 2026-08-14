@@ -1485,7 +1485,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("一、工程概况 / （一）材料要求", content)
             self.assertIn("正文段落 8", content)
             self.assertIn(issue["snippet"], content)
-            self.assertIn("问题片段：承包0商", content)
+            self.assertIn("规则校验对不上的原文片段：承包0商", content)
 
     def test_quality_report_states_headers_and_footers_are_not_translated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

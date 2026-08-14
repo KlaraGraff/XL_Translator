@@ -130,6 +130,14 @@ _WORD_RECOVERY_NORMAL_SOFT_RATIO = 0.8
 _SEMANTIC_MIN_LENGTH_RATIO = 0.18
 _SEMANTIC_RESIDUAL_CJK_RATIO_BLOCK = 0.12
 _SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK = 12
+# Word 输出文档里的底色只留给真正需要人手处理的两类：译文没出来（残留原文、残留中文）
+# 和原文本身可疑。程序自己已经判过并放行的——严格重试恢复、语义仲裁认定等义——一律
+# 不上底色，只在质量报告里留记录。满篇底色等于没有底色：用户会挨个点开发现全是"已处理"，
+# 下一次就整片跳过，真正的问题跟着一起被跳过。
+# 这张表只在一件事上用得着：同一条原文被判进两类时留哪一类（见 _set_review_mark）。
+# MIXED_MARK_SEMANTIC 这一行现在已经取不到——本模块不再写入这个标记，留着只是为了
+# 让这张表仍然覆盖三种标记的全集，不表示还有哪条路会用它。识别旧文档身上已有的底色
+# 是另一回事，那在 core/word_document.py 的 _review_mark_highlight_values 里。
 _WORD_REVIEW_MARK_PRIORITY = {
     MIXED_MARK_SEMANTIC: 1,
     MIXED_MARK_UNRESOLVED: 2,
@@ -1175,12 +1183,12 @@ class WordTaskRunner:
                 api_translations.update(recovery_outcome.accepted_translations)
                 for source in recovery_outcome.unresolved_sources:
                     api_translations[source] = source
+                # 这两类都通过了复核：恢复规则认可、或语义仲裁判定与原文等义。文档里
+                # 不再上底色——底色只留给真正要人工看的东西，见 _WORD_REVIEW_MARK_PRIORITY
+                # 上方的说明。
+                # 但它们仍然不写记忆库：接受的是"这一段可以用"，不是"这条译文可以复用"。
                 recovery_review_sources.update(recovery_outcome.recovery_review_results)
                 recovery_review_sources.update(recovery_outcome.semantic_review_results)
-                for source in recovery_outcome.recovery_review_results:
-                    _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
-                for source in recovery_outcome.semantic_review_results:
-                    _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
                 standard_fixed_sources = [
                     source
                     for source in recovery_outcome.fixed_sources
@@ -2978,7 +2986,11 @@ def _append_residual_cjk_issues(
     file_name: str,
     residual_units: list,
 ) -> None:
-    """译文整体已翻好、只夹带零星中文（日期、编号）时，单独给一条更轻的提示。"""
+    """译文整体已翻好、只夹带零星中文时，单独给一条更轻的提示。
+
+    实稿里这些残留常常是章节序号（一、二、三）或单个汉字，不是日期编号——别替用户
+    先入为主地断定是哪一种，提示里照实列出残留了什么就够了。
+    """
     for unit in residual_units[:_POST_WRITE_COVERAGE_ISSUE_LIMIT]:
         fragments = [str(item) for item in unit.data.get("residual_cjk") or []]
         if not fragments:
@@ -2994,7 +3006,10 @@ def _append_residual_cjk_issues(
                 str(unit.data.get("residual_text") or unit.target_text)
             ),
             "problem": "译文中残留少量中文",
-            "status": f"该位置译文已完成，仅残留：{'、'.join(fragments)}，多为日期或编号，请确认是否需要改写。",
+            # 只报实际残留了什么。早先这里固定跟一句"多为日期或编号"，可残留的常常
+            # 是章节序号（一、二、三）或单个汉字，那句话等于替用户断言了一个没查过的
+            # 原因，会把人往错的方向引。
+            "status": f"该位置译文已完成，仅残留：{'、'.join(fragments)}，请确认是否需要改写。",
             "severity": "needs_review",
         }
         key = (
@@ -3054,8 +3069,8 @@ def _apply_mixed_language_word_results(
             if result.translation.strip():
                 translations[source] = result.translation.strip()
             if result.accepted_by == "semantic":
+                # 语义仲裁放行的不上底色，只在报告里留一条记录。
                 semantic_translate.append(source)
-                _set_review_mark(review_marks, source, MIXED_MARK_SEMANTIC)
             continue
         uncertain.append(source)
         translations[source] = source
@@ -3076,8 +3091,13 @@ def _apply_mixed_language_word_results(
             segment_locations,
             foreign_noise,
             problem="原文疑似夹杂错误外文",
-            status="已输出译文，原文疑似存在错误外文，未写入翻译记忆库。",
-            severity="resolved",
+            status=(
+                "已输出译文，但原文里混着疑似写错的外文，未写入翻译记忆库；"
+                "请对照原件确认这段原文本身是否需要更正。"
+            ),
+            # 程序能做的只是把这段照常翻出来，它没法判断原文里那串外文是不是写错了——
+            # 那要对着原件看。这是"原文可能有问题"，不是"程序已经处理好了"。
+            severity="needs_review",
         )
     if uncertain:
         _add_quality_issues(
@@ -3250,7 +3270,12 @@ def _write_word_quality_report(
                 )
                 fragments = issue.get("review_fragments") or []
                 if fragments:
-                    lines.append(f"- 问题片段：{'、'.join(str(item) for item in fragments)}")
+                    # 这些片段取自**原文**，是规则校验拿去比对、没在译文里按字面对上的部分。
+                    # 早先叫「问题片段」，列出来的又都是中文日期编号，读起来像"译文里的
+                    # 日期错了"，而实际情况往往是译文把日期正常译成了外文写法。
+                    lines.append(
+                        f"- 规则校验对不上的原文片段：{'、'.join(str(item) for item in fragments)}"
+                    )
                 lines.append("")
 
         report_path.write_text("\n".join(lines), encoding="utf-8")

@@ -280,8 +280,9 @@ def apply_coverage_review_marks(
 
     marked = 0
     for unit, mark, index_key in (
-        # 未译源文 → unresolved 色；译文里只残留零星中文（日期、编号）是更轻的问题，
-        # 换 foreign_noise 色，用户一眼分得清"整段没翻"和"翻好了但留了个日期"。
+        # 未译源文 → unresolved 色；译文里只残留零星中文（章节序号、单个汉字、日期片段
+        # 都见过）是更轻的问题，换 foreign_noise 色，用户一眼分得清"整段没翻"和
+        # "翻好了但留了几个字"。
         *((unit, MIXED_MARK_UNRESOLVED, None) for unit in source_units),
         *((unit, MIXED_MARK_FOREIGN_NOISE, "residual_index") for unit in residual_units),
     ):

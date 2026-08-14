@@ -28,6 +28,7 @@ from api.task_manager import TaskOptions, TranslationTaskManager
 from core import word_converter
 from core.api_config_check import ApiConfigCheckResult
 from core.language_preflight import TranslationLanguageResult
+from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.model_api_identity import TaskApiContext
 from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, WordRecoveryStatusMsg
@@ -941,6 +942,115 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
             self.assertEqual(inserted, [("zh-en", [(strict, translations[strict])])])
             self.assertEqual(done.recovery["recovered_count"], 1)
             self.assertEqual(done.recovery["semantic_accepted_count"], 1)
+            self.assertEqual(done.recovery["unresolved_count"], 1)
+
+    def test_only_the_paragraph_that_kept_its_source_text_gets_a_review_mark(self) -> None:
+        """严格重试恢复和语义仲裁接受都不上底色——它们已经有可用的译文了。
+
+        底色是给人看的待办：翻到那一页要动手。恢复成功和仲裁判定等义这两类没有待办，
+        它们只在质量报告里留一条记录。真正保留了原文的那一段才上底色。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            Document().save(source)
+            strict = "严格重试恢复的段落已经有译文，不需要任何人再看一眼。"
+            semantic = "语义仲裁判定与原文等义的段落同样不需要任何人再看一眼。"
+            unresolved = "重试到底也没出译文、只能保留原文的段落必须上底色。"
+            translations = {
+                strict: "A strict-retry recovery needs nobody to look at it.",
+                semantic: "A semantically accepted paragraph needs nobody either.",
+                unresolved: "An unresolved paragraph must remain source text.",
+            }
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+
+            class _RecoveryPool:
+                def add_candidate(self, *_args, **_kwargs) -> None:
+                    return None
+
+                def start(self) -> None:
+                    return None
+
+                def wait_for_completion(self):
+                    return SimpleNamespace(
+                        fixed_sources=[strict],
+                        unresolved_sources=[unresolved],
+                        accepted_translations={strict: translations[strict]},
+                        # 恢复规则接受和语义仲裁接受，两条都不该留下底色。
+                        recovery_review_results={
+                            strict: SimpleNamespace(review_fragments=())
+                        },
+                        semantic_review_results={
+                            semantic: SimpleNamespace(review_fragments=())
+                        },
+                        unresolved_validation_results={
+                            unresolved: SimpleNamespace(review_fragments=())
+                        },
+                        semantic_check_count=1,
+                    )
+
+            def translate_with_all_results(texts, *_args, **kwargs):
+                kwargs["drained_callback"]()
+                return {text: translations[text] for text in texts}
+
+            with ExitStack() as stack:
+                writer = self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: prepared},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[
+                            WordSegment(strict, "paragraph", "正文第 1 段"),
+                            WordSegment(semantic, "paragraph", "正文第 2 段"),
+                            WordSegment(unresolved, "paragraph", "正文第 3 段"),
+                        ],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={text: None for text in translations},
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=translate_with_all_results,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=_RecoveryPool(),
+                    )
+                )
+                runner._run()
+
+            writer.assert_called_once()
+            self.assertEqual(
+                writer.call_args.kwargs["review_marks"],
+                {unresolved: MIXED_MARK_UNRESOLVED},
+            )
+            done = self._terminal_message(runner, DoneMsg)
             self.assertEqual(done.recovery["unresolved_count"], 1)
 
 
