@@ -122,7 +122,8 @@ _FR_ORDINAL_VALUE = {
     "onzième": 11, "douzième": 12, "treizième": 13, "quatorzième": 14,
     "quinzième": 15, "seizième": 16, "dix-septième": 17, "dix-huitième": 18,
     "dix-neuvième": 19, "vingtième": 20,
-    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    # "second" 与法语拼写相同，法语块里已收录
+    "first": 1, "third": 3, "fourth": 4, "fifth": 5,
     "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
 }
 
