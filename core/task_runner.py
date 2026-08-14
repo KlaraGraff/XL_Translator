@@ -44,7 +44,6 @@ from core.mixed_language import (
     MIXED_ACTION_TRANSLATE,
     MIXED_ACTION_UNCERTAIN,
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
     MixedLanguageRunStats,
     split_mixed_language_sources,
@@ -95,8 +94,10 @@ def user_facing_reason(value: object, *, fallback: str) -> str:
 
 AUTOFIT_STALL_TIMEOUT_SECONDS = 180
 AUTOFIT_MONITOR_POLL_SECONDS = 0.5
+# 单元格底色和 Word 段落底色是同一条规矩：只留给真正要人动手的两类——译文没出来
+# （保留了原文）和原文本身可疑。同一条原文被判进两类时按这里的大小取重的那个。
+# 「语义校验接受」在 9.3.1 整类删除，见 MixedLanguageResult.mark_kind。
 _EXCEL_REVIEW_MARK_PRIORITY = {
-    MIXED_MARK_SEMANTIC: 10,
     MIXED_MARK_UNRESOLVED: 20,
     MIXED_MARK_FOREIGN_NOISE: 30,
 }

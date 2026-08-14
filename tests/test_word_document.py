@@ -12,7 +12,6 @@ from docx.shared import Pt
 
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
 )
 from core.translation_filter import (
@@ -552,7 +551,6 @@ class WordDocumentTests(unittest.TestCase):
             output_dir = temp_path / "out"
 
             doc = Document()
-            doc.add_paragraph("语义接受")
             doc.add_paragraph("保留原文")
             doc.add_paragraph("疑似异常")
             doc.save(str(source_path))
@@ -564,29 +562,23 @@ class WordDocumentTests(unittest.TestCase):
                 target_lang="en",
                 source_lang="zh",
                 review_marks={
-                    "语义接受": MIXED_MARK_SEMANTIC,
                     "保留原文": MIXED_MARK_UNRESOLVED,
                     "疑似异常": MIXED_MARK_FOREIGN_NOISE,
                 },
                 review_mark_colors={
-                    MIXED_MARK_SEMANTIC: "DDEBFF",
                     MIXED_MARK_UNRESOLVED: "D9EAD3",
-                    MIXED_MARK_FOREIGN_NOISE: "FCE4D6",
+                    MIXED_MARK_FOREIGN_NOISE: "DDEBFF",
                 },
             )
 
             out_doc = Document(str(out_path))
             self.assertEqual(
                 self._paragraph_first_run_highlight(out_doc.paragraphs[0]),
-                "cyan",
-            )
-            self.assertEqual(
-                self._paragraph_first_run_highlight(out_doc.paragraphs[1]),
                 "green",
             )
             self.assertEqual(
-                self._paragraph_first_run_highlight(out_doc.paragraphs[2]),
-                "yellow",
+                self._paragraph_first_run_highlight(out_doc.paragraphs[1]),
+                "cyan",
             )
 
     def test_word_review_highlight_preserves_existing_shading(self) -> None:

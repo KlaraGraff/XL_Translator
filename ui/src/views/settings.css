@@ -45,7 +45,7 @@
   padding: 8px 10px;
 }
 
-/* 复核三色选择器：把原生 color input 重置成 .swatch 同款瓷片。 */
+/* 复核标记颜色选择器：把原生 color input 重置成 .swatch 同款瓷片。 */
 .set-body input.swatch-input {
   -webkit-appearance: none;
   appearance: none;

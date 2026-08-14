@@ -4,7 +4,6 @@ import unittest
 
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
 )
 from settings import AppSettings, WordBatchSettings
@@ -16,14 +15,14 @@ class WordDefaultSettingsTests(unittest.TestCase):
 
         self.assertTrue(settings.word_review.highlight_unresolved)
         self.assertEqual(settings.word_review.existing_highlight_policy, "red_underline")
-        self.assertEqual(
-            settings.word_review.mark_colors,
-            {
-                MIXED_MARK_SEMANTIC: "FFF2CC",
-                MIXED_MARK_UNRESOLVED: "FCE4D6",
-                MIXED_MARK_FOREIGN_NOISE: "F4CCCC",
-            },
-        )
+        # 只有两种复核底色，Word 和 Excel 用同一套。曾经的第三种「语义校验接受」
+        # 已整类删除：那是程序自己判过没问题的记录，不该占用文档上的底色。
+        two_colors = {
+            MIXED_MARK_UNRESOLVED: "FCE4D6",
+            MIXED_MARK_FOREIGN_NOISE: "F4CCCC",
+        }
+        self.assertEqual(settings.word_review.mark_colors, two_colors)
+        self.assertEqual(settings.excel_review.mark_colors, two_colors)
         self.assertTrue(settings.excel_review.mark_review_items)
         self.assertEqual(settings.excel_review.existing_fill_policy, "red_font")
         self.assertEqual(settings.word_batch.max_paragraphs_per_batch, 8)
@@ -40,6 +39,37 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertEqual(settings.max_chars_per_batch, 3000)
         self.assertEqual(settings.split_paragraph_chars, 3000)
         self.assertEqual(settings.strict_retry_attempts, 3)
+
+    def test_a_config_written_by_930_still_loads_after_semantic_was_removed(self) -> None:
+        """9.3.0 存下的配置里有第三种颜色，读到它不能报错，也不能把它带回来。
+
+        用户不会为了升级去手改配置文件，删一类标记不该让整份设置读不进来。
+        """
+        settings = AppSettings(
+            word_review={
+                "mark_colors": {
+                    "semantic": "FFF2CC",
+                    "unresolved": "AABBCC",
+                    "foreign_noise": "F4CCCC",
+                }
+            },
+            excel_review={
+                "mark_colors": {
+                    "semantic": "FFF2CC",
+                    "unresolved": "AABBCC",
+                    "foreign_noise": "F4CCCC",
+                }
+            },
+        )
+
+        for colors in (
+            settings.word_review.mark_colors,
+            settings.excel_review.mark_colors,
+        ):
+            self.assertNotIn("semantic", colors)
+            # 用户自己调过的那两个颜色要原样留住，不能被"顺手重置"掉。
+            self.assertEqual(colors[MIXED_MARK_UNRESOLVED], "AABBCC")
+            self.assertEqual(colors[MIXED_MARK_FOREIGN_NOISE], "F4CCCC")
 
     def test_language_aliases_are_normalized_without_falling_back_to_chinese(self) -> None:
         settings = AppSettings(source_lang="汉语", target_lang="法语")

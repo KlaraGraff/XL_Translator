@@ -12,7 +12,6 @@ from core.mixed_language import (
     MIXED_COLOR_FOREIGN_NOISE,
     MIXED_COLOR_UNRESOLVED,
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
 )
 
@@ -51,8 +50,8 @@ class BilingualWriterTests(unittest.TestCase):
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
                 enable_print_guard=False,
-                review_marks={"项目": MIXED_MARK_SEMANTIC},
-                review_mark_colors={MIXED_MARK_SEMANTIC: "DDEBFF"},
+                review_marks={"项目": MIXED_MARK_UNRESOLVED},
+                review_mark_colors={MIXED_MARK_UNRESOLVED: "DDEBFF"},
             )
 
             wb = load_workbook(out_path)

@@ -13,7 +13,7 @@ from core.translation_coverage import (
     COVERAGE_IGNORED,
     COVERAGE_SOURCE_ONLY,
 )
-from core.mixed_language import MIXED_MARK_SEMANTIC
+from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.word_coverage import (
     apply_coverage_review_marks,
     build_word_coverage_plan,
@@ -393,8 +393,8 @@ class ReviewMarkTests(unittest.TestCase):
                 target_lang="fr",
                 source_lang="zh",
                 review_marks={
-                    "一、工程概况": MIXED_MARK_SEMANTIC,
-                    "砂浆名称": MIXED_MARK_SEMANTIC,
+                    "一、工程概况": MIXED_MARK_UNRESOLVED,
+                    "砂浆名称": MIXED_MARK_UNRESOLVED,
                 },
             )
 
@@ -469,7 +469,7 @@ class ReviewMarkTests(unittest.TestCase):
                 translations={"四、应急预案": "4. 应急预案 2026年"},
                 target_lang="fr",
                 source_lang="zh",
-                review_marks={"四、应急预案": MIXED_MARK_SEMANTIC},
+                review_marks={"四、应急预案": MIXED_MARK_UNRESOLVED},
                 existing_highlight_policy="red_underline",
             )
 

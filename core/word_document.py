@@ -26,7 +26,6 @@ from core.bilingual_writer import build_output_dir
 from core.language_registry import get_target_lang_display
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
 )
 from core.translation_filter import should_translate
@@ -1211,7 +1210,6 @@ def _normalize_review_mark(mark: str) -> str:
     if value in {
         MIXED_MARK_UNRESOLVED,
         MIXED_MARK_FOREIGN_NOISE,
-        MIXED_MARK_SEMANTIC,
     }:
         return value
     return _normalize_hex_fill(value)
@@ -1269,12 +1267,18 @@ def _review_mark_highlight_values(mark_colors: dict[str, str] | None) -> set[str
     用来区分"文档原本就有的底色"和"这一趟我们刚涂上去的复核标记"：
     写文档时已经标过的位置，写完体检那一趟不能再按"已有底色"的策略叠一层
     红色下划线——那不是用户的底色，是我们自己的。
+
+    这个集合必须与"我们真的会涂哪几种色"严格一致，多一种都不行：多出来的那一种
+    等于宣布"凡是这个颜色的段落都是我们涂的"，于是用户自己在原文里涂成这个颜色的
+    段落，即使整段没翻，体检也会直接跳过。9.3.0 里的 semantic 就是这样一个多出来
+    的颜色（已经不涂了却还在表里），只是默认色下它和 unresolved 都映射成 yellow，
+    集合没变大，要用户自己把它调成别的映射色才够得着——所以当时是个陷阱而不是
+    现行故障。删掉它是把陷阱一起拆了。
     """
     colors = _normalize_review_mark_colors(mark_colors)
     return {
         _review_mark_highlight(mark, colors)
         for mark in (
-            MIXED_MARK_SEMANTIC,
             MIXED_MARK_UNRESOLVED,
             MIXED_MARK_FOREIGN_NOISE,
         )

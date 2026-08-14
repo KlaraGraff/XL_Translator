@@ -61,7 +61,6 @@ from core.mixed_language import (
     MIXED_ACTION_TRANSLATE,
     MIXED_ACTION_UNCERTAIN,
     MIXED_MARK_FOREIGN_NOISE,
-    MIXED_MARK_SEMANTIC,
     MIXED_MARK_UNRESOLVED,
     MixedLanguageResult,
     MixedLanguageRunStats,
@@ -135,13 +134,11 @@ _SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK = 12
 # 不上底色，只在质量报告里留记录。满篇底色等于没有底色：用户会挨个点开发现全是"已处理"，
 # 下一次就整片跳过，真正的问题跟着一起被跳过。
 # 这张表只在一件事上用得着：同一条原文被判进两类时留哪一类（见 _set_review_mark）。
-# MIXED_MARK_SEMANTIC 这一行现在已经取不到——本模块不再写入这个标记，留着只是为了
-# 让这张表仍然覆盖三种标记的全集，不表示还有哪条路会用它。识别旧文档身上已有的底色
-# 是另一回事，那在 core/word_document.py 的 _review_mark_highlight_values 里。
+# 全集就是这两个——「语义校验接受」那一类在 9.3.1 整类删除了，它是"已经没事了"的
+# 记录，不该占用文档上的底色。
 _WORD_REVIEW_MARK_PRIORITY = {
-    MIXED_MARK_SEMANTIC: 1,
-    MIXED_MARK_UNRESOLVED: 2,
-    MIXED_MARK_FOREIGN_NOISE: 3,
+    MIXED_MARK_UNRESOLVED: 1,
+    MIXED_MARK_FOREIGN_NOISE: 2,
 }
 _POST_WRITE_COVERAGE_ISSUE_LIMIT = 50
 # 「保护封面和目录」上报到前端的标题文字截断长度——正常标题（如「第一章 工程概况」）

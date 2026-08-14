@@ -225,18 +225,25 @@ WORD_STRICT_RETRY_ATTEMPTS_DEFAULT = 3
 WORD_STRICT_RETRY_ATTEMPTS_MIN     = 1
 WORD_STRICT_RETRY_ATTEMPTS_MAX     = 8
 WORD_REVIEW_HIGHLIGHT_DEFAULT      = True
-REVIEW_MARK_SEMANTIC = "semantic"
+# 复核底色只有两种，对应两类真正需要人动手的东西：译文没出来（保留了原文、
+# 译文里残留源语言）和原文本身可疑。程序自己判过并放行的不上底色——9.3.0 之前
+# 还有第三种 "semantic"（语义校验接受），但那是"已经没事了"的记录，涂上去只会
+# 把满篇底色变成没有底色，9.3.1 整类删除。旧配置里残留的 "semantic" 颜色会在
+# settings 归一化时自动丢弃（那个循环只认这张表里的键），不需要迁移。
 REVIEW_MARK_UNRESOLVED = "unresolved"
 REVIEW_MARK_FOREIGN_NOISE = "foreign_noise"
-REVIEW_MARK_COLOR_SEMANTIC_DEFAULT = "FFF2CC"
 REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT = "FCE4D6"
 REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT = "F4CCCC"
 REVIEW_MARK_COLOR_DEFAULTS = {
-    REVIEW_MARK_SEMANTIC: REVIEW_MARK_COLOR_SEMANTIC_DEFAULT,
     REVIEW_MARK_UNRESOLVED: REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT,
     REVIEW_MARK_FOREIGN_NOISE: REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT,
 }
-WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = REVIEW_MARK_COLOR_SEMANTIC_DEFAULT
+# 分三色之前只有一个 word_review.highlight_color。这个值是当年的默认值，留在这里
+# 只当迁移哨兵用：旧配置里**没有 mark_colors**、而 highlight_color 又与它不同时，
+# 说明用户在单色时代自己调过色，那就把两种标记都涂成用户调的那个色。已经有
+# mark_colors 的配置直接按 mark_colors 走，不看这个值（见 settings 里的
+# _review_mark_colors_from_payload）。
+WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT = "FFF2CC"
 WORD_REVIEW_EXISTING_HIGHLIGHT_POLICY_DEFAULT = "skip"
 EXCEL_REVIEW_MARK_DEFAULT = True
 EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT = "red_font"

@@ -12,10 +12,8 @@ from typing import Callable
 
 from config import (
     REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT,
-    REVIEW_MARK_COLOR_SEMANTIC_DEFAULT,
     REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT,
     REVIEW_MARK_FOREIGN_NOISE,
-    REVIEW_MARK_SEMANTIC,
     REVIEW_MARK_UNRESOLVED,
 )
 from core.api_concurrency_control import (
@@ -46,11 +44,9 @@ MIXED_LANGUAGE_ACTIONS = {
     MIXED_ACTION_UNCERTAIN,
 }
 
-MIXED_MARK_SEMANTIC = REVIEW_MARK_SEMANTIC
 MIXED_MARK_UNRESOLVED = REVIEW_MARK_UNRESOLVED
 MIXED_MARK_FOREIGN_NOISE = REVIEW_MARK_FOREIGN_NOISE
 
-MIXED_COLOR_SEMANTIC = REVIEW_MARK_COLOR_SEMANTIC_DEFAULT
 MIXED_COLOR_UNRESOLVED = REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT
 MIXED_COLOR_FOREIGN_NOISE = REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT
 
@@ -116,12 +112,27 @@ class MixedLanguageResult:
 
     @property
     def mark_kind(self) -> str | None:
+        """要不要给这条上复核底色，上哪一种。
+
+        只有两种情况值得上色：原文里混着疑似写错的外文（要对着原件看），或者
+        程序拿不准、把原文原样留在了输出里（译文根本没出来）。
+
+        语义仲裁判定"这条译文和原文等义"的那一类**不上色**——它是程序自己判过
+        并放行的，用户没有任何事要做。以前它有自己的一种底色，实测下来一份文档
+        里大半的标记都是这一类，用户挨个点开发现全都没事，下一次就整片跳过，
+        真正的问题跟着一起被跳过。
+
+        这个属性只有 Excel 那条路在读（core/task_runner.py 的混合语言分支）。
+        Excel 的复核清单是跟着底色走的：不上色 = 不进清单，语义接受的单元格
+        改完之后在结构化结果里只剩运行日志里的一个计数。这是有意的——那份清单
+        叫"需复核"，一条已经判定没问题的内容本来就不该出现在里面，"需复核 N"
+        这个数字也因此变准了。Word 侧不一样，它另有一份质量报告分"已自动处理"
+        和"需人工复核"两栏，语义接受的段落照旧记在前一栏里。
+        """
         if self.action == MIXED_ACTION_FOREIGN_NOISE:
             return MIXED_MARK_FOREIGN_NOISE
         if self.action == MIXED_ACTION_UNCERTAIN:
             return MIXED_MARK_UNRESOLVED
-        if self.action == MIXED_ACTION_TRANSLATE and self.accepted_by == "semantic":
-            return MIXED_MARK_SEMANTIC
         return None
 
 

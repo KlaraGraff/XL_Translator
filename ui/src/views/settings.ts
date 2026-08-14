@@ -2495,15 +2495,17 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
   const wrap = document.createElement("div");
   wrap.className = "field";
   const label = document.createElement("label");
-  label.textContent = "复核三色";
+  label.textContent = "复核标记颜色";
   wrap.append(label);
   const row = document.createElement("div");
   row.style.display = "flex";
   row.style.gap = "18px";
   row.style.alignItems = "center";
   row.style.flexWrap = "wrap";
+  // 只有这两种。曾经还有一格「语义校验接受」，但那一类是程序自己判过没问题的，
+  // 不再上色，格子也一并撤掉——留着一个永远不会被涂上的颜色，只会让人以为
+  // 改了它就能改变什么。
   const marks: { key: string; label: string; fallback: string }[] = [
-    { key: "semantic", label: "语义校验接受", fallback: "FFF2CC" },
     { key: "unresolved", label: "保留原文复核", fallback: "FCE4D6" },
     { key: "foreign_noise", label: "疑似原文异常", fallback: "F4CCCC" },
   ];

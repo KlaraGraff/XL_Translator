@@ -1,4 +1,4 @@
-"""Word 输出文档里"上底色"的取舍。
+"""输出文档里"上底色"的取舍——Word 段落和 Excel 单元格同一条规矩。
 
 规则只有一条：底色留给需要人动手的东西——译文没出来（保留了原文、译文里残留中文），
 或者原文本身可疑。程序自己判过并放行的（严格重试恢复、语义仲裁认定等义）不上底色，
@@ -6,6 +6,14 @@
 
 为什么要专门锁住：满篇底色等于没有底色。一份文档里 18 条提示有 13 条是"已自动处理"，
 用户挨个点开发现都没事，下一次就整片跳过——真正要看的那几条跟着一起被跳过了。
+
+Word 侧的判定散在 core/word_task_runner.py 的几条路上，下面逐条覆盖。
+
+Excel 侧有四处写入标记，其中三处是写死的 MIXED_MARK_UNRESOLVED（core/task_runner.py
+两处"译文与原文相同"的兜底、core/xlsx_patcher.py 的"保留了原文"），本来就在政策
+之内；唯一会按内容变化的是 MixedLanguageResult.mark_kind，所以下面只锁这一个。
+换句话说这里守的是"哪些情况值得上色"，不是"Excel 一共有几处上色代码"——真要在
+xlsx_patcher 里新加一处硬编码的标记，这些用例拦不住。
 """
 
 from __future__ import annotations
@@ -121,16 +129,62 @@ class MixedLanguageMarkingTests(unittest.TestCase):
         )
 
 
+class ExcelMarkKindTests(unittest.TestCase):
+    """Excel 单元格上不上底色，全看 MixedLanguageResult.mark_kind 返回什么。"""
+
+    def test_semantically_accepted_cell_gets_no_fill(self) -> None:
+        """仲裁判定与原文等义，用户没有任何事要做——报告里有记录就够了。"""
+        result = MixedLanguageResult(
+            source="本工程按合同工期组织施工。",
+            action=MIXED_ACTION_TRANSLATE,
+            translation="Les travaux suivent le délai contractuel.",
+            accepted_by="semantic",
+        )
+
+        self.assertIsNone(result.mark_kind)
+
+    def test_plain_translation_gets_no_fill(self) -> None:
+        result = MixedLanguageResult(
+            source="材料进场计划",
+            action=MIXED_ACTION_TRANSLATE,
+            translation="Plan d'approvisionnement",
+        )
+
+        self.assertIsNone(result.mark_kind)
+
+    def test_already_bilingual_cell_gets_no_fill(self) -> None:
+        result = MixedLanguageResult(
+            source="工程概况 Présentation du projet",
+            action=MIXED_ACTION_EXISTING_BILINGUAL,
+        )
+
+        self.assertIsNone(result.mark_kind)
+
+    def test_the_two_cases_a_person_still_has_to_look_at_do_get_filled(self) -> None:
+        suspect = MixedLanguageResult(
+            source="3#一体化车间 sitr 完成。",
+            action=MIXED_ACTION_FOREIGN_NOISE,
+            translation="Atelier intégré n°3 terminé.",
+        )
+        undecided = MixedLanguageResult(
+            source="现场动火作业 hot work 管控要求。",
+            action=MIXED_ACTION_UNCERTAIN,
+        )
+
+        self.assertEqual(suspect.mark_kind, MIXED_MARK_FOREIGN_NOISE)
+        self.assertEqual(undecided.mark_kind, MIXED_MARK_UNRESOLVED)
+
+
 class OnlyTwoMarksExistTests(unittest.TestCase):
     """扫源码，锁住"哪些标记允许被写入"这条规则本身。
 
     上面几条用例覆盖得到混合语言那条路，`_run` 深处的重试/仲裁两处由
     tests/test_phase5_word_contracts.py 的整跑用例断言。这里再加一道结构上的保险：
     真正危险的不是"有人把删掉的那两行原样贴回来"，而是有人换个写法绕过去——
-    传关键字 `mark=`、传 `result.mark_kind`（Excel 那条路就是这么写的，而
-    MixedLanguageResult.mark_kind 对语义接受正好返回 SEMANTIC）、或者写成属性引用。
-    所以这里用白名单：交给 _set_review_mark 的标记必须是明面上的那两个常量之一，
-    凡是看不出取值的写法一律算违规——要放宽就得先改这条政策，而不是绕过它。
+    传关键字 `mark=`、传一个当场算出来的值（`result.mark_kind` 这类，Excel 那条路
+    就是这么写的）、或者写成属性引用。所以这里用白名单：交给 _set_review_mark 的
+    标记必须是明面上的那两个常量之一，凡是看不出取值的写法一律算违规——要放宽就得
+    先改这条政策，而不是绕过它。
     """
 
     _ALLOWED_MARKS = {"MIXED_MARK_UNRESOLVED", "MIXED_MARK_FOREIGN_NOISE"}
