@@ -96,6 +96,9 @@ class TranslationBatchRunStats:
     failed_items: list[dict[str, str]] = field(default_factory=list)
     quality_reset_count: int = 0
     quality_reset_items: list[str] = field(default_factory=list)
+    # API 失败回退（译文=原文）的全量源文集合。failed_items 是限量采样，
+    # 质量校验去重必须用全集，否则超出采样上限的条目仍会被二次计数。
+    untranslated_sources: set[str] = field(default_factory=set)
     max_request_weight: int = 1
     weighted_scheduler_used: bool = False
     adaptive_concurrency_reductions: int = 0
@@ -141,6 +144,7 @@ class TranslationBatchRunStats:
             self.record_failed_batch(str(text or ""), error)
         with self._lock:
             self.untranslated_count += len(items)
+            self.untranslated_sources.update(str(text or "") for text in items)
 
     def record_adaptive_concurrency_decision(
         self,
@@ -993,7 +997,15 @@ def _apply_quality_filter(
     由任务层汇入结果报告——文件里保留原文的格子必须在报告里有对应条目。
     """
     reset_count = 0
+    already_untranslated = (
+        stats.untranslated_sources if stats is not None else frozenset()
+    )
     for src in list(results.keys()):
+        if src in already_untranslated:
+            # API 失败回退的条目已按「未翻译」上报过。这里译文必然等于原文，
+            # 再计一次「质量校验回退」会把服务故障误报成译文质量问题，
+            # 同一格子在报告里出现两条互相矛盾的 needs_action。
+            continue
         if not should_apply_quality_filter(results[src]):
             continue
         if is_translation_redundant(

@@ -3,7 +3,9 @@
 PoC：残留中文「分类→修复阶梯→文档级一致性→报告锚定」重构的核心机制验证。
 离线运行，不调 API。语料 = 真实双语输出文档。
 """
-import re, sys, glob, difflib
+import re
+import sys
+import difflib
 from docx import Document
 
 CJK_RE = re.compile(r"[一-鿿]")

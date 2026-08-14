@@ -50,7 +50,11 @@ def sanitize_tm_pairs(pairs, *, target_lang: str) -> TmHygieneResult:
         unit.source_text: "译文残留中文：" + "、".join(f"«{t}»" for t in unit.spans)
         for unit in residual.needs_review
     }
-    normalized: set[str] = set(residual.fixes)
+    # 序号修好但正文仍有阻断残留的配对最终没入库：只算「拦下」，不算「归一」，
+    # 否则同一条源文会同时出现在两条日志里，对不上账
+    normalized: set[str] = {
+        source for source in residual.fixes if source not in rejected
+    }
     kept = [
         (source, residual.fixes.get(source, target))
         for source, target in materialized

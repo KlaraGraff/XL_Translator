@@ -36,19 +36,26 @@ RESIDUAL_EXEMPT_TARGET_LANGS = frozenset({"zh", "ja"})
 _CN_NUM_CHARS = "零一二三四五六七八九十"
 _CN_DIGIT_VALUE = {c: i for i, c in enumerate("零一二三四五六七八九")}
 
-# 段首结构序号：（四）/ (四) / 四、 / 四. / 第X节（X 可为汉字或数字，节可省略）
+# 段首结构序号：（四）/ (四) / 四、 / 四. / 第X节（X 可为汉字或数字，节可省略）。
+# 「第X」两支的 (?![一-龥]) 是硬约束：前缀边界后紧跟汉字时（第三|方、第五节|点、
+# 第二部|分）它不是序号而是词语的前半截——按序号切割会把正文砍掉半截。
 NUMBERING_PREFIX_RE = re.compile(
     r"^\s*(?:"
     r"[（(]\s*[%(cn)s]{1,3}\s*[）)]"
     r"|[%(cn)s]{1,3}\s*[、\.．]"
-    r"|第\s*[%(cn)s0-9０-９]{1,3}\s*[节章条款项部分]?"
+    r"|第\s*[%(cn)s0-9０-９]{1,3}\s*(?:[节章条款项]|部分)(?![一-龥])"
+    r"|第\s*[%(cn)s0-9０-９]{1,3}(?![一-龥])"
     r")" % {"cn": _CN_NUM_CHARS}
 )
 
 _PAREN_CN_PREFIX_RE = re.compile(r"^(\s*)[（(]\s*([%s]{1,3})\s*[）)]" % _CN_NUM_CHARS)
 _SECTION_CN_PREFIX_RE = re.compile(
-    r"^(\s*)第\s*([%s0-9０-９]{1,3})\s*([节章条款项])" % _CN_NUM_CHARS
+    r"^(\s*)第\s*([%s0-9０-９]{1,3})\s*([节章条款项])(?![一-龥])" % _CN_NUM_CHARS
 )
+
+# 源锚定替换后残留的枚举分隔符（「第一、」只匹配到「第一」时留下的顿号）。
+# ASCII 句点后跟数字时是小数/多级编号的一部分，不能吃。
+_DANGLING_ENUM_SEPARATOR_RE = re.compile(r"^\s*(?:[、，]|[\.．](?!\d))\s*")
 
 # 目标语单词（用于判断残留是否「嵌在成句译文中」）：拉丁（含扩展）/西里尔/希腊
 _TARGET_WORD_RE = re.compile(r"[A-Za-zÀ-ɏͰ-ϿЀ-ӿ]{2,}")
@@ -213,7 +220,10 @@ def classify_residual_spans(
                 )
             )
             continue
-        if any(s < match.end() and start < e for s, e in date_unit_ranges):
+        if any(s <= start and match.end() <= e for s, e in date_unit_ranges):
+            # 仅当整个片段都落在「数字+单位」匹配内（2026年 的「年」）才算
+            # 日期单位；片段只是与之沾边的长串（30日历天内完成全部工作）
+            # 按长度正常分类，否则整句未译会被日期标签劫持而失去修复通道。
             category = CATEGORY_CN_DATE_UNIT
         elif set(fragment) <= {"万", "亿"}:
             category = CATEGORY_QUANTITY_UNIT
@@ -317,9 +327,10 @@ def deterministic_numbering_fix(
     if prefix:
         label = _source_arabic_prefix_label(source_text)
         if label is not None:
-            rest = text[prefix.end():]
-            separator = "" if rest.startswith((" ", "\t")) else " "
-            return text[: prefix.start()] + label + separator + rest
+            # 「第一、」只匹配到「第一」时会留下悬空顿号，一并吃掉
+            rest = _DANGLING_ENUM_SEPARATOR_RE.sub("", text[prefix.end():], count=1)
+            separator = "" if (not rest or rest.startswith((" ", "\t"))) else " "
+            return (text[: prefix.start()] + label + separator + rest).rstrip()
 
     paren = _PAREN_CN_PREFIX_RE.match(text)
     if paren:
@@ -355,7 +366,18 @@ def deterministic_numbering_fix(
 # 外科修补验收器（diff 受限）
 # ---------------------------------------------------------------------------
 
-_NUMBER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?")
+_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[\.,]\d+)?")
+
+# 修补稿相对原译文的净增长上限：残留片段每字符 6 字符 + 12。中文术语译成
+# 法/英文的展开率通常在 6 倍以内；超过即视为模型在窗口内塞入自造内容。
+_SURGICAL_GROWTH_PER_SPAN_CHAR = 6
+_SURGICAL_GROWTH_BASE = 12
+
+
+def extract_number_tokens(text: str) -> list[str]:
+    """按出现顺序提取数字 token（全角归一为半角，小数逗号归一为点）。"""
+    normalized = str(text or "").translate(_FW_DIGIT_DOT_TRANS)
+    return [token.replace(",", ".") for token in _NUMBER_TOKEN_RE.findall(normalized)]
 
 
 def surgical_repair_ok(
@@ -370,10 +392,12 @@ def surgical_repair_ok(
     机器验收外科修补稿：修补只允许发生在残留片段 ±window 字符内。
 
     spans: [(start, length), ...] —— 原译文中被允许修补的残留片段位置。
-    三条硬规则（设计文档 §3.3）：
+    四条硬规则（设计文档 §3.3）：
       1. 阻断级/可修复级残留必须已消除（复跑分类器，仅容忍 quantity_unit）；
-      2. 所有编辑操作都落在允许窗口内（SequenceMatcher opcodes 逐一检查）；
-      3. 数字多重集合完全不变。
+      2. 所有编辑操作都落在允许窗口内（SequenceMatcher opcodes 逐一检查），
+         且每处编辑与全文的净增长都有上限——窗口只约束原文侧偏移，不设
+         增长上限的话一次窗口内 replace 就能塞进任意长度的自造内容；
+      3. 数字序列完全不变（含顺序：窗口内的数字互换也必须拒收）。
     不满足任何一条即拒收，理由随返回值给出。
     """
     original = str(original or "")
@@ -394,8 +418,17 @@ def surgical_repair_ok(
     ]
     if not windows:
         return False, "no repair spans given"
+    span_char_total = sum(max(1, int(length)) for _start, length in spans)
+    max_growth = (
+        _SURGICAL_GROWTH_PER_SPAN_CHAR * span_char_total + _SURGICAL_GROWTH_BASE
+    )
+    if len(repaired) - len(original) > max_growth:
+        return False, (
+            f"repaired text grew too much: +{len(repaired) - len(original)} chars "
+            f"(limit {max_growth})"
+        )
     matcher = difflib.SequenceMatcher(None, original, repaired, autojunk=False)
-    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
         if not any(lo <= i1 and i2 <= hi for lo, hi in windows):
@@ -403,9 +436,14 @@ def surgical_repair_ok(
                 f"edit outside allowed window: {tag} original[{i1}:{i2}]="
                 f"{original[i1:i2]!r}"
             )
+        if (j2 - j1) - (i2 - i1) > max_growth:
+            return False, (
+                f"edit inserts too much text: {tag} +{(j2 - j1) - (i2 - i1)} chars "
+                f"(limit {max_growth})"
+            )
 
-    numbers_original = sorted(_NUMBER_TOKEN_RE.findall(original))
-    numbers_repaired = sorted(_NUMBER_TOKEN_RE.findall(repaired))
+    numbers_original = extract_number_tokens(original)
+    numbers_repaired = extract_number_tokens(repaired)
     if numbers_original != numbers_repaired:
         return False, f"numbers changed: {numbers_original} -> {numbers_repaired}"
     return True, "ok"
