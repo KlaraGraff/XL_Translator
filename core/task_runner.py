@@ -61,6 +61,12 @@ from core.engine_dispatcher import (
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from core.model_throughput import get_model_throughput
 from core.residual_pipeline import run_residual_pass
+from core.residual_repair import (
+    METHOD_FEEDBACK_RETRANSLATION,
+    METHOD_SURGICAL,
+    repair_unit,
+)
+from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
 from core.excel_automation import (
@@ -101,6 +107,11 @@ AUTOFIT_MONITOR_POLL_SECONDS = 0.5
 _EXCEL_REVIEW_MARK_PRIORITY = {
     MIXED_MARK_UNRESOLVED: 20,
     MIXED_MARK_FOREIGN_NOISE: 30,
+}
+
+_RESIDUAL_REPAIR_METHOD_LABELS = {
+    METHOD_SURGICAL: "外科修补",
+    METHOD_FEEDBACK_RETRANSLATION: "带反馈重译",
 }
 
 
@@ -1254,8 +1265,58 @@ class TaskRunner:
                         ),
                     }
                 )
-            if residual_result.needs_review:
-                for unit in residual_result.needs_review:
+            # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）
+            still_needs_review = list(residual_result.needs_review)
+            repair_method_counts: dict[str, int] = {}
+            if still_needs_review and engine_supports_chat(engine):
+
+                def _repair_send(system: str, user: str) -> str | None:
+                    try:
+                        return engine.chat(system, user)
+                    except Exception as repair_exc:
+                        logger.debug(f"残留修复请求失败：{repair_exc!r}")
+                        return None
+
+                remaining_units = []
+                for unit in still_needs_review:
+                    if self._stop_event.is_set():
+                        remaining_units.append(unit)
+                        continue
+                    outcome = repair_unit(
+                        unit.source_text,
+                        unit.target_text,
+                        target_lang=target_lang,
+                        surgical_send=_repair_send,
+                        retranslate_send=_repair_send,
+                    )
+                    if outcome.accepted and outcome.method:
+                        global_translations[unit.source_text] = outcome.text
+                        repair_method_counts[outcome.method] = (
+                            repair_method_counts.get(outcome.method, 0) + 1
+                        )
+                    else:
+                        remaining_units.append(unit)
+                still_needs_review = remaining_units
+            repaired_total = sum(repair_method_counts.values())
+            if repaired_total:
+                method_desc = "、".join(
+                    f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
+                    for method, count in sorted(repair_method_counts.items())
+                )
+                self._log("OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）")
+                quality_issues.append(
+                    {
+                        "type": "residual_repaired",
+                        "severity": "info",
+                        "count": repaired_total,
+                        "message": (
+                            f"有 {repaired_total} 条译文的残留中文已自动修复"
+                            f"（{method_desc}），修复稿均通过机器验收。"
+                        ),
+                    }
+                )
+            if still_needs_review:
+                for unit in still_needs_review:
                     _set_excel_review_mark(
                         excel_review_marks,
                         unit.source_text,
@@ -1265,9 +1326,9 @@ class TaskRunner:
                     {
                         "type": "residual_source_language",
                         "severity": "needs_action",
-                        "count": len(residual_result.needs_review),
+                        "count": len(still_needs_review),
                         "message": (
-                            f"有 {len(residual_result.needs_review)} 条译文残留了未翻译的中文片段，"
+                            f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
                             "已在输出文件中标记待复核位置。"
                         ),
                         "failed_sources": [
@@ -1278,13 +1339,13 @@ class TaskRunner:
                                     + "、".join(f"«{span}»" for span in unit.spans)
                                 ),
                             }
-                            for unit in residual_result.needs_review
+                            for unit in still_needs_review
                         ],
                     }
                 )
                 self._log(
                     "WARN",
-                    f"检出 {len(residual_result.needs_review)} 条译文残留中文，已标记待复核。",
+                    f"检出 {len(still_needs_review)} 条译文残留中文，已标记待复核。",
                 )
             if residual_result.released_notes:
                 # 万/亿等数量单位残留：不拦发布，但报告里留痕

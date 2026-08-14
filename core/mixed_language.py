@@ -31,7 +31,11 @@ from core.translation_filter import (
     TranslationValidationResult,
     validate_translation,
 )
-from engines.base_engine import TranslationEngine, strip_markdown_json
+from engines.base_engine import (
+    TranslationEngine,
+    engine_supports_chat,
+    strip_markdown_json,
+)
 
 MIXED_ACTION_EXISTING_BILINGUAL = "existing_bilingual"
 MIXED_ACTION_TRANSLATE = "translate"
@@ -505,7 +509,7 @@ def _translate_mixed_batch_once(
     source_lang: str,
     retry_hint: bool,
 ) -> list[MixedLanguageResult]:
-    if not _engine_supports_chat(engine):
+    if not engine_supports_chat(engine):
         raise NotImplementedError(f"{engine.__class__.__name__} 不支持混合语言结构化调用")
 
     entries = [
@@ -647,7 +651,7 @@ def _recover_one_mixed_result(
                 stats=stats,
             )
         )
-        if _engine_supports_chat(engine):
+        if engine_supports_chat(engine):
             futures.append(
                 executor.submit(
                     _semantic_review_mixed_result,
@@ -763,7 +767,7 @@ def _semantic_review_mixed_result(
 ) -> MixedLanguageResult | None:
     if should_stop and should_stop():
         return None
-    if not _engine_supports_chat(engine):
+    if not engine_supports_chat(engine):
         return None
     stats.semantic_check_count += 1
     prompt = _build_mixed_semantic_prompt(target_lang=target_lang, source_lang=source_lang)
@@ -884,11 +888,6 @@ def _estimate_mixed_request_weight(texts: list[str], system_prompt: str = "") ->
     estimated_output_chars = int(math.ceil(input_chars * _API_WEIGHT_OUTPUT_MULTIPLIER))
     total_chars = max(1, input_chars + prompt_chars + estimated_output_chars)
     return max(1, int(math.ceil(total_chars / _API_WEIGHT_CHARS_PER_SLOT)))
-
-
-def _engine_supports_chat(engine) -> bool:
-    chat = getattr(type(engine), "chat", None)
-    return chat is not None and chat is not TranslationEngine.chat
 
 
 def _uncertain_result(source: str, *, note: str = "") -> MixedLanguageResult:

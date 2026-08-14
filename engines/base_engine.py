@@ -204,3 +204,9 @@ class TranslationEngine(ABC):
     def engine_name(self) -> str:
         """引擎标识名，用于 TM 记录 source_engine 字段。"""
         return self.__class__.__name__
+
+
+def engine_supports_chat(engine) -> bool:
+    """引擎是否真正实现了 chat()（基类默认实现只会抛 NotImplementedError）。"""
+    chat = getattr(type(engine), "chat", None)
+    return chat is not None and chat is not TranslationEngine.chat

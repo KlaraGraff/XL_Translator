@@ -262,10 +262,9 @@ class FailoverEngineTests(unittest.TestCase):
         )
 
     def test_the_wrapper_reports_chat_capability_like_a_real_engine(self) -> None:
-        # ``_engine_supports_chat`` in mixed_language / word_task_runner probes
-        # the class, so a wrapper that left ``chat`` on the base silently
-        # disabled mixed-language handling and semantic review.
-        from core.mixed_language import _engine_supports_chat
+        # ``engine_supports_chat`` probes 类而不是实例，所以包装引擎若把
+        # ``chat`` 留在基类上，会静默禁用混合语言处理与语义审核。
+        from engines.base_engine import engine_supports_chat
 
         pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
         engines = {pool[0].id: _StubEngine("A"), pool[1].id: _StubEngine("B")}
@@ -274,7 +273,7 @@ class FailoverEngineTests(unittest.TestCase):
         )
 
         self.assertIsNot(FailoverTranslationEngine.chat, TranslationEngine.chat)
-        self.assertTrue(_engine_supports_chat(engine))
+        self.assertTrue(engine_supports_chat(engine))
 
     def test_an_empty_chain_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
