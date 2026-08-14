@@ -26,6 +26,7 @@ from core.language_registry import (
 from core.engine_dispatcher import is_local_engine_name
 from core.api_concurrency_control import handle_api_concurrency_limit
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL
+from core.residual_classifier import check_heading_consistency, is_section_heading_source
 from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
 from engines.base_engine import TranslationEngine, strip_markdown_json
 
@@ -306,6 +307,54 @@ def _build_clean_suggestion(item: dict, id_to_entry: dict[int, dict]) -> CleanSu
     )
 
 
+def build_convention_suggestions(
+    lang_pair: str,
+    entries: list[dict] | None = None,
+) -> list[CleanSuggestion]:
+    """
+    惯例归一建议（确定性规则，0 API）：库内「第X节/章」条目按多数派写法
+    聚类，离群者生成仅改前缀的建议，沿用「先建议、用户确认后写入」流程。
+
+    只在多数派是「Section N」系写法时给建议——归一到序数词写法需要词形
+    变化知识，不做确定性改写。
+    """
+    if entries is None:
+        entries = tm_manager.get_all_entries_for_cleaning(lang_pair)
+    heading_entries = [
+        e for e in entries if is_section_heading_source(e.get("source_text", ""))
+    ]
+    if len(heading_entries) < 2:
+        return []
+    target_lang = lang_pair.split("-", 1)[1] if "-" in lang_pair else ""
+    result = check_heading_consistency(
+        (
+            (e["source_text"], e["target_text"], e["id"])
+            for e in heading_entries
+        ),
+        target_lang=target_lang,
+    )
+    id_to_entry = {e["id"]: e for e in heading_entries}
+    suggestions: list[CleanSuggestion] = []
+    for entry_id, fixed in result.fixes.items():
+        entry = id_to_entry[entry_id]
+        current_target = str(entry.get("target_text") or "")
+        if normalize_tm_text_for_compare(fixed) == normalize_tm_text_for_compare(
+            current_target
+        ):
+            continue
+        suggestions.append(
+            CleanSuggestion(
+                entry_id=entry_id,
+                source_text=entry["source_text"],
+                old_target=current_target,
+                new_target=fixed,
+                lang_pair=str(entry.get("lang_pair") or ""),
+                expected_version=str(entry.get("version") or ""),
+            )
+        )
+    return suggestions
+
+
 def run_cleaning(
     lang_pair: str,
     engine: TranslationEngine,
@@ -329,6 +378,14 @@ def run_cleaning(
     all_entries = tm_manager.get_all_entries_for_cleaning(lang_pair)
     if not all_entries:
         return []
+
+    # 确定性惯例归一先行（0 API）；同一条目以确定性建议为准，模型建议让位
+    convention_suggestions = build_convention_suggestions(lang_pair, entries=all_entries)
+    if convention_suggestions:
+        logger.info(
+            f"TM 清洗：节标题惯例归一规则命中 {len(convention_suggestions)} 条（0 API）"
+        )
+    convention_covered = {s.entry_id for s in convention_suggestions}
 
     clean_system_prompt = build_clean_system_prompt(
         lang_pair=lang_pair,
@@ -357,7 +414,7 @@ def run_cleaning(
 
     if is_local:
         # 本地引擎：使用 asyncio 并发（与翻译流程一致）
-        return _run_cleaning_async(
+        model_suggestions = _run_cleaning_async(
             batches,
             engine,
             progress_callback,
@@ -366,7 +423,7 @@ def run_cleaning(
         )
     else:
         # 云端引擎：使用 ThreadPoolExecutor 并发（与翻译流程一致）
-        return _run_cleaning_threaded(
+        model_suggestions = _run_cleaning_threaded(
             batches,
             engine,
             progress_callback,
@@ -375,6 +432,9 @@ def run_cleaning(
             cancel_event=cancel_event,
             api_scheduler=api_scheduler,
         )
+    return convention_suggestions + [
+        s for s in model_suggestions if s.entry_id not in convention_covered
+    ]
 
 
 def _run_cleaning_async(

@@ -66,6 +66,7 @@ from core.residual_repair import (
     METHOD_SURGICAL,
     repair_unit,
 )
+from core.tm_hygiene import sanitize_tm_pairs
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
@@ -1793,9 +1794,19 @@ class TaskRunner:
             # The model-reported item source language is the final gate.
             # ``mixed``/``und``/``auto`` and anything outside that file's
             # preflight scope are rejected by TM manager.
+            hygiene = sanitize_tm_pairs(
+                (
+                    (source_text, item.translation)
+                    for source_text, item in normal_api_language_results.items()
+                ),
+                target_lang=target_lang,
+            )
+            self._log_tm_hygiene(hygiene)
+            normalized_targets = dict(hygiene.pairs)
+            rejected_sources = {source for source, _reason in hygiene.rejected}
             tm_entries = []
             for source_text, item in normal_api_language_results.items():
-                translation = item.translation
+                translation = normalized_targets.get(source_text, item.translation)
                 source_scopes = text_source_scopes.get(source_text, [])
                 source_in_every_file_scope = bool(source_scopes) and all(
                     item.source_lang in scope for scope in source_scopes
@@ -1806,6 +1817,7 @@ class TaskRunner:
                         "translation": translation,
                         "source_lang": item.source_lang,
                         "tm_eligible": item.tm_eligible
+                        and source_text not in rejected_sources
                         and source_in_every_file_scope
                         and should_store_translation_in_tm(source_text, translation),
                     }
@@ -1823,13 +1835,35 @@ class TaskRunner:
             for k, v in normal_api_translations.items()
             if should_store_translation_in_tm(k, v)
         ]
+        hygiene = sanitize_tm_pairs(new_pairs, target_lang=target_lang)
+        self._log_tm_hygiene(hygiene)
         return tm_manager.insert_batch(
-            new_pairs,
+            list(hygiene.pairs),
             lang_pair,
             max_len,
             engine_name,
             sync_reverse=False,
         )
+
+    def _log_tm_hygiene(self, hygiene) -> None:
+        """入库卫生留痕：归一是顺手事，拦下的必须说清为什么没进库。"""
+        if hygiene.normalized:
+            self._log(
+                "INFO",
+                f"TM 入库前惯例归一 {len(hygiene.normalized)} 条（序号前缀/标题写法）。",
+            )
+        if hygiene.rejected:
+            samples = "；".join(
+                f"{source[:20]}…（{reason}）" if len(source) > 20 else f"{source}（{reason}）"
+                for source, reason in hygiene.rejected[:3]
+            )
+            self._log(
+                "WARN",
+                (
+                    f"TM 入库复检拦下 {len(hygiene.rejected)} 条带残留中文的配对，"
+                    f"未写入词库：{samples}"
+                ),
+            )
 
     def _log_excel_coverage_plan(self, file_name: str, plan) -> None:
         """Report one file's untranslated-only plan, including the empty case."""
