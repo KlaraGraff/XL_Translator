@@ -151,6 +151,16 @@ class RunCleaningMergeTest(unittest.TestCase):
                 return_value=[model_only, conflicting],
             ),
             mock.patch("core.tm_cleaner.is_local_engine_name", return_value=False),
+            # 惯例建议会即时入库（读 pending 去重 + 写建议表）；测试不碰真实
+            # 用户库，两个入库口都替换掉
+            mock.patch(
+                "core.tm_cleaner.tm_manager.list_cleaning_suggestions",
+                return_value=[],
+            ),
+            mock.patch(
+                "core.tm_cleaner.tm_manager.persist_cleaning_suggestions",
+                return_value=3,
+            ) as persist_mock,
         ):
             fake_engine = mock.Mock()
             fake_engine.engine_name = "FakeCloudEngine"
@@ -159,6 +169,12 @@ class RunCleaningMergeTest(unittest.TestCase):
         self.assertEqual(sorted(by_id), [1, 5, 6, 7])
         self.assertEqual(by_id[5].new_target, "Section 5 Sécurité du chantier")
         self.assertEqual(by_id[1].new_target, "Section 1 Dispositions générales (rev)")
+        # 惯例建议应当在模型批次之前就已入库（entry 5/6/7 三条）
+        persist_mock.assert_called_once()
+        persisted_ids = sorted(
+            item["entry_id"] for item in persist_mock.call_args.args[0]
+        )
+        self.assertEqual(persisted_ids, [5, 6, 7])
 
 
 if __name__ == "__main__":

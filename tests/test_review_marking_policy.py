@@ -251,6 +251,7 @@ class ResidualReportWordingTests(unittest.TestCase):
             kind = "paragraph"
             location = "body.paragraph[23]"
             section_path = "正文"
+            source_text = "（一）、交货严重延误"
             target_text = "（一）、Retard important de livraison"
             data = {
                 "residual_cjk": ["一"],
@@ -272,6 +273,46 @@ class ResidualReportWordingTests(unittest.TestCase):
         self.assertNotIn("日期", status)
         self.assertNotIn("编号", status)
         self.assertEqual(issues[0]["severity"], "needs_review")
+
+    def test_pre_reported_sources_are_not_counted_twice(self) -> None:
+        """写盘前残留巡检报过的段落，写盘后通道必须跳过。
+
+        两个通道的坐标与措辞都不同，位置合并键对不上：不跳过的话同一处残留会
+        数成两条待办，复核计数直接翻倍。
+        """
+
+        class _Unit:
+            kind = "paragraph"
+            location = "body.paragraph[7]"
+            section_path = "正文"
+            source_text = "沿裂缝开V型槽并清理浮灰。"
+            target_text = "Ouvrir une rainure en V 型槽 le long de la fissure."
+            data = {
+                "residual_cjk": ["型槽"],
+                "residual_location": "body.paragraph[7]",
+                "residual_text": "Ouvrir une rainure en V 型槽 le long de la fissure.",
+            }
+
+        # 不给跳过名单：正常报一条
+        issues: list[dict] = []
+        _append_residual_cjk_issues(
+            issues=issues,
+            existing_keys=set(),
+            file_name="抢工方案.docx",
+            residual_units=[_Unit()],
+        )
+        self.assertEqual(len(issues), 1)
+
+        # 给了跳过名单（写盘前通道已按原文坐标报过）：一条都不再报
+        issues = []
+        _append_residual_cjk_issues(
+            issues=issues,
+            existing_keys=set(),
+            file_name="抢工方案.docx",
+            residual_units=[_Unit()],
+            pre_reported_residual_sources={"沿裂缝开V型槽并清理浮灰。"},
+        )
+        self.assertEqual(issues, [])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -99,3 +99,27 @@ def sanitize_tm_pairs(
             if source in rejected
         ),
     )
+
+
+def tm_hygiene_log_lines(hygiene: TmHygieneResult) -> list[tuple[str, str]]:
+    """入库卫生留痕文案（Word / Excel 共用）：归一是顺手事提一句，
+    拦下的必须说清为什么没进库。返回 (级别, 消息) 列表。"""
+    lines: list[tuple[str, str]] = []
+    if hygiene.normalized:
+        lines.append((
+            "INFO",
+            f"TM 入库前惯例归一 {len(hygiene.normalized)} 条（序号前缀/标题写法）。",
+        ))
+    if hygiene.rejected:
+        samples = "；".join(
+            f"{source[:20]}…（{reason}）" if len(source) > 20 else f"{source}（{reason}）"
+            for source, reason in hygiene.rejected[:3]
+        )
+        lines.append((
+            "WARN",
+            (
+                f"TM 入库复检拦下 {len(hygiene.rejected)} 条带残留中文的配对，"
+                f"未写入词库：{samples}"
+            ),
+        ))
+    return lines

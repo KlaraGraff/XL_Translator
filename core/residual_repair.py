@@ -37,6 +37,12 @@ from engines.base_engine import get_target_lang_name, strip_markdown_json
 METHOD_SURGICAL = "surgical"
 METHOD_FEEDBACK_RETRANSLATION = "feedback_retranslation"
 
+# 日志/报告里的中文名，Word / Excel 主流程共用这一份
+REPAIR_METHOD_LABELS = {
+    METHOD_SURGICAL: "外科修补",
+    METHOD_FEEDBACK_RETRANSLATION: "带反馈重译",
+}
+
 
 @dataclass(frozen=True)
 class RepairOutcome:

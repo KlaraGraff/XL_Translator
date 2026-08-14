@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import deque
 from contextlib import ExitStack
 import hashlib
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,7 @@ from core.mixed_language import MIXED_MARK_UNRESOLVED
 from core.model_api_identity import TaskApiContext
 from core.model_throughput import EffectiveModelThroughput
 from core.task_runner import DoneMsg, WordRecoveryStatusMsg
+from core.tm_hygiene import sanitize_tm_pairs as real_sanitize_tm_pairs
 from core.word_converter import WordConversionError, convert_doc_to_docx
 from core.word_document import WordFileItem, WordSegment, extract_word_segments, write_bilingual_docx
 from core.word_task_runner import WordTaskRunner
@@ -943,6 +945,244 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
             self.assertEqual(done.recovery["recovered_count"], 1)
             self.assertEqual(done.recovery["semantic_accepted_count"], 1)
             self.assertEqual(done.recovery["unresolved_count"], 1)
+
+    @staticmethod
+    def _stub_recovery_pool():
+        """A recovery pool that accepts nothing and retries nothing."""
+
+        class _RecoveryPool:
+            def add_candidate(self, *_args, **_kwargs) -> None:
+                return None
+
+            def start(self) -> None:
+                return None
+
+            def wait_for_completion(self):
+                return SimpleNamespace(
+                    fixed_sources=[],
+                    unresolved_sources=[],
+                    accepted_translations={},
+                    recovery_review_results={},
+                    semantic_review_results={},
+                    unresolved_validation_results={},
+                    semantic_check_count=0,
+                )
+
+        return _RecoveryPool()
+
+    def test_word_tm_write_stores_final_repaired_text_with_document_conventions(self) -> None:
+        """TM 只许存文件最终译文（Word 版，与 Excel TmWriteFinalTextTest 同一契约）。
+
+        入库文本必须是残留修复改完之后的版本，且入库口拿到的是文档级序号惯例与
+        全篇标题多数派——TM 只见 API 未命中子集，让它自己投票可能与全篇结论相反。
+        删掉 _final_tm_text 或任何一个贯通参数，这条测试都必须红。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            Document().save(source)
+            src = "（四）安全文明施工措施。"
+            raw = "（四） Mesures de sécurité et de civilité du chantier."
+            fixed = "(IV) Mesures de sécurité et de civilité du chantier."
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+            inserted: list[tuple[str, list[tuple[str, str]]]] = []
+            sanitize_calls: list[dict] = []
+
+            def capture_insert(entries, pair, *_args, **_kwargs):
+                inserted.append((pair, list(entries)))
+                return len(entries)
+
+            def spy_sanitize(pairs, **kwargs):
+                sanitize_calls.append(dict(kwargs))
+                return real_sanitize_tm_pairs(pairs, **kwargs)
+
+            def translate_with_all_results(texts, *_args, **kwargs):
+                kwargs["drained_callback"]()
+                return {text: raw for text in texts}
+
+            with ExitStack() as stack:
+                self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: prepared},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[WordSegment(src, "paragraph", "正文第 1 段")],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={src: None},
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=translate_with_all_results,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=self._stub_recovery_pool(),
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.run_residual_pass",
+                        return_value=SimpleNamespace(
+                            fixes={src: fixed},
+                            needs_review=[],
+                            released_notes=[],
+                            convention="paren_roman",
+                        ),
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.is_section_heading_source",
+                        return_value=True,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.check_heading_consistency",
+                        return_value=SimpleNamespace(
+                            majority_form="section_n", fixes={}, outliers=[]
+                        ),
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.sanitize_tm_pairs",
+                        side_effect=spy_sanitize,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.insert_batch",
+                        side_effect=capture_insert,
+                    )
+                )
+                runner._run()
+
+            self._terminal_message(runner, DoneMsg)
+            # 入库的是序号修复后的最终译文，不是 API 原始返回
+            self.assertEqual(inserted, [("zh-en", [(src, fixed)])])
+            # 文档级惯例与全篇标题多数派必须贯通到入库口
+            self.assertEqual(len(sanitize_calls), 1)
+            self.assertEqual(sanitize_calls[0].get("convention"), "paren_roman")
+            self.assertEqual(sanitize_calls[0].get("heading_majority"), "section_n")
+
+    def test_word_tm_write_failure_degrades_to_warning_and_files_still_write(self) -> None:
+        """词库写入失败不许弄死任务（Excel store_api_results_in_tm 的同一条规矩）。
+
+        写库发生在 API 全部付费返回之后、双语文件写出之前：一次 database is locked
+        以前会把整个任务带走，一个文件都拿不到。现在必须降级为 WARN + 报告条目，
+        阶段 3 照常写文件。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            Document().save(source)
+            src = "施工安全措施。"
+            translated = "Safety measures for the construction site."
+            prepared = SimpleNamespace(
+                path=source,
+                method="编号预处理：Python 兜底",
+                temp_paths=(),
+                fallback_messages=(),
+                labels_seen=0,
+                labels_prepended=0,
+                conversion_method="not_required",
+                conversion_fidelity="not_required",
+                numbering_method="python_conservative",
+                numbering_fallback_messages=(),
+            )
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+
+            def translate_with_all_results(texts, *_args, **kwargs):
+                kwargs["drained_callback"]()
+                return {text: translated for text in texts}
+
+            with ExitStack() as stack:
+                writer = self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: prepared},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[WordSegment(src, "paragraph", "正文第 1 段")],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={src: None},
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=translate_with_all_results,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=self._stub_recovery_pool(),
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.insert_batch",
+                        side_effect=sqlite3.OperationalError("database is locked"),
+                    )
+                )
+                runner._run()
+
+            done = self._terminal_message(runner, DoneMsg)
+            self.assertEqual(done.files[0]["status"], "succeeded")
+            self.assertTrue(writer.called)
+            tm_rows = [
+                issue
+                for issue in done.issues
+                if issue.get("problem") == "翻译记忆库写入失败"
+            ]
+            self.assertEqual(len(tm_rows), 1)
+            self.assertIn("没有存入词库", str(tm_rows[0].get("status")))
+            # sqlite 的英文原文进日志即可，WARN 里必须有中文说明
+            warnings = [
+                message.message
+                for message in list(runner._queue.queue)
+                if getattr(message, "level", "") == "WARN"
+            ]
+            self.assertTrue(any("没有存入词库" in message for message in warnings))
 
     def test_only_the_paragraph_that_kept_its_source_text_gets_a_review_mark(self) -> None:
         """严格重试恢复和语义仲裁接受都不上底色——它们已经有可用的译文了。

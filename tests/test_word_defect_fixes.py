@@ -395,7 +395,9 @@ class WordTableCellReplaceTests(unittest.TestCase):
         )
         self.assertEqual(issue["file"], "a.docx")
         self.assertEqual(issue["kind"], "table_cell")
-        self.assertEqual(issue["location_label"], "表格 1 / 单元格 3")
+        # 行数不齐是在输出文档里发现的，位置标签带「输出」前缀，
+        # 免得用户拿着报告去源文档里数段落
+        self.assertEqual(issue["location_label"], "输出表格 1 / 单元格 3")
         self.assertEqual(issue["severity"], "needs_review")
         self.assertIn("行数不一致", issue["problem"])
         self.assertIn("甲", issue["snippet"])

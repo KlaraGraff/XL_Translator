@@ -34,7 +34,6 @@ from core.word_task_runner import (
     _append_post_write_coverage_issues,
     _WordRecoveryPool,
     _build_source_excerpt,
-    _run_word_strict_retries,
     _write_word_quality_report,
 )
 from engines.base_engine import TranslationEngine
@@ -1197,55 +1196,63 @@ class WordDocumentTests(unittest.TestCase):
             )
         )
 
-    def test_word_strict_retry_repeats_until_translation_recovers(self) -> None:
+    def test_word_recovery_pool_retries_until_translation_recovers(self) -> None:
         source = "短段落也应该通过多次重试恢复。"
-        api_translations = {source: source}
         retry_settings = WordBatchSettings()
         retry_settings.max_paragraphs_per_batch = 1
         engine = RetryWordEngine(success_on_call=3)
 
-        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
-            retry_sources=[source],
-            api_translations=api_translations,
+        pool = _WordRecoveryPool(
             engine=engine,
             target_lang="fr",
             retry_prompt="retry",
             retry_batch_settings=retry_settings,
             retry_attempts=3,
             source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
             should_stop=lambda: False,
+            enable_semantic=False,
+        )
+        pool.add_candidate(source, source)
+        outcome = pool.wait_for_completion()
+
+        self.assertEqual(outcome.fixed_sources, [source])
+        self.assertEqual(outcome.unresolved_sources, [])
+        self.assertEqual(outcome.recovery_review_results, {})
+        self.assertEqual(len(engine.calls), 3)
+        self.assertEqual(
+            outcome.accepted_translations[source],
+            f"Traduction valide {len(source)}",
         )
 
-        self.assertEqual(fixed_sources, [source])
-        self.assertEqual(unresolved_sources, [])
-        self.assertEqual(recovery_reviews, {})
-        self.assertEqual(len(engine.calls), 3)
-        self.assertEqual(api_translations[source], f"Traduction valide {len(source)}")
-
-    def test_word_strict_retry_reports_unresolved_after_attempts_exhausted(self) -> None:
+    def test_word_recovery_pool_reports_unresolved_after_attempts_exhausted(self) -> None:
         source = "短段落如果仍然返回原文则需要复核。"
-        api_translations = {source: source}
         retry_settings = WordBatchSettings()
         retry_settings.max_paragraphs_per_batch = 1
         engine = RetryWordEngine(success_on_call=4)
 
-        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
-            retry_sources=[source],
-            api_translations=api_translations,
+        pool = _WordRecoveryPool(
             engine=engine,
             target_lang="fr",
             retry_prompt="retry",
             retry_batch_settings=retry_settings,
             retry_attempts=3,
             source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
             should_stop=lambda: False,
+            enable_semantic=False,
         )
+        pool.add_candidate(source, source)
+        outcome = pool.wait_for_completion()
 
-        self.assertEqual(fixed_sources, [])
-        self.assertEqual(unresolved_sources, [source])
-        self.assertEqual(recovery_reviews, {})
+        self.assertEqual(outcome.fixed_sources, [])
+        self.assertEqual(outcome.unresolved_sources, [source])
+        self.assertEqual(outcome.recovery_review_results, {})
         self.assertEqual(len(engine.calls), 3)
-        self.assertEqual(api_translations[source], source)
+        self.assertNotIn(source, outcome.accepted_translations)
+        self.assertIn(source, outcome.unresolved_validation_results)
 
     def test_word_recovery_accepts_vnd_ten_thousand_amount_equivalence(self) -> None:
         source = (
@@ -1277,35 +1284,39 @@ class WordDocumentTests(unittest.TestCase):
         )
         self.assertTrue(recovery.is_pass)
 
-    def test_word_retry_soft_accepts_embedded_ocr_digit_with_review(self) -> None:
+    def test_word_recovery_pool_soft_accepts_embedded_ocr_digit_with_review(self) -> None:
         source = "承包0商应被视为已将所有直接和间接成本计入合同金额。"
         translated = (
             "The contractor shall be deemed to have included all direct "
             "and indirect costs in the contract amount."
         )
-        api_translations = {source: source}
         retry_settings = WordBatchSettings()
         retry_settings.max_paragraphs_per_batch = 1
         engine = MappingWordEngine({source: translated})
 
-        fixed_sources, unresolved_sources, recovery_reviews = _run_word_strict_retries(
-            retry_sources=[source],
-            api_translations=api_translations,
+        pool = _WordRecoveryPool(
             engine=engine,
             target_lang="en",
             retry_prompt="retry",
             retry_batch_settings=retry_settings,
             retry_attempts=3,
             source_lang="zh",
+            api_scheduler=None,
+            concurrency=2,
             should_stop=lambda: False,
+            enable_semantic=False,
         )
+        pool.add_candidate(source, source)
+        outcome = pool.wait_for_completion()
 
-        self.assertEqual(fixed_sources, [source])
-        self.assertEqual(unresolved_sources, [])
-        self.assertIn(source, recovery_reviews)
-        self.assertIn("承包0商", recovery_reviews[source].review_fragments)
+        self.assertEqual(outcome.fixed_sources, [source])
+        self.assertEqual(outcome.unresolved_sources, [])
+        self.assertIn(source, outcome.recovery_review_results)
+        self.assertIn(
+            "承包0商", outcome.recovery_review_results[source].review_fragments
+        )
         self.assertEqual(len(engine.calls), 1)
-        self.assertEqual(api_translations[source], translated)
+        self.assertEqual(outcome.accepted_translations[source], translated)
 
     def test_word_recovery_pool_semantic_accepts_valid_rejected_candidate(self) -> None:
         source = "签订时间 / Ngày：2026年 02月10日Ngày 10 tháng 02 năm 2026"
@@ -1610,7 +1621,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertEqual(residual_count, 1)
             self.assertEqual(len(issues), 1)
             self.assertEqual(issues[0]["problem"], "输出文档仍存在未译源文")
-            self.assertEqual(issues[0]["location_label"], "表格 1 / 单元格 2")
+            self.assertEqual(issues[0]["location_label"], "输出表格 1 / 单元格 2")
             self.assertIn("专用砌筑砂浆", issues[0]["snippet"])
 
     def test_post_write_coverage_marks_every_reported_position_in_the_file(self) -> None:

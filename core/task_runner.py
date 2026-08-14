@@ -68,11 +68,10 @@ from core.residual_pipeline import run_residual_pass
 from core.residual_repair import (
     DEFAULT_REPAIR_BREAKER_THRESHOLD,
     DEFAULT_REPAIR_MAX_UNITS,
-    METHOD_FEEDBACK_RETRANSLATION,
-    METHOD_SURGICAL,
+    REPAIR_METHOD_LABELS,
     run_repair_ladder,
 )
-from core.tm_hygiene import sanitize_tm_pairs
+from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
@@ -116,10 +115,8 @@ _EXCEL_REVIEW_MARK_PRIORITY = {
     MIXED_MARK_FOREIGN_NOISE: 30,
 }
 
-_RESIDUAL_REPAIR_METHOD_LABELS = {
-    METHOD_SURGICAL: "外科修补",
-    METHOD_FEEDBACK_RETRANSLATION: "带反馈重译",
-}
+# 修复方法中文名只在 core/residual_repair 维护一份（Word 共用）
+_RESIDUAL_REPAIR_METHOD_LABELS = REPAIR_METHOD_LABELS
 
 # 残留修复阶梯的护栏值只在 core/residual_repair 维护一份（Word 共用）
 _RESIDUAL_REPAIR_MAX_UNITS = DEFAULT_REPAIR_MAX_UNITS
@@ -1999,24 +1996,9 @@ class TaskRunner:
         )
 
     def _log_tm_hygiene(self, hygiene) -> None:
-        """入库卫生留痕：归一是顺手事，拦下的必须说清为什么没进库。"""
-        if hygiene.normalized:
-            self._log(
-                "INFO",
-                f"TM 入库前惯例归一 {len(hygiene.normalized)} 条（序号前缀/标题写法）。",
-            )
-        if hygiene.rejected:
-            samples = "；".join(
-                f"{source[:20]}…（{reason}）" if len(source) > 20 else f"{source}（{reason}）"
-                for source, reason in hygiene.rejected[:3]
-            )
-            self._log(
-                "WARN",
-                (
-                    f"TM 入库复检拦下 {len(hygiene.rejected)} 条带残留中文的配对，"
-                    f"未写入词库：{samples}"
-                ),
-            )
+        """入库卫生留痕：文案在 core/tm_hygiene 维护一份（Word 共用）。"""
+        for level, message in tm_hygiene_log_lines(hygiene):
+            self._log(level, message)
 
     def _log_excel_coverage_plan(self, file_name: str, plan) -> None:
         """Report one file's untranslated-only plan, including the empty case."""

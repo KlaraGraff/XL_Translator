@@ -22,13 +22,8 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
-from core.translation_filter import (
-    VALIDATION_PROFILE_STRICT,
-    validate_translation,
-)
 from core.engine_dispatcher import is_local_engine_name
 from core.language_preflight import TranslationLanguageResult
-from core.translation_protocol import should_apply_quality_filter
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
 
@@ -102,7 +97,6 @@ def translate_word_texts(
     should_stop=None,
     source_lang: str = "zh",
     stats: WordBatchRunStats | None = None,
-    quality_profile: str | None = VALIDATION_PROFILE_STRICT,
     api_scheduler: WeightedApiScheduler | None = None,
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     candidate_callback: CandidateCallback | None = None,
@@ -151,7 +145,6 @@ def translate_word_texts(
             target_lang=target_lang,
             system_prompt=system_prompt,
             source_lang=source_lang,
-            quality_profile=quality_profile,
             api_scheduler=api_scheduler,
             request_category=request_category,
             candidate_callback=candidate_callback,
@@ -276,7 +269,6 @@ def _translate_units_with_fallback(
     target_lang: str,
     system_prompt: str,
     source_lang: str,
-    quality_profile: str | None,
     api_scheduler: WeightedApiScheduler | None,
     request_category: str,
     candidate_callback: CandidateCallback | None,
@@ -339,12 +331,6 @@ def _translate_units_with_fallback(
                 if result is not None:
                     source_result_callback(unit.source, result)
         _notify_whole_paragraph_candidates(units, raw_results, candidate_callback)
-        _apply_word_quality_filter(
-            raw_results,
-            target_lang,
-            source_lang=source_lang,
-            quality_profile=quality_profile,
-        )
         return {
             (unit.source, unit.part_index): raw_results.get(unit.text, unit.text)
             for unit in units
@@ -372,7 +358,6 @@ def _translate_units_with_fallback(
                     target_lang=target_lang,
                     system_prompt=system_prompt,
                     source_lang=source_lang,
-                    quality_profile=quality_profile,
                     api_scheduler=api_scheduler,
                     request_category=request_category,
                     candidate_callback=candidate_callback,
@@ -396,7 +381,6 @@ def _translate_units_with_fallback(
                 target_lang=target_lang,
                 system_prompt=system_prompt,
                 source_lang=source_lang,
-                quality_profile=quality_profile,
                 api_scheduler=api_scheduler,
                 request_category=request_category,
                 candidate_callback=candidate_callback,
@@ -412,7 +396,6 @@ def _translate_units_with_fallback(
                 target_lang=target_lang,
                 system_prompt=system_prompt,
                 source_lang=source_lang,
-                quality_profile=quality_profile,
                 api_scheduler=api_scheduler,
                 request_category=request_category,
                 candidate_callback=candidate_callback,
@@ -482,34 +465,6 @@ def _validate_batch_integrity(payloads: list[str], results: dict[str, str]) -> N
         raise WordBatchIntegrityError(
             f"返回条数不足：输入 {len(payloads)} 条，返回 {len(results)} 条"
         )
-
-
-def _apply_word_quality_filter(
-    results: dict[str, str],
-    target_lang: str,
-    *,
-    source_lang: str,
-    quality_profile: str | None = VALIDATION_PROFILE_STRICT,
-) -> None:
-    if not quality_profile:
-        return
-    reset_count = 0
-    for source in list(results):
-        translated = results[source]
-        if not should_apply_quality_filter(translated):
-            continue
-        validation = validate_translation(
-            source,
-            translated,
-            target_lang=target_lang,
-            source_lang=source_lang,
-            profile=quality_profile,
-        )
-        if validation.is_fail:
-            results[source] = source
-            reset_count += 1
-    if reset_count:
-        logger.warning(f"因 Word 质量校验未通过，已强制保留 {reset_count} 条原文")
 
 
 def _merge_unit_results(

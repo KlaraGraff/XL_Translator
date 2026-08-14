@@ -7,18 +7,13 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+# 「数字 + 中文日期/数量单位」的判定模式只在 core/residual_classifier 维护一份；
+# 残留中文的分级（阻断/可修/放行）也由同一分类器给出，Word / Excel 共用。
+from core.residual_classifier import CN_DATE_UNIT_RE, summarize_residuals
+
 _CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")
 _NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _SEMANTIC_NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)*(?:\s*[万亿])?")
-_CJK_SPAN_RE = re.compile(r"[\u4e00-\u9fa5]+")
-
-# 「数字 + 中文日期/数量单位」残留检测：编号（BTR-ANODE-CCTEB-032、Ø25、1#）与
-# 国际单位（38℃、30 %、m²）本身不含中文字符，天然不会命中；只有真正把中文计
-# 量用语原样留在非中文译文里时才会匹配。数字与单位之间允许出现空格，覆盖
-# 「2025 年 11 月」这类模型输出。较长的词（周岁/万元）排在前面，避免被更短
-# 的子串（岁/元）先行截断匹配范围。
-_CN_DATE_UNIT_RE = re.compile(r"\d+\s*(?:周岁|万元|岁|元|年|月|日|时|分)")
-
 VALIDATION_STATUS_PASS = "pass"
 VALIDATION_STATUS_FAIL = "fail"
 VALIDATION_STATUS_SOFT_PASS_REVIEW = "soft_pass_review"
@@ -523,12 +518,29 @@ def _validate_translation_word_recovery(
             )
         )
 
-    residual_issue = _light_residual_chinese_issue(translated, target_lang=target_lang)
-    if residual_issue is not None:
-        if residual_issue.code == "residual_chinese_blocking":
-            issues.append(residual_issue)
+    # 残留中文分级交给共享分类器（与 Excel、写盘前残留巡检同一套标准）：
+    # 阻断级（日期单位/整句未译）不放行；序号前缀、短语残留、数量单位以
+    # 复核提示放行——它们随后由确定性修复与修复阶梯处理，比在这里一票
+    # 否决多一条自动修复通道。
+    residual = summarize_residuals(translated, target_lang=target_lang)
+    if residual.spans:
+        fragments = _unique_fragments(span.text for span in residual.spans)
+        if residual.blocking:
+            issues.append(
+                TranslationValidationIssue(
+                    code="residual_chinese_blocking",
+                    message="译文仍残留未翻译的中文，疑似未完整翻译。",
+                    fragments=fragments,
+                )
+            )
             return _validation_result_from_issues(issues)
-        issues.append(residual_issue)
+        issues.append(
+            TranslationValidationIssue(
+                code="residual_chinese_light",
+                message="译文残留少量中文，已作为 Word 恢复提示处理。",
+                fragments=fragments,
+            )
+        )
 
     if issues:
         return TranslationValidationResult(
@@ -577,48 +589,15 @@ def _residual_cn_date_unit_issue(
     """
     检测译文中是否残留「数字 + 中文日期/数量单位」组合，例如日译文中夹带的
     "2026年8月9日"、"18周岁"、"20000元"。编号（BTR-ANODE-CCTEB-032、1#）与国际
-    单位（38℃、m²）本身不含中文字符，不会被 _CN_DATE_UNIT_RE 命中。
+    单位（38℃、m²）本身不含中文字符，不会被 CN_DATE_UNIT_RE 命中。
     """
-    matches = _unique_fragments(_CN_DATE_UNIT_RE.findall(str(translated or "")))
+    matches = _unique_fragments(CN_DATE_UNIT_RE.findall(str(translated or "")))
     if not matches:
         return None
     return TranslationValidationIssue(
         code="residual_cn_date_unit",
         message="译文中残留中文日期/数量单位：" + "、".join(matches),
         fragments=matches,
-    )
-
-
-def _light_residual_chinese_issue(
-    translated: str,
-    *,
-    target_lang: str,
-) -> TranslationValidationIssue | None:
-    if target_lang in {"zh", "ja"}:
-        return None
-    spans = _CJK_SPAN_RE.findall(str(translated or ""))
-    if not spans:
-        return None
-
-    total_cjk = sum(len(span) for span in spans)
-    non_space_len = max(len(re.sub(r"\s+", "", str(translated or ""))), 1)
-    fragments = _unique_fragments(spans)
-    if all(set(span) <= {"万", "亿"} for span in spans) and total_cjk <= 4:
-        return TranslationValidationIssue(
-            code="residual_chinese_light",
-            message="译文仅残留少量中文数量单位，已作为 Word 恢复提示处理。",
-            fragments=fragments,
-        )
-    if total_cjk >= 4 or (total_cjk / non_space_len) > 0.04:
-        return TranslationValidationIssue(
-            code="residual_chinese_blocking",
-            message="译文仍残留较多中文，疑似未完整翻译。",
-            fragments=fragments,
-        )
-    return TranslationValidationIssue(
-        code="residual_chinese_light",
-        message="译文残留少量中文，已作为 Word 恢复提示处理。",
-        fragments=fragments,
     )
 
 
