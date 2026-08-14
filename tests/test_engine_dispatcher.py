@@ -484,5 +484,35 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertFalse(hasattr(engine, "_client"))
 
 
+class QualityFilterResetTrackingTests(unittest.TestCase):
+    """质量校验重置不许静默：每条被回退的原文必须记入 stats，任务层才报得出来。
+
+    历史缺陷：_apply_quality_filter 把不合格译文重置回原文时只写一条汇总
+    日志，结果报告里毫无痕迹——用户拿到的文件里那些格子是原文，却以为翻完了。
+    """
+
+    def test_reset_items_are_recorded_in_stats(self) -> None:
+        from core.engine_dispatcher import _apply_quality_filter
+
+        stats = TranslationBatchRunStats()
+        results = {
+            "施工方案总说明": " 施工方案总说明 ",  # same_as_source → 重置
+            "养护要求": "Exigences de cure",  # 合格译文 → 不动
+        }
+        _apply_quality_filter(results, "fr", source_lang="zh", stats=stats)
+
+        self.assertEqual(results["施工方案总说明"], "施工方案总说明")
+        self.assertEqual(results["养护要求"], "Exigences de cure")
+        self.assertEqual(stats.quality_reset_count, 1)
+        self.assertEqual(stats.quality_reset_items, ["施工方案总说明"])
+
+    def test_no_stats_object_still_resets_without_error(self) -> None:
+        from core.engine_dispatcher import _apply_quality_filter
+
+        results = {"施工方案总说明": " 施工方案总说明 "}
+        _apply_quality_filter(results, "fr", source_lang="zh", stats=None)
+        self.assertEqual(results["施工方案总说明"], "施工方案总说明")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

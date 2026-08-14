@@ -94,6 +94,8 @@ class TranslationBatchRunStats:
     failed_batch_count: int = 0
     untranslated_count: int = 0
     failed_items: list[dict[str, str]] = field(default_factory=list)
+    quality_reset_count: int = 0
+    quality_reset_items: list[str] = field(default_factory=list)
     max_request_weight: int = 1
     weighted_scheduler_used: bool = False
     adaptive_concurrency_reductions: int = 0
@@ -118,6 +120,13 @@ class TranslationBatchRunStats:
                         "error": error,
                     }
                 )
+
+    def record_quality_reset(self, source_text: str) -> None:
+        """质量校验把译文重置回原文时留痕：条目必须能被任务层看见并上报。"""
+        with self._lock:
+            self.quality_reset_count += 1
+            if source_text and len(self.quality_reset_items) < _FAILED_ITEM_SAMPLE_LIMIT:
+                self.quality_reset_items.append(source_text)
 
     def record_untranslated(self, texts: Sequence[str], error: str = "") -> None:
         """Mark every entry of a batch as returned without a translation.
@@ -459,7 +468,9 @@ def translate_texts(
             done += len(batch)
             if progress_callback:
                 progress_callback(done, total)
-        _apply_quality_filter(results, target_lang, source_lang=source_lang)
+        _apply_quality_filter(
+            results, target_lang, source_lang=source_lang, stats=run_stats
+        )
         return results
 
     # 云端引擎：ThreadPoolExecutor 并发提交所有批次
@@ -517,7 +528,9 @@ def translate_texts(
                 if not (should_stop and should_stop()):
                     _submit_next()
 
-    _apply_quality_filter(results, target_lang, source_lang=source_lang)
+    _apply_quality_filter(
+        results, target_lang, source_lang=source_lang, stats=run_stats
+    )
     return results
 
 
@@ -969,11 +982,15 @@ def _apply_quality_filter(
     target_lang: str,
     *,
     source_lang: str = "zh",
+    stats: TranslationBatchRunStats | None = None,
 ) -> None:
     """
     检测-拦截-重置闭环：
     对每条译文调用 is_translation_redundant()，若判定为无效，
     强制将译文重置为原文（Source Text），阻止损坏数据写回 Excel。
+
+    重置不允许静默：每条被重置的原文都记入 stats.quality_reset_items，
+    由任务层汇入结果报告——文件里保留原文的格子必须在报告里有对应条目。
     """
     reset_count = 0
     for src in list(results.keys()):
@@ -987,5 +1004,7 @@ def _apply_quality_filter(
         ):
             results[src] = src
             reset_count += 1
+            if stats is not None:
+                stats.record_quality_reset(src)
     if reset_count > 0:
         logger.warning(f"因质量校验未通过，已强制保留 {reset_count} 条原文")

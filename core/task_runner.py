@@ -60,6 +60,7 @@ from core.engine_dispatcher import (
 )
 from core.model_roles import ROLE_TRANSLATION, resolve_effective_model_config
 from core.model_throughput import get_model_throughput
+from core.residual_pipeline import run_residual_pass
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
 from core.excel_automation import (
@@ -1168,6 +1169,29 @@ class TaskRunner:
                         "ERROR",
                         f"本次有 {untranslated_count} 条内容未获得译文，已在结果中标记为未翻译。",
                     )
+                if batch_stats.quality_reset_count:
+                    # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
+                    # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
+                    quality_issues.append(
+                        {
+                            "type": "quality_filter_reset",
+                            "severity": "needs_action",
+                            "count": batch_stats.quality_reset_count,
+                            "message": (
+                                f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
+                                "已回退为原文并标记待复核。这些单元格里保留的是原文，"
+                                "请在输出文件中核对带标记的位置。"
+                            ),
+                            "failed_sources": [
+                                {"source": source, "error": "译文未通过质量校验，已回退为原文"}
+                                for source in batch_stats.quality_reset_items
+                            ],
+                        }
+                    )
+                    self._log(
+                        "WARN",
+                        f"质量校验回退 {batch_stats.quality_reset_count} 条译文为原文，已记入结果报告。",
+                    )
                 self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
 
@@ -1204,6 +1228,77 @@ class TaskRunner:
                         source,
                         MIXED_MARK_UNRESOLVED,
                     )
+
+            # ── 残留中文体检 + 确定性序号修复（0 API，与 Word 共用分类器）──
+            # 放在写盘前：能确定修的（序号前缀）直接改词典，改不了的标记复核。
+            residual_result = run_residual_pass(
+                global_translations.items(), target_lang=target_lang
+            )
+            if residual_result.fixes:
+                global_translations.update(residual_result.fixes)
+                self._log(
+                    "OK",
+                    (
+                        f"残留序号确定性修复 {len(residual_result.fixes)} 条"
+                        f"（序号惯例：{residual_result.convention}）"
+                    ),
+                )
+                quality_issues.append(
+                    {
+                        "type": "residual_numbering_autofixed",
+                        "severity": "info",
+                        "count": len(residual_result.fixes),
+                        "message": (
+                            f"有 {len(residual_result.fixes)} 条译文的中文序号残留"
+                            "已按文档序号惯例自动修复，无需人工处理。"
+                        ),
+                    }
+                )
+            if residual_result.needs_review:
+                for unit in residual_result.needs_review:
+                    _set_excel_review_mark(
+                        excel_review_marks,
+                        unit.source_text,
+                        MIXED_MARK_UNRESOLVED,
+                    )
+                quality_issues.append(
+                    {
+                        "type": "residual_source_language",
+                        "severity": "needs_action",
+                        "count": len(residual_result.needs_review),
+                        "message": (
+                            f"有 {len(residual_result.needs_review)} 条译文残留了未翻译的中文片段，"
+                            "已在输出文件中标记待复核位置。"
+                        ),
+                        "failed_sources": [
+                            {
+                                "source": unit.source_text,
+                                "error": (
+                                    "译文残留中文："
+                                    + "、".join(f"«{span}»" for span in unit.spans)
+                                ),
+                            }
+                            for unit in residual_result.needs_review
+                        ],
+                    }
+                )
+                self._log(
+                    "WARN",
+                    f"检出 {len(residual_result.needs_review)} 条译文残留中文，已标记待复核。",
+                )
+            if residual_result.released_notes:
+                # 万/亿等数量单位残留：不拦发布，但报告里留痕
+                quality_issues.append(
+                    {
+                        "type": "residual_quantity_unit",
+                        "severity": "info",
+                        "count": len(residual_result.released_notes),
+                        "message": (
+                            f"有 {len(residual_result.released_notes)} 条译文保留了「万/亿」等数量单位，"
+                            "通常不影响理解，如需统一可人工调整。"
+                        ),
+                    }
+                )
 
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
