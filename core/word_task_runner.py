@@ -1397,6 +1397,14 @@ class WordTaskRunner:
                                 "OK" if msg.startswith("[OK]") else "INFO",
                                 msg,
                             ),
+                            issue_callback=lambda info: quality_issues.append(
+                                _word_cell_line_mismatch_issue(
+                                    file_name=_file_result_identity(
+                                        file_item, source_root
+                                    ),
+                                    info=info,
+                                )
+                            ),
                             protect_front_matter=self._protect_front_matter,
                             translate_headers_footers=self._translate_headers_footers,
                         )
@@ -2878,6 +2886,26 @@ def _add_quality_issues(
                 continue
             seen_keys.add(key)
             issues.append(issue)
+
+
+def _word_cell_line_mismatch_issue(*, file_name: str, info: dict) -> dict:
+    """替换式译文行数与单元格源文段数不齐时的报告条目。
+
+    写入器已经做了保底（保留全部原文、译文整体追加），这里负责让这件事在报告里
+    被看见——以前这种单元格会被静默清空原文，内容丢了也没人知道。
+    """
+    location = str(info.get("location") or "output.table")
+    return {
+        "file": file_name,
+        "kind": "table_cell",
+        "location": location,
+        "location_label": _format_location_label(location),
+        "section_path": "表格",
+        "snippet": _build_source_excerpt(str(info.get("source") or "")),
+        "problem": "替换译文与原文行数不一致",
+        "status": "已保留原文并在单元格末尾追加整段译文，请人工核对分段。",
+        "severity": "needs_review",
+    }
 
 
 def _append_post_write_coverage_issues(

@@ -31,7 +31,12 @@ from core.word_document import (
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
 )
-from core.word_task_runner import WordTaskRunner, _WordRecoveryOutcome, _WordRecoveryPool
+from core.word_task_runner import (
+    WordTaskRunner,
+    _WordRecoveryOutcome,
+    _WordRecoveryPool,
+    _word_cell_line_mismatch_issue,
+)
 from settings import AppSettings, WordBatchSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -332,7 +337,12 @@ class WordTableCellReplaceTests(unittest.TestCase):
                 "嵌套单元格文本",
             )
 
-    def test_replace_only_cell_with_mismatched_line_count_keeps_no_source_text(self) -> None:
+    def test_replace_only_cell_with_mismatched_line_count_keeps_source_and_appends(self) -> None:
+        """行数不齐（模型丢了第三行）时保留全部原文、译文整体追加，并向报告留痕。
+
+        修复前的回退是"译文全塞第一段、其余源文段清空"：译文没覆盖到的第三段
+        原文被无声抹掉，报告里一个字都不提。
+        """
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source_path = root / "mismatch_cell.docx"
@@ -341,18 +351,54 @@ class WordTableCellReplaceTests(unittest.TestCase):
             cell = table.rows[0].cells[0]
             cell.paragraphs[0].add_run("First line")
             cell.add_paragraph().add_run("Second line")
+            cell.add_paragraph().add_run("Third line")
             doc.save(source_path)
 
+            logs: list[str] = []
+            issues: list[dict] = []
             out_path = write_bilingual_docx(
                 source_path=source_path,
                 output_dir=root / "out",
-                translations={"First line\nSecond line": _replace("合并成一行的译文")},
+                translations={
+                    "First line\nSecond line\nThird line": _replace("第一行\n第二行")
+                },
                 target_lang="zh",
                 source_lang="en",
+                log_callback=logs.append,
+                issue_callback=issues.append,
             )
             out_cell = Document(str(out_path)).tables[0].rows[0].cells[0]
-            self.assertEqual(out_cell.paragraphs[0].text, "合并成一行的译文")
-            self.assertNotIn("Second line", out_cell.text)
+            texts = [paragraph.text for paragraph in out_cell.paragraphs]
+            self.assertEqual(
+                texts[:3],
+                ["First line", "Second line", "Third line"],
+                "行数不齐时源文段被清空——译文没覆盖到的内容就此丢失",
+            )
+            self.assertEqual(texts[-1], "第一行\n第二行", "译文应整体追加在单元格末尾")
+            self.assertEqual(len(issues), 1, "行数不齐必须向报告层留痕")
+            self.assertEqual(issues[0]["location"], "table[0].cell[0]")
+            self.assertEqual(issues[0]["source"], "First line\nSecond line\nThird line")
+            self.assertEqual(issues[0]["translation"], "第一行\n第二行")
+            self.assertTrue(
+                any("行数与原文段数不齐" in line for line in logs),
+                f"日志汇总也要提到行数不齐：{logs}",
+            )
+
+    def test_cell_line_mismatch_issue_matches_report_shape(self) -> None:
+        issue = _word_cell_line_mismatch_issue(
+            file_name="a.docx",
+            info={
+                "location": "table[0].cell[2]",
+                "source": "甲\n乙\n丙",
+                "translation": "A\nB",
+            },
+        )
+        self.assertEqual(issue["file"], "a.docx")
+        self.assertEqual(issue["kind"], "table_cell")
+        self.assertEqual(issue["location_label"], "表格 1 / 单元格 3")
+        self.assertEqual(issue["severity"], "needs_review")
+        self.assertIn("行数不一致", issue["problem"])
+        self.assertIn("甲", issue["snippet"])
 
 
 class WordSentencePackingTests(unittest.TestCase):

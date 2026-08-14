@@ -632,10 +632,17 @@ def write_bilingual_docx(
     review_mark_colors: dict[str, str] | None = None,
     existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
+    issue_callback=None,
     protect_front_matter: bool = False,
     translate_headers_footers: bool = False,
 ) -> Path:
-    """Write a bilingual Word document to the output directory."""
+    """Write a bilingual Word document to the output directory.
+
+    ``issue_callback``：替换式译文行数与单元格源文段数对不上、写入器退到"保留原文
+    +追加译文"时，对每个这样的单元格回调一次，参数是
+    ``{"location": "table[i].cell[j]", "source": 原文, "translation": 译文}``，
+    供调用方写进质量报告。不传则只体现在日志汇总里。
+    """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -672,10 +679,16 @@ def write_bilingual_docx(
     # 一直持有强引用，下面按 id() 判定"是否受保护"才有意义。
     cell_paragraphs: list[Paragraph] = []
     protected_paragraph_ids: set[int] = set()
+    # 位置编号与 word_coverage._classify_table_cells 同一套（cell_index 跨表累加），
+    # 行数不齐的留痕条目才能和体检报告里的定位对得上。
+    cell_locations: dict[int, str] = {}
+    cell_index = 0
     for table_index, table in enumerate(doc.tables):
         table_protected = table_index in protected_tables
         for cell in _iter_unique_table_cells(table):
             table_cells.append(cell)
+            cell_locations[id(cell)] = f"table[{table_index}].cell[{cell_index}]"
+            cell_index += 1
             own_paragraphs = list(cell.paragraphs)
             cell_paragraphs.extend(own_paragraphs)
             if table_protected:
@@ -712,6 +725,7 @@ def write_bilingual_docx(
 
     paragraph_insertions = 0
     table_insertions = 0
+    cell_line_mismatch_count = 0
     highlight_count = 0
     highlight_skip_count = 0
 
@@ -804,7 +818,16 @@ def write_bilingual_docx(
                     highlight_skip_count += 1
             continue
         if resolved.replace_only:
-            _replace_cell_text(cell, resolved.text, target_lang=target_lang)
+            if not _replace_cell_text(cell, resolved.text, target_lang=target_lang):
+                cell_line_mismatch_count += 1
+                if issue_callback:
+                    issue_callback(
+                        {
+                            "location": cell_locations.get(id(cell), ""),
+                            "source": source,
+                            "translation": resolved.text,
+                        }
+                    )
         else:
             _append_translation_to_cell(
                 cell,
@@ -859,9 +882,15 @@ def write_bilingual_docx(
         header_footer_summary = (
             f"，页眉页脚 {header_footer_insertions}" if translate_headers_footers else ""
         )
+        mismatch_summary = (
+            f"，其中 {cell_line_mismatch_count} 格译文行数与原文段数不齐（已保留原文并追加译文）"
+            if cell_line_mismatch_count
+            else ""
+        )
         log_callback(
             f"[OK] 已输出：{out_path.name}（段落 {paragraph_insertions}，"
-            f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
+            f"表格单元格 {table_insertions}{mismatch_summary}"
+            f"{header_footer_summary}{highlight_summary}）"
         )
     return out_path
 
@@ -2170,19 +2199,16 @@ def _replace_paragraph_text(
     _drop_emptied_hyperlinks(paragraph)
 
 
-def _clear_paragraph_text(paragraph: Paragraph) -> None:
-    for run in _paragraph_content_runs(paragraph):
-        run.text = ""
-    _drop_emptied_hyperlinks(paragraph)
-
-
-def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> None:
+def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> bool:
     """逐段改写单元格文本，保留嵌套表格、多段落与段落内的局部格式。
 
     ``cell.text = ...`` 会把整个 ``w:tc`` 清空、只留下一个纯文本段落：单元格里的
     嵌套表格、其余段落、局部加粗全部被压平，而这只是"把原文换成译文"而已。单元格
     原文本身就是各直接子段落的文本用换行拼起来的（见 ``_cell_source_text``），所以
     译文也按换行拆回去、一段对一段地写。
+
+    返回 True 表示逐段替换完成；False 表示译文行数与源文段数对不上、走了保底
+    路径：源文段全部原样保留，译文整体追加到单元格末尾，调用方据此在报告里留痕。
     """
     paragraphs = [
         paragraph
@@ -2192,19 +2218,19 @@ def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> None:
     if not paragraphs:
         target = next(iter(_iter_cell_direct_paragraphs(cell)), None) or cell.add_paragraph()
         _replace_paragraph_text(target, text, target_lang=target_lang)
-        return
+        return True
 
     lines = str(text or "").split("\n")
     if len(lines) == len(paragraphs):
         for paragraph, line in zip(paragraphs, lines):
             _replace_paragraph_text(paragraph, line, target_lang=target_lang)
-        return
+        return True
 
-    # 行数对不上（模型合并或拆分了换行）时不再猜哪一行对应哪一段：整段译文写进第一
-    # 段，其余原文段清空。留下空段落好过让原文残留在译文旁边。
-    _replace_paragraph_text(paragraphs[0], text, target_lang=target_lang)
-    for paragraph in paragraphs[1:]:
-        _clear_paragraph_text(paragraph)
+    # 行数对不上（模型合并、拆分或干脆丢了行）时不再猜哪一行对应哪一段，也不能清空
+    # 源文段：行数不齐正说明译文未必覆盖了每一段，把没对上的原文抹掉，漏译的内容就
+    # 从文档里无声消失了。改为整格保留原文、译文按双语版式追加在末尾，交人工核对。
+    _append_translation_to_cell(cell, text, target_lang=target_lang)
+    return False
 
 
 def _trim_trailing_empty_body_paragraphs(doc) -> None:
