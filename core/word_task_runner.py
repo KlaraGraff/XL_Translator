@@ -27,11 +27,7 @@ from core.api_scheduler import (
 )
 from core.bilingual_writer import get_custom_output_dir_error
 from core.coverage_arbitration import RETRANSLATE_MODEL
-from core.coverage_review import (
-    arbitrate_coverage_units,
-    build_pair_arbitration_prompt as _build_coverage_pair_arbitration_prompt,
-    run_pair_arbitration_batch as _run_coverage_pair_arbitration,
-)
+from core.coverage_review import arbitrate_coverage_units
 from core.word_coverage import (
     apply_coverage_review_marks,
     build_word_coverage_plan,

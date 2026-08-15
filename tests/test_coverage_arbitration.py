@@ -715,7 +715,7 @@ class RunnerGlueTests(unittest.TestCase):
 
 
 class BatchRequestTests(unittest.TestCase):
-    """_run_coverage_pair_arbitration：一次请求判一批，结果按 id 回填。"""
+    """coverage_review.run_pair_arbitration_batch：一次请求判一批，结果按 id 回填。"""
 
     def _pairs(self, count: int) -> list[ArbitrationPair]:
         return [
@@ -747,7 +747,7 @@ class BatchRequestTests(unittest.TestCase):
             )
         )
 
-        verdicts = word_task_runner._run_coverage_pair_arbitration(
+        verdicts = coverage_review.run_pair_arbitration_batch(
             engine,
             self._pairs(3),
             target_lang="fr",
@@ -769,7 +769,7 @@ class BatchRequestTests(unittest.TestCase):
         engine, _ = self._engine(RuntimeError("网络中断"))
         warnings: list[str] = []
 
-        verdicts = word_task_runner._run_coverage_pair_arbitration(
+        verdicts = coverage_review.run_pair_arbitration_batch(
             engine,
             self._pairs(2),
             target_lang="fr",
@@ -786,7 +786,7 @@ class BatchRequestTests(unittest.TestCase):
         engine, _ = self._engine(ApiKeyTemporarilyUnavailableError("key 暂不可用"))
 
         with self.assertRaises(ApiKeyTemporarilyUnavailableError):
-            word_task_runner._run_coverage_pair_arbitration(
+            coverage_review.run_pair_arbitration_batch(
                 engine,
                 self._pairs(1),
                 target_lang="fr",
@@ -799,7 +799,7 @@ class BatchRequestTests(unittest.TestCase):
             with self.subTest(reply=reply):
                 engine, _ = self._engine(reply)
                 self.assertEqual(
-                    word_task_runner._run_coverage_pair_arbitration(
+                    coverage_review.run_pair_arbitration_batch(
                         engine,
                         self._pairs(2),
                         target_lang="fr",
@@ -813,7 +813,7 @@ class BatchRequestTests(unittest.TestCase):
         self,
     ) -> None:
         """人工写的法定译名跟字面翻译对不齐，按机器译文的尺度卡会把它们全判成错。"""
-        prompt = word_task_runner._build_coverage_pair_arbitration_prompt()
+        prompt = coverage_review.build_pair_arbitration_prompt()
 
         for expected in ("法定译名", "惯用译名", "同义词", "语序", "缩写", "简洁"):
             self.assertIn(expected, prompt)
