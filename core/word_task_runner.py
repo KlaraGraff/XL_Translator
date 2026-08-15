@@ -27,7 +27,9 @@ from core.api_scheduler import (
 )
 from core.bilingual_writer import get_custom_output_dir_error
 from core.coverage_arbitration import (
+    RETRANSLATE_MODEL,
     RETRANSLATE_UNCERTAIN,
+    ArbitrationPair,
     apply_arbitration,
     collect_arbitration_candidates,
     review_coverage_pairs,
@@ -148,6 +150,10 @@ _SEMANTIC_RESIDUAL_CJK_COUNT_BLOCK = 12
 # 和原文本身可疑。程序自己已经判过并放行的——严格重试恢复、语义仲裁认定等义——一律
 # 不上底色，只在质量报告里留记录。满篇底色等于没有底色：用户会挨个点开发现全是"已处理"，
 # 下一次就整片跳过，真正的问题跟着一起被跳过。
+# 「原文本身可疑」这一类不只装混合语言那一种：补译复核判定"紧邻段落不是这一段的译文"
+# 也归进来——程序只能在旁边补一条译文，原来那条可疑内容删不删得由人看着原件定，
+# 属于需要人手处理，符合上面那条规矩。但只有模型真判了 not_equivalent 才上底色；
+# 没问出结果而从严重翻的那批不上——接口抖一下就是一整批，涂红了就是满篇底色。
 # 这张表只在一件事上用得着：同一条原文被判进两类时留哪一类（见 _set_review_mark）。
 # 全集就是这两个——「语义校验接受」那一类在 9.3.1 整类删除了，它是"已经没事了"的
 # 记录，不该占用文档上的底色。
@@ -368,6 +374,7 @@ class WordTaskRunner:
         file_name: str,
         file_identity: str,
         quality_issues: list[dict],
+        review_marks: dict[str, str],
     ) -> None:
         """复核「这一段中文的下一段真的是它的译文吗」，判错的打回去重新翻译。
 
@@ -395,18 +402,19 @@ class WordTaskRunner:
 
         arbitrate = None
         if engine_supports_chat(engine):
-            def arbitrate(source: str, candidate: str) -> str:
+            def arbitrate(pairs) -> dict[str, str]:
                 if self._stop_event.is_set():
-                    return _SEMANTIC_VERDICT_EQUIVALENT
-                return _run_semantic_arbitration(
+                    # 用户按了停止，剩下的一律保持原判——停止不该顺手把一份翻好的
+                    # 文档改判成"要重翻"。
+                    return {pair.id: _SEMANTIC_VERDICT_EQUIVALENT for pair in pairs}
+                return _run_coverage_pair_arbitration(
                     engine,
-                    source,
-                    candidate,
+                    pairs,
                     target_lang=target_lang,
                     source_lang=source_lang,
                     api_scheduler=api_scheduler,
                     error_callback=lambda message: self._log("WARNING", message),
-                ).verdict
+                )
 
         try:
             outcome = review_coverage_pairs(
@@ -414,9 +422,12 @@ class WordTaskRunner:
                 known_translations=known_translations,
                 arbitrate=arbitrate,
                 max_workers=max(1, int(concurrency or 4)),
-                notify_model_checks=lambda count: self._log(
+                notify_model_checks=lambda count, batches: self._log(
                     "INFO",
-                    f"  → 补译复核：{count} 对疑似配对送模型判定，请稍候。",
+                    (
+                        f"  → 补译复核：{count} 对已有译文送模型判定，"
+                        f"分 {batches} 批发出，请稍候。"
+                    ),
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -441,11 +452,14 @@ class WordTaskRunner:
             detail += f"（其中 {uncertain} 对因未取得判定结果而从严处理）"
         # 有候选就报一句，哪怕结论是"全都没问题"。只在有异常时才吭声的检查，用户
         # 无从分辨它是查过了没事，还是压根没跑。
+        batch_note = (
+            f"（分 {outcome.model_batch_count} 批）" if outcome.model_batch_count else ""
+        )
         self._log(
             "INFO",
             (
                 f"  → 补译复核：{len(candidates)} 对已有译文，"
-                f"其中 {outcome.model_check_count} 对送模型判定，{detail}。"
+                f"其中 {outcome.model_check_count} 对送模型判定{batch_note}，{detail}。"
             ),
         )
         if outcome.skipped_over_cap:
@@ -456,7 +470,19 @@ class WordTaskRunner:
                     f"{outcome.skipped_over_cap} 对未送模型，按原判保留为已有译文。"
                 ),
             )
-        for unit in flipped:
+        for review in outcome.retranslated:
+            unit = review.unit
+            judged = review.reason == RETRANSLATE_MODEL
+            if judged:
+                # 模型确实判了"旁边那条不是这一段的译文"：程序只能补一条新译文上去，
+                # 没法替用户判断旧的那条是错配、是别处漏过来的、还是压根不该在这儿。
+                # 要对着原件看，所以归进「疑似原文异常」一起上底色。
+                _set_review_mark(
+                    review_marks, unit.source_text, MIXED_MARK_FOREIGN_NOISE
+                )
+            # 没问出结果的那批不上底色。接口抖一下就是整整一批（25 对）落到 uncertain，
+            # 给它们全涂上红底，用户点开发现全是好好的译文——底色一失信，真正判出问题
+            # 的那几段就跟着一起被跳过了。这一类只在报告里留一行。
             quality_issues.append(
                 {
                     "file": file_identity,
@@ -465,9 +491,23 @@ class WordTaskRunner:
                     "location_label": _format_location_label(unit.location),
                     "section_path": unit.section_path or "正文",
                     "snippet": _build_source_excerpt(unit.source_text),
-                    "problem": "紧邻段落不是这一段的译文",
-                    "status": "复核判定后已改为补译，原有内容保持不变。",
-                    "severity": "resolved",
+                    "problem": (
+                        "紧邻段落不是这一段的译文"
+                        if judged
+                        else "紧邻段落是不是这一段的译文，未能判定"
+                    ),
+                    "status": (
+                        (
+                            "已按未翻译处理并补上译文；原有的紧邻内容保持不变，"
+                            "但它很可能不是这一段的译文，请对照原件人工核对后删改。"
+                        )
+                        if judged
+                        else (
+                            "未取得判定结果，已从严按未翻译处理并补上译文，"
+                            "原有内容保持不变。"
+                        )
+                    ),
+                    "severity": "needs_review" if judged else "resolved",
                 }
             )
         if flipped:
@@ -741,6 +781,7 @@ class WordTaskRunner:
                                 file_item, self._source_root
                             ),
                             quality_issues=quality_issues,
+                            review_marks=review_marks,
                         )
                         coverage_plans.append(coverage_plan)
                         _remember_coverage_unit_locations(
@@ -1605,6 +1646,7 @@ class WordTaskRunner:
                     )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")
+
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
 
@@ -2988,6 +3030,147 @@ def _build_semantic_arbitration_prompt() -> str:
         "4. 无法确定时判定为 uncertain。\n"
         "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
         '{"verdict":"equivalent|not_equivalent|uncertain","reason":"简短原因"}'
+    )
+
+
+def _run_coverage_pair_arbitration(
+    engine,
+    pairs: list[ArbitrationPair],
+    *,
+    target_lang: str,
+    source_lang: str,
+    api_scheduler: WeightedApiScheduler | None,
+    error_callback: Callable[[str], None] | None = None,
+) -> dict[str, str]:
+    """一次请求判一批「原文段 ＋ 紧邻段」，返回 {id: verdict}。
+
+    补译复核取消长度比预筛之后，送判对数是原来的好几倍；一对一次请求会把请求数打爆，
+    所以按批发。返回的 key 用调用方给的 id，不靠顺序对齐——模型漏返、多返、乱序都
+    只会让对应的那几对落到 uncertain，不会把 A 的裁定安到 B 头上。
+
+    出错一律返回空 dict（上游按 uncertain 处理，也就是重翻），只有
+    ApiKeyTemporarilyUnavailableError 要往上抛——那是"这个 key 暂时不能用"的调度信号，
+    吞掉会让整轮任务在错误的 key 上空转。
+    """
+    entries: list[tuple[str, str, str]] = []
+    for pair in pairs:
+        candidate_text = _candidate_validation_text(pair.candidate)
+        if not candidate_text:
+            continue
+        entries.append((pair.id, pair.source, candidate_text))
+    if not entries:
+        return {}
+
+    system_prompt = _build_coverage_pair_arbitration_prompt()
+    user_payload = json.dumps(
+        {
+            "source_language": source_lang,
+            "target_language": target_lang,
+            "pairs": [
+                {
+                    "id": pair_id,
+                    "source_text": source,
+                    "existing_translation": candidate,
+                }
+                for pair_id, source, candidate in entries
+            ],
+        },
+        ensure_ascii=False,
+    )
+    weight_texts: list[str] = []
+    for _, source, candidate in entries:
+        weight_texts.extend((source, candidate))
+    weight = estimate_api_request_weight(weight_texts, system_prompt)
+
+    request_generation: int | None = None
+    try:
+        if api_scheduler is None:
+            raw = engine.chat(system_prompt, user_payload)
+        else:
+            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+                request_generation = lease.generation
+                raw = engine.chat(system_prompt, user_payload)
+        payload = json.loads(strip_markdown_json(raw))
+    except Exception as exc:  # noqa: BLE001 - 判不出就当拿不准，不能连累整个文件
+        if isinstance(exc, ApiKeyTemporarilyUnavailableError):
+            raise
+        if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Word 补译复核",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                return _run_coverage_pair_arbitration(
+                    engine,
+                    pairs,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    api_scheduler=api_scheduler,
+                    error_callback=error_callback,
+                )
+        if error_callback is not None:
+            # 一批判不出就是一批段落被从严重翻，用户看到多出来的译文得知道是为什么。
+            error_callback(
+                f"  → 补译复核：一批 {len(entries)} 对未取得判定结果（{exc}），"
+                "这一批按从严处理。"
+            )
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+    items = payload.get("results")
+    if not isinstance(items, list):
+        return {}
+
+    verdicts: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pair_id = str(item.get("id", "")).strip()
+        if not pair_id:
+            continue
+        verdict = str(item.get("verdict") or "").strip().lower()
+        if verdict not in {
+            _SEMANTIC_VERDICT_EQUIVALENT,
+            _SEMANTIC_VERDICT_NOT_EQUIVALENT,
+            _SEMANTIC_VERDICT_UNCERTAIN,
+        }:
+            verdict = _SEMANTIC_VERDICT_UNCERTAIN
+        verdicts[pair_id] = verdict
+    return verdicts
+
+
+def _build_coverage_pair_arbitration_prompt() -> str:
+    """补译复核专用提示词——尺度比 _build_semantic_arbitration_prompt 宽得多。
+
+    那一份判的是"机器刚翻出来的译文合不合格"，从严是对的。这一份判的是"文档里本来
+    就有的这段文字，是不是上一段的译文"，写它的多半是人：单位的法定译名、合同上的
+    签署译名跟字面翻译本来就对不齐，按机器译文的尺度去卡，会把大批好好的人工译文
+    判成"不是译文"，然后在旁边再插一条机器译文——那是给用户添乱。
+    所以这里只抓三种硬伤：说的是另一件事、整块内容缺失、数字对不上。
+    """
+    return (
+        "你在核对一份双语文档：给你若干对文字，每一对是「文档里的一段原文」和"
+        "「紧挨在它后面的那段文字」。你只判断后者是不是前者的译文。\n"
+        "这些译文多半是人工写的，不是机器翻的。判定尺度要宽松，以下情形全部算 equivalent：\n"
+        "1. 用了单位、公司、项目、机构的法定译名、官方译名或惯用译名，而不是字面直译；\n"
+        "2. 用了合同、公文里约定俗成的签署译名、职务译名、文件名译法，与字面翻译对不上；\n"
+        "3. 术语选词不同、用了同义词、表达习惯不同；\n"
+        "4. 语序不同、句子被拆开或被合并、标点与分段不同；\n"
+        "5. 使用了缩写、简称、代号或编号形式；\n"
+        "6. 译文比原文简洁，省去了重复表述或不影响事实的修饰语。\n"
+        "只有下面三种情形才判 not_equivalent：\n"
+        "a. 两段讲的明显是另一件事（内容不相关，或者后者其实是另一段的译文）；\n"
+        "b. 原文里有整块实质内容在译文里完全缺失——是整块没有，不是简写或省略修饰；\n"
+        "c. 数字、日期、金额、期限、编号互相矛盾。\n"
+        "以上三种都不符合就判 equivalent；确实拿不准才判 uncertain。\n"
+        "输入是一个 JSON 对象，pairs 数组里每一项有 id、source_text、existing_translation。\n"
+        "必须逐项判定：每个 id 各给一条结果，不能漏项、不能合并、不能自己编造 id。\n"
+        "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
+        '{"results":[{"id":"0","verdict":"equivalent|not_equivalent|uncertain"}]}'
     )
 
 
