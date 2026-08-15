@@ -310,6 +310,48 @@ class ChannelGlueTests(unittest.TestCase):
         self.assertEqual([issue["file"] for issue in issues], ["甲.docx", "乙.docx"])
 
 
+class SplitTests(unittest.TestCase):
+    """哪些行进通道：只有页眉页脚里「已经混着非源语言内容」的那些。"""
+
+    def _split(self, segments):
+        runner = word_task_runner.WordTaskRunner.__new__(word_task_runner.WordTaskRunner)
+        entries: list[tuple[str, WordSegment]] = []
+        normal = runner._split_header_channel_lines(
+            segments,
+            identity="方案.docx",
+            source_lang="zh",
+            entries=entries,
+        )
+        return normal, entries
+
+    def test_only_mixed_header_and_footer_lines_leave_the_normal_path(self) -> None:
+        plain_header = _segment("某某工程 抢工方案")
+        mixed_footer = WordSegment(
+            source="编制单位：中建八局 CSCEC 8e Bureau 审核版",
+            kind="footer",
+            location="footer[footer1].paragraph[0]",
+            section_path="页脚",
+        )
+        body = WordSegment(
+            source=REAL_HEADER,
+            kind="paragraph",
+            location="body.paragraph[3]",
+            section_path="正文",
+        )
+
+        normal, entries = self._split([_segment(REAL_HEADER), plain_header, mixed_footer, body])
+
+        # 正文段落即使同样混排也不进通道——通道的成品是整行替换，会把正文排版一起改掉。
+        self.assertEqual(
+            {source for source in normal},
+            {plain_header.source, body.source},
+        )
+        self.assertEqual(
+            [segment.location for _identity, segment in entries],
+            ["header[header1].paragraph[0]", "footer[footer1].paragraph[0]"],
+        )
+
+
 class BatchRequestTests(unittest.TestCase):
     def test_a_good_reply_is_parsed_into_line_and_added(self) -> None:
         engine = _Engine(_reply([REAL_HEADER]))

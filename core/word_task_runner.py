@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from loguru import logger
 
@@ -149,6 +149,7 @@ from engines.base_engine import engine_supports_chat, strip_markdown_json
 from settings import AppSettings, provider_key_overrides
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_HEADER_FOOTER_KINDS = ("header", "footer")
 _SEMANTIC_VERDICT_EQUIVALENT = "equivalent"
 _SEMANTIC_VERDICT_NOT_EQUIVALENT = "not_equivalent"
 _SEMANTIC_VERDICT_UNCERTAIN = "uncertain"
@@ -525,6 +526,30 @@ class WordTaskRunner:
                 "INFO",
                 f"  → {file_name}：{len(flipped)} 段原判「已有译文」经复核改为补译。",
             )
+
+    def _split_header_channel_lines(
+        self,
+        segments: Iterable[WordSegment],
+        *,
+        identity: str,
+        source_lang: str,
+        entries: list[tuple[str, WordSegment]],
+    ) -> set[str]:
+        """把「行里已经混着非源语言内容」的页眉页脚行挑到专用通道，其余照常返回。
+
+        典型是中文项目名后面紧挨着合同上签的法文法定译名，再跟一段还没翻的中文。
+        这种行整条走正常通道，模型会把整行重翻一遍，签在合同上的那个译名就被改写了。
+        补译和全译两条路都走这一步——同一份文档换个模式跑，页眉不该有两种结果。
+        """
+        normal: set[str] = set()
+        for segment in segments:
+            if segment.kind in _HEADER_FOOTER_KINDS and line_has_foreign_content(
+                segment.source, source_lang=source_lang
+            ):
+                entries.append((identity, segment))
+            else:
+                normal.add(segment.source)
+        return normal
 
     def _resolve_header_footer_lines(
         self,
@@ -954,29 +979,20 @@ class WordTaskRunner:
                                 _file_result_identity(file_item, self._source_root),
                                 header_segments,
                             )
-                            # 行里已经混着非源语言内容的（中文项目名后面挤着法文法定
-                            # 译名那种），走专用通道：整行交给模型只补缺的那截，已有
-                            # 的译名一个字符都不许改。走正常通道会把整行重翻一遍，
-                            # 合同里签的那个译名就被改写了。
-                            for segment in header_segments:
-                                if line_has_foreign_content(
-                                    segment.source,
+                            text_set.update(
+                                self._split_header_channel_lines(
+                                    header_segments,
+                                    identity=_file_result_identity(
+                                        file_item, self._source_root
+                                    ),
                                     source_lang=(
                                         source_lang
                                         if not auto_source_lang
                                         else get_default_source_lang()
                                     ),
-                                ):
-                                    header_channel_entries.append(
-                                        (
-                                            _file_result_identity(
-                                                file_item, self._source_root
-                                            ),
-                                            segment,
-                                        )
-                                    )
-                                else:
-                                    text_set.add(segment.source)
+                                    entries=header_channel_entries,
+                                )
+                            )
                         summary = coverage_plan.summary
                         self._log(
                             "INFO",
@@ -1012,7 +1028,19 @@ class WordTaskRunner:
                             _file_result_identity(file_item, self._source_root),
                             segments,
                         )
-                        text_set = {segment.source for segment in segments}
+                        # 全译模式的页眉页脚同样分流：这种行整条重翻一遍，接在后面的
+                        # 译文会把合同上签的那个译名重写一遍（而且页眉高度是固定的，
+                        # 白接一段没必要的字）。走专用通道只补缺的那截。
+                        text_set = self._split_header_channel_lines(
+                            segments,
+                            identity=_file_result_identity(file_item, self._source_root),
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
+                            entries=header_channel_entries,
+                        )
                         # extract_word_segments 只返回抽取好的词条，不携带边界信息；
                         # 全文翻译模式下要单独查一次正文边界才能把保护结果上报给前端，
                         # 这与补译模式下 coverage_plan.front_matter 已经"顺手"带出来不同。
