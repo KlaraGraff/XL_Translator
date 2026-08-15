@@ -11,7 +11,6 @@ import httpx
 from loguru import logger
 
 from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT, RETRY_MAX_ATTEMPTS
-from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
     TranslationEngine,
@@ -71,7 +70,6 @@ class OllamaEngine(TranslationEngine):
         instruction = TASK_INSTRUCTION.format(
             source_lang_name=source_lang_name,
             target_lang_name=target_lang_name,
-            replace_prefix=REPLACE_TRANSLATION_PREFIX,
         )
         full_system = f"{system_prompt}\n\n{instruction}".strip()
 

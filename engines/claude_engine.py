@@ -14,7 +14,6 @@ from config import (
     RETRY_WAIT_MIN,
     RETRY_WAIT_MAX,
 )
-from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from engines.base_engine import (
     TASK_INSTRUCTION,
     TranslationEngine,
@@ -51,7 +50,6 @@ class ClaudeEngine(TranslationEngine):
         instruction = TASK_INSTRUCTION.format(
             source_lang_name=source_lang_name,
             target_lang_name=target_lang_name,
-            replace_prefix=REPLACE_TRANSLATION_PREFIX,
         )
         full_system = f"{system_prompt}\n\n{instruction}".strip()
         user_msg    = json.dumps(texts, ensure_ascii=False)
