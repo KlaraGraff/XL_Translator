@@ -118,9 +118,19 @@ from core.word_converter import (
     convert_doc_to_docx,
     is_legacy_word_doc,
 )
+from core.header_footer_channel import (
+    HEADER_FOOTER_BATCH_SIZE,
+    RESOLUTION_MODEL_APPEND,
+    build_header_footer_payload,
+    build_header_footer_prompt,
+    line_has_foreign_content,
+    parse_header_footer_response,
+    resolve_header_footer_lines,
+)
 from core.word_document import (
     WordFileItem,
     WordFrontMatterBoundary,
+    WordSegment,
     build_word_output_dir,
     count_text_bearing_header_footer_parts,
     detect_hidden_word_content,
@@ -516,6 +526,141 @@ class WordTaskRunner:
                 f"  → {file_name}：{len(flipped)} 段原判「已有译文」经复核改为补译。",
             )
 
+    def _resolve_header_footer_lines(
+        self,
+        entries: list[tuple[str, WordSegment]],
+        *,
+        engine,
+        api_scheduler: WeightedApiScheduler | None,
+        tm_manager,
+        tm_language_pairs: list[str],
+        target_lang: str,
+        source_lang: str,
+        global_translations: dict[str, str],
+        body_texts: set[str],
+        quality_issues: list[dict],
+    ) -> None:
+        """页眉页脚里「已经混着译文」的行走这一趟，结果并进 global_translations。
+
+        这些行的规矩和正文不一样：行里凡是不属于源语言的内容，都当成已经定稿的译名
+        （合同上签的法文名往往不是字面直译，而且目标语言可能是英文——按目标语言判会
+        把它当成没翻），一个字符都不许改，只补缺的那截。机器验收只认一条硬规则：原
+        行的每一个片段都要原样按顺序出现在成品里；验不过就退回「只把新译文接在行尾」，
+        再不行就整行不动——宁可少翻一行页眉，也不能把合同译名改掉。
+        """
+        # 同一个字符串既是页眉又是正文段落时不走这条路：通道的成品是「整行替换」，
+        # 拿去替换正文段落会把那一段的排版和分行一起改掉。这种行按老路走（它已经
+        # 在正文的待翻集合里），什么都不用做。
+        collided = {
+            source
+            for _identity, segment in entries
+            if (source := segment.source) in body_texts
+        }
+        if collided:
+            self._log(
+                "INFO",
+                f"  → 页眉页脚：{len(collided)} 行与正文内容相同，按正文的译文处理。",
+            )
+        lines = [
+            segment.source
+            for _identity, segment in entries
+            if segment.source not in collided
+        ]
+        lines = list(dict.fromkeys(lines))
+        if not lines:
+            return
+
+        def tm_lookup(probes: list[str]) -> dict[str, str]:
+            found: dict[str, str] = {}
+            for probe in probes:
+                value = global_translations.get(probe)
+                # 整体替换标记是「这一行的成品」，不是这段原文的译文，不能拿来拼接。
+                if isinstance(value, str) and value.strip() and not is_replace_translation(value):
+                    found[probe] = value
+            missing = [probe for probe in probes if probe not in found]
+            for pair in tm_language_pairs:
+                if not missing:
+                    break
+                for probe, value in (tm_manager.lookup_batch(missing, pair) or {}).items():
+                    if value is not None and str(value).strip():
+                        found.setdefault(probe, str(value))
+                missing = [probe for probe in missing if probe not in found]
+            return found
+
+        ask_model = None
+        if engine_supports_chat(engine):
+
+            def ask_model(batch: list[str]) -> list[tuple[str, str]]:
+                if self._stop_event.is_set():
+                    return []
+                return _run_header_footer_batch(
+                    engine,
+                    batch,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    api_scheduler=api_scheduler,
+                    error_callback=lambda message: self._log("WARNING", message),
+                )
+
+        outcome = resolve_header_footer_lines(
+            lines,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            tm_lookup=tm_lookup,
+            ask_model=ask_model,
+            batch_size=HEADER_FOOTER_BATCH_SIZE,
+        )
+        translations = outcome.translations
+        global_translations.update(translations)
+        self._log(
+            "INFO",
+            (
+                f"  → 页眉页脚专用通道：{len(lines)} 行含已有译文，"
+                f"其中 {outcome.model_line_count} 行送模型，"
+                f"补上译文 {len(translations)} 行。"
+            ),
+        )
+
+        locations_by_source: dict[str, list[tuple[str, WordSegment]]] = {}
+        for identity, segment in entries:
+            locations_by_source.setdefault(segment.source, []).append((identity, segment))
+        for resolution in outcome.resolutions:
+            if resolution.resolved and resolution.resolution != RESOLUTION_MODEL_APPEND:
+                continue
+            # 模型判「这一行本来就全译好了」时原样退回、也没有拒收理由——这一行没有
+            # 事情要做，不是问题，不进报告。
+            if not resolution.resolved and not resolution.reject_reason:
+                continue
+            for identity, segment in locations_by_source.get(resolution.source, []):
+                if resolution.resolved:
+                    # 整行成品没通过验收，退回「只把新译文接在行尾」：原行一个字没动，
+                    # 但译文接的位置可能不是最顺的那处，报告里说一句。
+                    problem = "页眉页脚整行改写未通过校验"
+                    status = (
+                        "已改为把新译文接在原行末尾，原有内容一个字符都没有改动。"
+                        f"（{resolution.reject_reason}）"
+                    )
+                else:
+                    problem = "页眉页脚未能补上译文"
+                    status = (
+                        "这一行已有部分译文，程序无法在不改动已有内容的前提下补全，"
+                        "已原样保留，请人工补译。"
+                        + (f"（{resolution.reject_reason}）" if resolution.reject_reason else "")
+                    )
+                quality_issues.append(
+                    {
+                        "file": identity,
+                        "kind": segment.kind,
+                        "location": segment.location,
+                        "location_label": _format_location_label(segment.location),
+                        "section_path": segment.section_path or "页眉页脚",
+                        "snippet": _build_source_excerpt(segment.source),
+                        "problem": problem,
+                        "status": status,
+                        "severity": "resolved" if resolution.resolved else "needs_review",
+                    }
+                )
+
     def _run_with_overrides(self) -> None:
         with provider_key_overrides(self._key_overrides):
             self._run()
@@ -637,6 +782,9 @@ class WordTaskRunner:
         coverage_plans: list = []
         global_unique_texts: set[str] = set()
         segment_locations: dict[str, list[dict]] = {}
+        # 走页眉页脚专用通道的行：(文件标识, 词条)。这些行不进 text_set——它们不
+        # 走正常翻译，等阶段 2 的译文都定下来之后再单独解一次。
+        header_channel_entries: list[tuple[str, WordSegment]] = []
         quality_issues: list[dict] = []
         unresolved_review_sources: set[str] = set()
         recovery_review_sources: set[str] = set()
@@ -806,7 +954,29 @@ class WordTaskRunner:
                                 _file_result_identity(file_item, self._source_root),
                                 header_segments,
                             )
-                            text_set.update(segment.source for segment in header_segments)
+                            # 行里已经混着非源语言内容的（中文项目名后面挤着法文法定
+                            # 译名那种），走专用通道：整行交给模型只补缺的那截，已有
+                            # 的译名一个字符都不许改。走正常通道会把整行重翻一遍，
+                            # 合同里签的那个译名就被改写了。
+                            for segment in header_segments:
+                                if line_has_foreign_content(
+                                    segment.source,
+                                    source_lang=(
+                                        source_lang
+                                        if not auto_source_lang
+                                        else get_default_source_lang()
+                                    ),
+                                ):
+                                    header_channel_entries.append(
+                                        (
+                                            _file_result_identity(
+                                                file_item, self._source_root
+                                            ),
+                                            segment,
+                                        )
+                                    )
+                                else:
+                                    text_set.add(segment.source)
                         summary = coverage_plan.summary
                         self._log(
                             "INFO",
@@ -1646,6 +1816,23 @@ class WordTaskRunner:
                     )
                 if written:
                     self._log("INFO", f"新增 TM 词条：{written} 条")
+
+            # ── 页眉页脚专用通道：放在 TM 写入之后，正文译文全部定稿之后。
+            # 通道产出的是「整行成品」或「接在行尾的一小截」，两种都不是干净的
+            # 原文→译文配对，不能进词库；放在写库之后，顺手也就不会被误捡。
+            if header_channel_entries:
+                self._resolve_header_footer_lines(
+                    header_channel_entries,
+                    engine=engine,
+                    api_scheduler=api_scheduler,
+                    tm_manager=tm_manager,
+                    tm_language_pairs=tm_language_pairs or ([lang_pair] if lang_pair else []),
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    global_translations=global_translations,
+                    body_texts=global_unique_texts,
+                    quality_issues=quality_issues,
+                )
 
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
@@ -3172,6 +3359,63 @@ def _build_coverage_pair_arbitration_prompt() -> str:
         "只输出一个 JSON 对象，不要输出 markdown 或解释文字。格式："
         '{"results":[{"id":"0","verdict":"equivalent|not_equivalent|uncertain"}]}'
     )
+
+
+def _run_header_footer_batch(
+    engine,
+    lines: list[str],
+    *,
+    source_lang: str,
+    target_lang: str,
+    api_scheduler: WeightedApiScheduler | None,
+    error_callback: Callable[[str], None] | None = None,
+) -> list[tuple[str, str]]:
+    """一次请求补一批页眉页脚行，返回等长的 (整行成品, 新增译文)。
+
+    出错返回空列表——上层按「这一批没拿到结果」处理，那些行原样保留。这里不往上抛
+    任何异常（包括 key 不可用）：这一趟跑在阶段 2 的最后，正文译文已经全部拿到手，
+    为了几行页眉把整批任务掀掉不划算，写一条 WARNING 让用户知道即可。
+    """
+    if not lines:
+        return []
+    system_prompt = build_header_footer_prompt(
+        source_lang=source_lang,
+        target_lang=target_lang,
+    )
+    user_payload = build_header_footer_payload(lines)
+    weight = estimate_api_request_weight(lines, system_prompt)
+    request_generation: int | None = None
+    try:
+        if api_scheduler is None:
+            raw = engine.chat(system_prompt, user_payload)
+        else:
+            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+                request_generation = lease.generation
+                raw = engine.chat(system_prompt, user_payload)
+    except Exception as exc:  # noqa: BLE001 - 补不上就原样留着，不连累已经翻好的正文
+        if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
+            decision = handle_api_concurrency_limit(
+                exc,
+                scheduler=api_scheduler,
+                request_generation=request_generation,
+                context_label="Word 页眉页脚",
+                error_callback=error_callback,
+            )
+            if decision is not None:
+                return _run_header_footer_batch(
+                    engine,
+                    lines,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    api_scheduler=api_scheduler,
+                    error_callback=error_callback,
+                )
+        if error_callback is not None:
+            error_callback(
+                f"  → 页眉页脚：一批 {len(lines)} 行未取得结果（{exc}），这批原样保留。"
+            )
+        return []
+    return parse_header_footer_response(raw, len(lines))
 
 
 def _semantic_review_validation(

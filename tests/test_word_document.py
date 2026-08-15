@@ -14,6 +14,7 @@ from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
     MIXED_MARK_UNRESOLVED,
 )
+from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from core.translation_filter import (
     VALIDATION_PROFILE_STRICT,
     VALIDATION_PROFILE_WORD_RECOVERY,
@@ -299,6 +300,34 @@ class WordDocumentTests(unittest.TestCase):
                 header.paragraphs[0].text,
                 "某某工程 抢工方案 / Plan de rattrapage",
             )
+
+    def test_a_mixed_header_line_is_written_as_one_finished_line(self) -> None:
+        """页眉里已经带着法定译名时，写的是「整行成品」，不是在行尾另接一段。
+
+        原行里的法文名是合同上签的写法，一个字符都不许改；专用通道给出的成品已经把
+        新译文插在该在的位置，写入器照原样落盘就行。行尾再接一遍等于把译名写两次。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "mixed.docx"
+            line = "贝特瑞项目PROJET BTR 地面裂缝修复施工方案"
+            composed = f"{line} Plan de réparation"
+            doc = Document()
+            doc.add_paragraph("施工内容")
+            doc.sections[0].header.paragraphs[0].text = line
+            doc.save(str(source_path))
+
+            out_path = write_bilingual_docx(
+                source_path=source_path,
+                output_dir=temp_path / "out",
+                translations={line: f"{REPLACE_TRANSLATION_PREFIX}{composed}"},
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            header = Document(str(out_path)).sections[0].header
+            self.assertEqual(header.paragraphs[0].text, composed)
+            self.assertNotIn(" / ", header.paragraphs[0].text)
 
     def test_header_footer_segments_are_collected_once_per_part(self) -> None:
         """链接到上一节的页眉指向同一个 part，不去重就会被追加多遍译文。"""
