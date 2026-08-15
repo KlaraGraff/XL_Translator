@@ -635,7 +635,9 @@ table.review-tbl { table-layout: fixed; }
 
 .ut-prog { padding: 0 14px 12px 40px; }
 .ut-bar { height: 4px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
-.ut-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); }
+/* 宽度走过渡：进度按整数百分比通知（见 update-controller 的节流），直接改宽度就是
+   一格一格地蹦；160ms 刚好把相邻两格接上，又不会慢到落在真实进度后面。 */
+.ut-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); transition: width 160ms ease-out; }
 /* 长度未知时来回滑，而不是停在 0%——一条不动的进度条读起来就是「卡住了」。 */
 .ut-bar.indet i { width: 34%; animation: ut-slide 1.25s ease-in-out infinite alternate; }
 @keyframes ut-slide { from { margin-left: 0; } to { margin-left: 66%; } }

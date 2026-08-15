@@ -3259,12 +3259,24 @@ function formatReleaseDate(iso: string): string {
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
 }
 
+/** 正在下载/安装那一屏上会变的部分。下载期间每涨 1% 就有一次重画通知，整页重建的话
+ *  按钮会掉焦点、进度条和百分比每跳一格都要闪一下；所以这一屏只改文字和宽度。 */
+let updateProgressView: { root: HTMLElement; apply: () => void } | null = null;
+
 /** 下载/安装过程中的重画。用户中途切到别的子页时不要把那一页顶掉。 */
 function renderAboutIfVisible(): void {
-  if (currentPage === "about") renderBody();
+  if (currentPage !== "about") return;
+  const view = updateProgressView;
+  const phase = updateSnapshot().flow.phase;
+  if (view && view.root.isConnected && (phase === "downloading" || phase === "installing")) {
+    view.apply();
+    return;
+  }
+  renderBody();
 }
 
 function renderAboutPage(host: HTMLElement): void {
+  updateProgressView = null;
   const snapshot = updateSnapshot();
   const paused = notificationsPaused();
   const ignored = ignoredVersion();
@@ -3468,19 +3480,18 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
   body.append(fieldRow(actions));
 }
 
-/** 屏④：下载有确定进度，解包安装没有——两段必须换文案，否则会被读成「重来了」。 */
+/** 屏④：下载有确定进度，解包安装没有——两段必须换文案，否则会被读成「重来了」。
+ *
+ *  这一屏建一次、改很多次：节点全部先摆好（包括安装阶段用不上的百分比），之后每次进度
+ *  变化只走 apply()。增删节点会让卡片改高度，那正是用户看见的「跳一下」。 */
 function renderUpdateProgress(body: HTMLElement): void {
-  const snapshot = updateSnapshot();
-  const flow = snapshot.flow;
   const heading = document.createElement("p");
   heading.style.fontSize = "13px";
   heading.append(document.createTextNode("正在更新到 "));
   const version = document.createElement("b");
-  version.textContent = flow.version || text(snapshot.result?.latest_version, "新版本");
   heading.append(version);
   body.append(heading);
 
-  const downloading = flow.phase === "downloading";
   const stage = document.createElement("div");
   stage.style.display = "flex";
   stage.style.alignItems = "baseline";
@@ -3488,43 +3499,49 @@ function renderUpdateProgress(body: HTMLElement): void {
   const label = document.createElement("span");
   label.style.fontSize = "12.5px";
   label.style.color = "var(--ink-2)";
-  label.textContent = downloading ? "正在下载安装包" : "正在校验签名并安装";
-  stage.append(label);
-  if (downloading && flow.percent !== null) {
-    const pct = document.createElement("b");
-    pct.style.marginLeft = "auto";
-    pct.style.fontSize = "17px";
-    pct.style.fontVariantNumeric = "tabular-nums";
-    pct.style.color = "var(--tint-ink)";
-    pct.textContent = `${Math.floor(flow.percent)}%`;
-    stage.append(pct);
-  }
+  const pct = document.createElement("b");
+  pct.style.marginLeft = "auto";
+  pct.style.fontSize = "17px";
+  pct.style.fontVariantNumeric = "tabular-nums";
+  pct.style.color = "var(--tint-ink)";
+  stage.append(label, pct);
   body.append(stage);
 
-  const determinate = downloading && flow.percent !== null;
-  if (determinate) {
-    body.append(createProgressBar({ percent: flow.percent ?? 0 }).root);
-  } else {
-    const bar = document.createElement("div");
-    bar.className = "bar indet";
-    bar.append(document.createElement("i"));
-    body.append(bar);
-  }
+  const progress = createProgressBar({ percent: 0 });
+  body.append(progress.root);
 
   const note = document.createElement("p");
   note.className = "note";
-  if (downloading) {
-    note.textContent = flow.total
-      ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
-      : `已下载 ${formatBytes(flow.received)}`;
-  } else {
-    note.textContent = "这一步通常几秒钟，请勿关闭窗口。";
-  }
   body.append(note);
 
-  body.append(fieldRow([
-    createButton({ label: downloading ? "下载中…" : "安装中…", size: "mini", disabled: true }),
-  ]));
+  const button = createButton({ label: "下载中…", size: "mini", disabled: true });
+  body.append(fieldRow([button]));
+
+  const apply = () => {
+    const snapshot = updateSnapshot();
+    const flow = snapshot.flow;
+    const downloading = flow.phase === "downloading";
+    const determinate = downloading && flow.percent !== null;
+
+    version.textContent = flow.version || text(snapshot.result?.latest_version, "新版本");
+    label.textContent = downloading ? "正在下载安装包" : "正在校验签名并安装";
+    pct.textContent = determinate ? `${Math.floor(flow.percent ?? 0)}%` : "";
+
+    const barClass = determinate ? "bar" : "bar indet";
+    if (progress.root.className !== barClass) progress.root.className = barClass;
+    // 不确定态的宽度归 CSS 管（.bar.indet i 是固定 34% 的滑块），内联宽度必须清掉。
+    if (determinate) progress.setPercent(flow.percent ?? 0);
+    else (progress.root.firstElementChild as HTMLElement).style.width = "";
+
+    note.textContent = downloading
+      ? (flow.total
+        ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
+        : `已下载 ${formatBytes(flow.received)}`)
+      : "这一步通常几秒钟，请勿关闭窗口。";
+    button.textContent = downloading ? "下载中…" : "安装中…";
+  };
+  apply();
+  updateProgressView = { root: body, apply };
 }
 
 /** 屏⑤：装好了但不自动重启——翻译任务动辄几十分钟，替用户做这个决定的代价太大。 */

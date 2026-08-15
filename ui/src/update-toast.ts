@@ -201,48 +201,90 @@ function spacer(): HTMLSpanElement {
 // 各个态
 // ---------------------------------------------------------------------------
 
-function renderProgress(): HTMLDivElement {
-  const { flow } = updateSnapshot();
-  const downloading = flow.phase === "downloading";
+/** 下载/安装那一张卡片上会变的节点。
+ *
+ *  下载期间每涨 1% 就来一次重画通知（节流在 update-controller 里）。整张卡片拆了重建
+ *  的话，`.utoast` 的入场动画（淡入 + 上移 8px）会跟着重放一遍——看上去就是进度条每
+ *  跳一格闪一下、卡片往上蹿一下，转圈图标也从头开始转。所以进度态改成就地更新：节点
+ *  从头到尾是同一批，只改文字和宽度。 */
+interface ProgressView {
+  root: HTMLDivElement;
+  title: HTMLElement;
+  detail: HTMLElement;
+  bar: HTMLDivElement;
+  fill: HTMLElement;
+  meta: HTMLDivElement;
+  left: HTMLElement;
+  right: HTMLElement;
+}
+
+let progressView: ProgressView | null = null;
+
+function buildProgress(): ProgressView {
   // 下载和安装都不给关闭按钮：updater 插件没有中止下载的接口，一个点了没反应
   // （或者更糟，只是把卡片藏起来而下载还在跑）的 ✕ 比没有 ✕ 更容易让人误判。
-  const el = card();
-  el.append(head({
-    icon: "spin",
-    tone: "tint",
-    title: downloading ? `正在下载 ${flow.version || "新版本"}` : "正在校验签名并安装",
-    detail: downloading ? "装完会告诉你，期间可以继续用" : "这一步通常几秒钟，请勿关闭窗口。",
-  }));
+  // 标题和说明的占位文字由 patchProgress 立刻覆盖——建好就补，挂进文档之前就是对的。
+  const root = card();
+  const headRow = head({ icon: "spin", tone: "tint", title: "…", detail: "…" });
+  root.append(headRow);
 
   const prog = document.createElement("div");
   prog.className = "ut-prog";
   const bar = document.createElement("div");
-  bar.className = downloading && flow.percent !== null ? "ut-bar" : "ut-bar indet";
+  bar.className = "ut-bar";
   const fill = document.createElement("i");
-  if (downloading && flow.percent !== null) {
-    fill.style.width = `${Math.min(100, Math.max(0, flow.percent))}%`;
-  }
   bar.append(fill);
-  prog.append(bar);
+  // 百分比那一格在安装阶段是空的，但节点始终留着——进度态里增删节点等于让卡片改高度，
+  // 那正是要消掉的「跳一下」。
+  const meta = document.createElement("div");
+  meta.className = "ut-meta";
+  const left = document.createElement("span");
+  const right = document.createElement("span");
+  right.className = "r";
+  meta.append(left, right);
+  prog.append(bar, meta);
+  root.append(prog);
 
+  const copy = headRow.querySelector(".ut-copy") as HTMLElement;
+  return {
+    root,
+    title: copy.querySelector("b") as HTMLElement,
+    detail: copy.querySelector("span") as HTMLElement,
+    bar,
+    fill,
+    meta,
+    left,
+    right,
+  };
+}
+
+function patchProgress(view: ProgressView): void {
+  const { flow } = updateSnapshot();
+  const downloading = flow.phase === "downloading";
+  const determinate = downloading && flow.percent !== null;
+
+  view.title.textContent = downloading
+    ? `正在下载 ${flow.version || "新版本"}`
+    : "正在校验签名并安装";
+  view.detail.textContent = downloading
+    ? "装完会告诉你，期间可以继续用"
+    : "这一步通常几秒钟，请勿关闭窗口。";
+
+  const barClass = determinate ? "ut-bar" : "ut-bar indet";
+  if (view.bar.className !== barClass) view.bar.className = barClass;
+  // 不确定态的宽度归 CSS 管（.ut-bar.indet i 是固定 34% 的滑块），这里必须把内联宽度清掉。
+  view.fill.style.width = determinate
+    ? `${Math.min(100, Math.max(0, flow.percent ?? 0))}%`
+    : "";
+
+  // hidden 属性在这里不管用：.ut-meta 自己写了 display: flex，作者样式压过 UA 的 [hidden]。
+  view.meta.style.display = downloading ? "" : "none";
   if (downloading) {
-    const meta = document.createElement("div");
-    meta.className = "ut-meta";
-    const left = document.createElement("span");
-    left.textContent = flow.total
+    view.left.textContent = flow.total
       ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
       : `已下载 ${formatBytes(flow.received)}`;
-    meta.append(left);
-    if (flow.percent !== null) {
-      const right = document.createElement("span");
-      right.className = "r";
-      right.textContent = `${Math.floor(flow.percent)}%`;
-      meta.append(right);
-    }
-    prog.append(meta);
+    view.right.textContent = flow.percent !== null ? `${Math.floor(flow.percent)}%` : "";
   }
-  el.append(prog);
-  return el;
 }
 
 function renderReady(): HTMLDivElement {
@@ -380,8 +422,6 @@ function renderSlim(tone: IconTone, mark: "spin" | "check", label: string): HTML
 
 function render(): void {
   if (!host) return;
-  clearTransient();
-  while (host.firstChild) host.removeChild(host.firstChild);
 
   const snapshot = updateSnapshot();
   const { flow } = snapshot;
@@ -397,8 +437,21 @@ function render(): void {
   wasChecking = snapshot.checking;
 
   // 顺序即优先级：正在进行的安装流程压过一切「有新版」的提示——它就是那个新版。
-  if (flow.phase === "downloading" || flow.phase === "installing") {
-    host.append(renderProgress());
+  // 卡片已经在了就只改数字，不重建（见 ProgressView 的注释）。
+  const inProgress = flow.phase === "downloading" || flow.phase === "installing";
+  if (inProgress && progressView && progressView.root.parentElement === host) {
+    patchProgress(progressView);
+    return;
+  }
+
+  clearTransient();
+  progressView = null;
+  while (host.firstChild) host.removeChild(host.firstChild);
+
+  if (inProgress) {
+    progressView = buildProgress();
+    patchProgress(progressView);
+    host.append(progressView.root);
     return;
   }
   if (flow.phase === "ready" && !snapshot.readyCollapsed) {
