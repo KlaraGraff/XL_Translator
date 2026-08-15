@@ -24,6 +24,8 @@ from core import bilingual_writer
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
+from core.coverage_arbitration import RETRANSLATE_MODEL
+from core.coverage_review import arbitrate_coverage_units
 from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
 from core.file_scanner import FileItem
 from core.language_registry import (
@@ -247,6 +249,13 @@ class TaskStopped(Exception):
     """后台任务收到停止信号时抛出，用于统一收尾。"""
 
 
+def _build_excel_source_excerpt(text: str, *, head: int = 18, tail: int = 16) -> str:
+    normalized = " ".join(str(text or "").split())
+    if len(normalized) <= head + tail + 3:
+        return normalized
+    return f"{normalized[:head]}……{normalized[-tail:]}"
+
+
 def _set_excel_review_mark(review_marks: dict[str, str], source: str, mark: str) -> None:
     source_key = str(source or "").strip()
     if not source_key:
@@ -410,6 +419,13 @@ class TaskRunner:
             throughput = get_model_throughput(settings, model_config)
             batch_size = throughput.batch_size or 1
             concurrency = throughput.concurrency
+            # 调度器提到阶段 1 之前建：补译复核在阶段 1 就要发请求，它和阶段 2 的
+            # 正文翻译必须共用同一个限流器，否则两边各按满并发跑会撞上接口上限。
+            shared_scheduler = (
+                (self._api_scheduler or WeightedApiScheduler(concurrency))
+                if settings.engine.mode != "local"
+                else None
+            )
         except Exception as e:
             logger.debug(f"引擎初始化失败原始错误：{e!r}")
             self._queue.put(
@@ -729,6 +745,18 @@ class TaskRunner:
                                 excel_output.formula_display_value_backfill
                             ),
                         )
+                        self._arbitrate_excel_coverage_pairs(
+                            coverage_plan,
+                            engine=engine,
+                            api_scheduler=shared_scheduler,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            lang_pair=lang_pair,
+                            concurrency=concurrency,
+                            file_name=file_item.name,
+                            quality_issues=quality_issues,
+                            review_marks=excel_review_marks,
+                        )
                         coverage_plans.append(coverage_plan)
                         texts = coverage_plan.source_texts
                         sheet_count = coverage_plan.sheet_count
@@ -882,6 +910,12 @@ class TaskRunner:
                         formula_display_value_backfill=(
                             excel_output.formula_display_value_backfill
                         ),
+                        engine=engine,
+                        api_scheduler=shared_scheduler,
+                        lang_pair=(tm_language_pairs[0] if tm_language_pairs else None),
+                        concurrency=concurrency,
+                        quality_issues=quality_issues,
+                        review_marks=excel_review_marks,
                     )
             else:
                 tm_language_pairs = [lang_pair] if lang_pair else []
@@ -1034,9 +1068,6 @@ class TaskRunner:
 
                 t0 = datetime.now()
                 batch_stats = TranslationBatchRunStats()
-                shared_scheduler = None
-                if settings.engine.mode != "local":
-                    shared_scheduler = self._api_scheduler or WeightedApiScheduler(concurrency)
 
                 mixed_stats = MixedLanguageRunStats()
                 mixed_results = {}
@@ -1557,6 +1588,15 @@ class TaskRunner:
                                 excel_output.formula_display_value_backfill
                             ),
                             lock_row_height=excel_output.lock_row_height,
+                            review_marks=excel_review_marks,
+                            review_mark_colors=self._settings.excel_review.mark_colors,
+                            mark_review_items=(
+                                self._settings.excel_review.mark_review_items
+                            ),
+                            existing_fill_policy=(
+                                self._settings.excel_review.existing_fill_policy
+                            ),
+                            review_positions=file_review_positions,
                             log_callback=lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
@@ -2000,6 +2040,80 @@ class TaskRunner:
         for level, message in tm_hygiene_log_lines(hygiene):
             self._log(level, message)
 
+    def _arbitrate_excel_coverage_pairs(
+        self,
+        coverage_plan,
+        *,
+        engine,
+        api_scheduler,
+        target_lang: str,
+        source_lang: str,
+        lang_pair: str | None,
+        concurrency: int,
+        file_name: str,
+        quality_issues: list[dict],
+        review_marks: dict[str, str],
+    ) -> None:
+        """复核「这一格里的译文真的是这一格原文的译文吗」，判错的打回去重新翻译。
+
+        判定与模型接线在 :mod:`core.coverage_review`，和 Word 是同一份——同一份内容
+        换个格式跑，不该有两种复核尺度。这里只负责把结论翻成 Excel 的报告条目和底色。
+        """
+        outcome = arbitrate_coverage_units(
+            coverage_plan.units,
+            engine=engine,
+            api_scheduler=api_scheduler,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            lang_pair=lang_pair,
+            concurrency=concurrency,
+            file_name=file_name,
+            log=self._log,
+            stop_event=self._stop_event,
+            scheduler_label="Excel 补译复核",
+        )
+        if outcome is None:
+            return
+        for review in outcome.retranslated:
+            unit = review.unit
+            judged = review.reason == RETRANSLATE_MODEL
+            if judged:
+                # 模型判了"这一格里的译文说的是另一回事"：程序只能在原有内容后面再补
+                # 一条译文，没法替用户判断旧的那条是错配、是从别的格子复制过来的、
+                # 还是压根不该在这儿。要对着原件看，所以归进「疑似原文异常」上底色。
+                _set_excel_review_mark(
+                    review_marks, unit.source_text, MIXED_MARK_FOREIGN_NOISE
+                )
+            # 没问出结果的那批不上底色：接口抖一下就是整整一批落到 uncertain，
+            # 全涂上底色，用户点开发现全是好好的译文——底色一失信，真正判出问题的
+            # 那几格就跟着一起被跳过了。这一类只在报告里留一行。
+            quality_issues.append(
+                {
+                    "file": file_name,
+                    "sheet": str(unit.data.get("sheet") or ""),
+                    "cell": str(unit.data.get("coordinate") or ""),
+                    "location": unit.location,
+                    "snippet": _build_excel_source_excerpt(unit.source_text),
+                    "problem": (
+                        "同格译文不是这一格原文的译文"
+                        if judged
+                        else "同格译文是不是这一格原文的译文，未能判定"
+                    ),
+                    "status": (
+                        (
+                            "已按未翻译处理并补上译文；原有内容保持不变，"
+                            "但它很可能不是这一格的译文，请对照原件人工核对后删改。"
+                        )
+                        if judged
+                        else (
+                            "未取得判定结果，已从严按未翻译处理并补上译文，"
+                            "原有内容保持不变。"
+                        )
+                    ),
+                    "severity": "needs_review" if judged else "resolved",
+                }
+            )
+
     def _log_excel_coverage_plan(self, file_name: str, plan) -> None:
         """Report one file's untranslated-only plan, including the empty case."""
         summary = plan.summary
@@ -2033,6 +2147,12 @@ class TaskRunner:
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
+        engine=None,
+        api_scheduler=None,
+        lang_pair: str | None = None,
+        concurrency: int = 4,
+        quality_issues: list[dict] | None = None,
+        review_marks: dict[str, str] | None = None,
     ) -> int:
         """Build the untranslated-only plans now that auto-detect settled the language.
 
@@ -2081,6 +2201,19 @@ class TaskRunner:
                 })
                 file_texts[fi] = set()
                 continue
+            if engine is not None:
+                self._arbitrate_excel_coverage_pairs(
+                    coverage_plan,
+                    engine=engine,
+                    api_scheduler=api_scheduler,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    lang_pair=lang_pair,
+                    concurrency=concurrency,
+                    file_name=file_item.name,
+                    quality_issues=quality_issues if quality_issues is not None else [],
+                    review_marks=review_marks if review_marks is not None else {},
+                )
             coverage_plans[fi] = coverage_plan
             text_set = set(coverage_plan.source_texts)
             file_texts[fi] = text_set

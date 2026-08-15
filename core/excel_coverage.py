@@ -114,6 +114,11 @@ def write_untranslated_excel_file(
     keep_original_sheets: bool = True,
     formula_display_value_backfill: bool = True,
     lock_row_height: bool = False,
+    review_marks: dict[str, str] | None = None,
+    review_mark_colors: dict[str, str] | None = None,
+    mark_review_items: bool = False,
+    existing_fill_policy: str | None = None,
+    review_positions: list[dict[str, str]] | None = None,
     log_callback=None,
     original_path: Path | None = None,
     external_autofit_planned: bool = False,
@@ -125,6 +130,11 @@ def write_untranslated_excel_file(
     ``allowed_positions`` 机制完成：只有 ``plan.source_units`` 里的 (sheet, coordinate)
     才允许改写，且写入时会用当前单元格的实际文本重新核对是否仍匹配 ``translations``
     的键，防止误伤已经变化的单元格或同文本的其它位置。
+
+    复核改判过的单元格（格里已经躺着一条可疑译文）按格子的**完整文字**建键：补上的
+    新译文接在整格内容后面，原有的原文和那条可疑译文一个字都不删。删掉的话，万一模型
+    判错了，用户连"原来写的是什么"都看不到；留着最多是一格里两条译文，肉眼一比就知道
+    该留哪条。底色也跟着按完整文字建一份键，否则标记落不到这一格上。
     """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -140,6 +150,7 @@ def write_untranslated_excel_file(
 
     allowed_positions: dict[str, set[str]] = {}
     scoped_translations: dict[str, str] = {}
+    scoped_marks: dict[str, str] = dict(review_marks or {})
     for unit in plan.source_units:
         sheet_name = str(unit.data.get("sheet") or "")
         coordinate = str(unit.data.get("coordinate") or "")
@@ -151,6 +162,13 @@ def write_untranslated_excel_file(
             continue
         allowed_positions.setdefault(sheet_name, set()).add(coordinate)
         scoped_translations[source_key] = translation
+        # 复核改判过来的格子：格里是「原文＋可疑译文」，写入器核对的是这一整串。
+        cell_key = str(unit.data.get("cell_text") or "").strip()
+        if cell_key and cell_key != source_key:
+            scoped_translations[cell_key] = translation
+            mark = scoped_marks.get(source_key)
+            if mark:
+                scoped_marks[cell_key] = mark
 
     # 调用方传了 stats 就直接写进去，省一次拷贝；没传就用本地临时字典。
     if stats is None:
@@ -168,7 +186,13 @@ def write_untranslated_excel_file(
             keep_original_sheets=keep_original_sheets,
             formula_display_value_backfill=formula_display_value_backfill,
             lock_row_height=lock_row_height,
-            mark_review_items=False,
+            review_marks=scoped_marks,
+            review_mark_colors=review_mark_colors,
+            mark_review_items=mark_review_items,
+            existing_fill_policy=xlsx_patcher.normalize_existing_fill_policy(
+                existing_fill_policy or ""
+            ),
+            review_positions=review_positions,
             log_callback=log_callback,
             allowed_positions=allowed_positions,
             external_autofit_planned=external_autofit_planned,
@@ -195,7 +219,10 @@ def _classify_excel_cell(
         return None
 
     location = f"{sheet_name}!{coordinate}"
-    data = {"sheet": sheet_name, "coordinate": coordinate}
+    # cell_text 是这一格当时的完整文字。补译复核会把「原文＋译文挤在同一格」的单元格
+    # 打回重译，那种 unit 的 source_text 只是格里的原文那一半，写入器按它去核对格子会
+    # 对不上（格里还有旧译文）——认这一条。
+    data = {"sheet": sheet_name, "coordinate": coordinate, "cell_text": text}
     split = split_existing_bilingual_text(
         text,
         source_lang=source_lang,
