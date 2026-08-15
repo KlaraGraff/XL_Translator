@@ -284,6 +284,10 @@ def _count_non_chinese_letters(text: str) -> int:
     return sum(1 for char in text if char.isalpha() and not _contains_chinese(char))
 
 
+def _count_ascii_letters(text: str) -> int:
+    return sum(1 for char in text if char.isascii() and char.isalpha())
+
+
 # ── 主函数 ────────────────────────────────────────────────────────────────────
 
 def should_translate(
@@ -300,7 +304,7 @@ def should_translate(
       3. 纯数字/符号/空白 → 跳过
       4. 无空格且字母数字混合（型号代码，如 "A3B12"） → 跳过
       5. 含空格（词组或短句） → 翻译
-      6. 纯字母且长度 > 3 → 翻译
+      6. 纯字母的单词 → 翻译（拉丁字母要长度 > 3，非拉丁文字见规则内注释）
       7. 其余 → 跳过
     """
     text = text.strip()
@@ -341,14 +345,33 @@ def should_translate(
         return False
 
     # 规则 4：无空格且字母数字混合（型号代码）
-    if ' ' not in text and re.search(r'[A-Za-z]', text) and re.search(r'\d', text):
+    if ' ' not in text and _contains_non_chinese_letters(text) and re.search(r'\d', text):
         return False
 
     # 规则 5：含空格（词组/短句）
     if ' ' in text:
         return True
 
-    # 规则 6：纯字母且长度 > 3
+    # 规则 6：单个词。
+    #
+    # 「长度 > 3」这条是当年为中文文档里夹的英文缩写定的——DN、PE、Ltd 这类不该翻。
+    # 它只对拉丁字母成立，套到别的文字上会把整份文档判成「没有要翻的内容」：泰语、
+    # 高棉语、老挝语、缅甸语词与词之间不打空格，一整句话走到这里就是「一个词」，
+    # 正则 ^[A-Za-z]+$ 一律不匹配；希腊语、西里尔字母、假名、谚文的单词同样落空；
+    # 连德语的 Straße、法语的 Généralités 都因为一个变音字符被判成不用翻。
+    #
+    # 判据改成：含非 ASCII 字母时按字母数放行——字母够多（> 3）就是实词；一个
+    # ASCII 字母都不含的（谚文、假名、泰文……）短到 2 个字也是实词。仍然含 ASCII
+    # 字母的短串（μm、Nº）继续按缩写处理，避免把单位符号送去翻译。
+    letter_count = _count_non_chinese_letters(text)
+    ascii_letters = _count_ascii_letters(text)
+    if (
+        letter_count >= 2
+        and letter_count > ascii_letters
+        and (letter_count > 3 or ascii_letters == 0)
+    ):
+        return True
+
     if re.match(r'^[A-Za-z]+$', text) and len(text) > 3:
         return True
 
