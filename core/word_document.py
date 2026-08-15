@@ -539,6 +539,48 @@ def _append_translation_inline(
     return True
 
 
+def apply_header_footer_translations(
+    doc: Document,
+    translations: dict[str, str],
+    *,
+    target_lang: str,
+    source_lang: str,
+) -> int:
+    """Write header/footer translations into an already-opened document.
+
+    全译（write_bilingual_docx）和补译（write_untranslated_docx）共用这一趟。补译的
+    覆盖率计划只按正文和表格的下标定位，页眉页脚不在计划里；两边各写一遍的话，「译文
+    接在同一行后面」「页码域跳过」「重跑不重复追加」这些规则迟早会走岔——补译曾经因为
+    压根没有这一趟，页眉页脚翻译完了却一个字也没写进文件。
+
+    返回实际写入的段落数。
+    """
+    insertions = 0
+    for _kind, _location, _label, paragraph in _iter_header_footer_paragraphs(doc):
+        source = _paragraph_source_text(paragraph)
+        if not _is_translatable_source(
+            source,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        ):
+            continue
+        if _is_toc_or_field_paragraph(paragraph):
+            continue
+        resolved = _resolve_translation(source, translations)
+        if resolved is None:
+            continue
+        if resolved.replace_only and not _paragraph_has_field(paragraph):
+            _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
+            insertions += 1
+        elif _append_translation_inline(
+            paragraph,
+            resolved.text,
+            target_lang=target_lang,
+        ):
+            insertions += 1
+    return insertions
+
+
 def count_text_bearing_header_footer_parts(source: str | Path) -> int:
     """Count header/footer parts that carry real words (page numbers don't count).
 
@@ -846,30 +888,16 @@ def write_bilingual_docx(
                 highlight_skip_count += 1
         table_insertions += 1
 
-    header_footer_insertions = 0
-    if translate_headers_footers:
-        for _kind, _location, _label, paragraph in _iter_header_footer_paragraphs(doc):
-            source = _paragraph_source_text(paragraph)
-            if not _is_translatable_source(
-                source,
-                target_lang=target_lang,
-                source_lang=source_lang,
-            ):
-                continue
-            if _is_toc_or_field_paragraph(paragraph):
-                continue
-            resolved = _resolve_translation(source, translations)
-            if resolved is None:
-                continue
-            if resolved.replace_only and not _paragraph_has_field(paragraph):
-                _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
-                header_footer_insertions += 1
-            elif _append_translation_inline(
-                paragraph,
-                resolved.text,
-                target_lang=target_lang,
-            ):
-                header_footer_insertions += 1
+    header_footer_insertions = (
+        apply_header_footer_translations(
+            doc,
+            translations,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        )
+        if translate_headers_footers
+        else 0
+    )
 
     _trim_trailing_empty_body_paragraphs(doc)
     doc.save(str(out_path))

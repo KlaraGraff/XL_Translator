@@ -46,6 +46,7 @@ from core.word_document import (
     _normalize_word_output_name,
     _paragraph_has_review_highlight,
     _paragraph_source_text,
+    apply_header_footer_translations,
     _review_mark_highlight_values,
     _sanitize_filename_fragment,
     find_word_front_matter_boundary,
@@ -135,8 +136,14 @@ def write_untranslated_docx(
     review_mark_colors: dict[str, str] | None = None,
     existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
+    translate_headers_footers: bool = False,
 ) -> Path:
-    """Copy a Word document and insert translations only at source-only positions."""
+    """Copy a Word document and insert translations only at source-only positions.
+
+    ``translate_headers_footers``：页眉页脚不在覆盖率计划里（计划只按正文段落和表格
+    单元格的下标定位），要单独写一趟；重复追加由 ``apply_header_footer_translations``
+    自己挡（原文后面已经有同一句译文就跳过），补译重跑不会越接越长。
+    """
     source_path = Path(source_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +237,17 @@ def write_untranslated_docx(
                 else:
                     highlight_skip_count += 1
 
+    header_footer_insertions = (
+        apply_header_footer_translations(
+            doc,
+            translations,
+            target_lang=target_lang,
+            source_lang=source_lang,
+        )
+        if translate_headers_footers
+        else 0
+    )
+
     doc.save(str(out_path))
     if log_callback:
         highlight_summary = ""
@@ -237,9 +255,13 @@ def write_untranslated_docx(
             highlight_summary = f"，复核标记 {highlight_count}"
             if highlight_skip_count:
                 highlight_summary += f"，跳过已有标记 {highlight_skip_count}"
+        # 开关开着就报数，哪怕是 0——用户要能从日志分辨"没有可翻的页眉"和"这一趟没做"。
+        header_footer_summary = (
+            f"，页眉页脚 {header_footer_insertions}" if translate_headers_footers else ""
+        )
         log_callback(
             f"[OK] 已输出：{out_path.name}（补译段落 {paragraph_insertions}，"
-            f"表格单元格 {table_insertions}{highlight_summary}）"
+            f"表格单元格 {table_insertions}{header_footer_summary}{highlight_summary}）"
         )
     return out_path
 

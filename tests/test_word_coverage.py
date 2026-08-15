@@ -423,6 +423,103 @@ class ReviewMarkTests(unittest.TestCase):
 
             self.assertEqual(self._highlighted_paragraph_texts(out_path), [])
 
+    def _build_sample_with_header(self, tmp: Path) -> Path:
+        source = self._build_sample(tmp)
+        doc = Document(str(source))
+        doc.sections[0].header.paragraphs[0].text = "某某工程 抢工方案"
+        doc.sections[0].footer.paragraphs[0].text = "项目部"
+        doc.save(str(source))
+        return source
+
+    def test_untranslated_only_writer_translates_headers_when_enabled(self) -> None:
+        """补译模式下的页眉页脚：曾经翻译完却一个字也没写进文件（开关只接了全译）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = self._build_sample_with_header(tmp_path)
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+
+            out_path = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=plan,
+                translations={
+                    "一、工程概况": "1. Présentation du projet",
+                    "某某工程 抢工方案": "Plan de rattrapage",
+                    "项目部": "Département de projet",
+                },
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+
+            out_doc = Document(str(out_path))
+            # 接在同一行后面，不另起一行——页眉高度固定，多一行会把版心顶下去。
+            self.assertEqual(
+                out_doc.sections[0].header.paragraphs[0].text,
+                "某某工程 抢工方案 / Plan de rattrapage",
+            )
+            self.assertEqual(
+                out_doc.sections[0].footer.paragraphs[0].text,
+                "项目部 / Département de projet",
+            )
+
+    def test_untranslated_only_writer_leaves_headers_alone_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = self._build_sample_with_header(tmp_path)
+            plan = build_word_coverage_plan(source, target_lang="fr", source_lang="zh")
+
+            out_path = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=plan,
+                translations={"某某工程 抢工方案": "Plan de rattrapage"},
+                target_lang="fr",
+                source_lang="zh",
+            )
+
+            out_doc = Document(str(out_path))
+            self.assertEqual(
+                out_doc.sections[0].header.paragraphs[0].text,
+                "某某工程 抢工方案",
+            )
+
+    def test_untranslated_only_writer_does_not_append_header_twice(self) -> None:
+        """补译的常见用法就是对着上一版输出再跑一遍，页眉不能越接越长。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = self._build_sample_with_header(tmp_path)
+            translations = {
+                "一、工程概况": "1. Présentation du projet",
+                "某某工程 抢工方案": "Plan de rattrapage",
+                "项目部": "Département de projet",
+            }
+
+            first = write_untranslated_docx(
+                source_path=source,
+                output_dir=tmp_path / "out",
+                plan=build_word_coverage_plan(source, target_lang="fr", source_lang="zh"),
+                translations=translations,
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+            second = write_untranslated_docx(
+                source_path=first,
+                output_dir=tmp_path / "out2",
+                plan=build_word_coverage_plan(first, target_lang="fr", source_lang="zh"),
+                translations=translations,
+                target_lang="fr",
+                source_lang="zh",
+                translate_headers_footers=True,
+            )
+
+            header = Document(str(second)).sections[0].header
+            self.assertEqual(
+                header.paragraphs[0].text,
+                "某某工程 抢工方案 / Plan de rattrapage",
+            )
+
     def test_post_write_audit_marks_untranslated_and_residual_positions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "双语(法文)_成品.docx"

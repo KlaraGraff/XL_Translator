@@ -1674,6 +1674,7 @@ class WordTaskRunner:
                                 "OK" if msg.startswith("[OK]") else "INFO",
                                 msg,
                             ),
+                            translate_headers_footers=self._translate_headers_footers,
                         )
                     else:
                         out_path = write_bilingual_docx(
