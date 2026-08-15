@@ -17,7 +17,7 @@ from unittest import mock
 
 from docx import Document
 
-from core import word_task_runner
+from core import coverage_review, word_task_runner
 
 from core.coverage_arbitration import (
     RETRANSLATE_MODEL,
@@ -550,7 +550,7 @@ class RunnerGlueTests(unittest.TestCase):
         def boom(*args, **kwargs):
             raise RuntimeError("接口限流")
 
-        with mock.patch.object(word_task_runner, "review_coverage_pairs", boom):
+        with mock.patch.object(coverage_review, "review_coverage_pairs", boom):
             self._runner(logs)._arbitrate_coverage_pairs(
                 plan,
                 engine=object(),
@@ -610,7 +610,7 @@ class RunnerGlueTests(unittest.TestCase):
         )
 
         with mock.patch.object(
-            word_task_runner, "review_coverage_pairs", lambda *a, **kw: outcome
+            coverage_review, "review_coverage_pairs", lambda *a, **kw: outcome
         ):
             self._runner(logs)._arbitrate_coverage_pairs(
                 plan,
@@ -654,7 +654,7 @@ class RunnerGlueTests(unittest.TestCase):
         )
 
         with mock.patch.object(
-            word_task_runner, "review_coverage_pairs", lambda *a, **kw: outcome
+            coverage_review, "review_coverage_pairs", lambda *a, **kw: outcome
         ):
             self._runner(logs)._arbitrate_coverage_pairs(
                 plan,
@@ -692,7 +692,7 @@ class RunnerGlueTests(unittest.TestCase):
                 model_batch_count=2,
             )
 
-        with mock.patch.object(word_task_runner, "review_coverage_pairs", fake_review):
+        with mock.patch.object(coverage_review, "review_coverage_pairs", fake_review):
             self._runner(logs)._arbitrate_coverage_pairs(
                 plan,
                 engine=object(),
