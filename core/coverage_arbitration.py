@@ -104,14 +104,16 @@ class ArbitrationOutcome:
 
 
 def collect_arbitration_candidates(units: Iterable[CoverageUnit]) -> list[CoverageUnit]:
-    """相邻段落对——单元格不在范围内，见模块说明。
+    """所有被判为"已覆盖"的位置：相邻段落对，以及原文译文挤在同一格的表格单元格。
 
-    表格单元格的"已覆盖"是原文和译文挤在同一个格里，打回重译需要写入器支持
-    "往已有译文的格里再追加一条"，那是另一件事。这里只处理段落对。
+    单元格 9.3.3 才进来：它的"已覆盖"是原文和译文在同一个格子里，打回重译要求写入器
+    能"往已有译文的格里再追加一条"（旧的那条留着——删不删得由人对着原件定），那一段
+    支持补上之后，表格就没有理由继续例外。表格里恰恰最容易配错对：表头、单位名称、
+    编号列，一格错位整列跟着错。
     """
     candidates: list[CoverageUnit] = []
     for unit in units:
-        if unit.status != COVERAGE_COVERED or unit.kind != "paragraph":
+        if unit.status != COVERAGE_COVERED:
             continue
         if not clean_coverage_text(unit.source_text):
             continue

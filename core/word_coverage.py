@@ -218,7 +218,11 @@ def write_untranslated_docx(
             if index < 0 or index >= len(table_cells):
                 continue
             cell = table_cells[index]
-            if _cell_source_text(cell) != source_text:
+            # 复核打回的单元格里还留着那条可疑译文，格子的文字和 source_text 对不上，
+            # 认分类时记下的完整文字。译文照旧追加在格子末尾——旧的那条留着，删不删
+            # 得由人对着原件定（报告里已经写明并上了底色）。
+            expected = str(unit.data.get("cell_text") or source_text)
+            if _cell_source_text(cell) not in {source_text, expected}:
                 continue
             _append_translation_to_cell(
                 cell,
@@ -507,7 +511,14 @@ def _classify_table_cells(
         for cell in _iter_unique_table_cells(table):
             text = _cell_source_text(cell)
             location = f"table[{table_index}].cell[{cell_index}]"
-            data = {"cell_index": cell_index, "table_index": table_index}
+            # cell_text 是这一格当时的完整文字。补译复核会把「原文＋译文挤在同一格」
+            # 的单元格打回重译，那种 unit 的 source_text 只是格子里的原文那一半，
+            # 写入器拿它去核对格子会对不上（格里还有旧译文）——认这一条。
+            data = {
+                "cell_index": cell_index,
+                "table_index": table_index,
+                "cell_text": text,
+            }
             if protect_table and clean_coverage_text(text):
                 unit = CoverageUnit(
                     source_text=text,

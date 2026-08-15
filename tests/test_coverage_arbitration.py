@@ -107,7 +107,7 @@ class ForeignAcronymTests(unittest.TestCase):
 
 
 class CandidateSelectionTests(unittest.TestCase):
-    def test_only_covered_paragraph_pairs_are_reviewed(self) -> None:
+    def test_every_covered_position_is_reviewed_including_table_cells(self) -> None:
         units = [
             _pair("工程概况", "Présentation du projet", index=0),
             CoverageUnit(
@@ -136,7 +136,11 @@ class CandidateSelectionTests(unittest.TestCase):
 
         candidates = collect_arbitration_candidates(units)
 
-        self.assertEqual([unit.location for unit in candidates], ["body.paragraph[0]"])
+        # 表格里最容易配错对——表头、单位名称、编号列，一格错位整列跟着错。
+        self.assertEqual(
+            [unit.location for unit in candidates],
+            ["body.paragraph[0]", "table[0].cell[0]"],
+        )
 
 
 class CheapRuleTests(unittest.TestCase):
@@ -482,6 +486,49 @@ class WriterIntegrationTests(unittest.TestCase):
 
             texts = [p.text for p in Document(out_path).paragraphs]
             self.assertEqual(texts[:3], [LONG_SOURCE, FULL_TARGET, "PV"])
+
+    def test_flipped_table_cell_keeps_the_suspect_text_and_gains_a_translation(
+        self,
+    ) -> None:
+        """表格改判：新译文追加进格子，原来那半译文一个字都不删。
+
+        删掉的话，万一模型判错了，用户连"原来写的是什么"都看不到；留着最多是一格里
+        两条译文，肉眼一比就知道该留哪条。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            source_path = Path(tmp) / "source.docx"
+            doc = Document()
+            doc.add_paragraph("正文占位")
+            table = doc.add_table(rows=1, cols=1)
+            cell = table.cell(0, 0)
+            cell.text = LONG_SOURCE
+            cell.add_paragraph(MISMATCHED_TARGET)  # 配错了对的"译文"
+            doc.save(source_path)
+
+            plan = build_word_coverage_plan(
+                source_path, target_lang="fr", source_lang="zh"
+            )
+            cell_units = [u for u in plan.units if u.kind == "table_cell"]
+            self.assertEqual([u.status for u in cell_units], [COVERAGE_COVERED])
+            self.assertNotIn(LONG_SOURCE, plan.source_texts)
+
+            outcome = review_coverage_pairs(
+                plan.units, arbitrate=_batch_arbitrate("not_equivalent")
+            )
+            apply_arbitration(outcome)
+            self.assertIn(LONG_SOURCE, plan.source_texts)
+
+            out_path = write_untranslated_docx(
+                source_path=source_path,
+                output_dir=Path(tmp) / "out",
+                plan=plan,
+                translations={LONG_SOURCE: FULL_TARGET},
+                target_lang="fr",
+            )
+
+            written = Document(out_path).tables[0].cell(0, 0)
+            lines = [p.text for p in written.paragraphs if p.text.strip()]
+            self.assertEqual(lines, [LONG_SOURCE, MISMATCHED_TARGET, FULL_TARGET])
 
 
 class RunnerGlueTests(unittest.TestCase):
