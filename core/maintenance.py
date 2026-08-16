@@ -313,6 +313,8 @@ def _reset_paths() -> list[Path]:
         *_log_paths(),
         diagnostics.DIAGNOSTICS_DIR,
         WORKSPACES_DIR,
+        # 启动自检模块已经删掉，现在没有任何代码再写这个文件；旧版本装过的机器上
+        # 它还躺着，恢复出厂得连它一起清，所以这条留着。
         API_HEALTH_STATE_PATH,
         # Read late: tests point the settings module at a temporary directory.
         settings_module.RECOVERY_PATH,
