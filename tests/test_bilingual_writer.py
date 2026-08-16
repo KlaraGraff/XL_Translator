@@ -27,7 +27,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 review_marks={"项目": MIXED_MARK_FOREIGN_NOISE},
             )
 
@@ -49,7 +48,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 review_marks={"项目": MIXED_MARK_UNRESOLVED},
                 review_mark_colors={MIXED_MARK_UNRESOLVED: "DDEBFF"},
             )
@@ -78,7 +76,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 review_marks={"项目": MIXED_MARK_UNRESOLVED},
                 existing_fill_policy="red_font",
             )
@@ -107,7 +104,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 review_marks={"项目": MIXED_MARK_UNRESOLVED},
                 existing_fill_policy="skip",
             )
@@ -130,7 +126,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
             )
 
             wb = load_workbook(out_path)
@@ -151,7 +146,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 review_marks={"项目": MIXED_MARK_FOREIGN_NOISE},
                 mark_review_items=False,
             )
@@ -174,7 +168,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
                 mark_review_items=False,
             )
 
@@ -197,7 +190,6 @@ class BilingualWriterTests(unittest.TestCase):
                 source_lang="en",
                 keep_original_sheets=False,
                 formula_display_value_backfill=True,
-                enable_print_guard=False,
             )
 
             wb = load_workbook(out_path)
@@ -220,7 +212,6 @@ class BilingualWriterTests(unittest.TestCase):
                 target_lang="fr",
                 keep_original_sheets=False,
                 formula_display_value_backfill=False,
-                enable_print_guard=False,
             )
 
             wb = load_workbook(out_path, data_only=False)

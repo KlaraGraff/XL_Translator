@@ -94,7 +94,6 @@ class ExcelWorkbookContractTests(unittest.TestCase):
                 source_lang="zh",
                 keep_original_sheets=True,
                 formula_display_value_backfill=False,
-                enable_print_guard=False,
                 review_marks={"施工内容": MIXED_MARK_UNRESOLVED},
                 review_mark_colors={MIXED_MARK_UNRESOLVED: "FF0000"},
                 mark_review_items=True,

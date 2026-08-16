@@ -579,12 +579,10 @@ class TMSettings(BaseModel):
 class OutputSettings(BaseModel):
     keep_original_sheets: bool = True
     formula_display_value_backfill: bool = True
-    enable_print_guard: bool = False
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
     enable_excel_autofit: bool = False
     lock_row_height: bool = False
-    enable_task_log: bool = False
 
 
 class ExcelOutputSettings(BaseModel):
@@ -625,7 +623,6 @@ class PdfOutputSettings(BaseModel):
 
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
-    retain_page_materials: bool = True
 
 
 class ExcelReviewSettings(BaseModel):
@@ -876,7 +873,6 @@ class AppearanceSettings(BaseModel):
     """Persisted Tauri shell preferences shared across desktop launches."""
 
     theme: str = "system"
-    model_config_panel_open: bool = False
 
     @model_validator(mode="after")
     def _normalize_theme(self):
@@ -944,7 +940,6 @@ class AppSettings(BaseModel):
     cleaner_mode: str = "diff"  # 清洗始终先生成建议，确认后才写入
     cleaner_engine: str = DEFAULT_CLOUD_PROVIDER
     cleaner_model: str = ""
-    auto_pin_after_clean: bool = False
     cleaner_prompt_extras: dict[str, str] = Field(default_factory=dict)
     cleaner_full_prompt_overrides: dict[str, str] = Field(default_factory=dict)
     domain_name_overrides: dict[str, str] = Field(default_factory=dict)

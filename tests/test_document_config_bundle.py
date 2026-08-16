@@ -106,7 +106,7 @@ class DocumentConfigImportTests(unittest.TestCase):
             "version": 1,
             "document": {
                 "output": {
-                    "enable_task_log": True,
+                    "enable_excel_autofit": True,
                     "custom_output_dir": "/Volumes/别人的盘/输出",
                     "use_custom_output_dir": True,
                 }
@@ -117,7 +117,7 @@ class DocumentConfigImportTests(unittest.TestCase):
             current, parse_document_config_import(hostile)
         )
 
-        self.assertTrue(merged.output.enable_task_log)
+        self.assertTrue(merged.output.enable_excel_autofit)
         self.assertEqual(merged.output.custom_output_dir, "/Users/someone/译文")
 
     def test_the_model_bundle_is_rejected_with_a_pointer_to_the_right_page(self) -> None:

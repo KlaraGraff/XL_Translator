@@ -69,7 +69,6 @@ class _PatcherDefectCase(unittest.TestCase):
             source_lang="zh",
             keep_original_sheets=False,
             formula_display_value_backfill=False,
-            enable_print_guard=False,
             log_callback=self.logs.append,
         )
         kwargs.update(overrides)

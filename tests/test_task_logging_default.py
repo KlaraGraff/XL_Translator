@@ -14,9 +14,15 @@ from settings import AppSettings
 
 
 class TaskLoggingDefaultTests(unittest.TestCase):
+    """任务日志永远开，没有开关。
+
+    日志本身是脱敏的（不写源文、不写密钥、不写异常细节，见下面两组用例），
+    界面的清理功能里也有「日志」这一类随时能清，所以不为它单独立一个设置项。
+    这两条盯的就是「别哪天又把它接成可关的」。
+    """
+
     def test_excel_task_logger_is_always_enabled(self) -> None:
         settings = AppSettings()
-        settings.output.enable_task_log = False
 
         logger_cls = MagicMock()
         logger_cls.return_value.task_id = "excel-task"
@@ -30,7 +36,6 @@ class TaskLoggingDefaultTests(unittest.TestCase):
 
     def test_word_task_logger_is_always_enabled(self) -> None:
         settings = AppSettings()
-        settings.output.enable_task_log = False
 
         logger_cls = MagicMock()
         logger_cls.return_value.task_id = "word-task"

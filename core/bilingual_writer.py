@@ -145,7 +145,6 @@ def write_bilingual_file(
     target_lang: str,
     keep_original_sheets: bool,
     formula_display_value_backfill: bool,
-    enable_print_guard: bool,
     source_lang: str = "zh",
     lock_row_height: bool = False,
     review_marks: dict[str, str] | None = None,
@@ -168,7 +167,6 @@ def write_bilingual_file(
     :param keep_original_sheets: 是否保留原始中文分表
     :param formula_display_value_backfill:
                                  是否对公式生成的显示文本按显示值匹配后回填
-    :param enable_print_guard:   保留参数（MVP 阶段不生效）
     :param lock_row_height:      是否锁定行高并通过缩小字号适配内容
     :param review_marks:         {原文: 风险标记类型}，用于整格标记需复核内容
     :param review_mark_colors:   风险标记类型到 RGB 色值的映射

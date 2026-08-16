@@ -33,7 +33,6 @@ class _CoverageCase(unittest.TestCase):
             source_lang="zh",
             keep_original_sheets=True,
             formula_display_value_backfill=False,
-            enable_print_guard=False,
         )
 
     def _plan_sheets(self, path: Path) -> set[str]:

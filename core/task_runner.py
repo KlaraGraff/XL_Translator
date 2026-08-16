@@ -1613,9 +1613,6 @@ class TaskRunner:
                             source_lang          = source_lang,
                             keep_original_sheets = excel_output.keep_original_sheets,
                             formula_display_value_backfill = excel_output.formula_display_value_backfill,
-                            # E4B-10 deliberately removes the legacy print-guard
-                            # toggle from Excel behavior.
-                            enable_print_guard   = False,
                             lock_row_height      = excel_output.lock_row_height,
                             review_marks         = excel_review_marks,
                             review_mark_colors   = self._settings.excel_review.mark_colors,

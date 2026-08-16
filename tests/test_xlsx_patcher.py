@@ -242,7 +242,6 @@ class XlsxPatcherTests(unittest.TestCase):
             source_lang="zh",
             keep_original_sheets=False,
             formula_display_value_backfill=False,
-            enable_print_guard=False,
         )
         kwargs.update(overrides)
         return write_bilingual_file(**kwargs)
@@ -672,7 +671,6 @@ class AnchorFreezeTests(unittest.TestCase):
             source_lang="zh",
             keep_original_sheets=False,
             formula_display_value_backfill=False,
-            enable_print_guard=False,
             stats=stats,
         )
         kwargs.update(overrides)
