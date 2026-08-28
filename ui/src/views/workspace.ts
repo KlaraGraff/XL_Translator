@@ -1915,6 +1915,10 @@ interface PdfBatchRerunState {
    *  快照里只有单页的 rerun.active / page_number，没有「第几页/共几页」这种批次概念，
    *  也就没法从快照反推进度，只能靠发起方自己记。 */
   current: { fileName: string; pageNumber: number } | null;
+  /** 用户按了「停止」。含义是「不再发起后面的页」，不是「立刻中断」——后端没有取消
+   *  接口（api-client 只有 rerunPdfPage，没有对应的 cancel），已经发出去的那一页在
+   *  服务端照跑到底。所以按下之后横幅要改口说「跑完这一页就停」，不能假装已经停了。 */
+  stopped: boolean;
 }
 const pdfBatchRerunState: Record<Surface, PdfBatchRerunState | undefined> = {
   excel: undefined,
@@ -1952,12 +1956,21 @@ async function waitForRerunSlot(surface: Surface, taskId: string): Promise<void>
  *  时出现（见 buildPdfReviewCard），用 regeneratePdfPage 会跟 rerun_actionable 的语义
  *  对不上——终态任务本来就不该走「排队等继续翻译」这条路，因为它不会再继续翻译了。 */
 async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): Promise<void> {
-  const batch: PdfBatchRerunState = { taskId, total: rows.length, done: 0, current: null };
+  const batch: PdfBatchRerunState = { taskId, total: rows.length, done: 0, current: null, stopped: false };
   pdfBatchRerunState[surface] = batch;
   rerender(surface);
   try {
     for (const { file, page } of rows) {
-      if (pdfBatchRerunState[surface] !== batch) return; // 任务切走了 / 被新一轮盖掉，不再继续
+      // 三个都得查，少一个就会继续往外发请求：
+      //   - stopped：用户按了停止，当前这一页跑完就到此为止；
+      //   - 状态被换掉：被新一轮批量盖掉；
+      //   - taskId 对不上：用户在同一个工作区切到了别的任务。第三条以前漏了——原来的
+      //     注释写着「任务切走了」，但 pdfBatchRerunState 只在这个函数里改，focusTask
+      //     换 states[surface].task 时压根不碰它，这个守卫对任务切换是瞎的。后果是
+      //     waitForRerunSlot 的 taskId 检查会让它每次立刻返回，剩下几页背靠背连发，
+      //     后端一路 409（page_rerun_active），连弹几条错误 toast，一页也没重跑成。
+      if (pdfBatchRerunState[surface] !== batch || batch.stopped) return;
+      if (states[surface].task?.task.task_id !== taskId) return;
       batch.current = { fileName: file.name, pageNumber: page.page_number };
       rerender(surface);
       try {
@@ -1978,6 +1991,17 @@ async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageR
   }
 }
 
+/** 停止批量重跑：只掐掉「发起下一页」，不碰已经在跑的那一页。
+ *
+ *  不弹确认框——这是刹车，不是危险操作，中间再挡一层就失去意义了。真正要交代清楚的
+ *  是它停不掉什么，那句话放在按下之后的横幅上说，比放在确认框里有用。 */
+function stopPdfBatchRerun(surface: Surface, taskId: string): void {
+  const batch = pdfBatchRerunState[surface];
+  if (!batch || batch.taskId !== taskId || batch.stopped) return;
+  batch.stopped = true;
+  rerender(surface);
+}
+
 /** 危险操作确认：跟单页那个 confirmPdfPageRerun 一个道理——会覆盖已有译文，批量做这件
  *  事更不能让人凭一个数字点下去，先把具体是哪几个文件的哪几页摆出来。 */
 function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): void {
@@ -1995,7 +2019,7 @@ function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow
     body: [
       "这几页现在的译文会被覆盖，覆盖之后取不回来；重新生成按页计费，其余页不受影响、不会重新调用接口。",
       list,
-      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF。",
+      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF。中途可以按横幅上的「停止」，当前这一页会跑完，后面的不再重跑。",
     ],
     actions: [
       { label: "取消" },
@@ -2139,13 +2163,35 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
     banner.append(el("span", "spin"));
     const txt = el("span", "txt");
     const em = el("em");
-    em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
-    txt.append(document.createTextNode("正在重跑 "), em);
-    if (batch.current) txt.append(document.createTextNode(`：${batch.current.fileName} 第 ${batch.current.pageNumber} 页`));
     const small = el("small");
-    small.textContent = "跑完会自动替换译文页并重新装订这个文件的输出 PDF，其余页不受影响。";
+    if (batch.stopped) {
+      // 按下停止之后，剩下多少页比「第几页」更要紧——用户按刹车就是想知道还会不会
+      // 继续烧钱，答案是「不会，就这一页了」。停在最后一页上时剩余是 0，那句话得换
+      // 个说法，否则界面上会出现「剩下的 0 页不再重跑」这种绕口的废话。
+      const remaining = Math.max(0, batch.total - batch.done - 1);
+      if (remaining > 0) {
+        em.textContent = `${remaining} 页`;
+        txt.append(document.createTextNode("已停止，剩下的 "), em, document.createTextNode(" 不再重跑"));
+      } else {
+        txt.append(document.createTextNode("已停止，这已经是最后一页"));
+      }
+      if (batch.current) txt.append(document.createTextNode(`；正在等 ${batch.current.fileName} 第 ${batch.current.pageNumber} 页跑完`));
+      small.textContent = "已经发出去的这一页停不下来，服务端会把它跑完并计费；跑完就收摊。";
+    } else {
+      em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
+      txt.append(document.createTextNode("正在重跑 "), em);
+      if (batch.current) txt.append(document.createTextNode(`：${batch.current.fileName} 第 ${batch.current.pageNumber} 页`));
+      small.textContent = "跑完会自动替换译文页并重新装订这个文件的输出 PDF，其余页不受影响。";
+    }
     txt.append(small);
     banner.append(txt);
+    if (!batch.stopped) {
+      banner.append(createButton({
+        label: "停止",
+        size: "mini",
+        onClick: () => stopPdfBatchRerun(surface, taskId),
+      }));
+    }
   } else if (snapshot.terminal && failingRows.length > 0) {
     banner = el("div", "pdf-fixbar");
     banner.append(el("span", "dot"));
@@ -2297,10 +2343,12 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
         ? "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
         // 批量重跑横幅在跑的时候，单页重跑用的是同一个全局重跑槽位（PdfPagesSnapshot.rerun
         // 一个任务只有一份），这里顺手把其它行的「重新生成」也锁住，不然点了会跟批量任务
-        // 抢槽位、互相打断。当前正在被批量处理的那一行走上面 rerunning 分支，文案已经是
-        // 「重新生成中」，不会落到这句话上。
+        // 抢槽位、互相打断。注意这条链子不看 rerunning：正在被批量处理的那一行也会落到
+        // 这句提示上（它的 status 仍是 failed/placeholder，rerunnable 为真）。显示没问题
+        // ——按钮文案由下面的 `rerunning ? "重新生成中"` 单独决定，跟这里的悬停说明是两
+        // 回事——但别照着「那一行不会走到这里」去改，那个前提不成立。
         : batchRerunActive
-          ? "正在批量重跑失败页，等这批跑完再单独操作这一页。"
+          ? "正在批量重跑失败页，等这批跑完再单独操作这一页；要提前停，用上面横幅的「停止」。"
           : snapshot.rerun.active
             ? "有一页正在重新生成，跑完再操作下一页。"
             : !snapshot.rerun_actionable
