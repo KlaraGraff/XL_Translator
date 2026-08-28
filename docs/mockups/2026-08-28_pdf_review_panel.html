@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>逐页审核面板 · 样张 2026-08-28</title>
+<style>
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff;--ground:#f4f6fc;--ground-2:#ebeef8;--rail:#fbfcfe;
+  --surface:#fff;--surface-2:#f8fafe;--ink:#141a2e;--ink-2:#556080;--ink-3:#8a93ac;
+  --line:#e7ebf5;--line-2:#d9dfee;--accent:var(--accent-base);--accent-strong:#4353cc;
+  --on-accent:#fff;--tint:#f0f1ff;--tint-line:#ccd2ff;--tint-ink:#404fc2;
+  --ok:#12a366;--ok-t:#e2f4ed;--ok-l:#b3e2ce;
+  --warn:#c77a00;--warn-t:#f8eede;--warn-l:#edd4ad;
+  --danger:#e5484d;--danger-t:#fdebec;--danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66 / 5%);
+  --sh-md:0 1px 2px rgb(24 34 66 / 5%),0 10px 26px -14px rgb(30 45 90 / 20%);
+  --sh-lg:0 2px 4px rgb(24 34 66 / 6%),0 24px 48px -22px rgb(30 45 90 / 30%);
+  --r-lg:15px;--r-md:12px;--r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Noto Sans SC",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);font-family:var(--font);color:var(--ink);
+  -webkit-font-smoothing:antialiased;padding:28px 24px 80px}
+.page{max-width:1000px;margin:0 auto}
+h1{font-size:20px;margin:0 0 6px}
+.lede{font-size:13px;color:var(--ink-2);margin:0 0 26px;line-height:1.7}
+.lede code{background:var(--ground-2);padding:1px 5px;border-radius:5px;font-size:12px}
+
+.sec{margin:34px 0 12px;display:flex;align-items:baseline;gap:10px}
+.sec h2{font-size:14px;margin:0;font-weight:650}
+.sec .why{font-size:12.5px;color:var(--ink-3)}
+
+/* ---- 复用应用真实样式 ---- */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  box-shadow:var(--sh-sm);display:flex;flex-direction:column;overflow:hidden}
+.tc-head{display:flex;align-items:center;gap:10px;padding:11px 16px;
+  border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.tc-head b{color:var(--ink);font-weight:600;font-size:13px}
+.tc-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.linklike{color:var(--tint-ink);font-size:12.5px;cursor:pointer;text-decoration:none}
+.linklike:hover{text-decoration:underline}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);
+  background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:550;
+  cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);
+  font-weight:600;box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:var(--accent-strong)}
+.btn.mini{height:26px;padding:0 10px;font-size:12px;border-radius:7px}
+.btn.dgr{color:var(--danger);border-color:var(--danger-l);background:var(--danger-t)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+table.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{font-size:11.5px;font-weight:600;color:var(--ink-3);text-align:left;padding:8px 12px;
+  border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:0;z-index:2}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tr:hover td{background:var(--surface-2)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;
+  border-radius:99px;padding:2.5px 9px;white-space:nowrap}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+.chip.dgr{background:var(--danger-t);color:var(--danger)}
+
+/* ---- 改动 1：可折叠的文件分组行 ---- */
+.pdf-file-group td{background:var(--surface-2);color:var(--ink-2);font-weight:600;
+  font-size:12px;padding:0}
+.grp{display:flex;align-items:center;gap:9px;width:100%;padding:7px 12px;
+  background:none;border:0;font:inherit;font-weight:600;font-size:12px;color:var(--ink-2);
+  cursor:pointer;text-align:left}
+.grp:hover{background:var(--ground-2)}
+.grp .cv{flex:none;width:13px;height:13px;color:var(--ink-3);transition:transform .13s ease}
+.grp[aria-expanded="false"] .cv{transform:rotate(-90deg)}
+.grp .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--ink);font-weight:600}
+.grp .sum{flex:none;display:flex;gap:6px;align-items:center;font-weight:500;color:var(--ink-3)}
+.grp .sum .bad{color:var(--danger);font-weight:650}
+
+/* ---- 改动 2：失败页重试横幅 ---- */
+.pdf-fixbar{display:flex;align-items:center;gap:12px;padding:10px 16px;
+  background:var(--danger-t);border-bottom:1px solid var(--danger-l);font-size:12.5px}
+.pdf-fixbar .dot{flex:none;width:7px;height:7px;border-radius:99px;background:var(--danger)}
+.pdf-fixbar .txt{flex:1;min-width:0;color:var(--ink);line-height:1.5}
+.pdf-fixbar .txt em{font-style:normal;font-weight:650;color:var(--danger)}
+.pdf-fixbar .txt small{display:block;color:var(--ink-2);font-size:11.5px;margin-top:1px}
+.pdf-fixbar.busy{background:var(--tint);border-bottom-color:var(--tint-line)}
+.pdf-fixbar.busy .dot{background:var(--accent);animation:pulse 1.1s ease-in-out infinite}
+.pdf-fixbar.busy .txt em{color:var(--tint-ink)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.spin{width:13px;height:13px;border:2px solid var(--tint-line);border-top-color:var(--accent);
+  border-radius:99px;animation:sp .7s linear infinite;flex:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---- 改动 3：终态滚动 ---- */
+.wrap{overflow:auto;max-height:420px}
+.wrap.short{max-height:250px}
+
+/* 只看有问题的页 */
+.onlybad{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);
+  cursor:pointer;user-select:none}
+.onlybad input{accent-color:var(--accent);width:14px;height:14px;margin:0}
+body.filter .row-ok{display:none}
+body.filter .grp-clean{display:none}
+
+/* 折叠 */
+tr.hid{display:none}
+
+/* 弹窗 */
+.mask{position:fixed;inset:0;background:rgb(14 20 38 / 42%);display:none;
+  align-items:center;justify-content:center;z-index:50;padding:20px}
+.mask.on{display:flex}
+.modal{background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--sh-lg);
+  width:440px;max-width:100%;padding:20px 22px 18px}
+.modal h3{margin:0 0 8px;font-size:15px}
+.modal p{margin:0 0 6px;font-size:13px;color:var(--ink-2);line-height:1.65}
+.modal ul{margin:8px 0 12px;padding-left:18px;font-size:12.5px;color:var(--ink-2);line-height:1.8}
+.modal .ft{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+
+.note{font-size:12.5px;color:var(--ink-2);background:var(--surface);border:1px solid var(--line);
+  border-left:3px solid var(--accent);border-radius:0 var(--r-sm) var(--r-sm) 0;
+  padding:11px 14px;margin:10px 0 0;line-height:1.75}
+.note b{color:var(--ink)}
+.note.q{border-left-color:var(--warn)}
+.hint{font-size:12px;color:var(--ink-3);margin:8px 0 0}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>逐页审核面板 · 改版样张</h1>
+<p class="lede">
+针对你标出的三处问题。<b>这一份是可交互的</b>——分组标题能真的点开收起，表格能真的滚，
+先上手点两下再决定版式。下面每一屏底下有一段说明，讲这么做的理由和还没定的地方。
+</p>
+
+<!-- ============ 屏 1 ============ -->
+<div class="sec">
+  <h2>屏 1 · 任务结束，有 2 页没生成出来（默认落地状态）</h2>
+  <span class="why">三处改动同时出现在这一屏</span>
+</div>
+
+<div class="card">
+  <div class="tc-head">
+    <b>逐页审核</b>
+    <span>本次没有开启逐页审核，下面是每一页的生成结果</span>
+    <div class="tc-tools">
+      <label class="onlybad"><input type="checkbox" id="fx"> 只看有问题的页</label>
+    </div>
+  </div>
+
+  <div class="pdf-fixbar" id="bar1">
+    <span class="dot"></span>
+    <span class="txt">
+      <em>2 页</em>没有生成译文，输出的 PDF 里这两页是占位图。
+      <small>重跑只动这 2 页，其余 82 页不会重新调用接口。</small>
+    </span>
+    <button class="btn mini" onclick="focusBad()">定位到这几页</button>
+    <button class="btn pri mini" onclick="openModal()">只重跑这 2 页</button>
+  </div>
+
+  <div class="wrap">
+    <table class="tbl">
+      <tr><th style="width:88px">页</th><th style="width:140px">审核结果</th><th>说明</th><th style="width:190px"></th></tr>
+      <tbody id="tb"></tbody>
+    </table>
+  </div>
+</div>
+
+<p class="note">
+<b>改动 1 —— 失败页重试入口。</b>
+这条红色横幅只在「有页面没出译文」时出现，全部成功时整条不渲染（见屏 4）。
+按钮走的是已有的单页重生成接口，只是一次排进这 2 页，不重跑整个任务。
+右边那颗「定位到这几页」是配套的：84 行里找 2 行，光给按钮不给定位仍然难受——点它会自动展开
+含失败页的文件、收起干净的文件，并把视图滚到第一个失败页。
+</p>
+<p class="note">
+<b>顺带加的：「只看有问题的页」。</b>
+你没提这条，我加在这里让你一并否决或留下。勾上后只剩失败 / 建议复核的行，84 行立刻变 3 行。
+不想要的话直接说，去掉它不影响另外三处改动。
+</p>
+
+<!-- ============ 屏 2 ============ -->
+<div class="sec">
+  <h2>屏 2 · 折叠态</h2>
+  <span class="why">默认：有问题的文件展开，干净的文件收起</span>
+</div>
+
+<div class="card">
+  <div class="tc-head"><b>逐页审核</b><span>5 个文件 · 84 页</span></div>
+  <div class="wrap short">
+    <table class="tbl">
+      <tr><th style="width:88px">页</th><th style="width:140px">审核结果</th><th>说明</th><th style="width:190px"></th></tr>
+      <tbody id="tb2"></tbody>
+    </table>
+  </div>
+</div>
+
+<p class="note">
+<b>改动 2 —— 分组可折叠。</b>
+标题行右侧常驻一行结果小结（<span style="color:var(--ink-3)">16 通过</span> /
+<span style="color:var(--danger);font-weight:650">1 失败</span>），
+所以<b>收起来不等于看不见问题</b>——收起状态下你依然一眼知道哪个文件有事。
+<br><br>
+默认规则我定成：<b>有失败或建议复核的文件默认展开，全部通过的文件默认收起</b>。
+理由是打开这张表 90% 是为了找出问题页，而不是逐页确认 84 个「通过」。
+如果你更希望「一律默认收起」或「一律默认展开」，这是一句话的事，说了就改。
+折叠状态记在内存里，同一个任务内切走再回来保持不变；关掉应用不保留。
+</p>
+
+<!-- ============ 屏 3 ============ -->
+<div class="sec">
+  <h2>屏 3 · 危险操作确认 + 重跑进行中</h2>
+  <span class="why">重生成会覆盖已有产物，必须先问</span>
+</div>
+
+<div class="card" style="margin-bottom:14px">
+  <div class="tc-head"><b>逐页审核</b><span>正在补 2 页</span></div>
+  <div class="pdf-fixbar busy">
+    <span class="spin"></span>
+    <span class="txt">
+      正在重跑 <em>第 1 / 2 页</em>：UNITE INDUSTRIELLE BTR ANODE BATIMENT 2 (5).pdf 第 6 页
+      <small>单页通常 60–150 秒。跑完会自动替换译文页并重新装订这个文件的 PDF。</small>
+    </span>
+    <button class="btn mini">停止</button>
+  </div>
+  <div class="wrap short">
+    <table class="tbl">
+      <tr><th style="width:88px">页</th><th style="width:140px">审核结果</th><th>说明</th><th style="width:190px"></th></tr>
+      <tbody>
+        <tr><td>第 6 页</td><td><span class="chip mute">重试中</span></td>
+            <td style="color:var(--ink-2)">正在重新调用 gpt-image-2 生成这一页。</td>
+            <td><button class="btn mini" disabled>立即重试</button></td></tr>
+        <tr><td>第 7 页</td><td><span class="chip mute">排队中</span></td>
+            <td style="color:var(--ink-2)">已排入本次重跑，等上一页结束。</td>
+            <td><button class="btn mini" disabled>立即重试</button></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<p class="hint">↑ 上面这块是重跑进行中的样子。点屏 1 里的「只重跑这 2 页」可以看确认弹窗。</p>
+
+<!-- ============ 屏 4 ============ -->
+<div class="sec">
+  <h2>屏 4 · 全部成功（对照）</h2>
+  <span class="why">没有失败页时，横幅整条不出现</span>
+</div>
+
+<div class="card">
+  <div class="tc-head">
+    <b>逐页审核</b><span>84 页全部生成成功</span>
+    <div class="tc-tools"><span class="chip ok">0 页需要处理</span></div>
+  </div>
+  <div class="wrap short">
+    <table class="tbl">
+      <tr><th style="width:88px">页</th><th style="width:140px">审核结果</th><th>说明</th><th style="width:190px"></th></tr>
+      <tbody id="tb4"></tbody>
+    </table>
+  </div>
+</div>
+
+<p class="note">
+<b>改动 3 —— 滚动。</b>
+上面每一张表都设了高度上限，滚动条在表内。现在线上这张表没有上限，84 行一路把卡片撑到几千像素高，
+所以你看到的是「截断、滚不动」。根因是一行覆盖写：<code>maxHeight</code> 设好后被
+<code>style.cssText =</code> 整个抹掉了（<code>workspace.ts:1805</code>），已经派人在修。
+<br><br>
+<b>这里有一个数值要你定：</b>原作者写死 420px（约 11 行）。样张屏 1 用的就是 420px。
+另一个做法是跟着窗口高度走（比如 <code>min(52vh, 640px)</code>），窗口拉大表格跟着变高。
+我的建议是<b>跟窗口走</b>——你这次是 84 页 5 个文件，固定 420px 在大屏上很浪费。默认按这个做，
+你要是觉得固定高度更稳就说一声。
+</p>
+
+<div class="mask" id="mask">
+  <div class="modal">
+    <h3>重跑这 2 页？</h3>
+    <p>会重新调用 gpt-image-2 生成下面这 2 页，并<b>覆盖</b>当前输出文件夹里对应的译文页和 PDF：</p>
+    <ul>
+      <li>UNITE INDUSTRIELLE BTR ANODE BATIMENT 2 (5).pdf · 第 6 页</li>
+      <li>NTS BTR ANOD BATIMENT 4 030525.pdf · 第 7 页</li>
+    </ul>
+    <p style="font-size:12.5px;color:var(--ink-3)">
+      其余 82 页不受影响，不会重新计费。原 PDF 会先备份一份再覆盖。
+    </p>
+    <div class="ft">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn pri" onclick="closeModal()">重跑这 2 页</button>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const CV = '<svg class="cv" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>';
+
+const FILES = [
+  {n:"UNITE INDUSTRIELLE BTR ANODE BATIMENT 1 (2).pdf", pages:17, bad:[]},
+  {n:"UNITE INDUSTRIELLE BTR ANODE BATIMENT 2 (5).pdf", pages:17, bad:[{p:6,why:"页面生成失败：安全连接校验没通过（已重试 4 次）。"}]},
+  {n:"NTS BTR ANOD BATIMENT 4 030525.pdf", pages:17, bad:[{p:7,why:"页面生成失败：等待模型返回超时（已重试 4 次）。"}]},
+  {n:"UNITE INDUSTRIELLE BTR ANODE BATIMENT 3.pdf", pages:16, bad:[]},
+  {n:"NTS BTR ANOD BATIMENT 5 030525.pdf", pages:17, bad:[]},
+];
+
+function grpRow(f, id, open){
+  const nbad = f.bad.length;
+  const sum = nbad
+    ? `<span class="bad">${nbad} 失败</span><span>·</span><span>${f.pages-nbad} 通过</span>`
+    : `<span>${f.pages} 页全部通过</span>`;
+  const tr = document.createElement("tr");
+  tr.className = "pdf-file-group" + (nbad ? "" : " grp-clean");
+  tr.innerHTML = `<td colspan="4"><button class="grp" aria-expanded="${open}" data-g="${id}">
+    ${CV}<span class="fn">${f.n}</span><span class="sum">${sum}</span></button></td>`;
+  tr.querySelector(".grp").onclick = e => toggle(e.currentTarget);
+  return tr;
+}
+
+function pageRow(f, i, id, open){
+  const bad = f.bad.find(b => b.p === i);
+  const tr = document.createElement("tr");
+  tr.dataset.g = id;
+  tr.className = (open ? "" : "hid ") + (bad ? "row-bad" : "row-ok");
+  if (bad) tr.dataset.bad = "1";
+  tr.innerHTML = bad
+    ? `<td>第 ${i} 页</td><td><span class="chip dgr">生成失败</span></td>
+       <td style="color:var(--ink-2)">${bad.why}</td>
+       <td><button class="btn mini">立即重试</button> <button class="btn mini">跳过该页</button></td>`
+    : `<td>第 ${i} 页</td><td><span class="chip mute">未审核</span></td>
+       <td style="color:var(--ink-2)">本次没有让审核模型看这一页。</td>
+       <td><a class="linklike">查看对比</a> · <a class="linklike">重新生成</a></td>`;
+  return tr;
+}
+
+function build(tbody, opts){
+  opts = opts || {};
+  FILES.forEach((f, gi) => {
+    const id = (opts.pfx||"g") + gi;
+    const open = opts.allOpen ? true : (opts.allShut ? false : f.bad.length > 0);
+    tbody.append(grpRow(f, id, open));
+    for (let i = 1; i <= f.pages; i++) tbody.append(pageRow(f, i, id, open));
+  });
+}
+
+function toggle(btn){
+  const open = btn.getAttribute("aria-expanded") === "true";
+  btn.setAttribute("aria-expanded", String(!open));
+  document.querySelectorAll(`tr[data-g="${btn.dataset.g}"]`)
+    .forEach(r => r.classList.toggle("hid", open));
+}
+
+function focusBad(){
+  document.querySelectorAll('#tb .grp').forEach(b => {
+    const id = b.dataset.g;
+    const has = !!document.querySelector(`#tb tr[data-g="${id}"][data-bad]`);
+    if ((b.getAttribute("aria-expanded") === "true") !== has) toggle(b);
+  });
+  const first = document.querySelector('#tb tr[data-bad]');
+  if (first) first.scrollIntoView({block:"center", behavior:"smooth"});
+}
+
+document.getElementById("fx").onchange = e =>
+  document.body.classList.toggle("filter", e.target.checked);
+function openModal(){ document.getElementById("mask").classList.add("on"); }
+function closeModal(){ document.getElementById("mask").classList.remove("on"); }
+
+build(document.getElementById("tb"),  {pfx:"a"});
+build(document.getElementById("tb2"), {pfx:"b"});
+build(document.getElementById("tb4"), {pfx:"c", allShut:true});
+// 屏 4 是「全部成功」的对照，把失败行降级成通过
+document.querySelectorAll("#tb4 .row-bad").forEach(r => {
+  r.className = r.className.replace("row-bad","row-ok");
+  r.cells[1].innerHTML = '<span class="chip mute">未审核</span>';
+  r.cells[2].textContent = "本次没有让审核模型看这一页。";
+  r.cells[3].innerHTML = '<a class="linklike">查看对比</a> · <a class="linklike">重新生成</a>';
+});
+document.querySelectorAll("#tb4 .grp .sum").forEach(s => {
+  if (s.querySelector(".bad")) s.innerHTML = "<span>17 页全部通过</span>";
+});
+</script>
+</body>
+</html>

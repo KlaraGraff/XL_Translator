@@ -1055,13 +1055,41 @@ const FILTERS: Array<["all" | "active" | "terminal", string]> = [
   ["terminal", "最近结果"],
 ];
 
+/** 卡片排序用的时间戳。优先用 created_at（用户发起这批任务的时刻）——用户在列表里
+ *  找任务，脑子里记的是「我什么时候开始跑的」，不是「它最后一次状态变更是什么时候」；
+ *  按 updated_at 排会让一个老任务因为刚被重试/续跑过就跳到最上面，顺序变得不可预期。
+ *  created_at 理论上创建任务时必写，但这里仍然兜底 updated_at：万一某条记录的 created_at
+ *  缺失（老数据或后端异常），也不能让它排序位置变得随机——退而求其次用 updated_at，
+ *  两个都没有才当作 0（沉到最后）。 */
+function taskSortTime(task: TaskStatus): number {
+  return task.created_at ?? task.updated_at ?? 0;
+}
+
+/** 列表排序：运行中的任务永远置顶（不看时间——用户此刻最关心的是正在跑的任务，
+ *  哪怕它是三天前发起的），已完成的任务按发起时间倒序排在后面，最新的在最上面。
+ *  之前这里没有任何排序：`order` 只是 upsert() 每次把被刷新到的任务塞到数组最前面，
+ *  多次轮询下来顺序完全取决于「最后一次巡检里后端把这条任务放在第几个」，跟时间无关，
+ *  实测下来就成了越旧的任务越靠上。
+ *  时间相同时必须返回 0（而不是任由减法产生的 NaN/未定义结果），Array.sort 在现代引擎
+ *  里是稳定排序，返回 0 才能保证同一时刻创建的两条任务每次渲染顺序都一样，不会跳来跳去。 */
+function compareTaskOrder(a: TaskStatus, b: TaskStatus): number {
+  const activeRank = Number(isTaskActive(b)) - Number(isTaskActive(a));
+  if (activeRank !== 0) return activeRank;
+  const at = taskSortTime(a);
+  const bt = taskSortTime(b);
+  if (at === bt) return 0;
+  return bt - at;
+}
+
 function visibleOrder(): string[] {
-  return order.filter((id) => {
-    const entry = tasks.get(id);
-    if (!entry) return false;
-    if (filter === "all") return true;
-    return filter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task);
-  });
+  return order
+    .filter((id) => {
+      const entry = tasks.get(id);
+      if (!entry) return false;
+      if (filter === "all") return true;
+      return filter === "active" ? isTaskActive(entry.task) : !isTaskActive(entry.task);
+    })
+    .sort((idA, idB) => compareTaskOrder(tasks.get(idA)!.task, tasks.get(idB)!.task));
 }
 
 /**
@@ -1534,7 +1562,10 @@ function renderDetail(): void {
 export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
   if (typeof params.taskId === "string") selectedId = params.taskId;
-  else if (!selectedId && order.length) selectedId = order[0];
+  // 必须用 visibleOrder()：order 是「最近一次被 upsert 的在最前」的原始序，既不是
+  // 列表的显示顺序，也不受当前筛选约束。拿它播种会选中一条在当前筛选下根本不显示的
+  // 任务——左边没有高亮项、右边详情却在放另一条任务的内容。
+  else if (!selectedId) selectedId = visibleOrder()[0] ?? null;
 
   refreshTopbarStatus();
 
