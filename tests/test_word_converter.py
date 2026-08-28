@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from docx import Document
 
+from core import word_converter
 from core.word_converter import (
     WordConversionError,
     convert_doc_to_docx,
@@ -147,6 +148,37 @@ class WordConverterTests(unittest.TestCase):
 
             self.assertEqual(result.method, "LibreOffice")
             self.assertEqual(native_calls, [])
+
+    def test_killed_libreoffice_python_is_not_retried_and_is_cached(self) -> None:
+        """被信号杀掉的解释器只探一次：不重试、不重复探。
+
+        真实场景是 macOS 以代码签名为由 SIGKILL 掉 LibreOffice 自带的 Python。
+        原来的实现每秒重试一次、连试 90 秒，把一次启动失败放大成几十份系统崩溃报告
+        和一叠「意外退出」对话框，而这些等待最终什么也换不到——照样退回 Python 兜底。
+        """
+        word_converter._LIBREOFFICE_PYTHON_PROBE_CACHE.clear()
+        self.addCleanup(word_converter._LIBREOFFICE_PYTHON_PROBE_CACHE.clear)
+
+        calls: list[list[str]] = []
+
+        class _Killed:
+            returncode = -9
+            stdout = ""
+            stderr = ""
+
+        def _fake_run(command, **_kwargs):
+            calls.append([str(part) for part in command])
+            return _Killed()
+
+        python_path = Path("/Applications/LibreOffice.app/Contents/Resources/python")
+        with patch.object(word_converter.subprocess, "run", _fake_run):
+            for _ in range(4):
+                with self.assertRaises(WordConversionError) as ctx:
+                    word_converter._ensure_libreoffice_python_runnable(python_path)
+
+        # 四次调用只真正启动过一次解释器，其余三次走缓存。
+        self.assertEqual(len(calls), 1)
+        self.assertIn("代码签名", str(ctx.exception))
 
     @staticmethod
     def _build_docx(path: Path) -> None:

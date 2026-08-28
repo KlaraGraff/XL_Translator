@@ -21,6 +21,8 @@ from core.user_facing_errors import humanize_error
 DOCX_FILE_FORMAT = 16
 WORD_CONVERSION_TIMEOUT_SECONDS = 180
 LIBREOFFICE_UNO_TIMEOUT_SECONDS = 90
+# 起 soffice 之前先花这点时间确认 LibreOffice 自带的 Python 还能不能跑起来。
+LIBREOFFICE_PYTHON_PROBE_TIMEOUT_SECONDS = 15
 
 
 class WordConversionError(Exception):
@@ -294,6 +296,12 @@ def convert_numbering_to_text_with_libreoffice(docx_path: str | Path) -> Path:
     if soffice_path is None:
         raise WordConversionError("未找到 LibreOffice/soffice。")
 
+    # 先确认这台机器上 LibreOffice 自带的 Python 还能起来，再决定要不要拉起 soffice。
+    # 顺序很重要：soffice 启动要好几秒，而这条路真正会挂的地方是它的 Python——
+    # 探活失败就直接让位给 Python 兜底，省下那几秒，也不会留一个空转的 headless 进程。
+    python_path = _find_libreoffice_python(soffice_path)
+    _ensure_libreoffice_python_runnable(python_path)
+
     output_path = _get_temp_docx_path(source_path)
     work_dir = Path(tempfile.mkdtemp(prefix="word_translator_lo_uno_"))
     profile_dir = work_dir / "profile"
@@ -313,13 +321,13 @@ def convert_numbering_to_text_with_libreoffice(docx_path: str | Path) -> Path:
     try:
         script_path = work_dir / "convert_numbering.py"
         script_path.write_text(_LIBREOFFICE_NUMBERING_SCRIPT, encoding="utf-8")
-        python_path = _find_libreoffice_python(soffice_path)
         last_error = ""
         deadline = time.monotonic() + LIBREOFFICE_UNO_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             result = subprocess.run(
                 [
                     str(python_path),
+                    "-B",
                     str(script_path),
                     str(port),
                     source_path.as_uri(),
@@ -329,10 +337,21 @@ def convert_numbering_to_text_with_libreoffice(docx_path: str | Path) -> Path:
                 check=False,
                 text=True,
                 timeout=20,
+                env=_libreoffice_python_env(),
             )
             if result.returncode == 0:
                 return output_path
             last_error = (result.stderr or result.stdout or "").strip()
+            # 这个循环本来是给「soffice 还没监听上端口」留的重试余地：那种失败下一秒就好了。
+            # 但「进程被信号杀掉」是另一回事——代码签名被系统拒绝、被 OOM kill，都属于
+            # 重试一百次也不会变的状态。原来不分青红皂白地每秒重试一次、连试 90 秒，
+            # 等于把一次启动失败放大成 90 次崩溃：macOS 会为每一次生成一份崩溃报告，
+            # 并把「XX 意外退出」的对话框叠在应用窗口上，而这 90 秒买不到任何东西——
+            # 最后照样退回 Python 兜底。认出信号杀就立刻停手。
+            if result.returncode < 0:
+                raise WordConversionError(
+                    _libreoffice_python_killed_message(python_path, -result.returncode)
+                )
             time.sleep(1)
         raise WordConversionError(last_error or "LibreOffice UNO 自动编号预处理超时。")
     finally:
@@ -583,6 +602,91 @@ def _find_libreoffice_python(soffice_path: Path) -> Path:
     if found:
         return Path(found)
     raise WordConversionError("未找到可用于 LibreOffice UNO 的 Python。")
+
+
+def _libreoffice_python_env() -> dict[str, str]:
+    """跑 LibreOffice 自带的 Python 时，禁止它往自己的应用包里写字节码缓存。
+
+    那些 `__pycache__/*.pyc` 是 LibreOffice 签名时封进去的文件。解释器一旦按常规习惯
+    重新生成它们，包的封条就对不上，macOS 会开始拒绝启动包里的嵌套程序——正是本机
+    现在这个症状。这台机器上的 27 个失配文件时间戳全是安装那一刻，不是我们写的；
+    但我们没有理由成为下一个写它的人，所以 `-B` 加环境变量双保险。
+    """
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _libreoffice_python_killed_message(python_path: Path, signal_number: int) -> str:
+    """被系统杀掉时给一句能照着做的话，而不是一个空的 stderr。"""
+    if signal_number == 9 and platform.system() == "Darwin":
+        # 实际遇到过的形态：macOS 以「Launch Constraint Violation」直接 SIGKILL 掉
+        # LibreOffice 自带的 Python，而它自己的签名是好的——坏的是外层 LibreOffice.app
+        # 的封装（spctl 报 sealed resource missing or invalid），加上安装包的隔离属性
+        # 还在。这不是文档的问题，也不是本应用的问题，重装 LibreOffice 才是出路。
+        return (
+            "LibreOffice 自带的 Python 被 macOS 直接终止（代码签名校验未通过）。"
+            "通常是 LibreOffice 这个应用本身的安装包损坏或未完成安全检查，"
+            "重新下载安装 LibreOffice 即可恢复；在此之前会自动改用内置方式处理编号。"
+        )
+    return (
+        f"LibreOffice 自带的 Python 被信号 {signal_number} 终止：{python_path}。"
+        "会自动改用内置方式处理编号。"
+    )
+
+
+# 探活结论按解释器路径缓存一次：{路径: None 表示可用, str 表示不可用的原因}。
+# 缓存的理由是探活本身有代价——解释器要是被系统杀掉，每探一次 macOS 就多生成一份
+# 崩溃报告、多弹一个「意外退出」对话框。一批文档挨个探，用户就会收到一叠对话框。
+# 这台机器上 LibreOffice 装坏了是个稳定状态，一次结论管到进程结束即可；用户重装了
+# LibreOffice 也重启了应用，缓存自然跟着没了。
+_LIBREOFFICE_PYTHON_PROBE_CACHE: dict[str, str | None] = {}
+
+
+def _ensure_libreoffice_python_runnable(python_path: Path) -> None:
+    """确认这个 Python 解释器能被启动；不能就抛错，让调用方走兜底。
+
+    只测「起不起得来」，不测 `import uno`——后者失败是另一类问题（UNO 环境没配好），
+    该由主流程的真实调用去暴露，探活越窄，误杀越少。
+    """
+    cache_key = str(python_path)
+    if cache_key in _LIBREOFFICE_PYTHON_PROBE_CACHE:
+        cached = _LIBREOFFICE_PYTHON_PROBE_CACHE[cache_key]
+        if cached is None:
+            return
+        raise WordConversionError(cached)
+    try:
+        _run_libreoffice_python_probe(python_path)
+    except WordConversionError as exc:
+        _LIBREOFFICE_PYTHON_PROBE_CACHE[cache_key] = str(exc)
+        raise
+    _LIBREOFFICE_PYTHON_PROBE_CACHE[cache_key] = None
+
+
+def _run_libreoffice_python_probe(python_path: Path) -> None:
+    try:
+        result = subprocess.run(
+            [str(python_path), "-B", "-c", ""],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=LIBREOFFICE_PYTHON_PROBE_TIMEOUT_SECONDS,
+            env=_libreoffice_python_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise WordConversionError(
+            f"LibreOffice 自带的 Python 启动超时：{python_path}。"
+        ) from exc
+    if result.returncode < 0:
+        raise WordConversionError(
+            _libreoffice_python_killed_message(python_path, -result.returncode)
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise WordConversionError(
+            f"LibreOffice 自带的 Python 无法启动（退出码 {result.returncode}）"
+            + (f"：{detail}" if detail else "。")
+        )
 
 
 def _get_temp_docx_path(original_path: Path) -> Path:
