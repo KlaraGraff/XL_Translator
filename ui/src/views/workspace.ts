@@ -1607,14 +1607,33 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
   return rows;
 }
 
+/** 刚点下去、快照还没回来的那一次单页重生成。
+ *
+ *  后端同一时刻只允许跑一页（rerun_pdf_page 撞上 rerun_active 直接抛 409），但终态没有
+ *  逐页 SSE，快照两秒才轮询一次。这两秒里 snapshot.rerun.active 还是 false，逐页表里
+ *  每一行的「重新生成」都照常可点——连点两页，第二页换来的只是一句报错。发起时先在本地
+ *  记一笔，界面立刻按「有一页在跑」渲染，等快照把真实状态换上来再清掉。 */
+type PendingRerun = { taskId: string; relativePath: string; pageNumber: number };
+
+const pendingReruns: Record<Surface, PendingRerun | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+
+/** 本地这笔只对发起它的那个任务有效——切到别的任务不能跟着禁用。 */
+function pendingRerunFor(surface: Surface, taskId: string): PendingRerun | undefined {
+  const pending = pendingReruns[surface];
+  return pending && pending.taskId === taskId ? pending : undefined;
+}
+
 /** actionable=false 时按钮全部禁用但常驻显示，这句短话解释原因。
  *
  *  只在卡片顶部说一次。早先每个按钮的 title 上也挂着同一句，一张十几行的表里
  *  就有二十多个一模一样的悬浮提示，读起来像出了二十个不同的问题。按行不同的原因
  *  （比如按幅面跳过的页）仍然挂在该行的按钮上——那才是 title 该承担的。 */
-function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot): string {
+function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot, pending?: PendingRerun): string {
   if (!snapshot.terminal) return "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
-  if (snapshot.rerun.active) return `第 ${snapshot.rerun.page_number} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
+  // 快照还没确认之前，用本地记的那一页说话——否则这句会写着「仍可单独重新生成某一页」，
+  // 而下面每一行的入口都已经是灰的，一屏之内自相矛盾。
+  const rerunningPage = snapshot.rerun.active ? snapshot.rerun.page_number : pending?.pageNumber;
+  if (rerunningPage !== undefined) return `第 ${rerunningPage} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
   if (snapshot.rerun.error) return `上一次重新生成没有成功：${redactedText(snapshot.rerun.error, "输出文件没有改动。")}`;
   // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
   if (snapshot.rerun_actionable) return "任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页，并覆盖原来的译文页和输出文件。";
@@ -1622,7 +1641,8 @@ function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot): string {
 }
 
 /** 这一页是不是正在被重新生成。终态没有逐页 SSE，这个判断只能来自快照。 */
-function isPageRerunning(snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage): boolean {
+function isPageRerunning(snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, pending?: PendingRerun): boolean {
+  if (pending && pending.relativePath === file.relative_path && pending.pageNumber === page.page_number) return true;
   return (
     snapshot.rerun.active &&
     snapshot.rerun.relative_path === file.relative_path &&
@@ -1663,6 +1683,10 @@ function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile
 }
 
 async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): Promise<void> {
+  // 请求还在路上时表里其他行就得先锁上，不能等两秒后的那次轮询。
+  const pending: PendingRerun = { taskId, relativePath: file.relative_path, pageNumber: page.page_number };
+  pendingReruns[surface] = pending;
+  rerender(surface);
   try {
     const c = await getClient();
     await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
@@ -1671,7 +1695,16 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
     showToast({ message: redactedText((error as Error)?.message, "重新生成失败。"), error: true });
   }
   // 成功要拿到「重新生成中」这一行，失败也要把后端此刻的真实状态换上来。
-  await fetchPdfPagesSnapshot(surface, taskId);
+  try {
+    await fetchPdfPagesSnapshot(surface, taskId);
+  } finally {
+    // 快照回来了（或者没拉动）就把话语权交回给它：本地这笔只负责盖住中间那一小段。
+    // 拉失败时也要清——那种情况下我们并不知道后端在跑什么，不该一直锁着整张表。
+    if (pendingReruns[surface] === pending) {
+      pendingReruns[surface] = undefined;
+      rerender(surface);
+    }
+  }
 }
 
 /** 终态没有 SSE，重生成的进度只能靠轮询这份快照；跑完自己停，不留空转的 interval。 */
@@ -1718,7 +1751,7 @@ function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement |
   if (!snapshot.actionable) {
     const note = el("p", "ws-note");
     note.style.cssText = "text-align:left;padding:8px 14px 0";
-    note.textContent = pdfActionsDisabledReason(snapshot);
+    note.textContent = pdfActionsDisabledReason(snapshot, pendingRerunFor(surface, taskId));
     card.append(note);
   }
 
@@ -2077,7 +2110,7 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   if (!snapshot.actionable) {
     const note = el("p", "ws-note");
     note.style.cssText = "text-align:left;padding:8px 14px 0";
-    note.textContent = pdfActionsDisabledReason(snapshot);
+    note.textContent = pdfActionsDisabledReason(snapshot, pendingRerunFor(surface, taskId));
     card.append(note);
   }
 
@@ -2299,7 +2332,8 @@ function reviewNote(page: PdfPage): string {
 
 function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, batchRerunActive: boolean): HTMLTableRowElement {
   const row = el("tr");
-  const rerunning = isPageRerunning(snapshot, file, page);
+  const pendingRerun = pendingRerunFor(surface, taskId);
+  const rerunning = isPageRerunning(snapshot, file, page, pendingRerun);
   const pageCell = el("td");
   pageCell.textContent = `第 ${page.page_number} 页`;
   row.append(pageCell);
@@ -2337,19 +2371,24 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
     // 终态不排队：点下去立刻重跑并覆盖输出文件，所以先过一道危险操作确认。
     // 「跳过该页」在终态没有意义（它的含义是「接受这张失败占位页」），不给入口。
     const rerunnable = !oversizeSkipped && !notFinished && page.status !== "rendered" && page.status !== "placeholder_pending";
+    // rerun_actionable 在后端就已经带上了 not rerun.active，但那是快照说的话；本地
+    // 这笔刚发出去的还没进快照，所以两个来源都要看。
+    const rerunBusy = snapshot.rerun.active || pendingRerun !== undefined;
     const rerunReason = oversizeSkipped
       ? oversizeReason
       : !rerunnable
         ? "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
-        // 批量重跑横幅在跑的时候，单页重跑用的是同一个全局重跑槽位（PdfPagesSnapshot.rerun
-        // 一个任务只有一份），这里顺手把其它行的「重新生成」也锁住，不然点了会跟批量任务
-        // 抢槽位、互相打断。注意这条链子不看 rerunning：正在被批量处理的那一行也会落到
-        // 这句提示上（它的 status 仍是 failed/placeholder，rerunnable 为真）。显示没问题
-        // ——按钮文案由下面的 `rerunning ? "重新生成中"` 单独决定，跟这里的悬停说明是两
-        // 回事——但别照着「那一行不会走到这里」去改，那个前提不成立。
+        // 三把锁串在一起，从具体到笼统：批量在跑（这一批还剩好几页）→ 有一页在跑
+        // （含本地那笔还没进快照的）→ 逐页记录已释放。顺序不能反：批量重跑期间
+        // rerunBusy 同样为真，先撞上笼统那句，用户就看不到「可以按停止」这个出路了。
+        //
+        // 注意这条链子不看 rerunning：正在被批量处理的那一行也会落到 batchRerunActive
+        // 这句提示上（它的 status 仍是 failed/placeholder，rerunnable 为真）。显示没
+        // 问题——按钮文案由下面的 `rerunning ? "重新生成中"` 单独决定，跟这里的悬停
+        // 说明是两回事——但别照着「那一行不会走到这里」去改，那个前提不成立。
         : batchRerunActive
           ? "正在批量重跑失败页，等这批跑完再单独操作这一页；要提前停，用上面横幅的「停止」。"
-          : snapshot.rerun.active
+          : rerunBusy
             ? "有一页正在重新生成，跑完再操作下一页。"
             : !snapshot.rerun_actionable
               ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
@@ -2357,7 +2396,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
     actionsCell.append(
       buildActionLink(
         rerunning ? "重新生成中" : "重新生成",
-        rerunning || !rerunnable || !snapshot.rerun_actionable || batchRerunActive,
+        rerunning || rerunBusy || !rerunnable || !snapshot.rerun_actionable || batchRerunActive,
         rerunReason,
         () => confirmPdfPageRerun(surface, taskId, file, page),
       ),
