@@ -540,10 +540,13 @@ table.review-tbl { table-layout: fixed; }
  *
  * 栈里两格：更新卡片在上，一次性提示在下，顺序在 mountShell 里定死。
  * ========================================================================== */
+/* bottom: 0 —— 栈本身撑满工作区（点得穿，不影响下面的内容），这样卡片的
+   max-height: 100% 才有一个确定的参照：窗口有多高，卡片最多就有多高。
+   没有它时百分比高度无解，说明一长卡片就会长出窗口底边（见 .utoast）。 */
 .toast-stack {
-  position: absolute; top: 0; left: 0; right: 0; z-index: 300;
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 300;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
-  padding-top: 76px; pointer-events: none;
+  padding-top: 76px; padding-bottom: 16px; pointer-events: none;
 }
 /* display: contents —— 格子本身不生成盒子，卡片直接参与栈的 flex 布局；空格不占位。 */
 .toast-slot { display: contents; }
@@ -584,11 +587,21 @@ table.review-tbl { table-layout: fixed; }
 /* ==========================================================================
  * 更新提示卡片（update-toast.ts，样张 docs/mockups/2026-08-13_update-toast.html）
  * ========================================================================== */
+/* 高度封顶 + 内部滚动：展开完整更新说明后卡片会比窗口还高，底部的「更新」按钮
+   被推出视野，而卡片是浮层，页面滚动救不了它。所以卡片自己是一列 flex——标题行和
+   按钮行固定，中间的说明区收缩并自己滚。窗口不是全屏时同理。 */
 .utoast {
   pointer-events: auto; width: 392px; background: var(--surface); border: 1px solid var(--line-2);
   border-radius: var(--r-md); box-shadow: var(--sh-lg); overflow: hidden;
   font-size: 12.8px; color: var(--ink-2); animation: toast-in 180ms ease-out;
+  display: flex; flex-direction: column; max-height: 100%;
 }
+/* 只有说明区可以被压缩，其它几块少一行都会缺信息。 */
+.utoast > .ut-head,
+.utoast > .ut-foot,
+.utoast > .ut-blocked,
+.utoast > .ut-prog { flex: none; }
+.utoast > .ut-notes { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
 /* 瞬态窄条（检查中 / 已是最新）不需要 392px 的版心。 */
 .utoast.slim { width: auto; min-width: 186px; max-width: 340px; }
 
@@ -614,7 +627,8 @@ table.review-tbl { table-layout: fixed; }
 .ut-notes { padding: 0 14px 11px 40px; }
 .ut-notes .lbl { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; color: var(--ink-3); margin-bottom: 4px; }
 /* 卡片里的发布说明去掉自己的框：外面已经有一层卡片了，双层描边会显得很挤。 */
-.ut-rn { border: 0; background: none; padding: 0; max-height: none; overflow: visible; font-size: 12.4px; line-height: 1.72; }
+/* 展开态里它就是那个可滚动的区域；夹住时（.clamped）另有 6.4em 的上限。 */
+.ut-rn { border: 0; background: none; padding: 0; max-height: none; overflow: auto; min-height: 0; font-size: 12.4px; line-height: 1.72; overscroll-behavior: contain; }
 .ut-rn.clamped { position: relative; max-height: 6.4em; overflow: hidden; }
 /* 夹住时底部渐隐，明示「下面还有」。渐变终点必须是卡片底色而不是透明——Safari 会把
    transparent 解析成 rgba(0,0,0,0)，浅色背景上会渐出一条灰边。 */
