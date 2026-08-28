@@ -912,6 +912,8 @@ export interface FoldOptions {
   title: string;
   content: HTMLElement;
   open?: boolean;
+  /** 用户点击开合时回调。开合状态是元素局部的，重建即丢；调用方想让它跨重绘粘住，靠这个回调把状态收走。 */
+  onToggle?(open: boolean): void;
 }
 
 export interface FoldHandle {
@@ -940,6 +942,7 @@ export function createFold(options: FoldOptions): FoldHandle {
   header.addEventListener("click", () => {
     open = !open;
     applyState();
+    options.onToggle?.(open);
   });
 
   root.append(header, body);

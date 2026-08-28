@@ -297,6 +297,8 @@ interface SurfaceState {
   excelDoneNotice: ExcelDoneNotice | null;
   allowXlsFallback: boolean;
   allowDocFallback: boolean;
+  /** 「更多设置」折叠区的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚收起就被弹回展开。 */
+  moreSettingsOpen: boolean;
   renderer: (() => void) | null;
   lastTaskId?: string;
   lastOutputPath?: string;
@@ -330,6 +332,7 @@ function freshState(surface: Surface): SurfaceState {
     excelDoneNotice: null,
     allowXlsFallback: false,
     allowDocFallback: false,
+    moreSettingsOpen: true,
     renderer: null,
   };
 }
@@ -2777,7 +2780,15 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
 
   if (!active) {
     const foldContent = buildTaskFold(surface, st);
-    const fold = createFold({ title: "本次任务", content: foldContent, open: st.files.length > 0 });
+    // 名字不能叫「本次任务」：里面的专业领域和输出位置都是改了就存的长期设置，
+    // 「本次」会让人以为下次要重设一遍（尤其是把输出位置固定到自定义文件夹的人）。
+    // 默认展开——它不是高级选项，是每次开工前会看一眼的东西。
+    const fold = createFold({
+      title: "更多设置",
+      content: foldContent,
+      open: st.moreSettingsOpen,
+      onToggle: (open) => { st.moreSettingsOpen = open; },
+    });
     scroll.append(fold.root);
   }
 
