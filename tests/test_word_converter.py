@@ -171,7 +171,15 @@ class WordConverterTests(unittest.TestCase):
             return _Killed()
 
         python_path = Path("/Applications/LibreOffice.app/Contents/Resources/python")
-        with patch.object(word_converter.subprocess, "run", _fake_run):
+        # 把 codesign 预检按掉，模拟「签名里没读出限制、真启动后才被杀」的路径。
+        with (
+            patch.object(word_converter.subprocess, "run", _fake_run),
+            patch.object(
+                word_converter,
+                "_libreoffice_python_launch_constraint_message",
+                return_value=None,
+            ),
+        ):
             for _ in range(4):
                 with self.assertRaises(WordConversionError) as ctx:
                     word_converter._ensure_libreoffice_python_runnable(python_path)
@@ -179,6 +187,54 @@ class WordConverterTests(unittest.TestCase):
         # 四次调用只真正启动过一次解释器，其余三次走缓存。
         self.assertEqual(len(calls), 1)
         self.assertIn("代码签名", str(ctx.exception))
+
+    def test_launch_constrained_python_is_refused_without_launching(self) -> None:
+        """签名里带启动限制的解释器：一次都不能启动，读签名就判死，并缓存结论。
+
+        新版 LibreOffice 给内置 Python 签了「父进程必须是 LibreOffice」的启动限制，
+        外部程序一启动它就被 macOS SIGKILL——每启动一次，用户桌面就多弹一个
+        「LibreOfficePython 意外退出」对话框。codesign 读签名不启动任何东西。
+        """
+        word_converter._LIBREOFFICE_PYTHON_PROBE_CACHE.clear()
+        self.addCleanup(word_converter._LIBREOFFICE_PYTHON_PROBE_CACHE.clear)
+
+        calls: list[list[str]] = []
+
+        class _CodesignListing:
+            returncode = 0
+            stdout = ""
+            # codesign --display 的清单走 stderr；真机上的关键行就是这句。
+            stderr = "Launch Constraints:\n\tHas Parent Launch Constraints\n"
+
+        def _fake_run(command, **_kwargs):
+            command_parts = [str(part) for part in command]
+            calls.append(command_parts)
+            if command_parts[0] != "/usr/bin/codesign":
+                self.fail(f"不该启动解释器，却启动了：{command_parts}")
+            return _CodesignListing()
+
+        python_path = Path("/Applications/LibreOffice.app/Contents/Resources/python")
+        bundle = Path(
+            "/Applications/LibreOffice.app/Contents/Frameworks/"
+            "LibreOfficePython.framework/Versions/Current/Resources/Python.app"
+        )
+        with (
+            patch.object(word_converter.subprocess, "run", _fake_run),
+            patch.object(word_converter.platform, "system", return_value="Darwin"),
+            patch.object(
+                word_converter,
+                "_find_libreoffice_python_app_bundle",
+                return_value=bundle,
+            ),
+        ):
+            for _ in range(4):
+                with self.assertRaises(WordConversionError) as ctx:
+                    word_converter._ensure_libreoffice_python_runnable(python_path)
+
+        # 四次调用只问过一次 codesign，其余三次走缓存；解释器一次都没被启动。
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "/usr/bin/codesign")
+        self.assertIn("启动限制", str(ctx.exception))
 
     @staticmethod
     def _build_docx(path: Path) -> None:

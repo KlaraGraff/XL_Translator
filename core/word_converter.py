@@ -23,6 +23,8 @@ WORD_CONVERSION_TIMEOUT_SECONDS = 180
 LIBREOFFICE_UNO_TIMEOUT_SECONDS = 90
 # 起 soffice 之前先花这点时间确认 LibreOffice 自带的 Python 还能不能跑起来。
 LIBREOFFICE_PYTHON_PROBE_TIMEOUT_SECONDS = 15
+# codesign 只是读签名，不启动任何东西；给个宽裕的上限防它挂死。
+LIBREOFFICE_CODESIGN_TIMEOUT_SECONDS = 10
 
 
 class WordConversionError(Exception):
@@ -633,14 +635,16 @@ def _libreoffice_python_env() -> dict[str, str]:
 def _libreoffice_python_killed_message(python_path: Path, signal_number: int) -> str:
     """被系统杀掉时给一句能照着做的话，而不是一个空的 stderr。"""
     if signal_number == 9 and platform.system() == "Darwin":
-        # 实际遇到过的形态：macOS 以「Launch Constraint Violation」直接 SIGKILL 掉
-        # LibreOffice 自带的 Python，而它自己的签名是好的——坏的是外层 LibreOffice.app
-        # 的封装（spctl 报 sealed resource missing or invalid），加上安装包的隔离属性
-        # 还在。这不是文档的问题，也不是本应用的问题，重装 LibreOffice 才是出路。
+        # 实际遇到过的两种形态都表现为 Launch Constraint Violation 的 SIGKILL：
+        # 一种是 LibreOffice.app 安装损坏；另一种更常见——新版 LibreOffice 给内置
+        # Python 签了「父进程必须是 LibreOffice」的启动限制，外部程序一启动它就被杀，
+        # 安装是完好的，重装也没用。正常路径下启动限制在 codesign 预检里就被认出来、
+        # 根本不会走到这里（见 _libreoffice_python_launch_constraint_message）；
+        # 走到这里说明预检没读出来，所以话不能说死，更不能劝人白白重装一遍。
         return (
-            "LibreOffice 自带的 Python 被 macOS 直接终止（代码签名校验未通过）。"
-            "通常是 LibreOffice 这个应用本身的安装包损坏或未完成安全检查，"
-            "重新下载安装 LibreOffice 即可恢复；在此之前会自动改用内置方式处理编号。"
+            "LibreOffice 自带的 Python 被 macOS 直接终止（代码签名或启动限制未通过）。"
+            "新版 LibreOffice 只允许它自己调用这个 Python，外部程序调用会被系统拦下。"
+            "已自动改用内置方式处理编号，译文不受影响。"
         )
     return (
         f"LibreOffice 自带的 Python 被信号 {signal_number} 终止：{python_path}。"
@@ -656,6 +660,60 @@ def _libreoffice_python_killed_message(python_path: Path, signal_number: int) ->
 _LIBREOFFICE_PYTHON_PROBE_CACHE: dict[str, str | None] = {}
 
 
+def _find_libreoffice_python_app_bundle(python_path: Path) -> Path | None:
+    """从 Resources/python 包装脚本推断真正被启动的 Python.app（macOS）。
+
+    subprocess 启动的是一个 shell 包装脚本，它 exec 到
+    Contents/Frameworks/LibreOfficePython.framework 里的 Python.app——签名和
+    启动限制都在后者身上，codesign 必须问它才问得到真话。
+    """
+    for parent in Path(python_path).resolve().parents:
+        framework = parent / "Contents" / "Frameworks" / "LibreOfficePython.framework"
+        if not framework.exists():
+            continue
+        current = framework / "Versions" / "Current" / "Resources" / "Python.app"
+        if current.exists():
+            return current
+        candidates = sorted(framework.glob("Versions/*/Resources/Python.app"))
+        return candidates[-1] if candidates else None
+    return None
+
+
+def _libreoffice_python_launch_constraint_message(python_path: Path) -> str | None:
+    """不启动解释器，先从签名里读出「它会不会被 macOS 拦下」。
+
+    新版 LibreOffice 给内置 Python 签了父进程启动限制（launch constraint）：
+    只有 LibreOffice 自己能启动它，别的进程一启动就被 SIGKILL——安装完好，
+    重装无济于事。真把它跑起来探测，代价是每次一份系统崩溃报告加一个
+    「LibreOfficePython 意外退出」对话框叠在应用窗口上；codesign 读签名则
+    什么都不启动。读到限制就直接判不可用，探活根本不该发生。
+    """
+    if platform.system() != "Darwin":
+        return None
+    bundle = _find_libreoffice_python_app_bundle(python_path)
+    if bundle is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/bin/codesign", "--display", "--verbose=3", str(bundle)],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=LIBREOFFICE_CODESIGN_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        # codesign 本身出问题就当没查过，落回原来的探活——它自己会认出被杀的情况。
+        return None
+    # codesign --display 的清单写在 stderr；万一哪个版本改道 stdout，两边都看。
+    listing = f"{result.stdout}\n{result.stderr}"
+    if "Parent Launch Constraint" in listing:
+        return (
+            "新版 LibreOffice 只允许它自己调用内置的 Python（代码签名里带有启动限制），"
+            "外部程序一调用就会被 macOS 终止。已自动改用内置方式处理编号，译文不受影响。"
+        )
+    return None
+
+
 def _ensure_libreoffice_python_runnable(python_path: Path) -> None:
     """确认这个 Python 解释器能被启动；不能就抛错，让调用方走兜底。
 
@@ -668,6 +726,11 @@ def _ensure_libreoffice_python_runnable(python_path: Path) -> None:
         if cached is None:
             return
         raise WordConversionError(cached)
+    # 顺序：先读签名，再考虑真启动。签名里已经写明会被拦的，一次都不要启动。
+    constraint_message = _libreoffice_python_launch_constraint_message(python_path)
+    if constraint_message is not None:
+        _LIBREOFFICE_PYTHON_PROBE_CACHE[cache_key] = constraint_message
+        raise WordConversionError(constraint_message)
     try:
         _run_libreoffice_python_probe(python_path)
     except WordConversionError as exc:
