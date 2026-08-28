@@ -206,8 +206,14 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(image_bytes, expected_bytes)
         self.assertEqual(len(fake_client.post_calls), 2)
         self.assertIn("quality", fake_client.post_calls[0]["data"])
-        self.assertNotIn("quality", fake_client.post_calls[1]["data"])
+        # 回退链丢的是 n / output_format 这些真正可选的参数，quality 是成本/
+        # 时延底线，任何一档回退都不能把它当成可丢弃的参数（见
+        # core/image_generation.py 里 request_variants 的注释）。
+        self.assertIn("quality", fake_client.post_calls[1]["data"])
+        self.assertEqual(fake_client.post_calls[1]["data"]["quality"], "medium")
         self.assertIn("size", fake_client.post_calls[1]["data"])
+        self.assertNotIn("n", fake_client.post_calls[1]["data"])
+        self.assertNotIn("output_format", fake_client.post_calls[1]["data"])
 
     def test_gpt_image_edit_error_includes_response_body_after_fallbacks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,6 +223,7 @@ class ImageGenerationTests(unittest.TestCase):
                 [
                     _FakeImageEditResponse(status_code=400, text='{"error":"bad quality"}'),
                     _FakeImageEditResponse(status_code=400, text='{"error":"bad size"}'),
+                    _FakeImageEditResponse(status_code=400, text='{"error":"bad output"}'),
                     _FakeImageEditResponse(status_code=400, text='{"error":"bad image"}'),
                 ]
             )
@@ -233,10 +240,16 @@ class ImageGenerationTests(unittest.TestCase):
                     model_config=_image_model_config(),
                 )
 
-        self.assertEqual(len(fake_client.post_calls), 3)
+        # 回退链现在是 4 档：前三档都钉着 quality="medium"（分别丢 n/output_format、
+        # size、两者都丢），只有最后一档在连 quality 都被拒时才彻底裸奔。
+        self.assertEqual(len(fake_client.post_calls), 4)
         self.assertEqual(
             set(fake_client.post_calls[-1]["data"].keys()),
             {"model", "prompt"},
+        )
+        self.assertEqual(
+            set(fake_client.post_calls[-2]["data"].keys()),
+            {"model", "prompt", "quality"},
         )
 
     def test_image_connectivity_retries_model_level_errors_three_times(self) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from loguru import logger
 from PIL import Image
 
 from config import (
@@ -32,7 +33,15 @@ from core.model_roles import (
 from settings import AppSettings
 
 IMAGE_TEST_MAX_ATTEMPTS = 3
-IMAGE_GENERATION_TIMEOUT_SECONDS = 180.0
+# 中转站按张收费（$0.03/张），跟耗时、质量档、客户端要不要超时都没关系。
+# 客户端超时不省钱：只是把已经付过钱的结果扔掉，然后原价重试一次。
+# 实测 125 次调用里有 10 次（8%）落在 180~240 秒之间，被 180 秒的旧值误杀，
+# 所以把超时调大到 240 秒，而不是调小——这里不是在优化速度，是在少花冤枉钱。
+IMAGE_GENERATION_TIMEOUT_SECONDS = 240.0
+# 但「测试连接」不能跟着涨。那条路发的是现造的 64x64 白图，跟整页 A4 不是一个
+# 耗时量级，上面那份延迟统计对它不适用；而它是同步端点、界面上转圈还没有取消按钮，
+# 240 x 3 次重试 = 12 分钟，用户只能干等。测试要的是「通不通」，不是「等得出结果」。
+IMAGE_TEST_TIMEOUT_SECONDS = 90.0
 GPT_IMAGE_MODEL_PREFIX = "gpt-image-"
 GPT_IMAGE_2_MODEL = "gpt-image-2"
 GPT_IMAGE_2_MIN_PIXELS = 655_360
@@ -200,11 +209,17 @@ def _generate_page_with_images_edit(
     base_url: str,
     timeout_seconds: float,
 ) -> bytes:
+    requested_size = _pdf_page_image_size_for_model(source_image_path, model_config.model)
     sized_data = {
         "model": model_config.model,
         "prompt": prompt,
-        "size": _pdf_page_image_size_for_model(source_image_path, model_config.model),
+        "size": requested_size,
     }
+    # 回退链的降级顺序是「逐步丢掉可选参数」，但 quality 不算可选参数——它是
+    # 成本/时延的底线（quality 一旦被服务端按默认档 high/auto 处理，同一张图
+    # 耗时会翻倍，计费却不变）。所以前三档全部钉死 quality="medium"，只丢
+    # n / output_format / size 这些真正可有可无的参数；只有极少数上游连
+    # quality 参数本身都不认时，才会落到链条最后这个不带 quality 的兜底档。
     request_variants = (
         {
             **sized_data,
@@ -212,14 +227,13 @@ def _generate_page_with_images_edit(
             "quality": "medium",
             "output_format": "png",
         },
-        sized_data,
-        {
-            "model": model_config.model,
-            "prompt": prompt,
-        },
+        {**sized_data, "quality": "medium"},
+        {"model": model_config.model, "prompt": prompt, "quality": "medium"},
+        {"model": model_config.model, "prompt": prompt},
     )
     headers = {"Authorization": f"Bearer {model_config.api_key}"}
     last_http_error: httpx.HTTPStatusError | None = None
+    succeeded_index = 0
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
             for index, data in enumerate(request_variants, start=1):
@@ -231,12 +245,20 @@ def _generate_page_with_images_edit(
                         data=data,
                         source_image_path=source_image_path,
                     )
+                    succeeded_index = index
                     break
                 except httpx.HTTPStatusError as exc:
                     last_http_error = exc
                     status_code = getattr(exc.response, "status_code", None)
                     if status_code != 400 or index >= len(request_variants):
                         raise _image_edit_http_error(exc) from exc
+                    # 400 响应体里写着到底哪个参数被拒——这是排查「回退链为什么
+                    # 越回退越贵/越慢」的关键线索，之前直接丢掉了，现在记下来。
+                    logger.debug(
+                        f"[图像生成] 变体 {index}/{len(request_variants)} 被拒（400），"
+                        f"改用下一档参数重试。参数键：{sorted(data.keys())}；"
+                        f"响应体：{_response_error_detail(exc.response)}"
+                    )
                     continue
             else:  # pragma: no cover - defensive, loop should break or raise.
                 if last_http_error is not None:
@@ -250,6 +272,11 @@ def _generate_page_with_images_edit(
     image_bytes = _extract_image_bytes(response_payload)
     if not image_bytes:
         raise ValueError("图像编辑接口已响应，但没有返回可用图片。")
+    logger.debug(
+        f"[图像生成] 第 {succeeded_index}/{len(request_variants)} 档参数成功，"
+        f"参数键：{sorted(request_variants[succeeded_index - 1].keys())}；"
+        f"{_actual_vs_requested_size_log(requested_size, image_bytes)}"
+    )
     return image_bytes
 
 
@@ -286,6 +313,21 @@ def _image_edit_http_error(exc: httpx.HTTPStatusError) -> RuntimeError:
     if detail:
         message = f"{message}\n接口返回：{detail}"
     return RuntimeError(message)
+
+
+def _actual_vs_requested_size_log(requested_size: str, image_bytes: bytes) -> str:
+    """拼一行「请求 WxH → 返回 WxH」的日志，方便一眼看出中转站有没有理会 size。
+
+    已知这家中转站会无视 size 参数：A4 页不管我们要多大，回来的都是
+    1055x1491。解码失败（理论上不该发生，走到这里说明上面已经拿到图片字节）
+    时不影响主流程，只是这行日志退化成「返回：无法解析」。
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            actual_width, actual_height = image.size
+        return f"请求 {requested_size} → 返回 {actual_width}x{actual_height}"
+    except Exception:  # noqa: BLE001 - 日志诊断用，绝不能因为这个抛出异常。
+        return f"请求 {requested_size} → 返回：无法解析图片尺寸"
 
 
 def _response_error_detail(response: httpx.Response) -> str:
@@ -359,7 +401,9 @@ def check_image_generation_connectivity(
         )
         return ImageConnectivityResult(False, message, status="unsupported_provider")
 
-    client = client or OpenAICompatibleImageGenerationClient()
+    client = client or OpenAICompatibleImageGenerationClient(
+        timeout_seconds=IMAGE_TEST_TIMEOUT_SECONDS
+    )
     with tempfile.TemporaryDirectory() as tmp:
         test_image = Path(tmp) / "image_connectivity_test.png"
         Image.new("RGB", (64, 64), "white").save(test_image, format="PNG")

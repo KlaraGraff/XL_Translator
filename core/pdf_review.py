@@ -29,7 +29,12 @@ from core.model_roles import (
 from settings import AppSettings
 
 
-PDF_REVIEW_TIMEOUT_SECONDS = 180.0
+# 审核跟生成用的是同一家中转站，按次计费、跟耗时无关：客户端超时不省钱，
+# 只是把已经付过钱的结果扔掉再重试一次。跟 image_generation.py 里的
+# IMAGE_GENERATION_TIMEOUT_SECONDS 一起从 180 调到 240，理由同源，见那边注释。
+PDF_REVIEW_TIMEOUT_SECONDS = 240.0
+# 「测试连接」同样不跟着涨，理由见 image_generation.py 的 IMAGE_TEST_TIMEOUT_SECONDS。
+PDF_REVIEW_TEST_TIMEOUT_SECONDS = 90.0
 PDF_REVIEW_TEST_MAX_ATTEMPTS = 3
 
 PDF_PAGE_REVIEW_PROMPT = (
@@ -259,7 +264,9 @@ def check_pdf_review_connectivity(
         )
         return PdfReviewConnectivityResult(False, message, status="unsupported_provider")
 
-    client = client or OpenAICompatiblePdfReviewClient()
+    client = client or OpenAICompatiblePdfReviewClient(
+        timeout_seconds=PDF_REVIEW_TEST_TIMEOUT_SECONDS
+    )
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "source.png"
         translated = Path(tmp) / "translated.png"
