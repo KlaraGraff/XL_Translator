@@ -566,11 +566,10 @@ if __name__ == "__main__":
 
 
 def _find_soffice() -> Path | None:
-    for executable in ("soffice", "libreoffice"):
-        found = shutil.which(executable)
-        if found:
-            return Path(found)
-
+    # 先看标准安装位置，再退回 PATH。顺序不能反过来：PATH 上的 soffice 常常是包管理器
+    # 生成的包装脚本（本机的 /opt/homebrew/bin/soffice 就是），它不在应用包里，而
+    # _find_libreoffice_python 要靠这个路径往上推 ../Resources/python 才能找到
+    # LibreOffice 自带的解释器。拿包装脚本去推，推出来的目录根本不存在。
     candidates: list[Path] = []
     if platform.system() == "Darwin":
         candidates.append(Path("/Applications/LibreOffice.app/Contents/MacOS/soffice"))
@@ -584,24 +583,38 @@ def _find_soffice() -> Path | None:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+
+    for executable in ("soffice", "libreoffice"):
+        found = shutil.which(executable)
+        if found:
+            return Path(found)
     return None
 
 
 def _find_libreoffice_python(soffice_path: Path) -> Path:
+    """找 LibreOffice 自带的那个 Python——只有它装了 uno 模块。
+
+    这里绝不能退回系统的 python3。通用解释器永远 import 不到 uno，拿它去跑桥接脚本，
+    换来的是二十轮重试、九十秒之后一句 ModuleNotFoundError；找不到就当场说找不到，
+    调用方立刻让位给纯 Python 兜底，用户少等一分半。
+    """
+    resolved = Path(soffice_path).resolve()
     candidates: list[Path] = []
     if platform.system() == "Darwin":
-        candidates.append(soffice_path.parent.parent / "Resources" / "python")
+        # 用 resolved 而不是原路径：PATH 上的 soffice 可能是指向应用包内的符号链接。
+        candidates.append(resolved.parent.parent / "Resources" / "python")
+        candidates.append(Path("/Applications/LibreOffice.app/Contents/Resources/python"))
     elif platform.system() == "Windows":
-        candidates.append(soffice_path.parent / "python.exe")
+        candidates.append(resolved.parent / "python.exe")
 
     for candidate in candidates:
         if candidate.exists():
             return candidate
 
-    found = shutil.which("python3") or shutil.which("python")
-    if found:
-        return Path(found)
-    raise WordConversionError("未找到可用于 LibreOffice UNO 的 Python。")
+    raise WordConversionError(
+        f"没找到 LibreOffice 自带的 Python（从 {soffice_path} 推断）。"
+        "编号转文本这一步需要它，本次改用纯 Python 兜底。"
+    )
 
 
 def _libreoffice_python_env() -> dict[str, str]:
