@@ -7,7 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 
-from core.bilingual_writer import build_output_dir, write_bilingual_file
+from core.bilingual_writer import bilingual_output_name, build_output_dir, write_bilingual_file
 from core.mixed_language import (
     MIXED_COLOR_FOREIGN_NOISE,
     MIXED_COLOR_UNRESOLVED,
@@ -276,3 +276,44 @@ class OutputDirNamingTests(unittest.TestCase):
             custom.mkdir()
             self.assertEqual(build_output_dir(source, custom).parent, custom)
 
+
+class BilingualOutputNameTests(unittest.TestCase):
+    """双语产物的命名。家族规则：{原名}_{语言}_{形态}，与 PDF 的 _高清/_压缩 同构。"""
+
+    def test_language_and_form_go_after_the_stem(self) -> None:
+        self.assertEqual(
+            bilingual_output_name("合同报价表.xlsx", "中文"),
+            "合同报价表_中文_双语.xlsx",
+        )
+
+    def test_translation_sorts_immediately_after_its_source(self) -> None:
+        """这条是整次改名的唯一理由，必须锁住。
+
+        `.`(0x2E) 排在 `_`(0x5F) 前面，所以后缀式译文紧跟在原文后面；而前缀式的
+        「双语(中文)_」以 U+53CC 开头，会被甩到所有英文名之后，跟原文彻底脱节。
+        混一批西文名进来一起排，才测得出这个差别。
+        """
+        sources = ["alpha.xlsx", "report.docx", "zulu.xlsx"]
+        names = sources + [bilingual_output_name(name, "中文") for name in sources]
+        ordered = sorted(names)
+        for source in sources:
+            translated = bilingual_output_name(source, "中文")
+            self.assertEqual(
+                ordered[ordered.index(source) + 1],
+                translated,
+                f"{translated} 没有紧挨着 {source}：{ordered}",
+            )
+
+    def test_only_the_last_suffix_is_treated_as_extension(self) -> None:
+        self.assertEqual(
+            bilingual_output_name("a.b.c.xls", "中文"),
+            "a.b.c_中文_双语.xls",
+        )
+
+    def test_source_stem_is_kept_verbatim_but_language_is_sanitised(self) -> None:
+        """原文件名主干原样保留——它是磁盘上已经存在的名字，再洗一遍只会凭空
+        制造和源文件对不上的风险。语言是用户在设置里填的，必须洗。"""
+        self.assertEqual(
+            bilingual_output_name("a:b.xlsx", "zh/CN"),
+            "a:b_zh_CN_双语.xlsx",
+        )

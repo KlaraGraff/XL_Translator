@@ -22,7 +22,7 @@ from docx.text.run import Run
 from loguru import logger
 
 from config import REVIEW_MARK_COLOR_DEFAULTS
-from core.bilingual_writer import build_output_dir
+from core.bilingual_writer import bilingual_output_name, build_output_dir
 from core.language_registry import get_target_lang_display
 from core.mixed_language import (
     MIXED_MARK_FOREIGN_NOISE,
@@ -700,7 +700,7 @@ def write_bilingual_docx(
         get_target_lang_display(target_lang, include_optional=True)
     )
     source_output_name = _normalize_word_output_name(output_name or source_path.name)
-    out_path = output_dir / f"双语({lang_display})_{source_output_name}"
+    out_path = output_dir / bilingual_output_name(source_output_name, lang_display)
     shutil.copy2(source_path, out_path)
     _ensure_owner_writable(out_path)
 

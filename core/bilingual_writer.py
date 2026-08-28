@@ -8,7 +8,7 @@
 
 输出：
   - 输出目录：{源目录}_翻译输出_{timestamp}/
-  - 文件名前缀：双语({语言})_{原文件名}.xlsx
+  - 文件名：{原文件名}_{语言}_双语.xlsx（后缀式，译文紧挨着原文排序）
   - 可选：保留原始中文分表（sheet 名称加 _原文 后缀）
 """
 import os
@@ -42,7 +42,7 @@ def patch_into_output(source_path: Path, out_path: Path, patch) -> Path:
 
     输出副本是在打补丁**之前**拷过去的。若直接拷成最终文件名，补丁中途失败
     （译文含非法 XML 字符、包结构异常、磁盘写满……）就会在输出目录里留下一个
-    文件名完全正常的「双语(xx)_xxx.xlsx」，内容却一个字没翻。用户看不出区别，
+    文件名完全正常的「xxx_中文_双语.xlsx」，内容却一个字没翻。用户看不出区别，
     极可能直接发出去。所以：要么产出一个翻译好的文件，要么什么都不留。
 
     ``patch`` 接收临时文件路径，就地改写它。
@@ -191,7 +191,7 @@ def write_bilingual_file(
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"
         
-    out_name     = f"双语({lang_display})_{basename}"
+    out_name     = bilingual_output_name(basename, lang_display)
     out_path     = output_dir / out_name
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -228,6 +228,31 @@ def _sanitize_filename_fragment(value: str) -> str:
     """Remove Windows-illegal filename characters from user-facing fragments."""
     cleaned = _INVALID_FILENAME_FRAGMENT_RE.sub("_", str(value or "")).strip().rstrip(". ")
     return cleaned or "目标语言"
+
+
+#: 双语产物的形态标签。跟 PDF 的 `_高清`/`_压缩` 是同一个位置上的东西——它回答的是
+#: 「这份译文长什么样」，而不是「翻成了哪种语言」。双语跟纯译文的内容确实不一样
+#: （每格是原文加译文），所以这个词得留着，不能只写语言。
+BILINGUAL_OUTPUT_FORM_LABEL = "双语"
+
+
+def bilingual_output_name(basename: str, lang_display: str) -> str:
+    """双语产物的文件名：`{原文件名}_{语言}_双语.ext`。
+
+    以前是前缀式的「双语(中文)_合同报价表.xlsx」。前缀式有个实打实的毛病：在 Finder
+    或资源管理器里按名字排序，所有译文会挤成一堆排到别处去，跟各自的原文完全脱节，
+    几十个文件的目录里配对全靠人眼找。换成后缀式之后，`.`(0x2E) 排在 `_`(0x5F) 前面，
+    `合同报价表.xlsx` 紧挨着 `合同报价表_中文_双语.xlsx`，原文和译文自然成对。
+
+    只重排不改字：原文件名主干原样保留，不做清洗——它本来就是磁盘上存在的名字，
+    再洗一遍只会凭空制造和源文件对不上的风险。语言片段仍然清洗，那是用户在设置里
+    填的自定义语言名，可能带非法字符。
+
+    与 PDF 的 translated_pdf_base_name 遵循同一条家族规则：{原名}_{语言}_{形态}。
+    """
+    source = Path(basename)
+    lang = _sanitize_filename_fragment(lang_display)
+    return f"{source.stem}_{lang}_{BILINGUAL_OUTPUT_FORM_LABEL}{source.suffix}"
 
 
 def autofit_files_batch(

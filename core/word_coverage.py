@@ -28,6 +28,7 @@ from core.translation_coverage import (
     residual_cjk_fragments,
     split_existing_bilingual_text,
 )
+from core.bilingual_writer import bilingual_output_name
 from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
@@ -159,7 +160,7 @@ def write_untranslated_docx(
         get_target_lang_display(target_lang, include_optional=True)
     )
     source_output_name = _normalize_word_output_name(output_name or source_path.name)
-    out_path = output_dir / f"双语({lang_display})_{source_output_name}"
+    out_path = output_dir / bilingual_output_name(source_output_name, lang_display)
     shutil.copy2(source_path, out_path)
     _ensure_owner_writable(out_path)
 

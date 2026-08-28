@@ -1183,7 +1183,7 @@ class WordDocumentTests(unittest.TestCase):
                 output_name="legacy.doc",
             )
 
-            self.assertEqual(out_path.name, "双语(英文)_legacy.docx")
+            self.assertEqual(out_path.name, "legacy_英文_双语.docx")
             self.assertTrue(out_path.exists())
 
     def test_word_retry_only_targets_unresolved_chinese_sources(self) -> None:

@@ -146,7 +146,7 @@ def write_untranslated_excel_file(
     basename = original_path.name if original_path else source_path.name
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"
-    out_path = output_dir / f"双语({lang_display})_{basename}"
+    out_path = output_dir / bilingual_writer.bilingual_output_name(basename, lang_display)
 
     allowed_positions: dict[str, set[str]] = {}
     scoped_translations: dict[str, str] = {}
