@@ -39,7 +39,9 @@
   color: var(--ink-2);
   font-weight: 600;
   font-size: 12px;
-  padding: 6px 12px;
+  /* padding 归零：这个 td 现在整个塞一个 .grp 按钮，按钮自己有 padding，
+     两层 padding 叠在一起会把标题行的点击热区往里挤一圈。 */
+  padding: 0;
 }
 
 .modal:has(.pdf-compare) {
@@ -83,4 +85,158 @@
   color: var(--ink-3);
   padding: 40px 10px;
   text-align: center;
+}
+
+/*
+ * 失败页横幅 + 分组折叠 + 「只看有问题的页」筛选，照抄
+ * docs/mockups/2026-08-28_pdf_review_panel.html 的类名和配色（色值全部是 tokens.css
+ * 的变量，样张本身也是抄的这一份，没有另起一套）：
+ *   .pdf-fixbar      —— 卡片顶部的失败页横幅；.busy 是批量重跑进行中的蓝色变体。
+ *   .grp / .cv / .fn / .sum —— 可折叠的文件分组标题行，.cv 跟着 aria-expanded 转向。
+ *   .onlybad / .row-ok / .grp-clean —— 「只看有问题的页」筛选。挂在卡片根元素
+ *     .pdf-review-card 上而不是 body：这张卡片会被反复插进真实页面里，污染全局类
+ *     会连累别的卡片。
+ *   tr.hid           —— 分组收起时隐藏的行，纯 display:none。
+ */
+
+.pdf-fixbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--danger-t);
+  border-bottom: 1px solid var(--danger-l);
+  font-size: 12.5px;
+}
+.pdf-fixbar .dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--danger);
+}
+.pdf-fixbar .txt {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  line-height: 1.5;
+}
+.pdf-fixbar .txt em {
+  font-style: normal;
+  font-weight: 650;
+  color: var(--danger);
+}
+.pdf-fixbar .txt small {
+  display: block;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  margin-top: 1px;
+}
+.pdf-fixbar.busy {
+  background: var(--tint);
+  border-bottom-color: var(--tint-line);
+}
+.pdf-fixbar.busy .dot {
+  background: var(--accent);
+  animation: pdf-fixbar-pulse 1.1s ease-in-out infinite;
+}
+.pdf-fixbar.busy .txt em {
+  color: var(--tint-ink);
+}
+@keyframes pdf-fixbar-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+.pdf-fixbar .spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--tint-line);
+  border-top-color: var(--accent);
+  border-radius: 99px;
+  animation: pdf-fixbar-spin .7s linear infinite;
+  flex: none;
+}
+@keyframes pdf-fixbar-spin {
+  to { transform: rotate(360deg); }
+}
+
+.grp {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+}
+.grp:hover {
+  background: var(--ground-2);
+}
+/* 尺寸交给 svg.ic.sm（app.css 里已定义 15x15），这里只管颜色和转向动画。 */
+.grp .cv {
+  flex: none;
+  color: var(--ink-3);
+  transition: transform .13s ease;
+}
+.grp[aria-expanded="false"] .cv {
+  transform: rotate(-90deg);
+}
+.grp .fn {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 600;
+}
+.grp .sum {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-weight: 500;
+  color: var(--ink-3);
+}
+.grp .sum .bad {
+  color: var(--danger);
+  font-weight: 650;
+}
+/* .flag 是 .bad 的建议复核版本：样张的示例数据没有「没失败但有页要复核」这种文件，
+   真实数据会有，收起状态下同样不能看起来像「全部通过」，见 buildGroupSummaryNodes()。 */
+.grp .sum .flag {
+  color: var(--warn);
+  font-weight: 650;
+}
+
+.onlybad {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+.onlybad input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+.pdf-review-card.filter .row-ok {
+  display: none;
+}
+.pdf-review-card.filter .grp-clean {
+  display: none;
+}
+
+tr.hid {
+  display: none;
 }

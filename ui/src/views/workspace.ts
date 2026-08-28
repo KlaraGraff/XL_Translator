@@ -1769,13 +1769,259 @@ function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSn
   return row;
 }
 
+// ---------------------------------------------------------------------------
+// 逐页审核卡片：失败页横幅批量重跑 + 文件分组折叠 + 「只看有问题的页」筛选。
+// 三件事有个共同前提——这张卡片每次快照刷新都是整体重建 DOM（buildColLeft 每次都
+// 重新调用 buildPdfReviewCard()，不是增量更新），所以「哪个分组展开了」「筛选勾没勾」
+// 「批量重跑跑到第几页了」都不能存在 DOM 属性或函数局部变量上，一刷新就清零。全部搬到
+// 下面这几个模块级状态里，键是 taskId：同一个任务内随便怎么重渲染都不丢，切到别的
+// 任务或重启应用则从空开始（这正是任务书要的行为，不是偷懒没做持久化）。
+// ---------------------------------------------------------------------------
+
+interface PdfReviewUiState {
+  /** 每个文件分组的展开/收起，键是 file.relative_path；没记录过的文件按
+   *  defaultGroupOpen 规则现算，不预先填满整张表。 */
+  collapse: Map<string, boolean>;
+  /** 「只看有问题的页」勾选框。 */
+  onlyBad: boolean;
+}
+const pdfReviewUiState = new Map<string, PdfReviewUiState>();
+function reviewUiState(taskId: string): PdfReviewUiState {
+  let state = pdfReviewUiState.get(taskId);
+  if (!state) {
+    state = { collapse: new Map(), onlyBad: false };
+    pdfReviewUiState.set(taskId, state);
+  }
+  return state;
+}
+
+/** 这一页算不算「失败页批量重跑」的目标：跟 reviewResultChip 同一套失败判断
+ *  （status === "failed" || placeholder），但排除用户已经在面板里主动跳过的占位页——
+ *  那是用户自己认下的结果，批量重跑不该替他们翻案；真要改主意，这一行自己的
+ *  「重新生成」链接还在，没有被拿掉。 */
+function pageNeedsRerun(page: PdfPage): boolean {
+  return (page.status === "failed" || page.placeholder) && !page.user_skipped;
+}
+
+/** 「这一页算不算有问题」统一按 reviewResultChip 判出来的颜色定，不重新发明一套规则：
+ *  dgr（失败 / 已跳过占位）和 warn（建议复核 / 审核未通过 / 待复核）都算。折叠默认
+ *  展开、分组小结、「只看有问题的页」筛选三处共用这一个答案，保证它们说的是同一件事，
+ *  不会出现「筛选说这页没问题，分组小结却把它算进失败」这种对不上。 */
+function pageIsProblem(page: PdfPage): boolean {
+  const tones = reviewResultChip(page).className.split(" ");
+  return tones.includes("dgr") || tones.includes("warn");
+}
+
+interface PdfGroupHandle {
+  fileKey: string;
+  /** 这个文件里有没有需要批量重跑的失败页——只看 pageNeedsRerun，不算「建议复核」。
+   *  「定位到这几页」按的就是这条：只展开真正失败的分组，跟决定默认展开/收起状态、
+   *  分组小结用的「有问题」（失败 + 建议复核）不是同一个判断，两者故意分开。 */
+  hasFailingPage: boolean;
+  rows: HTMLTableRowElement[];
+  /** 单文件任务不建分组标题行，这时候没有按钮可切，toggleGroupOpen 对它是空操作。 */
+  button?: HTMLButtonElement;
+}
+
+/** 展开/收起一个文件分组：aria-expanded 驱动箭头旋转（CSS 选择器，见 workspace.css
+ *  的 .grp[aria-expanded="false"] .cv），行的 hid 类直接控制显示；顺手把新状态写回
+ *  reviewUiState，不用等下一次整卡重渲染。 */
+function toggleGroupOpen(ui: PdfReviewUiState, handle: PdfGroupHandle, open?: boolean): void {
+  const btn = handle.button;
+  if (!btn) return;
+  const next = open ?? btn.getAttribute("aria-expanded") !== "true";
+  btn.setAttribute("aria-expanded", String(next));
+  handle.rows.forEach((row) => row.classList.toggle("hid", !next));
+  ui.collapse.set(handle.fileKey, next);
+}
+
+/** 「定位到这几页」：照抄样张 focusBad() 的效果——含失败页的分组展开、干净分组收起，
+ *  再滚到第一个失败页。单文件任务没有分组按钮可切（toggleGroupOpen 对它是空操作），
+ *  滚动仍然生效。 */
+function focusFailingPages(ui: PdfReviewUiState, handles: PdfGroupHandle[], firstFailingRow: HTMLTableRowElement | null): void {
+  for (const handle of handles) {
+    if (handle.button) toggleGroupOpen(ui, handle, handle.hasFailingPage);
+  }
+  firstFailingRow?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+/** 这一页跑完了没有。后端的三个中间态：pending 还没轮到、rendered 页图已渲染正在等
+ *  模型、placeholder_pending 等着补占位页。三个的 chip 都是灰的（reviewResultChip），
+ *  既不是失败也不是「有问题」——小结要是不单独数它们，就会把它们算进「通过」。 */
+function pageIsUnfinished(page: PdfPage): boolean {
+  return page.status === "pending" || page.status === "rendered" || page.status === "placeholder_pending";
+}
+
+/** 分组标题右侧常驻小结。
+ *
+ *  这里只说数得出来的事，不下「全部通过」这种总结论，除非真的每一页都跑完且没问题。
+ *  之前的写法把「还没跑完」和「通过」混成一档，代价是两处睁眼说瞎话：
+ *
+ *  1. 任务刚开跑，快照里所有文件的所有页都是 pending，小结却写「17 页全部通过」——
+ *     一页都还没翻。多文件任务必然经过这一刻，不是边角情况。
+ *  2. 预处理就失败的文件（PDF 打不开、图片校验没过）page_count 是 0、一页都没有，
+ *     `total - failed` 算出来是 0，小结写「0 页全部通过」。改动前这里是中性的
+ *     「xxx.pdf · 0 页」，不说谎；这是新引入的虚假肯定，而且正好落在最该被看见的
+ *     文件上。文件级的失败原因 status/error 快照里现成有，直接用。
+ *
+ *  所以改成分桶累加：失败 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
+function buildGroupSummaryNodes(file: PdfPageFile): HTMLElement[] {
+  if (file.status === "failed" || file.pages.length === 0) {
+    const bad = el("span", "bad");
+    bad.textContent = "文件打不开";
+    return [bad];
+  }
+
+  const pages = file.pages;
+  const failed = pages.filter(pageNeedsRerun);
+  const flagged = pages.filter((page) => !pageNeedsRerun(page) && pageIsProblem(page));
+  const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !pageIsProblem(page) && pageIsUnfinished(page));
+  const passed = pages.length - failed.length - flagged.length - unfinished.length;
+
+  if (failed.length === 0 && flagged.length === 0 && unfinished.length === 0) {
+    const all = el("span");
+    all.textContent = `${pages.length} 页全部通过`;
+    return [all];
+  }
+
+  const parts: HTMLElement[] = [];
+  const push = (text: string, className?: string): void => {
+    const node = el("span", className);
+    node.textContent = text;
+    parts.push(node);
+  };
+  if (failed.length > 0) push(`${failed.length} 失败`, "bad");
+  if (flagged.length > 0) push(`${flagged.length} 建议复核`, "flag");
+  if (unfinished.length > 0) push(`${unfinished.length} 待处理`);
+  if (passed > 0) push(`${passed} 通过`);
+
+  const out: HTMLElement[] = [];
+  parts.forEach((node, i) => {
+    if (i > 0) {
+      const dot = el("span");
+      dot.textContent = "·";
+      out.push(dot);
+    }
+    out.push(node);
+  });
+  return out;
+}
+
+interface PdfBatchRerunState {
+  taskId: string;
+  total: number;
+  done: number;
+  /** 当前这一页的定位信息，纯粹是这个函数自己数出来的——后端不知道这是「一批」，
+   *  快照里只有单页的 rerun.active / page_number，没有「第几页/共几页」这种批次概念，
+   *  也就没法从快照反推进度，只能靠发起方自己记。 */
+  current: { fileName: string; pageNumber: number } | null;
+}
+const pdfBatchRerunState: Record<Surface, PdfBatchRerunState | undefined> = {
+  excel: undefined,
+  word: undefined,
+  pdf: undefined,
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** 等当前这一页真正跑完（rerun.active 归 false）才能发下一页。终态的单页重跑只有一个
+ *  槽位——PdfPagesSnapshot.rerun 是整个任务一份，不是按页分的（见它上面的注释，以及
+ *  pdfActionsDisabledReason 里「第 N 页正在重新生成，跑完再操作下一页」那句），批量
+ *  重跑没法并发发起，只能串行等。轮询节奏跟 startPdfRerunTicker 一样是 2 秒一次，但
+ *  不复用那个 interval：那套是给「用户手动点了单独一页」配的独立计时器，跟这里
+ *  「等完一页再发下一页」的串行 await 用途不一样，硬凑一起只会让两边互相踩状态。 */
+async function waitForRerunSlot(surface: Surface, taskId: string): Promise<void> {
+  // 请求刚发出去，给后端一点时间把 rerun.active 标记上；不等这一下，第一次检查可能
+  // 正好撞在「还没来得及写状态」的空档，会把这一页误判成「已经跑完」，提前发下一页。
+  await sleep(1500);
+  for (;;) {
+    const local = states[surface].task;
+    if (!local || local.task.task_id !== taskId) return;
+    if (!local.pdfPagesSnapshot?.rerun.active) return;
+    await sleep(2000);
+    await fetchPdfPagesSnapshot(surface, taskId);
+  }
+}
+
+/** 「只重跑这 N 页」确认后的批量执行。走的是终态专用的 rerunPdfPage——立即触发、跑完
+ *  覆盖输出，不是 runPdfPageAction 包的 regeneratePdfPage 那条「排队，继续翻译时生效」
+ *  的路：后者是给还没结束的任务用的（触发后要等任务继续跑才生效），api-client.ts 在
+ *  rerunPdfPage 上明确写着「终态任务专用：现在就重跑」。这条横幅只在 snapshot.terminal
+ *  时出现（见 buildPdfReviewCard），用 regeneratePdfPage 会跟 rerun_actionable 的语义
+ *  对不上——终态任务本来就不该走「排队等继续翻译」这条路，因为它不会再继续翻译了。 */
+async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): Promise<void> {
+  const batch: PdfBatchRerunState = { taskId, total: rows.length, done: 0, current: null };
+  pdfBatchRerunState[surface] = batch;
+  rerender(surface);
+  try {
+    for (const { file, page } of rows) {
+      if (pdfBatchRerunState[surface] !== batch) return; // 任务切走了 / 被新一轮盖掉，不再继续
+      batch.current = { fileName: file.name, pageNumber: page.page_number };
+      rerender(surface);
+      try {
+        const c = await getClient();
+        await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
+        await fetchPdfPagesSnapshot(surface, taskId);
+        await waitForRerunSlot(surface, taskId);
+      } catch (error) {
+        showToast({ message: redactedText((error as Error)?.message, `第 ${page.page_number} 页重新生成失败。`), error: true });
+      }
+      if (pdfBatchRerunState[surface] !== batch) return;
+      batch.done += 1;
+      rerender(surface);
+    }
+  } finally {
+    if (pdfBatchRerunState[surface] === batch) pdfBatchRerunState[surface] = undefined;
+    rerender(surface);
+  }
+}
+
+/** 危险操作确认：跟单页那个 confirmPdfPageRerun 一个道理——会覆盖已有译文，批量做这件
+ *  事更不能让人凭一个数字点下去，先把具体是哪几个文件的哪几页摆出来。 */
+function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): void {
+  const list = el("ul");
+  list.style.cssText = "margin:2px 0 0;padding-left:18px;line-height:1.8";
+  for (const { file, page } of rows) {
+    const li = el("li");
+    li.textContent = `${file.name} · 第 ${page.page_number} 页`;
+    list.append(li);
+  }
+  openModal({
+    tone: "danger",
+    icon: "warn",
+    title: `重跑这 ${rows.length} 页？`,
+    body: [
+      "这几页现在的译文会被覆盖，覆盖之后取不回来；重新生成按页计费，其余页不受影响、不会重新调用接口。",
+      list,
+      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF。",
+    ],
+    actions: [
+      { label: "取消" },
+      {
+        label: `重跑这 ${rows.length} 页`,
+        variant: "danger-solid",
+        onClick: () => void runPdfBatchRerun(surface, taskId, rows),
+      },
+    ],
+  });
+}
+
 function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | null {
   const snapshot = local.pdfPagesSnapshot;
   if (!snapshot || !snapshot.files.length) return null;
   const taskId = local.task.task_id;
   const multiFile = snapshot.files.length > 1;
+  const ui = reviewUiState(taskId);
+  const batch = pdfBatchRerunState[surface];
+  const batchRerunActive = !!batch && batch.taskId === taskId;
 
-  const card = el("div", "card");
+  // .pdf-review-card 是「只看有问题的页」筛选的挂载点（card.filter .row-ok /
+  // .grp-clean 定义在 workspace.css），特意挂在这张卡片自己身上而不是 body：卡片会
+  // 反复整体重建并重新插入页面，全局类名一勾就会连累界面上其它跟这次筛选无关的东西。
+  const card = el("div", "card pdf-review-card");
+  card.classList.toggle("filter", ui.onlyBad);
   card.style.cssText = snapshot.terminal
     ? "flex:0 0 auto;display:flex;flex-direction:column;overflow:hidden"
     : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
@@ -1789,6 +2035,19 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
     ? "审核模型逐页检查版式与译文完整性"
     : "本次没有开启逐页审核，下面是每一页的生成结果";
   head.append(b, span);
+
+  const tools = el("div", "tc-tools");
+  const onlyBadLabel = el("label", "onlybad");
+  const onlyBadInput = document.createElement("input");
+  onlyBadInput.type = "checkbox";
+  onlyBadInput.checked = ui.onlyBad;
+  onlyBadInput.addEventListener("change", () => {
+    ui.onlyBad = onlyBadInput.checked;
+    card.classList.toggle("filter", ui.onlyBad);
+  });
+  onlyBadLabel.append(onlyBadInput, document.createTextNode(" 只看有问题的页"));
+  tools.append(onlyBadLabel);
+  head.append(tools);
   card.append(head);
 
   if (!snapshot.actionable) {
@@ -1798,10 +2057,9 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
     card.append(note);
   }
 
-  const tableWrap = el("div");
-  // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，flex:1 会把它压成一条缝。
-  if (snapshot.terminal) tableWrap.style.maxHeight = "420px";
-  tableWrap.style.cssText = "flex:1;overflow:auto";
+  // 表先建、横幅后建：横幅要报「一共 N 页失败」「第一处失败在哪一行」，这些数只有
+  // 扫过整张表才数得出来，所以构建顺序是表在前；最后再按视觉顺序（头→提示→横幅→表）
+  // 把节点拼回卡片，构建顺序和视觉顺序不必是同一件事。
   const table = el("table", "tbl");
   const headRow = el("tr");
   const headLabels = ["页", "审核结果", "说明", ""];
@@ -1813,20 +2071,119 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   });
   table.append(headRow);
 
+  const groupHandles: PdfGroupHandle[] = [];
+  const failingRows: PdfPageRow[] = [];
+  let firstFailingRow: HTMLTableRowElement | null = null;
+  let totalPages = 0;
+
   for (const file of snapshot.files) {
+    const fileKey = file.relative_path;
+    // 预处理就失败的文件一页都没有，file.pages.some(...) 恒为 false——不额外认一下
+    // file.status，它就会被当成「干净」：默认收起，勾上「只看有问题的页」时整行消失。
+    // 最该被看见的文件反而是唯一看不见的，正好反了。
+    const anyProblem = file.status === "failed" || file.pages.length === 0 || file.pages.some(pageIsProblem);
+    const handle: PdfGroupHandle = { fileKey, hasFailingPage: file.pages.some(pageNeedsRerun), rows: [] };
+
     if (multiFile) {
-      const groupRow = el("tr", "pdf-file-group");
+      // 默认展开规则：有失败或建议复核的文件默认展开，全部通过的文件默认收起——打开
+      // 这张表多数是为了找问题页，不是逐页确认几十个「通过」。
+      //
+      // ui.collapse 只存用户自己点过的分组，默认值每次现算，绝不写回去。原先第一次
+      // 渲染就把默认值固化进 Map，而「第一次渲染」发生在任务刚开跑、所有页都还是
+      // pending 的时刻：那时 anyProblem 一律是 false，全部分组被钉死成收起状态。
+      // 等文件真的跑出失败页，stored 已经有值，默认展开永远不会再生效——「有失败的
+      // 文件默认展开」这条规则在主流程里等于不存在。
+      const open = ui.collapse.get(fileKey) ?? anyProblem;
+      const groupRow = el("tr", anyProblem ? "pdf-file-group" : "pdf-file-group grp-clean");
       const cell = el("td");
       cell.colSpan = 4;
-      cell.textContent = `${file.name} · ${file.page_count} 页`;
+      const btn = el("button", "grp");
+      btn.type = "button";
+      btn.setAttribute("aria-expanded", String(open));
+      btn.append(icon("chev", { size: "sm", className: "cv" }));
+      const fn = el("span", "fn");
+      fn.textContent = file.name;
+      const sum = el("span", "sum");
+      sum.append(...buildGroupSummaryNodes(file));
+      btn.append(fn, sum);
+      btn.addEventListener("click", () => toggleGroupOpen(ui, handle));
+      cell.append(btn);
       groupRow.append(cell);
       table.append(groupRow);
+      handle.button = btn;
     }
+
+    const open = multiFile ? ui.collapse.get(fileKey) ?? anyProblem : true;
     for (const page of file.pages) {
-      table.append(buildReviewRow(surface, taskId, snapshot, file, page));
+      const row = buildReviewRow(surface, taskId, snapshot, file, page, batchRerunActive);
+      if (!pageIsProblem(page)) row.classList.add("row-ok");
+      if (multiFile && !open) row.classList.add("hid");
+      table.append(row);
+      handle.rows.push(row);
+      totalPages += 1;
+      if (pageNeedsRerun(page)) {
+        failingRows.push({ file, page });
+        if (!firstFailingRow) firstFailingRow = row;
+      }
     }
+    groupHandles.push(handle);
   }
+
+  // 失败页横幅：只在终态出现——非终态的失败页走的是 buildPdfRecoveryCard 那张独立的
+  // 「页恢复」卡片（排队式的 regeneratePdfPage，继续翻译才生效），这里的批量重跑走的
+  // 是终态专用、点了立刻重跑的 rerunPdfPage，两条路语义不同，不能在还没结束的任务上
+  // 出现「立刻重跑」的横幅。
+  let banner: HTMLElement | null = null;
+  if (snapshot.terminal && batchRerunActive && batch) {
+    banner = el("div", "pdf-fixbar busy");
+    banner.append(el("span", "spin"));
+    const txt = el("span", "txt");
+    const em = el("em");
+    em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
+    txt.append(document.createTextNode("正在重跑 "), em);
+    if (batch.current) txt.append(document.createTextNode(`：${batch.current.fileName} 第 ${batch.current.pageNumber} 页`));
+    const small = el("small");
+    small.textContent = "跑完会自动替换译文页并重新装订这个文件的输出 PDF，其余页不受影响。";
+    txt.append(small);
+    banner.append(txt);
+  } else if (snapshot.terminal && failingRows.length > 0) {
+    banner = el("div", "pdf-fixbar");
+    banner.append(el("span", "dot"));
+    const txt = el("span", "txt");
+    const em = el("em");
+    em.textContent = `${failingRows.length} 页`;
+    txt.append(em, document.createTextNode("没有生成译文，输出的 PDF 里这几页是占位图。"));
+    const small = el("small");
+    small.textContent = `重跑只动这 ${failingRows.length} 页，其余 ${totalPages - failingRows.length} 页不会重新调用接口。`;
+    txt.append(small);
+    banner.append(txt);
+    banner.append(createButton({
+      label: "定位到这几页",
+      size: "mini",
+      onClick: () => focusFailingPages(ui, groupHandles, firstFailingRow),
+    }));
+    banner.append(createButton({
+      label: `只重跑这 ${failingRows.length} 页`,
+      size: "mini",
+      variant: "primary",
+      onClick: () => confirmPdfBatchRerun(surface, taskId, failingRows),
+    }));
+  }
+
+  const tableWrap = el("div");
+  // 真正的修复是这两行的先后顺序：style.cssText 是整体替换，原先写在它前面的
+  // maxHeight 会被整块冲掉，420px 的上限等于没写，84 行的表就把外层顶穿了。
+  // min-height:0 是顺手补的保险，不是这次生效的原因——flex 子项的 min-height:auto
+  // 只在 overflow 计算值为 visible 时才按内容撑开，而这里已经是 overflow:auto。
+  tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto";
+  // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，给个上限才滚得起来。
+  // 上限不再写死 420px：终态任务可能有 5 个文件、84 页，固定 420px 在大屏上会浪费
+  // 一大截空间；改成跟视口走（52vh），同时封顶 640px，避免在超大屏上把卡片拉得
+  // 过高。非终态（运行中）分支的高度逻辑不受影响，还是外层 flex 撑高度。
+  if (snapshot.terminal) tableWrap.style.maxHeight = "min(52vh, 640px)";
   tableWrap.append(table);
+
+  if (banner) card.append(banner);
   card.append(tableWrap);
   return card;
 }
@@ -1894,7 +2251,7 @@ function reviewNote(page: PdfPage): string {
   return "";
 }
 
-function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage): HTMLTableRowElement {
+function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, batchRerunActive: boolean): HTMLTableRowElement {
   const row = el("tr");
   const rerunning = isPageRerunning(snapshot, file, page);
   const pageCell = el("td");
@@ -1938,15 +2295,21 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
       ? oversizeReason
       : !rerunnable
         ? "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
-        : snapshot.rerun.active
-          ? "有一页正在重新生成，跑完再操作下一页。"
-          : !snapshot.rerun_actionable
-            ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
-            : undefined;
+        // 批量重跑横幅在跑的时候，单页重跑用的是同一个全局重跑槽位（PdfPagesSnapshot.rerun
+        // 一个任务只有一份），这里顺手把其它行的「重新生成」也锁住，不然点了会跟批量任务
+        // 抢槽位、互相打断。当前正在被批量处理的那一行走上面 rerunning 分支，文案已经是
+        // 「重新生成中」，不会落到这句话上。
+        : batchRerunActive
+          ? "正在批量重跑失败页，等这批跑完再单独操作这一页。"
+          : snapshot.rerun.active
+            ? "有一页正在重新生成，跑完再操作下一页。"
+            : !snapshot.rerun_actionable
+              ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
+              : undefined;
     actionsCell.append(
       buildActionLink(
         rerunning ? "重新生成中" : "重新生成",
-        rerunning || !rerunnable || !snapshot.rerun_actionable,
+        rerunning || !rerunnable || !snapshot.rerun_actionable || batchRerunActive,
         rerunReason,
         () => confirmPdfPageRerun(surface, taskId, file, page),
       ),
