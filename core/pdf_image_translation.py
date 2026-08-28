@@ -48,7 +48,7 @@ from core.image_generation import (
     is_model_unavailable_error,
     pdf_page_ratio_tolerance,
 )
-from core.language_registry import get_target_lang_display
+from core.language_registry import get_supported_languages, get_target_lang_display
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -867,7 +867,10 @@ def translated_pdf_base_name(
     source_path = Path(source_pdf_name)
     source_stem = _sanitize_filename_fragment(source_path.stem)
     suffix = f"_{_sanitize_filename_fragment(variant_label)}" if variant_label else ""
-    return f"译文({label})_{source_stem}{suffix}{source_path.suffix}"
+    # 命名从前缀式「译文(语言)_原文名」改成后缀式「原文名_语言」：前缀式会让
+    # 所有译文在 Finder / 资源管理器按名排序时统统排到最后，跟各自的原文完全
+    # 脱节；语言标签挪到原文名主干后面，译文才能紧挨着原文排在一起，方便配对。
+    return f"{source_stem}_{label}{suffix}{source_path.suffix}"
 
 
 def resolve_translated_pdf_path(
@@ -974,7 +977,8 @@ def translated_image_base_name(
     source_path = Path(source_image_name)
     source_stem = _sanitize_filename_fragment(source_path.stem)
     suffix = output_suffix if output_suffix.startswith(".") else f".{output_suffix}"
-    return f"译文({label})_{source_stem}{suffix}"
+    # 同 translated_pdf_base_name：改成后缀式，让译文在文件管理器里紧挨着原文排序。
+    return f"{source_stem}_{label}{suffix}"
 
 
 def resolve_translated_image_path(
@@ -4134,6 +4138,41 @@ def _validate_source_image(path: Path) -> tuple[int, int]:
     return int(width), int(height)
 
 
+# 内置目标语言的显示名白名单，只用来识别「后缀式」译文命名（见
+# _is_new_style_translated_name）。include_optional=True 保留了未来
+# 启用可选语言的扩展口子；不传 custom_target_langs 是因为扫描目录时
+# 走不到 AppSettings——用户自定义语言名不在这个白名单里，是已知的
+# 口子，见 _is_new_style_translated_name 的说明。
+_BUILTIN_TARGET_LANG_LABELS = frozenset(get_supported_languages(None, include_optional=True))
+
+# 后缀式译文名末尾可能叠着修订号 `_R2` 和高清/压缩变体 `_高清`/`_压缩`，
+# 识别时要先把这两层剥掉，才能拿到真正的语言标签去对白名单。
+_REVISION_SUFFIX_RE = re.compile(r"_R\d+$")
+_VARIANT_SUFFIX_RE = re.compile(r"_(?:高清|压缩)$")
+
+
+def _is_new_style_translated_name(name: str) -> bool:
+    """识别「原文名_语言标签[_高清/_压缩][_R修订号].ext」这种后缀式译文命名。
+
+    V9.3.0 之前产出的译文用前缀式「译文(语言)_原文名」，`_should_skip_scanned_input`
+    靠 startswith("译文(") 就能认出来；换成后缀式之后没有这么显眼的标记了，只能靠
+    「最后一段是不是我们认识的语言名」来判断。这里刻意要求最后一段必须命中内置语言
+    白名单，而不是「文件名里有下划线就算」——否则任何 `随便一个词_另一个词.pdf`
+    都会被当成自己的产物跳过扫描，把用户真正想翻译的原文件挡在外面。
+    即便加了白名单限制，风险也没有完全消除：如果用户自己的原文件恰好叫
+    `xxx_中文.pdf`（没有 `_高清`/`_压缩` 兜底,比如图片译文或未分变体的 PDF 命名），
+    会被误判成我们的产物而跳过翻译。带 `_高清`/`_压缩` 后缀的 PDF 命名风险很低
+    （PDF 正式产线只会走这条路），裸后缀（图片、以及不区分变体时的 PDF 命名）风险
+    略高，这里的取舍是接受这个小概率误伤，换来不用把 AppSettings 一路传进扫描函数。
+    """
+    stem = _REVISION_SUFFIX_RE.sub("", Path(name).stem)
+    stem = _VARIANT_SUFFIX_RE.sub("", stem)
+    if "_" not in stem:
+        return False
+    _, _, label = stem.rpartition("_")
+    return label in _BUILTIN_TARGET_LANG_LABELS
+
+
 def _should_skip_scanned_input(relative_path: Path) -> bool:
     parts = relative_path.parts
     if any(part.startswith(".") for part in parts):
@@ -4145,7 +4184,12 @@ def _should_skip_scanned_input(relative_path: Path) -> bool:
     name = relative_path.name
     if name in {PDF_REPORT_FILENAME, PDF_MANIFEST_FILENAME}:
         return True
-    return name.startswith("译文(")
+    if name.startswith("译文("):
+        # 旧命名（前缀式）。磁盘上已经堆了大量这种命名的历史译文，改了命名规则
+        # 也必须继续认得，不然用户一重新扫描旧输出目录，这些译文就被当成待翻的
+        # 原文又翻一遍，白花 API 的钱。
+        return True
+    return _is_new_style_translated_name(name)
 
 
 def _should_skip_scanned_pdf(relative_path: Path) -> bool:

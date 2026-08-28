@@ -58,6 +58,7 @@ from core.pdf_image_translation import (
     _done_kpi,
     _file_record_to_result,
     _finished_page_count,
+    _is_new_style_translated_name,
     _load_placeholder_font,
     _localized_pdf_placeholder_problem,
     _open_pdf_document,
@@ -271,9 +272,9 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
             self.assertTrue((output_dir / "docs" / "source.pdf").exists())
             self.assertFalse((output_dir / "docs" / "note.txt").exists())
-            self.assertTrue((output_dir / "docs" / "译文(英文)_source_高清.pdf").exists())
-            self.assertTrue((output_dir / "docs" / "译文(英文)_source_压缩.pdf").exists())
-            self.assertTrue(record.compressed_pdf_path.endswith("译文(英文)_source_压缩.pdf"))
+            self.assertTrue((output_dir / "docs" / "source_英文_高清.pdf").exists())
+            self.assertTrue((output_dir / "docs" / "source_英文_压缩.pdf").exists())
+            self.assertTrue(record.compressed_pdf_path.endswith("source_英文_压缩.pdf"))
             self.assertTrue(
                 (
                     output_dir
@@ -394,7 +395,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(record.source_type, SOURCE_TYPE_IMAGE)
             self.assertFalse(record.translated_pdf_path)
             self.assertFalse(record.compressed_pdf_path)
-            self.assertTrue(record.translated_image_path.endswith("译文(英文)_diagram.jpg"))
+            self.assertTrue(record.translated_image_path.endswith("diagram_英文.jpg"))
             self.assertEqual(record.translated_image_format, "JPEG")
             self.assertTrue((output_dir / "images" / "diagram.png").exists())
             self.assertTrue(
@@ -428,7 +429,7 @@ class PdfImageTranslationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
-            base = target_dir / "译文(英文)_source.pdf"
+            base = target_dir / "source_英文.pdf"
             base.write_text("old", encoding="utf-8")
 
             next_path = resolve_translated_pdf_path(
@@ -440,8 +441,8 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
 
             self.assertFalse(base.exists())
-            self.assertTrue((target_dir / "译文(英文)_source_R1.pdf").exists())
-            self.assertEqual(next_path.name, "译文(英文)_source_R2.pdf")
+            self.assertTrue((target_dir / "source_英文_R1.pdf").exists())
+            self.assertEqual(next_path.name, "source_英文_R2.pdf")
 
             next_path.write_text("new", encoding="utf-8")
             r3 = resolve_translated_pdf_path(
@@ -451,13 +452,13 @@ class PdfImageTranslationTests(unittest.TestCase):
                 settings,
                 app_managed=True,
             )
-            self.assertEqual(r3.name, "译文(英文)_source_R3.pdf")
+            self.assertEqual(r3.name, "source_英文_R3.pdf")
 
     def test_custom_output_revision_does_not_rename_unsuffixed_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
-            base = target_dir / "译文(英文)_source.pdf"
+            base = target_dir / "source_英文.pdf"
             base.write_text("old", encoding="utf-8")
 
             next_path = resolve_translated_pdf_path(
@@ -469,13 +470,13 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
 
             self.assertTrue(base.exists())
-            self.assertEqual(next_path.name, "译文(英文)_source_R1.pdf")
+            self.assertEqual(next_path.name, "source_英文_R1.pdf")
 
     def test_translated_pdf_variant_paths_use_matched_revision_numbers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
-            (target_dir / "译文(英文)_source_高清.pdf").write_text("old", encoding="utf-8")
+            (target_dir / "source_英文_高清.pdf").write_text("old", encoding="utf-8")
 
             high, compressed = resolve_translated_pdf_variant_paths(
                 target_dir,
@@ -485,16 +486,16 @@ class PdfImageTranslationTests(unittest.TestCase):
                 app_managed=True,
             )
 
-            self.assertTrue((target_dir / "译文(英文)_source_高清_R1.pdf").exists())
-            self.assertEqual(high.name, "译文(英文)_source_高清_R2.pdf")
-            self.assertEqual(compressed.name, "译文(英文)_source_压缩_R2.pdf")
+            self.assertTrue((target_dir / "source_英文_高清_R1.pdf").exists())
+            self.assertEqual(high.name, "source_英文_高清_R2.pdf")
+            self.assertEqual(compressed.name, "source_英文_压缩_R2.pdf")
 
     def test_translated_artifact_names_sanitize_windows_invalid_fragments(self) -> None:
         settings = AppSettings(target_lang="en")
 
         self.assertEqual(
             translated_pdf_base_name('site:plan?"A".pdf', "en", settings),
-            "译文(英文)_site_plan_A_.pdf",
+            "site_plan_A__英文.pdf",
         )
         self.assertEqual(
             translated_image_base_name(
@@ -503,14 +504,14 @@ class PdfImageTranslationTests(unittest.TestCase):
                 settings,
                 output_suffix=".jpg",
             ),
-            "译文(英文)_diagram_phase_1.jpg",
+            "diagram_phase_1_英文.jpg",
         )
 
     def test_revision_lookup_handles_glob_special_characters_in_source_name(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target_dir = Path(tmp)
             settings = AppSettings(target_lang="en")
-            (target_dir / "译文(英文)_[source]_R1.pdf").write_text("old", encoding="utf-8")
+            (target_dir / "[source]_英文_R1.pdf").write_text("old", encoding="utf-8")
 
             next_path = resolve_translated_pdf_path(
                 target_dir,
@@ -520,7 +521,23 @@ class PdfImageTranslationTests(unittest.TestCase):
                 app_managed=True,
             )
 
-            self.assertEqual(next_path.name, "译文(英文)_[source]_R2.pdf")
+            self.assertEqual(next_path.name, "[source]_英文_R2.pdf")
+
+    def test_new_style_translated_name_recognizes_suffix_and_rejects_originals(self) -> None:
+        # 命名从「译文(语言)_原文名」前缀式改成「原文名_语言」后缀式后，扫描目录时
+        # 还得靠这个判断跳过自己产出的译文，不然重新扫描输出目录会把译文当原文再翻
+        # 一遍。这里覆盖新旧两种命名，以及一份真实原文件名（没有语言后缀）不能被
+        # 误伤——这正是后缀式命名比前缀式更容易踩中的风险。
+        self.assertTrue(_is_new_style_translated_name("source_中文_高清.pdf"))
+        self.assertTrue(_is_new_style_translated_name("source_中文_压缩.pdf"))
+        self.assertTrue(_is_new_style_translated_name("source_中文_高清_R2.pdf"))
+        self.assertTrue(_is_new_style_translated_name("diagram_英文.jpg"))
+        self.assertFalse(
+            _is_new_style_translated_name(
+                "UNITE INDUSTRIELLE BTR ANODE BATIMENT 1 (2).pdf"
+            )
+        )
+        self.assertFalse(_is_new_style_translated_name("quarterly_report.pdf"))
 
     def test_page_quality_checks_decode_and_ratio_only(self) -> None:
         decode = check_page_quality(b"not an image", source_width=1600, source_height=1200)
@@ -1431,8 +1448,8 @@ class PdfImageTranslationTests(unittest.TestCase):
             stopped = _drain_last_message(runner, StoppedMsg)
             self.assertIsNotNone(stopped)
             output_dir = Path(stopped.output_dir)
-            self.assertTrue((output_dir / "译文(英文)_first_高清.pdf").exists())
-            self.assertFalse((output_dir / "译文(英文)_second_高清.pdf").exists())
+            self.assertTrue((output_dir / "first_英文_高清.pdf").exists())
+            self.assertFalse((output_dir / "second_英文_高清.pdf").exists())
             report = Path(stopped.report_path).read_text(encoding="utf-8")
             self.assertIn("结束原因：用户主动中止", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
