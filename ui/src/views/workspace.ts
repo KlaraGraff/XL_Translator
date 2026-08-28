@@ -102,9 +102,9 @@ interface ToggleDef {
 const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },
-  { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: false, pathKind: "output", path: "formula_display_value_backfill" },
-  { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: true, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
-  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「使用 Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
+  { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
+  { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
+  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「使用 Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: true, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
   { key: "reviewMark", label: "标记需复核内容", hint: "为保留原文和疑似原文异常的单元格标注底色，便于人工复核。程序自己判过没问题的（如语义校验接受）只进报告，不标底色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
 ];
 
@@ -112,17 +112,17 @@ const WORD_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "wordNativePreprocessing", label: "本地自动编号预处理", hint: "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
   { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
-  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: false, pathKind: "none" },
+  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: true, pathKind: "none" },
   { key: "translateHeadersFooters", label: "翻译页眉页脚", hint: "默认不翻。开启后页眉页脚的文字也会翻译，译文用「 / 」接在同一行原文后面，不另起一行——页眉高度是固定的，多一行会把正文顶下去。只有页码、目录域的页眉页脚仍然跳过。全译和补译都生效。", default: false, pathKind: "none" },
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
-  { key: "pdfReview", label: "逐页审核模型", hint: "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。", default: true, pathKind: "flat", path: "pdf.review_enabled" },
+  { key: "pdfReview", label: "逐页审核模型", hint: "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。", default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: "生成压缩 PDF", hint: "在原始输出之外额外生成一份体积更小的 PDF。", default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
-  { key: "pdfImages", label: "允许独立图片", hint: "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。", default: false, pathKind: "flat", path: "pdf.include_images" },
+  { key: "pdfImages", label: "允许独立图片", hint: "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。", default: true, pathKind: "flat", path: "pdf.include_images" },
   // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
   // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
-  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: false, pathKind: "flat", path: "pdf.skip_oversized_pages" },
+  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES };
@@ -430,6 +430,13 @@ function applySettingsToStates(): void {
       } else if (toggle.pathKind === "output") {
         st.toggles.set(toggle.key, Boolean(readOutputPath(surface, toggle.path as string)));
       }
+    }
+    // 互斥对两边都为真：老版本切换互斥开关时只落盘自己那一半，磁盘上会留下
+    // 两个都是 true 的脏数据。照后端的实际裁决显示——task_runner 里
+    // need_autofit = enable_excel_autofit and not lock_row_height，锁定行高赢。
+    // 界面必须跟裁决一致，不能两个都亮着让人以为设置被改乱了。
+    if (st.toggles.get("excelAutofit") && st.toggles.get("lockRowHeight")) {
+      st.toggles.set("excelAutofit", false);
     }
     const outputSettings = outputRecord(surface);
     st.useCustomOutputDir = Boolean(outputSettings.use_custom_output_dir);
@@ -2780,16 +2787,41 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   return col;
 }
 
+/** 这个开关落盘要写的补丁；pathKind "none" 不落盘，返回 null。 */
+function togglePatch(surface: Surface, toggle: ToggleDef, checked: boolean): JsonObject | null {
+  if (toggle.pathKind === "flat" && toggle.path) return nestedPatch(toggle.path, checked);
+  if (toggle.pathKind === "output" && toggle.path) return nestedPatch(`${outputSettingPathPrefix(surface)}.${toggle.path}`, checked);
+  return null;
+}
+
+/** 两份 nestedPatch 合并成一份（同前缀的嵌套对象拼在一起），一次 PUT 写完。 */
+function mergePatches(base: JsonObject, extra: JsonObject): JsonObject {
+  const out: JsonObject = { ...base };
+  for (const [key, value] of Object.entries(extra)) {
+    const existing = out[key];
+    if (existing && typeof existing === "object" && !Array.isArray(existing) && value && typeof value === "object" && !Array.isArray(value)) {
+      out[key] = mergePatches(existing as JsonObject, value as JsonObject);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: ToggleDef, checked: boolean): Promise<void> {
   st.toggles.set(toggle.key, checked);
-  if (toggle.exclusiveWith && checked) {
-    st.toggles.set(toggle.exclusiveWith, false);
+  let patch = togglePatch(surface, toggle, checked);
+  if (toggle.exclusiveWith) {
+    if (checked) st.toggles.set(toggle.exclusiveWith, false);
+    // 互斥对每次都两半一起落盘，开、关都写。只写自己那一半的话，磁盘上会留下
+    // 「两个都开」的脏数据，下次启动水合出来就是「设置被默认替代掉」的样子——
+    // 正是用户报的那个 bug。老版本已经留下的脏数据也靠这一步顺手治好：水合时
+    // 界面按后端裁决只亮一个，用户随便动一下这对开关，写盘的就是界面上的两个值。
+    const partner = TOGGLES[surface].find((t) => t.key === toggle.exclusiveWith);
+    const partnerPatch = partner ? togglePatch(surface, partner, Boolean(st.toggles.get(partner.key))) : null;
+    if (partnerPatch) patch = patch ? mergePatches(patch, partnerPatch) : partnerPatch;
   }
-  if (toggle.pathKind === "flat" && toggle.path) {
-    await persistSettings(nestedPatch(toggle.path, checked));
-  } else if (toggle.pathKind === "output" && toggle.path) {
-    await persistSettings(nestedPatch(`${outputSettingPathPrefix(surface)}.${toggle.path}`, checked));
-  }
+  if (patch) await persistSettings(patch);
   rerender(surface);
 }
 
