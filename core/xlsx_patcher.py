@@ -2123,8 +2123,28 @@ def write_bilingual_workbook(
             package, workbook_root, workbook_part, workbook_rels_root
         )
 
+        # 「保留原文表」只对还没有原文副本的分表克隆。续译时写出的源是上次的
+        # 双语产物，里面已经带着上一轮克隆的「X_原文」：(a) 那张原文表自己不能
+        # 再被克隆一层（否则出现「X_原文_原文」）；(b) 已有原文副本的分表也不能
+        # 再拍快照（快照取的是本轮开跑前的双语内容，克隆出来的「X_原文_2」会
+        # 顶着原文的名字装着译文）。不过滤的话分表数每续译一轮翻一倍。
+        all_sheet_names = {entry.name for entry in entries}
+
+        def _needs_original_clone(entry: _SheetEntry) -> bool:
+            if is_generated_original_sheet_title(entry.name, all_sheet_names):
+                return False
+            return not any(
+                is_generated_original_sheet_title(other, {entry.name})
+                for other in all_sheet_names
+                if other != entry.name
+            )
+
         snapshots = (
-            [_snapshot_sheet(package, entry) for entry in entries]
+            [
+                _snapshot_sheet(package, entry)
+                for entry in entries
+                if _needs_original_clone(entry)
+            ]
             if keep_original_sheets
             else []
         )

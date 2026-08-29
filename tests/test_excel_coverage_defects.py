@@ -92,9 +92,11 @@ class GeneratedOriginalSheetTests(_CoverageCase):
         # 别矫枉过正：没被翻译的普通分表仍然要进补译候选。
         self.assertIn("汇总", sheets_in_plan)
 
-    def test_dedup_suffixed_clone_name_is_still_recognized(self) -> None:
-        # 工作簿里已经有一张叫「报价_原文」的分表 → 克隆「报价」时重名，
-        # 生成的名字带上 _2 后缀。
+    def test_existing_original_sheet_suppresses_reclone(self) -> None:
+        # 工作簿里已经有一张叫「报价_原文」的分表——不管它是用户自己起的名还是
+        # 上一轮翻译克隆出来的，写入器都视同「原文副本已存在」，不再给「报价」
+        # 拍快照。旧行为是重名加 _2 后缀硬克隆（报价_原文_2），续译场景下分表数
+        # 每跑一轮翻一倍，这个契约已废除。
         source = self.root / "dedup.xlsx"
         workbook = Workbook()
         sheet = workbook.active
@@ -109,15 +111,23 @@ class GeneratedOriginalSheetTests(_CoverageCase):
 
         translated = load_workbook(output)
         try:
-            self.assertIn("报价_原文_2", translated.sheetnames)
+            self.assertEqual(translated.sheetnames, ["报价", "报价_原文"])
         finally:
             translated.close()
 
         self.assertNotIn(
-            "报价_原文_2",
+            "报价_原文",
             self._plan_sheets(output),
-            "带去重后缀的克隆分表同样是我们自己生成的，补译必须跳过",
+            "原文副本分表不是待译内容，补译必须跳过",
         )
+
+    def test_dedup_suffixed_clone_name_is_still_recognized(self) -> None:
+        # 反推函数本身仍然要认得带 _2 去重后缀的克隆名：老版本写出的产物里
+        # 就存在这种分表（当年的硬克隆行为），补译扫到它们时照样得跳过。
+        from core.xlsx_patcher import is_generated_original_sheet_title
+
+        self.assertTrue(is_generated_original_sheet_title("报价_原文_2", {"报价"}))
+        self.assertFalse(is_generated_original_sheet_title("报价_原文_2", {"汇总"}))
 
 
 class CoverageScanPerformanceTests(_CoverageCase):

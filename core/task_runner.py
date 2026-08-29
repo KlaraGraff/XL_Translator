@@ -284,6 +284,7 @@ class TaskRunner:
         api_scheduler=None,
         untranslated_only: bool = False,
         connection_chain: tuple[str, ...] | list[str] | None = None,
+        resume_output_dir: str | None = None,
     ):
         self._files       = file_items
         self._settings    = settings
@@ -293,6 +294,8 @@ class TaskRunner:
         self._key_overrides = dict(key_overrides or {})
         self._api_scheduler = api_scheduler
         self._untranslated_only = bool(untranslated_only)
+        # 只读：上次输出目录，补译时用它的双语产物做底稿。绝不写入。
+        self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
         self._queue: queue.Queue = queue.Queue()
@@ -658,8 +661,16 @@ class TaskRunner:
             # ══════════════════════════════════════════════════════════
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在扫描所有文件提取词汇..."))
 
-            # process_paths[i] 对应 self._files[i]，若 .xls 则指向转换后的临时 .xlsx
+            # process_paths[i] 对应 self._files[i]，若 .xls 则指向转换后的临时 .xlsx，
+            # 若续译换了底稿则指向上次输出的双语文件
             process_paths: list[Path] = []
+            # resume_baseline_used[i] 标记 process_paths[i] 是否为上次输出的双语底稿
+            # （而非源文件本身/其转换件），写盘阶段据此纠正输出命名基准
+            resume_baseline_used: list[bool] = []
+            # deferred_resume_baselines[i]：自动识别源语言时，阶段 1 不能换底稿（换了
+            # 会拿双语文件当语言预检样本，译文混进去把源语言判花）。这里先把匹配好、
+            # 验证过的底稿记下来，等预检定出源语言、重算补译清单之前再换。
+            deferred_resume_baselines: list[Path | None] = []
             # file_texts[i] 对应 self._files[i] 的本文件词条集合
             file_texts = []
             coverage_plans = []
@@ -684,6 +695,88 @@ class TaskRunner:
 
                 process_path = file_item.path
                 source_is_xls = file_item.path.suffix.lower() == ".xls"
+                resume_used = False
+
+                # 换底稿只在补译覆盖率计划真的会跑的前提下才安全：覆盖率计划负责
+                # 分清「原文」和「已译」，没有它就没法阻止把双语底稿的译文列再整份
+                # 送去翻一遍。源语言已知时这里直接换；自动识别时不能现在换——阶段 1
+                # 取的词条要当语言预检的样本，双语底稿会把译文混进样本、把源语言判
+                # 花——先把匹配好、验证过的底稿记下来，等预检定出源语言、重算补译
+                # 清单之前再换（见 _apply_deferred_resume_baselines）。
+                deferred_baseline: Path | None = None
+                if self._untranslated_only and self._resume_output_dir is not None:
+                    try:
+                        rel_dir = file_item.path.parent.relative_to(root_for_output)
+                    except ValueError:
+                        rel_dir = Path()
+                    naming_source_name = (
+                        file_item.original_path.name
+                        if file_item.original_path
+                        else file_item.path.name
+                    )
+                    try:
+                        from core.resume_detection import (
+                            baseline_missing_source_texts,
+                            match_previous_output,
+                        )
+                        candidate = match_previous_output(
+                            self._resume_output_dir,
+                            str(rel_dir),
+                            naming_source_name,
+                            target_lang,
+                            "excel",
+                        )
+                    except Exception as e:
+                        candidate = None
+                        logger.debug(f"续译底稿匹配失败原始错误 {file_item.name}：{e!r}")
+                        self._log(
+                            "WARN",
+                            f"续译底稿匹配失败 {file_item.name}，改为全量翻译："
+                            + user_facing_reason(e, fallback="续译匹配出错。"),
+                        )
+
+                    if candidate is not None:
+                        if not self._validate_resume_baseline(candidate):
+                            self._log(
+                                "WARN",
+                                f"续译底稿已损坏或无法打开，改用源文件全量翻译："
+                                f"{candidate}",
+                            )
+                        elif auto_source_lang:
+                            deferred_baseline = candidate
+                            self._log(
+                                "INFO",
+                                f"续译：{file_item.name} 已找到上次产物 {candidate.name}，"
+                                "等识别出源语言后再换为底稿。",
+                            )
+                        elif (
+                            missing := baseline_missing_source_texts(
+                                process_path,
+                                candidate,
+                                surface="excel",
+                                target_lang=target_lang,
+                                source_lang=source_lang,
+                            )
+                        ):
+                            # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
+                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
+                            self._log(
+                                "WARN",
+                                f"续译核对：{file_item.name} 的源文件比上次翻译时"
+                                f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                                "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
+                            )
+                        else:
+                            process_path = candidate
+                            source_is_xls = False
+                            resume_used = True
+                            self._log(
+                                "INFO",
+                                f"续译：{file_item.name} 以上次产物为底稿 {candidate.name}",
+                            )
+
+                resume_baseline_used.append(resume_used)
+                deferred_resume_baselines.append(deferred_baseline)
 
                 if source_is_xls:
                     xls_file_count += 1
@@ -760,7 +853,9 @@ class TaskRunner:
                         coverage_plans.append(coverage_plan)
                         texts = coverage_plan.source_texts
                         sheet_count = coverage_plan.sheet_count
-                        self._log_excel_coverage_plan(file_item.name, coverage_plan)
+                        self._log_excel_coverage_plan(
+                            file_item.name, coverage_plan, resume_baseline=resume_used
+                        )
                     else:
                         texts, sheet_count = self._collect_texts(
                             process_path,
@@ -770,36 +865,98 @@ class TaskRunner:
                         )
                         coverage_plans.append(None)
                 except Exception as e:
-                    logger.debug(f"源文件读取失败原始错误 {file_item.name}：{e!r}")
-                    read_reason = user_facing_reason(
-                        e,
-                        fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
-                    )
-                    self._log("ERROR", f"源文件读取失败 {file_item.name}：{read_reason}")
-                    self._task_logger.file_error(file_item.name, f"源文件读取失败: {read_reason}")
-                    file_results.append({
-                        "name": file_item.name,
-                        "source_path": str(file_item.path),
-                        "source_relative_path": self._relative_source_path(file_item.path),
-                        "format": file_item.format,
-                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
-                        "status": "failed",
-                        "success": False,
-                        "error": f"源文件读取失败: {read_reason}",
-                    })
-                    if len(coverage_plans) < len(process_paths):
-                        coverage_plans.append(None)
-                    file_texts.append(set())
-                    if process_path != file_item.path:
+                    # 底稿探活（load_workbook 打得开）过了、真正建补译计划才炸的
+                    # 区间：底稿不行不等于源文件不行。用户只是选了「接着上次继续」，
+                    # 不能因此拿到一个「翻译失败」——退回源文件按全量翻译再试一次，
+                    # 只有源文件自己也读不出来才算失败。（.xls 源的转换件在换底稿
+                    # 时被跳过，退无可退，维持失败但把话术指向底稿。）
+                    degraded = False
+                    if resume_used and file_item.path.suffix.lower() != ".xls":
+                        logger.debug(
+                            f"续译底稿建计划失败原始错误 {file_item.name}：{e!r}"
+                        )
+                        self._log(
+                            "WARN",
+                            f"续译底稿无法建立补译计划 {file_item.name}，"
+                            "已退回按源文件全量翻译："
+                            + user_facing_reason(e, fallback="底稿读取失败。"),
+                        )
+                        process_path = file_item.path
+                        process_paths[-1] = process_path
+                        resume_used = False
+                        resume_baseline_used[-1] = False
                         try:
-                            os.remove(process_path)
-                        except Exception as cleanup_error:
-                            self._log(
-                                "WARN",
-                                f"临时文件清理失败 {process_path.name}: "
-                                f"{user_facing_reason(cleanup_error, fallback='临时文件删不掉。')}",
-                            )
-                    continue
+                            if self._untranslated_only and not auto_source_lang:
+                                coverage_plan = build_excel_coverage_plan(
+                                    process_path,
+                                    target_lang=target_lang,
+                                    source_lang=source_lang,
+                                    formula_display_value_backfill=(
+                                        excel_output.formula_display_value_backfill
+                                    ),
+                                )
+                                self._arbitrate_excel_coverage_pairs(
+                                    coverage_plan,
+                                    engine=engine,
+                                    api_scheduler=shared_scheduler,
+                                    target_lang=target_lang,
+                                    source_lang=source_lang,
+                                    lang_pair=lang_pair,
+                                    concurrency=concurrency,
+                                    file_name=file_item.name,
+                                    quality_issues=quality_issues,
+                                    review_marks=excel_review_marks,
+                                )
+                                coverage_plans.append(coverage_plan)
+                                texts = coverage_plan.source_texts
+                                sheet_count = coverage_plan.sheet_count
+                                self._log_excel_coverage_plan(
+                                    file_item.name, coverage_plan
+                                )
+                            else:
+                                texts, sheet_count = self._collect_texts(
+                                    process_path,
+                                    file_item.name,
+                                    target_lang=target_lang,
+                                    source_lang=source_lang,
+                                )
+                                coverage_plans.append(None)
+                            degraded = True
+                        except Exception as retry_error:
+                            e = retry_error
+                    if not degraded:
+                        fail_label = "续译底稿读取失败" if resume_used else "源文件读取失败"
+                        logger.debug(f"{fail_label}原始错误 {file_item.name}：{e!r}")
+                        read_reason = user_facing_reason(
+                            e,
+                            fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
+                        )
+                        self._log("ERROR", f"{fail_label} {file_item.name}：{read_reason}")
+                        self._task_logger.file_error(file_item.name, f"{fail_label}: {read_reason}")
+                        file_results.append({
+                            "name": file_item.name,
+                            "source_path": str(file_item.path),
+                            "source_relative_path": self._relative_source_path(file_item.path),
+                            "format": file_item.format,
+                            "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                            "status": "failed",
+                            "success": False,
+                            "error": f"{fail_label}: {read_reason}",
+                        })
+                        if len(coverage_plans) < len(process_paths):
+                            coverage_plans.append(None)
+                        file_texts.append(set())
+                        # resume_used 时 process_path 是上次输出的续译底稿，只读，绝不删除
+                        if process_path != file_item.path and not resume_used:
+                            try:
+                                os.remove(process_path)
+                            except Exception as cleanup_error:
+                                self._log(
+                                    "WARN",
+                                    f"临时文件清理失败 {process_path.name}: "
+                                    f"{user_facing_reason(cleanup_error, fallback='临时文件删不掉。')}",
+                                )
+                        continue
                 text_set = set(texts)
                 file_texts.append(text_set)
                 total_sheet_count += sheet_count
@@ -898,6 +1055,14 @@ class TaskRunner:
                     ),
                 )
                 if self._untranslated_only:
+                    self._apply_deferred_resume_baselines(
+                        process_paths=process_paths,
+                        deferred_resume_baselines=deferred_resume_baselines,
+                        resume_baseline_used=resume_baseline_used,
+                        file_results=file_results,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                    )
                     raw_text_count = self._rebuild_coverage_plans_after_preflight(
                         process_paths=process_paths,
                         coverage_plans=coverage_plans,
@@ -905,6 +1070,7 @@ class TaskRunner:
                         file_results=file_results,
                         file_conversion_modes=file_conversion_modes,
                         global_unique_texts=global_unique_texts,
+                        resume_baseline_used=resume_baseline_used,
                         target_lang=target_lang,
                         source_lang=source_lang,
                         formula_display_value_backfill=(
@@ -1511,7 +1677,10 @@ class TaskRunner:
                     quality_issues.append(
                         {
                             "type": "tm_write_failed",
-                            "severity": "info",
+                            # 写 TM 是真的失败了，不是「按设计如此」的提示。severity=info
+                            # 已经被界面定义成「用户不用管」的一档（自动目录那类），这一条
+                            # 留在 info 里会连着 KPI 一起被抹掉。
+                            "severity": "needs_action",
                             "message": tm_write_error,
                         }
                     )
@@ -1557,6 +1726,15 @@ class TaskRunner:
                 self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{fi+1}/{len(self._files)}）")
 
                 process_path = process_paths[fi]
+                # 换了续译底稿时，output 命名/相对目录必须仍按「原始源文件」算，
+                # 否则底稿文件名（已经带过一次「双语」后缀）会在输出名里叠加一遍。
+                naming_original_path = file_item.original_path
+                if (
+                    fi < len(resume_baseline_used)
+                    and resume_baseline_used[fi]
+                    and naming_original_path is None
+                ):
+                    naming_original_path = file_item.path
 
                 try:
                     rel_subdir = file_item.path.parent.relative_to(source_root)
@@ -1576,6 +1754,23 @@ class TaskRunner:
                         coverage_plan = coverage_plans[fi] if fi < len(coverage_plans) else None
                         if coverage_plan is None:
                             raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                        # 「保留原文副本」的快照取自写入源。续译时写入源是上次的双语
+                        # 底稿——从双语内容里克隆不出「未翻译的原始副本」，硬克隆出来
+                        # 的「X_原文」里装的是「原文\n译文」，名字在撒谎、体积还翻倍。
+                        # 底稿里上一轮已有的「X_原文」是普通分表，复制产物时原样保留，
+                        # 不受这里影响。
+                        resume_used_here = (
+                            fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                        )
+                        if excel_output.keep_original_sheets and resume_used_here:
+                            self._log(
+                                "INFO",
+                                (
+                                    f"  → [续译] {file_item.name}：底稿本身是双语内容，"
+                                    "无法从中克隆出纯原文副本，本次不新增「_原文」分表"
+                                    "（上次已有的原样保留）。"
+                                ),
+                            )
                         out_path = write_untranslated_excel_file(
                             source_path=process_path,
                             output_dir=output_dir / rel_subdir,
@@ -1583,7 +1778,9 @@ class TaskRunner:
                             translations=global_translations,
                             target_lang=target_lang,
                             source_lang=source_lang,
-                            keep_original_sheets=excel_output.keep_original_sheets,
+                            keep_original_sheets=(
+                                excel_output.keep_original_sheets and not resume_used_here
+                            ),
                             formula_display_value_backfill=(
                                 excel_output.formula_display_value_backfill
                             ),
@@ -1600,7 +1797,7 @@ class TaskRunner:
                             log_callback=lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
-                            original_path=file_item.original_path,
+                            original_path=naming_original_path,
                             external_autofit_planned=need_autofit,
                             stats=write_stats,
                         )
@@ -1622,7 +1819,7 @@ class TaskRunner:
                             log_callback         = lambda msg: self._log(
                                 "OK" if msg.startswith("[OK]") else "INFO", msg
                             ),
-                            original_path        = file_item.original_path,
+                            original_path        = naming_original_path,
                             external_autofit_planned = need_autofit,
                             stats                = write_stats,
                         )
@@ -1711,8 +1908,12 @@ class TaskRunner:
                         "error": write_reason,
                     })
                 finally:
-                    # 清理 .xls 转换后的临时 .xlsx 文件
-                    if process_path != file_item.path:
+                    # 清理 .xls 转换后的临时 .xlsx 文件；续译底稿是上次输出的历史产物，
+                    # 只读绝不删除
+                    is_resume_baseline = (
+                        fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                    )
+                    if process_path != file_item.path and not is_resume_baseline:
                         try:
                             os.remove(process_path)
                         except Exception as e:
@@ -2111,7 +2312,9 @@ class TaskRunner:
                 }
             )
 
-    def _log_excel_coverage_plan(self, file_name: str, plan) -> None:
+    def _log_excel_coverage_plan(
+        self, file_name: str, plan, *, resume_baseline: bool = False
+    ) -> None:
         """Report one file's untranslated-only plan, including the empty case."""
         summary = plan.summary
         self._log(
@@ -2123,14 +2326,88 @@ class TaskRunner:
                 f"不确定跳过 {summary.get('ambiguous', 0)}"
             ),
         )
-        # 「一条都不用补」是合法结果，但那样输出文件会和原文一模一样。不明说的话，
-        # 用户看到的就是一份没翻译的文件，看不出是「本来就不用翻」还是程序没干活。
+        # 「一条都不用补」是合法结果，但普通补译时那样输出文件会和原文一模一样。
+        # 不明说的话，用户看到的就是一份没翻译的文件，看不出是「本来就不用翻」
+        # 还是程序没干活。续译时计划建在上次的双语底稿上，「不用补」意味着上次
+        # 已经翻完了——输出等于上次产物（不是原文），这是好消息不是警告。
         if not summary.get("source_only", 0):
-            self._log(
-                "WARN",
-                f"  → {file_name}：没有找到需要补译的内容，输出文件会和原文一致。"
-                "如果这份文件其实还没翻译过，请关掉「仅补译未翻译内容」再跑一次。",
+            if resume_baseline:
+                self._log(
+                    "INFO",
+                    f"  → {file_name}：上次的翻译已覆盖全部内容，无需补译，"
+                    "输出与上次产物一致。",
+                )
+            else:
+                self._log(
+                    "WARN",
+                    f"  → {file_name}：没有找到需要补译的内容，输出文件会和原文一致。"
+                    "如果这份文件其实还没翻译过，请关掉「仅补译未翻译内容」再跑一次。",
+                )
+
+    def _apply_deferred_resume_baselines(
+        self,
+        *,
+        process_paths: list[Path],
+        deferred_resume_baselines: list[Path | None],
+        resume_baseline_used: list[bool],
+        file_results: list[dict],
+        target_lang: str,
+        source_lang: str,
+    ) -> None:
+        """自动识别源语言的续译：预检定完语言、重算补译清单之前，把底稿换上。
+
+        阶段 1 为了让语言预检拿到干净的源文样本，一直按源文件（或其 .xls 转换件）
+        取词。现在源语言已定，补译清单马上要按 process_paths 重算——此刻换成上次
+        的双语底稿，重算出来的才是「还缺哪些译文」，而不是把整份原文再翻一遍。
+
+        换之前先做底稿资格核查（baseline_missing_source_texts）：源文件在上次翻译
+        之后新增的内容不在底稿里，硬换底稿会把它静默丢掉。核查放在这里而不是阶段 1，
+        是因为文本分类依赖源语言——此刻语言刚定下来，核查结果才作数。
+        """
+        from core.resume_detection import baseline_missing_source_texts
+
+        failed_sources = {
+            r.get("source_path") for r in file_results if not r.get("success")
+        }
+        for fi, file_item in enumerate(self._files):
+            if fi >= len(process_paths) or fi >= len(deferred_resume_baselines):
+                continue
+            baseline = deferred_resume_baselines[fi]
+            if baseline is None or str(file_item.path) in failed_sources:
+                continue
+            previous = process_paths[fi]
+            missing = baseline_missing_source_texts(
+                previous,
+                baseline,
+                surface="excel",
+                target_lang=target_lang,
+                source_lang=source_lang,
             )
+            if missing:
+                self._log(
+                    "WARN",
+                    f"续译核对：{file_item.name} 的源文件比上次翻译时"
+                    f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                    "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
+                )
+                continue
+            process_paths[fi] = baseline
+            if fi < len(resume_baseline_used):
+                resume_baseline_used[fi] = True
+            self._log(
+                "INFO",
+                f"续译：{file_item.name} 以上次产物为底稿 {baseline.name}",
+            )
+            # 阶段 1 若做过 .xls → .xlsx 转换，那个临时件从此用不上了
+            if previous != file_item.path and previous != baseline:
+                try:
+                    os.remove(previous)
+                except Exception as e:
+                    self._log(
+                        "WARN",
+                        f"临时文件清理失败 {previous.name}: "
+                        f"{user_facing_reason(e, fallback='临时文件删不掉。')}",
+                    )
 
     def _rebuild_coverage_plans_after_preflight(
         self,
@@ -2141,6 +2418,7 @@ class TaskRunner:
         file_results: list[dict],
         file_conversion_modes: dict[str, str],
         global_unique_texts: set[str],
+        resume_baseline_used: list[bool],
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
@@ -2177,27 +2455,62 @@ class TaskRunner:
                     formula_display_value_backfill=formula_display_value_backfill,
                 )
             except Exception as e:  # noqa: BLE001 - 单个文件读失败不该带走整批
-                logger.debug(f"补译识别失败原始错误 {file_item.name}：{e!r}")
-                reason = user_facing_reason(
-                    e,
-                    fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
-                )
-                self._log("ERROR", f"补译识别失败 {file_item.name}：{reason}")
-                self._task_logger.file_error(file_item.name, f"补译识别失败: {reason}")
-                file_results.append({
-                    "name": file_item.name,
-                    "source_path": str(file_item.path),
-                    "source_relative_path": self._relative_source_path(file_item.path),
-                    "format": file_item.format,
-                    "conversion_mode": file_conversion_modes.get(
-                        str(file_item.path), "native_xlsx"
-                    ),
-                    "status": "failed",
-                    "success": False,
-                    "error": f"补译识别失败: {reason}",
-                })
-                file_texts[fi] = set()
-                continue
+                # 刚被 _apply_deferred_resume_baselines 换上的底稿探活能过、建计划
+                # 才炸：底稿不行不等于源文件不行，先退回源文件重建一次，只有源
+                # 文件也读不出来才标失败。（.xls 源的转换件在换底稿时已被清理，
+                # 退无可退，维持失败。）
+                degraded = False
+                if (
+                    fi < len(resume_baseline_used)
+                    and resume_baseline_used[fi]
+                    and file_item.path.suffix.lower() != ".xls"
+                ):
+                    logger.debug(f"续译底稿建计划失败原始错误 {file_item.name}：{e!r}")
+                    self._log(
+                        "WARN",
+                        f"续译底稿无法建立补译计划 {file_item.name}，"
+                        "已退回按源文件全量翻译："
+                        + user_facing_reason(e, fallback="底稿读取失败。"),
+                    )
+                    process_paths[fi] = file_item.path
+                    resume_baseline_used[fi] = False
+                    try:
+                        coverage_plan = build_excel_coverage_plan(
+                            file_item.path,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            formula_display_value_backfill=formula_display_value_backfill,
+                        )
+                        degraded = True
+                    except Exception as retry_error:  # noqa: BLE001
+                        e = retry_error
+                if not degraded:
+                    fail_label = (
+                        "续译底稿读取失败"
+                        if fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                        else "补译识别失败"
+                    )
+                    logger.debug(f"{fail_label}原始错误 {file_item.name}：{e!r}")
+                    reason = user_facing_reason(
+                        e,
+                        fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
+                    )
+                    self._log("ERROR", f"{fail_label} {file_item.name}：{reason}")
+                    self._task_logger.file_error(file_item.name, f"{fail_label}: {reason}")
+                    file_results.append({
+                        "name": file_item.name,
+                        "source_path": str(file_item.path),
+                        "source_relative_path": self._relative_source_path(file_item.path),
+                        "format": file_item.format,
+                        "conversion_mode": file_conversion_modes.get(
+                            str(file_item.path), "native_xlsx"
+                        ),
+                        "status": "failed",
+                        "success": False,
+                        "error": f"{fail_label}: {reason}",
+                    })
+                    file_texts[fi] = set()
+                    continue
             if engine is not None:
                 self._arbitrate_excel_coverage_pairs(
                     coverage_plan,
@@ -2217,7 +2530,13 @@ class TaskRunner:
             raw_text_count += len(text_set)
             global_unique_texts.update(text_set)
             self._log("INFO", f"[补译识别] {file_item.name}")
-            self._log_excel_coverage_plan(file_item.name, coverage_plan)
+            self._log_excel_coverage_plan(
+                file_item.name,
+                coverage_plan,
+                resume_baseline=(
+                    fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                ),
+            )
         self._log(
             "OK",
             f"[补译识别完成] 全部文件合计 {len(global_unique_texts)} 处待补译文本。",
@@ -2396,6 +2715,18 @@ class TaskRunner:
             summary["final_label"] = switches[-1].get("to_label", "")
             summary["started_with_label"] = switches[0].get("from_label", "")
         return summary
+
+    @staticmethod
+    def _validate_resume_baseline(path: Path) -> bool:
+        """续译底稿只读探活：打得开才敢当底稿用，打不开就必须降级到源文件。"""
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(str(path), read_only=True)
+            wb.close()
+            return True
+        except Exception as e:
+            logger.debug(f"续译底稿探活失败原始错误 {path}：{e!r}")
+            return False
 
     @staticmethod
     def _collect_texts(
