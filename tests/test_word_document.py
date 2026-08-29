@@ -1519,6 +1519,35 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn(issue["snippet"], content)
             self.assertIn("规则校验对不上的原文片段：承包0商", content)
 
+    def test_quality_report_calls_a_toc_hint_a_hint(self) -> None:
+        """只有目录提示时，报告不许顶着「需复核内容」的标题说话。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            report_path = _write_word_quality_report(
+                output_dir=output_dir,
+                file_results=[{"name": "方案", "success": True}],
+                issues=[
+                    {
+                        "file": "方案",
+                        "section_path": "目录",
+                        "location_label": "整篇文档",
+                        "problem": "自动目录未参与翻译",
+                        "status": "请在 Word 里选中目录、按 F9 并选「更新整个目录」。",
+                        "severity": "info",
+                    }
+                ],
+                elapsed_sec=1.0,
+                tm_hit_count=0,
+                api_call_count=1,
+            )
+
+            content = report_path.read_text(encoding="utf-8")
+            self.assertIn("## 质量提示", content)
+            self.assertNotIn("## 需复核内容", content)
+            self.assertIn("- 需人工复核事项：0", content)
+            self.assertIn("- 提示事项：1", content)
+            self.assertIn("### 1. 提示", content)
+
     def test_quality_report_states_headers_and_footers_are_not_translated(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

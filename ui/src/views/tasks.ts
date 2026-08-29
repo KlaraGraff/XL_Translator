@@ -598,8 +598,10 @@ function toReviewRow(entry: JsonObject): ReviewRow {
   // 否定（「未参与翻译」里没有任何一个词能被 /复核|未通过|待/ 命中）。
   // Excel 那一路没有 severity，但它写进 review_positions 的每一格本来就是复核标记，
   // 一律算需复核。两者都没有时才退回正则，只用来兜住将来新增的第三种数据形状。
+  // resolved 是后端已经修好的，info 是「按设计如此，去 Word 里刷一下就行」的提示
+  // （自动目录）。两者都不是待办，算进去就会让一份正常文档在界面上写着「需复核 1」。
   const needsReview = severity
-    ? severity !== "resolved"
+    ? severity !== "resolved" && severity !== "info"
     : actionCode
       ? true
       : /复核|未通过|待/.test(action) || /复核|未通过|待/.test(issue);
@@ -623,6 +625,12 @@ function reviewActionMeta(row: ReviewRow): { label: string; tone: ChipTone } | n
     if (/保留原文|保持原文|保留原内容/.test(value)) return { label: "保留原文，待复核", tone: "warn" };
     return { label: "需复核", tone: "warn" };
   }
+  if (row.severity === "info") {
+    // 提示档只有「要用户自己去做一下」这一种含义，颜色用中性的 tint，不能是 warn——
+    // 一眼看过去跟需复核同色，等于没降级。
+    if (/目录/.test(value)) return { label: "请手动更新目录", tone: "tint" };
+    return { label: "提示", tone: "tint" };
+  }
   if (row.severity === "resolved") {
     if (/保留原内容|保留原文/.test(value)) return { label: "已保留原文", tone: "ok" };
     if (/恢复/.test(value)) return { label: "已恢复译文", tone: "ok" };
@@ -630,8 +638,10 @@ function reviewActionMeta(row: ReviewRow): { label: string; tone: ChipTone } | n
     if (/写入|输出/.test(value)) return { label: "已写入译文", tone: "ok" };
     return { label: "已自动处理", tone: "ok" };
   }
-  // severity 缺失：这条数据的来路不明，只报事实（失败是 action 里唯一能确定的词面），
-  // 其余一律中性——宁可少说一句，也不能替后端下「已处理」的结论。
+  // 剩下的两类都落这里：severity 缺失（来路不明）和 severity=needs_action（后端明说
+  // 「这件事没做成、要人去做」，比如 TM 写库失败）。两类的处理一样——只报事实（失败是
+  // action 里唯一能确定的词面），其余一律中性，宁可少说一句，也不能替后端下
+  // 「已处理」的结论。
   if (/失败|拒绝/.test(value)) return { label: "未处理", tone: "dgr" };
   return { label: "已记录", tone: "mute" };
 }
@@ -1114,7 +1124,7 @@ function reviewCount(task: TaskStatus): number | null {
   const review = record(result.review);
   const counts = record(review.counts);
   // severity 分桶（Word）认这两个键；只要出现过其中之一，总数就不是「待办数」。
-  if ("needs_review" in counts || "resolved" in counts) {
+  if ("needs_review" in counts || "resolved" in counts || "info" in counts) {
     return firstNumber(counts, ["needs_review"]) ?? 0;
   }
   const merged = { ...result, ...record(result.summary), ...record(result.kpi) };
@@ -1139,7 +1149,15 @@ function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null 
   if (failed > 0) return { label: `${failed} 个文件未生成`, tone: "dgr" };
   if (task.state !== "completed_with_issues") return null;
   const count = reviewCount(task);
-  return { label: count !== null && count > 0 ? `需复核 ${count}` : "需复核", tone: "warn" };
+  if (count !== null && count > 0) return { label: `需复核 ${count}`, tone: "warn" };
+  // 后端只要给出任何一条 issue，任务状态就是 completed_with_issues，徽章过去一律写
+  // 「需复核」——包括那些一条待办都没有、只有自动目录提示或已自动处理条目的任务。
+  // 待办为 0 时不许再用 warn 说话：有提示就说提示，什么都没有就交回状态词（已完成）。
+  const info = reviewRows(task).filter((row) => row.severity === "info").length;
+  if (info > 0) return { label: `提示 ${info}`, tone: "tint" };
+  // 只剩已自动处理的条目：交回 taskStateMeta 会说「完成但有问题」，同样是在报一件
+  // 用户不用管的事。这里直接说完成，条目本身在下面的定位清单里照列。
+  return { label: "已完成", tone: "ok" };
 }
 
 function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {

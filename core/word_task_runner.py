@@ -922,6 +922,37 @@ class WordTaskRunner:
                                 "severity": "needs_review",
                             }
                         )
+                    if hidden_content.has_toc:
+                        # 自动目录不是漏译，是设计如此：目录是域，内容由 Word 按标题现生成，
+                        # 翻译出来的字一按 F9 就被覆盖。之前它跟真正的漏译走同一条路，
+                        # 一份正常文档因此在界面上写着「需复核 1」——一件不需要修的事
+                        # 被报成了缺陷。现在只留一句告诉用户去刷新的提示。
+                        self._log(
+                            "INFO",
+                            (
+                                f"  → [自动目录] {file_item.name}：检测到自动目录 "
+                                f"{hidden_content.toc_control_count} 处，目录由 Word 的域生成，"
+                                "不参与翻译。请在 Word 里选中目录、按 F9 并选「更新整个目录」，"
+                                "目录会按译文标题重新生成。"
+                            ),
+                        )
+                        quality_issues.append(
+                            {
+                                "file": _file_result_identity(file_item, self._source_root),
+                                "kind": "toc_field",
+                                "location": "document",
+                                "location_label": "整篇文档",
+                                "section_path": "目录",
+                                "snippet": "",
+                                "problem": "自动目录未参与翻译",
+                                "status": (
+                                    "目录由 Word 的域自动生成，译文一刷新就会被覆盖，"
+                                    "因此不参与翻译。请在 Word 里选中目录、按 F9 并选"
+                                    "「更新整个目录」，目录会按译文标题重新生成。"
+                                ),
+                                "severity": "info",
+                            }
+                        )
                     preprocess_summaries.append(
                         {
                             "hidden_content": hidden_content.as_dict(),
@@ -3813,6 +3844,13 @@ def _build_translation_scope_lines(
     ]
 
 
+_WORD_ISSUE_SEVERITY_LABELS = {
+    "resolved": "已自动处理",
+    "info": "提示",
+    "needs_review": "需人工复核",
+}
+
+
 def _write_word_quality_report(
     *,
     output_dir: Path,
@@ -3828,7 +3866,8 @@ def _write_word_quality_report(
         successful = sum(1 for item in file_results if item.get("success"))
         failed = len(file_results) - successful
         resolved_count = sum(1 for issue in issues if issue.get("severity") == "resolved")
-        review_count = len(issues) - resolved_count
+        info_count = sum(1 for issue in issues if issue.get("severity") == "info")
+        review_count = len(issues) - resolved_count - info_count
 
         lines = [
             "# Word 翻译质量报告",
@@ -3843,6 +3882,7 @@ def _write_word_quality_report(
             f"- API 翻译：{api_call_count}",
             f"- 已自动处理事项：{resolved_count}",
             f"- 需人工复核事项：{review_count}",
+            f"- 提示事项：{info_count}",
             "",
         ]
 
@@ -3872,9 +3912,13 @@ def _write_word_quality_report(
         if not issues:
             lines.extend(["## 质量提示", "", "未发现需要提示的问题。", ""])
         else:
-            lines.extend(["## 需复核内容", ""])
+            # 标题要跟里面的条目对得上：一份只有目录提示的报告顶着「需复核内容」，
+            # 而概览里刚写完「需人工复核事项：0」，两句话自己打自己。
+            lines.extend(["## 需复核内容" if review_count else "## 质量提示", ""])
             for idx, issue in enumerate(issues, 1):
-                label = "已自动处理" if issue.get("severity") == "resolved" else "需人工复核"
+                label = _WORD_ISSUE_SEVERITY_LABELS.get(
+                    str(issue.get("severity") or ""), "需人工复核"
+                )
                 lines.extend(
                     [
                         f"### {idx}. {label}",

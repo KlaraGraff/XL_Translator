@@ -247,6 +247,9 @@ class WordHiddenContentReport:
 
     content_control_count: int = 0
     tracked_insertion_count: int = 0
+    # 自动目录也住在内容控件里，但它不是漏译：目录是域，内容由 Word 按标题自动生成，
+    # 译出来的字一按 F9 就被覆盖。所以它单独一格，不进 total、不进 found，只作提示。
+    toc_control_count: int = 0
 
     @property
     def total(self) -> int:
@@ -255,6 +258,10 @@ class WordHiddenContentReport:
     @property
     def found(self) -> bool:
         return self.total > 0
+
+    @property
+    def has_toc(self) -> bool:
+        return self.toc_control_count > 0
 
     def describe(self) -> str:
         parts = []
@@ -268,6 +275,7 @@ class WordHiddenContentReport:
         return {
             "content_control_count": self.content_control_count,
             "tracked_insertion_count": self.tracked_insertion_count,
+            "toc_control_count": self.toc_control_count,
             "total": self.total,
         }
 
@@ -621,12 +629,15 @@ def detect_hidden_word_content(source: str | Path) -> WordHiddenContentReport:
 
 def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
     body = doc.element.body
+    controls = [
+        element
+        for element in _iter_outermost_elements(body, "w:sdt")
+        if _element_has_visible_text(element)
+    ]
+    toc_controls = [element for element in controls if _is_toc_content_control(element)]
     return WordHiddenContentReport(
-        content_control_count=sum(
-            1
-            for element in _iter_outermost_elements(body, "w:sdt")
-            if _element_has_visible_text(element)
-        ),
+        content_control_count=len(controls) - len(toc_controls),
+        toc_control_count=len(toc_controls),
         tracked_insertion_count=sum(
             1
             for element in _iter_outermost_elements(body, "w:ins")
@@ -636,6 +647,145 @@ def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
             and not _has_ancestor_tag(element, "w:sdt", body)
         ),
     )
+
+
+_TOC_FIELD_INSTRUCTION = re.compile(r"^\s*TOC\b", re.IGNORECASE)
+# 目录控件里由人手写的字，只有那一行标题。放行要三个信号同时成立：
+#   1. 里面出现「目录」这类词——只按长度放行时，一句「本工程按甲方通知暂停施工。」
+#      正好塞得进额度，既不翻译也不报警；
+#   2. 整体短——只按关键词放行，「详见目录第 3 条」这种夹带就能混过去；
+#   3. 不带句末标点——标题不会以句号结尾，正文常会。
+# 三个信号缺一不可，但也不能更严：真实文档里的标题写法五花八门（「图纸目录」
+# 「目录（Contents）」「目录 / TABLE OF CONTENTS」），认死一个词会让一份正常文档
+# 重新开始报「需复核」，正是这次要消掉的那句误报。
+_TOC_TITLE_WORD = re.compile(
+    r"目\s*[录錄次]|索\s*引|차\s*례|목\s*차|もくじ"
+    r"|contents|table\s+des\s+mati[eè]res|sommaire|inhaltsverzeichnis"
+    r"|[ií]ndice|m[uụ]c\s*l[uụ]c|inhoudsopgave|spis\s+tre[sś]ci"
+    r"|i[çc]indekiler|содержание|оглавление|فهرس",
+    re.IGNORECASE,
+)
+_TOC_TITLE_BUDGET = 48
+_SENTENCE_END = re.compile(r"[。！？；!?;]")
+_CJK_CHAR = re.compile(r"[぀-ヿ㐀-鿿豈-﫿]")
+_LATIN_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+# 去掉「目录」这类词以后还剩下的实词：标题最多再带一两个限定词（「图纸」目录、
+# 目录「页」、目录（「Drawing List」）），一整句话剩下的远不止这个数。
+_TOC_TITLE_RESIDUE_CJK = 4
+_TOC_TITLE_RESIDUE_WORDS = 3
+
+
+def _is_toc_content_control(element) -> bool:
+    """这个内容控件装的是不是**只是**一份自动目录。
+
+    Word 生成目录时会把整页包进 ``w:sdt``，并在 ``w:docPartGallery`` 上标 "Table of
+    Contents"。少数由旧版本或第三方工具写出的文档没有这个标记，但里面一定有一条
+    ``TOC`` 域指令，所以两条线索认一条就算。
+
+    判断必须严格限定在这一层：早先的版本用 ``element.iter()`` 扫整棵子树找线索，
+    而外层只要套着一份目录就会被整体认成目录——外层真正藏起来的正文于是从「需复核」
+    被静默降级成一句提示，用户再没有任何线索知道有内容被吞了。误报只是烦人，漏报是
+    丢内容，所以这里的每一条线索都只认自己这一层，拿不准就退回按漏译报警。
+    """
+    if _has_text_bearing_nested_sdt(element):
+        return False
+    if not _declares_toc_field(element):
+        return False
+    authored = _authored_text_outside_fields(element)
+    if authored is None:  # 域的括号没配平，读不准，按漏译报警
+        return False
+    return _looks_like_toc_title(authored)
+
+
+def _looks_like_toc_title(authored: str) -> bool:
+    """控件里由人写的那点字，是不是只是一行目录标题。
+
+    空的也算：LibreOffice 转档会把「目录」这行挪到控件外面，控件里只剩域。
+
+    光看「有没有目录这个词」不够——「目录以下内容为补充协议正文条款……」也有。所以
+    把目录词抠掉，看剩下多少实词：标题顶多再带一两个限定词，一句话剩下的远不止。
+    """
+    if not authored:
+        return True
+    if len(authored) > _TOC_TITLE_BUDGET:
+        return False
+    if _SENTENCE_END.search(authored):
+        return False
+    if not _TOC_TITLE_WORD.search(authored):
+        return False
+    residue = _TOC_TITLE_WORD.sub(" ", authored)
+    cjk = len(_CJK_CHAR.findall(residue))
+    words = [word for word in _LATIN_WORD.findall(residue) if not _CJK_CHAR.search(word)]
+    return cjk <= _TOC_TITLE_RESIDUE_CJK and len(words) <= _TOC_TITLE_RESIDUE_WORDS
+
+
+def _has_text_bearing_nested_sdt(element) -> bool:
+    """里面还套着别的、装了文字的内容控件——那这一层就不只是目录。"""
+    return any(
+        nested is not element and _element_has_visible_text(nested)
+        for nested in element.iter(qn("w:sdt"))
+    )
+
+
+def _declares_toc_field(element) -> bool:
+    """这一层自己声明了目录：要么带 gallery 标记，要么直接挂着一条 TOC 域指令。"""
+    properties = element.find(qn("w:sdtPr"))
+    if properties is not None and any(
+        (gallery.get(qn("w:val")) or "").strip().lower() == "table of contents"
+        for gallery in properties.iter(qn("w:docPartGallery"))
+    ):
+        return True
+    if any(
+        _TOC_FIELD_INSTRUCTION.match(instruction.text or "")
+        and not _has_ancestor_tag(instruction, "w:sdt", element)
+        for instruction in element.iter(qn("w:instrText"))
+    ):
+        return True
+    # 域也可以写成一个自闭合的 w:fldSimple，指令挂在属性上。本文件里读段落文字的
+    # _paragraph_literal_text 早就认这种写法，这里不认的话同一份目录两套口径。
+    return any(
+        _TOC_FIELD_INSTRUCTION.match(field.get(qn("w:instr")) or "")
+        and not _has_ancestor_tag(field, "w:sdt", element)
+        for field in element.iter(qn("w:fldSimple"))
+    )
+
+
+def _authored_text_outside_fields(element) -> str | None:
+    """控件里由人手写的文字：域结果（目录条目）和嵌套控件里的内容都不算。
+
+    ``w:fldChar`` 的 begin/end 圈出域的范围，中间那段是 Word 自己生成的；只有落在
+    域外面的 ``w:t`` 才是作者敲进去的字。自闭合的 ``w:fldSimple`` 同理，它整棵子树
+    都是域结果。
+
+    括号没配平就返回 ``None``：多一个 begin，后面所有正文都会被当成域结果扣掉，一段
+    真正的漏译于是无声消失。这种文档不算罕见——LibreOffice 转档出来的 ``.docx`` 就
+    可能带着断掉的域。读不准的时候不猜，交回去按漏译报警。
+    """
+    depth = 0
+    parts: list[str] = []
+    field_simple_texts = {
+        id(text_node)
+        for field in element.iter(qn("w:fldSimple"))
+        for text_node in field.iter(qn("w:t"))
+    }
+    for node in element.iter():
+        if _has_ancestor_tag(node, "w:sdt", element):
+            continue
+        if id(node) in field_simple_texts:
+            continue
+        if node.tag == qn("w:fldChar"):
+            kind = node.get(qn("w:fldCharType"))
+            if kind == "begin":
+                depth += 1
+            elif kind == "end":
+                if depth == 0:
+                    return None
+                depth -= 1
+        elif node.tag == qn("w:t") and depth == 0:
+            parts.append(node.text or "")
+    if depth != 0:
+        return None
+    return "".join(parts).strip()
 
 
 def _iter_outermost_elements(root, tag: str):

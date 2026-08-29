@@ -27,6 +27,7 @@ from core.translation_protocol import REPLACE_TRANSLATION_PREFIX
 from core.word_batching import WordBatchRunStats, _split_long_word_text
 from core.word_document import (
     WordFileItem,
+    _looks_like_toc_title,
     detect_hidden_word_content,
     normalize_docx_automatic_numbering,
     write_bilingual_docx,
@@ -495,6 +496,261 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
 
             self.assertFalse(detect_hidden_word_content(path).found)
 
+    @staticmethod
+    def _add_toc_control(doc: Document, *, gallery: bool) -> None:
+        """按 Word 的写法塞一份自动目录：整页包在 w:sdt 里，中间一条 TOC 域指令。"""
+        marker = (
+            "<w:sdtPr><w:docPartObj>"
+            '<w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/>'
+            "</w:docPartObj></w:sdtPr>"
+            if gallery
+            else "<w:sdtPr/>"
+        )
+        doc.element.body.find(qn("w:sectPr")).addprevious(
+            parse_xml(
+                f'<w:sdt {nsdecls("w")}>{marker}<w:sdtContent>'
+                "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r>"
+                '<w:r><w:instrText xml:space="preserve">TOC \\o "1-3" \\h \\u </w:instrText></w:r>'
+                '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+                "<w:r><w:t>一、变更概况</w:t></w:r>"
+                '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+                "</w:sdtContent></w:sdt>"
+            )
+        )
+
+    def test_table_of_contents_is_a_hint_not_a_defect(self) -> None:
+        """自动目录是域，刷新就会覆盖译文，不该被算成漏译（用户 2026-08-29 反馈）。"""
+        for gallery in (True, False):
+            with self.subTest(gallery=gallery), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "toc.docx"
+                doc = Document()
+                doc.add_paragraph("Visible body paragraph.")
+                self._add_toc_control(doc, gallery=gallery)
+                doc.save(path)
+
+                report = detect_hidden_word_content(path)
+                self.assertEqual(report.toc_control_count, 1)
+                self.assertTrue(report.has_toc)
+                # 关键断言：目录不进漏译账本，否则界面照旧报「需复核 1」。
+                self.assertEqual(report.content_control_count, 0)
+                self.assertEqual(report.total, 0)
+                self.assertFalse(report.found)
+                self.assertEqual(report.describe(), "")
+
+    def test_toc_and_real_content_control_are_counted_apart(self) -> None:
+        """同一份文档里既有目录又有真正藏了正文的控件时，只有后者算漏译。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "both.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+                    "<w:p><w:r><w:t>Content control paragraph.</w:t></w:r></w:p>"
+                    "</w:sdtContent></w:sdt>"
+                )
+            )
+            self._add_toc_control(doc, gallery=True)
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.toc_control_count, 1)
+            self.assertEqual(report.content_control_count, 1)
+            self.assertTrue(report.found)
+            self.assertIn("内容控件 1 处", report.describe())
+
+    def test_control_wrapping_a_toc_and_real_text_is_still_a_defect(self) -> None:
+        """外层控件套着目录时不许整体降级——里面藏的正文会被静默吞掉。
+
+        误报只是烦人，漏报是丢内容。拿不准一律退回按漏译报警。
+        """
+        secret = "SECRET CLAUSE that must be translated."
+        shapes = {
+            # 嵌套：外层普通控件裹着一段正文和一个标准目录控件。
+            "nested": (
+                f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+                f"<w:p><w:r><w:t>{secret}</w:t></w:r></w:p>"
+                "<w:sdt><w:sdtPr><w:docPartObj>"
+                '<w:docPartGallery w:val="Table of Contents"/>'
+                "</w:docPartObj></w:sdtPr><w:sdtContent>"
+                "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                "</w:sdtContent></w:sdt>"
+                "</w:sdtContent></w:sdt>"
+            ),
+            # 混装：同一个控件里既有目录域，又有作者自己敲的正文。
+            "mixed": (
+                f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj>'
+                '<w:docPartGallery w:val="Table of Contents"/>'
+                "</w:docPartObj></w:sdtPr><w:sdtContent>"
+                "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                f"<w:p><w:r><w:t>{secret}</w:t></w:r></w:p>"
+                "</w:sdtContent></w:sdt>"
+            ),
+        }
+        for name, xml in shapes.items():
+            with self.subTest(shape=name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / f"{name}.docx"
+                doc = Document()
+                doc.add_paragraph("Visible body paragraph.")
+                doc.element.body.find(qn("w:sectPr")).addprevious(parse_xml(xml))
+                doc.save(path)
+
+                report = detect_hidden_word_content(path)
+                self.assertEqual(report.toc_control_count, 0, f"{name}：被当成了纯目录")
+                self.assertEqual(report.content_control_count, 1)
+                self.assertTrue(report.found, f"{name}：藏起来的正文没有报警")
+
+    def test_short_sentence_smuggled_into_a_toc_is_still_a_defect(self) -> None:
+        """一句短正文塞进目录控件，不许因为「字数不多」被放过。
+
+        判目录看的是标题本身，不是长度。按长度放行时，一句十几个字的「本工程按甲方
+        通知暂停施工。」正好落在额度里，既不翻译也不报警——正是要防的静默丢内容。
+        """
+        secret = "本工程按甲方通知暂停施工。"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "short.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj>'
+                    '<w:docPartGallery w:val="Table of Contents"/>'
+                    "</w:docPartObj></w:sdtPr><w:sdtContent>"
+                    "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+                    '<w:r><w:instrText xml:space="preserve">TOC \\o "1-3" \\h \\u </w:instrText></w:r>'
+                    '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+                    "<w:r><w:t>一、变更概况</w:t></w:r>"
+                    '<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>'
+                    f"<w:p><w:r><w:t>{secret}</w:t></w:r></w:p>"
+                    "</w:sdtContent></w:sdt>"
+                )
+            )
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.toc_control_count, 0, "短句被当成了目录标题")
+            self.assertEqual(report.content_control_count, 1)
+            self.assertTrue(report.found)
+
+    def test_bilingual_toc_title_is_still_a_hint(self) -> None:
+        """双语标题「目录 / TABLE OF CONTENTS」仍是目录，不该退回报警。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bilingual.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj>'
+                    '<w:docPartGallery w:val="Table of Contents"/>'
+                    "</w:docPartObj></w:sdtPr><w:sdtContent>"
+                    "<w:p><w:r><w:t>目录 / </w:t></w:r>"
+                    "<w:r><w:t>TABLE OF CONTENTS</w:t></w:r></w:p>"
+                    "</w:sdtContent></w:sdt>"
+                )
+            )
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.toc_control_count, 1)
+            self.assertEqual(report.content_control_count, 0)
+            self.assertFalse(report.found)
+
+    def test_unbalanced_field_brackets_fall_back_to_a_defect(self) -> None:
+        """域的 begin/end 没配平就不认目录——读不准的时候不猜。
+
+        多出来的一个 begin 会把它之后的所有正文都当成域结果扣掉，一整段漏译于是从
+        账本上消失。LibreOffice 转出来的 .docx 就可能带着断掉的域，这不是罕见形状。
+        """
+        secret = "SECRET CLAUSE that must be translated. " * 2
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "unbalanced.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj>'
+                    '<w:docPartGallery w:val="Table of Contents"/>'
+                    "</w:docPartObj></w:sdtPr><w:sdtContent>"
+                    "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                    '<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+                    '<w:r><w:instrText xml:space="preserve">TOC \\o "1-3" \\h \\u </w:instrText></w:r>'
+                    '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+                    "<w:r><w:t>一、变更概况</w:t></w:r></w:p>"
+                    f"<w:p><w:r><w:t>{secret}</w:t></w:r></w:p>"
+                    "</w:sdtContent></w:sdt>"
+                )
+            )
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.toc_control_count, 0, "域没配平却按目录放过了")
+            self.assertEqual(report.content_control_count, 1)
+            self.assertTrue(report.found)
+
+    def test_toc_declared_by_a_self_closing_field(self) -> None:
+        """目录也可以写成 w:fldSimple（指令挂在属性上），同样算目录。
+
+        本文件里读段落文字的 _paragraph_literal_text 早就认这种写法，检测这一路不认
+        的话，同一份目录在同一个模块里有两套口径。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "simple.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:sdt {nsdecls("w")}><w:sdtPr/><w:sdtContent>'
+                    "<w:p><w:r><w:t>目录</w:t></w:r></w:p>"
+                    '<w:p><w:fldSimple w:instr="TOC \\o &quot;1-3&quot; \\h">'
+                    "<w:r><w:t>一、变更概况\t1</w:t></w:r></w:fldSimple></w:p>"
+                    "</w:sdtContent></w:sdt>"
+                )
+            )
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.toc_control_count, 1)
+            self.assertEqual(report.content_control_count, 0)
+            self.assertFalse(report.found)
+
+    def test_toc_title_wording_matrix(self) -> None:
+        """标题认得宽、正文拦得住：这两件事是同一条规则的两面。
+
+        只按长度放行，一句短正文就能混进来；只认「目录」两个字，一份标题写成
+        「图纸目录」的正常文档又会重新开始报「需复核」——那正是用户投诉的那句误报。
+        """
+        titles = [
+            "",  # LibreOffice 转档会把标题挪到控件外面，控件里只剩域
+            "目录",
+            "目 录",
+            "目录：",
+            "目录（Contents）",
+            "目录 / TABLE OF CONTENTS",
+            "Table of Contents",
+            "图纸目录",
+            "图纸目录（Drawing List）",
+            "一、目录",
+            "目录页",
+            "Mục lục",
+            "もくじ",
+        ]
+        smuggled = [
+            "本工程按甲方通知暂停施工。",
+            "详见目录第 3 条。",
+            "本工程按甲方通知暂停施工，详见目录第 3 条。",
+            "目录以下内容为补充协议正文条款，具有同等法律效力",
+            "SECRET CLAUSE that must be translated.",
+            "See the contents above and sign here",
+        ]
+        for title in titles:
+            with self.subTest(title=title or "<空>"):
+                self.assertTrue(_looks_like_toc_title(title), "正常的目录标题被判成了漏译")
+        for text in smuggled:
+            with self.subTest(smuggled=text):
+                self.assertFalse(_looks_like_toc_title(text), "夹带的正文被当成目录标题吞掉了")
+
 
 class WordRecoveryPoolShutdownTests(unittest.TestCase):
     """3.8：executor 只在 wait_for_completion 内部 shutdown，异常路径全漏。"""
@@ -770,69 +1026,114 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
 class WordHiddenContentWarningTests(IsolatedAppDataTestCase):
     """4.7 的用户可见部分：漏译必须留下告警，不能静悄悄。"""
 
+    def _run(self, root: Path, source: Path) -> WordTaskRunner:
+        prepared = SimpleNamespace(
+            path=source,
+            method="编号预处理：Python 兜底",
+            temp_paths=(),
+            fallback_messages=(),
+            labels_seen=0,
+            labels_prepended=0,
+            conversion_method="not_required",
+            conversion_fidelity="not_required",
+            numbering_method="python_conservative",
+            numbering_fallback_messages=(),
+        )
+        runner = WordTaskRunner(
+            [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+            AppSettings(source_lang="en", target_lang="zh"),
+            source_root=root,
+        )
+        with ExitStack() as stack:
+            WordRunFallbackTests()._runner_patches(stack, root=root)
+            stack.enter_context(
+                patch(
+                    "core.word_task_runner._prepare_word_source_for_translation",
+                    return_value=prepared,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "core.word_task_runner.tm_manager.lookup_batch",
+                    side_effect=lambda texts, _pair: {text: "译文" for text in texts},
+                )
+            )
+            stack.enter_context(
+                patch("core.word_task_runner.tm_manager.insert_batch", return_value=0)
+            )
+            stack.enter_context(
+                patch(
+                    "core.word_task_runner.write_bilingual_docx",
+                    return_value=root / "out.docx",
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "core.word_task_runner._append_post_write_coverage_issues",
+                    return_value=0,
+                )
+            )
+            runner._run()
+        return runner
+
+    @staticmethod
+    def _messages(runner: WordTaskRunner, level: str) -> list[str]:
+        return [
+            message.message
+            for message in runner._queue.queue
+            if getattr(message, "level", "") == level
+        ]
+
+    @staticmethod
+    def _issues(runner: WordTaskRunner) -> list[dict]:
+        for message in runner._queue.queue:
+            issues = getattr(message, "issues", None)
+            if issues:
+                return list(issues)
+        return []
+
     def test_runner_warns_about_content_controls_and_tracked_insertions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "hidden.docx"
             WordHiddenContentDetectionTests._build_hidden_content_docx(source)
 
-            prepared = SimpleNamespace(
-                path=source,
-                method="编号预处理：Python 兜底",
-                temp_paths=(),
-                fallback_messages=(),
-                labels_seen=0,
-                labels_prepended=0,
-                conversion_method="not_required",
-                conversion_fidelity="not_required",
-                numbering_method="python_conservative",
-                numbering_fallback_messages=(),
-            )
-            runner = WordTaskRunner(
-                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
-                AppSettings(source_lang="en", target_lang="zh"),
-                source_root=root,
-            )
-            with ExitStack() as stack:
-                WordRunFallbackTests()._runner_patches(stack, root=root)
-                stack.enter_context(
-                    patch(
-                        "core.word_task_runner._prepare_word_source_for_translation",
-                        return_value=prepared,
-                    )
-                )
-                stack.enter_context(
-                    patch(
-                        "core.word_task_runner.tm_manager.lookup_batch",
-                        side_effect=lambda texts, _pair: {text: "译文" for text in texts},
-                    )
-                )
-                stack.enter_context(
-                    patch("core.word_task_runner.tm_manager.insert_batch", return_value=0)
-                )
-                stack.enter_context(
-                    patch(
-                        "core.word_task_runner.write_bilingual_docx",
-                        return_value=root / "out.docx",
-                    )
-                )
-                stack.enter_context(
-                    patch(
-                        "core.word_task_runner._append_post_write_coverage_issues",
-                        return_value=0,
-                    )
-                )
-                runner._run()
+            runner = self._run(root, source)
 
-            warnings = [
-                message.message
-                for message in runner._queue.queue
-                if getattr(message, "level", "") == "WARN"
-            ]
+            warnings = self._messages(runner, "WARN")
             self.assertTrue(
                 any("未翻译内容" in text and "内容控件" in text for text in warnings),
                 f"没有发出漏译告警：{warnings}",
             )
+
+    def test_table_of_contents_is_reported_as_a_hint(self) -> None:
+        """目录不是缺陷：不许发漏译 WARN，只留一句「去 Word 里按 F9」的提示。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "toc.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            WordHiddenContentDetectionTests._add_toc_control(doc, gallery=True)
+            doc.save(source)
+
+            runner = self._run(root, source)
+
+            warnings = self._messages(runner, "WARN")
+            self.assertFalse(
+                any("未翻译内容" in text for text in warnings),
+                f"目录被当成漏译报了出去：{warnings}",
+            )
+            self.assertTrue(
+                any("自动目录" in text and "F9" in text for text in self._messages(runner, "INFO")),
+                "没有发出目录刷新提示",
+            )
+            toc_issues = [
+                issue for issue in self._issues(runner) if issue.get("kind") == "toc_field"
+            ]
+            self.assertEqual(len(toc_issues), 1, self._issues(runner))
+            # severity 决定界面把它算不算待办，这一条是整个修复的着力点。
+            self.assertEqual(toc_issues[0]["severity"], "info")
+            self.assertIn("F9", str(toc_issues[0]["status"]))
 
 
 class WordReviewPositionCountTests(IsolatedAppDataTestCase):

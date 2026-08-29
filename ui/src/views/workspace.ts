@@ -4026,7 +4026,35 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   }
   const stateFailed = task.state === "error" || task.state === "interrupted";
   const generated = fileResults.length > 0 ? produced : stateFailed ? 0 : st.selected.size;
-  const review = num(record(result.review).total_count);
+  // total_count 数的是全部结果项，里面混着用户不用管的两类：severity=resolved（后端
+  // 已经自动修好）和 severity=info（按设计如此、去 Word 里刷一下就行的提示，比如自动
+  // 目录）。照抄总数，一份只有目录提示的正常文档会在这一屏顶着黄横幅写「1 处需复核」，
+  // 而同一个任务在任务中心已经显示成「提示 1」——同一件事两屏两种说法。
+  // counts 只有 Word 那一路按 severity 分桶，Excel 按 category 分桶；认不出分桶就按
+  // 总数算，宁可多报也不漏报。
+  const reviewCounts = record(record(result.review).counts);
+  const countsBucketed = ["needs_review", "resolved", "info"].some((key) => key in reviewCounts);
+  // counts 只有 Word 那一路按 severity 分桶（Excel 按 category 分桶，PDF 不填）。
+  // 分不出桶就退回逐条 issue 自己带的 severity——Excel 的 quality_issues 同样带
+  // severity，任务中心正是照它把「提示」从待办里摘出去的（tasks.ts 的 reviewRows）。
+  // 这一步不做的话，一次只触发了「残留序号已自动修复」的 Excel 任务，在任务中心是
+  // 中性的「提示 1」，切到这一屏却是黄底的「完成但有问题」——同一件事两屏两种说法，
+  // 正是这次要消灭的那类矛盾。
+  const issues = Array.isArray(result.issues) ? result.issues.map((raw) => text(record(raw).severity)) : [];
+  const issuesBucketed = issues.length > 0 && issues.every((severity) => severity !== "");
+  const severityBucketed = countsBucketed || issuesBucketed;
+  const hints = countsBucketed
+    ? num(reviewCounts.info)
+    : issues.filter((severity) => severity === "info").length;
+  // 待办数只认一个来源，不许把 issues 加进来：Excel 里判「同格译文不是这一格的译文」
+  // 既写一条 issue、又给那一格上底色（core/task_runner.py 的 _set_excel_review_mark），
+  // 两边一相加，一格问题会被说成两处。issues 只用来判「还有没有待办」，不用来计数。
+  const openIssues = countsBucketed ? 0 : issues.filter(
+    (severity) => severity !== "resolved" && severity !== "info",
+  ).length;
+  const review = countsBucketed
+    ? Math.max(0, num(record(result.review).total_count) - num(reviewCounts.resolved) - hints)
+    : num(record(result.review).total_count);
   const autoFixed = num(record(result.kpi).auto_recovered_text_count);
   const outputPath = text(result.output_dir, st.sourcePath);
   st.lastOutputPath = outputPath;
@@ -4069,6 +4097,8 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   }
   if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
   if (review > 0) clauses.push(`${review} 处需复核`);
+  // 提示不是待办，但也不能不说：自动目录那条要用户自己回 Word 按一下 F9，不说他不会做。
+  if (hints > 0) clauses.push(`${hints} 处提示待你手动处理`);
   // 中途换过连接就明说：这一半译文出自另一家服务商，用户回头比质量、查账单都要知道。
   // 详细的切换时刻和原因在任务中心的快照行里。
   const switchCount = num(record(result.connections).switch_count);
@@ -4096,14 +4126,30 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
   if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0) {
-    clauses.push(review > 0 || autoFixed > 0 || pageProblems > 0 ? "其余全部通过" : "全部通过");
+    clauses.push(
+      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0
+        ? "其余全部通过"
+        : "全部通过",
+    );
   }
   if (generated > 0) clauses.push(`输出至 ${outputPath}`);
-  const tone = resultTone(task.state, generated, failed, review + pageProblems + untranslatedFiles, autoFixed);
+  const tone = resultTone(
+    task.state,
+    generated,
+    failed,
+    review + pageProblems + untranslatedFiles + openIssues,
+    autoFixed,
+    severityBucketed,
+  );
   // 完成汇总要用扫描期的图片/文本框计数。任务失败时不出这张卡：那种情况下
   // 「哪些没翻」根本说不准，横幅已经说了任务未完成。
   st.excelDoneNotice = surface === "excel" && tone !== "fail" ? buildExcelDoneNotice(st, result) : null;
-  const stateWord = terminalStateWord(task.state);
+  // 横幅已经判成绿色（零待办，最多剩几条「回 Word 按 F9」这类提示），状态词还写
+  // 「完成但有问题」的话，同一行里绿勾和「有问题」互相打脸，后缀又是空的，用户只能
+  // 去猜到底哪里有问题。有没有问题以 tone 为准。
+  const stateWord = tone === "ok" && task.state === "completed_with_issues"
+    ? terminalStateWord("done")
+    : terminalStateWord(task.state);
   const reason = redactedText(result.message, "");
   if (tone === "fail") {
     const detail = reason || (generated > 0
@@ -4117,13 +4163,19 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       hasOutput: generated > 0,
     };
   } else {
+    // 后缀要指着「让这条横幅变黄的那件事」说。提示排在自动处理前面的话，一份既有
+    // 目录提示、又有自动恢复的文档，横幅写「有提示」而真正让它变黄的是自动处理——
+    // 用户照着提示去 Word 按了 F9，回来发现还是黄的。所以按报黄的顺序排：需复核 →
+    // 自动处理 → 提示（提示本身不报黄，排最后）。
     const suffix = failed > 0
       ? "有文件未生成"
-      : review > 0 || pageProblems > 0
+      : review > 0 || pageProblems > 0 || openIssues > 0
         ? "需复核"
         : autoFixed > 0
           ? "有自动处理"
-          : "";
+          : hints > 0
+            ? "有提示"
+            : "";
     st.bannerInfo = {
       title: stateWord === "已完成"
         ? `已生成 ${generated} 个文件`
@@ -4214,11 +4266,20 @@ function resultTone(
   failed: number,
   review: number,
   autoFixed: number,
+  settled: boolean,
 ): ResultTone {
   if (state === "error" || state === "interrupted") return "fail";
   if (generated === 0) return "fail";
-  if (failed > 0 || state === "stopped" || state === "completed_with_issues") return "warn";
+  if (failed > 0 || state === "stopped") return "warn";
   if (review > 0 || autoFixed > 0) return "warn";
+  // 后端只要给出任何一条结果项，任务终态就是 completed_with_issues，这一行过去无条件
+  // 报黄——包括一条待办都没有、只剩「去 Word 里按 F9 刷新目录」这类提示的任务。真正
+  // 该报黄的情况上面几行已经全部拦下。
+  // 放行的条件是「后端按 severity 分了桶」，不是「有提示」：一份问题全被自动修好
+  // （severity=resolved）、连提示都没有的任务同样零待办，只认 hints>0 会让它顶着
+  // 黄横幅写「全部通过」，颜色和文字互相打脸。分不出桶（Excel / PDF 那两路）说明
+  // 「零待办」这个结论不可信，照旧报黄。
+  if (state === "completed_with_issues") return settled ? "ok" : "warn";
   return "ok";
 }
 
