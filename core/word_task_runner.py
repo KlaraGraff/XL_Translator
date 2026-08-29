@@ -79,6 +79,7 @@ from core.residual_repair import (
     build_feedback_note,
     run_repair_ladder,
 )
+from core.resume_detection import baseline_missing_source_texts, match_previous_output
 from core.task_logger import TaskLogger
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from core.task_runner import (
@@ -295,6 +296,7 @@ class WordTaskRunner:
         protect_front_matter: bool = False,
         translate_headers_footers: bool = False,
         allow_doc_fallback: bool = False,
+        resume_output_dir: str | None = None,
     ):
         self._files = file_items
         self._settings = settings
@@ -306,6 +308,7 @@ class WordTaskRunner:
         self._protect_front_matter = bool(protect_front_matter)
         self._translate_headers_footers = bool(translate_headers_footers)
         self._allow_doc_fallback = bool(allow_doc_fallback)
+        self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         self._queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -365,6 +368,42 @@ class WordTaskRunner:
                     "前置内容保护未生效，本文件将按未保护方式正常处理。"
                 ),
             )
+
+    def _resolve_resume_process_path(
+        self, file_item: WordFileItem, *, target_lang: str
+    ) -> Path | None:
+        """续译：定位这个文件上次的双语产物，作为本次翻译链路的输入底稿。
+
+        找不到候选、候选文件已不存在，都视为没有可用底稿——调用方据此退回按
+        源文件正常处理。底稿是否读得出、建不建得出补译计划，留给调用方在真正
+        拿它建计划时兜底，这里不重复开一遍文档，重复不了两遍的判定。
+        """
+        if self._resume_output_dir is None:
+            return None
+        try:
+            # match_previous_output 的第二个参数是「相对目录」，而扫描器填进
+            # WordFileItem.relative_path 的是【含文件名】的相对路径（word_document
+            # 的 _relative_word_path）。直接透传会拼出 resume_dir/report.docx/
+            # report_英文_双语.docx 这种不可能存在的路径，生产环境恒定失配——
+            # 必须先取父目录。
+            rel_dir = Path(file_item.relative_path).parent if file_item.relative_path else Path(".")
+            candidate = match_previous_output(
+                self._resume_output_dir,
+                str(rel_dir),
+                file_item.path.name,
+                target_lang,
+                "word",
+            )
+        except Exception as exc:
+            self._log(
+                "WARNING",
+                f"{file_item.name}：续译底稿定位失败，已按源文件正常处理（{exc}）。",
+            )
+            return None
+        if candidate is None:
+            return None
+        candidate = Path(candidate)
+        return candidate if candidate.is_file() else None
 
     def _arbitrate_coverage_pairs(
         self,
@@ -765,35 +804,94 @@ class WordTaskRunner:
                 self._log("INFO", f"[阶段 1] 提取文本：{file_item.name}（{index + 1}/{len(self._files)}）")
                 try:
                     t0 = datetime.now()
-                    self._queue.put(
-                        StatusMsg(
-                            phase_desc=(
-                                f"状态：[阶段 1/{phase_total}] 正在预处理 Word 文档："
-                                f"{file_item.name}"
+                    prepared = None
+                    resumed_coverage_plan = None
+                    resume_source_lang = (
+                        source_lang if not auto_source_lang else get_default_source_lang()
+                    )
+                    resumed_path = (
+                        self._resolve_resume_process_path(file_item, target_lang=target_lang)
+                        if self._untranslated_only
+                        else None
+                    )
+                    if resumed_path is not None:
+                        try:
+                            resumed_coverage_plan = build_word_coverage_plan(
+                                resumed_path,
+                                target_lang=target_lang,
+                                source_lang=resume_source_lang,
+                                protect_front_matter=self._protect_front_matter,
+                            )
+                        except Exception as exc:
+                            # 底稿建不出补译计划（结构对不上、已损坏之类）——退回按源
+                            # 文件正常处理，不能让一个用不了的底稿拖累整份文件翻译失败。
+                            self._log(
+                                "WARNING",
+                                (
+                                    f"{file_item.name}：续译底稿无法建立补译计划，"
+                                    f"已按源文件正常处理（{exc}）。"
+                                ),
+                            )
+                            resumed_path = None
+                    if resumed_path is not None:
+                        # 底稿资格核查：补译计划只看底稿——源文件在上次翻译后新增的
+                        # 段落不在底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
+                        # 源文件是 .doc 时读不出文本，核查返回 None，维持原行为。
+                        missing = baseline_missing_source_texts(
+                            file_item.path,
+                            resumed_path,
+                            surface="word",
+                            target_lang=target_lang,
+                            source_lang=resume_source_lang,
+                            baseline_plan=resumed_coverage_plan,
+                        )
+                        if missing:
+                            self._log(
+                                "WARNING",
+                                (
+                                    f"续译核对：{file_item.name} 的源文件比上次翻译时"
+                                    f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                                    "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。"
+                                ),
+                            )
+                            resumed_path = None
+                            resumed_coverage_plan = None
+                    if resumed_path is not None:
+                        process_path = resumed_path
+                        self._log(
+                            "INFO",
+                            f"  → [续译] {file_item.name}：复用上次双语产物为底稿，本次只补未译内容。",
+                        )
+                    else:
+                        self._queue.put(
+                            StatusMsg(
+                                phase_desc=(
+                                    f"状态：[阶段 1/{phase_total}] 正在预处理 Word 文档："
+                                    f"{file_item.name}"
+                                )
                             )
                         )
-                    )
-                    prepared = _prepare_word_source_for_translation(
-                        file_item.path,
-                        use_native_preprocessing=(
-                            settings.word_conversion.use_native_preprocessing
-                        ),
-                        allow_doc_fallback=self._allow_doc_fallback,
-                    )
-                    process_path = prepared.path
-                    converted_temp_paths.extend(prepared.temp_paths)
-                    for fallback_message in prepared.fallback_messages:
-                        self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一处理方式。")
-                    self._log(
-                        "INFO",
-                        (
-                            f"Word 预处理完成 {file_item.name}，"
-                            f"使用 {prepared.method}，"
-                            f"自动编号 {prepared.labels_seen} 段，"
-                            f"物化 {prepared.labels_prepended} 段，"
-                            f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
-                        ),
-                    )
+                        prepared = _prepare_word_source_for_translation(
+                            file_item.path,
+                            use_native_preprocessing=(
+                                settings.word_conversion.use_native_preprocessing
+                            ),
+                            allow_doc_fallback=self._allow_doc_fallback,
+                        )
+                        process_path = prepared.path
+                        converted_temp_paths.extend(prepared.temp_paths)
+                        for fallback_message in prepared.fallback_messages:
+                            self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一处理方式。")
+                        self._log(
+                            "INFO",
+                            (
+                                f"Word 预处理完成 {file_item.name}，"
+                                f"使用 {prepared.method}，"
+                                f"自动编号 {prepared.labels_seen} 段，"
+                                f"物化 {prepared.labels_prepended} 段，"
+                                f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
+                            ),
+                        )
                     process_paths.append(process_path)
                     hidden_content = detect_hidden_word_content(process_path)
                     if hidden_content.found:
@@ -827,30 +925,42 @@ class WordTaskRunner:
                     preprocess_summaries.append(
                         {
                             "hidden_content": hidden_content.as_dict(),
-                            "method": prepared.method,
-                            "labels_seen": prepared.labels_seen,
-                            "labels_prepended": prepared.labels_prepended,
-                            "conversion_method": prepared.conversion_method,
-                            "conversion_fidelity": prepared.conversion_fidelity,
-                            "conversion_fallback_messages": list(
-                                prepared.fallback_messages
+                            "method": (
+                                prepared.method if prepared is not None else "resume_previous_output"
                             ),
-                            "numbering_method": prepared.numbering_method,
-                            "numbering_fallback_messages": list(
-                                prepared.numbering_fallback_messages
+                            "labels_seen": prepared.labels_seen if prepared is not None else 0,
+                            "labels_prepended": (
+                                prepared.labels_prepended if prepared is not None else 0
+                            ),
+                            "conversion_method": (
+                                prepared.conversion_method if prepared is not None else None
+                            ),
+                            "conversion_fidelity": (
+                                prepared.conversion_fidelity if prepared is not None else None
+                            ),
+                            "conversion_fallback_messages": (
+                                list(prepared.fallback_messages) if prepared is not None else []
+                            ),
+                            "numbering_method": (
+                                prepared.numbering_method if prepared is not None else None
+                            ),
+                            "numbering_fallback_messages": (
+                                list(prepared.numbering_fallback_messages)
+                                if prepared is not None
+                                else []
                             ),
                         }
                     )
                     if self._untranslated_only:
-                        coverage_plan = build_word_coverage_plan(
-                            process_path,
-                            target_lang=target_lang,
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
-                            protect_front_matter=self._protect_front_matter,
+                        coverage_plan = (
+                            resumed_coverage_plan
+                            if resumed_coverage_plan is not None
+                            else build_word_coverage_plan(
+                                process_path,
+                                target_lang=target_lang,
+                                source_lang=resume_source_lang,
+                                protect_front_matter=self._protect_front_matter,
+                            )
                         )
                         self._arbitrate_coverage_pairs(
                             coverage_plan,
