@@ -1097,6 +1097,227 @@ def write_pdf_manifest_and_report(summary: PdfTaskSummary) -> tuple[Path, Path]:
     return manifest_path, report_path
 
 
+# --- 续译：读上一次输出目录的页存档 -------------------------------------------
+# 只认「明确成功」这一个状态。中止时已入队未开跑的页会被烧成「图像生成失败」占位页
+# （零模型调用就进了上一份产物），复用它们等于把空白页永久固化成译文；同理，本地质检
+# 有标记、审核判失败、走了应急比例归一化的页虽然进得了上一份交付，也一律重新生成——
+# 它们值不值得原样搬进这一份是另一回事，宁可多花一次调用。
+PDF_RESUME_REUSABLE_PAGE_STATUSES = frozenset({"success"})
+
+
+@dataclass(frozen=True)
+class ResumePageSource:
+    """One page of a previous run that may be adopted without re-translating."""
+
+    page_number: int
+    translated_image_path: Path
+    source_image_path: Path | None
+    page_width_pt: float
+    page_height_pt: float
+    source_width_px: int
+    source_height_px: int
+    output_width_px: int
+    output_height_px: int
+    render_dpi: float
+    ratio_letterboxed: bool
+
+
+def _resume_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resume_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def read_pdf_resume_manifest(resume_dir: str | Path) -> dict[str, Any] | None:
+    """Read the manifest of a previous output package, or ``None`` if unusable.
+
+    Every caller degrades to a normal full translation on ``None``: a resume
+    directory that was moved, emptied or half-written is a reason to translate
+    everything again, never a reason to fail the task.
+    """
+    try:
+        path = Path(resume_dir)
+    except TypeError:
+        return None
+    if not path.is_dir() or not is_app_managed_pdf_output_dir(path):
+        return None
+    try:
+        payload = json.loads((path / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - an unreadable manifest is just "no resume".
+        logger.debug(f"[PDF] 读取上次输出清单失败原始错误：{path}：{exc!r}")
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("files"), list):
+        return None
+    return payload
+
+
+def _resume_manifest_files(manifest: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Index a manifest's file records by POSIX relative path."""
+    files: dict[str, dict[str, Any]] = {}
+    if not isinstance(manifest, dict):
+        return files
+    for entry in manifest.get("files") or []:
+        if not isinstance(entry, dict):
+            continue
+        relative = str(entry.get("relative_path") or "").strip()
+        if not relative:
+            continue
+        files[Path(relative).as_posix()] = entry
+    return files
+
+
+def _resume_page_is_reusable(page: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(page, dict)
+        and page.get("status") in PDF_RESUME_REUSABLE_PAGE_STATUSES
+        and not page.get("placeholder")
+        and not page.get("skipped_oversize")
+        and page.get("review_status") != "failed"
+        and not page.get("quality_flags")
+    )
+
+
+def _resume_page_image_candidates(
+    archive_dir: Path,
+    recorded_path: str,
+    page_number: int,
+    page_count: int,
+) -> list[Path]:
+    """Page images to try, all constrained to the previous archive folder.
+
+    The manifest's own path is tried first but only counts while it still points
+    inside that folder — a manifest is user-writable data, and a moved package
+    leaves stale absolute paths behind either way.
+    """
+    candidates: list[Path] = []
+    recorded = str(recorded_path or "").strip()
+    if recorded:
+        candidates.append(Path(recorded))
+    base_name = page_image_name(page_number, page_count)
+    candidates.append(archive_dir / base_name)
+    if archive_dir.is_dir():
+        candidates.extend(sorted(archive_dir.glob(f"{base_name.removesuffix('.png')}.*")))
+    seen: set[Path] = set()
+    usable: list[Path] = []
+    for candidate in candidates:
+        if candidate in seen or "_failed" in candidate.name:
+            continue
+        seen.add(candidate)
+        if _path_is_within(candidate, archive_dir):
+            usable.append(candidate)
+    return usable
+
+
+def _resume_pick_page_image(
+    candidates: list[Path],
+    *,
+    verify: bool,
+) -> tuple[Path, int, int] | None:
+    """Return the first candidate that really is a readable image, with its size."""
+    for candidate in candidates:
+        try:
+            if not candidate.is_file() or candidate.stat().st_size <= 0:
+                continue
+            with Image.open(candidate) as image:
+                width, height = image.size
+                if verify:
+                    # 截断/损坏的 PNG 在 open() 时不会报错，只有真正读完才会。
+                    image.verify()
+            return candidate, int(width), int(height)
+        except Exception as exc:  # noqa: BLE001 - a broken page image is just not reusable.
+            logger.debug(f"[PDF] 上次输出的页图不可用：{candidate}：{exc!r}")
+    return None
+
+
+def reusable_pdf_pages(
+    manifest: dict[str, Any] | None,
+    resume_dir: str | Path,
+    *,
+    verify_images: bool = True,
+) -> dict[str, list[ResumePageSource]]:
+    """Per-file pages of a previous run that may be adopted as-is.
+
+    Keys are POSIX relative paths as recorded in the manifest.  Anything that
+    cannot be verified — a page image that is missing, unreadable or outside the
+    archive folder, missing page geometry — drops that one page, never the file.
+    ``verify_images=False`` skips the full-decode check for callers that only
+    need a count (scan-time detection) rather than pages they are about to bind.
+    """
+    resume_path = Path(resume_dir)
+    reusable: dict[str, list[ResumePageSource]] = {}
+    for relative, entry in _resume_manifest_files(manifest).items():
+        page_count = _resume_int(entry.get("page_count"))
+        if page_count <= 0:
+            continue
+        is_image = str(entry.get("source_type") or SOURCE_TYPE_PDF) == SOURCE_TYPE_IMAGE
+        source_dir, translated_dir = resolve_pdf_page_archive_dirs(resume_path, Path(relative))
+        pages: list[ResumePageSource] = []
+        seen_numbers: set[int] = set()
+        for page in entry.get("pages") or []:
+            if not _resume_page_is_reusable(page):
+                continue
+            page_number = _resume_int(page.get("page_number"))
+            if page_number < 1 or page_number > page_count or page_number in seen_numbers:
+                continue
+            width_pt = _resume_float(page.get("page_width_pt"))
+            height_pt = _resume_float(page.get("page_height_pt"))
+            if not is_image and (width_pt <= 0 or height_pt <= 0):
+                # 装订按 pt 尺寸建页，没有尺寸的页复用出来就是一张 0×0 的废页。
+                continue
+            picked = _resume_pick_page_image(
+                _resume_page_image_candidates(
+                    translated_dir,
+                    str(page.get("translated_image_path") or ""),
+                    page_number,
+                    page_count,
+                ),
+                verify=verify_images,
+            )
+            if picked is None:
+                continue
+            image_path, image_width, image_height = picked
+            source_image = next(
+                (
+                    candidate
+                    for candidate in _resume_page_image_candidates(
+                        source_dir,
+                        str(page.get("source_image_path") or ""),
+                        page_number,
+                        page_count,
+                    )
+                    if candidate.is_file()
+                ),
+                None,
+            )
+            pages.append(
+                ResumePageSource(
+                    page_number=page_number,
+                    translated_image_path=image_path,
+                    source_image_path=source_image,
+                    page_width_pt=width_pt,
+                    page_height_pt=height_pt,
+                    source_width_px=_resume_int(page.get("source_width_px")),
+                    source_height_px=_resume_int(page.get("source_height_px")),
+                    output_width_px=_resume_int(page.get("output_width_px")) or image_width,
+                    output_height_px=_resume_int(page.get("output_height_px")) or image_height,
+                    render_dpi=_resume_float(page.get("render_dpi")),
+                    ratio_letterboxed=bool(page.get("ratio_letterboxed")),
+                )
+            )
+            seen_numbers.add(page_number)
+        if pages:
+            reusable[relative] = sorted(pages, key=lambda item: item.page_number)
+    return reusable
+
+
 class PdfImageTranslationRunner:
     """Background runner for PDF image-layout translation."""
 
@@ -1112,10 +1333,13 @@ class PdfImageTranslationRunner:
         key_overrides: dict[str, str] | None = None,
         api_scheduler: WeightedApiScheduler | None = None,
         review_api_scheduler: WeightedApiScheduler | None = None,
+        resume_output_dir: str | None = None,
     ) -> None:
         self._files = file_items
         self._settings = settings
         self._source_root = Path(source_root) if source_root else None
+        # 「接着上次继续」选中的历史输出目录。只读：本次任务写的永远是自己的新目录。
+        self._resume_output_dir = str(resume_output_dir).strip() if resume_output_dir else ""
         self._image_client = image_client or OpenAICompatibleImageGenerationClient()
         self._review_client = review_client or OpenAICompatiblePdfReviewClient()
         self._key_overrides = dict(key_overrides or {})
@@ -2080,6 +2304,9 @@ class PdfImageTranslationRunner:
             file_records = [prepared.record for prepared in prepared_files]
             with self._page_action_lock:
                 self._prepared_files = list(prepared_files)
+            # 复用上次的成品页必须发生在这里：页记录一旦建好，_iter_rendered_pages
+            # 就会自然跳过这些页，装订、逐页面板、停止/暂停语义全都不用另开分支。
+            self._prefill_resume_pages(prepared_files, output_dir=output_dir)
             total_pages = sum(record.page_count for record in file_records)
             self._total_page_count = total_pages
             self._emit_page_status()
@@ -2390,6 +2617,165 @@ class PdfImageTranslationRunner:
             app_managed=app_managed,
         )
 
+    def _prefill_resume_pages(
+        self,
+        prepared_files: list[_PreparedPdfFile],
+        *,
+        output_dir: Path,
+    ) -> None:
+        """Adopt the finished pages of the previous output package.
+
+        The resume directory is only ever read: every adopted page is copied into
+        this task's own archive first, so the historical package stays untouched
+        and every path the page panel and the assembler see still resolves inside
+        this task's own folders.  Any doubt about that package — missing manifest,
+        different target language, a source file that changed since — degrades to
+        a normal full translation with a log line, never to a task error.
+        """
+        if not self._resume_output_dir:
+            return
+        resume_path = Path(self._resume_output_dir)
+        if _path_is_within(resume_path, Path(output_dir)) or _path_is_within(
+            Path(output_dir), resume_path
+        ):
+            self._log("WARN", "续译：上次输出目录和本次输出目录重叠，本次改为全部重新翻译。")
+            return
+        manifest = read_pdf_resume_manifest(resume_path)
+        if manifest is None:
+            self._log(
+                "WARN",
+                "续译：上次的输出目录读不出翻译清单（可能已被移动、删除或损坏），本次全部重新翻译。",
+            )
+            return
+        previous_lang = str(manifest.get("target_lang") or "")
+        current_lang = str(self._settings.pdf.target_lang or "")
+        if previous_lang and current_lang and previous_lang != current_lang:
+            self._log(
+                "WARN",
+                f"续译：上次输出的目标语言（{previous_lang}）和本次（{current_lang}）不一致，本次全部重新翻译。",
+            )
+            return
+        try:
+            reusable = reusable_pdf_pages(manifest, resume_path)
+        except Exception as exc:  # noqa: BLE001 - resume is best-effort by design.
+            logger.debug(f"[PDF] 读取上次输出页存档失败原始错误：{exc!r}")
+            self._log("WARN", "续译：上次输出的页面存档读不出来，本次全部重新翻译。")
+            return
+
+        manifest_files = _resume_manifest_files(manifest)
+        total_pages = 0
+        total_reused = 0
+        for prepared in prepared_files:
+            record = prepared.record
+            total_pages += max(0, int(record.page_count or 0))
+            if record.status == PDF_OUTPUT_STATE_FAILED or record.page_count <= 0:
+                continue
+            key = Path(record.relative_path).as_posix()
+            entry = manifest_files.get(key)
+            pages = reusable.get(key) or []
+            if entry is None or not pages:
+                continue
+            previous_page_count = _resume_int(entry.get("page_count"))
+            if previous_page_count != record.page_count:
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 续译：源文件现在有 {record.page_count} 页，上次记录的是 "
+                    f"{previous_page_count} 页，这个文件整份重新翻译。",
+                )
+                continue
+            previous_size = _resume_int(entry.get("source_pdf_size_bytes"))
+            if (
+                previous_size
+                and record.source_pdf_size_bytes
+                and previous_size != record.source_pdf_size_bytes
+            ):
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 续译：源文件在上次翻译之后改动过，这个文件整份重新翻译。",
+                )
+                continue
+            reused = self._adopt_resume_pages(prepared, pages)
+            if reused:
+                total_reused += reused
+                self._log(
+                    "INFO",
+                    f"[{record.name}] 续译：复用上次已完成页 {reused} 页，"
+                    f"本次只需生成 {max(0, record.page_count - reused)} 页。",
+                )
+
+        if not total_reused:
+            self._log("INFO", "续译：上次输出里没有可以直接复用的已完成页，本次全部重新翻译。")
+            return
+        with self._page_status_lock:
+            # 复用页按「已提交且已完成」记账，和大幅面跳过页同一条口径，否则「N/M 已完成」
+            # 会永远差这几页。它们没有调用过模型，_api_call_count 不动。
+            self._submitted_page_count += total_reused
+            self._completed_page_count += total_reused
+            self._emit_page_status_locked()
+        self._log(
+            "INFO",
+            f"续译：共复用上次已完成页 {total_reused} 页，本次只需生成 "
+            f"{max(0, total_pages - total_reused)} 页（复用页不消耗任何模型调用）。",
+        )
+
+    def _adopt_resume_pages(
+        self,
+        prepared: _PreparedPdfFile,
+        pages: list[ResumePageSource],
+    ) -> int:
+        record = prepared.record
+        existing = {page.page_number for page in record.pages}
+        adopted = 0
+        for source in pages:
+            if source.page_number in existing:
+                continue
+            target = prepared.translated_pages_dir / source.translated_image_path.name
+            try:
+                prepared.translated_pages_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source.translated_image_path, target)
+            except Exception as exc:  # noqa: BLE001 - the page is simply re-translated.
+                logger.debug(f"[PDF] 复用上次译图失败原始错误：{exc!r}")
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 续译：第 {source.page_number} 页的旧译图复制失败，这一页会重新生成。",
+                )
+                continue
+            source_copy = ""
+            if source.source_image_path is not None:
+                # 源页图只影响逐页面板的原文/译文对照，缺了不影响装订，所以失败不退页。
+                try:
+                    prepared.source_pages_dir.mkdir(parents=True, exist_ok=True)
+                    source_target = prepared.source_pages_dir / source.source_image_path.name
+                    shutil.copy2(source.source_image_path, source_target)
+                    source_copy = str(source_target)
+                except Exception as exc:  # noqa: BLE001 - cosmetic copy only.
+                    logger.debug(f"[PDF] 复用上次源页图失败原始错误：{exc!r}")
+            record.pages.append(
+                PdfPageRecord(
+                    page_number=source.page_number,
+                    source_image_path=source_copy,
+                    file_name=record.name,
+                    translated_image_path=str(target),
+                    status="success",
+                    # 复用页这一次没有调用过模型：attempts 记 1、审核记「未审核」，
+                    # 否则上一轮的重试数和审核数会被算进这一轮的指标里。
+                    attempts=1,
+                    ratio_letterboxed=source.ratio_letterboxed,
+                    render_dpi=source.render_dpi,
+                    source_width_px=source.source_width_px,
+                    source_height_px=source.source_height_px,
+                    output_width_px=source.output_width_px,
+                    output_height_px=source.output_height_px,
+                    page_width_pt=source.page_width_pt,
+                    page_height_pt=source.page_height_pt,
+                )
+            )
+            existing.add(source.page_number)
+            adopted += 1
+        if adopted:
+            record.pages.sort(key=lambda item: item.page_number)
+        return adopted
+
     def _process_prepared_pages(
         self,
         prepared_files: list[_PreparedPdfFile],
@@ -2407,8 +2793,8 @@ class PdfImageTranslationRunner:
         producer_done = False
         stop_logged = False
         page_iter = self._iter_rendered_pages(prepared_files)
-        self._queue.put(ProgressMsg(2, 4, "翻译页面", 0, max(1, total_pages)))
-        self._queue.put(StatusMsg(f"状态：正在翻译 PDF 页面，已完成 0 / {total_pages} 页。"))
+        # 起点不是 0：续译复用的页在进这里之前就已经记完成了，写 0 会让进度条先跳回去。
+        self._push_translation_progress(total_pages)
 
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             while not producer_done or futures:
