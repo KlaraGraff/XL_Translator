@@ -280,7 +280,10 @@ class WordScanAndEventContractTests(IsolatedAppDataTestCase):
 
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()
-            self.assertEqual(set(payload), {"items", "skipped", "summary", "risk", "result"})
+            self.assertEqual(
+                set(payload),
+                {"items", "skipped", "summary", "risk", "result", "previous_output"},
+            )
             known_item = next(item for item in payload["items"] if item["format"] == "docx")
             legacy_item = next(item for item in payload["items"] if item["format"] == "doc")
             self.assertEqual(known_item["paragraph_count"], 1)

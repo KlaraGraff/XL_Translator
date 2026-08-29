@@ -151,6 +151,9 @@ class ScanRequest(BaseModel):
     # 「浏览 → 选择文件」允许一次挑多个文件（只限类型，不限数量）。给了 paths 就按这
     # 几个路径各扫一次再合并；不给就还是按 path 扫一个文件或一整个文件夹。
     paths: list[str] = Field(default_factory=list)
+    # 续译弹窗里用户从历史下拉换了一个输出目录后重扫时带上；平时为空，
+    # 检测自动选最新的一个。
+    preferred_resume_dir: str | None = None
 
 
 class PdfPageActionRequest(BaseModel):
@@ -173,6 +176,9 @@ class TaskStartRequest(BaseModel):
     allow_known_review_failure: bool = False
     lang_pair: str | None = None
     confirmation_token: str | None = None
+    # 「接着上次继续」：上一次任务的输出目录。runner 只读取它里面的既有译文，
+    # 绝不往里写；本次输出仍然新建目录。
+    resume_output_dir: str | None = None
 
     @model_validator(mode="after")
     def _require_source_path(self) -> "TaskStartRequest":
@@ -743,11 +749,52 @@ def create_app(
             "summary": result.summary,
             "risk": result.risk,
         }
+        payload["previous_output"] = _detect_previous_output_safe(request, result, roots)
         # ``result`` is a stable grouped alias for callers that consume
         # one typed scan object; top-level fields keep the Phase 1 route
         # backward compatible.
         payload["result"] = dict(payload)
         return payload
+
+    def _detect_previous_output_safe(
+        request: ScanRequest, result: Any, roots: list[Path]
+    ) -> dict[str, Any] | None:
+        # 检测只是给弹窗提供线索，失败绝不允许拖垮扫描本身——import 和调用
+        # 都包在这里，任何异常都降级成「没有上一次的输出」。
+        try:
+            from core.resume_detection import detect_previous_output
+
+            settings = load_settings()
+            if request.surface == "excel":
+                target_lang = settings.excel_target_lang
+                source_lang: str | None = settings.excel_source_lang
+                output_settings = settings.excel_output
+            elif request.surface == "word":
+                target_lang = settings.word_target_lang
+                source_lang = settings.word_source_lang
+                output_settings = settings.word_output
+            else:
+                target_lang = settings.pdf.target_lang
+                source_lang = None
+                output_settings = settings.pdf_output
+            custom_output_root = (
+                output_settings.custom_output_dir.strip() or None
+                if output_settings.use_custom_output_dir
+                else None
+            )
+            previous = detect_previous_output(
+                surface=request.surface,
+                items=result.items,
+                scan_roots=roots,
+                custom_output_root=custom_output_root,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                preferred_dir=request.preferred_resume_dir,
+            )
+        except Exception:
+            logger.exception("previous-output detection failed; scan continues without it")
+            return None
+        return _json_safe(previous) if previous else None
 
     def _task_options(request: TaskStartRequest) -> TaskOptions:
         return TaskOptions(
@@ -761,6 +808,7 @@ def create_app(
             target_lang=request.target_lang,
             allow_known_review_failure=request.allow_known_review_failure,
             lang_pair=request.lang_pair,
+            resume_output_dir=request.resume_output_dir,
         )
 
     @app.post("/api/tasks/preflight")

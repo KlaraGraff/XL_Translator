@@ -124,6 +124,8 @@ class TaskOptions:
     target_lang: str | None = None
     allow_known_review_failure: bool = False
     lang_pair: str | None = None
+    # 「接着上次继续」时上一次任务的输出目录；runner 只读它，不往里写。
+    resume_output_dir: str | None = None
 
     @property
     def xls_conversion_mode(self) -> str:
@@ -537,6 +539,9 @@ class TranslationTaskManager:
                 "source_lang": source_lang,
                 "target_lang": options.target_lang,
                 "lang_pair": options.lang_pair,
+                # 续译任务和全量任务即使源相同也不算重复提交；指纹整体会被
+                # sha256 掉，这里的路径不会以明文进历史。
+                "resume_output_dir": options.resume_output_dir,
             },
         }
         fingerprint = hashlib.sha256(
@@ -1408,6 +1413,7 @@ class TranslationTaskManager:
                 api_scheduler=api_schedulers.get("translation"),
                 untranslated_only=options.untranslated_only,
                 connection_chain=translation_chain,
+                resume_output_dir=options.resume_output_dir,
             )
         if surface == "word":
             return WordTaskRunner(
@@ -1421,6 +1427,7 @@ class TranslationTaskManager:
                 translate_headers_footers=options.translate_headers_footers,
                 allow_doc_fallback=options.allow_doc_fallback,
                 api_scheduler=api_schedulers.get("translation"),
+                resume_output_dir=options.resume_output_dir,
             )
         return PdfImageTranslationRunner(
             files,
@@ -1429,6 +1436,7 @@ class TranslationTaskManager:
             key_overrides=key_overrides,
             api_scheduler=api_schedulers.get("image"),
             review_api_scheduler=api_schedulers.get("pdf_review"),
+            resume_output_dir=options.resume_output_dir,
         )
 
     @staticmethod

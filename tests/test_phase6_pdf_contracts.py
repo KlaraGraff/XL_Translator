@@ -209,8 +209,14 @@ class PdfScanApiContractTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()
-            self.assertEqual(set(payload), {"items", "skipped", "summary", "risk", "result"})
-            self.assertEqual(set(payload["result"]), {"items", "skipped", "summary", "risk"})
+            self.assertEqual(
+                set(payload),
+                {"items", "skipped", "summary", "risk", "result", "previous_output"},
+            )
+            self.assertEqual(
+                set(payload["result"]),
+                {"items", "skipped", "summary", "risk", "previous_output"},
+            )
             selected = {item["relative_path"]: item for item in payload["items"]}
             self.assertEqual(set(selected), {"source.pdf", "photo.png"})
             self.assertEqual(selected["source.pdf"]["source_type"], SOURCE_TYPE_PDF)
