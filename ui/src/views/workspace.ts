@@ -36,6 +36,7 @@ import {
   showToast,
   type ChipTone,
   type LanguageOption,
+  type ModalAction,
   type ModalHandle,
   type StatusTone,
 } from "../components";
@@ -84,6 +85,47 @@ type FileItem = JsonObject & {
 };
 
 type ScanSkippedItem = { path?: string; relative_path?: string; name?: string; reason?: string };
+
+// --- 续译：扫描响应里的 previous_output ------------------------------------
+// 后端在源目录旁（或自定义输出根目录下）找 `{文件夹名}_翻译输出_{时间戳}`，按当前目标
+// 语言的产物命名规则逐个文件比对。没有命中时整个字段是 null，前端一个字都不提。
+
+type ResumeFileStatus = "full" | "partial" | "none" | "found" | "diverged";
+
+type ResumeCandidate = { dir: string; label: string; timestamp: string };
+
+type ResumeFileInfo = {
+  /** 与 items[].path 对应的源文件绝对路径，逐行标注靠它连接。 */
+  path: string;
+  status: ResumeFileStatus;
+  matched_output: string | null;
+  /** excel = 待补格数，word = 待补段数；PDF 不给这个字段，用 page_done / page_total。 */
+  untranslated_count: number | null;
+  page_done: number | null;
+  page_total: number | null;
+};
+
+type ResumeSummary = {
+  full: number;
+  partial: number;
+  none: number;
+  /** 找到产物但判定不出完整度：按「已有译文」展示，但不算进「上次已全部翻完」。 */
+  found: number;
+  /** 源文件在上次翻译后有改动：底稿当不了续译起点，续译时该文件整份重翻。 */
+  diverged: number;
+  page_done: number | null;
+  page_total: number | null;
+  last_task_stopped: boolean | null;
+  last_time_label: string | null;
+};
+
+interface PreviousOutput {
+  target_lang: string;
+  candidates: ResumeCandidate[];
+  selected_dir: string | null;
+  files: ResumeFileInfo[];
+  summary: ResumeSummary;
+}
 
 type TogglePathKind = "none" | "flat" | "output";
 
@@ -299,6 +341,17 @@ interface SurfaceState {
   allowDocFallback: boolean;
   /** 「更多设置」折叠区的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚收起就被弹回展开。 */
   moreSettingsOpen: boolean;
+  /** 本次扫描检测到的历史产物；没有检测结果时为 null。每次扫描整体重置。 */
+  resumeInfo: PreviousOutput | null;
+  /** 用户对这份检测结果的决定。null = 弹窗还没弹或还没回应。 */
+  resumeDecision: "resume" | "fresh" | null;
+  /** 检测发生时的目标语言。产物文件名里带语言名，换了目标语言这份检测就对不上号了——
+   *  与当前 targetLang 不一致时整套续译状态作废（见 resumeState()）。 */
+  resumeDetectedLang: string;
+  /** 提示条上的「×」：本次扫描内不再出现这条提示（重新弹窗也不恢复）。 */
+  resumeNoticeDismissed: boolean;
+  /** 进入续译前「仅补译未翻译内容」开关的原值，「改为全部重译」时还原回去。 */
+  resumeToggleRestore: boolean | null;
   renderer: (() => void) | null;
   lastTaskId?: string;
   lastOutputPath?: string;
@@ -333,6 +386,11 @@ function freshState(surface: Surface): SurfaceState {
     allowXlsFallback: false,
     allowDocFallback: false,
     moreSettingsOpen: true,
+    resumeInfo: null,
+    resumeDecision: null,
+    resumeDetectedLang: "",
+    resumeNoticeDismissed: false,
+    resumeToggleRestore: null,
     renderer: null,
   };
 }
@@ -761,6 +819,11 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       const notice = buildOutsideCellBanner(st);
       if (notice) col.append(notice);
     }
+    // 续译的两种「已决定」态都贴在文件表正上方：横幅说底稿从哪来，提示条说这次不用底稿。
+    const resumeBanner = buildResumeBanner(surface, st);
+    if (resumeBanner) col.append(resumeBanner);
+    const resumeDismiss = buildResumeDismissBar(surface, st);
+    if (resumeDismiss) col.append(resumeDismiss);
     col.append(buildTableCard(surface, st));
     // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
     // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
@@ -1339,8 +1402,9 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
   tableWrap.style.cssText = "flex:1;overflow:auto";
   const table = el("table", "tbl");
   table.append(buildTableHeadRow(surface));
+  const resumeFiles = resumeFileMap(st);
   for (const file of st.files) {
-    table.append(buildTableRow(surface, st, file));
+    table.append(buildTableRow(surface, st, file, resumeFiles.get(file.path)));
   }
   tableWrap.append(table);
   card.append(tableWrap);
@@ -1392,7 +1456,7 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
   return row;
 }
 
-function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTMLTableRowElement {
+function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resume?: ResumeFileInfo): HTMLTableRowElement {
   const row = el("tr");
   const checkCell = el("td");
   const checkbox = document.createElement("input");
@@ -1463,6 +1527,10 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem): HTML
     });
     if (outcome.detail) chip.title = outcome.detail;
     statusCell.append(chip);
+  } else if (resume) {
+    // 选了「接着上次继续」之后，这一列说的是「这份文件本次会怎么处理」，比开跑前的
+    // 格式预判更贴近用户此刻要确认的事。
+    statusCell.append(resumeChip(surface, resume));
   } else if (isRisky(surface, file)) {
     statusCell.append(createChip({ label: "需先转换", tone: "warn", icon: "warn" }));
   } else if (surface === "pdf" && isAllOversized(file)) {
@@ -2738,6 +2806,12 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     onChange: (value) => {
       st.targetLang = value;
       void persistSettings(surface === "pdf" ? nestedPatch("pdf.target_lang", value) : { [`${surface}_target_lang`]: value });
+      // 历史产物的文件名里带目标语言，换了语言这份检测就对不上号了。静默作废，不弹提示：
+      // 用户此刻在做的是选语言，不是在处理续译。
+      if (st.resumeInfo && st.resumeDetectedLang && st.resumeDetectedLang !== value) {
+        resetResumeState(st);
+        rerender(surface);
+      }
     },
   });
   scroll.append(targetField.root);
@@ -2767,14 +2841,26 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   typeSec.textContent = `本类型选项 · ${SURFACE_LABEL[surface]}`;
   scroll.append(typeSec);
 
+  const resumeAuto = Boolean(activeResumeDir(st));
   for (const toggle of TOGGLES[surface]) {
+    // 「接着上次继续」时补译是这次任务的定义，不是一个可选项：payload 无论如何都按补译发
+    // （见 buildPayload），开关再放开就会出现「界面显示关、实际按开跑」的假象。锁住并给
+    // 角标说明，想全译走横幅上的「改为全部重译」。
+    const lockedByResume = resumeAuto && toggle.key === "untranslated";
     const row = createSwitchRow({
       label: toggle.label,
-      hint: toggle.hint,
+      hint: lockedByResume
+        ? `${toggle.hint}选了「接着上次继续」时由程序打开；要全部重译，点文件表上方横幅里的「改为全部重译」。`
+        : toggle.hint,
       checked: Boolean(st.toggles.get(toggle.key)),
-      disabled: active,
+      disabled: active || lockedByResume,
       onChange: (checked) => void handleToggleChange(surface, st, toggle, checked),
     });
+    if (lockedByResume) {
+      const badge = el("span", "resume-auto");
+      badge.textContent = "已自动开启";
+      row.insertBefore(badge, row.querySelector(".sw"));
+    }
     scroll.append(row);
   }
 
@@ -2953,6 +3039,420 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
 }
 
 // ---------------------------------------------------------------------------
+// 续译（接着上次继续）
+//
+// 扫描完成 → 后端给出 previous_output → 弹窗二选一 → 决定写进 SurfaceState，
+// 由文件表上方的横幅/提示条、状态列的芯片、右栏开关的角标一起把决定说清楚，
+// 最后在 buildPayload() 里变成 resume_output_dir（+ excel/word 的 untranslated_only）。
+// 两种选择都写进新的时间戳输出目录，历史产物只读不改。
+// ---------------------------------------------------------------------------
+
+function numOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parsePreviousOutput(raw: unknown): PreviousOutput | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as JsonObject;
+  const summaryRaw = record(obj.summary);
+  const candidates: ResumeCandidate[] = (Array.isArray(obj.candidates) ? obj.candidates : [])
+    .map((item) => record(item))
+    .filter((item) => text(item.dir))
+    .map((item) => ({ dir: text(item.dir), label: text(item.label, text(item.timestamp)), timestamp: text(item.timestamp) }));
+  const files: ResumeFileInfo[] = (Array.isArray(obj.files) ? obj.files : [])
+    .map((item) => record(item))
+    .filter((item) => text(item.path))
+    .map((item) => ({
+      path: text(item.path),
+      status: (["full", "partial", "none", "found", "diverged"] as const).includes(item.status as ResumeFileStatus)
+        ? (item.status as ResumeFileStatus)
+        : "found",
+      matched_output: text(item.matched_output) || null,
+      untranslated_count: numOrNull(item.untranslated_count),
+      page_done: numOrNull(item.page_done),
+      page_total: numOrNull(item.page_total),
+    }));
+  return {
+    target_lang: text(obj.target_lang),
+    candidates,
+    selected_dir: text(obj.selected_dir) || null,
+    files,
+    summary: {
+      full: num(summaryRaw.full),
+      partial: num(summaryRaw.partial),
+      none: num(summaryRaw.none),
+      found: num(summaryRaw.found),
+      diverged: num(summaryRaw.diverged),
+      page_done: numOrNull(summaryRaw.page_done),
+      page_total: numOrNull(summaryRaw.page_total),
+      last_task_stopped: typeof summaryRaw.last_task_stopped === "boolean" ? summaryRaw.last_task_stopped : null,
+      last_time_label: text(summaryRaw.last_time_label) || null,
+    },
+  };
+}
+
+/** 检测结果里有没有值得开口的命中。none 不算——那只是「这个文件没翻过」。 */
+function resumeHitCount(info: PreviousOutput): number {
+  return info.summary.full + info.summary.partial + info.summary.found + info.summary.diverged;
+}
+
+/**
+ * 当前仍然有效的检测结果。产物文件名里带目标语言，用户改了目标语言之后这份检测就
+ * 对不上号了：这里直接判空，横幅、芯片、角标、payload 全都跟着一起消失，不额外弹提示。
+ */
+function resumeState(st: SurfaceState): PreviousOutput | null {
+  const info = st.resumeInfo;
+  if (!info) return null;
+  if (st.resumeDetectedLang && st.resumeDetectedLang !== st.targetLang) return null;
+  return info;
+}
+
+/** 真的要按「接着上次继续」跑这一次任务吗。没有底稿目录就不算数。 */
+function activeResumeDir(st: SurfaceState): string | null {
+  if (st.resumeDecision !== "resume") return null;
+  const info = resumeState(st);
+  return info?.selected_dir ?? null;
+}
+
+/** 每次扫描（含切换历史目录的重扫）都把续译状态整体归零，不留上一次的残留。 */
+function resetResumeState(st: SurfaceState): void {
+  restoreUntranslatedToggle(st);
+  st.resumeInfo = null;
+  st.resumeDecision = null;
+  st.resumeDetectedLang = "";
+  st.resumeNoticeDismissed = false;
+}
+
+/** 进入续译时把「仅补译未翻译内容」自动打开，原值留着还原用（这个开关不落盘，只影响本次）。 */
+function forceUntranslatedToggle(surface: Surface, st: SurfaceState): void {
+  if (surface === "pdf") return;
+  if (st.resumeToggleRestore === null) st.resumeToggleRestore = Boolean(st.toggles.get("untranslated"));
+  st.toggles.set("untranslated", true);
+}
+
+function restoreUntranslatedToggle(st: SurfaceState): void {
+  if (st.resumeToggleRestore === null) return;
+  st.toggles.set("untranslated", st.resumeToggleRestore);
+  st.resumeToggleRestore = null;
+}
+
+function chooseResume(surface: Surface, st: SurfaceState): void {
+  st.resumeDecision = "resume";
+  st.resumeNoticeDismissed = false;
+  forceUntranslatedToggle(surface, st);
+  rerender(surface);
+}
+
+function chooseFresh(surface: Surface, st: SurfaceState): void {
+  st.resumeDecision = "fresh";
+  restoreUntranslatedToggle(st);
+  rerender(surface);
+}
+
+function basename(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
+/** 补译数量的量词按 surface 换：Excel 数格、Word 数段、PDF 数页。 */
+function resumePendingLabel(surface: Surface, file: ResumeFileInfo): string {
+  if (surface === "pdf") {
+    const total = file.page_total;
+    const done = file.page_done;
+    if (total !== null && done !== null && total > done) return `部分翻译 · 补 ${total - done} 页`;
+    return "部分翻译 · 补剩余页";
+  }
+  const count = file.untranslated_count;
+  if (count === null || count <= 0) return "部分翻译 · 补缺失内容";
+  return surface === "excel" ? `部分翻译 · 补 ${count.toLocaleString("zh-CN")} 格` : `部分翻译 · 补 ${count} 段`;
+}
+
+function resumeChip(surface: Surface, file: ResumeFileInfo): HTMLElement {
+  // found（找到产物但判定不出完整度）按「已有译文」说：底稿照样接得上，补译由后端逐项判。
+  if (file.status === "full" || file.status === "found") return createChip({ label: "已有译文 · 原样保留", tone: "ok" });
+  if (file.status === "partial") return createChip({ label: resumePendingLabel(surface, file), tone: "warn" });
+  // 源文件在上次翻译后有改动：上次产物当不了底稿，后端会整份重翻这个文件。
+  if (file.status === "diverged") return createChip({ label: "源文件已变化 · 整份重翻", tone: "warn" });
+  // 「首次翻译」是状态不是承诺：整个任务按补译方式跑，这个文件因为没有任何已有
+  // 译文，事实上就是从头翻——但不能写「全量翻译」，那跟右栏亮着的「仅补译未翻译
+  // 内容」开关自相矛盾。
+  return createChip({ label: "无译文 · 首次翻译", tone: "tint" });
+}
+
+/** 状态列查表用；决策不是「继续」时返回空表，状态列照旧走原来的分支。 */
+function resumeFileMap(st: SurfaceState): Map<string, ResumeFileInfo> {
+  const map = new Map<string, ResumeFileInfo>();
+  if (st.resumeDecision !== "resume") return map;
+  const info = resumeState(st);
+  if (!info) return map;
+  for (const file of info.files) map.set(file.path, file);
+  return map;
+}
+
+// --- 状态 C：文件表上方的续译横幅 ------------------------------------------
+
+function buildResumeBanner(surface: Surface, st: SurfaceState): HTMLElement | null {
+  const dir = activeResumeDir(st);
+  if (!dir) return null;
+  const info = resumeState(st)!;
+  const banner = el("div", "resume-banner");
+  const badge = el("div", "bi");
+  badge.append(icon("restart", { size: "sm" }));
+  const copy = el("div", "copy");
+  const title = el("b");
+  title.textContent = "接着上次继续";
+  const sub = el("div", "sub");
+  const code = el("code");
+  code.textContent = basename(dir);
+  const done = info.summary.page_done;
+  if (surface === "pdf" && done !== null && done > 0) {
+    sub.append(document.createTextNode("以 "), code, document.createTextNode(` 里已完成的 ${done} 页为底稿，只生成剩下的页；结果存入新的输出文件夹。`));
+  } else {
+    sub.append(document.createTextNode("以 "), code, document.createTextNode(" 里的译文为底稿，只补缺失的部分；结果存入新的输出文件夹。"));
+  }
+  if (info.summary.diverged > 0) {
+    sub.append(document.createTextNode(`（${info.summary.diverged} 个源文件已变化的文件会整份重翻）`));
+  }
+  copy.append(title, sub);
+  const acts = el("div", "acts");
+  const revert = el("button", "resume-link");
+  revert.type = "button";
+  revert.textContent = "改为全部重译";
+  revert.addEventListener("click", () => chooseFresh(surface, st));
+  acts.append(revert);
+  banner.append(badge, copy, acts);
+  return banner;
+}
+
+// --- 状态 D：「稍后再说」之后的提示条 --------------------------------------
+
+function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement | null {
+  if (st.resumeDecision !== "fresh" || st.resumeNoticeDismissed) return null;
+  const info = resumeState(st);
+  if (!info || resumeHitCount(info) === 0) return null;
+  const bar = el("div", "resume-dismiss");
+  const mark = icon("help", { size: "sm" });
+  const label = el("span");
+  const withText = info.summary.full + info.summary.found;
+  label.textContent = `检测到上次的翻译结果（${withText}/${info.files.length} 个文件已有译文）。本次将全部重新翻译。`;
+  const acts = el("div", "acts");
+  const again = el("button", "resume-link");
+  again.type = "button";
+  again.textContent = "重新选择";
+  // 重新弹的是缓存下来的这一份检测结果，不重扫——用户只是想改主意，没换过路径。
+  again.addEventListener("click", () => showResumeModal(surface, st));
+  const close = el("button", "resume-link mute");
+  close.type = "button";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "不再提示");
+  close.addEventListener("click", () => {
+    st.resumeNoticeDismissed = true;
+    rerender(surface);
+  });
+  acts.append(again, close);
+  bar.append(mark, label, acts);
+  return bar;
+}
+
+// --- 状态 A / B / E：扫描完成后的弹窗 ---------------------------------------
+
+function resumeStatChips(info: PreviousOutput): HTMLElement {
+  const row = el("div", "rf-stats");
+  const s = info.summary;
+  if (s.full > 0) row.append(createChip({ label: `${s.full} 个已有完整译文`, tone: "ok" }));
+  if (s.found > 0) row.append(createChip({ label: `${s.found} 个已有译文`, tone: "ok" }));
+  if (s.partial > 0) row.append(createChip({ label: `${s.partial} 个翻了一部分`, tone: "warn" }));
+  if (s.diverged > 0) row.append(createChip({ label: `${s.diverged} 个源文件已变化`, tone: "warn" }));
+  if (s.none > 0) row.append(createChip({ label: `${s.none} 个还没有译文`, tone: "mute" }));
+  return row;
+}
+
+/** PDF 专用：page_total 缺失（null 或 0）的文件数。summary.page_done/page_total 只统计
+ *  有清单记录的 PDF，这批文件不在里面——续译对它们形同摆设，只能整份重新生成。少了这个
+ *  数，「剩余页数」会被当成整批的工作量，漏掉这几个文件的真实成本。
+ *  diverged（源文件已变化）单独有自己的文案，不混进「没有页记录」里数两遍。 */
+function pdfFilesMissingPageData(info: PreviousOutput): number {
+  return info.files.filter((file) => file.status !== "diverged" && !file.page_total).length;
+}
+
+/** 弹窗里那个灰底方框：底稿目录 + 统计（或页进度）+ 历史目录下拉。 */
+function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () => ModalHandle | null): HTMLElement {
+  const box = el("div", "resume-found");
+  const pathRow = el("div", "rf-path");
+  pathRow.append(icon(surface === "pdf" ? "pdf" : "folder", { size: "sm" }));
+  const code = el("code");
+  code.textContent = info.selected_dir ? basename(info.selected_dir) : "（未找到可用的历史目录）";
+  pathRow.append(code);
+  box.append(pathRow);
+
+  const total = info.summary.page_total;
+  const done = info.summary.page_done;
+  if (surface === "pdf" && total !== null && total > 0) {
+    const missing = pdfFilesMissingPageData(info);
+    const line = el("div", "rf-page");
+    line.append(createProgressBar({ percent: ((done ?? 0) / total) * 100 }).root);
+    const span = el("span");
+    // 页进度只覆盖有清单记录的文件；还有 missing 个文件完全没有页记录，不能让这条进度条
+    // 看起来像是「整批」的进度——那会把这几个文件的工作量凭空抹掉。
+    span.textContent = missing > 0
+      ? `已完成 ${done ?? 0} / ${total} 页（另有 ${missing} 个文件没有页记录，需整份生成）`
+      : `已完成 ${done ?? 0} / ${total} 页`;
+    line.append(span);
+    box.append(line);
+  } else {
+    box.append(resumeStatChips(info));
+  }
+
+  if (info.summary.last_task_stopped) {
+    const stoppedRow = el("div", "rf-stats");
+    const when = info.summary.last_time_label;
+    stoppedRow.append(createChip({ label: when ? `上次任务 ${when} 被手动停止` : "上次任务被手动停止", tone: "warn" }));
+    box.append(stoppedRow);
+  }
+
+  // 一份历史输出没什么可选的，下拉只在有第二份时出现。
+  if (info.candidates.length >= 2) {
+    const selRow = el("div", "rf-sel");
+    const isLatest = info.selected_dir === info.candidates[0].dir;
+    const hint = el("span");
+    hint.textContent = `找到 ${info.candidates.length} 次历史输出${isLatest ? "，已选最近一次" : ""}`;
+    const select = document.createElement("select");
+    info.candidates.forEach((candidate, index) => {
+      const option = document.createElement("option");
+      option.value = candidate.dir;
+      option.textContent = index === 0 ? `${candidate.label}（最近）` : candidate.label;
+      option.selected = candidate.dir === info.selected_dir;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      const next = select.value;
+      if (!next || next === info.selected_dir) return;
+      // 换底稿要重新逐个文件比对，只有后端算得出来：带着 preferred_resume_dir 重扫一次，
+      // 新结果回来会重新弹这个弹窗（走 runScan 原有的请求序号守卫，旧结果不会落地）。
+      handle()?.close();
+      void runScan(surface, next);
+    });
+    selRow.append(hint, select);
+    box.append(selRow);
+  }
+  return box;
+}
+
+/** 「**加粗词**：正文」这种一句话说明；openModal 会把它包进 <p>。 */
+function resumeLead(lead: string, body: string): HTMLElement {
+  const span = el("span");
+  const bold = el("b");
+  bold.textContent = lead;
+  span.append(bold, document.createTextNode(`：${body}`));
+  return span;
+}
+
+function resumeFootnote(body: string): HTMLElement {
+  const span = el("span");
+  span.style.cssText = "color:var(--ink-3);font-size:12.5px";
+  span.textContent = body;
+  return span;
+}
+
+function showResumeModal(surface: Surface, st: SurfaceState): void {
+  const info = resumeState(st);
+  if (!info || resumeHitCount(info) === 0) return;
+  const fileCount = st.files.length || info.files.length;
+  const single = fileCount === 1;
+  const s = info.summary;
+  // 「上次已全部翻完」只认 full：partial 显然还有活，found 是判定不出完整度的，
+  // diverged 是源文件已经变了的——都不能拿来当「翻完了」，那会把唯一能补译的
+  // 入口从界面上拿掉，或者拿旧版本的产物冒充新版本的成品。
+  const allDone = s.partial === 0 && s.none === 0 && s.found === 0 && s.diverged === 0;
+  const pdfPages = surface === "pdf" && s.page_total !== null && s.page_total > 0;
+  const remaining = pdfPages ? (s.page_total as number) - (s.page_done ?? 0) : 0;
+  // pdfPages 为假说明整批 PDF 一份可用的页存档都没有——续译完全靠这份存档才能只补差额，
+  // 存档不在，「接着上次继续」在后端会整份重新生成，跟「全部重新翻译」没有区别，
+  // 却顶着「不再重复花钱」的许诺，是在骗用户点它。
+  const pdfNoPageData = surface === "pdf" && !pdfPages && !allDone;
+  // pdfPages 为真时页汇总也可能没盖住整批：还有几个文件完全没有页记录（新加进来的、
+  // 或找到产物但读不出页存档），这些文件的工作量不在 s.page_total 里，两个选项的文案
+  // 都得把它们单独点出来，不然「10 页」听起来就是这一批的全部代价。
+  const pdfMissingPages = pdfPages ? pdfFilesMissingPageData(info) : 0;
+  const pdfMissingNote = pdfMissingPages > 0
+    ? `另有 ${pdfMissingPages} 个文件没有页记录，两种选法都会把它们整份重新生成，不计入这里的页数。`
+    : "";
+  const pdfDivergedNote = surface === "pdf" && s.diverged > 0
+    ? `另有 ${s.diverged} 个 PDF 的源文件在上次翻译后改动过，上次的页面无法复用，会整份重新生成。`
+    : "";
+
+  let handle: ModalHandle | null = null;
+  const foundBox = buildResumeFoundBox(surface, info, () => handle);
+  const body: (string | HTMLElement)[] = [foundBox];
+
+  if (allDone) {
+    body.push("上次这一批已经全部翻完，没有需要补译的内容，产物就在上面这个文件夹里。");
+    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
+    body.push(resumeFootnote("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+  } else if (pdfPages) {
+    body.push(resumeLead(
+      "接着上次继续",
+      `跳过已完成的 ${s.page_done ?? 0} 页，只生成剩下的 ${remaining} 页，最后装订成完整的 PDF。已生成的页面直接复用，不再重复花钱。${pdfMissingNote}${pdfDivergedNote}`,
+    ));
+    const warnBox = el("div", "resume-warn");
+    warnBox.append(icon("warn", { size: "sm" }));
+    const warnText = el("span");
+    warnText.textContent = "中途停止的任务，最后几页可能没有真正生成完。继续前会逐页核对，发现占位页或坏页会自动重新生成，不会照单全收。";
+    warnBox.append(warnText);
+    body.push(warnBox);
+    body.push(resumeLead("全部重新翻译", `${s.page_total} 页从头生成一遍。${pdfMissingNote}${pdfDivergedNote}`));
+    body.push(resumeFootnote("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+  } else if (pdfNoPageData) {
+    // 整批都是「源文件已改动」时按真实原因说话，别拿「读不到页存档」搪塞。
+    const allChanged = s.diverged > 0 && s.partial + s.found + s.full === 0;
+    body.push(allChanged
+      ? resumeLead("找到上次的翻译产物", "但源文件在上次翻译之后改动过，上次的页面无法复用，继续也会整份重新生成。")
+      : resumeLead("找到上次的翻译产物", "但读不到上次的页存档，继续也会整份重新生成，没法只补翻还缺的部分。"));
+    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
+    body.push(resumeFootnote("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+  } else {
+    // diverged 文件的「继续」承诺不了省钱：底稿被拒后整份重翻，只有翻译记忆兜底。
+    // 有一个说一个，不能让「一个字不动」的许诺盖到它们头上。
+    const resumables = s.partial + s.found + s.full;
+    const divergedNote = s.diverged > 0
+      ? `其中 ${s.diverged} 个文件的源文件在上次翻译后改动过，上次产物当不了底稿，会整份重新翻译（已翻过的内容尽量由翻译记忆复用）。`
+      : "";
+    body.push(s.diverged > 0 && resumables === 0
+      ? resumeLead("接着上次继续", "源文件在上次翻译后改动过，上次产物当不了底稿，这次会整份重新翻译；已翻过的内容尽量由翻译记忆复用。")
+      : resumeLead("接着上次继续", `以上次的译文为底稿，只翻译还缺译文的部分，已翻好的内容一个字不动，不再重复花钱。${divergedNote}`));
+    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
+    body.push(resumeFootnote("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+  }
+
+  const title = allDone
+    ? (single ? "这个文件上次已经翻完了" : "这批文件上次已经全部翻完")
+    : pdfNoPageData
+      ? (single ? "这份 PDF 找不到可用的续译记录" : "这些 PDF 找不到可用的续译记录")
+      : pdfPages
+        ? (single ? "这份 PDF 上次没有翻完" : "这些 PDF 上次没有翻完")
+        : (single ? "这个文件翻译过" : "这个文件夹翻译过一部分");
+
+  const actions: ModalAction[] = [
+    { label: "稍后再说", onClick: () => chooseFresh(surface, st) },
+    { label: "全部重新翻译", variant: allDone || pdfNoPageData ? "primary" : undefined, onClick: () => chooseFresh(surface, st) },
+  ];
+  // pdfNoPageData 时不给「接着上次继续」——那个按钮在后端会整份重新生成，跟「全部重新
+  // 翻译」结果一样，留着它只会让用户以为还有一条能省钱的路。
+  if (!allDone && !pdfNoPageData) {
+    actions.push({ label: "接着上次继续", variant: "primary", onClick: () => chooseResume(surface, st) });
+  }
+
+  handle = openModal({
+    tone: (pdfPages || pdfNoPageData) && !allDone ? "warn" : "tint",
+    icon: surface === "pdf" ? "pdf" : "folder",
+    sourceLabel: `${SURFACE_LABEL[surface]} · 扫描完成`,
+    title,
+    body,
+    actions,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 扫描
 // ---------------------------------------------------------------------------
 
@@ -2967,7 +3467,8 @@ const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
 const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false };
 
-async function runScan(surface: Surface): Promise<void> {
+/** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
+async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
   const st = states[surface];
   const path = st.sourcePath.trim();
   if (!path) return;
@@ -2976,13 +3477,14 @@ async function runScan(surface: Surface): Promise<void> {
   rerender(surface);
   try {
     const c = await getClient();
-    const payload = {
+    const payload: JsonObject = {
       surface,
       path,
       // 多选文件时按这几个路径各扫一次再合并；清单里就只有用户挑的那几份。
       paths: st.sourcePaths,
       include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
     };
+    if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
     if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
     const result = record(response.result) && Object.keys(record(response.result)).length ? record(response.result) : response;
@@ -2995,6 +3497,16 @@ async function runScan(surface: Surface): Promise<void> {
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
     st.fileOutcomes = new Map();
+    // 续译状态整体跟着这一次扫描重置，再按新的检测结果重建。
+    resetResumeState(st);
+    const detected = parsePreviousOutput(result.previous_output);
+    // selected_dir 为空说明后端定不出唯一的底稿目录（比如跨多个文件夹多选）。任务只认
+    // 一个 resume_output_dir，没有它「接着上次继续」根本兑现不了——这种检测结果连弹窗
+    // 都不该弹，弹了就是在承诺一件做不到的事。
+    if (detected && detected.selected_dir && resumeHitCount(detected) > 0) {
+      st.resumeInfo = detected;
+      st.resumeDetectedLang = detected.target_lang || st.targetLang;
+    }
     // 「记住上次目录」失败不能牵连扫描结果：清单已经拿到了，没道理因为写设置出错就清空它。
     try {
       await persistSettings({ [`last_${surface}_source_folder`]: path });
@@ -3007,6 +3519,8 @@ async function runScan(surface: Surface): Promise<void> {
       ? `已扫描到 ${items.length} 个 PDF / 图片输入${skipSuffix}。`
       : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
     showToast({ message: toastMessage });
+    // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
+    if (st.resumeInfo) showResumeModal(surface, st);
   } catch (error) {
     if (token !== scanTokens[surface]) return;
     // 扫描失败必须把上一次的清单清掉：留着旧结果，用户看到的是「路径 B + B 之外的文件」，
@@ -3015,6 +3529,7 @@ async function runScan(surface: Surface): Promise<void> {
     st.skipped = [];
     st.scanSummary = {};
     st.selected = new Set();
+    resetResumeState(st);
     showToast({ message: redactedText((error as Error)?.message, "扫描失败。"), error: true });
   } finally {
     if (token === scanTokens[surface]) {
@@ -3036,6 +3551,13 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     untranslated_only: Boolean(st.toggles.get("untranslated")),
     target_lang: st.targetLang,
   };
+  // 「接着上次继续」：底稿目录跟着请求走，Excel / Word 一律按补译跑。这里不读开关的 UI
+  // 状态——开关只是把这个决定显示出来，真正保证补译的是这一行。
+  const resumeDir = activeResumeDir(st);
+  if (resumeDir) {
+    payload.resume_output_dir = resumeDir;
+    if (surface !== "pdf") payload.untranslated_only = true;
+  }
   if (surface !== "pdf") payload.source_lang = st.sourceLang;
   if (surface === "excel") payload.allow_xls_fallback = st.allowXlsFallback;
   if (surface === "word") {
@@ -3444,6 +3966,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
   st.hasEverCompleted = true;
   closeStopModal(surface);
+  // 任务一到终态就把续译状态整体清零：resume_output_dir 指向的是这次任务开始前的产物
+  // 目录，这次任务自己刚写出的新产物根本不在那个目录里。不清空的话续译横幅还挂着
+  // 「接着上次继续」，用户点「开始翻译」会把 buildPayload() 里的旧 resume_output_dir
+  // 原样带上，把刚生成的内容当成「还没翻」重新翻一遍——重复花钱；而且文件表这时已经在
+  // 显示这次任务的完成芯片，续译横幅还说着上一次的话，两处对不上。
+  resetResumeState(st);
   const result = record(task.result);
   // 终态结果契约（core/*_task_runner.py 的 DoneMsg/ErrorMsg/StoppedMsg）没有 `summary`
   // 对象，也没有顶层 generated_count/review_count/auto_fixed_count——这些字段名在后端

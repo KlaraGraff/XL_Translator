@@ -660,6 +660,51 @@ table.review-tbl { table-layout: fixed; }
 
 
 /* ==========================================================================
+ * 续译（接着上次继续）
+ *
+ * 工作区文件表上方的两条（横幅 / 提示条）、状态列右边的角标，以及扫描完成弹窗里的
+ * 「找到的历史产物」方框。色值全部走 token，明暗两套自动跟随。
+ * ========================================================================== */
+
+/* 文本按钮：横幅和提示条里那种「链接样子的动作」，比 .btn 轻，比 .linklike 明确。 */
+.resume-link { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--tint-ink); cursor: pointer; font-weight: 600; white-space: nowrap; }
+.resume-link:hover { text-decoration: underline; }
+.resume-link.mute { color: var(--ink-3); font-size: 14px; line-height: 1; }
+
+/* 状态 C：选了「接着上次继续」之后的横幅 */
+.resume-banner { border: 1px solid var(--tint-line); background: var(--tint); border-radius: var(--r-md); padding: 11px 14px; display: flex; gap: 11px; align-items: flex-start; }
+.resume-banner .bi { width: 30px; height: 30px; border-radius: 99px; background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; flex: none; }
+.resume-banner .copy { flex: 1; min-width: 0; }
+.resume-banner b { font-weight: 650; }
+.resume-banner .sub { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; line-height: 1.6; overflow-wrap: anywhere; }
+.resume-banner .sub code { font: 11.5px var(--mono); }
+.resume-banner .acts { margin-left: auto; display: flex; gap: 8px; align-items: center; flex: none; }
+
+/* 状态 D：「稍后再说」之后那条安静的提示 */
+.resume-dismiss { border: 1px solid var(--line-2); background: var(--surface-2); border-radius: var(--r-md); padding: 9px 14px; display: flex; gap: 9px; align-items: center; font-size: 12.5px; color: var(--ink-2); }
+.resume-dismiss > .ic { color: var(--ink-3); flex: none; }
+.resume-dismiss .acts { margin-left: auto; display: flex; gap: 12px; align-items: center; flex: none; }
+
+/* 弹窗内：找到的历史产物 */
+.resume-found { border: 1px solid var(--line); background: var(--surface-2); border-radius: var(--r-md); padding: 10px 12px; }
+.resume-found .rf-path { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); }
+.resume-found .rf-path code { font: 11.5px/1.4 var(--mono); background: var(--ground-2); border-radius: 5px; padding: 2px 7px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+:root[data-theme="dark"] .resume-found .rf-path code { background: var(--ground); }
+.resume-found .rf-stats { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.resume-found .rf-page { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+.resume-found .rf-page .bar { flex: 1; }
+.resume-found .rf-page span { font-size: 12px; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+.resume-found .rf-sel { display: flex; align-items: center; gap: 7px; margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--line-2); font-size: 12px; color: var(--ink-3); }
+.resume-found .rf-sel select { font: inherit; font-size: 12px; height: 26px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); padding: 0 6px; max-width: 250px; }
+
+/* 弹窗内：中断产物要逐页核对的警示 */
+.resume-warn { border: 1px solid var(--warn-l); background: var(--warn-t); border-radius: var(--r-md); padding: 9px 12px; font-size: 12.5px; color: var(--ink-2); display: flex; gap: 8px; }
+.resume-warn .ic { color: var(--warn); flex: none; margin-top: 1px; }
+
+/* 右栏开关旁的「已自动开启」角标 */
+.resume-auto { font-size: 10.5px; font-weight: 650; color: var(--tint-ink); background: var(--tint); border-radius: 99px; padding: 1.5px 7px; flex: none; }
+
+/* ==========================================================================
  * 输入控件的聚焦态（状态层，必须留在文件最末）
  *
  * 走「边框变色 + 外发光」，比外描边更贴合表单的视觉语言。用 :focus 而不是
