@@ -1346,6 +1346,12 @@ def _process_sheet(
                 allowed_coordinates is None
                 or f"{_column_letter(col_index)}{row_num}" in allowed_coordinates
             )
+            # allowed_coordinates 非空即补译模式：坐标限定本该已经把公式格挡在
+            # 外面（见 excel_coverage._classify_excel_cell），这里再兜底一层——
+            # 补译的前提是「不动已完成内容」，公式格无论如何不该在这个模式下
+            # 被判定可写，任何一层的坐标计算算错都不该把 <f> 删掉换成静态译文。
+            if allowed_coordinates is not None and formula_el is not None:
+                position_allowed = False
             mutation = (
                 _plan_cell_mutation(
                     source_text,

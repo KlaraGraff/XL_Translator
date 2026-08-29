@@ -89,6 +89,7 @@ def build_excel_coverage_plan(
                         coordinate=cell.coordinate,
                         source_lang=source_lang,
                         target_lang=target_lang,
+                        is_formula=getattr(cell, "data_type", None) == "f",
                     )
                     if unit is not None:
                         units.append(unit)
@@ -213,6 +214,7 @@ def _classify_excel_cell(
     coordinate: str,
     source_lang: str,
     target_lang: str,
+    is_formula: bool = False,
 ) -> CoverageUnit | None:
     text = clean_coverage_text(raw)
     if not text:
@@ -223,6 +225,21 @@ def _classify_excel_cell(
     # 打回重译，那种 unit 的 source_text 只是格里的原文那一半，写入器按它去核对格子会
     # 对不上（格里还有旧译文）——认这一条。
     data = {"sheet": sheet_name, "coordinate": coordinate, "cell_text": text}
+
+    if is_formula:
+        # 公式格无论显示值/公式源码长什么样都不能进 source_only：那会被送去
+        # 翻译（白花一次 API 调用译公式源码），译文回填时又用同一把 key 命中
+        # 这一格，写入器会把 <f> 整个删掉换成静态译文——公式永久丢失。补译
+        # 模式的前提是「不动已完成内容」，公式格不属于「未翻译」，直接判 ignored。
+        return CoverageUnit(
+            source_text=text,
+            status=COVERAGE_IGNORED,
+            location=location,
+            kind="cell",
+            reason="公式单元格，补译模式不覆盖以保留公式。",
+            data=data,
+        )
+
     split = split_existing_bilingual_text(
         text,
         source_lang=source_lang,

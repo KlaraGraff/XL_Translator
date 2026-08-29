@@ -15,7 +15,7 @@ from openpyxl import Workbook, load_workbook
 
 from core.bilingual_writer import write_bilingual_file
 from core.excel_coverage import build_excel_coverage_plan
-from core.translation_coverage import COVERAGE_SOURCE_ONLY
+from core.translation_coverage import COVERAGE_IGNORED, COVERAGE_SOURCE_ONLY
 
 
 class _CoverageCase(unittest.TestCase):
@@ -158,8 +158,13 @@ class CoverageScanPerformanceTests(_CoverageCase):
             f"{self.FORMULA_CELLS} 个公式格扫了 {elapsed:.2f}s，公式显示值查询疑似退回逐格重解析",
         )
 
-    def test_formula_display_values_are_still_resolved(self) -> None:
-        """改成映射查表后，公式格的缓存显示值仍然要能被读出来。"""
+    def test_formula_cells_with_cached_values_never_become_candidates(self) -> None:
+        """审计高-6：公式格即使带缓存显示值，也一律忽略、绝不进补译候选。
+
+        旧契约是「缓存显示值被解析进 source_texts」——那正是补译把公式格整格
+        覆写成静态文本、公式永久丢失的入口，已废除。显示值映射的性能意图由上面
+        ``test_large_formula_sheet_scans_quickly`` 继续把守。
+        """
         source = self.root / "cached.xlsx"
         workbook = Workbook()
         sheet = workbook.active
@@ -177,7 +182,13 @@ class CoverageScanPerformanceTests(_CoverageCase):
             source_lang="zh",
             formula_display_value_backfill=True,
         )
-        self.assertEqual(plan.source_texts, ["配电箱"])
+        self.assertEqual(plan.source_texts, [])
+        formula_units = [
+            unit for unit in plan.units if unit.data.get("coordinate") == "A1"
+        ]
+        self.assertEqual(len(formula_units), 1)
+        self.assertEqual(formula_units[0].status, COVERAGE_IGNORED)
+        self.assertIn("公式", formula_units[0].reason)
 
 
 def _inject_cached_value(path: Path, coordinate: str, value: str) -> None:
