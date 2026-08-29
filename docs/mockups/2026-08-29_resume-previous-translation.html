@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>续译提示 · 样张 2026-08-29</title>
+<style>
+/* ============================================================
+ * token —— 原样取自 ui/src/styles/tokens.css
+ * ============================================================ */
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff; --ground:#f4f6fc; --ground-2:#ebeef8; --rail:#fbfcfe;
+  --surface:#fff; --surface-2:#f8fafe; --ink:#141a2e; --ink-2:#556080; --ink-3:#8a93ac;
+  --line:#e7ebf5; --line-2:#d9dfee; --accent:var(--accent-base); --accent-strong:#4353cc;
+  --on-accent:#fff; --tint:#f0f1ff; --tint-line:#ccd2ff; --tint-ink:#404fc2;
+  --ok:#12a366; --ok-t:#e2f4ed; --ok-l:#b3e2ce;
+  --warn:#c77a00; --warn-t:#f8eede; --warn-l:#edd4ad;
+  --danger:#e5484d; --danger-t:#fdebec; --danger-l:#f5bfc1;
+  --ring:#a9b3ff; --ring-soft:rgb(84 104 255/18%);
+  --sh-sm:0 1px 2px rgb(24 34 66/5%);
+  --sh-md:0 1px 2px rgb(24 34 66/5%),0 10px 26px -14px rgb(30 45 90/20%);
+  --sh-lg:0 2px 4px rgb(24 34 66/6%),0 24px 48px -22px rgb(30 45 90/30%);
+  --r-lg:15px; --r-md:12px; --r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0c1019; --ground-2:#090d15; --rail:#10151f; --surface:#151b28; --surface-2:#1a2130;
+  --ink:#eaedf7; --ink-2:#a4aec7; --ink-3:#6b7590; --line:#242c3e; --line-2:#313a50;
+  --accent:#8090ff; --accent-strong:var(--accent-base); --on-accent:#0b0f1a;
+  --tint:#1b223b; --tint-line:#283268; --tint-ink:#aab6ff;
+  --ok:#3ddc9a; --ok-t:#12291f; --ok-l:#1d4736;
+  --warn:#e5a33a; --warn-t:#2a2013; --warn-l:#4c3a19;
+  --danger:#ff6369; --danger-t:#2c1416; --danger-l:#5a2226;
+  --ring:#5f6fd6; --ring-soft:rgb(128 144 255/22%);
+  --sh-sm:0 1px 2px rgb(0 0 0/30%);
+  --sh-lg:0 2px 4px rgb(0 0 0/35%),0 24px 48px -22px rgb(0 0 0/70%);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--ground-2);color:var(--ink);font-family:var(--font);font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased;padding:0 0 80px}
+svg.ic{width:18px;height:18px;flex:none;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+svg.ic.sm{width:15px;height:15px}
+
+/* ---------- 陈列脚手架（不进产品） ---------- */
+.board-bar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:12px 26px;background:var(--surface);border-bottom:1px solid var(--line);box-shadow:var(--sh-sm)}
+.board-bar b{font-size:14px;font-weight:650}
+.board-bar .sp{flex:1}
+.jump{display:flex;gap:5px;flex-wrap:wrap}
+.jump a{font-size:11.5px;color:var(--ink-2);text-decoration:none;border:1px solid var(--line-2);
+  border-radius:99px;padding:3px 10px;background:var(--surface)}
+.jump a:hover{background:var(--surface-2);color:var(--ink)}
+.theme-btn{font:inherit;font-size:12px;height:28px;padding:0 12px;border-radius:7px;
+  border:1px solid var(--line-2);background:var(--surface);color:var(--ink);cursor:pointer}
+.sec{max-width:1180px;margin:0 auto;padding:34px 26px 0}
+.sec>h2{font-size:15.5px;font-weight:650;margin-bottom:4px}
+.sec>h2 i{font-style:normal;color:var(--ink-3);font-weight:500;font-size:12.5px;margin-left:8px}
+.sec>.desc{font-size:12.5px;color:var(--ink-2);max-width:820px;margin-bottom:14px;line-height:1.7}
+.frame{background:var(--ground);border:1px solid var(--line-2);border-radius:var(--r-lg);
+  padding:18px;box-shadow:var(--sh-md);overflow:hidden}
+.note-x{font-size:12px;color:var(--ink-3);margin-top:9px;line-height:1.65;max-width:820px}
+.note-x b{color:var(--ink-2);font-weight:600}
+
+/* ---------- 产品组件（取自 ui/src/styles/app.css） ---------- */
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);
+  color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn:hover{background:var(--surface-2)}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600;box-shadow:var(--sh-sm)}
+.btn.pri:hover{background:var(--accent-strong)}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px;width:fit-content;white-space:nowrap}
+.chip.ok{background:var(--ok-t);color:var(--ok)}
+.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}
+.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+:root[data-theme="dark"] .chip.mute{background:var(--ground)}
+.bar{height:7px;border-radius:99px;background:var(--ground-2);overflow:hidden}
+:root[data-theme="dark"] .bar{background:var(--ground)}
+.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),#7d8cff)}
+
+/* 模态（app.css .overlay/.modal 原样，overlay 改为在样张 stage 内绝对定位） */
+.stage{position:relative;border-radius:var(--r-md);overflow:hidden;min-height:430px;
+  background:
+    radial-gradient(circle at 20% 15%, rgb(84 104 255/8%), transparent 42%),
+    var(--ground-2)}
+:root[data-theme="dark"] .stage{background:var(--ground)}
+.stage .scrim{position:relative;background:rgb(10 14 26/45%);display:flex;align-items:flex-start;justify-content:center;padding:52px 20px 28px}
+.modal{position:relative;display:flex;flex-direction:column;width:430px;max-width:100%;background:var(--surface);
+  border-radius:var(--r-lg);box-shadow:var(--sh-lg);padding:22px 22px 18px}
+.modal .mbody{overflow-y:auto;min-height:0}
+.modal .mi{width:38px;height:38px;border-radius:99px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+.modal .mi.tint{background:var(--tint);color:var(--tint-ink)}
+.modal .mi.warn{background:var(--warn-t);color:var(--warn)}
+.modal h3{font-size:15px;font-weight:650;margin-bottom:7px}
+.modal p{font-size:13px;color:var(--ink-2);margin-bottom:8px}
+.modal .macts{display:flex;justify-content:flex-end;gap:9px;margin-top:16px;flex-wrap:wrap}
+.mlabel{position:absolute;top:-34px;left:22px;font-size:11.5px;font-weight:650;letter-spacing:.06em;color:#fff;background:rgb(10 14 26/55%);border-radius:99px;padding:3px 12px;white-space:nowrap}
+
+/* 模态内的新增元素（本样张提案） */
+.found{border:1px solid var(--line);background:var(--surface-2);border-radius:var(--r-md);padding:10px 12px;margin-bottom:10px}
+.found .fp{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink)}
+.found .fp code{font:11.5px/1.4 var(--mono);background:var(--ground-2);border-radius:5px;padding:2px 7px;color:var(--ink-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+:root[data-theme="dark"] .found .fp code{background:var(--ground)}
+.found .fs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.found .fsel{display:flex;align-items:center;gap:7px;margin-top:9px;padding-top:9px;border-top:1px dashed var(--line-2);font-size:12px;color:var(--ink-3)}
+.found select{font:inherit;font-size:12px;height:26px;border-radius:7px;border:1px solid var(--line-2);
+  background:var(--surface);color:var(--ink);padding:0 6px;max-width:250px}
+.mwarn{border:1px solid var(--warn-l);background:var(--warn-t);border-radius:var(--r-md);padding:9px 12px;
+  font-size:12.5px;color:var(--ink-2);display:flex;gap:8px;margin-bottom:8px}
+.mwarn svg{color:var(--warn);margin-top:1px}
+.pgline{display:flex;align-items:center;gap:10px;margin:2px 0 10px}
+.pgline .bar{flex:1}
+.pgline span{font-size:12px;color:var(--ink-2);font-weight:600;white-space:nowrap}
+
+/* 工作区片段（状态 C/D 用） */
+.wcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm);padding:14px 16px}
+.resume-banner{border:1px solid var(--tint-line);background:var(--tint);border-radius:var(--r-md);
+  padding:11px 14px;display:flex;gap:11px;align-items:flex-start;margin-bottom:12px}
+.resume-banner .bi{width:30px;height:30px;border-radius:99px;background:var(--accent);color:var(--on-accent);
+  display:flex;align-items:center;justify-content:center;flex:none}
+.resume-banner b{font-weight:650}
+.resume-banner .sub{font-size:12.5px;color:var(--ink-2);margin-top:2px;line-height:1.6}
+.resume-banner .acts{margin-left:auto;display:flex;gap:8px;align-items:center;flex:none}
+.linkbtn{border:0;background:none;padding:0;font:inherit;font-size:12.5px;color:var(--tint-ink);cursor:pointer;font-weight:600;white-space:nowrap}
+.linkbtn:hover{text-decoration:underline}
+.dismiss-bar{border:1px solid var(--line-2);background:var(--surface-2);border-radius:var(--r-md);
+  padding:9px 14px;display:flex;gap:9px;align-items:center;font-size:12.5px;color:var(--ink-2)}
+.dismiss-bar svg{color:var(--ink-3)}
+.dismiss-bar .acts{margin-left:auto;display:flex;gap:12px}
+
+table.ft{width:100%;border-collapse:collapse;font-size:12.5px}
+table.ft th{font-size:11px;font-weight:650;letter-spacing:.05em;color:var(--ink-3);text-align:left;
+  padding:7px 10px;border-bottom:1px solid var(--line-2);white-space:nowrap}
+table.ft td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.ft tr:last-child td{border-bottom:0}
+table.ft .fname{display:flex;align-items:center;gap:8px;font-weight:550;color:var(--ink)}
+table.ft .num{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.ck{width:14px;height:14px;border-radius:4px;border:1.5px solid var(--line-2);display:inline-block;vertical-align:-2px;flex:none}
+.ck.on{background:var(--accent);border-color:var(--accent);position:relative}
+.ck.on::after{content:"";position:absolute;left:3.5px;top:1px;width:4px;height:7.5px;border:solid var(--on-accent);border-width:0 2px 2px 0;transform:rotate(42deg)}
+.thead-meta{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--ink-3)}
+.thead-meta b{color:var(--ink-2);font-weight:650}
+.toggle-line{display:flex;align-items:center;gap:9px;padding:8px 2px 0;font-size:13px}
+.toggle-line .sw{width:30px;height:18px;border-radius:99px;background:var(--line-2);position:relative;flex:none}
+.toggle-line .sw.on{background:var(--accent)}
+.toggle-line .sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:99px;background:#fff;box-shadow:var(--sh-sm);transition:left .15s}
+.toggle-line .sw.on::after{left:14px}
+.toggle-line .hint{font-size:12px;color:var(--ink-3)}
+.autochip{font-size:10.5px;font-weight:650;color:var(--tint-ink);background:var(--tint);border-radius:99px;padding:1.5px 7px}
+
+/* 边界态卡片 */
+.edge-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px}
+.edge{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px}
+.edge b{font-size:12.5px;font-weight:650;display:block;margin-bottom:4px}
+.edge p{font-size:12px;color:var(--ink-2);line-height:1.65}
+</style>
+</head>
+<body>
+
+<div class="board-bar">
+  <b>「接着上次继续」提示 · 样张</b>
+  <span style="font-size:12px;color:var(--ink-3)">2026-08-29 · 扫描完成后检测历史产物 → 弹窗二选一</span>
+  <span class="sp"></span>
+  <nav class="jump">
+    <a href="#s-a">A 弹窗·Excel 文件夹</a>
+    <a href="#s-b">B 弹窗·PDF 中断续跑</a>
+    <a href="#s-c">C 选继续后的工作区</a>
+    <a href="#s-d">D 稍后再说</a>
+    <a href="#s-e">E 边界态</a>
+  </nav>
+  <button class="theme-btn" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'':'dark'">明暗切换</button>
+</div>
+
+<!-- ============================================================ A -->
+<section class="sec" id="s-a">
+  <h2>状态 A · 检测到历史产物（Excel 文件夹）<i>扫描完成后立即弹出，一次任务只弹一次</i></h2>
+  <p class="desc">扫描结束时，程序在源文件夹旁（或自定义输出根目录下）找 <code>文件夹名_翻译输出_*</code> 的历史目录，
+    并按当前目标语言的产物命名规则逐个文件比对。找到才弹，找不到不打扰。Word 与 Excel 同一形态，只是统计口径换成段落。</p>
+  <div class="frame">
+    <div class="stage">
+      <div class="scrim">
+        <div class="modal">
+          <span class="mlabel">Excel · 扫描完成</span>
+          <div class="mi tint"><svg class="ic" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5"/></svg></div>
+          <div class="mbody">
+            <h3>这个文件夹翻译过一部分</h3>
+            <div class="found">
+              <div class="fp">
+                <svg class="ic sm" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                <code>销售报表_翻译输出_20260828_154210</code>
+              </div>
+              <div class="fs">
+                <span class="chip ok">8 个已有完整译文</span>
+                <span class="chip warn">1 个翻了一部分</span>
+                <span class="chip mute">3 个还没有译文</span>
+              </div>
+              <div class="fsel">
+                找到 2 次历史输出，已选最近一次
+                <select><option>08-28 15:42（最近）</option><option>08-21 09:17</option></select>
+              </div>
+            </div>
+            <p><b>接着上次继续</b>：以上次的译文为底稿，只翻译还缺译文的部分，已翻好的内容一个字不动，不再重复花钱。</p>
+            <p><b>全部重新翻译</b>：不管上次的结果，12 个文件从头翻一遍。</p>
+            <p style="color:var(--ink-3);font-size:12.5px">两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。</p>
+          </div>
+          <div class="macts">
+            <button class="btn">稍后再说</button>
+            <button class="btn">全部重新翻译</button>
+            <button class="btn pri">接着上次继续</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note-x"><b>交互约定：</b>「稍后再说」= 关闭弹窗、本次按全部重新翻译准备（见状态 D，可再改）。
+      弹窗不阻塞扫描结果展示——文件表已在背后就位。多次历史输出默认取最近一次，下拉可切换。</p>
+  </div>
+</section>
+
+<!-- ============================================================ B -->
+<section class="sec" id="s-b">
+  <h2>状态 B · PDF 中断续跑<i>带页级进度 + 中断产物核查警示</i></h2>
+  <p class="desc">PDF 按页计费、按页产出，是续译省钱最多的场景。程序从历史输出目录里的
+    <code>pdf_translation_manifest.json</code> 与逐页存档读出「翻到第几页」。上次是中途停止的任务时，
+    额外提示会先逐页核对——防止把占位页、坏页当成已完成（对应审查发现的中断产物陷阱）。</p>
+  <div class="frame">
+    <div class="stage">
+      <div class="scrim">
+        <div class="modal">
+          <span class="mlabel">PDF · 扫描完成</span>
+          <div class="mi warn"><svg class="ic" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v4h4"/><path d="M9 13h6M9 17h4"/></svg></div>
+          <div class="mbody">
+            <h3>这份 PDF 上次没有翻完</h3>
+            <div class="found">
+              <div class="fp">
+                <svg class="ic sm" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M15 3v4h4"/></svg>
+                <code>产品手册_翻译输出_20260828_210344</code>
+              </div>
+              <div class="pgline" style="margin-top:9px">
+                <div class="bar"><i style="width:38%"></i></div>
+                <span>已完成 45 / 120 页</span>
+              </div>
+              <div class="fs" style="margin-top:0">
+                <span class="chip warn">上次任务 08-28 21:07 被手动停止</span>
+              </div>
+            </div>
+            <p><b>接着上次继续</b>：跳过已完成的 45 页，只生成剩下的 75 页，最后装订成完整的 PDF。已生成的页面直接复用，不再重复花钱。</p>
+            <div class="mwarn">
+              <svg class="ic sm" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18.1a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+              <span>中途停止的任务，最后几页可能没有真正生成完。继续前会逐页核对，发现占位页或坏页会自动重新生成，不会照单全收。</span>
+            </div>
+            <p><b>全部重新翻译</b>：120 页从头生成一遍。</p>
+          </div>
+          <div class="macts">
+            <button class="btn">稍后再说</button>
+            <button class="btn">全部重新翻译</button>
+            <button class="btn pri">接着上次继续</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note-x"><b>为什么 PDF 单独一版：</b>Excel/Word 的「继续」靠逐格/逐段补译，粒度是内容；
+      PDF 的「继续」靠逐页存档，粒度是页，所以进度条和警示只在 PDF 出现。</p>
+  </div>
+</section>
+
+<!-- ============================================================ C -->
+<section class="sec" id="s-c">
+  <h2>状态 C · 选了「接着上次继续」之后<i>工作区顶部横幅 + 文件表逐行标注</i></h2>
+  <p class="desc">点「接着上次继续」不立即开跑——回到工作区让用户过目：横幅说明本次的底稿来源，
+    「仅补译未翻译内容」开关自动打开（带「自动」角标），文件表状态列换成逐文件的续译判定。用户确认无误后照常点「开始翻译」。</p>
+  <div class="frame">
+    <div class="wcard">
+      <div class="resume-banner">
+        <div class="bi"><svg class="ic sm" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg></div>
+        <div>
+          <b>接着上次继续</b>
+          <div class="sub">以 <code style="font:11.5px var(--mono)">销售报表_翻译输出_20260828_154210</code> 里的译文为底稿，只补缺失的部分；结果存入新的输出文件夹。</div>
+        </div>
+        <div class="acts">
+          <button class="linkbtn">改为全部重译</button>
+        </div>
+      </div>
+      <div class="thead-meta"><b>已选 12 / 12</b>·<span>全选</span>·<span>全不选</span></div>
+      <table class="ft">
+        <thead><tr><th></th><th>文件</th><th>格式</th><th>工作表</th><th>文本单元格</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td><span class="ck on"></span></td><td class="fname">Q3_东区销售.xlsx</td><td class="num">xlsx</td><td class="num">4</td><td class="num">1,208</td><td><span class="chip ok">已有译文 · 原样保留</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">Q3_西区销售.xlsx</td><td class="num">xlsx</td><td class="num">4</td><td class="num">1,164</td><td><span class="chip ok">已有译文 · 原样保留</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">年度汇总.xlsx</td><td class="num">xlsx</td><td class="num">9</td><td class="num">3,842</td><td><span class="chip warn">部分翻译 · 补 214 格</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">新品价目表.xlsx</td><td class="num">xlsx</td><td class="num">2</td><td class="num">655</td><td><span class="chip tint">无译文 · 全量翻译</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">渠道对账单.xls</td><td class="num">xls</td><td class="num">1</td><td class="num">302</td><td><span class="chip tint">无译文 · 全量翻译</span></td></tr>
+        </tbody>
+      </table>
+      <div class="toggle-line">
+        <span class="sw on"></span>
+        <span>仅补译未翻译内容</span>
+        <span class="autochip">已自动开启</span>
+        <span class="hint">只翻译还没有译文的内容，已翻译部分保持不变。</span>
+      </div>
+    </div>
+    <p class="note-x"><b>底稿切换的含义：</b>「已有译文 / 部分翻译」的文件，本次任务读的是上次输出里的双语文件（不是原始源文件）；
+      「无译文」的文件照常读源文件。输出文件名与直接翻源文件时完全一致，不会出现「_双语_双语」的叠加后缀。</p>
+  </div>
+</section>
+
+<!-- ============================================================ D -->
+<section class="sec" id="s-d">
+  <h2>状态 D · 点了「稍后再说」<i>不纠缠，但留一个回头的入口</i></h2>
+  <p class="desc">关掉弹窗后，文件表上方留一条安静的提示条，本次按「全部重新翻译」准备。想反悔点「重新选择」再弹一次；点「×」彻底收起，本次扫描内不再出现。</p>
+  <div class="frame">
+    <div class="wcard">
+      <div class="dismiss-bar">
+        <svg class="ic sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        <span>检测到上次的翻译结果（8/12 个文件已有译文）。本次将全部重新翻译。</span>
+        <div class="acts">
+          <button class="linkbtn">重新选择</button>
+          <button class="linkbtn" style="color:var(--ink-3)">×</button>
+        </div>
+      </div>
+      <div class="thead-meta" style="margin-top:12px"><b>已选 12 / 12</b>·<span>全选</span>·<span>全不选</span></div>
+      <table class="ft">
+        <thead><tr><th></th><th>文件</th><th>格式</th><th>工作表</th><th>文本单元格</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td><span class="ck on"></span></td><td class="fname">Q3_东区销售.xlsx</td><td class="num">xlsx</td><td class="num">4</td><td class="num">1,208</td><td><span class="chip mute">未开始</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">Q3_西区销售.xlsx</td><td class="num">xlsx</td><td class="num">4</td><td class="num">1,164</td><td><span class="chip mute">未开始</span></td></tr>
+          <tr><td><span class="ck on"></span></td><td class="fname">年度汇总.xlsx</td><td class="num">xlsx</td><td class="num">9</td><td class="num">3,842</td><td><span class="chip mute">未开始</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ E -->
+<section class="sec" id="s-e">
+  <h2>状态 E · 边界态<i>什么时候不弹、弹了信息怎么变</i></h2>
+  <div class="edge-grid">
+    <div class="edge">
+      <b>没有历史产物 → 完全不弹</b>
+      <p>找不到 <code>_翻译输出_</code> 历史目录、或目录里没有一个文件对得上号，一切照旧，用户感知不到这个功能存在。</p>
+    </div>
+    <div class="edge">
+      <b>换了目标语言 → 视为无历史</b>
+      <p>产物文件名里带语言名（如「_中文_双语」）。上次翻的是英文、这次选日文，对不上号，不弹窗、从头翻。弹窗只认「同一目标语言」的历史。</p>
+    </div>
+    <div class="edge">
+      <b>自定义输出目录 → 去那里找</b>
+      <p>设置了「输出到指定文件夹」的用户，历史目录在那个根目录下找，逻辑不变；弹窗里展示的路径换成对应位置。</p>
+    </div>
+    <div class="edge">
+      <b>上次全部翻完 → 弹窗变提示</b>
+      <p>12/12 个文件都有完整译文时，「接着上次继续」没有可补的内容。弹窗改为两个按钮：「全部重新翻译」和「稍后再说」，并说明「上次已全部翻完，产物在 ×××」。</p>
+    </div>
+    <div class="edge">
+      <b>历史产物被手工改过名 → 找不到就算了</b>
+      <p>检测只按标准命名规则比对，用户改过名、移动过的产物不强行识别，宁可漏报不误报。</p>
+    </div>
+    <div class="edge">
+      <b>多选零散文件（非文件夹）→ 按各自所在目录找</b>
+      <p>「浏览多选」进来的文件，逐个在其所在文件夹旁找历史目录；有部分文件命中时弹窗照常，统计口径按命中的说。</p>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>
