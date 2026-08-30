@@ -59,11 +59,18 @@ def build_excel_coverage_plan(
 
     source_path = Path(path)
     wb = load_workbook(str(source_path), read_only=True, data_only=False)
-    wb_values = (
-        load_workbook(str(source_path), read_only=True, data_only=True)
-        if formula_display_value_backfill
-        else None
-    )
+    # 第二次 load 也会失败（同一个文件损坏、内存不够、被别的进程锁住），失败时
+    # 第一个工作簿还开着——read_only 的 openpyxl 抱着 zip 文件句柄不放，异常一路
+    # 抛出去就再没人关得掉它。Windows 上这个句柄还会让后续的改名/删除直接失败。
+    try:
+        wb_values = (
+            load_workbook(str(source_path), read_only=True, data_only=True)
+            if formula_display_value_backfill
+            else None
+        )
+    except BaseException:
+        wb.close()
+        raise
     units: list[CoverageUnit] = []
     try:
         workbook_sheet_names = set(wb.sheetnames)
@@ -328,6 +335,13 @@ def _resolve_cell_text(
 ) -> str | None:
     value = cell.value
     if not isinstance(value, str):
+        return None
+    if getattr(cell, "data_type", None) == "e":
+        # 错误值格（``<c t="e">``）的「值」就是 ``#N/A`` / ``#REF!`` 这串符号本身，
+        # openpyxl 把它读成字符串，于是整条管线都把它当正文：排进待译词条 →
+        # 花一次 API 调用译成「不适用」→ 写入端按同一把键命中这一格。写入端已经
+        # 挡住了改写（xlsx_patcher._is_error_cell），这里连词条都不该收——收下就是
+        # 白花钱，还会让补译报告把这一格算成「未翻译内容」。
         return None
     if not formula_display_value_backfill or getattr(cell, "data_type", None) != "f":
         return value

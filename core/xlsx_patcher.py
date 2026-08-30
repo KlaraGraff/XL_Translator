@@ -43,7 +43,6 @@ from config import (
     REVIEW_MARK_COLOR_DEFAULTS,
 )
 from core.mixed_language import MIXED_MARK_UNRESOLVED
-from core.translation_filter import should_translate
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 
 # ── 命名空间 ──────────────────────────────────────────────────────────────────
@@ -860,6 +859,20 @@ def _cell_display_text(cell, shared_strings: list[str]) -> str | None:
     return None  # 数字 / 布尔 / 日期在 openpyxl 里不是 str
 
 
+def _is_error_cell(cell) -> bool:
+    """这一格存的是不是错误值（``#N/A`` / ``#REF!`` / ``#DIV/0!`` …）。
+
+    Excel 把错误值存成 ``<c t="e"><v>#N/A</v></c>``——**值**是那串符号本身。整条
+    管线只认「读出来是不是字符串」，所以错误格一路畅通：抽取端收下它、送去翻译、
+    回填时按同一把键命中这一格，最后整格被换成 ``#N/A\\n不适用`` 的 inlineStr，
+    错误格降级成文本格，公式的计算结果被一个译文覆盖掉。
+
+    ``.xls`` 兼容转换按 ctype 还原错误值之后这条路第一次走得通（原来写的是错误码
+    数字，抽取端只收 str 所以够不着），原生 .xlsx 里的错误格则一直有这个毛病。
+    """
+    return cell.get("t") == "e"
+
+
 def _cell_static_text(cell, shared_strings: list[str]) -> str | None:
     """非公式单元格在 openpyxl 里的字符串值；非字符串返回 None。"""
     cell_type = cell.get("t", "n")
@@ -920,7 +933,61 @@ def _set_cell_inline_text(cell, text: str) -> bool:
     return removed_formula
 
 
-def _promote_shared_formula(root, formula_el) -> bool:
+class _SharedFormulaIndex:
+    """一张分表里所有带 ``si`` 的公式单元格，按共享组分好、整表只扫一遍。
+
+    让渡主控权要找出同组的其它单元格。原来每让渡一次就把整张分表重扫一遍：一列
+    长公式上就是 O(n²)，实测每翻一倍行数耗时涨四倍（200 行 0.19s → 1600 行
+    11.7s），上万行的表在用户眼里就是任务假死。这里整表扫一次建索引，之后每次
+    让渡都是一次字典查询。
+
+    索引建好之后单元格还会继续被改写（``_set_cell_inline_text`` 会把 ``<f>``
+    删掉，让渡也会摘掉 ``si``），所以取用时逐条复核「``<f>`` 还在、``si`` 还是
+    这一组」，过期条目当场从组里剔除，不让它们在后续让渡里被当成候选。
+    """
+
+    def __init__(self, root) -> None:
+        self._root = root
+        self._groups: dict[str, list[tuple[int, int, object]]] | None = None
+
+    def _build(self) -> dict[str, list[tuple[int, int, object]]]:
+        groups: dict[str, list[tuple[int, int, object]]] = {}
+        for row_num, row in _iter_rows(self._root):
+            for _, col_index, cell in _iter_cells(row, row_num):
+                formula_el = cell.find(_m("f"))
+                if formula_el is None:
+                    continue
+                share_id = formula_el.get("si")
+                if share_id is None:
+                    continue
+                groups.setdefault(share_id, []).append((row_num, col_index, cell))
+        return groups
+
+    def dependents(self, share_id: str, master_cell) -> list[tuple[int, int, object]]:
+        """同组里除 ``master_cell`` 之外仍然有效的单元格（文档顺序）。
+
+        返回 ``(行号, 列号, <f> 元素)``，与整表重扫时的顺序一致。
+        """
+        if self._groups is None:
+            self._groups = self._build()
+        entries = self._groups.get(share_id)
+        if not entries:
+            return []
+
+        live: list[tuple[int, int, object]] = []
+        result: list[tuple[int, int, object]] = []
+        for row_num, col_index, cell in entries:
+            formula_el = cell.find(_m("f"))
+            if formula_el is None or formula_el.get("si") != share_id:
+                continue  # 已被改写成 inlineStr，或已经在上一次让渡里脱组
+            live.append((row_num, col_index, cell))
+            if cell is not master_cell:
+                result.append((row_num, col_index, formula_el))
+        self._groups[share_id] = live
+        return result
+
+
+def _promote_shared_formula(index: _SharedFormulaIndex, formula_el) -> bool:
     """把要被删除的共享公式主单元格的主控权让给组里下一个单元格。
 
     返回 True 表示已安全处理（无依赖或已成功让渡），False 表示应放弃改写该单元格。
@@ -934,15 +1001,7 @@ def _promote_shared_formula(root, formula_el) -> bool:
 
     master_cell = formula_el.getparent()
     master_coord = master_cell.get("r")
-    dependents: list[tuple[int, int, object]] = []
-    for row_num, row in _iter_rows(root):
-        for _, col_index, cell in _iter_cells(row, row_num):
-            if cell is master_cell:
-                continue
-            other = cell.find(_m("f"))
-            if other is None or other.get("si") != share_id:
-                continue
-            dependents.append((row_num, col_index, other))
+    dependents = index.dependents(share_id, master_cell)
     if not dependents:
         return True
 
@@ -954,28 +1013,51 @@ def _promote_shared_formula(root, formula_el) -> bool:
     except ImportError:  # pragma: no cover - openpyxl 是硬依赖
         return False
 
-    new_master_row, new_master_col, new_master_f = dependents[0]
-    new_master_coord = f"{_column_letter(new_master_col)}{new_master_row}"
-    try:
-        translated = Translator(
-            f"={formula_el.text}", origin=master_coord
-        ).translate_formula(new_master_coord)
-    except Exception as error:  # noqa: BLE001 - 公式无法平移时放弃改写更安全
-        logger.warning(f"共享公式主控权让渡失败（{master_coord}）：{error}")
-        return False
+    translator = Translator(f"={formula_el.text}", origin=master_coord)
 
+    def _translate(row_num: int, col_index: int) -> str:
+        return translator.translate_formula(
+            f"{_column_letter(col_index)}{row_num}"
+        ).lstrip("=")
+
+    new_master_row, new_master_col, new_master_f = dependents[0]
     min_row = min(item[0] for item in dependents)
     max_row = max(item[0] for item in dependents)
     min_col = min(item[1] for item in dependents)
     max_col = max(item[1] for item in dependents)
-    new_ref = (
-        f"{_column_letter(min_col)}{min_row}:{_column_letter(max_col)}{max_row}"
-    )
+    # 共享公式的 ``ref`` 左上角必须就是主控格本身——从属格靠「相对主控格的偏移」
+    # 推出自己的公式，左上角指着一个已经不在组里的格子，Excel 打开时会判文件需要
+    # 修复。剩下的从属格排成一列/一行时（绝大多数情况）新主控格天然就是左上角；
+    # 排成二维块时（例如主控 B2、从属 C2/B3/C3）左上角是刚被改写掉的 B2，让不出
+    # 一个合法的组——那就整组拆开，每格写回自己的完整公式，语义完全一样。
+    can_stay_shared = min_row == new_master_row and min_col == new_master_col
 
-    new_master_f.text = translated.lstrip("=")
-    new_master_f.set("t", "shared")
-    new_master_f.set("si", share_id)
-    new_master_f.set("ref", new_ref)
+    try:
+        if can_stay_shared:
+            new_master_f.text = _translate(new_master_row, new_master_col)
+        else:
+            expanded = [
+                (dep_f, _translate(row_num, col_index))
+                for row_num, col_index, dep_f in dependents
+            ]
+    except Exception as error:  # noqa: BLE001 - 公式无法平移时放弃改写更安全
+        logger.warning(f"共享公式主控权让渡失败（{master_coord}）：{error}")
+        return False
+
+    if can_stay_shared:
+        new_master_f.set("t", "shared")
+        new_master_f.set("si", share_id)
+        new_master_f.set(
+            "ref",
+            f"{_column_letter(min_col)}{min_row}:{_column_letter(max_col)}{max_row}",
+        )
+        return True
+
+    for dep_f, text in expanded:
+        dep_f.text = text
+        dep_f.attrib.pop("t", None)
+        dep_f.attrib.pop("si", None)
+        dep_f.attrib.pop("ref", None)
     return True
 
 
@@ -1272,6 +1354,8 @@ class _SheetOutcome:
     removed_formula: bool = False
     anchor_frozen_count: int = 0
     truncated_positions: list[str] = field(default_factory=list)
+    # 有译文在手、但因为是错误值而按原样保留的单元格坐标。
+    error_positions: list[str] = field(default_factory=list)
 
 
 def _process_sheet(
@@ -1281,8 +1365,6 @@ def _process_sheet(
     shared_strings: list[str],
     styles: _Styles,
     translations: dict[str, str],
-    target_lang: str,
-    source_lang: str,
     formula_display_value_backfill: bool,
     lock_row_height: bool,
     review_enabled: bool,
@@ -1300,6 +1382,7 @@ def _process_sheet(
 
     root = _parse(data)
     geometry = _SheetGeometry(root)
+    shared_formulas = _SharedFormulaIndex(root)
     outcome = _SheetOutcome()
     dirty = False
 
@@ -1342,6 +1425,18 @@ def _process_sheet(
                 shared_strings,
                 formula_display_value_backfill,
             )
+            # 手上正好有这格错误值的「译文」，说明它已经被送去翻译过一轮了。写是
+            # 不写的（见 _is_error_cell），但得在任务日志里说一声，别让用户对着一格
+            # 没跟着译的 #N/A 猜是不是漏了。
+            if (
+                source_text is None
+                and _is_error_cell(cell)
+                and current_text
+                and current_text.strip() in translations
+            ):
+                outcome.error_positions.append(
+                    f"{entry.name}!{_column_letter(col_index)}{row_num}"
+                )
             position_allowed = (
                 allowed_coordinates is None
                 or f"{_column_letter(col_index)}{row_num}" in allowed_coordinates
@@ -1356,14 +1451,25 @@ def _process_sheet(
                 _plan_cell_mutation(
                     source_text,
                     translations=translations,
-                    target_lang=target_lang,
-                    source_lang=source_lang,
                     review_enabled=review_enabled,
                     review_mark_map=review_mark_map,
                 )
                 if position_allowed
                 else None
             )
+
+            # 共享公式的主控权让不出去 → 整格放弃改写，连底色都不涂。判定必须赶在
+            # 涂色之前：涂了色又没有译文，用户看到的是一格无缘无故变了颜色，而放弃
+            # 的原因只躺在 loguru 里，任务日志一个字都查不到。
+            if mutation is not None and mutation[0] is not None and formula_el is not None:
+                if not _promote_shared_formula(shared_formulas, formula_el):
+                    if log_callback:
+                        log_callback(
+                            f"[WARN] {entry.name}!{_column_letter(col_index)}{row_num} "
+                            "是共享公式的主控单元格，主控权无法转交给同组其它单元格，"
+                            "已跳过改写（公式与原文保持不变）"
+                        )
+                    mutation = None
 
             if mutation is not None:
                 new_text, mark_kind = mutation
@@ -1392,10 +1498,6 @@ def _process_sheet(
                         outcome.review_marked += 1
                     else:
                         outcome.review_skipped += 1
-
-                if new_text is not None:
-                    if formula_el is not None and not _promote_shared_formula(root, formula_el):
-                        new_text = None
 
                 if new_text is not None:
                     coordinate = f"{_column_letter(col_index)}{row_num}"
@@ -1433,9 +1535,14 @@ def _process_sheet(
                             font_size = size
                         outcome.shrunk_cells += 1
                         if reached_floor and log_callback:
+                            # 原字号本来就小于触底阈值时下界是它自己（只减不增），
+                            # 报出来的必须是这一格真实的最小字号，不是全局阈值。
+                            floor_size = (
+                                size if size is not None else styles.font_size(base_index)
+                            )
                             log_callback(
                                 f"[WARN] {entry.name}!{_column_letter(col_index)}{row_num} "
-                                f"缩至最小字号 {PRINT_GUARD_FONT_FLOOR:.1f}pt 仍可能无法完全显示"
+                                f"缩至最小字号 {floor_size:.1f}pt 仍可能无法完全显示"
                             )
 
                     new_index = styles.resolve(
@@ -1490,9 +1597,15 @@ def _resolve_source_text(
     formula_display_value_backfill: bool,
 ) -> str | None:
     if formula_el is None:
+        # 错误值不是正文，改写它等于把 Excel 的计算结果换成一段译文。
+        if _is_error_cell(cell):
+            return None
         return _cell_static_text(cell, shared_strings)
     if not formula_display_value_backfill:
         return "=" + (formula_el.text or "")
+    # 回填模式下取的是公式的显示值——算出来是 #N/A 的公式格同理不能动。
+    if _is_error_cell(cell):
+        return None
     return _cell_display_text(cell, shared_strings)
 
 
@@ -1500,17 +1613,23 @@ def _plan_cell_mutation(
     source_text: str | None,
     *,
     translations: dict[str, str],
-    target_lang: str,
-    source_lang: str,
     review_enabled: bool,
     review_mark_map: dict[str, str],
 ) -> tuple[str | None, str | None] | None:
     """复刻旧写入路径的判定顺序。返回 ``(新文本或 None, 标记类型或 None)``。"""
     if source_text is None:
         return None
-    if not should_translate(source_text, target_lang=target_lang, source_lang=source_lang):
-        return None
 
+    # 「这一格里的文本值不值得送去翻译」由抽取端的 ``should_translate`` 判定，写入端
+    # 不再重判一次：能走到这里，说明上游（词条收集 / 补译计划 / 复核仲裁）已经按这一
+    # 格的**完整文字**备好了译文，那就是点了名要改写这一格。
+    #
+    # 重判会误伤复核改判过的格子：它们里面躺的是「原文＋可疑译文」，建键用的是整串，
+    # 目标语是中文时这串必然含中文 → ``should_translate`` 判 False → 直接 return
+    # None，译文和复核底色一起丢。复核那次 API 钱付过了，文件却一个字都没改。
+    #
+    # 重判对正常格子本来就是恒真：译文表的键就是抽取端过完筛子留下的那些文本，同一段
+    # 文本再判一次结果必然一样。
     source_key = source_text.strip()
     translated = translations.get(source_key)
     if translated is None:
@@ -1606,9 +1725,12 @@ def _shrink_font_for_locked_row(
 ) -> tuple[float | None, bool]:
     """锁定行高模式：逐步缩字号。返回 ``(新字号或 None, 是否触底且仍装不下)``。"""
     current_size = float(font_size or BASE_FONT_SIZE_PT)
-    min_size = float(PRINT_GUARD_FONT_FLOOR)
     step = float(PRINT_GUARD_FONT_STEP)
     original_size = current_size
+    # 触底阈值不能高于这一格原本的字号：原字号已经小于 6pt 时（角标、备注行常见），
+    # 按 6pt 触底会把 4pt 直接「缩」成 6pt——本该缩小的一格反而被放大，行高又锁死，
+    # 结果是原本显示得下的内容被挤没了。原字号更小就以它自己为下界，只减不增。
+    min_size = min(float(PRINT_GUARD_FONT_FLOOR), current_size)
 
     while True:
         chars_per_line = estimate_chars_per_line(col_width, current_size)
@@ -2042,6 +2164,10 @@ def write_bilingual_workbook(
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
 
+    ``target_lang`` / ``source_lang``：保留在签名里的调用契约，本模块自己不再据此
+    判定「这一格该不该译」——那是抽取端 ``should_translate`` 的活。写入端只认
+    ``translations`` 里备好的键，见 ``_plan_cell_mutation``。
+
     ``allowed_positions``：``None`` 表示不限制（默认，逐字节等价于旧行为）；
     传入 ``{分表名: {坐标, ...}}`` 时，只有落在该集合内的坐标才会被回填，
     未列出的分表视为坐标集合为空（该分表任何单元格都不会被改写）。
@@ -2154,6 +2280,7 @@ def write_bilingual_workbook(
         total_mutated_cells = 0
         total_anchor_frozen = 0
         truncated_positions: list[str] = []
+        error_positions: list[str] = []
         for entry in entries:
             sheet_allowed = (
                 allowed_positions.get(entry.name, set())
@@ -2166,8 +2293,6 @@ def write_bilingual_workbook(
                 shared_strings=shared_strings,
                 styles=styles,
                 translations=translations,
-                target_lang=target_lang,
-                source_lang=source_lang,
                 formula_display_value_backfill=formula_display_value_backfill,
                 lock_row_height=lock_row_height,
                 review_enabled=review_enabled,
@@ -2183,6 +2308,7 @@ def write_bilingual_workbook(
             total_mutated_cells += outcome.mutated_cells
             total_anchor_frozen += outcome.anchor_frozen_count
             truncated_positions.extend(outcome.truncated_positions)
+            error_positions.extend(outcome.error_positions)
 
             if log_callback:
                 if outcome.anchor_frozen_count:
@@ -2243,6 +2369,17 @@ def write_bilingual_workbook(
             stats["anchor_frozen_count"] = total_anchor_frozen
             stats["truncated_cells"] = len(truncated_positions)
             stats["truncated_positions"] = truncated_positions
+
+        if error_positions and log_callback:
+            # 这些格子存的是 #N/A / #REF! 这类错误值。它们被抽取端当成普通文本
+            # 送去翻译过（钱已经花了），但改写它们等于把 Excel 的计算结果换成一段
+            # 译文，所以一律按原样保留。默默不写用户会以为是漏译，得说一声。
+            shown = "、".join(error_positions[:5])
+            more = f" 等 {len(error_positions)} 处" if len(error_positions) > 5 else ""
+            log_callback(
+                f"[INFO] 共 {len(error_positions)} 个单元格是错误值"
+                f"（#N/A、#REF! 之类），已按原样保留、未写入译文：{shown}{more}"
+            )
 
         if truncated_positions and log_callback:
             shown = "、".join(truncated_positions[:5])
