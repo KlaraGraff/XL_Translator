@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from docx import Document as DocxDocument
 from openpyxl import Workbook
 from PIL import Image
