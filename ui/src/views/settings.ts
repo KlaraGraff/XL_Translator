@@ -155,6 +155,7 @@ type DataHealthEntry = {
 type DataHealthPayload = {
   settings: DataHealthEntry;
   tm: DataHealthEntry;
+  keys: DataHealthEntry;
 };
 
 // ---------------------------------------------------------------------------
@@ -207,29 +208,34 @@ function formatCheckedAt(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 内置领域 Prompt（原样迁移自 main.ts；服务端仍是最终 Prompt 的权威来源，
-// 这里只保留可见、可编辑的内置文本，占位符/协议追加逻辑不在前端暴露）。
+// 内置领域 Prompt：唯一事实来源是后端 GET /api/domains/builtin-prompts
+// （config.py 的 DOMAIN_PRESETS）。这里绝不能再自己维护一份硬拷贝——旧版本
+// 就是这么翻的车：前端那份文本一过期，用户在陈旧文本上随手一改保存，就会把
+// 「缺规则的旧文本」当成覆盖永久写进 prompt_overrides，从此追不上 config.py
+// 的更新（高-14）。domainBuiltinPrompts 由 refreshSettings() 每次刷新，
+// 拿不到时保持上一次的值，实在从没拿到过就退化成空字符串——空字符串会让
+// 「跟内置默认比对」这一步天然把用户的任何输入都存成覆盖，而不是悄悄拿旧文
+// 本去顶替，属于更安全的退化方向。
 // ---------------------------------------------------------------------------
 
-const BUILTIN_DOMAIN_PROMPTS: Record<string, Record<string, string>> = {
-  "同步工程场景": {
-    _base: "你是一名面向工程同步场景的专业翻译助手。\n请优先采用工程资料与项目沟通中的常用表达，保持术语前后一致。\n原文中的编号、日期、计量单位、规格参数、版本号与符号必须原样保留。\n输出应简洁、准确、可直接用于工程过程文件、往来沟通与进度同步材料。",
-    fr: "Tu es un assistant de traduction professionnel pour la synchronisation de projets d’ingénierie.\nUtiliser des formulations courantes dans les documents techniques et la communication de projet, avec une terminologie cohérente.\nConserver strictement inchangés les numéros, dates, unités, paramètres, versions et symboles du texte source.\nLa traduction doit être concise, précise et directement exploitable dans les documents de suivi et de coordination.",
-  },
-  "资料管理场景": {
-    _base: "你是一名面向资料管理场景的专业翻译助手。\n请使用资料整理、归档、送审、台账与表单语境下的规范表达，保证字段名称一致。\n涉及编号、文号、日期、版本、附件标识时必须完整保留，不得改写结构。\n输出应便于资料员直接用于整理、流转、归档与审查。",
-    fr: "Tu es un assistant de traduction professionnel pour la gestion documentaire.\nEmployer des formulations normalisées adaptées au classement, à l’archivage, à la soumission, aux registres et aux formulaires, avec cohérence des champs.\nConserver intégralement les numéros, références, dates, versions et identifiants de pièces jointes sans modifier la structure.\nLe résultat doit être directement réutilisable pour le tri, la circulation, l’archivage et la revue documentaire.",
-  },
-  "行政生活化场景": {
-    _base: "你是一名面向行政与日常办公场景的翻译助手。\n请使用自然、清晰、礼貌且易理解的通用表达，避免过强行业术语。\n保留原文中的数字、时间、地址、联系人、编号等关键信息，不改变事实含义。\n输出应适用于通知、邮件、流程说明、日常沟通与生活化文本。",
-    fr: "Tu es un assistant de traduction pour l’administration et le bureau au quotidien.\nUtiliser un style naturel, clair, poli et facile à comprendre, sans surcharge de jargon technique.\nConserver les informations clés du texte source (chiffres, dates, heures, adresses, contacts, références) sans altérer le sens factuel.\nLa traduction doit convenir aux notifications, e-mails, consignes de processus, communications courantes et contenus de vie quotidienne.",
-  },
-};
+let domainBuiltinPrompts: Record<string, Record<string, string>> = {};
 
 function domainBuiltInPrompt(preset: string, targetLang: string): string {
-  const prompts = BUILTIN_DOMAIN_PROMPTS[preset];
+  const prompts = domainBuiltinPrompts[preset];
   if (!prompts) return "";
   return prompts[targetLang] || prompts._base || "";
+}
+
+async function refreshDomainBuiltinPrompts(): Promise<void> {
+  try {
+    const payload = await client.request<{ presets: Record<string, Record<string, string>> }>(
+      "/api/domains/builtin-prompts",
+    );
+    domainBuiltinPrompts = payload.presets || {};
+  } catch (error) {
+    // 保留上一次成功拿到的值：这只是一次刷新失败，不代表内置文本变了。
+    console.warn("内置领域 Prompt 读取失败，本次沿用上一次的缓存：", error);
+  }
 }
 
 // 顺序必须和 config.py 的 DOMAIN_PRESETS 一致：「无」排第一，表示不注入任何领域提示词。
@@ -493,18 +499,34 @@ async function refreshDataHealth(token: number): Promise<void> {
   renderDataHealthBanner();
 }
 
-function dataHealthRecreatedMessages(payload: DataHealthPayload | null): string[] {
+// 消息带着自己的作用域走：「知道了」只清横幅上真正展示过的作用域，
+// 后端按这份清单删事件（scope 字符串与 /api/data/health 的字段名一致）。
+type DataHealthMessage = { scope: keyof DataHealthPayload; text: string };
+
+function dataHealthRecreatedMessages(payload: DataHealthPayload | null): DataHealthMessage[] {
   if (!payload) return [];
-  const messages: string[] = [];
+  const messages: DataHealthMessage[] = [];
   if (payload.settings?.state === "recreated") {
-    messages.push(
-      `旧的配置无法读取，已备份到 ${payload.settings.backup_path || "备份目录"}，已新建一份可用的。`,
-    );
+    messages.push({
+      scope: "settings",
+      text: `旧的配置无法读取，已备份到 ${payload.settings.backup_path || "备份目录"}，已新建一份可用的。`,
+    });
   }
   if (payload.tm?.state === "recreated") {
-    messages.push(
-      `旧的翻译记忆库无法读取，已备份到 ${payload.tm.backup_path || "备份目录"}，已新建一份可用的。`,
-    );
+    messages.push({
+      scope: "tm",
+      text: `旧的翻译记忆库无法读取，已备份到 ${payload.tm.backup_path || "备份目录"}，已新建一份可用的。`,
+    });
+  }
+  if (payload.keys?.state === "recreated") {
+    // 和 settings/tm 不同：这条恢复的代价用户必须自己补——旧文件里其余服务商
+    // 的 Key 已经跟着坏文件一起没了，新文件目前只有本次保存的这一把。
+    messages.push({
+      scope: "keys",
+      text:
+        `旧的 API Key 文件已损坏，已备份到 ${payload.keys.backup_path || "备份目录"}；` +
+        "其余服务商的 Key 未能保留，请重新填写各服务商的 Key。",
+    });
   }
   return messages;
 }
@@ -530,8 +552,12 @@ function renderDataHealthBanner(): void {
   if (!bannerHost) return;
   clearElement(bannerHost);
   const blocked = dataHealthBlockedMessages(dataHealth);
-  const messages = blocked.length ? blocked : dataHealthRecreatedMessages(dataHealth);
+  const recreated = dataHealthRecreatedMessages(dataHealth);
+  const messages = blocked.length ? blocked : recreated.map((item) => item.text);
   if (!messages.length) return;
+  // blocked 优先在屏时 recreated 一条都没露面，此时一个作用域都不清——
+  // 没展示过的恢复事件必须留到它露面的那天，不能被「知道了」顺手抹掉。
+  const shownScopes = blocked.length ? [] : recreated.map((item) => item.scope);
   // .banner 默认是任务完成用的绿色底色；这条是警示，挂 .warn 换成 app.css 里那套黄色。
   const banner = createBanner({
     title: blocked.length ? "有数据暂时无法读取" : "有数据被重新创建",
@@ -543,7 +569,9 @@ function renderDataHealthBanner(): void {
         onClick: () => void (async () => {
           const token = mountToken;
           try {
-            await client.request("/api/data/health/notice", { method: "DELETE" });
+            await client.request("/api/data/health/notice", {
+              method: "DELETE", body: JSON.stringify({ scopes: shownScopes }),
+            });
           } catch (error) {
             if (token === mountToken) showToast({ message: errorMessage(error), error: true });
             return;
@@ -691,7 +719,7 @@ function restoreModelFormDraft(draft: ModelFormDraft): void {
 // unhandled promise rejection（toast 已经把错误讲给用户了，rethrow 没有实际接收方）。
 async function reRenderAfter<T>(
   action: () => Promise<T>,
-  opts: { preserveDraft?: boolean } = {},
+  opts: { preserveDraft?: boolean; rerenderOnError?: boolean } = {},
 ): Promise<T | undefined> {
   const token = mountToken;
   const draft = opts.preserveDraft === false ? null : snapshotModelFormDraft();
@@ -706,9 +734,34 @@ async function reRenderAfter<T>(
     }
     return result;
   } catch (error) {
-    if (token === mountToken) showToast({ message: errorMessage(error), error: true });
+    if (token === mountToken) {
+      showToast({ message: friendlyErrorMessage(error), error: true });
+      // 失败重绘只对「输入框只装得下已落盘值、重画等于把界面拉回磁盘真值」的
+      // 调用点开启（数值框 + PDF 并发框，由调用方显式传 rerenderOnError: true，
+      // 中-14）。其余调用点（尤其是领域 Prompt 这类可能装着几百字未提交草稿的
+      // 文本框）默认不重绘：重绘会把 renderBody() 读到的模块状态（对文本框来说
+      // 就是 current.customPrompt 等旧值）整份糊回输入框，用户刚敲的内容会在
+      // 后端短暂不可用时被无声吞掉，这是本函数曾经引入的回归（REG-1），不是
+      // 「表单看着像存上但没存」的中-14 场景本身。
+      if (opts.rerenderOnError) {
+        renderBody();
+        if (draft) restoreModelFormDraft(draft);
+      }
+    }
     return undefined;
   }
+}
+
+// 后端把 pydantic ValidationError 直接 str() 塞进 422 的 detail：一整段英文栈式
+// 报错，看不出具体是哪个字段、允许范围是多少（中-14）。真正挡住越界提交靠
+// numberField/pdf 并发输入框自己的 clamp，这里只是兜底——真撞上了，至少给一句
+// 看得懂的中文，而不是原样甩出 pydantic 的内部文本。
+function friendlyErrorMessage(error: unknown): string {
+  const raw = errorMessage(error);
+  if (/validation error/i.test(raw)) {
+    return "保存失败：填写的值超出允许范围，已恢复为上次保存的值，请检查后重新输入。";
+  }
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +772,18 @@ async function refreshSettings(): Promise<void> {
   settings = await client.request<JsonObject>("/api/settings");
   await refreshProviderDefaults();
   await refreshModelRoles();
+  await refreshDomainBuiltinPrompts();
+  // 这里是「刚从后端拿到权威值」的唯一入口，顺手把可见主题和 localStorage
+  // 缓存按后端值对齐一次（中-17-残留）。不这样做的话，「重置设置」之类不经过
+  // 主题分段控件、直接把后端 theme 改回默认值的路径（core/maintenance.py 的
+  // reset_settings()）不会触发 applyThemeVisual/commitThemeToLocalStorage，
+  // 界面和 localStorage 会永久停在重置前的旧主题上；已经因为历史 bug 分叉过的
+  // 旧安装也永远不会自愈。落盘失败的路径不受影响：那条路径上 settings 从未被
+  // 赋新值，这里读到的 pref 仍是回滚前的旧值，方向和 applyThemeVisual(previous)
+  // 一致，不会把失败的半成品主题写进 localStorage。
+  const pref = currentThemePreference();
+  applyThemeVisual(pref);
+  commitThemeToLocalStorage(pref);
 }
 
 async function refreshProviderDefaults(): Promise<void> {
@@ -907,7 +972,17 @@ function numberField(
   input.disabled = Boolean(opts.disabled);
   input.addEventListener("change", () => {
     const parsed = Number(input.value);
-    if (!Number.isNaN(parsed)) onCommit(parsed);
+    if (Number.isNaN(parsed)) return;
+    // 越界的值贴着边界夹一下再提交：HTML 的 min/max 属性只影响浏览器的上下箭头
+    // 和表单自带校验提示，手动输入或粘贴超界数字照样能触发 change 事件。不夹
+    // 的话，这个数字会原样发去后端，换来一段 pydantic 英文 422（中-14）。这里
+    // 用的 min/max 就是调用方按 config.py 传进来的后端真实边界，夹完立即回填
+    // 输入框，让界面显示的值和即将落盘的值一致。
+    let clamped = parsed;
+    if (opts.min !== undefined) clamped = Math.max(opts.min, clamped);
+    if (opts.max !== undefined) clamped = Math.min(opts.max, clamped);
+    if (clamped !== parsed) input.value = String(clamped);
+    onCommit(clamped);
   });
   return fieldWithHint(labelText, input, opts.hint);
 }
@@ -1705,6 +1780,9 @@ async function saveModel(
       { method: "PUT", body: JSON.stringify({ label: form.connectionLabel, provider: form.provider, model: form.model, base_url: form.baseUrl, api_key: form.apiKey }) },
     );
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
+    // 这条 PUT 也写 keys.json，keys 的惰性自愈可能就发生在里面——每个会写
+    // Key 的出口都要拉一次横幅，丢 Key 的提示必须在丢的那一刻给。
+    void refreshDataHealth(mountToken);
     if (!opts.silent) showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
     return;
   }
@@ -1754,6 +1832,10 @@ async function saveModel(
   }
   clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
   await refreshSettings();
+  // keys.json 的惰性自愈恰好发生在上面这次保存里；恢复事件落盘后若没人重新拉
+  // /api/data/health，本次会话内横幅永远不露面——丢 Key 的提示必须在丢的那一刻
+  // 给。失败静默，语义与 bootstrap 那次一致。
+  void refreshDataHealth(mountToken);
   if (!opts.silent) showToast({ message: "模型配置已保存。密钥仅写入本机密钥存储。" });
 }
 
@@ -1792,6 +1874,8 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
     );
     delete selectedConnection[role];
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
+    // 删除连接会经由 save_connection_key 写 keys.json，同样可能触发惰性自愈。
+    void refreshDataHealth(mountToken);
     showToast({ message: "连接已删除，其密钥也已从本机移除。" });
   }, { preserveDraft: false }); // 表单会切回默认连接，不该把被删连接的草稿糊上去
 }
@@ -2119,6 +2203,8 @@ async function runModelConfigImport(preview: ModelImportPreview, handle: ModalHa
     });
     modelImportPreview = null;
     await refreshSettings();
+    // 导入写入密钥作用域时同样走 keys.json 的写路径，可能触发惰性自愈。
+    void refreshDataHealth(mountToken);
     for (const role of Object.keys(modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。");
     renderBody();
     handle.close();
@@ -2448,28 +2534,42 @@ function renderParamsPage(host: HTMLElement): void {
     body.append(sectionLabel("批次与重试"));
     const grid = document.createElement("div");
     grid.className = "grid2";
-    grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 30), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v)), { min: 1, hint: "单次模型请求最多包含的段落数量。" }));
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v)), { min: 1, hint: "单次模型请求的字符上限，超出会自动分批。" }));
-    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v)), { min: 1, hint: "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位。" }));
-    grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v)), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
+    // 上下限对齐 config.py：WORD_BATCH_PARAGRAPHS_MIN/MAX、WORD_BATCH_CHARS_MIN/MAX、
+    // WORD_BATCH_SPLIT_CHARS_MIN/MAX。这里曾经比后端宽（或干脆没设上限），越界的值能
+    // 在前端存活到点保存那一刻才被后端 422 打回，且打回的是英文 pydantic 原文（中-14）。
+    grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 8), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v), { rerenderOnError: true }), { min: 1, max: 16, hint: "单次模型请求最多包含的段落数量，范围 1–16。" }));
+    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: 800, max: 12000, hint: "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
+    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: 1500, max: 30000, hint: "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
+    grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
     body.append(grid);
   } else {
     const pdf = pdfParamsSettings();
     const grid = document.createElement("div");
     grid.className = "grid2";
-    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 2), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v)), { min: 0, max: 10, hint: "单页翻译失败后的重试次数。" }));
+    // 上下限对齐 config.py：PDF_PAGE_RETRY_ATTEMPTS_MIN/MAX(0–8)、
+    // PDF_PAGE_CONCURRENCY_SAFETY_CAP(1–20)。max: 10 曾经比后端的 8 宽，落进
+    // 那道夹缝的值只会在保存时被后端 422 打回（中-14）。
+    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "单页翻译失败后的重试次数，范围 0–8。" }));
     const concurrencyValue = pdf.page_generation_concurrency === null || pdf.page_generation_concurrency === undefined
       ? "" : String(pdf.page_generation_concurrency);
     const concurrencyInput = document.createElement("input");
     concurrencyInput.type = "number";
     concurrencyInput.min = "1";
+    concurrencyInput.max = "20";
     concurrencyInput.value = concurrencyValue;
     concurrencyInput.placeholder = "留空自动";
     concurrencyInput.addEventListener("change", () => {
       const raw = concurrencyInput.value.trim();
-      void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", raw ? Number(raw) : null));
+      let parsed: number | null = raw ? Number(raw) : null;
+      // 留空＝自动，不夹；填了数字才按后端安全上限（PDF_PAGE_CONCURRENCY_SAFETY_CAP）
+      // 夹一下，理由同 numberField：HTML 的 min/max 属性拦不住手动输入的越界值。
+      if (parsed !== null && !Number.isNaN(parsed)) {
+        parsed = Math.min(20, Math.max(1, parsed));
+        concurrencyInput.value = String(parsed);
+      }
+      void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
     });
-    grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, "同时生成页图的并发数；留空由应用按机器性能决定。"));
+    grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, "同时生成页图的并发数，范围 1–20；留空由应用按机器性能决定。"));
     body.append(grid);
   }
 
@@ -2658,8 +2758,17 @@ function resolveTheme(preference: ThemePreference): "light" | "dark" {
   return preference;
 }
 
-function applyThemePreference(preference: ThemePreference): void {
+// 只改可见主题，不碰 localStorage。localStorage 只是「首屏免等后端」的缓存
+// （见 app.ts 的 initTheme 注释），后端 settings.appearance.theme 才是权威值。
+// 落盘前先用这个把界面切过去，是为了点了就有反馈，不用等一轮网络请求。
+function applyThemeVisual(preference: ThemePreference): void {
   document.documentElement.dataset.theme = resolveTheme(preference);
+}
+
+// 真正落盘成功之后才写 localStorage。此前的实现是先写 localStorage 再落后端，
+// 后端失败时 localStorage 已经改了、界面也已经切了，两者从此和后端权威值永久
+// 分叉——重启后界面按 localStorage 显示，设置页却按后端高亮另一个选项（中-17）。
+function commitThemeToLocalStorage(preference: ThemePreference): void {
   window.localStorage.setItem(THEME_STORAGE_KEY, preference);
 }
 
@@ -2690,8 +2799,17 @@ function renderAppearancePage(host: HTMLElement): void {
     span.textContent = option.hint;
     segc.append(b, span);
     segc.addEventListener("click", () => void reRenderAfter(async () => {
-      applyThemePreference(option.value);
-      await persistSettings({ appearance: { ...record(settings?.appearance), theme: option.value } });
+      const previous = currentThemePreference();
+      applyThemeVisual(option.value);
+      try {
+        await persistSettings({ appearance: { ...record(settings?.appearance), theme: option.value } });
+      } catch (error) {
+        // 落盘失败：把可见主题回滚到落盘前的状态，不留下「界面已经切了、
+        // 后端还是旧值」的分叉。reRenderAfter 外层会接着重绘整页 + 弹 toast。
+        applyThemeVisual(previous);
+        throw error;
+      }
+      commitThemeToLocalStorage(option.value);
     }));
     seg.append(segc);
   }
@@ -3190,6 +3308,9 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
           });
           if (category === "settings") await refreshSettings();
           await refreshMaintenance();
+          // 维护清理可能改变数据健康状态（比如清空 Key 后旧横幅不再成立），
+          // 拉一次让横幅与后端真相对齐。
+          void refreshDataHealth(mountToken);
           showToast({ message: "维护操作已完成；翻译输出未受影响。" });
         }),
       },

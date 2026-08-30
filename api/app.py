@@ -650,6 +650,23 @@ def create_app(
         save_settings(settings)
         return settings.model_dump(mode="json")
 
+    @app.get("/api/domains/builtin-prompts")
+    def get_domain_builtin_prompts() -> dict[str, Any]:
+        """只读端点：内置领域 Prompt 的唯一事实来源。
+
+        必须注册在 `/api/domains/{surface}` 之前——否则会被那条参数路由吃掉，
+        变成 404「Unknown translation surface.」。
+
+        前端曾经自己维护一份 DOMAIN_PRESETS 的硬拷贝用于「文本框默认显示什么、
+        跟内置默认比对是否算改动」，那份拷贝会随 config.py 更新而过期。用户在
+        陈旧文本上编辑保存，走的是「跟默认值不一样就存成覆盖」这条路（见
+        put_domain_settings 调用方 settings.ts 的比对逻辑），于是把陈旧文本连
+        同它缺的规则一起，永久固化成 prompt_overrides，此后再也追不上
+        DOMAIN_PRESETS 的更新。改为前端每次都从这里取内置文本，config.py 改了
+        当场生效，不需要跟着发前端版本。
+        """
+        return {"presets": DOMAIN_PRESETS}
+
     @app.get("/api/domains/{surface}")
     def get_domain_settings(surface: str) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
