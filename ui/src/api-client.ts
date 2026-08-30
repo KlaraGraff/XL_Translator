@@ -18,7 +18,13 @@ export type TaskStatus = {
   task_snapshot?: Record<string, unknown>;
   resource_groups?: Array<Record<string, unknown>>;
   logs?: Array<Record<string, unknown>>;
-  result: Record<string, unknown> | null;
+  // list_tasks() 的 active 数组走 _status_payload(include_result=False)（api/task_manager.py），
+  // 报文里根本没有 "result" 这个键——不是 null，是键缺失，JS 里读到的就是 undefined。
+  // 只有 recent（历史记录）和单任务详情接口才总带这个键。之前这里写死非可选、只留 null，
+  // 等于告诉调用方“这个字段永远在”，把“缺键”和“存在但为 null”混成一回事；调用方一旦按
+  // `!== null` 做类型收窄就会在 undefined 上直接调用属性而炸。全仓库现有读取都经过下面
+  // 的 record() 兜底、对 undefined/null 一视同仁，运行时没受影响，但类型声明本身是假的。
+  result?: Record<string, unknown> | null;
 };
 
 export type SseEvent = {
@@ -263,6 +269,14 @@ export class ApiClient {
         }
         if (terminal) {
           return lastEventId;
+        }
+        // 干净的 200 但连一个终态事件都没见到（比如快照竞态把本地状态短暂打回非终态，
+        // 调用方拿着这份「还在跑」的判断重新打开流，而服务端这边任务其实已经结束，
+        // 于是连接一建立就直接关闭、body 是空的）——这条路径不抛异常，如果这里不检查
+        // 重试上限，就会绕开下面 catch 块里 attempt >= 7 的封顶，变成每隔至多 5 秒
+        // 重连一次、永不停止的死循环。抛出后交给下面同一个 catch 走同样的封顶逻辑。
+        if (attempt >= 7) {
+          throw new Error("Task event stream closed without ever reaching a terminal event.");
         }
       } catch (error) {
         if (options.signal?.aborted) {

@@ -761,6 +761,19 @@ async function getClient(): Promise<ApiClient> {
  */
 const deletedTaskIds = new Set<string>();
 
+/**
+ * 服务端已经明确关闭事件流的任务 id 集合：只在 handleEvent() 收到 TERMINAL_STATES 里的
+ * SSE 事件时写入，代表「这不是前端自己猜的终态，是服务端亲口说完了」。
+ *
+ * 只用来决定要不要重新发起 streamTask() 连接（watchTask 的入口守卫、refreshRegistry 的
+ * 重连触发），不参与 upsert() 的数据合并——「不许重开一条服务端已关闭的流」和「不许拿旧
+ * 快照覆盖新数据」是两件事，混在一起会把「已终态但需要刷新 result」（比如 PDF 任务终态后
+ * 重跑某一页，见 api/task_manager.py 里 rerun 收尾时对 task.result 的原地更新）和「本地误判
+ * 的 interrupted 需要被后续真实快照纠正」这两条正常路径一起堵死。永不清空：一次会话里终态
+ * 任务数量有限，不做淘汰更安全。
+ */
+const streamClosedTaskIds = new Set<string>();
+
 function upsert(task: TaskStatus): TaskEntry | null {
   if (deletedTaskIds.has(task.task_id)) return null;
   const previous = tasks.get(task.task_id);
@@ -818,7 +831,11 @@ function touch(taskId?: string): void {
 
 async function watchTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
-  if (!entry || entry.watcherActive || entry.task.terminal) return;
+  // entry.task.terminal 挡住「当前已知状态是终态」的情况（不管这个终态是服务端事件给的还是
+  // 前端自己推断的 interrupted）；streamClosedTaskIds 额外挡住「服务端明确关闭过事件流」这
+  // 件事本身——即便某一次巡检快照把 entry.task.terminal 短暂打回 false（旧快照迟到），也不
+  // 会对着一条已经关闭的流做无意义重连。两者是 OR 关系，任一命中就不发起连接。
+  if (!entry || entry.watcherActive || entry.task.terminal || streamClosedTaskIds.has(taskId)) return;
   entry.watcherActive = true;
   try {
     const client = await getClient();
@@ -886,6 +903,8 @@ function handleEvent(taskId: string, event: SseEvent): void {
   }
   if (TERMINAL_STATES.includes(event.type)) {
     entry.task = { ...entry.task, state: event.type as TaskStatus["state"], terminal: true, result: data };
+    // 服务端亲口给的终态事件：这条流服务端已经关闭，任何后续快照都不该再让 watchTask 重连。
+    streamClosedTaskIds.add(taskId);
     if (mounted) {
       const label = taskSurfaceLabel(entry.task.surface);
       showToast({
@@ -945,37 +964,56 @@ ensureBackgroundLoop();
 // 任务操作（停止 / PDF 暂停恢复 / 打开本地文件 / 复制路径）
 // ---------------------------------------------------------------------------
 
+// 列表快照最多滞后 12 秒（后台巡检）/ 4 秒（前台轮询），按钮的可见状态可能已经过期：
+// 用户点「继续翻译」时任务其实已经在后端跑到终态，POST 落地为 422。这里必须接住失败并
+// 提示用户，而不是让 unhandled rejection 悄悄吞掉——按钮看着没反应，用户会以为点空了。
 async function stopTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry) return;
-  const client = await getClient();
-  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/stop`, { method: "POST" });
-  touch(taskId);
+  try {
+    const client = await getClient();
+    entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/stop`, { method: "POST" });
+    touch(taskId);
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "停止任务失败。"), error: true });
+  }
 }
 
 async function pausePdfTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry || entry.task.surface !== "pdf") return;
-  const client = await getClient();
-  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/pause`, { method: "POST" });
-  touch(taskId);
+  try {
+    const client = await getClient();
+    entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/pause`, { method: "POST" });
+    touch(taskId);
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "暂停失败。"), error: true });
+  }
 }
 
 async function resumePdfTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry || entry.task.surface !== "pdf") return;
-  const client = await getClient();
-  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/resume`, { method: "POST" });
-  touch(taskId);
+  try {
+    const client = await getClient();
+    entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/resume`, { method: "POST" });
+    touch(taskId);
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "继续任务失败。"), error: true });
+  }
 }
 
 async function endPausedPdfTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry || entry.task.surface !== "pdf") return;
   if (!window.confirm("结束暂停任务将不再提交未处理页面，但会写入并保留已完成页面、素材、清单和报告。是否结束？")) return;
-  const client = await getClient();
-  entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
-  touch(taskId);
+  try {
+    const client = await getClient();
+    entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
+    touch(taskId);
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "结束暂停失败。"), error: true });
+  }
 }
 
 async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
@@ -1002,9 +1040,18 @@ async function exportTaskDiagnostic(taskId: string): Promise<void> {
 }
 
 async function copyTaskPath(path: string): Promise<void> {
-  if (!path.trim() || !navigator.clipboard?.writeText) return;
-  await navigator.clipboard.writeText(path);
-  showToast({ message: "路径已复制。" });
+  const trimmed = path.trim();
+  if (!trimmed) return;
+  // WKWebView 在窗口失焦（比如系统保存对话框正开着）时会拒绝写剪贴板，Promise 直接 reject；
+  // 之前这里没有 catch，失败是彻底静默的——按钮点了，用户以为复制成功，其实什么都没发生。
+  // 这里兜住失败并把路径本身放进提示文案，让用户至少能从提示里手动选中复制。
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("当前环境不支持写剪贴板");
+    await navigator.clipboard.writeText(trimmed);
+    showToast({ message: "路径已复制。" });
+  } catch {
+    showToast({ message: `复制失败，请手动复制：${trimmed}`, error: true });
+  }
 }
 
 function confirmStopTask(taskId: string): void {

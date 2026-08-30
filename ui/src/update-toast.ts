@@ -426,11 +426,16 @@ function render(): void {
   const snapshot = updateSnapshot();
   const { flow } = snapshot;
 
-  // 检查刚刚结束（真→假）：这一轮如果没有新版，下面要说一句「已经是最新」。
+  // 检查刚刚结束（真→假）：这一轮如果真的查成了且没有新版，下面要说一句「已经是最新」。
   // 同时清掉「这个版本我关过了」——手动检查就是在要一个回答，之前关掉卡片不算
   // 拒绝回答。不清的话，关过 9.4.0 再点检查会得到「已经是最新版本 9.3.0」，
   // 而设置页同一时刻写着「有可用更新」，两边打架。
-  if (wasChecking && !snapshot.checking) {
+  // 用 lastCheckOk（这一轮检查本身成没成）而不是 result.status 来判断「查完了」：
+  // 后端把网络故障/超时包成 200 + { status: "error" } 是一条路径，但请求本身抛异常
+  // （sidecar 未就绪、超时、5xx）时 runUpdateCheck 根本不会碰 result，若只看
+  // result.status，界面会拿上一轮成功检查留下的旧值（甚至首次启动时的 undefined）
+  // 误判成「这次也查完了、没有新版」，把绿色对勾和刚弹出的失败 toast 一起画出来。
+  if (wasChecking && !snapshot.checking && snapshot.lastCheckOk === true) {
     showUpToDate = true;
     dismissedVersion = "";
   }

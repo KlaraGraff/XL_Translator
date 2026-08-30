@@ -72,6 +72,15 @@ export interface UpdateSnapshot {
   checking: boolean;
   /** 最近一次检查完成的时刻（手动或后台都算）。 */
   checkedAt: string;
+  /**
+   * 「这一轮手动检查到底查成没查成」，独立于 result 的内容判断。null 表示这一轮还没
+   * 走完（或从未手动查过）。之所以不能靠 `result?.status !== "error"` 反推：请求本身
+   * 抛异常（sidecar 未就绪、超时、5xx）时 runUpdateCheck 根本不会给 result 赋新值，
+   * 界面看到的还是上一轮成功检查留下的 { status: "up_to_date" } 旧值，会把「这次没
+   * 查成」误判成「查完了、没有新版」，同屏出现一条失败 toast 和一个绿色「已是最新版」
+   * ——两者判据必须分开存。
+   */
+  lastCheckOk: boolean | null;
   flow: UpdateFlow;
   env: UpdaterEnvironment | null;
   /** 用户对「已装好，等重启」点过「稍后」。收起的是提示，不是事实。 */
@@ -83,6 +92,7 @@ const state: UpdateSnapshot = {
   result: null,
   checking: false,
   checkedAt: "",
+  lastCheckOk: null,
   flow: idleUpdateFlow(),
   env: null,
   readyCollapsed: false,
@@ -207,6 +217,7 @@ function applyAvailability(): boolean {
  */
 export async function runUpdateCheck(): Promise<void> {
   state.checking = true;
+  state.lastCheckOk = null;
   emit();
   try {
     await ensureConnected();
@@ -216,7 +227,18 @@ export async function runUpdateCheck(): Promise<void> {
     // 手动检查的结论覆盖上一次安装尝试留下的失败态：用户明确要求重新问一次。
     if (state.flow.phase === "failed") state.flow = idleUpdateFlow();
     applyAvailability();
+    // 请求本身是 200，但后端把网络故障/超时之类的失败包成了 { status: "error", message }——
+    // 这不是异常，走不到下面的 catch。这里把它和「请求本身失败」统一记进 lastCheckOk，
+    // 而不是留给 update-toast.ts 靠 result.status 反推：否则抛异常那条路径完全不碰
+    // result，界面会拿上一轮的旧结果误判成「这次也查完了、没有新版」。
+    if (text(result.status) === "error") {
+      state.lastCheckOk = false;
+      showToast({ message: text(result.message, "检查更新失败，请稍后重试。"), error: true });
+    } else {
+      state.lastCheckOk = true;
+    }
   } catch (error) {
+    state.lastCheckOk = false;
     showToast({ message: errorMessage(error), error: true });
   } finally {
     state.checking = false;
