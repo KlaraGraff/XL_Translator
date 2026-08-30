@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import queue
@@ -110,12 +111,22 @@ PDF_OUTPUT_STATE_FAILED = "failed"
 
 PDF_PAGE_ACTION_REGENERATE = "regenerate"
 PDF_PAGE_ACTION_SKIP = "skip"
+# 终态任务单页重生成时，旧译文页图被改名挪到这个前缀下。前缀放在最前面，页图名
+# 的所有 glob（页面存档复用、面板取图）都以 page_00N 开头，因此挪走的文件不会被
+# 任何一处当成有效页图；重生成成功就删掉，失败就原样搬回。
+PDF_PAGE_IMAGE_STASH_PREFIX = ".rerun_backup."
 PDF_PAGE_IMAGE_KIND_SOURCE = "source"
 PDF_PAGE_IMAGE_KIND_TRANSLATED = "translated"
 # 「跳过大幅面页」功能专用的页面终态：页面判定为超出 A4 的大幅面页，从未提交给
 # 翻译模型，装订时从源 PDF 矢量直传。语义上和 request_page_skip 的用户手动跳过
 # （发生在失败之后）完全不同，不要合并成同一个状态。
 PDF_PAGE_STATUS_SKIPPED_OVERSIZE = "skipped_oversize"
+# 中止时还没跑出任何结果的页面。占位页是「模型试过了，就是没成」的结论；中止的页
+# 没有这个结论——它连一次模型调用都没发生过。这个状态只在工作线程和主循环之间传
+# 一次：主循环见到它就把这条页记录整条撤掉，让这一页回到「还没开始」，于是产物不
+# 会被烧进占位页、报告如实报截断、续译时这一页还能重新排队。它不写进清单，也不该
+# 出现在前端（页记录不在了，快照给的就是 pending）。
+PDF_PAGE_STATUS_STOPPED_UNSTARTED = "stopped_unstarted"
 # A page may only be re-run or skipped once its own processing unit settled.
 # Everything else is still owned by an in-flight future.
 _PDF_PAGE_REGENERABLE_STATUSES = frozenset(
@@ -433,6 +444,10 @@ class _PreparedPdfFile:
     translated_pdf_path: Path
     compressed_pdf_path: Path
     app_managed: bool
+    # 图片源的交付路径。PDF 变体在准备阶段就解析定了，图片源要等模型吐回来才知道
+    # 后缀，所以这里留空、由第一次落盘时解析并缓存——之后每一轮重生成都原子覆盖
+    # 同一个文件名，不再重复触发 ``resolve_translated_image_path`` 的改名副作用。
+    translated_image_path: Path | None = None
 
 
 def is_supported_pdf_file(path: str | Path) -> bool:
@@ -1351,6 +1366,9 @@ class PdfImageTranslationRunner:
         self._pause_event = threading.Event()
         self._stop_reason = ""
         self._task_logger = TaskLogger(enabled=task_logger_enabled)
+        # 这三个计数器由每个页面工作线程自增，`+=` 不是原子操作（读—加—写三步），
+        # 并发跑页时丢计数是必然的，报告里的「接口调用次数」会比实际少。
+        self._counter_lock = threading.Lock()
         self._rate_limit_reduction_count = 0
         self._api_call_count = 0
         self._review_api_call_count = 0
@@ -1628,10 +1646,10 @@ class PdfImageTranslationRunner:
             raise PdfPageActionError("任务还在运行，请暂停后再做单页操作。")
         if self._finished_output_dir is None:
             raise PdfPageActionError("这个任务没有留下输出目录，不能重新生成单页。")
-        # Checked before the per-page checks below, not only at the claim: a
-        # rerun in flight has already reset its file's status back to pending,
-        # so the eligibility checks would otherwise answer "this file never
-        # produced an output" to someone who simply clicked a second page.
+        # Checked before the per-page checks below, not only at the claim: while
+        # a rerun is in flight the page it owns has left ``record.pages``, so the
+        # eligibility checks would otherwise answer "this page has no result to
+        # regenerate" to someone who simply clicked a second page.
         self._raise_if_rerun_active()
         with self._page_action_lock:
             prepared = self._find_prepared_file(relative_path)
@@ -1801,23 +1819,100 @@ class PdfImageTranslationRunner:
             )
         self._log(
             "INFO",
-            f"[{record.name}] 第 {page_number} 页开始重新生成：旧译文页和输出文件会被覆盖。",
+            f"[{record.name}] 第 {page_number} 页开始重新生成：成功后才会替换译文页和输出文件。",
         )
-        self._apply_page_regenerate(prepared, page)
-        self._process_prepared_pages(
-            [prepared],
-            max_attempts=max_attempts,
-            scheduler=scheduler,
-            review_scheduler=review_scheduler,
-            model_config=model_config,
-            review_model_config=review_model_config,
-            concurrency=1,
-            total_pages=max(1, int(record.page_count)),
-        )
-        if self._fatal_model_error:
-            raise PdfPageActionError(self._fatal_model_error)
-        self._finalize_file_record(prepared, should_assemble=True)
+        # 事务边界。这一步之前先把「回滚需要的一切」拍下来：页记录本身、这份文件
+        # 的产物字段和状态、逐页计数。重生成失败（模型 Key 失效是最常见的一种）时
+        # 全部还原，磁盘上的高清/压缩 PDF 也从未被动过——旧版本从头到尾还在。
+        page_backup = copy.deepcopy(page)
+        artifact_backup = _file_artifact_snapshot(record)
+        counters_backup = self._page_counters_snapshot()
+        committed = False
+        stashed = self._apply_page_regenerate(prepared, page, transactional=True)
+        try:
+            self._process_prepared_pages(
+                [prepared],
+                max_attempts=max_attempts,
+                scheduler=scheduler,
+                review_scheduler=review_scheduler,
+                model_config=model_config,
+                review_model_config=review_model_config,
+                concurrency=1,
+                total_pages=max(1, int(record.page_count)),
+            )
+            if self._fatal_model_error:
+                raise PdfPageActionError(self._fatal_model_error)
+            self._finalize_file_record(prepared, should_assemble=True)
+            if record.status == PDF_OUTPUT_STATE_FAILED:
+                # 装配失败：旧产物还在磁盘上（新产物是先写临时文件再原子替换的），
+                # 所以这里同样要整体回滚，而不是把这份文件留在「失败」上。
+                raise PdfPageActionError(
+                    record.error or "重新生成后没能重新装配输出文件，已保留上一版产物。"
+                )
+            committed = True
+        finally:
+            if committed:
+                self._commit_page_image_stash(stashed)
+            else:
+                self._restore_page_image_stash(stashed)
+                self._restore_page_after_failed_rerun(
+                    prepared,
+                    page_number=page_number,
+                    page_backup=page_backup,
+                    artifact_backup=artifact_backup,
+                    counters_backup=counters_backup,
+                )
         self._rewrite_finished_report(extra_elapsed_sec=time.monotonic() - rerun_started)
+
+    def _restore_page_after_failed_rerun(
+        self,
+        prepared: _PreparedPdfFile,
+        *,
+        page_number: int,
+        page_backup: PdfPageRecord,
+        artifact_backup: dict[str, Any],
+        counters_backup: tuple,
+    ) -> None:
+        """单页重生成失败后把这份文件恢复到点「重新生成」之前的样子。"""
+        record = prepared.record
+        record.pages = [page for page in record.pages if page.page_number != page_number]
+        record.pages.append(copy.deepcopy(page_backup))
+        record.pages.sort(key=lambda item: item.page_number)
+        _restore_file_artifacts(record, artifact_backup)
+        self._refresh_file_record_counts(record)
+        self._restore_page_counters(counters_backup)
+        self._log(
+            "WARN",
+            f"[{record.name}] 第 {page_number} 页重新生成没有成功，"
+            "已保留上一版译文页和输出文件，任务结果未改动。",
+        )
+
+    def _page_counters_snapshot(self) -> tuple:
+        with self._page_status_lock:
+            return (
+                self._completed_page_count,
+                self._submitted_page_count,
+                set(self._retrying_pages),
+                set(self._retried_pages),
+                set(self._recovered_pages),
+                set(self._placeholder_pages),
+            )
+
+    def _restore_page_counters(self, snapshot: tuple) -> None:
+        with self._page_status_lock:
+            (
+                self._completed_page_count,
+                self._submitted_page_count,
+                retrying,
+                retried,
+                recovered,
+                placeholder,
+            ) = snapshot
+            self._retrying_pages = set(retrying)
+            self._retried_pages = set(retried)
+            self._recovered_pages = set(recovered)
+            self._placeholder_pages = set(placeholder)
+            self._emit_page_status_locked()
 
     def _remember_finished_run(
         self,
@@ -2056,7 +2151,23 @@ class PdfImageTranslationRunner:
             elif action.kind == PDF_PAGE_ACTION_SKIP:
                 self._apply_page_skip(prepared, page)
 
-    def _apply_page_regenerate(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
+    def _apply_page_regenerate(
+        self,
+        prepared: _PreparedPdfFile,
+        page: PdfPageRecord,
+        *,
+        transactional: bool = False,
+    ) -> list[tuple[Path, Path]]:
+        """让一页重新排队生成。
+
+        ``transactional=True`` 是终态任务的单页重生成用的：旧的译文页图只是改名
+        挪开（失败时原样搬回），已经交付的高清/压缩 PDF 一个字节都不动——新产物
+        由 ``_assemble_translated_pdf`` 写完整之后原子替换。任务运行中的那条路
+        （暂停时排队的单页操作）仍然照旧清理，因为它后面必定会重新装配，而且续译
+        流程本来就能从页面存档重建产物。
+
+        返回值是「已挪开的译文页图」清单，交给调用方提交或回滚。
+        """
         record = prepared.record
         # Dropping the record is what makes ``_iter_rendered_pages`` yield this
         # page again on re-entry, and it is also what keeps the re-yielded page
@@ -2065,14 +2176,16 @@ class PdfImageTranslationRunner:
         with self._page_action_lock:
             self._user_skipped_pages.discard((record.relative_path, page.page_number))
         self._forget_page_progress(page)
-        self._remove_translated_page_images(prepared, page)
-        # A file that already produced a PDF must be assembled again after the
-        # page is regenerated.
-        self._clear_generated_pdf_outputs([prepared])
+        stashed = self._remove_translated_page_images(prepared, page, stash=transactional)
+        if not transactional:
+            # A file that already produced a PDF must be assembled again after the
+            # page is regenerated.
+            self._clear_generated_pdf_outputs([prepared])
         self._log(
             "INFO",
             f"[{record.name}] 第 {page.page_number} 页已按用户要求重新排队生成。",
         )
+        return stashed
 
     def _apply_page_skip(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
         record = prepared.record
@@ -2095,6 +2208,60 @@ class PdfImageTranslationRunner:
             f"[{record.name}] 第 {page.page_number} 页已按用户选择跳过，将生成失败占位页。",
         )
 
+    def _discard_stopped_page(
+        self,
+        prepared: _PreparedPdfFile,
+        page_record: PdfPageRecord,
+    ) -> None:
+        """把中止时没跑出结果的页整条撤回「未开始」。
+
+        页记录是在提交之前就 append 进去的，所以中止时它已经在 ``record.pages``
+        里了。留着它（哪怕状态写成失败）会让 ``_record_has_all_pages_finished``
+        认为整份文件已经跑完，于是占位页被烧进交付 PDF、任务还报「已完成、未截
+        断」。撤掉之后这一页在快照里回到 pending，续译能重新排队。
+        """
+        record = prepared.record
+        try:
+            record.pages.remove(page_record)
+        except ValueError:  # 页记录已被别处摘掉（单页重生成），不重复处理。
+            pass
+        key = self._page_status_key(page_record)
+        with self._page_status_lock:
+            # 提交时 +1 过，这一页没有产出，账要平回去。
+            self._submitted_page_count = max(0, self._submitted_page_count - 1)
+            self._retrying_pages.discard(key)
+            self._retried_pages.discard(key)
+            self._recovered_pages.discard(key)
+            self._placeholder_pages.discard(key)
+            self._emit_page_status_locked()
+        self._log(
+            "WARN",
+            f"[{record.name}] 第 {page_record.page_number} 页在中止时还没有生成结果，"
+            "已按未开始处理：不生成占位页，续译时会重新排队。",
+            visible=False,
+        )
+
+    def _discard_stopped_pages(self, prepared_files: list[_PreparedPdfFile]) -> None:
+        """兜底：把所有还挂着 ``stopped_unstarted`` 的页统一撤回「未开始」。
+
+        正常收敛 future 的那条路上，每收回一页就地撤一页。但致命错误（翻译模型
+        或审核模型不可用）是先置停止标志再 ``raise`` 出去的，收敛循环再也回不
+        来——还在飞的页由执行器 ``__exit__`` 等回来，工作线程就地把它们标成
+        ``stopped_unstarted`` 就没人管了。这个状态只是「撤回这条页记录」的内部
+        信号，一旦跟着异常留在 ``record.pages`` 里，就会被写进清单、送进逐页面
+        板：前端不认识这个字符串，会把一张连译文图都没有的页显示成「已跑完 ·
+        未审核」，报告的「未开始页面」也漏计。
+
+        调用点在 ``_process_prepared_pages`` 的 ``finally`` 里，且在
+        ``with ThreadPoolExecutor`` 之外——执行器 ``__exit__`` 已经 join 完所有
+        工作线程，这里遍历页记录不会和它们抢。
+        """
+        for prepared in prepared_files:
+            for page_record in list(prepared.record.pages):
+                if page_record.status != PDF_PAGE_STATUS_STOPPED_UNSTARTED:
+                    continue
+                self._discard_stopped_page(prepared, page_record)
+
     def _forget_page_progress(self, page_record: PdfPageRecord) -> None:
         """Undo the aggregate counters of a page that is about to run again."""
         key = self._page_status_key(page_record)
@@ -2111,24 +2278,60 @@ class PdfImageTranslationRunner:
         self,
         prepared: _PreparedPdfFile,
         page: PdfPageRecord,
-    ) -> None:
-        """Drop stale translated page images so the panel cannot show them."""
+        *,
+        stash: bool = False,
+    ) -> list[tuple[Path, Path]]:
+        """Drop stale translated page images so the panel cannot show them.
+
+        ``stash=True`` 时不删除，只改名挪到同目录的隐藏名下，返回
+        ``[(挪走后的路径, 原路径), ...]``：重生成成功就丢掉，失败就搬回来，
+        这一页于是要么整个换新、要么原样不动。
+        """
         base_dir = prepared.translated_pages_dir
+        stashed: list[tuple[Path, Path]] = []
         if not base_dir.is_dir():
-            return
+            return stashed
         page_count = max(1, int(prepared.record.page_count or 1))
         stem = page_image_name(page.page_number, page_count).removesuffix(".png")
         for candidate in sorted(base_dir.glob(f"{stem}*")):
             if not _path_is_within(candidate, base_dir) or not candidate.is_file():
                 continue
+            if candidate.name.startswith(PDF_PAGE_IMAGE_STASH_PREFIX):
+                continue
             try:
-                candidate.unlink()
+                if stash:
+                    target = base_dir / f"{PDF_PAGE_IMAGE_STASH_PREFIX}{candidate.name}"
+                    target.unlink(missing_ok=True)
+                    candidate.rename(target)
+                    stashed.append((target, candidate))
+                else:
+                    candidate.unlink()
             except Exception as exc:  # noqa: BLE001 - cleanup must not block resume.
                 self._log(
                     "WARN",
                     f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}："
                     f"{user_facing_reason(exc, fallback='文件删不掉。')}",
                 )
+        return stashed
+
+    def _commit_page_image_stash(self, stashed: list[tuple[Path, Path]]) -> None:
+        """重生成成功：挪开的旧译图不再需要了。"""
+        for stashed_path, _original in stashed:
+            try:
+                stashed_path.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001 - 残留文件不影响产物。
+                logger.debug(f"[PDF] 删除挪开的旧译图失败：{stashed_path}：{exc!r}")
+
+    def _restore_page_image_stash(self, stashed: list[tuple[Path, Path]]) -> None:
+        """重生成失败：把挪开的旧译图原样搬回来。"""
+        for stashed_path, original in stashed:
+            try:
+                if not stashed_path.is_file():
+                    continue
+                original.unlink(missing_ok=True)
+                stashed_path.rename(original)
+            except Exception as exc:  # noqa: BLE001 - 已经在失败路径上，不再抛新错。
+                logger.debug(f"[PDF] 恢复旧译图失败：{stashed_path}：{exc!r}")
 
     def _log(self, level: str, message: str, *, visible: bool = True) -> None:
         self._queue.put(LogMsg(level=level, message=message, visible=visible))
@@ -2796,132 +2999,149 @@ class PdfImageTranslationRunner:
         # 起点不是 0：续译复用的页在进这里之前就已经记完成了，写 0 会让进度条先跳回去。
         self._push_translation_progress(total_pages)
 
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            while not producer_done or futures:
-                while (
-                    not producer_done
-                    and not self._stop_event.is_set()
-                    and not self._pause_event.is_set()
-                    and len(futures) < max_pending
-                ):
-                    try:
-                        prepared, page_record = next(page_iter)
-                    except StopIteration:
-                        producer_done = True
-                        break
-                    if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
-                        continue
-                    prepared.record.pages.append(page_record)
-                    if page_record.skipped_oversize:
-                        # 大幅面页：不进 executor.submit，直接按「已提交且已
-                        # 完成」记账，否则「N/M 已完成」的进度会永远差这几页。
-                        long_mm = _pt_to_mm(
-                            max(page_record.page_width_pt, page_record.page_height_pt)
-                        )
-                        short_mm = _pt_to_mm(
-                            min(page_record.page_width_pt, page_record.page_height_pt)
-                        )
+        try:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                while not producer_done or futures:
+                    while (
+                        not producer_done
+                        and not self._stop_event.is_set()
+                        and not self._pause_event.is_set()
+                        and len(futures) < max_pending
+                    ):
+                        try:
+                            prepared, page_record = next(page_iter)
+                        except StopIteration:
+                            producer_done = True
+                            break
+                        if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
+                            continue
+                        prepared.record.pages.append(page_record)
+                        if page_record.skipped_oversize:
+                            # 大幅面页：不进 executor.submit，直接按「已提交且已
+                            # 完成」记账，否则「N/M 已完成」的进度会永远差这几页。
+                            long_mm = _pt_to_mm(
+                                max(page_record.page_width_pt, page_record.page_height_pt)
+                            )
+                            short_mm = _pt_to_mm(
+                                min(page_record.page_width_pt, page_record.page_height_pt)
+                            )
+                            self._log(
+                                "INFO",
+                                f"[{prepared.record.name}] 跳过大幅面页：第 "
+                                f"{page_record.page_number} 页 {short_mm:.0f}×{long_mm:.0f} mm，"
+                                "已跳过翻译，原页将矢量直传到输出 PDF。",
+                            )
+                            self._record_page_submitted()
+                            self._record_page_completed(page_record)
+                            self._push_translation_progress(total_pages)
+                            continue
+                        if page_record.status == "placeholder_pending":
+                            # 渲染阶段就坏掉的页：没有源页图可以交给模型，直接按
+                            # 「已提交且已失败」记账，走占位页流程，不占用重试和配额。
+                            self._record_page_submitted()
+                            self._record_page_placeholder(page_record)
+                            self._record_page_completed(page_record)
+                            self._push_translation_progress(total_pages)
+                            continue
                         self._log(
                             "INFO",
-                            f"[{prepared.record.name}] 跳过大幅面页：第 "
-                            f"{page_record.page_number} 页 {short_mm:.0f}×{long_mm:.0f} mm，"
-                            "已跳过翻译，原页将矢量直传到输出 PDF。",
+                            f"[{prepared.record.name}] 第 {page_record.page_number} 页已渲染",
+                            visible=False,
                         )
+                        future = executor.submit(
+                            self._generate_page_with_retries,
+                            page_record,
+                            prepared.record.page_count,
+                            prepared.translated_pages_dir,
+                            prepared.review_candidates_dir,
+                            max_attempts,
+                            scheduler,
+                            review_scheduler,
+                            model_config,
+                            review_model_config,
+                            source_type=prepared.record.source_type,
+                        )
+                        futures[future] = (prepared, page_record)
                         self._record_page_submitted()
+                        self._log(
+                            "INFO",
+                            f"[{prepared.record.name}] 第 {page_record.page_number} 页已提交图像生成",
+                            visible=False,
+                        )
+
+                    if self._stop_event.is_set() and not stop_logged:
+                        stop_logged = True
+                        self._stop_wait_started_at = time.monotonic()
+                        self._log("WARN", "已收到中止请求：不再提交新页，等待已提交页面结束。")
+                        self._emit_stop_wait_status(force=True)
+                    elif self._stop_event.is_set() and stop_logged:
+                        # 等待期间没有任何页跑完也要让状态行往前走（见 _stop_wait_status）。
+                        self._emit_stop_wait_status()
+                    elif not self._stop_event.is_set() and stop_logged:
+                        stop_logged = False
+                        self._stop_wait_started_at = None
+
+                    if self._pause_event.is_set() and not futures:
+                        return
+
+                    if not futures:
+                        break
+
+                    done, _ = wait(
+                        list(futures.keys()),
+                        timeout=0.2,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        prepared, page_record = futures.pop(future)
+                        try:
+                            updated = future.result()
+                            _copy_page_record(updated, page_record)
+                        except ImageModelUnavailableError as exc:
+                            page_record.status = PDF_OUTPUT_STATE_FAILED
+                            page_record.error = str(exc)
+                            page_record.attempts = max(1, page_record.attempts)
+                            self._stop_event.set()
+                            self._fatal_model_error = str(exc)
+                            raise
+                        except PdfReviewModelUnavailableError as exc:
+                            page_record.status = PDF_OUTPUT_STATE_FAILED
+                            page_record.error = str(exc)
+                            page_record.attempts = max(1, page_record.attempts)
+                            self._stop_event.set()
+                            self._fatal_model_error = str(exc)
+                            self._fatal_review_model_error = str(exc)
+                            raise
+                        except Exception as exc:  # noqa: BLE001 - page-level unknown failure.
+                            logger.debug(
+                                f"[PDF] 第 {page_record.page_number} 页失败原始错误：{exc!r}"
+                            )
+                            page_record.status = "placeholder_pending"
+                            page_record.placeholder = True
+                            page_record.error = user_facing_reason(
+                                exc,
+                                fallback="这一页处理失败，已改为失败占位页。",
+                            )
+                            page_record.attempts = max_attempts
+                            self._record_page_placeholder(page_record)
+                        if page_record.status == PDF_PAGE_STATUS_STOPPED_UNSTARTED:
+                            # 中止时没跑出结果的页：撤掉页记录，让它回到「还没开始」。
+                            # 这是「文件是否全部页面已完成」唯一的判据，也是报告里
+                            # 「未开始页数」的来源。
+                            self._discard_stopped_page(prepared, page_record)
+                            self._push_translation_progress(total_pages)
+                            continue
                         self._record_page_completed(page_record)
                         self._push_translation_progress(total_pages)
-                        continue
-                    if page_record.status == "placeholder_pending":
-                        # 渲染阶段就坏掉的页：没有源页图可以交给模型，直接按
-                        # 「已提交且已失败」记账，走占位页流程，不占用重试和配额。
-                        self._record_page_submitted()
-                        self._record_page_placeholder(page_record)
-                        self._record_page_completed(page_record)
-                        self._push_translation_progress(total_pages)
-                        continue
-                    self._log(
-                        "INFO",
-                        f"[{prepared.record.name}] 第 {page_record.page_number} 页已渲染",
-                        visible=False,
-                    )
-                    future = executor.submit(
-                        self._generate_page_with_retries,
-                        page_record,
-                        prepared.record.page_count,
-                        prepared.translated_pages_dir,
-                        prepared.review_candidates_dir,
-                        max_attempts,
-                        scheduler,
-                        review_scheduler,
-                        model_config,
-                        review_model_config,
-                        source_type=prepared.record.source_type,
-                    )
-                    futures[future] = (prepared, page_record)
-                    self._record_page_submitted()
-                    self._log(
-                        "INFO",
-                        f"[{prepared.record.name}] 第 {page_record.page_number} 页已提交图像生成",
-                        visible=False,
-                    )
 
-                if self._stop_event.is_set() and not stop_logged:
-                    stop_logged = True
-                    self._stop_wait_started_at = time.monotonic()
-                    self._log("WARN", "已收到中止请求：不再提交新页，等待已提交页面结束。")
-                    self._emit_stop_wait_status(force=True)
-                elif self._stop_event.is_set() and stop_logged:
-                    # 等待期间没有任何页跑完也要让状态行往前走（见 _stop_wait_status）。
-                    self._emit_stop_wait_status()
-                elif not self._stop_event.is_set() and stop_logged:
-                    stop_logged = False
-                    self._stop_wait_started_at = None
-
-                if self._pause_event.is_set() and not futures:
-                    return
-
-                if not futures:
-                    break
-
-                done, _ = wait(
-                    list(futures.keys()),
-                    timeout=0.2,
-                    return_when=FIRST_COMPLETED,
-                )
-                for future in done:
-                    prepared, page_record = futures.pop(future)
-                    try:
-                        updated = future.result()
-                        _copy_page_record(updated, page_record)
-                    except ImageModelUnavailableError as exc:
-                        page_record.status = PDF_OUTPUT_STATE_FAILED
-                        page_record.error = str(exc)
-                        page_record.attempts = max(1, page_record.attempts)
-                        self._stop_event.set()
-                        self._fatal_model_error = str(exc)
-                        raise
-                    except PdfReviewModelUnavailableError as exc:
-                        page_record.status = PDF_OUTPUT_STATE_FAILED
-                        page_record.error = str(exc)
-                        page_record.attempts = max(1, page_record.attempts)
-                        self._stop_event.set()
-                        self._fatal_model_error = str(exc)
-                        self._fatal_review_model_error = str(exc)
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - page-level unknown failure.
-                        logger.debug(
-                            f"[PDF] 第 {page_record.page_number} 页失败原始错误：{exc!r}"
-                        )
-                        page_record.status = "placeholder_pending"
-                        page_record.placeholder = True
-                        page_record.error = user_facing_reason(
-                            exc,
-                            fallback="这一页处理失败，已改为失败占位页。",
-                        )
-                        page_record.attempts = max_attempts
-                        self._record_page_placeholder(page_record)
-                    self._record_page_completed(page_record)
-                    self._push_translation_progress(total_pages)
+        finally:
+            # 致命错误（模型/审核模型不可用）是直接 raise 出去的，收敛循环再也回不来；
+            # 还在飞的页由执行器 __exit__ 等回来，工作线程就地把它们标成
+            # stopped_unstarted。这个状态只是「撤回这条页记录」的内部信号，一旦跟着
+            # 异常留在 record.pages 里，就会被写进清单、送进逐页面板——前端不认识它，
+            # 会把一张连译文图都没有的页显示成「已跑完·未审核」，报告的「未开始页面」
+            # 也漏计。所以不论从哪条路离开，都在这里统一撤干净。
+            self._discard_stopped_pages(prepared_files)
 
     def _push_translation_progress(self, total_pages: int) -> None:
         """Emit the "N / total 已完成" progress pair used by both the normal
@@ -3110,6 +3330,11 @@ class PdfImageTranslationRunner:
             self._assemble_translated_pdf(record, prepared.translated_pdf_path)
             record.translated_pdf_path = str(prepared.translated_pdf_path)
             record.high_quality_pdf_size_bytes = _safe_file_size(prepared.translated_pdf_path)
+            # 这一轮重新装配，上一轮的压缩结论（成功路径与失败原因）全部作废：
+            # 单页重生成不再预删旧产物，不在这里显式收口的话，旧压缩版会连同旧的
+            # compression_error 一起被当成本轮的结果继续挂在记录上。
+            compressed_built = False
+            record.compression_error = ""
             if self._settings.pdf.generate_compressed_pdf:
                 try:
                     self._assemble_translated_pdf(
@@ -3121,6 +3346,7 @@ class PdfImageTranslationRunner:
                     record.compressed_pdf_size_bytes = _safe_file_size(
                         prepared.compressed_pdf_path
                     )
+                    compressed_built = True
                     self._log(
                         "OK",
                         f"[{record.name}] 已生成压缩 PDF：{prepared.compressed_pdf_path.name}",
@@ -3146,6 +3372,10 @@ class PdfImageTranslationRunner:
                 if _record_needs_review(record)
                 else PDF_OUTPUT_STATE_COMPLETED
             )
+            if not compressed_built:
+                # 清理放在状态落定之后：这样单页重生成失败要回滚时，磁盘上什么
+                # 都还没被删过（那正是 高-5 的病根，不能为清残留把它请回来）。
+                self._discard_superseded_compressed_pdf(record, prepared)
             self._log("OK", f"[{record.name}] 已生成高清 PDF：{prepared.translated_pdf_path.name}")
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
@@ -3172,16 +3402,24 @@ class PdfImageTranslationRunner:
             self._log("ERROR", f"[{record.name}] {record.error}")
             return
         source_path = Path(source_page.translated_image_path)
-        output_path = resolve_translated_image_path(
-            Path(record.source_copy_path).parent,
-            record.name,
-            self._settings.pdf.target_lang,
-            self._settings,
-            app_managed=prepared.app_managed,
+        previous_output = record.translated_image_path
+        output_path = self._resolve_image_output_path(
+            prepared,
             output_suffix=source_path.suffix or ".png",
         )
         try:
-            shutil.copy2(source_path, output_path)
+            # 和 PDF 装配同一条纪律：先写同目录的临时文件，写成功再原子替换。
+            # 重新生成失败时，上一版译图必须原样留在磁盘上。
+            temp_path = output_path.with_name(f".{output_path.name}.building")
+            try:
+                shutil.copy2(source_path, temp_path)
+            except BaseException:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception as cleanup_exc:  # noqa: BLE001 - 不改变原始错误。
+                    logger.debug(f"[PDF] 清理未完成的译图临时文件失败：{temp_path}：{cleanup_exc!r}")
+                raise
+            os.replace(temp_path, output_path)
             record.translated_image_path = str(output_path)
             record.translated_image_format = _image_format_from_path(output_path)
             record.high_quality_pdf_size_bytes = _safe_file_size(output_path)
@@ -3190,12 +3428,49 @@ class PdfImageTranslationRunner:
                 if (record.review_failed_page_count or record.quality_flagged_page_count)
                 else PDF_OUTPUT_STATE_COMPLETED
             )
+            # 模型换了输出格式时新译图落在另一个后缀下（xxx_en.png → xxx_en.jpg），
+            # 上一版不清就会以孤儿的身份留在用户的输出目录里，看上去像第二份译图。
+            # 同样放在状态落定之后：重生成失败要回滚时磁盘上一个字节都没动过。
+            self._discard_superseded_translated_image(record, previous_output, output_path)
             self._log("OK", f"[{record.name}] 已生成译图：{output_path.name}")
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
             logger.debug(f"[PDF] 译图写入失败原始错误：{exc!r}")
             record.error = f"译图写入失败：{user_facing_reason(exc, fallback='译图无法写入输出目录。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
+
+    def _resolve_image_output_path(
+        self,
+        prepared: _PreparedPdfFile,
+        *,
+        output_suffix: str,
+    ) -> Path:
+        """图片源的交付路径只解析一次，之后每一轮都原子覆盖同一个文件名。
+
+        ``resolve_translated_image_path`` 是有副作用的：app 托管目录下它会先把已
+        经存在的同名文件改名成 ``_R1`` 再返回基名。事务化重生成之后，那一步会成
+        为整条链路上唯一一个「先动磁盘、再写新产物」的动作——重生成失败时回滚只
+        还原记录字段、还不回文件名，用户就会拿到一个指向已消失文件的下载入口；
+        重生成成功时被挪走的旧版又会以 ``_R1`` 的身份永久留在输出目录里，交付文
+        件名还每重生成一次漂一级。所以这里跟 PDF 变体对齐：准备好的那份路径缓存
+        在 ``prepared`` 上，重生成直接复用，只有模型换了输出格式时才换后缀。
+        """
+        cached = prepared.translated_image_path
+        if cached is not None:
+            if cached.suffix.lower() != output_suffix.lower():
+                cached = cached.with_name(f"{cached.stem}{output_suffix}")
+                prepared.translated_image_path = cached
+            return cached
+        resolved = resolve_translated_image_path(
+            Path(prepared.record.source_copy_path).parent,
+            prepared.record.name,
+            self._settings.pdf.target_lang,
+            self._settings,
+            app_managed=prepared.app_managed,
+            output_suffix=output_suffix,
+        )
+        prepared.translated_image_path = resolved
+        return resolved
 
     def _refresh_file_record_counts(self, record: PdfFileRecord) -> None:
         record.generated_page_count = sum(
@@ -3280,6 +3555,61 @@ class PdfImageTranslationRunner:
             for record in records
         )
 
+    def _discard_superseded_compressed_pdf(
+        self,
+        record: PdfFileRecord,
+        prepared: _PreparedPdfFile,
+    ) -> None:
+        """本轮没有产出压缩版时，把上一轮留下的那份清掉。
+
+        终态任务的单页重生成是事务化的：旧产物不再被预先删除，而是等新产物写成
+        功后原子替换。代价是「本轮没被重写的旧产物」会原地留下——压缩版关掉、或
+        者压缩装配失败时，磁盘上那份旧压缩 PDF 内容还停在重生成之前，却仍然挂在
+        ``record.compressed_pdf_path`` 上被当成本任务的当前产物给用户下载。
+        """
+        stale_paths = {prepared.compressed_pdf_path}
+        if record.compressed_pdf_path:
+            stale_paths.add(Path(record.compressed_pdf_path))
+        record.compressed_pdf_path = ""
+        record.compressed_pdf_size_bytes = 0
+        for path in stale_paths:
+            try:
+                if path.is_file():
+                    path.unlink()
+            except Exception as exc:  # noqa: BLE001 - 清理失败不该影响已交付的高清版。
+                logger.debug(f"[PDF] 清除被取代的压缩 PDF 失败：{path}：{exc!r}")
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 清除上一版压缩 PDF 失败：{path.name}："
+                    + user_facing_reason(exc, fallback="文件可能正被其他程序打开。"),
+                )
+
+    def _discard_superseded_translated_image(
+        self,
+        record: PdfFileRecord,
+        previous_output: str,
+        output_path: Path,
+    ) -> None:
+        """图片源换了输出格式时，把上一版另一个后缀的译图清掉。"""
+        if not previous_output:
+            return
+        previous_path = Path(previous_output)
+        try:
+            if previous_path == output_path or not previous_path.is_file():
+                return
+            if previous_path.samefile(output_path):
+                return
+            previous_path.unlink()
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # noqa: BLE001 - 清理失败不该影响已写好的新译图。
+            logger.debug(f"[PDF] 清除被取代的译图失败：{previous_path}：{exc!r}")
+            self._log(
+                "WARN",
+                f"[{record.name}] 清除上一版译图失败：{previous_path.name}："
+                + user_facing_reason(exc, fallback="文件可能正被其他程序打开。"),
+            )
+
     def _clear_generated_pdf_outputs(self, prepared_files: list[_PreparedPdfFile]) -> None:
         for prepared in prepared_files:
             record = prepared.record
@@ -3313,217 +3643,6 @@ class PdfImageTranslationRunner:
                 PDF_OUTPUT_STATE_STOPPED,
             }:
                 record.status = "pending"
-
-    def _process_file(
-        self,
-        item: PdfFileItem,
-        *,
-        output_dir: Path,
-        app_managed: bool,
-        max_attempts: int,
-        scheduler: WeightedApiScheduler,
-        model_config,
-        review_model_config,
-        concurrency: int,
-        processed_page_offset: int,
-        total_pages: int,
-        review_scheduler: WeightedApiScheduler | None = None,
-    ) -> PdfFileRecord:
-        review_scheduler = review_scheduler or scheduler
-        relative_pdf = _relative_pdf_path(item.path, self._source_root)
-        source_copy_path = output_dir / relative_pdf
-        source_copy_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item.path, source_copy_path)
-        record = PdfFileRecord(
-            name=item.path.name,
-            source_path=str(item.path),
-            relative_path=str(relative_pdf),
-            source_type=item.source_type,
-            source_copy_path=str(source_copy_path),
-            source_pdf_size_bytes=_safe_file_size(item.path),
-        )
-        self._log("INFO", f"[{item.path.name}] 已复制源 PDF 到输出目录")
-
-        try:
-            _load_pdfium()
-        except Exception as exc:  # noqa: BLE001 - dependency may be absent in dev env.
-            record.status = PDF_OUTPUT_STATE_FAILED
-            logger.debug(f"[PDF] PDF 渲染组件不可用原始错误：{exc!r}")
-            record.error = (
-                "程序里负责渲染 PDF 页面的组件没能加载，无法处理 PDF；请重装程序后重试。"
-            )
-            return record
-
-        source_pages_dir, translated_pages_dir = resolve_pdf_page_archive_dirs(
-            output_dir,
-            relative_pdf,
-        )
-        review_candidates_dir = resolve_pdf_review_candidates_dir(output_dir, relative_pdf)
-        source_pages_dir.mkdir(parents=True, exist_ok=True)
-        translated_pages_dir.mkdir(parents=True, exist_ok=True)
-        if self._settings.pdf.review_enabled:
-            review_candidates_dir.mkdir(parents=True, exist_ok=True)
-        translated_pdf_path, compressed_pdf_path = resolve_translated_pdf_variant_paths(
-            source_copy_path.parent,
-            item.path.name,
-            self._settings.pdf.target_lang,
-            self._settings,
-            app_managed=app_managed,
-        )
-
-        try:
-            doc = _open_pdf_document(item.path)
-            try:
-                page_count = len(doc)
-                record.page_count = page_count
-                futures: dict[Any, PdfPageRecord] = {}
-                max_pending = max(1, concurrency + PDF_PAGE_RENDER_AHEAD_COUNT)
-                next_page_index = 0
-                with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                    while next_page_index < page_count or futures:
-                        while (
-                            next_page_index < page_count
-                            and len(futures) < max_pending
-                            and not self._stop_event.is_set()
-                        ):
-                            page_number = next_page_index + 1
-                            page_record = self._render_source_page(
-                                doc,
-                                page_index=next_page_index,
-                                page_count=page_count,
-                                source_pages_dir=source_pages_dir,
-                            )
-                            record.pages.append(page_record)
-                            self._log("INFO", f"[{item.path.name}] 第 {page_number} 页已渲染")
-                            future = executor.submit(
-                                self._generate_page_with_retries,
-                                page_record,
-                                page_count,
-                                translated_pages_dir,
-                                review_candidates_dir,
-                                max_attempts,
-                                scheduler,
-                                review_scheduler,
-                                model_config,
-                                review_model_config,
-                            )
-                            futures[future] = page_record
-                            self._log("INFO", f"[{item.path.name}] 第 {page_number} 页已提交图像生成")
-                            next_page_index += 1
-
-                        if not futures:
-                            break
-                        done, _ = wait(list(futures.keys()), timeout=0.2, return_when=FIRST_COMPLETED)
-                        for future in done:
-                            page_record = futures.pop(future)
-                            try:
-                                updated = future.result()
-                                _copy_page_record(updated, page_record)
-                            except ImageModelUnavailableError as exc:
-                                page_record.status = PDF_OUTPUT_STATE_FAILED
-                                page_record.error = str(exc)
-                                page_record.attempts = max(1, page_record.attempts)
-                                self._stop_event.set()
-                                raise
-                            except PdfReviewModelUnavailableError as exc:
-                                page_record.status = PDF_OUTPUT_STATE_FAILED
-                                page_record.error = str(exc)
-                                page_record.attempts = max(1, page_record.attempts)
-                                self._stop_event.set()
-                                raise
-                            except Exception as exc:  # noqa: BLE001 - page-level unknown failure.
-                                logger.debug(
-                                    f"[PDF] 第 {page_record.page_number} 页失败原始错误：{exc!r}"
-                                )
-                                page_record.status = "placeholder_pending"
-                                page_record.error = user_facing_reason(
-                                    exc,
-                                    fallback="这一页处理失败，已改为失败占位页。",
-                                )
-                                page_record.attempts = max_attempts
-                            processed = processed_page_offset + min(
-                                page_count,
-                                max(next_page_index - len(futures), 0),
-                            )
-                            self._queue.put(ProgressMsg(2, 3, "生成 PDF 页", processed, total_pages))
-
-                        if self._stop_event.is_set() and next_page_index < page_count:
-                            self._log("WARN", f"[{item.path.name}] 已收到中止请求，不再提交新页")
-                            wait(list(futures.keys()), timeout=20)
-                            break
-            finally:
-                doc.close()
-        except ImageModelUnavailableError as exc:
-            self._fatal_model_error = str(exc)
-            record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = self._fatal_model_error
-            return record
-        except PdfReviewModelUnavailableError as exc:
-            self._fatal_model_error = str(exc)
-            self._fatal_review_model_error = self._fatal_model_error
-            record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = self._fatal_model_error
-            return record
-
-        if self._stop_event.is_set():
-            record.status = PDF_OUTPUT_STATE_STOPPED
-            self._refresh_file_record_counts(record)
-            return record
-
-        self._finalize_placeholders(record, translated_pages_dir)
-        # 逐页计数只有一处实现。这里原先手抄了一份，抄漏了 quality_flagged_page_count 和
-        # skipped_oversize_page_count，于是同一份记录走不同代码路径会给出不同的数——正是
-        # 「界面说的话跟实际不符」的源头之一。
-        self._refresh_file_record_counts(record)
-        if not _record_has_usable_translated_pages(record):
-            record.status = PDF_OUTPUT_STATE_FAILED
-            record.error = _no_usable_translated_pages_error(record)
-            self._log("ERROR", f"[{item.path.name}] {record.error}")
-            return record
-
-        try:
-            self._queue.put(ProgressMsg(3, 3, "合成 PDF", 0, 1))
-            self._assemble_translated_pdf(record, Path(translated_pdf_path))
-            record.translated_pdf_path = str(translated_pdf_path)
-            record.high_quality_pdf_size_bytes = _safe_file_size(translated_pdf_path)
-            if self._settings.pdf.generate_compressed_pdf:
-                try:
-                    self._assemble_translated_pdf(
-                        record,
-                        Path(compressed_pdf_path),
-                        compressed=True,
-                    )
-                    record.compressed_pdf_path = str(compressed_pdf_path)
-                    record.compressed_pdf_size_bytes = _safe_file_size(compressed_pdf_path)
-                    self._log("OK", f"[{item.path.name}] 已生成压缩 PDF：{compressed_pdf_path.name}")
-                except Exception as exc:  # noqa: BLE001 - compressed output is optional.
-                    logger.debug(f"[PDF] 压缩 PDF 生成失败原始错误：{exc!r}")
-                    record.compression_error = user_facing_reason(
-                        exc,
-                        fallback="压缩版 PDF 没能生成，高清版不受影响。",
-                    )
-                    self._log(
-                        "WARN",
-                        f"[{item.path.name}] 压缩 PDF 生成失败，已保留高清版："
-                        f"{record.compression_error}",
-                    )
-            record.status = (
-                PDF_OUTPUT_STATE_NEEDS_REVIEW
-                if (
-                    record.placeholder_page_count
-                    or record.emergency_ratio_normalized_count
-                    or record.review_failed_page_count
-                )
-                else PDF_OUTPUT_STATE_COMPLETED
-            )
-            self._log("OK", f"[{item.path.name}] 已生成高清 PDF：{translated_pdf_path.name}")
-            self._queue.put(ProgressMsg(3, 3, "合成 PDF", 1, 1))
-        except Exception as exc:  # noqa: BLE001 - file-level failure.
-            record.status = PDF_OUTPUT_STATE_FAILED
-            logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
-            record.error = f"PDF 合成失败：{user_facing_reason(exc, fallback='译文页面无法装配成 PDF。')}"
-            self._log("ERROR", f"[{item.path.name}] {record.error}")
-        return record
 
     def _render_source_page(
         self,
@@ -3664,7 +3783,7 @@ class PdfImageTranslationRunner:
             try:
                 if self._stop_event.is_set():
                     break
-                self._api_call_count += 1
+                self._record_api_call()
                 image_bytes = self._image_client.generate_page(
                     source_image_path=Path(page_record.source_image_path),
                     target_language=target_language,
@@ -3692,6 +3811,9 @@ class PdfImageTranslationRunner:
                     request_generation=lease.generation,
                     context_label=f"PDF 第 {page_record.page_number} 页",
                     error_callback=lambda message: self._record_rate_limit_reduction(message),
+                    # 限流退避里睡的是整整 30 秒。不把停止标志交给它，用户点了停止
+                    # 之后每一页都要先把这一觉睡完才肯回来，停止响应被拖成几十秒。
+                    should_stop=self._stop_event.is_set,
                 )
                 if decision is not None and decision.should_retry:
                     time.sleep(0.2)
@@ -3751,7 +3873,7 @@ class PdfImageTranslationRunner:
                     self._begin_page_review(attempt)
                     review_request_error: Exception | None = None
                     try:
-                        self._review_api_call_count += 1
+                        self._record_review_api_call()
                         with review_scheduler.slot(
                             1,
                             category=API_REQUEST_CATEGORY_RECOVERY,
@@ -3811,6 +3933,16 @@ class PdfImageTranslationRunner:
                             issue.__dict__ for issue in review_result.blocking_issues
                         ]
                         page_record.error = review_result.summary
+                        # 审核异常保留候选图时也要按真实格式定扩展名：这条分支此前
+                        # 一直用循环开头那个写死的 .png，模型返回 JPEG/WebP 时就会
+                        # 写出一张「名叫 png 的 jpg」，装订和预览都要另猜格式。
+                        output_path = _translated_page_output_path(
+                            translated_pages_dir,
+                            page_record=page_record,
+                            page_count=page_count,
+                            image_bytes=image_bytes,
+                            preserve_model_format=preserve_model_format,
+                        )
                         width, height = self._write_accepted_page_image(
                             image_bytes,
                             output_path,
@@ -3861,6 +3993,10 @@ class PdfImageTranslationRunner:
                         self._record_page_review_passed()
                         page_record.status = "success"
                         page_record.review_status = "passed"
+                        # 上一轮没通过时留下的 blocking issue 必须清掉：面板的
+                        # review_summary 优先读它，不清就会出现「通过」和上一轮那句
+                        # 「编号标签误译」并排显示，同一行自相矛盾。
+                        page_record.review_issues = []
                         page_record.translated_image_path = str(output_path)
                         page_record.output_width_px = width
                         page_record.output_height_px = height
@@ -3955,6 +4091,18 @@ class PdfImageTranslationRunner:
             page_record.error = last_error
             self._record_page_recovered(page_record)
             self._log("WARN", f"{self._page_log_prefix(page_record)}已执行应急比例归一化")
+            return page_record
+
+        if self._stop_event.is_set():
+            # 中止时这一页没跑出任何可用结果：它可能一次模型调用都没发生（在队列里
+            # 等着，闸门直接取消），也可能跑到一半被截断。无论哪种，它都不是「试过
+            # 了没成」，不该被烧成失败占位页塞进交付产物、更不该让整份文件被判成
+            # 「全部页面已完成」。退回「未开始」，交给主循环撤掉这条页记录：报告如实
+            # 报截断，续译时这一页还能重新排队。
+            page_record.status = PDF_PAGE_STATUS_STOPPED_UNSTARTED
+            page_record.placeholder = False
+            page_record.translated_image_path = ""
+            page_record.error = last_error or "任务已中止，这一页还没有生成结果。"
             return page_record
 
         if source_type == SOURCE_TYPE_IMAGE:
@@ -4215,8 +4363,19 @@ class PdfImageTranslationRunner:
             )
         )
 
+    def _record_api_call(self) -> None:
+        """页面工作线程记一次图像生成调用（并发自增必须上锁）。"""
+        with self._counter_lock:
+            self._api_call_count += 1
+
+    def _record_review_api_call(self) -> None:
+        """页面工作线程记一次审核调用（并发自增必须上锁）。"""
+        with self._counter_lock:
+            self._review_api_call_count += 1
+
     def _record_rate_limit_reduction(self, message: str) -> None:
-        self._rate_limit_reduction_count += 1
+        with self._counter_lock:
+            self._rate_limit_reduction_count += 1
         self._log("WARN", message)
 
     def _finalize_placeholders(
@@ -4263,6 +4422,11 @@ class PdfImageTranslationRunner:
     ) -> None:
         pdfium = _load_pdfium()
         output_pdf.parent.mkdir(parents=True, exist_ok=True)
+        # 先写同目录的临时文件，整份写成功了再原子替换旧产物。装配中途失败（页图
+        # 缺失、磁盘写满、模型不可用导致的重生成半途而废）时，上一次已经交付的
+        # 高清/压缩 PDF 必须原样留在磁盘上：单页重新生成不该有机会把整份 PDF 弄丢，
+        # 也不该在原地留下一个写了一半的坏文件。
+        temp_pdf = output_pdf.with_name(f".{output_pdf.name}.building")
         out_doc = pdfium.PdfDocument.new()
         # 大幅面页矢量直传要从「复制到输出目录的源 PDF」按需打开一次，而不是
         # 每页都开一次；大多数文件根本没有大幅面页，绝大多数情况下这个文档
@@ -4304,11 +4468,19 @@ class PdfImageTranslationRunner:
                         page_width_pt=page.page_width_pt,
                         page_height_pt=page.page_height_pt,
                     )
-                out_doc.save(output_pdf)
+                out_doc.save(temp_pdf)
+        except BaseException:
+            # 半成品不能留在输出目录里：它既不是产物，也会被下一次装配当成旧文件。
+            try:
+                temp_pdf.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001 - 清理失败不改变原始错误。
+                logger.debug(f"[PDF] 清理未完成的 PDF 临时文件失败：{temp_pdf}：{exc!r}")
+            raise
         finally:
             if source_doc is not None:
                 source_doc.close()
             out_doc.close()
+        os.replace(temp_pdf, output_pdf)
 
     def _resolve_pdf_concurrency(self, auto_concurrency: int | None = None) -> int:
         """Runtime page concurrency: the explicit setting wins, blank means auto.
@@ -4861,6 +5033,30 @@ def _localized_pdf_placeholder_problem(error_summary: str) -> str:
         raw,
         fallback="图像翻译接口这一次没有返回可用结果。",
     )
+
+
+# 一份文件「已经交出了什么产物」的全部字段。终态任务的单页重生成把它拍下来，
+# 重生成没成功时原样还原：磁盘上的旧产物没被动过，记录也不该被动过。
+_FILE_ARTIFACT_FIELDS = (
+    "status",
+    "error",
+    "translated_pdf_path",
+    "compressed_pdf_path",
+    "translated_image_path",
+    "translated_image_format",
+    "compression_error",
+    "high_quality_pdf_size_bytes",
+    "compressed_pdf_size_bytes",
+)
+
+
+def _file_artifact_snapshot(record: PdfFileRecord) -> dict[str, Any]:
+    return {name: getattr(record, name) for name in _FILE_ARTIFACT_FIELDS}
+
+
+def _restore_file_artifacts(record: PdfFileRecord, snapshot: dict[str, Any]) -> None:
+    for name, value in snapshot.items():
+        setattr(record, name, value)
 
 
 def _copy_page_record(source: PdfPageRecord, target: PdfPageRecord) -> None:

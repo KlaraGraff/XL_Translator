@@ -40,6 +40,7 @@ from core.pdf_image_translation import (
     PDF_PAGE_MAX_RENDER_PIXELS,
     PDF_PAGE_MIN_RENDER_DPI,
     PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
+    PDF_PAGE_STATUS_STOPPED_UNSTARTED,
     PDF_REPORT_FILENAME,
     SKIP_KIND_IMAGES_DISABLED,
     SOURCE_TYPE_IMAGE,
@@ -144,6 +145,38 @@ def _write_multi_page_pdf(path: Path, page_specs: list[dict]) -> None:
     path.write_bytes(bytes(buf))
 
 
+def _run_single_file(
+    runner: PdfImageTranslationRunner,
+    *,
+    output_dir: Path,
+    max_attempts: int,
+    model_config,
+    review_model_config=None,
+    total_pages: int = 1,
+    should_assemble: bool = True,
+) -> PdfFileRecord:
+    """按生产路径跑「一份文件」：准备 → 逐页生成 → 收尾装配。
+
+    这三步就是 ``_run`` 对每份文件做的事。此前这些用例走的是 ``_process_file``，
+    那是一条没有任何生产调用方的旁路，判定（needs_review 的口径、中止处理、大幅面
+    页）早就和真正跑的分支漂移了——用例绿着，生产分支没人测。
+    """
+    prepared = runner._prepare_pdf_files(output_dir=output_dir, app_managed=True)[0]
+    runner._total_page_count = total_pages
+    runner._process_prepared_pages(
+        [prepared],
+        max_attempts=max_attempts,
+        scheduler=WeightedApiScheduler(1),
+        review_scheduler=WeightedApiScheduler(1),
+        model_config=model_config,
+        review_model_config=review_model_config,
+        concurrency=1,
+        total_pages=total_pages,
+    )
+    runner._finalize_file_record(prepared, should_assemble=should_assemble)
+    return prepared.record
+
+
 class PdfImageTranslationTests(unittest.TestCase):
     def test_stop_after_lease_acquire_releases_exactly_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,7 +212,10 @@ class PdfImageTranslationTests(unittest.TestCase):
 
             self.assertEqual(scheduler.release_count, 1)
             self.assertEqual(scheduler.snapshot().active_total_weight, 0)
-            self.assertEqual(result.status, "placeholder_pending")
+            # 停在闸门上的页一次模型调用都没发生，不是「试过了没成」：它退回未开始，
+            # 由主循环撤掉页记录，绝不烧成失败占位页（见 PDF_PAGE_STATUS_STOPPED_UNSTARTED）。
+            self.assertEqual(result.status, PDF_PAGE_STATUS_STOPPED_UNSTARTED)
+            self.assertFalse(result.placeholder)
 
     def test_scan_skips_generated_dirs_and_non_pdf_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -256,17 +292,11 @@ class PdfImageTranslationTests(unittest.TestCase):
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
-                record = runner._process_file(
-                    runner._files[0],
+                record = _run_single_file(
+                    runner,
                     output_dir=output_dir,
-                    app_managed=True,
                     max_attempts=max_page_generation_attempts(3),
-                    scheduler=WeightedApiScheduler(1),
                     model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
-                    review_model_config=None,
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
                 )
 
             self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
@@ -321,17 +351,11 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
 
             with patch("core.model_roles.get_key", return_value="secret"):
-                record = runner._process_file(
-                    runner._files[0],
+                record = _run_single_file(
+                    runner,
                     output_dir=root / "out",
-                    app_managed=True,
                     max_attempts=max_page_generation_attempts(0),
-                    scheduler=WeightedApiScheduler(1),
                     model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
-                    review_model_config=None,
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
                 )
 
             self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
@@ -1047,27 +1071,33 @@ class PdfImageTranslationTests(unittest.TestCase):
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
-                record = runner._process_file(
-                    runner._files[0],
-                    output_dir=output_dir,
-                    app_managed=True,
-                    max_attempts=max_page_generation_attempts(3),
-                    scheduler=WeightedApiScheduler(1),
-                    model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
-                    review_model_config=None,
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
-                )
+                prepared = runner._prepare_pdf_files(output_dir=output_dir, app_managed=True)[0]
+                # 模型不可用是任务级致命错误：生产路径上它从 _process_prepared_pages
+                # 抛出去，由 _run 收成任务级失败，逐文件记录不会被装配。
+                with self.assertRaises(ImageModelUnavailableError):
+                    runner._process_prepared_pages(
+                        [prepared],
+                        max_attempts=max_page_generation_attempts(3),
+                        scheduler=WeightedApiScheduler(1),
+                        review_scheduler=WeightedApiScheduler(1),
+                        model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
+                        review_model_config=None,
+                        concurrency=1,
+                        total_pages=1,
+                    )
 
-            self.assertEqual(record.status, PDF_OUTPUT_STATE_FAILED)
+            record = prepared.record
             self.assertTrue(record.source_copy_path)
             self.assertEqual(len(record.pages), 1)
             self.assertTrue(record.pages[0].source_image_path.endswith("page_001.png"))
+            self.assertEqual(record.pages[0].status, PDF_OUTPUT_STATE_FAILED)
+            # 页面素材保留下来了：源页图还在，续译还能接着跑。
+            self.assertTrue(Path(record.pages[0].source_image_path).exists())
             # 用户看到的是一句中文，不是上游那句 "invalid api key"。
-            self.assertNotIn("invalid api key", record.error)
-            self.assertIn("API Key", record.error)
-            self.assertIn("请在设置里检查", record.error)
+            for text in (runner._fatal_model_error, record.pages[0].error):
+                self.assertNotIn("invalid api key", text)
+                self.assertIn("API Key", text)
+                self.assertIn("请在设置里检查", text)
 
     def test_review_failure_regenerates_from_source_and_keeps_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1101,20 +1131,15 @@ class PdfImageTranslationTests(unittest.TestCase):
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
-                record = runner._process_file(
-                    runner._files[0],
+                record = _run_single_file(
+                    runner,
                     output_dir=output_dir,
-                    app_managed=True,
                     max_attempts=max_page_generation_attempts(3),
-                    scheduler=WeightedApiScheduler(1),
                     model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
                     review_model_config=resolve_effective_model_config(
                         settings,
                         ROLE_PDF_REVIEW,
                     ),
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
                 )
 
             page = record.pages[0]
@@ -1170,20 +1195,15 @@ class PdfImageTranslationTests(unittest.TestCase):
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
-                record = runner._process_file(
-                    runner._files[0],
+                record = _run_single_file(
+                    runner,
                     output_dir=output_dir,
-                    app_managed=True,
                     max_attempts=max_page_generation_attempts(3),
-                    scheduler=WeightedApiScheduler(1),
                     model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
                     review_model_config=resolve_effective_model_config(
                         settings,
                         ROLE_PDF_REVIEW,
                     ),
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
                 )
 
             page = record.pages[0]
@@ -1330,20 +1350,15 @@ class PdfImageTranslationTests(unittest.TestCase):
                 "core.model_roles.get_key",
                 return_value="secret",
             ):
-                record = runner._process_file(
-                    runner._files[0],
+                record = _run_single_file(
+                    runner,
                     output_dir=output_dir,
-                    app_managed=True,
                     max_attempts=max_page_generation_attempts(3),
-                    scheduler=WeightedApiScheduler(1),
                     model_config=resolve_effective_model_config(settings, ROLE_IMAGE),
                     review_model_config=resolve_effective_model_config(
                         settings,
                         ROLE_PDF_REVIEW,
                     ),
-                    concurrency=1,
-                    processed_page_offset=0,
-                    total_pages=1,
                 )
 
             page = record.pages[0]
