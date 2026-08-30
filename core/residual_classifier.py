@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, localcontext
 
 # 与 translation_filter 既有检测保持同一 CJK 范围（一-龥）。
 CJK_SPAN_RE = re.compile(r"[一-龥]+")
@@ -414,21 +416,280 @@ def deterministic_numbering_fix(
 
 
 # ---------------------------------------------------------------------------
-# 外科修补验收器（diff 受限）
+# 数字 token 的跨语言归一（translation_filter / residual_repair 共用这一份）
 # ---------------------------------------------------------------------------
 
-_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[\.,]\d+)?")
+# 千分位写法随语言而变：法语用（窄）空格 1 500、英语用逗号 1,500、德语用点
+# 1.500、瑞士用撇号 1'500；数字体系也不止 ASCII（全角 １５００、阿拉伯-印度
+# 数字 ١٥٠٠）。旧的 `\d+(?:[.,]\d+)?` + 「逗号换点」两条规则只认 ASCII 与小数
+# 点，「1500天 → 1 500 jours」这种完全正确的译文会被判成「丢了数字 1500」，
+# 译文随即被打回改写回原文。
+_NUMBER_WS_SEP_CLASS = "[ \u00a0\u2007\u2009\u202f]"
+_NUMBER_GROUP_SEP_CLASS = "[ \u00a0\u2007\u2009\u202f'\u2019]"
+# 千分位组必须正好 3 位且后面不再接数字，"1 5000" 才不会被并成一个 token。
+NUMBER_TOKEN_PATTERN = (
+    r"\d+(?:(?:%s|[.,])\d{3}(?!\d))*(?:[.,]\d+)?" % _NUMBER_GROUP_SEP_CLASS
+)
+NUMBER_TOKEN_RE = re.compile(NUMBER_TOKEN_PATTERN)
+_NUMBER_GROUP_SEP_RE = re.compile(_NUMBER_GROUP_SEP_CLASS)
+# 空白类分隔符单独留一份。撇号只可能是千分位（1'500），空白却身兼两职：既是
+# 法语的千分位，也是「尺寸 100 200」里把两个独立的数隔开的普通空格。二者无法
+# 从字形上分辨，所以带空白的 token 一律保留两种读法，见 number_group_readings。
+_NUMBER_WS_SEP_RE = re.compile(_NUMBER_WS_SEP_CLASS)
+
+
+def fold_unicode_digits(text: str) -> str:
+    """把任意数字体系的数位折成 ASCII（１→1、١→1），其余字符原样保留。"""
+    source = str(text or "")
+    if source.isascii():
+        return source
+    folded: list[str] = []
+    for char in source:
+        if char.isascii() or not char.isdigit():
+            folded.append(char)
+            continue
+        try:
+            folded.append(str(unicodedata.digit(char)))
+        except (TypeError, ValueError):
+            folded.append(char)
+    return "".join(folded)
+
+
+def _decimal_digit_count(value: Decimal) -> int:
+    try:
+        return len(value.as_tuple().digits)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def decimal_number_key(value: Decimal) -> str:
+    """Decimal → 规范化字符串键（1500.00 与 1500 是同一个键）。
+
+    decimal 默认上下文只有 28 位有效数字，normalize / quantize 一旦超出就抛
+    InvalidOperation。30 位的银行账号、流水号是真实存在的文本，键取不出来会被
+    配对器当成「译文丢了这个数」，一字未改的译文照样被打回原文——所以这里按
+    实际位数临时抬高精度。键的用途是「同值判等」，任何舍入都会制造假失败。
+    """
+    with localcontext() as ctx:
+        ctx.prec = max(ctx.prec, _decimal_digit_count(value) + 2)
+        normalized = value.normalize()
+        if normalized == normalized.to_integral_value():
+            return str(normalized.quantize(Decimal(1)))
+        return format(normalized, "f")
+
+
+def scale_number_key(key: str, factor: Decimal) -> str:
+    """已规范化的数值键 × 倍率（万 / 亿）→ 新的数值键。
+
+    与 decimal_number_key 同理，倍率运算也要避开默认上下文的 28 位精度上限，
+    否则长数字乘出来的是被静默舍入的错值。
+    """
+    with localcontext() as ctx:
+        ctx.prec = max(ctx.prec, len(str(key)) + 20)
+        return decimal_number_key(Decimal(key) * factor)
+
+
+def _numeric_key(raw: str) -> str:
+    """数字串 → 数值键；解析不出来时退回字面量，绝不返回空串。
+
+    空键在 match_number_groups 里等价于「永远配不上」，会把原样保留的数字判成
+    丢失。宁可退化成字符串比对（同写法仍判等），也不能给出空键。
+    """
+    try:
+        return decimal_number_key(Decimal(raw))
+    except (InvalidOperation, ValueError):
+        return str(raw or "")
+
+
+def _number_key_candidates(token: str) -> list[str]:
+    """token 的数值解读列表，千分位读法在前（歧义时的首选）。"""
+    cleaned = _NUMBER_GROUP_SEP_RE.sub("", fold_unicode_digits(token))
+    if not cleaned:
+        return []
+    parts = re.split(r"[.,]", cleaned)
+    if not parts or any(not piece.isdigit() for piece in parts):
+        return []
+    if len(parts) == 1:
+        key = _numeric_key(parts[0])
+        return [key] if key else []
+
+    head, rest = parts[0], parts[1:]
+    candidates: list[str] = []
+    # 读法 A：所有分隔符都是千分位（1,500 / 1.500 / 1 500 → 1500）
+    if 1 <= len(head) <= 3 and all(len(piece) == 3 for piece in rest):
+        candidates.append(_numeric_key("".join(parts)))
+    # 读法 B：最后一个分隔符是小数点，其余是千分位（1 500,25 → 1500.25）
+    if all(len(piece) == 3 for piece in rest[:-1]) and rest[-1]:
+        candidates.append(_numeric_key("".join(parts[:-1]) + "." + rest[-1]))
+    return [key for key in dict.fromkeys(candidates) if key]
+
+
+def canonical_number_keys(token: str) -> frozenset[str]:
+    """一个数字 token 的全部合理数值解读。
+
+    「1,500」在英文里是 1500、在法文里是 1.5——单凭 token 无法消歧，所以两种
+    读法都返回，比对时任取其一命中即算数字未丢。判定的目的是抓「数字消失」，
+    在写法歧义上宁可放过也不能把正确译文打回。
+    """
+    return frozenset(_number_key_candidates(token))
+
+
+def primary_number_key(token: str) -> str:
+    """token 的首选数值键；无法解析时退回原样 token（永远不返回空串）。"""
+    candidates = _number_key_candidates(token)
+    return candidates[0] if candidates else str(token or "")
+
+
+def split_number_token_segments(token: str) -> list[str]:
+    """按空白类分隔符把 token 拆成「各自成数」的读法；无空白时返回单元素。"""
+    return [seg for seg in _NUMBER_WS_SEP_RE.split(str(token or "")) if seg]
+
+
+@dataclass(frozen=True)
+class NumberGroup:
+    """一个数字 token 的两种读法。
+
+    whole 是「整体当一个数」的解读（1 500 → 1500）；parts 是「空白只是分隔符、
+    各段各自成数」的解读（100 200 → 100 与 200）。token 里没有空白时 parts 为
+    空元组——此时读法唯一，不存在歧义。
+    """
+
+    token: str = ""
+    whole: frozenset[str] = frozenset()
+    parts: tuple[frozenset[str], ...] = ()
+
+
+def number_group_readings(token: str) -> NumberGroup:
+    """token → 它的整体读法与逐段读法。
+
+    空格在千分位上是法语标准写法（1 500），在正文里又是最普通的分隔符
+    （「尺寸 100 200」是两个数）。只保留其中一种读法都会造假失败：只当千分位
+    会把「100 200 → 100/200」判成丢数字，只当分隔符会把「1500 → 1 500」判成
+    丢数字。所以两种读法都留着，配对时任一成立即算数字没丢。
+    """
+    text = str(token or "")
+    segments = split_number_token_segments(text)
+    parts = (
+        tuple(canonical_number_keys(segment) for segment in segments)
+        if len(segments) > 1
+        else ()
+    )
+    return NumberGroup(token=text, whole=canonical_number_keys(text), parts=parts)
+
+
+def number_groups(text: str) -> list[NumberGroup]:
+    """按出现顺序给出文本中每个数字 token 的读法组。"""
+    return [
+        number_group_readings(match.group(0))
+        for match in NUMBER_TOKEN_RE.finditer(str(text or ""))
+    ]
+
+
+class _TargetNumberPool:
+    """译文侧可被消耗的数值单元。
+
+    每个 token 要么被整体消耗（1 500 当作 1500），要么被逐段消耗（100 200 里
+    的 100 与 200 分别配给不同的源数字）——两条路互斥：一旦拆开用过一段，
+    整体读法就不再成立。
+    """
+
+    __slots__ = ("_wholes", "_atoms")
+
+    def __init__(self, groups) -> None:
+        # _wholes[i] 非空 == 第 i 个 token 尚未被消耗过任何一段，整体读法仍可用。
+        self._wholes: list[set[str]] = []
+        self._atoms: list[list[set[str]]] = []
+        for group in groups:
+            self._wholes.append(set(group.whole))
+            atoms = group.parts if group.parts else (group.whole,)
+            self._atoms.append([set(atom) for atom in atoms])
+
+    def snapshot(self):
+        return (
+            [set(keys) for keys in self._wholes],
+            [[set(atom) for atom in atoms] for atoms in self._atoms],
+        )
+
+    def restore(self, saved) -> None:
+        self._wholes, self._atoms = saved
+
+    def take(self, wanted: set[str]) -> bool:
+        """消耗一个与 wanted 同值的单元；成功返回 True。"""
+        if not wanted:
+            return False
+        # 先试整体：整体读法命中就把这个 token 连同各段一起消耗掉。
+        for index, whole in enumerate(self._wholes):
+            if whole & wanted:
+                self._wholes[index] = set()
+                self._atoms[index] = []
+                return True
+        # 再试逐段：拆用任意一段后，该 token 的整体读法随即作废。
+        for index, atoms in enumerate(self._atoms):
+            for position, atom in enumerate(atoms):
+                if atom & wanted:
+                    atoms.pop(position)
+                    self._wholes[index] = set()
+                    return True
+        return False
+
+
+def match_number_groups(source_groups, target_groups) -> list[int]:
+    """贪心一对一配对，返回源侧没有对应数值的读法组下标。
+
+    每个源 token 先按整体读法找对应；找不到且它自身含空白时，退化成「逐段都
+    要找到」——两个数挨着写（尺寸 100 200）而译文换了分隔符（100/200）时靠
+    这一步救回。逐段配对是事务性的：有一段落空就整体回滚并判为丢失，不留下
+    被半途消耗掉的译文数字去连累后面的 token。
+    """
+    pool = _TargetNumberPool(target_groups)
+    missing: list[int] = []
+    for index, group in enumerate(source_groups):
+        if pool.take(set(group.whole)):
+            continue
+        if group.parts:
+            saved = pool.snapshot()
+            if all(pool.take(set(part)) for part in group.parts):
+                continue
+            pool.restore(saved)
+        missing.append(index)
+    return missing
+
+
+def missing_number_tokens(source_text: str, target_text: str) -> list[str]:
+    """源文里出现、译文里找不到的数字 token（原样返回源文写法，供报错文案用）。"""
+    source_groups = number_groups(source_text)
+    missing_indexes = match_number_groups(source_groups, number_groups(target_text))
+    return [source_groups[index].token for index in missing_indexes]
+
+
+def extract_number_tokens(text: str) -> list[str]:
+    """按出现顺序提取数字 token 的规范化数值键。
+
+    同一个数值不论写成 1500 / 1,500 / １５００ / ١٥٠٠ 都归到同一个键，序列本身
+    仍按出现顺序返回（顺序比较的调用方靠它抓「3 与 5 互换」）。
+
+    空白分组在这里一律按「各段各自成数」展开：本函数服务的是顺序全等比对，
+    「100 200」与「100/200」必须给出同一条序列。空白确实是千分位时（1 500）
+    两侧写法一致也照样相等，写法不一致则比对从严——拒收只是少做一次外科
+    修补，不会把译文打回原文。
+    """
+    keys: list[str] = []
+    for match in NUMBER_TOKEN_RE.finditer(str(text or "")):
+        keys.extend(
+            primary_number_key(segment)
+            for segment in split_number_token_segments(match.group(0))
+        )
+    return keys
+
+
+# ---------------------------------------------------------------------------
+# 外科修补验收器（diff 受限）
+# ---------------------------------------------------------------------------
 
 # 修补稿相对原译文的净增长上限：残留片段每字符 6 字符 + 12。中文术语译成
 # 法/英文的展开率通常在 6 倍以内；超过即视为模型在窗口内塞入自造内容。
 _SURGICAL_GROWTH_PER_SPAN_CHAR = 6
 _SURGICAL_GROWTH_BASE = 12
-
-
-def extract_number_tokens(text: str) -> list[str]:
-    """按出现顺序提取数字 token（全角归一为半角，小数逗号归一为点）。"""
-    normalized = str(text or "").translate(_FW_DIGIT_DOT_TRANS)
-    return [token.replace(",", ".") for token in _NUMBER_TOKEN_RE.findall(normalized)]
 
 
 def surgical_repair_ok(

@@ -1,9 +1,10 @@
 """should_translate 是全流程唯一的「这条要不要送去翻」闸门。
 
 Word 抽取与写入（word_document._is_translatable_source）、Excel 词条收集
-（task_runner._collect_texts）、Excel 写入器（xlsx_patcher._plan_cell_mutation）、
-补译分类（translation_coverage.looks_like_source_text）全部经过它。它判 False
-的内容不会被抽取、不会被写入、也不会出现在任何报告里——整份文档静悄悄地没有译文。
+（task_runner._collect_texts）、Excel 写入器（xlsx_patcher._plan_cell_mutation）
+全部经过它；补译分类（translation_coverage.looks_like_source_text）的最终放行
+也要过它，只是前面另有「像译文」「纯数字符号」两道先行否决。它判 False 的内容
+不会被抽取、不会被写入、也不会出现在任何报告里——整份文档静悄悄地没有译文。
 
 这个文件盯的是「源语言不是中文、目标语言也不是中文」那一格：产品支持 59×59 个
 语言对，而这条分支当年只按「中文文档里夹英文」写。

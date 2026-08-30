@@ -18,8 +18,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from collections import Counter
-
 from loguru import logger
 
 from core.residual_classifier import (
@@ -29,7 +27,7 @@ from core.residual_classifier import (
     CATEGORY_TERM_FRAGMENT,
     align_enum_prefix_to_convention,
     classify_residual_spans,
-    extract_number_tokens,
+    missing_number_tokens,
     surgical_repair_ok,
 )
 from engines.base_engine import get_target_lang_name, strip_markdown_json
@@ -139,8 +137,10 @@ def verify_feedback_retranslation(
 
     数字规则是包含而非相等：译文允许多出数字（「一、」译成「1.」、日期
     重排都会新增 token），但源文里的每个数字都必须原样出现——养护天数、
-    坍落度被改写的重译稿绝不允许覆盖原译文。汉字数字（三十天）不在此列，
-    宁可放过也不为它做数值换算猜测。
+    坍落度被改写的重译稿绝不允许覆盖原译文。「原样」按数值算而不是按写法算
+    （1500 与法语的 1 500、英语的 1,500 是同一个数），否则符合目标语书写
+    习惯的正确重译稿会被这道闸门打回。汉字数字（三十天）不在此列，宁可
+    放过也不为它做数值换算猜测。
     """
     candidate = str(candidate or "")
     if not candidate.strip():
@@ -151,11 +151,9 @@ def verify_feedback_retranslation(
     bad = [s for s in leftover if s.category != CATEGORY_QUANTITY_UNIT]
     if bad:
         return False, "重译稿仍有残留：" + "、".join(f"«{s.text}»" for s in bad)
-    missing = Counter(extract_number_tokens(source_text)) - Counter(
-        extract_number_tokens(candidate)
-    )
+    missing = missing_number_tokens(source_text, candidate)
     if missing:
-        lost = "、".join(sorted(missing.elements()))
+        lost = "、".join(sorted(missing))
         return False, f"重译稿丢失或改动了源文中的数字：{lost}"
     return True, ""
 

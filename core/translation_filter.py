@@ -3,17 +3,38 @@
 完整迁移原 GAS 宏的 shouldTranslate() 逻辑。
 """
 import re
-from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 # 「数字 + 中文日期/数量单位」的判定模式只在 core/residual_classifier 维护一份；
-# 残留中文的分级（阻断/可修/放行）也由同一分类器给出，Word / Excel 共用。
-from core.residual_classifier import CN_DATE_UNIT_RE, summarize_residuals
+# 残留中文的分级（阻断/可修/放行）、目标语豁免表、以及数字 token 的跨语言
+# 归一也都由同一分类器给出，Word / Excel 共用。
+from core.residual_classifier import (
+    CN_DATE_UNIT_RE,
+    NUMBER_TOKEN_PATTERN,
+    NUMBER_TOKEN_RE,
+    RESIDUAL_EXEMPT_TARGET_LANGS,
+    NumberGroup,
+    match_number_groups,
+    number_group_readings,
+    scale_number_key,
+    summarize_residuals,
+)
 
 _CHINESE_CHAR_RE = re.compile(r"[\u4e00-\u9fa5]")
-_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?")
-_SEMANTIC_NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)*(?:\s*[万亿])?")
+# 假名（平假名 / 片假名 / 半角片假名）与谚文：出现即证明这段文字不是中文，
+# 与源语言选了什么无关。
+# \u7247\u5047\u540d\u533a\u91cc\u7684\u4e2d\u70b9 \u30fb(U+30FB)\u3001\u957f\u97f3\u7b26 \u30fc(U+30FC) \u4e0e\u53cc\u8fde\u5b57\u7b26 \u30a0(U+30A0) \u7279\u610f
+# \u6392\u9664\u5728\u5916\uff1a\u4e2d\u6587\u6b63\u6587\u4e5f\u7528\u5b83\u4eec\u5206\u9694\u5916\u56fd\u4eba\u540d\uff08\u76ae\u57c3\u5c14\u30fb\u5361\u5c14\u4e39\uff09\uff0c\u628a\u5b83\u4eec\u5f53\u6210\u300c\u8fd9\u6bb5
+# \u4e0d\u662f\u4e2d\u6587\u300d\u7684\u8bc1\u636e\uff0c\u4f1a\u8ba9\u5916\u8bd1\u4e2d\u65f6\u5df2\u7ecf\u662f\u4e2d\u6587\u7684\u5355\u5143\u683c\u88ab\u91cd\u590d\u9001\u7ffb\u3002
+_KANA_OR_HANGUL_RE = re.compile(
+    r"[\u3041-\u309f\u30a1-\u30fa\u30fd-\u30ff"
+    r"\uff66-\uff9f\uac00-\ud7a3\u1100-\u11ff]"
+)
+# 日文汉字、韩文汉字与中文汉字共用 \u4e00-\u9fa5 码区。源语言是日/韩时，
+# 「含汉字」不等于「已经是中文」——「工事契約書」这类纯汉字标题是待译原文。
+_HAN_SHARING_SOURCE_LANGS = frozenset({"ja", "ko"})
+_SEMANTIC_NUMBER_RE = re.compile(r"[-+]?" + NUMBER_TOKEN_PATTERN + r"(?:\s*[万亿])?")
 VALIDATION_STATUS_PASS = "pass"
 VALIDATION_STATUS_FAIL = "fail"
 VALIDATION_STATUS_SOFT_PASS_REVIEW = "soft_pass_review"
@@ -63,7 +84,9 @@ class TranslationValidationResult:
 @dataclass(frozen=True)
 class _NumberToken:
     token: str
-    normalized: str
+    # 该 token 的读法组：整体读法（1,500 在英/法两种写法下分别是 1500 与 1.5）
+    # 加上空白分组的逐段读法（100 200 也可能是两个独立的数）。
+    group: NumberGroup
     fragment: str
     weak: bool = False
 
@@ -74,29 +97,25 @@ def _check_numbers_intact(original: str, translated: str) -> bool:
     """
     数字完整性模糊校验：验证译文是否保留了原文的所有数值。
 
-    允许：符号（* / × / x）或空格的变化（如 100×200 → 100*200）。
+    允许：符号（* / × / x）或空格的变化（如 100×200 → 100*200），以及各语言
+    的千分位/数字体系写法差异（1500 与 1 500 / 1,500 / １５００ / ١٥٠٠ 同值）。
     不允许：任何数值缺失或频次减少（如 200*200 被截断为 200）。
 
-    实现：提取整数/小数数值序列，使用 Counter 频次对比。
+    实现：提取数值序列后按「数值」一对一配对（core/residual_classifier）。
     """
     return not _missing_number_tokens(original, translated)
-
-
-def _normalize_number_token(token: str) -> str:
-    """Normalize dot/comma decimal variants for cross-language number checks."""
-    return str(token or "").replace(",", ".")
 
 
 def _find_number_tokens(text: str) -> list[_NumberToken]:
     tokens: list[_NumberToken] = []
     source = str(text or "")
-    for match in _NUMBER_TOKEN_RE.finditer(source):
+    for match in NUMBER_TOKEN_RE.finditer(source):
         token = match.group(0)
         weak = _is_weak_embedded_noise_number(source, match.start(), match.end())
         tokens.append(
             _NumberToken(
                 token=token,
-                normalized=_normalize_number_token(token),
+                group=number_group_readings(token),
                 fragment=(
                     _weak_number_context_fragment(source, match.start(), match.end())
                     if weak
@@ -122,15 +141,14 @@ def _missing_number_tokens(
     if not source_tokens:
         return []
 
-    translated_counts = Counter(token.normalized for token in _find_number_tokens(translated))
-    missing: list[_NumberToken] = []
-    seen_counts: Counter[str] = Counter()
-    for token in source_tokens:
-        seen_counts[token.normalized] += 1
-        if translated_counts[token.normalized] >= seen_counts[token.normalized]:
-            continue
-        missing.append(token)
-    return missing
+    # 比对按「数值」而不是按「写法」：1500 与 1 500 / 1,500 / １５００ / ١٥٠٠
+    # 是同一个数，配对成功即消耗（原文两个 3、译文只剩一个照样算丢）。空白分组
+    # 的两种读法由 match_number_groups 兜住（1 500 是一个数，100 200 是两个）。
+    missing_indexes = match_number_groups(
+        [token.group for token in source_tokens],
+        [token.group for token in _find_number_tokens(translated)],
+    )
+    return [source_tokens[index] for index in missing_indexes]
 
 
 def _number_context_fragment(text: str, start: int, end: int) -> str:
@@ -181,8 +199,12 @@ def _is_weak_embedded_noise_number(text: str, start: int, end: int) -> bool:
     return True
 
 
-def _semantic_number_counts(text: str, *, skip_weak_source: bool = False) -> Counter[str]:
-    counts: Counter[str] = Counter()
+def _semantic_number_entries(
+    text: str,
+    *,
+    skip_weak_source: bool = False,
+) -> list[NumberGroup]:
+    entries: list[NumberGroup] = []
     source = str(text or "")
     for match in _SEMANTIC_NUMBER_RE.finditer(source):
         raw = match.group(0)
@@ -192,11 +214,10 @@ def _semantic_number_counts(text: str, *, skip_weak_source: bool = False) -> Cou
             _numeric_part_end(source, match.start(), match.end()),
         ):
             continue
-        value = _parse_semantic_number(raw)
-        if value is None:
-            continue
-        counts[_decimal_key(value)] += 1
-    return counts
+        group = _semantic_number_group(raw)
+        if group.whole or group.parts:
+            entries.append(group)
+    return entries
 
 
 def _numeric_part_end(text: str, start: int, end: int) -> int:
@@ -209,10 +230,31 @@ def _numeric_part_end(text: str, start: int, end: int) -> int:
     return cursor
 
 
-def _parse_semantic_number(raw: str) -> Decimal | None:
+def _scaled_number_keys(keys, factor: Decimal) -> frozenset:
+    scaled: set[str] = set()
+    for key in keys:
+        try:
+            scaled.add(scale_number_key(key, factor))
+        except InvalidOperation:
+            continue
+    return frozenset(scaled)
+
+
+def _semantic_number_group(raw: str) -> NumberGroup:
+    """「3万」「-1 500,25」→ 该写法的读法组；解析不了返回空组。
+
+    读法组而不是单一键集：空白分组的歧义（1 500 是一个数、100 200 是两个）
+    与 _missing_number_tokens 那道闸门必须用同一套判据，否则又会出现「严格
+    校验和分类器各有一套规则」——那正是本轮 高-2 的根因形状。
+    """
     token = str(raw or "").strip()
     if not token:
-        return None
+        return NumberGroup()
+
+    sign = Decimal(1)
+    if token[0] in "+-":
+        sign = Decimal(-1) if token[0] == "-" else Decimal(1)
+        token = token[1:].strip()
 
     multiplier = Decimal(1)
     if token.endswith("万"):
@@ -222,38 +264,20 @@ def _parse_semantic_number(raw: str) -> Decimal | None:
         multiplier = Decimal(100000000)
         token = token[:-1].strip()
 
-    normalized = _normalize_semantic_number_text(token)
-    if not normalized:
-        return None
-    try:
-        return Decimal(normalized) * multiplier
-    except InvalidOperation:
-        return None
-
-
-def _normalize_semantic_number_text(token: str) -> str:
-    cleaned = str(token or "").strip().replace(" ", "")
-    if not cleaned:
-        return ""
-
-    sign = ""
-    if cleaned[0] in "+-":
-        sign = cleaned[0]
-        cleaned = cleaned[1:]
-
-    separator_count = cleaned.count(",") + cleaned.count(".")
-    if separator_count > 1:
-        return sign + cleaned.replace(",", "").replace(".", "")
-    if "," in cleaned:
-        return sign + cleaned.replace(",", ".")
-    return sign + cleaned
-
-
-def _decimal_key(value: Decimal) -> str:
-    normalized = value.normalize()
-    if normalized == normalized.to_integral():
-        return str(normalized.quantize(Decimal(1)))
-    return format(normalized, "f")
+    group = number_group_readings(token)
+    factor = multiplier * sign
+    if factor == 1:
+        return group
+    # 倍率只作用于紧挨着 万/亿 的那一段：「100 200万」读作 100 与 200万，
+    # 而不是 100万 与 200万。整体读法（100200万）则整体乘。
+    parts = tuple(group.parts)
+    if parts:
+        parts = parts[:-1] + (_scaled_number_keys(parts[-1], factor),)
+    return NumberGroup(
+        token=group.token,
+        whole=_scaled_number_keys(group.whole, factor),
+        parts=parts,
+    )
 
 
 def _check_semantic_numbers_intact(
@@ -262,18 +286,48 @@ def _check_semantic_numbers_intact(
     *,
     skip_weak_source: bool = False,
 ) -> bool:
-    original_counts = _semantic_number_counts(original, skip_weak_source=skip_weak_source)
-    if not original_counts:
+    original_entries = _semantic_number_entries(
+        original, skip_weak_source=skip_weak_source
+    )
+    if not original_entries:
         return True
-    translated_counts = _semantic_number_counts(translated)
-    return all(
-        translated_counts[value] >= count
-        for value, count in original_counts.items()
+    return not match_number_groups(
+        original_entries,
+        _semantic_number_entries(translated),
     )
 
 
 def _contains_chinese(text: str) -> bool:
     return bool(_CHINESE_CHAR_RE.search(text))
+
+
+def _normalize_lang(lang: str) -> str:
+    """"ja-JP" / " JA " → "ja"；空值原样返回空串。"""
+    cleaned = str(lang or "").strip().lower()
+    if not cleaned:
+        return ""
+    return re.split(r"[-_]", cleaned, maxsplit=1)[0]
+
+
+def _is_source_script_text(text: str, source_lang: str) -> bool:
+    """目标语是中文时：这段文字属于「源语言自己的文字」，而不是已有的中文？
+
+    一-龥 码区同时装着中文汉字、日文汉字和韩文汉字。旧判据「含汉字 → 已经是
+    中文 → 跳过」在日译中/韩译中上是灾难：`工事契約書` 这类纯汉字的标题、
+    表头、条款名不抽取、不翻译、也不进报告，整份文档只有假名句子被翻。
+
+    判据因此看语言对而不是放宽正则：
+      1. 假名 / 谚文是无歧义证据——含它们的文字一定不是中文，源语言选什么都算；
+      2. 源语言明确选了日 / 韩时，含汉字的文字按待译原文处理。
+    源语言是「自动」且整段全是汉字时仍无从分辨，保持旧行为（跳过），由语言
+    预检把 auto 解析成具体语言后再走这里。
+    """
+    if _KANA_OR_HANGUL_RE.search(text):
+        return True
+    return (
+        _normalize_lang(source_lang) in _HAN_SHARING_SOURCE_LANGS
+        and _contains_chinese(text)
+    )
 
 
 def _contains_non_chinese_letters(text: str) -> bool:
@@ -298,6 +352,9 @@ def should_translate(
     """
     判断单元格文本是否需要翻译。
 
+    源语言与目标语言共同决定判据：日译中 / 韩译中时「含汉字」不等于「已经是
+    中文」，详见 _is_source_script_text。
+
     规则优先级（从高到低）：
       1. 空字符串  → 跳过
       2. 含中文字符 → 翻译
@@ -313,7 +370,7 @@ def should_translate(
     if not text:
         return False
 
-    if target_lang == "zh":
+    if target_lang == "zh" and not _is_source_script_text(text, source_lang):
         # 中文已经是目标语言，本轮最小范围下直接跳过。
         if _contains_chinese(text):
             return False
@@ -336,7 +393,8 @@ def should_translate(
 
         return False
 
-    # 规则 2：含中文字符
+    # 规则 2：含中文字符（日译中/韩译中时，这里的「汉字」是源语言的汉字，
+    # 同样要翻——判据见 _is_source_script_text）
     if _contains_chinese(text):
         return True
 
@@ -454,11 +512,14 @@ def _validate_translation_strict(
 
         return _validation_result_from_issues(issues)
 
-    # 目标语言不是中文时，译文本身不应残留「数字 + 中文日期/数量单位」写法
-    # （如 "2026年8月9日"、"18周岁"）；只查译文，不查原文。
-    cn_date_unit_issue = _residual_cn_date_unit_issue(tran)
-    if cn_date_unit_issue is not None:
-        issues.append(cn_date_unit_issue)
+    # 目标语言既不是中文也不是日文时，译文本身不应残留「数字 + 中文日期/数量
+    # 单位」写法（如 "2026年8月9日"、"18周岁"）；只查译文，不查原文。
+    # 豁免表与 residual_classifier 共用一份：日文本来就写「2026年8月9日」，
+    # 在这里判 fail 会让 engine_dispatcher 把正确的日文译文重置回中文原文。
+    if _normalize_lang(target_lang) not in RESIDUAL_EXEMPT_TARGET_LANGS:
+        cn_date_unit_issue = _residual_cn_date_unit_issue(tran)
+        if cn_date_unit_issue is not None:
+            issues.append(cn_date_unit_issue)
 
     # 仅对含中文的原文执行进一步检测
     if not _contains_chinese(orig):
