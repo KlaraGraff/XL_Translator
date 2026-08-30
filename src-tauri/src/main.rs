@@ -8,11 +8,11 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{mpsc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
-use tauri::{ipc::InvokeBody, Manager, RunEvent, State};
+use tauri::{ipc::InvokeBody, Manager, Resource, RunEvent, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 #[cfg(windows)]
@@ -26,6 +26,60 @@ use std::os::windows::process::CommandExt;
 // wait for fewer false "engine failed to start" reports is a clear win.
 const SIDECAR_START_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_secs(8);
+
+// ── 退出预算：外层（这里）必须严格包住内层（sidecar 自己的那条链）──────────
+//
+// sidecar 的收尾预算是**串行叠加**的，不是并行的，三段首尾相接：
+//   ① uvicorn 等连接关完                    ≤ GRACEFUL_SHUTDOWN_SECONDS = 10s
+//   ② 连接关完之后 lifespan 才调
+//      `task_manager.shutdown()`，等运行中的任务走到 terminal ≤ 12s
+//   ③ **等完 ② 之后**才轮到 `mark_active_tasks_interrupted()` 和
+//      `flush_history()`——历史记录不再卡在「运行中」全靠这一步
+// 而这里的超时是从 Rust 发出 SIGTERM 那一刻起算的**总**预算，覆盖 ①+②+③。
+//
+// 上一版把它写成 12s「对齐」②，这正是缺陷本身：外层截止时间 ≤ 内层截止时间，
+// 这场竞争外层必输——SIGKILL 恰好落在 Python 刚要开始 ③ 记账的那一刻，
+// headless soffice、`word_translator_temp`、PDF 分页工作区照样残留，历史记录
+// 照样卡在「运行中」。所以外层取 ①+②+③ 的和：**包住**，不是对齐。
+//
+// ①② 的数值是 Python 侧的镜像，两边必须成对改；`the_mirrored_sidecar_budgets_
+// still_match_the_python_side` 这个测试会去读那两个文件，改了一侧不改另一侧
+// 直接变红。
+/// ① 的镜像：api/launcher.py 的 `GRACEFUL_SHUTDOWN_SECONDS`，uvicorn 排空连接的上限。
+const SIDECAR_DRAIN_BUDGET_SECS: u64 = 10;
+/// ② 的镜像：api/task_manager.py 里 `TranslationTaskManager.shutdown` 的默认
+/// `timeout`（launcher 没有传别的值），留给运行中任务自己 unwind 的上限——runner
+/// 的 finally 就在这一段里删 LibreOffice profile、`word_translator_temp`、PDF 分页
+/// 工作区。
+const SIDECAR_TASK_UNWIND_BUDGET_SECS: u64 = 12;
+/// ③ 的余量：`mark_active_tasks_interrupted()` + `flush_history()` 落盘。这一段
+/// Python 侧没有自己的超时，纯粹是几次文件写入，3s 是宽松估计；它同时也是安全带，
+/// 保证内外两个 deadline 不会再次贴到一起。
+const SIDECAR_SHUTDOWN_MARGIN_SECS: u64 = 3;
+/// 正常退出时留给 sidecar 自己收尾的时间上限 = ① 10 + ② 12 + ③ 3 = 25s。
+/// 故意写成加法而不是字面量：谁改了任何一段，总额自己跟着走，不会再退化成「对齐」。
+///
+/// 这是**最坏情况**上限，不是常态：`begin_shutdown` 在信号处理里就把 SSE 唤醒了，
+/// ① 基本不花时间；没有任务在跑时 ② 立刻返回，整个退出是几十毫秒。只有「Word/PDF
+/// 任务跑到一半按 Cmd+Q，且某个 runner 正卡在一次云端请求里（单次上限 120s，
+/// `begin_shutdown` 只置位、掐不断在途的 httpx 调用）」才会用满。
+const SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(
+    SIDECAR_DRAIN_BUDGET_SECS + SIDECAR_TASK_UNWIND_BUDGET_SECS + SIDECAR_SHUTDOWN_MARGIN_SECS,
+);
+// 启动失败路径上的等待上限：这时错误对话框还没弹，用户在干等，收尾也没什么可收
+// （握手都没完成），所以给一个很短的窗口就上 SIGKILL。
+const SIDECAR_ABORT_TIMEOUT: Duration = Duration::from_secs(2);
+const SIDECAR_STOP_POLL: Duration = Duration::from_millis(50);
+
+// std 没有暴露「给子进程发信号」的 API，而 libc 早就被链进每个 Unix 上的 Rust
+// 二进制里，为这一个调用多加一条直接依赖不划算，所以直接声明它。
+// SIGTERM 的值由 POSIX 固定为 15，不随平台变化。
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
 
 // Prevents Windows from allocating a console window for the sidecar, which is
 // a console-subsystem executable (see packaging/sidecar/translator_sidecar.spec's
@@ -602,11 +656,22 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
         let _ = sender.send(result);
     });
 
-    let info = receiver
+    // 握手失败/超时也必须亲手收掉子进程。`?` 提前返回只是 drop 掉 `Child`，而
+    // drop 既不发信号也不 wait：sidecar 会继续跑，一直活到用户点掉那个「翻译引擎
+    // 未能启动」的对话框、进程 exit 为止。首启撞上 Gatekeeper / Defender 扫描
+    // 超过 30 秒就会走到这条路径。紧邻的健康检查失败路径本来就 kill，这里是遗漏。
+    let handshake = receiver
         .recv_timeout(SIDECAR_START_TIMEOUT)
-        .map_err(|_| "Translator engine startup timed out.".to_string())??;
+        .unwrap_or_else(|_| Err("Translator engine startup timed out.".to_string()));
+    let info = match handshake {
+        Ok(info) => info,
+        Err(error) => {
+            stop_child(&mut child, SIDECAR_ABORT_TIMEOUT);
+            return Err(error);
+        }
+    };
     if let Err(error) = wait_for_health(info.port, &info.token) {
-        let _ = child.kill();
+        stop_child(&mut child, SIDECAR_ABORT_TIMEOUT);
         return Err(error);
     }
     Ok(RunningSidecar { child, info })
@@ -652,14 +717,99 @@ fn wait_for_health(port: u16, token: &str) -> Result<(), String> {
     Err("Translator engine did not pass its health check.".to_string())
 }
 
-fn stop_sidecar(app: &tauri::AppHandle) {
-    let state = app.state::<SidecarState>();
-    if let Ok(mut state) = state.0.lock() {
-        if let Some(mut sidecar) = state.take() {
-            let _ = sidecar.child.kill();
-            let _ = sidecar.child.wait();
+/// sidecar 是怎么停下来的。返回值只为把行为钉进测试，调用方不需要分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidecarStopOutcome {
+    /// 收到 SIGTERM 后自己退干净了——lifespan、`task_manager.shutdown`、
+    /// runner 的 finally 都跑过。
+    Graceful,
+    /// 等到超时还在跑，只能 SIGKILL；临时目录和 soffice 子进程可能留下来。
+    Forced,
+}
+
+/// 请子进程自己退出；返回「信号发出去了，值得再等一会儿」。
+///
+/// Unix 上是 SIGTERM：uvicorn 的 `handle_exit` 只认 SIGINT/SIGTERM，`Child::kill()`
+/// 发的 SIGKILL 不可捕获，三层收尾（launcher 的 GracefulSidecarServer、app.py 的
+/// lifespan、task_manager 的 shutdown）一层都执行不到。
+#[cfg(unix)]
+fn request_child_termination(child: &Child) -> bool {
+    // 这里还没有 `wait()` 过，已退出的子进程仍是僵尸进程占着 pid，不存在 pid
+    // 被复用后误杀别人的问题。
+    unsafe { kill(child.id() as i32, SIGTERM) == 0 }
+}
+
+/// Windows 上没有能落到控制台子进程头上的优雅信号：`GenerateConsoleCtrlEvent`
+/// 需要 `CREATE_NEW_PROCESS_GROUP`，而 sidecar 是带 `CREATE_NO_WINDOW` 起的
+/// GUI 子进程，本机也无法实测。所以这里不假装能优雅，直接走 TerminateProcess，
+/// 保证的是「安装器动手之前文件句柄一定已经释放」。
+#[cfg(not(unix))]
+fn request_child_termination(_child: &Child) -> bool {
+    false
+}
+
+/// 先请子进程自己退，限时等待，超时才 SIGKILL 兜底。
+///
+/// 「限时」是硬要求：退出不能被一个卡死的 sidecar 拖住，否则 Cmd+Q 变成假死。
+fn stop_child(child: &mut Child, timeout: Duration) -> SidecarStopOutcome {
+    if request_child_termination(child) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return SidecarStopOutcome::Graceful,
+                Ok(None) => {}
+                // 拿不到状态就别再等了，直接走兜底。
+                Err(_) => break,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(SIDECAR_STOP_POLL);
         }
-    };
+    }
+    let _ = child.kill();
+    // 必须 wait：不回收就留一个僵尸进程，而且 `kill()` 只是发信号，不等它真死。
+    let _ = child.wait();
+    SidecarStopOutcome::Forced
+}
+
+/// 停掉 state 里的 sidecar。take 过之后再调是空操作——退出路径上这个函数会被
+/// 走到两次（`RunEvent::Exit` 一次，`cleanup_before_exit` 清资源表时又一次）。
+fn stop_running_sidecar(state: &SidecarState, timeout: Duration) -> Option<SidecarStopOutcome> {
+    let mut guard = state.0.lock().ok()?;
+    let mut sidecar = guard.take()?;
+    Some(stop_child(&mut sidecar.child, timeout))
+}
+
+fn stop_sidecar(app: &tauri::AppHandle) {
+    let _ = stop_running_sidecar(&app.state::<SidecarState>(), SIDECAR_STOP_TIMEOUT);
+}
+
+/// 挂在 Tauri 资源表上的关闭钩子，专治「进程不经 `RunEvent::Exit` 就没了」。
+///
+/// updater 插件在 Windows 上装更新时的顺序是：`on_before_exit()` →
+/// `AppHandle::cleanup_before_exit()` → `ShellExecuteW` 拉起 NSIS →
+/// `std::process::exit(0)`（tauri-plugin-updater 的 updater.rs）。整条路上事件
+/// 循环从没收到过退出事件，所以挂在 `RunEvent::Exit` 上的 `stop_sidecar` 一次
+/// 都不执行，安装器开始覆盖文件时 sidecar 和它的 DLL 还被占着。
+///
+/// `cleanup_before_exit()` 做的第一件事就是清空 app 级资源表，清空即 drop 掉表
+/// 里的 `Arc`，于是这个钩子的 `Drop` 成了那条路径上唯一还会执行的代码。它是同步
+/// 的，返回之前 sidecar 一定已经退出，NSIS 拿到的是干净的目录。
+/// 同一个机制顺带盖住 `AppHandle::restart()`（macOS 就地更新后「立即重启」走的
+/// 就是它，同样只调 `cleanup_before_exit` 就 exec 新进程）。
+struct SidecarShutdownHook {
+    handle: tauri::AppHandle,
+}
+
+impl Resource for SidecarShutdownHook {}
+
+impl Drop for SidecarShutdownHook {
+    fn drop(&mut self) {
+        // 注意：drop 发生在资源表的锁里，这里只碰 `SidecarState`，不要回头再取
+        // 资源表，否则就是自锁。
+        stop_sidecar(&self.handle);
+    }
 }
 
 fn main() {
@@ -677,6 +827,12 @@ fn main() {
             match spawn_sidecar(app.handle()) {
                 Ok(sidecar) => {
                     app.manage(SidecarState(Mutex::new(Some(sidecar))));
+                    // 见 `SidecarShutdownHook`：绕开事件循环的退出路径（Windows
+                    // 更新安装、macOS 更新后重启）只会走 `cleanup_before_exit`，
+                    // 资源表被清空时这个钩子是唯一还会执行到的关闭逻辑。
+                    app.resources_table().add(SidecarShutdownHook {
+                        handle: app.handle().clone(),
+                    });
                 }
                 Err(error) => {
                     // No running sidecar to hand out, but commands that pull
@@ -730,8 +886,184 @@ fn main() {
 mod tests {
     use super::{
         directory_is_writable, open_external_url, parse_handshake, split_save_frame,
-        update_environment, write_file_atomically,
+        update_environment, write_file_atomically, SIDECAR_ABORT_TIMEOUT, SIDECAR_DRAIN_BUDGET_SECS,
+        SIDECAR_SHUTDOWN_MARGIN_SECS, SIDECAR_STOP_TIMEOUT, SIDECAR_TASK_UNWIND_BUDGET_SECS,
     };
+    #[cfg(unix)]
+    use super::{
+        stop_child, stop_running_sidecar, RunningSidecar, SidecarInfo, SidecarState,
+        SidecarStopOutcome,
+    };
+    #[cfg(unix)]
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Child, Command, Stdio},
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    /// 起一个假 sidecar，并且**等到它真的装好信号处理**才返回。
+    ///
+    /// 这个握手不是摆设：直接 spawn 完就发信号的话，SIGTERM 会赶在 `trap` 执行
+    /// 之前到达，子进程按默认处置被杀掉，两个测试都会「通过」但什么都没验证到。
+    #[cfg(unix)]
+    fn spawn_test_child(trap: &str) -> Child {
+        let script = format!("{trap}; echo ready; while :; do sleep 0.05; done");
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the test child");
+        let stdout = child.stdout.as_mut().expect("test child has no stdout");
+        let mut line = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("test child never reported readiness");
+        assert_eq!(line.trim(), "ready");
+        child
+    }
+
+    /// 一个「会自己收尾」的假 sidecar：收到 SIGTERM 就干净退出。
+    #[cfg(unix)]
+    fn spawn_well_behaved_child() -> Child {
+        spawn_test_child("trap 'exit 0' TERM")
+    }
+
+    /// 一个卡死的假 sidecar：SIGTERM 被忽略，只有 SIGKILL 弄得死它。
+    #[cfg(unix)]
+    fn spawn_wedged_child() -> Child {
+        spawn_test_child("trap '' TERM")
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stopping_a_sidecar_lets_it_unwind_instead_of_sigkilling_it() {
+        // 这是高-11 的回归点：以前退出走的是 `Child::kill()`（SIGKILL），
+        // sidecar 三层收尾一层都跑不到，headless soffice 被 reparent 后残留。
+        let mut child = spawn_well_behaved_child();
+        let started = Instant::now();
+
+        let outcome = stop_child(&mut child, Duration::from_secs(5));
+
+        assert_eq!(outcome, SidecarStopOutcome::Graceful);
+        // 正常收尾不该等满超时。
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_wedged_sidecar_is_killed_after_the_timeout_instead_of_blocking_exit() {
+        // 优雅关闭必须带兜底：卡死的 sidecar 不许把退出拖住。
+        let mut child = spawn_wedged_child();
+        let started = Instant::now();
+
+        let outcome = stop_child(&mut child, Duration::from_millis(300));
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, SidecarStopOutcome::Forced);
+        assert!(elapsed >= Duration::from_millis(300));
+        // 兜底之后立刻返回，不会再多等。
+        assert!(elapsed < Duration::from_secs(5), "等待超时了：{elapsed:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stopping_the_sidecar_twice_is_a_no_op_the_second_time() {
+        // 退出路径上关闭逻辑会被走到两次：`RunEvent::Exit` 一次，
+        // `cleanup_before_exit()` 清空资源表触发 `SidecarShutdownHook` 又一次。
+        // 第二次必须是空操作，不能去 wait 一个已经回收掉的子进程。
+        let state = SidecarState(Mutex::new(Some(RunningSidecar {
+            child: spawn_well_behaved_child(),
+            info: SidecarInfo {
+                port: 43123,
+                token: "test-token".to_string(),
+            },
+        })));
+
+        let first = stop_running_sidecar(&state, Duration::from_secs(5));
+        let second = stop_running_sidecar(&state, Duration::from_secs(5));
+
+        assert_eq!(first, Some(SidecarStopOutcome::Graceful));
+        assert_eq!(second, None);
+    }
+
+    /// 从 Python 源码里取出一个锚点行后面的数字。
+    ///
+    /// 找不到锚点就直接 panic：那说明 api/ 那边动过结构，此时**必须**有人回来重新
+    /// 核对内外两层的预算关系，静默放过才是真的危险。
+    fn python_budget_secs(relative_path: &str, anchor: &str) -> f64 {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("src-tauri 没有上级目录？");
+        let path = root.join(relative_path);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("读不到 {}：{err}", path.display()));
+        let tail = source.split(anchor).nth(1).unwrap_or_else(|| {
+            panic!(
+                "在 {} 里找不到锚点 `{anchor}`。api/ 那边改过结构，请重新核对 \
+                 main.rs 里的退出预算镜像常量，确认外层仍然包住内层。",
+                path.display()
+            )
+        });
+        let digits: String = tail
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        digits
+            .parse()
+            .unwrap_or_else(|err| panic!("锚点 `{anchor}` 后面不是数字（{digits:?}）：{err}"))
+    }
+
+    #[test]
+    fn the_exit_budget_outlasts_the_whole_sidecar_shutdown_chain() {
+        // 高-11 的真正回归点：只把 SIGKILL 换成 SIGTERM 不够，外层预算还必须**包住**
+        // 内层那条串行的链，否则 SIGKILL 恰好落在 Python 刚要写 history 的那一刻，
+        // 临时目录和 headless soffice 照样残留、历史照样卡在「运行中」。
+        // 上一版两边都是 12s、首尾相接、零余量，这个断言会红。
+        let inner_chain = SIDECAR_DRAIN_BUDGET_SECS + SIDECAR_TASK_UNWIND_BUDGET_SECS;
+        let outer = SIDECAR_STOP_TIMEOUT.as_secs();
+
+        assert!(
+            outer > inner_chain,
+            "外层退出预算 {outer}s 必须严格大于内层链条 {inner_chain}s\
+             （uvicorn 排空 {SIDECAR_DRAIN_BUDGET_SECS}s + 任务 unwind \
+             {SIDECAR_TASK_UNWIND_BUDGET_SECS}s），否则 SIGKILL 会打断 Python 的收尾记账"
+        );
+        assert!(
+            outer - inner_chain >= SIDECAR_SHUTDOWN_MARGIN_SECS,
+            "余量只剩 {}s，不够 mark_active_tasks_interrupted + flush_history 落盘\
+             （至少要 {SIDECAR_SHUTDOWN_MARGIN_SECS}s）",
+            outer - inner_chain
+        );
+        // 启动失败那条路径是另一回事：用户正对着还没弹出来的错误对话框干等，
+        // 握手都没完成也没什么可收尾的，短就是对的。
+        assert!(SIDECAR_ABORT_TIMEOUT < SIDECAR_STOP_TIMEOUT);
+    }
+
+    #[test]
+    fn the_mirrored_sidecar_budgets_still_match_the_python_side() {
+        // 这两个数跨语言、跨文件，注释拴不住；改了 Python 一侧不改这里，
+        // 外层就会重新缩回内层里去。让它变红，而不是等用户的临时目录残留。
+        let drain = python_budget_secs("api/launcher.py", "GRACEFUL_SHUTDOWN_SECONDS = ");
+        let unwind = python_budget_secs(
+            "api/task_manager.py",
+            "def shutdown(self, *, timeout: float = ",
+        );
+
+        assert_eq!(
+            drain, SIDECAR_DRAIN_BUDGET_SECS as f64,
+            "api/launcher.py 的 GRACEFUL_SHUTDOWN_SECONDS 现在是 {drain}s，和 main.rs 的\
+             镜像常量对不上：请同步 SIDECAR_DRAIN_BUDGET_SECS，并确认 SIDECAR_STOP_TIMEOUT\
+             仍然包得住内层"
+        );
+        assert_eq!(
+            unwind, SIDECAR_TASK_UNWIND_BUDGET_SECS as f64,
+            "api/task_manager.py 的 shutdown(timeout=) 现在是 {unwind}s，和 main.rs 的\
+             镜像常量对不上：请同步 SIDECAR_TASK_UNWIND_BUDGET_SECS，并确认 \
+             SIDECAR_STOP_TIMEOUT 仍然包得住内层"
+        );
+    }
 
     #[test]
     fn parses_launcher_handshake() {
