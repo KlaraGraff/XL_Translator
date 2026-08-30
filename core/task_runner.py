@@ -446,6 +446,37 @@ class TaskRunner:
             if self._stop_event.is_set():
                 raise TaskStopped(message)
 
+        def _cleanup_excel_conversion_temp(
+            process_path: Path, file_item, *, is_resume_baseline: bool
+        ) -> None:
+            """删掉 .xls → .xlsx 转换产生的临时件（`$TMPDIR/xl_translator_temp/*.xlsx`）。
+
+            两种情况都不是「临时件」，直接跳过：process_path 就是源文件本身
+            （没转换过）；或它是续译底稿（上次的正式产物，只读绝不删）。文件
+            已经被别处删过时 `.exists()` 挡住，不会在日志里报一次假的
+            「删不掉」——阶段 1 抽词失败、续译换底稿都会提前删一次，这里必须
+            能被安全地重复调用（中-8：兜底扫一遍时不能对已删文件出警告）。
+            """
+            if process_path == file_item.path or is_resume_baseline:
+                return
+            if not process_path.exists():
+                return
+            try:
+                os.remove(process_path)
+            except Exception as e:
+                self._log(
+                    "WARN",
+                    f"临时文件清理失败 {process_path.name}: "
+                    f"{user_facing_reason(e, fallback='临时文件删不掉。')}",
+                )
+
+        # 阶段 1/3 内部各有自己的清理点，但停止、致命失败连阶段 3 都进不去，
+        # 阶段 3 里提前停止时后面还没轮到的文件、以及 already_failed 被跳过的
+        # 文件也一样漏删——预先声明成空列表，好让下面 finally 里的兜底扫描
+        # 在任务连阶段 1 都没跑起来就被停止时，不会因为变量从未赋值而炸掉。
+        process_paths: list[Path] = []
+        resume_baseline_used: list[bool] = []
+
         root_for_output = self._source_root if self._source_root else self._files[0].path.parent
         custom_output_dir = (
             excel_output.custom_output_dir
@@ -947,15 +978,9 @@ class TaskRunner:
                             coverage_plans.append(None)
                         file_texts.append(set())
                         # resume_used 时 process_path 是上次输出的续译底稿，只读，绝不删除
-                        if process_path != file_item.path and not resume_used:
-                            try:
-                                os.remove(process_path)
-                            except Exception as cleanup_error:
-                                self._log(
-                                    "WARN",
-                                    f"临时文件清理失败 {process_path.name}: "
-                                    f"{user_facing_reason(cleanup_error, fallback='临时文件删不掉。')}",
-                                )
+                        _cleanup_excel_conversion_temp(
+                            process_path, file_item, is_resume_baseline=resume_used
+                        )
                         continue
                 text_set = set(texts)
                 file_texts.append(text_set)
@@ -1202,7 +1227,10 @@ class TaskRunner:
             api_translations: dict[str, str] = {}
             normal_api_translations: dict[str, str] = {}
             normal_api_language_results = {}
-            excel_review_marks = {}
+            # 不许在这里重绑定 excel_review_marks：它在函数顶部声明一次，
+            # 阶段 1 的 _arbitrate_excel_coverage_pairs 已经把仲裁标记写进去了
+            # （中-3）——这里再赋一个新空 dict 会把那些标记全部丢弃，底色不涂、
+            # review 计数归零。下面继续用同一个字典累加阶段 2 自己的标记。
             if (misses or mixed_texts) and not self._stop_event.is_set():
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
                 self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
@@ -1343,7 +1371,11 @@ class TaskRunner:
                             f"语义校验接受 {mixed_stats.semantic_accepted_count}"
                         ),
                     )
-                _raise_if_stopped("任务已停止，未写入剩余翻译结果。")
+                # 注意：这里不能拦停止信号。已经跑到这一步的批次，API 费用已经
+                # 付了——`misses`/`mixed_texts` 里凡是进了 normal_api_translations /
+                # normal_api_language_results 的词条，都要走到下面的 TM 写入，
+                # 否则重跑整批要重新付费（中-2）。真正该拦停止的位置是阶段 3
+                # 开始前那一处 `_raise_if_stopped()`，出文件才是可以整批放弃的部分。
                 api_elapsed = (datetime.now() - t0).total_seconds()
                 self._log(
                     "INFO",
@@ -1716,6 +1748,11 @@ class TaskRunner:
                     for r in file_results
                 )
                 if already_failed:
+                    # 这个文件在阶段 1/2 之间被标失败（例如自动识别源语言后
+                    # 重算补译计划时读不出来），它的 .xls 转换临时件当时未必删
+                    # 过——但不必在这里现删：下面 finally 里的兜底扫描会对
+                    # self._files 里的每一个文件都补删一遍，覆盖这条路径，
+                    # 这里再删一次纯属重复（中-8）。
                     continue
 
                 self._queue.put(ProgressMsg(
@@ -1913,15 +1950,9 @@ class TaskRunner:
                     is_resume_baseline = (
                         fi < len(resume_baseline_used) and resume_baseline_used[fi]
                     )
-                    if process_path != file_item.path and not is_resume_baseline:
-                        try:
-                            os.remove(process_path)
-                        except Exception as e:
-                            self._log(
-                                "WARN",
-                                f"临时文件清理失败 {process_path.name}: "
-                                f"{user_facing_reason(e, fallback='临时文件删不掉。')}",
-                            )
+                    _cleanup_excel_conversion_temp(
+                        process_path, file_item, is_resume_baseline=is_resume_baseline
+                    )
 
             # 阶段 3 收尾进度
             self._queue.put(ProgressMsg(
@@ -2026,6 +2057,20 @@ class TaskRunner:
             if excel_app is not None:
                 self._log("INFO", "清理全局 Excel 进程...")
                 _cleanup_excel_app(status_msg="状态：[收尾中] 正在清理 Excel 进程...")
+            # 兜底扫一遍所有文件的 .xls 转换临时件：正常跑完时阶段 3 已经在
+            # 各自的清理点删过；停止、致命失败连阶段 3 都进不去，阶段 3 内部
+            # 提前停止时后面还没轮到的文件也一样——都靠这里补删一遍。已经删过
+            # 的文件 _cleanup_excel_conversion_temp 会因为不存在直接跳过，
+            # 不会重复报错（中-8）。
+            for _fi, _file_item in enumerate(self._files):
+                if _fi >= len(process_paths):
+                    continue
+                _is_resume_baseline = (
+                    _fi < len(resume_baseline_used) and resume_baseline_used[_fi]
+                )
+                _cleanup_excel_conversion_temp(
+                    process_paths[_fi], _file_item, is_resume_baseline=_is_resume_baseline
+                )
 
         if stopped_message is not None:
             elapsed = (datetime.now() - start_ts).total_seconds()
@@ -2190,10 +2235,18 @@ class TaskRunner:
                 translation = normalized_targets.get(
                     source_text, _final_text(source_text, item.translation)
                 )
-                source_scopes = text_source_scopes.get(source_text, [])
-                source_in_every_file_scope = bool(source_scopes) and all(
-                    item.source_lang in scope for scope in source_scopes
-                )
+                source_scopes = text_source_scopes.get(source_text)
+                if source_scopes is None:
+                    # 这个词条从未出现在预检前的全文扫描样本里——它是补译计划
+                    # 拿到真实源语言之后重算才冒出来的新词条（低-
+                    # text_source_scopes）。没有跨文件源语言冲突的证据可查，
+                    # 不该被下面这条「每个出现过的文件都得认同源语言」的一致
+                    # 性校验保守拒收，否则这类新词条永远进不了 TM。
+                    source_in_every_file_scope = True
+                else:
+                    source_in_every_file_scope = bool(source_scopes) and all(
+                        item.source_lang in scope for scope in source_scopes
+                    )
                 tm_entries.append(
                     {
                         "source_text": source_text,
