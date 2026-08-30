@@ -102,6 +102,25 @@ export function updateSnapshot(): UpdateSnapshot {
   return state;
 }
 
+// 已经拦截过「更新装好了还没重启就要新建任务」的那个版本号。macOS 就地更新会把
+// 正在运行的 sidecar 的 bundle 整个换掉，之后新任务的惰性导入按旧偏移读新二进制,
+// 报出来的错误完全误导（审计 高-12）——所以第一次新建任务时拦一下,提醒先重启。
+// 只拦一次:用户看过提醒后再点就直接放行,不反复唠叨。
+let restartWarningShownFor = "";
+
+/**
+ * 更新已装好且这个版本还没提醒过时返回 true,同时记下「提醒过了」。
+ * 调用方负责真正把弹窗画出来;返回 false 表示不需要拦(没有待重启的更新,
+ * 或这个版本已经提醒过)。
+ */
+export function consumePendingRestartWarning(): boolean {
+  if (state.flow.phase !== "ready") return false;
+  const version = state.flow.version || "pending";
+  if (restartWarningShownFor === version) return false;
+  restartWarningShownFor = version;
+  return true;
+}
+
 const listeners = new Set<() => void>();
 
 /** 订阅状态变化。返回退订函数。 */

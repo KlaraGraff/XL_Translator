@@ -16,6 +16,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { ApiClient, apiErrorReason, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
+import { consumePendingRestartWarning } from "../update-controller";
+import { openRestartBeforeTaskModal } from "../update-toast";
 import {
   createBanner,
   createButton,
@@ -3722,6 +3724,13 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
 
 async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
   if (!st.sourcePath.trim() || !st.selected.size) return;
+  // 更新已装好但还没重启时,新任务的组件加载可能按旧偏移读到新二进制而失败,
+  // 报错文案还会带偏方向(高-12)——第一次新建任务先拦一下,提醒重启。
+  // 「仍要开始」重新走 startTask:警告已消费,这次会直接放行,后续守卫照常跑。
+  if (consumePendingRestartWarning()) {
+    openRestartBeforeTaskModal(() => void startTask(surface, st));
+    return;
+  }
   if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
     showToast({ message: "源语言与目标语言相同，请重新选择。", error: true });
     return;

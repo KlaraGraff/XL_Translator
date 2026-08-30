@@ -11,6 +11,7 @@
 // 不占布局高度：卡片浮在内容之上（见 app.css 的 .toast-stack），窗口内容不会被往下挤。
 // 这一点和它取代的那条通栏提示条不同——那条会把整个工作区推下去 40 多像素。
 
+import { openModal } from "./components";
 import { icon } from "./icons";
 import { renderReleaseNotes } from "./markdown";
 import { toastStackSlot } from "./shell";
@@ -266,8 +267,10 @@ function patchProgress(view: ProgressView): void {
   view.title.textContent = downloading
     ? `正在下载 ${flow.version || "新版本"}`
     : "正在校验签名并安装";
+  // 「可以继续用」只对下载阶段成立——安装会把程序文件换掉,装好之后新任务
+  // 可能失败(高-12),那句话由 renderReady 的警示文案接手。
   view.detail.textContent = downloading
-    ? "装完会告诉你，期间可以继续用"
+    ? "下载期间可以继续用，装好后会提醒你重启"
     : "这一步通常几秒钟，请勿关闭窗口。";
 
   const barClass = determinate ? "ut-bar" : "ut-bar indet";
@@ -294,7 +297,9 @@ function renderReady(): HTMLDivElement {
     icon: "check",
     tone: "ok",
     title: `${flow.version || "新版本"} 已装好`,
-    detail: "重启 Translator 后生效。有任务在跑就先跑完，不急。",
+    // 不能安抚:程序文件已被替换,正在跑的任务不受影响,但新任务的组件加载可能
+    // 失败且报错误导(高-12)。
+    detail: "请尽快重启完成更新，期间新任务可能失败。",
     onDismiss: collapseUpdateReady,
   }));
   el.append(footer([
@@ -496,4 +501,33 @@ function render(): void {
       render();
     }, TRANSIENT_MS);
   }
+}
+
+// ---------------------------------------------------------------------------
+// 「更新装好了还没重启」的新建任务拦截(高-12)
+// ---------------------------------------------------------------------------
+
+/**
+ * 更新落地后第一次新建任务时弹的提醒。搭配 update-controller 的
+ * consumePendingRestartWarning() 使用:调用方先 consume,拿到 true 再调这里。
+ * 「立即重启」走正常的重启完成更新;「仍要开始」把原始动作接着跑——拦截的目的
+ * 是让用户知情,不是禁止。
+ */
+export function openRestartBeforeTaskModal(onProceed: () => void): void {
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    title: "更新已安装，建议先重启",
+    body: [
+      "新版本的程序文件已经替换完成，当前运行的还是旧版本。",
+      "正在进行的任务不受影响；但此时新建任务可能在加载组件时失败，而且报错原因会带偏方向。建议先重启完成更新，再开始新任务。",
+    ],
+    actions: [
+      // 「取消」给反悔留门：既不想现在重启、也不想开这个任务（比如想先换文件）。
+      // 警告在弹窗前已被 consume，取消后再点开始不会二次弹——用户已经知情。
+      { label: "取消", variant: "default" },
+      { label: "仍要开始", variant: "default", onClick: onProceed },
+      { label: "立即重启", variant: "primary", onClick: () => void requestRestart() },
+    ],
+  });
 }
