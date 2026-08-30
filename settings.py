@@ -928,11 +928,14 @@ class AppSettings(BaseModel):
     excel_domain_preset: str = "同步工程场景"
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
-    excel_domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    # Prompt 覆盖按「预设名 → {目标语言 → Prompt}」两层存放。内置 DOMAIN_PRESETS
+    # 本身就是按语言给文本的，覆盖若不带语言，换目标语言后会拿错语言的 Prompt
+    # 静默产出错稿（审计 中-15）。
+    excel_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     word_domain_preset: str = "同步工程场景"
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
-    word_domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
@@ -943,7 +946,7 @@ class AppSettings(BaseModel):
     cleaner_prompt_extras: dict[str, str] = Field(default_factory=dict)
     cleaner_full_prompt_overrides: dict[str, str] = Field(default_factory=dict)
     domain_name_overrides: dict[str, str] = Field(default_factory=dict)
-    domain_prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     # What was on disk when this object was loaded.  ``save_settings`` diffs
     # against it so a write only touches the fields this caller changed; see
@@ -971,6 +974,46 @@ class AppSettings(BaseModel):
         if "domain_prompt_overrides" in migrated:
             migrated.setdefault("excel_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))
             migrated.setdefault("word_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))
+
+        # 旧版 Prompt 覆盖是「预设名 → Prompt」的扁平字典，不区分目标语言。升级时
+        # 把它归入当时磁盘上的目标语言名下（用户最后在用的语言，最可能就是这份
+        # 覆盖写作时面向的语言），其他语言回内置默认。嵌套的新形态原样通过——这个
+        # 迁移必须幂等，因为每次校验都会经过这里。放在上面的 setdefault 之后，
+        # 让页面拆分前的旧全局覆盖也按各自页面的语言各包一层。
+        def _wrap_flat_prompt_overrides(field: str, lang_field: str) -> None:
+            raw = migrated.get(field)
+            if not isinstance(raw, dict):
+                return
+            home_lang = ""
+            wrapped: dict[str, dict[str, str]] = {}
+            for preset, value in raw.items():
+                if isinstance(value, dict):
+                    wrapped[str(preset)] = {
+                        str(k): v for k, v in value.items() if isinstance(v, str)
+                    }
+                elif isinstance(value, str):
+                    if not home_lang:
+                        # 语言字段稍后会被 _normalize_target_lang_state 归一化成
+                        # 语言代码（例如「日语」→ ja）。覆盖的键必须先过同一道
+                        # 解析，否则落在没人查的原始字符串键下、覆盖无声失效。
+                        # 只在真的碰到扁平值时才解析：嵌套稳态下这里一次都不跑。
+                        home_lang = resolve_language_code(
+                            str(
+                                migrated.get(lang_field)
+                                or migrated.get("target_lang")
+                                or ""
+                            ),
+                            get_supported_languages(
+                                migrated.get("custom_target_langs") or [],
+                                include_optional=True,
+                            ),
+                        ) or get_default_target_lang()
+                    wrapped[str(preset)] = {home_lang: value}
+            migrated[field] = wrapped
+
+        _wrap_flat_prompt_overrides("excel_domain_prompt_overrides", "excel_target_lang")
+        _wrap_flat_prompt_overrides("word_domain_prompt_overrides", "word_target_lang")
+        _wrap_flat_prompt_overrides("domain_prompt_overrides", "target_lang")
         engine_payload = dict(migrated.get("engine") or {})
 
         if "cleaner_model_role" not in migrated:

@@ -355,11 +355,21 @@ def get_system_prompt(
             prompt,
             build_target_lang_note_block(target_lang, settings.custom_target_langs),
         )
-    # 用户自定义覆盖优先于内置预设
-    if domain_preset in domain_prompt_overrides:
-        prompt = domain_prompt_overrides[domain_preset]
+    # 用户自定义覆盖优先于内置预设。覆盖按「预设名 → {目标语言 → Prompt}」存放，
+    # 只有当前目标语言名下的那份才作数——其他语言回内置默认，宁可回退（可见、
+    # 可重建）也不拿别的语言的覆盖静默出错稿（审计 中-15）。
+    override_entry = domain_prompt_overrides.get(domain_preset)
+    if isinstance(override_entry, dict):
+        if target_lang in override_entry and isinstance(override_entry[target_lang], str):
+            return append_prompt_block(
+                override_entry[target_lang],
+                build_target_lang_note_block(target_lang, settings.custom_target_langs),
+            )
+    elif isinstance(override_entry, str):
+        # 未经 AppSettings 校验的旧扁平值（比如手工构造的 dict 配置）：保持旧语义，
+        # 不分语言直接用。正常加载路径在 settings 校验时已迁移成嵌套形态。
         return append_prompt_block(
-            prompt,
+            override_entry,
             build_target_lang_note_block(target_lang, settings.custom_target_langs),
         )
     preset = DOMAIN_PRESETS.get(domain_preset, "")

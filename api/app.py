@@ -320,7 +320,9 @@ class ModelRoleTestPayload(BaseModel):
 class DomainSettingsPayload(BaseModel):
     preset: str = "同步工程场景"
     custom_prompt: str = ""
-    prompt_overrides: dict[str, str] = Field(default_factory=dict)
+    # 新形态是「预设名 → {目标语言 → Prompt}」；str 分支收留旧客户端的扁平写入，
+    # 落盘前归到该页面当前的目标语言名下，绝不 422 拒绝（兼容硬约束）。
+    prompt_overrides: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     name_overrides: dict[str, str] = Field(default_factory=dict)
 
 
@@ -699,7 +701,18 @@ def create_app(
         prefix = f"{normalized}_"
         setattr(settings, f"{prefix}domain_preset", preset)
         setattr(settings, f"{prefix}custom_prompt", str(payload.custom_prompt or ""))
-        setattr(settings, f"{prefix}domain_prompt_overrides", dict(payload.prompt_overrides))
+        surface_lang = str(getattr(settings, f"{prefix}target_lang") or "").strip() or str(
+            settings.target_lang or ""
+        ).strip()
+        normalized_overrides: dict[str, dict[str, str]] = {}
+        for name, value in payload.prompt_overrides.items():
+            if isinstance(value, str):
+                # 旧客户端的扁平覆盖：归到该页面当前的目标语言名下。
+                normalized_overrides[name] = {surface_lang: value}
+            elif value:
+                # 语言层为空的预设直接丢掉，免得留一个空壳 key。
+                normalized_overrides[name] = dict(value)
+        setattr(settings, f"{prefix}domain_prompt_overrides", normalized_overrides)
         setattr(settings, f"{prefix}domain_name_overrides", dict(payload.name_overrides))
         save_settings(settings)
         return get_domain_settings(normalized)

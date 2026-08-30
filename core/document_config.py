@@ -25,7 +25,10 @@ from app_meta import APP_NAME, APP_VERSION
 from settings import AppSettings
 
 DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
-DOCUMENT_CONFIG_EXPORT_VERSION = 1
+# v2：领域 Prompt 覆盖从「预设名 → Prompt」升级为「预设名 → {目标语言 → Prompt}」。
+# 旧版应用校验不了嵌套形态，必须靠上面的版本闸门给出「请升级」的明白话，而不是
+# 一段英文校验报错；新版导入 v1 照常（导入侧只拒绝比自己高的版本）。
+DOCUMENT_CONFIG_EXPORT_VERSION = 2
 
 # Nested setting objects that describe document translation behaviour.
 DOCUMENT_CONFIG_SECTIONS = (

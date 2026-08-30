@@ -2452,14 +2452,21 @@ function pdfParamsSettings(): JsonObject {
 }
 
 function domainSettingsFor(surface: TranslationSurface): {
-  preset: string; customPrompt: string; promptOverrides: Record<string, string>; nameOverrides: Record<string, string>;
+  preset: string; customPrompt: string; promptOverrides: Record<string, Record<string, string>>; nameOverrides: Record<string, string>;
 } {
   const prefix = surface;
+  // 覆盖是「预设名 → {目标语言 → Prompt}」两层结构（中-15）；后端加载时已把
+  // 旧扁平数据迁移成这个形态，这里只需按嵌套读。
   return {
     preset: text(settings?.[`${prefix}_domain_preset`], "同步工程场景"),
     customPrompt: text(settings?.[`${prefix}_custom_prompt`]),
     promptOverrides: Object.fromEntries(
-      Object.entries(record(settings?.[`${prefix}_domain_prompt_overrides`])).filter((e): e is [string, string] => typeof e[1] === "string"),
+      Object.entries(record(settings?.[`${prefix}_domain_prompt_overrides`])).map(([preset, langs]) => [
+        preset,
+        Object.fromEntries(
+          Object.entries(record(langs)).filter((e): e is [string, string] => typeof e[1] === "string"),
+        ),
+      ]),
     ),
     nameOverrides: Object.fromEntries(
       Object.entries(record(settings?.[`${prefix}_domain_name_overrides`])).filter((e): e is [string, string] => typeof e[1] === "string"),
@@ -2638,8 +2645,11 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   const builtInPrompt = domainBuiltInPrompt(current.preset, targetLang);
   const isCustom = current.preset === "自定义";
   const isNone = current.preset === "无";
-  const hasOverride = !isCustom && !isNone && Object.prototype.hasOwnProperty.call(current.promptOverrides, current.preset);
-  const prompt = isCustom ? current.customPrompt : hasOverride ? current.promptOverrides[current.preset] : builtInPrompt;
+  // 覆盖按目标语言分开存取：只认当前目标语言名下的那份，其他语言各用各的
+  // 覆盖或内置默认（中-15）。
+  const overrideFor = (preset: string): string | undefined => current.promptOverrides[preset]?.[targetLang];
+  const hasOverride = !isCustom && !isNone && typeof overrideFor(current.preset) === "string";
+  const prompt = isCustom ? current.customPrompt : hasOverride ? overrideFor(current.preset) ?? "" : builtInPrompt;
 
   const card = createCard([]);
   const tools: HTMLElement[] = [];
@@ -2667,7 +2677,11 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   promptArea.value = prompt;
   promptArea.rows = 6;
   promptArea.placeholder = isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示";
-  const promptField = fieldWithHint(isCustom ? "自定义领域 Prompt" : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）", promptArea);
+  const promptField = fieldWithHint(
+    isCustom ? "自定义领域 Prompt" : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）",
+    promptArea,
+    isCustom ? undefined : `覆盖按目标语言分别保存，这里编辑的是「${targetLang}」的版本；其他目标语言没有自己的覆盖时用内置 Prompt。`,
+  );
   body.append(promptField);
 
   // 「无」没有可编辑的 Prompt——它的全部含义就是一个字都不追加。把编辑框留在那里，
@@ -2684,10 +2698,10 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const nextPreset = presetSelect.value;
     const nextIsNone = applyNoneState(nextPreset);
     const nextIsCustom = nextPreset === "自定义";
-    const nextOverride = !nextIsCustom && !nextIsNone && Object.prototype.hasOwnProperty.call(current.promptOverrides, nextPreset);
+    const nextOverridePrompt = nextIsCustom || nextIsNone ? undefined : overrideFor(nextPreset);
     promptArea.value = nextIsCustom
       ? current.customPrompt
-      : nextOverride ? current.promptOverrides[nextPreset] : domainBuiltInPrompt(nextPreset, targetLang);
+      : typeof nextOverridePrompt === "string" ? nextOverridePrompt : domainBuiltInPrompt(nextPreset, targetLang);
     saveBtn.textContent = nextIsNone ? "保存领域选择" : nextIsCustom ? "保存自定义 Prompt" : "保存覆盖";
   });
 
@@ -2701,9 +2715,13 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       if (!promptArea.value.trim()) throw new Error("自定义领域必须填写完整 Prompt，不能保存空配置。");
       customPrompt = promptArea.value;
     } else {
+      // 只动当前目标语言名下的那一份，其他语言的覆盖原样带回去。
       const defaultPrompt = domainBuiltInPrompt(preset, targetLang);
-      if (promptArea.value === defaultPrompt) delete promptOverrides[preset];
-      else promptOverrides[preset] = promptArea.value;
+      const langOverrides = { ...(promptOverrides[preset] ?? {}) };
+      if (promptArea.value === defaultPrompt) delete langOverrides[targetLang];
+      else langOverrides[targetLang] = promptArea.value;
+      if (Object.keys(langOverrides).length) promptOverrides[preset] = langOverrides;
+      else delete promptOverrides[preset];
     }
     await client.request(`/api/domains/${surface}`, {
       method: "PUT",
@@ -2727,14 +2745,18 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       onClick: () => void reRenderAfter(async () => {
         const preset = presetSelect.value;
         if (preset === "自定义") return;
+        // 只清当前目标语言的覆盖；其他语言写的覆盖不陪葬。
         const promptOverrides = { ...current.promptOverrides };
-        delete promptOverrides[preset];
+        const langOverrides = { ...(promptOverrides[preset] ?? {}) };
+        delete langOverrides[targetLang];
+        if (Object.keys(langOverrides).length) promptOverrides[preset] = langOverrides;
+        else delete promptOverrides[preset];
         await client.request(`/api/domains/${surface}`, {
           method: "PUT",
           body: JSON.stringify({ preset, custom_prompt: current.customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides }),
         });
         await refreshSettings();
-        showToast({ message: "已恢复该页面与领域的内置 Prompt。" });
+        showToast({ message: "已恢复该领域在当前目标语言下的内置 Prompt。" });
       }),
     }));
   }
