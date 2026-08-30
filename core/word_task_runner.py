@@ -2685,6 +2685,21 @@ class _WordRecoveryState:
         )
 
 
+@dataclass
+class _WordRecoveryTicket:
+    """一次恢复池线程任务的记账凭据。
+
+    worker 正常跑完会自己把 inflight 标志记回去，并置 settled；只要它没走到
+    那一步（抛异常、被取消、线程池已关停），就由 `_future_done` 按这张凭据兜底
+    复位——否则 `complete()` 永假，`wait_for_completion` 的等待循环空转到天荒地老。
+    """
+
+    kind: str  # "retry" | "semantic"
+    source: str
+    attempt_index: int = 0
+    settled: bool = False
+
+
 class _MainTranslationDrainGate:
     """Start recovery once every main translation queue has no new batches left."""
 
@@ -2710,7 +2725,30 @@ class _MainTranslationDrainGate:
 
 
 class _WordRecoveryPool:
-    """Parallel Word recovery pool for retry and semantic arbitration."""
+    """Parallel Word recovery pool for retry and semantic arbitration.
+
+    锁序（改这个类之前先读完这一段）：
+
+    ``pool._condition``  →  **绝不再获取任何会阻塞的锁**，尤其是
+    ``ThreadPoolExecutor`` 内部那把 ``_shutdown_lock``。
+
+    原因在 CPython 的 ``Executor.shutdown(cancel_futures=True)``：它**持着**
+    ``executor._shutdown_lock`` 逐个 ``work_item.future.cancel()``，而 ``cancel()``
+    会**同线程**回调 done-callback（我们的 ``_future_done``），后者要拿
+    ``_condition``。于是：
+
+    * 若 done-callback 里再去 ``executor.submit``，就是同一把非重入锁在同一个
+      线程上二次获取 —— 直接自锁（审查 WT1-M1，已实测复现）。
+    * 若别的线程「持着 ``_condition`` 去 submit」，它等 ``_shutdown_lock``、
+      关停线程等 ``_condition``，两把锁构成 ABBA 环（审查 WT1-M2，已实测复现）。
+
+    两条都表现为任务线程永不返回：UI 停在「运行中」、临时文件不清理、soffice
+    不回收，和审计高-8 的原始症状一模一样。
+
+    所以本类的排队一律两段走：持锁期间只用 ``_submit_locked`` 把任务记进
+    ``_pending_submits``，出锁之后再由 ``_flush_pending_submits`` 统一
+    ``executor.submit``。``pool._shutdown_lock`` 同理只在不持 ``_condition`` 时获取。
+    """
 
     def __init__(
         self,
@@ -2746,7 +2784,9 @@ class _WordRecoveryPool:
         self._source_locations = source_locations or {}
         self._enable_semantic = enable_semantic and engine_supports_chat(engine)
         self._states: dict[str, _WordRecoveryState] = {}
-        self._futures = set()
+        self._futures: dict[object, _WordRecoveryTicket] = {}
+        # 持 _condition 期间攒下的待排队任务，出锁后统一 submit（见类文档的锁序）
+        self._pending_submits: list[tuple[Callable, _WordRecoveryTicket, tuple]] = []
         self._condition = threading.Condition()
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(concurrency or 1)))
         # ThreadPoolExecutor 的 worker 不是守护线程。没人 shutdown 就等于每次泄漏
@@ -2835,48 +2875,56 @@ class _WordRecoveryPool:
             allow_recovery=allow_recovery,
         )
 
-        with self._condition:
-            state = self._states.setdefault(source_text, _WordRecoveryState(source=source_text))
-            if state.accepted:
-                return
-            if evaluation.accepted:
-                accepted_by = (
-                    "word_recovery"
-                    if evaluation.validation.needs_review
-                    else "strict_retry"
+        try:
+            with self._condition:
+                state = self._states.setdefault(
+                    source_text, _WordRecoveryState(source=source_text)
                 )
-                self._accept_locked(state, candidate_text, accepted_by, evaluation.validation)
-                return
+                if state.accepted:
+                    return
+                if evaluation.accepted:
+                    accepted_by = (
+                        "word_recovery"
+                        if evaluation.validation.needs_review
+                        else "strict_retry"
+                    )
+                    self._accept_locked(state, candidate_text, accepted_by, evaluation.validation)
+                    return
 
-            state.last_validation = evaluation.validation
-            state.last_candidate = candidate_text
-            if self._started:
-                self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
-                self._schedule_retry_locked(state)
-            else:
-                state.pending_candidates.append((candidate_text, evaluation.validation))
-            self._emit_status_locked()
-            self._condition.notify_all()
+                state.last_validation = evaluation.validation
+                state.last_candidate = candidate_text
+                if self._started:
+                    self._schedule_semantic_locked(state, candidate_text, evaluation.validation)
+                    self._schedule_retry_locked(state)
+                else:
+                    state.pending_candidates.append((candidate_text, evaluation.validation))
+                self._emit_status_locked()
+                self._condition.notify_all()
+        finally:
+            self._flush_pending_submits()
 
     def start(self) -> None:
-        with self._condition:
-            if self._started:
-                return
-            self._started = True
-            stopped = bool(self._should_stop and self._should_stop())
-            for state in self._states.values():
-                if state.accepted:
-                    continue
-                pending_candidates = list(state.pending_candidates)
-                state.pending_candidates.clear()
-                if stopped:
-                    state.attempts_done = self._max_attempts
-                    continue
-                for candidate, validation in pending_candidates:
-                    self._schedule_semantic_locked(state, candidate, validation)
-                self._schedule_retry_locked(state)
-            self._emit_status_locked()
-            self._condition.notify_all()
+        try:
+            with self._condition:
+                if self._started:
+                    return
+                self._started = True
+                stopped = bool(self._should_stop and self._should_stop())
+                for state in self._states.values():
+                    if state.accepted:
+                        continue
+                    pending_candidates = list(state.pending_candidates)
+                    state.pending_candidates.clear()
+                    if stopped:
+                        state.attempts_done = self._max_attempts
+                        continue
+                    for candidate, validation in pending_candidates:
+                        self._schedule_semantic_locked(state, candidate, validation)
+                    self._schedule_retry_locked(state)
+                self._emit_status_locked()
+                self._condition.notify_all()
+        finally:
+            self._flush_pending_submits()
 
     def shutdown(self, *, cancel_futures: bool = False) -> None:
         """幂等地关停线程池。异常路径下也必须走到这里，否则 worker 线程永久泄漏。"""
@@ -2895,8 +2943,15 @@ class _WordRecoveryPool:
     def wait_for_completion(self) -> _WordRecoveryOutcome:
         try:
             self.start()
+            stopped = False
             with self._condition:
                 while self._fatal_error is None and not self._all_complete_locked():
+                    # 只看「全部完成」会漏掉停止：停止后 _schedule_retry_locked
+                    # 不再排下一轮，剩余轮次永远补不齐，等待循环就成了死循环
+                    # （任务线程空转、UI 永远「运行中」）。停止是第二个出口。
+                    if self._stop_requested():
+                        stopped = True
+                        break
                     self._condition.wait(timeout=0.1)
 
                 fatal_error = self._fatal_error
@@ -2905,12 +2960,17 @@ class _WordRecoveryPool:
                 self.shutdown(cancel_futures=True)
                 raise fatal_error
 
-            self.shutdown()
+            # 停止时丢掉还在排队的任务，但仍要等在跑的 worker 收尾；已经恢复的
+            # 译文照常交回——停止不等于丢结果。
+            self.shutdown(cancel_futures=stopped)
             return self._build_outcome()
         finally:
             # start()、等待循环、_build_outcome 里任何一处抛出（含 KeyboardInterrupt）
             # 都不能让线程池活下来。已经关停时这里是空操作。
             self.shutdown(cancel_futures=True)
+
+    def _stop_requested(self) -> bool:
+        return bool(self._should_stop and self._should_stop())
 
     def _all_complete_locked(self) -> bool:
         return all(
@@ -2971,13 +3031,23 @@ class _WordRecoveryPool:
             return
         if state.attempts_done >= self._max_attempts:
             return
-        if self._should_stop and self._should_stop():
+        if self._stop_requested():
+            # 停止后不再排下一轮。剩余预算必须就地记为用尽，否则这一段的
+            # complete() 永假——等待循环没有别的东西会来补齐它。
+            state.attempts_done = self._max_attempts
             return
         state.retry_inflight = True
         attempt_index = state.attempts_done + 1
         self._latest_retry_round = max(self._latest_retry_round, attempt_index)
+        ticket = _WordRecoveryTicket(
+            kind="retry",
+            source=state.source,
+            attempt_index=attempt_index,
+        )
+        # 只记账，不 submit：真正排队由出锁后的 _flush_pending_submits 完成。
+        # retry_inflight 已经置上，等待循环在这期间不会误判「全部完成」。
+        self._submit_locked(self._run_retry_attempt, ticket)
         self._emit_status_locked()
-        self._submit(self._run_retry_attempt, state.source, attempt_index)
 
     def _schedule_semantic_locked(
         self,
@@ -2988,6 +3058,11 @@ class _WordRecoveryPool:
         if not self._started:
             return
         if not self._enable_semantic or state.accepted:
+            return
+        if self._stop_requested():
+            # 停止后不该再花钱发仲裁请求（与 _schedule_retry_locked 同口径）。
+            # 少了这道闸，停止收尾期间还在跑的 retry worker 会继续往线程池排
+            # 仲裁任务，白烧一轮 API 额度。
             return
         candidate_key = _candidate_validation_text(candidate)
         if candidate_key in state.seen_semantic_candidates:
@@ -3002,17 +3077,105 @@ class _WordRecoveryPool:
             return
         state.seen_semantic_candidates.add(candidate_key)
         state.semantic_inflight += 1
+        ticket = _WordRecoveryTicket(kind="semantic", source=state.source)
+        self._submit_locked(self._run_semantic_check, ticket, candidate, validation)
         self._emit_status_locked()
-        self._submit(self._run_semantic_check, state.source, candidate, validation)
 
-    def _submit(self, fn, *args) -> None:
-        future = self._executor.submit(fn, *args)
-        self._futures.add(future)
+    def _submit_locked(self, fn, ticket: _WordRecoveryTicket, *args) -> None:
+        """持 `_condition` 时的排队入口：只记账，不碰线程池。
+
+        调用方必须已经把对应的 inflight 标志置上（`retry_inflight` /
+        `semantic_inflight`），这样在「已记账、尚未 submit」这段窗口里，等待循环
+        看到的仍是「未完成」，不会提前判定全部完成。真正的 `executor.submit`
+        由出锁后的 `_flush_pending_submits` 执行 —— 原因见类文档的锁序说明。
+        """
+        self._pending_submits.append((fn, ticket, args))
+
+    def _flush_pending_submits(self) -> None:
+        """出锁后把攒下的任务排进线程池；排不下去的就地退回记账。
+
+        调用时**不得**持有 `_condition`。线程池已经关停（或正在关停）时一律不再
+        碰 executor —— `shutdown(cancel_futures=True)` 的取消回调正走在这条线上，
+        再 submit 就是同一把 `_shutdown_lock` 的二次获取（审查 WT1-M1）。
+        """
+        while True:
+            with self._condition:
+                if not self._pending_submits:
+                    return
+                batch = self._pending_submits
+                self._pending_submits = []
+                shutting_down = self._executor_shutdown
+            for fn, ticket, args in batch:
+                if shutting_down or not self._submit(fn, ticket, *args):
+                    with self._condition:
+                        self._abandon_unsubmitted_ticket_locked(ticket)
+                        self._emit_status_locked()
+                        self._condition.notify_all()
+
+    def _abandon_unsubmitted_ticket_locked(self, ticket: _WordRecoveryTicket) -> None:
+        """任务压根没排进线程池时的退账：inflight 标志绝不能挂着不还。
+
+        留在 True 上就等于这一段 `complete()` 永假，等待循环空转到天荒地老。
+        """
+        ticket.settled = True
+        state = self._states.get(ticket.source)
+        if state is None:
+            return
+        if ticket.kind == "semantic":
+            state.semantic_inflight = max(0, state.semantic_inflight - 1)
+            return
+        # 重试排不下去 = 线程池已关停，剩下的轮次也没机会跑，按预算用尽处理。
+        state.retry_inflight = False
+        state.attempts_done = self._max_attempts
+
+    def _submit(self, fn, ticket: _WordRecoveryTicket, *args) -> bool:
+        """真正把任务排进线程池。调用方**不得**持有 `_condition`（见类文档锁序）。"""
+        try:
+            future = self._executor.submit(fn, ticket, *args)
+        except RuntimeError as exc:
+            # 线程池已经关停（停止收尾或异常路径）。调用方负责把 inflight
+            # 标志退回去，返回 False 就是在通知它。
+            logger.debug(f"Word 恢复池线程池已关停，放弃排队：{exc!r}")
+            return False
+        # 先登记凭据再挂回调：任务可能瞬间跑完，回调会在本线程内联执行，
+        # 登记晚了 `_future_done` 就 pop 不到凭据，兜底复位形同虚设。
+        with self._condition:
+            self._futures[future] = ticket
         future.add_done_callback(self._future_done)
+        return True
+
+    def _settle_abandoned_ticket_locked(self, ticket: _WordRecoveryTicket) -> None:
+        """任务没能自己完成记账（抛异常、被取消）时的兜底复位。
+
+        inflight 标志留在 True 上就等于这一段永远不会 complete()，等待循环
+        再也退不出来——审计里的第二条挂死路径。
+        """
+        ticket.settled = True
+        state = self._states.get(ticket.source)
+        if state is None:
+            return
+        if ticket.kind == "semantic":
+            state.semantic_inflight = max(0, state.semantic_inflight - 1)
+            self._emit_status_locked()
+            return
+        state.retry_inflight = False
+        # 崩掉的这一轮照样计入预算（否则轮次号原地打转）。
+        state.attempts_done = max(state.attempts_done, ticket.attempt_index)
+        if self._executor_shutdown or self._stop_requested():
+            # 线程池已关停/已按停止：剩余轮次没机会跑了，就地记为预算用尽。
+            # 这里绝不能再调 _schedule_retry_locked —— 本函数最常见的调用点就是
+            # shutdown(cancel_futures=True) 的取消回调，排队会连锁到 executor
+            # 的 _shutdown_lock 上（审查 WT1-M1）。
+            state.attempts_done = self._max_attempts
+        else:
+            # 一轮崩掉不吞掉剩余轮次：继续排下一轮（仅记账，出锁后才 submit）。
+            self._schedule_retry_locked(state)
+        self._emit_status_locked()
 
     def _future_done(self, future) -> None:
         try:
-            future.result()
+            if not future.cancelled():
+                future.result()
         except ApiKeyTemporarilyUnavailableError as exc:
             with self._condition:
                 self._fatal_error = exc
@@ -3026,9 +3189,19 @@ class _WordRecoveryPool:
                     + user_facing_reason(exc, fallback="这一段的补救没能完成，已转人工复核。"),
                 )
         finally:
-            with self._condition:
-                self._futures.discard(future)
-                self._condition.notify_all()
+            try:
+                with self._condition:
+                    ticket = self._futures.pop(future, None)
+                    try:
+                        if ticket is not None and not ticket.settled:
+                            self._settle_abandoned_ticket_locked(ticket)
+                    finally:
+                        # 兜底复位本身抛出也不能吃掉唤醒，否则等待线程要空转到超时。
+                        self._condition.notify_all()
+            finally:
+                # 出锁后才排队。关停期间 flush 只做退账、不碰 executor，所以取消
+                # 回调走到这里是安全的。
+                self._flush_pending_submits()
 
     def _build_attempt_retry_prompt(self, source: str) -> str:
         """上一稿残留中文时，把残留片段作为结构化反馈附进重试 prompt。
@@ -3054,7 +3227,9 @@ class _WordRecoveryPool:
         note = build_feedback_note([span.text for span in residual.spans])
         return f"{self._retry_prompt}\n5. {note}"
 
-    def _run_retry_attempt(self, source: str, attempt_index: int) -> None:
+    def _run_retry_attempt(self, ticket: _WordRecoveryTicket) -> None:
+        source = ticket.source
+        attempt_index = ticket.attempt_index
         self._log_source_locations(
             "INFO",
             source,
@@ -3081,9 +3256,10 @@ class _WordRecoveryPool:
             request_category=API_REQUEST_CATEGORY_RECOVERY,
         )
         candidate = retry_translations.get(source, "")
-        self._handle_retry_result(source, candidate, attempt_index)
+        self._handle_retry_result(ticket, candidate)
 
-    def _handle_retry_result(self, source: str, candidate: str, attempt_index: int) -> None:
+    def _handle_retry_result(self, ticket: _WordRecoveryTicket, candidate: str) -> None:
+        source = ticket.source
         evaluation = _evaluate_word_translation(
             source,
             candidate,
@@ -3091,7 +3267,24 @@ class _WordRecoveryPool:
             target_lang=self._target_lang,
             allow_recovery=True,
         )
+        try:
+            self._handle_retry_result_locked(ticket, candidate, evaluation)
+        finally:
+            # 出锁后才排队：持 _condition 去 executor.submit 会和
+            # shutdown(cancel_futures=True) 的取消回调构成 ABBA 环（审查 WT1-M2）。
+            self._flush_pending_submits()
+
+    def _handle_retry_result_locked(
+        self,
+        ticket: _WordRecoveryTicket,
+        candidate: str,
+        evaluation: _WordRetryEvaluation,
+    ) -> None:
+        source = ticket.source
+        attempt_index = ticket.attempt_index
         with self._condition:
+            # 记账已经由本函数接手，_future_done 不再兜底复位
+            ticket.settled = True
             state = self._states.get(source)
             if state is None:
                 return
@@ -3127,10 +3320,11 @@ class _WordRecoveryPool:
 
     def _run_semantic_check(
         self,
-        source: str,
+        ticket: _WordRecoveryTicket,
         candidate: str,
         validation: TranslationValidationResult,
     ) -> None:
+        source = ticket.source
         self._log_source_locations("INFO", source, "正在语义仲裁")
         result = _run_semantic_arbitration(
             self._engine,
@@ -3146,6 +3340,8 @@ class _WordRecoveryPool:
             ),
         )
         with self._condition:
+            # 记账已经由本函数接手，_future_done 不再兜底复位
+            ticket.settled = True
             state = self._states.get(source)
             self._semantic_check_count += 1
             if state is None:
@@ -3167,6 +3363,9 @@ class _WordRecoveryPool:
                 self._log_source_locations("WARN", source, f"语义仲裁未接受（{result.verdict}）")
             self._emit_status_locked()
             self._condition.notify_all()
+        # 本函数目前不排新任务，但仍统一走一次出锁 flush：将来这里若加了排队，
+        # 不至于把任务永远留在 _pending_submits 里。
+        self._flush_pending_submits()
 
 
 def _candidate_validation_text(candidate: str | None) -> str:
