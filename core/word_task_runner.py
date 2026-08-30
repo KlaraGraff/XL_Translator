@@ -733,6 +733,18 @@ class WordTaskRunner:
             if self._stop_event.is_set():
                 raise TaskStopped(message)
 
+        def _note_stop_without_discarding(message: str) -> None:
+            """停止发生在「已经拿到译文」之后：记一笔停止说明，但不再抛异常。
+
+            与 `_raise_if_stopped` 的区别是这里绝不 raise——TM 写入、恢复池收尾、
+            阶段 3 写盘都要照常往下走，把停止前已经翻好的内容用掉，而不是让
+            TaskStopped 把它们连着还没花的活儿一起冲掉。只记最早那一次的说明：
+            后面各检查点的措辞大同小异，先到的最贴近真实触发时刻。
+            """
+            nonlocal stopped_message
+            if self._stop_event.is_set() and stopped_message is None:
+                stopped_message = message
+
         self._task_logger.task_start(
             files=self._files,
             engine_name=engine.engine_name,
@@ -760,6 +772,10 @@ class WordTaskRunner:
         text_source_candidates: dict[str, set[str]] = {}
         coverage_plans: list = []
         global_unique_texts: set[str] = set()
+        # 提前声明：停止落在阶段 2 结束之前（还没跑到下面 1571 行那次真正赋值）
+        # 时，收尾阶段（写盘统计、StoppedMsg 文案）也要能安全读它，取空字典即可——
+        # 这正是「没拿到译文」的语义，不需要特判。
+        global_translations: dict[str, str] = {}
         segment_locations: dict[str, list[dict]] = {}
         # 走页眉页脚专用通道的行：(文件标识, 词条)。这些行不进 text_set——它们不
         # 走正常翻译，等阶段 2 的译文都定下来之后再单独解一次。
@@ -767,6 +783,9 @@ class WordTaskRunner:
         quality_issues: list[dict] = []
         unresolved_review_sources: set[str] = set()
         recovery_review_sources: set[str] = set()
+        # 恢复池重试穷尽后「原文当译文」占位写进 api_translations 的段落。进度统计
+        # 要把它们从「已译」里剔出去——词典里有键不等于真的翻出来了。
+        identity_fallback_sources: set[str] = set()
         review_marks: dict[str, str] = {}
         process_paths: list[Path] = []
         converted_temp_paths: list[Path] = []
@@ -1455,7 +1474,11 @@ class WordTaskRunner:
                         )
                     ),
                 )
-                _raise_if_stopped("任务已停止，未写入剩余 Word 翻译结果。")
+                # 停止不再拦在这里：这一批已经付费拿到的译文（含下面 recovery_pool
+                # 还没收官的那部分）要照常走完 TM 写入和阶段 3 写盘，见 fa34578 的
+                # 立场——跳过只会让下次运行整批重新付费。真正决定「有没有东西可写」
+                # 的检查挪到阶段 3 入口（下面 global_translations 算完之后）。
+                _note_stop_without_discarding("任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。")
 
                 if mixed_texts:
                     _apply_mixed_language_word_results(
@@ -1490,10 +1513,23 @@ class WordTaskRunner:
                 for source in retry_sources:
                     recovery_pool.add_candidate(source, api_translations.get(source, ""))
                 recovery_outcome = recovery_pool.wait_for_completion()
-                _raise_if_stopped("任务已停止，未写入剩余 Word 翻译结果。")
+                # 同上：恢复池已经按 de71ab7 的规矩做到「停止也能收尾、已接受的
+                # 译文照常交回」，这里不再拦停止，只补记一笔说明（若上面已经记过，
+                # 这里不会覆盖）。
+                _note_stop_without_discarding("任务已停止，停止前已获得的译文（含恢复池已接受的）将照常写入文档并存入记忆库，未完成部分保留原文。")
                 api_translations.update(recovery_outcome.accepted_translations)
-                for source in recovery_outcome.unresolved_sources:
-                    api_translations[source] = source
+                # 停止时恢复池是被撤下的：cancel_futures 会把所有还没被接受的候选
+                # 一律塞进 unresolved_sources，池子分不清「试完没成」和「压根没轮到」
+                # （见 _build_outcome）。这批段落不能再做下面的「原文当译文」占位——
+                # 那会让它们混进 global_translations：绕过阶段 3 的空产物闸（零真译
+                # 文也照样写盘）、把进度数字撑大、还挨一顶「重试 N 轮仍失败」的假帽
+                # 子。跳过占位，它们就和没轮到的段落一样缺席词典：写盘保留原文，
+                # 进度计入「保留原文待续译」，续译时会重新排队。
+                stop_withdrew_unresolved = self._stop_event.is_set()
+                if not stop_withdrew_unresolved:
+                    for source in recovery_outcome.unresolved_sources:
+                        api_translations[source] = source
+                        identity_fallback_sources.add(source)
                 # 这两类都通过了复核：恢复规则认可、或语义仲裁判定与原文等义。文档里
                 # 不再上底色——底色只留给真正要人工看的东西，见 _WORD_REVIEW_MARK_PRIORITY
                 # 上方的说明。
@@ -1542,7 +1578,10 @@ class WordTaskRunner:
                         severity="resolved",
                         validation_results=recovery_outcome.semantic_review_results,
                     )
-                if recovery_outcome.unresolved_sources:
+                # 停止场景同样跳过「需人工复核」标记：这些段落多半是被停止撤下的，
+                # 不是重试穷尽，按失败归因是冤枉；停止说明里的「未完成部分保留原文」
+                # 已经覆盖了它们。
+                if recovery_outcome.unresolved_sources and not stop_withdrew_unresolved:
                     unresolved_review_sources.update(recovery_outcome.unresolved_sources)
                     for source in recovery_outcome.unresolved_sources:
                         _set_review_mark(review_marks, source, MIXED_MARK_UNRESOLVED)
@@ -1921,7 +1960,19 @@ class WordTaskRunner:
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
 
-            _raise_if_stopped()
+            # 阶段 3 的入口闸：这里才是真正决定「有没有东西可写」的地方——
+            # global_translations 到这里已经是终稿（残留修复、修复阶梯、标题
+            # 归一都做完了）。停止落在更早阶段、一条译文都没拿到时
+            # global_translations 仍是空字典，这里照旧整批放弃、不写空产物；
+            # 只要有内容，就带着「未翻到的段落保留原文」的立场往下写，不再
+            # 因为停止信号把已经到手的译文整批扔掉。
+            if self._stop_event.is_set():
+                if global_translations:
+                    _note_stop_without_discarding(
+                        "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。"
+                    )
+                else:
+                    raise TaskStopped("任务已停止，未获得可写入的 Word 翻译结果。")
 
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word..."))
             self._queue.put(
@@ -1937,7 +1988,13 @@ class WordTaskRunner:
             t_phase3 = datetime.now()
             source_root = self._source_root if self._source_root else self._files[0].path.parent
             for index, file_item in enumerate(self._files):
-                _raise_if_stopped()
+                # 阶段 3 进了门就不再半路丢文件：这一步不发 API、只是把已经算好的
+                # global_translations 落盘，成本是本地磁盘 IO，没有理由为了「响应
+                # 停止」把后面文件已经翻好的内容也扔掉。这里只在停止第一次出现在
+                # 写盘过程中时补记一笔说明（不会覆盖更早的说明），不打断循环。
+                _note_stop_without_discarding(
+                    "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。"
+                )
                 already_failed = any(
                     result.get("source_path") == str(file_item.path)
                     and not result.get("success")
@@ -2195,6 +2252,26 @@ class WordTaskRunner:
             )
 
             if stopped_message is not None:
+                # 账记在「停止」头上：这里如实报「翻了多少、剩多少」，不管最终是
+                # 提前收尾（多数场景）还是碰巧在停止生效前就把活干完了（阶段 3 不
+                # 再半路弃文件之后，这种巧合确实会发生）——两种情况数字都不撒谎。
+                total_texts = len(global_unique_texts)
+                if total_texts:
+                    # 排除「原文当译文」的占位段：它们在词典里只是为了让写盘统一走
+                    # 替换通道，实际没翻出来，按「保留原文待续译」计。
+                    translated_texts = sum(
+                        1
+                        for text in global_unique_texts
+                        if text in global_translations
+                        and text not in identity_fallback_sources
+                    )
+                    untranslated_texts = max(total_texts - translated_texts, 0)
+                    written_files = sum(1 for item in file_results if item.get("success"))
+                    stopped_message = (
+                        f"{stopped_message}"
+                        f"进度：已译 {translated_texts}/{total_texts} 段，"
+                        f"{untranslated_texts} 段保留原文待续译，已写入 {written_files} 个文件。"
+                    )
                 self._log("WARN", stopped_message)
                 _emit_terminal(
                     StoppedMsg(
