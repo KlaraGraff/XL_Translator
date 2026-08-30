@@ -1016,14 +1016,34 @@ def write_bilingual_docx(
             continue
         leading_prefix = original_paragraph_prefixes.get(paragraph_key, "")
         translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
-        # 原地改写会清空非锚点 run，段落里若有域（题注的 SEQ 编号）会被抹掉，
-        # 这类段落一律改成在下一行插入译文。
         if resolved.replace_only and not _paragraph_has_field(paragraph):
             _replace_paragraph_text(
                 paragraph,
                 translated_text,
                 target_lang=target_lang,
             )
+            if review_mark:
+                _apply_paragraph_review_mark(
+                    paragraph,
+                    review_mark,
+                    highlight_policy,
+                    review_color_map,
+                )
+        elif resolved.replace_only and _replace_paragraph_text_around_fields(
+            paragraph,
+            translated_text,
+            target_lang=target_lang,
+        ):
+            # 含域正文段（题注 SEQ、交叉引用编号最常见）：域周边的作者文字原地换成
+            # 译文，域本体保留在原位——与页眉同款的 _replace_paragraph_text_around_fields。
+            # 早先这类段落一律退到"下一行插入译文"，理由是原地改写会把非锚点 run
+            # 一并清空、域跟着陪葬；那个理由现在不成立了，这个函数按域把段落切成
+            # 若干段作者文字分别改写，从不触碰域三件套本身。插行的代价是原文整段还
+            # 留在正文里、译文另起一段，读者看到的是"原文+译文"而不是 replace 模式
+            # 承诺的"译文顶替原文"；能原地替换时不该为了一个已经解决的顾虑继续付
+            # 这个代价。译文里配不出域结果、或域夹在超链接内部读不准边界这些情形，
+            # 函数会返回 False，同样退回下面的插行兜底，不冒着搅坏域或打乱词序的
+            # 风险硬替换。
             if review_mark:
                 _apply_paragraph_review_mark(
                     paragraph,
@@ -2503,16 +2523,19 @@ def _replace_paragraph_text_around_fields(
     """段落里带域时，只把作者自己敲的文字换成译文，域整段留在原位。
 
     ``_replace_paragraph_text`` 会把非锚点 run 一律清空，域的 begin/instrText/end 也
-    在其中——章号（STYLEREF）、题注编号（SEQ）就此变成一次性的死文本。所以以前遇到
-    含域的段落只能退回「在行尾追加译文」，可页眉的高度由节边距定死：原文整行留着、
-    后面再接一整行译文，不是把版心顶下去就是被裁掉半行。
+    在其中——章号（STYLEREF）、题注编号（SEQ）就此变成一次性的死文本。含域段落一律
+    退回「在原段后面插一整行译文」的话，页眉和正文各有各的代价：页眉高度由节边距
+    定死，原文整行留着、后面再接一整行译文，不是把版心顶下去就是被裁掉半行；正文
+    则是原文整段照留、译文另起一段，读者看到的是"原文+译文"堆在一起，与 replace
+    模式承诺的"译文顶替原文"不符。页眉、正文调这个函数走的是同一份保护：超链接、
+    制表位、软换行都不因为段落里有域就被牺牲掉。
 
     这里按域把段落切成若干段作者文字，再把译文按域当前缓存的结果切成同样多块，一块
     对一段地写回去。译文里找不到域结果时不猜位置：整句译文写进第一处作者文字，其余
     作者文字清空，域仍旧保留——重复一个章号远好过重复一整行。
 
     返回 True 表示已经改写；False 表示这段没有可替换的作者文字（整段都是域，或域的
-    begin/end 不配平），调用方按原路退回追加。
+    begin/end 不配平，或域被包在超链接内部读不准边界），调用方按原路退回追加。
     """
     replacement = str(text or "")
     groups = _paragraph_author_run_groups(paragraph)
