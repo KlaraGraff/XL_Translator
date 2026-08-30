@@ -1336,6 +1336,7 @@ class SettingsSchemaError(ValueError):
 RECOVERY_PATH = APP_DATA_DIR / "recovery.json"
 SETTINGS_RECOVERY_SCOPE = "settings"
 TM_RECOVERY_SCOPE = "tm"
+KEYS_RECOVERY_SCOPE = "keys"
 
 
 def read_recovery_record() -> dict[str, dict]:
@@ -1387,13 +1388,36 @@ def record_recovery_event(
         logger.warning(f"恢复记录写入失败（不影响已完成的恢复）：{exc}")
 
 
-def clear_recovery_record() -> bool:
-    """Drop the recovery notice once the user has acknowledged it."""
+def clear_recovery_record(scopes: list[str] | None = None) -> bool:
+    """Drop the recovery notice once the user has acknowledged it.
+
+    scopes=None 维持旧语义：整个文件删掉。传了 scopes 就只清这些作用域——
+    「知道了」只应该消掉横幅上真正展示过的事件；没露过面的作用域（比如横幅
+    已在屏时才惰性写入的 keys 事件）必须留到它露面的那天，不能被顺手抹掉。
+    """
     lock_path = RECOVERY_PATH.with_name(f".{RECOVERY_PATH.name}.lock")
     with _exclusive_file_lock(lock_path):
         existed = RECOVERY_PATH.exists()
-        RECOVERY_PATH.unlink(missing_ok=True)
-    return existed
+        if scopes is None:
+            RECOVERY_PATH.unlink(missing_ok=True)
+            return existed
+        if not existed:
+            return False
+        wanted = {str(scope) for scope in scopes}
+        record = read_recovery_record()
+        remaining = {
+            scope: event for scope, event in record.items() if scope not in wanted
+        }
+        if len(remaining) == len(record):
+            return False
+        if remaining:
+            _write_text_atomic(
+                RECOVERY_PATH,
+                json.dumps(remaining, indent=2, ensure_ascii=False),
+            )
+        else:
+            RECOVERY_PATH.unlink(missing_ok=True)
+        return True
 
 
 def _timestamped_backup_name(prefix: str, suffix: str) -> str:
@@ -1713,18 +1737,85 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
     logger.debug(f"配置已保存：{SETTINGS_PATH}")
 
 
-def _load_keys_unlocked(*, strict: bool) -> dict[str, str]:
+def _backup_keys_file() -> str:
+    """Copy the unusable keys.json aside; return the backup path.
+
+    Mirrors ``_backup_settings_file``: a copy, never a move, so a failure
+    partway through never takes the only copy of the user's keys with it.
+    """
+    target_dir = BACKUPS_DIR / "keys"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / _timestamped_backup_name("keys_unusable", ".json")
+    shutil.copy2(KEYS_PATH, target)
+    return str(target)
+
+
+def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
+    """Read keys.json, telling "cannot parse" apart from "cannot read".
+
+    Mirrors ``_inspect_settings_file``'s split between ``unusable``（内容损坏，
+    可以放心备份后当空表续写）和 ``unreadable``（文件可能完好，只是这一刻打不
+    开——Windows 上被杀毒/备份软件占住，或者一次 EACCES/EIO）。后者绝不能走自
+    愈：读不出来就复制不出来，复制不出来就不能覆盖，否则「暂时占用」会被写成
+    「永久丢失」。``force`` 是维护页「清空全部 Key」的显式放弃——那条路本来就
+    要整个删除文件，一次读取失败或备份失败不该拦着它。
+    """
     if not KEYS_PATH.exists():
         return {}
     try:
-        payload = json.loads(KEYS_PATH.read_text(encoding="utf-8"))
+        raw = KEYS_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        if not strict:
+            logger.warning(f"keys.json 暂时读取不到：{exc}")
+            return {}
+        if not force:
+            raise SettingsSchemaError(
+                f"keys.json 无法安全更新：暂时读取不到（{exc}）。原文件已原样"
+                "保留，未做任何改动；确定要放弃它，请到维护页执行「删除全部"
+                " API Key」。"
+            ) from exc
+        logger.warning(f"keys.json 暂时读取不到，按显式清空继续：{exc}")
+        return {}
+    try:
+        payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("keys.json 顶层必须是 JSON 对象")
         return payload
     except Exception as exc:
-        if strict:
-            raise ValueError(f"keys.json 无法安全更新：{exc}") from exc
-        logger.warning(f"keys.json 解析失败：{exc}")
+        if not strict:
+            logger.warning(f"keys.json 解析失败：{exc}")
+            return {}
+        # 写入路径（保存/删除一把 Key、清空全部 Key）：内容损坏的文件不能让
+        # 「保存」和「清空」两条路都拒绝还不给出路——那正是 clear_tm 对坏 TM
+        # 库的处理方式，keys.json 补齐同等待遇。
+        if force:
+            # force 是「调用方已明确放弃这份文件」（维护页删除全部 Key）。按钮
+            # 承诺的是删除，不是搬家：不做备份也不记恢复事件——否则 backups/
+            # 里会静默留一份含明文 Key 的副本，且用户亲手清空后还会看到一条
+            # 催他重填的警告横幅。审计前的 clear 同样不留副本。
+            logger.warning(f"keys.json 无法解析，按显式清空继续，不留备份：{exc}")
+            return {}
+        # 备份是前置条件，不是客气话：备份做不成就说明这次改动本身就是一次
+        # 不可恢复的丢失，必须拒绝。这也保证恢复事件里的 backup_path 永不为空。
+        try:
+            backup_path = _backup_keys_file()
+        except OSError as backup_exc:
+            raise SettingsSchemaError(
+                f"keys.json 无法安全更新：内容已损坏且备份失败（{backup_exc}）。"
+                "原文件已原样保留，未做任何改动；确定要放弃它，请到维护页"
+                "执行「删除全部 API Key」。"
+            ) from backup_exc
+        logger.warning(
+            "keys.json 无法解析（{}），已备份到 {} 并按空表继续写入。",
+            exc,
+            backup_path,
+        )
+        record_recovery_event(
+            KEYS_RECOVERY_SCOPE,
+            stored_version=None,
+            current_version=1,
+            backup_path=backup_path,
+        )
         return {}
 
 
@@ -2062,7 +2153,9 @@ def delete_all_keys() -> int:
     """Delete every locally persisted API key without exposing their values."""
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     with _exclusive_file_lock(_keys_lock_path()):
-        keys = _load_keys_unlocked(strict=True)
+        # force=True：这是维护页「删除全部 API Key」按钮本身，用户已经在按下
+        # 它的那一刻放弃了旧文件——不该因为读取或备份失败就拒绝执行删除。
+        keys = _load_keys_unlocked(strict=True, force=True)
         removed = len(keys)
         KEYS_PATH.unlink(missing_ok=True)
         # 来源标记跟着密钥一起消失，别留下指向不存在密钥的孤儿标记：

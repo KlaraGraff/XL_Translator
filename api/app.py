@@ -231,12 +231,24 @@ class TmFullImportPayload(BaseModel):
     sync_reverse: bool = False
 
 
+class DataHealthDismissPayload(BaseModel):
+    """「知道了」随手带上的作用域清单：只清横幅上真正展示过的恢复事件。"""
+
+    scopes: list[str] | None = None
+
+
 class TmSuggestionPayload(BaseModel):
     entry_id: int
     source_text: str = ""
     old_target: str = ""
     new_target: str = Field(min_length=1)
     accepted: bool = True
+    # 建议表主键与乐观并发版本：缺了它们，确认写入既无法把建议标成已处理，
+    # 也等于关掉了版本校验——期间被别人改过的译文会被无声覆盖。
+    # 旧客户端可能不带，服务端再按内容回查一次兜底。
+    suggestion_id: int = 0
+    lang_pair: str = ""
+    expected_version: str = ""
 
 
 class TmApplySuggestionsPayload(BaseModel):
@@ -601,6 +613,13 @@ def create_app(
             settings = AppSettings.model_validate(merged)
         except Exception as exc:
             raise HTTPException(422, str(exc)) from exc
+        # 校验器会在同一 provider 已经存过「服务商记忆」时，把这次刚合并进来的
+        # cloud_model/cloud_base_url 悄悄换回记忆里的旧值——这是为切换 provider
+        # 时找回上次用过的模型设计的，但代价是这个通用合并端点只改
+        # engine.cloud_model 会返回 200 却被覆盖回旧值，跟没存一样。payload 里
+        # 显式给出的字段必须真的落盘，所以在这里按用户原样写回服务商记忆，
+        # 和 PUT /api/models/roles/{role} 走的是同一条路径。
+        _persist_explicit_cloud_overrides(settings, payload)
         # Rebuilding through model_validate produces an object with no
         # load-time snapshot, which would make the save a full overwrite for
         # the one endpoint the UI hits on every switch flip.
@@ -1778,8 +1797,12 @@ def create_app(
         return maintenance.data_health()
 
     @app.delete("/api/data/health/notice")
-    def dismiss_data_health_notice() -> dict[str, Any]:
-        return maintenance.dismiss_recovery_notice()
+    def dismiss_data_health_notice(
+        payload: DataHealthDismissPayload | None = None,
+    ) -> dict[str, Any]:
+        # 不带 body 维持旧语义（整份清除）；带 scopes 只清横幅真正展示过的
+        # 作用域，横幅在屏期间才惰性写入的事件（典型：keys）不会被顺手抹掉。
+        return maintenance.dismiss_recovery_notice(payload.scopes if payload else None)
 
     @app.get("/api/maintenance/overview")
     def maintenance_overview() -> dict[str, Any]:
@@ -2202,6 +2225,47 @@ def _deep_merge(current: dict[str, Any], update: dict[str, Any]) -> dict[str, An
         else:
             merged[key] = value
     return merged
+
+
+# 四个「引擎归属」对象共享同一套 cloud_model/cloud_base_url + cloud_provider_configs
+# 校验逻辑（见 settings.py 的 EngineSettings / ModelRoleSettings），因而共享同一个
+# 「服务商记忆覆盖回」隐患。
+_CLOUD_MEMORY_OWNER_FIELDS = (
+    "engine",
+    "cleaner_model_role",
+    "image_model_role",
+    "pdf_review_model_role",
+)
+
+
+def _persist_explicit_cloud_overrides(
+    settings: AppSettings, payload: dict[str, Any]
+) -> None:
+    """让 payload 里显式给出的 cloud_model/cloud_base_url 真的落盘。
+
+    ``AppSettings`` 校验之后，这几个字段可能已经被同 provider 下的服务商记忆
+    悄悄换回旧值（见调用处的注释）。这里只认 payload 原始结构里显式出现的键——
+    没提到的字段维持校验器的结果不动，只把用户这次明确改动的值写回去。
+    """
+    for field in _CLOUD_MEMORY_OWNER_FIELDS:
+        raw = payload.get(field)
+        if not isinstance(raw, dict):
+            continue
+        wants_model = "cloud_model" in raw
+        wants_base_url = "cloud_base_url" in raw
+        if not wants_model and not wants_base_url:
+            continue
+        owner = getattr(settings, field, None)
+        if owner is None:
+            continue
+        set_cloud_provider_config(
+            owner,
+            owner.cloud_provider,
+            cloud_model=str(raw.get("cloud_model", "") or "").strip() if wants_model else None,
+            cloud_base_url=(
+                str(raw.get("cloud_base_url", "") or "").strip() if wants_base_url else None
+            ),
+        )
 
 
 def _merge_scan_results(results: list[Any]) -> Any:

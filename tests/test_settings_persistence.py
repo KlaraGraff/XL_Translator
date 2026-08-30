@@ -368,7 +368,12 @@ class SettingsPersistenceTests(unittest.TestCase):
             self.assertEqual(loaded.target_lang, "fr")
             self.assertEqual(loaded.custom_prompt, "keep-normalized")
 
-    def test_malformed_key_store_is_not_overwritten(self) -> None:
+    def test_malformed_key_store_is_backed_up_and_recovered_on_save(self) -> None:
+        """保存不再被一份读不出来的 keys.json 卡死。
+
+        对照 clear_tm 对坏 TM 库的处理：先把打不开的旧文件备份留痕，再当空表
+        继续这次写入——不是「拒绝写入且不给出路」的硬约束违规点了。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             app_data_dir = Path(tmp)
             keys_path = app_data_dir / "keys.json"
@@ -378,11 +383,19 @@ class SettingsPersistenceTests(unittest.TestCase):
                 settings_module,
                 APP_DATA_DIR=app_data_dir,
                 KEYS_PATH=keys_path,
+                BACKUPS_DIR=app_data_dir / "backups",
+                RECOVERY_PATH=app_data_dir / "recovery.json",
             ):
-                with self.assertRaisesRegex(ValueError, "无法安全更新"):
-                    settings_module.save_key("custom_openai", "new-secret")
+                settings_module.save_key("custom_openai", "new-secret")
 
-            self.assertEqual(keys_path.read_text(encoding="utf-8"), "[]")
+                stored = json.loads(keys_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    stored.get(settings_module.api_key_scope("custom_openai", "")),
+                    "new-secret",
+                )
+                backups = list((app_data_dir / "backups" / "keys").glob("keys_unusable_*.json"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_text(encoding="utf-8"), "[]")
 
     def test_malformed_key_store_reads_as_empty_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

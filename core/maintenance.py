@@ -11,10 +11,11 @@ from loguru import logger
 
 from config import APP_DATA_DIR, KEYS_PATH, LOG_PATH, SETTINGS_PATH
 from core import diagnostics, tm_manager
-from core.task_history import TaskHistoryStore
+from core.task_history import TaskHistoryStore, default_history_path
 from core.task_logger import clear_log_files
 import settings as settings_module
 from settings import (
+    KEYS_RECOVERY_SCOPE,
     SETTINGS_RECOVERY_SCOPE,
     TM_RECOVERY_SCOPE,
     AppSettings,
@@ -27,7 +28,6 @@ from settings import (
 )
 
 
-TASK_HISTORY_PATH = APP_DATA_DIR / "task_history.json"
 WORKSPACES_DIR = APP_DATA_DIR / "workspaces"
 API_HEALTH_STATE_PATH = APP_DATA_DIR / "api_health_state.json"
 _TASK_HISTORY_LIMIT = 200
@@ -61,7 +61,7 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
         _category("settings", "设置", [SETTINGS_PATH], clearable=True),
         _category("keys", "API Key", [KEYS_PATH], clearable=True),
         _category("tm", "翻译记忆库", _tm_paths(), clearable=True),
-        _category("task_history", "任务摘要", [TASK_HISTORY_PATH], clearable=True),
+        _category("task_history", "任务摘要", [default_history_path()], clearable=True),
         _category("logs", "结构化日志", _log_paths(), clearable=True),
         _category("diagnostics", "脱敏诊断", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
         _category("workspaces", "临时工作区", [WORKSPACES_DIR], clearable=True),
@@ -136,12 +136,26 @@ def data_health() -> dict[str, Any]:
             kept_state="upgraded",
             after=tm_manager.get_schema_status(),
         ),
+        # keys.json 没有 settings/tm 那种「启动时主动自检」的环节——它只在保存
+        # 或删除一把 Key 时惰性自愈（settings.py::_load_keys_unlocked），所以
+        # 这里不重新检查一次文件状态，只是把已经发生过的恢复事件（如果有）翻
+        # 出来给用户看。没有事件时退化成「current」，不存在 unreadable 分支：
+        # 读不出来的 keys.json 在写入路径上是直接拒绝，不会落到这条自愈分支。
+        "keys": _health_entry(
+            {"current_version": 1, "state": "current"},
+            record.get(KEYS_RECOVERY_SCOPE),
+            kept_state="__keys_never_kept__",
+            after={"state": "current"},
+        ),
     }
 
 
-def dismiss_recovery_notice() -> dict[str, Any]:
-    """Clear the recovery notice after the user acknowledges it."""
-    return {"cleared": clear_recovery_record()}
+def dismiss_recovery_notice(scopes: list[str] | None = None) -> dict[str, Any]:
+    """Clear the recovery notice after the user acknowledges it.
+
+    scopes 由前端传入「横幅上真正展示过的作用域」；None 维持整份清除的旧语义。
+    """
+    return {"cleared": clear_recovery_record(scopes)}
 
 
 def _health_entry(
@@ -297,6 +311,24 @@ def _log_paths() -> list[Path]:
     return [path for path in LOG_PATH.parent.glob(f"{LOG_PATH.name}*") if path.is_file()]
 
 
+def _task_history_temp_paths() -> list[Path]:
+    """任务历史落盘中途崩溃可能留下的临时文件。
+
+    命名规则必须和 ``TaskHistoryStore._write_locked``（隐藏点前缀 + 随机 uuid +
+    ``.tmp`` 后缀）保持一致——之前这里用的是 ``TASK_HISTORY_PATH.with_suffix(".tmp")``，
+    算出来的路径和真正的临时文件名从不相同，「完整重置」因而从没真的清过它。
+
+    路径本身也改走 ``default_history_path()``（同 ``TaskHistoryStore`` 的默认路径
+    解析函数）而不是本模块曾经维护的 ``TASK_HISTORY_PATH`` 常量：那个常量在模块
+    导入时就从 ``config.APP_DATA_DIR`` 定死，只在测试显式 patch 它本身时才会跟着
+    变；而任务历史库自己是按 ``settings.APP_DATA_DIR`` 现读现算的——只 patch
+    ``settings.APP_DATA_DIR``（常见测试写法）时两边会读到不同目录，「维护」清的
+    和「历史库」写的对不上。
+    """
+    history_path = default_history_path()
+    return list(history_path.parent.glob(f".{history_path.name}.*.tmp"))
+
+
 def _reset_paths() -> list[Path]:
     return [
         SETTINGS_PATH,
@@ -308,8 +340,8 @@ def _reset_paths() -> list[Path]:
         # settings 模块的密钥路径指到临时目录。
         settings_module.key_origins_path(),
         *_tm_paths(),
-        TASK_HISTORY_PATH,
-        TASK_HISTORY_PATH.with_suffix(".tmp"),
+        default_history_path(),
+        *_task_history_temp_paths(),
         *_log_paths(),
         diagnostics.DIAGNOSTICS_DIR,
         WORKSPACES_DIR,
@@ -321,6 +353,9 @@ def _reset_paths() -> list[Path]:
         settings_module.RECOVERY_PATH.with_name(
             f".{settings_module.RECOVERY_PATH.name}.lock"
         ),
+        # 备份目录里躺着损坏文件的原文（settings/tm/keys，其中 keys 是明文
+        # Key）。恢复出厂承诺「回到首次启动状态」，必须连它一起清。
+        settings_module.BACKUPS_DIR,
     ]
 
 

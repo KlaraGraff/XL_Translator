@@ -112,8 +112,19 @@ class TaskHistoryStore:
         with self._lock:
             count = len(self._read_locked())
             self._path.unlink(missing_ok=True)
-            self._path.with_suffix(".tmp").unlink(missing_ok=True)
+            for stray in self._stray_temp_paths():
+                stray.unlink(missing_ok=True)
             return count
+
+    def _stray_temp_paths(self) -> list[Path]:
+        """Temp files a crash could leave behind mid-``_write_locked``.
+
+        Must match the exact naming ``_write_locked`` uses (hidden dot prefix,
+        a random uuid, ``.tmp`` suffix) — ``self._path.with_suffix(".tmp")``
+        used to be tried here instead, which never matches that pattern and so
+        never actually removed anything.
+        """
+        return list(self._path.parent.glob(f".{self._path.name}.*.tmp"))
 
     def _read_locked(self) -> list[dict[str, Any]]:
         try:

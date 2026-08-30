@@ -64,6 +64,7 @@ def archive_task_diagnostics(
     status: str = "",
     progress: Any | None = None,
     task_artifacts: dict[str, Any] | None = None,
+    safe_error_code: str | None = None,
 ) -> Path:
     """Persist a strictly anonymous support record.
 
@@ -71,6 +72,13 @@ def archive_task_diagnostics(
     paragraph locations, source/target content, prompts, model responses, API
     keys, or a copied ``app.log``.  User-facing reports remain the only local
     files that may retain document-specific positioning information.
+
+    ``safe_error_code``, when given, is trusted as an already-bounded caller
+    identifier (e.g. the update checker's own ``diagnostic_code``) and used
+    as-is instead of being re-derived from ``error_message`` — running it
+    back through ``_safe_error_code``'s coarse keyword buckets would collapse
+    a specific code like ``checksum_invalid`` into the generic
+    ``task_failed``, throwing away the one detail a support triage needs.
     """
     del source_root, task_artifacts
     record_dir = _unique_record_dir(surface=surface, task_id=task_id)
@@ -95,7 +103,11 @@ def archive_task_diagnostics(
         "phase": _safe_category(phase, fallback="unknown"),
         "anonymous_locator": _anonymous_locator(task_id),
         "status": _safe_category(status, fallback="unknown"),
-        "error_code": _safe_error_code(error_message),
+        "error_code": (
+            _safe_category(safe_error_code, fallback="task_failed")
+            if safe_error_code is not None
+            else _safe_error_code(error_message)
+        ),
         **metrics,
         "content_categories": [
             "runtime",
@@ -234,7 +246,15 @@ def _is_current_safe_manifest(payload: object) -> bool:
 
 
 def record_system_diagnostic(*, phase: str, error_code: str) -> Path:
-    """Record a non-task failure such as a release check without raw details."""
+    """Record a non-task failure such as a release check without raw details.
+
+    Replaces its own previous record for the same ``phase`` instead of
+    stacking a fresh one every time.  Without this, an offline machine that
+    fails the same background update check on every launch fills the entire
+    80-slot diagnostics history with copies of one failure and evicts every
+    real task record before the user ever gets to export one.
+    """
+    _discard_system_diagnostics(phase=phase)
     return archive_task_diagnostics(
         surface="system",
         phase=phase,
@@ -244,7 +264,19 @@ def record_system_diagnostic(*, phase: str, error_code: str) -> Path:
         logs=[],
         status="error",
         error_message=error_code,
+        safe_error_code=error_code,
     )
+
+
+def _discard_system_diagnostics(*, phase: str) -> None:
+    """Remove this phase's existing system diagnostic before a new one lands."""
+    safe_phase = _safe_category(phase, fallback="unknown")
+    for record in list_diagnostic_records():
+        if record.get("surface") != "system" or record.get("phase") != safe_phase:
+            continue
+        record_dir = Path(str(record.get("record_dir") or ""))
+        if _is_record_directory(record_dir):
+            shutil.rmtree(record_dir, ignore_errors=True)
 
 
 def prune_diagnostic_records(

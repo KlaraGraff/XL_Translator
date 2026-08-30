@@ -59,7 +59,6 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 SETTINGS_PATH=settings_path,
                 KEYS_PATH=keys_path,
                 LOG_PATH=log_path,
-                TASK_HISTORY_PATH=self.app_data / "task_history.json",
                 WORKSPACES_DIR=self.app_data / "workspaces",
                 API_HEALTH_STATE_PATH=self.app_data / "api_health_state.json",
             ),

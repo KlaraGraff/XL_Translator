@@ -46,6 +46,7 @@ from core.task_runner import (
     StoppedMsg,
     TaskRunner,
     WordRecoveryStatusMsg,
+    user_facing_reason,
 )
 from core.word_document import scan_word_path
 from core.word_task_runner import WordTaskRunner
@@ -1587,14 +1588,25 @@ class TranslationTaskManager:
                 task,
                 state="error",
                 event_type="error",
-                result={"message": "Translation runner ended without a terminal message."},
+                result={
+                    "message": user_facing_reason(
+                        "Translation runner ended without a terminal message.",
+                        fallback="翻译流程异常终止，未收到结束信号，请重试。",
+                    )
+                },
             )
         except Exception as exc:  # noqa: BLE001 - task errors must be delivered to SSE.
+            # 裸异常名（如 "RuntimeError"）和未识别的英文内部串一样，不能直接端给
+            # 用户；user_facing_reason 只放行真正的中文说明，其余一律换成兜底句。
             self._finish_if_needed(
                 task,
                 state="error",
                 event_type="error",
-                result={"message": str(exc) or exc.__class__.__name__},
+                result={
+                    "message": user_facing_reason(
+                        exc, fallback="任务执行时出现未知错误，请重试或查看日志。"
+                    )
+                },
             )
 
     def _handle_message(self, task: ApiTask, message: Any) -> None:
