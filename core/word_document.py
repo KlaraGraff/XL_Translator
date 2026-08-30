@@ -96,6 +96,48 @@ _HEADER_FOOTER_SLOTS: tuple[tuple[str, str, str], ...] = (
 )
 _HEADER_FOOTER_INLINE_SEPARATOR = " / "
 
+# CT_PPr 在 ECMA-376 里是一条 xsd:sequence：子元素必须按这个次序出现。合并样式链与
+# 段落自身的 pPr 时是「一个个 append」，顺序天然按来源先后排，与 schema 次序无关；
+# Word 读得进去，LibreOffice 转档和严格校验器不一定。生成完统一按这张表排一遍。
+_PPR_CHILD_ORDER: tuple[str, ...] = (
+    "w:pStyle",
+    "w:keepNext",
+    "w:keepLines",
+    "w:pageBreakBefore",
+    "w:framePr",
+    "w:widowControl",
+    "w:numPr",
+    "w:suppressLineNumbers",
+    "w:pBdr",
+    "w:shd",
+    "w:tabs",
+    "w:suppressAutoHyphens",
+    "w:kinsoku",
+    "w:wordWrap",
+    "w:overflowPunct",
+    "w:topLinePunct",
+    "w:autoSpaceDE",
+    "w:autoSpaceDN",
+    "w:bidi",
+    "w:adjustRightInd",
+    "w:snapToGrid",
+    "w:spacing",
+    "w:ind",
+    "w:contextualSpacing",
+    "w:mirrorIndents",
+    "w:suppressOverlap",
+    "w:jc",
+    "w:textDirection",
+    "w:textAlignment",
+    "w:textboxTightWrap",
+    "w:outlineLvl",
+    "w:divId",
+    "w:cnfStyle",
+    "w:rPr",
+    "w:sectPr",
+    "w:pPrChange",
+)
+
 _WORD_HIGHLIGHT_RGB = {
     "black": (0x00, 0x00, 0x00),
     "blue": (0x00, 0x00, 0xFF),
@@ -492,6 +534,13 @@ def _iter_header_footer_paragraphs(
 
     "链接到前一节"的页眉页脚指向同一个 part（partname 相同），不按 part 去重的话，
     同一行会被追加好几遍译文。
+
+    没有定义的槽位一律跳过：python-docx 的 ``section.header`` 只是个代理，一旦读它的
+    ``.part``/``.paragraphs`` 就会「顺手」给文档建一个空页眉 part 并挂上 reference。
+    压根没有页眉页脚的文档翻译一次，产物里就凭空多出 6 个空 part、6 条 reference——
+    文件里多出本来不存在的页眉，还会影响后续工具对该文档的判断。
+    ``is_linked_to_previous`` 只读 sectPr 上的 reference，不会触发这个副作用；它为真
+    时要么继承前一节（那个 part 在定义它的那一节已经收过了），要么根本没有内容。
     """
     seen_parts: set[str] = set()
     items: list[tuple[str, str, str, Paragraph]] = []
@@ -499,6 +548,8 @@ def _iter_header_footer_paragraphs(
         for attr, kind, label in _HEADER_FOOTER_SLOTS:
             try:
                 container = getattr(section, attr)
+                if container.is_linked_to_previous:
+                    continue
                 part_name = str(container.part.partname)
             except Exception:  # noqa: BLE001 - 页眉页脚异常不该拖垮正文翻译
                 continue
@@ -579,6 +630,14 @@ def apply_header_footer_translations(
             continue
         if resolved.replace_only and not _paragraph_has_field(paragraph):
             _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
+            insertions += 1
+        elif resolved.replace_only and _replace_paragraph_text_around_fields(
+            paragraph,
+            resolved.text,
+            target_lang=target_lang,
+        ):
+            # 含域的页眉：换掉作者写的那部分文字、域原样留在原位。追加会把整行原文
+            # 留在译文前面，页眉高度是节边距定死的，多出一行不是跑版就是被裁掉。
             insertions += 1
         elif _append_translation_inline(
             paragraph,
@@ -763,15 +822,17 @@ def _authored_text_outside_fields(element) -> str | None:
     """
     depth = 0
     parts: list[str] = []
+    # 存元素本身、不存 ``id()``：lxml 的元素代理用完就回收，只留 id 的话后面新建的
+    # 代理会复用同一个内存地址，一段域外正文就被误当成域结果扣掉（实测必现）。
     field_simple_texts = {
-        id(text_node)
+        text_node
         for field in element.iter(qn("w:fldSimple"))
         for text_node in field.iter(qn("w:t"))
     }
     for node in element.iter():
         if _has_ancestor_tag(node, "w:sdt", element):
             continue
-        if id(node) in field_simple_texts:
+        if node in field_simple_texts:
             continue
         if node.tag == qn("w:fldChar"):
             kind = node.get(qn("w:fldCharType"))
@@ -1695,10 +1756,16 @@ def _has_translatable_literal_text(paragraph: Paragraph) -> bool:
 
 
 def _paragraph_literal_text(paragraph: Paragraph) -> str:
-    """段落里作者自己敲的文字：域指令与域结果（含缓存的编号、页码）都不计入。"""
+    """段落里作者自己敲的文字：域指令与域结果（含缓存的编号、页码）都不计入。
+
+    这里存的是元素本身而不是 ``id()``：lxml 的元素代理是用完即弃的，只留下 id 的话，
+    后面遍历新建的代理很容易落在同一个内存地址上——本来在域外的一段正文于是被当成
+    域结果扣掉，整段沦为"只有域、没正文"而被跳过不译。带 ``w:fldSimple`` 的段落实测
+    必现。集合持着引用，代理就一直是同一个对象，比对才成立。
+    """
     element = paragraph._p
     field_simple_texts = {
-        id(text_node)
+        text_node
         for field_simple in element.iter(qn("w:fldSimple"))
         for text_node in field_simple.iter(qn("w:t"))
     }
@@ -1712,7 +1779,7 @@ def _paragraph_literal_text(paragraph: Paragraph) -> str:
                 depth += 1
             elif char_type == "end":
                 depth = max(0, depth - 1)
-        elif tag == qn("w:t") and depth == 0 and id(node) not in field_simple_texts:
+        elif tag == qn("w:t") and depth == 0 and node not in field_simple_texts:
             parts.append(node.text or "")
     return "".join(parts)
 
@@ -2253,6 +2320,7 @@ def _remove_paragraph_numbering(paragraph: Paragraph) -> bool:
     suppress_num_id.set(qn("w:val"), "0")
     suppress_num_pr.append(suppress_num_id)
     p_pr.append(suppress_num_pr)
+    _sort_paragraph_properties(p_pr)
     return True
 
 
@@ -2355,6 +2423,54 @@ def _append_translation_to_cell(
     return new_para
 
 
+def _layout_tags_to_keep(text: str) -> frozenset:
+    """这段译文里没有的版式节点才需要原样留住。
+
+    run 里除 w:t 之外还承载版式的节点就三个：w:tab（制表位）、w:br / w:cr（软换行）。
+    ``paragraph.text`` 会把 w:tab 读成 ``\\t``、w:br 读成 ``\\n``，所以模型看得到它们，
+    有时也会照样还回来。还回来了就交给 ``Run.text`` setter 自己生成，原节点再挂一遍
+    就成了两个制表位；没还回来才轮到这里兜底。
+    """
+    tags = []
+    if "\t" not in text:
+        tags.append(qn("w:tab"))
+    if "\n" not in text and "\r" not in text:
+        tags.append(qn("w:br"))
+        tags.append(qn("w:cr"))
+    return frozenset(tags)
+
+
+def _set_run_text_keeping_layout(run, text: str, keep_tags: frozenset) -> None:
+    """改写 run 的文字，同时把指定的版式节点留在原位。
+
+    ``Run.text = ...`` 先 ``clear_content()`` 把 run 里的一切扫空，w:tab / w:br 一起
+    陪葬。Word 默认的三段式页眉是「左标题 <w:tab/> 右章号」，制表位一没，整行塌成左
+    对齐，右侧章号不再靠右——治页眉跑版的路上再带出一种跑版。这里先把要保住的节点摘
+    下来，写完文字按原来的前后位置挂回去。
+    """
+    element = run._r
+    leading: list = []
+    trailing: list = []
+    seen_text = False
+    for child in element.iterchildren():
+        if child.tag == qn("w:t"):
+            seen_text = True
+            continue
+        if child.tag not in keep_tags:
+            continue
+        (trailing if seen_text else leading).append(child)
+
+    run.text = text
+    if not leading and not trailing:
+        return
+    # rPr 必须留在 run 的第一位，前置节点从它后面开始插。
+    insert_at = 1 if element.find(qn("w:rPr")) is not None else 0
+    for offset, node in enumerate(leading):
+        element.insert(insert_at + offset, node)
+    for node in trailing:
+        element.append(node)
+
+
 def _replace_paragraph_text(
     paragraph: Paragraph,
     text: str,
@@ -2367,14 +2483,219 @@ def _replace_paragraph_text(
         _set_latin_run_font(run, target_lang=target_lang)
         return
 
+    keep_tags = _layout_tags_to_keep(text)
     anchor = _paragraph_text_anchor_run(paragraph, runs)
-    anchor.text = text
+    _set_run_text_keeping_layout(anchor, text, keep_tags)
     _set_latin_run_font(anchor, target_lang=target_lang)
     for run in runs:
         if run._r is anchor._r:
             continue
-        run.text = ""
+        _set_run_text_keeping_layout(run, "", keep_tags)
     _drop_emptied_hyperlinks(paragraph)
+
+
+def _replace_paragraph_text_around_fields(
+    paragraph: Paragraph,
+    text: str,
+    *,
+    target_lang: str,
+) -> bool:
+    """段落里带域时，只把作者自己敲的文字换成译文，域整段留在原位。
+
+    ``_replace_paragraph_text`` 会把非锚点 run 一律清空，域的 begin/instrText/end 也
+    在其中——章号（STYLEREF）、题注编号（SEQ）就此变成一次性的死文本。所以以前遇到
+    含域的段落只能退回「在行尾追加译文」，可页眉的高度由节边距定死：原文整行留着、
+    后面再接一整行译文，不是把版心顶下去就是被裁掉半行。
+
+    这里按域把段落切成若干段作者文字，再把译文按域当前缓存的结果切成同样多块，一块
+    对一段地写回去。译文里找不到域结果时不猜位置：整句译文写进第一处作者文字，其余
+    作者文字清空，域仍旧保留——重复一个章号远好过重复一整行。
+
+    返回 True 表示已经改写；False 表示这段没有可替换的作者文字（整段都是域，或域的
+    begin/end 不配平），调用方按原路退回追加。
+    """
+    replacement = str(text or "")
+    groups = _paragraph_author_run_groups(paragraph)
+    if groups is None:
+        return False
+    run_groups = [runs for runs, _field_text in groups]
+    if not any(run_groups):
+        return False
+
+    field_texts = [field_text for _runs, field_text in groups[:-1]]
+    chunks = _split_translation_around_fields(replacement, field_texts)
+    if chunks is not None and any(
+        chunk and not runs for chunk, runs in zip(chunks, run_groups)
+    ):
+        chunks = None
+    if chunks is None:
+        chunks = ["" for _ in run_groups]
+        first_index = next(index for index, runs in enumerate(run_groups) if runs)
+        chunks[first_index] = replacement
+
+    keep_tags = _layout_tags_to_keep(replacement)
+    for runs, chunk in zip(run_groups, chunks):
+        if not runs:
+            continue
+        # 这一组的首个 run 可能在超链接里，直接写进去整段译文就成了指向原 URL 的可点击
+        # 链接（_paragraph_text_anchor_run 的注释说的就是这件事）。这一组没字要写时也
+        # 不必新建锚点，清空了事。
+        anchor = _paragraph_text_anchor_run(paragraph, runs) if chunk else None
+        if anchor is not None:
+            _set_run_text_keeping_layout(anchor, chunk, keep_tags)
+            _set_latin_run_font(anchor, target_lang=target_lang)
+        for run in runs:
+            if anchor is not None and run._r is anchor._r:
+                continue
+            _set_run_text_keeping_layout(run, "", keep_tags)
+    _drop_emptied_hyperlinks(paragraph)
+    return True
+
+
+def _paragraph_author_run_groups(
+    paragraph: Paragraph,
+) -> list[tuple[list, str]] | None:
+    """按域把段落切开：每一项是「这一段作者文字的 run 列表」+「紧随其后那个域的结果」。
+
+    最后一项是末尾那段作者文字，没有跟随的域，结果为空串。域的 begin/end 不配平时
+    返回 ``None``——读不准就不改，交回去走追加，宁可版式难看也不能把域搅坏。
+
+    超链接内部自己带着域（返回目录、REF/PAGEREF 交叉引用）也一样交回追加：
+    ``_iter_paragraph_content_nodes`` 把链接内的 run 摊平成顶层节点，可
+    ``_paragraph_text_anchor_run`` 的插入点是整个 ``w:hyperlink`` **之前**——域之后那
+    一组文字会被搬到域前面，「前缀 3 尾巴」写出来成了「Prefixe  queue3」。要真支持得把
+    锚点插进链接内部再单独提到段落级，改动大、场景少，不如按同一条纪律退回去。
+    """
+    for hyperlink in paragraph._p.iterchildren(qn("w:hyperlink")):
+        if _element_has_field_machinery(hyperlink):
+            return None
+
+    groups: list[tuple[list, str]] = []
+    author_runs: list = []
+    field_parts: list[str] | None = None
+    depth = 0
+
+    for node in _iter_paragraph_content_nodes(paragraph):
+        if node.tag == qn("w:fldSimple"):
+            # 自闭合域整棵子树都是域结果，作者一个字也没参与。
+            text = _element_visible_text(node)
+            if field_parts is not None:
+                field_parts.append(text)
+            else:
+                groups.append((author_runs, text))
+                author_runs = []
+            continue
+
+        begins = 0
+        ends = 0
+        for field_char in node.iter(qn("w:fldChar")):
+            char_type = field_char.get(qn("w:fldCharType"))
+            if char_type == "begin":
+                begins += 1
+            elif char_type == "end":
+                ends += 1
+        is_field_machinery = (
+            begins > 0 or ends > 0 or node.find(qn("w:instrText")) is not None
+        )
+        if field_parts is None and not is_field_machinery:
+            author_runs.append(Run(node, paragraph))
+            continue
+
+        if field_parts is None:
+            field_parts = []
+        field_parts.append(_element_visible_text(node))
+        depth = depth + begins - ends
+        if depth < 0:
+            return None
+        if depth == 0:
+            groups.append((author_runs, "".join(field_parts)))
+            author_runs = []
+            field_parts = None
+
+    if depth != 0 or field_parts is not None:
+        # begin/end 不配平：后面哪些字属于域已经说不清了。
+        return None
+    groups.append((author_runs, ""))
+    return groups
+
+
+def _iter_paragraph_content_nodes(paragraph: Paragraph):
+    """段落里承载可见内容的顶层节点：``w:r`` 与 ``w:fldSimple``，含超链接内部的。"""
+    for child in paragraph._p.iterchildren():
+        if child.tag in (qn("w:r"), qn("w:fldSimple")):
+            yield child
+        elif child.tag == qn("w:hyperlink"):
+            for nested in child.iterchildren():
+                if nested.tag in (qn("w:r"), qn("w:fldSimple")):
+                    yield nested
+
+
+def _element_visible_text(element) -> str:
+    return "".join(node.text or "" for node in element.iter(qn("w:t")))
+
+
+def _element_has_field_machinery(element) -> bool:
+    """这棵子树里有没有域：域三件套的 ``w:fldChar`` / ``w:instrText``，或自闭合的域。"""
+    for tag in (qn("w:fldChar"), qn("w:instrText"), qn("w:fldSimple")):
+        if next(element.iter(tag), None) is not None:
+            return True
+    return False
+
+
+def _split_translation_around_fields(
+    text: str,
+    field_texts: list[str],
+) -> list[str] | None:
+    """按域结果把译文切成 len(field_texts)+1 块；认不准位置就返回 ``None``。
+
+    域结果（章号、题注号）在原文里怎么显示，模型给的整行译文里通常照抄一遍——顺着
+    找到它，译文就能原地切开，域夹在中间继续生效。空结果或找不到都算对不上。
+
+    难在域结果常常只是一两位数字，而工程文档的页眉里几乎一定还有个年份：页眉
+    「施工组织设计 2023 第 3 章」的 STYLEREF 结果就是 ``3``，译文
+    ``Plan 2023 Chapitre 3`` 里最先出现的 ``3`` 是年份的末位。按第一处出现去切，域就
+    被种进了 2023 中间——刚翻完渲染一模一样，用户按 F9 或章号变动触发刷新之后，年份
+    被章号改写成 2024，真正的章号反倒成了死文本，而且全程无声。所以这里改成「唯一且
+    成边界才切」：纯数字的域结果不许贴着别的数字算命中，过滤完仍有歧义就整段返回
+    ``None``，交回上层兜底——兜底会多出一个看得见的重复章号，用户自己就能删掉。
+    """
+    chunks: list[str] = []
+    rest = text
+    for field_text in field_texts:
+        marker = str(field_text or "").strip()
+        if not marker:
+            return None
+        index = _locate_unique_field_result(rest, marker)
+        if index is None:
+            return None
+        chunks.append(rest[:index])
+        rest = rest[index + len(marker) :]
+    chunks.append(rest)
+    return chunks
+
+
+def _locate_unique_field_result(text: str, marker: str) -> int | None:
+    """``marker`` 在 ``text`` 里唯一且成边界的出现位置；有歧义就返回 ``None``。"""
+    positions: list[int] = []
+    index = text.find(marker)
+    while index >= 0:
+        positions.append(index)
+        index = text.find(marker, index + 1)
+
+    if marker.isdigit():
+        end = len(marker)
+        positions = [
+            pos
+            for pos in positions
+            if not (pos > 0 and text[pos - 1].isdigit())
+            and not (
+                pos + end < len(text) and text[pos + end].isdigit()
+            )
+        ]
+
+    if len(positions) != 1:
+        return None
+    return positions[0]
 
 
 def _replace_cell_text(cell: _Cell, text: str, *, target_lang: str) -> bool:
@@ -2428,6 +2749,13 @@ def _trim_trailing_empty_body_paragraphs(doc) -> None:
 
 
 def _is_removable_empty_paragraph_element(paragraph_element) -> bool:
+    """这个段落除了段落标记以外，是不是真的一无所有。
+
+    修订（订正）里被删掉的文字存在 ``w:delText`` 里、包在 ``w:del`` 中，不是 ``w:t``：
+    只按 ``w:t`` 判空的话，文末一段「整段被删除」的修订看上去就是个空段，一删了之，
+    修订记录跟着没了——用户在 Word 里点「拒绝所有修订」也拿不回那段原文。移动修订
+    （``w:moveFrom``/``w:moveTo``）同理，被删掉的域指令码走的是 ``w:delInstrText``。
+    """
     for tag in (
         "t",
         "tab",
@@ -2442,6 +2770,11 @@ def _is_removable_empty_paragraph_element(paragraph_element) -> bool:
         "bookmarkEnd",
         "commentRangeStart",
         "commentRangeEnd",
+        "del",
+        "delText",
+        "delInstrText",
+        "moveFrom",
+        "moveTo",
     ):
         if paragraph_element.findall(f".//{qn(f'w:{tag}')}"):
             return False
@@ -2473,6 +2806,7 @@ def _copy_translation_paragraph_shape(
     _strip_translation_flow_controls(source, copied_p_pr)
     if target_lang != "zh":
         _materialize_character_first_line_indent(source, copied_p_pr)
+    _sort_paragraph_properties(copied_p_pr)
     target._p.insert(0, copied_p_pr)
 
 
@@ -2564,6 +2898,34 @@ def _strip_translation_flow_controls(source: Paragraph, p_pr) -> None:
         page_break_before = OxmlElement("w:pageBreakBefore")
         page_break_before.set(qn("w:val"), "0")
         p_pr.append(page_break_before)
+
+
+def _sort_paragraph_properties(p_pr) -> None:
+    """把 ``w:pPr`` 的子元素按 CT_PPr 的 schema 次序重排。
+
+    合并样式链和段落自身的 pPr 是一路 ``append``，出来的次序只反映来源先后：样式里
+    的 ``w:ind`` 会排在段落自己的 ``w:pStyle`` 前面，补的 ``w:numPr``（抑制自动编号）
+    则一定落在末尾。Word 读得下去，但这已经不符合 schema——严格校验器和 LibreOffice
+    转档不保证同样宽容。
+
+    出现表外的元素（第三方扩展、mc:AlternateContent）就整段不动：这时按表排会把它
+    们一律甩到末尾，得失不清楚，宁可保持原样。
+    """
+    children = list(p_pr)
+    if len(children) < 2:
+        return
+    order: dict[str, int] = {}
+    for index, name in enumerate(_PPR_CHILD_ORDER):
+        order[qn(name)] = index
+    if any(child.tag not in order for child in children):
+        return
+    if all(
+        order[left.tag] <= order[right.tag]
+        for left, right in zip(children, children[1:])
+    ):
+        return
+    for child in sorted(children, key=lambda child: order[child.tag]):
+        p_pr.append(child)
 
 
 def _remove_ppr_children(p_pr, tag: str) -> None:
