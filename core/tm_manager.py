@@ -1663,44 +1663,56 @@ def bulk_update_detailed(
     sync_reverse: bool = False,
     expected_versions: dict[int, str] | None = None,
     word_type: str | None = None,
-) -> dict[str, list[int]]:
+) -> dict[str, list]:
     """批量更新译文，并逐条回报每个词条的去向。
 
     返回 `{"updated": [...], "missing": [...], "pinned": [...], "stale": [...],
-    "unchanged": [...]}`；清洗确认写入据此把对应的建议标成 applied / stale，
-    没有这份明细就只能靠一个总数猜，旧建议永远留在 pending 里。
+    "unchanged": [...], "rows": [...]}`。前五个桶装 entry_id，供聚合计数；
+    `rows` 是与 ``updates`` 提交行序一一对齐的去向字符串（五个桶名之一，外加
+    "invalid" 表示译文规整后为空、这一行没有落库）。清洗确认写入必须拿 `rows`
+    做逐条配对——同一词条挂两条建议时 entry_id 会同时出现在多个桶里（先到的
+    updated、后到的被乐观并发拦成 stale），按 entry_id 反查会把两条都标错。
     """
-    outcome: dict[str, list[int]] = {
+    outcome: dict[str, list] = {
         "updated": [],
         "missing": [],
         "pinned": [],
         "stale": [],
         "unchanged": [],
+        "rows": [],
     }
     if not updates:
         return outcome
-    rows = [(normalize_tm_text_for_storage(tgt), int(eid)) for eid, tgt in updates]
-    rows = [(tgt, eid) for tgt, eid in rows if tgt]
-    if not rows:
-        return outcome
+    row_outcomes: list[str] = ["invalid"] * len(updates)
+    outcome["rows"] = row_outcomes
     count = 0
     with _get_conn() as conn:
-        for target_text, entry_id in rows:
-            old_row = _fetch_entry(conn, int(entry_id))
+        for index, (raw_entry_id, raw_target) in enumerate(updates):
+            entry_id = int(raw_entry_id)
+            target_text = normalize_tm_text_for_storage(raw_target)
+            if not target_text:
+                # 译文规整后为空：写进去等于清掉译文，这一行不落库，逐行去向
+                # 保持 "invalid"，让界面能对用户说清这一条为什么没写。
+                continue
+            old_row = _fetch_entry(conn, entry_id)
             if old_row is None:
                 outcome["missing"].append(entry_id)
+                row_outcomes[index] = "missing"
                 continue
             if int(old_row["pinned"] or 0):
                 outcome["pinned"].append(entry_id)
+                row_outcomes[index] = "pinned"
                 continue
-            if expected_versions and expected_versions.get(int(entry_id)):
-                expected = str(expected_versions[int(entry_id)])
+            if expected_versions and expected_versions.get(entry_id):
+                expected = str(expected_versions[entry_id])
                 current = _entry_version(old_row)
                 if expected != current:
                     outcome["stale"].append(entry_id)
+                    row_outcomes[index] = "stale"
                     continue
             if old_row["target_text"] == target_text:
                 outcome["unchanged"].append(entry_id)
+                row_outcomes[index] = "unchanged"
                 continue
             conn.execute(
                 """
@@ -1727,6 +1739,7 @@ def bulk_update_detailed(
                 )
             count += 1
             outcome["updated"].append(entry_id)
+            row_outcomes[index] = "updated"
     logger.info(
         f"TM 批量更新 {count} 条"
         f"{'' if not sync_reverse else '（已请求反向同步）'}"
@@ -1985,6 +1998,55 @@ def list_cleaning_suggestions(
             params,
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def count_cleaning_suggestions(lang_pair: str | None = None, *, status: str = "stale") -> int:
+    """统计某状态的建议条数（全量口径）。
+
+    复核面板顶部的「失效汇总」不要用这个：stale 行永久累积，全量数半年后
+    会顶着一句「另有 137 条已失效」说陈年旧账——那边走
+    :func:`count_stale_suggestions_in_review_window`。
+    """
+    where = ["status = ?"]
+    params: list[object] = [status]
+    if lang_pair:
+        where.append("lang_pair = ?")
+        params.append(lang_pair)
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total FROM tm_cleaning_suggestions WHERE " + " AND ".join(where),
+            params,
+        ).fetchone()
+    return int(row["total"] or 0)
+
+
+def count_stale_suggestions_in_review_window(lang_pair: str | None = None) -> int:
+    """数「当前待审窗口」内失效的建议条数，供复核面板顶部的失效汇总用。
+
+    建议表没有批次/任务归属列，「本批失效了几条」没法精确回答；但全量数
+    stale 又会无限累积，面板会永久顶着一句说陈年旧账的提示。折中锚点：只数
+    updated_at（失效时刻）不早于「现存最早 pending 建议 created_at」的失效
+    行——也就是用户还没处理完的这段待审期间里失效的那些。pending 清零
+    （批次处理完）时子查询为 NULL，比较不成立，计数自动归零，提示随之消失。
+    """
+    pending_where = "status = 'pending'"
+    where = ["s.status = 'stale'"]
+    params: list[object] = []
+    if lang_pair:
+        where.append("s.lang_pair = ?")
+        params.append(lang_pair)
+        pending_where += " AND lang_pair = ?"
+        params.append(lang_pair)
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total FROM tm_cleaning_suggestions s WHERE "
+            + " AND ".join(where)
+            + " AND s.updated_at >= ("
+            f"SELECT MIN(created_at) FROM tm_cleaning_suggestions WHERE {pending_where}"
+            ")",
+            params,
+        ).fetchone()
+    return int(row["total"] or 0)
 
 
 def mark_cleaning_suggestions(

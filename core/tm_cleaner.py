@@ -918,21 +918,24 @@ def _resolve_pending_suggestions(
 
 
 def _settle_suggestion_rows(
-    suggestions: list[CleanSuggestion],
-    outcome: dict[str, list[int]],
+    paired: list[tuple[CleanSuggestion, str]],
 ) -> None:
-    """按写入结果把建议表里的对应行标成 applied / stale。"""
-    applied_entries = set(outcome["updated"]) | set(outcome["unchanged"])
-    stale_entries = set(outcome["stale"]) | set(outcome["pinned"]) | set(outcome["missing"])
+    """按逐行写入结果把建议表里的对应行标成 applied / stale。
+
+    必须按提交行序配对，不能按 entry_id 归并：同一词条挂两条建议时，先到的
+    写入（updated）、后到的被乐观并发拦下（stale），entry_id 会同时出现在两个
+    桶里——按 id 反查会把两条一起标错。invalid（译文为空、没落库）的行保持
+    pending：什么都没发生，用户下次打开还应该原样看到它。
+    """
     applied_ids = [
         s.suggestion_id
-        for s in suggestions
-        if s.suggestion_id and s.entry_id in applied_entries
+        for s, bucket in paired
+        if s.suggestion_id and bucket in ("updated", "unchanged")
     ]
     stale_ids = [
         s.suggestion_id
-        for s in suggestions
-        if s.suggestion_id and s.entry_id in stale_entries
+        for s, bucket in paired
+        if s.suggestion_id and bucket in ("stale", "pinned", "missing")
     ]
     if applied_ids:
         tm_manager.mark_cleaning_suggestions(applied_ids, "applied")
@@ -956,28 +959,56 @@ def apply_suggestions(
     )["applied"]
 
 
+def _build_suggestion_outcomes(
+    paired: list[tuple[CleanSuggestion, str]],
+) -> list[dict[str, object]]:
+    """把逐行去向（updated/unchanged/pinned/stale/missing/invalid）摊回逐条建议。
+
+    界面拿这份明细在弹窗里原地标出每一行到底进了哪一桶，不用再靠 applied/
+    unchanged/skipped 三个总数猜某一条具体是被固定拦下还是已经过期。
+    配对必须按提交行序（bulk_update_detailed 的 "rows"），不能按 entry_id
+    归并——同一词条挂两条建议时 entry_id 会同时出现在多个桶里，反查会把
+    没写入的那条也标成已写入。建议表本身的 status 词汇表不因此扩充（仍只有
+    pending/applied/stale/rejected 四个，兼容旧记录）——这份细分只走 API
+    响应，不落库。
+    """
+    return [
+        {"suggestion_id": s.suggestion_id, "outcome": bucket}
+        for s, bucket in paired
+        if s.suggestion_id
+    ]
+
+
 def apply_suggestions_detailed(
     suggestions: list[CleanSuggestion],
     auto_pin: bool = False,
     *,
     sync_reverse: bool = False,
-) -> dict[str, int]:
+) -> dict[str, object]:
     """
     将用户接受的建议写入 TM 数据库，逐类给出去向。
     若 auto_pin=True，写入后同时固定这些词条（防止重复清洗）。
 
-    返回 {applied, unchanged, skipped}：
+    返回 {applied, unchanged, skipped, outcomes}：
       applied   真正改写了译文的条数；
       unchanged 库里译文本来就与建议一致、无需改动的条数；
-      skipped   被乐观并发拦下、词条已固定或已删除的条数。
-    界面要靠这三个数字如实汇报——把 unchanged 混进 skipped，用户会以为
-    自己的词条被别人改过或被固定了，其实什么问题都没有。
+      skipped   被乐观并发拦下、词条已固定、已删除，或建议译文为空没法写的条数；
+      outcomes  逐条 {suggestion_id, outcome}，outcome 属于
+                updated/unchanged/pinned/stale/missing/invalid，只覆盖本次
+                实际提交（accepted=true）的建议——未勾选的不在其中。
+                invalid＝译文规整后为空、这一行没落库，建议保持 pending。
+    界面要靠 applied/unchanged/skipped 这三个数字如实汇报——把 unchanged
+    混进 skipped，用户会以为自己的词条被别人改过或被固定了，其实什么问题都没有。
 
     写入后按逐条结果结算建议表：写进去的（含译文本来就一样的）标 applied，
     被乐观并发拦下、词条已固定或已删除的标 stale。少了这一步，建议永远
     停在 pending，下次打开审阅列表还会看到同一批已经处理过的旧建议。
+
+    accepted=false 的建议从头到尾不参与这个函数：既不写入、也不结算，
+    在建议表里保持原样（多半是 pending）——用户没做决定的东西，下次打开
+    复核面板还应该原样看到，不能因为「这一轮没勾」就被悄悄销账。
     """
-    empty = {"applied": 0, "unchanged": 0, "skipped": 0}
+    empty: dict[str, object] = {"applied": 0, "unchanged": 0, "skipped": 0, "outcomes": []}
     accepted_suggestions = [s for s in suggestions if s.accepted]
     if not accepted_suggestions:
         return dict(empty)
@@ -1000,8 +1031,16 @@ def apply_suggestions_detailed(
     )
     count = len(outcome["updated"])
     unchanged = len(outcome["unchanged"])
-    _settle_suggestion_rows(accepted_suggestions, outcome)
-    skipped = len(outcome["stale"]) + len(outcome["pinned"]) + len(outcome["missing"])
+    # 逐条去向按提交行序配对（bulk_update_detailed 的 "rows" 与 accepted 一一
+    # 对齐）。zip 在两边长度不符时静默截断，宁可让多出来的建议留在 pending，
+    # 也不给它们编造去向。
+    paired = list(zip(accepted_suggestions, outcome.get("rows") or []))
+    _settle_suggestion_rows(paired)
+    invalid = sum(1 for _, bucket in paired if bucket == "invalid")
+    skipped = (
+        len(outcome["stale"]) + len(outcome["pinned"]) + len(outcome["missing"]) + invalid
+    )
+    outcomes = _build_suggestion_outcomes(paired)
     if skipped:
         logger.warning(f"清洗建议已过期并跳过 {skipped} 条")
     if count:
@@ -1009,4 +1048,4 @@ def apply_suggestions_detailed(
             f"清洗确认写入 {count} 条，状态升级为 "
             f"{'cleaning_locked' if auto_pin else 'reviewed_auto'}"
         )
-    return {"applied": count, "unchanged": unchanged, "skipped": skipped}
+    return {"applied": count, "unchanged": unchanged, "skipped": skipped, "outcomes": outcomes}

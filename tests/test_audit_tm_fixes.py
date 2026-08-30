@@ -416,7 +416,11 @@ class CleaningSuggestionLifecycleTests(IsolatedTmTestCase):
 
         result = self._apply(row)
 
-        self.assertEqual(result, {"applied": 0, "unchanged": 1, "skipped": 0})
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 0, "unchanged": 1, "skipped": 0},
+        )
+        self.assertEqual(result["outcomes"], [{"suggestion_id": row["id"], "outcome": "unchanged"}])
 
     def test_real_skip_is_counted_as_skipped(self) -> None:
         row = self._seed_suggestion()
@@ -424,14 +428,222 @@ class CleaningSuggestionLifecycleTests(IsolatedTmTestCase):
 
         result = self._apply(row)
 
-        self.assertEqual(result, {"applied": 0, "unchanged": 0, "skipped": 1})
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 0, "unchanged": 0, "skipped": 1},
+        )
+        self.assertEqual(result["outcomes"], [{"suggestion_id": row["id"], "outcome": "stale"}])
 
     def test_written_suggestion_is_counted_as_applied(self) -> None:
         row = self._seed_suggestion()
 
         result = self._apply(row)
 
-        self.assertEqual(result, {"applied": 1, "unchanged": 0, "skipped": 0})
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 1, "unchanged": 0, "skipped": 0},
+        )
+        self.assertEqual(result["outcomes"], [{"suggestion_id": row["id"], "outcome": "updated"}])
+
+    def test_rejected_suggestion_stays_pending(self) -> None:
+        # 前端注释暗示 accepted=false 的建议原样留在待审列表，这里落实成回归钉子：
+        # 不写入、不结算，建议表状态照旧 pending，行为对应「留到下次复核」的产品口径。
+        row = self._seed_suggestion()
+
+        result = apply_suggestions_detailed(
+            [
+                CleanSuggestion(
+                    entry_id=int(row["entry_id"]),
+                    source_text=str(row["source_text"]),
+                    old_target=str(row["old_target"]),
+                    new_target=str(row["new_target"]),
+                    lang_pair="en-zh",
+                    expected_version=str(row["expected_version"]),
+                    suggestion_id=int(row["id"]),
+                    accepted=False,
+                )
+            ]
+        )
+
+        self.assertEqual(result, {"applied": 0, "unchanged": 0, "skipped": 0, "outcomes": []})
+        self.assertEqual(
+            self.rows("SELECT status FROM tm_cleaning_suggestions")[0]["status"],
+            "pending",
+        )
+        self.assertEqual(
+            self.rows("SELECT target_text FROM tm_entries")[0]["target_text"],
+            "你好",
+        )
+        self.assertEqual(len(tm_manager.list_cleaning_suggestions("en-zh")), 1)
+
+
+class SuggestionOutcomePairingTests(IsolatedTmTestCase):
+    """互审整改（2026-08-30）：逐条去向必须按提交行序配对，不能按 entry_id 归并。
+
+    同一词条可以挂多条 pending 建议（不同新译文），写入时 entry_id 会同时落进
+    多个桶（先到的 updated、后到的被乐观并发拦成 stale）。按 entry_id 反查会把
+    没写入的那条也标成「已写入」，结算时两条建议还会一起被标错状态。
+    附带钉住：pinned/missing 的逐条去向、译文为空（invalid）不落库且保持
+    pending、失效汇总只数「当前待审窗口」内的失效行。
+    """
+
+    def _seed_entry(self, source: str = "hello", target: str = "你好") -> dict:
+        tm_manager.insert_batch([(source, target)], "en-zh", 500, "test")
+        return tm_manager.get_all_entries_for_cleaning("en-zh")[-1]
+
+    def _persist(self, entry: dict, new_target: str) -> dict:
+        tm_manager.persist_cleaning_suggestions(
+            [
+                {
+                    "entry_id": entry["id"],
+                    "source_text": entry["source_text"],
+                    "old_target": entry["target_text"],
+                    "new_target": new_target,
+                    "lang_pair": "en-zh",
+                    "version": entry["version"],
+                }
+            ]
+        )
+        return [
+            row
+            for row in tm_manager.list_cleaning_suggestions("en-zh")
+            if str(row["new_target"]) == new_target
+        ][0]
+
+    def _suggestion(self, row: dict, *, new_target: str | None = None) -> CleanSuggestion:
+        return CleanSuggestion(
+            entry_id=int(row["entry_id"]),
+            source_text=str(row["source_text"]),
+            old_target=str(row["old_target"]),
+            new_target=str(row["new_target"]) if new_target is None else new_target,
+            lang_pair="en-zh",
+            expected_version=str(row["expected_version"]),
+            suggestion_id=int(row["id"]),
+        )
+
+    def test_duplicate_entry_suggestions_get_row_level_outcomes(self) -> None:
+        # 同一词条两条建议一起勾选：先到的写入，后到的因为版本已变被拦下。
+        # 逐条去向必须一条 updated、一条 stale——不能两条都报「已写入」。
+        entry = self._seed_entry()
+        row_a = self._persist(entry, "译文甲")
+        row_b = self._persist(entry, "译文乙")
+
+        result = apply_suggestions_detailed(
+            [self._suggestion(row_a), self._suggestion(row_b)]
+        )
+
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 1, "unchanged": 0, "skipped": 1},
+        )
+        self.assertEqual(
+            result["outcomes"],
+            [
+                {"suggestion_id": row_a["id"], "outcome": "updated"},
+                {"suggestion_id": row_b["id"], "outcome": "stale"},
+            ],
+        )
+        self.assertEqual(
+            self.rows("SELECT target_text FROM tm_entries")[0]["target_text"],
+            "译文甲",
+        )
+        statuses = {
+            row["id"]: row["status"]
+            for row in self.rows("SELECT id, status FROM tm_cleaning_suggestions")
+        }
+        self.assertEqual(statuses[row_a["id"]], "applied")
+        self.assertEqual(statuses[row_b["id"]], "stale")
+
+    def test_pinned_entry_reports_pinned_outcome(self) -> None:
+        entry = self._seed_entry()
+        row = self._persist(entry, "更好的译文")
+        tm_manager.pin_entry(int(entry["id"]), True)
+
+        result = apply_suggestions_detailed([self._suggestion(row)])
+
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 0, "unchanged": 0, "skipped": 1},
+        )
+        self.assertEqual(
+            result["outcomes"], [{"suggestion_id": row["id"], "outcome": "pinned"}]
+        )
+        self.assertEqual(
+            self.rows("SELECT status FROM tm_cleaning_suggestions")[0]["status"],
+            "stale",
+        )
+
+    def test_deleted_entry_reports_missing_outcome(self) -> None:
+        entry = self._seed_entry()
+        row = self._persist(entry, "更好的译文")
+        tm_manager.delete_entry(int(entry["id"]))
+
+        result = apply_suggestions_detailed([self._suggestion(row)])
+
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 0, "unchanged": 0, "skipped": 1},
+        )
+        self.assertEqual(
+            result["outcomes"], [{"suggestion_id": row["id"], "outcome": "missing"}]
+        )
+        self.assertEqual(
+            self.rows("SELECT status FROM tm_cleaning_suggestions")[0]["status"],
+            "stale",
+        )
+
+    def test_empty_target_reports_invalid_and_stays_pending(self) -> None:
+        # 用户在面板里把译文改成空白再写入：什么都不该发生——不落库、
+        # 逐条去向如实报 invalid、建议保持 pending 留到下次复核。
+        entry = self._seed_entry()
+        row = self._persist(entry, "更好的译文")
+
+        result = apply_suggestions_detailed(
+            [self._suggestion(row, new_target="   ")]
+        )
+
+        self.assertEqual(
+            {k: v for k, v in result.items() if k != "outcomes"},
+            {"applied": 0, "unchanged": 0, "skipped": 1},
+        )
+        self.assertEqual(
+            result["outcomes"], [{"suggestion_id": row["id"], "outcome": "invalid"}]
+        )
+        self.assertEqual(
+            self.rows("SELECT status FROM tm_cleaning_suggestions")[0]["status"],
+            "pending",
+        )
+        self.assertEqual(
+            self.rows("SELECT target_text FROM tm_entries")[0]["target_text"],
+            "你好",
+        )
+
+    def test_stale_count_only_covers_current_review_window(self) -> None:
+        # 失效汇总不数陈年旧账：只有「现存最早 pending 建议之后」失效的行才计入；
+        # pending 清零时计数归零，面板不会永久顶着一句失效提示。
+        entry_a = self._seed_entry("old", "旧词条")
+        row_a = self._persist(entry_a, "旧建议")
+        tm_manager.mark_cleaning_suggestions([int(row_a["id"])], "stale")
+        # 伪造成很久以前失效的历史行。
+        self.write(
+            "UPDATE tm_cleaning_suggestions SET updated_at = '2000-01-01 00:00:00', "
+            "created_at = '2000-01-01 00:00:00' WHERE id = ?",
+            [int(row_a["id"])],
+        )
+
+        # 没有任何 pending：窗口不存在，历史失效行不计。
+        self.assertEqual(tm_manager.count_stale_suggestions_in_review_window("en-zh"), 0)
+
+        entry_b = self._seed_entry("fresh", "新词条")
+        self._persist(entry_b, "新建议")
+        # 有 pending 了，但历史失效行仍在窗口之外。
+        self.assertEqual(tm_manager.count_stale_suggestions_in_review_window("en-zh"), 0)
+
+        entry_c = self._seed_entry("live", "在审词条")
+        row_c = self._persist(entry_c, "在审建议")
+        tm_manager.mark_cleaning_suggestions([int(row_c["id"])], "stale")
+        # 待审期间新失效的行要计入。
+        self.assertEqual(tm_manager.count_stale_suggestions_in_review_window("en-zh"), 1)
 
 
 class OuterNoiseStrippingTests(unittest.TestCase):

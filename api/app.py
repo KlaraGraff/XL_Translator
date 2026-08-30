@@ -1233,7 +1233,14 @@ def create_app(
         # 先淘汰对不上当前词条的旧建议：对应词条已被改过/固定/删除的建议
         # 再展示出来只会让用户勾一次、失败一次。
         tm_manager.expire_stale_cleaning_suggestions(lang_pair)
-        return {"suggestions": tm_manager.list_cleaning_suggestions(lang_pair)}
+        # stale_count 只数「当前待审窗口」内失效的条数（现存最早 pending 之后
+        # 失效的那些）：建议表没有批次列，全量数 stale 会无限累积，面板会永久
+        # 顶着一句说陈年旧账的「另有 N 条已失效」。窗口口径下 pending 清零时
+        # 计数自动归零。前端拿它在复核面板顶部渲染失效汇总。
+        return {
+            "suggestions": tm_manager.list_cleaning_suggestions(lang_pair),
+            "stale_count": tm_manager.count_stale_suggestions_in_review_window(lang_pair),
+        }
 
     @app.post("/api/tm/clean", status_code=202)
     def clean_tm_entries(payload: TmCleanRequest) -> dict[str, Any]:
@@ -1250,7 +1257,7 @@ def create_app(
         )
 
     @app.post("/api/tm/clean/apply")
-    def apply_tm_suggestions(payload: TmApplySuggestionsPayload) -> dict[str, int]:
+    def apply_tm_suggestions(payload: TmApplySuggestionsPayload) -> dict[str, Any]:
         tm_manager.init_db()
         suggestions = [
             CleanSuggestion(
@@ -1265,9 +1272,10 @@ def create_app(
             )
             for item in payload.suggestions
         ]
-        # 三个数字都回：unchanged（库里本来就一样）与 skipped（被并发拦下 /
+        # 三个聚合数字都回：unchanged（库里本来就一样）与 skipped（被并发拦下 /
         # 已固定 / 已删除）是两回事，界面混着说会让用户以为词条被人动过。
-        # 旧前端只读 applied，字段是增量的，照样能工作。
+        # outcomes 是逐条去向（旧前端只读聚合数字，字段是增量的，照样能工作）：
+        # 界面靠它在写入后原地标出每一行到底进了哪一桶，不必再靠总数瞎猜。
         return apply_suggestions_detailed(
             suggestions,
             auto_pin=payload.auto_pin,

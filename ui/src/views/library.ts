@@ -174,6 +174,12 @@ let conflictMessage = "";
 let cleaningState: "idle" | "running" | "ready" | "error" = "idle";
 let cleanTaskId: string | null = null;
 let cleanSuggestions: JsonObject[] = [];
+// 常驻待复核提示：与 cleaningState 是两套状态。cleaningState 只在「刚跑完清洗」
+// 这一次会话内有值，翻页/切语言对/重进页面就丢了；pendingCleanCount 每次加载都
+// 重新拉一次待审建议数，只要语言对下还有没处理的建议就一直提示，直到清零。
+let pendingCleanCount = 0;
+// 复核面板里的「另有 N 条建议已失效」汇总——只在弹窗内使用，随每次打开面板刷新。
+let cleanStaleCount = 0;
 
 let mounted = false;
 let toolbarCardEl: HTMLDivElement | null = null;
@@ -380,6 +386,8 @@ async function saveLangPair(source: string, target: string): Promise<void> {
     renderTable();
     renderStatsRow();
     renderTopbarStatus();
+    // 切了语言对，「有 N 条清洗建议待复核」也要跟着换成新语言对下的数字。
+    await refreshCleanBadge();
   } catch (error) {
     showToast({ message: `切换语言对失败：${errorMessage(error)}`, error: true });
   }
@@ -732,6 +740,40 @@ async function tmClean(): Promise<void> {
   }
 }
 
+/** 拉一次当前语言对的待审建议——GET 本身会触发服务端过期清理，所以这也是
+ * 「常驻待复核提示」与「面板顶部失效汇总」共用的唯一数据源，不另开接口。 */
+async function fetchCleanSuggestions(): Promise<{ suggestions: JsonObject[]; staleCount: number }> {
+  const client = await getClient();
+  const payload = await client.request<JsonObject>(`/api/tm/clean/suggestions?lang_pair=${encodeURIComponent(tmLangPair())}`);
+  return { suggestions: resultEntries(payload, ["suggestions", "items"]), staleCount: num(payload.stale_count) };
+}
+
+/** 刷新常驻提示的待审计数。取不到就当没有——这一行是锦上添花，不能因为它
+ * 失败拖垮整页记忆库加载，也不该在拿不到数时弹错误 toast 打扰用户。 */
+async function refreshCleanBadge(): Promise<void> {
+  try {
+    const { suggestions } = await fetchCleanSuggestions();
+    pendingCleanCount = suggestions.length;
+  } catch {
+    pendingCleanCount = 0;
+  }
+  renderStateRow();
+}
+
+/** 常驻提示里的「查看建议」入口：不依赖上一次清洗任务，现拉现开。 */
+async function openCleanReviewForCurrentPair(): Promise<void> {
+  try {
+    const { suggestions, staleCount } = await fetchCleanSuggestions();
+    cleanSuggestions = suggestions;
+    cleanStaleCount = staleCount;
+    pendingCleanCount = suggestions.length;
+    renderStateRow();
+    openCleanReviewModal();
+  } catch (error) {
+    showToast({ message: `加载清洗建议失败：${errorMessage(error)}`, error: true });
+  }
+}
+
 async function loadCleanSuggestions(taskId: string): Promise<void> {
   cleanTaskId = taskId;
   let suggestions: JsonObject[] = [];
@@ -742,22 +784,60 @@ async function loadCleanSuggestions(taskId: string): Promise<void> {
   } catch {
     // 该结果可能有意不包含 TM 建议明细；下面走专门的复核接口兜底。
   }
-  if (!suggestions.length) {
-    try {
-      const payload = await client.request<JsonObject>(`/api/tm/clean/suggestions?lang_pair=${encodeURIComponent(tmLangPair())}`);
-      suggestions = resultEntries(payload, ["suggestions", "items"]);
-    } catch {
-      // 没有可写入的建议也是合法结果。
-    }
-  }
+  // 无论上面拿没拿到，都再走一次复核接口——它是 stale_count 的唯一来源，
+  // 且顺带触发一次服务端过期清理，不能只在 suggestions 为空时才调用。
+  const fetched = await fetchCleanSuggestions().catch(() => ({ suggestions: [] as JsonObject[], staleCount: 0 }));
+  if (!suggestions.length) suggestions = fetched.suggestions;
   cleanSuggestions = suggestions;
+  cleanStaleCount = fetched.staleCount;
+  pendingCleanCount = fetched.suggestions.length;
   openCleanReviewModal();
 }
+
+interface SubmittedSuggestion {
+  suggestion_id: number;
+  entry_id: number;
+  source_text: string;
+  old_target: string;
+  new_target: string;
+  accepted: boolean;
+  lang_pair: string;
+  expected_version: string;
+}
+
+interface ApplySuggestionsResult {
+  applied: number;
+  unchanged: number;
+  skipped: number;
+  outcomes: { suggestion_id: number; outcome: string }[];
+}
+
+// 逐条去向 → chip 语气 + 文案 + 原因说明。「已写入」没有额外原因（写成功了不需要
+// 解释）；其余几种都要说清楚「为什么没按你勾的写」，用户才知道要不要再处理一次。
+const CLEAN_OUTCOME_INFO: Record<string, { tone: ChipTone; label: string; reason?: string }> = {
+  updated: { tone: "ok", label: "已写入" },
+  unchanged: { tone: "mute", label: "未改动", reason: "库中译文已经是这个值" },
+  pinned: { tone: "warn", label: "已跳过", reason: "词条已被固定——固定词条不接受清洗建议，如需改动请先解除固定" },
+  stale: { tone: "warn", label: "已跳过", reason: "词条在你审阅期间被改动过，建议已过期" },
+  missing: { tone: "warn", label: "已跳过", reason: "词条已被删除" },
+  invalid: { tone: "warn", label: "已跳过", reason: "译文改成了空白，没有写入；这一条仍留在待审列表" },
+};
+const CLEAN_OUTCOME_UNSELECTED = { tone: "mute" as ChipTone, label: "未勾选", reason: "留在待审列表，下次打开还能处理" };
+// 服务端没回报去向时（旧版本服务端、或响应里缺了这一条）不编结论：
+// 「未改动＝库里已经是这个值」是个事实断言，猜错会误导用户。
+const CLEAN_OUTCOME_UNKNOWN = { tone: "mute" as ChipTone, label: "已提交", reason: "服务端未回报这一条的写入结果" };
 
 function openCleanReviewModal(): void {
   const checks: HTMLInputElement[] = [];
   const targets: HTMLInputElement[] = [];
   const body: HTMLElement[] = [];
+  if (cleanStaleCount > 0) {
+    const staleNote = document.createElement("div");
+    staleNote.style.cssText =
+      "background:var(--ground);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px";
+    staleNote.textContent = `另有 ${cleanStaleCount} 条建议已失效：生成之后对应词条被你改动或固定过，为避免盖掉你的修改，已自动作废。`;
+    body.push(staleNote);
+  }
   if (!cleanSuggestions.length) {
     const empty = document.createElement("p");
     empty.textContent = "未生成可写入的建议。";
@@ -804,9 +884,9 @@ function openCleanReviewModal(): void {
     actions: [
       { label: "取消", variant: "default" },
       {
-        // 成功写入才收弹窗；一条没勾就点（默认全不勾之后大概率是误触）时留在
-        // 原地提示、不发请求——原来会无声提交一个全 false 的空单，后端不动一条,
-        // 前端却把整个建议面板连同「查看建议」入口一起收走。
+        // 一条没勾就点（默认全不勾之后大概率是误触）时留在原地提示、不发请求——
+        // 原来会无声提交一个全 false 的空单，后端不动一条。写入成功也不在这里
+        // 收弹窗：结果原地重渲染，用户看完每一行的去向再点「完成」才关。
         label: "写入已勾选建议",
         variant: "primary",
         keepOpen: true,
@@ -815,7 +895,7 @@ function openCleanReviewModal(): void {
           // 建议主键与 expected_version 必须原样回传：前者让后端把已处理的建议
           // 从待审列表里销账，后者是乐观并发的凭据——不带就等于关掉版本校验，
           // 审阅期间被别人改过的译文会被这次确认无声覆盖。
-          const suggestions = cleanSuggestions.map((suggestion, index) => ({
+          const suggestions: SubmittedSuggestion[] = cleanSuggestions.map((suggestion, index) => ({
             suggestion_id: num(suggestion.id),
             entry_id: num(suggestion.entry_id),
             source_text: text(suggestion.source_text),
@@ -834,16 +914,13 @@ function openCleanReviewModal(): void {
             applied: number;
             unchanged?: number;
             skipped?: number;
+            outcomes?: { suggestion_id: number; outcome: string }[];
           }>("/api/tm/clean/apply", {
             method: "POST",
             body: JSON.stringify({ suggestions, auto_pin: false }),
           });
           cleanSuggestions = [];
           cleaningState = "idle";
-          await refreshTm();
-          renderTable();
-          renderStatsRow();
-          renderStateRow();
           // 「库里本来就一样」与「被别人改过／已固定」是两回事，分开说。
           // 后端未回这两个字段时（旧服务端）才退回按差额估算，宁可少说也不误报。
           const applied = num(result.applied);
@@ -852,15 +929,97 @@ function openCleanReviewModal(): void {
             result.skipped === undefined
               ? Math.max(accepted - applied, 0)
               : num(result.skipped);
-          const parts = [`已写入 ${applied} 条清洗建议`];
-          if (unchanged > 0) parts.push(`${unchanged} 条与库中译文相同，无需改动`);
-          if (skipped > 0) parts.push(`${skipped} 条因词条已被改动或固定而跳过`);
-          showToast({ message: `${parts.join("；")}。` });
-          handle.close();
+          // 先把逐行结果画出来再刷新背后的表格：写入已经发生，结果弹窗是它
+          // 唯一的凭据，不能因为列表刷新抛错就一并丢掉。
+          renderApplyResult(suggestions, {
+            applied,
+            unchanged,
+            skipped,
+            outcomes: Array.isArray(result.outcomes) ? result.outcomes : [],
+          });
+          try {
+            await refreshTm();
+            renderTable();
+            renderStatsRow();
+          } catch {
+            showToast({ message: "记忆库列表刷新失败，切换语言对或重新进入本页可重新加载。" });
+          }
         },
       },
     ],
   });
+
+  /** 写入完成后原地重渲染弹窗正文与底部按钮：复选框/输入框全撤下，换成
+   * 「顶部汇总 + 每行去向 chip」，直到用户看完点「完成」才真正关闭。
+   * 直接操作 handle.element 里的 .mbody/.macts——openModal 本身没提供
+   * 「换内容」的接口，这两个类名是它内部渲染出来的挂载点。 */
+  function renderApplyResult(submitted: SubmittedSuggestion[], result: ApplySuggestionsResult): void {
+    const mbody = handle.element.querySelector<HTMLDivElement>(".mbody");
+    const acts = handle.element.querySelector<HTMLDivElement>(".macts");
+    if (!mbody || !acts) return;
+    const outcomeById = new Map(result.outcomes.map((item) => [num(item.suggestion_id), text(item.outcome)]));
+    const notAccepted = submitted.filter((item) => !item.accepted).length;
+    const parts: string[] = [];
+    if (result.applied > 0) parts.push(`已写入 ${result.applied} 条`);
+    if (result.unchanged > 0) parts.push(`${result.unchanged} 条与库中译文相同`);
+    if (result.skipped > 0) parts.push(`${result.skipped} 条跳过`);
+    if (notAccepted > 0) parts.push(`${notAccepted} 条未勾选，留待下次复核`);
+
+    mbody.innerHTML = "";
+    const summary = document.createElement("p");
+    summary.style.fontWeight = "600";
+    summary.textContent = parts.length ? `${parts.join("；")}。` : "没有条目被处理。";
+    mbody.append(summary);
+
+    submitted.forEach((item, index) => {
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.flexDirection = "column";
+      row.style.gap = "4px";
+      row.style.padding = "8px 0";
+      row.style.borderTop = index ? "1px solid var(--line)" : "none";
+      if (!item.accepted) row.style.opacity = "0.55";
+
+      const title = document.createElement("b");
+      title.textContent = item.source_text;
+      const line = document.createElement("p");
+      line.style.margin = "3px 0 0";
+      line.append(document.createTextNode(`${item.old_target} → `));
+      const targetInput = document.createElement("input");
+      targetInput.type = "text";
+      targetInput.value = item.new_target;
+      targetInput.style.width = "60%";
+      targetInput.disabled = true;
+      line.append(targetInput);
+
+      const tail = document.createElement("div");
+      tail.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap";
+      const outcomeInfo = item.accepted
+        ? (CLEAN_OUTCOME_INFO[outcomeById.get(item.suggestion_id) ?? ""] ?? CLEAN_OUTCOME_UNKNOWN)
+        : CLEAN_OUTCOME_UNSELECTED;
+      tail.append(createChip({ label: outcomeInfo.label, tone: outcomeInfo.tone }));
+      if (outcomeInfo.reason) {
+        const reasonEl = document.createElement("span");
+        reasonEl.style.cssText = "font-size:12px;color:var(--ink-3)";
+        reasonEl.textContent = outcomeInfo.reason;
+        tail.append(reasonEl);
+      }
+      row.append(title, line, tail);
+      mbody.append(row);
+    });
+
+    acts.innerHTML = "";
+    acts.append(
+      createButton({
+        label: "完成",
+        variant: "primary",
+        onClick: () => {
+          handle.close();
+          void refreshCleanBadge();
+        },
+      }),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,14 +1460,27 @@ function rebuildToolbar(): void {
 function renderStateRow(): void {
   if (!stateRowEl) return;
   stateRowEl.innerHTML = "";
-  if (cleaningState === "idle") return;
-  const tone: ChipTone = cleaningState === "error" ? "dgr" : cleaningState === "ready" ? "warn" : "tint";
-  const label =
-    cleaningState === "running" ? "正在分析未固定条目…" : cleaningState === "ready" ? "清洗建议已生成，请复核后写入。" : "清洗失败，请检查模型连接后重试。";
-  const chip = createChip({ label, tone });
-  stateRowEl.append(chip);
-  if (cleaningState === "ready" && cleanTaskId) {
-    const reviewBtn = createButton({ label: "查看建议", size: "mini", onClick: () => openCleanReviewModal() });
+  if (cleaningState !== "idle") {
+    // 正在跑清洗 / 刚失败 / 刚生成待复核，这三种「本次会话内」的状态优先于
+    // 常驻提示——用户此刻更需要知道这次操作的结果，不是「还有旧建议没看」。
+    const tone: ChipTone = cleaningState === "error" ? "dgr" : cleaningState === "ready" ? "warn" : "tint";
+    const label =
+      cleaningState === "running" ? "正在分析未固定条目…" : cleaningState === "ready" ? "清洗建议已生成，请复核后写入。" : "清洗失败，请检查模型连接后重试。";
+    const chip = createChip({ label, tone });
+    stateRowEl.append(chip);
+    if (cleaningState === "ready" && cleanTaskId) {
+      const reviewBtn = createButton({ label: "查看建议", size: "mini", onClick: () => openCleanReviewModal() });
+      reviewBtn.style.marginLeft = "8px";
+      stateRowEl.append(reviewBtn);
+    }
+    return;
+  }
+  if (pendingCleanCount > 0) {
+    // 常驻提示：不依赖「刚跑完清洗」这次会话，只要当前语言对下还有没处理的
+    // 建议就一直显示，进任务中心深链复核完、或写完最后一条后自动消失。
+    const chip = createChip({ label: `有 ${pendingCleanCount} 条清洗建议待复核`, tone: "warn" });
+    stateRowEl.append(chip);
+    const reviewBtn = createButton({ label: "查看建议", size: "mini", onClick: () => void openCleanReviewForCurrentPair() });
     reviewBtn.style.marginLeft = "8px";
     stateRowEl.append(reviewBtn);
   }
@@ -1663,9 +1835,15 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null):
   renderTable();
   renderTopbarStatus();
   if (reviewTaskId) {
+    // 任务中心深链进来：loadCleanSuggestions 自己会把 pendingCleanCount 和
+    // stale_count 一起拉齐，不必再单独调 refreshCleanBadge 重复请求一次。
     cleaningState = "ready";
     renderStateRow();
     await loadCleanSuggestions(reviewTaskId);
+  } else {
+    // 每次进页都按当前语言对拉一次待审建议——这个 GET 本身会触发服务端
+    // 过期清理，常驻提示才能如实反映「现在还有几条真正待处理」。
+    await refreshCleanBadge();
   }
 }
 

@@ -323,6 +323,73 @@ class ApiAppTests(unittest.TestCase):
         ):
             self.assertEqual(self.client.post(endpoint).status_code, 200)
 
+    def test_clean_suggestions_endpoint_reports_stale_count_and_apply_outcomes(self) -> None:
+        # 清洗建议动线三件套的后端半边：GET 要带上 stale_count（哪怕退化成
+        # 按语言对统计全部 stale），POST 写入要逐条回报 outcome，供前端
+        # 原地渲染每一行的去向，不必再靠三个总数瞎猜。
+        tm_manager.init_db()
+        tm_manager.insert_batch([("术语一", "term one"), ("术语二", "term two")], "zh-en", 500, "test")
+        entries = {row["source_text"]: row for row in tm_manager.get_all_entries_for_cleaning("zh-en")}
+        tm_manager.persist_cleaning_suggestions(
+            [
+                {
+                    "entry_id": entries["术语一"]["id"],
+                    "source_text": "术语一",
+                    "old_target": "term one",
+                    "new_target": "terminology one",
+                    "lang_pair": "zh-en",
+                    "version": entries["术语一"]["version"],
+                },
+                {
+                    "entry_id": entries["术语二"]["id"],
+                    "source_text": "术语二",
+                    "old_target": "term two",
+                    "new_target": "terminology two",
+                    "lang_pair": "zh-en",
+                    "version": entries["术语二"]["version"],
+                },
+            ]
+        )
+        # 建议生成之后，术语二被人工改过——GET 应该把它挪进 stale 并算进 stale_count。
+        tm_manager.update_entry_full(int(entries["术语二"]["id"]), "术语二", "人工改过的译文")
+
+        listed = self.client.get("/api/tm/clean/suggestions?lang_pair=zh-en")
+        self.assertEqual(listed.status_code, 200)
+        body = listed.json()
+        self.assertEqual(len(body["suggestions"]), 1)
+        self.assertEqual(body["suggestions"][0]["source_text"], "术语一")
+        self.assertEqual(body["stale_count"], 1)
+
+        pending = body["suggestions"][0]
+        applied = self.client.post(
+            "/api/tm/clean/apply",
+            json={
+                "auto_pin": False,
+                "suggestions": [
+                    {
+                        "suggestion_id": pending["id"],
+                        "entry_id": pending["entry_id"],
+                        "source_text": pending["source_text"],
+                        "old_target": pending["old_target"],
+                        "new_target": pending["new_target"],
+                        "accepted": True,
+                        "lang_pair": "zh-en",
+                        "expected_version": pending["expected_version"],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(applied.status_code, 200)
+        applied_body = applied.json()
+        self.assertEqual(applied_body["applied"], 1)
+        self.assertEqual(
+            applied_body["outcomes"],
+            [{"suggestion_id": pending["id"], "outcome": "updated"}],
+        )
+        # 写入之后再拉一次：待审列表清零，常驻提示才会跟着消失。
+        after_apply = self.client.get("/api/tm/clean/suggestions?lang_pair=zh-en")
+        self.assertEqual(after_apply.json()["suggestions"], [])
+
     def test_model_config_update_and_diagnostics_endpoints(self) -> None:
         imported = self.client.post(
             "/api/model-config/import",
