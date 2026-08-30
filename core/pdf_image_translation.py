@@ -115,8 +115,17 @@ PDF_PAGE_ACTION_SKIP = "skip"
 # 的所有 glob（页面存档复用、面板取图）都以 page_00N 开头，因此挪走的文件不会被
 # 任何一处当成有效页图；重生成成功就删掉，失败就原样搬回。
 PDF_PAGE_IMAGE_STASH_PREFIX = ".rerun_backup."
+# 重生成成功后，被顶下去的那一版译文页图不再删掉，改名留在这个前缀下当「上一版」。
+# 前缀同样放在最前面，理由和上面那条一模一样：所有找当前页图的 glob 都以 page_00N
+# 开头，上一版因此不会被任何一处当成有效页图，只由 previous_image_path 指名读取。
+# 只留一版：再往前的那版在下一次重生成时被顶替，磁盘不随重跑次数无限长。
+PDF_PAGE_IMAGE_PREVIOUS_PREFIX = ".previous."
+# 换回上一版时，当前版先改名挪到这个前缀下当中转（三步互换的第一步）。同一目录内
+# os.replace，中途失败按相反顺序还原，磁盘上不会留下半套。
+PDF_PAGE_IMAGE_SWAP_PREFIX = ".restore_swap."
 PDF_PAGE_IMAGE_KIND_SOURCE = "source"
 PDF_PAGE_IMAGE_KIND_TRANSLATED = "translated"
+PDF_PAGE_IMAGE_KIND_PREVIOUS = "previous"
 # 「跳过大幅面页」功能专用的页面终态：页面判定为超出 A4 的大幅面页，从未提交给
 # 翻译模型，装订时从源 PDF 矢量直传。语义上和 request_page_skip 的用户手动跳过
 # （发生在失败之后）完全不同，不要合并成同一个状态。
@@ -354,6 +363,17 @@ class PdfPageRecord:
     review_minor_suggestions: list[str] = field(default_factory=list)
     candidate_artifacts: list[dict[str, Any]] = field(default_factory=list)
     final_candidate_attempt: int = 0
+    # 单页重生成留下的「上一版」译文页图（同目录改名保留，见
+    # PDF_PAGE_IMAGE_PREVIOUS_PREFIX）。空串＝这一页没有上一版，界面不给换回入口。
+    previous_image_path: str = ""
+    # 上一版那一次的页面结论（状态/质检/审核/输出尺寸，字段清单见
+    # _PAGE_VERSION_FIELDS）。只留图不留结论的话，一页从失败占位页换回好译文之后，
+    # 记录仍然写着「占位页」，报告、计数和界面会继续把这一页当坏页。
+    # 两个字段都带默认值：更早的 task_history 记录里没有它们，读回来是空，
+    # 表现就是「这一页还没有上一版」，其余功能不受影响。
+    # 注意：这个 dict 是进程内快照，写清单时会在 _summary_to_manifest 里剔掉，
+    # 不进用户输出目录的 pdf_translation_manifest.json。
+    previous_page_state: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1418,6 +1438,10 @@ class PdfImageTranslationRunner:
         self._rerun_thread: threading.Thread | None = None
         self._rerun_page_key: tuple[str, int] | None = None
         self._rerun_error = ""
+        # 「换回上一版」占的是同一把忙锁（同一份输出文件不能被两件事同时重装），
+        # 但单独记一个键：它不调用模型、也没有重生成的进度可报，混进
+        # ``page_rerun_state`` 会让界面写出「第 N 页正在重新生成」。
+        self._restore_page_key: tuple[str, int] | None = None
         self._finished_output_dir: Path | None = None
         self._finished_started_at: datetime | None = None
         self._finished_elapsed_sec = 0.0
@@ -1562,8 +1586,9 @@ class PdfImageTranslationRunner:
         if normalized_kind not in {
             PDF_PAGE_IMAGE_KIND_SOURCE,
             PDF_PAGE_IMAGE_KIND_TRANSLATED,
+            PDF_PAGE_IMAGE_KIND_PREVIOUS,
         }:
-            raise PdfPageActionError("页图类型只能是 source 或 translated。")
+            raise PdfPageActionError("页图类型只能是 source、translated 或 previous。")
         with self._page_action_lock:
             prepared = self._find_prepared_file(relative_path)
         if prepared is None:
@@ -1622,18 +1647,24 @@ class PdfImageTranslationRunner:
         if self._finished_output_dir is None or self.is_running():
             return False
         with self._rerun_lock:
-            return self._rerun_page_key is None
+            return self._rerun_page_key is None and self._restore_page_key is None
 
     def _raise_if_rerun_active(self, *, locked: bool = False) -> None:
         """Refuse a second rerun; one page at a time keeps the output coherent."""
         if locked:
             active = self._rerun_page_key
+            restoring = self._restore_page_key
         else:
             with self._rerun_lock:
                 active = self._rerun_page_key
+                restoring = self._restore_page_key
         if active is not None:
             raise PdfPageActionError(
                 f"第 {active[1]} 页正在重新生成，等它跑完再操作下一页。"
+            )
+        if restoring is not None:
+            raise PdfPageActionError(
+                f"第 {restoring[1]} 页正在换回上一版，等它完成再操作下一页。"
             )
 
     def result_patch(self) -> dict[str, Any]:
@@ -1881,7 +1912,7 @@ class PdfImageTranslationRunner:
             committed = True
         finally:
             if committed:
-                self._commit_page_image_stash(stashed)
+                self._commit_page_image_stash(prepared, stashed, page_backup=page_backup)
             else:
                 self._restore_page_image_stash(stashed)
                 self._restore_page_after_failed_rerun(
@@ -1915,6 +1946,177 @@ class PdfImageTranslationRunner:
             f"[{record.name}] 第 {page_number} 页重新生成没有成功，"
             "已保留上一版译文页和输出文件，任务结果未改动。",
         )
+
+    # ---- swapping one page back to its previous version -------------------------
+    #
+    # 换回不调用模型、不计费：这一页的上一版页图还在页面存档里（重生成成功时留的），
+    # 输出文件本来就是从全部页图整份重装的，所以「换回」＝把两版页图对调一次，再走
+    # 和重生成成功后完全相同的重装配路径。同步做完，没有后台线程。
+
+    def restore_previous_page(self, *, relative_path: str, page_number: int) -> dict[str, Any]:
+        """把一页换回上一版译文，并按新的页图重新装配输出文件。"""
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise PdfPageActionError("页码必须是整数。") from exc
+        if self.is_running():
+            raise PdfPageActionError("任务还在运行，请暂停后再做单页操作。")
+        if self._finished_output_dir is None:
+            raise PdfPageActionError("这个任务没有留下输出目录，不能换回上一版。")
+        self._raise_if_rerun_active()
+        with self._page_action_lock:
+            prepared = self._find_prepared_file(relative_path)
+        if prepared is None:
+            raise PdfPageActionError("该任务没有这个文件的逐页记录。")
+        record = prepared.record
+        if page_number < 1 or page_number > max(0, int(record.page_count)):
+            raise PdfPageActionError(
+                f"页码超出范围：{record.name} 共 {record.page_count} 页。"
+            )
+        if record.status not in {PDF_OUTPUT_STATE_COMPLETED, PDF_OUTPUT_STATE_NEEDS_REVIEW}:
+            raise PdfPageActionError(
+                f"{record.name} 这次没有生成输出文件，换回上一版帮不上忙；请重新建立任务。"
+            )
+        page = next(
+            (item for item in record.pages if item.page_number == page_number),
+            None,
+        )
+        if page is None or not self._page_image_file(
+            prepared,
+            page_number,
+            page,
+            PDF_PAGE_IMAGE_KIND_PREVIOUS,
+        ):
+            raise PdfPageActionError(
+                f"{record.name} 第 {page_number} 页没有留下上一版译文，无法换回。"
+            )
+        if not page.translated_image_path or not Path(page.translated_image_path).is_file():
+            raise PdfPageActionError(
+                f"{record.name} 第 {page_number} 页当前的译文页图不在了，无法互换；请重新生成这一页。"
+            )
+        with self._rerun_lock:
+            self._raise_if_rerun_active(locked=True)
+            self._restore_page_key = (record.relative_path, page_number)
+        try:
+            self._execute_restore_previous(prepared, page)
+        finally:
+            with self._rerun_lock:
+                self._restore_page_key = None
+        return {
+            "action": "restore_previous",
+            "relative_path": record.relative_path,
+            "name": record.name,
+            "page_number": page_number,
+        }
+
+    def _execute_restore_previous(self, prepared: _PreparedPdfFile, page: PdfPageRecord) -> None:
+        record = prepared.record
+        page_number = int(page.page_number)
+        started = time.monotonic()
+        self._log(
+            "INFO",
+            f"[{record.name}] 第 {page_number} 页开始换回上一版：重新装配输出文件，不调用模型。",
+        )
+        # 和单页重生成同一条事务纪律：先把「回滚需要的一切」拍下来。区别只在于
+        # 这里没有模型调用，失败的成因只剩装配本身。
+        page_backup = copy.deepcopy(page)
+        artifact_backup = _file_artifact_snapshot(record)
+        counters_backup = self._page_counters_snapshot()
+        # 成功路径故意不动 runner 的全局逐页计数器（_completed_page_count 等）：
+        # 任务已终态，进度消息不再发，终态界面读的是 record.pages 重算出的记录级
+        # 计数（_refresh_file_record_counts），口径以 record 为准。失败路径回滚
+        # 计数器只是把快照原样放回，不是「成功也该调」的另一半。
+        moves = self._swap_page_versions(prepared, page)
+        committed = False
+        try:
+            self._finalize_file_record(prepared, should_assemble=True)
+            if record.status == PDF_OUTPUT_STATE_FAILED:
+                reason = _with_sentence_end(
+                    record.error or "换回上一版后没能重新装配输出文件。"
+                )
+                raise PdfPageActionError(f"{reason}已保留当前版本，本次换回未生效。")
+            committed = True
+        except PdfPageActionError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 失败变成一条面板消息。
+            logger.exception("PDF 单页换回上一版失败")
+            reason = _with_sentence_end(
+                user_facing_reason(exc, fallback="换回上一版时出现了未预期的问题。")
+            )
+            raise PdfPageActionError(f"{reason}已保留当前版本，本次换回未生效。") from exc
+        finally:
+            if not committed:
+                self._undo_page_version_swap(moves)
+                _copy_page_record(page_backup, page)
+                _restore_file_artifacts(record, artifact_backup)
+                self._refresh_file_record_counts(record)
+                self._restore_page_counters(counters_backup)
+                self._log(
+                    "WARN",
+                    f"[{record.name}] 第 {page_number} 页换回上一版没有成功，"
+                    "已保留当前版本，输出文件未改动。",
+                )
+        self._rewrite_finished_report(extra_elapsed_sec=time.monotonic() - started)
+        self._log(
+            "OK",
+            f"[{record.name}] 第 {page_number} 页已换回上一版，输出文件已重新装配。",
+        )
+
+    def _swap_page_versions(
+        self,
+        prepared: _PreparedPdfFile,
+        page: PdfPageRecord,
+    ) -> list[tuple[Path, Path]]:
+        """三步互换这一页的当前版与上一版（文件与页记录一起），返回已完成的改名。
+
+        三步都是同目录 os.replace：当前版→中转名、上一版→当前版的位置、中转名→
+        上一版的位置。中途失败按相反顺序还原，磁盘上不会留下半套。
+        """
+        base_dir = prepared.translated_pages_dir
+        current = Path(page.translated_image_path)
+        previous = Path(page.previous_image_path)
+        # 上一版的文件名就是「当初那一版的页图名」加了前缀，去掉前缀正好换回它原来
+        # 的名字——模型换过输出格式时后缀跟着变，这条也照样成立。
+        restored_current = base_dir / previous.name.removeprefix(PDF_PAGE_IMAGE_PREVIOUS_PREFIX)
+        swapped_previous = base_dir / f"{PDF_PAGE_IMAGE_PREVIOUS_PREFIX}{current.name}"
+        temp = base_dir / f"{PDF_PAGE_IMAGE_SWAP_PREFIX}{current.name}"
+        for path in (current, previous, restored_current, swapped_previous, temp):
+            if not _path_is_within(path, base_dir):
+                raise PdfPageActionError("这一页的译文页图不在任务的页面存档里，已放弃换回。")
+        done: list[tuple[Path, Path]] = []
+        try:
+            temp.unlink(missing_ok=True)
+            for src, dst in ((current, temp), (previous, restored_current), (temp, swapped_previous)):
+                os.replace(src, dst)
+                done.append((src, dst))
+        except Exception as exc:  # noqa: BLE001 - 半套互换比换不成危险得多。
+            self._undo_page_version_swap(done)
+            raise PdfPageActionError(
+                "换回上一版时页图文件改名失败："
+                + user_facing_reason(exc, fallback="页面存档里的文件动不了。")
+                + "已保留当前版本，本次换回未生效。"
+            ) from exc
+        previous_state = dict(page.previous_page_state or {})
+        current_state = _page_version_state(page)
+        if previous_state:
+            _apply_page_version_state(page, previous_state)
+        page.translated_image_path = str(restored_current)
+        page.previous_image_path = str(swapped_previous)
+        page.previous_page_state = current_state
+        # 尺寸以磁盘上的那张图为准：更早的记录里可能根本没有这一版的结论
+        # （previous_page_state 为空），装配和报告都要拿真实尺寸说话。
+        measured = _resume_pick_page_image([restored_current], verify=False)
+        if measured is not None:
+            _, page.output_width_px, page.output_height_px = measured
+        return done
+
+    def _undo_page_version_swap(self, moves: list[tuple[Path, Path]]) -> None:
+        """按相反顺序把互换过的页图搬回去。"""
+        for src, dst in reversed(moves):
+            try:
+                os.replace(dst, src)
+            except Exception as exc:  # noqa: BLE001 - 已经在失败路径上，不再抛新错。
+                logger.debug(f"[PDF] 换回上一版回滚页图失败：{dst} → {src}：{exc!r}")
 
     def _page_counters_snapshot(self) -> tuple:
         with self._page_status_lock:
@@ -2118,6 +2320,16 @@ class PdfImageTranslationRunner:
                     PDF_PAGE_IMAGE_KIND_TRANSLATED,
                 )
             ),
+            # 这一页留着上一版译文（上一次重生成把旧译图顶下来时留的）。对比弹窗
+            # 靠它决定要不要出「当前版／上一版」切换和「换回这一版」。
+            "has_previous_image": bool(
+                self._page_image_file(
+                    prepared,
+                    page_number,
+                    page,
+                    PDF_PAGE_IMAGE_KIND_PREVIOUS,
+                )
+            ),
         }
         return entry
 
@@ -2131,6 +2343,21 @@ class PdfImageTranslationRunner:
         """Return an existing page image contained by this task's archive dir."""
         source_kind = kind == PDF_PAGE_IMAGE_KIND_SOURCE
         base_dir = prepared.source_pages_dir if source_kind else prepared.translated_pages_dir
+        if kind == PDF_PAGE_IMAGE_KIND_PREVIOUS:
+            # 上一版只认记录里指名的那一份，没有任何按名字猜的兜底：猜出来的文件
+            # 一旦不是这一页真正的上一版，换回就会把别的东西写进交付文件。
+            recorded = str(page.previous_image_path) if page is not None else ""
+            if not recorded:
+                return None
+            candidate = Path(recorded)
+            # 名字必须带上一版前缀：_swap_page_versions 是拿 removeprefix 反推
+            # 「当前版该叫什么」的，指到一个没前缀的文件会把当前版页图改名吞掉。
+            # 今天没有写入路径能造出这种记录，这里是纯护栏。
+            if not candidate.name.startswith(PDF_PAGE_IMAGE_PREVIOUS_PREFIX):
+                return None
+            if _path_is_within(candidate, base_dir) and candidate.is_file():
+                return candidate
+            return None
         page_count = max(1, int(prepared.record.page_count or 1))
         candidates: list[Path] = []
         if page is not None:
@@ -2343,13 +2570,89 @@ class PdfImageTranslationRunner:
                 )
         return stashed
 
-    def _commit_page_image_stash(self, stashed: list[tuple[Path, Path]]) -> None:
-        """重生成成功：挪开的旧译图不再需要了。"""
-        for stashed_path, _original in stashed:
+    def _commit_page_image_stash(
+        self,
+        prepared: _PreparedPdfFile,
+        stashed: list[tuple[Path, Path]],
+        *,
+        page_backup: PdfPageRecord,
+    ) -> None:
+        """重生成成功：把挪开的旧译图提升为这一页的「上一版」。
+
+        只留页图、不留整份旧 PDF——输出文件每次都是从全部页图整份重装的，留住
+        页图就等于留住了那一版的输出，而且不会随文件大小翻倍占盘。
+        只留紧邻的一版：上一轮留下的那份在这里被顶替掉。
+
+        提升失败（改名报错）时退回旧行为把它删掉：宁可这一页没有「上一版」，
+        也不能让记录指着一个不存在的文件。
+        """
+        base_dir = prepared.translated_pages_dir
+        page_number = int(page_backup.page_number)
+        wanted = str(page_backup.translated_image_path or "")
+        # 一页正常只有一份译图；真出现多份（模型换过输出格式）时，只有记录指着的
+        # 那一份才是「上一版」，其余是残留，跟着删掉。
+        keeper = next((moved for moved, original in stashed if str(original) == wanted), None)
+        if keeper is None and len(stashed) == 1:
+            keeper = stashed[0][0]
+        promoted = ""
+        for moved, original in stashed:
+            if moved is not keeper:
+                try:
+                    moved.unlink(missing_ok=True)
+                except Exception as exc:  # noqa: BLE001 - 残留文件不影响产物。
+                    logger.debug(f"[PDF] 删除挪开的旧译图失败：{moved}：{exc!r}")
+                continue
+            target = base_dir / f"{PDF_PAGE_IMAGE_PREVIOUS_PREFIX}{original.name}"
             try:
-                stashed_path.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+                os.replace(moved, target)
+                promoted = str(target)
+            except Exception as exc:  # noqa: BLE001 - 留不住上一版不该让重生成失败。
+                logger.debug(f"[PDF] 保留上一版译图失败：{moved}：{exc!r}")
+                try:
+                    moved.unlink(missing_ok=True)
+                except Exception as cleanup_exc:  # noqa: BLE001
+                    logger.debug(f"[PDF] 删除挪开的旧译图失败：{moved}：{cleanup_exc!r}")
+        page = next(
+            (item for item in prepared.record.pages if item.page_number == page_number),
+            None,
+        )
+        if page is None:
+            # 这一页的记录在重生成里被换走了：留下的「上一版」没有任何记录指着它，
+            # 只会是页面存档里一份看不懂的隐藏文件。
+            promoted = ""
+        self._prune_previous_page_images(prepared, page_number, keep=promoted)
+        if page is None:
+            return
+        page.previous_image_path = promoted
+        page.previous_page_state = _page_version_state(page_backup) if promoted else {}
+
+    def _prune_previous_page_images(
+        self,
+        prepared: _PreparedPdfFile,
+        page_number: int,
+        *,
+        keep: str,
+    ) -> None:
+        """删掉这一页除 ``keep`` 之外的所有「上一版」文件。
+
+        后缀会变（模型换过输出格式：page_001.png → page_001.jpg），不清理的话
+        同一页会留下两份「上一版」，而记录只认得其中一份，另一份成了孤儿。
+        """
+        base_dir = prepared.translated_pages_dir
+        if not base_dir.is_dir():
+            return
+        page_count = max(1, int(prepared.record.page_count or 1))
+        stem = page_image_name(page_number, page_count).removesuffix(".png")
+        for candidate in sorted(base_dir.glob(f"{PDF_PAGE_IMAGE_PREVIOUS_PREFIX}{stem}*")):
+            if str(candidate) == keep or not candidate.is_file():
+                continue
+            if not _path_is_within(candidate, base_dir):
+                continue
+            try:
+                candidate.unlink()
             except Exception as exc:  # noqa: BLE001 - 残留文件不影响产物。
-                logger.debug(f"[PDF] 删除挪开的旧译图失败：{stashed_path}：{exc!r}")
+                logger.debug(f"[PDF] 清除更早的上一版译图失败：{candidate}：{exc!r}")
 
     def _restore_page_image_stash(self, stashed: list[tuple[Path, Path]]) -> None:
         """重生成失败：把挪开的旧译图原样搬回来。"""
@@ -5088,6 +5391,44 @@ def _restore_file_artifacts(record: PdfFileRecord, snapshot: dict[str, Any]) -> 
         setattr(record, name, value)
 
 
+# 一页「这一版跑出了什么结论」的全部字段：换回上一版时，这些要跟页图一起对调。
+# 刻意不含源页相关字段（source_image_path / source_*_px / page_*_pt / render_dpi）——
+# 那些描述的是原文页本身，两版之间不会变，对调它们只会给还原留下犯错的机会。
+_PAGE_VERSION_FIELDS = (
+    "translated_image_path",
+    "status",
+    "attempts",
+    "error",
+    "emergency_ratio_normalized",
+    "ratio_letterboxed",
+    "quality_flags",
+    "quality_message",
+    "placeholder",
+    "failure_ordinal",
+    "output_width_px",
+    "output_height_px",
+    "review_enabled",
+    "review_status",
+    "review_attempts",
+    "review_issues",
+    "review_minor_suggestions",
+    "candidate_artifacts",
+    "final_candidate_attempt",
+)
+
+
+def _page_version_state(page: PdfPageRecord) -> dict[str, Any]:
+    """把一页当前这一版的结论拍成可直接写进 task_history 的纯 JSON 结构。"""
+    return copy.deepcopy({name: getattr(page, name) for name in _PAGE_VERSION_FIELDS})
+
+
+def _apply_page_version_state(page: PdfPageRecord, state: dict[str, Any]) -> None:
+    """把一份版本结论写回页记录；不认识的键一律忽略（旧数据可能少字段）。"""
+    for name in _PAGE_VERSION_FIELDS:
+        if name in state:
+            setattr(page, name, copy.deepcopy(state[name]))
+
+
 def _copy_page_record(source: PdfPageRecord, target: PdfPageRecord) -> None:
     for key, value in asdict(source).items():
         setattr(target, key, value)
@@ -5466,6 +5807,13 @@ def _last_finished_page_label(record: PdfFileRecord) -> str:
 
 def _summary_to_manifest(summary: PdfTaskSummary) -> dict[str, Any]:
     payload = asdict(summary)
+    # previous_page_state 是「换回上一版」的进程内快照（页尺寸、结论等运行期字段），
+    # 只在换回流程里读写，清单没有它的读者；写出去等于把内部字段升格成对外格式，
+    # 以后一改就背兼容包袱。previous_image_path 保留——它回答「这一页有没有上一版
+    # 可换」，排查清单时用得上。
+    for file_payload in payload.get("files") or []:
+        for page_payload in file_payload.get("pages") or []:
+            page_payload.pop("previous_page_state", None)
     payload["route"] = "pdf_image_layout_translation"
     payload["render_dpi"] = PDF_RENDER_DPI_DEFAULT
     payload["image_format"] = "png"

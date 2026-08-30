@@ -950,7 +950,12 @@ def create_app(
             kind=kind,
         )
         if path is None:
-            raise HTTPException(404, "该页图不存在。")
+            # 「上一版」只有做过一次单页重生成的页才有，缺它是常态而不是异常，
+            # 报错要说清是哪一种缺，别让用户以为页图丢了。
+            raise HTTPException(
+                404,
+                "这一页没有留下上一版译文。" if kind == "previous" else "该页图不存在。",
+            )
         return FileResponse(
             path,
             media_type=_page_image_media_type(path),
@@ -973,6 +978,16 @@ def create_app(
         # 终态任务专用：/regenerate 是「排队，继续翻译时生效」，这一条是「现在就重跑
         # 这一页，并把输出文件重新合成一遍」。
         return app.state.task_manager.rerun_pdf_page(
+            task_id,
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/restore-previous")
+    def restore_pdf_page_previous(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        # 终态任务专用：把这一页换回上一版译文页图（上一次重生成留下的那一版），
+        # 并按新的页图重新装配输出文件。不调用模型、不计费；做完才返回。
+        return app.state.task_manager.restore_pdf_page_previous(
             task_id,
             relative_path=request.file,
             page_number=request.page,

@@ -174,6 +174,10 @@ class ApiTask:
     # task back to running would put it into the task center's concurrency
     # accounting, the busy-connection set and the risk payload all over again.
     rerun_active: bool = False
+    # 与 ``rerun_active`` 同生同灭：占着锁的是哪种操作（"rerun" / "restore"）。
+    # 只用来把 409 文案说准——「有一页在重新生成」和「有一页在换回上一版」
+    # 对用户是两回事，等待时长也差一个量级。
+    rerun_kind: str = ""
 
 
 class RetiredRunner:
@@ -864,10 +868,12 @@ class TranslationTaskManager:
                     reason="task_active",
                 )
             if live is not None and live.rerun_active:
-                # Terminal, but still writing: the rerun rebuilds the output
-                # file and the report under this record.
+                # Terminal, but still writing: the rerun (or restore) rebuilds
+                # the output file and the report under this record.
                 raise TaskConflictError(
-                    "这个任务正在重新生成某一页，等它跑完再删除这条记录。",
+                    "这个任务正在把一页换回上一版，稍等几秒再删除这条记录。"
+                    if live.rerun_kind == "restore"
+                    else "这个任务正在重新生成某一页，等它跑完再删除这条记录。",
                     reason="page_rerun_active",
                 )
         # 其它任务可能仍在运行并写历史，先把内存里挂着的脏记录落盘，
@@ -1107,10 +1113,13 @@ class TranslationTaskManager:
                 )
             if task.rerun_active:
                 raise TaskConflictError(
-                    "这个任务已经有一页在重新生成，等它跑完再操作下一页。",
+                    "这个任务正在把一页换回上一版，马上就好，稍等一下再重新生成。"
+                    if task.rerun_kind == "restore"
+                    else "这个任务已经有一页在重新生成，等它跑完再操作下一页。",
                     reason="page_rerun_active",
                 )
             task.rerun_active = True
+            task.rerun_kind = "rerun"
         lease: ScheduledTaskLease | None = None
         try:
             # A rerun spends real API budget, so it reserves the shared groups
@@ -1150,6 +1159,7 @@ class TranslationTaskManager:
                 lease.release()
             with task.condition:
                 task.rerun_active = False
+                task.rerun_kind = ""
             raise
         self._append_event(
             task,
@@ -1167,6 +1177,93 @@ class TranslationTaskManager:
             name=f"api-rerun-{task.task_id[:8]}",
         ).start()
         return {"task_id": task.task_id, "state": task.state, "accepted": accepted}
+
+    def restore_pdf_page_previous(
+        self,
+        task_id: str,
+        *,
+        relative_path: str,
+        page_number: int,
+    ) -> dict[str, Any]:
+        """把一页换回上一版译文，并按新的页图重新装配输出文件。
+
+        和 ``rerun_pdf_page`` 共用同一把忙锁（``rerun_active``）：同一份输出文件
+        不能同时被两件事重装。区别是这件事不调用模型、不花钱，所以既不预约资源
+        组（``reserve_task``），也不需要后台线程＋轮询——同步做完就回，界面拿到
+        响应时输出文件已经换好了。
+        """
+        task = self._get_task(task_id)
+        runner = self._pdf_review_runner(task)
+        if not callable(getattr(runner, "restore_previous_page", None)):
+            raise TaskInputError("这个任务的逐页记录已经释放，不能再换回上一版。")
+        with task.condition:
+            if not task.terminal:
+                raise TaskConflictError(
+                    "任务还没结束；运行中的任务请先暂停再做单页操作。",
+                    reason="task_not_terminal",
+                )
+            if task.rerun_active:
+                raise TaskConflictError(
+                    "这个任务正在把另一页换回上一版，马上就好，稍等一下再操作。"
+                    if task.rerun_kind == "restore"
+                    else "这个任务有一页正在重新生成，等它跑完再换回上一版。",
+                    reason="page_rerun_active",
+                )
+            task.rerun_active = True
+            task.rerun_kind = "restore"
+        try:
+            accepted = runner.restore_previous_page(
+                relative_path=relative_path,
+                page_number=page_number,
+            )
+        except PdfPageActionError as exc:
+            self._settle_page_restore(task, runner, apply_patch=False)
+            raise TaskInputError(str(exc)) from exc
+        except Exception:
+            self._settle_page_restore(task, runner, apply_patch=False)
+            raise
+        self._settle_page_restore(task, runner, apply_patch=True)
+        self._append_event(
+            task,
+            "pdf_page_restore",
+            {
+                "phase": "finished",
+                "page_number": int(accepted.get("page_number") or page_number),
+                "name": str(accepted.get("name") or ""),
+            },
+        )
+        self._retire_terminal_task(task)
+        return {"task_id": task.task_id, "state": task.state, "accepted": accepted}
+
+    def _settle_page_restore(self, task: ApiTask, runner: Any, *, apply_patch: bool) -> None:
+        """换回结束后放锁：把 runner 攒下的日志收走，成功时刷新任务结果。
+
+        这里是换回路径上 ``rerun_active`` 唯一的释放点：排空消息要写任务历史，
+        哪一步抛出去而锁没放掉，这个任务之后所有单页重生成/换回都会被 409 挡死，
+        只能重启 sidecar。所以排空和取结果各自吞异常（最多丢几行日志或一次结果
+        刷新），锁无条件释放——与 ``_pump_page_rerun`` 的 finally 收尾纪律对齐。
+        """
+        try:
+            while True:
+                message = runner.get_message(timeout=0.0)
+                if message is None:
+                    break
+                self._handle_message(task, message)
+        except Exception:  # noqa: BLE001 - 排空失败只损失日志，锁必须照常放。
+            pass
+        patch: dict[str, Any] = {}
+        if apply_patch:
+            try:
+                patch = dict(runner.result_patch() or {})
+            except Exception:  # noqa: BLE001 - 结果刷新失败不该让换回本身算失败。
+                patch = {}
+        with task.condition:
+            task.rerun_active = False
+            task.rerun_kind = ""
+            if patch and isinstance(task.result, dict):
+                # 任务中心的文件表和指标读的是这份存下来的结果，不是磁盘上的报告；
+                # 不更新的话，换回之后那一页的结论还停在换回之前。
+                task.result.update(_sanitize_task_data(patch))
 
     def _pump_page_rerun(
         self,
@@ -1210,6 +1307,7 @@ class TranslationTaskManager:
                     patch = {}
             with task.condition:
                 task.rerun_active = False
+                task.rerun_kind = ""
                 if patch and isinstance(task.result, dict):
                     # The task center reads its file table and metrics from the
                     # stored result, not from the report on disk; leaving it

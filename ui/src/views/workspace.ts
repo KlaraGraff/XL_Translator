@@ -1772,7 +1772,7 @@ function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot, pending?: PendingR
   if (rerunningPage !== undefined) return `第 ${rerunningPage} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
   if (snapshot.rerun.error) return `上一次重新生成没有成功：${redactedText(snapshot.rerun.error, "输出文件没有改动。")}`;
   // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
-  if (snapshot.rerun_actionable) return "任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页，并覆盖原来的译文页和输出文件。";
+  if (snapshot.rerun_actionable) return "任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页并改写输出文件，原来那一版会留成「上一版」，随时能在对比弹窗里换回。";
   return "任务已结束，仅可查看对比页图，不能再触发操作。";
 }
 
@@ -1798,19 +1798,23 @@ async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageF
   }
 }
 
-/** 危险操作确认：覆盖不可逆、要再花一次钱、还会改写可能已经交出去的文件，三条都得说。 */
+/** 危险操作确认：要再花一次钱、还会改写可能已经交出去的文件，两条都得说。
+ *
+ *  「覆盖之后取不回来」这句已经不成立了——重生成会把现在这一版留成「上一版」，
+ *  在对比弹窗里随时能换回来。文案跟着改口，按钮也不再叫「覆盖并重新生成」：
+ *  真正不可逆的只剩「已经发出去的那份文件」，那句提醒保留。 */
 function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): void {
   openModal({
     tone: "danger",
     icon: "warn",
     title: `重新生成第 ${page.page_number} 页？`,
     body: [
-      "现在这一页的译文会被覆盖，覆盖之后取不回来。重新生成要再调用一次接口，按这一页的用量计费。输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。",
+      "现在这一页的译文会保留为「上一版」，重新生成后如果不满意，可以在对比弹窗里换回。重新生成要再调用一次接口，按这一页的用量计费。输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。",
     ],
     actions: [
       { label: "取消" },
       {
-        label: "覆盖并重新生成",
+        label: "重新生成",
         variant: "danger-solid",
         onClick: () => void runPdfPageRerun(surface, taskId, file, page),
       },
@@ -2260,9 +2264,9 @@ function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow
     icon: "warn",
     title: `重跑这 ${rows.length} 页？`,
     body: [
-      "这几页现在的译文会被覆盖，覆盖之后取不回来；重新生成按页计费，其余页不受影响、不会重新调用接口。",
+      "这几页现在的译文会保留为各自的「上一版」，重新生成后如果不满意，可以在对比弹窗里逐页换回；重新生成按页计费，其余页不受影响、不会重新调用接口。",
       list,
-      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF。中途可以按横幅上的「停止」，当前这一页会跑完，后面的不再重跑。",
+      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF；如果你已经把这些文件发出去了，记得重新发一份。中途可以按横幅上的「停止」，当前这一页会跑完，后面的不再重跑。",
     ],
     actions: [
       { label: "取消" },
@@ -2577,7 +2581,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会覆盖原来的译文页" : reviewNote(page, taskStopped);
+  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会改写输出文件" : reviewNote(page, taskStopped);
   row.append(noteCell);
 
   const actionsCell = el("td");
@@ -2677,23 +2681,40 @@ interface CompareColHandle {
   root: HTMLElement;
   setImage(url: string): void;
   setError(message: string): void;
+  setLoading(): void;
+  /** 表头右侧的挂载点：译文栏在这里放「当前版／上一版」切换和「换回这一版」。 */
+  header: HTMLElement;
 }
 
 function buildCompareCol(label: string): CompareColHandle {
   const root = el("div", "pdf-compare-col");
+  // 表头一行两端对齐：左边是「译文 · 第 N 页」，右边是版本切换。没有右侧内容时
+  // 和原来的单行标题完全一样（flex 空容器不占位），无上一版的页看不出区别。
+  const head = el("div");
+  head.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:24px";
   const labelEl = el("div", "pdf-compare-label");
   labelEl.textContent = label;
+  const header = el("div");
+  header.style.cssText = "display:flex;align-items:center;gap:8px";
+  head.append(labelEl, header);
   const imgWrap = el("div", "pdf-compare-imgwrap");
   const loading = el("div", "ph");
   loading.textContent = "加载中…";
   imgWrap.append(loading);
-  root.append(labelEl, imgWrap);
+  root.append(head, imgWrap);
 
   const clear = () => {
     while (imgWrap.firstChild) imgWrap.removeChild(imgWrap.firstChild);
   };
   return {
     root,
+    header,
+    setLoading: () => {
+      clear();
+      const ph = el("div", "ph");
+      ph.textContent = "加载中…";
+      imgWrap.append(ph);
+    },
     setImage: (url: string) => {
       clear();
       const img = document.createElement("img");
@@ -2716,6 +2737,37 @@ function buildCompareCol(label: string): CompareColHandle {
   };
 }
 
+/** 译文栏表头的「当前版／上一版」胶囊切换。只有这一页真的留着上一版时才建。 */
+function buildVersionToggle(onPick: (kind: "translated" | "previous") => void): {
+  root: HTMLElement;
+  setKind(kind: "translated" | "previous"): void;
+} {
+  const root = el("div");
+  root.style.cssText =
+    "display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line-2);border-radius:99px;background:var(--surface)";
+  const make = (label: string, kind: "translated" | "previous") => {
+    const pill = el("span");
+    pill.textContent = label;
+    pill.addEventListener("click", () => onPick(kind));
+    return pill;
+  };
+  const current = make("当前版", "translated");
+  const previous = make("上一版", "previous");
+  root.append(current, previous);
+  const paint = (pill: HTMLElement, on: boolean) => {
+    pill.style.cssText = on
+      ? "padding:2px 10px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer;background:var(--accent);color:var(--on-accent)"
+      : "padding:2px 10px;border-radius:99px;font-size:11.5px;cursor:pointer;color:var(--ink-2)";
+  };
+  return {
+    root,
+    setKind: (kind) => {
+      paint(current, kind === "translated");
+      paint(previous, kind === "previous");
+    },
+  };
+}
+
 function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): void {
   const wrap = el("div", "pdf-compare");
   const sourceCol = buildCompareCol(`原文 · 第 ${page.page_number} 页`);
@@ -2723,9 +2775,18 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
   wrap.append(sourceCol.root, translatedCol.root);
 
   const objectUrls: string[] = [];
-  const load = async (kind: "source" | "translated", has: boolean, col: CompareColHandle) => {
+  // 换回成功后要用新快照重开这个弹窗；不先关掉旧的，两层对比弹窗会叠在一起，
+  // 关掉上面那层露出来的是换回之前的旧图。
+  let handle: ModalHandle | null = null;
+  const closeCompare = () => {
+    for (const url of objectUrls) URL.revokeObjectURL(url);
+    handle?.close();
+  };
+  const load = async (kind: "source" | "translated" | "previous", has: boolean, col: CompareColHandle) => {
     if (!has) {
-      col.setError(kind === "source" ? "该页尚无原文页图" : "该页尚无译文页图");
+      col.setError(
+        kind === "source" ? "该页尚无原文页图" : kind === "previous" ? "这一页没有留下上一版译文" : "该页尚无译文页图",
+      );
       return;
     }
     try {
@@ -2741,7 +2802,39 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
   void load("source", page.has_source_image, sourceCol);
   void load("translated", page.has_translated_image, translatedCol);
 
-  openModal({
+  // 没有上一版的页：表头右侧空着，弹窗和以前完全一样。
+  if (page.has_previous_image) {
+    let shown: "translated" | "previous" = "translated";
+    const restoreBtn = createButton({
+      label: "换回这一版",
+      size: "mini",
+      onClick: () => confirmPdfPageRestorePrevious(surface, taskId, file, page, closeCompare),
+    });
+    // 换回按钮只在看着「上一版」时出现：看当前版时它没有指代对象，摆在那里只会
+    // 让人以为「换回」的是眼前这一版。
+    restoreBtn.style.display = "none";
+    const toggle = buildVersionToggle((kind) => {
+      if (kind === shown) return;
+      shown = kind;
+      toggle.setKind(kind);
+      restoreBtn.style.display = kind === "previous" ? "" : "none";
+      translatedCol.setLoading();
+      void load(kind, kind === "previous" ? page.has_previous_image : page.has_translated_image, translatedCol);
+    });
+    toggle.setKind("translated");
+    translatedCol.header.append(toggle.root, restoreBtn);
+    // 重生成正在跑（或刚点下去还没确认）时，输出文件正在被另一件事重装，换回
+    // 只会撞上后端的忙锁；先禁掉，理由挂在 title 上。
+    const local = states[surface].task;
+    const snapshot = local?.task.task_id === taskId ? local.pdfPagesSnapshot : undefined;
+    const busy = !!snapshot?.rerun.active || !!pendingRerunFor(surface, taskId);
+    if (busy) {
+      restoreBtn.disabled = true;
+      restoreBtn.title = "有一页正在重新生成，跑完再换回上一版。";
+    }
+  }
+
+  handle = openModal({
     tone: "warn",
     icon: "pdf",
     sourceLabel: `逐页审核 · ${SURFACE_LABEL[surface]}`,
@@ -2756,6 +2849,75 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
       },
     ],
   });
+}
+
+/** 换回上一版的确认框。不是危险操作（换回来的那一版仍然留得住、随时能再换回去），
+ *  但它会改写可能已经交出去的输出文件，所以照样先说清后果再动手。 */
+function confirmPdfPageRestorePrevious(
+  surface: Surface,
+  taskId: string,
+  file: PdfPageFile,
+  page: PdfPage,
+  closeCompare: () => void,
+): void {
+  const handle = openModal({
+    tone: "warn",
+    icon: "warn",
+    title: `换回第 ${page.page_number} 页的上一版？`,
+    body: [
+      "这一页会换回上一版译文，现在的版本变成新的「上一版」，随时可以再换回来。输出文件会重新装配改写——不调用模型，不产生费用；如果你已经把文件发出去了，记得重新发一份。",
+    ],
+    actions: [
+      { label: "取消" },
+      {
+        label: "换回上一版",
+        variant: "primary",
+        // 后端是同步装配完才返回的，大文件要等上几秒。原来这里先关弹窗再发请求，
+        // 这几秒里界面毫无动静，用户多点几下别的页操作只会撞出一串 409——所以
+        // 确认框留在原地当忙态：按钮全部禁用、文字换成「换回中…」，做完再统一收。
+        keepOpen: true,
+        onClick: async () => {
+          const buttons = Array.from(handle.element.querySelectorAll("button"));
+          for (const button of buttons) button.disabled = true;
+          const confirmButton = buttons[buttons.length - 1];
+          if (confirmButton) confirmButton.textContent = "换回中…";
+          await runPdfPageRestorePrevious(surface, taskId, file, page, () => {
+            handle.close();
+            closeCompare();
+          });
+        },
+      },
+    ],
+  });
+}
+
+async function runPdfPageRestorePrevious(
+  surface: Surface,
+  taskId: string,
+  file: PdfPageFile,
+  page: PdfPage,
+  closeModals: () => void,
+): Promise<void> {
+  try {
+    const c = await getClient();
+    // 后端是同步做完才返回的：这个 await 结束时，页图和输出文件都已经换好。
+    await c.restorePdfPagePrevious(taskId, file.relative_path, page.page_number);
+    showToast({ message: "已换回上一版，输出文件已重新装配。" });
+  } catch (error) {
+    showToast({ message: redactedText((error as Error)?.message, "换回上一版失败。"), error: true });
+  }
+  // 请求已经落定，忙态确认框完成使命；先把旧的两层弹窗收掉，再按新快照重开对比，
+  // 免得新旧对比弹窗叠在一起。
+  closeModals();
+  // 成功要把两版对调后的新快照换上来（哪一版是「上一版」变了），失败也要看后端此刻
+  // 的真实状态。拿到新快照后重开对比弹窗，图片跟着重新拉一次。
+  const ok = await fetchPdfPagesSnapshot(surface, taskId);
+  if (!ok) return;
+  const local = states[surface].task;
+  if (local?.task.task_id !== taskId) return;
+  const nextFile = local.pdfPagesSnapshot?.files.find((item) => item.relative_path === file.relative_path);
+  const nextPage = nextFile?.pages.find((item) => item.page_number === page.page_number);
+  if (nextFile && nextPage) openPdfPageCompareModal(surface, taskId, nextFile, nextPage);
 }
 
 // ---------------------------------------------------------------------------

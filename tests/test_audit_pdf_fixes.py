@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 import sys
@@ -30,12 +31,16 @@ from core.pdf_image_translation import (
     PDF_MANIFEST_FILENAME,
     PDF_OUTPUT_STATE_COMPLETED,
     PDF_OUTPUT_STATE_STOPPED,
+    PDF_PAGE_IMAGE_PREVIOUS_PREFIX,
     PDF_PAGE_IMAGE_STASH_PREFIX,
+    PDF_PAGE_IMAGE_SWAP_PREFIX,
     PDF_PAGE_STATUS_STOPPED_UNSTARTED,
     PDF_REPORT_FILENAME,
     SOURCE_TYPE_IMAGE,
     PdfFileItem,
     PdfImageTranslationRunner,
+    PdfPageActionError,
+    PdfPageRecord,
     _unstarted_page_count,
     max_page_generation_attempts,
 )
@@ -44,6 +49,7 @@ from settings import AppSettings
 from tests.test_pdf_image_translation import (
     _FailThenPassReviewClient,
     _FakeImageClient,
+    _GateOnCallImageClient,
     _ReviewRequestErrorClient,
     _drain_all_messages,
     _fake_pdfium_module,
@@ -850,6 +856,444 @@ class AuditPdfThirdRoundTests(unittest.TestCase):
                 if path.is_file() and path.name.startswith(f"{delivered.stem}_R")
             )
             self.assertEqual(strays, [])
+
+
+class _SequencedImageClient(_FakeImageClient):
+    """按调用次序依次返回不同颜色的图，调用次数用完之后一直返回最后一张。
+
+    「哪一版译文在磁盘上」这件事，只有让每一版长得不一样才断言得了；纯色图的
+    中心像素就是这一版的身份证。
+    """
+
+    def __init__(self, images: list[bytes]) -> None:
+        super().__init__(images[0])
+        self.images = list(images)
+        self.calls = 0
+
+    def generate_page(self, **_kwargs):
+        index = min(self.calls, len(self.images) - 1)
+        self.calls += 1
+        return self.images[index]
+
+
+def _center_color(path: Path) -> tuple[int, int, int]:
+    with Image.open(path) as image:
+        rgb = image.convert("RGB")
+        return rgb.getpixel((rgb.width // 2, rgb.height // 2))
+
+
+def _pdf_center_color(path: Path) -> tuple[int, int, int]:
+    """渲染 PDF 第一页，取中心像素——用来断言整份输出确实按新页图重装过。"""
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(path)
+    try:
+        page = document.get_page(0)
+        try:
+            bitmap = page.render(scale=0.25, rev_byteorder=True)
+            try:
+                image = bitmap.to_pil().convert("RGB")
+                return image.getpixel((image.width // 2, image.height // 2))
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+    finally:
+        document.close()
+
+
+def _previous_page_images(base_dir: Path) -> list[Path]:
+    return sorted(base_dir.glob(f"{PDF_PAGE_IMAGE_PREVIOUS_PREFIX}*"))
+
+
+class PdfPagePreviousVersionTests(unittest.TestCase):
+    """单页重生成留一版「上一版」，以及把这一页换回上一版。
+
+    换回不调用模型、不计费：上一版页图还在页面存档里，输出文件本来就是从全部页图
+    整份重装的，所以换回＝两版页图对调 + 走一遍和重生成成功后完全相同的装配路径。
+    """
+
+    def _pdf_runner(
+        self,
+        root: Path,
+        image_client,
+        *,
+        page_count: int = 2,
+    ) -> PdfImageTranslationRunner:
+        source_pdf = root / "source.pdf"
+        source_pdf.write_bytes(b"%PDF-1.4\n")
+        settings = _page_review_settings(root)
+        settings.pdf.page_retry_attempts = 0
+        return PdfImageTranslationRunner(
+            [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=page_count)],
+            settings,
+            source_root=root,
+            image_client=image_client,
+            task_logger_enabled=False,
+        )
+
+    def _page_entry(self, runner: PdfImageTranslationRunner, page_number: int) -> dict:
+        snapshot = runner.pdf_page_snapshot()
+        pages = snapshot["files"][0]["pages"]
+        return next(item for item in pages if item["page_number"] == page_number)
+
+    def test_page_rerun_keeps_one_previous_version_and_replaces_it_next_time(self) -> None:
+        """重生成成功后，被顶下去的那一版留下来当「上一版」，而且只留一版。
+
+        以前这一版是直接删掉的：用户点完「重新生成」如果更喜欢原来那版，没有任何
+        退路。现在留一版；再往前的那版在下一次重生成时被顶替，磁盘不随重跑次数长。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_client = _SequencedImageClient(
+                [
+                    _png_bytes(1200, 1600, "white"),
+                    _png_bytes(1200, 1600, "white"),
+                    _png_bytes(1200, 1600, "red"),
+                    _png_bytes(1200, 1600, "blue"),
+                ]
+            )
+            runner = self._pdf_runner(root, image_client)
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                page = next(item for item in record.pages if item.page_number == 1)
+                # 跑批刚结束：没有上一版，界面不给换回入口。
+                self.assertEqual(page.previous_image_path, "")
+                self.assertFalse(self._page_entry(runner, 1)["has_previous_image"])
+                _drain_all_messages(runner)
+
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                _await_rerun(self, runner)
+                self.assertEqual(runner.page_rerun_state()["error"], "")
+
+                page = next(item for item in record.pages if item.page_number == 1)
+                self.assertEqual(_center_color(Path(page.translated_image_path)), (255, 0, 0))
+                previous = Path(page.previous_image_path)
+                self.assertTrue(previous.is_file())
+                self.assertTrue(previous.name.startswith(PDF_PAGE_IMAGE_PREVIOUS_PREFIX))
+                self.assertEqual(_center_color(previous), (255, 255, 255))
+                # 上一版连同它那一版的结论一起留着：换回时页面状态不会串成新版的。
+                self.assertEqual(page.previous_page_state.get("status"), "success")
+                self.assertTrue(self._page_entry(runner, 1)["has_previous_image"])
+                # 没被重生成过的第 2 页不许凭空多出换回入口。
+                self.assertFalse(self._page_entry(runner, 2)["has_previous_image"])
+
+                pages_dir = runner._prepared_files[0].translated_pages_dir
+                self.assertEqual(_previous_page_images(pages_dir), [previous])
+
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                _await_rerun(self, runner)
+                self.assertEqual(runner.page_rerun_state()["error"], "")
+
+            page = next(item for item in record.pages if item.page_number == 1)
+            self.assertEqual(_center_color(Path(page.translated_image_path)), (0, 0, 255))
+            # 只留一版：白色那版被红色顶替，磁盘上始终只有一份 previous。
+            second_previous = Path(page.previous_image_path)
+            self.assertEqual(_center_color(second_previous), (255, 0, 0))
+            self.assertEqual(_previous_page_images(pages_dir), [second_previous])
+            # 中转用的隐藏名不许留在页面存档里。
+            leftovers = [
+                path.name
+                for path in pages_dir.iterdir()
+                if path.name.startswith(PDF_PAGE_IMAGE_STASH_PREFIX)
+                or path.name.startswith(PDF_PAGE_IMAGE_SWAP_PREFIX)
+            ]
+            self.assertEqual(leftovers, [])
+
+    def test_restore_previous_swaps_versions_and_reassembles_the_whole_pdf(self) -> None:
+        """换回上一版：两版页图对调，整份 PDF 按新页图重装，而且还能再换回来。
+
+        这里刻意用真实 pypdfium2 装配：只有渲染出来的那一页像素能证明「输出文件
+        真的跟着换了」，假模块写的是固定字节，换没换都看不出来。
+        """
+        import pypdfium2  # noqa: F401 - 缺了它这条用例就没有意义，直接让它报错。
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            Image.new("RGB", (1224, 1584), "white").save(
+                source_pdf,
+                format="PDF",
+                resolution=144.0,
+            )
+            settings = _page_review_settings(root)
+            settings.pdf.page_retry_attempts = 0
+            image_client = _SequencedImageClient(
+                [
+                    _png_bytes(1224, 1584, "white"),
+                    _png_bytes(1224, 1584, "red"),
+                ]
+            )
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                translated_pdf = Path(record.translated_pdf_path)
+                compressed_name = Path(record.compressed_pdf_path).name
+                _drain_all_messages(runner)
+
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                _await_rerun(self, runner)
+                self.assertEqual(runner.page_rerun_state()["error"], "")
+
+                rerun_pdf_bytes = translated_pdf.read_bytes()
+                self.assertLess(abs(_pdf_center_color(translated_pdf)[0] - 255), 30)
+                self.assertLess(_pdf_center_color(translated_pdf)[2], 60)
+
+                result = runner.restore_previous_page(relative_path="source.pdf", page_number=1)
+
+            self.assertEqual(result["action"], "restore_previous")
+            self.assertEqual(result["page_number"], 1)
+            page = next(item for item in record.pages if item.page_number == 1)
+            # 两版对调：现在指着白色那版，红色那版成了新的「上一版」。
+            self.assertEqual(_center_color(Path(page.translated_image_path)), (255, 255, 255))
+            self.assertEqual(_center_color(Path(page.previous_image_path)), (255, 0, 0))
+            # 整份输出重新装配过：渲染出来的那一页变回白色，字节也不是重生成那份。
+            self.assertNotEqual(translated_pdf.read_bytes(), rerun_pdf_bytes)
+            restored_color = _pdf_center_color(translated_pdf)
+            self.assertTrue(all(channel > 200 for channel in restored_color), restored_color)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            self.assertEqual(
+                record.high_quality_pdf_size_bytes,
+                translated_pdf.stat().st_size,
+            )
+            # 压缩版跟着重装，名字不许漂（不能冒出 _R1 之类的第二份产物）。
+            compressed_pdf = Path(record.compressed_pdf_path)
+            self.assertEqual(compressed_pdf.name, compressed_name)
+            self.assertTrue(compressed_pdf.is_file())
+            self.assertEqual(record.compressed_pdf_size_bytes, compressed_pdf.stat().st_size)
+
+            # 换回之后随时可以再换回来：这一版又变成「上一版」。
+            with patch("core.model_roles.get_key", return_value="secret"):
+                runner.restore_previous_page(relative_path="source.pdf", page_number=1)
+            page = next(item for item in record.pages if item.page_number == 1)
+            self.assertEqual(_center_color(Path(page.translated_image_path)), (255, 0, 0))
+            self.assertEqual(_center_color(Path(page.previous_image_path)), (255, 255, 255))
+            again_color = _pdf_center_color(translated_pdf)
+            self.assertGreater(again_color[0], 200, again_color)
+            self.assertLess(again_color[2], 60, again_color)
+            # 模型一次都没被调用过：换回不花钱。
+            self.assertEqual(image_client.calls, 2)
+
+    def test_failed_restore_keeps_the_current_version_intact(self) -> None:
+        """换回中途装配失败：当前版页图、输出文件、记录状态一律回到点之前。
+
+        这条和「高-5」是同一条纪律——半套状态比换不成危险得多。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_client = _SequencedImageClient(
+                [
+                    _png_bytes(1200, 1600, "white"),
+                    _png_bytes(1200, 1600, "white"),
+                    _png_bytes(1200, 1600, "red"),
+                ]
+            )
+            runner = self._pdf_runner(root, image_client)
+            real_assemble = PdfImageTranslationRunner._assemble_translated_pdf
+            fail_assembly = {"on": False}
+
+            def assemble(self, record, output_pdf, *, compressed=False):
+                if fail_assembly["on"] and not compressed:
+                    raise RuntimeError("磁盘写满")
+                return real_assemble(self, record, output_pdf, compressed=compressed)
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                _drain_all_messages(runner)
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                _await_rerun(self, runner)
+                self.assertEqual(runner.page_rerun_state()["error"], "")
+
+                page = next(item for item in record.pages if item.page_number == 1)
+                current_path = Path(page.translated_image_path)
+                previous_path = Path(page.previous_image_path)
+                current_bytes = current_path.read_bytes()
+                previous_bytes = previous_path.read_bytes()
+                translated_pdf = Path(record.translated_pdf_path)
+                pdf_bytes_before = translated_pdf.read_bytes()
+
+                fail_assembly["on"] = True
+                with patch.object(
+                    PdfImageTranslationRunner,
+                    "_assemble_translated_pdf",
+                    assemble,
+                ):
+                    with self.assertRaises(PdfPageActionError) as ctx:
+                        runner.restore_previous_page(relative_path="source.pdf", page_number=1)
+
+            # 失败要如实说出来，而且先说后果。
+            self.assertIn("已保留当前版本，本次换回未生效。", str(ctx.exception))
+            # 当前版一个字节都没动，记录还指着它。
+            page = next(item for item in record.pages if item.page_number == 1)
+            self.assertEqual(page.translated_image_path, str(current_path))
+            self.assertEqual(current_path.read_bytes(), current_bytes)
+            self.assertEqual(_center_color(current_path), (255, 0, 0))
+            # 上一版也还在原处，还能再试一次。
+            self.assertEqual(page.previous_image_path, str(previous_path))
+            self.assertEqual(previous_path.read_bytes(), previous_bytes)
+            self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+            self.assertEqual(translated_pdf.read_bytes(), pdf_bytes_before)
+            pages_dir = runner._prepared_files[0].translated_pages_dir
+            strays = [
+                path.name
+                for path in pages_dir.iterdir()
+                if path.name.startswith(PDF_PAGE_IMAGE_SWAP_PREFIX)
+            ]
+            self.assertEqual(strays, [])
+            self.assertEqual(_previous_page_images(pages_dir), [previous_path])
+
+    def test_restore_is_refused_while_a_page_rerun_is_running(self) -> None:
+        """有一页正在重新生成时，换回要被挡住并说清楚在等谁。
+
+        两条路都会改同一批页图和同一份输出文件，撞上就会互相覆写。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_client = _GateOnCallImageClient(_png_bytes(1200, 1600), gate_calls={3})
+            runner = self._pdf_runner(root, image_client)
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 2})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+                self.assertEqual(
+                    runner._prepared_files[0].record.status,
+                    PDF_OUTPUT_STATE_COMPLETED,
+                )
+                _drain_all_messages(runner)
+
+                runner.rerun_page(relative_path="source.pdf", page_number=1)
+                self.assertTrue(image_client.entered.wait(15), "重生成没有进到闸门里。")
+                try:
+                    self.assertFalse(runner.can_rerun_pages())
+                    with self.assertRaises(PdfPageActionError) as ctx:
+                        runner.restore_previous_page(relative_path="source.pdf", page_number=1)
+                    self.assertIn("正在重新生成", str(ctx.exception))
+                finally:
+                    image_client.release.set()
+                _await_rerun(self, runner)
+
+            self.assertEqual(runner.page_rerun_state()["error"], "")
+
+    def test_image_task_restores_the_previous_version_into_the_delivered_file(self) -> None:
+        """图片源任务走同一套机制：换回之后，交付的那张译图变回上一版，文件名不漂。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "images"
+            source_dir.mkdir()
+            source_image = source_dir / "diagram.png"
+            source_image.write_bytes(_png_bytes(1200, 1600))
+            settings = _page_review_settings(root)
+            settings.pdf.page_retry_attempts = 0
+            image_client = _SequencedImageClient(
+                [
+                    _png_bytes(1200, 1600, "white"),
+                    _png_bytes(1200, 1600, "red"),
+                ]
+            )
+            runner = PdfImageTranslationRunner(
+                [
+                    PdfFileItem(
+                        path=source_image,
+                        name="diagram",
+                        size_kb=1.0,
+                        page_count=1,
+                        source_type=SOURCE_TYPE_IMAGE,
+                    )
+                ],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                task_logger_enabled=False,
+            )
+
+            with patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                delivered = Path(record.translated_image_path)
+                self.assertEqual(_center_color(delivered), (255, 255, 255))
+                _drain_all_messages(runner)
+
+                runner.rerun_page(relative_path=record.relative_path, page_number=1)
+                _await_rerun(self, runner)
+                self.assertEqual(runner.page_rerun_state()["error"], "")
+                self.assertEqual(_center_color(Path(record.translated_image_path)), (255, 0, 0))
+
+                runner.restore_previous_page(relative_path=record.relative_path, page_number=1)
+
+            # 交付文件名恒定，内容变回上一版。
+            self.assertEqual(record.translated_image_path, str(delivered))
+            self.assertTrue(delivered.is_file())
+            self.assertEqual(_center_color(delivered), (255, 255, 255))
+            page = record.pages[0]
+            self.assertEqual(_center_color(Path(page.previous_image_path)), (255, 0, 0))
+            self.assertEqual(image_client.calls, 2)
+
+    def test_page_records_without_the_previous_fields_still_load(self) -> None:
+        """旧任务留下的逐页记录（没有新字段）照常读，只是不给换回入口。
+
+        自 V9.3.0 起数据结构升级必须能读旧数据：老记录里没有 previous_image_path，
+        界面要安静地退回「这一页没有上一版」，而不是报错或者给一个点了就坏的按钮。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = self._pdf_runner(root, _FakeImageClient(_png_bytes(1200, 1600)), page_count=1)
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+                record = runner._prepared_files[0].record
+                self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
+                page = record.pages[0]
+                legacy_fields = {
+                    key: copy.deepcopy(value)
+                    for key, value in vars(page).items()
+                    if key not in {"previous_image_path", "previous_page_state"}
+                }
+                # 旧记录就是「少了这两个键的那份 dict」。
+                legacy = PdfPageRecord(**legacy_fields)
+                self.assertEqual(legacy.previous_image_path, "")
+                self.assertEqual(legacy.previous_page_state, {})
+                record.pages[0] = legacy
+
+                entry = self._page_entry(runner, 1)
+                self.assertTrue(entry["has_translated_image"])
+                self.assertFalse(entry["has_previous_image"])
+                # 快照仍然是纯 JSON，能原样写进 task_history。
+                json.dumps(runner.pdf_page_snapshot(), ensure_ascii=False)
+
+                with self.assertRaises(PdfPageActionError) as ctx:
+                    runner.restore_previous_page(relative_path="source.pdf", page_number=1)
+            self.assertIn("没有留下上一版译文", str(ctx.exception))
 
 
 if __name__ == "__main__":

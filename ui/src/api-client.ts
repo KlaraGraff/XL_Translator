@@ -68,6 +68,9 @@ export type PdfPage = {
   emergency_ratio_normalized: boolean;
   has_source_image: boolean;
   has_translated_image: boolean;
+  /** 这一页留着上一版译文（上一次单页重生成把旧译图顶下来时留的，只留紧邻一版）。
+   *  对比弹窗靠它决定要不要出「当前版／上一版」切换和「换回这一版」。 */
+  has_previous_image: boolean;
 };
 
 export type PdfPageFile = {
@@ -332,6 +335,15 @@ export class ApiClient {
     });
   }
 
+  /** 终态任务专用：把这一页换回上一版译文，并按新的页图重新装配输出文件。
+   *  不调用模型、不计费；后端做完才返回，所以这个 await 会一直等到输出文件换好。 */
+  async restorePdfPagePrevious(taskId: string, file: string, page: number): Promise<void> {
+    await this.request(`/api/tasks/${taskId}/pdf-pages/restore-previous`, {
+      method: "POST",
+      body: JSON.stringify({ file, page }),
+    });
+  }
+
   async skipPdfPage(taskId: string, file: string, page: number): Promise<void> {
     await this.request(`/api/tasks/${taskId}/pdf-pages/skip`, {
       method: "POST",
@@ -341,7 +353,7 @@ export class ApiClient {
 
   /** 页图是二进制响应，走独立 fetch（而不是 request<T>，它固定 response.json()）；
    *  鉴权头与 request() 保持一致。file 是任务内相对路径，可能含斜杠/中文，调用方不必自行编码。 */
-  async getPdfPageImage(taskId: string, file: string, page: number, kind: "source" | "translated"): Promise<Blob> {
+  async getPdfPageImage(taskId: string, file: string, page: number, kind: "source" | "translated" | "previous"): Promise<Blob> {
     const url = `${this.#baseUrl}/api/tasks/${taskId}/pdf-pages/image?file=${encodeURIComponent(file)}&page=${page}&kind=${kind}`;
     const response = await fetch(url, { headers: { "X-Translator-Token": this.#token } });
     if (!response.ok) {
