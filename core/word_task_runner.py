@@ -28,6 +28,7 @@ from core.api_scheduler import (
 from core.bilingual_writer import get_custom_output_dir_error
 from core.coverage_arbitration import RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
+from core.translation_coverage import format_ignored_coverage_report
 from core.word_coverage import (
     apply_coverage_review_marks,
     build_word_coverage_plan,
@@ -368,6 +369,22 @@ class WordTaskRunner:
                     "前置内容保护未生效，本文件将按未保护方式正常处理。"
                 ),
             )
+
+    def _log_ignored_coverage_units(self, file_name: str, units: list) -> None:
+        """审计批次 2 第④条的 Word 侧：ignored 段落也要留痕。
+
+        与 core/task_runner.py 的同名方法同一立场，只是量词换成 Word 的「处」：
+        分组摘要进任务日志（INFO），全量坐标只进 loguru 调试输出（stderr，本仓库
+        没配文件 sink）——任务面板不按 level 过滤，发任务日志会整段刷屏，淹掉
+        摘要。零 ignored 一行都不出（无关提示不挂）。
+        """
+        ignored_lines, ignored_detail = format_ignored_coverage_report(
+            file_name, units, unit_noun="处"
+        )
+        for line in ignored_lines:
+            self._log("INFO", line)
+        if ignored_detail:
+            logger.debug(ignored_detail)
 
     def _resolve_resume_process_path(
         self, file_item: WordFileItem, *, target_lang: str
@@ -1077,6 +1094,9 @@ class WordTaskRunner:
                                 f"已覆盖 {summary.get('covered', 0)}，"
                                 f"不确定跳过 {summary.get('ambiguous', 0)}"
                             ),
+                        )
+                        self._log_ignored_coverage_units(
+                            file_item.name, coverage_plan.units
                         )
                         front_matter_summaries.append(
                             _front_matter_report(

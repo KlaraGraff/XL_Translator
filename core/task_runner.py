@@ -51,6 +51,7 @@ from core.mixed_language import (
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
+from core.translation_coverage import format_ignored_coverage_report
 from core.translation_filter import should_translate
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
@@ -2459,6 +2460,7 @@ class TaskRunner:
                 f"不确定跳过 {summary.get('ambiguous', 0)}"
             ),
         )
+        self._log_ignored_coverage_units(file_name, plan.units)
         # 「一条都不用补」是合法结果，但普通补译时那样输出文件会和原文一模一样。
         # 不明说的话，用户看到的就是一份没翻译的文件，看不出是「本来就不用翻」
         # 还是程序没干活。续译时计划建在上次的双语底稿上，「不用补」意味着上次
@@ -2476,6 +2478,28 @@ class TaskRunner:
                     f"  → {file_name}：没有找到需要补译的内容，输出文件会和原文一致。"
                     "如果这份文件其实还没翻译过，请关掉「仅补译未翻译内容」再跑一次。",
                 )
+
+    def _log_ignored_coverage_units(self, file_name: str, units: list) -> None:
+        """按理由分组回报补译计划里被跳过（ignored）的格子——审计批次 2 第④条。
+
+        旧版补译日志只报 covered / source_only / ambiguous 三类计数，ignored（公式格、
+        看起来已经是译文的格、不符合候选规则的格）从不出现在日志里：用户看到"补了几格"，
+        看不到"跳过了几格、为什么跳过"，翻完对着原表发现漏译也无从查起。这里补上这条
+        自查线索，语气是"如实告知"，不是"报警"——大多数 ignored 本来就是正确判断
+        （公式格不该被覆盖、已经是双语的格不用再翻），只有当用户凭位置去核对、发现
+        误判时，这条线索才用得上。
+
+        零 ignored 时一行都不出：仓库立场是"无关提示不挂"，见 CLAUDE.md。
+        """
+        lines, full_detail = format_ignored_coverage_report(file_name, units)
+        for line in lines:
+            self._log("INFO", line)
+        # 全量坐标只进 loguru 调试输出（stderr，本仓库没配文件 sink）：任务面板
+        # 不按 level 过滤，发进任务日志的话会跟分组摘要一起整段刷在用户面前，
+        # 反而淹掉摘要。打包用户看不到 stderr——这是取舍：全量明细服务于开发排
+        # 查，用户核对靠摘要里的样例位置就够。
+        if full_detail:
+            logger.debug(full_detail)
 
     def _apply_deferred_resume_baselines(
         self,

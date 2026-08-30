@@ -698,3 +698,65 @@ def coverage_summary(units: list[CoverageUnit]) -> dict[str, int]:
     for unit in units:
         summary[unit.status] = summary.get(unit.status, 0) + 1
     return summary
+
+
+def group_ignored_units(units: list[CoverageUnit]) -> list[tuple[str, list[str]]]:
+    """把 ``ignored`` 状态的单元按 ``reason`` 分组，返回 ``[(reason, locations), ...]``。
+
+    审计批次 2 第④条：ignored 是补译计划里的静默黑洞——公式格、看起来已经是译文的格、
+    不符合候选规则的格都会落进这个状态，但补译日志过去只汇报 covered / source_only /
+    ambiguous 三类计数，从不提 ignored，用户没法知道"这一格为什么没被补"。这里只负责
+    产出证据（哪些位置、什么理由）；格式化成日志文案由 ``format_ignored_coverage_report``
+    统一负责——Excel 和 Word 的板式只差一个量词（格／处），由调用方传入。
+
+    放在共享层而不是 excel_coverage.py：判定 ignored 状态的三条理由分别在
+    excel_coverage.py／word_coverage.py 各写各的，但"按 reason 分组"这一步跟格式
+    无关，只要有一份 ``CoverageUnit`` 列表就能做。放这里意味着 Word 侧以后想接同样
+    的日志汇总，改的是它自己的任务日志调用点，不用再挪判定逻辑或重写一遍分组代码。
+
+    顺序：按 reason 首次出现的顺序，不按数量重排——补译计划本身是按 sheet / 段落的
+    遍历顺序生成的，这样分组顺序就是"文档里先遇到哪类问题就先报哪类"，同一份文档
+    每次跑结果稳定，也方便测试断言。
+    """
+    grouped: dict[str, list[str]] = {}
+    for unit in units:
+        if unit.status != COVERAGE_IGNORED:
+            continue
+        grouped.setdefault(unit.reason, []).append(unit.location)
+    return list(grouped.items())
+
+
+def format_ignored_coverage_report(
+    file_name: str,
+    units: list[CoverageUnit],
+    *,
+    unit_noun: str = "格",
+    sample_limit: int = 5,
+) -> tuple[list[str], str]:
+    """把 ignored 分组结果排成任务日志行，返回 ``(摘要行列表, 全量明细)``。
+
+    摘要行进用户可见的任务日志：一行总数加每个理由一行，位置只点 ``sample_limit``
+    个样例、超出的写「等 N ×量词」——任务日志消息会被脱敏管线截到 500 字符，全量
+    坐标塞进去也只会被静默砍掉，所以截样例不是审美选择而是硬约束。全量明细单独
+    返回，调用方落到 loguru 调试输出里去（stderr，本仓库没配文件 sink；任务面板
+    前端不按 level 过滤，DEBUG 行发进任务日志照样全量刷在用户面前，起不到
+    「降权重」的作用）。
+
+    零 ignored 返回 ``([], "")``：仓库立场「无关提示不挂」，调用方一行都不用出。
+    """
+    groups = group_ignored_units(units)
+    if not groups:
+        return [], ""
+    total = sum(len(locations) for _, locations in groups)
+    lines = [f"  → {file_name}：{total} {unit_noun}未补译（默认跳过），按原因分类如下："]
+    for reason, locations in groups:
+        sample = locations[:sample_limit]
+        remaining = len(locations) - len(sample)
+        detail = "、".join(sample)
+        if remaining > 0:
+            detail += f"，等 {remaining} {unit_noun}"
+        lines.append(f"    · {reason}（{len(locations)} {unit_noun}）：{detail}")
+    full_detail = "；".join(
+        f"{reason}：{'、'.join(locations)}" for reason, locations in groups
+    )
+    return lines, f"{file_name}：补译 ignored 全量明细 | {full_detail}"
