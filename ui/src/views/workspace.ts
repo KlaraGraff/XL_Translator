@@ -4335,8 +4335,8 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   if (task.state === "stopped") {
     const unfinishedPages = num(record(result.kpi).unstarted_page_count);
     const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
-    if (unfinishedPages > 0) clauses.push(`还有 ${unfinishedPages} 页没跑到，已停止`);
-    else if (unfinishedFiles > 0) clauses.push(`还有 ${unfinishedFiles} 个文件没跑到，已停止`);
+    if (unfinishedPages > 0) clauses.push(`还有 ${unfinishedPages} 页没跑到`);
+    else if (unfinishedFiles > 0) clauses.push(`还有 ${unfinishedFiles} 个文件没跑到`);
   }
   // 按了「安全停止」、但在飞的页刚好全部跑完时，任务照常走完成分支。不点这一句的话，
   // 屏幕上只剩「已完成 · 全部通过」，用户不知道自己那一下有没有截掉内容（只有运行日志

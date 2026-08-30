@@ -99,7 +99,7 @@ def describe_xls_compatibility_consequence(*, has_libreoffice: bool) -> str:
     """
     if has_libreoffice:
         return (
-            "会用本机 LibreOffice 转换：公式、样式、合并单元格通常能保留"
+            "，这一步会交给本机 LibreOffice 完成，公式、样式、合并单元格通常能保留"
             "（图表、图片可能有出入）；原始文件不会被改动。"
         )
     return (
