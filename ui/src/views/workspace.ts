@@ -535,6 +535,21 @@ async function persistSettings(patch: JsonObject): Promise<void> {
   settings = await c.request<JsonObject>("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 }
 
+/** 开关/领域/输出目录这几处设置都是「先改界面再落盘」，落盘发射后不管：PUT 失败时
+ *  界面已经显示了新值，磁盘上还是旧值，之后任务读的是磁盘（比如「锁定行高时缩字号」
+ *  这一类互斥开关），于是出现「界面显示关、实际按开跑」的假象，用户全程不知道保存
+ *  失败过。这里统一收口：失败就把 revert 传回来的旧值改回界面并重绘，同时报一句
+ *  尽量简短的事实性 toast，不替用户下「这意味着什么」的结论。 */
+async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, revert: () => void, what: string): Promise<void> {
+  try {
+    await persistSettings(patch);
+  } catch (error) {
+    revert();
+    rerender(surface);
+    showToast({ message: redactedText((error as Error)?.message, `${what}没有保存成功，已恢复为原来的设置。`), error: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // mount / unmount
 // ---------------------------------------------------------------------------
@@ -548,6 +563,13 @@ export function mountWorkspace(container: HTMLElement, _params: ViewParams, surf
   ensureBootstrap()
     .then(() => adoptExistingTask(surface))
     .then(() => {
+      // 「停」配对的「起」：unmountWorkspace 会停掉 PDF 逐页重跑的轮询计时器（高-10），
+      // 但 adoptExistingTask 只在首次发现任务时拉一次快照——st.task 已经存在的情形（切走
+      // 再切回这一屏）它会直接早返回，不会重新拉快照，于是重跑期间切走再切回来，面板会
+      // 永远停在离开那一刻的页码上、逐页按钮全灰，直到重启应用（B1-1）。这里补上：只要是
+      // PDF 且已经有任务，每次挂载都重新拉一次快照；fetchPdfPagesSnapshot 内部看到
+      // rerun.active 会自己把计时器重新起起来，跟 adoptExistingTask 里的调用是同一套逻辑。
+      if (surface === "pdf" && st.task) void fetchPdfPagesSnapshot(surface, st.task.task.task_id);
       if (st.renderer) renderInto(container, surface);
     })
     .catch((error) => {
@@ -561,6 +583,11 @@ export function unmountWorkspace(surface: Surface): void {
   // 离开这一屏后没人看那句「已等待 N 秒」，计时器再走就是白转（rerender 也已经是空操作）。
   // 任务本身不受影响：事件流由 watchTask 维护，回到这一屏时 startSilenceTicker 会重新起。
   stopSilenceTicker(surface);
+  // PDF 逐页重跑的轮询计时器同理必须在这里清掉：它是 setTimeout 链而不是随 DOM 走的
+  // 东西，不主动停就会在用户切到设置、记忆库等完全不相干的页面之后继续每隔几秒拉一次
+  // 快照——拉失败时那条报错 toast 会跟着用户跨页面弹，直到应用重启（高-10）。回到这一屏
+  // 时 fetchPdfPagesSnapshot 看到 snapshot.rerun.active 仍会自己把计时器重新起起来。
+  stopPdfRerunTicker(surface);
   // 提示气泡、语言选择器浮层、「浏览」按钮的锚定菜单都挂在 document.body 上，不随 container
   // 一起被清掉。不主动关就会留下一个悬在半空的面板，而且模块级的「当前展开项」指针还指着已死的闭包。
   hideHint();
@@ -575,24 +602,45 @@ function renderLoading(container: HTMLElement, surface: Surface): void {
   container.append(card);
 }
 
+const adoptAttempts: Partial<Record<Surface, Promise<void>>> = {};
+
 /** 首次打开某 surface 时，如果后端已有一个仍在跑的该类任务且本地还没聚焦任何任务，
- *  自动接管并订阅——对应 main.ts 的 workspaceTask() 在无显式聚焦时退回"最近一个活动任务"。 */
+ *  自动接管并订阅——对应 main.ts 的 workspaceTask() 在无显式聚焦时退回"最近一个活动任务"。
+ *
+ *  bootstrapAdopted 只在这次 listTasks() 真的问出结果（不管有没有活动任务）之后才写入，
+ *  绝不在发起网络调用之前就标记。原来的写法是「先标记、再请求、请求失败就静默吞掉」——
+ *  一次网络抖动就把这个 surface 永久钉在「没有任务」的假设上：bootstrapAdopted 是
+ *  模块级、跨挂载持续存在的 Set，之后不管切页面多少次再切回来，看到的都只是空的工作区，
+ *  实际后端还在跑的任务再也不会被自动接管。跟 ensureBootstrap() 一个道理：失败的尝试
+ *  不能留在缓存里，得让下一次挂载能够重试。 */
 async function adoptExistingTask(surface: Surface): Promise<void> {
   if (bootstrapAdopted.has(surface)) return;
-  bootstrapAdopted.add(surface);
   const st = states[surface];
-  if (st.task) return;
+  if (st.task) {
+    bootstrapAdopted.add(surface);
+    return;
+  }
+  if (!adoptAttempts[surface]) {
+    const attempt = (async () => {
+      const c = await getClient();
+      const list = await c.listTasks();
+      const candidate = list.active.find((t) => t.surface === surface);
+      if (candidate) {
+        focusTask(surface, candidate);
+        watchTask(surface);
+        if (surface === "pdf") void fetchPdfPagesSnapshot(surface, candidate.task_id);
+      }
+      bootstrapAdopted.add(surface);
+    })();
+    attempt.catch(() => {
+      if (adoptAttempts[surface] === attempt) delete adoptAttempts[surface];
+    });
+    adoptAttempts[surface] = attempt;
+  }
   try {
-    const c = await getClient();
-    const list = await c.listTasks();
-    const candidate = list.active.find((t) => t.surface === surface);
-    if (candidate) {
-      focusTask(surface, candidate);
-      watchTask(surface);
-      if (surface === "pdf") void fetchPdfPagesSnapshot(surface, candidate.task_id);
-    }
+    await adoptAttempts[surface];
   } catch {
-    // 接管失败不影响正常使用——用户可以照常扫描发起新任务。
+    // 接管失败不影响正常使用——用户可以照常扫描发起新任务；下次挂载这个 surface 会重试。
   }
 }
 
@@ -1710,7 +1758,11 @@ function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot, pending?: PendingR
   if (!snapshot.terminal) return "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
   // 快照还没确认之前，用本地记的那一页说话——否则这句会写着「仍可单独重新生成某一页」，
   // 而下面每一行的入口都已经是灰的，一屏之内自相矛盾。
-  const rerunningPage = snapshot.rerun.active ? snapshot.rerun.page_number : pending?.pageNumber;
+  // page_number > 0 这道额外的门槛是防「重跑刚结束那一瞬间」的显示闪烁：后端把 rerun
+  // 状态标记为「不在跑」和把 page_number 归零不保证是同一次写入，轮询有可能正好夹在
+  // 中间读到 active=true、page_number=0——页码从 1 开始，0 从来不是一页真实的页，
+  // 直接当「没有有效页码」处理，不把这个假页码报给用户。
+  const rerunningPage = snapshot.rerun.active && snapshot.rerun.page_number > 0 ? snapshot.rerun.page_number : pending?.pageNumber;
   if (rerunningPage !== undefined) return `第 ${rerunningPage} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
   if (snapshot.rerun.error) return `上一次重新生成没有成功：${redactedText(snapshot.rerun.error, "输出文件没有改动。")}`;
   // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
@@ -1785,27 +1837,68 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
   }
 }
 
-/** 终态没有 SSE，重生成的进度只能靠轮询这份快照；跑完自己停，不留空转的 interval。 */
+/** 终态没有 SSE，重生成的进度只能靠轮询这份快照；跑完自己停，不留空转的 interval。
+ *
+ *  用 setTimeout 自我重排而不是 setInterval：sidecar 中途重启过时 getPdfPages 会连续
+ *  失败，纯 setInterval 只会不多不少每 2 秒报一次错、永远不停（高-10）——快照拉不到，
+ *  local.pdfPagesSnapshot.rerun.active 停在拉失败前的最后一次真值上，永远不会自己变
+ *  false，下一轮判断条件形同虚设。这里改成连续失败计数：失败就退避（翻倍，封顶 20
+ *  秒），累计到上限就整个停掉并且只在停的那一刻说一句话，不再每一轮都弹 toast。 */
 const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+const rerunTickerFailures: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const RERUN_POLL_BASE_MS = 2000;
+const RERUN_POLL_MAX_MS = 20000;
+const RERUN_POLL_MAX_FAILURES = 5;
 
 function startPdfRerunTicker(surface: Surface, taskId: string): void {
   if (rerunTickers[surface] !== undefined) return;
-  rerunTickers[surface] = window.setInterval(() => {
-    const local = states[surface].task;
-    if (!local || local.task.task_id !== taskId || !local.pdfPagesSnapshot?.rerun.active) {
-      stopPdfRerunTicker(surface);
-      return;
-    }
-    void fetchPdfPagesSnapshot(surface, taskId);
-  }, 2000);
+  // fetchPdfPagesSnapshot 的成功分支无条件调用这里——包括「请求发出去时页面还挂载着，
+  // 响应回来时用户已经切走」这种情形（unmountWorkspace 早就 stopPdfRerunTicker 把槽位
+  // 清空了）。不看挂载状态就重开，会在用户已经离开的页面上复活出一个 handle：紧接着
+  // scheduleRerunTick 的下一轮会把这个新 handle 覆盖掉，stopPdfRerunTicker 永远够不着
+  // 它，两条链就在设置、记忆库等不相干的页面上继续轮询、继续弹「已停止自动刷新」的
+  // toast——正是高-10 要消灭的跨页面行为（B1-2）。renderer 在 unmountWorkspace 里被置
+  // 空、mountWorkspace 里被重新赋值，用它当「这一屏当前是否挂载」的判断刚好合适。
+  if (states[surface].renderer === null) return;
+  rerunTickerFailures[surface] = 0;
+  scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
+}
+
+function scheduleRerunTick(surface: Surface, taskId: string, delay: number): void {
+  rerunTickers[surface] = window.setTimeout(() => {
+    void (async () => {
+      const local = states[surface].task;
+      if (!local || local.task.task_id !== taskId || !local.pdfPagesSnapshot?.rerun.active) {
+        stopPdfRerunTicker(surface);
+        return;
+      }
+      const ok = await fetchPdfPagesSnapshot(surface, taskId, { silent: true });
+      // 这次 await 期间可能已经被 stopPdfRerunTicker 掐掉（unmountWorkspace、任务切走），
+      // handle 已经清空，不该再续排下一轮。
+      if (rerunTickers[surface] === undefined) return;
+      if (!ok) {
+        rerunTickerFailures[surface] += 1;
+        if (rerunTickerFailures[surface] >= RERUN_POLL_MAX_FAILURES) {
+          stopPdfRerunTicker(surface);
+          showToast({ message: "刷新重新生成进度连续失败，已停止自动刷新；重新打开这个任务可再次尝试。", error: true });
+          return;
+        }
+        scheduleRerunTick(surface, taskId, Math.min(RERUN_POLL_BASE_MS * 2 ** rerunTickerFailures[surface], RERUN_POLL_MAX_MS));
+        return;
+      }
+      rerunTickerFailures[surface] = 0;
+      scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
+    })();
+  }, delay);
 }
 
 function stopPdfRerunTicker(surface: Surface): void {
   const handle = rerunTickers[surface];
   if (handle !== undefined) {
-    window.clearInterval(handle);
+    window.clearTimeout(handle);
     rerunTickers[surface] = undefined;
   }
+  rerunTickerFailures[surface] = 0;
 }
 
 function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement | null {
@@ -2046,17 +2139,36 @@ function sleep(ms: number): Promise<void> {
  *  pdfActionsDisabledReason 里「第 N 页正在重新生成，跑完再操作下一页」那句），批量
  *  重跑没法并发发起，只能串行等。轮询节奏跟 startPdfRerunTicker 一样是 2 秒一次，但
  *  不复用那个 interval：那套是给「用户手动点了单独一页」配的独立计时器，跟这里
- *  「等完一页再发下一页」的串行 await 用途不一样，硬凑一起只会让两边互相踩状态。 */
-async function waitForRerunSlot(surface: Surface, taskId: string): Promise<void> {
+ *  「等完一页再发下一页」的串行 await 用途不一样，硬凑一起只会让两边互相踩状态。
+ *
+ *  返回 false 表示放弃了（连续拉快照失败太多次），调用方应该停掉整批，不能只是
+ *  沉默地继续发下一页——快照拉不到时我们并不知道后端到底有没有跑完，硬发下一页
+ *  只会撞 409。返回 true 表示槽位正常释放（或任务已经不是这一个了，交回调用方
+ *  自己的守卫判断）。 */
+async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boolean> {
   // 请求刚发出去，给后端一点时间把 rerun.active 标记上；不等这一下，第一次检查可能
   // 正好撞在「还没来得及写状态」的空档，会把这一页误判成「已经跑完」，提前发下一页。
   await sleep(1500);
+  let failures = 0;
   for (;;) {
     const local = states[surface].task;
-    if (!local || local.task.task_id !== taskId) return;
-    if (!local.pdfPagesSnapshot?.rerun.active) return;
-    await sleep(2000);
-    await fetchPdfPagesSnapshot(surface, taskId);
+    if (!local || local.task.task_id !== taskId) return true;
+    if (!local.pdfPagesSnapshot?.rerun.active) return true;
+    // sidecar 中途重启过时快照会连续拉不到：local.pdfPagesSnapshot.rerun.active 停在
+    // 拉失败前的最后一次真值上永远不会自己变 false，这个 for(;;) 不设退出条件就是
+    // 死循环，批量重跑卡死在第一页（同高-10 根因）。跟单页那个计时器一样退避 + 封顶。
+    const delay = Math.min(RERUN_POLL_BASE_MS * 2 ** failures, RERUN_POLL_MAX_MS);
+    await sleep(delay);
+    const ok = await fetchPdfPagesSnapshot(surface, taskId, { silent: true });
+    if (!ok) {
+      failures += 1;
+      if (failures >= RERUN_POLL_MAX_FAILURES) {
+        showToast({ message: "刷新重新生成状态连续失败，批量重跑已停止；请检查后台服务是否正常后重新发起。", error: true });
+        return false;
+      }
+      continue;
+    }
+    failures = 0;
   }
 }
 
@@ -2088,7 +2200,14 @@ async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageR
         const c = await getClient();
         await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
         await fetchPdfPagesSnapshot(surface, taskId);
-        await waitForRerunSlot(surface, taskId);
+        const gotSlot = await waitForRerunSlot(surface, taskId);
+        // 放弃等待（连续拉快照失败）时不能装作这一页正常跑完继续发下一页——那样只会
+        // 一页页往下、每一页都在死循环里重新攒够失败次数才停，体感上批量重跑还是卡住。
+        // waitForRerunSlot 已经弹过一次说明性 toast，这里直接收工。
+        if (!gotSlot) {
+          batch.stopped = true;
+          return;
+        }
       } catch (error) {
         showToast({ message: redactedText((error as Error)?.message, `第 ${page.page_number} 页重新生成失败。`), error: true });
       }
@@ -2603,21 +2722,29 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
 // 终态分支，adoptExistingTask 接管已有任务时，submitTaskStart 启动新任务后，以及 refetchTask 兜底刷新时。
 // ---------------------------------------------------------------------------
 
-async function fetchPdfPagesSnapshot(surface: Surface, taskId: string): Promise<void> {
-  if (surface !== "pdf") return;
+/** 返回是否拿到了新快照。轮询类调用方（重跑计时器、批量重跑的等槽位循环）传
+ *  `silent: true` 自己管失败计数和退避，不需要也不该在每一轮失败上都弹一条 toast——
+ *  那正是高-10 的报错洪水。一次性调用点（任务事件、接管、启动任务）保持原样：
+ *  单次失败就该让用户知道。 */
+async function fetchPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
+  if (surface !== "pdf") return false;
   const st = states[surface];
-  if (!st.task || st.task.task.task_id !== taskId) return;
+  if (!st.task || st.task.task.task_id !== taskId) return false;
   try {
     const c = await getClient();
     const snapshot = await c.getPdfPages(taskId);
-    if (st.task?.task.task_id !== taskId) return;
+    if (st.task?.task.task_id !== taskId) return false;
     st.task.pdfPagesSnapshot = snapshot;
     // 单页重生成跑在终态任务上，SSE 那时已经收摊了；接管一个正在重生成的任务
     // （切回页面、重开程序）也要能自己接上进度，所以起点放在这里而不是发起处。
     if (snapshot.rerun?.active) startPdfRerunTicker(surface, taskId);
     rerender(surface);
+    return true;
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "刷新逐页状态失败。"), error: true });
+    if (!options?.silent) {
+      showToast({ message: redactedText((error as Error)?.message, "刷新逐页状态失败。"), error: true });
+    }
+    return false;
   }
 }
 
@@ -2906,6 +3033,8 @@ function mergePatches(base: JsonObject, extra: JsonObject): JsonObject {
 }
 
 async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: ToggleDef, checked: boolean): Promise<void> {
+  const prevChecked = Boolean(st.toggles.get(toggle.key));
+  const prevPartner = toggle.exclusiveWith ? Boolean(st.toggles.get(toggle.exclusiveWith)) : undefined;
   st.toggles.set(toggle.key, checked);
   let patch = togglePatch(surface, toggle, checked);
   if (toggle.exclusiveWith) {
@@ -2918,7 +3047,12 @@ async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: To
     const partnerPatch = partner ? togglePatch(surface, partner, Boolean(st.toggles.get(partner.key))) : null;
     if (partnerPatch) patch = patch ? mergePatches(patch, partnerPatch) : partnerPatch;
   }
-  if (patch) await persistSettings(patch);
+  if (patch) {
+    await persistSettingsOrRevert(surface, patch, () => {
+      st.toggles.set(toggle.key, prevChecked);
+      if (toggle.exclusiveWith && prevPartner !== undefined) st.toggles.set(toggle.exclusiveWith, prevPartner);
+    }, toggle.label);
+  }
   rerender(surface);
 }
 
@@ -2945,9 +3079,10 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
       options: ["无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"].map((v) => ({ value: v, label: v })),
       value: st.domainPreset,
       onChange: (value) => {
+        const prev = st.domainPreset;
         st.domainPreset = value;
-        void persistSettings({ [`${surface}_domain_preset`]: value });
         rerender(surface);
+        void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, "专业领域");
       },
     });
     domainField.append(select.select);
@@ -2969,9 +3104,15 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
     radio.name = name;
     radio.checked = st.useCustomOutputDir === value;
     radio.addEventListener("change", () => {
+      const prev = st.useCustomOutputDir;
       st.useCustomOutputDir = value;
-      void persistSettings(nestedPatch(`${outputSettingPathPrefix(surface)}.use_custom_output_dir`, value));
       rerender(surface);
+      void persistSettingsOrRevert(
+        surface,
+        nestedPatch(`${outputSettingPathPrefix(surface)}.use_custom_output_dir`, value),
+        () => { st.useCustomOutputDir = prev; },
+        "输出位置",
+      );
     });
     wrapLabel.append(radio, document.createTextNode(` ${label}`));
     return wrapLabel;
@@ -2989,7 +3130,17 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
       },
     });
     input.addEventListener("change", () => {
-      void persistSettings(nestedPatch(`${outputSettingPathPrefix(surface)}.custom_output_dir`, st.customOutputDir));
+      // 落盘前的旧值要从「上一次成功落盘的值」取，不能取 st.customOutputDir 自己——
+      // 打字过程中每敲一下 onInput 都已经把它改成了正在输入的新值，到这里已经晚了。
+      // outputRecord() 读的是 settings 模块变量，只在 persistSettings 成功时才会更新，
+      // 是这一刻唯一还留着「磁盘上真实值」的地方。
+      const prevDir = text(outputRecord(surface).custom_output_dir);
+      void persistSettingsOrRevert(
+        surface,
+        nestedPatch(`${outputSettingPathPrefix(surface)}.custom_output_dir`, st.customOutputDir),
+        () => { st.customOutputDir = prevDir; },
+        "自定义输出目录",
+      );
     });
     root.style.marginTop = "6px";
     container.append(root);
@@ -4024,8 +4175,14 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       });
     }
   }
-  const stateFailed = task.state === "error" || task.state === "interrupted";
-  const generated = fileResults.length > 0 ? produced : stateFailed ? 0 : st.selected.size;
+  // stopped 不能跟 error/interrupted 分开对待：PDF 任务停在预处理阶段（还没真正开始
+  // 翻译第一页）时，file_results 会是空数组——一个字节都没写出来过。Excel/Word 的停止
+  // 路径无论如何都会给每个文件补一条 unstarted 记录，fileResults 从不为空，不会走到
+  // 这个兜底分支；只有 PDF 这条路会。此时唯一诚实的数字是 0，不是「选中了多少个文件」
+  // ——选中只代表打算翻，不代表已经产出，退回 st.selected.size 会把「已停止」说成
+  // 「已生成 N 个文件、全部通过」，实际一个文件都没写出来。
+  const stateNotProduced = task.state === "error" || task.state === "interrupted" || task.state === "stopped";
+  const generated = fileResults.length > 0 ? produced : stateNotProduced ? 0 : st.selected.size;
   // total_count 数的是全部结果项，里面混着用户不用管的两类：severity=resolved（后端
   // 已经自动修好）和 severity=info（按设计如此、去 Word 里刷一下就行的提示，比如自动
   // 目录）。照抄总数，一份只有目录提示的正常文档会在这一屏顶着黄横幅写「1 处需复核」，
