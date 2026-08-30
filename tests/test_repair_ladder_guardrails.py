@@ -116,6 +116,30 @@ class RepairLadderGuardrailTest(unittest.TestCase):
         )
         self.assertEqual(len(result.accepted), 1)
         self.assertEqual(len(result.remaining), 2)
+        # 停止撤下的单元逐条计入 stopped_count——调用方靠它把「停止没修」和
+        # 「试过被拒」分开归因（互审 F7）。
+        self.assertEqual(result.stopped_count, 2)
+
+    def test_stop_during_last_unit_request_reports_zero_stopped_count(self):
+        # 互审 F7 的边界：停止落在最后一个单元的请求进行中——循环正常收尾，
+        # remaining 里若有单元全是真拒收，stopped_count 必须是 0。调用方若改用
+        # 「事后探停止标志」的判据，这里就会把真拒收误标成停止导致。
+        state = {"sent": 0}
+
+        def reject_send(system, user):
+            state["sent"] += 1
+            return '{"repaired": ""}'  # 空修复稿被正当拒收
+
+        units = [_sentence_unit(1)]
+        result = run_repair_ladder(
+            units,
+            target_lang="fr",
+            send=reject_send,
+            # 第一次探测（单元开跑前）为假，请求发出后停止才生效。
+            should_stop=lambda: state["sent"] >= 1,
+        )
+        self.assertEqual(result.stopped_count, 0)
+        self.assertEqual(len(result.remaining), 1)
 
     def test_reject_reasons_and_progress_are_reported(self):
         progress = []

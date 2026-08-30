@@ -175,6 +175,17 @@ class PdfPageActionError(ValueError):
     """Raised when a single-page review action cannot be accepted."""
 
 
+def _with_sentence_end(text: str) -> str:
+    """给要往后拼安抚句的上游消息补齐句末标点。
+
+    humanize_error 没有模式命中时会原样透传服务商消息（内置成句都带「。」，
+    透传的不一定带），直接拼会粘成「余额不足已保留上一版…」这种粘连句。
+    """
+    if text and text[-1] not in "。！？.!?；;":
+        return text + "。"
+    return text
+
+
 @dataclass(frozen=True)
 class _PdfPageAction:
     kind: str
@@ -1830,25 +1841,43 @@ class PdfImageTranslationRunner:
         committed = False
         stashed = self._apply_page_regenerate(prepared, page, transactional=True)
         try:
-            self._process_prepared_pages(
-                [prepared],
-                max_attempts=max_attempts,
-                scheduler=scheduler,
-                review_scheduler=review_scheduler,
-                model_config=model_config,
-                review_model_config=review_model_config,
-                concurrency=1,
-                total_pages=max(1, int(record.page_count)),
-            )
+            try:
+                self._process_prepared_pages(
+                    [prepared],
+                    max_attempts=max_attempts,
+                    scheduler=scheduler,
+                    review_scheduler=review_scheduler,
+                    model_config=model_config,
+                    review_model_config=review_model_config,
+                    concurrency=1,
+                    total_pages=max(1, int(record.page_count)),
+                )
+            except (ImageModelUnavailableError, PdfReviewModelUnavailableError):
+                # _process_prepared_pages 探测到模型/审核模型致命不可用时是直接把异常
+                # raise 出来的（它自己在 finally 里说了「致命错误直接 raise 出去，收敛
+                # 循环再也回不来」），不是正常返回后再让调用方去看 self._fatal_model_error
+                # 标志位——下面 `if self._fatal_model_error:` 那行如果没有这个 except
+                # 接住异常，永远走不到：能把这个标志位设成真的两处（本文件内）都紧跟着
+                # raise。这里必须真的接住它，用户看到的 toast 才带得上「旧产物已保留」。
+                pass
             if self._fatal_model_error:
-                raise PdfPageActionError(self._fatal_model_error)
+                # finally 块里会把这一页和文件记录整体回滚（见下方 committed 分支），
+                # 旧的译文页、高清/压缩 PDF 全都原样保留——异常消息本身要把这句话
+                # 说出来，用户看到的是 toast，不是这段代码的回滚逻辑（低-旧产物提示）。
+                raise PdfPageActionError(
+                    f"{_with_sentence_end(self._fatal_model_error)}"
+                    "已保留上一版译文页和输出文件，本次改动未生效。"
+                )
             self._finalize_file_record(prepared, should_assemble=True)
             if record.status == PDF_OUTPUT_STATE_FAILED:
                 # 装配失败：旧产物还在磁盘上（新产物是先写临时文件再原子替换的），
-                # 所以这里同样要整体回滚，而不是把这份文件留在「失败」上。
-                raise PdfPageActionError(
-                    record.error or "重新生成后没能重新装配输出文件，已保留上一版产物。"
+                # 所以这里同样要整体回滚，而不是把这份文件留在「失败」上——同样要
+                # 把「旧产物没丢」说进异常消息（低-旧产物提示），不能只在 record.error
+                # 缺失时走默认文案才带这句话。
+                reason = _with_sentence_end(
+                    record.error or "重新生成后没能重新装配输出文件。"
                 )
+                raise PdfPageActionError(f"{reason}已保留上一版产物，输出文件未改动。")
             committed = True
         finally:
             if committed:

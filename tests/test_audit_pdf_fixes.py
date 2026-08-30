@@ -244,6 +244,9 @@ class AuditPdfHighAndMediumTests(unittest.TestCase):
             # 失败要如实说出来，而不是悄悄留下一份被删空的输出目录。
             self.assertTrue(state["error"])
             self.assertIn("API Key", state["error"])
+            # 审计批次 2 第③条：旧产物没丢这件事不能只让用户自己发现，异常消息
+            # 本身要把这句话说出来。
+            self.assertIn("已保留上一版译文页和输出文件，本次改动未生效。", state["error"])
 
             # 交付产物：还在原地，内容一致。
             self.assertTrue(translated_pdf.is_file())

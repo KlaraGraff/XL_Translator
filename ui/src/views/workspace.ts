@@ -2014,11 +2014,12 @@ function pageNeedsRerun(page: PdfPage): boolean {
 }
 
 /** 「这一页算不算有问题」统一按 reviewResultChip 判出来的颜色定，不重新发明一套规则：
- *  dgr（失败 / 已跳过占位）和 warn（建议复核 / 审核未通过 / 待复核）都算。折叠默认
- *  展开、分组小结、「只看有问题的页」筛选三处共用这一个答案，保证它们说的是同一件事，
- *  不会出现「筛选说这页没问题，分组小结却把它算进失败」这种对不上。 */
-function pageIsProblem(page: PdfPage): boolean {
-  const tones = reviewResultChip(page).className.split(" ");
+ *  dgr（失败 / 已跳过占位）和 warn（建议复核 / 审核未通过 / 待复核 / 任务已停止时的
+ *  待处理页）都算。折叠默认展开、分组小结、「只看有问题的页」筛选三处共用这一个答案，
+ *  保证它们说的是同一件事，不会出现「筛选说这页没问题，分组小结却把它算进失败」这种
+ *  对不上。taskStopped 只影响 reviewResultChip 对 pending 页给出的颜色，见那边注释。 */
+function pageIsProblem(page: PdfPage, taskStopped: boolean): boolean {
+  const tones = reviewResultChip(page, taskStopped).className.split(" ");
   return tones.includes("dgr") || tones.includes("warn");
 }
 
@@ -2074,8 +2075,8 @@ function pageIsUnfinished(page: PdfPage): boolean {
  *     「xxx.pdf · 0 页」，不说谎；这是新引入的虚假肯定，而且正好落在最该被看见的
  *     文件上。文件级的失败原因 status/error 快照里现成有，直接用。
  *
- *  所以改成分桶累加：失败 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
-function buildGroupSummaryNodes(file: PdfPageFile): HTMLElement[] {
+ *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
+function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLElement[] {
   if (file.status === "failed" || file.pages.length === 0) {
     const bad = el("span", "bad");
     bad.textContent = "文件打不开";
@@ -2084,11 +2085,16 @@ function buildGroupSummaryNodes(file: PdfPageFile): HTMLElement[] {
 
   const pages = file.pages;
   const failed = pages.filter(pageNeedsRerun);
-  const flagged = pages.filter((page) => !pageNeedsRerun(page) && pageIsProblem(page));
-  const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !pageIsProblem(page) && pageIsUnfinished(page));
-  const passed = pages.length - failed.length - flagged.length - unfinished.length;
+  // 停止时还没排上号的页单独一档：它既不是「试过没通过」（失败/建议复核），也不是
+  // 「还在排队，等着轮到」（待处理）——任务已经定格在终态，它不会再自己轮到。混进
+  // 前两档的任何一档都会让用户会错意（以为程序判定这页有质量问题，或以为程序还在
+  // 后台继续跑），见 reviewResultChip 对 pending 页在 taskStopped 下的处理。
+  const stoppedSet = new Set(taskStopped ? pages.filter((page) => !pageNeedsRerun(page) && page.status === "pending") : []);
+  const flagged = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && pageIsProblem(page, taskStopped));
+  const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
+  const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length;
 
-  if (failed.length === 0 && flagged.length === 0 && unfinished.length === 0) {
+  if (failed.length === 0 && stoppedSet.size === 0 && flagged.length === 0 && unfinished.length === 0) {
     const all = el("span");
     all.textContent = `${pages.length} 页全部通过`;
     return [all];
@@ -2101,6 +2107,7 @@ function buildGroupSummaryNodes(file: PdfPageFile): HTMLElement[] {
     parts.push(node);
   };
   if (failed.length > 0) push(`${failed.length} 失败`, "bad");
+  if (stoppedSet.size > 0) push(`${stoppedSet.size} 已停止`, "flag");
   if (flagged.length > 0) push(`${flagged.length} 建议复核`, "flag");
   if (unfinished.length > 0) push(`${unfinished.length} 待处理`);
   if (passed > 0) push(`${passed} 通过`);
@@ -2276,6 +2283,12 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   const ui = reviewUiState(taskId);
   const batch = pdfBatchRerunState[surface];
   const batchRerunActive = !!batch && batch.taskId === taskId;
+  // 只认「已停止」这一个终态。注意这是范围裁剪、不是成因差异：error 终态下同样
+  // 会留下 pending 页（_discard_stopped_pages 在 _process_prepared_pages 的
+  // finally 里，对致命模型错误等所有出口一样生效，见
+  // core/pdf_image_translation.py），那些页现在仍显示灰色「待处理」。审计批次 2
+  // 第①条的范围只覆盖「停止」，error 终态的同类改进是另一条待办。
+  const taskStopped = local.task.state === "stopped";
 
   // .pdf-review-card 是「只看有问题的页」筛选的挂载点（card.filter .row-ok /
   // .grp-clean 定义在 workspace.css），特意挂在这张卡片自己身上而不是 body：卡片会
@@ -2341,7 +2354,7 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
     // 预处理就失败的文件一页都没有，file.pages.some(...) 恒为 false——不额外认一下
     // file.status，它就会被当成「干净」：默认收起，勾上「只看有问题的页」时整行消失。
     // 最该被看见的文件反而是唯一看不见的，正好反了。
-    const anyProblem = file.status === "failed" || file.pages.length === 0 || file.pages.some(pageIsProblem);
+    const anyProblem = file.status === "failed" || file.pages.length === 0 || file.pages.some((page) => pageIsProblem(page, taskStopped));
     const handle: PdfGroupHandle = { fileKey, hasFailingPage: file.pages.some(pageNeedsRerun), rows: [] };
 
     if (multiFile) {
@@ -2364,7 +2377,7 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
       const fn = el("span", "fn");
       fn.textContent = file.name;
       const sum = el("span", "sum");
-      sum.append(...buildGroupSummaryNodes(file));
+      sum.append(...buildGroupSummaryNodes(file, taskStopped));
       btn.append(fn, sum);
       btn.addEventListener("click", () => toggleGroupOpen(ui, handle));
       cell.append(btn);
@@ -2375,8 +2388,8 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
 
     const open = multiFile ? ui.collapse.get(fileKey) ?? anyProblem : true;
     for (const page of file.pages) {
-      const row = buildReviewRow(surface, taskId, snapshot, file, page, batchRerunActive);
-      if (!pageIsProblem(page)) row.classList.add("row-ok");
+      const row = buildReviewRow(surface, taskId, snapshot, file, page, batchRerunActive, taskStopped);
+      if (!pageIsProblem(page, taskStopped)) row.classList.add("row-ok");
       if (multiFile && !open) row.classList.add("hid");
       table.append(row);
       handle.rows.push(row);
@@ -2470,7 +2483,7 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   return card;
 }
 
-function reviewResultChip(page: PdfPage): HTMLElement {
+function reviewResultChip(page: PdfPage, taskStopped: boolean): HTMLElement {
   // 按尺寸跳过的页必须排在最前面判断，而且不能落到「待复核」上：它没有译文也没有页图，
   // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
   if (page.skipped_oversize) return createChip({ label: "按幅面跳过", tone: "mute" });
@@ -2480,7 +2493,17 @@ function reviewResultChip(page: PdfPage): HTMLElement {
   // 译文页还没出来的一律不给审核结论。后端的中间态有三个：pending 还没轮到、
   // rendered 页图已渲染正在等模型、placeholder_pending 等着补占位页。9.2.6 只认识
   // pending，另外两个落到了下面的 review_status 分支上，于是页面还没生成就写「待复核」。
-  if (page.status === "pending") return createChip({ label: "待处理", tone: "mute" });
+  if (page.status === "pending") {
+    // 中止时这一页可能一次模型调用都没发生：071e130 之后后端把它退回「未开始」而不是
+    // 烧成失败占位页（core/pdf_image_translation.py 的 _discard_stopped_page），所以
+    // 快照里跟「还在排队、马上轮到」长得一模一样，都是 status: "pending"。区别只能靠
+    // 任务是否已经落在终态「已停止」上：还在跑时这就是正常的排队中（灰色、不打扰）；
+    // 一旦定格在「已停止」，它就再也不会自己轮到，用黄色「已停止」把它跟「失败」
+    // （红色）和「还在排队」（灰色）都分开，不能三者共用一个灰色「待处理」。
+    return taskStopped
+      ? createChip({ label: "已停止", tone: "warn" })
+      : createChip({ label: "待处理", tone: "mute" });
+  }
   if (page.status === "rendered") return createChip({ label: "生成中", tone: "mute" });
   if (page.status === "placeholder_pending") return createChip({ label: "待补占位", tone: "mute" });
   // 审核结论要排在质检疑点前面：同一页可能既被质检挂了疑点又被审核判不通过，那时候
@@ -2507,13 +2530,20 @@ function reviewResultChip(page: PdfPage): HTMLElement {
   return createChip({ label: "待复核", tone: "warn" });
 }
 
-function reviewNote(page: PdfPage): string {
+function reviewNote(page: PdfPage, taskStopped: boolean): string {
   if (page.skipped_oversize) return "幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。";
   if (page.pending_action === "regenerate") return "已排队重新生成，继续翻译后生效。";
   if (page.pending_action === "skip") return "已排队跳过，继续翻译后生效。";
   if (page.review_summary) return redactedText(page.review_summary);
   if (page.status === "failed" || page.placeholder) return redactedText(page.error, "页面生成失败。");
-  if (page.status === "pending") return "尚未处理。";
+  if (page.status === "pending") {
+    // 跟 reviewResultChip 用同一个 taskStopped 信号：任务已经停止时，这一页不是「还没
+    // 轮到」，是「不会再轮到了」；同时说清这不是失败，也不用「单页重新生成」（那是给
+    // 已经跑出结果、要推倒重来的页用的），真正能补上它的是对同一输出目录发起续译。
+    return taskStopped
+      ? "任务已停止，这一页还没有跑到；不是生成失败，对同一输出目录发起「接着上次继续」可以把它排回队列。"
+      : "尚未处理。";
+  }
   if (page.status === "rendered") return "页图已渲染，正在等模型返回这一页的译文。";
   if (page.status === "placeholder_pending") return "这一页没能生成，正在补一张占位页。";
   // 跟 reviewResultChip 同理：质检疑点要压在「通过」前面，否则这一页会摆着一句
@@ -2533,7 +2563,7 @@ function reviewNote(page: PdfPage): string {
   return "";
 }
 
-function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, batchRerunActive: boolean): HTMLTableRowElement {
+function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, batchRerunActive: boolean, taskStopped: boolean): HTMLTableRowElement {
   const row = el("tr");
   const pendingRerun = pendingRerunFor(surface, taskId);
   const rerunning = isPageRerunning(snapshot, file, page, pendingRerun);
@@ -2542,12 +2572,12 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   row.append(pageCell);
 
   const resultCell = el("td");
-  resultCell.append(rerunning ? createChip({ label: "重新生成中", tone: "tint" }) : reviewResultChip(page));
+  resultCell.append(rerunning ? createChip({ label: "重新生成中", tone: "tint" }) : reviewResultChip(page, taskStopped));
   row.append(resultCell);
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会覆盖原来的译文页" : reviewNote(page);
+  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会覆盖原来的译文页" : reviewNote(page, taskStopped);
   row.append(noteCell);
 
   const actionsCell = el("td");
@@ -2580,7 +2610,13 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
     const rerunReason = oversizeSkipped
       ? oversizeReason
       : !rerunnable
-        ? "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
+        ? notFinished && taskStopped
+          // 停止时还没跑到的页不是「试过没成」，「单页重新生成」这个动作本身也不适用
+          // （它的前提是已经有一版结果可以推倒重来）。真正能补上它的路是续译——同一个
+          // 输出目录发起「接着上次继续」会把这一页重新排进队列，不需要整份推倒重来，
+          // 「请重新建立任务」这句在这里是错的，会让用户以为要连已经跑完的页一起重翻。
+          ? "这一页在停止时还没有跑到，不是生成失败；单页重新生成帮不上忙，对同一输出目录发起「接着上次继续」可以把它排回队列。"
+          : "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
         // 三把锁串在一起，从具体到笼统：批量在跑（这一批还剩好几页）→ 有一页在跑
         // （含本地那笔还没进快照的）→ 逐页记录已释放。顺序不能反：批量重跑期间
         // rerunBusy 同样为真，先撞上笼统那句，用户就看不到「可以按停止」这个出路了。
@@ -4290,6 +4326,18 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     clauses.push(finalLabel ? `中途换了连接，后半程由「${finalLabel}」完成` : `中途换了 ${switchCount} 次连接`);
   }
   if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
+  // 停止且真有内容没跑到时，横幅要报出「还剩多少」——不然用户只知道自己点了停止，
+  // 不知道停在了哪、值不值得重新跑。字段名照抄任务中心已经在用的口径（tasks.ts）：
+  // PDF 按页算（kpi.unstarted_page_count，core/pdf_image_translation.py 的 _done_kpi），
+  // Excel/Word 按文件算（kpi.unstarted_file_count，core/task_runner.py 的
+  // _build_result_contract）。两个字段不会同时非零，谁非空就报谁；旧任务记录没有这
+  // 两个字段时 num() 按 0 处理，不会显示这一句——不是新字段就必须报数。
+  if (task.state === "stopped") {
+    const unfinishedPages = num(record(result.kpi).unstarted_page_count);
+    const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
+    if (unfinishedPages > 0) clauses.push(`还有 ${unfinishedPages} 页没跑到，已停止`);
+    else if (unfinishedFiles > 0) clauses.push(`还有 ${unfinishedFiles} 个文件没跑到，已停止`);
+  }
   // 按了「安全停止」、但在飞的页刚好全部跑完时，任务照常走完成分支。不点这一句的话，
   // 屏幕上只剩「已完成 · 全部通过」，用户不知道自己那一下有没有截掉内容（只有运行日志
   // 里有一条 WARN）。
@@ -4340,7 +4388,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       : "任务没有产出文件，请看下方日志或完整报告里的原因。");
     st.bannerInfo = {
       title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
-      subtitle: generated > 0 ? [detail, ...clauses].join(" · ") : detail,
+      // 零产出也要拼 clauses：停止在阶段 2 之前时 generated 为 0，而「还有 N 页/
+      // 个文件没跑到」恰恰在 clauses 里——那正是最需要报数的一次（其余 clauses
+      // 在零产出时本来就都是空的，拼上无害）。
+      subtitle: [detail, ...clauses].join(" · "),
       tone,
       statusLabel: generated > 0 ? `${stateWord} · 部分生成` : stateWord,
       hasOutput: generated > 0,

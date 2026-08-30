@@ -243,6 +243,15 @@ class StoppedMsg:
     connections: dict[str, object] = field(default_factory=dict)
     language: dict[str, object] = field(default_factory=dict)
     error: dict[str, object] = field(default_factory=dict)
+    # DoneMsg 一直带着 issues（残留中文待复核等 quality_issues），StoppedMsg 之前没有——
+    # 停止收尾那条分支只是没把这个字段接上，不是设计上认为"停止就不该带 issues"。
+    # 结果是任务真被停止时，正在处理的这份文件如果恰好检出了残留中文/待复核项，
+    # 这条信息会在收尾时直接被丢掉，前端和任务中心都看不到（详见下面 StoppedMsg(...)
+    # 构造处的说明）。补上这个字段，前端 workspace.ts 的 openIssues 统计（读
+    # result.issues，不挑 task.state）才吃得到停止路径下的 quality_issues。
+    # 新增字段带默认值，旧任务记录/旧消息反序列化时缺这个键按空列表处理，不影响
+    # 旧数据可读。
+    issues: list[dict] = field(default_factory=list)
 
 
 class TaskStopped(Exception):
@@ -1515,6 +1524,12 @@ class TaskRunner:
             # 「这批单元根本没尝试修复，重跑还有救」
             repair_over_cap_count = 0
             repair_breaker_tripped = False
+            # 停止导致的「没来得及修」跟「超限/熔断没修成」是三种不同的成因——
+            # 审计批次 2 第④条：这批未完成的内容不该被说成「修复失败」，用户按了
+            # 停止不算失败。判据用 ladder.stopped_count（阶梯逐单元记录「停止时还
+            # 没开跑」的条数），不用事后探停止标志：停止落在最后一个单元的请求
+            # 进行中时，remaining 全是真拒收、标志却已置位，事后探会把归因算反。
+            repair_stopped_by_user = False
             if still_needs_review and engine_supports_chat(engine):
 
                 def _on_repair_progress(done: int, total: int) -> None:
@@ -1558,6 +1573,8 @@ class TaskRunner:
                 repair_over_cap_count = ladder.over_cap_count
                 repair_breaker_tripped = ladder.breaker_tripped
                 still_needs_review = ladder.remaining
+                # 跟「超限」「熔断」不冲突，三个成因可能同时出现，下面拼消息时各说各的。
+                repair_stopped_by_user = ladder.stopped_count > 0
             repaired_total = sum(repair_method_counts.values())
             if repaired_total:
                 method_desc = "、".join(
@@ -1588,15 +1605,31 @@ class TaskRunner:
                         "type": "residual_source_language",
                         "severity": "needs_action",
                         "count": len(still_needs_review),
+                        # 附加的机器可判字段，不改动 type/severity：报告/界面想按「是不是
+                        # 停止导致的」单独处理时读这个字段，不用去猜 message 里的措辞；
+                        # 旧任务记录没有这个键，读取方按缺省 False（当作非停止）处理即可，
+                        # 不影响旧数据可读——新增字段只加不改，兼容旧结果契约。
+                        "caused_by_stop": repair_stopped_by_user,
                         "message": (
                             f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
                             + (
+                                # 停止不是失败：这批是任务被停止时还没轮到自动修复的部分，
+                                # 不是「模型改了还是不对」。放在最前面说，不然用户会把它跟
+                                # 下面「熔断/超限」这些真正尝试过、没修成的情况混为一谈。
+                                "其中一部分是任务停止时还没来得及自动修复（不是修复失败），"
+                                if repair_stopped_by_user
+                                else ""
+                            )
+                            + (
                                 # 补译模式的输出文件不带标记列；双语模式下用户
                                 # 也可能关掉「标记需复核内容」——文件里真没标记
-                                # 时不许许诺有标记
+                                # 时不许许诺有标记。停止同理：停止标志置位后
+                                # 阶段 3 之前的 _raise_if_stopped 会拦下写盘，
+                                # 输出文件根本不存在，更不能许诺「已在文件中标记」。
                                 "请按下方源文清单逐条核对。"
                                 if self._untranslated_only
                                 or not self._settings.excel_review.mark_review_items
+                                or repair_stopped_by_user
                                 else "已在输出文件中标记待复核位置。"
                             )
                             + (
@@ -1610,6 +1643,17 @@ class TaskRunner:
                                 "自动修复通道因连续请求失败已熔断，部分单元未尝试"
                                 "修复，确认网络与引擎可用后重新运行任务可继续修复。"
                                 if repair_breaker_tripped
+                                else ""
+                            )
+                            + (
+                                # 不说「接着处理」：停止发生在写盘之前时本次没有
+                                # 可续的产物，重跑是从头再来（已入库的译文会经
+                                # 记忆库直接复用，残留部分重新走自动修复）。
+                                "重新运行任务时，已完成的译文会经记忆库复用，"
+                                "这批残留会重新尝试自动修复。"
+                                if repair_stopped_by_user
+                                and not repair_over_cap_count
+                                and not repair_breaker_tripped
                                 else ""
                             )
                         ),
@@ -1633,9 +1677,22 @@ class TaskRunner:
                         ],
                     }
                 )
+                # 运行日志同样要把「停止」和「修复失败」分开说——面板里这条 WARN 是用户
+                # 唯一能看到的第一手记录，跟上面 quality_issues 的 message 措辞保持一致，
+                # 不能一边在报告里说「不是修复失败」，日志这行却只字不提成因。级别仍用
+                # WARN：不管是不是因为停止，这批内容都还需要用户处理，不该看起来比真实
+                # 状态更轻。
                 self._log(
                     "WARN",
-                    f"检出 {len(still_needs_review)} 条译文残留中文，已列入待复核。",
+                    (
+                        f"检出 {len(still_needs_review)} 条译文残留中文，"
+                        + (
+                            "其中一部分是任务停止时还没来得及自动修复，"
+                            if repair_stopped_by_user
+                            else ""
+                        )
+                        + "已列入待复核。"
+                    ),
                 )
             if residual_result.released_notes:
                 # 万/亿等数量单位残留：不拦发布，但报告里留痕
@@ -2116,6 +2173,11 @@ class TaskRunner:
                 StoppedMsg(
                     message=stopped_message,
                     output_dir=str(output_dir),
+                    # 正在处理的那份文件在停止前已经跑完阶段 2（含残留中文修复梯队），
+                    # quality_issues 里可能已经有它的记录（包括本次新增的
+                    # caused_by_stop 标记）——DoneMsg 一直把这份列表接到 issues 上，
+                    # 这里之前漏接，导致停止路径下这份信息始终到不了前端。
+                    issues=quality_issues,
                     **contract,
                 )
             )

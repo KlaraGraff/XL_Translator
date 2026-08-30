@@ -266,6 +266,10 @@ class RepairLadderResult:
     reject_reasons: dict = field(default_factory=dict)  # source_text -> tuple[str]
     over_cap_count: int = 0
     breaker_tripped: bool = False
+    # remaining 里有几条是「停止时还没开跑」——调用方要把「停止没修」和
+    # 「试过没修成」分开归因，光在调用结束后探停止标志会把边界算反：停止落在
+    # 最后一个单元的请求进行中时，remaining 全是真拒收，标志却已置位。
+    stopped_count: int = 0
 
 
 def run_repair_ladder(
@@ -320,6 +324,7 @@ def run_repair_ladder(
 
     for index, unit in enumerate(queue, start=1):
         if should_stop is not None and should_stop():
+            result.stopped_count += 1
             result.remaining.append(unit)
             continue
         if consecutive_failures >= breaker_threshold:
