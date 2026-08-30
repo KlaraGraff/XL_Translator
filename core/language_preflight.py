@@ -128,9 +128,25 @@ def _is_representative_candidate(text: str) -> bool:
         return False
     if _NUMBER_ONLY_RE.fullmatch(text) or _NUMBERING_ONLY_RE.fullmatch(text):
         return False
-    # A candidate must contain at least one letter or CJK character.  This
-    # filters dates, dimensions, model numbers and punctuation-only cells.
-    return bool(re.search(r"[A-Za-z\u00c0-\u024f\u0370-\u052f\u0900-\u0dff\u3040-\u30ff\u3400-\u9fff]", text))
+    # A candidate must contain at least one letter or CJK/other-script
+    # character.  This filters dates, dimensions, model numbers and
+    # punctuation-only cells.  The ranges below cover, in order: Latin
+    # (incl. extended), Greek/Cyrillic, Hebrew, Arabic (+ Supplement +
+    # Extended-A), Devanagari..Sinhala, Thai+Lao, Myanmar, Hangul Jamo,
+    # Ethiopic (+ Supplement), Khmer, Hiragana/Katakana, Hangul Compat
+    # Jamo, CJK Unified Ideographs, Hangul Syllables.  Without these, a
+    # whole-file source language of Arabic/Hebrew/Thai/Lao/Myanmar/Khmer/
+    # Ethiopic/Korean never produces a candidate, "auto" detection never
+    # fires a request, and the file falls back to the zh default untranslated.
+    return bool(
+        re.search(
+            r"[A-Za-z\u00c0-\u024f\u0370-\u052f\u0590-\u05ff\u0600-\u06ff"
+            r"\u0750-\u077f\u08a0-\u08ff\u0900-\u0dff\u0e00-\u0eff\u1000-\u109f"
+            r"\u1100-\u11ff\u1200-\u139f\u1780-\u17ff\u3040-\u30ff\u3130-\u318f"
+            r"\u3400-\u9fff\uac00-\ud7a3]",
+            text,
+        )
+    )
 
 
 def extract_preflight_candidates(
@@ -261,7 +277,13 @@ def normalize_translation_language_result(
     allowed_source_langs: Iterable[str] | None = None,
     manual_source_lang: str | None = None,
 ) -> TranslationLanguageResult:
-    """Normalize a model item and gate TM eligibility on actual source_lang."""
+    """Normalize a model item and gate TM eligibility on actual source_lang.
+
+    Raises ``ValueError`` when the item's translation is missing or is
+    itself a non-string container (dict/list) — a protocol violation the
+    caller's batch retry/split fallback must handle, not something to
+    silently swallow into "" or serialize with ``str()``.
+    """
     source = str(source_text or "")
     if isinstance(raw_item, Mapping):
         translation = raw_item.get("translation")
@@ -273,6 +295,25 @@ def normalize_translation_language_result(
     else:
         translation = raw_item
         reported_source = None
+
+    # TASK_INSTRUCTION_WITH_SOURCE only ever specifies a string translation
+    # inside the per-item object; null, or a translation field that is
+    # itself a dict/list, is a protocol violation — not a value to
+    # str()-serialize into the output and TM. Give one nested dict a second
+    # chance (some providers double-wrap the field), then reject so the
+    # caller's batch retry/split fallback runs instead of a cell ending up
+    # with something like "{'translation': 'Valve'}".
+    if isinstance(translation, Mapping):
+        nested = translation.get("translation")
+        if nested is None:
+            nested = translation.get("target_text")
+        if nested is None:
+            nested = translation.get("translated")
+        translation = nested
+    if translation is None or isinstance(translation, (Mapping, list)):
+        raise ValueError(
+            f"响应解析失败：译文缺失或不是字符串（{translation!r}），违反协议约定"
+        )
 
     candidate = str(reported_source or "").strip().lower()
     resolved = resolve_language_code(candidate, dict(SUPPORTED_SOURCE_LANGS)) if candidate else None
@@ -289,7 +330,7 @@ def normalize_translation_language_result(
 
     return TranslationLanguageResult(
         source_text=source,
-        translation="" if translation is None else str(translation),
+        translation=str(translation),
         source_lang=actual_source,
         target_lang=str(target_lang or "").strip(),
         tm_eligible=eligible,

@@ -7,7 +7,7 @@
   get_source_lang_name  — 源语言代码 → 中文显示名
   get_target_lang_name  — 目标语言代码 → 中文显示名
   strip_markdown_json() — 健壮剥离 LLM 响应中的 markdown 代码块
-  parse_response()      — 通用 JSON 数组响应解析，降级返回原文
+  parse_response()      — 通用 JSON 数组响应解析，解析失败抛异常交重试链处理
 """
 import json
 import re
@@ -93,19 +93,32 @@ def parse_response(originals: list[str], raw: str, engine_label: str = "") -> di
     """
     通用 JSON 数组响应解析。
     先剥离 markdown 代码块，再解析 JSON，长度校验通过后返回 {原文: 译文}。
-    任何解析失败均降级返回 {原文: 原文}，并记录 warning 日志。
+
+    数组元素若为 null，或为对象但取不出 translation 字段，均属违反
+    TASK_INSTRUCTION 第 6 条（"每一项都必须是字符串，严禁返回 null"）的协议
+    响应，一律在此抛出异常，交由调用方既有的批次重试/拆分/降级链路处理——
+    绝不能把 None 静默转成 "" 或把 ``{'translation': 'Valve'}`` 这类字典字面量
+    用 str() 写进译文产物与 TM。真正的降级（原样保留原文、计入未翻译数）
+    发生在 engine_dispatcher 的批次重试逻辑里，而不是这里。
     """
     cleaned = strip_markdown_json(raw)
+    label = f"{engine_label} " if engine_label else ""
     try:
         translations = json.loads(cleaned)
         if isinstance(translations, list) and len(translations) == len(originals):
-            return {
-                src: ("" if tgt is None else str(tgt))
-                for src, tgt in zip(originals, translations)
-            }
+            result: dict[str, str] = {}
+            for index, (src, tgt) in enumerate(zip(originals, translations)):
+                if isinstance(tgt, dict):
+                    tgt = tgt.get("translation")
+                if tgt is None or isinstance(tgt, (dict, list)):
+                    raise ValueError(
+                        f"{label}响应解析失败：第 {index + 1} 项译文缺失或不是字符串"
+                        f"（{tgt!r}），违反协议约定"
+                    )
+                result[src] = str(tgt)
+            return result
     except json.JSONDecodeError:
         pass
-    label = f"{engine_label} " if engine_label else ""
     raise ValueError(f"{label}响应解析失败 (无法匹配为包含 {len(originals)} 条记录的数组)，大模型原始内容：{raw[:200]}")
 
 
