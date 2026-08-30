@@ -242,6 +242,11 @@ class XlsConversionTempFileCleanup(unittest.TestCase):
 
             with ExitStack() as stack:
                 _base_patches(stack, root=root, engine=engine)
+                # 兼容转换现在先探 LibreOffice：桩成「没装」，让这个用例继续走它原本
+                # 要测的 xlrd 兜底路径，不被 LO 分支截胡。
+                stack.enter_context(
+                    patch("core.word_converter._find_soffice", return_value=None)
+                )
                 stack.enter_context(
                     patch("core.xls_converter.convert_with_fallback", return_value=converted)
                 )
@@ -285,6 +290,11 @@ class XlsConversionTempFileCleanup(unittest.TestCase):
 
             with ExitStack() as stack:
                 _base_patches(stack, root=root, engine=engine)
+                # 兼容转换现在先探 LibreOffice：桩成「没装」，让这个用例继续走它原本
+                # 要测的 xlrd 兜底路径，不被 LO 分支截胡。
+                stack.enter_context(
+                    patch("core.word_converter._find_soffice", return_value=None)
+                )
                 stack.enter_context(
                     patch("core.xls_converter.convert_with_fallback", return_value=converted)
                 )

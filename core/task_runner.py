@@ -818,6 +818,7 @@ class TaskRunner:
                     from core.xls_converter import (
                         convert_with_excel,
                         convert_with_fallback,
+                        convert_with_libreoffice,
                     )
                     t_conv = datetime.now()
                     try:
@@ -826,8 +827,25 @@ class TaskRunner:
                             process_path = convert_with_excel(app, process_path)
                             file_conversion_modes[str(file_item.path)] = "excel_automation"
                         else:
-                            process_path = convert_with_fallback(process_path)
-                            file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
+                            # 兼容转换内部分两级：本机有 LibreOffice 就优先用它保留公式/
+                            # 样式/合并单元格；没装或转换失败再退回 xlrd 纯取值——用户侧
+                            # 的授权仍是二选一（高保真/兼容），这两级不额外弹选项。
+                            try:
+                                process_path = convert_with_libreoffice(process_path)
+                                file_conversion_modes[str(file_item.path)] = "libreoffice_conversion"
+                            except Exception as lo_error:
+                                lo_reason = user_facing_reason(
+                                    lo_error, fallback="LibreOffice 转换不可用。"
+                                )
+                                # WARN 而不是 INFO：这一步意味着产物质量降级（公式
+                                # 变数值），用户扫日志时应当一眼看到。
+                                self._log(
+                                    "WARN",
+                                    f"{file_item.name}：LibreOffice 兼容转换不可用，"
+                                    f"退回值化转换（公式不会保留）：{lo_reason}",
+                                )
+                                process_path = convert_with_fallback(process_path)
+                                file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
                         self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")
                     except Exception as e:
                         logger.debug(f"源文件转换失败 {file_item.name} 原始错误：{e!r}")

@@ -341,6 +341,9 @@ interface SurfaceState {
   excelDoneNotice: ExcelDoneNotice | null;
   allowXlsFallback: boolean;
   allowDocFallback: boolean;
+  /** 本机是否装了 LibreOffice（扫描时探测一次）。只用来切换兼容转换弹窗的文案——
+   *  装了之后兼容转换也能保留公式/样式，不再是「必然变纯数值」。 */
+  libreofficeAvailable: boolean;
   /** 「更多设置」折叠区的开合。每次开关变化都会整块重绘右栏，不记下来的话用户刚收起就被弹回展开。 */
   moreSettingsOpen: boolean;
   /** 本次扫描检测到的历史产物；没有检测结果时为 null。每次扫描整体重置。 */
@@ -387,6 +390,7 @@ function freshState(surface: Surface): SurfaceState {
     excelDoneNotice: null,
     allowXlsFallback: false,
     allowDocFallback: false,
+    libreofficeAvailable: false,
     moreSettingsOpen: true,
     resumeInfo: null,
     resumeDecision: null,
@@ -3646,6 +3650,9 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     st.files = items;
     st.skipped = skipped;
     st.scanSummary = record(result.summary);
+    // 只有 Excel 扫描才带 risk.libreoffice_available；Word/PDF 没这个字段，record()
+    // 在缺字段时给回 {}，取值自然落回 false，不用按 surface 分支特判。
+    st.libreofficeAvailable = Boolean(record(result.risk).libreoffice_available);
     st.selected = new Set(items.map((f) => f.path));
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
@@ -3766,7 +3773,9 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
             `已选择 ${count} 个旧版 .xls 文件，最终结果统一输出为 .xlsx。`,
             `原始文件不会被改动：公式、宏和样式都完整保留在原来的 .xls 文件里，随时可以打开对照。下面的取舍只影响翻译输出的新文件。`,
             `优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 未安装、自动化被拒绝或某个文件转换失败时，该文件明确失败，其他文件继续，绝不静默改用兼容模式。`,
-            `允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。`,
+            st.libreofficeAvailable
+              ? `允许兼容转换：没装 Excel 也能翻译——本机检测到 LibreOffice，会用它转换，公式、样式、合并单元格通常能保留（图表、图片可能有出入）。这项选择只对本次任务生效。`
+              : `允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。安装免费的 LibreOffice 后，兼容转换也能保留公式与样式。`,
           ]
         : [
             `已选择 ${count} 个旧版 ${legacyExt} 文件。最终结果统一输出为 ${finalExt}，源文件不会被改写。`,

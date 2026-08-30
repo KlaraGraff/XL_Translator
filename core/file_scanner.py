@@ -124,14 +124,27 @@ class ExcelScanResult:
     @property
     def risk(self) -> dict[str, object]:
         xls_count = self.summary["xls_count"]
+        # 只有真有 .xls 文件时才值得探一次 soffice——没有 .xls 的扫描不该为一个
+        # 用不上的字段多付一次文件系统查找的代价。
+        has_libreoffice = False
+        if xls_count:
+            from core.xls_converter import (
+                describe_xls_compatibility_consequence,
+                libreoffice_xls_conversion_available,
+            )
+
+            has_libreoffice = libreoffice_xls_conversion_available()
         return {
             "has_xls": bool(xls_count),
             "xls_count": xls_count,
             "requires_explicit_compatibility_confirmation": bool(xls_count),
+            # 前端弹窗按这个字段切换「允许兼容转换」的文案变体——装了 LibreOffice
+            # 的机器上，兼容转换不再等于「公式变数值」。
+            "libreoffice_available": has_libreoffice,
             "message": (
                 "检测到 .xls 文件：优先用本机 Microsoft Excel 高保真转换；"
-                "若确认改用兼容转换，输出文件里公式会变成算好的数值，"
-                "样式、合并单元格、图片和图表不会保留。原始文件不会被改动。"
+                "若确认改用兼容转换"
+                + describe_xls_compatibility_consequence(has_libreoffice=has_libreoffice)
                 if xls_count
                 else ""
             ),
@@ -491,6 +504,24 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
     size_kb = path.stat().st_size / 1024
 
     original_path = path if path.suffix.lower() == ".xls" else None
+    is_xls = path.suffix.lower() == ".xls"
+    file_risk: dict[str, object] = {}
+    if is_xls:
+        from core.xls_converter import (
+            describe_xls_compatibility_consequence,
+            libreoffice_xls_conversion_available,
+        )
+
+        file_risk = {
+            "compatibility_required": True,
+            "message": (
+                ".xls 需通过本机 Microsoft Excel 高保真转换；"
+                "或经用户明确确认后改用兼容转换"
+                + describe_xls_compatibility_consequence(
+                    has_libreoffice=libreoffice_xls_conversion_available()
+                )
+            ),
+        }
 
     return FileItem(
         path=path,
@@ -504,16 +535,5 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
         image_count=image_count,
         shape_text_count=shape_text_count,
         comment_count=comment_count,
-        risk=(
-            {
-                "compatibility_required": True,
-                "message": (
-                    ".xls 需通过本机 Microsoft Excel 高保真转换；"
-                    "或经用户明确确认后改用兼容转换——输出中公式会变成算好的数值，"
-                    "样式、合并单元格、图片和图表不会保留。原始文件不会被改动。"
-                ),
-            }
-            if path.suffix.lower() == ".xls"
-            else {}
-        ),
+        risk=file_risk,
     )

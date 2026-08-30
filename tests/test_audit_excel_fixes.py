@@ -851,19 +851,45 @@ def _function_body(source: str, name: str) -> str:
 
 
 class XlsCompatibilityWarningWordingTests(unittest.TestCase):
-    """后果导向文案：告警必须说清「公式变数值、样式丢失」，且不改动原始文件。"""
+    """后果导向文案：告警必须说清兼容转换的真实后果，且不改动原始文件。
 
-    def test_aggregate_scan_message_states_the_consequence(self) -> None:
+    LibreOffice 接入后「公式变数值、样式丢失」不再对所有机器成立——按本机有没有
+    LibreOffice，这里分两组钉：没有 LO 的机器维持原话，装了 LO 的机器换成新话，
+    两组都必须留住「原始文件不会被改动」这句安抚（core/xls_converter.py 的
+    describe_xls_compatibility_consequence 是唯一出处，见该函数文档）。
+    """
+
+    def test_aggregate_scan_message_states_the_consequence_without_libreoffice(self) -> None:
+        from core.file_scanner import ExcelScanResult, FileItem
+
+        # ExcelScanResult.risk 是个每次访问都重算的 property（不缓存），必须在同一次
+        # 打桩窗口内把要断言的值一次取全，出了 with 块再访问就是在读真机的探测结果。
+        item = FileItem(path=Path("legacy.xls"), name="legacy", size_kb=1.0, format="xls")
+        with mock.patch("core.word_converter._find_soffice", return_value=None):
+            result = ExcelScanResult(root=Path("."), items=[item])
+            risk = result.risk
+        self.assertFalse(risk["libreoffice_available"])
+        self.assertIn("公式会变成算好的数值", risk["message"])
+        self.assertIn("原始文件不会被改动", risk["message"])
+
+    def test_aggregate_scan_message_switches_when_libreoffice_is_available(self) -> None:
         from core.file_scanner import ExcelScanResult, FileItem
 
         item = FileItem(path=Path("legacy.xls"), name="legacy", size_kb=1.0, format="xls")
-        result = ExcelScanResult(root=Path("."), items=[item])
-        message = result.risk["message"]
-        self.assertIn("公式会变成算好的数值", message)
-        self.assertIn("原始文件不会被改动", message)
+        with mock.patch(
+            "core.word_converter._find_soffice",
+            return_value="/Applications/LibreOffice.app/Contents/MacOS/soffice",
+        ):
+            result = ExcelScanResult(root=Path("."), items=[item])
+            risk = result.risk
+        self.assertTrue(risk["libreoffice_available"])
+        self.assertIn("LibreOffice", risk["message"])
+        self.assertIn("原始文件不会被改动", risk["message"])
+        # 装了 LO 之后不该再吓唬用户说公式一定会被拍死成数值。
+        self.assertNotIn("公式会变成算好的数值", risk["message"])
 
     @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")
-    def test_single_file_risk_message_states_the_consequence(self) -> None:
+    def test_single_file_risk_message_states_the_consequence_without_libreoffice(self) -> None:
         import xlwt
 
         from core.file_scanner import _build_file_item
@@ -874,12 +900,13 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
             book.add_sheet("S").write(0, 0, "施工内容")
             book.save(str(path))
 
-            item = _build_file_item(path)
+            with mock.patch("core.word_converter._find_soffice", return_value=None):
+                item = _build_file_item(path)
             message = item.risk["message"]
             self.assertIn("公式会变成算好的数值", message)
             self.assertIn("原始文件不会被改动", message)
 
-    def test_ui_modal_pins_the_new_excel_wording_and_keeps_word_wording(self) -> None:
+    def test_ui_modal_pins_both_excel_wording_variants_and_keeps_word_wording(self) -> None:
         source = _read_ui("views/workspace.ts")
         body = _function_body(source, "showCompatibilityModal")
         # 互审抓过两处假钉子：整个函数体里搜 ".doc" 连变量声明都能满足，Word 文案
@@ -890,6 +917,9 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
         excel_arm, sep, word_arm = arms.partition(": [")
         self.assertTrue(sep, "在函数体里找不到三元的 Word 分支")
         self.assertIn("原始文件不会被改动", excel_arm)
+        # 「允许兼容转换」这一段本身又按 libreofficeAvailable 分了两个变体，两句都
+        # 必须原样留在 Excel 分支里——只留一句就是把某一类机器的用户晾在旧文案上。
+        self.assertIn("本机检测到 LibreOffice", excel_arm)
         self.assertIn("公式会变成算好的数值", excel_arm)
         self.assertIn(
             "复杂样式、合并单元格、图片、图表和宏可能无法完整保留",
@@ -897,18 +927,28 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
             "Word 分支的既有文案不该被误改",
         )
 
-    def test_backend_error_messages_share_the_consequence_wording(self) -> None:
+    def test_backend_error_messages_call_the_shared_consequence_helper(self) -> None:
         """弹窗后紧接着可能出现的两条后端报错必须和弹窗说同一套话。
 
-        互审抓到的矛盾：用户刚在弹窗里读完「不会保留」，几秒后预检失败的报错
-        又说「可能损失…和宏」——同一个选择两种说法。这里钉住两处报错源文件。
+        互审抓到的矛盾：用户刚在弹窗里读完一套说法，几秒后预检失败的报错又说
+        另一套——同一个选择两种说法。LibreOffice 接入后已经没有唯一一句「写死
+        的话」可以整段 grep 了（后果按本机有没有 LO 分叉，见
+        describe_xls_compatibility_consequence），所以这里改成两层校验：
+        ①共享函数本身的两个分支都留着「原始文件不会被改动」；
+        ②两处报错源文件真的在调用这个共享函数，而不是各自写死一份新句子。
         """
+        for has_libreoffice in (True, False):
+            consequence = xls_converter.describe_xls_compatibility_consequence(
+                has_libreoffice=has_libreoffice
+            )
+            with self.subTest(has_libreoffice=has_libreoffice):
+                self.assertIn("原始文件不会被改动", consequence)
+
         repo = Path(__file__).resolve().parents[1]
         for rel in ("api/task_manager.py", "core/xls_converter.py"):
             source = (repo / rel).read_text(encoding="utf-8")
             with self.subTest(rel):
-                self.assertIn("公式会变成算好的数值", source)
-                self.assertIn("原始文件不会被改动", source)
+                self.assertIn("describe_xls_compatibility_consequence(", source)
                 self.assertNotIn("兼容转换可能损失", source)
 
 

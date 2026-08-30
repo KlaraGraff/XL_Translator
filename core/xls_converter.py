@@ -1,12 +1,18 @@
 """
 XLS 格式转换器模块。
 提供将老的 .xls 格式转换为 .xlsx 格式的功能。
-提供两种策略：
-1. xlwings（优先复用本地 Excel 链路）：保真度更高，但运行前提取决于本机实际环境。
-2. xlrd + openpyxl（纯 Python）：降级转换，可能丢失复杂格式（合并单元格样式、图片、宏等）。
+对外仍是二元授权（高保真 / 兼容），但「兼容」内部分两级：
+1. xlwings（优先复用本地 Excel 链路，高保真授权专用）：保真度更高，但运行前提
+   取决于本机实际环境。
+2. 兼容转换先试 LibreOffice headless（convert_with_libreoffice）：本机装了就
+   用它转，公式、样式、合并单元格通常能保留；没装或转换失败再退到
+3. xlrd + openpyxl（纯 Python，convert_with_fallback）：兜底转换，只取裸值，
+   公式必丢、复杂格式（合并单元格样式、图片、宏等）也丢。
 """
 import datetime
 import platform
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -16,8 +22,21 @@ from core.excel_automation import probe_local_excel_automation
 from core.user_facing_errors import humanize_error
 
 
+# 单文件转换超时。与 word_converter.WORD_CONVERSION_TIMEOUT_SECONDS 同值——两条
+# 管线都是「起一个 soffice 进程转一个文件」，没有理由给不同的上限。
+LIBREOFFICE_XLS_CONVERSION_TIMEOUT_SECONDS = 180
+
+
 class XlwingsUnavailableError(Exception):
     """当尝试使用 xlwings 但环境不可用时抛出。"""
+
+
+class LibreOfficeConversionError(Exception):
+    """LibreOffice 转换 .xls 失败时抛出：未安装、超时、非零退出、没有产物皆属此类。
+
+    调用方（task_runner.py 的兼容转换分支）接住它之后退回 convert_with_fallback，
+    这个异常从不需要直接展示给用户。
+    """
 
 
 def is_excel_automation_permission_denied(exc: BaseException | str) -> bool:
@@ -46,12 +65,125 @@ def _format_excel_conversion_error(exc: BaseException) -> str:
             fallback="本机 Excel 没能完成这次转换，可返回任务设置并选择兼容转换后重试。",
         )
 
+    consequence = describe_xls_compatibility_consequence(
+        has_libreoffice=libreoffice_xls_conversion_available()
+    )
     return (
         "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。"
         f"请在「{macos_excel_automation_privacy_path()}」中允许 Translator 控制 Microsoft Excel，"
-        "或返回任务设置并明确选择兼容转换；兼容转换后，输出文件里公式会变成算好的数值，"
-        "样式、合并单元格、图片和图表不会保留；原始文件不会被改动。"
+        f"或返回任务设置并明确选择兼容转换{consequence}"
     )
+
+
+def libreoffice_xls_conversion_available() -> bool:
+    """本机能不能把 .xls 兼容转换交给 LibreOffice。
+
+    探测复用 Word 管线已有的 ``_find_soffice``（core/word_converter.py:570-593），
+    不在这里另起一份查找逻辑——两条管线找的是同一个 soffice 二进制，写两份候选
+    路径列表迟早会走岔。探测本身只是查几个文件是否存在，很便宜，调用方可以按
+    需现查，不用自己缓存。
+    """
+    from core.word_converter import _find_soffice
+
+    return _find_soffice() is not None
+
+
+def describe_xls_compatibility_consequence(*, has_libreoffice: bool) -> str:
+    """兼容转换实际会造成什么后果：按本机有没有 LibreOffice 二选一。
+
+    预检报错、Excel 自动化权限报错、扫描聚合/单文件告警原来各自写死一份「公式会
+    变成算好的数值」——LibreOffice 接入后这句对装了 LO 的用户不再成立，统一到这
+    一处，以后口径变化只改这一个函数。返回值是接在「……兼容转换」后面的从句
+    （含标点），调用方按自己的引导语拼接前半句。两个变体都保留「原始文件不会被
+    改动」这层安抚：兼容转换动的从来只是输出的新文件，不是用户手上那份 .xls。
+    """
+    if has_libreoffice:
+        return (
+            "会用本机 LibreOffice 转换：公式、样式、合并单元格通常能保留"
+            "（图表、图片可能有出入）；原始文件不会被改动。"
+        )
+    return (
+        "后，输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表"
+        "不会保留；原始文件不会被改动。"
+    )
+
+
+def convert_with_libreoffice(xls_path: Path) -> Path:
+    """用本机 LibreOffice headless 转换 .xls，公式/样式/合并单元格通常能保留。
+
+    「兼容转换」内部藏的隐藏档位：授权语义对用户仍是二元的，这一层是实现细节。
+    调用方（task_runner.py）在 xlrd 纯值化兜底之前先试这条路，失败（soffice 不
+    在、超时、非零退出、没有产物）一律抛 LibreOfficeConversionError，接住后退回
+    convert_with_fallback。
+
+    每次转换单独传 ``-env:UserInstallation``：两个 soffice 进程不能共享用户配置
+    目录，用户开着 LibreOffice 图形界面时共享 profile 会静默失败——本仓库 Word
+    的 UNO 路径已经踩过这个坑（word_converter.py:308-319）。``--convert-to`` 的
+    产物名固定是 ``<stem>.xlsx``，先落进独立的临时子目录，再挪到
+    ``_get_temp_xlsx_path`` 生成的唯一路径上；临时 profile 和这个子目录用完
+    整个删掉，不留任何残余。
+    """
+    from core.word_converter import _find_soffice
+
+    xls_path = Path(xls_path)
+    soffice_path = _find_soffice()
+    if soffice_path is None:
+        raise LibreOfficeConversionError("未找到 LibreOffice/soffice。")
+
+    out_path = _get_temp_xlsx_path(xls_path)
+    work_dir = Path(tempfile.mkdtemp(prefix="xl_translator_lo_"))
+    profile_dir = work_dir / "profile"
+    convert_dir = work_dir / "out"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    convert_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"使用 LibreOffice 将 {xls_path.name} 转换为临时 .xlsx")
+    try:
+        command = [
+            str(soffice_path),
+            "--headless",
+            "--norestore",
+            "--nodefault",
+            f"-env:UserInstallation={profile_dir.as_uri()}",
+            "--convert-to",
+            "xlsx",
+            "--outdir",
+            str(convert_dir),
+            str(xls_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=LIBREOFFICE_XLS_CONVERSION_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise LibreOfficeConversionError(
+                f"LibreOffice 转换超时（{LIBREOFFICE_XLS_CONVERSION_TIMEOUT_SECONDS} 秒）。"
+            ) from error
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise LibreOfficeConversionError(detail or f"LibreOffice 转换返回码 {result.returncode}")
+
+        converted_path = convert_dir / f"{xls_path.stem}.xlsx"
+        if not converted_path.exists():
+            # soffice 偶尔会按内部规范化过的文件名落盘（比如原名带它不认的字符）；
+            # 目录里只要唯一一个 .xlsx，就认它是这次转换的产物。
+            candidates = list(convert_dir.glob("*.xlsx"))
+            if len(candidates) == 1:
+                converted_path = candidates[0]
+        if not converted_path.exists():
+            raise LibreOfficeConversionError("LibreOffice 未生成 .xlsx 输出。")
+
+        shutil.move(str(converted_path), str(out_path))
+        return out_path
+    except Exception:
+        _discard_partial_output(out_path)
+        raise
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def macos_excel_automation_privacy_path() -> str:

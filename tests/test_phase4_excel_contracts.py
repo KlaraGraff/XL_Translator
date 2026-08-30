@@ -373,6 +373,9 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
             self.assertTrue(by_source[str(healthy)]["success"])
 
     def test_xls_compatibility_conversion_requires_explicit_confirmation(self) -> None:
+        """本机没有 LibreOffice 时，兼容转换应退到 xlrd 纯值化——这是接入 LO 之前
+        就有的桩测，这里补上 _find_soffice 探测桩，让它继续只测 xlrd 这条路径；
+        LO 命中那条路径由下面 test_xls_compatibility_conversion_prefers_libreoffice_when_available 覆盖。"""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             legacy = root / "legacy.xls"
@@ -387,6 +390,9 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
                     engine=engine,
                     texts_by_path={converted: ["施工内容"]},
                 )
+                stack.enter_context(
+                    patch("core.word_converter._find_soffice", return_value=None)
+                )
                 fallback = stack.enter_context(
                     patch("core.xls_converter.convert_with_fallback", return_value=converted)
                 )
@@ -400,7 +406,97 @@ class ExcelTaskRunnerContractTests(unittest.TestCase):
 
             fallback.assert_called_once_with(legacy)
             writer.assert_called_once()
-            self.assertTrue(_done_message(runner).file_results[0]["success"])
+            done = _done_message(runner)
+            self.assertTrue(done.file_results[0]["success"])
+            self.assertEqual(done.file_results[0]["conversion_mode"], "compatibility_fallback")
+
+    def test_xls_compatibility_conversion_prefers_libreoffice_when_available(self) -> None:
+        """本机装了 LibreOffice 时，兼容转换应该先走 LO，xlrd 兜底完全不该被调用。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = root / "legacy.xls"
+            converted = root / "converted.xlsx"
+            legacy.touch()
+            converted.touch()
+            engine = _PreflightEngine()
+            with ExitStack() as stack:
+                writer = self._run_patches(
+                    stack,
+                    root=root,
+                    engine=engine,
+                    texts_by_path={converted: ["施工内容"]},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_converter._find_soffice",
+                        return_value="/Applications/LibreOffice.app/Contents/MacOS/soffice",
+                    )
+                )
+                libreoffice = stack.enter_context(
+                    patch("core.xls_converter.convert_with_libreoffice", return_value=converted)
+                )
+                fallback = stack.enter_context(patch("core.xls_converter.convert_with_fallback"))
+                runner = TaskRunner(
+                    [FileItem(path=legacy, name="legacy", size_kb=1.0)],
+                    _settings(),
+                    source_root=root,
+                    allow_xls_fallback=True,
+                )
+                runner._run()
+
+            libreoffice.assert_called_once_with(legacy)
+            fallback.assert_not_called()
+            writer.assert_called_once()
+            done = _done_message(runner)
+            self.assertTrue(done.file_results[0]["success"])
+            self.assertEqual(done.file_results[0]["conversion_mode"], "libreoffice_conversion")
+
+    def test_xls_compatibility_conversion_falls_back_when_libreoffice_conversion_fails(self) -> None:
+        """LO 探测到了，但真正转换时失败（比如遇到损坏文件）：必须退回 xlrd，
+        不能让这一个文件直接判死——这是「兼容转换」这个二元授权对用户的承诺。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = root / "legacy.xls"
+            converted = root / "converted.xlsx"
+            legacy.touch()
+            converted.touch()
+            engine = _PreflightEngine()
+            with ExitStack() as stack:
+                writer = self._run_patches(
+                    stack,
+                    root=root,
+                    engine=engine,
+                    texts_by_path={converted: ["施工内容"]},
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_converter._find_soffice",
+                        return_value="/Applications/LibreOffice.app/Contents/MacOS/soffice",
+                    )
+                )
+                libreoffice = stack.enter_context(
+                    patch(
+                        "core.xls_converter.convert_with_libreoffice",
+                        side_effect=xls_converter.LibreOfficeConversionError("模拟转换失败"),
+                    )
+                )
+                fallback = stack.enter_context(
+                    patch("core.xls_converter.convert_with_fallback", return_value=converted)
+                )
+                runner = TaskRunner(
+                    [FileItem(path=legacy, name="legacy", size_kb=1.0)],
+                    _settings(),
+                    source_root=root,
+                    allow_xls_fallback=True,
+                )
+                runner._run()
+
+            libreoffice.assert_called_once_with(legacy)
+            fallback.assert_called_once_with(legacy)
+            writer.assert_called_once()
+            done = _done_message(runner)
+            self.assertTrue(done.file_results[0]["success"])
+            self.assertEqual(done.file_results[0]["conversion_mode"], "compatibility_fallback")
 
     def test_excel_review_colors_are_not_read_from_word_settings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -51,7 +51,11 @@ from core.task_runner import (
 from core.word_document import scan_word_path
 from core.word_task_runner import WordTaskRunner
 from core.word_converter import get_local_word_automation_availability
-from core.xls_converter import get_local_excel_availability
+from core.xls_converter import (
+    describe_xls_compatibility_consequence,
+    get_local_excel_availability,
+    libreoffice_xls_conversion_available,
+)
 from settings import AppSettings, load_settings
 
 TaskSurface = Literal["excel", "word", "pdf", "tm_clean"]
@@ -1472,12 +1476,13 @@ class TranslationTaskManager:
         available, reason = get_local_excel_availability()
         if available:
             return
+        consequence = describe_xls_compatibility_consequence(
+            has_libreoffice=libreoffice_xls_conversion_available()
+        )
         raise TaskInputError(
             "检测到 "
             f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
-            "请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换；"
-            "兼容转换后，输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表"
-            "不会保留；原始文件不会被改动。"
+            f"请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换{consequence}"
         )
 
     @staticmethod
