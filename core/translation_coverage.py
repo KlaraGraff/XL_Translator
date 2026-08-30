@@ -32,16 +32,153 @@ _INCIDENTAL_CJK_MAX_RATIO_OF_TEXT = 0.05
 _INCIDENTAL_CJK_MAX_RATIO = 0.2
 _INCIDENTAL_CJK_MIN_LETTERS = 12
 
-_FRENCH_MARKER_WORDS = {
-    "avec", "aux", "ce", "ces", "cette", "dans", "des", "du", "est",
-    "et", "la", "le", "les", "pour", "sans", "sur", "une",
+# ---------------------------------------------------------------------------
+# 语言证据：这段文字到底像哪一门语言
+#
+# 9.3.4 之前这里只有 en/fr 一对标记词，而且是硬编码的「非英即法」：英译中时
+# 「Société Générale Contract」因为带 é 被判成「法语，所以不是英语」→ 既不算源文
+# 也不算译文 → 静默进 ignored，不翻译、也不进报告，用户翻到才发现。这一版做三件事：
+#   1) 加一层文字体系判定（中日韩俄阿希泰希腊天城体各有专属字符区间，最硬的证据）；
+#   2) 标记词表扩到 7 门拉丁语言，德译英这种同字母语言对终于有话可说；
+#   3) 同一个词出现在两门以上语言的表里就从所有表里删掉——"in" 英德荷都有、"la" 法西
+#      意都有，它们证明不了任何事，留着只会制造假证据。变音符号同理。
+#
+# 证据只有三态：True（像）/ False（不像）/ None（没话说）。None 绝不能被当成 False
+# 用——「说不上来」和「确定不是」在补译里是两个完全不同的后果，见 looks_like_source_text。
+# ---------------------------------------------------------------------------
+_LANGUAGE_MARKER_WORDS: dict[str, set[str]] = {
+    "en": {
+        "and", "are", "the", "this", "that", "these", "those", "with", "without",
+        "from", "for", "of", "on", "in", "is", "to", "was", "were", "be", "been",
+        "shall", "will", "must", "may", "should", "which", "its", "their", "they",
+        "there", "have", "has", "had", "not", "any", "all", "each", "such",
+        "after", "before", "between", "during", "per", "than", "then", "when",
+        "where", "while", "by", "at", "as", "or", "if", "into", "upon", "other",
+        "no", "do", "does",
+    },
+    "fr": {
+        "avec", "aux", "ce", "ces", "cette", "cet", "dans", "des", "du", "de",
+        "est", "et", "la", "le", "les", "pour", "sans", "sur", "une", "un", "par",
+        "que", "qui", "plus", "sont", "ont", "leur", "leurs", "ainsi", "selon",
+        "entre", "dont", "où", "chaque", "tout", "tous", "doit", "peut", "être",
+        "non", "il", "elle", "nous", "vous", "mais", "comme", "lors", "sous",
+        "vers",
+    },
+    "de": {
+        "der", "die", "das", "den", "dem", "des", "und", "oder", "mit", "von",
+        "für", "auf", "im", "in", "ist", "sind", "nicht", "ein", "eine", "einer",
+        "einem", "eines", "zu", "zur", "zum", "bei", "nach", "aus", "wird",
+        "werden", "durch", "als", "dass", "sich", "auch", "sowie", "kein",
+        "keine", "wenn", "über", "unter", "vor", "gemäß", "sie", "wir", "aber",
+        "wie", "nur", "noch", "muss", "kann",
+    },
+    "es": {
+        "el", "la", "los", "las", "del", "de", "en", "un", "una", "uno", "para",
+        "con", "sin", "que", "por", "como", "este", "esta", "estos", "estas",
+        "son", "ser", "está", "están", "más", "pero", "todo", "todos", "cada",
+        "según", "entre", "sobre", "desde", "hasta", "cuando", "donde", "también",
+        "no", "se", "su", "sus", "al", "ya", "muy",
+    },
+    "it": {
+        "il", "lo", "la", "le", "gli", "dei", "delle", "della", "degli", "del",
+        "dal", "dalla", "nel", "nella", "alla", "al", "per", "con", "senza",
+        "una", "un", "che", "non", "sono", "essere", "come", "questo", "questa",
+        "questi", "anche", "tra", "sul", "sulla", "più", "ogni", "secondo",
+        "sia", "ma", "se", "si", "ha", "hanno",
+    },
+    "pt": {
+        "os", "as", "do", "da", "dos", "das", "um", "uma", "com", "sem", "para",
+        "por", "que", "não", "são", "ser", "como", "este", "esta", "também",
+        "entre", "sobre", "desde", "até", "quando", "onde", "cada", "pelo",
+        "pela", "no", "na", "nos", "nas", "ao", "aos", "de", "mais", "mas", "se",
+        "seu", "sua",
+    },
+    "nl": {
+        "de", "het", "een", "en", "van", "niet", "voor", "zijn", "aan", "naar",
+        "uit", "op", "met", "door", "als", "bij", "die", "dat", "in", "of", "om",
+        "te", "ook", "deze", "dit", "tussen", "over", "worden", "wordt", "moet",
+        "kan", "zal", "wie", "hun", "maar", "meer", "nog", "geen",
+    },
 }
-_ENGLISH_MARKER_WORDS = {
-    "and", "are", "for", "from", "in", "is", "of", "on", "the", "this",
-    "to", "with", "without",
+_LANGUAGE_DIACRITICS: dict[str, set[str]] = {
+    "fr": set("àâçéèêëîïôùûüÿœæ"),
+    "de": set("äöüß"),
+    "es": set("áéíóúñü¿¡"),
+    "pt": set("ãõáéíóúâêôçàü"),
+    "it": set("àèéìíòóùî"),
+    "nl": set("ëïéèü"),
 }
+_MARKER_MIN_WORD_LENGTH = 2
+
+
+def _unique_by_language(
+    table: dict[str, set[str]],
+    *,
+    min_length: int = 1,
+) -> dict[str, frozenset[str]]:
+    """只保留「只属于一门语言」的标记，共享的一律丢掉。"""
+    unique: dict[str, frozenset[str]] = {}
+    for language, items in table.items():
+        others: set[str] = set()
+        for other_language, other_items in table.items():
+            if other_language != language:
+                others |= other_items
+        unique[language] = frozenset(
+            item for item in items - others if len(item) >= min_length
+        )
+    return unique
+
+
+_UNIQUE_MARKER_WORDS = _unique_by_language(
+    _LANGUAGE_MARKER_WORDS,
+    min_length=_MARKER_MIN_WORD_LENGTH,
+)
+_UNIQUE_DIACRITICS = _unique_by_language(_LANGUAGE_DIACRITICS)
 _FRENCH_ELISION_RE = re.compile(r"\b(?:[cdjlmnstqu]|jusqu|lorsqu)['’]", re.IGNORECASE)
-_FRENCH_DIACRITIC_RE = re.compile(r"[àâçéèêëîïôùûüÿœæ]", re.IGNORECASE)
+# 变音符号/省音撇号只是旁证，比不上一个功能词命中，但比什么都没有强。
+_DIACRITIC_EVIDENCE_WEIGHT = 2
+# 否定结论要留余量：1 比 0 不许定案。词表扩到 7 门之后，door / over / met / van / son /
+# el 这些荷、西专属词会把一堆普通英文短标签判成「确定不是英文」——而这类短标签里往往
+# 一个 en 专属功能词都没有，own_score 恒为 0。落到产品上就是 zh→en（本工具最主要的语言
+# 对）已经翻好的双语格「防火门 / Fire Door」被判成未译，整格再翻一遍。弱证据只配给出
+# 「说不上来」，这跟本文件开头写的三态原则是同一条。
+_EVIDENCE_DECISIVE_MARGIN = 2
+
+# 有专属文字体系的语言：字符区间比任何词表都硬。缺了这一层，「英译俄」里一整格英文
+# 会因为「有 3 个字母以上的词」被当成俄文译文，整格漏译。
+# 只收真正的假名：片假名区间 U+30A0–U+30FF 里还混着 ゠(U+30A0)、・(U+30FB)、
+# ー(U+30FC) 这几个标点/长音号，中文排版里照样会出现（外国人名分隔、从日文资料复制
+# 过来的长音号）。把它们算成假名，中译日时一个纯中文格就成了「日文译文」——既不算源文
+# 也不算译文，静默进 ignored，不翻译也不进报告，正是 高-4 那个病换个路径复发。
+# 「ー」不会单独出现在没有别的假名的日文里，去掉它不损失日文判定力。
+_KANA_RE = re.compile(r"[ぁ-ゖゝ-ゟァ-ヺヽ-ヿｦ-ﾝ]")
+_HANGUL_RE = re.compile(r"[가-힣ᄀ-ᇿ㄰-㆏]")
+_CYRILLIC_RE = re.compile(r"[Ѐ-ӿԀ-ԯ]")
+_ARABIC_RE = re.compile(r"[؀-ۿݐ-ݿ]")
+_HEBREW_RE = re.compile(r"[֐-׿]")
+_THAI_RE = re.compile(r"[฀-๿]")
+_LAO_RE = re.compile(r"[຀-໿]")
+_GREEK_RE = re.compile(r"[Ͱ-Ͽἀ-῿]")
+_DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
+_LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ɏ]")
+_LANGUAGE_SCRIPT_RE = {
+    "ko": _HANGUL_RE,
+    "ru": _CYRILLIC_RE,
+    "uk": _CYRILLIC_RE,
+    "bg": _CYRILLIC_RE,
+    "sr": _CYRILLIC_RE,
+    "mn": _CYRILLIC_RE,
+    "ar": _ARABIC_RE,
+    "fa": _ARABIC_RE,
+    "ur": _ARABIC_RE,
+    "he": _HEBREW_RE,
+    "th": _THAI_RE,
+    "lo": _LAO_RE,
+    "el": _GREEK_RE,
+    "hi": _DEVANAGARI_RE,
+    "mr": _DEVANAGARI_RE,
+    "ne": _DEVANAGARI_RE,
+}
 
 # 极短的目标语言片段：编号符号、计量单位、罗马数字。这类文本天然不满足「至少 3 个
 # 字母的自然语言词」门槛（"N°" 只有一个字母），但整份双语文档里大量出现——常见于
@@ -123,6 +260,11 @@ def contains_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(str(text or "")))
 
 
+def contains_kana(text: str) -> bool:
+    """Return whether text carries hiragana/katakana — 日文独有，中文不会有。"""
+    return bool(_KANA_RE.search(str(text or "")))
+
+
 def contains_non_cjk_letters(text: str) -> bool:
     return any(char.isalpha() and not contains_cjk(char) for char in str(text or ""))
 
@@ -186,23 +328,156 @@ def has_incidental_cjk(text: str, *, target_lang: str) -> bool:
     return contains_meaningful_non_cjk_word(cleaned)
 
 
-def _language_evidence(text: str, language: str) -> bool | None:
-    """Return positive/negative evidence for the supported Latin pair, else unknown."""
-    normalized = str(language or "").strip().lower()
-    if normalized not in {"en", "fr"}:
+def _normalize_lang(language: str | None) -> str:
+    """"ja-JP" / " JA " → "ja"。与 core.translation_filter._normalize_lang 同口径。
+
+    带地区子标签的语言码必须先归一，否则 "ja-JP" 落不进任何按语言分支的判据：日文源文
+    会走到「拉丁语言遇 CJK 即反证」那条路上被判成非源文，整份文档静默 ignored。
+    """
+    cleaned = str(language or "").strip().lower()
+    if not cleaned:
+        return ""
+    return re.split(r"[-_]", cleaned, maxsplit=1)[0]
+
+
+def _script_evidence(text: str, language: str, rival: str) -> bool | None:
+    """Script-level evidence: 有专属文字体系的语言，看字符区间就能定。"""
+    if language == "zh":
+        if not _CJK_RE.search(text):
+            return False
+        # 汉字＋假名的是日文，不是中文。
+        return not _KANA_RE.search(text)
+    if language == "ja":
+        if _KANA_RE.search(text):
+            return True
+        if not _CJK_RE.search(text):
+            return False
+        # 纯汉字：跟中文分不开，除非对手压根不是汉字圈的语言。
+        return None if rival in {"", "zh", "ja"} else True
+
+    own_script = _LANGUAGE_SCRIPT_RE.get(language)
+    if own_script is not None:
+        return bool(own_script.search(text))
+
+    # 自己是拉丁字母语言：文本里一个拉丁字母都没有、却是别的文字体系，就是反证。
+    if _LATIN_LETTER_RE.search(text):
         return None
+    if _CJK_RE.search(text) or _KANA_RE.search(text):
+        return False
+    for script in _LANGUAGE_SCRIPT_RE.values():
+        if script.search(text):
+            return False
+    return None
+
+
+def _is_same_alphabet_pair(source_lang: str | None, target_lang: str | None) -> bool:
+    """Return whether both languages are written in the plain Latin alphabet.
+
+    「同字母语言对」指英译德、英译荷这类两边共用一套字母、光看字符区间分不出谁是谁的
+    组合——只有这种组合才需要靠功能词去防「两行都是原文却被配成一对」。任何一边有专属
+    文字体系（中、日、韩、俄、阿、希、泰……）都不算：那种组合看字符就分得开，用不着
+    这道闸，硬套只会误伤。
+    """
+    source = _normalize_lang(resolve_coverage_source_lang(source_lang))
+    target = _normalize_lang(target_lang)
+    if not source or not target or source == target:
+        return False
+    return all(
+        code not in {"zh", "ja"} and code not in _LANGUAGE_SCRIPT_RE
+        for code in (source, target)
+    )
+
+
+def _marker_score(
+    language: str,
+    *,
+    words: set[str],
+    chars: set[str],
+    has_french_elision: bool,
+) -> int:
+    score = len(words & _UNIQUE_MARKER_WORDS.get(language, frozenset()))
+    if chars & _UNIQUE_DIACRITICS.get(language, frozenset()):
+        score += _DIACRITIC_EVIDENCE_WEIGHT
+    elif language == "fr" and has_french_elision:
+        score += _DIACRITIC_EVIDENCE_WEIGHT
+    return score
+
+
+def _marker_evidence(
+    text: str,
+    language: str,
+    *,
+    rival: str | None = None,
+) -> bool | None:
+    """只按功能词/变音符号判，不看文字体系。
+
+    跟 _language_evidence 分开是有原因的：_script_evidence 判 zh 时只问「有汉字且没
+    假名」，这对「后半是不是仍然是中文原文」根本不是证据——中译法的译文行里留一个中文
+    序号「（二）」就够它返 True 了。要拿「后半仍是源语言」当理由去否掉一次配对，只能用
+    功能词这种真·语言证据，见 split_existing_bilingual_text 里的同字母闸门。
+    """
+    normalized = _normalize_lang(language)
+    normalized_rival = _normalize_lang(rival)
+    if not normalized or normalized == normalized_rival:
+        return None
+
+    if normalized not in _UNIQUE_MARKER_WORDS:
+        # 词表里没有这门语言（自定义目标语言、暂未收录的语种）：能给的只有「没话说」。
+        # 拿别人的标记词反推「所以不是它」会出大事——中译某自定义语言时，法文译文会因为
+        # 「更像法语」被判成非译文，整格重翻一遍，格里多出一条重复译文。
+        return None
+
     words = {match.group(0).casefold() for match in _NON_CJK_LETTER_RUN_RE.finditer(text)}
-    french_score = len(words & _FRENCH_MARKER_WORDS)
-    english_score = len(words & _ENGLISH_MARKER_WORDS)
-    if _FRENCH_DIACRITIC_RE.search(text) or _FRENCH_ELISION_RE.search(text):
-        french_score += 2
-    own_score = french_score if normalized == "fr" else english_score
-    other_score = english_score if normalized == "fr" else french_score
+    # 用 lower 而不是 casefold：casefold 会把 ß 折成 ss，德语最硬的那个记号就没了。
+    chars = set(text.lower())
+    has_french_elision = bool(_FRENCH_ELISION_RE.search(text))
+
+    def score(language_code: str) -> int:
+        return _marker_score(
+            language_code,
+            words=words,
+            chars=chars,
+            has_french_elision=has_french_elision,
+        )
+
+    own_score = score(normalized)
+    if normalized_rival:
+        candidates = [normalized_rival]
+    else:
+        candidates = [key for key in _UNIQUE_MARKER_WORDS if key != normalized]
+    other_score = max((score(candidate) for candidate in candidates), default=0)
     if own_score > other_score:
         return True
-    if other_score > own_score:
+    if other_score - own_score >= _EVIDENCE_DECISIVE_MARGIN:
         return False
     return None
+
+
+def _language_evidence(
+    text: str,
+    language: str,
+    *,
+    rival: str | None = None,
+) -> bool | None:
+    """Return whether text looks like ``language`` rather than another language.
+
+    先看文字体系（最硬的证据），文字体系说不上来时才看功能词。
+
+    ``rival`` 指定要跟哪一门语言比。给了就只跟它比——补译判「这是不是源文」时，
+    唯一有资格顶掉源文身份的就是目标语言，跟第三门语言比毫无意义（英译中的
+    「Société Générale Contract」不该因为「更像法语」而被判成非英文）。不给就跟
+    词表里所有其他语言比，用于判「这段拉丁字母文字到底是不是目标语言」——中译法的
+    文档里夹一段英文，那不是法文译文。
+    """
+    normalized = _normalize_lang(language)
+    normalized_rival = _normalize_lang(rival)
+    if not normalized or normalized == normalized_rival:
+        return None
+
+    script = _script_evidence(text, normalized, normalized_rival)
+    if script is not None:
+        return script
+    return _marker_evidence(text, normalized, rival=normalized_rival)
 
 
 def resolve_coverage_source_lang(source_lang: str | None) -> str:
@@ -231,7 +506,7 @@ def looks_like_source_text(
         return False
 
     source_lang = resolve_coverage_source_lang(source_lang)
-    source = source_lang.lower()
+    source = _normalize_lang(source_lang)
     if source == "zh":
         if not contains_cjk(cleaned):
             return False
@@ -247,12 +522,28 @@ def looks_like_source_text(
             source_lang=source_lang,
         )
 
-    if contains_cjk(cleaned):
+    # 源语言不是中文时，旧代码在这里对含汉字的文本一刀 `return False`——理由是「中文
+    # 只可能是译文」。这条在日译中/韩译中上是灾难：一-龥 码区同时装着中文、日文、韩文
+    # 汉字，「工事契約書」这类纯汉字标题连带「コンクリート打設」整批判成非源文，既不译
+    # 也不进报告（补译模式下整份日文文档 ignored）。判据交给 should_translate 这个唯一
+    # 漏斗——它已经按语言对判定（假名/谚文是硬证据，源语言落在日/韩时汉字按原文处理），
+    # 抽取路径和补译路径这才是同一把尺子。
+    #
+    # 「看起来不是源语言」也不足以否掉源文身份。证据表覆盖不到的语言、或者只是带了几个
+    # 法语变音符号的英文公司名（英译中里的 Société Générale Contract），一旦在这里被
+    # 否掉，就既不算源文也不算译文——静默落进 ignored，不翻译、也不进报告，用户翻到
+    # 才发现。只有当这段文字确实像目标语言（＝像一条已经产出的译文）时才否得掉；其余
+    # 一律当源文送去翻译：多翻一条看得见、删得掉，漏译一条没人知道。
+    if _language_evidence(cleaned, source, rival=target_lang) is False and looks_like_target_text(
+        cleaned,
+        source_lang=source_lang,
+        target_lang=target_lang,
+    ):
         return False
-    source_evidence = _language_evidence(cleaned, source)
-    if source_evidence is False:
+    if not (contains_non_cjk_letters(cleaned) or contains_cjk(cleaned)):
+        # 纯数字/符号的格子不算源文（假名、谚文本身是字母，走上一半）。
         return False
-    return contains_non_cjk_letters(cleaned) and should_translate(
+    return should_translate(
         cleaned,
         target_lang=target_lang,
         source_lang=source_lang,
@@ -277,6 +568,12 @@ def looks_like_target_text(
     if looks_like_short_target_token(cleaned):
         return True
 
+    if target == "ja" and contains_kana(cleaned):
+        # 日文译文天然含汉字，「夹带零星 CJK」那把尺子量不了它——中译日时
+        # 「工事は2026年8月9日に完了する」会被当成中文原文，整表再补一遍重复译文。
+        # 假名才是可靠证据：中文里不会出现平假名/片假名。
+        return True
+
     if contains_cjk(cleaned):
         # 整句已是目标语言、只夹带编号或日期这类零星中文时，仍算译文；
         # 残留的中文另由 residual_cjk_fragments() 单独提示，不再判成「未译源文」。
@@ -299,9 +596,14 @@ def _looks_translated_despite_cjk(
 ) -> bool:
     if resolve_coverage_source_lang(source_lang).lower() != "zh":
         return False
-    if not has_incidental_cjk(cleaned, target_lang=target_lang):
+    target = _normalize_lang(target_lang)
+    if target == "ja":
+        # 中译日：has_incidental_cjk 这条尺子对日文恒为 False（日文本来就满是汉字），
+        # 拿它判「这是不是已经翻好的日文」永远判不出来。改看假名。
+        return contains_kana(cleaned)
+    if not has_incidental_cjk(cleaned, target_lang=target):
         return False
-    return _language_evidence(cleaned, str(target_lang or "").strip().lower()) is not False
+    return _language_evidence(cleaned, target) is not False
 
 
 def split_existing_bilingual_text(
@@ -352,6 +654,28 @@ def split_existing_bilingual_text(
             target_candidate,
             source_lang=source_lang,
             target_lang=target_lang,
+        ):
+            continue
+        # 同字母语言对（英译德、英译荷……）的死角：两行都是原文时，后一行照样满足
+        # 「有 3 个字母以上的自然语言词」，必然被当成译文，整格判 covered 后再不进
+        # 补译清单——引擎不支持仲裁或仲裁失败时就是彻底漏译。有正面的功能词证据说后半
+        # 仍是源语言时，这一刀不能切。
+        #
+        # 这道闸只对同字母语言对开，而且只认功能词证据。第一轮写的是「两半文字体系
+        # 相同」＋ _language_evidence，两处都错：_script_signature 是「出现过就算」的
+        # 集合比较，中文行里有一个 HRB400、C30 这样的材料牌号（施工表里到处都是），
+        # 两半签名就都成了 {cjk, latin}；而 _language_evidence 判 zh 时走 _script_evidence，
+        # 「有汉字且没假名」就返 True——译文行里留一个中文序号「（二）」就够了。两个错
+        # 凑到一起，中译法里已经翻好的格子被整批打回补译清单，重翻一遍。跨文字体系的
+        # 格子本来也用不着这道闸：中译法的「（二）Ligature des armatures」是一条译文，
+        # 译文里残留的中文归残留体检管，在这里否掉配对等于把残留检查的输入整个抽掉。
+        if _is_same_alphabet_pair(source_lang, target_lang) and (
+            _marker_evidence(
+                target_candidate,
+                resolve_coverage_source_lang(source_lang),
+                rival=target_lang,
+            )
+            is True
         ):
             continue
         if not looks_like_source_text(
