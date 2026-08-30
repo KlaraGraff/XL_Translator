@@ -15,6 +15,10 @@ Excel（core/task_runner.py，见提交 fa34578）早就是「停止不丢结果
     —— 「零译文时不写产物」（边界 3a：更早阶段一段都没拿到时行为不变）
   * test_stop_message_reports_progress_honestly_not_as_failure
     —— 「停止报告口径」：账记在停止头上，不冒充失败
+  * test_stop_keeps_recorded_quality_issues_on_stopped_msg
+    —— 「停止不丢质量问题」：阶段 2 已检出的 quality_issues 要接进
+    StoppedMsg.issues（对齐 Excel 侧 tests/test_audit_stop_visibility.py
+    的 ExcelStopNotRepairedWordingTests）
 
 不改 core/word_document.py（另有代理在改「正文域段落原地替换」）：这里只调用
 它导出的 write_bilingual_docx，且测试段落都不含域，不触碰那条改动路径。
@@ -563,6 +567,110 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             stopped = self._terminal_message(runner, StoppedMsg)
             self.assertIn("任务已停止，未获得可写入的 Word 翻译结果。", stopped.message)
             self.assertEqual(stopped.files[0]["status"], "unstarted")
+
+    def test_stop_keeps_recorded_quality_issues_on_stopped_msg(self) -> None:
+        """停止收尾不许丢阶段 2 已检出的质量问题。
+
+        译文里故意留一个中文片段：残留体检是 0 API 的本地检查，停止后照常
+        跑，会记一条 needs_review 的 quality_issue（桩引擎没有 chat()，修复
+        阶梯整个跳过，这条必然落到「待复核」）。StoppedMsg 之前没接 issues
+        字段，这条记录在停止路径下直接蒸发——报告文件里有、前端
+        result.issues 里没有（workspace.ts 的 openIssues 读 result.issues，
+        不挑 task.state）。接线后顶层 issues（原始形状）与 review.items
+        （界面形状）说的是同一批位置，tasks.ts reviewRows 按「文件+位置+
+        摘录+严重度」合并两份，界面上仍是一行，不会双显。
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("已完成翻译的段落。")
+            document.add_paragraph("翻译中途被打断的段落。")
+            document.save(source)
+            # 故意让「已完成」的译文里残留中文：残留体检会把它标成待复核。
+            translated_text = "The finished paragraph still keeps 段落 in Chinese."
+
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+
+            def stop_mid_batch(texts, *_args, **kwargs):
+                runner.stop()
+                kwargs["drained_callback"]()
+                return {"已完成翻译的段落。": translated_text}
+
+            with ExitStack() as stack:
+                self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: _prepared(source)},
+                    real_write=True,
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[
+                            WordSegment("已完成翻译的段落。", "paragraph", "正文第 1 段"),
+                            WordSegment("翻译中途被打断的段落。", "paragraph", "正文第 2 段"),
+                        ],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={
+                            "已完成翻译的段落。": None,
+                            "翻译中途被打断的段落。": None,
+                        },
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=stop_mid_batch,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=_stub_recovery_pool(),
+                    )
+                )
+                runner._run()
+
+            stopped = self._terminal_message(runner, StoppedMsg)
+            residual = [
+                item
+                for item in stopped.issues
+                if item.get("problem") == "译文残留未翻译的中文片段"
+                and item.get("severity") == "needs_review"
+            ]
+            self.assertEqual(
+                len(residual), 1, "停止路径下 quality_issues 没有传进 StoppedMsg.issues"
+            )
+            issue = residual[0]
+            # 前端 toReviewRow 靠这几个键与 review.items 合并成一行（文件+位置+
+            # 摘录+严重度），键值缺失或对不上，同一处问题就会在定位清单里双显。
+            self.assertEqual(issue["file"], stopped.files[0]["source_relative_path"])
+            self.assertEqual(issue["section_path"], "正文")
+            self.assertEqual(issue["location_label"], "正文第 1 段")
+            self.assertTrue(issue["snippet"])
+            review_items = stopped.review["items"]
+            matched = [
+                item
+                for item in review_items
+                if item.get("file") == issue["file"]
+                and item.get("location") == issue["location_label"]
+                and item.get("snippet") == issue["snippet"]
+                and item.get("severity") == "needs_review"
+            ]
+            self.assertEqual(
+                len(matched),
+                1,
+                "review.items 里找不到与顶层 issues 同位置的条目，前端合并会失效",
+            )
 
 
 if __name__ == "__main__":

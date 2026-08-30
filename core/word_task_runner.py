@@ -2298,6 +2298,15 @@ class WordTaskRunner:
                         message=stopped_message,
                         output_dir=str(output_dir),
                         report_path=str(report_path) if report_path else "",
+                        # 停止落在批次中途时，阶段 2 的残留体检/恢复池判定多半已经
+                        # 跑完，quality_issues 里已有记录——DoneMsg 一直把这份列表
+                        # 接到 issues 上，这里之前漏接，停止路径下顶层 issues 恒为
+                        # 空，前端 workspace.ts 的 openIssues（读 result.issues，
+                        # 不挑 task.state）看不到这批待复核。contract 里的
+                        # review.items / files[*].review_items 是同一批问题的界面
+                        # 形状，tasks.ts reviewRows 按「文件+位置+摘录+严重度」把
+                        # 两份合并；位置键同出 segment_locations，不会双显。
+                        issues=quality_issues,
                         **result_contract,
                     )
                 )
