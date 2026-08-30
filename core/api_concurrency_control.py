@@ -388,8 +388,15 @@ def _collect_response_texts(response: Any) -> Iterable[str]:
     if status_code not in (None, ""):
         yield f"HTTP {status_code}"
 
+    # 流式响应(httpx.Response 处于 stream 模式且未被读取)访问 .text/.content
+    # 会抛 httpx.ResponseNotRead(RuntimeError 子类),不是 AttributeError,
+    # getattr 的 default 参数拦不住——必须显式 try/except,否则限流分类器
+    # 自身崩溃会穿透批次二分和降级阶梯,直接打崩整个翻译任务。
     for attr in ("text", "content"):
-        value = getattr(response, attr, None)
+        try:
+            value = getattr(response, attr, None)
+        except Exception:
+            continue
         if value not in (None, b"", ""):
             yield _stringify_payload(value)
 

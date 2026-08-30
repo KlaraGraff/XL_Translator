@@ -155,6 +155,31 @@ class FailoverEngineTests(unittest.TestCase):
         with self.assertRaises(_HttpError):
             _run(engine)
 
+    def test_a_candidate_build_failure_only_skips_itself_not_its_gateway(self) -> None:
+        # Regression for 中-9: B and C share a gateway. B's own engine fails
+        # to *build* (bad config, missing field, ...) -- that says nothing
+        # about whether the gateway itself is reachable, so C on the same
+        # gateway must still get a real try instead of being declared
+        # exhausted alongside B.
+        pool = _pool(
+            ("A", "https://a.example/v1"),
+            ("B", "https://b.example/v1"),
+            ("C", "https://b.example/v1"),
+        )
+        engines = {
+            pool[0].id: _StubEngine("A", _HttpError(401)),
+            pool[2].id: _StubEngine("C"),
+        }
+
+        def build(conn):
+            if conn.id == pool[1].id:
+                raise RuntimeError("B 的连接配置非法，构建阶段直接失败")
+            return engines[conn.id]
+
+        engine = FailoverTranslationEngine(build_engine_for=build, candidates=pool)
+        self.assertEqual(_run(engine), {"hello": "C:hello"})
+        self.assertEqual(engine.current_connection.label, "C")
+
     def test_a_connection_is_not_retried_after_it_was_ruled_out(self) -> None:
         pool = _pool(
             ("A", "https://a.example/v1"),

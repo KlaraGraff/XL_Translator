@@ -347,7 +347,11 @@ def check_for_updates(
 ) -> UpdateCheckResult:
     """Check one stable release and expose only a complete native DMG."""
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
+        # GitHub 的 release 下载链接(含校验和兜底请求命中的 checksum_url)
+        # 一律 302 到 objects.githubusercontent.com,httpx 默认不跟随重
+        # 定向——不加 follow_redirects 会把 302 的空/占位正文当校验和文件
+        # 去解析,解析失败后整次检查被误判为「正式发布包尚未就绪」。
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
             response = client.get(
                 LATEST_RELEASE_API_URL,
                 headers={

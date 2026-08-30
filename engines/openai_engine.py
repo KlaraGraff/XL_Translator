@@ -194,6 +194,14 @@ class OpenAIEngine(TranslationEngine):
                 headers=headers,
                 json=payload,
             ) as response:
+                if response.is_error:
+                    # 非 2xx 时先把响应体读出来再抛错:流式响应在未读取前
+                    # 访问 .text/.json() 会抛 httpx.ResponseNotRead,若把
+                    # 未读的 response 挂在异常上抛给上层限流分类器,分类器
+                    # 读 .text 时会被这个 RuntimeError 子类击穿,穿透批次
+                    # 二分和降级阶梯直接崩掉整个任务。读出来之后分类器才能
+                    # 按状态码/正文正常识别限流、鉴权失败等错误类型。
+                    response.read()
                 response.raise_for_status()
                 text = _extract_text_from_responses_events(response.iter_lines())
 

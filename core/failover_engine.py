@@ -180,40 +180,47 @@ class FailoverTranslationEngine(TranslationEngine):
             # using; retry on the one it picked instead of burning it too.
             return True
 
-        remaining = failover_candidates(
-            self._candidates,
-            failed_connection_id=failed.id,
-            failure_kind=failure_kind,
-            exhausted_connection_ids=frozenset(self._exhausted),
-        )
-        if not remaining:
-            logger.error(
-                "连接链已全部失效：last={} kind={} error={}",
-                failed.display_label,
-                failure_kind,
-                exc,
+        # 用循环而非递归尝试候选：某个候选「构建失败」只代表它自己不可用
+        # (配置缺失、参数非法等自身问题),不代表它所在的网关宕机——不能
+        # 像 FAILURE_ENDPOINT 那样牵连同网关的其它候选,否则一个候选构建
+        # 失败会把整条网关的全部连接标成耗尽,可用的候选一次都没试就被
+        # 跳过。
+        while True:
+            remaining = failover_candidates(
+                self._candidates,
+                failed_connection_id=failed.id,
+                failure_kind=failure_kind,
+                exhausted_connection_ids=frozenset(self._exhausted),
             )
-            return False
+            if not remaining:
+                logger.error(
+                    "连接链已全部失效：last={} kind={} error={}",
+                    failed.display_label,
+                    failure_kind,
+                    exc,
+                )
+                return False
 
-        target = remaining[0]
-        try:
-            engine = self._build_engine_for(target)
-        except Exception as build_error:  # noqa: BLE001 - try the next candidate
+            target = remaining[0]
+            try:
+                engine = self._build_engine_for(target)
+            except Exception as build_error:  # noqa: BLE001 - try the next candidate
+                logger.warning(
+                    "切换连接失败，跳过该候选继续尝试下一个：target={} error={}",
+                    target.display_label,
+                    build_error,
+                )
+                self._exhausted.add(target.id)
+                continue
+
+            previous, self._current = self._current, target
+            self._engine = engine
             logger.warning(
-                "切换连接失败，继续尝试下一条：target={} error={}",
+                "已切换连接：{} -> {}（原因：{}）",
+                previous.display_label,
                 target.display_label,
-                build_error,
+                failure_kind,
             )
-            return self._switch_from_locked(target, build_error, FAILURE_ENDPOINT)
-
-        previous, self._current = self._current, target
-        self._engine = engine
-        logger.warning(
-            "已切换连接：{} -> {}（原因：{}）",
-            previous.display_label,
-            target.display_label,
-            failure_kind,
-        )
-        if self._on_switch is not None:
-            self._on_switch(previous, target, failure_kind, str(exc))
-        return True
+            if self._on_switch is not None:
+                self._on_switch(previous, target, failure_kind, str(exc))
+            return True
