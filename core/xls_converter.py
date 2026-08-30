@@ -49,7 +49,8 @@ def _format_excel_conversion_error(exc: BaseException) -> str:
     return (
         "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。"
         f"请在「{macos_excel_automation_privacy_path()}」中允许 Translator 控制 Microsoft Excel，"
-        "或返回任务设置并明确选择兼容转换；兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
+        "或返回任务设置并明确选择兼容转换；兼容转换后，输出文件里公式会变成算好的数值，"
+        "样式、合并单元格、图片和图表不会保留；原始文件不会被改动。"
     )
 
 

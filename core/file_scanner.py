@@ -129,8 +129,9 @@ class ExcelScanResult:
             "xls_count": xls_count,
             "requires_explicit_compatibility_confirmation": bool(xls_count),
             "message": (
-                "检测到 .xls 文件：优先使用本机 Microsoft Excel 高保真转换；"
-                "若选择兼容转换，复杂样式、合并单元格、图片、图表和宏可能无法完整保留。"
+                "检测到 .xls 文件：优先用本机 Microsoft Excel 高保真转换；"
+                "若确认改用兼容转换，输出文件里公式会变成算好的数值，"
+                "样式、合并单元格、图片和图表不会保留。原始文件不会被改动。"
                 if xls_count
                 else ""
             ),
@@ -507,8 +508,9 @@ def _build_file_item(path: Path, *, root: Path | None = None) -> FileItem:
             {
                 "compatibility_required": True,
                 "message": (
-                    ".xls 需通过 Microsoft Excel 高保真转换，或经用户明确确认后"
-                    "使用可能损失样式/合并单元格/图片/图表/宏的兼容转换。"
+                    ".xls 需通过本机 Microsoft Excel 高保真转换；"
+                    "或经用户明确确认后改用兼容转换——输出中公式会变成算好的数值，"
+                    "样式、合并单元格、图片和图表不会保留。原始文件不会被改动。"
                 ),
             }
             if path.suffix.lower() == ".xls"

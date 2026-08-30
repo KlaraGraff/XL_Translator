@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import re
 import tempfile
 import time
 import unittest
@@ -833,6 +834,82 @@ class CoveragePlanHandleTests(unittest.TestCase):
                     )
 
             self.assertEqual(closed, [True], "第一个工作簿句柄泄了")
+
+
+_UI_SRC = Path(__file__).resolve().parents[1] / "ui" / "src"
+
+
+def _read_ui(relative: str) -> str:
+    return (_UI_SRC / relative).read_text(encoding="utf-8")
+
+
+def _function_body(source: str, name: str) -> str:
+    """按「function NAME(...) ... 列首 }」截取函数体（见 B2 集群先例）。"""
+    match = re.search(rf"(?:async )?function {re.escape(name)}\(.*?\n\}}", source, re.S)
+    assert match, f"在源码里找不到函数 {name}"
+    return match.group(0)
+
+
+class XlsCompatibilityWarningWordingTests(unittest.TestCase):
+    """后果导向文案：告警必须说清「公式变数值、样式丢失」，且不改动原始文件。"""
+
+    def test_aggregate_scan_message_states_the_consequence(self) -> None:
+        from core.file_scanner import ExcelScanResult, FileItem
+
+        item = FileItem(path=Path("legacy.xls"), name="legacy", size_kb=1.0, format="xls")
+        result = ExcelScanResult(root=Path("."), items=[item])
+        message = result.risk["message"]
+        self.assertIn("公式会变成算好的数值", message)
+        self.assertIn("原始文件不会被改动", message)
+
+    @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")
+    def test_single_file_risk_message_states_the_consequence(self) -> None:
+        import xlwt
+
+        from core.file_scanner import _build_file_item
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.xls"
+            book = xlwt.Workbook()
+            book.add_sheet("S").write(0, 0, "施工内容")
+            book.save(str(path))
+
+            item = _build_file_item(path)
+            message = item.risk["message"]
+            self.assertIn("公式会变成算好的数值", message)
+            self.assertIn("原始文件不会被改动", message)
+
+    def test_ui_modal_pins_the_new_excel_wording_and_keeps_word_wording(self) -> None:
+        source = _read_ui("views/workspace.ts")
+        body = _function_body(source, "showCompatibilityModal")
+        # 互审抓过两处假钉子：整个函数体里搜 ".doc" 连变量声明都能满足，Word 文案
+        # 全删都不红；不切分支的话 Excel/Word 文案整个调包也不红。所以这里必须
+        # ①钉死三元写的是 ===（写成 !== 等于把两套文案调包），②按分支切开各钉各的。
+        self.assertIn('surface === "excel"', body)
+        _, _, arms = body.partition('surface === "excel"')
+        excel_arm, sep, word_arm = arms.partition(": [")
+        self.assertTrue(sep, "在函数体里找不到三元的 Word 分支")
+        self.assertIn("原始文件不会被改动", excel_arm)
+        self.assertIn("公式会变成算好的数值", excel_arm)
+        self.assertIn(
+            "复杂样式、合并单元格、图片、图表和宏可能无法完整保留",
+            word_arm,
+            "Word 分支的既有文案不该被误改",
+        )
+
+    def test_backend_error_messages_share_the_consequence_wording(self) -> None:
+        """弹窗后紧接着可能出现的两条后端报错必须和弹窗说同一套话。
+
+        互审抓到的矛盾：用户刚在弹窗里读完「不会保留」，几秒后预检失败的报错
+        又说「可能损失…和宏」——同一个选择两种说法。这里钉住两处报错源文件。
+        """
+        repo = Path(__file__).resolve().parents[1]
+        for rel in ("api/task_manager.py", "core/xls_converter.py"):
+            source = (repo / rel).read_text(encoding="utf-8")
+            with self.subTest(rel):
+                self.assertIn("公式会变成算好的数值", source)
+                self.assertIn("原始文件不会被改动", source)
+                self.assertNotIn("兼容转换可能损失", source)
 
 
 if __name__ == "__main__":

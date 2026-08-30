@@ -1476,7 +1476,8 @@ class TranslationTaskManager:
             "检测到 "
             f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
             "请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换；"
-            "兼容转换可能损失复杂样式、合并单元格、图片、图表和宏。"
+            "兼容转换后，输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表"
+            "不会保留；原始文件不会被改动。"
         )
 
     @staticmethod
