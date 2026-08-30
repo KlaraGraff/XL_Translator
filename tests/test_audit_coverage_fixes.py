@@ -28,6 +28,8 @@ from core.translation_coverage import (
     COVERAGE_IGNORED,
     COVERAGE_SOURCE_ONLY,
     _is_same_alphabet_pair,
+    _looks_translated_despite_cjk,
+    _script_evidence,
     contains_kana,
     looks_like_source_text,
     looks_like_target_text,
@@ -475,6 +477,132 @@ class JapaneseSourceCoverageTests(_WorkbookCase):
                 looks_like_source_text(text, source_lang="en", target_lang="zh"),
                 text,
             )
+
+
+class KoreanPureHanjaCoverageTests(_WorkbookCase):
+    """整改（2026-08-30）：ko 纯汉字漏译。
+
+    _script_evidence 对 "ja" 有专属三分支，"ko" 没有，落进通用逻辑：纯汉字、
+    无谚文，直接 return False（「确定不是韩文」）。后果是韩译中里「工事契約書」
+    「株式会社」这类纯汉字词被 looks_like_target_text 误判成已译中文，
+    补译、覆盖率两条线一起漏收。修法是把 ja 的三分支参数化给 ja/ko 共用：
+    含本国专属文字（假名/谚文）→ True；无任何 CJK 汉字→ False；纯汉字、
+    无本国专属文字，且 rival 落在汉字圈歧义集合 {"", "zh", "ja", "ko"}→ None，
+    交下游 should_translate 兜底裁决，否则才是 True。
+    """
+
+    def test_pure_hanja_script_evidence_abstains_like_japanese_does(self) -> None:
+        # ko 纯汉字，对手是汉字圈内的语言（含空白）：跟 ja 此前对纯汉字的处理
+        # 一样弃权，不再像改动前那样直接 False（「确定不是韩文」）。
+        for rival in ("", "zh", "ja", "ko"):
+            with self.subTest(rival=rival):
+                self.assertIsNone(_script_evidence("工事契約書", "ko", rival))
+
+    def test_pure_hanja_script_evidence_confirms_against_non_cjk_rival(self) -> None:
+        # 对手压根不是汉字圈的语言（比如 fr）：纯汉字才能确证是 ko。
+        self.assertEqual(_script_evidence("工事契約書", "ko", "fr"), True)
+
+    def test_japanese_pure_kanji_now_abstains_against_korean_rival(self) -> None:
+        # 有意的行为变化：ja 纯汉字此前只对 {"", "zh", "ja"} 弃权，rival="ko" 时
+        # 会误判 True（「早就断定是日文」）。现在 ko 也算进汉字圈歧义集合，
+        # ja 遇 rival="ko" 同样从 True 变 None——更保守，交下游裁决，不是回归。
+        self.assertIsNone(_script_evidence("工事契約書", "ja", "ko"))
+
+    def test_japanese_pure_kanji_behaviour_otherwise_unchanged(self) -> None:
+        # ja 原有分支的其余行为一律不动：假名命中直接 True；无 CJK 直接 False；
+        # 纯汉字对非汉字圈对手（如 fr）依旧确证 True。
+        self.assertTrue(_script_evidence("おしらせ", "ja", ""))
+        self.assertFalse(_script_evidence("Straße", "ja", ""))
+        self.assertEqual(_script_evidence("工事契約書", "ja", "fr"), True)
+
+    def test_korean_pure_hanja_is_recognized_as_source_text(self) -> None:
+        for text in ("工事契約書", "株式会社"):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    looks_like_source_text(text, source_lang="ko", target_lang="zh"),
+                    text,
+                )
+
+    def test_korean_pure_hanja_workbook_is_scanned_not_ignored(self) -> None:
+        statuses = self._plan(
+            {"A1": "工事契約書", "A2": "株式会社"},
+            source_lang="ko",
+            target_lang="zh",
+        )
+        self.assertEqual(statuses["A1"], COVERAGE_SOURCE_ONLY)
+        self.assertEqual(statuses["A2"], COVERAGE_SOURCE_ONLY)
+
+    def test_pure_hangul_behaviour_is_not_regressed(self) -> None:
+        # 纯谚文：走的是 own_script_re 命中即 True 那一步，跟改动前一样，不经过
+        # 汉字圈歧义那段新逻辑。
+        self.assertTrue(_script_evidence("계약서", "ko", ""))
+        self.assertTrue(
+            looks_like_source_text("계약서", source_lang="ko", target_lang="zh")
+        )
+
+    def test_hangul_mixed_with_hanja_behaviour_is_not_regressed(self) -> None:
+        # 谚文夹汉字：只要谚文命中就直接 True，不看汉字，跟改动前一样。
+        text = "工事契約書는 계약서입니다"
+        self.assertTrue(_script_evidence(text, "ko", ""))
+        self.assertTrue(
+            looks_like_source_text(text, source_lang="ko", target_lang="zh")
+        )
+
+    def test_pure_hanzi_under_korean_source_matches_japanese_precedent(self) -> None:
+        """护栏：纯汉字、rival=zh 弃权后落到下游兜底，ko 要跟 ja 此前的既有口径一致。
+
+        "施工合同" 这种纯汉字词，_script_evidence 对 zh 对手弃权（返回 None），
+        拿不准时兜底判 True（见模块开头「拿不准时要落到 source_only」）——这不是
+        本次改动引入的新宽松，ja 在同样场景下改动前后都是这个结果，这里钉住的是
+        ko 跟 ja 对齐，不是「纯汉字总能穿透」。
+        """
+        self.assertEqual(
+            looks_like_source_text("施工合同", source_lang="ko", target_lang="zh"),
+            looks_like_source_text("施工合同", source_lang="ja", target_lang="zh"),
+        )
+
+
+class KoreanTargetAbstainGuardTests(_WorkbookCase):
+    """互审整改（2026-08-30）：ko 弃权不得从「判源文」漏进「判译文」。
+
+    _script_evidence 给 ko 补的「纯汉字弃权」（None）是为「这是不是韩文源文」
+    留的余地；_looks_translated_despite_cjk 末行的 `is not False` 却会把 None
+    当成正面证据——中译韩里「拉丁为主＋零星汉字、无谚文」的段落会被判成
+    「已翻好的韩文」，造成新的静默漏译（word/excel 覆盖率共用这条判据）。
+    修法：ko 在这里直接看谚文，与参数化前「无谚文即决定性 False」口径一致，
+    弃权只留在源文判定一侧。
+    """
+
+    _LATIN_WITH_HAN = "Payment Schedule for Contract 附件 A and Appendix Notes"
+
+    def test_incidental_cjk_without_hangul_is_not_korean_target_text(self) -> None:
+        # 修复前：_language_evidence 对「有汉字、无谚文」的 ko 弃权（None），
+        # `is not False` 把弃权放行成 True；修复后一个谚文字符都没有必须是 False。
+        self.assertFalse(
+            _looks_translated_despite_cjk(
+                self._LATIN_WITH_HAN, source_lang="zh", target_lang="ko"
+            )
+        )
+        self.assertFalse(
+            looks_like_target_text(
+                self._LATIN_WITH_HAN, source_lang="zh", target_lang="ko"
+            )
+        )
+
+    def test_incidental_cjk_cell_stays_source_only_under_korean_target(self) -> None:
+        statuses = self._plan(
+            {"A1": self._LATIN_WITH_HAN},
+            source_lang="zh",
+            target_lang="ko",
+        )
+        self.assertEqual(statuses["A1"], COVERAGE_SOURCE_ONLY)
+
+    def test_hangul_evidence_still_counts_as_korean_target_text(self) -> None:
+        # 正例护栏：真带谚文的译文照常放行，证明上一条不是一刀切 False。
+        text = "계약 대금 지급 일정표 Payment Schedule for the Contract 附件 A and Notes"
+        self.assertTrue(
+            looks_like_target_text(text, source_lang="zh", target_lang="ko")
+        )
 
 
 if __name__ == "__main__":

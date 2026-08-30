@@ -347,13 +347,19 @@ def _script_evidence(text: str, language: str, rival: str) -> bool | None:
             return False
         # 汉字＋假名的是日文，不是中文。
         return not _KANA_RE.search(text)
-    if language == "ja":
-        if _KANA_RE.search(text):
+    if language in ("ja", "ko"):
+        # ja 看假名、ko 看谚文：本国专属文字体系命中即可确证，不用再看汉字。
+        own_script_re = _KANA_RE if language == "ja" else _HANGUL_RE
+        if own_script_re.search(text):
             return True
         if not _CJK_RE.search(text):
             return False
-        # 纯汉字：跟中文分不开，除非对手压根不是汉字圈的语言。
-        return None if rival in {"", "zh", "ja"} else True
+        # 纯汉字（无假名/谚文）：跟中文分不开，除非对手压根不是汉字圈的语言。
+        # 汉字圈歧义集合含 ja/ko 双向——之前 ja 只对 {"", "zh", "ja"} 弃权、遇到
+        # rival="ko" 会误判 True（「早就断定是日文」），现在 ko 也算进歧义集合，
+        # ja 在 rival="ko" 时随之从 True 变 None，交给下游 should_translate 兜底。
+        # 这是本次修复有意带出的行为变化，不是回归。
+        return None if rival in {"", "zh", "ja", "ko"} else True
 
     own_script = _LANGUAGE_SCRIPT_RE.get(language)
     if own_script is not None:
@@ -603,6 +609,12 @@ def _looks_translated_despite_cjk(
         return contains_kana(cleaned)
     if not has_incidental_cjk(cleaned, target_lang=target):
         return False
+    if target == "ko":
+        # 中译韩：_script_evidence 的「纯汉字弃权」是给「这是不是韩文源文」留的余地，
+        # 这里问的是「这是不是已经翻好的韩文」，弃权不能当正面证据——末行的
+        # `is not False` 会把 None 放行，一个谚文字符都没有的段落就被判成韩文译文，
+        # 静默漏译。直接看谚文，与 ko 参数化之前「无谚文即决定性 False」的口径一致。
+        return bool(_HANGUL_RE.search(cleaned))
     return _language_evidence(cleaned, target) is not False
 
 
