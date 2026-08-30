@@ -109,7 +109,7 @@ from core.model_throughput import (
 )
 from core.pdf_image_translation import scan_pdf_sources
 from core.pdf_review import check_pdf_review_connectivity
-from core.tm_cleaner import CleanSuggestion, apply_suggestions
+from core.tm_cleaner import CleanSuggestion, apply_suggestions_detailed
 from core.word_document import scan_word_sources
 from config import (
     CLOUD_PROVIDER_BASE_URL_DEFAULTS,
@@ -997,15 +997,28 @@ def create_app(
         }
 
     @app.post("/api/tm/entries", status_code=201)
-    def create_tm_entry(payload: TmEntryPayload) -> dict[str, bool]:
+    def create_tm_entry(payload: TmEntryPayload) -> dict[str, Any]:
+        """如实回报这次手工新增的去向，不再一律当成写入成功。
+
+        被固定词条挡下（只登记了待裁决冲突）、库里本来就是同一条译文、
+        数据库出错，这三种情况以前和真正写入返回同一个形状，界面于是
+        统一弹「已保存」，用户以为改动生效了。
+        """
         tm_manager.init_db()
+        result = tm_manager.insert_manual_entry_detailed(
+            payload.source_text,
+            payload.target_text,
+            payload.lang_pair,
+            sync_reverse=payload.sync_reverse,
+        )
+        if result.status == "invalid":
+            raise HTTPException(422, result.message)
+        if result.status == "error":
+            raise HTTPException(500, result.message)
         return {
-            "changed": tm_manager.insert_manual_entry(
-                payload.source_text,
-                payload.target_text,
-                payload.lang_pair,
-                sync_reverse=payload.sync_reverse,
-            )
+            "changed": result.changed,
+            "status": result.status,
+            "message": result.message,
         }
 
     # Literal segments must be declared before the parameterised sibling.
@@ -1024,17 +1037,24 @@ def create_app(
         return tm_manager.delete_entries(payload.ids)
 
     @app.put("/api/tm/entries/{entry_id}")
-    def update_tm_entry(entry_id: int, payload: TmEntryUpdatePayload) -> dict[str, bool]:
+    def update_tm_entry(entry_id: int, payload: TmEntryUpdatePayload) -> dict[str, Any]:
+        """按真实原因回报编辑失败，不再把所有拒绝都说成「与现有原文冲突」。"""
         tm_manager.init_db()
-        changed = tm_manager.update_entry_full(
+        result = tm_manager.update_entry_full_detailed(
             entry_id,
             payload.source_text,
             payload.target_text,
             sync_reverse=payload.sync_reverse,
         )
-        if not changed:
-            raise HTTPException(409, "Entry is missing or conflicts with an existing source.")
-        return {"changed": True}
+        if result.status == "invalid":
+            raise HTTPException(422, result.message)
+        if result.status == "error":
+            raise HTTPException(500, result.message)
+        if result.status == "missing":
+            raise HTTPException(404, result.message)
+        if not result.changed:
+            raise HTTPException(409, result.message)
+        return {"changed": True, "status": result.status, "message": result.message}
 
     @app.delete("/api/tm/entries/{entry_id}")
     def delete_tm_entry(entry_id: int) -> dict[str, bool]:
@@ -1180,6 +1200,9 @@ def create_app(
     @app.get("/api/tm/clean/suggestions")
     def list_tm_clean_suggestions(lang_pair: str | None = None) -> dict[str, Any]:
         tm_manager.init_db()
+        # 先淘汰对不上当前词条的旧建议：对应词条已被改过/固定/删除的建议
+        # 再展示出来只会让用户勾一次、失败一次。
+        tm_manager.expire_stale_cleaning_suggestions(lang_pair)
         return {"suggestions": tm_manager.list_cleaning_suggestions(lang_pair)}
 
     @app.post("/api/tm/clean", status_code=202)
@@ -1206,16 +1229,20 @@ def create_app(
                 old_target=item.old_target,
                 new_target=item.new_target,
                 accepted=item.accepted,
+                lang_pair=item.lang_pair,
+                expected_version=item.expected_version,
+                suggestion_id=item.suggestion_id,
             )
             for item in payload.suggestions
         ]
-        return {
-            "applied": apply_suggestions(
-                suggestions,
-                auto_pin=payload.auto_pin,
-                sync_reverse=payload.sync_reverse,
-            )
-        }
+        # 三个数字都回：unchanged（库里本来就一样）与 skipped（被并发拦下 /
+        # 已固定 / 已删除）是两回事，界面混着说会让用户以为词条被人动过。
+        # 旧前端只读 applied，字段是增量的，照样能工作。
+        return apply_suggestions_detailed(
+            suggestions,
+            auto_pin=payload.auto_pin,
+            sync_reverse=payload.sync_reverse,
+        )
 
     @app.get("/api/models/provider-defaults")
     def get_provider_defaults() -> dict[str, Any]:

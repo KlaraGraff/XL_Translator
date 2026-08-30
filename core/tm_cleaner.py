@@ -13,7 +13,7 @@ import json
 import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from loguru import logger
 
@@ -40,6 +40,9 @@ class CleanSuggestion:
     accepted:    bool = True   # UI 中用户可逐条切换
     lang_pair:   str = ""
     expected_version: str = ""
+    # 建议表主键：确认写入后据此把这一条标成 applied/stale，
+    # 否则旧建议永远挂在 pending，重复出现在待审列表里
+    suggestion_id: int = 0
 
 
 class TmCleaningBatchError(RuntimeError):
@@ -223,6 +226,38 @@ def _normalize_clean_target(text: str) -> str:
     return _MULTISPACE_RE.sub(" ", cleaned).strip()
 
 
+def _wraps_whole_text(cleaned: str, prefix: str, suffix: str) -> bool:
+    """判断首尾这一对定界符是否真的包住了整段文本。
+
+    只看「开头是它、结尾也是它」会把正文当噪声吃掉：`「甲」 与 「乙」`
+    首尾恰好是一对引号，按字面剥一层就变成 `甲」 与 「乙`，正文被毁，
+    而且这类建议默认勾选，会直接写进记忆库。
+    """
+    inner = cleaned[len(prefix) : len(cleaned) - len(suffix)]
+    if prefix == suffix:
+        # 对称定界符（引号、`**`、`` ` ``）无法靠配对深度判断：
+        # 正文里再出现同一个定界符，就说明首尾两个不是一对，保守不剥。
+        return prefix not in inner
+    # 非对称定界符按配对深度扫描：深度在末尾之前归零，
+    # 说明开头那个的配对不在结尾，是「A」与「B」这类并列，不能剥。
+    depth = 1
+    index = len(prefix)
+    last = len(cleaned) - len(suffix)
+    while index < last:
+        if cleaned.startswith(prefix, index):
+            depth += 1
+            index += len(prefix)
+            continue
+        if cleaned.startswith(suffix, index):
+            depth -= 1
+            if depth == 0:
+                return False
+            index += len(suffix)
+            continue
+        index += 1
+    return depth == 1
+
+
 def _strip_outer_noise_once(text: str) -> str:
     """仅剥离一层高置信外层噪声，不触碰括号/方括号/大括号。"""
     cleaned = str(text or "").strip()
@@ -233,8 +268,11 @@ def _strip_outer_noise_once(text: str) -> str:
         min_len = len(prefix) + len(suffix)
         if len(cleaned) <= min_len:
             continue
-        if cleaned.startswith(prefix) and cleaned.endswith(suffix):
-            return cleaned[len(prefix) : len(cleaned) - len(suffix)].strip()
+        if not (cleaned.startswith(prefix) and cleaned.endswith(suffix)):
+            continue
+        if not _wraps_whole_text(cleaned, prefix, suffix):
+            continue
+        return cleaned[len(prefix) : len(cleaned) - len(suffix)].strip()
 
     match = _OUTER_COLON_WRAPPER_RE.match(cleaned)
     if match:
@@ -835,27 +873,122 @@ def _clean_batch_sync(
     return suggestions
 
 
+def _resolve_pending_suggestions(
+    suggestions: list[CleanSuggestion],
+) -> list[CleanSuggestion]:
+    """给建议补上建议表主键与乐观并发版本。
+
+    前端可能只回传内容（旧版本客户端就是如此）。这时按
+    (entry_id, 新译文) 去 pending 建议里找回对应行：没有 expected_version
+    就等于关掉乐观并发检查，别人刚改过的译文会被这次确认无声覆盖。
+    """
+    lang_pairs = {str(item.lang_pair or "") for item in suggestions}
+    pending: list[dict] = []
+    for lang_pair in lang_pairs:
+        pending.extend(tm_manager.list_cleaning_suggestions(lang_pair or None, status="pending"))
+    by_content: dict[tuple[int, str], dict] = {}
+    by_id: dict[int, dict] = {}
+    for row in pending:
+        key = (
+            int(row.get("entry_id") or 0),
+            normalize_tm_text_for_compare(str(row.get("new_target") or "")),
+        )
+        by_content.setdefault(key, row)
+        by_id[int(row.get("id") or 0)] = row
+
+    resolved: list[CleanSuggestion] = []
+    for item in suggestions:
+        row = by_id.get(int(item.suggestion_id or 0))
+        if row is None:
+            row = by_content.get(
+                (item.entry_id, normalize_tm_text_for_compare(item.new_target))
+            )
+        if row is None:
+            resolved.append(item)
+            continue
+        resolved.append(
+            replace(
+                item,
+                suggestion_id=int(row.get("id") or 0),
+                expected_version=item.expected_version
+                or str(row.get("expected_version") or ""),
+            )
+        )
+    return resolved
+
+
+def _settle_suggestion_rows(
+    suggestions: list[CleanSuggestion],
+    outcome: dict[str, list[int]],
+) -> None:
+    """按写入结果把建议表里的对应行标成 applied / stale。"""
+    applied_entries = set(outcome["updated"]) | set(outcome["unchanged"])
+    stale_entries = set(outcome["stale"]) | set(outcome["pinned"]) | set(outcome["missing"])
+    applied_ids = [
+        s.suggestion_id
+        for s in suggestions
+        if s.suggestion_id and s.entry_id in applied_entries
+    ]
+    stale_ids = [
+        s.suggestion_id
+        for s in suggestions
+        if s.suggestion_id and s.entry_id in stale_entries
+    ]
+    if applied_ids:
+        tm_manager.mark_cleaning_suggestions(applied_ids, "applied")
+    if stale_ids:
+        tm_manager.mark_cleaning_suggestions(stale_ids, "stale")
+
+
 def apply_suggestions(
     suggestions: list[CleanSuggestion],
     auto_pin: bool = False,
     *,
     sync_reverse: bool = False,
 ) -> int:
+    """将用户接受的建议写入 TM 数据库，返回实际写入条数。
+
+    保留为薄包装：老调用方只关心写入条数，明细走
+    :func:`apply_suggestions_detailed`。
     """
-    将用户接受的建议写入 TM 数据库。
+    return apply_suggestions_detailed(
+        suggestions, auto_pin=auto_pin, sync_reverse=sync_reverse
+    )["applied"]
+
+
+def apply_suggestions_detailed(
+    suggestions: list[CleanSuggestion],
+    auto_pin: bool = False,
+    *,
+    sync_reverse: bool = False,
+) -> dict[str, int]:
+    """
+    将用户接受的建议写入 TM 数据库，逐类给出去向。
     若 auto_pin=True，写入后同时固定这些词条（防止重复清洗）。
-    返回实际写入条数。
+
+    返回 {applied, unchanged, skipped}：
+      applied   真正改写了译文的条数；
+      unchanged 库里译文本来就与建议一致、无需改动的条数；
+      skipped   被乐观并发拦下、词条已固定或已删除的条数。
+    界面要靠这三个数字如实汇报——把 unchanged 混进 skipped，用户会以为
+    自己的词条被别人改过或被固定了，其实什么问题都没有。
+
+    写入后按逐条结果结算建议表：写进去的（含译文本来就一样的）标 applied，
+    被乐观并发拦下、词条已固定或已删除的标 stale。少了这一步，建议永远
+    停在 pending，下次打开审阅列表还会看到同一批已经处理过的旧建议。
     """
+    empty = {"applied": 0, "unchanged": 0, "skipped": 0}
     accepted_suggestions = [s for s in suggestions if s.accepted]
+    if not accepted_suggestions:
+        return dict(empty)
+    accepted_suggestions = _resolve_pending_suggestions(accepted_suggestions)
     accepted = [(s.entry_id, s.new_target) for s in accepted_suggestions]
-    if not accepted:
-        return 0
     expected_versions = {
         s.entry_id: s.expected_version
         for s in accepted_suggestions
         if s.expected_version
     }
-    count = tm_manager.bulk_update(
+    outcome = tm_manager.bulk_update_detailed(
         accepted,
         sync_reverse=sync_reverse,
         expected_versions=expected_versions or None,
@@ -865,20 +998,15 @@ def apply_suggestions(
             else tm_manager.REVIEWED_AUTO_WORD_TYPE
         ),
     )
-    if expected_versions:
-        stale_ids = set(expected_versions)
-        applied_ids = {
-            s.entry_id
-            for s in accepted_suggestions
-            if not expected_versions.get(s.entry_id)
-            or tm_manager.lookup_batch([s.source_text], s.lang_pair).get(s.source_text) == s.new_target
-        }
-        stale_ids -= applied_ids
-        if stale_ids:
-            logger.warning(f"清洗建议已过期并跳过 {len(stale_ids)} 条")
+    count = len(outcome["updated"])
+    unchanged = len(outcome["unchanged"])
+    _settle_suggestion_rows(accepted_suggestions, outcome)
+    skipped = len(outcome["stale"]) + len(outcome["pinned"]) + len(outcome["missing"])
+    if skipped:
+        logger.warning(f"清洗建议已过期并跳过 {skipped} 条")
     if count:
         logger.info(
             f"清洗确认写入 {count} 条，状态升级为 "
             f"{'cleaning_locked' if auto_pin else 'reviewed_auto'}"
         )
-    return count
+    return {"applied": count, "unchanged": unchanged, "skipped": skipped}

@@ -258,6 +258,38 @@ async function refreshTm(): Promise<void> {
   }
 }
 
+/**
+ * 换页 / 改每页条数 / 搜索都走这里：先改查询状态再取数，失败就原样退回。
+ *
+ * 旧代码在请求发出前就清空了选中集合，失败后既不重画表格也不出提示——
+ * 界面停在上一页的数据上，选中却已经没了，用户看不出发生过什么，
+ * 再点一次「批量删除」删的还是上一次的范围。返回 true 表示这次取数成功。
+ */
+async function applyTmQueryChange(change: () => void): Promise<boolean> {
+  const snapshot = {
+    page,
+    keyword,
+    pageSize,
+    selected: [...selectedIds],
+  };
+  change();
+  let ok = true;
+  try {
+    await refreshTm();
+  } catch (error) {
+    ok = false;
+    page = snapshot.page;
+    keyword = snapshot.keyword;
+    pageSize = snapshot.pageSize;
+    selectedIds.clear();
+    for (const id of snapshot.selected) selectedIds.add(id);
+    showToast({ message: `记忆库加载失败：${errorMessage(error)}`, error: true });
+  }
+  renderTable();
+  renderTopbarStatus();
+  return ok;
+}
+
 // 「选择全部」跨页拿全量 id：复用 /api/tm/entries 本身（不新建后端接口），把
 // page_size 顶到服务端允许的上限（api/app.py list_tm_entries 里 min(page_size, 200)）
 // 分批并发拉完。SELECT_ALL_CAP 是前端自设的上限，避免语言对里条目多到失控时
@@ -452,6 +484,8 @@ function openAddEditModal(editing: TmEntry | null): void {
             return;
           }
           const client = await getClient();
+          // 被固定词条挡下时会登记一条待裁决冲突，这时要留住冲突提示，别顺手清空
+          let keepConflictMessage = false;
           try {
             if (editing) {
               await client.request(`/api/tm/entries/${editing.id}`, {
@@ -460,20 +494,39 @@ function openAddEditModal(editing: TmEntry | null): void {
               });
               showToast({ message: "记忆条目已更新。" });
             } else {
-              await client.request("/api/tm/entries", {
-                method: "POST",
-                body: JSON.stringify({ source_text: sourceText, target_text: targetText, lang_pair: pairField.input.value.trim() || tmLangPair(), sync_reverse: syncReverse }),
-              });
-              showToast({ message: syncReverse ? "记忆条目已保存，并同步反向语言对。" : "记忆条目已保存。" });
+              // 后端如实回报这次新增的去向：被固定词条挡下、库里已有同一条译文，
+              // 都不是「已保存」。照着 status 说，别再一律报成功。
+              const saved = await client.request<{ changed?: boolean; status?: string; message?: string }>(
+                "/api/tm/entries",
+                {
+                  method: "POST",
+                  body: JSON.stringify({ source_text: sourceText, target_text: targetText, lang_pair: pairField.input.value.trim() || tmLangPair(), sync_reverse: syncReverse }),
+                },
+              );
+              const status = text(saved.status, saved.changed === false ? "unchanged" : "written");
+              const backendMessage = text(saved.message);
+              if (status === "written") {
+                showToast({ message: syncReverse ? "记忆条目已保存，并同步反向语言对。" : "记忆条目已保存。" });
+              } else if (status === "blocked_pinned") {
+                showToast({ message: backendMessage || "该原文已有固定词条，新译文没有写入。", error: true });
+                conflictMessage = backendMessage;
+                keepConflictMessage = true;
+                await refreshConflicts();
+                renderConflictArea();
+              } else {
+                showToast({ message: backendMessage || "记忆条目没有写入。" });
+              }
             }
-            conflictMessage = "";
+            if (!keepConflictMessage) conflictMessage = "";
             await refreshTm();
             renderTable();
             renderStatsRow();
             currentModalClose?.();
           } catch (error) {
             const message = errorMessage(error);
-            if (/409|conflict|冲突|重复/i.test(message)) {
+            // 只有真的原文冲突才转到冲突裁决区；固定/清洗锁定这类拒绝原因
+            // 和冲突无关，塞进冲突区会让用户照着完全无关的提示去操作。
+            if (/conflict|冲突|重复/i.test(message)) {
               conflictMessage = message;
               await refreshConflicts();
               renderConflictArea();
@@ -746,14 +799,25 @@ function openCleanReviewModal(): void {
         variant: "primary",
         onClick: async () => {
           const client = await getClient();
+          // 建议主键与 expected_version 必须原样回传：前者让后端把已处理的建议
+          // 从待审列表里销账，后者是乐观并发的凭据——不带就等于关掉版本校验，
+          // 审阅期间被别人改过的译文会被这次确认无声覆盖。
           const suggestions = cleanSuggestions.map((suggestion, index) => ({
+            suggestion_id: num(suggestion.id),
             entry_id: num(suggestion.entry_id),
             source_text: text(suggestion.source_text),
             old_target: text(suggestion.old_target),
             new_target: targets[index]?.value ?? text(suggestion.new_target),
             accepted: checks[index]?.checked ?? false,
+            lang_pair: text(suggestion.lang_pair, tmLangPair()),
+            expected_version: text(suggestion.expected_version),
           }));
-          const result = await client.request<{ applied: number }>("/api/tm/clean/apply", {
+          const accepted = suggestions.filter((item) => item.accepted).length;
+          const result = await client.request<{
+            applied: number;
+            unchanged?: number;
+            skipped?: number;
+          }>("/api/tm/clean/apply", {
             method: "POST",
             body: JSON.stringify({ suggestions, auto_pin: false }),
           });
@@ -763,7 +827,18 @@ function openCleanReviewModal(): void {
           renderTable();
           renderStatsRow();
           renderStateRow();
-          showToast({ message: `已写入 ${result.applied} 条清洗建议。` });
+          // 「库里本来就一样」与「被别人改过／已固定」是两回事，分开说。
+          // 后端未回这两个字段时（旧服务端）才退回按差额估算，宁可少说也不误报。
+          const applied = num(result.applied);
+          const unchanged = num(result.unchanged);
+          const skipped =
+            result.skipped === undefined
+              ? Math.max(accepted - applied, 0)
+              : num(result.skipped);
+          const parts = [`已写入 ${applied} 条清洗建议`];
+          if (unchanged > 0) parts.push(`${unchanged} 条与库中译文相同，无需改动`);
+          if (skipped > 0) parts.push(`${skipped} 条因词条已被改动或固定而跳过`);
+          showToast({ message: `${parts.join("；")}。` });
         },
       },
     ],
@@ -1128,16 +1203,16 @@ function rebuildToolbar(): void {
   searchInput.style.cssText =
     "width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 10px 0 32px";
   searchInput.addEventListener("input", () => {
-    keyword = searchInput.value;
     if (searchDebounce !== null) window.clearTimeout(searchDebounce);
     searchDebounce = window.setTimeout(() => {
-      page = 1;
-      // 搜索关键词变了，「选择全部」圈定的结果集也跟着变——旧的选中集合可能包含
-      // 现在已经看不见的条目，继续留着容易误批量删除，所以筛选条件一变就清空。
-      selectedIds.clear();
-      void refreshTm().then(() => {
-        renderTable();
-        renderTopbarStatus();
+      // keyword 直到真正发起这次取数才更新：提前赋值会让失败回滚拿不到
+      // 「当前表格对应的关键词」，回滚后状态和屏幕上的数据对不上。
+      void applyTmQueryChange(() => {
+        keyword = searchInput.value;
+        page = 1;
+        // 搜索关键词变了，「选择全部」圈定的结果集也跟着变——旧的选中集合可能包含
+        // 现在已经看不见的条目，继续留着容易误批量删除，所以筛选条件一变就清空。
+        selectedIds.clear();
       });
     }, 320);
   });
@@ -1465,9 +1540,14 @@ function buildTcHead(): HTMLDivElement {
     sizeSelect.append(option);
   }
   sizeSelect.addEventListener("change", () => {
-    pageSize = Number(sizeSelect.value) || 25;
-    page = 1;
-    void refreshTm().then(() => renderTable());
+    void applyTmQueryChange(() => {
+      pageSize = Number(sizeSelect.value) || 25;
+      page = 1;
+    }).then((ok) => {
+      // 取数失败时 pageSize 已回滚，下拉框也要跟着退回去，否则控件显示的
+      // 每页条数和表格里的实际条数对不上。
+      if (!ok) sizeSelect.value = String(pageSize);
+    });
   });
   tools.append(sizeSelect);
 
@@ -1476,17 +1556,20 @@ function buildTcHead(): HTMLDivElement {
   pageLabel.dataset.role = "page-label";
   tools.append(pageLabel);
 
-  const prevBtn = createButton({ label: "‹", size: "mini", onClick: () => { if (page > 1) { page -= 1; void refreshTm().then(() => renderTable()); } } });
+  const prevBtn = createButton({
+    label: "‹",
+    size: "mini",
+    onClick: () => {
+      if (page > 1) void applyTmQueryChange(() => { page -= 1; });
+    },
+  });
   prevBtn.dataset.role = "page-prev";
   const nextBtn = createButton({
     label: "›",
     size: "mini",
     onClick: () => {
       const totalPages = Math.max(1, Math.ceil(total / pageSize));
-      if (page < totalPages) {
-        page += 1;
-        void refreshTm().then(() => renderTable());
-      }
+      if (page < totalPages) void applyTmQueryChange(() => { page += 1; });
     },
   });
   nextBtn.dataset.role = "page-next";

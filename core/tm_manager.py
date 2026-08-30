@@ -21,7 +21,7 @@ from loguru import logger
 
 from config import BACKUPS_DIR as DEFAULT_BACKUPS_DIR, DB_PATH
 from core.language_registry import is_custom_target_lang
-from core.tm_text import normalize_tm_text_for_storage
+from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
 
 
 # ── 哈希工具 ──────────────────────────────────────────────────────────────────
@@ -34,6 +34,16 @@ def _make_hash(source_text: str, lang_pair: str) -> str:
     """
     raw = (source_text + "\x00" + lang_pair).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _match_hash(source_text: str, lang_pair: str) -> str:
+    """匹配用哈希：按比较形态（换行折成空格）计算。
+
+    存储形态自 9.3.x 起保留换行，但命中判定不能因此变严：旧库里同一段
+    原文是折成一行存的，它们的 source_hash 恰好就是这个比较形态的哈希，
+    所以新旧两种写法算出同一个键，旧库照常命中、也不会被写成重复行。
+    """
+    return _make_hash(normalize_tm_text_for_compare(source_text), lang_pair)
 
 
 # ── DDL ──────────────────────────────────────────────────────────────────────
@@ -550,7 +560,7 @@ def _backfill_source_hashes() -> None:
         for row in rows:
             conn.execute(
                 "UPDATE tm_entries SET source_hash = ? WHERE id = ?",
-                [_make_hash(row["source_text"], row["lang_pair"]), row["id"]],
+                [_match_hash(row["source_text"], row["lang_pair"]), row["id"]],
             )
         logger.info(f"TM 数据库修复：source_hash 回填完成，共 {len(rows)} 条")
 
@@ -588,7 +598,7 @@ def _ensure_hash_index() -> None:
         for row in rows:
             conn.execute(
                 "UPDATE tm_entries SET source_hash = ? WHERE id = ?",
-                [_make_hash(row["source_text"], row["lang_pair"]), row["id"]],
+                [_match_hash(row["source_text"], row["lang_pair"]), row["id"]],
             )
     try:
         with _get_conn() as conn:
@@ -710,7 +720,13 @@ def _fetch_entry_by_source(
     source_text: str,
     lang_pair: str,
 ) -> sqlite3.Row | None:
-    return conn.execute(
+    """先按原文逐字匹配，再退到匹配哈希。
+
+    哈希这一步不是优化：命中判定按比较形态（换行折成空格）做，写入侧
+    要是只认逐字相等，「多行写法」和「旧库里的单行写法」就会被当成两条
+    不同的词条——轻则重复行，重则撞上 source_hash 唯一索引整批写入失败。
+    """
+    row = conn.execute(
         """
         SELECT id, source_text, source_hash, target_text, lang_pair,
                word_type, source_engine, pinned, created_at, updated_at
@@ -718,6 +734,18 @@ def _fetch_entry_by_source(
         WHERE source_text = ? AND lang_pair = ?
         """,
         [source_text, lang_pair],
+    ).fetchone()
+    if row is not None:
+        return row
+    return conn.execute(
+        """
+        SELECT id, source_text, source_hash, target_text, lang_pair,
+               word_type, source_engine, pinned, created_at, updated_at
+        FROM tm_entries
+        WHERE lang_pair = ? AND source_hash = ?
+        ORDER BY id
+        """,
+        [lang_pair, _match_hash(source_text, lang_pair)],
     ).fetchone()
 
 
@@ -730,6 +758,13 @@ def _entry_version(row: sqlite3.Row | dict) -> str:
             str(row["target_text"] or ""),
             str(row["updated_at"] or ""),
         )
+    )
+
+
+def _same_target_ignoring_newlines(left: object, right: object) -> bool:
+    """两段译文是否只差换行/空白写法。"""
+    return normalize_tm_text_for_compare(str(left or "")) == normalize_tm_text_for_compare(
+        str(right or "")
     )
 
 
@@ -808,10 +843,33 @@ def _upsert_entry(
     pinned = 1 if int(pinned or 0) else 0
     existing = _fetch_entry_by_source(conn, source_text, lang_pair)
     incoming_priority = _incoming_priority(word_type, pinned)
-    source_hash = _make_hash(source_text, lang_pair)
+    source_hash = _match_hash(source_text, lang_pair)
 
     if existing is not None:
         if existing["target_text"] == target_text and not force_overwrite:
+            return False
+        if not force_overwrite and _same_target_ignoring_newlines(
+            existing["target_text"], target_text
+        ):
+            # 只差换行/空白写法，不是译文冲突：不记冲突候选（否则旧库每跑一次
+            # 就攒一批「甲 乙 → 甲\n乙」的假冲突）。只在「补回换行」这一个方向上
+            # 采纳新写法，且不动固定/人工等更高优先级的条目。
+            if (
+                _entry_priority(existing) <= incoming_priority
+                and "\n" in target_text
+                and "\n" not in str(existing["target_text"] or "")
+            ):
+                conn.execute(
+                    """
+                    UPDATE tm_entries
+                    SET target_text = ?,
+                        source_hash = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    [target_text, source_hash, existing["id"]],
+                )
+                return True
             return False
         if not force_overwrite:
             # Ordinary automatic results never silently replace an existing
@@ -1036,17 +1094,26 @@ def lookup_batch(
     if not texts:
         return {}
 
-    # 同时查询原始哈希与标准化哈希，兼容历史脏数据与新标准化入库数据。
+    # 三种哈希一起查，兼容历史脏数据、旧标准化入库数据与保留换行的新数据：
+    #   raw        —— 未经标准化就入库的历史行
+    #   storage    —— 保留换行的当前存储形态
+    #   match      —— 换行折成空格的比较形态，同时也是旧版本的存储形态
     raw_hash_to_texts: dict[str, list[str]] = defaultdict(list)
     normalized_hash_to_texts: dict[str, list[str]] = defaultdict(list)
     for original_text in texts:
         raw_hash = _make_hash(original_text, lang_pair)
         raw_hash_to_texts[raw_hash].append(original_text)
 
-        normalized_text = normalize_tm_text_for_storage(original_text)
-        normalized_hash = _make_hash(normalized_text, lang_pair)
-        if normalized_hash != raw_hash:
-            normalized_hash_to_texts[normalized_hash].append(original_text)
+        seen_hashes = {raw_hash}
+        for candidate in (
+            normalize_tm_text_for_storage(original_text),
+            normalize_tm_text_for_compare(original_text),
+        ):
+            candidate_hash = _make_hash(candidate, lang_pair)
+            if candidate_hash in seen_hashes:
+                continue
+            seen_hashes.add(candidate_hash)
+            normalized_hash_to_texts[candidate_hash].append(original_text)
 
     hits: dict[str, str] = {}  # source_text -> target_text
     hash_list = list({*raw_hash_to_texts.keys(), *normalized_hash_to_texts.keys()})
@@ -1250,6 +1317,95 @@ def insert_auto_entries(
     )
 
 
+@dataclass(frozen=True)
+class TmWriteResult:
+    """一次写入尝试的真实结果（供 API/界面如实汇报，别再一律说「已保存」）。"""
+
+    status: str
+    changed: bool
+    message: str = ""
+
+    def __bool__(self) -> bool:
+        return self.changed
+
+
+# status 取值：
+#   written        —— 新建或更新成功
+#   unchanged      —— 库里已经是同一条译文，无需写入
+#   blocked_pinned —— 被固定条目挡下，已登记为待裁决冲突，实际没写
+#   invalid        —— 原文或译文为空
+#   error          —— 数据库异常
+_MANUAL_ENTRY_MESSAGES = {
+    "written": "",
+    "unchanged": "记忆库里已有相同译文，未重复写入。",
+    "blocked_pinned": "该原文已有固定词条，新译文没有写入，已登记为待裁决冲突。",
+    "invalid": "原文和译文都不能为空。",
+}
+
+
+def insert_manual_entry_detailed(
+    source: str,
+    target: str,
+    lang_pair: str,
+    *,
+    sync_reverse: bool = False,
+) -> TmWriteResult:
+    """手动新增单条词条，并如实回报写没写进去。
+
+    `_upsert_entry` 对固定条目只登记冲突候选、不覆盖，返回 False；旧接口把
+    这一路和「异常」「已存在相同译文」压成同一个布尔值，界面于是在什么都没
+    写的时候也弹「已保存」。这里把三种情况分开报。
+    """
+    normalized_source = normalize_tm_text_for_storage(source)
+    normalized_target = normalize_tm_text_for_storage(target)
+    if not normalized_source or not normalized_target:
+        return TmWriteResult("invalid", False, _MANUAL_ENTRY_MESSAGES["invalid"])
+    try:
+        with _get_conn() as conn:
+            existing = _fetch_entry_by_source(conn, normalized_source, lang_pair)
+            changed = _upsert_entry(
+                conn,
+                normalized_source,
+                normalized_target,
+                lang_pair,
+                word_type=MANUAL_WORD_TYPE,
+                source_engine="manual",
+                pinned=0,
+            )
+            if changed and sync_reverse:
+                _sync_reverse_upsert(
+                    conn,
+                    normalized_source,
+                    normalized_target,
+                    lang_pair,
+                    word_type=MANUAL_WORD_TYPE,
+                    source_engine="manual",
+                    pinned=0,
+                )
+    except Exception as exc:  # noqa: BLE001 - 汇报给界面，别静默吞掉
+        logger.warning(f"TM 手动新增失败：{exc}")
+        return TmWriteResult("error", False, f"写入记忆库失败：{exc}")
+
+    if changed:
+        logger.debug(
+            f"TM 手动新增：{normalized_source[:20]} → {normalized_target[:20]}"
+            f"{'' if not sync_reverse else '（已请求反向同步）'}"
+        )
+        return TmWriteResult("written", True)
+
+    if existing is not None and _same_target_ignoring_newlines(
+        existing["target_text"], normalized_target
+    ):
+        status = "unchanged"
+    elif existing is not None and int(existing["pinned"] or 0):
+        status = "blocked_pinned"
+    else:
+        status = "unchanged" if existing is not None else "error"
+    message = _MANUAL_ENTRY_MESSAGES.get(status) or "词条没有写入记忆库。"
+    logger.warning(f"TM 手动新增未写入（{status}）：{normalized_source[:20]}")
+    return TmWriteResult(status, False, message)
+
+
 def insert_manual_entry(
     source: str,
     target: str,
@@ -1262,40 +1418,12 @@ def insert_manual_entry(
     若原文已存在则更新译文（不修改固定状态）。
     返回 True 表示成功。
     """
-    try:
-        source = normalize_tm_text_for_storage(source)
-        target = normalize_tm_text_for_storage(target)
-        if not source or not target:
-            return False
-        with _get_conn() as conn:
-            changed = _upsert_entry(
-                conn,
-                source,
-                target,
-                lang_pair,
-                word_type=MANUAL_WORD_TYPE,
-                source_engine="manual",
-                pinned=0,
-            )
-            if changed:
-                if sync_reverse:
-                    _sync_reverse_upsert(
-                        conn,
-                        source,
-                        target,
-                        lang_pair,
-                        word_type=MANUAL_WORD_TYPE,
-                        source_engine="manual",
-                        pinned=0,
-                    )
-        logger.debug(
-            f"TM 手动新增：{source[:20]} → {target[:20]}"
-            f"{'' if not sync_reverse else '（已请求反向同步）'}"
-        )
-        return changed
-    except Exception as e:
-        logger.warning(f"TM 手动新增失败：{e}")
-        return False
+    return insert_manual_entry_detailed(
+        source,
+        target,
+        lang_pair,
+        sync_reverse=sync_reverse,
+    ).changed
 
 
 def update_entry(entry_id: int, new_target: str) -> None:
@@ -1304,34 +1432,47 @@ def update_entry(entry_id: int, new_target: str) -> None:
     logger.debug(f"TM 更新条目 id={entry_id}")
 
 
-def update_entry_full(
+# status 取值：written / missing / pinned / cleaning_locked / conflict / invalid / error
+_ENTRY_UPDATE_MESSAGES = {
+    "invalid": "原文和译文都不能为空。",
+    "missing": "词条不存在，可能已被删除。",
+    "pinned": "固定词条不能直接编辑，请先解除固定。",
+    "cleaning_locked": "清洗锁定词条需要明确确认后才能编辑。",
+    "conflict": "新原文与现有词条冲突。",
+}
+
+
+def update_entry_full_detailed(
     entry_id: int,
     new_source: str,
     new_target: str,
     *,
     sync_reverse: bool = False,
     confirm_cleaning_locked: bool = False,
-) -> bool:
-    """
-    同时更新原文和译文，并解除该词条的固定状态。
-    同时重新计算并更新 source_hash 以保持与原文的一致性。
-    若新原文与其他词条冲突则返回 False。
+) -> TmWriteResult:
+    """全量更新一条词条，并如实回报被拒的真实原因。
+
+    旧接口只回一个布尔值，调用方（API）把「固定」「清洗锁定」「不存在」
+    统统报成「与现有原文冲突」——那句话跟真实原因无关，用户按提示做也解不开。
     """
     new_source = normalize_tm_text_for_storage(new_source)
     new_target = normalize_tm_text_for_storage(new_target)
     if not new_source or not new_target:
         logger.warning(f"TM 全量更新失败：词条 id={entry_id} 的原文或译文为空")
-        return False
-    
+        return TmWriteResult("invalid", False, _ENTRY_UPDATE_MESSAGES["invalid"])
+
+    def _rejected(status: str) -> TmWriteResult:
+        return TmWriteResult(status, False, _ENTRY_UPDATE_MESSAGES[status])
+
     try:
         with _get_conn() as conn:
             old_row = _fetch_entry(conn, entry_id)
             if old_row is None:
                 logger.warning(f"TM 全量更新失败：词条 id={entry_id} 不存在")
-                return False
+                return _rejected("missing")
             if int(old_row["pinned"] or 0):
                 logger.warning(f"TM 全量更新拒绝：固定条目 id={entry_id} 必须先解除固定")
-                return False
+                return _rejected("pinned")
             if (
                 _normalize_word_type(old_row["word_type"]) == CLEANING_LOCKED_WORD_TYPE
                 and not confirm_cleaning_locked
@@ -1339,14 +1480,14 @@ def update_entry_full(
                 logger.warning(
                     f"TM 全量更新拒绝：清洗锁定条目 id={entry_id} 需要明确确认"
                 )
-                return False
+                return _rejected("cleaning_locked")
             conflict = _fetch_entry_by_source(conn, new_source, old_row["lang_pair"])
             if conflict is not None and int(conflict["id"]) != int(entry_id):
                 logger.warning(f"TM 全量更新失败：词条 id={entry_id} 的新原文与现有词条冲突")
-                return False
+                return _rejected("conflict")
 
             lang_pair = old_row["lang_pair"]
-            new_hash = _make_hash(new_source, lang_pair)
+            new_hash = _match_hash(new_source, lang_pair)
 
             conn.execute(
                 """
@@ -1377,10 +1518,32 @@ def update_entry_full(
             f"TM 全量更新条目 id={entry_id}"
             f"{'' if not sync_reverse else '（已请求反向同步）'}"
         )
-        return True
+        return TmWriteResult("written", True)
     except Exception as e:
         logger.warning(f"TM 全量更新失败（可能原文冲突）：{e}")
-        return False
+        return TmWriteResult("error", False, f"更新记忆库失败：{e}")
+
+
+def update_entry_full(
+    entry_id: int,
+    new_source: str,
+    new_target: str,
+    *,
+    sync_reverse: bool = False,
+    confirm_cleaning_locked: bool = False,
+) -> bool:
+    """
+    同时更新原文和译文，并解除该词条的固定状态。
+    同时重新计算并更新 source_hash 以保持与原文的一致性。
+    若新原文与其他词条冲突则返回 False。
+    """
+    return update_entry_full_detailed(
+        entry_id,
+        new_source,
+        new_target,
+        sync_reverse=sync_reverse,
+        confirm_cleaning_locked=confirm_cleaning_locked,
+    ).changed
 
 
 def delete_entry(entry_id: int) -> bool:
@@ -1484,26 +1647,60 @@ def bulk_update(
     updates: [(entry_id, new_target_text), ...]
     返回更新条数。
     """
+    return len(
+        bulk_update_detailed(
+            updates,
+            sync_reverse=sync_reverse,
+            expected_versions=expected_versions,
+            word_type=word_type,
+        )["updated"]
+    )
+
+
+def bulk_update_detailed(
+    updates: list[tuple[int, str]],
+    *,
+    sync_reverse: bool = False,
+    expected_versions: dict[int, str] | None = None,
+    word_type: str | None = None,
+) -> dict[str, list[int]]:
+    """批量更新译文，并逐条回报每个词条的去向。
+
+    返回 `{"updated": [...], "missing": [...], "pinned": [...], "stale": [...],
+    "unchanged": [...]}`；清洗确认写入据此把对应的建议标成 applied / stale，
+    没有这份明细就只能靠一个总数猜，旧建议永远留在 pending 里。
+    """
+    outcome: dict[str, list[int]] = {
+        "updated": [],
+        "missing": [],
+        "pinned": [],
+        "stale": [],
+        "unchanged": [],
+    }
     if not updates:
-        return 0
-    rows = [(normalize_tm_text_for_storage(tgt), eid) for eid, tgt in updates]
+        return outcome
+    rows = [(normalize_tm_text_for_storage(tgt), int(eid)) for eid, tgt in updates]
     rows = [(tgt, eid) for tgt, eid in rows if tgt]
     if not rows:
-        return 0
+        return outcome
     count = 0
     with _get_conn() as conn:
         for target_text, entry_id in rows:
             old_row = _fetch_entry(conn, int(entry_id))
             if old_row is None:
+                outcome["missing"].append(entry_id)
                 continue
             if int(old_row["pinned"] or 0):
+                outcome["pinned"].append(entry_id)
                 continue
             if expected_versions and expected_versions.get(int(entry_id)):
                 expected = str(expected_versions[int(entry_id)])
                 current = _entry_version(old_row)
                 if expected != current:
+                    outcome["stale"].append(entry_id)
                     continue
             if old_row["target_text"] == target_text:
+                outcome["unchanged"].append(entry_id)
                 continue
             conn.execute(
                 """
@@ -1529,11 +1726,12 @@ def bulk_update(
                     pinned=1 if updated_row["pinned"] else 0,
                 )
             count += 1
+            outcome["updated"].append(entry_id)
     logger.info(
         f"TM 批量更新 {count} 条"
         f"{'' if not sync_reverse else '（已请求反向同步）'}"
     )
-    return count
+    return outcome
 
 
 # ── 固定管理 ──────────────────────────────────────────────────────────────────
@@ -1552,26 +1750,52 @@ def pin_entry(entry_id: int, pinned: bool = True) -> None:
     logger.debug(f"TM {'固定' if pinned else '解固'} id={entry_id}（已同步反向词条）")
 
 
+# SQLite 的绑定变量上限：旧运行时（SQLite < 3.32，发布用的 Python 3.11 就带这一档）
+# 只有 999，新版本是 32766。整库固定/解固动辄上万条 id，必须分片下发，
+# 否则一句 IN (...) 直接抛 "too many SQL variables"，整次操作零生效。
+_SQL_VARIABLE_CHUNK = 900
+
+
+def _chunked(items: list, size: int = _SQL_VARIABLE_CHUNK):
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def _set_pinned_by_ids(
+    conn: sqlite3.Connection,
+    entry_ids: list[int],
+    pinned: bool,
+) -> None:
+    for chunk in _chunked(entry_ids):
+        placeholders = ",".join("?" * len(chunk))
+        conn.execute(
+            f"UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP "
+            f"WHERE id IN ({placeholders})",
+            [1 if pinned else 0, *chunk],
+        )
+
+
 def bulk_pin_entries(ids: list[int], pinned: bool = True) -> None:
     """批量固定或解除固定（按 ID 列表）。"""
     if not ids:
         return
     with _get_conn() as conn:
-        placeholders = ",".join("?" * len(ids))
-        rows = conn.execute(
-            f"""
-            SELECT id, source_text, target_text, lang_pair, word_type, source_engine, pinned
-            FROM tm_entries
-            WHERE id IN ({placeholders})
-            """,
-            ids,
-        ).fetchall()
+        rows: list[sqlite3.Row] = []
+        for chunk in _chunked(list(ids)):
+            placeholders = ",".join("?" * len(chunk))
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, source_text, target_text, lang_pair, word_type, source_engine, pinned
+                    FROM tm_entries
+                    WHERE id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+            )
         if not rows:
             return
-        conn.execute(
-            f"UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
-            [1 if pinned else 0, *ids],
-        )
+        _set_pinned_by_ids(conn, [int(row["id"]) for row in rows], pinned)
         for row in rows:
             _sync_reverse_pin(conn, row, pinned)
     logger.debug(f"TM 批量{'固定' if pinned else '解固'} {len(rows)} 条（已同步反向词条）")
@@ -1586,11 +1810,7 @@ def set_all_pinned(lang_pair: str, pinned: bool, keyword: str = "") -> int:
         rows = _select_scope_rows(conn, lang_pair, keyword)
         if not rows:
             return 0
-        placeholders = ",".join("?" * len(rows))
-        conn.execute(
-            f"UPDATE tm_entries SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
-            [1 if pinned else 0, *[row["id"] for row in rows]],
-        )
+        _set_pinned_by_ids(conn, [int(row["id"]) for row in rows], pinned)
         for row in rows:
             _sync_reverse_pin(conn, row, pinned)
         return len(rows)
@@ -1599,30 +1819,37 @@ def set_all_pinned(lang_pair: str, pinned: bool, keyword: str = "") -> int:
 # ── 查询与统计 ────────────────────────────────────────────────────────────────
 
 def get_stats(lang_pair: str) -> dict[str, int]:
-    """返回指定语言对的词条统计。"""
-    sql = """
-        SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) as pinned,
-            SUM(CASE WHEN word_type = ? THEN 1 ELSE 0 END) as manual,
-            SUM(CASE WHEN word_type = ? THEN 1 ELSE 0 END) as reviewed_auto,
-            SUM(CASE WHEN word_type = ? THEN 1 ELSE 0 END) as cleaning_locked,
-            SUM(CASE WHEN pinned = 1 THEN 1 ELSE 0 END) as user_fixed
-        FROM tm_entries
-        WHERE lang_pair = ?
+    """返回指定语言对的词条统计。
+
+    分类按 `_normalize_word_type` 归一后再计数：旧库里的 `'import'` 行属于
+    人工维护、`'term'` 一类未知写法属于普通自动条目，按字面比对会把它们
+    一股脑算进 auto，统计条上的「手动维护」于是比实际少。
     """
     with _get_conn() as conn:
-        row = conn.execute(
-            sql,
-            [MANUAL_WORD_TYPE, REVIEWED_AUTO_WORD_TYPE, CLEANING_LOCKED_WORD_TYPE, lang_pair],
-        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT word_type, pinned, COUNT(*) AS cnt
+            FROM tm_entries
+            WHERE lang_pair = ?
+            GROUP BY word_type, pinned
+            """,
+            [lang_pair],
+        ).fetchall()
 
-    total = int(row["total"] or 0)
-    pinned = int(row["pinned"] or 0)
-    manual = int(row["manual"] or 0)
-    reviewed_auto = int(row["reviewed_auto"] or 0)
-    cleaning_locked = int(row["cleaning_locked"] or 0)
-    user_fixed = int(row["user_fixed"] or 0)
+    total = 0
+    pinned = 0
+    by_type: dict[str, int] = defaultdict(int)
+    for row in rows:
+        count = int(row["cnt"] or 0)
+        total += count
+        if int(row["pinned"] or 0):
+            pinned += count
+        by_type[_normalize_word_type(row["word_type"])] += count
+
+    manual = by_type.get(MANUAL_WORD_TYPE, 0)
+    reviewed_auto = by_type.get(REVIEWED_AUTO_WORD_TYPE, 0)
+    cleaning_locked = by_type.get(CLEANING_LOCKED_WORD_TYPE, 0)
+    user_fixed = pinned
     return {
         "total": total,
         "pinned": pinned,
@@ -1697,11 +1924,22 @@ def resolve_conflict_candidate(candidate_id: int, action: str) -> bool:
 
 
 def persist_cleaning_suggestions(suggestions: list[dict[str, object]]) -> int:
-    """Persist a cleaning result set for explicit later approval."""
+    """Persist a cleaning result set for explicit later approval.
+
+    同一条建议（同词条 + 同新译文）只要还挂在 pending，就不再重复入库：
+    清洗跑第二遍时模型往往给出一模一样的结果，逐次追加会让审阅列表里
+    堆出成倍的相同行，用户得把同一句话勾选很多次。
+    """
     if not suggestions:
         return 0
     created = 0
     with _get_conn() as conn:
+        pending_rows = conn.execute(
+            "SELECT entry_id, new_target FROM tm_cleaning_suggestions WHERE status = 'pending'"
+        ).fetchall()
+        seen: set[tuple[int, str]] = {
+            (int(row["entry_id"]), str(row["new_target"])) for row in pending_rows
+        }
         for item in suggestions:
             entry_id = int(item.get("entry_id") or 0)
             source_text = normalize_tm_text_for_storage(item.get("source_text", ""))
@@ -1711,6 +1949,9 @@ def persist_cleaning_suggestions(suggestions: list[dict[str, object]]) -> int:
             expected_version = str(item.get("version") or item.get("expected_version") or "")
             if not entry_id or not source_text or not old_target or not new_target or not lang_pair or not expected_version:
                 continue
+            if (entry_id, new_target) in seen:
+                continue
+            seen.add((entry_id, new_target))
             cursor = conn.execute(
                 """
                 INSERT INTO tm_cleaning_suggestions (
@@ -1750,18 +1991,51 @@ def mark_cleaning_suggestions(
     suggestion_ids: list[int],
     status: str,
 ) -> int:
+    """把建议标成已应用 / 已过期 / 已拒绝，返回真正改动的行数。
+
+    id 列表按绑定变量上限分片下发——整库清洗一次能产出上万条建议，
+    一句 `IN (...)` 会直接撞上 SQLite 的变量上限。
+    """
     if status not in {"applied", "stale", "rejected"}:
         raise ValueError("status must be applied, stale, or rejected")
-    if not suggestion_ids:
+    ids = [int(item) for item in suggestion_ids if item]
+    if not ids:
         return 0
-    placeholders = ",".join("?" * len(suggestion_ids))
+    changed = 0
     with _get_conn() as conn:
-        cursor = conn.execute(
-            f"UPDATE tm_cleaning_suggestions SET status = ?, updated_at = CURRENT_TIMESTAMP "
-            f"WHERE id IN ({placeholders}) AND status = 'pending'",
-            [status, *suggestion_ids],
-        )
-    return int(cursor.rowcount)
+        for chunk in _chunked(ids):
+            placeholders = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"UPDATE tm_cleaning_suggestions SET status = ?, updated_at = CURRENT_TIMESTAMP "
+                f"WHERE id IN ({placeholders}) AND status = 'pending'",
+                [status, *chunk],
+            )
+            changed += int(cursor.rowcount or 0)
+    return changed
+
+
+def expire_stale_cleaning_suggestions(lang_pair: str | None = None) -> int:
+    """把已经对不上当前词条的 pending 建议标成 stale，返回过期条数。
+
+    建议是「当时那一版译文」的改写方案。词条后来被人工改过、被固定、
+    或者干脆删了，这条建议就不该再出现在待审列表里——否则用户勾了它，
+    写入时才被乐观并发拦下，界面上只看到一次莫名其妙的失败。
+    """
+    pending = list_cleaning_suggestions(lang_pair, status="pending")
+    if not pending:
+        return 0
+    stale_ids: list[int] = []
+    with _get_conn() as conn:
+        for item in pending:
+            row = _fetch_entry(conn, int(item["entry_id"]))
+            if row is None or _entry_version(row) != str(item["expected_version"] or ""):
+                stale_ids.append(int(item["id"]))
+    if not stale_ids:
+        return 0
+    marked = mark_cleaning_suggestions(stale_ids, "stale")
+    if marked:
+        logger.info(f"TM 清洗建议过期 {marked} 条（对应词条已变更或已删除）")
+    return marked
 
 
 def count_entries_referencing_language(language_code: str) -> int:
@@ -1998,27 +2272,39 @@ def import_entries(
                 updated += 1
 
             if preserve_status:
-                # Recompute the hash after any API-level language code map;
-                # preserving an old hash would make the restored row
-                # unreachable under its new language pair.
-                metadata_updates = ["source_hash = ?", "source_engine = ?"]
-                metadata_values: list[object] = [
-                    _make_hash(write_source, lang_pair),
-                    source_engine,
-                ]
-                if created_at:
-                    metadata_updates.append("created_at = ?")
-                    metadata_values.append(created_at)
-                if updated_at:
-                    metadata_updates.append("updated_at = ?")
-                    metadata_values.append(updated_at)
-                metadata_values.extend([write_source, lang_pair])
-                conn.execute(
-                    "UPDATE tm_entries SET "
-                    + ", ".join(metadata_updates)
-                    + " WHERE source_text = ? AND lang_pair = ?",
-                    metadata_values,
+                # 目标行按 id 定位：_upsert_entry 可能是靠匹配哈希命中了写法
+                # 不同的既有行（旧库里同一句原文是折成单行存的），这时按
+                # source_text 逐字相等去 UPDATE 一行都匹配不到，备份里的
+                # created_at / updated_at / source_engine 会静默丢失。
+                target_row = (
+                    existing
+                    if existing is not None
+                    else _fetch_entry_by_source(conn, write_source, lang_pair)
                 )
+                if target_row is not None:
+                    # 哈希在语言对被 API 层映射过之后重算：沿用备份里的旧哈希
+                    # 会让还原出来的行再也查不到。口径必须是 _match_hash（比较
+                    # 形态），与全仓其它写入点一致；按存储形态算会让同一句原文
+                    # 的多行写法和单行写法各存一条，且此后编辑任一条都会撞上
+                    # UNIQUE(source_hash, lang_pair) 而无路可走。
+                    metadata_updates = ["source_hash = ?", "source_engine = ?"]
+                    metadata_values: list[object] = [
+                        _match_hash(write_source, lang_pair),
+                        source_engine,
+                    ]
+                    if created_at:
+                        metadata_updates.append("created_at = ?")
+                        metadata_values.append(created_at)
+                    if updated_at:
+                        metadata_updates.append("updated_at = ?")
+                        metadata_values.append(updated_at)
+                    metadata_values.append(int(target_row["id"]))
+                    conn.execute(
+                        "UPDATE tm_entries SET "
+                        + ", ".join(metadata_updates)
+                        + " WHERE id = ?",
+                        metadata_values,
+                    )
             if sync_reverse and _sync_reverse_upsert(
                 conn,
                 write_source,
@@ -2109,18 +2395,24 @@ def get_all_entries_for_cleaning(lang_pair: str) -> list[dict]:
     """
     只取普通自动词条供 TM 清洗模块使用。
     返回包含乐观并发版本的 `{id, source_text, target_text, version}`。
+
+    过滤走 `_normalize_word_type`，不用 SQL 字面比对：旧库（TM v2 之前）
+    写下的 `'term'` 等历史写法归一后就是普通自动词条，字面比对会把它们
+    永久排除在深度清洗之外——那正是最该被清洗的一批老数据。
     """
     sql = """
         SELECT id, source_text, source_hash, target_text, lang_pair,
                word_type, source_engine, pinned, updated_at
         FROM tm_entries
-        WHERE lang_pair = ? AND pinned = 0 AND word_type = ?
+        WHERE lang_pair = ? AND pinned = 0
         ORDER BY id
     """
     with _get_conn() as conn:
-        rows = conn.execute(sql, [lang_pair, AUTO_WORD_TYPE]).fetchall()
+        rows = conn.execute(sql, [lang_pair]).fetchall()
     result = []
     for row in rows:
+        if _normalize_word_type(row["word_type"]) != AUTO_WORD_TYPE:
+            continue
         item = dict(row)
         item["version"] = _entry_version(row)
         result.append(item)
