@@ -25,6 +25,8 @@ import {
 } from "../components";
 import { icon } from "../icons";
 import { ApiClient } from "../api-client";
+import { consumePendingRestartWarning } from "../update-controller";
+import { openRestartBeforeTaskModal } from "../update-toast";
 import { saveJsonFile, saveTextFile } from "../save-file";
 
 // ---------------------------------------------------------------------------
@@ -703,6 +705,11 @@ async function submitTmCleanStart(payload: JsonObject, confirmationToken: string
 }
 
 async function tmClean(): Promise<void> {
+  // 深度清洗也是新任务,同样吃「更新装好没重启 → 组件加载失败」这一刀(高-12)。
+  if (consumePendingRestartWarning()) {
+    openRestartBeforeTaskModal(() => void tmClean());
+    return;
+  }
   cleaningState = "running";
   conflictMessage = "";
   renderStateRow();
@@ -766,7 +773,9 @@ function openCleanReviewModal(): void {
     const check = document.createElement("input");
     check.type = "checkbox";
     check.className = "ck";
-    check.checked = true;
+    // 默认全不勾：清洗建议要用户逐条看过才写入。默认全勾时「确认写入」一键
+    // 就能拿建议盖掉记忆库里的人工校对（审计 高-7 的产品半边）。
+    check.checked = false;
     check.style.marginTop = "3px";
     checks.push(check);
     const info = document.createElement("div");
@@ -787,7 +796,7 @@ function openCleanReviewModal(): void {
     body.push(row);
   });
 
-  openModal({
+  const handle = openModal({
     tone: "warn",
     icon: "book",
     title: "清洗建议",
@@ -795,8 +804,12 @@ function openCleanReviewModal(): void {
     actions: [
       { label: "取消", variant: "default" },
       {
+        // 成功写入才收弹窗；一条没勾就点（默认全不勾之后大概率是误触）时留在
+        // 原地提示、不发请求——原来会无声提交一个全 false 的空单，后端不动一条,
+        // 前端却把整个建议面板连同「查看建议」入口一起收走。
         label: "写入已勾选建议",
         variant: "primary",
+        keepOpen: true,
         onClick: async () => {
           const client = await getClient();
           // 建议主键与 expected_version 必须原样回传：前者让后端把已处理的建议
@@ -813,6 +826,10 @@ function openCleanReviewModal(): void {
             expected_version: text(suggestion.expected_version),
           }));
           const accepted = suggestions.filter((item) => item.accepted).length;
+          if (!accepted) {
+            showToast({ message: "还没有勾选任何建议。勾选后再写入；暂不处理可点「取消」。" });
+            return;
+          }
           const result = await client.request<{
             applied: number;
             unchanged?: number;
@@ -839,6 +856,7 @@ function openCleanReviewModal(): void {
           if (unchanged > 0) parts.push(`${unchanged} 条与库中译文相同，无需改动`);
           if (skipped > 0) parts.push(`${skipped} 条因词条已被改动或固定而跳过`);
           showToast({ message: `${parts.join("；")}。` });
+          handle.close();
         },
       },
     ],
