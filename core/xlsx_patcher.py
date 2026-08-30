@@ -827,11 +827,22 @@ def _cell_formula(cell):
     return cell.find(_m("f"))
 
 
+def is_dispimg_formula_text(formula_text: str) -> bool:
+    """这串公式源码是不是 WPS 的 DISPIMG 嵌入图片公式。
+
+    两个调用方拿到的形态不同：XML ``<f>`` 的文本没有 ``=`` 前缀，openpyxl 读出的
+    公式值带 ``=`` 前缀——这里两种都认。覆盖率层（excel_coverage）用它把 DISPIMG
+    格挡在补译候选之外：写入层对这类格无条件跳过，排进计划只会白花一次 API 调用，
+    还留下一个永远清不掉的「未翻译」计数。
+    """
+    cleaned = str(formula_text or "").lstrip().removeprefix("=").lstrip()
+    return cleaned.upper().startswith(("DISPIMG(", "_XLFN.DISPIMG("))
+
+
 def _is_dispimg_formula(formula_el) -> bool:
     if formula_el is None:
         return False
-    text = str(formula_el.text or "").lstrip()
-    return text.upper().startswith(("DISPIMG(", "_XLFN.DISPIMG("))
+    return is_dispimg_formula_text(formula_el.text or "")
 
 
 def _cell_v_text(cell) -> str | None:
@@ -1441,11 +1452,17 @@ def _process_sheet(
                 allowed_coordinates is None
                 or f"{_column_letter(col_index)}{row_num}" in allowed_coordinates
             )
-            # allowed_coordinates 非空即补译模式：坐标限定本该已经把公式格挡在
-            # 外面（见 excel_coverage._classify_excel_cell），这里再兜底一层——
-            # 补译的前提是「不动已完成内容」，公式格无论如何不该在这个模式下
-            # 被判定可写，任何一层的坐标计算算错都不该把 <f> 删掉换成静态译文。
-            if allowed_coordinates is not None and formula_el is not None:
+            # allowed_coordinates 非空即补译模式。公式格的产品约定是「译文以值
+            # 覆盖公式」（原公式在「_原文」分表和原始文件里都完好），所以「公式
+            # 显示值回填」开着时补译与全量同一条规则：按显示值命中译文就整格覆盖
+            # 成静态双语文本。只有回填关闭才保护公式——覆盖率层（excel_coverage.
+            # _classify_excel_cell）本该已把公式格挡在坐标集合外，这里再兜一层：
+            # 任何一层的坐标计算算错，都不该把 <f> 删掉换成静态译文。
+            if (
+                allowed_coordinates is not None
+                and formula_el is not None
+                and not formula_display_value_backfill
+            ):
                 position_allowed = False
             mutation = (
                 _plan_cell_mutation(

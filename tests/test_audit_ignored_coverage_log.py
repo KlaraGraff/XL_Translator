@@ -34,7 +34,7 @@ from core.translation_coverage import (
 )
 
 REASON_RULE = "单元格不符合补译候选规则。"
-REASON_FORMULA = "公式单元格，补译模式不覆盖以保留公式。"
+REASON_FORMULA = "公式单元格：公式显示值回填已关闭，不覆盖以保留公式。"
 
 
 def _unit(status: str, location: str, *, reason: str = "") -> CoverageUnit:

@@ -753,9 +753,10 @@ class ErrorCellsStayOutOfTranslationTests(unittest.TestCase):
     def test_cached_formula_error_never_enters_the_coverage_plan(self) -> None:
         """回填显示值那条路同理：公式算出来是 #N/A，缓存值也是一串字符串。
 
-        说明白它是防退化守卫、不是缺陷钉子：这一格现在靠的是 ``_classify_excel_cell``
-        的公式闸门（公式格一律判 ignored），所以在错误值这条修复之前它也是绿的。
-        留着它是因为公式闸门一旦被放宽，错误公式格会立刻从这个口子漏进待译词条。
+        公式闸门已按「公式显示值回填」开关放宽（开着时公式格按显示值进补译
+        候选），这一格现在靠的是显示值映射（``_DisplayValues``）对错误格
+        （``data_type == "e"``）的过滤——错误码那串符号不是正文，进了候选就是
+        白花一次 API 调用。
         """
         rows_xml = (
             '<row r="1">'

@@ -168,13 +168,7 @@ class CoverageScanPerformanceTests(_CoverageCase):
             f"{self.FORMULA_CELLS} 个公式格扫了 {elapsed:.2f}s，公式显示值查询疑似退回逐格重解析",
         )
 
-    def test_formula_cells_with_cached_values_never_become_candidates(self) -> None:
-        """审计高-6：公式格即使带缓存显示值，也一律忽略、绝不进补译候选。
-
-        旧契约是「缓存显示值被解析进 source_texts」——那正是补译把公式格整格
-        覆写成静态文本、公式永久丢失的入口，已废除。显示值映射的性能意图由上面
-        ``test_large_formula_sheet_scans_quickly`` 继续把守。
-        """
+    def _cached_formula_workbook(self) -> Path:
         source = self.root / "cached.xlsx"
         workbook = Workbook()
         sheet = workbook.active
@@ -185,12 +179,35 @@ class CoverageScanPerformanceTests(_CoverageCase):
 
         # openpyxl 写不出缓存值，手工把 <v> 塞进分表 XML。
         _inject_cached_value(source, "A1", "配电箱")
+        return source
 
+    def test_formula_cells_follow_backfill_switch_on(self) -> None:
+        """公式格的产品约定：「公式显示值回填」开着（默认）时，缓存显示值按普通
+        文本分类，补译与全量同一条规则——译文以值覆盖公式，原公式在「_原文」
+        分表和原始文件里都完好。旧契约「公式格一律 ignored」（审计高-6 的第一版
+        修法）与设计初衷相反，已按开关拆成两支。
+        """
         plan = build_excel_coverage_plan(
-            source,
+            self._cached_formula_workbook(),
             target_lang="en",
             source_lang="zh",
             formula_display_value_backfill=True,
+        )
+        self.assertEqual(plan.source_texts, ["配电箱"])
+        formula_units = [
+            unit for unit in plan.units if unit.data.get("coordinate") == "A1"
+        ]
+        self.assertEqual(len(formula_units), 1)
+        self.assertEqual(formula_units[0].status, COVERAGE_SOURCE_ONLY)
+
+    def test_formula_cells_follow_backfill_switch_off(self) -> None:
+        """回填关闭才保护公式：此时公式格的「文本」是公式源码，送翻是白花钱，
+        写回还会删 <f>——一律 ignored，且理由说清是开关关闭所致。"""
+        plan = build_excel_coverage_plan(
+            self._cached_formula_workbook(),
+            target_lang="en",
+            source_lang="zh",
+            formula_display_value_backfill=False,
         )
         self.assertEqual(plan.source_texts, [])
         formula_units = [
@@ -199,6 +216,7 @@ class CoverageScanPerformanceTests(_CoverageCase):
         self.assertEqual(len(formula_units), 1)
         self.assertEqual(formula_units[0].status, COVERAGE_IGNORED)
         self.assertIn("公式", formula_units[0].reason)
+        self.assertIn("回填已关闭", formula_units[0].reason)
 
 
 def _inject_cached_value(path: Path, coordinate: str, value: str) -> None:

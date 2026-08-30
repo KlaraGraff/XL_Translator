@@ -97,6 +97,7 @@ def build_excel_coverage_plan(
                         source_lang=source_lang,
                         target_lang=target_lang,
                         is_formula=getattr(cell, "data_type", None) == "f",
+                        formula_display_value_backfill=formula_display_value_backfill,
                     )
                     if unit is not None:
                         units.append(unit)
@@ -222,6 +223,7 @@ def _classify_excel_cell(
     source_lang: str,
     target_lang: str,
     is_formula: bool = False,
+    formula_display_value_backfill: bool = True,
 ) -> CoverageUnit | None:
     text = clean_coverage_text(raw)
     if not text:
@@ -233,17 +235,18 @@ def _classify_excel_cell(
     # 对不上（格里还有旧译文）——认这一条。
     data = {"sheet": sheet_name, "coordinate": coordinate, "cell_text": text}
 
-    if is_formula:
-        # 公式格无论显示值/公式源码长什么样都不能进 source_only：那会被送去
-        # 翻译（白花一次 API 调用译公式源码），译文回填时又用同一把 key 命中
-        # 这一格，写入器会把 <f> 整个删掉换成静态译文——公式永久丢失。补译
-        # 模式的前提是「不动已完成内容」，公式格不属于「未翻译」，直接判 ignored。
+    if is_formula and not formula_display_value_backfill:
+        # 公式格的产品约定：译文以「值」覆盖公式——原公式在「_原文」分表和原始
+        # 文件里都完好，所以「公式显示值回填」开着（默认）时公式格按显示值走下面
+        # 的普通分类，补译与全量同一条规则。只有用户明确关掉回填才保护公式：此时
+        # 这一格的「文本」是公式源码，送翻是白花一次 API 调用译公式源码，写回还会
+        # 把 <f> 删掉换成静态译文，两头都不该发生，直接判 ignored。
         return CoverageUnit(
             source_text=text,
             status=COVERAGE_IGNORED,
             location=location,
             kind="cell",
-            reason="公式单元格，补译模式不覆盖以保留公式。",
+            reason="公式单元格：公式显示值回填已关闭，不覆盖以保留公式。",
             data=data,
         )
 
@@ -319,11 +322,16 @@ class _DisplayValues:
 
     def get(self, coordinate: str) -> str | None:
         if self._values is None:
+            # 错误值公式格（算出来是 #N/A / #REF! 的格）在 data_only 视图里的
+            # 「值」就是那串错误符号本身，也是字符串。进了显示值映射就会被当成
+            # 正文送翻——写入端拦得住改写（_is_error_cell），但词条那次 API 调用
+            # 的钱已经花了，补译报告还会把它算成「未翻译内容」。这里直接不收。
             self._values = {
                 cell.coordinate: cell.value
                 for row in self._worksheet.iter_rows()
                 for cell in row
                 if isinstance(cell.value, str)
+                and getattr(cell, "data_type", None) != "e"
             }
         return self._values.get(coordinate)
 
@@ -343,7 +351,15 @@ def _resolve_cell_text(
         # 挡住了改写（xlsx_patcher._is_error_cell），这里连词条都不该收——收下就是
         # 白花钱，还会让补译报告把这一格算成「未翻译内容」。
         return None
-    if not formula_display_value_backfill or getattr(cell, "data_type", None) != "f":
+    if getattr(cell, "data_type", None) != "f":
+        return value
+    if xlsx_patcher.is_dispimg_formula_text(value):
+        # WPS 的 DISPIMG「嵌入图片」格：格里的公式是图片引用，缓存显示值只是
+        # 占位文本。写入层（xlsx_patcher）对这类格无条件跳过、永远写不进去——
+        # 把它的显示值排进补译候选，等于花一次 API 调用换一个永远清不掉的
+        # 「未翻译」计数（续译弹窗每次都报同样的数字）。两个开关分支都不收。
+        return None
+    if not formula_display_value_backfill:
         return value
     if display_values is None:
         return None

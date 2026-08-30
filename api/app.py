@@ -839,6 +839,13 @@ def create_app(
                 target_lang=target_lang,
                 source_lang=source_lang,
                 preferred_dir=request.preferred_resume_dir,
+                # Excel 的补译计划按这个开关决定公式格进不进待译集合，检测层
+                # 必须同一套口径，否则弹窗数字和任务实际行为对不上。
+                formula_display_value_backfill=(
+                    settings.excel_output.formula_display_value_backfill
+                    if request.surface == "excel"
+                    else True
+                ),
             )
         except Exception:
             logger.exception("previous-output detection failed; scan continues without it")

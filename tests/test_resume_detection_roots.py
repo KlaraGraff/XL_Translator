@@ -124,6 +124,7 @@ class DeferredResumeBaselineTests(unittest.TestCase):
                 file_results=[],
                 target_lang="en",
                 source_lang="zh",
+                formula_display_value_backfill=True,
             )
             self.assertEqual(process_paths[0], baseline)
             self.assertTrue(resume_used[0])
@@ -151,6 +152,7 @@ class DeferredResumeBaselineTests(unittest.TestCase):
                 ],
                 target_lang="en",
                 source_lang="zh",
+                formula_display_value_backfill=True,
             )
             self.assertEqual(process_paths[0], source)
             self.assertFalse(resume_used[0])
@@ -170,6 +172,7 @@ class DeferredResumeBaselineTests(unittest.TestCase):
                 file_results=[],
                 target_lang="en",
                 source_lang="zh",
+                formula_display_value_backfill=True,
             )
             self.assertEqual(process_paths[0], source)
             self.assertFalse(resume_used[0])

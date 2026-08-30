@@ -15,7 +15,11 @@ from pathlib import Path
 from lxml import etree
 from openpyxl import load_workbook
 
-from core.excel_coverage import ExcelCoveragePlan, write_untranslated_excel_file
+from core.excel_coverage import (
+    ExcelCoveragePlan,
+    build_excel_coverage_plan,
+    write_untranslated_excel_file,
+)
 from core.translation_coverage import COVERAGE_SOURCE_ONLY, CoverageUnit
 from core.xlsx_patcher import NS_MAIN
 from tests.test_xlsx_patcher import (
@@ -99,6 +103,30 @@ class ExcelCoveragePatcherTests(unittest.TestCase):
             self.assertEqual(wb["报价"]["A1"].value, "施工内容")
         finally:
             wb.close()
+
+    # ── 嵌入图片格不进补译候选 ────────────────────────────────────────────
+    def test_dispimg_cell_never_enters_coverage_plan(self) -> None:
+        # WPS 的 DISPIMG 单元格（A5）：公式是图片引用，缓存 <v> 只是占位文本
+        # "配电箱"。写入层对这类格无条件跳过（见下一条测试），覆盖率层若把它的
+        # 缓存值排进补译候选，就是花一次 API 调用换一个永远清不掉的「未翻译」
+        # 计数——续译弹窗每次都报同样的数字。开关两个分支都不许收它。
+        for backfill in (True, False):
+            with self.subTest(formula_display_value_backfill=backfill):
+                plan = build_excel_coverage_plan(
+                    self.fixture,
+                    target_lang="en",
+                    source_lang="zh",
+                    formula_display_value_backfill=backfill,
+                )
+                dispimg_units = [
+                    unit
+                    for unit in plan.units
+                    if unit.data.get("sheet") == "报价"
+                    and unit.data.get("coordinate") == "A5"
+                ]
+                self.assertEqual(dispimg_units, [])
+                # 同文本的普通格照常进候选——排除的是图片格，不是"配电箱"这串字。
+                self.assertIn("配电箱", plan.source_texts)
 
     # ── 嵌入图片保真 ──────────────────────────────────────────────────────
     def test_embedded_image_parts_survive_supplementary_write(self) -> None:

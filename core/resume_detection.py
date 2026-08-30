@@ -307,6 +307,7 @@ def baseline_missing_source_texts(
     target_lang: str,
     source_lang: str,
     baseline_plan: Any | None = None,
+    formula_display_value_backfill: bool = True,
 ) -> list[str] | None:
     """核查上次产物有没有资格当续译底稿：源文件里有、底稿里没有的待译文本。
 
@@ -330,12 +331,20 @@ def baseline_missing_source_texts(
     """
     try:
         if surface == "excel":
+            # 回填开关要和真正跑任务的补译计划一致：开关关着时公式格根本不进
+            # 待译集合，硬要求底稿里有它们的显示值文本只会平白拒掉一份好底稿。
             source_plan = build_excel_coverage_plan(
-                Path(source_path), target_lang=target_lang, source_lang=source_lang
+                Path(source_path),
+                target_lang=target_lang,
+                source_lang=source_lang,
+                formula_display_value_backfill=formula_display_value_backfill,
             )
             if baseline_plan is None:
                 baseline_plan = build_excel_coverage_plan(
-                    Path(baseline_path), target_lang=target_lang, source_lang=source_lang
+                    Path(baseline_path),
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    formula_display_value_backfill=formula_display_value_backfill,
                 )
         elif surface == "word":
             source_plan = build_word_coverage_plan(
@@ -472,10 +481,18 @@ def _classify_excel_or_word(
     item_path: Path,
     target_lang: str,
     source_lang: str,
+    formula_display_value_backfill: bool = True,
 ) -> tuple[str, int | None]:
     try:
         if surface == "excel":
-            plan = build_excel_coverage_plan(matched, target_lang=target_lang, source_lang=source_lang)
+            # 与 runner 的补译计划同一套开关：不然回填关闭的用户会看到弹窗报
+            # 「还剩 N 处」、续译跑完却一格没动——正是下面注释里那个死循环观感。
+            plan = build_excel_coverage_plan(
+                matched,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                formula_display_value_backfill=formula_display_value_backfill,
+            )
         else:
             plan = build_word_coverage_plan(matched, target_lang=target_lang, source_lang=source_lang)
         # 只数 source_only：补译写回只处理 source_units，AMBIGUOUS（多行歧义格）
@@ -494,6 +511,7 @@ def _classify_excel_or_word(
         target_lang=target_lang,
         source_lang=source_lang,
         baseline_plan=plan,
+        formula_display_value_backfill=formula_display_value_backfill,
     )
     if missing:
         # missing 非空意味着 runner 一定会拒用这份底稿、整份按源文件重翻
@@ -612,6 +630,7 @@ def detect_previous_output(
     target_lang: str,
     source_lang: str | None = None,
     preferred_dir: str | None = None,
+    formula_display_value_backfill: bool = True,
 ) -> dict[str, Any] | None:
     """检测扫描输入是否已有历史翻译产物；检测失败一律返回 None（绝不抛给调用方）。"""
     try:
@@ -623,6 +642,7 @@ def detect_previous_output(
             target_lang,
             source_lang,
             preferred_dir,
+            formula_display_value_backfill,
         )
     except Exception:  # noqa: BLE001 - 检测是可选增强，绝不能拖垮扫描主流程。
         logger.warning("[续译检测] detect_previous_output 内部异常，按未检测到处理。", exc_info=True)
@@ -637,6 +657,7 @@ def _detect_previous_output_impl(
     target_lang: str,
     source_lang: str | None,
     preferred_dir: str | None,
+    formula_display_value_backfill: bool = True,
 ) -> dict[str, Any] | None:
     resolved_source_lang = source_lang or _DEFAULT_SOURCE_LANG
     roots = _normalize_scan_roots(scan_roots)
@@ -745,6 +766,7 @@ def _detect_previous_output_impl(
                             item_path=item_path,
                             target_lang=target_lang,
                             source_lang=resolved_source_lang,
+                            formula_display_value_backfill=formula_display_value_backfill,
                         )
                         entry["status"] = status
                         entry["untranslated_count"] = untranslated

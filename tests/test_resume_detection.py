@@ -343,6 +343,103 @@ def test_excel_source_grown_since_baseline_is_reported_as_diverged(tmp_path):
     assert result["summary"]["partial"] == 0
 
 
+def test_excel_formula_cells_follow_backfill_switch_in_detection(tmp_path):
+    """续译弹窗的未译计数必须与任务真实行为同口径——按「公式显示值回填」开关拆分。
+
+    底稿形态：A1 已翻成双语，A2 是公式格、缓存显示值还是中文——这正是回填关闭
+    那次任务的产物（公式格被保护、原样留下）。回填开着时，任务会按显示值把 A2
+    补译掉，弹窗报 partial/1 名副其实；回填关着时任务对 A2 碰都不碰，报 partial/1
+    就是「剩 1 处 → 续译 → 还是剩 1 处」的死循环观感，必须报 full/0。
+    这条测试钉住的是开关从 detect_previous_output 一路传到覆盖率计划的整条线：
+    中途任何一处丢掉这个参数，False 分支就会退回 True 的行为。
+    """
+    from tests.test_excel_coverage_defects import _inject_cached_value
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "a.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.cell(row=1, column=1, value="项目名称")
+    ws.cell(row=2, column=1, value="=B2")
+    wb.save(source)
+    _inject_cached_value(source, "A2", "配电箱")
+
+    history_dir = _history_dir(root, "20260101_010101")
+    baseline = history_dir / bilingual_output_name("a.xlsx", get_target_lang_display("en"))
+    wb2 = Workbook()
+    ws2 = wb2.active
+    ws2.cell(row=1, column=1, value="项目名称\nProject name")
+    ws2.cell(row=2, column=1, value="=B2")  # 公式格被上次任务保护，原样留下
+    wb2.save(baseline)
+    _inject_cached_value(baseline, "A2", "配电箱")
+
+    def _detect(backfill: bool):
+        return detect_previous_output(
+            surface="excel",
+            items=[{"path": str(source)}],
+            scan_roots=[str(root)],
+            custom_output_root=None,
+            target_lang="en",
+            formula_display_value_backfill=backfill,
+        )
+
+    entry_on = _detect(True)["files"][0]
+    assert entry_on["status"] == "partial"
+    assert entry_on["untranslated_count"] == 1
+
+    entry_off = _detect(False)["files"][0]
+    assert entry_off["status"] == "full"
+    assert entry_off["untranslated_count"] == 0
+
+
+def test_baseline_qualification_follows_backfill_switch(tmp_path):
+    """底稿资格核查的开关口径：回填关闭的任务根本不会碰公式格，不许因为底稿里
+    没有公式显示值文本就拒掉一份好底稿；回填开着时这份底稿确实缺待译内容，必须拒。
+
+    场景：源文件在上次翻译之后新长出一个公式格（缓存显示值是中文），底稿完全
+    没见过这串文本。这钉住 baseline_missing_source_texts 内部两次计划构建都吃到
+    开关——参数在那里被丢掉的话，False 分支会平白报 missing。
+    """
+    from tests.test_excel_coverage_defects import _inject_cached_value
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "a.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.cell(row=1, column=1, value="项目名称")
+    ws.cell(row=2, column=1, value="=B2")
+    wb.save(source)
+    _inject_cached_value(source, "A2", "配电箱")
+
+    baseline = root / "baseline.xlsx"
+    wb2 = Workbook()
+    ws2 = wb2.active
+    ws2.cell(row=1, column=1, value="项目名称\nProject name")
+    wb2.save(baseline)
+
+    missing_on = baseline_missing_source_texts(
+        source,
+        baseline,
+        surface="excel",
+        target_lang="en",
+        source_lang="zh",
+        formula_display_value_backfill=True,
+    )
+    assert missing_on == ["配电箱"]
+
+    missing_off = baseline_missing_source_texts(
+        source,
+        baseline,
+        surface="excel",
+        target_lang="en",
+        source_lang="zh",
+        formula_display_value_backfill=False,
+    )
+    assert missing_off == []
+
+
 def test_excel_new_row_reusing_existing_text_is_diverged(tmp_path):
     """新增的行哪怕逐字复用了底稿里出现过的文本，也是底稿没有的内容。
 

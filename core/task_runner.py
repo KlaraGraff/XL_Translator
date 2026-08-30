@@ -797,6 +797,9 @@ class TaskRunner:
                                 surface="excel",
                                 target_lang=target_lang,
                                 source_lang=source_lang,
+                                formula_display_value_backfill=(
+                                    excel_output.formula_display_value_backfill
+                                ),
                             )
                         ):
                             # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
@@ -1115,6 +1118,9 @@ class TaskRunner:
                         file_results=file_results,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        formula_display_value_backfill=(
+                            excel_output.formula_display_value_backfill
+                        ),
                     )
                     raw_text_count = self._rebuild_coverage_plans_after_preflight(
                         process_paths=process_paths,
@@ -2482,12 +2488,12 @@ class TaskRunner:
     def _log_ignored_coverage_units(self, file_name: str, units: list) -> None:
         """按理由分组回报补译计划里被跳过（ignored）的格子——审计批次 2 第④条。
 
-        旧版补译日志只报 covered / source_only / ambiguous 三类计数，ignored（公式格、
-        看起来已经是译文的格、不符合候选规则的格）从不出现在日志里：用户看到"补了几格"，
-        看不到"跳过了几格、为什么跳过"，翻完对着原表发现漏译也无从查起。这里补上这条
-        自查线索，语气是"如实告知"，不是"报警"——大多数 ignored 本来就是正确判断
-        （公式格不该被覆盖、已经是双语的格不用再翻），只有当用户凭位置去核对、发现
-        误判时，这条线索才用得上。
+        旧版补译日志只报 covered / source_only / ambiguous 三类计数，ignored（看起来
+        已经是译文的格、不符合候选规则的格、回填关闭时被保护的公式格）从不出现在日志
+        里：用户看到"补了几格"，看不到"跳过了几格、为什么跳过"，翻完对着原表发现漏译
+        也无从查起。这里补上这条自查线索，语气是"如实告知"，不是"报警"——大多数
+        ignored 本来就是正确判断（已经是双语的格不用再翻、用户关了回填的公式格不该
+        被覆盖），只有当用户凭位置去核对、发现误判时，这条线索才用得上。
 
         零 ignored 时一行都不出：仓库立场是"无关提示不挂"，见 CLAUDE.md。
         """
@@ -2510,6 +2516,7 @@ class TaskRunner:
         file_results: list[dict],
         target_lang: str,
         source_lang: str,
+        formula_display_value_backfill: bool,
     ) -> None:
         """自动识别源语言的续译：预检定完语言、重算补译清单之前，把底稿换上。
 
@@ -2539,6 +2546,7 @@ class TaskRunner:
                 surface="excel",
                 target_lang=target_lang,
                 source_lang=source_lang,
+                formula_display_value_backfill=formula_display_value_backfill,
             )
             if missing:
                 self._log(
