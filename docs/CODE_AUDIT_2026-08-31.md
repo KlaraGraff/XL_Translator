@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：14/17 条审查线回传，累计 50 条发现（高 13 / 中 25 / 低 12）。**
+**当前进度：15/17 条审查线回传，累计 52 条发现（高 13 / 中 27 / 低 12）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -26,6 +26,7 @@
 | F2 | 前端设置页、记忆库页、更新流程、样式 | 中 1 |
 | D1 | Excel 翻译管线 | 高 1、中 3、低 2 |
 | D2 | Word 翻译管线 | 高 1、中 3 |
+| D3 | PDF 翻译管线（pdf_image_translation.py / pdf_review.py / image_generation.py / headless_pdf_translate.py / residual_replay.py | 中 2 |
 
 ---
 
@@ -284,7 +285,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 ---
 
-## 中危（25 条）
+## 中危（27 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -670,6 +671,34 @@ print_callers 显示其中 12300 次（cumtime 4.529s）直接来自 core/word_d
 extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **修法**：两处一起改：① `_paragraph_style_name` 改成先直接读 XML——`paragraph._p.pPr` 下的 `w:pStyle/@w:val`，取到就返回（注意这是 styleId 不是 name，`_is_toc_or_field_paragraph` 里判 'toc'/'目录' 对 styleId 同样成立，`_is_heading_style` 的判定要一并按 styleId 校准并补测试）；② 取不到 pStyle 时才回落到 `paragraph.style.name`，并把「本文档的默认段落样式名」按 `id(doc.part)` 或直接在调用方按文档缓存一次，不要每段重算。粗估写回从 11.5s 降到 ~2.4s（约 4.8×），抽取同比例受益。
+
+### 中-26 审核「轻微建议」跨重试轮次只累加不清空——报告里把已被丢弃那几版的建议当成最终译文的建议展示，条数也翻倍
+
+`D3` · 置信度 high · new
+
+**位置**：`core/pdf_image_translation.py:4303`、`core/pdf_image_translation.py:3862`、`core/pdf_image_translation.py:5943`、`core/pdf_image_translation.py:5873`
+
+**机制**：`_generate_page_with_retries` 的审核分支里，阻断问题用的是赋值（4331 行 `page_record.review_issues = []`、4351 行整体替换，这正是上一轮低危「通过与问题描述并存」的修法），但轻微建议用的是 `page_record.review_minor_suggestions.extend(review_result.minor_suggestions)`（4303 行）——每一轮审核的建议都往同一个列表里追加，从头到尾没有任何一处清空。一页跑 N 轮就攒 N 轮的建议，而前 N-1 轮的候选图早已被丢弃（只留在 review_candidates 里），最终交付的是第 N 版。这些建议随后被两处消费：`record.review_minor_suggestion_count = sum(len(page.review_minor_suggestions) ...)`（3862 行）和报告逐页明细里的 `review_note += "；轻微建议：" + "；".join(page.review_minor_suggestions[:2])`（5943 行）。`[:2]` 取的恰好是最早两轮（即被丢弃那几版）的建议，真正对应交付版本的那条反而被截掉。此外报告的 `review_pages` 过滤条件里含 `or page.review_minor_suggestions`（5936 行），于是一个最终审核干干净净通过的页，也会因为早期废弃版本的建议而被列进「需要留意的页」表格。
+
+**后果**：翻译报告里「审核轻微建议：N」这个数最多被放大到重试轮数倍（默认重试 3 次即最多 4 倍）；逐页明细里那句「轻微建议：…」描述的是一张用户永远看不到、已经被模型自己推翻的图。用户照着这条建议去改原文或调提示词，改的是不存在的问题。同时干净通过的页被无端列进问题表，让人以为译文质量比实际差。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py：审核 mock 前两轮不通过（各带一条轻微建议，文案写死为「这一版已被丢弃」），第三轮通过（带一条「最终版」建议）。实际输出：review_status = passed；review_issues = []（阻断问题被正确清空）；minor_suggestions = ['轻微建议-第1轮（这一版已被丢弃）', '轻微建议-第2轮（这一版已被丢弃）', '轻微建议-最终版']；record.minor_count = 3。即 3 条里 2 条是废弃版本的，且报告 `[:2]` 只会印出这 2 条。现有测试对这一点零覆盖：全仓只有 tests/test_pdf_image_translation.py:1157 一句 `assertIn("字体略细", page.review_minor_suggestions)`，assertIn 恰好对累加不敏感。
+
+**修法**：把 4303 行的 extend 改成「每轮先归零再写入本轮结果」，与同一处 review_issues 的赋值语义对齐：在审核结果拿到后写 `page_record.review_minor_suggestions = list(review_result.minor_suggestions)`。这样通过的那一版带什么建议，页面上就是什么建议；不通过的那几版建议随候选图留在 review_candidates/attempt_NN_review.json 里备查即可，不进最终页记录。改完顺带在 tests/test_audit_pdf_fixes.py 补一个「前两轮建议不得出现在最终页记录里」的断言。
+
+### 中-27 「审核修复页」「审核重试次数」把质检/生成失败导致的重跑算成审核模型的功劳——审核模型只跑了 1 次、且一次就通过，报告却写审核重试 1 次、审核修复 1 页
+
+`D3` · 置信度 high · new
+
+**位置**：`core/pdf_image_translation.py:3839`、`core/pdf_image_translation.py:3861`、`core/pdf_image_translation.py:4204`、`core/pdf_image_translation.py:4335`、`core/pdf_image_translation.py:5870`
+
+**机制**：生成循环里 `attempt` 是一个共用计数器：生成报错、质检不过、审核不过，三种情况都让它 +1。而两个审核指标是直接拿 `attempt` 反推出来的——4204 行在送审前写 `page_record.review_attempts = attempt`，4335 行在审核通过时写 `page_record.final_candidate_attempt = attempt`；随后 3861 行 `record.review_retry_count = sum(max(0, page.review_attempts - 1) ...)`、3839 行 `review_repaired_page_count = sum(1 for page if page.review_status == "passed" and page.final_candidate_attempt > 1)`。于是只要一页在进入审核之前先因为生成失败或质检（比例/空白）不过而重跑过，即使审核模型只被调用了一次并且一次就通过，这一页也会被记成「审核重试了一次」「被审核修复了一版」。同一次重跑还会同时进入 3831 行的 `record.retry_count`（页级重试次数），一份工作在报告里被计两遍。
+
+**后果**：报告 `## 概览` 里「审核重试次数」「审核修复页」两行系统性偏高（`_write_pdf_report` 5870 行附近）。审核模型是独立计费的一条连接，用户正是靠这两个数判断「审核这一档钱花得值不值、要不要继续开」；把图像模型自己重试的功劳记在审核头上，会让人高估审核的作用而继续为它付费，反过来也可能因为「审核重试次数高」去调审核提示词，实际上审核压根没拒过稿。属于「界面/报告不许骗人」那一类。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_quality_then_review.py：图像 mock 第 1 次返回 1200×600（对 1200×1600 的源页是比例错误，质检不过、不送审），第 2 次返回正确尺寸；审核 mock 一律通过。实际输出：image calls = 2；review calls = 1；review_status = passed；page.review_attempts = 2；record.review_retry_count = 1；record.review_repaired_count = 1。即审核模型只跑了 1 次、零拒稿，报告却写审核重试 1 次、审核修复 1 页。
+
+**修法**：把审核口径和生成口径拆开，不要共用 `attempt`。最小改法：在页记录上加一个只在真正调用审核模型时自增的计数器（例如 `review_rounds`），4204 行改成 `page_record.review_rounds += 1`，3861 行的 review_retry_count 改用它；「审核修复页」的判定改成「这一页至少有一轮审核判过 not passed，且最终 passed」——可以直接看 candidate_artifacts 里是否存在 review_status == "failed" 的候选，或在 4350 行审核未通过时打一个 `review_rejected_once` 标志，3839 行按该标志统计，而不是按 `final_candidate_attempt > 1`。
 
 ---
 
@@ -1201,4 +1230,25 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。本线自跑板块测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_word_document.py tests/test_word_coverage.py tests/test_audit_word_doc_fixes.py tests/test_word_defect_fixes.py` → 128 passed, 23 subtests passed in 2.00s（全绿）。所有复现脚本与夹具写在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d2_*，未改动仓库任何文件，未 git add/commit；每个脚本开头先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config 并断言 APP_DATA_DIR 落在 /var/folders 下（实测输出 /var/folders/y6/.../tmpXXXX），全程未触碰真实数据目录。
 
 工具预算内没查完、留给后续的部分：\n1. **停止与恢复（关注点 5）没查。** `_WordRecoveryPool`（word_task_runner.py:2833-3477）的 `_flush_pending_submits` / `_abandon_unsubmitted_ticket_locked` / `_settle_abandoned_ticket_locked` 三者的锁序与「停止时已恢复译文是否写盘」都没验证。AUDIT_FIX_PLAN 把后者列在「待用户拍板批次 2」，且仓库里已有 tests/test_audit_word_stop_write.py，看起来已有结论，所以按纪律没往下挖——但第一轮修复审查报过的 ABBA 死锁与 shutdown 后 submit 两条回归，我没有独立复核过。\n2. **.doc 老格式（关注点 4）没查。** core/word_converter.py（793 行，LibreOffice 转换路径）与失败/残留清理 `_cleanup_converted_word_paths` 完全没读。\n3. **结构保真度只覆盖了一部分。** 已实测：文本框、书签、run 分裂+格式、超链接锚点（读代码确认已修）、合并单元格/嵌套表（`_iter_unique_table_cells` 按 `w:tc` 去重，python-docx 1.2.0 的 vMerge 委派机制下正确，未见问题）。**未实测**：脚注/尾注/批注（只做了机制确认，见发现 1）、内容控件 SDT 正文（走 `detect_hidden_word_content` 告警，属已知）、OMML 公式、SmartArt、图注 SEQ 域的 `_replace_paragraph_text_around_fields` 实跑、分节与首页/奇偶页眉的三段式制表位、多级列表跨表格的编号连续性。\n4. **双语模式（关注点 3）只读了代码没实跑。** 插行路径 `_insert_translation_paragraph_after` / `_append_translation_to_cell` 的结构保真没有独立夹具验证；页眉页脚的 `_append_translation_inline` 同理。\n5. 发现 2、3、4 都根植于同一个函数 `_replace_paragraph_text`（word_document.py:2494）的「锚点吃掉全部文字」策略，改动时建议一起设计，别分三次打补丁。
+
+### D3 — PDF 翻译管线（pdf_image_translation.py / pdf_review.py / image_generation.py / headless_pdf_translate.py / residual_replay.py）
+
+**基线与复现脚本**
+
+未跑全量（按任务说明沿用给定基线 1664 passed + 249 subtests）。只跑了本板块直接相关的两个文件：`./.venv/bin/python3 -m pytest -q tests/test_audit_pdf_fixes.py tests/test_pdf_image_translation.py` → 95 passed, 20 subtests passed in 6.59s，全绿。另写了两个只读复现脚本（全部 mock 图像/审核模型，零真实模型调用、零花费），并按红线在 import config 之前把 TRANSLATOR_APP_DATA_DIR 指到 mkdtemp，脚本启动时打印并断言 APP_DATA_DIR 落在 /var/folders 下：/private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py 与 d3_quality_then_review.py。未修改仓库内任何文件，未 git add/commit。
+
+已查并确认没问题的（不作为发现报出，供台账参考）：
+
+1) V9.4.0 新增的「上一版 + 换回」（498ba0b）整体读过一遍，事务纪律是扎实的：`_swap_page_versions` 三步同目录 os.replace + 失败按逆序回滚；`_page_image_file(kind=previous)` 只认记录指名的那一份、强制校验 `.previous.` 点前缀 + `_path_is_within`，没有按名字猜的兜底；装配一律先写临时文件再 os.replace，换回失败时磁盘上的高清 PDF 一个字节没动。磁盘占用有界：`_commit_page_image_stash` 顶替旧的那份 + `_prune_previous_page_images` 清同页其它后缀的残留，每页最多只留一版（约 2×），多次重生成不堆积。
+2) 忙锁覆盖：rerun / restore 共用 `task.rerun_active`（并用 `rerun_kind` 把 409 文案说准），`delete_task_record` 也挡住了 rerun_active。我担心过「restore 不预约资源组，能和一个在跑的 PDF 任务并发写同一份输出」，实测 `bilingual_writer.build_output_dir` 每次运行都是带时间戳且冲突时 _2/_3 递增的独立目录，两个任务不会指到同一份文件——此路不通，不算问题。
+3) 续译（resume）适配的页是新建 PdfPageRecord、不带 previous_image_path，不会出现「面板给了换回入口但文件在旧存档里」的悬空记录；`_remove_translated_page_images` / resume 的 glob 都以页图名开头，`.previous.` / `.restore_swap.` 以点开头，不会被当成现役页图删掉或装进产物。旧存档里的 `.previous.*` 在续译后成为孤儿残留（不影响产物，量级 = 曾重生成过的页数），极低，未列为发现。
+4) 上一轮的 低-PDF(e)「_process_file 是生产死代码」确已删除（tests/test_audit_pdf_fixes.py:567 用 assertFalse(hasattr(...)) 钉住）。我又对 pdf_image_translation.py 全部私有方法做了一次「只被测试引用、生产零调用」的机械扫描，结果为空——没有别的「测试当真、生产不走」的分支。
+5) 成本上限：每页图像模型调用次数 = max_page_generation_attempts(retry_count) = retries+1，生成失败/质检不过/审核不过共用同一个 attempt 计数器，不会突破预算；审核接口报错时保留本次候选并转人工复核、不重发（4261 附近），不白花钱；限流分支的 `continue` 不加 attempt，但 `handle_api_concurrency_limit` 在最低并发上有 grace window 会升级成 ApiKeyTemporarilyUnavailableError，有界。100 页最坏 = 100×(retries+1) 次图像调用 + 同量级审核调用。超时 240s（image_generation.py:40 / pdf_review.py:35）已是上一轮调过的值，未见「超时重发导致重复付费」的新增窗口。
+6) 停止路径：`_generate_page_with_retries` 末尾的顺序是「应急比例归一化 → 停止判定 → 失败占位」，停止时已经付过钱、只是比例不对的那一版会被归一化留下（不丢弃已付费成果），一次模型调用都没发生的页退回 `stopped_unstarted` 并由 `_discard_stopped_pages` 撤记录（中-27 的修法仍然成立），未发现「没跑过的页被当成功计入」的路径。
+
+预算内没来得及做实证、留给后续的（均未写成发现，避免夸大）：
+a) `_finalize_file_record` 在「压缩版装配失败 / 压缩开关关掉」时会调 `_discard_superseded_compressed_pdf` 真删掉上一版压缩 PDF，而高清版成功 → 整体不回滚。也就是说一次被宣传为「不调用模型、失败整体回滚、输出文件不动」的换回，仍可能让用户永久失去压缩版，只留一行 WARN。3890 行的注释显示这是作者明确权衡过的取舍（防止交付陈旧压缩版），所以我按「已知代价」处理没有报；但产品口径上「换回」的文案与这个副作用不完全自洽，值得用户拍一下板。
+b) `previous_page_state` 故意不进清单/任务历史（5810 附近），而 `previous_image_path` 保留。若真出现「有 previous_image_path 但 state 为空」的记录，`_swap_page_versions` 只补尺寸、不补审核结论，会出现「换了图但结论还是上一版的」。我顺着写入路径查下来，两个字段今天是同生同灭的（promoted 为空时 state 也置空），且 sidecar 重启后 runner 已释放、换回入口直接被挡，因此当前不可达——只作为latent风险记一笔，没有报为发现。
+c) 换回失败路径（`_settle_page_restore(apply_patch=False)` 后直接抛错）不追加收尾事件，drain 出来的日志把 `history_dirty` 置真却没有触发落盘，要等下一次事件或 flush_history 才写进任务历史。影响仅限「失败那几行日志晚落盘」，未验证是否真会丢，未报。
+d) pdf_review 面板的 blocking issue 清除逻辑已按上一轮修法收口（4331 行）并被我的复现间接验证（review_issues = []），但「多次重生成之间的状态传递」只读了代码、没有单独构造复现。
 
