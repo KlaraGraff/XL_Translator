@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：16/17 条审查线回传，累计 56 条发现（高 13 / 中 29 / 低 14）。**
+**当前进度：17/17 条审查线回传，累计 61 条发现（高 13 / 中 30 / 低 18）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -28,6 +28,7 @@
 | D2 | Word 翻译管线 | 高 1、中 3 |
 | D3 | PDF 翻译管线（pdf_image_translation.py / pdf_review.py / image_generation.py / headless_pdf_translate.py / residual_replay.py | 中 2 |
 | X1 | 性能：启动时间、交互延迟、内存、磁盘、打包体积 | 中 2、低 2 |
+| H1 | 工程健康：死代码、重复实现、测试质量、构建与发布脚本 | 中 1、低 4 |
 
 ---
 
@@ -286,7 +287,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 ---
 
-## 中危（29 条）
+## 中危（30 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -729,9 +730,23 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **修法**：把 delete_entries 改成和 bulk_pin_entries 同构：单个 `with _get_conn() as conn:` 包住全过程，先用分片 IN 查询一次性把这批 id 的 (id, pinned) 查出来（_chunked 已有），在内存里分出 deleted / protected / missing 三类，再对可删的那批发一条（或按 900 分片的几条）`DELETE FROM tm_entries WHERE id IN (...)`，最后统一提交。这样既拿回 300 倍速度，也顺带让批量删除变成原子操作。注意保留现有语义：pinned 行仍要计入 protected 而不是删掉，去重仍用 dict.fromkeys。
 
+### 中-30 core/diagnostics.py 里约 450 行（11 个函数）是零调用点的死代码，且这批代码做的恰是文件自己文档禁止的事
+
+`H1` · 置信度 high · new
+
+**位置**：`core/diagnostics.py:500`、`core/diagnostics.py:517`、`core/diagnostics.py:589`、`core/diagnostics.py:631`、`core/diagnostics.py:658`、`core/diagnostics.py:665`、`core/diagnostics.py:669`、`core/diagnostics.py:778`、`core/diagnostics.py:811`、`core/diagnostics.py:823`、`core/diagnostics.py:908`、`core/diagnostics.py:927`、`core/diagnostics.py:53`
+
+**机制**：对 core/api/engines 全部私有函数做全仓引用计数（grep -rc，排除定义行自身），`_serialize_file_item`(500)、`_build_pdf_diagnostic_summary`(517)、`_build_summary`(589)、`_sanitize_quality_issues`(631)、`_write_jsonl`(658)、`_write_text`(665)、`_write_failed_items_csv`(669)、`_read_app_log_excerpt`(778，读取 app.log)、`_extract_failed_source_texts`(811)、`_collect_excel_locations`(823)、`_extract_word_locations`(908)、`_extract_word_runtime_events`(927) 这 11 个函数在 core/api/engines/tests 全仓（含测试）都只有定义那一行命中，零调用点。而生产唯一入口 `archive_task_diagnostics()`（第53行）的 docstring 明确写着「诊断记录刻意不包含文档名、路径、单元格/段落位置、原文/译文内容、prompt、模型响应、API key，也不打包 app.log 副本」，实际只写 manifest.json/metrics.json/environment/runtime.json（外加 log_levels 计数）。这 11 个死函数恰恰是在做文档名定位、单元格/段落位置提取、失败原文摘录、app.log 摘录、CSV/JSONL 导出——正是 docstring 说「刻意不做」的那些事，说明这是被严格匿名化改造之前遗留的旧诊断子系统，改造时忘了删。
+
+**后果**：不是当前行为 bug（这批代码从未被调用，用户看不到任何差异）。风险在于：1) 这是 diagnostics.py 覆盖率只有 51%（228/470 行未覆盖）的主要来源——`--cov-report=term-missing` 报的缺失行号（501-514,524-567,594-628,632-648,659-732,753,779-957）与这批函数的定义范围逐一对应，说明覆盖率低不是「没测好」而是「整段不该在文件里」；2) 代码摆在那里本身是个诱饵，将来有人改 archive_task_diagnostics 想加「更详细的诊断」时，顺手把这批现成函数接回去，就会在不知情的情况下打破文件自己写明的匿名承诺，而且不会有任何测试拦住（这批函数没有一个测试覆盖）。
+
+**复现**：已复现。逐个 grep 确认（如 `grep -n _build_summary core/diagnostics.py` 只命中定义行 589，`grep -rn _build_summary core api tests` 全仓也只有这一行，pdf_image_translation.py 里的同名 `self._build_summary` 是另一个类方法，非此函数），并与 `--cov-report=term-missing` 的缺失行号逐一核对一致。
+
+**修法**：确认产品侧不再需要「带文件名/位置/摘要」的详细诊断模式后，直接删掉这 11 个函数（连带 `_collect_xlsx_locations`/`_collect_xls_locations`/`_read_tail_text`/`_write_csv`/`_csv_text`/`_source_hash`/`_source_excerpt` 等仅被它们内部调用的辅助函数），diagnostics.py 能瘦身到约 500 行，覆盖率也会自然回到正常水平。如果产品侧其实还想要这个「详细诊断」选项，那应该走一次正式的产品拍板（涉及隐私边界），而不是放任死代码停在半接入状态。
+
 ---
 
-## 低危（14 条）
+## 低危（18 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -929,6 +944,62 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 **复现**：机制确认。grep -rn "workspaces" 与 grep -rn "translator-workspace"（*.py/*.rs/*.ts，排除 __pycache__、worktrees、node_modules）的全部命中即上列文件；生产代码里只有读取方，没有任何写入方。未构造运行时复现（该分类恒返回 removed_count=0 是代码路径上的确定结论：WORKSPACES_DIR 不存在时 :253 直接返回 0）。
 
 **修法**：由产品拍板选一条，我倾向前者：(a) 删掉这个分类——从 data_overview 的 categories、MaintenanceCategory 的 Literal（api/app.py:341）、确认清单（api/app.py:1905）和路由分支（:1924）里一并摘除，同时删掉 clear_owned_workspaces 和它那两个测试，面板上不再出现一个假的清理项；(b) 如果希望面板真能管到临时文件，就反过来让 word_converter / xls_converter / pdf_image_translation 的 mkdtemp 统一改到 WORKSPACES_DIR 下、创建时写入 `.translator-workspace.json` 标记——这样这个分类才名副其实，代价是中间产物从系统临时目录搬进应用数据目录，崩溃残留不再由系统自动回收，得靠这个清理入口兜底。</br>注意 (b) 会改变崩溃后的磁盘行为，属于产品形态变更。
+
+### 低-15 CJK 字符判定正则在 6 个文件里各写一份，范围不一致：生僻汉字被 translation_filter 判成「非中文」
+
+`H1` · 置信度 high · new
+
+**位置**：`core/translation_filter.py:24`、`core/translation_filter.py:525`、`core/translation_coverage.py:16`、`core/word_batching.py:30`、`core/task_runner.py:96`、`core/word_task_runner.py:147`、`core/mixed_language.py:66`
+
+**机制**：core/translation_filter.py 的 `_CHINESE_CHAR_RE = re.compile(r"[一-龥]")`（第24行）码区截止在 U+9FA5；而 core/translation_coverage.py、core/word_batching.py、core/task_runner.py、core/word_task_runner.py、core/mixed_language.py 里各自独立定义的 `_CJK_RE` 全部用 `[一-鿿]`，覆盖到 U+9FFF。U+9FA6–U+9FFF 之间是 Unicode 后续版本正式收录的真实汉字（如 U+9FA8「龨」），translation_filter 的窄区间会把它们当成「非中文」。validate_translation() 里 `_contains_chinese(orig)` 用来判断原文是否含中文（第525行：`if not _contains_chinese(orig): return`），一旦命中就直接跳过后续所有「译文是否真的翻译了」的校验（语向感知子串检测、缺失中文告警等）。
+
+**后果**：如果一份文档的源文本里唯一的中文特征字符恰好落在 U+9FA6–U+9FFF 这个生僻扩展区（真实存在但罕见，多见于人名/地名用字），validate_translation 会误判该原文「不含中文」而直接放行，跳过本该做的漏译/未译检测——用户拿到一份「校验通过」但实际可能没真正翻译的译文，且任务日志里不会留下任何异常痕迹。translation_coverage.py 等其余五处判定该字符为中文，行为已经不一致。
+
+**复现**：已复现。脚本：`.venv/bin/python3 -c "ch=chr(0x9fa8); from core.translation_coverage import contains_cjk; from core.translation_filter import _CHINESE_CHAR_RE; print(contains_cjk(ch), bool(_CHINESE_CHAR_RE.search(ch)))"` → 实测输出 `True False`，即同一个真实汉字「龨」在 translation_coverage 判为 CJK，在 translation_filter 判为非中文。
+
+**修法**：把 translation_filter.py:24 的正则改成与其余五处一致的 `[一-鿿]`（或者干脆把这个判定收敛成一个共享函数，六处各自维护同一份正则是这个 bug 的根因，以后任何一处改动都可能再次分叉）。
+
+### 低-16 CONTEXT.md 对诊断归档内容的描述与当前代码不符，且与上一条死代码同根因
+
+`H1` · 置信度 medium · new
+
+**位置**：`CONTEXT.md:236`、`core/diagnostics.py:53`
+
+**机制**：CONTEXT.md:236 写「The lightweight diagnostic archive for PDF translation tasks. It can include summaries, runtime logs, and manifest summaries」，但 archive_task_diagnostics() 当前实际只写 manifest.json / metrics.json / environment/runtime.json，`logs` 参数只被 `_count_log_levels()` 转成计数，既没有 summary 文本，也没有日志正文。
+
+**后果**：开发者（或未来接手支持流程的人）照 CONTEXT.md 字面意思理解诊断包内容，会误以为诊断包里能看到摘要/日志原文用于排障，实际打开只有计数和 manifest；反过来也可能让人以为诊断包比实际含有更多用户内容，误判隐私边界。
+
+**复现**：机制确认——直接对照 CONTEXT.md:236 原文与 core/diagnostics.py:53-129 的 archive_task_diagnostics() 实际写盘内容。
+
+**修法**：结合上一条一起处理：如果死代码确认要删，CONTEXT.md 这条一并改成「manifest + 计数指标 + 运行环境，不含摘要、不含日志正文」；如果反而决定要恢复 summary/日志摘要能力，则文档保留、把上一条的死代码接回生产并补测试。二选一，不要让代码和文档继续各说各话。
+
+### 低-17 core/word_document.py 里 `_apply_paragraph_text_shading` 是零调用的死代码，是其相邻标记函数的完整同胞实现
+
+`H1` · 置信度 high · new
+
+**位置**：`core/word_document.py:1646`
+
+**机制**：`_apply_paragraph_text_shading(paragraph, fill)`（1646行）与紧邻的 `_apply_paragraph_text_highlight`（1636行）、`_apply_paragraph_red_underline`（1655行）结构完全一致，都是给审阅标记用的三种视觉手段之一，但全仓（含测试）grep 只命中定义行本身，未被任何调用方接入。
+
+**后果**：无当前行为影响，纯粹是完整但从未启用的备用实现，占位置、也可能被误以为「阴影标记功能已支持」。
+
+**复现**：已复现：`grep -rn _apply_paragraph_text_shading core api engines tests` 只命中 word_document.py:1646 这一行。
+
+**修法**：确认产品不需要「阴影」这种标记样式后直接删除；如果将来要用，作为一个正式功能补上调用点和测试再启用。
+
+### 低-18 core/model_config.py 两个解析函数疑似死代码
+
+`H1` · 置信度 low · new
+
+**位置**：`core/model_config.py:933`、`core/model_config.py:946`
+
+**机制**：`_parse_throughput_profiles`(933行) 和 `_parse_scoped_api_keys`(946行) 在全仓（含测试）grep 都只命中定义行本身，零调用点。未深入定位是否有同名/近似逻辑在别处重复实现并取代了它们。
+
+**后果**：未确认具体影响，标记为疑似死代码，值得后续核实是否安全删除或是否遗漏了应有的调用点（如果是后者，反而可能是配置解析漏挂的真 bug，需要先查清楚再定性）。
+
+**复现**：疑似——仅做了引用计数 grep，未逐行读代码确认是否为设计遗留还是漏接。
+
+**修法**：读一下 model_config.py 里 throughput_profiles / scoped_api_keys 当前的加载路径，确认这两个函数是被别的实现取代还是漏接；分别处理，不要一刀切删除。
 
 ---
 
@@ -1335,4 +1406,30 @@ d) pdf_review 面板的 blocking issue 清除逻辑已按上一轮修法收口�
 4. **PDF 页图缓存的磁盘占用没查**。pdf_image_translation.py 里有 _remove_translated_page_images / _prune_previous_page_images（2533/2630），说明页图是有生命周期管理的，但它们落在哪个目录、上一版译文留存（ef33c69 那个「留上一版可回退」的特性）会不会无限累积，我没有跟进去。这是 200 页 PDF 场景下最可能的磁盘增长点，优先级高于我报的 finding 4。
 
 5. 已确认**没有**问题、不必再查的：app.log 有 5MB×5 轮转（core/task_logger.py:113）；diagnostics 有 prune_diagnostic_records 条数+总字节双上限（core/diagnostics.py:282，list_diagnostic_records 每次调用都触发）；task_history 的写入已按 1 秒节流且 remove() 已从「201 次重写」改成单次（core/task_history.py:66 的注释就是上一轮的修复记录）；word_converter / xls_converter 的 mkdtemp 都在 finally 里 rmtree；ui/dist 只有 324K。
+
+### H1 — 工程健康：死代码、重复实现、测试质量、构建与发布脚本
+
+**基线与复现脚本**
+
+未重跑全量（按指示信任已给基线：1664 passed + 249 subtests, 31s, 全绿）。本轮自己实测的是：
+1) `./.venv/bin/python3 -m pytest -q --cov=core --cov=api --cov=engines --cov-report=term-missing`（TRANSLATOR_APP_DATA_DIR 指向 mktemp 临时目录）→ 1664 passed, 249 subtests passed in 36.81s，总覆盖率 82%（core+api+engines 共 22669 行，缺 4087 行）。
+2) `pwsh ./quality_gate.ps1`（同样隔离数据目录）→ All checks passed（本机装了 homebrew 版 pwsh，实测可正常跑，不是「mac 上跑不了」）。
+3) 对 core/translation_filter.py 的 `_contains_chinese` 做内存 monkeypatch（恒返回 False）后跑 `tests/test_audit_filter_fixes.py` → 14 failed / 38 passed / 72 subtests passed，证明该文件测试对真实逻辑破坏是敏感的，不是空转。
+
+覆盖率实测（--cov=core --cov=api --cov=engines，1664 用例全绿时测得）：总计 82%（22669 行缺 4087 行）。
+
+覆盖率最低的 15 个模块（core/image_detector.py 0% 除外——它是 docs/KNOWN_ISSUES.md VAL-006 已登记的「保留源码但未启用」死代码，不是新发现）：
+engines/zhipu_engine.py 0%(5行) / core/headless_pdf_translate.py 26%(114行) / api/launcher.py 34%(68行) / core/tm_cleaning_task_runner.py 34%(59行) / core/word_converter.py 37%(385行) / core/excel_automation.py 39%(109行) / core/headless_word_translate.py 39%(80行) / core/diagnostics.py 51%(470行，见上方发现) / core/headless_translate.py 52%(111行) / core/bilingual_writer.py 54%(154行) / core/mixed_language.py 58%(398行) / engines/openai_engine.py 58%(116行) / core/connectivity_check.py 67%(213行) / core/translation_protocol.py 71%(21行) / core/word_batching.py 71%(343行)。
+
+「行数多 × 覆盖低」风险加权（stmts×缺失率）前列：core/pdf_image_translation.py(≈373) > core/word_document.py(≈287) > core/word_converter.py(≈243) > core/diagnostics.py(≈230，见上方发现) > core/word_task_runner.py(≈216) > core/task_runner.py(≈182) > api/app.py(≈178) > core/mixed_language.py(≈167) > api/task_manager.py(≈166) > core/xlsx_patcher.py(≈156)。pdf_image_translation/word_document/word_task_runner/task_runner/api/app.py/api/task_manager.py 这几个巨型高风险模块本轮受时间预算限制没有逐一深挖覆盖缺口的具体成因（是否也有整段死代码、还是正常的异常分支/平台分支没测到），只对 diagnostics.py 和 word_document.py 一小块做了确认。core/headless_translate.py / core/headless_word_translate.py / core/headless_pdf_translate.py 三个低覆盖模块看起来是 CLI 入口（scripts/translate_*_cli.py）的胶水层，未核实是否因为「只在打包环境走」而合理地缺测，值得下一轮确认。
+
+死代码扫描方法与结果：对 core/api/engines 全部 1013 个私有函数(def _xxx)做全仓引用计数——0 个函数是「仅被测试调用、生产代码零调用」（说明上一轮审计在 pdf_image_translation._process_file 上发现的模式已经清干净，本轮未见新增同类实例）；19 个函数是「全仓零调用（含测试）」，逐一核实后：11 个集中在 diagnostics.py（已报告，构成一整套子系统）、1 个是 word_document.py 的孤立同胞函数（已报告）、2 个是 model_config.py 的疑似死代码（已报告但未及深挖）、1 个（api/app.py 的 `_require_source_path`）核实是 pydantic `@model_validator` 装饰器动态调用，排除误报、未报告；其余 4 个（core/header_footer_channel.py `_preserved_tokens`、core/pdf_image_translation.py `_should_skip_scanned_pdf`/`_page_progress_label`、core/translation_filter.py `_check_numbers_intact`）受时间预算限制未逐一核实，未纳入报告，留待下一轮确认是否为真死代码。
+
+重复实现排查：除已报告的 CJK 正则六处分裂外，另发现 `_normalize_lang`（core/translation_filter.py:304 与 core/translation_coverage.py:331）逐字节相同、且 translation_coverage.py 的 docstring 明确写「与 core.translation_filter._normalize_lang 同口径」——这是已知且披露的重复，行为一致，不构成新发现，未单独报告。
+
+「空洞断言」排查：写了 AST 脚本扫描全部测试函数的断言情况，最初按纯 `assert` 语句统计出 1543 个「疑似无断言」，但复核后发现绝大多数是假阳性——本项目测试大量用 unittest.TestCase 的 `self.assertEqual/assertTrue/...`，纯 `assert` 语句只是少数写法；换成识别 `self.assert*` 调用后，全仓只剩 24 个「函数体内一个断言调用都没有」的用例，逐个抽查（test_date_unit_rules.py 的 23 个、test_changelog_version.py 的 1 个）发现全部是「断言封装进共享 helper 方法」或「断言失败即抛异常」的合法模式，不是真的空洞断言。本项目测试断言纪律总体扎实，未找到实质性的「空洞断言」问题；「过度 mock」「永绿测试」两类受时间预算限制，只做了 diagnostics.py 一处的抽查（确认它是真实集成测试、未过度 mock），未系统扫描其余模块，是本轮遗留的排查缺口。
+
+quality_gate.ps1 / AGENTS.md 矛盾核实：任务简报里提到的疑虑「quality_gate.ps1 是 PowerShell，mac 上跑不了」，实测证伪——本机装有 homebrew 版 pwsh，`pwsh ./quality_gate.ps1` 正常跑通并只做 `ruff check`（不含 pytest/tsc/clippy）。CI（.github/workflows/build-distributions.yml:196-204）里在 pwsh quality_gate.ps1 之后单独跑 pytest/tsc/cargo test/cargo check，说明 quality_gate.ps1 本来就只是四道门禁里的一道，不是唯一门禁，AGENTS.md 第1条+第2条+第6条组合起来其实和 CI 实际顺序一致，没有发现文档与实际执行方式之间有会误导开发者做错决策的矛盾，未纳入正式发现。
+
+build_tauri_package.py / build_updater_manifest.py / verify_release_dependencies.py 三个发布脚本的失败模式，以及 scripts/ 下其余脚本、README/AGENTS.md 更大范围的文档漂移排查，受 60 次工具调用预算限制未及展开，留给下一轮。
 
