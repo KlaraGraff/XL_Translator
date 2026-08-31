@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：8/17 条审查线回传，累计 30 条发现（高 10 / 中 13 / 低 7）。**
+**当前进度：9/17 条审查线回传，累计 35 条发现（高 11 / 中 15 / 低 9）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -20,10 +20,11 @@
 | A1 | HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py | 高 1、低 1 |
 | G1 | 模型引擎 / 故障转移 / 调度 / Token 成本 | 高 3、中 6、低 1 |
 | T1 | 翻译质量链路：过滤、覆盖率、残留、语言识别、续译 | 高 3、中 1 |
+| M1 | 翻译记忆库（TM | 高 1、中 2、低 2 |
 
 ---
 
-## 高危（10 条）
+## 高危（11 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -224,9 +225,23 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：豁免判断不能按语言码做集合比对，要按「目标语言是否使用汉字书写」来判。建议在 language_registry 里给自定义语言加一个「书写系统」标记（新建自定义语言时让用户选一次，或按显示名里是否含汉字/假名做默认推断），残留链路改为调 `target_lang_uses_han(target_lang, custom_target_langs)`。过渡期最低成本的兜底：`x-custom-` 前缀的目标语言一律豁免残留中文检查（自定义语言本来就没法给它定残留规则，宁可不查也不能把正确译文重置回原文）。同时把四个调用点统一走 `_normalize_lang` 归一，别留两套。
 
+### 高-11 深度清洗只要有一个批次失败，其余批次已付费拿到的全部建议被直接丢弃，一条都不落库
+
+`M1` · 置信度 high · new
+
+**位置**：`core/tm_cleaner.py:805`、`core/tm_cleaner.py:821`、`core/tm_cleaner.py:608`、`core/tm_cleaner.py:624`、`core/tm_cleaner.py:510`
+
+**机制**：`_run_cleaning_threaded`（云端引擎）与 `_run_cleaning_async`（Ollama）都是先把所有批次的建议收进内存里的 `suggestions`，最后统一 `tm_manager.persist_cleaning_suggestions(...)` 入库。但 `if batch_errors: raise TmCleaningBatchError(...)`（805/608）排在这句 persist（821/624）**前面**：只要 N 个批次里有任意 1 个抛异常（超时、5xx、连接断），函数直接抛出，那句 persist 永远执行不到，内存里那份成功批次的建议随栈一起消失。`_submit_batch` 里的 `handle_api_concurrency_limit` 只对「并发限流」类错误重试，超时/网络错误不重试，直接进 `batch_errors`。异常上带的 `partial_suggestions` 在 run_cleaning:510 只被赋值为 `convention_suggestions`（0 API 的确定性惯例归一建议），模型建议一条都不在里面——任务运行器的提示语「另有 N 条 0 API 惯例归一建议已生成并保存」也印证了：活下来的只有不花钱的那批。
+
+**后果**：用户点一次深度清洗，钱已经按批次实打实付给模型了。默认 batch_size=20，一个 20 万条的语言对就是 1 万个批次；这 1 万次调用里只要有 1 次超时，前面 9999 批的建议全部作废，界面只给一句「1/10000 个清洗批次失败」，建议列表是空的。用户唯一的补救是重跑，也就是把这笔钱重新付一遍——而重跑同样只要再撞上一次瞬时失败就再次归零。库越大越必然踩中，正好是最需要清洗的老用户。直接违反「白花钱 / 停止后丢弃已付费成果算高危」这条硬约束。
+
+**复现**：已复现（scratchpad/m1_batchfail.py）。5 个批次、假引擎让第 5 批抛 RuntimeError('模拟第 5 批超时')。实际输出：`engine calls actually made (paid): 5`、`RAISED: 1/5 个清洗批次失败`、`partial_suggestions attr: []`、`suggestions persisted in DB: 0`。前 4 批共 20 条有效建议全部丢失。
+
+**修法**：把 `persist_cleaning_suggestions(suggestions)` 挪到 `if batch_errors: raise` **之前**（两条路径都要改：threaded 805/821、async 608/624），先落库再抛错；同时把 `batch_error.partial_suggestions` 从 `list(convention_suggestions)` 改成 `convention_suggestions + suggestions`，任务运行器 tm_cleaning_task_runner.py:103-108 的提示语相应改成「本次已生成并保存 N 条建议（其中 M 条来自模型），另有 K 个批次失败，可只对失败部分重跑」。停止路径（cancel_event）目前是正确的——已实测会走到 persist，不要一起改坏。
+
 ---
 
-## 中危（13 条）
+## 中危（15 条）
 
 ### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
@@ -425,9 +440,37 @@ C:\Users\Tom\file.docx      False  True  True
 
 **修法**：在 `should_translate` 的 target=zh 分支里，把 zh→X 方向已有的「结构化字面量」保护补齐并抽成一个共用判据（两个方向共用一份，别再各写一套）：无空格且匹配 URL（`^\w+://` 或 `^www\.`）、邮箱（`^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$`）、绝对/相对路径（含 `/` 或 `\` 且无空格）、纯扩展名文件名的一律 return False。同时在 `_validate_translation_strict` 里加一条对称守卫：原文整体是 URL/邮箱/路径而译文不是同一串时判 fail，堵住「模型真把网址翻了」这条没人拦的路。
 
+### 中-14 清洗建议写回把多行译文折成单行，多行单元格的换行在「深度清洗」这条路上又被吃掉了
+
+`M1` · 置信度 high · regression-of-prior-audit
+
+**位置**：`core/tm_cleaner.py:226`、`core/tm_cleaner.py:214`、`core/tm_cleaner.py:310`
+
+**机制**：`_sanitize_clean_suggestion`(310) 先调 `_normalize_clean_target`(214)，后者最后一句是 `_MULTISPACE_RE.sub(" ", cleaned)`，而 `_MULTISPACE_RE = re.compile(r"\s+")` 会连换行一起吃。之后才调 `normalize_tm_text_for_storage` —— 可那个函数自 9.3.x 起专门改成保留换行（tm_text.py 的 docstring 写死了「绝不把换行折成空格——那会让二次跑同一份文档时多行单元格塌成单行」），此时换行早就没了，它只能把一个已经是单行的串再规整一遍。也就是说中-5 的修复在「入库」这条路上守住了，在「清洗写回」这条路上没守住：tm_cleaner 用的是自己那套 `\s+` 折叠，没跟着换成 tm_text 的行内空白正则 `[^\S\n]+`。注意只有「模型确实改了内容」才会出问题：模型原样返回时 `normalize_tm_text_for_compare` 比较相等，建议被丢弃，看不出症状。
+
+**后果**：库里凡是多行的译文（Excel 多行单元格、Word 里带软换行的段落），一旦被深度清洗改写并由用户确认写入，换行就永久变成一个空格。下次翻同一份文档时 TM 命中回填的是单行译文，排版与首次交付不一致——正是中-5 当初要消灭的那个症状，只是入口换成了清洗。用户在复核面板上看到的 diff 也不会提示「顺便把你的换行去掉了」。
+
+**复现**：已复现（scratchpad/m1_clean.py）。current='第一行\n第二行'，模型建议 '第一行改\n第二行改'：`normalize_tm_text_for_storage` 保留换行（'第一行改\n第二行改'），但 `_sanitize_clean_suggestion` 返回 '第一行改 第二行改'，`_build_clean_suggestion(...).new_target` 同样是折平的 '第一行改 第二行改'。
+
+**修法**：`_normalize_clean_target` 末尾那句改成只折行内空白：复用 tm_text 里的 `[^\S\n]+` 口径（或直接 `return normalize_tm_text_for_storage(cleaned)`，它已经做了「统一换行符 + 折行内空白 + 逐行 strip」），别再用 `\s+`。`_looks_like_meta_output`(286) 里那句 `_MULTISPACE_RE.sub` 只用于判定、不落库，可以不动。补一条测试：多行译文经清洗建议写回后 `\n` 仍在。
+
+### 中-15 「深度清洗」一键起跑，不告诉用户要跑多少条、要花多少次模型调用，也没有任何上限
+
+`M1` · 置信度 high · new
+
+**位置**：`ui/src/views/library.ts:1424`、`ui/src/views/library.ts:716`、`api/task_manager.py:359`、`core/tm_cleaner.py:420`
+
+**机制**：`tmClean()`(716) 只做了「更新后没重启」的拦截，随后直接 preflight → 起任务；`openTaskRiskModal` 只有在「与别的活动任务共用 API 连接」时才弹，且弹的内容全是并发风险，一个字没提规模。服务端 `_prepare` 里 tm_clean 分支（task_manager.py:359-386）构造的 task_snapshot 写死 `"selected_file_count": 0`，既不查词条数也不估批次数。`run_cleaning`(420) 拿 `get_all_entries_for_cleaning(lang_pair)` 的**全部**未固定 auto 词条，无上限、无采样、无分段确认，按 batch_size（默认 20，settings.py:486）切批全部提交。界面上唯一的反馈是状态条一句「正在分析未固定条目…」。
+
+**后果**：老用户库里几万到几十万条是常态。实测 20 万条的库，get_all_entries_for_cleaning 全量返回，按默认 batch_size=20 就是 1 万次模型调用，用户在点下按钮之前完全不知道这个数字，点完才发现账单。配合上面那条「一个批次失败全丢」，这笔钱还可能白花。按项目硬约束「用户为每一次模型调用真金白银付费」，一个不可预估、不可分段、无上限的一键花钱入口是需要拍板的产品缺口。
+
+**复现**：机制确认。代码路径已逐段核对（library.ts 无规模提示、task_manager tm_clean 分支 selected_file_count 恒为 0、run_cleaning 无 limit）；实测部分：scratchpad/m1_scale.py 造了 20 万条库，`get_all_entries_for_cleaning` 口径下这 20 万条全部合格（word_type=auto、pinned=0），除以默认 batch_size=20 即 1 万批。未真跑模型调用（不花钱）。
+
+**修法**：起任务前先算一次规模：在 task_manager.py:359 的 tm_clean 分支里查 `len(get_all_entries_for_cleaning(lang_pair))` 与 `ceil(n / batch_size)`，塞进 task_snapshot；前端在 `tmClean()` 里无条件弹一次确认框，把「本次将分析 N 条词条，约 M 次模型调用」说清楚（现在的共享连接风险框可以合并进去）。是否再加「只清洗最近 N 条 / 分批跑」的上限选项属产品拍板，建议至少先把数字亮出来。
+
 ---
 
-## 低危（7 条）
+## 低危（9 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -527,6 +570,34 @@ C:\Users\Tom\file.docx      False  True  True
 **复现**：机制确认：逐行比对四个引擎文件（ollama_engine.py:108-121 的 for 循环无异常类型判断、:141-144 的 chat 无重试、:88-102 的 gather 后 `raise errors[0]` 丢弃 merged；openai_engine.py:134/222 与 claude_engine.py:60/78 的 `with httpx.Client(...)` 均在调用内构造）。未构造 Ollama 服务端做端到端复现。
 
 **修法**：三件事，按性价比排序：(1) Ollama 的重试循环接上 `is_retryable_engine_error`，并把最后一次失败后的 sleep 去掉；chat() 复用同一条重试路径。(2) 把 `httpx.Client` 提到引擎实例上（引擎本身就是每任务构造一次），或用一个模块级的共享 Client + limits，拿回 keep-alive。(3) Ollama 的 `_translate_async` 改成返回 (merged, errors)，让 dispatcher 只重译失败的 chunk，而不是整批重来。
+
+### 低-8 外层噪声剥离会把下划线包裹的工程标识符当 Markdown 强调剥掉
+
+`M1` · 置信度 high · new
+
+**位置**：`core/tm_cleaner.py:191`、`core/tm_cleaner.py:261`
+
+**机制**：`_HIGH_CONFIDENCE_OUTER_WRAPPERS` 把 `("_", "_")` 和 `("*", "*")` 当高置信 Markdown 强调。`_wraps_whole_text` 对对称定界符的判据是「内部不再出现同一个字符」，`_reserved_` 内部确实没有下划线，于是判定为「整段被包住」，剥成 `reserved`。中-7 的修复解决的是「首尾恰好各有一个引号但不是一对」的情况，对「首尾确实是一对、但那不是标记而是标识符正文」这一类没有防线。
+
+**后果**：译文里出现 `_reserved_`、`_internal_`、`*ID*` 这类工程标识/占位符时，清洗建议会给出剥掉包裹符的版本。复核面板默认全不勾（library.ts:856 已确认），用户逐条看得见，所以不会静默污染；但一次大批量清洗里混进这类建议，用户按整体印象快速勾选就会连带改坏标识符。命中面窄（要求整段译文就是那一个标识符），故定低。
+
+**复现**：已复现（scratchpad/m1_clean.py）：`_normalize_clean_target('_reserved_')` → `'reserved'`，`_normalize_clean_target('*星号*')` → `'星号'`。同一脚本里 `'「甲」与「乙」'`、`'"甲" 与 "乙"'`、`'《书》和《报》'` 均正确保持原样（中-7 的修复有效）。
+
+**修法**：给 `_` 和 `*` 这两对加一条附加条件：只有当内部文本不是「纯标识符形态」（`^[A-Za-z0-9_]+$`）时才剥，或者干脆要求内部含空白/CJK 才认作强调标记。`**`/`__` 双字符那两对不受影响，可保留现状。
+
+### 低-9 清洗建议写回的乐观并发版本按 entry_id 归并，同一词条挂多条建议时版本校验会张冠李戴
+
+`M1` · 置信度 high · new
+
+**位置**：`core/tm_cleaner.py:1017`、`core/tm_manager.py:1706`
+
+**机制**：`apply_suggestions_detailed` 把逐条建议的 `expected_version` 收成 `{s.entry_id: s.expected_version}` 一个 dict（1017），同一 entry_id 的多条建议里只有**最后一条**的版本活下来；`bulk_update_detailed`(1706) 再按 entry_id 取这个版本去校验**每一行**。结果是：基于旧版本译文的过期建议会被拿当前版本去校验从而通过并写入，而基于当前版本的正确建议反被判成 stale。`_settle_suggestion_rows` 的注释本身就把「同一词条挂两条建议」当成明确存在的情形来处理，说明这个前提不成立。
+
+**后果**：触发后果很重（过期建议盖掉人工校对，正是高-7 的失效模式），但当前动线兜得住：`/api/tm/clean/suggestions` 每次 GET 都先跑 `expire_stale_cleaning_suggestions`，而复核面板的建议**只**来自这个 GET（tm_cleaning_task_runner 的 DoneMsg 不带 suggestions，前端 library.ts:790 必然回退到 fetched.suggestions），expire 之后能留在 pending 的建议版本必然与当前词条一致，所以真实 UI 下同一词条不会出现两个不同版本的待审建议。属于「靠外层不变量兜住的内部错误」，任何一次动线调整（比如让任务结果直接带回建议、或去掉 GET 里的 expire）都会让它变成真 bug。
+
+**复现**：已复现（scratchpad/m1_apply.py CASE2，绕过 GET/expire 直接构造两条 pending）：词条「Pump casing」先有建议 A（版本 V1）→ 用户人工校对成「泵体外壳（人工校对）」→ 再生成建议 B（版本 V2）→ 两条一起确认。实际输出 `{'applied': 1, 'skipped': 1, outcomes: [{2:'updated'},{3:'stale'}]}`，库里译文变成「旧建议A」——过期建议写入成功，人工校对被覆盖，当前版本的建议 B 反被拦下。
+
+**修法**：别再用 entry_id 当 key：给 `bulk_update_detailed` 增加一个按提交行序对齐的 `expected_versions: list[str | None]`（与 `updates`、`rows` 同序），逐行取版本；旧的 dict 形参保留给其它调用方即可。顺带把 api/app.py:245-251 里 `expected_version: str = ""` / `suggestion_id: int = 0` 的默认值收紧成必填（或在 `_resolve_pending_suggestions` 里对「既查不到 pending 行、客户端又没给版本」的建议直接判 stale 拒写），现在这两个字段一旦为空就等于关掉整个乐观并发检查。
 
 ---
 
@@ -769,4 +840,27 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - 续译的 PDF 分支（`_classify_pdf` 的体积闸 + `reusable_pdf_pages` 计数口径）只读了代码，没造 manifest 实跑。
 - 发现 2 的反向核查我只在 Excel 上实测；Word 侧（`word_task_runner.py:876`）是同构代码，按机制推定同样中招，未单独构造 .docx 复现。
 - `unit_ledger.py`（200 行）没读，问询要点 6 里「同一判断写了几遍」只查到 translation_filter vs excel_coverage 这一处不一致（已写进发现 1）。
+
+### M1 — 翻译记忆库（TM）
+
+**基线与复现脚本**
+
+未跑全量（按要求沿用给定基线 1664 passed）。只按需读取并对照了 tests/test_tm_cleaner_failures.py（2 个用例，只断言「批次失败不报 completed」，不涉及本次发现）。所有复现脚本均先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config，并断言 `config.APP_DATA_DIR` 落在 /var/folders 下，全程未触碰用户真实数据目录。脚本落在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：m1_scale.py（20 万条压测）、m1_clean.py（清洗规则反例）、m1_apply.py（建议写回并发校验）、m1_conc.py（并发写 + 批量固定 + 导入）、m1_lock.py（10 万条导入与实时写入争锁）、m1_page.py（分页稳定性）、m1_batchfail.py（批次失败丢建议）。
+
+**排除掉的假阳性（都实测过，不要再查）**
+
+1. 规模性能全部合格，索引够用。20 万条库（scratchpad/m1_scale.py）：count 5ms、get_stats 37ms、search 第 1 页 19ms / 第 2000 页 49ms、关键词搜索 35ms、lookup_batch 200 条 2ms、导出 20 万条 161ms、set_all_pinned 全库 501ms、delete_unpinned 11ms。`search_entries` 的 `ORDER BY updated_at DESC` 虽然走 SCAN + TEMP B-TREE，绝对耗时仍在几十毫秒量级，不值得加索引。
+2. 分页在 updated_at 全部相同（时间戳只有秒精度，批量入库必然大量并列）时依然稳定：1000 条翻 20 页，seen=1000 / unique=1000 / missing=0（m1_page.py）。
+3. 并发没有 database is locked。翻译任务写入 + 用户全库固定/解固 + 8000 条导入三线程并发跑完 0.86s 无异常（m1_conc.py）；10 万条 `import_entries`（单事务）只占锁 2.6s，期间实时 `insert_batch` 10 轮全部成功，远在 busy_timeout=5000ms 之内（m1_lock.py）。WAL + busy_timeout 的配法是对的。
+4. sqlite 变量上限：`core/tm_manager.py` 里全部 4 处动态 `IN (...)` 都已按 `_SQL_VARIABLE_CHUNK = 900` 分片（lookup_batch:1122、_set_pinned_by_ids:1783、bulk_pin_entries:1798、mark_cleaning_suggestions:2069），900 < 999，3.11 老运行时也安全。上一轮的低危已修干净。
+5. 停止（cancel_event）路径**不丢**已付费建议：取消后停止投新批次、在飞批次跑完、仍会走到 `persist_cleaning_suggestions`。这一条我本来怀疑是硬约束违规，实测是对的。真正丢结果的是「批次失败」那条路（发现 1）。
+6. 中-4（旧库 term 被排除）、中-5（入库端换行）、中-6（pinned 冲突谎报已保存）、中-7（引号剥离咬正文）在各自原始位置都已修好并实测有效；复核面板默认全不勾（library.ts:856），高-7 的「默认全勾 + 无版本校验」组合已不成立。批次 3 的三件套（常驻待复核提示、stale_count 窗口口径、逐行去向 outcomes）逻辑核对无误，`count_stale_suggestions_in_review_window` 的两个绑定参数顺序也是对的。
+7. `delete_entries` 每条 id 开一个新连接（tm_manager.py:1568），5000 条实测 2.5s，且非原子（中途失败留半个删除）。慢得有限、界面单页选中最多 50 条，没到值得报的程度，仅记在此。
+
+**没来得及验的（留给下一轮或主会话决定）**
+
+- TM 导出的文件格式（xlsx/csv 写出端）对多行译文的处理没查，只验到 `get_all_entries_for_export` / `get_full_export` 这一层的数据是对的。
+- 完整备份还原（api/app.py:1150-1233）是先 `save_settings` 保存自定义语言、再按语言对逐个 `import_entries`，中途某个语言对失败会留下「设置已改、词条只还原一半」的中间态，且没有还原前快照。没构造用例证死，也没算准这算不算硬约束覆盖范围内，故未成条。
+- `_upsert_entry` 走哈希兜底命中旧库单行写法时，只更新 `source_hash` 不更新 `source_text`（tm_manager.py:900-918），库里会长期留着单行原文配多行译文的行。看着是有意的（改 source_text 会撞 UNIQUE），未视为缺陷。
+- `run_cleaning` 产出的建议在 `list_cleaning_suggestions` 里一次性全量返回、不分页；20 万条库一次清洗可能产出上万条建议，一个 JSON 全推给前端渲染成弹窗列表。有卡顿嫌疑但没实测前端渲染，不敢定性。
 
