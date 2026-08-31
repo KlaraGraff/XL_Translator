@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：15/17 条审查线回传，累计 52 条发现（高 13 / 中 27 / 低 12）。**
+**当前进度：16/17 条审查线回传，累计 56 条发现（高 13 / 中 29 / 低 14）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -27,6 +27,7 @@
 | D1 | Excel 翻译管线 | 高 1、中 3、低 2 |
 | D2 | Word 翻译管线 | 高 1、中 3 |
 | D3 | PDF 翻译管线（pdf_image_translation.py / pdf_review.py / image_generation.py / headless_pdf_translate.py / residual_replay.py | 中 2 |
+| X1 | 性能：启动时间、交互延迟、内存、磁盘、打包体积 | 中 2、低 2 |
 
 ---
 
@@ -285,7 +286,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 ---
 
-## 中危（27 条）
+## 中危（29 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -700,9 +701,37 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **修法**：把审核口径和生成口径拆开，不要共用 `attempt`。最小改法：在页记录上加一个只在真正调用审核模型时自增的计数器（例如 `review_rounds`），4204 行改成 `page_record.review_rounds += 1`，3861 行的 review_retry_count 改用它；「审核修复页」的判定改成「这一页至少有一轮审核判过 not passed，且最终 passed」——可以直接看 candidate_artifacts 里是否存在 review_status == "failed" 的候选，或在 4350 行审核未通过时打一个 `review_rejected_once` 标志，3839 行按该标志统计，而不是按 `final_candidate_attempt > 1`。
 
+### 中-28 任务历史只限条数不限体积：日志多的任务能把 task_history.json 撑到 70MB，而任务运行期每秒把整份文件重写一遍（实测单次 445ms）
+
+`X1` · 置信度 high · new
+
+**位置**：`core/task_history.py:53`、`core/task_history.py:64`、`api/task_manager.py:820`、`api/task_manager.py:1852`、`api/task_manager.py:1863`
+
+**机制**：TaskHistoryStore.upsert() 是「读整份 JSON → 过滤 → 插到队首 → 整份重写」，limit=200 只封顶**记录条数**，不封顶每条记录的体积。而 api/task_manager.py:820 的 _status_payload() 把 `"logs": list(task.logs)` 整段塞进记录，task.logs 是一个**无上限**的 list（api/task_manager.py:166 定义、1814 行 append，全文件没有任何 maxlen / 截断），任务跑多久就攒多少行；core/pdf_image_translation.py 里有 83 处日志发射点，多数在按页循环里，一个几百页的 PDF 任务轻松攒到数千行。这些记录终态写入后永久留在历史里，直到被第 201 条挤出去。于是历史文件体积 ≈ 200 × 单任务日志量，且任务运行期每 1 秒（HISTORY_WRITE_INTERVAL_SECONDS = 1.0，api/task_manager.py:80）就要把这整份文件读出来解析一遍、再序列化写回一遍。
+
+**后果**：重度使用者（跑过 200 个大 PDF/Word 任务后）会遇到三件事同时发生：① APP_DATA_DIR 里多出一个几十 MB 的 task_history.json，用户在「维护」面板里只看到「任务历史 200 条」，看不出它占了 70MB；② 之后**每开一个新任务**，sidecar 每秒要花约 0.45 秒在历史文件的读-解析-序列化-重写上，等于常驻烧掉近半个核，并持续以约 50MB/s 的速率写盘（SSD 写放大），翻译本身的非 API 耗时被这条无关的 I/O 吃掉；③ 打开任务中心（GET /api/tasks → records()）要 200ms 才返回，列表明显发滞。日志量小的用户完全无感，日志量大的用户会觉得「用久了就变慢」，且找不到原因。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_history_bench2.py（数据目录指向 /var/folders 临时目录并断言）：填入 199 条各含 3000 行日志的记录后，task_history.json = 70.8 MB；此后一次 store.upsert() 实测 445 ms；store.records() 实测 200 ms。梯度见 x1_history_bench.py（历史 199 条小记录为底）：单任务 logs=0 → 2.9ms/0.47MB，logs=500 → 3.3ms，logs=2000 → 4.6ms，logs=5000 → 6.0ms/1.06MB，logs=20000 → 16.0ms/2.87MB——可见成本随记录体积线性上涨，真正致命的是 200 条大记录叠加后的常数项。
+
+**修法**：两处都要改，缺一不可。(1) 持久化时截断日志：在 api/task_manager.py:820 的 _status_payload() 里把写进历史记录的 logs 截成尾部 N 条（比如 200 条，够定位问题即可），完整日志本来就已经另存在 app.log 且有 5MB×5 轮转——历史文件没有第二次存全量的理由；顺带给内存里的 task.logs / task.events 也加 deque(maxlen=...)，现在这两个 list 在任务运行期同样是无界增长。(2) 给 TaskHistoryStore 加字节上限：limit 之外再加一个 max_total_bytes（比如 8MB），_write_locked 时从尾部丢弃超出的记录，和 core/diagnostics.py:282 的 prune_diagnostic_records（条数 + 总字节双上限）用同一套口径。做完 (1) 之后 (2) 基本不会触发，但它是防止同类问题第三次出现的兜底。
+
+### 中-29 记忆库批量删除逐条开新连接、逐条提交事务：3000 条实测 1.47s，比一条 SQL 慢约 300 倍，且删到一半失败会留下半删状态
+
+`X1` · 置信度 high · new
+
+**位置**：`core/tm_manager.py:1563`、`core/tm_manager.py:172`、`api/app.py:1086`、`ui/src/views/library.ts:443`
+
+**机制**：core/tm_manager.py:1563 的 delete_entries() 把 `with _get_conn() as conn:` 写在了 for 循环**里面**。_get_conn()（同文件 172 行）每次调用都是一次完整的 sqlite3.connect + `PRAGMA busy_timeout` + `PRAGMA journal_mode = WAL` + 退出时 commit + close。所以删 N 条 = N 次建连接、N 次 PRAGMA、N 次事务提交（每次提交都要落 WAL）。对照组就在同一个文件里：bulk_pin_entries()（1791 行）是标准写法——一个连接、分片 IN 查询、一次提交；delete_unpinned_entries()（1582 行）也是一个连接。可见逐条开连接不是有意设计，是这一个函数写漏了。调用链是 ui/src/views/library.ts:443 的「批量删除」→ POST /api/tm/entries/bulk/delete（api/app.py:1086）→ delete_entries(payload.ids)，而前端的「选择全部」（library.ts:329）会跨页拉取整个筛选结果集的 id，上限 SELECT_ALL_CAP = 5000（library.ts:306）。
+
+**后果**：用户在记忆库里「选择全部 → 批量删除」，本机 SSD 上按实测线性外推，5000 条要卡约 2.4 秒（本可以是 8 毫秒）；机械盘或开了全盘加密的机器上因为每条都要独立提交 WAL，会明显更久。整个过程弹窗按钮已经点下去、界面在等，用户看到的就是「删除一批词条要转好几秒圈」。另一个后果是这个批量删除**不是原子的**：中途抛异常（磁盘满、锁超时）时前面已提交的条目已经真删了，接口返回的 deleted 计数和实际状态对不上，用户重试一次才能补齐。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_tm_delete_bench.py（数据目录指向 /var/folders 临时目录并断言 config.APP_DATA_DIR 落在临时区）。输出：insert_batch 3000 条 = 0.038s；delete_entries(3000 个 id) = **1.470s**（每条 0.490 ms）；同一批数据改成单条 `DELETE ... WHERE id IN (...)`（同样走 _get_conn）= **0.005s**。约 294 倍。
+
+**修法**：把 delete_entries 改成和 bulk_pin_entries 同构：单个 `with _get_conn() as conn:` 包住全过程，先用分片 IN 查询一次性把这批 id 的 (id, pinned) 查出来（_chunked 已有），在内存里分出 deleted / protected / missing 三类，再对可删的那批发一条（或按 900 分片的几条）`DELETE FROM tm_entries WHERE id IN (...)`，最后统一提交。这样既拿回 300 倍速度，也顺带让批量删除变成原子操作。注意保留现有语义：pinned 行仍要计入 protected 而不是删掉，去重仍用 dict.fromkeys。
+
 ---
 
-## 低危（12 条）
+## 低危（14 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -872,6 +901,34 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 **复现**：已复现。脚本 d1_fidelity.py：夹具含 `DataValidation(type="list", formula1='"甲,乙,丙"')`，翻译前后 `dv` 快照完全一致（`['D2:D10|"甲,乙,丙"']`），且整个运行的 log_callback 只输出两条「分表已处理」，无任何提示。
 
 **修法**：最小成本先补知情权：在 `_scan_one_excel_file` 里数一遍 `<dataValidation type="list">` 且 formula1 为内联字面量、含 CJK 的条数，加进 `FileItem`（与 comment_count 同一套 None 语义）并在扫描摘要里报出来。真要翻的话属于新功能、要产品拍板：内联清单是逗号分隔的字符串，翻完还得保证不引入逗号、总长不超 255 字符，这两条约束不解决就会写出 Excel 打不开的文件。
+
+### 低-13 Excel 覆盖计划的内存放大约 630 字节/单元格，30 万格实测峰值 223MB，且全流程没有任何单元格总量上限
+
+`X1` · 置信度 medium · new
+
+**位置**：`core/excel_coverage.py:50`、`core/excel_coverage.py:74`
+
+**机制**：build_excel_coverage_plan() 用 read_only 流式读工作簿（这部分是对的，且 _DisplayValues 的懒加载已经解决了上一轮那个 O(n²)），但它把**每一个有文本的单元格**都物化成一个 CoverageUnit 对象存进 units 列表，全部驻留在内存里直到调用方用完。每个 unit 携带原文、sheet 名、坐标、分类结果等字段，实测摊到约 630 字节/格。代码里没有任何针对单元格总量的预检或上限（grep MAX_CELL/cell_limit/文件过大 只命中 xlsx_patcher 的单格 32767 字符上限，那是另一回事）。
+
+**后果**：一个 1.2MB 的 xlsx（30 万格重复中文，压缩率高）就能让 sidecar 峰值 RSS 从 34MB 涨到 223MB。按同一比例，百万格量级的大工作簿会把覆盖计划这一步推到 600MB 以上，再叠加后续批次组装和写回阶段的副本，在内存吃紧的机器上有被系统杀掉的风险——而用户看到的会是「sidecar 无故退出」，没有任何提示告诉他是文件太大。
+
+**复现**：已复现（数字确切，风险外推为推导）。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_xlsx_mem.py：write_only 生成 20000×15 = 300000 格的 xlsx（文件 1.23MB），build_excel_coverage_plan 前 ru_maxrss = 34.3MB，执行后 units=300000、耗时 2.92s、**峰值 RSS 223MB**。百万格 OOM 属于按 630B/格 线性外推，未实测。
+
+**修法**：两条路，建议先做第二条。(1) 瘦身 CoverageUnit：改成 slots dataclass 或 NamedTuple，sheet_name 用 sys.intern / 索引复用，能省掉相当一部分 per-object 开销。(2) 更重要的是加一道量级预检：扫描阶段先数有文本的单元格数，超过阈值（比如 50 万）时明确告诉用户「这份表格有 N 个待译单元格，超出单次处理上限，请拆分后再试」，而不是让 sidecar 被系统静默杀掉。注意不要做成「拒绝且不给出路」——提示里要给出可执行的下一步（按分表拆分 / 缩小选区）。
+
+### 低-14 「维护」面板里的「临时工作区」是死分类：没有任何代码创建 workspaces 目录或它的所有权标记，用户点清理永远是 0
+
+`X1` · 置信度 high · new
+
+**位置**：`core/maintenance.py:31`、`core/maintenance.py:67`、`core/maintenance.py:250`、`api/app.py:1924`
+
+**机制**：WORKSPACES_DIR = APP_DATA_DIR / "workspaces"（maintenance.py:31）被登记为一个可清理分类「临时工作区」（:67，clearable=True），清理函数 clear_owned_workspaces()（:250）只删带 `.translator-workspace.json` 所有权标记的子目录。但全仓 grep（*.py / *.rs / *.ts，排除 __pycache__ 与 worktrees）显示：写 WORKSPACES_DIR 的代码一处都没有，写 `.translator-workspace.json` 标记的只有 tests/test_phase8_maintenance_contracts.py:84/100 两处测试自造。真正的中间产物走的是系统临时目录（core/word_converter.py:193/308、core/xls_converter.py:134、core/pdf_image_translation.py:4768 的 tempfile.mkdtemp / TemporaryDirectory），不落在 APP_DATA_DIR 下。
+
+**后果**：两个后果都不大但都是「界面在说不准确的话」：① 维护面板给用户展示了一个恒为 0、点了也永远没反应的清理项，用户会以为自己的临时文件已经被清干净了；② 数据占用总览因此系统性地漏报了转换/PDF 流程真实产生的临时文件（它们在系统临时目录，面板不统计也清不掉）——用户想靠这个面板回答「这个软件占了我多少磁盘」时会得到偏低的答案。属于产品口径问题，不属于数据安全问题。
+
+**复现**：机制确认。grep -rn "workspaces" 与 grep -rn "translator-workspace"（*.py/*.rs/*.ts，排除 __pycache__、worktrees、node_modules）的全部命中即上列文件；生产代码里只有读取方，没有任何写入方。未构造运行时复现（该分类恒返回 removed_count=0 是代码路径上的确定结论：WORKSPACES_DIR 不存在时 :253 直接返回 0）。
+
+**修法**：由产品拍板选一条，我倾向前者：(a) 删掉这个分类——从 data_overview 的 categories、MaintenanceCategory 的 Literal（api/app.py:341）、确认清单（api/app.py:1905）和路由分支（:1924）里一并摘除，同时删掉 clear_owned_workspaces 和它那两个测试，面板上不再出现一个假的清理项；(b) 如果希望面板真能管到临时文件，就反过来让 word_converter / xls_converter / pdf_image_translation 的 mkdtemp 统一改到 WORKSPACES_DIR 下、创建时写入 `.translator-workspace.json` 标记——这样这个分类才名副其实，代价是中间产物从系统临时目录搬进应用数据目录，崩溃残留不再由系统自动回收，得靠这个清理入口兜底。</br>注意 (b) 会改变崩溃后的磁盘行为，属于产品形态变更。
 
 ---
 
@@ -1251,4 +1308,31 @@ a) `_finalize_file_record` 在「压缩版装配失败 / 压缩开关关掉」�
 b) `previous_page_state` 故意不进清单/任务历史（5810 附近），而 `previous_image_path` 保留。若真出现「有 previous_image_path 但 state 为空」的记录，`_swap_page_versions` 只补尺寸、不补审核结论，会出现「换了图但结论还是上一版的」。我顺着写入路径查下来，两个字段今天是同生同灭的（promoted 为空时 state 也置空），且 sidecar 重启后 runner 已释放、换回入口直接被挡，因此当前不可达——只作为latent风险记一笔，没有报为发现。
 c) 换回失败路径（`_settle_page_restore(apply_patch=False)` 后直接抛错）不追加收尾事件，drain 出来的日志把 `history_dirty` 置真却没有触发落盘，要等下一次事件或 flush_history 才写进任务历史。影响仅限「失败那几行日志晚落盘」，未验证是否真会丢，未报。
 d) pdf_review 面板的 blocking issue 清除逻辑已按上一轮修法收口（4331 行）并被我的复现间接验证（review_issues = []），但「多次重生成之间的状态传递」只读了代码、没有单独构造复现。
+
+### X1 — 性能：启动时间、交互延迟、内存、磁盘、打包体积
+
+**基线与复现脚本**
+
+未重跑全量（沿用给定基线 1664 passed + 249 subtests, 31s 全绿）。本轮全部为只读审查 + 自建基准脚本，数据目录一律经 TRANSLATOR_APP_DATA_DIR 指向 /var/folders 临时目录并在脚本内断言，未触碰真实数据目录。
+
+实测项：
+1) 冷启动：`./.venv/bin/python3 -c "import api.app"` = 0.31s total；`-X importtime` 顶层 api.app 累计 221ms（fastapi 89ms / core.pdf_image_translation 44ms / httpx 21ms / docx 10.5ms）。create_app() 33ms，lifespan 3ms，首个 /api/health 1ms。开发态启动不构成瓶颈，惰性导入可省的绝对值 < 100ms，不值得改；PyInstaller 冷启动未能实测（需完整重打包，超出预算），故不出结论。
+2) 打包体积：src-tauri/resources/sidecar/translator-sidecar = 55M（_internal 44M + 主程序 11M）。构成：PIL 7.9M、python3.13 6.1M、Python.framework 4.8M、pypdfium2_raw 4.6M、libcrypto 4.6M、lxml 4.5M、pydantic_core 4.0M、xlwings 1.3M。packaging/sidecar/translator_sidecar.spec 的 excludes 已被上一轮审计逐项论证过（numpy/pandas/tkinter/setuptools/PIL.AvifImagePlugin/lxml 子模块），未发现新的可安全剔除项，故不报体积条目。
+3) 前端产物：ui/dist 共 324K（index-*.js 272K + css 40K）。无代码分割，但绝对值太小，不是瓶颈，不报。
+4) 磁盘：app.log 有 RotatingFileHandler 5MB×5 封顶；diagnostics 有 prune_diagonstic_records（条数+总字节双上限）；task_history 条数封顶 200——但**字节无上限**，见 finding 1。
+5) 内存：见 finding 4（脚本 x1_xlsx_mem.py）。
+
+脚本（均在 scratchpad 下）：x1_tm_delete_bench.py / x1_history_bench.py / x1_history_bench2.py / x1_xlsx_mem.py
+
+未及验证 / 有意不报的部分，供下一轮取用：
+
+1. **PyInstaller 冷启动未实测**。开发态 import 只有 221ms，真正的成本在解压 55MB onedir + Gatekeeper 首启扫描，要复现必须完整重打包（scripts/build_tauri_sidecar.py，分钟级）并在一台没缓存过该签名的机器上跑，超出本轮 60 次工具调用预算。上一轮报过的「Gatekeeper 首启超 30 秒触发握手超时」我没有能力在本轮证实或证伪，建议单独派一条打包线去做。src-tauri/resources/sidecar 里那份产物的时间戳是 8 月 6 日（8.0.0 时代），已经不代表 9.4.0，体积数字只能当量级参考。
+
+2. **打包体积没有新的可剔除项**。spec 的 excludes 每一条都带了上一轮的论证注释（numpy/pandas/tkinter/setuptools/PIL.AvifImagePlugin/lxml 五个子模块），我逐项核对没有发现被误删或可再删的。唯一存疑的是 `_internal/python3.13`（6.1M）与 `_internal/Python.framework`（4.8M）看起来像同一个运行时的两份拷贝，但要确认是不是 PyInstaller 在 macOS framework build 下的正常产物、能不能安全去重，需要重打包验证，本轮没做，**不要当成结论**。xlwings 1.3M + aem 92K 在 macOS 上其实只有「用户装了 Excel 且开高保真链路」才用得到，是惰性 import（core/bilingual_writer.py:279、core/excel_automation.py:59），删不得。
+
+3. **翻译吞吐的端到端非 API 耗时占比没测出来**。core/headless_translate.run_translation_path 没有现成的 mock 引擎测试夹具（tests/test_headless_translate.py 只覆盖 build_runtime_settings 三个纯函数），要搭一套 3000 格走完整流程的 mock 需要摸清 engine_dispatcher/failover_engine 的注入点，估计还要 15～20 次工具调用。我只单点测到扫描侧：30 万格覆盖计划 2.92s（约 9.7μs/格），按这个速率 3000 格的扫描只有 30ms，相对 API 等待可以忽略——所以扫描不是瓶颈，但 TM 查询、批次组装、过滤、覆盖率判定、写回各自的占比仍是空白。TM 侧我单独确认了 lookup_batch（tm_manager.py:1082）是分片 IN 查询、insert_batch（:1209）是单连接单事务，这两条热路径都没问题。
+
+4. **PDF 页图缓存的磁盘占用没查**。pdf_image_translation.py 里有 _remove_translated_page_images / _prune_previous_page_images（2533/2630），说明页图是有生命周期管理的，但它们落在哪个目录、上一版译文留存（ef33c69 那个「留上一版可回退」的特性）会不会无限累积，我没有跟进去。这是 200 页 PDF 场景下最可能的磁盘增长点，优先级高于我报的 finding 4。
+
+5. 已确认**没有**问题、不必再查的：app.log 有 5MB×5 轮转（core/task_logger.py:113）；diagnostics 有 prune_diagnostic_records 条数+总字节双上限（core/diagnostics.py:282，list_diagnostic_records 每次调用都触发）；task_history 的写入已按 1 秒节流且 remove() 已从「201 次重写」改成单次（core/task_history.py:66 的注释就是上一轮的修复记录）；word_converter / xls_converter 的 mkdtemp 都在 finally 里 rmtree；ui/dist 只有 324K。
 
