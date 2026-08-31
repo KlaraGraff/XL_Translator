@@ -8,12 +8,13 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：3/17 条审查线回传，累计 9 条发现（高 2 / 中 4 / 低 3）。**
+**当前进度：4/17 条审查线回传，累计 12 条发现（高 2 / 中 5 / 低 5）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
 | R1 | 2026-08-29 审计 14 条高危的回归核验 | **0 条** |
 | C1 | 并发、线程、锁、竞态、死锁 | 高 1、中 2 |
+| C2 | 资源生命周期：临时文件、子进程、数据库连接、文件句柄 | 中 1、低 2 |
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
 
 ---
@@ -50,7 +51,7 @@
 
 ---
 
-## 中危（4 条）
+## 中危（5 条）
 
 ### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
@@ -80,7 +81,21 @@
 
 **修法**：三处调用都补上 `should_stop=`：core/mixed_language.py:440 和 :748 直接把作用域里现成的 `should_stop` 传进去（:445 那句检查可以保留，但退避本身必须先能被打断）；core/tm_cleaner.py:747 把 runner 的停止回调透传到这一层。更稳的做法是给 handle_api_concurrency_limit 的 should_stop 改成必填关键字参数，让漏传在 tsc/ruff 之外靠签名本身兜住——现在 8 个调用点漏了 6 个，说明「可选参数」这个形状本身就是缺陷来源。
 
-### 中-3 keys.json 上同一个洞：非 UTF-8 字节让保存、读取、以及显式出路「删除全部 API Key」三条路一起抛异常（中-1 的修复没修干净）
+### 中-3 sidecar 看门狗的 20 秒强杀预算包不住内层 22 秒收尾链——壳被强退时 soffice 与临时目录照样残留
+
+`C2` · 置信度 high · regression-of-prior-audit
+
+**位置**：`api/launcher.py:21`、`api/launcher.py:78-84`、`src-tauri/src/main.rs:48-68`、`src-tauri/src/main.rs:1045-1063`
+
+**机制**：上一轮高-11 只修了「正常退出」这条路：Rust 侧把 SIDECAR_STOP_TIMEOUT 改成 ①uvicorn 排空 10s + ②task_manager.shutdown 12s + ③落盘余量 3s = 25s，明确写着「外层必须包住内层」。但「壳非正常消失」（Force Quit 整个 app、Tauri 崩溃、被系统杀）走的是另一条路——Rust 根本没机会发 SIGTERM，收尾由 api/launcher.py 的 parent watchdog 触发：它发现父进程没了 → 调 begin_shutdown（只置标志）→ server.should_exit = True → 然后 `deadline = time.monotonic() + WATCHDOG_FORCE_EXIT_SECONDS` 干等 20 秒，到点无条件 os._exit(0)。这个 20.0 从来没跟着高-11 一起改：内层最坏情况仍是 10.0（GRACEFUL_SHUTDOWN_SECONDS）+ 12.0（TranslationTaskManager.shutdown 默认 timeout）= 22.0 秒 > 20.0，而 runner 的 finally（删 LibreOffice profile、word_translator_temp、PDF 分页工作区）恰好就在②那一段里。更关键的是这个循环压根不观察收尾有没有做完——不看 server 状态、不看任务是否已 terminal，只是纯睡满 20 秒。Rust 侧那个 the_mirrored_sidecar_budgets_still_match_the_python_side 测试只读 GRACEFUL_SHUTDOWN_SECONDS 和 shutdown(timeout=)，完全没覆盖 WATCHDOG_FORCE_EXIT_SECONDS，所以这条不等式变红不了。
+
+**后果**：Word / PDF 任务跑到一半，用户强退应用（或应用崩溃）：sidecar 在收尾走到一半时被自己的看门狗 os._exit 掉。UNO 那条路拉起的 headless soffice 是 Popen 长驻进程，terminate 写在 finally 里，这一杀就永远不执行——soffice 被 reparent 到 launchd 长期存活，占着 127.0.0.1 的 UNO 端口和 profile 目录；word_translator_temp 里那份几十 MB 的中间 docx、PDF 分页工作区也一起留下。任务历史那部分不受影响（下次启动 mark_active_tasks_interrupted 会兜住）。
+
+**复现**：已复现（c2_watchdog.py + c2_watchdog2.py）。c2_watchdog.py 实测输出：GRACEFUL_SHUTDOWN_SECONDS = 10.0 / WATCHDOG_FORCE_EXIT_SECONDS = 20.0 / task_manager.shutdown default timeout = 12.0 / worst-case inner chain (drain+unwind) = 22.0 | watchdog force-exit = 20.0 | watchdog covers inner? False / watchdog waits on server state? False。c2_watchdog2.py 做等比例活体验证：把 WATCHDOG_FORCE_EXIT_SECONDS 调成 2.0、模拟收尾工作耗时 4.0s，进程在恰好 2 秒时退出（elapsed=2s），CLEANUP FINISHED 一次都没打印——证明看门狗到点即杀、完全不等收尾。
+
+**修法**：把 api/launcher.py 的 WATCHDOG_FORCE_EXIT_SECONDS 改成和 Rust 同源的加法：GRACEFUL_SHUTDOWN_SECONDS + <task_manager.shutdown 默认 timeout> + 余量（即 25s），而不是写死 20.0；更稳的做法是循环里改成「轮询到 server 真的停了就立刻 os._exit，否则等到 deadline」，这样正常情况几百毫秒就退干净、异常情况才用满预算。同时把 WATCHDOG_FORCE_EXIT_SECONDS 补进 src-tauri/src/main.rs:1045 那个镜像测试的断言里（断言它 >= drain + unwind），否则下次改任何一段还是没人拦。
+
+### 中-4 keys.json 上同一个洞：非 UTF-8 字节让保存、读取、以及显式出路「删除全部 API Key」三条路一起抛异常（中-1 的修复没修干净）
 
 `P1` · 置信度 high · regression-of-prior-audit
 
@@ -94,7 +109,7 @@
 
 **修法**：settings.py:1809-1810 与上一条同源修复：改用 `read_bytes().decode("utf-8")`，把 `UnicodeDecodeError` 并入下面那段已经写好的「内容损坏 → 非 strict 返回空表 / force 直接放弃 / 否则备份后按空表续写」逻辑里，不要让它绕过状态机。两处一起改，别只改 settings 那边。
 
-### 中-4 「测试连接」跨网络往返持着旧快照，落盘时整份 connections 列表覆盖，把期间用户对另一条连接的修改静默吃掉（两个请求都返回 200）
+### 中-5 「测试连接」跨网络往返持着旧快照，落盘时整份 connections 列表覆盖，把期间用户对另一条连接的修改静默吃掉（两个请求都返回 200）
 
 `P1` · 置信度 high · new
 
@@ -110,9 +125,37 @@
 
 ---
 
-## 低危（3 条）
+## 低危（5 条）
 
-### 低-1 settings.json 的位置被目录占住时，连维护页的显式重置都抛 IsADirectoryError，一条出路都不剩
+### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
+
+`C2` · 置信度 high · new
+
+**位置**：`core/word_converter.py:50-110`、`core/word_converter.py:186-214`、`core/word_converter.py:268-292`、`core/word_converter.py:768-771`、`core/word_task_runner.py:2597-2657`、`core/word_task_runner.py:918`
+
+**机制**：两处叠加。(a) core/word_converter.py 整个文件里一次 unlink / _discard_partial_output 都没有（grep 实证）。convert_doc_to_docx 和 convert_numbering_to_text_with_native_apps 都是「多策略依次试」：每个策略先用 _get_temp_docx_path 在 $TMPDIR/word_translator_temp 下生成唯一路径、落盘产物，再由 _validate_docx 校验；校验不过或落盘后抛异常时，except 只把错误文案记进 errors 列表就 continue 下一个策略，那份已经写到盘上的 docx 谁都不删。对照 core/xls_converter.py:169-176 的 _discard_partial_output——Excel 那条路上一轮已经补了这个动作，Word 这条路没有。(b) core/word_task_runner.py 的 _prepare_word_source_for_translation 把 temp_paths 攒在函数局部，只有正常 return 后调用方（:918）才 extend 进 converted_temp_paths，:2214 的 finally 才清得到。只要这个函数在中途抛出（.doc 已经转成 docx 之后 normalize_docx_automatic_numbering 再失败，是最典型的一条），先前生成的那一两份临时 docx 就永远没被登记，谁都清不掉。
+
+**后果**：用户每翻一批 .doc / 需要编号预处理的 Word，只要有策略失败（本机没装 Word、LibreOffice 自带 Python 起不来、转出来的东西 python-docx 读不动），就在系统临时目录留下一份和原文档同量级的 docx，且不在任何清理路径上。单次几十 MB 量级，长期只靠 macOS 自己的临时目录老化回收（Windows 上连这个都没有）。不影响译文正确性，是磁盘慢性泄漏。
+
+**复现**：已复现（c2_word_leak2.py）：造一个带 OLE 头的坏 .doc，注入 _validate_docx 失败（模拟「转换器落了盘但产物不是有效 docx」这个真实条件），调 convert_doc_to_docx(prefer_native_word=False, allow_compatibility_fallback=True)。输出：convert_doc_to_docx failed: WordConversionError / LEAKED temp files: 2 / broken2_31a5b36a.docx 3531 bytes / broken2_d9cc37ad.docx 5113 bytes——LibreOffice 和 textutil 两次尝试各留一份。(b) 那一半是机制确认，没构造出 normalize 抛错的输入。
+
+**修法**：在 core/word_converter.py 里补一个和 xls_converter._discard_partial_output 同形的 helper，convert_doc_to_docx / convert_numbering_to_text_with_native_apps 的 except 分支里对该次尝试的 output_path 调一次（_validate_docx 失败那条也要走到）。(b) 处把 _prepare_word_source_for_translation 改成 try/except：抛出前先删掉本次已经生成的 temp_paths，或者改成接收调用方传进来的 converted_temp_paths 列表、边生成边登记，让 :2214 的 finally 能兜住。
+
+### 低-2 维护页「临时工作区」是死条目：永远 0 项，而真正会堆积的临时目录既不显示也无处清
+
+`C2` · 置信度 high · new
+
+**位置**：`core/maintenance.py:31`、`core/maintenance.py:67`、`core/maintenance.py:250-263`、`api/app.py:1905`、`api/app.py:1924-1925`、`core/word_converter.py:769`、`core/xls_converter.py:234`
+
+**机制**：clear_owned_workspaces 只删 APP_DATA_DIR/workspaces 下带 .translator-workspace.json 标记的目录。全仓库 grep：写这个标记的地方只有 tests/test_phase8_maintenance_contracts.py，没有任何生产代码创建 APP_DATA_DIR/workspaces 或那个标记文件（PDF 分页存档实际落在用户的输出目录，见 core/pdf_image_translation.py:1121-1126 resolve_pdf_page_archive_dirs，不在 APP_DATA_DIR 下）。于是 data_overview 里这一栏恒为 0 B / 0 项，而 api/app.py:1905 还把它和 keys/settings/tm 一样归进「必须二次确认」的危险类别——用户被弹一次确认框，换来删掉 0 个东西。与此同时，真正在堆积的是 $TMPDIR/xl_translator_temp、$TMPDIR/word_translator_temp 和异常退出留下的 xl_translator_lo_* / word_translator_lo_uno_* profile 目录，它们既不在 data_overview 里，也没有任何清扫入口或启动清扫。
+
+**后果**：两层。用户侧：维护页多一栏永远为空的假条目加一个永远无效的确认弹窗，是误导性文案；而真正占盘的临时残留他看不见也清不掉。工程侧：_get_temp_docx_path / _get_temp_xlsx_path 写死 tempfile.gettempdir()，不认 TRANSLATOR_APP_DATA_DIR，测试也隔离不掉——本机 $TMPDIR 就攒了实测 1325 个文件 / 47 MB。
+
+**复现**：已复现（c2_ws.py）。APP_DATA_DIR 指向 mktemp 目录后输出：{'id': 'workspaces', 'label': '临时工作区', 'size_bytes': 0, 'count': 0, 'clearable': True} / WORKSPACES_DIR: .../workspaces exists: False / clear result: {'category': 'workspaces', 'removed_count': 0}。同时 ls 本机 $TMPDIR 实测：word_translator_temp 1325 个 .docx 共 47M（最早 2026-08-28）、xl_translator_temp 10 个 .xlsx、word_translator_lo_uno_7no3wp5l 与 _xep3pzrn（2026-08-28）、xl_translator_lo_498y5qt8 与 _hq9o445_（2026-08-31）——后四个是 mkdtemp + finally rmtree 的目录，它们还在就说明 finally 没跑到，即进程被杀过。据文件名判断这批多数由测试套件产生，但没有任何生产代码会清它们这一点是一样的。
+
+**修法**：二选一，建议后者：(1) 最省事——把「临时工作区」这一栏和 clear_owned_workspaces 一起删掉（含 api/app.py:1905 的确认名单、Literal 类型、前端那一行），别在维护页留死按钮；(2) 更有价值——把这一栏改成真的指向 $TMPDIR/xl_translator_temp、$TMPDIR/word_translator_temp、$TMPDIR/{xl,word}_translator_lo*，统计真实体积并支持清理，同时在 sidecar 启动时顺带清一次超过 N 天没动过的残留（启动清扫必须只删本 app 自己 prefix 的路径，且跳过当前进程正在用的）。顺带把 _get_temp_docx_path / _get_temp_xlsx_path 的根目录改成可注入，测试才隔离得掉。
+
+### 低-3 settings.json 的位置被目录占住时，连维护页的显式重置都抛 IsADirectoryError，一条出路都不剩
 
 `P1` · 置信度 high · new
 
@@ -126,7 +169,7 @@
 
 **修法**：在 `_recreate_settings_file` 的 force 分支里（settings.py:1533 之后、写新文件之前）加一句：目标存在且 `is_dir()` 就先 `shutil.move` 到 backups（挪不动再 `shutil.rmtree`），再走 `_write_text_atomic`。同样的判断建议在 `_inspect_settings_file` 里也加一个 `is_dir()` 分支，让它归 `unusable` 而不是 `unreadable`——目录里没有用户配置，没有「不能覆盖」的理由。
 
-### 低-2 core/maintenance.py 的 reopen_quick_start 是死代码，却借用了 replace_incompatible=True——一旦接线就会在 settings.json 暂时读不到时无备份地把整份配置换成默认值，还报成功
+### 低-4 core/maintenance.py 的 reopen_quick_start 是死代码，却借用了 replace_incompatible=True——一旦接线就会在 settings.json 暂时读不到时无备份地把整份配置换成默认值，还报成功
 
 `P1` · 置信度 high · new
 
@@ -140,7 +183,7 @@
 
 **修法**：两件事分开做。① 直接删掉 `reopen_quick_start`（真实路径是 `PUT /api/updates/preferences`，api/app.py:1876-1878，走的是普通 `save_settings`，行为正确）；如果要留就把 `replace_incompatible=True` 去掉。② 独立于死代码：settings.py:1533 的 force 分支在备份失败时不要再写 `record_recovery_event(backup_path="")`，或者给恢复记录加一个 `backup_ok: false`，让前端说「旧文件无法备份，已直接重建」而不是编一个不存在的备份目录出来。
 
-### 低-3 任务历史的原子写少了 fsync（settings 侧有），断电/强杀后整份历史可能变空并被静默当作空列表
+### 低-5 任务历史的原子写少了 fsync（settings 侧有），断电/强杀后整份历史可能变空并被静默当作空列表
 
 `P1` · 置信度 medium · new
 
@@ -257,6 +300,29 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 5. 没审 api/app.py 的事件推送侧（SSE 端点本身），只审到 task_manager 的 `_iter_task_sse`。
 
 **成本**：约 55 次工具调用，未跑全量 pytest。
+
+### C2 — 资源生命周期：临时文件、子进程、数据库连接、文件句柄
+
+**基线与复现脚本**
+
+沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。自己跑的板块相关测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_phase8_maintenance_contracts.py tests/test_word_converter.py tests/test_api_launcher.py` → 19 passed，全绿（说明本次三条发现都落在既有覆盖之外）。所有复现脚本都先把 TRANSLATOR_APP_DATA_DIR 指到 mktemp 目录并断言 config.APP_DATA_DIR 落在 /var/folders 下，未触碰任何用户真实数据目录。脚本留在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/（c2_soffice_timeout.py、c2_timeout2.py、c2_watchdog.py、c2_watchdog2.py、c2_ws.py、c2_word_leak.py、c2_word_leak2.py）。
+
+【实测排除的假阳性，别再重复查】
+1. soffice 超时不会留僵尸/孤儿。c2_timeout2.py 用真实 .doc 夹具（.runtime/self-tests/phase-05-word/artifacts/legacy.doc）跑生产同形命令，分别用 0.4s / 0.8s 触发 subprocess.run 的 TimeoutExpired，3 秒后 `pgrep -f LibreOffice.app` 两次都是空。macOS 上 /Applications/LibreOffice.app/Contents/MacOS/soffice 是就地 exec 的，不像 Linux 包装脚本那样另起 soffice.bin，所以 subprocess.run 自带的 kill 足够。注意 `pgrep -f soffice` 会误命中 wpsoffice（本机装了 WPS），排查时必须按 LibreOffice.app 过滤——我第一次就被这个骗了一下。
+2. core/xls_converter.py:126-180 的 LibreOffice 路径是干净的：work_dir 在 finally 里 rmtree，失败时 _discard_partial_output 删半成品，profile 目录逐次独立。
+3. 上一轮「疑似」的 excel_coverage.py 第二次 load 泄句柄已修（core/excel_coverage.py:61-68 有 try/except BaseException: wb.close(); raise）。
+4. task_history 的 stray temp glob 已修，`.{name}.*.tmp` 和 _write_locked 的命名对得上（core/task_history.py:119-129），maintenance._task_history_temp_paths 同步改走 default_history_path()。
+5. tm_manager 的连接生命周期没问题：_get_conn 是 contextmanager，finally close；:409 的探测连接也在 finally close；WAL sidecar 文件被 maintenance._tm_paths 通过 db_sidecar_paths 完整列出。
+6. 磁盘上限存在且合理：diagnostics 有 _DIAGNOSTIC_MAX_RECORDS=80 / _DIAGNOSTIC_MAX_TOTAL_BYTES=256MB，日志 max_files=5 / max_file_bytes=5MB，任务摘要 retention_limit=200。PDF 页图落在用户自己的输出目录（是续译/复核要用的产物，不是 app 私有缓存），不算无界增长。
+7. maintenance.py:362 _remove_owned_path 用模块级 APP_DATA_DIR 做越界校验，而清单里多数路径是晚绑定的（default_history_path()、settings_module.RECOVERY_PATH、tm_manager.DB_PATH）——生产上 APP_DATA_DIR 稳定所以不炸，只在测试单独 patch settings 侧路径时会抛 MaintenanceError。这就是上一轮低危提过的那一条，没恶化，不重复报。
+
+【本次预算内没查完的，供主会话决定要不要另派】
+- core/headless_translate.py / headless_word_translate.py / headless_pdf_translate.py 三个 CLI 入口只做了 grep（无 Popen / 无裸 open / 无 tempfile），没有逐行读，也没跑起来验证它们的中断路径。
+- PDF 分页工作区在「任务中途停止」时的清理是否完整（core/pdf_image_translation.py 那 4700 行只按 grep 命中点抽读了几段）。
+- core/excel_automation.py 里 xlwings App 的进程生命周期（Excel 自动化只在装了 Excel 的机器上才走得到，本机没构造出环境）。
+- Windows 独有路径（COM、pythoncom.CoUninitialize、文件占用导致 unlink 失败）全部没验证，本机是 macOS。
+- word_converter.py:325 那个 Popen 用了 stdout/stderr=PIPE 却从不读取：理论上 soffice 输出超过管道缓冲（64KB）会把子进程写阻塞住，但 headless soffice 正常几乎不输出，我判断站不住，没写进 findings。
+- core/task_resources.py 是 API 并发调度（连接位/租约），不涉及文件句柄或子进程，与本审查线主题不符，只快速通读未深挖。
 
 ### P1 — 持久化 / schema 迁移 / 旧数据兼容
 
