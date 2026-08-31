@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：12/17 条审查线回传，累计 40 条发现（高 11 / 中 19 / 低 10）。**
+**当前进度：13/17 条审查线回传，累计 46 条发现（高 12 / 中 22 / 低 12）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -24,10 +24,11 @@
 | M1 | 翻译记忆库（TM | 高 1、中 2、低 2 |
 | F1 | 前端工作区、任务中心、客户端 | 中 1、低 1 |
 | F2 | 前端设置页、记忆库页、更新流程、样式 | 中 1 |
+| D1 | Excel 翻译管线 | 高 1、中 3、低 2 |
 
 ---
 
-## 高危（11 条）
+## 高危（12 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -242,9 +243,28 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：把 `persist_cleaning_suggestions(suggestions)` 挪到 `if batch_errors: raise` **之前**（两条路径都要改：threaded 805/821、async 608/624），先落库再抛错；同时把 `batch_error.partial_suggestions` 从 `list(convention_suggestions)` 改成 `convention_suggestions + suggestions`，任务运行器 tm_cleaning_task_runner.py:103-108 的提示语相应改成「本次已生成并保存 N 条建议（其中 M 条来自模型），另有 K 个批次失败，可只对失败部分重跑」。停止路径（cancel_event）目前是正确的——已实测会走到 persist，不要一起改坏。
 
+### 高-12 全量模式下「公式显示值回填」关闭时，公式格的显示值照样被送去翻译，一格都写不回去——钱白花一半
+
+`D1` · 置信度 high · new
+
+**位置**：`core/task_runner.py:2897`、`core/task_runner.py:922`、`core/xlsx_patcher.py:1610`、`core/excel_coverage.py:238`
+
+**机制**：词条抽取有两条路。补译路（build_excel_coverage_plan → _classify_excel_cell，core/excel_coverage.py:238）明确判断 `is_formula and not formula_display_value_backfill` → 直接判 COVERAGE_IGNORED，注释里写得清清楚楚「送翻是白花一次 API 调用」。但全量路 `TaskRunner._collect_texts`（core/task_runner.py:2897）用 `load_workbook(data_only=True)` 无差别收所有字符串，压根没有 formula_display_value_backfill 这个参数——公式格的缓存显示值一律进待译词条。到了写回端 `_resolve_source_text`（core/xlsx_patcher.py:1610）在回填关闭时返回的是 `"=" + 公式源码`，而译文表的键是显示值，必然对不上，`_plan_cell_mutation` 返回 None，这一格原样不动。于是这批词条 100% 是付了钱、拿到译文、然后扔掉。
+
+**后果**：用户为了保住公式而关掉「公式显示值回填」（这正是这个开关存在的理由），结果每次全量翻译都要额外为所有公式格的显示值付一遍模型费用，产出文件里一个字都用不上。公式列越多浪费越大：VLOOKUP/CONCAT 生成的中文列在国内表里极常见，实测夹具里 400 个词条有 200 个（50%）是纯浪费。同样的表走「只补未译」反而不花这笔钱——两条路对同一个开关的行为不一致。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d1_waste.py（夹具 d1_shared_200.xlsx：A 列 200 个静态中文 + B 列 200 个共享公式、缓存显示值为中文）。输出：
+  全量模式收词条总数 = 400  其中来自公式格显示值的 = 200
+  backfill=False 写回改动格数 = 200 (只有 A 列静态文本)
+  B1 仍是公式? True
+  译文 EN_项目1件 是否出现在文件里? False
+  补译模式收词条数 = 200  其中公式显示值 = 0
+
+**修法**：给 `TaskRunner._collect_texts` 加上 `formula_display_value_backfill` 参数（两个调用点 core/task_runner.py:922 和 :979 都已经有 `excel_output.formula_display_value_backfill` 在手），回填关闭时改用 `data_only=False` 判 `cell.data_type == 'f'` 跳过公式格——判据可以直接复用 `excel_coverage._resolve_cell_text`，两条路共用一份规则才不会再漂移。同时把 DISPIMG 与错误值格的排除（补译路已有）一并搬过来：全量路目前同样在为这两类格子付钱。
+
 ---
 
-## 中危（19 条）
+## 中危（22 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -533,9 +553,51 @@ C:\Users\Tom\file.docx      False  True  True
 
 **修法**：把 saveLangPair() 改成和 applyTmQueryChange() 一样的 snapshot/try/catch-rollback 模式：进入前拍一份 { sourceLang, targetLang, page, selectedIds, recentPairs } 快照；PUT 或后续 refreshTm/refreshConflicts 任一步失败时，把这几个变量原样恢复成快照值再调用 rebuildToolbar()/renderTable()，让 DOM 与失败后的真实状态对齐，toast 之外不留任何“看不见的状态漂移”。最省事的做法是直接让 saveLangPair 复用 applyTmQueryChange 的 change 回调机制（把 sourceLang/targetLang 的赋值也塞进 change() 闭包里），避免同一套回滚逻辑维护两份。
 
+### 中-20 共享公式主控权让渡仍然是 O(n²)——上一轮中-28 只压小了常数，没改掉复杂度，3200 行 4.4 秒、上万行仍是分钟级假死
+
+`D1` · 置信度 high · regression-of-prior-audit
+
+**位置**：`core/xlsx_patcher.py:977`、`core/xlsx_patcher.py:1001`、`core/xlsx_patcher.py:1035`
+
+**机制**：`_SharedFormulaIndex.dependents`（core/xlsx_patcher.py:977）确实把「整表重扫」换成了「只扫这一组」，但漏了一件事：公式格被改写成静态双语文本之后，让渡的主控权会落到组里下一个格子，而那个格子紧接着也会被改写，于是 `_promote_shared_formula` 对同一组要被调用 n 次，每次都把当前存活的 n、n-1、n-2 … 个成员整个走一遍（`for row_num, col_index, cell in entries` + 后面 1035-1038 行四个 `min`/`max` 生成器又各扫一遍）。总量仍是 n²/2。cProfile 实证：n=3200 时 `dependents` 被调用 3200 次、tottime 4.99s，占总耗时 7.46s 的 67%，min/max 再吃 0.8s。
+
+**后果**：一张只有一列长共享公式的表，写回阶段的耗时按行数平方涨。实测每翻一倍行数耗时涨约 4 倍，外推 12800 行约 71s、25600 行约 4.7 分钟——这是在所有模型调用都已完成、界面停在「正在写入」之后才发生的纯 CPU 空转，用户看到的就是任务假死。上一轮审计的 中-28 判为已修，但只是把常数从 800 行 2.08s 降到 0.27s，量级没变。
+
+**复现**：已复现。脚本 d1_perf_shared.py（同上目录）实测：n=200 → 0.10s；n=800 → 0.27s；n=1600 → 1.07s；n=3200 → 4.44s（每翻倍 ×3.9~4.1，标准 O(n²) 特征）。脚本 d1_prof.py 的 cProfile：`3200 calls, tottime 4.986s  xlsx_patcher.py:977(dependents)` 排第一。
+
+**修法**：别在每次让渡时重扫整组。给每个组维护一个游标（下标）而不是每次重建 `live` 列表：`dependents` 从上次停下的位置往后推进，跳过已失效条目就永久前移游标；同时把组的 min_row/min_col/max_row/max_col 在 `_build` 时算一次并随游标增量维护，别每次让渡都 4 次全组扫描。更彻底的做法是在 `_build` 时就把每组的成员按文档顺序存成 deque，让渡时 popleft 到第一个仍带 `<f>` 的成员即可，整组总代价降到 O(n)。
+
+### 中-21 「锁定行高」模式对默认行高的行永远缩不进去，结果是整表字号被无差别压到 6pt 下限，并逐格刷警告
+
+`D1` · 置信度 high · new
+
+**位置**：`core/xlsx_patcher.py:1736`、`core/xlsx_patcher.py:614`、`core/xlsx_patcher.py:1545`、`config.py:402`
+
+**机制**：双语文本一定含换行（config.py:407 `BILINGUAL_SEPARATOR = "\n"`），所以 `estimate_required_lines` 恒 ≥ 2。可见行数 `estimate_max_visible_lines(row_height, size) = int(row_height / (size * 1.35))`，在 Excel 默认行高 15pt（或真实文件常见的 14.4pt）下：size=11 → int(11.11/11)=1，size=6（PRINT_GUARD_FONT_FLOOR）→ int(11.11/6)=1。整个 [6, 11] 区间可见行数恒为 1，永远追不上 required≥2。于是 `_shrink_font_for_locked_row` 的 while 循环必然一路走到 `current_size <= min_size` 才 break，`reached_floor` 恒为 True。要装下 2 行需要字号 ≤ 5.55pt，正好被 6.0 的下限卡在门外。
+
+**后果**：用户打开「锁定行高」（用意是保住打印版式），拿到的是一张**每一格译文都变成 6pt** 的表——几乎读不了；同时任务日志对每一个被翻译的单元格刷一条「缩至最小字号 6.0pt 仍可能无法完全显示」，万格的表就是万条警告，真正需要关注的告警被淹没。更糟的是这次缩字号没有换来任何收益：可见行数从头到尾都是 1 行，只是把用户的字号毁了。
+
+**复现**：已复现。脚本 d1_merge.py，lock_row_height=True 那一轮输出：A1 字号 11.0 → 6.0；A5（普通单元格、无合并、列宽 12、行高未设即默认 15pt）同样报 `[WARN] Sheet!A5 缩至最小字号 6.0pt 仍可能无法完全显示`。手算复核：int(15/(1.35*11))=1，int(15/(1.35*6))=1，required=2，恒不满足。
+
+**修法**：在 `_shrink_font_for_locked_row` 里先算一次「下限字号下的可见行数」：如果 `estimate_max_visible_lines(row_height, min_size) <= estimate_max_visible_lines(row_height, original_size)`，说明这一格在允许区间内缩多少都不会多出一行，直接返回 `(None, True)`——不动字号，只记一次「装不下」。另外警告要按分表聚合成一条（「本表 N 格在锁定行高下装不下，已保持原字号」），不要逐格刷。产品上还得拍板：默认行高的行本来就只放得下一行，锁定行高 + 双语是一对天然矛盾，是否该在开关旁边直接说明。
+
+### 中-22 合并单元格的排版估算只按左上角那一列的宽度算，合并标题行被撑成几倍高（或在锁行高模式下直接压到 6pt）
+
+`D1` · 置信度 high · new
+
+**位置**：`core/xlsx_patcher.py:1793`、`core/xlsx_patcher.py:1545`、`core/xlsx_patcher.py:622`
+
+**机制**：`xlsx_patcher.py` 全文没有出现过 `mergeCell`（grep 零命中），`_SheetGeometry` 也只读 `<col>`/`<row>`。行高自适应 `_auto_adjust_row_heights`（core/xlsx_patcher.py:1793）用 `geometry.col_width(col_index)` 只取锚点格自己那一列的宽度；锁行高的 `_shrink_font_for_locked_row` 调用点（core/xlsx_patcher.py:1545）同样只传单列宽。合并区的实际可用宽度是区内所有列宽之和，估算值因此系统性偏小若干倍，required_lines 被高估同样倍数。
+
+**后果**：中文表里「A1:H1 合并的大标题」是最常见的版式。实测一个 8 列合并（总宽 96 字符位）、55 字符双语标题：自适应模式把第 1 行行高从默认撑到 77pt（按 5 行算，实际 1 行就够），整张表顶上多出一大块空白；锁行高模式下同一格字号被从 11pt 压到 6pt 并报「仍可能无法完全显示」。两种模式都是把用户明确排过的版式弄坏，且方向相反、都错。
+
+**复现**：已复现。脚本 d1_merge.py：夹具 A1:H1 合并、每列宽 12（合计 96）、译文合成后共 55 字符。lock=False → 第1行 height=77.0；lock=True → A1 字号 6.0 且报 `[WARN] Sheet!A1 缩至最小字号 6.0pt 仍可能无法完全显示`。对照组 A5 未合并，行为符合预期。
+
+**修法**：在 `_SheetGeometry.__init__` 里顺手解析 `<mergeCells>/<mergeCell ref=...>`，建一张「锚点坐标 → 合并区列范围」的表，新增 `effective_col_width(row, col)`：命中合并区就返回区内各列 `col_width` 之和，否则返回本列宽。`_auto_adjust_row_heights` 与 `_shrink_font_for_locked_row` 的调用点都改用它。跨多行的合并区（ref 高度 > 1）同理要把可见高度按区内行高求和，否则纵向合并的格子会被判成装不下。
+
 ---
 
-## 低危（10 条）
+## 低危（12 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -677,6 +739,34 @@ C:\Users\Tom\file.docx      False  True  True
 **复现**：机制确认（代码路径推导：await 之后才 createObjectURL/push，而 revoke 只遍历同步时刻的数组；未构造真实 PDF 任务复现）。
 
 **修法**：在 openPdfPageCompareModal 里加一个 `let closed = false;` 闭包标志，closeCompare() 和「关闭」按钮的 onClick 都置 true；load() 在 `await c.getPdfPageImage(...)` 返回后先判 `if (closed) return;`，再 createObjectURL。或者更省事：load() 里改成拿到 blob 就先 push url、再在 `closed` 为真时立刻 revoke 掉自己这一条。两种都只改 5 行以内。
+
+### 低-11 自动行高会把用户手工设过的行高往小里改写——120pt 的行被压成 61.6pt
+
+`D1` · 置信度 high · new
+
+**位置**：`core/xlsx_patcher.py:1802`
+
+**机制**：`_auto_adjust_row_heights` 算出 `new_height = max_lines * BASE_FONT_SIZE_PT * LINE_HEIGHT_RATIO` 后**无条件** `row.set("ht", ...)`，没有和原有 `ht` 取 max。函数的 docstring 只承诺保护「这次一个字都没翻的行」，但一旦这行里有任意一格被翻译，用户手工设的行高就被换成一个纯按文字行数估出来的值。而且估算固定用 `BASE_FONT_SIZE_PT`（11pt 常量）而不是这一格的真实字号，18pt 标题行会被算矮。
+
+**后果**：为了摆图片、留版心而特意拉高的行（在报价单/施工方案这类表里很常见），只要行内有一格被翻译，行高就被压回文字估算值，悬浮图片与版式被挤乱。用户没做任何要求改行高的动作，也没有任何日志提示。
+
+**复现**：已复现。脚本 d1_merge.py，lock_row_height=False 那一轮：夹具第 3 行手工设 `height=120`，A3 有一格被翻译，输出 `第3行 height = 61.6 (原 120)`。同一脚本 lock=True 时该行保持 120（锁行高模式不动行高），可见差异确实来自 `_auto_adjust_row_heights`。
+
+**修法**：`new_height` 改成 `max(new_height, old_height)` —— 自动行高的职责是「不让译文被截掉」，不是「把行压到刚刚好」。另外把估算基准从常量 `BASE_FONT_SIZE_PT` 换成该行内被改写格的实际最大字号（`styles.font_size(base_index)` 已经在 _process_sheet 里拿得到，顺手记进 row_texts 即可）。
+
+### 低-12 数据验证下拉列表里的中文选项永远不翻译，且扫描风险提示里一个字都没提
+
+`D1` · 置信度 high · new
+
+**位置**：`core/xlsx_patcher.py:1372`、`core/file_scanner.py:125`
+
+**机制**：写入端只遍历 `<sheetData>` 里的单元格，`<dataValidations>` 里 `formula1="甲,乙,丙"` 这种内联清单从来不在处理范围内；引用式清单（formula1 指向某个区域）里的选项因为在单元格里，反而会被翻译，于是同一份文件里两种下拉的行为不一致。file_scanner 的 `risk`（core/file_scanner.py:125）只披露 .xls 兼容转换，`FileItem` 也只有 image_count / shape_text_count / comment_count 三个「数得出来但不翻」的计数，下拉选项既不计数也不提示。
+
+**后果**：外方拿到的双语表，正文全是双语、点开下拉却是一串纯中文，而任务日志与扫描摘要都显示「一切正常」。批注和形状文字至少还在扫描摘要里报了数量、用户知道要自己补；下拉选项连这个知情权都没有。
+
+**复现**：已复现。脚本 d1_fidelity.py：夹具含 `DataValidation(type="list", formula1='"甲,乙,丙"')`，翻译前后 `dv` 快照完全一致（`['D2:D10|"甲,乙,丙"']`），且整个运行的 log_callback 只输出两条「分表已处理」，无任何提示。
+
+**修法**：最小成本先补知情权：在 `_scan_one_excel_file` 里数一遍 `<dataValidation type="list">` 且 formula1 为内联字面量、含 CJK 的条数，加进 `FileItem`（与 comment_count 同一套 None 语义）并在扫描摘要里报出来。真要翻的话属于新功能、要产品拍板：内联清单是逗号分隔的字符串，翻完还得保证不引入逗号、总长不超 255 字符，这两条约束不解决就会写出 Excel 打不开的文件。
 
 ---
 
@@ -1010,4 +1100,21 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 未重跑全量（按指示复用既定基线：pytest 1664 passed + 249 subtests，ruff/tsc/cargo clippy 干净）。本线是纯前端 TS 审查，未执行任何测试命令；核对手段为静态代码读取 + 跨文件比对（settings.ts vs config.py/settings.py 的字段范围、update-controller.ts 状态机逐分支读取、markdown.ts 全文读取确认无 innerHTML/无链接渲染）。
 
 本线大量既有前端逻辑（settings.ts 五个数值字段区间、领域 Prompt 拉取回退、update-controller.ts 的下载/安装/签名/磁盘满/lastCheckOk 状态机、markdown.ts 的发布说明渲染、settings.css/workspace.css/tokens.css 的暗色 token）在读码核对后确认与上一轮审计（CODE_AUDIT_2026-08-29 中-14/中-17/中-22/高-12/高-14）记录的修复状态一致，未发现新问题或回归，因此未逐条重复列为 finding：(1) settings.ts 里 word_batch 四个字段 + pdf.page_retry_attempts + pdf.page_generation_concurrency 的 min/max 已与 config.py 的 WORD_BATCH_*/PDF_PAGE_RETRY_ATTEMPTS_*/PDF_PAGE_CONCURRENCY_SAFETY_CAP 逐项核对一致（settings.ts:2598-2630 vs config.py:216-257）。(2) update-controller.ts 的 runUpdateCheck()/startInstall() 对“请求异常”与“200+status:error”两种失败分开记录 lastCheckOk，disk-full/signature/permission/network 四类诊断码分流清楚，失败文案统一带“当前版本没有被改动”，未发现中-22 类回归。(3) markdown.ts 全文读取确认发布说明渲染器完全不解析/不生成 `<a>`，[text](url) 语法只保留纯文本、丢弃链接地址，不存在 href 注入面，也没有任何 innerHTML 使用，维持“无 XSS 面”结论。(4) library.ts 的清洗建议“三件套”（常驻待复核提示、面板顶部失效汇总 staleCount、写入后逐行去向 outcomes）在零条/全部失效/部分失败三种边界下都有对应文案与 chip 展示，未发现新问题。(5) settings.css / workspace.css 未见硬编码颜色；app.css 里少量字面量色值（#fff、渐变、rgb(0 0 0/…) 阴影）都是画在纯色强调背景上的白字/白色圆点，或已经按 :root[data-theme="dark"] 显式覆盖过的渐变终止色，与 tokens.css 的 --surface 暗色值逐一核对数值一致，未发现暗色下看不清的组合。以下方向本线因预算已用去约 45 次工具调用、未及深入，供后续补查：settings.ts 里模型角色（cloud/local）切换与厂商预设联动的全部分支（只抽查了数值字段，没有走完整个角色矩阵）；library.ts 大数据量（万级）渲染路径的实测性能（本线与之前的 F1 都未覆盖，08-31 审计文档明确记了这一空档）；quickstart.ts、help.ts、model-pill.ts、dev-tauri-shim.ts 四个小文件只做了体量确认（89~186 行），未逐行核对。
+
+### D1 — Excel 翻译管线
+
+**基线与复现脚本**
+
+未跑全量（按指令复用给定基线 1664 passed + 249 subtests）。只跑了本板块相关文件：`./.venv/bin/python3 -m pytest -q tests/test_xlsx_patcher.py tests/test_audit_excel_fixes.py tests/test_excel_coverage.py` → 62 passed, 4 subtests passed in 0.69s（全绿）。所有复现脚本都先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import，并断言 `app_paths.get_app_data_dir()` 落在 /var/folders 下（实测输出 `/var/folders/y6/.../tmp8lbqsfkl`），全程未读写用户真实数据目录。
+
+复现脚本都在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/ 下：d1_perf_shared.py（共享公式 O(n²) 计时 + 夹具生成器）、d1_prof.py（cProfile 定位）、d1_waste.py（回填关闭时的白花钱）、d1_merge.py（合并格排版 + 锁行高触底 + 手工行高被压）、d1_fidelity.py（写回保真度全项对照）。未修改仓库任何文件，未 git add/commit。
+
+**已实测通过、无发现的项**（d1_fidelity.py 逐项对照翻译前后）：合并区、数据验证区域定义、条件格式、自动筛选、冻结窗格、超链接、批注内容、隐藏行/隐藏列、自定义数字格式（`#,##0.00\"元\"`）、打印区域、工作表保护、名称管理器、公式（缓存值为数字时不动）、keep_original_sheets 生成的 `_原文` 分表——全部原样保留。中-28 之外的其它 O(n²) 未发现（cProfile 里除 dependents 外没有超线性热点）。
+
+**因预算未及验证的项**（留给下一轮或后续代理）：
+1. `.xls` 路线（xls_converter）只做了代码走读，没有真 .xls 夹具实跑（本机无 xlwt，造 .xls 夹具成本高）。两处可疑但未证实：`convert_with_fallback` 把 xlrd 文本值直接喂给 `ws_out.cell(value=...)`，openpyxl 会把以 `=` 开头的**文本**当公式写、遇到非法控制字符（老 .xls 常见）会抛 IllegalCharacterError 让整个转换失败并丢弃产物；以及 `_xls_date_value` 还原成 date 后原表的自定义日期格式（如 `yyyy年m月d日`）会退成 openpyxl 默认格式。
+2. LibreOffice 路线（docs/LIBREOFFICE_XLS_ROUTE_2026-08-30.md）与超 65536 行、密码保护 .xls 均未触及。
+3. 数组公式 / 动态数组（`<f t=\"array\" ref=...>`）被改写成 inlineStr 后 spill 区的行为未构造夹具验证。
+4. 富文本（单格内多段不同格式）改写后格式统一丢失——机制确认（`_set_cell_inline_text` 整格重建为单个 `<t>`），但这大概率是产品已知代价，未列入 findings。
+5. 扫描/写回 key 一致性（关注点 6）只验证了公式格这一条路径（即高危那条），富文本与跨 sheet 同名场景未单独构造。
 
