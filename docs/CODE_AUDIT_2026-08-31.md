@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：5/17 条审查线回传，累计 14 条发现（高 3 / 中 5 / 低 6）。**
+**当前进度：6/17 条审查线回传，累计 24 条发现（高 6 / 中 11 / 低 7）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -17,10 +17,11 @@
 | C2 | 资源生命周期：临时文件、子进程、数据库连接、文件句柄 | 中 1、低 2 |
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
 | A1 | HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py | 高 1、低 1 |
+| G1 | 模型引擎 / 故障转移 / 调度 / Token 成本 | 高 3、中 6、低 1 |
 
 ---
 
-## 高危（3 条）
+## 高危（6 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -80,9 +81,51 @@
 3) `TaskHistoryStore.upsert` 的「全量读+全量重写」在记录变小之后成本自然下来；如果仍嫌 1 Hz 太密，可以把运行中任务的节流从 1 s 放宽到 3–5 s（状态变化仍然立即写，语义不变）。
 改完补一条测试：断言单条历史记录的 logs 长度有上限、且 GET /api/tasks 的报文里不含 logs。
 
+### 高-4 连接链判定「全部失效」后没有熔断，后续每个批次继续重拨已知全死的连接，二分把请求放大到 45 次/批
+
+`G1` · 置信度 high · new
+
+**位置**：`core/failover_engine.py:32`、`core/failover_engine.py:91`、`core/failover_engine.py:186`、`core/engine_dispatcher.py:737`
+
+**机制**：FailoverTranslationEngine._switch_from_locked 在 failover_candidates 返回空时只 `return False`，`_call_with_failover` 把原始异常原样抛出——`AllConnectionsExhaustedError`（failover_engine.py:32 定义）全仓库从未被 raise 过，是死代码。于是「整条链已全灭」这个信息从来没有传出去。上层 `_translate_batch_with_fallback` 收到的只是一个普通 503/超时，`_is_permanent_request_error` 判 False，于是照常二分重试；每个子节点又各自走一遍 failover（当前引擎已是耗尽状态，必然再失败），真实引擎里每个节点内部还有 tenacity 的 3 次尝试。单批 15 个二分节点 × 3 = 45 次 HTTP 请求，每次超时上限 CLOUD_REQUEST_TIMEOUT=120s。而且 self._exhausted 一旦集齐全部连接就再也不清空，后面每一个批次都从这个已死状态重新开始。
+
+**后果**：网关宕机 / DNS 挂掉 / 账号整体被封时，任务不是快速失败，而是长时间假死：8000 格文件约 400 批，每批 45 次 120s 超时请求，并发 10 也要跑到小时级；界面上只滚「Excel 有 N 条未能翻译」，从头到尾不会出现一句「所有连接都已失效」。用户唯一的出路是自己按停止。
+
+**复现**：已复现（g1_exhausted.py）：两条不同 Base URL 的连接都固定回 503，连续跑 5 个 8 条的批次，输出为 `after batch 1: cumulative engine dials = 16, exhausted=['c1','c2']` … `after batch 5: cumulative engine dials = 76`。即链路在第 1 批就已被判定全灭（exhausted 集齐两条），第 2～5 批仍各自重拨 15 次。测试里的 DeadEngine 是裸引擎，生产的 OpenAIEngine/ClaudeEngine 每次重拨内部还有 tenacity 3 次，实际是 45 次/批。
+
+**修法**：在 FailoverTranslationEngine 里落地 AllConnectionsExhaustedError：`_call_with_failover` 在 `_switch_after` 返回 False 时抛这个异常（把原异常挂 __cause__），并置一个 self._dead 标志，之后所有调用直接快速抛出、不再发请求。`_translate_batch_with_fallback` 把 AllConnectionsExhaustedError 归入 `_is_permanent_request_error` 同级处理——不二分、不重试，直接把剩余批次全部计未翻译并向上抛一个明确的「所有连接均已失效」终止信号，让 task_runner 停止提交后续批次。
+
+### 高-5 限流持续到阈值抛 ApiKeyTemporarilyUnavailableError 时，同一次 translate_texts 里已翻译并已计费的批次全部被丢弃
+
+`G1` · 置信度 high · new
+
+**位置**：`core/engine_dispatcher.py:690`、`core/engine_dispatcher.py:519`、`core/task_runner.py:2136`、`core/api_concurrency_control.py:310`
+
+**机制**：`_translate_batch_with_fallback` 对 ApiKeyTemporarilyUnavailableError 直接 `raise`（engine_dispatcher.py:690）。在云端路径里这个异常从线程池的 `future.result()`（engine_dispatcher.py:519 的 `while future_map:` 循环内）抛出，直接穿出 `translate_texts`，函数体内已经累积在局部变量 `results` 里的所有成功批次随栈一起消失，一条都没有返回给调用方。task_runner.py:2136 只把它转成 fatal_error_message 结束任务。更糟的是异常抛出时线程池 `__exit__` 还会 wait 等已提交的 future 跑完——那些请求照发照计费，结果同样进不了任何地方。api_concurrency_control.py:28-33 的注释写着「Failing the whole task on the next 429 threw away every request already paid for, so the run now waits out a grace window」——宽限窗口只是把这个丢弃推迟了 120 秒，丢弃路径本身一行没改。
+
+**后果**：上游持续限流两分钟，用户已经付过钱的几百上千条译文全部作废，任务以致命错误收场；下次续译要为同样的内容再付一次。这正好命中「停止后丢弃已付费成果」这条高危线。
+
+**复现**：已复现（g1_lostwork.py）：121 条文本、batch_size=10、concurrency=2，中间一条触发 ApiKeyTemporarilyUnavailableError。输出 `items actually sent to (and billed by) the model: 80` / `translations returned to the caller: 0 -> every paid batch discarded`。
+
+**修法**：不要让这个异常裸穿 translate_texts。在 `translate_texts` 的 `while future_map:` 里 try/except 捕获，记进 run_stats（新增一个 fatal 字段），停止 `_submit_next()`，把已收到的 `results` 正常返回；由 task_runner 读 stats 的 fatal 标志决定「部分完成 + 致命原因」而不是「全盘失败」。已翻译的部分要照常写盘和写 TM，未翻译的计入未翻译数，这样续译才只补差额。translate_texts_with_sources 同一处理。
+
+### 高-6 纯 429 限流会触发批次二分，对正在限流的端点反而把请求数放大一个数量级
+
+`G1` · 置信度 high · new
+
+**位置**：`core/engine_dispatcher.py:692`、`core/engine_dispatcher.py:737`、`core/api_concurrency_control.py:172`
+
+**机制**：`_translate_batch_with_fallback` 里限流的专用通道有一道硬上限 `concurrency_round < _MAX_CONCURRENCY_RETRY_ROUNDS`（=8）。跑满 8 轮之后（前 4 轮把并发从 10 降到 2，后 4 轮在最低档退避 2/4/8/16 秒），第 9 次失败就落到普通分支：429 不在 `_is_permanent_request_error` 的永久错误集合里，于是 `can_split` 成立，批次被一分为二重发。两个半批各自把 concurrency_round 重置为 0，又各自享有 8 轮限流重试 + 继续二分，三层二分共 15 个叶子节点。二分对限流毫无帮助——它不减少 token、只增加请求条数，等于在上游明确说「请求太多」的时候把请求数乘以 15。
+
+**后果**：上游持续限流时本地变成请求风暴，把限流窗口拖得更长，还会连累同一个 key 上的其他任务；最后这些请求要么全部失败（20 条全部原样保留），要么在 120 秒宽限期到点后抛致命错误（叠加上一条，已付费结果一起丢）。
+
+**复现**：已复现（g1_429split.py）：单个 20 条批次，引擎对每次调用都回 429（httpx.HTTPStatusError，body 为 OpenAI 风格 rate limit）。为了在秒级内数清请求把 `_backoff_sleep` 与 `_interruptible_sleep` 打桩为空。输出 `requests fired at an endpoint that answered 429 to every single one: 135` / `did the code SPLIT the batch under pure 429? -> yes | split retries recorded: 7` / `scheduler capacity walked to: 2`。生产环境退避是真实计时，但 8 轮上限一样会走到二分，只是时间被拉长。
+
+**修法**：在 `can_split` 的判据里排除限流：`can_split = ... and not is_api_concurrency_limit_error(exc)`。限流耗尽 8 轮后应当保持原批次不动，交给上层「这个 key 暂时不可用」的路径（或直接触发换连接），而不是拆批再打。顺带把 429 的重试上限从「轮数」改成「累计等待时长」，与 MINIMUM_CAPACITY_GRACE_SECONDS 对齐，避免两套计时各说各话。
+
 ---
 
-## 中危（5 条）
+## 中危（11 条）
 
 ### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
@@ -154,9 +197,93 @@
 
 **修法**：两条路选一条。轻量：给 `_settings_delta` 加一条列表特例——对元素带稳定主键的列表（connections 有 `id`）按 id 生成逐元素的增/删/改 delta，而不是整份 SET；`_apply_settings_delta` 对应按 id 合并，顺序变化仍记为整份 SET。稳妥：把 `check_model_role_connectivity` 的写盘窗口收窄——网络往返结束后重新 `load_settings()`，只把 availability_* 这几个字段写到目标连接上再保存，不要让一个跨秒级 I/O 的请求持有整份设置快照。推荐后者先落地（改动小、语义清楚），前者作为 delta 层的根治。
 
+### 中-6 自适应并发只降不升：一次瞬时 429 之后整段任务永久跑在 20% 速度，还会拖慢同组的其他任务
+
+`G1` · 置信度 high · new
+
+**位置**：`core/api_scheduler.py:214`、`core/api_scheduler.py:264`、`core/task_resources.py:303`、`core/task_resources.py:339`
+
+**机制**：`register_concurrency_limit_hit` 沿 build_adaptive_capacity_levels 的 0.8/0.6/0.4/0.2 阶梯单向下调 self.capacity，全模块没有任何回升路径——grep `restore|recover|raise` 在两个调度器上都是零命中，`set_capacity` 只在任务加入/退出时被调用。FairApiGroupScheduler 更进一步：容量是整个连接组共享的，任务 A 撞到的 429 直接把 B 的可用并发一起削掉；只有 `_reset_capacity_locked`（成员变动时）才会恢复。也就是说，只要在长任务的前几分钟遇到一次限流抖动，剩下的几小时都跑在最慢档。
+
+**后果**：8000 格文件约 400 批，并发 10 降到 2 意味着后续吞吐掉到 1/5，用户看到的是「越跑越慢而且再也不快起来」，且没有任何界面提示解释原因（限流通知每轮最多两条，之后只有心跳）。
+
+**复现**：已复现（g1_repro.py 段 (b)）：`WeightedApiScheduler(10)` 连打 6 次限流信号，输出 `hit1: reduced 10->8 … hit4: reduced 4->2 … hit5: unavailable`，随后执行 500 次完全成功的 acquire/release，`after 500 successful requests capacity: 2 (initial was 10)`，`any restore/raise API on scheduler? NONE`。组调度器同样：`add_task(A,8)+add_task(B,8)` → capacity 16，A 连撞 6 次后 `taskA's 429 burst lowered SHARED group capacity to: 3`。
+
+**修法**：加一条对称的回升路径：记录最近一次限流命中时间，在连续 N 次成功释放（或安静 60~120 秒）后沿同一阶梯回升一级，并 `_generation += 1` 让在途请求的旧信号被判为过期。回升要有上限（不超过 initial_capacity）和阻尼（回升步长小于下降步长），避免与上游限流窗口共振。
+
+### 中-7 Claude 引擎硬编码 max_tokens=8096，而连通性测试只发 8：输出上限 4096 的模型「测试全绿、每批 400、整份文档原样退回」
+
+`G1` · 置信度 high · new
+
+**位置**：`engines/claude_engine.py:74`、`core/connectivity_check.py:284`、`core/engine_dispatcher.py:730`、`core/model_catalog.py:14`
+
+**机制**：claude_engine.py:74 对所有 Claude 模型固定发 `max_tokens: 8096`。Anthropic 对 claude-3-opus / claude-3-haiku / claude-3-sonnet（以及不少第三方中转网关）的输出上限是 4096，超限直接 400 invalid_request_error。而 Claude 不在 OPENAI_COMPATIBLE_MODEL_PROVIDERS 里（model_catalog.py:14-22 没有 claude），模型名是用户手输的，没有任何白名单拦得住。连通性测试（connectivity_check.py:284）发的是 `max_tokens: 8`，必然通过。真正翻译时 400 落进 `_is_permanent_request_error`（400 在永久错误集合里），走 engine_dispatcher.py:730 的「不可重试，已停止拆分批次」——不重试、不二分、不换连接（400 被 classify_connection_failure 归为 transient，`should_switch_connection` 返回 False），整批原样退回。
+
+**后果**：用户在设置里填了一个老 Claude 模型，点「测试连接」显示绿色可用，跑翻译却一格都没翻，错误文案是「Excel 翻译请求不可重试：Client error '400 Bad Request'」，完全指不到「模型输出上限对不上」这个真因。
+
+**复现**：已复现（g1_repro.py 段 (a)）：MockTransport 模拟 Anthropic 对 max_tokens>4096 回 400（原文即 Anthropic 的真实报错措辞）。输出 `max_tokens actually sent: [8096]` / `result == source text? True` / `untranslated recorded: 3 | retries: 0` / 错误文案 `Excel 翻译请求不可重试，已停止拆分批次：Client error '400 Bad Request'`。同一模型走 connectivity_check 的 max_tokens=8 则通过。
+
+**修法**：两处一起改：(1) claude_engine 的 max_tokens 按批次预估输出量动态给，并给一个保守下限（比如 max(2048, 预估×1.3)），或从模型名映射一张上限表；(2) 更重要的是连通性测试要用与真实翻译一致的 max_tokens，否则测试绿灯没有任何保证价值；(3) 400 响应体里带 `max_tokens` 关键字时，把 humanize 后的文案改成「所选模型的输出上限低于本次请求」。
+
+### 中-8 Claude 响应只取 content[0]，首块不是 text 就静默返回空串，一个 30 条批次要烧掉 15 次真实计费的 200 OK 才放弃
+
+`G1` · 置信度 high · new
+
+**位置**：`engines/claude_engine.py:91`、`engines/base_engine.py:99`、`core/engine_dispatcher.py:737`
+
+**机制**：`_extract_claude_text` 只看 `content[0]`，且末尾是 `return text if isinstance(text, str) else ""`——首块是 thinking / redacted_thinking / tool_use 等非 text 块时，真正的译文块（content[1]）被整个丢掉，函数返回空串而不是报错。空串进 `parse_response` 触发 JSONDecodeError → ValueError。注意 parse_response 是在 `_call_api` 之外调用的，所以 tenacity 不会重试（这点是对的），但 dispatcher 的三层二分会把同一批文本重发 15 次，每一次上游都返回 200 并照常计费。
+
+**后果**：这 15 次调用是成功计费的（不是错误响应），token 全部白花，最终这一批还是 100% 原样保留计未翻译。对第三方中转网关尤其现实——不少网关会对特定模型强制打开思考模式，用户这边看到的只是「翻译全失败但账单在涨」。
+
+**复现**：已复现（g1_amplify.py）：MockTransport 让 Claude 返回 `content=[{type:thinking,...},{type:text,text:'["T0",...]'}]`，30 条一批。输出 `thinking-block first: paid API calls for ONE 30-item batch = 15` / `all untranslated? True | untranslated: 30`。对照组：持续 HTTP 500 的同一批是 45 次（tenacity 3 × 二分 15）。
+
+**修法**：`_extract_claude_text` 改成遍历 content、拼接所有 `type == "text"` 的块；一个 text 块都没有时抛 ValueError 并把 stop_reason / 首块 type 写进异常文案，而不是返回空串。顺便校验 `stop_reason == "max_tokens"` 时给出「输出被截断」的明确错误，别让它伪装成解析失败。
+
+### 中-9 Responses API（asxs 网关，生产实际路径）的 SSE 解析不看事件 type、也不校验终态：非正文 delta 会污染 JSON，失败/截断事件被当成功
+
+`G1` · 置信度 high · regression-of-prior-audit
+
+**位置**：`engines/openai_engine.py:38`、`engines/openai_engine.py:186`
+
+**机制**：`_extract_text_from_responses_events` 完全不读 `data["type"]`，只要事件里有字符串 `delta` 就拼进正文。Responses API 里带 `delta` 字段的事件不止 `response.output_text.delta`——还有 `response.reasoning_summary_text.delta`、`response.refusal.delta`、`response.function_call_arguments.delta` 等，全部会被无差别拼进去。同时终态事件一个都不校验：`response.failed`、`response.incomplete`（含 max_output_tokens 截断）、以及流被中途掐断都不会被识别，只要拼出来的字符串非空，`_call_responses_api` 就当成功返回。payload 里也没有设 max_output_tokens，截断由网关默认值决定。
+
+**后果**：轻则每批解析失败 → 三层二分 15 次重发（付 15 次钱后整批未翻译），重则一段被截断的响应恰好能解析（例如只丢了尾部若干项）时，长度校验只在 parse_response 里按数组长度卡——长度对不上会报错，但污染型（reasoning 文本 + 正确 JSON 拼接）一律解析失败。这条路是当前生产实际在走的路由（上一轮高-9 就出在这里）。
+
+**复现**：已复现（g1_repro.py 段 (c)）：喂入含 `response.reasoning_summary_text.delta` 的事件流，`extracted: 'Let me think about these terms.\n["Valve", "Flange"]'`、`parses as JSON? False`。中途掐断（无 response.completed）→ `extracted: '["Valve", "Fla' | accepted as success? True`。`response.failed` 事件在完整正文之后 → 仍返回正文、失败事件被忽略。`response.incomplete(max_output_tokens)` → 返回半截 JSON。
+
+**修法**：按 type 白名单收 delta（只收 `response.output_text.delta`，done 只认 `response.output_text.done`）；显式处理 `response.failed` / `response.error` / `response.incomplete`，抛带上游 code/message 的异常；流结束时若没见到 `response.completed`（或 output_text.done）就判为截断并抛错，而不是把半截正文当成功。另外给 payload 补一个显式的 max_output_tokens，别让网关默认值决定截断点。
+
+### 中-10 全仓库从不读取 Retry-After 响应头，退避节奏完全无视上游明确给出的等待时间
+
+`G1` · 置信度 high · new
+
+**位置**：`core/api_concurrency_control.py:308`、`core/api_concurrency_control.py:382`、`engines/openai_engine.py:141`、`core/engine_dispatcher.py:65`
+
+**机制**：限流退避一律用本地公式：`MINIMUM_CAPACITY_BASE_DELAY * 2**attempt`（封顶 30s）和 `_backoff_sleep`（封顶 8s）。`_collect_response_texts`（api_concurrency_control.py:382）只从响应里取 status_code / text / content / json()，`headers` 一次都没碰过。全仓库 grep `retry.after|retry_after` 只有一句无关的英文注释命中。OpenAI/Anthropic/DashScope 在 429 和 529 上都会给 Retry-After 或 x-ratelimit-reset-*，这些信息被完整丢弃。
+
+**后果**：上游说「60 秒后再来」，本地 2 秒后就重打，把限流窗口不断刷新；反过来上游说「1 秒即可」时又白等 30 秒。叠加上面的 8 轮上限，本地更容易提前走到二分（第 3 条）和 120 秒宽限到点的致命错误（第 2 条）——这两条的触发概率都被这一项直接抬高。
+
+**复现**：机制确认：`grep -rni "retry.after|retry_after" --include='*.py' --include='*.ts' --include='*.rs'` 在非 .claude 路径下只命中 core/api_concurrency_control.py:185 的一句英文注释，无任何读取代码；`_collect_response_texts` 的属性遍历列表为 ('text','content')，不含 headers。
+
+**修法**：在 `_collect_exception_texts` 旁加一个 `extract_retry_after(exc) -> float | None`，读 `exc.response.headers` 的 Retry-After（秒数与 HTTP-date 两种格式都要认）以及 x-ratelimit-reset-requests/tokens；`_wait_out_minimum_capacity_limit` 与 `_backoff_sleep` 取 `max(本地退避, 上游给的秒数)`，并对上游值设一个上限（比如 120s）防止恶意/异常头把任务挂死。
+
+### 中-11 每批重发的系统提示词比正文本身还长：8000 格文件里 60% 的输入字符是重复的固定提示
+
+`G1` · 置信度 high · new
+
+**位置**：`engines/base_engine.py:23`、`core/engine_dispatcher.py:41`、`core/engine_dispatcher.py:411`、`config.py:207`
+
+**机制**：每个批次都把完整的 system（领域提示 225 字符 + TASK_INSTRUCTION 372 字符 = 599 字符）重新发一遍。批次大小受两道限制：CHUNK_CLOUD_DEFAULT=20 条（config.py:207，UI 上限 30）和 `_EXCEL_CLOUD_BATCH_CHAR_BUDGET=3200` 字符。实测典型 Excel 词条平均约 20 字符，所以卡死在「20 条」这道限制上，每批正文只有约 400 字符——3200 的字符预算连 1/8 都没用到。Claude 侧也没有任何 cache_control（claude_engine.py 全文无该字段），OpenAI 侧 599 字符约 500 token，低于 1024 token 的自动缓存门槛，所以两家的 prompt 缓存都吃不到。
+
+**后果**：8000 格文件产生 400 个批次，系统提示词累计重发 239,600 字符，正文只有 158,890 字符——输入 token 里 60.1% 是重复的模板。把每批条数放到 40、或把字符预算真正用满，可以直接砍掉三到四成的输入 token 开销。用户为每次调用付费，这是可直接换算成钱的浪费。
+
+**复现**：已复现（g1_prompt.py）：`system prompt chars: 225` / `task instruction chars: 372` / `full system chars: 599`；8000 条平均 19.9 字符的词条经 `_build_text_batches(max_items=20, max_chars=3200)` 得 `batches: 400, avg items/batch: 20.0`；`system-prompt chars resent: 239600 vs body chars: 158890 -> prompt overhead ratio: 60.1%`；`cache_control present in claude_engine? False`。
+
+**修法**：这项涉及批次大小这个用户可见设置，建议先出数字给用户拍板。技术侧的具体动作：把 CHUNK_CLOUD_MAX 从 30 提到 60~80（现代模型上下文早已不是瓶颈，3200 字符预算仍然兜底），默认值从 20 提到 40；同时因为批次变大会放大单批失败的影响面，要配套第 3 条（429 不二分）和第 1 条（耗尽熔断）一起改。Claude 侧若把 system 补齐到 1024 token 以上再加 cache_control 反而更贵，不建议。
+
 ---
 
-## 低危（6 条）
+## 低危（7 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -242,6 +369,20 @@
 **复现**：已复现。scratchpad/a1_cors401.py 输出：`middleware order (outermost first): ['BaseHTTPMiddleware', 'CORSMiddleware']`；带 Origin: tauri://localhost 且 token 正确 → `200 ACAO= tauri://localhost`；token 错误 → `401 ACAO= None body= ''`；OPTIONS 预检 → `200 ACAO= tauri://localhost`；路由内 404 → `404 ACAO= tauri://localhost`。
 
 **修法**：两选一。简单的：把 CORSMiddleware 改成在 token 中间件之后注册（即调换 app.py:404 与 :414 两块的顺序），让 CORS 包在最外层，401 也就带上头了。稳妥的：token 中间件不再自己造 Response，改成 `raise HTTPException(401, ...)` 之外的路径不好走，那就手动给这条 401 补上 `Access-Control-Allow-Origin`（按 `_allowed_origins()` 匹配请求的 Origin）并把 body 换成 `_json_error(401, "鉴权令牌不匹配，请重启应用。", reason="invalid_token")`，前端才能按 reason 分支。顺带补一条测试断言 401 带 ACAO 且 body 有 reason。
+
+### 低-7 五个引擎对超时/重试/永久错误/连接复用各写各的，Ollama 一路最脆：401 也重试、chat() 完全不重试、失败 chunk 会连带丢弃同批已成功的结果
+
+`G1` · 置信度 high · new
+
+**位置**：`engines/ollama_engine.py:108`、`engines/ollama_engine.py:88`、`engines/ollama_engine.py:141`、`engines/openai_engine.py:134`、`engines/claude_engine.py:60`、`engines/claude_engine.py:78`
+
+**机制**：差异表：(a) 重试判据——OpenAI/Claude 用 tenacity + `is_retryable_engine_error`（400/401/403/404 等不重试），Ollama 是手写 for 循环（ollama_engine.py:108-121），对任何异常都重试满 RETRY_MAX_ATTEMPTS，包括永远不会变的 401/404，而且最后一次失败后仍会 `await asyncio.sleep(1.5**attempt)` 白等；(b) chat() ——OpenAI/Claude 的 chat 走带重试的 `_call_api`，Ollama 的 chat（ollama_engine.py:141）直接调 `_call_ollama`，一次失败就抛，同一个引擎两条路径重试策略相反；(c) 部分成功——Ollama 的 `_translate_async` 在任一 chunk 失败时 `raise errors[0]`，把同批已经成功的 chunk 结果（merged）整个丢掉，交给 dispatcher 二分重译（本地不花钱，但重复算力和耗时是实打实的）；(d) 连接复用——三个引擎（含 model_catalog、connectivity_check）都是每次调用 `with httpx.Client(...)` 新建客户端，没有任何共享连接池，400 个批次 = 400 次 TCP+TLS 握手；(e) 停止响应——没有任何引擎接受 should_stop，一个已发出的请求在 120s 超时前无法中断，停止只能等在途请求自己结束。
+
+**后果**：本地模型路径下配置写错（模型名不存在）会硬等三轮重试加退避才报错；Ollama 的 chat 路径（复核/清洗等结构化调用）一次网络抖动就整条失败，与 translate_batch 的行为不一致，排查时很难对上；每批新建 TLS 连接在远端 API 上按每次 100~300ms 计，400 批就是 40~120 秒纯握手开销。
+
+**复现**：机制确认：逐行比对四个引擎文件（ollama_engine.py:108-121 的 for 循环无异常类型判断、:141-144 的 chat 无重试、:88-102 的 gather 后 `raise errors[0]` 丢弃 merged；openai_engine.py:134/222 与 claude_engine.py:60/78 的 `with httpx.Client(...)` 均在调用内构造）。未构造 Ollama 服务端做端到端复现。
+
+**修法**：三件事，按性价比排序：(1) Ollama 的重试循环接上 `is_retryable_engine_error`，并把最后一次失败后的 sleep 去掉；chat() 复用同一条重试路径。(2) 把 `httpx.Client` 提到引擎实例上（引擎本身就是每任务构造一次），或用一个模块级的共享 Client + limits，拿回 keep-alive。(3) Ollama 的 `_translate_async` 改成返回 (merged, errors)，让 dispatcher 只重译失败的 chunk，而不是整批重来。
 
 ---
 
@@ -425,4 +566,26 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - 板块 6 的「响应体 vs 前端类型契约」只对了 TaskStatus / TaskList / PdfPagesSnapshot 三组，**没有**逐字段核对 settings / model-roles / maintenance / diagnostics 这几组更大的报文与 ui/src 里对应的 interface。上一轮报的 `TaskStatus.result` 那条现在已在 api-client.ts:20 用注释显式改成可选，属于已修。
 - 板块 3 的并发只做了代码路径确认（`_start_prepared` 用 `expected_revision` 做乐观并发，双发 POST /api/tasks 会被 reserve_task 的 revision 校验拦成 409 stale），**没有**真起两个线程压测。
 - `list_tasks()` 在持有全局 `self._lock` 的情况下对每个活动任务做全量 logs 拷贝+脱敏（8000 行实测 33 ms），会和 start/stop/pause 抢同一把锁——这是发现 1 的同一个根因，修了日志上限就一起消失，所以没有单列。
+
+### G1 — 模型引擎 / 故障转移 / 调度 / Token 成本
+
+**基线与复现脚本**
+
+未跑全量（按纪律沿用主会话基线 1664 passed + 249 subtests）。本线全部结论走独立复现脚本，均在 `TRANSLATOR_APP_DATA_DIR` 指向 mktemp 的隔离环境下执行（每个脚本开头断言 config.APP_DATA_DIR 落在 /var/folders，实测输出 `/var/folders/y6/.../tmpzu7bu3b7`），未读也未写用户真实数据目录。脚本位于 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：g1_probe.py（429 分类矩阵，7 种响应体全部正确识别，无发现）、g1_repro.py（Claude max_tokens / 调度器容量 / SSE 解析）、g1_amplify.py（重试放大计数）、g1_exhausted.py（连接链耗尽后行为）、g1_429split.py（429 下的批次二分计数）、g1_lostwork.py（致命错误丢弃已付费结果）、g1_prompt.py（系统提示词开销实测）。
+
+**排除掉的假阳性（都实测证伪过，不要再查）：**
+1. 「裸 429 因为响应体没有关键词而被漏判成普通错误」——不成立。g1_probe.py 跑了 7 种 429 响应体（空 body、OpenAI code-only、智谱中文并发限制、通用中文流量提示、DashScope Throttling.RateQuota、空 JSON、HTML 网关页），`is_api_concurrency_limit_error` 全部返回 True。原因是 httpx 的 `raise_for_status()` 异常文案本身就带 "Too Many Requests"，正好命中 `\btoo\s+many\s+requests\b`。唯一漏判的是「自定义异常只带 status_code=429、文案里无任何关键词」，这在当前五个引擎里不存在（都走 httpx）。
+2. 「同一文档内重复文本没去重、被翻译两次」——不成立。task_runner.py:718/1034/1196 用 `global_unique_texts: set[str]` 做了跨文件全局去重，日志也明说「相同内容只翻一次」。
+3. 「二分时前半批已成功的结果丢失」——不成立。engine_dispatcher.py:758-771 的 left/right 是 `{**left, **right}` 合并，成功的一半会保留。
+4. 「解析层把 dict 用 str() 写进单元格 / null 转空串」——上一轮已修干净，base_engine.py:99-118 现在对 dict/list/None 一律抛 ValueError，实测行为正确。
+5. 「候选连接构建失败牵连整个 endpoint」（上一轮中-9）——已修干净，failover_engine.py:196-214 改成了循环跳过单个候选，不再牵连同网关其他连接。
+6. 「FailoverTranslationEngine 的 exhausted 状态跨任务共享」——不成立。build_role_engine 每个任务各建一个实例，`_exhausted` 是实例级的。
+
+**未及验证、留给下一轮的（预算到了）：**
+- `FairApiGroupScheduler._can_acquire_locked` 的 FIFO 队头阻塞：队头任务的 weight 装不下时，后面权重更小、本可放行的任务也一并卡住，直到有 lease 释放。看代码是成立的，但没构造多线程场景压出来，不敢按已复现报。
+- `core/model_throughput.py`、`core/model_api_identity.py`、`core/model_roles.py`（1011 行）只做了 grep 级扫描，没有逐段读。
+- `_estimate_api_request_weight` 的权重换算（4000 字符 = 1 槽）与真实 provider 限额之间是否有量纲错配，没有验证。
+- OpenAI Chat Completions 路径不校验 `finish_reason == "length"`：截断响应会伪装成解析失败并触发 15 次二分，机制与第 6 条同型，但因为 payload 没设 max_tokens、由服务端默认值决定，我没能构造出确定的触发条件，故未单列。
+
+**跑批建议：** 第 1、2、3 条互相咬合（耗尽不熔断 → 二分放大 → 宽限到点丢弃已付费结果），修的时候建议放同一个集群、一次改完再验，分开改容易出现「熔断加了但丢弃路径还在」这种半吊子状态。
 
