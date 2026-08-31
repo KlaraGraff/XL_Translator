@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：7/17 条审查线回传，累计 28 条发现（高 9 / 中 12 / 低 7）。**
+**当前进度：8/17 条审查线回传，累计 30 条发现（高 10 / 中 13 / 低 7）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -16,13 +16,14 @@
 | C1 | 并发、线程、锁、竞态、死锁 | 高 1、中 2 |
 | C2 | 资源生命周期：临时文件、子进程、数据库连接、文件句柄 | 中 1、低 2 |
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
+| E1 | 错误处理、异常吞没、用户可见错误文案 | 高 1、中 1 |
 | A1 | HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py | 高 1、低 1 |
 | G1 | 模型引擎 / 故障转移 / 调度 / Token 成本 | 高 3、中 6、低 1 |
 | T1 | 翻译质量链路：过滤、覆盖率、残留、语言识别、续译 | 高 3、中 1 |
 
 ---
 
-## 高危（9 条）
+## 高危（10 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -52,7 +53,21 @@
 
 **修法**：settings.py:1500 改成 `SETTINGS_PATH.read_bytes().decode("utf-8")` 并把 `except OSError` 扩成 `except OSError` + `except (UnicodeDecodeError, ValueError)` 两支：解码失败属于「内容坏了但文件读得出来」，应当归到 `unusable`（可以备份后重建），而不是逃逸。顺手把 BOM 一并处理掉（`decode("utf-8-sig")` 或读前剥 `﻿`）——目前带 BOM 的文件被判 unusable 直接重建，用户配置白丢一次，虽然有备份但完全没必要。
 
-### 高-3 任务日志没有任何上限，整份写进 task_history.json，并被 GET /api/tasks 每 4 秒原样回吐——历史文件与轮询报文一起线性膨胀到 10 MB 量级
+### 高-3 OpenAI 兼容引擎把已经答对、已经付费的译文当解析失败静默丢弃，报错文案里唯一的线索也被擦成空白
+
+`E1` · 置信度 high · new
+
+**位置**：`engines/openai_engine.py:236`、`engines/base_engine.py:104-122`
+
+**机制**：_extract_chat_completion_text 对 message.content 只接受纯字符串：`return content if isinstance(content, str) else ""`。只要某个 OpenAI 兼容中转/模型把 content 返回成非字符串（最常见是新协议下的 content-parts 数组，如 `[{"type":"text","text":"..."}]`），这一行就把模型已经答出来的译文原地丢掉换成空串。空串被传进 parse_response 后，json.loads("") 解析失败，抛出的 ValueError 文案是「OpenAI 响应解析失败...大模型原始内容：」，冒号后面是空的——用户和调试日志看到的都不是真实原因（content 格式不被本程序识别），而是一句被自己清空过的空话。DashscopeEngine / ZhipuEngine 都继承 OpenAIEngine 的同一条路径，同样会中招。
+
+**后果**：用户看到一句「解析失败，原始内容：（空）」，既不知道是接口坏了还是本程序识别不了这种格式，也没法把这段报错拿去问客服；更关键的是这次 API 调用已经产生真实的模型输出（也就是已经真金白银付费成功），却被当成失败整批丢弃、计入未翻译，用户要重新发起才能拿到译文，等于重复付费。
+
+**复现**：已复现：脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_openai_content_list.py，mock `_post_json` 返回 `content=[{"type":"text","text":"这是应该出现的译文"}]`（模拟模型已经正确回答），实测 `translate_batch` 抛出 `ValueError: OpenAI 响应解析失败 (无法匹配为包含 1 条记录的数组)，大模型原始内容：`，原始内容字段确认为空，尽管「模型」实际已经给出了译文。另确认此 ValueError 不带 status_code，engine_dispatcher 层面是否会为它重跑整批（可能造成二次付费）不在本文件范围内未查证。
+
+**修法**：_extract_chat_completion_text 遇到非字符串 content 时不要直接转空串：先尝试从数组里按 type=="text" 拼出正文，实在提取不到再抛异常，且异常文案里带上 `repr(content)[:200]` 之类的真实原始返回，而不是让 parse_response 拿着空字符串报出一句自己都解释不清的话。
+
+### 高-4 任务日志没有任何上限，整份写进 task_history.json，并被 GET /api/tasks 每 4 秒原样回吐——历史文件与轮询报文一起线性膨胀到 10 MB 量级
 
 `A1` · 置信度 high · new
 
@@ -82,7 +97,7 @@
 3) `TaskHistoryStore.upsert` 的「全量读+全量重写」在记录变小之后成本自然下来；如果仍嫌 1 Hz 太密，可以把运行中任务的节流从 1 s 放宽到 3–5 s（状态变化仍然立即写，语义不变）。
 改完补一条测试：断言单条历史记录的 logs 长度有上限、且 GET /api/tasks 的报文里不含 logs。
 
-### 高-4 连接链判定「全部失效」后没有熔断，后续每个批次继续重拨已知全死的连接，二分把请求放大到 45 次/批
+### 高-5 连接链判定「全部失效」后没有熔断，后续每个批次继续重拨已知全死的连接，二分把请求放大到 45 次/批
 
 `G1` · 置信度 high · new
 
@@ -96,7 +111,7 @@
 
 **修法**：在 FailoverTranslationEngine 里落地 AllConnectionsExhaustedError：`_call_with_failover` 在 `_switch_after` 返回 False 时抛这个异常（把原异常挂 __cause__），并置一个 self._dead 标志，之后所有调用直接快速抛出、不再发请求。`_translate_batch_with_fallback` 把 AllConnectionsExhaustedError 归入 `_is_permanent_request_error` 同级处理——不二分、不重试，直接把剩余批次全部计未翻译并向上抛一个明确的「所有连接均已失效」终止信号，让 task_runner 停止提交后续批次。
 
-### 高-5 限流持续到阈值抛 ApiKeyTemporarilyUnavailableError 时，同一次 translate_texts 里已翻译并已计费的批次全部被丢弃
+### 高-6 限流持续到阈值抛 ApiKeyTemporarilyUnavailableError 时，同一次 translate_texts 里已翻译并已计费的批次全部被丢弃
 
 `G1` · 置信度 high · new
 
@@ -110,7 +125,7 @@
 
 **修法**：不要让这个异常裸穿 translate_texts。在 `translate_texts` 的 `while future_map:` 里 try/except 捕获，记进 run_stats（新增一个 fatal 字段），停止 `_submit_next()`，把已收到的 `results` 正常返回；由 task_runner 读 stats 的 fatal 标志决定「部分完成 + 致命原因」而不是「全盘失败」。已翻译的部分要照常写盘和写 TM，未翻译的计入未翻译数，这样续译才只补差额。translate_texts_with_sources 同一处理。
 
-### 高-6 纯 429 限流会触发批次二分，对正在限流的端点反而把请求数放大一个数量级
+### 高-7 纯 429 限流会触发批次二分，对正在限流的端点反而把请求数放大一个数量级
 
 `G1` · 置信度 high · new
 
@@ -124,7 +139,7 @@
 
 **修法**：在 `can_split` 的判据里排除限流：`can_split = ... and not is_api_concurrency_limit_error(exc)`。限流耗尽 8 轮后应当保持原批次不动，交给上层「这个 key 暂时不可用」的路径（或直接触发换连接），而不是拆批再打。顺带把 429 的重试上限从「轮数」改成「累计等待时长」，与 MINIMUM_CAPACITY_GRACE_SECONDS 对齐，避免两套计时各说各话。
 
-### 高-7 自动源语言预检没定出语言就回落 zh、多文件批次全局只取第一个语言，日/韩文件在补译模式下整份被判 ignored 不译
+### 高-8 自动源语言预检没定出语言就回落 zh、多文件批次全局只取第一个语言，日/韩文件在补译模式下整份被判 ignored 不译
 
 `T1` · 置信度 high · new
 
@@ -152,7 +167,7 @@ source_lang=en  summary={'covered':0,'source_only':0,'ignored':4}   ← 连假�
 
 **修法**：两处改：(1) 语言预检结果按文件保留而不是拍平成全局一个值——`file_language_preflights` 本来就是 per-file 的，`_rebuild_coverage_plans_after_preflight` / `_apply_deferred_resume_baselines` 应按 `result.source_langs[0]` 逐文件取源语言，而不是共用 `detected_sources[0]`；(2) 预检一条语言都没定出来时不要静默回落 zh：补译模式下应把该文件的源语言判定标成未知，并让 `_is_source_script_text` 在未知源语言 + 含假名/谚文/汉字时按「待译」处理（宁可多翻一次，也不要整份原样交付），同时在任务日志里出一条 WARN 而不是只在汇总行写「实际源语言=未确定」。
 
-### 高-8 续译底稿资格核查只查「源文件新增内容」，不查「源文件删掉的内容」——用户删掉的段落/行原样留在新译文里
+### 高-9 续译底稿资格核查只查「源文件新增内容」，不查「源文件删掉的内容」——用户删掉的段落/行原样留在新译文里
 
 `T1` · 置信度 high · new
 
@@ -181,7 +196,7 @@ source_lang=en  summary={'covered':0,'source_only':0,'ignored':4}   ← 连假�
 
 **修法**：在 `baseline_missing_source_texts` 里加反向核查：消耗完源文件全部 source_only 文本后，检查底稿多重集里是否还有**未被消耗、且属于源文段（非译文段）**的剩余项——Excel 按 (sheet, 源文半边) 计，Word 按段落源文半边计。有剩余就说明源文件删过内容，跟新增一样判 diverged 拒用底稿。给用户的文案也要分两种说法：「多了 N 处」/「少了 N 处」，别一律写成「多了」。若担心误杀（底稿里的译文半边被误算成源文），可以先只对 Excel 的整行/整表消失和 Word 的整段消失做检查，阈值放在「底稿里有源文半边但源文件里一次都没出现」这一条上。
 
-### 高-9 自定义目标语言（繁体中文/粤语/日语变体）不在残留豁免表里，正确译文被判「残留中文」并被强制重置回原文
+### 高-10 自定义目标语言（繁体中文/粤语/日语变体）不在残留豁免表里，正确译文被判「残留中文」并被强制重置回原文
 
 `T1` · 置信度 high · new
 
@@ -211,7 +226,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 ---
 
-## 中危（12 条）
+## 中危（13 条）
 
 ### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
@@ -283,7 +298,21 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：两条路选一条。轻量：给 `_settings_delta` 加一条列表特例——对元素带稳定主键的列表（connections 有 `id`）按 id 生成逐元素的增/删/改 delta，而不是整份 SET；`_apply_settings_delta` 对应按 id 合并，顺序变化仍记为整份 SET。稳妥：把 `check_model_role_connectivity` 的写盘窗口收窄——网络往返结束后重新 `load_settings()`，只把 availability_* 这几个字段写到目标连接上再保存，不要让一个跨秒级 I/O 的请求持有整份设置快照。推荐后者先落地（改动小、语义清楚），前者作为 delta 层的根治。
 
-### 中-6 自适应并发只降不升：一次瞬时 429 之后整段任务永久跑在 20% 速度，还会拖慢同组的其他任务
+### 中-6 Ollama 引擎手写的重试循环不判断错误能否重试，把「模型名填错」这类永久性配置错误当瞬时故障重试三次
+
+`E1` · 置信度 high · new
+
+**位置**：`engines/ollama_engine.py:110-120`
+
+**机制**：openai_engine.py / claude_engine.py 都用 tenacity 的 `@retry(..., retry=retry_if_exception(is_retryable_engine_error))`，命中 400/401/402/403/404/405/410/422 这类永久性错误时第一次失败就放弃重试、立即把真实原因交回上层（base_engine.py:50 的 _NON_RETRYABLE_STATUS 就是为此设的）。但 ollama_engine.py 的 `_translate_chunk` 是独立手写的 `for attempt in range(RETRY_MAX_ATTEMPTS): except Exception` 循环，完全没有导入也没有调用 is_retryable_engine_error，任何异常一律当瞬时故障重试到底。
+
+**后果**：本地模型名填错、Ollama 服务鉴权被拒等这类重试也不会自愈的场景下，用户要多等 3 次退避（实测约 4.8 秒）才能看到真实报错，期间日志连打三条「第 N 次重试」的警告，容易让人误以为是网络抖动而去调网络设置，而不是去检查模型名/权限——正是关注点 5 里点名的「重试掩盖配置错误」。本地模型不花钱，所以只是体验问题，不是资金问题，故定为中危。
+
+**复现**：已复现：脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_ollama_retry.py，把 `_call_ollama` 替换为始终抛出 `status_code=404`（"model 'bogus' not found"）的异常，实测 `translate_batch` 耗时 4.76 秒、重试 3 次后才把原始异常抛给调用方；对照 base_engine.is_retryable_engine_error(同一个 404 异常) 返回 False，说明 openai/claude 引擎在同等场景下会立即放弃重试。
+
+**修法**：`_translate_chunk` 的 except 分支里先调用 `is_retryable_engine_error(e)`，不可重试就直接 break/reraise，和 openai_engine/claude_engine 保持一致的策略，不必接入 tenacity，一行判断即可。
+
+### 中-7 自适应并发只降不升：一次瞬时 429 之后整段任务永久跑在 20% 速度，还会拖慢同组的其他任务
 
 `G1` · 置信度 high · new
 
@@ -297,7 +326,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：加一条对称的回升路径：记录最近一次限流命中时间，在连续 N 次成功释放（或安静 60~120 秒）后沿同一阶梯回升一级，并 `_generation += 1` 让在途请求的旧信号被判为过期。回升要有上限（不超过 initial_capacity）和阻尼（回升步长小于下降步长），避免与上游限流窗口共振。
 
-### 中-7 Claude 引擎硬编码 max_tokens=8096，而连通性测试只发 8：输出上限 4096 的模型「测试全绿、每批 400、整份文档原样退回」
+### 中-8 Claude 引擎硬编码 max_tokens=8096，而连通性测试只发 8：输出上限 4096 的模型「测试全绿、每批 400、整份文档原样退回」
 
 `G1` · 置信度 high · new
 
@@ -311,7 +340,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：两处一起改：(1) claude_engine 的 max_tokens 按批次预估输出量动态给，并给一个保守下限（比如 max(2048, 预估×1.3)），或从模型名映射一张上限表；(2) 更重要的是连通性测试要用与真实翻译一致的 max_tokens，否则测试绿灯没有任何保证价值；(3) 400 响应体里带 `max_tokens` 关键字时，把 humanize 后的文案改成「所选模型的输出上限低于本次请求」。
 
-### 中-8 Claude 响应只取 content[0]，首块不是 text 就静默返回空串，一个 30 条批次要烧掉 15 次真实计费的 200 OK 才放弃
+### 中-9 Claude 响应只取 content[0]，首块不是 text 就静默返回空串，一个 30 条批次要烧掉 15 次真实计费的 200 OK 才放弃
 
 `G1` · 置信度 high · new
 
@@ -325,7 +354,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：`_extract_claude_text` 改成遍历 content、拼接所有 `type == "text"` 的块；一个 text 块都没有时抛 ValueError 并把 stop_reason / 首块 type 写进异常文案，而不是返回空串。顺便校验 `stop_reason == "max_tokens"` 时给出「输出被截断」的明确错误，别让它伪装成解析失败。
 
-### 中-9 Responses API（asxs 网关，生产实际路径）的 SSE 解析不看事件 type、也不校验终态：非正文 delta 会污染 JSON，失败/截断事件被当成功
+### 中-10 Responses API（asxs 网关，生产实际路径）的 SSE 解析不看事件 type、也不校验终态：非正文 delta 会污染 JSON，失败/截断事件被当成功
 
 `G1` · 置信度 high · regression-of-prior-audit
 
@@ -339,7 +368,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：按 type 白名单收 delta（只收 `response.output_text.delta`，done 只认 `response.output_text.done`）；显式处理 `response.failed` / `response.error` / `response.incomplete`，抛带上游 code/message 的异常；流结束时若没见到 `response.completed`（或 output_text.done）就判为截断并抛错，而不是把半截正文当成功。另外给 payload 补一个显式的 max_output_tokens，别让网关默认值决定截断点。
 
-### 中-10 全仓库从不读取 Retry-After 响应头，退避节奏完全无视上游明确给出的等待时间
+### 中-11 全仓库从不读取 Retry-After 响应头，退避节奏完全无视上游明确给出的等待时间
 
 `G1` · 置信度 high · new
 
@@ -353,7 +382,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：在 `_collect_exception_texts` 旁加一个 `extract_retry_after(exc) -> float | None`，读 `exc.response.headers` 的 Retry-After（秒数与 HTTP-date 两种格式都要认）以及 x-ratelimit-reset-requests/tokens；`_wait_out_minimum_capacity_limit` 与 `_backoff_sleep` 取 `max(本地退避, 上游给的秒数)`，并对上游值设一个上限（比如 120s）防止恶意/异常头把任务挂死。
 
-### 中-11 每批重发的系统提示词比正文本身还长：8000 格文件里 60% 的输入字符是重复的固定提示
+### 中-12 每批重发的系统提示词比正文本身还长：8000 格文件里 60% 的输入字符是重复的固定提示
 
 `G1` · 置信度 high · new
 
@@ -367,7 +396,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：这项涉及批次大小这个用户可见设置，建议先出数字给用户拍板。技术侧的具体动作：把 CHUNK_CLOUD_MAX 从 30 提到 60~80（现代模型上下文早已不是瓶颈，3200 字符预算仍然兜底），默认值从 20 提到 40；同时因为批次变大会放大单批失败的影响面，要配套第 3 条（429 不二分）和第 1 条（耗尽熔断）一起改。Claude 侧若把 system 补齐到 1024 token 以上再加 cache_control 反而更贵，不建议。
 
-### 中-12 目标语言为中文时，URL / 邮箱 / 文件路径被当成待译文本送模型：既白花钱，模型真译了还会把网址替换成中文
+### 中-13 目标语言为中文时，URL / 邮箱 / 文件路径被当成待译文本送模型：既白花钱，模型真译了还会把网址替换成中文
 
 `T1` · 置信度 high · new
 
@@ -654,6 +683,14 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - 第 4 条和第 1 条共享 `_recreate_settings_file` / `_write_text_atomic` 这条路径，建议归到同一个修复集群，避免两个代理撞车。
 - 第 3 条如果按我推荐的「收窄写盘窗口」修，动的是 api/app.py 的连接测试端点；如果按「delta 支持列表主键」修，动的是 settings.py 的 `_settings_delta`/`_apply_settings_delta`，后者会影响全部并发写路径，需要补测试覆盖 connections 之外的其它列表字段（`custom_target_langs` 等）。
 - 现有 tests/test_settings_concurrent_updates.py 的 10 个并发用例全部是标量与嵌套 dict，**列表元素维度零覆盖**；tests/test_data_schema_recovery.py 的损坏样本全是合法 UTF-8，**编码维度零覆盖**。这两处是本轮四条主要发现能存活到 V9.4.0 的原因。
+
+### E1 — 错误处理、异常吞没、用户可见错误文案
+
+**基线与复现脚本**
+
+未重跑全量（按指示信任已给基线：1664 passed + 249 subtests，2026-08-31 实测全绿）。本线只跑了两个针对性一次性复现脚本（见下），未跑既有 pytest 套件文件，因为两条发现都落在既有测试覆盖之外（grep 确认无测试命中 `_extract_chat_completion_text` / ollama 重试路径）。
+
+排除/未深挖的点：(1) claude_engine.py:102 `_extract_claude_text` 的 `first_block.get(\"text\")` 非字符串时同样转空串，理论上和 openai_engine 是同一类缺陷，但当前请求体没有开 extended thinking（没传 thinking 参数），正常情况下 content[0] 应该就是 text 块，没能构造出真实触发场景，置信度不够没有单独立项，只是提醒后续如果这个应用支持切换到带 thinking 的 Claude 模型要重新看这里。(2) api/task_manager.py `_pump_page_rerun`（1298-1299 行）把 pump 循环自身崩溃时的 `str(exc)` 直接写进 SSE 事件 `pdf_page_rerun` 的 message 字段、未过 humanize_error，看起来像是「重生成留上一版」新功能里复刻了此前 `_pump_runner` 那条已修问题的同款反模式；但实测追了一遍前端（ui/src/views/workspace.ts:1773 及 dist 里的构建产物）确认这个 SSE 事件类型目前没有任何前端代码消费，用户看到的重跑失败文案走的是另一条已经用了 user_facing_reason 的字段（`snapshot.rerun.error`，来自 core/pdf_image_translation.py:1757-1764，处理得很规范）。所以这是一条真实存在但当前不会被用户看到的死代码/技术债，没有计入 findings（不满足「用户会看到什么错误信息」的门槛），仅供参考，以后要是给这个 SSE 事件接上前端消费者，记得先把这两行改成走 user_facing_reason。(3) api/app.py 里大量 `except Exception as exc: raise HTTPException(422, str(exc))` 通用模式（PUT /api/settings 等）会把 pydantic ValidationError 的英文原文透传给前端，这正是上一轮审计「中-14」已经报过、已排进 B2 修复计划（ui/src/views/settings.ts + api/app.py）的问题，本轮没有重复上报。(4) core/user_facing_errors.py 的 timeout/502/504 规则顺序确实会让网关超时被「等接口响应超时了」这条更早命中，但文件里 130-137 行的注释已经明确讨论过这个取舍并给出理由（并非疏漏），不重复上报。(5) core/connectivity_check.py 里「测试连接」失败时把原始 HTTP 状态码+响应体（截断 300 字符）直接放进 message，判断这是连接测试这个诊断工具本身故意保留的技术细节（给会看日志的人用），未见明显误导，未列入 findings。工具调用数约 48 次，在预算内完成，未出现被打断的情况。
 
 ### A1 — HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py）
 
