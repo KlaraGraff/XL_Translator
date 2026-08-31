@@ -8,11 +8,12 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：9/17 条审查线回传，累计 35 条发现（高 11 / 中 15 / 低 9）。**
+**当前进度：10/17 条审查线回传，累计 37 条发现（高 11 / 中 17 / 低 9）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
 | R1 | 2026-08-29 审计 14 条高危的回归核验 | **0 条** |
+| R2 | 上一轮审计中危 30 条 + 低危 27 条修复抽验 | 中 2 |
 | C1 | 并发、线程、锁、竞态、死锁 | 高 1、中 2 |
 | C2 | 资源生命周期：临时文件、子进程、数据库连接、文件句柄 | 中 1、低 2 |
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
@@ -241,9 +242,37 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 ---
 
-## 中危（15 条）
+## 中危（17 条）
 
-### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
+### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
+
+`R2` · 置信度 high · regression-of-prior-audit
+
+**位置**：`core/xlsx_patcher.py:977`、`core/xlsx_patcher.py:1015`、`core/xlsx_patcher.py:1034`、`tests/test_audit_excel_fixes.py:86`、`tests/test_audit_excel_fixes.py:148`
+
+**机制**：修复引入了 _SharedFormulaIndex，整表只扫一次建索引，注释写的是「之后每次让渡都是一次字典查询」。实际不是：dependents() 拿到那一组的 live 列表后，每次调用都要把整组元素重走一遍（cell.find(<f>) + get("si") 逐个复核过期），再回写 live；_promote_shared_formula 紧接着又对 dependents 做四次 min/max 全列表扫描（1035-1038 行）。一个含 n 个单元格的共享组，n 次让渡的总代价仍是 Σk ≈ n²/2 次 lxml 调用，只是把「整张分表重扫」换成了「本组重扫」，常数降了约 7 倍，指数没动。真实 Excel 的一列下拉公式就是一个 si 覆盖整段 ref 的大组，正是这个最坏形态。回归测试 test_donation_cost_no_longer_grows_quadratically 用的夹具是 _one_group_per_row —— n 个大小为 2 的组，组内代价恒定，这个形态无论实现怎么写都是 O(n)，所以它抓不到剩下的这一半。
+
+**后果**：一列长公式的 Excel 表在写回阶段单线程空转：实测（.venv 3.13，单组）200 行 0.02s、800 行 0.28s、1600 行 1.09s、3000 行 3.95s、6000 行 16.35s、10000 行 48.34s —— 每翻一倍行数耗时翻四倍。模型钱已经花完了，卡在最后写文件这一步，界面没有进度、没有可解释的状态，用户看到的就是任务假死；上万行的工程量表（这类表恰恰最爱整列下拉公式）会卡到分钟级。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/perf_shared.py：手写一张分表 XML，B 列 1..N 行同属 si="1" 一个共享组（B1 为主控带 ref="B1:BN"，每格缓存显示值都是待译文本），调 write_bilingual_workbook(formula_display_value_backfill=True)。实测输出：rows=200 0.02s / 400 0.08s / 800 0.28s / 1600 1.09s / 3000 3.95s；perf_big.log：rows=6000 16.35s / rows=10000 48.34s。倍率 3.5～4.0，标准平方增长。对照现有回归测试的夹具（每行一组），同样行数只要毫秒级——所以测试是绿的。
+
+**修法**：两处都要动。① dependents() 不要每次线性复核整组：让 _set_cell_inline_text 和让渡本身在改写单元格时主动从索引里摘掉该条目（索引持有 (row,col,cell) 时同步维护一个 已失效 id 集合，或让组用 deque/游标从头推进——同一组的让渡天然按文档顺序单向前进，游标只需前进不需回头），把单次让渡降到 O(1) 摊还。② min_row/max_row/min_col/max_col 不要每次对整个 dependents 重算：一个组的边界在建索引时就能一次算出，让渡后只需把左上角沿游标前移，右下角不变。③ 回归测试补一个「单个大共享组」的夹具（例如 B 列 400 行同 si vs 1600 行同 si），沿用现有的 8 倍阈值——当前实现在这个夹具上会得到约 16 倍，能真正锁住这条性质。
+
+### 中-2 限流退避漏传停止信号：补译复核与混合语言仲裁两处没跟上 PDF 那次修复，停止后仍继续重试约 2 分钟，最后还报成「换 API Key」而不是「已停止」
+
+`R2` · 置信度 high · regression-of-prior-audit
+
+**位置**：`core/coverage_review.py:239`、`core/mixed_language.py:436`、`core/api_concurrency_control.py:338`、`core/coverage_review.py:97`、`core/pdf_image_translation.py:4148`
+
+**机制**：上一轮低-PDF 那条「handle_api_concurrency_limit 漏传 should_stop，停止响应最多拖 30 秒/页」已在 pdf_image_translation.py:4148 修好（连注释一起补了），engine_dispatcher.py:699/847 也一直是传的。但同一个函数还有两个调用方没跟上：core/coverage_review.py:239（run_pair_arbitration_batch，Excel/Word 补译复核共用）和 core/mixed_language.py:436（混合语言仲裁）都没有 should_stop 参数。api_concurrency_control._wait_out_minimum_capacity_limit 最后一行是 _interruptible_sleep(delay, should_stop)，should_stop 为 None 时那个循环退不出来，睡满 delay（MINIMUM_CAPACITY_MAX_DELAY = 30s）。更糟的是 coverage_review 拿到 decision 后是直接递归调用自己重试，中间不看任何停止标志——stop_event 只在 coverage_review.py:97 的批次之间起作用，进了批次内部就完全失联；退避一直退到 MINIMUM_CAPACITY_GRACE_SECONDS = 120s 用完，抛出的是 ApiKeyTemporarilyUnavailableError（任务致命错误），不是停止。mixed_language 更明显：它下一行就写着 if should_stop and should_stop()，变量就在作用域里，只是没往下传，于是必须先睡满一觉才轮得到那句检查。
+
+**后果**：用户在「补译复核」阶段遇到上游限流时按停止：界面上按钮点下去了，任务却继续往上游发请求（实测停止置位后又发了 4 次），最长要等到 120 秒的宽限窗口耗尽才停下；而且最终收尾不是「已停止」，是一条误导性的致命错误——「接口持续限流…请稍后重试，或在设置里换一条连接、更换 API Key 后重新开始」。用户主动停的，却被告知自己的 Key 出了问题。复核本身是按次计费的模型调用，停止后仍在发的那几次也在花钱（虽然多半被 429 挡回）。
+
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/stop_latency2.py：假引擎每次 chat 都抛 429 too many concurrent requests，真 WeightedApiScheduler，0.5 秒后置位 stop_event，调 run_pair_arbitration_batch。为了让脚本跑得完把 GRACE 临时改成 12s、MAX_DELAY 改成 4s（真实值 120s / 30s，倍数关系不变）。实测输出：「[0.50s] 用户点了停止」→「[12.80s] 抛出 ApiKeyTemporarilyUnavailableError: 接口持续限流…请更换 API Key」→「stop 置位后仍继续调用模型的次数（含首次）: 5」。按真实常量外推即 ~120 秒不响应停止。
+
+**修法**：① core/coverage_review.py：给 run_pair_arbitration_batch 加 should_stop: Callable[[], bool] | None = None 形参，从 arbitrate_coverage_units 已有的 stop_event 传下来（stop_event.is_set），既传给 handle_api_concurrency_limit，也在递归重试之前检查一次——停了就直接返回空 dict，让上游按 uncertain 处理，而不是继续退避到宽限期用完抛致命错。② core/mixed_language.py:436：把作用域里现成的 should_stop 直接传进去（下一行的检查保留即可）。③ 加一条测试锁住「三个调用方都把 should_stop 交出去」——这类漏传按调用点逐个修必然还会漏，最省事的做法是给 handle_api_concurrency_limit 的 should_stop 去掉默认值（改成必填关键字参数），让漏传在类型检查/导入期就暴露。
+
+### 中-3 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
 `C1` · 置信度 high · new
 
@@ -257,7 +286,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：把 WeightedApiScheduler._can_acquire 的那段软上限逻辑搬进 FairApiGroupScheduler._can_acquire_locked：给它加 category 形参（调用点 core/task_resources.py:245 已经算好了 normalized_category），维护一个 normal_soft_limit（在 _reset_capacity_locked / set_capacity / _next_reduced_capacity_locked 三处一起更新），并保留「_active_normal_weight == 0 时放行一个超重普通请求」那条防死锁的逃生口。同时给 tests/test_scheduler_waiters.py 补一条「normal 满载时 recovery 仍能在 N 毫秒内拿到槽位」的测试——现在这条契约在生产调度器上完全没有测试守着。
 
-### 中-2 限流退避不响应停止：另有 3 处调用也没把停止标志交给 handle_api_concurrency_limit
+### 中-4 限流退避不响应停止：另有 3 处调用也没把停止标志交给 handle_api_concurrency_limit
 
 `C1` · 置信度 high · new
 
@@ -271,7 +300,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：三处调用都补上 `should_stop=`：core/mixed_language.py:440 和 :748 直接把作用域里现成的 `should_stop` 传进去（:445 那句检查可以保留，但退避本身必须先能被打断）；core/tm_cleaner.py:747 把 runner 的停止回调透传到这一层。更稳的做法是给 handle_api_concurrency_limit 的 should_stop 改成必填关键字参数，让漏传在 tsc/ruff 之外靠签名本身兜住——现在 8 个调用点漏了 6 个，说明「可选参数」这个形状本身就是缺陷来源。
 
-### 中-3 sidecar 看门狗的 20 秒强杀预算包不住内层 22 秒收尾链——壳被强退时 soffice 与临时目录照样残留
+### 中-5 sidecar 看门狗的 20 秒强杀预算包不住内层 22 秒收尾链——壳被强退时 soffice 与临时目录照样残留
 
 `C2` · 置信度 high · regression-of-prior-audit
 
@@ -285,7 +314,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：把 api/launcher.py 的 WATCHDOG_FORCE_EXIT_SECONDS 改成和 Rust 同源的加法：GRACEFUL_SHUTDOWN_SECONDS + <task_manager.shutdown 默认 timeout> + 余量（即 25s），而不是写死 20.0；更稳的做法是循环里改成「轮询到 server 真的停了就立刻 os._exit，否则等到 deadline」，这样正常情况几百毫秒就退干净、异常情况才用满预算。同时把 WATCHDOG_FORCE_EXIT_SECONDS 补进 src-tauri/src/main.rs:1045 那个镜像测试的断言里（断言它 >= drain + unwind），否则下次改任何一段还是没人拦。
 
-### 中-4 keys.json 上同一个洞：非 UTF-8 字节让保存、读取、以及显式出路「删除全部 API Key」三条路一起抛异常（中-1 的修复没修干净）
+### 中-6 keys.json 上同一个洞：非 UTF-8 字节让保存、读取、以及显式出路「删除全部 API Key」三条路一起抛异常（中-1 的修复没修干净）
 
 `P1` · 置信度 high · regression-of-prior-audit
 
@@ -299,7 +328,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：settings.py:1809-1810 与上一条同源修复：改用 `read_bytes().decode("utf-8")`，把 `UnicodeDecodeError` 并入下面那段已经写好的「内容损坏 → 非 strict 返回空表 / force 直接放弃 / 否则备份后按空表续写」逻辑里，不要让它绕过状态机。两处一起改，别只改 settings 那边。
 
-### 中-5 「测试连接」跨网络往返持着旧快照，落盘时整份 connections 列表覆盖，把期间用户对另一条连接的修改静默吃掉（两个请求都返回 200）
+### 中-7 「测试连接」跨网络往返持着旧快照，落盘时整份 connections 列表覆盖，把期间用户对另一条连接的修改静默吃掉（两个请求都返回 200）
 
 `P1` · 置信度 high · new
 
@@ -313,7 +342,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：两条路选一条。轻量：给 `_settings_delta` 加一条列表特例——对元素带稳定主键的列表（connections 有 `id`）按 id 生成逐元素的增/删/改 delta，而不是整份 SET；`_apply_settings_delta` 对应按 id 合并，顺序变化仍记为整份 SET。稳妥：把 `check_model_role_connectivity` 的写盘窗口收窄——网络往返结束后重新 `load_settings()`，只把 availability_* 这几个字段写到目标连接上再保存，不要让一个跨秒级 I/O 的请求持有整份设置快照。推荐后者先落地（改动小、语义清楚），前者作为 delta 层的根治。
 
-### 中-6 Ollama 引擎手写的重试循环不判断错误能否重试，把「模型名填错」这类永久性配置错误当瞬时故障重试三次
+### 中-8 Ollama 引擎手写的重试循环不判断错误能否重试，把「模型名填错」这类永久性配置错误当瞬时故障重试三次
 
 `E1` · 置信度 high · new
 
@@ -327,7 +356,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：`_translate_chunk` 的 except 分支里先调用 `is_retryable_engine_error(e)`，不可重试就直接 break/reraise，和 openai_engine/claude_engine 保持一致的策略，不必接入 tenacity，一行判断即可。
 
-### 中-7 自适应并发只降不升：一次瞬时 429 之后整段任务永久跑在 20% 速度，还会拖慢同组的其他任务
+### 中-9 自适应并发只降不升：一次瞬时 429 之后整段任务永久跑在 20% 速度，还会拖慢同组的其他任务
 
 `G1` · 置信度 high · new
 
@@ -341,7 +370,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：加一条对称的回升路径：记录最近一次限流命中时间，在连续 N 次成功释放（或安静 60~120 秒）后沿同一阶梯回升一级，并 `_generation += 1` 让在途请求的旧信号被判为过期。回升要有上限（不超过 initial_capacity）和阻尼（回升步长小于下降步长），避免与上游限流窗口共振。
 
-### 中-8 Claude 引擎硬编码 max_tokens=8096，而连通性测试只发 8：输出上限 4096 的模型「测试全绿、每批 400、整份文档原样退回」
+### 中-10 Claude 引擎硬编码 max_tokens=8096，而连通性测试只发 8：输出上限 4096 的模型「测试全绿、每批 400、整份文档原样退回」
 
 `G1` · 置信度 high · new
 
@@ -355,7 +384,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：两处一起改：(1) claude_engine 的 max_tokens 按批次预估输出量动态给，并给一个保守下限（比如 max(2048, 预估×1.3)），或从模型名映射一张上限表；(2) 更重要的是连通性测试要用与真实翻译一致的 max_tokens，否则测试绿灯没有任何保证价值；(3) 400 响应体里带 `max_tokens` 关键字时，把 humanize 后的文案改成「所选模型的输出上限低于本次请求」。
 
-### 中-9 Claude 响应只取 content[0]，首块不是 text 就静默返回空串，一个 30 条批次要烧掉 15 次真实计费的 200 OK 才放弃
+### 中-11 Claude 响应只取 content[0]，首块不是 text 就静默返回空串，一个 30 条批次要烧掉 15 次真实计费的 200 OK 才放弃
 
 `G1` · 置信度 high · new
 
@@ -369,7 +398,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：`_extract_claude_text` 改成遍历 content、拼接所有 `type == "text"` 的块；一个 text 块都没有时抛 ValueError 并把 stop_reason / 首块 type 写进异常文案，而不是返回空串。顺便校验 `stop_reason == "max_tokens"` 时给出「输出被截断」的明确错误，别让它伪装成解析失败。
 
-### 中-10 Responses API（asxs 网关，生产实际路径）的 SSE 解析不看事件 type、也不校验终态：非正文 delta 会污染 JSON，失败/截断事件被当成功
+### 中-12 Responses API（asxs 网关，生产实际路径）的 SSE 解析不看事件 type、也不校验终态：非正文 delta 会污染 JSON，失败/截断事件被当成功
 
 `G1` · 置信度 high · regression-of-prior-audit
 
@@ -383,7 +412,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：按 type 白名单收 delta（只收 `response.output_text.delta`，done 只认 `response.output_text.done`）；显式处理 `response.failed` / `response.error` / `response.incomplete`，抛带上游 code/message 的异常；流结束时若没见到 `response.completed`（或 output_text.done）就判为截断并抛错，而不是把半截正文当成功。另外给 payload 补一个显式的 max_output_tokens，别让网关默认值决定截断点。
 
-### 中-11 全仓库从不读取 Retry-After 响应头，退避节奏完全无视上游明确给出的等待时间
+### 中-13 全仓库从不读取 Retry-After 响应头，退避节奏完全无视上游明确给出的等待时间
 
 `G1` · 置信度 high · new
 
@@ -397,7 +426,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：在 `_collect_exception_texts` 旁加一个 `extract_retry_after(exc) -> float | None`，读 `exc.response.headers` 的 Retry-After（秒数与 HTTP-date 两种格式都要认）以及 x-ratelimit-reset-requests/tokens；`_wait_out_minimum_capacity_limit` 与 `_backoff_sleep` 取 `max(本地退避, 上游给的秒数)`，并对上游值设一个上限（比如 120s）防止恶意/异常头把任务挂死。
 
-### 中-12 每批重发的系统提示词比正文本身还长：8000 格文件里 60% 的输入字符是重复的固定提示
+### 中-14 每批重发的系统提示词比正文本身还长：8000 格文件里 60% 的输入字符是重复的固定提示
 
 `G1` · 置信度 high · new
 
@@ -411,7 +440,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：这项涉及批次大小这个用户可见设置，建议先出数字给用户拍板。技术侧的具体动作：把 CHUNK_CLOUD_MAX 从 30 提到 60~80（现代模型上下文早已不是瓶颈，3200 字符预算仍然兜底），默认值从 20 提到 40；同时因为批次变大会放大单批失败的影响面，要配套第 3 条（429 不二分）和第 1 条（耗尽熔断）一起改。Claude 侧若把 system 补齐到 1024 token 以上再加 cache_control 反而更贵，不建议。
 
-### 中-13 目标语言为中文时，URL / 邮箱 / 文件路径被当成待译文本送模型：既白花钱，模型真译了还会把网址替换成中文
+### 中-15 目标语言为中文时，URL / 邮箱 / 文件路径被当成待译文本送模型：既白花钱，模型真译了还会把网址替换成中文
 
 `T1` · 置信度 high · new
 
@@ -440,7 +469,7 @@ C:\Users\Tom\file.docx      False  True  True
 
 **修法**：在 `should_translate` 的 target=zh 分支里，把 zh→X 方向已有的「结构化字面量」保护补齐并抽成一个共用判据（两个方向共用一份，别再各写一套）：无空格且匹配 URL（`^\w+://` 或 `^www\.`）、邮箱（`^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$`）、绝对/相对路径（含 `/` 或 `\` 且无空格）、纯扩展名文件名的一律 return False。同时在 `_validate_translation_strict` 里加一条对称守卫：原文整体是 URL/邮箱/路径而译文不是同一串时判 fail，堵住「模型真把网址翻了」这条没人拦的路。
 
-### 中-14 清洗建议写回把多行译文折成单行，多行单元格的换行在「深度清洗」这条路上又被吃掉了
+### 中-16 清洗建议写回把多行译文折成单行，多行单元格的换行在「深度清洗」这条路上又被吃掉了
 
 `M1` · 置信度 high · regression-of-prior-audit
 
@@ -454,7 +483,7 @@ C:\Users\Tom\file.docx      False  True  True
 
 **修法**：`_normalize_clean_target` 末尾那句改成只折行内空白：复用 tm_text 里的 `[^\S\n]+` 口径（或直接 `return normalize_tm_text_for_storage(cleaned)`，它已经做了「统一换行符 + 折行内空白 + 逐行 strip」），别再用 `\s+`。`_looks_like_meta_output`(286) 里那句 `_MULTISPACE_RE.sub` 只用于判定、不落库，可以不动。补一条测试：多行译文经清洗建议写回后 `\n` 仍在。
 
-### 中-15 「深度清洗」一键起跑，不告诉用户要跑多少条、要花多少次模型调用，也没有任何上限
+### 中-17 「深度清洗」一键起跑，不告诉用户要跑多少条、要花多少次模型调用，也没有任何上限
 
 `M1` · 置信度 high · new
 
@@ -654,6 +683,39 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - **Windows 的 sidecar 仍然是硬杀。** `request_child_termination` 在非 Unix 直接 `return false`，`stop_child` 于是立刻 `TerminateProcess`。高-13 的「安装器动手前文件句柄已释放」达成了，但 Windows 上退出/更新时**在途的已付费翻译结果照样丢**。这一条已在 `AUDIT_FIX_PLAN` 里登记为「需 sidecar 加 shutdown 端点（新对外 API，立 issue 待拍板）」，按简报要求不重复开单——但它确实还是那条「付费成果被丢弃」的口子，issue #1 别让它沉底。
 - **`runPdfBatchRerun` 里 `rerunPdfPage` 抛异常那一支**（`workspace.ts:2226`）弹完 toast 就 `batch.done += 1` 继续下一页，不等槽位。若异常是「请求超时但后端其实已经开跑」，下一页会撞 409。属于既有实现的边角，后果只是多一条错误 toast、这一页没跑，不丢数据不多花钱，我判定够不上开单，记在这里备查。
 - **全量模式 + 「公式显示值回填」关闭** 时，`_resolve_source_text`（`xlsx_patcher.py:1610-1626`）返回的是 `"=" + 公式源码`，命中译文就会把 `<f>` 换成静态文本；而补译侧 `excel_coverage` 明确把公式格判 `ignored` 并注明「公式源码不送翻，不白花 API 调用」。两侧口径不一致，但这是 a235f84 **之前**就存在的全量侧老行为，且不在 14 条高危里，我没有越界处理——如果要拉齐口径，是产品拍板的事。
+
+### R2 — 上一轮审计中危 30 条 + 低危 27 条修复抽验
+
+**基线与复现脚本**
+
+未跑全量（按纪律沿用给定基线 1664 passed + 249 subtests）。只跑了与本线相关的定向复现脚本，全部在临时数据目录下执行（每个脚本开头 os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp() 并断言 config.APP_DATA_DIR 落在 /var/folders 下，实测输出确认；未读也未写 ~/Library/Application Support/Translator）：
+1) /private/tmp/.../scratchpad/perf_shared.py + perf_big.log —— 共享公式让渡耗时随行数的增长关系。
+2) /private/tmp/.../scratchpad/keys_repro.py —— keys.json 损坏后 save_key / clear_keys / 维护路径。
+3) /private/tmp/.../scratchpad/stop_latency2.py —— 补译复核在上游限流时对停止信号的响应。
+读代码核验（未构造运行环境）：中-3 中-8 中-14 中-19 中-29 中-30 低-TM(32766) 低-Excel(让渡失败入任务日志)。
+
+【已核验确实修干净，不报】
+- 中-1 keys.json 损坏无出路：keys_repro.py 实测。损坏文件 → save_key 成功（自动备份到 backups/keys/keys_unusable_*.json 后按空表续写并记 recovery event）；再损坏 → maintenance.clear_keys() 成功（force 路径不留含明文 Key 的副本，这个取舍在注释里说清了，是对的）。strict/force、unusable/unreadable 四象限都区分开了，硬约束合规。
+- 中-2：core/task_runner.py:1408 与 1771 两处都明确注释「不拦停止信号，已付费结果必须落库」，TM 写入不再被停止旁路。
+- 中-3：excel_review_marks 顶部声明一次，1264 行有「不许重绑定」的守卫注释，全部调用点共用同一个 dict。
+- 中-4：get_all_entries_for_cleaning 改成先取全部再用 _normalize_word_type 过滤，旧库 'term' / 'import' 归一正确；get_stats 同样按归一后计数。
+- 中-5：tm_text 拆成 storage（保留换行）/ compare（折换行，兼容旧库存储形态）两种形态，lookup_batch 三种哈希齐查（raw / storage / compare），新旧数据都命中。
+- 中-6：insert_manual_entry_detailed 把 written / unchanged / blocked_pinned / invalid / error 分开回报，不再压成一个布尔。
+- 中-8：task_runner finally 里对 self._files 全量兜底扫描删临时件，_cleanup_excel_conversion_temp 可安全重复调用（不存在直接跳过，不刷假告警），process_paths / resume_baseline_used 预声明成空列表防未赋值。
+- 中-14：settings.ts 五个 numberField 的 min/max（1–16 / 800–12000 / 1500–30000 / 1–8 / 0–8）与 config.py:216-255 常量逐条对齐，422 夹缝已闭合。
+- 中-19：workspace.ts:4409 `fileResults.length > 0 ? produced : stateNotProduced ? 0 : st.selected.size`，PDF 停止零产出不再谎报文件数。
+- 中-29：_plan_cell_mutation 去掉了写入端的 should_translate 重判，注释把「复核改判格含中文被误杀」讲透了。
+- 中-30：_cell_value_by_ctype 按 ctype 逐类还原（DATE→date/time/datetime、BOOLEAN→bool、ERROR→xlrd.error_text_from_code 文本、认不出的错误码留空不编造），日期/布尔不再变序列号。
+- 低-TM sqlite 32766：_SQL_VARIABLE_CHUNK = 900 + _chunked()，bulk_pin_entries / _set_pinned_by_ids / set_all_pinned / lookup_batch / 清洗建议更新五处全部分片；单句最大绑定变量数 901，远低于 3.11 运行时 SQLite 的 999 下限。注：.venv311 存在（Python 3.11.15）但没装 pytest，无法在 3.11 下跑测试，这条按代码路径核验 + 变量数计数确认。
+- 低-Excel「让渡失败只写 loguru」：xlsx_patcher.py:1481-1488 已补 log_callback 的 [WARN] 行，并且判定挪到了涂色之前，不会再出现「标了色没译文」。
+
+【排除的假阳性】
+- key_origins.json 损坏时被当成空集且在「本地保存」路径上不自愈（settings.py:1918-1922 / 1948-1958），后果是已导入的密钥退回成「自己的」、可被导出。代码注释明确把这条登记为可接受的降级（「最坏结果只是退回没有这份文件时的老行为，而不是让用户存不进 Key」），是有意设计，不报。
+- normalize_tm_text_for_compare 把换行折成空格作哈希，会让「甲\n乙」和「甲 乙」撞同一条 TM 记录 —— 这是为兼容旧库存储形态的有意取舍，注释写明，不报。
+- 按纪律排除：低-覆盖率 5% CJK 阈值、复制路径、Cmd+Q 25s、ko/ja 四处特判。
+
+【未及验证，留给下一轮】
+工具预算用尽，以下中危只做了「代码路径存在对应修复」的粗查，没有逐条构造复现：中-7（引号剥离）、中-9（failover 候选构建失败）、中-10（对象数组 str() 兜底）、中-11/12/13（覆盖率三条）、中-15/16/17/18/20/21/22/23/24（前端与更新/壳，共 9 条）、中-25/26/27（Word 与 PDF 三条）。其中中-21（SSE 终态竞态无限重连）和中-27（PDF 停止烧占位页，直接对应「白花钱」硬约束）我认为最值得下一轮优先补上实测。
 
 ### C1 — 并发、线程、锁、竞态、死锁
 
