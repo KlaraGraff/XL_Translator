@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：10/17 条审查线回传，累计 37 条发现（高 11 / 中 17 / 低 9）。**
+**当前进度：11/17 条审查线回传，累计 39 条发现（高 11 / 中 18 / 低 10）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -22,6 +22,7 @@
 | G1 | 模型引擎 / 故障转移 / 调度 / Token 成本 | 高 3、中 6、低 1 |
 | T1 | 翻译质量链路：过滤、覆盖率、残留、语言识别、续译 | 高 3、中 1 |
 | M1 | 翻译记忆库（TM | 高 1、中 2、低 2 |
+| F1 | 前端工作区、任务中心、客户端 | 中 1、低 1 |
 
 ---
 
@@ -242,7 +243,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 ---
 
-## 中危（17 条）
+## 中危（18 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -497,9 +498,29 @@ C:\Users\Tom\file.docx      False  True  True
 
 **修法**：起任务前先算一次规模：在 task_manager.py:359 的 tm_clean 分支里查 `len(get_all_entries_for_cleaning(lang_pair))` 与 `ceil(n / batch_size)`，塞进 task_snapshot；前端在 `tmClean()` 里无条件弹一次确认框，把「本次将分析 N 条词条，约 M 次模型调用」说清楚（现在的共享连接风险框可以合并进去）。是否再加「只清洗最近 N 条 / 分批跑」的上限选项属产品拍板，建议至少先把数字亮出来。
 
+### 中-18 运行中每来一条 SSE 事件就整屏重建工作区，「逐页审核」表和文件表的滚动条被打回顶部——任务跑着的时候根本没法翻表
+
+`F1` · 置信度 high · new
+
+**位置**：`ui/src/views/workspace.ts:4337`、`ui/src/views/workspace.ts:727`、`ui/src/views/workspace.ts:1455`、`ui/src/views/workspace.ts:2472`、`core/headless_pdf_translate.py:139`、`api/task_manager.py:1788`
+
+**机制**：handleTaskEvent() 在 switch 末尾无条件 `rerender(surface)`（workspace.ts:4337），而后端每一条 LogMsg 都原样转成一个 SSE `log` 事件、没有任何合并或节流（headless_pdf_translate.py:139 的 while 循环里逐条 _emit_event；api/task_manager.py:1788 的 _append_event 同样逐条入队）。rerender → renderInto()（workspace.ts:727）第一件事就是 `while (container.firstChild) container.removeChild(container.firstChild)`，把整屏拆光再重建：文件表（buildTableCard）、逐页审核表（buildPdfReviewCard，snapshot 里**每一页**都建一个 tr，收起的分组也照建、只加 .hid 类）、200 行日志、右栏全部控件。
+关键点在滚动容器本身也是每次新建的：buildTableCard 里 `const tableWrap = el("div"); tableWrap.style.cssText = "flex:1;overflow:auto"`（workspace.ts:1455），buildPdfReviewCard 里 `tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto"`（workspace.ts:2472）。新建的 div 其 scrollTop 定义上就是 0，所以用户翻到的位置每次事件都归零。
+对照证据：这个代码库对**日志面板**专门写了 captureLogScroll / restoreLogScroll（workspace.ts:684/705，含锚点行 data-seq 的完整方案），说明作者清楚整屏重建会毁掉滚动位置——但这套保护只认 `container.querySelector(".log")` 一个元素，两张表一个都没覆盖。
+
+**后果**：1) 交互：PDF 任务跑到一半，用户想在「逐页审核」里翻到第 150 页看某一页的状态——每来一条日志（后端逐条发、不节流）表格就跳回第 1 页，实际等于翻不动；Excel/Word 批量几十上百个文件时，运行中的文件清单同样翻不动。而运行中恰恰是用户最想盯着表看的时候。
+2) 性能：实测每次重建 300 页 ≈ 16 ms、800 页 ≈ 38 ms（Chrome；WKWebView 更慢）。日志密集时段这些开销直接压在主线程上，表现为整屏发涩、按钮点击迟滞。
+
+**复现**：已复现（机制部分为代码路径确认，成本部分为实测）。脚本：/private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/bench_rerender.html，Chrome 实测输出 {"pdf_300页_200日志":"16.0 ms/次","pdf_100页_200日志":"6.9 ms/次","pdf_800页_200日志":"38.0 ms/次","excel_0页_200日志":"2.1 ms/次"}。滚动归零这一半是定义级确定：tableWrap 每次 renderInto 都是 `el("div")` 新建的节点，新节点 scrollTop 恒为 0，无需实测。附带做的对照实验 repro_detail_scroll.html 证明「同一元素清空再填」**不**丢滚动（600→600），正说明问题出在「容器被换掉」而不是「内容被清空」。
+
+**修法**：两步，第一步就能解决可用性：
+(1) 把 captureLogScroll/restoreLogScroll 那套推广成通用的「按 CSS 选择器保存/还原滚动位置」——renderInto 开头对 `.log`、`.tablecard [style*=overflow]`（或给两个 tableWrap 加上稳定的 class，如 `.ws-scroll`，并各配一个 data-scroll-key）统一 capture，重建后统一 restore。表格行不像日志会被 200 条上限挤掉，直接还原 scrollTop 即可，不需要日志那套锚点行方案。
+(2) 给 rerender 加一层 requestAnimationFrame 合帧：handleTaskEvent 只置脏标记，同一帧内的多条 log/progress 事件只重建一次。这样 800 页那档 38 ms/次的开销从「按事件数」降到「按帧」，也顺带减少滚动被打断的次数。
+（更彻底的做法是逐页审核表改成只重建变化的行，但那要给行做 key 索引，工程量大得多；先做 (1)+(2)。）
+
 ---
 
-## 低危（9 条）
+## 低危（10 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -627,6 +648,20 @@ C:\Users\Tom\file.docx      False  True  True
 **复现**：已复现（scratchpad/m1_apply.py CASE2，绕过 GET/expire 直接构造两条 pending）：词条「Pump casing」先有建议 A（版本 V1）→ 用户人工校对成「泵体外壳（人工校对）」→ 再生成建议 B（版本 V2）→ 两条一起确认。实际输出 `{'applied': 1, 'skipped': 1, outcomes: [{2:'updated'},{3:'stale'}]}`，库里译文变成「旧建议A」——过期建议写入成功，人工校对被覆盖，当前版本的建议 B 反被拦下。
 
 **修法**：别再用 entry_id 当 key：给 `bulk_update_detailed` 增加一个按提交行序对齐的 `expected_versions: list[str | None]`（与 `updates`、`rows` 同序），逐行取版本；旧的 dict 形参保留给其它调用方即可。顺带把 api/app.py:245-251 里 `expected_version: str = ""` / `suggestion_id: int = 0` 的默认值收紧成必填（或在 `_resolve_pending_suggestions` 里对「既查不到 pending 行、客户端又没给版本」的建议直接判 stale 拒写），现在这两个字段一旦为空就等于关掉整个乐观并发检查。
+
+### 低-10 PDF「查看对比」弹窗：关闭之后才下载完的页图，其 blob URL 永远不会被 revoke
+
+`F1` · 置信度 high · new
+
+**位置**：`ui/src/views/workspace.ts:2771`、`ui/src/views/workspace.ts:2792`、`ui/src/views/workspace.ts:2846`
+
+**机制**：openPdfPageCompareModal 里的 load() 是异步的：`const blob = await c.getPdfPageImage(...)`，拿到后才 `const url = URL.createObjectURL(blob); objectUrls.push(url);`（workspace.ts:2792-2796）。而回收只发生在两个同步时刻——closeCompare()（2782）和「关闭」按钮的 onClick（2846-2848），两者都是对**当时**的 objectUrls 数组做一遍 revoke。如果用户在图片还没下载完时就点了关闭（或在「当前版/上一版」切换后立刻关闭），revoke 循环先跑完、fetch 后落地，新建的 blob URL 被 push 进一个再也没人遍历的数组，对应的 blob 就在 document 存活期内一直占着内存。注意 components.ts 的 openModal 没有 Esc / 点遮罩关闭，所以只有这一条异步竞态路径会漏，不是所有关闭路径都漏。
+
+**后果**：逐页审核一份大 PDF 时，用户往往连开连关很多页的对比弹窗；A3 幅面、200 dpi 的页图单张可达数 MB。急着翻页（图还在转圈就关掉）的操作习惯下，泄漏的 blob 会一张张累积，长时间审核后应用内存持续上涨，直到重启程序才释放。不会导致数据错误，只是内存不回收。
+
+**复现**：机制确认（代码路径推导：await 之后才 createObjectURL/push，而 revoke 只遍历同步时刻的数组；未构造真实 PDF 任务复现）。
+
+**修法**：在 openPdfPageCompareModal 里加一个 `let closed = false;` 闭包标志，closeCompare() 和「关闭」按钮的 onClick 都置 true；load() 在 `await c.getPdfPageImage(...)` 返回后先判 `if (closed) return;`，再 createObjectURL。或者更省事：load() 里改成拿到 blob 就先 push url、再在 `closed` 为真时立刻 revoke 掉自己这一条。两种都只改 5 行以内。
 
 ---
 
@@ -925,4 +960,31 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - 完整备份还原（api/app.py:1150-1233）是先 `save_settings` 保存自定义语言、再按语言对逐个 `import_entries`，中途某个语言对失败会留下「设置已改、词条只还原一半」的中间态，且没有还原前快照。没构造用例证死，也没算准这算不算硬约束覆盖范围内，故未成条。
 - `_upsert_entry` 走哈希兜底命中旧库单行写法时，只更新 `source_hash` 不更新 `source_text`（tm_manager.py:900-918），库里会长期留着单行原文配多行译文的行。看着是有意的（改 source_text 会撞 UNIQUE），未视为缺陷。
 - `run_cleaning` 产出的建议在 `list_cleaning_suggestions` 里一次性全量返回、不分页；20 万条库一次清洗可能产出上万条建议，一个 JSON 全推给前端渲染成弹窗列表。有卡顿嫌疑但没实测前端渲染，不敢定性。
+
+### F1 — 前端工作区、任务中心、客户端
+
+**基线与复现脚本**
+
+按纪律未跑全量 pytest（基线已给：1664 passed + 249 subtests）。本线所有验证在浏览器实测 + 静态定位完成：
+1) 起了一个隔离的静态服务器（/private/tmp/.../scratchpad，端口 8931，测完已 pkill）跑两份自写页面，全程未触碰 ~/Library/Application Support/Translator，未起 sidecar、未写任何仓库文件。
+2) repro_detail_scroll.html —— 验证「同一个元素 innerHTML='' 后同步重填」是否丢滚动位置。实测输出 {"scrollTop_before_rebuild":600,"scrollTop_after_rebuild":600}，**滚动位置不丢**。据此推翻了我最初对 tasks.ts renderDetail 的假设，未上报（记录在 notes）。
+3) bench_rerender.html —— 按 buildPdfReviewCard / buildLogCard 的真实节点结构（每页 1 tr + 4 td + chip + 2~3 个带 click 监听的 linklike；日志 200 行 × 3 节点）测整屏拆建 + 强制布局的耗时，Chrome 实测：
+   100 页 + 200 日志 = 6.9 ms/次；300 页 + 200 日志 = 16.0 ms/次；800 页 + 200 日志 = 38.0 ms/次；0 页 + 200 日志 + 30 文件行 = 2.1 ms/次。
+   （WKWebView 只会更慢，且真实代码还多出 createChip/icon 的 SVG use、captureLogScroll 的逐行 getBoundingClientRect、updateTopbar 与整个右栏控件。）
+
+**被我自己推翻、明确不上报的假设（避免下一轮重复挖）**
+- tasks.ts:1315 `detailRootEl.innerHTML = \"\"` + 整块重建，由 4 秒前台轮询（tasks.ts:1665）和 12 秒后台巡检（tasks.ts:959）无条件触发 touch()。我最初判定「用户翻到的任务详情每 4 秒被打回顶部」。**实测证伪**：同一个元素清空后在同一个同步块里重填、期间没有强制布局读取，浏览器不会把 scrollTop 夹到 0（实测 600 → 600）。renderDetail 全程无 getBoundingClientRect，故不触发夹取。已放弃。
+  - 残留的小问题（未验证，留给后续）：整块重建会让用户在详情面板里选中的文本（比如「产物文件」表里那一列没有复制入口的错误原文）每 4 秒被清掉一次。若要报，需要先实测 Selection 在节点被移除后的行为。
+
+**看过、判定不构成发现的点**
+- 定时器/监听器生命周期整体是干净的：fastPollTimer（mount/unmount 配对）、silenceTickers、rerunTickers（unmountWorkspace 里显式 stop，且注释挂着高-10 的来由）、components.ts 的 popover/hint 都成对解绑；router.navigate 保证 unmount 一定先于下一次 mount，没有重复启动同一循环的第二入口。ensureBackgroundLoop 的 12 秒 interval 是刻意常驻（徽标要跨视图准确），不是泄漏。
+- 异步竞态防护到位：runScan 有 scanTokens 单调递增丢弃旧结果（含 catch 和 finally 两处判 token）；preflightAndSubmit / submitTaskStart 各自守 submittingSurfaces 防连点；watchTask / refetchTask / fetchPdfPagesSnapshot 都在 await 后复查 task_id。
+- XSS 面：全仓 innerHTML 仅 3 处非空赋值，均为静态字面量（icons.ts:163 内置 sprite、settings.ts:3158 表头、markdown.ts 明确禁用 innerHTML）。V9.4.0 新增的续译横幅/弹窗、上一版对比弹窗、逐页审核表全部走 createElement + textContent。**上一轮「无 XSS 面」的结论现在仍然成立。**
+- workspace.ts:4744 与 tasks.ts:1009 的 window.confirm（结束暂停）是带注释的刻意选择（「与 main.ts / tasks.ts 一致」），按纪律不报。
+
+**预算内没查完的（下一轮可接手）**
+1. runPdfBatchRerun（workspace.ts:2198）：单页 rerunPdfPage 抛错时走 catch 弹 toast，随后**跳过 waitForRerunSlot 直接发下一页**，且 batch.done 照常 +1。若那次失败是超时/网络抖动而后端其实已经开跑，下一页会撞 409。需要构造后端故障注入才能确认，未做。
+2. tasks.ts watchTask 的重连上限：streamTask 内部 7 次退避后抛出，catch 里若 getTask 成功且非终态就 setTimeout(0) 重新 watchTask，等于开启新一轮 7 次——「事件流一直 404 但任务详情接口一直正常」这种状态下是无上限的循环重连。需要造后端故障才能验，未做。
+3. api-client.saveBinaryDownload（api-client.ts:194）直接把服务端 Content-Disposition 里的 filename 当原生保存框的 defaultPath。本地 sidecar 可信，判为不值得报，但如果将来允许接远端服务需要复查。
+4. 大列表：记忆库（library.ts）上万条的渲染路径本线未覆盖（不在 F1 文件清单里）。
 
