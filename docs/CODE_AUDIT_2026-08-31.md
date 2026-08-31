@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：13/17 条审查线回传，累计 46 条发现（高 12 / 中 22 / 低 12）。**
+**当前进度：14/17 条审查线回传，累计 50 条发现（高 13 / 中 25 / 低 12）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -25,10 +25,11 @@
 | F1 | 前端工作区、任务中心、客户端 | 中 1、低 1 |
 | F2 | 前端设置页、记忆库页、更新流程、样式 | 中 1 |
 | D1 | Excel 翻译管线 | 高 1、中 3、低 2 |
+| D2 | Word 翻译管线 | 高 1、中 3 |
 
 ---
 
-## 高危（12 条）
+## 高危（13 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -262,9 +263,28 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **修法**：给 `TaskRunner._collect_texts` 加上 `formula_display_value_backfill` 参数（两个调用点 core/task_runner.py:922 和 :979 都已经有 `excel_output.formula_display_value_backfill` 在手），回填关闭时改用 `data_only=False` 判 `cell.data_type == 'f'` 跳过公式格——判据可以直接复用 `excel_coverage._resolve_cell_text`，两条路共用一份规则才不会再漂移。同时把 DISPIMG 与错误值格的排除（补译路已有）一并搬过来：全量路目前同样在为这两类格子付钱。
 
+### 高-13 Word 文本框 / 形状 / 脚注里的文字既不翻译，也不进「无法读取的内容」告警——Excel 早就会数会提示，Word 没有
+
+`D2` · 置信度 high · new
+
+**位置**：`core/word_document.py:390`、`core/word_document.py:689`、`core/word_coverage.py:92`、`core/word_task_runner.py:932`
+
+**机制**：三条链路都只走 python-docx 的 `doc.paragraphs` + `doc.tables`：抽取（`extract_word_segments`，word_document.py:410/438）、写回（`write_bilingual_docx` 的 `body_paragraphs = list(doc.paragraphs)`）、体检（`word_coverage._classify_body_paragraphs` 的 `paragraphs = list(doc.paragraphs)`）。文本框/形状的文字住在 `w:pict/v:textbox/w:txbxContent`（旧式）或 `mc:AlternateContent → wps:txbx`（新式）里，脚注/尾注/批注住在独立的 footnotes.xml / endnotes.xml / comments.xml part，全都不是 `w:body` 的直接 `w:p` 子元素，python-docx 一个都返回不了。
+本来有一道兜底：`detect_hidden_word_content`（word_document.py:689）的文档字符串明写「统计文档里 python-docx 扫不到、因而会被静默漏译的内容」，结果由 word_task_runner.py:932 变成质量报告里的一条「存在无法读取的内容」。可它只查两样东西——`w:sdt`（内容控件）和 `w:ins`（修订插入），对 `txbxContent` / 脚注 part 一个字都没查（全仓库 grep `txbx|footnote|endnote` 在 core/word_*.py 里零命中）。于是漏译发生在告警机制的盲区里。
+对照组：Excel 侧的产品结论早就拍板过——docs/mockups/2026-08-06_lang-picker-focus-excel-notice.html 与 CHANGELOG.md:248「清点嵌入内容：列出文件里的图片数量和含文字的文本框 / 形状数量，提前说明这两类内容当前不会被翻译」。同一条产品标准在 Word 侧没有落地。
+
+**后果**：中文工程/标书/合同类 docx 里，封面标题、图纸说明、流程图标注、印章旁注几乎全是文本框，脚注是法律与技术文档的标配。用户翻完拿到的产物里这些位置原样是中文，而任务日志、覆盖率体检、质量报告三处都显示这份文件已全部译完、无残留、无「无法读取的内容」。用户要么自己一页页翻出来，要么直接把带中文的文件发出去。这正好踩中「界面不许骗人」：报告声称覆盖完整，实际整块内容从未进过翻译范围。
+
+**复现**：已复现。脚本 d2_textbox.py：用 python-docx 造一份含两段正文 + 一个 VML 文本框（内容「文本框里的中文说明文字。」）的 docx，输出——
+segments: ['这是正文里的普通段落。', '末尾另一段正文。']  ← 文本框那句根本没进抽取
+hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_control_count': 0, 'total': 0} found= False describe=  ← 告警机制也判定「没有扫不到的内容」
+脚注/尾注/批注部分为机制确认（core/word_*.py 内 grep `footnote|endnote|comment part` 零命中，无任何读取 footnotes.xml 的代码路径），未单独造夹具。
+
+**修法**：最小改动是先把「不翻译」变成「说清楚不翻译」，与 Excel 对齐：在 `_detect_hidden_word_content`（word_document.py:689）里补两项统计——① 从 `doc.element.body.iter()` 找 `w:txbxContent`，统计其中含可见文字（复用现成的 `_element_has_visible_text`）的个数；② 直接读 zip 里的 `word/footnotes.xml` / `word/endnotes.xml`（可照抄 `count_text_bearing_header_footer_parts` 的 zipfile+正则写法，避开再解析一遍整份文档），数出带字母/汉字的注释条数；把两个计数并进 `WordHiddenContentReport`，让 `describe()` 与 word_task_runner.py:932 那条质量问题如实说出「N 个文本框 / M 条脚注不会被翻译，原样保留」。真要翻译文本框则是下一步的产品决策（`txbxContent` 里就是标准的 `w:p`，抽取与写回可以直接复用现有段落逻辑，只是要在遍历入口把 `body.iter(qn('w:txbxContent'))` 的段落并进 `all_paragraphs`，并注意保护边界与位置编号）。
+
 ---
 
-## 中危（22 条）
+## 中危（25 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -594,6 +614,62 @@ C:\Users\Tom\file.docx      False  True  True
 **复现**：已复现。脚本 d1_merge.py：夹具 A1:H1 合并、每列宽 12（合计 96）、译文合成后共 55 字符。lock=False → 第1行 height=77.0；lock=True → A1 字号 6.0 且报 `[WARN] Sheet!A1 缩至最小字号 6.0pt 仍可能无法完全显示`。对照组 A5 未合并，行为符合预期。
 
 **修法**：在 `_SheetGeometry.__init__` 里顺手解析 `<mergeCells>/<mergeCell ref=...>`，建一张「锚点坐标 → 合并区列范围」的表，新增 `effective_col_width(row, col)`：命中合并区就返回区内各列 `col_width` 之和，否则返回本列宽。`_auto_adjust_row_heights` 与 `_shrink_font_for_locked_row` 的调用点都改用它。跨多行的合并区（ref 高度 > 1）同理要把可见高度按区内行高求和，否则纵向合并的格子会被判成装不下。
+
+### 中-23 替换模式把整段译文塞进第一个 run，段首若是上标脚注号 / 彩色强调字，整段译文继承那个格式（实测整句变成红色上标）
+
+`D2` · 置信度 high · new
+
+**位置**：`core/word_document.py:2494`、`core/word_document.py:1354`、`core/word_document.py:632`
+
+**机制**：`_replace_paragraph_text`（word_document.py:2494）的策略是：取 `_paragraph_content_runs` 的第一个 run 当锚点，把整段译文写进去，其余 run 一律清空。锚点选择在 `_paragraph_text_anchor_run`（:1354）里，唯一的特判是「段落以超链接开头就在超链接前插一个新 run」——只解决了「译文别变成链接」，没管锚点自身的字符格式。
+run 分裂在真实 docx 里是常态，而分裂出来的第一个 run 恰恰经常是格式异类：段首的上标脚注号/角标、被标红的强调词、定义式段落开头加粗的术语（「**安全生产**：指……」）、首字下沉。`Run.text = ...` 只换 `w:t`，`w:rPr` 原封不动留着，于是整句译文戴上了本来只属于一个字符的格式帽子。页眉页脚走同一个函数（word_document.py:632 的 `apply_header_footer_translations`），同样中招。
+
+**后果**：产物观感直接坏掉，而且是整段而不是一个字：段首有脚注号的条款，整条译文变成缩小的上标；段首有红字的段落，整段译文变红。用户会认为程序把文档格式搞乱了。这类段落在规章、合同、技术规范里成片出现，一份文档往往不止一处。
+
+**复现**：已复现。脚本 d2_runfmt.py：段落 = run1「1」(superscript=True, color=FF0000) + run2「 本条款适用于全体员工及外聘人员。」，走 `write_bilingual_docx` 的 `__XL_REPLACE__::` 路径。输出——
+'1 This clause applies to all employees and outsourced staff.' super= True color= FF0000
+'' super= None color= None
+整句英文译文继承了上标 + 红色。
+
+**修法**：锚点位置可以不动（保住词序与超链接规避），但字符格式要改成跟「主体」走：在 `_replace_paragraph_text` 里先按 `len(run.text)` 找出原段落里文字最多的那个 run 作为「主体格式源」，若它不是锚点，就把它的 `w:rPr` 深拷贝覆盖到锚点上再写文字（现成的 `_copy_run_shape` 已经在做类似的事，可以复用其取「统一格式」的判定）。更保守的最小改法：只在锚点承载的原文字数占全段不足某个比例（比如 1/3）时，从锚点的 `w:rPr` 上剔除 `w:vertAlign`（上标/下标）、`w:color`、`w:highlight` 这几个最容易致灾的属性。
+
+### 中-24 书签只圈住段落中间一段文字时，替换模式把文字全挪到 bookmarkStart 之前，书签范围内只剩空 run，REF 交叉引用刷新后变空
+
+`D2` · 置信度 high · new
+
+**位置**：`core/word_document.py:2494`、`core/word_document.py:1354`
+
+**机制**：同样出在 `_replace_paragraph_text` 的「锚点吃掉全部文字、其余 run 清空」。`w:bookmarkStart` / `w:bookmarkEnd` 是 `w:p` 的直接子元素，函数完全不看它们：锚点固定取第一个内容 run。当书签的起点排在第一个 run 之后（用户选中段落中间一个短语插书签、Word 为交叉引用自动生成的 `_Ref…` 书签圈住的是被引用的那截文字），译文就落在 bookmarkStart 之外，书签区间里只剩一个被清空的 `<w:r/>`。书签坐标还在，但范围内零字符。
+注：书签在段首（`<w:bookmarkStart/><w:r>正文</w:r><w:bookmarkEnd/>`，Word 给标题生成 `_Toc…` 时的常见形状）不受影响，锚点正好落在区间内。
+
+**后果**：文档里所有 `REF 该书签` 的交叉引用（「详见 第三章 安全总则」里的那半句）在 Word 更新域后取到空串，读者看到「详见 」后面什么都没有；`\* MERGEFORMAT` 缓存被刷掉之前不显形，用户交付出去以后才炸。PAGEREF 不受影响（书签位置还在）。
+
+**复现**：已复现。脚本 d2_bookmark.py：段落 = 「参见 」+ bookmarkStart(_Ref100) + 「第三章 安全总则」+ bookmarkEnd，走 `__XL_REPLACE__::` 路径。产物 XML——
+<w:r><w:rPr>…</w:rPr><w:t>See Chapter 3 General Safety Rules</w:t></w:r>
+<w:bookmarkStart w:id="1" w:name="_Ref100"/>
+<w:r/>
+<w:bookmarkEnd w:id="1"/>
+译文落在书签外，书签内是空 run。
+
+**修法**：在 `_paragraph_text_anchor_run`（word_document.py:1354）里加一条书签感知：先扫段落里的 `w:bookmarkStart`/`w:bookmarkEnd` 配对，若存在一个区间既不是从段首开始、也没有覆盖整段（即真正圈住段落中间一截），就把锚点选在该区间之内的第一个 run（同时保持躲开 `w:hyperlink` 的现有规则）；这样译文整体落进书签范围，REF 至少能取到完整译文而不是空串。段落里有多个互不相交书签的情形无法用单锚点全部满足，那种情况保持现状但值得在质量报告里留一条痕（与 `issue_callback` 同一条通道）。
+
+### 中-25 `paragraph.style.name` 打在热路径上，每次都触发 python-docx 全样式表扫描——9000 段文档写回 11.5s 里 9.2s 花在这一件事上
+
+`D2` · 置信度 high · new
+
+**位置**：`core/word_document.py:1823`、`core/word_document.py:1744`、`core/word_document.py:1830`
+
+**机制**：`_paragraph_style_name`（word_document.py:1823）用的是 `paragraph.style.name`。段落没有显式 `w:pStyle` 时（正文段落的常态），python-docx 会退到 `styles.default(WD_STYLE_TYPE.PARAGRAPH)` → `CT_Styles.default_for()`，那个函数每次都把 styles.xml 里的全部样式过一遍，并对每个样式做一次 `WD_STYLE_TYPE` 的枚举反解（`enum/base.py:from_xml`）。Word 默认模板带 ~160 个样式，于是一次「读段落样式名」= 160 次枚举转换。
+这个调用挂在 `_is_toc_or_field_paragraph`（:1744，正文循环里逐段调）和 `_is_heading_style`/`_detect_heading_level`（:1830，抽取时逐段调）上，等于每段付一次。结果不是 O(n²)，但常数大得离谱，而且完全可以缓存掉。
+
+**后果**：一份 9000 段（3000 正文 + 60 张 20×5 表格）的 docx，`write_bilingual_docx` 实测 11.54s，其中 9.17s（79%）耗在 `default_for`；`extract_word_segments` 另花 3.57s，覆盖率体检再花 2.06s。真实的 500 页文档段落数只多不少，用户在全部 API 调用都结束之后，还要盯着界面干等十几到几十秒的纯 CPU 空转，且这段时间没有任何进度反馈。批量翻译时每个文件都付一遍。
+
+**复现**：已复现。脚本 d2_perf.py / d2_callers.py：造 3000 段正文 + 60 张 20×5 表格的 docx（9000 段落、14220 个待译单元），cProfile 结果——
+write 11.54 s；docx/oxml/styles.py:292(default_for) ncalls=25920 cumtime=9.171s
+print_callers 显示其中 12300 次（cumtime 4.529s）直接来自 core/word_document.py:1823(_paragraph_style_name) ← :1744(_is_toc_or_field_paragraph)，其余来自写回时新建段落取默认样式。
+extract 3.57 s / coverage 2.06 s 同一份文档。
+
+**修法**：两处一起改：① `_paragraph_style_name` 改成先直接读 XML——`paragraph._p.pPr` 下的 `w:pStyle/@w:val`，取到就返回（注意这是 styleId 不是 name，`_is_toc_or_field_paragraph` 里判 'toc'/'目录' 对 styleId 同样成立，`_is_heading_style` 的判定要一并按 styleId 校准并补测试）；② 取不到 pStyle 时才回落到 `paragraph.style.name`，并把「本文档的默认段落样式名」按 `id(doc.part)` 或直接在调用方按文档缓存一次，不要每段重算。粗估写回从 11.5s 降到 ~2.4s（约 4.8×），抽取同比例受益。
 
 ---
 
@@ -1117,4 +1193,12 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 3. 数组公式 / 动态数组（`<f t=\"array\" ref=...>`）被改写成 inlineStr 后 spill 区的行为未构造夹具验证。
 4. 富文本（单格内多段不同格式）改写后格式统一丢失——机制确认（`_set_cell_inline_text` 整格重建为单个 `<t>`），但这大概率是产品已知代价，未列入 findings。
 5. 扫描/写回 key 一致性（关注点 6）只验证了公式格这一条路径（即高危那条），富文本与跨 sheet 同名场景未单独构造。
+
+### D2 — Word 翻译管线
+
+**基线与复现脚本**
+
+沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。本线自跑板块测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_word_document.py tests/test_word_coverage.py tests/test_audit_word_doc_fixes.py tests/test_word_defect_fixes.py` → 128 passed, 23 subtests passed in 2.00s（全绿）。所有复现脚本与夹具写在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d2_*，未改动仓库任何文件，未 git add/commit；每个脚本开头先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config 并断言 APP_DATA_DIR 落在 /var/folders 下（实测输出 /var/folders/y6/.../tmpXXXX），全程未触碰真实数据目录。
+
+工具预算内没查完、留给后续的部分：\n1. **停止与恢复（关注点 5）没查。** `_WordRecoveryPool`（word_task_runner.py:2833-3477）的 `_flush_pending_submits` / `_abandon_unsubmitted_ticket_locked` / `_settle_abandoned_ticket_locked` 三者的锁序与「停止时已恢复译文是否写盘」都没验证。AUDIT_FIX_PLAN 把后者列在「待用户拍板批次 2」，且仓库里已有 tests/test_audit_word_stop_write.py，看起来已有结论，所以按纪律没往下挖——但第一轮修复审查报过的 ABBA 死锁与 shutdown 后 submit 两条回归，我没有独立复核过。\n2. **.doc 老格式（关注点 4）没查。** core/word_converter.py（793 行，LibreOffice 转换路径）与失败/残留清理 `_cleanup_converted_word_paths` 完全没读。\n3. **结构保真度只覆盖了一部分。** 已实测：文本框、书签、run 分裂+格式、超链接锚点（读代码确认已修）、合并单元格/嵌套表（`_iter_unique_table_cells` 按 `w:tc` 去重，python-docx 1.2.0 的 vMerge 委派机制下正确，未见问题）。**未实测**：脚注/尾注/批注（只做了机制确认，见发现 1）、内容控件 SDT 正文（走 `detect_hidden_word_content` 告警，属已知）、OMML 公式、SmartArt、图注 SEQ 域的 `_replace_paragraph_text_around_fields` 实跑、分节与首页/奇偶页眉的三段式制表位、多级列表跨表格的编号连续性。\n4. **双语模式（关注点 3）只读了代码没实跑。** 插行路径 `_insert_translation_paragraph_after` / `_append_translation_to_cell` 的结构保真没有独立夹具验证；页眉页脚的 `_append_translation_inline` 同理。\n5. 发现 2、3、4 都根植于同一个函数 `_replace_paragraph_text`（word_document.py:2494）的「锚点吃掉全部文字」策略，改动时建议一起设计，别分三次打补丁。
 
