@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：6/17 条审查线回传，累计 24 条发现（高 6 / 中 11 / 低 7）。**
+**当前进度：7/17 条审查线回传，累计 28 条发现（高 9 / 中 12 / 低 7）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -18,10 +18,11 @@
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
 | A1 | HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py | 高 1、低 1 |
 | G1 | 模型引擎 / 故障转移 / 调度 / Token 成本 | 高 3、中 6、低 1 |
+| T1 | 翻译质量链路：过滤、覆盖率、残留、语言识别、续译 | 高 3、中 1 |
 
 ---
 
-## 高危（6 条）
+## 高危（9 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -123,9 +124,94 @@
 
 **修法**：在 `can_split` 的判据里排除限流：`can_split = ... and not is_api_concurrency_limit_error(exc)`。限流耗尽 8 轮后应当保持原批次不动，交给上层「这个 key 暂时不可用」的路径（或直接触发换连接），而不是拆批再打。顺带把 429 的重试上限从「轮数」改成「累计等待时长」，与 MINIMUM_CAPACITY_GRACE_SECONDS 对齐，避免两套计时各说各话。
 
+### 高-7 自动源语言预检没定出语言就回落 zh、多文件批次全局只取第一个语言，日/韩文件在补译模式下整份被判 ignored 不译
+
+`T1` · 置信度 high · new
+
+**位置**：`core/task_runner.py:1087`、`core/task_runner.py:1095`、`core/translation_filter.py:312`、`core/excel_coverage.py:236`
+
+**机制**：阶段 2 的语言预检结果被压成**一个全局字符串**：`detected_sources` 是把所有文件的 `result.source_langs` 拍平去重后的列表，`source_lang = detected_sources[0]`（task_runner.py:1087）；一条都没有时回落 `get_default_source_lang()` = "zh"（:1095）。这个单一值随后被原样喂给 `_apply_deferred_resume_baselines` 和 `_rebuild_coverage_plans_after_preflight`，也就是喂给**每一个文件**的补译覆盖率计划。
+
+而 `_is_source_script_text`（translation_filter.py:312-330）只在 `source_lang ∈ {ja, ko}` 时才把汉字当作待译原文。于是源语言一旦落成 zh 或 en，日文/韩文文件里的纯汉字内容（标题、条款名、表头）重新变回上一轮高-1 的「已经是中文 → 跳过」。
+
+实测（t1_ja_sourcelang.py，日文单元格 `工事契約書` / `第一条 目的` / `本契約は、発注者と受注者との間の工事に関する。` / `設計図書`）：
+```
+source_lang=ja  summary={'covered':0,'source_only':4,'ignored':0}
+source_lang=zh  summary={'covered':0,'source_only':1,'ignored':3}
+source_lang=en  summary={'covered':0,'source_only':0,'ignored':4}   ← 连假名整句都 ignored
+```
+两条触发路径都很日常：
+1. 预检请求失败 / 模型答 uncertain → `source_langs` 为空 → 回落 zh → 日文件 3/4 内容不译（上一轮高-3「整份原样输出」的同一形态，只是入口从候选正则换成了回落分支）；
+2. 一次拖一个文件夹进来、里面英文件排在日文件前面 → `detected_sources[0]` = "en" → 那个日文件 **4/4 全部 ignored**，一个字都不翻。
+
+另外注意 source_lang=en 那一行：`should_translate('本契約は…', 'zh', 'en')` 返回 True，但覆盖率计划把它判成 ignored——同一个判断在 translation_filter 和 excel_coverage 两处各有一套，结论不一致（这正是问询要点 6 说的「同一判断写了两遍」的实例）。
+
+**后果**：用户选「自动识别」翻一批日文/韩文合同，预检抖一下或批次里混了别的语言文件，产出的文件跟原文逐字相同（或只翻了带假名的几句），任务显示成功。只有任务日志里一行「N 格未补译（默认跳过）」提示，用户对着几十页原文才发现。同时预检那一次模型调用的钱已经付了。
+
+**复现**：已复现：t1_ja_sourcelang.py，输出见 mechanism 里的三行 summary（source_lang=en 时 4/4 ignored，source_lang=zh 时 3/4 ignored）。多文件批次取 detected_sources[0] 这一段为机制确认（读 task_runner.py:1080-1095 代码路径）。
+
+**修法**：两处改：(1) 语言预检结果按文件保留而不是拍平成全局一个值——`file_language_preflights` 本来就是 per-file 的，`_rebuild_coverage_plans_after_preflight` / `_apply_deferred_resume_baselines` 应按 `result.source_langs[0]` 逐文件取源语言，而不是共用 `detected_sources[0]`；(2) 预检一条语言都没定出来时不要静默回落 zh：补译模式下应把该文件的源语言判定标成未知，并让 `_is_source_script_text` 在未知源语言 + 含假名/谚文/汉字时按「待译」处理（宁可多翻一次，也不要整份原样交付），同时在任务日志里出一条 WARN 而不是只在汇总行写「实际源语言=未确定」。
+
+### 高-8 续译底稿资格核查只查「源文件新增内容」，不查「源文件删掉的内容」——用户删掉的段落/行原样留在新译文里
+
+`T1` · 置信度 high · new
+
+**位置**：`core/resume_detection.py:302`、`core/resume_detection.py:404`、`core/task_runner.py:794`、`core/word_task_runner.py:876`、`core/task_runner.py:2543`
+
+**机制**：`baseline_missing_source_texts` 只做单向消耗式比对：遍历**源文件**计划里每条 `COVERAGE_SOURCE_ONLY` 文本，去底稿的文本多重集里消耗一次；剩下没消耗掉的算「源文件新增」。反方向——底稿里有、源文件里已经没有的文本——完全不看。
+
+续译一旦通过核查，`process_path` 被整个换成上次的双语产物（task_runner.py:813 `process_path = candidate`，word_task_runner 同构）。也就是说**新产物是从旧产物文件长出来的**，源文件此后只用来做核查。源文件里被删掉的那些行/段落仍然完整地躺在底稿里，于是原样写进这一次的交付物，而且因为它在底稿里已经有译文，覆盖率计划判 covered，既不重译也不进任何报告。
+
+实测（t1_excel_resume.py，底稿为 `工程概况/施工方案/质量保证措施` 三行双语，源文件做各种改动后跑核查）：
+```
+1 源文件未改                    missing=[]
+2 源文件新增一行                 missing=['安全文明施工']
+3 源文件删掉一行(施工方案)          missing=[]        ← 判定「底稿可用」
+4 源文件改了一格文字              missing=['施工方案(修订)']
+5 新增行文字与已有行重复           missing=['工程概况']
+6 源文件重命名工作表              missing=[三条全部]
+```
+第 3 行就是缺口：用户把「施工方案」整行删掉后续译，核查放行、底稿被采用，新产物里「施工方案」及其译文照常出现。
+
+模块 docstring 和给用户的 WARN 文案（「源文件比上次翻译时多了 N 处内容」）都只讲了新增这一半，产品对外承诺的却是「源文件改过就不拿旧产物当底稿」。
+
+**后果**：用户在两次翻译之间删掉了作废条款、删掉了整张工作表、删掉了几个段落，然后点续译。交付出去的译文里这些内容仍然在——是「已经删掉的内容被当成正式交付件发出去」，而且报告里一个字都不提。合同/投标文件这类场景后果直接。
+
+**复现**：已复现：t1_excel_resume.py，case「3 源文件删掉一行(施工方案)」输出 `missing=[]`（即核查判定底稿合格）。底稿被采用后旧内容随底稿进入产物这一段为机制确认（task_runner.py:813 `process_path = candidate`，产物由底稿文件生成）。
+
+**修法**：在 `baseline_missing_source_texts` 里加反向核查：消耗完源文件全部 source_only 文本后，检查底稿多重集里是否还有**未被消耗、且属于源文段（非译文段）**的剩余项——Excel 按 (sheet, 源文半边) 计，Word 按段落源文半边计。有剩余就说明源文件删过内容，跟新增一样判 diverged 拒用底稿。给用户的文案也要分两种说法：「多了 N 处」/「少了 N 处」，别一律写成「多了」。若担心误杀（底稿里的译文半边被误算成源文），可以先只对 Excel 的整行/整表消失和 Word 的整段消失做检查，阈值放在「底稿里有源文半边但源文件里一次都没出现」这一条上。
+
+### 高-9 自定义目标语言（繁体中文/粤语/日语变体）不在残留豁免表里，正确译文被判「残留中文」并被强制重置回原文
+
+`T1` · 置信度 high · new
+
+**位置**：`core/residual_classifier.py:36`、`core/translation_filter.py:519`、`core/residual_pipeline.py:70`、`core/engine_dispatcher.py:1027`、`core/tm_hygiene.py:56`
+
+**机制**：`RESIDUAL_EXEMPT_TARGET_LANGS = frozenset({"zh", "ja"})` 是一张**只认内置语言码**的硬编码白名单。而自定义目标语言的码是 `x-custom-<base64>`（language_registry.py:89 `CUSTOM_TARGET_LANG_PREFIX`），永远进不了这张表。于是任何用汉字书写的自定义目标语言——繁体中文、粤语、文言文、日语的敬体/简体变体——都会被残留链路当成「译文里不该有中文」来处理。
+
+两条后果叠加：
+1. `translation_filter.py:519` 的 `_residual_cn_date_unit_issue` 对译文里的「2026年8月9日 / 18個月 / 500萬元」判 fail；`is_translation_redundant` 返回 True；`engine_dispatcher.py:1027` 的 `_apply_quality_filter` 执行 `results[src] = src`——**把正确的译文重置成中文原文**。这是上一轮高-2 的同一条重置路径，只是入口换成了自定义语言。
+2. `residual_pipeline.py:70` 的豁免判断同样落空，整句被 `classify_residual_spans` 切成 `cn_date_unit + sentence_block`，进 `needs_review`，在报告里报成「残留未译」。
+
+实测（t1_custom_lang.py，源文中文、译文繁体）：
+```
+=== custom target: 繁體中文 code: x-custom-57mB6auU5Lit5paH
+  validate → fail ['residual_cn_date_unit']
+  residual needs_review: [(('cn_date_unit','sentence_block'), ('本工程於','年','月','日完工','工期為','個月','總金額','萬元'))]
+=== custom target: 粵語 / 日本語（敬体）  同上，全部 fail
+ja baseline validate → pass []      ← 内置 ja 正常豁免
+```
+附带一处不一致：translation_filter.py:519 比对前做了 `_normalize_lang(target_lang)`，而 residual_classifier.py:199 / residual_pipeline.py:70 / tm_hygiene.py:56 三处都拿原始 `target_lang` 直接 `in` 判断——同一张豁免表四个调用点两套归一规则。
+
+**后果**：用户新建一个「繁体中文」或「粤语」自定义目标语言去翻中文文档：凡是带日期、月数、金额的句子（合同里几乎每段都有），模型翻好的译文在写盘前被静默换回中文原文，报告里记成「质量校验回退」；剩下的句子被报成「残留未译」。用户为每一条都付过费，拿到的是原文。这是自定义语言功能里最典型的用法（要变体而不是要小语种），踩中概率很高。
+
+**复现**：已复现：t1_custom_lang.py，三个自定义目标语言全部 `validate → fail ['residual_cn_date_unit']` + `needs_review` 非空，内置 ja 对照组 `pass`。从 fail 到 `results[src] = src` 的重置路径为机制确认（engine_dispatcher.py:1019-1030，逻辑与上一轮高-2 已确认的同一条）。
+
+**修法**：豁免判断不能按语言码做集合比对，要按「目标语言是否使用汉字书写」来判。建议在 language_registry 里给自定义语言加一个「书写系统」标记（新建自定义语言时让用户选一次，或按显示名里是否含汉字/假名做默认推断），残留链路改为调 `target_lang_uses_han(target_lang, custom_target_langs)`。过渡期最低成本的兜底：`x-custom-` 前缀的目标语言一律豁免残留中文检查（自定义语言本来就没法给它定残留规则，宁可不查也不能把正确译文重置回原文）。同时把四个调用点统一走 `_normalize_lang` 归一，别留两套。
+
 ---
 
-## 中危（11 条）
+## 中危（12 条）
 
 ### 中-1 生产实际使用的 FairApiGroupScheduler 完全忽略 request category，恢复优先级是死代码
 
@@ -280,6 +366,35 @@
 **复现**：已复现（g1_prompt.py）：`system prompt chars: 225` / `task instruction chars: 372` / `full system chars: 599`；8000 条平均 19.9 字符的词条经 `_build_text_batches(max_items=20, max_chars=3200)` 得 `batches: 400, avg items/batch: 20.0`；`system-prompt chars resent: 239600 vs body chars: 158890 -> prompt overhead ratio: 60.1%`；`cache_control present in claude_engine? False`。
 
 **修法**：这项涉及批次大小这个用户可见设置，建议先出数字给用户拍板。技术侧的具体动作：把 CHUNK_CLOUD_MAX 从 30 提到 60~80（现代模型上下文早已不是瓶颈，3200 字符预算仍然兜底），默认值从 20 提到 40；同时因为批次变大会放大单批失败的影响面，要配套第 3 条（429 不二分）和第 1 条（耗尽熔断）一起改。Claude 侧若把 system 补齐到 1024 token 以上再加 cache_control 反而更贵，不建议。
+
+### 中-12 目标语言为中文时，URL / 邮箱 / 文件路径被当成待译文本送模型：既白花钱，模型真译了还会把网址替换成中文
+
+`T1` · 置信度 high · new
+
+**位置**：`core/translation_filter.py:390`、`core/excel_coverage.py:236`、`core/engine_dispatcher.py:1027`
+
+**机制**：`should_translate` 的 target=zh 分支（translation_filter.py:376-396）保护规则只有两条：纯数字符号、以及「无空格 + 含字母 + **含数字**」的型号码。URL、邮箱、Unix/Windows 路径这类字符串不含数字时两条都躲过去，落到兜底的 `letter_count >= 2 → return True`（:390-392），一律判为要翻。
+
+反方向（target=en）却是跳过的——同一批样本在 zh→en 下全部 False，en→zh 下全部 True，两个方向对「什么算可翻文本」的定义不一致。
+
+实测（t1_filter_matrix.py，列为 zh→en / en→zh / ja→zh）：
+```
+https://example.com/a/b     False  True  True
+user@example.com            False  True  True
+C:\Users\Tom\file.docx      False  True  True
+/usr/local/bin/python       False  True  True
+```
+补译计划也照单全收（t1_url_zh.py）：`summary={'covered':0,'source_only':5,...}`，5 条里 4 条是 URL/邮箱/路径。
+
+下游两种结局都不好（t1_url_zh.py 第一段输出）：
+- 模型原样返回 → `same_as_source` 判 fail → `_apply_quality_filter` 重置为原文并记一条 `quality_reset`，报告里堆出一串假的「质量校验回退」；
+- 模型真把它译了（`is_translation_redundant('https://example.com/a/b', '示例网址', 'zh')` → **False**，校验放行）→ 网址/邮箱/路径被中文短语替换写进产物，没有任何一道闸拦得住。
+
+**后果**：英译中（以及任何 X→中文）的表格/文档里，每个网址、邮箱、文件路径都是一次自费的模型调用；报告里多出一批看不懂的「质量校验回退」条目误导用户去查译文质量；模型一旦按字面翻译，交付件里的链接和联系邮箱就被替换成中文词，用户点不开也发不出去。含供应商联系表、参考链接的文件必踩。
+
+**复现**：已复现：t1_filter_matrix.py（39 个样本的三向判定表）+ t1_url_zh.py（补译计划 5 条 source_only 全含 URL/邮箱/路径；`is_translation_redundant(url, '示例网址', 'zh')` 返回 False，即译坏了也放行）。
+
+**修法**：在 `should_translate` 的 target=zh 分支里，把 zh→X 方向已有的「结构化字面量」保护补齐并抽成一个共用判据（两个方向共用一份，别再各写一套）：无空格且匹配 URL（`^\w+://` 或 `^www\.`）、邮箱（`^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$`）、绝对/相对路径（含 `/` 或 `\` 且无空格）、纯扩展名文件名的一律 return False。同时在 `_validate_translation_strict` 里加一条对称守卫：原文整体是 URL/邮箱/路径而译文不是同一串时判 fail，堵住「模型真把网址翻了」这条没人拦的路。
 
 ---
 
@@ -588,4 +703,33 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - OpenAI Chat Completions 路径不校验 `finish_reason == "length"`：截断响应会伪装成解析失败并触发 15 次二分，机制与第 6 条同型，但因为 payload 没设 max_tokens、由服务端默认值决定，我没能构造出确定的触发条件，故未单列。
 
 **跑批建议：** 第 1、2、3 条互相咬合（耗尽不熔断 → 二分放大 → 宽限到点丢弃已付费结果），修的时候建议放同一个集群、一次改完再验，分开改容易出现「熔断加了但丢弃路径还在」这种半吊子状态。
+
+### T1 — 翻译质量链路：过滤、覆盖率、残留、语言识别、续译
+
+**基线与复现脚本**
+
+未跑全量（按指示复用给定基线 1664 passed）。只跑本板块直接相关的测试文件：`./.venv/bin/python3 -m pytest -q tests/test_resume_detection.py tests/test_excel_resume.py tests/test_word_resume.py tests/test_audit_filter_fixes.py tests/test_residual_pipeline.py tests/test_language_preflight.py tests/test_coverage_arbitration.py` → **154 passed, 89 subtests passed in 1.09s**（全绿，本报告 4 条发现全部落在既有覆盖之外）。
+
+自建复现脚本（均先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config，并断言 `config.APP_DATA_DIR` 落在 /var/folders 下；全程未读写用户真实数据目录）：
+- /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/t1_ja_sourcelang.py
+- .../t1_excel_resume.py
+- .../t1_custom_lang.py
+- .../t1_filter_matrix.py
+- .../t1_url_zh.py
+
+**排除掉的假阳性 / 查过没问题的：**
+1. `coverage_arbitration` 的批次对齐——id 用 `str(index)`、每批 `allowed` 白名单过滤越界 id、缺项按 uncertain，仲裁结果直接改 `unit.status` 且写入端读的是同一批 CoverageUnit 对象（内存同一引用，不存在上一轮中-29 那种 key 对不上）。没有发现。
+2. 仲裁「限流抖动 → 整批 uncertain → 全部重译」是**设计上的取舍**（coverage_review.py 注释明写「宁可多翻，不可漏翻」，且 uncertain 数单独上报），不当发现报。
+3. `RESIDUAL_EXEMPT_TARGET_LANGS` 缺 `ko`：现代韩文译文不写「2026年8月9日」，构造不出误判样本，不报。
+4. Excel/Word 产物恒为双语（`bilingual_output_name`，无替换模式），所以「双语/替换模式切换」这条边界在当前产品形态下不存在。
+5. 续译换语言：Excel/Word 靠文件名里的语言片段天然错开；PDF 有 `_pdf_manifest_lang_matches` 语言闸。核对过，没问题。
+6. 续译目录发现：`_glob_output_dirs` 用 iterdir 字面量前缀比对（不受 `[ ] * ?` 影响），`file_scanner.py:166` 会把带 `_翻译输出_` 的路径整条排除，不会把上次产物当新源文件重扫。没问题。
+7. 高-4 说的「ignored 类不进报告」现已修好（`format_ignored_coverage_report`，tests/test_audit_ignored_coverage_log.py 覆盖）——这也是发现 1 严重度没标到「完全静默」的原因：用户至少能在任务日志里看到一行「N 格未补译」。
+8. `language_preflight` 的候选正则确实按高-3 补全了阿拉伯/希伯来/泰/老挝/缅甸/高棉/埃塞俄比亚/谚文。仍缺亚美尼亚(0530-058F)、格鲁吉亚(10A0-10FF)、藏文(0F00-0FFF)、蒙文传统字(1800-18AF)——但这几种都不在 `SUPPORTED_SOURCE_LANGS` 里，构造不出可达路径，不报。
+
+**未及验证（预算到线，留给下一轮）：**
+- `residual_repair.py` / `residual_replay.py` 两个模块只做了接口层扫读，没构造样本实跑；`mixed_language.py`（899 行）完全没查。
+- 续译的 PDF 分支（`_classify_pdf` 的体积闸 + `reusable_pdf_pages` 计数口径）只读了代码，没造 manifest 实跑。
+- 发现 2 的反向核查我只在 Excel 上实测；Word 侧（`word_task_runner.py:876`）是同构代码，按机制推定同样中招，未单独构造 .docx 复现。
+- `unit_ledger.py`（200 行）没读，问询要点 6 里「同一判断写了几遍」只查到 translation_filter vs excel_coverage 这一处不一致（已写进发现 1）。
 
