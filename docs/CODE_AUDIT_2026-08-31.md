@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：11/17 条审查线回传，累计 39 条发现（高 11 / 中 18 / 低 10）。**
+**当前进度：12/17 条审查线回传，累计 40 条发现（高 11 / 中 19 / 低 10）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -23,6 +23,7 @@
 | T1 | 翻译质量链路：过滤、覆盖率、残留、语言识别、续译 | 高 3、中 1 |
 | M1 | 翻译记忆库（TM | 高 1、中 2、低 2 |
 | F1 | 前端工作区、任务中心、客户端 | 中 1、低 1 |
+| F2 | 前端设置页、记忆库页、更新流程、样式 | 中 1 |
 
 ---
 
@@ -243,7 +244,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 ---
 
-## 中危（18 条）
+## 中危（19 条）
 
 ### 中-1 中-28「共享公式让渡 O(n²)」只降了常数，复杂度没变：单个大共享组仍是平方增长，1 万行公式列实测卡死 48 秒
 
@@ -517,6 +518,20 @@ C:\Users\Tom\file.docx      False  True  True
 (1) 把 captureLogScroll/restoreLogScroll 那套推广成通用的「按 CSS 选择器保存/还原滚动位置」——renderInto 开头对 `.log`、`.tablecard [style*=overflow]`（或给两个 tableWrap 加上稳定的 class，如 `.ws-scroll`，并各配一个 data-scroll-key）统一 capture，重建后统一 restore。表格行不像日志会被 200 条上限挤掉，直接还原 scrollTop 即可，不需要日志那套锚点行方案。
 (2) 给 rerender 加一层 requestAnimationFrame 合帧：handleTaskEvent 只置脏标记，同一帧内的多条 log/progress 事件只重建一次。这样 800 页那档 38 ms/次的开销从「按事件数」降到「按帧」，也顺带减少滚动被打断的次数。
 （更彻底的做法是逐页审核表改成只重建变化的行，但那要给行做 key 索引，工程量大得多；先做 (1)+(2)。）
+
+### 中-19 记忆库切换语言对失败时，源/目标语言等模块状态不回滚也不重渲染，导致「已选」与实际选中 ID 集合脱节，后续全选/批量删除可能作用在用户未看到的语言对上
+
+`F2` · 置信度 medium · new
+
+**位置**：`ui/src/views/library.ts:368-394`、`ui/src/views/library.ts:328-354 (handleSelectAllTm)`、`ui/src/views/library.ts:428-452 (confirmBulkDelete)`、`ui/src/views/library.ts:264-296 (applyTmQueryChange，对照用的“已修好”版本)`
+
+**机制**：saveLangPair() 一进函数体就直接把 sourceLang/targetLang/page 改成新值、清空 selectedIds、并把新 pair 塞进 recentPairs（368-380 行），然后才 try persistSettings(PUT /api/settings)。一旦这次 PUT（或紧随其后的 refreshTm/refreshConflicts）失败，catch 分支（391-393 行）只弹一条 toast，不回滚 sourceLang/targetLang/page，也不调用 rebuildToolbar()/renderTable()——表格 DOM 停在旧数据，但模块级 sourceLang/targetLang 已经是新值。文件内其余所有用 tmLangPair() 取当前语言对的调用点（handleSelectAllTm 的 fetchAllMatchingTmIds、openCleanReviewForCurrentPair 等）此后都会用这个“未落盘、未渲染”的新 pair 去查询。confirmBulkDelete() 直接拿 selectedIds 里的原始 id 发 /api/tm/entries/bulk/delete，完全不校验这些 id 是否属于当前表格显示的语言对。对照同文件 264-278 行 applyTmQueryChange() 的写法——那里明确写了大段注释说明“旧代码请求前清空选中集合、失败不回滚不提示”是要修的 bug，并做了完整的 snapshot/restore；但 saveLangPair()（语言对切换，产品含义与搜索/翻页完全同类）没有套用同一套修法，是同一 bug 类在另一入口的漏网实例。
+
+**后果**：用户切换记忆库语言对时如果这次保存失败（网络抖动、后端瞬时 5xx），界面上的语言选择控件（自定义下拉组件）大概率已经视觉上显示了新选项（点击即改自身展示态），但下方表格仍是旧语言对的数据，之前勾选的行的“已选”计数被清零但复选框视觉状态未刷新——已经是一次可感知的不一致。更严重的是：只要用户此后点了一次“选择全部”，实际发出的查询用的是新（未提交）语言对，selectedIds 里装的 id 属于新语言对，而屏幕上仍呈现旧语言对的行；此时点“批量删除”，删除请求按 selectedIds 原样发送，删掉的是用户根本没有在看的那个语言对下的记录，且没有任何界面文案提示“这些 id 不对应你现在看到的表格”。属于会造成非预期数据丢失的记忆库操作，触发条件是“语言对切换保存失败 + 用户不理会失败 toast 继续操作”的复合场景，不常见但一旦触发后果是不可逆删除。
+
+**复现**：机制确认（未做实测复现）。已完整读取 saveLangPair()（368-394 行）确认状态在 try 之前无条件修改、catch 分支无回滚无重渲染；已读取 handleSelectAllTm()/fetchAllMatchingTmIds()（307-352 行）确认其查询参数来自 tmLangPair() 这一模块级可变状态；已读取 confirmBulkDelete()（428-452 行）确认删除请求直接使用 selectedIds 原始值、不做语言对归属校验。未搭建 PUT /api/settings 失败的实际前端环境去触发（项目前端目前没有任何测试基建，ui/package.json 只有 tsc --noEmit / vite build，没有 vitest/jest，临时补一套 DOM+mock 环境的成本超出本轮预算），故标“机制确认”而非“已复现”。
+
+**修法**：把 saveLangPair() 改成和 applyTmQueryChange() 一样的 snapshot/try/catch-rollback 模式：进入前拍一份 { sourceLang, targetLang, page, selectedIds, recentPairs } 快照；PUT 或后续 refreshTm/refreshConflicts 任一步失败时，把这几个变量原样恢复成快照值再调用 rebuildToolbar()/renderTable()，让 DOM 与失败后的真实状态对齐，toast 之外不留任何“看不见的状态漂移”。最省事的做法是直接让 saveLangPair 复用 applyTmQueryChange 的 change 回调机制（把 sourceLang/targetLang 的赋值也塞进 change() 闭包里），避免同一套回滚逻辑维护两份。
 
 ---
 
@@ -987,4 +1002,12 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 2. tasks.ts watchTask 的重连上限：streamTask 内部 7 次退避后抛出，catch 里若 getTask 成功且非终态就 setTimeout(0) 重新 watchTask，等于开启新一轮 7 次——「事件流一直 404 但任务详情接口一直正常」这种状态下是无上限的循环重连。需要造后端故障才能验，未做。
 3. api-client.saveBinaryDownload（api-client.ts:194）直接把服务端 Content-Disposition 里的 filename 当原生保存框的 defaultPath。本地 sidecar 可信，判为不值得报，但如果将来允许接远端服务需要复查。
 4. 大列表：记忆库（library.ts）上万条的渲染路径本线未覆盖（不在 F1 文件清单里）。
+
+### F2 — 前端设置页、记忆库页、更新流程、样式
+
+**基线与复现脚本**
+
+未重跑全量（按指示复用既定基线：pytest 1664 passed + 249 subtests，ruff/tsc/cargo clippy 干净）。本线是纯前端 TS 审查，未执行任何测试命令；核对手段为静态代码读取 + 跨文件比对（settings.ts vs config.py/settings.py 的字段范围、update-controller.ts 状态机逐分支读取、markdown.ts 全文读取确认无 innerHTML/无链接渲染）。
+
+本线大量既有前端逻辑（settings.ts 五个数值字段区间、领域 Prompt 拉取回退、update-controller.ts 的下载/安装/签名/磁盘满/lastCheckOk 状态机、markdown.ts 的发布说明渲染、settings.css/workspace.css/tokens.css 的暗色 token）在读码核对后确认与上一轮审计（CODE_AUDIT_2026-08-29 中-14/中-17/中-22/高-12/高-14）记录的修复状态一致，未发现新问题或回归，因此未逐条重复列为 finding：(1) settings.ts 里 word_batch 四个字段 + pdf.page_retry_attempts + pdf.page_generation_concurrency 的 min/max 已与 config.py 的 WORD_BATCH_*/PDF_PAGE_RETRY_ATTEMPTS_*/PDF_PAGE_CONCURRENCY_SAFETY_CAP 逐项核对一致（settings.ts:2598-2630 vs config.py:216-257）。(2) update-controller.ts 的 runUpdateCheck()/startInstall() 对“请求异常”与“200+status:error”两种失败分开记录 lastCheckOk，disk-full/signature/permission/network 四类诊断码分流清楚，失败文案统一带“当前版本没有被改动”，未发现中-22 类回归。(3) markdown.ts 全文读取确认发布说明渲染器完全不解析/不生成 `<a>`，[text](url) 语法只保留纯文本、丢弃链接地址，不存在 href 注入面，也没有任何 innerHTML 使用，维持“无 XSS 面”结论。(4) library.ts 的清洗建议“三件套”（常驻待复核提示、面板顶部失效汇总 staleCount、写入后逐行去向 outcomes）在零条/全部失效/部分失败三种边界下都有对应文案与 chip 展示，未发现新问题。(5) settings.css / workspace.css 未见硬编码颜色；app.css 里少量字面量色值（#fff、渐变、rgb(0 0 0/…) 阴影）都是画在纯色强调背景上的白字/白色圆点，或已经按 :root[data-theme="dark"] 显式覆盖过的渐变终止色，与 tokens.css 的 --surface 暗色值逐一核对数值一致，未发现暗色下看不清的组合。以下方向本线因预算已用去约 45 次工具调用、未及深入，供后续补查：settings.ts 里模型角色（cloud/local）切换与厂商预设联动的全部分支（只抽查了数值字段，没有走完整个角色矩阵）；library.ts 大数据量（万级）渲染路径的实测性能（本线与之前的 F1 都未覆盖，08-31 审计文档明确记了这一空档）；quickstart.ts、help.ts、model-pill.ts、dev-tauri-shim.ts 四个小文件只做了体量确认（89~186 行），未逐行核对。
 
