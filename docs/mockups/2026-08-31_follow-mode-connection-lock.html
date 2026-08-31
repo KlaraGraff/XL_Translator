@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>样张 · 跟随模式下的连接列表（Bug B 修复方案）</title>
+<style>
+:root{
+  color-scheme:light;
+  --accent-base:#5468ff;--ground:#f4f6fc;--ground-2:#ebeef8;--rail:#fbfcfe;--surface:#fff;--surface-2:#f8fafe;
+  --ink:#141a2e;--ink-2:#556080;--ink-3:#8a93ac;--line:#e7ebf5;--line-2:#d9dfee;
+  --accent:var(--accent-base);--accent-strong:#4353cc;--on-accent:#fff;--tint:#f0f1ff;--tint-line:#ccd2ff;--tint-ink:#404fc2;
+  --ok:#12a366;--ok-t:#e2f4ed;--ok-l:#b3e2ce;--warn:#c77a00;--warn-t:#f8eede;--warn-l:#edd4ad;
+  --danger:#e5484d;--danger-t:#fdebec;--danger-l:#f5bfc1;
+  --sh-sm:0 1px 2px rgb(24 34 66 / 5%);--sh-md:0 1px 2px rgb(24 34 66/5%),0 10px 26px -14px rgb(30 45 90/20%);
+  --r-lg:15px;--r-md:12px;--r-sm:9px;
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--font);font-size:13px;padding:28px 22px 60px}
+.wrap{max-width:1560px;margin:0 auto}
+h1{font-size:19px;margin:0 0 6px}
+.lede{color:var(--ink-2);font-size:13px;line-height:1.65;max-width:900px;margin:0 0 22px}
+.lede code{font-family:var(--mono);font-size:12px;background:var(--ground-2);padding:1px 5px;border-radius:4px}
+.screens{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+.screen{width:485px;flex:none}
+.cap{margin:0 0 9px}
+.cap b{display:block;font-size:13.5px}
+.cap span{display:block;font-size:12px;color:var(--ink-2);line-height:1.55;margin-top:3px}
+.cap .tag{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.05em;border-radius:5px;padding:2px 7px;margin-bottom:5px}
+.tag.now{background:var(--danger-t);color:var(--danger)}
+.tag.new{background:var(--ok-t);color:var(--ok)}
+.tag.base{background:var(--ground-2);color:var(--ink-2)}
+.panel{background:var(--ground);border:1px solid var(--line-2);border-radius:var(--r-lg);padding:14px;display:flex;flex-direction:column;gap:12px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-sm)}
+.tc-head{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2)}
+.tc-head b{color:var(--ink);font-weight:600;font-size:13px}
+.tc-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+.btn{height:34px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:550;cursor:pointer;display:inline-flex;align-items:center;gap:7px;justify-content:center}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--on-accent);font-weight:600;box-shadow:var(--sh-sm)}
+.btn.dgr{background:transparent;border-color:var(--danger-l);color:var(--danger)}
+.btn.mini{height:27px;padding:0 10px;font-size:12px;border-radius:7px}
+.btn:disabled{cursor:default;opacity:.45}
+.btn.warnpri{background:var(--warn);border-color:transparent;color:#fff;font-weight:600}
+.seg{display:flex;gap:8px}
+.segc{flex:1;border:1px solid var(--line);border-radius:var(--r-md);padding:9px 12px;background:var(--surface)}
+.segc b{display:block;font-size:12.5px;font-weight:600}
+.segc span{font-size:11px;color:var(--ink-3)}
+.segc.on{border-color:var(--tint-line);background:var(--tint)}
+.segc.on b{color:var(--tint-ink)}
+.conn{display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--line);font-size:13px}
+.conn:first-of-type{border-top:0}
+.conn.selected{background:var(--tint)}
+.conn .cdot{width:8px;height:8px;border-radius:99px;flex:none}
+.conn .nm{flex:1;font-weight:600}
+.conn .acts{display:flex;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;border-radius:99px;padding:2.5px 9px}
+.chip.ok{background:var(--ok-t);color:var(--ok)}.chip.warn{background:var(--warn-t);color:var(--warn)}
+.chip.tint{background:var(--tint);color:var(--tint-ink)}.chip.mute{background:var(--ground-2);color:var(--ink-2)}
+.field{margin-bottom:11px}
+.field label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:4px;font-weight:550}
+.field input,.field select{width:100%;height:32px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);font:inherit;font-size:12.5px;padding:0 9px}
+.field input:disabled,.field select:disabled{background:var(--ground-2);color:var(--ink-3)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+.radio-row{display:flex;gap:14px;font-size:12.5px;align-items:center;color:var(--ink);flex-wrap:wrap}
+.radio-row input{accent-color:var(--accent)}
+.radio-row label{display:inline-flex;align-items:center;gap:5px;cursor:default}
+.body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.note{font-size:12px;color:var(--ink-3);line-height:1.55;margin:0}
+.seclabel{font-size:11px;font-weight:650;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;margin:4px 0 -2px}
+.empty{display:flex;flex-direction:column;align-items:center;gap:5px;color:var(--ink-3);padding:26px 20px;text-align:center}
+.empty b{color:var(--ink-2);font-weight:600;font-size:13.5px}
+.empty p{font-size:12.5px;margin:0;max-width:280px}
+.statusrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.hintdot{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:99px;background:var(--ground-2);color:var(--ink-3);font-size:9.5px;font-weight:700;margin-left:5px;vertical-align:1px}
+
+/* 新增：跟随/待保存的解释条 */
+.statebar{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);font-size:12.5px;line-height:1.6}
+.statebar .ic{flex:none;width:16px;height:16px;border-radius:99px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;margin-top:1px}
+.statebar.info{background:var(--tint);color:var(--tint-ink)}
+.statebar.info .ic{background:var(--tint-ink);color:#fff}
+.statebar.pend{background:var(--warn-t);color:#8a5600}
+.statebar.pend .ic{background:var(--warn);color:#fff}
+.statebar .txt{flex:1}
+.statebar .txt b{font-weight:650}
+.statebar .go{margin-left:auto;flex:none}
+.locked .conn{opacity:.55}
+.accessbar{display:flex;align-items:center;gap:14px;padding:12px 16px;flex-wrap:wrap}
+.accessbar .lbl{font-size:12.5px;font-weight:600;color:var(--ink);flex:none}
+.diagram{display:flex;gap:16px;flex-wrap:wrap;margin:0 0 26px}
+.dg{width:340px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:13px 15px}
+.dg h4{margin:0 0 9px;font-size:12.5px}
+.dg .box{border:1px dashed var(--line-2);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--ink-2);margin-bottom:6px}
+.dg .box.hit{border-style:solid;border-color:var(--danger-l);background:var(--danger-t);color:var(--danger);font-weight:600}
+.dg .box.fix{border-style:solid;border-color:var(--ok-l);background:var(--ok-t);color:var(--ok);font-weight:600}
+.dg .box.sub{margin-left:16px}
+</style></head><body><div class="wrap">
+
+<h1>样张 · 「跟随文档翻译」把连接列表锁死（Bug B 修复方案）</h1>
+<p class="lede">
+根因不是某个按钮写错了，是<b>位置</b>：「连接方式」是<b>整个用途</b>（角色）的设置，却渲染在「连接详情卡」里、跟在连接列表下面——看起来像属于你当下选中的那一条连接。
+于是「在第二条连接里选跟随」这个动作，在界面上完全合理，在代码里却是角色级改动，四个症状全从这个错位长出来。
+本方案做三件事：<b>把「连接方式」提到角色级位置</b>、<b>锁定时把话说清楚而不是让按钮消失</b>、<b>给「切回云端但还没保存」这个死角一条明路</b>。后端语义不动。
+</p>
+
+<div class="diagram">
+  <div class="dg"><h4>现在的结构（错位）</h4>
+    <div class="box">角色分段（文档翻译 / 术语清洗 / …）</div>
+    <div class="box">连接列表卡 ── 选中第 2 条</div>
+    <div class="box">连接详情卡</div>
+    <div class="box sub hit">↳ 连接方式（其实是角色级）</div>
+    <div class="box sub">↳ 服务商 / Base URL / 模型 / 密钥</div>
+  </div>
+  <div class="dg"><h4>改后的结构</h4>
+    <div class="box">角色分段（文档翻译 / 术语清洗 / …）</div>
+    <div class="box fix">连接方式（角色级，统辖下面两张卡）</div>
+    <div class="box">连接列表卡</div>
+    <div class="box">连接详情卡</div>
+    <div class="box sub">↳ 服务商 / Base URL / 模型 / 密钥</div>
+  </div>
+</div>
+
+<div class="screens">
+
+<!-- A -->
+<div class="screen">
+  <p class="cap"><span class="tag base">基线</span><b>A · 云端 API，选中第二条连接</b>
+  <span>改动后的常态。「连接方式」独立成一条，选哪条连接都不会动它——症状 1 的「列表莫名跳回第一条」从此不再发生。</span></p>
+  <div class="panel">
+    <div class="seg">
+      <div class="segc on"><b>PDF 翻译模型</b><span>gpt-5.6-luna</span></div>
+      <div class="segc"><b>文档翻译</b><span>deepseek-chat</span></div>
+      <div class="segc"><b>术语清洗</b><span>跟随文档翻译</span></div>
+    </div>
+    <div class="card"><div class="accessbar">
+      <span class="lbl">连接方式<span class="hintdot">?</span></span>
+      <div class="radio-row">
+        <label><input type="radio" checked> 云端 API</label>
+        <label><input type="radio"> 本地模型</label>
+        <label><input type="radio"> 跟随文档翻译</label>
+      </div>
+    </div></div>
+    <div class="card">
+      <div class="tc-head"><b>连接列表</b><span class="tc-tools"><button class="btn mini">＋ 新增连接</button></span></div>
+      <div class="conn"><span class="cdot" style="background:var(--ok)"></span><span class="nm">主账号</span><span class="chip tint">主用</span>
+        <span class="acts"><button class="btn mini">测试</button><button class="btn mini dgr">删除</button></span></div>
+      <div class="conn selected"><span class="cdot" style="background:var(--ink-3)"></span><span class="nm">备用厂商</span><span class="chip warn">无密钥</span>
+        <span class="acts"><button class="btn mini">测试</button><button class="btn mini">设为主用</button><button class="btn mini dgr">删除</button></span></div>
+    </div>
+    <div class="card"><div class="body">
+      <div class="grid2">
+        <div class="field"><label>服务商</label><select><option>OpenAI 兼容</option></select></div>
+        <div class="field"><label>模型名称</label><input value="deepseek-chat"></div>
+      </div>
+      <div class="field"><label>Base URL</label><input value="https://api.deepseek.com/v1"></div>
+      <div class="field"><label>连接名称</label><input value="备用厂商"></div>
+      <div class="field"><label>API 密钥</label><input type="password" placeholder="粘贴该连接的 API 密钥"></div>
+      <div class="statusrow"><span class="chip mute">未获取列表</span><span class="chip mute">未测试</span></div>
+      <div style="display:flex;gap:8px;margin-top:2px"><button class="btn pri">✓ 保存配置</button><button class="btn">获取模型列表</button><button class="btn">测试连接</button></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- B -->
+<div class="screen">
+  <p class="cap"><span class="tag new">改后</span><b>B · 跟随文档翻译（已保存）</b>
+  <span>症状 2 的解法。列表仍然锁定（后端 <code>_own_pool_or_422</code> 是硬约束），但：① 卡头挂一条蓝色说明，讲清为什么锁、怎么解锁；② 按钮<b>保留并置灰</b>，不再整个消失——「删除按钮不见了」和「暂时不能删」是两种完全不同的心理感受。</span></p>
+  <div class="panel">
+    <div class="seg">
+      <div class="segc on"><b>PDF 翻译模型</b><span>跟随文档翻译</span></div>
+      <div class="segc"><b>文档翻译</b><span>deepseek-chat</span></div>
+      <div class="segc"><b>术语清洗</b><span>跟随文档翻译</span></div>
+    </div>
+    <div class="card"><div class="accessbar">
+      <span class="lbl">连接方式<span class="hintdot">?</span></span>
+      <div class="radio-row">
+        <label><input type="radio"> 云端 API</label>
+        <label><input type="radio"> 本地模型</label>
+        <label><input type="radio" checked> 跟随文档翻译</label>
+      </div>
+    </div></div>
+    <div class="card locked">
+      <div class="tc-head"><b>连接列表</b><span class="chip mute">跟随中 · 只读</span><span class="tc-tools"><button class="btn mini" disabled>＋ 新增连接</button></span></div>
+      <div class="statebar info"><span class="ic">i</span><span class="txt">
+        <b>跟随「文档翻译」时，这个用途直接用文档翻译的连接和密钥</b>，不需要自己的连接。<br>
+        下面这些是你自己配的连接，我们替你留着，一条都没删。要改它们，先把连接方式切回「云端 API」并保存。</span></div>
+      <div class="conn"><span class="cdot" style="background:var(--ok)"></span><span class="nm">主账号</span><span class="chip tint">主用</span>
+        <span class="acts"><button class="btn mini" disabled>测试</button><button class="btn mini dgr" disabled>删除</button></span></div>
+      <div class="conn"><span class="cdot" style="background:var(--ink-3)"></span><span class="nm">备用厂商</span><span class="chip warn">无密钥</span>
+        <span class="acts"><button class="btn mini" disabled>测试</button><button class="btn mini" disabled>设为主用</button><button class="btn mini dgr" disabled>删除</button></span></div>
+    </div>
+    <div class="card"><div class="body">
+      <div class="grid2">
+        <div class="field"><label>服务商</label><select disabled><option>OpenAI 兼容（来自文档翻译）</option></select></div>
+        <div class="field"><label>模型名称</label><input value="gpt-5.6-luna"></div>
+      </div>
+      <div class="field"><label>Base URL</label><input disabled value="https://api.deepseek.com/v1"></div>
+      <div class="field"><label>API 密钥</label><input type="password" disabled placeholder="跟随时使用来源角色的密钥"></div>
+      <p class="note">跟随只共享服务商、Base URL 和密钥；模型名称、速率和测试状态始终独立。</p>
+      <div style="display:flex;gap:8px;margin-top:2px"><button class="btn pri">✓ 保存配置</button><button class="btn">测试连接</button></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- C -->
+<div class="screen">
+  <p class="cap"><span class="tag new">改后 · 关键</span><b>C · 刚切回「云端 API」，还没保存</b>
+  <span>症状 4 的死角。切回云端只改了草稿，后端记的池子归属还指着「文档翻译」，所以列表按现在的代码<b>仍然锁着、删除按钮仍然没有</b>——用户完全无从判断下一步该点哪。<br>改后：换成橙色待办条，把「还差一步」和那一步的按钮摆在同一行。点「保存并解锁」就是那次角色级 PUT，回来即恢复可编辑。</span></p>
+  <div class="panel">
+    <div class="seg">
+      <div class="segc on"><b>PDF 翻译模型</b><span>跟随文档翻译</span></div>
+      <div class="segc"><b>文档翻译</b><span>deepseek-chat</span></div>
+      <div class="segc"><b>术语清洗</b><span>跟随文档翻译</span></div>
+    </div>
+    <div class="card"><div class="accessbar">
+      <span class="lbl">连接方式<span class="hintdot">?</span></span>
+      <div class="radio-row">
+        <label><input type="radio" checked> 云端 API</label>
+        <label><input type="radio"> 本地模型</label>
+        <label><input type="radio"> 跟随文档翻译</label>
+      </div>
+      <span class="chip warn" style="margin-left:auto">未保存</span>
+    </div></div>
+    <div class="card locked">
+      <div class="tc-head"><b>连接列表</b><span class="chip warn">待保存</span><span class="tc-tools"><button class="btn mini" disabled>＋ 新增连接</button></span></div>
+      <div class="statebar pend"><span class="ic">!</span><span class="txt">
+        <b>连接方式改成「云端 API」了，但还没保存。</b><br>保存之后这个用途才重新拥有自己的连接列表，新增 / 设为主用 / 删除也才能用。</span>
+        <span class="go"><button class="btn mini warnpri">保存并解锁</button></span></div>
+      <div class="conn"><span class="cdot" style="background:var(--ok)"></span><span class="nm">主账号</span><span class="chip tint">主用</span>
+        <span class="acts"><button class="btn mini" disabled>测试</button><button class="btn mini dgr" disabled>删除</button></span></div>
+      <div class="conn"><span class="cdot" style="background:var(--ink-3)"></span><span class="nm">备用厂商</span><span class="chip warn">无密钥</span>
+        <span class="acts"><button class="btn mini" disabled>测试</button><button class="btn mini" disabled>设为主用</button><button class="btn mini dgr" disabled>删除</button></span></div>
+    </div>
+    <div class="card"><div class="body">
+      <div class="grid2">
+        <div class="field"><label>服务商</label><select><option>OpenAI 兼容</option></select></div>
+        <div class="field"><label>模型名称</label><input value="gpt-5.6-luna"></div>
+      </div>
+      <div class="field"><label>Base URL</label><input value="https://api.deepseek.com/v1"></div>
+      <div class="field"><label>连接名称</label><input disabled placeholder="保存后可改"></div>
+      <div class="field"><label>API 密钥</label><input type="password" placeholder="粘贴该连接的 API 密钥"></div>
+      <div style="display:flex;gap:8px;margin-top:2px"><button class="btn pri">✓ 保存配置</button><button class="btn">测试连接</button></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- D -->
+<div class="screen">
+  <p class="cap"><span class="tag base">回归</span><b>D · 本地模型</b>
+  <span>本地模式本来就没有连接列表，整张卡不出现。这一屏只是确认「连接方式」搬家之后，本地态的版式没被搞坏。</span></p>
+  <div class="panel">
+    <div class="seg">
+      <div class="segc on"><b>PDF 翻译模型</b><span>qwen2.5:7b</span></div>
+      <div class="segc"><b>文档翻译</b><span>deepseek-chat</span></div>
+      <div class="segc"><b>术语清洗</b><span>跟随文档翻译</span></div>
+    </div>
+    <div class="card"><div class="accessbar">
+      <span class="lbl">连接方式<span class="hintdot">?</span></span>
+      <div class="radio-row">
+        <label><input type="radio"> 云端 API</label>
+        <label><input type="radio" checked> 本地模型</label>
+        <label><input type="radio"> 跟随文档翻译</label>
+      </div>
+    </div></div>
+    <div class="card"><div class="body">
+      <div class="grid2">
+        <div class="field"><label>本地运行器</label><select><option>Ollama</option></select></div>
+        <div class="field"><label>模型名称</label><input value="qwen2.5:7b"></div>
+      </div>
+      <div class="field"><label>Base URL</label><input value="http://127.0.0.1:11434/v1"></div>
+      <p class="seclabel">速率设置</p>
+      <div class="grid2">
+        <div class="field"><label>批次大小</label><input value="8"></div>
+        <div class="field"><label>并发数</label><input value="1"></div>
+      </div>
+      <p class="note">改动即时保存，运行中的任务不受影响。</p>
+      <div class="statusrow"><span class="chip ok">测试通过</span></div>
+      <div style="display:flex;gap:8px;margin-top:2px"><button class="btn pri">✓ 保存配置</button><button class="btn">测试连接</button></div>
+    </div></div>
+  </div>
+</div>
+
+<!-- E -->
+<div class="screen">
+  <p class="cap"><span class="tag base">空态</span><b>E · 还没有任何连接</b>
+  <span>新装或刚清空的样子，作为对照：只有这一种情况下「连接列表」才是真的空的。跟随态（B）永远不该长成这样——用户自己配的连接一直在，只是暂时不能改。</span></p>
+  <div class="panel">
+    <div class="seg">
+      <div class="segc on"><b>PDF 翻译模型</b><span>未配置</span></div>
+      <div class="segc"><b>文档翻译</b><span>deepseek-chat</span></div>
+      <div class="segc"><b>术语清洗</b><span>跟随文档翻译</span></div>
+    </div>
+    <div class="card"><div class="accessbar">
+      <span class="lbl">连接方式<span class="hintdot">?</span></span>
+      <div class="radio-row">
+        <label><input type="radio" checked> 云端 API</label>
+        <label><input type="radio"> 本地模型</label>
+        <label><input type="radio"> 跟随文档翻译</label>
+      </div>
+    </div></div>
+    <div class="card">
+      <div class="tc-head"><b>连接列表</b><span class="tc-tools"><button class="btn mini">＋ 新增连接</button></span></div>
+      <div class="empty"><b>还没有连接</b><p>点右上角「新增连接」开始配置。</p></div>
+    </div>
+  </div>
+</div>
+
+</div>
+</div></body></html>
