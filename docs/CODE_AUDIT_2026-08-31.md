@@ -8,7 +8,7 @@
 
 审查线一律不得写入用户真实数据目录（`~/Library/Application Support/Translator`）：脚本必须在 `import config` **之前** 把 `TRANSLATOR_APP_DATA_DIR` 指到临时目录，并断言 `config.APP_DATA_DIR` 落在 /tmp、/var/folders 或 /private 之下。这条纪律是本轮开跑后补的——此前有代理直接写坏了用户的 `keys.json`，触发了「静默备份并重置为空」的路径。
 
-**当前进度：4/17 条审查线回传，累计 12 条发现（高 2 / 中 5 / 低 5）。**
+**当前进度：5/17 条审查线回传，累计 14 条发现（高 3 / 中 5 / 低 6）。**
 
 | 审查线 | 范围 | 发现 |
 |---|---|---|
@@ -16,10 +16,11 @@
 | C1 | 并发、线程、锁、竞态、死锁 | 高 1、中 2 |
 | C2 | 资源生命周期：临时文件、子进程、数据库连接、文件句柄 | 中 1、低 2 |
 | P1 | 持久化 / schema 迁移 / 旧数据兼容 | 高 1、中 2、低 3 |
+| A1 | HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py | 高 1、低 1 |
 
 ---
 
-## 高危（2 条）
+## 高危（3 条）
 
 ### 高-1 用户点了停止之后，三条「恢复类」链路仍会等到槽位并发出付费模型调用，还会自动重试一次
 
@@ -48,6 +49,36 @@
 **复现**：已复现。`p1_corrupt.py latin1`：status / load_settings / recover / save_settings / force_reset 五步全部 `RAISED UnicodeDecodeError: 'utf-8' codec can't decode byte 0xe9 in position 133`，backups 目录为空。`p1_api_nonutf8.py`（把一份合法 settings.json 用 gb18030 编码写盘，走真实 FastAPI TestClient）：`GET /api/settings -> 500`、`GET /api/maintenance/overview -> 500`、`POST /api/maintenance/clear settings(confirmation=true) -> 500`、`PUT /api/settings -> 500`、`POST /api/maintenance/reset-full -> 200`。既有 tests/test_data_schema_recovery.py 只覆盖 `"not json"` / `"{oops"` 这类合法 UTF-8 的坏内容，没有编码维度。
 
 **修法**：settings.py:1500 改成 `SETTINGS_PATH.read_bytes().decode("utf-8")` 并把 `except OSError` 扩成 `except OSError` + `except (UnicodeDecodeError, ValueError)` 两支：解码失败属于「内容坏了但文件读得出来」，应当归到 `unusable`（可以备份后重建），而不是逃逸。顺手把 BOM 一并处理掉（`decode("utf-8-sig")` 或读前剥 `﻿`）——目前带 BOM 的文件被判 unusable 直接重建，用户配置白丢一次，虽然有备份但完全没必要。
+
+### 高-3 任务日志没有任何上限，整份写进 task_history.json，并被 GET /api/tasks 每 4 秒原样回吐——历史文件与轮询报文一起线性膨胀到 10 MB 量级
+
+`A1` · 置信度 high · new
+
+**位置**：`api/task_manager.py:820`、`api/task_manager.py:844`、`api/task_manager.py:1840`、`api/task_manager.py:1852`、`api/task_manager.py:1773`、`core/task_history.py:53`、`ui/src/views/tasks.ts:959`、`ui/src/views/tasks.ts:1665`
+
+**机制**：三处叠加，根因是 ApiTask.logs / ApiTask.events 全程无上限。
+
+(1) `_status_payload()`（task_manager.py:820）把 `list(task.logs)` 整份放进报文，runner 每写一行日志就 append 一条，全程不裁剪；`_retire_terminal_task()`（:1773）退休时只裁 `task.events` 到 TERMINAL_EVENT_TAIL=300，`task.logs` 一条都不裁。core/task_runner.py 里 `self._log(...)` 有 78 处调用点，pdf_image_translation.py 里 79 处，大多在按文件/按批/按页的循环体内——一次中等任务几百到几千行是常态。
+
+(2) `_append_event()`（:1840-1852）在 `_history_write_due()` 为真时（HISTORY_WRITE_INTERVAL_SECONDS = 1.0，翻译期间日志密集，实际就是每秒一次）把这份带全量 logs 的记录交给 `TaskHistoryStore.upsert()`；而 `upsert()`（core/task_history.py:53-64）是「读整个文件 → 过滤 → 整个重写」，limit=200 条记录**每条都带自己的全量 logs**。于是翻译期间 sidecar 以约 1 Hz 的频率把一个越来越大的 JSON 全量读+全量重写。
+
+(3) `list_tasks()`（:844）直接返回 `self._history.records()`——整个历史文件、200 条记录、每条的全部日志。前端 `ensureBackgroundLoop` 12 秒轮一次（应用启动即开始，与视图无关），任务中心挂载时 `fastPollTimer` 4 秒轮一次（tasks.ts:959 / 1665），每次都要 JSON.parse 这份报文并对 200 条记录逐条 upsert + renderList。
+
+仓库里没有任何日志条数上限常量，tests/test_task_history.py 也没有相关断言——不是「登记为已知代价」，是漏了。
+
+**后果**：用得越久越卡，且不可逆（除非用户去「清空任务历史」）。实测：200 条历史 × 每条 400 行日志 → task_history.json 10.72 MB；GET /api/tasks 返回 10.72 MB 报文，前端每 4 秒解析一次这么大的 JSON，WKWebView 里就是任务中心持续掉帧、切视图卡顿。翻译进行中还叠一层：每秒一次全量读写 10.7 MB 文件（实测单次 57–69 ms），等于整个翻译过程持续约 10 MB/s 的磁盘写放大，而且发生在 `_pump_runner` 送 SSE 事件的同一个线程上——事件推送和进度更新会被这 60 ms 顶住。线性可外推：50 行/条 → 1.36 MB / 8 ms；100 行/条 → 2.68 MB / 15 ms；400 行/条 → 10.72 MB / 57 ms。一个几百页 PDF 或几十文件的 Excel 批次单条记录就能顶到几千行，200 条上限意味着文件没有天花板。此外 12 条退休终态任务各自的全量 logs 一直留在内存里。
+
+**复现**：已复现。
+1) scratchpad/a1_logs.py：写 200 条各 400 行日志的记录 → 「history file size: 10.72 MB」「one upsert on a full history: 69 ms」「HISTORY_WRITE_INTERVAL_SECONDS = 1.0」。
+2) scratchpad/a1_listtasks.py（走真实 FastAPI TestClient）→ 「GET /api/tasks -> 200, 10.72 MB, 49 ms」「recent[0] has logs: 400」，确认日志确实原样出现在轮询报文里。
+3) scratchpad/a1_scale.py → 50/100/400 行三档的文件大小与单次 upsert 耗时，线性。
+4) scratchpad/a1_sanitize.py → `_sanitize_task_data` 在 8000 行时 33 ms/次，确认脱敏不是主要成本，主要成本在文件全量读写和报文体积。
+
+**修法**：三处都要动，缺一不可：
+1) 落盘记录裁剪日志：`_persist_task` / `_status_payload(include_result=True)` 走持久化路径时只保留日志尾部（比如最后 200 条）加一个 `logs_truncated: true` + 总条数；内存里的 `task.logs` 也设一个上限（deque(maxlen=N)），并在 `_retire_terminal_task` 里像裁 events 一样裁 logs。
+2) `list_tasks()` 不再回吐日志：`recent` 只回摘要字段（task_id/surface/state/terminal/时间戳/result 摘要），日志留给 `GET /api/tasks/{id}` 和 `/results` 按需取。前端 refreshRegistry 本来也只用 upsert 的摘要字段，detail 面板已经单独调 getTask/getTaskResult。
+3) `TaskHistoryStore.upsert` 的「全量读+全量重写」在记录变小之后成本自然下来；如果仍嫌 1 Hz 太密，可以把运行中任务的节流从 1 s 放宽到 3–5 s（状态变化仍然立即写，语义不变）。
+改完补一条测试：断言单条历史记录的 logs 长度有上限、且 GET /api/tasks 的报文里不含 logs。
 
 ---
 
@@ -125,7 +156,7 @@
 
 ---
 
-## 低危（5 条）
+## 低危（6 条）
 
 ### 低-1 Word 转换失败留下的半成品临时 docx 没人回收——Excel 侧修了（低-25），Word 侧从来没修
 
@@ -196,6 +227,21 @@
 **复现**：机制确认。代码路径确定（write_text/replace 无 fsync，与 settings.py:1315-1334 逐行对照可见差异），未构造掉电环境实测——需要真机断电或 fs 故障注入才能观察到撕裂，不在本次可复现范围内。
 
 **修法**：把 `_write_locked` 换成复用 `settings._write_text_atomic`（它已经处理了唯一临时文件名、fsync 文件、fsync 父目录、Windows ACL），只把 `file_mode` 传 0o600 即可，顺带去掉这里手写的 chmod 和 `_stray_temp_paths` 里对命名格式的重复约定。若不想跨模块依赖，至少在 `temporary.write_text` 之后补 `flush + os.fsync`、`replace` 之后补一次父目录 fsync。
+
+### 低-6 401 响应绕过了 CORSMiddleware，没有 Access-Control-Allow-Origin——浏览器层直接拦掉，前端拿到的是不可辨识的网络错误而不是 401
+
+`A1` · 置信度 high · new
+
+**位置**：`api/app.py:404`、`api/app.py:414`、`api/app.py:429`、`ui/src/api-client.ts:150`
+
+**机制**：`app.add_middleware(CORSMiddleware, ...)`（app.py:404）先注册，`@app.middleware("http") require_loopback_token`（:414）后注册。Starlette 的 add_middleware 是往 user_middleware 头部插的，后注册的在**外层**——实测 `app.user_middleware` 顺序是 `['BaseHTTPMiddleware', 'CORSMiddleware']`，即 token 中间件包在 CORS 外面。于是 token 不匹配时 `return Response(status_code=401)`（:429）这条响应根本不经过 CORSMiddleware，不带任何 CORS 头。webview 的 origin 是 tauri://localhost，请求打的是 http://127.0.0.1:PORT，属于跨源；一个没有 ACAO 的跨源响应会被 WebView 在网络层直接丢弃，fetch 以 TypeError 拒绝。另外这个 401 的 body 是空的，即使同源也没有 detail/reason 可读。
+（OPTIONS 预检本身是对的——中间件显式放行 OPTIONS，由内层 CORSMiddleware 应答，实测 200 带 ACAO。路由内抛出的 404/422 也在内层，实测带 ACAO。只有 401 这一条漏在外面。）
+
+**后果**：鉴权失败这一类故障在前端完全不可辨识：`ApiClient.request` 抛出的是 `TypeError: Failed to fetch` 而不是 `ApiError(status=401)`，`apiErrorReason()` 返回空串，界面只能报「连不上」。触发场景有限（token 来自 Tauri 的 sidecar_info，正常不会不匹配；sidecar 重启时端口也一起变，TCP 层就先失败了），所以定低。真正的代价是排障：真出现 token 不一致时，日志和界面都看不出是鉴权问题。
+
+**复现**：已复现。scratchpad/a1_cors401.py 输出：`middleware order (outermost first): ['BaseHTTPMiddleware', 'CORSMiddleware']`；带 Origin: tauri://localhost 且 token 正确 → `200 ACAO= tauri://localhost`；token 错误 → `401 ACAO= None body= ''`；OPTIONS 预检 → `200 ACAO= tauri://localhost`；路由内 404 → `404 ACAO= tauri://localhost`。
+
+**修法**：两选一。简单的：把 CORSMiddleware 改成在 token 中间件之后注册（即调换 app.py:404 与 :414 两块的顺序），让 CORS 包在最外层，401 也就带上头了。稳妥的：token 中间件不再自己造 Response，改成 `raise HTTPException(401, ...)` 之外的路径不好走，那就手动给这条 401 补上 `Access-Control-Allow-Origin`（按 `_allowed_origins()` 匹配请求的 Origin）并把 body 换成 `_json_error(401, "鉴权令牌不匹配，请重启应用。", reason="invalid_token")`，前端才能按 reason 分支。顺带补一条测试断言 401 带 ACAO 且 body 有 reason。
 
 ---
 
@@ -352,4 +398,31 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 - 第 4 条和第 1 条共享 `_recreate_settings_file` / `_write_text_atomic` 这条路径，建议归到同一个修复集群，避免两个代理撞车。
 - 第 3 条如果按我推荐的「收窄写盘窗口」修，动的是 api/app.py 的连接测试端点；如果按「delta 支持列表主键」修，动的是 settings.py 的 `_settings_delta`/`_apply_settings_delta`，后者会影响全部并发写路径，需要补测试覆盖 connections 之外的其它列表字段（`custom_target_langs` 等）。
 - 现有 tests/test_settings_concurrent_updates.py 的 10 个并发用例全部是标量与嵌套 dict，**列表元素维度零覆盖**；tests/test_data_schema_recovery.py 的损坏样本全是合法 UTF-8，**编码维度零覆盖**。这两处是本轮四条主要发现能存活到 V9.4.0 的原因。
+
+### A1 — HTTP API 层（api/app.py、api/task_manager.py、api/launcher.py）
+
+**基线与复现脚本**
+
+未跑全量（按指示沿用已给基线 1664 passed + 249 subtests）。本轮全部为只读审查 + 一次性复现脚本，全部在临时数据目录下运行：每个脚本第一行 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()`（在 import config 之前），并 assert `config.APP_DATA_DIR` 落在 /var/folders 下，实测输出确认（例：/var/folders/y6/.../T/a1data_st0dl67p）。未读、未写用户真实数据目录。脚本留在 scratchpad：a1_boot.py / a1_routes.py / a1_fuzz.py / a1_logs.py / a1_listtasks.py / a1_sanitize.py / a1_scale.py / a1_cors401.py。
+
+**排除掉的假阳性（都实测过，不要再查）：**
+
+1. *「pausing 状态在 sidecar 重启后不会被扫成 interrupted」* —— 看起来像 高-10 toast 洪水的复活（`core/task_history.py:93` 的 active_states 集合里确实没有 "pausing"），但 grep 全仓确认 **"pausing" 是纯前端状态**，后端 task_manager 从不写它。后端实际会持久化的状态只有 running / stopping / paused / error / interrupted / done / completed_with_issues / stopped，全部被 active_states 或终态覆盖。无缺口。
+
+2. *事件循环阻塞（板块 5）* —— api/app.py 里**没有一个 `async def` 路由**（只有 lifespan、鉴权中间件和 6 个异常处理器是 async，全都不做同步 IO）。所有端点都是同步 `def`，FastAPI 自动丢线程池。SSE 也是同步 generator 走 `iterate_in_threadpool`。不存在「大文件翻译时 API 假死」。并发 SSE 流最多 4 条（surface_busy 保证每种 surface 同时只有一个活动任务），离 anyio 默认 40 线程上限很远。
+
+3. *路径穿越* —— `/api/tasks/{id}/pdf-pages/image` 的 `file` 参数不落到文件系统拼接上：`resolve_page_image_path`（core/pdf_image_translation.py:1577）先 `_find_prepared_file(relative_path)` 在任务已扫描的文件清单里查表，查不到返回 None → 404；kind 白名单三选一，page 有上下界。诊断包路由 `/api/diagnostics/{record_id}.zip` 实测 `..%2F..%2Fetc%2Fpasswd.zip` 返回 404 Not Found（路由都没匹配上）。
+
+4. *绑定与鉴权* —— launcher.py 绑 `("127.0.0.1", 0)` 随机端口，端口和 32 字节 token 一起从 stdout 交给 Tauri；token 用 `secrets.compare_digest` 比对，避免时序泄漏。CORS 白名单只有 tauri://localhost / http://tauri.localhost，dev origin 靠 `TRANSLATOR_DEV_ORIGIN` 环境变量且必须以 `http://127.0.0.1:` 或 `http://localhost:` 开头——发布构建不设这个变量，开发口子没有漏进去。
+
+5. *端点健壮性* —— 对 33 个 GET（含空 lang_pair、`page=-5&page_size=100000`、`lang_pair=../../etc`、未知 surface / role / 不存在的 task_id / 诊断 id）做了一轮 fuzz（a1_fuzz.py），**零 500**，边界值都被 clamp 或返回带中文 detail 的 404/422。非法 task_id 上的 stop/pause/resume/end-paused/delete 一律干净 404（a1_boot.py）。
+
+6. *中-21（SSE 终态重连风暴）* —— 已修干净：api-client.ts:277 那条「干净 200 但没见终态事件」的分支现在也走 `attempt >= 7` 封顶，不再绕过重试上限。
+
+7. *启动残留* —— `TaskHistoryStore.mark_active_interrupted()` 在 TranslationTaskManager.__init__（:256）里就跑，重启后遗留的 running/paused/stopping 记录会被改成 interrupted + terminal=true，前端不会去 watch 它们。`task_status` / `task_results` 在内存任务被驱逐后都回落到历史记录（:786-797、:897-906），不会因为 MAX_RETAINED_TERMINAL_TASKS=12 的驱逐而 404。
+
+**没查完的（留给后续或其他线）：**
+- 板块 6 的「响应体 vs 前端类型契约」只对了 TaskStatus / TaskList / PdfPagesSnapshot 三组，**没有**逐字段核对 settings / model-roles / maintenance / diagnostics 这几组更大的报文与 ui/src 里对应的 interface。上一轮报的 `TaskStatus.result` 那条现在已在 api-client.ts:20 用注释显式改成可选，属于已修。
+- 板块 3 的并发只做了代码路径确认（`_start_prepared` 用 `expected_revision` 做乐观并发，双发 POST /api/tasks 会被 reserve_task 的 revision 校验拦成 409 stale），**没有**真起两个线程压测。
+- `list_tasks()` 在持有全局 `self._lock` 的情况下对每个活动任务做全量 logs 拷贝+脱敏（8000 行实测 33 ms），会和 start/stop/pause 抢同一把锁——这是发现 1 的同一个根因，修了日志上限就一起消失，所以没有单列。
 
