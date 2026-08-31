@@ -233,6 +233,20 @@ table.review-tbl { table-layout: fixed; }
 .radio-row { display: flex; gap: 12px; font-size: 12.5px; align-items: center; color: var(--ink); }
 .radio-row input { accent-color: var(--accent); }
 
+/* 「连接方式」从连接详情卡里提出来，单独做成一张角色级横条卡，压在连接列表上面。
+   它改的是整个角色，长在详情卡里会被读成「当前选中那条连接的属性」。 */
+.accessbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 11px 16px; }
+.accessbar-label { display: flex; align-items: center; font-size: 12px; font-weight: 550; color: var(--ink-2); flex: none; }
+
+/* 列表被锁时贴在表头下方的解释条。info＝跟随中（稳定态），pend＝连接方式改了还没保存。
+   按钮不再凭空消失，改成灰掉 + 这一条说明「为什么」和「怎么解开」。 */
+/* 下一行 .conn 自带 border-top，这里不能再画一条，否则表头下面是两条 1px 的线。 */
+.statebar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; font-size: 12.5px; line-height: 1.65; }
+.statebar > span { flex: 1; }
+.statebar > .btn { flex: none; }
+.statebar.info { background: var(--tint); color: var(--tint-ink); }
+.statebar.pend { background: var(--warn-t); color: var(--warn); }
+
 /* ========== 进度 / 日志 / 监控 ========== */
 .prog-stage { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .prog-stage b { font-size: 14px; font-weight: 650; }

@@ -1125,6 +1125,16 @@ function accessModeOptions(role: string): { value: string; label: string }[] {
   return options;
 }
 
+function accessModeLabel(role: string, value: string): string {
+  const hit = accessModeOptions(role).find((option) => option.value === value);
+  if (hit) return hit.label;
+  if (value.startsWith(FOLLOW_PREFIX)) {
+    const source = value.slice(FOLLOW_PREFIX.length);
+    return `跟随${MODEL_ROLE_LABELS[source] || source}`;
+  }
+  return value === "local" ? "本地模型" : "云端 API";
+}
+
 function roleConnections(role: string): PoolConnection[] {
   const raw = record(modelRoles[role]).connections;
   return Array.isArray(raw) ? (raw as PoolConnection[]) : [];
@@ -1247,6 +1257,50 @@ function renderModelsPage(host: HTMLElement): void {
   // 就会出现「界面上写着跟随，却顶着自己池子的测试通过」这类对不上的状态。
   const ownsPool = !following && text(rolePayload.connection_pool_role, role) === role;
 
+  // 连接方式改了但还没保存。它决定了下面那张列表卡是「跟随中」还是「等你按一下保存」，
+  // 两种状态给的话完全不同，所以在这里算一次，两处共用。
+  const accessDirty = modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
+
+  // ---- 连接方式卡（角色级）----
+  // 它以前长在「连接详情卡」的第一格里，跟在连接列表下面，看上去像是「当前选中那条连接
+  // 的属性」。可它写的是 modelAccessDraft[role]，改的是**整个角色**。用户「选中第二条连接、
+  // 在它里面改连接方式」这个完全合理的动作，于是触发了一次角色级改动：列表跳回主用连接、
+  // 整张列表卡被锁、保存走的路由也换了一条——四个症状同一个根。挪到角色分段和连接列表
+  // 之间，它在视觉上统辖下面两张卡，语义才对得上。
+  const accessBar = document.createElement("div");
+  accessBar.className = "accessbar";
+  const accessLabel = document.createElement("span");
+  accessLabel.className = "accessbar-label";
+  accessLabel.textContent = "连接方式";
+  accessLabel.append(hintBadge("云端 API 通过服务商接口调用；本地模型直接连接本机运行器；跟随只共享服务商、Base URL 和 Key，模型名称、吞吐和测试状态始终独立。"));
+  accessBar.append(accessLabel);
+  const radioRow = document.createElement("div");
+  radioRow.className = "radio-row";
+  for (const option of accessModeOptions(role)) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "accessMode";
+    input.checked = access === option.value;
+    input.addEventListener("change", () => {
+      modelAccessDraft[role] = option.value;
+      // 切换连接方式是角色级动作，面板必须同时退回主用连接。停在某条非主用连接上时，
+      // 界面显示的字段（那条连接的端点）和这一改动该走的路由（角色级 PUT）必然对不上，
+      // 保存要么写错对象、要么把角色级改动整个吞掉。
+      delete selectedConnection[role];
+      renderBody();
+    });
+    label.append(input, document.createTextNode(option.label));
+    radioRow.append(label);
+  }
+  accessBar.append(radioRow);
+  if (accessDirty) {
+    const dirtyChip = createChip({ label: "未保存", tone: "warn" });
+    dirtyChip.style.marginLeft = "auto";
+    accessBar.append(dirtyChip);
+  }
+  host.append(createCard([accessBar]));
+
   // ---- 连接列表卡 ----
   if (cloudMode) {
     // 整张卡的可操作性只认 ownsPool，不认服务端的 connection_pool_role。后者在草稿刚切到
@@ -1270,6 +1324,31 @@ function renderModelsPage(host: HTMLElement): void {
       }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
     });
     const listCard = createCard([tcHead("连接列表", [addBtn])]);
+    // 锁住时必须把「为什么锁」和「怎么解开」写在列表正上方。以前这里什么都不说，按钮直接
+    // 从 DOM 里消失（见下面 actions 那段），用户看到的是「界面卡死了，连删除按钮都没有」，
+    // 而实际上后端只是不接受借来的池子的增删改（_own_pool_or_422），保存一次就恢复。
+    if (borrowed) {
+      const poolOwner = text(rolePayload.connection_pool_role, role);
+      const poolOwnerLabel = MODEL_ROLE_LABELS[poolOwner] || poolOwner;
+      const bar = document.createElement("div");
+      bar.className = accessDirty ? "statebar pend" : "statebar info";
+      const barText = document.createElement("span");
+      if (accessDirty) {
+        barText.textContent = `“连接方式”改成了“${accessModeLabel(role, accessMode(role))}”，还没保存。下面列的仍是旧配置下的连接，`
+          + "新增、测试、设为主用、删除都先停用了。保存之后列表会换成这个用途该用的连接，操作随即恢复。";
+      } else {
+        barText.textContent = `这个用途正在跟随“${poolOwnerLabel}”，直接用它的连接和密钥，下面列的就是“${poolOwnerLabel}”的连接，`
+          + "只能看不能改。你自己配的连接一条都没删，把连接方式切回“云端 API”并保存，它们就回来了。";
+      }
+      bar.append(barText);
+      if (accessDirty) {
+        bar.append(createButton({
+          label: "保存并解锁", size: "mini", variant: "primary",
+          onClick: () => void doSaveModel(),
+        }));
+      }
+      listCard.append(bar);
+    }
     if (!connections.length) {
       listCard.append(createEmptyState({ title: "还没有连接", description: "点右上角“新增连接”开始配置。", icon: "gear" }));
     } else {
@@ -1289,23 +1368,23 @@ function renderModelsPage(host: HTMLElement): void {
         const actions = document.createElement("span");
         actions.style.display = "flex";
         actions.style.gap = "6px";
-        if (!borrowed) {
+        // 借来的池子上这三个动作后端一律 422，所以要拦。但拦法是「灰掉」而不是「删掉」：
+        // 按钮整个消失时，用户没有任何线索区分「这条不能删」和「这个界面坏了」。
+        actions.append(createButton({
+          label: "测试", size: "mini", disabled: borrowed,
+          onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
+        }));
+        if (index > 0) {
           actions.append(createButton({
-            label: "测试", size: "mini",
-            onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
+            label: "设为主用", size: "mini", disabled: borrowed,
+            onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
           }));
-          if (index > 0) {
-            actions.append(createButton({
-              label: "设为主用", size: "mini",
-              onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
-            }));
-          }
-          if (connections.length > 1) {
-            actions.append(createButton({
-              label: "删除", size: "mini", variant: "danger",
-              onClick: (e) => { e.stopPropagation(); void deleteConnection(role, connection.id); },
-            }));
-          }
+        }
+        if (connections.length > 1) {
+          actions.append(createButton({
+            label: "删除", size: "mini", variant: "danger", disabled: borrowed,
+            onClick: (e) => { e.stopPropagation(); void deleteConnection(role, connection.id); },
+          }));
         }
         const row = connRow([dot, name, ...chips, actions], {
           selected: Boolean(selected && selected.id === connection.id),
@@ -1334,35 +1413,6 @@ function renderModelsPage(host: HTMLElement): void {
   const grid = document.createElement("div");
   grid.className = "grid2";
 
-  // 连接方式
-  const radioWrap = document.createElement("div");
-  radioWrap.className = "field";
-  const radioLabel = document.createElement("label");
-  radioLabel.textContent = "连接方式";
-  radioLabel.append(hintBadge("云端 API 通过服务商接口调用；本地模型直接连接本机运行器；跟随只共享服务商、Base URL 和 Key，模型名称、吞吐和测试状态始终独立。"));
-  radioWrap.append(radioLabel);
-  const radioRow = document.createElement("div");
-  radioRow.className = "radio-row";
-  for (const option of accessModeOptions(role)) {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "accessMode";
-    input.checked = access === option.value;
-    input.addEventListener("change", () => {
-      modelAccessDraft[role] = option.value;
-      // 切换连接方式是角色级动作，面板必须同时退回主用连接。停在某条非主用连接上时，
-      // 界面显示的字段（那条连接的端点）和这一改动该走的路由（角色级 PUT）必然对不上，
-      // 保存要么写错对象、要么把角色级改动整个吞掉。
-      delete selectedConnection[role];
-      renderBody();
-    });
-    label.append(input, document.createTextNode(option.label));
-    radioRow.append(label);
-  }
-  radioWrap.append(radioRow);
-  grid.append(radioWrap);
-
   // onChange 需要拿到下面才创建的 baseUrlField，用可变引用打个转 —— select 的 change
   // 事件只会在用户真的切换了选项时触发一次，天然满足「只在切换动作发生时重填，不覆盖
   // 用户已手填内容」的要求（初次渲染、其他按钮触发的重画都不会 fire change）。
@@ -1383,8 +1433,6 @@ function renderModelsPage(host: HTMLElement): void {
   providerSelectEl.dataset.formScope = `${role}|${cloudMode ? "cloud" : "local"}|${selected?.id ?? ""}`;
   grid.append(providerFieldHandle.root);
 
-  detailBody.append(grid);
-
   const baseUrlDisabledByProvider = cloudMode && providerBaseUrlDisabled.has(formProvider);
   const baseUrlField = textField(
     "Base URL",
@@ -1396,7 +1444,6 @@ function renderModelsPage(host: HTMLElement): void {
     },
   );
   baseUrlField.input.id = "settings-model-base-url";
-  detailBody.append(baseUrlField.root);
   // 只改 Base URL 的可填性和占位符，不动它的值——草稿回填时要按服务商重放这段联动，
   // 但绝不能把用户刚敲的 Base URL 冲掉。
   applyProviderDerivedState = (value) => {
@@ -1438,7 +1485,11 @@ function renderModelsPage(host: HTMLElement): void {
   // 条灰色系统条，跟这一页其余的下拉完全不是一套东西，用户也找不到「怎么把它调出来」。
   // 改成输入框右侧一个箭头按钮，点开走 openMenu，和「浏览」那类锚定菜单同一套外观。
   attachModelNameDropdown(modelNameField.input, catalog, () => providerSelectEl.value);
-  detailBody.append(modelNameField.root);
+  // 服务商和模型名称并排；Base URL 长，独占一行摆在它们下面。三者都要等 modelNameField
+  // 建好之后再挂进 DOM，因为 onProviderChange 的闭包引用它。
+  grid.append(modelNameField.root);
+  detailBody.append(grid);
+  detailBody.append(baseUrlField.root);
 
   let connectionLabelField: HTMLInputElement | null = null;
   if (cloudMode) {
