@@ -2600,13 +2600,6 @@ function renderParamsPage(host: HTMLElement): void {
   body.style.gap = "12px";
 
   if (paramsTab === "excel") {
-    const excelOutput = record(settings?.excel_output);
-    body.append(createSwitchRow({
-      label: "仅显示译文",
-      hint: "开启后翻译结果单元格只写入译文；关闭时保留原文与译文。保留原文表的设置继续生效。",
-      checked: Boolean(excelOutput.output_translation_only),
-      onChange: (checked) => void reRenderAfter(() => saveSettingPath("excel_output.output_translation_only", checked)),
-    }));
     const review = excelReviewSettings();
     body.append(selectField(
       "已有底色处理", [
@@ -2623,13 +2616,6 @@ function renderParamsPage(host: HTMLElement): void {
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
   } else if (paramsTab === "word") {
-    const wordOutput = record(settings?.word_output);
-    body.append(createSwitchRow({
-      label: "仅显示译文",
-      hint: "开启后 Word 正文、表格和页眉页脚只保留译文；关闭时保留原文与译文。",
-      checked: Boolean(wordOutput.output_translation_only),
-      onChange: (checked) => void reRenderAfter(() => saveSettingPath("word_output.output_translation_only", checked)),
-    }));
     const review = wordReviewSettings();
     const batch = wordBatchSettings();
     body.append(selectField(

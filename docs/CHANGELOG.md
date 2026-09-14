@@ -1,5 +1,11 @@
 # Translator 版本更新日志
 
+## V9.5.2
+
+- **工作区显示“仅显示译文”开关**：9.5.1 已有该功能，但开关只出现在参数设置页，Excel 和 Word 工作区右侧的常用选项中没有显示。本版补齐工作区入口，打开后分别对当前 Excel 或 Word 任务输出译文。
+
+  **“Translation only” in the workspace**: V9.5.1 included the feature in the parameter settings page, but the commonly used Excel and Word workspace panels did not show the switch. This release adds both workspace entries and applies the choice to the current document task.
+
 ## V9.5.1
 
 - **连接更多文本服务**：以前部分兼容服务必须依赖特殊地址才能使用。现在程序会在同一服务和模型内识别两种常见接口格式，并在明确不兼容时有限切换，连接测试和实际翻译使用同一套判断。
