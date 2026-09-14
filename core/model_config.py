@@ -78,6 +78,16 @@ ApiKeySaver = Callable[..., None]
 ImportedApiKeyCheck = Callable[[str, str], bool]
 ImportedScopedApiKeyCheck = Callable[[str], bool]
 
+
+def _configured_base_url(value: object) -> str:
+    """Keep the URL path as configured in portable model settings.
+
+    ``normalize_cloud_base_url`` is intentionally reserved for credential
+    scopes and legacy identity matching.  Export/import must not turn a user
+    supplied root URL into a different request path by appending ``/v1``.
+    """
+    return str(value or "").strip().rstrip("/")
+
 # ── 导出回执里每条连接的密钥去向 ──────────────────────────
 # 「导出含 Key」现在会扣下从别人配置导入来的密钥（见 ``_exportable_provider_key``），
 # 界面必须能逐条说清楚哪些带走了、哪些被扣下了，只报个数字用户无从对照。
@@ -264,9 +274,7 @@ def _connection_endpoint(connection: dict[str, Any]) -> tuple[str, str]:
     """What "the same connection" means when a pool is replaced wholesale."""
     provider = str(connection.get("provider") or "").strip()
     base_url = str(connection.get("base_url") or "").strip()
-    normalized = (
-        normalize_cloud_base_url(provider, base_url) if provider else base_url
-    ).rstrip("/")
+    normalized = normalize_cloud_base_url(provider, base_url) if provider else base_url
     return provider, normalized
 
 
@@ -339,9 +347,11 @@ def _synchronize_selected_provider_memory(
     """
     selected_fields = {
         field: imported_fields[field]
-        for field in ("cloud_model", "cloud_base_url")
+        for field in ("cloud_model", "cloud_base_url", "api_mode")
         if field in imported_fields
     }
+    if selected_fields and "api_mode" not in selected_fields:
+        selected_fields["api_mode"] = owner.get("api_mode", "auto")
     if not selected_fields:
         return
     provider = str(owner.get("cloud_provider") or "").strip()
@@ -513,15 +523,13 @@ def _connections_for_export(
         if not isinstance(raw, dict):
             continue
         provider = str(raw.get("provider") or "").strip()
-        base_url = normalize_cloud_base_url(
-            provider,
-            str(raw.get("base_url") or "").strip(),
-        )
+        base_url = _configured_base_url(raw.get("base_url"))
         entry = {
             "label": str(raw.get("label") or "").strip(),
             "provider": provider,
             "model": str(raw.get("model") or "").strip(),
-            "base_url": base_url,
+            "base_url": _configured_base_url(raw.get("base_url")),
+            "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
         }
         if include_api_key:
             api_key, status = _exportable_connection_key(
@@ -592,14 +600,11 @@ def _cloud_profile_for_export(
     api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     provider = str(owner.get("cloud_provider") or "").strip()
-    base_url = normalize_cloud_base_url(
-        provider,
-        str(owner.get("cloud_base_url") or "").strip(),
-    )
     profile: dict[str, Any] = {
         "provider": provider,
         "model": str(owner.get("cloud_model") or "").strip(),
-        "base_url": base_url,
+        "base_url": _configured_base_url(owner.get("cloud_base_url")),
+        "api_mode": str(owner.get("api_mode") or "auto").strip() or "auto",
         "provider_configs": _provider_configs_for_export(
             owner,
             role=role,
@@ -637,6 +642,7 @@ def _provider_configs_for_export(
             {
                 "cloud_model": str(owner.get("cloud_model") or "").strip(),
                 "cloud_base_url": str(owner.get("cloud_base_url") or "").strip(),
+                "api_mode": str(owner.get("api_mode") or "auto").strip() or "auto",
             },
         )
 
@@ -651,7 +657,8 @@ def _provider_configs_for_export(
         )
         entry = {
             "model": str(raw_config.get("cloud_model") or "").strip(),
-            "base_url": base_url,
+            "base_url": _configured_base_url(raw_config.get("cloud_base_url")),
+            "api_mode": str(raw_config.get("api_mode") or "auto").strip() or "auto",
         }
         # 这些是「这个角色记住的其他服务商配置」，同样要按来源过滤，否则一把导入来的
         # 密钥即使在连接列表里被扣下，也会从这条记忆里漏出去。它们不是界面上的连接，
@@ -720,6 +727,7 @@ def _effective_profile_for_export(
         return {}
     return {
         "mode": config.mode,
+        "api_mode": config.api_mode,
         "provider": config.provider,
         "model": config.model,
         "base_url": config.base_url,
@@ -747,7 +755,7 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
         scoped_api_keys.append(
             {
                 "provider": provider,
-                "base_url": normalize_cloud_base_url(provider, base_url),
+                "base_url": _configured_base_url(base_url),
                 "api_key": api_key,
             }
         )
@@ -782,9 +790,10 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
         has_base_url, raw_base_url = _first_present(cloud, "base_url", "cloud_base_url")
         base_url = str(raw_base_url or "").strip() if has_base_url else ""
         if has_base_url:
-            values["cloud_base_url"] = (
-                normalize_cloud_base_url(provider, base_url) if provider else base_url
-            )
+            values["cloud_base_url"] = _configured_base_url(base_url)
+        has_api_mode, raw_api_mode = _first_present(cloud, "api_mode")
+        if has_api_mode:
+            values["api_mode"] = str(raw_api_mode or "auto").strip() or "auto"
 
         has_api_key, raw_api_key = _first_present(cloud, "api_key")
         if has_api_key:
@@ -819,10 +828,12 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                 )
                 config_base_url = str(raw_config_base or "").strip()
                 if has_config_base:
-                    entry["cloud_base_url"] = normalize_cloud_base_url(
-                        config_provider,
-                        config_base_url,
-                    )
+                    entry["cloud_base_url"] = _configured_base_url(config_base_url)
+                has_config_api_mode, raw_config_api_mode = _first_present(
+                    raw_config, "api_mode"
+                )
+                if has_config_api_mode:
+                    entry["api_mode"] = str(raw_config_api_mode or "auto").strip() or "auto"
                 has_config_key, raw_config_key = _first_present(raw_config, "api_key")
                 if has_config_key:
                     add_key(config_provider, config_base_url, str(raw_config_key or ""))
@@ -855,11 +866,8 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                     "label": str(raw.get("label") or "").strip(),
                     "provider": provider,
                     "model": str(raw.get("model") or "").strip(),
-                    "base_url": (
-                        normalize_cloud_base_url(provider, base_url)
-                        if provider
-                        else base_url
-                    ),
+                    "base_url": _configured_base_url(base_url),
+                    "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
                 }
             )
         return entries or None
@@ -893,6 +901,8 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
             if mode not in {"cloud", "local"}:
                 raise ValueError(f"{role} mode must be 'cloud' or 'local'.")
             values["mode"] = mode
+        if "api_mode" in profile:
+            values["api_mode"] = str(profile.get("api_mode") or "auto").strip() or "auto"
         local = profile.get("local")
         if isinstance(local, dict):
             has_local_provider, raw_local_provider = _first_present(local, "provider")

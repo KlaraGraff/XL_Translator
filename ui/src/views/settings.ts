@@ -70,6 +70,7 @@ type PoolConnection = {
   provider: string;
   model: string;
   base_url: string;
+  api_mode?: string;
   availability_status: string;
   availability_message: string;
   availability_checked_at: string;
@@ -681,6 +682,7 @@ type ModelFormSubmission = {
   model: string;
   apiKey: string;
   connectionLabel: string;
+  apiMode: string;
 };
 
 type ModelFormDraft = { scope: string; values: Record<string, string> };
@@ -1491,6 +1493,23 @@ function renderModelsPage(host: HTMLElement): void {
   detailBody.append(grid);
   detailBody.append(baseUrlField.root);
 
+  let apiModeSelect: HTMLSelectElement | null = null;
+  if (cloudMode) {
+    const apiModeField = selectField(
+      "文本请求协议",
+      [
+        { value: "auto", label: "自动识别" },
+        { value: "chat", label: "Chat Completions" },
+        { value: "responses", label: "Responses" },
+      ],
+      text(editingSecondary ? selected?.api_mode : rolePayload.api_mode, "auto"),
+      () => undefined,
+      { disabled: following },
+    );
+    apiModeSelect = apiModeField.select;
+    detailBody.append(fieldWithHint("", apiModeSelect, "自动模式只在明确的接口/协议错误时有限尝试替代协议；超时不会盲目重发。"));
+  }
+
   let connectionLabelField: HTMLInputElement | null = null;
   if (cloudMode) {
     // 可填性看 ownsPool，不是 borrowedPool（后者只看草稿是否跟随）。草稿刚从「跟随」切回
@@ -1531,19 +1550,42 @@ function renderModelsPage(host: HTMLElement): void {
   const bounds = record(rolePayload.throughput_bounds);
   const batchBounds = Array.isArray(bounds.batch_size) ? (bounds.batch_size as unknown[]) : [];
   const concurrencyBounds = Array.isArray(bounds.concurrency) ? (bounds.concurrency as unknown[]) : [];
+  const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
+  if (!throughputUnlocked) {
+    const unlockRow = document.createElement("div");
+    unlockRow.className = "field-row";
+    const unlockInput = document.createElement("input");
+    unlockInput.type = "text";
+    unlockInput.placeholder = "输入 OA 解锁速率上限";
+    unlockInput.className = "text-input";
+    const unlockButton = createButton({ label: "解锁", size: "mini", onClick: () => void (async () => {
+      try {
+        await client.request("/api/models/throughput/unlock", {
+          method: "POST", body: JSON.stringify({ code: unlockInput.value }),
+        });
+        showToast({ message: "速率上限已解锁。" });
+        await refreshSettings();
+        await refreshModelRoles();
+      } catch (error) {
+        showToast({ message: `解锁失败：${errorMessage(error)}`, error: true });
+      }
+    })() });
+    unlockRow.append(fieldWithHint("OA 解锁", unlockInput, "输入 OA 后，批次大小和并发数只要求为正整数。"), unlockButton);
+    detailBody.append(unlockRow);
+  }
   const throughputGrid = document.createElement("div");
   throughputGrid.className = "grid2";
   let batchInput: HTMLInputElement | null = null;
   const needsBatch = role === "translation" || role === "cleaner";
   if (needsBatch) {
     const batchField = numberField("批次大小", num(throughput.batch_size, 8), () => undefined, {
-      min: num(batchBounds[0], 1), max: num(batchBounds[1], 128),
+      min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128),
     });
     batchInput = batchField.querySelector("input");
     throughputGrid.append(batchField);
   }
   const concurrencyField = numberField("并发数", num(throughput.concurrency, 1), () => undefined, {
-    min: num(concurrencyBounds[0], 1), max: num(concurrencyBounds[1], 32),
+    min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32),
   });
   const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;
   throughputGrid.append(concurrencyField);
@@ -1641,6 +1683,7 @@ function renderModelsPage(host: HTMLElement): void {
     model: modelNameField.input.value,
     apiKey: apiKeyField?.value ?? "",
     connectionLabel: connectionLabelField?.value ?? "",
+    apiMode: apiModeSelect?.value ?? "auto",
   });
   submitModelForm = () => queueModelFormSave(() => saveModel(readModelForm(), { silent: true }));
 
@@ -1665,7 +1708,7 @@ function renderModelsPage(host: HTMLElement): void {
       }
     });
   };
-  for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField]) {
+  for (const field of [providerSelectEl, baseUrlField.input, modelNameField.input, connectionLabelField, apiKeyField, apiModeSelect]) {
     field?.addEventListener("change", autoSaveOnBlur);
   }
 
@@ -1828,7 +1871,7 @@ async function saveModel(
   if (form.secondaryId) {
     modelRoles[role] = await client.request<JsonObject>(
       `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.secondaryId)}`,
-      { method: "PUT", body: JSON.stringify({ label: form.connectionLabel, provider: form.provider, model: form.model, base_url: form.baseUrl, api_key: form.apiKey }) },
+      { method: "PUT", body: JSON.stringify({ label: form.connectionLabel, provider: form.provider, model: form.model, base_url: form.baseUrl, api_mode: form.apiMode, api_key: form.apiKey }) },
     );
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
     // 这条 PUT 也写 keys.json，keys 的惰性自愈可能就发生在里面——每个会写
@@ -1843,7 +1886,7 @@ async function saveModel(
   const mode = following ? text(record(modelRoles[role]).mode, "cloud") : access;
   const payload = following
     ? { source_role: sourceRole, model: form.model }
-    : { source_role: "independent", mode, provider: form.provider, base_url: form.baseUrl, model: form.model };
+    : { source_role: "independent", mode, provider: form.provider, base_url: form.baseUrl, model: form.model, api_mode: form.apiMode };
   const roleAfter = await client.request<JsonObject>(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
   delete modelAccessDraft[role];
   // 目标连接必须从**这一次写入之后**的角色状态里读，不能用渲染时算下来的 form.ownsPool /
@@ -2557,6 +2600,13 @@ function renderParamsPage(host: HTMLElement): void {
   body.style.gap = "12px";
 
   if (paramsTab === "excel") {
+    const excelOutput = record(settings?.excel_output);
+    body.append(createSwitchRow({
+      label: "仅显示译文",
+      hint: "开启后翻译结果单元格只写入译文；关闭时保留原文与译文。保留原文表的设置继续生效。",
+      checked: Boolean(excelOutput.output_translation_only),
+      onChange: (checked) => void reRenderAfter(() => saveSettingPath("excel_output.output_translation_only", checked)),
+    }));
     const review = excelReviewSettings();
     body.append(selectField(
       "已有底色处理", [
@@ -2573,6 +2623,13 @@ function renderParamsPage(host: HTMLElement): void {
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
   } else if (paramsTab === "word") {
+    const wordOutput = record(settings?.word_output);
+    body.append(createSwitchRow({
+      label: "仅显示译文",
+      hint: "开启后 Word 正文、表格和页眉页脚只保留译文；关闭时保留原文与译文。",
+      checked: Boolean(wordOutput.output_translation_only),
+      onChange: (checked) => void reRenderAfter(() => saveSettingPath("word_output.output_translation_only", checked)),
+    }));
     const review = wordReviewSettings();
     const batch = wordBatchSettings();
     body.append(selectField(

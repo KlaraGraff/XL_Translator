@@ -97,6 +97,13 @@ def cloud_provider_uses_base_url(provider: str) -> bool:
     return str(provider or "").strip() not in CLOUD_PROVIDER_BASE_URL_DISABLED
 
 
+def configured_cloud_base_url(provider: str, base_url: str) -> str:
+    """Keep the user's request path; credential/scheduler scopes retain legacy normalization."""
+    if not cloud_provider_uses_base_url(provider):
+        return ""
+    return str(base_url or "").strip().rstrip("/") or cloud_provider_base_url_default(provider).rstrip("/")
+
+
 def normalize_cloud_base_url(provider: str, base_url: str) -> str:
     provider_name = str(provider or "").strip()
     if not cloud_provider_uses_base_url(provider_name):
@@ -408,4 +415,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 26
+SETTINGS_SCHEMA_VERSION = 27

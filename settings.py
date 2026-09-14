@@ -60,7 +60,12 @@ from config import (
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
     normalize_cloud_base_url,
+    configured_cloud_base_url,
+    is_valid_concurrency_unlock_code,
 )
+
+from core.text_transport import normalize_api_mode
+from urllib.parse import urlsplit
 
 from core.language_registry import (
     CustomTargetLang,
@@ -255,7 +260,25 @@ def new_connection_id() -> str:
     return uuid.uuid4().hex
 
 
-class ModelConnection(BaseModel):
+class TextProtocolSettings(BaseModel):
+    api_mode: str = "auto"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_text_protocol(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "api_mode" not in data:
+            # The only historical domain rule lives in additive migration, not
+            # request routing. Existing asxs connections keep their working route.
+            url = str(data.get("cloud_base_url") or data.get("base_url") or "")
+            data["api_mode"] = "responses" if urlsplit(url).hostname == "api.asxs.top" else "auto"
+        data["api_mode"] = normalize_api_mode(data["api_mode"])
+        return data
+
+
+class ModelConnection(TextProtocolSettings):
     """One cloud connection inside a model role's pool.
 
     A pool is an ordered list: entry 0 is the primary and is kept mirrored
@@ -312,6 +335,7 @@ def _sync_connection_pool(owner) -> None:
                 provider=owner.cloud_provider,
                 model=owner.cloud_model,
                 base_url=owner.cloud_base_url,
+                api_mode=owner.api_mode,
                 availability_status=owner.availability_status,
                 availability_message=owner.availability_message,
                 availability_checked_at=owner.availability_checked_at,
@@ -323,6 +347,7 @@ def _sync_connection_pool(owner) -> None:
         primary.provider = owner.cloud_provider
         primary.model = owner.cloud_model
         primary.base_url = owner.cloud_base_url
+        primary.api_mode = owner.api_mode
         primary.availability_status = owner.availability_status
         primary.availability_message = owner.availability_message
         primary.availability_checked_at = owner.availability_checked_at
@@ -336,7 +361,7 @@ def _sync_connection_pool(owner) -> None:
     owner.connections = connections
 
 
-class CloudProviderConfig(BaseModel):
+class CloudProviderConfig(TextProtocolSettings):
     """Provider-specific model and Base URL values for one model role."""
 
     cloud_model: str = ""
@@ -368,8 +393,9 @@ def _normalize_provider_configs(
         except Exception:
             config = CloudProviderConfig()
         normalized[provider] = CloudProviderConfig(
+            api_mode=config.api_mode,
             cloud_model=config.cloud_model,
-            cloud_base_url=normalize_cloud_base_url(provider, config.cloud_base_url),
+            cloud_base_url=configured_cloud_base_url(provider, config.cloud_base_url),
         )
     return normalized
 
@@ -385,15 +411,16 @@ def get_cloud_provider_config(owner, provider: str) -> CloudProviderConfig:
     current_provider = str(getattr(owner, "cloud_provider", "") or "").strip()
     if provider_name == current_provider:
         return CloudProviderConfig(
+            api_mode=owner.api_mode,
             cloud_model=str(getattr(owner, "cloud_model", "") or "").strip(),
-            cloud_base_url=normalize_cloud_base_url(
+            cloud_base_url=configured_cloud_base_url(
                 provider_name,
                 str(getattr(owner, "cloud_base_url", "") or "").strip(),
             ),
         )
     return CloudProviderConfig(
         cloud_model="",
-        cloud_base_url=normalize_cloud_base_url(provider_name, ""),
+        cloud_base_url=configured_cloud_base_url(provider_name, ""),
     )
 
 
@@ -403,6 +430,7 @@ def set_cloud_provider_config(
     *,
     cloud_model: str | None = None,
     cloud_base_url: str | None = None,
+    api_mode: str | None = None,
 ) -> CloudProviderConfig:
     """Store provider-specific values and keep legacy current fields in sync."""
     provider_name = str(provider or DEFAULT_CLOUD_PROVIDER).strip()
@@ -418,14 +446,16 @@ def set_cloud_provider_config(
         else str(cloud_base_url or "").strip()
     )
     config = CloudProviderConfig(
+        api_mode=normalize_api_mode(api_mode) if api_mode is not None else current.api_mode,
         cloud_model=model,
-        cloud_base_url=normalize_cloud_base_url(provider_name, base_url_raw),
+        cloud_base_url=configured_cloud_base_url(provider_name, base_url_raw),
     )
     owner.cloud_provider_configs = _normalize_provider_configs(
         getattr(owner, "cloud_provider_configs", {}),
     )
     owner.cloud_provider_configs[provider_name] = config
     if provider_name == str(getattr(owner, "cloud_provider", "") or "").strip():
+        owner.api_mode = config.api_mode
         owner.cloud_model = config.cloud_model
         owner.cloud_base_url = config.cloud_base_url
     return config
@@ -441,9 +471,10 @@ def select_cloud_provider_config(owner, provider: str) -> CloudProviderConfig:
     if config is None:
         config = CloudProviderConfig(
             cloud_model="",
-            cloud_base_url=normalize_cloud_base_url(provider_name, ""),
+            cloud_base_url=configured_cloud_base_url(provider_name, ""),
         )
     owner.cloud_provider = provider_name
+    owner.api_mode = config.api_mode
     owner.cloud_model = config.cloud_model
     owner.cloud_base_url = config.cloud_base_url
     return config
@@ -458,7 +489,7 @@ MODEL_ROLE_SOURCE_VALUES = {
 }
 
 
-class EngineSettings(BaseModel):
+class EngineSettings(TextProtocolSettings):
     mode: str = "cloud"  # "cloud" | "local"
     # Translation used to be the only follow *source*.  It can now follow a
     # role that is itself independent, so it needs the same field as the rest;
@@ -483,6 +514,7 @@ class EngineSettings(BaseModel):
         le=get_concurrency_cap(),
     )
     concurrency_unlocked: bool = False
+    concurrency_unlock_code: str = ""
     batch_size: int = Field(default=20, ge=5, le=30)
     availability_status: str = "unknown"
     availability_message: str = ""
@@ -527,6 +559,8 @@ class EngineSettings(BaseModel):
                 migrated.get("local_provider"),
             )
         migrated.setdefault("concurrency_unlocked", False)
+        if is_valid_concurrency_unlock_code(str(migrated.get("concurrency_unlock_code") or "").strip()):
+            migrated["concurrency_unlocked"] = True
         return migrated
 
     @model_validator(mode="after")
@@ -542,7 +576,7 @@ class EngineSettings(BaseModel):
             self.source_role = "independent"
         self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
         self.cloud_model = str(self.cloud_model or "").strip()
-        self.cloud_base_url = normalize_cloud_base_url(
+        self.cloud_base_url = configured_cloud_base_url(
             self.cloud_provider,
             self.cloud_base_url,
         )
@@ -551,10 +585,12 @@ class EngineSettings(BaseModel):
             existing = self.cloud_provider_configs.get(self.cloud_provider)
             if existing is None or not (existing.cloud_model or existing.cloud_base_url):
                 self.cloud_provider_configs[self.cloud_provider] = CloudProviderConfig(
+                    api_mode=self.api_mode,
                     cloud_model=self.cloud_model,
                     cloud_base_url=self.cloud_base_url,
                 )
             else:
+                self.api_mode = existing.api_mode
                 self.cloud_model = existing.cloud_model
                 self.cloud_base_url = existing.cloud_base_url
         if not str(self.local_base_url or "").strip():
@@ -594,6 +630,7 @@ class ExcelOutputSettings(BaseModel):
     """
 
     keep_original_sheets: bool = True
+    output_translation_only: bool = False
     formula_display_value_backfill: bool = True
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
@@ -612,6 +649,7 @@ class WordOutputSettings(BaseModel):
 
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
+    output_translation_only: bool = False
 
 
 class PdfOutputSettings(BaseModel):
@@ -733,7 +771,7 @@ class WordConversionSettings(BaseModel):
         return self
 
 
-class ModelRoleSettings(BaseModel):
+class ModelRoleSettings(TextProtocolSettings):
     """Cloud access settings owned by one model role."""
 
     source_role: str = "independent"
@@ -768,7 +806,7 @@ class ModelRoleSettings(BaseModel):
             self.availability_status = "unknown"
         self.cloud_provider = str(self.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
         self.cloud_model = str(self.cloud_model or "").strip()
-        self.cloud_base_url = normalize_cloud_base_url(
+        self.cloud_base_url = configured_cloud_base_url(
             self.cloud_provider,
             self.cloud_base_url,
         )
@@ -777,10 +815,12 @@ class ModelRoleSettings(BaseModel):
             existing = self.cloud_provider_configs.get(self.cloud_provider)
             if existing is None or not (existing.cloud_model or existing.cloud_base_url):
                 self.cloud_provider_configs[self.cloud_provider] = CloudProviderConfig(
+                    api_mode=self.api_mode,
                     cloud_model=self.cloud_model,
                     cloud_base_url=self.cloud_base_url,
                 )
             else:
+                self.api_mode = existing.api_mode
                 self.cloud_model = existing.cloud_model
                 self.cloud_base_url = existing.cloud_base_url
         _sync_connection_pool(self)
@@ -826,6 +866,7 @@ class ModelThroughputSettings(BaseModel):
 
     batch_size: int | None = None
     concurrency: int | None = None
+    output_translation_only: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -920,6 +961,59 @@ class AppSettings(BaseModel):
     recent_tm_lang_pairs: list[str] = Field(default_factory=list)
     custom_target_langs: list[CustomTargetLang] = Field(default_factory=list)
     recent_target_langs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_image_model(cls, data):
+        """Upgrade retired models once while loading an older settings payload."""
+        if isinstance(data, BaseModel):
+            data = data.model_dump(mode="python")
+        if not isinstance(data, dict):
+            return data
+        migrated = dict(data)
+        if _extract_settings_version(migrated) >= SETTINGS_SCHEMA_VERSION:
+            return migrated
+
+        def migrate_model(value):
+            model = str(value or "").strip()
+            if model == "gpt-image-2":
+                return "gpt-image-2.5-flare"
+            if model.lower().startswith("deepseek-"):
+                return "deepseek-flash"
+            return value
+
+        def migrate_role(payload):
+            if isinstance(payload, BaseModel):
+                payload = payload.model_dump(mode="python")
+            if not isinstance(payload, dict):
+                return payload
+            role = dict(payload)
+            for field in ("cloud_model", "model"):
+                if field in role:
+                    role[field] = migrate_model(role[field])
+            if isinstance(role.get("cloud_provider_configs"), dict):
+                role["cloud_provider_configs"] = {
+                    provider: (
+                        {**config, "cloud_model": migrate_model(config.get("cloud_model"))}
+                        if isinstance(config, dict) else config
+                    )
+                    for provider, config in role["cloud_provider_configs"].items()
+                }
+            if isinstance(role.get("connections"), list):
+                role["connections"] = [
+                    {**conn, "model": migrate_model(conn.get("model"))}
+                    if isinstance(conn, dict) else conn
+                    for conn in role["connections"]
+                ]
+            return role
+
+        for role_name in ("engine", "cleaner_model_role", "image_model_role", "pdf_review_model_role"):
+            if role_name in migrated:
+                migrated[role_name] = migrate_role(migrated[role_name])
+        for field in ("cleaner_model",):
+            if field in migrated:
+                migrated[field] = migrate_model(migrated[field])
+        return migrated
     domain_preset: str = "同步工程场景"
     custom_prompt: str = ""
     # Excel and Word intentionally own separate domain/prompt state.  The
@@ -1045,7 +1139,6 @@ class AppSettings(BaseModel):
                 "cloud_provider": str(
                     engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
                 ).strip(),
-                "cloud_model": "",
                 "cloud_base_url": str(
                     engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
                 ).strip(),
@@ -1059,7 +1152,6 @@ class AppSettings(BaseModel):
                 "cloud_provider": str(
                     engine_payload.get("cloud_provider") or DEFAULT_CLOUD_PROVIDER
                 ).strip(),
-                "cloud_model": "",
                 "cloud_base_url": str(
                     engine_payload.get("cloud_base_url") or DEFAULT_CUSTOM_OPENAI_BASE_URL
                 ).strip(),
@@ -1766,6 +1858,13 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
         state, stored_version, _payload = _inspect_settings_file()
         if state in {"unusable", "unreadable"}:
             _recreate_settings_file(stored_version, force=replace_incompatible)
+        elif state == "adopted" and stored_version < SETTINGS_SCHEMA_VERSION:
+            # Model upgrades are destructive to the on-disk representation.
+            # Keep the exact pre-upgrade file before the first write; subsequent
+            # saves see the current schema and do not create repeat backups.
+            before_text = json.dumps(_payload or {}, ensure_ascii=False)
+            if "gpt-image-2" in before_text or "deepseek-" in before_text.lower():
+                _backup_settings_file()
         # An explicit reset deliberately discards whatever is on disk, so it
         # must never be merged with it.
         merged = None if replace_incompatible else _merged_settings_payload(settings)

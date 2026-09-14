@@ -1384,6 +1384,7 @@ def _process_sheet(
     fill_policy: str,
     review_positions: list[dict[str, str]] | None,
     log_callback,
+    output_translation_only: bool = False,
     allowed_coordinates: set[str] | None = None,
     external_autofit_planned: bool = False,
 ) -> _SheetOutcome:
@@ -1468,6 +1469,7 @@ def _process_sheet(
                 _plan_cell_mutation(
                     source_text,
                     translations=translations,
+                    output_translation_only=output_translation_only,
                     review_enabled=review_enabled,
                     review_mark_map=review_mark_map,
                 )
@@ -1632,6 +1634,7 @@ def _plan_cell_mutation(
     translations: dict[str, str],
     review_enabled: bool,
     review_mark_map: dict[str, str],
+    output_translation_only: bool = False,
 ) -> tuple[str | None, str | None] | None:
     """复刻旧写入路径的判定顺序。返回 ``(新文本或 None, 标记类型或 None)``。"""
     if source_text is None:
@@ -1669,6 +1672,8 @@ def _plan_cell_mutation(
     if retained_original:
         return (None, mark_kind) if mark_kind else None
 
+    if output_translation_only:
+        return translated.strip(), mark_kind
     return source_text + BILINGUAL_SEPARATOR + translated, mark_kind
 
 
@@ -2168,6 +2173,7 @@ def write_bilingual_workbook(
     source_lang: str = "zh",
     keep_original_sheets: bool = False,
     formula_display_value_backfill: bool = False,
+    output_translation_only: bool = False,
     lock_row_height: bool = False,
     review_marks: dict[str, str] | None = None,
     review_mark_colors: dict[str, str] | None = None,
@@ -2311,6 +2317,7 @@ def write_bilingual_workbook(
                 styles=styles,
                 translations=translations,
                 formula_display_value_backfill=formula_display_value_backfill,
+                output_translation_only=output_translation_only,
                 lock_row_height=lock_row_height,
                 review_enabled=review_enabled,
                 review_mark_map=review_mark_map,

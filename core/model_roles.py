@@ -106,6 +106,7 @@ class EffectiveModelConfig:
     # connection it actually ran on rather than just "the role's connection".
     connection_id: str = ""
     connection_label: str = ""
+    api_mode: str = "auto"
 
     @property
     def engine_label(self) -> str:
@@ -218,6 +219,7 @@ def _apply_primary_to_legacy_fields(owner) -> None:
         primary.provider,
         cloud_model=primary.model,
         cloud_base_url=primary.base_url,
+        api_mode=primary.api_mode,
     )
     owner.availability_status = primary.availability_status
     owner.availability_message = primary.availability_message
@@ -233,6 +235,7 @@ def add_role_connection(
     provider: str = "",
     model: str = "",
     base_url: str = "",
+    api_mode: str = "auto",
 ) -> ModelConnection:
     """Append a new entry to one role's pool and return it."""
     owner = role_pool_owner(settings, role)
@@ -242,6 +245,7 @@ def add_role_connection(
         provider=provider or primary.provider,
         model=model or primary.model,
         base_url=base_url,
+        api_mode=api_mode,
     )
     owner.connections = [*owner.connections, connection]
     return connection
@@ -256,6 +260,7 @@ def update_role_connection(
     provider: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
+    api_mode: str | None = None,
 ) -> ModelConnection:
     """Edit one pool entry in place."""
     owner = role_pool_owner(settings, role)
@@ -269,10 +274,14 @@ def update_role_connection(
         ("provider", provider),
         ("model", model),
         ("base_url", base_url),
+        ("api_mode", api_mode),
     ):
         if value is None:
             continue
         normalized = str(value).strip()
+        if field_name == "api_mode":
+            from core.text_transport import normalize_api_mode
+            normalized = normalize_api_mode(normalized)
         # 只在值真的变了时才作数。面板每次保存都会把这三个字段整份提交，按「传了就算改」
         # 判定的话，光改个连接名字都会把「测试通过」打回「未测试」。
         if normalized != getattr(connection, field_name):
@@ -607,6 +616,7 @@ def model_config_signature(config: EffectiveModelConfig) -> str:
             config.provider,
             config.model,
             config.base_url.rstrip("/"),
+            config.api_mode,
             _hash_secret(config.api_key),
         ]
     )
@@ -769,6 +779,7 @@ def resolve_effective_model_config(
             provider=source_config.provider,
             model=_own_model_name(settings, normalized_role, source_config.mode),
             base_url=source_config.base_url,
+            api_mode=source_config.api_mode,
             api_key=source_config.api_key,
             # Report the connection actually dialed rather than an entry from
             # this role's own idle pool, which is what made the panel label a
@@ -828,6 +839,7 @@ def resolve_effective_model_config(
         provider=provider,
         model=model,
         base_url=base_url,
+        api_mode=provider_config.api_mode if is_primary else connection.api_mode,
         api_key=_connection_api_key(connection, provider, base_url),
         connection_id=connection.id,
         connection_label=connection.display_label,
@@ -888,6 +900,7 @@ def _adopt_stored_source_endpoint(
         # 上跑的，换个 key 存反而等于把它丢了。
         cloud_model=str(owner.cloud_model or "").strip(),
         cloud_base_url=source_config.base_url,
+        api_mode=source_config.api_mode,
     )
     connections = list(owner.connections or [])
     if connections:
@@ -962,11 +975,15 @@ def settings_for_text_role(
     copy_settings.engine.cloud_provider = config.provider
     copy_settings.engine.cloud_model = config.model
     copy_settings.engine.cloud_base_url = config.base_url
+    copy_settings.engine.api_mode = config.api_mode
+    if copy_settings.engine.connections:
+        copy_settings.engine.connections[0].id = config.connection_id
     set_cloud_provider_config(
         copy_settings.engine,
         config.provider,
         cloud_model=config.model,
         cloud_base_url=config.base_url,
+        api_mode=config.api_mode,
     )
     return copy_settings
 

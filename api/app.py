@@ -117,6 +117,7 @@ from config import (
     CLOUD_PROVIDER_MODEL_DEFAULTS,
     DISABLED_BASE_URL_PLACEHOLDER,
     DOMAIN_PRESETS,
+    is_valid_concurrency_unlock_code,
 )
 from settings import (
     AppSettings,
@@ -299,6 +300,7 @@ class ModelRoleUpdatePayload(BaseModel):
     provider: str | None = None
     model: str | None = None
     base_url: str | None = None
+    api_mode: str | None = None
 
 
 class ConnectionUpsertPayload(BaseModel):
@@ -307,6 +309,7 @@ class ConnectionUpsertPayload(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    api_mode: str | None = None
 
 
 class ConnectionReorderPayload(BaseModel):
@@ -329,6 +332,10 @@ class DomainSettingsPayload(BaseModel):
 class ThroughputPayload(BaseModel):
     batch_size: int | None = None
     concurrency: int | None = None
+
+
+class ThroughputUnlockPayload(BaseModel):
+    code: str
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -1351,6 +1358,7 @@ def create_app(
         for field, value in (
             ("source_role", payload.source_role),
             ("mode", payload.mode),
+            ("api_mode", payload.api_mode),
         ):
             if value is not None and getattr(owner, field) != value:
                 setattr(owner, field, value)
@@ -1370,6 +1378,7 @@ def create_app(
                 owner.cloud_provider,
                 cloud_model=owner.cloud_model,
                 cloud_base_url=owner.cloud_base_url,
+                api_mode=owner.api_mode,
             )
         try:
             # A changed translation connection can make a following image or
@@ -1423,6 +1432,7 @@ def create_app(
                 provider=payload.provider or "",
                 model=payload.model or "",
                 base_url=payload.base_url or "",
+                api_mode=payload.api_mode or "auto",
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -1449,6 +1459,7 @@ def create_app(
                 provider=payload.provider,
                 model=payload.model,
                 base_url=payload.base_url,
+                api_mode=payload.api_mode,
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
@@ -1610,20 +1621,28 @@ def create_app(
             "profile_key": throughput.profile_key,
             "batch_size": throughput.batch_size,
             "concurrency": throughput.concurrency,
-            "batch_size_bounds": batch_size_bounds(config),
-            "concurrency_bounds": concurrency_bounds(config),
+            "batch_size_bounds": None if settings.engine.concurrency_unlocked else batch_size_bounds(config),
+            "concurrency_bounds": None if settings.engine.concurrency_unlocked else concurrency_bounds(config),
         }
+
+    @app.post("/api/models/throughput/unlock")
+    def unlock_throughput(payload: ThroughputUnlockPayload) -> dict[str, Any]:
+        if not is_valid_concurrency_unlock_code(payload.code.strip()):
+            raise HTTPException(422, "解锁口令不正确。")
+        settings = load_settings()
+        settings.engine.concurrency_unlocked = True
+        settings.engine.concurrency_unlock_code = payload.code.strip()
+        save_settings(settings)
+        return {"unlocked": True}
 
     @app.put("/api/models/throughput/{role}")
     def put_throughput(role: str, payload: ThroughputPayload) -> dict[str, Any]:
         settings = load_settings()
         config = _model_config_or_422(settings, role)
-        throughput = set_model_throughput(
-            settings,
-            config,
-            batch_size=payload.batch_size,
-            concurrency=payload.concurrency,
-        )
+        try:
+            throughput = set_model_throughput(settings, config, batch_size=payload.batch_size, concurrency=payload.concurrency)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         save_settings(settings)
         return {
             "profile_key": throughput.profile_key,
@@ -1642,8 +1661,8 @@ def create_app(
             "profile_key": throughput.profile_key,
             "batch_size": throughput.batch_size,
             "concurrency": throughput.concurrency,
-            "batch_size_bounds": batch_size_bounds(config),
-            "concurrency_bounds": concurrency_bounds(config),
+            "batch_size_bounds": None if settings.engine.concurrency_unlocked else batch_size_bounds(config),
+            "concurrency_bounds": None if settings.engine.concurrency_unlocked else concurrency_bounds(config),
         }
 
     @app.get("/api/model-config/export")
@@ -2082,6 +2101,7 @@ def _connection_payload(
         "provider": connection.provider,
         "model": connection.model,
         "base_url": connection.base_url,
+        "api_mode": connection.api_mode,
         "availability_status": connection.availability_status,
         "availability_message": connection.availability_message,
         "availability_checked_at": connection.availability_checked_at,
@@ -2107,6 +2127,7 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "provider": config.provider,
         "model": config.model,
         "base_url": config.base_url,
+        "api_mode": config.api_mode,
         # A following role reuses its source's credentials, so the source's
         # pool is what it dials.  Serving its own idle pool here made the panel
         # label a followed connection with a name nothing was connecting to.

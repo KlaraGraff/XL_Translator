@@ -604,6 +604,7 @@ def apply_header_footer_translations(
     *,
     target_lang: str,
     source_lang: str,
+    output_translation_only: bool = False,
 ) -> int:
     """Write header/footer translations into an already-opened document.
 
@@ -628,10 +629,10 @@ def apply_header_footer_translations(
         resolved = _resolve_translation(source, translations)
         if resolved is None:
             continue
-        if resolved.replace_only and not _paragraph_has_field(paragraph):
+        if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
             _replace_paragraph_text(paragraph, resolved.text, target_lang=target_lang)
             insertions += 1
-        elif resolved.replace_only and _replace_paragraph_text_around_fields(
+        elif (resolved.replace_only or output_translation_only) and _replace_paragraph_text_around_fields(
             paragraph,
             resolved.text,
             target_lang=target_lang,
@@ -888,6 +889,7 @@ def write_bilingual_docx(
     issue_callback=None,
     protect_front_matter: bool = False,
     translate_headers_footers: bool = False,
+    output_translation_only: bool = False,
 ) -> Path:
     """Write a bilingual Word document to the output directory.
 
@@ -1016,7 +1018,7 @@ def write_bilingual_docx(
             continue
         leading_prefix = original_paragraph_prefixes.get(paragraph_key, "")
         translated_text = _apply_leading_prefix(resolved.text, leading_prefix)
-        if resolved.replace_only and not _paragraph_has_field(paragraph):
+        if (resolved.replace_only or output_translation_only) and not _paragraph_has_field(paragraph):
             _replace_paragraph_text(
                 paragraph,
                 translated_text,
@@ -1029,7 +1031,7 @@ def write_bilingual_docx(
                     highlight_policy,
                     review_color_map,
                 )
-        elif resolved.replace_only and _replace_paragraph_text_around_fields(
+        elif (resolved.replace_only or output_translation_only) and _replace_paragraph_text_around_fields(
             paragraph,
             translated_text,
             target_lang=target_lang,
@@ -1090,7 +1092,7 @@ def write_bilingual_docx(
                 else:
                     highlight_skip_count += 1
             continue
-        if resolved.replace_only:
+        if resolved.replace_only or output_translation_only:
             if not _replace_cell_text(cell, resolved.text, target_lang=target_lang):
                 cell_line_mismatch_count += 1
                 if issue_callback:
@@ -1125,6 +1127,7 @@ def write_bilingual_docx(
             translations,
             target_lang=target_lang,
             source_lang=source_lang,
+            output_translation_only=output_translation_only,
         )
         if translate_headers_footers
         else 0

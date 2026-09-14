@@ -248,6 +248,7 @@ class TaskLogger:
         formula_display_value_backfill: bool,
         enable_excel_autofit: bool,
         lock_row_height: bool = False,
+        output_translation_only: bool = False,
     ) -> None:
         """记录任务启动段落。"""
         if not self.enabled:
@@ -260,7 +261,7 @@ class TaskLogger:
             f"目标语言={get_target_lang_display(target_lang)}"
         )
         self.info(
-            f"保留原始表格={keep_original_sheets} | 公式显示值回填={formula_display_value_backfill} | "
+            f"保留原始表格={keep_original_sheets} | 仅显示译文={output_translation_only} | 公式显示值回填={formula_display_value_backfill} | "
             f"ExcelAutoFit={enable_excel_autofit} | "
             f"锁定行高缩字号={lock_row_height}"
         )

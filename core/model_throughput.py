@@ -71,6 +71,16 @@ def concurrency_bounds(config: EffectiveModelConfig) -> tuple[int, int]:
     return get_cloud_concurrency_bounds(True)
 
 
+def _throughput_bounds(settings: AppSettings, config: EffectiveModelConfig):
+    unlocked = bool(getattr(settings.engine, "concurrency_unlocked", False))
+    batch = None if unlocked and config.role in TEXT_THROUGHPUT_ROLES else batch_size_bounds(config)
+    if unlocked:
+        concurrency = None
+    else:
+        concurrency = concurrency_bounds(config)
+    return batch, concurrency
+
+
 def supports_batch_size(config: EffectiveModelConfig) -> bool:
     return batch_size_bounds(config) is not None
 
@@ -87,10 +97,10 @@ def _default_batch_size(
     settings: AppSettings,
     config: EffectiveModelConfig,
 ) -> int | None:
-    del settings
-    bounds = batch_size_bounds(config)
-    if bounds is None:
+    if not supports_batch_size(config):
         return None
+    bounds, _ = _throughput_bounds(settings, config)
+    bounds = bounds or (1, 2**31 - 1)
     minimum, maximum = bounds
     return _clamp_int(
         CHUNK_LOCAL_DEFAULT if config.mode == "local" else CHUNK_CLOUD_DEFAULT,
@@ -101,7 +111,6 @@ def _default_batch_size(
 
 
 def _default_concurrency(settings: AppSettings, config: EffectiveModelConfig) -> int:
-    del settings
     if config.mode == "local":
         raw = CONCURRENCY_LOCAL_DEFAULT
     elif config.role == ROLE_IMAGE:
@@ -110,7 +119,8 @@ def _default_concurrency(settings: AppSettings, config: EffectiveModelConfig) ->
         raw = 1
     else:
         raw = CONCURRENCY_CLOUD_DEFAULT
-    minimum, maximum = concurrency_bounds(config)
+    _, bounds = _throughput_bounds(settings, config)
+    minimum, maximum = bounds or (1, 2**31 - 1)
     return _clamp_int(
         raw,
         minimum=minimum,
@@ -136,7 +146,8 @@ def get_model_throughput(
     if default_batch is None:
         batch_size = None
     else:
-        minimum, maximum = batch_size_bounds(config) or (1, default_batch)
+        bounds, _ = _throughput_bounds(settings, config)
+        minimum, maximum = bounds or (1, 2**31 - 1)
         batch_size = _clamp_int(
             profile.batch_size,
             minimum=minimum,
@@ -144,7 +155,8 @@ def get_model_throughput(
             fallback=default_batch,
         )
 
-    minimum, maximum = concurrency_bounds(config)
+    _, bounds = _throughput_bounds(settings, config)
+    minimum, maximum = bounds or (1, 2**31 - 1)
     concurrency = _clamp_int(
         profile.concurrency,
         minimum=minimum,
@@ -173,7 +185,10 @@ def set_model_throughput(
     )
 
     if batch_size is not None and supports_batch_size(config):
-        minimum, maximum = batch_size_bounds(config) or (1, int(batch_size))
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        bounds, _ = _throughput_bounds(settings, config)
+        minimum, maximum = bounds or (1, int(batch_size))
         profile.batch_size = _clamp_int(
             batch_size,
             minimum=minimum,
@@ -181,7 +196,10 @@ def set_model_throughput(
             fallback=current.batch_size or minimum,
         )
     if concurrency is not None:
-        minimum, maximum = concurrency_bounds(config)
+        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency <= 0:
+            raise ValueError("concurrency must be a positive integer")
+        _, bounds = _throughput_bounds(settings, config)
+        minimum, maximum = bounds or (1, int(concurrency))
         profile.concurrency = _clamp_int(
             concurrency,
             minimum=minimum,

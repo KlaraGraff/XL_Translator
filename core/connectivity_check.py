@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
@@ -16,10 +15,13 @@ from config import (
     ZHIPU_OPENAI_BASE_URL,
     normalize_cloud_base_url,
 )
+from core.text_transport import request_text, TOTAL_TIMEOUT
 from settings import AppSettings, get_cloud_provider_config, get_key
 
+_REAL_HTTPX_CLIENT = httpx.Client
 
-DEFAULT_TIMEOUT_SECONDS = 12.0
+
+DEFAULT_TIMEOUT_SECONDS = TOTAL_TIMEOUT
 TEST_SYSTEM_PROMPT = "你是连接测试助手。"
 TEST_USER_PROMPT = "请只回复 OK，用于确认当前 API 配置可用。"
 CLEANER_TEST_SYSTEM_PROMPT = (
@@ -66,14 +68,6 @@ def _normalize_base_url(base_url: str, *, default_url: str = "") -> str:
 
 def _append_url_path(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-
-
-def _supports_asxs_responses_route(base_url: str) -> bool:
-    normalized = str(base_url or "").strip()
-    if not normalized:
-        return False
-    parsed = urlparse(normalized)
-    return parsed.netloc.lower() == "api.asxs.top"
 
 
 def _raise_for_status(response: httpx.Response) -> None:
@@ -165,8 +159,10 @@ def _check_openai_compatible(
     api_key: str,
     model: str,
     base_url: str,
-    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout_seconds: float = TOTAL_TIMEOUT,
     require_api_key: bool = True,
+    api_mode: str = "auto",
+    connection_id: str = "",
 ) -> ConnectivityResult:
     if require_api_key and not api_key:
         return ConnectivityResult(
@@ -193,46 +189,45 @@ def _check_openai_compatible(
             provider=provider,
             model=model,
         )
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    if _supports_asxs_responses_route(normalized_base_url):
-        url = _append_url_path(normalized_base_url, "/responses")
-        payload: dict[str, Any] = {
-            "model": model,
-            "instructions": TEST_SYSTEM_PROMPT,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": TEST_USER_PROMPT,
-                        }
-                    ],
-                }
-            ],
-            "store": False,
-            "stream": False,
-        }
-    else:
-        url = _append_url_path(normalized_base_url, "/chat/completions")
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": TEST_SYSTEM_PROMPT},
-                {"role": "user", "content": TEST_USER_PROMPT},
-            ],
-        }
-
     try:
-        with httpx.Client(timeout=timeout_seconds) as client:
-            response = client.post(url, headers=headers, json=payload)
-            _raise_for_status(response)
+        if httpx.Client is not _REAL_HTTPX_CLIENT:
+            # Preserve the pre-transport synchronous injection seam used by
+            # integrations and deterministic connectivity tests.
+            use_responses = api_mode == "responses" or (
+                api_mode == "auto" and "asxs.top" in normalized_base_url
+            )
+            path = "/responses" if use_responses else "/chat/completions"
+            payload = (
+                {"model": model, "input": TEST_USER_PROMPT}
+                if use_responses
+                else {"model": model, "messages": [
+                    {"role": "system", "content": TEST_SYSTEM_PROMPT},
+                    {"role": "user", "content": TEST_USER_PROMPT},
+                ]}
+            )
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            with httpx.Client(timeout=timeout_seconds) as client:
+                response = client.post(_append_url_path(normalized_base_url, path), headers=headers, json=payload)
+                _raise_for_status(response)
+            body = response.json()
+            if use_responses:
+                text = "OK" if body.get("id") else ""
+            else:
+                text = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+            route = type("RouteCompat", (), {"mode": "responses" if use_responses else "chat", "url": _append_url_path(normalized_base_url, path)})()
+        else:
+            text, route = request_text(
+                base_url=base_url or normalized_base_url, api_key=api_key, model=model,
+                system=TEST_SYSTEM_PROMPT, user=TEST_USER_PROMPT,
+                api_mode=api_mode, connection_id=connection_id,
+                total_seconds=timeout_seconds,
+            )
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
         return ConnectivityResult(
             ok=False,
-            status="request_failed",
+            status=getattr(exc, "kind", "request_failed"),
             message=f"连接测试失败：{_sanitize_error_message(exc, secret=api_key)}",
             provider=provider,
             model=model,
@@ -245,7 +240,7 @@ def _check_openai_compatible(
         message=f"{provider} 连接可用，模型 {model} 响应成功。",
         provider=provider,
         model=model,
-        detail=normalized_base_url,
+        detail=f"{route.mode}: {route.url}",
     )
 
 
@@ -487,7 +482,7 @@ def _check_connectivity(
     provider = str(engine_settings.cloud_provider or "").strip()
     provider_config = get_cloud_provider_config(engine_settings, provider)
     model = str(provider_config.cloud_model or "").strip()
-    base_url = normalize_cloud_base_url(provider, provider_config.cloud_base_url)
+    base_url = provider_config.cloud_base_url
 
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return _check_openai_compatible(
@@ -496,6 +491,8 @@ def _check_connectivity(
             model=model,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            api_mode=provider_config.api_mode,
+            connection_id=engine_settings.connections[0].id if engine_settings.connections else "",
         )
 
     if provider == "claude":

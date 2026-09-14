@@ -13,13 +13,13 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from core.text_transport import bounded_text_operation
 from config import (
     DOMAIN_PRESETS,
-    CHUNK_CLOUD_MIN, CHUNK_CLOUD_MAX,
-    CHUNK_LOCAL_MIN, CHUNK_LOCAL_MAX,
+    CHUNK_CLOUD_MAX,
+    CHUNK_LOCAL_MAX,
     LM_STUDIO_BASE_URL,
     OLLAMA_BASE_URL,
-    normalize_cloud_base_url,
 )
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -196,7 +196,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
     provider = str(s.cloud_provider or "").strip()
     provider_config = get_cloud_provider_config(s, provider)
     cloud_model = provider_config.cloud_model or s.cloud_model
-    cloud_base_url = normalize_cloud_base_url(provider, provider_config.cloud_base_url)
+    cloud_base_url = provider_config.cloud_base_url
     api_key = get_key(provider, cloud_base_url)
 
     if provider == "claude":
@@ -213,6 +213,8 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
             api_key=api_key,
             model=cloud_model,
             base_url=cloud_base_url,
+            api_mode=provider_config.api_mode,
+            connection_id=s.connections[0].id if s.connections else "",
         )
 
     if provider == "zhipu":
@@ -427,6 +429,7 @@ def translate_texts(
     api_scheduler: WeightedApiScheduler | None = None,
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: TranslationBatchRunStats | None = None,
+    throughput_unlocked: bool = False,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -443,9 +446,11 @@ def translate_texts(
     # 防止配置脏数据或 UI 传参异常导致越界请求。
     is_local = is_local_engine_name(engine.engine_name)
     if is_local:
-        chunk = max(CHUNK_LOCAL_MIN, min(CHUNK_LOCAL_MAX, batch_size))
+        maximum = 2**31 - 1 if throughput_unlocked else CHUNK_LOCAL_MAX
+        chunk = max(1, min(maximum, int(batch_size)))
     else:
-        chunk = max(CHUNK_CLOUD_MIN, min(CHUNK_CLOUD_MAX, batch_size))
+        maximum = 2**31 - 1 if throughput_unlocked else CHUNK_CLOUD_MAX
+        chunk = max(1, min(maximum, int(batch_size)))
 
     char_budget = (
         _EXCEL_LOCAL_BATCH_CHAR_BUDGET
@@ -561,6 +566,7 @@ def translate_texts_with_sources(
     api_scheduler: WeightedApiScheduler | None = None,
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: TranslationBatchRunStats | None = None,
+    throughput_unlocked: bool = False,
 ) -> dict[str, TranslationLanguageResult]:
     """Translate bounded batches while retaining model-reported source codes.
 
@@ -572,9 +578,9 @@ def translate_texts_with_sources(
         return {}
     is_local = is_local_engine_name(engine.engine_name)
     item_limit = (
-        max(CHUNK_LOCAL_MIN, min(CHUNK_LOCAL_MAX, batch_size))
+        max(1, min(2**31 - 1 if throughput_unlocked else CHUNK_LOCAL_MAX, batch_size))
         if is_local
-        else max(CHUNK_CLOUD_MIN, min(CHUNK_CLOUD_MAX, batch_size))
+        else max(1, min(2**31 - 1 if throughput_unlocked else CHUNK_CLOUD_MAX, batch_size))
     )
     char_budget = _EXCEL_LOCAL_BATCH_CHAR_BUDGET if is_local else _EXCEL_CLOUD_BATCH_CHAR_BUDGET
     batches = _build_text_batches(texts, max_items=item_limit, max_chars=char_budget)
@@ -643,6 +649,7 @@ def _build_text_batches(
     return batches
 
 
+@bounded_text_operation
 def _translate_batch_with_fallback(
     batch: list[str],
     *,
@@ -782,6 +789,7 @@ def _translate_batch_with_fallback(
         return {text: text for text in batch}
 
 
+@bounded_text_operation
 def _translate_batch_with_sources_fallback(
     batch: list[str],
     *,
@@ -941,6 +949,8 @@ def _untranslated_language_results(
 
 def _is_permanent_request_error(exc: BaseException) -> bool:
     """Return True when shrinking a batch cannot change the upstream outcome."""
+    if getattr(exc, "no_replay", False):
+        return True
     status_code = getattr(exc, "status_code", None)
     if status_code is None:
         response = getattr(exc, "response", None)

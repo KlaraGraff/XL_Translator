@@ -1,5 +1,31 @@
 # Translator 版本更新日志
 
+## V9.5.0
+
+- **连接更多文本服务**：以前部分兼容服务必须依赖特殊地址才能使用。现在程序会在同一服务和模型内识别两种常见接口格式，并在明确不兼容时有限切换，连接测试和实际翻译使用同一套判断。
+
+  **More compatible text services**: Some compatible services previously required a special address. The app now recognizes two common interface formats for the same service and model, with limited fallback when incompatibility is clear. Connection tests and translations use the same logic.
+
+- **OA 高并发设置**：输入 OA 解锁码后，批次数和并发数只需填写正整数，可以按服务能力使用更大的数值；未解锁时仍保持原有保护。
+
+  **Higher OA limits**: After entering the OA unlock code, batch and concurrency settings accept any positive integer. The existing safeguards remain for locked settings.
+
+- **可只输出译文**：Excel 和 Word 设置中新增“仅显示译文”。关闭时继续输出原文和译文，打开后结果文件只保留译文。
+
+  **Translation-only output**: Excel and Word now offer “translation only”. The default keeps bilingual output; enabling it leaves only the translated text in the result.
+
+- **模型名称自动更新**：更新配置时，旧的 `gpt-image-2` 会自动换成 `gpt-image-2.5-flare`，旧 DeepSeek 系列会换成 `deepseek-flash`，原有设置会继续保留。
+
+  **Automatic model updates**: Configuration updates replace the retired `gpt-image-2` with `gpt-image-2.5-flare` and older DeepSeek model names with `deepseek-flash`, while preserving the rest of the settings.
+
+- **默认行为保持不变**：没有打开新选项或输入解锁码时，原有双语输出和数值限制继续生效。
+
+  **Defaults remain unchanged**: Without enabling the new option or entering the unlock code, bilingual output and the existing numeric limits remain in effect.
+
+下载时请选择对应平台的安装包，并保留同名 `.sha256` 文件用于校验。本次构建的签名和公证状态以 Release 页面中的实际说明为准。
+
+Download the installer for your platform and keep the matching `.sha256` file for verification. Check the Release page for the actual signing and notarization status of this build.
+
 ## V9.4.0
 本版两条主线。一条是新能力「续译」：翻到一半被打断、或上次没翻完的文件，再次翻译时可以接着上次的成果补完，不再为已经翻好的内容重复付费。另一条是一次全仓体检：2026-08-29 把整个代码库从头到尾审了一遍，71 条发现里 67 条技术缺陷在本版全部修掉，其余产品取舍逐条拍板后随批落地。修复面很广，下面按「你会遇到什么」分组。
 

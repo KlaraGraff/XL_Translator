@@ -25,7 +25,7 @@ FAILURE_CREDENTIAL = "credential"
 FAILURE_TRANSIENT = "transient"
 
 _CREDENTIAL_STATUS = {401, 402, 403}
-_ENDPOINT_STATUS = {404, 500, 502, 503, 504}
+_ENDPOINT_STATUS = {500, 502, 503, 504}
 
 _CREDENTIAL_MARKERS = (
     "invalid api key",
@@ -67,6 +67,8 @@ def _status_code(exc: BaseException) -> int:
 
 def classify_connection_failure(exc: BaseException) -> str:
     """Classify why a request failed, in pool terms."""
+    if getattr(exc, "no_replay", False):
+        return FAILURE_TRANSIENT
     status = _status_code(exc)
     if status in _CREDENTIAL_STATUS:
         return FAILURE_CREDENTIAL

@@ -15,6 +15,8 @@ from typing import TypeVar
 
 from loguru import logger
 
+from core.text_transport import bounded_text_operation
+
 from core.connection_pool import (
     FAILURE_ENDPOINT,
     classify_connection_failure,
@@ -92,6 +94,7 @@ class FailoverTranslationEngine(TranslationEngine):
         # Anything the wrapper does not define belongs to the live engine.
         return getattr(self.__dict__["_engine"], item)
 
+    @bounded_text_operation
     def _call_with_failover(self, invoke: Callable[[TranslationEngine], _T]) -> _T:
         """Run ``invoke`` on the live engine, moving down the chain on failure."""
         while True:

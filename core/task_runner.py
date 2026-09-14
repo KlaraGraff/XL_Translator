@@ -520,6 +520,7 @@ class TaskRunner:
             engine_name          = engine.engine_name,
             target_lang          = target_lang,
             keep_original_sheets = excel_output.keep_original_sheets,
+            output_translation_only = excel_output.output_translation_only,
             formula_display_value_backfill = excel_output.formula_display_value_backfill,
             enable_excel_autofit = excel_output.enable_excel_autofit,
             lock_row_height      = excel_output.lock_row_height,
@@ -1316,6 +1317,7 @@ class TaskRunner:
                             should_stop=self.stop_requested,
                             api_scheduler=shared_scheduler,
                             stats=batch_stats,
+                            throughput_unlocked=self._settings.engine.concurrency_unlocked,
                         )
                         normal_api_language_results.update(language_results)
                         return {
@@ -1335,6 +1337,7 @@ class TaskRunner:
                         source_lang=source_lang,
                         api_scheduler=shared_scheduler,
                         stats=batch_stats,
+                        throughput_unlocked=self._settings.engine.concurrency_unlocked,
                     )
 
                 def run_mixed_api_translation():
@@ -1903,6 +1906,7 @@ class TaskRunner:
                             formula_display_value_backfill=(
                                 excel_output.formula_display_value_backfill
                             ),
+                            output_translation_only=excel_output.output_translation_only,
                             lock_row_height=excel_output.lock_row_height,
                             review_marks=excel_review_marks,
                             review_mark_colors=self._settings.excel_review.mark_colors,
@@ -1929,6 +1933,7 @@ class TaskRunner:
                             source_lang          = source_lang,
                             keep_original_sheets = excel_output.keep_original_sheets,
                             formula_display_value_backfill = excel_output.formula_display_value_backfill,
+                            output_translation_only = excel_output.output_translation_only,
                             lock_row_height      = excel_output.lock_row_height,
                             review_marks         = excel_review_marks,
                             review_mark_colors   = self._settings.excel_review.mark_colors,

@@ -33,6 +33,7 @@ from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
     _append_translation_to_cell,
+    _replace_cell_text,
     _apply_cell_review_mark,
     _apply_paragraph_review_mark,
     _cell_has_review_highlight,
@@ -47,6 +48,9 @@ from core.word_document import (
     _normalize_word_output_name,
     _paragraph_has_review_highlight,
     _paragraph_source_text,
+    _paragraph_has_field,
+    _replace_paragraph_text,
+    _replace_paragraph_text_around_fields,
     apply_header_footer_translations,
     _review_mark_highlight_values,
     _sanitize_filename_fragment,
@@ -138,6 +142,7 @@ def write_untranslated_docx(
     existing_highlight_policy: str = EXISTING_HIGHLIGHT_POLICY_SKIP,
     log_callback=None,
     translate_headers_footers: bool = False,
+    output_translation_only: bool = False,
 ) -> Path:
     """Copy a Word document and insert translations only at source-only positions.
 
@@ -190,11 +195,17 @@ def write_untranslated_docx(
             paragraph = body_paragraphs[index]
             if _paragraph_source_text(paragraph) != source_text:
                 continue
-            translation_paragraph = _insert_translation_paragraph_after(
-                paragraph,
-                translation,
-                target_lang=target_lang,
-            )
+            translation_paragraph = None
+            if output_translation_only and not _paragraph_has_field(paragraph):
+                _replace_paragraph_text(paragraph, translation, target_lang=target_lang)
+            elif output_translation_only and _replace_paragraph_text_around_fields(
+                paragraph, translation, target_lang=target_lang
+            ):
+                pass
+            else:
+                translation_paragraph = _insert_translation_paragraph_after(
+                    paragraph, translation, target_lang=target_lang
+                )
             paragraph_insertions += 1
             if review_mark:
                 # 原文段和刚插进去的译文段都涂上：用户在文档里翻到哪一边都看得见。
@@ -204,12 +215,13 @@ def write_untranslated_docx(
                     highlight_policy,
                     review_color_map,
                 )
-                _apply_paragraph_review_mark(
-                    translation_paragraph,
-                    review_mark,
-                    highlight_policy,
-                    review_color_map,
-                )
+                if translation_paragraph is not None:
+                    _apply_paragraph_review_mark(
+                        translation_paragraph,
+                        review_mark,
+                        highlight_policy,
+                        review_color_map,
+                    )
                 if marked:
                     highlight_count += 1
                 else:
@@ -225,11 +237,10 @@ def write_untranslated_docx(
             expected = str(unit.data.get("cell_text") or source_text)
             if _cell_source_text(cell) not in {source_text, expected}:
                 continue
-            _append_translation_to_cell(
-                cell,
-                translation,
-                target_lang=target_lang,
-            )
+            if output_translation_only:
+                _replace_cell_text(cell, translation, target_lang=target_lang)
+            else:
+                _append_translation_to_cell(cell, translation, target_lang=target_lang)
             table_insertions += 1
             if review_mark:
                 if _apply_cell_review_mark(
@@ -248,6 +259,7 @@ def write_untranslated_docx(
             translations,
             target_lang=target_lang,
             source_lang=source_lang,
+            output_translation_only=output_translation_only,
         )
         if translate_headers_footers
         else 0

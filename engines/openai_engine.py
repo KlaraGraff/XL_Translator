@@ -1,82 +1,15 @@
-"""
-OpenAI 兼容翻译引擎。
-覆盖：OpenAI / 硅基流动 / 自定义 OpenAI 兼容接口。
-"""
+"""OpenAI-compatible translation through the shared text transport."""
 import json
-from urllib.parse import urlparse
+import httpx  # noqa: F401 - compatibility patch target for legacy integrations
 
-import httpx
-
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-
-from config import (
-    CLOUD_REQUEST_TIMEOUT,
-    OPENAI_BASE_URL,
-    RETRY_MAX_ATTEMPTS,
-    RETRY_WAIT_MIN,
-    RETRY_WAIT_MAX,
+from config import OPENAI_BASE_URL
+from core.text_transport import (
+    request_text,
 )
 from engines.base_engine import (
-    TASK_INSTRUCTION,
-    TranslationEngine,
-    get_source_lang_name,
-    get_target_lang_name,
-    is_retryable_engine_error,
-    parse_response,
+    TASK_INSTRUCTION, TranslationEngine, get_source_lang_name,
+    get_target_lang_name, parse_response,
 )
-
-
-def _supports_asxs_responses_route(base_url: str) -> bool:
-    normalized = str(base_url or "").strip()
-    if not normalized:
-        return False
-    parsed = urlparse(normalized)
-    return parsed.netloc.lower() == "api.asxs.top"
-
-
-def _extract_text_from_responses_events(lines) -> str:
-    deltas: list[str] = []
-    done_texts: list[str] = []
-
-    for raw_line in lines:
-        if not raw_line:
-            continue
-
-        line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else str(raw_line)
-        if not line.startswith("data: "):
-            continue
-
-        payload = line[6:]
-        if payload == "[DONE]":
-            continue
-
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
-        if isinstance(data.get("delta"), str):
-            deltas.append(data["delta"])
-            continue
-
-        if isinstance(data.get("text"), str):
-            done_texts.append(data["text"])
-            continue
-
-        item = data.get("item")
-        if isinstance(item, dict):
-            for content in item.get("content") or []:
-                if not isinstance(content, dict):
-                    continue
-                if isinstance(content.get("text"), str):
-                    done_texts.append(content["text"])
-
-    if deltas:
-        return "".join(deltas)
-    if done_texts:
-        return done_texts[-1]
-    return ""
-
 
 class OpenAIEngine(TranslationEngine):
 
@@ -87,10 +20,12 @@ class OpenAIEngine(TranslationEngine):
         # 写死一个默认值会随时间过期，而且永远轮不到它生效——调度层一律显式传入。
         model: str,
         base_url: str = "",
-        api_mode: str = "",
+        api_mode: str = "auto",
+        connection_id: str = "",
         engine_name_prefix: str = "openai",
         response_label: str = "OpenAI",
     ):
+        self._connection_id = connection_id
         self._model = model
         self._api_key = api_key
         self._base_url = str(base_url or OPENAI_BASE_URL).rstrip("/")
@@ -124,113 +59,20 @@ class OpenAIEngine(TranslationEngine):
         raw = self._call_api(full_system, user_msg)
         return parse_response(texts, raw, self._response_label)
 
-    def _use_responses_api(self) -> bool:
-        if self._api_mode == "codex_responses":
-            return True
-        if self._api_mode and self._api_mode != "codex_responses":
-            return False
-        return _supports_asxs_responses_route(self._base_url)
-
-    @retry(
-        stop=stop_after_attempt(RETRY_MAX_ATTEMPTS),
-        wait=wait_exponential(min=RETRY_WAIT_MIN, max=RETRY_WAIT_MAX),
-        retry=retry_if_exception(is_retryable_engine_error),
-        reraise=True,
-    )
     def _call_api(self, system: str, user_msg: str) -> str:
-        if self._use_responses_api():
-            return self._call_responses_api(system, user_msg)
-        return self._call_chat_completions_api(system, user_msg)
-
-    def _call_chat_completions_api(self, system: str, user_msg: str) -> str:
-        response = _post_json(
-            f"{self._base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            payload={
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_msg},
-                ],
-            },
+        text, self.last_route = request_text(
+            base_url=self._base_url, api_key=self._api_key, model=self._model,
+            system=system, user=user_msg, api_mode=self._api_mode or "auto",
+            connection_id=self._connection_id,
         )
-        return _extract_chat_completion_text(response)
+        return text
 
     def _call_responses_api(self, system: str, user_msg: str) -> str:
-        if not self._base_url:
-            raise ValueError("Responses API 调用缺少 base_url 配置")
-
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        payload = {
-            "model": self._model,
-            "instructions": system,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": user_msg,
-                        }
-                    ],
-                }
-            ],
-            "store": False,
-            "stream": True,
-            "include": ["reasoning.encrypted_content"],
-        }
-
-        with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
-            with client.stream(
-                "POST",
-                f"{self._base_url}/responses",
-                headers=headers,
-                json=payload,
-            ) as response:
-                if response.is_error:
-                    # 非 2xx 时先把响应体读出来再抛错:流式响应在未读取前
-                    # 访问 .text/.json() 会抛 httpx.ResponseNotRead,若把
-                    # 未读的 response 挂在异常上抛给上层限流分类器,分类器
-                    # 读 .text 时会被这个 RuntimeError 子类击穿,穿透批次
-                    # 二分和降级阶梯直接崩掉整个任务。读出来之后分类器才能
-                    # 按状态码/正文正常识别限流、鉴权失败等错误类型。
-                    response.read()
-                response.raise_for_status()
-                text = _extract_text_from_responses_events(response.iter_lines())
-
-        if not text.strip():
-            raise ValueError("Responses API 返回成功但未包含可解析正文")
-        return text
+        return request_text(
+            base_url=self._base_url, api_key=self._api_key, model=self._model,
+            system=system, user=user_msg, api_mode="responses",
+            connection_id=self._connection_id,
+        )[0]
 
     def chat(self, system: str, user: str) -> str:
         return self._call_api(system, user)
-
-
-def _post_json(url: str, *, headers: dict[str, str], payload: dict) -> object:
-    with httpx.Client(timeout=CLOUD_REQUEST_TIMEOUT) as client:
-        response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()
-
-
-def _extract_chat_completion_text(payload: object) -> str:
-    if not isinstance(payload, dict):
-        raise ValueError("Chat Completions API 返回格式异常")
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("Chat Completions API 返回未包含 choices")
-    first_choice = choices[0]
-    if not isinstance(first_choice, dict):
-        raise ValueError("Chat Completions API 返回 choice 格式异常")
-    message = first_choice.get("message")
-    if not isinstance(message, dict):
-        raise ValueError("Chat Completions API 返回未包含 message")
-    content = message.get("content")
-    return content if isinstance(content, str) else ""

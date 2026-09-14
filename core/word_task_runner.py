@@ -2065,6 +2065,7 @@ class WordTaskRunner:
                                 msg,
                             ),
                             translate_headers_footers=self._translate_headers_footers,
+                            output_translation_only=settings.word_output.output_translation_only,
                         )
                     else:
                         out_path = write_bilingual_docx(
@@ -2095,6 +2096,7 @@ class WordTaskRunner:
                             ),
                             protect_front_matter=self._protect_front_matter,
                             translate_headers_footers=self._translate_headers_footers,
+                            output_translation_only=settings.word_output.output_translation_only,
                         )
                     residual_count = _append_post_write_coverage_issues(
                         issues=quality_issues,
