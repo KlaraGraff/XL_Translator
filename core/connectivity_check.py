@@ -15,11 +15,8 @@ from config import (
     ZHIPU_OPENAI_BASE_URL,
     normalize_cloud_base_url,
 )
-from core.text_transport import request_text, TOTAL_TIMEOUT
+from core.text_transport import request_text, TextTransportError, TOTAL_TIMEOUT
 from settings import AppSettings, get_cloud_provider_config, get_key
-
-_REAL_HTTPX_CLIENT = httpx.Client
-
 
 DEFAULT_TIMEOUT_SECONDS = TOTAL_TIMEOUT
 TEST_SYSTEM_PROMPT = "你是连接测试助手。"
@@ -190,39 +187,16 @@ def _check_openai_compatible(
             model=model,
         )
     try:
-        if httpx.Client is not _REAL_HTTPX_CLIENT:
-            # Preserve the pre-transport synchronous injection seam used by
-            # integrations and deterministic connectivity tests.
-            use_responses = api_mode == "responses" or (
-                api_mode == "auto" and "asxs.top" in normalized_base_url
-            )
-            path = "/responses" if use_responses else "/chat/completions"
-            payload = (
-                {"model": model, "input": TEST_USER_PROMPT}
-                if use_responses
-                else {"model": model, "messages": [
-                    {"role": "system", "content": TEST_SYSTEM_PROMPT},
-                    {"role": "user", "content": TEST_USER_PROMPT},
-                ]}
-            )
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(_append_url_path(normalized_base_url, path), headers=headers, json=payload)
-                _raise_for_status(response)
-            body = response.json()
-            if use_responses:
-                text = "OK" if body.get("id") else ""
-            else:
-                text = body.get("choices", [{}])[0].get("message", {}).get("content", "")
-            route = type("RouteCompat", (), {"mode": "responses" if use_responses else "chat", "url": _append_url_path(normalized_base_url, path)})()
-        else:
-            text, route = request_text(
-                base_url=base_url or normalized_base_url, api_key=api_key, model=model,
-                system=TEST_SYSTEM_PROMPT, user=TEST_USER_PROMPT,
-                api_mode=api_mode, connection_id=connection_id,
-                total_seconds=timeout_seconds,
+        text, route = request_text(
+            base_url=base_url or normalized_base_url, api_key=api_key, model=model,
+            system=TEST_SYSTEM_PROMPT, user=TEST_USER_PROMPT,
+            api_mode=api_mode, connection_id=connection_id,
+            total_seconds=timeout_seconds,
+        )
+        if text.strip() != "OK":
+            raise TextTransportError(
+                "连接测试响应不是约定的 OK。",
+                kind="invalid_response",
             )
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
         return ConnectivityResult(

@@ -9,6 +9,8 @@ listing alone.
 from __future__ import annotations
 
 import json
+import httpx
+from core.text_transport import clear_protocol_cache
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -133,11 +135,16 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
         self._configure_mock_translation()
         provider = _MockTextProvider()
 
-        with patch(
-            "core.connectivity_check.httpx.Client",
-            autospec=True,
-            return_value=provider,
-        ):
+        clear_protocol_cache()
+        real_client = httpx.AsyncClient
+        def handler(request):
+            provider.post(str(request.url), headers=request.headers, json=json.loads(request.content))
+            return httpx.Response(200, json={"choices": [{
+                "finish_reason": "stop", "message": {"content": "OK"},
+            }]})
+        def build_client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+        with patch("core.text_transport.httpx.AsyncClient", side_effect=build_client):
             tested = self.client.post("/api/models/connectivity/translation")
 
         self.assertEqual(tested.status_code, 200, tested.text)

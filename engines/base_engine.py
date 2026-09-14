@@ -52,6 +52,8 @@ _NON_RETRYABLE_STATUS = {400, 401, 402, 403, 404, 405, 410, 422}
 
 def is_retryable_engine_error(exc: BaseException) -> bool:
     """Return whether an engine API failure is worth another attempt."""
+    if getattr(exc, "no_replay", False):
+        return False
     status_code = getattr(exc, "status_code", None)
     if status_code is None:
         response = getattr(exc, "response", None)

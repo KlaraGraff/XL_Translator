@@ -35,6 +35,17 @@ class TextTransportError(ValueError):
         self.kind = kind
 
 
+class TextTransportHTTPError(httpx.HTTPStatusError):
+    """A completed HTTP failure that callers may classify but must not replay."""
+
+    no_replay = True
+
+    def __init__(self, message: str, *, request: httpx.Request,
+                 response: httpx.Response, kind: str):
+        super().__init__(message, request=request, response=response)
+        self.kind = kind
+
+
 @dataclass
 class RequestBudget:
     deadline: float = field(default_factory=lambda: time.monotonic() + TOTAL_TIMEOUT)
@@ -98,39 +109,64 @@ class _Entry:
 
 _CACHE: dict[str, _Entry] = {}
 _LOCK = threading.Lock()
-_REAL_HTTPX_CLIENT = httpx.Client
 
 
-def _send_sync_compat(route: Route, api_key: str, payload: dict, budget: RequestBudget) -> str:
-    """Keep the historical sync-client injection seam usable in tests/plugins."""
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    with httpx.Client() as client:
-        if hasattr(client, "stream"):
-            with client.stream("POST", route.url, headers=headers, json=payload) as response:
-                if getattr(response, "status_code", 200) >= 300:
-                    response.read()
-                    response.raise_for_status()
-                if "text/event-stream" in response.headers.get("content-type", "").lower():
-                    return extract_responses_events(response.iter_lines())
-                response.read()
-                body = response.json()
-        else:
-            response = client.post(route.url, headers=headers, json=payload)
-            if getattr(response, "status_code", 200) >= 300:
-                response.raise_for_status()
-            body = response.json()
-    if route.mode == "responses":
-        return _response_text(body)
-    # Legacy injected clients often omit finish_reason; retain that seam while
-    # the real transport continues to require a completed response.
-    choices = body.get("choices") if isinstance(body, dict) else None
-    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        content = (choices[0].get("message") or {}).get("content")
-        if isinstance(content, str) and content.strip():
-            return content
-    return extract_chat_text(body)
+def _response_body(response: httpx.Response) -> str:
+    try:
+        return response.text
+    except httpx.ResponseNotRead:
+        return ""
+
+
+def _copy_cached_error(exc: Exception) -> Exception:
+    """Give every caller an equivalent exception with its own traceback."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        request = httpx.Request(exc.request.method, exc.request.url)
+        response = httpx.Response(
+            exc.response.status_code,
+            headers=exc.response.headers,
+            text=_response_body(exc.response),
+            request=request,
+        )
+        return TextTransportHTTPError(
+            str(exc),
+            request=request,
+            response=response,
+            kind=getattr(exc, "kind", classify_http_error(exc)[0]),
+        )
+    copied = TextTransportError(
+        str(exc),
+        kind=getattr(exc, "kind", "request_failed"),
+    )
+    if hasattr(exc, "status_code"):
+        copied.status_code = exc.status_code
+    return copied
+
+
+def _sanitize_error(exc: Exception, api_key: str) -> Exception:
+    def replacement(value: str) -> str:
+        return value.replace(api_key, "***") if api_key else value
+    if isinstance(exc, httpx.HTTPStatusError):
+        request = httpx.Request(exc.request.method, exc.request.url)
+        response = httpx.Response(
+            exc.response.status_code,
+            headers=exc.response.headers,
+            text=replacement(_response_body(exc.response)),
+            request=request,
+        )
+        return TextTransportHTTPError(
+            replacement(str(exc)),
+            request=request,
+            response=response,
+            kind=classify_http_error(exc)[0],
+        )
+    sanitized = TextTransportError(
+        replacement(str(exc)),
+        kind=getattr(exc, "kind", "request_failed"),
+    )
+    if hasattr(exc, "status_code"):
+        sanitized.status_code = exc.status_code
+    return sanitized
 
 
 def clear_protocol_cache():
@@ -326,8 +362,6 @@ async def _send_cancellable(route, api_key, payload, budget):
 def _send(route, api_key, payload, budget):
     budget.take()
     try:
-        if httpx.Client is not _REAL_HTTPX_CLIENT:
-            return _send_sync_compat(route, api_key, payload, budget)
         return asyncio.run(_send_cancellable(route, api_key, payload, budget))
     except httpx.TimeoutException as exc:
         kind = "connect_timeout" if isinstance(exc, httpx.ConnectTimeout) else "read_timeout"
@@ -357,10 +391,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
             while not entry.event.wait(min(0.05, budget.check())):
                 pass
             if entry.error:
-                # Fresh exception: avoid mutating a shared traceback across workers.
-                if isinstance(entry.error, httpx.HTTPStatusError):
-                    raise httpx.HTTPStatusError(str(entry.error), request=entry.error.request, response=entry.error.response)
-                raise TextTransportError(str(entry.error), kind=getattr(entry.error, "kind", "request_failed"))
+                raise _copy_cached_error(entry.error)
             routes = [entry.route] + [r for r in routes if r != entry.route]
         try:
             # Cached success runs concurrently. If capability changes, invalidate and
@@ -376,7 +407,7 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                                 del _CACHE[identity]
                             if budget.remaining <= 0:
                                 raise TextTransportError("协议候选已耗尽。", kind="budget_exhausted") from exc
-                            raise
+                    raise
             # Keep a local attempt cap as well as the wall-clock budget. The
             # latter is deliberately consumed by _send; the local counter
             # also protects callers that replace _send in tests/integrations.
@@ -391,11 +422,11 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                         return text, route
                     except httpx.HTTPStatusError as exc:
                         kind, param = classify_http_error(exc)
+                        if budget.remaining <= 0 or send_attempts >= MAX_SENDS:
+                            raise TextTransportError("协议候选已耗尽。", kind="budget_exhausted") from exc
                         if kind == "parameter" and param in _payload(route, model, system, user) and param not in route.omitted:
                             route = Route(route.mode, route.url, route.omitted | {param})
                             continue
-                        if budget.remaining <= 0 or send_attempts >= MAX_SENDS or route_index + 1 >= MAX_SENDS:
-                            raise TextTransportError("协议候选已耗尽。", kind="budget_exhausted") from exc
                         if mode == "auto" and kind == "route" and route != routes[-1]:
                             break
                         raise
@@ -403,26 +434,10 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
         except Exception as exc:
             if leader:
                 # Retain only sanitized failures; no request payloads or credentials.
-                if isinstance(exc, httpx.HTTPStatusError):
-                    safe_request = httpx.Request(exc.request.method, exc.request.url)
-                    safe_response = httpx.Response(exc.response.status_code, text=exc.response.text.replace(api_key, "***") if api_key else exc.response.text, request=safe_request)
-                    entry.error = httpx.HTTPStatusError(str(exc).replace(api_key, "***") if api_key else str(exc), request=safe_request, response=safe_response)
-                else:
-                    entry.error = TextTransportError(str(exc).replace(api_key, "***") if api_key else str(exc), kind=getattr(exc, "kind", "request_failed"))
+                entry.error = _sanitize_error(exc, api_key)
                 entry.expires = time.monotonic() + 2
-                if isinstance(exc, httpx.HTTPStatusError):
-                    if mode in {"chat", "responses"}:
-                        raise
-                    kind, _ = classify_http_error(exc)
-                else:
-                    raise
-                error = TextTransportError(
-                    "协议候选已耗尽。" if budget.remaining <= 0 else str(exc),
-                    kind="budget_exhausted" if budget.remaining <= 0 else kind,
-                )
-                error.status_code = exc.response.status_code
-                raise error from exc
-            raise
+                raise _copy_cached_error(entry.error) from exc
+            raise _sanitize_error(exc, api_key) from exc
         finally:
             if leader:
                 entry.event.set()

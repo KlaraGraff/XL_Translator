@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
+from contextlib import ExitStack, contextmanager
+import httpx
+from core.text_transport import clear_protocol_cache
 from unittest.mock import patch
 
 from core.connectivity_check import (
@@ -47,12 +51,25 @@ class _FakeClient:
 
 
 class ConnectivityCheckTests(unittest.TestCase):
-    def _patch_client(self, fake_client: _FakeClient):
-        return patch(
-            "core.connectivity_check.httpx.Client",
-            autospec=True,
-            return_value=fake_client,
-        )
+    def setUp(self):
+        clear_protocol_cache()
+
+    @contextmanager
+    def _patch_client(self, fake_client):
+        real_client = httpx.AsyncClient
+        def handler(request):
+            fake_client.post(str(request.url), headers=request.headers,
+                             json=json.loads(request.content))
+            response = fake_client.post_response
+            if response.text:
+                return httpx.Response(response.status_code, text=response.text)
+            return httpx.Response(response.status_code, json=response.json())
+        def build_client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.connectivity_check.httpx.Client", return_value=fake_client))
+            stack.enter_context(patch("core.text_transport.httpx.AsyncClient", side_effect=build_client))
+            yield
 
     def test_ollama_model_found_returns_ok(self) -> None:
         fake_client = _FakeClient(
@@ -121,7 +138,7 @@ class ConnectivityCheckTests(unittest.TestCase):
                 cloud_base_url="https://cleaner.example.test/v1",
             ),
         )
-        fake_client = _FakeClient(post_response=_FakeResponse({"id": "chatcmpl_1"}))
+        fake_client = _FakeClient(post_response=_FakeResponse({"choices": [{"finish_reason": "stop", "message": {"content": "OK"}}]}))
 
         with (
             self._patch_client(fake_client),
@@ -148,7 +165,7 @@ class ConnectivityCheckTests(unittest.TestCase):
                 local_base_url="http://localhost:1234/v1",
             )
         )
-        fake_client = _FakeClient(post_response=_FakeResponse({"id": "chatcmpl_1"}))
+        fake_client = _FakeClient(post_response=_FakeResponse({"choices": [{"finish_reason": "stop", "message": {"content": "OK"}}]}))
 
         with self._patch_client(fake_client):
             result = check_connectivity(settings)
@@ -161,19 +178,20 @@ class ConnectivityCheckTests(unittest.TestCase):
         )
         self.assertNotIn("Authorization", fake_client.post_calls[0]["headers"])
 
-    def test_openai_compatible_uses_responses_route_for_asxs(self) -> None:
-        fake_client = _FakeClient(post_response=_FakeResponse({"id": "resp_1"}))
+    def test_explicit_responses_route_for_arbitrary_service(self) -> None:
+        fake_client = _FakeClient(post_response=_FakeResponse({"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "OK"}]}]}))
 
         with self._patch_client(fake_client):
             result = _check_openai_compatible(
                 provider="custom_openai",
                 api_key="secret",
                 model="gpt-5.4",
-                base_url="https://api.asxs.top/v1",
+                base_url="https://responses.example.test/v1",
+                api_mode="responses",
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(fake_client.post_calls[0]["url"], "https://api.asxs.top/v1/responses")
+        self.assertEqual(fake_client.post_calls[0]["url"], "https://responses.example.test/v1/responses")
         self.assertEqual(fake_client.post_calls[0]["json"]["model"], "gpt-5.4")
 
     def test_openai_error_does_not_echo_api_key(self) -> None:
@@ -195,7 +213,8 @@ class ConnectivityCheckTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertNotIn("secret-token", result.message)
-        self.assertIn("***", result.message)
+        self.assertEqual(result.status, "credential")
+        self.assertEqual(len(fake_client.post_calls), 1)
 
     def test_official_openai_uses_configured_base_url(self) -> None:
         from core.engine_dispatcher import build_engine

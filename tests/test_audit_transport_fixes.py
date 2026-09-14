@@ -18,21 +18,16 @@ from unittest.mock import patch
 import httpx
 
 from core.api_concurrency_control import is_api_concurrency_limit_error
+from core.text_transport import clear_protocol_cache
 from core.update_checker import check_for_updates
 from engines.openai_engine import OpenAIEngine
 
 
 SHA256 = "a" * 64
 
-# ``patch("engines.openai_engine.httpx.Client", ...)`` patches the attribute
-# on the shared ``httpx`` module object (engines.openai_engine.httpx *is*
-# this same module, not a copy), so any test-side helper that itself calls
-# ``httpx.Client(...)`` while the patch is active would recurse into its own
-# mock. Keep the real class around before patching and call that instead.
-_REAL_HTTPX_CLIENT = httpx.Client
+_REAL_HTTPX_CLIENT = httpx.AsyncClient
 
-
-class _LazyByteStream(httpx.SyncByteStream):
+class _LazyByteStream(httpx.SyncByteStream, httpx.AsyncByteStream):
     """A body that only yields chunks when actually iterated/read.
 
     A real HTTP response streamed over the wire never has its body sitting
@@ -45,6 +40,13 @@ class _LazyByteStream(httpx.SyncByteStream):
 
     def __iter__(self):
         yield from self._chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aclose(self):
+        return None
 
     def close(self) -> None:
         return None
@@ -60,6 +62,9 @@ def _error_transport(*, status_code: int, body: bytes) -> httpx.MockTransport:
 class ResponsesStreamErrorBodyTests(unittest.TestCase):
     """高-9: 流式错误路径必须先读出 body,分类器读 .text 不能被击穿。"""
 
+    def setUp(self):
+        clear_protocol_cache()
+
     def test_a_non_2xx_streaming_response_is_read_before_raising(self) -> None:
         transport = _error_transport(
             status_code=429,
@@ -69,7 +74,7 @@ class ResponsesStreamErrorBodyTests(unittest.TestCase):
         def build_client(**kwargs) -> httpx.Client:
             # 生产代码传 timeout=CLOUD_REQUEST_TIMEOUT；这里换上 MockTransport
             # 但保留一个真实、未提前读取的流式响应体。
-            return _REAL_HTTPX_CLIENT(transport=transport)
+            return _REAL_HTTPX_CLIENT(transport=transport, **kwargs)
 
         engine = OpenAIEngine(
             api_key="test-key",
@@ -78,7 +83,7 @@ class ResponsesStreamErrorBodyTests(unittest.TestCase):
             api_mode="codex_responses",
         )
 
-        with patch("engines.openai_engine.httpx.Client", side_effect=build_client):
+        with patch("core.text_transport.httpx.AsyncClient", side_effect=build_client):
             with self.assertRaises(httpx.HTTPStatusError) as ctx:
                 engine._call_responses_api("system", "user")
 
@@ -113,7 +118,7 @@ class ResponsesStreamErrorBodyTests(unittest.TestCase):
         )
 
         def build_client(**kwargs) -> httpx.Client:
-            return _REAL_HTTPX_CLIENT(transport=transport)
+            return _REAL_HTTPX_CLIENT(transport=transport, **kwargs)
 
         engine = OpenAIEngine(
             api_key="test-key",
@@ -122,7 +127,7 @@ class ResponsesStreamErrorBodyTests(unittest.TestCase):
             api_mode="codex_responses",
         )
 
-        with patch("engines.openai_engine.httpx.Client", side_effect=build_client):
+        with patch("core.text_transport.httpx.AsyncClient", side_effect=build_client):
             with self.assertRaises(httpx.HTTPStatusError) as ctx:
                 engine._call_responses_api("system", "user")
 

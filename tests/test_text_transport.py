@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import patch
 
 import httpx
+
+os.environ.setdefault("TRANSLATOR_APP_DATA_DIR", tempfile.mkdtemp(prefix="xl-translator-text-"))
 
 from core import text_transport as transport
 
@@ -16,6 +20,85 @@ class TextTransportTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         transport.clear_protocol_cache()
+
+    def test_real_async_client_mock_transport_requires_completed_chat_response(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"content": "OK"},
+                    }],
+                },
+                request=request,
+            )
+
+        real_async_client = httpx.AsyncClient
+
+        def build_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(*args, **kwargs)
+
+        with patch.object(transport.httpx, "AsyncClient", side_effect=build_client):
+            text, route = transport.request_text(
+                base_url="https://service.test/v1",
+                api_key="k",
+                model="m",
+                system="s",
+                user="u",
+                api_mode="chat",
+                connection_id="real-async",
+            )
+
+        self.assertEqual(text, "OK")
+        self.assertEqual(route.mode, "chat")
+        self.assertEqual(requests[0].url, "https://service.test/v1/chat/completions")
+
+    def test_cached_http_error_has_same_type_and_classifier_for_leader_and_follower(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                429,
+                json={"error": {"message": "too many requests"}},
+                request=request,
+            )
+
+        real_async_client = httpx.AsyncClient
+
+        def build_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(*args, **kwargs)
+
+        errors: list[Exception] = []
+        with patch.object(transport.httpx, "AsyncClient", side_effect=build_client):
+            for _ in range(2):
+                try:
+                    transport.request_text(
+                        base_url="https://service.test/v1",
+                        api_key="k",
+                        model="m",
+                        system="s",
+                        user="u",
+                        api_mode="chat",
+                        connection_id="cached-http-error",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual([type(error) for error in errors], [
+            transport.TextTransportHTTPError,
+            transport.TextTransportHTTPError,
+        ])
+        self.assertTrue(all(error.no_replay for error in errors))
+        self.assertTrue(all(transport.classify_http_error(error) == ("transient", "") for error in errors))
 
     def test_auto_switches_only_after_explicit_route_error(self) -> None:
         calls: list[str] = []
@@ -201,6 +284,32 @@ class TextTransportTests(unittest.TestCase):
                 )
         self.assertEqual(caught.exception.kind, "budget_exhausted")
         self.assertEqual(calls, transport.MAX_SENDS)
+
+    def test_attempt_budget_caps_optional_parameter_retries(self) -> None:
+        calls = []
+
+        def send(route, api_key, payload, budget):
+            budget.take()
+            calls.append(payload)
+            param = "store" if "store" in payload else "stream"
+            request = httpx.Request("POST", route.url)
+            response = httpx.Response(400, json={"error": {
+                "param": param, "message": "unsupported parameter",
+            }}, request=request)
+            raise httpx.HTTPStatusError("parameter", request=request, response=response)
+
+        with transport.request_budget(seconds=2) as budget:
+            budget.remaining = 2
+            with patch.object(transport, "_send", side_effect=send):
+                with self.assertRaises(transport.TextTransportError) as caught:
+                    transport.request_text(
+                        base_url="https://service.test/v1", api_key="k", model="m",
+                        system="s", user="u", api_mode="responses",
+                        connection_id="parameter-budget",
+                    )
+        self.assertEqual(caught.exception.kind, "budget_exhausted")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("store", calls[1])
 
 
 if __name__ == "__main__":

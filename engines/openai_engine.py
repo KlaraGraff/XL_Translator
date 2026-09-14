@@ -1,6 +1,5 @@
 """OpenAI-compatible translation through the shared text transport."""
 import json
-import httpx  # noqa: F401 - compatibility patch target for legacy integrations
 
 from config import OPENAI_BASE_URL
 from core.text_transport import (

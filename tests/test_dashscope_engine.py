@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import httpx
+from core.text_transport import clear_protocol_cache
 import unittest
 from unittest.mock import patch
 
@@ -35,12 +38,21 @@ class _FakeClient:
 
 
 class DashscopeEngineTests(unittest.TestCase):
+    def setUp(self):
+        clear_protocol_cache()
+
     def test_compatible_engines_scope_api_keys_per_http_request(self) -> None:
         client = _FakeClient(
-            _FakeResponse({"choices": [{"message": {"content": "[]"}}]})
+            _FakeResponse({"choices": [{"finish_reason": "stop", "message": {"content": "[]"}}]})
         )
 
-        with patch("engines.openai_engine.httpx.Client", return_value=client):
+        real_client = httpx.AsyncClient
+        def handler(request):
+            response = client.post(str(request.url), headers=request.headers, json=json.loads(request.content))
+            return httpx.Response(200, json=response.json())
+        def build_client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+        with patch("core.text_transport.httpx.AsyncClient", side_effect=build_client):
             first = DashscopeEngine("key-a", "model-a")
             second = DashscopeEngine("key-b", "model-b")
             first._call_api("system", "user")

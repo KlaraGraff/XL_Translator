@@ -1862,8 +1862,7 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
             # Model upgrades are destructive to the on-disk representation.
             # Keep the exact pre-upgrade file before the first write; subsequent
             # saves see the current schema and do not create repeat backups.
-            before_text = json.dumps(_payload or {}, ensure_ascii=False)
-            if "gpt-image-2" in before_text or "deepseek-" in before_text.lower():
+            if AppSettings._migrate_legacy_image_model(_payload) != _payload:
                 _backup_settings_file()
         # An explicit reset deliberately discards whatever is on disk, so it
         # must never be merged with it.
