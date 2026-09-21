@@ -31,6 +31,8 @@ from core.file_scanner import FileItem
 from core.language_registry import (
     build_lang_pair,
     get_default_source_lang,
+    get_source_lang_display,
+    get_target_lang_display,
     get_tm_language_pairs,
     is_auto_source_lang,
 )
@@ -96,6 +98,73 @@ from settings import AppSettings, provider_key_overrides
 _USER_REASON_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _USER_REASON_URL_RE = re.compile(r"\b(?:https?|wss?)://", re.IGNORECASE)
 _USER_REASON_JSON_RE = re.compile(r"\{\s*[\"']")
+
+
+def _detect_post_failure_source_language(
+    *,
+    engine,
+    samples: list[str],
+    requested_source: str,
+    target_lang: str,
+    reset_count: int,
+    original_count: int,
+) -> str | None:
+    """Probe once after a near-total quality reset and return a real mismatch.
+
+    Manual source selection normally avoids a language-detection request.  A
+    near-total reset is exceptional evidence that the selection may be wrong,
+    so one bounded probe is justified there.  Any unavailable/uncertain result
+    falls back to the ordinary quality warning.
+    """
+    if (
+        not samples
+        or is_auto_source_lang(requested_source)
+        or reset_count < 3
+        or original_count <= 0
+        or reset_count * 5 < original_count * 4
+        or not engine_supports_chat(engine)
+    ):
+        return None
+    try:
+        probe = preflight_files(
+            {"post_failure": samples},
+            lambda candidates, detected_target: engine.chat(
+                LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+                build_language_preflight_prompt(
+                    candidates,
+                    target_lang=detected_target,
+                ),
+            ),
+            target_lang=target_lang,
+        )["post_failure"]
+    except Exception as exc:  # defensive: diagnosis must not break delivery
+        logger.debug("语言方向失败后预检失败：{}", exc)
+        return None
+    detected = probe.primary_source_lang
+    if not detected or detected == requested_source:
+        return None
+    return detected
+
+
+def _language_mismatch_message(
+    detected_source: str,
+    requested_source: str,
+    target_lang: str,
+) -> str:
+    detected_name = get_source_lang_display(detected_source)
+    requested_name = get_source_lang_display(requested_source)
+    target_name = get_target_lang_display(target_lang)
+    if detected_source == target_lang:
+        suggestion = f"建议反向选择“{target_name} → {requested_name}”后重新翻译。"
+    else:
+        suggestion = (
+            f"请将源语言改为“{detected_name}”，"
+            f"并确认目标语言“{target_name}”后重新翻译。"
+        )
+    return (
+        f"语言方向疑似选错：检测到的源文本更像{detected_name}，"
+        f"当前选择为“{requested_name} → {target_name}”。{suggestion}"
+    )
 
 
 def user_facing_reason(value: object, *, fallback: str) -> str:
@@ -1457,23 +1526,40 @@ class TaskRunner:
                 if batch_stats.quality_reset_count:
                     # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
                     # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
+                    mismatch = _detect_post_failure_source_language(
+                        engine=engine,
+                        samples=batch_stats.quality_reset_items,
+                        requested_source=source_lang,
+                        target_lang=target_lang,
+                        reset_count=batch_stats.quality_reset_count,
+                        original_count=(
+                            batch_stats.original_count or len(global_unique_texts)
+                        ),
+                    )
+                    issue_type = "suspected_source_language_mismatch" if mismatch else "quality_filter_reset"
+                    if mismatch:
+                        message = _language_mismatch_message(
+                            mismatch,
+                            source_lang,
+                            target_lang,
+                        )
+                    else:
+                        message = (
+                            f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
+                            "已回退为原文。这些单元格里保留的是原文，"
+                            + (
+                                "请按下方源文清单逐条核对。"
+                                if self._untranslated_only
+                                or not self._settings.excel_review.mark_review_items
+                                else "已标记待复核，请在输出文件中核对带标记的位置。"
+                            )
+                        )
                     quality_issues.append(
                         {
-                            "type": "quality_filter_reset",
+                            "type": issue_type,
                             "severity": "needs_action",
                             "count": batch_stats.quality_reset_count,
-                            "message": (
-                                f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
-                                "已回退为原文。这些单元格里保留的是原文，"
-                                + (
-                                    # 补译模式没有标记列；「标记需复核内容」被
-                                    # 用户关掉时文件里同样没有标记，只能按清单核对
-                                    "请按下方源文清单逐条核对。"
-                                    if self._untranslated_only
-                                    or not self._settings.excel_review.mark_review_items
-                                    else "已标记待复核，请在输出文件中核对带标记的位置。"
-                                )
-                            ),
+                            "message": message,
                             "failed_sources": [
                                 {"source": source, "error": "译文未通过质量校验，已回退为原文"}
                                 for source in batch_stats.quality_reset_items

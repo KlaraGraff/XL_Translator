@@ -501,6 +501,7 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   // 会落到 `type` 键）：core/task_runner.py 的 quality_issues 枚举
   api_unavailable: "接口异常，部分内容未翻译",
   quality_filter_reset: "质量校验回退为原文",
+  suspected_source_language_mismatch: "语言方向疑似选错",
   residual_numbering_autofixed: "中文序号残留已自动修复",
   residual_repaired: "残留中文已自动修复",
   residual_source_language: "译文残留中文待复核",
