@@ -146,6 +146,8 @@ interface ToggleDef {
 const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "translationOnly", label: "仅显示译文", hint: "开启后输出文件只保留译文；关闭时保留原文与译文。", default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "translateSheetNames", label: "翻译工作表名称", hint: "翻译 Excel 工作表名称，并同步更新工作簿内部对工作表的引用；遇到无法安全处理的引用时保留原名称。", default: true, pathKind: "output", path: "translate_sheet_names" },
   { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },
   { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
@@ -156,6 +158,7 @@ const EXCEL_TOGGLES: ToggleDef[] = [
 const WORD_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "translationOnly", label: "仅显示译文", hint: "开启后输出文件只保留译文；关闭时保留原文与译文。", default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "wordNativePreprocessing", label: "本地自动编号预处理", hint: "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
   { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
   { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: true, pathKind: "none" },
@@ -163,6 +166,7 @@ const WORD_TOGGLES: ToggleDef[] = [
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
+  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "pdfReview", label: "逐页审核模型", hint: "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。", default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: "生成压缩 PDF", hint: "在原始输出之外额外生成一份体积更小的 PDF。", default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
   { key: "pdfImages", label: "允许独立图片", hint: "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。", default: true, pathKind: "flat", path: "pdf.include_images" },
@@ -497,7 +501,8 @@ function applySettingsToStates(): void {
       if (toggle.pathKind === "flat" && toggle.path) {
         st.toggles.set(toggle.key, Boolean(readPath(settings, toggle.path)));
       } else if (toggle.pathKind === "output") {
-        st.toggles.set(toggle.key, Boolean(readOutputPath(surface, toggle.path as string)));
+        const configured = readOutputPath(surface, toggle.path as string);
+        st.toggles.set(toggle.key, configured === undefined ? toggle.default : Boolean(configured));
       }
     }
     // 互斥对两边都为真：老版本切换互斥开关时只落盘自己那一半，磁盘上会留下

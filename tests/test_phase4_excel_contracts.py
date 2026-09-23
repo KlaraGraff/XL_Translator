@@ -43,7 +43,7 @@ class _PreflightEngine:
 
 
 def _settings(*, source_lang: str = "zh", target_lang: str = "en") -> AppSettings:
-    return AppSettings(
+    settings = AppSettings(
         engine=EngineSettings(
             mode="cloud",
             cloud_provider="custom_openai",
@@ -55,6 +55,9 @@ def _settings(*, source_lang: str = "zh", target_lang: str = "en") -> AppSetting
         source_lang=source_lang,
         target_lang=target_lang,
     )
+    # This contract suite uses mocked writers and tests the legacy sheet set.
+    settings.excel_output.translate_sheet_names = False
+    return settings
 
 
 def _done_message(runner: TaskRunner) -> DoneMsg:

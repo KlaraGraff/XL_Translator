@@ -104,7 +104,7 @@ def _expected_bilingual_name(source_name: str, target_lang: str = TARGET_LANG) -
 
 
 def _settings(*, source_lang: str = SOURCE_LANG, target_lang: str = TARGET_LANG) -> AppSettings:
-    return AppSettings(
+    settings = AppSettings(
         engine=EngineSettings(
             mode="cloud",
             cloud_provider="custom_openai",
@@ -116,6 +116,10 @@ def _settings(*, source_lang: str = SOURCE_LANG, target_lang: str = TARGET_LANG)
         target_lang=target_lang,
         source_lang=source_lang,
     )
+    # This suite checks resume behavior against the original sheet titles.
+    # Worksheet-title translation has its own coverage.
+    settings.excel_output.translate_sheet_names = False
+    return settings
 
 
 def _pipeline_patches(

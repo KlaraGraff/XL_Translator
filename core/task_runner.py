@@ -21,6 +21,12 @@ from pathlib import Path
 from loguru import logger
 
 from core import bilingual_writer
+from core.excel_sheet_naming import rename_worksheets
+from core.output_name_translation import (
+    avoid_bilingual_name_collision,
+    translate_names,
+    translate_output_stem,
+)
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
@@ -1951,6 +1957,20 @@ class TaskRunner:
 
                 try:
                     t0 = datetime.now()
+                    output_basename = None
+                    if excel_output.translate_output_filename:
+                        original_name = naming_original_path.name if naming_original_path else file_item.path.name
+                        translated_stem = translate_output_stem(
+                            engine, Path(original_name).stem, target_lang, source_lang
+                        )
+                        if translated_stem != Path(original_name).stem:
+                            output_basename = avoid_bilingual_name_collision(
+                                output_dir / rel_subdir,
+                                translated_stem + Path(original_name).suffix,
+                                target_lang,
+                            )
+                        else:
+                            self._log("WARN", f"[{file_item.name}] 输出文件名未获得可用译名，沿用原名。")
                     file_review_positions: list[dict[str, str]] = []
                     # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
                     # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
@@ -2009,6 +2029,7 @@ class TaskRunner:
                             original_path=naming_original_path,
                             external_autofit_planned=need_autofit,
                             stats=write_stats,
+                            output_basename=output_basename,
                         )
                     else:
                         out_path = bilingual_writer.write_bilingual_file(
@@ -2032,7 +2053,42 @@ class TaskRunner:
                             original_path        = naming_original_path,
                             external_autofit_planned = need_autofit,
                             stats                = write_stats,
+                            output_basename      = output_basename,
                         )
+                    if excel_output.translate_sheet_names:
+                        from zipfile import ZipFile
+                        from lxml import etree
+
+                        with ZipFile(out_path) as workbook_package:
+                            workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))
+                        sheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                        sheet_names = [
+                            node.get("name", "")
+                            for node in workbook_root.iter(f"{{{sheet_namespace}}}sheet")
+                        ]
+                        translated_sheets = translate_names(
+                            engine, sheet_names, target_lang, source_lang, kind="工作表名称"
+                        )
+                        requested_sheets = {
+                            old: new for old, new in translated_sheets.items() if new != old
+                        }
+                        if requested_sheets:
+                            rename_result = rename_worksheets(out_path, out_path, requested_sheets)
+                            write_stats["sheet_name_status"] = rename_result.status
+                            write_stats["sheet_name_changes"] = rename_result.names
+                            if rename_result.status == "preserved":
+                                message = f"[{file_item.name}] 工作表名称保留原名：{rename_result.reason}"
+                                self._log("WARN", message)
+                                quality_issues.append({
+                                    "file": file_item.name,
+                                    "type": "sheet_rename_preserved",
+                                    "severity": "needs_review",
+                                    "problem": "工作表名称无法安全改写",
+                                    "status": f"已保留原工作表名称：{rename_result.reason}",
+                                    "message": message,
+                                })
+                        else:
+                            self._log("INFO", f"[{file_item.name}] 工作表名称无可用译名，保留原名。")
                     write_elapsed = (datetime.now() - t0).total_seconds()
                     self._task_logger.file_write_done(file_item.name, write_elapsed)
 
@@ -2058,6 +2114,8 @@ class TaskRunner:
                         "status": "succeeded",
                         "review_count": len(file_review_positions),
                         "review_items": file_review_positions,
+                        "sheet_name_status": write_stats.get("sheet_name_status", "unchanged"),
+                        "sheet_name_changes": dict(write_stats.get("sheet_name_changes") or {}),
                         # 悬浮图片/形状里被我们固定住锚点的数量（0 表示没动过）
                         "anchor_frozen_count": int(
                             write_stats.get("anchor_frozen_count", 0) or 0

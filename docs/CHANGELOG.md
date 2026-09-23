@@ -1,5 +1,15 @@
 # Translator 版本更新日志
 
+## V9.5.5
+
+- **工作表名称可翻译**：Excel 翻译默认将工作表名译成目标语言，并同步更新能确认安全的公式、定义名称、图表、下拉列表和内部跳转引用。遇到动态或无法确认的引用时，整份输出保留原工作表名并给出提示；原文副本仍保留原名。此选项与“公式显示值回填”相互独立。
+
+  **Translated worksheet names**: Excel translation now translates worksheet names by default and updates supported references in formulas, defined names, charts, dropdowns, and internal links. If a dynamic or uncertain reference is found, the output keeps all original worksheet names and reports why. Original-copy sheets keep their names. This option is independent of formula display-value backfill.
+
+- **可翻译输出文件名**：Excel、Word 和 PDF 均增加“翻译输出文件名”选项，默认关闭。开启后使用当前文本翻译模型生成目标语言文件名；原文件不改动，模型未给出可用译名时沿用原名。
+
+  **Optional translated output filenames**: Excel, Word, and PDF now offer an output-filename translation option, off by default. When enabled, the current text translation model produces a target-language filename. The source file remains untouched, and an unusable name falls back to the original.
+
 ## V9.5.4
 
 - **新增连接不再改动原连接**：在模型服务中新增连接并选择“跟随”时，只会让新连接借用来源主用连接的服务商、地址和密钥；原连接保持原样，新连接仍可单独选中和删除。

@@ -157,6 +157,7 @@ def write_bilingual_file(
     review_positions: list[dict[str, str]] | None = None,
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
+    output_basename: str | None = None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -187,7 +188,7 @@ def write_bilingual_file(
     )
     
     # 确定输出文件名，处理源文件可能是临时文件的场景
-    basename = original_path.name if original_path else source_path.name
+    basename = output_basename or (original_path.name if original_path else source_path.name)
     # 强制最终输出为 .xlsx（即使源文件是 .xls）
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"

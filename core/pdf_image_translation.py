@@ -36,6 +36,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.output_name_translation import translate_output_stem
 from core.api_concurrency_control import handle_api_concurrency_limit
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_RECOVERY,
@@ -1449,6 +1450,9 @@ class PdfImageTranslationRunner:
         self._finished_stop_reason = ""
         self._finished_fatal_error = ""
         self._result_patch: dict[str, Any] = {}
+        self._output_name_engine = None
+        self._output_name_engine_failed = False
+        self._translated_pdf_names: dict[str, str] = {}
 
     @property
     def task_id(self) -> str:
@@ -3133,9 +3137,38 @@ class PdfImageTranslationRunner:
         translated_pages_dir.mkdir(parents=True, exist_ok=True)
         if self._settings.pdf.review_enabled:
             review_candidates_dir.mkdir(parents=True, exist_ok=True)
+        output_source_name = item.path.name
+        if (
+            item.source_type != SOURCE_TYPE_IMAGE
+            and self._settings.pdf_output.translate_output_filename
+        ):
+            original_stem = item.path.stem
+            if original_stem not in self._translated_pdf_names:
+                if not self._output_name_engine_failed and self._output_name_engine is None:
+                    try:
+                        from core.engine_dispatcher import build_engine
+
+                        self._output_name_engine = build_engine(self._settings)
+                    except Exception as exc:
+                        self._output_name_engine_failed = True
+                        logger.debug(f"[PDF] 文件名翻译模型不可用：{exc!r}")
+                translated_stem = (
+                    translate_output_stem(
+                        self._output_name_engine,
+                        original_stem,
+                        self._settings.pdf.target_lang,
+                        "auto",
+                    )
+                    if self._output_name_engine is not None
+                    else original_stem
+                )
+                self._translated_pdf_names[original_stem] = translated_stem
+                if translated_stem == original_stem:
+                    self._log("WARN", f"[{item.path.name}] 输出文件名未获得可用译名，沿用原名。")
+            output_source_name = self._translated_pdf_names[original_stem] + item.path.suffix
         translated_pdf_path, compressed_pdf_path = resolve_translated_pdf_variant_paths(
             source_copy_path.parent,
-            item.path.name,
+            output_source_name,
             self._settings.pdf.target_lang,
             self._settings,
             app_managed=app_managed,

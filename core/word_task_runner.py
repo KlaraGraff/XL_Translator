@@ -141,6 +141,7 @@ from core.word_batching import (
     estimate_api_request_weight,
     translate_word_texts,
 )
+from core.output_name_translation import avoid_bilingual_name_collision, translate_output_stem
 from engines.base_engine import engine_supports_chat, strip_markdown_json
 from settings import AppSettings, provider_key_overrides
 
@@ -2049,6 +2050,34 @@ class WordTaskRunner:
                 try:
                     t0 = datetime.now()
                     source_path = process_paths[index] if index < len(process_paths) else file_item.path
+                    output_source_name = _word_output_source_name(file_item.path)
+                    if word_output.translate_output_filename:
+                        original_stem = Path(output_source_name).stem
+                        try:
+                            translated_stem = translate_output_stem(
+                                engine,
+                                original_stem,
+                                target_lang,
+                                source_lang,
+                            )
+                        except Exception as exc:
+                            logger.debug(f"Word 输出文件名翻译失败原始错误：{exc!r}")
+                            translated_stem = original_stem
+                            self._log(
+                                "WARN",
+                                f"文件名翻译未完成，沿用原文件名：{Path(output_source_name).name}",
+                            )
+                        if translated_stem == original_stem:
+                            self._log(
+                                "INFO",
+                                f"文件名沿用原名：{Path(output_source_name).name}",
+                            )
+                        if translated_stem != original_stem:
+                            output_source_name = avoid_bilingual_name_collision(
+                                output_dir / rel_subdir,
+                                f"{translated_stem}{Path(output_source_name).suffix}",
+                                target_lang,
+                            )
                     if self._untranslated_only:
                         coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
                         if coverage_plan is None:
@@ -2060,7 +2089,7 @@ class WordTaskRunner:
                             translations=global_translations,
                             target_lang=target_lang,
                             source_lang=source_lang,
-                            output_name=_word_output_source_name(file_item.path),
+                            output_name=output_source_name,
                             review_marks=(
                                 review_marks
                                 if settings.word_review.highlight_unresolved
@@ -2082,7 +2111,7 @@ class WordTaskRunner:
                             translations=global_translations,
                             target_lang=target_lang,
                             source_lang=source_lang,
-                            output_name=_word_output_source_name(file_item.path),
+                            output_name=output_source_name,
                             review_marks=(
                                 review_marks
                                 if settings.word_review.highlight_unresolved

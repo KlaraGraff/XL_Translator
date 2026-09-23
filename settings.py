@@ -741,6 +741,8 @@ class ExcelOutputSettings(BaseModel):
     """
 
     keep_original_sheets: bool = True
+    translate_output_filename: bool = False
+    translate_sheet_names: bool = True
     output_translation_only: bool = False
     formula_display_value_backfill: bool = True
     use_custom_output_dir: bool = False
@@ -759,6 +761,7 @@ class WordOutputSettings(BaseModel):
     """
 
     use_custom_output_dir: bool = False
+    translate_output_filename: bool = False
     custom_output_dir: str = ""
     output_translation_only: bool = False
 
@@ -771,6 +774,7 @@ class PdfOutputSettings(BaseModel):
     """
 
     use_custom_output_dir: bool = False
+    translate_output_filename: bool = False
     custom_output_dir: str = ""
 
 

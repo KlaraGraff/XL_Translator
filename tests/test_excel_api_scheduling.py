@@ -43,6 +43,7 @@ class ExcelApiSchedulingTests(unittest.TestCase):
             target_lang="fr",
             source_lang="zh",
         )
+        settings.excel_output.translate_sheet_names = False
         normal_started = threading.Event()
         mixed_started = threading.Event()
         allow_normal_return = threading.Event()
@@ -163,6 +164,7 @@ class ExcelApiSchedulingTests(unittest.TestCase):
             target_lang="fr",
             source_lang="zh",
         )
+        settings.excel_output.translate_sheet_names = False
         first_path = Path("first") / "source.xlsx"
         second_path = Path("second") / "source.xlsx"
 

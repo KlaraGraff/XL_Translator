@@ -133,6 +133,7 @@ def write_untranslated_excel_file(
     original_path: Path | None = None,
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
+    output_basename: str | None = None,
 ) -> Path:
     """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
@@ -153,7 +154,7 @@ def write_untranslated_excel_file(
     lang_display = bilingual_writer._sanitize_filename_fragment(
         get_target_lang_display(target_lang, include_optional=True)
     )
-    basename = original_path.name if original_path else source_path.name
+    basename = output_basename or (original_path.name if original_path else source_path.name)
     if basename.lower().endswith(".xls"):
         basename = basename[:-4] + ".xlsx"
     out_path = output_dir / bilingual_writer.bilingual_output_name(basename, lang_display)

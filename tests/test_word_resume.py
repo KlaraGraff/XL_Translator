@@ -223,6 +223,41 @@ class WordResumeTests(IsolatedAppDataTestCase):
             # 源文件没有比底稿多出内容，分歧核查不应触发降级。
             self.assertNotIn("续译核对", log_text)
 
+    def test_translated_output_filename_applies_to_full_and_untranslated_runs(self) -> None:
+        for untranslated_only in (False, True):
+            with self.subTest(untranslated_only=untranslated_only), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "报告.docx"
+                self._make_docx(source, ["待翻译内容"])
+                settings = self._settings()
+                settings.word_output.translate_output_filename = True
+                item = WordFileItem(
+                    path=source,
+                    name=source.name,
+                    size_kb=1.0,
+                    relative_path=source.name,
+                )
+                runner = WordTaskRunner(
+                    [item],
+                    settings,
+                    source_root=root,
+                    untranslated_only=untranslated_only,
+                )
+                done = self._run_success(
+                    runner,
+                    root,
+                    **{
+                        "core.word_task_runner.translate_output_stem": {
+                            "return_value": "Translated report"
+                        }
+                    },
+                )
+                output_path = Path(done.file_results[0]["output"])
+                self.assertEqual(
+                    output_path.name,
+                    self._bilingual_name("Translated report.docx", "en"),
+                )
+
     # ------------------------------------------------------------------
     # 2) 匹配不到 → 源文件全量翻
     # ------------------------------------------------------------------
