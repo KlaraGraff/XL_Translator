@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from importlib.metadata import version
 from pathlib import Path
@@ -22,6 +23,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseVerificationTests(unittest.TestCase):
+    def test_public_author_attribution_matches_bundled_license(self):
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        attribution = next(
+            line for line in license_text.splitlines() if line.startswith("Copyright (c) ")
+        )
+        year_and_author = attribution.removeprefix("Copyright (c) ")
+        year, author = year_and_author.split(" ", 1)
+        cargo = tomllib.loads((ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+        settings_ui = (ROOT / "ui/src/views/settings.ts").read_text(encoding="utf-8")
+        self.assertEqual(cargo["package"]["authors"], [author])
+        self.assertIn(f'MIT License · © {year} {author}', settings_ui)
+
     def test_source_smoke_does_not_write_application_data(self):
         with tempfile.TemporaryDirectory() as app_data:
             environment = os.environ.copy()

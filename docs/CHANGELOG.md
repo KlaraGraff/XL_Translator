@@ -1,5 +1,27 @@
 # Translator 版本更新日志
 
+## V9.5.3
+
+- **开源署名更新**：“更新与关于”中的署名与项目仓库中的许可文件统一显示为 OA，已有发布版本不受影响。
+
+  **Updated open-source attribution**: The About page and repository license now show OA consistently. Previously published versions are unchanged.
+
+- **更容易发现语言方向选错**：当表格内容与所选源语言明显不符时，任务结果会提示检查语言选择，不再只显示笼统的质量失败。
+
+  **Clearer language-direction errors**: When a workbook clearly does not match the selected source language, the task result now points to the language choice instead of showing only a generic quality failure.
+
+- **连接拥挤时自动恢复**：Word、Excel 和 PDF 翻译遇到本机连接资源不足时，会降低同时处理的请求数并重试；PDF 审阅失败也不必因此重新生成整页。
+
+  **Automatic recovery under connection pressure**: Word, Excel, and PDF translation reduce simultaneous requests and retry when local connection resources run short. A PDF review retry no longer regenerates the whole page.
+
+- **自动跟进同系列模型**：启动后会检查有无较新的兼容型号，通过当前连接验证后更新；如果新型号持续不可用，会恢复原型号并暂停反复尝试。当前覆盖指定的 OpenAI 和 DeepSeek 型号。
+
+  **Automatic same-family model updates**: At startup, the app checks for newer compatible models and verifies them through the current connection before switching. If a new model keeps failing, it restores the previous one and pauses repeated attempts. Selected OpenAI and DeepSeek models are covered.
+
+- **隐藏式解除数值限制**：在“模型服务”的“文档翻译”并发输入框输入解锁码并按 Enter，即可解除各翻译模块的批次与并发上限；页面不再单独显示解锁选项。
+
+  **Discreet limit unlock**: Enter the unlock code in the Document Translation concurrency field under Model Services and press Enter to remove batch and concurrency limits across translation modules. The separate unlock control is no longer shown.
+
 ## V9.5.2
 
 - **工作区显示“仅显示译文”开关**：9.5.1 已有该功能，但开关只出现在参数设置页，Excel 和 Word 工作区右侧的常用选项中没有显示。本版补齐工作区入口，打开后分别对当前 Excel 或 Word 任务输出译文。

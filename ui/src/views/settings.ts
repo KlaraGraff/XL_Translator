@@ -2641,8 +2641,8 @@ function renderParamsPage(host: HTMLElement): void {
     // WORD_BATCH_SPLIT_CHARS_MIN/MAX。这里曾经比后端宽（或干脆没设上限），越界的值能
     // 在前端存活到点保存那一刻才被后端 422 打回，且打回的是英文 pydantic 原文（中-14）。
     grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 8), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 16, integer: true, hint: throughputUnlocked ? "单次模型请求最多包含的段落数量。" : "单次模型请求最多包含的段落数量，范围 1–16。" }));
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限，超出会自动分批。" : "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
-    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 30000, integer: true, hint: throughputUnlocked ? "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写。" : "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
+    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限，超出会自动分批。" : "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
+    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 1500, max: throughputUnlocked ? undefined : 30000, integer: true, hint: throughputUnlocked ? "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写。" : "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
     grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
     body.append(grid);
   } else {
@@ -3556,12 +3556,12 @@ function renderAboutPage(host: HTMLElement): void {
   const licenseText = document.createElement("p");
   licenseText.style.fontSize = "12.5px";
   licenseText.style.color = "var(--ink-2)";
-  licenseText.textContent = "MIT License · © 2026 KlaraGraff";
+  licenseText.textContent = "MIT License · © 2026 OA";
   const licenseNote = document.createElement("p");
   licenseNote.className = "note";
   licenseNote.style.fontSize = "12px";
   licenseNote.style.color = "var(--ink-3)";
-  licenseNote.textContent = "完整许可文本见应用安装包内的 LICENSE 文件。";
+  licenseNote.textContent = "完整许可文本见项目仓库中的 LICENSE 文件。";
   licenseBody.append(licenseText, licenseNote);
   licenseCard.append(licenseBody);
   host.append(licenseCard);

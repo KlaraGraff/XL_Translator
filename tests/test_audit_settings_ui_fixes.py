@@ -120,7 +120,7 @@ class DomainPromptFrontendSourceTests(unittest.TestCase):
 
 
 class NumericBoundsAlignmentTests(unittest.TestCase):
-    """中-14：前端五个数值字段的上下限必须与 config.py 完全一致。"""
+    """中-14：未解锁时前端上限与 config.py 一致；解锁后只保留正整数限制。"""
 
     @staticmethod
     def _numberfield_bounds(source: str, setting_path: str) -> tuple[int, int]:
@@ -129,7 +129,8 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
             # reRenderAfter 的第二个参数（{ rerenderOnError: true } 之类的 opts）是可选的——
             # REG-1 之后数值框都会带上它，但这条断言只关心 min/max，不关心 opts 长什么样。
             r'(?:,\s*\{[^{}]*\})?\)'
-            r'[^)]*?\{\s*min:\s*(-?\d+),\s*max:\s*(-?\d+)'
+            r'[^)]*?\{\s*min:\s*(?:throughputUnlocked\s*\?\s*1\s*:\s*)?(-?\d+),\s*'
+            r'max:\s*throughputUnlocked\s*\?\s*undefined\s*:\s*(-?\d+)'
         )
         match = re.search(pattern, source)
         assert match, f"没找到 {setting_path} 的 numberField min/max 声明"
@@ -148,16 +149,25 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
         self.assertEqual((lo, hi), (config.WORD_BATCH_SPLIT_CHARS_MIN, config.WORD_BATCH_SPLIT_CHARS_MAX))
 
     def test_pdf_page_retry_bounds_match_config(self) -> None:
-        lo, hi = self._numberfield_bounds(_read_settings_ts(), "pdf.page_retry_attempts")
+        source = _read_settings_ts()
+        match = re.search(
+            r'saveSettingPath\("pdf\.page_retry_attempts", v\).*?\{\s*min:\s*(\d+),\s*max:\s*(\d+)',
+            source,
+        )
+        self.assertIsNotNone(match)
+        lo, hi = int(match.group(1)), int(match.group(2))
         self.assertEqual((lo, hi), (config.PDF_PAGE_RETRY_ATTEMPTS_MIN, config.PDF_PAGE_RETRY_ATTEMPTS_MAX))
 
     def test_pdf_page_concurrency_bounds_match_config(self) -> None:
         source = _read_settings_ts()
         self.assertIn('concurrencyInput.min = "1";', source)
-        self.assertIn(f'concurrencyInput.max = "{config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}";', source)
-        # clamp 逻辑里的字面量同样要跟安全上限对齐，不能只改 HTML 属性不改夹值。
         self.assertIn(
-            f"parsed = Math.min({config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}, Math.max(1, parsed));",
+            f'if (!throughputUnlocked) concurrencyInput.max = "{config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}";',
+            source,
+        )
+        # 未解锁时继续夹到安全上限；解锁后可使用更大的正整数。
+        self.assertIn(
+            f"parsed = Math.min(throughputUnlocked ? 2**31 - 1 : {config.PDF_PAGE_CONCURRENCY_SAFETY_CAP}, Math.max(1, parsed));",
             source,
         )
 
