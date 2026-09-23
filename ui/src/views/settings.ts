@@ -1260,17 +1260,17 @@ function renderModelsPage(host: HTMLElement): void {
   const formProvider = following
     ? (followedProvider || provider)
     : cloudMode
-      ? (selected?.own_cloud_provider || (selected?.connection_mode === "cloud" ? selected.own_provider : "") || (selected ? "custom_openai" : provider))
+      ? (selected?.connection_mode === "cloud" ? selected.provider : selected?.own_cloud_provider || (selected ? "custom_openai" : provider))
       : (selected?.own_local_provider || (selected?.connection_mode === "local" ? selected.own_provider : "") || "ollama");
   const formBaseUrl = following
     ? (followConnection ? followConnection.base_url : selected?.base_url ?? baseUrl)
     : cloudMode
-      ? (selected?.own_cloud_base_url || (selected?.connection_mode === "cloud" ? selected.own_base_url : "") || (selected ? "" : baseUrl))
+      ? (selected?.connection_mode === "cloud" ? selected.base_url : selected?.own_cloud_base_url ?? baseUrl)
       : (selected?.own_local_base_url || (selected?.connection_mode === "local" ? selected.own_base_url : "") || LOCAL_PROVIDER_BASE_URL_DEFAULTS[formProvider] || "");
   const formModel = following
     ? (selected?.model ?? model)
     : cloudMode
-      ? (selected?.own_cloud_model || (selected?.connection_mode === "cloud" ? selected.own_model : "") || (selected ? "" : model))
+      ? (selected?.connection_mode === "cloud" ? selected.model : selected?.own_cloud_model || (selected ? "" : model))
       : (selected?.own_local_model || (selected?.connection_mode === "local" ? selected.own_model : "") || "");
 
   // 连接方式草稿只属于当前选中的连接；选中另一行时立即丢弃。
@@ -1471,7 +1471,7 @@ function renderModelsPage(host: HTMLElement): void {
         { value: "chat", label: "Chat Completions" },
         { value: "responses", label: "Responses" },
       ],
-      text(following ? followConnection?.api_mode || selected?.api_mode : selected?.own_cloud_api_mode || (selected?.connection_mode === "cloud" ? selected.own_api_mode : "") || (selected ? "auto" : rolePayload.api_mode), "auto"),
+      text(following ? followConnection?.api_mode || selected?.api_mode : selected?.connection_mode === "cloud" ? selected.api_mode : selected?.own_cloud_api_mode || (selected ? "auto" : rolePayload.api_mode), "auto"),
       () => undefined,
       { disabled: following },
     );

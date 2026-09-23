@@ -1,5 +1,15 @@
 # Translator 版本更新日志
 
+## V9.5.4
+
+- **新增连接不再改动原连接**：在模型服务中新增连接并选择“跟随”时，只会让新连接借用来源主用连接的服务商、地址和密钥；原连接保持原样，新连接仍可单独选中和删除。
+
+  **New connections no longer change existing ones**: Selecting Follow for a new connection borrows the source primary connection's service, address, and key for that row only. The existing connection stays intact, and the new row remains selectable and removable.
+
+- **模型名称按连接保存**：每条跟随连接都有自己的模型名称，保存或切换连接后不会被另一条连接的名称替换。云端、本地和跟随三种方式各自保留原有模型配置，切回时恢复。
+
+  **Model names stay with their connections**: Each following connection keeps its own model name when saved or reselected. Cloud, local, and following settings are retained separately and restored when switching back.
+
 ## V9.5.3
 
 - **开源署名更新**：“更新与关于”中的署名与项目仓库中的许可文件统一显示为 OA，已有发布版本不受影响。

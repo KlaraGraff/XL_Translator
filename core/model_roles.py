@@ -23,6 +23,7 @@ from settings import (
     ModelRoleSettings,
     api_key_scope,
     connection_key_scope,
+    get_cloud_provider_config,
     get_connection_scoped_key,
     get_key,
     set_cloud_provider_config,
@@ -969,8 +970,15 @@ def resolve_effective_model_config(
     # 主连接的测试结果镜像在 owner 上（校验器双向同步），其余连接各记各的：
     # 读错了这一处，新加的连接就会挂着主连接的「测试通过」。
     provider = connection.provider or DEFAULT_CLOUD_PROVIDER
-    model = connection.model or _own_model_name(settings, normalized_role, "cloud")
-    base_url = connection.base_url
+    # The primary also has a legacy per-provider memory. Older settings may
+    # store a different protocol or endpoint there than in the pool row; the
+    # previous release dialed the provider memory, so keep that precedence.
+    provider_config = get_cloud_provider_config(owner, provider) if is_primary else None
+    model = (
+        provider_config.cloud_model if provider_config and provider_config.cloud_model
+        else connection.model or _own_model_name(settings, normalized_role, "cloud")
+    )
+    base_url = provider_config.cloud_base_url if provider_config else connection.base_url
     config = EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
@@ -979,7 +987,7 @@ def resolve_effective_model_config(
         provider=provider,
         model=model,
         base_url=base_url,
-        api_mode=connection.api_mode,
+        api_mode=provider_config.api_mode if provider_config else connection.api_mode,
         api_key=_connection_api_key(connection, provider, base_url),
         connection_id=connection.id,
         connection_label=connection.display_label,

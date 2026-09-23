@@ -353,10 +353,9 @@ class ScopedDataHealthDismissSourceTests(unittest.TestCase):
     1. 「知道了」曾整份清除 recovery.json——keys 的恢复事件是惰性补录的，横幅
        已在屏时新写入的事件从未展示过就被顺手抹掉，用户永远见不到通知。
        修复：横幅把「真正展示过的作用域」随 DELETE 一起送后端，按清单清除。
-    2. 界面里写 Key 的四个入口（saveModel 主/副连接两个出口、deleteConnection、
-       runModelConfigImport）成功后都不刷新 data health——惰性补录的 keys 事件
-       要等下一次整页刷新才可能露面。复审证实按调用点补丁已经漏了 4 处里的
-       3 处，所以作用域化的清除是主修复，这里同时钉住四个刷新点防再漏。
+    2. 界面里写 Key 的三个入口（saveModel、deleteConnection、runModelConfigImport）
+       成功后都要刷新 data health。模型连接现在逐条保存，saveModel 只有一个
+       成功出口；惰性补录的 keys 事件不能等下一次整页刷新才露面。
     """
 
     @staticmethod
@@ -388,11 +387,11 @@ class ScopedDataHealthDismissSourceTests(unittest.TestCase):
 
     def test_every_ui_key_write_path_refreshes_data_health(self) -> None:
         source = _read_settings_ts()
-        # saveModel 有两个成功出口：副连接分支提前 return、主连接走到函数末尾。
+        # 模型连接逐条保存后，saveModel 只有一个成功出口。
         save_model = self._function_body(source, "saveModel")
-        self.assertGreaterEqual(
-            save_model.count("void refreshDataHealth(mountToken);"), 2,
-            "saveModel 的主/副连接两个成功出口都必须刷新 data health（复审实测漏刷即丢通知）",
+        self.assertIn(
+            "void refreshDataHealth(mountToken);", save_model,
+            "saveModel 成功后必须刷新 data health（复审实测漏刷即丢通知）",
         )
         for name in ("deleteConnection", "runModelConfigImport"):
             body = self._function_body(source, name)
