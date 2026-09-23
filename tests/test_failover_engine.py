@@ -409,11 +409,13 @@ class RoleEngineChainTests(_IsolatedKeyStore):
         )
         return settings, [conn.id for conn in settings.engine.connections]
 
-    def test_a_following_role_resolves_its_chain_in_the_source_pool(self) -> None:
-        settings, chain = self._settings_with_backup()
-        # cleaner follows translation out of the box, so its task chain holds
-        # translation-pool ids; resolving them in cleaner's own idle pool used
-        # to degrade every entry to the primary and drop failover entirely.
+    def test_a_following_role_resolves_its_own_mixed_chain(self) -> None:
+        settings, _translation_chain = self._settings_with_backup()
+        add_role_connection(
+            settings, "cleaner", label="清洗备用", provider="custom_openai",
+            model="cleaner-backup", base_url="https://cleaner-b.example/v1",
+        )
+        chain = [conn.id for conn in settings.cleaner_model_role.connections]
         built: list[object] = []
 
         def _fake_build_engine(role_settings):

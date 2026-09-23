@@ -24,7 +24,6 @@ from core.model_roles import (
     ROLE_TRANSLATION,
     list_effective_role_connections,
     resolve_effective_model_config,
-    role_pool_owner,
     update_role_connection,
 )
 from core.text_transport import classify_http_error, request_text
@@ -32,7 +31,6 @@ from settings import (
     AppSettings,
     ModelUpgradeState,
     load_settings,
-    set_cloud_provider_config,
     update_settings_atomically,
 )
 
@@ -155,13 +153,7 @@ def _targets(settings: AppSettings) -> list[UpgradeTarget]:
     for role in _ROLE_NAMES:
         try:
             effective_pool = list_effective_role_connections(settings, role)
-            owner = role_pool_owner(settings, role)
         except Exception:  # noqa: BLE001 - one invalid idle role must not block others
-            continue
-        if owner.source_role != "independent" and len(effective_pool) != 1:
-            # A follower has one model name for every source endpoint.  One
-            # successful probe cannot establish that all pooled endpoints
-            # serve it, so leave this configuration unchanged.
             continue
         for connection in effective_pool:
             try:
@@ -259,17 +251,9 @@ def _fresh_connection(settings: AppSettings, target: UpgradeTarget):
 
 
 def _set_role_model(settings: AppSettings, role: str, connection_id: str, model: str) -> None:
-    owner = role_pool_owner(settings, role)
-    if role == ROLE_TRANSLATION or owner.source_role == "independent":
-        update_role_connection(settings, role, connection_id, model=model)
-        return
-    set_cloud_provider_config(owner, owner.cloud_provider, cloud_model=model)
-    if owner.connections:
-        owner.connections[0].model = model
-    owner.availability_status = "unknown"
-    owner.availability_message = "模型已变化，请重新测试当前配置。"
-    owner.availability_signature = ""
-    owner.availability_checked_at = ""
+    # The target id belongs to this role even when it borrows a source
+    # endpoint.  Never rewrite the source primary or every row in this role.
+    update_role_connection(settings, role, connection_id, model=model)
 
 
 def _save_failed_candidate(target: UpgradeTarget, candidate: str) -> None:

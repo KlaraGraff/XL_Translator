@@ -22,6 +22,26 @@ from settings import AppSettings, EngineSettings
 
 
 class ModelRoleTests(unittest.TestCase):
+    def test_legacy_local_follower_keeps_its_own_local_model(self) -> None:
+        settings = AppSettings()
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+        settings.engine.mode = "local"
+        settings.engine.local_provider = "ollama"
+        settings.engine.local_model = "translation-local"
+        settings.cleaner_model_role.source_role = ROLE_TRANSLATION
+        settings.cleaner_model_role.cloud_model = "cleaner-cloud"
+        settings.cleaner_model_role.local_model = "cleaner-local"
+
+        config = resolve_effective_model_config(settings, ROLE_CLEANER)
+        self.assertEqual(config.mode, "local")
+        self.assertEqual(config.model, "cleaner-local")
+        restored = AppSettings.model_validate(settings.model_dump())
+        self.assertEqual(
+            resolve_effective_model_config(restored, ROLE_CLEANER).model,
+            "cleaner-local",
+        )
+
     def test_current_baseline_has_model_roles_pdf_defaults_and_local_defaults(self) -> None:
         settings = AppSettings(
             engine=EngineSettings(

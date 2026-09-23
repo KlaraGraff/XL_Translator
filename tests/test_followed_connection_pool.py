@@ -1,9 +1,4 @@
-"""A following role's connection list belongs to the role it follows.
-
-Reusing another role's credentials but listing your own idle pool made the
-panel name a connection nothing was dialing, so these tests pin the pool a
-following role reports and the fact that it cannot be edited from there.
-"""
+"""Follow rows belong to their role and borrow the source primary endpoint."""
 
 from __future__ import annotations
 
@@ -17,12 +12,13 @@ from fastapi.testclient import TestClient
 
 import settings as settings_module
 from api.app import create_app
-from core.model_api_identity import task_api_context_for_page
+from core.model_api_identity import api_group_signature_from_config, task_api_context_for_page
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
     add_role_connection,
+    resolve_effective_model_config,
 )
 from settings import AppSettings
 
@@ -81,16 +77,17 @@ class RoleApiTestCase(unittest.TestCase):
 
 
 class FollowedConnectionPoolTests(RoleApiTestCase):
-    def test_a_following_role_lists_the_connection_it_actually_dials(self) -> None:
+    def test_a_following_role_lists_its_own_connection_and_effective_endpoint(self) -> None:
         connection_id = self._name_translation_primary("DeepSeek")
         self._follow_translation("pdf_review")
 
         review = self._role("pdf_review")
         assert review["follows"] is True
-        assert review["connection_pool_role"] == "translation"
-        assert [conn["id"] for conn in review["connections"]] == [connection_id]
-        # The panel used to fall back to the role's own provider name here.
-        assert review["connections"][0]["display_label"] == "DeepSeek"
+        assert review["connection_pool_role"] == "pdf_review"
+        assert review["connections"][0]["id"] != connection_id
+        assert review["connections"][0]["connection_mode"] == "follow"
+        assert review["connections"][0]["source_role"] == "translation"
+        assert review["connections"][0]["provider"] == self._role("translation")["provider"]
 
     def test_an_independent_role_still_lists_its_own_pool(self) -> None:
         self._name_translation_primary("DeepSeek")
@@ -107,35 +104,28 @@ class FollowedConnectionPoolTests(RoleApiTestCase):
         }
         assert not translation_ids & {conn["id"] for conn in image["connections"]}
 
-    def test_a_following_role_cannot_edit_the_borrowed_pool(self) -> None:
+    def test_a_following_role_can_edit_its_own_pool_without_touching_source(self) -> None:
         connection_id = self._name_translation_primary("DeepSeek")
         self._follow_translation("pdf_review")
-
-        attempts = (
-            self.client.post(
-                "/api/models/roles/pdf_review/connections",
-                json={"label": "新连接"},
-            ),
-            self.client.put(
-                f"/api/models/roles/pdf_review/connections/{connection_id}",
-                json={"label": "改名"},
-            ),
-            self.client.delete(
-                f"/api/models/roles/pdf_review/connections/{connection_id}",
-            ),
-            self.client.post(
-                "/api/models/roles/pdf_review/connections/reorder",
-                json={"ordered_ids": [connection_id]},
-            ),
+        response = self.client.post(
+            "/api/models/roles/pdf_review/connections",
+            json={"label": "新连接", "connection_mode": "follow", "source_role": "translation"},
         )
-        for response in attempts:
-            assert response.status_code == 422, response.text
-            assert "跟随" in response.json()["detail"]
-
-        # The borrowed pool survived every rejected edit.
-        assert [
-            conn["display_label"] for conn in self._role("translation")["connections"]
-        ] == ["DeepSeek"]
+        self.assertEqual(response.status_code, 200, response.text)
+        added = response.json()["connections"][1]
+        response = self.client.put(
+            f"/api/models/roles/pdf_review/connections/{added['id']}",
+            json={"label": "改名"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        assert response.json()["connections"][1]["label"] == "改名"
+        response = self.client.delete(
+            f"/api/models/roles/pdf_review/connections/{added['id']}"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        assert len(response.json()["connections"]) == 1
+        assert self._role("translation")["connections"][0]["id"] == connection_id
+        assert self._role("translation")["connections"][0]["display_label"] == "DeepSeek"
 
     def test_following_reports_the_source_primary_after_a_promotion(self) -> None:
         self._name_translation_primary("DeepSeek")
@@ -158,11 +148,9 @@ class FollowedConnectionPoolTests(RoleApiTestCase):
         self.assertEqual(reordered.status_code, 200, reordered.text)
 
         review = self._role("pdf_review")
-        assert [conn["id"] for conn in review["connections"]] == [
-            pool[1]["id"],
-            pool[0]["id"],
-        ]
-        assert review["connections"][0]["display_label"] == "备用厂商"
+        assert len(review["connections"]) == 1
+        assert review["connections"][0]["id"] not in {pool[0]["id"], pool[1]["id"]}
+        assert review["connections"][0]["base_url"] == "https://vendor-b.example/v1"
 
 
 class AccessModeApiTests(RoleApiTestCase):
@@ -226,7 +214,7 @@ class AccessModeApiTests(RoleApiTestCase):
         assert response.json()["follows"] is True
         assert response.json()["source_role"] == "cleaner"
         assert response.json()["base_url"] == "https://cleaner.example/v1"
-        assert response.json()["connection_pool_role"] == "cleaner"
+        assert response.json()["connection_pool_role"] == "translation"
 
     def test_following_a_role_that_already_follows_is_rejected(self) -> None:
         # cleaner follows translation by default, so translation following
@@ -351,7 +339,7 @@ class StoredIllegalFollowTests(RoleApiTestCase):
 
 
 class FollowedConnectionAllocationTests(unittest.TestCase):
-    """A task's recorded connection must come from the pool it really dials."""
+    """A task records the owned row while a follower uses source credentials."""
 
     def _settings(self) -> AppSettings:
         settings = AppSettings()
@@ -362,42 +350,48 @@ class FollowedConnectionAllocationTests(unittest.TestCase):
         settings.pdf.review_enabled = True
         return settings
 
-    def test_a_following_role_is_allocated_from_the_source_pool(self) -> None:
+    def test_a_following_role_is_allocated_from_its_own_pool(self) -> None:
         settings = self._settings()
         source_ids = {conn.id for conn in settings.engine.connections}
 
         with patch("core.model_roles.get_key", return_value="secret"):
             context = task_api_context_for_page(settings, "pdf_translate")
 
-        # This id is what the panel matches its "occupied" markers against, so
-        # it has to name a connection the panel actually lists.
-        assert context.role_connection_ids[ROLE_PDF_REVIEW] in source_ids
-        # 独立配置的角色仍然拨自己那份池子。
+        assert context.role_connection_ids[ROLE_PDF_REVIEW] == settings.pdf_review_model_role.connections[0].id
+        assert context.role_connection_ids[ROLE_PDF_REVIEW] not in source_ids
         assert context.role_connection_ids[ROLE_IMAGE] not in source_ids
+        assert context.model_snapshot[ROLE_PDF_REVIEW]["pool_connection_id"] != settings.engine.connections[0].id
 
-    def test_spreading_moves_a_follower_off_a_busy_source_connection(self) -> None:
+    def test_spreading_uses_the_follower_owned_backup(self) -> None:
         settings = self._settings()
         add_role_connection(
             settings,
-            ROLE_TRANSLATION,
-            label="备用厂商",
+            ROLE_PDF_REVIEW,
+            label="备用审核连接",
             provider="custom_openai",
             base_url="https://vendor-b.example/v1",
         )
-        source_ids = [conn.id for conn in settings.engine.connections]
-        assert len(source_ids) == 2
+        owned_ids = [conn.id for conn in settings.pdf_review_model_role.connections]
+        assert len(owned_ids) == 2
 
         with patch("core.model_roles.get_key", return_value="secret"):
             context = task_api_context_for_page(
                 settings,
                 "pdf_translate",
-                busy_connection_ids=frozenset({source_ids[0]}),
+                busy_connection_ids=frozenset({owned_ids[0]}),
                 spread=True,
             )
 
-        # The follower borrows the source's pool, so spreading has to move it
-        # inside that pool rather than fall back to its own idle entry.
-        assert context.role_connection_ids[ROLE_PDF_REVIEW] == source_ids[1]
+        assert context.role_connection_ids[ROLE_PDF_REVIEW] == owned_ids[1]
+
+    def test_followed_endpoint_shares_key_but_keeps_own_connection_identity(self) -> None:
+        settings = self._settings()
+        with patch("core.model_roles.get_key", return_value="source-secret"):
+            source = resolve_effective_model_config(settings, ROLE_TRANSLATION)
+            follower = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
+        assert follower.api_key == source.api_key == "source-secret"
+        assert follower.connection_id != source.connection_id
+        assert api_group_signature_from_config(follower) == api_group_signature_from_config(source)
 
 
 if __name__ == "__main__":

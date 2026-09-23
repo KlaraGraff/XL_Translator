@@ -84,6 +84,13 @@
 .conn.selected { background: var(--tint); }
 .conn .key-state code { font-family: var(--mono); }
 
+/* 当前连接方式位于详情卡内，和列表所选行保持同一层级。 */
+.set-body .accessbar {
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.set-body .accessbar .radio-row { flex-wrap: wrap; }
+
 /* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */
 .card.danger-section { border-color: var(--danger-l); background: var(--danger-t); }
 

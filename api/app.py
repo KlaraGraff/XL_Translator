@@ -86,15 +86,12 @@ from core.model_roles import (
     ModelRoleConfigError,
     add_role_connection,
     allowed_source_roles,
-    list_effective_role_connections,
     list_role_connections,
     model_config_signature,
     model_role_owner,
     normalize_source_role,
-    pool_role,
     remove_role_connection,
     reorder_role_connections,
-    role_label,
     update_role_connection,
     reset_model_role_availability,
     reset_role_connection_availability,
@@ -312,6 +309,8 @@ class ConnectionUpsertPayload(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     api_mode: str | None = None
+    connection_mode: Literal["cloud", "local", "follow"] | None = None
+    source_role: str | None = None
 
 
 class ConnectionReorderPayload(BaseModel):
@@ -1362,34 +1361,29 @@ def create_app(
         # 用户在面板上现选的跟随组合按严格规则判：读旧配置时不合法的跟随会静默降级为
         # 独立配置，那是为了让老设置文件还能打开；这里再降级就成了「存了别的、还不吭声」。
         _reject_illegal_follow_choice(role, payload.source_role)
-        # All four roles now carry the same fields, so one branch serves them
-        # all: translation just happens to keep its copy on ``engine``.
         owner = model_role_owner(settings, role)
-        for field, value in (
-            ("source_role", payload.source_role),
-            ("mode", payload.mode),
-            ("api_mode", payload.api_mode),
-        ):
-            if value is not None and getattr(owner, field) != value:
-                setattr(owner, field, value)
-                changed = True
-        local = owner.mode == "local"
-        for field, value in (
-            ("local_provider" if local else "cloud_provider", payload.provider),
-            ("local_model" if local else "cloud_model", payload.model),
-            ("local_base_url" if local else "cloud_base_url", payload.base_url),
-        ):
-            if value is not None and getattr(owner, field) != value:
-                setattr(owner, field, value)
-                changed = True
-        if not local and owner.source_role == "independent":
-            set_cloud_provider_config(
-                owner,
-                owner.cloud_provider,
-                cloud_model=owner.cloud_model,
-                cloud_base_url=owner.cloud_base_url,
-                api_mode=owner.api_mode,
+        primary = owner.connections[0]
+        requested_source = (
+            payload.source_role if payload.source_role is not None else primary.source_role
+        )
+        requested_mode = (
+            "follow" if requested_source != "independent" else
+            payload.mode or ("cloud" if primary.connection_mode == "follow" else primary.connection_mode)
+        )
+        before_primary = primary.model_dump()
+        try:
+            update_role_connection(
+                settings, role, primary.id,
+                connection_mode=requested_mode,
+                source_role=requested_source,
+                provider=payload.provider,
+                model=payload.model,
+                base_url=payload.base_url,
+                api_mode=payload.api_mode,
             )
+        except ModelRoleConfigError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        changed = primary.model_dump() != before_primary
         try:
             # A changed translation connection can make a following image or
             # review role illegal.  Do not persist an invalid shared graph.
@@ -1410,21 +1404,28 @@ def create_app(
             raise HTTPException(404, "Unknown model role.")
         return role
 
-    def _own_pool_or_422(settings: AppSettings, role: str) -> None:
-        """Reject pool edits on a role that is following another one.
+    def _validate_connection_choice(settings: AppSettings, role: str, connection: ModelConnection) -> None:
+        if connection.connection_mode == "follow":
+            if connection.source_role == "independent":
+                raise HTTPException(422, "跟随连接必须选择来源。")
+            _reject_illegal_follow_choice(role, connection.source_role)
+            if connection.source_role not in allowed_source_roles(role, settings):
+                raise HTTPException(422, "跟随来源的主用连接也在跟随其他模型，请直接选择最终来源。")
+        try:
+            validate_all_model_roles(settings)
+        except Exception as exc:
+            raise HTTPException(422, str(exc)) from exc
 
-        The panel shows the source's pool while following, so an edit here would
-        either miss (ids belong to the source) or silently change a pool the user
-        is not looking at.  Both are worse than saying which role owns it.
-        """
-        owner_role = pool_role(settings, role)
-        if owner_role != role:
-            raise HTTPException(
-                422,
-                f"{role_label(role)}正在跟随{role_label(owner_role)}，"
-                f"连接列表属于{role_label(owner_role)}。"
-                "请切换到该角色编辑，或先改为独立配置。",
-            )
+    def _requested_connection_mode(payload: ConnectionUpsertPayload) -> str | None:
+        mode = payload.connection_mode
+        source = payload.source_role
+        if mode is None and source is not None:
+            return "cloud" if source == "independent" else "follow"
+        if mode == "follow" and source == "independent":
+            raise HTTPException(422, "跟随连接必须选择来源。")
+        if mode in {"cloud", "local"} and source not in {None, "independent"}:
+            raise HTTPException(422, "独立连接不能同时指定跟随来源。")
+        return mode
 
     @app.post("/api/models/roles/{role}/connections")
     def create_role_connection(
@@ -1433,7 +1434,7 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
-        _own_pool_or_422(settings, role)
+        requested_mode = _requested_connection_mode(payload) or "cloud"
         try:
             connection = add_role_connection(
                 settings,
@@ -1443,9 +1444,12 @@ def create_app(
                 model=payload.model or "",
                 base_url=payload.base_url or "",
                 api_mode=payload.api_mode or "auto",
+                connection_mode=requested_mode,
+                source_role=payload.source_role or "independent",
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
+        _validate_connection_choice(settings, role, connection)
         save_settings(settings)
         if payload.api_key:
             save_connection_key(connection.id, payload.api_key)
@@ -1459,9 +1463,9 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
-        _own_pool_or_422(settings, role)
+        requested_mode = _requested_connection_mode(payload)
         try:
-            update_role_connection(
+            connection = update_role_connection(
                 settings,
                 role,
                 connection_id,
@@ -1470,9 +1474,12 @@ def create_app(
                 model=payload.model,
                 base_url=payload.base_url,
                 api_mode=payload.api_mode,
+                connection_mode=requested_mode,
+                source_role=payload.source_role,
             )
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
+        _validate_connection_choice(settings, role, connection)
         # An empty string means "leave the stored key alone", matching the
         # placeholder shown in the panel; only a non-empty value replaces it.
         if payload.api_key:
@@ -1491,9 +1498,9 @@ def create_app(
     def drop_role_connection(role: str, connection_id: str) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
-        _own_pool_or_422(settings, role)
         try:
             remove_role_connection(settings, role, connection_id)
+            validate_all_model_roles(settings)
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
         save_settings(settings)
@@ -1507,9 +1514,9 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
-        _own_pool_or_422(settings, role)
         try:
             reorder_role_connections(settings, role, list(payload.ordered_ids))
+            validate_all_model_roles(settings)
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
         save_settings(settings)
@@ -2095,25 +2102,38 @@ def _connection_payload(
     connection: ModelConnection,
     index: int,
     config: EffectiveModelConfig,
+    role: str,
 ) -> dict[str, Any]:
     """Describe one pool connection, including a masked hint of its saved key."""
     # 必须和拨号时的取值顺序一致（core/model_roles.py::_connection_api_key）：连接
     # 作用域优先，取不到就回落到 provider + Base URL 作用域。以前非主用连接不做这个
     # 回落，于是任何靠 provider 作用域拿密钥的第二条连接（带 Key 导入进来的、老配置
     # 升上来的）都被标成「无密钥」，密钥框也不显示已保存掩码——它其实翻译得好好的。
-    api_key = get_connection_scoped_key(connection.id) or (
-        config.api_key if index == 0 else get_key(connection.provider, connection.base_url)
-    )
+    api_key = config.api_key
     return {
         "id": connection.id,
         "label": connection.label,
         "display_label": connection.display_label,
-        "provider": connection.provider,
-        "model": connection.model,
-        "base_url": connection.base_url,
-        "api_mode": connection.api_mode,
-        "availability_status": connection.availability_status,
-        "availability_message": connection.availability_message,
+        "provider": config.provider,
+        "model": config.model,
+        "base_url": config.base_url,
+        "api_mode": config.api_mode,
+        "connection_mode": connection.connection_mode,
+        "source_role": connection.source_role,
+        "connection_pool_role": role,
+        "own_provider": connection.provider,
+        "own_model": connection.model,
+        "own_local_model": connection.local_model,
+        "own_base_url": connection.base_url,
+        "own_api_mode": connection.api_mode,
+        "own_cloud_provider": connection.cloud_provider,
+        "own_cloud_model": connection.cloud_model,
+        "own_cloud_base_url": connection.cloud_base_url,
+        "own_cloud_api_mode": connection.cloud_api_mode,
+        "own_local_provider": connection.local_provider,
+        "own_local_base_url": connection.local_base_url,
+        "availability_status": config.availability_status,
+        "availability_message": config.availability_message,
         "availability_checked_at": connection.availability_checked_at,
         "has_api_key": bool(api_key),
         "api_key_preview": mask_api_key(api_key),
@@ -2138,16 +2158,18 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "model": config.model,
         "base_url": config.base_url,
         "api_mode": config.api_mode,
-        # A following role reuses its source's credentials, so the source's
-        # pool is what it dials.  Serving its own idle pool here made the panel
-        # label a followed connection with a name nothing was connecting to.
+        # Every role edits its own pool.  A follow row exposes effective
+        # endpoint values while keeping its own model and stored endpoint.
         "connections": [
-            _connection_payload(connection, index, config)
+            _connection_payload(
+                connection, index,
+                _model_config_or_422(settings, role, connection.id), role,
+            )
             for index, connection in enumerate(
-                list_effective_role_connections(settings, role)
+                list_role_connections(settings, role)
             )
         ],
-        "connection_pool_role": pool_role(settings, role),
+        "connection_pool_role": role,
         "source_role": config.source_role,
         # Which follow sources are legal *right now*: a role that already
         # follows something cannot be followed, or it would form a chain.  The

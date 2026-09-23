@@ -16,6 +16,7 @@ from loguru import logger
 from app_meta import APP_NAME, APP_VERSION
 from config import CLOUD_ENGINES, normalize_cloud_base_url
 from core.model_roles import (
+    MODEL_ROLES,
     ROLE_CLEANER,
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -374,6 +375,13 @@ def _model_profiles_for_export(
     include_api_key: bool,
     api_key_report: list[dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    # Older callers may still mutate role-wide fields directly before
+    # exporting.  Resolve primaries first so the exported rows mirror them.
+    for role in MODEL_ROLES:
+        try:
+            resolve_effective_model_config(settings, role)
+        except Exception:
+            pass
     payload = settings.model_dump(mode="json")
     profiles: dict[str, dict[str, Any]] = {}
     for profile_key, role in MODEL_PROFILE_ROLES:
@@ -528,8 +536,18 @@ def _connections_for_export(
             "label": str(raw.get("label") or "").strip(),
             "provider": provider,
             "model": str(raw.get("model") or "").strip(),
+            "cloud_provider": str(raw.get("cloud_provider") or "").strip(),
+            "cloud_model": str(raw.get("cloud_model") or "").strip(),
+            "cloud_base_url": _configured_base_url(raw.get("cloud_base_url")),
+            "cloud_api_mode": str(raw.get("cloud_api_mode") or "auto").strip() or "auto",
+            "local_provider": str(raw.get("local_provider") or "").strip(),
+            "local_model": str(raw.get("local_model") or "").strip(),
+            "local_base_url": str(raw.get("local_base_url") or "").strip(),
+            "follow_model": str(raw.get("follow_model") or "").strip(),
             "base_url": _configured_base_url(raw.get("base_url")),
             "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
+            "connection_mode": str(raw.get("connection_mode") or "cloud").strip(),
+            "source_role": str(raw.get("source_role") or SOURCE_INDEPENDENT).strip(),
         }
         if include_api_key:
             api_key, status = _exportable_connection_key(
@@ -866,8 +884,18 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
                     "label": str(raw.get("label") or "").strip(),
                     "provider": provider,
                     "model": str(raw.get("model") or "").strip(),
+                    "cloud_provider": str(raw.get("cloud_provider") or "").strip(),
+                    "cloud_model": str(raw.get("cloud_model") or "").strip(),
+                    "cloud_base_url": _configured_base_url(raw.get("cloud_base_url")),
+                    "cloud_api_mode": str(raw.get("cloud_api_mode") or "auto").strip() or "auto",
+                    "local_provider": str(raw.get("local_provider") or "").strip(),
+                    "local_model": str(raw.get("local_model") or "").strip(),
+                    "local_base_url": str(raw.get("local_base_url") or "").strip(),
+                    "follow_model": str(raw.get("follow_model") or "").strip(),
                     "base_url": _configured_base_url(base_url),
                     "api_mode": str(raw.get("api_mode") or "auto").strip() or "auto",
+                    "connection_mode": str(raw.get("connection_mode") or "").strip(),
+                    "source_role": str(raw.get("source_role") or SOURCE_INDEPENDENT).strip(),
                 }
             )
         return entries or None
@@ -922,6 +950,18 @@ def _parse_model_profiles(raw: dict[str, Any]) -> ImportedModelConfig:
             values["source_role"] = (
                 ROLE_IMAGE if source_role == "pdf_translation" else source_role
             )
+        if isinstance(values.get("connections"), list) and values["connections"]:
+            primary = values["connections"][0]
+            # The role-wide fields remain a compatibility alias for entry 0.
+            # Bundles written before row modes existed rely on this mapping.
+            if "source_role" in values:
+                primary["source_role"] = values["source_role"]
+                primary["connection_mode"] = (
+                    "follow" if values["source_role"] != SOURCE_INDEPENDENT
+                    else str(values.get("mode") or primary.get("connection_mode") or "cloud")
+                )
+            elif "mode" in values and not primary.get("connection_mode"):
+                primary["connection_mode"] = values["mode"]
         if values:
             model_config[setting_key] = values
 

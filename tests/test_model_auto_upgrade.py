@@ -271,6 +271,7 @@ class ModelAutoUpgradeTests(IsolatedAppDataTestCase):
     def test_single_connection_follower_has_own_upgrade_and_rollback(self) -> None:
         settings = load_settings()
         owner = settings.cleaner_model_role
+        cleaner_connection_id = owner.connections[0].id
         set_cloud_provider_config(owner, owner.cloud_provider, cloud_model="gpt-5.6-sol")
         save_settings(settings)
 
@@ -284,7 +285,7 @@ class ModelAutoUpgradeTests(IsolatedAppDataTestCase):
         self.assertEqual(settings.engine.cloud_model, "gpt-6-luna")
         self.assertEqual(settings.cleaner_model_role.cloud_model, "gpt-5.6-sol")
         self.assertEqual(
-            settings.model_upgrade_states[f"cleaner:{self.connection_id}"].status,
+            settings.model_upgrade_states[f"cleaner:{cleaner_connection_id}"].status,
             "failed",
         )
         self._run()
@@ -300,14 +301,14 @@ class ModelAutoUpgradeTests(IsolatedAppDataTestCase):
             text_transport.request_text(
                 base_url="https://example.test/v1", api_key="isolated-fake-key",
                 model="gpt-6-sol", system="Translate", user="Hello",
-                api_mode="chat", connection_id=self.connection_id,
+                api_mode="chat", connection_id=cleaner_connection_id,
                 model_role="cleaner",
             )
         settings = load_settings()
         self.assertEqual(settings.cleaner_model_role.cloud_model, "gpt-5.6-sol")
         self.assertEqual(settings.engine.cloud_model, "gpt-6-luna")
 
-    def test_multi_connection_follower_is_not_auto_upgraded(self) -> None:
+    def test_source_pool_size_does_not_change_follower_own_upgrade(self) -> None:
         settings = load_settings()
         owner = settings.cleaner_model_role
         set_cloud_provider_config(owner, owner.cloud_provider, cloud_model="gpt-5.6-sol")
@@ -317,8 +318,9 @@ class ModelAutoUpgradeTests(IsolatedAppDataTestCase):
         )
         save_settings(settings)
         self._run()
-        self.assertEqual(load_settings().cleaner_model_role.cloud_model, "gpt-5.6-sol")
-        self.assertNotIn(f"cleaner:{self.connection_id}", load_settings().model_upgrade_states)
+        refreshed = load_settings()
+        self.assertEqual(refreshed.cleaner_model_role.cloud_model, "gpt-6-sol")
+        self.assertIn(f"cleaner:{owner.connections[0].id}", refreshed.model_upgrade_states)
 
     def test_deepseek_only_known_official_alias_is_renamed(self) -> None:
         settings = load_settings()

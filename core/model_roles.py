@@ -23,7 +23,6 @@ from settings import (
     ModelRoleSettings,
     api_key_scope,
     connection_key_scope,
-    get_cloud_provider_config,
     get_connection_scoped_key,
     get_key,
     set_cloud_provider_config,
@@ -157,26 +156,16 @@ def list_role_connections(settings: AppSettings, role: str) -> list[ModelConnect
 
 
 def pool_role(settings: AppSettings, role: str) -> str:
-    """Return the role whose pool a given role actually dials.
-
-    A following role reuses its source's provider, Base URL and key, so the
-    source's pool is the one that describes its connections.  Follow chains are
-    rejected elsewhere, so resolving one hop is enough.
-    """
-    normalized_role = role if role in MODEL_ROLE_LABELS else ROLE_TRANSLATION
-    source = normalize_source_role(
-        normalized_role,
-        role_source_role(settings, normalized_role),
-    )
-    return normalized_role if source == SOURCE_INDEPENDENT else source
+    """Each role owns its pool, including entries that follow another role."""
+    return role if role in MODEL_ROLE_LABELS else ROLE_TRANSLATION
 
 
 def list_effective_role_connections(
     settings: AppSettings,
     role: str,
 ) -> list[ModelConnection]:
-    """Return the pool that describes one role's real connections."""
-    return list_role_connections(settings, pool_role(settings, role))
+    """Return the role's selectable connections, with their stable own ids."""
+    return list_role_connections(settings, role)
 
 
 def find_role_connection(
@@ -201,6 +190,50 @@ def find_role_connection(
     return connections[0]
 
 
+def _refresh_primary_from_legacy(settings: AppSettings, owner, role: str) -> None:
+    """Honor older callers that still mutate role-wide fields in memory.
+
+    API pool edits mirror both sides immediately.  Direct integrations may
+    still set ``owner.cloud_model`` or ``owner.source_role`` and call the
+    resolver without rebuilding AppSettings; keep that compatibility path.
+    """
+    primary = owner.connections[0]
+    stored_source = str(owner.source_role or SOURCE_INDEPENDENT).strip()
+    source = normalize_source_role(role, stored_source)
+    if source != stored_source:
+        _adopt_stored_source_endpoint(settings, role, stored_source)
+        owner.source_role = source
+    if source != SOURCE_INDEPENDENT:
+        primary.connection_mode = "follow"
+        primary.source_role = source
+        primary.follow_model = str(owner.cloud_model or "").strip()
+        primary.model = primary.follow_model
+        primary.local_model = str(owner.local_model or "").strip()
+        return
+    if primary.connection_mode == "follow":
+        primary.connection_mode = "cloud"
+        primary.source_role = SOURCE_INDEPENDENT
+    desired_mode = str(getattr(owner, "mode", "cloud") or "cloud")
+    if desired_mode == "local":
+        primary.connection_mode = "local"
+        primary.provider = str(owner.local_provider or "ollama").strip()
+        primary.model = str(owner.local_model or "").strip()
+        primary.base_url = str(owner.local_base_url or "").strip()
+        primary.local_provider = primary.provider
+        primary.local_model = primary.model
+        primary.local_base_url = primary.base_url
+        return
+    primary.connection_mode = "cloud"
+    primary.provider = str(owner.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
+    primary.model = str(owner.cloud_model or "").strip()
+    primary.base_url = str(owner.cloud_base_url or "").strip()
+    primary.api_mode = str(owner.api_mode or "auto").strip()
+    primary.cloud_provider = primary.provider
+    primary.cloud_model = primary.model
+    primary.cloud_base_url = primary.base_url
+    primary.cloud_api_mode = primary.api_mode
+
+
 def _apply_primary_to_legacy_fields(owner) -> None:
     """Copy entry 0 onto the legacy single-connection fields.
 
@@ -209,18 +242,37 @@ def _apply_primary_to_legacy_fields(owner) -> None:
     or the validator will put the old values straight back.
     """
     primary = owner.connections[0]
-    owner.cloud_provider = primary.provider
-    owner.cloud_model = primary.model
-    owner.cloud_base_url = primary.base_url
-    # The per-provider stash outranks the flat fields inside the validator, so
-    # promoting an entry has to update it too or the old endpoint comes back.
-    set_cloud_provider_config(
-        owner,
-        primary.provider,
-        cloud_model=primary.model,
-        cloud_base_url=primary.base_url,
-        api_mode=primary.api_mode,
+    owner.source_role = (
+        primary.source_role if primary.connection_mode == "follow" else SOURCE_INDEPENDENT
     )
+    owner.mode = "local" if primary.connection_mode == "local" else "cloud"
+    if primary.connection_mode == "local":
+        owner.local_provider = primary.provider
+        owner.local_model = primary.model
+        owner.local_base_url = primary.base_url
+        owner.cloud_provider = primary.cloud_provider or owner.cloud_provider
+        owner.cloud_model = primary.cloud_model or owner.cloud_model
+        owner.cloud_base_url = primary.cloud_base_url or owner.cloud_base_url
+    else:
+        owner.cloud_provider = primary.cloud_provider or primary.provider
+        owner.cloud_model = (
+            primary.follow_model if primary.connection_mode == "follow" else primary.model
+        )
+        owner.cloud_base_url = primary.cloud_base_url or primary.base_url
+        if primary.connection_mode == "follow" and primary.local_model:
+            owner.local_model = primary.local_model
+        if primary.local_provider:
+            owner.local_provider = primary.local_provider
+        if primary.local_base_url:
+            owner.local_base_url = primary.local_base_url
+        # The per-provider stash outranks the flat fields inside the validator.
+        set_cloud_provider_config(
+            owner,
+            owner.cloud_provider,
+            cloud_model=owner.cloud_model,
+            cloud_base_url=owner.cloud_base_url,
+            api_mode=primary.cloud_api_mode,
+        )
     owner.availability_status = primary.availability_status
     owner.availability_message = primary.availability_message
     owner.availability_checked_at = primary.availability_checked_at
@@ -236,19 +288,85 @@ def add_role_connection(
     model: str = "",
     base_url: str = "",
     api_mode: str = "auto",
+    connection_mode: str = "cloud",
+    source_role: str = SOURCE_INDEPENDENT,
 ) -> ModelConnection:
     """Append a new entry to one role's pool and return it."""
     owner = role_pool_owner(settings, role)
-    primary = owner.connections[0]
+    local = connection_mode == "local"
+    own_provider = provider or (
+        owner.local_provider if local else owner.cloud_provider
+    )
+    own_model = model or (
+        owner.local_model if local else owner.cloud_model
+    )
+    own_base_url = base_url or (owner.local_base_url if local else "")
     connection = ModelConnection(
         label=label,
-        provider=provider or primary.provider,
-        model=model or primary.model,
-        base_url=base_url,
+        provider=own_provider,
+        model=own_model,
+        base_url=own_base_url,
         api_mode=api_mode,
+        connection_mode=connection_mode,
+        source_role=source_role,
+        cloud_provider=(owner.cloud_provider if local else own_provider),
+        cloud_model=(owner.cloud_model if local else own_model),
+        cloud_base_url=(owner.cloud_base_url if local else own_base_url),
+        cloud_api_mode=(owner.api_mode if local else api_mode),
+        local_provider=(own_provider if local else owner.local_provider),
+        local_model=(own_model if local else owner.local_model),
+        local_base_url=(own_base_url if local else owner.local_base_url),
+        follow_model=(own_model if connection_mode == "follow" else ""),
     )
+    if connection_mode == "follow" and source_role != SOURCE_INDEPENDENT:
+        try:
+            if resolve_effective_model_config(settings, source_role).mode == "local":
+                connection.local_model = connection.model
+        except ModelRoleConfigError:
+            pass
     owner.connections = [*owner.connections, connection]
     return connection
+
+
+def _remember_connection_mode(connection: ModelConnection) -> None:
+    """Capture the active endpoint before changing this row's mode."""
+    if connection.connection_mode == "local":
+        connection.local_provider = connection.provider
+        connection.local_model = connection.model
+        connection.local_base_url = connection.base_url
+    elif connection.connection_mode == "follow":
+        connection.follow_model = connection.model
+        connection.cloud_provider = connection.provider
+        connection.cloud_base_url = connection.base_url
+        connection.cloud_api_mode = connection.api_mode
+    else:
+        connection.cloud_provider = connection.provider
+        connection.cloud_model = connection.model
+        connection.cloud_base_url = connection.base_url
+        connection.cloud_api_mode = connection.api_mode
+
+
+def _restore_connection_mode(connection: ModelConnection, owner, mode: str) -> None:
+    """Restore this row's previous endpoint for the requested mode."""
+    if mode == "local":
+        connection.provider = connection.local_provider or owner.local_provider
+        connection.model = connection.local_model or owner.local_model
+        connection.base_url = (
+            connection.local_base_url if connection.local_provider
+            else owner.local_base_url
+        )
+    else:
+        connection.provider = connection.cloud_provider or owner.cloud_provider
+        connection.model = connection.cloud_model or owner.cloud_model
+        connection.base_url = (
+            connection.cloud_base_url if connection.cloud_provider
+            else owner.cloud_base_url
+        )
+        connection.api_mode = connection.cloud_api_mode or owner.api_mode
+        if mode == "follow":
+            connection.model = connection.follow_model or connection.model
+            connection.follow_model = connection.model
+    connection.connection_mode = mode
 
 
 def update_role_connection(
@@ -261,6 +379,8 @@ def update_role_connection(
     model: str | None = None,
     base_url: str | None = None,
     api_mode: str | None = None,
+    connection_mode: str | None = None,
+    source_role: str | None = None,
 ) -> ModelConnection:
     """Edit one pool entry in place."""
     owner = role_pool_owner(settings, role)
@@ -270,6 +390,23 @@ def update_role_connection(
     if label is not None:
         connection.label = str(label).strip()
     changed_endpoint = False
+    if connection_mode is not None:
+        mode = str(connection_mode).strip()
+        if mode not in {"cloud", "local", "follow"}:
+            raise ModelRoleConfigError("未知连接方式。")
+        if mode != connection.connection_mode:
+            changed_endpoint = True
+            _remember_connection_mode(connection)
+            _restore_connection_mode(connection, owner, mode)
+    if source_role is not None:
+        source = str(source_role).strip() or SOURCE_INDEPENDENT
+        if source != connection.source_role:
+            changed_endpoint = True
+        connection.source_role = source
+    if connection.connection_mode != "follow":
+        connection.source_role = SOURCE_INDEPENDENT
+    elif connection.source_role == SOURCE_INDEPENDENT:
+        raise ModelRoleConfigError("跟随连接必须选择来源。")
     for field_name, value in (
         ("provider", provider),
         ("model", model),
@@ -284,9 +421,22 @@ def update_role_connection(
             normalized = normalize_api_mode(normalized)
         # 只在值真的变了时才作数。面板每次保存都会把这三个字段整份提交，按「传了就算改」
         # 判定的话，光改个连接名字都会把「测试通过」打回「未测试」。
-        if normalized != getattr(connection, field_name):
+        target_field = field_name
+        if field_name == "model" and connection.connection_mode == "follow":
+            target_field = "follow_model"
+            try:
+                if resolve_effective_model_config(
+                    settings, connection.source_role
+                ).mode == "local":
+                    connection.local_model = normalized
+            except ModelRoleConfigError:
+                pass
+        if normalized != getattr(connection, target_field):
             changed_endpoint = True
-        setattr(connection, field_name, normalized)
+        setattr(connection, target_field, normalized)
+        if target_field == "follow_model":
+            connection.model = normalized
+    _remember_connection_mode(connection)
     if changed_endpoint:
         # The endpoint moved, so any prior test result no longer describes it.
         connection.availability_status = "unknown"
@@ -442,8 +592,6 @@ def _availability_record_target(settings: AppSettings, role: str, connection_id:
     # 记在自己身上：写到来源那条连接上，等于用清洗模型的测试结论覆盖翻译模型的结论，
     # 而且跟随角色自己那份状态（resolve_effective_model_config 的 follow 分支读的是
     # owner）永远也刷不新。四个角色里有三个默认跟随翻译，这条路径是常态而非边角。
-    if pool_role(settings, role) != role:
-        return owner
     connections = list_role_connections(settings, role)
     if not connections or connections[0].id == wanted:
         return owner
@@ -460,10 +608,15 @@ def validate_all_model_roles(
     settings block was untouched.  Saving only after this full validation
     keeps an impossible reuse graph out of persistent settings.
     """
-    return {
-        role: resolve_effective_model_config(settings, role)
-        for role in MODEL_ROLES
-    }
+    primary: dict[str, EffectiveModelConfig] = {}
+    for role in MODEL_ROLES:
+        for index, connection in enumerate(list_role_connections(settings, role)):
+            config = resolve_effective_model_config(
+                settings, role, connection_id=connection.id
+            )
+            if index == 0:
+                primary[role] = config
+    return primary
 
 
 def role_source_role(settings: AppSettings, role: str) -> str:
@@ -724,26 +877,23 @@ def resolve_effective_model_config(
     if normalized_role in _seen:
         raise ChainedModelFollowError("模型配置来源存在循环，请改为独立配置。")
 
-    # All four roles resolve the same way now: follow first, then a local
-    # runner, then the role's own pool.  Translation only differs in storing its
-    # values on ``engine`` instead of a ModelRoleSettings.
+    # Select this role's own row first.  A following row borrows only the
+    # source primary's endpoint and credential; its model and id stay its own.
     owner = model_role_owner(settings, normalized_role)
     capability = role_capability(normalized_role)
-    stored_source = role_source_role(settings, normalized_role)
+    connection = find_role_connection(settings, normalized_role, connection_id)
+    is_primary = connection.id == list_role_connections(settings, normalized_role)[0].id
+    if is_primary:
+        _refresh_primary_from_legacy(settings, owner, normalized_role)
+    availability_source = owner if is_primary else connection
+    mode = connection.connection_mode or "cloud"
+    stored_source = connection.source_role if mode == "follow" else SOURCE_INDEPENDENT
     source = normalize_source_role(normalized_role, stored_source)
-    if source != owner.source_role:
-        if source == SOURCE_INDEPENDENT and stored_source != SOURCE_INDEPENDENT:
-            # 旧配置里的一条跟随刚刚被判为不合法。降级前先把它此刻真正在用的端点
-            # 抄到自己名下，见 _adopt_stored_source_endpoint。
-            _adopt_stored_source_endpoint(
-                settings,
-                normalized_role,
-                stored_source,
-                _seen,
-            )
-        owner.source_role = source
+    if mode == "follow" and source == SOURCE_INDEPENDENT:
+        # Older invalid combinations remain readable as the row's own endpoint.
+        mode = "cloud"
 
-    if source != SOURCE_INDEPENDENT:
+    if mode == "follow":
         # 来源自己那条跟随也要按规范化后的值看：它如果跟随的是一个已经不合法的角色，
         # 读出来就是独立配置，按存下来的原值算会把一份能用的配置报成链式跟随。
         if normalize_source_role(source, role_source_role(settings, source)) != (
@@ -757,10 +907,7 @@ def resolve_effective_model_config(
         # against the source's pool; an id this role no longer matches degrades
         # to the source's primary, which is what following has always meant.
         source_config = resolve_effective_model_config(
-            settings,
-            source,
-            connection_id=connection_id,
-            _seen=(*_seen, normalized_role),
+            settings, source, _seen=(*_seen, normalized_role)
         )
         if (
             source_config.mode == "local"
@@ -777,60 +924,53 @@ def resolve_effective_model_config(
             # comes from the source rather than being pinned to cloud.
             mode=source_config.mode,
             provider=source_config.provider,
-            model=_own_model_name(settings, normalized_role, source_config.mode),
+            model=(
+                (connection.local_model or connection.model)
+                if source_config.mode == "local" else connection.model
+            ) or _own_model_name(settings, normalized_role, source_config.mode),
             base_url=source_config.base_url,
             api_mode=source_config.api_mode,
             api_key=source_config.api_key,
             # Report the connection actually dialed rather than an entry from
             # this role's own idle pool, which is what made the panel label a
             # followed connection with a stale name.
-            connection_id=source_config.connection_id,
-            connection_label=source_config.connection_label,
+            connection_id=connection.id,
+            connection_label=connection.display_label,
             source_role=source,
             follows=True,
-            availability_status=owner.availability_status,
-            availability_message=owner.availability_message,
-            availability_signature=owner.availability_signature,
+            availability_status=availability_source.availability_status,
+            availability_message=availability_source.availability_message,
+            availability_signature=availability_source.availability_signature,
         )
         validate_model_capability(config)
-        return _availability_for_config(config, owner)
+        return _availability_for_config(config, availability_source)
 
-    if str(getattr(owner, "mode", "cloud") or "cloud") == "local":
+    if mode == "local":
         config = EffectiveModelConfig(
             role=normalized_role,
             label=role_label(normalized_role),
             capability=capability,
             mode="local",
-            provider=str(getattr(owner, "local_provider", "") or "ollama").strip(),
-            model=_own_model_name(settings, normalized_role, "local"),
-            base_url=str(getattr(owner, "local_base_url", "") or "").strip(),
+            provider=connection.provider or str(getattr(owner, "local_provider", "") or "ollama").strip(),
+            model=connection.model or _own_model_name(settings, normalized_role, "local"),
+            base_url=connection.base_url or str(getattr(owner, "local_base_url", "") or "").strip(),
             api_key="",
+            connection_id=connection.id,
+            connection_label=connection.display_label,
             source_role=SOURCE_INDEPENDENT,
             follows=False,
+            availability_status=availability_source.availability_status,
+            availability_message=availability_source.availability_message,
+            availability_signature=availability_source.availability_signature,
         )
         validate_model_capability(config)
-        return _availability_for_config(config, owner)
+        return _availability_for_config(config, availability_source)
 
-    connection = find_role_connection(settings, normalized_role, connection_id)
-    is_primary = connection.id == list_role_connections(settings, normalized_role)[0].id
     # 主连接的测试结果镜像在 owner 上（校验器双向同步），其余连接各记各的：
     # 读错了这一处，新加的连接就会挂着主连接的「测试通过」。
-    availability_source = owner if is_primary else connection
-    if is_primary:
-        # The primary keeps reading through cloud_provider_configs so that
-        # switching provider still restores that provider's saved model.
-        provider = str(owner.cloud_provider or DEFAULT_CLOUD_PROVIDER).strip()
-        provider_config = get_cloud_provider_config(owner, provider)
-        model = provider_config.cloud_model or _own_model_name(
-            settings,
-            normalized_role,
-            "cloud",
-        )
-        base_url = provider_config.cloud_base_url
-    else:
-        provider = connection.provider or DEFAULT_CLOUD_PROVIDER
-        model = connection.model or _own_model_name(settings, normalized_role, "cloud")
-        base_url = connection.base_url
+    provider = connection.provider or DEFAULT_CLOUD_PROVIDER
+    model = connection.model or _own_model_name(settings, normalized_role, "cloud")
+    base_url = connection.base_url
     config = EffectiveModelConfig(
         role=normalized_role,
         label=role_label(normalized_role),
@@ -839,7 +979,7 @@ def resolve_effective_model_config(
         provider=provider,
         model=model,
         base_url=base_url,
-        api_mode=provider_config.api_mode if is_primary else connection.api_mode,
+        api_mode=connection.api_mode,
         api_key=_connection_api_key(connection, provider, base_url),
         connection_id=connection.id,
         connection_label=connection.display_label,

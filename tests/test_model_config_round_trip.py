@@ -15,7 +15,7 @@ from core.model_config import (
     build_model_config_export_payload,
     parse_model_config_import,
 )
-from core.model_roles import ROLE_TRANSLATION, add_role_connection
+from core.model_roles import ROLE_TRANSLATION, add_role_connection, update_role_connection
 from settings import AppSettings
 
 
@@ -100,6 +100,50 @@ class ModelConfigRoundTripTests(unittest.TestCase):
             save_api_key=lambda *_args, **_kwargs: None,
         )
         assert restored.cleaner_model_role.mode == "local"
+
+    def test_mixed_cloud_and_follow_rows_keep_mode_source_and_own_model(self) -> None:
+        settings = AppSettings()
+        settings.cleaner_model_role.source_role = "independent"
+        settings.cleaner_model_role.cloud_model = "manual-cleaner"
+        settings = AppSettings.model_validate(settings.model_dump())
+        add_role_connection(
+            settings, "cleaner", label="跟随翻译", connection_mode="follow",
+            source_role="translation", model="second-cleaner-model",
+            provider="custom_openai", base_url="https://own.example/v1",
+        )
+
+        restored = _round_trip(settings)
+        rows = restored.cleaner_model_role.connections
+        assert len(rows) == 2
+        assert rows[0].connection_mode == "cloud"
+        assert rows[0].model == "manual-cleaner"
+        assert rows[1].connection_mode == "follow"
+        assert rows[1].source_role == "translation"
+        assert rows[1].model == "second-cleaner-model"
+        assert rows[1].base_url == "https://own.example/v1"
+
+    def test_secondary_mode_memories_survive_export_import(self) -> None:
+        settings = AppSettings()
+        settings.cleaner_model_role.source_role = "independent"
+        settings = AppSettings.model_validate(settings.model_dump())
+        row = add_role_connection(
+            settings, "cleaner", provider="custom_openai", model="saved-cloud",
+            base_url="https://saved.example/v1",
+        )
+        update_role_connection(
+            settings, "cleaner", row.id, connection_mode="local",
+            provider="ollama", model="saved-local", base_url="http://127.0.0.1:11434",
+        )
+
+        restored = _round_trip(settings)
+        local_row = restored.cleaner_model_role.connections[1]
+        assert local_row.connection_mode == "local"
+        assert local_row.cloud_model == "saved-cloud"
+        assert local_row.cloud_base_url == "https://saved.example/v1"
+        update_role_connection(restored, "cleaner", local_row.id, connection_mode="cloud")
+        cloud_row = restored.cleaner_model_role.connections[1]
+        assert cloud_row.model == "saved-cloud"
+        assert cloud_row.base_url == "https://saved.example/v1"
 
     def test_every_connection_in_a_pool_travels_with_the_bundle(self) -> None:
         """The bundle promises the whole model service, pools included."""

@@ -280,7 +280,7 @@ class TextProtocolSettings(BaseModel):
 
 
 class ModelConnection(TextProtocolSettings):
-    """One cloud connection inside a model role's pool.
+    """One independently selectable connection inside a model role's pool.
 
     A pool is an ordered list: entry 0 is the primary and is kept mirrored
     onto the role's legacy single-connection fields, so configuration written
@@ -291,7 +291,21 @@ class ModelConnection(TextProtocolSettings):
     label: str = ""
     provider: str = DEFAULT_CLOUD_PROVIDER
     model: str = ""
+    cloud_provider: str = ""
+    cloud_model: str = ""
+    cloud_base_url: str = ""
+    cloud_api_mode: str = "auto"
+    local_provider: str = ""
+    # A legacy text follower may have a distinct local model name.  Keep it
+    # when its source switches between cloud and local primaries.
+    local_model: str = ""
+    local_base_url: str = ""
+    follow_model: str = ""
     base_url: str = ""
+    # Empty only while loading an older pool entry.  _sync_connection_pool
+    # infers its former role-wide mode once and persists the explicit value.
+    connection_mode: str = ""
+    source_role: str = "independent"
     availability_status: str = "unknown"
     availability_message: str = ""
     availability_checked_at: str = ""
@@ -303,7 +317,21 @@ class ModelConnection(TextProtocolSettings):
         self.label = str(self.label or "").strip()
         self.provider = str(self.provider or DEFAULT_CLOUD_PROVIDER).strip()
         self.model = str(self.model or "").strip()
+        self.cloud_provider = str(self.cloud_provider or "").strip()
+        self.cloud_model = str(self.cloud_model or "").strip()
+        self.cloud_base_url = str(self.cloud_base_url or "").strip().rstrip("/")
+        self.cloud_api_mode = normalize_api_mode(self.cloud_api_mode)
+        self.local_provider = str(self.local_provider or "").strip()
+        self.local_model = str(self.local_model or "").strip()
+        self.local_base_url = str(self.local_base_url or "").strip().rstrip("/")
+        self.follow_model = str(self.follow_model or "").strip()
         self.base_url = str(self.base_url or "").strip().rstrip("/")
+        if self.connection_mode not in {"", "cloud", "local", "follow"}:
+            self.connection_mode = "cloud"
+        if self.source_role not in MODEL_ROLE_SOURCE_VALUES:
+            self.source_role = "independent"
+        if self.connection_mode != "follow":
+            self.source_role = "independent"
         if self.availability_status not in {"unknown", "available", "unavailable"}:
             self.availability_status = "unknown"
         return self
@@ -343,10 +371,22 @@ def _sync_connection_pool(owner) -> None:
         connections = [
             ModelConnection(
                 id=f"{_SEEDED_CONNECTION_PREFIX}{uuid.uuid4().hex}",
-                provider=owner.cloud_provider,
-                model=owner.cloud_model,
-                base_url=owner.cloud_base_url,
+                provider=owner.local_provider if owner.mode == "local" and owner.source_role == "independent" else owner.cloud_provider,
+                model=owner.local_model if owner.mode == "local" and owner.source_role == "independent" else owner.cloud_model,
+                local_model=owner.local_model,
+                cloud_provider=owner.cloud_provider,
+                cloud_model=owner.cloud_model,
+                cloud_base_url=owner.cloud_base_url,
+                cloud_api_mode=owner.api_mode,
+                local_provider=owner.local_provider,
+                local_base_url=owner.local_base_url,
+                follow_model=owner.cloud_model if owner.source_role != "independent" else "",
+                base_url=owner.local_base_url if owner.mode == "local" and owner.source_role == "independent" else owner.cloud_base_url,
                 api_mode=owner.api_mode,
+                connection_mode=(
+                    "follow" if owner.source_role != "independent" else owner.mode
+                ),
+                source_role=owner.source_role,
                 availability_status=owner.availability_status,
                 availability_message=owner.availability_message,
                 availability_checked_at=owner.availability_checked_at,
@@ -355,17 +395,77 @@ def _sync_connection_pool(owner) -> None:
         ]
     else:
         primary = connections[0]
-        primary.provider = owner.cloud_provider
-        primary.model = owner.cloud_model
-        primary.base_url = owner.cloud_base_url
-        primary.api_mode = owner.api_mode
+        if not primary.connection_mode:
+            primary.connection_mode = (
+                "follow" if owner.source_role != "independent" else owner.mode
+            )
+            primary.source_role = owner.source_role
+            primary.local_model = owner.local_model
+            primary.cloud_provider = owner.cloud_provider
+            primary.cloud_model = owner.cloud_model
+            primary.cloud_base_url = owner.cloud_base_url
+            primary.cloud_api_mode = owner.api_mode
+            primary.local_provider = owner.local_provider
+            primary.local_base_url = owner.local_base_url
+            if primary.connection_mode == "follow":
+                primary.follow_model = owner.cloud_model
+            if primary.connection_mode == "local":
+                primary.provider = owner.local_provider
+                primary.model = owner.local_model
+                primary.base_url = owner.local_base_url
+        elif owner.source_role != (
+            primary.source_role if primary.connection_mode == "follow" else "independent"
+        ):
+            # The role-wide field is entry 0's compatibility alias.  A file
+            # whose two representations disagree may have been edited by an
+            # older build, which only knew the role-wide value.
+            primary.connection_mode = (
+                "follow" if owner.source_role != "independent" else owner.mode
+            )
+            primary.source_role = owner.source_role
+        if primary.connection_mode in {"cloud", "follow"}:
+            primary.model = owner.cloud_model
+            if primary.connection_mode == "follow":
+                primary.follow_model = owner.cloud_model
+        if primary.connection_mode == "cloud":
+            primary.provider = owner.cloud_provider
+            primary.base_url = owner.cloud_base_url
+            primary.api_mode = owner.api_mode
         primary.availability_status = owner.availability_status
         primary.availability_message = owner.availability_message
         primary.availability_checked_at = owner.availability_checked_at
         primary.availability_signature = owner.availability_signature
 
     seen: set[str] = set()
-    for conn in connections:
+    for index, conn in enumerate(connections):
+        if not conn.connection_mode:
+            conn.connection_mode = "cloud"
+        if conn.connection_mode == "local":
+            conn.local_provider = conn.local_provider or conn.provider
+            conn.local_model = conn.local_model or conn.model
+            conn.local_base_url = conn.local_base_url or conn.base_url
+            if index == 0:
+                conn.cloud_provider = conn.cloud_provider or owner.cloud_provider
+                conn.cloud_model = conn.cloud_model or owner.cloud_model
+                conn.cloud_base_url = conn.cloud_base_url or owner.cloud_base_url
+                conn.cloud_api_mode = conn.cloud_api_mode or owner.api_mode
+        else:
+            conn.cloud_provider = conn.cloud_provider or conn.provider
+            conn.cloud_model = conn.cloud_model or conn.model
+            conn.cloud_base_url = conn.cloud_base_url or conn.base_url
+            conn.cloud_api_mode = conn.cloud_api_mode or conn.api_mode
+            if conn.connection_mode == "follow":
+                conn.follow_model = conn.follow_model or conn.model
+            if index == 0:
+                conn.local_provider = conn.local_provider or owner.local_provider
+                conn.local_model = conn.local_model or owner.local_model
+                conn.local_base_url = conn.local_base_url or owner.local_base_url
+        if index == 0 and conn.connection_mode == "follow":
+            # Keep the role-wide compatibility field aligned with the primary.
+            owner.source_role = conn.source_role
+        elif index == 0:
+            owner.source_role = "independent"
+            owner.mode = conn.connection_mode
         if conn.id in seen:
             conn.id = new_connection_id()
         seen.add(conn.id)

@@ -67,6 +67,19 @@ type PoolConnection = {
   id: string;
   label: string;
   display_label: string;
+  connection_mode?: "cloud" | "local" | "follow";
+  source_role?: string;
+  own_provider?: string;
+  own_model?: string;
+  own_base_url?: string;
+  own_api_mode?: string;
+  own_cloud_provider?: string;
+  own_cloud_model?: string;
+  own_cloud_base_url?: string;
+  own_cloud_api_mode?: string;
+  own_local_provider?: string;
+  own_local_model?: string;
+  own_local_base_url?: string;
   provider: string;
   model: string;
   base_url: string;
@@ -672,11 +685,7 @@ type ModelFormSubmission = {
   access: string;
   sourceRole: string;
   secondaryId: string;
-  // 这个池子是不是本角色自己的。保存时不能现读全局：草稿刚从「跟随」切回「云端」时，
-  // selectedId 指的还是**来源角色**的连接，拿它去 PUT 本角色的连接路由必然 422。
-  ownsPool: boolean;
   selectedId: string;
-  selectedLabel: string;
   provider: string;
   baseUrl: string;
   model: string;
@@ -1097,6 +1106,12 @@ function statusChip(label: string, tone: "done" | "error" | ""): HTMLSpanElement
 // ---------------------------------------------------------------------------
 
 function savedAccessMode(role: string): string {
+  const selected = activeConnection(role);
+  if (selected?.connection_mode) {
+    return selected.connection_mode === "follow"
+      ? `${FOLLOW_PREFIX}${selected.source_role || "translation"}`
+      : selected.connection_mode;
+  }
   const saved = record(modelRoles[role]);
   const source = text(saved.source_role, "independent");
   if (source !== "independent") return `${FOLLOW_PREFIX}${source}`;
@@ -1128,16 +1143,6 @@ function accessModeOptions(role: string): { value: string; label: string }[] {
   return options;
 }
 
-function accessModeLabel(role: string, value: string): string {
-  const hit = accessModeOptions(role).find((option) => option.value === value);
-  if (hit) return hit.label;
-  if (value.startsWith(FOLLOW_PREFIX)) {
-    const source = value.slice(FOLLOW_PREFIX.length);
-    return `跟随${MODEL_ROLE_LABELS[source] || source}`;
-  }
-  return value === "local" ? "本地模型" : "云端 API";
-}
-
 function roleConnections(role: string): PoolConnection[] {
   const raw = record(modelRoles[role]).connections;
   return Array.isArray(raw) ? (raw as PoolConnection[]) : [];
@@ -1150,19 +1155,8 @@ function activeConnection(role: string): PoolConnection | null {
   return connections.find((item) => item.id === wanted) ?? connections[0];
 }
 
-// 面板此刻编辑的是不是「本角色自己池子里的一条非主用连接」。三个条件缺一不可：
-// 本地模式没有连接列表（activeConnection 会兜底返回云端主连接）；跟随时列表里摆的是
-// 来源角色的池子，往那上面写等于改翻译模型的连接；主用连接走的是角色级路由。
-// 渲染和保存必须用同一个判断，否则会出现「看到的是 A，存进去的是 B」。
+// 当前选中的是不是非主用连接。提交队列需要这个信息保留旧版主连接的密钥回退作用域。
 function editableSecondaryConnection(role: string): PoolConnection | null {
-  const following = accessFollowSource(role) !== "independent";
-  const cloudMode = following || accessMode(role) === "cloud";
-  if (!cloudMode || following) return null;
-  // 还有没提交的连接方式变更时，一律不认非主用连接。走连接路由会把唯一写 mode 的角色级
-  // PUT 整段 return 掉：toast 说「连接已保存」，角色却仍停在旧模式上，翻译继续拨旧端点。
-  // 角色级的改动必须先落地，之后才谈得上编辑池子里的某一条。
-  if (modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role)) return null;
-  if (text(record(modelRoles[role]).connection_pool_role, role) !== role) return null;
   const selected = activeConnection(role);
   return selected && !selected.primary ? selected : null;
 }
@@ -1173,16 +1167,13 @@ function modelCatalogConnectionKey(args: { role: string; mode: string; provider:
 
 function modelCatalogConnectionForRole(role: string): string {
   const payload = record(modelRoles[role]);
-  // 模型列表是按端点缓存的，而拉列表用的是**面板选中的那条连接**（connection_id 一路
-  // 传到后端）。键里只写主用连接的端点，第二条连接拉回来的列表就会被当成主用连接的，
-  // 切回主用时照样展示——用户会拿 B 家的模型名去填 A 家的连接。
-  const secondary = editableSecondaryConnection(role);
-  if (secondary) {
+  const selected = activeConnection(role);
+  if (selected) {
     return modelCatalogConnectionKey({
       role,
-      mode: "cloud",
-      provider: secondary.provider,
-      baseUrl: secondary.base_url,
+      mode: selected.connection_mode || "cloud",
+      provider: selected.provider,
+      baseUrl: selected.base_url,
     });
   }
   return modelCatalogConnectionKey({
@@ -1220,10 +1211,11 @@ function renderModelsPage(host: HTMLElement): void {
     segc.className = role === modelRole ? "segc on" : "segc";
     const b = document.createElement("b");
     b.textContent = MODEL_ROLE_LABELS[role] || role;
-    const savedSourceRole = text(payload.source_role, "independent");
-    const modeSummary = savedAccessMode(role).startsWith(FOLLOW_PREFIX)
-      ? `跟随${MODEL_ROLE_LABELS[savedSourceRole] || savedSourceRole}`
-      : text(payload.model) || (text(payload.mode, "cloud") === "cloud" ? "云端 API" : "本地模型");
+    const primary = roleConnections(role)[0];
+    const primarySource = primary?.source_role || text(payload.source_role, "independent");
+    const modeSummary = primary?.connection_mode === "follow"
+      ? `跟随${MODEL_ROLE_LABELS[primarySource] || primarySource}`
+      : primary?.model || text(payload.model) || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
     const span = document.createElement("span");
     span.textContent = modeSummary || "未配置";
     segc.append(b, span);
@@ -1239,10 +1231,13 @@ function renderModelsPage(host: HTMLElement): void {
   const role = modelRole;
   const rolePayload = record(modelRoles[role]);
   const engine = record(settings?.engine);
+  const selected = activeConnection(role);
   const access = accessMode(role);
   const sourceRole = accessFollowSource(role);
   const following = sourceRole !== "independent";
-  const cloudMode = following || access === "cloud";
+  const followConnection = following ? roleConnections(sourceRole)[0] : null;
+  const followedProvider = followConnection?.provider || selected?.provider || "";
+  const cloudMode = access === "cloud" || (following && !LOCAL_PROVIDERS.includes(followedProvider));
   const provider = role === "translation"
     ? (cloudMode ? text(engine.cloud_provider, "custom_openai") : text(engine.local_provider, "ollama"))
     : text(rolePayload.provider, cloudMode ? "custom_openai" : "ollama");
@@ -1254,82 +1249,42 @@ function renderModelsPage(host: HTMLElement): void {
     : text(rolePayload.model);
   const providers = cloudMode ? CLOUD_PROVIDERS : LOCAL_PROVIDERS;
 
-  const selected = activeConnection(role);
   // 和其余表单字段一样在渲染这一刻算死（见 ModelFormSubmission）。以前它是在排队回调
   // **内部**才求值的：前一笔保存还在飞、用户又点了另一行时，第二笔提交会重新读全局状态
   // 拿到 null，本该写进 B 的服务商/Base URL/模型名改走角色级 PUT，被后端同步到 entry 0，
   // 等于把 B 的端点覆盖到主用连接 A 上。
   const secondaryConnection = editableSecondaryConnection(role);
   const secondaryId = secondaryConnection?.id ?? "";
-  const editingSecondary = secondaryConnection !== null;
-  const formProvider = editingSecondary ? selected!.provider : provider;
-  const formBaseUrl = editingSecondary ? selected!.base_url : baseUrl;
-  const formModel = editingSecondary ? selected!.model : model;
-  const borrowedPool = following;
-  // 这个池子到底是不是本角色自己的。两个条件都要看：草稿刚切到「跟随」时后端返回的
-  // connection_pool_role 还停在旧值，草稿刚切回「云端」时它又还指着来源角色。只看一边，
-  // 就会出现「界面上写着跟随，却顶着自己池子的测试通过」这类对不上的状态。
-  const ownsPool = !following && text(rolePayload.connection_pool_role, role) === role;
+  // 模式切换只是草稿，selected 仍是切换前的已保存行。表单必须从目标模式自己的
+  // 记忆区取值；否则 cloud→local→cloud 会把 Ollama 地址和模型写回云端配置。
+  const formProvider = following
+    ? (followedProvider || provider)
+    : cloudMode
+      ? (selected?.own_cloud_provider || (selected?.connection_mode === "cloud" ? selected.own_provider : "") || (selected ? "custom_openai" : provider))
+      : (selected?.own_local_provider || (selected?.connection_mode === "local" ? selected.own_provider : "") || "ollama");
+  const formBaseUrl = following
+    ? (followConnection ? followConnection.base_url : selected?.base_url ?? baseUrl)
+    : cloudMode
+      ? (selected?.own_cloud_base_url || (selected?.connection_mode === "cloud" ? selected.own_base_url : "") || (selected ? "" : baseUrl))
+      : (selected?.own_local_base_url || (selected?.connection_mode === "local" ? selected.own_base_url : "") || LOCAL_PROVIDER_BASE_URL_DEFAULTS[formProvider] || "");
+  const formModel = following
+    ? (selected?.model ?? model)
+    : cloudMode
+      ? (selected?.own_cloud_model || (selected?.connection_mode === "cloud" ? selected.own_model : "") || (selected ? "" : model))
+      : (selected?.own_local_model || (selected?.connection_mode === "local" ? selected.own_model : "") || "");
 
-  // 连接方式改了但还没保存。它决定了下面那张列表卡是「跟随中」还是「等你按一下保存」，
-  // 两种状态给的话完全不同，所以在这里算一次，两处共用。
+  // 连接方式草稿只属于当前选中的连接；选中另一行时立即丢弃。
   const accessDirty = modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
 
-  // ---- 连接方式卡（角色级）----
-  // 它以前长在「连接详情卡」的第一格里，跟在连接列表下面，看上去像是「当前选中那条连接
-  // 的属性」。可它写的是 modelAccessDraft[role]，改的是**整个角色**。用户「选中第二条连接、
-  // 在它里面改连接方式」这个完全合理的动作，于是触发了一次角色级改动：列表跳回主用连接、
-  // 整张列表卡被锁、保存走的路由也换了一条——四个症状同一个根。挪到角色分段和连接列表
-  // 之间，它在视觉上统辖下面两张卡，语义才对得上。
-  const accessBar = document.createElement("div");
-  accessBar.className = "accessbar";
-  const accessLabel = document.createElement("span");
-  accessLabel.className = "accessbar-label";
-  accessLabel.textContent = "连接方式";
-  accessLabel.append(hintBadge("云端 API 通过服务商接口调用；本地模型直接连接本机运行器；跟随只共享服务商、Base URL 和 Key，模型名称、吞吐和测试状态始终独立。"));
-  accessBar.append(accessLabel);
-  const radioRow = document.createElement("div");
-  radioRow.className = "radio-row";
-  for (const option of accessModeOptions(role)) {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "radio";
-    input.name = "accessMode";
-    input.checked = access === option.value;
-    input.addEventListener("change", () => {
-      modelAccessDraft[role] = option.value;
-      // 切换连接方式是角色级动作，面板必须同时退回主用连接。停在某条非主用连接上时，
-      // 界面显示的字段（那条连接的端点）和这一改动该走的路由（角色级 PUT）必然对不上，
-      // 保存要么写错对象、要么把角色级改动整个吞掉。
-      delete selectedConnection[role];
-      renderBody();
-    });
-    label.append(input, document.createTextNode(option.label));
-    radioRow.append(label);
-  }
-  accessBar.append(radioRow);
-  if (accessDirty) {
-    const dirtyChip = createChip({ label: "未保存", tone: "warn" });
-    dirtyChip.style.marginLeft = "auto";
-    accessBar.append(dirtyChip);
-  }
-  host.append(createCard([accessBar]));
-
   // ---- 连接列表卡 ----
-  if (cloudMode) {
-    // 整张卡的可操作性只认 ownsPool，不认服务端的 connection_pool_role。后者在草稿刚切到
-    // 「跟随」时还停在旧值：那一刻「新增连接」还能点，加出来的是一条所有输入框都灰掉、
-    // 永远填不了的空连接；非主用行的「测试」也还能点，结论记在连接上，详情卡却因为
-    // ownsPool=false 回读角色级状态——圆点变绿，胶囊仍写着「未测试」。
-    const borrowed = !ownsPool;
+  {
     const connections = roleConnections(role);
     const addBtn = createButton({
       label: "新增连接", size: "mini", icon: "plus",
-      disabled: borrowed,
       onClick: () => void reRenderAfter(async () => {
         const payload = await client.request<JsonObject>(
           `/api/models/roles/${encodeURIComponent(role)}/connections`,
-          { method: "POST", body: JSON.stringify({ label: "", base_url: "" }) },
+          { method: "POST", body: JSON.stringify({ label: "", connection_mode: "cloud", base_url: "" }) },
         );
         modelRoles[role] = payload;
         const added = Array.isArray(payload.connections) ? payload.connections : [];
@@ -1338,31 +1293,6 @@ function renderModelsPage(host: HTMLElement): void {
       }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
     });
     const listCard = createCard([tcHead("连接列表", [addBtn])]);
-    // 锁住时必须把「为什么锁」和「怎么解开」写在列表正上方。以前这里什么都不说，按钮直接
-    // 从 DOM 里消失（见下面 actions 那段），用户看到的是「界面卡死了，连删除按钮都没有」，
-    // 而实际上后端只是不接受借来的池子的增删改（_own_pool_or_422），保存一次就恢复。
-    if (borrowed) {
-      const poolOwner = text(rolePayload.connection_pool_role, role);
-      const poolOwnerLabel = MODEL_ROLE_LABELS[poolOwner] || poolOwner;
-      const bar = document.createElement("div");
-      bar.className = accessDirty ? "statebar pend" : "statebar info";
-      const barText = document.createElement("span");
-      if (accessDirty) {
-        barText.textContent = `“连接方式”改成了“${accessModeLabel(role, accessMode(role))}”，还没保存。下面列的仍是旧配置下的连接，`
-          + "新增、测试、设为主用、删除都先停用了。保存之后列表会换成这个用途该用的连接，操作随即恢复。";
-      } else {
-        barText.textContent = `这个用途正在跟随“${poolOwnerLabel}”，直接用它的连接和密钥，下面列的就是“${poolOwnerLabel}”的连接，`
-          + "只能看不能改。你自己配的连接一条都没删，把连接方式切回“云端 API”并保存，它们就回来了。";
-      }
-      bar.append(barText);
-      if (accessDirty) {
-        bar.append(createButton({
-          label: "保存并解锁", size: "mini", variant: "primary",
-          onClick: () => void doSaveModel(),
-        }));
-      }
-      listCard.append(bar);
-    }
     if (!connections.length) {
       listCard.append(createEmptyState({ title: "还没有连接", description: "点右上角“新增连接”开始配置。", icon: "gear" }));
     } else {
@@ -1378,35 +1308,35 @@ function renderModelsPage(host: HTMLElement): void {
         name.textContent = connection.display_label || `连接 ${index + 1}`;
         const chips: HTMLElement[] = [];
         if (index === 0) chips.push(createChip({ label: "主用", tone: "tint" }));
-        if (!connection.has_api_key) chips.push(createChip({ label: "无密钥", tone: "warn" }));
+        if (connection.connection_mode === "follow") chips.push(createChip({ label: `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`, tone: "tint" }));
+        if (connection.connection_mode === "local") chips.push(createChip({ label: "本地", tone: "mute" }));
+        if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
+          chips.push(createChip({ label: "无密钥", tone: "warn" }));
+        }
         const actions = document.createElement("span");
         actions.style.display = "flex";
         actions.style.gap = "6px";
-        // 借来的池子上这三个动作后端一律 422，所以要拦。但拦法是「灰掉」而不是「删掉」：
-        // 按钮整个消失时，用户没有任何线索区分「这条不能删」和「这个界面坏了」。
         actions.append(createButton({
-          label: "测试", size: "mini", disabled: borrowed,
+          label: "测试", size: "mini",
           onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
         }));
         if (index > 0) {
           actions.append(createButton({
-            label: "设为主用", size: "mini", disabled: borrowed,
+            label: "设为主用", size: "mini",
             onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
           }));
         }
         if (connections.length > 1) {
           actions.append(createButton({
-            label: "删除", size: "mini", variant: "danger", disabled: borrowed,
-            onClick: (e) => { e.stopPropagation(); void deleteConnection(role, connection.id); },
+            label: "删除", size: "mini", variant: "danger",
+            onClick: (e) => { e.stopPropagation(); confirmDeleteConnection(role, connection); },
           }));
         }
         const row = connRow([dot, name, ...chips, actions], {
           selected: Boolean(selected && selected.id === connection.id),
-          // 借来的池子不许选：跟随角色只有一份测试结论的存放位置，按行去测会把某一行
-          // 的签名写进去，而面板回读的是这个角色实际会拨的那条，两边对不上，测完仍旧
-          // 显示「未测试」。这里的行只是告诉用户「来源有哪些连接」。
-          onClick: borrowed ? undefined : () => {
+          onClick: () => {
             selectedConnection[role] = connection.id;
+            delete modelAccessDraft[role];
             renderBody();
           },
         });
@@ -1423,6 +1353,33 @@ function renderModelsPage(host: HTMLElement): void {
   detailBody.style.display = "flex";
   detailBody.style.flexDirection = "column";
   detailBody.style.gap = "10px";
+
+  // 连接方式属于当前选中的这一条连接；切换另一行不会改变它。
+  const accessBar = document.createElement("div");
+  accessBar.className = "accessbar";
+  const accessLabel = document.createElement("span");
+  accessLabel.className = "accessbar-label";
+  accessLabel.textContent = "当前连接方式";
+  accessLabel.append(hintBadge("跟随只共享来源主用连接的服务商、Base URL 和 Key；这条连接的模型名称独立保存。"));
+  accessBar.append(accessLabel);
+  const radioRow = document.createElement("div");
+  radioRow.className = "radio-row";
+  for (const option of accessModeOptions(role)) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "accessMode";
+    input.checked = access === option.value;
+    input.addEventListener("change", () => {
+      modelAccessDraft[role] = option.value;
+      renderBody();
+    });
+    label.append(input, document.createTextNode(option.label));
+    radioRow.append(label);
+  }
+  accessBar.append(radioRow);
+  if (accessDirty) accessBar.append(createChip({ label: "未保存", tone: "warn" }));
+  detailBody.append(accessBar);
 
   const grid = document.createElement("div");
   grid.className = "grid2";
@@ -1514,7 +1471,7 @@ function renderModelsPage(host: HTMLElement): void {
         { value: "chat", label: "Chat Completions" },
         { value: "responses", label: "Responses" },
       ],
-      text(editingSecondary ? selected?.api_mode : rolePayload.api_mode, "auto"),
+      text(following ? followConnection?.api_mode || selected?.api_mode : selected?.own_cloud_api_mode || (selected?.connection_mode === "cloud" ? selected.own_api_mode : "") || (selected ? "auto" : rolePayload.api_mode), "auto"),
       () => undefined,
       { disabled: following },
     );
@@ -1522,17 +1479,10 @@ function renderModelsPage(host: HTMLElement): void {
     detailBody.append(fieldWithHint("", apiModeSelect, "自动模式只在明确的接口/协议错误时有限尝试替代协议；超时不会盲目重发。"));
   }
 
-  let connectionLabelField: HTMLInputElement | null = null;
-  if (cloudMode) {
-    // 可填性看 ownsPool，不是 borrowedPool（后者只看草稿是否跟随）。草稿刚从「跟随」切回
-    // 「云端」、本角色还没有自己的池子时，框里摆的是**来源角色**那条连接的名字：改了它，
-    // 自动保存会拿来源池的 id 去 PUT 本角色的连接路由，后端一句「找不到要修改的连接」422，
-    // 名字丢了，用户只看到一声报错。
-    const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商", disabled: !ownsPool });
-    connectionLabelField = labelField.input;
-    connectionLabelField.id = "settings-model-connection-label";
-    detailBody.append(labelField.root);
-  }
+  const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商" });
+  const connectionLabelField = labelField.input;
+  connectionLabelField.id = "settings-model-connection-label";
+  detailBody.append(labelField.root);
 
   let apiKeyField: HTMLInputElement | null = null;
   if (cloudMode) {
@@ -1542,15 +1492,13 @@ function renderModelsPage(host: HTMLElement): void {
     keyInput.autocomplete = "off";
     // 已保存的密钥直接以掩码当占位符摆在框里，不再在下面挂一行注释：注释和输入框
     // 中间隔着一段空白，「已保存」和「这个框是空的」看上去像在说两件互相矛盾的事。
-    // 掩码只在池子是本角色自己的时候才作数：草稿刚切回「云端」时 selected 是**来源角色**
-    // 的主连接，照它的掩码显示等于用别人的 Key 冒充「本角色已经存过密钥了」，用户会以为
-    // 留空即可，结果这个角色一个 Key 都没有。
-    keyInput.placeholder = borrowedPool
-      ? "跟随时使用来源角色的密钥"
-      : ownsPool && selected?.has_api_key ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
-    // 这里刻意保持 borrowedPool 而不是 !ownsPool：草稿切回云端时用户应该能顺手把 Key 填上，
-    // 那条路径按 provider 作用域存（见 saveModel），不需要本角色先有自己的池子。
-    keyInput.disabled = borrowedPool;
+    // 跟随行的 has_api_key 来自来源连接。草稿刚从跟随切到云端时，不能把来源的
+    // 掩码冒充为当前行已存的独立密钥。
+    keyInput.placeholder = following
+      ? "跟随时使用来源连接的密钥"
+      : selected?.connection_mode === "cloud" && selected.has_api_key
+        ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
+    keyInput.disabled = following;
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
     const keyField = fieldWithHint("API 密钥", keyInput, "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。");
@@ -1629,11 +1577,8 @@ function renderModelsPage(host: HTMLElement): void {
   // 状态胶囊。取的是**当前选中那条连接**的测试结果，不是角色级的那份——角色级状态
   // 是主用连接的镜像（core/model_roles.py 里照抄 primary 的三个字段），拿它当详情卡的
   // 状态，新建的第二条连接一挂上来就顶着主用连接的「测试通过」，用户会以为它已经验过。
-  // 两种情况必须回到角色自己那份状态，不能读连接行：跟随时列表里摆的是**来源角色**的
-  // 池子（后端 list_effective_role_connections），照抄就会让一次都没测过的跟随角色顶着
-  // 翻译模型的「测试通过」；本地模式下压根没有连接列表，activeConnection 兜底给出的是
-  // 云端主连接，读它等于把云端的结论安到本地运行器头上。
-  const connectionOwnsVerdict = cloudMode && ownsPool && Boolean(selected);
+  // 现在列表始终是本角色拥有的连接，每行都有独立测试结论。
+  const connectionOwnsVerdict = Boolean(selected);
   const availabilitySource: JsonObject = connectionOwnsVerdict
     ? { availability_status: selected!.availability_status, availability_message: selected!.availability_message, availability_checked_at: selected!.availability_checked_at }
     : rolePayload;
@@ -1688,17 +1633,18 @@ function renderModelsPage(host: HTMLElement): void {
     access,
     sourceRole,
     secondaryId,
-    ownsPool,
     selectedId: selected?.id ?? "",
-    selectedLabel: selected?.label ?? "",
     provider: providerSelectEl.value,
     baseUrl: baseUrlField.input.value,
     model: modelNameField.input.value,
     apiKey: apiKeyField?.value ?? "",
-    connectionLabel: connectionLabelField?.value ?? "",
+    connectionLabel: connectionLabelField.value,
     apiMode: apiModeSelect?.value ?? "auto",
   });
-  submitModelForm = () => queueModelFormSave(() => saveModel(readModelForm(), { silent: true }));
+  submitModelForm = () => {
+    const form = readModelForm();
+    return queueModelFormSave(() => saveModel(form, { silent: true }));
+  };
 
   const autoSaveNote = document.createElement("span");
   autoSaveNote.style.fontSize = "12px";
@@ -1711,9 +1657,10 @@ function renderModelsPage(host: HTMLElement): void {
   const autoSaveOnBlur = (event: Event) => {
     const field = event.currentTarget as HTMLInputElement | HTMLSelectElement;
     if (field.disabled) return;
+    const form = readModelForm();
     void queueModelFormSave(async () => {
       try {
-        await saveModel(readModelForm(), { silent: true });
+        await saveModel(form, { silent: true });
         autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
       } catch (error) {
         autoSaveNote.textContent = "";
@@ -1778,10 +1725,13 @@ function renderModelsPage(host: HTMLElement): void {
     field?.addEventListener("change", autoSaveThroughput);
   }
 
-  const doSaveModel = () => void reRenderAfter(
-    () => queueModelFormSave(() => saveModel(readModelForm())),
-    { preserveDraft: false }, // 表单确实提交了，重画后应显示服务端回填的最新值
-  );
+  const doSaveModel = () => {
+    const form = readModelForm();
+    void reRenderAfter(
+      () => queueModelFormSave(() => saveModel(form)),
+      { preserveDraft: false },
+    );
+  };
   detailBody.append(fieldRow([
     createButton({ label: "保存配置", icon: "check", onClick: doSaveModel }),
     createButton({ label: "获取模型列表", onClick: () => void reRenderAfter(async () => {
@@ -1799,13 +1749,10 @@ function renderModelsPage(host: HTMLElement): void {
     }, { preserveDraft: false }) }),
     createButton({ label: "测试连接", onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
-      // 测的必须是面板正在显示的这条连接：不带 id 时后端一律拨主连接，
-      // 用户看着新加的连接，拿到的却是主连接的结论。跟随角色例外——它只有一份结论
-      // 的存放位置，测哪条就得回读哪条，否则测完还是「未测试」；它实际拨的就是来源
-      // 的主连接，所以不带 id 正是「测它真正在用的那条」。
+      // 测的必须是面板正在显示的这条连接：不带 id 时后端一律拨主连接。
       const result = await client.request<{ ok: boolean; message: string }>(
         `/api/models/connectivity/${encodeURIComponent(role)}`,
-        { method: "POST", body: JSON.stringify({ connection_id: ownsPool ? (selected?.id ?? "") : "" }) },
+        { method: "POST", body: JSON.stringify({ connection_id: selected?.id ?? "" }) },
       );
       showToast({ message: result.message, error: !result.ok });
       await refreshModelRoles();
@@ -1866,63 +1813,30 @@ async function saveModel(
   opts: { silent?: boolean } = {},
 ): Promise<void> {
   const role = form.role;
-  // 只有「自己池子里的非主用连接」才走连接路由。以前这里只看 !primary：切到本地模型
-  // 后失焦自动保存，会把本机运行器的地址 PUT 到那条云端连接上（连名字一起清掉），
-  // 而「改成本地」这件事本身一次都没存进去。
-  if (form.secondaryId) {
-    modelRoles[role] = await client.request<JsonObject>(
-      `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.secondaryId)}`,
-      { method: "PUT", body: JSON.stringify({ label: form.connectionLabel, provider: form.provider, model: form.model, base_url: form.baseUrl, api_mode: form.apiMode, api_key: form.apiKey }) },
-    );
-    clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
-    // 这条 PUT 也写 keys.json，keys 的惰性自愈可能就发生在里面——每个会写
-    // Key 的出口都要拉一次横幅，丢 Key 的提示必须在丢的那一刻给。
-    void refreshDataHealth(mountToken);
-    if (!opts.silent) showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
-    return;
+  if (!form.selectedId) throw new Error("请先新增或选择一条连接。");
+  const following = form.sourceRole !== "independent";
+  const connectionMode = following ? "follow" : form.access;
+  const body: JsonObject = {
+    connection_mode: connectionMode,
+    source_role: form.sourceRole,
+    label: form.connectionLabel || (following ? `跟随${MODEL_ROLE_LABELS[form.sourceRole] || form.sourceRole}` : ""),
+    model: form.model,
+  };
+  // 跟随行的端点属于来源连接。把界面上展示的有效端点一并提交，会把它写进本行的
+  // 独立配置，并在切回云端时覆盖用户原先保存的服务商与地址。
+  if (!following) {
+    body.provider = form.provider;
+    body.base_url = form.baseUrl;
+    body.api_mode = form.apiMode;
+    if (form.apiKey && connectionMode === "cloud") body.api_key = form.apiKey;
   }
-  const access = form.access;
-  const sourceRole = form.sourceRole;
-  const following = sourceRole !== "independent";
-  const mode = following ? text(record(modelRoles[role]).mode, "cloud") : access;
-  const payload = following
-    ? { source_role: sourceRole, model: form.model }
-    : { source_role: "independent", mode, provider: form.provider, base_url: form.baseUrl, model: form.model, api_mode: form.apiMode };
-  const roleAfter = await client.request<JsonObject>(`/api/models/roles/${role}`, { method: "PUT", body: JSON.stringify(payload) });
+  modelRoles[role] = await client.request<JsonObject>(
+    `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.selectedId)}`,
+    { method: "PUT", body: JSON.stringify(body) },
+  );
   delete modelAccessDraft[role];
-  // 目标连接必须从**这一次写入之后**的角色状态里读，不能用渲染时算下来的 form.ownsPool /
-  // form.selectedId。草稿刚从「跟随」切回「云端」时那两个值说的还是来源角色的池子：拿
-  // 来源池的 id 去 PUT 本角色必然 422，而本角色自己那条旧连接（后端会原样取回，见
-  // settings.py::_sync_connection_pool）上可能还留着早年的 conn:: 密钥，会把这一次输入的
-  // 新 Key 整个遮住——面板显示「已保存」，拨号用的却是旧 Key。
-  const poolAfter = Array.isArray(roleAfter.connections) ? roleAfter.connections.map(record) : [];
-  const ownsPoolAfter = text(roleAfter.connection_pool_role, role) === role;
-  const primaryIdAfter = ownsPoolAfter ? text(poolAfter[0]?.id, "") : "";
-  // 密钥永远属于连接。后端取 Key 时连接作用域压过 provider 作用域
-  // （core/model_roles.py::_connection_api_key），主用连接却一直只写 provider 作用域：
-  // 「在第二条连接上存过 Key → 把它设为主用 → 再改 Key」之后，新 Key 永远被那条连接
-  // 早年留下的 conn:: 作用域遮住，应用照旧拿旧 Key 拨号，用户怎么改都改不动。
-  // 连接名称和它一起走同一条连接路由，省掉一次多余的请求。
-  if (!following && mode === "cloud" && primaryIdAfter) {
-    const body: JsonObject = {};
-    // 连接名称输入框只在云端且拥有自己的池子时才可填；其余情况 form.connectionLabel 恒等于
-    // form.selectedLabel，不会误提交——尤其不能把主用连接的名字清掉。
-    if (form.ownsPool && form.connectionLabel !== form.selectedLabel) body.label = form.connectionLabel;
-    // 空串在后端表示「不动已保存的密钥」，和输入框的占位符说的是同一件事。
-    if (form.apiKey) body.api_key = form.apiKey;
-    // 端点三件套已经由上面的角色级 PUT 写进主用连接了，这里再送一遍只会白白把
-    // 「测试通过」打回「未测试」，所以只送真正改了的字段。
-    if (Object.keys(body).length) {
-      await client.request(`/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(primaryIdAfter)}`, {
-        method: "PUT", body: JSON.stringify(body),
-      });
-    }
-  }
-  // provider 作用域照旧要写，不是二选一。同一个服务商下的另一个独立角色（常见：翻译和
-  // PDF 审阅都用 deepseek，只是模型不同）自己那条连接从没单独存过 Key，解析时落到
-  // provider 作用域上。只写连接作用域的话，用户在厂商后台轮换 Key、在「翻译」面板改一次，
-  // 另一个角色就会静默 401，而它的面板因为同一条回退仍显示「已保存」。
-  if (form.apiKey && mode === "cloud") {
+  if (form.apiKey && connectionMode === "cloud" && !form.secondaryId) {
+    // 保留旧版 provider 作用域的回退密钥，供尚未单独存过 Key 的旧角色继续使用。
     await client.request(`/api/keys/${form.provider}`, { method: "PUT", body: JSON.stringify({ api_key: form.apiKey, base_url: form.baseUrl }) });
   }
   clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
@@ -1931,7 +1845,7 @@ async function saveModel(
   // /api/data/health，本次会话内横幅永远不露面——丢 Key 的提示必须在丢的那一刻
   // 给。失败静默，语义与 bootstrap 那次一致。
   void refreshDataHealth(mountToken);
-  if (!opts.silent) showToast({ message: "模型配置已保存。密钥仅写入本机密钥存储。" });
+  if (!opts.silent) showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
 }
 
 async function testConnectionRow(role: string, connectionId: string): Promise<void> {
@@ -1973,6 +1887,23 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
     void refreshDataHealth(mountToken);
     showToast({ message: "连接已删除，其密钥也已从本机移除。" });
   }, { preserveDraft: false }); // 表单会切回默认连接，不该把被删连接的草稿糊上去
+}
+
+function confirmDeleteConnection(role: string, connection: PoolConnection): void {
+  const name = connection.display_label || connection.label || "这条连接";
+  openModal({
+    tone: "danger", icon: "trash",
+    sourceLabel: `设置 · 模型服务 · ${MODEL_ROLE_LABELS[role] || role}`,
+    title: `删除「${name}」？`,
+    body: [
+      `这只会移除当前用途中的「${name}」，不会修改它跟随的来源连接。`,
+      connection.primary ? "删除主用连接后，列表中的下一条连接会成为主用。" : "其他连接不受影响。",
+    ],
+    actions: [
+      { label: "取消" },
+      { label: "确认删除", variant: "danger-solid", onClick: () => void deleteConnection(role, connection.id) },
+    ],
+  });
 }
 
 // 后端 core/config_crypto.py 在文件被改过一个字节（AAD 绑定了到期日和正文哈希）时
