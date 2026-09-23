@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from core.file_scanner import FileItem
+from core.excel_sheet_naming import rename_worksheets
 from core.output_name_translation import (
     avoid_bilingual_name_collision,
     translate_names,
@@ -145,6 +146,21 @@ class OutputNameTranslationTests(unittest.TestCase):
                 self.assertNotIn("Data", output.sheetnames)
             finally:
                 output.close()
+
+    def test_hyperlink_formula_text_reference_blocks_sheet_rename(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.xlsx"
+            output = root / "output.xlsx"
+            book = Workbook()
+            book.active.title = "数据"
+            book.create_sheet("Summary")["A1"] = '=HYPERLINK("#数据!A1","Open")'
+            book.save(source)
+            book.close()
+            result = rename_worksheets(source, output, {"数据": "Data"})
+            self.assertEqual(result.status, "preserved")
+            self.assertIn("HYPERLINK", result.reason)
+            self.assertEqual(source.read_bytes(), output.read_bytes())
 
 
 if __name__ == "__main__":

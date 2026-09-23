@@ -95,6 +95,11 @@ def _rewrite_formula(value: str, plan: dict[str, str]) -> str:
         tokens = Tokenizer(value if had_equals else "=" + value).items
     except Exception as exc:
         raise UnsafeSheetRename("公式无法解析") from exc
+    if re.search(r"\bHYPERLINK\s*\(", value, re.I) and any(
+        token.subtype == "TEXT" and _has_direct_reference(token.value, plan)
+        for token in tokens
+    ):
+        raise UnsafeSheetRename("存在 HYPERLINK 文字形式的工作表跳转")
     updated = []
     for token in tokens:
         piece = token.value
