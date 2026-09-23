@@ -21,10 +21,12 @@ class OpenAIEngine(TranslationEngine):
         base_url: str = "",
         api_mode: str = "auto",
         connection_id: str = "",
+        model_role: str = "translation",
         engine_name_prefix: str = "openai",
         response_label: str = "OpenAI",
     ):
         self._connection_id = connection_id
+        self._model_role = model_role
         self._model = model
         self._api_key = api_key
         self._base_url = str(base_url or OPENAI_BASE_URL).rstrip("/")
@@ -63,6 +65,7 @@ class OpenAIEngine(TranslationEngine):
             base_url=self._base_url, api_key=self._api_key, model=self._model,
             system=system, user=user_msg, api_mode=self._api_mode or "auto",
             connection_id=self._connection_id,
+            model_role=self._model_role,
         )
         return text
 
@@ -71,6 +74,7 @@ class OpenAIEngine(TranslationEngine):
             base_url=self._base_url, api_key=self._api_key, model=self._model,
             system=system, user=user_msg, api_mode="responses",
             connection_id=self._connection_id,
+            model_role=self._model_role,
         )[0]
 
     def chat(self, system: str, user: str) -> str:

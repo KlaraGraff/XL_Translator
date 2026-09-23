@@ -47,6 +47,22 @@ class OaProtocolApiTests(unittest.TestCase):
             ).status_code,
             422,
         )
+        locked_sizes = self.client.put(
+            "/api/settings",
+            json={
+                "word_batch": {
+                    "max_paragraphs_per_batch": 1000000,
+                    "max_chars_per_batch": 1000000,
+                    "split_paragraph_chars": 1000000,
+                },
+                "pdf": {"page_generation_concurrency": 1000000},
+            },
+        )
+        self.assertEqual(locked_sizes.status_code, 200)
+        self.assertEqual(locked_sizes.json()["word_batch"]["max_paragraphs_per_batch"], 16)
+        self.assertEqual(locked_sizes.json()["word_batch"]["max_chars_per_batch"], 12000)
+        self.assertEqual(locked_sizes.json()["word_batch"]["split_paragraph_chars"], 30000)
+        self.assertEqual(locked_sizes.json()["pdf"]["page_generation_concurrency"], 20)
         self.assertEqual(
             self.client.post("/api/models/throughput/unlock", json={"code": "wrong"}).status_code,
             422,
@@ -62,6 +78,13 @@ class OaProtocolApiTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.json()["batch_size"], 1000000)
         self.assertEqual(saved.json()["concurrency"], 1000000)
+        self.assertEqual(
+            self.client.put(
+                "/api/models/throughput/translation",
+                json={"batch_size": 1.5, "concurrency": 1.5},
+            ).status_code,
+            422,
+        )
 
         reloaded = self.client.get("/api/models/throughput/translation")
         self.assertEqual(reloaded.status_code, 200)
@@ -69,6 +92,34 @@ class OaProtocolApiTests(unittest.TestCase):
         self.assertEqual(reloaded.json()["concurrency"], 1000000)
         self.assertIsNone(reloaded.json()["batch_size_bounds"])
         self.assertIsNone(reloaded.json()["concurrency_bounds"])
+
+        # The unlock flag applies to every model role, including image and
+        # PDF review, and removes the separate PDF page-generation cap too.
+        for role in ("cleaner", "image", "pdf_review"):
+            role_saved = self.client.put(
+                f"/api/models/throughput/{role}",
+                json={"concurrency": 1000000},
+            )
+            self.assertEqual(role_saved.status_code, 200, role)
+            self.assertEqual(role_saved.json()["concurrency"], 1000000, role)
+            role_bounds = self.client.get(f"/api/models/throughput/{role}").json()
+            self.assertIsNone(role_bounds["concurrency_bounds"], role)
+
+        word_batch = self.client.put(
+            "/api/settings",
+            json={
+                "word_batch": {
+                    "max_paragraphs_per_batch": 1000000,
+                    "max_chars_per_batch": 1000000,
+                    "split_paragraph_chars": 1000000,
+                },
+                "pdf": {"page_generation_concurrency": 1000000},
+            },
+        )
+        self.assertEqual(word_batch.status_code, 200)
+        self.assertEqual(word_batch.json()["word_batch"]["max_paragraphs_per_batch"], 1000000)
+        self.assertEqual(word_batch.json()["word_batch"]["max_chars_per_batch"], 1000000)
+        self.assertEqual(word_batch.json()["pdf"]["page_generation_concurrency"], 1000000)
 
     def test_protocol_round_trip_for_role_and_secondary_connection(self) -> None:
         role = self.client.put(

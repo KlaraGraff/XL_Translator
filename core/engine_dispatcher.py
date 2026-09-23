@@ -215,6 +215,7 @@ def build_engine(settings: AppSettings) -> TranslationEngine:
             base_url=cloud_base_url,
             api_mode=provider_config.api_mode,
             connection_id=s.connections[0].id if s.connections else "",
+            model_role=getattr(settings, "_runtime_model_role", "translation"),
         )
 
     if provider == "zhipu":

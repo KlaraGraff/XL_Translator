@@ -1415,7 +1415,10 @@ class WordTaskRunner:
                         settings.word_batch,
                         concurrency,
                         progress_callback=progress_cb,
-                        error_callback=lambda msg: self._log("WARN", msg),
+                        # Batch retries and temporary single-paragraph fallbacks
+                        # are attempts, not final defects. Final unresolved
+                        # positions are reported after strict recovery below.
+                        error_callback=lambda msg: self._log("INFO", msg),
                         should_stop=self.stop_requested,
                         source_lang=source_lang,
                         stats=word_batch_stats,
@@ -1486,6 +1489,11 @@ class WordTaskRunner:
                         f"{word_batch_stats.unit_count} 个请求片段，"
                         f"长段拆分 {word_batch_stats.split_source_count} 段，"
                         f"缩小重试 {word_batch_stats.retry_count} 次"
+                        + (
+                            f"，本机连接不足退避 {word_batch_stats.local_resource_retry_count} 次"
+                            if word_batch_stats.local_resource_retry_count
+                            else ""
+                        )
                         + (
                             f"，自适应降并发 {word_batch_stats.adaptive_concurrency_reductions} 次，"
                             f"最低并发 {word_batch_stats.adaptive_lowest_concurrency}"
@@ -3353,7 +3361,7 @@ class _WordRecoveryPool:
             concurrency=1,
             progress_callback=None,
             error_callback=(
-                (lambda msg: self._log_callback("WARN", msg))
+                (lambda msg: self._log_callback("INFO", msg))
                 if self._log_callback
                 else None
             ),

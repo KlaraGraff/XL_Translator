@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
 
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -17,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StrictInt, model_validator
 
 from api.task_manager import (
     TaskConflictError,
@@ -56,6 +57,7 @@ from core.document_config import (
 from core.file_scanner import scan_excel_sources
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
+from core.model_auto_upgrade import auto_upgrade_models_on_startup
 from core.config_crypto import (
     DEFAULT_VALID_DAYS,
     UNSEAL_CORRUPT,
@@ -330,8 +332,8 @@ class DomainSettingsPayload(BaseModel):
 
 
 class ThroughputPayload(BaseModel):
-    batch_size: int | None = None
-    concurrency: int | None = None
+    batch_size: StrictInt | None = Field(default=None, ge=1, le=2**31 - 1)
+    concurrency: StrictInt | None = Field(default=None, ge=1, le=2**31 - 1)
 
 
 class ThroughputUnlockPayload(BaseModel):
@@ -400,7 +402,15 @@ def create_app(
             await run_in_threadpool(recover_settings_file_if_needed)
         except Exception as exc:  # noqa: BLE001 - never block startup on this
             logger.warning(f"启动时的设置文件自检失败：{exc}")
+        upgrade_stop = threading.Event()
+        threading.Thread(
+            target=auto_upgrade_models_on_startup,
+            args=(upgrade_stop,),
+            name="model-auto-upgrade",
+            daemon=True,
+        ).start()
         yield
+        upgrade_stop.set()
         # Closing the window used to kill running tasks outright, leaving the
         # LibreOffice profile, the Word temp docx directory and PDF page
         # workspaces behind and the history stuck on "running".  Give the
@@ -2157,8 +2167,8 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
             "concurrency": throughput.concurrency,
         },
         "throughput_bounds": {
-            "batch_size": batch_size_bounds(config),
-            "concurrency": concurrency_bounds(config),
+            "batch_size": None if settings.engine.concurrency_unlocked else batch_size_bounds(config),
+            "concurrency": None if settings.engine.concurrency_unlocked else concurrency_bounds(config),
         },
     }
 

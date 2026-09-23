@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import threading
 import time
+import errno
 
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -38,6 +39,35 @@ class FakeWordEngine(TranslationEngine):
 
 
 class WordBatchingTests(unittest.TestCase):
+    def test_local_open_file_exhaustion_reduces_pressure_without_splitting(self) -> None:
+        class TransientFileLimitEngine(FakeWordEngine):
+            def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):
+                self.calls.append(list(texts))
+                if len(self.calls) == 1:
+                    raise OSError(errno.EMFILE, "Too many open files")
+                return {text: f"译文:{text}" for text in texts}
+
+        settings = WordBatchSettings()
+        settings.max_paragraphs_per_batch = 4
+        engine = TransientFileLimitEngine()
+        scheduler = WeightedApiScheduler(100)
+        stats = WordBatchRunStats()
+        notices: list[str] = []
+
+        result = translate_word_texts(
+            ["第一段", "第二段", "第三段"], engine, "fr", "system",
+            settings, concurrency=1, source_lang="zh", stats=stats,
+            api_scheduler=scheduler, error_callback=notices.append,
+        )
+
+        self.assertEqual(result["第一段"], "译文:第一段")
+        self.assertEqual([len(call) for call in engine.calls], [3, 3])
+        self.assertEqual(stats.retry_count, 0)
+        self.assertEqual(stats.failed_unit_count, 0)
+        self.assertEqual(stats.local_resource_retry_count, 1)
+        self.assertLess(scheduler.snapshot().capacity, 100)
+        self.assertEqual(len(notices), 1)
+
     def test_word_batches_respect_character_budget(self) -> None:
         settings = WordBatchSettings()
         settings.max_paragraphs_per_batch = 4

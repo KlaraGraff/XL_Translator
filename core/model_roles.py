@@ -964,6 +964,7 @@ def settings_for_text_role(
 ) -> AppSettings:
     config = resolve_effective_model_config(settings, role, connection_id=connection_id)
     copy_settings = settings.model_copy(deep=True)
+    copy_settings._runtime_model_role = role
     if config.mode == "local":
         copy_settings.engine.mode = "local"
         copy_settings.engine.local_provider = config.provider

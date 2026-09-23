@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,21 @@ class ConcurrencyLimitExcelEngine(TranslationEngine):
         if self.fail_count > 0:
             self.fail_count -= 1
             raise RuntimeError("too many concurrent requests: concurrency limit reached")
+        return {text: f"translated:{text}" for text in texts}
+
+
+class LocalDescriptorLimitExcelEngine(ConcurrencyLimitExcelEngine):
+    def translate_batch(
+        self,
+        texts: list[str],
+        target_lang: str,
+        system_prompt: str,
+        source_lang: str = "zh",
+    ) -> dict[str, str]:
+        self.calls.append(list(texts))
+        if self.fail_count > 0:
+            self.fail_count -= 1
+            raise OSError(errno.EMFILE, "Too many open files")
         return {text: f"translated:{text}" for text in texts}
 
 
@@ -236,6 +252,29 @@ class EngineDispatcherTests(unittest.TestCase):
         # in the debug log, because they are group-level and match nothing the
         # user configured.
         self.assertTrue(any("已自动放慢发送速度" in message for message in errors), errors)
+
+    def test_translate_texts_retries_same_batch_after_local_descriptor_limit(self) -> None:
+        engine = LocalDescriptorLimitExcelEngine(fail_count=1)
+        stats = TranslationBatchRunStats()
+        errors: list[str] = []
+
+        result = translate_texts(
+            ["alpha", "beta"],
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=20,
+            concurrency=5,
+            error_callback=errors.append,
+            source_lang="en",
+            stats=stats,
+        )
+
+        self.assertEqual(result, {"alpha": "translated:alpha", "beta": "translated:beta"})
+        self.assertEqual(engine.calls, [["alpha", "beta"], ["alpha", "beta"]])
+        self.assertEqual(stats.retry_count, 0)
+        self.assertEqual(stats.adaptive_concurrency_reductions, 1)
+        self.assertTrue(any("本机" in message and "降低并发" in message for message in errors))
 
     def test_translate_texts_waits_out_a_limit_at_minimum_capacity(self) -> None:
         # A key already walked down to the minimum cap is the normal state of a

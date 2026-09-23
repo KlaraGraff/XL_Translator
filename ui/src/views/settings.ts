@@ -964,17 +964,18 @@ function numberField(
   labelText: string,
   value: number,
   onCommit: (value: number) => void,
-  opts: { min?: number; max?: number; disabled?: boolean; hint?: string } = {},
+  opts: { min?: number; max?: number; disabled?: boolean; hint?: string; type?: string; integer?: boolean } = {},
 ): HTMLDivElement {
   const input = document.createElement("input");
-  input.type = "number";
+  input.type = opts.type ?? "number";
   input.value = String(value);
   if (opts.min !== undefined) input.min = String(opts.min);
   if (opts.max !== undefined) input.max = String(opts.max);
+  if (opts.integer && input.type === "number") input.step = "1";
   input.disabled = Boolean(opts.disabled);
   input.addEventListener("change", () => {
     const parsed = Number(input.value);
-    if (Number.isNaN(parsed)) return;
+    if (Number.isNaN(parsed) || (opts.integer && !Number.isInteger(parsed))) return;
     // 越界的值贴着边界夹一下再提交：HTML 的 min/max 属性只影响浏览器的上下箭头
     // 和表单自带校验提示，手动输入或粘贴超界数字照样能触发 change 事件。不夹
     // 的话，这个数字会原样发去后端，换来一段 pydantic 英文 422（中-14）。这里
@@ -1199,6 +1200,17 @@ function clearModelCatalog(role: string, message = "尚未获取当前连接的�
 }
 
 function renderModelsPage(host: HTMLElement): void {
+  // 这张卡导出的是整套模型服务，不属于下面任何一个角色或连接，放在角色切换之前。
+  host.append(bundleCard({
+    title: "模型服务配置导入与导出",
+    description: "备份或分享整套模型配置，供他人一键导入。含密钥的文件会加密，默认 30 天有效；从别人配置导入的密钥不会再次转出。",
+    buttons: [
+      createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
+      createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
+      createButton({ label: "导入配置", size: "mini", onClick: () => importModelConfig() }),
+    ],
+  }));
+
   // 角色切换（4 张卡）
   const seg = document.createElement("div");
   seg.className = "seg";
@@ -1551,43 +1563,44 @@ function renderModelsPage(host: HTMLElement): void {
   const batchBounds = Array.isArray(bounds.batch_size) ? (bounds.batch_size as unknown[]) : [];
   const concurrencyBounds = Array.isArray(bounds.concurrency) ? (bounds.concurrency as unknown[]) : [];
   const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
-  if (!throughputUnlocked) {
-    const unlockRow = document.createElement("div");
-    unlockRow.className = "field-row";
-    const unlockInput = document.createElement("input");
-    unlockInput.type = "text";
-    unlockInput.placeholder = "输入 OA 解锁速率上限";
-    unlockInput.className = "text-input";
-    const unlockButton = createButton({ label: "解锁", size: "mini", onClick: () => void (async () => {
-      try {
-        await client.request("/api/models/throughput/unlock", {
-          method: "POST", body: JSON.stringify({ code: unlockInput.value }),
-        });
-        showToast({ message: "速率上限已解锁。" });
-        await refreshSettings();
-        await refreshModelRoles();
-      } catch (error) {
-        showToast({ message: `解锁失败：${errorMessage(error)}`, error: true });
-      }
-    })() });
-    unlockRow.append(fieldWithHint("OA 解锁", unlockInput, "输入 OA 后，批次大小和并发数只要求为正整数。"), unlockButton);
-    detailBody.append(unlockRow);
-  }
   const throughputGrid = document.createElement("div");
   throughputGrid.className = "grid2";
   let batchInput: HTMLInputElement | null = null;
   const needsBatch = role === "translation" || role === "cleaner";
   if (needsBatch) {
     const batchField = numberField("批次大小", num(throughput.batch_size, 8), () => undefined, {
-      min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128),
+      min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128), integer: true,
     });
     batchInput = batchField.querySelector("input");
     throughputGrid.append(batchField);
   }
   const concurrencyField = numberField("并发数", num(throughput.concurrency, 1), () => undefined, {
-    min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32),
+    min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32), type: "text", integer: true,
   });
   const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;
+  if (role === "translation" && !throughputUnlocked) {
+    concurrencyInput.addEventListener("input", () => {
+      const nextType = /^\d*$/.test(concurrencyInput.value) ? "text" : "password";
+      if (concurrencyInput.type !== nextType) concurrencyInput.type = nextType;
+    });
+    concurrencyInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || concurrencyInput.value.trim().toUpperCase() !== "OA") return;
+      event.preventDefault();
+      concurrencyInput.value = String(throughput.concurrency || 1);
+      concurrencyInput.type = "text";
+      void (async () => {
+        try {
+          await client.request("/api/models/throughput/unlock", {
+            method: "POST", body: JSON.stringify({ code: "OA" }),
+          });
+          await refreshSettings();
+          renderBody();
+        } catch {
+          // Hidden code entry has no separate feedback surface.
+        }
+      })();
+    });
+  }
   throughputGrid.append(concurrencyField);
   detailBody.append(sectionLabel("速率设置"));
   // 速率原来有自己的「保存速率」按钮，是这张卡上唯一还要手动点一下才生效的一块。
@@ -1739,6 +1752,9 @@ function renderModelsPage(host: HTMLElement): void {
   const autoSaveThroughput = (event: Event) => {
     const field = event.currentTarget as HTMLInputElement;
     if (field.disabled) return;
+    const rawConcurrency = concurrencyInput.value.trim();
+    const rawBatch = batchInput?.value.trim() ?? "";
+    if (!/^\d+$/.test(rawConcurrency) || (needsBatch && !/^\d+$/.test(rawBatch))) return;
     void queueModelFormSave(async () => {
       try {
         const sentConcurrency = Number(concurrencyInput.value || "1");
@@ -1819,21 +1835,6 @@ function renderModelsPage(host: HTMLElement): void {
   spreadCard.append(spreadBody);
   host.append(spreadCard);
 
-  // 整包导出导入。以前这三个按钮挂在每个模型的详情卡里，看起来像是「这个模型的配置」，
-  // 实际上导的一直是四个角色的全部配置。挪到页面底部单独成卡，名字也照实写。
-  host.append(bundleCard({
-    title: "整个模型服务打包",
-    description: [
-      "一次导出翻译、清洗、PDF 翻译、PDF 审阅四个模型的全部连接、模型名和速率设置，对方一键导入即可复现整套模型服务。",
-      "选择「导出含 Key」时，密钥会加密写入文件，对方用本软件导入自动解开，两边都不需要输入口令。文件默认 30 天后失效。",
-      "只会带上你在这台电脑上自己填过的密钥；从别人配置文件导入进来的密钥不会再传出去，除非你自己重新填过一次。",
-    ].join("\n"),
-    buttons: [
-      createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
-      createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
-      createButton({ label: "导入配置", size: "mini", onClick: () => importModelConfig() }),
-    ],
-  }));
 }
 
 function bundleCard(opts: { title: string; description: string; buttons: HTMLElement[] }): HTMLElement {
@@ -2635,12 +2636,13 @@ function renderParamsPage(host: HTMLElement): void {
     body.append(sectionLabel("批次与重试"));
     const grid = document.createElement("div");
     grid.className = "grid2";
+    const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
     // 上下限对齐 config.py：WORD_BATCH_PARAGRAPHS_MIN/MAX、WORD_BATCH_CHARS_MIN/MAX、
     // WORD_BATCH_SPLIT_CHARS_MIN/MAX。这里曾经比后端宽（或干脆没设上限），越界的值能
     // 在前端存活到点保存那一刻才被后端 422 打回，且打回的是英文 pydantic 原文（中-14）。
-    grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 8), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v), { rerenderOnError: true }), { min: 1, max: 16, hint: "单次模型请求最多包含的段落数量，范围 1–16。" }));
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: 800, max: 12000, hint: "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
-    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: 1500, max: 30000, hint: "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
+    grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 8), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 16, integer: true, hint: throughputUnlocked ? "单次模型请求最多包含的段落数量。" : "单次模型请求最多包含的段落数量，范围 1–16。" }));
+    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限，超出会自动分批。" : "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
+    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 30000, integer: true, hint: throughputUnlocked ? "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写。" : "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
     grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
     body.append(grid);
   } else {
@@ -2656,21 +2658,24 @@ function renderParamsPage(host: HTMLElement): void {
     const concurrencyInput = document.createElement("input");
     concurrencyInput.type = "number";
     concurrencyInput.min = "1";
-    concurrencyInput.max = "20";
+    const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
+    if (!throughputUnlocked) concurrencyInput.max = "20";
     concurrencyInput.value = concurrencyValue;
     concurrencyInput.placeholder = "留空自动";
     concurrencyInput.addEventListener("change", () => {
       const raw = concurrencyInput.value.trim();
       let parsed: number | null = raw ? Number(raw) : null;
-      // 留空＝自动，不夹；填了数字才按后端安全上限（PDF_PAGE_CONCURRENCY_SAFETY_CAP）
-      // 夹一下，理由同 numberField：HTML 的 min/max 属性拦不住手动输入的越界值。
+      // 留空＝自动；普通状态按页图并发范围收敛，解锁后保留正整数校验。
       if (parsed !== null && !Number.isNaN(parsed)) {
-        parsed = Math.min(20, Math.max(1, parsed));
+        if (!Number.isInteger(parsed)) return;
+        parsed = Math.min(throughputUnlocked ? 2**31 - 1 : 20, Math.max(1, parsed));
         concurrencyInput.value = String(parsed);
       }
       void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
     });
-    grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, "同时生成页图的并发数，范围 1–20；留空由应用按机器性能决定。"));
+    grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, throughputUnlocked
+      ? "同时生成页图的并发数；留空由应用按机器性能决定。"
+      : "同时生成页图的并发数，范围 1–20；留空由应用按机器性能决定。"));
     body.append(grid);
   }
 

@@ -65,19 +65,16 @@ def batch_size_bounds(config: EffectiveModelConfig) -> tuple[int, int] | None:
 
 def concurrency_bounds(config: EffectiveModelConfig) -> tuple[int, int]:
     if config.mode == "local":
-        return get_local_concurrency_bounds(True)
+        return get_local_concurrency_bounds(False)
     if config.role in {ROLE_IMAGE, ROLE_PDF_REVIEW}:
         return 1, PDF_PAGE_CONCURRENCY_SAFETY_CAP
-    return get_cloud_concurrency_bounds(True)
+    return get_cloud_concurrency_bounds(False)
 
 
 def _throughput_bounds(settings: AppSettings, config: EffectiveModelConfig):
     unlocked = bool(getattr(settings.engine, "concurrency_unlocked", False))
-    batch = None if unlocked and config.role in TEXT_THROUGHPUT_ROLES else batch_size_bounds(config)
-    if unlocked:
-        concurrency = None
-    else:
-        concurrency = concurrency_bounds(config)
+    batch = None if unlocked else batch_size_bounds(config)
+    concurrency = None if unlocked else concurrency_bounds(config)
     return batch, concurrency
 
 
@@ -185,8 +182,12 @@ def set_model_throughput(
     )
 
     if batch_size is not None and supports_batch_size(config):
-        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
-            raise ValueError("batch_size must be a positive integer")
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or not 1 <= batch_size <= 2**31 - 1
+        ):
+            raise ValueError("batch_size must be a positive integer within the protocol limit")
         bounds, _ = _throughput_bounds(settings, config)
         minimum, maximum = bounds or (1, int(batch_size))
         profile.batch_size = _clamp_int(
@@ -196,8 +197,12 @@ def set_model_throughput(
             fallback=current.batch_size or minimum,
         )
     if concurrency is not None:
-        if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency <= 0:
-            raise ValueError("concurrency must be a positive integer")
+        if (
+            not isinstance(concurrency, int)
+            or isinstance(concurrency, bool)
+            or not 1 <= concurrency <= 2**31 - 1
+        ):
+            raise ValueError("concurrency must be a positive integer within the protocol limit")
         _, bounds = _throughput_bounds(settings, config)
         minimum, maximum = bounds or (1, int(concurrency))
         profile.concurrency = _clamp_int(

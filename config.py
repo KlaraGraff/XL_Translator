@@ -300,13 +300,13 @@ def is_valid_concurrency_unlock_code(code: str) -> bool:
 
 def get_cloud_concurrency_bounds(unlocked: bool) -> tuple[int, int]:
     if unlocked:
-        return CONCURRENCY_CLOUD_MIN, CONCURRENCY_CLOUD_MAX
+        return CONCURRENCY_CLOUD_MIN, 2**31 - 1
     return CONCURRENCY_CLOUD_MIN, CONCURRENCY_CLOUD_LOCKED_MAX
 
 
 def get_local_concurrency_bounds(unlocked: bool) -> tuple[int, int]:
     if unlocked:
-        return CONCURRENCY_LOCAL_MIN, CONCURRENCY_LOCAL_MAX
+        return CONCURRENCY_LOCAL_MIN, 2**31 - 1
     return CONCURRENCY_LOCAL_MIN, CONCURRENCY_LOCAL_LOCKED_MAX
 
 
@@ -317,7 +317,7 @@ def get_concurrency_bounds(mode: str, unlocked: bool) -> tuple[int, int]:
 
 
 def get_concurrency_cap() -> int:
-    return max(CONCURRENCY_CLOUD_MAX, CONCURRENCY_LOCAL_MAX)
+    return 2**31 - 1
 
 
 def get_default_concurrency(mode: str) -> int:
@@ -415,4 +415,4 @@ BILINGUAL_SEPARATOR = "\n"   # 原文与译文之间的分隔符
 
 # ── 应用版本 / 元信息 ─────────────────────────────────────
 # 版本元信息已迁移至 app_meta.py；这里保留 re-export 兼容旧导入。
-SETTINGS_SCHEMA_VERSION = 27
+SETTINGS_SCHEMA_VERSION = 28

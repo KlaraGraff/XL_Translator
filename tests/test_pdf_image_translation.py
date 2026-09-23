@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -1820,6 +1821,39 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue(any("生成成功，质检通过" in msg.message for msg in success_logs))
             self.assertTrue(all("1/" not in msg.message for msg in success_logs))
 
+    def test_local_descriptor_error_retries_pdf_review_without_regenerating_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4\n")
+            settings = _page_review_settings(root)
+            settings.pdf.review_enabled = True
+            settings.pdf.page_retry_attempts = 0
+            settings.pdf_review_model_role.source_role = SOURCE_INDEPENDENT
+            settings.pdf_review_model_role.cloud_provider = "custom_openai"
+            settings.pdf_review_model_role.cloud_model = "vision-review-model"
+            settings.pdf_review_model_role.cloud_base_url = "https://images.example/v1"
+            image_client = _RecordingImageClient(_png_bytes(1200, 1600))
+            review_client = _DescriptorThenPassReviewClient()
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source_pdf, name="source", size_kb=1.0, page_count=1)],
+                settings,
+                source_root=root,
+                image_client=image_client,
+                review_client=review_client,
+                task_logger_enabled=False,
+            )
+
+            with patch.dict(
+                sys.modules,
+                {"pypdfium2": _fake_pdfium_module_by_page_count({"source.pdf": 1})},
+            ), patch("core.model_roles.get_key", return_value="secret"):
+                runner._run()
+
+            self.assertEqual(review_client.calls, 2)
+            self.assertEqual(len(image_client.calls), 1)
+            self.assertEqual(runner._prepared_files[0].record.status, PDF_OUTPUT_STATE_COMPLETED)
+
     def test_paused_page_regenerate_reruns_the_page_without_duplicate_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2537,6 +2571,14 @@ class _PassReviewClient:
     def review_page(self, **_kwargs):
         self.calls += 1
         return PdfPageReviewResult(passed=True, summary="可采用")
+
+
+class _DescriptorThenPassReviewClient(_PassReviewClient):
+    def review_page(self, **kwargs):
+        if self.calls == 0:
+            self.calls += 1
+            raise OSError(errno.EMFILE, "Too many open files")
+        return super().review_page(**kwargs)
 
 
 class _AlwaysFailReviewClient:
@@ -3273,6 +3315,9 @@ class PdfDefectRegressionTests(unittest.TestCase):
 
         settings.pdf.page_generation_concurrency = 999
         self.assertEqual(runner._resolve_pdf_concurrency(2), 20)
+        settings.engine.concurrency_unlocked = True
+        settings.pdf.page_generation_concurrency = 1000000
+        self.assertEqual(runner._resolve_pdf_concurrency(2), 1000000)
         settings.pdf.page_generation_concurrency = 0
         self.assertEqual(runner._resolve_pdf_concurrency(2), 1)
 

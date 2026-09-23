@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import random
 import re
 import threading
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -16,6 +17,7 @@ from loguru import logger
 
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
+    API_CONCURRENCY_ACTION_RETRY_CURRENT,
     ApiConcurrencyLimitDecision,
     WeightedApiScheduler,
 )
@@ -171,6 +173,25 @@ def is_api_concurrency_limit_error(exc: BaseException) -> bool:
     return False
 
 
+def is_local_descriptor_limit_error(exc: BaseException) -> bool:
+    """Recognize process/system descriptor exhaustion, including wrapped errors."""
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno in {errno.EMFILE, errno.ENFILE}:
+            return True
+        if "too many open files" in str(current).casefold():
+            return True
+        for nested in (current.__cause__, current.__context__):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
 def handle_api_concurrency_limit(
     exc: BaseException,
     *,
@@ -187,7 +208,8 @@ def handle_api_concurrency_limit(
     for the whole grace window escalates to
     :class:`ApiKeyTemporarilyUnavailableError`.
     """
-    if not is_api_concurrency_limit_error(exc):
+    local_descriptor_limit = is_local_descriptor_limit_error(exc)
+    if not local_descriptor_limit and not is_api_concurrency_limit_error(exc):
         return None
 
     decision = scheduler.register_concurrency_limit_hit(request_generation)
@@ -198,6 +220,7 @@ def handle_api_concurrency_limit(
             decision=decision,
             context_label=context_label,
             error_callback=error_callback,
+            local_descriptor_limit=local_descriptor_limit,
         )
 
     if decision.should_retry:
@@ -213,6 +236,7 @@ def handle_api_concurrency_limit(
         context_label=context_label,
         error_callback=error_callback,
         should_stop=should_stop,
+        local_descriptor_limit=local_descriptor_limit,
     )
 
 
@@ -223,6 +247,7 @@ def _announce_slowdown(
     decision: ApiConcurrencyLimitDecision,
     context_label: str,
     error_callback: Callable[[str], None] | None,
+    local_descriptor_limit: bool = False,
 ) -> None:
     """Report a slow-down to the user at most twice per limit episode.
 
@@ -246,11 +271,20 @@ def _announce_slowdown(
         if say_slowdown or say_floor:
             watch.last_notice_at = now
 
+    reason = "本机句柄不足" if local_descriptor_limit else "上游限流"
     logger.debug(
-        f"{context_label} 上游限流：并发 {decision.previous_capacity} → "
+        f"{context_label} {reason}：并发 {decision.previous_capacity} → "
         f"{decision.current_capacity}（最低 {decision.minimum_capacity}）"
     )
     if not error_callback:
+        return
+
+    if local_descriptor_limit:
+        if say_slowdown:
+            error_callback(
+                f"{context_label} 本机同时打开的文件或网络连接过多，"
+                "已临时降低并发并重试当前请求。"
+            )
         return
 
     if say_slowdown and say_floor:
@@ -277,6 +311,7 @@ def _wait_out_minimum_capacity_limit(
     context_label: str,
     error_callback: Callable[[str], None] | None,
     should_stop: Callable[[], bool] | None,
+    local_descriptor_limit: bool = False,
 ) -> ApiConcurrencyLimitDecision:
     watch = _watch_for(scheduler)
     now = time.monotonic()
@@ -309,6 +344,11 @@ def _wait_out_minimum_capacity_limit(
             watch.last_notice_at = now
 
     if elapsed >= MINIMUM_CAPACITY_GRACE_SECONDS:
+        if local_descriptor_limit:
+            raise ApiKeyTemporarilyUnavailableError(
+                "本机文件或网络连接句柄持续不足，已降至最低并发仍无法继续。"
+                "请关闭其他占用资源的任务后重试。"
+            ) from exc
         raise ApiKeyTemporarilyUnavailableError(
             (
                 f"接口持续限流：已经放慢到最慢档，{int(elapsed)} 秒内上游一直反馈"
@@ -321,12 +361,21 @@ def _wait_out_minimum_capacity_limit(
         MINIMUM_CAPACITY_BASE_DELAY * (2 ** min(attempt - 1, 6)),
     )
     delay *= 0.75 + random.random() * 0.5
+    reason = "本机句柄仍不足" if local_descriptor_limit else "上游仍在限流"
     logger.warning(
-        f"{context_label} 上游仍在限流（并发已在最低档 {decision.current_capacity}）；"
+        f"{context_label} {reason}（并发已在最低档 {decision.current_capacity}）；"
         f"等待 {delay:.1f}s 后重试当前批次，已持续 {int(elapsed)}s。"
     )
     if error_callback:
-        if say_floor:
+        if local_descriptor_limit and say_floor:
+            error_callback(
+                f"{context_label} 本机句柄仍不足，已降到最慢档，正在等待后重试。"
+            )
+        elif local_descriptor_limit and say_heartbeat:
+            error_callback(
+                f"{context_label} 本机句柄仍不足，已等待 {int(elapsed)} 秒，仍在重试。"
+            )
+        elif say_floor:
             error_callback(
                 f"{context_label} 接口仍在限流，已放慢到最慢档，正在等待后重试当前批次。"
                 f"{_upstream_reason(exc)}"
@@ -336,7 +385,7 @@ def _wait_out_minimum_capacity_limit(
                 f"{context_label} 接口仍在限流，已等待 {int(elapsed)} 秒，仍在重试当前批次。"
             )
     _interruptible_sleep(delay, should_stop)
-    return decision
+    return replace(decision, action=API_CONCURRENCY_ACTION_RETRY_CURRENT)
 
 
 def _has_concurrency_pattern(text: str) -> bool:

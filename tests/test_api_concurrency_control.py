@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
     is_api_concurrency_limit_error,
+    is_local_descriptor_limit_error,
     reset_minimum_capacity_watch,
 )
 from core.api_scheduler import (
@@ -46,6 +48,29 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         self.assertEqual(decision.action, API_CONCURRENCY_ACTION_REDUCED)
         self.assertLess(decision.current_capacity, 8)
 
+    def test_wrapped_local_descriptor_limit_reduces_shared_capacity(self) -> None:
+        scheduler = WeightedApiScheduler(8)
+        messages: list[str] = []
+        try:
+            raise OSError(errno.EMFILE, "Too many open files")
+        except OSError as cause:
+            error = RuntimeError("connection failed")
+            error.__cause__ = cause
+
+        self.assertTrue(is_local_descriptor_limit_error(error))
+        self.assertFalse(is_api_concurrency_limit_error(error))
+        decision = handle_api_concurrency_limit(
+            error,
+            scheduler=scheduler,
+            request_generation=None,
+            context_label="PDF",
+            error_callback=messages.append,
+        )
+        self.assertIsNotNone(decision)
+        self.assertLess(decision.current_capacity, 8)
+        self.assertTrue(any("本机" in message and "降低并发" in message for message in messages))
+        self.assertFalse(any("接口反馈请求过于频繁" in message for message in messages))
+
     def test_at_the_minimum_the_caller_is_told_to_retry_not_to_give_up(self) -> None:
         scheduler = WeightedApiScheduler(1)
         reset_minimum_capacity_watch(scheduler)
@@ -60,7 +85,25 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(decision)
+        self.assertTrue(decision.should_retry)
         self.assertTrue(any("等待" in message for message in messages))
+
+    def test_local_descriptor_limit_at_minimum_waits_without_upstream_message(self) -> None:
+        scheduler = WeightedApiScheduler(1)
+        reset_minimum_capacity_watch(scheduler)
+        messages: list[str] = []
+        decision = handle_api_concurrency_limit(
+            OSError(errno.EMFILE, "Too many open files"),
+            scheduler=scheduler,
+            request_generation=None,
+            context_label="PDF",
+            error_callback=messages.append,
+            should_stop=lambda: True,
+        )
+        self.assertIsNotNone(decision)
+        self.assertTrue(decision.should_retry)
+        self.assertTrue(any("本机句柄" in message for message in messages))
+        self.assertFalse(any("接口仍在限流" in message for message in messages))
 
     def test_a_key_limited_past_the_grace_window_fails_the_task(self) -> None:
         scheduler = WeightedApiScheduler(1)

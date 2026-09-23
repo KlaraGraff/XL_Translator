@@ -12,6 +12,7 @@ import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -314,6 +315,16 @@ class ModelConnection(TextProtocolSettings):
         return self.base_url or self.provider
 
 
+class ModelUpgradeState(BaseModel):
+    """Non-secret record of one connection's automatic model upgrade."""
+
+    source_model: str = ""
+    candidate_model: str = ""
+    connection_signature: str = ""
+    consecutive_failures: int = Field(default=0, ge=0, le=3)
+    status: str = ""
+
+
 _SEEDED_CONNECTION_PREFIX = "seed-"
 
 
@@ -506,16 +517,16 @@ class EngineSettings(TextProtocolSettings):
     concurrency: int = Field(
         default=CONCURRENCY_DEFAULT,
         ge=1,
-        le=get_concurrency_cap(),
+        le=2**31 - 1,
     )
     ollama_concurrency: int = Field(
         default=get_default_concurrency("local"),
         ge=1,
-        le=get_concurrency_cap(),
+        le=2**31 - 1,
     )
     concurrency_unlocked: bool = False
     concurrency_unlock_code: str = ""
-    batch_size: int = Field(default=20, ge=5, le=30)
+    batch_size: int = Field(default=20, ge=1, le=2**31 - 1)
     availability_status: str = "unknown"
     availability_message: str = ""
     availability_checked_at: str = ""
@@ -684,18 +695,18 @@ class ExcelReviewSettings(BaseModel):
 class WordBatchSettings(BaseModel):
     max_paragraphs_per_batch: int = Field(
         default=WORD_BATCH_PARAGRAPHS_DEFAULT,
-        ge=WORD_BATCH_PARAGRAPHS_MIN,
-        le=WORD_BATCH_PARAGRAPHS_MAX,
+        ge=1,
+        le=2**31 - 1,
     )
     max_chars_per_batch: int = Field(
         default=WORD_BATCH_CHARS_DEFAULT,
-        ge=WORD_BATCH_CHARS_MIN,
-        le=WORD_BATCH_CHARS_MAX,
+        ge=1,
+        le=2**31 - 1,
     )
     split_paragraph_chars: int = Field(
         default=WORD_BATCH_SPLIT_CHARS_DEFAULT,
-        ge=WORD_BATCH_SPLIT_CHARS_MIN,
-        le=WORD_BATCH_SPLIT_CHARS_MAX,
+        ge=1,
+        le=2**31 - 1,
     )
     strict_retry_attempts: int = Field(
         default=WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
@@ -837,7 +848,7 @@ class PdfSettings(BaseModel):
     page_generation_concurrency: int | None = Field(
         default=None,
         ge=1,
-        le=PDF_PAGE_CONCURRENCY_SAFETY_CAP,
+        le=2**31 - 1,
     )
     review_enabled: bool = False
     generate_compressed_pdf: bool = True
@@ -923,6 +934,7 @@ class AppearanceSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
+    _runtime_model_role: str = PrivateAttr(default="translation")
     engine: EngineSettings = Field(default_factory=EngineSettings)
     tm: TMSettings = Field(default_factory=TMSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
@@ -946,6 +958,7 @@ class AppSettings(BaseModel):
     # 关闭时多余的连接只作故障切换备用；打开后并行任务才会分散到不同连接上。
     spread_tasks_across_connections: bool = False
     model_throughput_profiles: dict[str, ModelThroughputSettings] = Field(default_factory=dict)
+    model_upgrade_states: dict[str, ModelUpgradeState] = Field(default_factory=dict)
     update: UpdateSettings = Field(default_factory=UpdateSettings)
     onboarding: OnboardingSettings = Field(default_factory=OnboardingSettings)
     appearance: AppearanceSettings = Field(default_factory=AppearanceSettings)
@@ -971,7 +984,9 @@ class AppSettings(BaseModel):
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
-        if _extract_settings_version(migrated) >= SETTINGS_SCHEMA_VERSION:
+        # This destructive migration belongs to v27.  Later additive schema
+        # bumps must not re-map a user's explicit v27 model selection.
+        if _extract_settings_version(migrated) >= 27:
             return migrated
 
         def migrate_model(value):
@@ -1193,6 +1208,30 @@ class AppSettings(BaseModel):
             for connection in owner.connections:
                 if connection.id.startswith(_SEEDED_CONNECTION_PREFIX):
                     connection.id = f"pool-{role_key}"
+        return self
+
+    @model_validator(mode="after")
+    def _normalize_locked_pdf_concurrency(self):
+        value = self.pdf.page_generation_concurrency
+        if value is not None and not self.engine.concurrency_unlocked:
+            self.pdf.page_generation_concurrency = min(
+                PDF_PAGE_CONCURRENCY_SAFETY_CAP,
+                value,
+            )
+        if not self.engine.concurrency_unlocked:
+            self.engine.batch_size = max(5, min(30, self.engine.batch_size))
+            self.word_batch.max_paragraphs_per_batch = max(
+                WORD_BATCH_PARAGRAPHS_MIN,
+                min(WORD_BATCH_PARAGRAPHS_MAX, self.word_batch.max_paragraphs_per_batch),
+            )
+            self.word_batch.max_chars_per_batch = max(
+                WORD_BATCH_CHARS_MIN,
+                min(WORD_BATCH_CHARS_MAX, self.word_batch.max_chars_per_batch),
+            )
+            self.word_batch.split_paragraph_chars = max(
+                WORD_BATCH_SPLIT_CHARS_MIN,
+                min(WORD_BATCH_SPLIT_CHARS_MAX, self.word_batch.split_paragraph_chars),
+            )
         return self
 
     @model_validator(mode="after")
@@ -1794,6 +1833,59 @@ def _merged_settings_payload(settings: AppSettings) -> AppSettings | None:
         return None
 
 
+def _pin_manual_model_edits(settings: AppSettings) -> None:
+    """Stop automation when a saved edit changes a promoted connection."""
+    baseline = settings._persisted_snapshot
+    if not isinstance(baseline, dict):
+        return
+    for field_name, role_name in (
+        ("engine", "translation"),
+        ("cleaner_model_role", "cleaner"),
+        ("pdf_review_model_role", "pdf_review"),
+    ):
+        old_owner = baseline.get(field_name)
+        owner = getattr(settings, field_name)
+        if not isinstance(old_owner, dict):
+            continue
+        old_connections = {
+            str(conn.get("id") or ""): conn
+            for conn in old_owner.get("connections") or []
+            if isinstance(conn, dict)
+        }
+        for index, connection in enumerate(owner.connections):
+            state_key = f"{role_name}:{connection.id}"
+            state = settings.model_upgrade_states.get(state_key)
+            previous = old_connections.get(connection.id)
+            if state is None or previous is None or state.status == "manual":
+                continue
+            changed = any(
+                getattr(connection, field) != previous.get(field)
+                for field in ("provider", "model", "base_url", "api_mode")
+            )
+            if index == 0:
+                changed = changed or any(
+                    getattr(owner, field) != old_owner.get(field)
+                    for field in ("cloud_provider", "cloud_model", "cloud_base_url", "api_mode")
+                )
+            if changed:
+                settings.model_upgrade_states[state_key] = ModelUpgradeState(
+                    source_model=owner.cloud_model if index == 0 else connection.model,
+                    status="manual",
+                )
+        if role_name == "translation":
+            continue
+        # A following role uses the source pool's id but owns its model name.
+        # Its idle owned pool will not show the edit, so compare the role field.
+        if owner.cloud_model != old_owner.get("cloud_model"):
+            prefix = f"{role_name}:"
+            for state_key in tuple(settings.model_upgrade_states):
+                if state_key.startswith(prefix):
+                    settings.model_upgrade_states[state_key] = ModelUpgradeState(
+                        source_model=owner.cloud_model,
+                        status="manual",
+                    )
+
+
 def load_settings() -> AppSettings:
     """Load the settings file, adopting an older one and never writing to it.
 
@@ -1852,6 +1944,7 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
     would be an unrecoverable loss; ``replace_incompatible`` (the maintenance
     page's reset) overrides that.
     """
+    _pin_manual_model_edits(settings)
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
     with _exclusive_file_lock(lock_path):
@@ -1876,6 +1969,30 @@ def save_settings(settings: AppSettings, *, replace_incompatible: bool = False) 
         )
         _remember_persisted_snapshot(settings)
     logger.debug(f"配置已保存：{SETTINGS_PATH}")
+
+
+def update_settings_atomically(update: Callable[[AppSettings], bool]) -> bool:
+    """Apply a conditional background edit to the latest settings under lock.
+
+    Automatic model checks finish after network I/O.  By then the user may
+    have edited a connection, so a saved snapshot cannot be trusted.  The
+    callback must recheck its exact target and return False when stale.
+    """
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = SETTINGS_PATH.with_name(f".{SETTINGS_PATH.name}.lock")
+    with _exclusive_file_lock(lock_path):
+        state, stored_version, payload = _inspect_settings_file()
+        if state in {"unusable", "unreadable"}:
+            return False
+        current = AppSettings.model_validate(payload) if payload is not None else AppSettings()
+        if not update(current):
+            return False
+        if state == "adopted" and stored_version < 27 and payload is not None:
+            if AppSettings._migrate_legacy_image_model(payload) != payload:
+                _backup_settings_file()
+        current.settings_version = SETTINGS_SCHEMA_VERSION
+        _write_text_atomic(SETTINGS_PATH, current.model_dump_json(indent=2))
+        return True
 
 
 def _backup_keys_file() -> str:

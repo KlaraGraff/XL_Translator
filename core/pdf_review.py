@@ -123,8 +123,18 @@ class OpenAICompatiblePdfReviewClient:
             raise PdfReviewModelUnavailableError("PDF 翻译审核模型名称不能为空")
 
         base_url = _normalize_base_url(model_config)
+        from core.model_auto_upgrade import (
+            effective_model_after_rollback,
+            rollback_upgraded_model,
+        )
+        from core.text_transport import classify_http_error
+
+        effective_model = effective_model_after_rollback(
+            model_config.connection_id, model_config.model,
+            model_config.base_url, ROLE_PDF_REVIEW,
+        )
         payload = {
-            "model": model_config.model,
+            "model": effective_model,
             "instructions": PDF_PAGE_REVIEW_PROMPT,
             "input": [
                 {
@@ -159,7 +169,23 @@ class OpenAICompatiblePdfReviewClient:
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 response = client.post(f"{base_url}/responses", headers=headers, json=payload)
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if classify_http_error(exc)[0] != "model":
+                        raise
+                    previous = rollback_upgraded_model(
+                        model_config.connection_id, effective_model,
+                        model_config.base_url, api_key=model_config.api_key,
+                        model_role=ROLE_PDF_REVIEW,
+                    )
+                    if not previous:
+                        raise
+                    payload["model"] = previous
+                    response = client.post(
+                        f"{base_url}/responses", headers=headers, json=payload,
+                    )
+                    response.raise_for_status()
                 response_payload = response.json()
         except Exception as exc:  # noqa: BLE001 - caller classifies page/model errors.
             if is_model_unavailable_error(exc):

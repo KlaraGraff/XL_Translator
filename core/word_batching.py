@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from math import ceil
 from typing import Callable
 
@@ -14,6 +15,7 @@ from loguru import logger
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
+    is_local_descriptor_limit_error,
 )
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -64,6 +66,17 @@ class WordBatchRunStats:
     failed_unit_count: int = 0
     adaptive_concurrency_reductions: int = 0
     adaptive_lowest_concurrency: int = 0
+    local_resource_retry_count: int = 0
+    _local_resource_notice_sent: bool = False
+    _resource_lock: threading.Lock = dataclass_field(default_factory=threading.Lock, repr=False)
+
+    def record_local_resource_retry(self) -> bool:
+        """Count local capacity retries; announce the episode only once."""
+        with self._resource_lock:
+            self.local_resource_retry_count += 1
+            first = not self._local_resource_notice_sent
+            self._local_resource_notice_sent = True
+            return first
 
     def record_adaptive_concurrency_decision(
         self,
@@ -277,6 +290,7 @@ def _translate_units_with_fallback(
     should_stop,
     error_callback: ErrorCallback | None,
     stats: WordBatchRunStats,
+    local_resource_retry_round: int = 0,
 ) -> dict[tuple[str, int], str]:
     if not units:
         return {}
@@ -340,6 +354,36 @@ def _translate_units_with_fallback(
             return {}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        # Local descriptor exhaustion can include HTTP sockets and other open
+        # resources. Splitting the text would start even more requests.
+        if (
+            api_scheduler is not None
+            and is_local_descriptor_limit_error(exc)
+            and local_resource_retry_round < 6
+        ):
+            decision = api_scheduler.register_concurrency_limit_hit(request_generation)
+            stats.record_adaptive_concurrency_decision(decision)
+            if stats.record_local_resource_retry() and error_callback:
+                error_callback("本机文件或网络连接句柄不足，已临时降低并发并重试。")
+            if should_stop and should_stop():
+                return {}
+            time.sleep(min(0.2 * (2 ** local_resource_retry_round), 1.5))
+            return _translate_units_with_fallback(
+                units,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                source_lang=source_lang,
+                api_scheduler=api_scheduler,
+                request_category=request_category,
+                candidate_callback=candidate_callback,
+                report_source_languages=report_source_languages,
+                source_result_callback=source_result_callback,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=stats,
+                local_resource_retry_round=local_resource_retry_round + 1,
+            )
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
@@ -366,6 +410,7 @@ def _translate_units_with_fallback(
                     should_stop=should_stop,
                     error_callback=error_callback,
                     stats=stats,
+                    local_resource_retry_round=local_resource_retry_round,
                 )
 
         if len(units) > 1:
@@ -389,6 +434,7 @@ def _translate_units_with_fallback(
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
+                local_resource_retry_round=local_resource_retry_round,
             )
             right = _translate_units_with_fallback(
                 units[midpoint:],
@@ -404,6 +450,7 @@ def _translate_units_with_fallback(
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=stats,
+                local_resource_retry_round=local_resource_retry_round,
             )
             return {**left, **right}
 

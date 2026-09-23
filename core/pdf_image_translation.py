@@ -4205,18 +4205,38 @@ class PdfImageTranslationRunner:
                     self._begin_page_review(attempt)
                     review_request_error: Exception | None = None
                     try:
-                        self._record_review_api_call()
-                        with review_scheduler.slot(
-                            1,
-                            category=API_REQUEST_CATEGORY_RECOVERY,
-                            should_stop=self._stop_event.is_set,
-                        ):
-                            review_result = self._review_client.review_page(
-                                source_image_path=Path(page_record.source_image_path),
-                                translated_image_path=candidate_path,
-                                target_language=target_language,
-                                model_config=review_model_config,
-                            )
+                        while True:
+                            review_generation: int | None = None
+                            try:
+                                with review_scheduler.slot(
+                                    1,
+                                    category=API_REQUEST_CATEGORY_RECOVERY,
+                                    should_stop=self._stop_event.is_set,
+                                ) as review_lease:
+                                    review_generation = review_lease.generation
+                                    self._record_review_api_call()
+                                    review_result = self._review_client.review_page(
+                                        source_image_path=Path(page_record.source_image_path),
+                                        translated_image_path=candidate_path,
+                                        target_language=target_language,
+                                        model_config=review_model_config,
+                                    )
+                                break
+                            except ApiSchedulerAcquireCancelled:
+                                raise
+                            except Exception as review_exc:
+                                if isinstance(review_exc, PdfReviewModelUnavailableError) or is_model_unavailable_error(review_exc):
+                                    raise
+                                decision = handle_api_concurrency_limit(
+                                    review_exc,
+                                    scheduler=review_scheduler,
+                                    request_generation=review_generation,
+                                    context_label=f"PDF 第 {page_record.page_number} 页审核",
+                                    error_callback=lambda message: self._record_rate_limit_reduction(message),
+                                    should_stop=self._stop_event.is_set,
+                                )
+                                if decision is None or not decision.should_retry:
+                                    raise
                     except ApiSchedulerAcquireCancelled:
                         self._finish_page_review()
                         break
@@ -4833,12 +4853,22 @@ class PdfImageTranslationRunner:
                 value = int(fallback)
             except (TypeError, ValueError):
                 value = PDF_PAGE_CONCURRENCY_DEFAULT
-            return max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
+            maximum = (
+                2**31 - 1
+                if self._settings.engine.concurrency_unlocked
+                else PDF_PAGE_CONCURRENCY_SAFETY_CAP
+            )
+            return max(1, min(maximum, value))
         try:
             value = int(raw)
         except (TypeError, ValueError):
             value = PDF_PAGE_CONCURRENCY_DEFAULT
-        return max(1, min(PDF_PAGE_CONCURRENCY_SAFETY_CAP, value))
+        maximum = (
+            2**31 - 1
+            if self._settings.engine.concurrency_unlocked
+            else PDF_PAGE_CONCURRENCY_SAFETY_CAP
+        )
+        return max(1, min(maximum, value))
 
     def _build_summary(
         self,

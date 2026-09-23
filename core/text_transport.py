@@ -372,7 +372,11 @@ def _send(route, api_key, payload, budget):
 
 def request_text(*, base_url: str, api_key: str, model: str, system: str, user: str,
                  api_mode: str = "auto", connection_id: str = "", total_seconds=TOTAL_TIMEOUT,
-                 should_stop=None) -> tuple[str, Route]:
+                 should_stop=None, model_role: str = "translation") -> tuple[str, Route]:
+    if connection_id:
+        from core.model_auto_upgrade import effective_model_after_rollback
+
+        model = effective_model_after_rollback(connection_id, model, base_url, model_role)
     mode = normalize_api_mode(api_mode)
     routes = candidate_routes(base_url, mode)
     identity = hashlib.sha256(json.dumps([connection_id, base_url, model, mode, hashlib.sha256(api_key.encode()).hexdigest()], ensure_ascii=False).encode()).hexdigest()
@@ -391,6 +395,24 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
             while not entry.event.wait(min(0.05, budget.check())):
                 pass
             if entry.error:
+                error_kind = (
+                    classify_http_error(entry.error)[0]
+                    if isinstance(entry.error, httpx.HTTPStatusError)
+                    else getattr(entry.error, "kind", "")
+                )
+                if error_kind == "model" and connection_id:
+                    from core.model_auto_upgrade import effective_model_after_rollback
+
+                    predecessor = effective_model_after_rollback(
+                        connection_id, model, base_url, model_role,
+                    )
+                    if predecessor != model:
+                        return request_text(
+                            base_url=base_url, api_key=api_key, model=predecessor,
+                            system=system, user=user, api_mode=api_mode,
+                            connection_id=connection_id, total_seconds=total_seconds,
+                            should_stop=should_stop, model_role=model_role,
+                        )
                 raise _copy_cached_error(entry.error)
             routes = [entry.route] + [r for r in routes if r != entry.route]
         try:
@@ -436,6 +458,35 @@ def request_text(*, base_url: str, api_key: str, model: str, system: str, user: 
                 # Retain only sanitized failures; no request payloads or credentials.
                 entry.error = _sanitize_error(exc, api_key)
                 entry.expires = time.monotonic() + 2
+            # A candidate promoted by this app can become unavailable
+            # unavailable after startup.  Restore its predecessor only for a
+            # definitive model error, then safely retry this same text request.
+            # A rejected model has not processed the user's request, unlike a
+            # timeout or incomplete response, so this replay cannot duplicate
+            # a translation that may already have run.
+            kind = (
+                classify_http_error(exc)[0]
+                if isinstance(exc, httpx.HTTPStatusError)
+                else getattr(exc, "kind", "")
+            )
+            if kind == "model" and connection_id:
+                from core.model_auto_upgrade import rollback_upgraded_model
+
+                try:
+                    previous_model = rollback_upgraded_model(
+                        connection_id, model, base_url, api_key=api_key,
+                        model_role=model_role,
+                    )
+                except Exception:
+                    previous_model = ""
+                if previous_model and budget.remaining > 0:
+                    return request_text(
+                        base_url=base_url, api_key=api_key, model=previous_model,
+                        system=system, user=user, api_mode=api_mode,
+                        connection_id=connection_id, total_seconds=total_seconds,
+                        should_stop=should_stop, model_role=model_role,
+                    )
+            if leader:
                 raise _copy_cached_error(entry.error) from exc
             raise _sanitize_error(exc, api_key) from exc
         finally:
