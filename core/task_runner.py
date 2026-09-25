@@ -17,15 +17,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from zipfile import ZipFile
 
 from loguru import logger
+from lxml import etree
 
 from core import bilingual_writer
 from core.excel_sheet_naming import rename_worksheets
 from core.output_name_translation import (
     avoid_bilingual_name_collision,
+    output_stem_from_translation,
     translate_names,
-    translate_output_stem,
 )
 from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
@@ -86,6 +88,7 @@ from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from engines.base_engine import engine_supports_chat
 from core.translation_protocol import should_store_translation_in_tm
 from core import tm_manager
+from core.xlsx_patcher import is_generated_original_sheet_title
 from core.excel_automation import (
     create_excel_app,
     finalize_excel_thread,
@@ -1916,6 +1919,75 @@ class TaskRunner:
             t_phase3 = datetime.now()
             source_root = self._source_root if self._source_root else self._files[0].path.parent
 
+            # Collect names across the task before serial file writes.  The
+            # default worksheet-name option used to make one model request per
+            # workbook here, even when every workbook had the same tab title.
+            filename_names: list[str] = []
+            sheet_names_to_translate: list[str] = []
+            if excel_output.translate_output_filename or excel_output.translate_sheet_names:
+                for fi, file_item in enumerate(self._files):
+                    if any(
+                        r.get("source_path") == str(file_item.path) and not r.get("success")
+                        for r in file_results
+                    ):
+                        continue
+                    if excel_output.translate_output_filename:
+                        original_path = file_item.original_path or file_item.path
+                        filename_names.append(original_path.stem)
+                    if excel_output.translate_sheet_names:
+                        try:
+                            with ZipFile(process_paths[fi]) as package:
+                                workbook = etree.fromstring(package.read("xl/workbook.xml"))
+                            namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                            names = [
+                                node.get("name", "")
+                                for node in workbook.iter(f"{{{namespace}}}sheet")
+                            ]
+                        except Exception as exc:  # File-level write still reports a bad workbook.
+                            logger.debug(f"读取工作表名称失败 {file_item.name}：{exc!r}")
+                            names = list(file_item.sheets)
+                        sheet_names_to_translate.extend(
+                            name
+                            for name in names
+                            if not is_generated_original_sheet_title(name, names)
+                        )
+
+            def _translate_name_pool(names: list[str], kind: str) -> dict[str, str]:
+                unique = list(dict.fromkeys(name for name in names if name.strip()))
+                if not unique:
+                    return {}
+                batches: list[list[str]] = []
+                current: list[str] = []
+                current_chars = 0
+                for name in unique:
+                    if current and (len(current) >= 24 or current_chars + len(name) > 1800):
+                        batches.append(current)
+                        current = []
+                        current_chars = 0
+                    current.append(name)
+                    current_chars += len(name)
+                if current:
+                    batches.append(current)
+                translated: dict[str, str] = {}
+                for number, batch in enumerate(batches, start=1):
+                    _raise_if_stopped()
+                    self._queue.put(StatusMsg(
+                        phase_desc=(
+                            f"状态：[阶段 3/{phase_total}] 正在翻译{kind}"
+                            f"（{number}/{len(batches)} 批）..."
+                        )
+                    ))
+                    translated.update(
+                        translate_names(engine, batch, target_lang, source_lang, kind=kind)
+                    )
+                return translated
+
+            filename_translations = _translate_name_pool(filename_names, "输出文件名")
+            sheet_translations = _translate_name_pool(sheet_names_to_translate, "工作表名称")
+            self._queue.put(StatusMsg(
+                phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语表格..."
+            ))
+
             for fi, file_item in enumerate(self._files):
                 _raise_if_stopped()
 
@@ -1960,10 +2032,12 @@ class TaskRunner:
                     output_basename = None
                     if excel_output.translate_output_filename:
                         original_name = naming_original_path.name if naming_original_path else file_item.path.name
-                        translated_stem = translate_output_stem(
-                            engine, Path(original_name).stem, target_lang, source_lang
+                        original_stem = Path(original_name).stem
+                        translated_stem = output_stem_from_translation(
+                            original_stem,
+                            filename_translations.get(original_stem, original_stem),
                         )
-                        if translated_stem != Path(original_name).stem:
+                        if translated_stem != original_stem:
                             output_basename = avoid_bilingual_name_collision(
                                 output_dir / rel_subdir,
                                 translated_stem + Path(original_name).suffix,
@@ -2056,9 +2130,6 @@ class TaskRunner:
                             output_basename      = output_basename,
                         )
                     if excel_output.translate_sheet_names:
-                        from zipfile import ZipFile
-                        from lxml import etree
-
                         with ZipFile(out_path) as workbook_package:
                             workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))
                         sheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -2066,11 +2137,10 @@ class TaskRunner:
                             node.get("name", "")
                             for node in workbook_root.iter(f"{{{sheet_namespace}}}sheet")
                         ]
-                        translated_sheets = translate_names(
-                            engine, sheet_names, target_lang, source_lang, kind="工作表名称"
-                        )
                         requested_sheets = {
-                            old: new for old, new in translated_sheets.items() if new != old
+                            old: sheet_translations[old]
+                            for old in sheet_names
+                            if old in sheet_translations and sheet_translations[old] != old
                         }
                         if requested_sheets:
                             rename_result = rename_worksheets(out_path, out_path, requested_sheets)

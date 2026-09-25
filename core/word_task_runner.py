@@ -130,6 +130,7 @@ from core.word_document import (
     build_word_output_dir,
     count_text_bearing_header_footer_parts,
     detect_hidden_word_content,
+    docx_has_possible_automatic_numbering,
     extract_word_header_footer_segments,
     extract_word_segments,
     find_word_front_matter_boundary_for_path,
@@ -2654,8 +2655,9 @@ def _prepare_word_source_for_translation(
         temp_paths.append(conversion.path)
         fallback_messages.extend(conversion.fallback_messages)
 
+    has_automatic_numbering = docx_has_possible_automatic_numbering(process_path)
     native_result: WordConversionResult | None = None
-    if use_native_preprocessing:
+    if use_native_preprocessing and has_automatic_numbering:
         try:
             native_result = convert_numbering_to_text_with_native_apps(
                 process_path,
@@ -2683,11 +2685,13 @@ def _prepare_word_source_for_translation(
     method_parts: list[str] = []
     if conversion_method != "not_required":
         method_parts.append(f".doc 转换：{conversion_method}")
-    if native_result is not None:
+    if not has_automatic_numbering:
+        method_parts.append("编号预处理：未检测到自动编号")
+    elif native_result is not None:
         method_parts.append(f"编号预处理：{native_result.method}")
         if normalized.stats.labels_seen:
             method_parts.append("Python 残余清理")
-    else:
+    elif has_automatic_numbering:
         method_parts.append("编号预处理：Python 兜底")
 
     return _PreparedWordSource(
@@ -2700,7 +2704,9 @@ def _prepare_word_source_for_translation(
         conversion_method=conversion_method,
         conversion_fidelity=conversion_fidelity,
         numbering_method=(
-            native_result.method if native_result is not None else "python_conservative"
+            native_result.method
+            if native_result is not None
+            else ("python_conservative" if has_automatic_numbering else "not_needed")
         ),
         numbering_fallback_messages=tuple(numbering_fallback_messages),
     )

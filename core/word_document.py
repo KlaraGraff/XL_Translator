@@ -1195,6 +1195,33 @@ def normalize_docx_automatic_numbering(
     return WordNumberingNormalizationResult(path=target_path, stats=stats)
 
 
+def docx_has_possible_automatic_numbering(source_path: str | Path) -> bool:
+    """Return whether a text paragraph may carry an automatic numbering reference.
+
+    This deliberately does not require our label formatter to understand the
+    numbering definition. Native Word/LibreOffice can still materialize list
+    forms that the conservative Python formatter cannot decode.
+    """
+    doc = Document(str(source_path))
+    table_cells = [
+        cell
+        for table in doc.tables
+        for cell in _iter_unique_table_cells(table)
+    ]
+    all_paragraphs = _order_paragraphs_by_document_position(
+        doc,
+        [
+            *list(doc.paragraphs),
+            *(paragraph for cell in table_cells for paragraph in cell.paragraphs),
+        ],
+    )
+    return any(
+        _paragraph_source_text(paragraph)
+        and _paragraph_has_possible_automatic_numbering_reference(paragraph)
+        for paragraph in all_paragraphs
+    )
+
+
 def _scan_one_word_file(path: Path, root: Path, result: WordScanResult) -> None:
     if not is_supported_word_file(path):
         result.skipped.append(
@@ -2103,6 +2130,45 @@ def _get_paragraph_numbering_info(paragraph: Paragraph) -> tuple[str, int] | Non
     except Exception:
         return None
     return _read_numbering_info_from_ppr(getattr(style_element, "pPr", None))
+
+
+def _paragraph_has_possible_automatic_numbering_reference(
+    paragraph: Paragraph,
+) -> bool:
+    """Conservatively detect direct or inherited ``w:numPr`` references."""
+    direct_p_pr = getattr(paragraph._p, "pPr", None)
+    direct_num_pr = direct_p_pr.find(qn("w:numPr")) if direct_p_pr is not None else None
+    if direct_num_pr is not None:
+        return _num_pr_may_reference_numbering(direct_num_pr)
+
+    try:
+        style = paragraph.style
+    except Exception:
+        return False
+
+    visited_style_ids: set[str] = set()
+    while style is not None:
+        style_id = str(getattr(style, "style_id", "") or "")
+        if style_id and style_id in visited_style_ids:
+            break
+        if style_id:
+            visited_style_ids.add(style_id)
+        style_element = getattr(style, "_element", None)
+        style_p_pr = getattr(style_element, "pPr", None)
+        style_num_pr = style_p_pr.find(qn("w:numPr")) if style_p_pr is not None else None
+        if style_num_pr is not None:
+            return _num_pr_may_reference_numbering(style_num_pr)
+        try:
+            style = style.base_style
+        except Exception:
+            break
+    return False
+
+
+def _num_pr_may_reference_numbering(num_pr) -> bool:
+    """Treat incomplete numPr as possible numbering; only explicit numId 0 opts out."""
+    num_id = _child_val(num_pr, "w:numId")
+    return num_id != "0"
 
 
 def _ppr_suppresses_numbering(p_pr) -> bool:

@@ -45,6 +45,7 @@ class OutputNameTranslationTests(unittest.TestCase):
         self.assertFalse(settings.word_output.translate_output_filename)
         self.assertFalse(settings.pdf_output.translate_output_filename)
         self.assertEqual(translate_output_stem(_NameEngine(), "报告", "en", "zh"), "Report")
+        self.assertEqual(translate_output_stem(_NameEngine(), " 报告 ", "en", "zh"), "Report")
         self.assertEqual(translate_names(_NameEngine(), ["数据"], "en", "zh"), {"数据": "Data"})
 
     def test_excel_task_writes_translated_file_and_sheet_names(self):
@@ -55,8 +56,12 @@ class OutputNameTranslationTests(unittest.TestCase):
             settings.excel_output.translate_output_filename = True
             settings.excel_output.translate_sheet_names = True
             with _pipeline_patches(translate_side_effect=_fake_translate([])):
-                with patch("core.task_runner.translate_output_stem", return_value="Report"), patch(
-                    "core.task_runner.translate_names", return_value={"数据": "Data"}
+                with patch(
+                    "core.task_runner.translate_names",
+                    side_effect=lambda _engine, names, *_args, **_kwargs: {
+                        name: {"报告": "Report", "数据": "Data"}.get(name, name)
+                        for name in names
+                    },
                 ):
                     runner = TaskRunner(
                         [FileItem(path=source, name="报告", size_kb=1.0)],
@@ -75,6 +80,68 @@ class OutputNameTranslationTests(unittest.TestCase):
                 self.assertEqual(book["Data"]["A1"].value, "你好\nT:你好")
             finally:
                 book.close()
+
+    def test_excel_batches_repeated_sheet_names_across_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = [
+                _make_xlsx(root / f"{stem}.xlsx", {"A1": "你好"}, sheet_name="数据")
+                for stem in ("报告", "日志")
+            ]
+            settings = _settings()
+            settings.excel_output.translate_output_filename = True
+            settings.excel_output.translate_sheet_names = True
+            calls: list[tuple[str, list[str]]] = []
+
+            def translate_batch(_engine, names, _target, _source, *, kind):
+                calls.append((kind, list(names)))
+                wanted = {"报告": "Report", "日志": "Log", "数据": "Data"}
+                return {name: wanted.get(name, name) for name in names}
+
+            with _pipeline_patches(translate_side_effect=_fake_translate([])):
+                with patch("core.task_runner.translate_names", side_effect=translate_batch):
+                    runner = TaskRunner(
+                        [FileItem(path=path, name=path.stem, size_kb=1.0) for path in files],
+                        settings,
+                        source_root=root,
+                    )
+                    done = _run_and_get_done(runner)
+            self.assertTrue(all(result["success"] for result in done.file_results))
+            self.assertEqual(
+                calls,
+                [
+                    ("输出文件名", ["报告", "日志"]),
+                    ("工作表名称", ["数据"]),
+                ],
+            )
+            for result in done.file_results:
+                workbook = load_workbook(result["output_path"])
+                try:
+                    self.assertIn("Data", workbook.sheetnames)
+                finally:
+                    workbook.close()
+
+    def test_names_with_surrounding_spaces_keep_exact_workbook_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.xlsx"
+            output = root / "output.xlsx"
+            workbook = Workbook()
+            workbook.active.title = " 数据 "
+            workbook.create_sheet("Summary")["A1"] = "=' 数据 '!A1"
+            workbook.save(source)
+            workbook.close()
+
+            translated = translate_names(_NameEngine(), [" 数据 "], "en", "zh")
+            self.assertEqual(translated, {" 数据 ": "Data"})
+            result = rename_worksheets(source, output, translated)
+            self.assertEqual(result.status, "renamed")
+            saved = load_workbook(output)
+            try:
+                self.assertIn("Data", saved.sheetnames)
+                self.assertEqual(saved["Summary"]["A1"].value, "='Data'!A1")
+            finally:
+                saved.close()
 
     def test_pdf_output_paths_use_translated_stem_only_when_enabled(self):
         with tempfile.TemporaryDirectory() as temporary:

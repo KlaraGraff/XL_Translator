@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import nsdecls, qn
@@ -36,8 +37,10 @@ from core.word_task_runner import (
     WordTaskRunner,
     _WordRecoveryOutcome,
     _WordRecoveryPool,
+    _prepare_word_source_for_translation,
     _word_cell_line_mismatch_issue,
 )
+from core.word_converter import WordConversionResult
 from settings import AppSettings, WordBatchSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -1252,6 +1255,108 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
             review = self._contract(issues, source, root)["review"]
             self.assertEqual(review["total_count"], 2)
             self.assertEqual(review["counts"], {"resolved": 1, "needs_review": 1})
+
+
+class WordNumberingPreprocessSelectionTests(unittest.TestCase):
+    def test_plain_docx_skips_native_numbering_preprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "plain.docx"
+            doc = Document()
+            doc.add_paragraph("普通正文段落")
+            doc.save(source)
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps"
+            ) as native_preprocess:
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                )
+
+            native_preprocess.assert_not_called()
+            self.assertEqual(prepared.numbering_method, "not_needed")
+            self.assertEqual(prepared.numbering_fallback_messages, ())
+            self.assertIn("未检测到自动编号", prepared.method)
+            for temp_path in prepared.temp_paths:
+                temp_path.unlink(missing_ok=True)
+
+    def test_numbered_docx_keeps_native_numbering_preprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "numbered.docx"
+            doc = Document()
+            _set_num_id_9_level(doc, number_format="decimal", level_text_value="%1.")
+            paragraph = doc.add_paragraph("编号正文")
+            _set_num_pr(paragraph, num_id="9", ilvl="0")
+            doc.save(source)
+            native_result = WordConversionResult(path=source, method="本地 Word")
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps",
+                return_value=native_result,
+            ) as native_preprocess:
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                )
+
+            native_preprocess.assert_called_once()
+            self.assertEqual(prepared.numbering_method, "本地 Word")
+            for temp_path in prepared.temp_paths:
+                temp_path.unlink(missing_ok=True)
+
+    def test_unrecognized_numbering_reference_still_tries_native_preprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "unrecognized-numbering.docx"
+            doc = Document()
+            paragraph = doc.add_paragraph("定义缺失的编号正文")
+            _set_num_pr(paragraph, num_id="999", ilvl="0")
+            doc.save(source)
+            native_result = WordConversionResult(path=source, method="本地 Word")
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps",
+                return_value=native_result,
+            ) as native_preprocess:
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                )
+
+            native_preprocess.assert_called_once()
+            self.assertEqual(prepared.numbering_method, "本地 Word")
+
+    def test_style_inherited_numbering_reference_tries_native_preprocessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "inherited-numbering.docx"
+            doc = Document()
+            base_style = doc.styles.add_style("Numbered Base", WD_STYLE_TYPE.PARAGRAPH)
+            inherited_style = doc.styles.add_style("Numbered Child", WD_STYLE_TYPE.PARAGRAPH)
+            inherited_style.base_style = base_style
+            p_pr = base_style._element.get_or_add_pPr()
+            num_pr = OxmlElement("w:numPr")
+            ilvl = OxmlElement("w:ilvl")
+            ilvl.set(qn("w:val"), "0")
+            num_id = OxmlElement("w:numId")
+            num_id.set(qn("w:val"), "999")
+            num_pr.append(ilvl)
+            num_pr.append(num_id)
+            p_pr.append(num_pr)
+            paragraph = doc.add_paragraph("样式继承的编号正文")
+            paragraph.style = inherited_style
+            doc.save(source)
+            native_result = WordConversionResult(path=source, method="本地 Word")
+
+            with patch(
+                "core.word_task_runner.convert_numbering_to_text_with_native_apps",
+                return_value=native_result,
+            ) as native_preprocess:
+                prepared = _prepare_word_source_for_translation(
+                    source,
+                    use_native_preprocessing=True,
+                )
+
+            native_preprocess.assert_called_once()
+            self.assertEqual(prepared.numbering_method, "本地 Word")
 
 
 if __name__ == "__main__":
