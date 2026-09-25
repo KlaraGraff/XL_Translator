@@ -220,7 +220,7 @@ def _build_translation_units(
     for source in texts:
         parts = _split_long_word_text(
             source,
-            split_threshold=batch_settings.split_paragraph_chars,
+            split_threshold=batch_settings.max_chars_per_batch,
             part_char_budget=batch_settings.max_chars_per_batch,
         )
         if len(parts) <= 1:
@@ -245,7 +245,7 @@ def _build_word_batches(
     batches: list[list[WordTranslationUnit]] = []
     current: list[WordTranslationUnit] = []
     current_chars = 0
-    max_items = max(1, batch_settings.max_paragraphs_per_batch)
+    max_items = max(1, min(8, batch_settings.max_paragraphs_per_batch))
     max_chars = max(1, batch_settings.max_chars_per_batch)
     single_threshold = max(max_chars // 2, min(max_chars, 1200))
 

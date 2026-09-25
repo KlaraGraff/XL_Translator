@@ -50,11 +50,7 @@ from config import (
     WORD_BATCH_CHARS_MAX,
     WORD_BATCH_CHARS_MIN,
     WORD_BATCH_PARAGRAPHS_DEFAULT,
-    WORD_BATCH_PARAGRAPHS_MAX,
-    WORD_BATCH_PARAGRAPHS_MIN,
     WORD_BATCH_SPLIT_CHARS_DEFAULT,
-    WORD_BATCH_SPLIT_CHARS_MAX,
-    WORD_BATCH_SPLIT_CHARS_MIN,
     WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
@@ -820,10 +816,10 @@ class WordBatchSettings(BaseModel):
 
     @model_validator(mode="after")
     def _normalize_thresholds(self):
-        self.split_paragraph_chars = max(
-            self.max_chars_per_batch,
-            self.split_paragraph_chars,
-        )
+        self.max_paragraphs_per_batch = min(8, self.max_paragraphs_per_batch)
+        # Kept in the saved schema for older settings files; the batch budget
+        # is now the sole user-facing limit and also governs long paragraphs.
+        self.split_paragraph_chars = self.max_chars_per_batch
         return self
 
 
@@ -1324,18 +1320,12 @@ class AppSettings(BaseModel):
             )
         if not self.engine.concurrency_unlocked:
             self.engine.batch_size = max(5, min(30, self.engine.batch_size))
-            self.word_batch.max_paragraphs_per_batch = max(
-                WORD_BATCH_PARAGRAPHS_MIN,
-                min(WORD_BATCH_PARAGRAPHS_MAX, self.word_batch.max_paragraphs_per_batch),
-            )
             self.word_batch.max_chars_per_batch = max(
                 WORD_BATCH_CHARS_MIN,
                 min(WORD_BATCH_CHARS_MAX, self.word_batch.max_chars_per_batch),
             )
-            self.word_batch.split_paragraph_chars = max(
-                WORD_BATCH_SPLIT_CHARS_MIN,
-                min(WORD_BATCH_SPLIT_CHARS_MAX, self.word_batch.split_paragraph_chars),
-            )
+        self.word_batch.max_paragraphs_per_batch = min(8, self.word_batch.max_paragraphs_per_batch)
+        self.word_batch.split_paragraph_chars = self.word_batch.max_chars_per_batch
         return self
 
     @model_validator(mode="after")

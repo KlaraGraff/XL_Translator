@@ -1,5 +1,15 @@
 # Translator 版本更新日志
 
+## V9.5.6
+
+- **Word 批次设置更简单**：默认每批最多 800 个字符，超过上限的长段自动拆分，内部每批最多 8 段。设置页不再显示段落数和拆分阈值两个多余选项。旧配置仍可读取，已有的字符上限设置会保留。
+
+  **Simpler Word batch settings**: The default is 800 source characters per batch. Longer paragraphs split automatically, with at most eight segments per request. The redundant paragraph-count and split-threshold controls are removed. Existing settings remain readable, and a saved character budget is preserved.
+
+- **重试默认值调整**：Word 单段严格重试默认 3 次，PDF 单页重试默认 1 次；PDF 页图并发的自动模式说明改为按图像模型吞吐设置决定。
+
+  **Updated retry defaults**: Word strict retries default to three attempts and PDF page retries to one. The PDF page-concurrency hint now explains that automatic mode follows the image model's throughput settings.
+
 ## V9.5.5
 
 - **工作表名称可翻译**：Excel 翻译默认将工作表名译成目标语言，并同步更新能确认安全的公式、定义名称、图表、下拉列表和内部跳转引用。遇到动态或无法确认的引用时，整份输出保留原工作表名并给出提示；原文副本仍保留原名。此选项与“公式显示值回填”相互独立。

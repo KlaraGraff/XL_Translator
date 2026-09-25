@@ -39,6 +39,27 @@ class FakeWordEngine(TranslationEngine):
 
 
 class WordBatchingTests(unittest.TestCase):
+    def test_legacy_limits_cannot_exceed_eight_items_and_budget_splits_long_text(self) -> None:
+        settings = WordBatchSettings.model_validate({
+            "max_paragraphs_per_batch": 16,
+            "max_chars_per_batch": 800,
+            "split_paragraph_chars": 3000,
+        })
+        self.assertEqual(settings.max_paragraphs_per_batch, 8)
+        self.assertEqual(settings.split_paragraph_chars, 800)
+        engine = FakeWordEngine()
+        texts = [f"第{i}段" for i in range(9)] + ["长段。" * 300]
+        stats = WordBatchRunStats()
+
+        translate_word_texts(
+            texts, engine, "fr", "system", settings,
+            concurrency=1, source_lang="zh", stats=stats,
+        )
+
+        self.assertEqual(stats.split_source_count, 1)
+        self.assertTrue(all(len(call) <= 8 for call in engine.calls))
+        self.assertTrue(all(sum(len(text) for text in call) <= 800 for call in engine.calls))
+
     def test_local_open_file_exhaustion_reduces_pressure_without_splitting(self) -> None:
         class TransientFileLimitEngine(FakeWordEngine):
             def translate_batch(self, texts, target_lang, system_prompt, source_lang="zh"):

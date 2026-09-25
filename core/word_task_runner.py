@@ -1398,7 +1398,7 @@ class WordTaskRunner:
                         "Word 批次策略："
                         f"每批最多 {settings.word_batch.max_paragraphs_per_batch} 段，"
                         f"字符预算 {settings.word_batch.max_chars_per_batch}，"
-                        f"长段拆分阈值 {settings.word_batch.split_paragraph_chars}，"
+                        "长段按字符预算自动拆分，"
                         f"失败严格重试 {settings.word_batch.strict_retry_attempts} 轮"
                     ),
                 )

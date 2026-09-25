@@ -26,9 +26,10 @@ class WordDefaultSettingsTests(unittest.TestCase):
         self.assertTrue(settings.excel_review.mark_review_items)
         self.assertEqual(settings.excel_review.existing_fill_policy, "red_font")
         self.assertEqual(settings.word_batch.max_paragraphs_per_batch, 8)
-        self.assertEqual(settings.word_batch.max_chars_per_batch, 3000)
-        self.assertEqual(settings.word_batch.split_paragraph_chars, 3000)
+        self.assertEqual(settings.word_batch.max_chars_per_batch, 800)
+        self.assertEqual(settings.word_batch.split_paragraph_chars, 800)
         self.assertEqual(settings.word_batch.strict_retry_attempts, 3)
+        self.assertEqual(settings.pdf.page_retry_attempts, 1)
         self.assertTrue(settings.word_conversion.use_native_preprocessing)
         self.assertTrue(settings.word_conversion.prefer_native_word)
 
@@ -36,8 +37,8 @@ class WordDefaultSettingsTests(unittest.TestCase):
         settings = WordBatchSettings()
 
         self.assertEqual(settings.max_paragraphs_per_batch, 8)
-        self.assertEqual(settings.max_chars_per_batch, 3000)
-        self.assertEqual(settings.split_paragraph_chars, 3000)
+        self.assertEqual(settings.max_chars_per_batch, 800)
+        self.assertEqual(settings.split_paragraph_chars, 800)
         self.assertEqual(settings.strict_retry_attempts, 3)
 
     def test_a_config_written_by_930_still_loads_after_semantic_was_removed(self) -> None:

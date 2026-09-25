@@ -136,17 +136,15 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
         assert match, f"没找到 {setting_path} 的 numberField min/max 声明"
         return int(match.group(1)), int(match.group(2))
 
-    def test_word_batch_paragraph_bounds_match_config(self) -> None:
-        lo, hi = self._numberfield_bounds(_read_settings_ts(), "word_batch.max_paragraphs_per_batch")
-        self.assertEqual((lo, hi), (config.WORD_BATCH_PARAGRAPHS_MIN, config.WORD_BATCH_PARAGRAPHS_MAX))
-
     def test_word_batch_chars_bounds_match_config(self) -> None:
         lo, hi = self._numberfield_bounds(_read_settings_ts(), "word_batch.max_chars_per_batch")
         self.assertEqual((lo, hi), (config.WORD_BATCH_CHARS_MIN, config.WORD_BATCH_CHARS_MAX))
 
-    def test_word_batch_split_chars_bounds_match_config(self) -> None:
-        lo, hi = self._numberfield_bounds(_read_settings_ts(), "word_batch.split_paragraph_chars")
-        self.assertEqual((lo, hi), (config.WORD_BATCH_SPLIT_CHARS_MIN, config.WORD_BATCH_SPLIT_CHARS_MAX))
+    def test_word_page_shows_only_character_budget_and_retry(self) -> None:
+        source = _read_settings_ts()
+        self.assertNotIn('numberField("每批最大段落数"', source)
+        self.assertNotIn('numberField("长段拆分阈值"', source)
+        self.assertIn('numberField("每批字符上限"', source)
 
     def test_pdf_page_retry_bounds_match_config(self) -> None:
         source = _read_settings_ts()
@@ -280,12 +278,10 @@ class DomainPromptDraftNotWipedOnSaveErrorTests(unittest.TestCase):
         )
 
     def test_numeric_setting_paths_opt_into_rerender_on_error(self) -> None:
-        """中-14 保住的效果：五个数值框 + PDF 并发框失败后仍要被拉回磁盘值。"""
+        """数值框保存失败后仍要被拉回磁盘值。"""
         source = _read_settings_ts()
         for path in (
-            "word_batch.max_paragraphs_per_batch",
             "word_batch.max_chars_per_batch",
-            "word_batch.split_paragraph_chars",
             "word_batch.strict_retry_attempts",
             "pdf.page_retry_attempts",
             "pdf.page_generation_concurrency",

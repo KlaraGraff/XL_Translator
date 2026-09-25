@@ -59,9 +59,9 @@ class OaProtocolApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(locked_sizes.status_code, 200)
-        self.assertEqual(locked_sizes.json()["word_batch"]["max_paragraphs_per_batch"], 16)
+        self.assertEqual(locked_sizes.json()["word_batch"]["max_paragraphs_per_batch"], 8)
         self.assertEqual(locked_sizes.json()["word_batch"]["max_chars_per_batch"], 12000)
-        self.assertEqual(locked_sizes.json()["word_batch"]["split_paragraph_chars"], 30000)
+        self.assertEqual(locked_sizes.json()["word_batch"]["split_paragraph_chars"], 12000)
         self.assertEqual(locked_sizes.json()["pdf"]["page_generation_concurrency"], 20)
         self.assertEqual(
             self.client.post("/api/models/throughput/unlock", json={"code": "wrong"}).status_code,
@@ -117,8 +117,9 @@ class OaProtocolApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(word_batch.status_code, 200)
-        self.assertEqual(word_batch.json()["word_batch"]["max_paragraphs_per_batch"], 1000000)
+        self.assertEqual(word_batch.json()["word_batch"]["max_paragraphs_per_batch"], 8)
         self.assertEqual(word_batch.json()["word_batch"]["max_chars_per_batch"], 1000000)
+        self.assertEqual(word_batch.json()["word_batch"]["split_paragraph_chars"], 1000000)
         self.assertEqual(word_batch.json()["pdf"]["page_generation_concurrency"], 1000000)
 
     def test_protocol_round_trip_for_role_and_secondary_connection(self) -> None:

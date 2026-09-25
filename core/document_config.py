@@ -47,6 +47,7 @@ DOCUMENT_CONFIG_SECTIONS = (
 DOCUMENT_CONFIG_LOCAL_PATH_FIELDS = frozenset(
     {"use_custom_output_dir", "custom_output_dir"}
 )
+_WORD_LEGACY_FIELDS = frozenset({"max_paragraphs_per_batch", "split_paragraph_chars"})
 # Top-level fields, kept flat because that is how they live in the settings
 # model.  Languages and domain prompts are the part users actually want to hand
 # to a colleague.
@@ -113,6 +114,7 @@ def build_document_config_export_payload(settings: AppSettings) -> dict[str, Any
             key: value
             for key, value in values.items()
             if key not in DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
+            and (section != "word_batch" or key not in _WORD_LEGACY_FIELDS)
         }
     for field in DOCUMENT_CONFIG_FIELDS:
         if field in payload:
@@ -162,6 +164,7 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
             key: value
             for key, value in values.items()
             if key not in DOCUMENT_CONFIG_LOCAL_PATH_FIELDS
+            and (section != "word_batch" or key not in _WORD_LEGACY_FIELDS)
         }
         if kept:
             parsed[section] = kept

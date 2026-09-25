@@ -17,8 +17,6 @@ from config import (  # noqa: E402
     WORD_BATCH_CHARS_MIN,
     WORD_BATCH_PARAGRAPHS_MAX,
     WORD_BATCH_PARAGRAPHS_MIN,
-    WORD_BATCH_SPLIT_CHARS_MAX,
-    WORD_BATCH_SPLIT_CHARS_MIN,
     WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
@@ -46,7 +44,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, help="Alias for --word-batch-paragraphs.")
     parser.add_argument("--word-batch-paragraphs", type=int, help="Override Word paragraphs per request batch.")
     parser.add_argument("--word-batch-chars", type=int, help="Override Word character budget per request batch.")
-    parser.add_argument("--word-split-chars", type=int, help="Override the long-paragraph split threshold.")
+    # Accept historical invocations without exposing a control that no longer applies.
+    parser.add_argument("--word-split-chars", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--word-retry-attempts", type=int, help="Override Word strict retry attempts for unresolved paragraphs.")
     parser.add_argument(
         "--word-untranslated-only",
@@ -175,15 +174,6 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
             WORD_BATCH_CHARS_MIN,
             WORD_BATCH_CHARS_MAX,
         )
-    if args.word_split_chars is not None:
-        settings.word_batch.split_paragraph_chars = max(
-            settings.word_batch.max_chars_per_batch,
-            _clamp(
-                args.word_split_chars,
-                WORD_BATCH_SPLIT_CHARS_MIN,
-                WORD_BATCH_SPLIT_CHARS_MAX,
-            ),
-        )
     if args.word_retry_attempts is not None:
         settings.word_batch.strict_retry_attempts = _clamp(
             args.word_retry_attempts,
@@ -204,10 +194,8 @@ def _apply_runtime_overrides(settings, args: argparse.Namespace) -> None:
     if args.custom_prompt:
         settings.domain_preset = "自定义"
         settings.custom_prompt = args.custom_prompt
-    settings.word_batch.split_paragraph_chars = max(
-        settings.word_batch.max_chars_per_batch,
-        settings.word_batch.split_paragraph_chars,
-    )
+    settings.word_batch.max_paragraphs_per_batch = min(8, settings.word_batch.max_paragraphs_per_batch)
+    settings.word_batch.split_paragraph_chars = settings.word_batch.max_chars_per_batch
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:

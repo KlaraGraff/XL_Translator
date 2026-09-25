@@ -2568,12 +2568,8 @@ function renderParamsPage(host: HTMLElement): void {
     const grid = document.createElement("div");
     grid.className = "grid2";
     const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
-    // 上下限对齐 config.py：WORD_BATCH_PARAGRAPHS_MIN/MAX、WORD_BATCH_CHARS_MIN/MAX、
-    // WORD_BATCH_SPLIT_CHARS_MIN/MAX。这里曾经比后端宽（或干脆没设上限），越界的值能
-    // 在前端存活到点保存那一刻才被后端 422 打回，且打回的是英文 pydantic 原文（中-14）。
-    grid.append(numberField("每批最大段落数", num(batch.max_paragraphs_per_batch, 8), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_paragraphs_per_batch", v), { rerenderOnError: true }), { min: 1, max: throughputUnlocked ? undefined : 16, integer: true, hint: throughputUnlocked ? "单次模型请求最多包含的段落数量。" : "单次模型请求最多包含的段落数量，范围 1–16。" }));
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限，超出会自动分批。" : "单次模型请求的字符上限，超出会自动分批，范围 800–12000。" }));
-    grid.append(numberField("长段拆分阈值", num(batch.split_paragraph_chars, 3000), (v) => void reRenderAfter(() => saveSettingPath("word_batch.split_paragraph_chars", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 1500, max: throughputUnlocked ? undefined : 30000, integer: true, hint: throughputUnlocked ? "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写。" : "超过该长度的段落只在模型请求层拆分，响应后按原顺序回写，不会新增段落或破坏编号、数字和单位，范围 1500–30000。" }));
+    // 批次字符数同时决定自动分批和长段拆分；段落数在后台最多限制为 8。
+    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限；超出自动分批，长段自动拆分。" : "单次模型请求的字符上限；超出自动分批，长段自动拆分。范围 800–12000。" }));
     grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
     body.append(grid);
   } else {
@@ -2583,7 +2579,7 @@ function renderParamsPage(host: HTMLElement): void {
     // 上下限对齐 config.py：PDF_PAGE_RETRY_ATTEMPTS_MIN/MAX(0–8)、
     // PDF_PAGE_CONCURRENCY_SAFETY_CAP(1–20)。max: 10 曾经比后端的 8 宽，落进
     // 那道夹缝的值只会在保存时被后端 422 打回（中-14）。
-    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "单页翻译失败后的重试次数，范围 0–8。" }));
+    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "单页翻译失败后的重试次数，范围 0–8。" }));
     const concurrencyValue = pdf.page_generation_concurrency === null || pdf.page_generation_concurrency === undefined
       ? "" : String(pdf.page_generation_concurrency);
     const concurrencyInput = document.createElement("input");
@@ -2605,8 +2601,8 @@ function renderParamsPage(host: HTMLElement): void {
       void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
     });
     grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, throughputUnlocked
-      ? "同时生成页图的并发数；留空由应用按机器性能决定。"
-      : "同时生成页图的并发数，范围 1–20；留空由应用按机器性能决定。"));
+      ? "同时生成页图的数量；留空时按当前图像模型的吞吐设置自动决定。"
+      : "同时生成页图的数量，范围 1–20；留空时按当前图像模型的吞吐设置自动决定。"));
     body.append(grid);
   }
 
