@@ -151,7 +151,7 @@ const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },
   { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
-  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「使用 Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: true, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
+  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「使用 Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
   { key: "reviewMark", label: "标记需复核内容", hint: "为保留原文和疑似原文异常的单元格标注底色，便于人工复核。程序自己判过没问题的（如语义校验接受）只进报告，不标底色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
 ];
 
@@ -383,9 +383,9 @@ function freshState(surface: Surface): SurfaceState {
     scanSummary: {},
     selected: new Set(),
     toggles: freshToggles(surface),
-    targetLang: surface === "pdf" ? "zh" : "en",
+    targetLang: surface === "pdf" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
-    domainPreset: "同步工程场景",
+    domainPreset: surface === "excel" ? "无" : "同步工程场景",
     useCustomOutputDir: false,
     customOutputDir: "",
     task: null,
@@ -491,11 +491,11 @@ function applySettingsToStates(): void {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
     } else {
-      st.targetLang = text(settings[`${surface}_target_lang`], text(settings.target_lang, "en"));
+      st.targetLang = text(settings[`${surface}_target_lang`], surface === "word" ? "fr" : text(settings.target_lang, "en"));
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
-      st.domainPreset = text(settings[`${surface}_domain_preset`], "同步工程场景");
+      st.domainPreset = text(settings[`${surface}_domain_preset`], surface === "excel" ? "无" : "同步工程场景");
     }
     for (const toggle of TOGGLES[surface]) {
       if (toggle.pathKind === "flat" && toggle.path) {

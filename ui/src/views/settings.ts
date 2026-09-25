@@ -2484,7 +2484,7 @@ function domainSettingsFor(surface: TranslationSurface): {
   // 覆盖是「预设名 → {目标语言 → Prompt}」两层结构（中-15）；后端加载时已把
   // 旧扁平数据迁移成这个形态，这里只需按嵌套读。
   return {
-    preset: text(settings?.[`${prefix}_domain_preset`], "同步工程场景"),
+    preset: text(settings?.[`${prefix}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"),
     customPrompt: text(settings?.[`${prefix}_custom_prompt`]),
     promptOverrides: Object.fromEntries(
       Object.entries(record(settings?.[`${prefix}_domain_prompt_overrides`])).map(([preset, langs]) => [
@@ -2502,7 +2502,7 @@ function domainSettingsFor(surface: TranslationSurface): {
 
 function targetLangForDomain(surface: TranslationSurface): string {
   const key = surface === "excel" ? "excel_target_lang" : "word_target_lang";
-  return text(settings?.[key], text(settings?.target_lang, "en"));
+  return text(settings?.[key], surface === "word" ? "fr" : text(settings?.target_lang, "en"));
 }
 
 function renderParamsPage(host: HTMLElement): void {

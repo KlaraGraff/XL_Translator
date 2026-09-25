@@ -748,7 +748,7 @@ class ExcelOutputSettings(BaseModel):
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
     enable_excel_autofit: bool = False
-    lock_row_height: bool = True
+    lock_row_height: bool = False
 
 
 class WordOutputSettings(BaseModel):
@@ -1072,7 +1072,7 @@ class AppSettings(BaseModel):
     excel_source_lang: str = "auto"
     word_source_lang: str = "auto"
     excel_target_lang: str = Field(default_factory=get_default_target_lang)
-    word_target_lang: str = Field(default_factory=get_default_target_lang)
+    word_target_lang: str = "fr"
     tm_source_lang: str = "zh"
     tm_target_lang: str = Field(default_factory=get_default_target_lang)
     recent_tm_lang_pairs: list[str] = Field(default_factory=list)
@@ -1138,7 +1138,7 @@ class AppSettings(BaseModel):
     # Excel and Word intentionally own separate domain/prompt state.  The
     # legacy global fields remain as an inert compatibility surface for CLI
     # callers; page-aware task code reads the fields below.
-    excel_domain_preset: str = "同步工程场景"
+    excel_domain_preset: str = "无"
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     # Prompt 覆盖按「预设名 → {目标语言 → Prompt}」两层存放。内置 DOMAIN_PRESETS
