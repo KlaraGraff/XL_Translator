@@ -1,5 +1,15 @@
 # Translator 版本更新日志
 
+## V9.5.7
+
+- **同名文件不会互相覆盖**：同一批里若有同名的旧版和新版 Excel 或 Word 文件，译文会分别保存；不同文件译出的名称相同、或目标位置已有文件时，也会自动使用不同名称。
+
+  **Distinct files keep distinct outputs**: Legacy and current Excel or Word files with the same name now produce separate results. Outputs also receive distinct names when translated filenames match or a destination file already exists.
+
+- **Word 失败时不留下假译文**：Word 文件写入或成品检查失败时，不会留下看似完成、实际只有原文或内容不完整的译文文件；已有结果会保留。
+
+  **No apparent Word result after a failed write**: If writing or checking a Word result fails, the app no longer leaves an apparently finished file containing only the source or incomplete content. An existing result is preserved.
+
 ## V9.5.6
 
 - **Word 批次设置更简单**：默认每批最多 800 个字符，超过上限的长段自动拆分，内部每批最多 8 段。设置页不再显示段落数和拆分阈值两个多余选项。旧配置仍可读取，已有的字符上限设置会保留。
