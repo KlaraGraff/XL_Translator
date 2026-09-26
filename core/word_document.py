@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
 import stat
 import tempfile
@@ -10,6 +11,7 @@ import uuid
 import zipfile
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 
 from docx import Document
@@ -872,6 +874,39 @@ def _element_has_visible_text(element) -> bool:
     return any((node.text or "").strip() for node in element.iter(qn("w:t")))
 
 
+def _atomic_docx_writer(write_fn):
+    """Keep the previous output intact until a complete DOCX can be opened.
+
+    The staging directory lives beside the destination so ``os.replace`` is
+    atomic on the same filesystem.  TemporaryDirectory removes the working
+    copy on every failure, including a failed final replacement.
+    """
+    @wraps(write_fn)
+    def wrapped(**kwargs):
+        output_dir = Path(kwargs["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_callback = kwargs.get("log_callback")
+        staged_logs: list[str] = []
+        with tempfile.TemporaryDirectory(prefix=".word-staging-", dir=output_dir) as stage_dir:
+            staged_kwargs = {**kwargs, "output_dir": stage_dir}
+            if log_callback is not None:
+                staged_kwargs["log_callback"] = staged_logs.append
+            staged_path = write_fn(**staged_kwargs)
+            final_path = output_dir / staged_path.name
+            Document(str(staged_path))
+            os.replace(staged_path, final_path)
+        if log_callback is not None:
+            for message in staged_logs:
+                try:
+                    log_callback(message)
+                except Exception as exc:  # noqa: BLE001 - 日志故障不应伪装成写入失败
+                    logger.warning(f"Word 文件已写入，但输出日志回调失败：{exc!r}")
+        return final_path
+
+    return wrapped
+
+
+@_atomic_docx_writer
 def write_bilingual_docx(
     *,
     source_path: str | Path,

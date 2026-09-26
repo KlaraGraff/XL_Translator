@@ -173,6 +173,67 @@ class WordResumeTests(IsolatedAppDataTestCase):
         self.assertTrue(done.file_results and done.file_results[0]["success"], done.file_results)
         return done
 
+    def test_post_write_audit_failure_does_not_publish_output(self) -> None:
+        for existing_output in (False, True):
+            with self.subTest(existing_output=existing_output), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "report.docx"
+                self._make_docx(source, ["项目名称"])
+                final_dir = root / "out"
+                final_dir.mkdir()
+                final = final_dir / self._bilingual_name(source.name, "en")
+                if existing_output:
+                    self._make_docx(final, ["之前的译文"])
+                previous = final.read_bytes() if existing_output else None
+                runner = WordTaskRunner(
+                    [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                    self._settings(),
+                    source_root=root,
+                )
+
+                with ExitStack() as stack:
+                    self._runner_patches(stack, root=root)
+                    stack.enter_context(
+                        patch(
+                            "core.word_task_runner._append_post_write_coverage_issues",
+                            side_effect=RuntimeError("audit failed"),
+                        )
+                    )
+                    runner._run()
+
+                done = self._terminal_message(runner, DoneMsg)
+                self.assertFalse(done.file_results[0]["success"])
+                self.assertNotIn("output", done.file_results[0])
+                self.assertEqual(final.read_bytes() if final.exists() else None, previous)
+                self.assertEqual(list(final_dir.iterdir()), [final] if existing_output else [])
+
+    def test_task_statistics_failure_after_commit_keeps_successful_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "report.docx"
+            self._make_docx(source, ["项目名称"])
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+            with ExitStack() as stack:
+                self._runner_patches(stack, root=root)
+                stack.enter_context(
+                    patch.object(
+                        runner._task_logger,
+                        "file_done",
+                        side_effect=RuntimeError("statistics failed"),
+                    )
+                )
+                runner._run()
+
+            done = self._terminal_message(runner, DoneMsg)
+            self.assertTrue(done.file_results[0]["success"])
+            final = Path(done.file_results[0]["output"])
+            self.assertTrue(final.is_file())
+            self.assertEqual(final.parent, root / "out")
+
     # ------------------------------------------------------------------
     # 1) resume + untranslated_only：换底稿，只补未译段落，输出名无叠加后缀
     # ------------------------------------------------------------------

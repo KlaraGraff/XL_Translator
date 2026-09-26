@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from core.word_document import (
     EXISTING_HIGHLIGHT_POLICY_SKIP,
     WordFrontMatterBoundary,
     _append_translation_to_cell,
+    _atomic_docx_writer,
     _replace_cell_text,
     _apply_cell_review_mark,
     _apply_paragraph_review_mark,
@@ -128,6 +131,7 @@ def build_word_coverage_plan(
     return WordCoveragePlan(path=source_path, units=units, front_matter=front_matter)
 
 
+@_atomic_docx_writer
 def write_untranslated_docx(
     *,
     source_path: str | Path,
@@ -359,7 +363,11 @@ def apply_coverage_review_marks(
                 marked += 1
 
     if marked:
-        doc.save(str(output_path))
+        with tempfile.TemporaryDirectory(prefix=".word-staging-", dir=output_path.parent) as stage_dir:
+            staged_path = Path(stage_dir) / output_path.name
+            doc.save(str(staged_path))
+            Document(str(staged_path))
+            os.replace(staged_path, output_path)
     return marked
 
 

@@ -82,9 +82,16 @@ def output_stem_from_translation(original_stem: str, translated: str) -> str:
 
 
 def avoid_bilingual_name_collision(
-    output_dir: Path, basename: str, target_lang: str
+    output_dir: Path,
+    basename: str,
+    target_lang: str,
+    reserved_paths: set[Path] | None = None,
 ) -> str:
-    """Keep two sources whose translated stems coincide from overwriting."""
+    """Choose and reserve a unique bilingual output name for one task.
+
+    ``reserved_paths`` also covers names selected earlier in the same task,
+    before their files have been written. Existing outputs are never reused.
+    """
     from core.bilingual_writer import bilingual_output_name
 
     source = Path(basename)
@@ -96,7 +103,14 @@ def avoid_bilingual_name_collision(
     label = get_target_lang_display(target_lang, include_optional=True)
     candidate = source.stem
     index = 2
-    while (output_dir / bilingual_output_name(candidate + extension, label)).exists():
+    while True:
+        output_path = output_dir / bilingual_output_name(candidate + extension, label)
+        if not output_path.exists() and (
+            reserved_paths is None or output_path not in reserved_paths
+        ):
+            break
         candidate = f"{source.stem}_{index}"
         index += 1
-    return candidate + source.suffix
+    if reserved_paths is not None:
+        reserved_paths.add(output_path)
+    return candidate + extension

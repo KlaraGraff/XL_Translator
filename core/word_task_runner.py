@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -2017,6 +2019,7 @@ class WordTaskRunner:
 
             t_phase3 = datetime.now()
             source_root = self._source_root if self._source_root else self._files[0].path.parent
+            reserved_output_paths: set[Path] = set()
             for index, file_item in enumerate(self._files):
                 # 阶段 3 进了门就不再半路丢文件：这一步不发 API、只是把已经算好的
                 # global_translations 落盘，成本是本地磁盘 IO，没有理由为了「响应
@@ -2048,6 +2051,11 @@ class WordTaskRunner:
                 except ValueError:
                     rel_subdir = Path()
 
+                stage_handle = None
+                file_issues_at_start = len(quality_issues)
+                reserved_before = set(reserved_output_paths)
+                committed_out_path = None
+                success_record = None
                 try:
                     t0 = datetime.now()
                     source_path = process_paths[index] if index < len(process_paths) else file_item.path
@@ -2074,18 +2082,28 @@ class WordTaskRunner:
                                 f"文件名沿用原名：{Path(output_source_name).name}",
                             )
                         if translated_stem != original_stem:
-                            output_source_name = avoid_bilingual_name_collision(
-                                output_dir / rel_subdir,
-                                f"{translated_stem}{Path(output_source_name).suffix}",
-                                target_lang,
-                            )
+                            output_source_name = f"{translated_stem}{Path(output_source_name).suffix}"
+                    output_source_name = avoid_bilingual_name_collision(
+                        output_dir / rel_subdir,
+                        output_source_name,
+                        target_lang,
+                        reserved_output_paths,
+                    )
+                    final_output_dir = output_dir / rel_subdir
+                    final_output_dir.mkdir(parents=True, exist_ok=True)
+                    stage_handle = tempfile.TemporaryDirectory(
+                        prefix=".word-task-staging-", dir=final_output_dir
+                    )
+                    staged_output_dir = Path(stage_handle.name)
+                    write_log_messages: list[str] = []
+                    mark_counts: list[int] = []
                     if self._untranslated_only:
                         coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
                         if coverage_plan is None:
                             raise ValueError("缺少补译识别计划，无法安全按位置写入。")
                         out_path = write_untranslated_docx(
                             source_path=source_path,
-                            output_dir=output_dir / rel_subdir,
+                            output_dir=staged_output_dir,
                             plan=coverage_plan,
                             translations=global_translations,
                             target_lang=target_lang,
@@ -2098,17 +2116,14 @@ class WordTaskRunner:
                             ),
                             review_mark_colors=settings.word_review.mark_colors,
                             existing_highlight_policy=settings.word_review.existing_highlight_policy,
-                            log_callback=lambda msg: self._log(
-                                "OK" if msg.startswith("[OK]") else "INFO",
-                                msg,
-                            ),
+                            log_callback=write_log_messages.append,
                             translate_headers_footers=self._translate_headers_footers,
                             output_translation_only=settings.word_output.output_translation_only,
                         )
                     else:
                         out_path = write_bilingual_docx(
                             source_path=source_path,
-                            output_dir=output_dir / rel_subdir,
+                            output_dir=staged_output_dir,
                             translations=global_translations,
                             target_lang=target_lang,
                             source_lang=source_lang,
@@ -2120,10 +2135,7 @@ class WordTaskRunner:
                             ),
                             review_mark_colors=settings.word_review.mark_colors,
                             existing_highlight_policy=settings.word_review.existing_highlight_policy,
-                            log_callback=lambda msg: self._log(
-                                "OK" if msg.startswith("[OK]") else "INFO",
-                                msg,
-                            ),
+                            log_callback=write_log_messages.append,
                             issue_callback=lambda info: quality_issues.append(
                                 _word_cell_line_mismatch_issue(
                                     file_name=_file_result_identity(
@@ -2149,60 +2161,78 @@ class WordTaskRunner:
                             if settings.word_review.highlight_unresolved
                             else None
                         ),
-                        mark_log_callback=lambda count, name=file_item.name: self._log(
-                            "INFO",
-                            f"{name}：已在输出文档标记 {count} 处需复核位置。",
-                        ),
+                        mark_log_callback=mark_counts.append,
                         # 写盘前残留巡检已逐位置报过的段落（带修复拒收理由），
                         # 成品体检不再重复报，防止同一处残留数成两条待办
                         pre_reported_residual_sources={
                             unit.source_text.strip() for unit in still_needs_review
                         },
                     )
-                    if residual_count:
-                        self._log(
-                            "WARN",
-                            (
-                                f"{file_item.name}：输出文档仍发现 {residual_count} "
-                                "处疑似未翻译源文，已写入质量报告。"
-                            ),
-                        )
+                    final_path = final_output_dir / out_path.name
                     elapsed = (datetime.now() - t0).total_seconds()
                     this_file_texts = file_texts[index]
                     this_tm = sum(1 for text in this_file_texts if text in hits)
                     this_api = sum(1 for text in this_file_texts if text in misses or text in mixed_texts)
-                    self._task_logger.file_done(
-                        filename=file_item.name,
-                        elapsed=elapsed,
-                        tm_hits=this_tm,
-                        api_calls=this_api,
-                    )
-                    file_results.append(
-                        {
-                            "name": file_item.name,
-                            "source_path": str(file_item.path),
-                            "output": str(out_path),
-                            "success": True,
-                            "preprocess": (
-                                preprocess_summaries[index]
-                                if index < len(preprocess_summaries)
-                                else {}
-                            ),
-                            "front_matter": (
-                                front_matter_summaries[index]
-                                if index < len(front_matter_summaries)
-                                else {}
-                            ),
-                            "issues": [
-                                issue
-                                for issue in quality_issues
-                                if issue.get("file")
-                                == _file_result_identity(file_item, source_root)
-                            ],
-                        }
-                    )
-                    self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
+                    success_record = {
+                        "name": file_item.name,
+                        "source_path": str(file_item.path),
+                        "output": str(final_path),
+                        "success": True,
+                        "preprocess": (
+                            preprocess_summaries[index]
+                            if index < len(preprocess_summaries)
+                            else {}
+                        ),
+                        "front_matter": (
+                            front_matter_summaries[index]
+                            if index < len(front_matter_summaries)
+                            else {}
+                        ),
+                        "issues": [
+                            issue
+                            for issue in quality_issues
+                            if issue.get("file")
+                            == _file_result_identity(file_item, source_root)
+                        ],
+                    }
+                    os.replace(out_path, final_path)
+                    committed_out_path = final_path
+                    file_results.append(success_record)
+                    try:
+                        for message in write_log_messages:
+                            self._log("OK" if message.startswith("[OK]") else "INFO", message)
+                        for count in mark_counts:
+                            self._log(
+                                "INFO",
+                                f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
+                            )
+                        if residual_count:
+                            self._log(
+                                "WARN",
+                                (
+                                    f"{file_item.name}：输出文档仍发现 {residual_count} "
+                                    "处疑似未翻译源文，已写入质量报告。"
+                                ),
+                            )
+                        self._task_logger.file_done(
+                            filename=file_item.name,
+                            elapsed=elapsed,
+                            tm_hits=this_tm,
+                            api_calls=this_api,
+                        )
+                        self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
+                    except Exception as exc:  # noqa: BLE001 - 文件已提交，统计故障只告警
+                        logger.warning(f"Word 文件已写出，但完成日志或统计失败：{exc!r}")
                 except Exception as exc:
+                    if committed_out_path is not None:
+                        logger.warning(f"Word 文件已写出，但结果登记失败：{exc!r}")
+                        if success_record is not None and success_record not in file_results:
+                            file_results.append(success_record)
+                        continue
+                    del quality_issues[file_issues_at_start:]
+                    reserved_output_paths.difference_update(
+                        reserved_output_paths - reserved_before
+                    )
                     logger.debug(f"Word 文件写入失败 {file_item.name} 原始错误：{exc!r}")
                     write_reason = user_facing_reason(
                         exc,
@@ -2218,6 +2248,12 @@ class WordTaskRunner:
                             "error": write_reason,
                         }
                     )
+                finally:
+                    if stage_handle is not None:
+                        try:
+                            stage_handle.cleanup()
+                        except Exception as exc:  # noqa: BLE001 - 不掩盖已提交文件的状态
+                            logger.warning(f"Word 临时目录清理失败：{exc!r}")
 
             self._queue.put(
                 ProgressMsg(

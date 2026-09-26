@@ -354,10 +354,17 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
         root: Path,
         prepared_by_path: dict[Path, object] | None = None,
     ) -> MagicMock:
+        def staged_writer(**kwargs):
+            # The runner now commits only a file that really exists in its
+            # per-file staging directory after the post-write audit.
+            path = Path(kwargs["output_dir"]) / kwargs["output_name"]
+            Document().save(path)
+            return path
+
         writer = stack.enter_context(
             patch(
                 "core.word_task_runner.write_bilingual_docx",
-                side_effect=lambda **kwargs: root / "out" / kwargs["output_name"],
+                side_effect=staged_writer,
             )
         )
         stack.enter_context(

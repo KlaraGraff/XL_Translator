@@ -1988,6 +1988,7 @@ class TaskRunner:
                 phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语表格..."
             ))
 
+            reserved_output_paths: set[Path] = set()
             for fi, file_item in enumerate(self._files):
                 _raise_if_stopped()
 
@@ -2029,22 +2030,24 @@ class TaskRunner:
 
                 try:
                     t0 = datetime.now()
-                    output_basename = None
+                    original_name = naming_original_path.name if naming_original_path else file_item.path.name
+                    output_basename = original_name
                     if excel_output.translate_output_filename:
-                        original_name = naming_original_path.name if naming_original_path else file_item.path.name
                         original_stem = Path(original_name).stem
                         translated_stem = output_stem_from_translation(
                             original_stem,
                             filename_translations.get(original_stem, original_stem),
                         )
                         if translated_stem != original_stem:
-                            output_basename = avoid_bilingual_name_collision(
-                                output_dir / rel_subdir,
-                                translated_stem + Path(original_name).suffix,
-                                target_lang,
-                            )
+                            output_basename = translated_stem + Path(original_name).suffix
                         else:
                             self._log("WARN", f"[{file_item.name}] 输出文件名未获得可用译名，沿用原名。")
+                    output_basename = avoid_bilingual_name_collision(
+                        output_dir / rel_subdir,
+                        output_basename,
+                        target_lang,
+                        reserved_output_paths,
+                    )
                     file_review_positions: list[dict[str, str]] = []
                     # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
                     # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
