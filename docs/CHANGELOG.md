@@ -1,5 +1,19 @@
 # Translator 版本更新日志
 
+## V9.5.8
+
+- **文件进度更准确**：Excel、Word 和 PDF 按每份文件的实际处理阶段显示“未开始”“待处理”“处理中”和“已生成”，不再笼统显示“排队中”；单文件 PDF 也会正确显示正在处理。
+
+  **Accurate file progress**: Excel, Word and PDF now show each file as not started, pending, processing or generated according to its actual stage. Single-file PDFs also show processing correctly.
+
+- **新一批不沿用旧状态**：重新扫描或更换来源后，旧的完成提示、文件状态和 PDF 页表会清空；快速切换时，较晚返回的旧结果不会覆盖当前内容。
+
+  **Fresh state for a new batch**: Rescanning or changing the source clears the previous completion notice, file status and PDF page list. Delayed responses from an earlier selection no longer overwrite the current workspace.
+
+- **历史任务打开正确工作区**：任务中心的“打开工作区”恢复所选任务自己的文件和结果；旧记录缺少原始来源路径或逐页记录时会明确说明。
+
+  **Correct workspace for historical tasks**: Open Workspace restores the selected task's own files and results. Older records clearly indicate when the original source path or per-page records are unavailable.
+
 ## V9.5.7
 
 - **同名文件不会互相覆盖**：同一批里若有同名的旧版和新版 Excel 或 Word 文件，译文会分别保存；不同文件译出的名称相同、或目标位置已有文件时，也会自动使用不同名称。

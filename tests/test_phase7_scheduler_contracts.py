@@ -888,8 +888,16 @@ class Phase7HttpContracts(unittest.TestCase):
                 for line in resumed_stream.text.splitlines()
                 if line.startswith("id:")
             ]
-            self.assertEqual(first_ids, [1, 2, 3, 4])
-            self.assertEqual(resumed_ids, [2, 3, 4])
+            # The terminal file-progress event precedes done, so reconnecting
+            # consumers receive the final file state as well as the task result.
+            self.assertEqual(first_ids, [1, 2, 3, 4, 5])
+            self.assertEqual(resumed_ids, [2, 3, 4, 5])
+            event_types = [
+                line.split(":", 1)[1].strip()
+                for line in first_stream.text.splitlines()
+                if line.startswith("event:")
+            ]
+            self.assertEqual(event_types[-2:], ["file_progress", "done"])
             # 进度要真的送到面板：阶段、文件名和计数保留，绝对路径换成 [path]。
             self.assertIn("[阶段 1] 提取词汇：fixture.xlsx（1/3）", first_stream.text)
             self.assertIn("source_root=[path]", first_stream.text)
