@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from config import PDF_RENDER_DPI_DEFAULT
 from core import diagnostics
+from core.file_progress import FileProgressMsg, file_progress_id
 from core.api_scheduler import WeightedApiScheduler
 from core.image_generation import (
     GPT_IMAGE_2_MODEL,
@@ -176,6 +177,192 @@ def _run_single_file(
     )
     runner._finalize_file_record(prepared, should_assemble=should_assemble)
     return prepared.record
+
+
+class PdfFileProgressTests(unittest.TestCase):
+    def test_source_copy_failure_includes_record_error_in_progress_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "missing.png"
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source, name=source.name, size_kb=0, source_type=SOURCE_TYPE_IMAGE)],
+                AppSettings(target_lang="en"),
+                source_root=root,
+                task_logger_enabled=False,
+            )
+            runner._prepare_pdf_files(output_dir=root / "out", app_managed=False)
+            failures = [
+                message
+                for message in self._progress_messages(runner)
+                if message.file_id == file_progress_id(source) and message.state == "failed"
+            ]
+            self.assertEqual(len(failures), 1)
+            self.assertIn("复制源文件失败", failures[0].result["error"])
+
+    def test_page_counters_exclude_pending_placeholders_and_wait_without_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "input.png"
+            source.write_bytes(_png_bytes(12, 16))
+            runner = PdfImageTranslationRunner(
+                [PdfFileItem(path=source, name=source.name, size_kb=1, source_type=SOURCE_TYPE_IMAGE)],
+                AppSettings(target_lang="en"),
+                source_root=root,
+                task_logger_enabled=False,
+            )
+            prepared = runner._prepare_pdf_files(output_dir=root / "out", app_managed=False)[0]
+            prepared.record.page_count = 2
+            prepared.record.pages = [
+                PdfPageRecord(page_number=1, source_image_path="", status="success"),
+                PdfPageRecord(page_number=2, source_image_path="", status="placeholder_pending"),
+            ]
+
+            while not runner._queue.empty():
+                runner._queue.get_nowait()
+            self.assertEqual(runner._settled_file_page_count(prepared.record), 1)
+            runner._emit_file_page_progress(prepared, outstanding=0)
+            waiting = runner._queue.get_nowait()
+            self.assertIsInstance(waiting, FileProgressMsg)
+            self.assertEqual((waiting.state, waiting.phase, waiting.completed, waiting.total), ("waiting", "translate", 1, 2))
+
+            future = object()
+            self.assertEqual(
+                runner._file_outstanding_future_count(prepared, {future: (prepared, prepared.record.pages[0])}),
+                1,
+            )
+            runner._emit_file_page_progress(prepared, outstanding=1)
+            active = runner._queue.get_nowait()
+            self.assertEqual((active.state, active.phase, active.completed, active.total), ("active", "translate", 1, 2))
+
+            prepared.record.pages[1].status = "placeholder"
+            self.assertEqual(runner._settled_file_page_count(prepared.record), 2)
+
+    def _make_runner(self, root: Path, *, block_second: bool = False, resume_after_first: bool = False):
+        first = root / "a" / "input.png"
+        second = root / "b" / "input.png"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_bytes(_png_bytes(12, 16))
+        second.write_bytes(_png_bytes(12, 16))
+        entered_second = threading.Event()
+        release_second = threading.Event()
+
+        class StubRunner(PdfImageTranslationRunner):
+            def __init__(self):
+                items = [
+                    PdfFileItem(path=path, name=path.name, size_kb=1, source_type=SOURCE_TYPE_IMAGE)
+                    for path in (first, second)
+                ]
+                settings = AppSettings(target_lang="en")
+                super().__init__(items, settings, source_root=root, task_logger_enabled=False)
+                self.unfinished_checks = 0
+                self.outputs_missing_on_second_pass: list[bool] = []
+
+            def _has_unfinished_pages(self, _records):
+                if not resume_after_first:
+                    return False
+                self.unfinished_checks += 1
+                return self.unfinished_checks <= 3
+
+            def _process_prepared_pages(self, *_args, **_kwargs):
+                if resume_after_first and not self._resume_was_requested:
+                    self._stop_event.set()
+
+            def _finalize_file_record(self, prepared, *, should_assemble):
+                output = prepared.translated_pages_dir.parent / "translated.png"
+                if prepared.item.path == second:
+                    if block_second:
+                        entered_second.set()
+                        if not release_second.wait(timeout=5):
+                            raise TimeoutError("test did not release second file finalization")
+                    if resume_after_first and self.unfinished_checks >= 2:
+                        self.outputs_missing_on_second_pass.append(not output.exists())
+                output.write_bytes(prepared.item.path.read_bytes())
+                prepared.record.translated_image_path = str(output)
+                prepared.record.status = PDF_OUTPUT_STATE_COMPLETED
+                if resume_after_first and prepared.item.path == first and not self._resume_was_requested:
+                    self._resume_was_requested = True
+                    self._stop_event.clear()
+
+        runner = StubRunner()
+        runner._resume_was_requested = False
+        return runner, first, second, entered_second, release_second
+
+    def _run_stubbed_pipeline(self, runner: PdfImageTranslationRunner, root: Path) -> None:
+        model_config = types.SimpleNamespace(provider="mock", model="mock-image")
+        with (
+            patch("core.pdf_image_translation.resolve_effective_model_config", return_value=model_config),
+            patch("core.pdf_image_translation.get_model_throughput", return_value=types.SimpleNamespace(concurrency=1)),
+            patch("core.pdf_image_translation.image_model_signature", return_value="mock-signature"),
+            patch("core.pdf_image_translation.provider_supports_capability", return_value=True),
+            patch("core.pdf_image_translation.build_pdf_output_dir", return_value=root / "out"),
+            patch("core.pdf_image_translation.is_app_managed_pdf_output_dir", return_value=False),
+            patch.object(runner, "_resolve_pdf_concurrency", return_value=1),
+        ):
+            runner._run()
+
+    def _progress_messages(self, runner: PdfImageTranslationRunner) -> list[FileProgressMsg]:
+        messages = []
+        while not runner._queue.empty():
+            message = runner._queue.get_nowait()
+            if isinstance(message, FileProgressMsg):
+                messages.append(message)
+        return messages
+
+    def test_first_file_reports_generated_while_next_file_is_finalizing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner, first, second, entered_second, release_second = self._make_runner(
+                root,
+                block_second=True,
+            )
+            errors: list[BaseException] = []
+
+            def run():
+                try:
+                    self._run_stubbed_pipeline(runner, root)
+                except BaseException as exc:  # noqa: BLE001 - surface worker-thread test errors.
+                    errors.append(exc)
+
+            worker = threading.Thread(target=run)
+            worker.start()
+            try:
+                self.assertTrue(entered_second.wait(timeout=5))
+                progress = self._progress_messages(runner)
+                first_id = file_progress_id(first)
+                second_id = file_progress_id(second)
+                self.assertNotEqual(first_id, second_id)
+                first_generated = next(
+                    message for message in progress
+                    if message.file_id == first_id and message.state == "generated"
+                )
+                self.assertTrue(Path(first_generated.result["output"]).is_file())
+                self.assertFalse(
+                    any(message.file_id == second_id and message.state == "generated" for message in progress)
+                )
+            finally:
+                release_second.set()
+                worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+
+    def test_resume_resets_generated_progress_and_clears_stale_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runner, first, _second, _entered, _release = self._make_runner(
+                root,
+                resume_after_first=True,
+            )
+            self._run_stubbed_pipeline(runner, root)
+            first_id = file_progress_id(first)
+            progress = [message for message in self._progress_messages(runner) if message.file_id == first_id]
+            states = [message.state for message in progress]
+            generated_index = states.index("generated")
+            reset_index = states.index("waiting", generated_index + 1)
+            self.assertEqual(progress[reset_index].phase, "translate")
+            self.assertNotIn("output", progress[reset_index].result)
+            self.assertIn("generated", states[reset_index + 1 :])
+            self.assertTrue(runner.outputs_missing_on_second_pass)
 
 
 class PdfImageTranslationTests(unittest.TestCase):

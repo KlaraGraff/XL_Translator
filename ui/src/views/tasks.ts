@@ -23,6 +23,7 @@ import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS } from "../task-state-labels";
 import { ApiClient, type SseEvent, type TaskStatus } from "../api-client";
 import { invoke } from "@tauri-apps/api/core";
+import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -678,6 +679,30 @@ const FILE_STATUS_LABELS: Record<string, { label: string; tone: ChipTone }> = {
 function fileRows(task: TaskStatus): FileRow[] {
   const result = record(task.result);
   const files = resultEntries(result, ["files", "file_results", "file_records"]);
+  const terminalById = new Map(files.map((entry) => [text(entry.file_id), entry]).filter(([id]) => Boolean(id)) as Array<[string, JsonObject]>);
+  if (task.file_progress?.files.length) {
+    return task.file_progress.files.map((progress) => {
+      const terminal = terminalById.get(progress.file_id) ?? {};
+      const fileResult = { ...progress.result, ...terminal };
+      const outputPath = realPath(firstText(fileResult, ["output_path", "result_path", "output", "translated_image_path"]));
+      const compressedOutputPath = realPath(firstText(fileResult, ["compressed_output", "compressed_output_path", "compressed_pdf_path"]));
+      const error = plainFailureText(firstText(fileResult, ["error", "error_message", "message", "detail"]));
+      const displayProgress: FileProgress = {
+        ...progress,
+        result: fileResult,
+      };
+      return {
+        name: progress.relative_path || progress.name,
+        status: fileProgressLabel(displayProgress, task.state),
+        tone: fileProgressTone(displayProgress, task.state),
+        output: outputPath ? fileNameOf(outputPath) : "",
+        outputPath,
+        compressedOutput: compressedOutputPath ? fileNameOf(compressedOutputPath) : "",
+        compressedOutputPath,
+        error,
+      };
+    });
+  }
   return files.map((entry) => {
     const statusCode = firstText(entry, ["status", "state", "terminal_state"]);
     const known = FILE_STATUS_LABELS[statusCode];
@@ -778,8 +803,23 @@ const streamClosedTaskIds = new Set<string>();
 function upsert(task: TaskStatus): TaskEntry | null {
   if (deletedTaskIds.has(task.task_id)) return null;
   const previous = tasks.get(task.task_id);
+  const mergedTask = { ...previous?.task, ...task };
+  // A request started before completion may return after the terminal event.
+  if (previous && streamClosedTaskIds.has(task.task_id) && isTaskActive(task)) {
+    mergedTask.state = previous.task.state;
+    mergedTask.terminal = previous.task.terminal;
+    mergedTask.result = previous.task.result;
+  }
+  mergedTask.file_progress = { revision: 0, files: [] };
+  const priorProgress = previous?.task.file_progress;
+  if (priorProgress) mergedTask.file_progress = { revision: priorProgress.revision, files: [] };
+  if (priorProgress) mergedTask.file_progress.files = [...reduceFileProgress(new Map(), priorProgress).values()];
+  if (task.file_progress) {
+    const merged = reduceFileProgress(new Map((mergedTask.file_progress?.files ?? []).map((item) => [item.file_id, item])), task.file_progress);
+    mergedTask.file_progress = { revision: Math.max(priorProgress?.revision ?? 0, task.file_progress.revision), files: [...merged.values()] };
+  }
   const entry: TaskEntry = {
-    task: { ...previous?.task, ...task },
+    task: mergedTask,
     phaseName: previous?.phaseName ?? "正在准备任务",
     stepDone: previous?.stepDone ?? 0,
     stepTotal: previous?.stepTotal ?? 0,
@@ -845,8 +885,16 @@ async function watchTask(taskId: string): Promise<void> {
       onConnectionState: (state) => {
         const live = tasks.get(taskId);
         if (!live) return;
+        const wasReconnecting = live.streamState === "reconnecting";
         live.streamState = state;
         touch(taskId);
+        if (wasReconnecting && state === "connected") {
+          void client.getTask(taskId).then((snapshot) => {
+            const refreshed = upsert(snapshot);
+            if (refreshed) refreshed.streamState = "connected";
+            touch(taskId);
+          }).catch(() => undefined);
+        }
       },
     });
     const latest = tasks.get(taskId);
@@ -892,6 +940,11 @@ function handleEvent(taskId: string, event: SseEvent): void {
   }
   if (event.type === "status") {
     entry.phaseName = text(data.phase_desc, entry.phaseName);
+  }
+  if (event.type === "file_progress") {
+    const current = new Map((entry.task.file_progress?.files ?? []).map((item) => [item.file_id, item]));
+    const merged = reduceFileProgress(current, data as unknown as FileProgress);
+    entry.task = { ...entry.task, file_progress: { revision: Math.max(entry.task.file_progress?.revision ?? 0, num(data.revision)), files: [...merged.values()] } };
   }
   if (event.type === "stopping") entry.task = { ...entry.task, state: "stopping" };
   if (event.type === "paused") {

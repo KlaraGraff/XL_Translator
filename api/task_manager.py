@@ -17,6 +17,7 @@ from core import tm_manager
 from core import bilingual_writer
 from core.api_config_check import check_translation_api_config
 from core.file_scanner import scan_path
+from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
 from core.language_registry import normalize_source_selection
@@ -157,6 +158,9 @@ class ApiTask:
     # moment the task ends, and its schedulers stop working with it.
     group_capacities: dict[object, int] = field(default_factory=dict)
     task_snapshot: dict[str, object] = field(default_factory=dict)
+    file_progress: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Used only to match runner results before sanitization; never serialized.
+    file_sources: dict[str, str] = field(default_factory=dict)
     state: str = "running"
     result: dict[str, Any] | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -638,6 +642,14 @@ class TranslationTaskManager:
                 group_capacities=dict(prepared.group_capacities),
                 task_snapshot=prepared.task_snapshot,
             )
+            source = Path(prepared.source_path)
+            source_root = source if source.is_dir() else source.parent
+            for item in prepared.files:
+                if getattr(item, "path", None) is None:
+                    continue
+                entry = file_progress_entry(item, source_root)
+                task.file_progress[entry["file_id"]] = entry
+                task.file_sources[entry["file_id"]] = str(item.path)
             with self._lock:
                 self._tasks[task_id] = task
             self._append_event(
@@ -666,12 +678,13 @@ class TranslationTaskManager:
                 # state="running"; leave a terminal record instead of a ghost
                 # forever-running task in the history.
                 with task.condition:
+                    failure_result = self._complete_file_progress(
+                        task, {"message": str(exc) or exc.__class__.__name__}, "error",
+                    )
                     task.state = "error"
                     task.terminal = True
                     task.updated_at = time.time()
-                    task.result = _sanitize_task_data(
-                        {"message": str(exc) or exc.__class__.__name__}
-                    )
+                    task.result = _sanitize_task_data(failure_result)
                     # Terminal flag and terminal event must be visible together.
                     self._append_event(task, "error", task.result)
             raise
@@ -818,6 +831,10 @@ class TranslationTaskManager:
             "model_snapshot": task.model_snapshot,
             "task_snapshot": task.task_snapshot,
             "logs": list(task.logs),
+            "file_progress": {
+                "revision": max((entry.get("revision", 0) for entry in task.file_progress.values()), default=0),
+                "files": list(task.file_progress.values()),
+            },
         }
         if include_result:
             result = _sanitize_task_data(task.result or {})
@@ -914,13 +931,14 @@ class TranslationTaskManager:
             with task.condition:
                 if task.terminal:
                     continue
+                result = self._complete_file_progress(task, {
+                    "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
+                    "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
+                }, "interrupted")
                 task.state = "interrupted"
                 task.terminal = True
                 task.updated_at = time.time()
-                task.result = {
-                    "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
-                    "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
-                }
+                task.result = result
                 # Terminal flag and terminal event must become visible together.
                 self._append_event(task, "interrupted", task.result)
             task.lease.release()
@@ -1716,6 +1734,14 @@ class TranslationTaskManager:
     def _handle_message(self, task: ApiTask, message: Any) -> None:
         event_type = _event_type_for_message(message)
         payload = _json_safe(asdict(message) if is_dataclass(message) else message)
+        if isinstance(message, FileProgressMsg):
+            with task.condition:
+                if task.terminal:
+                    return
+                payload["revision"] = task.next_event_id
+                task.file_progress[message.file_id] = _sanitize_task_data(payload)
+                self._append_event(task, "file_progress", payload)
+            return
         if isinstance(message, DoneMsg):
             issues = payload.get("issues") if isinstance(payload, dict) else None
             has_issues = bool(issues)
@@ -1744,6 +1770,7 @@ class TranslationTaskManager:
         with task.condition:
             if task.terminal:
                 return
+            result = self._complete_file_progress(task, result, state)
             task.state = state
             task.terminal = True
             task.updated_at = time.time()
@@ -1754,6 +1781,74 @@ class TranslationTaskManager:
             self._append_event(task, event_type, task.result)
         task.lease.release()
         self._retire_terminal_task(task)
+
+    def _complete_file_progress(self, task: ApiTask, result: dict[str, Any], state: str) -> dict[str, Any]:
+        """Reconcile each file against its output, never blanket-mark a task done."""
+        result = dict(result)
+        matched: dict[str, dict[str, Any]] = {}
+        for key in ("file_results", "files", "file_records"):
+            entries = result.get(key)
+            if not isinstance(entries, list):
+                continue
+            tagged = []
+            for raw in entries:
+                if not isinstance(raw, dict):
+                    tagged.append(raw)
+                    continue
+                entry = dict(raw)
+                file_id = str(entry.get("file_id") or "")
+                source_path = entry.get("source_path")
+                if not file_id and source_path:
+                    candidate = file_progress_id(source_path)
+                    if candidate in task.file_progress:
+                        file_id = candidate
+                if not file_id:
+                    relative = str(entry.get("source_relative_path") or entry.get("relative_path") or "")
+                    candidates = [
+                        fid for fid, descriptor in task.file_progress.items()
+                        if relative and descriptor["relative_path"] == relative
+                    ]
+                    if len(candidates) != 1:
+                        name = str(entry.get("name") or "")
+                        candidates = [
+                            fid for fid, descriptor in task.file_progress.items()
+                            if name and name in {descriptor["name"], Path(descriptor["name"]).stem}
+                        ]
+                    if len(candidates) == 1:
+                        file_id = candidates[0]
+                if file_id:
+                    entry["file_id"] = file_id
+                    matched[file_id] = {**matched.get(file_id, {}), **entry}
+                tagged.append(entry)
+            result[key] = tagged
+        for file_id, progress in task.file_progress.items():
+            entry = matched.get(file_id, {})
+            output = any(entry.get(key) for key in ("output", "output_path", "translated_image_path"))
+            status = str(entry.get("status") or "")
+            previous = progress["state"]
+            if output:
+                file_state = "generated"
+            elif status == "unstarted":
+                file_state = "unstarted"
+            elif status in {"failed", "error"}:
+                file_state = "failed"
+            elif status == "stopped":
+                file_state = "stopped"
+            elif previous in {"generated", "failed", "unstarted", "stopped", "interrupted"}:
+                file_state = previous
+            elif state == "interrupted":
+                file_state = "interrupted"
+            elif state == "stopped":
+                file_state = "unstarted" if progress["phase"] == "prepare" and previous == "waiting" else "stopped"
+            else:
+                file_state = "failed"
+            progress.update(
+                state=file_state,
+                result=_sanitize_task_data(entry or progress.get("result") or {}),
+                revision=task.next_event_id,
+            )
+            self._append_event(task, "file_progress", progress)
+        return result
 
     def _retire_terminal_task(self, task: ApiTask) -> None:
         """Release a finished task's heavy references and bound how many stay.
@@ -1943,6 +2038,7 @@ def _selected_files_label(files: list[Any]) -> str:
 
 def _event_type_for_message(message: Any) -> str:
     mapping = (
+        (FileProgressMsg, "file_progress"),
         (ProgressMsg, "progress"),
         (StatusMsg, "status"),
         (LogMsg, "log"),

@@ -263,6 +263,7 @@ def autofit_files_batch(
     log_callback=None,
     app=None,
     progress_callback=None,
+    file_start_callback=None,
 ) -> bool:
     """使用一次 Excel 进程对多个文件批量执行 AutoFit 行高调整。
 
@@ -273,6 +274,7 @@ def autofit_files_batch(
     :param log_callback: 日志回调
     :param app:          如果有现成的 xlwings App，可直接传入复用
     :param progress_callback: 进度回调 progress_callback(done, total, current_file)
+    :param file_start_callback: 单文件开始 AutoFit 前调用 file_start_callback(current_file)
     :return:             True 表示成功，False 表示 xlwings 不可用（已静默降级）
     """
     if not file_paths:
@@ -300,6 +302,11 @@ def autofit_files_batch(
             total = len(staged_paths)
             done = 0
             for original_path, staged_path in staged_paths:
+                if file_start_callback:
+                    try:
+                        file_start_callback(original_path)
+                    except Exception as callback_error:  # noqa: BLE001 - progress must not break output
+                        logger.warning(f"AutoFit 起始进度回调失败：{callback_error!r}")
                 try:
                     if log_callback:
                         log_callback(

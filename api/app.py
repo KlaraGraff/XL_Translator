@@ -808,8 +808,10 @@ def create_app(
                     for root in roots
                 ]
             )
+        from core.file_progress import file_progress_id
+
         payload = {
-            "items": [_json_safe(item) for item in result.items],
+            "items": [{**_json_safe(item), "file_id": file_progress_id(item.path)} for item in result.items],
             "skipped": [_json_safe(item) for item in result.skipped],
             "summary": result.summary,
             "risk": result.risk,

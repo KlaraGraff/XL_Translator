@@ -36,6 +36,7 @@ from core.coverage_arbitration import RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
 from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
 from core.file_scanner import FileItem
+from core.file_progress import FileProgressReporter
 from core.language_registry import (
     build_lang_pair,
     get_default_source_lang,
@@ -387,6 +388,10 @@ class TaskRunner:
         # The pool entries this task may fall back to, frozen at start.
         self._connection_chain = tuple(connection_chain or ())
         self._queue: queue.Queue = queue.Queue()
+        self._file_progress = FileProgressReporter(
+            self._queue, self._files, self._source_root
+        )
+        self._file_progress.emit_many("waiting", "extract")
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
@@ -486,6 +491,7 @@ class TaskRunner:
             config_check = check_translation_api_config(settings)
             if not config_check.ok:
                 detail = f"（{config_check.detail}）" if config_check.detail else ""
+                self._file_progress.emit_many("unstarted", "not_started")
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
             # Only take the failover path when there is somewhere to fail over
@@ -519,6 +525,7 @@ class TaskRunner:
             )
         except Exception as e:
             logger.debug(f"引擎初始化失败原始错误：{e!r}")
+            self._file_progress.emit_many("unstarted", "not_started")
             self._queue.put(
                 ErrorMsg(
                     message="引擎初始化失败："
@@ -581,6 +588,7 @@ class TaskRunner:
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.debug(f"输出目录初始化失败原始错误：{e!r}")
+            self._file_progress.emit_many("unstarted", "not_started")
             self._queue.put(
                 ErrorMsg(
                     message="输出目录初始化失败："
@@ -680,7 +688,9 @@ class TaskRunner:
                 finalize_excel_thread(excel_thread_state)
                 excel_thread_state = None
 
-        def _run_autofit_with_guard(file_paths: list[Path], progress_callback) -> bool:
+        def _run_autofit_with_guard(
+            file_paths: list[Path], progress_callback, file_start_callback=None
+        ) -> bool:
             """Run AutoFit in a dedicated Excel process so it can be stopped safely."""
             worker_state = {
                 "pid": None,
@@ -703,6 +713,11 @@ class TaskRunner:
                         worker_state["last_progress_ts"] = time.monotonic()
                         progress_callback(done, total, current_file)
 
+                    def _file_start(current_file):
+                        worker_state["last_progress_ts"] = time.monotonic()
+                        if file_start_callback is not None:
+                            file_start_callback(current_file)
+
                     worker_state["result"] = bilingual_writer.autofit_files_batch(
                         file_paths,
                         app=app,
@@ -710,6 +725,7 @@ class TaskRunner:
                             "WARN" if msg.startswith("[WARN]") else "INFO", msg
                         ),
                         progress_callback=_progress,
+                        file_start_callback=_file_start,
                     )
                 except Exception as e:
                     worker_state["error"] = e
@@ -807,6 +823,7 @@ class TaskRunner:
 
             for fi, file_item in enumerate(self._files):
                 _raise_if_stopped()
+                self._file_progress.emit(file_item.path, "active", "extract")
 
                 self._queue.put(ProgressMsg(
                     phase_index=1, phase_total=phase_total, phase_name="全局扫描",
@@ -959,6 +976,10 @@ class TaskRunner:
                             "success": False,
                             "error": f"源文件转换失败: {conversion_reason}",
                         })
+                        self._file_progress.emit(
+                            file_item.path, "failed", "extract",
+                            result={"error": f"源文件转换失败: {conversion_reason}"},
+                        )
                         process_paths.append(process_path)
                         file_texts.append(set())
                         coverage_plans.append(None)
@@ -1084,6 +1105,10 @@ class TaskRunner:
                             "success": False,
                             "error": f"{fail_label}: {read_reason}",
                         })
+                        self._file_progress.emit(
+                            file_item.path, "failed", "extract",
+                            result={"error": f"{fail_label}: {read_reason}"},
+                        )
                         if len(coverage_plans) < len(process_paths):
                             coverage_plans.append(None)
                         file_texts.append(set())
@@ -1109,6 +1134,7 @@ class TaskRunner:
                 else:
                     self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
                 self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
+                self._file_progress.emit(file_item.path, "waiting", "translate")
 
                 global_unique_texts.update(text_set)
 
@@ -1152,11 +1178,15 @@ class TaskRunner:
                     str(file_item.path): texts
                     for file_item, texts in zip(self._files, file_texts)
                 }
-                file_language_preflights = preflight_files(
-                    file_payloads,
-                    _detect_file_language,
-                    target_lang=target_lang,
-                )
+                file_language_preflights = {}
+                for file_path, candidate_texts in file_payloads.items():
+                    self._file_progress.emit(file_path, "active", "detect")
+                    file_language_preflights.update(preflight_files(
+                        {file_path: candidate_texts},
+                        _detect_file_language,
+                        target_lang=target_lang,
+                    ))
+                    self._file_progress.emit(file_path, "waiting", "translate")
                 detected_sources: list[str] = []
                 for result in file_language_preflights.values():
                     for detected in result.source_langs:
@@ -1345,6 +1375,16 @@ class TaskRunner:
             # （中-3）——这里再赋一个新空 dict 会把那些标记全部丢弃，底色不涂、
             # review 计数归零。下面继续用同一个字典累加阶段 2 自己的标记。
             if (misses or mixed_texts) and not self._stop_event.is_set():
+                api_translation_sources = set(misses) | set(mixed_texts)
+                active_translation_paths = [
+                    self._files[index].path
+                    for index, texts in enumerate(file_texts)
+                    if index < len(self._files)
+                    and any(text in api_translation_sources for text in texts)
+                ]
+                self._file_progress.emit_many(
+                    "active", "translate", active_translation_paths
+                )
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
                 self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
 
@@ -1902,6 +1942,8 @@ class TaskRunner:
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
 
+            self._file_progress.emit_many("waiting", "generate")
+
             _raise_if_stopped()
 
             # ══════════════════════════════════════════════════════════
@@ -2004,6 +2046,8 @@ class TaskRunner:
                     # self._files 里的每一个文件都补删一遍，覆盖这条路径，
                     # 这里再删一次纯属重复（中-8）。
                     continue
+
+                self._file_progress.emit(file_item.path, "active", "generate")
 
                 self._queue.put(ProgressMsg(
                     phase_index=3, phase_total=phase_total, phase_name="生成文件",
@@ -2203,6 +2247,16 @@ class TaskRunner:
                         ),
                         "success": True,
                     })
+                    self._file_progress.emit(
+                        file_item.path,
+                        "waiting" if need_autofit else "generated",
+                        "adjust" if need_autofit else "generate",
+                        result={
+                            key: value
+                            for key, value in file_results[-1].items()
+                            if key not in {"source_path", "source_relative_path"}
+                        } if not need_autofit else None,
+                    )
                     truncated_positions = list(
                         write_stats.get("truncated_positions") or []
                     )
@@ -2248,6 +2302,10 @@ class TaskRunner:
                         "success": False,
                         "error": write_reason,
                     })
+                    self._file_progress.emit(
+                        file_item.path, "failed", "generate",
+                        result={"error": write_reason},
+                    )
                 finally:
                     # 清理 .xls 转换后的临时 .xlsx 文件；续译底稿是上次输出的历史产物，
                     # 只读绝不删除
@@ -2280,6 +2338,11 @@ class TaskRunner:
                     if r.get("success") and r.get("output")
                 ]
                 if out_paths:
+                    autofit_results_by_path = {
+                        Path(result["output"]).resolve(): result
+                        for result in file_results
+                        if result.get("success") and result.get("output")
+                    }
                     if reuse_excel_for_autofit:
                         self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在复用阶段 1 的 Excel 进程精调行高..."))
                     else:
@@ -2297,7 +2360,31 @@ class TaskRunner:
                         f"开始 Excel AutoFit，共 {len(out_paths)} 个文件 | policy={excel_policy}",
                     )
 
+                    def autofit_file_start_cb(current_file):
+                        result = autofit_results_by_path.get(
+                            Path(current_file).resolve()
+                        )
+                        if result is not None:
+                            self._file_progress.emit(
+                                result.get("source_path"), "active", "adjust"
+                            )
+
                     def autofit_progress_cb(done, total, current_file):
+                        if current_file is not None:
+                            result = autofit_results_by_path.get(
+                                Path(current_file).resolve()
+                            )
+                            if result is not None:
+                                self._file_progress.emit(
+                                    result.get("source_path"),
+                                    "generated",
+                                    "adjust",
+                                    result={
+                                        key: value
+                                        for key, value in result.items()
+                                        if key not in {"source_path", "source_relative_path"}
+                                    },
+                                )
                         self._queue.put(ProgressMsg(
                             phase_index=4,
                             phase_total=phase_total,
@@ -2319,9 +2406,14 @@ class TaskRunner:
                                 "WARN" if msg.startswith("[WARN]") else "INFO", msg
                             ),
                             progress_callback=autofit_progress_cb,
+                            file_start_callback=autofit_file_start_cb,
                         )
                     else:
-                        autofit_success = _run_autofit_with_guard(out_paths, autofit_progress_cb)
+                        autofit_success = _run_autofit_with_guard(
+                            out_paths,
+                            autofit_progress_cb,
+                            autofit_file_start_cb,
+                        )
 
                     self._queue.put(ProgressMsg(
                         phase_index=4,
@@ -2331,6 +2423,20 @@ class TaskRunner:
                         step_total=len(out_paths),
                     ))
                     autofit_elapsed = (datetime.now() - t0).total_seconds()
+                    for result in file_results:
+                        if result.get("success") and result.get("output"):
+                            self._file_progress.emit(
+                                result.get("source_path"),
+                                "generated",
+                                "adjust",
+                                result={
+                                    **{
+                                        key: value
+                                        for key, value in result.items()
+                                        if key not in {"source_path", "source_relative_path"}
+                                    },
+                                },
+                            )
                     if autofit_success:
                         self._log("INFO", f"Excel AutoFit 完成，耗时 {autofit_elapsed:.2f}s | policy={excel_policy}")
                         self._task_logger.info(
@@ -2342,6 +2448,16 @@ class TaskRunner:
                             f"批量AutoFit未完全完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
                         )
                 else:
+                    for result in file_results:
+                        if result.get("success") and result.get("output"):
+                            self._file_progress.emit(
+                                result.get("source_path"), "generated", "generate",
+                                result={
+                                    key: value
+                                    for key, value in result.items()
+                                    if key not in {"source_path", "source_relative_path"}
+                                },
+                            )
                     self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 无可精调文件，已跳过 Excel 精调。"))
                     self._queue.put(ProgressMsg(
                         phase_index=4,
@@ -2377,6 +2493,7 @@ class TaskRunner:
                 )
 
         if stopped_message is not None:
+            self._file_progress.emit_many("stopped", "stopped")
             elapsed = (datetime.now() - start_ts).total_seconds()
             self._log("WARN", stopped_message)
             self._task_logger.warning(stopped_message)
@@ -2413,6 +2530,7 @@ class TaskRunner:
             return
 
         if fatal_error_message is not None:
+            self._file_progress.emit_many("failed", "translate")
             elapsed = (datetime.now() - start_ts).total_seconds()
             self._log("ERROR", fatal_error_message)
             self._task_logger.error(fatal_error_message)
@@ -2445,6 +2563,8 @@ class TaskRunner:
             return
 
         elapsed = (datetime.now() - start_ts).total_seconds()
+
+        self._file_progress.emit_many("unstarted", "not_started")
 
         # ── 任务日志：记录结束信息 ────────────────────────────────────
         self._task_logger.task_end(

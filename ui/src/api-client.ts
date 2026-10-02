@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { saveBinaryFile } from "./save-file";
+import type { FileProgressSnapshot } from "./file-progress";
 
 export type SidecarInfo = {
   port: number;
@@ -25,6 +26,8 @@ export type TaskStatus = {
   // `!== null` 做类型收窄就会在 undefined 上直接调用属性而炸。全仓库现有读取都经过下面
   // 的 record() 兜底、对 undefined/null 一视同仁，运行时没受影响，但类型声明本身是假的。
   result?: Record<string, unknown> | null;
+  /** Current per-file status snapshot; absent on older or non-file tasks. */
+  file_progress?: FileProgressSnapshot;
 };
 
 export type SseEvent = {

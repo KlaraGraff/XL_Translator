@@ -102,6 +102,15 @@ class TaskHistoryStore:
                 item["interrupted"] = True
                 item["recovery"] = {"can_resume": False, "reason": "sidecar_restarted"}
                 item["updated_at"] = _now_epoch()
+                progress = item.get("file_progress")
+                if isinstance(progress, dict):
+                    revision = int(progress.get("revision") or 0) + 1
+                    for entry in progress.get("files") or []:
+                        if isinstance(entry, dict) and entry.get("state") not in {
+                            "generated", "failed", "unstarted", "stopped", "interrupted",
+                        }:
+                            entry.update(state="interrupted", revision=revision)
+                    progress["revision"] = revision
                 changed.append(str(item.get("task_id") or ""))
             if changed:
                 self._write_locked(records)

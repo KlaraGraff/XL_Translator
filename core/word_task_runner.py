@@ -84,6 +84,7 @@ from core.residual_repair import (
 )
 from core.resume_detection import baseline_missing_source_texts, match_previous_output
 from core.task_logger import TaskLogger
+from core.file_progress import FileProgressReporter
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from core.task_runner import (
     DoneMsg,
@@ -315,6 +316,10 @@ class WordTaskRunner:
         self._allow_doc_fallback = bool(allow_doc_fallback)
         self._resume_output_dir = Path(resume_output_dir) if resume_output_dir else None
         self._queue: queue.Queue = queue.Queue()
+        self._file_progress = FileProgressReporter(
+            self._queue, self._files, self._source_root
+        )
+        self._file_progress.emit_many("waiting", "extract")
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
@@ -687,6 +692,7 @@ class WordTaskRunner:
             config_check = check_translation_api_config(settings)
             if not config_check.ok:
                 detail = f"（{config_check.detail}）" if config_check.detail else ""
+                self._file_progress.emit_many("unstarted", "not_started")
                 self._queue.put(ErrorMsg(message=f"{config_check.message}{detail}"))
                 return
             engine = build_engine(settings)
@@ -710,6 +716,7 @@ class WordTaskRunner:
                 )
         except Exception as exc:
             logger.debug(f"Word 引擎初始化失败原始错误：{exc!r}")
+            self._file_progress.emit_many("unstarted", "not_started")
             self._queue.put(
                 ErrorMsg(
                     message="引擎初始化失败："
@@ -722,6 +729,7 @@ class WordTaskRunner:
             return
 
         if not self._files:
+            self._file_progress.emit_many("unstarted", "not_started")
             self._queue.put(ErrorMsg(message="未选择可翻译的 Word 文件。"))
             return
 
@@ -739,6 +747,7 @@ class WordTaskRunner:
             output_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             logger.debug(f"Word 输出目录初始化失败原始错误：{exc!r}")
+            self._file_progress.emit_many("unstarted", "not_started")
             self._queue.put(
                 ErrorMsg(
                     message="输出目录初始化失败："
@@ -832,6 +841,7 @@ class WordTaskRunner:
             t_phase1 = datetime.now()
             for index, file_item in enumerate(self._files):
                 _raise_if_stopped()
+                self._file_progress.emit(file_item.path, "active", "extract")
                 self._queue.put(
                     ProgressMsg(
                         phase_index=1,
@@ -1160,6 +1170,7 @@ class WordTaskRunner:
                     elapsed = (datetime.now() - t0).total_seconds()
                     self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
                     self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
+                    self._file_progress.emit(file_item.path, "waiting", "translate")
                 except Exception as exc:
                     if len(process_paths) < index + 1:
                         process_paths.append(file_item.path)
@@ -1187,6 +1198,10 @@ class WordTaskRunner:
                             "success": False,
                             "error": f"Word 文件读取失败: {read_reason}",
                         }
+                    )
+                    self._file_progress.emit(
+                        file_item.path, "failed", "extract",
+                        result={"error": f"Word 文件读取失败: {read_reason}"},
                     )
 
             self._queue.put(
@@ -1229,11 +1244,15 @@ class WordTaskRunner:
                     str(file_item.path): texts
                     for file_item, texts in zip(self._files, file_texts)
                 }
-                file_language_preflights = preflight_files(
-                    file_payloads,
-                    _detect_file_language,
-                    target_lang=target_lang,
-                )
+                file_language_preflights = {}
+                for file_path, candidate_texts in file_payloads.items():
+                    self._file_progress.emit(file_path, "active", "detect")
+                    file_language_preflights.update(preflight_files(
+                        {file_path: candidate_texts},
+                        _detect_file_language,
+                        target_lang=target_lang,
+                    ))
+                    self._file_progress.emit(file_path, "waiting", "translate")
                 detected_sources: list[str] = []
                 for result in file_language_preflights.values():
                     for detected in result.source_langs:
@@ -1335,6 +1354,16 @@ class WordTaskRunner:
 
             api_translations: dict[str, str] = {}
             if (misses or mixed_texts) and not self._stop_event.is_set():
+                api_translation_sources = set(misses) | set(mixed_texts)
+                active_translation_paths = [
+                    self._files[file_index].path
+                    for file_index, texts in enumerate(file_texts)
+                    if file_index < len(self._files)
+                    and any(text in api_translation_sources for text in texts)
+                ]
+                self._file_progress.emit_many(
+                    "active", "translate", active_translation_paths
+                )
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
 
                 def progress_cb(done, total):
@@ -2007,6 +2036,7 @@ class WordTaskRunner:
                     raise TaskStopped("任务已停止，未获得可写入的 Word 翻译结果。")
 
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word..."))
+            self._file_progress.emit_many("waiting", "generate")
             self._queue.put(
                 ProgressMsg(
                     phase_index=3,
@@ -2035,6 +2065,8 @@ class WordTaskRunner:
                 )
                 if already_failed:
                     continue
+
+                self._file_progress.emit(file_item.path, "active", "generate")
 
                 self._queue.put(
                     ProgressMsg(
@@ -2198,6 +2230,14 @@ class WordTaskRunner:
                     os.replace(out_path, final_path)
                     committed_out_path = final_path
                     file_results.append(success_record)
+                    self._file_progress.emit(
+                        file_item.path, "generated", "generate",
+                        result={
+                            key: value
+                            for key, value in success_record.items()
+                            if key != "source_path"
+                        },
+                    )
                     try:
                         for message in write_log_messages:
                             self._log("OK" if message.startswith("[OK]") else "INFO", message)
@@ -2247,6 +2287,10 @@ class WordTaskRunner:
                             "success": False,
                             "error": write_reason,
                         }
+                    )
+                    self._file_progress.emit(
+                        file_item.path, "failed", "generate",
+                        result={"error": write_reason},
                     )
                 finally:
                     if stage_handle is not None:
@@ -2348,6 +2392,7 @@ class WordTaskRunner:
             )
 
             if stopped_message is not None:
+                self._file_progress.emit_many("stopped", "stopped")
                 # 账记在「停止」头上：这里如实报「翻了多少、剩多少」，不管最终是
                 # 提前收尾（多数场景）还是碰巧在停止生效前就把活干完了（阶段 3 不
                 # 再半路弃文件之后，这种巧合确实会发生）——两种情况数字都不撒谎。
@@ -2389,6 +2434,7 @@ class WordTaskRunner:
                 return
 
             if fatal_error_message is not None:
+                self._file_progress.emit_many("failed", "translate")
                 self._log("ERROR", fatal_error_message)
                 self._task_logger.error(fatal_error_message)
                 _emit_terminal(
@@ -2401,6 +2447,7 @@ class WordTaskRunner:
                 )
                 return
 
+            self._file_progress.emit_many("unstarted", "not_started")
             _emit_terminal(
                 DoneMsg(
                     output_dir=str(output_dir),

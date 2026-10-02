@@ -48,6 +48,7 @@ import { setTopbar } from "../shell";
 import { taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
+import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
 
 import "./workspace.css";
 
@@ -62,6 +63,7 @@ type JsonObject = Record<string, unknown>;
 /** 扫描接口返回的文件条目；字段是后端各 surface 联合，具体用到哪些看 surface。 */
 type FileItem = JsonObject & {
   path: string;
+  file_id?: string;
   name?: string;
   relative_path?: string;
   size_kb?: number;
@@ -287,7 +289,7 @@ interface LocalTask {
   /** 最后一次收到任何事件的时刻。一批请求发出去到回来之间引擎不说话，界面得自己
    *  报一句「还在等」，否则十几秒没动静看起来和卡死一模一样。 */
   lastEventAt: number;
-  fileStage: Map<string, "queued" | "active" | "done" | "error">;
+  fileProgress: Map<string, FileProgress>;
   wordRecovery?: JsonObject;
   pdfPageRecovery?: JsonObject;
   pdfReview?: JsonObject;
@@ -1576,9 +1578,12 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   }
 
   const statusCell = el("td");
-  const outcome = st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
+  const liveProgress = file.file_id ? st.task?.fileProgress.get(file.file_id) : undefined;
+  const outcome = (file.file_id ? st.fileOutcomes.get(file.file_id) : undefined) ?? st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
     statusCell.append(createChip({ label: "已排除", tone: "mute" }));
+  } else if (liveProgress) {
+    statusCell.append(createChip({ label: fileProgressLabel(liveProgress, st.task?.task.state), tone: fileProgressTone(liveProgress, st.task?.task.state) }));
   } else if (outcome) {
     // 跑过之后这一列说的是结果，不再说开跑前的预判——那时候的「需先转换」已经成了旧闻。
     const chip = createChip({
@@ -1798,7 +1803,7 @@ async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageF
     const c = await getClient();
     if (action === "regenerate") await c.regeneratePdfPage(taskId, file.relative_path, page.page_number);
     else await c.skipPdfPage(taskId, file.relative_path, page.page_number);
-    showToast({ message: `第 ${page.page_number} 页已排队${action === "regenerate" ? "重新生成" : "跳过"}，继续翻译后生效。` });
+    showToast({ message: `已安排${action === "regenerate" ? "重新生成" : "跳过"}第 ${page.page_number} 页，继续翻译后执行。` });
     await fetchPdfPagesSnapshot(surface, taskId);
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "操作失败。"), error: true });
@@ -1959,9 +1964,9 @@ function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSn
   const actionable = snapshot.actionable;
 
   if (page.pending_action === "regenerate") {
-    row.append(createChip({ label: "已排队 · 重新生成", tone: "tint" }));
+    row.append(createChip({ label: "待执行 · 重新生成", tone: "tint" }));
   } else if (page.pending_action === "skip") {
-    row.append(createChip({ label: "已排队 · 跳过", tone: "tint" }));
+    row.append(createChip({ label: "待执行 · 跳过", tone: "tint" }));
   } else if (page.user_skipped) {
     row.append(createChip({ label: "已跳过", tone: "mute" }));
   } else if (page.attempts > 0) {
@@ -2543,8 +2548,8 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean): HTMLElement {
 
 function reviewNote(page: PdfPage, taskStopped: boolean): string {
   if (page.skipped_oversize) return "幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。";
-  if (page.pending_action === "regenerate") return "已排队重新生成，继续翻译后生效。";
-  if (page.pending_action === "skip") return "已排队跳过，继续翻译后生效。";
+  if (page.pending_action === "regenerate") return "待执行重新生成，继续翻译后执行。";
+  if (page.pending_action === "skip") return "待执行跳过，继续翻译后执行。";
   if (page.review_summary) return redactedText(page.review_summary);
   if (page.status === "failed" || page.placeholder) return redactedText(page.error, "页面生成失败。");
   if (page.status === "pending") {
@@ -3085,23 +3090,21 @@ function buildLogCard(local: LocalTask): HTMLElement {
 
   const fileList = el("div");
   const result = record(local.task.result);
-  for (const [path, stage] of local.fileStage) {
+  const rows = [...local.fileProgress.values()];
+  if (!rows.length) {
+    const state = states[local.task.surface as Surface];
+    for (const file of state.files) {
+      if (!state.selected.has(file.path) || !file.file_id) continue;
+      rows.push({ file_id: file.file_id, name: file.name ?? file.path.split(/[\\/]/).pop() ?? file.path, relative_path: file.relative_path ?? "", state: "waiting", phase: "", completed: 0, total: 0, result: {}, revision: 0 });
+    }
+  }
+  for (const progress of rows) {
     const row = el("div", "filerow");
-    // done 的含义只是「阶段名里已经不提这个文件了」（见 markActiveFile），不是「产物写出来
-    // 了」：第 1 阶段刚提取完文本的文件也是 done。所以这一格不能写「已生成」——CONTEXT.md
-    // 里「已生成」的定义是输出文档已经写成功，而那会儿输出目录里一个文件都没有。
-    const meta: Record<string, { label: string; tone: ChipTone }> = {
-      queued: { label: "排队中", tone: "mute" },
-      active: { label: "进行中", tone: "tint" },
-      done: { label: "已进入下一步", tone: "ok" },
-      error: { label: "未完成", tone: "warn" },
-    };
-    row.append(createChip(meta[stage]));
+    row.append(createChip({ label: fileProgressLabel(progress, local.task.state), tone: fileProgressTone(progress, local.task.state) }));
     const nm = el("span", "nm");
-    nm.textContent = path.split("/").pop() ?? path;
+    nm.textContent = progress.name || progress.relative_path;
     row.append(nm);
-    // 跳过标签只在文件跑完后才有数据（file_results 是终态才产出的），跑的过程中自然为空。
-    for (const chip of buildFileSkipChips(result, path)) row.append(chip);
+    for (const chip of buildFileSkipChips(result, progress.relative_path || progress.name)) row.append(chip);
     fileList.append(row);
   }
   card.append(fileList);
@@ -4146,7 +4149,7 @@ function focusTask(surface: Surface, task: TaskStatus): void {
     streamState: "connected",
     watcherActive: false,
     lastEventAt: Date.now(),
-    fileStage: new Map(),
+    fileProgress: reduceFileProgress(new Map(), task.file_progress),
   };
   st.lastTaskId = task.task_id;
   startSilenceTicker(surface);
@@ -4188,7 +4191,9 @@ function initFileStages(st: SurfaceState): void {
   const local = st.task;
   if (!local) return;
   for (const file of st.files) {
-    if (st.selected.has(file.path)) local.fileStage.set(file.path, "queued");
+    if (st.selected.has(file.path) && file.file_id && !local.fileProgress.has(file.file_id)) {
+      local.fileProgress.set(file.file_id, { file_id: file.file_id, name: file.name ?? "", relative_path: file.relative_path ?? "", state: "waiting", phase: "", completed: 0, total: 0, result: {}, revision: 0 });
+    }
   }
 }
 
@@ -4208,8 +4213,10 @@ function watchTask(surface: Surface): void {
       await c.streamTask(taskId, (event) => handleTaskEvent(surface, taskId, event), {
         onConnectionState: (state) => {
           if (states[surface].task?.task.task_id !== taskId) return;
+          const wasReconnecting = states[surface].task!.streamState === "reconnecting";
           states[surface].task!.streamState = state;
           rerender(surface);
+          if (wasReconnecting && state === "connected") void refetchTask(surface, taskId).catch(() => undefined);
         },
       });
       if (states[surface].task?.task.task_id === taskId && !states[surface].task!.task.terminal) {
@@ -4229,7 +4236,9 @@ async function refetchTask(surface: Surface, taskId: string): Promise<void> {
   const c = await getClient();
   const task = await c.getTask(taskId);
   if (states[surface].task?.task.task_id !== taskId) return;
+  if (states[surface].task!.task.terminal && !task.terminal && states[surface].task!.task.state !== "interrupted") return;
   states[surface].task!.task = task;
+  states[surface].task!.fileProgress = reduceFileProgress(states[surface].task!.fileProgress, task.file_progress);
   // 终态前把最后一次逐页快照拉齐，保证「查看对比」在任务结束后仍能用上最新数据。
   if (surface === "pdf") await fetchPdfPagesSnapshot(surface, taskId);
   if (task.terminal) finishTask(surface, task);
@@ -4277,12 +4286,14 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       } else if (total > 0) {
         local.percent = withinPhase * 100;
       }
-      markActiveFile(local, st);
       break;
     }
     case "status": {
       local.phaseName = redactedText(data.phase_desc, local.phaseName);
-      markActiveFile(local, st);
+      break;
+    }
+    case "file_progress": {
+      local.fileProgress = reduceFileProgress(local.fileProgress, data as unknown as FileProgress);
       break;
     }
     case "stopping":
@@ -4317,9 +4328,8 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
     case "stopped":
     case "interrupted": {
       local.task = { ...local.task, state: event.type as TaskStatus["state"], terminal: true, result: (data as JsonObject) ?? local.task.result };
-      for (const path of local.fileStage.keys()) {
-        if (local.fileStage.get(path) !== "error") local.fileStage.set(path, "done");
-      }
+      local.fileProgress = reduceFileProgress(local.fileProgress, (data as JsonObject).file_progress as never);
+      // Per-file terminal state remains authoritative; task completion never promotes every file.
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       finishTask(surface, local.task);
       return;
@@ -4328,20 +4338,6 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
   }
   rerender(surface);
-}
-
-function markActiveFile(local: LocalTask, st: SurfaceState): void {
-  if (!local.phaseName) return;
-  for (const file of st.files) {
-    if (!local.fileStage.has(file.path)) continue;
-    if (local.phaseName.includes(fileLabel(file))) {
-      for (const [path, stage] of local.fileStage) {
-        if (path === file.path) local.fileStage.set(path, "active");
-        else if (stage === "active") local.fileStage.set(path, "done");
-      }
-      break;
-    }
-  }
 }
 
 function finishTask(surface: Surface, task: TaskStatus): void {
@@ -4385,6 +4381,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     if (ok) produced += 1;
     else failed += 1;
     const key = fileOutcomeKey(text(item.name));
+    const fileId = text(item.file_id);
     if (key && !ambiguousNames.has(key)) {
       const pending = fileResultPendingReview(item);
       // 整份未翻译的文件不能只写「已生成」：文档确实写出来了，可里面一个字都没翻。
@@ -4404,6 +4401,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
           ? ""
           : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
       });
+    }
+    if (fileId) {
+      if (key && !ambiguousNames.has(key)) {
+        const outcome = st.fileOutcomes.get(key);
+        if (outcome) st.fileOutcomes.set(fileId, outcome);
+      }
     }
   }
   // stopped 不能跟 error/interrupted 分开对待：PDF 任务停在预处理阶段（还没真正开始

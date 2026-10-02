@@ -37,6 +37,7 @@ from config import (
 )
 from core import bilingual_writer
 from core.output_name_translation import translate_output_stem
+from core.file_progress import FileProgressReporter, file_progress_id
 from core.api_concurrency_control import handle_api_concurrency_limit
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_RECOVERY,
@@ -1393,6 +1394,11 @@ class PdfImageTranslationRunner:
         self._api_scheduler_override = api_scheduler
         self._review_api_scheduler_override = review_api_scheduler
         self._queue: queue.Queue = queue.Queue()
+        self._file_progress = FileProgressReporter(
+            self._queue,
+            self._files,
+            self._source_root,
+        )
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
@@ -2849,6 +2855,16 @@ class PdfImageTranslationRunner:
             total_pages = sum(record.page_count for record in file_records)
             self._total_page_count = total_pages
             self._emit_page_status()
+            for prepared in prepared_files:
+                if self._all_file_pages_settled_for_progress(prepared.record):
+                    completed = self._settled_file_page_count(prepared.record)
+                    self._file_progress.emit(
+                        prepared.item.path,
+                        "waiting",
+                        "generate",
+                        completed=completed,
+                        total=prepared.record.page_count,
+                    )
             self._queue.put(
                 ProgressMsg(1, 4, "预处理 PDF", len(prepared_files), max(1, len(self._files)))
             )
@@ -2908,10 +2924,47 @@ class PdfImageTranslationRunner:
                         should_assemble = (
                             not stopped or self._record_has_all_pages_finished(prepared.record)
                         )
+                        self._file_progress.emit(
+                            prepared.item.path,
+                            "active",
+                            "generate",
+                            completed=self._settled_file_page_count(prepared.record),
+                            total=prepared.record.page_count,
+                        )
                         self._finalize_file_record(
                             prepared,
                             should_assemble=should_assemble,
                         )
+                        completed = self._settled_file_page_count(prepared.record)
+                        result = _file_record_to_result(prepared.record)
+                        output = str(result.get("output") or "")
+                        if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
+                            self._file_progress.emit(
+                                prepared.item.path,
+                                "failed",
+                                "generate",
+                                completed=completed,
+                                total=prepared.record.page_count,
+                                result=result,
+                            )
+                        elif prepared.record.status == PDF_OUTPUT_STATE_STOPPED:
+                            self._file_progress.emit(
+                                prepared.item.path,
+                                "stopped",
+                                "generate",
+                                completed=completed,
+                                total=prepared.record.page_count,
+                                result=result,
+                            )
+                        elif output and Path(output).is_file():
+                            self._file_progress.emit(
+                                prepared.item.path,
+                                "generated",
+                                "generate",
+                                completed=completed,
+                                total=prepared.record.page_count,
+                                result=result,
+                            )
                         self._queue.put(
                             ProgressMsg(3, 4, "生成最终产物", index, max(1, len(file_records)))
                         )
@@ -2920,7 +2973,30 @@ class PdfImageTranslationRunner:
                             resume_requested = True
                             break
                     if resume_requested:
+                        resettable_records = [
+                            prepared
+                            for prepared in prepared_files
+                            if prepared.record.status
+                            in {
+                                PDF_OUTPUT_STATE_COMPLETED,
+                                PDF_OUTPUT_STATE_NEEDS_REVIEW,
+                                PDF_OUTPUT_STATE_STOPPED,
+                            }
+                        ]
                         self._clear_generated_pdf_outputs(prepared_files)
+                        for prepared in resettable_records:
+                            if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
+                                continue
+                            finished = self._all_file_pages_settled_for_progress(prepared.record)
+                            self._file_progress.emit(
+                                prepared.item.path,
+                                "waiting",
+                                "generate" if finished else "translate",
+                                completed=self._settled_file_page_count(prepared.record),
+                                total=prepared.record.page_count,
+                                result={},
+                                force=True,
+                            )
                         self._log("INFO", "已中断 PDF 合成并清除旧产物，继续翻译剩余页面。")
                         continue
                 break
@@ -3046,7 +3122,10 @@ class PdfImageTranslationRunner:
         prepared_files: list[_PreparedPdfFile] = []
         for index, item in enumerate(self._files, start=1):
             if self._stop_event.is_set():
+                remaining = [candidate.path for candidate in self._files[index - 1 :]]
+                self._file_progress.emit_many("unstarted", "prepare", remaining)
                 break
+            self._file_progress.emit(item.path, "active", "prepare")
             relative_pdf = _relative_pdf_path(item.path, self._source_root)
             source_copy_path = output_dir / relative_pdf
             source_copy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3074,6 +3153,12 @@ class PdfImageTranslationRunner:
                         app_managed=app_managed,
                     )
                 )
+                self._file_progress.emit(
+                    item.path,
+                    "failed",
+                    "prepare",
+                    result=_file_record_to_result(record),
+                )
                 continue
 
             if item.source_type == SOURCE_TYPE_IMAGE:
@@ -3093,6 +3178,15 @@ class PdfImageTranslationRunner:
                         app_managed=app_managed,
                     )
                 )
+                if record.status == PDF_OUTPUT_STATE_FAILED:
+                    self._file_progress.emit(
+                        item.path,
+                        "failed",
+                        "prepare",
+                        result=_file_record_to_result(record),
+                    )
+                else:
+                    self._file_progress.emit(item.path, "waiting", "translate", total=record.page_count)
                 self._queue.put(ProgressMsg(1, 4, "预处理 PDF", index, max(1, len(self._files))))
                 continue
 
@@ -3115,6 +3209,15 @@ class PdfImageTranslationRunner:
                     app_managed=app_managed,
                 )
             )
+            if record.status == PDF_OUTPUT_STATE_FAILED:
+                self._file_progress.emit(
+                    item.path,
+                    "failed",
+                    "prepare",
+                    result=_file_record_to_result(record),
+                )
+            else:
+                self._file_progress.emit(item.path, "waiting", "translate", total=record.page_count)
             self._queue.put(ProgressMsg(1, 4, "预处理 PDF", index, max(1, len(self._files))))
         return prepared_files
 
@@ -3380,6 +3483,13 @@ class PdfImageTranslationRunner:
                             break
                         if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
                             continue
+                        self._file_progress.emit(
+                            prepared.item.path,
+                            "active",
+                            "translate",
+                            completed=self._settled_file_page_count(prepared.record),
+                            total=prepared.record.page_count,
+                        )
                         prepared.record.pages.append(page_record)
                         if page_record.skipped_oversize:
                             # 大幅面页：不进 executor.submit，直接按「已提交且已
@@ -3398,6 +3508,10 @@ class PdfImageTranslationRunner:
                             )
                             self._record_page_submitted()
                             self._record_page_completed(page_record)
+                            self._emit_file_page_progress(
+                                prepared,
+                                outstanding=self._file_outstanding_future_count(prepared, futures),
+                            )
                             self._push_translation_progress(total_pages)
                             continue
                         if page_record.status == "placeholder_pending":
@@ -3406,6 +3520,10 @@ class PdfImageTranslationRunner:
                             self._record_page_submitted()
                             self._record_page_placeholder(page_record)
                             self._record_page_completed(page_record)
+                            self._emit_file_page_progress(
+                                prepared,
+                                outstanding=self._file_outstanding_future_count(prepared, futures),
+                            )
                             self._push_translation_progress(total_pages)
                             continue
                         self._log(
@@ -3427,6 +3545,13 @@ class PdfImageTranslationRunner:
                             source_type=prepared.record.source_type,
                         )
                         futures[future] = (prepared, page_record)
+                        self._file_progress.emit(
+                            prepared.item.path,
+                            "active",
+                            "translate",
+                            completed=self._settled_file_page_count(prepared.record),
+                            total=prepared.record.page_count,
+                        )
                         self._record_page_submitted()
                         self._log(
                             "INFO",
@@ -3447,6 +3572,15 @@ class PdfImageTranslationRunner:
                         self._stop_wait_started_at = None
 
                     if self._pause_event.is_set() and not futures:
+                        for prepared in prepared_files:
+                            if not self._record_has_all_pages_finished(prepared.record):
+                                self._file_progress.emit(
+                                    prepared.item.path,
+                                    "paused",
+                                    "translate",
+                                    completed=self._settled_file_page_count(prepared.record),
+                                    total=prepared.record.page_count,
+                                )
                         return
 
                     if not futures:
@@ -3497,7 +3631,22 @@ class PdfImageTranslationRunner:
                             self._push_translation_progress(total_pages)
                             continue
                         self._record_page_completed(page_record)
+                        self._emit_file_page_progress(
+                            prepared,
+                            outstanding=self._file_outstanding_future_count(prepared, futures),
+                        )
                         self._push_translation_progress(total_pages)
+
+            for prepared in prepared_files:
+                if prepared.record.status == PDF_OUTPUT_STATE_FAILED:
+                    self._file_progress.emit(
+                        prepared.item.path,
+                        "failed",
+                        "extract",
+                        completed=self._settled_file_page_count(prepared.record),
+                        total=prepared.record.page_count,
+                        result=_file_record_to_result(prepared.record),
+                    )
 
         finally:
             # 致命错误（模型/审核模型不可用）是直接 raise 出去的，收敛循环再也回不来；
@@ -3553,6 +3702,13 @@ class PdfImageTranslationRunner:
             record = prepared.record
             if record.status == PDF_OUTPUT_STATE_FAILED or record.page_count <= 0:
                 continue
+            self._file_progress.emit(
+                prepared.item.path,
+                "active",
+                "extract",
+                completed=self._settled_file_page_count(record),
+                total=record.page_count,
+            )
             if record.source_type == SOURCE_TYPE_IMAGE:
                 existing_pages = {page.page_number for page in record.pages}
                 if 1 in existing_pages:
@@ -3586,6 +3742,13 @@ class PdfImageTranslationRunner:
                         page_number = page_index + 1
                         if page_number in existing_pages:
                             continue
+                        self._file_progress.emit(
+                            prepared.item.path,
+                            "active",
+                            "extract",
+                            completed=self._settled_file_page_count(record),
+                            total=record.page_count,
+                        )
                         try:
                             page_record = self._render_source_page(
                                 doc,
@@ -3910,6 +4073,49 @@ class PdfImageTranslationRunner:
         return (
             len(record.pages) == record.page_count
             and all(page.status in finished_statuses for page in record.pages)
+        )
+
+    @staticmethod
+    def _settled_file_page_count(record: PdfFileRecord) -> int:
+        finished_statuses = {
+            "success",
+            "emergency_normalized",
+            "placeholder",
+            PDF_OUTPUT_STATE_FAILED,
+            PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
+        }
+        return sum(page.status in finished_statuses for page in record.pages)
+
+    @classmethod
+    def _all_file_pages_settled_for_progress(cls, record: PdfFileRecord) -> bool:
+        return (
+            record.page_count > 0
+            and len(record.pages) == record.page_count
+            and cls._settled_file_page_count(record) == record.page_count
+        )
+
+    @staticmethod
+    def _file_outstanding_future_count(
+        prepared: _PreparedPdfFile,
+        futures: dict[Any, tuple[_PreparedPdfFile, PdfPageRecord]],
+    ) -> int:
+        return sum(owner is prepared for owner, _page in futures.values())
+
+    def _emit_file_page_progress(
+        self,
+        prepared: _PreparedPdfFile,
+        *,
+        outstanding: int = 0,
+    ) -> None:
+        record = prepared.record
+        completed = self._settled_file_page_count(record)
+        finished = self._all_file_pages_settled_for_progress(record)
+        self._file_progress.emit(
+            prepared.item.path,
+            "waiting" if finished or outstanding == 0 else "active",
+            "generate" if finished else "translate",
+            completed=completed,
+            total=record.page_count,
         )
 
     def _has_unfinished_pages(self, records: list[PdfFileRecord]) -> bool:
@@ -6057,6 +6263,7 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     if record.compression_error:
         detail_parts.append("压缩版生成失败")
     return {
+        "file_id": file_progress_id(record.source_path),
         "name": record.name,
         "source_type": record.source_type,
         "success": success,
