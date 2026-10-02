@@ -1294,6 +1294,7 @@ function renderCard(id: string): HTMLDivElement {
   const entry = tasks.get(id)!;
   const card = document.createElement("div");
   card.className = id === selectedId ? "card tkcard sel" : "card tkcard";
+  card.dataset.taskId = id;
   card.addEventListener("click", () => {
     selectedId = id;
     renderList();
@@ -1441,7 +1442,7 @@ function renderDetail(): void {
         label: "打开工作区",
         icon: "play",
         size: "mini",
-        onClick: () => navigate(task.surface as "excel" | "word" | "pdf"),
+        onClick: () => navigate(task.surface as "excel" | "word" | "pdf", { taskId: task.task_id }),
       }),
     );
   }

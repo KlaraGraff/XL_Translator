@@ -15,7 +15,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, apiErrorReason, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, ApiError, apiErrorReason, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import {
@@ -296,6 +296,7 @@ interface LocalTask {
   /** 逐页拉取的快照（GET /pdf-pages）。没有逐页 SSE——收到聚合事件或任务状态变化时重新拉取一次，
    *  见 fetchPdfPagesSnapshot() 与它的调用点清单。终态后不清空，保留最后一次结果供「查看对比」使用。 */
   pdfPagesSnapshot?: PdfPagesSnapshot;
+  pdfPagesUnavailable?: boolean;
 }
 
 /** 结果的三种口气：全部产出、产出了但有事要说、没能产出。 */
@@ -334,6 +335,8 @@ interface SurfaceState {
   useCustomOutputDir: boolean;
   customOutputDir: string;
   task: LocalTask | null;
+  /** Older persisted tasks omit source paths; their results remain viewable but cannot start a new run. */
+  historyOnly: boolean;
   hasEverCompleted: boolean;
   showBanner: boolean;
   bannerInfo: BannerInfo | null;
@@ -391,6 +394,7 @@ function freshState(surface: Surface): SurfaceState {
     useCustomOutputDir: false,
     customOutputDir: "",
     task: null,
+    historyOnly: false,
     hasEverCompleted: false,
     showBanner: false,
     bannerInfo: null,
@@ -414,6 +418,90 @@ const states: Record<Surface, SurfaceState> = {
   word: freshState("word"),
   pdf: freshState("pdf"),
 };
+
+type WorkspaceContext = Pick<SurfaceState, "sourcePath" | "sourcePaths" | "files" | "skipped" | "scanSummary" | "selected">;
+// Source paths stay in this window, outside sanitized task history/diagnostics.
+const taskContexts = new Map<string, WorkspaceContext>();
+
+function rememberTaskContext(st: SurfaceState, taskId: string): void {
+  if (st.historyOnly || !st.sourcePath || !st.files.length) return;
+  taskContexts.set(taskId, {
+    sourcePath: st.sourcePath,
+    sourcePaths: [...st.sourcePaths],
+    files: [...st.files],
+    skipped: [...st.skipped],
+    scanSummary: { ...st.scanSummary },
+    selected: new Set(st.selected),
+  });
+  if (taskContexts.size > 200) taskContexts.delete(taskContexts.keys().next().value!);
+}
+
+/** New input must not reuse a completed task's progress, pages, banner or results. */
+function clearWorkspaceInput(surface: Surface, invalidate = true): void {
+  const st = states[surface];
+  if (invalidate) ++mountTokens[surface];
+  ++scanTokens[surface];
+  scanBusy[surface] = false;
+  stopSilenceTicker(surface);
+  stopPdfRerunTicker(surface);
+  st.task = null;
+  st.files = [];
+  st.skipped = [];
+  st.scanSummary = {};
+  st.selected = new Set();
+  st.fileOutcomes = new Map();
+  st.showBanner = false;
+  st.bannerInfo = null;
+  st.excelDoneNotice = null;
+  st.lastTaskId = undefined;
+  st.lastOutputPath = undefined;
+  st.historyOnly = false;
+  resetResumeState(st);
+}
+
+async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: () => boolean): Promise<void> {
+  // Hide the previous task immediately, including on lookup failure.
+  const st = states[surface];
+  clearWorkspaceInput(surface, false);
+  st.sourcePath = "";
+  st.sourcePaths = [];
+  const c = await getClient();
+  const task = await c.getTask(taskId);
+  if (!isCurrent()) return;
+  if (task.surface !== surface) throw new Error("这个任务不属于当前工作区。");
+  const context = taskContexts.get(taskId);
+  st.sourcePath = context?.sourcePath ?? "";
+  st.sourcePaths = [...(context?.sourcePaths ?? [])];
+  st.skipped = [...(context?.skipped ?? [])];
+  st.scanSummary = { ...(context?.scanSummary ?? {}) };
+  st.historyOnly = !context;
+  // Old records deliberately exclude original paths. Show their own file results,
+  // never borrow the current source list or invent paths for a new translation.
+  const progress = [...reduceFileProgress(new Map(), task.file_progress).values()];
+  const entries = progress.length ? progress : terminalFileResults(record(task.result)).map(record);
+  st.files = context ? [...context.files] : entries.map((entry, index) => {
+    const name = text(entry.name, text(entry.relative_path, `文件 ${index + 1}`));
+    const format = name.split(".").pop()?.toLowerCase();
+    return {
+      path: `history:${taskId}:${index}`,
+      file_id: text(entry.file_id),
+      name,
+      relative_path: text(entry.relative_path),
+      format: format && ["xlsx", "xls", "docx", "doc", "pdf", "png", "jpg", "jpeg"].includes(format)
+        ? format : "",
+    };
+  });
+  st.selected = context ? new Set(context.selected) : new Set(st.files.map((file) => file.path));
+  focusTask(surface, task);
+  st.task!.logs = (task.logs ?? []).map((log, index) => ({
+    seq: num(log.event_id, index), time: typeof log.timestamp === "number" ? formatTime(log.timestamp) : "",
+    level: text(log.level, "INFO"), message: redactedText(log.message),
+  }));
+  bootstrapAdopted.add(surface);
+  if (task.terminal) finishTask(surface, task);
+  else watchTask(surface);
+  if (surface === "pdf") await fetchPdfPagesSnapshot(surface, taskId);
+}
 
 // ---------------------------------------------------------------------------
 // API 客户端 + 全局设置/语言目录（本视图独立持有一份，不复用 tasks.ts 的实例——
@@ -569,15 +657,24 @@ async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, reve
 // mount / unmount
 // ---------------------------------------------------------------------------
 
-export function mountWorkspace(container: HTMLElement, _params: ViewParams, surface: Surface): void {
+const mountTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+
+export function mountWorkspace(container: HTMLElement, params: ViewParams, surface: Surface): void {
   const st = states[surface];
+  const token = ++mountTokens[surface];
+  const isCurrent = () => token === mountTokens[surface] && st.renderer !== null;
+  const taskId = text(params.taskId);
   st.renderer = () => renderInto(container, surface);
   // 中途切走再回来时任务还在跑（st.task 是模块级状态），静默计时器得跟着这一屏重新起。
   if (st.task && !st.task.task.terminal) startSilenceTicker(surface);
   renderLoading(container, surface);
   ensureBootstrap()
-    .then(() => adoptExistingTask(surface))
     .then(() => {
+      if (!isCurrent()) return;
+      return taskId ? openWorkspaceTask(surface, taskId, isCurrent) : adoptExistingTask(surface, isCurrent);
+    })
+    .then(() => {
+      if (!isCurrent()) return;
       // 「停」配对的「起」：unmountWorkspace 会停掉 PDF 逐页重跑的轮询计时器（高-10），
       // 但 adoptExistingTask 只在首次发现任务时拉一次快照——st.task 已经存在的情形（切走
       // 再切回这一屏）它会直接早返回，不会重新拉快照，于是重跑期间切走再切回来，面板会
@@ -588,12 +685,14 @@ export function mountWorkspace(container: HTMLElement, _params: ViewParams, surf
       if (st.renderer) renderInto(container, surface);
     })
     .catch((error) => {
+      if (!isCurrent()) return;
       showToast({ message: redactedText((error as Error)?.message, "初始化工作区失败。"), error: true });
       if (st.renderer) renderInto(container, surface);
     });
 }
 
 export function unmountWorkspace(surface: Surface): void {
+  ++mountTokens[surface];
   states[surface].renderer = null;
   // 离开这一屏后没人看那句「已等待 N 秒」，计时器再走就是白转（rerender 也已经是空操作）。
   // 任务本身不受影响：事件流由 watchTask 维护，回到这一屏时 startSilenceTicker 会重新起。
@@ -617,7 +716,6 @@ function renderLoading(container: HTMLElement, surface: Surface): void {
   container.append(card);
 }
 
-const adoptAttempts: Partial<Record<Surface, Promise<void>>> = {};
 
 /** 首次打开某 surface 时，如果后端已有一个仍在跑的该类任务且本地还没聚焦任何任务，
  *  自动接管并订阅——对应 main.ts 的 workspaceTask() 在无显式聚焦时退回"最近一个活动任务"。
@@ -628,32 +726,22 @@ const adoptAttempts: Partial<Record<Surface, Promise<void>>> = {};
  *  模块级、跨挂载持续存在的 Set，之后不管切页面多少次再切回来，看到的都只是空的工作区，
  *  实际后端还在跑的任务再也不会被自动接管。跟 ensureBootstrap() 一个道理：失败的尝试
  *  不能留在缓存里，得让下一次挂载能够重试。 */
-async function adoptExistingTask(surface: Surface): Promise<void> {
+async function adoptExistingTask(surface: Surface, isCurrent: () => boolean): Promise<void> {
   if (bootstrapAdopted.has(surface)) return;
   const st = states[surface];
   if (st.task) {
     bootstrapAdopted.add(surface);
     return;
   }
-  if (!adoptAttempts[surface]) {
-    const attempt = (async () => {
-      const c = await getClient();
-      const list = await c.listTasks();
-      const candidate = list.active.find((t) => t.surface === surface);
-      if (candidate) {
-        focusTask(surface, candidate);
-        watchTask(surface);
-        if (surface === "pdf") void fetchPdfPagesSnapshot(surface, candidate.task_id);
-      }
-      bootstrapAdopted.add(surface);
-    })();
-    attempt.catch(() => {
-      if (adoptAttempts[surface] === attempt) delete adoptAttempts[surface];
-    });
-    adoptAttempts[surface] = attempt;
-  }
   try {
-    await adoptAttempts[surface];
+    // Each mount owns its lookup. A rapid remount must not reuse an obsolete
+    // promise whose guard belongs to the previous mount.
+    const c = await getClient();
+    const list = await c.listTasks();
+    if (!isCurrent()) return;
+    const candidate = list.active.find((t) => t.surface === surface);
+    if (candidate) await openWorkspaceTask(surface, candidate.task_id, isCurrent);
+    if (isCurrent()) bootstrapAdopted.add(surface);
   } catch {
     // 接管失败不影响正常使用——用户可以照常扫描发起新任务；下次挂载这个 surface 会重试。
   }
@@ -876,6 +964,11 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     col.append(buildLogCard(local));
   } else {
     col.append(buildSrcBar(surface, st));
+    if (st.historyOnly) {
+      const note = el("p", "ws-note");
+      note.textContent = "这个历史任务未保留原始来源路径。结果仍可查看；重新翻译请先选择来源并扫描。";
+      col.append(note);
+    }
     col.append(buildStatsRow(surface, st));
     // 单元格外内容的说明只属于 Excel：Word / PDF 没有这条限制，不该出现这段提示。
     if (surface === "excel") {
@@ -892,6 +985,11 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
     // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
     if (surface === "pdf" && local?.task.terminal) {
+      if (local.pdfPagesUnavailable) {
+        const note = el("p", "ws-note");
+        note.textContent = "这个历史任务的逐页记录已不可用。文件结果仍可在完整报告中查看。";
+        col.append(note);
+      }
       const reviewCard = buildPdfReviewCard(surface, local);
       if (reviewCard) col.append(reviewCard);
     }
@@ -915,12 +1013,22 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     value: st.sourcePath,
     placeholder: "选择或粘贴文件、文件夹路径…",
     onInput: (value) => {
+      if (value === st.sourcePath && !st.sourcePaths.length) return;
+      const needsRender = !!st.task || !!st.files.length || st.showBanner || scanBusy[surface];
+      const caret = input.selectionStart;
+      clearWorkspaceInput(surface);
       st.sourcePath = value;
       // 手输/粘贴就不再是"刚才多选的那几个文件"了，多选清单必须一起作废。
       st.sourcePaths = [];
       // 手输/粘贴路径时同步解锁「扫描」——这一栏不整页重建，按钮得自己更新。
       // 扫描在飞时仍然保持锁定，光有路径不算能点。
       scanBtn.disabled = scanBusy[surface] || !value.trim();
+      if (needsRender) {
+        rerender(surface);
+        const next = document.querySelector<HTMLInputElement>(".srcbar input");
+        next?.focus();
+        if (caret !== null) next?.setSelectionRange(caret, caret);
+      }
     },
   });
   root.style.margin = "0";
@@ -982,6 +1090,7 @@ async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputEl
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
   if (!pickedList.length) return;
+  clearWorkspaceInput(surface);
   // 多选时 sourcePath 记它们共同的上级目录：任务启动要用它重扫，selected_paths 再收窄
   // 回这几个文件；清单和统计仍然只显示选中的这几份（扫描只扫这几个路径）。
   st.sourcePaths = pickedList.length > 1 ? pickedList : [];
@@ -1018,7 +1127,7 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
   // 四格以内沿用固定 4 列；Excel 多出「图片 / 文本框」那一格后改自适应列宽，
   // 否则窄窗口下五格会被压得看不清标签。
   const wrap = el("div", stats.length > 4 ? "stats five" : "stats");
-  for (const stat of stats) {
+  for (const [index, stat] of stats.entries()) {
     const classes = ["stat"];
     if (!st.files.length) classes.push("dim");
     else if (stat.attn) classes.push("attn");
@@ -1026,7 +1135,7 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
     const span = el("span");
     span.textContent = stat.label;
     const b = el("b");
-    b.textContent = st.files.length ? stat.value : "—";
+    b.textContent = st.files.length && (!st.historyOnly || index === 0) ? stat.value : "—";
     if (stat.warn && st.files.length) b.style.color = "var(--warn)";
     if (stat.dim && st.files.length) b.className = "dash";
     cell.append(span, b);
@@ -1543,9 +1652,9 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
     row.append(fmtCell);
     const numCell1 = el("td", "num");
-    numCell1.textContent = surface === "excel" ? String(num(file.sheet_count, file.sheets?.length ?? 0)) : String(num(file.paragraph_count));
+    numCell1.textContent = st.historyOnly ? "—" : surface === "excel" ? String(num(file.sheet_count, file.sheets?.length ?? 0)) : String(num(file.paragraph_count));
     const numCell2 = el("td", "num");
-    numCell2.textContent = surface === "excel" ? num(file.text_cell_count).toLocaleString("zh-CN") : String(num(file.table_count));
+    numCell2.textContent = st.historyOnly ? "—" : surface === "excel" ? num(file.text_cell_count).toLocaleString("zh-CN") : String(num(file.table_count));
     row.append(numCell1, numCell2);
     if (surface === "excel") {
       const outsideCell = el("td");
@@ -1557,13 +1666,13 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     typeCell.append(buildFmtBadge((file.format ?? file.source_type ?? "").toUpperCase(), false));
     row.append(typeCell);
     const sizeCell = el("td");
-    sizeCell.textContent = formatSizeKb(file.size_kb);
+    sizeCell.textContent = st.historyOnly ? "—" : formatSizeKb(file.size_kb);
     row.append(sizeCell);
     const dimCell = el("td");
     if (file.source_type === "image") {
       dimCell.textContent = "—";
     } else {
-      dimCell.append(document.createTextNode(`${num(file.page_count)} 页`));
+      dimCell.append(document.createTextNode(file.page_count === undefined && st.historyOnly ? "—" : `${num(file.page_count)} 页`));
       const note = oversizedPageNote(file);
       if (note) {
         dimCell.append(document.createTextNode(" · "));
@@ -2946,17 +3055,32 @@ async function fetchPdfPagesSnapshot(surface: Surface, taskId: string, options?:
   if (surface !== "pdf") return false;
   const st = states[surface];
   if (!st.task || st.task.task.task_id !== taskId) return false;
+  const local = st.task;
+  if (local.pdfPagesUnavailable) return false;
   try {
     const c = await getClient();
     const snapshot = await c.getPdfPages(taskId);
-    if (st.task?.task.task_id !== taskId) return false;
-    st.task.pdfPagesSnapshot = snapshot;
+    if (st.task !== local) return false;
+    local.pdfPagesSnapshot = snapshot;
+    if (st.historyOnly) {
+      for (const file of st.files) {
+        const pageFile = snapshot.files.find((entry) => entry.relative_path === file.relative_path);
+        if (pageFile) file.page_count = pageFile.page_count;
+      }
+    }
     // 单页重生成跑在终态任务上，SSE 那时已经收摊了；接管一个正在重生成的任务
     // （切回页面、重开程序）也要能自己接上进度，所以起点放在这里而不是发起处。
     if (snapshot.rerun?.active) startPdfRerunTicker(surface, taskId);
     rerender(surface);
     return true;
   } catch (error) {
+    if (st.task !== local) return false;
+    // Persisted summaries survive sidecar restarts; the in-memory page runner does not.
+    if (local.task.terminal && error instanceof ApiError && error.status === 404) {
+      local.pdfPagesUnavailable = true;
+      rerender(surface);
+      return false;
+    }
     if (!options?.silent) {
       showToast({ message: redactedText((error as Error)?.message, "刷新逐页状态失败。"), error: true });
     }
@@ -3366,7 +3490,7 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   const foot = el("div", "rp-foot");
   if (!active) {
     const busy = submittingSurfaces.has(surface);
-    const disabled = st.selected.size === 0 || busy;
+    const disabled = st.selected.size === 0 || !st.sourcePath.trim() || scanBusy[surface] || busy;
     foot.append(createButton({
       label: busy
         ? "正在启动…"
@@ -3837,6 +3961,8 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
   const st = states[surface];
   const path = st.sourcePath.trim();
   if (!path) return;
+  if (st.task && !st.task.task.terminal) return;
+  clearWorkspaceInput(surface);
   const token = ++scanTokens[surface];
   scanBusy[surface] = true;
   rerender(surface);
@@ -3881,6 +4007,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     } catch {
       // 下次进入这个界面得重新选路径而已，不值得打断当前流程。
     }
+    if (token !== scanTokens[surface]) return;
     // 一个都没跳过时不提「跳过 0 个」；西文名词前后都要留空格。
     const skipSuffix = skipped.length > 0 ? `，跳过 ${skipped.length} 个` : "";
     const toastMessage = surface === "pdf"
@@ -4139,6 +4266,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
 
 function focusTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
+  rememberTaskContext(st, task.task_id);
   st.task = {
     task,
     logs: [],
@@ -4210,32 +4338,36 @@ function watchTask(surface: Surface): void {
   void (async () => {
     try {
       const c = await getClient();
-      await c.streamTask(taskId, (event) => handleTaskEvent(surface, taskId, event), {
+      await c.streamTask(taskId, (event) => {
+        if (states[surface].task === local) handleTaskEvent(surface, taskId, event);
+      }, {
         onConnectionState: (state) => {
-          if (states[surface].task?.task.task_id !== taskId) return;
+          if (states[surface].task !== local) return;
           const wasReconnecting = states[surface].task!.streamState === "reconnecting";
           states[surface].task!.streamState = state;
           rerender(surface);
           if (wasReconnecting && state === "connected") void refetchTask(surface, taskId).catch(() => undefined);
         },
       });
-      if (states[surface].task?.task.task_id === taskId && !states[surface].task!.task.terminal) {
+      if (states[surface].task === local && !local.task.terminal) {
         await refetchTask(surface, taskId);
       }
     } catch {
+      if (states[surface].task !== local) return;
       await refetchTask(surface, taskId).catch(() => {
-        markTaskInterrupted(surface, taskId);
+        if (states[surface].task === local) markTaskInterrupted(surface, taskId);
       });
     } finally {
-      if (states[surface].task?.task.task_id === taskId) states[surface].task!.watcherActive = false;
+      if (states[surface].task === local) local.watcherActive = false;
     }
   })();
 }
 
 async function refetchTask(surface: Surface, taskId: string): Promise<void> {
+  const local = states[surface].task;
   const c = await getClient();
   const task = await c.getTask(taskId);
-  if (states[surface].task?.task.task_id !== taskId) return;
+  if (!local || states[surface].task !== local || local.task.task_id !== taskId) return;
   if (states[surface].task!.task.terminal && !task.terminal && states[surface].task!.task.state !== "interrupted") return;
   states[surface].task!.task = task;
   states[surface].task!.fileProgress = reduceFileProgress(states[surface].task!.fileProgress, task.file_progress);
