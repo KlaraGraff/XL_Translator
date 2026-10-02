@@ -52,6 +52,8 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 APP_DATA_DIR=self.app_data,
                 SETTINGS_PATH=settings_path,
                 KEYS_PATH=keys_path,
+                RECOVERY_PATH=self.app_data / "recovery.json",
+                BACKUPS_DIR=self.app_data / "backups",
             ),
             patch.multiple(
                 maintenance,
@@ -69,7 +71,11 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
                 DIAGNOSTIC_RECORDS_DIR=records_dir,
                 LOG_PATH=log_path,
             ),
-            patch.object(tm_manager, "DB_PATH", self.app_data / "tm.db"),
+            patch.multiple(
+                tm_manager,
+                DB_PATH=self.app_data / "tm.db",
+                BACKUPS_DIR=self.app_data / "backups",
+            ),
         ]
         for patcher in self._patchers:
             patcher.start()
@@ -79,6 +85,13 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         self.app_data.mkdir()
         self.app_data.joinpath("settings.json").write_text("{}", encoding="utf-8")
         self.app_data.joinpath("keys.json").write_text('{"provider":"secret"}', encoding="utf-8")
+        settings_module.RECOVERY_PATH.write_text('{}', encoding="utf-8")
+        recovery_lock = settings_module.RECOVERY_PATH.with_name(".recovery.json.lock")
+        recovery_lock.touch()
+        settings_module.BACKUPS_DIR.mkdir()
+        settings_module.BACKUPS_DIR.joinpath("original.json").write_bytes(b"original")
+        unrelated_recovery = self.root / "recovery.json"
+        unrelated_recovery.write_bytes(b"outside current app data")
         owned_workspace = self.app_data / "workspaces" / "task-1"
         owned_workspace.mkdir(parents=True)
         owned_workspace.joinpath(".translator-workspace.json").write_text("{}", encoding="utf-8")
@@ -88,6 +101,10 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
         self.assertEqual(result.category, "reset_full")
         self.assertTrue(result.restart_required)
         self.assertFalse(self.app_data.joinpath("settings.json").exists())
+        self.assertFalse(settings_module.RECOVERY_PATH.exists())
+        self.assertFalse(recovery_lock.exists())
+        self.assertFalse(settings_module.BACKUPS_DIR.exists())
+        self.assertEqual(unrelated_recovery.read_bytes(), b"outside current app data")
         self.assertTrue(self.source.exists())
         self.assertTrue(self.output.exists())
         self.assertEqual(self.legacy_data.joinpath("settings.json").read_text(encoding="utf-8"), "legacy")

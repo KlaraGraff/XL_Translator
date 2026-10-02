@@ -329,9 +329,13 @@ async function activeTaskCount(): Promise<number> {
   try {
     await ensureConnected();
     const list = await client.listTasks();
-    return list.active.length;
+    const count = record(list).active_work_count;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+      throw new Error("activity count unavailable");
+    }
+    return count;
   } catch {
-    return 0;
+    throw new Error("无法确认是否还有任务或单页操作正在进行，请稍后重试。");
   }
 }
 
@@ -348,12 +352,12 @@ export async function requestUpdateInstall(): Promise<void> {
       const running = await activeTaskCount();
       const body = running > 0
         ? [
-          `现在安装会中断这 ${running} 个任务，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。`,
+          `现在安装会中断这 ${running} 个任务或单页操作，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。`,
           "安装程序会在更新完成后自动重新打开 Translator。",
         ]
         : ["安装过程中 Translator 会关闭，安装程序完成后会自动重新打开它。"];
       const confirmed = await confirmModal({
-        title: running > 0 ? `还有 ${running} 个任务正在运行` : "安装将关闭 Translator",
+        title: running > 0 ? `还有 ${running} 个任务或单页操作正在进行` : "安装将关闭 Translator",
         body,
         confirmLabel: "仍然安装",
         cancelLabel: "暂不安装",
@@ -361,6 +365,8 @@ export async function requestUpdateInstall(): Promise<void> {
       if (!confirmed) return;
     }
     await startInstall();
+  } catch (error) {
+    showToast({ message: errorMessage(error), error: true });
   } finally {
     actionBusy = false;
   }
@@ -379,7 +385,7 @@ async function startInstall(): Promise<void> {
   // 出错时用来决定说「取不到更新信息」「下载失败」还是「安装失败」——三者的下一步
   // 动作完全不同：第一种多半是这一版根本没发更新包（重试永远不会成功），第二种重试
   // 或换网络，第三种多半是磁盘/权限/签名，重试没用。
-  let stage: "resolve" | "download" | "install" = "resolve";
+  let stage: "resolve" | "download" | "activity-check" | "install" = "resolve";
   try {
     handle = await resolveUpdate();
     if (!handle) {
@@ -416,6 +422,18 @@ async function startInstall(): Promise<void> {
         emit();
       }
     });
+    if (state.env?.installBehavior === "installer_restart") {
+      stage = "activity-check";
+      const running = await activeTaskCount();
+      if (running > 0 && !await confirmModal({
+        title: `还有 ${running} 个任务或单页操作正在进行`,
+        body: ["下载期间仍有工作正在进行，现在安装会中断它们。已经生成的文件会保留。"],
+        confirmLabel: "仍然安装", cancelLabel: "暂不安装",
+      })) {
+        state.flow = idleUpdateFlow();
+        return;
+      }
+    }
     stage = "install";
     state.flow = { ...state.flow, phase: "installing", percent: null };
     emit();
@@ -426,11 +444,14 @@ async function startInstall(): Promise<void> {
       ...idleUpdateFlow(), phase: "failed",
       version: handle?.version || fallbackVersion,
       failureTitle:
-        stage === "resolve" ? "无法自动更新" : stage === "download" ? "下载失败" : "安装失败",
+        stage === "resolve" ? "无法自动更新" : stage === "download" ? "下载失败"
+          : stage === "activity-check" ? "暂时无法安装" : "安装失败",
       message:
         // 「取不到更新信息」不能说成「下载失败」：那句话会让人一遍遍重试一件不可能
         // 成功的事——这一版没有提供应用内更新包时，重试到下一个版本发布为止都是失败。
-        stage === "resolve"
+        stage === "activity-check"
+          ? "无法确认是否还有任务或单页操作正在进行，请稍后重试。当前版本没有被改动，可以正常继续使用。"
+          : stage === "resolve"
           ? "没有取到这一版的更新信息：可能是网络不通，也可能是这一版没有提供应用内更新包。可以稍后再试，或改为下载安装包。当前版本没有被改动，可以正常继续使用。"
           : stage === "download"
             ? "安装包没有下载完，当前版本没有被改动，可以正常继续使用。"
@@ -468,7 +489,7 @@ export async function requestRestart(): Promise<void> {
     const running = await activeTaskCount();
     if (running > 0) {
       const confirmed = await confirmModal({
-        title: `还有 ${running} 个任务正在运行`,
+        title: `还有 ${running} 个任务或单页操作正在进行`,
         body: [
           "现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。",
           "更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。",
@@ -483,6 +504,8 @@ export async function requestRestart(): Promise<void> {
     } catch (error) {
       showToast({ message: `无法自动重启，请手动退出并重新打开 Translator。（${errorMessage(error)}）`, error: true });
     }
+  } catch (error) {
+    showToast({ message: errorMessage(error), error: true });
   } finally {
     actionBusy = false;
   }

@@ -28,6 +28,7 @@ from api.task_manager import (
     TranslationTaskManager,
 )
 from core import diagnostics, maintenance, tm_manager
+from core.task_history import TaskHistoryError
 from core.language_preflight import (
     build_language_preflight_prompt,
     extract_language_probe_texts,
@@ -476,6 +477,10 @@ def create_app(
         # opened nor copied, or one another task is still holding.  Both carry
         # their own actionable sentence.
         return _json_error(409, str(exc), reason="tm_database_unreadable")
+
+    @app.exception_handler(TaskHistoryError)
+    async def task_history_error(_request, exc):
+        return _json_error(409, str(exc), reason="task_history_write_blocked")
 
     @app.exception_handler(maintenance.MaintenanceError)
     async def maintenance_error(_request, exc):

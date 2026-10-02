@@ -14,6 +14,11 @@ import settings as app_settings
 
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+TASK_HISTORY_RECOVERY_SCOPE = "task_history"
+
+
+class TaskHistoryError(RuntimeError):
+    """History cannot be updated without risking the only copy of old data."""
 
 
 def default_history_path() -> Path:
@@ -45,6 +50,7 @@ class TaskHistoryStore:
         self._path = path or default_history_path()
         self._limit = max(1, int(limit))
         self._lock = _lock_for_path(self._path)
+        self._blocked_reason = ""
 
     def records(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -61,6 +67,7 @@ class TaskHistoryStore:
                 if str(item.get("task_id") or "") != task_id
             ]
             records.insert(0, dict(record))
+            self._ensure_writable()
             self._write_locked(records[: self._limit])
 
     def remove(self, task_id: str) -> bool:
@@ -78,6 +85,7 @@ class TaskHistoryStore:
             return False
         with self._lock:
             records = self._read_locked()
+            self._ensure_writable()
             kept = [
                 item
                 for item in records
@@ -119,10 +127,17 @@ class TaskHistoryStore:
     def clear(self) -> int:
         """Remove task-center summaries only; generated outputs are never owned here."""
         with self._lock:
-            count = len(self._read_locked())
+            # Explicit deletion must not create a fresh backup or recovery event.
+            try:
+                data = json.loads(self._path.read_bytes())
+                count = len(data) if isinstance(data, list) else 0
+            except (OSError, ValueError):
+                count = 0
             self._path.unlink(missing_ok=True)
             for stray in self._stray_temp_paths():
                 stray.unlink(missing_ok=True)
+            self._blocked_reason = ""
+            app_settings.clear_recovery_record([TASK_HISTORY_RECOVERY_SCOPE])
             return count
 
     def _stray_temp_paths(self) -> list[Path]:
@@ -136,14 +151,84 @@ class TaskHistoryStore:
         return list(self._path.parent.glob(f".{self._path.name}.*.tmp"))
 
     def _read_locked(self) -> list[dict[str, Any]]:
+        self._blocked_reason = ""
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = self._path.read_bytes()
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            self._blocked_reason = f"任务历史无法读取，新的任务历史暂时无法保存，原文件未被覆盖：{exc}"
+            return []
+        try:
             data = json.loads(raw)
-        except (OSError, ValueError, TypeError):
+        except (ValueError, UnicodeError):
+            data = None
+        kept = [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        normalized = []
+        progress_repaired = False
+        for item in kept:
+            progress = item.get("file_progress")
+            if isinstance(progress, dict):
+                repaired = dict(progress)
+                try:
+                    int(progress.get("revision") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    repaired["revision"] = 0
+                if progress.get("files") is not None and not isinstance(progress["files"], list):
+                    repaired["files"] = []
+                if repaired != progress:
+                    item = {**item, "file_progress": repaired}
+                    progress_repaired = True
+            normalized.append(item)
+        if isinstance(data, list) and len(kept) == len(data) and not progress_repaired:
+            return data
+        kept = normalized
+        try:
+            backup = self._backup_raw_locked(raw)
+            self._write_locked(kept)
+        except OSError as exc:
+            self._blocked_reason = f"任务历史无法安全恢复，备份或写入失败，新的任务历史暂时无法保存，原文件未被覆盖：{exc}"
             return []
-        if not isinstance(data, list):
-            return []
-        return [item for item in data if isinstance(item, dict)]
+        app_settings.record_recovery_event(
+            TASK_HISTORY_RECOVERY_SCOPE,
+            stored_version=None,
+            current_version=1,
+            backup_path=str(backup),
+        )
+        return kept
+
+    def _backup_raw_locked(self, raw: bytes) -> Path:
+        directory = self._path.parent / "backups" / TASK_HISTORY_RECOVERY_SCOPE
+        directory.mkdir(parents=True, exist_ok=True)
+        backup = directory / f"task_history_unusable_{uuid.uuid4().hex}.json"
+        # Exclusive creation gives private permissions before any bytes are written.
+        descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                private = app_settings.restrict_windows_file_to_owner(backup)
+                if os.name == "nt" and not private:
+                    raise PermissionError("无法为任务历史备份设置仅当前用户可访问的权限")
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+    def _ensure_writable(self) -> None:
+        if self._blocked_reason:
+            raise TaskHistoryError(self._blocked_reason)
+
+    def health_status(self) -> dict[str, object]:
+        with self._lock:
+            self._read_locked()
+            return {
+                "state": "unreadable" if self._blocked_reason else "current",
+                "stored_version": None,
+                "current_version": 1,
+                "reason": self._blocked_reason,
+            }
 
     def _write_locked(self, records: list[dict[str, Any]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

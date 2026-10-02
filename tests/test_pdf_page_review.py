@@ -23,7 +23,8 @@ from api.app import create_app
 from api.task_manager import TranslationTaskManager
 from core.model_api_identity import TaskApiContext
 from core.pdf_image_translation import PdfPageActionError
-from core.task_runner import StoppedMsg
+from core.task_runner import DoneMsg, StoppedMsg
+from core.task_history import TaskHistoryError
 from settings import AppSettings
 from tests.app_data_isolation import IsolatedAppDataTestCase
 
@@ -391,7 +392,22 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                 self.assertTrue(during["rerun"]["active"])
                 self.assertEqual(during["rerun"]["page_number"], 2)
                 self.assertFalse(during["rerun_actionable"])
-                self.assertEqual(client.get("/api/tasks").json()["active"], [])
+                listed = client.get("/api/tasks").json()
+                self.assertEqual(listed["active"], [])
+                self.assertEqual(listed["active_work_count"], 1)
+                self.assertEqual(client.delete("/api/tasks/history").status_code, 409)
+                for category in ("task_history", "keys", "tm", "logs", "diagnostics"):
+                    blocked = client.post("/api/maintenance/clear", json={
+                        "category": category, "confirmation": True,
+                    })
+                    self.assertEqual(blocked.status_code, 409, blocked.text)
+                self.assertEqual(client.post("/api/maintenance/reset-full", json={
+                    "confirmation": True, "phrase": "RESET",
+                }).status_code, 409)
+                with patch("api.task_manager.MAX_RETAINED_TERMINAL_TASKS", 0):
+                    manager._evict_retired_tasks()
+                self.assertIn(task_id, manager._tasks)
+                self.assertEqual(manager.active_task_count(), 1)
 
                 busy = client.post(
                     f"/api/tasks/{task_id}/pdf-pages/rerun",
@@ -413,13 +429,237 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
                     finished = client.get(f"/api/tasks/{task_id}/pdf-pages").json()
                 self.assertFalse(finished["rerun"]["active"])
                 self.assertTrue(finished["rerun_actionable"])
+                self.assertEqual(manager.active_task_count(), 0)
                 self.assertEqual(finished["files"][0]["pages"][1]["status"], "success")
 
                 status = client.get(f"/api/tasks/{task_id}").json()
                 self.assertTrue(status["terminal"])
                 # 任务中心的文件表和指标读的是这份 result，不跟着刷新就永远是旧数。
                 self.assertEqual(status["result"]["api_call_count"], 7)
+                persisted = next(record for record in manager._history.records()
+                                 if record["task_id"] == task_id)
+                self.assertEqual(persisted["result"]["api_call_count"], 7)
+                rebuilt = TranslationTaskManager(settings_loader=AppSettings)
+                rebuilt_record = next(record for record in rebuilt.list_tasks()["recent"]
+                                      if record["task_id"] == task_id)
+                self.assertEqual(rebuilt_record["result"]["api_call_count"], 7)
                 self.assertEqual(client.delete(f"/api/tasks/{task_id}").status_code, 200)
+
+    def test_shutdown_deadline_keeps_unfinished_page_transaction_protected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = self._review_runner(root)
+            manager, client, root = self._client(root, runner)
+            preflight, context = self._patches(manager)
+            with preflight, context:
+                task_id = self._start(client, root)
+                client.post(f"/api/tasks/{task_id}/pause")
+                client.post(f"/api/tasks/{task_id}/end-paused")
+                self._await_terminal(client, task_id)
+                original_state = manager._tasks[task_id].state
+                original_result = dict(manager._tasks[task_id].result or {})
+                client.post(f"/api/tasks/{task_id}/pdf-pages/rerun",
+                            json={"file": "source.pdf", "page": 2})
+                closing = threading.Thread(target=lambda: manager.shutdown(timeout=0.01))
+                closing.start()
+                time.sleep(0.08)
+                self.assertFalse(closing.is_alive())
+                self.assertEqual(manager.active_task_count(), 1)
+                self.assertEqual(manager._tasks[task_id].state, original_state)
+                self.assertGreaterEqual(runner.stop_calls, 2)
+                self.assertEqual(manager._tasks[task_id].result, original_result)
+                self.assertTrue(any(event["type"] == "pdf_page_shutdown_pending"
+                                    for event in manager._tasks[task_id].events))
+                runner.release_rerun.set()
+                closing.join(3)
+                deadline = time.monotonic() + 3
+                while manager.active_task_count() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertFalse(closing.is_alive())
+                self.assertEqual(manager.active_task_count(), 0)
+                self.assertEqual(manager._tasks[task_id].state, original_state)
+
+    def test_restore_counts_as_work_until_transaction_returns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = self._review_runner(root)
+            manager, client, root = self._client(root, runner)
+            started, release = threading.Event(), threading.Event()
+            def restore_previous_page(**_kwargs):
+                started.set()
+                release.wait(3)
+                return {"page_number": 2}
+            runner.restore_previous_page = restore_previous_page
+            preflight, context = self._patches(manager)
+            with preflight, context:
+                task_id = self._start(client, root)
+                client.post(f"/api/tasks/{task_id}/pause")
+                client.post(f"/api/tasks/{task_id}/end-paused")
+                self._await_terminal(client, task_id)
+                restoring = threading.Thread(target=lambda: client.post(
+                    f"/api/tasks/{task_id}/pdf-pages/restore-previous",
+                    json={"file": "source.pdf", "page": 2}))
+                restoring.start()
+                self.assertTrue(started.wait(1))
+                self.assertEqual(manager.active_task_count(), 1)
+                self.assertEqual(client.get("/api/tasks").json()["active"], [])
+                self.assertEqual(client.delete("/api/tasks/history").status_code, 409)
+                release.set()
+                restoring.join(3)
+                self.assertEqual(manager.active_task_count(), 0)
+                self.assertEqual(client.delete("/api/tasks/history").status_code, 200)
+
+    def test_history_write_failure_releases_page_operation_busy_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = self._review_runner(root)
+            manager, client, root = self._client(root, runner)
+            preflight, context = self._patches(manager)
+            with preflight, context:
+                task_id = self._start(client, root)
+                client.post(f"/api/tasks/{task_id}/pause")
+                client.post(f"/api/tasks/{task_id}/end-paused")
+                self._await_terminal(client, task_id)
+                task = manager._tasks[task_id]
+                original_state = task.state
+                released = []
+                lease = SimpleNamespace(release=lambda: released.append(True))
+                for operation in ("rerun", "restore"):
+                    task.rerun_active = True
+                    task.rerun_kind = operation
+                    with patch.object(manager._history, "upsert", side_effect=OSError("disk full")):
+                        if operation == "rerun":
+                            manager._pump_page_rerun(task, runner, lease)
+                        else:
+                            manager._settle_page_restore(task, runner, apply_patch=True,
+                                closing_data={"phase": "finished"})
+                    self.assertTrue(task.history_dirty)
+                    self.assertIn(task_id, manager._pending_history)
+                    self.assertFalse(task.rerun_active)
+                    self.assertEqual(task.state, original_state)
+                    self.assertEqual(manager.active_task_count(), 0)
+                self.assertEqual(released, [True])
+                self.assertTrue((root / "page_1_translated.png").is_file())
+
+    def test_blocked_history_does_not_block_translation_and_flush_retries_evicted_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = self._review_runner(root)
+            manager, client, root = self._client(root, runner)
+            preflight, context = self._patches(manager)
+            with preflight, context:
+                with patch.object(manager._history, "upsert", side_effect=TaskHistoryError("protected")):
+                    task_id = self._start(client, root)
+                    runner._messages.append(DoneMsg(output_dir=str(root), file_results=[],
+                        elapsed_sec=1, tm_hit_count=0, api_call_count=3))
+                    self._await_terminal(client, task_id)
+                    result = client.get(f"/api/tasks/{task_id}/results").json()
+                    self.assertEqual(result["result"]["api_call_count"], 3)
+                    self.assertEqual(manager.active_task_count(), 0)
+                    self.assertFalse(manager.reservations())
+                    self.assertIn("event: done\n", "".join(manager.iter_sse(task_id)))
+                    self.assertIn(task_id, [record["task_id"] for record
+                                          in client.get("/api/tasks").json()["recent"]])
+                    with patch("api.task_manager.MAX_RETAINED_TERMINAL_TASKS", 0):
+                        manager._evict_retired_tasks()
+                    self.assertNotIn(task_id, manager._tasks)
+                    self.assertEqual(client.get(f"/api/tasks/{task_id}/results").json()
+                                     ["result"]["api_call_count"], 3)
+                    manager.flush_history()
+                    self.assertIn(task_id, manager._pending_history)
+                manager.flush_history()
+                self.assertNotIn(task_id, manager._pending_history)
+                saved = next(record for record in manager._history.records()
+                             if record["task_id"] == task_id)
+                self.assertEqual(saved["result"]["api_call_count"], 3)
+                for method, path in (("clear", "/api/tasks/history"),
+                                     ("remove", f"/api/tasks/{task_id}")):
+                    with patch.object(manager._history, method,
+                                      side_effect=TaskHistoryError("protected")):
+                        self.assertEqual(client.delete(path).status_code, 409)
+
+    def test_unsaved_history_cache_is_bounded_to_recent_200_sanitized_summaries(self) -> None:
+        manager = TranslationTaskManager(settings_loader=AppSettings)
+        with patch.object(manager._history, "upsert", side_effect=OSError("disk full")), \
+                patch("api.task_manager.logger.warning"):
+            for index in range(205):
+                task = SimpleNamespace(task_id=str(index), condition=threading.Condition(),
+                                       history_dirty=False)
+                record = {"task_id": str(index), "terminal": True, "state": "done",
+                          "updated_at": index, "result": {"api_call_count": index}}
+                manager._write_task_history(task, record)
+        self.assertEqual(len(manager._pending_history), 200)
+        self.assertIsNone(manager._history_record("0"))
+        self.assertEqual(manager._history_record("204")["result"]["api_call_count"], 204)
+        self.assertEqual(len(manager.list_tasks()["recent"]), 200)
+        manager.flush_history()
+        self.assertFalse(manager._pending_history)
+
+    def test_history_flush_cannot_replay_snapshot_removed_by_newer_write(self) -> None:
+        manager = TranslationTaskManager(settings_loader=AppSettings)
+        old = {"task_id": "retry-race", "terminal": True, "state": "done",
+               "updated_at": 1, "result": {"api_call_count": 1}}
+        newer = {**old, "updated_at": 2, "result": {"api_call_count": 7}}
+        task = SimpleNamespace(task_id="retry-race", condition=threading.Condition(),
+                               history_dirty=True, updated_at=2)
+        manager._pending_history[task.task_id] = old
+        captured, release = threading.Event(), threading.Event()
+        retry = manager._retry_pending_history
+        def delayed_retry(key, record):
+            captured.set()
+            self.assertTrue(release.wait(2))
+            retry(key, record)
+        with patch.object(manager, "_retry_pending_history", side_effect=delayed_retry):
+            flushing = threading.Thread(target=manager.flush_history)
+            flushing.start()
+            self.assertTrue(captured.wait(1))
+            manager._write_task_history(task, newer)
+            self.assertNotIn(task.task_id, manager._pending_history)
+            release.set()
+            flushing.join(2)
+        self.assertFalse(flushing.is_alive())
+        saved = next(record for record in manager._history.records()
+                     if record["task_id"] == task.task_id)
+        self.assertEqual(saved["result"]["api_call_count"], 7)
+
+    def test_history_retry_and_new_write_serialize_without_task_lock_inversion(self) -> None:
+        manager = TranslationTaskManager(settings_loader=AppSettings)
+        old = {"task_id": "write-race", "terminal": True, "state": "done",
+               "updated_at": 1, "result": {"api_call_count": 1}}
+        newer = {**old, "updated_at": 2, "result": {"api_call_count": 7}}
+        task = SimpleNamespace(task_id="write-race", condition=threading.Condition(),
+                               history_dirty=True, updated_at=2)
+        manager._pending_history[task.task_id] = old
+        writing_old, release_old, new_started, new_finished = (
+            threading.Event() for _ in range(4))
+        original = manager._history.upsert
+        def delayed_upsert(record):
+            if record is old:
+                writing_old.set()
+                self.assertTrue(release_old.wait(2))
+            original(record)
+        def write_new():
+            with task.condition:
+                new_started.set()
+                manager._write_task_history(task, newer)
+            new_finished.set()
+        with patch.object(manager._history, "upsert", side_effect=delayed_upsert):
+            flushing = threading.Thread(target=manager.flush_history)
+            flushing.start()
+            self.assertTrue(writing_old.wait(1))
+            writer = threading.Thread(target=write_new)
+            writer.start()
+            self.assertTrue(new_started.wait(1))
+            self.assertFalse(new_finished.wait(0.05))
+            release_old.set()
+            flushing.join(2)
+            writer.join(2)
+        self.assertFalse(flushing.is_alive())
+        self.assertFalse(writer.is_alive())
+        self.assertTrue(new_finished.is_set())
+        saved = next(record for record in manager._history.records()
+                     if record["task_id"] == task.task_id)
+        self.assertEqual(saved["result"]["api_call_count"], 7)
 
     def test_page_action_rejections_from_the_runner_become_input_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

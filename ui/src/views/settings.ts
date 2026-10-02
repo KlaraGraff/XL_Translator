@@ -165,11 +165,13 @@ type DataHealthEntry = {
   stored_version: number | null;
   current_version: number;
   backup_path: string;
+  reason?: string;
 };
 type DataHealthPayload = {
   settings: DataHealthEntry;
   tm: DataHealthEntry;
   keys: DataHealthEntry;
+  task_history?: DataHealthEntry;
 };
 
 // ---------------------------------------------------------------------------
@@ -501,6 +503,8 @@ async function bootstrap(token: number): Promise<void> {
 // toast，因为这条横幅本来就是「有异常才出现」，接口缺失不算异常。
 async function refreshDataHealth(token: number): Promise<void> {
   try {
+    await ensureConnected();
+    if (token !== mountToken) return;
     const result = await client.request<DataHealthPayload>("/api/data/health");
     if (token !== mountToken) return;
     dataHealth = result;
@@ -520,6 +524,12 @@ type DataHealthMessage = { scope: keyof DataHealthPayload; text: string };
 function dataHealthRecreatedMessages(payload: DataHealthPayload | null): DataHealthMessage[] {
   if (!payload) return [];
   const messages: DataHealthMessage[] = [];
+  if (payload.task_history?.state === "recreated") {
+    messages.push({
+      scope: "task_history",
+      text: `旧的任务历史已损坏，原文件已备份到 ${payload.task_history.backup_path || "备份目录"}；已恢复可用记录，无法读取的记录未能保留。`,
+    });
+  }
   if (payload.settings?.state === "recreated") {
     messages.push({
       scope: "settings",
@@ -550,6 +560,9 @@ function dataHealthRecreatedMessages(payload: DataHealthPayload | null): DataHea
 function dataHealthBlockedMessages(payload: DataHealthPayload | null): string[] {
   if (!payload) return [];
   const messages: string[] = [];
+  if (payload.task_history?.state === "unreadable") {
+    messages.push(payload.task_history.reason || "任务历史无法安全恢复，原文件未被覆盖，新的任务历史暂时无法保存。");
+  }
   if (payload.settings?.state === "unreadable") {
     messages.push("配置文件读不出来，本次按默认设置运行，改动无法保存。原文件没有被覆盖。");
   }

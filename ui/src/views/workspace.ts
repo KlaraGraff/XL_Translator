@@ -147,7 +147,7 @@ interface ToggleDef {
 
 const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
-  { key: "translationOnly", label: "仅显示译文", hint: "开启后输出文件只保留译文；关闭时保留原文与译文。", default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translationOnly", label: "仅显示译文", hint: "翻译后的工作表仅显示译文；独立的「_原文」副本由其开关控制。", default: false, pathKind: "output", path: "output_translation_only" },
   { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "translateSheetNames", label: "翻译工作表名称", hint: "翻译 Excel 工作表名称，并同步更新工作簿内部对工作表的引用；遇到无法安全处理的引用时保留原名称。", default: true, pathKind: "output", path: "translate_sheet_names" },
   { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },

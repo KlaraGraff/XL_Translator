@@ -182,6 +182,33 @@ let pendingCleanCount = 0;
 let cleanStaleCount = 0;
 
 let mounted = false;
+let mountGeneration = 0;
+let tmRequestRevision = 0;
+let tmQueryRevision = 0;
+// 回滚到最后一次真正显示的数据，不能回滚到另一个仍在等待的查询。
+let confirmedQuery = { page, keyword, pageSize, sourceLang, targetLang };
+let confirmedSelectedIds: number[] = [];
+let tmQueryPending = true;
+function tmQueryReady(): boolean {
+  return mounted && !tmQueryPending && sourceLang === confirmedQuery.sourceLang
+    && targetLang === confirmedQuery.targetLang && keyword === confirmedQuery.keyword
+    && page === confirmedQuery.page && pageSize === confirmedQuery.pageSize;
+}
+function restoreConfirmedQuery(): void {
+  ({ page, keyword, pageSize, sourceLang, targetLang } = confirmedQuery);
+  selectedIds.clear();
+  for (const id of confirmedSelectedIds) selectedIds.add(id);
+  tmQueryPending = false;
+}
+function currentTmScope(generation: number, revision: number): boolean {
+  return mounted && generation === mountGeneration && revision === tmQueryRevision;
+}
+function invalidateTmQuery(): number {
+  if (!tmQueryPending) confirmedSelectedIds = [...selectedIds];
+  tmQueryPending = true;
+  selectAllBusy = false;
+  return ++tmQueryRevision;
+}
 let toolbarCardEl: HTMLDivElement | null = null;
 let statsRowEl: HTMLDivElement | null = null;
 let stateRowEl: HTMLDivElement | null = null;
@@ -235,6 +262,7 @@ function pairAllowsReverse(): boolean {
 // ---------------------------------------------------------------------------
 
 async function refreshLanguagePairs(): Promise<void> {
+  const generation = mountGeneration;
   const client = await getClient();
   const payload = await client.request<{
     source_options: LanguageOption[];
@@ -242,6 +270,7 @@ async function refreshLanguagePairs(): Promise<void> {
     selected?: { source_lang?: string; target_lang?: string };
     recent?: string[];
   }>("/api/tm/language-pairs");
+  if (!mounted || generation !== mountGeneration) return;
   sourceOptions = payload.source_options.filter((option) => option.builtin !== false && option.can_source !== false);
   targetOptions = payload.target_options.filter((option) => option.can_target !== false);
   recentPairs = strings(payload.recent);
@@ -251,18 +280,37 @@ async function refreshLanguagePairs(): Promise<void> {
   targetLang = targetOptions.some((option) => option.code === wantedTarget) ? wantedTarget : (targetOptions[0]?.code ?? "en");
 }
 
-async function refreshTm(): Promise<void> {
-  const client = await getClient();
-  const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number }>(
-    `/api/tm/entries?lang_pair=${encodeURIComponent(tmLangPair())}&keyword=${encodeURIComponent(keyword)}&page=${page}&page_size=${pageSize}`,
-  );
-  entries = payload.entries;
-  stats = payload.stats ?? {};
-  total = num(payload.total, entries.length);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  if (page > totalPages) {
-    page = totalPages;
-    await refreshTm();
+async function refreshTm(): Promise<boolean> {
+  const generation = mountGeneration;
+  const queryRevision = tmQueryRevision;
+  const requestRevision = ++tmRequestRevision;
+  const query = { pair: tmLangPair(), keyword, page, pageSize };
+  const isCurrent = () => currentTmScope(generation, queryRevision) && requestRevision === tmRequestRevision;
+  try {
+    const client = await getClient();
+    if (!isCurrent()) return false;
+    while (true) {
+      const payload = await client.request<{ entries: TmEntry[]; stats: JsonObject; total?: number }>(
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${query.page}&page_size=${query.pageSize}`,
+      );
+      if (!isCurrent()) return false;
+      const nextTotal = num(payload.total, payload.entries.length);
+      const totalPages = Math.max(1, Math.ceil(nextTotal / query.pageSize));
+      if (query.page > totalPages) {
+        query.page = totalPages;
+        continue;
+      }
+      entries = payload.entries;
+      stats = payload.stats ?? {};
+      total = nextTotal;
+      page = query.page;
+      confirmedQuery = { page, keyword: query.keyword, pageSize: query.pageSize, sourceLang, targetLang };
+      tmQueryPending = false;
+      return true;
+    }
+  } catch (error) {
+    if (!isCurrent()) return false;
+    throw error;
   }
 }
 
@@ -274,24 +322,24 @@ async function refreshTm(): Promise<void> {
  * 再点一次「批量删除」删的还是上一次的范围。返回 true 表示这次取数成功。
  */
 async function applyTmQueryChange(change: () => void): Promise<boolean> {
-  const snapshot = {
-    page,
-    keyword,
-    pageSize,
-    selected: [...selectedIds],
-  };
+  const generation = mountGeneration;
+  const revision = invalidateTmQuery();
   change();
+  renderTable();
+  updateSelectionUi();
   let ok = true;
   try {
-    await refreshTm();
+    ok = await refreshTm();
   } catch (error) {
+    if (!currentTmScope(generation, revision)) return false;
     ok = false;
-    page = snapshot.page;
-    keyword = snapshot.keyword;
-    pageSize = snapshot.pageSize;
-    selectedIds.clear();
-    for (const id of snapshot.selected) selectedIds.add(id);
+    restoreConfirmedQuery();
     showToast({ message: `记忆库加载失败：${errorMessage(error)}`, error: true });
+  }
+  if (!currentTmScope(generation, revision)) return false;
+  if (ok) {
+    selectedIds.clear();
+    confirmedSelectedIds = [];
   }
   renderTable();
   renderTopbarStatus();
@@ -307,36 +355,40 @@ const SELECT_ALL_CAP = 5000;
 let selectAllBusy = false;
 
 async function fetchAllMatchingTmIds(): Promise<{ ids: number[]; truncated: boolean }> {
-  const targetCount = Math.min(total, SELECT_ALL_CAP);
+  const query = { pair: tmLangPair(), keyword, total };
+  const targetCount = Math.min(query.total, SELECT_ALL_CAP);
   if (targetCount <= 0) return { ids: [], truncated: false };
   const client = await getClient();
   const pageCount = Math.ceil(targetCount / SELECT_ALL_PAGE_SIZE);
   const pagePayloads = await Promise.all(
     Array.from({ length: pageCount }, (_, index) =>
       client.request<{ entries: TmEntry[] }>(
-        `/api/tm/entries?lang_pair=${encodeURIComponent(tmLangPair())}&keyword=${encodeURIComponent(keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}`,
+        `/api/tm/entries?lang_pair=${encodeURIComponent(query.pair)}&keyword=${encodeURIComponent(query.keyword)}&page=${index + 1}&page_size=${SELECT_ALL_PAGE_SIZE}`,
       ),
     ),
   );
   const ids = pagePayloads.flatMap((payload) => payload.entries.map((entry) => entry.id)).slice(0, targetCount);
-  return { ids, truncated: total > SELECT_ALL_CAP };
+  return { ids, truncated: query.total > SELECT_ALL_CAP };
 }
 
 /** 「选择全部」/「取消全选」：选中的是当前语言对 + 搜索关键词过滤后的完整结果集
  * （跨页），不是无视筛选的整个记忆库。已经选满一次可达上限时再点会直接清空，
  * 不必重新发请求。 */
 async function handleSelectAllTm(): Promise<void> {
-  if (selectAllBusy || total <= 0) return;
+  if (!tmQueryReady() || selectAllBusy || total <= 0) return;
   const reachable = Math.min(total, SELECT_ALL_CAP);
   if (selectedIds.size > 0 && selectedIds.size === reachable) {
     selectedIds.clear();
     renderTable();
     return;
   }
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
   selectAllBusy = true;
   updateSelectionUi();
   try {
     const { ids, truncated } = await fetchAllMatchingTmIds();
+    if (!currentTmScope(generation, revision)) return;
     selectedIds.clear();
     for (const id of ids) selectedIds.add(id);
     renderTable();
@@ -347,16 +399,23 @@ async function handleSelectAllTm(): Promise<void> {
       });
     }
   } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
     showToast({ message: `选择全部失败：${errorMessage(error)}`, error: true });
   } finally {
-    selectAllBusy = false;
-    updateSelectionUi();
+    if (currentTmScope(generation, revision)) {
+      selectAllBusy = false;
+      updateSelectionUi();
+    }
   }
 }
 
 async function refreshConflicts(): Promise<void> {
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  const pair = tmLangPair();
   const client = await getClient();
-  const payload = await client.request<{ conflicts: TmConflict[] }>(`/api/tm/conflicts?lang_pair=${encodeURIComponent(tmLangPair())}`);
+  const payload = await client.request<{ conflicts: TmConflict[] }>(`/api/tm/conflicts?lang_pair=${encodeURIComponent(pair)}`);
+  if (!currentTmScope(generation, revision)) return;
   conflicts = Array.isArray(payload.conflicts) ? payload.conflicts : [];
 }
 
@@ -365,11 +424,26 @@ async function persistSettings(patch: JsonObject): Promise<void> {
   await client.request("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
 }
 
+// 单独串行化语言对保存：后发意图最后落盘，不让慢的旧 PUT 覆盖新语言对。
+let langPairSaveQueue: Promise<void> = Promise.resolve();
+let langPairSaveRevision = 0;
+function persistLangPairInOrder(patch: JsonObject, generation: number, revision: number): Promise<void> {
+  const saving = langPairSaveQueue.catch(() => {}).then(async () => {
+    if (!mounted || generation !== mountGeneration || revision !== langPairSaveRevision) return;
+    await persistSettings(patch);
+  });
+  langPairSaveQueue = saving.catch(() => {});
+  return saving;
+}
+
 async function saveLangPair(source: string, target: string): Promise<void> {
   if (source === target) {
     showToast({ message: "记忆库源语言和目标语言不能相同。", error: true });
     return;
   }
+  const generation = mountGeneration;
+  const revision = invalidateTmQuery();
+  const saveRevision = ++langPairSaveRevision;
   sourceLang = source;
   targetLang = target;
   page = 1;
@@ -378,10 +452,16 @@ async function saveLangPair(source: string, target: string): Promise<void> {
   conflictMessage = "";
   const pair = tmLangPair();
   recentPairs = [pair, ...recentPairs.filter((item) => item !== pair)].slice(0, 8);
+  renderTable();
+  updateSelectionUi();
+  let queryLoaded = false;
   try {
-    await persistSettings({ tm_source_lang: source, tm_target_lang: target, recent_tm_lang_pairs: recentPairs });
-    await refreshTm();
+    await persistLangPairInOrder({ tm_source_lang: source, tm_target_lang: target, recent_tm_lang_pairs: recentPairs }, generation, saveRevision);
+    if (!currentTmScope(generation, revision)) return;
+    if (!await refreshTm()) return;
+    queryLoaded = true;
     await refreshConflicts();
+    if (!currentTmScope(generation, revision)) return;
     rebuildToolbar();
     renderTable();
     renderStatsRow();
@@ -389,6 +469,12 @@ async function saveLangPair(source: string, target: string): Promise<void> {
     // 切了语言对，「有 N 条清洗建议待复核」也要跟着换成新语言对下的数字。
     await refreshCleanBadge();
   } catch (error) {
+    if (!currentTmScope(generation, revision)) return;
+    if (!queryLoaded) restoreConfirmedQuery();
+    rebuildToolbar();
+    renderTable();
+    renderStatsRow();
+    renderTopbarStatus();
     showToast({ message: `切换语言对失败：${errorMessage(error)}`, error: true });
   }
 }
@@ -398,7 +484,7 @@ function renderTopbarStatus(): void {
   setTopbar({
     title: "记忆库",
     status: { label: `${total} 条`, tone: "idle" },
-    subtitle: "翻译过的内容自动入库，固定词条优先复用",
+    subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用",
   });
 }
 
@@ -407,7 +493,11 @@ function renderTopbarStatus(): void {
 // ---------------------------------------------------------------------------
 
 async function tmPin(entryId: number, pinned: boolean): Promise<void> {
+  if (!tmQueryReady()) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
   const client = await getClient();
+  if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
   await client.request(`/api/tm/entries/${entryId}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
   await refreshTm();
   renderTable();
@@ -415,9 +505,13 @@ async function tmPin(entryId: number, pinned: boolean): Promise<void> {
 }
 
 async function tmBulkPin(pinned: boolean): Promise<void> {
-  if (!selectedIds.size) return;
+  if (!tmQueryReady() || !selectedIds.size) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  const ids = [...selectedIds];
   const client = await getClient();
-  await client.request("/api/tm/entries/bulk/pin", { method: "POST", body: JSON.stringify({ ids: [...selectedIds], pinned }) });
+  if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
+  await client.request("/api/tm/entries/bulk/pin", { method: "POST", body: JSON.stringify({ ids, pinned }) });
   selectedIds.clear();
   await refreshTm();
   renderTable();
@@ -426,8 +520,11 @@ async function tmBulkPin(pinned: boolean): Promise<void> {
 }
 
 function confirmBulkDelete(): void {
-  if (!selectedIds.size) return;
+  if (!tmQueryReady() || !selectedIds.size) return;
   const count = selectedIds.size;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
+  const ids = [...selectedIds];
   openModal({
     tone: "danger",
     icon: "trash",
@@ -440,9 +537,10 @@ function confirmBulkDelete(): void {
         variant: "danger-solid",
         onClick: async () => {
           const client = await getClient();
+          if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
           const result = await client.request<{ deleted: number; protected: number; missing: number }>("/api/tm/entries/bulk/delete", {
             method: "POST",
-            body: JSON.stringify({ ids: [...selectedIds] }),
+            body: JSON.stringify({ ids }),
           });
           selectedIds.clear();
           await refreshTm();
@@ -457,6 +555,9 @@ function confirmBulkDelete(): void {
 }
 
 function openAddEditModal(editing: TmEntry | null): void {
+  if (!tmQueryReady()) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
   const sourceField = createTextField({ label: "原文", value: editing?.source_text ?? "" });
   const targetField = createTextField({ label: "译文", value: editing?.target_text ?? "" });
   const pairField = createTextField({ label: "语言对", value: tmLangPair(), disabled: Boolean(editing) });
@@ -494,6 +595,7 @@ function openAddEditModal(editing: TmEntry | null): void {
             return;
           }
           const client = await getClient();
+          if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
           // 被固定词条挡下时会登记一条待裁决冲突，这时要留住冲突提示，别顺手清空
           let keepConflictMessage = false;
           try {
@@ -559,6 +661,9 @@ function trackModal<T extends { close(): void }>(handle: T): T {
 }
 
 function openDeleteModal(entryToDelete: TmEntry): void {
+  if (!tmQueryReady()) return;
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
   trackModal(
     openModal({
       tone: "danger",
@@ -572,6 +677,7 @@ function openDeleteModal(entryToDelete: TmEntry): void {
           variant: "danger-solid",
           onClick: async () => {
             const client = await getClient();
+            if (!tmQueryReady() || !currentTmScope(generation, revision)) return;
             try {
               await client.request(`/api/tm/entries/${entryToDelete.id}`, { method: "DELETE" });
             } catch (error) {
@@ -751,10 +857,14 @@ async function fetchCleanSuggestions(): Promise<{ suggestions: JsonObject[]; sta
 /** 刷新常驻提示的待审计数。取不到就当没有——这一行是锦上添花，不能因为它
  * 失败拖垮整页记忆库加载，也不该在拿不到数时弹错误 toast 打扰用户。 */
 async function refreshCleanBadge(): Promise<void> {
+  const generation = mountGeneration;
+  const revision = tmQueryRevision;
   try {
     const { suggestions } = await fetchCleanSuggestions();
+    if (!currentTmScope(generation, revision)) return;
     pendingCleanCount = suggestions.length;
   } catch {
+    if (!currentTmScope(generation, revision)) return;
     pendingCleanCount = 0;
   }
   renderStateRow();
@@ -1559,25 +1669,33 @@ function updateSelectionUi(): void {
   if (chip) chip.textContent = `已选 ${selectedIds.size} / ${total}`;
   const pinBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-pin]");
   const deleteBtn = tcHeadEl.querySelector<HTMLButtonElement>("[data-role=bulk-delete]");
-  if (pinBtn) pinBtn.disabled = selectedIds.size === 0;
-  if (deleteBtn) deleteBtn.disabled = selectedIds.size === 0;
+  if (pinBtn) pinBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
+  if (deleteBtn) deleteBtn.disabled = !tmQueryReady() || selectedIds.size === 0;
   const selectAllLink = tcHeadEl.querySelector<HTMLSpanElement>("[data-role=select-all]");
   if (selectAllLink) {
     const reachable = Math.min(total, SELECT_ALL_CAP);
     const allSelected = reachable > 0 && selectedIds.size === reachable;
     selectAllLink.textContent = selectAllBusy ? "选取中…" : allSelected ? "取消全选" : "选择全部";
-    selectAllLink.style.opacity = selectAllBusy ? "0.5" : "1";
-    selectAllLink.style.pointerEvents = selectAllBusy ? "none" : "auto";
+    selectAllLink.style.opacity = selectAllBusy || !tmQueryReady() ? "0.5" : "1";
+    selectAllLink.style.pointerEvents = selectAllBusy || !tmQueryReady() ? "none" : "auto";
   }
 }
 
 function renderTable(): void {
   if (!tableScrollEl) return;
   tableScrollEl.innerHTML = "";
+  if (!tmQueryReady()) {
+    const loading = document.createElement("div");
+    loading.className = "empty";
+    loading.textContent = "加载中…";
+    tableScrollEl.append(loading);
+    updateSelectionUi();
+    return;
+  }
   if (!entries.length) {
     const empty = createEmptyState({
       title: "当前语言对没有记忆条目",
-      description: "翻译任务会自动写入记忆，也可以用上方“新增词条”或“导入”手动补充。",
+      description: "Excel 和 Word 翻译中符合入库条件的内容会保存为记忆，也可以用上方“新增词条”或“导入”手动补充。",
       icon: "book",
     });
     tableScrollEl.append(empty);
@@ -1812,21 +1930,24 @@ function buildLayout(container: HTMLElement): void {
 }
 
 async function loadLibrary(container: HTMLElement, reviewTaskId: string | null): Promise<void> {
+  const generation = mountGeneration;
+  const isCurrent = () => mounted && generation === mountGeneration;
   try {
     await refreshLanguagePairs();
+    if (!isCurrent()) return;
     await Promise.all([refreshTm(), refreshConflicts()]);
   } catch (error) {
-    if (!mounted) return;
-    setTopbar({ title: "记忆库", status: { label: "加载失败", tone: "warn" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+    if (!isCurrent()) return;
+    setTopbar({ title: "记忆库", status: { label: "加载失败", tone: "warn" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
     renderLoadFailure(container, errorMessage(error), () => {
-      if (!mounted) return;
-      setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+      if (!isCurrent()) return;
+      setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
       renderLoadingPlaceholder(container);
       void loadLibrary(container, reviewTaskId);
     });
     return;
   }
-  if (!mounted) return;
+  if (!isCurrent()) return;
   placeholderEl?.remove();
   placeholderEl = null;
   buildLayout(container);
@@ -1848,10 +1969,13 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null):
 }
 
 export function mount(container: HTMLElement, params: ViewParams): void {
+  mountGeneration += 1;
+  invalidateTmQuery();
   mounted = true;
+  selectedIds.clear();
   container.style.flexDirection = "column";
 
-  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译过的内容自动入库，固定词条优先复用" });
+  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
 
   renderLoadingPlaceholder(container);
 
@@ -1861,6 +1985,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
 export function unmount(): void {
   mounted = false;
+  mountGeneration += 1;
+  invalidateTmQuery();
   // closeMenus() 关的是本文件自己的「导入 ▾ / 导出 ▾」下拉（.v9-tm-menu，本文件独立实现，
   // 没有借用 components.ts 的 openMenu）；closeMenu() 关的是 components.ts 里锚定菜单的
   // 模块级单例——本文件目前不触发它，纯粹是防御性收尾，两者管的是各自独立的浮层，不冲突。

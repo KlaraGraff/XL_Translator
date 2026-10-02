@@ -58,7 +58,8 @@
 ### 当前行为
 - 翻译扫描主流程不依赖 `image_detector`
 - 写回链路按“纯文本模式”工作
-- 图片相关扫描字段已经从当前 MVP 主线中移除
+- 当前 Excel 扫描仍提供 `image_count`、`shape_text_count` 和 `comment_count`，用于提示嵌入图片、含文字的文本框/形状和批注等不会被翻译的内容。
+- `.xlsx` 的这些计数由 `core/file_scanner.py` 独立读取 ZIP 内的 XML 部件完成，不启用旧 `image_detector`，也不读取或搬运图片本身；`.xls` 扫描阶段将这些计数标为未知（`None`），不是零。
 
 ### 源码位置
 - `core/image_detector.py`

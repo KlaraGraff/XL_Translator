@@ -34,7 +34,8 @@ from core.pdf_image_translation import (
 )
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
-from core.task_history import TaskHistoryStore
+from core.task_history import TaskHistoryError, TaskHistoryStore
+from loguru import logger
 from core.tm_cleaning_task_runner import TmCleaningTaskRunner
 from core.task_runner import (
     DoneMsg,
@@ -257,7 +258,13 @@ class TranslationTaskManager:
         # A complete sidecar restart cannot safely resume a frozen runner.  A
         # prior process may have recorded an active summary, so close that
         # state before this manager accepts fresh work.
-        self._history.mark_active_interrupted()
+        self._history_warning_tasks: set[str] = set()
+        self._pending_history: dict[str, dict[str, Any]] = {}
+        self._pending_history_lock = threading.RLock()
+        try:
+            self._history.mark_active_interrupted()
+        except (TaskHistoryError, OSError):
+            logger.warning("任务历史暂时无法保存；本次任务仍可正常执行。")
 
     def preflight_task(
         self,
@@ -811,6 +818,10 @@ class TranslationTaskManager:
 
     def _history_record(self, task_id: str) -> dict[str, Any] | None:
         wanted = str(task_id or "")
+        with self._pending_history_lock:
+            pending = self._pending_history.get(wanted)
+            if pending is not None:
+                return dict(pending)
         for item in self._history.records():
             if str(item.get("task_id") or "") == wanted:
                 return item
@@ -843,31 +854,95 @@ class TranslationTaskManager:
             payload["result"] = result
         return _sanitize_task_data(payload)
 
+    def _write_task_history(self, task: ApiTask, record: dict[str, Any]) -> None:
+        """History is optional bookkeeping, never a translation prerequisite."""
+        failed = False
+        # Serialize only history I/O and its retry cache. Never acquire a task
+        # condition while holding this lock: event writers may already own it.
+        with self._pending_history_lock:
+            try:
+                self._history.upsert(record)
+            except (TaskHistoryError, OSError):
+                failed = True
+                pending = self._pending_history.get(task.task_id)
+                if pending is None or pending.get("updated_at", 0) <= record.get("updated_at", 0):
+                    self._pending_history.pop(task.task_id, None)
+                    self._pending_history[task.task_id] = record
+                while len(self._pending_history) > 200:
+                    oldest = next(iter(self._pending_history))
+                    self._pending_history.pop(oldest)
+                    self._history_warning_tasks.discard(oldest)
+                if task.task_id not in self._history_warning_tasks:
+                    self._history_warning_tasks.add(task.task_id)
+                    logger.warning("任务历史暂时无法保存；任务继续执行，结果保留在本次运行中。")
+            else:
+                pending = self._pending_history.get(task.task_id)
+                if pending is not None and pending.get("updated_at", 0) <= record.get("updated_at", 0):
+                    self._pending_history.pop(task.task_id, None)
+                self._history_warning_tasks.discard(task.task_id)
+        with task.condition:
+            if failed:
+                task.history_dirty = True
+            else:
+                task.last_persisted_at = time.time()
+                task.last_persisted_state = str(record["state"])
+                task.history_dirty = task.updated_at != record["updated_at"]
+
+    def _retry_pending_history(self, key: str, record: dict[str, Any]) -> None:
+        with self._pending_history_lock:
+            # A successful newer write may have removed this snapshot while
+            # flush was waiting, or a newer failed write may have replaced it.
+            if self._pending_history.get(key) is not record:
+                return
+            try:
+                self._history.upsert(record)
+            except (TaskHistoryError, OSError):
+                return
+            self._pending_history.pop(key, None)
+            self._history_warning_tasks.discard(key)
+
     def _persist_task(self, task: ApiTask) -> None:
         with task.condition:
             record = self._status_payload(task, include_result=True)
-            task.last_persisted_at = time.time()
-            task.last_persisted_state = task.state
-            task.history_dirty = False
-        self._history.upsert(record)
+            task.history_dirty = True
+        self._write_task_history(task, record)
 
-    def list_tasks(self) -> dict[str, list[dict[str, Any]]]:
+    def list_tasks(self) -> dict[str, Any]:
         with self._lock:
             active = [
                 self._status_payload(task, include_result=False)
                 for task in self._tasks.values()
                 if not task.terminal
             ]
-        return {"active": active, "recent": self._history.records()}
+        with self._pending_history_lock:
+            unsaved = [dict(record) for record in self._pending_history.values() if record["terminal"]]
+        recent = {record["task_id"]: record for record in self._history.records()}
+        recent.update({record["task_id"]: record for record in unsaved})
+        return {"active": active, "recent": sorted(recent.values(),
+                key=lambda record: record.get("updated_at", 0), reverse=True)[:200],
+                "active_work_count": self.active_task_count()}
 
     def active_task_count(self) -> int:
-        """Return the number of live task snapshots for maintenance guards."""
+        """Count all work that can write data, including terminal page operations."""
         with self._lock:
-            return sum(1 for task in self._tasks.values() if not task.terminal)
+            return sum(1 for task in self._tasks.values() if not task.terminal or task.rerun_active)
 
     def clear_history(self) -> int:
         """Clear persisted task summaries only after the caller enforces its guard."""
-        return self._history.clear()
+        try:
+            with self._pending_history_lock:
+                removed = self._history.clear()
+                self._pending_history.clear()
+                self._history_warning_tasks.clear()
+            with self._lock:
+                tasks = list(self._tasks.values())
+            for task in tasks:
+                with task.condition:
+                    if task.terminal:
+                        task.history_dirty = False
+            return removed
+        except OSError as exc:
+            raise TaskHistoryError("任务历史无法写入，暂时不能清空记录。") from exc
 
     def delete_task_record(self, task_id: str) -> dict[str, Any]:
         """删除单条任务记录本身。
@@ -899,9 +974,15 @@ class TranslationTaskManager:
         # 一次加锁内读改写，历史文件不会出现「只剩一半」的中间态：以前是先 clear 再
         # 逐条 upsert 回填，整表最多 200 条就是 201 次落盘（实测约 0.4 秒），这段时间里
         # 别的任务写进来的记录要么被挤到表尾，要么直接丢失。
-        removed_from_history = self._history.remove(key)
+        try:
+            with self._pending_history_lock:
+                removed_from_history = self._history.remove(key)
+                removed_from_pending = self._pending_history.pop(key, None) is not None
+                self._history_warning_tasks.discard(key)
+        except OSError as exc:
+            raise TaskHistoryError("任务历史无法写入，暂时不能删除记录。") from exc
         with self._lock:
-            removed_from_memory = self._tasks.pop(key, None) is not None
+            removed_from_memory = self._tasks.pop(key, None) is not None or removed_from_pending
         if not removed_from_history and not removed_from_memory:
             raise TaskNotFoundError(key)
         return {
@@ -1124,6 +1205,8 @@ class TranslationTaskManager:
         if not callable(getattr(runner, "rerun_page", None)):
             raise TaskInputError("这个任务的逐页记录已经释放，不能再重新生成单页。")
         with task.condition:
+            if self._shutdown.is_set():
+                raise TaskConflictError("应用正在关闭，请重新打开后再操作。", reason="shutting_down")
             if not task.terminal:
                 raise TaskConflictError(
                     "任务还没结束；运行中的任务请先暂停再做单页操作。",
@@ -1215,6 +1298,8 @@ class TranslationTaskManager:
         if not callable(getattr(runner, "restore_previous_page", None)):
             raise TaskInputError("这个任务的逐页记录已经释放，不能再换回上一版。")
         with task.condition:
+            if self._shutdown.is_set():
+                raise TaskConflictError("应用正在关闭，请重新打开后再操作。", reason="shutting_down")
             if not task.terminal:
                 raise TaskConflictError(
                     "任务还没结束；运行中的任务请先暂停再做单页操作。",
@@ -1240,20 +1325,18 @@ class TranslationTaskManager:
         except Exception:
             self._settle_page_restore(task, runner, apply_patch=False)
             raise
-        self._settle_page_restore(task, runner, apply_patch=True)
-        self._append_event(
-            task,
-            "pdf_page_restore",
-            {
-                "phase": "finished",
-                "page_number": int(accepted.get("page_number") or page_number),
-                "name": str(accepted.get("name") or ""),
-            },
-        )
+        self._settle_page_restore(task, runner, apply_patch=True, closing_data={
+            "phase": "finished",
+            "page_number": int(accepted.get("page_number") or page_number),
+            "name": str(accepted.get("name") or ""),
+        })
         self._retire_terminal_task(task)
         return {"task_id": task.task_id, "state": task.state, "accepted": accepted}
 
-    def _settle_page_restore(self, task: ApiTask, runner: Any, *, apply_patch: bool) -> None:
+    def _settle_page_restore(
+        self, task: ApiTask, runner: Any, *, apply_patch: bool,
+        closing_data: dict[str, Any] | None = None,
+    ) -> None:
         """换回结束后放锁：把 runner 攒下的日志收走，成功时刷新任务结果。
 
         这里是换回路径上 ``rerun_active`` 唯一的释放点：排空消息要写任务历史，
@@ -1275,13 +1358,18 @@ class TranslationTaskManager:
                 patch = dict(runner.result_patch() or {})
             except Exception:  # noqa: BLE001 - 结果刷新失败不该让换回本身算失败。
                 patch = {}
-        with task.condition:
-            task.rerun_active = False
-            task.rerun_kind = ""
-            if patch and isinstance(task.result, dict):
-                # 任务中心的文件表和指标读的是这份存下来的结果，不是磁盘上的报告；
-                # 不更新的话，换回之后那一页的结论还停在换回之前。
-                task.result.update(_sanitize_task_data(patch))
+        try:
+            with task.condition:
+                if patch and isinstance(task.result, dict):
+                    task.result.update(_sanitize_task_data(patch))
+            if closing_data is not None:
+                self._append_event(task, "pdf_page_restore", closing_data)
+            self._persist_task(task)
+        finally:
+            with task.condition:
+                task.rerun_active = False
+                task.rerun_kind = ""
+                task.condition.notify_all()
 
     def _pump_page_rerun(
         self,
@@ -1310,32 +1398,32 @@ class TranslationTaskManager:
                             break
                         self._handle_message(task, message)
                     break
-                if self._shutdown.is_set():
-                    break
             error = str(runner.page_rerun_state().get("error") or "")
         except Exception as exc:  # noqa: BLE001 - a broken pump must not wedge the flag.
             error = str(exc) or exc.__class__.__name__
         finally:
-            lease.release()
             patch = {}
             if not error:
                 try:
                     patch = dict(runner.result_patch() or {})
                 except Exception:  # noqa: BLE001 - a stale result is not worth failing on.
                     patch = {}
-            with task.condition:
-                task.rerun_active = False
-                task.rerun_kind = ""
-                if patch and isinstance(task.result, dict):
-                    # The task center reads its file table and metrics from the
-                    # stored result, not from the report on disk; leaving it
-                    # alone would show the pre-rerun counts forever.
-                    task.result.update(_sanitize_task_data(patch))
-            self._append_event(
-                task,
-                "pdf_page_rerun",
-                {"phase": "failed" if error else "finished", "message": error},
-            )
+            try:
+                with task.condition:
+                    if patch and isinstance(task.result, dict):
+                        task.result.update(_sanitize_task_data(patch))
+                self._append_event(
+                    task,
+                    "pdf_page_rerun",
+                    {"phase": "failed" if error else "finished", "message": error},
+                )
+                self._persist_task(task)
+            finally:
+                with task.condition:
+                    task.rerun_active = False
+                    task.rerun_kind = ""
+                    task.condition.notify_all()
+                lease.release()
             self._retire_terminal_task(task)
 
     @staticmethod
@@ -1462,7 +1550,7 @@ class TranslationTaskManager:
                 if not terminal and task.state != "stopping":
                     task.state = "stopping"
                 task.condition.notify_all()
-            if terminal:
+            if terminal and not task.rerun_active:
                 continue
             try:
                 task.runner.stop()
@@ -1487,9 +1575,13 @@ class TranslationTaskManager:
             tasks = list(self._tasks.values())
         for task in tasks:
             with task.condition:
-                while not task.terminal:
+                while not task.terminal or task.rerun_active:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        if task.rerun_active:
+                            self._append_event(task, "pdf_page_shutdown_pending", {
+                                "message": "关闭等待已超时，单页操作尚未确认安全结束。",
+                            })
                         break
                     task.condition.wait(timeout=min(remaining, 0.25))
         self.mark_active_tasks_interrupted()
@@ -1872,7 +1964,8 @@ class TranslationTaskManager:
     def _evict_retired_tasks(self) -> None:
         """Keep only the most recent finished tasks in memory."""
         with self._lock:
-            terminal = [item for item in self._tasks.values() if item.terminal]
+            terminal = [item for item in self._tasks.values()
+                        if item.terminal and not item.rerun_active]
             excess = len(terminal) - MAX_RETAINED_TERMINAL_TASKS
             if excess <= 0:
                 return
@@ -1921,8 +2014,8 @@ class TranslationTaskManager:
                 # A single-page rerun emits hundreds of log lines on a task that
                 # is already terminal.  Without this the branch below would do a
                 # full sanitize + read + rewrite of the history file for each
-                # one; the pump clears the flag and appends its closing event,
-                # which lands on the branch below and writes once.
+                # one; the page-operation settlement persists once before
+                # releasing its busy flag.
                 task.history_dirty = True
             elif task.terminal:
                 # Persist before anyone can observe the event (the condition is
@@ -1937,14 +2030,12 @@ class TranslationTaskManager:
                 # snapshot, but keep the file read/rewrite outside: that is the
                 # part that blocks this task's SSE stream and status endpoint.
                 pending_record = self._status_payload(task, include_result=True)
-                task.last_persisted_at = now
-                task.last_persisted_state = task.state
-                task.history_dirty = False
+                task.history_dirty = True
             else:
                 task.history_dirty = True
             task.condition.notify_all()
         if pending_record is not None:
-            self._history.upsert(pending_record)
+            self._write_task_history(task, pending_record)
 
     @staticmethod
     def _history_write_due(task: ApiTask, now: float) -> bool:
@@ -1961,17 +2052,17 @@ class TranslationTaskManager:
 
     def flush_history(self) -> None:
         """Write out summaries whose last events were held back by the throttle."""
+        with self._pending_history_lock:
+            pending = list(self._pending_history.items())
+        for key, record in pending:
+            self._retry_pending_history(key, record)
         with self._lock:
             tasks = list(self._tasks.values())
         for task in tasks:
             with task.condition:
                 if not task.history_dirty:
                     continue
-                record = self._status_payload(task, include_result=True)
-                task.last_persisted_at = time.time()
-                task.last_persisted_state = task.state
-                task.history_dirty = False
-            self._history.upsert(record)
+            self._persist_task(task)
 
     def _get_task(self, task_id: str) -> ApiTask:
         with self._lock:

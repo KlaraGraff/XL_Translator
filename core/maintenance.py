@@ -11,7 +11,7 @@ from loguru import logger
 
 from config import APP_DATA_DIR, KEYS_PATH, LOG_PATH, SETTINGS_PATH
 from core import diagnostics, tm_manager
-from core.task_history import TaskHistoryStore, default_history_path
+from core.task_history import TASK_HISTORY_RECOVERY_SCOPE, TaskHistoryStore, default_history_path
 from core.task_logger import clear_log_files
 import settings as settings_module
 from settings import (
@@ -122,8 +122,19 @@ def data_health() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - health must not fail on TM trouble
         logger.warning(f"翻译记忆库自检失败：{exc}")
 
+    history_status = TaskHistoryStore().health_status()
     record = read_recovery_record()
     return {
+        "task_history": (
+            {**history_status, "backup_path": ""}
+            if history_status["state"] == "unreadable"
+            else _health_entry(
+                history_status,
+                record.get(TASK_HISTORY_RECOVERY_SCOPE),
+                kept_state="__history_never_kept__",
+                after=history_status,
+            )
+        ),
         "settings": _health_entry(
             settings_before,
             record.get(SETTINGS_RECOVERY_SCOPE),
