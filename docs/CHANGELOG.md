@@ -1,5 +1,19 @@
 # Translator 版本更新日志
 
+## V9.5.9
+
+- **任务历史更可靠**：损坏的历史记录会先备份再恢复，备份失败时保留原文件；历史暂时无法保存时，翻译仍可继续，结果会在本次运行中保留。
+
+  **More reliable task history**: Corrupted history is backed up before recovery. If history cannot be written temporarily, translation continues and the result remains available in the current run.
+
+- **记忆库切换更准确**：快速搜索、翻页和切换语言时，迟到的旧结果不会覆盖当前内容；“仅显示译文”提示也明确了独立“_原文”副本的控制方式。
+
+  **More accurate memory-library switching**: Delayed results from an earlier search, page or language pair no longer replace the current view. The translation-only option now explains how the separate “_原文” copy is controlled.
+
+- **PDF 单页操作与更新更安全**：单页重做或换回会计入活动操作，完成保存后才释放保护；更新检查失败不会误报为下载失败，也不会在无法确认活动任务时继续安装。
+
+  **Safer PDF page actions and updates**: Single-page regeneration and restore count as active work until their results are saved. Update checks no longer call an activity-check failure a download failure or install while active work cannot be confirmed.
+
 ## V9.5.8
 
 - **文件进度更准确**：Excel、Word 和 PDF 按每份文件的实际处理阶段显示“未开始”“待处理”“处理中”和“已生成”，不再笼统显示“排队中”；单文件 PDF 也会正确显示正在处理。
