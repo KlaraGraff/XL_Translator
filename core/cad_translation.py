@@ -995,6 +995,68 @@ class SubprocessCadConverter:
         self.executable = str(executable)
         self.timeout = timeout
 
+    def _macos_app_bundle(self) -> Path | None:
+        """Return the enclosing ``.app`` bundle for a macOS executable."""
+        executable = Path(self.executable).expanduser()
+        if platform.system().lower() != "darwin":
+            return None
+        try:
+            resolved = executable.resolve()
+        except OSError:
+            resolved = executable
+        return next((parent for parent in resolved.parents if parent.suffix.lower() == ".app"), None)
+
+    @staticmethod
+    def _produced_file(output_dir: Path, stem: str, output_type: str) -> Path | None:
+        expected = output_dir / f"{stem}.{output_type.lower()}"
+        if expected.is_file() and expected.stat().st_size > 0:
+            return expected
+        candidates = sorted(
+            path for path in output_dir.iterdir()
+            if path.is_file()
+            and path.stat().st_size > 0
+            and path.suffix.lower() == f".{output_type.lower()}"
+            and path.stem.lower() == stem.lower()
+        )
+        return candidates[0] if candidates else None
+
+    def _run_macos_app(self, app_bundle: Path, args: list[str], output_dir: Path, stem: str, output_type: str) -> Path:
+        """Launch ODA through LaunchServices and wait for its output.
+
+        ODA's macOS build is a Cocoa application.  Invoking the binary inside
+        ``Contents/MacOS`` directly can fail before conversion with a
+        PasteBoard ``Connection Invalid`` error, even in an interactive user
+        session.  LaunchServices supplies the application session correctly;
+        ``-n`` forces a fresh instance so command-line arguments are honored;
+        ``-g`` keeps that helper window out of the user's foreground.
+        """
+        launcher = shutil.which("open") or "/usr/bin/open"
+        command = [launcher, "-n", "-g", "-a", str(app_bundle), "--args", *args]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                timeout=30,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CadPipelineError("CAD 转换器启动超时。") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
+            raise CadPipelineError(f"CAD 转换器启动失败：{detail}") from exc
+
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            produced = self._produced_file(output_dir, stem, output_type)
+            if produced is not None:
+                return produced
+            time.sleep(0.5)
+        raise CadPipelineError(
+            f"CAD 转换器未在 {self.timeout} 秒内生成目标 {stem}.{output_type.lower()} 文件。"
+        )
+
     def _run(self, source: Path, destination: Path, output_type: str) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="xl-cad-convert-") as temp:
@@ -1013,26 +1075,23 @@ class SubprocessCadConverter:
             # it is needed to run without a display server.
             if platform.system().lower() == "linux":
                 env.setdefault("QT_QPA_PLATFORM", "offscreen")
-            try:
-                subprocess.run(
-                    command, check=True, timeout=self.timeout, cwd=str(temp), env=env,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise CadPipelineError(f"CAD 转换超时（{self.timeout} 秒）。") from exc
-            except subprocess.CalledProcessError as exc:
-                detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
-                raise CadPipelineError(f"CAD 转换失败：{detail}") from exc
-            produced = out_dir / f"{source.stem}.{output_type.lower()}"
-            if not produced.exists():
-                candidates = sorted(
-                    path for path in out_dir.iterdir()
-                    if path.is_file() and path.suffix.lower() == f".{output_type.lower()}"
-                    and path.stem.lower() == source.stem.lower()
-                )
-                if not candidates:
+            app_bundle = self._macos_app_bundle()
+            if app_bundle is not None:
+                produced = self._run_macos_app(app_bundle, command[1:], out_dir, source.stem, output_type)
+            else:
+                try:
+                    subprocess.run(
+                        command, check=True, timeout=self.timeout, cwd=str(temp), env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise CadPipelineError(f"CAD 转换超时（{self.timeout} 秒）。") from exc
+                except subprocess.CalledProcessError as exc:
+                    detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
+                    raise CadPipelineError(f"CAD 转换失败：{detail}") from exc
+                produced = self._produced_file(out_dir, source.stem, output_type)
+                if produced is None:
                     raise CadPipelineError(f"CAD 转换器没有生成目标 {source.stem}.{output_type.lower()} 文件。")
-                produced = candidates[0]
             shutil.copy2(produced, destination)
         return destination
 

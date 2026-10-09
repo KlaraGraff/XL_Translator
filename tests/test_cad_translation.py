@@ -234,3 +234,31 @@ def test_macos_oda_does_not_force_missing_offscreen_qt_plugin(tmp_path, monkeypa
 
     assert destination.read_text(encoding="utf-8") == "DWG"
     assert "QT_QPA_PLATFORM" not in captured["env"]
+
+
+def test_macos_oda_app_is_launched_through_launchservices(tmp_path, monkeypatch):
+    source = tmp_path / "sample.dxf"
+    source.write_text("DXF", encoding="utf-8")
+    destination = tmp_path / "sample.dwg"
+    app_executable = tmp_path / "ODAFileConverter.app" / "Contents" / "MacOS" / "ODAFileConverter"
+    app_executable.parent.mkdir(parents=True)
+    app_executable.write_text("binary", encoding="utf-8")
+    captured = {}
+
+    def fake_run(command, *, check, timeout, stdout, stderr, text):
+        captured["command"] = command
+        output_dir = Path(command[7])
+        (output_dir / "sample.dwg").write_text("DWG", encoding="utf-8")
+
+    monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
+    monkeypatch.setattr("core.cad_translation.shutil.which", lambda name: "/usr/bin/open")
+
+    SubprocessCadConverter(app_executable, timeout=2).dxf_to_dwg(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "DWG"
+    assert captured["command"][:6] == [
+        "/usr/bin/open", "-n", "-g", "-a", str(app_executable.parent.parent.parent), "--args"
+    ]
+    assert captured["command"][6].endswith("/in")
+    assert captured["command"][7].endswith("/out")
