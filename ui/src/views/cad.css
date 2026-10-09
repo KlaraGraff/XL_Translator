@@ -12,6 +12,7 @@
 .cad-status-card { flex: none; }
 .cad-status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); }
 .cad-status-grid > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--surface); }
+.cad-status-actions { display: flex; flex-wrap: wrap; margin-top: 4px; }
 .cad-status-grid span, .cad-muted, .cad-path-field small { color: var(--ink-3); font-size: 12px; }
 .cad-status-grid strong { font-size: 13px; font-weight: 600; }
 .cad-path-field { padding: 10px 0; border-bottom: 1px solid var(--line); }
