@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -1005,7 +1006,13 @@ class SubprocessCadConverter:
             shutil.copy2(source, input_file)
             command = [self.executable, str(in_dir), str(out_dir), "ACAD2018", output_type, "0", "1"]
             env = os.environ.copy()
-            env.setdefault("QT_QPA_PLATFORM", "offscreen")
+            # ODA's macOS distribution is a Cocoa GUI application.  Forcing
+            # Qt's offscreen plugin makes it fail before it even reaches the
+            # conversion step because that plugin is not shipped in the app
+            # bundle.  Keep the headless override only for Linux builds where
+            # it is needed to run without a display server.
+            if platform.system().lower() == "linux":
+                env.setdefault("QT_QPA_PLATFORM", "offscreen")
             try:
                 subprocess.run(
                     command, check=True, timeout=self.timeout, cwd=str(temp), env=env,

@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 from core.cad_translation import (
     CadPipelineOptions,
@@ -10,6 +11,7 @@ from core.cad_translation import (
     scan_replacement_characters,
     scan_cad_file,
     scan_cad_paths,
+    SubprocessCadConverter,
 )
 from core.cad_translation import _parse_dxf, _serialize_dxf
 from core.cad_translation import CadPipelineError
@@ -211,3 +213,24 @@ def test_residual_scan_respects_non_english_target_language(tmp_path):
         translator=lambda texts, glossary: {},
     ).translate_file(source, output, options=CadPipelineOptions(target_lang="fr"))
     assert result.stats.residual_foreign_text_count == 0
+
+
+def test_macos_oda_does_not_force_missing_offscreen_qt_plugin(tmp_path, monkeypatch):
+    source = tmp_path / "sample.dxf"
+    source.write_text("DXF", encoding="utf-8")
+    destination = tmp_path / "sample.dwg"
+    captured = {}
+
+    def fake_run(command, *, check, timeout, cwd, env, stdout, stderr, text):
+        captured["env"] = env
+        output_dir = Path(command[2])
+        (output_dir / "sample.dwg").write_text("DWG", encoding="utf-8")
+
+    monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
+
+    SubprocessCadConverter("/tmp/ODAFileConverter").dxf_to_dwg(source, destination)
+
+    assert destination.read_text(encoding="utf-8") == "DWG"
+    assert "QT_QPA_PLATFORM" not in captured["env"]
