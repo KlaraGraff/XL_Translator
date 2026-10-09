@@ -22,6 +22,7 @@ const TRANSLATE_ITEMS: SideItemDef[] = [
 const RESOURCE_ITEMS: SideItemDef[] = [
   { id: "tasks", label: "任务中心", icon: "tasks" },
   { id: "library", label: "记忆库", icon: "book" },
+  { id: "plugins", label: "插件管理", icon: "spark" },
 ];
 
 const SYSTEM_ITEMS: SideItemDef[] = [

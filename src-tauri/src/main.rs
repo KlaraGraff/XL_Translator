@@ -485,19 +485,24 @@ fn update_environment() -> UpdateEnvironment {
     }
 }
 
-#[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
-    let supplied = url.trim();
-    let is_allowed_github_url = [
+fn is_verified_external_url(supplied: &str) -> bool {
+    [
         "https://github.com/",
         "https://www.github.com/",
         "https://objects.githubusercontent.com/",
         "https://github-releases.githubusercontent.com/",
+        "https://opendesign.com/",
+        "https://www.opendesign.com/",
     ]
     .iter()
-    .any(|prefix| supplied.starts_with(prefix));
-    if !is_allowed_github_url {
-        return Err("只能打开官方 GitHub Release 与支持链接。".to_string());
+    .any(|prefix| supplied.starts_with(prefix))
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let supplied = url.trim();
+    if !is_verified_external_url(supplied) {
+        return Err("只能打开已验证的官方 Release、支持或 ODA 页面。".to_string());
     }
 
     #[cfg(target_os = "macos")]
@@ -1080,8 +1085,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_github_external_urls() {
-        assert!(open_external_url("https://example.invalid/download".to_string()).is_err());
+    fn only_allows_verified_external_urls() {
+        assert!(!is_verified_external_url("https://example.invalid/download"));
+        assert!(is_verified_external_url("https://www.opendesign.com/guestfiles/oda_file_converter"));
     }
 
     #[test]

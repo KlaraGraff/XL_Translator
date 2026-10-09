@@ -1,4 +1,4 @@
-// V9 应用入口 —— 注入图标 sprite、挂载外壳、注册七个视图、初始化主题、默认进入 Excel。
+// V9 应用入口 —— 注入图标 sprite、挂载外壳、注册顶层视图、初始化主题、默认进入 Excel。
 
 // 必须最先导入：纯浏览器 dev 走查时垫掉 Tauri IPC（生产构建整体剔除）。
 import "./dev-tauri-shim";
@@ -20,6 +20,7 @@ import * as pdfView from "./views/pdf";
 import * as cadView from "./views/cad";
 import * as tasksView from "./views/tasks";
 import * as libraryView from "./views/library";
+import * as pluginsView from "./views/plugins";
 import * as settingsView from "./views/settings";
 import * as helpView from "./views/help";
 
@@ -78,6 +79,7 @@ function main(): void {
   registerView("cad", cadView);
   registerView("tasks", tasksView);
   registerView("library", libraryView);
+  registerView("plugins", pluginsView);
   registerView("settings", settingsView);
   registerView("help", helpView);
 

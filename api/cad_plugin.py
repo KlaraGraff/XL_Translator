@@ -145,11 +145,12 @@ def _platform_supported(info: dict[str, str]) -> bool:
 def _platform_search_paths(info: dict[str, str]) -> list[Path]:
     """Return narrow, known vendor install locations; never scan a home tree."""
     if info.get("system") == "darwin":
-        applications = Path("/Applications")
-        return [
-            path / "Contents" / "MacOS" / "ODAFileConverter"
-            for path in sorted(applications.glob("ODA*.app"))
-        ]
+        application_dirs = [Path("/Applications"), Path.home() / "Applications", Path.home() / "Downloads"]
+        candidates: list[Path] = []
+        for applications in application_dirs:
+            candidates.extend(path / "Contents" / "MacOS" / "ODAFileConverter" for path in sorted(applications.glob("ODA*.app")))
+            candidates.extend(path / "Contents" / "MacOS" / "ODAFileConverter" for path in sorted(applications.glob("ODAFileConverter*.app")))
+        return candidates
     if info.get("system") == "windows":
         roots: list[Path] = []
         for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):

@@ -18,6 +18,7 @@
 .cad-path-field > div { display: flex; align-items: center; justify-content: space-between; color: var(--ink-2); font-size: 12px; }
 .cad-path-field small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 5px; }
 .cad-plugin-actions, .cad-controls, .cad-result { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 14px; }
+.cad-auto-note { margin-top: 12px; padding: 10px 11px; border-radius: var(--r-sm); background: var(--tint); color: var(--tint-ink); font-size: 12px; line-height: 1.55; }
 .cad-controls { padding-top: 14px; border-top: 1px solid var(--line); }
 .cad-progress-card { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cad-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

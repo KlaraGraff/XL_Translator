@@ -39,6 +39,16 @@ def test_builtin_marker_and_external_oda_lifecycle(isolated):
     assert converter.exists()
 
 
+def test_mac_app_bundle_can_be_selected_as_one_install_location(isolated):
+    cad.install_builtin()
+    app_bundle = isolated / "ODAFileConverter.app"
+    converter = app_bundle / "Contents" / "MacOS" / "ODAFileConverter"
+    _mach_o(converter)
+    status = cad.connect_oda(str(app_bundle))
+    assert status["oda"] == "connected"
+    assert status["converter"] == str(converter.resolve())
+
+
 def test_text_fixture_never_counts_as_converter(isolated):
     cad.install_builtin()
     converter = isolated / "ODAFileConverter.app" / "Contents" / "MacOS" / "ODAFileConverter"
