@@ -27,6 +27,7 @@ from core.model_roles import (
     provider_supports_capability,
     resolve_effective_model_config,
 )
+from core.engine_dispatcher import build_role_engine
 from core.pdf_image_translation import (
     PdfImageTranslationRunner,
     PdfPageActionError,
@@ -52,6 +53,9 @@ from core.task_runner import (
 )
 from core.word_document import scan_word_path
 from core.word_task_runner import WordTaskRunner
+from core.cad_task_runner import CadTaskRunner
+from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
+from api.cad_plugin import probe_status
 from core.word_converter import get_local_word_automation_availability
 from core.xls_converter import (
     describe_xls_compatibility_consequence,
@@ -60,18 +64,20 @@ from core.xls_converter import (
 )
 from settings import AppSettings, load_settings
 
-TaskSurface = Literal["excel", "word", "pdf", "tm_clean"]
+TaskSurface = Literal["excel", "word", "pdf", "cad", "tm_clean"]
 
 _PAGE_BY_SURFACE = {
     "excel": "excel_translate",
     "word": "word_translate",
     "pdf": "pdf_translate",
+    "cad": "cad_translate",
     "tm_clean": "tm_clean",
 }
 _LABEL_BY_SURFACE = {
     "excel": "Excel translation",
     "word": "Word translation",
     "pdf": "PDF translation",
+    "cad": "CAD drawing translation",
     "tm_clean": "TM cleaning",
 }
 
@@ -133,6 +139,20 @@ class TaskOptions:
     lang_pair: str | None = None
     # 「接着上次继续」时上一次任务的输出目录；runner 只读它，不往里写。
     resume_output_dir: str | None = None
+    # CAD-only task settings. These are deliberately separate from the
+    # document output suffix settings: CAD always creates a sibling output
+    # file/directory and never exposes a filename-suffix option.
+    cad_output_dir: str | None = None
+    cad_use_terminology: bool = True
+    cad_keep_work_dxf: bool = True
+    cad_copy_related_files: bool = False
+    cad_verify_roundtrip: bool = True
+    cad_scan_replacement_chars: bool = True
+    cad_include_block_text: bool = True
+    cad_glossary_path: str | None = None
+    cad_use_memory: bool = True
+    cad_check_entity_counts: bool = True
+    cad_scan_residual: bool = True
 
     @property
     def xls_conversion_mode(self) -> str:
@@ -169,6 +189,7 @@ class ApiTask:
     terminal: bool = False
     updated_at: float = field(default_factory=time.time)
     logs: list[dict[str, Any]] = field(default_factory=list)
+    progress: dict[str, Any] = field(default_factory=dict)
     condition: threading.Condition = field(default_factory=threading.Condition)
     # History throttling bookkeeping; only touched under ``condition``.
     last_persisted_at: float = 0.0
@@ -446,9 +467,13 @@ class TranslationTaskManager:
             self._validate_excel_preflight(files=files, settings=settings, options=selected_options)
         elif normalized_surface == "word":
             self._validate_word_preflight(files=files, settings=settings, options=selected_options)
+        elif normalized_surface == "cad":
+            self._validate_cad_preflight(files=files, settings=settings)
         else:
             self._validate_pdf_preflight(files=files, settings=settings, options=selected_options)
         if normalized_surface in {"excel", "word"}:
+            tm_manager.init_db()
+        elif normalized_surface == "cad":
             tm_manager.init_db()
 
         context = task_api_context_for_page(
@@ -497,6 +522,24 @@ class TranslationTaskManager:
                     "doc_conversion_mode": selected_options.doc_conversion_mode,
                     "selected_file_count": len(files),
                     "doc_file_count": sum(1 for item in files if _word_file_format(item) == "doc"),
+                }
+            )
+        elif normalized_surface == "cad":
+            task_snapshot.update(
+                {
+                    "selected_file_count": len(files),
+                    "cad_output_dir": selected_options.cad_output_dir or "",
+                    "cad_checks": {
+                        "verify_roundtrip": selected_options.cad_verify_roundtrip,
+                        "scan_replacement_chars": selected_options.cad_scan_replacement_chars,
+                    },
+                    "cad_options": {
+                        "use_terminology": selected_options.cad_use_terminology,
+                        "keep_work_dxf": selected_options.cad_keep_work_dxf,
+                        "copy_related_files": selected_options.cad_copy_related_files,
+                        "include_block_text": selected_options.cad_include_block_text,
+                    },
+                    "tm": {"enabled": selected_options.cad_use_memory, "priority": "user_memory_first"},
                 }
             )
         else:
@@ -846,6 +889,7 @@ class TranslationTaskManager:
                 "revision": max((entry.get("revision", 0) for entry in task.file_progress.values()), default=0),
                 "files": list(task.file_progress.values()),
             },
+            "progress": dict(task.progress),
         }
         if include_result:
             result = _sanitize_task_data(task.result or {})
@@ -1040,17 +1084,17 @@ class TranslationTaskManager:
     def pause_task(self, task_id: str) -> dict[str, Any]:
         """Pause PDF page submission while its sidecar and snapshot remain alive."""
         task = self._get_task(task_id)
-        if task.surface != "pdf":
-            raise TaskInputError("只有 PDF/图片任务支持暂停提交。")
+        if task.surface not in {"pdf", "cad"}:
+            raise TaskInputError("当前任务不支持暂停提交。")
         with task.condition:
             if task.terminal:
                 return self.task_status(task_id)
             if not hasattr(task.runner, "pause"):
-                raise TaskInputError("当前 PDF 任务不支持暂停提交。")
+                raise TaskInputError("当前任务不支持暂停提交。")
             if task.state == "paused":
                 return self.task_status(task_id)
             if task.state != "running":
-                raise TaskInputError("当前 PDF/图片任务不处于可暂停状态。")
+                raise TaskInputError("当前任务不处于可暂停状态。")
             task.state = "paused"
             self._append_event(task, "paused", {"state": "paused"})
         task.runner.pause()  # type: ignore[attr-defined]
@@ -1059,15 +1103,15 @@ class TranslationTaskManager:
     def resume_task(self, task_id: str) -> dict[str, Any]:
         """Resume a same-sidecar PDF task with its frozen settings."""
         task = self._get_task(task_id)
-        if task.surface != "pdf":
-            raise TaskInputError("只有 PDF/图片任务支持继续。")
+        if task.surface not in {"pdf", "cad"}:
+            raise TaskInputError("当前任务不支持继续。")
         with task.condition:
             if task.terminal:
                 raise TaskInputError("任务已经结束，不能继续。")
             if not hasattr(task.runner, "resume"):
-                raise TaskInputError("当前 PDF 任务不支持继续。")
+                raise TaskInputError("当前任务不支持继续。")
             if task.state != "paused":
-                raise TaskInputError("只有暂停提交的 PDF/图片任务可以继续。")
+                raise TaskInputError("只有暂停提交的任务可以继续。")
             task.state = "running"
             self._append_event(task, "resumed", {"state": "running"})
         task.runner.resume()  # type: ignore[attr-defined]
@@ -1597,6 +1641,18 @@ class TranslationTaskManager:
             return scan_path(root)
         if surface == "word":
             return scan_word_path(root)
+        if surface == "cad":
+            status = probe_status()
+            converter_path = str(status.get("converter") or "").strip()
+            converter = SubprocessCadConverter(converter_path) if converter_path else None
+            return [
+                type("CadFile", (), {"path": summary.path, "name": summary.filename, "format": summary.format})()
+                for summary in scan_cad_paths(
+                    [root],
+                    converter=converter,
+                    options=CadPipelineOptions(include_block_text=options.cad_include_block_text),
+                )
+            ]
         return scan_pdf_path(root, include_images=options.include_images)
 
     def _build_runner(
@@ -1641,6 +1697,84 @@ class TranslationTaskManager:
                 allow_doc_fallback=options.allow_doc_fallback,
                 api_scheduler=api_schedulers.get("translation"),
                 resume_output_dir=options.resume_output_dir,
+            )
+        if surface == "cad":
+            status = probe_status()
+            converter_path = str(status.get("converter") or "").strip()
+            has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
+            if has_dwg and not converter_path:
+                raise TaskInputError("CAD 翻译需要先连接 ODA 转换器。", reason="cad_converter_missing")
+            output_dir = Path(options.cad_output_dir).expanduser() if options.cad_output_dir else (
+                source_root / "CAD翻译输出"
+            )
+            engine = build_role_engine(
+                settings,
+                "translation",
+                connection_ids=tuple(chains.get("translation") or ()),
+            )
+            from core.engine_dispatcher import get_system_prompt, translate_texts
+            system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
+
+            def translate_batch(texts: list[str], glossary: dict[str, str]) -> dict[str, str]:
+                prompt = system_prompt
+                if glossary:
+                    prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
+                return translate_texts(
+                    texts,
+                    engine,
+                    settings.target_lang,
+                    prompt,
+                    max(1, int(settings.engine.batch_size)),
+                    max(1, int(settings.engine.concurrency)),
+                    # CAD preflight may keep mixed English/French text under
+                    # automatic detection.  Passing ``zh`` here silently
+                    # changes the model instruction and can produce a wrong
+                    # translation; the engine accepts ``auto`` and should
+                    # receive the user's actual selection.
+                    source_lang=source_lang,
+                    api_scheduler=api_schedulers.get("translation"),
+                )
+
+            source_pair = str(source_lang or "").strip()
+            memory_pairs = (
+                [f"{source_pair}-{settings.target_lang}"]
+                if source_pair and source_pair != "auto"
+                else [f"{candidate}-{settings.target_lang}" for candidate in ("en", "fr", "zh")]
+            )
+
+            def memory_lookup(texts: list[str]) -> dict[str, str | None]:
+                hits: dict[str, str | None] = {text: None for text in texts}
+                remaining = list(texts)
+                for pair in memory_pairs:
+                    if not remaining:
+                        break
+                    current = tm_manager.lookup_batch(remaining, pair)
+                    for text, value in current.items():
+                        if value and hits.get(text) in (None, ""):
+                            hits[text] = value
+                    remaining = [text for text in remaining if not hits.get(text)]
+                return hits
+
+            return CadTaskRunner(
+                files,
+                source_root=source_root,
+                output_dir=output_dir,
+                converter=SubprocessCadConverter(converter_path) if converter_path else None,
+                memory_lookup=memory_lookup if options.cad_use_memory else None,
+                translator=translate_batch,
+                glossary=_load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
+                options=CadPipelineOptions(
+                    source_lang=source_lang,
+                    target_lang=settings.target_lang,
+                    skip_target_language=options.untranslated_only,
+                    keep_work_dxf=options.cad_keep_work_dxf,
+                    include_block_text=options.cad_include_block_text,
+                    verify_roundtrip=options.cad_verify_roundtrip,
+                    scan_replacement_chars=options.cad_scan_replacement_chars,
+                    copy_related_files=options.cad_copy_related_files,
+                    check_entity_counts=options.cad_check_entity_counts,
+                    scan_residual=options.cad_scan_residual,
+                ),
             )
         return PdfImageTranslationRunner(
             files,
@@ -1789,6 +1923,24 @@ class TranslationTaskManager:
                 reason="pdf_review_model_unavailable",
             )
 
+    @staticmethod
+    def _validate_cad_preflight(*, files: list[Any], settings: AppSettings) -> None:
+        if not files:
+            raise TaskInputError("请至少选择一个 DWG 或 DXF 文件。")
+        status = probe_status()
+        has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
+        if has_dwg and not bool(status.get("enabled")):
+            raise TaskInputError(
+                "CAD 插件或 ODA 转换器未就绪，请先安装 CAD Support 并连接 ODA。",
+                reason="cad_capability_missing",
+            )
+        if not str(getattr(settings, "target_lang", "") or "").strip():
+            raise TaskInputError("请先选择 CAD 目标语言。")
+        model_check = check_translation_api_config(settings)
+        if not model_check.ok:
+            detail = f"（{model_check.detail}）" if model_check.detail else ""
+            raise TaskInputError(f"{model_check.message}{detail}")
+
     def _pump_runner(self, task: ApiTask) -> None:
         try:
             while task.runner.needs_poll():
@@ -1826,6 +1978,25 @@ class TranslationTaskManager:
     def _handle_message(self, task: ApiTask, message: Any) -> None:
         event_type = _event_type_for_message(message)
         payload = _json_safe(asdict(message) if is_dataclass(message) else message)
+        if isinstance(message, ProgressMsg):
+            stage_weights = (15, 10, 45, 20, 10)
+            phase_index = max(1, min(len(stage_weights), int(message.phase_index)))
+            stage_percent = min(100.0, max(0.0, 100.0 * message.step_done / max(1, message.step_total)))
+            completed_weight = sum(stage_weights[: phase_index - 1])
+            overall_percent = completed_weight + stage_weights[phase_index - 1] * stage_percent / 100.0
+            with task.condition:
+                task.progress = {
+                    "phase_index": phase_index,
+                    "phase_total": int(message.phase_total),
+                    "phase_name": str(message.phase_name),
+                    "stage_percent": round(stage_percent, 1),
+                    "overall_percent": round(overall_percent, 1),
+                    "step_done": int(message.step_done),
+                    "step_total": int(message.step_total),
+                }
+            if task.surface == "cad":
+                with task.condition:
+                    task.task_snapshot.update(task.progress)
         if isinstance(message, FileProgressMsg):
             with task.condition:
                 if task.terminal:
@@ -2077,6 +2248,37 @@ def _normalize_surface(surface: str) -> TaskSurface:
     if normalized not in _PAGE_BY_SURFACE:
         raise TaskInputError(f"Unsupported translation surface: {surface}")
     return normalized  # type: ignore[return-value]
+
+
+def _load_cad_glossary(path: str | None) -> dict[str, str]:
+    """Load an optional simple JSON/CSV terminology map."""
+    if not str(path or "").strip():
+        return {}
+    candidate = Path(str(path)).expanduser()
+    if not candidate.is_file():
+        raise TaskInputError(f"CAD 术语库不存在：{candidate}")
+    try:
+        if candidate.suffix.lower() == ".json":
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("JSON 术语库必须是原文到译文的对象。")
+            return {
+                str(key): str(item)
+                for key, item in value.items()
+                if str(key).strip() and str(item).strip()
+            }
+        glossary: dict[str, str] = {}
+        for row in candidate.read_text(encoding="utf-8-sig").splitlines():
+            if not row.strip() or row.lstrip().startswith("#"):
+                continue
+            source, separator, target = row.partition("\t")
+            if not separator:
+                source, separator, target = row.partition(",")
+            if separator and source.strip() and target.strip():
+                glossary[source.strip()] = target.strip()
+        return glossary
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise TaskInputError(f"CAD 术语库无法读取：{candidate}") from exc
 
 
 def _excel_file_format(item: Any) -> str:

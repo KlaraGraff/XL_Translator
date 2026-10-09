@@ -20,6 +20,14 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, StrictInt, model_validator
 
+from api.cad_plugin import (
+    OFFICIAL_DOWNLOAD_URL,
+    connect_oda,
+    install_builtin,
+    install_from_directory,
+    probe_status,
+    uninstall,
+)
 from api.task_manager import (
     TaskConflictError,
     TaskInputError,
@@ -108,6 +116,7 @@ from core.model_throughput import (
     set_model_throughput,
 )
 from core.pdf_image_translation import scan_pdf_sources
+from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
 from core.pdf_review import check_pdf_review_connectivity
 from core.tm_cleaner import CleanSuggestion, apply_suggestions_detailed
 from core.word_document import scan_word_sources
@@ -147,7 +156,7 @@ class ApiKeyPayload(BaseModel):
 
 class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
-    surface: Literal["excel", "word", "pdf"]
+    surface: Literal["excel", "word", "pdf", "cad"]
     include_images: bool = False
     # 「浏览 → 选择文件」允许一次挑多个文件（只限类型，不限数量）。给了 paths 就按这
     # 几个路径各扫一次再合并；不给就还是按 path 扫一个文件或一整个文件夹。
@@ -157,6 +166,13 @@ class ScanRequest(BaseModel):
     preferred_resume_dir: str | None = None
 
 
+class CadScanRequest(BaseModel):
+    paths: list[str] = Field(min_length=1)
+    source_language: str | None = None
+    target_language: str = "zh"
+    include_block_text: bool = True
+
+
 class PdfPageActionRequest(BaseModel):
     file: str = Field(min_length=1, max_length=1_024)
     page: int = Field(ge=1)
@@ -164,7 +180,7 @@ class PdfPageActionRequest(BaseModel):
 
 class TaskStartRequest(BaseModel):
     source_path: str = ""
-    surface: Literal["excel", "word", "pdf", "tm_clean"]
+    surface: Literal["excel", "word", "pdf", "cad", "tm_clean"]
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_front_matter: bool = False
@@ -180,6 +196,17 @@ class TaskStartRequest(BaseModel):
     # 「接着上次继续」：上一次任务的输出目录。runner 只读取它里面的既有译文，
     # 绝不往里写；本次输出仍然新建目录。
     resume_output_dir: str | None = None
+    cad_output_dir: str | None = None
+    cad_use_terminology: bool = True
+    cad_keep_work_dxf: bool = True
+    cad_copy_related_files: bool = False
+    cad_verify_roundtrip: bool = True
+    cad_scan_replacement_chars: bool = True
+    cad_include_block_text: bool = True
+    cad_glossary_path: str | None = None
+    cad_use_memory: bool = True
+    cad_check_entity_counts: bool = True
+    cad_scan_residual: bool = True
 
     @model_validator(mode="after")
     def _require_source_path(self) -> "TaskStartRequest":
@@ -427,6 +454,71 @@ def create_app(
     )
     app.state.task_manager = task_manager or TranslationTaskManager()
     app.state.auth_token = str(auth_token or "")
+
+    @app.get("/api/plugins/cad")
+    def cad_plugin_status() -> dict[str, Any]:
+        """Return optional CAD plugin and local converter availability."""
+        return probe_status()
+
+    @app.post("/api/plugins/cad/install")
+    def install_cad_plugin(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        source = str(payload.get("source_dir") or "").strip()
+        try:
+            return install_from_directory(source) if source else install_builtin()
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/plugins/cad/probe")
+    def probe_cad_plugin() -> dict[str, Any]:
+        return probe_status()
+
+    @app.post("/api/plugins/cad/official-download")
+    def official_cad_download() -> dict[str, str]:
+        """Return the vendor page without bundling or downloading ODA."""
+        return {"authorization_url": OFFICIAL_DOWNLOAD_URL, "url": OFFICIAL_DOWNLOAD_URL}
+
+    @app.post("/api/plugins/cad/uninstall")
+    def uninstall_cad_plugin() -> dict[str, Any]:
+        """Remove the first-party wrapper while retaining a user-provided ODA."""
+        return uninstall()
+
+    @app.post("/api/plugins/cad/oda")
+    def connect_cad_oda(payload: dict[str, Any]) -> dict[str, Any]:
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            raise HTTPException(422, "path is required.")
+        try:
+            return connect_oda(path)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/cad/scan")
+    def scan_cad(payload: CadScanRequest) -> dict[str, Any]:
+        status = probe_status()
+        converter_path = str(status.get("converter") or "").strip()
+        converter = SubprocessCadConverter(converter_path) if converter_path else None
+        options = CadPipelineOptions(
+            source_lang=str(payload.source_language or "auto"),
+            target_lang=str(payload.target_language or "zh"),
+            include_block_text=bool(payload.include_block_text),
+        )
+        try:
+            summaries = scan_cad_paths(payload.paths, converter=converter, options=options)
+        except Exception as exc:  # noqa: BLE001 - return a user-facing preflight error
+            raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+        items = [
+            {
+                "path": str(item.path),
+                "name": item.filename,
+                "format": item.format,
+                "text_count": item.text_entity_count,
+                "candidate_count": item.candidate_count,
+                "needs_conversion": item.needs_conversion,
+            }
+            for item in summaries
+        ]
+        return {"items": items, "skipped": [], "capability": status}
 
     @app.middleware("http")
     async def require_loopback_token(request, call_next):
@@ -802,6 +894,53 @@ def create_app(
         roots = [Path(item).expanduser() for item in request.paths if str(item).strip()]
         if not roots:
             roots = [Path(request.path).expanduser()]
+        if request.surface == "cad":
+            from core.file_progress import file_progress_id
+            status = probe_status()
+            converter_path = str(status.get("converter") or "").strip()
+            converter = SubprocessCadConverter(converter_path) if converter_path else None
+            try:
+                summaries = scan_cad_paths(
+                    roots,
+                    converter=converter,
+                    options=CadPipelineOptions(
+                        source_lang="auto",
+                        target_lang="zh",
+                    ),
+                )
+            except Exception as exc:
+                raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+            items = [
+                {
+                    "path": str(item.path),
+                    "name": item.filename,
+                    "format": item.format,
+                    "text_count": item.text_entity_count,
+                    "candidate_count": item.candidate_count,
+                    "needs_conversion": item.needs_conversion,
+                    "file_id": file_progress_id(item.path),
+                }
+                for item in summaries
+            ]
+            return {
+                "items": items,
+                "skipped": [],
+                # Keep the capability at the response root for the CAD view;
+                # ``risk.capability`` remains for older scan consumers.
+                "capability": status,
+                "summary": {
+                    "file_count": len(items),
+                    "text_entity_count": sum(item["text_count"] for item in items),
+                    "candidate_count": sum(item["candidate_count"] for item in items),
+                },
+                "risk": {
+                    "capability": status,
+                    "message": "ODA 未连接时只能列出 DXF；DWG 翻译需先连接 ODA。"
+                    if not converter
+                    else "",
+                },
+                "previous_output": None,
+            }
         if request.surface == "excel":
             result = _merge_scan_results([scan_excel_sources(root) for root in roots])
         elif request.surface == "word":
@@ -888,6 +1027,17 @@ def create_app(
             allow_known_review_failure=request.allow_known_review_failure,
             lang_pair=request.lang_pair,
             resume_output_dir=request.resume_output_dir,
+            cad_output_dir=request.cad_output_dir,
+            cad_use_terminology=request.cad_use_terminology,
+            cad_keep_work_dxf=request.cad_keep_work_dxf,
+            cad_copy_related_files=request.cad_copy_related_files,
+            cad_verify_roundtrip=request.cad_verify_roundtrip,
+            cad_scan_replacement_chars=request.cad_scan_replacement_chars,
+            cad_include_block_text=request.cad_include_block_text,
+            cad_glossary_path=request.cad_glossary_path,
+            cad_use_memory=request.cad_use_memory,
+            cad_check_entity_counts=request.cad_check_entity_counts,
+            cad_scan_residual=request.cad_scan_residual,
         )
 
     @app.post("/api/tasks/preflight")

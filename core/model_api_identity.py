@@ -62,7 +62,7 @@ def api_group_signature_from_config(config: EffectiveModelConfig) -> ApiGroupSig
 def task_model_roles_for_page(settings: AppSettings, page_key: str) -> tuple[str, ...]:
     """Map one translation page to the model roles it will occupy."""
     normalized_page = str(page_key or "").strip()
-    if normalized_page in {"excel_translate", "word_translate"}:
+    if normalized_page in {"excel_translate", "word_translate", "cad_translate"}:
         return (ROLE_TRANSLATION,)
     if normalized_page == "tm_clean":
         return (ROLE_CLEANER,)

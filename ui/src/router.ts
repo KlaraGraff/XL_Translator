@@ -2,9 +2,9 @@
 // 不做历史记录、不做 URL 同步；侧栏点击与「查看完整报告」之类的深链都直接调用 navigate()。
 
 /** 侧栏可切换的七个顶层视图。 */
-export type ViewId = "excel" | "word" | "pdf" | "tasks" | "library" | "settings" | "help";
+export type ViewId = "excel" | "word" | "pdf" | "cad" | "tasks" | "library" | "settings" | "help";
 
-export const VIEW_IDS: ViewId[] = ["excel", "word", "pdf", "tasks", "library", "settings", "help"];
+export const VIEW_IDS: ViewId[] = ["excel", "word", "pdf", "cad", "tasks", "library", "settings", "help"];
 
 /** 跳转参数：例如 settings 的子页 id、tasks 的任务 id。各视图自行约定 key。 */
 export type ViewParams = Record<string, unknown>;

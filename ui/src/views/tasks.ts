@@ -870,7 +870,7 @@ function touch(taskId?: string): void {
 // 事件流 / 轮询
 // ---------------------------------------------------------------------------
 
-async function watchTask(taskId: string): Promise<void> {
+export async function watchTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   // entry.task.terminal 挡住「当前已知状态是终态」的情况（不管这个终态是服务端事件给的还是
   // 前端自己推断的 interrupted）；streamClosedTaskIds 额外挡住「服务端明确关闭过事件流」这
@@ -996,6 +996,13 @@ async function refreshRegistry(): Promise<void> {
  *  后台巡检 12 秒。用户在工作台点了「开始」立刻切到任务中心，看到的是一份还没有这条任务
  *  的列表，侧栏徽标也还是旧数字——像是没提交成功。这里直接把返回的任务塞进登记册并挂上
  *  事件流，徽标和列表同一帧就对。 */
+export function focusTask(task: TaskStatus): void {
+  if (!upsert(task)) return;
+  selectedId = task.task_id;
+  if (isTaskActive(task)) void watchTask(task.task_id);
+  touch(task.task_id);
+}
+
 export function noteTaskStarted(task: TaskStatus): void {
   if (!upsert(task)) return;
   if (isTaskActive(task)) void watchTask(task.task_id);

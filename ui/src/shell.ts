@@ -16,6 +16,7 @@ const TRANSLATE_ITEMS: SideItemDef[] = [
   { id: "excel", label: "Excel 表格", icon: "excel" },
   { id: "word", label: "Word 文档", icon: "word" },
   { id: "pdf", label: "PDF 与图片", icon: "pdf" },
+  { id: "cad", label: "CAD 图纸", icon: "doc-file" },
 ];
 
 const RESOURCE_ITEMS: SideItemDef[] = [

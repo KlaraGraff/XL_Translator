@@ -17,6 +17,7 @@ import { mountUpdateToast } from "./update-toast";
 import * as excelView from "./views/excel";
 import * as wordView from "./views/word";
 import * as pdfView from "./views/pdf";
+import * as cadView from "./views/cad";
 import * as tasksView from "./views/tasks";
 import * as libraryView from "./views/library";
 import * as settingsView from "./views/settings";
@@ -74,6 +75,7 @@ function main(): void {
   registerView("excel", excelView);
   registerView("word", wordView);
   registerView("pdf", pdfView);
+  registerView("cad", cadView);
   registerView("tasks", tasksView);
   registerView("library", libraryView);
   registerView("settings", settingsView);

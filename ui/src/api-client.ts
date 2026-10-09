@@ -9,7 +9,7 @@ export type SidecarInfo = {
 
 export type TaskStatus = {
   task_id: string;
-  surface: "excel" | "word" | "pdf" | "cleaner" | "tm_clean";
+  surface: "excel" | "word" | "pdf" | "cad" | "cleaner" | "tm_clean";
   source_label?: string;
   state: "preflight" | "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
   terminal: boolean;
@@ -28,7 +28,43 @@ export type TaskStatus = {
   result?: Record<string, unknown> | null;
   /** Current per-file status snapshot; absent on older or non-file tasks. */
   file_progress?: FileProgressSnapshot;
+  progress?: Record<string, unknown>;
 };
+
+/** CAD 插件与 ODA 能力状态；后端未提供时前端按 unavailable 处理。 */
+export type CadCapabilityStatus = {
+  plugin: "missing" | "installing" | "enabled" | "error";
+  oda: "missing" | "connected" | "incompatible";
+  platform?: { system: string; arch: string };
+  platform_supported?: boolean;
+  enabled?: boolean;
+  installed?: boolean;
+  converter?: string | null;
+  converter_found?: boolean;
+  oda_bundled?: boolean;
+  license_action?: string;
+  version?: string;
+  detail?: string;
+};
+
+export type CadScanItem = {
+  path: string;
+  name: string;
+  format: "dwg" | "dxf";
+  text_count?: number;
+  candidate_count?: number;
+  needs_conversion?: boolean;
+  source_language?: string;
+};
+
+export type CadScanResponse = {
+  items: CadScanItem[];
+  skipped: Array<{ path: string; reason: string }>;
+  capability: CadCapabilityStatus;
+};
+
+export type CadScanRequest = { paths: string[]; source_language?: string; target_language: string; include_block_text?: boolean };
+export type CadStartRequest = CadScanRequest & { selected_paths: string[]; source_path?: string; source_lang?: string; target_lang?: string; untranslated_only?: boolean; cad_output_dir?: string; cad_use_memory?: boolean; cad_use_terminology?: boolean; cad_glossary_path?: string; cad_keep_work_dxf?: boolean; cad_copy_related_files?: boolean; cad_verify_roundtrip?: boolean; cad_scan_replacement_chars?: boolean; cad_include_block_text?: boolean; cad_check_entity_counts?: boolean; cad_scan_residual?: boolean };
 
 export type SseEvent = {
   id: number;
@@ -308,6 +344,33 @@ export class ApiClient {
 
   async listTasks(): Promise<TaskList> {
     return this.request<TaskList>("/api/tasks");
+  }
+
+  async getCadCapability(): Promise<CadCapabilityStatus> {
+    return this.request<CadCapabilityStatus>("/api/plugins/cad");
+  }
+
+  async installCadPlugin(): Promise<CadCapabilityStatus> {
+    return this.request<CadCapabilityStatus>("/api/plugins/cad/install", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async scanCad(payload: CadScanRequest): Promise<CadScanResponse> {
+    return this.request<CadScanResponse>("/api/cad/scan", { method: "POST", body: JSON.stringify(payload) });
+  }
+  async officialCadDownload(): Promise<{ authorization_url?: string; url?: string }> {
+    return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/cad/official-download", { method: "POST", body: JSON.stringify({}) });
+  }
+
+  async connectCadOda(path: string): Promise<CadCapabilityStatus> {
+    return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
+  }
+
+  async startCad(payload: CadStartRequest): Promise<TaskStatus> {
+    const sourcePath = payload.source_path || payload.paths[0] || "";
+    return this.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify({ ...payload, source_path: sourcePath, surface: "cad" }) });
+  }
+  async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {
+    return this.request<TaskStatus>(`/api/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify({}) });
   }
 
   async getTask(taskId: string): Promise<TaskStatus> {

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Translator · CAD 插件与运行过程样张</title>
+  <link rel="stylesheet" href="../../ui/src/styles/tokens.css">
+  <link rel="stylesheet" href="../../ui/src/styles/app.css">
+  <style>
+    .sample-bar { padding:10px 22px 0; background:var(--ground); display:flex; gap:6px; flex-wrap:wrap; }
+    .sample-bar button { height:27px; padding:0 10px; border:1px solid var(--line-2); border-radius:var(--r-sm); background:var(--surface); color:var(--ink-2); font-size:12px; cursor:pointer; }
+    .sample-bar button.on { background:var(--tint); border-color:var(--tint-line); color:var(--tint-ink); font-weight:600; }
+    .sample-state { display:none; width:100%; } .sample-state.on { display:flex; }
+    .content { padding-top:14px; }
+    .sample-state .col-l, .sample-state .col-r { min-height:0; }
+    .demo-body { padding:14px 16px; }
+    .filerow .bar { flex:1; }
+    .plugin-card { display:flex; align-items:center; gap:13px; padding:20px; min-height:170px; }
+    .plugin-mark { width:48px; height:48px; border-radius:14px; background:var(--tint); color:var(--tint-ink); display:grid; place-items:center; font-size:24px; flex:none; }
+    .plugin-card h2 { margin:0 0 3px; font-size:15px; font-weight:650; } .plugin-card p { margin:0; color:var(--ink-3); font-size:12px; }
+    .plugin-copy { flex:1; min-width:0; } .plugin-copy .muted-line { margin-top:10px; color:var(--ink-2); font-size:12px; }
+    .plugin-actions { display:flex; gap:7px; margin-top:14px; flex-wrap:wrap; }
+    .notice { padding:10px 12px; border-radius:8px; font-size:12px; background:var(--tint); color:var(--tint-ink); } .notice.ok { background:var(--ok-t); color:var(--ok); } .notice.warn { background:var(--warn-t); color:var(--warn); } .notice.danger { background:var(--danger-t); color:var(--danger); }
+    .kv { display:grid; grid-template-columns:118px 1fr; gap:7px 10px; font-size:12px; } .kv dt { color:var(--ink-3); } .kv dd { margin:0; color:var(--ink-2); }
+    .rowline { display:flex; align-items:center; gap:8px; } .rowline .grow { flex:1; }
+    .sample-state .demo-wide { width:100%; }
+    .sample-state .card { overflow:hidden; }
+    .phase-row { display:flex; gap:6px; flex-wrap:wrap; margin-top:12px; }
+    .stage-copy { color:var(--ink-2); font-size:12px; margin:4px 0 11px; }
+    .sample-log { border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface-2); padding:8px 10px; font:11.5px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--ink-2); }
+    .sample-log span { color:var(--ink-3); margin-right:8px; }
+    .modal-demo { max-width:480px; margin:25px auto; }
+    .modal-demo .card { border-color:var(--danger-l); }
+    @media (max-width:900px) { .sample-state { flex-direction:column; } .col-r { width:auto; } }
+  </style>
+</head>
+<body>
+  <div id="app"><div class="app-shell">
+    <aside class="side">
+      <div class="brand"><span class="brand-mark">文A</span>Translator</div>
+      <div class="side-label">翻译</div><div class="side-item">▦　Excel 表格</div><div class="side-item">▤　Word 文档</div><div class="side-item">▧　PDF 与图片</div><div class="side-item on">▥　CAD 图纸</div>
+      <div class="side-label">资源</div><div class="side-item">▣　任务中心 <span class="side-badge">1</span></div><div class="side-item">▤　记忆库</div><div class="side-spacer"></div><div class="side-item">⚙　设置</div><div class="side-item">ⓘ　帮助</div>
+    </aside>
+    <div class="stage">
+      <header class="topbar"><div><h1>CAD 图纸</h1><div class="tb-sub">可选插件 · 翻译可见文字并生成新的 DWG</div></div><div class="tb-right"><span class="pill"><span class="dot"></span>任务中心</span><span class="pill live"><span class="dot"></span>gpt-6-luna</span></div></header>
+      <div class="sample-bar"><button class="on" data-state="plugin">插件管理</button><button data-state="ready">已启用 / 预检</button><button data-state="scan">扫描中</button><button data-state="translate">翻译中</button><button data-state="write">写回与校验</button><button data-state="done">完成待审阅</button><button data-state="stop">停止确认</button></div>
+      <main class="content">
+        <section class="sample-state on" data-panel="plugin"><div class="col-l"><div class="card"><div class="plugin-card"><div class="plugin-mark">▥</div><div class="plugin-copy"><h2>CAD Support</h2><p>DWG / DXF 翻译与写回 · 可选插件</p><div class="muted-line"><span class="status idle"><span class="led"></span>未安装</span>　主程序的 Excel、Word、PDF 功能不受影响</div><div class="plugin-actions"><button class="btn pri">安装 CAD 支持</button><button class="btn">查看安装说明</button></div></div></div></div><div class="card"><div class="tc-head"><b>安装流程</b><span class="chip mute">用户主动安装</span></div><div style="padding:14px 16px"><div class="phase-row"><span class="chip mute">1 检查平台</span><span class="chip mute">2 下载插件</span><span class="chip mute">3 校验签名</span><span class="chip mute">4 安装</span><span class="chip mute">5 重启启用</span></div><p class="muted" style="font-size:12px;margin:11px 0 0">ODA 不随插件静默捆绑。安装后还要单独选择本机 ODA 或打开官方下载页，并按许可使用。</p></div></div></div><aside class="col-r"><div class="card runpanel"><div class="rp-scroll"><div class="rp-title">插件与能力</div><div class="rp-sec">当前环境</div><dl class="kv"><dt>Translator</dt><dd>当前版本</dd><dt>平台</dt><dd>macOS 13+ / Windows 10 x64</dd><dt>CAD 插件</dt><dd>未安装</dd><dt>ODA</dt><dd>未探测</dd></dl><div class="rp-sec">安装来源</div><div class="notice">插件包将先下载到临时目录，校验通过后才安装。</div></div><div class="rp-foot"><button class="btn pri big">安装 CAD 支持</button></div></div></aside></section>
+
+        <section class="sample-state" data-panel="ready"><div class="col-l"><div class="card"><div class="srcbar"><button class="btn pri">添加文件</button><button class="btn">添加文件夹</button><span class="muted">原件只读 · 输出写入独立结果目录</span></div><div class="tablecard"><div class="tc-head"><b>待翻译文件</b><span class="chip ok">ODA 已连接</span><div class="tc-tools"><button class="btn mini">清空</button></div></div><table class="tbl"><thead><tr><th>文件</th><th>格式</th><th>可见文字</th><th>状态</th></tr></thead><tbody><tr><td>J-3#设计总说明_t3.dwg</td><td>T3 / DWG</td><td>328</td><td><span class="chip tint">待预检</span></td></tr><tr><td>SNRS...DOUANE.dwg</td><td>DWG</td><td>91</td><td><span class="chip tint">待预检</span></td></tr></tbody></table></div></div></div><aside class="col-r"><div class="card runpanel"><div class="rp-scroll"><div class="rp-title">本次任务设置</div><div class="rp-sec">翻译</div><div class="field"><label>源语言</label><select><option>自动识别</option></select></div><div class="field"><label>目标语言</label><select><option>中文（简体）</option></select></div><div class="swrow">跳过已是目标语言 <button class="sw" aria-label="开启"></button></div><div class="rp-sec">记忆与术语</div><div class="field"><label>用户记忆库</label><select><option>启用 · 优先</option></select></div><div class="field"><label>项目术语库</label><select><option>不使用（可选）</option><option>建筑电气术语库</option></select></div><div class="rp-sec">输出与检查</div><div class="field"><label>输出目录</label><input value="独立结果目录（自动创建）" readonly></div><div class="swrow">写回后重新读取 <span class="hint" title="重新读取生成的 DWG，检查文件结构和实体数量">?</span><button class="sw" aria-label="开启"></button></div><div class="swrow">检查文字乱码 <span class="hint" title="检查输出中是否有乱码替代字符">?</span><button class="sw" aria-label="开启"></button></div><div class="muted" style="font-size:11.5px;margin-top:5px">重新读取验证结构；检查文字乱码验证文字内容。</div></div><div class="rp-foot"><button class="btn pri big">开始预检</button></div></div></aside></section>
+
+        <section class="sample-state" data-panel="scan"><div class="demo-wide"><div class="card"><div class="tc-head"><b>正在扫描 CAD 文件</b><span class="status run"><span class="led"></span>扫描中</span><div class="tc-tools"><button class="btn mini dgr">停止</button></div></div><div class="demo-body"><div class="prog-stage"><b>读取图纸与扫描可见文字</b><span>扫描 2 / 8 个文件 · 总进度 15%</span><div class="bar"><i style="width:15%"></i></div><small>当前：J-3#设计总说明_t3.dwg · 布局 3 / 5</small></div><div class="phase-row"><span class="chip tint">● 读取图纸</span><span class="chip mute">匹配记忆/术语</span><span class="chip mute">AI 翻译</span><span class="chip mute">写回 DWG</span><span class="chip mute">打开校验</span></div></div></div><div class="card"><div class="tc-head"><b>扫描日志</b><span class="muted">最近三条</span></div><div class="demo-body"><div class="sample-log"><div><span>21:41:08</span>发现 8 个 DWG 文件</div><div><span>21:41:12</span>已读取 J-3#设计总说明_t3.dwg 的 5 个布局</div><div><span>21:41:16</span>检测到 328 条可见文字，中文跳过</div></div></div></div></div></section>
+
+        <section class="sample-state" data-panel="translate"><div class="demo-wide"><div class="card"><div class="tc-head"><b>正在翻译 8 个 CAD 文件</b><span class="status run"><span class="led"></span>运行中</span><div class="tc-tools"><button class="btn mini">后台运行</button><button class="btn mini dgr">暂停</button></div></div><div class="demo-body"><div class="prog-stage"><b>AI 翻译</b><span>总进度 64% · 当前阶段 73% · 1,806 / 2,825 条</span><div class="bar"><i style="width:64%"></i></div><small>批次 37 / 142 · 记忆命中 402 · 术语命中 118 · 重试 2</small></div><div class="phase-row"><span class="chip ok">✓ 读取图纸 15%</span><span class="chip ok">✓ 匹配记忆/术语 10%</span><span class="chip tint">● AI 翻译 45%</span><span class="chip mute">写回 DWG 20%</span><span class="chip mute">打开校验 10%</span></div></div></div><div class="card"><div class="tc-head"><b>文件进度</b><span class="muted">总进度按工作量加权</span></div><div class="demo-body"><div class="filerow"><b>SNRS...DOUANE.dwg</b><span class="chip ok">已翻译</span><div class="bar"><i style="width:100%"></i></div></div><div class="filerow"><b>J-3#设计总说明_t3.dwg</b><span class="chip tint">翻译中</span><div class="bar"><i style="width:64%"></i></div></div><div class="filerow"><b>其余 6 个文件</b><span class="chip mute">排队</span><div class="bar"><i style="width:18%"></i></div></div></div></div></div></section>
+
+        <section class="sample-state" data-panel="write"><div class="demo-wide"><div class="card"><div class="tc-head"><b>写回 DWG 与打开校验</b><span class="status run"><span class="led"></span>第 4 / 5 阶段</span></div><div class="demo-body"><div class="prog-stage"><b>DXF → DWG → 重新读取</b><span>总进度 86% · 当前阶段 42%</span><div class="bar"><i style="width:86%"></i></div><small>当前：J-3#设计总说明_t3.dwg · 正在验证文字实体数</small></div><div class="phase-row"><span class="chip ok">✓ 读取图纸</span><span class="chip ok">✓ 匹配记忆/术语</span><span class="chip ok">✓ AI 翻译</span><span class="chip tint">● 写回 DWG</span><span class="chip mute">打开校验</span></div></div></div><div class="card"><div class="tc-head"><b>当前校验结果</b></div><table class="tbl"><tbody><tr><td>文字实体数</td><td>328 → 328</td><td><span class="chip ok">通过</span></td></tr><tr><td>乱码</td><td>0</td><td><span class="chip ok">通过</span></td></tr><tr><td>残余可见外文</td><td>12 条</td><td><span class="chip warn">待审阅</span></td></tr><tr><td>未支持对象</td><td>2 个代理对象</td><td><span class="chip warn">已报告</span></td></tr></tbody></table></div></div></section>
+
+        <section class="sample-state" data-panel="done"><div class="demo-wide"><div class="banner res-warn"><b>翻译完成，但有 12 项需要复核</b><span>8 个 DWG 已生成，原件未改动。可打开结果目录或进入文本审阅。</span></div><div class="card" style="margin-top:14px"><div class="tc-head"><b>结果文件</b><div class="tc-tools"><button class="btn mini">打开结果目录</button><button class="btn mini">导出 manifest</button></div></div><table class="tbl"><thead><tr><th>文件</th><th>输出</th><th>写回</th><th>检查</th><th>操作</th></tr></thead><tbody><tr><td>J-3#设计总说明_t3_中文.dwg</td><td><span class="chip ok">已生成</span></td><td>316 / 328</td><td><span class="chip warn">12 待审阅</span></td><td><button class="btn mini">审阅</button></td></tr><tr><td>SNRS...DOUANE_中文.dwg</td><td><span class="chip ok">已生成</span></td><td>91 / 91</td><td><span class="chip ok">通过</span></td><td><button class="btn mini">打开</button></td></tr></tbody></table></div></div></section>
+
+        <section class="sample-state" data-panel="stop"><div class="demo-wide"><div class="modal-demo"><div class="card"><div class="tc-head"><b>安全停止当前任务？</b><span class="status pause"><span class="led"></span>可恢复</span></div><div class="demo-body"><p style="font-size:13px;margin:0 0 6px"><b>当前文件完成后暂停</b></p><p class="muted" style="font-size:12px;margin:0">已完成的文件会保留，未完成的文件从断点继续。原件不会被覆盖。</p><div class="rowline" style="margin-top:15px"><span class="grow"></span><button class="btn">继续翻译</button><button class="btn dgr">暂停并保存进度</button></div></div></div></div></div></section>
+      </main>
+    </div>
+  </div></div>
+  <script>
+    const buttons=[...document.querySelectorAll('[data-state]')]; const panels=[...document.querySelectorAll('[data-panel]')];
+    buttons.forEach(button=>button.addEventListener('click',()=>{buttons.forEach(item=>item.classList.toggle('on',item===button));panels.forEach(panel=>panel.classList.toggle('on',panel.dataset.panel===button.dataset.state));}));
+  </script>
+</body>
+</html>

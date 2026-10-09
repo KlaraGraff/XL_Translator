@@ -1,0 +1,27 @@
+.cad-content { overflow: auto; }
+.cad-files-card { min-height: 360px; }
+.cad-file-table { table-layout: fixed; }
+.cad-file-table th:nth-child(1), .cad-file-table td:nth-child(1) { width: 42px; text-align: center; }
+.cad-file-table th:nth-child(2) { width: 42%; }
+.cad-file-table th:nth-child(3) { width: 70px; }
+.cad-file-table th:nth-child(4) { width: 70px; }
+.cad-file-table th:nth-child(5) { width: 88px; }
+.cad-file-table th:nth-child(6) { width: 58px; }
+.cad-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cad-remove { color: var(--danger); border: 0; background: none; padding: 0; }
+.cad-status-card { flex: none; }
+.cad-status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); }
+.cad-status-grid > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--surface); }
+.cad-status-grid span, .cad-muted, .cad-path-field small { color: var(--ink-3); font-size: 12px; }
+.cad-status-grid strong { font-size: 13px; font-weight: 600; }
+.cad-path-field { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.cad-path-field > div { display: flex; align-items: center; justify-content: space-between; color: var(--ink-2); font-size: 12px; }
+.cad-path-field small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 5px; }
+.cad-plugin-actions, .cad-controls, .cad-result { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 14px; }
+.cad-controls { padding-top: 14px; border-top: 1px solid var(--line); }
+.cad-progress-card { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.cad-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cad-progress-head strong { color: var(--tint-ink); }
+.cad-progress-card .bar { margin: 10px 0 7px; }
+.cad-warning { margin: 12px 16px; color: var(--warn); font-size: 12px; line-height: 1.5; }
+@media (max-width: 850px) { .content.cad-content { display: block; } .cad-content .col-r { width: auto; margin-top: 14px; } .cad-status-grid { grid-template-columns: 1fr; } }
