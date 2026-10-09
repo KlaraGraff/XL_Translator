@@ -24,7 +24,17 @@ def _mach_o(path: Path) -> None:
     path.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 128)
 
 
+def test_builtin_adapter_does_not_need_legacy_install_marker(isolated):
+    status = cad.probe_status()
+    assert status["plugin"] == "enabled"
+    assert status["installed"] is True
+    assert status["oda"] == "missing"
+    assert not (cad.plugin_root() / "plugin.json").exists()
+
+
 def test_builtin_marker_and_external_oda_lifecycle(isolated):
+    # The CAD adapter ships with Translator; the legacy call is retained only
+    # for clients that still invoke it and must not create an install marker.
     status = cad.install_builtin()
     assert status["plugin"] == "enabled"
     assert status["oda"] == "missing"
@@ -35,7 +45,8 @@ def test_builtin_marker_and_external_oda_lifecycle(isolated):
     assert status["enabled"] is True
     assert status["official_download_url"] == cad.OFFICIAL_DOWNLOAD_URL
     assert converter.exists()
-    assert cad.uninstall()["plugin"] == "missing"
+    assert cad.uninstall()["plugin"] == "enabled"
+    assert cad._oda_config_path().exists()
     assert converter.exists()
 
 
@@ -47,6 +58,43 @@ def test_mac_app_bundle_can_be_selected_as_one_install_location(isolated):
     status = cad.connect_oda(str(app_bundle))
     assert status["oda"] == "connected"
     assert status["converter"] == str(converter.resolve())
+
+
+def test_macos_indexed_oda_install_is_discovered_and_persisted(isolated, monkeypatch):
+    cad.install_builtin()
+    app_bundle = isolated / "custom" / "ODAFileConverter.app"
+    converter = app_bundle / "Contents" / "MacOS" / "ODAFileConverter"
+    _mach_o(converter)
+
+    def fake_command(args, *, timeout=5.0):
+        if args[0] == "mdfind" and args[1].startswith("kMDItemFSName == 'ODAFileConverter.app'"):
+            return [str(app_bundle)]
+        return []
+
+    monkeypatch.setattr(cad, "_run_discovery_command", fake_command)
+    status = cad.probe_status()
+    assert status["oda"] == "connected"
+    assert status["converter"] == str(converter.resolve())
+    assert json.loads(cad._oda_config_path().read_text(encoding="utf-8"))["path"] == str(converter.resolve())
+
+
+def test_saved_oda_path_wins_before_index_search(isolated, monkeypatch):
+    cad.install_builtin()
+    saved = isolated / "saved" / "ODAFileConverter"
+    indexed = isolated / "indexed" / "ODAFileConverter"
+    _mach_o(saved)
+    _mach_o(indexed)
+    cad.connect_oda(str(saved))
+    calls = []
+
+    def fake_command(args, *, timeout=5.0):
+        calls.append(args)
+        return [str(indexed)]
+
+    monkeypatch.setattr(cad, "_run_discovery_command", fake_command)
+    status = cad.probe_status()
+    assert status["converter"] == str(saved.resolve())
+    assert calls == []
 
 
 def test_text_fixture_never_counts_as_converter(isolated):

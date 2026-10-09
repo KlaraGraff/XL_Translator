@@ -458,11 +458,12 @@ def create_app(
 
     @app.get("/api/plugins/cad")
     def cad_plugin_status() -> dict[str, Any]:
-        """Return optional CAD plugin and local converter availability."""
+        """Return the drawing-converter plugin and its local dependency status."""
         return probe_status()
 
     @app.post("/api/plugins/cad/install")
     def install_cad_plugin(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Keep the legacy plugin-install route for older clients."""
         payload = payload or {}
         source = str(payload.get("source_dir") or "").strip()
         try:
@@ -481,7 +482,7 @@ def create_app(
 
     @app.post("/api/plugins/cad/uninstall")
     def uninstall_cad_plugin() -> dict[str, Any]:
-        """Remove the first-party wrapper while retaining a user-provided ODA."""
+        """Keep the legacy route without removing built-in support or ODA config."""
         return uninstall()
 
     @app.post("/api/plugins/cad/oda")

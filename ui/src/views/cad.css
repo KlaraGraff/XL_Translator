@@ -10,7 +10,7 @@
 .cad-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cad-remove { color: var(--danger); border: 0; background: none; padding: 0; }
 .cad-status-card { flex: none; }
-.cad-status-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); }
+.cad-status-grid { display: grid; grid-template-columns: 1fr; gap: 1px; background: var(--line); }
 .cad-status-grid > div { display: grid; gap: 4px; padding: 12px 14px; background: var(--surface); }
 .cad-status-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-left: auto; }
 .cad-status-grid span, .cad-muted, .cad-path-field small { color: var(--ink-3); }

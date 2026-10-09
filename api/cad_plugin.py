@@ -1,7 +1,10 @@
-"""Optional CAD plugin lifecycle and ODA connector discovery.
+"""Built-in CAD adapter and external drawing-converter discovery.
 
-The first-party adapter contains no ODA binaries. ODA remains a separately
-licensed, user-provided dependency selected through the connector endpoint.
+The CAD translation adapter ships with Translator.  The ODA converter remains
+a separately licensed, user-provided dependency selected through the connector
+endpoint.  The legacy install/uninstall functions are retained as no-op
+compatibility shims for older clients; they never install or remove the built-in
+adapter or the user's converter.
 """
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import threading
 import uuid
 from pathlib import Path
@@ -169,6 +173,87 @@ def _platform_search_paths(info: dict[str, str]) -> list[Path]:
     return []
 
 
+def _run_discovery_command(args: list[str], *, timeout: float = 5.0) -> list[str]:
+    """Run an OS discovery helper without invoking any candidate executable.
+
+    Discovery is deliberately best-effort: a missing helper, timeout, or
+    permission error simply leaves the caller to try its other search sources.
+    Keeping this in one small function also makes the platform search easy to
+    exercise without touching the host filesystem in tests.
+    """
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _indexed_search_paths(info: dict[str, str]) -> list[Path]:
+    """Return converter candidates found by native OS indexes.
+
+    The user may install ODA anywhere. Native indexes are therefore tried
+    after the saved path and known vendor locations, while the manual chooser
+    remains available for machines with indexing disabled.
+    """
+    system = info.get("system")
+    if system == "darwin":
+        paths: list[Path] = []
+        for query in (
+            "kMDItemFSName == 'ODAFileConverter.app'cd",
+            "kMDItemFSName == 'ODAFileConverter'cd",
+        ):
+            for value in _run_discovery_command(["mdfind", query]):
+                path = Path(value).expanduser()
+                if path.name == "ODAFileConverter.app":
+                    paths.append(path / "Contents" / "MacOS" / "ODAFileConverter")
+                else:
+                    paths.append(path)
+        return paths
+    if system == "windows":
+        paths = [Path(value) for value in _run_discovery_command(["where", "ODAFileConverter.exe"])]
+        # The uninstall registry is a source of the install directory, not an
+        # executable to launch. Read it only on Windows and tolerate missing
+        # keys (portable installs do not create one).
+        if os.name == "nt":
+            try:
+                import winreg
+
+                for hive, subkey in (
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                ):
+                    try:
+                        with winreg.OpenKey(hive, subkey) as uninstall:
+                            for index in range(winreg.QueryInfoKey(uninstall)[0]):
+                                try:
+                                    name = winreg.EnumKey(uninstall, index)
+                                    with winreg.OpenKey(uninstall, name) as entry:
+                                        display = str(winreg.QueryValueEx(entry, "DisplayName")[0])
+                                        if "oda" not in display.lower() or "converter" not in display.lower():
+                                            continue
+                                        location = str(winreg.QueryValueEx(entry, "InstallLocation")[0] or "").strip()
+                                        if location:
+                                            root = Path(location)
+                                            paths.extend((root / "ODAFileConverter.exe", root / "bin" / "ODAFileConverter.exe"))
+                                except (OSError, ValueError, TypeError):
+                                    continue
+                    except OSError:
+                        continue
+            except ImportError:
+                pass
+        return paths
+    return []
+
+
 def _mach_o(path: Path) -> bool:
     try:
         magic = path.read_bytes()[:4]
@@ -266,6 +351,7 @@ def _find_converter(root: Path | None = None, info: dict[str, str] | None = None
         elif root.is_dir() and info.get("system") == "windows":
             candidates.extend((root / "ODAFileConverter.exe", root / "bin" / "ODAFileConverter.exe"))
     candidates.extend(_platform_search_paths(info))
+    candidates.extend(_indexed_search_paths(info))
     for candidate in candidates:
         valid, _, _ = _validate_converter(candidate, info)
         if valid:
@@ -380,20 +466,11 @@ def probe_status() -> dict[str, Any]:
         converter, converter_version, converter_valid = _converter_candidate(info)
         _persist_discovered_converter(converter)
         oda_invalid = converter is not None and not converter_valid
-        plugin_state = "missing"
+        # CAD translation support is part of Translator itself.  Older builds
+        # wrote a manifest and an ``.enabled`` marker, but those files describe
+        # an obsolete lifecycle and must not gate readiness anymore.
+        plugin_state = "enabled"
         detail: list[str] = []
-        if manifest is None:
-            if (root / "plugin.json").exists():
-                plugin_state = "error"
-                detail.append("CAD 插件清单缺失或无法读取。")
-        elif not _core_compatible(manifest):
-            plugin_state = "error"
-            detail.append("CAD 插件与当前 Translator 版本不兼容。")
-        elif not _marker_valid(root, manifest):
-            plugin_state = "error"
-            detail.append("CAD 插件启用标记或核心版本校验失败。")
-        else:
-            plugin_state = "enabled"
         oda_state = "missing"
         if not supported:
             detail.append("当前平台仅支持 macOS 13+（Apple Silicon/Intel）或 Windows 10 x64。")
@@ -402,8 +479,15 @@ def probe_status() -> dict[str, Any]:
             detail.append("已配置的 ODA 转换器校验失败。")
         elif converter is not None:
             oda_state = "connected"
-        enabled = plugin_state == "enabled" and oda_state == "connected" and supported
-        message = "CAD 插件已就绪。" if enabled else "请安装 CAD Support 插件，并选择或下载官方 ODA 转换器。"
+        enabled = oda_state == "connected" and supported
+        if not supported:
+            message = "当前平台不支持图纸转换工具。"
+        elif oda_state == "connected":
+            message = "图纸转换工具已连接。"
+        elif oda_state == "incompatible":
+            message = "已找到图纸转换工具，但当前版本不可用。"
+        else:
+            message = "未检测到图纸转换工具。"
         return {
             "plugin_id": PLUGIN_ID,
             "version": str(manifest.get("version") if manifest else PLUGIN_VERSION),
@@ -533,39 +617,8 @@ def install_from_directory(source: str) -> dict[str, Any]:
 
 
 def install_builtin() -> dict[str, Any]:
-    with _plugin_lock():
-        root = plugin_root()
-        root.parent.mkdir(parents=True, exist_ok=True)
-        manifest = {"id": PLUGIN_ID, "version": PLUGIN_VERSION, "adapter": "builtin", "sha256": {}}
-        temporary = root.with_name(f"{root.name}.installing-{uuid.uuid4().hex}")
-        backup = root.with_name(f"{root.name}.previous-{uuid.uuid4().hex}")
-        oda = _oda_config_path(root)
-        old_oda = oda.read_bytes() if oda.is_file() and not oda.is_symlink() else None
-        try:
-            temporary.mkdir(parents=True)
-            _atomic_write(temporary / "plugin.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-            if old_oda is not None:
-                _atomic_write(temporary / "oda.json", old_oda.decode("utf-8"))
-            marker = {
-                "plugin_id": PLUGIN_ID,
-                "plugin_version": PLUGIN_VERSION,
-                "core_version": APP_VERSION,
-                "core_version_sha256": hashlib.sha256(APP_VERSION.encode("utf-8")).hexdigest(),
-                "core_version_hash": hashlib.sha256(APP_VERSION.encode("utf-8")).hexdigest(),
-                "wrapper_sha256": hashlib.sha256((temporary / "plugin.json").read_bytes()).hexdigest(),
-                "wrapper_hash": hashlib.sha256((temporary / "plugin.json").read_bytes()).hexdigest(),
-            }
-            _atomic_write(temporary / ".enabled", json.dumps(marker, ensure_ascii=False, indent=2))
-            if root.exists():
-                os.replace(root, backup)
-            os.replace(temporary, root)
-            shutil.rmtree(backup, ignore_errors=True)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            if not root.exists() and backup.exists():
-                os.replace(backup, root)
-            raise
-        return probe_status()
+    """Legacy compatibility shim: CAD support is already built in."""
+    return probe_status()
 
 
 def connect_oda(path: str) -> dict[str, Any]:
@@ -595,9 +648,5 @@ def connect_oda(path: str) -> dict[str, Any]:
 
 
 def uninstall() -> dict[str, Any]:
-    """Remove first-party plugin files while preserving any external ODA binary."""
-    with _plugin_lock():
-        root = plugin_root()
-        if root.exists():
-            shutil.rmtree(root)
-        return probe_status()
+    """Legacy compatibility shim: never remove built-in support or ODA config."""
+    return probe_status()
