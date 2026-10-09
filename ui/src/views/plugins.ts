@@ -2,11 +2,10 @@
 // CAD 工作台只负责翻译任务；能力状态和外部依赖不再塞进「设置 → 更新与关于」。
 
 import { open } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus } from "../api-client";
-import { createButton, createCard, createStatus, openModal, showToast } from "../components";
+import { createButton, createCard, createHintBadge, createStatus, openModal, showToast } from "../components";
 import "./plugins.css";
 
 let mounted = false;
@@ -90,24 +89,6 @@ async function chooseOda(): Promise<void> {
   }
 }
 
-function showConverterDetails(): void {
-  const officialUrl = "https://www.opendesign.com/guestfiles/oda_file_converter";
-  openModal({
-    tone: "tint",
-    icon: "help",
-    title: "图纸转换工具详情",
-    body: [
-      "软件名称：ODA File Converter",
-      "用途：负责将翻译后的内容转换为 DWG 或其他 CAD 图纸格式。",
-      "官网地址：opendesign.com/guestfiles/oda_file_converter",
-    ],
-    actions: [
-      { label: "打开官网", onClick: () => void invoke("open_external_url", { url: officialUrl }).catch((error) => showToast({ message: error instanceof Error ? error.message : "无法打开官网。", error: true })) },
-      { label: "知道了" },
-    ],
-  });
-}
-
 function actionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
@@ -117,7 +98,6 @@ function actionButtons(): HTMLElement {
     actions.append(createButton({ label: "选择转换工具位置", variant: "primary", onClick: () => void chooseOda() }));
   }
   actions.append(createButton({ label: "刷新状态", onClick: () => void refresh() }));
-  actions.append(createButton({ label: "转换工具详情", icon: "help", onClick: () => showConverterDetails() }));
   if (capability?.plugin === "enabled") {
     actions.append(createButton({ label: "卸载插件", variant: "danger-solid", onClick: () => confirmUninstall() }));
   }
@@ -183,6 +163,7 @@ function render(): void {
   copy.className = "plugins-copy";
   const title = document.createElement("h2");
   title.textContent = "图纸转换工具";
+  title.append(createHintBadge("负责把翻译后的内容转换为 DWG 或其他 CAD 图纸格式。"));
   const desc = document.createElement("p");
   desc.textContent = "翻译 DWG / DXF 中的可见文字，原件不覆盖，结果和报告写入输出目录。";
   copy.append(title, desc);
@@ -193,15 +174,17 @@ function render(): void {
   const details = document.createElement("div");
   details.className = "plugins-details";
   const rows: Array<[string, string]> = [
-    ["翻译组件", capability?.plugin === "enabled" ? "OK" : capability?.plugin === "error" ? "安装状态异常" : "未安装"],
-    ["图纸转换工具", capability?.oda === "connected" ? "OK" : capability?.oda === "incompatible" ? "不可用" : "未找到"],
-    ["本机平台", capability?.platform ? `${capability.platform.system} · ${capability.platform.arch}` : "检测中"],
+    ["翻译组件", capability?.plugin === "enabled" ? "翻译组件已启用" : capability?.plugin === "error" ? "安装状态异常" : "未安装"],
+    ["图纸转换工具", capability?.oda === "connected" ? "图纸转换工具已连接" : capability?.oda === "incompatible" ? "不可用" : "未找到"],
   ];
   rows.forEach(([label, value]) => {
     const row = document.createElement("div");
     row.className = "plugins-detail-row";
     const labelEl = document.createElement("span");
+    labelEl.className = "plugins-detail-label";
     labelEl.textContent = label;
+    if (label === "翻译组件") labelEl.append(createHintBadge("负责提供 CAD 图纸文字翻译能力。"));
+    if (label === "图纸转换工具") labelEl.append(createHintBadge("负责把翻译后的内容转换为 DWG 或其他 CAD 图纸格式。"));
     const valueEl = document.createElement("strong");
     valueEl.textContent = value;
     row.append(labelEl, valueEl);
@@ -217,7 +200,7 @@ function render(): void {
   } else if (capability?.plugin === "enabled" && capability.oda === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    ok.textContent = "OK";
+    ok.textContent = "转换工具已准备好。";
     body.append(ok);
   } else if (capability?.plugin === "enabled") {
     const warn = document.createElement("div");

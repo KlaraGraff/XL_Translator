@@ -1,16 +1,18 @@
-.plugins-content { display: block; overflow: auto; }
-.plugins-column { width: min(100%, 1040px); margin: 0 auto; }
+.plugins-content { display: flex; overflow: auto; }
+.plugins-column { width: 100%; display: flex; flex-direction: column; gap: 14px; }
 .plugins-intro { padding: 14px 16px; color: var(--ink-2); }
 .plugins-card-body { padding: 18px 20px 20px; }
 .plugins-title-row { display: flex; align-items: center; gap: 14px; }
 .plugins-icon { width: 46px; height: 46px; border-radius: 13px; background: var(--tint); color: var(--tint-ink); display: grid; place-items: center; font-size: 23px; flex: none; }
 .plugins-copy { flex: 1; min-width: 0; }
-.plugins-copy h2 { margin: 0; font-size: 16px; }
+.plugins-copy h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 7px; }
 .plugins-copy p { margin: 5px 0 0; color: var(--ink-3); font-size: 12.5px; }
 .plugins-details { margin-top: 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .plugins-detail-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
 .plugins-detail-row:last-child { border-bottom: 0; }
 .plugins-detail-row span { color: var(--ink-3); flex: 1; }
+.plugins-detail-label { display: inline-flex; align-items: center; gap: 7px; }
+.plugins-detail-label .hint, .plugins-copy h2 .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; font-weight: 600; }
 .plugins-detail-row strong { font-size: 12.5px; font-weight: 600; }
 .plugins-actions { margin-top: 16px; }
 .plugins-notice { margin-top: 14px; padding: 10px 12px; border-radius: var(--r-sm); font-size: 12px; line-height: 1.55; }

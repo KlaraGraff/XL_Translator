@@ -890,7 +890,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        directory_is_writable, open_external_url, parse_handshake, split_save_frame,
+        directory_is_writable, is_verified_external_url, parse_handshake, split_save_frame,
         update_environment, write_file_atomically, SIDECAR_ABORT_TIMEOUT, SIDECAR_DRAIN_BUDGET_SECS,
         SIDECAR_SHUTDOWN_MARGIN_SECS, SIDECAR_STOP_TIMEOUT, SIDECAR_TASK_UNWIND_BUDGET_SECS,
     };
