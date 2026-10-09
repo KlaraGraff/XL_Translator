@@ -40,6 +40,7 @@ let loading = false;
 let scanning = false;
 let polling: number | null = null;
 let submitting = false;
+let settingsHydrated = false;
 
 const fileName = (path: string): string => path.split(/[\\/]/).filter(Boolean).pop() || path;
 const displayName = (path: string): string => { const name = fileName(path); return name.replace(/\.(dwg|dxf)$/i, ""); };
@@ -51,7 +52,7 @@ export function mount(container: HTMLElement, _params: ViewParams): void { mount
 export function unmount(): void { mounted = false; rootEl = null; if (polling !== null) window.clearInterval(polling); polling = null; }
 
 async function bootstrap(): Promise<void> {
-  try { const c = new ApiClient(); await c.connect(); const [cap, langs, tasks] = await Promise.all([c.getCadCapability(), c.request<{ source_options?: LanguageOption[]; target_options?: LanguageOption[] }>("/api/languages"), c.listTasks()]); capability = cap; const recovered = [...tasks.active, ...tasks.recent].find((x) => x.surface === "cad" && !x.terminal); if (recovered) { task = recovered; startPolling(); } languageOptions = { source: langs.source_options ?? [], target: langs.target_options ?? [] }; if (!options.targetLang && languageOptions.target[0]) options.targetLang = languageOptions.target[0].code; } catch (e) { capabilityError = e instanceof Error ? e.message : "CAD 服务暂不可用。"; }
+  try { const c = new ApiClient(); await c.connect(); const [cap, langs, tasks, saved] = await Promise.all([c.getCadCapability(), c.request<{ source_options?: LanguageOption[]; target_options?: LanguageOption[] }>("/api/languages"), c.listTasks(), c.request<Record<string, unknown>>("/api/settings")]); capability = cap; const recovered = [...tasks.active, ...tasks.recent].find((x) => x.surface === "cad" && !x.terminal); if (recovered) { task = recovered; startPolling(); } languageOptions = { source: langs.source_options ?? [], target: langs.target_options ?? [] }; if (!settingsHydrated) { const savedSource = typeof saved.source_lang === "string" ? saved.source_lang : typeof saved.excel_source_lang === "string" ? saved.excel_source_lang : ""; const savedTarget = typeof saved.target_lang === "string" ? saved.target_lang : typeof saved.excel_target_lang === "string" ? saved.excel_target_lang : ""; if (savedSource) options.sourceLang = savedSource; if (savedTarget) options.targetLang = savedTarget; settingsHydrated = true; } if (!options.targetLang && languageOptions.target[0]) options.targetLang = languageOptions.target[0].code; } catch (e) { capabilityError = e instanceof Error ? e.message : "CAD 服务暂不可用。"; }
   if (mounted) render();
 }
 
