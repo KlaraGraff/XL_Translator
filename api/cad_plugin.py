@@ -300,13 +300,29 @@ def _converter_candidate(info: dict[str, str]) -> tuple[Path | None, str | None,
         valid, version, detail = _validate_converter(configured, info)
         if valid:
             return configured, version, True
-        return configured, None, False
+        # A previously saved path can become stale after an upgrade or uninstall.
+        # Keep probing the known installation locations so the user does not have
+        # to choose the same converter again manually.
     discovered = _find_converter(info=info)
     if discovered is not None:
         valid, version, _ = _validate_converter(discovered, info)
         if valid:
             return discovered, version, True
     return None, None, False
+
+
+def _persist_discovered_converter(converter: Path | None) -> None:
+    """Remember a newly discovered converter for the next status probe."""
+    if converter is None:
+        return
+    try:
+        current = _configured_converter()
+        if current and current == converter:
+            return
+        _atomic_write(_oda_config_path(), json.dumps({"path": str(converter)}, ensure_ascii=False, indent=2))
+    except (OSError, TypeError, ValueError):
+        # Discovery remains useful even when the settings directory is read-only.
+        return
 
 
 def _manifest(root: Path) -> dict[str, Any] | None:
@@ -362,6 +378,7 @@ def probe_status() -> dict[str, Any]:
         info = _platform_info()
         supported = _platform_supported(info)
         converter, converter_version, converter_valid = _converter_candidate(info)
+        _persist_discovered_converter(converter)
         oda_invalid = converter is not None and not converter_valid
         plugin_state = "missing"
         detail: list[str] = []

@@ -31,7 +31,7 @@ import { icon, type IconName } from "../icons";
 import { ApiClient } from "../api-client";
 import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
-import { applyModelPillFromRoles } from "../model-pill";
+import { applyModelPillFromRoles, setModelPillSettingsRole } from "../model-pill";
 import { renderReleaseNotes, releaseNotesLineCount } from "../markdown";
 // 更新的状态和动作都在 update-controller：顶部的更新提示卡片和这一页显示的是同一件事，
 // 各存一份就会出现「卡片在下载、这一页还写着有可用更新」。这一页只负责画和触发。
@@ -351,6 +351,7 @@ let modelCatalogConnection: Record<string, string> = {};
 let selectedConnection: Record<string, string> = {};
 let modelAccessDraft: Record<string, string> = {};
 let modelRole = "translation";
+const modelFormDrafts: Record<string, ModelFormDraft> = {};
 let modelImportPreview: ModelImportPreview | null = null;
 
 let targetOptions: LanguageOption[] = [];
@@ -381,10 +382,13 @@ let paramsTab: ParamsSurface = "excel";
 export function mount(container: HTMLElement, params: ViewParams): void {
   const token = ++mountToken;
   const requestedPage = params.page;
+  const requestedRole = typeof params.role === "string" && MODEL_ROLE_ORDER.includes(params.role) ? params.role : null;
+  if (requestedRole) modelRole = requestedRole;
   currentPage = requestedPage === "models" || requestedPage === "params" || requestedPage === "appearance"
     || requestedPage === "data" || requestedPage === "about"
     ? requestedPage
     : "models";
+  setModelPillSettingsRole(currentPage === "models" ? modelRole : null);
 
   setTopbar({
     title: "设置",
@@ -401,6 +405,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
     el.addEventListener("click", () => {
       if (currentPage === item.id) return;
       currentPage = item.id;
+      setModelPillSettingsRole(currentPage === "models" ? modelRole : null);
       highlightNav();
       void loadAndRenderPage(token);
     });
@@ -460,6 +465,7 @@ export function unmount(): void {
   bodyHost = null;
   bannerHost = null;
   navEls = null;
+  setModelPillSettingsRole(null);
   unsubscribeUpdates?.();
   unsubscribeUpdates = null;
 }
@@ -1234,8 +1240,13 @@ function renderModelsPage(host: HTMLElement): void {
     segc.append(b, span);
     segc.addEventListener("click", () => {
       if (modelRole === role) return;
+      const draft = snapshotModelFormDraft();
+      if (draft) modelFormDrafts[modelRole] = draft;
       modelRole = role;
+      setModelPillSettingsRole(modelRole);
       renderBody();
+      const roleDraft = modelFormDrafts[role];
+      if (roleDraft) restoreModelFormDraft(roleDraft);
     });
     seg.append(segc);
   }

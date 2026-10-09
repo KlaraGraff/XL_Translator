@@ -153,6 +153,7 @@ class TaskOptions:
     cad_use_memory: bool = True
     cad_check_entity_counts: bool = True
     cad_scan_residual: bool = True
+    cad_translate_output_filename: bool = False
 
     @property
     def xls_conversion_mode(self) -> str:
@@ -642,7 +643,7 @@ class TranslationTaskManager:
             fingerprint_payload["cad_content_identity"] = cad_files
             fingerprint_payload["options"]["cad"] = {
                 key: getattr(options, key)
-                for key in ("cad_use_terminology", "cad_keep_work_dxf", "cad_copy_related_files", "cad_verify_roundtrip", "cad_scan_replacement_chars", "cad_include_block_text", "cad_glossary_path", "cad_use_memory", "cad_check_entity_counts", "cad_scan_residual")
+                for key in ("cad_use_terminology", "cad_keep_work_dxf", "cad_copy_related_files", "cad_verify_roundtrip", "cad_scan_replacement_chars", "cad_include_block_text", "cad_glossary_path", "cad_use_memory", "cad_check_entity_counts", "cad_scan_residual", "cad_translate_output_filename")
             }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
@@ -1836,6 +1837,7 @@ class TranslationTaskManager:
                 converter=SubprocessCadConverter(converter_path) if converter_path else None,
                 memory_lookup=memory_lookup if options.cad_use_memory else None,
                 translator=translate_batch,
+                filename_translator=engine,
                 glossary=_load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
                 options=CadPipelineOptions(
                     source_lang=source_lang,
@@ -1850,6 +1852,7 @@ class TranslationTaskManager:
                     scan_residual=options.cad_scan_residual,
                 ),
                 resume_output_dir=options.resume_output_dir,
+                translate_output_filename=options.cad_translate_output_filename,
                 translation_identity={
                     "model": getattr(settings.engine, "cloud_model", ""),
                     "provider": getattr(settings.engine, "cloud_provider", ""),

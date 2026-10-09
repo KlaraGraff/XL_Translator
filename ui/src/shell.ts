@@ -54,6 +54,8 @@ export interface TaskPillConfig {
 export interface ModelPillConfig {
   label: string;
   tone?: "ok" | "idle" | "warn";
+  /** Settings role opened when the pill is clicked. */
+  role?: string;
 }
 
 const PILL_TONE_COLOR: Record<NonNullable<ModelPillConfig["tone"]>, string> = {
@@ -280,6 +282,6 @@ export function setModelPill(config: ModelPillConfig): void {
   modelPillHost.innerHTML = "";
   const dotColor = PILL_TONE_COLOR[config.tone ?? "ok"];
   modelPillHost.append(
-    createPill({ label: config.label, dotColor, onClick: () => navigate("settings") }),
+    createPill({ label: config.label, dotColor, onClick: () => navigate("settings", { page: "models", role: config.role }) }),
   );
 }

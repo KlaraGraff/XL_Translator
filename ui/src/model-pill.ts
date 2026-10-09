@@ -26,10 +26,27 @@ function roleKeyForView(id: ViewId | undefined): string {
   return id === "pdf" ? "image" : "translation";
 }
 
+function effectiveRoleKey(roleKey: string): string {
+  const seen = new Set<string>();
+  let key = roleKey;
+  while (!seen.has(key)) {
+    seen.add(key);
+    const role = (lastRoles?.[key] ?? null) as RolePayload & { source_role?: unknown; connections?: unknown } | null;
+    const connections = Array.isArray(role?.connections) ? role.connections : [];
+    const primary = connections[0] as { connection_mode?: unknown; source_role?: unknown } | undefined;
+    const follows = String(primary?.connection_mode ?? "") === "follow" ? primary?.source_role : role?.source_role;
+    const next = typeof follows === "string" ? follows.trim() : "";
+    if (!next || next === key) break;
+    key = next;
+  }
+  return key;
+}
+
 // 角色表只在拿到时存一份，不是每次切视图都问后端要——applyModelPillFromRoles
 // 本来就是「用已有数据刷新」这条路，缓存才对得上这个设计，也不会因为频繁切页面
 // 打一堆没必要的请求。
 let lastRoles: Record<string, unknown> | null | undefined = null;
+let settingsRoleOverride: string | null = null;
 
 async function getClient(): Promise<ApiClient> {
   if (client) return client;
@@ -51,20 +68,23 @@ async function getClient(): Promise<ApiClient> {
 
 /** 用缓存的角色表 + 当前视图重算一次药丸，不发请求。*/
 function renderModelPill(): void {
-  const roleKey = roleKeyForView(currentView()?.id);
-  const role = (lastRoles?.[roleKey] ?? null) as RolePayload | null;
+  const roleKey = currentView()?.id === "settings" && settingsRoleOverride
+    ? settingsRoleOverride
+    : roleKeyForView(currentView()?.id);
+  const resolvedRoleKey = effectiveRoleKey(roleKey);
+  const role = (lastRoles?.[resolvedRoleKey] ?? null) as RolePayload | null;
   const model = String(role?.model ?? "").trim();
   if (!model) {
     // 这个视图对应的角色没配模型就老实说「未连接模型」，不能回退去显示别的角色——
     // 那正是徽章跟当前页面对不上的 bug 本身。
-    setModelPill({ label: "未连接模型", tone: "idle" });
+    setModelPill({ label: "未连接模型", tone: "idle", role: roleKey });
     return;
   }
   const status = String(role?.availability_status ?? "").trim();
   const local = String(role?.mode ?? "") === "local";
   // 没测过就是没测过：绿点只给测通的那一刻，不能因为填了型号就假装连上了。
   const tone = status === "available" ? "ok" : status === "unavailable" ? "warn" : "idle";
-  setModelPill({ label: local ? `本地 · ${model}` : model, tone });
+  setModelPill({ label: local ? `本地 · ${model}` : model, tone, role: roleKey });
 }
 
 // 切视图时用缓存重算，不重新发请求。模块只会被 import 一次（ESM 单例），
@@ -86,4 +106,10 @@ export async function refreshModelPill(): Promise<void> {
   } catch {
     setModelPill({ label: "未连接模型", tone: "idle" });
   }
+}
+
+/** Select the role represented by the pill while the settings model tabs are visible. */
+export function setModelPillSettingsRole(role: string | null): void {
+  settingsRoleOverride = role;
+  renderModelPill();
 }

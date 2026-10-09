@@ -1,12 +1,12 @@
-// 插件管理视图 —— CAD Support 与 ODA 的安装、检测和连接统一在这里完成。
+// 插件管理视图 —— 图纸翻译组件与转换工具的安装、检测和连接统一在这里完成。
 // CAD 工作台只负责翻译任务；能力状态和外部依赖不再塞进「设置 → 更新与关于」。
 
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus } from "../api-client";
-import { createButton, createCard, createChip, createStatus, openModal, showToast } from "../components";
+import { createButton, createCard, createStatus, openModal, showToast } from "../components";
 import "./plugins.css";
 
 let mounted = false;
@@ -18,9 +18,9 @@ let busy = false;
 function statusLabel(): string {
   if (!capability) return "正在检测";
   if (!capability.platform_supported) return "当前平台不支持";
-  if (capability.plugin !== "enabled") return "CAD 插件未安装";
-  if (capability.oda === "connected") return "CAD 能力已就绪";
-  return capability.oda === "incompatible" ? "ODA 不可用" : "需要连接 ODA";
+  if (capability.plugin !== "enabled") return "转换工具未启用";
+  if (capability.oda === "connected") return "图纸转换已就绪";
+  return capability.oda === "incompatible" ? "转换工具不可用" : "需要连接图纸转换工具";
 }
 
 function statusTone(): "idle" | "ok" | "warn" | "danger" {
@@ -63,9 +63,9 @@ async function installAndDetect(): Promise<void> {
     await client.connect();
     capability = await client.installCadPlugin();
     errorText = "";
-    showToast({ message: capability.oda === "connected" ? "CAD Support 已安装，ODA 已自动连接。" : "CAD Support 已安装，请连接 ODA。" });
+    showToast({ message: capability.oda === "connected" ? "图纸转换工具已自动连接。" : "翻译组件已安装，请连接图纸转换工具。" });
   } catch (error) {
-    errorText = error instanceof Error ? error.message : "CAD Support 安装失败。";
+    errorText = error instanceof Error ? error.message : "翻译组件安装失败。";
     showToast({ message: errorText, error: true });
   } finally {
     busy = false;
@@ -83,38 +83,41 @@ async function chooseOda(): Promise<void> {
     await client.connect();
     capability = await client.connectCadOda(path);
     errorText = "";
-    showToast({ message: capability.oda === "connected" ? "ODA 已连接。" : "选择的位置不是可用的 ODA 安装。", error: capability.oda !== "connected" });
+    showToast({ message: capability.oda === "connected" ? "图纸转换工具已连接。" : "选择的位置不是可用的转换工具。", error: capability.oda !== "connected" });
     if (mounted) render();
   } catch (error) {
-    showToast({ message: error instanceof Error ? error.message : "无法连接 ODA。", error: true });
+    showToast({ message: error instanceof Error ? error.message : "无法连接图纸转换工具。", error: true });
   }
 }
 
-async function openOfficialPage(): Promise<void> {
-  try {
-    const client = new ApiClient();
-    await client.connect();
-    const result = await client.officialCadDownload();
-    const url = result.authorization_url || result.url || "";
-    if (!url) throw new Error("官方 ODA 页面地址暂不可用。 ");
-    await invoke("open_external_url", { url });
-  } catch (error) {
-    errorText = error instanceof Error ? error.message : "无法打开官方 ODA 页面。";
-    showToast({ message: errorText, error: true });
-    if (mounted) render();
-  }
+function showConverterDetails(): void {
+  const officialUrl = "https://www.opendesign.com/guestfiles/oda_file_converter";
+  openModal({
+    tone: "tint",
+    icon: "help",
+    title: "图纸转换工具详情",
+    body: [
+      "软件名称：ODA File Converter",
+      "用途：负责将翻译后的内容转换为 DWG 或其他 CAD 图纸格式。",
+      "官网地址：opendesign.com/guestfiles/oda_file_converter",
+    ],
+    actions: [
+      { label: "打开官网", onClick: () => void invoke("open_external_url", { url: officialUrl }).catch((error) => showToast({ message: error instanceof Error ? error.message : "无法打开官网。", error: true })) },
+      { label: "知道了" },
+    ],
+  });
 }
 
 function actionButtons(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "field-row plugins-actions";
   if (capability?.plugin !== "enabled") {
-    actions.append(createButton({ label: busy ? "安装中…" : "安装 / 检测 CAD 能力", variant: "primary", disabled: busy, onClick: () => void installAndDetect() }));
+    actions.append(createButton({ label: busy ? "安装中…" : "安装 / 检测翻译组件", variant: "primary", disabled: busy, onClick: () => void installAndDetect() }));
   } else if (capability.oda !== "connected") {
-    actions.append(createButton({ label: "选择 ODA 安装位置", variant: "primary", onClick: () => void chooseOda() }));
+    actions.append(createButton({ label: "选择转换工具位置", variant: "primary", onClick: () => void chooseOda() }));
   }
   actions.append(createButton({ label: "刷新状态", onClick: () => void refresh() }));
-  actions.append(createButton({ label: "打开 ODA 官方页面", icon: "ext", onClick: () => void openOfficialPage() }));
+  actions.append(createButton({ label: "转换工具详情", icon: "help", onClick: () => showConverterDetails() }));
   if (capability?.plugin === "enabled") {
     actions.append(createButton({ label: "卸载插件", variant: "danger-solid", onClick: () => confirmUninstall() }));
   }
@@ -125,8 +128,8 @@ function confirmUninstall(): void {
   openModal({
     tone: "warn",
     icon: "stop",
-    title: "卸载 CAD Support？",
-    body: ["CAD 翻译能力将被移除。已有任务结果、ODA 安装和其他文档翻译功能不受影响。"],
+    title: "卸载翻译组件？",
+    body: ["CAD 翻译能力将被移除。已有任务结果、转换工具安装和其他文档翻译功能不受影响。"],
     actions: [
       { label: "取消" },
       { label: "卸载", variant: "danger-solid", onClick: () => void uninstall() },
@@ -139,7 +142,7 @@ async function uninstall(): Promise<void> {
     const client = new ApiClient();
     await client.connect();
     capability = await client.uninstallCadPlugin();
-    showToast({ message: "CAD Support 已卸载。" });
+    showToast({ message: "翻译组件已卸载。" });
     if (mounted) render();
   } catch (error) {
     showToast({ message: error instanceof Error ? error.message : "插件卸载失败。", error: true });
@@ -179,7 +182,7 @@ function render(): void {
   const copy = document.createElement("div");
   copy.className = "plugins-copy";
   const title = document.createElement("h2");
-  title.textContent = "CAD Support";
+  title.textContent = "图纸转换工具";
   const desc = document.createElement("p");
   desc.textContent = "翻译 DWG / DXF 中的可见文字，原件不覆盖，结果和报告写入输出目录。";
   copy.append(title, desc);
@@ -190,8 +193,8 @@ function render(): void {
   const details = document.createElement("div");
   details.className = "plugins-details";
   const rows: Array<[string, string]> = [
-    ["CAD Support", capability?.plugin === "enabled" ? `已启用 · ${capability.version || "当前版本"}` : capability?.plugin === "error" ? "安装状态异常" : "未安装"],
-    ["ODA File Converter", capability?.oda === "connected" ? "已连接" : capability?.oda === "incompatible" ? "校验失败" : "未找到"],
+    ["翻译组件", capability?.plugin === "enabled" ? "OK" : capability?.plugin === "error" ? "安装状态异常" : "未安装"],
+    ["图纸转换工具", capability?.oda === "connected" ? "OK" : capability?.oda === "incompatible" ? "不可用" : "未找到"],
     ["本机平台", capability?.platform ? `${capability.platform.system} · ${capability.platform.arch}` : "检测中"],
   ];
   rows.forEach(([label, value]) => {
@@ -214,28 +217,17 @@ function render(): void {
   } else if (capability?.plugin === "enabled" && capability.oda === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    ok.textContent = `已连接：${capability.converter || "ODA File Converter"}`;
+    ok.textContent = "OK";
     body.append(ok);
   } else if (capability?.plugin === "enabled") {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = "CAD Support 已安装。点击“选择 ODA 安装位置”可一次选择整个 .app 或安装目录；也可以先打开官方页面下载。";
+    warn.textContent = "转换工具未找到。请选择已安装的转换工具位置，系统会自动连接。";
     body.append(warn);
   }
   body.append(actionButtons());
   card.append(body);
   column.append(card);
 
-  const note = createCard([]);
-  const noteBody = document.createElement("div");
-  noteBody.className = "plugins-note";
-  noteBody.append(createChip({ label: "旧配置已保留", tone: "ok" }));
-  const noteText = document.createElement("span");
-  noteText.textContent = "CAD 使用“文档翻译（Excel / Word / CAD）”模型角色，当前模型、连接、语言和记忆库设置不会要求重新填写。";
-  noteBody.append(noteText);
-  note.append(noteBody);
-  column.append(note);
-
   rootEl.append(column);
 }
-

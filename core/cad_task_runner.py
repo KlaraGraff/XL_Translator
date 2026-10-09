@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import hashlib
 import json
+import re
 import shutil
 import threading
 import time
@@ -19,6 +20,7 @@ from core.cad_translation import (
 )
 from core.file_progress import FileProgressReporter
 from core.language_registry import get_target_lang_display
+from core.output_name_translation import translate_names, output_stem_from_translation
 from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
 
 
@@ -50,6 +52,8 @@ class CadTaskRunner:
         converter: Any = None,
         memory_lookup: Any = None,
         translator: Any = None,
+        filename_translator: Any = None,
+        translate_output_filename: bool = False,
         glossary: Mapping[str, str] | None = None,
         options: CadPipelineOptions | None = None,
         resume_output_dir: Path | None = None,
@@ -65,6 +69,8 @@ class CadTaskRunner:
         self._converter = converter
         self._memory_lookup = memory_lookup
         self._translator = translator
+        self._filename_translator = filename_translator
+        self._translate_output_filename = bool(translate_output_filename)
         self._glossary = dict(glossary or {})
         self._options = options or CadPipelineOptions()
         self._translation_identity = dict(translation_identity or {})
@@ -161,6 +167,7 @@ class CadTaskRunner:
             "options": {key: value for key, value in vars(self._options).items()},
             "glossary": self._glossary,
             "translation_identity": self._translation_identity,
+            "translate_output_filename": self._translate_output_filename,
         }
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
@@ -195,6 +202,16 @@ class CadTaskRunner:
         previous_files = previous.get("files", {}) if previous.get("options_fingerprint") == self._options_fingerprint() else {}
         checkpoint_files: dict[str, Any] = {}
         target_label = _target_filename_label(self._options.target_lang)
+        filename_translations: dict[str, str] = {}
+        if self._translate_output_filename and self._filename_translator is not None:
+            stems = list(dict.fromkeys(Path(item.path).stem for item in self._files))
+            filename_translations = translate_names(
+                self._filename_translator,
+                stems,
+                self._options.target_lang,
+                self._options.source_lang,
+                kind="CAD 输出文件名",
+            )
         try:
             self._log("INFO", f"扫描到 {len(self._files)} 个 CAD 文件")
             for item in self._files:
@@ -211,13 +228,20 @@ class CadTaskRunner:
                     relative = source.relative_to(self._source_root) if self._source_root.is_dir() else Path(source.name)
                 except ValueError:
                     relative = Path(source.name)
-                output = self._output_dir / relative.parent / f"{source.stem}_{target_label}{source.suffix.lower()}"
-                if output in used_outputs:
-                    message = "批次中存在同名 CAD 文件，已拒绝覆盖输出。"
-                    self._file_progress.emit(source, "failed", "write", result={"status": "failed", "message": message})
-                    results.append({"source_path": str(source), "status": "failed", "message": message})
-                    issues.append({"file": source.name, "stage": "write", "message": message})
-                    continue
+                translated_stem = output_stem_from_translation(
+                    source.stem, filename_translations.get(source.stem, source.stem)
+                )
+                # A drawing number is an identity anchor; retain the source name
+                # if the model drops any digit sequence while translating it.
+                source_numbers = re.findall(r"\d+", source.stem)
+                if source_numbers and any(number not in translated_stem for number in source_numbers):
+                    translated_stem = source.stem
+                base_output = self._output_dir / relative.parent / f"{translated_stem}_{target_label}{source.suffix.lower()}"
+                output = base_output
+                collision_index = 2
+                while output in used_outputs or output.exists():
+                    output = base_output.with_name(f"{base_output.stem}_{collision_index}{base_output.suffix}")
+                    collision_index += 1
                 used_outputs.add(output)
                 source_key = str(source.resolve())
                 source_hash = self._source_hash(source)

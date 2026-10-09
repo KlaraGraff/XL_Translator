@@ -207,6 +207,7 @@ class TaskStartRequest(BaseModel):
     cad_use_memory: bool = True
     cad_check_entity_counts: bool = True
     cad_scan_residual: bool = True
+    cad_translate_output_filename: bool = False
 
     @model_validator(mode="after")
     def _require_source_path(self) -> "TaskStartRequest":
@@ -1038,6 +1039,7 @@ def create_app(
             cad_use_memory=request.cad_use_memory,
             cad_check_entity_counts=request.cad_check_entity_counts,
             cad_scan_residual=request.cad_scan_residual,
+            cad_translate_output_filename=request.cad_translate_output_filename,
         )
 
     @app.post("/api/tasks/preflight")

@@ -26,3 +26,8 @@
 .cad-progress-card .bar { margin: 10px 0 7px; }
 .cad-warning { margin: 12px 16px; color: var(--warn); font-size: 12px; line-height: 1.5; }
 @media (max-width: 850px) { .content.cad-content { display: block; } .cad-content .col-r { width: auto; margin-top: 14px; } .cad-status-grid { grid-template-columns: 1fr; } }
+.cad-left-stack { display:flex; flex-direction:column; gap:14px; min-height:0; }
+.cad-left-stack .srcbar { flex:none; }
+.cad-left-stack .stats { flex:none; }
+.cad-files-card { min-height:260px; }
+.cad-status-card { margin-top:14px; }
