@@ -353,6 +353,10 @@ export class ApiClient {
   async installCadPlugin(): Promise<CadCapabilityStatus> {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/install", { method: "POST", body: JSON.stringify({}) });
   }
+  async uninstallCadPlugin(): Promise<CadCapabilityStatus> {
+    return this.request<CadCapabilityStatus>("/api/plugins/cad/uninstall", { method: "POST", body: JSON.stringify({}) });
+  }
+  async refreshCadCapability(): Promise<CadCapabilityStatus> { return this.getCadCapability(); }
 
   async scanCad(payload: CadScanRequest): Promise<CadScanResponse> {
     return this.request<CadScanResponse>("/api/cad/scan", { method: "POST", body: JSON.stringify(payload) });

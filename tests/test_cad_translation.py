@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from core.cad_translation import (
     CadPipelineOptions,
     CadProgress,
@@ -10,6 +13,7 @@ from core.cad_translation import (
 )
 from core.cad_translation import _parse_dxf, _serialize_dxf
 from core.cad_translation import CadPipelineError
+from core.cad_translation import _is_likely_target_language
 
 
 class FakeConverter:
@@ -118,6 +122,8 @@ def test_untouched_dxf_bytes_survive_pipeline(tmp_path):
     output = tmp_path / "untouched_zh.dxf"
     CadTranslationPipeline(converter=None, translator=lambda texts, glossary: {}).translate_file(source, output)
     assert output.read_bytes() == raw
+    manifest = json.loads((output.with_suffix(output.suffix + ".manifest.json")).read_text(encoding="utf-8"))
+    assert manifest["source_sha256"] == hashlib.sha256(raw).hexdigest()
 
 
 def test_unicode_escape_before_ascii_word_is_one_visible_run(tmp_path):
@@ -185,3 +191,23 @@ def test_roundtrip_false_does_not_read_back_dwg(tmp_path):
         source, output, options=CadPipelineOptions(verify_roundtrip=False)
     )
     assert output.exists()
+
+
+def test_target_language_detection_covers_scripts_and_latin_families():
+    assert _is_likely_target_language("中文", "zh")
+    assert _is_likely_target_language("Bonjour", "fr")
+    assert _is_likely_target_language("Über", "de")
+    assert _is_likely_target_language("مرحبا", "ar")
+    assert _is_likely_target_language("日本語", "ja")
+    assert not _is_likely_target_language("Bonjour", "x-custom-foo")
+
+
+def test_residual_scan_respects_non_english_target_language(tmp_path):
+    source = tmp_path / "french.dxf"
+    source.write_text(_dxf((0, "TEXT"), (1, "Bonjour")), encoding="utf-8")
+    output = tmp_path / "french_zh.dxf"
+    result = CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {},
+    ).translate_file(source, output, options=CadPipelineOptions(target_lang="fr"))
+    assert result.stats.residual_foreign_text_count == 0

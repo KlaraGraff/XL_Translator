@@ -69,3 +69,21 @@ def test_cad_auto_source_language_reaches_translation_engine(tmp_path, monkeypat
         runner._translator(["Door"], {})
 
     assert captured["source_lang"] == "auto"
+
+
+def test_cad_scan_excludes_custom_output_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "source.dxf"
+    source.write_text(_dxf_text(), encoding="utf-8")
+    output = tmp_path / "translated"
+    output.mkdir()
+    generated = output / "source_中文.dxf"
+    generated.write_text(_dxf_text(), encoding="utf-8")
+    manager = TranslationTaskManager(settings_loader=AppSettings)
+    with patch("api.task_manager.probe_status", return_value={"converter": ""}):
+        files = manager._scan(
+            tmp_path,
+            "cad",
+            TaskOptions(cad_output_dir=str(output)),
+        )
+    assert [item.path for item in files] == [source]

@@ -3486,6 +3486,8 @@ function renderAboutPage(host: HTMLElement): void {
   card.append(body);
   host.append(card);
 
+  renderCadCapabilityCard(host);
+
   const licenseCard = createCard([]);
   const licenseBody = document.createElement("div");
   licenseBody.style.padding = "14px 16px";
@@ -3505,6 +3507,21 @@ function renderAboutPage(host: HTMLElement): void {
   licenseBody.append(licenseText, licenseNote);
   licenseCard.append(licenseBody);
   host.append(licenseCard);
+}
+
+function renderCadCapabilityCard(host: HTMLElement): void {
+  const card = createCard([]); const body = document.createElement("div"); body.className = "cad-capability-settings";
+  body.append(sectionLabel("插件与能力"));
+  const status = document.createElement("p"); status.className = "note"; status.textContent = "正在读取 CAD Support 状态…"; body.append(status);
+  const actions = document.createElement("div"); actions.className = "field-row"; body.append(actions); card.append(body); host.append(card);
+  void (async () => { try { await ensureConnected(); const cap = await client.getCadCapability(); status.textContent = `${cap.plugin === "enabled" ? `CAD Support ${cap.version || "已启用"}` : "CAD Support 未安装"} · ${cap.oda === "connected" ? "ODA 已连接" : cap.oda === "incompatible" ? "ODA 与本机不兼容" : "需要连接 ODA"}`;
+      const button = (label: string, fn: () => void, variant: "primary" | "default" | "danger-solid" = "default") => { const b = createButton({ label, variant, onClick: fn }); actions.append(b); };
+      if (cap.plugin !== "enabled") button("安装 CAD Support", () => void client.installCadPlugin().then(() => renderBody()).catch((e) => showToast({ message: errorMessage(e), error: true })), "primary");
+      else button("卸载插件", () => openModal({ tone: "warn", icon: "stop", title: "卸载 CAD Support？", body: ["CAD 翻译能力将被移除，已有任务结果和其他翻译功能不受影响。"], actions: [{ label: "取消" }, { label: "卸载", variant: "danger-solid", onClick: () => void client.uninstallCadPlugin().then(() => renderBody()).catch((e) => showToast({ message: errorMessage(e), error: true })) }] }), "danger-solid");
+      if (cap.plugin === "enabled" && cap.oda !== "connected") button("选择 ODA…", () => void (async () => { const { open } = await import("@tauri-apps/plugin-dialog"); const picked = await open({ multiple: false, directory: false, filters: [{ name: "ODA File Converter", extensions: ["app", "exe"] }] }); const path = Array.isArray(picked) ? picked[0] : picked; if (typeof path === "string") await client.connectCadOda(path).then(() => renderBody()); })().catch((e) => showToast({ message: errorMessage(e), error: true })));
+      button("刷新状态", () => void client.refreshCadCapability().then(() => renderBody()).catch((e) => showToast({ message: errorMessage(e), error: true })));
+      button("打开 ODA 官方页面", () => void client.officialCadDownload().then((r) => openExternalUrl(r.authorization_url || r.url || "")).catch((e) => showToast({ message: errorMessage(e), error: true })));
+    } catch (e) { status.textContent = "CAD 能力状态暂不可用"; showToast({ message: errorMessage(e), error: true }); } })();
 }
 
 /** 屏①：还没有任何检查结果。进这一页不自动发起检查——启动时后台已经跑过一次了。 */

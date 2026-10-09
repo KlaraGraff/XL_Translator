@@ -9,6 +9,7 @@ writer preserve every DXF record and only replace text group values.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -516,11 +517,26 @@ def extract_cad_text_units(
 
 
 def _is_likely_target_language(text: str, target_lang: str) -> bool:
-    normalized = str(target_lang or "").lower()
-    if normalized in {"zh", "zh-cn", "zh-hans", "chinese"}:
-        return bool(re.search(r"[\u3400-\u9fff]", text)) and not bool(re.search(r"[A-Za-z]", text))
-    if normalized in {"en", "en-us", "en-gb", "english"}:
-        return bool(re.fullmatch(r"[\x00-\x7f\s\d\W]+", text)) and bool(re.search(r"[A-Za-z]", text))
+    normalized = str(target_lang or "").strip().lower().replace("_", "-")
+    code = normalized.split("-", 1)[0]
+    if code in {"zh", "ja", "ko"}:
+        patterns = {"zh": r"[\u3400-\u9fff]", "ja": r"[\u3040-\u30ff\u3400-\u9fff]", "ko": r"[\uac00-\ud7af]"}
+        return bool(re.search(patterns[code], text)) and not bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+    script_patterns = {
+        "ar": r"[\u0600-\u06ff]", "fa": r"[\u0600-\u06ff]", "ur": r"[\u0600-\u06ff]",
+        "he": r"[\u0590-\u05ff]", "th": r"[\u0e00-\u0e7f]", "km": r"[\u1780-\u17ff]",
+        "hi": r"[\u0900-\u097f]", "bn": r"[\u0980-\u09ff]", "ta": r"[\u0b80-\u0bff]",
+        "te": r"[\u0c00-\u0c7f]", "ml": r"[\u0d00-\u0d7f]", "kn": r"[\u0c80-\u0cff]",
+        "gu": r"[\u0a80-\u0aff]", "pa": r"[\u0a00-\u0a7f]", "my": r"[\u1000-\u109f]",
+        "si": r"[\u0d80-\u0dff]", "lo": r"[\u0e80-\u0eff]", "am": r"[\u1200-\u137f]",
+    }
+    pattern = script_patterns.get(code)
+    if pattern:
+        return bool(re.search(pattern, text)) and not bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+    # Latin-script targets share the same Unicode ranges. This is deliberately
+    # conservative for unknown/custom languages, which must still be scanned.
+    if code in {"en", "fr", "de", "es", "it", "pt", "nl", "sv", "da", "no", "fi", "pl", "cs", "sk", "sl", "hu", "ro", "tr", "vi", "id", "ms"}:
+        return bool(re.search(r"[A-Za-zÀ-ÿ]", text))
     return False
 
 
@@ -935,6 +951,7 @@ class CadTranslationPipeline:
             manifest = {
                 "schema_version": 1,
                 "source": str(source),
+                "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "output": str(output),
                 "work_dxf": str(persisted_work_dxf) if options.keep_work_dxf else None,
                 "source_extension": source.suffix.lower(),

@@ -20,7 +20,7 @@ from core.file_scanner import scan_path
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
-from core.language_registry import normalize_source_selection
+from core.language_registry import get_target_lang_display, normalize_source_selection
 from core.model_roles import (
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
@@ -447,12 +447,22 @@ class TranslationTaskManager:
                 settings.target_lang,
             )
 
-        files = self._scan(root, normalized_surface, selected_options)
         selected = {
             str(Path(path).expanduser().resolve())
             for path in (selected_paths or [])
             if str(path or "").strip()
         }
+        if normalized_surface == "cad":
+            files = self._scan(
+                root,
+                normalized_surface,
+                selected_options,
+                selected_paths=selected if selected else None,
+            )
+        else:
+            # Keep the established call shape for other surfaces; tests and
+            # integrations may provide a narrow scan adapter for them.
+            files = self._scan(root, normalized_surface, selected_options)
         if selected:
             files = [
                 item
@@ -525,6 +535,13 @@ class TranslationTaskManager:
                 }
             )
         elif normalized_surface == "cad":
+            glossary_signature = ""
+            if selected_options.cad_glossary_path:
+                glossary_path = Path(selected_options.cad_glossary_path).expanduser()
+                try:
+                    glossary_signature = hashlib.sha256(glossary_path.read_bytes()).hexdigest()
+                except OSError:
+                    glossary_signature = "missing"
             task_snapshot.update(
                 {
                     "selected_file_count": len(files),
@@ -532,16 +549,21 @@ class TranslationTaskManager:
                     "cad_checks": {
                         "verify_roundtrip": selected_options.cad_verify_roundtrip,
                         "scan_replacement_chars": selected_options.cad_scan_replacement_chars,
+                        "check_entity_counts": selected_options.cad_check_entity_counts,
+                        "scan_residual": selected_options.cad_scan_residual,
                     },
                     "cad_options": {
                         "use_terminology": selected_options.cad_use_terminology,
                         "keep_work_dxf": selected_options.cad_keep_work_dxf,
                         "copy_related_files": selected_options.cad_copy_related_files,
                         "include_block_text": selected_options.cad_include_block_text,
+                        "glossary_path": selected_options.cad_glossary_path or "",
+                        "glossary_sha256": glossary_signature,
                     },
                     "tm": {"enabled": selected_options.cad_use_memory, "priority": "user_memory_first"},
                 }
             )
+            task_snapshot["target_lang_display"] = get_target_lang_display(settings.target_lang)
         else:
             task_snapshot.update(
                 {
@@ -607,6 +629,21 @@ class TranslationTaskManager:
                 "resume_output_dir": options.resume_output_dir,
             },
         }
+        if surface == "cad":
+            cad_files = []
+            for item in files:
+                path = Path(getattr(item, "path", ""))
+                try:
+                    stat = path.stat()
+                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                    cad_files.append({"path": str(path.resolve()), "sha256": digest, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                except OSError:
+                    cad_files.append({"path": str(path.resolve()), "missing": True})
+            fingerprint_payload["cad_content_identity"] = cad_files
+            fingerprint_payload["options"]["cad"] = {
+                key: getattr(options, key)
+                for key in ("cad_use_terminology", "cad_keep_work_dxf", "cad_copy_related_files", "cad_verify_roundtrip", "cad_scan_replacement_chars", "cad_include_block_text", "cad_glossary_path", "cad_use_memory", "cad_check_entity_counts", "cad_scan_residual")
+            }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -639,9 +676,12 @@ class TranslationTaskManager:
         expected_revision: int | None,
     ) -> dict[str, Any]:
         task_id = uuid.uuid4().hex
+        owner_label = _LABEL_BY_SURFACE[prepared.surface]
+        if prepared.surface == "cad":
+            owner_label = f"{owner_label} → {get_target_lang_display(str(prepared.task_snapshot.get('target_lang') or ''))}"
         attempted = self._registry.reserve_task(
             owner_key=task_id,
-            owner_label=_LABEL_BY_SURFACE[prepared.surface],
+            owner_label=owner_label,
             task_type=prepared.surface,
             group_capacities=prepared.group_capacities,
             expected_revision=expected_revision,
@@ -1095,8 +1135,10 @@ class TranslationTaskManager:
                 return self.task_status(task_id)
             if task.state != "running":
                 raise TaskInputError("当前任务不处于可暂停状态。")
-            task.state = "paused"
-            self._append_event(task, "paused", {"state": "paused"})
+            # CAD pauses at the current-file boundary. Keep the intermediate
+            # state visible until the runner acknowledges that boundary.
+            task.state = "pausing" if task.surface == "cad" else "paused"
+            self._append_event(task, "pausing" if task.surface == "cad" else "paused", {"state": task.state})
         task.runner.pause()  # type: ignore[attr-defined]
         return self.task_status(task_id)
 
@@ -1636,6 +1678,8 @@ class TranslationTaskManager:
         root: Path,
         surface: TaskSurface,
         options: TaskOptions,
+        *,
+        selected_paths: set[str] | None = None,
     ) -> list[Any]:
         if surface == "excel":
             return scan_path(root)
@@ -1645,13 +1689,43 @@ class TranslationTaskManager:
             status = probe_status()
             converter_path = str(status.get("converter") or "").strip()
             converter = SubprocessCadConverter(converter_path) if converter_path else None
+            scan_options = CadPipelineOptions(include_block_text=options.cad_include_block_text)
+            output_root = Path(options.cad_output_dir).expanduser().resolve() if options.cad_output_dir else None
+
+            def under(path: Path, parent: Path | None) -> bool:
+                if parent is None:
+                    return False
+                try:
+                    path.resolve().relative_to(parent)
+                    return True
+                except ValueError:
+                    return False
+
+            if selected_paths:
+                scan_inputs = [Path(path) for path in sorted(selected_paths)]
+            elif root.is_dir():
+                scan_inputs = [
+                    candidate
+                    for candidate in sorted(root.rglob("*"))
+                    if candidate.is_file()
+                    and candidate.suffix.lower() in {".dwg", ".dxf"}
+                    and not under(candidate, output_root)
+                    and not any(part in {"CAD翻译输出", ".cad-work"} for part in candidate.relative_to(root).parts)
+                ]
+            else:
+                scan_inputs = [root]
+
+            summaries = []
+            for candidate in scan_inputs:
+                if under(candidate, output_root):
+                    continue
+                try:
+                    summaries.extend(scan_cad_paths([candidate], converter=converter, options=scan_options))
+                except Exception as exc:  # one malformed drawing must not abort the batch preflight
+                    logger.warning("CAD 预检跳过文件 {}：{}", candidate, exc)
             return [
                 type("CadFile", (), {"path": summary.path, "name": summary.filename, "format": summary.format})()
-                for summary in scan_cad_paths(
-                    [root],
-                    converter=converter,
-                    options=CadPipelineOptions(include_block_text=options.cad_include_block_text),
-                )
+                for summary in summaries
             ]
         return scan_pdf_path(root, include_images=options.include_images)
 
@@ -1775,6 +1849,13 @@ class TranslationTaskManager:
                     check_entity_counts=options.cad_check_entity_counts,
                     scan_residual=options.cad_scan_residual,
                 ),
+                resume_output_dir=options.resume_output_dir,
+                translation_identity={
+                    "model": getattr(settings.engine, "cloud_model", ""),
+                    "provider": getattr(settings.engine, "cloud_provider", ""),
+                    "target_lang": settings.target_lang,
+                    "source_lang": source_lang,
+                },
             )
         return PdfImageTranslationRunner(
             files,
@@ -1997,6 +2078,12 @@ class TranslationTaskManager:
             if task.surface == "cad":
                 with task.condition:
                     task.task_snapshot.update(task.progress)
+        if isinstance(message, StatusMsg) and task.surface == "cad":
+            if str(message.phase_desc).startswith("任务已暂停"):
+                with task.condition:
+                    if not task.terminal and task.state == "pausing":
+                        task.state = "paused"
+                        self._append_event(task, "paused", {"state": "paused"})
         if isinstance(message, FileProgressMsg):
             with task.condition:
                 if task.terminal:
