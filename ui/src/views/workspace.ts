@@ -866,6 +866,14 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     });
     return;
   }
+  if (scanBusy[surface]) {
+    setTopbar({
+      title: SURFACE_PAGE_TITLE[surface],
+      status: { label: "扫描中…", tone: "run" },
+      subtitle: "正在读取文件，请稍候",
+    });
+    return;
+  }
   if (active && st.task) {
     const state = st.task.task.state;
     const meta = runningStatusMeta(state);
@@ -1547,6 +1555,14 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
       head.append(countSpan, tools);
     },
   });
+  if (scanBusy[surface]) {
+    card.append(createEmptyState({
+      title: "扫描中…",
+      description: "正在读取文件，请稍候。",
+      icon: SURFACE_ICON[surface],
+    }));
+    return card;
+  }
   if (!st.files.length) {
     // 全部输入都被跳过时，清单是空的但原因是明摆着的——扫描到了文件，只是一个都不能翻。
     // 这时候还说「拖入文件开始」等于把刚发生的事抹掉，人会以为路径选错了反复重扫。
