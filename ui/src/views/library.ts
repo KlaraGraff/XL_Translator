@@ -11,6 +11,7 @@ import {
   createChip,
   createButton,
   createTextField,
+  createDropdown,
   createSelectField,
   createLanguagePicker,
   createSwitchRow,
@@ -20,6 +21,8 @@ import {
   hideHint,
   closeLanguagePopover,
   closeMenu,
+  openMenu as openSharedMenu,
+  type MenuItem,
   type ChipTone,
   type LanguageOption,
 } from "../components";
@@ -1393,54 +1396,12 @@ async function resolveTmConflict(candidateId: number, action: string): Promise<v
 // 下拉菜单（导入 ▾ / 导出 ▾）
 // ---------------------------------------------------------------------------
 
-function closeMenus(): void {
-  document.querySelectorAll(".v9-tm-menu").forEach((node) => node.remove());
+function openMenu(anchor: HTMLElement, items: Array<{ label: string; onClick: () => void }>): void {
+  openSharedMenu(anchor, items.map((item): MenuItem => ({ label: item.label, onSelect: item.onClick })));
 }
 
-function openMenu(anchor: HTMLElement, items: Array<{ label: string; onClick: () => void }>): void {
-  closeMenus();
-  const rect = anchor.getBoundingClientRect();
-  const menu = document.createElement("div");
-  menu.className = "v9-tm-menu";
-  menu.style.position = "fixed";
-  menu.style.top = `${rect.bottom + 4}px`;
-  menu.style.left = `${rect.left}px`;
-  menu.style.zIndex = "250";
-  menu.style.background = "var(--surface)";
-  menu.style.border = "1px solid var(--line)";
-  menu.style.borderRadius = "var(--r-md)";
-  menu.style.boxShadow = "var(--sh-lg)";
-  menu.style.padding = "6px";
-  menu.style.display = "flex";
-  menu.style.flexDirection = "column";
-  menu.style.gap = "2px";
-  menu.style.minWidth = "190px";
-  for (const item of items) {
-    const button = document.createElement("button");
-    button.className = "btn mini";
-    button.style.justifyContent = "flex-start";
-    button.style.width = "100%";
-    button.textContent = item.label;
-    button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      closeMenus();
-      item.onClick();
-    });
-    menu.append(button);
-  }
-  document.body.append(menu);
-  window.setTimeout(() => {
-    document.addEventListener(
-      "click",
-      function closer(event: MouseEvent) {
-        if (!menu.contains(event.target as Node)) {
-          closeMenus();
-          document.removeEventListener("click", closer, true);
-        }
-      },
-      true,
-    );
-  }, 0);
+function closeMenus(): void {
+  closeMenu();
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,26 +1799,22 @@ function buildTcHead(): HTMLDivElement {
 
   const tools = document.createElement("div");
   tools.className = "tc-tools";
-  const sizeSelect = document.createElement("select");
-  sizeSelect.style.cssText = "height:27px;border:1px solid var(--line-2);border-radius:7px;background:var(--surface);color:var(--ink);font:inherit;font-size:12px;padding:0 6px";
-  for (const size of [25, 50, 100]) {
-    const option = document.createElement("option");
-    option.value = String(size);
-    option.textContent = `${size} / 页`;
-    if (size === pageSize) option.selected = true;
-    sizeSelect.append(option);
-  }
-  sizeSelect.addEventListener("change", () => {
+  const sizeSelect = createDropdown({
+    className: "tm-page-size",
+    options: [25, 50, 100].map((size) => ({ value: String(size), label: `${size} / 页` })),
+    value: String(pageSize),
+    onChange: (value) => {
     void applyTmQueryChange(() => {
-      pageSize = Number(sizeSelect.value) || 25;
+      pageSize = Number(value) || 25;
       page = 1;
     }).then((ok) => {
       // 取数失败时 pageSize 已回滚，下拉框也要跟着退回去，否则控件显示的
       // 每页条数和表格里的实际条数对不上。
-      if (!ok) sizeSelect.value = String(pageSize);
+      if (!ok) sizeSelect.setValue(String(pageSize));
     });
+    },
   });
-  tools.append(sizeSelect);
+  tools.append(sizeSelect.root);
 
   const pageLabel = document.createElement("span");
   pageLabel.style.cssText = "color:var(--ink-3);font-size:12px";

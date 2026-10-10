@@ -109,6 +109,8 @@ from core.model_roles import (
     validate_all_model_roles,
     validate_model_capability,
 )
+from core.engine_dispatcher import build_role_engine
+from core.language_registry import get_target_lang_display
 from core.model_throughput import (
     batch_size_bounds,
     concurrency_bounds,
@@ -389,6 +391,16 @@ class DomainSettingsPayload(BaseModel):
     # 落盘前归到该页面当前的目标语言名下，绝不 422 拒绝（兼容硬约束）。
     prompt_overrides: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     name_overrides: dict[str, str] = Field(default_factory=dict)
+    # Named user prompts are stored per target language.  The values accept a
+    # plain string for compatibility with early development builds.
+    custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    disabled_presets: list[str] = Field(default_factory=list)
+
+
+class DomainPromptOptimizePayload(BaseModel):
+    preset: str
+    target_lang: str = ""
+    prompt: str = Field(min_length=1, max_length=20000)
 
 
 class ThroughputPayload(BaseModel):
@@ -819,7 +831,7 @@ def create_app(
     @app.get("/api/domains/{surface}")
     def get_domain_settings(surface: str) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
-        if normalized not in {"excel", "word"}:
+        if normalized not in {"excel", "word", "cad"}:
             raise HTTPException(404, "Unknown translation surface.")
         settings = load_settings()
         prefix = f"{normalized}_"
@@ -832,23 +844,87 @@ def create_app(
             "custom_prompt": getattr(settings, f"{prefix}custom_prompt"),
             "prompt_overrides": getattr(settings, f"{prefix}domain_prompt_overrides"),
             "name_overrides": getattr(settings, f"{prefix}domain_name_overrides"),
+            "custom_prompts": getattr(settings, f"{prefix}domain_custom_prompts", {}),
+            "disabled_presets": list(
+                getattr(settings, f"{prefix}domain_disabled_presets", []) or []
+            ),
         }
+
+    @app.post("/api/domains/{surface}/optimize")
+    def optimize_domain_prompt(
+        surface: str, payload: DomainPromptOptimizePayload
+    ) -> dict[str, Any]:
+        """Suggest an improved built-in prompt using the translation model role.
+
+        The result is deliberately returned to the editor and never persisted
+        here; the user still controls the subsequent save operation.
+        """
+        normalized = str(surface or "").strip().lower()
+        if normalized not in {"excel", "word", "cad"}:
+            raise HTTPException(404, "Unknown translation surface.")
+        preset = str(payload.preset or "").strip()
+        if preset not in DOMAIN_PRESETS or preset in {"无", "自定义"}:
+            raise HTTPException(422, "只有内置领域 Prompt 可以优化。")
+        prompt = str(payload.prompt or "").strip()
+        if not prompt:
+            raise HTTPException(422, "Prompt 不能为空。")
+        settings = load_settings()
+        target_code = str(payload.target_lang or "").strip() or str(
+            getattr(settings, f"{normalized}_target_lang", "")
+            or settings.target_lang
+            or ""
+        ).strip()
+        try:
+            target_name = get_target_lang_display(target_code, include_optional=True)
+        except Exception:
+            target_name = target_code or "目标语言"
+        system = (
+            "你是文档翻译产品的提示词编辑。请优化用户给出的领域翻译 Prompt，"
+            "只返回优化后的 Prompt 正文，不要 Markdown 代码块、标题或解释。"
+            "必须保留原有约束、数字和占位符，避免加入与领域无关的要求。"
+        )
+        user = (
+            f"内置领域：{preset}\n目标语言：{target_name}\n"
+            "请让它更清晰、稳定、可执行，并适合直接作为翻译模型的 system prompt。\n\n"
+            f"原 Prompt：\n{prompt}"
+        )
+        try:
+            engine = build_role_engine(settings, ROLE_TRANSLATION)
+            result = str(engine.chat(system, user) or "").strip()
+        except Exception as exc:
+            logger.warning("domain prompt optimization failed for {}: {}", normalized, exc)
+            raise HTTPException(502, "模型优化失败，请检查文档翻译模型配置。") from exc
+        if result.startswith("```") and result.endswith("```"):
+            result = result.split("\n", 1)[1] if "\n" in result else result
+            result = result.rsplit("```", 1)[0].strip()
+        if not result:
+            raise HTTPException(502, "模型未返回可用的优化结果。")
+        return {"surface": normalized, "preset": preset, "target_lang": target_code, "prompt": result}
 
     @app.put("/api/domains/{surface}")
     def put_domain_settings(surface: str, payload: DomainSettingsPayload) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
-        if normalized not in {"excel", "word"}:
+        if normalized not in {"excel", "word", "cad"}:
             raise HTTPException(404, "Unknown translation surface.")
         preset = str(payload.preset or "").strip()
-        if preset not in DOMAIN_PRESETS:
+        custom_names = {
+            str(name).strip()
+            for name in payload.custom_prompts
+            if str(name).strip()
+        }
+        if preset not in DOMAIN_PRESETS and preset not in custom_names:
             raise HTTPException(422, "未知专业领域预设。")
+        # Deleting the active preset is a valid operation: fall back to the
+        # neutral option in the same write instead of leaving settings stuck.
+        if preset in set(payload.disabled_presets):
+            preset = "无"
         if preset == "自定义" and not str(payload.custom_prompt or "").strip():
             raise HTTPException(422, "自定义领域必须填写完整 Prompt。")
         settings = load_settings()
         prefix = f"{normalized}_"
         setattr(settings, f"{prefix}domain_preset", preset)
         setattr(settings, f"{prefix}custom_prompt", str(payload.custom_prompt or ""))
-        surface_lang = str(getattr(settings, f"{prefix}target_lang") or "").strip() or str(
+        surface_lang = str(getattr(settings, f"{prefix}target_lang", "") or "").strip() or str(
             settings.target_lang or ""
         ).strip()
         normalized_overrides: dict[str, dict[str, str]] = {}
@@ -861,6 +937,29 @@ def create_app(
                 normalized_overrides[name] = dict(value)
         setattr(settings, f"{prefix}domain_prompt_overrides", normalized_overrides)
         setattr(settings, f"{prefix}domain_name_overrides", dict(payload.name_overrides))
+        normalized_custom: dict[str, dict[str, str]] = {}
+        for name, value in payload.custom_prompts.items():
+            clean_name = str(name or "").strip()
+            if not clean_name or clean_name in DOMAIN_PRESETS:
+                raise HTTPException(422, "自定义提示词名称不能为空且不能与内置预设重名。")
+            if isinstance(value, str):
+                if value.strip():
+                    normalized_custom[clean_name] = {surface_lang: value}
+            elif isinstance(value, dict):
+                entries = {
+                    str(lang).strip(): str(text)
+                    for lang, text in value.items()
+                    if str(lang).strip() and isinstance(text, str) and text.strip()
+                }
+                if entries:
+                    normalized_custom[clean_name] = entries
+        disabled = []
+        for name in payload.disabled_presets:
+            clean_name = str(name or "").strip()
+            if clean_name in DOMAIN_PRESETS and clean_name != "无":
+                disabled.append(clean_name)
+        setattr(settings, f"{prefix}domain_custom_prompts", normalized_custom)
+        setattr(settings, f"{prefix}domain_disabled_presets", list(dict.fromkeys(disabled)))
         save_settings(settings)
         return get_domain_settings(normalized)
 

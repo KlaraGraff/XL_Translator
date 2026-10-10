@@ -1149,13 +1149,22 @@ class AppSettings(BaseModel):
     # 本身就是按语言给文本的，覆盖若不带语言，换目标语言后会拿错语言的 Prompt
     # 静默产出错稿（审计 中-15）。
     excel_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # User-managed named prompt presets. Values may be a language map or a
+    # legacy/plain string; the API normalizes writes while reads stay tolerant.
+    excel_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    excel_domain_disabled_presets: list[str] = Field(default_factory=list)
     word_domain_preset: str = "同步工程场景"
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    word_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    word_domain_disabled_presets: list[str] = Field(default_factory=list)
     cad_domain_preset: str = "同步工程场景"
     cad_custom_prompt: str = ""
+    cad_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     cad_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    cad_domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    cad_domain_disabled_presets: list[str] = Field(default_factory=list)
     cad_output: CadOutputSettings = Field(default_factory=CadOutputSettings)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
@@ -1168,6 +1177,10 @@ class AppSettings(BaseModel):
     cleaner_full_prompt_overrides: dict[str, str] = Field(default_factory=dict)
     domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # Compatibility fields populated when a page-owned configuration is
+    # activated into the legacy global translation context.
+    domain_custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
+    domain_disabled_presets: list[str] = Field(default_factory=list)
 
     # What was on disk when this object was loaded.  ``save_settings`` diffs
     # against it so a write only touches the fields this caller changed; see
@@ -1194,6 +1207,7 @@ class AppSettings(BaseModel):
         if "domain_name_overrides" in migrated:
             migrated.setdefault("excel_domain_name_overrides", migrated.get("domain_name_overrides"))
             migrated.setdefault("word_domain_name_overrides", migrated.get("domain_name_overrides"))
+            migrated.setdefault("cad_domain_name_overrides", migrated.get("domain_name_overrides"))
         if "domain_prompt_overrides" in migrated:
             migrated.setdefault("excel_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))
             migrated.setdefault("word_domain_prompt_overrides", migrated.get("domain_prompt_overrides"))

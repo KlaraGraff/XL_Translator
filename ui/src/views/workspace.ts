@@ -26,6 +26,7 @@ import {
   createFold,
   createLanguageField,
   createProgressBar,
+  createDropdown,
   createSelectField,
   createSwitchRow,
   createTextField,
@@ -3334,21 +3335,22 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
     const domainField = el("div", "field");
     const label = el("label");
     label.textContent = "专业领域 ";
-    // 「无」= 不指定领域，不会拼进任何领域 Prompt，也就没有可编辑的段落——
-    // 选中「无」时不出「编辑 Prompt」入口，避免用户点进设置页给一个本该
-    // 保持空的领域挂上覆盖文本。
-    if (st.domainPreset !== "无") {
-      const link = el("span", "linklike");
-      link.style.fontSize = "11px";
-      link.textContent = "编辑 Prompt ↗ 设置";
-      link.addEventListener("click", () => navigate("settings", { page: "params" }));
-      label.append(link);
-    }
+    // 即使当前选的是「无」也保留入口：进入设置后会落到「＋新增提示词」，
+    // 让用户可以从空配置直接建立自己的提示词。
+    const link = el("span", "linklike");
+    link.style.fontSize = "11px";
+    link.textContent = "编辑 Prompt ↗ 设置";
+    link.addEventListener("click", () => navigate("settings", {
+      page: "params",
+      paramsSurface: surface,
+      domainPreset: st.domainPreset,
+    }));
+    label.append(link);
     domainField.append(label);
     const select = createSelectField({
       label: "",
       // 「无」放在第一项，让「不加任何领域限定」一眼可见。
-      options: ["无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"].map((v) => ({ value: v, label: v })),
+      options: domainOptionsFor(surface, st.domainPreset).map((v) => ({ value: v, label: v })),
       value: st.domainPreset,
       onChange: (value) => {
         const prev = st.domainPreset;
@@ -3357,13 +3359,28 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
         void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, "专业领域");
       },
     });
-    domainField.append(select.select);
+    domainField.append(select.root);
     wrap.append(domainField);
   }
 
   const outputField = createField("输出位置", buildOutputRadioRow(surface, st));
   wrap.append(outputField);
   return wrap;
+}
+
+function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
+  const builtIns = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"];
+  const disabled = Array.isArray(settings[`${surface}_domain_disabled_presets`])
+    ? (settings[`${surface}_domain_disabled_presets`] as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const custom = settings[`${surface}_domain_custom_prompts`];
+  const customNames = custom && typeof custom === "object" && !Array.isArray(custom)
+    ? Object.keys(custom as JsonObject)
+    : [];
+  const options = builtIns.filter((name) => name === "无" || !disabled.includes(name));
+  for (const name of customNames) if (!options.includes(name)) options.push(name);
+  if (current && !options.includes(current)) options.push(current);
+  return options;
 }
 
 function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
@@ -3728,23 +3745,22 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
     const isLatest = info.selected_dir === info.candidates[0].dir;
     const hint = el("span");
     hint.textContent = `找到 ${info.candidates.length} 次历史输出${isLatest ? "，已选最近一次" : ""}`;
-    const select = document.createElement("select");
-    info.candidates.forEach((candidate, index) => {
-      const option = document.createElement("option");
-      option.value = candidate.dir;
-      option.textContent = index === 0 ? `${candidate.label}（最近）` : candidate.label;
-      option.selected = candidate.dir === info.selected_dir;
-      select.append(option);
-    });
-    select.addEventListener("change", () => {
-      const next = select.value;
+    const select = createDropdown({
+      className: "rf-history-select",
+      options: info.candidates.map((candidate, index) => ({
+        value: candidate.dir,
+        label: index === 0 ? `${candidate.label}（最近）` : candidate.label,
+      })),
+      value: info.selected_dir ?? undefined,
+      onChange: (next) => {
       if (!next || next === info.selected_dir) return;
       // 换底稿要重新逐个文件比对，只有后端算得出来：带着 preferred_resume_dir 重扫一次，
       // 新结果回来会重新弹这个弹窗（走 runScan 原有的请求序号守卫，旧结果不会落地）。
       handle()?.close();
       void runScan(surface, next);
+      },
     });
-    selRow.append(hint, select);
+    selRow.append(hint, select.root);
     box.append(selRow);
   }
   return box;

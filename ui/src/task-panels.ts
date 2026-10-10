@@ -168,6 +168,7 @@ export interface TaskMoreSettingsOptions {
     value: string;
     options: string[];
     onChange: (value: string) => void;
+    onEdit?: () => void;
   };
   output?: {
     useCustom: boolean;
@@ -182,13 +183,25 @@ export interface TaskMoreSettingsOptions {
 export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLElement {
   const content = document.createElement("div");
   if (options.domain) {
-    content.append(createSelectField({
+    const domainField = createSelectField({
       label: "专业领域",
       options: options.domain.options.map((value) => ({ value, label: value })),
       value: options.domain.value,
       disabled: options.disabled,
       onChange: options.domain.onChange,
-    }).root);
+    });
+    if (options.domain.onEdit) {
+      const label = domainField.root.querySelector("label");
+      if (label) {
+        const link = document.createElement("span");
+        link.className = "linklike";
+        link.style.fontSize = "11px";
+        link.textContent = "编辑 Prompt ↗ 设置";
+        link.addEventListener("click", options.domain.onEdit);
+        label.append(" ", link);
+      }
+    }
+    content.append(domainField.root);
   }
   if (options.output) {
     const output = document.createElement("div");

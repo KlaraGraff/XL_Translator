@@ -12,6 +12,8 @@ import {
   createButton,
   createSwitchRow,
   createField,
+  createSelectField,
+  createDropdown,
   createHintBadge,
   createEmptyState,
   createBanner,
@@ -60,8 +62,8 @@ import "./settings.css";
 
 type JsonObject = Record<string, unknown>;
 type SettingsPage = "models" | "params" | "appearance" | "data" | "about";
-type TranslationSurface = "excel" | "word";
-type ParamsSurface = "excel" | "word" | "pdf";
+type TranslationSurface = "excel" | "word" | "cad";
+type ParamsSurface = "excel" | "word" | "pdf" | "cad";
 
 type PoolConnection = {
   id: string;
@@ -257,7 +259,8 @@ async function refreshDomainBuiltinPrompts(): Promise<void> {
 // 顺序必须和 config.py 的 DOMAIN_PRESETS 一致：「无」排第一，表示不注入任何领域提示词。
 // 少列一项不是「少个选项」而已——下拉里找不到当前值时浏览器会静默选中第 0 项，保存时
 // 就把用户当前的领域改掉，还会把空白 Prompt 当成覆盖写进另一个领域里。
-const DOMAIN_PRESET_OPTIONS = ["无", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"];
+const ADD_PROMPT_PRESET = "__add_prompt__";
+const LEGACY_CUSTOM_PROMPT = "__legacy_custom__";
 
 const MODEL_ROLE_LABELS: Record<string, string> = {
   translation: "文档翻译（Excel / Word / CAD）",
@@ -374,6 +377,8 @@ let tmPairCatalogLoaded = false;
 let selectedTmClearPair = "";
 
 let paramsTab: ParamsSurface = "excel";
+let pendingDomainPreset: string | null = null;
+let pendingNewPrompt = false;
 
 // ---------------------------------------------------------------------------
 // mount / unmount
@@ -383,6 +388,12 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   const token = ++mountToken;
   const requestedPage = params.page;
   const requestedRole = typeof params.role === "string" && MODEL_ROLE_ORDER.includes(params.role) ? params.role : null;
+  const requestedSurface = params.paramsSurface;
+  if (requestedSurface === "excel" || requestedSurface === "word" || requestedSurface === "pdf" || requestedSurface === "cad") {
+    paramsTab = requestedSurface;
+  }
+  pendingDomainPreset = typeof params.domainPreset === "string" ? params.domainPreset : null;
+  pendingNewPrompt = pendingDomainPreset === "无";
   if (requestedRole) modelRole = requestedRole;
   currentPage = requestedPage === "models" || requestedPage === "params" || requestedPage === "appearance"
     || requestedPage === "data" || requestedPage === "about"
@@ -735,7 +746,13 @@ function restoreModelFormDraft(draft: ModelFormDraft): void {
   if (modelFormScope() !== draft.scope) return;
   for (const [id, value] of Object.entries(draft.values)) {
     const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
-    if (el) el.value = value;
+    if (el) {
+      el.value = value;
+      // Shared dropdowns keep a hidden select as the compatibility value
+      // bridge. Dispatching change repaints its visible trigger when a draft
+      // is restored by assigning the DOM value directly.
+      if (el instanceof HTMLSelectElement) el.dispatchEvent(new Event("change"));
+    }
   }
   // 服务商是草稿的一部分，Base URL 的禁用态和占位符却是重画时按服务端值算的，
   // 两者会对不上（切到智谱后点「获取模型列表」，回来 Base URL 又变成可填了）。
@@ -958,18 +975,15 @@ function selectField(
   onChange: (value: string) => void,
   opts: { disabled?: boolean; hint?: string } = {},
 ): { root: HTMLDivElement; select: HTMLSelectElement } {
-  const select = document.createElement("select");
-  select.disabled = Boolean(opts.disabled);
-  for (const opt of options) {
-    const optionEl = document.createElement("option");
-    optionEl.value = opt.value;
-    optionEl.textContent = opt.label;
-    if (opt.value === value) optionEl.selected = true;
-    select.append(optionEl);
-  }
-  select.addEventListener("change", () => onChange(select.value));
-  const root = fieldWithHint(labelText, select, opts.hint);
-  return { root, select };
+  const field = createSelectField({
+    label: labelText,
+    options,
+    value,
+    disabled: opts.disabled,
+    hint: opts.hint,
+    onChange,
+  });
+  return field;
 }
 
 function textField(
@@ -1500,7 +1514,7 @@ function renderModelsPage(host: HTMLElement): void {
       { disabled: following },
     );
     apiModeSelect = apiModeField.select;
-    detailBody.append(fieldWithHint("", apiModeSelect, "自动模式只在明确的接口/协议错误时有限尝试替代协议；超时不会盲目重发。"));
+    detailBody.append(apiModeField.root);
   }
 
   const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商" });
@@ -2070,18 +2084,15 @@ async function exportModelConfig(includeApiKey: boolean): Promise<void> {
 /** 「导出含 Key」确认弹窗：选有效期 + 明确的传播风险警告，替换掉原来那句 window.confirm。 */
 function openExportWithKeyConfirmModal(): void {
   let validDays = DEFAULT_VALID_DAYS;
-  const select = document.createElement("select");
-  for (const option of VALID_DAYS_OPTIONS) {
-    const el = document.createElement("option");
-    el.value = String(option.value);
-    el.textContent = option.label;
-    if (option.value === DEFAULT_VALID_DAYS) el.selected = true;
-    select.append(el);
-  }
-  select.addEventListener("change", () => {
-    validDays = Number(select.value);
+  const selectField = createSelectField({
+    label: "文件有效期",
+    options: VALID_DAYS_OPTIONS.map((option) => ({ value: String(option.value), label: option.label })),
+    value: String(DEFAULT_VALID_DAYS),
+    onChange: (value) => {
+      validDays = Number(value);
+    },
   });
-  const field = createField("文件有效期", select);
+  const field = selectField.root;
   field.style.marginTop = "16px";
 
   const note = document.createElement("p");
@@ -2502,7 +2513,12 @@ function pdfParamsSettings(): JsonObject {
 }
 
 function domainSettingsFor(surface: TranslationSurface): {
-  preset: string; customPrompt: string; promptOverrides: Record<string, Record<string, string>>; nameOverrides: Record<string, string>;
+  preset: string;
+  customPrompt: string;
+  promptOverrides: Record<string, Record<string, string>>;
+  nameOverrides: Record<string, string>;
+  customPrompts: Record<string, Record<string, string>>;
+  disabledPresets: string[];
 } {
   const prefix = surface;
   // 覆盖是「预设名 → {目标语言 → Prompt}」两层结构（中-15）；后端加载时已把
@@ -2521,12 +2537,23 @@ function domainSettingsFor(surface: TranslationSurface): {
     nameOverrides: Object.fromEntries(
       Object.entries(record(settings?.[`${prefix}_domain_name_overrides`])).filter((e): e is [string, string] => typeof e[1] === "string"),
     ),
+    customPrompts: Object.fromEntries(
+      Object.entries(record(settings?.[`${prefix}_domain_custom_prompts`])).map(([name, langs]) => [
+        name,
+        Object.fromEntries(
+          Object.entries(record(langs)).filter((e): e is [string, string] => typeof e[1] === "string"),
+        ),
+      ]),
+    ),
+    disabledPresets: Array.isArray(settings?.[`${prefix}_domain_disabled_presets`])
+      ? (settings?.[`${prefix}_domain_disabled_presets`] as unknown[]).filter((item): item is string => typeof item === "string")
+      : [],
   };
 }
 
 function targetLangForDomain(surface: TranslationSurface): string {
-  const key = surface === "excel" ? "excel_target_lang" : "word_target_lang";
-  return text(settings?.[key], surface === "word" ? "fr" : text(settings?.target_lang, "en"));
+  const key = surface === "excel" ? "excel_target_lang" : surface === "word" ? "word_target_lang" : "target_lang";
+  return text(settings?.[key], surface === "word" ? "fr" : surface === "cad" ? "zh" : "en");
 }
 
 function renderParamsPage(host: HTMLElement): void {
@@ -2535,6 +2562,7 @@ function renderParamsPage(host: HTMLElement): void {
   tabs.className = "tabs";
   const tabDefs: { id: ParamsSurface; label: string }[] = [
     { id: "excel", label: "Excel" }, { id: "word", label: "Word" }, { id: "pdf", label: "PDF" },
+    { id: "cad", label: "CAD" },
   ];
   for (const def of tabDefs) {
     const tab = document.createElement("div");
@@ -2596,7 +2624,7 @@ function renderParamsPage(host: HTMLElement): void {
     grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限；超出自动分批，长段自动拆分。" : "单次模型请求的字符上限；超出自动分批，长段自动拆分。范围 800–12000。" }));
     grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
     body.append(grid);
-  } else {
+  } else if (paramsTab === "pdf") {
     const pdf = pdfParamsSettings();
     const grid = document.createElement("div");
     grid.className = "grid2";
@@ -2633,7 +2661,7 @@ function renderParamsPage(host: HTMLElement): void {
   card.append(body);
   host.append(card);
 
-  if (paramsTab === "excel" || paramsTab === "word") {
+  if (paramsTab === "excel" || paramsTab === "word" || paramsTab === "cad") {
     host.append(renderDomainPromptCard(paramsTab));
   }
 
@@ -2692,14 +2720,41 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
 function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   const current = domainSettingsFor(surface);
   const targetLang = targetLangForDomain(surface);
-  const builtInPrompt = domainBuiltInPrompt(current.preset, targetLang);
-  const isCustom = current.preset === "自定义";
-  const isNone = current.preset === "无";
-  // 覆盖按目标语言分开存取：只认当前目标语言名下的那份，其他语言各用各的
-  // 覆盖或内置默认（中-15）。
+  const jumpPreset = pendingDomainPreset;
+  pendingDomainPreset = null;
+  const forceAdd = pendingNewPrompt;
+  pendingNewPrompt = false;
+
+  const allBuiltIns = Object.keys(domainBuiltinPrompts).filter((name) => name !== "无" && name !== "自定义");
+  const builtIns = allBuiltIns.filter((name) => !current.disabledPresets.includes(name) || name === current.preset || name === jumpPreset);
+  const customNames = Object.keys(current.customPrompts);
+  const options: { value: string; label: string }[] = [
+    { value: "无", label: "无" },
+    ...builtIns.map((name) => ({ value: name, label: current.disabledPresets.includes(name) ? `${name}（已停用）` : name })),
+    ...customNames.map((name) => ({ value: name, label: name })),
+    { value: ADD_PROMPT_PRESET, label: "＋ 新增提示词" },
+  ];
+  if (current.preset === "自定义" && !customNames.includes(current.preset)) {
+    options.splice(options.length - 1, 0, { value: LEGACY_CUSTOM_PROMPT, label: "当前提示词（旧版）" });
+  }
+  const optionValues = new Set(options.map((option) => option.value));
+  const selected = forceAdd
+    ? ADD_PROMPT_PRESET
+    : jumpPreset && optionValues.has(jumpPreset)
+      ? jumpPreset
+      : current.preset === "自定义" ? LEGACY_CUSTOM_PROMPT : optionValues.has(current.preset) ? current.preset : "无";
+
+  // 覆盖按目标语言分开存取：只认当前目标语言名下的那份，其他语言各用各的覆盖或内置默认。
   const overrideFor = (preset: string): string | undefined => current.promptOverrides[preset]?.[targetLang];
-  const hasOverride = !isCustom && !isNone && typeof overrideFor(current.preset) === "string";
-  const prompt = isCustom ? current.customPrompt : hasOverride ? overrideFor(current.preset) ?? "" : builtInPrompt;
+  const customPromptFor = (preset: string): string => current.customPrompts[preset]?.[targetLang]
+    || current.customPrompts[preset]?._base || "";
+  const promptFor = (preset: string): string => {
+    if (preset === "无" || preset === ADD_PROMPT_PRESET) return "";
+    if (preset === LEGACY_CUSTOM_PROMPT) return current.customPrompt;
+    if (customNames.includes(preset)) return customPromptFor(preset);
+    return overrideFor(preset) ?? domainBuiltInPrompt(preset, targetLang);
+  };
+  const isBuiltIn = (preset: string): boolean => allBuiltIns.includes(preset);
 
   const card = createCard([]);
   const tools: HTMLElement[] = [];
@@ -2709,61 +2764,100 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   body.style.flexDirection = "column";
   body.style.gap = "10px";
 
-  const surfaceLabel = surface === "excel" ? "Excel" : "Word";
-  body.append(sectionLabel(`专业领域 Prompt（${surfaceLabel} 独立）`));
-
-  const presetSelect = document.createElement("select");
-  for (const option of DOMAIN_PRESET_OPTIONS) {
-    const opt = document.createElement("option");
-    opt.value = option;
-    opt.textContent = option;
-    if (option === current.preset) opt.selected = true;
-    presetSelect.append(opt);
-  }
-  body.append(fieldWithHint("领域预设", presetSelect, "领域 Prompt 只决定用词风格。固定输出 JSON、格式与占位符保护、目标语言和逐条原文语言回报由应用追加，不能被覆盖。"));
+  let selectedPreset = selected;
+  let saveBtn: HTMLButtonElement | null = null;
+  let optimizeBtn: HTMLButtonElement | null = null;
+  const deletePreset = (name: string): void => {
+    void reRenderAfter(async () => {
+      const disabledPresets = current.disabledPresets.filter((item) => item !== name);
+      const customPrompts = { ...current.customPrompts };
+      let preset = current.preset;
+      if (allBuiltIns.includes(name)) disabledPresets.push(name);
+      else delete customPrompts[name];
+      if (preset === name) preset = "无";
+      await client.request(`/api/domains/${surface}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          preset,
+          custom_prompt: current.customPrompt,
+          prompt_overrides: current.promptOverrides,
+          name_overrides: current.nameOverrides,
+          custom_prompts: customPrompts,
+          disabled_presets: disabledPresets,
+        }),
+      });
+      await refreshSettings();
+      showToast({ message: `已删除提示词“${name}”。` });
+    });
+  };
+  const presetDropdown = createDropdown({
+    options,
+    value: selectedPreset,
+    actionFor: (option) => {
+      if (option.value === "无" || option.value === ADD_PROMPT_PRESET || option.value === LEGACY_CUSTOM_PROMPT) return undefined;
+      return { label: "删除", onClick: () => deletePreset(option.value) };
+    },
+    onChange: (value) => {
+      selectedPreset = value;
+      updateEditor(value);
+    },
+  });
+  body.append(fieldWithHint("提示词设置", presetDropdown.root, "管理内置提示词和你新增的提示词。删除内置项只会停用它，之后仍可重新启用。"));
 
   const promptArea = document.createElement("textarea");
   promptArea.className = "domain-prompt";
-  promptArea.value = prompt;
   promptArea.rows = 6;
-  promptArea.placeholder = isCustom ? "请输入完整领域 Prompt" : "内置 Prompt 会在此显示";
-  const promptField = fieldWithHint(
-    isCustom ? "自定义领域 Prompt" : hasOverride ? "当前领域覆盖 Prompt" : "内置领域 Prompt（可查看、可编辑为覆盖）",
-    promptArea,
-    isCustom ? undefined : `覆盖按目标语言分别保存，这里编辑的是「${targetLang}」的版本；其他目标语言没有自己的覆盖时用内置 Prompt。`,
-  );
+  const promptField = fieldWithHint("提示词内容", promptArea, undefined);
   body.append(promptField);
 
-  // 「无」没有可编辑的 Prompt——它的全部含义就是一个字都不追加。把编辑框留在那里，
-  // 用户改两句话再点保存，只会存下一段谁都不会用到的文本。
-  const applyNoneState = (preset: string) => {
-    const none = preset === "无";
-    promptField.style.display = none ? "none" : "";
-    return none;
-  };
-  applyNoneState(current.preset);
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "例如：电气图纸翻译";
+  const nameField = fieldWithHint("提示词名称", nameInput, "新增提示词需要一个不会与内置项重复的名称。");
+  body.append(nameField);
 
-  presetSelect.addEventListener("change", () => {
-    // 切换预设时刷新文本框内容（不立即保存，需点“保存”）。
-    const nextPreset = presetSelect.value;
-    const nextIsNone = applyNoneState(nextPreset);
-    const nextIsCustom = nextPreset === "自定义";
-    const nextOverridePrompt = nextIsCustom || nextIsNone ? undefined : overrideFor(nextPreset);
-    promptArea.value = nextIsCustom
-      ? current.customPrompt
-      : typeof nextOverridePrompt === "string" ? nextOverridePrompt : domainBuiltInPrompt(nextPreset, targetLang);
-    saveBtn.textContent = nextIsNone ? "保存领域选择" : nextIsCustom ? "保存自定义 Prompt" : "保存覆盖";
-  });
+  const updateEditor = (preset: string): void => {
+    const custom = customNames.includes(preset);
+    const legacy = preset === LEGACY_CUSTOM_PROMPT;
+    const none = preset === "无";
+    const add = preset === ADD_PROMPT_PRESET;
+    promptArea.value = promptFor(preset);
+    promptArea.placeholder = add ? "请输入完整提示词" : isBuiltIn(preset) ? "内置提示词会在此显示" : "请输入提示词内容";
+    promptField.style.display = none ? "none" : "";
+    nameField.style.display = add ? "" : "none";
+    const label = promptField.querySelector("label");
+    if (label) label.firstChild && (label.firstChild.textContent = add ? "提示词内容" : legacy ? "旧版提示词内容" : custom ? "提示词内容" : isBuiltIn(preset) ? "内置提示词（可编辑覆盖）" : "提示词内容");
+    if (saveBtn) saveBtn.textContent = none ? "保存选择" : add ? "保存新提示词" : custom || legacy ? "保存提示词" : "保存覆盖";
+    if (optimizeBtn) {
+      optimizeBtn.style.display = isBuiltIn(preset) ? "" : "none";
+      optimizeBtn.disabled = false;
+    }
+  };
+  updateEditor(selectedPreset);
 
   const doSave = () => void reRenderAfter(async () => {
-    const preset = presetSelect.value;
+    const preset = selectedPreset;
     const promptOverrides = { ...current.promptOverrides };
     let customPrompt = current.customPrompt;
+    const customPrompts = { ...current.customPrompts };
+    const disabledPresets = [...current.disabledPresets];
+    let persistedPreset = preset;
     if (preset === "无") {
       // 只改「当前选哪个领域」，其他领域已存的覆盖原样带回去。
-    } else if (preset === "自定义") {
-      if (!promptArea.value.trim()) throw new Error("自定义领域必须填写完整 Prompt，不能保存空配置。");
+    } else if (preset === ADD_PROMPT_PRESET) {
+      const name = nameInput.value.trim();
+      if (!name) throw new Error("请填写提示词名称。");
+      if (name === "无" || name === "自定义" || name === ADD_PROMPT_PRESET || name === LEGACY_CUSTOM_PROMPT || allBuiltIns.includes(name)) throw new Error("提示词名称不能与内置选项重复。");
+      if (!promptArea.value.trim()) throw new Error("新提示词不能保存为空。");
+      customPrompts[name] = { ...(customPrompts[name] ?? {}), [targetLang]: promptArea.value };
+      persistedPreset = name;
+    } else if (preset === LEGACY_CUSTOM_PROMPT) {
+      if (!promptArea.value.trim()) throw new Error("提示词不能保存为空。");
       customPrompt = promptArea.value;
+      persistedPreset = "自定义";
+    } else if (customNames.includes(preset)) {
+      if (!promptArea.value.trim()) throw new Error("提示词不能保存为空。");
+      customPrompts[preset] = { ...(customPrompts[preset] ?? {}), [targetLang]: promptArea.value };
     } else {
       // 只动当前目标语言名下的那一份，其他语言的覆盖原样带回去。
       const defaultPrompt = domainBuiltInPrompt(preset, targetLang);
@@ -2775,26 +2869,58 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     }
     await client.request(`/api/domains/${surface}`, {
       method: "PUT",
-      body: JSON.stringify({ preset, custom_prompt: customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides }),
+      body: JSON.stringify({
+        preset: persistedPreset,
+        custom_prompt: customPrompt,
+        prompt_overrides: promptOverrides,
+        name_overrides: current.nameOverrides,
+        custom_prompts: customPrompts,
+        disabled_presets: disabledPresets,
+      }),
     });
     await refreshSettings();
     showToast({
-      message: preset === "无"
-        ? "已改为不使用领域提示词。"
-        : preset === "自定义" ? "自定义领域 Prompt 已保存。" : "当前页面的领域 Prompt 覆盖已保存。",
+      message: persistedPreset === "无" ? "已改为不使用领域提示词。"
+        : preset === ADD_PROMPT_PRESET ? "新提示词已保存。"
+          : customNames.includes(preset) || preset === LEGACY_CUSTOM_PROMPT ? "提示词已保存。"
+            : "当前页面的领域 Prompt 覆盖已保存。",
     });
   });
-  const saveBtn = createButton({
-    label: isNone ? "保存领域选择" : isCustom ? "保存自定义 Prompt" : "保存覆盖",
+  saveBtn = createButton({
+    label: "保存选择",
     variant: "primary", size: "mini", onClick: doSave,
   });
-  const actions = [saveBtn];
-  if (!isCustom && !isNone) {
+  optimizeBtn = createButton({
+    label: "让模型优化", size: "mini",
+    onClick: () => void (async () => {
+      if (!isBuiltIn(selectedPreset)) return;
+      optimizeBtn!.disabled = true;
+      try {
+        const result = await client.request<{ prompt: string }>(`/api/domains/${surface}/optimize`, {
+          method: "POST",
+          body: JSON.stringify({ preset: selectedPreset, target_lang: targetLang, prompt: promptArea.value }),
+        });
+        if (result.prompt) {
+          promptArea.value = result.prompt;
+          showToast({ message: "模型已生成优化建议，请确认后保存。" });
+        }
+      } catch (error) {
+        showToast({ message: `提示词优化失败：${errorMessage(error)}`, error: true });
+      } finally {
+        optimizeBtn!.disabled = false;
+      }
+    }),
+  });
+  if (!isBuiltIn(selectedPreset)) optimizeBtn.style.display = "none";
+  // 按钮是在编辑器首次填充后创建的，再同步一次初始文案和显隐状态。
+  updateEditor(selectedPreset);
+  const actions: HTMLButtonElement[] = [saveBtn, optimizeBtn];
+  if (isBuiltIn(selectedPreset)) {
     actions.push(createButton({
       label: "恢复内置默认", size: "mini",
       onClick: () => void reRenderAfter(async () => {
-        const preset = presetSelect.value;
-        if (preset === "自定义") return;
+        const preset = selectedPreset;
+        if (!isBuiltIn(preset)) return;
         // 只清当前目标语言的覆盖；其他语言写的覆盖不陪葬。
         const promptOverrides = { ...current.promptOverrides };
         const langOverrides = { ...(promptOverrides[preset] ?? {}) };
@@ -2803,16 +2929,18 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
         else delete promptOverrides[preset];
         await client.request(`/api/domains/${surface}`, {
           method: "PUT",
-          body: JSON.stringify({ preset, custom_prompt: current.customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides }),
+          body: JSON.stringify({ preset, custom_prompt: current.customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides, custom_prompts: current.customPrompts, disabled_presets: current.disabledPresets }),
         });
         await refreshSettings();
         showToast({ message: "已恢复该领域在当前目标语言下的内置 Prompt。" });
       }),
     }));
   }
-  body.append(fieldRow(actions));
+  const actionsRow = fieldRow(actions);
+  actionsRow.style.justifyContent = "flex-end";
+  body.append(actionsRow);
 
-  card.append(tcHead("专业领域 Prompt", tools), body);
+  card.append(tcHead("提示词设置", tools), body);
   return card;
 }
 

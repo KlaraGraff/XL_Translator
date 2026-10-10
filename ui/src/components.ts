@@ -344,10 +344,13 @@ export interface MenuItem {
   label: string;
   description?: string;
   onSelect: () => void;
+  /** Optional trailing action used by managed lists such as prompt presets. */
+  action?: { label: string; onClick: () => void };
 }
 
 /** 同一时刻只允许一个锚定菜单展开；写法与下面语言浮层的 closeActiveLanguagePopover 一致。 */
 let closeActiveMenu: (() => void) | null = null;
+let closeActiveDropdown: (() => void) | null = null;
 
 /**
  * 关闭当前展开的锚定菜单；没有展开时是空操作。
@@ -356,6 +359,39 @@ let closeActiveMenu: (() => void) | null = null;
  */
 export function closeMenu(): void {
   closeActiveMenu?.();
+  closeActiveDropdown?.();
+}
+
+/**
+ * Position a fixed popover relative to its trigger.  Every anchored menu uses
+ * the same rule: open below first, then flip above when the remaining space is
+ * insufficient.  The final position is clamped inside the viewport.
+ */
+export function placePopover(
+  popover: HTMLElement,
+  anchor: HTMLElement,
+  options: { gap?: number; margin?: number; minWidth?: number } = {},
+): "above" | "below" {
+  const gap = options.gap ?? 6;
+  const margin = options.margin ?? 8;
+  const rect = anchor.getBoundingClientRect();
+  if (options.minWidth !== undefined) {
+    popover.style.minWidth = `${Math.round(options.minWidth)}px`;
+  }
+  const width = popover.offsetWidth;
+  const height = popover.offsetHeight;
+  const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+  let top = rect.bottom + gap;
+  let placement: "above" | "below" = "below";
+  if (top + height > window.innerHeight - margin) {
+    const above = rect.top - height - gap;
+    top = above >= margin ? above : Math.max(margin, window.innerHeight - height - margin);
+    placement = "above";
+  }
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(top)}px`;
+  popover.dataset.placement = placement;
+  return placement;
 }
 
 /**
@@ -407,31 +443,46 @@ export function openMenu(
   };
 
   for (const item of items) {
-    const button = el("button", { className: "menu-item" });
-    button.type = "button";
-    button.setAttribute("role", "menuitem");
-    button.append(el("b", { text: item.label }));
-    if (item.description) {
-      button.append(el("span", { text: item.description }));
+    if (!item.action) {
+      const button = el("button", { className: "menu-item" });
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.append(el("b", { text: item.label }));
+      if (item.description) {
+        button.append(el("span", { text: item.description }));
+      }
+      button.addEventListener("click", () => {
+        close();
+        item.onSelect();
+      });
+      menu.append(button);
+      continue;
     }
-    button.addEventListener("click", () => {
+    const row = el("div", { className: "menu-item menu-item-row" });
+    row.setAttribute("role", "none");
+    const main = el("button", { className: "menu-item-main" });
+    main.type = "button";
+    main.setAttribute("role", "menuitem");
+    main.append(el("b", { text: item.label }));
+    if (item.description) main.append(el("span", { text: item.description }));
+    main.addEventListener("click", () => {
       close();
       item.onSelect();
     });
-    menu.append(button);
+    const action = el("button", { className: "menu-item-action", text: item.action.label });
+    action.type = "button";
+    action.setAttribute("aria-label", item.action.label);
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      close();
+      item.action?.onClick();
+    });
+    row.append(main, action);
+    menu.append(row);
   }
 
   document.body.append(menu);
-  const margin = 8;
-  const rect = anchor.getBoundingClientRect();
-  let left = rect.left;
-  left = Math.max(margin, Math.min(left, window.innerWidth - menu.offsetWidth - margin));
-  let top = rect.bottom + 6;
-  if (top + menu.offsetHeight > window.innerHeight - margin) {
-    top = Math.max(margin, rect.top - menu.offsetHeight - 6);
-  }
-  menu.style.left = `${Math.round(left)}px`;
-  menu.style.top = `${Math.round(top)}px`;
+  placePopover(menu, anchor);
 
   document.addEventListener("pointerdown", onOutside, true);
   document.addEventListener("keydown", onKey);
@@ -490,16 +541,36 @@ export interface SelectFieldOptions {
   options: SelectFieldOption[];
   value?: string;
   disabled?: boolean;
+  hint?: string;
   onChange?: (value: string) => void;
 }
 
 export interface SelectFieldHandle {
   root: HTMLDivElement;
   select: HTMLSelectElement;
+  button: HTMLButtonElement;
+  setValue(value: string): void;
 }
 
-/** .field > label + select。 */
-export function createSelectField(options: SelectFieldOptions): SelectFieldHandle {
+export interface DropdownOptions {
+  options: SelectFieldOption[];
+  value?: string;
+  disabled?: boolean;
+  className?: string;
+  onChange?: (value: string) => void;
+  /** Optional trailing actions for managed option lists. */
+  actionFor?: (option: SelectFieldOption) => { label: string; onClick: () => void } | undefined;
+}
+
+export interface DropdownHandle {
+  root: HTMLDivElement;
+  select: HTMLSelectElement;
+  button: HTMLButtonElement;
+  setValue(value: string): void;
+}
+
+/** A platform-independent select whose popover can reliably flip above the trigger. */
+export function createDropdown(options: DropdownOptions): DropdownHandle {
   const select = el("select");
   for (const opt of options.options) {
     const optionEl = el("option", { text: opt.label, attrs: { value: opt.value } });
@@ -509,11 +580,136 @@ export function createSelectField(options: SelectFieldOptions): SelectFieldHandl
     select.value = options.value;
   }
   select.disabled = Boolean(options.disabled);
-  if (options.onChange) {
-    select.addEventListener("change", () => options.onChange?.(select.value));
-  }
-  const root = createField(options.label, select);
-  return { root, select };
+  select.tabIndex = -1;
+  select.setAttribute("aria-hidden", "true");
+  select.style.display = "none";
+
+  const root = el("div", { className: options.className ? `dropdown ${options.className}` : "dropdown" });
+  const button = el("button", { className: "dropdown-btn" });
+  button.type = "button";
+  button.setAttribute("role", "combobox");
+  button.setAttribute("aria-haspopup", "listbox");
+  button.setAttribute("aria-expanded", "false");
+  const valueLabel = el("span", { className: "dropdown-value" });
+  button.append(valueLabel, icon("chev", { className: "chev" }));
+
+  const currentLabel = () => options.options.find((item) => item.value === select.value)?.label ?? select.value;
+  const paint = () => {
+    valueLabel.textContent = currentLabel();
+    button.disabled = Boolean(options.disabled);
+  };
+  // Keep the visual trigger in sync when a caller restores a form by assigning
+  // to the compatibility select element (settings drafts do this).
+  select.addEventListener("change", paint);
+  paint();
+
+  const open = () => {
+    if (button.disabled) return;
+    closeActiveDropdown?.();
+    closeActiveMenu?.();
+    const menu = el("div", { className: "menu dropdown-menu" });
+    menu.setAttribute("role", "listbox");
+    if (options.className) menu.classList.add(`${options.className}-menu`);
+    const close = () => {
+      menu.remove();
+      button.setAttribute("aria-expanded", "false");
+      delete root.dataset.open;
+      document.removeEventListener("pointerdown", onOutside, true);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+      if (closeActiveDropdown === close) closeActiveDropdown = null;
+    };
+    const onOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || root.contains(target))) return;
+      close();
+    };
+    const onScroll = (event: Event) => {
+      const target = event.target as Node | null;
+      if (target && menu.contains(target)) return;
+      close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        button.focus();
+      }
+    };
+    for (const option of options.options) {
+      const action = options.actionFor?.(option);
+      if (action) {
+        const row = el("div", { className: "menu-item menu-item-row" });
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", String(option.value === select.value));
+        const main = el("button", { className: "menu-item-main" });
+        main.type = "button";
+        main.append(el("b", { text: option.label }));
+        main.addEventListener("click", () => {
+          select.value = option.value;
+          paint();
+          select.dispatchEvent(new Event("change"));
+          close();
+          options.onChange?.(option.value);
+        });
+        const remove = el("button", { className: "menu-item-action", text: action.label });
+        remove.type = "button";
+        remove.setAttribute("aria-label", action.label);
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          close();
+          action.onClick();
+        });
+        row.append(main, remove);
+        menu.append(row);
+        continue;
+      }
+      const item = el("button", { className: option.value === select.value ? "menu-item selected" : "menu-item" });
+      item.type = "button";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(option.value === select.value));
+      item.append(el("b", { text: option.label }));
+      item.addEventListener("click", () => {
+        select.value = option.value;
+        paint();
+        select.dispatchEvent(new Event("change"));
+        close();
+        options.onChange?.(option.value);
+      });
+      menu.append(item);
+    }
+    document.body.append(menu);
+    root.dataset.open = "true";
+    button.setAttribute("aria-expanded", "true");
+    placePopover(menu, button, { minWidth: button.getBoundingClientRect().width });
+    document.addEventListener("pointerdown", onOutside, true);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
+    closeActiveDropdown = close;
+  };
+
+  button.addEventListener("click", () => {
+    if (root.dataset.open === "true") closeActiveDropdown?.();
+    else open();
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (root.dataset.open !== "true") open();
+    }
+  });
+  root.append(button, select);
+  return { root, select, button, setValue: (value: string) => { select.value = value; paint(); } };
+}
+
+/** .field > label + shared dropdown. */
+export function createSelectField(options: SelectFieldOptions): SelectFieldHandle {
+  const dropdown = createDropdown(options);
+  const root = createField(options.label, dropdown.root);
+  if (options.hint) root.querySelector("label")?.append(createHintBadge(options.hint));
+  return { root, select: dropdown.select, button: dropdown.button, setValue: dropdown.setValue };
 }
 
 // ---------------------------------------------------------------------------
@@ -720,20 +916,8 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
     closeActiveLanguagePopover = close;
 
     const place = () => {
-      const rect = button.getBoundingClientRect();
-      const margin = 8;
-      // 浮层固定 288px（样张值），但按钮更宽时跟着长，免得浮层比触发它的按钮还窄。
-      pop.style.minWidth = `${Math.round(rect.width)}px`;
-      const width = pop.offsetWidth;
-      const height = pop.offsetHeight;
-      const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
-      let top = rect.bottom + 6;
-      if (top + height > window.innerHeight - margin) {
-        const above = rect.top - height - 6;
-        top = above >= margin ? above : Math.max(margin, window.innerHeight - height - margin);
-      }
-      pop.style.left = `${Math.round(left)}px`;
-      pop.style.top = `${Math.round(top)}px`;
+      // 语言选择器也走共享定位规则，保证它与普通下拉在视口底部的翻转行为一致。
+      placePopover(pop, button, { minWidth: button.getBoundingClientRect().width });
     };
 
     const pick = (code: string) => {

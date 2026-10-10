@@ -67,10 +67,20 @@ DOCUMENT_CONFIG_FIELDS = (
     "excel_custom_prompt",
     "excel_domain_name_overrides",
     "excel_domain_prompt_overrides",
+    "excel_domain_custom_prompts",
+    "excel_domain_disabled_presets",
     "word_domain_preset",
     "word_custom_prompt",
     "word_domain_name_overrides",
     "word_domain_prompt_overrides",
+    "word_domain_custom_prompts",
+    "word_domain_disabled_presets",
+    "cad_domain_preset",
+    "cad_custom_prompt",
+    "cad_domain_name_overrides",
+    "cad_domain_prompt_overrides",
+    "cad_domain_custom_prompts",
+    "cad_domain_disabled_presets",
 )
 
 # What each key is called in the import preview, so the dialog can say what is

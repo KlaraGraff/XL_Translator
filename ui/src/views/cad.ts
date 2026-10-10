@@ -29,6 +29,7 @@ type CadOptions = {
 };
 const defaults: CadOptions = { sourceLang: "auto", targetLang: "zh", domainPreset: "同步工程场景", useCustomOutputDir: false, customOutputDir: "", moreSettingsOpen: true, translateOutputFilename: false, useMemory: true, useTerminology: true, keepWorkDxf: true, copyRelatedFiles: false, verifyRoundtrip: true, scanReplacementChars: true, includeBlockText: true, checkEntityCounts: true, scanResidual: true };
 let options: CadOptions = { ...defaults };
+let domainOptions = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"];
 let mounted = false;
 let rootEl: HTMLElement | null = null;
 let capability: CadCapabilityStatus | null = null;
@@ -56,7 +57,7 @@ export function mount(container: HTMLElement, _params: ViewParams): void { mount
 export function unmount(): void { mounted = false; rootEl = null; if (polling !== null) window.clearInterval(polling); polling = null; }
 
 async function bootstrap(): Promise<void> {
-  try { const c = new ApiClient(); await c.connect(); const [cap, langs, tasks, settings] = await Promise.all([c.getCadCapability(), c.request<{ source_options?: LanguageOption[]; target_options?: LanguageOption[] }>("/api/languages"), c.listTasks(), c.request<Record<string, unknown>>("/api/settings")]); capability = cap; const recovered = [...tasks.active, ...tasks.recent].find((x) => x.surface === "cad" && !x.terminal); if (recovered) { task = recovered; startPolling(); } languageOptions = { source: langs.source_options ?? [], target: langs.target_options ?? [] }; if (!settingsHydrated) { const rawOutput = settings.cad_output && typeof settings.cad_output === "object" ? settings.cad_output as Record<string, unknown> : {}; options.domainPreset = typeof settings.cad_domain_preset === "string" ? settings.cad_domain_preset : defaults.domainPreset; options.useCustomOutputDir = Boolean(rawOutput.use_custom_output_dir); options.customOutputDir = typeof rawOutput.custom_output_dir === "string" ? rawOutput.custom_output_dir : ""; options.translateOutputFilename = Boolean(rawOutput.translate_output_filename); options.sourceLang = "auto"; options.targetLang = "zh"; settingsHydrated = true; } } catch (e) { capabilityError = e instanceof Error ? e.message : "CAD 服务暂不可用。"; }
+  try { const c = new ApiClient(); await c.connect(); const [cap, langs, tasks, settings] = await Promise.all([c.getCadCapability(), c.request<{ source_options?: LanguageOption[]; target_options?: LanguageOption[] }>("/api/languages"), c.listTasks(), c.request<Record<string, unknown>>("/api/settings")]); capability = cap; const recovered = [...tasks.active, ...tasks.recent].find((x) => x.surface === "cad" && !x.terminal); if (recovered) { task = recovered; startPolling(); } languageOptions = { source: langs.source_options ?? [], target: langs.target_options ?? [] }; const disabled = Array.isArray(settings.cad_domain_disabled_presets) ? settings.cad_domain_disabled_presets.filter((value): value is string => typeof value === "string") : []; const custom = settings.cad_domain_custom_prompts && typeof settings.cad_domain_custom_prompts === "object" && !Array.isArray(settings.cad_domain_custom_prompts) ? Object.keys(settings.cad_domain_custom_prompts) : []; domainOptions = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"].filter((name) => name === "无" || !disabled.includes(name)); for (const name of custom) if (!domainOptions.includes(name)) domainOptions.push(name); if (!settingsHydrated) { const rawOutput = settings.cad_output && typeof settings.cad_output === "object" ? settings.cad_output as Record<string, unknown> : {}; options.domainPreset = typeof settings.cad_domain_preset === "string" ? settings.cad_domain_preset : defaults.domainPreset; if (options.domainPreset && !domainOptions.includes(options.domainPreset)) domainOptions.push(options.domainPreset); options.useCustomOutputDir = Boolean(rawOutput.use_custom_output_dir); options.customOutputDir = typeof rawOutput.custom_output_dir === "string" ? rawOutput.custom_output_dir : ""; options.translateOutputFilename = Boolean(rawOutput.translate_output_filename); options.sourceLang = "auto"; options.targetLang = "zh"; settingsHydrated = true; } } catch (e) { capabilityError = e instanceof Error ? e.message : "CAD 服务暂不可用。"; }
   if (mounted) render();
 }
 
@@ -146,8 +147,9 @@ function settingsCard(): HTMLElement {
     onToggle: (open) => { options.moreSettingsOpen = open; },
     domain: {
       value: options.domainPreset,
-      options: ["无", "同步工程场景", "资料管理场景", "行政生活化场景"],
+      options: domainOptions,
       onChange: (value) => { const previous = options.domainPreset; options.domainPreset = value; void persistCadSettings({ cad_domain_preset: value }, () => { options.domainPreset = previous; }); },
+      onEdit: () => navigate("settings", { page: "params", paramsSurface: "cad", domainPreset: options.domainPreset }),
     },
     output: {
       useCustom: options.useCustomOutputDir,

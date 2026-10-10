@@ -345,10 +345,30 @@ def get_system_prompt(
             )
             or {}
         )
+        domain_custom_prompts = dict(
+            getattr(settings, f"{prefix}domain_custom_prompts", {}) or {}
+        )
     else:
         domain_preset = str(settings.domain_preset or "").strip()
         custom_prompt = str(settings.custom_prompt or "")
         domain_prompt_overrides = dict(settings.domain_prompt_overrides or {})
+        domain_custom_prompts = {}
+
+    # Named prompts created by the user are resolved before the legacy
+    # ``自定义`` sentinel.  Keep both string and language-map values readable
+    # so older settings files remain usable after the schema addition.
+    named_entry = domain_custom_prompts.get(domain_preset)
+    if isinstance(named_entry, dict):
+        named_prompt = str(named_entry.get(target_lang) or named_entry.get("_base") or "")
+    elif isinstance(named_entry, str):
+        named_prompt = named_entry
+    else:
+        named_prompt = ""
+    if named_prompt.strip():
+        return append_prompt_block(
+            named_prompt,
+            build_target_lang_note_block(target_lang, settings.custom_target_langs),
+        )
 
     if domain_preset == "自定义":
         if not custom_prompt.strip():
@@ -407,6 +427,13 @@ def activate_translation_surface(settings: AppSettings, surface: str) -> AppSett
     settings.domain_prompt_overrides = dict(
         getattr(settings, f"{prefix}domain_prompt_overrides", settings.domain_prompt_overrides)
         or {}
+    )
+    settings.domain_custom_prompts = dict(
+        getattr(settings, f"{prefix}domain_custom_prompts", {})
+        or {}
+    )
+    settings.domain_disabled_presets = list(
+        getattr(settings, f"{prefix}domain_disabled_presets", []) or []
     )
     return settings
 

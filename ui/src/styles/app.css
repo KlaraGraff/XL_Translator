@@ -387,6 +387,28 @@ table.review-tbl { table-layout: fixed; }
 .menu-item b { display: block; font-weight: 550; }
 .menu-item span { display: block; margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
 .menu-item:hover { background: var(--surface-2); }
+.menu-item.selected { background: var(--tint); color: var(--tint-ink); font-weight: 600; }
+.menu-item-row { display: flex; align-items: stretch; padding: 0; }
+.menu-item-main { flex: 1; min-width: 0; display: block; text-align: left; padding: 7px 10px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; font-size: 12.5px; cursor: pointer; }
+.menu-item-main b { display: block; font-weight: 550; }
+.menu-item-main:hover { background: var(--surface-2); }
+.menu-item-action { flex: none; border: 0; border-radius: var(--r-sm); background: none; color: var(--ink-3); padding: 0 9px; font: inherit; font-size: 11px; cursor: pointer; }
+.menu-item-action:hover { background: var(--danger-soft, var(--surface-2)); color: var(--danger, var(--ink)); }
+
+/* Shared visual select. The native select remains hidden as the value bridge;
+ * the anchored menu is positioned by placePopover and flips upward when needed. */
+.dropdown { position: relative; min-width: 0; }
+.dropdown-btn { width: 100%; min-height: 34px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; padding: 0 10px 0 11px; cursor: pointer; text-align: left; transition: border-color .12s, box-shadow .12s; }
+.dropdown-btn:hover { border-color: var(--ink-3); }
+.dropdown-btn:disabled { cursor: default; opacity: .6; }
+.dropdown[data-open="true"] .dropdown-btn { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring-soft); }
+.dropdown-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropdown-btn .chev { width: 14px; height: 14px; flex: none; color: var(--ink-3); }
+.dropdown-menu { max-height: min(360px, calc(100vh - 16px)); overflow-y: auto; }
+.dropdown-menu[data-placement="above"] { transform-origin: bottom center; }
+.dropdown-menu[data-placement="below"] { transform-origin: top center; }
+.rf-history-select { min-width: 180px; }
+.tm-page-size { min-width: 84px; }
 
 /* ========== 可搜索语言选择器 ==========
  * 迁移自 docs/mockups/2026-08-06_lang-picker-focus-excel-notice.html 第 ② 节。
@@ -711,7 +733,8 @@ table.review-tbl { table-layout: fixed; }
 .resume-found .rf-page .bar { flex: 1; }
 .resume-found .rf-page span { font-size: 12px; color: var(--ink-2); font-weight: 600; white-space: nowrap; }
 .resume-found .rf-sel { display: flex; align-items: center; gap: 7px; margin-top: 9px; padding-top: 9px; border-top: 1px dashed var(--line-2); font-size: 12px; color: var(--ink-3); }
-.resume-found .rf-sel select { font: inherit; font-size: 12px; height: 26px; border-radius: 7px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); padding: 0 6px; max-width: 250px; }
+.resume-found .rf-sel .dropdown { max-width: 250px; }
+.resume-found .rf-sel .dropdown-btn { min-height: 26px; height: 26px; font-size: 12px; border-radius: 7px; padding: 0 6px; }
 
 /* 弹窗内：中断产物要逐页核对的警示 */
 .resume-warn { border: 1px solid var(--warn-l); background: var(--warn-t); border-radius: var(--r-md); padding: 9px 12px; font-size: 12.5px; color: var(--ink-2); display: flex; gap: 8px; }

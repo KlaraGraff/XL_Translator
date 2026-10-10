@@ -511,6 +511,22 @@ class TranslationTaskManager:
                 str(getattr(settings, "domain_preset", "") or ""),
                 str(getattr(settings, "custom_prompt", "") or ""),
                 str(getattr(settings, "domain_prompt_overrides", {}) or {}),
+                str(
+                    getattr(
+                        settings,
+                        f"{normalized_surface}_domain_custom_prompts",
+                        {},
+                    )
+                    or {}
+                ),
+                str(
+                    getattr(
+                        settings,
+                        f"{normalized_surface}_domain_disabled_presets",
+                        [],
+                    )
+                    or []
+                ),
             )
         )
         task_snapshot = {
