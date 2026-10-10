@@ -6,6 +6,7 @@ export const ICON_NAMES = [
   "excel",
   "word",
   "pdf",
+  "cad",
   "tasks",
   "book",
   "gear",
@@ -47,6 +48,12 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   pdf: {
     viewBox: "0 0 24 24",
     body: '<path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><circle cx="9" cy="13" r="1.6"/><path d="m16.5 17-2.8-3.6-2.2 2.6-1.3-1.4L7 18"/>',
+  },
+  cad: {
+    viewBox: "0 0 24 24",
+    // Technical drawing sheet, matching the PDF icon's folded-document
+    // silhouette while using drafting lines instead of a photo glyph.
+    body: '<path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5M7.5 12h4M7.5 15h9M7.5 18h6"/>',
   },
   tasks: {
     viewBox: "0 0 24 24",

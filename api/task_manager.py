@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Generator
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -34,6 +34,7 @@ from core.pdf_image_translation import (
     scan_pdf_path,
 )
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
+from core.path_utils import normalize_user_path
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
 from core.task_history import TaskHistoryError, TaskHistoryStore
 from loguru import logger
@@ -385,7 +386,20 @@ class TranslationTaskManager:
         options: TaskOptions | None,
     ) -> PreparedTask:
         normalized_surface = _normalize_surface(surface)
+        source_path = str(normalize_user_path(str(source_path or "")) or "")
+        selected_paths = [
+            str(normalize_user_path(str(path)))
+            for path in (selected_paths or [])
+            if str(path or "").strip()
+        ]
         selected_options = options or TaskOptions()
+        option_paths = {
+            "resume_output_dir": normalize_user_path(selected_options.resume_output_dir),
+            "cad_output_dir": normalize_user_path(selected_options.cad_output_dir),
+            "cad_glossary_path": normalize_user_path(selected_options.cad_glossary_path),
+        }
+        if any(option_paths[key] != getattr(selected_options, key) for key in option_paths):
+            selected_options = replace(selected_options, **option_paths)
         settings = self._settings_loader().model_copy(deep=True)
         activate_translation_surface(settings, normalized_surface)
 
@@ -1711,7 +1725,11 @@ class TranslationTaskManager:
                     if candidate.is_file()
                     and candidate.suffix.lower() in {".dwg", ".dxf"}
                     and not under(candidate, output_root)
-                    and not any(part in {"CAD翻译输出", ".cad-work"} for part in candidate.relative_to(root).parts)
+                    and not any(
+                        part in {"CAD翻译输出", ".cad-work", ".cad-review"}
+                        or (part.endswith("_翻译输出") or "_翻译输出_" in part)
+                        for part in candidate.relative_to(root).parts
+                    )
                 ]
             else:
                 scan_inputs = [root]
@@ -1779,9 +1797,16 @@ class TranslationTaskManager:
             has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
             if has_dwg and not converter_path:
                 raise TaskInputError("CAD 翻译需要先连接 ODA 转换器。", reason="cad_converter_missing")
-            output_dir = Path(options.cad_output_dir).expanduser() if options.cad_output_dir else (
-                source_root / "CAD翻译输出"
-            )
+            # All document surfaces publish into one unique, timestamped
+            # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
+            # with nested translated/review/run directories, which made a
+            # second run overwrite or mix with the first one.  Reuse the
+            # shared builder used by Excel, Word and PDF instead.
+            cad_output = getattr(settings, "cad_output", None)
+            configured_output_dir = options.cad_output_dir
+            if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
+                configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
+            output_dir = bilingual_writer.build_output_dir(source_root, configured_output_dir)
             engine = build_role_engine(
                 settings,
                 "translation",
@@ -2472,6 +2497,11 @@ _SENSITIVE_VALUE_KEYS = {
 }
 _ARTIFACT_PATH_KEYS = {
     "output_dir",
+    "translated_dir",
+    "publication_dir",
+    "review_dir",
+    "summary_path",
+    "checkpoint_path",
     # Word and PDF name their per-file artifact "output" (Excel uses "output_path").
     # Without it the redactor rewrote every Word output path to the literal
     # "[path]", and the task center printed that placeholder as if it were a path.
@@ -2541,6 +2571,8 @@ def _local_operation_descriptors(result: dict[str, Any]) -> list[dict[str, str]]
         ("reveal_output", "output_path"),
         ("open_report", "report_path"),
         ("open_manifest", "manifest_path"),
+        ("open_summary", "summary_path"),
+        ("open_review", "review_dir"),
         ("copy_output_path", "output_dir"),
     )
     for action, field_name in mappings:
@@ -2559,6 +2591,8 @@ def _sanitize_local_operations(value: Any) -> list[dict[str, str]]:
         "reveal_output",
         "open_report",
         "open_manifest",
+        "open_summary",
+        "open_review",
         "copy_output_path",
     }
     operations: list[dict[str, str]] = []

@@ -327,7 +327,7 @@ def get_system_prompt(
       - dict[str, dict[str, str]]：多语言，内层 key 为 lang 代码 或 "_base"
     """
     normalized_page = str(page_key or "").strip().lower()
-    if normalized_page in {"excel", "word"}:
+    if normalized_page in {"excel", "word", "cad"}:
         prefix = f"{normalized_page}_"
         domain_preset = str(
             getattr(settings, f"{prefix}domain_preset", settings.domain_preset)

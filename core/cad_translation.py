@@ -184,7 +184,9 @@ def scan_cad_paths(
                 if candidate.is_file()
                 and candidate.suffix.lower() in CAD_SUPPORTED_EXTENSIONS
                 and not any(
-                    part in {"CAD翻译输出", ".cad-work"}
+                    part in {"CAD翻译输出", ".cad-work", ".cad-review"}
+                    or part.endswith("_翻译输出")
+                    or "_翻译输出_" in part
                     for part in candidate.relative_to(path).parts
                 )
             )

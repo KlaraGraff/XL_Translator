@@ -18,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from loguru import logger
-from pydantic import BaseModel, Field, StrictInt, model_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from api.cad_plugin import (
     OFFICIAL_DOWNLOAD_URL,
@@ -64,6 +64,7 @@ from core.document_config import (
     summarize_document_config_import,
 )
 from core.file_scanner import scan_excel_sources
+from core.path_utils import normalize_user_path, normalize_user_paths
 from core.image_generation import check_image_generation_connectivity
 from core.model_catalog import fetch_openai_compatible_models
 from core.model_auto_upgrade import auto_upgrade_models_on_startup
@@ -165,12 +166,27 @@ class ScanRequest(BaseModel):
     # 检测自动选最新的一个。
     preferred_resume_dir: str | None = None
 
+    @field_validator("path", "preferred_resume_dir", mode="before")
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        return normalize_user_path(value)
+
+    @field_validator("paths", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        return normalize_user_paths(value)
+
 
 class CadScanRequest(BaseModel):
     paths: list[str] = Field(min_length=1)
     source_language: str | None = None
     target_language: str = "zh"
     include_block_text: bool = True
+
+    @field_validator("paths", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        return normalize_user_paths(value)
 
 
 class PdfPageActionRequest(BaseModel):
@@ -208,6 +224,22 @@ class TaskStartRequest(BaseModel):
     cad_check_entity_counts: bool = True
     cad_scan_residual: bool = True
     cad_translate_output_filename: bool = False
+
+    @field_validator(
+        "source_path",
+        "resume_output_dir",
+        "cad_output_dir",
+        "cad_glossary_path",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        return normalize_user_path(value)
+
+    @field_validator("selected_paths", mode="before")
+    @classmethod
+    def _normalize_paths(cls, value: Any) -> Any:
+        return normalize_user_paths(value)
 
     @model_validator(mode="after")
     def _require_source_path(self) -> "TaskStartRequest":

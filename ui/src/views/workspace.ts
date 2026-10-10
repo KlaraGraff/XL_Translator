@@ -19,7 +19,6 @@ import { ApiClient, ApiError, apiErrorReason, type PdfPage, type PdfPageFile, ty
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import {
-  createBanner,
   createButton,
   createChip,
   createEmptyState,
@@ -49,6 +48,8 @@ import { taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
+import { createTaskControlFoot, createTaskListPanel, createTaskLogPanel, createTaskProgressPanel, createTaskTerminalBanner } from "../task-panels";
+import { normalizeUserPath } from "../path-input";
 
 import "./workspace.css";
 
@@ -576,7 +577,7 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
 function applySettingsToStates(): void {
   for (const surface of ["excel", "word", "pdf"] as Surface[]) {
     const st = states[surface];
-    st.sourcePath = st.sourcePath || text(settings[`last_${surface}_source_folder`]);
+    st.sourcePath = normalizeUserPath(st.sourcePath || text(settings[`last_${surface}_source_folder`]));
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
@@ -929,7 +930,7 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
     icon: "ext",
     onClick: () => navigate("tasks", { taskId: st.lastTaskId }),
   }));
-  return createBanner({
+  return createTaskTerminalBanner({
     title: info.title,
     subtitle: info.subtitle,
     icon: info.tone === "ok" ? "check" : "warn",
@@ -1013,16 +1014,18 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
     value: st.sourcePath,
     placeholder: "选择或粘贴文件、文件夹路径…",
     onInput: (value) => {
-      if (value === st.sourcePath && !st.sourcePaths.length) return;
+      const normalized = normalizeUserPath(value);
+      if (normalized !== value) input.value = normalized;
+      if (normalized === st.sourcePath && !st.sourcePaths.length) return;
       const needsRender = !!st.task || !!st.files.length || st.showBanner || scanBusy[surface];
       const caret = input.selectionStart;
       clearWorkspaceInput(surface);
-      st.sourcePath = value;
+      st.sourcePath = normalized;
       // 手输/粘贴就不再是"刚才多选的那几个文件"了，多选清单必须一起作废。
       st.sourcePaths = [];
       // 手输/粘贴路径时同步解锁「扫描」——这一栏不整页重建，按钮得自己更新。
       // 扫描在飞时仍然保持锁定，光有路径不算能点。
-      scanBtn.disabled = scanBusy[surface] || !value.trim();
+      scanBtn.disabled = scanBusy[surface] || !normalized;
       if (needsRender) {
         rerender(surface);
         const next = document.querySelector<HTMLInputElement>(".srcbar input");
@@ -1521,13 +1524,29 @@ function buildFmtBadge(label: string, warn: boolean): HTMLElement {
 }
 
 function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
-  const card = el("div", "card tablecard");
+  const card = createTaskListPanel({
+    header: (head) => {
+      if (!st.files.length) return;
+      const countSpan = el("span");
+      countSpan.textContent = `已选 ${st.selected.size} / ${st.files.length}`;
+      const tools = el("div", "tc-tools");
+      const selectAll = el("span", "linklike");
+      selectAll.textContent = "全选";
+      selectAll.addEventListener("click", () => {
+        st.selected = new Set(st.files.map((f) => f.path));
+        rerender(surface);
+      });
+      const selectNone = el("span", "linklike");
+      selectNone.textContent = "全不选";
+      selectNone.addEventListener("click", () => {
+        st.selected = new Set();
+        rerender(surface);
+      });
+      tools.append(selectAll, selectNone);
+      head.append(countSpan, tools);
+    },
+  });
   if (!st.files.length) {
-    const head = el("div", "tc-head");
-    const b = el("b");
-    b.textContent = "任务清单";
-    head.append(b);
-    card.append(head);
     // 全部输入都被跳过时，清单是空的但原因是明摆着的——扫描到了文件，只是一个都不能翻。
     // 这时候还说「拖入文件开始」等于把刚发生的事抹掉，人会以为路径选错了反复重扫。
     const allSkipped = st.skipped.length > 0;
@@ -1547,28 +1566,6 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     if (skipRow) card.append(skipRow);
     return card;
   }
-
-  const head = el("div", "tc-head");
-  const b = el("b");
-  b.textContent = "任务清单";
-  const countSpan = el("span");
-  countSpan.textContent = `已选 ${st.selected.size} / ${st.files.length}`;
-  const tools = el("div", "tc-tools");
-  const selectAll = el("span", "linklike");
-  selectAll.textContent = "全选";
-  selectAll.addEventListener("click", () => {
-    st.selected = new Set(st.files.map((f) => f.path));
-    rerender(surface);
-  });
-  const selectNone = el("span", "linklike");
-  selectNone.textContent = "全不选";
-  selectNone.addEventListener("click", () => {
-    st.selected = new Set();
-    rerender(surface);
-  });
-  tools.append(selectAll, selectNone);
-  head.append(b, countSpan, tools);
-  card.append(head);
 
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
@@ -1738,54 +1735,27 @@ function showSkipReportModal(surface: Surface, st: SurfaceState): void {
 // ---------------------------------------------------------------------------
 
 function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
-  const card = el("div", "card");
-  card.style.padding = "16px 18px 14px";
   const local = st.task!;
-  const stage = el("div", "prog-stage");
-  const b = el("b");
-  b.textContent = redactedText(local.phaseName, "正在准备任务");
-  const pct = el("span", "pct");
-  // 阶段号跟着百分比一起给：只有一个百分比时，用户没法判断「45% 之后还有几个阶段」。
-  const phaseSuffix = local.phaseTotal > 0 && local.phaseIndex > 0
-    ? ` · 阶段 ${local.phaseIndex} / ${local.phaseTotal}`
-    : "";
-  pct.textContent = `${Math.round(local.percent)}%${phaseSuffix}`;
-  if (local.task.state === "paused" || local.task.state === "pausing") pct.style.color = "var(--warn)";
-  stage.append(b, pct);
-  card.append(stage);
-
-  const bar = createProgressBar({ percent: local.percent, tone: local.task.state === "paused" || local.task.state === "pausing" ? "warn" : "accent" });
-  card.append(bar.root);
-
-  const monChips = buildMonChips(surface, local);
-  if (monChips.length) {
-    const mon = el("div", "mon");
-    for (const chip of monChips) mon.append(chip);
-    card.append(mon);
-  }
-
+  let note: string | undefined;
   if (local.streamState === "reconnecting") {
-    const note = el("p");
-    note.className = "ws-note";
-    note.textContent = "事件流暂时断开，正在自动重连，不会重复处理已有进度。";
-    card.append(note);
+    note = "事件流暂时断开，正在自动重连，不会重复处理已有进度。";
   } else {
-    // 一批内容发去翻译、等接口返回的这段时间里引擎不产生任何事件。界面上百分比、
-    // 日志、逐文件状态全都定住不动，看起来和卡死没有区别，人只能去点停止。
     const silence = silenceSeconds(local);
     const waiting = !local.task.terminal
       && local.task.state !== "paused"
       && local.task.state !== "pausing"
       && silence >= SILENCE_NOTICE_SECONDS;
-    if (waiting) {
-      const note = el("p");
-      note.className = "ws-note";
-      note.textContent = `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
-      card.append(note);
-    }
+    if (waiting) note = `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
   }
-
-  return card;
+  return createTaskProgressPanel({
+    phase: redactedText(local.phaseName, "正在准备任务"),
+    percent: local.percent,
+    phaseIndex: local.phaseIndex,
+    phaseTotal: local.phaseTotal,
+    state: local.task.state,
+    monitor: buildMonChips(surface, local),
+    note,
+  });
 }
 
 function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
@@ -3172,46 +3142,10 @@ const LOG_VIEW_LIMIT = 200;
 let nextLogSeq = 1;
 
 function buildLogCard(local: LocalTask): HTMLElement {
-  const card = el("div", "card");
-  // flex:0 1 auto（不是 flex:1）：短任务只有三五行日志时，flex:1 会把这张卡撑到栏底，
-  // 留下一大片深色空白，看着像日志丢了。改成按内容高度取，超过可用空间再收缩滚动。
-  card.style.cssText = "flex:0 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden";
-  const head = el("div", "tc-head");
-  const b = el("b");
-  b.textContent = "运行日志";
-  const span = el("span");
-  span.textContent = "保留最近 200 条 · 完整日志随诊断归档";
-  head.append(b, span);
-  card.append(head);
-
-  const log = el("div", "log");
-  // flex:1 撑满卡片剩余空间；min-height:0 让它在内容超高时收缩而不是把卡片顶大，
-  // overflow-y:auto 才能真的滚起来——否则 flex 子项默认会按内容高度撑开父容器。
-  // min-height 给几行的余量，免得日志只有一两条时这块比标题还矮、跳来跳去；
-  // max-height 封顶，长任务里它才是那个可滚动的区域而不是把整页顶长。
-  log.style.cssText = "flex:0 1 auto;min-height:76px;max-height:340px;border:0;border-radius:0;overflow-y:auto";
-  for (const entry of local.logs.slice(-LOG_VIEW_LIMIT)) {
-    const line = el("div");
-    // 整页重建后靠这个属性把滚动位置对回原来那一行，见 restoreLogScroll。
-    line.dataset.seq = String(entry.seq);
-    const t = el("span", "t");
-    t.textContent = entry.time;
-    line.append(t);
-    const tone = entry.level.toUpperCase();
-    const textSpan = document.createElement("span");
-    if (tone === "ERROR" || tone === "WARN") textSpan.className = "w";
-    else if (tone === "OK" || tone === "SUCCESS" || tone === "GOOD") textSpan.className = "g";
-    textSpan.textContent = entry.message;
-    line.append(textSpan);
-    log.append(line);
-  }
-  if (!local.logs.length) {
-    const line = el("div");
-    line.textContent = "等待引擎事件…";
-    log.append(line);
-  }
-  card.append(log);
-
+  const card = createTaskLogPanel({
+    entries: local.logs.map((entry) => ({ seq: entry.seq, time: entry.time, message: entry.message, level: entry.level })),
+    limit: LOG_VIEW_LIMIT,
+  });
   const fileList = el("div");
   const result = record(local.task.result);
   const rows = [...local.fileProgress.values()];
@@ -3487,44 +3421,33 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
 }
 
 function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HTMLElement {
-  const foot = el("div", "rp-foot");
   if (!active) {
     const busy = submittingSurfaces.has(surface);
     const disabled = st.selected.size === 0 || !st.sourcePath.trim() || scanBusy[surface] || busy;
-    foot.append(createButton({
+    return createTaskControlFoot({ idle: {
       label: busy
         ? "正在启动…"
-        : disabled ? "开始翻译" : `开始翻译（${st.selected.size} 个文件）`,
-      icon: disabled ? undefined : "play",
-      variant: "primary",
-      size: "big",
+        : submitFailures.has(surface) ? "重试启动" : disabled ? "开始翻译" : `开始翻译（${st.selected.size} 个文件）`,
       disabled,
       onClick: () => void startTask(surface, st),
-    }));
-    return foot;
+    } });
   }
 
   const task = st.task!;
-  if (surface === "pdf" && task.task.state === "paused") {
-    foot.append(createButton({ label: "继续翻译", icon: "play", variant: "primary", size: "big", onClick: () => void resumePdfTask(st) }));
-    foot.append(createButton({ label: "结束暂停并收尾", icon: "stop", size: "big", onClick: () => void confirmEndPaused(st) }));
-    const note = el("div", "ws-note");
-    note.style.textAlign = "center";
-    note.textContent = "收尾会保存已完成页并生成部分结果报告";
-    foot.append(note);
-    return foot;
-  }
-  if (surface === "pdf") {
-    foot.append(createButton({ label: "暂停提交", icon: "pause", size: "big", onClick: () => void pausePdfTask(st) }));
-    foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", onClick: () => confirmStopTask(surface, st) }));
-    return foot;
-  }
-  foot.append(createButton({ label: "安全停止", icon: "stop", variant: "danger", size: "big", onClick: () => confirmStopTask(surface, st) }));
-  const note = el("div", "ws-note");
-  note.style.textAlign = "center";
-  note.textContent = "已完成的文件会保留，当前文件回滚为未开始";
-  foot.append(note);
-  return foot;
+  return createTaskControlFoot({
+    idle: { label: "开始翻译", disabled: true, onClick: () => undefined },
+    active: {
+      paused: surface === "pdf" && task.task.state === "paused",
+      onResume: () => void resumePdfTask(st),
+      onPause: () => void pausePdfTask(st),
+      onStop: () => confirmStopTask(surface, st),
+      pauseLabel: surface === "pdf" ? "暂停提交" : undefined,
+      finishPaused: surface === "pdf" && task.task.state === "paused"
+        ? { label: "结束暂停并收尾", onClick: () => void confirmEndPaused(st), note: "收尾会保存已完成页并生成部分结果报告" }
+        : undefined,
+      stopLabel: surface === "pdf" ? "安全停止" : "安全停止",
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3959,8 +3882,9 @@ const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: fal
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
 async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
   const st = states[surface];
-  const path = st.sourcePath.trim();
+  const path = normalizeUserPath(st.sourcePath);
   if (!path) return;
+  st.sourcePath = path;
   if (st.task && !st.task.task.terminal) return;
   clearWorkspaceInput(surface);
   const token = ++scanTokens[surface];
@@ -3972,7 +3896,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
       surface,
       path,
       // 多选文件时按这几个路径各扫一次再合并；清单里就只有用户挑的那几份。
-      paths: st.sourcePaths,
+      paths: st.sourcePaths.map(normalizeUserPath),
       include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
     };
     if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
@@ -4041,8 +3965,8 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
 function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
   const payload: JsonObject = {
     surface,
-    source_path: st.sourcePath,
-    selected_paths: st.files.filter((f) => st.selected.has(f.path)).map((f) => f.path),
+    source_path: normalizeUserPath(st.sourcePath),
+    selected_paths: st.files.filter((f) => st.selected.has(f.path)).map((f) => normalizeUserPath(f.path)),
     untranslated_only: Boolean(st.toggles.get("untranslated")),
     target_lang: st.targetLang,
   };
@@ -4145,6 +4069,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
 /** 预检加提交合起来要跑好几个来回，这段时间里按钮还是可点的。第二次点击最终会被
  *  后端的串行化挡下来返回 409，用户看到的是一条看不懂的报错——所以在这里就拦住。 */
 const submittingSurfaces = new Set<Surface>();
+const submitFailures = new Set<Surface>();
 
 async function preflightAndSubmit(
   surface: Surface,
@@ -4153,6 +4078,7 @@ async function preflightAndSubmit(
 ): Promise<void> {
   if (submittingSurfaces.has(surface)) return;
   submittingSurfaces.add(surface);
+  submitFailures.delete(surface);
   rerender(surface);
   const payload = { ...buildPayload(surface, st), ...overrides };
   try {
@@ -4166,6 +4092,7 @@ async function preflightAndSubmit(
     }
     await sendTaskStart(surface, st, payload);
   } catch (error) {
+    submitFailures.add(surface);
     showStartBlockedModal(surface, st, payload, error);
   } finally {
     submittingSurfaces.delete(surface);
@@ -4249,6 +4176,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     const c = await getClient();
     const body = confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload;
     const task = await c.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify(body) });
+    submitFailures.delete(surface);
     focusTask(surface, task);
     noteTaskStarted(task);
     st.showBanner = false;
@@ -4258,6 +4186,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     watchTask(surface);
     if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
   } catch (error) {
+    submitFailures.add(surface);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);

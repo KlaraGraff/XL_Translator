@@ -61,11 +61,30 @@ class CadTaskRunner:
     ) -> None:
         self._files = files
         self._source_root = Path(source_root)
-        # Every invocation gets a fresh publication root.  A previous run is
-        # read only through ``resume_output_dir`` and is never reused as an
-        # output destination.
-        self._output_dir = Path(output_dir) / f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        # ``output_dir`` is already the unique task root selected by the
+        # shared output-directory builder.  Keep the deliverable files at
+        # that root, like Excel/Word/PDF; private CAD evidence is hidden
+        # below it and never becomes a second visible output hierarchy.
+        requested_output_dir = Path(output_dir)
         self._resume_output_dir = Path(resume_output_dir).expanduser() if resume_output_dir else None
+        if self._resume_output_dir and requested_output_dir.expanduser().resolve() == self._resume_output_dir.resolve():
+            # Keep the direct runner API safe for callers that reuse the old
+            # output path.  The task manager normally passes a fresh shared
+            # output root already, so this branch is legacy compatibility.
+            base = requested_output_dir.parent / f"{requested_output_dir.name}_resume_{time.strftime('%Y%m%d_%H%M%S')}"
+            candidate = base
+            suffix = 2
+            while candidate.exists():
+                candidate = requested_output_dir.parent / f"{base.name}_{suffix}"
+                suffix += 1
+            self._output_dir = candidate
+        else:
+            self._output_dir = requested_output_dir
+        self._run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        self._run_dir = self._output_dir / ".cad-work" / self._run_id
+        self._translated_dir = self._output_dir
+        self._review_dir = self._output_dir / ".cad-review"
+        self._publication_dir = self._output_dir
         self._converter = converter
         self._memory_lookup = memory_lookup
         self._translator = translator
@@ -74,7 +93,8 @@ class CadTaskRunner:
         self._glossary = dict(glossary or {})
         self._options = options or CadPipelineOptions()
         self._translation_identity = dict(translation_identity or {})
-        self._checkpoint_path = self._output_dir / ".cad-checkpoint.json"
+        self._checkpoint_path = self._run_dir / ".cad-checkpoint.json"
+        self._legacy_checkpoint_path = self._output_dir / ".cad-checkpoint.json"
         self._last_stage: str | None = None
         self._pause_acknowledged = False
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -174,7 +194,7 @@ class CadTaskRunner:
     def _load_checkpoint(self) -> dict[str, Any]:
         if not self._resume_output_dir:
             return {}
-        candidates = [self._resume_output_dir / ".cad-checkpoint.json"]
+        candidates = [self._resume_output_dir / ".cad-checkpoint.json", self._resume_output_dir.parent / ".cad-checkpoint.json"]
         candidates.extend(self._resume_output_dir.rglob(".cad-checkpoint.json"))
         for path in candidates:
             try:
@@ -187,11 +207,134 @@ class CadTaskRunner:
 
     def _write_checkpoint(self, entries: Mapping[str, Any]) -> None:
         self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        self._checkpoint_path.write_text(json.dumps({"schema_version": 1, "options_fingerprint": self._options_fingerprint(), "files": entries}, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps({"schema_version": 1, "options_fingerprint": self._options_fingerprint(), "files": entries}, ensure_ascii=False, indent=2)
+        self._checkpoint_path.write_text(payload, encoding="utf-8")
+        # Keep the historical root-level location readable by older resume
+        # callers that pass translated/ or CAD翻译输出 as their source.
+        self._legacy_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        self._legacy_checkpoint_path.write_text(payload, encoding="utf-8")
+
+    def _relocate_file_artifacts(self, result: Any) -> Any:
+        """Move per-file evidence out of ``translated/`` into ``review/``.
+
+        The pipeline writes companion files beside its CAD output so its
+        atomic publication guarantees remain unchanged.  The task runner is
+        the batch boundary, so it moves those companions after a successful
+        file and rewrites the embedded references to their final paths.
+        """
+        try:
+            relative_output = result.output.relative_to(self._publication_dir)
+            review_parent = self._review_dir / relative_output.parent
+        except ValueError:
+            review_parent = self._review_dir
+        review_parent.mkdir(parents=True, exist_ok=True)
+        evidence_source = result.output.parent / f"{result.output.stem}.cad-work"
+        evidence_target: Path | None = None
+        if evidence_source.is_dir():
+            evidence_target = review_parent / evidence_source.name
+            collision_index = 2
+            while evidence_target.exists() and evidence_target.resolve() != evidence_source.resolve():
+                evidence_target = review_parent / f"{result.output.stem}.cad-work_{collision_index}"
+                collision_index += 1
+            if evidence_target.resolve() != evidence_source.resolve():
+                shutil.move(str(evidence_source), str(evidence_target))
+        paths = {
+            "manifest": Path(result.manifest),
+            "report": Path(result.report),
+            "summary": Path(result.summary) if result.summary else None,
+            "work_dxf": Path(result.work_dxf) if result.work_dxf else None,
+        }
+        moved: dict[str, Path | None] = {}
+        for key, source in paths.items():
+            if source is None or not source.is_file():
+                moved[key] = source
+                continue
+            target = review_parent / source.name
+            collision_index = 2
+            while target.exists() and target.resolve() != source.resolve():
+                target = review_parent / f"{result.output.stem}.{key}_{collision_index}{source.suffix}"
+                collision_index += 1
+            if target.resolve() != source.resolve():
+                shutil.move(str(source), str(target))
+            moved[key] = target
+
+        if moved.get("manifest") and moved["manifest"].is_file():
+            try:
+                manifest = json.loads(moved["manifest"].read_text(encoding="utf-8"))
+                if isinstance(manifest, dict):
+                    manifest.update({
+                        "output_dir": str(self._output_dir),
+                        "translated_dir": str(self._translated_dir),
+                        "publication_dir": str(self._publication_dir),
+                        "review_dir": str(self._review_dir),
+                        "work_evidence_dir": str(evidence_target or ""),
+                        "manifest": str(moved["manifest"]),
+                        "report": str(moved.get("report") or ""),
+                        "summary": str(moved.get("summary") or ""),
+                        "work_dxf": str(moved.get("work_dxf") or "") if moved.get("work_dxf") else None,
+                    })
+                    moved["manifest"].write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError, TypeError):
+                pass
+        if moved.get("report") and moved["report"].is_file():
+            try:
+                report = json.loads(moved["report"].read_text(encoding="utf-8"))
+                if isinstance(report, dict):
+                    report.update({
+                        "output_dir": str(self._output_dir),
+                        "translated_dir": str(self._translated_dir),
+                        "publication_dir": str(self._publication_dir),
+                        "review_dir": str(self._review_dir),
+                        "work_evidence_dir": str(evidence_target or ""),
+                        "manifest": str(moved.get("manifest") or ""),
+                        "report": str(moved["report"]),
+                        "summary": str(moved.get("summary") or ""),
+                        "work_dxf": str(moved.get("work_dxf") or "") if moved.get("work_dxf") else None,
+                    })
+                    moved["report"].write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError, TypeError):
+                pass
+        result.manifest = moved.get("manifest") or result.manifest
+        result.report = moved.get("report") or result.report
+        result.summary = moved.get("summary") or result.summary
+        result.work_dxf = moved.get("work_dxf") or result.work_dxf
+        result.work_evidence_dir = evidence_target
+        return result
+
+    def _write_batch_artifacts(self, *, status: str, files: list[dict[str, Any]], issues: list[dict[str, Any]]) -> dict[str, str]:
+        """Publish stable batch-level manifest/report/summary entry points."""
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._translated_dir.mkdir(parents=True, exist_ok=True)
+        self._review_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 2,
+            "status": status,
+            "run_id": self._run_id,
+            "output_dir": str(self._output_dir),
+            "translated_dir": str(self._translated_dir),
+            "publication_dir": str(self._publication_dir),
+            "review_dir": str(self._review_dir),
+            "checkpoint_path": str(self._checkpoint_path),
+            "files": files,
+            "issues": issues,
+        }
+        manifest_path = self._output_dir / "manifest.json"
+        report_path = self._output_dir / "report.json"
+        summary_path = self._output_dir / "summary.md"
+        manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path.write_text(json.dumps({**payload, "report": str(report_path), "manifest": str(manifest_path)}, ensure_ascii=False, indent=2), encoding="utf-8")
+        lines = ["# CAD 翻译摘要", "", f"- 状态：{status}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
+        for item in files:
+            lines.append(f"| {Path(str(item.get('source_path') or item.get('output_path') or 'CAD')).name} | {item.get('status', '')} | {item.get('output_path', '')} |")
+        summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return {"output_dir": str(self._output_dir), "translated_dir": str(self._translated_dir), "review_dir": str(self._review_dir), "manifest_path": str(manifest_path), "report_path": str(report_path), "summary_path": str(summary_path), "checkpoint_path": str(self._checkpoint_path)}
 
     def _run(self) -> None:
         started = time.monotonic()
         self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._run_dir.mkdir(parents=True, exist_ok=True)
+        self._translated_dir.mkdir(parents=True, exist_ok=True)
+        self._review_dir.mkdir(parents=True, exist_ok=True)
         results: list[dict[str, Any]] = []
         issues: list[dict[str, Any]] = []
         translated_count = 0
@@ -236,7 +379,7 @@ class CadTaskRunner:
                 source_numbers = re.findall(r"\d+", source.stem)
                 if source_numbers and any(number not in translated_stem for number in source_numbers):
                     translated_stem = source.stem
-                base_output = self._output_dir / relative.parent / f"{translated_stem}_{target_label}{source.suffix.lower()}"
+                base_output = self._publication_dir / relative.parent / f"{translated_stem}_{target_label}{source.suffix.lower()}"
                 output = base_output
                 collision_index = 2
                 while output in used_outputs or output.exists():
@@ -252,17 +395,42 @@ class CadTaskRunner:
                     if prior_output.is_file() and prior_manifest.is_file():
                         output.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(prior_output, output)
-                        for suffix in (".manifest.json", ".report.json", ".summary.md", ".work.dxf"):
-                            old = prior_output.with_suffix(prior_output.suffix + suffix)
-                            new = output.with_suffix(output.suffix + suffix)
+                        copied_paths: dict[str, str] = {}
+                        try:
+                            output_relative = output.relative_to(self._publication_dir)
+                            review_parent = self._review_dir / output_relative.parent
+                        except ValueError:
+                            review_parent = self._review_dir
+                        review_parent.mkdir(parents=True, exist_ok=True)
+                        for key in ("manifest_path", "report_path", "summary_path", "work_dxf"):
+                            old = Path(str(prior.get(key) or ""))
                             if old.is_file():
-                                shutil.copy2(old, new)
+                                target = review_parent / old.name
+                                collision_index = 2
+                                while target.exists() and target.resolve() != old.resolve():
+                                    target = review_parent / f"{output.stem}.{key}_{collision_index}{old.suffix}"
+                                    collision_index += 1
+                                if target.resolve() != old.resolve():
+                                    shutil.copy2(old, target)
+                                copied_paths[key] = str(target)
+                        old_evidence = Path(str(prior.get("work_evidence_dir") or ""))
+                        if not old_evidence.is_dir():
+                            old_evidence = prior_output.parent / f"{prior_output.stem}.cad-work"
+                        if old_evidence.is_dir():
+                            evidence_target = review_parent / old_evidence.name
+                            collision_index = 2
+                            while evidence_target.exists() and evidence_target.resolve() != old_evidence.resolve():
+                                evidence_target = review_parent / f"{output.stem}.cad-work_{collision_index}"
+                                collision_index += 1
+                            if evidence_target.resolve() != old_evidence.resolve():
+                                shutil.copytree(old_evidence, evidence_target)
+                            copied_paths["work_evidence_dir"] = str(evidence_target)
                         file_result = dict(prior.get("result") or {})
-                        file_result.update({"source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True})
+                        file_result.update({"source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                         self._log("INFO", f"{source.name}：复用已验证的上次结果")
-                        checkpoint_files[source_key] = {**prior, "output_path": str(output), "manifest_path": str(output.with_suffix(output.suffix + ".manifest.json"))}
+                        checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
                         continue
                 self._file_progress.emit(source, "running", "extract")
@@ -297,6 +465,7 @@ class CadTaskRunner:
                     issues.append({"file": source.name, "stage": "cad", "message": message})
                     self._log("ERROR", f"{source.name}：{message}")
                     continue
+                result = self._relocate_file_artifacts(result)
                 stats = result.stats
                 translated_count += stats.changed
                 memory_hits += stats.memory_hits
@@ -307,6 +476,8 @@ class CadTaskRunner:
                     "work_dxf": str(result.work_dxf),
                     "manifest_path": str(result.manifest),
                     "report_path": str(result.report),
+                    "summary_path": str(result.summary) if result.summary else "",
+                    "work_evidence_dir": str(getattr(result, "work_evidence_dir", "") or ""),
                     "status": "needs_review"
                     if result.unresolved
                     or stats.replacement_characters
@@ -329,7 +500,7 @@ class CadTaskRunner:
                     "unresolved": result.unresolved,
                 }
                 results.append(file_result)
-                checkpoint_files[source_key] = {"source_sha256": source_hash, "output_path": str(result.output), "manifest_path": str(result.manifest), "report_path": str(result.report), "result": file_result}
+                checkpoint_files[source_key] = {"source_sha256": source_hash, "output_path": str(result.output), "manifest_path": str(result.manifest), "report_path": str(result.report), "summary_path": str(result.summary) if result.summary else "", "work_dxf": str(result.work_dxf), "work_evidence_dir": str(getattr(result, "work_evidence_dir", "") or ""), "result": file_result}
                 self._write_checkpoint(checkpoint_files)
                 if result.unresolved:
                     issues.extend({"file": source.name, **entry} for entry in result.unresolved)
@@ -342,11 +513,15 @@ class CadTaskRunner:
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                 self._log("INFO", f"{source.name}：已生成翻译 DWG")
             elapsed = round(time.monotonic() - started, 3)
+            batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if issues else "done")
+            batch_paths = self._write_batch_artifacts(status=batch_status, files=results, issues=issues)
+            for item in results:
+                item.update({key: value for key, value in batch_paths.items() if key in {"output_dir", "translated_dir", "review_dir"}})
             if self._stop_event.is_set():
                 self._queue.put(
                     StoppedMsg(
                         message="任务已停止；已完成文件和断点均已保留。",
-                        output_dir=str(self._output_dir),
+                        **batch_paths,
                         files=results,
                         issues=issues,
                     )
@@ -354,7 +529,7 @@ class CadTaskRunner:
             else:
                 self._queue.put(
                     DoneMsg(
-                        output_dir=str(self._output_dir),
+                        **batch_paths,
                         file_results=results,
                         files=results,
                         elapsed_sec=elapsed,
@@ -365,4 +540,5 @@ class CadTaskRunner:
                     )
                 )
         except Exception as exc:  # runner-level failures still become a task result
-            self._queue.put(ErrorMsg(message=f"CAD 翻译流程失败：{exc}"))
+            batch_paths = self._write_batch_artifacts(status="error", files=results, issues=issues)
+            self._queue.put(ErrorMsg(message=f"CAD 翻译流程失败：{exc}", **batch_paths))

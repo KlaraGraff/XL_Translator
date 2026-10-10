@@ -774,6 +774,14 @@ class PdfOutputSettings(BaseModel):
     custom_output_dir: str = ""
 
 
+class CadOutputSettings(BaseModel):
+    """Output choices owned by the CAD translation surface."""
+
+    use_custom_output_dir: bool = False
+    custom_output_dir: str = ""
+    translate_output_filename: bool = False
+
+
 class ExcelReviewSettings(BaseModel):
     mark_review_items: bool = EXCEL_REVIEW_MARK_DEFAULT
     existing_fill_policy: str = EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
@@ -1145,6 +1153,10 @@ class AppSettings(BaseModel):
     word_custom_prompt: str = ""
     word_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
     word_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    cad_domain_preset: str = "同步工程场景"
+    cad_custom_prompt: str = ""
+    cad_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
+    cad_output: CadOutputSettings = Field(default_factory=CadOutputSettings)
     last_source_folder: str = ""
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
@@ -1174,9 +1186,11 @@ class AppSettings(BaseModel):
         if "domain_preset" in migrated:
             migrated.setdefault("excel_domain_preset", migrated.get("domain_preset"))
             migrated.setdefault("word_domain_preset", migrated.get("domain_preset"))
+            migrated.setdefault("cad_domain_preset", migrated.get("domain_preset"))
         if "custom_prompt" in migrated:
             migrated.setdefault("excel_custom_prompt", migrated.get("custom_prompt"))
             migrated.setdefault("word_custom_prompt", migrated.get("custom_prompt"))
+            migrated.setdefault("cad_custom_prompt", migrated.get("custom_prompt"))
         if "domain_name_overrides" in migrated:
             migrated.setdefault("excel_domain_name_overrides", migrated.get("domain_name_overrides"))
             migrated.setdefault("word_domain_name_overrides", migrated.get("domain_name_overrides"))
@@ -1274,6 +1288,7 @@ class AppSettings(BaseModel):
             },
         )
         migrated.setdefault("pdf", PdfSettings().model_dump())
+        migrated.setdefault("cad_output", CadOutputSettings().model_dump())
         migrated.setdefault("model_throughput_profiles", {})
         migrated.setdefault("update", UpdateSettings().model_dump())
         return migrated

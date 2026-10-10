@@ -39,6 +39,22 @@ def test_cad_scan_sources_exposes_capability_at_response_root(tmp_path, monkeypa
     assert payload["items"][0]["format"] == "dxf"
 
 
+def test_cad_scan_route_accepts_a_shell_quoted_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "quoted drawing.dxf"
+    source.write_text(_dxf_text(), encoding="utf-8")
+    status = {"plugin": "enabled", "oda": "connected", "converter": None, "enabled": True}
+    with patch("api.app.probe_status", return_value=status):
+        with TestClient(create_app()) as client:
+            response = client.post(
+                "/api/cad/scan",
+                json={"paths": [f'"{source}"'], "target_language": "zh"},
+            )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["path"] == str(source)
+
+
 def test_cad_auto_source_language_reaches_translation_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
     settings = AppSettings()
