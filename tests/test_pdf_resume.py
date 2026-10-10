@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+import core.process_artifacts as process_artifacts_module
 from core.model_roles import SOURCE_INDEPENDENT
 from core.pdf_image_translation import (
     PDF_MANIFEST_FILENAME,
@@ -324,6 +325,9 @@ class PdfResumeRunTests(unittest.TestCase):
         settings = _pdf_settings(target_lang)
         settings.pdf_output.use_custom_output_dir = True
         settings.pdf_output.custom_output_dir = str(root / "out")
+        # Keep process manifests and page archives inside this isolated test
+        # tree; never write test evidence to the developer's real app data.
+        process_artifacts_module.APP_DATA_DIR = root / "app-data"
         client = _CountingImageClient(_png_bytes(1200, 1600))
         runner = PdfImageTranslationRunner(
             [
@@ -374,9 +378,12 @@ class PdfResumeRunTests(unittest.TestCase):
             self.assertIn("本次只需生成 2 页", logs)
 
             output_dir = Path(done.output_dir)
-            manifest = json.loads(
-                (output_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
-            )
+            # Process manifests live in the app-owned process log directory;
+            # the user output directory contains only final deliverables.
+            manifest_path = Path(done.manifest_path)
+            self.assertEqual(manifest_path.name, PDF_MANIFEST_FILENAME)
+            self.assertNotEqual(manifest_path.parent, output_dir)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             file_entry = manifest["files"][0]
             self.assertEqual(file_entry["generated_page_count"], 3)
             self.assertEqual(file_entry["placeholder_page_count"], 0)
@@ -384,9 +391,9 @@ class PdfResumeRunTests(unittest.TestCase):
             reused_page = file_entry["pages"][0]
             self.assertEqual(reused_page["status"], "success")
             self.assertEqual(reused_page["attempts"], 1)
-            # 复用页的所有路径都必须落在本次任务自己的目录里。
+            # 复用页的过程图像和清单都必须落在本次任务自己的过程目录里。
             self.assertTrue(
-                Path(reused_page["translated_image_path"]).is_relative_to(output_dir)
+                Path(reused_page["translated_image_path"]).is_relative_to(manifest_path.parent)
             )
             self.assertTrue(Path(reused_page["translated_image_path"]).is_file())
             self.assertTrue(Path(file_entry["translated_pdf_path"]).is_file())

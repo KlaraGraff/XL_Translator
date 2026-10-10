@@ -29,6 +29,12 @@ class HumanizeErrorTests(unittest.TestCase):
         raw = "execution error: Not authorized to send Apple events to Microsoft Word. (-1743)"
         self.assertIn("系统设置", humanize_error(raw))
 
+    def test_excel_launch_services_failure_points_at_installation(self) -> None:
+        raw = "open failed: kLSNoExecutableErr (-10827)"
+        sentence = humanize_error(raw)
+        self.assertIn("macOS 找不到可启动的 Microsoft Excel 程序", sentence)
+        self.assertIn("修复或重装 Office", sentence)
+
     def test_apple_event_permission_denial_is_not_read_as_a_busy_file(self) -> None:
         # 这句里同时有 permission denied 和 Apple events，绝不能落到「关闭占用它的
         # 程序后重试」——那条路走不通，人会白折腾。

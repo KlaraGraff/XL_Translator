@@ -7,6 +7,7 @@ export const ICON_NAMES = [
   "word",
   "pdf",
   "cad",
+  "convert",
   "tasks",
   "book",
   "gear",
@@ -28,6 +29,7 @@ export const ICON_NAMES = [
   "down",
   "restart",
   "spark",
+  "wand",
   "close",
 ] as const;
 
@@ -54,6 +56,11 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
     // Technical drawing sheet, matching the PDF icon's folded-document
     // silhouette while using drafting lines instead of a photo glyph.
     body: '<path d="M6 3.5h8.5L19.5 8.5V18a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z"/><path d="M14 3.5V9h5.5M7.5 12h4M7.5 15h9M7.5 18h6"/>',
+  },
+  convert: {
+    viewBox: "0 0 24 24",
+    // Two opposing arrows communicate DWG ↔ DXF conversion without another file glyph.
+    body: '<path d="M4 7h14l-3-3M20 17H6l3 3"/>',
   },
   tasks: {
     viewBox: "0 0 24 24",
@@ -140,6 +147,12 @@ const SYMBOLS: Record<IconName, { viewBox: string; body: string }> = {
   spark: {
     viewBox: "0 0 24 24",
     body: '<path d="M12 3.5v3.6M12 16.9v3.6M3.5 12h3.6M16.9 12h3.6M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/>',
+  },
+  // Lantern 的 CustomActionEditor 使用 lucide Wand2；这里保留同样的「斜杖 + 四角星」轮廓，
+  // 让翻译设置里的整理按钮和 Lantern 视觉一致。
+  wand: {
+    viewBox: "0 0 24 24",
+    body: '<path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72"/><path d="m14 7 3 3M5 6v4M19 14v4M10 2v2M7 8H3M21 16h-4M11 3H9"/>',
   },
   close: {
     viewBox: "0 0 24 24",

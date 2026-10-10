@@ -167,7 +167,7 @@ class OutputNameTranslationTests(unittest.TestCase):
                     output_dir=root / "output",
                     app_managed=False,
                 )
-            self.assertEqual(prepared.translated_pdf_path.name, "Report_英文_高清.pdf")
+            self.assertEqual(prepared.translated_pdf_path.name, "Report_英文.pdf")
             self.assertEqual(prepared.compressed_pdf_path.name, "Report_英文_压缩.pdf")
             self.assertEqual(record.source_copy_path, str(root / "output" / "报告.pdf"))
 

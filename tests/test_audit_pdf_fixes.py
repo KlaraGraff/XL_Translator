@@ -329,11 +329,14 @@ class AuditPdfHighAndMediumTests(unittest.TestCase):
             self.assertEqual(record.compressed_pdf_path, "")
             output_dir = runner._finished_output_dir
             self.assertIsNotNone(output_dir)
-            # 目录里只有原样复制过去的源文件，没有任何译文产物。
+            # 未完成时交付目录为空，源文件副本保留在过程目录中。
             self.assertEqual(
                 sorted(path.name for path in output_dir.glob("*.pdf")),
-                ["source.pdf"],
+                [],
             )
+
+            self.assertTrue(Path(record.source_copy_path).is_file())
+            self.assertEqual(Path(record.source_copy_path).parent, runner._process_work_dir)
 
             # 任务级结论：是「已停止」，不是「已完成」。
             messages = _drain_all_messages(runner)
@@ -341,10 +344,10 @@ class AuditPdfHighAndMediumTests(unittest.TestCase):
             self.assertFalse(any(isinstance(msg, DoneMsg) for msg in messages))
 
             manifest = json.loads(
-                (output_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
+                (runner._process_work_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["placeholder_page_count"], 0)
-            report = (output_dir / PDF_REPORT_FILENAME).read_text(encoding="utf-8")
+            report = (runner._process_work_dir / PDF_REPORT_FILENAME).read_text(encoding="utf-8")
             self.assertIn("未开始页面：2", report)
 
 
@@ -733,7 +736,7 @@ class AuditPdfSecondRoundTests(unittest.TestCase):
 
             output_dir = runner._finished_output_dir
             self.assertIsNotNone(output_dir)
-            manifest_text = (output_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
+            manifest_text = (runner._process_work_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
             self.assertNotIn(PDF_PAGE_STATUS_STOPPED_UNSTARTED, manifest_text)
             snapshot_text = json.dumps(runner.pdf_page_snapshot(), ensure_ascii=False)
             self.assertNotIn(PDF_PAGE_STATUS_STOPPED_UNSTARTED, snapshot_text)

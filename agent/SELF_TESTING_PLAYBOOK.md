@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
 
 1. 在 `ui/` 运行 `npm run check && npm run build`。
 2. 在 `src-tauri/` 运行 `cargo test && cargo check`。
-3. 用隔离的 `TRANSLATOR_APP_DATA_DIR` 启动 `tauri dev`。
+3. 人工测试壳默认先复制当时正式软件的配置（含 API 密钥）到隔离目录，再启动 `tauri dev`；macOS 使用 `scripts/start_tauri_macos.command`，它会自动刷新配置副本。直接启动时先执行 `agent/testing/seed_user_config.py --target <隔离目录>`。测试中的修改只落在副本，自动化单元测试继续使用合成配置。
 4. 验证 sidecar 随机 loopback 健康检查、页面导航、主题、配置面板持久化和相关页面关键状态。
 
 完成后关闭旧的 `Translator`、`tauri dev` 和 `api.launcher` 进程；确认新进程 PID、启动路径和 `/health`，避免用户测到旧安装包或旧内存进程。

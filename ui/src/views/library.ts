@@ -1879,7 +1879,10 @@ function buildLayout(container: HTMLElement): void {
 
   const tableCard = createCard([], "tablecard");
   tableScrollEl = document.createElement("div");
-  tableScrollEl.style.cssText = "flex:1;overflow:auto";
+  // 结果区域本身也使用纵向 flex，让空态/加载态的通用 .empty 组件
+  // 可以占满可用高度并在区域中央展示。此前这里只设置了 overflow，
+  // .empty 的 flex:1 没有生效，内容会贴在结果区域顶部。
+  tableScrollEl.style.cssText = "flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column";
   tableCard.append(tableScrollEl);
   tcHeadEl = buildTcHead();
   tableCard.append(tcHeadEl);

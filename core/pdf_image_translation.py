@@ -82,6 +82,7 @@ from core.task_runner import (
     StoppedMsg,
     user_facing_reason,
 )
+from core.process_artifacts import ProcessArtifacts, find_process_dirs
 from settings import AppSettings, provider_key_overrides
 
 
@@ -477,6 +478,7 @@ class _PreparedPdfFile:
     translated_pdf_path: Path
     compressed_pdf_path: Path
     app_managed: bool
+    final_output_dir: Path
     # 图片源的交付路径。PDF 变体在准备阶段就解析定了，图片源要等模型吐回来才知道
     # 后缀，所以这里留空、由第一次落盘时解析并缓存——之后每一轮重生成都原子覆盖
     # 同一个文件名，不再重复触发 ``resolve_translated_image_path`` 的改名副作用。
@@ -967,11 +969,13 @@ def resolve_translated_pdf_variant_paths(
 ) -> tuple[Path, Path]:
     """Resolve matched high-quality and compressed PDF output paths."""
     target_dir.mkdir(parents=True, exist_ok=True)
+    # 高清/主产物使用无变体后缀的稳定名称；旧版本的 `_高清` 文件仍由
+    # 续译检测兼容识别，但新生成结果不再额外增加“高清”后缀。
     high_base = target_dir / translated_pdf_base_name(
         source_pdf_name,
         target_lang,
         settings,
-        variant_label="高清",
+        variant_label=None,
     )
     compressed_base = target_dir / translated_pdf_base_name(
         source_pdf_name,
@@ -983,6 +987,15 @@ def resolve_translated_pdf_variant_paths(
     suffix = high_base.suffix
 
     if app_managed:
+        # Migrate the former primary name once: keep the old `_高清` artifact as
+        # a revision, then let the new suffix-free primary name be created.
+        legacy_high = target_dir / translated_pdf_base_name(
+            source_pdf_name, target_lang, settings, variant_label="高清"
+        )
+        if legacy_high.exists() and not high_base.exists():
+            legacy_r1 = legacy_high.with_name(f"{legacy_high.stem}_R1{legacy_high.suffix}")
+            if not legacy_r1.exists():
+                legacy_high.rename(legacy_r1)
         for base_path in (high_base, compressed_base):
             if base_path.exists():
                 r1_path = base_path.with_name(f"{base_path.stem}_R1{base_path.suffix}")
@@ -1132,8 +1145,13 @@ def resolve_pdf_review_candidates_dir(output_dir: Path, relative_pdf: Path) -> P
     return output_dir / PDF_PAGES_ROOT / REVIEW_CANDIDATES_DIRNAME / _page_archive_stem(relative_pdf)
 
 
-def write_pdf_manifest_and_report(summary: PdfTaskSummary) -> tuple[Path, Path]:
-    output_dir = Path(summary.output_dir)
+def write_pdf_manifest_and_report(
+    summary: PdfTaskSummary,
+    *,
+    artifact_dir: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """Write run metadata outside the user's delivery directory when requested."""
+    output_dir = Path(artifact_dir) if artifact_dir is not None else Path(summary.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / PDF_MANIFEST_FILENAME
     report_path = output_dir / PDF_REPORT_FILENAME
@@ -1195,15 +1213,32 @@ def read_pdf_resume_manifest(resume_dir: str | Path) -> dict[str, Any] | None:
         path = Path(resume_dir)
     except TypeError:
         return None
-    if not path.is_dir() or not is_app_managed_pdf_output_dir(path):
+    if not path.is_dir():
+        return None
+    manifest_dir = path
+    # New runs keep metadata and page archives in the process log directory;
+    # retain the legacy direct-child lookup for older packages.
+    manifest_path = manifest_dir / PDF_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        try:
+            candidates = find_process_dirs(path, kind="pdf")
+        except Exception:  # pragma: no cover - discovery is best effort
+            candidates = []
+        for candidate in candidates:
+            if (candidate / PDF_MANIFEST_FILENAME).is_file():
+                manifest_dir = candidate
+                manifest_path = candidate / PDF_MANIFEST_FILENAME
+                break
+    if not manifest_path.is_file():
         return None
     try:
-        payload = json.loads((path / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 - an unreadable manifest is just "no resume".
         logger.debug(f"[PDF] 读取上次输出清单失败原始错误：{path}：{exc!r}")
         return None
     if not isinstance(payload, dict) or not isinstance(payload.get("files"), list):
         return None
+    payload["_resume_process_dir"] = str(manifest_dir)
     return payload
 
 
@@ -1299,7 +1334,11 @@ def reusable_pdf_pages(
     ``verify_images=False`` skips the full-decode check for callers that only
     need a count (scan-time detection) rather than pages they are about to bind.
     """
-    resume_path = Path(resume_dir)
+    resume_path = (
+        Path(str(manifest.get("_resume_process_dir") or resume_dir))
+        if isinstance(manifest, dict)
+        else Path(resume_dir)
+    )
     reusable: dict[str, list[ResumePageSource]] = {}
     for relative, entry in _resume_manifest_files(manifest).items():
         page_count = _resume_int(entry.get("page_count"))
@@ -1455,6 +1494,8 @@ class PdfImageTranslationRunner:
         self._finished_stopped = False
         self._finished_stop_reason = ""
         self._finished_fatal_error = ""
+        self._process_artifacts: ProcessArtifacts | None = None
+        self._process_work_dir: Path | None = None
         self._result_patch: dict[str, Any] = {}
         self._output_name_engine = None
         self._output_name_engine_failed = False
@@ -1835,19 +1876,19 @@ class PdfImageTranslationRunner:
             except Exception as exc:  # noqa: BLE001 - init converted to a panel message.
                 logger.debug(f"[PDF] 单页重生成解析审核模型配置失败原始错误：{exc!r}")
                 raise PdfPageActionError(
-                    "PDF 翻译审核模型配置不可用："
+                    "PDF翻译（图像翻译）复核模型配置不可用："
                     + user_facing_reason(
                         exc,
-                        fallback="请在设置里检查 PDF 翻译审核模型这条连接。",
+                        fallback="请在设置里检查 PDF翻译（图像翻译）复核这条连接。",
                     )
                 ) from exc
             if not provider_supports_capability(review_model_config.provider, "vision_text"):
                 raise PdfPageActionError(
-                    "当前 PDF 翻译审核模型服务商不支持图像理解审核能力："
+                    "当前 PDF翻译（图像翻译）复核模型服务商不支持图像理解审核能力："
                     f"{review_model_config.provider}"
                 )
             if not review_model_config.model:
-                raise PdfPageActionError("PDF 翻译审核模型名称不能为空。")
+                raise PdfPageActionError("PDF翻译（图像翻译）复核模型名称不能为空。")
 
         max_attempts = max_page_generation_attempts(self._settings.pdf.page_retry_attempts)
         self._review_total = max_attempts
@@ -2191,7 +2232,9 @@ class PdfImageTranslationRunner:
             elapsed_sec=self._finished_elapsed_sec,
             stop_reason=self._finished_stop_reason,
         )
-        manifest_path, report_path = write_pdf_manifest_and_report(summary)
+        manifest_path, report_path = write_pdf_manifest_and_report(
+            summary, artifact_dir=self._process_work_dir
+        )
         self._log("INFO", f"已更新 PDF 翻译清单：{manifest_path.name}")
         self._log("INFO", f"已更新 PDF 翻译报告：{report_path.name}")
         self._result_patch = {
@@ -2762,10 +2805,10 @@ class PdfImageTranslationRunner:
                 review_model_signature = pdf_review_model_signature(self._settings)
                 if not provider_supports_capability(review_model_config.provider, "vision_text"):
                     raise PdfReviewModelUnavailableError(
-                        f"当前 PDF 翻译审核模型服务商不支持图像理解审核能力：{review_model_config.provider}"
+                        f"当前 PDF翻译（图像翻译）复核模型服务商不支持图像理解审核能力：{review_model_config.provider}"
                     )
                 if not review_model_config.model:
-                    raise PdfReviewModelUnavailableError("PDF 翻译审核模型名称不能为空")
+                    raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型名称不能为空")
             except PdfReviewModelUnavailableError as exc:
                 message = str(exc)
                 record_pdf_review_model_availability(
@@ -2775,16 +2818,16 @@ class PdfImageTranslationRunner:
                     signature=review_model_signature,
                     checked_at=datetime.now().isoformat(timespec="seconds"),
                 )
-                self._queue.put(ErrorMsg(message=f"PDF 翻译审核模型配置不可用：{message}"))
+                self._queue.put(ErrorMsg(message=f"PDF翻译（图像翻译）复核模型配置不可用：{message}"))
                 return
             except Exception as exc:  # noqa: BLE001 - init converted to UI error.
                 logger.debug(f"[PDF] 解析审核模型配置失败原始错误：{exc!r}")
                 self._queue.put(
                     ErrorMsg(
-                        message="PDF 翻译审核模型配置不可用："
+                        message="PDF翻译（图像翻译）复核模型配置不可用："
                         + user_facing_reason(
                             exc,
-                            fallback="请在设置里检查 PDF 翻译审核模型这条连接。",
+                            fallback="请在设置里检查 PDF翻译（图像翻译）复核这条连接。",
                         )
                     )
                 )
@@ -2802,6 +2845,11 @@ class PdfImageTranslationRunner:
             output_dir = build_pdf_output_dir(root_for_output, custom_output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             app_managed = is_app_managed_pdf_output_dir(output_dir)
+            self._process_artifacts = ProcessArtifacts.create(
+                "pdf", output_dir, run_id=self.task_id
+            )
+            self._process_work_dir = Path(self._process_artifacts.work_dir)
+            self._process_work_dir.mkdir(parents=True, exist_ok=True)
             max_attempts = max_page_generation_attempts(
                 self._settings.pdf.page_retry_attempts
             )
@@ -3040,7 +3088,9 @@ class PdfImageTranslationRunner:
                 fatal_error=fatal_error,
             )
             self._queue.put(ProgressMsg(4, 4, "写入报告", 0, 1))
-            manifest_path, report_path = write_pdf_manifest_and_report(summary)
+            manifest_path, report_path = write_pdf_manifest_and_report(
+                summary, artifact_dir=self._process_work_dir
+            )
             self._log("INFO", f"已写入 PDF 翻译清单：{manifest_path.name}")
             self._log("INFO", f"已写入 PDF 翻译报告：{report_path.name}")
             self._queue.put(ProgressMsg(4, 4, "写入报告", 1, 1))
@@ -3054,6 +3104,17 @@ class PdfImageTranslationRunner:
                 stopped=stopped,
                 fatal_error=fatal_error,
             )
+            if self._process_artifacts is not None:
+                try:
+                    process_status = {
+                        PDF_OUTPUT_STATE_COMPLETED: "succeeded",
+                        PDF_OUTPUT_STATE_NEEDS_REVIEW: "needs_review",
+                        PDF_OUTPUT_STATE_STOPPED: "paused",
+                        PDF_OUTPUT_STATE_FAILED: "failed",
+                    }.get(summary.status, summary.status)
+                    self._process_artifacts.finish(process_status)
+                except Exception:  # pragma: no cover - retention must not fail delivery
+                    logger.debug("[PDF] process artifact finish failed", exc_info=True)
 
             # 中止和失败也要把逐文件结果和指标交出去（Excel / Word 那两路一直是这么做的）：
             # 停在半路的任务恰恰是最需要看「哪几个文件已经写出来了、有多少页是占位」的时候，
@@ -3097,6 +3158,7 @@ class PdfImageTranslationRunner:
                     api_call_count=self._api_call_count,
                     issues=_summary_issues(file_records),
                     report_path=str(report_path),
+                    manifest_path=str(manifest_path),
                     kpi=_done_kpi(summary),
                     # 按了停止、但在飞的页刚好全部跑完：任务是正常完成的，可小结里得留下
                     # 这一下的痕迹，否则用户只看到「已完成 · 全部通过」，不知道自己按的那
@@ -3127,7 +3189,8 @@ class PdfImageTranslationRunner:
                 break
             self._file_progress.emit(item.path, "active", "prepare")
             relative_pdf = _relative_pdf_path(item.path, self._source_root)
-            source_copy_path = output_dir / relative_pdf
+            work_output_dir = self._process_work_dir or output_dir
+            source_copy_path = work_output_dir / relative_pdf
             source_copy_path.parent.mkdir(parents=True, exist_ok=True)
             record = PdfFileRecord(
                 name=item.path.name,
@@ -3139,11 +3202,11 @@ class PdfImageTranslationRunner:
             )
             try:
                 shutil.copy2(item.path, source_copy_path)
-                self._log("INFO", f"[{item.path.name}] 已复制源文件到输出目录")
+                self._log("INFO", f"[{item.path.name}] 已复制源文件到过程目录")
             except Exception as exc:  # noqa: BLE001 - file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 logger.debug(f"[PDF] 复制源文件失败原始错误：{exc!r}")
-                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法把源文件复制到输出目录。')}"
+                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法把源文件复制到过程目录。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -3230,12 +3293,17 @@ class PdfImageTranslationRunner:
         output_dir: Path,
         app_managed: bool,
     ) -> _PreparedPdfFile:
-        source_copy_path = Path(record.source_copy_path)
+        # Source copies, page PNGs and review candidates are process artifacts;
+        # only assembled PDFs and translated standalone images belong in the
+        # user's delivery directory.
+        work_output_dir = self._process_work_dir or output_dir
+        source_copy_path = work_output_dir / relative_pdf
+        record.source_copy_path = str(source_copy_path)
         source_pages_dir, translated_pages_dir = resolve_pdf_page_archive_dirs(
-            output_dir,
+            work_output_dir,
             relative_pdf,
         )
-        review_candidates_dir = resolve_pdf_review_candidates_dir(output_dir, relative_pdf)
+        review_candidates_dir = resolve_pdf_review_candidates_dir(work_output_dir, relative_pdf)
         source_pages_dir.mkdir(parents=True, exist_ok=True)
         translated_pages_dir.mkdir(parents=True, exist_ok=True)
         if self._settings.pdf.review_enabled:
@@ -3270,7 +3338,7 @@ class PdfImageTranslationRunner:
                     self._log("WARN", f"[{item.path.name}] 输出文件名未获得可用译名，沿用原名。")
             output_source_name = self._translated_pdf_names[original_stem] + item.path.suffix
         translated_pdf_path, compressed_pdf_path = resolve_translated_pdf_variant_paths(
-            source_copy_path.parent,
+            output_dir / relative_pdf.parent,
             output_source_name,
             self._settings.pdf.target_lang,
             self._settings,
@@ -3286,6 +3354,7 @@ class PdfImageTranslationRunner:
             translated_pdf_path=translated_pdf_path,
             compressed_pdf_path=compressed_pdf_path,
             app_managed=app_managed,
+            final_output_dir=output_dir,
         )
 
     def _prefill_resume_pages(
@@ -3327,7 +3396,10 @@ class PdfImageTranslationRunner:
             )
             return
         try:
-            reusable = reusable_pdf_pages(manifest, resume_path)
+            resume_archive_path = Path(
+                str(manifest.get("_resume_process_dir") or resume_path)
+            )
+            reusable = reusable_pdf_pages(manifest, resume_archive_path)
         except Exception as exc:  # noqa: BLE001 - resume is best-effort by design.
             logger.debug(f"[PDF] 读取上次输出页存档失败原始错误：{exc!r}")
             self._log("WARN", "续译：上次输出的页面存档读不出来，本次全部重新翻译。")
@@ -3990,7 +4062,7 @@ class PdfImageTranslationRunner:
                 prepared.translated_image_path = cached
             return cached
         resolved = resolve_translated_image_path(
-            Path(prepared.record.source_copy_path).parent,
+            prepared.final_output_dir / Path(prepared.relative_pdf).parent,
             prepared.record.name,
             self._settings.pdf.target_lang,
             self._settings,
@@ -4487,7 +4559,7 @@ class PdfImageTranslationRunner:
                                 user_facing_reason(
                                     exc,
                                     fallback=(
-                                        "PDF 翻译审核模型当前不可用，请在设置里检查这条连接的 "
+                                        "PDF翻译（图像翻译）复核模型当前不可用，请在设置里检查这条连接的 "
                                         "API Key、模型名和账号额度。"
                                     ),
                                 )
@@ -4504,7 +4576,7 @@ class PdfImageTranslationRunner:
                                 PdfReviewIssue(
                                     type="review_request_failed",
                                     problem=review_failure_reason,
-                                    suggestion="请重试审核或更换 PDF 翻译审核模型。",
+                                    suggestion="请重试审核或更换 PDF翻译（图像翻译）复核模型。",
                                 )
                             ],
                             summary=f"审核请求失败：{review_failure_reason}",

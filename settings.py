@@ -1145,9 +1145,8 @@ class AppSettings(BaseModel):
     excel_domain_preset: str = "无"
     excel_custom_prompt: str = ""
     excel_domain_name_overrides: dict[str, str] = Field(default_factory=dict)
-    # Prompt 覆盖按「预设名 → {目标语言 → Prompt}」两层存放。内置 DOMAIN_PRESETS
-    # 本身就是按语言给文本的，覆盖若不带语言，换目标语言后会拿错语言的 Prompt
-    # 静默产出错稿（审计 中-15）。
+    # Prompt 覆盖新版本按「预设名 → {_base: Prompt}」保存；旧版目标语言映射仍可
+    # 读取，便于升级后逐步收敛，不让旧配置失效。
     excel_domain_prompt_overrides: dict[str, dict[str, str]] = Field(default_factory=dict)
     # User-managed named prompt presets. Values may be a language map or a
     # legacy/plain string; the API normalizes writes while reads stay tolerant.

@@ -28,7 +28,9 @@ from config import APP_DATA_DIR
 
 PLUGIN_ID = "cad-support"
 PLUGIN_VERSION = "0.1.0"
-OFFICIAL_DOWNLOAD_URL = "https://www.opendesign.com/guestfiles/oda_file_converter"
+# Open the Chinese ODA page by default; it still contains the same converter
+# downloads while avoiding an extra language switch for Chinese users.
+OFFICIAL_DOWNLOAD_URL = "https://www.opendesign.com/cn/guestfiles/oda_file_converter"
 _REQUIRED_CONVERTER_NAMES = ("ODAFileConverter", "ODAFileConverter.exe")
 _MANIFEST_KEYS = {
     "id",

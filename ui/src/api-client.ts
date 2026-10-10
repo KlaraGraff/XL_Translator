@@ -41,6 +41,7 @@ export type CadCapabilityStatus = {
   installed?: boolean;
   converter?: string | null;
   converter_found?: boolean;
+  official_download_url?: string;
   oda_bundled?: boolean;
   license_action?: string;
   version?: string;

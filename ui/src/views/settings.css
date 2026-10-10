@@ -45,6 +45,77 @@
   padding: 8px 10px;
 }
 
+/* 提示词整理：统一提示词语言、翻译方向、补充要求和 Lantern 风格的左右版本对比。 */
+.prompt-language-pair {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface-2, var(--surface));
+}
+.prompt-language-pair-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.prompt-language-pair-info { flex-wrap: wrap; }
+.prompt-language-pair-label,
+.prompt-optimization-heading span,
+.prompt-optimization-actions {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.prompt-language-pair-info b { color: var(--ink); font-size: 13px; }
+.prompt-optimization-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--surface-2, var(--surface));
+}
+.prompt-optimization-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.prompt-optimization-heading b { color: var(--ink); font-size: 13px; }
+.prompt-optimization-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.prompt-optimization-column {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.prompt-optimization-column label {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.prompt-optimization-column.result label { color: var(--accent); }
+.prompt-optimization-column .btn { align-self: flex-start; }
+.prompt-optimization-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+.prompt-refinement { min-height: 58px !important; }
+@media (max-width: 760px) {
+  .prompt-language-pair { align-items: flex-start; flex-direction: column; }
+  .prompt-optimization-columns { grid-template-columns: 1fr; }
+  .prompt-optimization-heading { align-items: flex-start; flex-direction: column; }
+}
+
 /* 复核标记颜色选择器：把原生 color input 重置成 .swatch 同款瓷片。 */
 .set-body input.swatch-input {
   -webkit-appearance: none;

@@ -25,10 +25,9 @@ from app_meta import APP_NAME, APP_VERSION
 from settings import AppSettings
 
 DOCUMENT_CONFIG_EXPORT_TYPE = "translator_document_config"
-# v2：领域 Prompt 覆盖从「预设名 → Prompt」升级为「预设名 → {目标语言 → Prompt}」。
-# 旧版应用校验不了嵌套形态，必须靠上面的版本闸门给出「请升级」的明白话，而不是
-# 一段英文校验报错；新版导入 v1 照常（导入侧只拒绝比自己高的版本）。
-DOCUMENT_CONFIG_EXPORT_VERSION = 2
+# v2：领域 Prompt 覆盖曾升级为按目标语言分层；v3 收敛为每个预设一份 `_base`
+# 主 Prompt。导入侧仍接受 v1/v2 的旧结构，并在设置写入时折叠为统一主版本。
+DOCUMENT_CONFIG_EXPORT_VERSION = 3
 
 # Nested setting objects that describe document translation behaviour.
 DOCUMENT_CONFIG_SECTIONS = (
@@ -110,6 +109,48 @@ _LANGUAGE_FIELDS = frozenset(
         "custom_target_langs",
     }
 )
+
+_PROMPT_MAP_FIELDS = frozenset(
+    {
+        "domain_prompt_overrides",
+        "excel_domain_prompt_overrides",
+        "word_domain_prompt_overrides",
+        "cad_domain_prompt_overrides",
+        "domain_custom_prompts",
+        "excel_domain_custom_prompts",
+        "word_domain_custom_prompts",
+        "cad_domain_custom_prompts",
+    }
+)
+
+
+def _canonicalize_prompt_map(value: object) -> dict[str, dict[str, str]]:
+    """Collapse legacy language maps to one `_base` prompt per preset."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for raw_name, raw_prompt in value.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        if isinstance(raw_prompt, str):
+            prompt = raw_prompt.strip()
+        elif isinstance(raw_prompt, dict):
+            prompt = str(raw_prompt.get("_base") or "").strip()
+            if not prompt:
+                prompt = next(
+                    (
+                        str(item).strip()
+                        for item in raw_prompt.values()
+                        if isinstance(item, str) and item.strip()
+                    ),
+                    "",
+                )
+        else:
+            prompt = ""
+        if prompt:
+            result[name] = {"_base": prompt}
+    return result
 
 
 def build_document_config_export_payload(settings: AppSettings) -> dict[str, Any]:
@@ -211,7 +252,11 @@ def apply_document_config_import(
                 *(value if isinstance(value, list) else []),
             ]
             continue
-        payload[key] = value
+        payload[key] = (
+            _canonicalize_prompt_map(value)
+            if key in _PROMPT_MAP_FIELDS
+            else value
+        )
     # Validation is what turns a bad colour string or an out-of-range batch size
     # into a 422 instead of an unusable settings file.
     return AppSettings.model_validate(payload)

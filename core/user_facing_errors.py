@@ -74,6 +74,10 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "本机 Office 没有响应。",
     ),
     (
+        (r"-10827", r"klsnoexecutablerr"),
+        "macOS 找不到可启动的 Microsoft Excel 程序，可能是 Excel 安装或系统注册异常；请先手动打开一次 Excel，仍失败时修复或重装 Office。",
+    ),
+    (
         (r"-10814", r"can['’]t be found", r"no such application"),
         "本机没有安装 Microsoft Office。",
     ),

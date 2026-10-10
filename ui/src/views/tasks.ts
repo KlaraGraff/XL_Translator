@@ -347,7 +347,7 @@ function connectionSwitchText(task: TaskStatus): string {
 const ROLE_LABELS: Record<string, string> = {
   translation: "翻译模型",
   image: "图像翻译模型",
-  pdf_review: "图像审核模型",
+  pdf_review: "PDF翻译（图像翻译）复核",
   review: "审核模型",
   cleaner: "记忆库清洗模型",
 };

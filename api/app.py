@@ -387,12 +387,12 @@ class ModelRoleTestPayload(BaseModel):
 class DomainSettingsPayload(BaseModel):
     preset: str = "同步工程场景"
     custom_prompt: str = ""
-    # 新形态是「预设名 → {目标语言 → Prompt}」；str 分支收留旧客户端的扁平写入，
-    # 落盘前归到该页面当前的目标语言名下，绝不 422 拒绝（兼容硬约束）。
+    # 新形态统一保存为「预设名 → {"_base": Prompt}」；仍接受旧的
+    # 语言映射和扁平字符串，写入时折叠为一个主 Prompt。
     prompt_overrides: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     name_overrides: dict[str, str] = Field(default_factory=dict)
-    # Named user prompts are stored per target language.  The values accept a
-    # plain string for compatibility with early development builds.
+    # Named user prompts also use one canonical ``_base`` value.  Language maps
+    # and plain strings remain accepted for backwards compatibility.
     custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
     disabled_presets: list[str] = Field(default_factory=list)
 
@@ -854,7 +854,7 @@ def create_app(
     def optimize_domain_prompt(
         surface: str, payload: DomainPromptOptimizePayload
     ) -> dict[str, Any]:
-        """Suggest an improved built-in prompt using the translation model role.
+        """Suggest an improved prompt using the translation model role.
 
         The result is deliberately returned to the editor and never persisted
         here; the user still controls the subsequent save operation.
@@ -863,12 +863,24 @@ def create_app(
         if normalized not in {"excel", "word", "cad"}:
             raise HTTPException(404, "Unknown translation surface.")
         preset = str(payload.preset or "").strip()
-        if preset not in DOMAIN_PRESETS or preset in {"无", "自定义"}:
-            raise HTTPException(422, "只有内置领域 Prompt 可以优化。")
         prompt = str(payload.prompt or "").strip()
         if not prompt:
             raise HTTPException(422, "Prompt 不能为空。")
         settings = load_settings()
+        custom_names = {
+            str(name).strip()
+            for name in getattr(settings, f"{normalized}_domain_custom_prompts", {})
+            if str(name).strip()
+        }
+        # The add form has not been persisted yet, so it uses a temporary
+        # marker. Named saved prompts are accepted alongside built-ins.
+        is_new_prompt = preset == "自定义提示词"
+        if (
+            not preset
+            or preset in {"无", "自定义"}
+            or (preset not in DOMAIN_PRESETS and preset not in custom_names and not is_new_prompt)
+        ):
+            raise HTTPException(422, "请选择一个有效的提示词后再整理。")
         target_code = str(payload.target_lang or "").strip() or str(
             getattr(settings, f"{normalized}_target_lang", "")
             or settings.target_lang
@@ -884,7 +896,7 @@ def create_app(
             "必须保留原有约束、数字和占位符，避免加入与领域无关的要求。"
         )
         user = (
-            f"内置领域：{preset}\n目标语言：{target_name}\n"
+            f"当前提示词名称：{preset}\n目标语言：{target_name}\n"
             "请让它更清晰、稳定、可执行，并适合直接作为翻译模型的 system prompt。\n\n"
             f"原 Prompt：\n{prompt}"
         )
@@ -924,17 +936,25 @@ def create_app(
         prefix = f"{normalized}_"
         setattr(settings, f"{prefix}domain_preset", preset)
         setattr(settings, f"{prefix}custom_prompt", str(payload.custom_prompt or ""))
-        surface_lang = str(getattr(settings, f"{prefix}target_lang", "") or "").strip() or str(
-            settings.target_lang or ""
-        ).strip()
         normalized_overrides: dict[str, dict[str, str]] = {}
         for name, value in payload.prompt_overrides.items():
             if isinstance(value, str):
-                # 旧客户端的扁平覆盖：归到该页面当前的目标语言名下。
-                normalized_overrides[name] = {surface_lang: value}
-            elif value:
-                # 语言层为空的预设直接丢掉，免得留一个空壳 key。
-                normalized_overrides[name] = dict(value)
+                prompt_text = value.strip()
+            elif isinstance(value, dict):
+                # Canonical storage keeps one language-neutral value.  Prefer
+                # an explicit _base entry, otherwise retain the first usable
+                # legacy language value while collapsing the old map.
+                prompt_text = str(value.get("_base") or "").strip()
+                if not prompt_text:
+                    prompt_text = next(
+                        (str(text).strip() for text in value.values()
+                         if isinstance(text, str) and text.strip()),
+                        "",
+                    )
+            else:
+                prompt_text = ""
+            if prompt_text:
+                normalized_overrides[str(name)] = {"_base": prompt_text}
         setattr(settings, f"{prefix}domain_prompt_overrides", normalized_overrides)
         setattr(settings, f"{prefix}domain_name_overrides", dict(payload.name_overrides))
         normalized_custom: dict[str, dict[str, str]] = {}
@@ -943,16 +963,19 @@ def create_app(
             if not clean_name or clean_name in DOMAIN_PRESETS:
                 raise HTTPException(422, "自定义提示词名称不能为空且不能与内置预设重名。")
             if isinstance(value, str):
-                if value.strip():
-                    normalized_custom[clean_name] = {surface_lang: value}
+                prompt_text = value.strip()
             elif isinstance(value, dict):
-                entries = {
-                    str(lang).strip(): str(text)
-                    for lang, text in value.items()
-                    if str(lang).strip() and isinstance(text, str) and text.strip()
-                }
-                if entries:
-                    normalized_custom[clean_name] = entries
+                prompt_text = str(value.get("_base") or "").strip()
+                if not prompt_text:
+                    prompt_text = next(
+                        (str(text).strip() for text in value.values()
+                         if isinstance(text, str) and text.strip()),
+                        "",
+                    )
+            else:
+                prompt_text = ""
+            if prompt_text:
+                normalized_custom[clean_name] = {"_base": prompt_text}
         disabled = []
         for name in payload.disabled_presets:
             clean_name = str(name or "").strip()

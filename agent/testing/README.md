@@ -23,6 +23,17 @@ powershell -ExecutionPolicy Bypass -File ./agent/testing/Run-IsolatedVenvPython.
 
 3. 如果要测 Tauri 页面，先用隔离应用数据启动开发壳，再对页面导航、主题、配置面板和关键 DOM 状态做断言。
 
+## 人工测试壳复用当前配置
+
+人工打开开发壳时默认复用当时正式软件的配置（包括 API 配置），每次启动前刷新隔离副本。macOS 可直接运行 `scripts/start_tauri_macos.command`，脚本会自动完成复制。手动启动时使用：
+
+```bash
+./.venv/bin/python3 agent/testing/seed_user_config.py --target "$PWD/.runtime/manual-shell-data"
+cd src-tauri && TRANSLATOR_APP_DATA_DIR="$PWD/../.runtime/manual-shell-data" ../ui/node_modules/.bin/tauri dev
+```
+
+也可用 `--source <目录>` 指定配置来源。脚本只复制 `settings.json`、`keys.json` 和 `key_origins.json`；自动化单元测试仍应自行合成隔离配置，不要调用此脚本。
+
 ## 复用到新项目时怎么搬
 
 最简单的方式不是一个文件一个文件地找，而是直接复制：

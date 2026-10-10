@@ -8,6 +8,7 @@
 
 优势：打破文件壁垒，最大化利用 API 批次并发能力；跨文件去重减少重复请求。
 """
+import json
 import os
 import queue
 import re
@@ -98,6 +99,7 @@ from core.excel_automation import (
     terminate_process_tree,
 )
 from core.task_logger import TaskLogger
+from core.process_artifacts import ProcessArtifacts
 from core.user_facing_errors import humanize_error
 from settings import AppSettings, provider_key_overrides
 
@@ -612,6 +614,43 @@ class TaskRunner:
                 )
             )
             return
+
+        process_artifacts: ProcessArtifacts | None = None
+        process_finished = False
+
+        def _finish_process(status: str, *, elapsed_sec: float | None = None) -> None:
+            """Close the internal run record without affecting deliverables."""
+            nonlocal process_finished
+            if process_artifacts is None or process_finished:
+                return
+            if elapsed_sec is not None:
+                try:
+                    (process_artifacts.work_dir / "run-summary.json").write_text(
+                        json.dumps(
+                            {
+                                "task_id": self.task_id,
+                                "status": status,
+                                "output_dir": str(output_dir),
+                                "files": len(self._files),
+                                "elapsed_sec": round(float(elapsed_sec), 3),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    logger.debug("Excel 过程摘要写入失败：{}", exc)
+            try:
+                process_artifacts.finish(status)
+                process_finished = True
+            except Exception as exc:  # process evidence must never block delivery
+                logger.warning("Excel 过程记录收尾失败：{}", exc)
+
+        try:
+            process_artifacts = ProcessArtifacts.create("excel", output_dir, self.task_id)
+        except Exception as exc:  # process evidence is best effort
+            logger.warning("Excel 过程目录创建失败，继续输出成果文件：{}", exc)
 
         # ── 任务日志：记录启动信息 ────────────────────────────────────
         self._task_logger.task_start(
@@ -2164,6 +2203,7 @@ class TaskRunner:
                             external_autofit_planned=need_autofit,
                             stats=write_stats,
                             output_basename=output_basename,
+                            staging_dir=(process_artifacts.work_dir if process_artifacts else None),
                         )
                     else:
                         out_path = bilingual_writer.write_bilingual_file(
@@ -2188,6 +2228,7 @@ class TaskRunner:
                             external_autofit_planned = need_autofit,
                             stats                = write_stats,
                             output_basename      = output_basename,
+                            staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
                         )
                     if excel_output.translate_sheet_names:
                         with ZipFile(out_path) as workbook_package:
@@ -2528,6 +2569,7 @@ class TaskRunner:
                 actual_results=normal_api_language_results,
                 review_marks=excel_review_marks,
             )
+            _finish_process("paused", elapsed_sec=elapsed)
             self._queue.put(
                 StoppedMsg(
                     message=stopped_message,
@@ -2566,6 +2608,7 @@ class TaskRunner:
                 review_marks=excel_review_marks,
                 error_message=fatal_error_message,
             )
+            _finish_process("failed", elapsed_sec=elapsed)
             self._queue.put(
                 ErrorMsg(
                     message=fatal_error_message,
@@ -2598,6 +2641,13 @@ class TaskRunner:
             actual_results=normal_api_language_results,
             review_marks=excel_review_marks,
         )
+        process_status = (
+            "needs_review"
+            if any(not bool(item.get("success")) for item in file_results)
+            or any(str(issue.get("severity") or "") == "needs_review" for issue in quality_issues)
+            else "succeeded"
+        )
+        _finish_process(process_status, elapsed_sec=elapsed)
         self._queue.put(DoneMsg(
             output_dir     = str(output_dir),
             file_results   = file_results,

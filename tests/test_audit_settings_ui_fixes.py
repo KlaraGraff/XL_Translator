@@ -72,19 +72,18 @@ class BuiltinDomainPromptsEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(response.json().get("detail"), "Unknown translation surface.")
 
-    def test_includes_the_previously_missing_en_key_and_the_two_dropped_rules(self) -> None:
-        """旧的前端硬编码文本缺 en 键，也缺「一个字符都不能改动」和「中文计量
-        用语换成目标语言书写习惯」这两条规则。走后端端点之后，这些必须都在。"""
+    def test_serves_one_canonical_prompt_with_the_two_required_rules(self) -> None:
+        """领域提示词只维护一份中文主版本；其中两条关键规则必须继续存在。"""
         preset = config.DOMAIN_PRESETS["同步工程场景"]
-        self.assertIn("en", preset, "config.py 的内置预设应当带 en 键")
-        self.assertIn("一个字符都不能改动", preset["en"])
-        self.assertIn("中文计量用语", preset["en"])
+        self.assertEqual(set(preset), {"_base"})
+        self.assertIn("一个字符都不能改动", preset["_base"])
+        self.assertIn("中文计量用语", preset["_base"])
 
         response = self.client.get("/api/domains/builtin-prompts")
         served = response.json()["presets"]["同步工程场景"]
-        self.assertIn("en", served)
-        self.assertIn("一个字符都不能改动", served["en"])
-        self.assertIn("中文计量用语", served["en"])
+        self.assertEqual(set(served), {"_base"})
+        self.assertIn("一个字符都不能改动", served["_base"])
+        self.assertIn("中文计量用语", served["_base"])
 
     def test_unknown_surface_still_404s_after_adding_the_sibling_route(self) -> None:
         """确认新路由没有反过来抢占 `/api/domains/{surface}` 的合法请求。"""

@@ -134,6 +134,7 @@ def write_untranslated_excel_file(
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
     output_basename: str | None = None,
+    staging_dir: Path | None = None,
 ) -> Path:
     """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
@@ -210,6 +211,7 @@ def write_untranslated_excel_file(
             external_autofit_planned=external_autofit_planned,
             stats=stats,
         ),
+        staging_dir=staging_dir,
     )
     write_count = stats.get("mutated_cells", 0)
 

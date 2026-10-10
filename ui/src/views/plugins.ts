@@ -7,6 +7,7 @@ import type { ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import { ApiClient, type CadCapabilityStatus } from "../api-client";
 import { createButton, createCard, createHintBadge, createStatus, showToast } from "../components";
+import { icon } from "../icons";
 import "./plugins.css";
 
 let mounted = false;
@@ -16,6 +17,20 @@ let errorText = "";
 let busy = false;
 let detectTimer: number | null = null;
 let detectDeadline = 0;
+const DEFAULT_OFFICIAL_CAD_URL = "https://www.opendesign.com/cn/guestfiles/oda_file_converter";
+
+function localizedOfficialCadUrl(value?: string): string {
+  if (!value) return DEFAULT_OFFICIAL_CAD_URL;
+  try {
+    const url = new URL(value);
+    if (url.hostname === "www.opendesign.com" && url.pathname === "/guestfiles/oda_file_converter") {
+      url.pathname = "/cn/guestfiles/oda_file_converter";
+    }
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return DEFAULT_OFFICIAL_CAD_URL;
+  }
+}
 
 function statusLabel(): string {
   if (!capability) return "正在检测";
@@ -66,8 +81,7 @@ async function openOfficialDownloadAndDetect(allowWhenBusy = false): Promise<voi
     const client = new ApiClient();
     await client.connect();
     const download = await client.officialCadDownload();
-    const url = download.url || download.authorization_url || "";
-    if (!url) throw new Error("官方下载地址暂不可用。");
+    const url = localizedOfficialCadUrl(download.url || download.authorization_url);
     await openExternalUrl(url);
     showToast({ message: "已打开图纸转换工具官网。安装完成后可刷新检测。" });
     detectDeadline = Date.now() + 3 * 60_000;
@@ -140,9 +154,10 @@ function actionButtons(): HTMLElement {
   actions.className = "field-row plugins-actions";
   if (capability?.oda !== "connected") {
     actions.append(createButton({ label: busy ? "打开中…" : "去官网下载", variant: "primary", disabled: busy, onClick: () => void openOfficialDownloadAndDetect() }));
-    actions.append(createButton({ label: "选择已安装位置", onClick: () => void chooseOda() }));
   }
-  actions.append(createButton({ label: "刷新状态", onClick: () => void refresh() }));
+  // 保留手动兜底：即使自动检测已连接，用户仍可切换到另一套安装位置。
+  actions.append(createButton({ label: "选择安装目录", onClick: () => void chooseOda() }));
+  actions.append(createButton({ label: "检测安装状态", onClick: () => void refresh() }));
   return actions;
 }
 
@@ -160,18 +175,19 @@ function render(): void {
   body.className = "plugins-card-body";
   const titleRow = document.createElement("div");
   titleRow.className = "plugins-title-row";
-  const icon = document.createElement("div");
-  icon.className = "plugins-icon";
-  icon.textContent = "▥";
+  const iconBox = document.createElement("div");
+  iconBox.className = "plugins-icon";
+  iconBox.append(icon("convert", { size: "lg" }));
   const copy = document.createElement("div");
   copy.className = "plugins-copy";
   const title = document.createElement("h2");
   title.textContent = "图纸转换工具";
-  title.append(createHintBadge("负责把翻译后的内容转换为 DWG 或其他 CAD 图纸格式。"));
+  const officialUrl = localizedOfficialCadUrl(capability?.official_download_url);
+  title.append(createHintBadge(`使用 ODA File Converter，把翻译后的 DXF 转回 DWG。官方下载：${officialUrl}`));
   const desc = document.createElement("p");
-  desc.textContent = "翻译 DWG / DXF 中的可见文字，原件不覆盖，结果和报告写入输出目录。";
+  desc.textContent = "把 DWG 转为可翻译的 DXF，完成翻译后再转回 DWG。";
   copy.append(title, desc);
-  titleRow.append(icon, copy);
+  titleRow.append(iconBox, copy);
   if (capability) titleRow.append(createStatus({ label: statusLabel(), tone: statusTone() }));
   titleRow.append(actionButtons());
   body.append(titleRow);
@@ -184,12 +200,12 @@ function render(): void {
   } else if (capability?.oda === "connected") {
     const ok = document.createElement("div");
     ok.className = "plugins-notice ok";
-    ok.textContent = "转换工具已准备好。";
+    ok.textContent = "ODA File Converter 已连接，可开始选择 DWG / DXF 来源。";
     body.append(ok);
   } else if (capability) {
     const warn = document.createElement("div");
     warn.className = "plugins-notice warn";
-    warn.textContent = "尚未检测到图纸转换工具。可打开官网、选择已安装位置或刷新检测。";
+    warn.textContent = "尚未检测到图纸转换工具。可打开官网、选择安装目录或检测安装状态。";
     body.append(warn);
   }
   card.append(body);

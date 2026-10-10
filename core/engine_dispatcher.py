@@ -322,9 +322,8 @@ def get_system_prompt(
     """
     根据领域预设和目标语言生成最终 System Prompt。
 
-    DOMAIN_PRESETS 支持两种格式：
-      - dict[str, str]：单语言（旧格式，向下兼容）
-      - dict[str, dict[str, str]]：多语言，内层 key 为 lang 代码 或 "_base"
+    领域提示词只维护一份 `_base` 主版本；旧版扁平字符串和按语言映射仍可读取，
+    但不会再覆盖新的统一主 Prompt 设计。
     """
     normalized_page = str(page_key or "").strip().lower()
     if normalized_page in {"excel", "word", "cad"}:
@@ -359,7 +358,15 @@ def get_system_prompt(
     # so older settings files remain usable after the schema addition.
     named_entry = domain_custom_prompts.get(domain_preset)
     if isinstance(named_entry, dict):
-        named_prompt = str(named_entry.get(target_lang) or named_entry.get("_base") or "")
+        # New data has one canonical ``_base`` prompt.  Prefer it for every
+        # target language; the target-specific lookup remains a compatibility
+        # fallback for settings written by older versions.
+        named_prompt = str(named_entry.get("_base") or named_entry.get(target_lang) or "")
+        if not named_prompt.strip():
+            named_prompt = next(
+                (str(value) for value in named_entry.values() if isinstance(value, str) and value.strip()),
+                "",
+            )
     elif isinstance(named_entry, str):
         named_prompt = named_entry
     else:
@@ -378,14 +385,22 @@ def get_system_prompt(
             prompt,
             build_target_lang_note_block(target_lang, settings.custom_target_langs),
         )
-    # 用户自定义覆盖优先于内置预设。覆盖按「预设名 → {目标语言 → Prompt}」存放，
-    # 只有当前目标语言名下的那份才作数——其他语言回内置默认，宁可回退（可见、
-    # 可重建）也不拿别的语言的覆盖静默出错稿（审计 中-15）。
+    # 用户自定义覆盖优先于内置预设。新数据按「预设名 → {_base: Prompt}」存放；
+    # 旧版按目标语言保存的映射仍按当前语言读取，找不到时取第一份有效值，保证升级
+    # 后已有配置仍可用。
     override_entry = domain_prompt_overrides.get(domain_preset)
     if isinstance(override_entry, dict):
-        if target_lang in override_entry and isinstance(override_entry[target_lang], str):
+        # Canonical storage is one language-neutral ``_base`` value.  Read old
+        # target-language maps as a fallback so existing settings keep working.
+        override_prompt = override_entry.get("_base") or override_entry.get(target_lang)
+        if not isinstance(override_prompt, str) or not override_prompt.strip():
+            override_prompt = next(
+                (value for value in override_entry.values() if isinstance(value, str) and value.strip()),
+                "",
+            )
+        if override_prompt:
             return append_prompt_block(
-                override_entry[target_lang],
+                override_prompt,
                 build_target_lang_note_block(target_lang, settings.custom_target_langs),
             )
     elif isinstance(override_entry, str):
@@ -398,7 +413,10 @@ def get_system_prompt(
     preset = DOMAIN_PRESETS.get(domain_preset, "")
     prompt = ""
     if isinstance(preset, dict):
-        prompt = preset.get(target_lang) or preset.get("_base", "")
+        # Built-in prompts are maintained once in ``_base``.  The language
+        # entries remain readable for older configurations but never override
+        # the canonical prompt.
+        prompt = preset.get("_base", "") or preset.get(target_lang, "")
     else:
         prompt = preset
     return append_prompt_block(

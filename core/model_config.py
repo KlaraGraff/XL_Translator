@@ -27,7 +27,12 @@ from core.model_roles import (
     role_label,
     validate_all_model_roles,
 )
-from core.model_throughput import get_model_throughput, set_model_throughput
+from core.model_throughput import (
+    batch_size_bounds,
+    concurrency_bounds,
+    get_model_throughput,
+    set_model_throughput,
+)
 from settings import (
     KEY_ORIGIN_IMPORTED,
     AppSettings,
@@ -256,6 +261,33 @@ def apply_model_config_import(
     for role, throughput in imported.profile_throughputs.items():
         try:
             config = resolve_effective_model_config(updated, role)
+            # A model export does not need to carry the private unlock flag.  The
+            # values themselves are the portable evidence: when an imported
+            # batch/concurrency value is above the normal safety range, preserve
+            # that deliberate unlocked configuration on the receiving machine.
+            # Values that fit inside the normal range never grant the unlock by
+            # themselves, even when the source machine happened to be unlocked.
+            if not updated.engine.concurrency_unlocked:
+                requested_values = [
+                    value for value in (throughput.get("batch_size"), throughput.get("concurrency"))
+                    if isinstance(value, int) and not isinstance(value, bool)
+                ]
+                locked_batch, locked_concurrency = (
+                    batch_size_bounds(config),
+                    concurrency_bounds(config),
+                )
+                exceeds_batch = bool(
+                    locked_batch
+                    and isinstance(throughput.get("batch_size"), int)
+                    and throughput["batch_size"] > locked_batch[1]
+                )
+                exceeds_concurrency = bool(
+                    locked_concurrency
+                    and isinstance(throughput.get("concurrency"), int)
+                    and throughput["concurrency"] > locked_concurrency[1]
+                )
+                if requested_values and (exceeds_batch or exceeds_concurrency):
+                    updated.engine.concurrency_unlocked = True
             set_model_throughput(
                 updated,
                 config,

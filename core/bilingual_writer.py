@@ -24,6 +24,7 @@ from loguru import logger
 
 from config import EXCEL_REVIEW_EXISTING_FILL_POLICY_DEFAULT
 from core.language_registry import get_target_lang_display
+from core.user_facing_errors import humanize_error
 from core.xlsx_patcher import write_bilingual_workbook
 
 _INVALID_FILENAME_FRAGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
@@ -37,7 +38,13 @@ def _ensure_owner_writable(path: Path) -> None:
     path.chmod(current_mode | stat.S_IWUSR)
 
 
-def patch_into_output(source_path: Path, out_path: Path, patch) -> Path:
+def patch_into_output(
+    source_path: Path,
+    out_path: Path,
+    patch,
+    *,
+    staging_dir: Path | None = None,
+) -> Path:
     """先在临时文件上打补丁，成功了才让它占用最终文件名。
 
     输出副本是在打补丁**之前**拷过去的。若直接拷成最终文件名，补丁中途失败
@@ -47,7 +54,18 @@ def patch_into_output(source_path: Path, out_path: Path, patch) -> Path:
 
     ``patch`` 接收临时文件路径，就地改写它。
     """
-    staging = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex[:8]}.partial")
+    staging_root = out_path.parent
+    if staging_dir is not None:
+        candidate = Path(staging_dir)
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            # os.replace is atomic only within one filesystem. Fall back to a
+            # hidden sibling when the app-data directory is on another volume.
+            if os.stat(candidate).st_dev == os.stat(out_path.parent).st_dev:
+                staging_root = candidate
+        except OSError:
+            staging_root = out_path.parent
+    staging = staging_root / f".{out_path.name}.{uuid.uuid4().hex[:8]}.partial"
     shutil.copy2(source_path, staging)
     _ensure_owner_writable(staging)
     try:
@@ -158,6 +176,7 @@ def write_bilingual_file(
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
     output_basename: str | None = None,
+    staging_dir: Path | None = None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -219,6 +238,7 @@ def write_bilingual_file(
             external_autofit_planned=external_autofit_planned,
             stats=stats,
         ),
+        staging_dir=staging_dir,
     )
 
     if log_callback:
@@ -331,9 +351,13 @@ def autofit_files_batch(
                         log_callback(f"[INFO] Excel AutoFit 已回写原文件：{original_path}")
                     logger.info(f"AutoFit 完成：{original_path.name}")
                 except Exception as e:
-                    logger.warning(f"AutoFit 异常（{original_path.name}）：{e}")
+                    reason = humanize_error(
+                        e,
+                        fallback="Excel 自动调整行高失败，已保留 Python 估算结果。",
+                    )
+                    logger.warning(f"AutoFit 异常（{original_path.name}）：{e!r}；{reason}")
                     if log_callback:
-                        log_callback(f"[WARN] {original_path.name} AutoFit 失败，已保留 Python 估算值：{e}")
+                        log_callback(f"[WARN] {original_path.name} AutoFit 失败，已保留 Python 估算值：{reason}")
                 finally:
                     done += 1
                     if progress_callback:
@@ -350,9 +374,13 @@ def autofit_files_batch(
             log_callback(f"[INFO] Excel AutoFit 完成，共处理 {len(file_paths)} 个文件")
         return True
     except Exception as e:
+        reason = humanize_error(
+            e,
+            fallback="Excel 自动调整行高失败，已保留 Python 估算结果。",
+        )
         if log_callback:
-            log_callback(f"[WARN] Excel AutoFit 失败，已保留 Python 估算值：{e}")
-        logger.warning(f"AutoFit 批量处理异常：{e}")
+            log_callback(f"[WARN] Excel AutoFit 失败，已保留 Python 估算值：{reason}")
+        logger.warning(f"AutoFit 批量处理异常：{e!r}；{reason}")
         return False
     finally:
         temp_workspace.cleanup()

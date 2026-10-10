@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import queue
 import re
+import shutil
 import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -84,6 +86,7 @@ from core.residual_repair import (
 )
 from core.resume_detection import baseline_missing_source_texts, match_previous_output
 from core.task_logger import TaskLogger
+from core.process_artifacts import ProcessArtifacts
 from core.file_progress import FileProgressReporter
 from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from core.task_runner import (
@@ -178,6 +181,26 @@ _POST_WRITE_COVERAGE_ISSUE_LIMIT = 50
 # 远短于这个长度，只有正文标题识别跑偏、把整段正文当标题时才会触顶，截断避免把大段
 # 文字塞进任务日志/结果面板。
 _FRONT_MATTER_HEADING_DISPLAY_LIMIT = 60
+
+
+def _publish_word_file(staged_path: Path, final_path: Path) -> None:
+    """Publish a process-store file, including when app data is another volume."""
+    try:
+        os.replace(staged_path, final_path)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    final_stage = final_path.with_name(
+        f".{final_path.name}.{os.urandom(4).hex()}.partial"
+    )
+    try:
+        shutil.copy2(staged_path, final_stage)
+        os.replace(final_stage, final_path)
+        staged_path.unlink(missing_ok=True)
+    except BaseException:
+        final_stage.unlink(missing_ok=True)
+        raise
 
 # 残留修复阶梯的护栏值与方法中文名只在 core/residual_repair 维护一份（Excel 共用）
 _RESIDUAL_REPAIR_MAX_UNITS = DEFAULT_REPAIR_MAX_UNITS
@@ -758,6 +781,44 @@ class WordTaskRunner:
                 )
             )
             return
+
+        process_artifacts: ProcessArtifacts | None = None
+        process_finished = False
+
+        def _finish_process(status: str, *, elapsed_sec: float | None = None) -> None:
+            """Keep process evidence in app data, never in the deliverable folder."""
+            nonlocal process_finished
+            if process_artifacts is None or process_finished:
+                return
+            if elapsed_sec is not None:
+                try:
+                    (process_artifacts.work_dir / "run-summary.json").write_text(
+                        json.dumps(
+                            {
+                                "task_id": self.task_id,
+                                "status": status,
+                                "output_dir": str(output_dir),
+                                "files": len(self._files),
+                                "elapsed_sec": round(float(elapsed_sec), 3),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    logger.debug("Word 过程摘要写入失败：{}", exc)
+            try:
+                process_artifacts.finish(status)
+                process_finished = True
+            except Exception as exc:  # process evidence must never block delivery
+                logger.warning("Word 过程记录收尾失败：{}", exc)
+
+        try:
+            process_artifacts = ProcessArtifacts.create("word", output_dir, self.task_id)
+        except Exception as exc:  # process evidence is best effort
+            logger.warning("Word 过程目录创建失败，继续输出成果文件：{}", exc)
+        process_work_dir = process_artifacts.work_dir if process_artifacts else Path(tempfile.gettempdir())
 
         def _raise_if_stopped(message: str = "任务已停止") -> None:
             if self._stop_event.is_set():
@@ -2124,7 +2185,7 @@ class WordTaskRunner:
                     final_output_dir = output_dir / rel_subdir
                     final_output_dir.mkdir(parents=True, exist_ok=True)
                     stage_handle = tempfile.TemporaryDirectory(
-                        prefix=".word-task-staging-", dir=final_output_dir
+                        prefix=".word-task-staging-", dir=process_work_dir
                     )
                     staged_output_dir = Path(stage_handle.name)
                     write_log_messages: list[str] = []
@@ -2227,7 +2288,7 @@ class WordTaskRunner:
                             == _file_result_identity(file_item, source_root)
                         ],
                     }
-                    os.replace(out_path, final_path)
+                    _publish_word_file(out_path, final_path)
                     committed_out_path = final_path
                     file_results.append(success_record)
                     self._file_progress.emit(
@@ -2342,6 +2403,18 @@ class WordTaskRunner:
         def _emit_terminal(message) -> None:
             nonlocal terminal_sent
             terminal_sent = True
+            if isinstance(message, StoppedMsg):
+                _finish_process("paused", elapsed_sec=(datetime.now() - start_ts).total_seconds())
+            elif isinstance(message, ErrorMsg):
+                _finish_process("failed", elapsed_sec=(datetime.now() - start_ts).total_seconds())
+            else:
+                process_status = (
+                    "needs_review"
+                    if any(not bool(item.get("success")) for item in file_results)
+                    or any(str(issue.get("severity") or "") == "needs_review" for issue in quality_issues)
+                    else "succeeded"
+                )
+                _finish_process(process_status, elapsed_sec=(datetime.now() - start_ts).total_seconds())
             self._queue.put(message)
 
         try:
@@ -2352,7 +2425,7 @@ class WordTaskRunner:
             if any(item.get("success") for item in file_results):
                 try:
                     report_path = _write_word_quality_report(
-                        output_dir=output_dir,
+                        output_dir=process_work_dir,
                         file_results=file_results,
                         issues=quality_issues,
                         elapsed_sec=elapsed_sec,
@@ -2471,6 +2544,7 @@ class WordTaskRunner:
             )
         finally:
             if not terminal_sent:
+                _finish_process("failed", elapsed_sec=(datetime.now() - start_ts).total_seconds())
                 self._queue.put(
                     ErrorMsg(
                         message=(

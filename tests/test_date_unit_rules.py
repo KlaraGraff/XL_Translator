@@ -185,34 +185,13 @@ class PromptWordingSplitsNumberingFromDateUnitsTests(unittest.TestCase):
     def test_sync_engineering_preset_base(self) -> None:
         self._assert_split_wording(DOMAIN_PRESETS["同步工程场景"]["_base"])
 
-    def test_sync_engineering_preset_en(self) -> None:
-        self._assert_split_wording(DOMAIN_PRESETS["同步工程场景"]["en"])
-
-    def test_sync_engineering_preset_fr_uses_idiomatic_french(self) -> None:
-        fr_text = DOMAIN_PRESETS["同步工程场景"]["fr"]
-        self.assertNotIn("编号", fr_text)
-        self.assertIn("selon l’usage du français", fr_text)
-        self.assertIn("9 août 2026", fr_text)
-
     def test_document_management_preset_base(self) -> None:
         self._assert_split_wording(DOMAIN_PRESETS["资料管理场景"]["_base"])
-
-    def test_document_management_preset_en(self) -> None:
-        self._assert_split_wording(DOMAIN_PRESETS["资料管理场景"]["en"])
-
-    def test_document_management_preset_fr_uses_idiomatic_french(self) -> None:
-        fr_text = DOMAIN_PRESETS["资料管理场景"]["fr"]
-        self.assertNotIn("dates, versions", fr_text)
-        self.assertIn("selon l’usage du français", fr_text)
 
     def test_admin_daily_preset_base_keeps_identifiers_literal(self) -> None:
         text = DOMAIN_PRESETS["行政生活化场景"]["_base"]
         self.assertIn("原样保留", text)
         self.assertIn("目标语言的书写习惯", text)
-
-    def test_admin_daily_preset_fr_uses_idiomatic_french(self) -> None:
-        fr_text = DOMAIN_PRESETS["行政生活化场景"]["fr"]
-        self.assertIn("selon l’usage du français", fr_text)
 
 
 class MixedLanguagePromptWordingTests(unittest.TestCase):

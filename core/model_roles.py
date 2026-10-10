@@ -40,7 +40,7 @@ MODEL_ROLE_LABELS = {
     ROLE_TRANSLATION: "翻译模型",
     ROLE_CLEANER: "深度清洗模型",
     ROLE_IMAGE: "PDF 翻译模型",
-    ROLE_PDF_REVIEW: "PDF 翻译审核模型",
+    ROLE_PDF_REVIEW: "PDF翻译（图像翻译）复核",
 }
 
 MODEL_ROLE_CAPABILITIES = {
@@ -62,7 +62,7 @@ FOLLOW_SOURCE_LABELS = {
     ROLE_TRANSLATION: "跟随翻译模型",
     ROLE_CLEANER: "跟随深度清洗模型",
     ROLE_IMAGE: "跟随PDF翻译模型",
-    ROLE_PDF_REVIEW: "跟随PDF翻译审核模型",
+    ROLE_PDF_REVIEW: "跟随PDF翻译（图像翻译）复核",
 }
 
 # Only a text role can run against a local runner.  Image generation and image

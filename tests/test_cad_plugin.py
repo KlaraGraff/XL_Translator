@@ -9,6 +9,15 @@ import pytest
 from api import cad_plugin as cad
 
 
+@pytest.fixture(autouse=True)
+def hermetic_converter_discovery(monkeypatch):
+    # Keep the machine's real converter installation out of lifecycle tests.
+    # Leave indexed-search logic intact so discovery tests can provide their
+    # own command results, and leave direct user-selected paths untouched.
+    monkeypatch.setattr(cad, "_platform_search_paths", lambda info: [])
+    monkeypatch.setattr(cad, "_run_discovery_command", lambda args, **kwargs: [])
+
+
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("TRANSLATOR_APP_DATA_DIR", str(tmp_path / "app-data"))

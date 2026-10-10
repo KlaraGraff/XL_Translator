@@ -77,7 +77,10 @@ function installDevShim(): void {
   console.info(`[dev-shim] 已安装：sidecar http://127.0.0.1:${port}`);
 }
 
-if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
+const existingTauriInternals = (window as unknown as {
+  __TAURI_INTERNALS__?: { invoke?: unknown };
+}).__TAURI_INTERNALS__;
+if (import.meta.env.DEV && typeof existingTauriInternals?.invoke !== "function") {
   installDevShim();
 }
 

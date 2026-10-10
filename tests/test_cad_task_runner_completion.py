@@ -5,6 +5,7 @@ from pathlib import Path
 
 from core.cad_task_runner import CadTaskRunner
 from core.cad_translation import CadPipelineOptions
+import core.process_artifacts as process_artifacts
 
 
 class _Converter:
@@ -27,7 +28,8 @@ def _run(runner: CadTaskRunner) -> list[object]:
     return messages
 
 
-def test_cad_runner_uses_fresh_output_root_and_checkpoint_resume(tmp_path):
+def test_cad_runner_uses_fresh_output_root_and_checkpoint_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
     source = tmp_path / "drawing.dxf"
     source.write_text("0\nTEXT\n1\nDoor\n", encoding="utf-8")
     item = SimpleNamespace(path=source, name=source.name, format="dxf")
@@ -55,6 +57,31 @@ def test_cad_runner_uses_fresh_output_root_and_checkpoint_resume(tmp_path):
     assert second_output.exists()
     assert second_output.parent != first_root
     assert first_output.read_bytes() == second_output.read_bytes()
+    # The deliverable folder contains CAD output only; diagnostics and the
+    # checkpoint are owned by the shared process store.
+    assert not list(first_root.rglob(".cad-checkpoint.json"))
+    assert not (first_root / "manifest.json").exists()
+    assert Path(first_done.report_path).is_file()
+    assert str(first_done.report_path).startswith(str(tmp_path / "app-data"))
+
+
+def test_cad_runner_preserves_failed_process_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "broken.dxf"
+    source.write_text("0\nTEXT\n1\n", encoding="utf-8")  # incomplete pair: converter/pipeline must fail safely
+    item = SimpleNamespace(path=source, name=source.name, format="dxf")
+    runner = CadTaskRunner(
+        files=[item], source_root=tmp_path, output_dir=tmp_path / "results",
+        converter=_Converter(), translator=lambda texts, glossary: {}, options=CadPipelineOptions(),
+    )
+    messages = _run(runner)
+    done = next(message for message in messages if hasattr(message, "file_results"))
+    assert done.file_results[0]["status"] == "failed"
+    assert not list((tmp_path / "results").glob("*.dxf"))
+    process_dirs = process_artifacts.find_process_dirs(tmp_path / "results", kind="cad")
+    assert process_dirs
+    assert (process_dirs[0] / ".process-run.json").is_file()
+    assert any(path.name == "source.dxf" for path in process_dirs[0].rglob("source.dxf"))
 
 
 def test_cad_runner_uses_target_language_in_output_name(tmp_path):

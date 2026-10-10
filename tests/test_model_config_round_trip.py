@@ -15,7 +15,13 @@ from core.model_config import (
     build_model_config_export_payload,
     parse_model_config_import,
 )
-from core.model_roles import ROLE_TRANSLATION, add_role_connection, update_role_connection
+from core.model_roles import (
+    ROLE_TRANSLATION,
+    add_role_connection,
+    resolve_effective_model_config,
+    update_role_connection,
+)
+from core.model_throughput import get_model_throughput
 from settings import AppSettings
 
 
@@ -30,6 +36,34 @@ def _round_trip(settings: AppSettings) -> AppSettings:
 
 
 class ModelConfigRoundTripTests(unittest.TestCase):
+    def test_importing_throughput_above_locked_limit_preserves_the_unlock(self) -> None:
+        payload = build_model_config_export_payload(AppSettings(), get_api_key=lambda *_: "")
+        payload["model_profiles"]["translation"]["throughput"]["concurrency"] = 21
+
+        restored = apply_model_config_import(
+            AppSettings(),
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertTrue(restored.engine.concurrency_unlocked)
+        config = resolve_effective_model_config(restored, ROLE_TRANSLATION)
+        self.assertEqual(get_model_throughput(restored, config).concurrency, 21)
+
+    def test_importing_throughput_inside_locked_limit_does_not_unlock(self) -> None:
+        payload = build_model_config_export_payload(AppSettings(), get_api_key=lambda *_: "")
+        payload["model_profiles"]["translation"]["throughput"]["concurrency"] = 20
+
+        restored = apply_model_config_import(
+            AppSettings(),
+            parse_model_config_import(payload),
+            save_api_key=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertFalse(restored.engine.concurrency_unlocked)
+        config = resolve_effective_model_config(restored, ROLE_TRANSLATION)
+        self.assertEqual(get_model_throughput(restored, config).concurrency, 20)
+
     def test_translation_following_another_role_survives(self) -> None:
         settings = AppSettings()
         # Cleaner has to become independent first: following a follower is the

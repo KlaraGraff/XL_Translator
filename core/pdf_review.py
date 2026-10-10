@@ -118,9 +118,9 @@ class OpenAICompatiblePdfReviewClient:
                 f"当前服务商不在图像理解审核能力列表中：{model_config.provider}"
             )
         if not model_config.api_key:
-            raise PdfReviewModelUnavailableError("PDF 翻译审核模型缺少 API Key")
+            raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型缺少 API Key")
         if not model_config.model:
-            raise PdfReviewModelUnavailableError("PDF 翻译审核模型名称不能为空")
+            raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型名称不能为空")
 
         base_url = _normalize_base_url(model_config)
         from core.model_auto_upgrade import (
@@ -194,7 +194,7 @@ class OpenAICompatiblePdfReviewClient:
                     humanize_error(
                         str(exc),
                         fallback=(
-                            "PDF 翻译审核模型当前不可用，请在设置里检查这条连接的 "
+                            "PDF翻译（图像翻译）复核模型当前不可用，请在设置里检查这条连接的 "
                             "API Key、模型名和账号额度。"
                         ),
                     )
@@ -336,7 +336,7 @@ def check_pdf_review_connectivity(
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
     base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
-        raise PdfReviewModelUnavailableError("PDF 翻译审核模型缺少 Base URL")
+        raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型缺少 Base URL")
     return base_url
 
 

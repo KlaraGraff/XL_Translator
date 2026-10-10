@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from config import PDF_RENDER_DPI_DEFAULT
 from core import diagnostics
+from core.process_artifacts import ProcessArtifacts
 from core.file_progress import FileProgressMsg, file_progress_id
 from core.api_scheduler import WeightedApiScheduler
 from core.image_generation import (
@@ -446,7 +447,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             output_dir / "_pdf_pages" / "translated_pages" / "section" / "source",
         )
 
-    def test_fake_pdf_pipeline_mirrors_pdf_only_and_writes_page_archives(self) -> None:
+    def test_fake_pdf_pipeline_delivers_pdfs_and_archives_pages_in_process_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source_dir = root / "docs"
@@ -476,6 +477,9 @@ class PdfImageTranslationTests(unittest.TestCase):
                 task_logger_enabled=False,
             )
 
+            artifacts = ProcessArtifacts.create("pdf", output_dir)
+            runner._process_artifacts = artifacts
+            runner._process_work_dir = artifacts.work_dir
             with patch.dict(sys.modules, {"pypdfium2": _fake_pdfium_module()}), patch(
                 "core.model_roles.get_key",
                 return_value="secret",
@@ -488,14 +492,16 @@ class PdfImageTranslationTests(unittest.TestCase):
                 )
 
             self.assertEqual(record.status, PDF_OUTPUT_STATE_COMPLETED)
-            self.assertTrue((output_dir / "docs" / "source.pdf").exists())
+            self.assertFalse((output_dir / "docs" / "source.pdf").exists())
+            self.assertEqual(Path(record.source_copy_path), artifacts.work_dir / "docs" / "source.pdf")
+            self.assertEqual(Path(record.source_copy_path).read_bytes(), source_pdf.read_bytes())
             self.assertFalse((output_dir / "docs" / "note.txt").exists())
-            self.assertTrue((output_dir / "docs" / "source_英文_高清.pdf").exists())
+            self.assertTrue((output_dir / "docs" / "source_英文.pdf").exists())
             self.assertTrue((output_dir / "docs" / "source_英文_压缩.pdf").exists())
             self.assertTrue(record.compressed_pdf_path.endswith("source_英文_压缩.pdf"))
             self.assertTrue(
                 (
-                    output_dir
+                    artifacts.work_dir
                     / "_pdf_pages"
                     / "source_pages"
                     / "docs"
@@ -505,13 +511,17 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
             self.assertTrue(
                 (
-                    output_dir
+                    artifacts.work_dir
                     / "_pdf_pages"
                     / "translated_pages"
                     / "docs"
                     / "source"
                     / "page_001.png"
                 ).exists()
+            )
+            self.assertEqual(
+                sorted(path.relative_to(output_dir).as_posix() for path in output_dir.rglob("*") if path.is_file()),
+                ["docs/source_英文.pdf", "docs/source_英文_压缩.pdf"],
             )
 
     def test_real_pdfium_pipeline_preserves_page_dimensions(self) -> None:
@@ -699,8 +709,8 @@ class PdfImageTranslationTests(unittest.TestCase):
             )
 
             self.assertTrue((target_dir / "source_英文_高清_R1.pdf").exists())
-            self.assertEqual(high.name, "source_英文_高清_R2.pdf")
-            self.assertEqual(compressed.name, "source_英文_压缩_R2.pdf")
+            self.assertEqual(high.name, "source_英文.pdf")
+            self.assertEqual(compressed.name, "source_英文_压缩.pdf")
 
     def test_translated_artifact_names_sanitize_windows_invalid_fragments(self) -> None:
         settings = AppSettings(target_lang="en")
@@ -1488,16 +1498,15 @@ class PdfImageTranslationTests(unittest.TestCase):
             done = _drain_last_message(runner, DoneMsg)
             self.assertIsNotNone(done)
             result = done.file_results[0]
-            output_dir = Path(done.output_dir)
             manifest = json.loads(
-                (output_dir / "pdf_translation_manifest.json").read_text(encoding="utf-8")
+                (runner._process_work_dir / PDF_MANIFEST_FILENAME).read_text(encoding="utf-8")
             )
             page_entry = manifest["files"][0]["pages"][0]
             visible_texts = [
                 result.get("error") or "",
                 done.issues[0].get("problem") or "",
                 page_entry.get("error") or "",
-                (output_dir / "pdf_translation_report.md").read_text(encoding="utf-8"),
+                Path(done.report_path).read_text(encoding="utf-8"),
             ]
             self.assertIn("未生成译文 PDF", result.get("error") or "")
             for text in visible_texts:
@@ -1651,8 +1660,8 @@ class PdfImageTranslationTests(unittest.TestCase):
             stopped = _drain_last_message(runner, StoppedMsg)
             self.assertIsNotNone(stopped)
             output_dir = Path(stopped.output_dir)
-            self.assertTrue((output_dir / "first_英文_高清.pdf").exists())
-            self.assertFalse((output_dir / "second_英文_高清.pdf").exists())
+            self.assertTrue((output_dir / "first_英文.pdf").exists())
+            self.assertFalse((output_dir / "second_英文.pdf").exists())
             report = Path(stopped.report_path).read_text(encoding="utf-8")
             self.assertIn("结束原因：用户主动中止", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
@@ -2309,8 +2318,8 @@ class PdfImageTranslationTests(unittest.TestCase):
                 self.assertEqual(record.placeholder_page_count, 1)
                 output_dir = runner._finished_output_dir
                 self.assertIsNotNone(output_dir)
-                manifest_path = output_dir / PDF_MANIFEST_FILENAME
-                report_path = output_dir / PDF_REPORT_FILENAME
+                manifest_path = runner._process_work_dir / PDF_MANIFEST_FILENAME
+                report_path = runner._process_work_dir / PDF_REPORT_FILENAME
                 before_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 before_report = report_path.read_text(encoding="utf-8")
                 self.assertEqual(before_manifest["placeholder_page_count"], 1)

@@ -9,7 +9,6 @@ PDF 复用 core/pdf_image_translation.py 的分页归档路径与命名规则。
 """
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +22,7 @@ from core.excel_coverage import build_excel_coverage_plan
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.language_registry import get_target_lang_display
 from core.pdf_image_translation import (
-    PDF_MANIFEST_FILENAME,
+    read_pdf_resume_manifest,
     reusable_pdf_pages,
 )
 from core.translation_coverage import COVERAGE_SOURCE_ONLY
@@ -249,7 +248,8 @@ def match_previous_output(
             return None
 
     if surface == "pdf":
-        for variant_label in ("高清", "压缩", None):
+        # 新命名的主产物没有“高清”后缀；保留旧 `_高清` 文件的兼容识别。
+        for variant_label in (None, "压缩", "高清"):
             base_name = _pdf_base_name(source_filename, target_lang, variant_label)
             stem = Path(base_name).stem
             suffix = Path(base_name).suffix
@@ -412,11 +412,9 @@ def baseline_missing_source_texts(
 
 
 def _load_pdf_manifest(resume_dir: Path) -> dict[str, Any] | None:
-    manifest_path = resume_dir / PDF_MANIFEST_FILENAME
     try:
-        raw = manifest_path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (OSError, ValueError, UnicodeDecodeError):
+        data = read_pdf_resume_manifest(resume_dir)
+    except Exception:  # noqa: BLE001 - resume detection is best effort.
         return None
     if not isinstance(data, dict):
         return None

@@ -2029,12 +2029,12 @@ class TranslationTaskManager:
         try:
             review_model = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
         except Exception as exc:  # noqa: BLE001
-            raise TaskInputError(f"PDF 翻译审核模型配置不可用：{exc}") from exc
+            raise TaskInputError(f"PDF翻译（图像翻译）复核模型配置不可用：{exc}") from exc
         if not review_model.model:
-            raise TaskInputError("已启用逐页审核，请先填写 PDF 翻译审核模型名称。")
+            raise TaskInputError("已启用逐页审核，请先填写 PDF翻译（图像翻译）复核模型名称。")
         if not provider_supports_capability(review_model.provider, "vision_text"):
             raise TaskInputError(
-                f"当前 PDF 翻译审核模型服务商不支持视觉理解能力：{review_model.provider}"
+                f"当前 PDF翻译（图像翻译）复核模型服务商不支持视觉理解能力：{review_model.provider}"
             )
         if review_model.mode == "cloud" and not review_model.api_key:
             raise TaskInputError("已启用逐页审核，请先配置审核模型 API Key。")
@@ -2044,7 +2044,7 @@ class TranslationTaskManager:
             # 拿它开一个带「仍要继续」按钮的弹窗，而不是弹一句两秒就没的提示。靠比对中文
             # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
-                "PDF 翻译审核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。",
+                "PDF翻译（图像翻译）复核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。",
                 reason="pdf_review_model_unavailable",
             )
 

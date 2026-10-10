@@ -5,6 +5,7 @@ from __future__ import annotations
 import queue
 import hashlib
 import json
+import os
 import re
 import shutil
 import threading
@@ -22,6 +23,7 @@ from core.file_progress import FileProgressReporter
 from core.language_registry import get_target_lang_display
 from core.output_name_translation import translate_names, output_stem_from_translation
 from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
+from core.process_artifacts import ProcessArtifacts, find_process_dirs
 
 
 _PHASES = {
@@ -81,9 +83,10 @@ class CadTaskRunner:
         else:
             self._output_dir = requested_output_dir
         self._run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        self._run_dir = self._output_dir / ".cad-work" / self._run_id
+        self._process_artifacts = ProcessArtifacts.create("cad", self._output_dir, self._run_id)
+        self._run_dir = self._process_artifacts.work_dir
         self._translated_dir = self._output_dir
-        self._review_dir = self._output_dir / ".cad-review"
+        self._review_dir = self._run_dir / ".cad-review"
         self._publication_dir = self._output_dir
         self._converter = converter
         self._memory_lookup = memory_lookup
@@ -94,7 +97,6 @@ class CadTaskRunner:
         self._options = options or CadPipelineOptions()
         self._translation_identity = dict(translation_identity or {})
         self._checkpoint_path = self._run_dir / ".cad-checkpoint.json"
-        self._legacy_checkpoint_path = self._output_dir / ".cad-checkpoint.json"
         self._last_stage: str | None = None
         self._pause_acknowledged = False
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -194,8 +196,22 @@ class CadTaskRunner:
     def _load_checkpoint(self) -> dict[str, Any]:
         if not self._resume_output_dir:
             return {}
-        candidates = [self._resume_output_dir / ".cad-checkpoint.json", self._resume_output_dir.parent / ".cad-checkpoint.json"]
-        candidates.extend(self._resume_output_dir.rglob(".cad-checkpoint.json"))
+        # New runs keep checkpoints in the shared process store.  Search only
+        # runs associated with this output root; the root-level legacy files
+        # remain readable for pre-process-store jobs.
+        candidates: list[Path] = []
+        try:
+            candidates.extend(path / ".cad-checkpoint.json" for path in find_process_dirs(self._resume_output_dir, kind="cad"))
+        except (OSError, TypeError, ValueError):
+            pass
+        candidates.extend([
+            self._resume_output_dir / ".cad-checkpoint.json",
+            self._resume_output_dir.parent / ".cad-checkpoint.json",
+        ])
+        try:
+            candidates.extend(self._resume_output_dir.rglob(".cad-checkpoint.json"))
+        except OSError:
+            pass
         for path in candidates:
             try:
                 value = json.loads(path.read_text(encoding="utf-8"))
@@ -205,14 +221,36 @@ class CadTaskRunner:
                 continue
         return {}
 
+    def _publish_result(self, result: Any, output: Path) -> Any:
+        """Atomically publish only the final CAD file into the task output."""
+        work_output = Path(result.output)
+        result.work_evidence_dir = work_output.parent / f"{work_output.stem}.cad-work"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staged = output.with_name(f".{output.name}.{self._run_id}.publish")
+        if staged.exists():
+            staged.unlink()
+        shutil.copy2(result.output, staged)
+        os.replace(staged, output)
+        result.output = output
+        # Companion reports stay in the process store, but their output link
+        # must point at the published user deliverable rather than the private
+        # staging copy used by the pipeline.
+        for report_path in (Path(result.manifest), Path(result.report)):
+            try:
+                payload = json.loads(report_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    payload["output"] = str(output)
+                    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError, TypeError):
+                pass
+        return result
+
     def _write_checkpoint(self, entries: Mapping[str, Any]) -> None:
         self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({"schema_version": 1, "options_fingerprint": self._options_fingerprint(), "files": entries}, ensure_ascii=False, indent=2)
         self._checkpoint_path.write_text(payload, encoding="utf-8")
-        # Keep the historical root-level location readable by older resume
-        # callers that pass translated/ or CAD翻译输出 as their source.
-        self._legacy_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        self._legacy_checkpoint_path.write_text(payload, encoding="utf-8")
+        # Legacy root-level checkpoints are read for compatibility, but new
+        # runs never place private state in the user-visible output folder.
 
     def _relocate_file_artifacts(self, result: Any) -> Any:
         """Move per-file evidence out of ``translated/`` into ``review/``.
@@ -304,7 +342,7 @@ class CadTaskRunner:
     def _write_batch_artifacts(self, *, status: str, files: list[dict[str, Any]], issues: list[dict[str, Any]]) -> dict[str, str]:
         """Publish stable batch-level manifest/report/summary entry points."""
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._translated_dir.mkdir(parents=True, exist_ok=True)
+        self._run_dir.mkdir(parents=True, exist_ok=True)
         self._review_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema_version": 2,
@@ -318,9 +356,9 @@ class CadTaskRunner:
             "files": files,
             "issues": issues,
         }
-        manifest_path = self._output_dir / "manifest.json"
-        report_path = self._output_dir / "report.json"
-        summary_path = self._output_dir / "summary.md"
+        manifest_path = self._run_dir / "manifest.json"
+        report_path = self._run_dir / "report.json"
+        summary_path = self._run_dir / "summary.md"
         manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         report_path.write_text(json.dumps({**payload, "report": str(report_path), "manifest": str(manifest_path)}, ensure_ascii=False, indent=2), encoding="utf-8")
         lines = ["# CAD 翻译摘要", "", f"- 状态：{status}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
@@ -332,7 +370,6 @@ class CadTaskRunner:
     def _run(self) -> None:
         started = time.monotonic()
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._run_dir.mkdir(parents=True, exist_ok=True)
         self._translated_dir.mkdir(parents=True, exist_ok=True)
         self._review_dir.mkdir(parents=True, exist_ok=True)
         results: list[dict[str, Any]] = []
@@ -340,6 +377,7 @@ class CadTaskRunner:
         translated_count = 0
         memory_hits = 0
         api_calls = 0
+        failed_files = False
         used_outputs: set[Path] = set()
         previous = self._load_checkpoint()
         previous_files = previous.get("files", {}) if previous.get("options_fingerprint") == self._options_fingerprint() else {}
@@ -348,13 +386,19 @@ class CadTaskRunner:
         filename_translations: dict[str, str] = {}
         if self._translate_output_filename and self._filename_translator is not None:
             stems = list(dict.fromkeys(Path(item.path).stem for item in self._files))
-            filename_translations = translate_names(
-                self._filename_translator,
-                stems,
-                self._options.target_lang,
-                self._options.source_lang,
-                kind="CAD 输出文件名",
-            )
+            try:
+                filename_translations = translate_names(
+                    self._filename_translator,
+                    stems,
+                    self._options.target_lang,
+                    self._options.source_lang,
+                    kind="CAD 输出文件名",
+                )
+            except Exception as exc:
+                # A filename provider outage must not strand an active
+                # process run; preserve source stems and continue the CAD
+                # translation itself.
+                self._log("WARN", f"CAD 输出文件名翻译失败，保留原文件名：{exc}")
         try:
             self._log("INFO", f"扫描到 {len(self._files)} 个 CAD 文件")
             for item in self._files:
@@ -444,13 +488,15 @@ class CadTaskRunner:
                     progress=progress,
                 )
                 try:
+                    work_output = self._run_dir / relative.parent / output.name
                     result = pipeline.translate_file(
                     source,
-                    output,
+                    work_output,
                     options=self._options,
                     glossary=self._glossary,
                     stop_requested=self._stop_event.is_set,
                 )
+                    result = self._publish_result(result, output)
                     if self._options.copy_related_files:
                         for related in source.parent.glob(f"{source.stem}.*"):
                             if related == source or related.suffix.lower() in {".dwg", ".dxf"}:
@@ -459,13 +505,13 @@ class CadTaskRunner:
                             if not target.exists():
                                 shutil.copy2(related, target)
                 except Exception as exc:  # one bad drawing must not erase the batch
+                    failed_files = True
                     message = str(exc) or exc.__class__.__name__
                     self._file_progress.emit(source, "failed", "error", result={"status": "failed", "message": message})
                     results.append({"source_path": str(source), "status": "failed", "message": message})
                     issues.append({"file": source.name, "stage": "cad", "message": message})
                     self._log("ERROR", f"{source.name}：{message}")
                     continue
-                result = self._relocate_file_artifacts(result)
                 stats = result.stats
                 translated_count += stats.changed
                 memory_hits += stats.memory_hits
@@ -515,6 +561,13 @@ class CadTaskRunner:
             elapsed = round(time.monotonic() - started, 3)
             batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if issues else "done")
             batch_paths = self._write_batch_artifacts(status=batch_status, files=results, issues=issues)
+            process_status = (
+                "cancelled" if self._stop_event.is_set()
+                else "failed" if failed_files and not any(item.get("status") in {"succeeded", "needs_review"} for item in results)
+                else "needs_review" if issues
+                else "succeeded"
+            )
+            self._process_artifacts.finish(process_status)
             for item in results:
                 item.update({key: value for key, value in batch_paths.items() if key in {"output_dir", "translated_dir", "review_dir"}})
             if self._stop_event.is_set():
@@ -541,4 +594,5 @@ class CadTaskRunner:
                 )
         except Exception as exc:  # runner-level failures still become a task result
             batch_paths = self._write_batch_artifacts(status="error", files=results, issues=issues)
+            self._process_artifacts.finish("failed")
             self._queue.put(ErrorMsg(message=f"CAD 翻译流程失败：{exc}", **batch_paths))
