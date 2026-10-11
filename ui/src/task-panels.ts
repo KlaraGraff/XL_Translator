@@ -163,6 +163,9 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
         note.textContent = active.finishPaused.note;
         foot.append(note);
       }
+    } else {
+      // 没有「结束任务」的（CAD）暂停后也要能停：后端 stop() 会先放开暂停再停下。
+      foot.append(createButton({ label: active.stopLabel ?? "停止", icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
     }
     return foot;
   }
