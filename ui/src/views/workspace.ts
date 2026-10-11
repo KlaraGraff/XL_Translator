@@ -2046,7 +2046,7 @@ function buildWordRecoveryCard(local: LocalTask): HTMLElement | null {
   const note = el("p", "ws-note");
   // ws-note 默认居中（给空态用的），这张卡和其他卡片一样左对齐。
   note.style.textAlign = "left";
-  note.textContent = "没翻出来、翻得不完整或没通过检查的段落会自动再翻一次；再翻后经过复查才采用的译文不会存进记忆库。";
+  note.textContent = "译文为空、明显不完整或没通过质量检查的段落会自动重译；重译后仍有疑问、经模型复查才采用的译文，不会存进记忆库。";
   card.append(note);
   return card;
 }
