@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -864,14 +864,25 @@ class CadTranslationPipeline:
         translator: CadTranslator | None = None,
         progress: Callable[[CadProgress], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        pause_gate: Callable[[], None] | None = None,
     ) -> None:
         self.converter = converter
         self.memory_lookup = memory_lookup
         self.translator = translator
         self.progress = progress
         self.stop_requested = stop_requested
+        # 暂停闸门：用户点了暂停时阻塞到继续或停止为止。由任务 runner 提供；
+        # 不传就是不支持文件内暂停（老调用方、测试替身）。
+        self.pause_gate = pause_gate
+
+    def _wait_if_paused(self) -> None:
+        if self.pause_gate is not None:
+            self.pause_gate()
 
     def _check_stop(self) -> None:
+        # 每个检查点先过暂停闸门：只有一张图纸时，以前的暂停要等整张图翻完才生效，
+        # 等于点了没用。闸门放行后再看是不是在暂停期间点了停止。
+        self._wait_if_paused()
         if self.stop_requested and self.stop_requested():
             raise CadStopRequested("已停止；已完成的部分已保留。")
 
@@ -903,14 +914,21 @@ class CadTranslationPipeline:
         def report(done: int, batch_total: int) -> None:
             fraction = min(1.0, max(0.0, done / max(1, batch_total)))
             self._emit("translate", already + int(len(remaining) * fraction), max(1, total))
+            # 批次回调跑在提交批次的那个线程里：在这里等着，就不会再发新的一批请求，
+            # 已经发出去的几批照常收回来。这就是「文件内暂停」，不用丢弃任何已付费的结果。
+            self._wait_if_paused()
 
         try:
-            accepts_progress = "progress" in inspect.signature(self.translator).parameters
+            parameters = inspect.signature(self.translator).parameters
         except (TypeError, ValueError):
-            accepts_progress = False
-        if accepts_progress:
-            return self.translator(remaining, glossary, progress=report)
-        return self.translator(remaining, glossary)
+            parameters = {}
+        kwargs: dict[str, Any] = {}
+        if "progress" in parameters:
+            kwargs["progress"] = report
+        # 停止也要在批次之间生效，不然点了停止还得等整张图的请求全部发完。
+        if "should_stop" in parameters and self.stop_requested is not None:
+            kwargs["should_stop"] = self.stop_requested
+        return self.translator(remaining, glossary, **kwargs)
 
     def translate_file(
         self,
@@ -920,10 +938,13 @@ class CadTranslationPipeline:
         options: CadPipelineOptions | None = None,
         glossary: Mapping[str, str] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        pause_gate: Callable[[], None] | None = None,
     ) -> CadTranslationResult:
         options = options or CadPipelineOptions()
         if stop_requested is not None:
             self.stop_requested = stop_requested
+        if pause_gate is not None:
+            self.pause_gate = pause_gate
         self._check_stop()
         source = Path(source)
         output = Path(output)

@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseVerificationTests(unittest.TestCase):
-    def test_public_author_attribution_matches_bundled_license(self):
+    def test_bundled_license_attribution_is_consistent(self):
         license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
         attribution = next(
             line for line in license_text.splitlines() if line.startswith("Copyright (c) ")
@@ -33,7 +33,9 @@ class ReleaseVerificationTests(unittest.TestCase):
         cargo = tomllib.loads((ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))
         settings_ui = (ROOT / "ui/src/views/settings.ts").read_text(encoding="utf-8")
         self.assertEqual(cargo["package"]["authors"], [author])
-        self.assertIn(f'MIT License · © {year} {author}', settings_ui)
+        # 关于页只写许可名，不带署名。
+        self.assertIn('licenseText.textContent = "MIT License";', settings_ui)
+        self.assertNotIn(f"© {year} {author}", settings_ui)
 
     def test_source_smoke_does_not_write_application_data(self):
         with tempfile.TemporaryDirectory() as app_data:

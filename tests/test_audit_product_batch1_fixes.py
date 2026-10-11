@@ -402,9 +402,10 @@ class UpdateRestartInterceptSourcePinTests(unittest.TestCase):
         body = _function_body(source, "startTask")
         self.assertIn("consumePendingRestartWarning()", body)
         self.assertIn("openRestartBeforeTaskModal", body)
+        # 提交经 submitAfterResumeCheck（先做续译检测再 preflightAndSubmit）。
         self.assertLess(
             body.index("consumePendingRestartWarning"),
-            body.index("preflightAndSubmit"),
+            body.index("submitAfterResumeCheck"),
             "拦截必须发生在预检/提交之前",
         )
 

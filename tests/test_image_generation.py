@@ -279,6 +279,41 @@ class ImageGenerationTests(unittest.TestCase):
         self.assertEqual(client.calls, 3)
         self.assertEqual(settings.image_model_role.availability_status, "unavailable")
 
+    def test_image_connectivity_failure_message_is_plain_words(self) -> None:
+        # 设置页把这句说明原样显示在「测试失败」胶囊下面；以前里面夹着 httpx 的英文原文。
+        class UnreachableClient:
+            def generate_page(self, **_kwargs):
+                raise httpx.ConnectError("All connection attempts failed")
+
+        settings = AppSettings()
+        settings.image_model_role.source_role = SOURCE_INDEPENDENT
+        settings.image_model_role.cloud_provider = "custom_openai"
+        settings.image_model_role.cloud_model = "gpt-image-2"
+        settings.image_model_role.cloud_base_url = "http://127.0.0.1:9/v1"
+
+        with patch("core.model_roles.get_key", return_value="secret"):
+            result = check_image_generation_connectivity(
+                settings,
+                client=UnreachableClient(),
+                max_attempts=1,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertNotIn("All connection attempts", result.message)
+        self.assertIn("接口拒绝了连接", result.message)
+        self.assertEqual(result.message, settings.image_model_role.availability_message)
+        # 原始报错没丢，留在 detail 里供诊断。
+        self.assertIn("All connection attempts failed", result.detail)
+
+        class OddClient:
+            def generate_page(self, **_kwargs):
+                raise RuntimeError("weird upstream envelope {\"x\": 1}")
+
+        with patch("core.model_roles.get_key", return_value="secret"):
+            odd = check_image_generation_connectivity(settings, client=OddClient(), max_attempts=1)
+        self.assertNotIn("weird upstream", odd.message)
+        self.assertIn("图像模型没有正常响应", odd.message)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

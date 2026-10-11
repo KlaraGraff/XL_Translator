@@ -17,6 +17,77 @@
   flex: none;
 }
 
+/* 进度卡标题前的阶段名小标签（读取文件 / 翻译 / 调整行高 / 生成文件），四个翻译页一样。
+   不许折行：标题长了折的是后面的说明句，不是这个标签。 */
+.prog-stage .prog-step {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--tint);
+  color: var(--tint-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.prog-stage .pct {
+  white-space: nowrap;
+}
+
+/* 扫描统计格（Excel 固定五格）。app.css 的 auto-fit 在 1080 宽的窗口里排成 4 + 1，第 5 格
+   单独掉到第二排。这里按统计条自己的宽度决定：放得下就五格同排，放不下整齐地折成
+   3 + 2（六列网格，前三格各占 2 列、后两格各占 3 列），两排都铺满。 */
+.stats-wrap {
+  container-type: inline-size;
+}
+.stats-wrap > .stats.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@container (max-width: 620px) {
+  .stats-wrap > .stats.five {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .stats-wrap > .stats.five > .stat {
+    grid-column: span 2;
+  }
+  .stats-wrap > .stats.five > .stat:nth-child(n + 4) {
+    grid-column: span 3;
+  }
+}
+
+/* 工作台文件清单（.ws-files）：文件名单行省略（悬停 title 看全名），其余各列——格式、
+   计数、大小、页数、状态胶囊——一律不折行，让出宽度的只有文件名。文件名格 max-width:0
+   让它只拿其余列用剩的宽度，省略号才生效；min-width 给它留底，1080 宽的窗口里也能看到
+   六七个字，而不是「材料...」。窄窗口里长表头可以折成两行（「单元格外内容」比它下面的
+   内容宽得多），省下的宽度留给状态列；再窄就放不下了：表格在卡片里横向滚动，不再压文件名。
+   只认 .ws-files：任务中心「生成的文件」等表格也用 .fname（一行两列），各有自己的规则。 */
+.tbl.ws-files td {
+  white-space: nowrap;
+}
+.tbl.ws-files th {
+  white-space: nowrap;
+}
+@media (max-width: 1250px) {
+  /* 窄窗口里长表头折成两行（只在表头文字里的零宽空格处折），省下的宽度留给状态列。 */
+  .tbl.ws-files th {
+    white-space: normal;
+    word-break: keep-all;
+  }
+}
+.tbl.ws-files td.fname {
+  max-width: 0;
+  min-width: 112px;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tbl.ws-files td.fstatus .chip,
+.filerow .chip {
+  flex: none;
+  white-space: nowrap;
+}
+
 /*
  * PDF 逐页面板（页恢复 / 逐页审核）专属样式：
  *   .linklike.disabled     —— actionable=false 时的操作链接，保留常驻但不可点。
@@ -64,13 +135,16 @@
   font-weight: 600;
   color: var(--ink-3);
 }
+/* 整页缩放进框里，不滚动：以前图片按宽度铺满、框内 overflow:auto，又用 flex 垂直居中——
+   竖版页比框高时，居中把页顶推到了滚动区上方，那一截滚不回来（标题只露下半截）。
+   现在框定高，图片 object-fit:contain 整页缩进去，两栏一样高，原文译文可以逐行对照。 */
 .pdf-compare-imgwrap {
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: auto;
+  overflow: hidden;
   background: var(--ground-2);
+  height: 60vh;
   min-height: 180px;
-  max-height: 60vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -78,7 +152,8 @@
 .pdf-compare-imgwrap img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
 }
 .pdf-compare-imgwrap .ph {
   font-size: 12px;

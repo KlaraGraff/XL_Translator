@@ -72,7 +72,7 @@
 
 **后果**：用户看到一句「解析失败，原始内容：（空）」，既不知道是接口坏了还是本程序识别不了这种格式，也没法把这段报错拿去问客服；更关键的是这次 API 调用已经产生真实的模型输出（也就是已经真金白银付费成功），却被当成失败整批丢弃、计入未翻译，用户要重新发起才能拿到译文，等于重复付费。
 
-**复现**：已复现：脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_openai_content_list.py，mock `_post_json` 返回 `content=[{"type":"text","text":"这是应该出现的译文"}]`（模拟模型已经正确回答），实测 `translate_batch` 抛出 `ValueError: OpenAI 响应解析失败 (无法匹配为包含 1 条记录的数组)，大模型原始内容：`，原始内容字段确认为空，尽管「模型」实际已经给出了译文。另确认此 ValueError 不带 status_code，engine_dispatcher 层面是否会为它重跑整批（可能造成二次付费）不在本文件范围内未查证。
+**复现**：已复现：脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_openai_content_list.py，mock `_post_json` 返回 `content=[{"type":"text","text":"这是应该出现的译文"}]`（模拟模型已经正确回答），实测 `translate_batch` 抛出 `ValueError: OpenAI 响应解析失败 (无法匹配为包含 1 条记录的数组)，大模型原始内容：`，原始内容字段确认为空，尽管「模型」实际已经给出了译文。另确认此 ValueError 不带 status_code，engine_dispatcher 层面是否会为它重跑整批（可能造成二次付费）不在本文件范围内未查证。
 
 **修法**：_extract_chat_completion_text 遇到非字符串 content 时不要直接转空串：先尝试从数组里按 type=="text" 拼出正文，实在提取不到再抛异常，且异常文案里带上 `repr(content)[:200]` 之类的真实原始返回，而不是让 parse_response 拿着空字符串报出一句自己都解释不清的话。
 
@@ -257,7 +257,7 @@ ja baseline validate → pass []      ← 内置 ja 正常豁免
 
 **后果**：用户为了保住公式而关掉「公式显示值回填」（这正是这个开关存在的理由），结果每次全量翻译都要额外为所有公式格的显示值付一遍模型费用，产出文件里一个字都用不上。公式列越多浪费越大：VLOOKUP/CONCAT 生成的中文列在国内表里极常见，实测夹具里 400 个词条有 200 个（50%）是纯浪费。同样的表走「只补未译」反而不花这笔钱——两条路对同一个开关的行为不一致。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d1_waste.py（夹具 d1_shared_200.xlsx：A 列 200 个静态中文 + B 列 200 个共享公式、缓存显示值为中文）。输出：
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d1_waste.py（夹具 d1_shared_200.xlsx：A 列 200 个静态中文 + B 列 200 个共享公式、缓存显示值为中文）。输出：
   全量模式收词条总数 = 400  其中来自公式格显示值的 = 200
   backfill=False 写回改动格数 = 200 (只有 A 列静态文本)
   B1 仍是公式? True
@@ -299,7 +299,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 **后果**：一列长公式的 Excel 表在写回阶段单线程空转：实测（.venv 3.13，单组）200 行 0.02s、800 行 0.28s、1600 行 1.09s、3000 行 3.95s、6000 行 16.35s、10000 行 48.34s —— 每翻一倍行数耗时翻四倍。模型钱已经花完了，卡在最后写文件这一步，界面没有进度、没有可解释的状态，用户看到的就是任务假死；上万行的工程量表（这类表恰恰最爱整列下拉公式）会卡到分钟级。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/perf_shared.py：手写一张分表 XML，B 列 1..N 行同属 si="1" 一个共享组（B1 为主控带 ref="B1:BN"，每格缓存显示值都是待译文本），调 write_bilingual_workbook(formula_display_value_backfill=True)。实测输出：rows=200 0.02s / 400 0.08s / 800 0.28s / 1600 1.09s / 3000 3.95s；perf_big.log：rows=6000 16.35s / rows=10000 48.34s。倍率 3.5～4.0，标准平方增长。对照现有回归测试的夹具（每行一组），同样行数只要毫秒级——所以测试是绿的。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/perf_shared.py：手写一张分表 XML，B 列 1..N 行同属 si="1" 一个共享组（B1 为主控带 ref="B1:BN"，每格缓存显示值都是待译文本），调 write_bilingual_workbook(formula_display_value_backfill=True)。实测输出：rows=200 0.02s / 400 0.08s / 800 0.28s / 1600 1.09s / 3000 3.95s；perf_big.log：rows=6000 16.35s / rows=10000 48.34s。倍率 3.5～4.0，标准平方增长。对照现有回归测试的夹具（每行一组），同样行数只要毫秒级——所以测试是绿的。
 
 **修法**：两处都要动。① dependents() 不要每次线性复核整组：让 _set_cell_inline_text 和让渡本身在改写单元格时主动从索引里摘掉该条目（索引持有 (row,col,cell) 时同步维护一个 已失效 id 集合，或让组用 deque/游标从头推进——同一组的让渡天然按文档顺序单向前进，游标只需前进不需回头），把单次让渡降到 O(1) 摊还。② min_row/max_row/min_col/max_col 不要每次对整个 dependents 重算：一个组的边界在建索引时就能一次算出，让渡后只需把左上角沿游标前移，右下角不变。③ 回归测试补一个「单个大共享组」的夹具（例如 B 列 400 行同 si vs 1600 行同 si），沿用现有的 8 倍阈值——当前实现在这个夹具上会得到约 16 倍，能真正锁住这条性质。
 
@@ -313,7 +313,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 **后果**：用户在「补译复核」阶段遇到上游限流时按停止：界面上按钮点下去了，任务却继续往上游发请求（实测停止置位后又发了 4 次），最长要等到 120 秒的宽限窗口耗尽才停下；而且最终收尾不是「已停止」，是一条误导性的致命错误——「接口持续限流…请稍后重试，或在设置里换一条连接、更换 API Key 后重新开始」。用户主动停的，却被告知自己的 Key 出了问题。复核本身是按次计费的模型调用，停止后仍在发的那几次也在花钱（虽然多半被 429 挡回）。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/stop_latency2.py：假引擎每次 chat 都抛 429 too many concurrent requests，真 WeightedApiScheduler，0.5 秒后置位 stop_event，调 run_pair_arbitration_batch。为了让脚本跑得完把 GRACE 临时改成 12s、MAX_DELAY 改成 4s（真实值 120s / 30s，倍数关系不变）。实测输出：「[0.50s] 用户点了停止」→「[12.80s] 抛出 ApiKeyTemporarilyUnavailableError: 接口持续限流…请更换 API Key」→「stop 置位后仍继续调用模型的次数（含首次）: 5」。按真实常量外推即 ~120 秒不响应停止。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/stop_latency2.py：假引擎每次 chat 都抛 429 too many concurrent requests，真 WeightedApiScheduler，0.5 秒后置位 stop_event，调 run_pair_arbitration_batch。为了让脚本跑得完把 GRACE 临时改成 12s、MAX_DELAY 改成 4s（真实值 120s / 30s，倍数关系不变）。实测输出：「[0.50s] 用户点了停止」→「[12.80s] 抛出 ApiKeyTemporarilyUnavailableError: 接口持续限流…请更换 API Key」→「stop 置位后仍继续调用模型的次数（含首次）: 5」。按真实常量外推即 ~120 秒不响应停止。
 
 **修法**：① core/coverage_review.py：给 run_pair_arbitration_batch 加 should_stop: Callable[[], bool] | None = None 形参，从 arbitrate_coverage_units 已有的 stop_event 传下来（stop_event.is_set），既传给 handle_api_concurrency_limit，也在递归重试之前检查一次——停了就直接返回空 dict，让上游按 uncertain 处理，而不是继续退避到宽限期用完抛致命错。② core/mixed_language.py:436：把作用域里现成的 should_stop 直接传进去（下一行的检查保留即可）。③ 加一条测试锁住「三个调用方都把 should_stop 交出去」——这类漏传按调用点逐个修必然还会漏，最省事的做法是给 handle_api_concurrency_limit 的 should_stop 去掉默认值（改成必填关键字参数），让漏传在类型检查/导入期就暴露。
 
@@ -397,7 +397,7 @@ hidden report: {'content_control_count': 0, 'tracked_insertion_count': 0, 'toc_c
 
 **后果**：本地模型名填错、Ollama 服务鉴权被拒等这类重试也不会自愈的场景下，用户要多等 3 次退避（实测约 4.8 秒）才能看到真实报错，期间日志连打三条「第 N 次重试」的警告，容易让人误以为是网络抖动而去调网络设置，而不是去检查模型名/权限——正是关注点 5 里点名的「重试掩盖配置错误」。本地模型不花钱，所以只是体验问题，不是资金问题，故定为中危。
 
-**复现**：已复现：脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_ollama_retry.py，把 `_call_ollama` 替换为始终抛出 `status_code=404`（"model 'bogus' not found"）的异常，实测 `translate_batch` 耗时 4.76 秒、重试 3 次后才把原始异常抛给调用方；对照 base_engine.is_retryable_engine_error(同一个 404 异常) 返回 False，说明 openai/claude 引擎在同等场景下会立即放弃重试。
+**复现**：已复现：脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/9bc2c740-3ad6-41c8-9853-d1ce6bd7a8c6/scratchpad/repro_ollama_retry.py，把 `_call_ollama` 替换为始终抛出 `status_code=404`（"model 'bogus' not found"）的异常，实测 `translate_batch` 耗时 4.76 秒、重试 3 次后才把原始异常抛给调用方；对照 base_engine.is_retryable_engine_error(同一个 404 异常) 返回 False，说明 openai/claude 引擎在同等场景下会立即放弃重试。
 
 **修法**：`_translate_chunk` 的 except 分支里先调用 `is_retryable_engine_error(e)`，不可重试就直接 break/reraise，和 openai_engine/claude_engine 保持一致的策略，不必接入 tenacity，一行判断即可。
 
@@ -555,7 +555,7 @@ C:\Users\Tom\file.docx      False  True  True
 **后果**：1) 交互：PDF 任务跑到一半，用户想在「逐页审核」里翻到第 150 页看某一页的状态——每来一条日志（后端逐条发、不节流）表格就跳回第 1 页，实际等于翻不动；Excel/Word 批量几十上百个文件时，运行中的文件清单同样翻不动。而运行中恰恰是用户最想盯着表看的时候。
 2) 性能：实测每次重建 300 页 ≈ 16 ms、800 页 ≈ 38 ms（Chrome；WKWebView 更慢）。日志密集时段这些开销直接压在主线程上，表现为整屏发涩、按钮点击迟滞。
 
-**复现**：已复现（机制部分为代码路径确认，成本部分为实测）。脚本：/private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/bench_rerender.html，Chrome 实测输出 {"pdf_300页_200日志":"16.0 ms/次","pdf_100页_200日志":"6.9 ms/次","pdf_800页_200日志":"38.0 ms/次","excel_0页_200日志":"2.1 ms/次"}。滚动归零这一半是定义级确定：tableWrap 每次 renderInto 都是 `el("div")` 新建的节点，新节点 scrollTop 恒为 0，无需实测。附带做的对照实验 repro_detail_scroll.html 证明「同一元素清空再填」**不**丢滚动（600→600），正说明问题出在「容器被换掉」而不是「内容被清空」。
+**复现**：已复现（机制部分为代码路径确认，成本部分为实测）。脚本：/private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/bench_rerender.html，Chrome 实测输出 {"pdf_300页_200日志":"16.0 ms/次","pdf_100页_200日志":"6.9 ms/次","pdf_800页_200日志":"38.0 ms/次","excel_0页_200日志":"2.1 ms/次"}。滚动归零这一半是定义级确定：tableWrap 每次 renderInto 都是 `el("div")` 新建的节点，新节点 scrollTop 恒为 0，无需实测。附带做的对照实验 repro_detail_scroll.html 证明「同一元素清空再填」**不**丢滚动（600→600），正说明问题出在「容器被换掉」而不是「内容被清空」。
 
 **修法**：两步，第一步就能解决可用性：
 (1) 把 captureLogScroll/restoreLogScroll 那套推广成通用的「按 CSS 选择器保存/还原滚动位置」——renderInto 开头对 `.log`、`.tablecard [style*=overflow]`（或给两个 tableWrap 加上稳定的 class，如 `.ws-scroll`，并各配一个 data-scroll-key）统一 capture，重建后统一 restore。表格行不像日志会被 200 条上限挤掉，直接还原 scrollTop 即可，不需要日志那套锚点行方案。
@@ -684,7 +684,7 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **后果**：翻译报告里「审核轻微建议：N」这个数最多被放大到重试轮数倍（默认重试 3 次即最多 4 倍）；逐页明细里那句「轻微建议：…」描述的是一张用户永远看不到、已经被模型自己推翻的图。用户照着这条建议去改原文或调提示词，改的是不存在的问题。同时干净通过的页被无端列进问题表，让人以为译文质量比实际差。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py：审核 mock 前两轮不通过（各带一条轻微建议，文案写死为「这一版已被丢弃」），第三轮通过（带一条「最终版」建议）。实际输出：review_status = passed；review_issues = []（阻断问题被正确清空）；minor_suggestions = ['轻微建议-第1轮（这一版已被丢弃）', '轻微建议-第2轮（这一版已被丢弃）', '轻微建议-最终版']；record.minor_count = 3。即 3 条里 2 条是废弃版本的，且报告 `[:2]` 只会印出这 2 条。现有测试对这一点零覆盖：全仓只有 tests/test_pdf_image_translation.py:1157 一句 `assertIn("字体略细", page.review_minor_suggestions)`，assertIn 恰好对累加不敏感。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py：审核 mock 前两轮不通过（各带一条轻微建议，文案写死为「这一版已被丢弃」），第三轮通过（带一条「最终版」建议）。实际输出：review_status = passed；review_issues = []（阻断问题被正确清空）；minor_suggestions = ['轻微建议-第1轮（这一版已被丢弃）', '轻微建议-第2轮（这一版已被丢弃）', '轻微建议-最终版']；record.minor_count = 3。即 3 条里 2 条是废弃版本的，且报告 `[:2]` 只会印出这 2 条。现有测试对这一点零覆盖：全仓只有 tests/test_pdf_image_translation.py:1157 一句 `assertIn("字体略细", page.review_minor_suggestions)`，assertIn 恰好对累加不敏感。
 
 **修法**：把 4303 行的 extend 改成「每轮先归零再写入本轮结果」，与同一处 review_issues 的赋值语义对齐：在审核结果拿到后写 `page_record.review_minor_suggestions = list(review_result.minor_suggestions)`。这样通过的那一版带什么建议，页面上就是什么建议；不通过的那几版建议随候选图留在 review_candidates/attempt_NN_review.json 里备查即可，不进最终页记录。改完顺带在 tests/test_audit_pdf_fixes.py 补一个「前两轮建议不得出现在最终页记录里」的断言。
 
@@ -698,7 +698,7 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **后果**：报告 `## 概览` 里「审核重试次数」「审核修复页」两行系统性偏高（`_write_pdf_report` 5870 行附近）。审核模型是独立计费的一条连接，用户正是靠这两个数判断「审核这一档钱花得值不值、要不要继续开」；把图像模型自己重试的功劳记在审核头上，会让人高估审核的作用而继续为它付费，反过来也可能因为「审核重试次数高」去调审核提示词，实际上审核压根没拒过稿。属于「界面/报告不许骗人」那一类。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_quality_then_review.py：图像 mock 第 1 次返回 1200×600（对 1200×1600 的源页是比例错误，质检不过、不送审），第 2 次返回正确尺寸；审核 mock 一律通过。实际输出：image calls = 2；review calls = 1；review_status = passed；page.review_attempts = 2；record.review_retry_count = 1；record.review_repaired_count = 1。即审核模型只跑了 1 次、零拒稿，报告却写审核重试 1 次、审核修复 1 页。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_quality_then_review.py：图像 mock 第 1 次返回 1200×600（对 1200×1600 的源页是比例错误，质检不过、不送审），第 2 次返回正确尺寸；审核 mock 一律通过。实际输出：image calls = 2；review calls = 1；review_status = passed；page.review_attempts = 2；record.review_retry_count = 1；record.review_repaired_count = 1。即审核模型只跑了 1 次、零拒稿，报告却写审核重试 1 次、审核修复 1 页。
 
 **修法**：把审核口径和生成口径拆开，不要共用 `attempt`。最小改法：在页记录上加一个只在真正调用审核模型时自增的计数器（例如 `review_rounds`），4204 行改成 `page_record.review_rounds += 1`，3861 行的 review_retry_count 改用它；「审核修复页」的判定改成「这一页至少有一轮审核判过 not passed，且最终 passed」——可以直接看 candidate_artifacts 里是否存在 review_status == "failed" 的候选，或在 4350 行审核未通过时打一个 `review_rejected_once` 标志，3839 行按该标志统计，而不是按 `final_candidate_attempt > 1`。
 
@@ -712,7 +712,7 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **后果**：重度使用者（跑过 200 个大 PDF/Word 任务后）会遇到三件事同时发生：① APP_DATA_DIR 里多出一个几十 MB 的 task_history.json，用户在「维护」面板里只看到「任务历史 200 条」，看不出它占了 70MB；② 之后**每开一个新任务**，sidecar 每秒要花约 0.45 秒在历史文件的读-解析-序列化-重写上，等于常驻烧掉近半个核，并持续以约 50MB/s 的速率写盘（SSD 写放大），翻译本身的非 API 耗时被这条无关的 I/O 吃掉；③ 打开任务中心（GET /api/tasks → records()）要 200ms 才返回，列表明显发滞。日志量小的用户完全无感，日志量大的用户会觉得「用久了就变慢」，且找不到原因。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_history_bench2.py（数据目录指向 /var/folders 临时目录并断言）：填入 199 条各含 3000 行日志的记录后，task_history.json = 70.8 MB；此后一次 store.upsert() 实测 445 ms；store.records() 实测 200 ms。梯度见 x1_history_bench.py（历史 199 条小记录为底）：单任务 logs=0 → 2.9ms/0.47MB，logs=500 → 3.3ms，logs=2000 → 4.6ms，logs=5000 → 6.0ms/1.06MB，logs=20000 → 16.0ms/2.87MB——可见成本随记录体积线性上涨，真正致命的是 200 条大记录叠加后的常数项。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_history_bench2.py（数据目录指向 /var/folders 临时目录并断言）：填入 199 条各含 3000 行日志的记录后，task_history.json = 70.8 MB；此后一次 store.upsert() 实测 445 ms；store.records() 实测 200 ms。梯度见 x1_history_bench.py（历史 199 条小记录为底）：单任务 logs=0 → 2.9ms/0.47MB，logs=500 → 3.3ms，logs=2000 → 4.6ms，logs=5000 → 6.0ms/1.06MB，logs=20000 → 16.0ms/2.87MB——可见成本随记录体积线性上涨，真正致命的是 200 条大记录叠加后的常数项。
 
 **修法**：两处都要改，缺一不可。(1) 持久化时截断日志：在 api/task_manager.py:820 的 _status_payload() 里把写进历史记录的 logs 截成尾部 N 条（比如 200 条，够定位问题即可），完整日志本来就已经另存在 app.log 且有 5MB×5 轮转——历史文件没有第二次存全量的理由；顺带给内存里的 task.logs / task.events 也加 deque(maxlen=...)，现在这两个 list 在任务运行期同样是无界增长。(2) 给 TaskHistoryStore 加字节上限：limit 之外再加一个 max_total_bytes（比如 8MB），_write_locked 时从尾部丢弃超出的记录，和 core/diagnostics.py:282 的 prune_diagnostic_records（条数 + 总字节双上限）用同一套口径。做完 (1) 之后 (2) 基本不会触发，但它是防止同类问题第三次出现的兜底。
 
@@ -726,7 +726,7 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **后果**：用户在记忆库里「选择全部 → 批量删除」，本机 SSD 上按实测线性外推，5000 条要卡约 2.4 秒（本可以是 8 毫秒）；机械盘或开了全盘加密的机器上因为每条都要独立提交 WAL，会明显更久。整个过程弹窗按钮已经点下去、界面在等，用户看到的就是「删除一批词条要转好几秒圈」。另一个后果是这个批量删除**不是原子的**：中途抛异常（磁盘满、锁超时）时前面已提交的条目已经真删了，接口返回的 deleted 计数和实际状态对不上，用户重试一次才能补齐。
 
-**复现**：已复现。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_tm_delete_bench.py（数据目录指向 /var/folders 临时目录并断言 config.APP_DATA_DIR 落在临时区）。输出：insert_batch 3000 条 = 0.038s；delete_entries(3000 个 id) = **1.470s**（每条 0.490 ms）；同一批数据改成单条 `DELETE ... WHERE id IN (...)`（同样走 _get_conn）= **0.005s**。约 294 倍。
+**复现**：已复现。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_tm_delete_bench.py（数据目录指向 /var/folders 临时目录并断言 config.APP_DATA_DIR 落在临时区）。输出：insert_batch 3000 条 = 0.038s；delete_entries(3000 个 id) = **1.470s**（每条 0.490 ms）；同一批数据改成单条 `DELETE ... WHERE id IN (...)`（同样走 _get_conn）= **0.005s**。约 294 倍。
 
 **修法**：把 delete_entries 改成和 bulk_pin_entries 同构：单个 `with _get_conn() as conn:` 包住全过程，先用分片 IN 查询一次性把这批 id 的 (id, pinned) 查出来（_chunked 已有），在内存里分出 deleted / protected / missing 三类，再对可删的那批发一条（或按 900 分片的几条）`DELETE FROM tm_entries WHERE id IN (...)`，最后统一提交。这样既拿回 300 倍速度，也顺带让批量删除变成原子操作。注意保留现有语义：pinned 行仍要计入 protected 而不是删掉，去重仍用 dict.fromkeys。
 
@@ -927,7 +927,7 @@ extract 3.57 s / coverage 2.06 s 同一份文档。
 
 **后果**：一个 1.2MB 的 xlsx（30 万格重复中文，压缩率高）就能让 sidecar 峰值 RSS 从 34MB 涨到 223MB。按同一比例，百万格量级的大工作簿会把覆盖计划这一步推到 600MB 以上，再叠加后续批次组装和写回阶段的副本，在内存吃紧的机器上有被系统杀掉的风险——而用户看到的会是「sidecar 无故退出」，没有任何提示告诉他是文件太大。
 
-**复现**：已复现（数字确切，风险外推为推导）。脚本 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_xlsx_mem.py：write_only 生成 20000×15 = 300000 格的 xlsx（文件 1.23MB），build_excel_coverage_plan 前 ru_maxrss = 34.3MB，执行后 units=300000、耗时 2.92s、**峰值 RSS 223MB**。百万格 OOM 属于按 630B/格 线性外推，未实测。
+**复现**：已复现（数字确切，风险外推为推导）。脚本 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/x1_xlsx_mem.py：write_only 生成 20000×15 = 300000 格的 xlsx（文件 1.23MB），build_excel_coverage_plan 前 ru_maxrss = 34.3MB，执行后 units=300000、耗时 2.92s、**峰值 RSS 223MB**。百万格 OOM 属于按 630B/格 线性外推，未实测。
 
 **修法**：两条路，建议先做第二条。(1) 瘦身 CoverageUnit：改成 slots dataclass 或 NamedTuple，sheet_name 用 sys.intern / 索引复用，能省掉相当一部分 per-object 开销。(2) 更重要的是加一道量级预检：扫描阶段先数有文本的单元格数，超过阈值（比如 50 万）时明确告诉用户「这份表格有 N 个待译单元格，超出单次处理上限，请拆分后再试」，而不是让 sidecar 被系统静默杀掉。注意不要做成「拒绝且不给出路」——提示里要给出可执行的下一步（按分表拆分 / 缩小选区）。
 
@@ -1094,7 +1094,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-未跑全量（按纪律沿用已给基线 1664 passed + 249 subtests）。本线只跑了三个一次性复现脚本，全部落在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：
+未跑全量（按纪律沿用已给基线 1664 passed + 249 subtests）。本线只跑了三个一次性复现脚本，全部落在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：
 
 1) c1_group_stress.py —— FairApiGroupScheduler 压力测试（2 个任务 / 11 个线程 / 660 次抢占，含 recovery 类别）。
    输出：elapsed 0.37s，alive(hung): []，peak concurrent 6 == capacity 6，errors 0，counts {'A': 480, 'B': 180}。
@@ -1142,7 +1142,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。自己跑的板块相关测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_phase8_maintenance_contracts.py tests/test_word_converter.py tests/test_api_launcher.py` → 19 passed，全绿（说明本次三条发现都落在既有覆盖之外）。所有复现脚本都先把 TRANSLATOR_APP_DATA_DIR 指到 mktemp 目录并断言 config.APP_DATA_DIR 落在 /var/folders 下，未触碰任何用户真实数据目录。脚本留在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/（c2_soffice_timeout.py、c2_timeout2.py、c2_watchdog.py、c2_watchdog2.py、c2_ws.py、c2_word_leak.py、c2_word_leak2.py）。
+沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。自己跑的板块相关测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_phase8_maintenance_contracts.py tests/test_word_converter.py tests/test_api_launcher.py` → 19 passed，全绿（说明本次三条发现都落在既有覆盖之外）。所有复现脚本都先把 TRANSLATOR_APP_DATA_DIR 指到 mktemp 目录并断言 config.APP_DATA_DIR 落在 /var/folders 下，未触碰任何用户真实数据目录。脚本留在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/（c2_soffice_timeout.py、c2_timeout2.py、c2_watchdog.py、c2_watchdog2.py、c2_ws.py、c2_word_leak.py、c2_word_leak2.py）。
 
 【实测排除的假阳性，别再重复查】
 1. soffice 超时不会留僵尸/孤儿。c2_timeout2.py 用真实 .doc 夹具（.runtime/self-tests/phase-05-word/artifacts/legacy.doc）跑生产同形命令，分别用 0.4s / 0.8s 触发 subprocess.run 的 TimeoutExpired，3 秒后 `pgrep -f LibreOffice.app` 两次都是空。macOS 上 /Applications/LibreOffice.app/Contents/MacOS/soffice 是就地 exec 的，不像 Linux 包装脚本那样另起 soffice.bin，所以 subprocess.run 自带的 kill 足够。注意 `pgrep -f soffice` 会误命中 wpsoffice（本机装了 WPS），排查时必须按 LibreOffice.app 过滤——我第一次就被这个骗了一下。
@@ -1165,7 +1165,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-`./.venv/bin/python3 -m pytest tests/test_data_schema_recovery.py tests/test_settings_persistence.py tests/test_settings_concurrent_updates.py tests/test_settings_api_keys.py tests/test_config_crypto.py tests/test_task_history.py tests/test_api_key_export_origins.py tests/test_model_config_round_trip.py tests/test_document_config_bundle.py tests/test_audit_config_maint_fixes.py -q` → **149 passed + 2 subtests，0 failed**（2.26s）。审查全程只读，结束时 `git status --porcelain` 为空。所有脚本写在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/p1_*.py，均通过 TRANSLATOR_APP_DATA_DIR 指向 tempfile 临时目录，没碰用户真实数据目录。
+`./.venv/bin/python3 -m pytest tests/test_data_schema_recovery.py tests/test_settings_persistence.py tests/test_settings_concurrent_updates.py tests/test_settings_api_keys.py tests/test_config_crypto.py tests/test_task_history.py tests/test_api_key_export_origins.py tests/test_model_config_round_trip.py tests/test_document_config_bundle.py tests/test_audit_config_maint_fixes.py -q` → **149 passed + 2 subtests，0 failed**（2.26s）。审查全程只读，结束时 `git status --porcelain` 为空。所有脚本写在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/p1_*.py，均通过 TRANSLATOR_APP_DATA_DIR 指向 tempfile 临时目录，没碰用户真实数据目录。
 
 **排除掉的假阳性（都实测过，不构成发现）：**
 
@@ -1229,7 +1229,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-未跑全量（按纪律沿用主会话基线 1664 passed + 249 subtests）。本线全部结论走独立复现脚本，均在 `TRANSLATOR_APP_DATA_DIR` 指向 mktemp 的隔离环境下执行（每个脚本开头断言 config.APP_DATA_DIR 落在 /var/folders，实测输出 `/var/folders/y6/.../tmpzu7bu3b7`），未读也未写用户真实数据目录。脚本位于 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：g1_probe.py（429 分类矩阵，7 种响应体全部正确识别，无发现）、g1_repro.py（Claude max_tokens / 调度器容量 / SSE 解析）、g1_amplify.py（重试放大计数）、g1_exhausted.py（连接链耗尽后行为）、g1_429split.py（429 下的批次二分计数）、g1_lostwork.py（致命错误丢弃已付费结果）、g1_prompt.py（系统提示词开销实测）。
+未跑全量（按纪律沿用主会话基线 1664 passed + 249 subtests）。本线全部结论走独立复现脚本，均在 `TRANSLATOR_APP_DATA_DIR` 指向 mktemp 的隔离环境下执行（每个脚本开头断言 config.APP_DATA_DIR 落在 /var/folders，实测输出 `/var/folders/y6/.../tmpzu7bu3b7`），未读也未写用户真实数据目录。脚本位于 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：g1_probe.py（429 分类矩阵，7 种响应体全部正确识别，无发现）、g1_repro.py（Claude max_tokens / 调度器容量 / SSE 解析）、g1_amplify.py（重试放大计数）、g1_exhausted.py（连接链耗尽后行为）、g1_429split.py（429 下的批次二分计数）、g1_lostwork.py（致命错误丢弃已付费结果）、g1_prompt.py（系统提示词开销实测）。
 
 **排除掉的假阳性（都实测证伪过，不要再查）：**
 1. 「裸 429 因为响应体没有关键词而被漏判成普通错误」——不成立。g1_probe.py 跑了 7 种 429 响应体（空 body、OpenAI code-only、智谱中文并发限制、通用中文流量提示、DashScope Throttling.RateQuota、空 JSON、HTML 网关页），`is_api_concurrency_limit_error` 全部返回 True。原因是 httpx 的 `raise_for_status()` 异常文案本身就带 "Too Many Requests"，正好命中 `\btoo\s+many\s+requests\b`。唯一漏判的是「自定义异常只带 status_code=429、文案里无任何关键词」，这在当前五个引擎里不存在（都走 httpx）。
@@ -1254,7 +1254,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 未跑全量（按指示复用给定基线 1664 passed）。只跑本板块直接相关的测试文件：`./.venv/bin/python3 -m pytest -q tests/test_resume_detection.py tests/test_excel_resume.py tests/test_word_resume.py tests/test_audit_filter_fixes.py tests/test_residual_pipeline.py tests/test_language_preflight.py tests/test_coverage_arbitration.py` → **154 passed, 89 subtests passed in 1.09s**（全绿，本报告 4 条发现全部落在既有覆盖之外）。
 
 自建复现脚本（均先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config，并断言 `config.APP_DATA_DIR` 落在 /var/folders 下；全程未读写用户真实数据目录）：
-- /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/t1_ja_sourcelang.py
+- /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/t1_ja_sourcelang.py
 - .../t1_excel_resume.py
 - .../t1_custom_lang.py
 - .../t1_filter_matrix.py
@@ -1280,7 +1280,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-未跑全量（按要求沿用给定基线 1664 passed）。只按需读取并对照了 tests/test_tm_cleaner_failures.py（2 个用例，只断言「批次失败不报 completed」，不涉及本次发现）。所有复现脚本均先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config，并断言 `config.APP_DATA_DIR` 落在 /var/folders 下，全程未触碰用户真实数据目录。脚本落在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：m1_scale.py（20 万条压测）、m1_clean.py（清洗规则反例）、m1_apply.py（建议写回并发校验）、m1_conc.py（并发写 + 批量固定 + 导入）、m1_lock.py（10 万条导入与实时写入争锁）、m1_page.py（分页稳定性）、m1_batchfail.py（批次失败丢建议）。
+未跑全量（按要求沿用给定基线 1664 passed）。只按需读取并对照了 tests/test_tm_cleaner_failures.py（2 个用例，只断言「批次失败不报 completed」，不涉及本次发现）。所有复现脚本均先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config，并断言 `config.APP_DATA_DIR` 落在 /var/folders 下，全程未触碰用户真实数据目录。脚本落在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/：m1_scale.py（20 万条压测）、m1_clean.py（清洗规则反例）、m1_apply.py（建议写回并发校验）、m1_conc.py（并发写 + 批量固定 + 导入）、m1_lock.py（10 万条导入与实时写入争锁）、m1_page.py（分页稳定性）、m1_batchfail.py（批次失败丢建议）。
 
 **排除掉的假阳性（都实测过，不要再查）**
 
@@ -1340,7 +1340,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 未跑全量（按指令复用给定基线 1664 passed + 249 subtests）。只跑了本板块相关文件：`./.venv/bin/python3 -m pytest -q tests/test_xlsx_patcher.py tests/test_audit_excel_fixes.py tests/test_excel_coverage.py` → 62 passed, 4 subtests passed in 0.69s（全绿）。所有复现脚本都先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import，并断言 `app_paths.get_app_data_dir()` 落在 /var/folders 下（实测输出 `/var/folders/y6/.../tmp8lbqsfkl`），全程未读写用户真实数据目录。
 
-复现脚本都在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/ 下：d1_perf_shared.py（共享公式 O(n²) 计时 + 夹具生成器）、d1_prof.py（cProfile 定位）、d1_waste.py（回填关闭时的白花钱）、d1_merge.py（合并格排版 + 锁行高触底 + 手工行高被压）、d1_fidelity.py（写回保真度全项对照）。未修改仓库任何文件，未 git add/commit。
+复现脚本都在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/ 下：d1_perf_shared.py（共享公式 O(n²) 计时 + 夹具生成器）、d1_prof.py（cProfile 定位）、d1_waste.py（回填关闭时的白花钱）、d1_merge.py（合并格排版 + 锁行高触底 + 手工行高被压）、d1_fidelity.py（写回保真度全项对照）。未修改仓库任何文件，未 git add/commit。
 
 **已实测通过、无发现的项**（d1_fidelity.py 逐项对照翻译前后）：合并区、数据验证区域定义、条件格式、自动筛选、冻结窗格、超链接、批注内容、隐藏行/隐藏列、自定义数字格式（`#,##0.00\"元\"`）、打印区域、工作表保护、名称管理器、公式（缓存值为数字时不动）、keep_original_sheets 生成的 `_原文` 分表——全部原样保留。中-28 之外的其它 O(n²) 未发现（cProfile 里除 dependents 外没有超线性热点）。
 
@@ -1355,7 +1355,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。本线自跑板块测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_word_document.py tests/test_word_coverage.py tests/test_audit_word_doc_fixes.py tests/test_word_defect_fixes.py` → 128 passed, 23 subtests passed in 2.00s（全绿）。所有复现脚本与夹具写在 /private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d2_*，未改动仓库任何文件，未 git add/commit；每个脚本开头先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config 并断言 APP_DATA_DIR 落在 /var/folders 下（实测输出 /var/folders/y6/.../tmpXXXX），全程未触碰真实数据目录。
+沿用交付的全量基线（1664 passed + 249 subtests，未重跑）。本线自跑板块测试：`TRANSLATOR_APP_DATA_DIR="$(mktemp -d)" ./.venv/bin/python3 -m pytest -q tests/test_word_document.py tests/test_word_coverage.py tests/test_audit_word_doc_fixes.py tests/test_word_defect_fixes.py` → 128 passed, 23 subtests passed in 2.00s（全绿）。所有复现脚本与夹具写在 /private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d2_*，未改动仓库任何文件，未 git add/commit；每个脚本开头先 `os.environ["TRANSLATOR_APP_DATA_DIR"]=tempfile.mkdtemp()` 再 import config 并断言 APP_DATA_DIR 落在 /var/folders 下（实测输出 /var/folders/y6/.../tmpXXXX），全程未触碰真实数据目录。
 
 工具预算内没查完、留给后续的部分：\n1. **停止与恢复（关注点 5）没查。** `_WordRecoveryPool`（word_task_runner.py:2833-3477）的 `_flush_pending_submits` / `_abandon_unsubmitted_ticket_locked` / `_settle_abandoned_ticket_locked` 三者的锁序与「停止时已恢复译文是否写盘」都没验证。AUDIT_FIX_PLAN 把后者列在「待用户拍板批次 2」，且仓库里已有 tests/test_audit_word_stop_write.py，看起来已有结论，所以按纪律没往下挖——但第一轮修复审查报过的 ABBA 死锁与 shutdown 后 submit 两条回归，我没有独立复核过。\n2. **.doc 老格式（关注点 4）没查。** core/word_converter.py（793 行，LibreOffice 转换路径）与失败/残留清理 `_cleanup_converted_word_paths` 完全没读。\n3. **结构保真度只覆盖了一部分。** 已实测：文本框、书签、run 分裂+格式、超链接锚点（读代码确认已修）、合并单元格/嵌套表（`_iter_unique_table_cells` 按 `w:tc` 去重，python-docx 1.2.0 的 vMerge 委派机制下正确，未见问题）。**未实测**：脚注/尾注/批注（只做了机制确认，见发现 1）、内容控件 SDT 正文（走 `detect_hidden_word_content` 告警，属已知）、OMML 公式、SmartArt、图注 SEQ 域的 `_replace_paragraph_text_around_fields` 实跑、分节与首页/奇偶页眉的三段式制表位、多级列表跨表格的编号连续性。\n4. **双语模式（关注点 3）只读了代码没实跑。** 插行路径 `_insert_translation_paragraph_after` / `_append_translation_to_cell` 的结构保真没有独立夹具验证；页眉页脚的 `_append_translation_inline` 同理。\n5. 发现 2、3、4 都根植于同一个函数 `_replace_paragraph_text`（word_document.py:2494）的「锚点吃掉全部文字」策略，改动时建议一起设计，别分三次打补丁。
 
@@ -1363,7 +1363,7 @@ PDF 单项：`pytest tests/test_audit_pdf_fixes.py tests/test_pdf_page_review.py
 
 **基线与复现脚本**
 
-未跑全量（按任务说明沿用给定基线 1664 passed + 249 subtests）。只跑了本板块直接相关的两个文件：`./.venv/bin/python3 -m pytest -q tests/test_audit_pdf_fixes.py tests/test_pdf_image_translation.py` → 95 passed, 20 subtests passed in 6.59s，全绿。另写了两个只读复现脚本（全部 mock 图像/审核模型，零真实模型调用、零花费），并按红线在 import config 之前把 TRANSLATOR_APP_DATA_DIR 指到 mkdtemp，脚本启动时打印并断言 APP_DATA_DIR 落在 /var/folders 下：/private/tmp/claude-501/-Users-lijianwei-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py 与 d3_quality_then_review.py。未修改仓库内任何文件，未 git add/commit。
+未跑全量（按任务说明沿用给定基线 1664 passed + 249 subtests）。只跑了本板块直接相关的两个文件：`./.venv/bin/python3 -m pytest -q tests/test_audit_pdf_fixes.py tests/test_pdf_image_translation.py` → 95 passed, 20 subtests passed in 6.59s，全绿。另写了两个只读复现脚本（全部 mock 图像/审核模型，零真实模型调用、零花费），并按红线在 import config 之前把 TRANSLATOR_APP_DATA_DIR 指到 mkdtemp，脚本启动时打印并断言 APP_DATA_DIR 落在 /var/folders 下：/private/tmp/claude-501/-Users-<user>-vibecoding-claude-XL-Translator/cef9c101-5dad-4a16-b030-8f75baf592e2/scratchpad/d3_minor_suggestions.py 与 d3_quality_then_review.py。未修改仓库内任何文件，未 git add/commit。
 
 已查并确认没问题的（不作为发现报出，供台账参考）：
 
