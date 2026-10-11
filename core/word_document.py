@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 import uuid
 import zipfile
 from copy import deepcopy
@@ -1362,6 +1363,31 @@ def _relative_word_path(path: Path, root: Path) -> str:
         return path.name
 
 
+# 点「开始」时同一份文档会被连读三遍：界面扫描、前置校验、真正启动各扫一次。一份
+# 3000 段的文档每遍 4~5 秒，按钮上「正在启动…」就要挂将近 10 秒。统计只取决于文件
+# 内容，按（路径、大小、修改时间）记住最近几份的结果，文件一改就自动失效。
+_WORD_COUNT_CACHE: dict[tuple[str, int, int], tuple[int, int, int]] = {}
+_WORD_COUNT_CACHE_LIMIT = 64
+_WORD_COUNT_CACHE_LOCK = threading.Lock()
+
+
+def _word_file_counts(path: Path) -> tuple[int, int, int]:
+    info = path.stat()
+    key = (str(path.resolve()), info.st_size, info.st_mtime_ns)
+    with _WORD_COUNT_CACHE_LOCK:
+        cached = _WORD_COUNT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    doc = Document(str(path))
+    segments = extract_word_segments(path, target_lang="en", source_lang="zh")
+    counts = (len(doc.paragraphs), len(doc.tables), len(segments))
+    with _WORD_COUNT_CACHE_LOCK:
+        _WORD_COUNT_CACHE[key] = counts
+        while len(_WORD_COUNT_CACHE) > _WORD_COUNT_CACHE_LIMIT:
+            _WORD_COUNT_CACHE.pop(next(iter(_WORD_COUNT_CACHE)))
+    return counts
+
+
 def _build_word_file_item(path: Path, *, root: Path | None = None) -> WordFileItem:
     if is_legacy_word_doc(path):
         return WordFileItem(
@@ -1382,15 +1408,14 @@ def _build_word_file_item(path: Path, *, root: Path | None = None) -> WordFileIt
             },
         )
 
-    doc = Document(str(path))
-    segments = extract_word_segments(path, target_lang="en", source_lang="zh")
+    paragraph_count, table_count, translatable_count = _word_file_counts(path)
     return WordFileItem(
         path=path,
         name=path.stem,
         size_kb=round(path.stat().st_size / 1024, 1),
-        paragraph_count=len(doc.paragraphs),
-        table_count=len(doc.tables),
-        translatable_count=len(segments),
+        paragraph_count=paragraph_count,
+        table_count=table_count,
+        translatable_count=translatable_count,
         relative_path=_relative_word_path(path, root or path.parent),
         format="docx",
         needs_conversion=False,

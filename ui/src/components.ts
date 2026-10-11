@@ -1383,7 +1383,7 @@ export interface ToastOptions {
 }
 
 /**
- * 顶部居中的一次性提示条，超时后自动移除。
+ * 工作区左下角的一次性提示条，超时后自动移除（位置见 app.css 的 .ts-toast）。
  *
  * 放进外壳的提示栈（shell.ts 的 .toast-stack），而不是直接扔 document.body：更新卡片
  * 也停在顶部居中，两者各自 fixed 定位就会重叠。栈还没建好时（启动早期）退回 body，

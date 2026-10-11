@@ -1259,6 +1259,11 @@ def create_app(
     def get_task(task_id: str) -> dict[str, Any]:
         return app.state.task_manager.task_status(task_id)
 
+    @app.get("/api/tasks/{task_id}/source")
+    def get_task_source(task_id: str) -> dict[str, Any]:
+        # 只给本机界面重新接管任务时恢复来源栏用；任务中心和历史记录里仍然没有路径。
+        return app.state.task_manager.task_source(task_id)
+
     @app.delete("/api/tasks/{task_id}")
     def delete_task_record(task_id: str) -> dict[str, Any]:
         # 只删任务中心的这条记录；运行中的任务由 task manager 拒绝（409）。

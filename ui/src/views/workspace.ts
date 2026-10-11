@@ -435,6 +435,47 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   resetResumeState(st);
 }
 
+/**
+ * 来源路径只记在本窗口内存里（任务中心和历史记录不带路径）。窗口重载后接管一个还在
+ * 跑或暂停着的任务，内存里的那份没了：以前来源栏是空的，还提示「未保留原始来源路径」，
+ * 跑完想再翻一次得重新选。后端还握着这个任务时，向它要回来源，再按原路径静默重扫一遍
+ * 把清单和统计补齐，勾选只保留这个任务实际处理的那几份。拿不到就照旧按历史任务显示。
+ */
+async function recoverTaskContext(surface: Surface, taskId: string): Promise<WorkspaceContext | undefined> {
+  const st = states[surface];
+  try {
+    const c = await getClient();
+    const source = await c.request<{ source_path?: string; files?: { path?: string }[] }>(
+      `/api/tasks/${encodeURIComponent(taskId)}/source`,
+    );
+    const path = normalizeUserPath(text(source.source_path));
+    if (!path) return undefined;
+    const taskFiles = new Set((source.files ?? []).map((item) => normalizeUserPath(text(item.path))).filter(Boolean));
+    const scanState = { ...st, sourcePaths: [] } as SurfaceState;
+    const response = await c.request<JsonObject>("/api/sources/scan", {
+      method: "POST",
+      body: JSON.stringify(scanPayload(surface, scanState, path)),
+    });
+    const result = record(response.result) && Object.keys(record(response.result)).length ? record(response.result) : response;
+    const items = Array.isArray(result.items) ? (result.items as FileItem[]) : [];
+    if (!items.length) return undefined;
+    const selected = items.filter((item) => !taskFiles.size || taskFiles.has(normalizeUserPath(item.path)));
+    const context: WorkspaceContext = {
+      sourcePath: path,
+      sourcePaths: [],
+      files: items,
+      skipped: Array.isArray(result.skipped) ? (result.skipped as ScanSkippedItem[]) : [],
+      scanSummary: record(result.summary),
+      selected: new Set((selected.length ? selected : items).map((item) => item.path)),
+    };
+    taskContexts.set(taskId, context);
+    return context;
+  } catch {
+    // 任务早已不在内存里（后端重启过、记录被回收）或来源已被移走：按历史任务显示即可。
+    return undefined;
+  }
+}
+
 async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: () => boolean): Promise<void> {
   // Hide the previous task immediately, including on lookup failure.
   const st = states[surface];
@@ -445,7 +486,8 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
   const task = await c.getTask(taskId);
   if (!isCurrent()) return;
   if (task.surface !== surface) throw new Error("这个任务不属于当前工作区。");
-  const context = taskContexts.get(taskId);
+  const context = taskContexts.get(taskId) ?? await recoverTaskContext(surface, taskId);
+  if (!isCurrent()) return;
   st.sourcePath = context?.sourcePath ?? "";
   st.sourcePaths = [...(context?.sourcePaths ?? [])];
   st.skipped = [...(context?.skipped ?? [])];
@@ -903,6 +945,16 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
       ? `${fileNounPhrase(surface, fileCount)} · → ${targetLabel(st)}`
       : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
+    return;
+  }
+  // 点了开始、任务还没建好：后端要把选中的文件重新读一遍再核对连接，大文档要好几秒。
+  // 这段时间顶栏还写「待开始」，看上去像没点上，用户会再点一次。
+  if (submittingSurfaces.has(surface) && st.files.length > 0) {
+    setTopbar({
+      title: SURFACE_PAGE_TITLE[surface],
+      status: { label: "正在启动", tone: "run" },
+      subtitle: `正在读取 ${fileNounPhrase(surface, st.selected.size || st.files.length)}并检查模型连接，文件大时要几秒`,
+    });
     return;
   }
   if (st.files.length > 0) {
@@ -1888,7 +1940,12 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
       && local.task.state !== "paused"
       && local.task.state !== "pausing"
       && silence >= SILENCE_NOTICE_SECONDS;
-    if (waiting) note = `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
+    // 安全停止时不再发新请求，安静的这段多半是在写文件，只说「等接口」会误导。
+    if (waiting) {
+      note = local.task.state === "stopping"
+        ? `已等待 ${silence} 秒：正在收尾，等手上的请求回来后把已翻好的内容写进文件，大文档要多等一会儿，程序没有卡住。`
+        : `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
+    }
   }
   return createTaskProgressPanel({
     phase: redactedText(local.phaseName, "正在准备任务"),
@@ -2810,6 +2867,23 @@ const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
 const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false, cad: false };
 
+function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObject {
+  const payload: JsonObject = {
+    surface,
+    path,
+    // 多选文件时按这几个路径各扫一次再合并；清单里就只有用户挑的那几份。
+    paths: st.sourcePaths.map(normalizeUserPath),
+    include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
+  };
+  if (surface === "cad") {
+    // CAD 的「待翻译」数取决于语言对：已经是目标语言的文字不算候选。
+    payload.source_language = st.sourceLang;
+    payload.target_language = st.targetLang;
+    payload.include_block_text = Boolean(st.toggles.get("cadBlockText"));
+  }
+  return payload;
+}
+
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
 async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
   const st = states[surface];
@@ -2823,19 +2897,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
   rerender(surface);
   try {
     const c = await getClient();
-    const payload: JsonObject = {
-      surface,
-      path,
-      // 多选文件时按这几个路径各扫一次再合并；清单里就只有用户挑的那几份。
-      paths: st.sourcePaths.map(normalizeUserPath),
-      include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
-    };
-    if (surface === "cad") {
-      // CAD 的「待翻译」数取决于语言对：已经是目标语言的文字不算候选。
-      payload.source_language = st.sourceLang;
-      payload.target_language = st.targetLang;
-      payload.include_block_text = Boolean(st.toggles.get("cadBlockText"));
-    }
+    const payload = scanPayload(surface, st, path);
     if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
     if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
@@ -3303,6 +3365,16 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       if (data.phase_name !== undefined && !holdsStatePhase(local)) local.phaseName = redactedText(data.phase_name, local.phaseName);
       const done = num(data.step_done);
       const total = num(data.step_total);
+      if (local.task.state === "stopping") {
+        // 停止时 Excel / Word 会把没翻完的部分跳过、直接进入最后的写文件阶段，后端按阶段
+        // 权重折算，进度条会从 29% 一下跳到 80%，然后在那儿停十几秒——看上去像快跑完了。
+        // 停止期间进度条留在点停止时的位置，标题改说正在做什么。
+        const lastPhase = num(data.phase_total) > 0 && num(data.phase_index) >= num(data.phase_total);
+        if ((surface === "excel" || surface === "word") && lastPhase && total > 0) {
+          local.phaseName = `正在安全停止：写出已翻好的部分（${Math.min(done, total)}/${total} 个文件）`;
+        }
+        break;
+      }
       // step_done/step_total 是**当前阶段**的步数。直接拿它当总进度，扫描一结束进度条
       // 就满格，后面还有翻译和生成两个阶段要跑——用户看到 100% 却还在等，只能理解成卡住。
       // 事件里带着 phase_index/phase_total，用它把阶段内进度折算到整条进度上。
@@ -3550,6 +3622,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
   // 「有东西没拿到」，它决定用户下一步要不要重跑。
   if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
+  // 接口一直限流时后端会先把翻好的部分写出去、其余保留原文（rate_limited_partial）。
+  // 只说「N 处需复核」，用户会以为是译文质量问题挨格去看；要直说是限流没翻完、等会儿续译。
+  const rateLimited = Array.isArray(result.issues)
+    ? result.issues.map(record).find((issue) => text(issue.type) === "rate_limited_partial")
+    : undefined;
+  if (rateLimited) clauses.push(`接口持续限流，${num(rateLimited.count)} 处还没翻，稍后用「接着上次继续」补译`);
   // CAD 的待复核是按文件记的（逐文件 status=needs_review），没有 review.total_count。
   const reviewFiles = surface === "cad"
     ? fileResults.filter((entry) => fileResultProduced(entry) && fileResultPendingReview(entry) > 0).length
@@ -3678,7 +3756,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       subtitle: clauses.join(" · "),
       tone,
       statusLabel: suffix ? `${stateWord} · ${suffix}` : stateWord,
-      hasOutput: true,
+      // 停止或失败时一个文件都没写出，后端会把空的输出文件夹删掉、output_dir 置空；
+      // 这时再给「打开输出目录」，点进去要么是空文件夹，要么是源文件夹。
+      hasOutput: generated > 0 || text(result.output_dir) !== "",
     };
   }
   st.showBanner = true;

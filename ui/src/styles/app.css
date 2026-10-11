@@ -591,10 +591,19 @@ table.review-tbl { table-layout: fixed; }
 }
 /* display: contents —— 格子本身不生成盒子，卡片直接参与栈的 flex 布局；空格不占位。 */
 .toast-slot { display: contents; }
+/* 一次性提示放到工作区左下角。原来跟更新卡片一起停在顶部居中，正好压在来源栏的
+   「浏览」按钮上，扫描完那几秒点不到它。右下角是「开始翻译」，也不能去；左下角只会
+   盖住清单或日志的末尾几行，那里没有按钮。 */
+.toast-slot.ts-toast {
+  display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 8px;
+  position: absolute; left: 24px; bottom: 20px; max-width: calc(100% - 48px); pointer-events: none;
+}
 
 /* ========== Toast（适配点 5：样张未覆盖，新增） ========== */
 .toast { pointer-events: auto; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; animation: toast-in 180ms ease-out; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.ts-toast .toast { animation-name: toast-up; }
+@keyframes toast-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .toast.error { border-color: var(--danger-l); color: var(--danger); }
 
 /* ========== 发布说明渲染（markdown.ts 的 .rn；设置页与更新卡片共用） ==========
