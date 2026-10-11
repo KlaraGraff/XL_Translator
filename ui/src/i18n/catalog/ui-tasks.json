@@ -128,7 +128,7 @@
   "复制路径": {"en": "Copy path", "fr": "Copier le chemin"},
   "需要复核的位置": {"en": "Places to review", "fr": "Éléments à vérifier"},
   "需复核在前 · 一行一个位置，同一位置的多条判定已并成一行": {"en": "Needs-review items first · one row per location; multiple findings at the same spot are merged", "fr": "Éléments à vérifier en premier · une ligne par emplacement ; les constats au même endroit sont regroupés"},
-  "位置": {"en": "Location", "fr": "Emplacement"},
+  "位置": {"en": "Location", "fr": "Position"},
   "原文摘录": {"en": "Source excerpt", "fr": "Extrait source"},
   "问题": {"en": "Issue", "fr": "Problème"},
   "处理": {"en": "Action", "fr": "Traitement"},
