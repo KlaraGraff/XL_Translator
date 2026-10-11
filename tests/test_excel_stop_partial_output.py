@@ -37,6 +37,7 @@ class _StoppingEngine:
     def __init__(self, *, stop_on_call: int, fail_after_stop: bool) -> None:
         self.runner: TaskRunner | None = None
         self.calls = 0
+        self.chat_calls = 0
         self._stop_on_call = stop_on_call
         self._fail_after_stop = fail_after_stop
 
@@ -49,7 +50,9 @@ class _StoppingEngine:
                 raise ConnectionError("connection aborted while stopping")
         return {text: f"Concrete pouring section {_SOURCES.index(text) + 1}" for text in texts}
 
-    def chat(self, system: str, user: str) -> str:  # pragma: no cover - 不该走到
+    def chat(self, system: str, user: str) -> str:
+        # 停止之后不该再发任何请求（包括「失败后语言方向」那一次探测）。
+        self.chat_calls += 1
         raise NotImplementedError
 
 
@@ -82,11 +85,17 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
         self._env.stop()
         self._tmp.cleanup()
 
-    def _run(self, *, fail_after_stop: bool) -> tuple[StoppedMsg, Path]:
+    def _run(
+        self,
+        *,
+        fail_after_stop: bool,
+        stop_on_call: int | None = None,
+        sources: list[str] = _SOURCES,
+    ) -> tuple[StoppedMsg, Path]:
         source = self.root / "工程量清单.xlsx"
         wb = Workbook()
         ws = wb.active
-        for row, text in enumerate(_SOURCES, start=1):
+        for row, text in enumerate(sources, start=1):
             ws.cell(row=row, column=1, value=text)
         wb.save(source)
 
@@ -96,8 +105,11 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
             settings,
             source_root=self.root,
         )
-        engine = _StoppingEngine(stop_on_call=1 if not fail_after_stop else 2, fail_after_stop=fail_after_stop)
+        if stop_on_call is None:
+            stop_on_call = 1 if not fail_after_stop else 2
+        engine = _StoppingEngine(stop_on_call=stop_on_call, fail_after_stop=fail_after_stop)
         engine.runner = runner
+        self.engine = engine
         with ExitStack() as stack:
             stack.enter_context(
                 patch("core.task_runner.TaskLogger", return_value=MagicMock(task_id="excel-stop-test"))
@@ -168,6 +180,22 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
             any("API 密钥" in str(issue.get("message")) for issue in stopped.issues),
             stopped.issues,
         )
+        # 停止交回的原文占位不是「质量校验回退」，也没有格子被标记待复核。
+        self.assertNotIn("quality_filter_reset", types)
+        self.assertNotIn("suspected_source_language_mismatch", types)
+        self.assertEqual(self.engine.chat_calls, 0)
+
+    def test_stop_on_first_request_makes_no_language_probe(self) -> None:
+        # 小任务（一批就装下）第一批就被停止打断：全部条目都是停止占位。以前它们
+        # 被当成「质量校验回退」，占比过线后还会在停止之后多发一次 chat 探测语言方向。
+        stopped, _source = self._run(
+            fail_after_stop=True, stop_on_call=1, sources=_SOURCES[:10]
+        )
+        types = {str(issue.get("type")) for issue in stopped.issues}
+        self.assertNotIn("quality_filter_reset", types)
+        self.assertNotIn("suspected_source_language_mismatch", types)
+        self.assertNotIn("api_unavailable", types)
+        self.assertEqual(self.engine.chat_calls, 0)
 
 
 if __name__ == "__main__":  # pragma: no cover

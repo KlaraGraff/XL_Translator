@@ -1858,16 +1858,19 @@ class TaskRunner(BaseTaskRunner):
             if batch_stats.quality_reset_count:
                 # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
                 # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
-                mismatch = _detect_post_failure_source_language(
-                    engine=engine,
-                    samples=batch_stats.quality_reset_items,
-                    requested_source=source_lang,
-                    target_lang=target_lang,
-                    reset_count=batch_stats.quality_reset_count,
-                    original_count=(
-                        batch_stats.original_count or len(global_unique_texts)
-                    ),
-                )
+                # 用户按了停止就不再发任何请求，语言方向探测也不例外。
+                mismatch = None
+                if not self._stop_event.is_set():
+                    mismatch = _detect_post_failure_source_language(
+                        engine=engine,
+                        samples=batch_stats.quality_reset_items,
+                        requested_source=source_lang,
+                        target_lang=target_lang,
+                        reset_count=batch_stats.quality_reset_count,
+                        original_count=(
+                            batch_stats.original_count or len(global_unique_texts)
+                        ),
+                    )
                 issue_type = "suspected_source_language_mismatch" if mismatch else "quality_filter_reset"
                 if mismatch:
                     message = _language_mismatch_message(

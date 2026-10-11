@@ -1188,13 +1188,16 @@ def _apply_quality_filter(
     """
     reset_count = 0
     already_untranslated = (
-        stats.untranslated_sources if stats is not None else frozenset()
+        stats.untranslated_sources | stats.stopped_sources
+        if stats is not None
+        else frozenset()
     )
     for src in list(results.keys()):
         if src in already_untranslated:
             # API 失败回退的条目已按「未翻译」上报过。这里译文必然等于原文，
             # 再计一次「质量校验回退」会把服务故障误报成译文质量问题，
             # 同一格子在报告里出现两条互相矛盾的 needs_action。
+            # 停止时按原文占位交回的条目同理：那是还没翻，不是译坏了。
             continue
         if not should_apply_quality_filter(results[src]):
             continue
