@@ -468,7 +468,7 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     f"临时文件清理失败 {process_path.name}: "
-                    f"{user_facing_reason(e, fallback="无法删除临时文件。")}",
+                    f"{user_facing_reason(e, fallback='无法删除临时文件。')}",
                 )
 
         # 阶段 1/3 内部各有自己的清理点，但停止、致命失败连阶段 3 都进不去，
@@ -3396,7 +3396,7 @@ class TaskRunner(BaseTaskRunner):
                     self._log(
                         "WARN",
                         f"临时文件清理失败 {previous.name}: "
-                        f"{user_facing_reason(e, fallback="无法删除临时文件。")}",
+                        f"{user_facing_reason(e, fallback='无法删除临时文件。')}",
                     )
 
     def _rebuild_coverage_plans_after_preflight(

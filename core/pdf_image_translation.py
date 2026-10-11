@@ -377,7 +377,7 @@ def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
         )
         result.items.append(item)
     except Exception as exc:  # noqa: BLE001 - one broken input must not block its peers.
-        reason = f"读取失败：{user_facing_reason(exc, fallback="无法打开此文件。")}"
+        reason = f"读取失败：{user_facing_reason(exc, fallback='无法打开此文件。')}"
         logger.warning(f"扫描 PDF/图片失败 {path.name}：{exc}")
         result.skipped.append(
             PdfScanSkippedItem(path, relative, reason, suffix.lstrip("."), source_type)
@@ -2327,7 +2327,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}："
-                    f"{user_facing_reason(exc, fallback="无法删除文件。")}",
+                    f"{user_facing_reason(exc, fallback='无法删除文件。')}",
                 )
         return stashed
 
@@ -2920,7 +2920,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 logger.debug(f"[PDF] 复制源文件失败原始错误：{exc!r}")
-                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback="无法将源文件复制到工作文件夹。")}"
+                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法将源文件复制到工作文件夹。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -2945,7 +2945,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 except Exception as exc:  # noqa: BLE001 - file-level validation failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
                     logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
-                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback="无法打开此图片，文件可能已损坏或格式不受支持。")}"
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='无法打开此图片，文件可能已损坏或格式不受支持。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -3520,7 +3520,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 except Exception as exc:  # noqa: BLE001 - file-level render failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
                     logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
-                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback="无法打开此图片，文件可能已损坏或格式不受支持。")}"
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='无法打开此图片，文件可能已损坏或格式不受支持。')}"
                     self._log("ERROR", f"[{record.name}] {record.error}")
                 continue
             try:
@@ -3565,7 +3565,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             self._log(
                                 "ERROR",
                                 f"[{record.name}] 无法读取第 {page_number} 页，已改为失败占位页，其余页面继续处理："
-                                f"{user_facing_reason(exc, fallback="无法从源文件读取此页。")}",
+                                f"{user_facing_reason(exc, fallback='无法从源文件读取此页。')}",
                             )
                         yield (prepared, page_record)
                 finally:
@@ -3573,7 +3573,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - file-level render failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 logger.debug(f"[PDF] PDF 渲染失败原始错误：{exc!r}")
-                record.error = f"PDF 页面读取失败：{user_facing_reason(exc, fallback="无法读取此 PDF 的页面。")}"
+                record.error = f"PDF 页面读取失败：{user_facing_reason(exc, fallback='无法读取此 PDF 的页面。')}"
                 self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _broken_page_record(
@@ -3607,7 +3607,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             file_name=file_name,
             status="placeholder_pending",
             placeholder=True,
-            error=f"页面读取/渲染失败：{user_facing_reason(error, fallback="无法从源文件读取此页。")}",
+            error=f"页面读取/渲染失败：{user_facing_reason(error, fallback='无法从源文件读取此页。')}",
             source_width_px=int(max(1, round(width_pt * scale))),
             source_height_px=int(max(1, round(height_pt * scale))),
             page_width_pt=float(width_pt),
@@ -3702,7 +3702,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
             logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
-            record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback="已翻译的页面未能合成 PDF。")}"
+            record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='已翻译的页面未能合成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _finalize_image_record(
@@ -5221,7 +5221,7 @@ def _pdf_read_error_message(exc: Exception) -> str:
     if "password" in str(exc).lower():
         return "此 PDF 受密码或权限保护，暂时无法翻译。"
     logger.debug(f"[PDF] 打开 PDF 失败原始错误：{exc!r}")
-    return f"PDF 读取失败：{user_facing_reason(exc, fallback="无法打开此 PDF，文件可能已损坏或扩展名与实际格式不符。")}"
+    return f"PDF 读取失败：{user_facing_reason(exc, fallback='无法打开此 PDF，文件可能已损坏或扩展名与实际格式不符。')}"
 
 
 def _append_pdf_image_page(
