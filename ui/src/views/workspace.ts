@@ -3448,8 +3448,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     const item = record(entry);
     const ok = fileResultProduced(item);
     if (ok) produced += 1;
-    // 用户按停止时还没做完的文件（CAD 记为 status=stopped）不是失败，算在「还有 N 个没跑到」里。
-    else if (item.status !== "stopped") failed += 1;
+    // 用户按停止时还没做完的文件不是失败，算在「还有 N 个没跑到」里：CAD 记为
+    // status=stopped，Excel / Word 记为 status=unstarted。以前只认前者，Excel 停止后
+    // 同一批文件会被说两遍——「3 个文件没能生成 · 还有 3 个文件没跑到」。
+    else if (!fileResultNotReached(item)) failed += 1;
     const key = fileOutcomeKey(text(item.name));
     const fileId = text(item.file_id);
     if (key && !ambiguousNames.has(key)) {
@@ -3457,7 +3459,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       // 整份未翻译的文件不能只写「已生成」：文档确实写出来了，可里面一个字都没翻。
       // 这一行的说明沿用后端给的原话（`fully_skipped_oversize_message`）。
       const untranslated = ok && fileResultUntranslated(item);
-      const label = !ok
+      const notReached = !ok && fileResultNotReached(item);
+      const label = notReached
+        ? "停止前没跑到"
+        : !ok
         ? "未生成"
         : untranslated
           ? "已生成 · 整份未翻译"
@@ -3467,7 +3472,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       st.fileOutcomes.set(key, {
         produced: ok,
         label,
-        detail: ok && !untranslated
+        detail: (ok && !untranslated) || notReached
           ? ""
           : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
       });
@@ -3629,7 +3634,17 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     ? terminalStateWord("done")
     : terminalStateWord(task.state);
   const reason = redactedText(result.message, "");
-  if (tone === "fail") {
+  if (task.state === "stopped") {
+    // 停止是用户自己的操作，不是失败：不报红、不弹错误 toast、按钮也不叫「查看失败原因」。
+    // 后端的停止说明（如 CAD 的「已完成文件和断点均已保留」）只在这里出现一次。
+    st.bannerInfo = {
+      title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
+      subtitle: [reason, ...clauses].filter(Boolean).join(" · "),
+      tone,
+      statusLabel: stateWord,
+      hasOutput: generated > 0,
+    };
+  } else if (tone === "fail") {
     const detail = reason || (generated > 0
       ? "任务在结束前中断，已生成的文件仍保留在输出目录。"
       : "任务没有产出文件，请看下方日志或完整报告里的原因。");
@@ -3674,6 +3689,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     showToast({ message: reason || "任务未能顺利完成。", error: true });
   }
   rerender(surface);
+}
+
+/** 这个文件是因为用户停止才没做（CAD：stopped；Excel / Word：unstarted），而不是失败。 */
+function fileResultNotReached(entry: unknown): boolean {
+  const status = text(record(entry).status);
+  return status === "stopped" || status === "unstarted";
 }
 
 /** 逐文件结果是否真的写出了文件。 */
@@ -3756,8 +3777,10 @@ function resultTone(
   settled: boolean,
 ): ResultTone {
   if (state === "error" || state === "interrupted") return "fail";
+  // 停止是用户主动的，哪怕一个文件都还没写出来也不算失败。
+  if (state === "stopped") return "warn";
   if (generated === 0) return "fail";
-  if (failed > 0 || state === "stopped") return "warn";
+  if (failed > 0) return "warn";
   if (review > 0 || autoFixed > 0) return "warn";
   // 后端只要给出任何一条结果项，任务终态就是 completed_with_issues，这一行过去无条件
   // 报黄——包括一条待办都没有、只剩「去 Word 里按 F9 刷新目录」这类提示的任务。真正
