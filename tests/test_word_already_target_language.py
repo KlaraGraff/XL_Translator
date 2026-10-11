@@ -11,7 +11,8 @@ from unittest.mock import patch
 from docx import Document
 
 from core.language_preflight import TranslationLanguageResult
-from core.task_runner import DoneMsg
+from core.api_concurrency_control import ApiCredentialRejectedError
+from core.task_runner import DoneMsg, ErrorMsg
 from core.word_document import WordFileItem, WordSegment
 from core.word_quality_report import _append_post_write_coverage_issues
 from core.word_task_runner import WordTaskRunner
@@ -46,7 +47,7 @@ class PostWriteCoverageTests(unittest.TestCase):
 
 
 class RunnerTests(IsolatedAppDataTestCase):
-    def _run(self, *, translation: str, reported_lang: str | None = None):
+    def _run(self, *, translation: str, reported_lang: str | None = None, raises: Exception | None = None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.docx"
@@ -70,6 +71,8 @@ class RunnerTests(IsolatedAppDataTestCase):
                     return '{"source_langs":["en"]}'
 
             def translate(texts, _engine, target_lang, *_args, **kwargs):
+                if raises is not None:
+                    raise raises
                 for text in texts:
                     kwargs["source_result_callback"](
                         text,
@@ -103,7 +106,10 @@ class RunnerTests(IsolatedAppDataTestCase):
                 stack.enter_context(patch("core.word_task_runner.translate_word_texts", side_effect=translate))
                 runner._run()
 
-            _contracts.WordTaskResultContractTests._terminal_message(runner, DoneMsg)
+            terminal = _contracts.WordTaskResultContractTests._terminal_message(
+                runner, ErrorMsg if raises is not None else DoneMsg
+            )
+            self.last_terminal = terminal
             return writer, retries, coverage
 
     def test_identity_in_target_language_skips_retry_and_reaches_post_write_check(self) -> None:
@@ -125,6 +131,16 @@ class RunnerTests(IsolatedAppDataTestCase):
         )
         retries.assert_called_once()
         self.assertEqual(retries.call_args.args[:2], (ENGLISH, ENGLISH))
+
+    def test_rejected_key_marks_the_file_not_generated_like_excel(self) -> None:
+        # 同一个 Key 错误，Excel 清单写「未生成」、Word 写「未开始」，两边说法不一致。
+        writer, _retries, _coverage = self._run(
+            translation=ENGLISH, raises=ApiCredentialRejectedError("接口拒绝了这条连接的 API Key（HTTP 401）"),
+        )
+        writer.assert_not_called()
+        self.assertIn("API Key", self.last_terminal.message)
+        self.assertEqual([item["status"] for item in self.last_terminal.files], ["failed"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

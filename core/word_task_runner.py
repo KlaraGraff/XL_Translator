@@ -2697,6 +2697,12 @@ class WordTaskRunner:
             elif stopped:
                 status = "unstarted"
                 readable_error = "任务在开始该文件前已停止。"
+            elif error_message:
+                # 与 Excel 同一口径：整批失败时这份文件是「没生成」，不是「还没轮到」。
+                # 以前这里记成 unstarted，同一个 Key 错误，Word 清单写「未开始」、
+                # Excel 写「未生成」。
+                status = "failed"
+                readable_error = "任务整体失败，这个文件没有写出。"
             else:
                 status = "unstarted"
                 readable_error = "该文件未开始处理。"

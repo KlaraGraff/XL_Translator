@@ -3764,7 +3764,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   st.showBanner = true;
   // 清单、勾选、来源路径都保留：任务结束正是用户要重跑失败文件、或换个设置再来一遍的
   // 时候。以前这里全部清空，等于把「再来一次」的入口一起删了，他只能重新选路径重扫。
-  if (tone === "fail") {
+  // 页面开着时横幅已经把原因原话写出来了，再弹一条同样的提示就是一句话说两遍。
+  // 只有用户在别的页面时才用提示告诉他任务失败了。
+  if (tone === "fail" && !st.renderer) {
     showToast({ message: reason || "任务未能顺利完成。", error: true });
   }
   rerender(surface);
