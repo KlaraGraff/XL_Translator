@@ -682,8 +682,8 @@ table.review-tbl { table-layout: fixed; }
 .ut-rn.clamped { position: relative; max-height: 6.4em; overflow: hidden; }
 /* 夹住时底部渐隐，明示「下面还有」。渐变终点必须是卡片底色而不是透明——Safari 会把
    transparent 解析成 rgba(0,0,0,0)，浅色背景上会渐出一条灰边。 */
-.ut-rn.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--surface)); }
-:root[data-theme="dark"] .ut-rn.clamped::after { background: linear-gradient(to bottom, rgba(21, 27, 40, 0), var(--surface)); }
+.ut-rn.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, rgba(244, 246, 249, 0), var(--surface)); }
+:root[data-theme="dark"] .ut-rn.clamped::after { background: linear-gradient(to bottom, rgba(30, 36, 49, 0), var(--surface)); }
 .ut-blocked { padding: 0 14px 10px 40px; font-size: 11.6px; color: var(--warn); line-height: 1.6; }
 
 .ut-foot { display: flex; align-items: center; gap: 12px; padding: 8px 11px 8px 14px; border-top: 1px solid var(--line); }
