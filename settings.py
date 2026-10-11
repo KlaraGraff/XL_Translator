@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from config import (
     APP_DATA_DIR,
     BACKUPS_DIR,
+    CLOUD_ENGINES,
     CONCURRENCY_DEFAULT,
     DEFAULT_CLOUD_MODEL,
     DEFAULT_CLOUD_PROVIDER,
@@ -336,7 +337,11 @@ class ModelConnection(TextProtocolSettings):
     def display_label(self) -> str:
         if self.label:
             return self.label
-        return self.base_url or self.provider
+        # 没起名的连接以前直接显示 Base URL 或内部标识（custom_openai），设置页
+        # 和任务中心里读起来像代码。改成服务商名，有地址时补上主机名好区分多条连接。
+        name = _PROVIDER_DISPLAY_NAMES.get(self.provider, self.provider)
+        host = urlsplit(self.base_url).hostname if self.base_url else ""
+        return f"{name} · {host}" if host else name
 
 
 class ModelUpgradeState(BaseModel):
@@ -350,6 +355,11 @@ class ModelUpgradeState(BaseModel):
 
 
 _SEEDED_CONNECTION_PREFIX = "seed-"
+
+_PROVIDER_DISPLAY_NAMES = {
+    **{value: label for label, value in {**CLOUD_ENGINES, **LOCAL_MODEL_PROVIDERS}.items()},
+    "custom_local": "自定义本地模型",
+}
 
 
 def _sync_connection_pool(owner) -> None:

@@ -717,6 +717,17 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
     groupHandles.push(handle);
   }
 
+  // 勾上「只看有问题的页」而一页问题都没有时，表格只剩表头，像是没加载出来。
+  // 这一行平时隐藏，只在筛选打开时由 CSS 显示（.pdf-review-card.filter .row-none-bad）。
+  if (totalPages > 0 && !table.querySelector("tr:not(.row-ok):not(.pdf-file-group) td")) {
+    const noneRow = el("tr", "row-none-bad");
+    const cell = el("td");
+    cell.colSpan = 4;
+    cell.textContent = "没有需要处理的页。";
+    noneRow.append(cell);
+    table.append(noneRow);
+  }
+
   // 失败页横幅：只在终态出现——非终态的失败页走的是 buildPdfRecoveryCard 那张独立的
   // 「页恢复」卡片（排队式的 regeneratePdfPage，继续翻译才生效），这里的批量重跑走的
   // 是终态专用、点了立刻重跑的 rerunPdfPage，两条路语义不同，不能在还没结束的任务上

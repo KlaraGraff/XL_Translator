@@ -1835,6 +1835,11 @@ class TranslationTaskManager:
                 self._tasks.pop(stale.task_id, None)
 
     def _append_event(self, task: ApiTask, event_type: str, data: Any) -> None:
+        if event_type == "log" and isinstance(data, dict) and data.get("visible") is False:
+            # 运行器标了 visible=False 的行（逐页「已渲染 / 已提交」、像素尺寸细节等）
+            # 只给排查用：运行器自己已经写进任务日志和 app.log，这里不再推到界面的
+            # 运行日志里。以前这个标记没人读，这些行照样显示给用户。
+            return
         safe_data = _sanitize_task_data(data)
         if event_type == "log":
             level = "INFO"

@@ -516,7 +516,8 @@ class TaskRunner(BaseTaskRunner):
             lock_row_height      = excel_output.lock_row_height,
         )
 
-        self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
+        # 只写进 app.log：路径和内部参数对排查有用，但不该出现在用户看的运行日志里。
+        logger.info(f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
         self._log("INFO", f"扫描到 {len(self._files)} 个文件")
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
@@ -819,7 +820,7 @@ class TaskRunner(BaseTaskRunner):
                 f"raw_text_count={raw_text_count} | "
                 f"reason={excel_policy_reason}"
             )
-            self._log("INFO", f"[Excel策略] {excel_policy_log}")
+            logger.info(f"[Excel策略] {excel_policy_log}")  # 同上，只进 app.log
             self._task_logger.excel_policy_decided(
                 excel_policy=excel_policy,
                 xls_file_count=xls_file_count,

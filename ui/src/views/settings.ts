@@ -330,6 +330,13 @@ const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string
   full_reset: { title: "完整重置本地数据？", message: "只删除 Translator 自己保存的数据。应用本身、你的源文件和翻译结果都不会被删除。", confirm: "完整重置" },
 };
 
+/** 按钮上的动词要和点开后弹窗的标题一致：以前列表里写「清理」，弹窗却问「重置设置？」。 */
+function maintenanceVerb(category: string): string {
+  if (category === "settings") return "重置";
+  if (category === "keys") return "删除";
+  return "清空";
+}
+
 // ---------------------------------------------------------------------------
 // 模块状态（单例：设置页同一时刻只会挂载一份）
 // ---------------------------------------------------------------------------
@@ -2072,7 +2079,7 @@ function renderDataPage(host: HTMLElement): void {
       const action = category.contains_user_output
         ? createChip({ label: "受保护", tone: "mute" })
         : category.clearable
-          ? createButton({ label: "清理", size: "mini", variant: "danger", onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory) })
+          ? createButton({ label: maintenanceVerb(category.id), size: "mini", variant: "danger", onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory) })
           : createChip({ label: "自动维护", tone: "mute" });
       overviewCard.append(connRow([name, meta, action]));
     }
@@ -2211,7 +2218,7 @@ function renderDataPage(host: HTMLElement): void {
     small.textContent = item.meta;
     name.append(b, small);
     const btn = createButton({
-      label: item.category === "settings" ? "重置" : "清空", size: "mini", variant: "danger",
+      label: maintenanceVerb(item.category), size: "mini", variant: "danger",
       disabled: item.blockOnActive && activeTaskCount > 0,
       onClick: () => requestMaintenanceClear(item.category),
     });
@@ -2769,7 +2776,8 @@ function diagnosticNote(message: string, code: string): HTMLParagraphElement {
     note.append(document.createElement("br"));
     const codeEl = document.createElement("span");
     codeEl.className = "diag-code";
-    codeEl.textContent = code;
+    // 代码本身是给反馈问题时用的，单独一行写成「诊断代码：xxx」，不然像是界面漏出来的乱码。
+    codeEl.textContent = `诊断代码：${code}`;
     note.append(codeEl);
   }
   return note;

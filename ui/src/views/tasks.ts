@@ -253,6 +253,8 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
     open_report: "打开报告",
     open_manifest: "打开清单",
     copy_output_path: "复制输出路径",
+    open_summary: "打开汇总",
+    open_review: "打开复核材料",
   };
   for (const operation of resultEntries(result, ["local_operations"])) {
     const action = text(operation.action);
@@ -270,6 +272,31 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
   add("打开报告", ["report_path", "word_translation_report_path", "pdf_translation_report_path"]);
   add("打开清单", ["manifest_path", "pdf_translation_manifest_path"]);
   return refs;
+}
+
+/** 快照里存的是语言代码（auto、en、zh），详情里要显示成「自动检测 → 英文」。
+ *  语言表进入任务中心时拉一次；没拉到时退回代码本身，不挡渲染。 */
+const languageNames = new Map<string, string>([["auto", "自动检测"]]);
+let languageNamesRequested = false;
+
+async function loadLanguageNames(): Promise<void> {
+  if (languageNamesRequested) return;
+  languageNamesRequested = true;
+  try {
+    const client = await getClient();
+    const payload = await client.request<{ source_options?: Array<{ code: string; display_name: string }>; target_options?: Array<{ code: string; display_name: string }> }>("/api/languages");
+    for (const option of [...(payload.source_options ?? []), ...(payload.target_options ?? [])]) {
+      if (option.code && option.display_name && option.code !== "auto") languageNames.set(option.code, option.display_name);
+    }
+    if (mounted) renderDetail();
+  } catch {
+    // 拉不到就下次进来再试；这期间显示代码。
+    languageNamesRequested = false;
+  }
+}
+
+function languageName(code: string): string {
+  return languageNames.get(code) ?? code;
 }
 
 function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
@@ -326,7 +353,7 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     ? connectionNames.join("、") + (pooledTotal > 1 ? `（共 ${pooledTotal} 个地址，自动轮流使用）` : "")
     : "";
   const rows: Array<[string, string]> = [
-    ["语言", [sourceLang, targetLang].filter(Boolean).join(" → ")],
+    ["语言", [sourceLang, targetLang].filter(Boolean).map(languageName).join(" → ")],
     ["模型", models],
     ["连接", connectionSummary],
     ["运行中换过连接", connectionSwitchText(task)],
@@ -1815,6 +1842,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
 
   // 进入任务中心先立刻拉一次：否则第一份画面用的是上一次巡检的成像，最长能差 12 秒。
   void refreshRegistry();
+  void loadLanguageNames();
   // 前台快速轮询：任务中心可见时更快发现新任务/刷新列表；后台巡检（12s）在任何视图下都跑。
   fastPollTimer = window.setInterval(() => void refreshRegistry(), 4000);
 }

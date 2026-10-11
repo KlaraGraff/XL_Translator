@@ -578,21 +578,30 @@ export function renderModelsPage(host: HTMLElement): void {
     // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
     // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点
     // 「测试连接」。「未获取列表」同样——光看这四个字看不出下一步该点哪里。
-    const statusReasons: string[] = [];
+    // 胶囊上已经写了「测试失败」，原因这里不再重复一遍；只有失败原因那一句和胶囊同用琥珀色，
+    // 后面「还没获取模型列表」这类普通说明保持灰色。旧版本存下的原因还带着
+    // 「XX连接测试失败：」前缀，显示前去掉。
+    const statusParts: HTMLElement[] = [];
     if (availability === "unavailable") {
-      const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。");
-      statusReasons.push(`测试失败：${reason}${checkedAt ? `（${checkedAt}）` : ""}`);
+      const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。")
+        .replace(/^[^：]{0,16}连接测试失败：/, "");
+      const failure = document.createElement("span");
+      failure.style.color = "var(--warn)";
+      failure.textContent = `${reason}${checkedAt ? `（${checkedAt}）` : ""}`;
+      statusParts.push(failure);
     }
     if (!list.length) {
-      statusReasons.push(
-        matches
-          ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
-          : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。",
-      );
+      const note = document.createElement("span");
+      note.textContent = matches
+        ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
+        : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。";
+      statusParts.push(note);
     }
-    statusReasonNote.hidden = !statusReasons.length;
-    statusReasonNote.style.color = availability === "unavailable" ? "var(--danger)" : "var(--ink-3)";
-    statusReasonNote.textContent = statusReasons.join(" · ");
+    statusReasonNote.hidden = !statusParts.length;
+    statusReasonNote.style.color = "var(--ink-3)";
+    statusReasonNote.replaceChildren(
+      ...statusParts.flatMap((part, index) => (index ? [document.createTextNode(" · "), part] : [part])),
+    );
   };
   paintStatus(selected);
 

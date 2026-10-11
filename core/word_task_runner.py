@@ -828,7 +828,8 @@ class WordTaskRunner(BaseTaskRunner):
             enable_excel_autofit=False,
             lock_row_height=False,
         )
-        self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
+        # 只写进 app.log：路径和内部参数对排查有用，但不该出现在用户看的运行日志里。
+        logger.info(f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
         self._log("INFO", f"扫描到 {len(self._files)} 个 Word 文件")
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")

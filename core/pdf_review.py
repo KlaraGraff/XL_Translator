@@ -279,7 +279,7 @@ def check_pdf_review_connectivity(
     )
     signature = pdf_review_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "vision_text"):
-        message = f"{config.label}当前服务商不支持图像理解审核能力：{config.provider}"
+        message = "这条连接的服务商不支持看图审核，请换一条连接。"
         record_pdf_review_model_availability(
             settings,
             ok=False,
@@ -307,7 +307,7 @@ def check_pdf_review_connectivity(
                     target_language="English",
                     model_config=config,
                 )
-                message = f"{config.label}连接测试通过。"
+                message = "连接测试通过。"
                 record_pdf_review_model_availability(
                     settings,
                     ok=True,
@@ -321,7 +321,7 @@ def check_pdf_review_connectivity(
             except Exception as exc:  # noqa: BLE001 - retry and report all review errors.
                 last_error = _sanitize_error(exc)
 
-    message = f"{config.label}连接测试失败：{last_error or '未知错误'}"
+    message = last_error or "审核模型没有正常响应，请检查这条连接的地址、API Key 和模型名。"
     record_pdf_review_model_availability(
         settings,
         ok=False,

@@ -961,10 +961,13 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     const state = st.task.task.state;
     const meta = runningStatusMeta(state, surface);
     const fileCount = st.selected.size || st.files.length;
-    const domainSuffix = surface !== "pdf" ? ` · ${st.domainPreset}` : "";
+    // 专业领域选「无」时不写：单独一个「无」挂在语言后面，看不出指的是什么。
+    const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== "无"
+      ? ` · 专业领域：${st.domainPreset}`
+      : "";
     // PDF 没有源语言选择，只说目标语言；其余三页同一句式。
     const subtitle = surface === "pdf"
-      ? `${fileNounPhrase(surface, fileCount)} · → ${targetLabel(st)}`
+      ? `${fileNounPhrase(surface, fileCount)} · 译成${targetLabel(st)}`
       : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
     return;
@@ -1760,10 +1763,16 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     // 全部输入都被跳过时，清单是空的但原因是明摆着的——扫描到了文件，只是一个都不能翻。
     // 这时候还说「拖入文件开始」等于把刚发生的事抹掉，人会以为路径选错了反复重扫。
     const allSkipped = st.skipped.length > 0;
+    // 只跳过一项（路径写错、文件损坏最常见）时把原因直接写出来，不用再点一次报告。
+    const onlySkipped = st.skipped.length === 1 ? st.skipped[0] : null;
     const copy = allSkipped
       ? {
-          title: `扫描到的 ${st.skipped.length} 个输入都没能纳入清单`,
-          description: "下方列出了每一个的原因；处理掉原因后重新扫描即可。",
+          title: onlySkipped
+            ? `「${text(onlySkipped.name, text(onlySkipped.relative_path, onlySkipped.path))}」没能纳入清单`
+            : `扫描到的 ${st.skipped.length} 个输入都没能纳入清单`,
+          description: onlySkipped
+            ? `${redactedText(onlySkipped.reason, "原因未知").replace(/[。.]?$/, "。")}处理好之后重新扫描即可。`
+            : "每一项的原因可以点下方「查看扫描报告」看到；处理好之后重新扫描即可。",
         }
       : !st.hasEverCompleted
         ? SURFACE_FIRST_EMPTY[surface]
@@ -1804,8 +1813,8 @@ function buildSkipNoticeRow(surface: Surface, st: SurfaceState): HTMLElement | n
   warnIcon.style.color = "var(--warn)";
   const label = el("span");
   const names = st.skipped.slice(0, 2).map((s) => text(s.name, text(s.relative_path, s.path))).filter(Boolean);
-  const extra = st.skipped.length > names.length ? `等 ${st.skipped.length} 项` : names.join("、");
-  label.textContent = `扫描时跳过 ${st.skipped.length} 项${names.length ? `：${extra}` : ""}`;
+  const extra = st.skipped.length > names.length ? " 等" : "";
+  label.textContent = `扫描时跳过 ${st.skipped.length} 项${names.length ? `：${names.join("、")}${extra}` : ""}`;
   const skipTools = el("div", "tc-tools");
   const reportLink = el("span", "linklike");
   reportLink.textContent = "查看扫描报告";
@@ -2031,11 +2040,13 @@ function buildWordRecoveryCard(local: LocalTask): HTMLElement | null {
   const head = el("div", "tc-head");
   head.style.cssText = "padding:0 0 8px;border:0";
   const b = el("b");
-  b.textContent = "严格重试与语义仲裁";
+  b.textContent = "自动重译与复查";
   head.append(b);
   card.append(head);
   const note = el("p", "ws-note");
-  note.textContent = "严格重试只处理空译文、明显不完整或质量校验失败内容；语义仲裁接受的边界译文不会自动写入记忆库。";
+  // ws-note 默认居中（给空态用的），这张卡和其他卡片一样左对齐。
+  note.style.textAlign = "left";
+  note.textContent = "没翻出来、翻得不完整或没通过检查的段落会自动再翻一次；再翻后经过复查才采用的译文不会存进记忆库。";
   card.append(note);
   return card;
 }

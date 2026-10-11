@@ -126,7 +126,14 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "安全连接校验没通过，通常是代理或安全软件拦截了加密流量。",
     ),
     (
-        (r"connection refused", r"failed to establish a new connection", r"connection reset", r"connection aborted"),
+        (
+            r"connection refused",
+            r"failed to establish a new connection",
+            r"connection reset",
+            r"connection aborted",
+            # httpx 的 ConnectError：端口不通、地址写错时就是这一句。
+            r"all connection attempts failed",
+        ),
         "接口拒绝了连接，请检查网络，以及这条连接的地址是否可用。",
     ),
     (
