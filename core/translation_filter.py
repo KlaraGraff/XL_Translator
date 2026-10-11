@@ -13,7 +13,7 @@ from core.residual_classifier import (
     CN_DATE_UNIT_RE,
     NUMBER_TOKEN_PATTERN,
     NUMBER_TOKEN_RE,
-    RESIDUAL_EXEMPT_TARGET_LANGS,
+    is_residual_exempt_target,
     NumberGroup,
     match_number_groups,
     number_group_readings,
@@ -516,7 +516,7 @@ def _validate_translation_strict(
     # 单位」写法（如 "2026年8月9日"、"18周岁"）；只查译文，不查原文。
     # 豁免表与 residual_classifier 共用一份：日文本来就写「2026年8月9日」，
     # 在这里判 fail 会让 engine_dispatcher 把正确的日文译文重置回中文原文。
-    if _normalize_lang(target_lang) not in RESIDUAL_EXEMPT_TARGET_LANGS:
+    if not is_residual_exempt_target(target_lang, tran):
         cn_date_unit_issue = _residual_cn_date_unit_issue(tran)
         if cn_date_unit_issue is not None:
             issues.append(cn_date_unit_issue)

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.residual_classifier import (
-    RESIDUAL_EXEMPT_TARGET_LANGS,
+    is_residual_exempt_target,
     check_heading_consistency,
     is_section_heading_source,
 )
@@ -53,7 +53,7 @@ def sanitize_tm_pairs(
     序号/标题写法惯例也不适用。
     """
     materialized = [(str(s or ""), str(t or "")) for s, t in pairs]
-    if not materialized or target_lang in RESIDUAL_EXEMPT_TARGET_LANGS:
+    if not materialized or is_residual_exempt_target(target_lang):
         return TmHygieneResult(pairs=tuple(materialized))
 
     residual = run_residual_pass(
