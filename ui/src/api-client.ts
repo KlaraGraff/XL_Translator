@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { saveBinaryFile } from "./save-file";
 import type { FileProgressSnapshot } from "./file-progress";
+import { tx } from "./i18n";
 
 export type SidecarInfo = {
   port: number;
@@ -145,7 +146,7 @@ export type StreamOptions = {
 function errorDetail(payload: { detail?: unknown }, fallback: string): string {
   const detail = payload.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
-  if (Array.isArray(detail)) return "提交的内容格式不对，这次操作没有生效。";
+  if (Array.isArray(detail)) return "提交的内容格式不对，这次操作没有生效。"; // i18n-ignore 作为后端原话进 ApiError，构造时由 tx() 翻译，rawMessage 保留中文
   return fallback;
 }
 
@@ -154,12 +155,15 @@ function errorDetail(payload: { detail?: unknown }, fallback: string): string {
 export class ApiError extends Error {
   readonly status: number;
   readonly reason: string;
+  /** 后端原话（中文）。message 已按界面语言翻好；要按句子内容判断时用这个。 */
+  readonly rawMessage: string;
 
   constructor(message: string, status: number, reason = "") {
-    super(message);
+    super(tx(message));
     this.name = "ApiError";
     this.status = status;
     this.reason = reason;
+    this.rawMessage = message;
   }
 }
 

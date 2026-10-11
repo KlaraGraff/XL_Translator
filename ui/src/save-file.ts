@@ -16,14 +16,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { t } from "./i18n";
 
 // 保存框的扩展名过滤器按默认文件名的后缀选。列表之外的后缀不给过滤器，
 // 保存框退化成「全部文件」，仍然可用。
 const FILTERS: Record<string, { name: string; extensions: string[] }> = {
-  json: { name: "JSON 文件", extensions: ["json"] },
-  csv: { name: "CSV 文件", extensions: ["csv"] },
-  zip: { name: "ZIP 压缩包", extensions: ["zip"] },
-  xltcfg: { name: "Translator 配置文件", extensions: ["xltcfg"] },
+  json: { name: t("JSON 文件"), extensions: ["json"] },
+  csv: { name: t("CSV 文件"), extensions: ["csv"] },
+  zip: { name: t("ZIP 压缩包"), extensions: ["zip"] },
+  xltcfg: { name: t("Translator 配置文件"), extensions: ["xltcfg"] },
 };
 
 function filtersFor(defaultFilename: string): Array<{ name: string; extensions: string[] }> {

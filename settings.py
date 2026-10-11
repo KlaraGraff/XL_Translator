@@ -1044,15 +1044,24 @@ class OnboardingSettings(BaseModel):
     quick_start_completed: bool = False
 
 
+UI_LANGUAGES = ("zh", "en", "fr")
+
+
 class AppearanceSettings(BaseModel):
     """Persisted Tauri shell preferences shared across desktop launches."""
 
-    theme: str = "system"
+    # 默认浅色（V10 起）。v29 及更早的设置文件里存的 "system" 绝大多数是当时的
+    # 默认值而不是用户选的，读取时按 _migrate_theme_default 换成 "light"。
+    theme: str = "light"
+    # 界面语言：中文 / English / Français。界面文字由前端按词条表翻译，后端只存选择。
+    ui_language: str = "zh"
 
     @model_validator(mode="after")
     def _normalize_theme(self):
         if self.theme not in {"system", "light", "dark"}:
-            self.theme = "system"
+            self.theme = "light"
+        if self.ui_language not in UI_LANGUAGES:
+            self.ui_language = "zh"
         return self
 
 
@@ -1630,6 +1639,26 @@ def _extract_settings_version(data: dict) -> int:
     return max(version, 0)
 
 
+def _migrate_theme_default(payload: dict, stored_version: int) -> dict:
+    """v30: the default theme became "light"; carry old files' default along.
+
+    Up to v29 the default was "system", and nothing in a v29 file tells a
+    default apart from a deliberate pick.  Almost every install never touched
+    it, so an old "system" is read as the old default and becomes "light".
+    Done at read time (not in a model validator) so a user who picks "system"
+    again after the upgrade is never re-migrated by a later validation of the
+    same in-memory payload.
+    """
+    if stored_version >= 30:
+        return payload
+    appearance = payload.get("appearance")
+    if not isinstance(appearance, dict) or appearance.get("theme", "system") != "system":
+        return payload
+    migrated = dict(payload)
+    migrated["appearance"] = {**appearance, "theme": "light"}
+    return migrated
+
+
 class SettingsSchemaError(ValueError):
     """The settings file could not be read *and* could not be backed up.
 
@@ -1790,7 +1819,7 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     except Exception:
         return "unusable", stored_version, payload
     if stored_version < SETTINGS_SCHEMA_VERSION:
-        return "adopted", stored_version, payload
+        return "adopted", stored_version, _migrate_theme_default(payload, stored_version)
     return "current", stored_version, payload
 
 

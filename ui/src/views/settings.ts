@@ -29,7 +29,7 @@ import {
   type ModalHandle,
 } from "../components";
 import { icon, type IconName } from "../icons";
-import { ApiClient } from "../api-client";
+import { ApiClient, ApiError } from "../api-client";
 import { saveJsonFile } from "../save-file";
 import { showQuickStart } from "../quickstart";
 import { applyModelPillFromRoles, setModelPillSettingsRole } from "../model-pill";
@@ -63,6 +63,7 @@ import {
   renderModelsPage,
 } from "./settings-models";
 import "./settings.css";
+import { LOCALES, currentLocale, fmtNum, isLocale, localeTag, storeLocale, t, tx, type Locale } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 类型（本地精简版，对照 main.ts 的同名类型/字段）
@@ -233,7 +234,7 @@ export function formatCheckedAt(value: string): string {
   if (!value) return "";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return `测试于 ${new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" }).format(parsed)}`;
+  return t("测试于 {0}", new Intl.DateTimeFormat(localeTag(), { dateStyle: "short", timeStyle: "short" }).format(parsed));
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ async function refreshDomainBuiltinPrompts(): Promise<void> {
     domainBuiltinPrompts = payload.presets || {};
   } catch (error) {
     // 保留上一次成功拿到的值：这只是一次刷新失败，不代表内置文本变了。
-    console.warn("内置领域 Prompt 读取失败，本次沿用上一次的缓存：", error);
+    console.warn("内置领域 Prompt 读取失败，本次沿用上一次的缓存：", error); // i18n-ignore 控制台日志，不面向用户
   }
 }
 
@@ -275,10 +276,10 @@ const ADD_PROMPT_PRESET = "__add_prompt__";
 const LEGACY_CUSTOM_PROMPT = "__legacy_custom__";
 
 export const MODEL_ROLE_LABELS: Record<string, string> = {
-  translation: "文档翻译（Excel / Word / CAD）",
-  cleaner: "记忆库清洗",
-  image: "PDF 与图片翻译",
-  pdf_review: "PDF 与图片审核",
+  translation: t("文档翻译（Excel / Word / CAD）"),
+  cleaner: t("记忆库清洗"),
+  image: t("PDF 与图片翻译"),
+  pdf_review: t("PDF 与图片审核"),
 };
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";
@@ -286,16 +287,16 @@ export const FOLLOW_PREFIX = "follow:";
 export const CLOUD_PROVIDERS = ["custom_openai", "openai", "claude", "zhipu", "dashscope", "siliconflow", "deepseek"];
 export const LOCAL_PROVIDERS = ["ollama", "lm_studio", "custom_local"];
 const PROVIDER_LABELS: Record<string, string> = {
-  custom_openai: "OpenAI 兼容",
+  custom_openai: t("OpenAI 兼容"),
   openai: "OpenAI",
   claude: "Claude",
-  zhipu: "智谱 GLM",
-  dashscope: "阿里百炼",
-  siliconflow: "硅基流动",
+  zhipu: t("智谱 GLM"),
+  dashscope: t("阿里百炼"),
+  siliconflow: t("硅基流动"),
   deepseek: "DeepSeek",
   ollama: "Ollama",
   lm_studio: "LM Studio",
-  custom_local: "自定义本地服务",
+  custom_local: t("自定义本地服务"),
 };
 export function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
@@ -307,7 +308,7 @@ export function providerLabel(provider: string): string {
 export let providerBaseUrlDefaults: Record<string, string> = {};
 export let providerModelDefaults: Record<string, string> = {};
 export let providerBaseUrlDisabled = new Set<string>();
-export let disabledBaseUrlPlaceholder = "当前服务商无需填写 Base URL";
+export let disabledBaseUrlPlaceholder = t("当前服务商无需填写 Base URL");
 
 // 本地运行器的 Base URL 预填表。上面「不留第二份硬编码」的约定只对云端成立——
 // /api/models/provider-defaults 下发的是 CLOUD_PROVIDER_BASE_URL_DEFAULTS，本地运行器
@@ -321,20 +322,20 @@ export const LOCAL_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
 };
 
 const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = {
-  task_history: { title: "清空任务记录？", message: "将删除任务中心里的任务记录，不会删除任何翻译结果。", confirm: "清空任务记录" },
-  logs: { title: "清空运行日志？", message: "将删除 Translator 的运行日志，不会删除诊断记录、源文件或翻译结果。", confirm: "清空日志" },
-  diagnostics: { title: "清空全部诊断？", message: "将删除所有本地诊断记录。导出过的 ZIP 不会被删除。", confirm: "清空诊断" },
-  keys: { title: "删除全部 API 密钥？", message: "将删除 Translator 保存的所有服务商密钥。有任务在运行时不能执行此操作。", confirm: "删除全部密钥" },
-  settings: { title: "重置设置？", message: "将恢复默认设置，API 密钥、记忆库和翻译结果都会保留。", confirm: "重置设置" },
-  tm: { title: "清空记忆库？", message: "此操作不会删除翻译结果。建议先在记忆库页面导出一份完整备份。", confirm: "清空记忆库" },
-  full_reset: { title: "完整重置本地数据？", message: "只删除 Translator 自己保存的数据。应用本身、你的源文件和翻译结果都不会被删除。", confirm: "完整重置" },
+  task_history: { title: t("清空任务记录？"), message: t("将删除任务中心里的任务记录，不会删除任何翻译结果。"), confirm: t("清空任务记录") },
+  logs: { title: t("清空运行日志？"), message: t("将删除 Translator 的运行日志，不会删除诊断记录、源文件或翻译结果。"), confirm: t("清空日志") },
+  diagnostics: { title: t("清空全部诊断？"), message: t("将删除所有本地诊断记录。导出过的 ZIP 不会被删除。"), confirm: t("清空诊断") },
+  keys: { title: t("删除全部 API 密钥？"), message: t("将删除 Translator 保存的所有服务商密钥。有任务在运行时不能执行此操作。"), confirm: t("删除全部密钥") },
+  settings: { title: t("重置设置？"), message: t("将恢复默认设置，API 密钥、记忆库和翻译结果都会保留。"), confirm: t("重置设置") },
+  tm: { title: t("清空记忆库？"), message: t("此操作不会删除翻译结果。建议先在记忆库页面导出一份完整备份。"), confirm: t("清空记忆库") },
+  full_reset: { title: t("完整重置本地数据？"), message: t("只删除 Translator 自己保存的数据。应用本身、你的源文件和翻译结果都不会被删除。"), confirm: t("完整重置") },
 };
 
 /** 按钮上的动词要和点开后弹窗的标题一致：以前列表里写「清理」，弹窗却问「重置设置？」。 */
 function maintenanceVerb(category: string): string {
-  if (category === "settings") return "重置";
-  if (category === "keys") return "删除";
-  return "清空";
+  if (category === "settings") return t("重置");
+  if (category === "keys") return t("删除");
+  return t("清空");
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +427,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
     paramsTab = requestedSurface;
   }
   pendingDomainPreset = typeof params.domainPreset === "string" ? params.domainPreset : null;
-  pendingNewPrompt = pendingDomainPreset === "无";
+  pendingNewPrompt = pendingDomainPreset === "无"; // i18n-ignore 领域预设值比较
   if (requestedRole) modelRole = requestedRole;
   currentPage = requestedPage === "models" || requestedPage === "params" || requestedPage === "appearance"
     || requestedPage === "data" || requestedPage === "about"
@@ -435,8 +436,8 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   setModelPillSettingsRole(currentPage === "models" ? modelRole : null);
 
   setTopbar({
-    title: "设置",
-    subtitle: "模型、参数、外观与数据都在这里",
+    title: t("设置"),
+    subtitle: t("模型、参数、外观与数据都在这里"),
   });
 
   const nav = document.createElement("div");
@@ -485,7 +486,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   highlightNav();
 
   clearElement(body);
-  body.append(createCard([createEmptyState({ title: "正在加载设置…", icon: "gear" })]));
+  body.append(createCard([createEmptyState({ title: t("正在加载设置…"), icon: "gear" })]));
 
   // 更新状态是共享的：顶部卡片上按的「更新」会一路改到这一页要显示的东西（下载进度、
   // 装好等重启、失败）。订阅着重画，才不会出现「卡片在下载、这一页还写着有可用更新」。
@@ -515,11 +516,11 @@ export function unmount(): void {
 }
 
 const NAV_ITEMS: { id: SettingsPage; label: string; icon: IconName }[] = [
-  { id: "models", label: "模型服务", icon: "gear" },
-  { id: "params", label: "翻译参数", icon: "doc-file" },
-  { id: "appearance", label: "外观与语言", icon: "book" },
-  { id: "data", label: "数据与维护", icon: "folder" },
-  { id: "about", label: "更新与关于", icon: "help" },
+  { id: "models", label: t("模型服务"), icon: "gear" },
+  { id: "params", label: t("翻译参数"), icon: "doc-file" },
+  { id: "appearance", label: t("外观与语言"), icon: "book" },
+  { id: "data", label: t("数据与维护"), icon: "folder" },
+  { id: "about", label: t("更新与关于"), icon: "help" },
 ];
 
 function highlightNav(): void {
@@ -543,7 +544,7 @@ async function bootstrap(token: number): Promise<void> {
     if (!bodyHost) return;
     clearElement(bodyHost);
     bodyHost.append(createCard([
-      createEmptyState({ title: "无法连接本地翻译引擎", description: errorMessage(error), icon: "warn" }),
+      createEmptyState({ title: t("无法连接本地翻译引擎"), description: errorMessage(error), icon: "warn" }),
     ]));
   }
 }
@@ -577,19 +578,19 @@ function dataHealthRecreatedMessages(payload: DataHealthPayload | null): DataHea
   if (payload.task_history?.state === "recreated") {
     messages.push({
       scope: "task_history",
-      text: `旧的任务历史已损坏，原文件已备份到 ${payload.task_history.backup_path || "备份目录"}；已恢复可用记录，无法读取的记录未能保留。`,
+      text: t("旧的任务历史已损坏，原文件已备份到 {0}；已恢复可用记录，无法读取的记录未能保留。", payload.task_history.backup_path || t("备份目录")),
     });
   }
   if (payload.settings?.state === "recreated") {
     messages.push({
       scope: "settings",
-      text: `旧的配置无法读取，已备份到 ${payload.settings.backup_path || "备份目录"}，已新建一份可用的。`,
+      text: t("旧的配置无法读取，已备份到 {0}，已新建一份可用的。", payload.settings.backup_path || t("备份目录")),
     });
   }
   if (payload.tm?.state === "recreated") {
     messages.push({
       scope: "tm",
-      text: `旧的翻译记忆库无法读取，已备份到 ${payload.tm.backup_path || "备份目录"}，已新建一份可用的。`,
+      text: t("旧的翻译记忆库无法读取，已备份到 {0}，已新建一份可用的。", payload.tm.backup_path || t("备份目录")),
     });
   }
   if (payload.keys?.state === "recreated") {
@@ -597,9 +598,7 @@ function dataHealthRecreatedMessages(payload: DataHealthPayload | null): DataHea
     // 的 Key 已经跟着坏文件一起没了，新文件目前只有本次保存的这一把。
     messages.push({
       scope: "keys",
-      text:
-        `旧的 API Key 文件已损坏，已备份到 ${payload.keys.backup_path || "备份目录"}；` +
-        "其余服务商的 Key 未能保留，请重新填写各服务商的 Key。",
+      text: t("旧的 API Key 文件已损坏，已备份到 {0}；其余服务商的 Key 未能保留，请重新填写各服务商的 Key。", payload.keys.backup_path || t("备份目录")),
     });
   }
   return messages;
@@ -611,16 +610,16 @@ function dataHealthBlockedMessages(payload: DataHealthPayload | null): string[] 
   if (!payload) return [];
   const messages: string[] = [];
   if (payload.task_history?.state === "unreadable") {
-    messages.push(payload.task_history.reason || "任务历史无法安全恢复，原文件未被覆盖，新的任务历史暂时无法保存。");
+    messages.push(tx(payload.task_history.reason) || t("任务历史无法安全恢复，原文件未被覆盖，新的任务历史暂时无法保存。"));
   }
   if (payload.settings?.state === "unreadable") {
-    messages.push("配置文件读不出来，本次按默认设置运行，改动无法保存。原文件没有被覆盖。");
+    messages.push(t("配置文件读不出来，本次按默认设置运行，改动无法保存。原文件没有被覆盖。"));
   }
   if (payload.tm?.state === "unreadable") {
-    messages.push("翻译记忆库读不出来，本次翻译不会读写它。原文件没有被删除。");
+    messages.push(t("翻译记忆库读不出来，本次翻译不会读写它。原文件没有被删除。"));
   }
   if (messages.length) {
-    messages.push("多为权限问题或被杀毒/备份软件占用：关掉占用它的程序后重启本应用即可；确定要放弃旧数据时，可在「数据与维护」里明确重置。");
+    messages.push(t("多为权限问题或被杀毒/备份软件占用：关掉占用它的程序后重启本应用即可；确定要放弃旧数据时，可在「数据与维护」里明确重置。"));
   }
   return messages;
 }
@@ -637,12 +636,12 @@ function renderDataHealthBanner(): void {
   const shownScopes = blocked.length ? [] : recreated.map((item) => item.scope);
   // .banner 默认是任务完成用的绿色底色；这条是警示，挂 .warn 换成 app.css 里那套黄色。
   const banner = createBanner({
-    title: blocked.length ? "有数据暂时无法读取" : "有数据被重新创建",
+    title: blocked.length ? t("有数据暂时无法读取") : t("有数据被重新创建"),
     subtitle: messages.join(" "),
     icon: "warn",
     actions: [
       createButton({
-        label: "知道了", size: "mini",
+        label: t("知道了"), size: "mini",
         onClick: () => void (async () => {
           const token = mountToken;
           try {
@@ -846,11 +845,11 @@ export async function reRenderAfter<T>(
 // numberField/pdf 并发输入框自己的 clamp，这里只是兜底——真撞上了，至少给一句
 // 看得懂的中文，而不是原样甩出 pydantic 的内部文本。
 function friendlyErrorMessage(error: unknown): string {
-  const raw = errorMessage(error);
+  const raw = error instanceof ApiError ? error.rawMessage : errorMessage(error);
   if (/validation error/i.test(raw)) {
-    return "保存失败：填写的值超出允许范围，已恢复为上次保存的值，请检查后重新输入。";
+    return t("保存失败：填写的值超出允许范围，已恢复为上次保存的值，请检查后重新输入。");
   }
-  return raw;
+  return errorMessage(error);
 }
 
 // ---------------------------------------------------------------------------
@@ -887,12 +886,12 @@ async function refreshProviderDefaults(): Promise<void> {
     providerBaseUrlDefaults = payload.base_url_defaults || {};
     providerModelDefaults = payload.model_defaults || {};
     providerBaseUrlDisabled = new Set(payload.base_url_disabled || []);
-    if (payload.disabled_placeholder) disabledBaseUrlPlaceholder = payload.disabled_placeholder;
+    if (payload.disabled_placeholder) disabledBaseUrlPlaceholder = tx(payload.disabled_placeholder);
   } catch (error) {
     providerBaseUrlDefaults = {};
     providerModelDefaults = {};
     providerBaseUrlDisabled = new Set();
-    console.warn("服务商预设读取失败，本次不预填 Base URL：", error);
+    console.warn("服务商预设读取失败，本次不预填 Base URL：", error); // i18n-ignore 控制台日志，不面向用户
   }
 }
 
@@ -953,8 +952,8 @@ async function refreshTmPairCatalog(): Promise<void> {
 function tmPairLabel(pair: string): string {
   const [source, ...targetParts] = pair.split("-");
   const target = targetParts.join("-");
-  const sourceLabel = tmPairCatalog?.source_options.find((option) => option.code === source)?.display_name ?? source;
-  const targetLabel = tmPairCatalog?.target_options.find((option) => option.code === target)?.display_name ?? target;
+  const sourceLabel = tx(tmPairCatalog?.source_options.find((option) => option.code === source)?.display_name ?? source);
+  const targetLabel = tx(tmPairCatalog?.target_options.find((option) => option.code === target)?.display_name ?? target);
   return `${sourceLabel} → ${targetLabel}`;
 }
 
@@ -1124,7 +1123,7 @@ export function attachModelNameDropdown(
   const caret = document.createElement("button");
   caret.type = "button";
   caret.className = "combo-caret";
-  caret.setAttribute("aria-label", "展开模型候选");
+  caret.setAttribute("aria-label", t("展开模型候选"));
   caret.append(icon("chev", { size: "sm" }));
   wrap.append(caret);
 
@@ -1139,8 +1138,8 @@ export function attachModelNameDropdown(
     const { list } = candidates();
     caret.disabled = input.disabled || !list.length;
     caret.title = caret.disabled
-      ? "还没有候选模型。点下面的「获取模型列表」向服务商要一份。"
-      : "从候选里选一个";
+      ? t("还没有候选模型。点下面的「获取模型列表」向服务商要一份。")
+      : t("从候选里选一个");
   };
   paint();
   // 服务商换了、输入框禁用态变了，可选项跟着变；没有事件能覆盖全部来源，直接在每次
@@ -1156,7 +1155,7 @@ export function attachModelNameDropdown(
       wrap,
       list.map((item) => ({
         label: item,
-        description: fallback ? "服务商推荐型号" : undefined,
+        description: fallback ? t("服务商推荐型号") : undefined,
         onSelect: () => {
           input.value = item;
           input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1202,7 +1201,7 @@ function domainSettingsFor(surface: TranslationSurface): {
   // 新数据是「预设名 → {_base: Prompt}」；这里保留嵌套读取，兼容旧版按目标语言
   // 保存的配置，保存时由后端统一折叠回 `_base`。
   return {
-    preset: text(settings?.[`${prefix}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"),
+    preset: text(settings?.[`${prefix}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"), // i18n-ignore 领域预设值（存进设置）
     customPrompt: text(settings?.[`${prefix}_custom_prompt`]),
     promptOverrides: Object.fromEntries(
       Object.entries(record(settings?.[`${prefix}_domain_prompt_overrides`])).map(([preset, langs]) => [
@@ -1263,9 +1262,9 @@ async function exportPromptConfig(): Promise<void> {
     };
     const saved = await saveJsonFile("translator-prompt-config.json", promptPayload);
     if (!saved) return;
-    showToast({ message: `已导出提示词配置到 ${saved}。` });
+    showToast({ message: t("已导出提示词配置到 {0}。", saved) });
   } catch (error) {
-    showToast({ message: `提示词配置导出失败：${errorMessage(error)}`, error: true });
+    showToast({ message: t("提示词配置导出失败：{0}", errorMessage(error)), error: true });
   }
 }
 
@@ -1276,18 +1275,18 @@ function importPromptConfig(): void {
       { method: "POST", body: JSON.stringify(payload) },
     );
     openDocumentImportPreviewModal(fileName, payload, preview.areas);
-  }, "提示词配置导入预览失败");
+  }, t("提示词配置导入预览失败"));
 }
 
 function renderParamsPage(host: HTMLElement): void {
   // 配置包是整个「翻译参数」页的入口，放在页首，避免用户滚到页面底部才发现。
   // 包内同时包含各页面参数、语言和领域提示词，因此这里也就是提示词的一键导入/导出。
   host.append(bundleCard({
-    title: "翻译参数配置导入与导出",
-    description: "一键备份或导入 Excel、Word、PDF、CAD 的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。",
+    title: t("翻译参数配置导入与导出"),
+    description: t("一键备份或导入 Excel、Word、PDF、CAD 的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。"),
     buttons: [
-      createButton({ label: "导出配置", size: "mini", onClick: () => void exportDocumentConfig() }),
-      createButton({ label: "导入配置", size: "mini", onClick: () => importDocumentConfig() }),
+      createButton({ label: t("导出配置"), size: "mini", onClick: () => void exportDocumentConfig() }),
+      createButton({ label: t("导入配置"), size: "mini", onClick: () => importDocumentConfig() }),
     ],
   }));
   const card = createCard([]);
@@ -1319,14 +1318,14 @@ function renderParamsPage(host: HTMLElement): void {
   if (paramsTab === "excel") {
     const review = excelReviewSettings();
     body.append(selectField(
-      "已有底色处理", [
-        { value: "skip", label: "不覆盖已有底色" },
-        { value: "red_font", label: "保留底色并使用红字（默认）" },
-        { value: "overwrite", label: "以复核色覆盖底色" },
+      t("已有底色处理"), [
+        { value: "skip", label: t("不覆盖已有底色") },
+        { value: "red_font", label: t("保留底色并使用红字（默认）") },
+        { value: "overwrite", label: t("以复核色覆盖底色") },
       ],
       text(review.existing_fill_policy, "red_font"),
       (value) => void reRenderAfter(() => saveSettingPath("excel_review.existing_fill_policy", value)),
-      { hint: "单元格本身已有底色时，复核标记的处理方式。" },
+      { hint: t("单元格本身已有底色时，复核标记的处理方式。") },
     ).root);
     body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
       const colors = record(excelReviewSettings().mark_colors);
@@ -1336,26 +1335,26 @@ function renderParamsPage(host: HTMLElement): void {
     const review = wordReviewSettings();
     const batch = wordBatchSettings();
     body.append(selectField(
-      "已有高亮处理", [
-        { value: "skip", label: "不覆盖已有高亮" },
-        { value: "red_underline", label: "保留已有高亮并使用红字下划线（默认）" },
-        { value: "overwrite", label: "以复核色覆盖已有高亮" },
+      t("已有高亮处理"), [
+        { value: "skip", label: t("不覆盖已有高亮") },
+        { value: "red_underline", label: t("保留已有高亮并使用红字下划线（默认）") },
+        { value: "overwrite", label: t("以复核色覆盖已有高亮") },
       ],
       text(review.existing_highlight_policy, "red_underline"),
       (value) => void reRenderAfter(() => saveSettingPath("word_review.existing_highlight_policy", value)),
-      { hint: "段落本身已有高亮时，复核标记的处理方式。" },
+      { hint: t("段落本身已有高亮时，复核标记的处理方式。") },
     ).root);
     body.append(renderReviewColorGroup(record(review.mark_colors), (mark, color) => void reRenderAfter(async () => {
       const colors = record(wordReviewSettings().mark_colors);
       await persistSettings({ word_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
-    body.append(sectionLabel("批次与重试"));
+    body.append(sectionLabel(t("批次与重试")));
     const grid = document.createElement("div");
     grid.className = "grid2";
     const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
     // 批次字符数同时决定自动分批和长段拆分；段落数在后台最多限制为 8。
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。" : "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。范围 800–12000。" }));
-    grid.append(numberField("单段最多重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "译文为空、明显不完整或没通过质量检查的段落，最多自动重翻几次。" }));
+    grid.append(numberField(t("每批字符上限"), num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? t("一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。") : t("一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。范围 800–12000。") }));
+    grid.append(numberField(t("单段最多重试次数"), num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: t("译文为空、明显不完整或没通过质量检查的段落，最多自动重翻几次。") }));
     body.append(grid);
   } else if (paramsTab === "pdf") {
     const pdf = pdfParamsSettings();
@@ -1364,7 +1363,7 @@ function renderParamsPage(host: HTMLElement): void {
     // 上下限对齐 config.py：PDF_PAGE_RETRY_ATTEMPTS_MIN/MAX(0–8)、
     // PDF_PAGE_CONCURRENCY_SAFETY_CAP(1–20)。max: 10 曾经比后端的 8 宽，落进
     // 那道夹缝的值只会在保存时被后端 422 打回（中-14）。
-    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "一页翻译失败后最多重试几次，0 到 8。" }));
+    grid.append(numberField(t("单页重试次数"), num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: t("一页翻译失败后最多重试几次，0 到 8。") }));
     const concurrencyValue = pdf.page_generation_concurrency === null || pdf.page_generation_concurrency === undefined
       ? "" : String(pdf.page_generation_concurrency);
     const concurrencyInput = document.createElement("input");
@@ -1373,7 +1372,7 @@ function renderParamsPage(host: HTMLElement): void {
     const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
     if (!throughputUnlocked) concurrencyInput.max = "20";
     concurrencyInput.value = concurrencyValue;
-    concurrencyInput.placeholder = "留空自动";
+    concurrencyInput.placeholder = t("留空自动");
     concurrencyInput.addEventListener("change", () => {
       const raw = concurrencyInput.value.trim();
       let parsed: number | null = raw ? Number(raw) : null;
@@ -1385,9 +1384,9 @@ function renderParamsPage(host: HTMLElement): void {
       }
       void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
     });
-    grid.append(fieldWithHint("同时生成页数（留空自动）", concurrencyInput, throughputUnlocked
-      ? "同时翻译几页；留空则按图像模型的速率设置自动决定。"
-      : "同时翻译几页，1 到 20；留空则按图像模型的速率设置自动决定。"));
+    grid.append(fieldWithHint(t("同时生成页数（留空自动）"), concurrencyInput, throughputUnlocked
+      ? t("同时翻译几页；留空则按图像模型的速率设置自动决定。")
+      : t("同时翻译几页，1 到 20；留空则按图像模型的速率设置自动决定。")));
     body.append(grid);
   } else if (paramsTab === "cad") {
     // CAD 没有放在这一页的参数；以前这个标签下是一块空白卡片，看着像没加载出来。
@@ -1396,7 +1395,7 @@ function renderParamsPage(host: HTMLElement): void {
     note.style.margin = "0";
     note.style.fontSize = "12.5px";
     note.style.color = "var(--ink-3)";
-    note.textContent = "CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。";
+    note.textContent = t("CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。");
     body.append(note);
   }
 
@@ -1413,7 +1412,7 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
   const wrap = document.createElement("div");
   wrap.className = "field";
   const label = document.createElement("label");
-  label.textContent = "复核标记颜色";
+  label.textContent = t("复核标记颜色");
   wrap.append(label);
   const row = document.createElement("div");
   row.style.display = "flex";
@@ -1424,8 +1423,8 @@ function renderReviewColorGroup(colors: JsonObject, onSave: (mark: string, color
   // 不再上色，格子也一并撤掉——留着一个永远不会被涂上的颜色，只会让人以为
   // 改了它就能改变什么。
   const marks: { key: string; label: string; fallback: string }[] = [
-    { key: "unresolved", label: "保留原文复核", fallback: "FCE4D6" },
-    { key: "foreign_noise", label: "疑似原文异常", fallback: "F4CCCC" },
+    { key: "unresolved", label: t("保留原文复核"), fallback: "FCE4D6" },
+    { key: "foreign_noise", label: t("疑似原文异常"), fallback: "F4CCCC" },
   ];
   for (const mark of marks) {
     const item = document.createElement("div");
@@ -1458,30 +1457,30 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   const forceAdd = pendingNewPrompt;
   pendingNewPrompt = false;
 
-  const allBuiltIns = Object.keys(domainBuiltinPrompts).filter((name) => name !== "无" && name !== "自定义");
+  const allBuiltIns = Object.keys(domainBuiltinPrompts).filter((name) => name !== "无" && name !== "自定义"); // i18n-ignore 领域预设值比较
   const builtIns = allBuiltIns.filter((name) => !current.disabledPresets.includes(name) || name === current.preset || name === jumpPreset);
   const customNames = Object.keys(current.customPrompts);
   const presetDisplayName = (name: string): string => current.nameOverrides[name]?.trim() || name;
   const nextCustomPromptName = (): string => {
     let index = 1;
-    while (customNames.includes(`自定义提示词${index}`) || allBuiltIns.some((name) => presetDisplayName(name) === `自定义提示词${index}`)) index += 1;
-    return `自定义提示词${index}`;
+    while (customNames.includes(t("自定义提示词{0}", index)) || allBuiltIns.some((name) => presetDisplayName(name) === t("自定义提示词{0}", index))) index += 1;
+    return t("自定义提示词{0}", index);
   };
   const options: { value: string; label: string }[] = [
-    { value: "无", label: "无" },
-    ...builtIns.map((name) => ({ value: name, label: current.disabledPresets.includes(name) ? `${presetDisplayName(name)}（已停用）` : presetDisplayName(name) })),
+    { value: "无", label: tx("无") }, // i18n-ignore 领域预设值（发回后端），显示走 tx()
+    ...builtIns.map((name) => ({ value: name, label: current.disabledPresets.includes(name) ? t("{0}（已停用）", tx(presetDisplayName(name))) : tx(presetDisplayName(name)) })),
     ...customNames.map((name) => ({ value: name, label: name })),
-    { value: ADD_PROMPT_PRESET, label: "＋ 新增提示词" },
+    { value: ADD_PROMPT_PRESET, label: t("＋ 新增提示词") },
   ];
-  if (current.preset === "自定义" && !customNames.includes(current.preset)) {
-    options.splice(options.length - 1, 0, { value: LEGACY_CUSTOM_PROMPT, label: "当前提示词（旧版）" });
+  if (current.preset === "自定义" && !customNames.includes(current.preset)) { // i18n-ignore 领域预设值比较
+    options.splice(options.length - 1, 0, { value: LEGACY_CUSTOM_PROMPT, label: t("当前提示词（旧版）") });
   }
   const optionValues = new Set(options.map((option) => option.value));
   const selected = forceAdd
     ? ADD_PROMPT_PRESET
     : jumpPreset && optionValues.has(jumpPreset)
       ? jumpPreset
-      : current.preset === "自定义" ? LEGACY_CUSTOM_PROMPT : optionValues.has(current.preset) ? current.preset : "无";
+      : current.preset === "自定义" ? LEGACY_CUSTOM_PROMPT : optionValues.has(current.preset) ? current.preset : "无"; // i18n-ignore 领域预设值
 
   // 新版本只维护一份统一 Prompt。读取时仍兼容旧的按目标语言存储，优先使用
   // `_base`，这样升级后不会丢失已有语言版本，后续保存会逐步收敛到统一版本。
@@ -1494,7 +1493,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     || Object.values(current.customPrompts[preset] || {}).find((value) => value.trim())
     || "";
   const promptFor = (preset: string): string => {
-    if (preset === "无" || preset === ADD_PROMPT_PRESET) return "";
+    if (preset === "无" || preset === ADD_PROMPT_PRESET) return ""; // i18n-ignore 领域预设值比较
     if (preset === LEGACY_CUSTOM_PROMPT) return current.customPrompt;
     if (customNames.includes(preset)) return customPromptFor(preset);
     return overrideFor(preset) ?? domainBuiltInPrompt(preset, "zh");
@@ -1520,7 +1519,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       let preset = current.preset;
       if (allBuiltIns.includes(name)) disabledPresets.push(name);
       else delete customPrompts[name];
-      if (preset === name) preset = "无";
+      if (preset === name) preset = "无"; // i18n-ignore 领域预设值（发回后端）
       await client.request(`/api/domains/${surface}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -1533,36 +1532,36 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
         }),
       });
       await refreshSettings();
-      showToast({ message: `已删除提示词“${name}”。` });
+      showToast({ message: t("已删除提示词“{0}”。", tx(name)) });
     });
   };
   const presetDropdown = createDropdown({
     options,
     value: selectedPreset,
     actionFor: (option) => {
-      if (option.value === "无" || option.value === ADD_PROMPT_PRESET || option.value === LEGACY_CUSTOM_PROMPT) return undefined;
-      return { label: "删除", onClick: () => deletePreset(option.value) };
+      if (option.value === "无" || option.value === ADD_PROMPT_PRESET || option.value === LEGACY_CUSTOM_PROMPT) return undefined; // i18n-ignore 领域预设值比较
+      return { label: t("删除"), onClick: () => deletePreset(option.value) };
     },
     onChange: (value) => {
       selectedPreset = value;
       updateEditor(value);
     },
   });
-  body.append(fieldWithHint("提示词名称", presetDropdown.root, "选择已有提示词，或选择“＋ 新增提示词”创建自己的提示词。名称可以在下方编辑。删除内置项只会停用它，之后仍可重新启用。"));
+  body.append(fieldWithHint(t("提示词名称"), presetDropdown.root, t("选择已有提示词，或选择“＋ 新增提示词”创建自己的提示词。名称可以在下方编辑。删除内置项只会停用它，之后仍可重新启用。")));
 
   let promptArea: HTMLTextAreaElement;
 
   promptArea = document.createElement("textarea");
   promptArea.className = "domain-prompt";
   promptArea.rows = 6;
-  const promptField = fieldWithHint("提示词内容", promptArea, undefined);
+  const promptField = fieldWithHint(t("提示词内容"), promptArea, undefined);
   body.append(promptField);
 
   const refinementInput = document.createElement("textarea");
   refinementInput.className = "domain-prompt prompt-refinement";
   refinementInput.rows = 2;
-  refinementInput.placeholder = "例如：保留电气专业术语，不要增加解释";
-  const refinementField = fieldWithHint("补充要求（可选）", refinementInput, "整理时会把这段要求一起交给文档翻译模型。整理结果仍需你确认后保存。");
+  refinementInput.placeholder = t("例如：保留电气专业术语，不要增加解释");
+  const refinementField = fieldWithHint(t("补充要求（可选）"), refinementInput, t("整理时会把这段要求一起交给文档翻译模型。整理结果仍需你确认后保存。"));
   body.append(refinementField);
 
   const optimizationCompare = document.createElement("div");
@@ -1585,9 +1584,9 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const heading = document.createElement("div");
     heading.className = "prompt-optimization-heading";
     const title = document.createElement("b");
-    title.textContent = "整理结果对比";
+    title.textContent = t("整理结果对比");
     const hint = document.createElement("span");
-    hint.textContent = "两侧都可以直接修改，确认后再写回上面的提示词。";
+    hint.textContent = t("两侧都可以直接修改，确认后再写回上面的提示词。");
     heading.append(title, hint);
 
     const columns = document.createElement("div");
@@ -1595,17 +1594,17 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const originalBox = document.createElement("div");
     originalBox.className = "prompt-optimization-column";
     const originalLabel = document.createElement("label");
-    originalLabel.textContent = "你的版本";
+    originalLabel.textContent = t("你的版本");
     const originalArea = document.createElement("textarea");
     originalArea.className = "domain-prompt";
     originalArea.rows = 7;
     originalArea.value = optimizationOriginal;
     originalArea.addEventListener("input", () => { optimizationOriginal = originalArea.value; });
     const useOriginal = createButton({
-      label: "使用你的版本", size: "mini",
+      label: t("使用你的版本"), size: "mini",
       onClick: () => {
         promptArea.value = optimizationOriginal;
-        showToast({ message: "已保留你的版本，请确认后保存。" });
+        showToast({ message: t("已保留你的版本，请确认后保存。") });
       },
     });
     originalBox.append(originalLabel, originalArea, useOriginal);
@@ -1613,17 +1612,17 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const resultBox = document.createElement("div");
     resultBox.className = "prompt-optimization-column result";
     const resultLabel = document.createElement("label");
-    resultLabel.textContent = "整理后";
+    resultLabel.textContent = t("整理后");
     const resultArea = document.createElement("textarea");
     resultArea.className = "domain-prompt";
     resultArea.rows = 7;
     resultArea.value = optimizationDraft;
     resultArea.addEventListener("input", () => { optimizationDraft = resultArea.value; });
     const useResult = createButton({
-      label: "使用这一版", icon: "check", variant: "primary", size: "mini",
+      label: t("使用这一版"), icon: "check", variant: "primary", size: "mini",
       onClick: () => {
         promptArea.value = optimizationDraft;
-        showToast({ message: "已将整理版放回提示词内容，请确认后保存。" });
+        showToast({ message: t("已将整理版放回提示词内容，请确认后保存。") });
       },
     });
     resultBox.append(resultLabel, resultArea, useResult);
@@ -1632,37 +1631,37 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const compareActions = document.createElement("div");
     compareActions.className = "prompt-optimization-actions";
     const note = document.createElement("span");
-    note.textContent = "整理结果不会自动保存";
+    note.textContent = t("整理结果不会自动保存");
     compareActions.append(note);
     optimizationCompare.append(heading, columns, compareActions);
   };
 
   const nameInput = document.createElement("input");
   nameInput.type = "text";
-  nameInput.placeholder = "例如：电气图纸翻译";
-  const nameField = fieldWithHint("编辑名称", nameInput, "名称可以修改；保存时会保留当前提示词内容。不能与内置提示词或其他自定义提示词重名。");
+  nameInput.placeholder = t("例如：电气图纸翻译");
+  const nameField = fieldWithHint(t("编辑名称"), nameInput, t("名称可以修改；保存时会保留当前提示词内容。不能与内置提示词或其他自定义提示词重名。"));
   body.append(nameField);
 
   const updateEditor = (preset: string): void => {
     const custom = customNames.includes(preset);
     const legacy = preset === LEGACY_CUSTOM_PROMPT;
-    const none = preset === "无";
+    const none = preset === "无"; // i18n-ignore 领域预设值比较
     const add = preset === ADD_PROMPT_PRESET;
     clearOptimization();
     refinementInput.value = "";
     promptArea.value = promptFor(preset);
-    promptArea.placeholder = add ? "请输入完整提示词" : isBuiltIn(preset) ? "内置提示词会在此显示" : "请输入提示词内容";
+    promptArea.placeholder = add ? t("请输入完整提示词") : isBuiltIn(preset) ? t("内置提示词会在此显示") : t("请输入提示词内容");
     promptField.style.display = none ? "none" : "";
     nameField.style.display = none ? "none" : "";
     nameInput.value = add
       ? nextCustomPromptName()
       : isBuiltIn(preset)
-        ? presetDisplayName(preset)
-        : preset === LEGACY_CUSTOM_PROMPT ? "自定义" : preset;
+        ? tx(presetDisplayName(preset))
+        : preset === LEGACY_CUSTOM_PROMPT ? tx("自定义") : preset; // i18n-ignore 预设名，显示走 tx()
     refinementField.style.display = "none";
     const label = promptField.querySelector("label");
-    if (label) label.firstChild && (label.firstChild.textContent = add ? "提示词内容" : legacy ? "旧版提示词内容" : custom ? "提示词内容" : isBuiltIn(preset) ? "内置提示词（可编辑覆盖）" : "提示词内容");
-    if (saveBtn) saveBtn.textContent = "保存";
+    if (label) label.firstChild && (label.firstChild.textContent = add ? t("提示词内容") : legacy ? t("旧版提示词内容") : custom ? t("提示词内容") : isBuiltIn(preset) ? t("内置提示词（可编辑覆盖）") : t("提示词内容"));
+    if (saveBtn) saveBtn.textContent = t("保存");
     if (optimizeBtn) {
       optimizeBtn.style.display = none ? "none" : "";
       optimizeBtn.disabled = false;
@@ -1682,29 +1681,29 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     const invalidName = (name: string, original?: string): boolean => {
       if (original && name === original) return false;
       if (isBuiltIn(preset) && name === presetDisplayName(preset)) return false;
-      if (!name || name === "无" || name === "自定义" || name === ADD_PROMPT_PRESET || name === LEGACY_CUSTOM_PROMPT) return true;
+      if (!name || name === "无" || name === "自定义" || name === ADD_PROMPT_PRESET || name === LEGACY_CUSTOM_PROMPT) return true; // i18n-ignore 领域预设值比较
       if (allBuiltIns.some((builtIn) => name === builtIn || name === presetDisplayName(builtIn))) return true;
       return customNames.some((customName) => customName !== original && customName === name);
     };
-    if (preset === "无") {
+    if (preset === "无") { // i18n-ignore 领域预设值比较
       // 只改「当前选哪个领域」，其他领域已存的覆盖原样带回去。
     } else if (preset === ADD_PROMPT_PRESET) {
       const name = nameInput.value.trim();
-      if (invalidName(name)) throw new Error("提示词名称不能为空，且不能与内置选项或已有提示词重名。");
-      if (!promptArea.value.trim()) throw new Error("新提示词不能保存为空。");
+      if (invalidName(name)) throw new Error(t("提示词名称不能为空，且不能与内置选项或已有提示词重名。"));
+      if (!promptArea.value.trim()) throw new Error(t("新提示词不能保存为空。"));
       customPrompts[name] = { ...(customPrompts[name] ?? {}), _base: promptArea.value };
       persistedPreset = name;
     } else if (preset === LEGACY_CUSTOM_PROMPT) {
-      if (!promptArea.value.trim()) throw new Error("提示词不能保存为空。");
+      if (!promptArea.value.trim()) throw new Error(t("提示词不能保存为空。"));
       const name = nameInput.value.trim();
-      if (invalidName(name)) throw new Error("提示词名称不能为空，且不能与内置选项或已有提示词重名。");
+      if (invalidName(name)) throw new Error(t("提示词名称不能为空，且不能与内置选项或已有提示词重名。"));
       customPrompts[name] = { _base: promptArea.value };
       customPrompt = "";
       persistedPreset = name;
     } else if (customNames.includes(preset)) {
-      if (!promptArea.value.trim()) throw new Error("提示词不能保存为空。");
+      if (!promptArea.value.trim()) throw new Error(t("提示词不能保存为空。"));
       const name = nameInput.value.trim();
-      if (invalidName(name, preset)) throw new Error("提示词名称不能为空，且不能与内置选项或已有提示词重名。");
+      if (invalidName(name, preset)) throw new Error(t("提示词名称不能为空，且不能与内置选项或已有提示词重名。"));
       customPrompts[name] = { ...(customPrompts[preset] ?? {}), _base: promptArea.value };
       if (name !== preset) delete customPrompts[preset];
       persistedPreset = name;
@@ -1716,9 +1715,10 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       else langOverrides._base = promptArea.value;
       if (Object.keys(langOverrides).length) promptOverrides[preset] = langOverrides;
       else delete promptOverrides[preset];
-      const name = nameInput.value.trim();
+      const typedName = nameInput.value.trim();
+      const name = typedName === tx(presetDisplayName(preset)) ? presetDisplayName(preset) : typedName;
       const defaultName = preset;
-      if (invalidName(name, preset)) throw new Error("提示词名称不能为空，且不能与内置选项或已有提示词重名。");
+      if (invalidName(name, preset)) throw new Error(t("提示词名称不能为空，且不能与内置选项或已有提示词重名。"));
       if (name === defaultName) delete nameOverrides[preset];
       else nameOverrides[preset] = name;
     }
@@ -1735,30 +1735,30 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     });
     await refreshSettings();
     showToast({
-      message: persistedPreset === "无" ? "已改为不使用专业领域提示词。"
-        : preset === ADD_PROMPT_PRESET ? "新提示词已保存。"
-          : customNames.includes(preset) || preset === LEGACY_CUSTOM_PROMPT ? "提示词已保存。"
-            : "提示词已保存。",
+      message: persistedPreset === "无" ? t("已改为不使用专业领域提示词。") // i18n-ignore 领域预设值比较
+        : preset === ADD_PROMPT_PRESET ? t("新提示词已保存。")
+          : customNames.includes(preset) || preset === LEGACY_CUSTOM_PROMPT ? t("提示词已保存。")
+            : t("提示词已保存。"),
     });
   });
   saveBtn = createButton({
-    label: "保存选择",
+    label: t("保存选择"),
     variant: "primary", size: "mini", onClick: doSave,
   });
   optimizeBtn = createButton({
-    label: "整理", icon: "wand", size: "mini",
+    label: t("整理"), icon: "wand", size: "mini",
     onClick: () => void (async () => {
-      if (selectedPreset === "无") return;
+      if (selectedPreset === "无") return; // i18n-ignore 领域预设值比较
       optimizeBtn!.disabled = true;
       try {
         const extra = refinementInput.value.trim();
         const prompt = extra
-          ? `${promptArea.value}\n\n用户补充整理要求：${extra}`
+          ? `${promptArea.value}\n\n用户补充整理要求：${extra}` // i18n-ignore 发给模型的提示词正文
           : promptArea.value;
         const result = await client.request<{ prompt: string }>(`/api/domains/${surface}/optimize`, {
           method: "POST",
           body: JSON.stringify({
-            preset: selectedPreset === ADD_PROMPT_PRESET || selectedPreset === LEGACY_CUSTOM_PROMPT ? "自定义提示词" : selectedPreset,
+            preset: selectedPreset === ADD_PROMPT_PRESET || selectedPreset === LEGACY_CUSTOM_PROMPT ? "自定义提示词" : selectedPreset, // i18n-ignore 发回后端的预设名
             target_lang: "zh",
             prompt,
           }),
@@ -1768,22 +1768,22 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
           optimizationDraft = result.prompt;
           refinementField.style.display = "";
           renderOptimizationCompare();
-          showToast({ message: "模型已生成优化建议，请确认后保存。" });
+          showToast({ message: t("模型已生成优化建议，请确认后保存。") });
         }
       } catch (error) {
-        showToast({ message: `提示词优化失败：${errorMessage(error)}`, error: true });
+        showToast({ message: t("提示词优化失败：{0}", errorMessage(error)), error: true });
       } finally {
         optimizeBtn!.disabled = false;
       }
     }),
   });
-  if (selectedPreset === "无") optimizeBtn.style.display = "none";
+  if (selectedPreset === "无") optimizeBtn.style.display = "none"; // i18n-ignore 领域预设值比较
   // 按钮是在编辑器首次填充后创建的，再同步一次初始文案和显隐状态。
   updateEditor(selectedPreset);
   const actions: HTMLButtonElement[] = [saveBtn, optimizeBtn];
   if (isBuiltIn(selectedPreset)) {
     restoreBtn = createButton({
-      label: "恢复内置默认", size: "mini",
+      label: t("恢复内置默认"), size: "mini",
       onClick: () => void reRenderAfter(async () => {
         const preset = selectedPreset;
         if (!isBuiltIn(preset)) return;
@@ -1798,7 +1798,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
           body: JSON.stringify({ preset, custom_prompt: current.customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides, custom_prompts: current.customPrompts, disabled_presets: current.disabledPresets }),
         });
         await refreshSettings();
-        showToast({ message: "已恢复内置提示词。" });
+        showToast({ message: t("已恢复内置提示词。") });
       }),
     });
     actions.push(restoreBtn);
@@ -1808,10 +1808,10 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   body.append(actionsRow);
 
   tools.push(
-    createButton({ label: "导出提示词", size: "mini", onClick: () => void exportPromptConfig() }),
-    createButton({ label: "导入提示词", size: "mini", onClick: () => importPromptConfig() }),
+    createButton({ label: t("导出提示词"), size: "mini", onClick: () => void exportPromptConfig() }),
+    createButton({ label: t("导入提示词"), size: "mini", onClick: () => importPromptConfig() }),
   );
-  card.append(tcHead("提示词设置", tools), body);
+  card.append(tcHead(t("提示词设置"), tools), body);
   return card;
 }
 
@@ -1844,21 +1844,73 @@ function commitThemeToLocalStorage(preference: ThemePreference): void {
 }
 
 function currentThemePreference(): ThemePreference {
-  const value = text(record(settings?.appearance).theme, "system");
-  return value === "light" || value === "dark" ? value : "system";
+  const value = text(record(settings?.appearance).theme, "light");
+  return value === "dark" || value === "system" ? value : "light";
+}
+
+function currentLanguagePreference(): Locale {
+  const value = record(settings?.appearance).ui_language;
+  return isLocale(value) ? value : "zh";
+}
+
+// 界面语言：先落盘再写 localStorage，然后重载页面让全部文字一次换齐（见 i18n/index.ts）。
+// 选项名用各自语言的原名（中文 / English / Français），不跟着当前语言翻译——
+// 看不懂当前语言的人也要能找到自己的语言。
+function renderLanguageCard(host: HTMLElement): void {
+  const card = createCard([]);
+  const body = document.createElement("div");
+  body.style.padding = "14px 16px";
+  body.append(sectionLabel(t("界面语言")));
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  const active = currentLanguagePreference();
+  const hints: Record<Locale, string> = {
+    zh: "界面、运行日志和提示显示为中文", // i18n-ignore 各语言用自己的原文
+    en: "Interface, activity log and messages in English",
+    fr: "Interface, journal d'activité et messages en français",
+  };
+  for (const option of LOCALES) {
+    const segc = document.createElement("div");
+    segc.className = option.value === active ? "segc on" : "segc";
+    segc.lang = option.value;
+    const b = document.createElement("b");
+    b.textContent = option.label;
+    const span = document.createElement("span");
+    span.textContent = hints[option.value];
+    segc.append(b, span);
+    segc.addEventListener("click", () => {
+      if (option.value === currentLanguagePreference() && option.value === currentLocale()) return;
+      void reRenderAfter(async () => {
+        await persistSettings({ appearance: { ...record(settings?.appearance), ui_language: option.value } });
+        storeLocale(option.value);
+        window.location.reload();
+      });
+    });
+    seg.append(segc);
+  }
+  body.append(seg);
+  const note = document.createElement("div");
+  note.style.marginTop = "8px";
+  note.style.fontSize = "12px";
+  note.style.color = "var(--ink-3)";
+  note.textContent = t("切换后界面会重新加载。正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。");
+  body.append(note);
+  card.append(body);
+  host.append(card);
 }
 
 function renderAppearancePage(host: HTMLElement): void {
+  renderLanguageCard(host);
   const themeCard = createCard([]);
   const themeBody = document.createElement("div");
   themeBody.style.padding = "14px 16px";
-  themeBody.append(sectionLabel("主题"));
+  themeBody.append(sectionLabel(t("主题")));
   const seg = document.createElement("div");
   seg.className = "seg";
   const options: { value: ThemePreference; label: string; hint: string }[] = [
-    { value: "light", label: "浅色", hint: "始终使用浅色界面" },
-    { value: "dark", label: "深色", hint: "始终使用深色界面" },
-    { value: "system", label: "跟随系统", hint: "跟随系统的浅色 / 深色外观自动切换" },
+    { value: "light", label: t("浅色"), hint: t("始终使用浅色界面") },
+    { value: "dark", label: t("深色"), hint: t("始终使用深色界面") },
+    { value: "system", label: t("跟随系统"), hint: t("跟随系统的浅色 / 深色外观自动切换") },
   ];
   const active = currentThemePreference();
   for (const option of options) {
@@ -1890,13 +1942,13 @@ function renderAppearancePage(host: HTMLElement): void {
 
   const langCard = createCard([]);
   const addBtn = createButton({
-    label: "新增自定义语言", size: "mini", icon: "plus",
+    label: t("新增自定义语言"), size: "mini", icon: "plus",
     onClick: () => openCustomLanguageModal(null),
   });
-  langCard.append(tcHead("自定义语言管理", [addBtn]));
+  langCard.append(tcHead(t("自定义语言管理"), [addBtn]));
   const customLanguages = targetOptions.filter((option) => option.builtin === false);
   if (!customLanguages.length) {
-    langCard.append(createEmptyState({ title: "还没有自定义目标语言", description: "自定义语言只能作为目标语言使用。", icon: "book" }));
+    langCard.append(createEmptyState({ title: t("还没有自定义目标语言"), description: t("自定义语言只能作为目标语言使用。"), icon: "book" }));
   } else {
     for (const option of customLanguages) {
       const name = document.createElement("span");
@@ -1911,8 +1963,8 @@ function renderAppearancePage(host: HTMLElement): void {
       actions.style.display = "flex";
       actions.style.gap = "6px";
       actions.append(
-        createButton({ label: "编辑", size: "mini", onClick: () => openCustomLanguageModal(option) }),
-        createButton({ label: "删除", size: "mini", variant: "danger", onClick: () => openCustomLanguageModal(option, true) }),
+        createButton({ label: t("编辑"), size: "mini", onClick: () => openCustomLanguageModal(option) }),
+        createButton({ label: t("删除"), size: "mini", variant: "danger", onClick: () => openCustomLanguageModal(option, true) }),
       );
       langCard.append(connRow([name, desc, actions]));
     }
@@ -1925,20 +1977,20 @@ function openCustomLanguageModal(editing: LanguageOption | null, deleteMode = fa
     let handle: ModalHandle;
     handle = openModal({
       tone: "danger", icon: "trash",
-      sourceLabel: "设置 · 外观与语言 · 自定义语言",
-      title: `删除「${editing.display_name}」？`,
-      body: ["删除后该语言不再出现在目标语言列表中；已使用该语言完成的翻译输出不受影响。"],
+      sourceLabel: t("设置 · 外观与语言 · 自定义语言"),
+      title: t("删除「{0}」？", editing.display_name),
+      body: [t("删除后该语言不再出现在目标语言列表中；已使用该语言完成的翻译输出不受影响。")],
       actions: [
-        { label: "取消" },
+        { label: t("取消") },
         {
-          label: "删除", variant: "danger-solid", keepOpen: true,
+          label: t("删除"), variant: "danger-solid", keepOpen: true,
           onClick: async () => {
             try {
               await client.request(`/api/languages/custom/${encodeURIComponent(editing.code)}`, { method: "DELETE" });
               await refreshLanguages();
               renderBody();
               handle.close();
-              showToast({ message: "自定义目标语言已删除。" });
+              showToast({ message: t("自定义目标语言已删除。") });
             } catch (error) {
               showToast({ message: errorMessage(error), error: true });
             }
@@ -1949,12 +2001,12 @@ function openCustomLanguageModal(editing: LanguageOption | null, deleteMode = fa
     return;
   }
 
-  const nameField = textField("显示名称", editing?.display_name ?? "", () => undefined, { disabled: Boolean(editing), placeholder: "例如 越南语" });
+  const nameField = textField(t("显示名称"), editing?.display_name ?? "", () => undefined, { disabled: Boolean(editing), placeholder: t("例如 越南语") });
   const descArea = document.createElement("textarea");
   descArea.className = "domain-prompt";
   descArea.rows = 3;
   descArea.value = editing?.description ?? "";
-  const descField = createField("语言说明", descArea);
+  const descField = createField(t("语言说明"), descArea);
 
   const body = document.createElement("div");
   body.style.display = "flex";
@@ -1965,13 +2017,13 @@ function openCustomLanguageModal(editing: LanguageOption | null, deleteMode = fa
   let handle: ModalHandle;
   handle = openModal({
     tone: "warn", icon: "book",
-    sourceLabel: "设置 · 外观与语言 · 自定义语言",
-    title: editing ? "编辑自定义语言" : "新增自定义目标语言",
-    body: ["自定义语言只能作为目标语言使用；名称创建后不能修改，说明可以随时改。", body],
+    sourceLabel: t("设置 · 外观与语言 · 自定义语言"),
+    title: editing ? t("编辑自定义语言") : t("新增自定义目标语言"),
+    body: [t("自定义语言只能作为目标语言使用；名称创建后不能修改，说明可以随时改。"), body],
     actions: [
-      { label: "取消" },
+      { label: t("取消") },
       {
-        label: "保存", variant: "primary", keepOpen: true,
+        label: t("保存"), variant: "primary", keepOpen: true,
         onClick: async () => {
           try {
             if (editing) {
@@ -1981,17 +2033,17 @@ function openCustomLanguageModal(editing: LanguageOption | null, deleteMode = fa
               await refreshLanguages();
               renderBody();
               handle.close();
-              showToast({ message: "自定义语言说明已更新。" });
+              showToast({ message: t("自定义语言说明已更新。") });
             } else {
               const name = nameField.input.value.trim();
-              if (!name) throw new Error("请输入自定义语言名称。");
+              if (!name) throw new Error(t("请输入自定义语言名称。"));
               await client.request("/api/languages/custom", {
                 method: "POST", body: JSON.stringify({ name, description: descArea.value.trim() }),
               });
               await refreshLanguages();
               renderBody();
               handle.close();
-              showToast({ message: "自定义目标语言已添加。" });
+              showToast({ message: t("自定义目标语言已添加。") });
             }
           } catch (error) {
             showToast({ message: errorMessage(error), error: true });
@@ -2016,7 +2068,7 @@ function maintenanceCategory(id: string): MaintenanceCategoryInfo | undefined {
 
 function renderDataPage(host: HTMLElement): void {
   const overview = maintenanceOverview;
-  const appDataDir = text(overview?.app_data_dir, "正在读取本地数据目录…");
+  const appDataDir = text(overview?.app_data_dir, t("正在读取本地数据目录…"));
   const limits = record(overview?.limits);
 
   const headerCard = createCard([]);
@@ -2031,7 +2083,7 @@ function renderDataPage(host: HTMLElement): void {
   const span = document.createElement("div");
   span.className = "rp-sec";
   span.style.margin = "0 0 4px";
-  span.textContent = "本地数据位置";
+  span.textContent = t("本地数据位置");
   const path = document.createElement("p");
   path.style.fontFamily = "var(--mono)";
   path.style.fontSize = "12px";
@@ -2042,8 +2094,8 @@ function renderDataPage(host: HTMLElement): void {
   path.textContent = appDataDir;
   headerText.append(span, path);
   headerBody.append(headerText, fieldRow([
-    createButton({ label: "刷新", size: "mini", onClick: () => void reRenderAfter(async () => { await refreshMaintenance(); await refreshActiveTaskCount(); }) }),
-    createButton({ label: "在文件夹中显示", size: "mini", onClick: () => void openAppDataDirectory() }),
+    createButton({ label: t("刷新"), size: "mini", onClick: () => void reRenderAfter(async () => { await refreshMaintenance(); await refreshActiveTaskCount(); }) }),
+    createButton({ label: t("在文件夹中显示"), size: "mini", onClick: () => void openAppDataDirectory() }),
   ]));
   headerCard.append(headerBody);
   host.append(headerCard);
@@ -2058,12 +2110,12 @@ function renderDataPage(host: HTMLElement): void {
     warnBody.append(icon("warn", { size: "sm" }));
     const text_ = document.createElement("div");
     const strong = document.createElement("strong");
-    strong.textContent = `有 ${activeTaskCount} 个任务正在运行`;
+    strong.textContent = t("有 {0} 个任务正在运行", activeTaskCount);
     const p = document.createElement("p");
     p.style.margin = "2px 0 0";
     p.style.fontSize = "12.5px";
     p.style.color = "var(--ink-2)";
-    p.textContent = "任务运行期间，清空任务记录、日志、诊断，删除全部密钥和完整重置暂时不能用。等任务结束后再操作。";
+    p.textContent = t("任务运行期间，清空任务记录、日志、诊断，删除全部密钥和完整重置暂时不能用。等任务结束后再操作。");
     text_.append(strong, p);
     warnBody.append(text_);
     warnCard.append(warnBody);
@@ -2072,61 +2124,61 @@ function renderDataPage(host: HTMLElement): void {
 
   // 本地数据：以前这里一张「分类」卡、下面再一张「单类重置」卡，把任务记录、日志、密钥、
   // 设置列了两遍，按钮一处叫「清理」一处叫「清空 / 重置」。现在只留这一张。
-  const overviewCard = createCard([tcHead("本地数据")]);
+  const overviewCard = createCard([tcHead(t("本地数据"))]);
   const overviewDesc = document.createElement("p");
   overviewDesc.className = "note";
   overviewDesc.style.padding = "0 16px";
   overviewDesc.style.fontSize = "12px";
   overviewDesc.style.color = "var(--ink-3)";
-  overviewDesc.textContent = "每一项只清理 Translator 自己保存的数据，源文件和翻译结果文件不会被删除。";
+  overviewDesc.textContent = t("每一项只清理 Translator 自己保存的数据，源文件和翻译结果文件不会被删除。");
   overviewCard.append(overviewDesc);
   const guarded = new Set(Array.isArray(maintenanceOverview?.activity_guarded_categories) ? maintenanceOverview.activity_guarded_categories as string[] : []);
   const categoryNotes: Record<string, string> = {
-    settings: "恢复默认设置，密钥和记忆库会保留",
-    keys: "只显示数量，不显示密钥内容",
+    settings: t("恢复默认设置，密钥和记忆库会保留"),
+    keys: t("只显示数量，不显示密钥内容"),
   };
   const categories = maintenanceCategories();
   if (!categories.length) {
-    overviewCard.append(createEmptyState({ title: "尚未读取本地数据概览", description: "点击上方“刷新”查看本地数据的位置和各类占用。", icon: "folder" }));
+    overviewCard.append(createEmptyState({ title: t("尚未读取本地数据概览"), description: t("点击上方“刷新”查看本地数据的位置和各类占用。"), icon: "folder" }));
   } else {
     for (const category of categories) {
       const name = document.createElement("span");
       name.style.flex = "1";
       const b = document.createElement("b");
-      b.textContent = category.label;
+      b.textContent = tx(category.label);
       const small = document.createElement("small");
       small.style.display = "block";
       small.style.color = "var(--ink-3)";
       small.style.fontSize = "11px";
       const count = category.id === "keys" ? record(category).key_count ?? category.count : category.count;
-      const sizeText = `${formatBytes(category.size_bytes)}${count !== undefined ? ` · ${count} 项` : ""}`;
+      const sizeText = `${formatBytes(category.size_bytes)}${count !== undefined ? ` · ${t("{0} 项", count)}` : ""}`;
       small.textContent = categoryNotes[category.id] ? `${sizeText} · ${categoryNotes[category.id]}` : sizeText;
       name.append(b, small);
       const action = category.contains_user_output
-        ? createChip({ label: "受保护", tone: "mute" })
+        ? createChip({ label: t("受保护"), tone: "mute" })
         : category.clearable
           ? createButton({
             label: maintenanceVerb(category.id), size: "mini", variant: "danger",
             disabled: guarded.has(category.id) && activeTaskCount > 0,
             onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory),
           })
-          : createChip({ label: "自动维护", tone: "mute" });
+          : createChip({ label: t("自动维护"), tone: "mute" });
       overviewCard.append(connRow([name, action]));
     }
   }
   const quickStartName = document.createElement("span");
   quickStartName.style.flex = "1";
   const quickStartLabel = document.createElement("b");
-  quickStartLabel.textContent = "快速开始";
+  quickStartLabel.textContent = t("快速开始");
   const quickStartMeta = document.createElement("small");
   quickStartMeta.style.display = "block";
   quickStartMeta.style.color = "var(--ink-3)";
   quickStartMeta.style.fontSize = "11px";
-  quickStartMeta.textContent = "重新显示欢迎引导";
+  quickStartMeta.textContent = t("重新显示欢迎引导");
   quickStartName.append(quickStartLabel, quickStartMeta);
   overviewCard.append(connRow([
     quickStartName,
-    createButton({ label: "重新显示", size: "mini", onClick: () => void showQuickStart() }),
+    createButton({ label: t("重新显示"), size: "mini", onClick: () => void showQuickStart() }),
   ]));
   host.append(overviewCard);
 
@@ -2142,11 +2194,11 @@ function renderDataPage(host: HTMLElement): void {
   limitsBody.style.display = "flex";
   limitsBody.style.flexDirection = "column";
   limitsBody.style.gap = "6px";
-  limitsBody.append(sectionLabel("自动保留上限"));
+  limitsBody.append(sectionLabel(t("自动保留上限")));
   const limitRows: [string, string][] = [
-    ["任务记录", `最近 ${historyLimit} 条`],
-    ["运行日志", `${num(logsLimit.max_files, 5)} 个 × ${formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024)}`],
-    ["诊断", `${num(diagLimit.max_records, 80)} 条 / ${formatBytes(diagLimit.max_total_bytes || 256 * 1024 * 1024)}`],
+    [t("任务记录"), t("最近 {0} 条", historyLimit)],
+    [t("运行日志"), t("{0} 个 × {1}", num(logsLimit.max_files, 5), formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024))],
+    [t("诊断"), t("{0} 条 / {1}", num(diagLimit.max_records, 80), formatBytes(diagLimit.max_total_bytes || 256 * 1024 * 1024))],
   ];
   for (const [label, value] of limitRows) {
     const row = document.createElement("div");
@@ -2165,22 +2217,22 @@ function renderDataPage(host: HTMLElement): void {
   note.className = "note";
   note.style.fontSize = "12px";
   note.style.color = "var(--ink-3)";
-  note.textContent = "维护操作不会删除源文件、用户输出目录或已生成的翻译文件。";
+  note.textContent = t("维护操作不会删除源文件、用户输出目录或已生成的翻译文件。");
   limitsBody.append(note);
   limitsCard.append(limitsBody);
   host.append(limitsCard);
 
   // 诊断
-  const diagCard = createCard([tcHead("诊断", [
-    createButton({ label: "导出全部诊断", size: "mini", onClick: () => void exportDiagnostics("/api/diagnostics/history.zip", "translator-diagnostics.zip") }),
-    createButton({ label: "清空诊断", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("diagnostics") }),
+  const diagCard = createCard([tcHead(t("诊断"), [
+    createButton({ label: t("导出全部诊断"), size: "mini", onClick: () => void exportDiagnostics("/api/diagnostics/history.zip", "translator-diagnostics.zip") }),
+    createButton({ label: t("清空诊断"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("diagnostics") }),
   ])]);
   const diagDesc = document.createElement("p");
   diagDesc.className = "note";
   diagDesc.style.padding = "0 16px";
   diagDesc.style.fontSize = "12px";
   diagDesc.style.color = "var(--ink-3)";
-  diagDesc.textContent = "诊断只记录版本、系统、任务进行到哪一步、隐去密钥的连接信息、计数和错误代码，不会自动上传。";
+  diagDesc.textContent = t("诊断只记录版本、系统、任务进行到哪一步、隐去密钥的连接信息、计数和错误代码，不会自动上传。");
   diagCard.append(diagDesc);
   const tableWrap = document.createElement("div");
   tableWrap.style.overflowX = "auto";
@@ -2188,7 +2240,13 @@ function renderDataPage(host: HTMLElement): void {
   const table = document.createElement("table");
   table.className = "tbl";
   const thead = document.createElement("thead");
-  thead.innerHTML = "<tr><th>记录</th><th>类型</th><th>大小</th><th></th></tr>";
+  const headRow = document.createElement("tr");
+  for (const heading of [t("记录"), t("类型"), t("大小"), ""]) {
+    const th = document.createElement("th");
+    th.textContent = heading;
+    headRow.append(th);
+  }
+  thead.append(headRow);
   table.append(thead);
   const tbody = document.createElement("tbody");
   if (!diagnostics.length) {
@@ -2198,15 +2256,15 @@ function renderDataPage(host: HTMLElement): void {
     td.className = "num";
     td.style.textAlign = "left";
     td.style.color = "var(--ink-3)";
-    td.textContent = "没有诊断记录。";
+    td.textContent = t("没有诊断记录。");
     tr.append(td);
     tbody.append(tr);
   } else {
     for (const item of diagnostics) {
       const tr = document.createElement("tr");
       const id = text(item.record_id);
-      const title = text(item.created_at, "诊断记录");
-      const type = [text(item.surface), text(item.phase)].filter(Boolean).join(" · ") || "应用";
+      const title = text(item.created_at, t("诊断记录"));
+      const type = [tx(text(item.surface)), tx(text(item.phase))].filter(Boolean).join(" · ") || t("应用");
       const tdTitle = document.createElement("td");
       tdTitle.textContent = title;
       const tdType = document.createElement("td");
@@ -2215,13 +2273,13 @@ function renderDataPage(host: HTMLElement): void {
       tdSize.textContent = formatBytes(item.size_bytes);
       const tdActions = document.createElement("td");
       tdActions.append(fieldRow([
-        createButton({ label: "导出", size: "mini", onClick: () => void exportDiagnostics(`/api/diagnostics/${encodeURIComponent(id)}.zip`, "translator-diagnostic.zip") }),
+        createButton({ label: t("导出"), size: "mini", onClick: () => void exportDiagnostics(`/api/diagnostics/${encodeURIComponent(id)}.zip`, "translator-diagnostic.zip") }),
         createButton({
-          label: "删除", size: "mini", variant: "danger", disabled: activeTaskCount > 0,
+          label: t("删除"), size: "mini", variant: "danger", disabled: activeTaskCount > 0,
           onClick: () => void reRenderAfter(async () => {
             await client.request(`/api/diagnostics/${encodeURIComponent(id)}`, { method: "DELETE" });
             await refreshMaintenance();
-            showToast({ message: "诊断记录已删除。" });
+            showToast({ message: t("诊断记录已删除。") });
           }),
         }),
       ]));
@@ -2243,15 +2301,15 @@ function renderDataPage(host: HTMLElement): void {
   tmBody.style.display = "flex";
   tmBody.style.flexDirection = "column";
   tmBody.style.gap = "8px";
-  tmBody.append(sectionLabel("记忆库"));
+  tmBody.append(sectionLabel(t("记忆库")));
   const tmDesc = document.createElement("p");
   tmDesc.className = "note";
   tmDesc.style.fontSize = "12px";
   tmDesc.style.color = "var(--ink-3)";
-  tmDesc.textContent = `建议先导出备份再清空，不会删除任何翻译结果。当前总占用：${tm ? formatBytes(tm.size_bytes) : "--"}。`;
+  tmDesc.textContent = t("建议先导出备份再清空，不会删除任何翻译结果。当前总占用：{0}。", tm ? formatBytes(tm.size_bytes) : "--");
   tmBody.append(tmDesc);
   tmBody.append(fieldRow([
-    createButton({ label: "前往记忆库导出", size: "mini", onClick: () => navigate("library") }),
+    createButton({ label: t("前往记忆库导出"), size: "mini", onClick: () => navigate("library") }),
   ]));
 
   const tmPairOptions = tmPairCatalog?.recent ?? [];
@@ -2260,24 +2318,24 @@ function renderDataPage(host: HTMLElement): void {
       selectedTmClearPair = tmPairOptions[0];
     }
     const pairSelect = selectField(
-      "清空所选语言对",
+      t("清空所选语言对"),
       tmPairOptions.map((pair) => ({ value: pair, label: tmPairLabel(pair) })),
       selectedTmClearPair,
       (value) => { selectedTmClearPair = value; renderBody(); },
-      { hint: "候选来自最近使用过的语言对，与记忆库页面的「最近使用」一致。" },
+      { hint: t("候选来自最近使用过的语言对，与记忆库页面的「最近使用」一致。") },
     );
     tmBody.append(pairSelect.root);
     tmBody.append(fieldRow([
       createButton({
-        label: `清空 ${tmPairLabel(selectedTmClearPair)}`, size: "mini", variant: "danger",
+        label: t("清空 {0}", tmPairLabel(selectedTmClearPair)), size: "mini", variant: "danger",
         disabled: activeTaskCount > 0,
         onClick: () => requestMaintenanceClear("tm", selectedTmClearPair),
       }),
-      createButton({ label: "清空全部记忆库", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
+      createButton({ label: t("清空全部记忆库"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   } else {
     tmBody.append(fieldRow([
-      createButton({ label: "清空全部记忆库", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
+      createButton({ label: t("清空全部记忆库"), size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   }
   tmCard.append(tmBody);
@@ -2290,14 +2348,14 @@ function renderDataPage(host: HTMLElement): void {
   dangerBody.style.display = "flex";
   dangerBody.style.flexDirection = "column";
   dangerBody.style.gap = "8px";
-  dangerBody.append(sectionLabel("完整本地重置"));
+  dangerBody.append(sectionLabel(t("完整本地重置")));
   const dangerDesc = document.createElement("p");
   dangerDesc.style.fontSize = "12.5px";
   dangerDesc.style.color = "var(--ink-2)";
-  dangerDesc.textContent = "只删除 Translator 自己保存的数据，不会删除应用本身、你的源文件和翻译结果。完成后需要重新打开应用。";
+  dangerDesc.textContent = t("只删除 Translator 自己保存的数据，不会删除应用本身、你的源文件和翻译结果。完成后需要重新打开应用。");
   dangerBody.append(dangerDesc);
   dangerBody.append(createButton({
-    label: "完整重置", variant: "danger-solid", disabled: activeTaskCount > 0,
+    label: t("完整重置"), variant: "danger-solid", disabled: activeTaskCount > 0,
     onClick: () => requestMaintenanceClear("full_reset"),
   }));
   dangerCard.append(dangerBody);
@@ -2306,7 +2364,7 @@ function renderDataPage(host: HTMLElement): void {
 
 function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: string): void {
   if (category !== "settings" && activeTaskCount > 0) {
-    showToast({ message: "有任务正在运行，暂时不能执行这项操作。", error: true });
+    showToast({ message: t("有任务正在运行，暂时不能执行这项操作。"), error: true });
     return;
   }
   const copy = MAINTENANCE_CONFIRM_COPY[category];
@@ -2315,16 +2373,18 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
     let handle: ModalHandle;
     handle = openModal({
       tone: "danger", icon: "trash",
-      sourceLabel: "设置 · 数据与维护 · 完整本地重置",
-      title: "完整本地重置",
+      sourceLabel: t("设置 · 数据与维护 · 完整本地重置"),
+      title: t("完整本地重置"),
       body: [
-        `将永久删除所有设置、API Key、记忆库${memoryCount !== undefined ? `（${memoryCount} 条）` : ""}与任务历史，应用回到首次启动状态。此操作无法恢复。`,
+        memoryCount !== undefined
+          ? t("将永久删除所有设置、API Key、记忆库（{0} 条）与任务历史，应用回到首次启动状态。此操作无法恢复。", fmtNum(memoryCount))
+          : t("将永久删除所有设置、API Key、记忆库与任务历史，应用回到首次启动状态。此操作无法恢复。"),
       ],
       confirmInput: { placeholder: "RESET", matchValue: "RESET" },
       actions: [
-        { label: "取消" },
+        { label: t("取消") },
         {
-          label: "永久删除", variant: "danger-solid", keepOpen: true,
+          label: t("永久删除"), variant: "danger-solid", keepOpen: true,
           onClick: async () => {
             try {
               await client.request<JsonObject>("/api/maintenance/reset-full", {
@@ -2333,9 +2393,9 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
               handle.close();
               openModal({
                 tone: "warn", icon: "check",
-                title: "本地数据已重置",
-                body: ["本地数据已删除。请关闭并重新打开 Translator，从头开始使用。"],
-                actions: [{ label: "知道了", variant: "primary" }],
+                title: t("本地数据已重置"),
+                body: [t("本地数据已删除。请关闭并重新打开 Translator，从头开始使用。")],
+                actions: [{ label: t("知道了"), variant: "primary" }],
               });
             } catch (error) {
               showToast({ message: errorMessage(error), error: true });
@@ -2348,17 +2408,17 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
   }
   const body: (string | HTMLElement)[] = [copy.message];
   if (category === "tm" && langPair) {
-    body.push(`范围：仅清空语言对 ${tmPairLabel(langPair)}（${langPair}）。`);
+    body.push(t("范围：仅清空语言对 {0}（{1}）。", tmPairLabel(langPair), langPair));
   }
   openModal({
     tone: "danger", icon: "trash",
-    sourceLabel: `设置 · 数据与维护 · ${copy.title.replace("？", "")}${langPair ? ` · ${langPair}` : ""}`,
+    sourceLabel: t("设置 · 数据与维护 · {0}", copy.title.replace(/\s*[？?]\s*$/, "")) + (langPair ? ` · ${langPair}` : ""),
     title: copy.title,
     body,
     actions: [
-      { label: "取消" },
+      { label: t("取消") },
       {
-        label: langPair ? `清空 ${tmPairLabel(langPair)}` : copy.confirm, variant: "danger-solid",
+        label: langPair ? t("清空 {0}", tmPairLabel(langPair)) : copy.confirm, variant: "danger-solid",
         onClick: () => void reRenderAfter(async () => {
           await client.request<JsonObject>("/api/maintenance/clear", {
             method: "POST", body: JSON.stringify({ category, lang_pair: langPair, confirmation: true }),
@@ -2368,7 +2428,7 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
           // 维护清理可能改变数据健康状态（比如清空 Key 后旧横幅不再成立），
           // 拉一次让横幅与后端真相对齐。
           void refreshDataHealth(mountToken);
-          showToast({ message: "已完成，翻译结果没有受影响。" });
+          showToast({ message: t("已完成，翻译结果没有受影响。") });
         }),
       },
     ],
@@ -2378,7 +2438,7 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
 async function openAppDataDirectory(): Promise<void> {
   const path = text(maintenanceOverview?.app_data_dir);
   if (!path) {
-    showToast({ message: "本地数据目录尚未加载。", error: true });
+    showToast({ message: t("本地数据目录尚未加载。"), error: true });
     return;
   }
   try {
@@ -2425,14 +2485,14 @@ function formatUpdateCheckedAt(iso: string): string {
   const sameDay = when.getFullYear() === today.getFullYear()
     && when.getMonth() === today.getMonth()
     && when.getDate() === today.getDate();
-  if (sameDay) return `今天 ${clock}`;
+  if (sameDay) return t("今天 {0}", clock);
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${clock}`;
 }
 
 /** GitHub 的 published_at 是完整 ISO 时间戳，界面上只要日期。 */
 export function formatReleaseDate(iso: string): string {
   const when = new Date(iso);
-  if (!iso || Number.isNaN(when.getTime())) return iso || "未提供";
+  if (!iso || Number.isNaN(when.getTime())) return iso || t("未提供");
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
 }
@@ -2465,7 +2525,7 @@ function renderAboutPage(host: HTMLElement): void {
   body.style.display = "flex";
   body.style.flexDirection = "column";
   body.style.gap = "10px";
-  body.append(sectionLabel("版本"));
+  body.append(sectionLabel(t("版本")));
 
   if (snapshot.flow.phase === "ready") {
     renderUpdateReady(body, { paused });
@@ -2488,7 +2548,7 @@ function renderAboutPage(host: HTMLElement): void {
   licenseBody.style.display = "flex";
   licenseBody.style.flexDirection = "column";
   licenseBody.style.gap = "6px";
-  licenseBody.append(sectionLabel("开源许可"));
+  licenseBody.append(sectionLabel(t("开源许可")));
   const licenseText = document.createElement("p");
   licenseText.style.fontSize = "12.5px";
   licenseText.style.color = "var(--ink-2)";
@@ -2497,7 +2557,7 @@ function renderAboutPage(host: HTMLElement): void {
   licenseNote.className = "note";
   licenseNote.style.fontSize = "12px";
   licenseNote.style.color = "var(--ink-3)";
-  licenseNote.textContent = "完整许可文本见项目仓库中的 LICENSE 文件。";
+  licenseNote.textContent = t("完整许可文本见项目仓库中的 LICENSE 文件。");
   licenseBody.append(licenseText, licenseNote);
   licenseCard.append(licenseBody);
   host.append(licenseCard);
@@ -2507,19 +2567,19 @@ function renderAboutPage(host: HTMLElement): void {
 function renderUpdateUnchecked(body: HTMLElement, options: { paused: boolean }): void {
   const info = document.createElement("p");
   info.style.fontSize = "13px";
-  info.textContent = `当前版本：${APP_VERSION_FALLBACK}`;
+  info.textContent = t("当前版本：{0}", APP_VERSION_FALLBACK);
   body.append(info);
 
   const hint = document.createElement("p");
   hint.className = "note";
   hint.textContent = options.paused
-    ? "后台提醒已暂停，只有手动检查才会联网查询新版本。"
-    : "应用每次启动会在后台检查一次更新；发现新版时会在左侧「设置」上点亮红点。";
+    ? t("后台提醒已暂停，只有手动检查才会联网查询新版本。")
+    : t("应用每次启动会在后台检查一次更新；发现新版时会在左侧「设置」上点亮红点。");
   body.append(hint);
 
   body.append(fieldRow([
     createButton({
-      label: updateSnapshot().checking ? "检查中…" : "检查更新",
+      label: updateSnapshot().checking ? t("检查中…") : t("检查更新"),
       variant: "primary", size: "mini",
       disabled: updateSnapshot().checking,
       onClick: () => void runUpdateCheck(),
@@ -2544,9 +2604,9 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 
   const info = document.createElement("p");
   info.style.fontSize = "13px";
-  info.append(document.createTextNode(`当前版本：${currentVersion}`));
+  info.append(document.createTextNode(t("当前版本：{0}", currentVersion)));
   if (latestVersion) {
-    info.append(document.createTextNode(" · 最新版本："));
+    info.append(document.createTextNode(" · " + t("最新版本：")));
     if (available) {
       const strong = document.createElement("b");
       strong.textContent = latestVersion;
@@ -2559,18 +2619,18 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 
   if (failed) {
     body.append(
-      createChip({ label: flow.failureTitle || "安装失败", tone: "warn", icon: "warn" }),
+      createChip({ label: tx(flow.failureTitle) || t("安装失败"), tone: "warn", icon: "warn" }),
     );
   } else if (available) {
-    body.append(createChip({ label: "有可用更新", tone: "tint", icon: "down" }));
+    body.append(createChip({ label: t("有可用更新"), tone: "tint", icon: "down" }));
   } else if (status === "current") {
-    body.append(createChip({ label: "已是最新", tone: "ok", icon: "check" }));
+    body.append(createChip({ label: t("已是最新"), tone: "ok", icon: "check" }));
   } else if (status === "release_not_ready") {
-    body.append(createChip({ label: "发布包未就绪", tone: "warn", icon: "warn" }));
+    body.append(createChip({ label: t("发布包未就绪"), tone: "warn", icon: "warn" }));
   } else if (status === "unsupported_platform") {
-    body.append(createChip({ label: "不支持自动更新", tone: "warn", icon: "warn" }));
+    body.append(createChip({ label: t("不支持自动更新"), tone: "warn", icon: "warn" }));
   } else {
-    body.append(createChip({ label: "检查失败", tone: "warn", icon: "warn" }));
+    body.append(createChip({ label: t("检查失败"), tone: "warn", icon: "warn" }));
   }
 
   if (available && !failed) {
@@ -2580,9 +2640,9 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
     dl.className = "kv";
     const size = num(result.asset_size);
     const rows: [string, string][] = [
-      ["安装包", text(result.asset_name, "--")],
-      ["大小", size > 0 ? formatBytes(size) : "--"],
-      ["发布日期", formatReleaseDate(text(result.release_date))],
+      [t("安装包"), text(result.asset_name, "--")],
+      [t("大小"), size > 0 ? formatBytes(size) : "--"],
+      [t("发布日期"), formatReleaseDate(text(result.release_date))],
     ];
     for (const [key, value] of rows) {
       const dt = document.createElement("dt");
@@ -2603,34 +2663,34 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
       body.append(blocked);
     }
   } else if (failed) {
-    body.append(diagnosticNote(flow.message, flow.code));
+    body.append(diagnosticNote(tx(flow.message), flow.code));
   } else if (status === "current") {
     const checked = formatUpdateCheckedAt(snapshot.checkedAt);
     if (checked) {
       const note = document.createElement("p");
       note.className = "note";
-      note.textContent = `上次检查：${checked}`;
+      note.textContent = t("上次检查：{0}", checked);
       body.append(note);
     }
   } else {
-    body.append(diagnosticNote(text(result.message, "检查更新失败，请稍后重试。"), text(result.diagnostic_code)));
+    body.append(diagnosticNote(tx(text(result.message, t("检查更新失败，请稍后重试。"))), text(result.diagnostic_code)));
   }
 
   const actions: HTMLElement[] = [];
   if (available && !failed) {
     actions.push(selfUpdate
       ? createButton({
-        label: "下载并安装", variant: "primary", size: "mini", icon: "down",
+        label: t("下载并安装"), variant: "primary", size: "mini", icon: "down",
         onClick: () => void requestUpdateInstall(),
       })
       : createButton({
-        label: "下载安装包", variant: "primary", size: "mini", icon: "down",
+        label: t("下载安装包"), variant: "primary", size: "mini", icon: "down",
         disabled: !downloadUrl,
         onClick: () => void openExternalUrl(downloadUrl),
       }));
   } else {
     actions.push(createButton({
-      label: failed ? "重试" : snapshot.checking ? "检查中…" : "重新检查",
+      label: failed ? t("重试") : snapshot.checking ? t("检查中…") : t("重新检查"),
       variant: failed || status !== "current" ? "primary" : "default",
       size: "mini",
       disabled: snapshot.checking,
@@ -2638,14 +2698,14 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
     }));
     if (failed && downloadUrl) {
       actions.push(createButton({
-        label: "改为下载安装包", size: "mini", icon: "down",
+        label: t("改为下载安装包"), size: "mini", icon: "down",
         onClick: () => void openExternalUrl(downloadUrl),
       }));
     }
   }
   if (available && latestVersion && options.ignored !== latestVersion) {
     actions.push(createButton({
-      label: "忽略此版本", size: "mini",
+      label: t("忽略此版本"), size: "mini",
       onClick: () => void ignoreVersion(latestVersion),
     }));
   }
@@ -2653,7 +2713,7 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
     actions.push(createPauseToggle(options.paused));
   }
   if (releaseUrl) {
-    actions.push(createButton({ label: "查看 Release", size: "mini", icon: "ext", onClick: () => void openExternalUrl(releaseUrl) }));
+    actions.push(createButton({ label: t("查看 Release"), size: "mini", icon: "ext", onClick: () => void openExternalUrl(releaseUrl) }));
   }
   body.append(fieldRow(actions));
 }
@@ -2665,7 +2725,7 @@ function renderUpdateResult(body: HTMLElement, options: { paused: boolean; ignor
 function renderUpdateProgress(body: HTMLElement): void {
   const heading = document.createElement("p");
   heading.style.fontSize = "13px";
-  heading.append(document.createTextNode("正在更新到 "));
+  heading.append(document.createTextNode(t("正在更新到") + " "));
   const version = document.createElement("b");
   heading.append(version);
   body.append(heading);
@@ -2692,7 +2752,7 @@ function renderUpdateProgress(body: HTMLElement): void {
   note.className = "note";
   body.append(note);
 
-  const button = createButton({ label: "下载中…", size: "mini", disabled: true });
+  const button = createButton({ label: t("下载中…"), size: "mini", disabled: true });
   body.append(fieldRow([button]));
 
   const apply = () => {
@@ -2701,8 +2761,8 @@ function renderUpdateProgress(body: HTMLElement): void {
     const downloading = flow.phase === "downloading";
     const determinate = downloading && flow.percent !== null;
 
-    version.textContent = flow.version || text(snapshot.result?.latest_version, "新版本");
-    label.textContent = downloading ? "正在下载安装包" : "正在校验签名并安装";
+    version.textContent = flow.version || text(snapshot.result?.latest_version, t("新版本"));
+    label.textContent = downloading ? t("正在下载安装包") : t("正在校验签名并安装");
     pct.textContent = determinate ? `${Math.floor(flow.percent ?? 0)}%` : "";
 
     const barClass = determinate ? "bar" : "bar indet";
@@ -2714,9 +2774,9 @@ function renderUpdateProgress(body: HTMLElement): void {
     note.textContent = downloading
       ? (flow.total
         ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
-        : `已下载 ${formatBytes(flow.received)}`)
-      : "这一步通常几秒钟，请勿关闭窗口。";
-    button.textContent = downloading ? "下载中…" : "安装中…";
+        : t("已下载 {0}", formatBytes(flow.received)))
+      : t("这一步通常几秒钟，请勿关闭窗口。");
+    button.textContent = downloading ? t("下载中…") : t("安装中…");
   };
   apply();
   updateProgressView = { root: body, apply };
@@ -2731,13 +2791,13 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
     // 否则这一页会退回去重新提供「下载并安装」，等于让人把同一份包再下一遍。
     const note = document.createElement("p");
     note.className = "note";
-    note.textContent = `${flow.version} 已安装完成，重启 Translator 后生效。`;
+    note.textContent = t("{0} 已安装完成，重启 Translator 后生效。", flow.version);
     body.append(note);
     // 更新装好之后到重启为止可能隔着一整天的工作，这一页不能只剩一个重启按钮：
     // 后台提醒的开关得一直够得着。
     body.append(fieldRow([
       createButton({
-        label: "立即重启", size: "mini", icon: "restart",
+        label: t("立即重启"), size: "mini", icon: "restart",
         onClick: () => void requestRestart(),
       }),
       createPauseToggle(opts.paused),
@@ -2745,19 +2805,19 @@ function renderUpdateReady(body: HTMLElement, opts: { paused: boolean }): void {
     return;
   }
   body.append(createBanner({
-    title: `${flow.version} 已安装完成`,
-    subtitle: "重启 Translator 后生效。也可以稍后手动退出再打开。",
+    title: t("{0} 已安装完成", flow.version),
+    subtitle: t("重启 Translator 后生效。也可以稍后手动退出再打开。"),
     icon: "check",
     actions: [
-      createButton({ label: "立即重启", variant: "primary", size: "mini", icon: "restart", onClick: () => void requestRestart() }),
-      createButton({ label: "稍后", size: "mini", onClick: collapseUpdateReady }),
+      createButton({ label: t("立即重启"), variant: "primary", size: "mini", icon: "restart", onClick: () => void requestRestart() }),
+      createButton({ label: t("稍后"), size: "mini", onClick: collapseUpdateReady }),
     ],
   }));
 }
 
 function createPauseToggle(paused: boolean): HTMLButtonElement {
   return createButton({
-    label: paused ? "恢复后台提醒" : "暂停后台提醒", size: "mini",
+    label: paused ? t("恢复后台提醒") : t("暂停后台提醒"), size: "mini",
     onClick: () => void setNotificationsPaused(!paused),
   });
 }
@@ -2772,7 +2832,7 @@ function diagnosticNote(message: string, code: string): HTMLParagraphElement {
     const codeEl = document.createElement("span");
     codeEl.className = "diag-code";
     // 代码本身是给反馈问题时用的，单独一行写成「诊断代码：xxx」，不然像是界面漏出来的乱码。
-    codeEl.textContent = `诊断代码：${code}`;
+    codeEl.textContent = t("诊断代码：{0}", code);
     note.append(codeEl);
   }
   return note;
@@ -2784,7 +2844,7 @@ function appendReleaseNotes(body: HTMLElement, source: string): void {
   if (!rendered) {
     const empty = document.createElement("p");
     empty.className = "note";
-    empty.textContent = "这一版没有提供更新说明。";
+    empty.textContent = t("这一版没有提供更新说明。");
     body.append(empty);
     return;
   }
@@ -2798,7 +2858,7 @@ function appendReleaseNotes(body: HTMLElement, source: string): void {
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "rn-more";
-  toggle.textContent = updateNotesExpanded ? "收起更新说明" : "展开完整更新说明";
+  toggle.textContent = updateNotesExpanded ? t("收起更新说明") : t("展开完整更新说明");
   toggle.addEventListener("click", () => {
     updateNotesExpanded = !updateNotesExpanded;
     renderAboutIfVisible();

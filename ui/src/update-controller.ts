@@ -11,6 +11,7 @@
 
 import { ApiClient } from "./api-client";
 import { openModal, showToast } from "./components";
+import { t, tx } from "./i18n";
 import { setSettingsAlert } from "./shell";
 import {
   resolveUpdate,
@@ -135,7 +136,7 @@ function emit(): void {
       listener();
     } catch (error) {
       // 一个订阅者画崩了不能拖累另一个——尤其是下载进度回调里，抛出去会直接中断下载。
-      console.error("[update] 订阅者重画失败：", error);
+      console.error("[update] 订阅者重画失败：", error); // i18n-ignore 控制台日志
     }
   }
 }
@@ -170,19 +171,19 @@ export function canSelfUpdate(): boolean {
 }
 
 const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = {
-  running_from_dmg: "Translator 当前是从磁盘映像里运行的，没法自己替换自己。请先把它拖进「应用程序」，或直接下载新版安装包。",
-  install_location_read_only: "Translator 所在目录没有写入权限，装不上更新。请把它移到「应用程序」，或直接下载新版安装包。",
-  unsupported_architecture: "这台机器的处理器架构没有对应的应用内更新包，请直接下载安装包。",
-  unsupported_platform: "当前系统不支持应用内更新，请直接下载安装包。",
-  not_a_bundle: "没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。",
-  install_location_unknown: "没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。",
-  dev_build: "开发模式下不提供应用内更新。",
-  browser_preview: "浏览器预览模式下不提供应用内更新。",
-  environment_probe_failed: "没能确认这台机器是否支持应用内更新，请直接下载安装包。",
+  running_from_dmg: t("Translator 当前是从磁盘映像里运行的，没法自己替换自己。请先把它拖进「应用程序」，或直接下载新版安装包。"),
+  install_location_read_only: t("Translator 所在目录没有写入权限，装不上更新。请把它移到「应用程序」，或直接下载新版安装包。"),
+  unsupported_architecture: t("这台机器的处理器架构没有对应的应用内更新包，请直接下载安装包。"),
+  unsupported_platform: t("当前系统不支持应用内更新，请直接下载安装包。"),
+  not_a_bundle: t("没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
+  install_location_unknown: t("没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
+  dev_build: t("开发模式下不提供应用内更新。"),
+  browser_preview: t("浏览器预览模式下不提供应用内更新。"),
+  environment_probe_failed: t("没能确认这台机器是否支持应用内更新，请直接下载安装包。"),
 };
 
 export function selfUpdateBlockedCopy(reason: string): string {
-  return SELF_UPDATE_BLOCKED_COPY[reason] ?? "这台机器暂不支持应用内更新，请直接下载安装包。";
+  return SELF_UPDATE_BLOCKED_COPY[reason] ?? t("这台机器暂不支持应用内更新，请直接下载安装包。");
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +253,7 @@ export async function runUpdateCheck(): Promise<void> {
     // result，界面会拿上一轮的旧结果误判成「这次也查完了、没有新版」。
     if (text(result.status) === "error") {
       state.lastCheckOk = false;
-      showToast({ message: text(result.message, "检查更新失败，请稍后重试。"), error: true });
+      showToast({ message: tx(text(result.message, t("检查更新失败，请稍后重试。"))), error: true });
     } else {
       state.lastCheckOk = true;
     }
@@ -308,13 +309,13 @@ async function putPreferences(body: JsonObject): Promise<void> {
 export async function setNotificationsPaused(paused: boolean): Promise<void> {
   await putPreferences({ notifications_paused: paused });
   showToast({
-    message: paused ? "已暂停后台更新提醒；手动检查仍然可用。" : "已恢复后台更新提醒。",
+    message: paused ? t("已暂停后台更新提醒；手动检查仍然可用。") : t("已恢复后台更新提醒。"),
   });
 }
 
 export async function ignoreVersion(version: string): Promise<void> {
   await putPreferences({ ignored_release_version: version });
-  showToast({ message: `已忽略版本 ${version}；后续版本仍会提示。` });
+  showToast({ message: t("已忽略版本 {0}；后续版本仍会提示。", version) });
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +336,7 @@ async function activeTaskCount(): Promise<number> {
     }
     return count;
   } catch {
-    throw new Error("无法确认是否还有任务或单页操作正在进行，请稍后重试。");
+    throw new Error(t("无法确认是否还有任务或单页操作正在进行，请稍后重试。"));
   }
 }
 
@@ -352,15 +353,15 @@ export async function requestUpdateInstall(): Promise<void> {
       const running = await activeTaskCount();
       const body = running > 0
         ? [
-          `现在安装会中断这 ${running} 个任务或单页操作，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。`,
-          "安装程序会在更新完成后自动重新打开 Translator。",
+          t("现在安装会中断这 {0} 个任务或单页操作，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。", running),
+          t("安装程序会在更新完成后自动重新打开 Translator。"),
         ]
-        : ["安装过程中 Translator 会关闭，安装程序完成后会自动重新打开它。"];
+        : [t("安装过程中 Translator 会关闭，安装程序完成后会自动重新打开它。")];
       const confirmed = await confirmModal({
-        title: running > 0 ? `还有 ${running} 个任务或单页操作正在进行` : "安装将关闭 Translator",
+        title: running > 0 ? t("还有 {0} 个任务或单页操作正在进行", running) : t("安装将关闭 Translator"),
         body,
-        confirmLabel: "仍然安装",
-        cancelLabel: "暂不安装",
+        confirmLabel: t("仍然安装"),
+        cancelLabel: t("暂不安装"),
       });
       if (!confirmed) return;
     }
@@ -393,8 +394,8 @@ async function startInstall(): Promise<void> {
       // 还没上传更新产物。别让用户干等，直接指回手动安装包。
       state.flow = {
         ...idleUpdateFlow(), phase: "failed", version: fallbackVersion,
-        failureTitle: "无法自动更新",
-        message: "更新服务器上没有这个平台的应用内更新包，请改为下载安装包。",
+        failureTitle: t("无法自动更新"),
+        message: t("更新服务器上没有这个平台的应用内更新包，请改为下载安装包。"),
         code: "updater_payload_missing",
       };
       return;
@@ -426,9 +427,9 @@ async function startInstall(): Promise<void> {
       stage = "activity-check";
       const running = await activeTaskCount();
       if (running > 0 && !await confirmModal({
-        title: `还有 ${running} 个任务或单页操作正在进行`,
-        body: ["下载期间仍有工作正在进行，现在安装会中断它们。已经生成的文件会保留。"],
-        confirmLabel: "仍然安装", cancelLabel: "暂不安装",
+        title: t("还有 {0} 个任务或单页操作正在进行", running),
+        body: [t("下载期间仍有工作正在进行，现在安装会中断它们。已经生成的文件会保留。")],
+        confirmLabel: t("仍然安装"), cancelLabel: t("暂不安装"),
       })) {
         state.flow = idleUpdateFlow();
         return;
@@ -444,18 +445,18 @@ async function startInstall(): Promise<void> {
       ...idleUpdateFlow(), phase: "failed",
       version: handle?.version || fallbackVersion,
       failureTitle:
-        stage === "resolve" ? "无法自动更新" : stage === "download" ? "下载失败"
-          : stage === "activity-check" ? "暂时无法安装" : "安装失败",
+        stage === "resolve" ? t("无法自动更新") : stage === "download" ? t("下载失败")
+          : stage === "activity-check" ? t("暂时无法安装") : t("安装失败"),
       message:
         // 「取不到更新信息」不能说成「下载失败」：那句话会让人一遍遍重试一件不可能
         // 成功的事——这一版没有提供应用内更新包时，重试到下一个版本发布为止都是失败。
         stage === "activity-check"
-          ? "无法确认是否还有任务或单页操作正在进行，请稍后重试。当前版本没有被改动，可以正常继续使用。"
+          ? t("无法确认是否还有任务或单页操作正在进行，请稍后重试。当前版本没有被改动，可以正常继续使用。")
           : stage === "resolve"
-          ? "没有取到这一版的更新信息：可能是网络不通，也可能是这一版没有提供应用内更新包。可以稍后再试，或改为下载安装包。当前版本没有被改动，可以正常继续使用。"
+          ? t("没有取到这一版的更新信息：可能是网络不通，也可能是这一版没有提供应用内更新包。可以稍后再试，或改为下载安装包。当前版本没有被改动，可以正常继续使用。")
           : stage === "download"
-            ? "安装包没有下载完，当前版本没有被改动，可以正常继续使用。"
-            : "更新没有安装成功，当前版本没有被改动，可以正常继续使用。",
+            ? t("安装包没有下载完，当前版本没有被改动，可以正常继续使用。")
+            : t("更新没有安装成功，当前版本没有被改动，可以正常继续使用。"),
       code: updaterDiagnosticCode(error),
     };
   } finally {
@@ -472,7 +473,7 @@ async function startInstall(): Promise<void> {
  * 直接摆在界面上既看不懂也可能泄露目录结构；完整信息进控制台。
  */
 function updaterDiagnosticCode(error: unknown): string {
-  console.error("[updater] 安装失败：", error);
+  console.error("[updater] 安装失败：", error); // i18n-ignore 控制台日志
   const raw = errorMessage(error).toLowerCase();
   if (raw.includes("signature")) return "install_signature_rejected";
   if (raw.includes("permission") || raw.includes("denied")) return "install_permission_denied";
@@ -489,20 +490,20 @@ export async function requestRestart(): Promise<void> {
     const running = await activeTaskCount();
     if (running > 0) {
       const confirmed = await confirmModal({
-        title: `还有 ${running} 个任务或单页操作正在进行`,
+        title: t("还有 {0} 个任务或单页操作正在进行", running),
         body: [
-          "现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。",
-          "更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。",
+          t("现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。"),
+          t("更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。"),
         ],
-        confirmLabel: "仍然重启",
-        cancelLabel: "稍后重启",
+        confirmLabel: t("仍然重启"),
+        cancelLabel: t("稍后重启"),
       });
       if (!confirmed) return;
     }
     try {
       await restartApp();
     } catch (error) {
-      showToast({ message: `无法自动重启，请手动退出并重新打开 Translator。（${errorMessage(error)}）`, error: true });
+      showToast({ message: t("无法自动重启，请手动退出并重新打开 Translator。（{0}）", errorMessage(error)), error: true });
     }
   } catch (error) {
     showToast({ message: errorMessage(error), error: true });

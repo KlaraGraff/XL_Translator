@@ -14,6 +14,7 @@
 import { navigate } from "./router";
 import { openModal, createButton, type ModalHandle } from "./components";
 import { ApiClient } from "./api-client";
+import { t } from "./i18n";
 import "./quickstart.css";
 
 type JsonObject = Record<string, unknown>;
@@ -80,38 +81,38 @@ function openQuickStartModal(): void {
   steps.className = "qs-steps";
   steps.append(
     buildStep(
-      "1. 配置翻译模型",
-      "填好服务商、模型和 API 密钥，再点「测试连接」确认能用。",
-      [createButton({ label: "打开配置", size: "mini", onClick: () => finish("config") })],
+      t("1. 配置翻译模型"),
+      t("填好服务商、模型和 API 密钥，再点「测试连接」确认能用。"),
+      [createButton({ label: t("打开配置"), size: "mini", onClick: () => finish("config") })],
     ),
     buildStep(
-      "2. 选择文件类型与语言",
-      "进入 Excel、Word、PDF / 图片或 CAD 图纸页面。源语言默认自动识别，PDF 和图片只需选目标语言。",
+      t("2. 选择文件类型与语言"),
+      t("进入 Excel、Word、PDF / 图片或 CAD 图纸页面。源语言默认自动识别，PDF 和图片只需选目标语言。"),
       [
         createButton({ label: "Excel", size: "mini", onClick: () => finish("excel") }),
         createButton({ label: "Word", size: "mini", onClick: () => finish("word") }),
-        createButton({ label: "PDF / 图片", size: "mini", onClick: () => finish("pdf") }),
-        createButton({ label: "CAD 图纸", size: "mini", onClick: () => finish("cad") }),
+        createButton({ label: t("PDF / 图片"), size: "mini", onClick: () => finish("pdf") }),
+        createButton({ label: t("CAD 图纸"), size: "mini", onClick: () => finish("cad") }),
       ],
     ),
     buildStep(
-      "3. 选择文件并开始",
-      "用「浏览」选好文件或文件夹，勾选要翻译的文件，确认右侧选项后点「开始翻译」。开始后再改设置，只影响下一次任务。",
+      t("3. 选择文件并开始"),
+      t("用「浏览」选好文件或文件夹，勾选要翻译的文件，确认右侧选项后点「开始翻译」。开始后再改设置，只影响下一次任务。"),
     ),
   );
 
   activeHandle = openModal({
     tone: "warn",
     icon: "gear",
-    sourceLabel: "欢迎使用 Translator",
-    title: "快速开始",
+    sourceLabel: t("欢迎使用 Translator"),
+    title: t("快速开始"),
     body: [
-      "照下面三步就能开始第一次翻译。这个引导不会替你测试连接，也不会发出任何翻译请求。",
+      t("照下面三步就能开始第一次翻译。这个引导不会替你测试连接，也不会发出任何翻译请求。"),
       steps,
     ],
     actions: [
-      { label: "跳过", onClick: () => finish() },
-      { label: "完成", variant: "primary", onClick: () => finish() },
+      { label: t("跳过"), onClick: () => finish() },
+      { label: t("完成"), variant: "primary", onClick: () => finish() },
     ],
   });
 }

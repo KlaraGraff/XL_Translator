@@ -12,6 +12,7 @@
 // 这一点和它取代的那条通栏提示条不同——那条会把整个工作区推下去 40 多像素。
 
 import { openModal } from "./components";
+import { t, tx } from "./i18n";
 import { icon } from "./icons";
 import { renderReleaseNotes } from "./markdown";
 import { toastStackSlot } from "./shell";
@@ -59,7 +60,7 @@ async function openExternalUrl(url: string): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("open_external_url", { url });
   } catch (error) {
-    console.error("[update] 打不开外部链接：", error);
+    console.error("[update] 打不开外部链接：", error); // i18n-ignore 控制台日志
   }
 }
 
@@ -153,7 +154,7 @@ function head(options: {
     const close = document.createElement("button");
     close.type = "button";
     close.className = "ut-x";
-    close.setAttribute("aria-label", "关闭");
+    close.setAttribute("aria-label", t("关闭"));
     close.append(icon("close", { size: "sm" }));
     close.addEventListener("click", options.onDismiss);
     row.append(close);
@@ -265,13 +266,13 @@ function patchProgress(view: ProgressView): void {
   const determinate = downloading && flow.percent !== null;
 
   view.title.textContent = downloading
-    ? `正在下载 ${flow.version || "新版本"}`
-    : "正在校验签名并安装";
+    ? t("正在下载 {0}", flow.version || t("新版本"))
+    : t("正在校验签名并安装");
   // 「可以继续用」只对下载阶段成立——安装会把程序文件换掉,装好之后新任务
   // 可能失败(高-12),那句话由 renderReady 的警示文案接手。
   view.detail.textContent = downloading
-    ? "下载期间可以继续用，装好后会提醒你重启"
-    : "这一步通常几秒钟，请勿关闭窗口。";
+    ? t("下载期间可以继续用，装好后会提醒你重启")
+    : t("这一步通常几秒钟，请勿关闭窗口。");
 
   const barClass = determinate ? "ut-bar" : "ut-bar indet";
   if (view.bar.className !== barClass) view.bar.className = barClass;
@@ -285,7 +286,7 @@ function patchProgress(view: ProgressView): void {
   if (downloading) {
     view.left.textContent = flow.total
       ? `${formatBytes(flow.received)} / ${formatBytes(flow.total)}`
-      : `已下载 ${formatBytes(flow.received)}`;
+      : t("已下载 {0}", formatBytes(flow.received));
     view.right.textContent = flow.percent !== null ? `${Math.floor(flow.percent)}%` : "";
   }
 }
@@ -296,16 +297,16 @@ function renderReady(): HTMLDivElement {
   el.append(head({
     icon: "check",
     tone: "ok",
-    title: `${flow.version || "新版本"} 已装好`,
+    title: t("{0} 已装好", flow.version || t("新版本")),
     // 不能安抚:程序文件已被替换,正在跑的任务不受影响,但新任务的组件加载可能
     // 失败且报错误导(高-12)。
-    detail: "请尽快重启完成更新，期间新任务可能失败。",
+    detail: t("请尽快重启完成更新，期间新任务可能失败。"),
     onDismiss: collapseUpdateReady,
   }));
   el.append(footer([
     spacer(),
-    actionButton("稍后", collapseUpdateReady),
-    actionButton("立即重启", () => void requestRestart(), true),
+    actionButton(t("稍后"), collapseUpdateReady),
+    actionButton(t("立即重启"), () => void requestRestart(), true),
   ]));
   return el;
 }
@@ -317,8 +318,8 @@ function renderFailure(): HTMLDivElement {
   el.append(head({
     icon: "warn",
     tone: "danger",
-    title: flow.failureTitle || "更新没装上",
-    detail: flow.message,
+    title: tx(flow.failureTitle) || t("更新没装上"),
+    detail: tx(flow.message),
     onDismiss: () => {
       dismissedFailureCode = flow.code || "dismissed";
       render();
@@ -326,10 +327,10 @@ function renderFailure(): HTMLDivElement {
   }));
   const actions: HTMLElement[] = [];
   if (downloadUrl) {
-    actions.push(linkButton("改为下载安装包", () => void openExternalUrl(downloadUrl)));
+    actions.push(linkButton(t("改为下载安装包"), () => void openExternalUrl(downloadUrl)));
   }
   actions.push(spacer());
-  actions.push(actionButton("重试", () => void requestUpdateInstall(), true));
+  actions.push(actionButton(t("重试"), () => void requestUpdateInstall(), true));
   el.append(footer(actions));
   return el;
 }
@@ -345,8 +346,8 @@ function renderAvailable(version: string): HTMLDivElement {
   const selfUpdate = canSelfUpdate();
 
   const detail = [
-    current ? `当前 ${current}` : "",
-    date ? `${date} 发布` : "",
+    current ? t("当前 {0}", current) : "",
+    date ? t("{0} 发布", date) : "",
     size > 0 ? formatBytes(size) : "",
   ].filter(Boolean).join(" · ");
 
@@ -354,7 +355,7 @@ function renderAvailable(version: string): HTMLDivElement {
   el.append(head({
     icon: "down",
     tone: "tint",
-    title: `Translator ${version} 可用`,
+    title: t("Translator {0} 可用", version),
     detail,
     onDismiss: () => {
       dismissedVersion = version;
@@ -363,7 +364,7 @@ function renderAvailable(version: string): HTMLDivElement {
   }));
 
   const toggle = linkButton(
-    notesExpanded ? "收起" : "展开完整说明",
+    notesExpanded ? t("收起") : t("展开完整说明"),
     () => {
       notesExpanded = !notesExpanded;
       render();
@@ -381,7 +382,7 @@ function renderAvailable(version: string): HTMLDivElement {
     wrap.className = "ut-notes";
     const label = document.createElement("div");
     label.className = "lbl";
-    label.textContent = "本次更新";
+    label.textContent = t("本次更新");
     notes.classList.add("ut-rn");
     if (!notesExpanded) notes.classList.add("clamped");
     wrap.append(label, notes);
@@ -397,12 +398,12 @@ function renderAvailable(version: string): HTMLDivElement {
 
   const actions: HTMLElement[] = [toggle];
   if (releaseUrl) {
-    actions.push(linkButton("在 GitHub 查看", () => void openExternalUrl(releaseUrl)));
+    actions.push(linkButton(t("在 GitHub 查看"), () => void openExternalUrl(releaseUrl)));
   }
   actions.push(spacer());
   actions.push(selfUpdate
-    ? actionButton("更新", () => void requestUpdateInstall(), true)
-    : actionButton("下载安装包", () => void openExternalUrl(downloadUrl || releaseUrl), true));
+    ? actionButton(t("更新"), () => void requestUpdateInstall(), true)
+    : actionButton(t("下载安装包"), () => void openExternalUrl(downloadUrl || releaseUrl), true));
   el.append(footer(actions));
 
   if (!selfUpdate && env) {
@@ -474,7 +475,7 @@ function render(): void {
   }
 
   if (snapshot.checking) {
-    host.append(renderSlim("mute", "spin", "正在检查更新…"));
+    host.append(renderSlim("mute", "spin", t("正在检查更新…")));
     return;
   }
 
@@ -493,8 +494,8 @@ function render(): void {
     const ignored = ignoredVersion();
     const latest = text(snapshot.result?.latest_version);
     const label = latest && latest === ignored
-      ? `已忽略版本 ${latest}`
-      : `已经是最新版本${current ? ` ${current}` : ""}`;
+      ? t("已忽略版本 {0}", latest)
+      : current ? t("已经是最新版本 {0}", current) : t("已经是最新版本");
     host.append(renderSlim("ok", "check", label));
     transientTimer = window.setTimeout(() => {
       transientTimer = 0;
@@ -517,17 +518,17 @@ export function openRestartBeforeTaskModal(onProceed: () => void): void {
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "更新已安装，建议先重启",
+    title: t("更新已安装，建议先重启"),
     body: [
-      "新版本的程序文件已经替换完成，当前运行的还是旧版本。",
-      "正在进行的任务不受影响，但现在开始新任务可能会莫名失败。建议先重启完成更新，再开始新任务。",
+      t("新版本的程序文件已经替换完成，当前运行的还是旧版本。"),
+      t("正在进行的任务不受影响，但现在开始新任务可能会莫名失败。建议先重启完成更新，再开始新任务。"),
     ],
     actions: [
       // 「取消」给反悔留门：既不想现在重启、也不想开这个任务（比如想先换文件）。
       // 警告在弹窗前已被 consume，取消后再点开始不会二次弹——用户已经知情。
-      { label: "取消", variant: "default" },
-      { label: "仍要开始", variant: "default", onClick: onProceed },
-      { label: "立即重启", variant: "primary", onClick: () => void requestRestart() },
+      { label: t("取消"), variant: "default" },
+      { label: t("仍要开始"), variant: "default", onClick: onProceed },
+      { label: t("立即重启"), variant: "primary", onClick: () => void requestRestart() },
     ],
   });
 }

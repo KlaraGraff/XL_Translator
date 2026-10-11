@@ -1,0 +1,1470 @@
+{
+  "意思与原文不一致": {
+    "en": "Meaning differs from the source",
+    "fr": "Le sens diffère du texte source"
+  },
+  "无法确定意思是否一致": {
+    "en": "Unable to tell whether the meaning matches",
+    "fr": "Impossible de déterminer si le sens est identique"
+  },
+  "未知文件 · 正文 · 未知位置": {
+    "en": "Unknown file · Body · Unknown location",
+    "fr": "Fichier inconnu · Corps du texte · Emplacement inconnu"
+  },
+  "  → 页眉页脚：{0} 行已有部分译文，其中 {1} 行交给模型补译，补上了 {2} 行。": {
+    "en": "  → Headers & footers: {0} lines already had partial translations; {1} were sent to the model to fill in, and {2} were completed.",
+    "fr": "  → En-têtes et pieds de page : {0} lignes avaient déjà une traduction partielle ; {1} ont été envoyées au modèle pour être complétées, {2} l'ont été."
+  },
+  "任务已停止": {
+    "en": "Task stopped",
+    "fr": "Tâche arrêtée"
+  },
+  "扫描到 {0} 个 Word 文件": {
+    "en": "Found {0} Word {0|file|files}",
+    "fr": "{0} {0|fichier Word trouvé|fichiers Word trouvés}"
+  },
+  "[阶段 1] 读取文件：{0}（{1}/{2}）": {
+    "en": "[Step 1] Reading file: {0} ({1}/{2})",
+    "fr": "[Étape 1] Lecture du fichier : {0} ({1}/{2})"
+  },
+  "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。": {
+    "en": "Task stopped. Translations obtained before stopping will still be written to the documents and saved to translation memory; unfinished parts keep the source text.",
+    "fr": "Tâche arrêtée. Les traductions obtenues avant l'arrêt seront tout de même écrites dans les documents et enregistrées dans la mémoire de traduction ; les parties non terminées conservent le texte source."
+  },
+  "[阶段 3] 写入文件：{0}（{1}/{2}）": {
+    "en": "[Step 3] Writing file: {0} ({1}/{2})",
+    "fr": "[Étape 3] Écriture du fichier : {0} ({1}/{2})"
+  },
+  ".doc 转换：{0}": {
+    "en": ".doc conversion: {0}",
+    "fr": "Conversion .doc : {0}"
+  },
+  "自动编号：未检测到": {
+    "en": "Automatic numbering: not detected",
+    "fr": "Numérotation automatique : non détectée"
+  },
+  "正在单独重译这一段（第 {0}/{1} 轮）": {
+    "en": "Retranslating this paragraph on its own (round {0}/{1})",
+    "fr": "Nouvelle traduction de ce paragraphe seul (passe {0}/{1})"
+  },
+  "候选译文为空": {
+    "en": "Candidate translation is empty",
+    "fr": "La traduction proposée est vide"
+  },
+  "仲裁结果不是 JSON 对象": {
+    "en": "The review result was not a JSON object",
+    "fr": "Le résultat de la vérification n'est pas un objet JSON"
+  },
+  "  → [前置内容保护] {0}：跳过开头 {1} 段，正文从「{2}」开始。": {
+    "en": "  → [Front matter protection] {0}: skipped the first {1} paragraphs; the body starts at “{2}”.",
+    "fr": "  → [Protection des pages liminaires] {0} : les {1} premiers paragraphes sont ignorés, le corps du texte commence à « {2} »."
+  },
+  "  → [前置内容保护] {0}：未能识别出正文标题，前置内容保护未生效，本文件将按未保护方式正常处理。": {
+    "en": "  → [Front matter protection] {0}: no body heading was found, so front matter protection did not apply; this file will be processed normally.",
+    "fr": "  → [Protection des pages liminaires] {0} : aucun titre de corps de texte n'a été trouvé, la protection n'a donc pas été appliquée ; ce fichier sera traité normalement."
+  },
+  "Word 补译复核": {
+    "en": "Word fill-in review",
+    "fr": "Vérification de la complétion Word"
+  },
+  "  → 页眉页脚：{0} 行与正文内容相同，按正文的译文处理。": {
+    "en": "  → Headers & footers: {0} lines match the body text and use the body translation.",
+    "fr": "  → En-têtes et pieds de page : {0} lignes sont identiques au corps du texte et reprennent sa traduction."
+  },
+  "[补译模式] 只补未译内容：已有译文位置将保持不变。": {
+    "en": "[Fill-in mode] Only untranslated content will be filled in; existing translations stay as they are.",
+    "fr": "[Mode complétion] Seul le contenu non traduit sera complété ; les traductions existantes restent inchangées."
+  },
+  "[前置内容保护] 已启用：每个文件从开头到第一个正文标题之前的内容（封面、目录、前言等）默认不翻译，找不到正文标题的文件不受影响。": {
+    "en": "[Front matter protection] On: in each file, everything before the first body heading (cover, table of contents, preface, etc.) is not translated by default. Files without a body heading are not affected.",
+    "fr": "[Protection des pages liminaires] Activée : dans chaque fichier, tout ce qui précède le premier titre du corps du texte (couverture, table des matières, préface, etc.) n'est pas traduit par défaut. Les fichiers sans titre de corps de texte ne sont pas concernés."
+  },
+  "[阶段 1 完成] 全部文档合计 {0} 处待翻译文本，相同内容只翻一次（{1}s）": {
+    "en": "[Step 1 done] {0} text items to translate across all documents; identical content is translated only once ({1}s)",
+    "fr": "[Étape 1 terminée] {0} textes à traduire dans l'ensemble des documents ; un contenu identique n'est traduit qu'une fois ({1}s)"
+  },
+  "[阶段 2] 记忆库已有译文 {0} 处，需要模型翻译 {1} 处，夹杂多种语言 {2} 处": {
+    "en": "[Step 2] Found in translation memory: {0}; to translate with the model: {1}; mixed-language: {2}",
+    "fr": "[Étape 2] Déjà dans la mémoire de traduction : {0} ; à traduire par le modèle : {1} ; en plusieurs langues : {2}"
+  },
+  "接口持续限流，已停止继续请求。已翻好的内容照常写入文件，其余段落保留原文，限流过去后用「接着上次继续」补译即可。": {
+    "en": "The service kept rate-limiting requests, so sending was stopped. Content already translated will be written as usual and the remaining paragraphs keep the source text. Once the limit clears, use “Resume last run” to fill them in.",
+    "fr": "Le service a limité les requêtes de façon persistante ; l'envoi a donc été arrêté. Le contenu déjà traduit sera écrit normalement et les paragraphes restants conservent le texte source. Une fois la limite levée, utilisez « Reprendre la dernière exécution » pour les compléter."
+  },
+  "[阶段 2 完成] 翻译数据就绪（{0}s）": {
+    "en": "[Step 2 done] Translations ready ({0}s)",
+    "fr": "[Étape 2 terminée] Traductions prêtes ({0}s)"
+  },
+  "[阶段 3 完成] Word 文件写入完毕（{0}s）": {
+    "en": "[Step 3 done] Word files written ({0}s)",
+    "fr": "[Étape 3 terminée] Fichiers Word écrits ({0}s)"
+  },
+  "  → {0}：{1} 处待翻译段落位置（{2}s）": {
+    "en": "  → {0}: {1} paragraph positions to translate ({2}s)",
+    "fr": "  → {0} : {1} emplacements de paragraphes à traduire ({2}s)"
+  },
+  "已识别原文语言：": {
+    "en": "Detected source language: ",
+    "fr": "Langue source détectée : "
+  },
+  "已自动修正 {0} 处没翻译的编号。": {
+    "en": "Automatically fixed {0} untranslated {0|number|numbers}.",
+    "fr": "{0} {0|numéro non traduit a été corrigé|numéros non traduits ont été corrigés} automatiquement."
+  },
+  "已自动补译 {0} 处遗留的原文（{1}）": {
+    "en": "Automatically filled in {0} leftover source-text {0|passage|passages} ({1})",
+    "fr": "{0} {0|passage resté|passages restés} en langue source {0|a été complété|ont été complétés} automatiquement ({1})"
+  },
+  "自动编号：由{0}处理": {
+    "en": "Automatic numbering: handled by {0}",
+    "fr": "Numérotation automatique : prise en charge par {0}"
+  },
+  "页眉页脚整行改写没通过自动检查": {
+    "en": "Rewriting the whole header/footer line did not pass the automatic check",
+    "fr": "La réécriture complète de la ligne d'en-tête/pied de page n'a pas passé la vérification automatique"
+  },
+  "已改为把新译文接在原行末尾，原有内容一个字符都没有改动。（{0}）": {
+    "en": "The new translation was appended to the end of the original line instead; the existing content was left completely unchanged. ({0})",
+    "fr": "La nouvelle traduction a été ajoutée à la fin de la ligne d'origine ; le contenu existant n'a pas été modifié du tout. ({0})"
+  },
+  "页眉页脚未能补上译文": {
+    "en": "Could not add translations to headers & footers",
+    "fr": "Impossible d'ajouter les traductions aux en-têtes et pieds de page"
+  },
+  "有 {0} 处内容夹杂多种语言，会单独翻译，不使用记忆库。": {
+    "en": "{0} {0|item mixes|items mix} several languages; {0|it|they} will be translated separately without using translation memory.",
+    "fr": "{0} {0|contenu mêle|contenus mêlent} plusieurs langues ; {0|il sera traduit|ils seront traduits} séparément, sans la mémoire de traduction."
+  },
+  "开始翻译 {0} 处内容": {
+    "en": "Translating {0} {0|item|items}",
+    "fr": "Traduction de {0} {0|élément|éléments}"
+  },
+  "任务已停止，停止前已获得的译文（含自动重译补上的）将照常写入文档并存入记忆库，未完成部分保留原文。": {
+    "en": "Task stopped. Translations obtained before stopping (including those filled in by automatic retranslation) will still be written to the documents and saved to translation memory; unfinished parts keep the source text.",
+    "fr": "Tâche arrêtée. Les traductions obtenues avant l'arrêt (y compris celles complétées par la nouvelle traduction automatique) seront tout de même écrites dans les documents et enregistrées dans la mémoire de traduction ; les parties non terminées conservent le texte source."
+  },
+  "模型翻译完成，共 {0} 处（{1}s）": {
+    "en": "Model translation finished: {0} {0|item|items} ({1}s)",
+    "fr": "Traduction par le modèle terminée : {0} {0|élément|éléments} ({1}s)"
+  },
+  "Word 翻译任务异常中止：": {
+    "en": "The Word translation task stopped unexpectedly: ",
+    "fr": "La tâche de traduction Word s'est interrompue de façon inattendue : "
+  },
+  "{0}进度：已译 {1}/{2} 段，{3} 段保留原文待续译，已写入 {4} 个文件。": {
+    "en": "{0}Progress: {1}/{2} paragraphs translated, {3} kept in the source language for later, {4} {4|file|files} written.",
+    "fr": "{0}Progression : {1}/{2} paragraphes traduits, {3} conservés en langue source pour plus tard, {4} {4|fichier écrit|fichiers écrits}."
+  },
+  "  → [接着上次继续] {0}：在上次的翻译结果上补译，这次只补没翻译的内容。": {
+    "en": "  → [Resume last run] {0}: building on the previous result; only untranslated content will be filled in this time.",
+    "fr": "  → [Reprendre la dernière exécution] {0} : complétion à partir du résultat précédent ; seul le contenu non traduit sera complété cette fois."
+  },
+  "  → [未翻译内容] {0}：检测到{1}，这些内容不在本次翻译范围内，输出文档中会保持原文。建议：{2}。": {
+    "en": "  → [Untranslated content] {0}: found {1}. This content is outside the scope of this translation and will keep the source text in the output document. Suggestion: {2}.",
+    "fr": "  → [Contenu non traduit] {0} : {1} détecté(s). Ce contenu n'entre pas dans le périmètre de cette traduction et restera en langue source dans le document produit. Conseil : {2}."
+  },
+  "  → [自动目录] {0}：检测到自动目录 {1} 处，目录由 Word 的域生成，不参与翻译。请在 Word 里选中目录、按 F9 并选「更新整个目录」，目录会按译文标题重新生成。": {
+    "en": "  → [Automatic table of contents] {0}: found {1} automatic table(s) of contents. They are generated by Word fields and are not translated. In Word, select the table of contents, press F9 and choose “Update entire table” to rebuild it from the translated headings.",
+    "fr": "  → [Table des matières automatique] {0} : {1} table(s) des matières automatique(s) détectée(s). Elles sont générées par des champs Word et ne sont pas traduites. Dans Word, sélectionnez la table des matières, appuyez sur F9 et choisissez « Mettre à jour toute la table » pour la régénérer à partir des titres traduits."
+  },
+  "  → 补译识别：待补 {0}，已覆盖 {1}，不确定跳过 {2}": {
+    "en": "  → Fill-in check: to fill in {0}, already covered {1}, skipped as uncertain {2}",
+    "fr": "  → Analyse de complétion : à compléter {0}, déjà couverts {1}, ignorés car incertains {2}"
+  },
+  "Word 文件读取失败 {0}: {1}": {
+    "en": "Could not read Word file {0}: {1}",
+    "fr": "Impossible de lire le fichier Word {0} : {1}"
+  },
+  "Word 文件读取失败: {0}": {
+    "en": "Could not read Word file: {0}",
+    "fr": "Impossible de lire le fichier Word : {0}"
+  },
+  "状态：正在识别每个 Word 文件的原文语言...": {
+    "en": "Status: detecting the source language of each Word file...",
+    "fr": "État : détection de la langue source de chaque fichier Word..."
+  },
+  "译文里有没翻译的编号": {
+    "en": "The translation contains untranslated numbering",
+    "fr": "La traduction contient une numérotation non traduite"
+  },
+  "已按全文的编号写法自动修正，无需处理。": {
+    "en": "Fixed automatically to match the numbering style used throughout the document; no action needed.",
+    "fr": "Corrigé automatiquement selon la numérotation utilisée dans tout le document ; aucune action requise."
+  },
+  "遗留原文的译文有 {0} 条，超出单次自动补译上限（{1} 条），超出的 {2} 条这次没有自动补译，已标为待复核。": {
+    "en": "{0} translations contain leftover source text, more than the limit for one automatic fill-in ({1}). The remaining {2} were not filled in this time and have been flagged for review.",
+    "fr": "{0} traductions contiennent encore du texte source, au-delà de la limite d'une complétion automatique ({1}). Les {2} restantes n'ont pas été complétées cette fois et ont été signalées pour vérification."
+  },
+  "自动补译连续 {0} 次失败，已停止自动补译，剩下的已标为待复核。": {
+    "en": "Automatic fill-in failed {0} times in a row and was stopped; the rest have been flagged for review.",
+    "fr": "La complétion automatique a échoué {0} fois de suite et a été arrêtée ; le reste a été signalé pour vérification."
+  },
+  "{0} {1} 处": {
+    "en": "{0}: {1}",
+    "fr": "{0} : {1}"
+  },
+  "译文里留着没翻译的原文片段": {
+    "en": "The translation still contains untranslated source text",
+    "fr": "La traduction contient encore des fragments de texte source non traduits"
+  },
+  "已自动补译，通过了自动检查。": {
+    "en": "Filled in automatically and passed the automatic check.",
+    "fr": "Complété automatiquement ; la vérification automatique est réussie."
+  },
+  "译文保留了「万/亿」等数量单位": {
+    "en": "The translation kept Chinese number units such as 万/亿",
+    "fr": "La traduction a conservé des unités chinoises comme 万/亿"
+  },
+  "通常不影响理解，如需统一可人工调整。": {
+    "en": "This usually does not affect understanding; adjust manually if you want consistency.",
+    "fr": "Cela ne gêne généralement pas la compréhension ; ajustez manuellement si vous souhaitez uniformiser."
+  },
+  "已按全文最常见的写法统一 {0} 处章节标题。": {
+    "en": "Standardized {0} section {0|heading|headings} to the most common style in the document.",
+    "fr": "{0} {0|titre de section a été uniformisé|titres de section ont été uniformisés} selon la forme la plus courante du document."
+  },
+  "已存入记忆库 {0} 条": {
+    "en": "Saved {0} {0|entry|entries} to translation memory",
+    "fr": "{0} {0|entrée enregistrée|entrées enregistrées} dans la mémoire de traduction"
+  },
+  "文件完成：{0}（{1}s）": {
+    "en": "File done: {0} ({1}s)",
+    "fr": "Fichier terminé : {0} ({1}s)"
+  },
+  "Word 文件写入失败 {0}：{1}": {
+    "en": "Could not write Word file {0}: {1}",
+    "fr": "Impossible d'écrire le fichier Word {0} : {1}"
+  },
+  "任务在开始该文件前已停止。": {
+    "en": "The task was stopped before this file started.",
+    "fr": "La tâche a été arrêtée avant le début de ce fichier."
+  },
+  "本机 Office 没能处理自动编号，已改用内置方式处理：": {
+    "en": "Office on this computer could not handle the automatic numbering; switched to the built-in method: ",
+    "fr": "Office n'a pas pu traiter la numérotation automatique sur cet ordinateur ; passage à la méthode intégrée : "
+  },
+  "剩余编号由程序补齐": {
+    "en": "Remaining numbers completed by the app",
+    "fr": "Numéros restants complétés par l'application"
+  },
+  "自动编号：由程序自行处理": {
+    "en": "Automatic numbering: handled by the app",
+    "fr": "Numérotation automatique : prise en charge par l'application"
+  },
+  "重译未成功，继续重译（已完成 {0}/{1} 轮）": {
+    "en": "Retranslation failed; trying again ({0}/{1} rounds done)",
+    "fr": "La nouvelle traduction a échoué ; nouvel essai ({0}/{1} passes effectuées)"
+  },
+  "复查通过，采用译文": {
+    "en": "Passed the second check; translation accepted",
+    "fr": "Seconde vérification réussie ; traduction retenue"
+  },
+  "程序化规则校验未通过，但语义仲裁判定候选译文与原文完整等义。": {
+    "en": "The rule-based check failed, but the meaning review found the candidate translation fully equivalent to the source.",
+    "fr": "La vérification par règles a échoué, mais l'examen du sens a jugé la traduction proposée entièrement équivalente au texte source."
+  },
+  "查找 {0} 上次的翻译结果时出错，这次从头完整翻译：": {
+    "en": "Error while looking up the previous translation of {0}; translating it in full this time: ",
+    "fr": "Erreur lors de la recherche de la traduction précédente de {0} ; traduction complète cette fois : "
+  },
+  "紧邻段落不是这一段的译文": {
+    "en": "The adjacent paragraph is not a translation of this one",
+    "fr": "Le paragraphe voisin n'est pas la traduction de celui-ci"
+  },
+  "紧邻段落是不是这一段的译文，未能判定": {
+    "en": "Could not tell whether the adjacent paragraph is a translation of this one",
+    "fr": "Impossible de déterminer si le paragraphe voisin est la traduction de celui-ci"
+  },
+  "已按未翻译处理并补上译文；原有的紧邻内容保持不变，但它很可能不是这一段的译文，请对照原件人工核对后删改。": {
+    "en": "Treated as untranslated and a translation was added. The existing adjacent content was left unchanged, but it is probably not a translation of this paragraph; please compare with the original and edit or delete it.",
+    "fr": "Traité comme non traduit et une traduction a été ajoutée. Le contenu voisin existant n'a pas été modifié, mais ce n'est probablement pas la traduction de ce paragraphe ; comparez avec l'original et modifiez-le ou supprimez-le."
+  },
+  "未取得判定结果，已从严按未翻译处理并补上译文，原有内容保持不变。": {
+    "en": "No verdict was obtained, so to be safe it was treated as untranslated and a translation was added; the existing content was left unchanged.",
+    "fr": "Aucun verdict n'a été obtenu ; par précaution, le paragraphe a été traité comme non traduit et une traduction a été ajoutée. Le contenu existant n'a pas été modifié."
+  },
+  "这一行已有部分译文，程序无法在不改动已有内容的前提下补全，已原样保留，请人工补译。": {
+    "en": "This line already has a partial translation, and it cannot be completed without changing the existing content. It was left as is; please complete it manually.",
+    "fr": "Cette ligne a déjà une traduction partielle qui ne peut pas être complétée sans modifier le contenu existant. Elle a été laissée telle quelle ; complétez-la manuellement."
+  },
+  "未选择可翻译的 Word 文件。": {
+    "en": "No translatable Word files selected.",
+    "fr": "Aucun fichier Word à traduire n'est sélectionné."
+  },
+  "状态：[阶段 1/{0}] 正在读取 Word 文件里的文字...": {
+    "en": "Status: [Step 1/{0}] Reading text from the Word files...",
+    "fr": "État : [Étape 1/{0}] Lecture du texte des fichiers Word..."
+  },
+  "状态：[阶段 2/{0}] 正在查找记忆库里已有的译文...": {
+    "en": "Status: [Step 2/{0}] Looking up existing translations in translation memory...",
+    "fr": "État : [Étape 2/{0}] Recherche des traductions existantes dans la mémoire de traduction..."
+  },
+  "夹杂多种语言的内容 {0} 处：已有双语 {1} 处，原文疑似有误 {2} 处，待人工确认 {3} 处，复查后采用 {4} 处": {
+    "en": "Mixed-language content: {0} items; already bilingual {1}, source likely contains errors {2}, awaiting manual confirmation {3}, accepted after second check {4}",
+    "fr": "Contenu en plusieurs langues : {0} éléments ; déjà bilingues {1}, erreur probable dans le texte source {2}, en attente de confirmation manuelle {3}, retenus après seconde vérification {4}"
+  },
+  "{0} 处译文不是目标语言（原文没有中文，译文却是中文），已退回原文重试。": {
+    "en": "{0} {0|translation is|translations are} not in the target language (the source has no Chinese, but the translation is Chinese); reverted to the source and retried.",
+    "fr": "{0} {0|traduction n'est|traductions ne sont} pas dans la langue cible (le texte source ne contient pas de chinois mais la traduction est en chinois) ; retour au texte source et nouvel essai."
+  },
+  "第一次翻译没得到有效译文": {
+    "en": "The first translation attempt did not return a usable translation",
+    "fr": "La première traduction n'a pas donné de résultat exploitable"
+  },
+  "已自动单独重译这一段，补上了译文。": {
+    "en": "This paragraph was automatically retranslated on its own and the translation was added.",
+    "fr": "Ce paragraphe a été retraduit seul automatiquement et la traduction a été ajoutée."
+  },
+  "任务已停止，未获得可写入的 Word 翻译结果。": {
+    "en": "Task stopped. No Word translation results were available to write.",
+    "fr": "Tâche arrêtée. Aucun résultat de traduction Word n'était disponible pour l'écriture."
+  },
+  "状态：[阶段 3/{0}] 正在生成双语 Word...": {
+    "en": "Status: [Step 3/{0}] Generating bilingual Word files...",
+    "fr": "État : [Étape 3/{0}] Génération des fichiers Word bilingues..."
+  },
+  "Word 翻译质量报告未能写入：{0}已生成的翻译文件仍可使用。": {
+    "en": "The Word translation quality report could not be written: {0}The translated files that were generated can still be used.",
+    "fr": "Le rapport de qualité de la traduction Word n'a pas pu être écrit : {0}Les fichiers traduits déjà générés restent utilisables."
+  },
+  "Word 翻译任务收尾失败：": {
+    "en": "The Word translation task failed while finishing up: ",
+    "fr": "La tâche de traduction Word a échoué lors de la finalisation : "
+  },
+  "接着上次继续：{0} 的原文件比上次翻译时{1}，没法接着上次的结果补译，这次完整翻译（已翻过的内容会尽量从记忆库直接取用）。": {
+    "en": "Resume last run: the source file of {0} has changed since the last translation ({1}), so the previous result cannot be built on. Translating in full this time (already translated content will be reused from translation memory where possible).",
+    "fr": "Reprendre la dernière exécution : le fichier source de {0} a changé depuis la dernière traduction ({1}) ; impossible de compléter le résultat précédent. Traduction complète cette fois (le contenu déjà traduit sera repris autant que possible depuis la mémoire de traduction)."
+  },
+  "{0}：{1}，已继续尝试下一处理方式。": {
+    "en": "{0}: {1}; trying the next method.",
+    "fr": "{0} : {1} ; essai de la méthode suivante."
+  },
+  "整篇文档": {
+    "en": "Whole document",
+    "fr": "Document entier"
+  },
+  "存在无法读取的内容（{0}）": {
+    "en": "Contains content that could not be read ({0})",
+    "fr": "Contient du contenu illisible ({0})"
+  },
+  "这些内容位于内容控件、未接受的修订、文本框或脚注里，未参与翻译，输出文档中保持原文。": {
+    "en": "This content is in content controls, unaccepted tracked changes, text boxes or footnotes. It was not translated and keeps the source text in the output document.",
+    "fr": "Ce contenu se trouve dans des contrôles de contenu, des modifications non acceptées, des zones de texte ou des notes de bas de page. Il n'a pas été traduit et reste en langue source dans le document produit."
+  },
+  "自动目录未参与翻译": {
+    "en": "Automatic table of contents was not translated",
+    "fr": "La table des matières automatique n'a pas été traduite"
+  },
+  "目录由 Word 的域自动生成，译文一刷新就会被覆盖，因此不参与翻译。请在 Word 里选中目录、按 F9 并选「更新整个目录」，目录会按译文标题重新生成。": {
+    "en": "The table of contents is generated automatically by Word fields and would be overwritten as soon as it refreshes, so it is not translated. In Word, select the table of contents, press F9 and choose “Update entire table” to rebuild it from the translated headings.",
+    "fr": "La table des matières est générée automatiquement par des champs Word et serait écrasée à la prochaine mise à jour ; elle n'est donc pas traduite. Dans Word, sélectionnez la table des matières, appuyez sur F9 et choisissez « Mettre à jour toute la table » pour la régénérer à partir des titres traduits."
+  },
+  "；自动补译没有通过：": {
+    "en": "; automatic fill-in did not pass: ",
+    "fr": " ; la complétion automatique n'a pas été validée : "
+  },
+  "没翻译的部分：{0}{1}，需人工复核。": {
+    "en": "Untranslated parts: {0}{1}. Needs manual review.",
+    "fr": "Parties non traduites : {0}{1}. Vérification manuelle nécessaire."
+  },
+  "整批任务": {
+    "en": "Entire batch",
+    "fr": "Lot entier"
+  },
+  "部分遗留的原文这次没有自动补译": {
+    "en": "Some leftover source text was not filled in automatically this time",
+    "fr": "Une partie du texte source restant n'a pas été complétée automatiquement cette fois"
+  },
+  "需要补译的内容超出单次自动补译上限（{0} 条），其中 {1} 条这次没有尝试，重新运行任务可继续补译。": {
+    "en": "The content to fill in exceeds the limit for one automatic fill-in ({0}); {1} were not attempted this time. Run the task again to continue filling in.",
+    "fr": "Le contenu à compléter dépasse la limite d'une complétion automatique ({0}) ; {1} n'ont pas été tentés cette fois. Relancez la tâche pour poursuivre la complétion."
+  },
+  "自动补译连续失败，已停止": {
+    "en": "Automatic fill-in kept failing and was stopped",
+    "fr": "La complétion automatique a échoué à plusieurs reprises et a été arrêtée"
+  },
+  "部分内容没有尝试补译，确认网络和模型连接正常后重新运行任务可继续补译。": {
+    "en": "Some content was not attempted. Check your network and model connection, then run the task again to continue filling in.",
+    "fr": "Une partie du contenu n'a pas été tentée. Vérifiez le réseau et la connexion au modèle, puis relancez la tâche pour poursuivre la complétion."
+  },
+  "章节标题写法与全文多数不一致": {
+    "en": "Section heading style differs from most of the document",
+    "fr": "Le style de ce titre de section diffère du reste du document"
+  },
+  "已按全文最常见的写法自动统一，无需处理。": {
+    "en": "Standardized automatically to the most common style in the document; no action needed.",
+    "fr": "Uniformisé automatiquement selon la forme la plus courante du document ; aucune action requise."
+  },
+  "记忆库写入失败，本次译文不受影响，但这批译文没有存进记忆库：": {
+    "en": "Could not write to translation memory. This translation is not affected, but this batch was not saved to translation memory: ",
+    "fr": "Impossible d'écrire dans la mémoire de traduction. Cette traduction n'est pas affectée, mais ce lot n'a pas été enregistré dans la mémoire de traduction : "
+  },
+  "文件名沿用原名：{0}": {
+    "en": "Keeping the original file name: {0}",
+    "fr": "Nom de fichier d'origine conservé : {0}"
+  },
+  "补译前的内容核对没有完成，为免写错位置，这个文件没有写出。": {
+    "en": "The content check before filling in did not finish. To avoid writing in the wrong places, this file was not written.",
+    "fr": "La vérification du contenu avant complétion n'a pas abouti. Pour éviter d'écrire au mauvais endroit, ce fichier n'a pas été écrit."
+  },
+  "{0}：已在输出文档标记 {1} 处需复核位置。": {
+    "en": "{0}: marked {1} {1|spot|spots} for review in the output document.",
+    "fr": "{0} : {1} {1|emplacement signalé|emplacements signalés} pour vérification dans le document produit."
+  },
+  "{0}：输出文档仍发现 {1} 处疑似没翻译的原文，已写入质量报告。": {
+    "en": "{0}: the output document still has {1} {1|spot|spots} that may be untranslated; added to the quality report.",
+    "fr": "{0} : le document produit contient encore {1} {1|passage peut-être non traduit|passages peut-être non traduits} ; ajouté(s) au rapport de qualité."
+  },
+  "译文文件没能写出，请检查输出目录的剩余空间和写入权限。": {
+    "en": "The translated file could not be written. Check the free space and write permission of the output folder.",
+    "fr": "Le fichier traduit n'a pas pu être écrit. Vérifiez l'espace libre et les droits d'écriture du dossier de sortie."
+  },
+  "任务整体失败，这个文件没有写出。": {
+    "en": "The task failed as a whole; this file was not written.",
+    "fr": "La tâche a échoué dans son ensemble ; ce fichier n'a pas été écrit."
+  },
+  "该文件未开始处理。": {
+    "en": "Processing of this file did not start.",
+    "fr": "Le traitement de ce fichier n'a pas commencé."
+  },
+  "临时 Word 转换文件清理失败 {0}: ": {
+    "en": "Could not clean up temporary Word conversion file {0}: ",
+    "fr": "Impossible de supprimer le fichier temporaire de conversion Word {0} : "
+  },
+  "Word 复查": {
+    "en": "Word second check",
+    "fr": "Seconde vérification Word"
+  },
+  "Word 页眉页脚": {
+    "en": "Word headers & footers",
+    "fr": "En-têtes et pieds de page Word"
+  },
+  "  → 页眉页脚：有一批 {0} 行没拿到译文，这批原样保留：": {
+    "en": "  → Headers & footers: a batch of {0} lines got no translation and was left as is: ",
+    "fr": "  → En-têtes et pieds de page : un lot de {0} lignes n'a reçu aucune traduction et a été laissé tel quel : "
+  },
+  "原因：{0}": {
+    "en": "Reason: {0}",
+    "fr": "Motif : {0}"
+  },
+  "页眉页脚": {
+    "en": "Headers & footers",
+    "fr": "En-têtes et pieds de page"
+  },
+  "状态：[阶段 2/{0}] 正在翻译记忆库里没有的内容...": {
+    "en": "Status: [Step 2/{0}] Translating content not in translation memory...",
+    "fr": "État : [Étape 2/{0}] Traduction du contenu absent de la mémoire de traduction..."
+  },
+  "重译后的译文按规则自动采用": {
+    "en": "Retranslation accepted automatically by the rules",
+    "fr": "Nouvelle traduction retenue automatiquement selon les règles"
+  },
+  "译文主体已通过自动检查，本段已写入译文，建议看一下提示的片段。": {
+    "en": "The main translation passed the automatic check and has been written for this paragraph; it's worth checking the highlighted fragment.",
+    "fr": "L'essentiel de la traduction a passé la vérification automatique et a été écrit pour ce paragraphe ; jetez un œil au fragment signalé."
+  },
+  "自动检查没通过，复查后采用": {
+    "en": "Failed the automatic check, accepted after second check",
+    "fr": "Échec de la vérification automatique, retenue après seconde vérification"
+  },
+  "这段译文没通过自动检查，但复查确认意思与原文完全一致；本段已写入译文，不会存入记忆库。": {
+    "en": "This translation failed the automatic check, but a second check confirmed its meaning matches the source exactly. It has been written for this paragraph but will not be saved to translation memory.",
+    "fr": "Cette traduction n'a pas passé la vérification automatique, mais une seconde vérification a confirmé que son sens correspond exactement au texte source. Elle a été écrite pour ce paragraphe mais ne sera pas enregistrée dans la mémoire de traduction."
+  },
+  "重译后仍没得到有效译文": {
+    "en": "Still no usable translation after retranslating",
+    "fr": "Toujours aucune traduction exploitable après une nouvelle traduction"
+  },
+  "已自动重译 {0} 轮并复查，仍保留原文，需人工复核。": {
+    "en": "Retranslated automatically {0} {0|time|times} with a second check; the source text is still kept. Needs manual review.",
+    "fr": "Retraduit automatiquement {0} fois avec seconde vérification ; le texte source est toujours conservé. Vérification manuelle nécessaire."
+  },
+  "出现了未预期的问题，已生成的文件仍可使用。": {
+    "en": "An unexpected problem occurred. The files already generated can still be used.",
+    "fr": "Un problème inattendu est survenu. Les fichiers déjà générés restent utilisables."
+  },
+  "状态：[阶段 1/{0}] 正在准备 Word 文档：{1}": {
+    "en": "Status: [Step 1/{0}] Preparing Word document: {1}",
+    "fr": "État : [Étape 1/{0}] Préparation du document Word : {1}"
+  },
+  "{0} 准备完成": {
+    "en": "{0} ready",
+    "fr": "{0} prêt"
+  },
+  "状态：[阶段 2/{0}] 正在补译遗留的原文（{1}/{2}）...": {
+    "en": "Status: [Step 2/{0}] Filling in leftover source text ({1}/{2})...",
+    "fr": "État : [Étape 2/{0}] Complétion du texte source restant ({1}/{2})..."
+  },
+  "统一它们需要改动词形，没有自动改写，如需统一可人工调整。": {
+    "en": "Making them consistent would require changing word forms, so they were not rewritten automatically; adjust manually if you want consistency.",
+    "fr": "Les uniformiser exigerait de modifier des formes de mots ; ils n'ont donc pas été réécrits automatiquement. Ajustez manuellement si vous souhaitez uniformiser."
+  },
+  "记忆库写入失败": {
+    "en": "Could not write to translation memory",
+    "fr": "Impossible d'écrire dans la mémoire de traduction"
+  },
+  "文件名翻译未完成，沿用原文件名：{0}": {
+    "en": "File name translation did not finish; keeping the original file name: {0}",
+    "fr": "La traduction du nom de fichier n'a pas abouti ; nom d'origine conservé : {0}"
+  },
+  "本机 Office 这次没能配合，编号已由程序自行还原。": {
+    "en": "Office on this computer could not help this time; the numbering was restored by the app.",
+    "fr": "Office n'a pas pu intervenir sur cet ordinateur cette fois ; la numérotation a été restaurée par l'application."
+  },
+  "有一段的自动重译没完成，已标为待复核：": {
+    "en": "Automatic retranslation of one paragraph did not finish; flagged for review: ",
+    "fr": "La nouvelle traduction automatique d'un paragraphe n'a pas abouti ; signalé pour vérification : "
+  },
+  "查找时出错。": {
+    "en": "Error during lookup.",
+    "fr": "Erreur lors de la recherche."
+  },
+  "引擎初始化失败：": {
+    "en": "Engine initialization failed: ",
+    "fr": "Échec de l'initialisation du moteur : "
+  },
+  "输出目录初始化失败：": {
+    "en": "Output folder initialization failed: ",
+    "fr": "Échec de l'initialisation du dossier de sortie : "
+  },
+  "状态：[阶段 2/{0}] 正在翻译夹杂多种语言的内容...": {
+    "en": "Status: [Step 2/{0}] Translating mixed-language content...",
+    "fr": "État : [Étape 2/{0}] Traduction du contenu en plusieurs langues..."
+  },
+  "共分 {0} 批发送": {
+    "en": "Sent in {0} {0|batch|batches}",
+    "fr": "Envoyé en {0} {0|lot|lots}"
+  },
+  "{0} 保留原文，需复核": {
+    "en": "{0} kept in the source language; needs review",
+    "fr": "{0} conservé(s) en langue source ; à vérifier"
+  },
+  "报告文件没能写出。": {
+    "en": "The report file could not be written.",
+    "fr": "Le fichier de rapport n'a pas pu être écrit."
+  },
+  "结果摘要没能生成，已生成的翻译文件仍可使用。": {
+    "en": "The result summary could not be generated. The translated files already generated can still be used.",
+    "fr": "Le résumé des résultats n'a pas pu être généré. Les fichiers traduits déjà générés restent utilisables."
+  },
+  "Word 翻译任务异常中止，未能生成结果摘要。": {
+    "en": "The Word translation task stopped unexpectedly; no result summary could be generated.",
+    "fr": "La tâche de traduction Word s'est interrompue de façon inattendue ; aucun résumé des résultats n'a pu être généré."
+  },
+  "{0}：没法接着上次的结果补译，这次从头完整翻译：": {
+    "en": "{0}: cannot build on the previous result; translating from scratch this time: ",
+    "fr": "{0} : impossible de compléter le résultat précédent ; traduction complète depuis le début cette fois : "
+  },
+  "：自动编号 {0} 段，其中 {1} 段的编号已转成文字": {
+    "en": ": {0} auto-numbered paragraphs, {1} of which had their numbers converted to text",
+    "fr": " : {0} paragraphes à numérotation automatique, dont {1} avec numéros convertis en texte"
+  },
+  "记忆库暂时无法写入。": {
+    "en": "Translation memory is temporarily unavailable for writing.",
+    "fr": "La mémoire de traduction est temporairement inaccessible en écriture."
+  },
+  " 下次翻译相同内容会重新请求模型，可稍后重跑补存。": {
+    "en": " The same content will be sent to the model again next time; you can rerun later to save it.",
+    "fr": " Le même contenu sera de nouveau envoyé au modèle la prochaine fois ; vous pourrez relancer plus tard pour l'enregistrer."
+  },
+  "临时文件删不掉。": {
+    "en": "The temporary file could not be deleted.",
+    "fr": "Le fichier temporaire n'a pas pu être supprimé."
+  },
+  "复查未通过（": {
+    "en": "Second check failed (",
+    "fr": "Échec de la seconde vérification ("
+  },
+  "，其中 {0} 次拆小重试": {
+    "en": ", including {0} retried in smaller batches",
+    "fr": ", dont {0} relancés en lots plus petits"
+  },
+  "重译过程中出错了。": {
+    "en": "An error occurred during retranslation.",
+    "fr": "Une erreur est survenue pendant la nouvelle traduction."
+  },
+  "请在设置里检查翻译模型这条连接。": {
+    "en": "Check the translation model connection in Settings.",
+    "fr": "Vérifiez la connexion du modèle de traduction dans les paramètres."
+  },
+  "请换一个有写入权限的输出目录后重试。": {
+    "en": "Choose an output folder you can write to and try again.",
+    "fr": "Choisissez un dossier de sortie accessible en écriture et réessayez."
+  },
+  "OpenAI 兼容": {
+    "en": "OpenAI-compatible",
+    "fr": "Compatible OpenAI"
+  },
+  "智谱 GLM": {
+    "en": "Zhipu GLM",
+    "fr": "Zhipu GLM"
+  },
+  "阿里百炼 (通义)": {
+    "en": "Alibaba Bailian (Qwen)",
+    "fr": "Alibaba Bailian (Qwen)"
+  },
+  "硅基流动": {
+    "en": "SiliconFlow",
+    "fr": "SiliconFlow"
+  },
+  "资料管理场景": {
+    "en": "Document management",
+    "fr": "Gestion documentaire"
+  },
+  "意大利语": {
+    "en": "Italian",
+    "fr": "Italien"
+  },
+  "俄语": {
+    "en": "Russian",
+    "fr": "Russe"
+  },
+  "印地语": {
+    "en": "Hindi",
+    "fr": "Hindi"
+  },
+  "孟加拉语": {
+    "en": "Bengali",
+    "fr": "Bengali"
+  },
+  "乌尔都语": {
+    "en": "Urdu",
+    "fr": "Ourdou"
+  },
+  "土耳其语": {
+    "en": "Turkish",
+    "fr": "Turc"
+  },
+  "希伯来语": {
+    "en": "Hebrew",
+    "fr": "Hébreu"
+  },
+  "希腊语": {
+    "en": "Greek",
+    "fr": "Grec"
+  },
+  "波兰语": {
+    "en": "Polish",
+    "fr": "Polonais"
+  },
+  "瑞典语": {
+    "en": "Swedish",
+    "fr": "Suédois"
+  },
+  "丹麦语": {
+    "en": "Danish",
+    "fr": "Danois"
+  },
+  "挪威语": {
+    "en": "Norwegian",
+    "fr": "Norvégien"
+  },
+  "芬兰语": {
+    "en": "Finnish",
+    "fr": "Finnois"
+  },
+  "捷克语": {
+    "en": "Czech",
+    "fr": "Tchèque"
+  },
+  "斯洛伐克语": {
+    "en": "Slovak",
+    "fr": "Slovaque"
+  },
+  "斯洛文尼亚语": {
+    "en": "Slovenian",
+    "fr": "Slovène"
+  },
+  "匈牙利语": {
+    "en": "Hungarian",
+    "fr": "Hongrois"
+  },
+  "罗马尼亚语": {
+    "en": "Romanian",
+    "fr": "Roumain"
+  },
+  "保加利亚语": {
+    "en": "Bulgarian",
+    "fr": "Bulgare"
+  },
+  "乌克兰语": {
+    "en": "Ukrainian",
+    "fr": "Ukrainien"
+  },
+  "塞尔维亚语": {
+    "en": "Serbian",
+    "fr": "Serbe"
+  },
+  "克罗地亚语": {
+    "en": "Croatian",
+    "fr": "Croate"
+  },
+  "立陶宛语": {
+    "en": "Lithuanian",
+    "fr": "Lituanien"
+  },
+  "拉脱维亚语": {
+    "en": "Latvian",
+    "fr": "Letton"
+  },
+  "爱沙尼亚语": {
+    "en": "Estonian",
+    "fr": "Estonien"
+  },
+  "斯瓦希里语": {
+    "en": "Swahili",
+    "fr": "Swahili"
+  },
+  "阿姆哈拉语": {
+    "en": "Amharic",
+    "fr": "Amharique"
+  },
+  "泰米尔语": {
+    "en": "Tamil",
+    "fr": "Tamoul"
+  },
+  "泰卢固语": {
+    "en": "Telugu",
+    "fr": "Télougou"
+  },
+  "马拉雅拉姆语": {
+    "en": "Malayalam",
+    "fr": "Malayalam"
+  },
+  "卡纳达语": {
+    "en": "Kannada",
+    "fr": "Kannada"
+  },
+  "马拉地语": {
+    "en": "Marathi",
+    "fr": "Marathi"
+  },
+  "古吉拉特语": {
+    "en": "Gujarati",
+    "fr": "Gujarati"
+  },
+  "旁遮普语": {
+    "en": "Punjabi",
+    "fr": "Pendjabi"
+  },
+  "尼泊尔语": {
+    "en": "Nepali",
+    "fr": "Népalais"
+  },
+  "僧伽罗语": {
+    "en": "Sinhala",
+    "fr": "Cingalais"
+  },
+  "老挝语": {
+    "en": "Lao",
+    "fr": "Lao"
+  },
+  "蒙古语": {
+    "en": "Mongolian",
+    "fr": "Mongol"
+  },
+  "哈萨克语": {
+    "en": "Kazakh",
+    "fr": "Kazakh"
+  },
+  "乌兹别克语": {
+    "en": "Uzbek",
+    "fr": "Ouzbek"
+  },
+  "阿塞拜疆语": {
+    "en": "Azerbaijani",
+    "fr": "Azerbaïdjanais"
+  },
+  "LibreOffice 自带的 Python 被信号 {0} 终止：{1}。会自动改用内置方式处理编号。": {
+    "en": "LibreOffice's bundled Python was terminated by signal {0}: {1}. Switching to the built-in method for numbering.",
+    "fr": "Le Python fourni avec LibreOffice a été arrêté par le signal {0} : {1}. Passage automatique à la méthode intégrée pour la numérotation."
+  },
+  "没有可用的转换策略": {
+    "en": "No conversion method available",
+    "fr": "Aucune méthode de conversion disponible"
+  },
+  "无法将旧版 .doc 转换为 .docx。请确认本机 Microsoft Word 或 LibreOffice 可用，或手动另存为 .docx 后再翻译。 详情：{0}": {
+    "en": "Could not convert the old .doc file to .docx. Make sure Microsoft Word or LibreOffice is available on this computer, or save it as .docx manually before translating. Details: {0}",
+    "fr": "Impossible de convertir l'ancien fichier .doc en .docx. Vérifiez que Microsoft Word ou LibreOffice est disponible sur cet ordinateur, ou enregistrez-le manuellement au format .docx avant de le traduire. Détails : {0}"
+  },
+  "这台电脑的系统不支持用本机 Word 转换。": {
+    "en": "This computer's system does not support converting with the local Word.",
+    "fr": "Le système de cet ordinateur ne permet pas la conversion avec Word installé localement."
+  },
+  "没有可用的预处理策略": {
+    "en": "No preprocessing method available",
+    "fr": "Aucune méthode de prétraitement disponible"
+  },
+  "没能用本机 Office 处理 Word 自动编号：{0}": {
+    "en": "Could not process Word automatic numbering with Office on this computer: {0}",
+    "fr": "Impossible de traiter la numérotation automatique Word avec Office sur cet ordinateur : {0}"
+  },
+  "当前平台 {0} 暂不支持本地 Word 自动编号预处理。": {
+    "en": "Local Word automatic numbering preprocessing is not supported on {0} yet.",
+    "fr": "Le prétraitement local de la numérotation automatique Word n'est pas encore pris en charge sur {0}."
+  },
+  "没找到 LibreOffice 自带的 Python（从 {0} 推断）。编号转文本这一步需要它，本次改用纯 Python 兜底。": {
+    "en": "LibreOffice's bundled Python was not found (looked based on {0}). It is needed to convert numbering to text, so a pure Python fallback is used this time.",
+    "fr": "Le Python fourni avec LibreOffice est introuvable (recherché à partir de {0}). Il est nécessaire pour convertir la numérotation en texte ; une solution de repli en Python pur est utilisée cette fois."
+  },
+  "LibreOffice 自带的 Python 被 macOS 直接终止（代码签名或启动限制未通过）。新版 LibreOffice 只允许它自己调用这个 Python，外部程序调用会被系统拦下。已自动改用内置方式处理编号，译文不受影响。": {
+    "en": "macOS terminated LibreOffice's bundled Python (code signing or launch restrictions were not met). Newer versions of LibreOffice only allow that Python to be run by LibreOffice itself, and the system blocks other programs from running it. Switched to the built-in method for numbering automatically; the translation is not affected.",
+    "fr": "macOS a arrêté le Python fourni avec LibreOffice (signature de code ou restrictions de lancement non satisfaites). Les versions récentes de LibreOffice n'autorisent que LibreOffice lui-même à lancer ce Python, et le système bloque les autres programmes. Passage automatique à la méthode intégrée pour la numérotation ; la traduction n'est pas affectée."
+  },
+  "新版 LibreOffice 只允许它自己调用内置的 Python（代码签名里带有启动限制），外部程序一调用就会被 macOS 终止。已自动改用内置方式处理编号，译文不受影响。": {
+    "en": "Newer versions of LibreOffice only allow their bundled Python to be run by LibreOffice itself (the code signature includes launch restrictions), so macOS terminates it as soon as another program runs it. Switched to the built-in method for numbering automatically; the translation is not affected.",
+    "fr": "Les versions récentes de LibreOffice n'autorisent que LibreOffice lui-même à lancer le Python intégré (la signature de code comporte des restrictions de lancement) ; macOS l'arrête dès qu'un autre programme le lance. Passage automatique à la méthode intégrée pour la numérotation ; la traduction n'est pas affectée."
+  },
+  "不是旧版 .doc 文件：{0}": {
+    "en": "Not an old .doc file: {0}",
+    "fr": "Ce n'est pas un ancien fichier .doc : {0}"
+  },
+  "未启用本机 Microsoft Word 高保真自动化": {
+    "en": "High-fidelity automation with the local Microsoft Word is not enabled",
+    "fr": "L'automatisation haute fidélité avec Microsoft Word installé localement n'est pas activée"
+  },
+  "无法使用本机 Microsoft Word 高保真转换 .doc。未取得兼容转换确认，因此不会自动改用 LibreOffice 或 macOS textutil。请安装/授权 Microsoft Word 后重试，或在确认可能损失版式、域、图文和宏后明确允许兼容转换。 详情：{0}": {
+    "en": "Could not use the local Microsoft Word for high-fidelity .doc conversion. Compatibility conversion was not confirmed, so the app will not switch to LibreOffice or macOS textutil automatically. Install or authorize Microsoft Word and try again, or explicitly allow compatibility conversion after confirming that layout, fields, images and macros may be lost. Details: {0}",
+    "fr": "Impossible d'utiliser Microsoft Word installé localement pour une conversion .doc haute fidélité. La conversion de compatibilité n'a pas été confirmée ; l'application ne passera donc pas automatiquement à LibreOffice ou à textutil de macOS. Installez ou autorisez Microsoft Word et réessayez, ou autorisez explicitement la conversion de compatibilité après avoir accepté que la mise en page, les champs, les images et les macros puissent être perdus. Détails : {0}"
+  },
+  "已检测到 Microsoft Word；实际转换仍可能要求自动化权限。": {
+    "en": "Microsoft Word detected; the actual conversion may still ask for automation permission.",
+    "fr": "Microsoft Word détecté ; la conversion elle-même peut encore demander l'autorisation d'automatisation."
+  },
+  "已检测到 Windows Word 自动化依赖；实际转换仍会验证 Word 安装状态。": {
+    "en": "Windows Word automation components detected; the actual conversion will still verify the Word installation.",
+    "fr": "Composants d'automatisation de Word pour Windows détectés ; la conversion vérifiera tout de même l'installation de Word."
+  },
+  "textutil 仅在 macOS 上可用。": {
+    "en": "textutil is only available on macOS.",
+    "fr": "textutil n'est disponible que sur macOS."
+  },
+  "未找到 textutil。": {
+    "en": "textutil not found.",
+    "fr": "textutil introuvable."
+  },
+  "不是 .docx 文件：{0}": {
+    "en": "Not a .docx file: {0}",
+    "fr": "Ce n'est pas un fichier .docx : {0}"
+  },
+  "Word for Mac 不提供自动编号转文本的自动化接口。": {
+    "en": "Word for Mac does not offer an automation interface for converting automatic numbering to text.",
+    "fr": "Word pour Mac ne propose pas d'interface d'automatisation pour convertir la numérotation automatique en texte."
+  },
+  "未找到 osascript。": {
+    "en": "osascript not found.",
+    "fr": "osascript introuvable."
+  },
+  "转换结果为空。": {
+    "en": "The conversion result is empty.",
+    "fr": "Le résultat de la conversion est vide."
+  },
+  "本地 Word": {
+    "en": "Local Word",
+    "fr": "Word local"
+  },
+  "本机缺少连接 Word 所需的系统组件。": {
+    "en": "This computer is missing the system components needed to connect to Word.",
+    "fr": "Il manque à cet ordinateur les composants système nécessaires pour se connecter à Word."
+  },
+  "没有找到 Microsoft Word，可能没安装。": {
+    "en": "Microsoft Word was not found; it may not be installed.",
+    "fr": "Microsoft Word est introuvable ; il n'est peut-être pas installé."
+  },
+  "LibreOffice 未生成 .docx 输出。": {
+    "en": "LibreOffice did not produce a .docx output.",
+    "fr": "LibreOffice n'a produit aucun fichier .docx."
+  },
+  "LibreOffice UNO 自动编号预处理超时。": {
+    "en": "LibreOffice timed out while preprocessing automatic numbering.",
+    "fr": "LibreOffice a dépassé le délai lors du prétraitement de la numérotation automatique."
+  },
+  "本机缺少连接 Word 所需的组件。": {
+    "en": "This computer is missing the components needed to connect to Word.",
+    "fr": "Il manque à cet ordinateur les composants nécessaires pour se connecter à Word."
+  },
+  "LibreOffice 自带的 Python 启动超时：{0}。": {
+    "en": "LibreOffice's bundled Python timed out while starting: {0}.",
+    "fr": "Le Python fourni avec LibreOffice a dépassé le délai de démarrage : {0}."
+  },
+  "LibreOffice 自带的 Python 无法启动（退出码 {0}）": {
+    "en": "LibreOffice's bundled Python could not start (exit code {0})",
+    "fr": "Le Python fourni avec LibreOffice n'a pas pu démarrer (code de sortie {0})"
+  },
+  "命令返回码 {0}": {
+    "en": "Command exit code {0}",
+    "fr": "Code de sortie de la commande : {0}"
+  },
+  "转换结果不是有效 .docx：{0}": {
+    "en": "The conversion result is not a valid .docx: {0}",
+    "fr": "Le résultat de la conversion n'est pas un fichier .docx valide : {0}"
+  },
+  "{0} 不可用：{1}": {
+    "en": "{0} unavailable: {1}",
+    "fr": "{0} indisponible : {1}"
+  },
+  "使用本机 Word 转换失败：": {
+    "en": "Conversion with the local Word failed: ",
+    "fr": "Échec de la conversion avec Word local : "
+  },
+  "使用本机 Word 处理自动编号失败：": {
+    "en": "Processing automatic numbering with the local Word failed: ",
+    "fr": "Échec du traitement de la numérotation automatique avec Word local : "
+  },
+  "Word 没能完成这次转换。": {
+    "en": "Word could not complete this conversion.",
+    "fr": "Word n'a pas pu effectuer cette conversion."
+  },
+  "Word 没能完成这一步。": {
+    "en": "Word could not complete this step.",
+    "fr": "Word n'a pas pu effectuer cette étape."
+  },
+  "这个插件包不完整或已被改动，请重新下载。": {
+    "en": "This plugin package is incomplete or has been modified. Please download it again.",
+    "fr": "Ce paquet de plugin est incomplet ou a été modifié. Veuillez le télécharger à nouveau."
+  },
+  "选的不是图纸转换工具程序。": {
+    "en": "The selected program is not a drawing converter.",
+    "fr": "Le programme sélectionné n'est pas un convertisseur de plans."
+  },
+  "当前系统不支持图纸转换工具。": {
+    "en": "The drawing converter is not supported on this system.",
+    "fr": "Le convertisseur de plans n'est pas pris en charge sur ce système."
+  },
+  "当前平台不支持图纸转换工具。": {
+    "en": "The drawing converter is not supported on this platform.",
+    "fr": "Le convertisseur de plans n'est pas pris en charge sur cette plateforme."
+  },
+  "插件 ID 不匹配。": {
+    "en": "Plugin ID mismatch.",
+    "fr": "L'identifiant du plugin ne correspond pas."
+  },
+  "plugin.json 缺少有效 version。": {
+    "en": "plugin.json is missing a valid version.",
+    "fr": "plugin.json ne contient pas de version valide."
+  },
+  "adapter 不是 builtin。": {
+    "en": "adapter is not builtin.",
+    "fr": "adapter n'est pas builtin."
+  },
+  "plugin.json 的 sha256 必须是文件名到摘要的映射。": {
+    "en": "The sha256 field in plugin.json must map file names to digests.",
+    "fr": "Le champ sha256 de plugin.json doit associer des noms de fichiers à des empreintes."
+  },
+  "插件包没有为全部文件提供 sha256（缺少：{0}，多余：{1}）。": {
+    "en": "The plugin package does not provide sha256 for every file (missing: {0}; extra: {1}).",
+    "fr": "Le paquet de plugin ne fournit pas de sha256 pour tous les fichiers (manquants : {0} ; en trop : {1})."
+  },
+  "读不到选中的图纸转换工具，请检查是否有权限访问。": {
+    "en": "Could not read the selected drawing converter. Check that you have permission to access it.",
+    "fr": "Impossible de lire le convertisseur de plans sélectionné. Vérifiez que vous avez l'autorisation d'y accéder."
+  },
+  "选的文件不是能在这台 Mac 上运行的图纸转换工具。": {
+    "en": "The selected file is not a drawing converter that can run on this Mac.",
+    "fr": "Le fichier sélectionné n'est pas un convertisseur de plans utilisable sur ce Mac."
+  },
+  "选的文件不是能在 Windows 上运行的图纸转换工具。": {
+    "en": "The selected file is not a drawing converter that can run on Windows.",
+    "fr": "Le fichier sélectionné n'est pas un convertisseur de plans utilisable sous Windows."
+  },
+  "选的图纸转换工具读不出版本信息，可能已损坏，请重新安装。": {
+    "en": "Could not read version information from the selected drawing converter. It may be damaged; please reinstall it.",
+    "fr": "Impossible de lire les informations de version du convertisseur de plans sélectionné. Il est peut-être endommagé ; veuillez le réinstaller."
+  },
+  "当前平台仅支持 macOS 13+（Apple Silicon/Intel）或 Windows 10 x64。": {
+    "en": "Only macOS 13+ (Apple Silicon/Intel) or Windows 10 x64 is supported.",
+    "fr": "Seuls macOS 13+ (Apple Silicon/Intel) et Windows 10 x64 sont pris en charge."
+  },
+  "图纸转换工具已连接。": {
+    "en": "Drawing converter connected.",
+    "fr": "Convertisseur de plans connecté."
+  },
+  "plugin.json 无法读取。": {
+    "en": "Could not read plugin.json.",
+    "fr": "Impossible de lire plugin.json."
+  },
+  "plugin.json 含未知字段：": {
+    "en": "plugin.json contains unknown fields: ",
+    "fr": "plugin.json contient des champs inconnus : "
+  },
+  "插件包包含符号链接。": {
+    "en": "The plugin package contains symbolic links.",
+    "fr": "Le paquet de plugin contient des liens symboliques."
+  },
+  "插件包包含 ODA 转换器。": {
+    "en": "The plugin package contains the ODA converter.",
+    "fr": "Le paquet de plugin contient le convertisseur ODA."
+  },
+  "插件包路径越界：{0}": {
+    "en": "Plugin package path is outside the allowed folder: {0}",
+    "fr": "Chemin du paquet de plugin hors du dossier autorisé : {0}"
+  },
+  "校验文件不存在：{0}": {
+    "en": "Checksum file not found: {0}",
+    "fr": "Fichier de contrôle introuvable : {0}"
+  },
+  "插件校验失败：{0}": {
+    "en": "Plugin verification failed: {0}",
+    "fr": "Échec de la vérification du plugin : {0}"
+  },
+  "找不到这个插件包文件夹。": {
+    "en": "This plugin package folder cannot be found.",
+    "fr": "Le dossier de ce paquet de plugin est introuvable."
+  },
+  "不能从程序自己的插件文件夹安装，请选择下载得到的插件包。": {
+    "en": "Cannot install from the app's own plugin folder. Please choose the plugin package you downloaded.",
+    "fr": "Impossible d'installer depuis le dossier de plugins de l'application. Choisissez le paquet de plugin que vous avez téléchargé."
+  },
+  "这个插件包和当前版本的程序不兼容，请下载对应的版本。": {
+    "en": "This plugin package is not compatible with this version of the app. Please download the matching version.",
+    "fr": "Ce paquet de plugin n'est pas compatible avec cette version de l'application. Téléchargez la version correspondante."
+  },
+  "之前连接的图纸转换工具现在用不了，请重新安装或重新选择。": {
+    "en": "The drawing converter connected earlier is no longer usable. Please reinstall it or select it again.",
+    "fr": "Le convertisseur de plans connecté précédemment n'est plus utilisable. Réinstallez-le ou sélectionnez-le de nouveau."
+  },
+  "已找到图纸转换工具，但当前版本不可用。": {
+    "en": "A drawing converter was found, but this version cannot be used.",
+    "fr": "Un convertisseur de plans a été trouvé, mais cette version n'est pas utilisable."
+  },
+  "未检测到图纸转换工具。": {
+    "en": "No drawing converter detected.",
+    "fr": "Aucun convertisseur de plans détecté."
+  },
+  "图纸转换工具不能放在本程序的插件文件夹里，请换个位置安装后再选。": {
+    "en": "The drawing converter cannot be placed in this app's plugin folder. Install it somewhere else and select it again.",
+    "fr": "Le convertisseur de plans ne peut pas se trouver dans le dossier de plugins de cette application. Installez-le ailleurs puis sélectionnez-le de nouveau."
+  },
+  "Ollama 服务可用，模型 {0} 已安装。": {
+    "en": "Ollama is available and model {0} is installed.",
+    "fr": "Ollama est disponible et le modèle {0} est installé."
+  },
+  "连接可用，模型 {0} 有响应。": {
+    "en": "Connection OK; model {0} responded.",
+    "fr": "Connexion réussie ; le modèle {0} a répondu."
+  },
+  "暂不支持该服务商的连接测试：{0}。": {
+    "en": "Connection testing is not supported for this provider yet: {0}.",
+    "fr": "Le test de connexion n'est pas encore pris en charge pour ce fournisseur : {0}."
+  },
+  "连接测试只支持文档翻译模型或记忆库清洗模型。": {
+    "en": "Connection testing only supports the document translation model or the memory cleanup model.",
+    "fr": "Le test de connexion ne prend en charge que le modèle de traduction de documents ou le modèle de nettoyage de la mémoire."
+  },
+  "请先填写 Ollama 模型名称。": {
+    "en": "Please enter the Ollama model name first.",
+    "fr": "Saisissez d'abord le nom du modèle Ollama."
+  },
+  "Ollama 返回格式异常。": {
+    "en": "Ollama returned an unexpected format.",
+    "fr": "Ollama a renvoyé un format inattendu."
+  },
+  "Ollama 服务可用，但未找到模型：{0}。": {
+    "en": "Ollama is available, but the model was not found: {0}.",
+    "fr": "Ollama est disponible, mais le modèle est introuvable : {0}."
+  },
+  "请先在终端运行 ollama pull 对应模型，或改选已安装模型。": {
+    "en": "Run “ollama pull” for the model in a terminal first, or choose a model that is already installed.",
+    "fr": "Exécutez d'abord « ollama pull » pour ce modèle dans un terminal, ou choisissez un modèle déjà installé."
+  },
+  "请先填写 API 密钥。": {
+    "en": "Please enter an API key first.",
+    "fr": "Saisissez d'abord une clé API."
+  },
+  "请先填写模型名称。": {
+    "en": "Please enter a model name first.",
+    "fr": "Saisissez d'abord un nom de modèle."
+  },
+  "请先填写 Base URL。": {
+    "en": "Please enter a Base URL first.",
+    "fr": "Saisissez d'abord une Base URL."
+  },
+  "连上了，但模型没有按要求回复「OK」，请确认模型名是否写对。": {
+    "en": "Connected, but the model did not reply “OK” as asked. Check that the model name is correct.",
+    "fr": "Connexion établie, mais le modèle n'a pas répondu « OK » comme demandé. Vérifiez que le nom du modèle est correct."
+  },
+  "请先填写本地模型服务 Base URL。": {
+    "en": "Please enter the Base URL of the local model service first.",
+    "fr": "Saisissez d'abord la Base URL du service de modèle local."
+  },
+  "暂不支持该本地模型服务：{0}。": {
+    "en": "This local model service is not supported yet: {0}.",
+    "fr": "Ce service de modèle local n'est pas encore pris en charge : {0}."
+  },
+  "连上了，但模型的回复格式不对，没法用来清洗记忆库，换一个模型试试。": {
+    "en": "Connected, but the model's reply format is wrong, so it cannot be used to clean up memory. Try another model.",
+    "fr": "Connexion établie, mais le format de réponse du modèle est incorrect ; il ne peut pas servir à nettoyer la mémoire. Essayez un autre modèle."
+  },
+  "Ollama 服务不可用：{0}": {
+    "en": "Ollama service unavailable: {0}",
+    "fr": "Service Ollama indisponible : {0}"
+  },
+  "未设置": {
+    "en": "Not set",
+    "fr": "Non défini"
+  },
+  "这个文件不是完整的 Excel 文件，可能已损坏（缺少文件目录）。": {
+    "en": "This is not a complete Excel file and may be damaged (the file index is missing).",
+    "fr": "Ce fichier Excel est incomplet et peut-être endommagé (l'index des fichiers est absent)."
+  },
+  "这个文件不是完整的 Excel 文件，可能已损坏（找不到工作簿内容）。": {
+    "en": "This is not a complete Excel file and may be damaged (the workbook content cannot be found).",
+    "fr": "Ce fichier Excel est incomplet et peut-être endommagé (le contenu du classeur est introuvable)."
+  },
+  "这个文件不是完整的 Excel 文件，可能已损坏（缺少工作簿目录）。": {
+    "en": "This is not a complete Excel file and may be damaged (the workbook index is missing).",
+    "fr": "Ce fichier Excel est incomplet et peut-être endommagé (l'index du classeur est absent)."
+  },
+  " 等 {0} 处": {
+    "en": " and {0} more",
+    "fr": " et {0} autres"
+  },
+  "[INFO] 共 {0} 个单元格是错误值（#N/A、#REF! 之类），已保持原样、没有写入译文：{1}{2}": {
+    "en": "[INFO] {0} {0|cell contains an error value|cells contain error values} (#N/A, #REF! and the like); left as is with no translation written: {1}{2}",
+    "fr": "[INFO] {0} {0|cellule contient une valeur d'erreur|cellules contiennent des valeurs d'erreur} (#N/A, #REF!, etc.) ; laissées telles quelles, sans traduction : {1}{2}"
+  },
+  "[WARN] 共 {0} 个单元格超过 Excel 的 {1} 字上限，已被截断：{2}{3}": {
+    "en": "[WARN] {0} {0|cell exceeds|cells exceed} Excel's {1}-character limit and {0|was|were} truncated: {2}{3}",
+    "fr": "[WARN] {0} {0|cellule dépasse|cellules dépassent} la limite de {1} caractères d'Excel et {0|a été tronquée|ont été tronquées} : {2}{3}"
+  },
+  "（复核标记 {0} 处": {
+    "en": " (review marks: {0}",
+    "fr": " (marques de vérification : {0}"
+  },
+  "[INFO] 工作表已处理：{0}{1}": {
+    "en": "[INFO] Worksheet processed: {0}{1}",
+    "fr": "[INFO] Feuille traitée : {0}{1}"
+  },
+  "[INFO] {0}：已固定 {1} 张浮动图片的位置和大小": {
+    "en": "[INFO] {0}: fixed the position and size of {1} floating {1|image|images}",
+    "fr": "[INFO] {0} : position et taille fixées pour {1} {1|image flottante|images flottantes}"
+  },
+  "[INFO] {0}：已锁定行高并缩小字号（{1} 个单元格）": {
+    "en": "[INFO] {0}: locked row heights and reduced font size ({1} {1|cell|cells})",
+    "fr": "[INFO] {0} : hauteurs de ligne verrouillées et taille de police réduite ({1} {1|cellule|cellules})"
+  },
+  "，保留原底色未改 {0} 处": {
+    "en": ", original fill kept for {0}",
+    "fr": ", couleur de fond d'origine conservée pour {0}"
+  },
+  "[WARN] {0}!{1}{2} 的公式与其它单元格共用，为了不破坏公式，这一格保持原样（没有写入译文）": {
+    "en": "[WARN] The formula in {0}!{1}{2} is shared with other cells. To avoid breaking it, this cell was left as is (no translation written)",
+    "fr": "[WARN] La formule de {0}!{1}{2} est partagée avec d'autres cellules. Pour ne pas la casser, cette cellule a été laissée telle quelle (aucune traduction écrite)"
+  },
+  "[WARN] {0}!{1} 译文里有 {2} 个无法保存的特殊字符，已去掉后写入": {
+    "en": "[WARN] The translation in {0}!{1} contained {2} special {2|character|characters} that cannot be saved; removed before writing",
+    "fr": "[WARN] La traduction de {0}!{1} contenait {2} {2|caractère spécial impossible|caractères spéciaux impossibles} à enregistrer ; {2|supprimé|supprimés} avant l'écriture"
+  },
+  "[WARN] {0}!{1} 原文加译文超过 Excel 单元格上限 {2} 字，已截掉 {3} 字（不截的话 Excel 会认为整个文件已损坏）": {
+    "en": "[WARN] Source plus translation in {0}!{1} exceeds Excel's {2}-character cell limit; {3} characters were cut (otherwise Excel would consider the whole file damaged)",
+    "fr": "[WARN] Le texte source et la traduction de {0}!{1} dépassent la limite de {2} caractères par cellule d'Excel ; {3} caractères ont été coupés (sinon Excel considérerait tout le fichier comme endommagé)"
+  },
+  "[WARN] {0}!{1}{2} 缩至最小字号 {3}pt 仍可能无法完全显示": {
+    "en": "[WARN] {0}!{1}{2} may still not fit even at the minimum font size of {3}pt",
+    "fr": "[WARN] {0}!{1}{2} risque de ne pas s'afficher entièrement, même à la taille de police minimale de {3}pt"
+  },
+  "使用 Excel 转换失败：macOS 已拒绝 Translator 控制 Microsoft Excel 的自动化权限。请在「{0}」中允许 Translator 控制 Microsoft Excel，或返回任务设置并明确选择兼容转换{1}": {
+    "en": "Conversion with Excel failed: macOS denied Translator permission to control Microsoft Excel. Allow Translator to control Microsoft Excel in “{0}”, or go back to the task settings and explicitly choose compatibility conversion{1}",
+    "fr": "Échec de la conversion avec Excel : macOS a refusé à Translator l'autorisation de contrôler Microsoft Excel. Autorisez Translator à contrôler Microsoft Excel dans « {0} », ou revenez aux paramètres de la tâche et choisissez explicitement la conversion de compatibilité{1}"
+  },
+  "后，输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留；原始文件不会被改动。": {
+    "en": ": formulas in the output file will become their calculated values, and styles, merged cells, images and charts will not be kept; the original file will not be modified.",
+    "fr": " : dans le fichier produit, les formules seront remplacées par leurs valeurs calculées, et les styles, cellules fusionnées, images et graphiques ne seront pas conservés ; le fichier d'origine ne sera pas modifié."
+  },
+  "系统设置 > 隐私与安全性 > 自动化": {
+    "en": "System Settings > Privacy & Security > Automation",
+    "fr": "Réglages Système > Confidentialité et sécurité > Automatisation"
+  },
+  "，这一步会交给本机 LibreOffice 完成，公式、样式、合并单元格通常能保留（图表、图片可能有出入）；原始文件不会被改动。": {
+    "en": ": this step will be done by LibreOffice on this computer, and formulas, styles and merged cells are usually kept (charts and images may differ); the original file will not be modified.",
+    "fr": " : cette étape sera effectuée par LibreOffice sur cet ordinateur ; les formules, styles et cellules fusionnées sont généralement conservés (les graphiques et images peuvent différer) ; le fichier d'origine ne sera pas modifié."
+  },
+  "系统的自动化隐私设置": {
+    "en": "the system's automation privacy settings",
+    "fr": "les réglages de confidentialité d'automatisation du système"
+  },
+  "系统偏好设置 > 安全性与隐私 > 隐私 > 自动化": {
+    "en": "System Preferences > Security & Privacy > Privacy > Automation",
+    "fr": "Préférences Système > Sécurité et confidentialité > Confidentialité > Automatisation"
+  },
+  "使用 Excel 转换失败：": {
+    "en": "Conversion with Excel failed: ",
+    "fr": "Échec de la conversion avec Excel : "
+  },
+  "本机没有找到 LibreOffice。": {
+    "en": "LibreOffice was not found on this computer.",
+    "fr": "LibreOffice est introuvable sur cet ordinateur."
+  },
+  "LibreOffice 没有生成转换后的文件。": {
+    "en": "LibreOffice did not produce a converted file.",
+    "fr": "LibreOffice n'a produit aucun fichier converti."
+  },
+  "本机 Excel 没能完成这次转换，可返回任务设置并选择兼容转换后重试。": {
+    "en": "Excel on this computer could not complete this conversion. You can go back to the task settings, choose compatibility conversion and try again.",
+    "fr": "Excel n'a pas pu effectuer cette conversion sur cet ordinateur. Vous pouvez revenir aux paramètres de la tâche, choisir la conversion de compatibilité et réessayer."
+  },
+  "LibreOffice 转换超时（{0} 秒）。": {
+    "en": "LibreOffice conversion timed out ({0} seconds).",
+    "fr": "La conversion LibreOffice a dépassé le délai ({0} secondes)."
+  },
+  "LibreOffice 没能转换这个文件：{0}": {
+    "en": "LibreOffice could not convert this file: {0}",
+    "fr": "LibreOffice n'a pas pu convertir ce fichier : {0}"
+  },
+  "LibreOffice 没能转换这个文件。": {
+    "en": "LibreOffice could not convert this file.",
+    "fr": "LibreOffice n'a pas pu convertir ce fichier."
+  },
+  "模型服务返回了错误。": {
+    "en": "The model service returned an error.",
+    "fr": "Le service du modèle a renvoyé une erreur."
+  },
+  "未知翻译引擎：{0}": {
+    "en": "Unknown translation engine: {0}",
+    "fr": "Moteur de traduction inconnu : {0}"
+  },
+  "未知本地模型服务：{0}": {
+    "en": "Unknown local model service: {0}",
+    "fr": "Service de modèle local inconnu : {0}"
+  },
+  "有 {0} 条内容未能翻译，已保留原文（如「{1}…」）：{2}": {
+    "en": "{0} {0|item|items} could not be translated and kept the source text (e.g. “{1}…”): {2}",
+    "fr": "{0} {0|élément n'a pas pu être traduit et conserve|éléments n'ont pas pu être traduits et conservent} le texte source (par ex. « {1}… ») : {2}"
+  },
+  "有 {0} 条内容未能翻译，已保留原文：{1}": {
+    "en": "{0} {0|item|items} could not be translated and kept the source text: {1}",
+    "fr": "{0} {0|élément n'a pas pu être traduit et conserve|éléments n'ont pas pu être traduits et conservent} le texte source : {1}"
+  },
+  "自定义领域 Prompt 不能为空": {
+    "en": "The custom domain prompt cannot be empty",
+    "fr": "Le prompt de domaine personnalisé ne peut pas être vide"
+  },
+  "有一批翻译请求出错，重试也不会成功，这批 {0} 条内容保留原文：{1}": {
+    "en": "A batch of translation requests failed and retrying will not help; these {0} items keep the source text: {1}",
+    "fr": "Un lot de requêtes de traduction a échoué et une nouvelle tentative n'y changera rien ; ces {0} éléments conservent le texte source : {1}"
+  },
+  "有一批翻译出错，已拆成更小的批次重试：{0}": {
+    "en": "A translation batch failed; retrying in smaller batches: {0}",
+    "fr": "Un lot de traduction a échoué ; nouvel essai en lots plus petits : {0}"
+  },
+  "返回条数不足：输入 {0}，返回 {1}": {
+    "en": "Too few results returned: sent {0}, received {1}",
+    "fr": "Nombre de résultats insuffisant : {0} envoyés, {1} reçus"
+  },
+  "找不到 CAD 术语库文件「{0}」，它可能已被移动或删除。": {
+    "en": "CAD glossary file “{0}” cannot be found; it may have been moved or deleted.",
+    "fr": "Le fichier de glossaire CAO « {0} » est introuvable ; il a peut-être été déplacé ou supprimé."
+  },
+  "请至少选择一个 DWG 或 DXF 文件。": {
+    "en": "Please select at least one DWG or DXF file.",
+    "fr": "Sélectionnez au moins un fichier DWG ou DXF."
+  },
+  "翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。": {
+    "en": "To translate DWG drawings, connect a drawing converter in “Plugins” first.",
+    "fr": "Pour traduire des plans DWG, connectez d'abord un convertisseur de plans dans « Plugins »."
+  },
+  "CAD 术语库文件「{0}」读不出来，请检查格式（每行「原文,译文」或 JSON 对象）。": {
+    "en": "CAD glossary file “{0}” could not be read. Check its format (one “source,translation” pair per line, or a JSON object).",
+    "fr": "Le fichier de glossaire CAO « {0} » est illisible. Vérifiez son format (une paire « source,traduction » par ligne, ou un objet JSON)."
+  },
+  "[CAD] 图纸扫描失败：{0}": {
+    "en": "[CAD] Drawing scan failed: {0}",
+    "fr": "[CAO] Échec de l'analyse du plan : {0}"
+  },
+  "还没有连接图纸转换工具：DXF 可以直接翻译，DWG 需要先在「插件管理」里连接转换工具。": {
+    "en": "No drawing converter connected: DXF files can be translated directly, but DWG files need a converter connected in “Plugins” first.",
+    "fr": "Aucun convertisseur de plans connecté : les fichiers DXF peuvent être traduits directement, mais les fichiers DWG nécessitent d'abord de connecter un convertisseur dans « Plugins »."
+  },
+  "JSON 术语库必须是原文到译文的对象。": {
+    "en": "A JSON glossary must be an object mapping source text to translations.",
+    "fr": "Un glossaire JSON doit être un objet associant le texte source aux traductions."
+  },
+  "图纸扫描失败。": {
+    "en": "Drawing scan failed.",
+    "fr": "Échec de l'analyse du plan."
+  },
+  "图纸扫描失败，出现了未预期的问题。": {
+    "en": "Drawing scan failed due to an unexpected problem.",
+    "fr": "Échec de l'analyse du plan à cause d'un problème inattendu."
+  },
+  "已获取 {0} 个本地模型。": {
+    "en": "Found {0} local {0|model|models}.",
+    "fr": "{0} {0|modèle local trouvé|modèles locaux trouvés}."
+  },
+  "已获取 {0} 个模型。": {
+    "en": "Found {0} {0|model|models}.",
+    "fr": "{0} {0|modèle trouvé|modèles trouvés}."
+  },
+  "Ollama 已响应，但没有读取到已安装模型。": {
+    "en": "Ollama responded, but no installed models were found.",
+    "fr": "Ollama a répondu, mais aucun modèle installé n'a été trouvé."
+  },
+  "当前服务商暂不支持自动获取模型列表。": {
+    "en": "This provider does not support fetching the model list automatically yet.",
+    "fr": "Ce fournisseur ne permet pas encore de récupérer automatiquement la liste des modèles."
+  },
+  "请先填写 API Key，再获取模型列表。": {
+    "en": "Enter an API key first, then fetch the model list.",
+    "fr": "Saisissez d'abord une clé API, puis récupérez la liste des modèles."
+  },
+  "请先填写 Base URL，再获取模型列表。": {
+    "en": "Enter a Base URL first, then fetch the model list.",
+    "fr": "Saisissez d'abord une Base URL, puis récupérez la liste des modèles."
+  },
+  "接口已响应，但没有读取到可用模型。": {
+    "en": "The service responded, but no usable models were found.",
+    "fr": "Le service a répondu, mais aucun modèle utilisable n'a été trouvé."
+  },
+  "Ollama 模型列表获取失败：{0}": {
+    "en": "Could not fetch the Ollama model list: {0}",
+    "fr": "Impossible de récupérer la liste des modèles Ollama : {0}"
+  },
+  "模型列表获取失败：{0}": {
+    "en": "Could not fetch the model list: {0}",
+    "fr": "Impossible de récupérer la liste des modèles : {0}"
+  },
+  "缺少 {0} 条译文": {
+    "en": "{0} {0|translation|translations} missing",
+    "fr": "{0} {0|traduction manquante|traductions manquantes}"
+  },
+  "返回条数不足：输入 {0} 条，返回 {1} 条": {
+    "en": "Too few results returned: sent {0}, received {1}",
+    "fr": "Nombre de résultats insuffisant : {0} envoyés, {1} reçus"
+  },
+  "语言回报条数不足：输入 {0}，返回 {1}": {
+    "en": "Too few language results returned: sent {0}, received {1}",
+    "fr": "Nombre de langues renvoyées insuffisant : {0} envoyées, {1} reçues"
+  },
+  "电脑同时打开的连接太多，已暂时放慢发送速度并重试。": {
+    "en": "Too many connections are open on this computer; sending has been slowed down temporarily and will retry.",
+    "fr": "Trop de connexions sont ouvertes sur cet ordinateur ; l'envoi a été temporairement ralenti et sera relancé."
+  },
+  "有一段翻译仍未成功，暂时保留原文（如「{0}…」）：": {
+    "en": "One paragraph still could not be translated and keeps the source text for now (e.g. “{0}…”): ",
+    "fr": "Un paragraphe n'a toujours pas pu être traduit et conserve pour l'instant le texte source (par ex. « {0}… ») : "
+  },
+  "有一批翻译结果不完整，已拆成更小的批次重试：": {
+    "en": "A batch of translation results was incomplete; retrying in smaller batches: ",
+    "fr": "Un lot de résultats de traduction était incomplet ; nouvel essai en lots plus petits : "
+  },
+  "模型返回的内容不完整。": {
+    "en": "The model's response was incomplete.",
+    "fr": "La réponse du modèle était incomplète."
+  },
+  "自定义本地模型": {
+    "en": "Custom local model",
+    "fr": "Modèle local personnalisé"
+  },
+  "settings.json 顶层必须是 JSON 对象": {
+    "en": "The top level of settings.json must be a JSON object",
+    "fr": "Le niveau supérieur de settings.json doit être un objet JSON"
+  },
+  "keys.json 顶层必须是 JSON 对象": {
+    "en": "The top level of keys.json must be a JSON object",
+    "fr": "Le niveau supérieur de keys.json doit être un objet JSON"
+  },
+  "imported_scopes 必须是 JSON 数组": {
+    "en": "imported_scopes must be a JSON array",
+    "fr": "imported_scopes doit être un tableau JSON"
+  },
+  "设置文件读不出来，也没能备份到 {0}。原文件已原样保留；如确定要放弃它，请在「设置 → 数据与维护」里点「重置设置」。": {
+    "en": "The settings file cannot be read, and it could not be backed up to {0} either. The original file has been left untouched. If you are sure you want to discard it, click “Reset settings” in “Settings → Data & maintenance”.",
+    "fr": "Le fichier de paramètres est illisible et n'a pas pu être sauvegardé dans {0}. Le fichier d'origine a été laissé intact. Si vous êtes sûr de vouloir l'abandonner, cliquez sur « Réinitialiser les paramètres » dans « Paramètres → Données et maintenance »."
+  },
+  "保存 API 密钥的文件暂时读不到（可能被其他程序占用），为免丢失没有做任何改动；确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。": {
+    "en": "The file that stores your API keys cannot be read right now (another program may be using it). Nothing was changed to avoid losing it. If you are sure you want to discard it, click “Delete all keys” in “Settings → Data & maintenance”.",
+    "fr": "Le fichier qui contient vos clés API est momentanément illisible (un autre programme l'utilise peut-être). Rien n'a été modifié afin de ne pas le perdre. Si vous êtes sûr de vouloir l'abandonner, cliquez sur « Supprimer toutes les clés » dans « Paramètres → Données et maintenance »."
+  },
+  "保存 API 密钥的文件已损坏，也没能备份，为免丢失没有做任何改动；确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。": {
+    "en": "The file that stores your API keys is damaged and could not be backed up. Nothing was changed to avoid losing it. If you are sure you want to discard it, click “Delete all keys” in “Settings → Data & maintenance”.",
+    "fr": "Le fichier qui contient vos clés API est endommagé et n'a pas pu être sauvegardé. Rien n'a été modifié afin de ne pas le perdre. Si vous êtes sûr de vouloir l'abandonner, cliquez sur « Supprimer toutes les clés » dans « Paramètres → Données et maintenance »."
+  },
+  "读取失败：": {
+    "en": "Read failed: ",
+    "fr": "Échec de la lecture : "
+  },
+  ".xls 需通过本机 Microsoft Excel 高保真转换；或经用户明确确认后改用兼容转换": {
+    "en": ".xls files need high-fidelity conversion with Microsoft Excel on this computer, or compatibility conversion once you explicitly confirm it",
+    "fr": "Les fichiers .xls nécessitent une conversion haute fidélité avec Microsoft Excel sur cet ordinateur, ou une conversion de compatibilité après votre confirmation explicite"
+  },
+  "检测到 .xls 文件：优先用本机 Microsoft Excel 高保真转换；若确认改用兼容转换": {
+    "en": ".xls files detected: high-fidelity conversion with Microsoft Excel on this computer is preferred; if you confirm compatibility conversion",
+    "fr": "Fichiers .xls détectés : la conversion haute fidélité avec Microsoft Excel sur cet ordinateur est privilégiée ; si vous confirmez la conversion de compatibilité"
+  },
+  "不支持的 Excel 文件或 Office 临时文件": {
+    "en": "Unsupported Excel file or Office temporary file",
+    "fr": "Fichier Excel non pris en charge ou fichier temporaire Office"
+  },
+  "这个文件读不出来，可能已损坏或格式与后缀不符。": {
+    "en": "This file cannot be read. It may be damaged, or its format does not match its extension.",
+    "fr": "Ce fichier est illisible. Il est peut-être endommagé, ou son format ne correspond pas à son extension."
+  },
+  "预检响应缺少 source_langs 数组。": {
+    "en": "The language check response is missing the source_langs array.",
+    "fr": "La réponse de la détection de langue ne contient pas le tableau source_langs."
+  },
+  "未能确定实际源语言。": {
+    "en": "Could not determine the actual source language.",
+    "fr": "Impossible de déterminer la langue source réelle."
+  },
+  "响应解析失败：译文缺失或不是字符串（{0}），违反协议约定": {
+    "en": "Could not parse the response: a translation is missing or is not a string ({0}), which breaks the expected format",
+    "fr": "Impossible d'analyser la réponse : une traduction est absente ou n'est pas une chaîne ({0}), ce qui ne respecte pas le format attendu"
+  },
+  "预检请求失败：{0}": {
+    "en": "Language check request failed: {0}",
+    "fr": "Échec de la requête de détection de langue : {0}"
+  },
+  "导出 API 密钥前，请先确认要一起导出这些敏感信息。": {
+    "en": "Before exporting API keys, please confirm that you want to include this sensitive information.",
+    "fr": "Avant d'exporter les clés API, confirmez que vous voulez inclure ces informations sensibles."
+  },
+  "文件有效期只能在 0（长期有效）到 3650 天之间。": {
+    "en": "The file validity period must be between 0 (never expires) and 3650 days.",
+    "fr": "La durée de validité du fichier doit être comprise entre 0 (illimitée) et 3650 jours."
+  },
+  "PDF 翻译任务异常结束：未收到完成消息。": {
+    "en": "The PDF translation task ended abnormally: no completion message was received.",
+    "fr": "La tâche de traduction PDF s'est terminée anormalement : aucun message de fin n'a été reçu."
+  },
+  "不支持的 PDF 目标语言：{0}。可用项：{1}": {
+    "en": "Unsupported PDF target language: {0}. Available: {1}",
+    "fr": "Langue cible PDF non prise en charge : {0}. Disponibles : {1}"
+  },
+  "未在路径中发现可处理的 PDF 文件：{0}": {
+    "en": "No PDF files to process were found in the path: {0}",
+    "fr": "Aucun fichier PDF à traiter n'a été trouvé dans le chemin : {0}"
+  },
+  "「允许独立图片」没有打开，这个图片文件没有纳入本次任务；要翻它就打开这个开关再扫描一次。": {
+    "en": "“Allow standalone images” is off, so this image file was not included in this task. To translate it, turn on the switch and scan again.",
+    "fr": "« Autoriser les images seules » est désactivé ; ce fichier image n'a donc pas été inclus dans cette tâche. Pour le traduire, activez cette option et relancez l'analyse."
+  },
+  "文件夹里有 {0} 个图片文件，「允许独立图片」没有打开，本次不会翻译它们；其余文件仍可继续。": {
+    "en": "The folder contains {0} image {0|file|files}, but “Allow standalone images” is off, so {0|it|they} will not be translated this time; the other files can still proceed.",
+    "fr": "Le dossier contient {0} {0|fichier image|fichiers image}, mais « Autoriser les images seules » est désactivé ; {0|il ne sera pas traduit|ils ne seront pas traduits} cette fois. Les autres fichiers peuvent continuer."
+  },
+  "部分 PDF/图片不可读、不受支持或未纳入本次任务，已列入跳过项目；其余文件仍可继续。": {
+    "en": "Some PDFs/images are unreadable, unsupported or not included in this task, and have been listed as skipped; the other files can still proceed.",
+    "fr": "Certains PDF/images sont illisibles, non pris en charge ou non inclus dans cette tâche ; ils figurent parmi les éléments ignorés. Les autres fichiers peuvent continuer."
+  },
+  "这一页没有留下上一版译文。": {
+    "en": "This page has no translation from the previous version.",
+    "fr": "Cette page n'a pas de traduction de la version précédente."
+  },
+  "该页图不存在。": {
+    "en": "This page image does not exist.",
+    "fr": "Cette image de page n'existe pas."
+  },
+  "检测到 {0} 个 .xls 文件，但没法用本机 Excel 转换：{1}。请取消任务，安装或授权 Microsoft Excel 后重试，或明确确认兼容转换{2}": {
+    "en": "Found {0} .xls {0|file|files}, but they cannot be converted with Excel on this computer: {1}. Cancel the task, install or authorize Microsoft Excel and try again, or explicitly confirm compatibility conversion{2}",
+    "fr": "{0} {0|fichier .xls détecté|fichiers .xls détectés}, mais la conversion avec Excel est impossible sur cet ordinateur : {1}. Annulez la tâche, installez ou autorisez Microsoft Excel et réessayez, ou confirmez explicitement la conversion de compatibilité{2}"
+  },
+  "请先选择服务商。": {
+    "en": "Please select a provider first.",
+    "fr": "Sélectionnez d'abord un fournisseur."
+  },
+  "智谱": {
+    "en": "Zhipu",
+    "fr": "Zhipu"
+  }
+}

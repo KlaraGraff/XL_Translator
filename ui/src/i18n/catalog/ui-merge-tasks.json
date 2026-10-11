@@ -1,0 +1,8 @@
+{
+  "{0} 开始": {"en": "Started {0}", "fr": "Lancée à {0}"},
+  "共 {0} 个文件": {"en": "{0} {0|file|files} in total", "fr": "{0} {0|fichier|fichiers} au total"},
+  "已生成 {0} / {1} 个文件": {"en": "{0} of {1} {1|file|files} generated", "fr": "{0} {0|fichier généré|fichiers générés} sur {1}"},
+  "更多": {"en": "More", "fr": "Plus"},
+  "输出文件不会被删除": {"en": "Output files are kept", "fr": "Les fichiers de sortie sont conservés"},
+  "部分翻译": {"en": "Partly translated", "fr": "Traduit en partie"}
+}

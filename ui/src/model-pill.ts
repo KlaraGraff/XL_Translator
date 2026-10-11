@@ -7,6 +7,7 @@
 import { ApiClient } from "./api-client";
 import { setModelPill } from "./shell";
 import { currentView, onNavigate, type ViewId } from "./router";
+import { t } from "./i18n";
 
 type RolePayload = {
   model?: unknown;
@@ -80,14 +81,14 @@ function renderModelPill(): void {
   if (!model) {
     // 这个视图对应的角色没配模型就老实说「未连接模型」，不能回退去显示别的角色——
     // 那正是徽章跟当前页面对不上的 bug 本身。
-    setModelPill({ label: "未连接模型", tone: "idle", role: roleKey });
+    setModelPill({ label: t("未连接模型"), tone: "idle", role: roleKey });
     return;
   }
   const status = String(role?.availability_status ?? "").trim();
   const local = String(role?.mode ?? "") === "local";
   // 没测过就是没测过：绿点只给测通的那一刻，不能因为填了型号就假装连上了。
   const tone = status === "available" ? "ok" : status === "unavailable" ? "warn" : "idle";
-  setModelPill({ label: local ? `本地 · ${model}` : model, tone, role: roleKey });
+  setModelPill({ label: local ? t("本地 · {0}", model) : model, tone, role: roleKey });
 }
 
 // 切视图时用缓存重算，不重新发请求。模块只会被 import 一次（ESM 单例），
@@ -107,7 +108,7 @@ export async function refreshModelPill(): Promise<void> {
     const payload = await api.request<{ roles: Record<string, unknown> }>("/api/models/roles");
     applyModelPillFromRoles(payload.roles);
   } catch {
-    setModelPill({ label: "未连接模型", tone: "idle" });
+    setModelPill({ label: t("未连接模型"), tone: "idle" });
   }
 }
 

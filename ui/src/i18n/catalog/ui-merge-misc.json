@@ -1,0 +1,22 @@
+{
+  "停止翻译后，已翻好的内容会写进文件，没翻到的格子保留原文，之后可以接着翻译。原件不会被改动。": {
+    "en": "After you stop, everything translated so far is written to the file; untranslated cells keep their source text and you can continue later. The original is not changed.",
+    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les cellules non traduites gardent le texte source et vous pourrez reprendre plus tard. L'original n'est pas modifié."
+  },
+  "停止翻译后，已翻好的内容会写进文件，没翻到的段落保留原文，之后可以接着翻译。原件不会被改动。": {
+    "en": "After you stop, everything translated so far is written to the file; untranslated paragraphs keep their source text and you can continue later. The original is not changed.",
+    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les paragraphes non traduits gardent le texte source et vous pourrez reprendre plus tard. L'original n'est pas modifié."
+  },
+  "缺模型名": {
+    "en": "Model name missing",
+    "fr": "Nom du modèle manquant"
+  },
+  "原译文：{0}": {
+    "en": "Current translation: {0}",
+    "fr": "Traduction actuelle : {0}"
+  },
+  "建议译文": {
+    "en": "Suggested translation",
+    "fr": "Traduction suggérée"
+  }
+}
