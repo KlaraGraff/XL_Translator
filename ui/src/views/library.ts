@@ -944,16 +944,20 @@ function openCleanReviewModal(): void {
     info.style.flex = "1";
     const title = document.createElement("b");
     title.textContent = text(suggestion.source_text);
+    // 原译文单独一行，建议译文的输入框另起一行占满整行：以前两者挤在同一行、输入框只有
+    // 六成宽，「Construction Schedule No. 11」被截成「No. 1」，用户看不全就没法判断该不该写入。
     const line = document.createElement("p");
-    line.style.margin = "3px 0 0";
-    line.append(document.createTextNode(`${text(suggestion.old_target)} → `));
+    line.style.cssText = "margin:3px 0 0;font-size:12.5px;color:var(--ink-3)";
+    line.textContent = `原译文：${text(suggestion.old_target)}`;
     const targetInput = document.createElement("input");
     targetInput.type = "text";
     targetInput.value = text(suggestion.new_target);
-    targetInput.style.width = "60%";
+    targetInput.title = text(suggestion.new_target);
+    targetInput.setAttribute("aria-label", "建议译文");
+    targetInput.style.cssText = "width:100%;box-sizing:border-box;margin-top:6px";
     targets.push(targetInput);
-    line.append(targetInput);
-    info.append(title, line);
+    info.style.minWidth = "0";
+    info.append(title, line, targetInput);
     row.append(check, info);
     body.push(row);
   });
@@ -963,6 +967,8 @@ function openCleanReviewModal(): void {
     icon: "book",
     title: "清洗建议",
     body: body.length ? body : ["未生成可写入的建议。"],
+    // 译文常是一整句英文，400px 的默认宽度放不下。
+    wide: true,
     actions: [
       { label: "取消", variant: "default" },
       {
@@ -1064,15 +1070,10 @@ function openCleanReviewModal(): void {
 
       const title = document.createElement("b");
       title.textContent = item.source_text;
+      // 结果页不再可编辑，用整段文字代替禁用的窄输入框，长译文能折行看全。
       const line = document.createElement("p");
       line.style.margin = "3px 0 0";
-      line.append(document.createTextNode(`${item.old_target} → `));
-      const targetInput = document.createElement("input");
-      targetInput.type = "text";
-      targetInput.value = item.new_target;
-      targetInput.style.width = "60%";
-      targetInput.disabled = true;
-      line.append(targetInput);
+      line.textContent = `${item.old_target} → ${item.new_target}`;
 
       const tail = document.createElement("div");
       tail.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:2px;flex-wrap:wrap";

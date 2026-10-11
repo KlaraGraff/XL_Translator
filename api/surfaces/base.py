@@ -71,8 +71,9 @@ class Surface:
     #: The page offers 暂停 (the runner must define ``pause()``).
     can_pause: ClassVar[bool] = False
     #: ``"immediate"`` – the task shows *paused* as soon as pause is pressed;
-    #: ``"file_boundary"`` – it shows *pausing* until the runner reaches the
-    #: end of the current file.
+    #: ``"file_boundary"`` – it shows *pausing* until the runner acknowledges
+    #: a safe point (CAD: between drawings, or between two request batches
+    #: inside one drawing).
     pause_mode: ClassVar[Literal["immediate", "file_boundary"]] = "immediate"
     #: The page offers 继续 after a pause (runner defines ``resume()``).
     can_resume: ClassVar[bool] = False

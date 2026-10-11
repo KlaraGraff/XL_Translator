@@ -54,8 +54,9 @@ class CadSurface(Surface):
     page_key = "cad_translate"
     uses_translation_memory = True
     scan_honours_selection = True
-    # CAD pauses at the current-file boundary: the task shows 正在暂停 until
-    # the runner acknowledges that boundary.
+    # CAD pauses between drawings, or inside one drawing between two batches
+    # of translation requests: the task shows 正在暂停 until the runner
+    # acknowledges that it has stopped sending new requests.
     can_pause = True
     pause_mode = "file_boundary"
     can_resume = True
@@ -270,6 +271,7 @@ class CadSurface(Surface):
             texts: list[str],
             glossary: dict[str, str],
             progress: Callable[[int, int], None] | None = None,
+            should_stop: Callable[[], bool] | None = None,
         ) -> dict[str, str]:
             prompt = system_prompt
             if glossary:
@@ -290,6 +292,8 @@ class CadSurface(Surface):
                 api_scheduler=api_schedulers.get("translation"),
                 # 逐批回调：CAD 进度条在「AI 翻译」阶段跟着批次走，而不是停住再跳。
                 progress_callback=progress,
+                # 停止在批次之间生效，不必等整张图纸的请求都发完。
+                should_stop=should_stop,
             )
 
         source_pair = str(source_lang or "").strip()
