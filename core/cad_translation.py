@@ -12,6 +12,7 @@ import json
 import hashlib
 import os
 import platform
+import inspect
 import re
 import shutil
 import subprocess
@@ -806,6 +807,35 @@ class CadTranslationPipeline:
         if self.progress:
             self.progress(CadProgress(stage, done, total, round(percent, 2), message))
 
+    def _call_translator(
+        self,
+        remaining: list[str],
+        glossary: Mapping[str, str],
+        *,
+        already: int,
+        total: int,
+    ) -> Mapping[str, str]:
+        """调用翻译器，并把它逐批的进度折算进「AI 翻译」阶段。
+
+        翻译是整张图纸里最慢的一步（真实 DWG 要等一分多钟），以前只在全部批次返回后
+        报一次进度，进度条就停在这一步开头一动不动、最后一下跳过去。翻译器肯接
+        ``progress`` 参数时（api/task_manager 里接的是 translate_texts 的批次回调），
+        每完成一批就推一次；老式只收两个参数的翻译器照旧调用。
+        """
+        self._emit("translate", already, max(1, total))
+
+        def report(done: int, batch_total: int) -> None:
+            fraction = min(1.0, max(0.0, done / max(1, batch_total)))
+            self._emit("translate", already + int(len(remaining) * fraction), max(1, total))
+
+        try:
+            accepts_progress = "progress" in inspect.signature(self.translator).parameters
+        except (TypeError, ValueError):
+            accepts_progress = False
+        if accepts_progress:
+            return self.translator(remaining, glossary, progress=report)
+        return self.translator(remaining, glossary)
+
     def translate_file(
         self,
         source: str | Path,
@@ -841,6 +871,8 @@ class CadTranslationPipeline:
         with tempfile.TemporaryDirectory(prefix="xl-cad-") as temporary:
             temp_root = Path(temporary)
             work_dxf = temp_root / f"{source.stem}.dxf"
+            # DWG 转 DXF 要调用外部转换器，大图纸要好几秒：先报一次 0，界面马上进入「读取」阶段。
+            self._emit("scan", 0, 1)
             if source.suffix.lower() == ".dxf":
                 shutil.copy2(source, work_dxf)
             elif self.converter is not None:
@@ -915,7 +947,9 @@ class CadTranslationPipeline:
             remaining = [text for text in remaining if text not in translations]
             self._check_stop()
             if remaining and self.translator is not None:
-                ai_results = dict(self.translator(remaining, glossary))
+                ai_results = dict(
+                    self._call_translator(remaining, glossary, already=len(translations), total=len(texts))
+                )
                 for text in remaining:
                     value = str(ai_results.get(text, "") or "").strip()
                     valid, _reason = _valid_translation(text, value)

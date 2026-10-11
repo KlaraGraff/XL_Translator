@@ -2633,7 +2633,7 @@ class TaskRunner:
                 actual_results=normal_api_language_results,
                 review_marks=excel_review_marks,
             )
-            _finish_process("paused", elapsed_sec=elapsed)
+            _finish_process("cancelled", elapsed_sec=elapsed)
             self._queue.put(
                 StoppedMsg(
                     message=stopped_message,

@@ -399,9 +399,13 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLEl
   const stoppedSet = new Set(taskStopped ? pages.filter((page) => !pageNeedsRerun(page) && page.status === "pending") : []);
   const flagged = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && pageIsProblem(page, taskStopped));
   const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
-  const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length;
+  // 按幅面跳过的 A3+ 页没有翻译，只是原样保留——不能算进「通过」。以前一份只有一页
+  // A3 的文件汇总写着「1 页全部通过」，展开才看到那一页是「按幅面跳过」。
+  const isSkippedOversize = (page: PdfPage): boolean => Boolean(page.skipped_oversize);
+  const oversize = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !flagged.includes(page) && !unfinished.includes(page) && isSkippedOversize(page));
+  const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length - oversize.length;
 
-  if (failed.length === 0 && stoppedSet.size === 0 && flagged.length === 0 && unfinished.length === 0) {
+  if (failed.length === 0 && stoppedSet.size === 0 && flagged.length === 0 && unfinished.length === 0 && oversize.length === 0) {
     const all = el("span");
     all.textContent = `${pages.length} 页全部通过`;
     return [all];
@@ -417,6 +421,7 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLEl
   if (stoppedSet.size > 0) push(`${stoppedSet.size} 已停止`, "flag");
   if (flagged.length > 0) push(`${flagged.length} 建议复核`, "flag");
   if (unfinished.length > 0) push(`${unfinished.length} 待处理`);
+  if (oversize.length > 0) push(`${oversize.length} 原样保留`);
   if (passed > 0) push(`${passed} 通过`);
 
   const out: HTMLElement[] = [];
@@ -603,8 +608,10 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   // 反复整体重建并重新插入页面，全局类名一勾就会连累界面上其它跟这次筛选无关的东西。
   const card = el("div", "card pdf-review-card");
   card.classList.toggle("filter", ui.onlyBad);
+  // 终态和上面的任务清单对半分高度（见 buildColLeft）；按内容撑高的话，展开几个文件
+  // 就会把任务清单压成只剩标题。
   card.style.cssText = snapshot.terminal
-    ? "flex:0 0 auto;display:flex;flex-direction:column;overflow:hidden"
+    ? "flex:1 1 0%;min-height:240px;display:flex;flex-direction:column;overflow:hidden"
     : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
   const head = el("div", "tc-head");
   const b = el("b");
@@ -780,11 +787,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   // 只在 overflow 计算值为 visible 时才按内容撑开，而这里已经是 overflow:auto。
   tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto";
   tableWrap.dataset.keepScroll = "pdf-review";
-  // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，给个上限才滚得起来。
-  // 上限不再写死 420px：终态任务可能有 5 个文件、84 页，固定 420px 在大屏上会浪费
-  // 一大截空间；改成跟视口走（52vh），同时封顶 640px，避免在超大屏上把卡片拉得
-  // 过高。非终态（运行中）分支的高度逻辑不受影响，还是外层 flex 撑高度。
-  if (snapshot.terminal) tableWrap.style.maxHeight = "min(52vh, 640px)";
+  // 运行中和终态都由外层 flex 定高度，表格在卡片里自己滚动。
   tableWrap.append(table);
 
   if (banner) card.append(banner);

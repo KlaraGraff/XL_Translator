@@ -1836,7 +1836,11 @@ class TranslationTaskManager:
             from core.engine_dispatcher import get_system_prompt, translate_texts
             system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
 
-            def translate_batch(texts: list[str], glossary: dict[str, str]) -> dict[str, str]:
+            def translate_batch(
+                texts: list[str],
+                glossary: dict[str, str],
+                progress: Callable[[int, int], None] | None = None,
+            ) -> dict[str, str]:
                 prompt = system_prompt
                 if glossary:
                     prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
@@ -1854,6 +1858,8 @@ class TranslationTaskManager:
                     # receive the user's actual selection.
                     source_lang=source_lang,
                     api_scheduler=api_schedulers.get("translation"),
+                    # 逐批回调：CAD 进度条在「AI 翻译」阶段跟着批次走，而不是停住再跳。
+                    progress_callback=progress,
                 )
 
             source_pair = str(source_lang or "").strip()
