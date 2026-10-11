@@ -60,6 +60,9 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
     || Number(result.truncated_cells ?? 0) > 0
     || result.sheet_name_status === "preserved"
     || issues.some((issue) => issue && typeof issue === "object" && (issue as Record<string, unknown>).severity === "needs_review");
+  // 停止后写出的 Excel / Word：文件是生成了，可里面还有一部分是原文（后端按续译检测
+  // 同一口径数出来的格/段数）。叫「已生成」会像翻完了一样。
+  const unfinished = Number(result.unfinished_text_count ?? 0);
   const untranslated = result.untranslated === true
     || result.all_pages_skipped_oversize === true
     || (Number(result.page_count ?? 0) > 0 && Number(result.skipped_oversize_page_count ?? 0) >= Number(result.page_count));
@@ -80,7 +83,9 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
       const count = file.total > 0 ? ` · ${file.completed} / ${file.total}` : "";
       return `处理中${phase ? ` · ${phase}` : ""}${count}`;
     }
-    case "generated": return `已生成${untranslated ? " · 整份未翻译" : ""}${needsReview ? " · 需复核" : ""}`;
+    case "generated":
+      if (unfinished > 0) return `部分翻译${needsReview ? " · 需复核" : ""}`;
+      return `已生成${untranslated ? " · 整份未翻译" : ""}${needsReview ? " · 需复核" : ""}`;
     case "failed": return "未生成";
     case "unstarted": return "未开始";
     case "stopped": return "已停止";
@@ -91,7 +96,10 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
 
 export function fileProgressTone(file: FileProgress, taskState?: string): "ok" | "warn" | "dgr" | "mute" | "tint" {
   if (taskState === "interrupted" && ["waiting", "active", "paused"].includes(file.state)) return "dgr";
-  if (file.state === "generated") return fileProgressLabel(file).includes("需复核") ? "warn" : "ok";
+  if (file.state === "generated") {
+    const label = fileProgressLabel(file);
+    return label.includes("需复核") || label.startsWith("部分翻译") ? "warn" : "ok";
+  }
   if (file.state === "active") return "tint";
   if (file.state === "failed" || file.state === "interrupted") return "dgr";
   if (file.state === "stopped" || file.state === "unstarted" || file.state === "waiting" || file.state === "paused") return "mute";
