@@ -1855,13 +1855,14 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     return cell;
   };
   if (surface === "excel") {
-    row.append(th("文件"), th("格式"), th("工作表", true), th("文本单元格", true), th("单元格外内容"), th("状态"));
+    // 「\u200b」是窄窗口下表头唯一允许折行的位置（workspace.css 的 .ws-files th 用 keep-all）。
+    row.append(th("文件"), th("格式"), th("工作表", true), th("文本\u200b单元格", true), th("单元格外\u200b内容"), th("状态"));
   } else if (surface === "word") {
     row.append(th("文件"), th("格式"), th("段落", true), th("表格", true), th("状态"));
   } else if (surface === "cad") {
     row.append(th("文件"), th("格式"), th("文字实体", true), th("待翻译", true), th("状态"));
   } else {
-    row.append(th("文件"), th("类型"), th("大小"), th("页数 / 尺寸"), th("状态"));
+    row.append(th("文件"), th("类型"), th("大小"), th("页数\u00a0/\u00a0\u200b尺寸"), th("状态"));
   }
   return row;
 }
