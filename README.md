@@ -70,3 +70,7 @@ Windows 的数据目录是 `%LOCALAPPDATA%\Translator`。
 手动下载走官方 GitHub Release 页，应用仅接受与本机系统和架构匹配且带 SHA-256 校验文件的完整发布包。
 
 查看 [CHANGELOG](docs/CHANGELOG.md) 了解版本变化。
+
+## 开发
+
+代码结构、一次任务的完整流程和「改什么去哪里」见 [架构说明](docs/ARCHITECTURE.md)；新增一个翻译板块按 [新增翻译板块清单](docs/ADDING_A_TRANSLATION_PAGE.md) 做。

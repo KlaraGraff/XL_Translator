@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -103,31 +104,10 @@ def register(app: FastAPI) -> None:
         return _json_safe(previous) if previous else None
 
     def _task_options(request: TaskStartRequest) -> TaskOptions:
-        return TaskOptions(
-            untranslated_only=request.untranslated_only,
-            protect_front_matter=request.protect_front_matter,
-            translate_headers_footers=request.translate_headers_footers,
-            allow_xls_fallback=request.allow_xls_fallback,
-            allow_doc_fallback=request.allow_doc_fallback,
-            include_images=request.include_images,
-            source_lang=request.source_lang,
-            target_lang=request.target_lang,
-            allow_known_review_failure=request.allow_known_review_failure,
-            lang_pair=request.lang_pair,
-            resume_output_dir=request.resume_output_dir,
-            cad_output_dir=request.cad_output_dir,
-            cad_use_terminology=request.cad_use_terminology,
-            cad_keep_work_dxf=request.cad_keep_work_dxf,
-            cad_copy_related_files=request.cad_copy_related_files,
-            cad_verify_roundtrip=request.cad_verify_roundtrip,
-            cad_scan_replacement_chars=request.cad_scan_replacement_chars,
-            cad_include_block_text=request.cad_include_block_text,
-            cad_glossary_path=request.cad_glossary_path,
-            cad_use_memory=request.cad_use_memory,
-            cad_check_entity_counts=request.cad_check_entity_counts,
-            cad_scan_residual=request.cad_scan_residual,
-            cad_translate_output_filename=request.cad_translate_output_filename,
-        )
+        # Every TaskOptions field has a same-named request field
+        # (tests/test_surface_registry_contracts.py checks it), so a new
+        # option is declared in those two places and nowhere else.
+        return TaskOptions(**{field.name: getattr(request, field.name) for field in fields(TaskOptions)})
 
     @app.post("/api/tasks/preflight")
     def preflight_task(request: TaskStartRequest) -> dict[str, Any]:

@@ -81,18 +81,70 @@ export type Surface = "excel" | "word" | "pdf" | "cad" | "新板块";
 
 ### 4. 后端
 
-- `api/app.py`：扫描和启动请求里的 `surface` 字面量类型都要加上新板块。
-- `api/task_manager.py`：
-  - `TaskSurface` 和任务类型映射要加上新板块。
-  - 如果各阶段耗时差别很大，在 `_PHASE_WEIGHTS` 里加一行权重，进度条才会平稳。
-    不加的话按各阶段等权处理。
-- 任务运行器要发出和已有板块相同的事件：进度、逐文件状态、日志、结束。前端只认这几种事件。
-- 新的设置项必须带默认值，让旧的 `settings.json` 不用迁移就能读（见 `AGENTS.md` 旧数据兼容规则）。
+后端也按「注册表」组织：任务管理器不认识具体页面，只向板块对象提问。整体结构见
+[ARCHITECTURE.md](ARCHITECTURE.md)。新板块要做四件事：
+
+**① 写执行器** `core/新板块_task_runner.py`
+
+```python
+from core.runner_base import BaseTaskRunner
+from core.task_runner_messages import DoneMsg, ErrorMsg, ProgressMsg, StoppedMsg
+
+class 新板块TaskRunner(BaseTaskRunner):
+    _thread_name = "新板块-translation"
+
+    def __init__(self, files, settings, ...):
+        self._init_runner_shell()      # 队列、线程、停止信号
+        ...
+
+    def _run(self) -> None:            # 在后台线程里跑
+        ...
+```
+
+- 线程、消息队列、`stop()`、`needs_poll()`、`get_message()` 都由 `BaseTaskRunner` 提供，
+  只写 `_run()`。
+- 只通过 `self._queue.put(...)` 汇报，消息类型都在 `core/task_runner_messages.py`：
+  `ProgressMsg`（带 `phase_index` / `phase_total`）、`StatusMsg`、`LogMsg`（用 `self._log()`）；
+  逐文件状态用 `core/file_progress.py`（参考已有执行器里的 `self._file_progress.emit(...)`）。
+- 最后**必须**以 `DoneMsg`、`StoppedMsg`、`ErrorMsg` 之一结束，否则任务会一直显示运行中。
+- 在循环和每次调模型前检查 `self._stop_event.is_set()`；已经拿到的译文照常写出（见架构说明里的
+  「停止不丢已付费结果」）。
+- `_run()` 只做编排，每个阶段写成一个方法，参数用关键字参数，参考 Excel / Word 执行器。
+- 要支持暂停，就实现 `pause()`、`resume()`，需要时再加 `end_paused()`。
+
+**② 写板块声明** `api/surfaces/新板块.py`，参考 `cad.py`：
+
+| 必填 | 说明 |
+|---|---|
+| `key` | 与前端 `Surface` 的键一致 |
+| `label` | 任务历史和调度里显示的名字 |
+| `page_key` | 决定任务占用哪类模型；新值要在 `core/model_api_identity.task_model_roles_for_page` 里登记 |
+| `scan()` | 列出来源下可翻译的文件（任务启动时用） |
+| `scan_sources()` | 给 `/api/sources/scan` 的文件清单；结构与其他板块不同时改写 `scan_response()` |
+| `validate_preflight()` | 开始前的检查，不合格抛 `TaskInputError`；常用 `require_target_lang()`、`require_translation_model()` |
+| `build_runner()` | 用 `RunnerRequest` 构建 ① 的执行器 |
+
+按需覆盖的类属性和方法：`phase_weights`（各阶段占进度条的比例，不填按等分）、`can_pause` /
+`pause_mode` / `can_resume` / `can_end_paused`、`uses_translation_memory`、
+`target_lang_setting`、`snapshot()`、`fingerprint_extras()`、`owner_label()`。
+每一项的含义写在 `api/surfaces/base.py` 的注释里。
+
+**③ 登记**：在 `api/surfaces/__init__.py` 的 `_SURFACES` 里加一个实例。扫描和启动请求能接受的
+`surface` 值、任务名称、进度权重、暂停按钮都从这里取，不用再改 `api/app.py` 或 `api/task_manager.py`。
+
+**④ 板块自己的运行选项**：在 `api/task_contracts.py` 的 `TaskOptions` 和 `api/schemas.py` 的
+`TaskStartRequest` 里各加一个**同名**、带默认值的字段，路由会按名字自动带过去。
+新的持久化设置项放 `settings.py`，也必须带默认值，让旧的 `settings.json` 不用迁移就能读
+（见 `AGENTS.md` 旧数据兼容规则）。
+
+`tests/test_surface_registry_contracts.py` 会核对前后端是否对得上：前端 `Surface` 与后端注册表、
+任务中心的可暂停列表与 `can_pause`、必填钩子是否都实现、`page_key` 是否登记了模型角色、
+`TaskOptions` 字段是否都有同名请求字段。漏了哪一处，报错会直接点名。
 
 ### 5. 自测
 
 - `cd ui && npx tsc --noEmit && npm run build`
 - `.venv/bin/ruff check .`
-- `.venv/bin/python -m pytest tests/test_workspace_surface_contracts.py`
+- `.venv/bin/python -m pytest tests/test_workspace_surface_contracts.py tests/test_surface_registry_contracts.py`
 - 在浏览器或 Tauri 壳里把完整流程走一遍，和已有板块逐项对照：选择来源、自动扫描、
   开始、暂停或停止、继续、完成横幅、任务中心。
