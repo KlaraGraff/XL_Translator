@@ -1645,7 +1645,17 @@ class WordTaskRunner:
                 # 子。跳过占位，它们就和没轮到的段落一样缺席词典：写盘保留原文，
                 # 进度计入「保留原文待续译」，续译时会重新排队。
                 stop_withdrew_unresolved = self._stop_event.is_set()
-                if not stop_withdrew_unresolved:
+                if stop_withdrew_unresolved:
+                    # 没轮到的批次在 translate_word_texts 合并结果时按「原文」补位
+                    # （_merge_unit_results 的缺省值），所以它们其实已经躺在词典里了。
+                    # 不摘掉的话，停止说明会报「已译 3000/3000 段，0 段待续译」，
+                    # 实际只译了三分之一——用户看到的就是一份「全部翻完」的假账。
+                    # 恢复池在停止后不再收候选（add_candidate 直接返回），这批段落
+                    # 不会出现在 unresolved_sources 里，只能按 retry_sources 摘。
+                    for source in retry_sources:
+                        if api_translations.get(source) == source:
+                            api_translations.pop(source, None)
+                else:
                     for source in recovery_outcome.unresolved_sources:
                         api_translations[source] = source
                         identity_fallback_sources.add(source)
@@ -2478,6 +2488,9 @@ class WordTaskRunner:
                     )
                     untranslated_texts = max(total_texts - translated_texts, 0)
                     written_files = sum(1 for item in file_results if item.get("success"))
+                    # Word 是全局批量翻译，停止时文件照样每个都写出来，
+                    # unstarted_file_count 恒为 0；界面要靠段数才能说出「还剩多少」。
+                    result_contract["kpi"]["unstarted_text_count"] = untranslated_texts
                     stopped_message = (
                         f"{stopped_message}"
                         f"进度：已译 {translated_texts}/{total_texts} 段，"
