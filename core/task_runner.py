@@ -376,6 +376,17 @@ def _set_excel_review_mark(review_marks: dict[str, str], source: str, mark: str)
         review_marks[source_key] = mark
 
 
+def _already_in_target_language(source: str, item, target_lang: str) -> bool:
+    """模型报的实际语言就是目标语言，且译文与原文相同。"""
+    translation = str(getattr(item, "translation", "") or "").strip()
+    reported = str(getattr(item, "source_lang", "") or "").strip().lower()
+    return (
+        bool(translation)
+        and translation.lower() == str(source or "").strip().lower()
+        and reported == str(target_lang or "").strip().lower()
+    )
+
+
 # ── TaskRunner ────────────────────────────────────────────────────────────────
 
 class TaskRunner:
@@ -1616,7 +1627,24 @@ class TaskRunner:
                     mixed_results = run_mixed_api_translation()
 
                 api_translations.update(normal_api_translations)
+                # 自动识别时模型会报每一格的实际语言：报的就是目标语言、译文又原样
+                # 返回的格子（英译英表里的 Total、Steel plate）本来就不用翻，不该进
+                # 写入词典——进了就会被当成「没翻成功」整格标黄需复核。
+                already_target = {
+                    source
+                    for source, item in normal_api_language_results.items()
+                    if _already_in_target_language(source, item, target_lang)
+                }
+                for source in already_target:
+                    api_translations.pop(source, None)
+                if already_target:
+                    self._log(
+                        "INFO",
+                        f"{len(already_target)} 处内容本来就是目标语言，保持原样，不标记复核。",
+                    )
                 for source, translation in normal_api_translations.items():
+                    if source in already_target:
+                        continue
                     if str(source or "").strip().lower() == str(translation or "").strip().lower():
                         _set_excel_review_mark(
                             excel_review_marks,

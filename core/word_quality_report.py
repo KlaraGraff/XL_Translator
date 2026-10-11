@@ -9,6 +9,7 @@ word_task_runner 会把这里的名字原样再导出，旧的导入路径继续
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from loguru import logger
@@ -21,6 +22,7 @@ from core.mixed_language import (
     MIXED_MARK_UNRESOLVED,
     MixedLanguageResult,
 )
+from core.translation_coverage import COVERAGE_SOURCE_ONLY
 from core.translation_filter import TranslationValidationResult
 from core.word_coverage import apply_coverage_review_marks, build_word_coverage_plan
 from core.word_document import count_text_bearing_header_footer_parts
@@ -137,6 +139,7 @@ def _append_post_write_coverage_issues(
     existing_highlight_policy: str | None = None,
     mark_log_callback=None,
     pre_reported_residual_sources: set[str] | None = None,
+    already_target_sources: set[str] | None = None,
 ) -> int:
     """成品文档体检：先按体检结果往文档上涂复核标记，再把同一批位置写进报告。
 
@@ -151,6 +154,19 @@ def _append_post_write_coverage_issues(
         source_lang=source_lang,
         protect_front_matter=protect_front_matter,
     )
+    if already_target_sources:
+        # 自动识别时模型报过「本来就是目标语言」的段落原样保留是对的，不是漏翻。
+        plan = replace(
+            plan,
+            units=[
+                unit
+                for unit in plan.units
+                if not (
+                    unit.status == COVERAGE_SOURCE_ONLY
+                    and unit.source_text.strip() in already_target_sources
+                )
+            ],
+        )
     if existing_highlight_policy is not None:
         marked = apply_coverage_review_marks(
             output_path,

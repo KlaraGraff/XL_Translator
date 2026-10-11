@@ -882,6 +882,8 @@ class WordTaskRunner:
         word_batch_stats = WordBatchRunStats()
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
+        # 模型报「本来就是目标语言」、原样返回的段落：成品体检不再把它们报成未译源文。
+        already_target_sources: set[str] = set()
         recovery_pool: _WordRecoveryPool | None = None
         recovery_outcome = _WordRecoveryOutcome(
             fixed_sources=[],
@@ -1461,8 +1463,24 @@ class WordTaskRunner:
                     on_all_drained=recovery_pool.start,
                 )
 
+                def already_in_target_language(source: str, candidate: str | None) -> bool:
+                    # 自动识别时模型报这段就是目标语言、译文又原样返回（英译英文档里的
+                    # 英文段落）：不是翻译失败，不该占三轮重试再标需复核。
+                    if not auto_source_lang:
+                        return False
+                    if str(candidate or "").strip() != str(source or "").strip():
+                        return False
+                    with model_source_results_lock:
+                        reported = list(model_source_results.get(source, ()))
+                    target = str(target_lang or "").strip().lower()
+                    return bool(reported) and all(
+                        str(item.source_lang or "").strip().lower() == target for item in reported
+                    )
+
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
                     if self.stop_requested():
+                        return
+                    if already_in_target_language(source, candidate):
                         return
                     if _needs_word_translation_retry(
                         source,
@@ -1619,10 +1637,16 @@ class WordTaskRunner:
                         ),
                     )
 
+                already_target_sources.update(
+                    source
+                    for source in misses
+                    if already_in_target_language(source, api_translations.get(source))
+                )
                 retry_sources = [
                     source
                     for source in misses
-                    if _needs_word_translation_retry(
+                    if source not in already_target_sources
+                    and _needs_word_translation_retry(
                         source,
                         api_translations.get(source),
                         source_lang=source_lang,
@@ -2267,6 +2291,7 @@ class WordTaskRunner:
                         pre_reported_residual_sources={
                             unit.source_text.strip() for unit in still_needs_review
                         },
+                        already_target_sources=already_target_sources,
                     )
                     final_path = final_output_dir / out_path.name
                     elapsed = (datetime.now() - t0).total_seconds()
