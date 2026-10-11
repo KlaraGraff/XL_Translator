@@ -292,6 +292,13 @@ def _parse_dxf(text: str) -> list[DxfRecord]:
         except ValueError as exc:
             raise CadPipelineError(f"DXF 代码行无效：{code_text!r}") from exc
         records.append(DxfRecord(code, value, ending, code_text, code_ending))
+    # 被截断的图纸（拷贝中断、网盘没同步完）照样能逐行配对解析，只是后半截没了：
+    # 不拦的话它会以「0 个文字实体」通过扫描，任务里还标成「已生成」，产物是一份
+    # 同样残缺的 DXF。开了 SECTION 却没有收尾的 ENDSEC，就是没读完的文件。
+    opened = sum(1 for record in records if record.code == 0 and record.value.strip() == "SECTION")
+    closed = sum(1 for record in records if record.code == 0 and record.value.strip() == "ENDSEC")
+    if opened > closed:
+        raise CadPipelineError("DXF 文件不完整：有段落没有结束标记，可能已损坏或没有拷贝完整，已拒绝处理。")
     return records
 
 

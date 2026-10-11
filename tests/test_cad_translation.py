@@ -1,3 +1,4 @@
+import pytest
 import hashlib
 import json
 from pathlib import Path
@@ -325,3 +326,11 @@ def test_numbers_next_to_chinese_characters_are_kept_in_the_check():
     assert _numeric_tokens("M10 螺栓 Q235") == []
     assert _valid_translation("Fire exit route 12345", "消防通道12345") == (True, "")
     assert _valid_translation("Room 101", "房间102")[0] is False
+
+
+def test_truncated_dxf_is_rejected_instead_of_passing_as_empty_drawing():
+    complete = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (1, "门"), (0, "ENDSEC"), (0, "EOF"))
+    assert [record.value for record in _parse_dxf(complete)][-1] == "EOF"
+    truncated = _dxf((0, "SECTION"), (2, "ENT"))
+    with pytest.raises(CadPipelineError, match="不完整"):
+        _parse_dxf(truncated)
