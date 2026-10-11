@@ -46,7 +46,7 @@ class PostWriteCoverageTests(unittest.TestCase):
 
 
 class RunnerTests(IsolatedAppDataTestCase):
-    def test_identity_in_target_language_skips_retry_and_reaches_post_write_check(self) -> None:
+    def _run(self, *, translation: str, reported_lang: str | None = None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.docx"
@@ -74,15 +74,17 @@ class RunnerTests(IsolatedAppDataTestCase):
                     kwargs["source_result_callback"](
                         text,
                         TranslationLanguageResult(
-                            source_text=text, translation=text,
-                            source_lang=target_lang, target_lang=target_lang,
+                            source_text=text, translation=translation,
+                            source_lang=reported_lang or target_lang, target_lang=target_lang,
                         ),
                     )
-                    kwargs["candidate_callback"](text, text)
-                return {text: text for text in texts}
+                    kwargs["candidate_callback"](text, translation)
+                return {text: translation for text in texts}
 
             with ExitStack() as stack:
-                _contracts.WordTaskResultContractTests._runner_patches(self, stack, root=root, prepared_by_path={source: prepared})
+                writer = _contracts.WordTaskResultContractTests._runner_patches(
+                    self, stack, root=root, prepared_by_path={source: prepared}
+                )
                 coverage = stack.enter_context(
                     patch("core.word_task_runner._append_post_write_coverage_issues", return_value=0)
                 )
@@ -102,9 +104,27 @@ class RunnerTests(IsolatedAppDataTestCase):
                 runner._run()
 
             _contracts.WordTaskResultContractTests._terminal_message(runner, DoneMsg)
-            retries.assert_not_called()
-            self.assertEqual(coverage.call_args.kwargs["already_target_sources"], {ENGLISH})
+            return writer, retries, coverage
 
+    def test_identity_in_target_language_skips_retry_and_reaches_post_write_check(self) -> None:
+        _writer, retries, coverage = self._run(translation=ENGLISH)
+        retries.assert_not_called()
+        self.assertEqual(coverage.call_args.kwargs["already_target_sources"], {ENGLISH})
+
+    def test_target_language_paragraph_translated_into_chinese_keeps_the_source(self) -> None:
+        # 本机实测：英文段落被模型译成中文，程序把中文插进文档还标了黄。
+        writer, retries, coverage = self._run(translation="已经是英文的泵房说明段落。")
+        retries.assert_not_called()
+        self.assertEqual(coverage.call_args.kwargs["already_target_sources"], {ENGLISH})
+        self.assertEqual(writer.call_args.kwargs["translations"].get(ENGLISH, ENGLISH), ENGLISH)
+
+    def test_chinese_output_for_text_without_chinese_goes_back_to_retry(self) -> None:
+        # 模型没把这段报成目标语言时，同样不收中文译文：退回原文交给严格重试。
+        _writer, retries, _coverage = self._run(
+            translation="已经是英文的泵房说明段落。", reported_lang="fr",
+        )
+        retries.assert_called_once()
+        self.assertEqual(retries.call_args.args[:2], (ENGLISH, ENGLISH))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

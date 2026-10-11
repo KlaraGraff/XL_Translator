@@ -20,6 +20,7 @@ from loguru import logger
 
 from core import tm_manager
 from core.api_concurrency_control import (
+    ApiCredentialRejectedError,
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
 )
@@ -304,6 +305,21 @@ def _iter_source_location_labels(
         location_label = str(location.get("location_label") or "未知位置")
         labels.append(f"{file_name} · {section_path} · {location_label}")
     return labels
+
+
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+_CJK_TARGET_PREFIXES = ("zh", "ja", "ko")
+
+
+def _translation_in_unexpected_cjk(source: str, translation: str | None, target_lang: str) -> bool:
+    """A Latin-script target whose "translation" of CJK-free text came back in CJK."""
+    target = str(target_lang or "").strip().lower()
+    if not target or target.startswith(_CJK_TARGET_PREFIXES):
+        return False
+    text = str(translation or "")
+    if not text or text.strip() == str(source or "").strip():
+        return False
+    return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
 
 
 class WordTaskRunner:
@@ -1466,9 +1482,10 @@ class WordTaskRunner:
                 def already_in_target_language(source: str, candidate: str | None) -> bool:
                     # 自动识别时模型报这段就是目标语言、译文又原样返回（英译英文档里的
                     # 英文段落）：不是翻译失败，不该占三轮重试再标需复核。
+                    # 译文跟原文不一样也算：模型报这段已经是目标语言，却又「翻」出了别的
+                    # 东西（本机实测里一段英文被译成了中文插进英文文档），那份译文一律不用。
+                    del candidate
                     if not auto_source_lang:
-                        return False
-                    if str(candidate or "").strip() != str(source or "").strip():
                         return False
                     with model_source_results_lock:
                         reported = list(model_source_results.get(source, ()))
@@ -1526,7 +1543,7 @@ class WordTaskRunner:
                         return _run_normal_main_translation()
                     except ApiKeyTemporarilyUnavailableError as exc:
                         partial = getattr(exc, "partial_results", None) or {}
-                        if not partial:
+                        if not partial or isinstance(exc, ApiCredentialRejectedError):
                             raise
                         self._log("WARN", f"{exc}")
                         if stopped_message is None:
@@ -1539,7 +1556,7 @@ class WordTaskRunner:
                     try:
                         return _run_mixed_main_translation()
                     except ApiKeyTemporarilyUnavailableError as exc:
-                        if not misses:
+                        if not misses or isinstance(exc, ApiCredentialRejectedError):
                             raise
                         self._log("WARN", f"{exc}")
                         if stopped_message is None:
@@ -1676,6 +1693,24 @@ class WordTaskRunner:
                     for source in misses
                     if already_in_target_language(source, api_translations.get(source))
                 )
+                for source in already_target_sources:
+                    api_translations[source] = source
+                # 模型没报语言、或者报错了语言时的兜底：目标是拼音文字、原文里一个汉字/假名
+                # 都没有，「译文」里却冒出了汉字，那一定不是要的译文。退回原文交给下面的
+                # 严格重试，重试不过就照常标需复核，不会把中文塞进英文文档里。
+                wrong_script = [
+                    source
+                    for source in misses
+                    if source not in already_target_sources
+                    and _translation_in_unexpected_cjk(source, api_translations.get(source), target_lang)
+                ]
+                for source in wrong_script:
+                    api_translations[source] = source
+                if wrong_script:
+                    self._log(
+                        "WARN",
+                        f"{len(wrong_script)} 处译文不是目标语言（原文没有中文，译文却是中文），已退回原文重试。",
+                    )
                 retry_sources = [
                     source
                     for source in misses
