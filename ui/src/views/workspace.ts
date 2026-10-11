@@ -1053,8 +1053,11 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
   }
   // Excel / Word 停止后已经写出了一部分：直接从这里接着翻，不用先去「重新扫描」才能
   // 看到续译入口。
-  const unfinishedTexts = num(record(record(lastTask?.result).kpi).unstarted_text_count);
-  if ((surface === "excel" || surface === "word") && lastTask?.state === "stopped" && info.hasOutput && unfinishedTexts > 0 && st.files.length) {
+  // 后端数不出剩余内容时不给 unstarted_text_count：那不是「全部翻完」，照样给入口。
+  const unfinishedRaw = record(record(lastTask?.result).kpi).unstarted_text_count;
+  const unfinishedTexts = num(unfinishedRaw);
+  const unfinishedUnknown = typeof unfinishedRaw !== "number";
+  if ((surface === "excel" || surface === "word") && lastTask?.state === "stopped" && info.hasOutput && (unfinishedTexts > 0 || unfinishedUnknown) && st.files.length) {
     actions.unshift(createButton({
       label: "接着翻译",
       icon: "play",
@@ -3882,7 +3885,13 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // Word 是先整批翻完再逐个写文件，停止时每个文件都会写出来，「没跑到的文件」恒为 0；
   // 没翻到的是段落（kpi.unstarted_text_count），它们保留原文留给续译。不报这个数，
   // 横幅会在三分之二段落还是原文时写「其余全部通过」。
-  const unfinishedTexts = task.state === "stopped" ? num(record(result.kpi).unstarted_text_count) : 0;
+  const unfinishedRaw = record(result.kpi).unstarted_text_count;
+  const unfinishedTexts = task.state === "stopped" ? num(unfinishedRaw) : 0;
+  // Excel / Word 停止后数不出产物里还剩多少原文时，后端不写这个键（不是 0）。
+  // 不知道就不能说「全部翻完」「全部通过」。
+  const unfinishedUnknown = task.state === "stopped"
+    && (surface === "excel" || surface === "word")
+    && typeof unfinishedRaw !== "number";
   if (task.state === "stopped") {
     const unfinishedPages = num(record(result.kpi).unstarted_page_count);
     const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
@@ -3912,7 +3921,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 没有这个键，也按没开算——说「已生成」不会错，说「通过」可能是错的）。
   const pdfUnreviewed = surface === "pdf"
     && !fileResults.some((entry) => record(entry).review_enabled === true);
-  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0) {
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0 && !unfinishedUnknown) {
     const hasOther = review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0;
     clauses.push(
       pdfUnreviewed
@@ -3951,7 +3960,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     // 换成「已翻好的内容写进了文件」那句会让人以为是自己点了停止。
     const userStopped = task.stop_requested !== false;
     const condensed = userStopped && (surface === "excel" || surface === "word")
-      ? stoppedSummarySentence(surface, generated, failed, unfinishedTexts, review)
+      ? stoppedSummarySentence(surface, generated, failed, unfinishedUnknown ? null : unfinishedTexts, review)
       : "";
     st.bannerInfo = {
       title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
@@ -4018,15 +4027,18 @@ function stoppedSummarySentence(
   surface: Surface,
   generated: number,
   failed: number,
-  unfinished: number,
+  unfinished: number | null,
   review: number,
 ): string {
   if (generated === 0) return "停止时还没有翻好的内容，没有生成文件。";
   const unit = surface === "excel" ? "格" : "段";
   const lead = failed > 0 ? `${failed} 个文件没能生成；其余` : "";
-  const body = unfinished > 0
-    ? `已翻好的内容写进了文件，还有 ${unfinished.toLocaleString("zh-CN")} ${unit}没翻、保留原文，点「接着翻译」从停下的地方继续`
-    : "停止前内容已经全部翻完";
+  // null：后端没能数出剩余多少，不报数，也不说「全部翻完」。
+  const body = unfinished === null
+    ? "已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续"
+    : unfinished > 0
+      ? `已翻好的内容写进了文件，还有 ${unfinished.toLocaleString("zh-CN")} ${unit}没翻、保留原文，点「接着翻译」从停下的地方继续`
+      : "停止前内容已经全部翻完";
   const tail = review > 0 ? `，另有 ${review} 处需复核` : "";
   return `${lead}${body}${tail}。`;
 }

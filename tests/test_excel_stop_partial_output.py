@@ -236,6 +236,19 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
         cells = [str(row[0].value or "") for row in workbook.worksheets[0].iter_rows(max_col=1)]
         self.assertEqual(len([value for value in cells if "\n" in value]), len(_SOURCES))
 
+    def test_uncountable_output_leaves_unfinished_kpi_unset(self) -> None:
+        # 产物数不出来（返回 None）时以前 kpi 记 0，界面就说「停止前内容已经全部翻完」
+        # 并藏起「接着翻译」。现在不写这个键，由界面按「没数清」处理。
+        with patch(
+            "core.resume_detection.count_untranslated_in_output", return_value=None
+        ):
+            stopped, _source = self._run(fail_after_stop=False)
+        entry = stopped.files[0]
+        self.assertTrue(entry["success"], entry)
+        self.assertNotIn("unstarted_text_count", stopped.kpi)
+        self.assertNotIn("unfinished_text_count", entry)
+        self.assertNotIn("还有", stopped.message)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

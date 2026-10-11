@@ -368,6 +368,9 @@ class TaskRunner(BaseTaskRunner):
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
+        # 停止后写出的文件里还剩多少格原文；None 表示没数（没走到写盘后的清点）
+        # 或数不出来——那时不报数，更不能报 0 冒充「已经全部翻完」。
+        unfinished_cells: int | None = None
         fatal_error_message: str | None = None
         quality_issues: list[dict] = []
         file_language_preflights: dict = {}
@@ -1181,7 +1184,7 @@ class TaskRunner(BaseTaskRunner):
 
             if self._stop_event.is_set():
                 # 停止后不再调整行高：续译跑完时会对整份文件重新调整。
-                self._record_unfinished_after_stop(
+                unfinished_cells = self._record_unfinished_after_stop(
                     file_results,
                     target_lang=target_lang,
                     source_lang=source_lang,
@@ -1237,9 +1240,6 @@ class TaskRunner(BaseTaskRunner):
         if stopped_message is not None:
             self._file_progress.emit_many("stopped", "stopped")
             elapsed = (datetime.now() - start_ts).total_seconds()
-            unfinished_cells = sum(
-                int(item.get("unfinished_text_count") or 0) for item in file_results
-            )
             if unfinished_cells:
                 stopped_message = (
                     f"{stopped_message}还有 {unfinished_cells} 格没翻。"
@@ -1265,8 +1265,10 @@ class TaskRunner(BaseTaskRunner):
                 review_marks=excel_review_marks,
             )
             # 与续译弹窗「补 N 格」同一口径（产物里还是原文的格子数），横幅据此报
-            # 「还有 N 格没翻」。
-            contract["kpi"]["unstarted_text_count"] = unfinished_cells
+            # 「还有 N 格没翻」。数不出来时不写这个键（与 Word 一致），界面按「没数清」
+            # 处理，仍给出「接着翻译」。
+            if unfinished_cells is not None:
+                contract["kpi"]["unstarted_text_count"] = unfinished_cells
             _finish_process("cancelled", elapsed_sec=elapsed)
             self._queue.put(
                 StoppedMsg(
@@ -3709,21 +3711,24 @@ class TaskRunner(BaseTaskRunner):
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
-    ) -> None:
-        """停止后写出的文件逐个数「还是原文的格子」，记在逐文件结果上。
+    ) -> int | None:
+        """停止后写出的文件逐个数「还是原文的格子」，记在逐文件结果上并返回合计。
 
         口径与续译检测完全相同（core.resume_detection.count_untranslated_in_output）：
         停止横幅说「还有 N 格没翻」，重新扫描后的续译弹窗说「补 N 格」，两个数是同一个数。
         文件状态也据此从「已生成」改成「部分翻译」，不再让翻了一半的文件看起来像翻完了。
+        任何一个写出的文件数不出来就返回 None：合计少了它就是个凑出来的数。
         """
         from core.resume_detection import count_untranslated_in_output
 
+        total: int | None = 0
         for entry in file_results:
             if not entry.get("success"):
                 continue
             output = str(entry.get("output_path") or entry.get("output") or "")
             source = str(entry.get("source_path") or "")
             if not source:
+                total = None
                 continue
             count = None if not output else count_untranslated_in_output(
                 "excel",
@@ -3735,6 +3740,10 @@ class TaskRunner(BaseTaskRunner):
             )
             if count is not None:
                 entry["unfinished_text_count"] = count
+                if total is not None:
+                    total += count
+            else:
+                total = None
             # 开着行高调整时写完的文件还挂在「等待调整行高」，停止后不再调整——
             # 这里一并把它落成「已生成」，免得被收尾的 emit_many 改成「已停止」。
             self._file_progress.emit(
@@ -3747,6 +3756,7 @@ class TaskRunner(BaseTaskRunner):
                     if key not in {"source_path", "source_relative_path"}
                 },
             )
+        return total
 
     def _connection_switch_summary(self) -> dict[str, object]:
         """The failover history, in the shape the task center and report read."""
