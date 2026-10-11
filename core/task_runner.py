@@ -1106,7 +1106,10 @@ class TaskRunner(BaseTaskRunner):
                     batches.append(current)
                 translated: dict[str, str] = {}
                 for number, batch in enumerate(batches, start=1):
-                    _raise_if_stopped()
+                    if self._stop_event.is_set():
+                        # 阶段 3 不再整批弃文件：名称翻译途中停止，没轮到的名称保持
+                        # 原样，格子照常写出。抛 TaskStopped 会把已翻好的内容一起丢掉。
+                        break
                     self._queue.put(StatusMsg(
                         phase_desc=(
                             f"状态：[阶段 3/{phase_total}] 正在翻译{kind}"
