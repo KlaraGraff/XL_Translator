@@ -21,7 +21,11 @@ from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
 )
-from core.api_scheduler import API_REQUEST_CATEGORY_RECOVERY, WeightedApiScheduler
+from core.api_scheduler import (
+    API_REQUEST_CATEGORY_RECOVERY,
+    ApiSchedulerAcquireCancelled,
+    WeightedApiScheduler,
+)
 from core.coverage_arbitration import (
     RETRANSLATE_UNCERTAIN,
     ArbitrationOutcome,
@@ -107,6 +111,7 @@ def arbitrate_coverage_units(
                 error_callback=lambda message: log("WARNING", message),
                 context_label=context_label,
                 scheduler_label=scheduler_label,
+                should_stop=stop_event.is_set if stop_event is not None else None,
             )
 
     try:
@@ -182,6 +187,7 @@ def run_pair_arbitration_batch(
     error_callback: Callable[[str], None] | None = None,
     context_label: str = "补译复核",
     scheduler_label: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, str]:
     """一次请求判一批「原文 ＋ 紧邻内容」，返回 {id: verdict}。
 
@@ -192,7 +198,12 @@ def run_pair_arbitration_batch(
     出错一律返回空 dict（上游按 uncertain 处理，也就是重翻），只有
     ApiKeyTemporarilyUnavailableError 要往上抛——那是"这个 key 暂时不能用"的调度信号，
     吞掉会让整轮任务在错误的 key 上空转。
+
+    ``should_stop``：用户按了停止就不再排队等槽位、不再发请求、不再限流重试——
+    这一批全部保持原判（与调用方在发起前看到停止时的处理一致），不花一分钱。
     """
+    if should_stop is not None and should_stop():
+        return {pair.id: VERDICT_EQUIVALENT for pair in pairs}
     entries: list[tuple[str, str, str]] = []
     for pair in pairs:
         candidate_text = _candidate_text(pair.candidate)
@@ -228,13 +239,19 @@ def run_pair_arbitration_batch(
         if api_scheduler is None:
             raw = engine.chat(system_prompt, user_payload)
         else:
-            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+            with api_scheduler.slot(
+                weight,
+                category=API_REQUEST_CATEGORY_RECOVERY,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
                 raw = engine.chat(system_prompt, user_payload)
         payload = json.loads(strip_markdown_json(raw))
     except Exception as exc:  # noqa: BLE001 - 判不出就当拿不准，不能连累整个文件
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        if isinstance(exc, ApiSchedulerAcquireCancelled) or (should_stop is not None and should_stop()):
+            return {pair.id: VERDICT_EQUIVALENT for pair in pairs}
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
@@ -242,6 +259,7 @@ def run_pair_arbitration_batch(
                 request_generation=request_generation,
                 context_label=scheduler_label or context_label,
                 error_callback=error_callback,
+                should_stop=should_stop,
             )
             if decision is not None:
                 return run_pair_arbitration_batch(
@@ -253,6 +271,7 @@ def run_pair_arbitration_batch(
                     error_callback=error_callback,
                     context_label=context_label,
                     scheduler_label=scheduler_label,
+                    should_stop=should_stop,
                 )
         if error_callback is not None:
             # 一批判不出就是一批内容被从严重翻，用户看到多出来的译文得知道是为什么。

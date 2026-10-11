@@ -27,6 +27,7 @@ from core.api_config_check import check_translation_api_config
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_NORMAL,
     API_REQUEST_CATEGORY_RECOVERY,
+    ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
 from core.bilingual_writer import get_custom_output_dir_error
@@ -628,6 +629,7 @@ class WordTaskRunner:
                     target_lang=target_lang,
                     api_scheduler=api_scheduler,
                     error_callback=lambda message: self._log("WARNING", message),
+                    should_stop=self._stop_event.is_set,
                 )
 
         outcome = resolve_header_footer_lines(
@@ -3646,6 +3648,7 @@ class _WordRecoveryPool:
                 if self._log_callback
                 else None
             ),
+            should_stop=self._should_stop,
         )
         with self._condition:
             # 记账已经由本函数接手，_future_done 不再兜底复位
@@ -3734,7 +3737,11 @@ def _run_semantic_arbitration(
     source_lang: str,
     api_scheduler: WeightedApiScheduler | None,
     error_callback: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> _SemanticArbitrationResult:
+    # 停止之后不再排队、不再发付费请求、不再限流重试：拿不准就按拿不准处理。
+    if should_stop is not None and should_stop():
+        return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "任务已停止")
     candidate_text = _candidate_validation_text(candidate)
     if not candidate_text:
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "候选译文为空")
@@ -3756,13 +3763,19 @@ def _run_semantic_arbitration(
         if api_scheduler is None:
             raw = engine.chat(system_prompt, user_payload)
         else:
-            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+            with api_scheduler.slot(
+                weight,
+                category=API_REQUEST_CATEGORY_RECOVERY,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
                 raw = engine.chat(system_prompt, user_payload)
         payload = json.loads(strip_markdown_json(raw))
     except Exception as exc:  # noqa: BLE001 - uncertain keeps original review path
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        if isinstance(exc, ApiSchedulerAcquireCancelled) or (should_stop is not None and should_stop()):
+            return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, "任务已停止")
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
@@ -3770,6 +3783,7 @@ def _run_semantic_arbitration(
                 request_generation=request_generation,
                 context_label="Word 语义仲裁",
                 error_callback=error_callback,
+                should_stop=should_stop,
             )
             if decision is not None:
                 return _run_semantic_arbitration(
@@ -3780,6 +3794,7 @@ def _run_semantic_arbitration(
                     source_lang=source_lang,
                     api_scheduler=api_scheduler,
                     error_callback=error_callback,
+                    should_stop=should_stop,
                 )
         return _SemanticArbitrationResult(_SEMANTIC_VERDICT_UNCERTAIN, str(exc))
 
@@ -3820,6 +3835,7 @@ def _run_header_footer_batch(
     target_lang: str,
     api_scheduler: WeightedApiScheduler | None,
     error_callback: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[tuple[str, str]]:
     """一次请求补一批页眉页脚行，返回等长的 (整行成品, 新增译文)。
 
@@ -3827,7 +3843,7 @@ def _run_header_footer_batch(
     任何异常（包括 key 不可用）：这一趟跑在阶段 2 的最后，正文译文已经全部拿到手，
     为了几行页眉把整批任务掀掉不划算，写一条 WARNING 让用户知道即可。
     """
-    if not lines:
+    if not lines or (should_stop is not None and should_stop()):
         return []
     system_prompt = build_header_footer_prompt(
         source_lang=source_lang,
@@ -3840,10 +3856,16 @@ def _run_header_footer_batch(
         if api_scheduler is None:
             raw = engine.chat(system_prompt, user_payload)
         else:
-            with api_scheduler.slot(weight, category=API_REQUEST_CATEGORY_RECOVERY) as lease:
+            with api_scheduler.slot(
+                weight,
+                category=API_REQUEST_CATEGORY_RECOVERY,
+                should_stop=should_stop,
+            ) as lease:
                 request_generation = lease.generation
                 raw = engine.chat(system_prompt, user_payload)
     except Exception as exc:  # noqa: BLE001 - 补不上就原样留着，不连累已经翻好的正文
+        if isinstance(exc, ApiSchedulerAcquireCancelled) or (should_stop is not None and should_stop()):
+            return []
         if api_scheduler is not None and not is_local_engine_name(engine.engine_name):
             decision = handle_api_concurrency_limit(
                 exc,
@@ -3851,6 +3873,7 @@ def _run_header_footer_batch(
                 request_generation=request_generation,
                 context_label="Word 页眉页脚",
                 error_callback=error_callback,
+                should_stop=should_stop,
             )
             if decision is not None:
                 return _run_header_footer_batch(
@@ -3860,6 +3883,7 @@ def _run_header_footer_batch(
                     target_lang=target_lang,
                     api_scheduler=api_scheduler,
                     error_callback=error_callback,
+                    should_stop=should_stop,
                 )
         if error_callback is not None:
             error_callback(
