@@ -77,10 +77,12 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
       if (file.phase === "adjust") return "待处理 · 等待调整排版";
       return "待处理";
     case "active": {
-      const phase = taskState === "paused" && file.phase === "translate"
-        ? "等待已提交页面完成"
-        : PHASE_LABELS[file.phase] ?? "";
       const count = file.total > 0 ? ` · ${file.completed} / ${file.total}` : "";
+      // 文件翻到一半时暂停：PDF 停止提交新页面、CAD 停在两张图之间都会走到这里，所以
+      // 不写哪一种的细节（以前写「等待已提交页面完成」，CAD 图纸上也这么显示）。PDF 已提交
+      // 的页还会陆续跑完，那一层由进度卡标题「已暂停提交新页面」交代。
+      if (taskState === "paused" && file.phase === "translate") return `已暂停${count}`;
+      const phase = PHASE_LABELS[file.phase] ?? "";
       return `处理中${phase ? ` · ${phase}` : ""}${count}`;
     }
     case "generated":
