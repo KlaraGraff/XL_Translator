@@ -64,13 +64,16 @@
   font-weight: 600;
   color: var(--ink-3);
 }
+/* 整页缩放进框里，不滚动：以前图片按宽度铺满、框内 overflow:auto，又用 flex 垂直居中——
+   竖版页比框高时，居中把页顶推到了滚动区上方，那一截滚不回来（标题只露下半截）。
+   现在框定高，图片 object-fit:contain 整页缩进去，两栏一样高，原文译文可以逐行对照。 */
 .pdf-compare-imgwrap {
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: auto;
+  overflow: hidden;
   background: var(--ground-2);
+  height: 60vh;
   min-height: 180px;
-  max-height: 60vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -78,7 +81,8 @@
 .pdf-compare-imgwrap img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
 }
 .pdf-compare-imgwrap .ph {
   font-size: 12px;
