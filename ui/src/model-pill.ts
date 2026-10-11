@@ -36,7 +36,10 @@ function effectiveRoleKey(roleKey: string): string {
     const primary = connections[0] as { connection_mode?: unknown; source_role?: unknown } | undefined;
     const follows = String(primary?.connection_mode ?? "") === "follow" ? primary?.source_role : role?.source_role;
     const next = typeof follows === "string" ? follows.trim() : "";
-    if (!next || next === key) break;
+    // source_role 不跟随时是哨兵值 "independent"，不是角色名。以前照着它去找一个叫
+    // independent 的角色，找不到就显示「未连接模型」——明明翻译一直在正常用模型。
+    // 只有真的指向角色表里另一个角色时才跟过去。
+    if (!next || next === key || !lastRoles || !(next in lastRoles)) break;
     key = next;
   }
   return key;

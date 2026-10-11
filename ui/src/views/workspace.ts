@@ -797,11 +797,12 @@ function captureLogScroll(container: HTMLElement): LogScrollState | null {
 }
 
 function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | null): void {
+  logResizeObserver?.disconnect();
   const next = container.querySelector<HTMLElement>(".log");
   if (!next) return;
   // 没有旧状态（比如第一次渲染日志卡片）按贴底处理，最新的日志本来就该先看到。
   if (!prevScroll || prevScroll.atBottom) {
-    next.scrollTop = next.scrollHeight;
+    stickLogToBottom(next);
     return;
   }
   if (prevScroll.anchorSeq !== null) {
@@ -816,6 +817,27 @@ function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | n
     return;
   }
   next.scrollTop = prevScroll.scrollTop;
+}
+
+let logResizeObserver: ResizeObserver | null = null;
+
+/** 贴底不能只在重建那一刻设一次 scrollTop：页面插进去以后，下面的文件状态条换了文案
+ *  （比如暂停时变成两行）或者逐页表又长了几行，日志区会再被压矮一截。这时 scrollTop
+ *  没变、可视高度变小，最后一行就被底下的文件状态条盖住半截；下一次重建量到的离底
+ *  距离又超过了容差，从此就不再贴底。所以用户没主动往上翻之前，日志区每次变高变矮都
+ *  重新贴一次底。 */
+function stickLogToBottom(log: HTMLElement): void {
+  log.scrollTop = log.scrollHeight;
+  logResizeObserver?.disconnect();
+  if (typeof ResizeObserver === "undefined") return;
+  let stick = true;
+  log.addEventListener("scroll", () => {
+    stick = log.scrollHeight - log.scrollTop - log.clientHeight <= LOG_SCROLL_STICK_TOLERANCE;
+  }, { passive: true });
+  logResizeObserver = new ResizeObserver(() => {
+    if (stick && log.isConnected) log.scrollTop = log.scrollHeight;
+  });
+  logResizeObserver.observe(log);
 }
 
 /** 整页重建前记下各滚动区的位置，重建后放回去。
@@ -1034,7 +1056,8 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     if (resumeBanner) col.append(resumeBanner);
     const resumeDismiss = buildResumeDismissBar(surface, st);
     if (resumeDismiss) col.append(resumeDismiss);
-    col.append(buildTableCard(surface, st));
+    const tableCard = buildTableCard(surface, st);
+    col.append(tableCard);
     // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
     // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
     // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
@@ -1045,7 +1068,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
         col.append(note);
       }
       const reviewCard = buildPdfReviewCard(surface, local);
-      if (reviewCard) col.append(reviewCard);
+      if (reviewCard) {
+        // 两张卡片对半分这一栏的高度。任务清单默认 min-height:0，逐页表一展开就把它
+        // 挤得只剩标题，所以这里给它留一个能看到几行文件的下限。
+        tableCard.style.minHeight = "200px";
+        col.append(reviewCard);
+      }
     }
   }
   return col;
@@ -2117,6 +2145,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
         resetResumeState(st);
         rerender(surface);
       }
+      if (surface === "cad") rescanAfterScanInputChange(surface);
     },
   });
   scroll.append(targetField.root);
@@ -2137,6 +2166,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
       onChange: (value) => {
         st.sourceLang = value;
         void persistSettings({ [`${surface}_source_lang`]: value });
+        if (surface === "cad") rescanAfterScanInputChange(surface);
       },
     });
     scroll.append(sourceField.root);
@@ -2232,6 +2262,20 @@ async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: To
     }, toggle.label);
   }
   rerender(surface);
+  if (SCAN_INPUT_TOGGLES.has(toggle.key)) rescanAfterScanInputChange(surface);
+}
+
+/** 这几个开关会改变扫描结果本身（PDF 收不收独立图片、CAD 数不数图块里的字）。 */
+const SCAN_INPUT_TOGGLES = new Set(["pdfImages", "cadBlockText"]);
+
+/** 扫描结果依赖的输入变了，就按「选完来源自动扫描」的同一规矩自动重扫一次。
+ *  以前 CAD 改了目标语言，「待翻译」还停在旧语言的数字，要用户自己点「重新扫描」。
+ *  还没选来源、或任务正在跑时什么都不做。 */
+function rescanAfterScanInputChange(surface: Surface): void {
+  const st = states[surface];
+  if (!normalizeUserPath(st.sourcePath)) return;
+  if (st.task && !st.task.task.terminal) return;
+  void runScan(surface);
 }
 
 function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
@@ -3612,7 +3656,8 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     clauses.push(
       review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
         ? "其余全部通过"
-        : "全部通过",
+        // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
+        : task.state === "stopped" ? "已生成的全部通过" : "全部通过",
     );
   }
   if (generated > 0) clauses.push(`输出至 ${outputPath}`);
