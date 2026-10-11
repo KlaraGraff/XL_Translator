@@ -55,6 +55,27 @@ class GracefulSidecarServer(uvicorn.Server):
         super().handle_exit(sig, frame)
 
 
+def _shutdown_requester(server: uvicorn.Server, on_exit):
+    """Return the hook behind ``POST /api/system/shutdown``.
+
+    It does what ``GracefulSidecarServer.handle_exit`` does for SIGTERM: ask
+    the runners to stop first, then let uvicorn run its orderly shutdown
+    (drain connections, lifespan, ``task_manager.shutdown``, history flush).
+    Windows has no SIGTERM for the desktop shell to send, so this is the only
+    way that platform gets the same unwinding instead of ``TerminateProcess``.
+    Calling it twice is harmless; both steps only set flags.
+    """
+
+    def request() -> None:
+        try:
+            on_exit()
+        except Exception:
+            pass
+        server.should_exit = True
+
+    return request
+
+
 def _start_parent_watchdog(server: uvicorn.Server, on_exit) -> None:
     """Exit when a Tauri parent dies so a loopback sidecar cannot linger."""
     raw_parent_pid = os.environ.get("TRANSLATOR_SIDECAR_PARENT_PID", "").strip()
@@ -107,6 +128,7 @@ def main() -> None:
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
         )
         server = GracefulSidecarServer(config, on_exit=begin_shutdown)
+        app.state.request_shutdown = _shutdown_requester(server, begin_shutdown)
         _start_parent_watchdog(server, begin_shutdown)
         server.run(sockets=[sock])
 

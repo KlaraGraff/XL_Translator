@@ -35,7 +35,8 @@ const SIDECAR_HEALTH_TIMEOUT: Duration = Duration::from_secs(8);
 //      `task_manager.shutdown()`，等运行中的任务走到 terminal ≤ 12s
 //   ③ **等完 ② 之后**才轮到 `mark_active_tasks_interrupted()` 和
 //      `flush_history()`——历史记录不再卡在「运行中」全靠这一步
-// 而这里的超时是从 Rust 发出 SIGTERM 那一刻起算的**总**预算，覆盖 ①+②+③。
+// 而这里的超时是从 Rust 发出 SIGTERM（Windows 上是关闭请求）那一刻起算的**总**
+// 预算，覆盖 ①+②+③。
 //
 // 上一版把它写成 12s「对齐」②，这正是缺陷本身：外层截止时间 ≤ 内层截止时间，
 // 这场竞争外层必输——SIGKILL 恰好落在 Python 刚要开始 ③ 记账的那一刻，
@@ -70,6 +71,10 @@ const SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(
 // （握手都没完成），所以给一个很短的窗口就上 SIGKILL。
 const SIDECAR_ABORT_TIMEOUT: Duration = Duration::from_secs(2);
 const SIDECAR_STOP_POLL: Duration = Duration::from_millis(50);
+// Windows 上请 sidecar 收尾的那次 HTTP 请求，连接、写、读各自的上限。它只是
+// 「把请求递过去」，收尾本身的等待由 SIDECAR_STOP_TIMEOUT 管。
+#[cfg(any(not(unix), test))]
+const SIDECAR_SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 // std 没有暴露「给子进程发信号」的 API，而 libc 早就被链进每个 Unix 上的 Rust
 // 二进制里，为这一个调用多加一条直接依赖不划算，所以直接声明它。
@@ -671,12 +676,12 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<RunningSidecar, String> {
     let info = match handshake {
         Ok(info) => info,
         Err(error) => {
-            stop_child(&mut child, SIDECAR_ABORT_TIMEOUT);
+            stop_child(&mut child, None, SIDECAR_ABORT_TIMEOUT);
             return Err(error);
         }
     };
     if let Err(error) = wait_for_health(info.port, &info.token) {
-        stop_child(&mut child, SIDECAR_ABORT_TIMEOUT);
+        stop_child(&mut child, Some(&info), SIDECAR_ABORT_TIMEOUT);
         return Err(error);
     }
     Ok(RunningSidecar { child, info })
@@ -732,32 +737,73 @@ enum SidecarStopOutcome {
     Forced,
 }
 
-/// 请子进程自己退出；返回「信号发出去了，值得再等一会儿」。
+/// 请子进程自己退出；返回「请求发出去了，值得再等一会儿」。
 ///
 /// Unix 上是 SIGTERM：uvicorn 的 `handle_exit` 只认 SIGINT/SIGTERM，`Child::kill()`
 /// 发的 SIGKILL 不可捕获，三层收尾（launcher 的 GracefulSidecarServer、app.py 的
 /// lifespan、task_manager 的 shutdown）一层都执行不到。
 #[cfg(unix)]
-fn request_child_termination(child: &Child) -> bool {
+fn request_child_termination(child: &Child, _info: Option<&SidecarInfo>) -> bool {
     // 这里还没有 `wait()` 过，已退出的子进程仍是僵尸进程占着 pid，不存在 pid
     // 被复用后误杀别人的问题。
     unsafe { kill(child.id() as i32, SIGTERM) == 0 }
 }
 
-/// Windows 上没有能落到控制台子进程头上的优雅信号：`GenerateConsoleCtrlEvent`
-/// 需要 `CREATE_NEW_PROCESS_GROUP`，而 sidecar 是带 `CREATE_NO_WINDOW` 起的
-/// GUI 子进程，本机也无法实测。所以这里不假装能优雅，直接走 TerminateProcess，
-/// 保证的是「安装器动手之前文件句柄一定已经释放」。
+/// Windows 上没有能落到 sidecar 头上的优雅信号：`GenerateConsoleCtrlEvent`
+/// 需要 `CREATE_NEW_PROCESS_GROUP`，而 sidecar 是带 `CREATE_NO_WINDOW` 起的。
+/// 所以改走 sidecar 的 `POST /api/system/shutdown`：它在 Python 侧做的事和
+/// SIGTERM 完全一样（`api/launcher.py` 的 `_shutdown_requester`），后面的限时
+/// 等待和 TerminateProcess 兜底也和 Unix 共用。
+///
+/// 握手还没完成时没有端口和令牌（`info` 为 `None`），那时也没什么可收尾的，
+/// 直接兜底。
 #[cfg(not(unix))]
-fn request_child_termination(_child: &Child) -> bool {
-    false
+fn request_child_termination(_child: &Child, info: Option<&SidecarInfo>) -> bool {
+    info.is_some_and(|info| post_shutdown_request(info.port, &info.token))
 }
 
-/// 先请子进程自己退，限时等待，超时才 SIGKILL 兜底。
+/// 给 sidecar 发 `POST /api/system/shutdown`，返回它是否接受了（2xx）。
+///
+/// 连接和读写都给很短的上限：sidecar 卡死时这里不能吃掉退出预算，失败了就
+/// 由调用方直接走兜底。sidecar 先回 202 再开始收尾，所以正常情况下这一来一回
+/// 是毫秒级的。
+#[cfg(any(not(unix), test))]
+fn post_shutdown_request(port: u16, token: &str) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, SIDECAR_SHUTDOWN_REQUEST_TIMEOUT)
+    else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(SIDECAR_SHUTDOWN_REQUEST_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(SIDECAR_SHUTDOWN_REQUEST_TIMEOUT));
+    let request = format!(
+        "POST /api/system/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Translator-Token: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    // 只看状态行。读到 `Connection: close` 的结尾最稳，但万一 sidecar 迟迟不关
+    // 连接，状态行已经够判断了，没必要等满读超时。
+    let mut status_line = String::new();
+    if BufReader::new(stream).read_line(&mut status_line).is_err() {
+        return false;
+    }
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .is_some_and(|code| code.len() == 3 && code.starts_with('2'))
+}
+
+/// 先请子进程自己退，限时等待，超时才强杀兜底。
 ///
 /// 「限时」是硬要求：退出不能被一个卡死的 sidecar 拖住，否则 Cmd+Q 变成假死。
-fn stop_child(child: &mut Child, timeout: Duration) -> SidecarStopOutcome {
-    if request_child_termination(child) {
+/// `info` 是握手拿到的端口和令牌，Windows 靠它请 sidecar 收尾；握手前为 `None`。
+fn stop_child(
+    child: &mut Child,
+    info: Option<&SidecarInfo>,
+    timeout: Duration,
+) -> SidecarStopOutcome {
+    if request_child_termination(child, info) {
         let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
@@ -783,7 +829,7 @@ fn stop_child(child: &mut Child, timeout: Duration) -> SidecarStopOutcome {
 fn stop_running_sidecar(state: &SidecarState, timeout: Duration) -> Option<SidecarStopOutcome> {
     let mut guard = state.0.lock().ok()?;
     let mut sidecar = guard.take()?;
-    Some(stop_child(&mut sidecar.child, timeout))
+    Some(stop_child(&mut sidecar.child, Some(&sidecar.info), timeout))
 }
 
 fn stop_sidecar(app: &tauri::AppHandle) {
@@ -803,6 +849,9 @@ fn stop_sidecar(app: &tauri::AppHandle) {
 /// 的，返回之前 sidecar 一定已经退出，NSIS 拿到的是干净的目录。
 /// 同一个机制顺带盖住 `AppHandle::restart()`（macOS 就地更新后「立即重启」走的
 /// 就是它，同样只调 `cleanup_before_exit` 就 exec 新进程）。
+///
+/// 「清表即 drop」是 tauri 的实现事实，不是公开契约：升级 tauri 时按
+/// docs/TAURI_UPGRADE_CHECKLIST.md 第 1 条复核。
 struct SidecarShutdownHook {
     handle: tauri::AppHandle,
 }
@@ -890,9 +939,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        directory_is_writable, is_verified_external_url, parse_handshake, split_save_frame,
-        update_environment, write_file_atomically, SIDECAR_ABORT_TIMEOUT, SIDECAR_DRAIN_BUDGET_SECS,
-        SIDECAR_SHUTDOWN_MARGIN_SECS, SIDECAR_STOP_TIMEOUT, SIDECAR_TASK_UNWIND_BUDGET_SECS,
+        directory_is_writable, is_verified_external_url, parse_handshake, post_shutdown_request,
+        split_save_frame, update_environment, write_file_atomically, SIDECAR_ABORT_TIMEOUT,
+        SIDECAR_DRAIN_BUDGET_SECS, SIDECAR_SHUTDOWN_MARGIN_SECS, SIDECAR_STOP_TIMEOUT,
+        SIDECAR_TASK_UNWIND_BUDGET_SECS,
     };
     #[cfg(unix)]
     use super::{
@@ -949,7 +999,7 @@ mod tests {
         let mut child = spawn_well_behaved_child();
         let started = Instant::now();
 
-        let outcome = stop_child(&mut child, Duration::from_secs(5));
+        let outcome = stop_child(&mut child, None, Duration::from_secs(5));
 
         assert_eq!(outcome, SidecarStopOutcome::Graceful);
         // 正常收尾不该等满超时。
@@ -963,7 +1013,7 @@ mod tests {
         let mut child = spawn_wedged_child();
         let started = Instant::now();
 
-        let outcome = stop_child(&mut child, Duration::from_millis(300));
+        let outcome = stop_child(&mut child, None, Duration::from_millis(300));
         let elapsed = started.elapsed();
 
         assert_eq!(outcome, SidecarStopOutcome::Forced);
@@ -991,6 +1041,108 @@ mod tests {
 
         assert_eq!(first, Some(SidecarStopOutcome::Graceful));
         assert_eq!(second, None);
+    }
+
+    /// 起一个只接一次请求的假 sidecar：把收到的请求原样交回来，回 `response`。
+    fn serve_one_request(response: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept failed");
+            let mut buffer = [0u8; 4096];
+            let mut request = String::new();
+            while !request.contains("\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read failed");
+                if read == 0 {
+                    break;
+                }
+                request.push_str(&String::from_utf8_lossy(&buffer[..read]));
+            }
+            stream.write_all(response.as_bytes()).expect("write failed");
+            request
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn the_windows_shutdown_request_reaches_the_sidecar_with_its_token() {
+        // Windows 没有 SIGTERM，优雅收尾全靠这一个请求（issue #1）。路径或令牌
+        // 写错，sidecar 只会回 404/401，退出就又悄悄退化成 TerminateProcess。
+        let (port, server) = serve_one_request(
+            "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+
+        assert!(post_shutdown_request(port, "one-time-token"));
+
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /api/system/shutdown HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("\r\nX-Translator-Token: one-time-token\r\n"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn a_rejected_shutdown_request_falls_back_to_terminating_the_sidecar() {
+        // 401（令牌不对）或 409（不是 launcher 起的）都不算「已经在收尾」，
+        // 调用方必须立刻走兜底，而不是白等满整个退出预算。
+        let (port, server) =
+            serve_one_request("HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n");
+
+        assert!(!post_shutdown_request(port, "wrong-token"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn an_unreachable_sidecar_does_not_hold_up_exit() {
+        // 端口上没人监听：连接立刻被拒，不能卡在这里。
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let started = std::time::Instant::now();
+
+        assert!(!post_shutdown_request(port, "token"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn cleanup_before_exit_still_drops_app_resources() {
+        // `SidecarShutdownHook` 靠的是 tauri 的实现事实而不是公开契约：
+        // `cleanup_before_exit()` 会清空 app 级资源表、drop 掉表里的条目。Windows
+        // 装更新和 macOS 更新后重启都只走这一步，不发 `RunEvent::Exit`。哪次升级
+        // tauri 把这个行为改了，这里变红，而不是等用户装更新时 sidecar 被强杀。
+        // 见 docs/TAURI_UPGRADE_CHECKLIST.md 第 1 条。
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use tauri::{Manager, Resource};
+
+        struct DropFlag(Arc<AtomicBool>);
+        impl Resource for DropFlag {}
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let app = tauri::test::mock_app();
+        let dropped = Arc::new(AtomicBool::new(false));
+        app.resources_table().add(DropFlag(dropped.clone()));
+        assert!(!dropped.load(Ordering::SeqCst));
+
+        app.handle().cleanup_before_exit();
+
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "cleanup_before_exit() 不再 drop app 级资源表里的条目了：SidecarShutdownHook \
+             在更新安装/重启路径上会失效，见 docs/TAURI_UPGRADE_CHECKLIST.md"
+        );
     }
 
     /// 从 Python 源码里取出一个锚点行后面的数字。

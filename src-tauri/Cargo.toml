@@ -19,3 +19,8 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-updater = "2.10.1"
+
+[dev-dependencies]
+# `tauri::test::mock_app()`: pins the `cleanup_before_exit()` behaviour that
+# `SidecarShutdownHook` relies on (docs/TAURI_UPGRADE_CHECKLIST.md, item 1).
+tauri = { version = "2.11.5", features = ["test"] }
