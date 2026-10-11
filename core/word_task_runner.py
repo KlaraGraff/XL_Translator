@@ -85,7 +85,11 @@ from core.residual_repair import (
     build_feedback_note,
     run_repair_ladder,
 )
-from core.resume_detection import baseline_missing_source_texts, match_previous_output
+from core.resume_detection import (
+    baseline_missing_source_texts,
+    describe_baseline_divergence,
+    match_previous_output,
+)
 from core.task_logger import TaskLogger
 from core.process_artifacts import ProcessArtifacts
 from core.file_progress import FileProgressReporter
@@ -963,7 +967,7 @@ class WordTaskRunner:
                                 "WARNING",
                                 (
                                     f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                                    f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                                    f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
                                     "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。"
                                 ),
                             )

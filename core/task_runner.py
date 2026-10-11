@@ -911,6 +911,7 @@ class TaskRunner:
                     try:
                         from core.resume_detection import (
                             baseline_missing_source_texts,
+                            describe_baseline_divergence,
                             match_previous_output,
                         )
                         candidate = match_previous_output(
@@ -956,11 +957,12 @@ class TaskRunner:
                             )
                         ):
                             # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
-                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
+                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）；
+                            # 源文件删掉的内容则相反，会随底稿原样留在产物里。
                             self._log(
                                 "WARN",
                                 f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                                f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                                f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
                                 "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
                             )
                         else:
@@ -2996,7 +2998,10 @@ class TaskRunner:
         之后新增的内容不在底稿里，硬换底稿会把它静默丢掉。核查放在这里而不是阶段 1，
         是因为文本分类依赖源语言——此刻语言刚定下来，核查结果才作数。
         """
-        from core.resume_detection import baseline_missing_source_texts
+        from core.resume_detection import (
+            baseline_missing_source_texts,
+            describe_baseline_divergence,
+        )
 
         failed_sources = {
             r.get("source_path") for r in file_results if not r.get("success")
@@ -3020,7 +3025,7 @@ class TaskRunner:
                 self._log(
                     "WARN",
                     f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                    f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                    f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
                     "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
                 )
                 continue

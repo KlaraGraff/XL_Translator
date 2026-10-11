@@ -25,7 +25,7 @@ from core.pdf_image_translation import (
     read_pdf_resume_manifest,
     reusable_pdf_pages,
 )
-from core.translation_coverage import COVERAGE_SOURCE_ONLY
+from core.translation_coverage import COVERAGE_IGNORED, COVERAGE_SOURCE_ONLY
 from core.word_coverage import build_word_coverage_plan
 from core.word_document import _normalize_word_output_name
 
@@ -299,6 +299,92 @@ def _plan_text_occurrences(plan: Any, *, keyed_by_sheet: bool) -> dict[tuple[str
     return occurrences
 
 
+class BaselineDivergence(list):
+    """底稿核查结果：仍是「分歧文本」列表（真假值、长度语义不变），另带两半明细。
+
+    ``added`` 是源文件新增、底稿里没有的文本；``removed`` 是底稿里还在、源文件里
+    已经删掉的源文（审计 高-9）。两种都意味着底稿不能用，但给用户的说法不同。
+    """
+
+    def __init__(self, added: list[str], removed: list[str]) -> None:
+        super().__init__([*added, *removed])
+        self.added = list(added)
+        self.removed = list(removed)
+
+
+def describe_baseline_divergence(missing: list[str]) -> str:
+    """「多了 N 处」/「少了 M 处」/「多了 N 处、少了 M 处」，给续译核对的提示文案用。"""
+    added = getattr(missing, "added", missing)
+    removed = getattr(missing, "removed", [])
+    parts = []
+    if added:
+        parts.append(f"多了 {len(added)} 处")
+    if removed:
+        parts.append(f"少了 {len(removed)} 处")
+    return "、".join(parts) + "内容"
+
+
+def _baseline_removed_source_texts(
+    source_plan: Any,
+    baseline_plan: Any,
+    *,
+    keyed_by_sheet: bool,
+    prefix_tolerant: bool,
+) -> list[str]:
+    """底稿里有源文半边、源文件里却一次都找不到的文本——源文件删掉的内容。
+
+    底稿一旦被采用，新产物就是从底稿文件长出来的：源文件删掉的行/段落仍躺在底稿里，
+    带着上次的译文原样进交付件，覆盖率计划还判它 covered，任何报告都不提。
+
+    只看底稿里有源文半边的 unit（covered / source_only / ambiguous），ignored 的
+    数字、纯译文等不算。源文件这边按任意状态的 unit 计（源文半边与整格原文都认），
+    按出现次数消耗。Word 保留与正向核查相同的编号前缀容差：底稿「1.1 概述」能被
+    源文件「概述」认领。
+    """
+    available: dict[tuple[str | None, str], int] = {}
+    seen_texts: set[tuple[str | None, str]] = set()
+    for unit in source_plan.units:
+        data = getattr(unit, "data", None)
+        sheet = None
+        if keyed_by_sheet and isinstance(data, dict):
+            sheet = str(data.get("sheet") or "") or None
+        source = str(unit.source_text or "").strip()
+        if source:
+            available[(sheet, source)] = available.get((sheet, source), 0) + 1
+            seen_texts.add((sheet, source))
+        if isinstance(data, dict):
+            cell_text = str(data.get("cell_text") or "").strip()
+            if cell_text:
+                seen_texts.add((sheet, cell_text))
+
+    removed: list[str] = []
+    for unit in baseline_plan.units:
+        if unit.status == COVERAGE_IGNORED:
+            continue
+        source = str(unit.source_text or "").strip()
+        if not source:
+            continue
+        data = getattr(unit, "data", None)
+        sheet = None
+        if keyed_by_sheet and isinstance(data, dict):
+            sheet = str(data.get("sheet") or "") or None
+        key = (sheet, source)
+        if available.get(key, 0) > 0:
+            available[key] -= 1
+            continue
+        if key in seen_texts:
+            # 拆分没拆开（整格原文对上了）——不是删除
+            continue
+        if prefix_tolerant and any(
+            (sheet, source[index:].strip()) in seen_texts
+            for index in range(1, len(source))
+            if not source[index - 1].isalnum()
+        ):
+            continue
+        removed.append(source)
+    return removed
+
+
 def baseline_missing_source_texts(
     source_path: str | Path,
     baseline_path: str | Path,
@@ -319,8 +405,9 @@ def baseline_missing_source_texts(
       - None：核查跑不起来（.doc/.xls 打不开、计划构建失败……），调用方按「无法
         核查」处理——维持既有行为照常用底稿，不因核查工具失灵而拒用底稿；
       - []：底稿包含源文件全部待译文本，放心用；
-      - 非空列表：源文件比上次翻译时多了这些内容（按出现次数逐条计，重复文本会
-        重复出现），这份底稿不能再当底稿。
+      - 非空列表（BaselineDivergence）：源文件比上次翻译时多了这些内容（按出现
+        次数逐条计，重复文本会重复出现），或者底稿里还留着源文件已经删掉的内容，
+        这份底稿不能再当底稿。``.added`` / ``.removed`` 分别是两半。
 
     比对按多重集做「消耗式」匹配：源文件每一处待译文本消耗底稿里一次同文出现，
     消耗完还有剩就是新增。Excel 额外按分表名分桶——整张新增的工作表即使逐格文字
@@ -403,7 +490,13 @@ def baseline_missing_source_texts(
                 known[rescued_key] -= 1
                 continue
         missing.append(source)
-    return missing
+    removed = _baseline_removed_source_texts(
+        source_plan,
+        baseline_plan,
+        keyed_by_sheet=keyed_by_sheet,
+        prefix_tolerant=prefix_tolerant,
+    )
+    return BaselineDivergence(missing, removed)
 
 
 # ---------------------------------------------------------------------------
