@@ -1231,7 +1231,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
                     "section_path": "正文",
                     "location_label": "正文段落 5",
                     "snippet": "施工范围……安装",
-                    "problem": "重试后仍未获得有效译文",
+                    "problem": "重译后仍没得到有效译文",
                     "status": "保留原文，待人工复核",
                     "severity": "needs_review",
                 },
@@ -1250,7 +1250,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
                     "section_path": "正文",
                     "location_label": "正文段落 9",
                     "snippet": "设备安装",
-                    "problem": "重试后仍未获得有效译文",
+                    "problem": "重译后仍没得到有效译文",
                     "status": "保留原文，待人工复核",
                     "severity": "needs_review",
                 },
@@ -1265,7 +1265,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
 
             merged = next(item for item in review["items"] if item["location"] == "正文段落 5")
             # 合并的是行数，不是内容：两句判定都要留在这一行里。
-            self.assertIn("重试后仍未获得有效译文", str(merged["problem"]))
+            self.assertIn("重译后仍没得到有效译文", str(merged["problem"]))
             self.assertIn("输出文档仍存在未译源文", str(merged["problem"]))
             self.assertEqual(merged["action"], "保留原文，待人工复核")
 
@@ -1321,7 +1321,7 @@ class WordNumberingPreprocessSelectionTests(unittest.TestCase):
             native_preprocess.assert_not_called()
             self.assertEqual(prepared.numbering_method, "not_needed")
             self.assertEqual(prepared.numbering_fallback_messages, ())
-            self.assertIn("未检测到自动编号", prepared.method)
+            self.assertIn("自动编号：未检测到", prepared.method)
             for temp_path in prepared.temp_paths:
                 temp_path.unlink(missing_ok=True)
 

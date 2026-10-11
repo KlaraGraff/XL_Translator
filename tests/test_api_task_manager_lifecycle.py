@@ -120,6 +120,17 @@ class TaskManagerLifecycleTests(IsolatedAppDataTestCase):
         for record in listing["active"] + listing["recent"]:
             self.assertNotIn("logs", record)
 
+    def test_log_lines_marked_invisible_stay_out_of_the_run_log(self) -> None:
+        """visible=False 的行只给排查用，不进界面的运行日志（SSE 事件与回看列表）。"""
+        task = self._register("quiet")
+        self.manager._append_event(task, "log", {"level": "INFO", "message": "第 1 页已渲染", "visible": False})
+        self.manager._append_event(task, "log", {"level": "INFO", "message": "开始翻译", "visible": True})
+        self.assertEqual([entry["message"] for entry in task.logs], ["开始翻译"])
+        self.assertEqual(
+            [event["data"]["message"] for event in task.events if event["type"] == "log"],
+            ["开始翻译"],
+        )
+
     def test_an_old_history_record_with_huge_logs_is_trimmed_on_the_next_write(self) -> None:
         from core.task_history import MAX_TASK_LOG_LINES
 

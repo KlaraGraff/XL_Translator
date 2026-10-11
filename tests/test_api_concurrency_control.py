@@ -68,7 +68,7 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(decision)
         self.assertLess(decision.current_capacity, 8)
-        self.assertTrue(any("本机" in message and "降低并发" in message for message in messages))
+        self.assertTrue(any("电脑同时打开的网络连接太多" in message and "放慢" in message for message in messages))
         self.assertFalse(any("接口反馈请求过于频繁" in message for message in messages))
 
     def test_at_the_minimum_the_caller_is_told_to_retry_not_to_give_up(self) -> None:
@@ -102,8 +102,8 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(decision)
         self.assertTrue(decision.should_retry)
-        self.assertTrue(any("本机句柄" in message for message in messages))
-        self.assertFalse(any("接口仍在限流" in message for message in messages))
+        self.assertTrue(any("电脑同时打开的网络连接仍然太多" in message for message in messages))
+        self.assertFalse(any("模型服务仍提示太忙" in message for message in messages))
 
     def test_a_key_limited_past_the_grace_window_fails_the_task(self) -> None:
         scheduler = WeightedApiScheduler(1)

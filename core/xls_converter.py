@@ -128,7 +128,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
     xls_path = Path(xls_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise LibreOfficeConversionError("未找到 LibreOffice/soffice。")
+        raise LibreOfficeConversionError("本机没有找到 LibreOffice。")
 
     out_path = _get_temp_xlsx_path(xls_path)
     work_dir = Path(tempfile.mkdtemp(prefix="xl_translator_lo_"))
@@ -165,7 +165,12 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
 
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
-            raise LibreOfficeConversionError(detail or f"LibreOffice 转换返回码 {result.returncode}")
+            logger.debug(
+                f"LibreOffice 转换返回码 {result.returncode}：{detail or '（无输出）'}"
+            )
+            raise LibreOfficeConversionError(
+                f"LibreOffice 没能转换这个文件：{detail}" if detail else "LibreOffice 没能转换这个文件。"
+            )
 
         converted_path = convert_dir / f"{xls_path.stem}.xlsx"
         if not converted_path.exists():
@@ -175,7 +180,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
             if len(candidates) == 1:
                 converted_path = candidates[0]
         if not converted_path.exists():
-            raise LibreOfficeConversionError("LibreOffice 未生成 .xlsx 输出。")
+            raise LibreOfficeConversionError("LibreOffice 没有生成转换后的文件。")
 
         shutil.move(str(converted_path), str(out_path))
         return out_path

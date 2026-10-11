@@ -196,7 +196,7 @@ def create_app(
 
     @app.exception_handler(TaskNotFoundError)
     async def task_not_found(_request, _exc):
-        return _json_error(404, "Task not found.")
+        return _json_error(404, "找不到这个任务，可能已被清除。")
 
     @app.exception_handler(TaskConflictError)
     async def task_conflict(_request, exc):

@@ -141,4 +141,4 @@ def test_cad_stop_after_a_finished_drawing_keeps_the_checkpoint_message(tmp_path
     messages = _run(_stopping_runner(tmp_path, [first, second], stop_on="Window"))
     stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
     assert any(item.get("status") in {"succeeded", "needs_review"} for item in stopped.files)
-    assert "断点均已保留" in stopped.message
+    assert "已翻完的图纸都已保留" in stopped.message

@@ -1,5 +1,5 @@
 // 快速开始向导 —— 端口自 main.ts 的 quick-start 模态（main.ts:1934，触发逻辑见
-// main.ts:3422-3440、3989-3993）。文案逐字沿用旧版，不做改写。
+// main.ts:3422-3440、3989-3993）。文案已按面向普通用户的口径改写过，并补上了 CAD 图纸。
 //
 // 「是否已看过」标志：后端设置字段 settings.onboarding.quick_start_completed，
 // 通过 GET /api/updates/state 读取（payload.preferences.quick_start_completed）、
@@ -17,7 +17,7 @@ import { ApiClient } from "./api-client";
 import "./quickstart.css";
 
 type JsonObject = Record<string, unknown>;
-type QuickStartDestination = "config" | "excel" | "word" | "pdf";
+type QuickStartDestination = "config" | "excel" | "word" | "pdf" | "cad";
 
 const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
@@ -67,7 +67,7 @@ function finish(destination?: QuickStartDestination): void {
   void updatePreferences({ quick_start_completed: true }).catch(() => undefined);
   if (destination === "config") {
     navigate("settings", { page: "models" });
-  } else if (destination === "excel" || destination === "word" || destination === "pdf") {
+  } else if (destination === "excel" || destination === "word" || destination === "pdf" || destination === "cad") {
     navigate(destination);
   }
 }
@@ -81,21 +81,22 @@ function openQuickStartModal(): void {
   steps.append(
     buildStep(
       "1. 配置翻译模型",
-      "保存服务商、Base URL、模型和 Key；连接测试仅在你主动点击时执行。",
+      "填好服务商、模型和 API 密钥，再点「测试连接」确认能用。",
       [createButton({ label: "打开配置", size: "mini", onClick: () => finish("config") })],
     ),
     buildStep(
-      "2. 选择工作流与语言",
-      "进入 Excel、Word 或 PDF / 图片页面。Excel 和 Word 默认使用自动识别，PDF 只选择目标语言。",
+      "2. 选择文件类型与语言",
+      "进入 Excel、Word、PDF / 图片或 CAD 图纸页面。源语言默认自动识别，PDF 和图片只需选目标语言。",
       [
         createButton({ label: "Excel", size: "mini", onClick: () => finish("excel") }),
         createButton({ label: "Word", size: "mini", onClick: () => finish("word") }),
         createButton({ label: "PDF / 图片", size: "mini", onClick: () => finish("pdf") }),
+        createButton({ label: "CAD 图纸", size: "mini", onClick: () => finish("cad") }),
       ],
     ),
     buildStep(
-      "3. 扫描文件并开始",
-      "选择文件或文件夹，检查输出选项后启动。任务会冻结本次语言、模型、Key 和吞吐快照。",
+      "3. 选择文件并开始",
+      "用「浏览」选好文件或文件夹，勾选要翻译的文件，确认右侧选项后点「开始翻译」。开始后再改设置，只影响下一次任务。",
     ),
   );
 
@@ -105,7 +106,7 @@ function openQuickStartModal(): void {
     sourceLabel: "欢迎使用 Translator",
     title: "快速开始",
     body: [
-      "这是全新的应用数据基线。不会读取、导入、迁移或删除任何旧版本数据；本引导也不会自动测试 API Key 或发送服务请求。",
+      "照下面三步就能开始第一次翻译。这个引导不会替你测试连接，也不会发出任何翻译请求。",
       steps,
     ],
     actions: [

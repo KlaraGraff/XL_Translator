@@ -25,7 +25,7 @@ class TmCleanerFailureTests(unittest.TestCase):
             "core.tm_cleaner._clean_batch_sync",
             side_effect=[[], RuntimeError("provider unavailable")],
         ):
-            with self.assertRaisesRegex(TmCleaningBatchError, "1/2 个清洗批次失败"):
+            with self.assertRaisesRegex(TmCleaningBatchError, r"有 1 批没成功（共 2 批）"):
                 _run_cleaning_threaded(
                     batches,
                     _Engine(),
@@ -45,7 +45,7 @@ class TmCleanerFailureTests(unittest.TestCase):
             return []
 
         with patch("core.tm_cleaner._clean_batch_async", side_effect=fake_clean):
-            with self.assertRaisesRegex(TmCleaningBatchError, "1/2 个清洗批次失败"):
+            with self.assertRaisesRegex(TmCleaningBatchError, r"有 1 批没成功（共 2 批）"):
                 asyncio.run(
                     _clean_async_impl(
                         batches,

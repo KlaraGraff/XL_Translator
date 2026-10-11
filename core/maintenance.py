@@ -59,12 +59,12 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
     """Describe owned local data without exposing credentials or external paths."""
     categories = [
         _category("settings", "设置", [SETTINGS_PATH], clearable=True),
-        _category("keys", "API Key", [KEYS_PATH], clearable=True),
-        _category("tm", "翻译记忆库", _tm_paths(), clearable=True),
-        _category("task_history", "任务摘要", [default_history_path()], clearable=True),
-        _category("logs", "结构化日志", _log_paths(), clearable=True),
-        _category("diagnostics", "脱敏诊断", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
-        _category("workspaces", "临时工作区", [WORKSPACES_DIR], clearable=True),
+        _category("keys", "API 密钥", [KEYS_PATH], clearable=True),
+        _category("tm", "记忆库", _tm_paths(), clearable=True),
+        _category("task_history", "任务记录", [default_history_path()], clearable=True),
+        _category("logs", "运行日志", _log_paths(), clearable=True),
+        _category("diagnostics", "诊断记录", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
+        _category("workspaces", "临时文件", [WORKSPACES_DIR], clearable=True),
     ]
     categories[0]["schema"] = get_settings_schema_status()
     categories[1]["key_count"] = _key_count()
@@ -237,7 +237,7 @@ def clear_diagnostics() -> MaintenanceResult:
 
 def delete_diagnostic(record_id: str) -> MaintenanceResult:
     if not diagnostics.delete_diagnostic_record(record_id):
-        raise MaintenanceError("诊断记录不存在。")
+        raise MaintenanceError("找不到这条诊断记录，可能已被清除。")
     return MaintenanceResult(category="diagnostics", removed_count=1)
 
 
@@ -376,7 +376,7 @@ def _remove_owned_path(path: Path) -> bool:
     try:
         path.resolve().relative_to(APP_DATA_DIR.resolve())
     except (OSError, ValueError) as exc:
-        raise MaintenanceError("维护操作拒绝删除应用数据目录外的文件。") from exc
+        raise MaintenanceError("为安全起见，清理只会删除本程序自己数据文件夹里的内容。") from exc
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:

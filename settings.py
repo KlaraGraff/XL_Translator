@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from config import (
     APP_DATA_DIR,
     BACKUPS_DIR,
+    CLOUD_ENGINES,
     CONCURRENCY_DEFAULT,
     DEFAULT_CLOUD_MODEL,
     DEFAULT_CLOUD_PROVIDER,
@@ -336,7 +337,11 @@ class ModelConnection(TextProtocolSettings):
     def display_label(self) -> str:
         if self.label:
             return self.label
-        return self.base_url or self.provider
+        # 没起名的连接以前直接显示 Base URL 或内部标识（custom_openai），设置页
+        # 和任务中心里读起来像代码。改成服务商名，有地址时补上主机名好区分多条连接。
+        name = _PROVIDER_DISPLAY_NAMES.get(self.provider, self.provider)
+        host = urlsplit(self.base_url).hostname if self.base_url else ""
+        return f"{name} · {host}" if host else name
 
 
 class ModelUpgradeState(BaseModel):
@@ -350,6 +355,11 @@ class ModelUpgradeState(BaseModel):
 
 
 _SEEDED_CONNECTION_PREFIX = "seed-"
+
+_PROVIDER_DISPLAY_NAMES = {
+    **{value: label for label, value in {**CLOUD_ENGINES, **LOCAL_MODEL_PROVIDERS}.items()},
+    "custom_local": "自定义本地模型",
+}
 
 
 def _sync_connection_pool(owner) -> None:
@@ -1800,9 +1810,10 @@ def _recreate_settings_file(
         backup_path = _backup_settings_file()
     except OSError as exc:
         if not force:
+            logger.warning(f"settings.json 备份失败：{exc}")
             raise SettingsSchemaError(
-                f"settings.json 无法读取，也无法备份到 {BACKUPS_DIR / 'settings'}"
-                f"（{exc}）。原文件已原样保留；如确定要放弃它，请在维护页执行"
+                f"设置文件读不出来，也没能备份到 {BACKUPS_DIR / 'settings'}。"
+                "原文件已原样保留；如确定要放弃它，请在「设置 → 数据与维护」里点"
                 "「重置设置」。"
             ) from exc
         # An explicit reset says the old file is expendable, so a failed
@@ -2161,10 +2172,10 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
             logger.warning(f"keys.json 暂时读取不到：{exc}")
             return {}
         if not force:
+            logger.warning(f"keys.json 暂时读取不到，拒绝写入：{exc}")
             raise SettingsSchemaError(
-                f"keys.json 无法安全更新：暂时读取不到（{exc}）。原文件已原样"
-                "保留，未做任何改动；确定要放弃它，请到维护页执行「删除全部"
-                " API Key」。"
+                "保存 API 密钥的文件暂时读不到（可能被其他程序占用），为免丢失没有做任何改动；"
+                "确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。"
             ) from exc
         logger.warning(f"keys.json 暂时读取不到，按显式清空继续：{exc}")
         return {}
@@ -2193,10 +2204,10 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
         try:
             backup_path = _backup_keys_file()
         except OSError as backup_exc:
+            logger.warning(f"keys.json 已损坏且备份失败：{backup_exc}")
             raise SettingsSchemaError(
-                f"keys.json 无法安全更新：内容已损坏且备份失败（{backup_exc}）。"
-                "原文件已原样保留，未做任何改动；确定要放弃它，请到维护页"
-                "执行「删除全部 API Key」。"
+                "保存 API 密钥的文件已损坏，也没能备份，为免丢失没有做任何改动；"
+                "确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。"
             ) from backup_exc
         logger.warning(
             "keys.json 无法解析（{}），已备份到 {} 并按空表继续写入。",

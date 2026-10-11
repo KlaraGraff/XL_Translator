@@ -206,6 +206,27 @@ def user_facing_reason(value: object, *, fallback: str) -> str:
     return sentence
 
 
+# 写入器（bilingual_writer、xlsx_patcher、excel_coverage、word_document……）用
+# 「[WARN] / [OK] / [INFO]」前缀给每行定级别。前缀只是给 runner 看的记号，不该原样
+# 出现在用户的运行日志里：这里剥掉它，并按它定级别。
+_LOG_PREFIX_LEVELS = (
+    ("[WARN]", "WARN"),
+    ("[ERROR]", "ERROR"),
+    ("[OK]", "OK"),
+    ("[INFO]", "INFO"),
+)
+
+
+def split_log_prefix(message: object, default: str = "INFO") -> tuple[str, str]:
+    """Return ``(level, text)`` with a leading ``[WARN]``-style tag removed."""
+    text = str(message or "")
+    stripped = text.lstrip()
+    for prefix, level in _LOG_PREFIX_LEVELS:
+        if stripped.startswith(prefix):
+            return level, stripped[len(prefix):].lstrip()
+    return default, text
+
+
 AUTOFIT_STALL_TIMEOUT_SECONDS = 180
 AUTOFIT_MONITOR_POLL_SECONDS = 0.5
 # 单元格底色和 Word 段落底色是同一条规矩：只留给真正要人动手的两类——译文没出来
@@ -305,7 +326,7 @@ class TaskRunner(BaseTaskRunner):
     def _report_connection_switch(self, previous, current, failure_kind, error) -> None:
         """Surface a runtime connection switch in the task's own event log."""
         reason = {
-            "endpoint": "服务端不可用",
+            "endpoint": "这条连接的服务暂时不可用",
             "credential": "密钥被拒绝或额度耗尽",
         }.get(failure_kind, failure_kind)
         # Batches run on a thread pool, so two threads can report a switch at once.
@@ -516,7 +537,8 @@ class TaskRunner(BaseTaskRunner):
             lock_row_height      = excel_output.lock_row_height,
         )
 
-        self._log("INFO", f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
+        # 只写进 app.log：路径和内部参数对排查有用，但不该出现在用户看的运行日志里。
+        logger.info(f"[诊断] source_root={self._source_root} | custom_output_dir={custom_output_dir} | output_dir={output_dir}")
         self._log("INFO", f"扫描到 {len(self._files)} 个文件")
         if self._untranslated_only:
             self._log("INFO", "[补译模式] 只补未译内容：已有译文位置将保持不变。")
@@ -553,15 +575,16 @@ class TaskRunner(BaseTaskRunner):
                 return
             try:
                 terminated = terminate_process_tree(pid, force=True)
+                logger.info(f"强制结束 Excel 进程 PID={pid}（{reason}）：terminated={terminated}")
                 if terminated:
-                    self._log("WARN", f"{reason}，已强制结束 Excel 进程 PID={pid}")
+                    self._log("WARN", f"{reason}，已强制关闭 Excel。")
                 else:
-                    self._log("WARN", f"{reason}，但未能确认 Excel 进程已退出 PID={pid}")
+                    self._log("WARN", f"{reason}，但没能确认 Excel 已经关闭；如果它还开着，请手动退出。")
             except Exception as e:
                 logger.debug(f"强制结束 Excel 进程失败原始错误 PID={pid}：{e!r}")
                 self._log(
                     "WARN",
-                    f"{reason}，但强制结束 Excel 进程失败 PID={pid}："
+                    f"{reason}，但没能强制关闭 Excel："
                     + user_facing_reason(e, fallback="请手动退出 Excel 后重试。"),
                 )
 
@@ -583,10 +606,10 @@ class TaskRunner(BaseTaskRunner):
                 logger.debug(f"Excel 进程清理异常原始错误：{e!r}")
                 self._log(
                     "WARN",
-                    "Excel 进程清理异常："
-                    + user_facing_reason(e, fallback="程序会尝试强制结束它。"),
+                    "关闭 Excel 时出错："
+                    + user_facing_reason(e, fallback="程序会尝试强制关闭它。"),
                 )
-                _kill_excel_pid(pid, "常规退出 Excel 失败")
+                _kill_excel_pid(pid, "Excel 没有正常退出")
             finally:
                 excel_app = None
                 finalize_excel_thread(excel_thread_state)
@@ -625,9 +648,7 @@ class TaskRunner(BaseTaskRunner):
                     worker_state["result"] = bilingual_writer.autofit_files_batch(
                         file_paths,
                         app=app,
-                        log_callback=lambda msg: self._log(
-                            "WARN" if msg.startswith("[WARN]") else "INFO", msg
-                        ),
+                        log_callback=lambda msg: self._log(*split_log_prefix(msg)),
                         progress_callback=_progress,
                         file_start_callback=_file_start,
                     )
@@ -639,7 +660,7 @@ class TaskRunner(BaseTaskRunner):
                         try:
                             app.quit()
                         except Exception:
-                            _kill_excel_pid(pid, "AutoFit 线程退出时清理 Excel 失败")
+                            _kill_excel_pid(pid, "调整行高结束后 Excel 没有正常退出")
                     finalize_excel_thread(thread_state)
                     done_event.set()
 
@@ -651,17 +672,17 @@ class TaskRunner(BaseTaskRunner):
                     self._task_logger.warning("收到停止请求，正在终止 Excel 精调。")
                     _kill_excel_pid(worker_state["pid"], "收到停止请求")
                     done_event.wait(timeout=5)
-                    raise TaskStopped("任务已停止，Excel 精调已终止，已保留当前已生成结果。")
+                    raise TaskStopped("任务已停止，行高调整已中止，已生成的文件都保留了。")
 
                 stalled_for = time.monotonic() - worker_state["last_progress_ts"]
                 if stalled_for >= AUTOFIT_STALL_TIMEOUT_SECONDS:
                     msg = (
-                        f"Excel AutoFit 连续 {AUTOFIT_STALL_TIMEOUT_SECONDS}s 无进度，"
-                        "已终止 Excel 精调并保留 Python 估算行高。"
+                        f"Excel 连续 {AUTOFIT_STALL_TIMEOUT_SECONDS} 秒没有进展，"
+                        "已停止自动调整行高，行高按估算值保存。"
                     )
                     self._log("WARN", msg)
                     self._task_logger.warning(msg)
-                    _kill_excel_pid(worker_state["pid"], "Excel 精调长时间无进度")
+                    _kill_excel_pid(worker_state["pid"], "调整行高长时间没有进展")
                     done_event.wait(timeout=5)
                     return False
 
@@ -673,10 +694,10 @@ class TaskRunner(BaseTaskRunner):
         def _get_excel_app():
             nonlocal excel_app, excel_thread_state
             if excel_app is None:
-                self._queue.put(StatusMsg(phase_desc="状态：正在唤醒底层 Excel 引擎，请稍候..."))
+                self._queue.put(StatusMsg(phase_desc="状态：正在启动 Excel，请稍候..."))
                 try:
                     excel_thread_state = initialize_excel_thread()
-                    self._log("INFO", "开始启动全局 Excel 进程...")
+                    self._log("INFO", "正在启动 Excel...")
                     excel_app = create_excel_app(visible=False, add_book=False)
                     _configure_excel_app(excel_app)
                 except Exception as e:
@@ -687,9 +708,9 @@ class TaskRunner(BaseTaskRunner):
                         e,
                         fallback="本机 Excel 没能启动，可能没安装，或没有授权本程序控制它。",
                     )
-                    self._log("WARN", f"启动全局 Excel 进程失败：{start_reason}")
+                    self._log("WARN", f"Excel 没能启动：{start_reason}")
                     raise Exception(
-                        "无法启动本地 Excel，请确认已正确安装并允许自动化控制："
+                        "本机 Excel 没能启动，请确认已安装，并允许本程序控制它："
                         f"{start_reason}"
                     )
             return excel_app
@@ -699,7 +720,7 @@ class TaskRunner(BaseTaskRunner):
             # ══════════════════════════════════════════════════════════
             # 阶段 1：全局词汇提取（扫描 + .xls 转换 + 收集词条）
             # ══════════════════════════════════════════════════════════
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在扫描所有文件提取词汇..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在读取所有文件里的文字..."))
 
             # process_paths[i] 对应 self._files[i]，若 .xls 则指向转换后的临时 .xlsx，
             # 若续译换了底稿则指向上次输出的双语文件
@@ -760,7 +781,7 @@ class TaskRunner(BaseTaskRunner):
 
             # 阶段 1 收尾：发送最终进度
             self._queue.put(ProgressMsg(
-                phase_index=1, phase_total=phase_total, phase_name="全局扫描",
+                phase_index=1, phase_total=phase_total, phase_name="读取文件",
                 step_done=len(self._files), step_total=len(self._files),
             ))
 
@@ -819,7 +840,7 @@ class TaskRunner(BaseTaskRunner):
                 f"raw_text_count={raw_text_count} | "
                 f"reason={excel_policy_reason}"
             )
-            self._log("INFO", f"[Excel策略] {excel_policy_log}")
+            logger.info(f"[Excel策略] {excel_policy_log}")  # 同上，只进 app.log
             self._task_logger.excel_policy_decided(
                 excel_policy=excel_policy,
                 xls_file_count=xls_file_count,
@@ -829,17 +850,17 @@ class TaskRunner(BaseTaskRunner):
             )
 
             if excel_app is not None and not reuse_excel_for_autofit:
-                self._log("INFO", "按策略释放阶段 1 的 Excel 进程，阶段 4 将使用干净进程")
+                logger.info("按策略释放阶段 1 的 Excel 进程，阶段 4 将使用干净进程")
                 _cleanup_excel_app(force=True)
             elif reuse_excel_for_autofit:
-                self._log("INFO", "按策略保留阶段 1 的 Excel 进程，阶段 4 将直接复用")
+                logger.info("按策略保留阶段 1 的 Excel 进程，阶段 4 将直接复用")
 
             _raise_if_stopped()
 
             # ══════════════════════════════════════════════════════════
             # 阶段 2：全局统一翻译（TM 查询 + API 并发）
             # ══════════════════════════════════════════════════════════
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在比对翻译记忆库..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在查找记忆库里已有的译文..."))
 
             t_phase2 = datetime.now()
 
@@ -853,7 +874,7 @@ class TaskRunner(BaseTaskRunner):
             if mixed_texts:
                 self._log(
                     "INFO",
-                    f"混合语言路径命中 {len(mixed_texts)} 处内容，已从记忆库查询中分流。",
+                    f"有 {len(mixed_texts)} 处内容夹杂多种语言，会单独翻译，不使用记忆库。",
                 )
 
             # TM 查询按“文件预检 -> 该文件文本 -> 实际语言对”分组。不能
@@ -897,13 +918,14 @@ class TaskRunner(BaseTaskRunner):
 
             self._log(
                 "INFO",
-                f"[阶段 2] TM 命中：{tm_hit_count}  普通待 API：{len(misses)}  混合语言：{len(mixed_texts)}",
+                f"[阶段 2] 记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
+                f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
             self._queue.put(ProgressMsg(
                 phase_index=2,
                 phase_total=phase_total,
-                phase_name="云端翻译",
+                phase_name="翻译",
                 step_done=0 if api_call_count else 1,
                 step_total=max(api_call_count, 1),
             ))
@@ -1140,7 +1162,7 @@ class TaskRunner(BaseTaskRunner):
 
             elapsed = (datetime.now() - start_ts).total_seconds()
             if need_autofit:
-                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在准备 Excel 精调..."))
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在准备调整行高..."))
             else:
                 self._queue.put(StatusMsg(phase_desc="状态：[收尾中] 正在整理任务结果..."))
 
@@ -1156,15 +1178,15 @@ class TaskRunner(BaseTaskRunner):
             )
 
             if excel_output.lock_row_height and excel_output.enable_excel_autofit:
-                self._log("INFO", '已启用"锁定行高，缩小字号"，跳过 Excel AutoFit。')
+                self._log("INFO", "已启用「锁定行高，缩小字号」，不再自动调整行高。")
         except TaskStopped as e:
             stopped_message = str(e)
         except ApiKeyTemporarilyUnavailableError as e:
             fatal_error_message = str(e)
         finally:
             if excel_app is not None:
-                self._log("INFO", "清理全局 Excel 进程...")
-                _cleanup_excel_app(status_msg="状态：[收尾中] 正在清理 Excel 进程...")
+                self._log("INFO", "正在关闭 Excel...")
+                _cleanup_excel_app(status_msg="状态：[收尾中] 正在关闭 Excel...")
             # 兜底扫一遍所有文件的 .xls 转换临时件：正常跑完时阶段 3 已经在
             # 各自的清理点删过；停止、致命失败连阶段 3 都进不去，阶段 3 内部
             # 提前停止时后面还没轮到的文件也一样——都靠这里补删一遍。已经删过
@@ -1320,7 +1342,7 @@ class TaskRunner(BaseTaskRunner):
         self._queue.put(
             StatusMsg(
                 phase_desc=(
-                    "状态：自动识别模式，正在对每个有候选文本的文件执行一次语言预检..."
+                    "状态：正在识别每个文件的原文语言..."
                 )
             )
         )
@@ -1383,12 +1405,17 @@ class TaskRunner(BaseTaskRunner):
                 text_source_scopes.setdefault(text, []).append(
                     frozenset(result.source_langs)
                 )
+        logger.info(
+            f"自动语言预检完成：{detector_calls['count']} 次请求，"
+            f"实际源语言={','.join(detected_sources) or '未确定'}，"
+            f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+        )
         self._log(
             "INFO",
-            (
-                f"自动语言预检完成：{detector_calls['count']} 次请求，"
-                f"实际源语言={','.join(detected_sources) or '未确定'}，"
-                f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+            "已识别原文语言："
+            + (
+                "、".join(get_source_lang_display(code) for code in detected_sources)
+                or "未能确定"
             ),
         )
         if self._untranslated_only:
@@ -1467,8 +1494,8 @@ class TaskRunner(BaseTaskRunner):
             self._file_progress.emit_many(
                 "active", "translate", active_translation_paths
             )
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
-            self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译记忆库里没有的内容..."))
+            self._log("INFO", f"开始翻译 {api_call_count} 处内容")
 
             progress_lock = threading.Lock()
             progress_done = {"normal": 0, "mixed": 0}
@@ -1483,7 +1510,7 @@ class TaskRunner(BaseTaskRunner):
                 self._queue.put(ProgressMsg(
                     phase_index=2,
                     phase_total=phase_total,
-                    phase_name="云端翻译",
+                    phase_name="翻译",
                     step_done=min(total_done, max(api_call_count, 1)),
                     step_total=max(api_call_count, 1),
                 ))
@@ -1530,7 +1557,7 @@ class TaskRunner(BaseTaskRunner):
                     self._log(
                         "INFO",
                         f"任务中断前已拿到 {len(partial)} 条译文，已存入记忆库 {written} 条；"
-                        "重新翻译时这些内容直接命中记忆库，不会再次计费。",
+                        "重新翻译时这些内容会直接从记忆库取用，不会再次计费。",
                     )
 
             def run_normal_api_translation() -> dict[str, str]:
@@ -1603,13 +1630,13 @@ class TaskRunner(BaseTaskRunner):
                     if isinstance(exc, ApiCredentialRejectedError):
                         raise
                     rate_limited.append(exc)
-                    self._log("WARN", "接口持续限流，混合语言内容这次没能翻译，已保留原文。")
+                    self._log("WARN", "接口持续限流，夹杂多种语言的内容这次没能翻译，已保留原文。")
                     return {}
 
             def _run_mixed_api_translation():
                 if not mixed_texts:
                     return {}
-                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译夹杂多种语言的内容..."))
 
                 def mixed_progress_cb(done, total):
                     _emit_api_progress("mixed", done)
@@ -1685,12 +1712,11 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "INFO",
                     (
-                        "混合语言路径："
-                        f"命中 {mixed_stats.input_count} 条，"
-                        f"已双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)}，"
-                        f"疑似原文错误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)}，"
-                        f"不确定 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)}，"
-                        f"语义校验接受 {mixed_stats.semantic_accepted_count}"
+                        f"夹杂多种语言的内容 {mixed_stats.input_count} 处："
+                        f"已有双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)} 处，"
+                        f"原文疑似有误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)} 处，"
+                        f"待人工确认 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)} 处，"
+                        f"复查后采用 {mixed_stats.semantic_accepted_count} 处"
                     ),
                 )
             if rate_limited:
@@ -1723,22 +1749,30 @@ class TaskRunner(BaseTaskRunner):
             # 否则重跑整批要重新付费（中-2）。真正该拦停止的位置是阶段 3
             # 开始前那一处 `_raise_if_stopped()`，出文件才是可以整批放弃的部分。
             api_elapsed = (datetime.now() - t0).total_seconds()
-            self._log(
-                "INFO",
-                (
-                    "Excel 实际请求："
-                    f"{batch_stats.batch_count} 批，"
-                    f"缩小重试 {batch_stats.retry_count} 次，"
-                    f"未翻译 {batch_stats.untranslated_count} 条，"
-                    f"最大请求权重 {batch_stats.max_request_weight}"
+            logger.info(
+                "Excel 实际请求："
+                f"{batch_stats.batch_count} 批，"
+                f"缩小重试 {batch_stats.retry_count} 次，"
+                f"未翻译 {batch_stats.untranslated_count} 条，"
+                f"最大请求权重 {batch_stats.max_request_weight}"
+                + (
+                    f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
+                    f"最低并发 {batch_stats.adaptive_lowest_concurrency}"
+                    if batch_stats.adaptive_concurrency_reductions
+                    else ""
+                )
+            )
+            if batch_stats.batch_count:
+                self._log(
+                    "INFO",
+                    f"共分 {batch_stats.batch_count} 批发送"
                     + (
-                        f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
-                        f"最低并发 {batch_stats.adaptive_lowest_concurrency}"
-                        if batch_stats.adaptive_concurrency_reductions
+                        f"，其中 {batch_stats.retry_count} 次拆小重试"
+                        if batch_stats.retry_count
                         else ""
                     )
-                ),
-            )
+                    + "。",
+                )
             untranslated_count = (
                 batch_stats.untranslated_count or batch_stats.failed_batch_count
             )
@@ -1752,9 +1786,9 @@ class TaskRunner(BaseTaskRunner):
                         "severity": "needs_action",
                         "count": untranslated_count,
                         "message": (
-                            f"有 {untranslated_count} 条内容未能从 API 获得译文，"
+                            f"有 {untranslated_count} 条内容没能从模型拿到译文，"
                             "文件中这些位置保留的是原文，不是译文。"
-                            "请检查 API Key、Base URL、模型名称或服务状态，重新配置后再试。"
+                            "请检查 API 密钥、Base URL、模型名称或服务状态，重新配置后再试。"
                         ),
                         "failed_sources": list(batch_stats.failed_items),
                     }
@@ -1808,9 +1842,9 @@ class TaskRunner(BaseTaskRunner):
                 )
                 self._log(
                     "WARN",
-                    f"质量校验回退 {batch_stats.quality_reset_count} 条译文为原文，已记入结果报告。",
+                    f"有 {batch_stats.quality_reset_count} 条译文没通过质量检查，已改回原文，已记入结果报告。",
                 )
-            self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
+            self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处（{api_elapsed:.2f}s）")
             self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
         return normal_api_translations
 
@@ -1851,7 +1885,7 @@ class TaskRunner(BaseTaskRunner):
         self._file_progress.emit(file_item.path, "active", "extract")
 
         self._queue.put(ProgressMsg(
-            phase_index=1, phase_total=phase_total, phase_name="全局扫描",
+            phase_index=1, phase_total=phase_total, phase_name="读取文件",
             step_done=fi, step_total=len(self._files),
         ))
 
@@ -1894,23 +1928,23 @@ class TaskRunner(BaseTaskRunner):
                 logger.debug(f"续译底稿匹配失败原始错误 {file_item.name}：{e!r}")
                 self._log(
                     "WARN",
-                    f"续译底稿匹配失败 {file_item.name}，改为全量翻译："
-                    + user_facing_reason(e, fallback="续译匹配出错。"),
+                    f"查找 {file_item.name} 上次的翻译结果时出错，这次从头完整翻译："
+                    + user_facing_reason(e, fallback="查找时出错。"),
                 )
 
             if candidate is not None:
                 if not self._validate_resume_baseline(candidate):
                     self._log(
                         "WARN",
-                        f"续译底稿已损坏或无法打开，改用源文件全量翻译："
-                        f"{candidate}",
+                        f"{file_item.name} 上次的翻译结果（{candidate.name}）已损坏或打不开，"
+                        "这次从头完整翻译。",
                     )
                 elif auto_source_lang:
                     deferred_baseline = candidate
                     self._log(
                         "INFO",
-                        f"续译：{file_item.name} 已找到上次产物 {candidate.name}，"
-                        "等识别出源语言后再换为底稿。",
+                        f"接着上次继续：已找到 {file_item.name} 上次的翻译结果 {candidate.name}，"
+                        "识别出原文语言后再在它的基础上补译。",
                     )
                 elif (
                     missing := baseline_missing_source_texts(
@@ -1929,9 +1963,9 @@ class TaskRunner(BaseTaskRunner):
                     # 源文件删掉的内容则相反，会随底稿原样留在产物里。
                     self._log(
                         "WARN",
-                        f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                        f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
-                        "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
+                        f"接着上次继续：{file_item.name} 的原文件比上次翻译时"
+                        f"{describe_baseline_divergence(missing)}，没法接着上次的结果补译，"
+                        "这次完整翻译（已翻过的内容会尽量从记忆库直接取用）。",
                     )
                 else:
                     process_path = candidate
@@ -1939,7 +1973,7 @@ class TaskRunner(BaseTaskRunner):
                     resume_used = True
                     self._log(
                         "INFO",
-                        f"续译：{file_item.name} 以上次产物为底稿 {candidate.name}",
+                        f"接着上次继续：{file_item.name} 在上次的翻译结果 {candidate.name} 上补译",
                     )
 
         resume_baseline_used.append(resume_used)
@@ -1977,8 +2011,8 @@ class TaskRunner(BaseTaskRunner):
                         # 变数值），用户扫日志时应当一眼看到。
                         self._log(
                             "WARN",
-                            f"{file_item.name}：LibreOffice 兼容转换不可用，"
-                            f"退回值化转换（公式不会保留）：{lo_reason}",
+                            f"{file_item.name}：兼容转换不可用，已改为只保留计算结果"
+                            f"（公式会变成数值）：{lo_reason}",
                         )
                         process_path = convert_with_fallback(process_path)
                         file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
@@ -2015,7 +2049,7 @@ class TaskRunner(BaseTaskRunner):
         process_paths.append(process_path)
 
         # 收集词条
-        self._log("INFO", f"[阶段 1] 提取词汇：{file_item.name}（{fi+1}/{len(self._files)}）")
+        self._log("INFO", f"[阶段 1] 读取文件：{file_item.name}（{fi+1}/{len(self._files)}）")
         t0 = datetime.now()
         try:
             if self._untranslated_only and not auto_source_lang:
@@ -2072,9 +2106,8 @@ class TaskRunner(BaseTaskRunner):
                 )
                 self._log(
                     "WARN",
-                    f"续译底稿无法建立补译计划 {file_item.name}，"
-                    "已退回按源文件全量翻译："
-                    + user_facing_reason(e, fallback="底稿读取失败。"),
+                    f"{file_item.name} 没法接着上次的结果补译，这次从头完整翻译："
+                    + user_facing_reason(e, fallback="上次的翻译结果读不出来。"),
                 )
                 process_path = file_item.path
                 process_paths[-1] = process_path
@@ -2123,7 +2156,7 @@ class TaskRunner(BaseTaskRunner):
                 except Exception as retry_error:
                     e = retry_error
             if not degraded:
-                fail_label = "续译底稿读取失败" if resume_used else "源文件读取失败"
+                fail_label = "上次的翻译结果读取失败" if resume_used else "源文件读取失败"
                 logger.debug(f"{fail_label}原始错误 {file_item.name}：{e!r}")
                 read_reason = user_facing_reason(
                     e,
@@ -2165,7 +2198,7 @@ class TaskRunner(BaseTaskRunner):
             self._log(
                 "INFO",
                 f"  → {file_item.name}：{len(text_set)} 处候选文本，"
-                f"先用于识别源语言（{collect_elapsed:.3f}s）",
+                f"先用来识别原文语言（{collect_elapsed:.3f}s）",
             )
         else:
             self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
@@ -2278,7 +2311,7 @@ class TaskRunner(BaseTaskRunner):
             if self._untranslated_only:
                 coverage_plan = coverage_plans[fi] if fi < len(coverage_plans) else None
                 if coverage_plan is None:
-                    raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                    raise ValueError("补译前的内容核对没有完成，为免写错位置，这个文件没有写出。")
                 # 「保留原文副本」的快照取自写入源。续译时写入源是上次的双语
                 # 底稿——从双语内容里克隆不出「未翻译的原始副本」，硬克隆出来
                 # 的「X_原文」里装的是「原文\n译文」，名字在撒谎、体积还翻倍。
@@ -2291,8 +2324,8 @@ class TaskRunner(BaseTaskRunner):
                     self._log(
                         "INFO",
                         (
-                            f"  → [续译] {file_item.name}：底稿本身是双语内容，"
-                            "无法从中克隆出纯原文副本，本次不新增「_原文」分表"
+                            f"  → [接着上次继续] {file_item.name}：上次的翻译结果已是双语内容，"
+                            "没法从中复制出纯原文的分表，这次不新增「_原文」分表"
                             "（上次已有的原样保留）。"
                         ),
                     )
@@ -2322,9 +2355,7 @@ class TaskRunner(BaseTaskRunner):
                         self._settings.excel_review.existing_fill_policy
                     ),
                     review_positions=file_review_positions,
-                    log_callback=lambda msg: self._log(
-                        "OK" if msg.startswith("[OK]") else "INFO", msg
-                    ),
+                    log_callback=lambda msg: self._log(*split_log_prefix(msg)),
                     original_path=naming_original_path,
                     external_autofit_planned=need_autofit,
                     stats=write_stats,
@@ -2347,9 +2378,7 @@ class TaskRunner(BaseTaskRunner):
                     mark_review_items    = self._settings.excel_review.mark_review_items,
                     existing_fill_policy = self._settings.excel_review.existing_fill_policy,
                     review_positions     = file_review_positions,
-                    log_callback         = lambda msg: self._log(
-                        "OK" if msg.startswith("[OK]") else "INFO", msg
-                    ),
+                    log_callback         = lambda msg: self._log(*split_log_prefix(msg)),
                     original_path        = naming_original_path,
                     external_autofit_planned = need_autofit,
                     stats                = write_stats,
@@ -2374,14 +2403,19 @@ class TaskRunner(BaseTaskRunner):
                     write_stats["sheet_name_status"] = rename_result.status
                     write_stats["sheet_name_changes"] = rename_result.names
                     if rename_result.status == "preserved":
-                        message = f"[{file_item.name}] 工作表名称保留原名：{rename_result.reason}"
+                        logger.debug(f"工作表改名保留原名原始理由 {file_item.name}：{rename_result.reason}")
+                        rename_reason = user_facing_reason(
+                            rename_result.reason,
+                            fallback="改名时出错，为了不损坏工作簿，保留了原名。",
+                        )
+                        message = f"[{file_item.name}] 工作表名称保留原名：{rename_reason}"
                         self._log("WARN", message)
                         quality_issues.append({
                             "file": file_item.name,
                             "type": "sheet_rename_preserved",
                             "severity": "needs_review",
                             "problem": "工作表名称无法安全改写",
-                            "status": f"已保留原工作表名称：{rename_result.reason}",
+                            "status": f"已保留原工作表名称：{rename_reason}",
                             "message": message,
                         })
                 else:
@@ -2513,12 +2547,13 @@ class TaskRunner(BaseTaskRunner):
         )
         if residual_result.fixes:
             global_translations.update(residual_result.fixes)
+            logger.info(
+                f"残留序号确定性修复 {len(residual_result.fixes)} 条"
+                f"（序号惯例：{residual_result.convention}）"
+            )
             self._log(
                 "OK",
-                (
-                    f"残留序号确定性修复 {len(residual_result.fixes)} 条"
-                    f"（序号惯例：{residual_result.convention}）"
-                ),
+                f"已自动修正 {len(residual_result.fixes)} 处没翻译的编号。",
             )
             quality_issues.append(
                 {
@@ -2526,8 +2561,8 @@ class TaskRunner(BaseTaskRunner):
                     "severity": "info",
                     "count": len(residual_result.fixes),
                     "message": (
-                        f"有 {len(residual_result.fixes)} 条译文的中文序号残留"
-                        "已按文档序号惯例自动修复，无需人工处理。"
+                        f"有 {len(residual_result.fixes)} 条译文里没翻译的编号"
+                        "已按全文的编号写法自动修正，无需处理。"
                     ),
                 }
             )
@@ -2552,7 +2587,7 @@ class TaskRunner(BaseTaskRunner):
             def _on_repair_progress(done: int, total: int) -> None:
                 self._queue.put(StatusMsg(
                     phase_desc=(
-                        f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
+                        f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文"
                         f"（{done}/{total}）..."
                     )
                 ))
@@ -2571,17 +2606,17 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     (
-                        f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
-                        f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
-                        f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
+                        f"遗留原文的译文有 {len(still_needs_review)} 条，超出单次自动补译上限"
+                        f"（{_RESIDUAL_REPAIR_MAX_UNITS} 条），超出的 "
+                        f"{ladder.over_cap_count} 条这次没有自动补译，已标为待复核。"
                     ),
                 )
             if ladder.breaker_tripped:
                 self._log(
                     "WARN",
                     (
-                        f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
-                        "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
+                        f"自动补译连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次失败，"
+                        "已停止自动补译，剩下的已标为待复核。"
                     ),
                 )
             global_translations.update(ladder.accepted)
@@ -2595,18 +2630,18 @@ class TaskRunner(BaseTaskRunner):
         repaired_total = sum(repair_method_counts.values())
         if repaired_total:
             method_desc = "、".join(
-                f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
+                f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 处"
                 for method, count in sorted(repair_method_counts.items())
             )
-            self._log("OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）")
+            self._log("OK", f"已自动补译 {repaired_total} 处遗留的原文（{method_desc}）")
             quality_issues.append(
                 {
                     "type": "residual_repaired",
                     "severity": "info",
                     "count": repaired_total,
                     "message": (
-                        f"有 {repaired_total} 条译文的残留中文已自动修复"
-                        f"（{method_desc}），修复稿均通过机器验收。"
+                        f"有 {repaired_total} 条译文里遗留的原文已自动补译"
+                        f"（{method_desc}），都通过了自动检查。"
                     ),
                 }
             )
@@ -2628,12 +2663,12 @@ class TaskRunner(BaseTaskRunner):
                     # 不影响旧数据可读——新增字段只加不改，兼容旧结果契约。
                     "caused_by_stop": repair_stopped_by_user,
                     "message": (
-                        f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
+                        f"有 {len(still_needs_review)} 条译文里还留着没翻译的原文片段，"
                         + (
                             # 停止不是失败：这批是任务被停止时还没轮到自动修复的部分，
                             # 不是「模型改了还是不对」。放在最前面说，不然用户会把它跟
                             # 下面「熔断/超限」这些真正尝试过、没修成的情况混为一谈。
-                            "其中一部分是任务停止时还没来得及自动修复（不是修复失败），"
+                            "其中一部分是任务停止时还没来得及自动补译（不是补译失败），"
                             if repair_stopped_by_user
                             else ""
                         )
@@ -2650,15 +2685,15 @@ class TaskRunner(BaseTaskRunner):
                             else "已在输出文件中标记待复核位置。"
                         )
                         + (
-                            f"其中 {repair_over_cap_count} 条超出单次自动修复"
-                            f"上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），本次未尝试"
-                            "修复，重新运行任务可继续修复。"
+                            f"其中 {repair_over_cap_count} 条超出单次自动补译"
+                            f"上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），这次没有尝试"
+                            "补译，重新运行任务可继续补译。"
                             if repair_over_cap_count
                             else ""
                         )
                         + (
-                            "自动修复通道因连续请求失败已熔断，部分单元未尝试"
-                            "修复，确认网络与引擎可用后重新运行任务可继续修复。"
+                            "自动补译连续失败，已停止，部分内容没有尝试补译；"
+                            "确认网络和模型连接正常后重新运行任务可继续补译。"
                             if repair_breaker_tripped
                             else ""
                         )
@@ -2666,8 +2701,8 @@ class TaskRunner(BaseTaskRunner):
                             # 不说「接着处理」：停止发生在写盘之前时本次没有
                             # 可续的产物，重跑是从头再来（已入库的译文会经
                             # 记忆库直接复用，残留部分重新走自动修复）。
-                            "重新运行任务时，已完成的译文会经记忆库复用，"
-                            "这批残留会重新尝试自动修复。"
+                            "重新运行任务时，已完成的译文会从记忆库直接取用，"
+                            "这批遗留的原文会重新尝试自动补译。"
                             if repair_stopped_by_user
                             and not repair_over_cap_count
                             and not repair_breaker_tripped
@@ -2678,10 +2713,10 @@ class TaskRunner(BaseTaskRunner):
                         {
                             "source": unit.source_text,
                             "error": (
-                                "译文残留中文："
+                                "译文里没翻译的原文："
                                 + "、".join(f"«{span}»" for span in unit.spans)
                                 + (
-                                    "；修复尝试被拒："
+                                    "；自动补译没有通过："
                                     + "；".join(
                                         repair_reject_reasons[unit.source_text]
                                     )
@@ -2702,9 +2737,9 @@ class TaskRunner(BaseTaskRunner):
             self._log(
                 "WARN",
                 (
-                    f"检出 {len(still_needs_review)} 条译文残留中文，"
+                    f"有 {len(still_needs_review)} 条译文里还留着没翻译的原文，"
                     + (
-                        "其中一部分是任务停止时还没来得及自动修复，"
+                        "其中一部分是任务停止时还没来得及自动补译，"
                         if repair_stopped_by_user
                         else ""
                     )
@@ -2752,8 +2787,7 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "OK",
                     (
-                        f"节标题写法归一 {len(heading_consistency.fixes)} 条"
-                        "（全篇多数派为准）。"
+                        f"已按全文最常见的写法统一 {len(heading_consistency.fixes)} 处章节标题。"
                     ),
                 )
                 quality_issues.append(
@@ -2762,8 +2796,8 @@ class TaskRunner(BaseTaskRunner):
                         "severity": "info",
                         "count": len(heading_consistency.fixes),
                         "message": (
-                            f"有 {len(heading_consistency.fixes)} 条节标题译文的写法"
-                            "与全篇多数派不一致，已自动归一，无需人工处理。"
+                            f"有 {len(heading_consistency.fixes)} 条章节标题译文的写法"
+                            "与全文多数不一致，已自动统一，无需处理。"
                         ),
                     }
                 )
@@ -2775,9 +2809,9 @@ class TaskRunner(BaseTaskRunner):
                         "severity": "info",
                         "count": len(heading_consistency.outliers),
                         "message": (
-                            f"有 {len(heading_consistency.outliers)} 条节标题译文"
-                            "与全篇多数写法不一致，因归一需要词形变化知识，"
-                            "未自动改写，如需统一可人工调整。"
+                            f"有 {len(heading_consistency.outliers)} 条章节标题译文"
+                            "与全文多数写法不一致；统一它们需要改动词形，"
+                            "没有自动改写，如需统一可人工调整。"
                         ),
                     }
                 )
@@ -2828,7 +2862,7 @@ class TaskRunner(BaseTaskRunner):
                     }
                 )
             if written:
-                self._log("INFO", f"新增 TM 词条：{written} 条")
+                self._log("INFO", f"已存入记忆库 {written} 条")
 
     def _run_autofit_phase(
         self,
@@ -2853,22 +2887,17 @@ class TaskRunner(BaseTaskRunner):
                     for result in file_results
                     if result.get("success") and result.get("output")
                 }
-                if reuse_excel_for_autofit:
-                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在复用阶段 1 的 Excel 进程精调行高..."))
-                else:
-                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在启动干净 Excel 进程精调行高..."))
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在自动调整行高..."))
                 self._queue.put(ProgressMsg(
                     phase_index=4,
                     phase_total=phase_total,
-                    phase_name="Excel 精调",
+                    phase_name="调整行高",
                     step_done=0,
                     step_total=len(out_paths),
                 ))
                 t0 = datetime.now()
-                self._log(
-                    "INFO",
-                    f"开始 Excel AutoFit，共 {len(out_paths)} 个文件 | policy={excel_policy}",
-                )
+                logger.info(f"开始 Excel AutoFit，共 {len(out_paths)} 个文件 | policy={excel_policy}")
+                self._log("INFO", f"开始自动调整行高，共 {len(out_paths)} 个文件")
 
                 def autofit_file_start_cb(current_file):
                     result = autofit_results_by_path.get(
@@ -2898,13 +2927,13 @@ class TaskRunner(BaseTaskRunner):
                     self._queue.put(ProgressMsg(
                         phase_index=4,
                         phase_total=phase_total,
-                        phase_name="Excel 精调",
+                        phase_name="调整行高",
                         step_done=done,
                         step_total=total,
                     ))
                     if current_file is not None and done < total:
                         self._queue.put(StatusMsg(
-                            phase_desc=f"状态：[阶段 4/{phase_total}] 正在精调 Excel 行高：{current_file.name}"
+                            phase_desc=f"状态：[阶段 4/{phase_total}] 正在调整行高：{current_file.name}"
                         ))
 
                 if reuse_excel_for_autofit:
@@ -2912,9 +2941,7 @@ class TaskRunner(BaseTaskRunner):
                     autofit_success = bilingual_writer.autofit_files_batch(
                         out_paths,
                         app=app,
-                        log_callback=lambda msg: self._log(
-                            "WARN" if msg.startswith("[WARN]") else "INFO", msg
-                        ),
+                        log_callback=lambda msg: self._log(*split_log_prefix(msg)),
                         progress_callback=autofit_progress_cb,
                         file_start_callback=autofit_file_start_cb,
                     )
@@ -2928,7 +2955,7 @@ class TaskRunner(BaseTaskRunner):
                 self._queue.put(ProgressMsg(
                     phase_index=4,
                     phase_total=phase_total,
-                    phase_name="Excel 精调",
+                    phase_name="调整行高",
                     step_done=len(out_paths),
                     step_total=len(out_paths),
                 ))
@@ -2948,12 +2975,12 @@ class TaskRunner(BaseTaskRunner):
                             },
                         )
                 if autofit_success:
-                    self._log("INFO", f"Excel AutoFit 完成，耗时 {autofit_elapsed:.2f}s | policy={excel_policy}")
+                    self._log("INFO", f"自动调整行高完成（{autofit_elapsed:.2f}s）")
                     self._task_logger.info(
                         f"批量AutoFit完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
                     )
                 else:
-                    self._log("WARN", f"Excel AutoFit 未完全完成，已保留 Python 估算行高 | policy={excel_policy}")
+                    self._log("WARN", "Excel 没能完成自动调整行高，没调整到的部分按估算行高保存。")
                     self._task_logger.warning(
                         f"批量AutoFit未完全完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
                     )
@@ -2968,11 +2995,11 @@ class TaskRunner(BaseTaskRunner):
                                 if key not in {"source_path", "source_relative_path"}
                             },
                         )
-                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 无可精调文件，已跳过 Excel 精调。"))
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 没有需要调整行高的文件，已跳过。"))
                 self._queue.put(ProgressMsg(
                     phase_index=4,
                     phase_total=phase_total,
-                    phase_name="Excel 精调",
+                    phase_name="调整行高",
                     step_done=1,
                     step_total=1,
                 ))
@@ -2989,11 +3016,12 @@ class TaskRunner(BaseTaskRunner):
         try:
             return self._write_api_results_to_tm(**kwargs), None
         except Exception as tm_error:  # noqa: BLE001 - never lose finished work
+            logger.warning(f"记忆库写入失败原始错误：{tm_error!r}")
             message = (
-                "翻译记忆库写入失败，本次译文不受影响，"
-                f"但这批词条没有存入词库：{tm_error}"
+                "记忆库写入失败，本次译文不受影响，"
+                "但这批译文没有存进记忆库："
+                + user_facing_reason(tm_error, fallback="记忆库暂时无法写入。")
             )
-            logger.warning(message)
             return 0, message
 
     def _write_api_results_to_tm(
@@ -3200,7 +3228,7 @@ class TaskRunner(BaseTaskRunner):
                 self._log(
                     "INFO",
                     f"  → {file_name}：上次的翻译已覆盖全部内容，无需补译，"
-                    "输出与上次产物一致。",
+                    "输出与上次的翻译结果一致。",
                 )
             else:
                 self._log(
@@ -3279,9 +3307,9 @@ class TaskRunner(BaseTaskRunner):
             if missing:
                 self._log(
                     "WARN",
-                    f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                    f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
-                    "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
+                    f"接着上次继续：{file_item.name} 的原文件比上次翻译时"
+                    f"{describe_baseline_divergence(missing)}，没法接着上次的结果补译，"
+                    "这次完整翻译（已翻过的内容会尽量从记忆库直接取用）。",
                 )
                 continue
             process_paths[fi] = baseline
@@ -3289,7 +3317,7 @@ class TaskRunner(BaseTaskRunner):
                 resume_baseline_used[fi] = True
             self._log(
                 "INFO",
-                f"续译：{file_item.name} 以上次产物为底稿 {baseline.name}",
+                f"接着上次继续：{file_item.name} 在上次的翻译结果 {baseline.name} 上补译",
             )
             # 阶段 1 若做过 .xls → .xlsx 转换，那个临时件从此用不上了
             if previous != file_item.path and previous != baseline:
@@ -3336,7 +3364,9 @@ class TaskRunner(BaseTaskRunner):
         detected_langs = sorted(set(file_source_langs.values())) or [source_lang]
         self._log(
             "INFO",
-            f"[补译模式] 源语言已识别为 {'、'.join(detected_langs)}，开始按各文件的语言重算待补清单。",
+            "[补译模式] 原文语言已识别为 "
+            + "、".join(get_source_lang_display(code) for code in detected_langs)
+            + "，开始按各文件的语言重新找出要补译的内容。",
         )
         for fi, file_item in enumerate(self._files):
             if fi >= len(process_paths) or fi >= len(coverage_plans):
@@ -3373,9 +3403,8 @@ class TaskRunner(BaseTaskRunner):
                     logger.debug(f"续译底稿建计划失败原始错误 {file_item.name}：{e!r}")
                     self._log(
                         "WARN",
-                        f"续译底稿无法建立补译计划 {file_item.name}，"
-                        "已退回按源文件全量翻译："
-                        + user_facing_reason(e, fallback="底稿读取失败。"),
+                        f"{file_item.name} 没法接着上次的结果补译，这次从头完整翻译："
+                        + user_facing_reason(e, fallback="上次的翻译结果读不出来。"),
                     )
                     process_paths[fi] = file_item.path
                     resume_baseline_used[fi] = False
@@ -3391,7 +3420,7 @@ class TaskRunner(BaseTaskRunner):
                         e = retry_error
                 if not degraded:
                     fail_label = (
-                        "续译底稿读取失败"
+                        "上次的翻译结果读取失败"
                         if fi < len(resume_baseline_used) and resume_baseline_used[fi]
                         else "补译识别失败"
                     )

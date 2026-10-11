@@ -1182,17 +1182,17 @@ class WordTaskResultContractTests(IsolatedAppDataTestCase):
             tm_rows = [
                 issue
                 for issue in done.issues
-                if issue.get("problem") == "翻译记忆库写入失败"
+                if issue.get("problem") == "记忆库写入失败"
             ]
             self.assertEqual(len(tm_rows), 1)
-            self.assertIn("没有存入词库", str(tm_rows[0].get("status")))
+            self.assertIn("没有存进记忆库", str(tm_rows[0].get("status")))
             # sqlite 的英文原文进日志即可，WARN 里必须有中文说明
             warnings = [
                 message.message
                 for message in list(runner._queue.queue)
                 if getattr(message, "level", "") == "WARN"
             ]
-            self.assertTrue(any("没有存入词库" in message for message in warnings))
+            self.assertTrue(any("没有存进记忆库" in message for message in warnings))
 
     def test_only_the_paragraph_that_kept_its_source_text_gets_a_review_mark(self) -> None:
         """严格重试恢复和语义仲裁接受都不上底色——它们已经有可用的译文了。

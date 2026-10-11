@@ -23,6 +23,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
+from loguru import logger
+
 from app_meta import APP_VERSION
 from config import APP_DATA_DIR
 
@@ -32,6 +34,14 @@ PLUGIN_VERSION = "0.1.0"
 # downloads while avoiding an extra language switch for Chinese users.
 OFFICIAL_DOWNLOAD_URL = "https://www.opendesign.com/cn/guestfiles/oda_file_converter"
 _REQUIRED_CONVERTER_NAMES = ("ODAFileConverter", "ODAFileConverter.exe")
+# 安装出错时对外只说这两句；具体哪条校验没过写进日志文件。
+PACKAGE_INVALID_MESSAGE = "这个插件包不完整或已被改动，请重新下载。"
+NOT_CONVERTER_MESSAGE = "选的不是图纸转换工具程序。"
+
+
+def _package_error(detail: str) -> ValueError:
+    logger.warning(f"[CAD 插件] 插件包校验未通过：{detail}")
+    return ValueError(PACKAGE_INVALID_MESSAGE)
 _MANIFEST_KEYS = {
     "id",
     "version",
@@ -325,20 +335,20 @@ def _validate_converter(path: Path, info: dict[str, str] | None = None) -> tuple
     info = info or _platform_info()
     try:
         if not path.is_file() or path.is_symlink() or path.name not in _REQUIRED_CONVERTER_NAMES:
-            return False, None, "ODA 转换器路径不是普通文件。"
+            return False, None, NOT_CONVERTER_MESSAGE
     except OSError:
-        return False, None, "ODA 转换器路径无法读取。"
+        return False, None, "读不到选中的图纸转换工具，请检查是否有权限访问。"
     if info.get("system") == "darwin":
         valid = _mach_o(path)
-        return valid, None, "ODA 转换器不是 Mach-O 可执行文件。" if not valid else ""
+        return valid, None, "选的文件不是能在这台 Mac 上运行的图纸转换工具。" if not valid else ""
     if info.get("system") == "windows":
         if not _pe_executable(path):
-            return False, None, "ODA 转换器不是有效的 Windows PE 文件。"
+            return False, None, "选的文件不是能在 Windows 上运行的图纸转换工具。"
         version = _windows_version_metadata(path)
         if not version:
-            return False, None, "ODA 转换器缺少文件版本元数据。"
+            return False, None, "选的图纸转换工具读不出版本信息，可能已损坏，请重新安装。"
         return True, version, ""
-    return False, None, "当前平台不支持 ODA 转换器。"
+    return False, None, "当前系统不支持图纸转换工具。"
 
 
 def _find_converter(root: Path | None = None, info: dict[str, str] | None = None) -> Path | None:
@@ -478,7 +488,7 @@ def probe_status() -> dict[str, Any]:
             detail.append("当前平台仅支持 macOS 13+（Apple Silicon/Intel）或 Windows 10 x64。")
         elif oda_invalid:
             oda_state = "incompatible"
-            detail.append("已配置的 ODA 转换器校验失败。")
+            detail.append("之前连接的图纸转换工具现在用不了，请重新安装或重新选择。")
         elif converter is not None:
             oda_state = "connected"
         enabled = oda_state == "connected" and supported
@@ -517,22 +527,22 @@ def _validate_manifest(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError) as exc:
-        raise ValueError("plugin.json 无法读取。") from exc
+        raise _package_error("plugin.json 无法读取。") from exc
     if not isinstance(value, dict) or value.get("id") != PLUGIN_ID:
-        raise ValueError("插件 ID 不匹配。")
+        raise _package_error("插件 ID 不匹配。")
     if (
         not isinstance(value.get("version"), str)
         or not re.match(r"^\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$", value["version"].strip())
     ):
-        raise ValueError("plugin.json 缺少有效 version。")
+        raise _package_error("plugin.json 缺少有效 version。")
     if value.get("adapter") != "builtin":
-        raise ValueError("CAD Support 必须使用 first-party builtin 适配器。")
+        raise _package_error("adapter 不是 builtin。")
     unknown = set(value) - _MANIFEST_KEYS
     if unknown:
-        raise ValueError("plugin.json 含未知字段：" + ", ".join(sorted(unknown)))
+        raise _package_error("plugin.json 含未知字段：" + ", ".join(sorted(unknown)))
     checksums = value.get("sha256", {})
     if not isinstance(checksums, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in checksums.items()):
-        raise ValueError("plugin.json 的 sha256 必须是文件名到摘要的映射。")
+        raise _package_error("plugin.json 的 sha256 必须是文件名到摘要的映射。")
     return value
 
 
@@ -540,7 +550,7 @@ def _package_files(src: Path) -> list[Path]:
     files: list[Path] = []
     for path in src.rglob("*"):
         if path.is_symlink():
-            raise ValueError("插件包不得包含符号链接。")
+            raise _package_error("插件包包含符号链接。")
         if path.is_file():
             files.append(path)
     return files
@@ -552,23 +562,23 @@ def _validate_package_checksums(src: Path, manifest: dict[str, Any]) -> None:
     for path in files:
         relative = path.relative_to(src)
         if path.name in _REQUIRED_CONVERTER_NAMES or "ODAFileConverter.app" in relative.parts:
-            raise ValueError("插件包不得包含 ODA 转换器；ODA 必须由用户单独提供。")
+            raise _package_error("插件包包含 ODA 转换器。")
     actual_names = {path.relative_to(src).as_posix() for path in files if path.name != "plugin.json"}
     declared_names = set(checksums)
     if actual_names != declared_names:
         missing = sorted(actual_names - declared_names)
         extra = sorted(declared_names - actual_names)
-        raise ValueError(f"插件包必须为全部文件提供 sha256（缺少：{missing}，多余：{extra}）。")
+        raise _package_error(f"插件包没有为全部文件提供 sha256（缺少：{missing}，多余：{extra}）。")
     for relative, expected in checksums.items():
         relative_path = Path(relative)
         if relative_path.is_absolute() or ".." in relative_path.parts:
-            raise ValueError(f"插件包路径越界：{relative}")
+            raise _package_error(f"插件包路径越界：{relative}")
         file_path = (src / relative_path).resolve()
         if src.resolve() not in file_path.parents or not file_path.is_file() or file_path.is_symlink():
-            raise ValueError(f"校验文件不存在：{relative}")
+            raise _package_error(f"校验文件不存在：{relative}")
         actual = hashlib.sha256(file_path.read_bytes()).hexdigest()
         if actual.lower() != expected.lower():
-            raise ValueError(f"插件校验失败：{relative}")
+            raise _package_error(f"插件校验失败：{relative}")
 
 
 def install_from_directory(source: str) -> dict[str, Any]:
@@ -576,12 +586,12 @@ def install_from_directory(source: str) -> dict[str, Any]:
         src = Path(source).expanduser().resolve()
         dst = plugin_root().resolve()
         if not src.is_dir():
-            raise ValueError("插件目录不存在。")
+            raise ValueError("找不到这个插件包文件夹。")
         if src == dst or dst in src.parents or src in dst.parents:
-            raise ValueError("不能从当前安装目录或其父子目录安装插件。")
+            raise ValueError("不能从程序自己的插件文件夹安装，请选择下载得到的插件包。")
         manifest = _validate_manifest(src / "plugin.json")
         if not _core_compatible(manifest):
-            raise ValueError("插件与当前 Translator 版本不兼容。")
+            raise ValueError("这个插件包和当前版本的程序不兼容，请下载对应的版本。")
         _validate_package_checksums(src, manifest)
         dst.parent.mkdir(parents=True, exist_ok=True)
         staging = dst.with_name(f"{dst.name}.installing-{uuid.uuid4().hex}")
@@ -631,16 +641,17 @@ def connect_oda(path: str) -> dict[str, Any]:
         try:
             candidate = candidate.resolve(strict=True)
         except OSError as exc:
-            raise ValueError("未找到可用的 ODAFileConverter 可执行文件。") from exc
+            logger.info(f"[CAD 插件] 选中的转换工具路径不存在：{exc!r}")
+            raise ValueError(NOT_CONVERTER_MESSAGE) from exc
         info = _platform_info()
         valid, _, detail = _validate_converter(candidate, info)
         if not valid:
-            raise ValueError(detail or "未找到可用的 ODAFileConverter 可执行文件。")
+            raise ValueError(detail or NOT_CONVERTER_MESSAGE)
         # A converter supplied inside our package would turn a separately licensed
         # dependency into a bundled component, which is prohibited.
         try:
             if plugin_root().resolve() in candidate.parents:
-                raise ValueError("ODA 转换器必须保留在插件目录之外。")
+                raise ValueError("图纸转换工具不能放在本程序的插件文件夹里，请换个位置安装后再选。")
         except OSError:
             pass
         root = plugin_root()

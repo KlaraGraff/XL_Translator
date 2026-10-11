@@ -49,7 +49,7 @@ def register(app: FastAPI) -> None:
     def get_domain_settings(surface: str) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "Unknown translation surface.")
+            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
         settings = load_settings()
         prefix = f"{normalized}_"
         return {
@@ -78,7 +78,7 @@ def register(app: FastAPI) -> None:
         """
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "Unknown translation surface.")
+            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
         preset = str(payload.preset or "").strip()
         prompt = str(payload.prompt or "").strip()
         if not prompt:
@@ -134,7 +134,7 @@ def register(app: FastAPI) -> None:
     def put_domain_settings(surface: str, payload: DomainSettingsPayload) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "Unknown translation surface.")
+            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
         preset = str(payload.preset or "").strip()
         custom_names = {
             str(name).strip()

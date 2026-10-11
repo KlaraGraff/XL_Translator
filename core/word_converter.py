@@ -154,18 +154,19 @@ def get_local_word_automation_availability() -> tuple[bool, str]:
     if system == "Darwin":
         osascript_path = shutil.which("osascript") or "/usr/bin/osascript"
         if not Path(osascript_path).exists():
-            return False, "未找到 macOS osascript。"
+            return False, "本机缺少连接 Word 所需的系统组件。"
         if not Path("/Applications/Microsoft Word.app").exists():
-            return False, "未找到 Microsoft Word.app。"
+            return False, "没有找到 Microsoft Word，可能没安装。"
         return True, "已检测到 Microsoft Word；实际转换仍可能要求自动化权限。"
     if system == "Windows":
         try:
             import pythoncom  # noqa: F401
             import win32com.client  # noqa: F401
         except ImportError:
-            return False, "未安装 pywin32，无法连接本地 Microsoft Word。"
+            return False, "本机缺少连接 Word 所需的组件。"
         return True, "已检测到 Windows Word 自动化依赖；实际转换仍会验证 Word 安装状态。"
-    return False, f"当前平台 {system} 不支持本机 Microsoft Word 自动化。"
+    logger.debug(f"当前平台 {system} 不支持本机 Microsoft Word 自动化")
+    return False, "这台电脑的系统不支持用本机 Word 转换。"
 
 
 def convert_with_native_word(doc_path: str | Path) -> Path:
@@ -179,7 +180,8 @@ def convert_with_native_word(doc_path: str | Path) -> Path:
     if system == "Darwin":
         _convert_with_macos_word(source_path, output_path)
         return output_path
-    raise WordConversionError(f"当前平台 {system} 暂不支持本地 Word 自动化。")
+    logger.debug(f"当前平台 {system} 暂不支持本地 Word 自动化")
+    raise WordConversionError("这台电脑的系统不支持用本机 Word 转换。")
 
 
 def convert_with_libreoffice(doc_path: str | Path) -> Path:
@@ -187,7 +189,7 @@ def convert_with_libreoffice(doc_path: str | Path) -> Path:
     source_path = Path(doc_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise WordConversionError("未找到 LibreOffice/soffice。")
+        raise WordConversionError("本机没有找到 LibreOffice。")
 
     output_path = _get_temp_docx_path(source_path)
     work_dir = Path(tempfile.mkdtemp(prefix="word_translator_lo_"))
@@ -269,7 +271,7 @@ def convert_numbering_to_text_with_native_apps(
             logger.debug(f"Word 编号预处理策略不可用 {source_path.name} ({method_name})，原始信息：{exc}")
 
     detail = "；".join(errors) if errors else "没有可用的预处理策略"
-    raise WordConversionError(f"无法通过本地 Office 预处理 Word 自动编号。详情：{detail}")
+    raise WordConversionError(f"没能用本机 Office 处理 Word 自动编号：{detail}")
 
 
 def convert_numbering_to_text_with_native_word(docx_path: str | Path) -> Path:
@@ -296,7 +298,7 @@ def convert_numbering_to_text_with_libreoffice(docx_path: str | Path) -> Path:
     source_path = Path(docx_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise WordConversionError("未找到 LibreOffice/soffice。")
+        raise WordConversionError("本机没有找到 LibreOffice。")
 
     # 先确认这台机器上 LibreOffice 自带的 Python 还能起来，再决定要不要拉起 soffice。
     # 顺序很重要：soffice 启动要好几秒，而这条路真正会挂的地方是它的 Python——
@@ -370,7 +372,7 @@ def _convert_with_windows_word(source_path: Path, output_path: Path) -> None:
         import pythoncom
         import win32com.client
     except ImportError as exc:
-        raise WordConversionError("未安装 pywin32，无法连接本地 Microsoft Word。") from exc
+        raise WordConversionError("本机缺少连接 Word 所需的组件。") from exc
 
     word = None
     document = None
@@ -392,7 +394,11 @@ def _convert_with_windows_word(source_path: Path, output_path: Path) -> None:
         )
         document.SaveAs2(str(output_path), FileFormat=DOCX_FILE_FORMAT)
     except Exception as exc:  # noqa: BLE001 - converted to user-facing fallback.
-        raise WordConversionError(f"使用本地 Word 转换失败：{exc}") from exc
+        logger.debug(f"使用本地 Word 转换失败原始错误：{exc!r}")
+        raise WordConversionError(
+            "使用本机 Word 转换失败："
+            + humanize_error(exc, fallback="Word 没能完成这次转换。")
+        ) from exc
     finally:
         if document is not None:
             try:
@@ -451,7 +457,7 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
         import pythoncom
         import win32com.client
     except ImportError as exc:
-        raise WordConversionError("未安装 pywin32，无法连接本地 Microsoft Word。") from exc
+        raise WordConversionError("本机缺少连接 Word 所需的组件。") from exc
 
     word = None
     document = None
@@ -477,7 +483,11 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
             document.Range().ListFormat.ConvertNumbersToText()
         document.SaveAs2(str(output_path), FileFormat=DOCX_FILE_FORMAT)
     except Exception as exc:  # noqa: BLE001 - converted to user-facing fallback.
-        raise WordConversionError(f"使用本地 Word 预处理编号失败：{exc}") from exc
+        logger.debug(f"使用本地 Word 预处理编号失败原始错误：{exc!r}")
+        raise WordConversionError(
+            "使用本机 Word 处理自动编号失败："
+            + humanize_error(exc, fallback="Word 没能完成这一步。")
+        ) from exc
     finally:
         if document is not None:
             try:

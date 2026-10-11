@@ -113,7 +113,7 @@ def register(app: FastAPI) -> None:
     def update_model_role(role: str, payload: ModelRoleUpdatePayload) -> dict[str, Any]:
         settings = load_settings()
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
-            raise HTTPException(404, "Unknown model role.")
+            raise HTTPException(404, "找不到这个模型用途，请刷新页面后重试。")
         before_signatures = _effective_role_signatures(settings)
         before_throughput_keys = throughput_profile_keys(settings)
         changed = False
@@ -161,7 +161,7 @@ def register(app: FastAPI) -> None:
 
     def _role_or_404(role: str) -> str:
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
-            raise HTTPException(404, "Unknown model role.")
+            raise HTTPException(404, "找不到这个模型用途，请刷新页面后重试。")
         return role
 
     def _validate_connection_choice(settings: AppSettings, role: str, connection: ModelConnection) -> None:
@@ -248,7 +248,7 @@ def register(app: FastAPI) -> None:
                 settings,
                 role,
                 connection_id,
-                message="API Key 已变化，请重新测试当前配置。",
+                message="API 密钥已变化，请重新测试这条连接。",
             )
         carry_over_throughput_profiles(settings, before_throughput_keys)
         save_settings(settings)
@@ -318,7 +318,7 @@ def register(app: FastAPI) -> None:
             "pdf-review": ROLE_PDF_REVIEW,
         }.get(role, role)
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
-            raise HTTPException(404, "Unknown model role.")
+            raise HTTPException(404, "找不到这个模型用途，请刷新页面后重试。")
         try:
             config = resolve_effective_model_config(
                 settings,

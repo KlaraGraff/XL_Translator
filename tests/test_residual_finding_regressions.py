@@ -219,7 +219,7 @@ class RepairLadderRoutingTest(unittest.TestCase):
             retranslate_send=must_not_send,
         )
         self.assertFalse(outcome.accepted)
-        self.assertIn("序号残留缺乏确定性修复依据，不做模型猜测", outcome.reject_reasons)
+        self.assertIn("没法确定编号该怎么写，不让模型猜", outcome.reject_reasons)
 
     def test_rejected_retranslation_keeps_original_text(self):
         outcome = repair_unit(

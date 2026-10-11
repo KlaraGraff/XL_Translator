@@ -489,7 +489,7 @@ async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boole
     if (!ok) {
       failures += 1;
       if (failures >= RERUN_POLL_MAX_FAILURES) {
-        showToast({ message: "刷新重新生成状态连续失败，批量重跑已停止；请检查后台服务是否正常后重新发起。", error: true });
+        showToast({ message: "连续几次没能刷新重跑进度，批量重跑已停止；稍后重新打开这个任务再试。", error: true });
         return false;
       }
       continue;
@@ -717,6 +717,17 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
     groupHandles.push(handle);
   }
 
+  // 勾上「只看有问题的页」而一页问题都没有时，表格只剩表头，像是没加载出来。
+  // 这一行平时隐藏，只在筛选打开时由 CSS 显示（.pdf-review-card.filter .row-none-bad）。
+  if (totalPages > 0 && !table.querySelector("tr:not(.row-ok):not(.pdf-file-group) td")) {
+    const noneRow = el("tr", "row-none-bad");
+    const cell = el("td");
+    cell.colSpan = 4;
+    cell.textContent = "没有需要处理的页。";
+    noneRow.append(cell);
+    table.append(noneRow);
+  }
+
   // 失败页横幅：只在终态出现——非终态的失败页走的是 buildPdfRecoveryCard 那张独立的
   // 「页恢复」卡片（排队式的 regeneratePdfPage，继续翻译才生效），这里的批量重跑走的
   // 是终态专用、点了立刻重跑的 rerunPdfPage，两条路语义不同，不能在还没结束的任务上
@@ -740,7 +751,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
         txt.append(document.createTextNode("已停止，这已经是最后一页"));
       }
       if (batch.current) txt.append(document.createTextNode(`；正在等 ${batch.current.fileName} 第 ${batch.current.pageNumber} 页跑完`));
-      small.textContent = "已经发出去的这一页停不下来，服务端会把它跑完并计费；跑完就收摊。";
+      small.textContent = "已经发出去的这一页停不下来，会跑完并照常计费；跑完这一页就停。";
     } else {
       em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
       txt.append(document.createTextNode("正在重跑 "), em);
@@ -942,7 +953,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
           : rerunBusy
             ? "有一页正在重新生成，跑完再操作下一页。"
             : !snapshot.rerun_actionable
-              ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
+              ? "这个任务的逐页记录已经清理，不能再重新生成单页。"
               : undefined;
     actionsCell.append(
       buildActionLink(

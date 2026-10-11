@@ -5,7 +5,7 @@
 // 用户看到的是同一个任务的两种说法，会以为是两回事。四个终态全都对不上，不止 stopped 一个。
 //
 // 选词的依据：
-//   stopped               —— 按钮从头到尾叫「安全停止」，状态词就得是「已停止」，不能换个动词。
+//   stopped               —— 按钮从头到尾叫「停止」，状态词就得是「已停止」，不能换个动词。
 //   error                 —— 「任务失败」直接说结果；「发生错误」只说过程里出过事，不说结局。
 //   interrupted           —— 「应用中断」点明是程序被关掉/崩了，不是任务自己出的问题。
 //   completed_with_issues —— 工作区会往后接后缀（「· 需复核」），「完成但有问题」接得上，
@@ -13,10 +13,10 @@
 
 export const TASK_STATE_LABELS: Record<string, string> = {
   preflight: "等待确认",
-  running: "执行中",
-  pausing: "暂停提交中",
-  paused: "已暂停提交",
-  stopping: "安全停止中",
+  running: "翻译中",
+  pausing: "正在暂停",
+  paused: "已暂停",
+  stopping: "正在停止",
   finalizing: "正在收尾",
   done: "已完成",
   completed_with_issues: "完成但有问题",
@@ -29,4 +29,17 @@ export const TASK_STATE_LABELS: Record<string, string> = {
  *  真的跑完之后才走到，与其写一个「未知状态」吓人，不如沿用最常见的那一个。 */
 export function taskStateWord(state: string): string {
   return TASK_STATE_LABELS[state] ?? "已完成";
+}
+
+/** 「停止」确认框正文。工作区和任务中心弹的是同一个确认，所以只在这里写一份；
+ *  以前任务中心那份写着「Excel、Word 会结束为终态」，还漏了 CAD。 */
+const STOP_CONFIRM_BODY: Record<string, string> = {
+  excel: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  word: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  pdf: "已生成的页面会保留在输出目录。想稍后接着跑，请改用「暂停」，之后可以选择继续或结束任务。",
+  cad: "当前图纸完成后停止。已生成的图纸和报告会保留在输出目录，原件不会被改动；之后可以从断点继续。",
+};
+
+export function stopConfirmBody(surface: string): string {
+  return STOP_CONFIRM_BODY[surface] ?? "当前这一批处理完后停止，已经完成的部分会保留。";
 }

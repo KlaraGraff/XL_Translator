@@ -261,7 +261,7 @@ class SharedFormulaDonationTests(unittest.TestCase):
         )
 
         self.assertEqual(positions, [], "译文没写成，底色不该单独涂上去")
-        warning = [line for line in logs if "B1" in line and "共享公式" in line]
+        warning = [line for line in logs if "B1" in line and "公式与其它单元格共用" in line]
         self.assertTrue(warning, f"任务日志里没有交代放弃的原因：{logs}")
 
         cells = _sheet_cells(target)
@@ -923,7 +923,7 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
         self.assertIn("本机检测到 LibreOffice", excel_arm)
         self.assertIn("公式会变成算好的数值", excel_arm)
         self.assertIn(
-            "复杂样式、合并单元格、图片、图表和宏可能无法完整保留",
+            "复杂样式、合并单元格、图片、图表和宏可能保留不全",
             word_arm,
             "Word 分支的既有文案不该被误改",
         )

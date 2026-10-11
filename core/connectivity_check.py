@@ -16,6 +16,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core.text_transport import request_text, TextTransportError, TOTAL_TIMEOUT
+from core.user_facing_errors import humanize_error
 from settings import AppSettings, get_cloud_provider_config, get_key
 
 DEFAULT_TIMEOUT_SECONDS = TOTAL_TIMEOUT
@@ -54,6 +55,15 @@ def _sanitize_error_message(exc: Exception, *, secret: str = "") -> str:
     if len(message) > 500:
         message = message[:497] + "..."
     return message
+
+
+def _user_error(exc: Exception, *, secret: str = "") -> str:
+    """连接测试失败时给设置页看的那一句话。
+
+    设置页已经在胶囊上写了「测试失败」，这里不再重复；httpx 的英文原文
+    （如 All connection attempts failed）换成能照着做的中文，认不出的原样给出。
+    """
+    return humanize_error(_sanitize_error_message(exc, secret=secret))
 
 
 def _normalize_base_url(base_url: str, *, default_url: str = "") -> str:
@@ -116,7 +126,7 @@ def _check_ollama_model(
         return ConnectivityResult(
             ok=False,
             status="unreachable",
-            message=f"Ollama 服务不可用：{_sanitize_error_message(exc)}",
+            message=f"Ollama 服务不可用：{_user_error(exc)}",
             provider="ollama",
             model=model_name,
         )
@@ -165,7 +175,7 @@ def _check_openai_compatible(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider=provider,
             model=model,
         )
@@ -195,14 +205,14 @@ def _check_openai_compatible(
         )
         if text.strip() != "OK":
             raise TextTransportError(
-                "连接测试响应不是约定的 OK。",
+                "连上了，但模型没有按要求回复「OK」，请确认模型名是否写对。",
                 kind="invalid_response",
             )
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
         return ConnectivityResult(
             ok=False,
             status=getattr(exc, "kind", "request_failed"),
-            message=f"连接测试失败：{_sanitize_error_message(exc, secret=api_key)}",
+            message=_user_error(exc, secret=api_key),
             provider=provider,
             model=model,
             detail=normalized_base_url,
@@ -211,7 +221,7 @@ def _check_openai_compatible(
     return ConnectivityResult(
         ok=True,
         status="ok",
-        message=f"{provider} 连接可用，模型 {model} 响应成功。",
+        message=f"连接可用，模型 {model} 有响应。",
         provider=provider,
         model=model,
         detail=f"{route.mode}: {route.url}",
@@ -229,7 +239,7 @@ def _check_claude(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="claude",
             model=model,
         )
@@ -263,7 +273,7 @@ def _check_claude(
         return ConnectivityResult(
             ok=False,
             status="request_failed",
-            message=f"Claude 连接测试失败：{_sanitize_error_message(exc, secret=api_key)}",
+            message=_user_error(exc, secret=api_key),
             provider="claude",
             model=model,
             detail=normalized_base_url,
@@ -272,7 +282,7 @@ def _check_claude(
     return ConnectivityResult(
         ok=True,
         status="ok",
-        message=f"Claude 连接可用，模型 {model} 响应成功。",
+        message=f"连接可用，模型 {model} 有响应。",
         provider="claude",
         model=model,
         detail=normalized_base_url,
@@ -289,7 +299,7 @@ def _check_zhipu(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="zhipu",
             model=model,
         )
@@ -322,7 +332,7 @@ def _check_zhipu(
         return ConnectivityResult(
             ok=False,
             status="request_failed",
-            message=f"智谱连接测试失败：{_sanitize_error_message(exc, secret=api_key)}",
+            message=_user_error(exc, secret=api_key),
             provider="zhipu",
             model=model,
         )
@@ -330,7 +340,7 @@ def _check_zhipu(
     return ConnectivityResult(
         ok=True,
         status="ok",
-        message=f"智谱连接可用，模型 {model} 响应成功。",
+        message=f"连接可用，模型 {model} 有响应。",
         provider="zhipu",
         model=model,
     )
@@ -346,7 +356,7 @@ def _check_dashscope(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="dashscope",
             model=model,
         )
@@ -379,7 +389,7 @@ def _check_dashscope(
         return ConnectivityResult(
             ok=False,
             status="request_failed",
-            message=f"百炼连接测试失败：{_sanitize_error_message(exc, secret=api_key)}",
+            message=_user_error(exc, secret=api_key),
             provider="dashscope",
             model=model,
         )
@@ -387,7 +397,7 @@ def _check_dashscope(
     return ConnectivityResult(
         ok=True,
         status="ok",
-        message=f"百炼连接可用，模型 {model} 响应成功。",
+        message=f"连接可用，模型 {model} 有响应。",
         provider="dashscope",
         model=model,
     )
@@ -544,15 +554,12 @@ def _check_cleaner_json_protocol(
             or str(payload[0].get("id") or "") != "connectivity-probe"
             or not isinstance(payload[0].get("suggested"), str)
         ):
-            raise ValueError("清洗测试响应未满足 JSON 数组、id 与 suggested 字段协议。")
+            raise ValueError("连上了，但模型的回复格式不对，没法用来清洗记忆库，换一个模型试试。")
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe result.
         return ConnectivityResult(
             ok=False,
             status="invalid_cleaner_protocol",
-            message=(
-                "深度清洗连接测试失败："
-                f"{_sanitize_error_message(exc, secret=config.api_key)}"
-            ),
+            message=_user_error(exc, secret=config.api_key),
             provider=config.provider,
             model=config.model,
             detail=normalize_cloud_base_url(config.provider, config.base_url),
@@ -560,7 +567,7 @@ def _check_cleaner_json_protocol(
     return ConnectivityResult(
         ok=True,
         status="ok",
-        message=f"{config.label}连接与 JSON 清洗协议测试通过。",
+        message="连接测试通过。",
         provider=config.provider,
         model=config.model,
         detail=normalize_cloud_base_url(config.provider, config.base_url),
@@ -594,7 +601,7 @@ def check_connectivity(
 
     normalized_role = str(role or ROLE_TRANSLATION).strip()
     if normalized_role not in {ROLE_TRANSLATION, ROLE_CLEANER}:
-        raise ValueError("连接测试只支持翻译模型或深度清洗模型。")
+        raise ValueError("连接测试只支持文档翻译模型或记忆库清洗模型。")
     config = resolve_effective_model_config(
         settings,
         normalized_role,

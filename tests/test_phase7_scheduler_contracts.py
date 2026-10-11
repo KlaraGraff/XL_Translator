@@ -521,7 +521,9 @@ class Phase7ManagedTaskContracts(unittest.TestCase):
                 self.assertIn("confirmation_token", word_preflight)
                 risk_dump = json.dumps(word_preflight, ensure_ascii=False)
                 self.assertNotIn("fixture-api-key-must-not-leak", risk_dump)
-                self.assertIn("429", risk_dump)
+                # 风险提示要说清后果（共用连接、会变慢、会计费），不再给用户看 HTTP 状态码。
+                self.assertIn("共用同一条模型连接", risk_dump)
+                self.assertNotIn("429", risk_dump)
 
                 with self.assertRaises(TaskConflictError) as missing:
                     manager.start_task(surface="word", source_path=str(root))

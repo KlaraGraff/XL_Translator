@@ -592,7 +592,7 @@ class RunnerGlueTests(unittest.TestCase):
         )
 
         self.assertTrue(
-            any("补译复核：1 对已有译文" in message for _, message in logs), logs
+            any("核对已有译文：共 1 处" in message for _, message in logs), logs
         )
 
     def test_a_flipped_pair_is_highlighted_and_reported_as_needing_review(self) -> None:
@@ -708,9 +708,9 @@ class RunnerGlueTests(unittest.TestCase):
             )
 
         messages = [message for _, message in logs]
-        self.assertTrue(any("分 2 批发出" in message for message in messages), messages)
+        self.assertTrue(any("（分 2 批），请稍候" in message for message in messages), messages)
         self.assertTrue(
-            any("3 对送模型判定（分 2 批）" in message for message in messages), messages
+            any("3 处交给模型确认（分 2 批）" in message for message in messages), messages
         )
 
 

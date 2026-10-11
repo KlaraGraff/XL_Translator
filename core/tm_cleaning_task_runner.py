@@ -7,11 +7,21 @@ import threading
 import time
 from typing import Any
 
+from loguru import logger
+
 from core.engine_dispatcher import build_engine
 from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
 from core.model_throughput import get_model_throughput
 from core.runner_base import BaseTaskRunner
-from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
+from core.task_runner import (
+    DoneMsg,
+    ErrorMsg,
+    LogMsg,
+    ProgressMsg,
+    StatusMsg,
+    StoppedMsg,
+    user_facing_reason,
+)
 from core.tm_cleaner import TmCleaningBatchError, run_cleaning
 from settings import AppSettings
 
@@ -38,7 +48,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
     def _run(self) -> None:
         started_at = time.monotonic()
         try:
-            self._queue.put(StatusMsg("状态：正在准备 TM 清洗建议..."))
+            self._queue.put(StatusMsg("状态：正在准备记忆库清洗建议..."))
             effective = resolve_effective_model_config(self._settings, ROLE_CLEANER)
             throughput = get_model_throughput(self._settings, effective)
             clean_settings = settings_for_text_role(self._settings, ROLE_CLEANER)
@@ -60,7 +70,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
             if self._stop_event.is_set():
                 self._queue.put(
                     StoppedMsg(
-                        message="TM 清洗已安全停止，未应用任何建议。",
+                        message="记忆库清洗已停止，没有写入任何建议。",
                         kpi={"suggestion_count": len(suggestions), "elapsed_sec": elapsed},
                     )
                 )
@@ -84,23 +94,29 @@ class TmCleaningTaskRunner(BaseTaskRunner):
                 # 0 API 的惯例归一建议、以及失败前成功批次的模型建议都已写进建议表——
                 # 说清楚它们没受失败影响，用户现在就能在建议列表里看到
                 from_model = sum(1 for s in exc.partial_suggestions if s in exc.model_suggestions)
-                detail = f"，其中 {from_model} 条来自模型" if from_model else "（均为 0 API 惯例归一）"
+                detail = f"，其中 {from_model} 条来自模型" if from_model else "（都是按固定规则自动整理的，没有调用模型）"
                 message += (
                     f"（已生成并保存 {len(exc.partial_suggestions)} 条建议{detail}，"
                     "可在清洗建议列表中直接查看）"
                 )
             self._queue.put(ErrorMsg(message=message))
         except Exception as exc:  # noqa: BLE001 - report via managed task SSE.
-            self._queue.put(ErrorMsg(message=str(exc) or exc.__class__.__name__))
+            logger.opt(exception=exc).warning(f"[记忆库清洗] 任务失败：{exc!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="记忆库清洗没能完成："
+                    + user_facing_reason(exc, fallback="出现了未预期的问题，请重试。")
+                )
+            )
 
     def _on_progress(self, payload: dict[str, Any]) -> None:
         self._queue.put(
             ProgressMsg(
                 phase_index=1,
                 phase_total=1,
-                phase_name="TM 清洗",
+                phase_name="记忆库清洗",
                 step_done=int(payload.get("done") or 0),
                 step_total=max(1, int(payload.get("total") or 1)),
             )
         )
-        self._queue.put(LogMsg(level="INFO", message="TM 清洗批次进度已更新", visible=False))
+        self._queue.put(LogMsg(level="INFO", message="记忆库清洗进度已更新", visible=False))

@@ -23,6 +23,7 @@ from core.model_roles import (
     ROLE_PDF_REVIEW,
     pdf_review_model_signature,
     provider_supports_capability,
+    unsupported_capability_message,
     record_pdf_review_model_availability,
     resolve_effective_model_config,
 )
@@ -115,12 +116,14 @@ class OpenAICompatiblePdfReviewClient:
     ) -> PdfPageReviewResult:
         if not provider_supports_capability(model_config.provider, "vision_text"):
             raise PdfReviewModelUnavailableError(
-                f"当前服务商不在图像理解审核能力列表中：{model_config.provider}"
+                unsupported_capability_message(
+                    "PDF 与图片审核模型", model_config.provider, "vision_text"
+                )
             )
         if not model_config.api_key:
-            raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型缺少 API Key")
+            raise PdfReviewModelUnavailableError("PDF 与图片审核模型还没有填写 API 密钥")
         if not model_config.model:
-            raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型名称不能为空")
+            raise PdfReviewModelUnavailableError("PDF 与图片审核模型的名称不能为空")
 
         base_url = _normalize_base_url(model_config)
         from core.model_auto_upgrade import (
@@ -194,8 +197,8 @@ class OpenAICompatiblePdfReviewClient:
                     humanize_error(
                         str(exc),
                         fallback=(
-                            "PDF翻译（图像翻译）复核模型当前不可用，请在设置里检查这条连接的 "
-                            "API Key、模型名和账号额度。"
+                            "PDF 与图片审核模型当前不可用，请在设置里检查这条连接的 "
+                            "API 密钥、模型名和账号额度。"
                         ),
                     )
                 ) from exc
@@ -229,8 +232,8 @@ def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
             blocking_issues=[
                 PdfReviewIssue(
                     type="invalid_review_response",
-                    problem="审核模型未返回可解析的 JSON 判断。",
-                    suggestion="请重新审核或改用更稳定的多模态模型。",
+                    problem="审核模型的回复格式不对，没法据此判断这一页。",
+                    suggestion="请重新审核，或换一个更稳定的看图模型。",
                 )
             ],
             summary="审核结果无法解析。",
@@ -279,7 +282,7 @@ def check_pdf_review_connectivity(
     )
     signature = pdf_review_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "vision_text"):
-        message = f"{config.label}当前服务商不支持图像理解审核能力：{config.provider}"
+        message = "这条连接的服务商不支持看图审核，请换一条连接。"
         record_pdf_review_model_availability(
             settings,
             ok=False,
@@ -307,7 +310,7 @@ def check_pdf_review_connectivity(
                     target_language="English",
                     model_config=config,
                 )
-                message = f"{config.label}连接测试通过。"
+                message = "连接测试通过。"
                 record_pdf_review_model_availability(
                     settings,
                     ok=True,
@@ -316,12 +319,12 @@ def check_pdf_review_connectivity(
                     checked_at=_now_iso(),
                     connection_id=connection_id,
                 )
-                detail = result.summary or "审核模型已返回结构化判断。"
+                detail = result.summary or "审核模型已正常返回判断结果。"
                 return PdfReviewConnectivityResult(True, message, detail=detail)
             except Exception as exc:  # noqa: BLE001 - retry and report all review errors.
                 last_error = _sanitize_error(exc)
 
-    message = f"{config.label}连接测试失败：{last_error or '未知错误'}"
+    message = last_error or "审核模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。"
     record_pdf_review_model_availability(
         settings,
         ok=False,
@@ -336,7 +339,7 @@ def check_pdf_review_connectivity(
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
     base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
-        raise PdfReviewModelUnavailableError("PDF翻译（图像翻译）复核模型缺少 Base URL")
+        raise PdfReviewModelUnavailableError("PDF 与图片审核模型还没有填写接口地址")
     return base_url
 
 
@@ -425,7 +428,7 @@ def _sanitize_error(exc: BaseException) -> str:
     logger.debug(f"[PDF审核] 连接测试失败原始错误：{_exception_text(exc)}")
     return humanize_error(
         str(exc),
-        fallback="审核模型没有正常响应，请检查这条连接的地址、API Key 和模型名。",
+        fallback="审核模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。",
     )
 
 

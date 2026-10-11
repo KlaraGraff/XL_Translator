@@ -25,7 +25,7 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
-from core.engine_dispatcher import is_local_engine_name
+from core.engine_dispatcher import is_local_engine_name, user_facing_batch_reason
 from core.language_preflight import TranslationLanguageResult
 from engines.base_engine import TranslationEngine
 from settings import WordBatchSettings
@@ -400,7 +400,7 @@ def _translate_units_with_fallback(
             decision = api_scheduler.register_concurrency_limit_hit(request_generation)
             stats.record_adaptive_concurrency_decision(decision)
             if stats.record_local_resource_retry() and error_callback:
-                error_callback("本机文件或网络连接句柄不足，已临时降低并发并重试。")
+                error_callback("电脑同时打开的连接太多，已暂时放慢发送速度并重试。")
             if should_stop and should_stop():
                 return {}
             time.sleep(min(0.2 * (2 ** local_resource_retry_round), 1.5))
@@ -452,9 +452,13 @@ def _translate_units_with_fallback(
         if len(units) > 1:
             stats.retry_count += 1
             midpoint = max(1, len(units) // 2)
+            logger.debug(
+                f"Word 批次响应不完整，已缩小批次重试（{len(units)} -> {midpoint}+{len(units) - midpoint}）：{exc!r}"
+            )
             if error_callback:
                 error_callback(
-                    f"Word 批次响应不完整，已缩小批次重试（{len(units)} -> {midpoint}+{len(units) - midpoint}）：{exc}"
+                    "有一批翻译结果不完整，已拆成更小的批次重试："
+                    + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
                 )
             left = _translate_units_with_fallback(
                 units[:midpoint],
@@ -492,8 +496,12 @@ def _translate_units_with_fallback(
 
         stats.failed_unit_count += len(units)
         unit = units[0]
+        logger.debug(f"Word 单段翻译仍失败，已暂时保留原文：{unit.text[:40]}... | {exc!r}")
         if error_callback:
-            error_callback(f"Word 单段翻译仍失败，已暂时保留原文：{unit.text[:40]}... | {exc}")
+            error_callback(
+                f"有一段翻译仍未成功，暂时保留原文（如「{unit.text[:40]}…」）："
+                + user_facing_batch_reason(exc)
+            )
         return {(unit.source, unit.part_index): unit.text}
 
 

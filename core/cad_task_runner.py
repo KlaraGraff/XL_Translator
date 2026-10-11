@@ -14,8 +14,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from loguru import logger
+
 from core.runner_base import BaseTaskRunner
 from core.cad_translation import (
+    CadPipelineError,
     CadPipelineOptions,
     CadProgress,
     CadStopRequested,
@@ -24,17 +27,51 @@ from core.cad_translation import (
 from core.file_progress import FileProgressReporter, file_progress_id
 from core.language_registry import get_target_lang_display
 from core.output_name_translation import translate_names, output_stem_from_translation
-from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
+from core.task_runner import (
+    DoneMsg,
+    ErrorMsg,
+    LogMsg,
+    ProgressMsg,
+    StatusMsg,
+    StoppedMsg,
+    user_facing_reason,
+)
 from core.process_artifacts import ProcessArtifacts, find_process_dirs
 
 
 _PHASES = {
-    "scan": (1, "读取与扫描"),
-    "match": (2, "匹配记忆/术语"),
-    "translate": (3, "AI 翻译"),
+    "scan": (1, "读取文件"),
+    "match": (2, "匹配记忆库与术语"),
+    "translate": (3, "翻译"),
     "write": (4, "写回图纸"),
-    "verify": (5, "重新读取与校验"),
+    "verify": (5, "校验结果"),
 }
+
+# 暂停在文件边界生效时发出的状态行。api/task_manager.py 靠这个前缀确认「已暂停」，
+# 改措辞时两边一起改（那边直接 import 这个常量）。
+CAD_PAUSED_STATUS = "已暂停：当前文件已翻完，可以继续翻译或停止任务。"
+CAD_PAUSED_STATUS_PREFIX = "已暂停"
+
+# 摘要里给人看的状态；manifest / report 里仍存内部状态码。
+_CAD_STATUS_LABELS = {
+    "done": "已完成",
+    "completed_with_issues": "已完成，有需要复核的地方",
+    "stopped": "已停止",
+    "error": "出错",
+    "succeeded": "已完成",
+    "needs_review": "需复核",
+    "failed": "失败",
+}
+
+# 单个图纸失败时给用户看的兜底句；原始异常写进日志文件。
+_CAD_FILE_FAILURE_FALLBACK = "这张图纸没能翻译，出现了未预期的问题。"
+
+
+def _cad_failure_message(exc: BaseException, *, fallback: str = _CAD_FILE_FAILURE_FALLBACK) -> str:
+    """把 CAD 失败换成一句人话：管线自己的中文报错原样用，其它异常走 humanize。"""
+    if isinstance(exc, CadPipelineError) and str(exc).strip():
+        return str(exc).strip()
+    return user_facing_reason(exc, fallback=fallback)
 
 
 def _file_identity(source: Path) -> dict[str, str]:
@@ -366,9 +403,9 @@ class CadTaskRunner(BaseTaskRunner):
         summary_path = self._run_dir / "summary.md"
         manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         report_path.write_text(json.dumps({**payload, "report": str(report_path), "manifest": str(manifest_path)}, ensure_ascii=False, indent=2), encoding="utf-8")
-        lines = ["# CAD 翻译摘要", "", f"- 状态：{status}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
+        lines = ["# CAD 翻译摘要", "", f"- 状态：{_CAD_STATUS_LABELS.get(status, status)}", f"- 结果目录：`{self._output_dir}`", f"- 已生成：{len([item for item in files if item.get('status') in {'succeeded', 'needs_review'}])} 个文件", f"- 需复核：{len(issues)} 项", "", "| 文件 | 状态 | 输出 |", "|---|---|---|"]
         for item in files:
-            lines.append(f"| {Path(str(item.get('source_path') or item.get('output_path') or 'CAD')).name} | {item.get('status', '')} | {item.get('output_path', '')} |")
+            lines.append(f"| {Path(str(item.get('source_path') or item.get('output_path') or 'CAD')).name} | {_CAD_STATUS_LABELS.get(str(item.get('status', '')), item.get('status', ''))} | {item.get('output_path', '')} |")
         summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return {"output_dir": str(self._output_dir), "translated_dir": str(self._translated_dir), "review_dir": str(self._review_dir), "manifest_path": str(manifest_path), "report_path": str(report_path), "summary_path": str(summary_path), "checkpoint_path": str(self._checkpoint_path)}
 
@@ -397,19 +434,24 @@ class CadTaskRunner(BaseTaskRunner):
                     stems,
                     self._options.target_lang,
                     self._options.source_lang,
-                    kind="CAD 输出文件名",
+                    kind="图纸文件名",
                 )
             except Exception as exc:
                 # A filename provider outage must not strand an active
                 # process run; preserve source stems and continue the CAD
                 # translation itself.
-                self._log("WARN", f"CAD 输出文件名翻译失败，保留原文件名：{exc}")
+                logger.warning(f"[CAD] 输出文件名翻译失败：{exc!r}")
+                self._log(
+                    "WARN",
+                    "图纸文件名没能翻译，保留原文件名："
+                    + user_facing_reason(exc, fallback="这次没有拿到可用的译名。"),
+                )
         try:
-            self._log("INFO", f"扫描到 {len(self._files)} 个 CAD 文件")
+            self._log("INFO", f"共 {len(self._files)} 个图纸文件")
             for item in self._files:
                 while self._pause_event.is_set() and not self._stop_event.is_set():
                     if not self._pause_acknowledged:
-                        self._queue.put(StatusMsg(phase_desc="任务已暂停；当前文件已完成。"))
+                        self._queue.put(StatusMsg(phase_desc=CAD_PAUSED_STATUS))
                         self._pause_acknowledged = True
                     time.sleep(0.1)
                 source = Path(item.path)
@@ -478,7 +520,7 @@ class CadTaskRunner(BaseTaskRunner):
                         file_result.update({**_file_identity(source), "source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
-                        self._log("INFO", f"{source.name}：复用已验证的上次结果")
+                        self._log("INFO", f"{source.name}：沿用上次已经翻好的结果")
                         checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
                         continue
@@ -512,14 +554,15 @@ class CadTaskRunner(BaseTaskRunner):
                 except CadStopRequested:
                     # 用户点了停止：当前文件记为"已停止"，不是"失败"，也不进问题清单。
                     self._file_progress.emit(source, "stopped", "stopped", result={"status": "stopped"})
-                    results.append({**_file_identity(source), "source_path": str(source), "status": "stopped", "message": "已按请求停止"})
+                    results.append({**_file_identity(source), "source_path": str(source), "status": "stopped", "message": "已停止"})
                     continue
                 except Exception as exc:  # one bad drawing must not erase the batch
                     failed_files = True
-                    message = str(exc) or exc.__class__.__name__
+                    logger.opt(exception=exc).warning(f"[CAD] {source.name} 翻译失败：{exc!r}")
+                    message = _cad_failure_message(exc)
                     self._file_progress.emit(source, "failed", "error", result={"status": "failed", "message": message})
                     results.append({**_file_identity(source), "source_path": str(source), "status": "failed", "message": message})
-                    issues.append({"file": source.name, "stage": "cad", "message": message})
+                    issues.append({"file": source.name, "stage": "cad", "message": message, "problem": message})
                     self._log("ERROR", f"{source.name}：{message}")
                     continue
                 stats = result.stats
@@ -560,13 +603,16 @@ class CadTaskRunner(BaseTaskRunner):
                 checkpoint_files[source_key] = {"source_sha256": source_hash, "output_path": str(result.output), "manifest_path": str(result.manifest), "report_path": str(result.report), "summary_path": str(result.summary) if result.summary else "", "work_dxf": str(result.work_dxf), "work_evidence_dir": str(getattr(result, "work_evidence_dir", "") or ""), "result": file_result}
                 self._write_checkpoint(checkpoint_files)
                 if result.unresolved:
-                    issues.extend({"file": source.name, **entry} for entry in result.unresolved)
+                    issues.extend(
+                        {"file": source.name, **entry, "problem": f"没翻好：{entry.get('reason') or '未获得译文'}"}
+                        for entry in result.unresolved
+                    )
                 if stats.replacement_characters:
-                    issues.append({"file": source.name, "reason": "replacement_characters", "count": stats.replacement_characters})
+                    issues.append({"file": source.name, "reason": "replacement_characters", "count": stats.replacement_characters, "problem": f"有 {stats.replacement_characters} 处文字出现乱码"})
                 if stats.residual_foreign_text_count:
-                    issues.append({"file": source.name, "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count})
+                    issues.append({"file": source.name, "reason": "residual_foreign_text", "count": stats.residual_foreign_text_count, "problem": f"有 {stats.residual_foreign_text_count} 处译文里仍有原文"})
                 if stats.unsupported_entities or stats.unknown_entity_count:
-                    issues.append({"file": source.name, "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count})
+                    issues.append({"file": source.name, "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count, "problem": f"有 {stats.unsupported_entities + stats.unknown_entity_count} 处图纸对象暂不支持翻译，已原样保留"})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                 self._log("INFO", f"{source.name}：已生成翻译图纸")
             elapsed = round(time.monotonic() - started, 3)
@@ -586,7 +632,7 @@ class CadTaskRunner(BaseTaskRunner):
                 # 第一张图写完之前就停下时，没有断点可续（断点按文件记），输出目录也会
                 # 因为是空的被收掉，界面不会给「从断点继续」——说明文字要跟着说实话。
                 stop_message = (
-                    "任务已停止；已完成文件和断点均已保留。"
+                    "已停止；已翻完的图纸都已保留，可以接着上次继续。"
                     if completed_count
                     else "任务已停止，还没有图纸翻译完成；原图纸未改动，需要时重新开始翻译即可。"
                 )
@@ -623,4 +669,11 @@ class CadTaskRunner(BaseTaskRunner):
         except Exception as exc:  # runner-level failures still become a task result
             batch_paths = self._write_batch_artifacts(status="error", files=results, issues=issues)
             self._process_artifacts.finish("failed")
-            self._queue.put(ErrorMsg(message=f"CAD 翻译流程失败：{exc}", **batch_paths))
+            logger.opt(exception=exc).error(f"[CAD] 翻译流程失败：{exc!r}")
+            self._queue.put(
+                ErrorMsg(
+                    message="CAD 翻译没能完成："
+                    + _cad_failure_message(exc, fallback="出现了未预期的问题。"),
+                    **batch_paths,
+                )
+            )

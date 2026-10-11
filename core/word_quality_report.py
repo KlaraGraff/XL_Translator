@@ -272,11 +272,11 @@ def _append_residual_cjk_issues(
             "snippet": _build_source_excerpt(
                 str(unit.data.get("residual_text") or unit.target_text)
             ),
-            "problem": "译文中残留少量中文",
+            "problem": "译文里还留着少量没翻译的原文",
             # 只报实际残留了什么。早先这里固定跟一句"多为日期或编号"，可残留的常常
             # 是章节序号（一、二、三）或单个汉字，那句话等于替用户断言了一个没查过的
             # 原因，会把人往错的方向引。
-            "status": f"该位置译文已完成，仅残留：{'、'.join(fragments)}，请确认是否需要改写。",
+            "status": f"该位置译文已完成，只有这些没翻译：{'、'.join(fragments)}，请确认是否需要改写。",
             "severity": "needs_review",
         }
         key = (
@@ -299,10 +299,10 @@ def _append_residual_cjk_issues(
                 "location_label": "输出文档",
                 "section_path": "正文",
                 "snippet": (
-                    f"共发现 {len(residual_units)} 处译文残留中文，"
+                    f"共发现 {len(residual_units)} 处译文里还留着没翻译的原文，"
                     f"已仅列出前 {_POST_WRITE_COVERAGE_ISSUE_LIMIT} 处。"
                 ),
-                "problem": "译文中残留少量中文",
+                "problem": "译文里还留着少量没翻译的原文",
                 "status": "其余位置过多，已截断展示。",
                 "severity": "needs_review",
             }
@@ -349,7 +349,7 @@ def _apply_mixed_language_word_results(
             segment_locations,
             existing_bilingual,
             problem="原文疑似已包含目标语言译文",
-            status="已保留原内容，未追加译文，未写入翻译记忆库。",
+            status="已保留原内容，未追加译文，未存入记忆库。",
             severity="resolved",
         )
     if foreign_noise:
@@ -359,7 +359,7 @@ def _apply_mixed_language_word_results(
             foreign_noise,
             problem="原文疑似夹杂错误外文",
             status=(
-                "已输出译文，但原文里混着疑似写错的外文，未写入翻译记忆库；"
+                "已输出译文，但原文里混着疑似写错的外文，未存入记忆库；"
                 "请对照原件确认这段原文本身是否需要更正。"
             ),
             # 程序能做的只是把这段照常翻出来，它没法判断原文里那串外文是不是写错了——
@@ -371,7 +371,7 @@ def _apply_mixed_language_word_results(
             quality_issues,
             segment_locations,
             uncertain,
-            problem="混合语言内容未能确认",
+            problem="夹杂多种语言的内容未能确认",
             status="已保留原文，需人工复核。",
             severity="needs_review",
         )
@@ -380,10 +380,10 @@ def _apply_mixed_language_word_results(
             quality_issues,
             segment_locations,
             semantic_translate,
-            problem="混合语言译文经语义校验接受",
+            problem="夹杂多种语言的译文复查后采用",
             status=(
-                "混合语言路径候选未通过程序化规则校验，但专属语义校验判定可接受；"
-                "本段已写入译文，且不会写入翻译记忆库。"
+                "这段夹杂多种语言的译文没通过自动检查，复查后确认意思正确，"
+                "已采用（不存入记忆库）。"
             ),
             severity="resolved",
         )
@@ -453,7 +453,7 @@ def _build_translation_scope_lines(
         listed += f" 等 {len(header_footer_files)} 个文件"
     if translate_headers_footers:
         header_footer_line = (
-            f"- 页眉、页脚已翻译，译文接在同一行原文后面（不另起一行，避免撑高版心）：{listed}。"
+            f"- 页眉、页脚已翻译，译文接在同一行原文后面（不另起一行，避免页眉页脚变高）：{listed}。"
         )
     else:
         header_footer_line = (
@@ -503,8 +503,8 @@ def _write_word_quality_report(
             f"- 成功文件：{successful}",
             f"- 失败文件：{failed}",
             f"- 耗时：{elapsed_sec:.2f} 秒",
-            f"- TM 命中：{tm_hit_count}",
-            f"- API 翻译：{api_call_count}",
+            f"- 来自记忆库：{tm_hit_count}",
+            f"- 模型翻译：{api_call_count}",
             f"- 已自动处理事项：{resolved_count}",
             f"- 需人工复核事项：{review_count}",
             f"- 提示事项：{info_count}",
@@ -521,11 +521,11 @@ def _write_word_quality_report(
                 (
                     f"- {item.get('name') or '未知文件'}：{method}"
                     f"（自动编号 {int(preprocess.get('labels_seen') or 0)} 段，"
-                    f"物化 {int(preprocess.get('labels_prepended') or 0)} 段）"
+                    f"其中 {int(preprocess.get('labels_prepended') or 0)} 段的编号已转成文字）"
                 )
             )
         if preprocess_lines:
-            lines.extend(["## Word 预处理", "", *preprocess_lines, ""])
+            lines.extend(["## 文档准备", "", *preprocess_lines, ""])
 
         lines.extend(
             _build_translation_scope_lines(
@@ -562,7 +562,7 @@ def _write_word_quality_report(
                     # 早先叫「问题片段」，列出来的又都是中文日期编号，读起来像"译文里的
                     # 日期错了"，而实际情况往往是译文把日期正常译成了外文写法。
                     lines.append(
-                        f"- 规则校验对不上的原文片段：{'、'.join(str(item) for item in fragments)}"
+                        f"- 自动检查时在译文里没对上的原文片段：{'、'.join(str(item) for item in fragments)}"
                     )
                 lines.append("")
 

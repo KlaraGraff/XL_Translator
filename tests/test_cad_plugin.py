@@ -125,7 +125,7 @@ def test_package_requires_every_file_checksum_and_rejects_symlink(isolated):
         json.dumps({"id": cad.PLUGIN_ID, "version": "0.2.0", "adapter": "builtin", "sha256": {}}),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="全部文件"):
+    with pytest.raises(ValueError, match=cad.PACKAGE_INVALID_MESSAGE):
         cad.install_from_directory(str(package))
     manifest = {
         "id": cad.PLUGIN_ID,

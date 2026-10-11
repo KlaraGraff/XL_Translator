@@ -24,6 +24,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from loguru import logger
+
+# 摘要表格给人看；manifest / report 里仍存内部状态码。
+_UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "没翻好"}
+
 CAD_SUPPORTED_EXTENSIONS = frozenset({".dwg", ".dxf"})
 # Stage weights are part of the UI contract and sum to 100.
 CAD_STAGE_WEIGHTS: dict[str, int] = {
@@ -117,7 +122,7 @@ def _detect_dxf_encoding(path: Path) -> str:
             return encoding
         except UnicodeDecodeError:
             continue
-    raise UnicodeError("DXF 既不是 UTF-8，也不是声明的代码页或 GBK 编码。")
+    raise UnicodeError("图纸的文字编码无法识别（不是 UTF-8，也不是图纸里声明的编码或 GBK）。")
 
 
 def _read_dxf_text(path: Path, encoding: str | None = None) -> str:
@@ -192,9 +197,9 @@ def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list
         try:
             return _parse_dxf(_read_dxf_text(path)), False
         except UnicodeError as exc:
-            raise CadPipelineError("中间 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
+            raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
     if path.suffix.lower() != ".dwg":
-        raise CadPipelineError(f"不支持的 CAD 文件格式：{path.suffix}")
+        raise CadPipelineError(f"不支持这种图纸格式：{path.suffix}（只支持 DWG 和 DXF）。")
     if converter is None:
         return [], True
     with tempfile.TemporaryDirectory(prefix="xl-cad-scan-") as temporary:
@@ -203,7 +208,7 @@ def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list
         try:
             return _parse_dxf(_read_dxf_text(dxf_path)), False
         except UnicodeError as exc:
-            raise CadPipelineError("DWG 转出的 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
+            raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
 
 
 def scan_cad_file(
@@ -338,7 +343,7 @@ class CadPipelineOptions:
 def _parse_dxf(text: str) -> list[DxfRecord]:
     raw_lines = text.splitlines(keepends=True)
     if len(raw_lines) % 2:
-        raise CadPipelineError("DXF 记录不完整：代码和值行数不成对，已拒绝处理。")
+        raise CadPipelineError("图纸里有一段内容格式无法识别，可能已损坏，没有处理。")
     records: list[DxfRecord] = []
     for index in range(0, len(raw_lines), 2):
         code_line = raw_lines[index]
@@ -350,7 +355,8 @@ def _parse_dxf(text: str) -> list[DxfRecord]:
         try:
             code = int(code_text)
         except ValueError as exc:
-            raise CadPipelineError(f"DXF 代码行无效：{code_text!r}") from exc
+            logger.debug(f"[CAD] DXF 代码行无效：{code_text!r}")
+            raise CadPipelineError("图纸里有一段内容格式无法识别，可能已损坏，没有处理。") from exc
         records.append(DxfRecord(code, value, ending, code_text, code_ending))
     # 被截断的图纸（拷贝中断、网盘没同步完）照样能逐行配对解析，只是后半截没了：
     # 不拦的话它会以「0 个文字实体」通过扫描，任务里还标成「已生成」，产物是一份
@@ -358,7 +364,7 @@ def _parse_dxf(text: str) -> list[DxfRecord]:
     opened = sum(1 for record in records if record.code == 0 and record.value.strip() == "SECTION")
     closed = sum(1 for record in records if record.code == 0 and record.value.strip() == "ENDSEC")
     if opened > closed:
-        raise CadPipelineError("DXF 文件不完整：有段落没有结束标记，可能已损坏或没有拷贝完整，已拒绝处理。")
+        raise CadPipelineError("图纸文件不完整，可能已损坏或没有拷贝完整，没有处理。")
     return records
 
 
@@ -701,11 +707,11 @@ def _numeric_tokens(text: str) -> list[str]:
 def _valid_translation(source: str, target: str) -> tuple[bool, str]:
     value = str(target or "").strip()
     if not value:
-        return False, "blank translation"
+        return False, "译文为空"
     if any(char in value for char in _REPLACEMENT_CHARS):
-        return False, "replacement/garbled character"
+        return False, "译文里有乱码"
     if _numeric_tokens(source) != _numeric_tokens(value):
-        return False, "numeric token drift"
+        return False, "译文里的数字和原文对不上"
     return True, ""
 
 
@@ -780,7 +786,7 @@ def _replace_unit(records: list[DxfRecord], unit: CadTextUnit, translated: str) 
         chunks = _ascii_chunks(value)
         final = next((index for index in reversed(unit.record_indices) if records[index].code == 1), None)
         if final is None:
-            raise CadPipelineError("MTEXT 缺少最终文字字段。")
+            raise CadPipelineError("图纸里有一段文字格式无法识别，可能已损坏。")
         continuation_fields = [index for index in unit.record_indices if records[index].code == 3]
         for index in continuation_fields:
             records[index] = _record_copy(records[index], value="", code=3)
@@ -827,7 +833,7 @@ def _replace_unit_runs(
     chunks = _ascii_chunks(encoded)
     final = next((index for index in reversed(unit.record_indices) if records[index].code == 1), None)
     if final is None:
-        raise CadPipelineError("MTEXT 缺少最终文字字段。")
+        raise CadPipelineError("图纸里有一段文字格式无法识别，可能已损坏。")
     continuation = [index for index in unit.record_indices if records[index].code == 3]
     for index in continuation:
         records[index] = _record_copy(records[index], value="", code=3)
@@ -863,7 +869,7 @@ class CadTranslationPipeline:
 
     def _check_stop(self) -> None:
         if self.stop_requested and self.stop_requested():
-            raise CadStopRequested("CAD 翻译已按请求停止；工作证据已保留。")
+            raise CadStopRequested("已停止；已完成的部分已保留。")
 
     def _emit(self, stage: str, done: int, total: int, message: str = "") -> None:
         stage_total = max(1, total)
@@ -918,7 +924,7 @@ class CadTranslationPipeline:
         source = Path(source)
         output = Path(output)
         if source.suffix.lower() not in CAD_SUPPORTED_EXTENSIONS:
-            raise CadPipelineError(f"不支持的 CAD 文件格式：{source.suffix}")
+            raise CadPipelineError(f"不支持这种图纸格式：{source.suffix}（只支持 DWG 和 DXF）。")
         if source.resolve() == output.resolve():
             raise CadPipelineError("输出文件不能覆盖源文件。")
         companion_paths = (
@@ -944,7 +950,7 @@ class CadTranslationPipeline:
             elif self.converter is not None:
                 self.converter.dwg_to_dxf(source, work_dxf)
             else:
-                raise CadPipelineError("DWG 翻译需要已连接的 CAD 转换器。")
+                raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
             # Keep a recoverable input/work copy even if a later provider or
             # converter step fails.
             shutil.copy2(work_dxf, evidence_dir / "source.dxf")
@@ -952,10 +958,10 @@ class CadTranslationPipeline:
                 dxf_encoding = _detect_dxf_encoding(work_dxf)
                 dxf_text = _read_dxf_text(work_dxf, dxf_encoding)
             except UnicodeError as exc:
-                raise CadPipelineError("中间 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
+                raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
             records = _parse_dxf(dxf_text)
             stats = CadTranslationStats(scanned_entities=sum(1 for r in records if r.code == 0))
-            self._emit("scan", 1, 1, "已读取 DXF")
+            self._emit("scan", 1, 1, "已读取图纸")
             units = extract_cad_text_units(records, include_block_text=options.include_block_text)
             stats.candidate_entities = len(units)
             candidates: list[CadTextUnit] = []
@@ -977,7 +983,7 @@ class CadTranslationPipeline:
                     continue
                 candidates.append(unit)
             timings["scan"] = round(time.perf_counter() - started_at, 4)
-            self._emit("scan", 1, 1, f"发现 {len(candidates)} 个可翻译文字实体")
+            self._emit("scan", 1, 1, f"找到 {len(candidates)} 处可翻译文字")
             texts = list(dict.fromkeys(
                 run.text for unit in candidates for run in unit.runs if _has_translatable_content(run.text)
             ))
@@ -996,7 +1002,7 @@ class CadTranslationPipeline:
                     invalid_reasons[key] = reason
                     translations.pop(key, None)
             stats.memory_hits = len(memory_hits)
-            self._emit("match", len(memory_hits), max(1, len(texts)), f"记忆命中 {len(memory_hits)} 条")
+            self._emit("match", len(memory_hits), max(1, len(texts)), f"记忆库已有译文 {len(memory_hits)} 条")
             remaining = [text for text in texts if text not in translations]
             glossary_hits: dict[str, str] = {}
             for text in remaining:
@@ -1010,7 +1016,7 @@ class CadTranslationPipeline:
             translations.update(glossary_hits)
             stats.glossary_hits = len(glossary_hits)
             timings["match"] = round(time.perf_counter() - started_at - timings["scan"], 4)
-            self._emit("match", len(memory_hits) + len(glossary_hits), max(1, len(texts)), f"术语命中 {len(glossary_hits)} 条")
+            self._emit("match", len(memory_hits) + len(glossary_hits), max(1, len(texts)), f"术语表匹配 {len(glossary_hits)} 条")
             remaining = [text for text in remaining if text not in translations]
             self._check_stop()
             if remaining and self.translator is not None:
@@ -1046,17 +1052,17 @@ class CadTranslationPipeline:
             staged_output = temp_root / f"{source.stem}_staged{output.suffix.lower()}"
             if output.suffix.lower() == ".dwg":
                 if self.converter is None:
-                    raise CadPipelineError("DWG 写回需要已连接的 CAD 转换器。")
+                    raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
                 self.converter.dxf_to_dwg(translated_dxf, staged_output)
             else:
                 shutil.copy2(translated_dxf, staged_output)
             timings["write"] = round(time.perf_counter() - write_started, 4)
-            self._emit("write", 1, 1, "已完成工作 DXF 与 CAD 写回")
+            self._emit("write", 1, 1, "已写回图纸")
             verification_dxf = translated_dxf
             self._check_stop()
             if output.suffix.lower() == ".dwg" and options.verify_roundtrip:
                 if self.converter is None:
-                    raise CadPipelineError("DWG 写回后校验需要已连接的 CAD 转换器。")
+                    raise CadPipelineError("翻译 DWG 需要先连接图纸转换工具。")
                 verification_dxf = temp_root / f"{source.stem}_verify.dxf"
                 self.converter.dwg_to_dxf(staged_output, verification_dxf)
             if options.verify_roundtrip:
@@ -1064,7 +1070,7 @@ class CadTranslationPipeline:
                 output_records = _parse_dxf(_read_dxf_text(verification_dxf))
                 output_units = extract_cad_text_units(output_records, include_block_text=options.include_block_text)
                 if options.check_entity_counts and len(output_units) != len(units):
-                    raise CadPipelineError("写回后文字实体数量发生变化，校验失败。")
+                    raise CadPipelineError("写回后的图纸文字数量对不上，为安全起见没有输出。")
             else:
                 output_records = records
                 output_units = extract_cad_text_units(output_records, include_block_text=options.include_block_text)
@@ -1137,16 +1143,17 @@ class CadTranslationPipeline:
             report_path.write_text(json.dumps({**manifest, "unresolved": unresolved}, ensure_ascii=False, indent=2), encoding="utf-8")
             summary_lines = [
                 f"# CAD 翻译摘要：{source.name}", "",
-                f"- 输出：`{output.name}`", f"- 修改文字实体：{stats.changed}",
-                f"- 未解决：{len(unresolved)}", f"- 残留外文：{stats.residual_foreign_text_count}", "",
-                "| unit_id | source | translation | status | reason |", "|---|---|---|---|---|",
+                f"- 输出：`{output.name}`", f"- 已翻译文字：{stats.changed} 处",
+                f"- 没翻好：{len(unresolved)} 处", f"- 译文里仍有原文：{stats.residual_foreign_text_count} 处", "",
+                "| 编号 | 原文 | 译文 | 状态 | 原因 |", "|---|---|---|---|---|",
             ]
             for item in unit_reports:
-                summary_lines.append("| {unit_id} | {source} | {translation} | {status} | {reason} |".format(**{key: str(value).replace("|", "\\|") for key, value in item.items()}))
+                row = {**item, "status": _UNIT_STATUS_LABELS.get(str(item.get("status") or ""), item.get("status", ""))}
+                summary_lines.append("| {unit_id} | {source} | {translation} | {status} | {reason} |".format(**{key: str(value).replace("|", "\\|") for key, value in row.items()}))
             summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
             # Publish only after the output and all review artifacts are ready.
             if output.exists():
-                raise CadPipelineError("输出文件在处理期间出现，为避免覆盖已停止发布。")
+                raise CadPipelineError("处理期间输出位置出现了同名文件，为避免覆盖，没有写出译文图纸。")
             shutil.copy2(staged_output, output)
             return CadTranslationResult(source, output, persisted_work_dxf if options.keep_work_dxf else translated_dxf, manifest_path, report_path, stats, unresolved, timings, summary_path)
 
@@ -1210,10 +1217,11 @@ class SubprocessCadConverter:
                 text=True,
             )
         except subprocess.TimeoutExpired as exc:
-            raise CadPipelineError("CAD 转换器启动超时。") from exc
+            raise CadPipelineError("图纸转换工具启动超时。") from exc
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
-            raise CadPipelineError(f"CAD 转换器启动失败：{detail}") from exc
+            logger.warning(f"[CAD] 图纸转换工具启动失败：{detail}")
+            raise CadPipelineError("图纸转换工具没能启动，请在 CAD 页重新连接后再试。") from exc
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
@@ -1222,7 +1230,7 @@ class SubprocessCadConverter:
                 return produced
             time.sleep(0.5)
         raise CadPipelineError(
-            f"CAD 转换器未在 {self.timeout} 秒内生成目标 {stem}.{output_type.lower()} 文件。"
+            f"图纸转换工具在 {self.timeout} 秒内没有转出文件。"
         )
 
     def _run(self, source: Path, destination: Path, output_type: str) -> Path:
@@ -1253,13 +1261,14 @@ class SubprocessCadConverter:
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     )
                 except subprocess.TimeoutExpired as exc:
-                    raise CadPipelineError(f"CAD 转换超时（{self.timeout} 秒）。") from exc
+                    raise CadPipelineError(f"图纸转换超时（{self.timeout} 秒）。") from exc
                 except subprocess.CalledProcessError as exc:
                     detail = (exc.stderr or exc.stdout or "").strip()[-2000:]
-                    raise CadPipelineError(f"CAD 转换失败：{detail}") from exc
+                    logger.warning(f"[CAD] 图纸转换失败：{detail}")
+                    raise CadPipelineError("图纸转换工具没能转换这张图纸，可能已损坏或版本不受支持。") from exc
                 produced = self._produced_file(out_dir, source.stem, output_type)
                 if produced is None:
-                    raise CadPipelineError(f"CAD 转换器没有生成目标 {source.stem}.{output_type.lower()} 文件。")
+                    raise CadPipelineError("图纸转换工具没有转出文件。")
             shutil.copy2(produced, destination)
         return destination
 

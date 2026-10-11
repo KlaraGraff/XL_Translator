@@ -39,13 +39,14 @@ _SOURCE_EXCERPT_LIMIT = 220
 _APP_LOG_TAIL_CHARS = 160_000
 _DIAGNOSTIC_MAX_RECORDS = 80
 _DIAGNOSTIC_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+# 必须与 core/word_task_runner.py 里 _WordRecoveryPool 写进运行日志的原文同步。
 _WORD_RUNTIME_EVENT_MARKERS = (
-    "正在单段重试",
-    "单段重试恢复",
-    "单段重试未恢复",
-    "正在语义仲裁",
-    "语义仲裁接受",
-    "语义仲裁未接受",
+    "正在单独重译",
+    "重译成功",
+    "重译未成功",
+    "正在复查译文意思",
+    "复查通过",
+    "复查未通过",
     "保留原文，需复核",
 )
 

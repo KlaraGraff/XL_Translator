@@ -126,7 +126,14 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "安全连接校验没通过，通常是代理或安全软件拦截了加密流量。",
     ),
     (
-        (r"connection refused", r"failed to establish a new connection", r"connection reset", r"connection aborted"),
+        (
+            r"connection refused",
+            r"failed to establish a new connection",
+            r"connection reset",
+            r"connection aborted",
+            # httpx 的 ConnectError：端口不通、地址写错时就是这一句。
+            r"all connection attempts failed",
+        ),
         "接口拒绝了连接，请检查网络，以及这条连接的地址是否可用。",
     ),
     (
@@ -139,11 +146,11 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         # 翻译、文件扫描、格式转换都会走到它，挂着不稳的 VPN 跑批量时那句话正好说反。
         # 而且 502/504 网关故障的报文里也带 "timeout"，会先被这一条吃掉。
         # 所以只说观察得到的事实（重试常常就过）和一个不越界的倾向（反复超时多半在上游）。
-        "等接口响应超时了，重试一次往往就过；反复超时多半是这条连接的上游在排队。",
+        "等模型服务响应超时了，重试一次往往就过；反复超时多半是这条连接的服务那边在排队。",
     ),
     (
         (r"invalid api key", r"incorrect api key", r"\bunauthorized\b", r"\b401\b"),
-        "接口拒绝了这个 API Key，请在设置里检查这条连接的 Key 是否正确。",
+        "接口拒绝了这个 API 密钥，请在设置里检查这条连接的密钥是否正确。",
     ),
     (
         (r"insufficient_quota", r"billing hard limit", r"余额不足", r"额度不足", r"\b402\b"),
@@ -151,7 +158,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"\bforbidden\b", r"\b403\b"),
-        "接口拒绝了这次请求，可能是这个 Key 没有该模型的权限。",
+        "接口拒绝了这次请求，可能是这个 API 密钥没有该模型的权限。",
     ),
     (
         (r"model_not_found", r"do not have access to", r"\b404\b"),
@@ -171,7 +178,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"internal server error", r"\b500\b"),
-        "接口服务端出错了，请稍后重试。",
+        "模型服务那边出错了，请稍后重试。",
     ),
 )
 

@@ -21,7 +21,13 @@ from api.surfaces.base import (
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
 from core.cad_task_runner import CadTaskRunner
-from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
+from core.cad_translation import (
+    CadPipelineError,
+    CadPipelineOptions,
+    SubprocessCadConverter,
+    scan_cad_paths,
+)
+from core.task_runner import user_facing_reason
 from core.engine_dispatcher import build_role_engine
 from core.file_progress import file_progress_id
 from core.language_registry import get_target_lang_display
@@ -125,8 +131,13 @@ class CadSurface(Surface):
                 ),
                 skipped=cad_skipped,
             )
+        except CadPipelineError as exc:
+            raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc
         except Exception as exc:
-            raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+            logger.opt(exception=exc).warning(f"[CAD] 图纸扫描失败：{exc!r}")
+            raise HTTPException(
+                422, user_facing_reason(exc, fallback="图纸扫描失败，出现了未预期的问题。")
+            ) from exc
         items = [
             {
                 "path": str(item.path),
@@ -152,7 +163,7 @@ class CadSurface(Surface):
             },
             "risk": {
                 "capability": status,
-                "message": "ODA 未连接时只能列出 DXF；DWG 翻译需先连接 ODA。"
+                "message": "还没有连接图纸转换工具：DXF 可以直接翻译，DWG 需要先在「插件管理」里连接转换工具。"
                 if not converter
                 else "",
             },
@@ -168,7 +179,7 @@ class CadSurface(Surface):
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not bool(status.get("enabled")):
             raise TaskInputError(
-                "CAD 插件或 ODA 转换器未就绪，请先安装 CAD Support 并连接 ODA。",
+                "翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。",
                 reason="cad_capability_missing",
             )
         require_target_lang(getattr(settings, "target_lang", ""), "CAD")
@@ -236,7 +247,7 @@ class CadSurface(Surface):
         converter_path = str(status.get("converter") or "").strip()
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not converter_path:
-            raise TaskInputError("CAD 翻译需要先连接 ODA 转换器。", reason="cad_converter_missing")
+            raise TaskInputError("翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。", reason="cad_converter_missing")
         # All document surfaces publish into one unique, timestamped
         # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
         # with nested translated/review/run directories, which made a
@@ -339,7 +350,7 @@ def load_cad_glossary(path: str | None) -> dict[str, str]:
         return {}
     candidate = Path(str(path)).expanduser()
     if not candidate.is_file():
-        raise TaskInputError(f"CAD 术语库不存在：{candidate}")
+        raise TaskInputError(f"找不到 CAD 术语库文件「{candidate.name}」，它可能已被移动或删除。")
     try:
         if candidate.suffix.lower() == ".json":
             value = json.loads(candidate.read_text(encoding="utf-8"))
@@ -361,4 +372,4 @@ def load_cad_glossary(path: str | None) -> dict[str, str]:
                 glossary[source.strip()] = target.strip()
         return glossary
     except (OSError, UnicodeError, ValueError) as exc:
-        raise TaskInputError(f"CAD 术语库无法读取：{candidate}") from exc
+        raise TaskInputError(f"CAD 术语库文件「{candidate.name}」读不出来，请检查格式（每行「原文,译文」或 JSON 对象）。") from exc

@@ -1,4 +1,4 @@
-// 记忆库视图（对应样张屏⑦）—— 语言对/搜索/增删改/导入导出/深度清洗/冲突裁决。
+// 记忆库视图（对应样张屏⑦）—— 语言对/搜索/增删改/导入导出/清洗记忆库/冲突裁决。
 // 功能范围以 main.ts 的 renderTmView 及其配套 tm* 函数为准（见文件头注释），
 // 版式与文案按样张屏⑦精修；样张未画出的功能（统计条、最近语言对、冲突裁决、任务风险
 // 确认）保留但用现有组件与设计令牌收纳，不新增样张之外的视觉语言。
@@ -487,7 +487,7 @@ function renderTopbarStatus(): void {
   setTopbar({
     title: "记忆库",
     status: { label: `${total} 条`, tone: "idle" },
-    subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用",
+    subtitle: "翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先",
   });
 }
 
@@ -704,59 +704,24 @@ function openDeleteModal(entryToDelete: TmEntry): void {
 }
 
 // ---------------------------------------------------------------------------
-// 深度清洗（tm_clean 任务）
+// 清洗记忆库（tm_clean 任务）
 // ---------------------------------------------------------------------------
-
-function connectionRowText(item: JsonObject): string {
-  const summary = record(item.summary);
-  const label = redactedText(
-    item.label || item.connection_summary || item.resource_group || [summary.provider, summary.base_url].filter(Boolean).join(" @ "),
-    "共享连接",
-  );
-  const roles = strings(item.roles).join("、") || "未返回";
-  const activeConcurrency = num(item.active_concurrency, 0);
-  const candidateConcurrency = num(item.candidate_concurrency, 0);
-  const total_ = num(item.total_potential_concurrency, num(item.potential_concurrency, 0));
-  return `${label} · 角色 ${roles} · 活动 / 新任务并发 ${activeConcurrency} / ${candidateConcurrency} · 合计潜在 ${total_}`;
-}
 
 function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmation: boolean; confirmation_token?: string; risk?: JsonObject }): void {
   const risk = record(preflight.risk);
-  const sharedConnections = Array.isArray(risk.shared_connections) ? risk.shared_connections.map(record) : [];
   const active = Array.isArray(risk.active_tasks) ? risk.active_tasks.map(record) : [];
-  const warnings = strings(risk.warnings);
 
-  const body: HTMLElement[] = [];
-  const note = document.createElement("p");
-  note.textContent = "此任务将与现有活动任务共用至少一个实际 API 连接。继续后会按新任务自己的默认吞吐启动，不会自动减半；服务端会在启动时用一次性令牌原子复检。";
-  body.push(note);
-
-  const callout = document.createElement("p");
-  callout.style.color = "var(--warn)";
-  callout.style.fontWeight = "600";
-  callout.textContent = "可能出现 429、排队、超时、失败或额外费用——同一连接的并发会累加。";
-  body.push(callout);
-
-  if (sharedConnections.length) {
-    const heading = document.createElement("p");
-    heading.style.fontWeight = "600";
-    heading.textContent = "共同连接与预算";
-    body.push(heading);
-    const list = document.createElement("ul");
-    list.style.paddingLeft = "18px";
-    list.style.fontSize = "12.5px";
-    list.style.color = "var(--ink-2)";
-    for (const item of sharedConnections) {
-      const li = document.createElement("li");
-      li.textContent = connectionRowText(item);
-      list.append(li);
-    }
-    body.push(list);
-  }
+  // 措辞和翻译工作区的同名确认框（workspace.ts showTaskRiskModal）保持一致。这里以前
+  // 印的是「一次性令牌原子复检」「429」「合计潜在并发」和逐条连接的角色/并发明细——
+  // 都是实现细节，用户要知道的只有：共用了什么、可能出什么事、自己的设置会不会被改。
+  const body: Array<HTMLElement | string> = [
+    "这次清洗会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。",
+    "因此可能变慢或排队，个别请求可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。你在设置里填的速度不会被改。",
+  ];
   if (active.length) {
     const heading = document.createElement("p");
     heading.style.fontWeight = "600";
-    heading.textContent = "活动任务";
+    heading.textContent = "正在跑的任务";
     body.push(heading);
     const list = document.createElement("ul");
     list.style.paddingLeft = "18px";
@@ -764,37 +729,22 @@ function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmati
     list.style.color = "var(--ink-2)";
     for (const item of active) {
       const li = document.createElement("li");
-      li.textContent = `${redactedText(item.source_label || item.task_label || item.task_id, "活动任务")} · 并发 ${num(item.concurrency, 0)}`;
+      li.textContent = redactedText(item.source_label || item.task_label, "未命名任务");
       list.append(li);
     }
     body.push(list);
   }
-  if (warnings.length) {
-    const heading = document.createElement("p");
-    heading.style.fontWeight = "600";
-    heading.textContent = "额外提示";
-    body.push(heading);
-    const list = document.createElement("ul");
-    list.style.paddingLeft = "18px";
-    list.style.fontSize = "12.5px";
-    list.style.color = "var(--ink-2)";
-    for (const warning of warnings) {
-      const li = document.createElement("li");
-      li.textContent = redactedText(warning);
-      list.append(li);
-    }
-    body.push(list);
-  }
+  body.push("不着急的话，等前一个任务跑完再开始最稳。");
 
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "共享 API 并行风险",
+    title: "和正在跑的任务共用同一条连接",
     body,
     actions: [
       { label: "取消", variant: "default" },
       {
-        label: "仍要启动",
+        label: "仍要并行启动",
         variant: "primary",
         onClick: async () => {
           await submitTmCleanStart(payload, preflight.confirmation_token ?? "");
@@ -812,17 +762,36 @@ async function submitTmCleanStart(payload: JsonObject, confirmationToken: string
       body: JSON.stringify(confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload),
     });
     cleaningState = "idle";
-    showToast({ message: "深度清洗任务已提交，前往任务中心查看进度。" });
+    showToast({ message: "记忆库清洗已开始，可以在任务中心看进度。" });
     navigate("tasks", { taskId: task.task_id });
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: `深度清洗启动失败：${errorMessage(error)}`, error: true });
+    showToast({ message: `记忆库清洗没能开始：${errorMessage(error)}`, error: true });
   }
 }
 
+function confirmTmClean(): void {
+  const langName = (options: LanguageOption[], code: string) => options.find((o) => o.code === code)?.display_name ?? code;
+  const pairLabel = `${langName(sourceOptions, sourceLang)} → ${langName(targetOptions, targetLang)}`;
+  const scope = keyword ? "" : `（共 ${total} 条，固定词条不参与）`;
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    title: "清洗记忆库？",
+    body: [
+      `会把「${pairLabel}」里没有固定的词条${scope}交给模型检查，找出译法不统一或有错的地方，给出修改建议。这会调用模型，按条数产生费用。`,
+      "建议生成后要你逐条确认才会写入，记忆库不会被直接改动。",
+    ],
+    actions: [
+      { label: "取消", variant: "default" },
+      { label: "开始清洗", variant: "primary", onClick: () => void tmClean() },
+    ],
+  });
+}
+
 async function tmClean(): Promise<void> {
-  // 深度清洗也是新任务,同样吃「更新装好没重启 → 组件加载失败」这一刀(高-12)。
+  // 记忆库清洗也是新任务,同样吃「更新装好没重启 → 组件加载失败」这一刀(高-12)。
   if (consumePendingRestartWarning()) {
     openRestartBeforeTaskModal(() => void tmClean());
     return;
@@ -845,7 +814,7 @@ async function tmClean(): Promise<void> {
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: `深度清洗启动失败：${errorMessage(error)}`, error: true });
+    showToast({ message: `记忆库清洗没能开始：${errorMessage(error)}`, error: true });
   }
 }
 
@@ -1165,7 +1134,7 @@ async function exportFullTm(): Promise<void> {
     const payload = await client.request<JsonObject>("/api/tm/export/full");
     const saved = await saveJsonFile("translator-tm-full.json", payload);
     if (!saved) return; // 用户取消保存框：静默返回
-    showToast({ message: `已导出当前完整记忆库到 ${saved}（全部语言对、可信等级、冲突候选和自定义目标语言定义）。` });
+    showToast({ message: `已导出完整记忆库到 ${saved}（全部语言对、待裁决冲突和自定义目标语言）。` });
   } catch (error) {
     showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
   }
@@ -1204,7 +1173,7 @@ function importTm(): void {
       }
       openImportPreviewModal(file.name, isCsv ? "csv" : "json", langPair, previewEntries);
     } catch (error) {
-      showToast({ message: `无法读取 TM 导入文件：${errorMessage(error)}`, error: true });
+      showToast({ message: `无法读取导入文件：${errorMessage(error)}`, error: true });
     }
   });
 }
@@ -1213,10 +1182,10 @@ function importFullTm(): void {
   pickFile("application/json,.json", async (file) => {
     try {
       const payload = JSON.parse(await file.text()) as JsonObject;
-      if (text(payload.format_version) !== "tm-full-v1") throw new Error("这不是当前格式的完整 TM 备份。");
+      if (text(payload.format_version) !== "tm-full-v1") throw new Error("这不是 Translator 导出的完整记忆库备份。");
       openFullImportPreviewModal(file.name, payload);
     } catch (error) {
-      showToast({ message: `无法读取完整 TM 备份：${errorMessage(error)}`, error: true });
+      showToast({ message: `无法读取完整记忆库备份：${errorMessage(error)}`, error: true });
     }
   });
 }
@@ -1229,7 +1198,7 @@ function openImportPreviewModal(fileName: string, format: "json" | "csv", langPa
     options: [
       { value: "skip", label: "跳过重复项" },
       { value: "overwrite", label: "覆盖重复项" },
-      { value: "keep_both", label: "保留两份" },
+      { value: "keep_both", label: "两份都留，列入待裁决冲突" },
     ],
   });
   let syncReverse = false;
@@ -1319,15 +1288,15 @@ function openFullImportPreviewModal(fileName: string, payload: JsonObject): void
   const customLangCount = Array.isArray(payload.custom_target_langs) ? payload.custom_target_langs.length : 0;
 
   const summary = document.createElement("p");
-  summary.textContent = `${fileName} · 当前格式 tm-full-v1。将校验并恢复 ${entryCount} 条词条、${conflictCount} 条冲突候选和 ${customLangCount} 个自定义目标语言。`;
+  summary.textContent = `${fileName} · 将检查并恢复 ${entryCount} 条词条、${conflictCount} 条待裁决冲突和 ${customLangCount} 个自定义目标语言。`;
 
   const modeField = createSelectField({
     label: "重复项",
     value: "skip",
     options: [
       { value: "skip", label: "跳过重复项" },
-      { value: "overwrite", label: "覆盖低等级重复项" },
-      { value: "keep_both", label: "保留冲突候选" },
+      { value: "overwrite", label: "用备份里的译文覆盖重复项" },
+      { value: "keep_both", label: "两份都留，列入待裁决冲突" },
     ],
   });
   const codeMapField = createTextField({ label: "自定义代码映射（可选 JSON）", value: "{}", placeholder: '例如 {"x-custom-old":"x-custom-new"}' });
@@ -1367,7 +1336,7 @@ function openFullImportPreviewModal(fileName: string, payload: JsonObject): void
             renderStatsRow();
             renderConflictArea();
             showToast({
-              message: `新增或更新 ${num(result.inserted)} 条，跳过 ${num(result.skipped)} 条，重复 ${num(result.duplicates)} 条，恢复冲突候选 ${num(result.conflicts)} 条。`,
+              message: `新增或更新 ${num(result.inserted)} 条，跳过 ${num(result.skipped)} 条，重复 ${num(result.duplicates)} 条，恢复待裁决冲突 ${num(result.conflicts)} 条。`,
             });
           } catch (error) {
             showToast({ message: `恢复失败：${errorMessage(error)}`, error: true });
@@ -1493,7 +1462,8 @@ function rebuildToolbar(): void {
       ]),
   });
   actions.append(importBtn, exportBtn);
-  actions.append(createButton({ label: "深度清洗", variant: "primary", disabled: cleaningState === "running", onClick: () => void tmClean() }));
+  // 清洗会调用模型、按条数花钱，所以是普通按钮、点了先确认；库是空的时候没东西可洗。
+  actions.append(createButton({ label: "清洗记忆库", disabled: cleaningState === "running" || (!keyword && total === 0), onClick: () => confirmTmClean() }));
   row.append(actions);
   toolbarCardEl.append(row);
 
@@ -1899,10 +1869,10 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null):
     await Promise.all([refreshTm(), refreshConflicts()]);
   } catch (error) {
     if (!isCurrent()) return;
-    setTopbar({ title: "记忆库", status: { label: "加载失败", tone: "warn" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
+    setTopbar({ title: "记忆库", status: { label: "加载失败", tone: "warn" }, subtitle: "翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先" });
     renderLoadFailure(container, errorMessage(error), () => {
       if (!isCurrent()) return;
-      setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
+      setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先" });
       renderLoadingPlaceholder(container);
       void loadLibrary(container, reviewTaskId);
     });
@@ -1936,7 +1906,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   selectedIds.clear();
   container.style.flexDirection = "column";
 
-  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "复用 Excel 和 Word 的翻译记忆，固定词条优先采用" });
+  setTopbar({ title: "记忆库", status: { label: "加载中…", tone: "idle" }, subtitle: "翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先" });
 
   renderLoadingPlaceholder(container);
 

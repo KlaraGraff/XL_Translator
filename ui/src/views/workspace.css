@@ -228,6 +228,16 @@
 .pdf-review-card.filter .grp-clean {
   display: none;
 }
+.pdf-review-card .row-none-bad {
+  display: none;
+}
+.pdf-review-card.filter .row-none-bad {
+  display: table-row;
+}
+.pdf-review-card .row-none-bad td {
+  color: var(--ink-3);
+  text-align: center;
+}
 
 tr.hid {
   display: none;

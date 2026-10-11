@@ -28,6 +28,7 @@ from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
 from core.task_history import MAX_TASK_LOG_LINES, TaskHistoryError, TaskHistoryStore
 from loguru import logger
 from core.tm_cleaning_task_runner import TmCleaningTaskRunner
+from core.cad_task_runner import CAD_PAUSED_STATUS_PREFIX
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
@@ -217,7 +218,7 @@ class TranslationTaskManager:
         )
         if bool(risk["surface_busy"]):
             raise TaskConflictError(
-                "同类型任务仍在运行、暂停或安全停止中。",
+                "同一类翻译已经有一个任务在进行（包括暂停中、正在停止的），请等它结束后再开始。",
                 reason="surface_busy",
             )
         response: dict[str, Any] = {
@@ -260,12 +261,12 @@ class TranslationTaskManager:
                 token = self._confirmation_tokens.pop(str(confirmation_token), None)
             if token is None:
                 raise TaskConflictError(
-                    "风险确认令牌已过期或已使用，请重新预检。",
+                    "这次确认已经过期，请重新点一次开始。",
                     reason="expired_or_consumed",
                 )
             if token.prepared.fingerprint != prepared.fingerprint:
                 raise TaskConflictError(
-                    "预检后的任务设置已变化，请重新确认风险。",
+                    "确认之后任务设置又改过了，请重新点一次开始。",
                     reason="stale",
                 )
             expected_revision = token.registry_revision
@@ -275,10 +276,10 @@ class TranslationTaskManager:
                 group_capacities=prepared.group_capacities,
             )
             if bool(risk["surface_busy"]):
-                raise TaskConflictError("同类型任务仍处于活动状态。", reason="surface_busy")
+                raise TaskConflictError("同一类翻译已经有一个任务在进行，请等它结束后再开始。", reason="surface_busy")
             if risk["shared_groups"]:
                 raise TaskConflictError(
-                    "此任务与活动任务共用模型/API，请先完成风险确认。",
+                    "这个任务会和正在跑的任务共用同一条模型连接，请先确认再开始。",
                     reason="confirmation_required",
                 )
             expected_revision = int(risk["revision"])
@@ -314,7 +315,7 @@ class TranslationTaskManager:
         if not spec.requires_source:
             lang_pair = str(selected_options.lang_pair or source_path or "").strip()
             if "-" not in lang_pair or not all(part.strip() for part in lang_pair.split("-", 1)):
-                raise TaskInputError("TM 清洗任务必须选择有效的定向语言对。")
+                raise TaskInputError("请先选择要清洗的语言方向。")
             tm_manager.init_db()
             context = task_api_context_for_page(
                 settings,
@@ -342,10 +343,10 @@ class TranslationTaskManager:
 
         if not str(source_path or "").strip():
             # Path("").resolve() is the process cwd; never scan that.
-            raise TaskInputError("Source path is required.")
+            raise TaskInputError("请先选择要翻译的文件或文件夹。")
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
-            raise TaskInputError(f"Source path does not exist: {root}")
+            raise TaskInputError(f"找不到「{root.name or root}」，它可能已被移动或删除。")
         default_surface_source = getattr(
             settings,
             f"{normalized_surface}_source_lang",
@@ -393,9 +394,8 @@ class TranslationTaskManager:
                 if str(Path(item.path).expanduser().resolve()) in selected
             ]
         if not files:
-            raise TaskInputError(
-                f"No supported {normalized_surface} files were found at: {root}"
-            )
+            logger.info(f"[任务] 没有找到可翻译的 {normalized_surface} 文件：{root}")
+            raise TaskInputError("这里没有找到可以翻译的文件，请换一个文件或文件夹，或检查文件格式。")
         self._validate_preflight(
             normalized_surface, files=files, settings=settings, options=selected_options
         )
@@ -551,10 +551,12 @@ class TranslationTaskManager:
         if attempted.lease is None:
             reason = attempted.reason or "conflict"
             messages = {
-                "surface_busy": "同类型任务仍处于活动状态。",
-                "stale": "风险确认期间任务资源已变化，请重新预检。",
+                "surface_busy": "同一类翻译已经有一个任务在进行，请等它结束后再开始。",
+                "stale": "确认之后正在运行的任务有变化，请重新点一次开始。",
             }
-            raise TaskConflictError(messages.get(reason, "任务资源预约失败。"), reason=reason)
+            raise TaskConflictError(
+                messages.get(reason, "任务没能开始，请稍后再点一次开始。"), reason=reason
+            )
         lease = attempted.lease
         try:
             api_schedulers = {
@@ -631,7 +633,13 @@ class TranslationTaskManager:
                 # forever-running task in the history.
                 with task.condition:
                     failure_result = self._complete_file_progress(
-                        task, {"message": str(exc) or exc.__class__.__name__}, "error",
+                        task,
+                        {
+                            "message": user_facing_reason(
+                                exc, fallback="任务没能启动，出现了未预期的问题，请重试。"
+                            )
+                        },
+                        "error",
                     )
                     task.state = "error"
                     task.terminal = True
@@ -734,7 +742,7 @@ class TranslationTaskManager:
             "active_tasks": active_tasks,
             "shared_connections": shared_connections,
             "warnings": (
-                ["共享 API 可能触发 429、排队、超时、失败或额外费用。"]
+                ["两个任务共用同一条模型连接，可能变慢、排队或超时，两边都会计费。"]
                 if shared_connections
                 else []
             ),
@@ -929,7 +937,7 @@ class TranslationTaskManager:
             live = self._tasks.get(key)
             if live is not None and not live.terminal:
                 raise TaskConflictError(
-                    "任务仍在运行，请先安全停止，再删除这条记录。",
+                    "任务仍在运行，请先停止，再删除这条记录。",
                     reason="task_active",
                 )
             if live is not None and live.rerun_active:
@@ -986,7 +994,7 @@ class TranslationTaskManager:
                 if task.terminal:
                     continue
                 result = self._complete_file_progress(task, {
-                    "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
+                    "message": "应用中途关闭，任务没有完成。已生成的文件和报告仍保留在输出目录，可以重新开始翻译。",
                     "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
                 }, "interrupted")
                 task.state = "interrupted"
@@ -1014,16 +1022,16 @@ class TranslationTaskManager:
         """Pause PDF page submission while its sidecar and snapshot remain alive."""
         task = self._get_task(task_id)
         if not get_surface(task.surface).can_pause:
-            raise TaskInputError("当前任务不支持暂停提交。")
+            raise TaskInputError("这个任务不支持暂停。")
         with task.condition:
             if task.terminal:
                 return self.task_status(task_id)
             if not hasattr(task.runner, "pause"):
-                raise TaskInputError("当前任务不支持暂停提交。")
+                raise TaskInputError("这个任务不支持暂停。")
             if task.state == "paused":
                 return self.task_status(task_id)
             if task.state != "running":
-                raise TaskInputError("当前任务不处于可暂停状态。")
+                raise TaskInputError("任务现在不能暂停。")
             # A surface that pauses at the current-file boundary (CAD) keeps
             # the intermediate state visible until the runner acknowledges it.
             task.state = (
@@ -1044,7 +1052,7 @@ class TranslationTaskManager:
             if not hasattr(task.runner, "resume"):
                 raise TaskInputError("当前任务不支持继续。")
             if task.state != "paused":
-                raise TaskInputError("只有暂停提交的任务可以继续。")
+                raise TaskInputError("只有已暂停的任务可以继续。")
             task.state = "running"
             self._append_event(task, "resumed", {"state": "running"})
         task.runner.resume()  # type: ignore[attr-defined]
@@ -1054,12 +1062,12 @@ class TranslationTaskManager:
         """End an intentionally paused PDF task and retain its partial evidence."""
         task = self._get_task(task_id)
         if not get_surface(task.surface).can_end_paused:
-            raise TaskInputError("只有 PDF/图片任务支持结束暂停任务。")
+            raise TaskInputError("这个任务暂停后不能直接结束，请点「停止」。")
         with task.condition:
             if task.terminal:
                 return self.task_status(task_id)
             if task.state != "paused":
-                raise TaskInputError("只有暂停提交的 PDF/图片任务可以结束。")
+                raise TaskInputError("只有已暂停的任务可以结束。")
             task.state = "stopping"
             self._append_event(task, "stopping", {"state": "stopping", "reason": "end_paused"})
         if hasattr(task.runner, "end_paused"):
@@ -1129,7 +1137,7 @@ class TranslationTaskManager:
         """Queue a single-page action; only a paused task may accept one."""
         normalized = str(action or "").strip().lower()
         if normalized not in {"regenerate", "skip"}:
-            raise TaskInputError("单页操作只支持 regenerate 或 skip。")
+            raise TaskInputError("这一页只能选择「重新生成」或「跳过」。")
         task = self._get_task(task_id)
         runner = self._pdf_review_runner(task)
         method = (
@@ -1146,7 +1154,7 @@ class TranslationTaskManager:
                 raise TaskConflictError("任务已经结束，不能再做单页操作。", reason="task_terminal")
             if task.state != "paused":
                 raise TaskConflictError(
-                    "只有暂停中的 PDF/图片任务可以做单页操作。",
+                    "只有已暂停的 PDF 与图片任务可以单独处理某一页。",
                     reason="task_not_paused",
                 )
             try:
@@ -1212,10 +1220,10 @@ class TranslationTaskManager:
             if attempted.lease is None:
                 reason = attempted.reason or "conflict"
                 messages = {
-                    "surface_busy": "有 PDF/图片任务正在进行，等它结束后再重新生成这一页。",
+                    "surface_busy": "有 PDF 与图片翻译任务正在进行，等它结束后再重新生成这一页。",
                 }
                 raise TaskConflictError(
-                    messages.get(reason, "任务资源预约失败。"),
+                    messages.get(reason, "这一页没能开始重新生成，请稍后再试。"),
                     reason=reason,
                 )
             lease = attempted.lease
@@ -1406,7 +1414,7 @@ class TranslationTaskManager:
     @staticmethod
     def _pdf_review_runner(task: ApiTask) -> Any:
         if task.surface != "pdf":
-            raise TaskInputError("只有 PDF/图片任务提供逐页审核数据。")
+            raise TaskInputError("只有 PDF 与图片翻译任务有逐页审核记录。")
         runner = task.runner
         required = (
             "pdf_page_snapshot",
@@ -1415,7 +1423,7 @@ class TranslationTaskManager:
             "request_page_skip",
         )
         if not all(callable(getattr(runner, name, None)) for name in required):
-            raise TaskInputError("当前 PDF 任务不支持逐页审核。")
+            raise TaskInputError("这个 PDF 任务没有逐页审核记录。")
         return runner
 
     def reservations(self) -> list[dict[str, Any]]:
@@ -1557,7 +1565,7 @@ class TranslationTaskManager:
                     if remaining <= 0:
                         if task.rerun_active:
                             self._append_event(task, "pdf_page_shutdown_pending", {
-                                "message": "关闭等待已超时，单页操作尚未确认安全结束。",
+                                "message": "等待关闭超时，单页操作还没确认结束。",
                             })
                         break
                     task.condition.wait(timeout=min(remaining, 0.25))
@@ -1630,7 +1638,7 @@ class TranslationTaskManager:
                 result={
                     "message": user_facing_reason(
                         "Translation runner ended without a terminal message.",
-                        fallback="翻译流程异常终止，未收到结束信号，请重试。",
+                        fallback="翻译中途意外结束，请重试。",
                     )
                 },
             )
@@ -1643,7 +1651,7 @@ class TranslationTaskManager:
                 event_type="error",
                 result={
                     "message": user_facing_reason(
-                        exc, fallback="任务执行时出现未知错误，请重试或查看日志。"
+                        exc, fallback="任务运行时出现了未预期的问题，请重试或查看运行日志。"
                     )
                 },
             )
@@ -1679,7 +1687,7 @@ class TranslationTaskManager:
                 with task.condition:
                     task.task_snapshot.update(task.progress)
         if isinstance(message, StatusMsg) and get_surface(task.surface).pause_mode == "file_boundary":
-            if str(message.phase_desc).startswith("任务已暂停"):
+            if str(message.phase_desc).startswith(CAD_PAUSED_STATUS_PREFIX):
                 with task.condition:
                     if not task.terminal and task.state == "pausing":
                         task.state = "paused"
@@ -1835,6 +1843,11 @@ class TranslationTaskManager:
                 self._tasks.pop(stale.task_id, None)
 
     def _append_event(self, task: ApiTask, event_type: str, data: Any) -> None:
+        if event_type == "log" and isinstance(data, dict) and data.get("visible") is False:
+            # 运行器标了 visible=False 的行（逐页「已渲染 / 已提交」、像素尺寸细节等）
+            # 只给排查用：运行器自己已经写进任务日志和 app.log，这里不再推到界面的
+            # 运行日志里。以前这个标记没人读，这些行照样显示给用户。
+            return
         safe_data = _sanitize_task_data(data)
         if event_type == "log":
             level = "INFO"

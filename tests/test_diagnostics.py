@@ -142,7 +142,7 @@ class DiagnosticsTests(unittest.TestCase):
                         "location_label": "正文段落 8",
                         "section_path": "一、工程概况",
                         "severity": "resolved",
-                        "problem": "规则校验未通过，语义仲裁自动接受",
+                        "problem": "自动检查没通过，复查后采用",
                         "status": "本段已写入译文。",
                         "snippet": "需要语义仲裁的段落",
                     }
@@ -151,12 +151,12 @@ class DiagnosticsTests(unittest.TestCase):
             logs = [
                 {
                     "level": "INFO",
-                    "message": "方案.docx · 一、工程概况 · 正文段落 8 正在语义仲裁",
+                    "message": "方案.docx · 一、工程概况 · 正文段落 8 正在复查译文意思",
                     "ts": "12:01:00",
                 },
                 {
                     "level": "OK",
-                    "message": "方案.docx · 一、工程概况 · 正文段落 8 语义仲裁接受",
+                    "message": "方案.docx · 一、工程概况 · 正文段落 8 复查通过，采用译文",
                     "ts": "12:01:02",
                 },
             ]

@@ -1,6 +1,6 @@
 // 帮助视图 —— 端口自 main.ts 的 renderHelpView()（英雄区 + 6 张说明卡）。
 // 样张没有单独画这一页，版式按 V9 组件与设计令牌自建（见 ./help.css），
-// 文案与卡片划分逐字沿用旧版；卡片上的入口按钮改为 router.navigate 深链到
+// 卡片划分沿用旧版，文案已改成面向普通用户的说法并补上 CAD 图纸；卡片上的入口按钮改为 router.navigate 深链到
 // 对应新视图 / 设置子页，而不是复刻旧版的模态/onboarding 流程。
 
 import type { ViewParams } from "../router";
@@ -27,7 +27,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "gear",
     title: "1. 配置翻译模型",
-    body: "选择服务商、Base URL、模型和 API Key。引导不会自动测试连接或发送请求。",
+    body: "填好服务商、模型和 API 密钥，再点「测试连接」确认能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。",
     footer: (host) => {
       host.append(
         createButton({ label: "打开模型配置", size: "mini", onClick: () => navigate("settings", { page: "models" }) }),
@@ -37,7 +37,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "doc-file",
     title: "2. 选择文件与语言",
-    body: "Excel 和 Word 默认自动识别；每个有候选文本的文件会在翻译前进行一次抽样预检，最多确认两种实际源语言。",
+    body: "支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。用「浏览」选好文件或文件夹后会自动扫描。源语言默认自动识别，PDF 和图片只需选目标语言。",
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
@@ -45,14 +45,15 @@ const CARDS: HelpCardSpec[] = [
         createButton({ label: "Excel", size: "mini", onClick: () => navigate("excel") }),
         createButton({ label: "Word", size: "mini", onClick: () => navigate("word") }),
         createButton({ label: "PDF / 图片", size: "mini", onClick: () => navigate("pdf") }),
+        createButton({ label: "CAD 图纸", size: "mini", onClick: () => navigate("cad") }),
       );
       host.append(row);
     },
   },
   {
     iconName: "book",
-    title: "3. 记忆库与语言识别",
-    body: "自动模式只按预检得到的实际语言对查询 TM；混合或不确定内容可以翻译，但不会自动写入普通 TM。",
+    title: "3. 记忆库",
+    body: "Excel 和 Word 翻好的词句会存进记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定的词条一定按你定的译法翻；语言混杂、识别不准的内容照常翻译，但不会存进记忆库。",
     footer: (host) => {
       host.append(createButton({ label: "打开记忆库", size: "mini", onClick: () => navigate("library") }));
     },
@@ -61,7 +62,7 @@ const CARDS: HelpCardSpec[] = [
     iconName: "tasks",
     title: "任务、停止与并行",
     // 429 是 HTTP 状态码，界面上不给用户看内部代号，说清后果就够了。
-    body: "不同类型任务可并行。两个任务用到同一条 API 连接时，会先说明可能变慢、排队、超时和产生费用，确认后才启动第二个任务。",
+    body: "不同类型的任务可以同时进行。两个任务要用同一条模型连接时，会先提醒可能变慢、排队或超时，并且两边都会计费，你确认后才会开始第二个。",
     footer: (host) => {
       host.append(createButton({ label: "打开任务中心", size: "mini", onClick: () => navigate("tasks") }));
     },
@@ -69,7 +70,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "folder",
     title: "输出与兼容格式",
-    body: "标准 .xlsx、.docx、PDF 和图片不依赖 Office。.xls / .doc 的高保真转换可使用本机 Office；没有授权或软件时会明确提示或按你的选择回退。",
+    body: "标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件」里连接图纸转换工具。",
     footer: (host) => {
       const details = document.createElement("details");
       details.className = "help-details";
@@ -88,7 +89,7 @@ const CARDS: HelpCardSpec[] = [
     // 这句话过去写的是「更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启」——
     // 应用内更新上线之后它就不成立了（会下载、验签、就地替换），而且 Windows 上根本没有
     // DMG。帮助页说错更新怎么工作，用户就会在真的替换应用时以为出了别的事。
-    body: "设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 走安装程序，会先提示再重开）。诊断由你主动导出，不包含 API Key、原文、译文、完整 Prompt 或文件路径。",
+    body: "设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 会打开安装程序，装完自动重新打开）。诊断信息只在你主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。",
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
