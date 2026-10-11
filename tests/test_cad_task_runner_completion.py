@@ -99,3 +99,46 @@ def test_cad_runner_uses_target_language_in_output_name(tmp_path):
     messages = _run(runner)
     done = next(message for message in messages if hasattr(message, "file_results"))
     assert Path(done.file_results[0]["output_path"]).name == "drawing_英文.dxf"
+
+
+def _stopping_runner(tmp_path, sources: list[Path], stop_on: str) -> CadTaskRunner:
+    holder: dict[str, CadTaskRunner] = {}
+
+    def translator(texts, glossary):
+        if stop_on in texts:
+            holder["runner"].stop()
+        return {text: f"{text}-译" for text in texts}
+
+    runner = CadTaskRunner(
+        files=[SimpleNamespace(path=path, name=path.name, format="dxf") for path in sources],
+        source_root=tmp_path,
+        output_dir=tmp_path / "results",
+        converter=_Converter(),
+        translator=translator,
+        options=CadPipelineOptions(),
+    )
+    holder["runner"] = runner
+    return runner
+
+
+def test_cad_stop_before_any_drawing_does_not_promise_a_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "a.dxf"
+    source.write_text("0\nTEXT\n1\nDoor\n", encoding="utf-8")
+    messages = _run(_stopping_runner(tmp_path, [source], stop_on="Door"))
+    stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
+    assert not any(item.get("status") in {"succeeded", "needs_review"} for item in stopped.files)
+    assert "断点" not in stopped.message
+    assert "还没有图纸翻译完成" in stopped.message
+
+
+def test_cad_stop_after_a_finished_drawing_keeps_the_checkpoint_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(process_artifacts, "APP_DATA_DIR", tmp_path / "app-data")
+    first = tmp_path / "a.dxf"
+    first.write_text("0\nTEXT\n1\nDoor\n", encoding="utf-8")
+    second = tmp_path / "b.dxf"
+    second.write_text("0\nTEXT\n1\nWindow\n", encoding="utf-8")
+    messages = _run(_stopping_runner(tmp_path, [first, second], stop_on="Window"))
+    stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
+    assert any(item.get("status") in {"succeeded", "needs_review"} for item in stopped.files)
+    assert "断点均已保留" in stopped.message

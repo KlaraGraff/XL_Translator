@@ -582,9 +582,17 @@ class CadTaskRunner(BaseTaskRunner):
             for item in results:
                 item.update({key: value for key, value in batch_paths.items() if key in {"output_dir", "translated_dir", "review_dir"}})
             if self._stop_event.is_set():
+                completed_count = sum(1 for item in results if item.get("status") in {"succeeded", "needs_review"})
+                # 第一张图写完之前就停下时，没有断点可续（断点按文件记），输出目录也会
+                # 因为是空的被收掉，界面不会给「从断点继续」——说明文字要跟着说实话。
+                stop_message = (
+                    "任务已停止；已完成文件和断点均已保留。"
+                    if completed_count
+                    else "任务已停止，还没有图纸翻译完成；原图纸未改动，需要时重新开始翻译即可。"
+                )
                 self._queue.put(
                     StoppedMsg(
-                        message="任务已停止；已完成文件和断点均已保留。",
+                        message=stop_message,
                         **batch_paths,
                         files=results,
                         issues=issues,
