@@ -31,12 +31,16 @@ _UNIT_STATUS_LABELS = {"translated": "已翻译", "unresolved": "没翻好"}
 
 CAD_SUPPORTED_EXTENSIONS = frozenset({".dwg", ".dxf"})
 # Stage weights are part of the UI contract and sum to 100.
+# Nearly all of a drawing's time is the model translating it; matching and
+# verifying are local and near-instant, and scan / write only take a few seconds
+# when a DWG goes through the converter.  The old 15/10/45/20/10 split jumped a
+# DXF to 25% at once and from 70% to 100% at the end.
 CAD_STAGE_WEIGHTS: dict[str, int] = {
-    "scan": 15,
-    "match": 10,
-    "translate": 45,
-    "write": 20,
-    "verify": 10,
+    "scan": 8,
+    "match": 2,
+    "translate": 80,
+    "write": 8,
+    "verify": 2,
 }
 
 _TEXT_ENTITY_TYPES = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION", "MINSERT"})
