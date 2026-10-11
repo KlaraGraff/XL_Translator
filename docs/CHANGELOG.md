@@ -1,5 +1,39 @@
 # Translator 版本更新日志
 
+## V10.0.0
+
+- **新增 CAD 图纸翻译**：支持 DWG 和 DXF，流程与 Excel、Word、PDF 一致，可暂停、停止和续译；DWG 需在新增的「插件」页配置 ODA File Converter；GBK 等中文编码的图纸可正确读写。
+
+  **CAD drawing translation**: DWG and DXF drawings are supported with the same workflow as Excel, Word and PDF, including pause, stop and resume. DWG requires ODA File Converter on the new Plugins page. GBK and other Chinese encodings are read and written correctly.
+
+- **英语和法语界面**：「设置 → 外观与语言」可切换中文、英语和法语，页面、运行日志、提示和错误信息随之切换；输出文件夹名、报告文件和写入文档的复核标记仍为中文。默认主题改为浅色，原先「跟随系统」的设置在升级时改为浅色（settings schema v30）。
+
+  **English and French interface**: Settings > Appearance & language switches between Chinese, English and French; pages, the run log, notifications and error messages follow the selection. Output folder names, report files and review markers in documents stay Chinese. The default theme is now light; a stored "follow system" setting is migrated to light (settings schema v30).
+
+- **配色与文案**：浅色模式改为暖米白，深色模式层次更清晰；界面、日志、报错和报告统一用语并改为正式书面说法，三种语言同步；「深度清洗」更名为「清洗记忆库」并在执行前提示费用。
+
+  **Colors and wording**: Light mode uses a warm off-white and dark mode has clearer layering. Wording across the interface, logs, errors and reports is unified and made formal in all three languages. "Deep clean" is renamed "Clean up memory" and warns about model charges first.
+
+- **停止与续译**：Excel 停止时保存已完成译文并标记「部分翻译」，可从中断处继续；手动停止不再记为接口错误，也不再产生额外模型调用；重新扫描不再误报「源文件已变化」。
+
+  **Stop and resume**: A stopped Excel task saves completed translations, is marked as partly translated and can resume. A manual stop is no longer recorded as an API error or followed by extra model requests. Rescanning no longer falsely reports a changed source file.
+
+- **密钥、限流与模型设置**：密钥无效或额度用尽时停止并说明原因；持续限流时先保存已完成部分。切换模型保留同时请求数，各连接独立保存速率，修正调整或删除连接后误报「尚未填写 API 密钥」。
+
+  **Keys, rate limits and model settings**: A rejected key or exhausted quota stops the task with a reason; under sustained rate limiting completed work is saved first. The concurrency limit survives model switches, each connection keeps its own rate, and a false "API key not entered" warning after reordering or deleting connections is fixed.
+
+- **翻译质量**：标准编号（如 GB/T 700-2006）不再送翻；自动识别时已是目标语言的内容保持不变；Word 不再插入非目标语言的译文，并提示文本框和脚注中未翻译的内容。
+
+  **Translation quality**: Standard codes such as GB/T 700-2006 are skipped. With auto-detect, text already in the target language is left unchanged. Word no longer inserts wrong-language output and reports untranslated text in text boxes and footnotes.
+
+- **性能与进度**：源语言为自动识别时 Excel 并发发送翻译请求；Excel、Word 和 CAD 的进度按等待模型的时间分配，翻译后期不再停滞；PDF 进度平稳、页面列表实时更新。
+
+  **Performance and progress**: Excel sends requests concurrently with auto-detect. Excel, Word and CAD progress follows model wait time and no longer stalls late in translation. PDF progress is smoother and the page list updates live.
+
+- **其他**：任务结束时保留匿名诊断记录，「导出诊断」恢复可用；Windows 关闭或更新时正在运行的任务正常收尾；提示消息移至顶部，窄窗口表格不再错位，未配置模型时引导至设置。
+
+  **Other**: Each finished task keeps an anonymous diagnostic record and Export diagnostics works again. Running tasks end cleanly when the app closes or updates on Windows. Notifications appear at the top, tables keep their layout in narrow windows, and starting without a model opens the settings.
+
 ## V9.5.9
 
 - **任务历史更可靠**：损坏的历史记录会先备份再恢复，备份失败时保留原文件；历史暂时无法保存时，翻译仍可继续，结果会在本次运行中保留。

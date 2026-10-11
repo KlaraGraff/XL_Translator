@@ -14,7 +14,6 @@
 """
 
 import sys
-import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -38,9 +37,13 @@ def _block_real_excel() -> None:
 def main() -> int:
     sys.path.insert(0, str(REPO_ROOT))
     _block_real_excel()
-    suite = unittest.TestLoader().discover(str(REPO_ROOT / "tests"))
-    result = unittest.TextTestRunner(verbosity=1).run(suite)
-    return 0 if result.wasSuccessful() else 1
+    # 用 pytest 而不是 unittest discover：tests/ 里有一部分是 pytest 风格的函数
+    # 用例（import pytest、tmp_path、parametrize），unittest 既跑不了它们，导入
+    # 时还会因为构建机没装 pytest 直接报错。pytest 同样能跑 unittest 风格的用例。
+    # 在本进程里调用，上面换掉的 create_excel_app 对测试仍然生效。
+    import pytest
+
+    return int(pytest.main(["-q", "-p", "no:cacheprovider", str(REPO_ROOT / "tests")]))
 
 
 if __name__ == "__main__":

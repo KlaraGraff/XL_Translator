@@ -197,7 +197,8 @@ jobs:
           TRANSLATOR_APP_DATA_DIR: ${{ runner.temp }}/translator-tests/app-data
         run: |
           pwsh ./quality_gate.ps1
-          ./.venv/bin/python3 -m unittest discover -s tests
+          ./.venv/bin/python3 -m pip install --requirement requirements-test.txt
+          ./.venv/bin/python3 scripts/release_env_tests.py
           npm run check --prefix ui
           npm run build --prefix ui
           cargo test --manifest-path src-tauri/Cargo.toml
