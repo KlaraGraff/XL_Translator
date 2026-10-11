@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from api.app import CadScanRequest, ScanRequest, TaskStartRequest
 from core.path_utils import normalize_user_path
 
@@ -43,5 +45,7 @@ def test_real_user_pdf_path_is_recovered_after_unwrapping() -> None:
     source = Path(
         "/Users/lijianwei/Downloads/海关、开闭所图纸_法语原版&中文翻译件/法语原版/海关全套图纸/电气/应急照明/PDF/SNRS.DIA.DCE.PLAN.EDS.BAT DOUANE.pdf"
     )
-    assert source.is_file()
+    if not source.is_file():
+        # 这是维护者本机上一份真实的报错文件，换台机器（包括 CI）没有它就无从验证。
+        pytest.skip("本机没有这份真实样本文件")
     assert Path(normalize_user_path(f"'{source}'")).is_file()
