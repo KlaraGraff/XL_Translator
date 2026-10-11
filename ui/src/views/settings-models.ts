@@ -811,7 +811,7 @@ function selectConnection(role: string, connectionId: string | null): void {
 
 function buildRoleSeg(): HTMLElement {
   const seg = document.createElement("div");
-  seg.className = "seg";
+  seg.className = "seg seg-roles";
   for (const role of MODEL_ROLE_ORDER) {
     const payload = record(modelRoles[role]);
     const segc = document.createElement("div");

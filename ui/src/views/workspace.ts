@@ -1808,7 +1808,7 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
   tableWrap.dataset.keepScroll = "files";
-  const table = el("table", "tbl");
+  const table = el("table", "tbl ws-files");
   table.append(buildTableHeadRow(surface));
   const resumeFiles = resumeFileMap(st);
   for (const file of st.files) {

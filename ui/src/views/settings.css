@@ -155,16 +155,17 @@
 /* 模型服务的四张用途卡。名字和摘要都只占一行，放不下就省略（title 里有全文）——
    以前窄窗口下「PDF 与图片翻译」这类标题折成两行，四张卡高矮不齐。窗口再窄一些时
    改成两列两行，而不是四张都挤成只剩几个字。断点按设置页宽度算：侧栏 210 + 内容区
-   左右留白 44 + 设置导航 188 + 间距 16，四张卡各至少 ~205px 时需要约 1300px 的窗口。 */
-.set-body .seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.set-body .segc { min-width: 0; padding: 11px 12px; }
-.set-body .segc b,
-.set-body .segc .segc-sub i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-body .segc .segc-sub { display: flex; gap: 6px; min-width: 0; }
-.set-body .segc .segc-sub i { font-style: normal; min-width: 0; }
-.set-body .segc .segc-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: none; }
+   左右留白 44 + 设置导航 188 + 间距 16，四张卡各至少 ~205px 时需要约 1300px 的窗口。
+   只认 .seg-roles：外观页的主题选择也是 .seg（三个选项），不能被套成四列。 */
+.set-body .seg.seg-roles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.set-body .seg-roles .segc { min-width: 0; padding: 11px 12px; }
+.set-body .seg-roles .segc b,
+.set-body .seg-roles .segc .segc-sub i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .seg-roles .segc .segc-sub { display: flex; gap: 6px; min-width: 0; }
+.set-body .seg-roles .segc .segc-sub i { font-style: normal; min-width: 0; }
+.set-body .seg-roles .segc .segc-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: none; }
 @media (max-width: 1300px) {
-  .set-body .seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .set-body .seg.seg-roles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */

@@ -56,19 +56,22 @@
   }
 }
 
-/* 任务清单：文件名单行省略（悬停 title 看全名），状态胶囊永不折行。文件名格 max-width:0
-   让它只拿其余列用剩的宽度，省略号才生效；状态列按胶囊自身宽度留足。 */
-.tbl td.fname {
+/* 工作台文件清单（.ws-files）：文件名单行省略（悬停 title 看全名），其余各列——格式、
+   计数、大小、页数、状态胶囊——一律不折行，让出宽度的只有文件名。文件名格 max-width:0
+   让它只拿其余列用剩的宽度，省略号才生效；min-width 给它留底，1080 宽的窗口里也能看到
+   七八个字，而不是「材料...」。再窄就放不下了：表格在卡片里横向滚动，不再压文件名。
+   只认 .ws-files：任务中心「生成的文件」等表格也用 .fname（一行两列），各有自己的规则。 */
+.tbl.ws-files td {
+  white-space: nowrap;
+}
+.tbl.ws-files td.fname {
   max-width: 0;
+  min-width: 140px;
   width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.tbl td.fstatus {
-  white-space: nowrap;
-}
-.tbl td.fstatus .chip,
+.tbl.ws-files td.fstatus .chip,
 .filerow .chip {
   flex: none;
   white-space: nowrap;
