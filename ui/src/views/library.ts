@@ -1429,7 +1429,8 @@ function rebuildToolbar(): void {
   toolbarCardEl.style.cssText = "display:flex;flex-direction:column;gap:8px;padding:11px 14px";
 
   const row = document.createElement("div");
-  row.style.cssText = "display:flex;gap:8px;align-items:center";
+  // 窄窗口（1024 宽）下一行放不下：允许整组换行，按钮文字不许折成两行（「新增词/条」）。
+  row.style.cssText = "display:flex;gap:8px;align-items:center;flex-wrap:wrap";
 
   row.append(
     langPicker(sourceOptions, sourceLang, "tm-source", (next) => void saveLangPair(next, targetLang)),
@@ -1443,7 +1444,7 @@ function rebuildToolbar(): void {
   );
 
   const searchWrap = document.createElement("div");
-  searchWrap.style.cssText = "flex:1;position:relative;max-width:340px";
+  searchWrap.style.cssText = "flex:1 1 180px;position:relative;max-width:340px;min-width:160px";
   const searchInput = document.createElement("input");
   searchInput.type = "text";
   searchInput.placeholder = "搜索原文或译文…";
@@ -1470,7 +1471,7 @@ function rebuildToolbar(): void {
   row.append(searchWrap);
 
   const actions = document.createElement("div");
-  actions.style.cssText = "margin-left:auto;display:flex;gap:7px";
+  actions.style.cssText = "margin-left:auto;display:flex;gap:7px;white-space:nowrap";
   actions.append(createButton({ label: "新增词条", icon: "plus", onClick: () => openAddEditModal(null) }));
   const importBtn = createButton({
     label: "导入",

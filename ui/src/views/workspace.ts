@@ -1092,6 +1092,12 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   input.addEventListener("change", () => {
     void persistSettings({ [`last_${surface}_source_folder`]: st.sourcePath });
   });
+  // 粘贴路径后按回车直接扫描，和点「扫描」等价；输入法组字时的回车不算。
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || scanBusy[surface] || !st.sourcePath.trim()) return;
+    event.preventDefault();
+    void runScan(surface);
+  });
   bar.append(input);
   const browseBtn = createButton({
     label: "浏览",
@@ -3448,8 +3454,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     const item = record(entry);
     const ok = fileResultProduced(item);
     if (ok) produced += 1;
-    // 用户按停止时还没做完的文件（CAD 记为 status=stopped）不是失败，算在「还有 N 个没跑到」里。
-    else if (item.status !== "stopped") failed += 1;
+    // 用户按停止时还没做完的文件（CAD 记为 status=stopped，Excel 记为 unstarted）不是失败，
+    // 算在「还有 N 个没跑到」里；否则横幅会把同一批文件既报「没能生成」又报「没跑到」。
+    else if (item.status !== "stopped" && item.status !== "unstarted") failed += 1;
     const key = fileOutcomeKey(text(item.name));
     const fileId = text(item.file_id);
     if (key && !ambiguousNames.has(key)) {
@@ -3579,11 +3586,16 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // Excel/Word 按文件算（kpi.unstarted_file_count，core/task_runner.py 的
   // _build_result_contract）。两个字段不会同时非零，谁非空就报谁；旧任务记录没有这
   // 两个字段时 num() 按 0 处理，不会显示这一句——不是新字段就必须报数。
+  // Word 是先整批翻完再逐个写文件，停止时每个文件都会写出来，「没跑到的文件」恒为 0；
+  // 没翻到的是段落（kpi.unstarted_text_count），它们保留原文留给续译。不报这个数，
+  // 横幅会在三分之二段落还是原文时写「其余全部通过」。
+  const unfinishedTexts = task.state === "stopped" ? num(record(result.kpi).unstarted_text_count) : 0;
   if (task.state === "stopped") {
     const unfinishedPages = num(record(result.kpi).unstarted_page_count);
     const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
     if (unfinishedPages > 0) clauses.push(`还有 ${unfinishedPages} 页没跑到`);
     else if (unfinishedFiles > 0) clauses.push(`还有 ${unfinishedFiles} 个文件没跑到`);
+    if (unfinishedTexts > 0) clauses.push(`还有 ${unfinishedTexts} 段没翻译，已保留原文，可续译`);
   }
   // 按了「安全停止」、但在飞的页刚好全部跑完时，任务照常走完成分支。不点这一句的话，
   // 屏幕上只剩「已完成 · 全部通过」，用户不知道自己那一下有没有截掉内容（只有运行日志
@@ -3603,7 +3615,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const totalPages = producedFileResultTotal(result, "page_count");
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
-  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated) {
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0) {
     clauses.push(
       review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
         ? "其余全部通过"
@@ -3615,7 +3627,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     task.state,
     generated,
     failed,
-    review + pageProblems + untranslatedFiles + openIssues,
+    review + pageProblems + untranslatedFiles + openIssues + unfinishedTexts,
     autoFixed,
     severityBucketed,
   );
@@ -3756,7 +3768,8 @@ function resultTone(
   settled: boolean,
 ): ResultTone {
   if (state === "error" || state === "interrupted") return "fail";
-  if (generated === 0) return "fail";
+  // 用户自己按的停止不是失败：一个文件都还没写出时同样报黄，按钮也不能叫「查看失败原因」。
+  if (generated === 0 && !(state === "stopped" && failed === 0)) return "fail";
   if (failed > 0 || state === "stopped") return "warn";
   if (review > 0 || autoFixed > 0) return "warn";
   // 后端只要给出任何一条结果项，任务终态就是 completed_with_issues，这一行过去无条件

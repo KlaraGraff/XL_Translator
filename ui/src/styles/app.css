@@ -172,6 +172,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.review-tbl { table-layout: fixed; }
 .review-tbl td { vertical-align: top; word-break: break-word; }
 .review-tbl .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 产物文件表：文件名单行省略（悬停看全名），状态徽章不折行——窄面板里「未生成」会被挤成两行。 */
+.files-tbl .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.files-tbl td:nth-child(2) { white-space: nowrap; }
 /* 「处理」列：第一行是两三个字的结论徽章，整句说明降级成第二行的灰色小字。
  * 徽章本身不允许换行——.chip 是圆角胶囊，塞进一整句话就会撑破卡片。 */
 .review-act { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }

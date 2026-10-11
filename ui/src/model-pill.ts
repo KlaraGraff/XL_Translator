@@ -36,7 +36,9 @@ function effectiveRoleKey(roleKey: string): string {
     const primary = connections[0] as { connection_mode?: unknown; source_role?: unknown } | undefined;
     const follows = String(primary?.connection_mode ?? "") === "follow" ? primary?.source_role : role?.source_role;
     const next = typeof follows === "string" ? follows.trim() : "";
-    if (!next || next === key) break;
+    // 不跟随别的角色时后端填的是 "independent"，它不是角色名；只认角色表里真有的键，
+    // 否则顺着它找下去就落空，徽章在配好模型的情况下也显示「未连接模型」。
+    if (!next || next === key || !lastRoles?.[next]) break;
     key = next;
   }
   return key;

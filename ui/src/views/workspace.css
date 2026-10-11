@@ -232,3 +232,10 @@
 tr.hid {
   display: none;
 }
+
+/* 逐页审核表的「页」和「审核结果」两列不许折行：窗口一窄，「第 1 页」会断成
+   「第 1 / 页」、「建议复核」徽章断成两行半截，整行跟着被撑高。说明列照常折行。 */
+.pdf-review-card .tbl tr:not(.pdf-file-group) > td:nth-child(-n+2),
+.pdf-review-card .tbl th:nth-child(-n+2) {
+  white-space: nowrap;
+}

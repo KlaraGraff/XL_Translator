@@ -142,6 +142,13 @@ function isTaskActive(task: TaskStatus): boolean {
  * PDF 任务同样收在 completed_with_issues，一个文件都没生成。列表徽章、副标题、详情徽章
  * 都必须按这个数说话，否则界面会把「什么都没拿到」显示成「需复核」。
  */
+function taskFailureText(task: TaskStatus): string {
+  const result = record(task.result);
+  const error = result.error;
+  const raw = typeof error === "string" ? error : firstText(record(error), ["message", "detail"]);
+  return plainFailureText(raw).trim();
+}
+
 function producedCounts(task: TaskStatus): { produced: number; failed: number; total: number } {
   const entries = resultEntries(record(task.result), ["files", "file_results", "file_records"]);
   let produced = 0;
@@ -448,6 +455,8 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["已选", ["selected_count", "selected_files", "selected_file_count", "total_files"]],
         ["已生成", ["success_count", "completed_count", "successful_files", "succeeded_file_count"]],
         ["未生成", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
+        // 只有停止的任务才带这个键：停下时没翻到、保留原文等续译的段落数。
+        ["未翻译段", ["unstarted_text_count"]],
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
         ["TM 命中", ["tm_hit_count", "tm_hits"]],
       ],
@@ -506,7 +515,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
   );
 }
 
-const WARN_KPI_LABELS = new Set(["需复核", "未生成", "失败占位", "有疑点仍采用"]);
+const WARN_KPI_LABELS = new Set(["需复核", "未生成", "未翻译段", "失败占位", "有疑点仍采用"]);
 
 interface ReviewRow {
   file: string;
@@ -772,6 +781,10 @@ interface TaskEntry {
   phaseName: string;
   stepDone: number;
   stepTotal: number;
+  /** 后端折算好的全任务进度（各阶段按权重拼起来的 0-100）。卡片徽章和进度条只认它：
+   *  step_done/step_total 只是「当前阶段」的进度，换阶段就归零，跟工作区那一屏的
+   *  百分比对不上（工作区 51%、任务中心 54%，进入下一阶段又跳回个位数）。 */
+  overallPercent: number | null;
   lastEventId: number;
   streamState: StreamState;
   watcherActive: boolean;
@@ -854,6 +867,7 @@ function upsert(task: TaskStatus): TaskEntry | null {
     phaseName: previous?.phaseName ?? "正在准备任务",
     stepDone: previous?.stepDone ?? 0,
     stepTotal: previous?.stepTotal ?? 0,
+    overallPercent: previous?.overallPercent ?? initialOverallPercent(task),
     lastEventId: previous?.lastEventId ?? 0,
     streamState: previous?.streamState ?? "idle",
     watcherActive: previous?.watcherActive ?? false,
@@ -968,9 +982,13 @@ function handleEvent(taskId: string, event: SseEvent): void {
     entry.phaseName = text(data.phase_name, "正在处理");
     entry.stepDone = num(data.step_done);
     entry.stepTotal = num(data.step_total);
+    const overall = Number(data.overall_percent);
+    if (Number.isFinite(overall)) entry.overallPercent = Math.min(100, Math.max(0, overall));
   }
   if (event.type === "status") {
-    entry.phaseName = text(data.phase_desc, entry.phaseName);
+    // 后端的 phase_desc 带着「状态：」前缀（工作区那边同样剥掉了），卡片副标题前面
+    // 已经有状态词，不剥就成了「已暂停提交 · 状态：已暂停提交，等待……」。
+    entry.phaseName = text(data.phase_desc, entry.phaseName).replace(/^状态[:：]\s*/, "");
   }
   if (event.type === "file_progress") {
     const current = new Map((entry.task.file_progress?.files ?? []).map((item) => [item.file_id, item]));
@@ -1302,10 +1320,20 @@ function reviewChip(task: TaskStatus): { label: string; tone: ChipTone } | null 
   return { label: "已完成", tone: "ok" };
 }
 
+function initialOverallPercent(task: TaskStatus): number | null {
+  const overall = Number(record(task.progress).overall_percent);
+  return Number.isFinite(overall) ? Math.min(100, Math.max(0, overall)) : null;
+}
+
+function entryPercent(entry: TaskEntry): number | null {
+  if (entry.overallPercent !== null) return Math.round(entry.overallPercent);
+  return entry.stepTotal > 0 ? Math.round((entry.stepDone / entry.stepTotal) * 100) : null;
+}
+
 function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
   const meta = taskStateMeta(entry.task, entry.streamState);
   if (isTaskActive(entry.task)) {
-    const percent = entry.stepTotal > 0 ? Math.round((entry.stepDone / entry.stepTotal) * 100) : null;
+    const percent = entryPercent(entry);
     return { label: percent !== null ? `${percent}%` : meta.label, tone: "tint" };
   }
   return reviewChip(entry.task) ?? meta;
@@ -1314,7 +1342,10 @@ function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
 function cardSubtitle(entry: TaskEntry): string {
   const meta = taskStateMeta(entry.task, entry.streamState);
   if (isTaskActive(entry.task)) {
-    return `${meta.label} · ${entry.phaseName || "正在准备任务"} · ${formatClock(entry.task.created_at)} 开始`;
+    const phase = entry.phaseName || "正在准备任务";
+    // 阶段说明本身就以状态词开头时（「已暂停提交，等待继续……」）不再重复一遍。
+    const lead = phase.startsWith(meta.label) ? phase : `${meta.label} · ${phase}`;
+    return `${lead} · ${formatClock(entry.task.created_at)} 开始`;
   }
   // 逐文件结果优先于 KPI 计数：KPI 那几个键各 surface 名字不同，取不到就会退回状态词，
   // 而 file_results 三个 surface 都有。
@@ -1366,12 +1397,13 @@ function renderCard(id: string): HTMLDivElement {
   r2.textContent = cardSubtitle(entry);
   card.append(r2);
 
-  if (isTaskActive(entry.task) && entry.stepTotal > 0) {
+  const percent = entryPercent(entry);
+  if (isTaskActive(entry.task) && percent !== null) {
     const bar = document.createElement("div");
     bar.className = "bar";
     bar.style.marginTop = "9px";
     const fill = document.createElement("i");
-    fill.style.width = `${Math.round((entry.stepDone / entry.stepTotal) * 100)}%`;
+    fill.style.width = `${percent}%`;
     bar.append(fill);
     card.append(bar);
   }
@@ -1510,6 +1542,25 @@ function renderDetail(): void {
   }
   header.append(actions);
   detailRootEl.append(header);
+
+  // 任务级失败原因（持续限流、上游不可用、Key 无效……）只有后端那一句话说得清，
+  // 详情页之前只摆一枚「任务失败」徽章，用户得去导出诊断包才知道为什么。
+  const failure = task.state === "error" || task.state === "interrupted" ? taskFailureText(task) : "";
+  if (failure) {
+    const banner = document.createElement("div");
+    banner.className = "banner res-err";
+    banner.style.margin = "12px 0 0";
+    const copy = document.createElement("div");
+    copy.className = "copy";
+    const head = document.createElement("b");
+    head.textContent = task.state === "error" ? "任务没有完成" : "任务被中断";
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = failure;
+    copy.append(head, sub);
+    banner.append(copy);
+    detailRootEl.append(banner);
+  }
 
   const snapshots = taskSnapshotRows(task);
   if (snapshots.length) {
@@ -1656,7 +1707,7 @@ function renderDetail(): void {
     detailRootEl.append(sectionTitle);
 
     const table = document.createElement("table");
-    table.className = "tbl";
+    table.className = "tbl files-tbl";
     const headRow = document.createElement("tr");
     for (const label of ["文件", "状态", "输出", "错误"]) {
       const th = document.createElement("th");
