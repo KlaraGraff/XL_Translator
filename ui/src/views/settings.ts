@@ -100,6 +100,9 @@ export type PoolConnection = {
   has_api_key: boolean;
   api_key_preview: string;
   primary: boolean;
+  // 这条连接自己的速率（后端按连接 + 模型分档）。旧版后端不回这两项，界面退回角色级那份。
+  throughput?: { profile_key: string; batch_size: number | null; concurrency: number };
+  throughput_bounds?: { batch_size: [number, number] | null; concurrency: [number, number] | null };
 };
 
 type MaintenanceCategoryInfo = {
@@ -356,7 +359,6 @@ let dataHealth: DataHealthPayload | null = null;
 
 export let settings: JsonObject | null = null;
 export let modelRoles: Record<string, JsonObject> = {};
-export let modelThroughput: Record<string, JsonObject> = {};
 export let modelCatalog: Record<string, string[]> = {};
 export let modelCatalogMessage: Record<string, string> = {};
 export let modelCatalogConnection: Record<string, string> = {};
@@ -883,15 +885,7 @@ export async function refreshModelRoles(): Promise<void> {
   modelRoles = payload.roles || {};
   // 顶栏药丸跟着同一份数据走：保存、切换连接、测试连通性之后都会经过这里。
   applyModelPillFromRoles(modelRoles);
-  await Promise.all(Object.keys(modelRoles).map((role) => refreshModelThroughput(role)));
-}
-
-async function refreshModelThroughput(role: string): Promise<void> {
-  try {
-    modelThroughput[role] = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`);
-  } catch {
-    modelThroughput[role] = record(modelRoles[role]?.throughput);
-  }
+  // 速率随角色数据一起回来（每条连接各一份），不再为每个角色单独问一次主用连接的速率。
 }
 
 async function refreshLanguages(): Promise<void> {
@@ -1047,9 +1041,11 @@ export function numberField(
     // 的话，这个数字会原样发去后端，换来一段 pydantic 英文 422（中-14）。这里
     // 用的 min/max 就是调用方按 config.py 传进来的后端真实边界，夹完立即回填
     // 输入框，让界面显示的值和即将落盘的值一致。
+    // 边界从输入框自己的 min/max 属性现读，不用创建时的 opts：调用方可能在保存
+    // 后改上限（模型页换了连接方式，云端 20 变本地 5；解锁后上限取消）。
     let clamped = parsed;
-    if (opts.min !== undefined) clamped = Math.max(opts.min, clamped);
-    if (opts.max !== undefined) clamped = Math.min(opts.max, clamped);
+    if (input.min !== "") clamped = Math.max(Number(input.min), clamped);
+    if (input.max !== "") clamped = Math.min(Number(input.max), clamped);
     if (clamped !== parsed) input.value = String(clamped);
     onCommit(clamped);
   });
@@ -1098,7 +1094,8 @@ export function tcHead(title: string, tools: HTMLElement[] = []): HTMLDivElement
  */
 export function attachModelNameDropdown(
   input: HTMLInputElement,
-  catalog: string[],
+  // 每次点开时现取：表单里换了服务商或地址，之前获取的列表就不再属于它。
+  currentCatalog: () => string[],
   currentProvider: () => string,
 ): void {
   const host = input.parentElement;
@@ -1116,6 +1113,7 @@ export function attachModelNameDropdown(
   wrap.append(caret);
 
   const candidates = (): { list: string[]; fallback: boolean } => {
+    const catalog = currentCatalog();
     if (catalog.length) return { list: catalog, fallback: false };
     const recommended = providerModelDefaults[currentProvider()];
     return recommended ? { list: [recommended], fallback: true } : { list: [], fallback: false };

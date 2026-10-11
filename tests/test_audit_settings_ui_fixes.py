@@ -181,8 +181,9 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
         )
         self.assertIsNotNone(number_field_match)
         body = number_field_match.group(0)
-        self.assertIn("Math.max(opts.min", body)
-        self.assertIn("Math.min(opts.max", body)
+        # 边界现读输入框属性（模型页保存后会改上限），不再用创建时的 opts。
+        self.assertIn("Math.max(Number(input.min)", body)
+        self.assertIn("Math.min(Number(input.max)", body)
 
 
 class ReRenderAfterRollbackTests(unittest.TestCase):
