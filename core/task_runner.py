@@ -786,7 +786,7 @@ class TaskRunner(BaseTaskRunner):
             ))
 
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"[阶段 1 完成] 全部文件合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次（{phase1_elapsed:.2f}s）")
+            self._log("OK", f"读取完成：全部文件合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -918,7 +918,7 @@ class TaskRunner(BaseTaskRunner):
 
             self._log(
                 "INFO",
-                f"[阶段 2] 记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
+                f"记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
@@ -1018,8 +1018,9 @@ class TaskRunner(BaseTaskRunner):
                 quality_issues=quality_issues,
             )
 
-            phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
-            self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
+            self._log("OK", "翻译完成，开始生成文件")
 
             self._file_progress.emit_many("waiting", "generate")
 
@@ -1157,8 +1158,9 @@ class TaskRunner(BaseTaskRunner):
                 step_done=len(self._files), step_total=len(self._files),
             ))
 
-            phase3_elapsed = (datetime.now() - t_phase3).total_seconds()
-            self._log("OK", f"[阶段 3 完成] 文件写入完毕（{phase3_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"阶段 3 耗时 {(datetime.now() - t_phase3).total_seconds():.2f}s")
+            self._log("OK", "全部文件已生成")
 
             elapsed = (datetime.now() - start_ts).total_seconds()
             if need_autofit:
@@ -1365,7 +1367,11 @@ class TaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求，整段可能要等好一阵，而进度条的读取阶段已经走满。
+        # 逐个文件报「正在检测语言 x/y」，进度卡标题才看得出还在往前走。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -1844,7 +1850,7 @@ class TaskRunner(BaseTaskRunner):
                     "WARN",
                     f"有 {batch_stats.quality_reset_count} 条译文没通过质量检查，已改回原文，已记入结果报告。",
                 )
-            self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处（{api_elapsed:.2f}s）")
+            self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
             self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
         return normal_api_translations
 
@@ -2049,7 +2055,7 @@ class TaskRunner(BaseTaskRunner):
         process_paths.append(process_path)
 
         # 收集词条
-        self._log("INFO", f"[阶段 1] 读取文件：{file_item.name}（{fi+1}/{len(self._files)}）")
+        self._log("INFO", f"读取文件：{file_item.name}（{fi+1}/{len(self._files)}）")
         t0 = datetime.now()
         try:
             if self._untranslated_only and not auto_source_lang:
@@ -2198,10 +2204,10 @@ class TaskRunner(BaseTaskRunner):
             self._log(
                 "INFO",
                 f"  → {file_item.name}：{len(text_set)} 处候选文本，"
-                f"先用来识别原文语言（{collect_elapsed:.3f}s）",
+                f"先用来识别原文语言",
             )
         else:
-            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本")
         self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
         self._file_progress.emit(file_item.path, "waiting", "translate")
 
@@ -2263,7 +2269,7 @@ class TaskRunner(BaseTaskRunner):
             step_done=fi, step_total=len(self._files),
         ))
 
-        self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{fi+1}/{len(self._files)}）")
+        self._log("INFO", f"生成文件：{file_item.name}（{fi+1}/{len(self._files)}）")
 
         process_path = process_paths[fi]
         # 换了续译底稿时，output 命名/相对目录必须仍按「原始源文件」算，
@@ -2497,7 +2503,7 @@ class TaskRunner(BaseTaskRunner):
                         "positions": truncated_positions,
                     }
                 )
-            self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
+            self._log("OK", f"文件完成：{file_item.name}")
         except Exception as e:
             logger.debug(f"文件写入失败 {file_item.name} 原始错误：{e!r}")
             write_reason = user_facing_reason(
@@ -2975,7 +2981,7 @@ class TaskRunner(BaseTaskRunner):
                             },
                         )
                 if autofit_success:
-                    self._log("INFO", f"自动调整行高完成（{autofit_elapsed:.2f}s）")
+                    self._log("INFO", "自动调整行高完成")
                     self._task_logger.info(
                         f"批量AutoFit完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
                     )

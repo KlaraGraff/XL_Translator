@@ -933,7 +933,7 @@ class WordTaskRunner(BaseTaskRunner):
                 )
             )
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"[阶段 1 完成] 全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次（{phase1_elapsed:.2f}s）")
+            self._log("OK", f"读取完成：全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -1005,7 +1005,7 @@ class WordTaskRunner(BaseTaskRunner):
             api_call_count = len(misses) + len(mixed_texts)
             self._log(
                 "INFO",
-                f"[阶段 2] 记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
+                f"记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
@@ -1420,7 +1420,7 @@ class WordTaskRunner(BaseTaskRunner):
                             self._log("WARN", f"{label} 保留原文，需复核")
 
                 elapsed = (datetime.now() - t0).total_seconds()
-                self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处（{elapsed:.2f}s）")
+                self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=elapsed)
                 # TM 写入挪到了残留修复之后（见下）：在这里写会把「修复前」的
                 # 带残留译文存进库，下个文档 TM 命中直接短路，残留就固化了。
@@ -1489,8 +1489,9 @@ class WordTaskRunner(BaseTaskRunner):
                     quality_issues=quality_issues,
                 )
 
-            phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
-            self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"Word 阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
+            self._log("OK", "翻译完成，开始生成文件")
 
             # 阶段 3 的入口闸：这里才是真正决定「有没有东西可写」的地方——
             # global_translations 到这里已经是终稿（残留修复、修复阶梯、标题
@@ -1565,8 +1566,9 @@ class WordTaskRunner(BaseTaskRunner):
                     step_total=len(self._files),
                 )
             )
-            phase3_elapsed = (datetime.now() - t_phase3).total_seconds()
-            self._log("OK", f"[阶段 3 完成] Word 文件写入完毕（{phase3_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"Word 阶段 3 耗时 {(datetime.now() - t_phase3).total_seconds():.2f}s")
+            self._log("OK", "全部 Word 文件已生成")
         except TaskStopped as exc:
             stopped_message = str(exc)
         except ApiKeyTemporarilyUnavailableError as exc:
@@ -1794,7 +1796,7 @@ class WordTaskRunner(BaseTaskRunner):
                 step_total=len(self._files),
             )
         )
-        self._log("INFO", f"[阶段 1] 读取文件：{file_item.name}（{index + 1}/{len(self._files)}）")
+        self._log("INFO", f"读取文件：{file_item.name}（{index + 1}/{len(self._files)}）")
         try:
             t0 = datetime.now()
             prepared = None
@@ -1893,7 +1895,6 @@ class WordTaskRunner(BaseTaskRunner):
                             if prepared.labels_seen
                             else ""
                         )
-                        + f"（{(datetime.now() - t0).total_seconds():.2f}s）"
                     ),
                 )
             process_paths.append(process_path)
@@ -2122,7 +2123,7 @@ class WordTaskRunner(BaseTaskRunner):
             file_texts.append(text_set)
             global_unique_texts.update(text_set)
             elapsed = (datetime.now() - t0).total_seconds()
-            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置")
             self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
             self._file_progress.emit(file_item.path, "waiting", "translate")
         except Exception as exc:
@@ -2192,7 +2193,11 @@ class WordTaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求，整段可能要等好一阵，而进度条的读取阶段已经走满。
+        # 逐个文件报「正在检测语言 x/y」，进度卡标题才看得出还在往前走。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -2657,7 +2662,7 @@ class WordTaskRunner(BaseTaskRunner):
                 step_total=len(self._files),
             )
         )
-        self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{index + 1}/{len(self._files)}）")
+        self._log("INFO", f"生成文件：{file_item.name}（{index + 1}/{len(self._files)}）")
         try:
             rel_subdir = file_item.path.parent.relative_to(source_root)
         except ValueError:
@@ -2841,7 +2846,7 @@ class WordTaskRunner(BaseTaskRunner):
                     tm_hits=this_tm,
                     api_calls=this_api,
                 )
-                self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
+                self._log("OK", f"文件完成：{file_item.name}")
             except Exception as exc:  # noqa: BLE001 - 文件已提交，统计故障只告警
                 logger.warning(f"Word 文件已写出，但完成日志或统计失败：{exc!r}")
         except Exception as exc:
