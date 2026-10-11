@@ -41,3 +41,29 @@
 - 字号/矢量审查：`.runtime/self-tests/pdf-optimization-20261011/review/stylecluster_review.md`
 - 多行隔离测试：`.runtime/self-tests/pdf-optimization-20261011/multiline/multiline_report.md`
 - 引出线/重叠诊断：`.runtime/self-tests/pdf-optimization-20261011/leaders/leader_report.md`
+
+## 集成验收（source-preserving 候选）
+
+本轮把已经通过局部安全门的字号、多行、表格单元格和引出线操作合并到同一个候选文件。候选从原始 PDF 重新生成，不把另一个 PDF 整页叠加，因此不会把不同版本的坐标变换和遮罩混在一起。
+
+通过的项目：
+
+- qpdf 结构检查通过；原始线段签名缺失 `0`；5/5 个嵌入图像保留；
+- 原始 drawing objects `33946`，候选 `34484`；原始 line items `487581`，候选 `487637`；
+- 中文字体统一为 `SourceHanSansCN-Regular`；写回字号范围 `2.0–19.25 pt`；
+- 8 个真实多行标注通过行距和碰撞检查；2 个表格单元格写回通过网格边界检查；
+- 4 个引出线标注通过字符墨迹遮罩和端点检查；没有重绘原始引出线；
+- 候选目标均存在，中文字符数 `687`，整页验收状态 `PASS`。
+
+集成候选：`.runtime/self-tests/pdf-optimization-20261011/integrated/SUNRISE_FES_EXE_BAT_DOUANE_COFF_A1_中文_integrated.pdf`
+
+## 剩余行的处理决定
+
+二次 OCR 复核没有产生可安全追加的自动写回项，安全覆盖仍为 `248/1189` 行（`20.9%`）。这不是翻译服务失败后把结果丢掉，而是以下两类区域无法在没有人工确认的情况下确定边界：
+
+- 4 个混合 OCR 框把多个标题、详图编号、钢筋标注和图线合在了一起；
+- 11 个引出线候选的字符墨迹与线段相交，或端点不能可靠确定。
+
+这些区域统一保留原始线和原文，并写入人工复核清单，禁止用整框白色遮罩强行替换。复核记录：`.runtime/self-tests/pdf-optimization-20261011/manual_review/manual_review_report.md`。
+
+因此，当前候选已经解决了可自动安全解决的写回缺陷；剩余项属于源 PDF 没有文字语义和图层信息导致的边界不确定性，继续自动写回会重新引入覆盖、断线和散落文字问题。
