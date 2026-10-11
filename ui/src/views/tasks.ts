@@ -28,7 +28,7 @@ import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, ApiError, type SseEvent, type TaskStatus } from "../api-client";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
-import { localeTag, t, tx } from "../i18n";
+import { currentLocale, localeTag, t, tx } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 基础类型 / 工具函数（与 main.ts 同名函数语义一致，独立实现以保持视图自包含）
@@ -649,9 +649,11 @@ function mergeSentences(current: string, addition: string): string {
 
 /** Word 复核项的 section_path：后端没找到标题时写「正文」「表格」「表格 2」，其余是文档里的标题原文（用户数据，不翻）。 */
 function sectionLabel(container: string): string {
+  if (currentLocale() === "zh") return container;
   if (container === "正文") return t("正文"); // i18n-ignore 后端原文
   const table = /^表格(?:\s*(\d+))?$/.exec(container); // i18n-ignore 后端原文
-  if (table) return table[1] ? t("表格 {0}", table[1]) : t("表格");
+  // 「表格」单独一个词在别处是统计列名（复数），这里是位置，用单数。
+  if (table) return table[1] ? t("表格 {0}", table[1]) : t("表格位置");
   return container;
 }
 
@@ -1759,7 +1761,11 @@ function renderDetail(): void {
     const showExcerpt = reviews.some((row) => row.excerpt.trim());
     // 固定列宽：任务详情是窄面板，交给浏览器按最小内容宽度分配会把文件名压成竖排单字。
     const cols = document.createElement("colgroup");
-    for (const width of showExcerpt ? ["20%", "14%", "26%", "12%", "28%"] : ["22%", "18%", "22%", "38%"]) {
+    // 英法的「位置」「问题」是整句外文，单词不能拆开，比中文需要更宽的列；摘录本身仍是原文。
+    const widths = currentLocale() === "zh"
+      ? (showExcerpt ? ["20%", "14%", "26%", "12%", "28%"] : ["22%", "18%", "22%", "38%"])
+      : (showExcerpt ? ["17%", "17%", "19%", "19%", "28%"] : ["16%", "22%", "26%", "36%"]);
+    for (const width of widths) {
       const col = document.createElement("col");
       col.style.width = width;
       cols.append(col);

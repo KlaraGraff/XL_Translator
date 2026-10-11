@@ -771,22 +771,6 @@
     "en": "Reading files",
     "fr": "Lecture des fichiers"
   },
-  "匹配记忆库与术语": {
-    "en": "Matching translation memory and terms",
-    "fr": "Recherche dans la mémoire de traduction et les termes"
-  },
-  "翻译": {
-    "en": "Translating",
-    "fr": "Traduction"
-  },
-  "写回图纸": {
-    "en": "Writing back to drawings",
-    "fr": "Réécriture dans les plans"
-  },
-  "校验结果": {
-    "en": "Verifying results",
-    "fr": "Vérification des résultats"
-  },
   "中文": {
     "en": "Chinese",
     "fr": "Chinois"
@@ -986,10 +970,6 @@
   "无质量/API 提示。": {
     "en": "No quality/API notices.",
     "fr": "Aucune alerte qualité/API."
-  },
-  "未记录": {
-    "en": "Not recorded",
-    "fr": "Non enregistré"
   },
   "文件处理失败": {
     "en": "File processing failed",
@@ -1355,10 +1335,6 @@
     "en": "Activity log",
     "fr": "Journal d'activité"
   },
-  "诊断记录": {
-    "en": "Diagnostic records",
-    "fr": "Enregistrements de diagnostic"
-  },
   "临时文件": {
     "en": "Temporary files",
     "fr": "Fichiers temporaires"
@@ -1390,10 +1366,6 @@
   "当前已是最新版本 V{0}。": {
     "en": "You're on the latest version, V{0}.",
     "fr": "Vous disposez de la dernière version, V{0}."
-  },
-  "检查更新失败，请稍后重试。": {
-    "en": "Update check failed. Please try again later.",
-    "fr": "Échec de la recherche de mises à jour. Veuillez réessayer plus tard."
   },
   "当前云端 API": {
     "en": "Current cloud API",

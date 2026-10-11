@@ -439,14 +439,6 @@
     "en": "some hadn't been filled in automatically yet when the task stopped (this isn't a failure); ",
     "fr": "une partie n'avait pas encore été complétée automatiquement à l'arrêt de la tâche (il ne s'agit pas d'un échec) ; "
   },
-  "已自动处理": {
-    "en": "Handled automatically",
-    "fr": "Traité automatiquement"
-  },
-  "提示": {
-    "en": "Note",
-    "fr": "Remarque"
-  },
   "需人工复核": {
     "en": "Needs manual review",
     "fr": "À vérifier manuellement"
@@ -458,14 +450,6 @@
   "已保留原文并在单元格末尾追加整段译文，请人工核对分段。": {
     "en": "The source text was kept and the full translation was appended at the end of the cell. Please check the paragraph breaks manually.",
     "fr": "Le texte source a été conservé et la traduction complète a été ajoutée à la fin de la cellule. Vérifiez manuellement le découpage des paragraphes."
-  },
-  "正文段落 {0}": {
-    "en": "Body paragraph {0}",
-    "fr": "Paragraphe {0} du corps du texte"
-  },
-  "表格 {0} / 单元格 {1}": {
-    "en": "Table {0} / Cell {1}",
-    "fr": "Tableau {0} / Cellule {1}"
   },
   "未知位置": {
     "en": "Unknown location",
@@ -578,10 +562,6 @@
   "已保留原内容，未追加译文，未存入记忆库。": {
     "en": "Original content kept; no translation added and nothing saved to translation memory.",
     "fr": "Contenu d'origine conservé ; aucune traduction ajoutée ni enregistrée dans la mémoire de traduction."
-  },
-  "原文疑似夹杂错误外文": {
-    "en": "The source text appears to contain erroneous foreign-language text",
-    "fr": "Le texte source semble contenir un passage erroné dans une autre langue"
   },
   "已输出译文，但原文里混着疑似写错的外文，未存入记忆库；请对照原件确认这段原文本身是否需要更正。": {
     "en": "The translation was output, but the source text contains foreign-language text that looks wrong, so it wasn't saved to translation memory. Compare with the original to check whether the source text itself needs correcting.",
@@ -1027,10 +1007,6 @@
     "en": "This source text already has a locked entry, so the new translation wasn't saved; it has been recorded as a conflict to resolve.",
     "fr": "Ce texte source a déjà une entrée verrouillée ; la nouvelle traduction n'a pas été enregistrée et a été consignée comme conflit à résoudre."
   },
-  "原文和译文都不能为空。": {
-    "en": "Source text and translation can't be empty.",
-    "fr": "Le texte source et la traduction ne peuvent pas être vides."
-  },
   "词条不存在，可能已被删除。": {
     "en": "The entry doesn't exist; it may have been deleted.",
     "fr": "L'entrée n'existe pas ; elle a peut-être été supprimée."
@@ -1086,10 +1062,6 @@
   "[OK] 已输出：{0}（补译段落 {1}，表格单元格 {2}{3}{4}）": {
     "en": "[OK] Output: {0} (paragraphs filled in {1}, table cells {2}{3}{4})",
     "fr": "[OK] Fichier produit : {0} (paragraphes complétés {1}, cellules de tableau {2}{3}{4})"
-  },
-  "表格": {
-    "en": "Table",
-    "fr": "Tableau"
   },
   "表格单元格不符合补译候选规则。": {
     "en": "The table cell doesn't meet the fill-in criteria.",
@@ -1311,10 +1283,6 @@
     "en": "The custom language in the backup (code {0}) differs from the language with the same code on this computer. Give it a new code under “Custom code mapping” and try again.",
     "fr": "La langue personnalisée de la sauvegarde (code {0}) diffère de celle qui porte le même code sur cet ordinateur. Attribuez-lui un nouveau code dans « Correspondance des codes personnalisés », puis réessayez."
   },
-  "当前配置尚未测试。": {
-    "en": "The current configuration hasn't been tested yet.",
-    "fr": "La configuration actuelle n'a pas encore été testée."
-  },
   "自定义语言不存在。": {
     "en": "The custom language doesn't exist.",
     "fr": "La langue personnalisée n'existe pas."
@@ -1386,10 +1354,6 @@
   "少了 {0} 处": {
     "en": "{0} missing",
     "fr": "{0} {0|manquant|manquants}"
-  },
-  "同步工程场景": {
-    "en": "Engineering project coordination",
-    "fr": "Coordination de projets d'ingénierie"
   },
   "检测到 {0} 个 .doc 文件，但没法用本机 Word 转换：{1}。请取消任务，安装或授权 Microsoft Word 后重试，或明确确认兼容转换；兼容转换可能改变版式、域、图文和宏。": {
     "en": "{0} .doc {0|file was|files were} detected, but they can't be converted with Word on this computer: {1}. Cancel the task, install or authorize Microsoft Word and try again, or explicitly confirm compatibility conversion, which may change layout, fields, images and macros.",

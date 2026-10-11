@@ -56,12 +56,22 @@ def _unescape_js(value: str) -> str:
     return re.sub(r"\\(u[0-9a-fA-F]{4}|.)", repl, value, flags=re.S)
 
 
+CONFLICTS: list[str] = []
+
+
 def load_catalog() -> dict[str, dict[str, str]]:
     merged: dict[str, dict[str, str]] = {}
+    origin: dict[str, str] = {}
     for path in sorted(CATALOG_DIR.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         for key, entry in data.items():
-            merged.setdefault(key, {}).update({k: v for k, v in (entry or {}).items() if isinstance(v, str)})
+            values = {k: v for k, v in (entry or {}).items() if isinstance(v, str)}
+            # 同一句中文在两个目录文件里给了不同译文时，界面只会用后加载的那个，
+            # 另一个永远不生效、改了也没用：直接报出来，只留一处。
+            if key in merged and any(merged[key].get(loc) not in (None, values.get(loc)) for loc in values):
+                CONFLICTS.append(f"conflicting entries: {key!r} in {origin[key]} and {path.name}")
+            merged.setdefault(key, {}).update(values)
+            origin[key] = path.name
     return merged
 
 
@@ -186,6 +196,31 @@ def _call_name(call: ast.Call) -> str:
     return ""
 
 
+# 不会出现在界面上的后端中文：给模型的提示词、用来匹配报错原文的关键词、中文数字
+# 换算用的单字、输出文件名里的固定片段。
+INTERNAL_PREFIXES = ("你是", "你的任务", "你在", "请把用户", "请只回复", "上一稿", "上一轮结果", "[", "\n", "当前提示词名称", "源语言：", "铁律", "补充要求", "输入是", "只输出", "line ——", "added ——")
+INTERNAL_TEXTS = {
+    "余额", "额度", "余额不足", "额度不足", "未授权", "模型不存在", "欠费", "图像生成能力", "无法连接", "连接被拒绝",
+    "并发达到上限", "自动化权限", "未能翻译", "原文实际语言", "目录", "标题", "双语", "开启", "压缩", "高清",
+    "_翻译输出_", "{0}_翻译输出_{1}", "_原文", "中文Ag", "{0}语", "{0}文", "第{0}{1}",
+    "PDF/图片扫描完成：{}，可选 {}，跳过 {}，图片输入 {}",  # logger.info(…format())
+    # Word 停止提示是两段拼起来的，目录里收的是拼好的整句。
+    "任务已停止，已翻好的内容写进了文件，", "还有 {0} 段没翻，保留原文，可以接着翻译。",
+}
+
+
+def _is_internal_text(template: str) -> bool:
+    if template in INTERNAL_TEXTS or template.startswith(INTERNAL_PREFIXES) or "JSON" in template:
+        return True
+    if re.match(r"\d\. ", template) or template.startswith(("把每项", "{0}\n\n[")):  # 提示词里的条目
+        return True
+    if re.fullmatch(r"\d*\.?\s*[\s\S]{0,2}", template.strip()):  # 单字：条、处、节、章、零、十……
+        return True
+    if re.fullmatch(r"[{}\d零〇一二两三四五六七八九十百千万亿鿿]+", template):  # 中文数字换算
+        return True
+    return "import " in template  # 内嵌的 LibreOffice 脚本
+
+
 def collect_backend_messages() -> dict[str, str]:
     """User-visible-looking Chinese strings in the backend, template → location."""
     files = [p for d in BACKEND_DIRS for p in (ROOT / d).rglob("*.py")]
@@ -223,6 +258,8 @@ def collect_backend_messages() -> dict[str, str]:
                 (".startswith", ".endswith", ".replace", ".split", ".strip")
             ):
                 continue
+            if _is_internal_text(template):
+                continue
             found.setdefault(template, f"{path.relative_to(ROOT)}:{node.lineno}")
     return found
 
@@ -240,6 +277,7 @@ def main() -> int:
         missing = [loc for loc in LOCALES if not entry.get(loc)]
         if missing:
             problems.append(f"missing {'/'.join(missing)}: {key!r} ({where[0]})")
+    problems += CONFLICTS
     problems += check_entries(catalog)
     raw = find_raw_chinese()
     problems += [f"untranslated literal: {item}" for item in raw]

@@ -7,10 +7,6 @@
     "en": "Review failed",
     "fr": "Vérification non réussie"
   },
-  "已生成": {
-    "en": "Generated",
-    "fr": "Générée"
-  },
   "已生成（自动修正了比例）": {
     "en": "Generated (aspect ratio corrected automatically)",
     "fr": "Générée (proportions corrigées automatiquement)"
@@ -23,29 +19,13 @@
     "en": "Failed, placeholder page pending",
     "fr": "Échec, page de substitution en attente"
   },
-  "未开始": {
-    "en": "Not started",
-    "fr": "Non commencée"
-  },
   "大幅面，未翻译": {
     "en": "Oversized, not translated",
     "fr": "Grand format, non traduite"
   },
-  "通过": {
-    "en": "Passed",
-    "fr": "Réussie"
-  },
   "未通过": {
     "en": "Failed",
     "fr": "Non réussie"
-  },
-  "重试中": {
-    "en": "Retrying",
-    "fr": "Nouvel essai en cours"
-  },
-  "未审核": {
-    "en": "Not reviewed",
-    "fr": "Non vérifiée"
   },
   "未完成 PDF": {
     "en": "Unfinished PDF",
@@ -66,10 +46,6 @@
   "已完成 PDF": {
     "en": "PDF completed",
     "fr": "PDF terminé"
-  },
-  "生成失败": {
-    "en": "Generation failed",
-    "fr": "Échec de la génération"
   },
   "未完成 PDF，已保留页面素材": {
     "en": "Unfinished PDF, page assets kept",
@@ -943,10 +919,6 @@
     "en": "The model settings follow each other in a loop. Configure them separately instead.",
     "fr": "Les configurations de modèle se suivent en boucle. Configurez-les de façon indépendante."
   },
-  "模型": {
-    "en": "Model",
-    "fr": "Modèle"
-  },
   "未知连接方式。": {
     "en": "Unknown connection type.",
     "fr": "Type de connexion inconnu."
@@ -1050,10 +1022,6 @@
   "接口反馈请求过于频繁，程序已自动放慢并重试。": {
     "en": "The API reported too many requests; the app slowed down and retried automatically.",
     "fr": "L'API a signalé trop de requêtes ; l'application a ralenti et réessayé automatiquement."
-  },
-  "接口所在的服务暂时不可用，请稍后重试，或在设置里换一条连接。": {
-    "en": "The API service is temporarily unavailable. Try again later, or switch to another connection in Settings.",
-    "fr": "Le service de l'API est temporairement indisponible. Réessayez plus tard ou choisissez une autre connexion dans les paramètres."
   },
   "接口网关暂时异常，请稍后重试。": {
     "en": "The API gateway is having temporary issues. Please try again later.",
@@ -1287,10 +1255,6 @@
     "en": "The PDF & image review model settings can't be used: {0}",
     "fr": "Les paramètres du modèle de vérification PDF et images sont inutilisables : {0}"
   },
-  "PDF 与图片审核模型": {
-    "en": "PDF & image review model",
-    "fr": "Modèle de vérification PDF et images"
-  },
   "补译复核": {
     "en": "Missing-translation check",
     "fr": "Vérification des traductions manquantes"
@@ -1374,10 +1338,6 @@
   "未知错误": {
     "en": "Unknown error",
     "fr": "Erreur inconnue"
-  },
-  "记忆库清洗": {
-    "en": "Clean up memory",
-    "fr": "Nettoyer la mémoire"
   },
   "{0}响应解析失败 (无法匹配为包含 {1} 条记录的数组)，大模型原始内容：{2}": {
     "en": "Couldn't read the {0} response (it isn't an array of {1} {1|item|items}). Raw model output: {2}",

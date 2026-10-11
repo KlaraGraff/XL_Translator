@@ -176,7 +176,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
  * 结果是文件名被挤成一列竖排单字。这里改成 fixed 布局 + colgroup 定死比例，各列
  * 宽度只由 <col> 决定，不再受内容长度影响。 */
 table.review-tbl { table-layout: fixed; }
-.review-tbl td { vertical-align: top; word-break: break-word; }
+/* 英法长单词优先按音节断行（html lang 已随界面语言设置），实在放不下才在词中折断。 */
+.review-tbl td { vertical-align: top; overflow-wrap: anywhere; hyphens: auto; }
 .review-tbl .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 产物文件表：文件名单行省略（悬停看全名），状态徽章不折行——窄面板里「未生成」会被挤成两行。 */
 .files-tbl .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }

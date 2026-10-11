@@ -115,10 +115,6 @@
     "en": "Automatically filled in {0} leftover source-text {0|passage|passages} ({1})",
     "fr": "{0} {0|passage resté|passages restés} en langue source {0|a été complété|ont été complétés} automatiquement ({1})"
   },
-  "有 {0} 条译文里还留着没翻译的原文，已列入待复核。": {
-    "en": "{0} {0|translation still contains|translations still contain} untranslated source text and {0|has|have} been flagged for review.",
-    "fr": "{0} {0|traduction contient|traductions contiennent} encore du texte source non traduit et {0|a été signalée|ont été signalées} pour vérification."
-  },
   "自动编号：由{0}处理": {
     "en": "Automatic numbering: handled by {0}",
     "fr": "Numérotation automatique : prise en charge par {0}"
@@ -186,10 +182,6 @@
   "状态：正在识别每个 Word 文件的原文语言...": {
     "en": "Status: detecting the source language of each Word file...",
     "fr": "État : détection de la langue source de chaque fichier Word..."
-  },
-  "未能确定": {
-    "en": "Could not determine",
-    "fr": "Indéterminée"
   },
   "译文里有没翻译的编号": {
     "en": "The translation contains untranslated numbering",
@@ -599,14 +591,6 @@
     "en": "Choose an output folder you can write to and try again.",
     "fr": "Choisissez un dossier de sortie accessible en écriture et réessayez."
   },
-  "上次的翻译结果读不出来。": {
-    "en": "The previous translation result could not be read.",
-    "fr": "Le résultat de la traduction précédente est illisible."
-  },
-  "当前服务商无需填写 Base URL": {
-    "en": "This provider does not need a Base URL",
-    "fr": "Ce fournisseur n'a pas besoin de Base URL"
-  },
   "OpenAI 兼容": {
     "en": "OpenAI-compatible",
     "fr": "Compatible OpenAI"
@@ -626,10 +610,6 @@
   "资料管理场景": {
     "en": "Document management",
     "fr": "Gestion documentaire"
-  },
-  "行政生活化场景": {
-    "en": "Administrative & everyday",
-    "fr": "Administratif et quotidien"
   },
   "意大利语": {
     "en": "Italian",
@@ -1434,10 +1414,6 @@
   "预检请求失败：{0}": {
     "en": "Language check request failed: {0}",
     "fr": "Échec de la requête de détection de langue : {0}"
-  },
-  "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。": {
-    "en": "This file was damaged in transfer or has been modified, so nothing was imported. Please ask the sender to send it again.",
-    "fr": "Ce fichier a été endommagé pendant le transfert ou a été modifié ; rien n'a été importé. Demandez à l'expéditeur de le renvoyer."
   },
   "导出 API 密钥前，请先确认要一起导出这些敏感信息。": {
     "en": "Before exporting API keys, please confirm that you want to include this sensitive information.",
