@@ -623,8 +623,24 @@ def _looks_translated_despite_cjk(
 # 刚翻完的双语格「吨\nt」于是拆不开、整格被当成未译源文——续译核查据此判「源文件
 # 已变化」，要求整份重翻。只在跨文字体系（源文侧有汉字、目标语言不用汉字）且两侧
 # 都很短时认这种配对：同字母语言对里一个孤零零的短词说明不了任何事。
+#
+# 只认「像单位」的译文：小写的 1~3 个字母（t、h、m、kg、pcs、set、ton，可带句点）。
+# 单个大写字母、罗马数字是编号——「方案\nA」「类型\nB」「区域\nN」「等级\nⅡ」是一格
+# 原文里的两行，不是双语，认成双语会让续译把它们当已翻跳过。大写或别的写法
+# （「吨 → T」「件 → PCS」）只在汉字侧本身就是常见单位词时才认。
 _SHORT_CROSS_SCRIPT_TARGET_RE = re.compile(r"[^\W\d_]{1,3}\.?")
+_SHORT_UNIT_TARGET_RE = re.compile(r"[a-z]{1,3}\.?")
+_LOWER_ROMAN_NUMERAL_RE = re.compile(r"(?:i{1,3}|iv|vi{0,3}|ix|x{1,3})\.?")
 _SHORT_CROSS_SCRIPT_SOURCE_MAX_CHARS = 8
+_CJK_UNIT_WORDS = frozenset(
+    {
+        "吨", "千克", "公斤", "克", "米", "延米", "毫米", "厘米", "千米", "公里",
+        "平方米", "平米", "立方米", "方", "升", "个", "套", "台", "件", "项", "天",
+        "日", "小时", "分钟", "秒", "月", "年", "周", "根", "块", "张", "片", "只",
+        "组", "批", "次", "人", "工日", "箱", "包", "袋", "卷", "桶", "瓶", "对",
+        "副", "樘", "座", "处", "部", "辆", "株", "棵", "孔", "段", "条", "节",
+    }
+)
 
 
 def _looks_like_short_cross_script_target(
@@ -641,7 +657,11 @@ def _looks_like_short_cross_script_target(
         return False
     if not contains_cjk(source_candidate) or contains_cjk(target_candidate):
         return False
-    return bool(_SHORT_CROSS_SCRIPT_TARGET_RE.fullmatch(target_candidate))
+    if source_candidate.strip() in _CJK_UNIT_WORDS:
+        return bool(_SHORT_CROSS_SCRIPT_TARGET_RE.fullmatch(target_candidate))
+    if _LOWER_ROMAN_NUMERAL_RE.fullmatch(target_candidate):
+        return False
+    return bool(_SHORT_UNIT_TARGET_RE.fullmatch(target_candidate))
 
 
 def split_existing_bilingual_text(

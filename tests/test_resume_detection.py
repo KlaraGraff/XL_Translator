@@ -495,6 +495,20 @@ def test_short_cross_script_split_does_not_apply_to_same_alphabet_or_long_source
     ) is None
     # 同字母语言对里孤零零的短词说明不了任何事。
     assert split_existing_bilingual_text("Ton\nt", source_lang="en", target_lang="de") is None
+    # 小写单位样的译文照认；大写只在汉字侧是单位词时认。
+    assert split_existing_bilingual_text("数量\npcs", source_lang="zh", target_lang="en") == ("数量", "pcs")
+    assert split_existing_bilingual_text("件\nPCS", source_lang="zh", target_lang="en") == ("件", "PCS")
+
+
+def test_short_cross_script_split_ignores_letter_and_numeral_labels():
+    """单个大写字母、罗马数字是编号：「方案\nA」是一格原文的两行，不是双语。
+
+    回归：放宽短译文配对后这几种格子被当成已翻，续译时直接跳过。
+    """
+    from core.translation_coverage import split_existing_bilingual_text
+
+    for text in ("方案\nA", "类型\nB", "区域\nN", "等级\nⅡ"):
+        assert split_existing_bilingual_text(text, source_lang="zh", target_lang="en") is None, text
 
 
 def test_excel_new_row_reusing_existing_text_is_diverged(tmp_path):
