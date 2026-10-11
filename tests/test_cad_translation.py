@@ -78,6 +78,45 @@ def test_pipeline_uses_memory_then_glossary_then_ai_and_writes_dwg(tmp_path):
     assert progress[-1].stage == "verify" and progress[-1].percent == 100
 
 
+def test_translate_stage_reports_progress_per_batch(tmp_path):
+    """本机实测：真实 DWG 翻译时进度停在一处一分多钟，然后一下跳过去。
+
+    翻译器接受 ``progress`` 时，每完成一批都要推进「AI 翻译」阶段（25%→70%）。
+    """
+    source = tmp_path / "batches.dxf"
+    source.write_text(
+        _dxf(*[pair for word in ("Alpha", "Bravo", "Charlie", "Delta") for pair in ((0, "TEXT"), (1, word))]),
+        encoding="utf-8",
+    )
+    progress: list[CadProgress] = []
+    seen_during_translation: list[float] = []
+
+    def translate(texts, glossary, progress=None):
+        for done in range(1, 3):
+            progress(done, 2)
+            seen_during_translation.append(progresses[-1].percent)
+        return {text: f"{text}译" for text in texts}
+
+    progresses = progress
+    CadTranslationPipeline(converter=None, translator=translate, progress=progress.append).translate_file(
+        source, tmp_path / "batches_zh.dxf", options=CadPipelineOptions(target_lang="zh", source_lang="auto")
+    )
+
+    assert seen_during_translation == [47.5, 70.0]
+    translate_percents = [item.percent for item in progress if item.stage == "translate"]
+    assert translate_percents == sorted(translate_percents)
+    assert translate_percents[0] == 25.0
+
+
+def test_two_argument_translator_still_works(tmp_path):
+    source = tmp_path / "old.dxf"
+    source.write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
+    result = CadTranslationPipeline(converter=None, translator=lambda texts, glossary: {"Door": "门"}).translate_file(
+        source, tmp_path / "old_zh.dxf"
+    )
+    assert result.stats.ai_translated == 1
+
+
 def test_target_language_skip_and_replacement_scan(tmp_path):
     source = tmp_path / "mixed.dxf"
     source.write_text(_dxf((0, "TEXT"), (1, "中文"), (0, "TEXT"), (1, "Bad")), encoding="utf-8")
