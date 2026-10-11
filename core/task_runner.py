@@ -30,7 +30,7 @@ from core.output_name_translation import (
     output_stem_from_translation,
     translate_names,
 )
-from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
 from core.coverage_arbitration import RETRANSLATE_MODEL
@@ -1552,8 +1552,9 @@ class TaskRunner:
                         return _run_normal_api_translation()
                     except ApiKeyTemporarilyUnavailableError as exc:
                         partial = getattr(exc, "partial_results", None) or {}
-                        if not partial:
-                            # 一条都没翻到：写出去也只是原文副本，照旧整批失败。
+                        if not partial or isinstance(exc, ApiCredentialRejectedError):
+                            # 一条都没翻到：写出去也只是原文副本，照旧整批失败。Key 被拒
+                            # 也一样整批失败，那不是等一等就会好的事。
                             keep_paid_results(exc)
                             raise
                         rate_limited.append(exc)
@@ -1613,6 +1614,8 @@ class TaskRunner:
                     try:
                         return _run_mixed_api_translation()
                     except ApiKeyTemporarilyUnavailableError as exc:
+                        if isinstance(exc, ApiCredentialRejectedError):
+                            raise
                         rate_limited.append(exc)
                         self._log("WARN", "接口持续限流，混合语言内容这次没能翻译，已保留原文。")
                         return {}

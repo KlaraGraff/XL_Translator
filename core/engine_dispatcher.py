@@ -30,6 +30,7 @@ from core.api_scheduler import (
 )
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
+    credential_rejection,
     handle_api_concurrency_limit,
     is_api_concurrency_limit_error,
 )
@@ -805,6 +806,10 @@ def _translate_batch_with_fallback(
                     split_depth=split_depth,
                     concurrency_round=concurrency_round + 1,
                 )
+        rejected = credential_rejection(exc)
+        if rejected is not None:
+            # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
+            raise rejected from exc
         if _is_permanent_request_error(exc):
             message = f"Excel 翻译请求不可重试，已停止拆分批次：{exc}"
             logger.error(message)
@@ -955,6 +960,10 @@ def _translate_batch_with_sources_fallback(
         # Splitting a batch cannot fix a rejected key or a missing model, and
         # the sources variant used to keep bisecting anyway — mirror the plain
         # path so a permanent failure costs one request, not fifteen.
+        rejected = credential_rejection(exc)
+        if rejected is not None:
+            # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
+            raise rejected from exc
         if _is_permanent_request_error(exc):
             message = f"Excel 语言回报请求不可重试，已停止拆分批次：{exc}"
             logger.error(message)

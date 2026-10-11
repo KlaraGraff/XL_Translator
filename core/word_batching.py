@@ -14,6 +14,7 @@ from loguru import logger
 
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
+    credential_rejection,
     handle_api_concurrency_limit,
     is_local_descriptor_limit_error,
 )
@@ -385,6 +386,10 @@ def _translate_units_with_fallback(
             return {}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        rejected = credential_rejection(exc)
+        if rejected is not None:
+            # Key 被拒时拆小批次重试只会把同一个 401 再收十几遍。
+            raise rejected from exc
         # Local descriptor exhaustion can include HTTP sockets and other open
         # resources. Splitting the text would start even more requests.
         if (

@@ -28,6 +28,58 @@ class ApiKeyTemporarilyUnavailableError(RuntimeError):
     """Raised when an API key remains concurrency-limited at the minimum cap."""
 
 
+class ApiCredentialRejectedError(ApiKeyTemporarilyUnavailableError):
+    """The provider refused the key or account itself (401/403, bad key, no quota).
+
+    Subclassing the rate-limit error is deliberate: every batch loop already
+    stops submitting and every runner already turns that error into a failed
+    task.  A wrong key used to be treated like any other bad batch instead: each
+    batch fell back to its source text, the file was written full of source
+    text, and the task finished as "完成但有问题 · N 处需复核", with the actual
+    cause buried in the issue list.
+    """
+
+
+_CREDENTIAL_STATUS = {401, 402, 403}
+_CREDENTIAL_MARKERS = (
+    "invalid api key",
+    "incorrect api key",
+    "invalid_api_key",
+    "unauthorized",
+    "insufficient_quota",
+    "billing hard limit",
+    "余额不足",
+    "额度不足",
+    "未授权",
+)
+
+
+def credential_rejection(exc: BaseException) -> ApiCredentialRejectedError | None:
+    """Return a task-fatal error when ``exc`` says the key/account was refused."""
+    if isinstance(exc, ApiCredentialRejectedError):
+        return exc
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        status = int(status_code)
+    except (TypeError, ValueError):
+        status = 0
+    message = str(exc or "")
+    lowered = message.casefold()
+    if status not in _CREDENTIAL_STATUS:
+        status = next((code for code in _CREDENTIAL_STATUS if f"'{code} " in message or f" {code} " in message), 0)
+    if not status and not any(marker in lowered for marker in _CREDENTIAL_MARKERS):
+        return None
+    if status == 402 or "quota" in lowered or "billing" in lowered or "余额" in message or "额度" in message:
+        reason = "接口提示账户余额或额度不足"
+    else:
+        reason = f"接口拒绝了这条连接的 API Key（HTTP {status or 401}），Key 可能填错、已失效或没有这个模型的权限"
+    return ApiCredentialRejectedError(
+        f"{reason}。任务已停止，没有写出只有原文的文件。请到「设置 → 模型服务」检查这条连接后重新开始。"
+    )
+
+
 # A rate-limited key that has already been walked down to the minimum cap is
 # the normal state for a busy account, not a dead one.  Failing the whole task
 # on the next 429 threw away every request already paid for, so the run now

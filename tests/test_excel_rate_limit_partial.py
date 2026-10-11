@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
 from core.file_scanner import FileItem
 from core.task_runner import ErrorMsg, TaskRunner
 from tests.test_excel_resume import _make_xlsx, _pipeline_patches, _run_and_get_done, _settings
@@ -22,6 +22,13 @@ def _rate_limited_after_first(texts, *args, **kwargs):
 
 def _rate_limited_without_results(texts, *args, **kwargs):
     raise ApiKeyTemporarilyUnavailableError("接口持续限流")
+
+
+def _key_rejected_after_first(texts, *args, **kwargs):
+    exc = ApiCredentialRejectedError("接口拒绝了这条连接的 API Key（HTTP 401）")
+    if texts:
+        exc.partial_results = {texts[0]: f"T:{texts[0]}"}
+    raise exc
 
 
 class RateLimitPartialTests(unittest.TestCase):
@@ -59,6 +66,21 @@ class RateLimitPartialTests(unittest.TestCase):
                 runner._run()
             errors = [m for m in list(runner._queue.queue) if isinstance(m, ErrorMsg)]
             self.assertEqual(len(errors), 1)
+
+    def test_rejected_key_fails_the_task_even_with_partial_results(self) -> None:
+        # Key 被拒不是等一等就会好的事：不写只有部分原文的文件，直接失败并说清原因。
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "proj"
+            source = _make_xlsx(proj / "a.xlsx", {"A1": "你好", "A2": "再见"})
+            with _pipeline_patches(translate_side_effect=_key_rejected_after_first):
+                runner = TaskRunner(
+                    [FileItem(path=source, name="a", size_kb=1.0)], _settings(), source_root=proj
+                )
+                runner._run()
+            errors = [m for m in list(runner._queue.queue) if isinstance(m, ErrorMsg)]
+            self.assertEqual(len(errors), 1)
+            self.assertIn("API Key", errors[0].message)
+            self.assertFalse(list(proj.rglob("*_双语.xlsx")))
 
 
 if __name__ == "__main__":
