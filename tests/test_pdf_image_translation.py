@@ -932,6 +932,37 @@ class PdfImageTranslationTests(unittest.TestCase):
         self.assertEqual(kpi["generated_page_count"], 0)
         self.assertNotIn("unstarted_page_count", kpi)
 
+    def test_file_result_carries_review_enabled_and_image_failure_is_not_a_placeholder(self) -> None:
+        # 界面靠这两条契约说话：
+        # - file_results[].review_enabled：没开逐页审核时完成横幅只能说「已生成」，不能说
+        #   「全部通过」（workspace.ts finishTask 的 pdfUnreviewed）。
+        # - 图片失败不放占位页，placeholder_page_count 只数 PDF 页：任务中心的「失败页
+        #   （已放占位）」因此不含图片，逐页面板的失败横幅按「N 页、M 张图片」分开数才对得上。
+        image = PdfFileRecord(
+            name="photo",
+            source_path="/src/photo.png",
+            relative_path="photo.png",
+            source_type=SOURCE_TYPE_IMAGE,
+            page_count=1,
+            status=PDF_OUTPUT_STATE_FAILED,
+            pages=[
+                PdfPageRecord(
+                    page_number=1,
+                    source_image_path="/s/page_001.png",
+                    translated_image_path="",
+                    status=PDF_OUTPUT_STATE_FAILED,
+                ),
+            ],
+        )
+        result = _file_record_to_result(image)
+        self.assertIn("review_enabled", result)
+        self.assertFalse(result["review_enabled"])
+        self.assertFalse(result["success"])
+        self.assertEqual(result["placeholder_page_count"], 0)
+
+        image.review_enabled = True
+        self.assertTrue(_file_record_to_result(image)["review_enabled"])
+
     def test_pending_placeholder_pages_are_not_counted_as_generated(self) -> None:
         # placeholder_pending 的页带着一个「page_00N_failed.png」路径，那是占位图**将要**
         # 写到的位置；中止时那一步根本没跑，文件并不存在。把它算成已完成，报告就会写

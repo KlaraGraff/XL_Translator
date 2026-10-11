@@ -3751,12 +3751,19 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const totalPages = producedFileResultTotal(result, "page_count");
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
+  // PDF 没开逐页审核时谁也没判过「通过」：逐文件的 review_enabled 一个都不为真（旧记录
+  // 没有这个键，也按没开算——说「已生成」不会错，说「通过」可能是错的）。
+  const pdfUnreviewed = surface === "pdf"
+    && !fileResults.some((entry) => record(entry).review_enabled === true);
   if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0) {
+    const hasOther = review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0;
     clauses.push(
-      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
-        ? "其余全部通过"
-        // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
-        : task.state === "stopped" ? "已生成的全部通过" : "全部通过",
+      pdfUnreviewed
+        ? hasOther ? "其余页面已生成" : task.state === "stopped" ? "已跑到的页面都已生成" : "全部页面已生成"
+        : hasOther
+          ? "其余全部通过"
+          // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
+          : task.state === "stopped" ? "已生成的全部通过" : "全部通过",
     );
   }
   if (generated > 0) clauses.push(`输出至 ${outputPath}`);
