@@ -113,10 +113,12 @@ from core.engine_dispatcher import build_role_engine
 from core.language_registry import get_target_lang_display
 from core.model_throughput import (
     batch_size_bounds,
+    carry_over_throughput_profiles,
     concurrency_bounds,
     get_model_throughput,
     reset_model_throughput,
     set_model_throughput,
+    throughput_profile_keys,
 )
 from core.pdf_image_translation import scan_pdf_sources
 from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
@@ -1680,6 +1682,7 @@ def create_app(
         if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
             raise HTTPException(404, "Unknown model role.")
         before_signatures = _effective_role_signatures(settings)
+        before_throughput_keys = throughput_profile_keys(settings)
         changed = False
         # 用户在面板上现选的跟随组合按严格规则判：读旧配置时不合法的跟随会静默降级为
         # 独立配置，那是为了让老设置文件还能打开；这里再降级就成了「存了别的、还不吭声」。
@@ -1717,6 +1720,7 @@ def create_app(
             for candidate_role, effective in after_configs.items():
                 if before_signatures.get(candidate_role) != model_config_signature(effective):
                     reset_model_role_availability(settings, candidate_role)
+            carry_over_throughput_profiles(settings, before_throughput_keys)
         save_settings(settings)
         # Re-read: the pool is only re-synced when settings are constructed, so
         # the in-memory object still carries the pre-edit connection list.
@@ -1787,6 +1791,7 @@ def create_app(
         _role_or_404(role)
         settings = load_settings()
         requested_mode = _requested_connection_mode(payload)
+        before_throughput_keys = throughput_profile_keys(settings)
         try:
             connection = update_role_connection(
                 settings,
@@ -1812,6 +1817,7 @@ def create_app(
                 connection_id,
                 message="API Key 已变化，请重新测试当前配置。",
             )
+        carry_over_throughput_profiles(settings, before_throughput_keys)
         save_settings(settings)
         if payload.api_key:
             save_connection_key(connection_id, payload.api_key)
@@ -1821,11 +1827,15 @@ def create_app(
     def drop_role_connection(role: str, connection_id: str) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        before_throughput_keys = throughput_profile_keys(settings)
         try:
             remove_role_connection(settings, role, connection_id)
             validate_all_model_roles(settings)
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
+        # A follower of this role's primary now resolves to the next entry's
+        # endpoint; keep its tuning instead of dropping it to the recommendation.
+        carry_over_throughput_profiles(settings, before_throughput_keys)
         save_settings(settings)
         delete_connection_key(connection_id)
         return _model_role_payload(load_settings(), role)
@@ -1837,11 +1847,13 @@ def create_app(
     ) -> dict[str, Any]:
         _role_or_404(role)
         settings = load_settings()
+        before_throughput_keys = throughput_profile_keys(settings)
         try:
             reorder_role_connections(settings, role, list(payload.ordered_ids))
             validate_all_model_roles(settings)
         except ModelRoleConfigError as exc:
             raise HTTPException(422, str(exc)) from exc
+        carry_over_throughput_profiles(settings, before_throughput_keys)
         save_settings(settings)
         return _model_role_payload(load_settings(), role)
 
@@ -1952,10 +1964,12 @@ def create_app(
         )
         return _json_safe(result)
 
+    # 速率按连接取：面板上选中第二条连接时调的是那条连接自己的速率。不带
+    # connection_id 时仍是主用连接，旧调用方不受影响。
     @app.get("/api/models/throughput/{role}")
-    def get_throughput(role: str) -> dict[str, Any]:
+    def get_throughput(role: str, connection_id: str = "") -> dict[str, Any]:
         settings = load_settings()
-        config = _model_config_or_422(settings, role)
+        config = _model_config_or_422(settings, role, connection_id)
         throughput = get_model_throughput(settings, config)
         return {
             "profile_key": throughput.profile_key,
@@ -1976,9 +1990,9 @@ def create_app(
         return {"unlocked": True}
 
     @app.put("/api/models/throughput/{role}")
-    def put_throughput(role: str, payload: ThroughputPayload) -> dict[str, Any]:
+    def put_throughput(role: str, payload: ThroughputPayload, connection_id: str = "") -> dict[str, Any]:
         settings = load_settings()
-        config = _model_config_or_422(settings, role)
+        config = _model_config_or_422(settings, role, connection_id)
         try:
             throughput = set_model_throughput(settings, config, batch_size=payload.batch_size, concurrency=payload.concurrency)
         except ValueError as exc:
@@ -1988,13 +2002,15 @@ def create_app(
             "profile_key": throughput.profile_key,
             "batch_size": throughput.batch_size,
             "concurrency": throughput.concurrency,
+            "batch_size_bounds": None if settings.engine.concurrency_unlocked else batch_size_bounds(config),
+            "concurrency_bounds": None if settings.engine.concurrency_unlocked else concurrency_bounds(config),
         }
 
     @app.delete("/api/models/throughput/{role}")
-    def reset_throughput(role: str) -> dict[str, Any]:
+    def reset_throughput(role: str, connection_id: str = "") -> dict[str, Any]:
         """Restore one role/model's recommended throughput profile."""
         settings = load_settings()
-        config = _model_config_or_422(settings, role)
+        config = _model_config_or_422(settings, role, connection_id)
         throughput = reset_model_throughput(settings, config)
         save_settings(settings)
         return {
@@ -2426,6 +2442,7 @@ def _connection_payload(
     index: int,
     config: EffectiveModelConfig,
     role: str,
+    settings: AppSettings,
 ) -> dict[str, Any]:
     """Describe one pool connection, including a masked hint of its saved key."""
     # 必须和拨号时的取值顺序一致（core/model_roles.py::_connection_api_key）：连接
@@ -2461,6 +2478,25 @@ def _connection_payload(
         "has_api_key": bool(api_key),
         "api_key_preview": mask_api_key(api_key),
         "primary": index == 0,
+        # 每条连接自己的速率。面板的「速率设置」挂在连接详情下，以前却永远读写主用
+        # 连接的那份：选中第二条连接改并发，改的其实是主用连接。
+        **_throughput_payload(settings, config),
+    }
+
+
+def _throughput_payload(settings: AppSettings, config: EffectiveModelConfig) -> dict[str, Any]:
+    throughput = get_model_throughput(settings, config)
+    unlocked = settings.engine.concurrency_unlocked
+    return {
+        "throughput": {
+            "profile_key": throughput.profile_key,
+            "batch_size": throughput.batch_size,
+            "concurrency": throughput.concurrency,
+        },
+        "throughput_bounds": {
+            "batch_size": None if unlocked else batch_size_bounds(config),
+            "concurrency": None if unlocked else concurrency_bounds(config),
+        },
     }
 
 
@@ -2486,7 +2522,7 @@ def _model_role_payload(settings: AppSettings, role: str) -> dict[str, Any]:
         "connections": [
             _connection_payload(
                 connection, index,
-                _model_config_or_422(settings, role, connection.id), role,
+                _model_config_or_422(settings, role, connection.id), role, settings,
             )
             for index, connection in enumerate(
                 list_role_connections(settings, role)

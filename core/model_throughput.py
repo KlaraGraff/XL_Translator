@@ -21,10 +21,14 @@ from config import (
 )
 from core.model_roles import (
     EffectiveModelConfig,
+    MODEL_ROLE_LABELS,
+    ModelRoleConfigError,
     ROLE_CLEANER,
     ROLE_IMAGE,
     ROLE_PDF_REVIEW,
     ROLE_TRANSLATION,
+    list_role_connections,
+    resolve_effective_model_config,
 )
 from settings import AppSettings, ModelThroughputSettings
 
@@ -228,3 +232,68 @@ def reset_model_throughput(
     """
     settings.model_throughput_profiles.pop(model_throughput_key(config), None)
     return get_model_throughput(settings, config)
+
+
+# ---------------------------------------------------------------------------
+# Carrying a profile across an edit
+# ---------------------------------------------------------------------------
+#
+# A profile is keyed by the full effective endpoint, model name included.  So
+# picking another model in the panel lands on a key nobody has tuned yet and
+# the concurrency silently falls back to the recommendation — for an unlocked
+# user who had typed 60, that reads as "it got clamped back to 20 again".
+# Saving a connection therefore hands its current tuning to the new key, unless
+# the new key already has its own saved profile (per-model memory still wins).
+# A mode change (cloud ↔ local) is not carried: the two have different ranges
+# and recommendations, and a cloud figure is meaningless for a local runner.
+
+ThroughputIdentity = tuple[str, str]  # (role, connection id)
+
+
+def throughput_profile_keys(settings: AppSettings) -> dict[ThroughputIdentity, tuple[str, str]]:
+    """Map every pool entry of every role to its (profile key, effective mode)."""
+    keys: dict[ThroughputIdentity, tuple[str, str]] = {}
+    for role in MODEL_ROLE_LABELS:
+        try:
+            connections = list_role_connections(settings, role)
+        except ModelRoleConfigError:
+            continue
+        for connection in connections:
+            try:
+                config = resolve_effective_model_config(settings, role, connection_id=connection.id)
+            except Exception:
+                # A half-edited or illegal entry has no usable key; the edit
+                # route reports that itself, carrying is best-effort.
+                continue
+            keys[(role, connection.id)] = (model_throughput_key(config), str(config.mode or ""))
+    return keys
+
+
+def carry_over_throughput_profiles(
+    settings: AppSettings,
+    before: dict[ThroughputIdentity, tuple[str, str]],
+) -> list[str]:
+    """Copy tuned profiles onto the keys an edit moved entries to.
+
+    ``before`` is :func:`throughput_profile_keys` taken ahead of the edit.
+    Returns the new keys that received a copy.
+    """
+    profiles = settings.model_throughput_profiles
+    copied: list[str] = []
+    for identity, (new_key, new_mode) in throughput_profile_keys(settings).items():
+        old = before.get(identity)
+        if old is None:
+            continue
+        old_key, old_mode = old
+        if old_key == new_key or old_mode != new_mode:
+            continue
+        if new_key in profiles or old_key not in profiles:
+            continue
+        source = profiles[old_key]
+        raw = source.model_dump() if isinstance(source, ModelThroughputSettings) else dict(source or {})
+        try:
+            profiles[new_key] = ModelThroughputSettings.model_validate(raw)
+        except Exception:
+            continue
+        copied.append(new_key)
+    return copied

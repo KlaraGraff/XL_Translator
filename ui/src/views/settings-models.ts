@@ -54,7 +54,6 @@ import {
   modelImportPreview,
   modelRole,
   modelRoles,
-  modelThroughput,
   mountToken,
   num,
   numberField,
@@ -211,34 +210,7 @@ export function renderModelsPage(host: HTMLElement): void {
   host.append(spreadCard);
 
   // 角色切换（4 张卡）
-  const seg = document.createElement("div");
-  seg.className = "seg";
-  for (const role of MODEL_ROLE_ORDER) {
-    const payload = record(modelRoles[role]);
-    const segc = document.createElement("div");
-    segc.className = role === modelRole ? "segc on" : "segc";
-    const b = document.createElement("b");
-    b.textContent = MODEL_ROLE_LABELS[role] || role;
-    const primary = roleConnections(role)[0];
-    const primarySource = primary?.source_role || text(payload.source_role, "independent");
-    const modeSummary = primary?.connection_mode === "follow"
-      ? `跟随${MODEL_ROLE_LABELS[primarySource] || primarySource}`
-      : primary?.model || text(payload.model) || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
-    const span = document.createElement("span");
-    span.textContent = modeSummary || "未配置";
-    segc.append(b, span);
-    segc.addEventListener("click", () => {
-      if (modelRole === role) return;
-      const draft = snapshotModelFormDraft();
-      if (draft) modelFormDrafts[modelRole] = draft;
-      setModelRole(role);
-      setModelPillSettingsRole(modelRole);
-      renderBody();
-      const roleDraft = modelFormDrafts[role];
-      if (roleDraft) restoreModelFormDraft(roleDraft);
-    });
-    seg.append(segc);
-  }
+  let seg = buildRoleSeg();
   host.append(seg);
 
   const role = modelRole;
@@ -286,78 +258,13 @@ export function renderModelsPage(host: HTMLElement): void {
       ? (selected?.connection_mode === "cloud" ? selected.model : selected?.own_cloud_model || (selected ? "" : model))
       : (selected?.own_local_model || (selected?.connection_mode === "local" ? selected.own_model : "") || "");
 
-  // 连接方式草稿只属于当前选中的连接；选中另一行时立即丢弃。
-  const accessDirty = modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
+  // 连接方式草稿只属于当前选中的连接；选中另一行时立即丢弃。失焦自动保存会把草稿
+  // 一并交上去，所以它在这一页存活期间会变：要用的地方都现算，不在渲染时算死。
+  const accessDirty = () => modelAccessDraft[role] !== undefined && modelAccessDraft[role] !== savedAccessMode(role);
 
   // ---- 连接列表卡 ----
-  {
-    const connections = roleConnections(role);
-    const addBtn = createButton({
-      label: "新增连接", size: "mini", icon: "plus",
-      onClick: () => void reRenderAfter(async () => {
-        const payload = await client.request<JsonObject>(
-          `/api/models/roles/${encodeURIComponent(role)}/connections`,
-          { method: "POST", body: JSON.stringify({ label: "", connection_mode: "cloud", base_url: "" }) },
-        );
-        modelRoles[role] = payload;
-        const added = Array.isArray(payload.connections) ? payload.connections : [];
-        if (added.length) selectedConnection[role] = text(record(added[added.length - 1]).id);
-        showToast({ message: "已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。" });
-      }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
-    });
-    const listCard = createCard([tcHead("连接列表", [addBtn])]);
-    if (!connections.length) {
-      listCard.append(createEmptyState({ title: "还没有连接", description: "点右上角“新增连接”开始配置。", icon: "gear" }));
-    } else {
-      for (const [index, connection] of connections.entries()) {
-        const tone = connection.availability_status === "available"
-          ? "ok" : connection.availability_status === "unavailable" ? "warn" : "mute";
-        const dot = document.createElement("span");
-        dot.className = "cdot";
-        dot.style.background = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--danger)" : "var(--ink-3)";
-        const name = document.createElement("span");
-        name.style.flex = "1";
-        name.style.fontWeight = "600";
-        name.textContent = connection.display_label || `连接 ${index + 1}`;
-        const chips: HTMLElement[] = [];
-        if (index === 0) chips.push(createChip({ label: "主用", tone: "tint" }));
-        if (connection.connection_mode === "follow") chips.push(createChip({ label: `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`, tone: "tint" }));
-        if (connection.connection_mode === "local") chips.push(createChip({ label: "本地", tone: "mute" }));
-        if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
-          chips.push(createChip({ label: "无密钥", tone: "warn" }));
-        }
-        const actions = document.createElement("span");
-        actions.style.display = "flex";
-        actions.style.gap = "6px";
-        actions.append(createButton({
-          label: "测试", size: "mini",
-          onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
-        }));
-        if (index > 0) {
-          actions.append(createButton({
-            label: "设为主用", size: "mini",
-            onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
-          }));
-        }
-        if (connections.length > 1) {
-          actions.append(createButton({
-            label: "删除", size: "mini", variant: "danger",
-            onClick: (e) => { e.stopPropagation(); confirmDeleteConnection(role, connection); },
-          }));
-        }
-        const row = connRow([dot, name, ...chips, actions], {
-          selected: Boolean(selected && selected.id === connection.id),
-          onClick: () => {
-            selectedConnection[role] = connection.id;
-            delete modelAccessDraft[role];
-            renderBody();
-          },
-        });
-        listCard.append(row);
-      }
-    }
-    host.append(listCard);
-  }
+  let listCard = buildConnectionListCard(role);
+  host.append(listCard);
 
   // ---- 连接详情卡 ----
   const detailCard = createCard([]);
@@ -391,7 +298,8 @@ export function renderModelsPage(host: HTMLElement): void {
     radioRow.append(label);
   }
   accessBar.append(radioRow);
-  if (accessDirty) accessBar.append(createChip({ label: "未保存", tone: "warn" }));
+  const accessDirtyChip = createChip({ label: "未保存", tone: "warn" });
+  if (accessDirty()) accessBar.append(accessDirtyChip);
   detailBody.append(accessBar);
 
   const grid = document.createElement("div");
@@ -463,12 +371,20 @@ export function renderModelsPage(host: HTMLElement): void {
   const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "右侧箭头可以展开候选；列表里没有的模型也可以手动填写。" });
   modelNameField.input.id = "settings-model-name";
   const catalogConnection = modelCatalogConnectionForRole(role);
-  const catalogMatches = modelCatalogConnection[role] === catalogConnection;
-  const catalog = catalogMatches ? modelCatalog[role] || [] : [];
+  const renderedBaseUrl = baseUrlField.input.value;
+  // 模型列表属于「服务商 + Base URL」这个端点，和模型名无关：换个模型名不该把刚获取的
+  // 列表清掉（以前每次保存都会清，于是从列表里选了一个模型之后，箭头里就只剩一个
+  // 「服务商推荐型号」，想换回别的只能再获取一遍）。反过来，表单里换了服务商或地址，
+  // 列表就不再属于它，候选必须立刻消失，不能等重画——以前换到 B 家后箭头里列的
+  // 还是 A 家的模型。
+  const catalogStillMatches = () => modelCatalogConnection[role] === catalogConnection
+    && providerSelectEl.value === formProvider
+    && baseUrlField.input.value === renderedBaseUrl;
+  const currentCatalog = () => (catalogStillMatches() ? modelCatalog[role] || [] : []);
   // 原来挂的是原生 <datalist>：候选只在输入框获得焦点且内容匹配时才冒出来，长得像一
   // 条灰色系统条，跟这一页其余的下拉完全不是一套东西，用户也找不到「怎么把它调出来」。
   // 改成输入框右侧一个箭头按钮，点开走 openMenu，和「浏览」那类锚定菜单同一套外观。
-  attachModelNameDropdown(modelNameField.input, catalog, () => providerSelectEl.value);
+  attachModelNameDropdown(modelNameField.input, currentCatalog, () => providerSelectEl.value);
   // 服务商和模型名称并排；Base URL 长，独占一行摆在它们下面。三者都要等 modelNameField
   // 建好之后再挂进 DOM，因为 onProviderChange 的闭包引用它。
   grid.append(modelNameField.root);
@@ -505,12 +421,7 @@ export function renderModelsPage(host: HTMLElement): void {
     keyInput.autocomplete = "off";
     // 已保存的密钥直接以掩码当占位符摆在框里，不再在下面挂一行注释：注释和输入框
     // 中间隔着一段空白，「已保存」和「这个框是空的」看上去像在说两件互相矛盾的事。
-    // 跟随行的 has_api_key 来自来源连接。草稿刚从跟随切到云端时，不能把来源的
-    // 掩码冒充为当前行已存的独立密钥。
-    keyInput.placeholder = following
-      ? "跟随时使用来源连接的密钥"
-      : selected?.connection_mode === "cloud" && selected.has_api_key
-        ? `${preview || "••••••"}（已保存 · 留空则不改）` : "粘贴该连接的 API 密钥";
+    keyInput.placeholder = apiKeyPlaceholder(selected, following, preview);
     keyInput.disabled = following;
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
@@ -518,9 +429,16 @@ export function renderModelsPage(host: HTMLElement): void {
     detailBody.append(keyField);
   }
 
-  // 吞吐设置
-  const throughput = record(modelThroughput[role] || rolePayload.throughput);
-  const bounds = record(rolePayload.throughput_bounds);
+  // 速率设置。读写的是**当前选中那条连接**自己的速率（后端按连接 + 模型分档记忆）。
+  // 以前这里读的是角色级 throughput，也就是主用连接那一份：选中第二条连接改并发，
+  // 改的其实是主用连接，第二条连接自己的速率在界面上根本看不到。
+  const connectionThroughput = (connection: PoolConnection | null) => ({
+    values: record(connection?.throughput ?? rolePayload.throughput),
+    bounds: record(connection?.throughput_bounds ?? rolePayload.throughput_bounds),
+  });
+  const initialThroughput = connectionThroughput(selected);
+  const throughput = initialThroughput.values;
+  const bounds = initialThroughput.bounds;
   const batchBounds = Array.isArray(bounds.batch_size) ? (bounds.batch_size as unknown[]) : [];
   const concurrencyBounds = Array.isArray(bounds.concurrency) ? (bounds.concurrency as unknown[]) : [];
   const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
@@ -551,8 +469,12 @@ export function renderModelsPage(host: HTMLElement): void {
       concurrencyInput.type = "text";
       void (async () => {
         try {
-          await client.request("/api/models/throughput/unlock", {
-            method: "POST", body: JSON.stringify({ code: "OA" }),
+          // 解锁前先把排队中的失焦保存跑完：解锁后的重画读的是服务端状态，
+          // 还在飞的那笔保存落盘晚于重画，界面就会停在旧值上。
+          await queueModelFormSave(async () => {
+            await client.request("/api/models/throughput/unlock", {
+              method: "POST", body: JSON.stringify({ code: "OA" }),
+            });
           });
           await refreshSettings();
           renderBody();
@@ -573,68 +495,106 @@ export function renderModelsPage(host: HTMLElement): void {
   throughputNote.style.margin = "0";
   throughputNote.style.fontSize = "12px";
   throughputNote.style.color = "var(--ink-3)";
-  throughputNote.textContent = "改动即时保存，运行中的任务不受影响。";
   // 摆在两个输入框**下面**，和「并发提醒」里 spreadNote 相对开关的位置是同一套：
   // 夹在小标题和输入框中间会把这一组撑开，看着像是两块无关的东西。
   detailBody.append(throughputGrid);
   detailBody.append(throughputNote);
+  const resetThroughputButton = createButton({ label: "恢复推荐值", size: "mini", onClick: () => void reRenderAfter(async () => {
+    await client.request<JsonObject>(
+      `/api/models/throughput/${encodeURIComponent(role)}${connectionQuery(activeConnection(role))}`,
+      { method: "DELETE" },
+    );
+    await refreshModelRoles();
+    showToast({ message: "已恢复推荐吞吐值。运行中的任务不受影响。" });
+  }) });
   detailBody.append(fieldRow([
     // 「恢复推荐值」留着：它是重置动作（DELETE 路由），失焦语义表达不了「把我存的那份
     // 丢掉、退回推荐值」。它照旧走 reRenderAfter 重画——重置本来就要把两个框的值整个换掉。
-    createButton({ label: "恢复推荐值", size: "mini", onClick: () => void reRenderAfter(async () => {
-      modelThroughput[role] = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, { method: "DELETE" });
-      showToast({ message: "已恢复推荐吞吐值。运行中的任务不受影响。" });
-    }) }),
+    resetThroughputButton,
   ]));
+  // 速率的上限、说明和可编辑状态都跟着「这条连接现在存的是什么」走。保存了别的字段
+  // （换模型、切本地）之后要重算一次，见下面的 syncAfterSave。
+  const paintThroughput = (connection: PoolConnection | null) => {
+    const { values, bounds: nextBounds } = connectionThroughput(connection);
+    const concurrencyMax = Array.isArray(nextBounds.concurrency) ? num((nextBounds.concurrency as unknown[])[1], 0) : 0;
+    const batchMax = Array.isArray(nextBounds.batch_size) ? num((nextBounds.batch_size as unknown[])[1], 0) : 0;
+    const pending = accessDirty();
+    for (const [input, value, max] of [
+      [concurrencyInput, values.concurrency, concurrencyMax],
+      [batchInput, values.batch_size, batchMax],
+    ] as [HTMLInputElement | null, unknown, number][]) {
+      if (!input) continue;
+      if (throughputUnlocked || !max) input.removeAttribute("max");
+      else input.max = String(max);
+      // 速率属于已保存的那种连接方式：切到本地但还没保存时改并发，会存进云端那一档，
+      // 范围也是云端的。先锁住，保存连接方式后再放开。
+      input.disabled = pending;
+      if (document.activeElement !== input && typeof value === "number") input.value = String(value);
+    }
+    resetThroughputButton.disabled = pending;
+    const range = throughputUnlocked || !concurrencyMax ? "" : `并发上限 ${concurrencyMax}。`;
+    throughputNote.textContent = pending
+      ? "连接方式还没保存。点「保存配置」后再调整这条连接的速率。"
+      : `每个模型分别记忆；换到没调过的模型时沿用当前数值。${range}改动即时保存，运行中的任务不受影响。`;
+  };
+  paintThroughput(selected);
 
   // 状态胶囊。取的是**当前选中那条连接**的测试结果，不是角色级的那份——角色级状态
   // 是主用连接的镜像（core/model_roles.py 里照抄 primary 的三个字段），拿它当详情卡的
   // 状态，新建的第二条连接一挂上来就顶着主用连接的「测试通过」，用户会以为它已经验过。
   // 现在列表始终是本角色拥有的连接，每行都有独立测试结论。
-  const connectionOwnsVerdict = Boolean(selected);
-  const availabilitySource: JsonObject = connectionOwnsVerdict
-    ? { availability_status: selected!.availability_status, availability_message: selected!.availability_message, availability_checked_at: selected!.availability_checked_at }
-    : rolePayload;
-  const availability = text(availabilitySource.availability_status, "unknown");
-  const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
-  const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
-  const checkedAt = formatCheckedAt(text(availabilitySource.availability_checked_at));
+  //
+  // 整块做成可重画的：失焦自动保存不重画整页（会抢焦点），但换了模型或密钥之后测试
+  // 结论已经被后端打回「未测试」，这里还挂着「测试通过」就是在报告没发生的事。
   const statusRow = document.createElement("div");
   statusRow.style.display = "flex";
   statusRow.style.gap = "8px";
   statusRow.style.alignItems = "center";
   statusRow.style.flexWrap = "wrap";
-  const catalogChip = statusChip(catalog.length ? `${catalog.length} 个可用模型` : "未获取列表", catalog.length ? "done" : "");
-  catalogChip.title = catalogMatches ? (modelCatalogMessage[role] || "尚未获取当前连接的模型列表。") : "当前连接尚未获取模型列表。保存配置后可手动获取。";
-  const availChip = statusChip(availabilityLabel, availabilityTone);
-  availChip.title = `${text(availabilitySource.availability_message, "当前配置尚未测试。")}${checkedAt ? ` · ${checkedAt}` : ""}`;
-  statusRow.append(catalogChip, availChip);
-  detailBody.append(statusRow);
+  const autoSaveNote = document.createElement("span");
+  autoSaveNote.style.fontSize = "12px";
+  autoSaveNote.style.color = "var(--ink-3)";
+  const statusReasonNote = document.createElement("div");
+  statusReasonNote.style.fontSize = "12px";
+  statusReasonNote.style.lineHeight = "1.5";
+  statusReasonNote.style.marginTop = "6px";
+  detailBody.append(statusRow, statusReasonNote);
+  const paintStatus = (connection: PoolConnection | null) => {
+    const availabilitySource: JsonObject = connection
+      ? { availability_status: connection.availability_status, availability_message: connection.availability_message, availability_checked_at: connection.availability_checked_at }
+      : rolePayload;
+    const availability = text(availabilitySource.availability_status, "unknown");
+    const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
+    const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
+    const checkedAt = formatCheckedAt(text(availabilitySource.availability_checked_at));
+    const matches = catalogStillMatches();
+    const list = currentCatalog();
+    const catalogChip = statusChip(list.length ? `${list.length} 个可用模型` : "未获取列表", list.length ? "done" : "");
+    catalogChip.title = matches ? (modelCatalogMessage[role] || "尚未获取当前连接的模型列表。") : "当前连接尚未获取模型列表。保存配置后可手动获取。";
+    const availChip = statusChip(availabilityLabel, availabilityTone);
+    availChip.title = `${text(availabilitySource.availability_message, "当前配置尚未测试。")}${checkedAt ? ` · ${checkedAt}` : ""}`;
+    statusRow.replaceChildren(catalogChip, availChip, autoSaveNote);
 
-  // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
-  // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点
-  // 「测试连接」。「未获取列表」同样——光看这四个字看不出下一步该点哪里。
-  const statusReasons: string[] = [];
-  if (availability === "unavailable") {
-    const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。");
-    statusReasons.push(`测试失败：${reason}${checkedAt ? `（${checkedAt}）` : ""}`);
-  }
-  if (!catalog.length) {
-    statusReasons.push(
-      catalogMatches
-        ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
-        : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。",
-    );
-  }
-  if (statusReasons.length) {
-    const statusReasonNote = document.createElement("div");
-    statusReasonNote.style.fontSize = "12px";
-    statusReasonNote.style.lineHeight = "1.5";
-    statusReasonNote.style.marginTop = "6px";
+    // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
+    // 红色的「测试失败」没有任何线索（是密钥错、地址错，还是对方在维护），只能反复点
+    // 「测试连接」。「未获取列表」同样——光看这四个字看不出下一步该点哪里。
+    const statusReasons: string[] = [];
+    if (availability === "unavailable") {
+      const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。");
+      statusReasons.push(`测试失败：${reason}${checkedAt ? `（${checkedAt}）` : ""}`);
+    }
+    if (!list.length) {
+      statusReasons.push(
+        matches
+          ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
+          : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。",
+      );
+    }
+    statusReasonNote.hidden = !statusReasons.length;
     statusReasonNote.style.color = availability === "unavailable" ? "var(--danger)" : "var(--ink-3)";
     statusReasonNote.textContent = statusReasons.join(" · ");
-    detailBody.append(statusReasonNote);
-  }
+  };
+  paintStatus(selected);
 
   // 保存 / 获取模型 / 测试连接 / 导出导入
   // 提交是串行排队的，真正发出去时可能已经隔了一次重画：用户切了角色卡、切了
@@ -659,14 +619,39 @@ export function renderModelsPage(host: HTMLElement): void {
     return queueModelFormSave(() => saveModel(form, { silent: true }));
   });
 
-  const autoSaveNote = document.createElement("span");
-  autoSaveNote.style.fontSize = "12px";
-  autoSaveNote.style.color = "var(--ink-3)";
-  statusRow.append(autoSaveNote);
-
   // 失焦即保存。用户的原话：「任何离开焦点的行为都应该自动保存」。change 事件只在值
   // 真的变了之后失焦才触发，所以不会出现「点进去又点出来也发一次请求」。这里刻意不
   // 重画：重画会把焦点从用户正要去的下一个字段上抢走。
+  //
+  // 不重画整页，但保存之后这一页上「别处」显示的东西必须跟上：角色卡上的模型名、连接
+  // 列表的名称和「无密钥」标记、测试结论（换模型/密钥后后端已打回未测试）、速率（换
+  // 模型后落到另一档）、「未保存」标记、密钥框。以前这些都要等下一次整页重画才变，
+  // 用户看到的是一半新一半旧的页面，再一重画数值又「自己变了」。
+  const syncAfterSave = (sentApiKey: string) => {
+    if (!detailCard.isConnected || modelRole !== role) return;
+    const fresh = activeConnection(role);
+    // 选中的连接已经换了：下一次整页重画会按新连接画，这里不去改一张过期的表单。
+    if ((fresh?.id ?? "") !== (selected?.id ?? "")) return;
+    const nextSeg = buildRoleSeg();
+    seg.replaceWith(nextSeg);
+    seg = nextSeg;
+    const nextList = buildConnectionListCard(role);
+    listCard.replaceWith(nextList);
+    listCard = nextList;
+    if (accessDirty()) {
+      if (!accessDirtyChip.isConnected) accessBar.append(accessDirtyChip);
+    } else {
+      accessDirtyChip.remove();
+    }
+    paintStatus(fresh);
+    paintThroughput(fresh);
+    if (apiKeyField) {
+      // 密钥已经存进本机密钥存储，框里不该继续留着明文；之后每次失焦保存也不会再
+      // 把同一把密钥重复提交、把测试结论一次次打回「未测试」。
+      if (sentApiKey && apiKeyField.value === sentApiKey) apiKeyField.value = "";
+      apiKeyField.placeholder = apiKeyPlaceholder(fresh, following, text(fresh?.api_key_preview));
+    }
+  };
   const autoSaveOnBlur = (event: Event) => {
     const field = event.currentTarget as HTMLInputElement | HTMLSelectElement;
     if (field.disabled) return;
@@ -674,6 +659,7 @@ export function renderModelsPage(host: HTMLElement): void {
     void queueModelFormSave(async () => {
       try {
         await saveModel(form, { silent: true });
+        syncAfterSave(form.apiKey);
         autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
       } catch (error) {
         autoSaveNote.textContent = "";
@@ -721,10 +707,10 @@ export function renderModelsPage(host: HTMLElement): void {
         const sentBatch = Number(batchInput?.value || "8");
         const payload: JsonObject = { concurrency: sentConcurrency };
         if (needsBatch && batchInput) payload.batch_size = sentBatch;
-        const saved = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}`, {
+        const saved = await client.request<JsonObject>(`/api/models/throughput/${encodeURIComponent(role)}${connectionQuery(selected)}`, {
           method: "PUT", body: JSON.stringify(payload),
         });
-        modelThroughput[role] = saved;
+        storeConnectionThroughput(role, selected?.id ?? "", saved);
         writeBackThroughput(concurrencyInput, sentConcurrency, saved.concurrency);
         if (needsBatch && batchInput) writeBackThroughput(batchInput, sentBatch, saved.batch_size);
         autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
@@ -777,6 +763,145 @@ export function renderModelsPage(host: HTMLElement): void {
 
 }
 
+function apiKeyPlaceholder(connection: PoolConnection | null, following: boolean, preview: string): string {
+  // 跟随行的 has_api_key 来自来源连接。草稿刚从跟随切到云端时，不能把来源的
+  // 掩码冒充为当前行已存的独立密钥。
+  if (following) return "跟随时使用来源连接的密钥";
+  return connection?.connection_mode === "cloud" && connection.has_api_key
+    ? `${preview || "••••••"}（已保存 · 留空则不改）`
+    : "粘贴该连接的 API 密钥";
+}
+
+// 速率路由不带 connection_id 时一律落到主用连接。
+function connectionQuery(connection: PoolConnection | null): string {
+  return connection?.id ? `?connection_id=${encodeURIComponent(connection.id)}` : "";
+}
+
+// PUT 速率不回整份角色数据；把结果写回那条连接，下一次重画才不会显示保存前的旧值。
+function storeConnectionThroughput(role: string, connectionId: string, saved: JsonObject): void {
+  const connection = roleConnections(role).find((item) => item.id === connectionId);
+  if (!connection) return;
+  connection.throughput = {
+    profile_key: text(saved.profile_key),
+    batch_size: typeof saved.batch_size === "number" ? saved.batch_size : null,
+    concurrency: num(saved.concurrency, 1),
+  };
+}
+
+// 选中另一条连接（点行、点行内「测试」、新增、删除、设为主用、导入）时调用。
+// 「连接方式」草稿只属于原来那条连接：以前只有点行会丢它，点别的行的「测试」或者新增
+// 连接后草稿原样留着，新选中的连接一打开就顶着上一条的「未保存 · 本地模型」，下一次
+// 失焦自动保存就把它真的切成了本地。
+function selectConnection(role: string, connectionId: string | null): void {
+  if (connectionId) selectedConnection[role] = connectionId;
+  else delete selectedConnection[role];
+  delete modelAccessDraft[role];
+}
+
+function buildRoleSeg(): HTMLElement {
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  for (const role of MODEL_ROLE_ORDER) {
+    const payload = record(modelRoles[role]);
+    const segc = document.createElement("div");
+    segc.className = role === modelRole ? "segc on" : "segc";
+    const b = document.createElement("b");
+    b.textContent = MODEL_ROLE_LABELS[role] || role;
+    const primary = roleConnections(role)[0];
+    const primarySource = primary?.source_role || text(payload.source_role, "independent");
+    const modeSummary = primary?.connection_mode === "follow"
+      ? `跟随${MODEL_ROLE_LABELS[primarySource] || primarySource}`
+      : primary?.model || text(payload.model) || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
+    const span = document.createElement("span");
+    span.textContent = modeSummary || "未配置";
+    segc.append(b, span);
+    segc.addEventListener("click", () => {
+      if (modelRole === role) return;
+      const draft = snapshotModelFormDraft();
+      if (draft) modelFormDrafts[modelRole] = draft;
+      setModelRole(role);
+      setModelPillSettingsRole(modelRole);
+      renderBody();
+      const roleDraft = modelFormDrafts[role];
+      // 草稿只用一次。留着它的话，之后每次切回这个角色都会把那一刻的旧值再糊一遍，
+      // 盖掉期间已经保存（或被导入、被跟随来源改动）的新值，下一次失焦又把旧值写回去。
+      delete modelFormDrafts[role];
+      if (roleDraft) restoreModelFormDraft(roleDraft);
+    });
+    seg.append(segc);
+  }
+  return seg;
+}
+
+function buildConnectionListCard(role: string): HTMLElement {
+  const selected = activeConnection(role);
+  const connections = roleConnections(role);
+  const addBtn = createButton({
+    label: "新增连接", size: "mini", icon: "plus",
+    onClick: () => void reRenderAfter(async () => {
+      const payload = await client.request<JsonObject>(
+        `/api/models/roles/${encodeURIComponent(role)}/connections`,
+        { method: "POST", body: JSON.stringify({ label: "", connection_mode: "cloud", base_url: "" }) },
+      );
+      modelRoles[role] = payload;
+      const added = Array.isArray(payload.connections) ? payload.connections : [];
+      if (added.length) selectConnection(role, text(record(added[added.length - 1]).id));
+      showToast({ message: "已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。" });
+    }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
+  });
+  const listCard = createCard([tcHead("连接列表", [addBtn])]);
+  if (!connections.length) {
+    listCard.append(createEmptyState({ title: "还没有连接", description: "点右上角“新增连接”开始配置。", icon: "gear" }));
+    return listCard;
+  }
+  for (const [index, connection] of connections.entries()) {
+    const tone = connection.availability_status === "available"
+      ? "ok" : connection.availability_status === "unavailable" ? "warn" : "mute";
+    const dot = document.createElement("span");
+    dot.className = "cdot";
+    dot.style.background = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--danger)" : "var(--ink-3)";
+    const name = document.createElement("span");
+    name.style.flex = "1";
+    name.style.fontWeight = "600";
+    name.textContent = connection.display_label || `连接 ${index + 1}`;
+    const chips: HTMLElement[] = [];
+    if (index === 0) chips.push(createChip({ label: "主用", tone: "tint" }));
+    if (connection.connection_mode === "follow") chips.push(createChip({ label: `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`, tone: "tint" }));
+    if (connection.connection_mode === "local") chips.push(createChip({ label: "本地", tone: "mute" }));
+    if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
+      chips.push(createChip({ label: "无密钥", tone: "warn" }));
+    }
+    const actions = document.createElement("span");
+    actions.style.display = "flex";
+    actions.style.gap = "6px";
+    actions.append(createButton({
+      label: "测试", size: "mini",
+      onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
+    }));
+    if (index > 0) {
+      actions.append(createButton({
+        label: "设为主用", size: "mini",
+        onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
+      }));
+    }
+    if (connections.length > 1) {
+      actions.append(createButton({
+        label: "删除", size: "mini", variant: "danger",
+        onClick: (e) => { e.stopPropagation(); confirmDeleteConnection(role, connection); },
+      }));
+    }
+    const row = connRow([dot, name, ...chips, actions], {
+      selected: Boolean(selected && selected.id === connection.id),
+      onClick: () => {
+        selectConnection(role, connection.id);
+        renderBody();
+      },
+    });
+    listCard.append(row);
+  }
+  return listCard;
+}
+
 export function bundleCard(opts: { title: string; description: string; buttons: HTMLElement[] }): HTMLElement {
   const card = createCard([tcHead(opts.title, opts.buttons)]);
   const note = document.createElement("p");
@@ -827,12 +952,16 @@ async function saveModel(
     `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(form.selectedId)}`,
     { method: "PUT", body: JSON.stringify(body) },
   );
-  delete modelAccessDraft[role];
+  // 只丢掉「这次交上去的那份」连接方式草稿。失焦保存是排队执行的：用户点「本地模型」
+  // 单选框时，先触发的是上一个输入框的失焦保存（带着旧的连接方式），它落盘时用户已经
+  // 选好了新方式——以前这里不分青红皂白地删草稿，界面上的「本地」就被悄悄撤回成云端。
+  if (modelAccessDraft[role] === form.access) delete modelAccessDraft[role];
   if (form.apiKey && connectionMode === "cloud" && !form.secondaryId) {
     // 保留旧版 provider 作用域的回退密钥，供尚未单独存过 Key 的旧角色继续使用。
     await client.request(`/api/keys/${form.provider}`, { method: "PUT", body: JSON.stringify({ api_key: form.apiKey, base_url: form.baseUrl }) });
   }
-  clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
+  // 模型列表不在这里清：它按「服务商 + Base URL」记在 modelCatalogConnection 里，端点
+  // 变了自然对不上、不再显示；只改模型名或连接名称时，刚获取的列表应当继续可选。
   await refreshSettings();
   // keys.json 的惰性自愈恰好发生在上面这次保存里；恢复事件落盘后若没人重新拉
   // /api/data/health，本次会话内横幅永远不露面——丢 Key 的提示必须在丢的那一刻
@@ -842,7 +971,7 @@ async function saveModel(
 }
 
 async function testConnectionRow(role: string, connectionId: string): Promise<void> {
-  selectedConnection[role] = connectionId;
+  if (activeConnection(role)?.id !== connectionId) selectConnection(role, connectionId);
   // 走 reRenderAfter 而不是裸 renderBody()：测试这条连接不该把用户刚敲的字冲掉。
   // 若这一下同时切换了连接，草稿的 scope 对不上，会自动丢弃而不是搬到新连接上。
   await reRenderAfter(async () => {
@@ -874,7 +1003,9 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
       `/api/models/roles/${encodeURIComponent(role)}/connections/${encodeURIComponent(connectionId)}`,
       { method: "DELETE" },
     );
-    delete selectedConnection[role];
+    selectConnection(role, null);
+    // 删掉的可能是主用连接，跟随它的角色、顶栏模型药丸和翻译角色的旧字段都跟着变。
+    await refreshSettings();
     clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
     // 删除连接会经由 save_connection_key 写 keys.json，同样可能触发惰性自愈。
     void refreshDataHealth(mountToken);
@@ -1218,6 +1349,11 @@ async function runModelConfigImport(preview: ModelImportPreview, handle: ModalHa
       method: "POST", body: JSON.stringify(preview.payload),
     });
     setModelImportPreview(null);
+    // 连接列表整份换掉了：旧连接的选中项、连接方式草稿和表单草稿都不再有主人。
+    for (const role of MODEL_ROLE_ORDER) {
+      selectConnection(role, null);
+      delete modelFormDrafts[role];
+    }
     await refreshSettings();
     // 导入写入密钥作用域时同样走 keys.json 的写路径，可能触发惰性自愈。
     void refreshDataHealth(mountToken);
