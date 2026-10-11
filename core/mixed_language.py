@@ -435,6 +435,10 @@ def _translate_mixed_batch_with_fallback(
             return {text: _uncertain_result(text, note="stopped") for text in batch}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        if should_stop and should_stop():
+            # 停止打断的在途请求不是「没能翻译」：按停止占位交回，调用方据此保留原文
+            # 待续译，不标复核、不在日志里报失败。
+            return {text: _uncertain_result(text, note="stopped") for text in batch}
         if api_scheduler is not None:
             decision = handle_api_concurrency_limit(
                 exc,
