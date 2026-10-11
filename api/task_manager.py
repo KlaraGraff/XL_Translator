@@ -2109,6 +2109,9 @@ class TranslationTaskManager:
             stage_percent = min(100.0, max(0.0, 100.0 * message.step_done / max(1, message.step_total)))
             completed_weight = sum(stage_weights[: phase_index - 1])
             overall_percent = completed_weight + stage_weights[phase_index - 1] * stage_percent / 100.0
+            if int(message.phase_total) <= 0:
+                # 没有阶段划分（CAD 直接上报整批进度）：step_done/step_total 就是总进度。
+                overall_percent = stage_percent
             with task.condition:
                 task.progress = {
                     "phase_index": phase_index,

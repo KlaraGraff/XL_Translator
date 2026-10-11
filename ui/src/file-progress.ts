@@ -37,6 +37,11 @@ const PHASE_LABELS: Record<string, string> = {
   translate: "翻译内容",
   generate: "生成文件",
   adjust: "调整排版",
+  // CAD 每个图纸的阶段（core/cad_task_runner.py 的 _PHASES）。
+  scan: "读取图纸",
+  match: "匹配记忆/术语",
+  write: "写回图纸",
+  verify: "校验结果",
 };
 
 export function fileProgressLabel(file: FileProgress, taskState?: string): string {

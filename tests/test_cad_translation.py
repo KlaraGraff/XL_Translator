@@ -316,3 +316,12 @@ def test_scan_paths_collects_unreadable_files_when_asked(tmp_path):
     summaries = scan_cad_paths([tmp_path], skipped=skipped)
     assert [item.filename for item in summaries] == ["good.dxf"]
     assert [entry["name"] for entry in skipped] == ["bad.dxf"]
+
+
+def test_numbers_next_to_chinese_characters_are_kept_in_the_check():
+    from core.cad_translation import _numeric_tokens, _valid_translation
+
+    assert _numeric_tokens("共12页") == ["12"]
+    assert _numeric_tokens("M10 螺栓 Q235") == []
+    assert _valid_translation("Fire exit route 12345", "消防通道12345") == (True, "")
+    assert _valid_translation("Room 101", "房间102")[0] is False

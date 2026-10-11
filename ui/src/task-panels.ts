@@ -120,8 +120,11 @@ export interface TaskControlFootOptions {
   idle: { label: string; disabled?: boolean; onClick: () => void };
   active?: {
     paused: boolean;
+    /** 已请求暂停、正在等当前单元（CAD 是当前文件）做完：暂停按钮变成不可点的「正在暂停…」。 */
+    pausing?: boolean;
     onResume: () => void;
-    onPause: () => void;
+    /** 不支持暂停的任务（Excel / Word）不传，底栏只留「安全停止」。 */
+    onPause?: () => void;
     onStop: () => void;
     finishPaused?: { label: string; onClick: () => void; note?: string };
     pauseLabel?: string;
@@ -151,7 +154,11 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
     }
     return foot;
   }
-  foot.append(createButton({ label: active.pauseLabel ?? "暂停提交", icon: "pause", size: "big", onClick: active.onPause }));
+  if (active.pausing) {
+    foot.append(createButton({ label: "正在暂停…", icon: "pause", size: "big", disabled: true, onClick: () => undefined }));
+  } else if (active.onPause) {
+    foot.append(createButton({ label: active.pauseLabel ?? "暂停提交", icon: "pause", size: "big", onClick: active.onPause }));
+  }
   foot.append(createButton({ label: active.stopLabel ?? "安全停止", icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
   return foot;
 }

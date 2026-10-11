@@ -31,7 +31,7 @@ _TOGGLE_ENTRY = re.compile(
     r"""pathKind:\s*(["'])(flat|output)\1\s*,\s*path:\s*(["'])(.+?)\3"""
 )
 
-_TOGGLE_BLOCK = re.compile(r"""const\s+(EXCEL|WORD|PDF)_TOGGLES\b""")
+_TOGGLE_BLOCK = re.compile(r"""const\s+(EXCEL|WORD|PDF|CAD)_TOGGLES\b""")
 
 
 def _code_lines(text: str) -> list[tuple[int, str]]:

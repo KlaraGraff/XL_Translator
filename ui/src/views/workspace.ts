@@ -1,14 +1,18 @@
-// V9 翻译工作区 —— Excel / Word / PDF 三个视图共用的布局模板 + 任务生命周期状态机。
-// 三页「同构」：col-l/col-r 的板块顺序、位置、命名完全一致，只有内容（开关列表、统计
-// 字段、文件表列）按 surface 不同。excel.ts / word.ts / pdf.ts 只提供这些差异化配置，
+// V9 翻译工作区 —— Excel / Word / PDF / CAD 四个视图共用的布局模板 + 任务生命周期状态机。
+// 四页「同构」：col-l/col-r 的板块顺序、位置、命名完全一致，只有内容（开关列表、统计
+// 字段、文件表列）按 surface 不同。excel.ts / word.ts / pdf.ts / cad.ts 只是薄封装，
 // 具体渲染、扫描、启动/停止/暂停、SSE 订阅、设置持久化全部在这里实现一次。
+//
+// 新增一个翻译板块时，不要另写页面：把它加进 Surface，补齐下面各张按 surface 索引的表
+// （TS 会把漏掉的表全部报出来），再在 computeStats / buildTableHeadRow / buildTableRow /
+// buildPayload 里补它自己的那一支。布局、文案、扫描→预检→开始→监听→收尾的流程都自动一致。
 //
 // 状态机（每个 surface 独立一份，模块级 Map 持久化，跨 mount/unmount 保留）：
 //   setup（未扫描 / 已扫描待开始） --scan--> setup（文件已填充）
 //   setup --start（可能经 xls/doc 兼容确认、并行风险确认）--> running
 //   running --stop--> running（等终态事件）--终态事件--> setup（横幅显示）
-//   running --pause（仅 PDF）--> paused
-//   paused --resume（仅 PDF）--> running
+//   running --pause（PDF；CAD 在当前文件结束后暂停）--> paused
+//   paused --resume（PDF / CAD）--> running
 //   paused --end-paused（仅 PDF）--> running（等终态事件，同上落回 setup+横幅）
 // 「right column 运行时锁定」「完成横幅 + 复位」等细节见下方实现与文件尾的架构说明。
 
@@ -58,7 +62,7 @@ import "./workspace.css";
 // 类型
 // ---------------------------------------------------------------------------
 
-export type Surface = "excel" | "word" | "pdf";
+export type Surface = "excel" | "word" | "pdf" | "cad";
 
 type JsonObject = Record<string, unknown>;
 
@@ -81,6 +85,9 @@ type FileItem = JsonObject & {
    *  oversizedPageStats() 上方的整段说明，处理方式与 Excel 的 image_count 完全一致。 */
   oversized_page_count?: number | null;
   source_type?: string;
+  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。 */
+  text_count?: number;
+  candidate_count?: number;
   needs_conversion?: boolean;
   // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
@@ -179,12 +186,21 @@ const PDF_TOGGLES: ToggleDef[] = [
   { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
-const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES };
+// CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
+// 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
+const CAD_TOGGLES: ToggleDef[] = [
+  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "cadBlockText", label: "翻译图块内文字", hint: "图块定义和属性里的文字也一起翻译。关闭后只翻译模型空间和布局里直接放置的文字。", default: true, pathKind: "output", path: "include_block_text" },
+  { key: "cadKeepWorkDxf", label: "保留工作 DXF", hint: "在输出文件旁边额外保留一份翻译后的 DXF，便于用其他软件核对。", default: true, pathKind: "output", path: "keep_work_dxf" },
+  { key: "cadCopyRelated", label: "复制同名附属文件", hint: "把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。", default: false, pathKind: "output", path: "copy_related_files" },
+];
 
-const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF" };
-const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf" };
-const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译" };
-const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件" };
+const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
+
+const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
+const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译", cad: "CAD 图纸翻译" };
+const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件", cad: "DWG / DXF 图纸" };
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
 function fileNounPhrase(surface: Surface, count: number): string {
@@ -195,16 +211,19 @@ const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
   excel: "选择文件或文件夹，扫描后勾选要翻译的表格",
   word: "选择文件或文件夹，扫描后勾选要翻译的文档",
   pdf: "选择文件或文件夹，扫描后勾选要翻译的 PDF 与图片",
+  cad: "选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸",
 };
 const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = {
   excel: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的表格会列在这里，可逐个勾选。" },
   word: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的文档会列在这里，可逐个勾选。" },
   pdf: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 PDF 与图片会列在这里，可逐个勾选。" },
+  cad: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。" },
 };
 const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = {
   excel: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
   word: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
   pdf: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
+  cad: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
 };
 
 // ---------------------------------------------------------------------------
@@ -373,6 +392,12 @@ interface SurfaceState {
   renderer: (() => void) | null;
   lastTaskId?: string;
   lastOutputPath?: string;
+  /** CAD：图纸转换工具（ODA）的连接状态，挂载时和每次扫描时刷新。DWG 必须先转成 DXF
+   *  才能读写，没连上时 DXF 照常可翻，DWG 在清单里标「需连接转换工具」。 */
+  cadCapability: JsonObject | null;
+  /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
+   *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
+  cadResumeDir: string;
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -390,7 +415,7 @@ function freshState(surface: Surface): SurfaceState {
     scanSummary: {},
     selected: new Set(),
     toggles: freshToggles(surface),
-    targetLang: surface === "pdf" ? "zh" : surface === "word" ? "fr" : "en",
+    targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: surface === "excel" ? "无" : "同步工程场景",
     useCustomOutputDir: false,
@@ -412,6 +437,8 @@ function freshState(surface: Surface): SurfaceState {
     resumeNoticeDismissed: false,
     resumeToggleRestore: null,
     renderer: null,
+    cadCapability: null,
+    cadResumeDir: "",
   };
 }
 
@@ -419,6 +446,7 @@ const states: Record<Surface, SurfaceState> = {
   excel: freshState("excel"),
   word: freshState("word"),
   pdf: freshState("pdf"),
+  cad: freshState("cad"),
 };
 
 type WorkspaceContext = Pick<SurfaceState, "sourcePath" | "sourcePaths" | "files" | "skipped" | "scanSummary" | "selected">;
@@ -458,6 +486,7 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   st.lastTaskId = undefined;
   st.lastOutputPath = undefined;
   st.historyOnly = false;
+  st.cadResumeDir = "";
   resetResumeState(st);
 }
 
@@ -489,7 +518,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
       file_id: text(entry.file_id),
       name,
       relative_path: text(entry.relative_path),
-      format: format && ["xlsx", "xls", "docx", "doc", "pdf", "png", "jpg", "jpeg"].includes(format)
+      format: format && ["xlsx", "xls", "docx", "doc", "pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "dwg", "dxf"].includes(format)
         ? format : "",
     };
   });
@@ -576,14 +605,15 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
 }
 
 function applySettingsToStates(): void {
-  for (const surface of ["excel", "word", "pdf"] as Surface[]) {
+  for (const surface of ["excel", "word", "pdf", "cad"] as Surface[]) {
     const st = states[surface];
     st.sourcePath = normalizeUserPath(st.sourcePath || text(settings[`last_${surface}_source_folder`]));
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
     } else {
-      st.targetLang = text(settings[`${surface}_target_lang`], surface === "word" ? "fr" : text(settings.target_lang, "en"));
+      const fallbackTarget = surface === "word" ? "fr" : surface === "cad" ? "zh" : text(settings.target_lang, "en");
+      st.targetLang = text(settings[`${surface}_target_lang`], fallbackTarget);
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
@@ -619,15 +649,15 @@ function readPath(obj: JsonObject, path: string): unknown {
   return cursor;
 }
 
-/** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output 没有。 */
+/** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output、cad_output 没有。 */
 function outputRecord(surface: Surface): JsonObject {
-  if (surface === "pdf") return record(settings.pdf_output);
+  if (surface === "pdf" || surface === "cad") return record(settings[`${surface}_output`]);
   const isolated = record(settings[`${surface}_output`]);
   return Object.keys(isolated).length ? isolated : record(settings.output);
 }
 
 function outputSettingPathPrefix(surface: Surface): string {
-  if (surface === "pdf") return "pdf_output";
+  if (surface === "pdf" || surface === "cad") return `${surface}_output`;
   return hasOwn(settings, `${surface}_output`) ? `${surface}_output` : "output";
 }
 
@@ -659,7 +689,7 @@ async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, reve
 // mount / unmount
 // ---------------------------------------------------------------------------
 
-const mountTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const mountTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
 
 export function mountWorkspace(container: HTMLElement, params: ViewParams, surface: Surface): void {
   const st = states[surface];
@@ -684,6 +714,8 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       // PDF 且已经有任务，每次挂载都重新拉一次快照；fetchPdfPagesSnapshot 内部看到
       // rerun.active 会自己把计时器重新起起来，跟 adoptExistingTask 里的调用是同一套逻辑。
       if (surface === "pdf" && st.task) void fetchPdfPagesSnapshot(surface, st.task.task.task_id);
+      // 用户可能刚在插件页连好转换工具再切回来，所以每次挂载都重新查一次。
+      if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
     })
     .catch((error) => {
@@ -691,6 +723,24 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       showToast({ message: redactedText((error as Error)?.message, "初始化工作区失败。"), error: true });
       if (st.renderer) renderInto(container, surface);
     });
+}
+
+/** CAD：查询图纸转换工具的连接状态。失败不打断页面——没有结果时按「未知」处理，
+ *  扫描时后端会再回一次最新状态。 */
+async function refreshCadCapability(isCurrent: () => boolean): Promise<void> {
+  try {
+    const c = await getClient();
+    const capability = await c.getCadCapability();
+    if (!isCurrent()) return;
+    states.cad.cadCapability = record(capability);
+    rerender("cad");
+  } catch {
+    // 查询失败时保持原状；扫描接口会带回 capability。
+  }
+}
+
+function cadConverterReady(st: SurfaceState): boolean {
+  return text(record(st.cadCapability).oda) === "connected";
 }
 
 export function unmountWorkspace(surface: Surface): void {
@@ -876,11 +926,12 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   }
   if (active && st.task) {
     const state = st.task.task.state;
-    const meta = runningStatusMeta(state);
+    const meta = runningStatusMeta(state, surface);
     const fileCount = st.selected.size || st.files.length;
     const domainSuffix = surface !== "pdf" ? ` · ${st.domainPreset}` : "";
+    // PDF 没有源语言选择，只说目标语言；其余三页同一句式。
     const subtitle = surface === "pdf"
-      ? `${st.sourcePath.split("/").pop() || "PDF / 图片任务"} · → ${targetLabel(st)}`
+      ? `${fileNounPhrase(surface, fileCount)} · → ${targetLabel(st)}`
       : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
     return;
@@ -896,10 +947,11 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: "待选择来源", tone: "idle" }, subtitle: SURFACE_EMPTY_SUBTITLE[surface] });
 }
 
-function runningStatusMeta(state: TaskStatus["state"]): { label: string; tone: StatusTone } {
+function runningStatusMeta(state: TaskStatus["state"], surface: Surface): { label: string; tone: StatusTone } {
   switch (state) {
     case "paused":
-      return { label: "已暂停提交", tone: "pause" };
+      // PDF 暂停的是「提交新页面」；CAD 是做完当前文件后整体暂停。
+      return { label: surface === "cad" ? "已暂停" : "已暂停提交", tone: "pause" };
     case "pausing":
       return { label: "正在暂停", tone: "pause" };
     case "stopping":
@@ -932,6 +984,21 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
       label: "打开输出目录",
       icon: "folder",
       onClick: () => openTaskLocalFile(st.lastOutputPath, true),
+    }));
+  }
+  // CAD 停止后可以从断点继续：已验证的文件直接复用，不用整批重跑。
+  const lastTask = st.task?.task;
+  const lastOutputDir = text(record(lastTask?.result).output_dir);
+  if (surface === "cad" && lastTask?.state === "stopped" && lastOutputDir && st.files.length) {
+    actions.push(createButton({
+      label: "从断点继续",
+      icon: "play",
+      onClick: () => {
+        st.cadResumeDir = lastOutputDir;
+        st.showBanner = false;
+        rerender(surface);
+        showToast({ message: "已选好断点，点「开始翻译」即可继续。" });
+      },
     }));
   }
   actions.push(createButton({
@@ -980,6 +1047,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       col.append(note);
     }
     col.append(buildStatsRow(surface, st));
+    if (surface === "cad") {
+      const notice = buildCadConverterBanner(st);
+      if (notice) col.append(notice);
+      const resumeNote = buildCadResumeNote(st);
+      if (resumeNote) col.append(resumeNote);
+    }
     // 单元格外内容的说明只属于 Excel：Word / PDF 没有这条限制，不该出现这段提示。
     if (surface === "excel") {
       const notice = buildOutsideCellBanner(st);
@@ -1070,6 +1143,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
 function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; extensions: string[] } {
   if (surface === "excel") return { name: "Excel 表格", extensions: ["xlsx", "xls"] };
   if (surface === "word") return { name: "Word 文档", extensions: ["docx", "doc"] };
+  if (surface === "cad") return { name: "CAD 图纸", extensions: ["dwg", "dxf"] };
   const images = st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [];
   return { name: images.length ? "PDF 与图片" : "PDF", extensions: ["pdf", ...images] };
 }
@@ -1189,6 +1263,18 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
       { label: "旧版 .doc", value: String(doc), warn: doc > 0 },
     ];
   }
+  if (surface === "cad") {
+    const texts = files.reduce((sum, f) => sum + num(f.text_count), 0);
+    const candidates = files.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
+    const blocked = files.filter((f) => isRisky(surface, f)).length;
+    return [
+      { label: "已扫描文件", value: String(files.length) },
+      { label: "文字实体", value: texts.toLocaleString("zh-CN") },
+      { label: "待翻译", value: candidates.toLocaleString("zh-CN"), sub: texts > candidates ? "已是目标语言的不计入" : undefined },
+      { label: "需转换工具", value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
+      { label: "跳过项", value: String(st.skipped.length), dim: st.skipped.length === 0 },
+    ];
+  }
   const pages = files.reduce((sum, f) => sum + num(f.page_count), 0);
   const images = files.filter((f) => f.source_type === "image").length;
   // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，
@@ -1206,6 +1292,8 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
 function isRisky(surface: Surface, f: FileItem): boolean {
   if (surface === "excel") return f.format === "xls" || Boolean(f.needs_conversion);
   if (surface === "word") return f.format === "doc" || Boolean(f.needs_conversion);
+  // DWG 要先经转换工具转成 DXF；转换工具没连上时这些文件开不了工。
+  if (surface === "cad") return Boolean(f.needs_conversion) && !cadConverterReady(states.cad);
   return false;
 }
 
@@ -1302,6 +1390,54 @@ function outsideCellStat(stats: OutsideCellStats): StatCell | null {
   // 这项信息，不该显示「0 / 0 / 0」把「不知道」说成「没有」，整格直接不渲染。
   if (stats.presentFiles === 0) return null;
   return { label, value: "0 / 0 / 0", dim: true, sub: "无" };
+}
+
+// ---------------------------------------------------------------------------
+// CAD 专属提示：转换工具状态、从断点继续。样式沿用 Excel「单元格外内容」那条横幅。
+// ---------------------------------------------------------------------------
+
+/** 转换工具没连上时的提示。只有 DXF 也照常可翻，所以只在清单里真有 DWG、或还没扫描时出现。 */
+function buildCadConverterBanner(st: SurfaceState): HTMLElement | null {
+  if (!st.cadCapability || cadConverterReady(st)) return null;
+  const blocked = st.files.filter((f) => isRisky("cad", f)).length;
+  if (st.files.length && blocked === 0) return null;
+  const banner = el("div", "banner warn");
+  banner.append(icon("warn", { className: "ico" }));
+  const tx = el("div", "tx");
+  const title = el("div", "tt");
+  title.textContent = blocked
+    ? `有 ${blocked} 个 DWG 图纸需要先连接图纸转换工具`
+    : "还没有连接图纸转换工具";
+  const body = el("div", "bd");
+  body.textContent = text(record(st.cadCapability).oda) === "incompatible"
+    ? "检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。"
+    : "DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。";
+  tx.append(title, body);
+  banner.append(tx);
+  banner.append(createButton({ label: "打开插件管理", onClick: () => navigate("plugins") }));
+  return banner;
+}
+
+/** 「从断点继续」已选好时，在清单上方说清这次会接着哪一次的输出继续，并给一个撤销入口。 */
+function buildCadResumeNote(st: SurfaceState): HTMLElement | null {
+  if (!st.cadResumeDir) return null;
+  const banner = el("div", "banner");
+  banner.append(icon("folder", { className: "ico" }));
+  const tx = el("div", "tx");
+  const title = el("div", "tt");
+  title.textContent = "将接着上次停止的位置继续";
+  const body = el("div", "bd");
+  body.textContent = `已经验证过的文件直接复用，其余文件重新翻译。上次输出：${st.cadResumeDir}`;
+  tx.append(title, body);
+  banner.append(tx);
+  banner.append(createButton({
+    label: "改为全部重译",
+    onClick: () => {
+      st.cadResumeDir = "";
+      rerender("cad");
+    },
+  }));
+  return banner;
 }
 
 /** 接入点 2 · 扫描后、任务清单上方的说明横幅。没有可说的就返回 null，不占版面。 */
@@ -1636,6 +1772,8 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     row.append(th("文件"), th("格式"), th("工作表", true), th("文本单元格", true), th("单元格外内容"), th("状态"));
   } else if (surface === "word") {
     row.append(th("文件"), th("格式"), th("段落", true), th("表格", true), th("状态"));
+  } else if (surface === "cad") {
+    row.append(th("文件"), th("格式"), th("文字实体", true), th("待翻译", true), th("状态"));
   } else {
     row.append(th("文件"), th("类型"), th("大小"), th("页数 / 尺寸"), th("状态"));
   }
@@ -1661,7 +1799,17 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   nameCell.textContent = fileLabel(file);
   row.append(nameCell);
 
-  if (surface === "excel" || surface === "word") {
+  if (surface === "cad") {
+    const fmtCell = el("td");
+    fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
+    // 没连转换工具的 DWG 读不出内容，计数是 0 不代表图纸里没字——写「—」，不写 0。
+    const unreadable = st.historyOnly || isRisky(surface, file);
+    const textCell = el("td", "num");
+    textCell.textContent = unreadable ? "—" : num(file.text_count).toLocaleString("zh-CN");
+    const candidateCell = el("td", "num");
+    candidateCell.textContent = unreadable ? "—" : num(file.candidate_count, num(file.text_count)).toLocaleString("zh-CN");
+    row.append(fmtCell, textCell, candidateCell);
+  } else if (surface === "excel" || surface === "word") {
     const fmtCell = el("td");
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
     row.append(fmtCell);
@@ -1721,7 +1869,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     // 格式预判更贴近用户此刻要确认的事。
     statusCell.append(resumeChip(surface, resume));
   } else if (isRisky(surface, file)) {
-    statusCell.append(createChip({ label: "需先转换", tone: "warn", icon: "warn" }));
+    statusCell.append(createChip({ label: surface === "cad" ? "需连接转换工具" : "需先转换", tone: "warn", icon: "warn" }));
   } else if (surface === "pdf" && isAllOversized(file)) {
     // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
     // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
@@ -1855,7 +2003,7 @@ function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
  *  记一笔，界面立刻按「有一页在跑」渲染，等快照把真实状态换上来再清掉。 */
 type PendingRerun = { taskId: string; relativePath: string; pageNumber: number };
 
-const pendingReruns: Record<Surface, PendingRerun | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+const pendingReruns: Record<Surface, PendingRerun | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
 
 /** 本地这笔只对发起它的那个任务有效——切到别的任务不能跟着禁用。 */
 function pendingRerunFor(surface: Surface, taskId: string): PendingRerun | undefined {
@@ -1962,8 +2110,8 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
  *  local.pdfPagesSnapshot.rerun.active 停在拉失败前的最后一次真值上，永远不会自己变
  *  false，下一轮判断条件形同虚设。这里改成连续失败计数：失败就退避（翻倍，封顶 20
  *  秒），累计到上限就整个停掉并且只在停的那一刻说一句话，不再每一轮都弹 toast。 */
-const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
-const rerunTickerFailures: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
+const rerunTickerFailures: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
 const RERUN_POLL_BASE_MS = 2000;
 const RERUN_POLL_MAX_MS = 20000;
 const RERUN_POLL_MAX_FAILURES = 5;
@@ -2253,6 +2401,7 @@ const pdfBatchRerunState: Record<Surface, PdfBatchRerunState | undefined> = {
   excel: undefined,
   word: undefined,
   pdf: undefined,
+  cad: undefined,
 };
 
 function sleep(ms: number): Promise<void> {
@@ -3467,18 +3616,22 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   }
 
   const task = st.task!;
+  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 在当前文件做完后暂停。
+  // Excel / Word 不给暂停按钮——后端会直接拒绝，按了只会弹一条报错。
+  const pausable = surface === "pdf" || surface === "cad";
   return createTaskControlFoot({
     idle: { label: "开始翻译", disabled: true, onClick: () => undefined },
     active: {
-      paused: surface === "pdf" && task.task.state === "paused",
-      onResume: () => void resumePdfTask(st),
-      onPause: () => void pausePdfTask(st),
+      paused: pausable && task.task.state === "paused",
+      pausing: pausable && task.task.state === "pausing",
+      onResume: () => void resumeTask(surface, st),
+      onPause: pausable ? () => void pauseTask(surface, st) : undefined,
       onStop: () => confirmStopTask(surface, st),
-      pauseLabel: surface === "pdf" ? "暂停提交" : undefined,
+      pauseLabel: surface === "cad" ? "当前文件完成后暂停" : "暂停提交",
       finishPaused: surface === "pdf" && task.task.state === "paused"
         ? { label: "结束暂停并收尾", onClick: () => void confirmEndPaused(st), note: "收尾会保存已完成页并生成部分结果报告" }
         : undefined,
-      stopLabel: surface === "pdf" ? "安全停止" : "安全停止",
+      stopLabel: "安全停止",
     },
   });
 }
@@ -3907,9 +4060,9 @@ function showResumeModal(surface: Surface, st: SurfaceState): void {
  * 路径取交集，结果只翻了两边都有的那一部分，界面上不报任何错。
  * 只有序号仍等于最新一次的响应才允许写回状态。
  */
-const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
-const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false };
+const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false, cad: false };
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
 async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
@@ -3931,6 +4084,12 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
       paths: st.sourcePaths.map(normalizeUserPath),
       include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
     };
+    if (surface === "cad") {
+      // CAD 的「待翻译」数取决于语言对：已经是目标语言的文字不算候选。
+      payload.source_language = st.sourceLang;
+      payload.target_language = st.targetLang;
+      payload.include_block_text = Boolean(st.toggles.get("cadBlockText"));
+    }
     if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
     if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
@@ -3943,6 +4102,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     // 只有 Excel 扫描才带 risk.libreoffice_available；Word/PDF 没这个字段，record()
     // 在缺字段时给回 {}，取值自然落回 false，不用按 surface 分支特判。
     st.libreofficeAvailable = Boolean(record(result.risk).libreoffice_available);
+    if (surface === "cad" && Object.keys(record(response.capability)).length) st.cadCapability = record(response.capability);
     st.selected = new Set(items.map((f) => f.path));
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
@@ -3968,7 +4128,9 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     const skipSuffix = skipped.length > 0 ? `，跳过 ${skipped.length} 个` : "";
     const toastMessage = surface === "pdf"
       ? `已扫描到 ${items.length} 个 PDF / 图片输入${skipSuffix}。`
-      : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
+      : surface === "cad"
+        ? `已扫描到 ${items.length} 个 DWG / DXF 图纸${skipSuffix}。`
+        : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
     if (st.resumeInfo) showResumeModal(surface, st);
@@ -4017,6 +4179,16 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.translate_headers_footers = Boolean(st.toggles.get("translateHeadersFooters"));
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
+  if (surface === "cad") {
+    // 已经是目标语言的文字不再送翻译——与扫描时「待翻译」的口径一致。
+    payload.untranslated_only = true;
+    payload.cad_translate_output_filename = Boolean(st.toggles.get("translateOutputFilename"));
+    payload.cad_include_block_text = Boolean(st.toggles.get("cadBlockText"));
+    payload.cad_keep_work_dxf = Boolean(st.toggles.get("cadKeepWorkDxf"));
+    payload.cad_copy_related_files = Boolean(st.toggles.get("cadCopyRelated"));
+    if (st.useCustomOutputDir && st.customOutputDir.trim()) payload.cad_output_dir = normalizeUserPath(st.customOutputDir);
+    if (st.cadResumeDir) payload.resume_output_dir = normalizeUserPath(st.cadResumeDir);
+  }
   return payload;
 }
 
@@ -4032,6 +4204,22 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
   if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
     showToast({ message: "源语言与目标语言相同，请重新选择。", error: true });
     return;
+  }
+  if (surface === "cad") {
+    const blocked = st.files.filter((f) => st.selected.has(f.path) && isRisky("cad", f)).length;
+    if (blocked > 0) {
+      openModal({
+        tone: "warn",
+        icon: "warn",
+        title: "需要先连接图纸转换工具",
+        body: [
+          `选中的文件里有 ${blocked} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。`,
+          "可以去插件管理连接转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。",
+        ],
+        actions: [{ label: "取消" }, { label: "打开插件管理", variant: "primary", onClick: () => navigate("plugins") }],
+      });
+      return;
+    }
   }
   if (surface === "excel") {
     const riskyCount = st.files.filter((f) => st.selected.has(f.path) && isRisky("excel", f)).length;
@@ -4213,6 +4401,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     noteTaskStarted(task);
     st.showBanner = false;
     st.fileOutcomes = new Map();
+    st.cadResumeDir = "";
     initFileStages(st);
     rerender(surface);
     watchTask(surface);
@@ -4246,7 +4435,7 @@ function focusTask(surface: Surface, task: TaskStatus): void {
 
 /** 静默计时器：任务在跑但没有事件进来时，每 5 秒重画一次，让「已等待 N 秒」这句话
  *  自己走动。任务一到终态就停——不留一个空转的 interval。 */
-const silenceTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+const silenceTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
 
 function startSilenceTicker(surface: Surface): void {
   if (silenceTickers[surface] !== undefined) return;
@@ -4389,15 +4578,24 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       local.fileProgress = reduceFileProgress(local.fileProgress, data as unknown as FileProgress);
       break;
     }
+    // 这几个事件都带着后端已经改好的任务状态（data.state），必须同步到本地：
+    // 底栏按钮、进度条颜色、顶栏、文件状态全都看 local.task.state。
     case "stopping":
+      syncEventState(local, data, "stopping");
       local.phaseName = "正在安全停止…";
       break;
+    case "pausing":
+      syncEventState(local, data, "pausing");
+      local.phaseName = "当前文件完成后暂停";
+      break;
     case "paused":
-      local.phaseName = "已暂停提交新页面";
+      syncEventState(local, data, "paused");
+      local.phaseName = surface === "cad" ? "已暂停，当前文件已完成" : "已暂停提交新页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":
-      local.phaseName = "正在继续提交页面";
+      syncEventState(local, data, "running");
+      local.phaseName = surface === "cad" ? "正在继续翻译" : "正在继续提交页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "word_recovery":
@@ -4431,6 +4629,12 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
   }
   rerender(surface);
+}
+
+function syncEventState(local: LocalTask, data: JsonObject, fallback: TaskStatus["state"]): void {
+  if (local.task.terminal) return;
+  const state = text(data.state, fallback) as TaskStatus["state"];
+  local.task = { ...local.task, state };
 }
 
 function finishTask(surface: Surface, task: TaskStatus): void {
@@ -4472,7 +4676,8 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     const item = record(entry);
     const ok = fileResultProduced(item);
     if (ok) produced += 1;
-    else failed += 1;
+    // 用户按停止时还没做完的文件（CAD 记为 status=stopped）不是失败，算在「还有 N 个没跑到」里。
+    else if (item.status !== "stopped") failed += 1;
     const key = fileOutcomeKey(text(item.name));
     const fileId = text(item.file_id);
     if (key && !ambiguousNames.has(key)) {
@@ -4566,6 +4771,11 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
   // 「有东西没拿到」，它决定用户下一步要不要重跑。
   if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
+  // CAD 的待复核是按文件记的（逐文件 status=needs_review），没有 review.total_count。
+  const reviewFiles = surface === "cad"
+    ? fileResults.filter((entry) => fileResultProduced(entry) && fileResultPendingReview(entry) > 0).length
+    : 0;
+  if (reviewFiles > 0) clauses.push(`${reviewFiles} 个文件需复核`);
   // 占位页不是原页：那是程序自己画的一张失败占位页（白底红框、写着这一页没能生成译图），
   // 源页内容一个像素都不在上面。说成「已保留原页」会让用户去输出 PDF 里找原文。
   // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
@@ -4621,9 +4831,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const totalPages = producedFileResultTotal(result, "page_count");
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
-  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0) {
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated) {
     clauses.push(
-      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0
+      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
         ? "其余全部通过"
         : "全部通过",
     );
@@ -4702,7 +4912,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
  *
  *  只削掉认识的扩展名：`报价.v2` 这种带点的主干名不能被当成扩展名削掉，否则同一个文件
  *  两边算出来的键会不一样。 */
-const KNOWN_DOC_EXT_RE = /\.(?:xlsx|xlsm|xls|docx|doc|pdf|png|jpe?g|webp|bmp|tiff?)$/i;
+const KNOWN_DOC_EXT_RE = /\.(?:xlsx|xlsm|xls|docx|doc|pdf|png|jpe?g|webp|bmp|tiff?|dwg|dxf)$/i;
 
 function fileOutcomeKey(raw: unknown): string {
   const value = text(raw).trim();
@@ -4733,13 +4943,19 @@ function fileResultPendingReview(item: JsonObject): number {
     if (text(record(raw).severity) === "needs_review") pending += 1;
   }
   if (pending > 0) return pending;
+  // CAD：逐条未解决的文字 + 写回后仍像外文的残留文字。
+  if (item.status === "needs_review") {
+    const stats = record(item.stats);
+    const unresolved = Array.isArray(item.unresolved) ? item.unresolved.length : 0;
+    return Math.max(1, unresolved + num(stats.residual_foreign_text_count) + num(stats.replacement_characters));
+  }
   return num(item.placeholder_page_count) + num(item.suspect_adopted_page_count);
 }
 
 function fileResultProduced(item: JsonObject): boolean {
   if (item.success === true) return true;
-  if (item.status === "failed") return false;
-  return Boolean(text(item.output) || text(item.compressed_output));
+  if (item.status === "failed" || item.status === "stopped") return false;
+  return Boolean(text(item.output) || text(item.compressed_output) || text(item.output_path));
 }
 
 /** 整份都被「跳过 A3+」跳过的文件：输出文档写出来了，但内容跟源文件逐字节一样，一个字都没翻。
@@ -4786,8 +5002,15 @@ function resultTone(
 // 停止 / 暂停 / 继续 / 结束暂停
 // ---------------------------------------------------------------------------
 
+const STOP_MODAL_BODY: Record<Surface, string> = {
+  excel: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  word: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  pdf: "已生成的页面会保留在输出目录。想稍后接着跑，请改用「暂停提交」，之后可以选择继续或结束暂停。",
+  cad: "当前图纸完成后停止。已生成的图纸和报告会保留在输出目录，原件不会被改动；之后可以从断点继续。",
+};
+
 /** 正在展示的「安全停止」确认框。任务自己走到终态时要把它关掉——见 closeStopModal。 */
-const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null };
+const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null, cad: null };
 
 function closeStopModal(surface: Surface): void {
   // 任务已经结束了，再问「要不要停止当前任务」没有意义：这个框以前会一直浮在结果横幅
@@ -4805,7 +5028,7 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
     icon: "stop",
     sourceLabel: "停止运行中的任务",
     title: "安全停止当前任务？",
-    body: ["已生成的文件会保留在输出目录；Excel、Word 会结束为终态。PDF / 图片应先「暂停提交」，再选择继续或结束暂停。"],
+    body: [STOP_MODAL_BODY[surface]],
     actions: [
       { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
       { label: "安全停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
@@ -4822,23 +5045,33 @@ async function stopTask(taskId: string): Promise<void> {
   }
 }
 
-async function pausePdfTask(st: SurfaceState): Promise<void> {
+/** 暂停 / 继续的接口会回传最新任务状态，直接用它更新界面——不能只等事件流：
+ *  以前这里把返回值丢掉，而事件处理又只改了提示文字，任务状态一直停在 running，
+ *  暂停后底栏还是「暂停」按钮，「继续」永远不出现。 */
+function applyControlResponse(surface: Surface, taskId: string, status: TaskStatus): void {
+  const local = states[surface].task;
+  if (!local || local.task.task_id !== taskId || local.task.terminal) return;
+  local.task = { ...local.task, state: status.state };
+  rerender(surface);
+}
+
+async function pauseTask(surface: Surface, st: SurfaceState): Promise<void> {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
   try {
     const c = await getClient();
-    await c.request(`/api/tasks/${taskId}/pause`, { method: "POST" });
+    applyControlResponse(surface, taskId, await c.controlTask(taskId, "pause"));
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "暂停失败。"), error: true });
   }
 }
 
-async function resumePdfTask(st: SurfaceState): Promise<void> {
+async function resumeTask(surface: Surface, st: SurfaceState): Promise<void> {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
   try {
     const c = await getClient();
-    await c.request(`/api/tasks/${taskId}/resume`, { method: "POST" });
+    applyControlResponse(surface, taskId, await c.controlTask(taskId, "resume"));
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "继续任务失败。"), error: true });
   }

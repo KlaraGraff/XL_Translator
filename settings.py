@@ -780,6 +780,11 @@ class CadOutputSettings(BaseModel):
     use_custom_output_dir: bool = False
     custom_output_dir: str = ""
     translate_output_filename: bool = False
+    # 以下三项是 CAD 页右栏「本类型选项」的开关，和 Excel/Word/PDF 一样改了就存。
+    # 旧版 settings.json 没有这几个键时按默认值补齐（加法改动，无需迁移）。
+    include_block_text: bool = True
+    keep_work_dxf: bool = True
+    copy_related_files: bool = False
 
 
 class ExcelReviewSettings(BaseModel):
@@ -1077,6 +1082,9 @@ class AppSettings(BaseModel):
     word_source_lang: str = "auto"
     excel_target_lang: str = Field(default_factory=get_default_target_lang)
     word_target_lang: str = "fr"
+    # CAD 页自己的一对语言，与 Excel/Word 分开记忆；图纸最常见的是外文 → 中文。
+    cad_source_lang: str = "auto"
+    cad_target_lang: str = "zh"
     tm_source_lang: str = "zh"
     tm_target_lang: str = Field(default_factory=get_default_target_lang)
     recent_tm_lang_pairs: list[str] = Field(default_factory=list)
@@ -1169,6 +1177,7 @@ class AppSettings(BaseModel):
     last_excel_source_folder: str = ""
     last_word_source_folder: str = ""
     last_pdf_source_folder: str = ""
+    last_cad_source_folder: str = ""
     cleaner_mode: str = "diff"  # 清洗始终先生成建议，确认后才写入
     cleaner_engine: str = DEFAULT_CLOUD_PROVIDER
     cleaner_model: str = ""
@@ -1377,7 +1386,7 @@ class AppSettings(BaseModel):
             )
             self.source_lang = resolved_source_lang or default_source_lang
 
-        for field_name in ("excel_source_lang", "word_source_lang"):
+        for field_name in ("excel_source_lang", "word_source_lang", "cad_source_lang"):
             value = getattr(self, field_name, "auto")
             if is_auto_source_lang(value):
                 setattr(self, field_name, "auto")
@@ -1385,7 +1394,7 @@ class AppSettings(BaseModel):
                 resolved = resolve_language_code(value, source_supported_map)
                 setattr(self, field_name, resolved or default_source_lang)
 
-        for field_name in ("excel_target_lang", "word_target_lang"):
+        for field_name in ("excel_target_lang", "word_target_lang", "cad_target_lang"):
             value = getattr(self, field_name, default_target_lang)
             resolved = resolve_language_code(value, target_supported_map)
             setattr(self, field_name, resolved or default_target_lang)

@@ -625,7 +625,10 @@ def _has_translatable_content(text: str) -> bool:
 
 
 def _numeric_tokens(text: str) -> list[str]:
-    return re.findall(r"(?<![A-Za-z\w])\d+(?:[.,]\d+)?", text)
+    # 只排除紧跟在拉丁字母/数字/下划线后面的数字（Q235、M10 这类代号的一部分）。
+    # 以前用 \w 判断，而 \w 也匹配汉字，于是「共12页」「译文12345」里的数字全被漏掉，
+    # 中文译文一律判成「数字被改动」，整条译文被丢弃并标为需复核。
+    return re.findall(r"(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?", text)
 
 
 def _valid_translation(source: str, target: str) -> tuple[bool, str]:

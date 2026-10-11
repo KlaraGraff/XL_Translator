@@ -20,7 +20,7 @@ from core.cad_translation import (
     CadStopRequested,
     CadTranslationPipeline,
 )
-from core.file_progress import FileProgressReporter
+from core.file_progress import FileProgressReporter, file_progress_id
 from core.language_registry import get_target_lang_display
 from core.output_name_translation import translate_names, output_stem_from_translation
 from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
@@ -31,9 +31,18 @@ _PHASES = {
     "scan": (1, "读取与扫描"),
     "match": (2, "匹配记忆/术语"),
     "translate": (3, "AI 翻译"),
-    "write": (4, "写回 DWG"),
+    "write": (4, "写回图纸"),
     "verify": (5, "重新读取与校验"),
 }
+
+
+def _file_identity(source: Path) -> dict[str, str]:
+    """Name + file_id that the workspace uses to match a result to its scan row.
+
+    ``source_path`` is blanked by the API privacy filter, so without these the
+    file list cannot show which drawing produced what.
+    """
+    return {"name": source.name, "file_id": file_progress_id(source)}
 
 
 def _target_filename_label(target_lang: str) -> str:
@@ -137,39 +146,40 @@ class CadTaskRunner:
             return None
 
     def _progress(self, progress: CadProgress, *, file_path: Path | None = None) -> None:
-        phase_index, phase_name = _PHASES.get(progress.stage, (1, progress.stage))
-        # ProgressMsg is shared with the other surfaces.  Encode CAD batch
-        # progress as completed local phase units so the task manager's normal
-        # phase weighting remains untouched for Excel/Word/PDF.
+        _phase_index, phase_name = _PHASES.get(progress.stage, (1, progress.stage))
+        # 一批里每个文件都会把 5 个阶段从头走一遍。如果照 Excel/Word 的做法上报
+        # 「阶段 i/5 + 阶段内进度」，界面按阶段折算出的总进度会在第二个文件回到
+        # 「读取与扫描」时倒退一大截。CAD 这里直接上报整批的总进度：
+        # step_done/step_total = 已完成文件 + 当前文件内的加权进度（CadProgress.percent
+        # 已按 CAD_STAGE_WEIGHTS 折算好），phase_index=0 表示「没有跨文件的阶段划分」，
+        # 界面就直接用这个比例画进度条。阶段名里带上「第 i / N 个文件」。
         file_count = max(1, len(self._files))
         index = next((i for i, item in enumerate(self._files) if file_path is not None and Path(item.path) == Path(file_path)), 0)
         local_percent = max(0.0, min(100.0, float(progress.percent)))
         batch_done = int(round(index * 100 + local_percent))
         batch_total = file_count * 100
-        if self._last_stage and self._last_stage != progress.stage:
-            previous_index, previous_name = _PHASES.get(self._last_stage, (1, self._last_stage))
-            self._queue.put(ProgressMsg(
-                phase_index=previous_index,
-                phase_total=5,
-                phase_name=previous_name,
-                step_done=batch_total,
-                step_total=batch_total,
-            ))
+        label = f"{phase_name} · 第 {index + 1} / {file_count} 个文件" if file_count > 1 else phase_name
         self._last_stage = progress.stage
         self._queue.put(
             ProgressMsg(
-                phase_index=phase_index,
-                phase_total=5,
-                phase_name=phase_name,
+                phase_index=0,
+                phase_total=0,
+                phase_name=label,
                 step_done=batch_done,
                 step_total=batch_total,
             )
         )
-        self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 {phase_index}/5] {progress.message or phase_name}"))
+        # 具体说明（「发现 N 个可翻译文字实体」等）进运行日志，不再用状态消息覆盖进度卡标题——
+        # 以前标题会在「AI 翻译」和「状态：[阶段 3/5] 翻译完成」之间来回跳。
+        if progress.message:
+            prefix = f"{Path(file_path).name}：" if file_path is not None else ""
+            self._log("INFO", f"{prefix}{progress.message}")
         if file_path is not None:
+            # 文件状态用全页共享的 "active"（见 ui/src/file-progress.ts），以前写成
+            # "running"，界面认不出来，状态芯片上直接显示 undefined。
             self._file_progress.emit(
                 file_path,
-                "running",
+                "active",
                 progress.stage,
                 completed=max(0, int(progress.done)),
                 total=max(1, int(progress.total)),
@@ -471,14 +481,14 @@ class CadTaskRunner:
                                 shutil.copytree(old_evidence, evidence_target)
                             copied_paths["work_evidence_dir"] = str(evidence_target)
                         file_result = dict(prior.get("result") or {})
-                        file_result.update({"source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
+                        file_result.update({**_file_identity(source), "source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
                         self._log("INFO", f"{source.name}：复用已验证的上次结果")
                         checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
                         continue
-                self._file_progress.emit(source, "running", "extract")
+                self._file_progress.emit(source, "active", "scan")
                 def progress(value: CadProgress, path: Path = source) -> None:
                     self._progress(value, file_path=path)
 
@@ -508,13 +518,13 @@ class CadTaskRunner:
                 except CadStopRequested:
                     # 用户点了停止：当前文件记为"已停止"，不是"失败"，也不进问题清单。
                     self._file_progress.emit(source, "stopped", "stopped", result={"status": "stopped"})
-                    results.append({"source_path": str(source), "status": "stopped", "message": "已按请求停止"})
+                    results.append({**_file_identity(source), "source_path": str(source), "status": "stopped", "message": "已按请求停止"})
                     continue
                 except Exception as exc:  # one bad drawing must not erase the batch
                     failed_files = True
                     message = str(exc) or exc.__class__.__name__
                     self._file_progress.emit(source, "failed", "error", result={"status": "failed", "message": message})
-                    results.append({"source_path": str(source), "status": "failed", "message": message})
+                    results.append({**_file_identity(source), "source_path": str(source), "status": "failed", "message": message})
                     issues.append({"file": source.name, "stage": "cad", "message": message})
                     self._log("ERROR", f"{source.name}：{message}")
                     continue
@@ -523,6 +533,7 @@ class CadTaskRunner:
                 memory_hits += stats.memory_hits
                 api_calls += stats.ai_translated
                 file_result = {
+                    **_file_identity(source),
                     "source_path": str(result.source),
                     "output_path": str(result.output),
                     "work_dxf": str(result.work_dxf),
@@ -563,7 +574,7 @@ class CadTaskRunner:
                 if stats.unsupported_entities or stats.unknown_entity_count:
                     issues.append({"file": source.name, "reason": "unsupported_entities", "count": stats.unsupported_entities + stats.unknown_entity_count})
                 self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
-                self._log("INFO", f"{source.name}：已生成翻译 DWG")
+                self._log("INFO", f"{source.name}：已生成翻译图纸")
             elapsed = round(time.monotonic() - started, 3)
             batch_status = "stopped" if self._stop_event.is_set() else ("completed_with_issues" if issues else "done")
             batch_paths = self._write_batch_artifacts(status=batch_status, files=results, issues=issues)
@@ -583,6 +594,15 @@ class CadTaskRunner:
                         **batch_paths,
                         files=results,
                         issues=issues,
+                        # 与 Excel/Word 同一口径：还有几个文件没跑完，界面据此写「还有 N 个文件没跑到」。
+                        kpi={"unstarted_file_count": sum(
+                            1 for item in self._files
+                            if not any(
+                                entry.get("source_path") == str(Path(item.path))
+                                and entry.get("status") in {"succeeded", "needs_review"}
+                                for entry in results
+                            )
+                        )},
                     )
                 )
             else:
