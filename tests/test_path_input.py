@@ -18,7 +18,7 @@ def test_normalize_user_path_removes_common_matching_wrappers_only() -> None:
 
 
 def test_api_path_models_normalize_pasted_paths() -> None:
-    source = "/Users/lijianwei/Downloads/海关、开闭所图纸_法语原版&中文翻译件/法语原版/海关全套图纸/电气/应急照明/PDF/SNRS.DIA.DCE.PLAN.EDS.BAT DOUANE.pdf"
+    source = "/Users/someone/Downloads/海关、开闭所图纸_法语原版&中文翻译件/法语原版/海关全套图纸/电气/应急照明/PDF/SNRS.DIA.DCE.PLAN.EDS.BAT DOUANE.pdf"
     scan = ScanRequest(
         path=f"'{source}'",
         paths=[f'“{source}”'],
@@ -42,8 +42,8 @@ def test_api_path_models_normalize_pasted_paths() -> None:
 
 
 def test_real_user_pdf_path_is_recovered_after_unwrapping() -> None:
-    source = Path(
-        "/Users/lijianwei/Downloads/海关、开闭所图纸_法语原版&中文翻译件/法语原版/海关全套图纸/电气/应急照明/PDF/SNRS.DIA.DCE.PLAN.EDS.BAT DOUANE.pdf"
+    source = Path.home() / (
+        "Downloads/海关、开闭所图纸_法语原版&中文翻译件/法语原版/海关全套图纸/电气/应急照明/PDF/SNRS.DIA.DCE.PLAN.EDS.BAT DOUANE.pdf"
     )
     if not source.is_file():
         # 这是维护者本机上一份真实的报错文件，换台机器（包括 CI）没有它就无从验证。

@@ -11,7 +11,7 @@
 | 升级前基线 | Git 提交 `14c2e55`（V7.4.2，Qt 原生界面） |
 | 当前比较版本 | 当前 `main` 工作树（Tauri 2 + vanilla TypeScript 界面） |
 | 差异审计 | `docs/validation/2026-07-17_v8_feature_regression_audit.md` |
-| 对齐任务说明 | `/Users/lijianwei/Workspace/个人/CodingWorkspace/Codex/upgrade-functional-migration-alignment-prompt.md` |
+| 对齐任务说明 | `~/Workspace/个人/CodingWorkspace/Codex/upgrade-functional-migration-alignment-prompt.md` |
 
 ## 2. 迁移原则
 

@@ -2,7 +2,7 @@
 
 ## 工作目录
 
-**`/Users/lijianwei/vibecoding/claude/XL_Translator`**（不是 BTR project plan，上一轮是从那个目录起的会话）。
+**`~/vibecoding/claude/XL_Translator`**（不是 BTR project plan，上一轮是从那个目录起的会话）。
 先读 `AGENTS.md`：本项目要求「改完先自测再交付」，并规定了 GitHub 同步规则（remote 必须是
 `https://github.com/KlaraGraff/XL_Translator`，默认分支 `main`，不要新建仓库或分支）。
 
@@ -81,7 +81,7 @@ image effective pool: ['DeepSeek']
 ### 验证结果（暂停时的状态）
 
 ```bash
-cd /Users/lijianwei/vibecoding/claude/XL_Translator && ./.venv/bin/python3 -m pytest tests/ -q
+cd ~/vibecoding/claude/XL_Translator && ./.venv/bin/python3 -m pytest tests/ -q
 ```
 `476 passed, 25 subtests passed` · `ruff check core/ api/ settings.py tests/` 全通过 ·
 `cd ui && npx tsc --noEmit -p tsconfig.json` 通过。
@@ -122,7 +122,7 @@ translation 跟随 cleaner、cleaner 本地模型这两种新状态。
 ## 复现用的小脚本（验证跟随池）
 
 ```bash
-cd /Users/lijianwei/vibecoding/claude/XL_Translator && ./.venv/bin/python3 - <<'PY'
+cd ~/vibecoding/claude/XL_Translator && ./.venv/bin/python3 - <<'PY'
 import tempfile, pathlib
 from unittest.mock import patch
 import settings as sm

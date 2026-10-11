@@ -1,7 +1,7 @@
 # Skill 翻译与多轮纠偏经验交接
 
 更新日期：2026-08-02  
-适用项目：`/Users/lijianwei/vibecoding/claude/XL_Translator`
+适用项目：`~/vibecoding/claude/XL_Translator`
 
 ## 这份交接的范围
 
@@ -31,10 +31,10 @@
 
 | 来源 | 本机位置 | 含有什么 | 是否适合直接导入软件 |
 | --- | --- | --- | --- |
-| Codex 会话 | `/Users/lijianwei/.codex/sessions/` | 请求、回复、工具执行、局部反馈和任务产物线索 | 否，需按任务筛选、脱敏、结构化 |
-| Claude 项目会话 | `/Users/lijianwei/.claude/projects/-Users-lijianwei-vibecoding-claude-XL-Translator/` | 关于翻译软件、模型路由、跑批和验收的完整讨论 | 否，适合人工复盘和抽取决策 |
+| Codex 会话 | `~/.codex/sessions/` | 请求、回复、工具执行、局部反馈和任务产物线索 | 否，需按任务筛选、脱敏、结构化 |
+| Claude 项目会话 | `~/.claude/projects/-Users-<user>-vibecoding-claude-XL-Translator/` | 关于翻译软件、模型路由、跑批和验收的完整讨论 | 否，适合人工复盘和抽取决策 |
 | Claude 项目记忆 | 上述目录的 `memory/` | 已明确记录的长期工作偏好 | 可以人工转为产品默认规则 |
-| Codex 翻译 skills | `/Users/lijianwei/.codex/skills/{file-translate,excel-translate,word-translate,pdf-image-translate}/` | 路由、模型/CLI、输出约定、验证规则 | 可以抽取为产品工作流规范 |
+| Codex 翻译 skills | `~/.codex/skills/{file-translate,excel-translate,word-translate,pdf-image-translate}/` | 路由、模型/CLI、输出约定、验证规则 | 可以抽取为产品工作流规范 |
 | 最终交付物及 report/manifest | 每个任务当时指定的输出目录 | 真实的已交付译文、输入指纹、机械检查结果 | 只导入经人工确认的样本 |
 | Translator 应用 TM | `~/Library/Application Support/Translator/tm.db` | 术语和短文本翻译对 | 仅作为辅助词汇资产，不是本交接的主来源 |
 
@@ -104,7 +104,7 @@
 
 当前长期偏好已记录在：
 
-- `/Users/lijianwei/.claude/projects/-Users-lijianwei-vibecoding-claude-XL-Translator/memory/delegate-test-runs-to-sonnet.md`
+- `~/.claude/projects/-Users-<user>-vibecoding-claude-XL-Translator/memory/delegate-test-runs-to-sonnet.md`
 - [`../.claude/agents/translation-smoke.md`](../.claude/agents/translation-smoke.md)
 
 具体规则是：测试跑批委派给 Sonnet + medium；不要为了省钱改用 Haiku；真实模型 API 成本由 Translator 的文本/图像/审核角色及 CLI 覆盖决定；排版和语义验收不能因机械核查通过而跳过。
@@ -205,12 +205,12 @@ Translation job state
 ## 交接入口
 
 - 直接 skill 的工作流：
-  - `/Users/lijianwei/.codex/skills/file-translate/SKILL.md`
-  - `/Users/lijianwei/.codex/skills/excel-translate/SKILL.md`
-  - `/Users/lijianwei/.codex/skills/word-translate/SKILL.md`
-  - `/Users/lijianwei/.codex/skills/pdf-image-translate/SKILL.md`
+  - `~/.codex/skills/file-translate/SKILL.md`
+  - `~/.codex/skills/excel-translate/SKILL.md`
+  - `~/.codex/skills/word-translate/SKILL.md`
+  - `~/.codex/skills/pdf-image-translate/SKILL.md`
 - 软件现有风格与 Prompt：[`../config.py`](../config.py)、[`../core/engine_dispatcher.py`](../core/engine_dispatcher.py)
 - 已记录的跑批模型策略：[`../.claude/agents/translation-smoke.md`](../.claude/agents/translation-smoke.md)
-- 本地项目偏好记录：`/Users/lijianwei/.claude/projects/-Users-lijianwei-vibecoding-claude-XL-Translator/memory/`
+- 本地项目偏好记录：`~/.claude/projects/-Users-<user>-vibecoding-claude-XL-Translator/memory/`
 
 本文件是经验交接和产品设计依据，不包含原始翻译内容或密钥。后续的数据整理应以“用户已接受的修订闭环”为单位，而不是以聊天记录或单句模型输出为单位。
