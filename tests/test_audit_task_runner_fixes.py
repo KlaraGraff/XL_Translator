@@ -92,7 +92,7 @@ def _stopped_message(runner: TaskRunner) -> StoppedMsg:
 class StopDuringApiTranslationKeepsTmWrite(unittest.TestCase):
     """中-2: the run stops mid phase-2, after the API call was already paid for."""
 
-    def test_translation_paid_for_before_stop_still_lands_in_tm_but_file_is_not_written(self) -> None:
+    def test_translation_paid_for_before_stop_lands_in_tm_and_in_the_written_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.xlsx"
@@ -144,9 +144,12 @@ class StopDuringApiTranslationKeepsTmWrite(unittest.TestCase):
             self.assertIn(("项目名称", "Project Name"), pairs)
             self.assertEqual(lang_pair, "zh-en")
 
-            # ...but stopping still cancels file generation (phase 3 never runs) —
-            # that is the part of the run stopping is actually allowed to cancel.
-            writer.assert_not_called()
+            # ...and into the file: stopping writes out what was already
+            # translated (as Word does) instead of throwing it away.
+            writer.assert_called_once()
+            self.assertEqual(
+                writer.call_args.kwargs["translations"], {"项目名称": "Project Name"}
+            )
             stopped = _stopped_message(runner)
             self.assertIn("source_path", stopped.files[0] if stopped.files else {})
 

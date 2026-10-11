@@ -103,6 +103,10 @@ class TranslationBatchRunStats:
     # API 失败回退（译文=原文）的全量源文集合。failed_items 是限量采样，
     # 质量校验去重必须用全集，否则超出采样上限的条目仍会被二次计数。
     untranslated_sources: set[str] = field(default_factory=set)
+    # 用户按停止时还没翻、按原文占位交回的条目。它们不是接口出错（不进
+    # untranslated_count / failed_items），调用方据此把占位从译文表里摘掉，
+    # 写盘时保留原文、续译时重新排队，也不会被当成「API 没给译文」去吓用户。
+    stopped_sources: set[str] = field(default_factory=set)
     max_request_weight: int = 1
     weighted_scheduler_used: bool = False
     adaptive_concurrency_reductions: int = 0
@@ -134,6 +138,11 @@ class TranslationBatchRunStats:
             self.quality_reset_count += 1
             if source_text and len(self.quality_reset_items) < _FAILED_ITEM_SAMPLE_LIMIT:
                 self.quality_reset_items.append(source_text)
+
+    def record_stopped(self, texts: Sequence[str]) -> None:
+        """停止时整批没翻、原文占位交回——停止不是失败，不计入未翻译条数。"""
+        with self._lock:
+            self.stopped_sources.update(str(text or "") for text in texts)
 
     def record_untranslated(self, texts: Sequence[str], error: str = "") -> None:
         """Mark every entry of a batch as returned without a translation.
@@ -743,6 +752,7 @@ def _translate_batch_with_fallback(
     if not batch:
         return {}
     if should_stop and should_stop():
+        stats.record_stopped(batch)
         return {text: text for text in batch}
     request_generation: int | None = None
     try:
@@ -760,6 +770,7 @@ def _translate_batch_with_fallback(
             ) as lease:
                 request_generation = lease.generation
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return {text: text for text in batch}
                 partial = engine.translate_batch(
                     batch, target_lang, system_prompt, source_lang=source_lang
@@ -768,9 +779,17 @@ def _translate_batch_with_fallback(
         return partial
     except Exception as exc:  # noqa: BLE001 - fallback decides the safest degradation
         if isinstance(exc, ApiSchedulerAcquireCancelled):
+            stats.record_stopped(batch)
             return {text: text for text in batch}
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        if should_stop and should_stop():
+            # 停止时在途请求被打断（连接被掐、读超时……）报出来的错不是接口坏了：
+            # 记成「停止时尚未翻译」，不拆批重试、不计入未翻译条数，免得任务详情
+            # 让用户去查一个没坏的 API 配置。
+            logger.debug(f"停止期间批次请求中断：{exc!r}")
+            stats.record_stopped(batch)
+            return {text: text for text in batch}
         if api_scheduler is not None and concurrency_round < _MAX_CONCURRENCY_RETRY_ROUNDS:
             decision = handle_api_concurrency_limit(
                 exc,
@@ -783,6 +802,7 @@ def _translate_batch_with_fallback(
             if decision is not None:
                 stats.record_adaptive_concurrency_decision(decision)
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return {text: text for text in batch}
                 # Retrying the identical batch the instant the cap dropped is
                 # what turned upstream 429 jitter into a local request storm.
@@ -793,6 +813,7 @@ def _translate_batch_with_fallback(
                     should_stop=should_stop,
                 )
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return {text: text for text in batch}
                 return _translate_batch_with_fallback(
                     batch,
@@ -921,6 +942,7 @@ def _translate_batch_with_sources_fallback(
     if not batch:
         return {}
     if should_stop and should_stop():
+        stats.record_stopped(batch)
         return {
             text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
             for text in batch
@@ -941,6 +963,7 @@ def _translate_batch_with_sources_fallback(
             ) as lease:
                 request_generation = lease.generation
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return {
                         text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
                         for text in batch
@@ -953,12 +976,18 @@ def _translate_batch_with_sources_fallback(
         return {item.source_text: item for item in items}
     except Exception as exc:  # noqa: BLE001 - retain a safe non-TM fallback
         if isinstance(exc, ApiSchedulerAcquireCancelled):
+            stats.record_stopped(batch)
             return {
                 text: TranslationLanguageResult(text, text, source_lang="und", target_lang=target_lang)
                 for text in batch
             }
         if isinstance(exc, ApiKeyTemporarilyUnavailableError):
             raise
+        if should_stop and should_stop():
+            # 同 _translate_batch_with_fallback：停止打断的请求不算接口出错。
+            logger.debug(f"停止期间批次请求中断：{exc!r}")
+            stats.record_stopped(batch)
+            return _untranslated_language_results(batch, target_lang)
         if api_scheduler is not None and concurrency_round < _MAX_CONCURRENCY_RETRY_ROUNDS:
             decision = handle_api_concurrency_limit(
                 exc,
@@ -971,6 +1000,7 @@ def _translate_batch_with_sources_fallback(
             if decision is not None:
                 stats.record_adaptive_concurrency_decision(decision)
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return _untranslated_language_results(batch, target_lang)
                 _backoff_sleep(
                     concurrency_round,
@@ -979,6 +1009,7 @@ def _translate_batch_with_sources_fallback(
                     should_stop=should_stop,
                 )
                 if should_stop and should_stop():
+                    stats.record_stopped(batch)
                     return _untranslated_language_results(batch, target_lang)
                 return _translate_batch_with_sources_fallback(
                     batch,
