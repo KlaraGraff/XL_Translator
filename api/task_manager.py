@@ -1032,8 +1032,9 @@ class TranslationTaskManager:
                 return self.task_status(task_id)
             if task.state != "running":
                 raise TaskInputError("任务现在不能暂停。")
-            # A surface that pauses at the current-file boundary (CAD) keeps
-            # the intermediate state visible until the runner acknowledges it.
+            # A surface that pauses at its next safe point (CAD: between
+            # drawings or between request batches) keeps the intermediate
+            # state visible until the runner acknowledges it.
             task.state = (
                 "pausing" if get_surface(task.surface).pause_mode == "file_boundary" else "paused"
             )

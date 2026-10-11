@@ -47,9 +47,12 @@ _PHASES = {
     "verify": (5, "校验结果"),
 }
 
-# 暂停在文件边界生效时发出的状态行。api/task_manager.py 靠这个前缀确认「已暂停」，
+# 暂停真正生效时发出的状态行。api/task_manager.py 靠这个前缀确认「已暂停」，
 # 改措辞时两边一起改（那边直接 import 这个常量）。
+# 两处生效点：两张图纸之间，以及一张图纸翻译途中的两批请求之间（只有一张图纸时，
+# 以前要等整张图翻完才停，等于点了没用）。
 CAD_PAUSED_STATUS = "已暂停：当前文件已翻完，可以继续翻译或停止任务。"
+CAD_PAUSED_IN_FILE_STATUS = "已暂停：不再发出新的翻译请求，可以继续翻译或停止任务。"
 CAD_PAUSED_STATUS_PREFIX = "已暂停"
 
 # 摘要里给人看的状态；manifest / report 里仍存内部状态码。
@@ -175,6 +178,14 @@ class CadTaskRunner(BaseTaskRunner):
 
     def end_paused(self) -> None:
         self.stop()
+
+    def _wait_while_paused(self, status: str) -> None:
+        """Block the runner thread while paused; return on resume or stop."""
+        while self._pause_event.is_set() and not self._stop_event.is_set():
+            if not self._pause_acknowledged:
+                self._queue.put(StatusMsg(phase_desc=status))
+                self._pause_acknowledged = True
+            time.sleep(0.1)
 
     def _progress(self, progress: CadProgress, *, file_path: Path | None = None) -> None:
         _phase_index, phase_name = _PHASES.get(progress.stage, (1, progress.stage))
@@ -449,11 +460,7 @@ class CadTaskRunner(BaseTaskRunner):
         try:
             self._log("INFO", f"共 {len(self._files)} 个图纸文件")
             for item in self._files:
-                while self._pause_event.is_set() and not self._stop_event.is_set():
-                    if not self._pause_acknowledged:
-                        self._queue.put(StatusMsg(phase_desc=CAD_PAUSED_STATUS))
-                        self._pause_acknowledged = True
-                    time.sleep(0.1)
+                self._wait_while_paused(CAD_PAUSED_STATUS)
                 source = Path(item.path)
                 if self._stop_event.is_set():
                     self._file_progress.emit(source, "stopped", "stopped", result={"status": "stopped"})
@@ -533,6 +540,7 @@ class CadTaskRunner(BaseTaskRunner):
                     memory_lookup=self._memory_lookup,
                     translator=self._translator,
                     progress=progress,
+                    pause_gate=lambda: self._wait_while_paused(CAD_PAUSED_IN_FILE_STATUS),
                 )
                 try:
                     work_output = self._run_dir / relative.parent / output.name

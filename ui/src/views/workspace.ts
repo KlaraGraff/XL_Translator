@@ -11,7 +11,7 @@
 //   setup（未扫描 / 已扫描待开始） --scan--> setup（文件已填充）
 //   setup --start（可能经 xls/doc 兼容确认、并行风险确认）--> running
 //   running --stop--> running（等终态事件）--终态事件--> setup（横幅显示）
-//   running --pause（PDF；CAD 在当前文件结束后暂停）--> paused
+//   running --pause（PDF；CAD 在下一批请求之前暂停）--> paused
 //   paused --resume（PDF / CAD）--> running
 //   paused --end-paused（仅 PDF）--> running（等终态事件，同上落回 setup+横幅）
 // 「right column 运行时锁定」「完成横幅 + 复位」等细节见下方实现与文件尾的架构说明。
@@ -2473,7 +2473,7 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   }
 
   const task = st.task!;
-  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 在当前文件做完后暂停。
+  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 停止发出新的一批翻译请求（单张图纸也能停）。
   // Excel / Word 不给暂停按钮——后端会直接拒绝，按了只会弹一条报错。
   const pausable = surface === "pdf" || surface === "cad";
   return createTaskControlFoot({
@@ -3468,11 +3468,11 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     case "pausing":
       syncEventState(local, data, "pausing");
-      local.phaseName = surface === "cad" ? "正在暂停：当前图纸完成后暂停" : "正在暂停：已开始的页面完成后暂停";
+      local.phaseName = surface === "cad" ? "正在暂停：已发出的这批请求收回后暂停" : "正在暂停：已开始的页面完成后暂停";
       break;
     case "paused":
       syncEventState(local, data, "paused");
-      local.phaseName = surface === "cad" ? "已暂停：当前文件已翻完" : "已暂停，不再开始新的页面";
+      local.phaseName = surface === "cad" ? "已暂停，不再发出新的翻译请求" : "已暂停，不再开始新的页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":

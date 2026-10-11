@@ -120,7 +120,7 @@ export interface TaskControlFootOptions {
   idle: { label: string; disabled?: boolean; onClick: () => void };
   active?: {
     paused: boolean;
-    /** 已请求暂停、正在等当前单元（CAD 是当前文件）做完：暂停按钮变成不可点的「正在暂停…」。 */
+    /** 已请求暂停、正在等当前单元（CAD 是已发出的这批请求）收尾：暂停按钮变成不可点的「正在暂停…」。 */
     pausing?: boolean;
     onResume: () => void;
     /** 不支持暂停的任务（Excel / Word）不传，底栏只留「安全停止」。 */

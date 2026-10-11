@@ -1118,7 +1118,7 @@ async function stopTask(taskId: string): Promise<void> {
   }
 }
 
-/** 暂停/继续：PDF（暂停提交新页面）和 CAD（当前文件完成后暂停）都支持。 */
+/** 暂停/继续：PDF（暂停提交新页面）和 CAD（不再发出新的一批翻译请求）都支持。 */
 const PAUSABLE_SURFACES = new Set<TaskSurface>(["pdf", "cad"]);
 
 async function pauseTask(taskId: string): Promise<void> {
@@ -1548,7 +1548,7 @@ function renderDetail(): void {
     );
   }
   if (isTaskActive(task)) {
-    // CAD 和工作区底栏一致：当前文件完成后暂停，暂停后可继续，随时可安全停止。
+    // CAD 和工作区底栏一致：已发出的这批请求收回后暂停（单张图纸也能停），暂停后可继续，随时可安全停止。
     if (task.surface === "cad") {
       if (task.state === "paused") {
         actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
