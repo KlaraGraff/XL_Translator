@@ -1759,12 +1759,15 @@ def _inspect_settings_file() -> tuple[str, int | None, dict | None]:
     if not SETTINGS_PATH.exists():
         return "missing", None, None
     try:
-        raw = SETTINGS_PATH.read_text(encoding="utf-8")
+        raw_bytes = SETTINGS_PATH.read_bytes()
     except OSError as exc:
         logger.warning(f"settings.json 暂时读不到（不会覆盖，原文件保留）：{exc}")
         return "unreadable", None, None
     try:
-        payload = json.loads(raw)
+        # 解码放在「内容」这一档里：被别的编辑器存成 GBK 之类的文件读得出来、
+        # 只是内容不对，应当备份后重建，而不是一路抛 UnicodeDecodeError 让设置页
+        # 和维护页一起 500（审计 高-2）。带 BOM 的 UTF-8 照常读。
+        payload = json.loads(raw_bytes.decode("utf-8-sig"))
         if not isinstance(payload, dict):
             raise ValueError("settings.json 顶层必须是 JSON 对象")
     except Exception:
@@ -2152,7 +2155,7 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
     if not KEYS_PATH.exists():
         return {}
     try:
-        raw = KEYS_PATH.read_text(encoding="utf-8")
+        raw_bytes = KEYS_PATH.read_bytes()
     except OSError as exc:
         if not strict:
             logger.warning(f"keys.json 暂时读取不到：{exc}")
@@ -2166,7 +2169,8 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
         logger.warning(f"keys.json 暂时读取不到，按显式清空继续：{exc}")
         return {}
     try:
-        payload = json.loads(raw)
+        # 同 settings.json：编码不对算内容损坏，走下面的备份后续写（审计 中-6）。
+        payload = json.loads(raw_bytes.decode("utf-8-sig"))
         if not isinstance(payload, dict):
             raise ValueError("keys.json 顶层必须是 JSON 对象")
         return payload
