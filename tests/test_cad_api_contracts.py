@@ -37,7 +37,7 @@ def test_cad_scan_sources_exposes_capability_at_response_root(tmp_path, monkeypa
         "converter": None,
         "enabled": True,
     }
-    with patch("api.app.probe_status", return_value=status):
+    with patch("api.routes.tasks.probe_status", return_value=status):
         with TestClient(create_app()) as client:
             response = client.post(
                 "/api/sources/scan",
@@ -56,7 +56,7 @@ def test_cad_scan_route_accepts_a_shell_quoted_path(tmp_path, monkeypatch):
     source = tmp_path / "quoted drawing.dxf"
     source.write_text(_dxf_text(), encoding="utf-8")
     status = {"plugin": "enabled", "oda": "connected", "converter": None, "enabled": True}
-    with patch("api.app.probe_status", return_value=status):
+    with patch("api.routes.cad.probe_status", return_value=status):
         with TestClient(create_app()) as client:
             response = client.post(
                 "/api/cad/scan",
@@ -121,7 +121,7 @@ def test_domain_prompt_optimize_accepts_saved_custom_prompt(tmp_path, monkeypatc
             },
         )
         assert saved.status_code == 200, saved.text
-        with patch("api.app.build_role_engine", return_value=FakeEngine()):
+        with patch("api.routes.domains.build_role_engine", return_value=FakeEngine()):
             response = client.post(
                 "/api/domains/cad/optimize",
                 json={

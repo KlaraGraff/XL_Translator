@@ -1,0 +1,395 @@
+"""Source scanning, the task lifecycle, PDF page actions and the task event stream."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
+from loguru import logger
+
+from api.cad_plugin import (
+    probe_status,
+)
+from api.task_manager import (
+    TaskOptions,
+)
+from core.file_scanner import scan_excel_sources
+from core.pdf_image_translation import scan_pdf_sources
+from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
+from core.word_document import scan_word_sources
+from settings import (
+    load_settings,
+)
+from api.schemas import (
+    ScanRequest,
+    PdfPageActionRequest,
+    TaskStartRequest,
+)
+from api.routes._shared import (
+    _require_no_active_tasks,
+    _json_safe,
+)
+
+
+def register(app: FastAPI) -> None:
+    """Register the tasks routes on ``app``."""
+
+    @app.post("/api/sources/scan")
+    def scan_sources(request: ScanRequest) -> dict[str, Any]:
+        roots = [Path(item).expanduser() for item in request.paths if str(item).strip()]
+        if not roots:
+            roots = [Path(request.path).expanduser()]
+        if request.surface == "cad":
+            from core.file_progress import file_progress_id
+            status = probe_status()
+            converter_path = str(status.get("converter") or "").strip()
+            converter = SubprocessCadConverter(converter_path) if converter_path else None
+            cad_skipped: list[dict[str, str]] = []
+            try:
+                summaries = scan_cad_paths(
+                    roots,
+                    converter=converter,
+                    options=CadPipelineOptions(
+                        source_lang=str(request.source_language or "auto"),
+                        target_lang=str(request.target_language or "zh"),
+                        include_block_text=bool(request.include_block_text),
+                    ),
+                    skipped=cad_skipped,
+                )
+            except Exception as exc:
+                raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+            items = [
+                {
+                    "path": str(item.path),
+                    "name": item.filename,
+                    "format": item.format,
+                    "text_count": item.text_entity_count,
+                    "candidate_count": item.candidate_count,
+                    "needs_conversion": item.needs_conversion,
+                    "file_id": file_progress_id(item.path),
+                }
+                for item in summaries
+            ]
+            return {
+                "items": items,
+                "skipped": cad_skipped,
+                # Keep the capability at the response root for the CAD view;
+                # ``risk.capability`` remains for older scan consumers.
+                "capability": status,
+                "summary": {
+                    "file_count": len(items),
+                    "text_entity_count": sum(item["text_count"] for item in items),
+                    "candidate_count": sum(item["candidate_count"] for item in items),
+                },
+                "risk": {
+                    "capability": status,
+                    "message": "ODA 未连接时只能列出 DXF；DWG 翻译需先连接 ODA。"
+                    if not converter
+                    else "",
+                },
+                "previous_output": None,
+            }
+        if request.surface == "excel":
+            result = _merge_scan_results([scan_excel_sources(root) for root in roots])
+        elif request.surface == "word":
+            result = _merge_scan_results([scan_word_sources(root) for root in roots])
+        else:
+            result = _merge_scan_results(
+                [
+                    scan_pdf_sources(root, include_images=request.include_images)
+                    for root in roots
+                ]
+            )
+        from core.file_progress import file_progress_id
+
+        payload = {
+            "items": [{**_json_safe(item), "file_id": file_progress_id(item.path)} for item in result.items],
+            "skipped": [_json_safe(item) for item in result.skipped],
+            "summary": result.summary,
+            "risk": result.risk,
+        }
+        payload["previous_output"] = _detect_previous_output_safe(request, result, roots)
+        # ``result`` is a stable grouped alias for callers that consume
+        # one typed scan object; top-level fields keep the Phase 1 route
+        # backward compatible.
+        payload["result"] = dict(payload)
+        return payload
+
+    def _detect_previous_output_safe(
+        request: ScanRequest, result: Any, roots: list[Path]
+    ) -> dict[str, Any] | None:
+        # 检测只是给弹窗提供线索，失败绝不允许拖垮扫描本身——import 和调用
+        # 都包在这里，任何异常都降级成「没有上一次的输出」。
+        try:
+            from core.resume_detection import detect_previous_output
+
+            settings = load_settings()
+            if request.surface == "excel":
+                target_lang = settings.excel_target_lang
+                source_lang: str | None = settings.excel_source_lang
+                output_settings = settings.excel_output
+            elif request.surface == "word":
+                target_lang = settings.word_target_lang
+                source_lang = settings.word_source_lang
+                output_settings = settings.word_output
+            else:
+                target_lang = settings.pdf.target_lang
+                source_lang = None
+                output_settings = settings.pdf_output
+            custom_output_root = (
+                output_settings.custom_output_dir.strip() or None
+                if output_settings.use_custom_output_dir
+                else None
+            )
+            previous = detect_previous_output(
+                surface=request.surface,
+                items=result.items,
+                scan_roots=roots,
+                custom_output_root=custom_output_root,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                preferred_dir=request.preferred_resume_dir,
+                # Excel 的补译计划按这个开关决定公式格进不进待译集合，检测层
+                # 必须同一套口径，否则弹窗数字和任务实际行为对不上。
+                formula_display_value_backfill=(
+                    settings.excel_output.formula_display_value_backfill
+                    if request.surface == "excel"
+                    else True
+                ),
+            )
+        except Exception:
+            logger.exception("previous-output detection failed; scan continues without it")
+            return None
+        return _json_safe(previous) if previous else None
+
+    def _task_options(request: TaskStartRequest) -> TaskOptions:
+        return TaskOptions(
+            untranslated_only=request.untranslated_only,
+            protect_front_matter=request.protect_front_matter,
+            translate_headers_footers=request.translate_headers_footers,
+            allow_xls_fallback=request.allow_xls_fallback,
+            allow_doc_fallback=request.allow_doc_fallback,
+            include_images=request.include_images,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang,
+            allow_known_review_failure=request.allow_known_review_failure,
+            lang_pair=request.lang_pair,
+            resume_output_dir=request.resume_output_dir,
+            cad_output_dir=request.cad_output_dir,
+            cad_use_terminology=request.cad_use_terminology,
+            cad_keep_work_dxf=request.cad_keep_work_dxf,
+            cad_copy_related_files=request.cad_copy_related_files,
+            cad_verify_roundtrip=request.cad_verify_roundtrip,
+            cad_scan_replacement_chars=request.cad_scan_replacement_chars,
+            cad_include_block_text=request.cad_include_block_text,
+            cad_glossary_path=request.cad_glossary_path,
+            cad_use_memory=request.cad_use_memory,
+            cad_check_entity_counts=request.cad_check_entity_counts,
+            cad_scan_residual=request.cad_scan_residual,
+            cad_translate_output_filename=request.cad_translate_output_filename,
+        )
+
+    @app.post("/api/tasks/preflight")
+    def preflight_task(request: TaskStartRequest) -> dict[str, Any]:
+        return app.state.task_manager.preflight_task(
+            surface=request.surface,
+            source_path=request.source_path,
+            selected_paths=request.selected_paths,
+            options=_task_options(request),
+        )
+
+    @app.post("/api/tasks", status_code=202)
+    def start_task(request: TaskStartRequest) -> dict[str, Any]:
+        return app.state.task_manager.start_task(
+            surface=request.surface,
+            source_path=request.source_path,
+            selected_paths=request.selected_paths,
+            options=_task_options(request),
+            confirmation_token=request.confirmation_token,
+        )
+
+    @app.get("/api/tasks")
+    def list_tasks() -> dict[str, Any]:
+        return app.state.task_manager.list_tasks()
+
+    # Static task-center routes must be registered before the parameterized
+    # task-id routes below; Starlette matches routes in declaration order.
+    @app.get("/api/tasks/locks/current")
+    def current_task_locks() -> dict[str, Any]:
+        return {"reservations": app.state.task_manager.reservations()}
+
+    @app.get("/api/tasks/resources")
+    def task_resource_groups() -> dict[str, Any]:
+        return {"groups": app.state.task_manager.resource_groups()}
+
+    @app.delete("/api/tasks/history")
+    def clear_task_history() -> dict[str, Any]:
+        _require_no_active_tasks(app, category="task_history")
+        return {
+            "category": "task_history",
+            "removed_count": app.state.task_manager.clear_history(),
+            "outputs_affected": False,
+            "restart_required": False,
+        }
+
+    @app.get("/api/tasks/{task_id}/results")
+    def get_task_results(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.task_results(task_id)
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.task_status(task_id)
+
+    @app.get("/api/tasks/{task_id}/source")
+    def get_task_source(task_id: str) -> dict[str, Any]:
+        # 只给本机界面重新接管任务时恢复来源栏用；任务中心和历史记录里仍然没有路径。
+        return app.state.task_manager.task_source(task_id)
+
+    @app.delete("/api/tasks/{task_id}")
+    def delete_task_record(task_id: str) -> dict[str, Any]:
+        # 只删任务中心的这条记录；运行中的任务由 task manager 拒绝（409）。
+        return app.state.task_manager.delete_task_record(task_id)
+
+    @app.post("/api/tasks/{task_id}/stop")
+    def stop_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.stop_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/pause")
+    def pause_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.pause_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/resume")
+    def resume_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.resume_task(task_id)
+
+    @app.post("/api/tasks/{task_id}/end-paused")
+    def end_paused_task(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.end_paused_task(task_id)
+
+    @app.get("/api/tasks/{task_id}/pdf-pages")
+    def pdf_page_review(task_id: str) -> dict[str, Any]:
+        return app.state.task_manager.pdf_page_review(task_id)
+
+    @app.get("/api/tasks/{task_id}/pdf-pages/image")
+    def pdf_page_image(
+        task_id: str,
+        file: str,
+        page: int,
+        kind: str = "translated",
+    ) -> FileResponse:
+        path = app.state.task_manager.pdf_page_image_path(
+            task_id,
+            relative_path=file,
+            page_number=page,
+            kind=kind,
+        )
+        if path is None:
+            # 「上一版」只有做过一次单页重生成的页才有，缺它是常态而不是异常，
+            # 报错要说清是哪一种缺，别让用户以为页图丢了。
+            raise HTTPException(
+                404,
+                "这一页没有留下上一版译文。" if kind == "previous" else "该页图不存在。",
+            )
+        return FileResponse(
+            path,
+            media_type=_page_image_media_type(path),
+            # The page image is rewritten in place when a page is regenerated,
+            # so a cached copy would show the previous run's output.
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/regenerate")
+    def regenerate_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        return app.state.task_manager.request_pdf_page_action(
+            task_id,
+            action="regenerate",
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/rerun")
+    def rerun_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        # 终态任务专用：/regenerate 是「排队，继续翻译时生效」，这一条是「现在就重跑
+        # 这一页，并把输出文件重新合成一遍」。
+        return app.state.task_manager.rerun_pdf_page(
+            task_id,
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/restore-previous")
+    def restore_pdf_page_previous(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        # 终态任务专用：把这一页换回上一版译文页图（上一次重生成留下的那一版），
+        # 并按新的页图重新装配输出文件。不调用模型、不计费；做完才返回。
+        return app.state.task_manager.restore_pdf_page_previous(
+            task_id,
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.post("/api/tasks/{task_id}/pdf-pages/skip")
+    def skip_pdf_page(task_id: str, request: PdfPageActionRequest) -> dict[str, Any]:
+        return app.state.task_manager.request_pdf_page_action(
+            task_id,
+            action="skip",
+            relative_path=request.file,
+            page_number=request.page,
+        )
+
+    @app.get("/api/tasks/{task_id}/events")
+    def task_events(
+        task_id: str,
+        last_event_id: int = 0,
+        last_event_header: str | None = Header(default=None, alias="Last-Event-ID"),
+    ) -> StreamingResponse:
+        after = last_event_id
+        if last_event_header:
+            try:
+                after = int(last_event_header)
+            except ValueError:
+                pass
+        return StreamingResponse(
+            app.state.task_manager.iter_sse(task_id, after_event_id=after),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+
+_PAGE_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
+
+
+def _page_image_media_type(path: Path) -> str:
+    return _PAGE_IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _merge_scan_results(results: list[Any]) -> Any:
+    """Fold several single-path scans into one selectable list.
+
+    多选文件时每个路径各扫一次，合并后 summary / risk 走同一个类的属性算，不会和
+    单路径扫描算出两套口径。同一个文件被扫到两次（路径互相包含）只保留第一次。
+    """
+    base = results[0]
+    for extra in results[1:]:
+        base.items.extend(extra.items)
+        base.skipped.extend(extra.skipped)
+    seen: set[str] = set()
+    unique_items = []
+    for item in base.items:
+        key = str(getattr(item, "path", "") or "")
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        unique_items.append(item)
+    base.items[:] = unique_items
+    return base

@@ -176,8 +176,8 @@ class Phase8MaintenanceContractsTests(unittest.TestCase):
     def test_old_data_migration_code_and_routes_are_absent(self) -> None:
         root = Path(__file__).resolve().parents[1]
         self.assertFalse((root / "core" / "data_migration.py").exists())
-        api_source = (root / "api" / "app.py").read_text(encoding="utf-8")
-        self.assertNotIn("/api/migration/", api_source)
+        for module in [root / "api" / "app.py", *sorted((root / "api" / "routes").glob("*.py"))]:
+            self.assertNotIn("/api/migration/", module.read_text(encoding="utf-8"), module.name)
 
     def test_background_update_waits_for_quick_start_but_manual_check_is_available(self) -> None:
         client = TestClient(create_app(task_manager=_TaskManager(active_count=0)))
