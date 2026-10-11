@@ -275,10 +275,10 @@ const ADD_PROMPT_PRESET = "__add_prompt__";
 const LEGACY_CUSTOM_PROMPT = "__legacy_custom__";
 
 export const MODEL_ROLE_LABELS: Record<string, string> = {
-  translation: "Excel/Word/CAD",
+  translation: "文档翻译（Excel / Word / CAD）",
   cleaner: "记忆库清洗",
-  image: "PDF 翻译（图像生成）",
-  pdf_review: "PDF翻译（图像翻译）复核",
+  image: "PDF 与图片翻译",
+  pdf_review: "PDF 与图片审核",
 };
 export const MODEL_ROLE_ORDER = ["translation", "cleaner", "image", "pdf_review"];
 export const FOLLOW_PREFIX = "follow:";
@@ -1345,8 +1345,8 @@ function renderParamsPage(host: HTMLElement): void {
     grid.className = "grid2";
     const throughputUnlocked = Boolean(record(settings).engine && record(record(settings).engine).concurrency_unlocked);
     // 批次字符数同时决定自动分批和长段拆分；段落数在后台最多限制为 8。
-    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "单次模型请求的字符上限；超出自动分批，长段自动拆分。" : "单次模型请求的字符上限；超出自动分批，长段自动拆分。范围 800–12000。" }));
-    grid.append(numberField("单段严格重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "仅对空译文、明显不完整或质量校验失败的段落重试。" }));
+    grid.append(numberField("每批字符上限", num(batch.max_chars_per_batch, 800), (v) => void reRenderAfter(() => saveSettingPath("word_batch.max_chars_per_batch", v), { rerenderOnError: true }), { min: throughputUnlocked ? 1 : 800, max: throughputUnlocked ? undefined : 12000, integer: true, hint: throughputUnlocked ? "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。" : "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。范围 800–12000。" }));
+    grid.append(numberField("单段最多重试次数", num(batch.strict_retry_attempts, 3), (v) => void reRenderAfter(() => saveSettingPath("word_batch.strict_retry_attempts", v), { rerenderOnError: true }), { min: 1, max: 8, hint: "译文为空、明显不完整或没通过质量检查的段落，最多自动重翻几次。" }));
     body.append(grid);
   } else if (paramsTab === "pdf") {
     const pdf = pdfParamsSettings();
@@ -1355,7 +1355,7 @@ function renderParamsPage(host: HTMLElement): void {
     // 上下限对齐 config.py：PDF_PAGE_RETRY_ATTEMPTS_MIN/MAX(0–8)、
     // PDF_PAGE_CONCURRENCY_SAFETY_CAP(1–20)。max: 10 曾经比后端的 8 宽，落进
     // 那道夹缝的值只会在保存时被后端 422 打回（中-14）。
-    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "单页翻译失败后的重试次数，范围 0–8。" }));
+    grid.append(numberField("单页重试次数", num(pdf.page_retry_attempts, 1), (v) => void reRenderAfter(() => saveSettingPath("pdf.page_retry_attempts", v), { rerenderOnError: true }), { min: 0, max: 8, hint: "一页翻译失败后最多重试几次，0 到 8。" }));
     const concurrencyValue = pdf.page_generation_concurrency === null || pdf.page_generation_concurrency === undefined
       ? "" : String(pdf.page_generation_concurrency);
     const concurrencyInput = document.createElement("input");
@@ -1376,9 +1376,9 @@ function renderParamsPage(host: HTMLElement): void {
       }
       void reRenderAfter(() => saveSettingPath("pdf.page_generation_concurrency", parsed), { rerenderOnError: true });
     });
-    grid.append(fieldWithHint("页图并发（留空自动）", concurrencyInput, throughputUnlocked
-      ? "同时生成页图的数量；留空时按当前图像模型的吞吐设置自动决定。"
-      : "同时生成页图的数量，范围 1–20；留空时按当前图像模型的吞吐设置自动决定。"));
+    grid.append(fieldWithHint("同时生成页数（留空自动）", concurrencyInput, throughputUnlocked
+      ? "同时翻译几页；留空则按图像模型的速率设置自动决定。"
+      : "同时翻译几页，1 到 20；留空则按图像模型的速率设置自动决定。"));
     body.append(grid);
   } else if (paramsTab === "cad") {
     // CAD 没有放在这一页的参数；以前这个标签下是一块空白卡片，看着像没加载出来。
@@ -2061,8 +2061,21 @@ function renderDataPage(host: HTMLElement): void {
     host.append(warnCard);
   }
 
-  // 分类总览
-  const overviewCard = createCard([tcHead("本地数据分类")]);
+  // 本地数据：以前这里一张「分类」卡、下面再一张「单类重置」卡，把任务记录、日志、密钥、
+  // 设置列了两遍，按钮一处叫「清理」一处叫「清空 / 重置」。现在只留这一张。
+  const overviewCard = createCard([tcHead("本地数据")]);
+  const overviewDesc = document.createElement("p");
+  overviewDesc.className = "note";
+  overviewDesc.style.padding = "0 16px";
+  overviewDesc.style.fontSize = "12px";
+  overviewDesc.style.color = "var(--ink-3)";
+  overviewDesc.textContent = "每一项只清理 Translator 自己保存的数据，源文件和翻译结果文件不会被删除。";
+  overviewCard.append(overviewDesc);
+  const guarded = new Set(Array.isArray(maintenanceOverview?.activity_guarded_categories) ? maintenanceOverview.activity_guarded_categories as string[] : []);
+  const categoryNotes: Record<string, string> = {
+    settings: "恢复默认设置，密钥和记忆库会保留",
+    keys: "只显示数量，不显示密钥内容",
+  };
   const categories = maintenanceCategories();
   if (!categories.length) {
     overviewCard.append(createEmptyState({ title: "尚未读取本地数据概览", description: "点击上方“刷新”查看本地数据的位置和各类占用。", icon: "folder" }));
@@ -2070,20 +2083,42 @@ function renderDataPage(host: HTMLElement): void {
     for (const category of categories) {
       const name = document.createElement("span");
       name.style.flex = "1";
-      name.style.fontWeight = "600";
-      name.textContent = category.label;
-      const meta = document.createElement("span");
-      meta.style.color = "var(--ink-3)";
-      meta.style.fontSize = "12px";
-      meta.textContent = `${formatBytes(category.size_bytes)}${category.count !== undefined ? ` · ${category.count} 项` : ""}`;
+      const b = document.createElement("b");
+      b.textContent = category.label;
+      const small = document.createElement("small");
+      small.style.display = "block";
+      small.style.color = "var(--ink-3)";
+      small.style.fontSize = "11px";
+      const count = category.id === "keys" ? record(category).key_count ?? category.count : category.count;
+      const sizeText = `${formatBytes(category.size_bytes)}${count !== undefined ? ` · ${count} 项` : ""}`;
+      small.textContent = categoryNotes[category.id] ? `${sizeText} · ${categoryNotes[category.id]}` : sizeText;
+      name.append(b, small);
       const action = category.contains_user_output
         ? createChip({ label: "受保护", tone: "mute" })
         : category.clearable
-          ? createButton({ label: maintenanceVerb(category.id), size: "mini", variant: "danger", onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory) })
+          ? createButton({
+            label: maintenanceVerb(category.id), size: "mini", variant: "danger",
+            disabled: guarded.has(category.id) && activeTaskCount > 0,
+            onClick: () => requestMaintenanceClear(category.id as MaintenanceClearCategory),
+          })
           : createChip({ label: "自动维护", tone: "mute" });
-      overviewCard.append(connRow([name, meta, action]));
+      overviewCard.append(connRow([name, action]));
     }
   }
+  const quickStartName = document.createElement("span");
+  quickStartName.style.flex = "1";
+  const quickStartLabel = document.createElement("b");
+  quickStartLabel.textContent = "快速开始";
+  const quickStartMeta = document.createElement("small");
+  quickStartMeta.style.display = "block";
+  quickStartMeta.style.color = "var(--ink-3)";
+  quickStartMeta.style.fontSize = "11px";
+  quickStartMeta.textContent = "重新显示欢迎引导";
+  quickStartName.append(quickStartLabel, quickStartMeta);
+  overviewCard.append(connRow([
+    quickStartName,
+    createButton({ label: "重新显示", size: "mini", onClick: () => void showQuickStart() }),
+  ]));
   host.append(overviewCard);
 
   // 留存边界
@@ -2098,7 +2133,7 @@ function renderDataPage(host: HTMLElement): void {
   limitsBody.style.display = "flex";
   limitsBody.style.flexDirection = "column";
   limitsBody.style.gap = "6px";
-  limitsBody.append(sectionLabel("自动留存边界"));
+  limitsBody.append(sectionLabel("自动保留上限"));
   const limitRows: [string, string][] = [
     ["任务记录", `最近 ${historyLimit} 条`],
     ["运行日志", `${num(logsLimit.max_files, 5)} 个 × ${formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024)}`],
@@ -2190,55 +2225,6 @@ function renderDataPage(host: HTMLElement): void {
   diagCard.append(tableWrap);
   host.append(diagCard);
 
-  // 单类重置
-  const resetCard = createCard([tcHead("单类重置")]);
-  const resetDesc = document.createElement("p");
-  resetDesc.className = "note";
-  resetDesc.style.padding = "0 16px";
-  resetDesc.style.fontSize = "12px";
-  resetDesc.style.color = "var(--ink-3)";
-  resetDesc.textContent = "每一项只清理 Translator 自己保存的数据，翻译结果文件不会被删除。";
-  resetCard.append(resetDesc);
-  const keyCategory = maintenanceCategory("keys");
-  const resetItems: { label: string; meta: string; category: MaintenanceClearCategory; blockOnActive: boolean }[] = [
-    { label: "任务记录", meta: taskHistory ? `${formatBytes(taskHistory.size_bytes)} · ${num(taskHistory.count)} 项` : "", category: "task_history", blockOnActive: true },
-    { label: "运行日志", meta: logs ? formatBytes(logs.size_bytes) : "", category: "logs", blockOnActive: true },
-    { label: "保存的 API 密钥", meta: keyCategory ? `${num(keyCategory.count)} 个` : "只显示数量，不显示密钥内容", category: "keys", blockOnActive: true },
-    { label: "设置", meta: "保留密钥与记忆库", category: "settings", blockOnActive: false },
-  ];
-  for (const item of resetItems) {
-    const name = document.createElement("span");
-    name.style.flex = "1";
-    const b = document.createElement("b");
-    b.textContent = item.label;
-    const small = document.createElement("small");
-    small.style.display = "block";
-    small.style.color = "var(--ink-3)";
-    small.style.fontSize = "11px";
-    small.textContent = item.meta;
-    name.append(b, small);
-    const btn = createButton({
-      label: maintenanceVerb(item.category), size: "mini", variant: "danger",
-      disabled: item.blockOnActive && activeTaskCount > 0,
-      onClick: () => requestMaintenanceClear(item.category),
-    });
-    resetCard.append(connRow([name, btn]));
-  }
-  const quickStartName = document.createElement("span");
-  quickStartName.style.flex = "1";
-  const quickStartLabel = document.createElement("b");
-  quickStartLabel.textContent = "快速开始";
-  const quickStartMeta = document.createElement("small");
-  quickStartMeta.style.display = "block";
-  quickStartMeta.style.color = "var(--ink-3)";
-  quickStartMeta.style.fontSize = "11px";
-  quickStartMeta.textContent = "重新显示欢迎引导";
-  quickStartName.append(quickStartLabel, quickStartMeta);
-  resetCard.append(connRow([
-    quickStartName,
-    createButton({ label: "重新显示", size: "mini", onClick: () => void showQuickStart() }),
-  ]));
-  host.append(resetCard);
 
   // 翻译记忆库
   const tm = maintenanceCategory("tm");

@@ -157,9 +157,9 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
   if (active.pausing) {
     foot.append(createButton({ label: "正在暂停…", icon: "pause", size: "big", disabled: true, onClick: () => undefined }));
   } else if (active.onPause) {
-    foot.append(createButton({ label: active.pauseLabel ?? "暂停提交", icon: "pause", size: "big", onClick: active.onPause }));
+    foot.append(createButton({ label: active.pauseLabel ?? "暂停", icon: "pause", size: "big", onClick: active.onPause }));
   }
-  foot.append(createButton({ label: active.stopLabel ?? "安全停止", icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
+  foot.append(createButton({ label: active.stopLabel ?? "停止", icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
   return foot;
 }
 

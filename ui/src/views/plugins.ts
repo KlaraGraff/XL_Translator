@@ -163,7 +163,7 @@ function actionButtons(): HTMLElement {
 
 function render(): void {
   if (!mounted || !rootEl) return;
-  setTopbar({ title: "插件管理", status: { label: statusLabel(), tone: statusTone() }, subtitle: "管理 Translator 的插件与连接状态" });
+  setTopbar({ title: "插件", status: { label: statusLabel(), tone: statusTone() }, subtitle: "连接翻译 DWG 图纸需要的转换工具" });
   rootEl.className = "content plugins-content";
   rootEl.replaceChildren();
 

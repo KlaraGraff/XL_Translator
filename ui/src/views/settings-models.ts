@@ -193,7 +193,7 @@ export function renderModelsPage(host: HTMLElement): void {
   const spreadCard = createCard([]);
   const spreadBody = document.createElement("div");
   spreadBody.style.padding = "14px 16px";
-  spreadBody.append(sectionLabel("并发提醒"));
+  spreadBody.append(sectionLabel("多个任务同时运行"));
   spreadBody.append(createSwitchRow({
     label: "并行任务分散到不同连接",
     hint: "关闭时所有任务都用主用连接，多余的连接只作故障切换备用。打开后同时运行的任务会各自占用一条空闲连接。",
@@ -204,7 +204,7 @@ export function renderModelsPage(host: HTMLElement): void {
   spreadNote.className = "note";
   spreadNote.style.fontSize = "12px";
   spreadNote.style.color = "var(--ink-3)";
-  spreadNote.textContent = "同一 API 连接的并发会叠加，可能触发限流或费用增长。";
+  spreadNote.textContent = "几个任务同时用同一条连接时，请求会叠在一起，可能被服务商限速，费用也会增加。"
   spreadBody.append(spreadNote);
   spreadCard.append(spreadBody);
   host.append(spreadCard);
@@ -280,7 +280,7 @@ export function renderModelsPage(host: HTMLElement): void {
   const accessLabel = document.createElement("span");
   accessLabel.className = "accessbar-label";
   accessLabel.textContent = "当前连接方式";
-  accessLabel.append(hintBadge("跟随只共享来源主用连接的服务商、Base URL 和 Key；这条连接的模型名称独立保存。"));
+  accessLabel.append(hintBadge("选「跟随」时，直接用另一个用途主用连接的服务商、地址和密钥，只需要单独选模型。"));
   accessBar.append(accessLabel);
   const radioRow = document.createElement("div");
   radioRow.className = "radio-row";
@@ -402,7 +402,7 @@ export function renderModelsPage(host: HTMLElement): void {
       ],
       text(following ? followConnection?.api_mode || selected?.api_mode : selected?.connection_mode === "cloud" ? selected.api_mode : selected?.own_cloud_api_mode || (selected ? "auto" : rolePayload.api_mode), "auto"),
       () => undefined,
-      { disabled: following },
+      { disabled: following, hint: "不确定就选「自动识别」；只有服务商明确要求时才手动指定。" },
     );
     apiModeSelect = apiModeField.select;
     detailBody.append(apiModeField.root);
@@ -447,13 +447,15 @@ export function renderModelsPage(host: HTMLElement): void {
   let batchInput: HTMLInputElement | null = null;
   const needsBatch = role === "translation" || role === "cleaner";
   if (needsBatch) {
-    const batchField = numberField("批次大小", num(throughput.batch_size, 8), () => undefined, {
+    const batchField = numberField("每批段数", num(throughput.batch_size, 8), () => undefined, {
+      hint: "一次发给模型几段文字。调大更快，但一批出错要重试的也更多。",
       min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128), integer: true,
     });
     batchInput = batchField.querySelector("input");
     throughputGrid.append(batchField);
   }
-  const concurrencyField = numberField("并发数", num(throughput.concurrency, 1), () => undefined, {
+  const concurrencyField = numberField("同时请求数", num(throughput.concurrency, 1), () => undefined, {
+    hint: "同时向模型发几个请求。调大更快，但容易被服务商限速。",
     min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32), type: "text", integer: true,
   });
   const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;

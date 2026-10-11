@@ -1,4 +1,4 @@
-// 记忆库视图（对应样张屏⑦）—— 语言对/搜索/增删改/导入导出/深度清洗/冲突裁决。
+// 记忆库视图（对应样张屏⑦）—— 语言对/搜索/增删改/导入导出/清洗记忆库/冲突裁决。
 // 功能范围以 main.ts 的 renderTmView 及其配套 tm* 函数为准（见文件头注释），
 // 版式与文案按样张屏⑦精修；样张未画出的功能（统计条、最近语言对、冲突裁决、任务风险
 // 确认）保留但用现有组件与设计令牌收纳，不新增样张之外的视觉语言。
@@ -704,7 +704,7 @@ function openDeleteModal(entryToDelete: TmEntry): void {
 }
 
 // ---------------------------------------------------------------------------
-// 深度清洗（tm_clean 任务）
+// 清洗记忆库（tm_clean 任务）
 // ---------------------------------------------------------------------------
 
 function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmation: boolean; confirmation_token?: string; risk?: JsonObject }): void {
@@ -762,17 +762,36 @@ async function submitTmCleanStart(payload: JsonObject, confirmationToken: string
       body: JSON.stringify(confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload),
     });
     cleaningState = "idle";
-    showToast({ message: "深度清洗任务已提交，前往任务中心查看进度。" });
+    showToast({ message: "记忆库清洗已开始，可以在任务中心看进度。" });
     navigate("tasks", { taskId: task.task_id });
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: `深度清洗启动失败：${errorMessage(error)}`, error: true });
+    showToast({ message: `记忆库清洗没能开始：${errorMessage(error)}`, error: true });
   }
 }
 
+function confirmTmClean(): void {
+  const langName = (options: LanguageOption[], code: string) => options.find((o) => o.code === code)?.display_name ?? code;
+  const pairLabel = `${langName(sourceOptions, sourceLang)} → ${langName(targetOptions, targetLang)}`;
+  const scope = keyword ? "" : `（共 ${total} 条，固定词条不参与）`;
+  openModal({
+    tone: "warn",
+    icon: "warn",
+    title: "清洗记忆库？",
+    body: [
+      `会把「${pairLabel}」里没有固定的词条${scope}交给模型检查，找出译法不统一或有错的地方，给出修改建议。这会调用模型，按条数产生费用。`,
+      "建议生成后要你逐条确认才会写入，记忆库不会被直接改动。",
+    ],
+    actions: [
+      { label: "取消", variant: "default" },
+      { label: "开始清洗", variant: "primary", onClick: () => void tmClean() },
+    ],
+  });
+}
+
 async function tmClean(): Promise<void> {
-  // 深度清洗也是新任务,同样吃「更新装好没重启 → 组件加载失败」这一刀(高-12)。
+  // 记忆库清洗也是新任务,同样吃「更新装好没重启 → 组件加载失败」这一刀(高-12)。
   if (consumePendingRestartWarning()) {
     openRestartBeforeTaskModal(() => void tmClean());
     return;
@@ -795,7 +814,7 @@ async function tmClean(): Promise<void> {
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: `深度清洗启动失败：${errorMessage(error)}`, error: true });
+    showToast({ message: `记忆库清洗没能开始：${errorMessage(error)}`, error: true });
   }
 }
 
@@ -1443,7 +1462,8 @@ function rebuildToolbar(): void {
       ]),
   });
   actions.append(importBtn, exportBtn);
-  actions.append(createButton({ label: "深度清洗", variant: "primary", disabled: cleaningState === "running", onClick: () => void tmClean() }));
+  // 清洗会调用模型、按条数花钱，所以是普通按钮、点了先确认；库是空的时候没东西可洗。
+  actions.append(createButton({ label: "清洗记忆库", disabled: cleaningState === "running" || (!keyword && total === 0), onClick: () => confirmTmClean() }));
   row.append(actions);
   toolbarCardEl.append(row);
 

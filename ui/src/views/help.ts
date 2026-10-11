@@ -70,7 +70,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "folder",
     title: "输出与兼容格式",
-    body: "标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件管理」里连接图纸转换工具。",
+    body: "标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件」里连接图纸转换工具。",
     footer: (host) => {
       const details = document.createElement("details");
       details.className = "help-details";

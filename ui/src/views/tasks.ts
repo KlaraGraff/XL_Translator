@@ -219,7 +219,9 @@ function taskStateMeta(task: TaskStatus, streamState?: StreamState): { label: st
   if (streamState === "interrupted") {
     return { label: "应用中断", tone: "dgr" };
   }
-  return { label: STATE_LABELS[task.state] ?? task.state, tone: TONE_MAP[task.state] ?? "mute" };
+  // 记忆库清洗任务跑着的时候不该叫「翻译中」。
+  const label = task.state === "running" && (task.surface === "tm_clean" || task.surface === "cleaner") ? "清洗中" : STATE_LABELS[task.state] ?? task.state;
+  return { label, tone: TONE_MAP[task.state] ?? "mute" };
 }
 
 function formatClock(epoch?: number): string {
@@ -397,10 +399,10 @@ function connectionSwitchText(task: TaskStatus): string {
 
 /** model_snapshot 里没给 label 的角色（老记录）才用得到的兜底名字。 */
 const ROLE_LABELS: Record<string, string> = {
-  translation: "翻译模型",
-  image: "图像翻译模型",
-  pdf_review: "PDF翻译（图像翻译）复核",
-  review: "审核模型",
+  translation: "文档翻译模型",
+  image: "PDF 与图片翻译模型",
+  pdf_review: "PDF 与图片审核模型",
+  review: "PDF 与图片审核模型",
   cleaner: "记忆库清洗模型",
 };
 
@@ -464,7 +466,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["未开始", ["unstarted_count", "not_started_count", "unstarted_file_count"]],
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
         ["记忆库命中", ["tm_hit_count", "tm_hits"]],
-        ["送模型文本", ["model_translation_text_count", "model_text_count", "translated_text_count"]],
+        ["交给模型翻译", ["model_translation_text_count", "model_text_count", "translated_text_count"]],
       ],
       reviewSource,
     );
@@ -491,8 +493,8 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
     ).concat(
       pickKpis(
         [
-          ["严格恢复", ["retry_recovered_count", "recovered_count"]],
-          ["仲裁接受", ["semantic_accepted_count"]],
+          ["重译后补上", ["retry_recovered_count", "recovered_count"]],
+          ["复查后采用", ["semantic_accepted_count"]],
         ],
         withRecovery,
       ),
@@ -508,8 +510,8 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["已生成页", ["generated_page_count"]],
         ["未开始页", ["unstarted_page_count"]],
         ["高清 PDF", ["generated_pdf_count"]],
-        ["译图", ["generated_image_count"]],
-        ["失败占位", ["placeholder_page_count"]],
+        ["译文图片", ["generated_image_count"]],
+        ["失败页（已放占位）", ["placeholder_page_count"]],
         // 跟「失败占位」并列的必须是与它互斥的那个数。「审核未通过」里有一半是直接退回
         // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。
         ["有疑点仍采用", ["suspect_adopted_page_count"]],
@@ -526,7 +528,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["已翻译文字", ["translated_entities"]],
         ["未开始", ["unstarted_file_count"]],
         ["记忆库命中", ["tm_hit_count"]],
-        ["模型调用", ["api_call_count"]],
+        ["调用模型次数", ["api_call_count"]],
       ],
       source,
     );
@@ -542,7 +544,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
   );
 }
 
-const WARN_KPI_LABELS = new Set(["需复核", "未生成", "未翻译段", "失败占位", "有疑点仍采用"]);
+const WARN_KPI_LABELS = new Set(["需复核", "未生成", "未翻译段", "失败页（已放占位）", "有疑点仍采用"]);
 
 interface ReviewRow {
   file: string;
@@ -1025,7 +1027,7 @@ function handleEvent(taskId: string, event: SseEvent): void {
   if (event.type === "stopping") entry.task = { ...entry.task, state: "stopping" };
   if (event.type === "paused") {
     entry.task = { ...entry.task, state: "paused" };
-    entry.phaseName = "已暂停提交新页面";
+    entry.phaseName = "已暂停，不再开始新的页面";
   }
   if (event.type === "resumed") {
     entry.task = { ...entry.task, state: "running" };
@@ -1146,13 +1148,13 @@ async function resumeTask(taskId: string): Promise<void> {
 async function endPausedPdfTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry || entry.task.surface !== "pdf") return;
-  if (!window.confirm("结束暂停任务将不再提交未处理页面，但会写入并保留已完成页面、素材、清单和报告。是否结束？")) return;
+  if (!window.confirm("结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？")) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
     touch(taskId);
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "结束暂停失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, "没能结束任务，请再试一次。"), error: true });
   }
 }
 
@@ -1198,11 +1200,11 @@ function confirmStopTask(taskId: string, surface: string): void {
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "安全停止当前任务？",
+    title: "停止当前任务？",
     body: [stopConfirmBody(surface)],
     actions: [
       { label: "继续执行", variant: "default" },
-      { label: "安全停止", variant: "danger-solid", onClick: () => stopTask(taskId) },
+      { label: "停止", variant: "danger-solid", onClick: () => stopTask(taskId) },
     ],
   });
 }
@@ -1551,16 +1553,16 @@ function renderDetail(): void {
       if (task.state === "paused") {
         actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
       } else if (task.state !== "pausing" && task.state !== "stopping") {
-        actions.append(createButton({ label: "当前文件完成后暂停", size: "mini", onClick: () => void pauseTask(task.task_id) }));
+        actions.append(createButton({ label: "暂停", size: "mini", onClick: () => void pauseTask(task.task_id) }));
       }
-      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
+      actions.append(createButton({ label: "停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     } else if (task.surface === "pdf" && task.state === "paused") {
       actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
-      actions.append(createButton({ label: "结束暂停", variant: "danger", size: "mini", onClick: () => void endPausedPdfTask(task.task_id) }));
+      actions.append(createButton({ label: "结束任务", variant: "danger", size: "mini", onClick: () => void endPausedPdfTask(task.task_id) }));
     } else if (task.surface === "pdf") {
-      actions.append(createButton({ label: "暂停提交", size: "mini", onClick: () => void pauseTask(task.task_id) }));
+      actions.append(createButton({ label: "暂停", size: "mini", onClick: () => void pauseTask(task.task_id) }));
     } else {
-      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
+      actions.append(createButton({ label: "停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     }
   }
   if (task.terminal) {
@@ -1636,7 +1638,7 @@ function renderDetail(): void {
     sectionTitle.style.fontSize = "13px";
     sectionTitle.style.fontWeight = "650";
     sectionTitle.style.margin = "6px 0 8px";
-    sectionTitle.textContent = "结果定位清单 ";
+    sectionTitle.textContent = "需要复核的位置 ";
     const hint = document.createElement("span");
     hint.style.fontWeight = "400";
     hint.style.color = "var(--ink-3)";
@@ -1730,7 +1732,7 @@ function renderDetail(): void {
     sectionTitle.style.fontSize = "13px";
     sectionTitle.style.fontWeight = "650";
     sectionTitle.style.margin = "16px 0 8px";
-    sectionTitle.textContent = "产物文件";
+    sectionTitle.textContent = "生成的文件";
     detailRootEl.append(sectionTitle);
 
     const table = document.createElement("table");

@@ -157,48 +157,48 @@ interface ToggleDef {
   pathKind: TogglePathKind;
   /** flat: 完整点路径（如 "excel_review.mark_review_items"）；output: 只给 key 本身，前缀由 outputSettingPath() 解析。 */
   path?: string;
-  /** 与另一个开关互斥：本开关打开时另一个自动关闭，反之亦然（Excel 的行高精调/锁定缩字号）。 */
+  /** 与另一个开关互斥：本开关打开时另一个自动关闭，反之亦然（Excel 的「用 Excel 调整行高」/「保持行高，缩小字号」）。 */
   exclusiveWith?: string;
 }
 
 const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
-  { key: "translationOnly", label: "仅显示译文", hint: "翻译后的工作表仅显示译文；独立的「_原文」副本由其开关控制。", default: false, pathKind: "output", path: "output_translation_only" },
-  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "translateSheetNames", label: "翻译工作表名称", hint: "翻译 Excel 工作表名称，并同步更新工作簿内部对工作表的引用；遇到无法安全处理的引用时保留原名称。", default: true, pathKind: "output", path: "translate_sheet_names" },
-  { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },
-  { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
-  { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
-  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
-  { key: "reviewMark", label: "标记需复核内容", hint: "为保留原文和疑似原文异常的单元格标注底色，便于人工复核。程序自己判过没问题的（如语义校验接受）只进报告，不标底色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
+  { key: "translationOnly", label: "仅显示译文", hint: "开启后工作表里只放译文。要不要另存一份原文，看下面的「另存原文工作表」。", default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "translateSheetNames", label: "翻译工作表名称", hint: "工作表标签名也翻译，公式里引用到的表名会一起改；改了不安全的表保留原名。", default: true, pathKind: "output", path: "translate_sheet_names" },
+  { key: "keepOriginal", label: "另存原文工作表", hint: "每张工作表旁边再放一份没翻译的原文，表名后面加「_原文」。", default: true, pathKind: "output", path: "keep_original_sheets" },
+  { key: "formulaBackfill", label: "翻译公式单元格", hint: "公式单元格按现在显示的内容写成双语文字，之后不再自动计算。关闭则公式单元格保持原样、不翻译。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
+  { key: "excelAutofit", label: "用 Excel 调整行高", hint: "需要本机装有 Excel。开启后用 Excel 按译文重算行高，更准；用不了时保留程序估算的行高，并在结果里提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
+  { key: "lockRowHeight", label: "保持行高，缩小字号", hint: "不改行高，译文放不下时缩小字号；缩到最小仍放不下的单元格标为需复核。和「用 Excel 调整行高」只能选一个。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
+  { key: "reviewMark", label: "标记需复核内容", hint: "把保留了原文、或原文里疑似夹杂错误外文的单元格涂上底色，方便人工检查。程序已确认没问题的只写进报告，不涂色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
 ];
 
 const WORD_TOGGLES: ToggleDef[] = [
   { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
   { key: "translationOnly", label: "仅显示译文", hint: "开启后输出文件只保留译文；关闭时保留原文与译文。", default: false, pathKind: "output", path: "output_translation_only" },
-  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "wordNativePreprocessing", label: "本地自动编号预处理", hint: "依次尝试本机 Microsoft Word 和 LibreOffice；不可用时自动用 Python 保守物化编号，关闭时全程只用 Python。所有预处理都发生在临时副本。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
+  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "wordNativePreprocessing", label: "用 Word / LibreOffice 处理编号", hint: "翻译前要把自动编号（如 1.1、（一））转成普通文字，免得译后编号错乱。开启时优先用本机的 Word 或 LibreOffice，效果更准；都没有时自动改用内置方式。关闭则始终用内置方式。只处理临时副本，原件不动。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
   { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
-  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头一直保留到正文第一个章节标题为止，封面、批准页、目录、前言都不翻译。章节标题按「第一章」「1 概述」「1.1 概述」「（一）」以及 Word 内置的标题样式识别，目录里的同名条目不算。识别不到正文起点时不启用保护，会在日志中说明。全译和补译都生效。", default: true, pathKind: "none" },
-  { key: "translateHeadersFooters", label: "翻译页眉页脚", hint: "默认不翻。开启后页眉页脚的文字也会翻译，译文用「 / 」接在同一行原文后面，不另起一行——页眉高度是固定的，多一行会把正文顶下去。只有页码、目录域的页眉页脚仍然跳过。全译和补译都生效。", default: false, pathKind: "none" },
+  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；找不到正文起点时不启用，并在日志里说明。", default: true, pathKind: "none" },
+  { key: "translateHeadersFooters", label: "翻译页眉页脚", hint: "开启后页眉页脚也翻译，译文用「 / 」接在原文同一行，免得页眉变高把正文往下挤。页码和目录类的页眉页脚不翻。", default: false, pathKind: "none" },
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
-  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "pdfReview", label: "逐页审核模型", hint: "开启后由审核模型逐页复核译文；审核模型的配置与连接状态会和任务一起冻结。", default: false, pathKind: "flat", path: "pdf.review_enabled" },
+  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "pdfReview", label: "逐页审核", hint: "每页翻完再让审核模型检查一遍版式和文字是否完整，有问题的页会提醒你复核。每页多调用一次模型，会多一份费用。", default: false, pathKind: "flat", path: "pdf.review_enabled" },
   { key: "pdfCompressed", label: "生成压缩 PDF", hint: "在原始输出之外额外生成一份体积更小的 PDF。", default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
-  { key: "pdfImages", label: "允许独立图片", hint: "只决定 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF 是否作为独立输入扫描；PDF 页面一律按版式协议处理。", default: true, pathKind: "flat", path: "pdf.include_images" },
+  { key: "pdfImages", label: "也翻译图片文件", hint: "开启后扫描时会把 PNG、JPG、WebP、BMP、TIFF 图片也列进来一起翻译；关闭则只处理 PDF。", default: true, pathKind: "flat", path: "pdf.include_images" },
   // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
   // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
-  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
+  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "长宽都比 A4 大约 15% 以上的页面（A3 及更大，横竖都算）不翻译，原样放进输出文件，清晰度不变。工程图纸常是这种幅面。比 A4 稍大一点的（比如扫描白边）不受影响。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
 // 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
 const CAD_TOGGLES: ToggleDef[] = [
-  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "cadBlockText", label: "翻译图块内文字", hint: "图块定义和属性里的文字也一起翻译。关闭后只翻译模型空间和布局里直接放置的文字。", default: true, pathKind: "output", path: "include_block_text" },
-  { key: "cadKeepWorkDxf", label: "保留工作 DXF", hint: "在输出文件旁边额外保留一份翻译后的 DXF，便于用其他软件核对。", default: true, pathKind: "output", path: "keep_work_dxf" },
+  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "cadBlockText", label: "翻译图块内文字", hint: "图块里的文字（含属性文字）也一起翻译；关闭则只翻译直接画在图纸上的文字。", default: true, pathKind: "output", path: "include_block_text" },
+  { key: "cadKeepWorkDxf", label: "另存一份 DXF", hint: "除了输出的图纸，再额外保存一份翻译后的 DXF，方便用别的软件核对。", default: true, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: "复制同名附属文件", hint: "把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。", default: false, pathKind: "output", path: "copy_related_files" },
 ];
 
@@ -959,7 +959,7 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   }
   if (active && st.task) {
     const state = st.task.task.state;
-    const meta = runningStatusMeta(state, surface);
+    const meta = runningStatusMeta(state);
     const fileCount = st.selected.size || st.files.length;
     // 专业领域选「无」时不写：单独一个「无」挂在语言后面，看不出指的是什么。
     const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== "无"
@@ -993,11 +993,10 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: "待选择来源", tone: "idle" }, subtitle: SURFACE_EMPTY_SUBTITLE[surface] });
 }
 
-function runningStatusMeta(state: TaskStatus["state"], surface: Surface): { label: string; tone: StatusTone } {
+function runningStatusMeta(state: TaskStatus["state"]): { label: string; tone: StatusTone } {
   switch (state) {
     case "paused":
-      // PDF 暂停的是「提交新页面」；CAD 是做完当前文件后整体暂停。
-      return { label: surface === "cad" ? "已暂停" : "已暂停提交", tone: "pause" };
+      return { label: "已暂停", tone: "pause" };
     case "pausing":
       return { label: "正在暂停", tone: "pause" };
     case "stopping":
@@ -1474,7 +1473,7 @@ function buildCadConverterBanner(st: SurfaceState): HTMLElement | null {
     : "DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。";
   tx.append(title, body);
   banner.append(tx);
-  banner.append(createButton({ label: "打开插件管理", onClick: () => navigate("plugins") }));
+  banner.append(createButton({ label: "打开插件", onClick: () => navigate("plugins") }));
   return banner;
 }
 
@@ -2005,11 +2004,11 @@ function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
   if (surface === "word" && local.wordRecovery) {
     const r = local.wordRecovery;
     const chips: HTMLElement[] = [];
-    chipIfAny(chips, num(r.retry_round), `重试轮次 ${num(r.retry_round)}`, "tint");
-    chipIfAny(chips, num(r.semantic_processing_count), `仲裁处理中 ${num(r.semantic_processing_count)}`, "tint");
-    chipIfAny(chips, num(r.semantic_accepted_count), `仲裁已接受 ${num(r.semantic_accepted_count)}`, "ok");
+    chipIfAny(chips, num(r.retry_round), `第 ${num(r.retry_round)} 轮重译`, "tint");
+    chipIfAny(chips, num(r.semantic_processing_count), `复查中 ${num(r.semantic_processing_count)}`, "tint");
+    chipIfAny(chips, num(r.semantic_accepted_count), `复查后采用 ${num(r.semantic_accepted_count)}`, "ok");
     const unresolved = num(r.retry_unresolved_count, num(r.unresolved_count));
-    chipIfAny(chips, unresolved, `未恢复 ${unresolved}`, "warn");
+    chipIfAny(chips, unresolved, `仍未翻好 ${unresolved}`, "warn");
     return chips;
   }
   if (surface === "pdf" && local.pdfPageRecovery) {
@@ -2247,7 +2246,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   }
 
   const typeSec = el("div", "rp-sec");
-  typeSec.textContent = `本类型选项 · ${SURFACE_LABEL[surface]}`;
+  typeSec.textContent = `${SURFACE_LABEL[surface]} 选项`;
   scroll.append(typeSec);
 
   const resumeAuto = Boolean(activeResumeDir(st));
@@ -2485,11 +2484,11 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
       onResume: () => void resumeTask(surface, st),
       onPause: pausable ? () => void pauseTask(surface, st) : undefined,
       onStop: () => confirmStopTask(surface, st),
-      pauseLabel: surface === "cad" ? "当前文件完成后暂停" : "暂停提交",
+      pauseLabel: "暂停",
       finishPaused: surface === "pdf" && task.task.state === "paused"
-        ? { label: "结束暂停并收尾", onClick: () => void confirmEndPaused(st), note: "收尾会保存已完成页并生成部分结果报告" }
+        ? { label: "结束任务", onClick: () => void confirmEndPaused(st), note: "结束后会保存已完成的页面，并生成这部分的报告" }
         : undefined,
-      stopLabel: "安全停止",
+      stopLabel: "停止",
     },
   });
 }
@@ -3077,9 +3076,9 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
         title: "需要先连接图纸转换工具",
         body: [
           `选中的文件里有 ${blocked} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。`,
-          "可以去插件管理连接转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。",
+          "可以去「插件」连接图纸转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。",
         ],
-        actions: [{ label: "取消" }, { label: "打开插件管理", variant: "primary", onClick: () => navigate("plugins") }],
+        actions: [{ label: "取消" }, { label: "打开插件", variant: "primary", onClick: () => navigate("plugins") }],
       });
       return;
     }
@@ -3194,8 +3193,8 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
       icon: "warn",
       title: "审核模型上次测试没通过",
       body: [
-        "逐页审核是开着的，但这台机器上最近一次测试 PDF翻译（图像翻译）复核模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。",
-        "稳妥的做法是先去「设置 → 模型服务 → PDF翻译（图像翻译）复核」重测一次，或者把逐页审核关掉再开始。",
+        "逐页审核是开着的，但这台机器上最近一次测试「PDF 与图片审核」用的模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。",
+        "稳妥的做法是先去「设置 → 模型服务 → PDF 与图片审核」重测一次，或者把逐页审核关掉再开始。",
         "也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。",
       ],
       actions: [
@@ -3426,7 +3425,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
         // 停止期间进度条留在点停止时的位置，标题改说正在做什么。
         const lastPhase = num(data.phase_total) > 0 && num(data.phase_index) >= num(data.phase_total);
         if ((surface === "excel" || surface === "word") && lastPhase && total > 0) {
-          local.phaseName = `正在安全停止：写出已翻好的部分（${Math.min(done, total)}/${total} 个文件）`;
+          local.phaseName = `正在停止：写出已翻好的部分（${Math.min(done, total)}/${total} 个文件）`;
         }
         break;
       }
@@ -3465,15 +3464,15 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
     // 底栏按钮、进度条颜色、顶栏、文件状态全都看 local.task.state。
     case "stopping":
       syncEventState(local, data, "stopping");
-      local.phaseName = "正在安全停止…";
+      local.phaseName = "正在停止…";
       break;
     case "pausing":
       syncEventState(local, data, "pausing");
-      local.phaseName = "当前文件完成后暂停";
+      local.phaseName = surface === "cad" ? "正在暂停：当前图纸完成后暂停" : "正在暂停：已开始的页面完成后暂停";
       break;
     case "paused":
       syncEventState(local, data, "paused");
-      local.phaseName = surface === "cad" ? "已暂停，当前文件已完成" : "已暂停提交新页面";
+      local.phaseName = surface === "cad" ? "已暂停，当前文件已完成" : "已暂停，不再开始新的页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":
@@ -3695,7 +3694,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 占位页不是原页：那是程序自己画的一张失败占位页（白底红框、写着这一页没能生成译图），
   // 源页内容一个像素都不在上面。说成「已保留原页」会让用户去输出 PDF 里找原文。
   // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
-  if (placeholderPages > 0) clauses.push(`${placeholderPages} 页没能生成译文，已放失败占位页`);
+  if (placeholderPages > 0) clauses.push(`${placeholderPages} 页没能生成译文，已放占位页`);
   if (suspectPages > 0) clauses.push(`${suspectPages} 页译文有疑点，已采用但建议复核`);
   if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
   // 整份都被跳过的文件必须单独点名：它的输出文档跟源文件逐字节一样，一个字都没翻。
@@ -3966,11 +3965,11 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
     tone: "warn",
     icon: "stop",
     sourceLabel: "停止运行中的任务",
-    title: "安全停止当前任务？",
+    title: "停止当前任务？",
     body: [stopConfirmBody(surface)],
     actions: [
       { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
-      { label: "安全停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
+      { label: "停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
     ],
   });
 }
@@ -4021,14 +4020,14 @@ async function resumeTask(surface: Surface, st: SurfaceState): Promise<void> {
 function confirmEndPaused(st: SurfaceState): void {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
-  const ok = window.confirm("结束暂停任务将不再提交未处理页面，但会写入并保留已完成页面、素材、清单和报告。是否结束？");
+  const ok = window.confirm("结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？");
   if (!ok) return;
   void (async () => {
     try {
       const c = await getClient();
       await c.request(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
     } catch (error) {
-      showToast({ message: redactedText((error as Error)?.message, "结束暂停失败。"), error: true });
+      showToast({ message: redactedText((error as Error)?.message, "没能结束任务，请再试一次。"), error: true });
     }
   })();
 }
