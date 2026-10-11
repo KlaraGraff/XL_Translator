@@ -82,7 +82,7 @@ def test_pipeline_uses_memory_then_glossary_then_ai_and_writes_dwg(tmp_path):
 def test_translate_stage_reports_progress_per_batch(tmp_path):
     """本机实测：真实 DWG 翻译时进度停在一处一分多钟，然后一下跳过去。
 
-    翻译器接受 ``progress`` 时，每完成一批都要推进「AI 翻译」阶段（25%→70%）。
+    翻译器接受 ``progress`` 时，每完成一批都要推进「AI 翻译」阶段（10%→90%）。
     """
     source = tmp_path / "batches.dxf"
     source.write_text(
@@ -103,10 +103,10 @@ def test_translate_stage_reports_progress_per_batch(tmp_path):
         source, tmp_path / "batches_zh.dxf", options=CadPipelineOptions(target_lang="zh", source_lang="auto")
     )
 
-    assert seen_during_translation == [47.5, 70.0]
+    assert seen_during_translation == [50.0, 90.0]
     translate_percents = [item.percent for item in progress if item.stage == "translate"]
     assert translate_percents == sorted(translate_percents)
-    assert translate_percents[0] == 25.0
+    assert translate_percents[0] == 10.0
 
 
 def test_two_argument_translator_still_works(tmp_path):

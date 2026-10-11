@@ -155,6 +155,7 @@ from core.word_batching import (
     translate_word_texts,
 )
 from core.output_name_translation import avoid_bilingual_name_collision, translate_output_stem
+from core.phase_progress import PhaseProgress
 from engines.base_engine import engine_supports_chat, strip_markdown_json
 from settings import AppSettings
 # 以下名字已拆到 core.word_quality_report，这里原样再导出，保持旧的导入路径可用。
@@ -366,6 +367,16 @@ class WordTaskRunner(BaseTaskRunner):
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
+        # 「翻译」这一段把所有要等模型的步骤都算进来：识别原文语言、主批次、
+        # 单段重试和复查、补译遗留原文。只算主批次的话，后面几步进行时进度条
+        # 停在 80% 一动不动，有时占了整个任务一大半的时间。
+        self._translate_progress = PhaseProgress(
+            self._queue.put,
+            phase_index=2,
+            phase_total=3,
+            phase_name="翻译",
+            steps=(("detect", 5), ("batches", 80), ("recovery", 9), ("repair", 6)),
+        )
 
     @property
     def task_id(self) -> str:
@@ -1009,14 +1020,8 @@ class WordTaskRunner(BaseTaskRunner):
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
-            self._queue.put(
-                ProgressMsg(
-                    phase_index=2,
-                    phase_total=phase_total,
-                    phase_name="翻译",
-                    step_done=0 if api_call_count else 1,
-                    step_total=max(api_call_count, 1),
-                )
+            self._translate_progress.report(
+                "batches", 0 if api_call_count else 1, max(api_call_count, 1)
             )
 
             api_translations: dict[str, str] = {}
@@ -1034,15 +1039,7 @@ class WordTaskRunner(BaseTaskRunner):
                 self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译记忆库里没有的内容..."))
 
                 def progress_cb(done, total):
-                    self._queue.put(
-                        ProgressMsg(
-                            phase_index=2,
-                            phase_total=phase_total,
-                            phase_name="翻译",
-                            step_done=done,
-                            step_total=max(api_call_count, 1),
-                        )
-                    )
+                    self._translate_progress.report("batches", done, max(api_call_count, 1))
 
                 t0 = datetime.now()
                 word_prompt = _build_word_batch_prompt(system_prompt)
@@ -1062,6 +1059,9 @@ class WordTaskRunner(BaseTaskRunner):
                     should_stop=self.stop_requested,
                     log_callback=self._log,
                     status_callback=lambda msg: self._queue.put(msg),
+                    progress_callback=lambda done, total: self._translate_progress.report(
+                        "recovery", done, total
+                    ),
                     source_locations=segment_locations,
                     defer_until_started=True,
                 )
@@ -1187,14 +1187,10 @@ class WordTaskRunner(BaseTaskRunner):
                     )
 
                     def mixed_progress_cb(done, total):
-                        self._queue.put(
-                            ProgressMsg(
-                                phase_index=2,
-                                phase_total=phase_total,
-                                phase_name="翻译",
-                                step_done=min(len(misses) + done, max(api_call_count, 1)),
-                                step_total=max(api_call_count, 1),
-                            )
+                        self._translate_progress.report(
+                            "batches",
+                            min(len(misses) + done, max(api_call_count, 1)),
+                            max(api_call_count, 1),
                         )
 
                     return translate_mixed_language_texts(
@@ -2192,7 +2188,12 @@ class WordTaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求。逐个文件推进度、报「正在检测语言 x/y」，进度条
+        # 和进度卡标题都看得出还在往前走（先报进度再报状态，标题才是这句状态）。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._translate_progress.report("detect", detect_index - 1, detect_total)
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -2285,6 +2286,8 @@ class WordTaskRunner(BaseTaskRunner):
         if still_needs_review and engine_supports_chat(engine):
 
             def _on_repair_progress(done: int, total: int) -> None:
+                # done 是正要开跑的那一条（从 1 起），已经补完的是 done - 1 条。
+                self._translate_progress.report("repair", done - 1, total)
                 self._queue.put(StatusMsg(
                     phase_desc=(
                         f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文"
@@ -3403,6 +3406,7 @@ class _WordRecoveryPool:
         should_stop,
         log_callback: Callable[[str, str], None] | None = None,
         status_callback: Callable[[WordRecoveryStatusMsg], None] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         source_locations: dict[str, list[dict]] | None = None,
         enable_semantic: bool = True,
         defer_until_started: bool = False,
@@ -3420,6 +3424,7 @@ class _WordRecoveryPool:
         self._should_stop = should_stop
         self._log_callback = log_callback
         self._status_callback = status_callback
+        self._progress_callback = progress_callback
         self._source_locations = source_locations or {}
         self._enable_semantic = enable_semantic and engine_supports_chat(engine)
         self._states: dict[str, _WordRecoveryState] = {}
@@ -3591,6 +3596,7 @@ class _WordRecoveryPool:
                     if self._stop_requested():
                         stopped = True
                         break
+                    self._report_progress_locked()
                     self._condition.wait(timeout=0.1)
 
                 fatal_error = self._fatal_error
@@ -3607,6 +3613,13 @@ class _WordRecoveryPool:
             # start()、等待循环、_build_outcome 里任何一处抛出（含 KeyboardInterrupt）
             # 都不能让线程池活下来。已经关停时这里是空操作。
             self.shutdown(cancel_futures=True)
+
+    def _report_progress_locked(self) -> None:
+        """恢复池在等的这段也是等模型：按已了结的段数推进度条。"""
+        if not self._progress_callback or not self._states:
+            return
+        done = sum(1 for state in self._states.values() if state.complete(self._max_attempts))
+        self._progress_callback(done, len(self._states))
 
     def _stop_requested(self) -> bool:
         return bool(self._should_stop and self._should_stop())

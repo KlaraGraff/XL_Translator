@@ -24,6 +24,7 @@ from lxml import etree
 
 from core import bilingual_writer
 from core.excel_sheet_naming import rename_worksheets
+from core.phase_progress import PhaseProgress
 from core.output_name_translation import (
     avoid_bilingual_name_collision,
     output_stem_from_translation,
@@ -318,6 +319,20 @@ class TaskRunner(BaseTaskRunner):
         # report — not only in a WARN line that scrolls away.
         self._connection_switches: list[dict[str, str]] = []
         self._switch_lock = threading.Lock()
+        # _run 按实际阶段数重建；这里先放一个，直接调用单个阶段方法的测试也能用。
+        self._translate_progress = self._new_translate_progress(phase_total=3)
+
+    def _new_translate_progress(self, *, phase_total: int) -> PhaseProgress:
+        # 「翻译」这一段把所有要等模型的步骤都算进来：识别原文语言、主批次、
+        # 补译遗留原文、翻译工作表名称。只算主批次的话，其余几步进行时进度条
+        # 一动不动，补译多的时候能在 80% 停上好几分钟。
+        return PhaseProgress(
+            self._queue.put,
+            phase_index=2,
+            phase_total=phase_total,
+            phase_name="翻译",
+            steps=(("detect", 5), ("batches", 82), ("repair", 8), ("names", 5)),
+        )
 
     @property
     def task_id(self) -> str:
@@ -793,6 +808,8 @@ class TaskRunner(BaseTaskRunner):
                 elapsed=phase1_elapsed,
             )
 
+            self._translate_progress = self._new_translate_progress(phase_total=phase_total)
+
             if auto_source_lang:
                 source_lang, system_prompt, raw_text_count, file_language_preflights = self._preflight_source_languages(
                     concurrency=concurrency,
@@ -922,13 +939,9 @@ class TaskRunner(BaseTaskRunner):
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
-            self._queue.put(ProgressMsg(
-                phase_index=2,
-                phase_total=phase_total,
-                phase_name="翻译",
-                step_done=0 if api_call_count else 1,
-                step_total=max(api_call_count, 1),
-            ))
+            self._translate_progress.report(
+                "batches", 0 if api_call_count else 1, max(api_call_count, 1)
+            )
 
             # API 翻译未命中词条
             api_translations: dict[str, str] = {}
@@ -1029,13 +1042,6 @@ class TaskRunner(BaseTaskRunner):
             # 阶段 3：逐文件串行回填写入
             # ══════════════════════════════════════════════════════════
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语表格..."))
-            self._queue.put(ProgressMsg(
-                phase_index=3,
-                phase_total=phase_total,
-                phase_name="生成文件",
-                step_done=0,
-                step_total=max(len(self._files), 1),
-            ))
 
             t_phase3 = datetime.now()
             source_root = self._source_root if self._source_root else self._files[0].path.parent
@@ -1097,6 +1103,9 @@ class TaskRunner(BaseTaskRunner):
                 translated: dict[str, str] = {}
                 for number, batch in enumerate(batches, start=1):
                     _raise_if_stopped()
+                    # 名称翻译也在等模型，进度算在「翻译」段的末尾；先报进度再报状态，
+                    # 进度卡标题才显示「正在翻译工作表名称」。
+                    self._translate_progress.report("names", number - 1, len(batches))
                     self._queue.put(StatusMsg(
                         phase_desc=(
                             f"状态：[阶段 3/{phase_total}] 正在翻译{kind}"
@@ -1114,6 +1123,14 @@ class TaskRunner(BaseTaskRunner):
                 filename_names, sheet_names_to_translate = [], []
             filename_translations = _translate_name_pool(filename_names, "输出文件名")
             sheet_translations = _translate_name_pool(sheet_names_to_translate, "工作表名称")
+            self._translate_progress.finish()
+            self._queue.put(ProgressMsg(
+                phase_index=3,
+                phase_total=phase_total,
+                phase_name="生成文件",
+                step_done=0,
+                step_total=max(len(self._files), 1),
+            ))
             self._queue.put(StatusMsg(
                 phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语表格..."
             ))
@@ -1365,7 +1382,12 @@ class TaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求。逐个文件推进度、报「正在检测语言 x/y」，进度条
+        # 和进度卡标题都看得出还在往前走（先报进度再报状态，标题才是这句状态）。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._translate_progress.report("detect", detect_index - 1, detect_total)
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -1507,13 +1529,9 @@ class TaskRunner(BaseTaskRunner):
                         progress_done["mixed"],
                         len(mixed_texts),
                     )
-                self._queue.put(ProgressMsg(
-                    phase_index=2,
-                    phase_total=phase_total,
-                    phase_name="翻译",
-                    step_done=min(total_done, max(api_call_count, 1)),
-                    step_total=max(api_call_count, 1),
-                ))
+                self._translate_progress.report(
+                    "batches", min(total_done, max(api_call_count, 1)), max(api_call_count, 1)
+                )
 
             def progress_cb(done, total):
                 _emit_api_progress("normal", done)
@@ -2585,6 +2603,8 @@ class TaskRunner(BaseTaskRunner):
         if still_needs_review and engine_supports_chat(engine) and not rate_limited:
 
             def _on_repair_progress(done: int, total: int) -> None:
+                # done 是正要开跑的那一条（从 1 起），已经补完的是 done - 1 条。
+                self._translate_progress.report("repair", done - 1, total)
                 self._queue.put(StatusMsg(
                     phase_desc=(
                         f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文"

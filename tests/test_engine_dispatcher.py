@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import errno
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -471,6 +473,65 @@ class EngineDispatcherTests(unittest.TestCase):
 
         self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
         self.assertEqual(stats.retry_count, 0)
+
+    def test_with_sources_sends_cloud_batches_concurrently(self) -> None:
+        # 自动识别源语言（Excel 的默认）以前逐批串行，并发设置形同虚设：
+        # 一份 30 批的表格比指定源语言慢了 7 倍。
+        class SlowSourcesEngine(SourcesReportingEngine):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lock = threading.Lock()
+                self.inflight = 0
+                self.max_inflight = 0
+
+            def translate_batch_with_sources(self, texts, target_lang, system_prompt, source_lang="auto"):
+                with self.lock:
+                    self.inflight += 1
+                    self.max_inflight = max(self.max_inflight, self.inflight)
+                time.sleep(0.05)
+                with self.lock:
+                    self.inflight -= 1
+                return super().translate_batch_with_sources(texts, target_lang, system_prompt, source_lang)
+
+        engine = SlowSourcesEngine()
+        texts = [f"item {index}" for index in range(12)]
+        progress: list[tuple[int, int]] = []
+
+        result = translate_texts_with_sources(
+            texts,
+            engine,
+            "fr",
+            "system prompt",
+            batch_size=2,
+            concurrency=4,
+            progress_callback=lambda done, total: progress.append((done, total)),
+        )
+
+        self.assertEqual(set(result), set(texts))
+        self.assertEqual(len(engine.calls), 6)
+        self.assertGreater(engine.max_inflight, 1)
+        self.assertLessEqual(engine.max_inflight, 4)
+        self.assertEqual(progress[-1], (12, 12))
+        self.assertEqual([done for done, _ in progress], sorted(done for done, _ in progress))
+
+    def test_with_sources_keeps_paid_batches_when_a_concurrent_batch_is_fatal(self) -> None:
+        class OneFatalBatchEngine(SourcesReportingEngine):
+            def translate_batch_with_sources(self, texts, target_lang, system_prompt, source_lang="auto"):
+                if "bad" in texts:
+                    raise ApiKeyTemporarilyUnavailableError("rate limited")
+                return super().translate_batch_with_sources(texts, target_lang, system_prompt, source_lang)
+
+        with self.assertRaises(ApiKeyTemporarilyUnavailableError) as raised:
+            translate_texts_with_sources(
+                ["alpha", "bad", "gamma"],
+                OneFatalBatchEngine(),
+                "fr",
+                "system prompt",
+                batch_size=1,
+                concurrency=3,
+            )
+
+        self.assertEqual(set(raised.exception.partial_results), {"alpha", "gamma"})
 
     def test_a_failover_wrapper_translates_the_automatic_language_path(self) -> None:
         # Regression for the multi-connection + auto-source-language path that

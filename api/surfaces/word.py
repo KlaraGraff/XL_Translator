@@ -27,8 +27,10 @@ class WordSurface(Surface):
     uses_translation_memory = True
     target_lang_setting = "per_surface"
     domain_preset_in_snapshot = True
-    # Word 提取 / 云端翻译 / 生成文件
-    phase_weights = (10, 70, 20)
+    # 读取文件 / 翻译 / 生成文件。时间几乎都花在等模型上，所以「翻译」占大头（它
+    # 包含识别语言、单段重试和复查、补译）；生成文件可能要调 Word / LibreOffice
+    # 处理编号，比读取多留一些。
+    phase_weights = (5, 80, 15)
 
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_word_path(root)
