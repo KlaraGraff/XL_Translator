@@ -87,10 +87,21 @@ import {
   textField,
 } from "./settings";
 import { version as PACKAGE_VERSION } from "../../package.json";
+import { ApiError } from "../api-client";
+import { localeTag, t, tx } from "../i18n";
 
 // ---------------------------------------------------------------------------
 // 子页①：模型服务
 // ---------------------------------------------------------------------------
+
+// 角色中文原名。settings.ts 的 MODEL_ROLE_LABELS 已随界面语言翻译，只能用于显示；
+// 跟随连接的默认名称要存进设置，必须用这份中文原文，显示时再 tx()。
+const MODEL_ROLE_LABELS_ZH: Record<string, string> = {
+  translation: "文档翻译（Excel / Word / CAD）", // i18n-ignore 存进设置的值
+  cleaner: "记忆库清洗", // i18n-ignore 存进设置的值
+  image: "PDF 与图片翻译", // i18n-ignore 存进设置的值
+  pdf_review: "PDF 与图片审核", // i18n-ignore 存进设置的值
+};
 
 function savedAccessMode(role: string): string {
   const selected = activeConnection(role);
@@ -119,13 +130,13 @@ function accessModeOptions(role: string): { value: string; label: string }[] {
   const sources = Array.isArray(saved.source_role_options)
     ? (saved.source_role_options as unknown[]).map((item) => text(item))
     : ["independent"];
-  const options = [{ value: "cloud", label: "云端 API" }];
+  const options = [{ value: "cloud", label: t("云端 API") }];
   if (saved.supports_local !== false) {
-    options.push({ value: "local", label: "本地模型" });
+    options.push({ value: "local", label: t("本地模型") });
   }
   for (const source of sources) {
     if (source === "independent") continue;
-    options.push({ value: `${FOLLOW_PREFIX}${source}`, label: `跟随${MODEL_ROLE_LABELS[source] || source}` });
+    options.push({ value: `${FOLLOW_PREFIX}${source}`, label: t("跟随{0}", MODEL_ROLE_LABELS[source] || source) });
   }
   return options;
 }
@@ -171,7 +182,7 @@ function modelCatalogConnectionForRole(role: string): string {
   });
 }
 
-function clearModelCatalog(role: string, message = "尚未获取当前连接的模型列表。"): void {
+function clearModelCatalog(role: string, message = t("尚未获取当前连接的模型列表。")): void {
   delete modelCatalog[role];
   delete modelCatalogConnection[role];
   modelCatalogMessage[role] = message;
@@ -180,12 +191,12 @@ function clearModelCatalog(role: string, message = "尚未获取当前连接的�
 export function renderModelsPage(host: HTMLElement): void {
   // 这张卡导出的是整套模型服务，不属于下面任何一个角色或连接，放在角色切换之前。
   host.append(bundleCard({
-    title: "模型服务配置导入与导出",
-    description: "备份或分享整套模型配置，供他人一键导入。含密钥的文件会加密，默认 30 天有效；从别人配置导入的密钥不会再次转出。",
+    title: t("模型服务配置导入与导出"),
+    description: t("备份或分享整套模型配置，供他人一键导入。含密钥的文件会加密，默认 30 天有效；从别人配置导入的密钥不会再次转出。"),
     buttons: [
-      createButton({ label: "导出（不含 Key）", size: "mini", onClick: () => void exportModelConfig(false) }),
-      createButton({ label: "导出含 Key", size: "mini", onClick: () => void exportModelConfig(true) }),
-      createButton({ label: "导入配置", size: "mini", onClick: () => importModelConfig() }),
+      createButton({ label: t("导出（不含 Key）"), size: "mini", onClick: () => void exportModelConfig(false) }),
+      createButton({ label: t("导出含 Key"), size: "mini", onClick: () => void exportModelConfig(true) }),
+      createButton({ label: t("导入配置"), size: "mini", onClick: () => importModelConfig() }),
     ],
   }));
 
@@ -193,10 +204,10 @@ export function renderModelsPage(host: HTMLElement): void {
   const spreadCard = createCard([]);
   const spreadBody = document.createElement("div");
   spreadBody.style.padding = "14px 16px";
-  spreadBody.append(sectionLabel("多个任务同时运行"));
+  spreadBody.append(sectionLabel(t("多个任务同时运行")));
   spreadBody.append(createSwitchRow({
-    label: "并行任务分散到不同连接",
-    hint: "关闭时所有任务都用主用连接，多余的连接只作故障切换备用。打开后同时运行的任务会各自占用一条空闲连接。",
+    label: t("并行任务分散到不同连接"),
+    hint: t("关闭时所有任务都用主用连接，多余的连接只作故障切换备用。打开后同时运行的任务会各自占用一条空闲连接。"),
     checked: Boolean(settings?.spread_tasks_across_connections),
     onChange: (checked) => void reRenderAfter(() => persistSettings({ spread_tasks_across_connections: checked })),
   }));
@@ -204,7 +215,7 @@ export function renderModelsPage(host: HTMLElement): void {
   spreadNote.className = "note";
   spreadNote.style.fontSize = "12px";
   spreadNote.style.color = "var(--ink-3)";
-  spreadNote.textContent = "几个任务同时用同一条连接时，请求会叠在一起，可能被服务商限速，费用也会增加。"
+  spreadNote.textContent = t("几个任务同时用同一条连接时，请求会叠在一起，可能被服务商限速，费用也会增加。")
   spreadBody.append(spreadNote);
   spreadCard.append(spreadBody);
   host.append(spreadCard);
@@ -279,8 +290,8 @@ export function renderModelsPage(host: HTMLElement): void {
   accessBar.className = "accessbar";
   const accessLabel = document.createElement("span");
   accessLabel.className = "accessbar-label";
-  accessLabel.textContent = "当前连接方式";
-  accessLabel.append(hintBadge("选「跟随」时，直接用另一个用途主用连接的服务商、地址和密钥，只需要单独选模型。"));
+  accessLabel.textContent = t("当前连接方式");
+  accessLabel.append(hintBadge(t("选「跟随」时，直接用另一个用途主用连接的服务商、地址和密钥，只需要单独选模型。")));
   accessBar.append(accessLabel);
   const radioRow = document.createElement("div");
   radioRow.className = "radio-row";
@@ -298,7 +309,7 @@ export function renderModelsPage(host: HTMLElement): void {
     radioRow.append(label);
   }
   accessBar.append(radioRow);
-  const accessDirtyChip = createChip({ label: "未保存", tone: "warn" });
+  const accessDirtyChip = createChip({ label: t("未保存"), tone: "warn" });
   if (accessDirty()) accessBar.append(accessDirtyChip);
   detailBody.append(accessBar);
 
@@ -311,7 +322,7 @@ export function renderModelsPage(host: HTMLElement): void {
   let onProviderChange: (value: string) => void = () => {};
   setApplyProviderDerivedState(() => {});
   const providerFieldHandle = selectField(
-    cloudMode ? "服务商" : "本地运行器",
+    cloudMode ? t("服务商") : t("本地运行器"),
     providers.map((item) => ({ value: item, label: providerLabel(item) })),
     formProvider,
     (value) => onProviderChange(value),
@@ -368,7 +379,7 @@ export function renderModelsPage(host: HTMLElement): void {
     if (recommended) modelNameField.input.value = recommended;
   };
 
-  const modelNameField = textField("模型名称", formModel, () => undefined, { placeholder: cloudMode ? "输入模型 ID" : "例如 qwen2.5:7b", hint: "右侧箭头可以展开候选；列表里没有的模型也可以手动填写。" });
+  const modelNameField = textField(t("模型名称"), formModel, () => undefined, { placeholder: cloudMode ? t("输入模型 ID") : t("例如 qwen2.5:7b"), hint: t("右侧箭头可以展开候选；列表里没有的模型也可以手动填写。") });
   modelNameField.input.id = "settings-model-name";
   const catalogConnection = modelCatalogConnectionForRole(role);
   const renderedBaseUrl = baseUrlField.input.value;
@@ -394,21 +405,21 @@ export function renderModelsPage(host: HTMLElement): void {
   let apiModeSelect: HTMLSelectElement | null = null;
   if (cloudMode) {
     const apiModeField = selectField(
-      "文本请求协议",
+      t("文本请求协议"),
       [
-        { value: "auto", label: "自动识别" },
+        { value: "auto", label: t("自动识别") },
         { value: "chat", label: "Chat Completions" },
         { value: "responses", label: "Responses" },
       ],
       text(following ? followConnection?.api_mode || selected?.api_mode : selected?.connection_mode === "cloud" ? selected.api_mode : selected?.own_cloud_api_mode || (selected ? "auto" : rolePayload.api_mode), "auto"),
       () => undefined,
-      { disabled: following, hint: "不确定就选「自动识别」；只有服务商明确要求时才手动指定。" },
+      { disabled: following, hint: t("不确定就选「自动识别」；只有服务商明确要求时才手动指定。") },
     );
     apiModeSelect = apiModeField.select;
     detailBody.append(apiModeField.root);
   }
 
-  const labelField = textField("连接名称", selected?.label ?? "", () => undefined, { placeholder: "例如 主账号 / 备用厂商" });
+  const labelField = textField(t("连接名称"), selected?.label ?? "", () => undefined, { placeholder: t("例如 主账号 / 备用厂商") });
   const connectionLabelField = labelField.input;
   connectionLabelField.id = "settings-model-connection-label";
   detailBody.append(labelField.root);
@@ -425,7 +436,7 @@ export function renderModelsPage(host: HTMLElement): void {
     keyInput.disabled = following;
     keyInput.id = "settings-model-api-key";
     apiKeyField = keyInput;
-    const keyField = fieldWithHint("API 密钥", keyInput, "留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。");
+    const keyField = fieldWithHint(t("API 密钥"), keyInput, t("留空表示沿用已保存的密钥；密钥只写入本机密钥存储，不随配置导出（除非选择“导出含 Key”）。"));
     detailBody.append(keyField);
   }
 
@@ -447,15 +458,15 @@ export function renderModelsPage(host: HTMLElement): void {
   let batchInput: HTMLInputElement | null = null;
   const needsBatch = role === "translation" || role === "cleaner";
   if (needsBatch) {
-    const batchField = numberField("每批段数", num(throughput.batch_size, 8), () => undefined, {
-      hint: "一次发给模型几段文字。调大更快，但一批出错要重试的也更多。",
+    const batchField = numberField(t("每批段数"), num(throughput.batch_size, 8), () => undefined, {
+      hint: t("一次发给模型几段文字。调大更快，但一批出错要重试的也更多。"),
       min: 1, max: throughputUnlocked ? undefined : num(batchBounds[1], 128), integer: true,
     });
     batchInput = batchField.querySelector("input");
     throughputGrid.append(batchField);
   }
-  const concurrencyField = numberField("同时请求数", num(throughput.concurrency, 1), () => undefined, {
-    hint: "同时向模型发几个请求。调大更快，但容易被服务商限速。",
+  const concurrencyField = numberField(t("同时请求数"), num(throughput.concurrency, 1), () => undefined, {
+    hint: t("同时向模型发几个请求。调大更快，但容易被服务商限速。"),
     min: 1, max: throughputUnlocked ? undefined : num(concurrencyBounds[1], 32), type: "text", integer: true,
   });
   const concurrencyInput = concurrencyField.querySelector("input") as HTMLInputElement;
@@ -487,7 +498,7 @@ export function renderModelsPage(host: HTMLElement): void {
     });
   }
   throughputGrid.append(concurrencyField);
-  detailBody.append(sectionLabel("速率设置"));
+  detailBody.append(sectionLabel(t("速率设置")));
   // 速率原来有自己的「保存速率」按钮，是这张卡上唯一还要手动点一下才生效的一块。
   // 速率本来就属于模型配置的一部分，现在和同卡其余字段一样失焦即保存（见下面的
   // autoSaveThroughput）。按钮消失后，原来那句 toast 里的「运行中的任务不受影响」
@@ -501,13 +512,13 @@ export function renderModelsPage(host: HTMLElement): void {
   // 夹在小标题和输入框中间会把这一组撑开，看着像是两块无关的东西。
   detailBody.append(throughputGrid);
   detailBody.append(throughputNote);
-  const resetThroughputButton = createButton({ label: "恢复推荐值", size: "mini", onClick: () => void reRenderAfter(async () => {
+  const resetThroughputButton = createButton({ label: t("恢复推荐值"), size: "mini", onClick: () => void reRenderAfter(async () => {
     await client.request<JsonObject>(
       `/api/models/throughput/${encodeURIComponent(role)}${connectionQuery(activeConnection(role))}`,
       { method: "DELETE" },
     );
     await refreshModelRoles();
-    showToast({ message: "已恢复推荐速率。运行中的任务不受影响。" });
+    showToast({ message: t("已恢复推荐速率。运行中的任务不受影响。") });
   }) });
   detailBody.append(fieldRow([
     // 「恢复推荐值」留着：它是重置动作（DELETE 路由），失焦语义表达不了「把我存的那份
@@ -534,10 +545,10 @@ export function renderModelsPage(host: HTMLElement): void {
       if (document.activeElement !== input && typeof value === "number") input.value = String(value);
     }
     resetThroughputButton.disabled = pending;
-    const range = throughputUnlocked || !concurrencyMax ? "" : `并发上限 ${concurrencyMax}。`;
+    const range = throughputUnlocked || !concurrencyMax ? "" : t("并发上限 {0}。", concurrencyMax);
     throughputNote.textContent = pending
-      ? "连接方式还没保存。点「保存配置」后再调整这条连接的速率。"
-      : `每个模型分别记忆；换到没调过的模型时沿用当前数值。${range}改动即时保存，运行中的任务不受影响。`;
+      ? t("连接方式还没保存。点「保存配置」后再调整这条连接的速率。")
+      : t("每个模型分别记忆；换到没调过的模型时沿用当前数值。{0}改动即时保存，运行中的任务不受影响。", range);
   };
   paintThroughput(selected);
 
@@ -567,14 +578,14 @@ export function renderModelsPage(host: HTMLElement): void {
       : rolePayload;
     const availability = text(availabilitySource.availability_status, "unknown");
     const availabilityTone = availability === "available" ? "done" : availability === "unavailable" ? "error" : "";
-    const availabilityLabel = availability === "available" ? "测试通过" : availability === "unavailable" ? "测试失败" : "未测试";
+    const availabilityLabel = availability === "available" ? t("测试通过") : availability === "unavailable" ? t("测试失败") : t("未测试");
     const checkedAt = formatCheckedAt(text(availabilitySource.availability_checked_at));
     const matches = catalogStillMatches();
     const list = currentCatalog();
-    const catalogChip = statusChip(list.length ? `${list.length} 个可用模型` : "未获取列表", list.length ? "done" : "");
-    catalogChip.title = matches ? (modelCatalogMessage[role] || "尚未获取当前连接的模型列表。") : "当前连接尚未获取模型列表。保存配置后可手动获取。";
+    const catalogChip = statusChip(list.length ? t("{0} 个可用模型", list.length) : t("未获取列表"), list.length ? "done" : "");
+    catalogChip.title = matches ? (tx(modelCatalogMessage[role]) || t("尚未获取当前连接的模型列表。")) : t("当前连接尚未获取模型列表。保存配置后可手动获取。");
     const availChip = statusChip(availabilityLabel, availabilityTone);
-    availChip.title = `${text(availabilitySource.availability_message, "当前配置尚未测试。")}${checkedAt ? ` · ${checkedAt}` : ""}`;
+    availChip.title = tx(text(availabilitySource.availability_message, t("当前配置尚未测试。"))) + (checkedAt ? ` · ${checkedAt}` : "");
     statusRow.replaceChildren(catalogChip, availChip, autoSaveNote);
 
     // 失败原因必须看得见。之前它只挂在胶囊的 title 上：不悬停就永远读不到，用户面对一个
@@ -585,18 +596,18 @@ export function renderModelsPage(host: HTMLElement): void {
     // 「XX连接测试失败：」前缀，显示前去掉。
     const statusParts: HTMLElement[] = [];
     if (availability === "unavailable") {
-      const reason = text(availabilitySource.availability_message, "上一次测试没有留下原因，请再测一次。")
-        .replace(/^[^：]{0,16}连接测试失败：/, "");
+      const reason = text(availabilitySource.availability_message, t("上一次测试没有留下原因，请再测一次。"))
+        .replace(/^[^：]{0,16}连接测试失败：/, ""); // i18n-ignore 匹配后端原文里的旧前缀，去掉后再 tx()
       const failure = document.createElement("span");
       failure.style.color = "var(--warn)";
-      failure.textContent = `${reason}${checkedAt ? `（${checkedAt}）` : ""}`;
+      failure.textContent = `${tx(reason)}${checkedAt ? t("（{0}）", checkedAt) : ""}`;
       statusParts.push(failure);
     }
     if (!list.length) {
       const note = document.createElement("span");
       note.textContent = matches
-        ? modelCatalogMessage[role] || "尚未获取当前连接的模型列表，可点「获取模型」拉取。"
-        : "当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。";
+        ? tx(modelCatalogMessage[role]) || t("尚未获取当前连接的模型列表，可点「获取模型」拉取。")
+        : t("当前连接尚未获取模型列表。保存配置后可点「获取模型」拉取。");
       statusParts.push(note);
     }
     statusReasonNote.hidden = !statusParts.length;
@@ -671,10 +682,10 @@ export function renderModelsPage(host: HTMLElement): void {
       try {
         await saveModel(form, { silent: true });
         syncAfterSave(form.apiKey);
-        autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+        autoSaveNote.textContent = t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" }));
       } catch (error) {
         autoSaveNote.textContent = "";
-        showToast({ message: `自动保存失败：${errorMessage(error)}`, error: true });
+        showToast({ message: t("自动保存失败：{0}", errorMessage(error)), error: true });
       }
     });
   };
@@ -724,10 +735,10 @@ export function renderModelsPage(host: HTMLElement): void {
         storeConnectionThroughput(role, selected?.id ?? "", saved);
         writeBackThroughput(concurrencyInput, sentConcurrency, saved.concurrency);
         if (needsBatch && batchInput) writeBackThroughput(batchInput, sentBatch, saved.batch_size);
-        autoSaveNote.textContent = `已自动保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+        autoSaveNote.textContent = t("已自动保存 · {0}", new Date().toLocaleTimeString(localeTag(), { hour: "2-digit", minute: "2-digit" }));
       } catch (error) {
         autoSaveNote.textContent = "";
-        showToast({ message: `自动保存失败：${errorMessage(error)}`, error: true });
+        showToast({ message: t("自动保存失败：{0}", errorMessage(error)), error: true });
       }
     });
   };
@@ -743,8 +754,8 @@ export function renderModelsPage(host: HTMLElement): void {
     );
   };
   detailBody.append(fieldRow([
-    createButton({ label: "保存配置", icon: "check", onClick: doSaveModel }),
-    createButton({ label: "获取模型列表", onClick: () => void reRenderAfter(async () => {
+    createButton({ label: t("保存配置"), icon: "check", onClick: doSaveModel }),
+    createButton({ label: t("获取模型列表"), onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
       const result = await client.request<{ ok: boolean; models: string[]; message: string }>(
         `/api/models/catalog/${encodeURIComponent(role)}`,
@@ -753,18 +764,18 @@ export function renderModelsPage(host: HTMLElement): void {
       modelCatalog[role] = result.models;
       modelCatalogMessage[role] = result.message;
       modelCatalogConnection[role] = modelCatalogConnectionForRole(role);
-      showToast({ message: result.models.length ? `已获取 ${result.models.length} 个模型，可从模型名称右侧的箭头里选择。` : result.message, error: !result.ok });
+      showToast({ message: result.models.length ? t("已获取 {0} 个模型，可从模型名称右侧的箭头里选择。", result.models.length) : tx(result.message), error: !result.ok });
       // 表单已经被 ensureFormSavedBeforeCatalog 提交了，重画该显示服务端回填的值，
       // 再把草稿盖回去只会让「已保存的密钥」以明文停在框里。
     }, { preserveDraft: false }) }),
-    createButton({ label: "测试连接", onClick: () => void reRenderAfter(async () => {
+    createButton({ label: t("测试连接"), onClick: () => void reRenderAfter(async () => {
       await ensureFormSavedBeforeCatalog();
       // 测的必须是面板正在显示的这条连接：不带 id 时后端一律拨主连接。
       const result = await client.request<{ ok: boolean; message: string }>(
         `/api/models/connectivity/${encodeURIComponent(role)}`,
         { method: "POST", body: JSON.stringify({ connection_id: selected?.id ?? "" }) },
       );
-      showToast({ message: result.message, error: !result.ok });
+      showToast({ message: tx(result.message), error: !result.ok });
       await refreshModelRoles();
     }, { preserveDraft: false }) }),
   ]));
@@ -777,10 +788,10 @@ export function renderModelsPage(host: HTMLElement): void {
 function apiKeyPlaceholder(connection: PoolConnection | null, following: boolean, preview: string): string {
   // 跟随行的 has_api_key 来自来源连接。草稿刚从跟随切到云端时，不能把来源的
   // 掩码冒充为当前行已存的独立密钥。
-  if (following) return "跟随时使用来源连接的密钥";
+  if (following) return t("跟随时使用来源连接的密钥");
   return connection?.connection_mode === "cloud" && connection.has_api_key
-    ? `${preview || "••••••"}（已保存 · 留空则不改）`
-    : "粘贴该连接的 API 密钥";
+    ? t("{0}（已保存 · 留空则不改）", preview || "••••••")
+    : t("粘贴该连接的 API 密钥");
 }
 
 // 速率路由不带 connection_id 时一律落到主用连接。
@@ -825,21 +836,21 @@ function buildRoleSeg(): HTMLElement {
     const following = primary?.connection_mode === "follow";
     const modelName = primary ? primary.model : text(payload.model);
     const modeSummary = following
-      ? `跟随${MODEL_ROLE_LABELS[primarySource] || primarySource}`
-      : modelName || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
+      ? t("跟随{0}", MODEL_ROLE_LABELS[primarySource] || primarySource)
+      : modelName || (primary?.connection_mode === "local" ? t("本地模型") : t("云端 API"));
     const span = document.createElement("span");
     span.className = "segc-sub";
     const summary = document.createElement("i");
-    summary.textContent = modeSummary || "未配置";
+    summary.textContent = modeSummary || t("未配置");
     span.append(summary);
     // 有连接但模型名还空着：跟随行尤其容易漏——卡片写着「跟随…」看起来已经配好，
     // 真用到这个用途时才报错。在卡片上直接标出来；摘要太长时省略的是摘要，不是这个标记。
     if (primary && !modelName) {
       const missing = document.createElement("em");
-      missing.textContent = "缺模型名";
+      missing.textContent = t("缺模型名");
       span.append(missing);
     }
-    span.title = [summary.textContent, primary && !modelName ? "缺模型名" : ""].filter(Boolean).join(" · ");
+    span.title = [summary.textContent, primary && !modelName ? t("缺模型名") : ""].filter(Boolean).join(" · ");
     segc.append(b, span);
     segc.addEventListener("click", () => {
       if (modelRole === role) return;
@@ -863,7 +874,7 @@ function buildConnectionListCard(role: string): HTMLElement {
   const selected = activeConnection(role);
   const connections = roleConnections(role);
   const addBtn = createButton({
-    label: "新增连接", size: "mini", icon: "plus",
+    label: t("新增连接"), size: "mini", icon: "plus",
     onClick: () => void reRenderAfter(async () => {
       const payload = await client.request<JsonObject>(
         `/api/models/roles/${encodeURIComponent(role)}/connections`,
@@ -872,12 +883,12 @@ function buildConnectionListCard(role: string): HTMLElement {
       modelRoles[role] = payload;
       const added = Array.isArray(payload.connections) ? payload.connections : [];
       if (added.length) selectConnection(role, text(record(added[added.length - 1]).id));
-      showToast({ message: "已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。" });
+      showToast({ message: t("已新增一条连接，填好 Base URL、模型和密钥后点“保存配置”。") });
     }, { preserveDraft: false }), // 表单切到了新连接的空白字段，不该把旧连接的草稿糊上去
   });
-  const listCard = createCard([tcHead("连接列表", [addBtn])]);
+  const listCard = createCard([tcHead(t("连接列表"), [addBtn])]);
   if (!connections.length) {
-    listCard.append(createEmptyState({ title: "还没有连接", description: "点右上角“新增连接”开始配置。", icon: "gear" }));
+    listCard.append(createEmptyState({ title: t("还没有连接"), description: t("点右上角“新增连接”开始配置。"), icon: "gear" }));
     return listCard;
   }
   for (const [index, connection] of connections.entries()) {
@@ -890,32 +901,33 @@ function buildConnectionListCard(role: string): HTMLElement {
     const name = document.createElement("span");
     name.style.flex = "1";
     name.style.fontWeight = "600";
-    name.textContent = connection.display_label || `连接 ${index + 1}`;
+    name.textContent = tx(connection.display_label) || t("连接 {0}", index + 1);
     const chips: HTMLElement[] = [];
-    if (index === 0) chips.push(createChip({ label: "主用", tone: "tint" }));
+    if (index === 0) chips.push(createChip({ label: t("主用"), tone: "tint" }));
     // 没起名的跟随行，名称本身就是「跟随…」（见 saveModel），再挂一个同样文字的胶囊是重复。
-    const followChip = `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`;
+    // 两边比的都是显示文字：name 显示的是 tx(display_label)，这里同样是翻译后的说法。
+    const followChip = t("跟随{0}", MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || t("其他用途"));
     if (connection.connection_mode === "follow" && name.textContent !== followChip) chips.push(createChip({ label: followChip, tone: "tint" }));
-    if (connection.connection_mode === "local") chips.push(createChip({ label: "本地", tone: "mute" }));
+    if (connection.connection_mode === "local") chips.push(createChip({ label: t("本地"), tone: "mute" }));
     if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
-      chips.push(createChip({ label: "无密钥", tone: "warn" }));
+      chips.push(createChip({ label: t("无密钥"), tone: "warn" }));
     }
     const actions = document.createElement("span");
     actions.style.display = "flex";
     actions.style.gap = "6px";
     actions.append(createButton({
-      label: "测试", size: "mini",
+      label: t("测试"), size: "mini",
       onClick: (e) => { e.stopPropagation(); void testConnectionRow(role, connection.id); },
     }));
     if (index > 0) {
       actions.append(createButton({
-        label: "设为主用", size: "mini",
+        label: t("设为主用"), size: "mini",
         onClick: (e) => { e.stopPropagation(); void promoteConnection(role, connection.id); },
       }));
     }
     if (connections.length > 1) {
       actions.append(createButton({
-        label: "删除", size: "mini", variant: "danger",
+        label: t("删除"), size: "mini", variant: "danger",
         onClick: (e) => { e.stopPropagation(); confirmDeleteConnection(role, connection); },
       }));
     }
@@ -960,13 +972,13 @@ async function saveModel(
   opts: { silent?: boolean } = {},
 ): Promise<void> {
   const role = form.role;
-  if (!form.selectedId) throw new Error("请先新增或选择一条连接。");
+  if (!form.selectedId) throw new Error(t("请先新增或选择一条连接。"));
   const following = form.sourceRole !== "independent";
   const connectionMode = following ? "follow" : form.access;
   const body: JsonObject = {
     connection_mode: connectionMode,
     source_role: form.sourceRole,
-    label: form.connectionLabel || (following ? `跟随${MODEL_ROLE_LABELS[form.sourceRole] || form.sourceRole}` : ""),
+    label: form.connectionLabel || (following ? `跟随${MODEL_ROLE_LABELS_ZH[form.sourceRole] || form.sourceRole}` : ""), // i18n-ignore 存进设置的连接名用中文原文，显示时 tx()
     model: form.model,
   };
   // 跟随行的端点属于来源连接。把界面上展示的有效端点一并提交，会把它写进本行的
@@ -996,7 +1008,7 @@ async function saveModel(
   // /api/data/health，本次会话内横幅永远不露面——丢 Key 的提示必须在丢的那一刻
   // 给。失败静默，语义与 bootstrap 那次一致。
   void refreshDataHealth(mountToken);
-  if (!opts.silent) showToast({ message: "连接已保存。密钥仅写入本机密钥存储。" });
+  if (!opts.silent) showToast({ message: t("连接已保存。密钥仅写入本机密钥存储。") });
 }
 
 async function testConnectionRow(role: string, connectionId: string): Promise<void> {
@@ -1008,7 +1020,7 @@ async function testConnectionRow(role: string, connectionId: string): Promise<vo
       `/api/models/connectivity/${encodeURIComponent(role)}`,
       { method: "POST", body: JSON.stringify({ connection_id: connectionId }) },
     );
-    showToast({ message: result.message, error: !result.ok });
+    showToast({ message: tx(result.message), error: !result.ok });
     await refreshModelRoles();
   });
 }
@@ -1022,7 +1034,7 @@ async function promoteConnection(role: string, connectionId: string): Promise<vo
       { method: "POST", body: JSON.stringify({ ordered_ids: ordered }) },
     );
     await refreshSettings();
-    showToast({ message: "已设为主用连接。" });
+    showToast({ message: t("已设为主用连接。") });
   }, { preserveDraft: false }); // 主用连接换人，表单跟着切到新连接，旧连接的草稿（含刚粘的密钥）绝不能糊过去
 }
 
@@ -1035,47 +1047,47 @@ async function deleteConnection(role: string, connectionId: string): Promise<voi
     selectConnection(role, null);
     // 删掉的可能是主用连接，跟随它的角色、顶栏模型药丸和翻译角色的旧字段都跟着变。
     await refreshSettings();
-    clearModelCatalog(role, "连接已变更，请重新获取模型列表。");
+    clearModelCatalog(role, t("连接已变更，请重新获取模型列表。"));
     // 删除连接会经由 save_connection_key 写 keys.json，同样可能触发惰性自愈。
     void refreshDataHealth(mountToken);
-    showToast({ message: "连接已删除，其密钥也已从本机移除。" });
+    showToast({ message: t("连接已删除，其密钥也已从本机移除。") });
   }, { preserveDraft: false }); // 表单会切回默认连接，不该把被删连接的草稿糊上去
 }
 
 function confirmDeleteConnection(role: string, connection: PoolConnection): void {
-  const name = connection.display_label || connection.label || "这条连接";
+  const name = tx(connection.display_label || connection.label) || t("这条连接");
   openModal({
     tone: "danger", icon: "trash",
-    sourceLabel: `设置 · 模型服务 · ${MODEL_ROLE_LABELS[role] || role}`,
-    title: `删除「${name}」？`,
+    sourceLabel: t("设置 · 模型服务 · {0}", MODEL_ROLE_LABELS[role] || role),
+    title: t("删除「{0}」？", name),
     body: [
-      `这只会移除当前用途中的「${name}」，不会修改它跟随的来源连接。`,
-      connection.primary ? "删除主用连接后，列表中的下一条连接会成为主用。" : "其他连接不受影响。",
+      t("这只会移除当前用途中的「{0}」，不会修改它跟随的来源连接。", name),
+      connection.primary ? t("删除主用连接后，列表中的下一条连接会成为主用。") : t("其他连接不受影响。"),
     ],
     actions: [
-      { label: "取消" },
-      { label: "确认删除", variant: "danger-solid", onClick: () => void deleteConnection(role, connection.id) },
+      { label: t("取消") },
+      { label: t("确认删除"), variant: "danger-solid", onClick: () => void deleteConnection(role, connection.id) },
     ],
   });
 }
 
 // 后端 core/config_crypto.py 在文件被改过一个字节（AAD 绑定了到期日和正文哈希）时
 // 原样抛出的这句话。要求原文照抄，不能换成界面自己的措辞。
-const CORRUPT_IMPORT_DETAIL = "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。";
+const CORRUPT_IMPORT_DETAIL = "这份文件在传输过程中损坏，或者被修改过，没有导入任何内容。请让发送方重新发一次。"; // i18n-ignore 与后端原文比较，显示时 tx()
 
 // 三条导入路径（正常 / 过期 / 版本太旧）提交的 payload 是同一份，连接列表一律整份
 // 替换。别再写「不删除未提及配置」：本机在这些角色下自己加的连接会连同它们保存的
 // Key 一起消失，说成「只合并」等于骗人。过期与版本太旧那两条路径的按钮写着「仅导入
 // 配置」，更需要这句话——「仅」字很容易被读成「影响有限」。
 const REPLACES_CONNECTIONS_NOTICE =
-  "文件里包含的用途，其连接列表会整份替换本机现有连接（本机自己加的连接和保存的密钥会被清除）；文件里没有的用途保持不变。";
+  t("文件里包含的用途，其连接列表会整份替换本机现有连接（本机自己加的连接和保存的密钥会被清除）；文件里没有的用途保持不变。");
 
 // 有效期选项与 core/config_crypto.py::DEFAULT_VALID_DAYS 对齐：0 = 长期有效。
 const VALID_DAYS_OPTIONS: { label: string; value: number }[] = [
-  { label: "7 天", value: 7 },
-  { label: "30 天（推荐）", value: 30 },
-  { label: "90 天", value: 90 },
-  { label: "长期有效", value: 0 },
+  { label: t("7 天"), value: 7 },
+  { label: t("30 天（推荐）"), value: 30 },
+  { label: t("90 天"), value: 90 },
+  { label: t("长期有效"), value: 0 },
 ];
 const DEFAULT_VALID_DAYS = 30;
 
@@ -1164,12 +1176,12 @@ function buildRolesList(preview: ModelImportPreview): HTMLUListElement {
     for (const item of preview.roles) {
       const li = document.createElement("li");
       // fields 是后端的设置键名（base_url、cloud_model 之类），对用户没有意义，只报数量。
-      li.textContent = `${MODEL_ROLE_LABELS[item.role] || item.role}：${item.fields.length ? `${item.fields.length} 项设置` : "没有具体设置"}`;
+      li.textContent = (MODEL_ROLE_LABELS[item.role] || item.role) + t("：") + (item.fields.length ? t("{0} 项设置", item.fields.length) : t("没有具体设置"));
       list.append(li);
     }
   } else {
     const li = document.createElement("li");
-    li.textContent = "没有需要导入的模型设置。";
+    li.textContent = t("没有需要导入的模型设置。");
     list.append(li);
   }
   return list;
@@ -1191,9 +1203,9 @@ async function exportModelConfig(includeApiKey: boolean): Promise<void> {
     // .xltcfg 留给含 Key 的加密文件：那种文件打开确实只有乱码，值得一个自己的扩展名。
     const saved = await saveJsonFile("translator-model-config.json", response.document);
     if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
-    showToast({ message: `已导出模型配置到 ${saved}；默认不包含 API Key。` });
+    showToast({ message: t("已导出模型配置到 {0}；默认不包含 API Key。", saved) });
   } catch (error) {
-    showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+    showToast({ message: t("导出失败：{0}", errorMessage(error)), error: true });
   }
 }
 
@@ -1201,7 +1213,7 @@ async function exportModelConfig(includeApiKey: boolean): Promise<void> {
 function openExportWithKeyConfirmModal(): void {
   let validDays = DEFAULT_VALID_DAYS;
   const selectField = createSelectField({
-    label: "文件有效期",
+    label: t("文件有效期"),
     options: VALID_DAYS_OPTIONS.map((option) => ({ value: String(option.value), label: option.label })),
     value: String(DEFAULT_VALID_DAYS),
     onChange: (value) => {
@@ -1214,24 +1226,24 @@ function openExportWithKeyConfirmModal(): void {
   const note = document.createElement("p");
   note.className = "note";
   note.style.marginTop = "-4px";
-  note.textContent = "过期后文件里的密钥无法再解开，配置部分仍可导入。";
+  note.textContent = t("过期后文件里的密钥无法再解开，配置部分仍可导入。");
 
   let handle: ModalHandle;
   handle = openModal({
     tone: "tint",
     icon: "gear",
-    sourceLabel: "设置 · 模型服务 · 导出含 Key",
-    title: "导出含 Key",
+    sourceLabel: t("设置 · 模型服务 · 导出含 Key"),
+    title: t("导出含 Key"),
     body: [
-      "密钥会加密后写进文件。对方用本软件导入即可自动解开，不需要口令，也不需要联网。",
-      buildInlineBanner("warn", "任何持有本软件的人都能解开这份文件。请只发给应当拿到这些密钥的人，不要发到公开群或网盘。"),
+      t("密钥会加密后写进文件。对方用本软件导入即可自动解开，不需要口令，也不需要联网。"),
+      buildInlineBanner("warn", t("任何持有本软件的人都能解开这份文件。请只发给应当拿到这些密钥的人，不要发到公开群或网盘。")),
       field,
       note,
     ],
     actions: [
-      { label: "取消", variant: "default" },
+      { label: t("取消"), variant: "default" },
       {
-        label: "选择保存位置", variant: "primary", keepOpen: true,
+        label: t("选择保存位置"), variant: "primary", keepOpen: true,
         onClick: async () => {
           try {
             const response = await client.request<ModelConfigExportResponse>(
@@ -1251,11 +1263,11 @@ function openExportWithKeyConfirmModal(): void {
               openApiKeyExportReportModal(saved, response);
               return;
             }
-            showToast({ message: `已导出模型配置到 ${saved}；本机目前没有已保存的 API Key，文件不含任何密钥。` });
+            showToast({ message: t("已导出模型配置到 {0}；本机目前没有已保存的 API Key，文件不含任何密钥。", saved) });
           } catch (error) {
             // 不带前缀的话，写盘失败时弹出来的会是 Rust 那一层的系统错误原文，
             // 用户看不出这是「导出」这件事出的错。
-            showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+            showToast({ message: t("导出失败：{0}", errorMessage(error)), error: true });
           }
         },
       },
@@ -1272,7 +1284,7 @@ function openApiKeyExportReportModal(savedPath: string, response: ModelConfigExp
   const withheld = rows.filter((row) => row.status === "withheld_imported");
   const exported = rows.filter((row) => row.status === "exported");
   const memories = report.provider_memories ?? [];
-  const describe = (row: ApiKeyExportRow) => `${row.role_label || row.role}：${row.connection}`;
+  const describe = (row: ApiKeyExportRow) => `${tx(row.role_label) || row.role}${t("：")}${tx(row.connection)}`;
   const buildList = (items: ApiKeyExportRow[], describeRow: (row: ApiKeyExportRow) => string, gap: string) => {
     const list = document.createElement("ul");
     list.style.margin = `0 0 ${gap}`;
@@ -1289,48 +1301,48 @@ function openApiKeyExportReportModal(savedPath: string, response: ModelConfigExp
   const body: (string | HTMLElement)[] = [];
   if (sealed) {
     body.push(buildKvList([
-      ["文件", monoText(savedPath)],
+      [t("文件"), monoText(savedPath)],
       // 数的是后端密封前实际数出来的密钥处数，不是回执里的连接行数：角色「换服务商时
       // 记住的配置」里的密钥也会被一起加密带走，按连接行数报会少算，和收件人导入时
       // 看到的作用域数对不上。
-      ["密钥", textAndChip(`${sealedKeyCount} 个密钥已加密写入 `, createChip({ label: "已加密", tone: "ok" }))],
-      ["有效期至", expiresAt ? `${formatReleaseDate(expiresAt)}（还剩 ${daysFromNow(expiresAt)} 天）` : "长期有效"],
+      [t("密钥"), textAndChip(t("{0} 个密钥已加密写入 ", sealedKeyCount), createChip({ label: t("已加密"), tone: "ok" }))],
+      [t("有效期至"), expiresAt ? t("{0}（还剩 {1} 天）", formatReleaseDate(expiresAt), daysFromNow(expiresAt)) : t("长期有效")],
     ]));
   } else {
-    body.push(`配置已导出到 ${savedPath}。`);
+    body.push(t("配置已导出到 {0}。", savedPath));
   }
   if (withheld.length) {
     body.push(
-      `以下 ${withheld.length} 条连接的密钥没有写进文件，因为它们是从别人的配置文件导入到这台电脑的：`,
+      t("以下 {0} 条连接的密钥没有写进文件，因为它们是从别人的配置文件导入到这台电脑的：", withheld.length),
       buildList(withheld, describe, "8px"),
     );
   }
   if (memories.length) {
     // 这些不是连接列表里的条目，而是角色换服务商时留下的记忆，用「服务商 + 地址」来指认。
     body.push(
-      `另有 ${memories.length} 处「换服务商时记住的配置」里的密钥同样是导入来的，也没有写进文件：`,
-      buildList(memories, (row) => `${row.role_label || row.role}：${providerLabel(row.provider ?? "")}（${row.connection}）`, "8px"),
+      t("另有 {0} 处「换服务商时记住的配置」里的密钥同样是导入来的，也没有写进文件：", memories.length),
+      buildList(memories, (row) => `${tx(row.role_label) || row.role}${t("：")}${providerLabel(row.provider ?? "")}${t("（{0}）", tx(row.connection))}`, "8px"),
     );
   }
   if (withheld.length || memories.length) {
-    body.push("这样做是为了不把别人的密钥继续传出去。对方导入这份配置后，需要自己填写上面这些密钥。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。");
+    body.push(t("这样做是为了不把别人的密钥继续传出去。对方导入这份配置后，需要自己填写上面这些密钥。如果这些密钥本来就是你的，在对应位置重新填写并保存一次，以后导出就会带上。"));
   }
   if (exported.length) {
-    body.push(`已随文件导出的密钥（${exported.length} 条连接，请把文件放到受保护的位置）：`, buildList(exported, describe, "0"));
+    body.push(t("已随文件导出的密钥（{0} 条连接，请把文件放到受保护的位置）：", exported.length), buildList(exported, describe, "0"));
   } else if (!sealed) {
-    body.push("这次导出的文件里没有任何密钥，对方导入后需要自己填写全部连接的密钥。");
+    body.push(t("这次导出的文件里没有任何密钥，对方导入后需要自己填写全部连接的密钥。"));
   }
 
   openModal({
     tone: sealed ? "ok" : "warn",
     icon: sealed ? "check" : "warn",
     wide: true,
-    sourceLabel: "设置 · 模型服务 · 导出含 Key",
-    title: sealed ? "已导出，密钥已加密" : "部分密钥没有导出",
+    sourceLabel: t("设置 · 模型服务 · 导出含 Key"),
+    title: sealed ? t("已导出，密钥已加密") : t("部分密钥没有导出"),
     body,
     actions: [
-      { label: "在文件夹中显示", onClick: () => void revealSavedFile(savedPath), keepOpen: true },
-      { label: "知道了", variant: "primary" },
+      { label: t("在文件夹中显示"), onClick: () => void revealSavedFile(savedPath), keepOpen: true },
+      { label: t("知道了"), variant: "primary" },
     ],
   });
 }
@@ -1346,7 +1358,7 @@ function importModelConfig(): void {
     } catch (error) {
       // 后端在这句原话上给的是 422：文件被篡改或损坏，AAD 校验没过。这种情况有专门的
       // 弹窗（样张界面 8），不走下面 pickJsonFile 自带的通用红色 toast。
-      if (errorMessage(error) === CORRUPT_IMPORT_DETAIL) {
+      if ((error instanceof ApiError ? error.rawMessage : errorMessage(error)) === CORRUPT_IMPORT_DETAIL) {
         openImportCorruptModal();
         return;
       }
@@ -1354,19 +1366,19 @@ function importModelConfig(): void {
     }
     setModelImportPreview({ fileName, payload, ...preview });
     openImportPreviewModal();
-  }, "模型配置导入预览失败", "application/json,.json,.xltcfg");
+  }, t("模型配置导入预览失败"), "application/json,.json,.xltcfg");
 }
 
 function openImportCorruptModal(): void {
   openModal({
     tone: "danger",
     icon: "close",
-    sourceLabel: "设置 · 模型服务 · 导入配置",
-    title: "文件校验未通过",
+    sourceLabel: t("设置 · 模型服务 · 导入配置"),
+    title: t("文件校验未通过"),
     // 第二句不是客套话：校验不过意味着文件可能是被人改过的（比如把某条连接的服务
     // 地址换成别人的服务器），「确认文件来源」是这条路径上用户唯一能做的安全动作。
-    body: [CORRUPT_IMPORT_DETAIL, "如果重发后仍然报错，请联系发送方确认文件来源。"],
-    actions: [{ label: "知道了", variant: "primary" }],
+    body: [tx(CORRUPT_IMPORT_DETAIL), t("如果重发后仍然报错，请联系发送方确认文件来源。")],
+    actions: [{ label: t("知道了"), variant: "primary" }],
   });
 }
 
@@ -1387,14 +1399,16 @@ async function runModelConfigImport(preview: ModelImportPreview, handle: ModalHa
     await refreshSettings();
     // 导入写入密钥作用域时同样走 keys.json 的写路径，可能触发惰性自愈。
     void refreshDataHealth(mountToken);
-    for (const role of Object.keys(modelRoles)) clearModelCatalog(role, "导入后请重新获取当前连接的模型列表。");
+    for (const role of Object.keys(modelRoles)) clearModelCatalog(role, t("导入后请重新获取当前连接的模型列表。"));
     renderBody();
     handle.close();
     const unsealedKeys = preview.seal_status === "unsealed" && result.imported_key_count > 0;
     const keysClause = result.imported_key_count > 0
-      ? `；同时${unsealedKeys ? "解开并写入" : "写入"} ${result.imported_key_count} 个密钥`
+      ? (unsealedKeys
+        ? t("；同时解开并写入 {0} 个密钥", result.imported_key_count)
+        : t("；同时写入 {0} 个密钥", result.imported_key_count))
       : "";
-    showToast({ message: `已导入配置，文件里包含的用途，其连接列表已整份替换${keysClause}。这些用途都需要重新测试连接。` });
+    showToast({ message: t("已导入配置，文件里包含的用途，其连接列表已整份替换{0}。这些用途都需要重新测试连接。", keysClause) });
   } catch (error) {
     showToast({ message: errorMessage(error), error: true });
   }
@@ -1421,31 +1435,31 @@ function openImportPreviewModal(): void {
 function openImportNormalModal(preview: ModelImportPreview): void {
   const showPlaintextWarning = preview.legacy_plaintext && preview.sealed_key_count > 0;
   const kvRows: [string, string | HTMLElement][] = [
-    ["文件", monoText(preview.fileName)],
-    ["包含", `${preview.roles.length} 个用途 · ${preview.throughput_profile_count} 项速率设置`],
+    [t("文件"), monoText(preview.fileName)],
+    [t("包含"), t("{0} 个用途 · {1} 项速率设置", preview.roles.length, preview.throughput_profile_count)],
   ];
   if (preview.sealed_key_count > 0) {
-    kvRows.push(["密钥", textAndChip(
-      `${preview.sealed_key_count} 个密钥 `,
+    kvRows.push([t("密钥"), textAndChip(
+      t("{0} 个密钥 ", preview.sealed_key_count),
       showPlaintextWarning
-        ? createChip({ label: "明文", tone: "warn" })
-        : createChip({ label: "已自动解开", tone: "ok" }),
+        ? createChip({ label: t("明文"), tone: "warn" })
+        : createChip({ label: t("已自动解开"), tone: "ok" }),
     )]);
     if (!showPlaintextWarning) {
-      kvRows.push(["有效期至", preview.expires_at
-        ? `${formatReleaseDate(preview.expires_at)}（还剩 ${daysFromNow(preview.expires_at)} 天）`
-        : "长期有效"]);
+      kvRows.push([t("有效期至"), preview.expires_at
+        ? t("{0}（还剩 {1} 天）", formatReleaseDate(preview.expires_at), daysFromNow(preview.expires_at))
+        : t("长期有效")]);
     }
   }
 
   const body: (string | HTMLElement)[] = [buildKvList(kvRows)];
   if (showPlaintextWarning) {
-    body.push(buildInlineBanner("warn", "这是旧版本导出的文件，密钥以明文保存在文件里，任何人用记事本打开都能看到。可以正常导入，建议导入后立刻删除这个文件。"));
+    body.push(buildInlineBanner("warn", t("这是旧版本导出的文件，密钥以明文保存在文件里，任何人用记事本打开都能看到。可以正常导入，建议导入后立刻删除这个文件。")));
   }
   body.push(
     REPLACES_CONNECTIONS_NOTICE,
     buildRolesList(preview),
-    "导入后这些用途都会变成“未测试”，不会自动发出任何请求。",
+    t("导入后这些用途都会变成“未测试”，不会自动发出任何请求。"),
   );
 
   let handle: ModalHandle;
@@ -1453,15 +1467,15 @@ function openImportNormalModal(preview: ModelImportPreview): void {
     tone: "tint",
     icon: "down",
     wide: true,
-    sourceLabel: "设置 · 模型服务 · 导入配置",
-    title: "预览导入模型配置",
+    sourceLabel: t("设置 · 模型服务 · 导入配置"),
+    title: t("预览导入模型配置"),
     body,
     actions: [
-      { label: "取消", variant: "default" },
+      { label: t("取消"), variant: "default" },
       {
         // 按钮和 toast 都跟着正文的口径走：连接列表是整份替换的，再说「合并」会让用户
         // 以为本机自己加的连接还在，而它们连同已保存的 Key 已经没了。
-        label: "确认替换并导入", variant: "primary", keepOpen: true,
+        label: t("确认替换并导入"), variant: "primary", keepOpen: true,
         onClick: () => runModelConfigImport(preview, handle),
       },
     ],
@@ -1475,23 +1489,23 @@ function openImportExpiredModal(preview: ModelImportPreview): void {
     tone: "warn",
     icon: "warn",
     wide: true,
-    sourceLabel: "设置 · 模型服务 · 导入配置",
-    title: "这份文件已过期",
+    sourceLabel: t("设置 · 模型服务 · 导入配置"),
+    title: t("这份文件已过期"),
     body: [
-      `文件的有效期是 ${preview.expires_at ? formatReleaseDate(preview.expires_at) : "未知"}，${elapsedDays > 0 ? `已经过去 ${elapsedDays} 天` : "刚刚过期"}，里面的密钥无法再解开。`,
+      t("文件的有效期是 {0}，{1}，里面的密钥无法再解开。", preview.expires_at ? formatReleaseDate(preview.expires_at) : t("未知"), elapsedDays > 0 ? t("已经过去 {0} 天", elapsedDays) : t("刚刚过期")),
       buildKvList([
-        ["包含", `${preview.roles.length} 个用途 · ${preview.throughput_profile_count} 项速率设置`],
-        ["密钥", textAndChip(`${preview.sealed_key_count} 个密钥 `, createChip({ label: "已失效，无法解开", tone: "warn" }))],
+        [t("包含"), t("{0} 个用途 · {1} 项速率设置", preview.roles.length, preview.throughput_profile_count)],
+        [t("密钥"), textAndChip(t("{0} 个密钥 ", preview.sealed_key_count), createChip({ label: t("已失效，无法解开"), tone: "warn" }))],
       ]),
-      buildInlineBanner("tint", "连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。"),
+      buildInlineBanner("tint", t("连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。")),
       // 「仅导入配置」提交的 payload 和正常导入的完全一样，连接列表照样整份替换。
       // 不写这一句，「仅」字会让人以为影响有限，而本机自己加的连接和它们的 Key
       // 已经没了，用户只能在事后的 toast 里第一次看到这件事。
       REPLACES_CONNECTIONS_NOTICE,
     ],
     actions: [
-      { label: "取消", variant: "default" },
-      { label: "仅导入配置（替换现有连接）", variant: "primary", keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
+      { label: t("取消"), variant: "default" },
+      { label: t("仅导入配置（替换现有连接）"), variant: "primary", keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
     ],
   });
 }
@@ -1502,16 +1516,16 @@ function openImportUnsupportedModal(preview: ModelImportPreview): void {
     tone: "warn",
     icon: "restart",
     wide: true,
-    sourceLabel: "设置 · 模型服务 · 导入配置",
-    title: "需要更新软件才能解开密钥",
+    sourceLabel: t("设置 · 模型服务 · 导入配置"),
+    title: t("需要更新软件才能解开密钥"),
     body: [
-      `这份文件由更新版本的 Translator 导出，当前版本（${PACKAGE_VERSION}）无法解开其中的密钥。`,
-      buildInlineBanner("tint", "更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。"),
+      t("这份文件由更新版本的 Translator 导出，当前版本（{0}）无法解开其中的密钥。", PACKAGE_VERSION),
+      buildInlineBanner("tint", t("更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。")),
       REPLACES_CONNECTIONS_NOTICE, // 同过期弹窗：「仅」字不代表影响有限，见那边的注释
     ],
     actions: [
-      { label: "仅导入配置（替换现有连接）", keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
-      { label: "前往更新", variant: "primary", onClick: () => navigate("settings", { page: "about" }) },
+      { label: t("仅导入配置（替换现有连接）"), keepOpen: true, onClick: () => runModelConfigImport(preview, handle) },
+      { label: t("前往更新"), variant: "primary", onClick: () => navigate("settings", { page: "about" }) },
     ],
   });
 }
@@ -1521,9 +1535,9 @@ export async function exportDocumentConfig(): Promise<void> {
     const payload = await client.request<JsonObject>("/api/document-config/export");
     const saved = await saveJsonFile("translator-document-config.json", payload);
     if (!saved) return; // 用户在保存框里取消：静默返回
-    showToast({ message: `已导出文档翻译配置到 ${saved}；不含模型、密钥和本机输出目录。` });
+    showToast({ message: t("已导出文档翻译配置到 {0}；不含模型、密钥和本机输出目录。", saved) });
   } catch (error) {
-    showToast({ message: `导出失败：${errorMessage(error)}`, error: true });
+    showToast({ message: t("导出失败：{0}", errorMessage(error)), error: true });
   }
 }
 
@@ -1534,7 +1548,7 @@ export function importDocumentConfig(): void {
       { method: "POST", body: JSON.stringify(payload) },
     );
     openDocumentImportPreviewModal(fileName, payload, preview.areas);
-  }, "文档翻译配置导入预览失败");
+  }, t("文档翻译配置导入预览失败"));
 }
 
 export function openDocumentImportPreviewModal(fileName: string, payload: JsonObject, areas: string[]): void {
@@ -1542,33 +1556,33 @@ export function openDocumentImportPreviewModal(fileName: string, payload: JsonOb
   list.style.margin = "0 0 8px";
   list.style.paddingLeft = "18px";
   list.style.fontSize = "12.5px";
-  for (const area of areas.length ? areas : ["没有可识别的配置变更。"]) {
+  for (const area of areas.length ? areas : [t("没有可识别的配置变更。")]) {
     const li = document.createElement("li");
-    li.textContent = area;
+    li.textContent = tx(area);
     list.append(li);
   }
   let handle: ModalHandle;
   handle = openModal({
     tone: "warn",
     icon: "gear",
-    sourceLabel: "设置 · 翻译参数 · 导入配置",
-    title: "预览导入文档翻译配置",
+    sourceLabel: t("设置 · 翻译参数 · 导入配置"),
+    title: t("预览导入文档翻译配置"),
     body: [
-      `${fileName} · 只覆盖文件里写明的项，没提到的设置保持不变。`,
+      t("{0} · 只覆盖文件里写明的项，没提到的设置保持不变。", fileName),
       list,
-      "模型、密钥和本机输出目录不在这个包里，导入后不会被改动。",
+      t("模型、密钥和本机输出目录不在这个包里，导入后不会被改动。"),
     ],
     actions: [
-      { label: "取消", variant: "default" },
+      { label: t("取消"), variant: "default" },
       {
-        label: "确认导入", variant: "primary", keepOpen: true,
+        label: t("确认导入"), variant: "primary", keepOpen: true,
         onClick: async () => {
           try {
             await client.request("/api/document-config/import", { method: "POST", body: JSON.stringify(payload) });
             await refreshSettings();
             renderBody();
             handle.close();
-            showToast({ message: "文档翻译配置已导入。" });
+            showToast({ message: t("文档翻译配置已导入。") });
           } catch (error) {
             showToast({ message: errorMessage(error), error: true });
           }
@@ -1592,7 +1606,7 @@ export function pickJsonFile(
     try {
       await onPicked(file.name, JSON.parse(await file.text()) as JsonObject);
     } catch (error) {
-      showToast({ message: `${failureLabel}：${errorMessage(error)}`, error: true });
+      showToast({ message: `${failureLabel}${t("：")}${errorMessage(error)}`, error: true });
     }
   };
   input.click();
@@ -1610,8 +1624,8 @@ export async function exportDiagnostics(path: string, fallbackFilename: string):
     await ensureConnected();
     const saved = await client.saveBinaryDownload(path, fallbackFilename);
     if (!saved) return; // 用户取消：静默
-    showToast({ message: `诊断包已保存到：${saved}` });
+    showToast({ message: t("诊断包已保存到：{0}", saved) });
   } catch (error) {
-    showToast({ message: `导出诊断失败：${errorMessage(error)}`, error: true });
+    showToast({ message: t("导出诊断失败：{0}", errorMessage(error)), error: true });
   }
 }

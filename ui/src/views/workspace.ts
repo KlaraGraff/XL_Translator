@@ -64,6 +64,7 @@ import {
   stopPdfRerunTicker,
 } from "./workspace-pdf-pages";
 import { el, formatSizeKb, formatTime, hasOwn, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
+import { currentLocale, fmtNum, t, tx } from "../i18n";
 import "./workspace.css";
 
 // ---------------------------------------------------------------------------
@@ -162,75 +163,79 @@ interface ToggleDef {
 }
 
 const EXCEL_TOGGLES: ToggleDef[] = [
-  { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
-  { key: "translationOnly", label: "仅显示译文", hint: "开启后工作表里只放译文。要不要另存一份原文，看下面的「另存原文工作表」。", default: false, pathKind: "output", path: "output_translation_only" },
-  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "translateSheetNames", label: "翻译工作表名称", hint: "工作表标签名也翻译，公式里引用到的表名会一起改；改了不安全的表保留原名。", default: true, pathKind: "output", path: "translate_sheet_names" },
-  { key: "keepOriginal", label: "另存原文工作表", hint: "每张工作表旁边再放一份没翻译的原文，表名后面加「_原文」。", default: true, pathKind: "output", path: "keep_original_sheets" },
-  { key: "formulaBackfill", label: "翻译公式单元格", hint: "公式单元格按现在显示的内容写成双语文字，之后不再自动计算。关闭则公式单元格保持原样、不翻译。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
-  { key: "excelAutofit", label: "用 Excel 调整行高", hint: "需要本机装有 Excel。开启后用 Excel 按译文重算行高，更准；用不了时保留程序估算的行高，并在结果里提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
-  { key: "lockRowHeight", label: "保持行高，缩小字号", hint: "不改行高，译文放不下时缩小字号；缩到最小仍放不下的单元格标为需复核。和「用 Excel 调整行高」只能选一个。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
-  { key: "reviewMark", label: "标记需复核内容", hint: "把保留了原文、或原文里疑似夹杂错误外文的单元格涂上底色，方便人工检查。程序已确认没问题的只写进报告，不涂色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
+  { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("只翻译还没有译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
+  { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后工作表里只放译文。要不要另存一份原文，看下面的「另存原文工作表」。"), default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("把输出文件的名称也翻成目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "translateSheetNames", label: t("翻译工作表名称"), hint: t("工作表标签名也翻译，公式里引用到的表名会一起改；改了不安全的表保留原名。"), default: true, pathKind: "output", path: "translate_sheet_names" },
+  { key: "keepOriginal", label: t("另存原文工作表"), hint: t("每张工作表旁边再放一份没翻译的原文，表名后面加「_原文」。"), default: true, pathKind: "output", path: "keep_original_sheets" },
+  { key: "formulaBackfill", label: t("翻译公式单元格"), hint: t("公式单元格按现在显示的内容写成双语文字，之后不再自动计算。关闭则公式单元格保持原样、不翻译。"), default: true, pathKind: "output", path: "formula_display_value_backfill" },
+  { key: "excelAutofit", label: t("用 Excel 调整行高"), hint: t("需要本机装有 Excel。开启后用 Excel 按译文重算行高，更准；用不了时保留程序估算的行高，并在结果里提示。"), default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
+  { key: "lockRowHeight", label: t("保持行高，缩小字号"), hint: t("不改行高，译文放不下时缩小字号；缩到最小仍放不下的单元格标为需复核。和「用 Excel 调整行高」只能选一个。"), default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
+  { key: "reviewMark", label: t("标记需复核内容"), hint: t("把保留了原文、或原文里疑似夹杂错误外文的单元格涂上底色，方便人工检查。程序已确认没问题的只写进报告，不涂色。"), default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
 ];
 
 const WORD_TOGGLES: ToggleDef[] = [
-  { key: "untranslated", label: "仅补译未翻译内容", hint: "只翻译还没有译文的内容，已翻译部分保持不变。", default: false, pathKind: "none" },
-  { key: "translationOnly", label: "仅显示译文", hint: "开启后输出文件只保留译文；关闭时保留原文与译文。", default: false, pathKind: "output", path: "output_translation_only" },
-  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "wordNativePreprocessing", label: "用 Word / LibreOffice 处理编号", hint: "翻译前要把自动编号（如 1.1、（一））转成普通文字，免得译后编号错乱。开启时优先用本机的 Word 或 LibreOffice，效果更准；都没有时自动改用内置方式。关闭则始终用内置方式。只处理临时副本，原件不动。", default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
-  { key: "wordHighlight", label: "标记需复核内容", hint: "为保留原文或质量校验未通过的段落加高亮，便于人工复核。", default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
-  { key: "protectFrontMatter", label: "保护封面和目录", hint: "从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；找不到正文起点时不启用，并在日志里说明。", default: true, pathKind: "none" },
-  { key: "translateHeadersFooters", label: "翻译页眉页脚", hint: "开启后页眉页脚也翻译，译文用「 / 」接在原文同一行，免得页眉变高把正文往下挤。页码和目录类的页眉页脚不翻。", default: false, pathKind: "none" },
+  { key: "untranslated", label: t("仅补译未翻译内容"), hint: t("只翻译还没有译文的内容，已翻译部分保持不变。"), default: false, pathKind: "none" },
+  { key: "translationOnly", label: t("仅显示译文"), hint: t("开启后输出文件只保留译文；关闭时保留原文与译文。"), default: false, pathKind: "output", path: "output_translation_only" },
+  { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("把输出文件的名称也翻成目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "wordNativePreprocessing", label: t("用 Word / LibreOffice 处理编号"), hint: t("翻译前要把自动编号（如 1.1、（一））转成普通文字，免得译后编号错乱。开启时优先用本机的 Word 或 LibreOffice，效果更准；都没有时自动改用内置方式。关闭则始终用内置方式。只处理临时副本，原件不动。"), default: true, pathKind: "flat", path: "word_conversion.use_native_preprocessing" },
+  { key: "wordHighlight", label: t("标记需复核内容"), hint: t("为保留原文或质量校验未通过的段落加高亮，便于人工复核。"), default: true, pathKind: "flat", path: "word_review.highlight_unresolved" },
+  { key: "protectFrontMatter", label: t("保护封面和目录"), hint: t("从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；找不到正文起点时不启用，并在日志里说明。"), default: true, pathKind: "none" },
+  { key: "translateHeadersFooters", label: t("翻译页眉页脚"), hint: t("开启后页眉页脚也翻译，译文用「 / 」接在原文同一行，免得页眉变高把正文往下挤。页码和目录类的页眉页脚不翻。"), default: false, pathKind: "none" },
 ];
 
 const PDF_TOGGLES: ToggleDef[] = [
-  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "pdfReview", label: "逐页审核", hint: "每页翻完再让审核模型检查一遍版式和文字是否完整，有问题的页会提醒你复核。每页多调用一次模型，会多一份费用。", default: false, pathKind: "flat", path: "pdf.review_enabled" },
-  { key: "pdfCompressed", label: "生成压缩 PDF", hint: "在原始输出之外额外生成一份体积更小的 PDF。", default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
-  { key: "pdfImages", label: "也翻译图片文件", hint: "开启后扫描时会把 PNG、JPG、WebP、BMP、TIFF 图片也列进来一起翻译；关闭则只处理 PDF。", default: true, pathKind: "flat", path: "pdf.include_images" },
+  { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("把输出文件的名称也翻成目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "pdfReview", label: t("逐页审核"), hint: t("每页翻完再让审核模型检查一遍版式和文字是否完整，有问题的页会提醒你复核。每页多调用一次模型，会多一份费用。"), default: false, pathKind: "flat", path: "pdf.review_enabled" },
+  { key: "pdfCompressed", label: t("生成压缩 PDF"), hint: t("在原始输出之外额外生成一份体积更小的 PDF。"), default: true, pathKind: "flat", path: "pdf.generate_compressed_pdf" },
+  { key: "pdfImages", label: t("也翻译图片文件"), hint: t("开启后扫描时会把 PNG、JPG、WebP、BMP、TIFF 图片也列进来一起翻译；关闭则只处理 PDF。"), default: true, pathKind: "flat", path: "pdf.include_images" },
   // 判定条件只看纸张尺寸，和内容是不是图纸无关，所以开关名必须是尺寸口径——叫「跳过图纸」
   // 会让人以为程序在识别图纸内容，遇到 A3 的宣传册被跳过时只会当成程序出错。
-  { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "长宽都比 A4 大约 15% 以上的页面（A3 及更大，横竖都算）不翻译，原样放进输出文件，清晰度不变。工程图纸常是这种幅面。比 A4 稍大一点的（比如扫描白边）不受影响。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
+  { key: "skipOversizedPages", label: t("跳过 A3 及更大的页面"), hint: t("长宽都比 A4 大约 15% 以上的页面（A3 及更大，横竖都算）不翻译，原样放进输出文件，清晰度不变。工程图纸常是这种幅面。比 A4 稍大一点的（比如扫描白边）不受影响。"), default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
 // CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
 // 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
 const CAD_TOGGLES: ToggleDef[] = [
-  { key: "translateOutputFilename", label: "翻译文件名", hint: "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
-  { key: "cadBlockText", label: "翻译图块内文字", hint: "图块里的文字（含属性文字）也一起翻译；关闭则只翻译直接画在图纸上的文字。", default: true, pathKind: "output", path: "include_block_text" },
-  { key: "cadKeepWorkDxf", label: "另存一份 DXF", hint: "除了输出的图纸，再额外保存一份翻译后的 DXF，方便用别的软件核对。", default: true, pathKind: "output", path: "keep_work_dxf" },
-  { key: "cadCopyRelated", label: "复制同名附属文件", hint: "把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。", default: false, pathKind: "output", path: "copy_related_files" },
+  { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("把输出文件的名称也翻成目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("图块里的文字（含属性文字）也一起翻译；关闭则只翻译直接画在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
+  { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("除了输出的图纸，再额外保存一份翻译后的 DXF，方便用别的软件核对。"), default: true, pathKind: "output", path: "keep_work_dxf" },
+  { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
 ];
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
 
 export const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
 const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
-const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译", cad: "CAD 图纸翻译" };
-const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件", cad: "DWG / DXF 图纸" };
+const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: t("Excel 表格翻译"), word: t("Word 文档翻译"), pdf: t("PDF 与图片翻译"), cad: t("CAD 图纸翻译") };
+const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: t("表格文件"), word: t("文档"), pdf: t("PDF / 图片文件"), cad: t("DWG / DXF 图纸") };
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
 function fileNounPhrase(surface: Surface, count: number): string {
-  const noun = SURFACE_FILE_NOUN[surface];
-  return `${count} 个${/^[A-Za-z]/.test(noun) ? " " : ""}${noun}`;
+  switch (surface) {
+    case "excel": return t("{0} 个表格文件", count);
+    case "word": return t("{0} 个文档", count);
+    case "pdf": return t("{0} 个 PDF / 图片文件", count);
+    default: return t("{0} 个 DWG / DXF 图纸", count);
+  }
 }
 const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
-  excel: "选择文件或文件夹，扫描后勾选要翻译的表格",
-  word: "选择文件或文件夹，扫描后勾选要翻译的文档",
-  pdf: "选择文件或文件夹，扫描后勾选要翻译的 PDF 与图片",
-  cad: "选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸",
+  excel: t("选择文件或文件夹，扫描后勾选要翻译的表格"),
+  word: t("选择文件或文件夹，扫描后勾选要翻译的文档"),
+  pdf: t("选择文件或文件夹，扫描后勾选要翻译的 PDF 与图片"),
+  cad: t("选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸"),
 };
 const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = {
-  excel: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的表格会列在这里，可逐个勾选。" },
-  word: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的文档会列在这里，可逐个勾选。" },
-  pdf: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的 PDF 与图片会列在这里，可逐个勾选。" },
-  cad: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。" },
+  excel: { title: t("还没有可翻译的文件"), description: t("用「浏览」选择文件或文件夹后会自动扫描，找到的表格会列在这里，可逐个勾选。") },
+  word: { title: t("还没有可翻译的文件"), description: t("用「浏览」选择文件或文件夹后会自动扫描，找到的文档会列在这里，可逐个勾选。") },
+  pdf: { title: t("还没有可翻译的文件"), description: t("用「浏览」选择文件或文件夹后会自动扫描，找到的 PDF 与图片会列在这里，可逐个勾选。") },
+  cad: { title: t("还没有可翻译的文件"), description: t("用「浏览」选择文件或文件夹后会自动扫描，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。") },
 };
 const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = {
-  excel: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
-  word: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
-  pdf: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
-  cad: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
+  excel: { title: t("可以开始下一批了"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
+  word: { title: t("可以开始下一批了"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
+  pdf: { title: t("可以开始下一批了"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
+  cad: { title: t("可以开始下一批了"), description: t("上一任务的结果已归档，选择新来源即可继续。") },
 };
 
 // ---------------------------------------------------------------------------
@@ -367,7 +372,7 @@ function freshState(surface: Surface): SurfaceState {
     toggles: freshToggles(surface),
     targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
-    domainPreset: surface === "excel" ? "无" : "同步工程场景",
+    domainPreset: surface === "excel" ? "无" : "同步工程场景", // i18n-ignore 发给后端的专业领域预设值
     useCustomOutputDir: false,
     customOutputDir: "",
     task: null,
@@ -490,7 +495,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
   const c = await getClient();
   const task = await c.getTask(taskId);
   if (!isCurrent()) return;
-  if (task.surface !== surface) throw new Error("这个任务不属于当前工作区。");
+  if (task.surface !== surface) throw new Error(t("这个任务不属于当前工作区。"));
   const context = taskContexts.get(taskId) ?? await recoverTaskContext(surface, taskId);
   if (!isCurrent()) return;
   st.sourcePath = context?.sourcePath ?? "";
@@ -503,7 +508,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
   const progress = [...reduceFileProgress(new Map(), task.file_progress).values()];
   const entries = progress.length ? progress : terminalFileResults(record(task.result)).map(record);
   st.files = context ? [...context.files] : entries.map((entry, index) => {
-    const name = text(entry.name, text(entry.relative_path, `文件 ${index + 1}`));
+    const name = text(entry.name, text(entry.relative_path, t("文件 {0}", index + 1)));
     const format = name.split(".").pop()?.toLowerCase();
     return {
       path: `history:${taskId}:${index}`,
@@ -590,7 +595,7 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
   try {
     await ensureBootstrap();
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "重新加载语言列表失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("重新加载语言列表失败。")), error: true });
     return;
   }
   states[surface].renderer?.();
@@ -609,7 +614,7 @@ function applySettingsToStates(): void {
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
-      st.domainPreset = text(settings[`${surface}_domain_preset`], surface === "excel" ? "无" : "同步工程场景");
+      st.domainPreset = text(settings[`${surface}_domain_preset`], surface === "excel" ? "无" : "同步工程场景"); // i18n-ignore 专业领域预设值，存进设置
     }
     for (const toggle of TOGGLES[surface]) {
       if (toggle.pathKind === "flat" && toggle.path) {
@@ -673,7 +678,7 @@ async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, reve
   } catch (error) {
     revert();
     rerender(surface);
-    showToast({ message: redactedText((error as Error)?.message, `${what}没有保存成功，已恢复为原来的设置。`), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("{0}没有保存成功，已恢复为原来的设置。", what)), error: true });
   }
 }
 
@@ -712,7 +717,7 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
     })
     .catch((error) => {
       if (!isCurrent()) return;
-      showToast({ message: redactedText((error as Error)?.message, "初始化工作区失败。"), error: true });
+      showToast({ message: redactedText((error as Error)?.message, t("初始化工作区失败。")), error: true });
       if (st.renderer) renderInto(container, surface);
     });
 }
@@ -754,8 +759,8 @@ export function unmountWorkspace(surface: Surface): void {
 }
 
 function renderLoading(container: HTMLElement, surface: Surface): void {
-  setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: "加载中", tone: "idle" }, subtitle: "正在连接后台服务…" });
-  const card = createEmptyState({ title: "正在加载工作区", description: "首次连接后台可能需要几秒。", icon: SURFACE_ICON[surface] });
+  setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: t("加载中"), tone: "idle" }, subtitle: t("正在连接后台服务…") });
+  const card = createEmptyState({ title: t("正在加载工作区"), description: t("首次连接后台可能需要几秒。"), icon: SURFACE_ICON[surface] });
   card.style.flex = "1";
   container.append(card);
 }
@@ -949,16 +954,16 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
       title: SURFACE_PAGE_TITLE[surface],
       status: { label: info.statusLabel, tone: info.tone === "fail" ? "danger" : info.tone },
       subtitle: info.tone === "fail"
-        ? "任务已归档到任务中心，可在完整报告里看失败原因"
-        : "任务已归档到任务中心，可随时回看完整报告",
+        ? t("任务已归档到任务中心，可在完整报告里看失败原因")
+        : t("任务已归档到任务中心，可随时回看完整报告"),
     });
     return;
   }
   if (scanBusy[surface]) {
     setTopbar({
       title: SURFACE_PAGE_TITLE[surface],
-      status: { label: "扫描中…", tone: "run" },
-      subtitle: "正在读取文件，请稍候",
+      status: { label: t("扫描中…"), tone: "run" },
+      subtitle: t("正在读取文件，请稍候"),
     });
     return;
   }
@@ -967,12 +972,12 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
     const meta = runningStatusMeta(state);
     const fileCount = st.selected.size || st.files.length;
     // 专业领域选「无」时不写：单独一个「无」挂在语言后面，看不出指的是什么。
-    const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== "无"
-      ? ` · 专业领域：${st.domainPreset}`
+    const domainSuffix = surface !== "pdf" && st.domainPreset && st.domainPreset !== "无" // i18n-ignore 与后端预设值比较
+      ? " · " + t("专业领域：{0}", tx(st.domainPreset))
       : "";
     // PDF 没有源语言选择，只说目标语言；其余三页同一句式。
     const subtitle = surface === "pdf"
-      ? `${fileNounPhrase(surface, fileCount)} · 译成${targetLabel(st)}`
+      ? t("{0} · 译成{1}", fileNounPhrase(surface, fileCount), targetLabel(st))
       : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
     return;
@@ -982,43 +987,57 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   if (submittingSurfaces.has(surface) && st.files.length > 0) {
     setTopbar({
       title: SURFACE_PAGE_TITLE[surface],
-      status: { label: "正在启动", tone: "run" },
-      subtitle: `正在读取 ${fileNounPhrase(surface, st.selected.size || st.files.length)}并检查模型连接，文件大时要几秒`,
+      status: { label: t("正在启动"), tone: "run" },
+      subtitle: t("正在读取 {0}并检查模型连接，文件大时要几秒", fileNounPhrase(surface, st.selected.size || st.files.length)),
     });
     return;
   }
   if (st.files.length > 0) {
     setTopbar({
       title: SURFACE_PAGE_TITLE[surface],
-      status: { label: "已扫描 · 待开始", tone: "run" },
-      subtitle: `已找到 ${fileNounPhrase(surface, st.files.length)}，勾选后开始翻译`,
+      status: { label: t("已扫描 · 待开始"), tone: "run" },
+      subtitle: t("已找到 {0}，勾选后开始翻译", fileNounPhrase(surface, st.files.length)),
     });
     return;
   }
-  setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: "待选择来源", tone: "idle" }, subtitle: SURFACE_EMPTY_SUBTITLE[surface] });
+  setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: t("待选择来源"), tone: "idle" }, subtitle: SURFACE_EMPTY_SUBTITLE[surface] });
 }
 
 function runningStatusMeta(state: TaskStatus["state"]): { label: string; tone: StatusTone } {
   switch (state) {
     case "paused":
-      return { label: "已暂停", tone: "pause" };
+      return { label: t("已暂停"), tone: "pause" };
     case "pausing":
-      return { label: "正在暂停", tone: "pause" };
+      return { label: t("正在暂停"), tone: "pause" };
     case "stopping":
-      return { label: "正在停止", tone: "warn" };
+      return { label: t("正在停止"), tone: "warn" };
     case "finalizing":
-      return { label: "正在收尾", tone: "warn" };
+      return { label: t("正在收尾"), tone: "warn" };
     default:
-      return { label: "翻译中", tone: "run" };
+      return { label: t("翻译中"), tone: "run" };
   }
 }
 
 function sourceLabel(st: SurfaceState): string {
-  if (st.sourceLang === "auto") return "自动检测";
-  return languageOptions.source.find((o) => o.code === st.sourceLang)?.display_name ?? st.sourceLang;
+  if (st.sourceLang === "auto") return t("自动检测");
+  return tx(languageOptions.source.find((o) => o.code === st.sourceLang)?.display_name ?? st.sourceLang);
 }
 function targetLabel(st: SurfaceState): string {
-  return languageOptions.target.find((o) => o.code === st.targetLang)?.display_name ?? st.targetLang;
+  return tx(languageOptions.target.find((o) => o.code === st.targetLang)?.display_name ?? st.targetLang);
+}
+
+/** 语言名是后端给的中文显示名：显示时换成当前界面语言，中文原名补进搜索别名，照样能用中文搜到。 */
+function localizedLanguageOptions(options: LanguageOption[]): LanguageOption[] {
+  return options.map((option) => {
+    const display = tx(option.display_name);
+    if (display === option.display_name && !option.description) return option;
+    return {
+      ...option,
+      display_name: display,
+      aliases: display === option.display_name ? option.aliases : [...(option.aliases ?? []), option.display_name],
+      description: option.description ? tx(option.description) : option.description,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1031,7 +1050,7 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
   // 一个文件都没产出时不给「打开输出目录」：点进去只有空目录，等于骗他跑一趟。
   if (info.hasOutput) {
     actions.push(createButton({
-      label: "打开输出目录",
+      label: t("打开输出目录"),
       icon: "folder",
       onClick: () => openTaskLocalFile(st.lastOutputPath, true),
     }));
@@ -1041,13 +1060,13 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
   const lastOutputDir = text(record(lastTask?.result).output_dir);
   if (surface === "cad" && lastTask?.state === "stopped" && lastOutputDir && st.files.length) {
     actions.push(createButton({
-      label: "从断点继续",
+      label: t("从断点继续"),
       icon: "play",
       onClick: () => {
         st.cadResumeDir = lastOutputDir;
         st.showBanner = false;
         rerender(surface);
-        showToast({ message: "已选好断点，点「开始翻译」即可继续。" });
+        showToast({ message: t("已选好断点，点「开始翻译」即可继续。") });
       },
     }));
   }
@@ -1059,7 +1078,7 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
   const unfinishedUnknown = typeof unfinishedRaw !== "number";
   if ((surface === "excel" || surface === "word") && lastTask?.state === "stopped" && info.hasOutput && (unfinishedTexts > 0 || unfinishedUnknown) && st.files.length) {
     actions.unshift(createButton({
-      label: "接着翻译",
+      label: t("接着翻译"),
       icon: "play",
       variant: "primary",
       disabled: submittingSurfaces.has(surface),
@@ -1067,7 +1086,7 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
     }));
   }
   actions.push(createButton({
-    label: info.tone === "fail" ? "查看失败原因" : "查看完整报告",
+    label: info.tone === "fail" ? t("查看失败原因") : t("查看完整报告"),
     icon: "ext",
     onClick: () => navigate("tasks", { taskId: st.lastTaskId }),
   }));
@@ -1110,7 +1129,7 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     col.append(buildSrcBar(surface, st));
     if (st.historyOnly) {
       const note = el("p", "ws-note");
-      note.textContent = "这个历史任务未保留原始来源路径。结果仍可查看；重新翻译请先选择来源并扫描。";
+      note.textContent = t("这个历史任务未保留原始来源路径。结果仍可查看；重新翻译请先选择来源并扫描。");
       col.append(note);
     }
     col.append(buildStatsRow(surface, st));
@@ -1138,7 +1157,7 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     if (surface === "pdf" && local?.task.terminal) {
       if (local.pdfPagesUnavailable) {
         const note = el("p", "ws-note");
-        note.textContent = "这个历史任务的逐页记录已不可用。文件结果仍可在完整报告中查看。";
+        note.textContent = t("这个历史任务的逐页记录已不可用。文件结果仍可在完整报告中查看。");
         col.append(note);
       }
       const reviewCard = buildPdfReviewCard(surface, local);
@@ -1159,7 +1178,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   const scanBtn = createButton({
     // 扫描在飞时两个入口都锁住：再点一次只会多一个在途请求，
     // 而先发后到的那个会把清单换成上一个路径的内容（见 runScan 的请求序号）。
-    label: scanning ? "扫描中…" : st.files.length > 0 ? "重新扫描" : "扫描",
+    label: scanning ? t("扫描中…") : st.files.length > 0 ? t("重新扫描") : t("扫描"),
     variant: "primary",
     disabled: scanning || !st.sourcePath.trim(),
     onClick: () => void runScan(surface),
@@ -1167,7 +1186,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   const { root, input } = createTextField({
     label: "",
     value: st.sourcePath,
-    placeholder: "选择或粘贴文件、文件夹路径…",
+    placeholder: t("选择或粘贴文件、文件夹路径…"),
     onInput: (value) => {
       const normalized = normalizeUserPath(value);
       if (normalized !== value) input.value = normalized;
@@ -1202,14 +1221,14 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
   });
   bar.append(input);
   const browseBtn = createButton({
-    label: "浏览",
+    label: t("浏览"),
     icon: "folder",
     disabled: scanning,
-    title: scanning ? "正在扫描当前路径，完成后再选新的来源。" : undefined,
+    title: scanning ? t("正在扫描当前路径，完成后再选新的来源。") : undefined,
     onClick: () => {
       openMenu(browseBtn, [
-        { label: "选择文件夹…", description: "递归扫描目录下所有可翻译文件", onSelect: () => void pickSource(surface, st, input, true) },
-        { label: `选择${SURFACE_FILE_NOUN[surface]}…`, description: "可多选，只扫描并翻译选中的文件", onSelect: () => void pickSource(surface, st, input, false) },
+        { label: t("选择文件夹…"), description: t("递归扫描目录下所有可翻译文件"), onSelect: () => void pickSource(surface, st, input, true) },
+        { label: t("选择{0}…", SURFACE_FILE_NOUN[surface]), description: t("可多选，只扫描并翻译选中的文件"), onSelect: () => void pickSource(surface, st, input, false) },
       ]);
     },
   });
@@ -1220,11 +1239,11 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
 
 /** 单文件选择时的扩展名过滤，与后端 scanner 的 SUPPORTED_*_SUFFIXES 一一对应。 */
 function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; extensions: string[] } {
-  if (surface === "excel") return { name: "Excel 表格", extensions: ["xlsx", "xls"] };
-  if (surface === "word") return { name: "Word 文档", extensions: ["docx", "doc"] };
-  if (surface === "cad") return { name: "CAD 图纸", extensions: ["dwg", "dxf"] };
+  if (surface === "excel") return { name: t("Excel 表格"), extensions: ["xlsx", "xls"] };
+  if (surface === "word") return { name: t("Word 文档"), extensions: ["docx", "doc"] };
+  if (surface === "cad") return { name: t("CAD 图纸"), extensions: ["dwg", "dxf"] };
   const images = st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [];
-  return { name: images.length ? "PDF 与图片" : "PDF", extensions: ["pdf", ...images] };
+  return { name: images.length ? t("PDF 与图片") : "PDF", extensions: ["pdf", ...images] };
 }
 
 /** 取路径的上级目录。系统选择框一次只能在同一个文件夹里多选，取第一个的父目录即可。 */
@@ -1244,11 +1263,11 @@ async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputEl
   let picked: unknown;
   try {
     picked = directory
-      ? await open({ title: "选择来源文件夹", directory: true, multiple: false })
+      ? await open({ title: t("选择来源文件夹"), directory: true, multiple: false })
       // 选文件不限数量，只限类型：filters 管类型，multiple 让用户一次挑几份。
-      : await open({ title: `选择${SURFACE_FILE_NOUN[surface]}`, directory: false, multiple: true, filters: [sourceFileFilter(surface, st)] });
+      : await open({ title: t("选择{0}", SURFACE_FILE_NOUN[surface]), directory: false, multiple: true, filters: [sourceFileFilter(surface, st)] });
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "选择来源失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("选择来源失败。")), error: true });
     return;
   }
   const pickedList = (Array.isArray(picked) ? picked : [picked]).filter(
@@ -1267,7 +1286,7 @@ async function pickSource(surface: Surface, st: SurfaceState, input: HTMLInputEl
   try {
     await persistSettings({ [`last_${surface}_source_folder`]: displayPath });
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "已选择来源，但记住上次目录失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("已选择来源，但记住上次目录失败。")), error: true });
   }
   // 走「浏览」选完路径就直接扫描，不用用户再点一次——手输/粘贴路径的场景不走这个函数，
   // 不受影响。复用 runScan 本身，扫描失败的提示和点按钮时完全一样。
@@ -1324,11 +1343,11 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     const xls = files.filter((f) => isRisky(surface, f)).length;
     // 固定五格：扫描前、扫描后、扫描失败都是这五格，数不出来的写「—」，页面不会跳。
     return [
-      { label: "已扫描文件", value: String(files.length) },
-      { label: "文本单元格", value: cells.toLocaleString("zh-CN") },
-      { label: "工作表", value: String(sheets) },
+      { label: t("已扫描文件"), value: String(files.length) },
+      { label: t("文本单元格"), value: fmtNum(cells) },
+      { label: t("工作表"), value: String(sheets) },
       outsideCellStat(outsideCellStats(files)),
-      { label: "旧版 .xls", value: String(xls), warn: xls > 0 },
+      { label: t("旧版 .xls"), value: String(xls), warn: xls > 0 },
     ];
   }
   if (surface === "word") {
@@ -1336,10 +1355,10 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     const tables = files.reduce((sum, f) => sum + num(f.table_count), 0);
     const doc = files.filter((f) => isRisky(surface, f)).length;
     return [
-      { label: "已扫描文件", value: String(files.length) },
-      { label: "段落", value: paragraphs.toLocaleString("zh-CN") },
-      { label: "表格", value: String(tables) },
-      { label: "旧版 .doc", value: String(doc), warn: doc > 0 },
+      { label: t("已扫描文件"), value: String(files.length) },
+      { label: t("段落"), value: fmtNum(paragraphs) },
+      { label: t("表格"), value: String(tables) },
+      { label: t("旧版 .doc"), value: String(doc), warn: doc > 0 },
     ];
   }
   if (surface === "cad") {
@@ -1347,11 +1366,11 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     const candidates = files.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
     const blocked = files.filter((f) => isRisky(surface, f)).length;
     return [
-      { label: "已扫描文件", value: String(files.length) },
-      { label: "文字实体", value: texts.toLocaleString("zh-CN") },
-      { label: "待翻译", value: candidates.toLocaleString("zh-CN"), sub: texts > candidates ? "已是目标语言的不计入" : undefined },
-      { label: "需转换工具", value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
-      { label: "跳过项", value: String(st.skipped.length), dim: st.skipped.length === 0 },
+      { label: t("已扫描文件"), value: String(files.length) },
+      { label: t("文字实体"), value: fmtNum(texts) },
+      { label: t("待翻译"), value: fmtNum(candidates), sub: texts > candidates ? t("已是目标语言的不计入") : undefined },
+      { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
+      { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
     ];
   }
   const pages = files.reduce((sum, f) => sum + num(f.page_count), 0);
@@ -1359,11 +1378,11 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
   // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，
   // 过滤掉即可——.five 修饰类靠的就是过滤后的实际格数。
   const pdfStats: (StatCell | null)[] = [
-    { label: "已扫描文件", value: String(files.length) },
-    { label: "总页数", value: String(pages) },
+    { label: t("已扫描文件"), value: String(files.length) },
+    { label: t("总页数"), value: String(pages) },
     oversizedPageStat(oversizedPageStats(files)),
-    { label: "独立图片", value: String(images) },
-    { label: "跳过项", value: String(st.skipped.length) },
+    { label: t("独立图片"), value: String(images) },
+    { label: t("跳过项"), value: String(st.skipped.length) },
   ];
   return pdfStats.filter((stat): stat is StatCell => stat !== null);
 }
@@ -1441,34 +1460,34 @@ function hasKnownOutside(stats: OutsideCellStats): boolean {
 /** 「9 张图片、4 个文本框、3 条批注」；全为 0 时返回空串。 */
 function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes" | "comments">): string {
   const parts: string[] = [];
-  if (stats.images > 0) parts.push(`${stats.images.toLocaleString("zh-CN")} 张图片`);
-  if (stats.shapes > 0) parts.push(`${stats.shapes.toLocaleString("zh-CN")} 个文本框`);
-  if (stats.comments > 0) parts.push(`${stats.comments.toLocaleString("zh-CN")} 条批注`);
-  return parts.join("、");
+  if (stats.images > 0) parts.push(t("{0} 张图片", fmtNum(stats.images)));
+  if (stats.shapes > 0) parts.push(t("{0} 个文本框", fmtNum(stats.shapes)));
+  if (stats.comments > 0) parts.push(t("{0} 条批注", fmtNum(stats.comments)));
+  return parts.join(t("、"));
 }
 
 /** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。这一格始终在（Excel 统计条固定五格，
  *  以前字段缺失时整格消失，扫描前后格数在 4 和 5 之间跳）；数不出来就写「—」。 */
 function outsideCellStat(stats: OutsideCellStats): StatCell {
-  const label = "图片 / 文本框 / 批注";
-  const unknownNote = stats.unknownFiles > 0 ? `${stats.unknownFiles} 个 .xls 未统计` : "";
-  const n = (value: number) => value.toLocaleString("zh-CN");
+  const label = t("图片 / 文本框 / 批注");
+  const unknownNote = stats.unknownFiles > 0 ? t("{0} 个 .xls 未统计", stats.unknownFiles) : "";
+  const n = (value: number) => fmtNum(value);
   if (hasKnownOutside(stats)) {
     return {
       label,
       value: `${n(stats.images)} / ${n(stats.shapes)} / ${n(stats.comments)}`,
       attn: true,
-      sub: unknownNote ? `不翻译，原样保留 · ${unknownNote}` : "不翻译，原样保留",
+      sub: unknownNote ? t("不翻译，原样保留 · {0}", unknownNote) : t("不翻译，原样保留"),
     };
   }
   // 一个都没数出来时不能写「0 / 0 / 0」——那是「确认没有」的说法。留「—」并说明原因。
   if (stats.unknownFiles > 0) {
-    return { label, value: "—", dim: true, sub: `${stats.unknownFiles} 个 .xls 需转换后才能统计` };
+    return { label, value: "—", dim: true, sub: t("{0} 个 .xls 需转换后才能统计", stats.unknownFiles) };
   }
   // 这几个字段在整批文件上都不存在（不是数出来是 0，例如还没扫描、扫描失败）——不该显示
   // 「0 / 0 / 0」把「不知道」说成「没有」，写「—」。
   if (stats.presentFiles === 0) return { label, value: "—", dim: true };
-  return { label, value: "0 / 0 / 0", dim: true, sub: "无" };
+  return { label, value: "0 / 0 / 0", dim: true, sub: t("无") };
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,15 +1504,15 @@ function buildCadConverterBanner(st: SurfaceState): HTMLElement | null {
   const tx = el("div", "tx");
   const title = el("div", "tt");
   title.textContent = blocked
-    ? `有 ${blocked} 个 DWG 图纸需要先连接图纸转换工具`
-    : "还没有连接图纸转换工具";
+    ? t("有 {0} 个 DWG 图纸需要先连接图纸转换工具", blocked)
+    : t("还没有连接图纸转换工具");
   const body = el("div", "bd");
   body.textContent = text(record(st.cadCapability).oda) === "incompatible"
-    ? "检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。"
-    : "DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。";
+    ? t("检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。")
+    : t("DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。");
   tx.append(title, body);
   banner.append(tx);
-  banner.append(createButton({ label: "打开插件", onClick: () => navigate("plugins") }));
+  banner.append(createButton({ label: t("打开插件"), onClick: () => navigate("plugins") }));
   return banner;
 }
 
@@ -1504,13 +1523,13 @@ function buildCadResumeNote(st: SurfaceState): HTMLElement | null {
   banner.append(icon("folder", { className: "ico" }));
   const tx = el("div", "tx");
   const title = el("div", "tt");
-  title.textContent = "将接着上次停止的位置继续";
+  title.textContent = t("将接着上次停止的位置继续");
   const body = el("div", "bd");
-  body.textContent = `已经验证过的文件直接复用，其余文件重新翻译。上次输出：${st.cadResumeDir}`;
+  body.textContent = t("已经验证过的文件直接复用，其余文件重新翻译。上次输出：{0}", st.cadResumeDir);
   tx.append(title, body);
   banner.append(tx);
   banner.append(createButton({
-    label: "改为全部重译",
+    label: t("改为全部重译"),
     onClick: () => {
       st.cadResumeDir = "";
       rerender("cad");
@@ -1531,18 +1550,18 @@ function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
   const tx = el("div", "tx");
   const title = el("div", "tt");
   title.textContent = known
-    ? `这批文件里有 ${outsideCellPhrase(stats)}不会被翻译`
-    : `有 ${stats.unknownFiles} 个 .xls 文件暂时数不出图片、文本框和批注`;
+    ? t("这批文件里有 {0}不会被翻译", outsideCellPhrase(stats))
+    : t("有 {0} 个 .xls 文件暂时数不出图片、文本框和批注", stats.unknownFiles);
   const body = el("div", "bd");
   body.textContent = known
-    ? "翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框、形状和批注里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。"
-    : "翻译只覆盖单元格里的文字，图片、文本框和批注里的字会原样保留。";
+    ? t("翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框、形状和批注里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。")
+    : t("翻译只覆盖单元格里的文字，图片、文本框和批注里的字会原样保留。");
   if (stats.unknownFiles > 0) {
-    body.textContent += `另有 ${stats.unknownFiles} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有这些内容，同样不会被翻译。`;
+    body.textContent += t("另有 {0} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有这些内容，同样不会被翻译。", stats.unknownFiles);
   }
   tx.append(title, body);
   banner.append(tx);
-  banner.append(createButton({ label: "查看是哪些文件", onClick: () => showOutsideCellModal(st) }));
+  banner.append(createButton({ label: t("查看是哪些文件"), onClick: () => showOutsideCellModal(st) }));
   return banner;
 }
 
@@ -1553,7 +1572,7 @@ function showOutsideCellModal(st: SurfaceState): void {
     const shapes = maybeCount(file, "shape_text_count");
     const comments = maybeCount(file, "comment_count");
     if (images === "unknown" || shapes === "unknown" || comments === "unknown") {
-      lines.push(`${fileLabel(file)} — 未知（.xls 需转换后才能统计）`);
+      lines.push(fileLabel(file) + " — " + t("未知（.xls 需转换后才能统计）"));
       continue;
     }
     const phrase = outsideCellPhrase({
@@ -1566,10 +1585,10 @@ function showOutsideCellModal(st: SurfaceState): void {
   openModal({
     tone: "warn",
     icon: "warn",
-    sourceLabel: "扫描结果 · 单元格外内容",
-    title: "这些文件里有不参与翻译的内容",
-    body: lines.length ? lines : ["没有检测到图片或文本框。"],
-    actions: [{ label: "关闭" }],
+    sourceLabel: t("扫描结果 · 单元格外内容"),
+    title: t("这些文件里有不参与翻译的内容"),
+    body: lines.length ? lines : [t("没有检测到图片或文本框。")],
+    actions: [{ label: t("关闭") }],
   });
 }
 
@@ -1580,17 +1599,17 @@ function buildOutsideCellChips(file: FileItem): HTMLElement[] {
   const comments = maybeCount(file, "comment_count");
   const chips: HTMLElement[] = [];
   if (typeof images === "number" && images > 0) {
-    chips.push(createChip({ label: `🖼 ${images.toLocaleString("zh-CN")} 张图片`, className: "oob" }));
+    chips.push(createChip({ label: "🖼 " + t("{0} 张图片", fmtNum(images)), className: "oob" }));
   }
   if (typeof shapes === "number" && shapes > 0) {
-    chips.push(createChip({ label: `▭ ${shapes.toLocaleString("zh-CN")} 个文本框`, className: "oob" }));
+    chips.push(createChip({ label: "▭ " + t("{0} 个文本框", fmtNum(shapes)), className: "oob" }));
   }
   if (typeof comments === "number" && comments > 0) {
-    chips.push(createChip({ label: `💬 ${comments.toLocaleString("zh-CN")} 条批注`, className: "oob" }));
+    chips.push(createChip({ label: "💬 " + t("{0} 条批注", fmtNum(comments)), className: "oob" }));
   }
   // 未知和已知可以并存（真出现时两条都要说），所以是追加而不是二选一。
   if (images === "unknown" || shapes === "unknown" || comments === "unknown") {
-    chips.push(createChip({ label: "? 未知（.xls 需转换后才能统计）", className: "oob mut" }));
+    chips.push(createChip({ label: "? " + t("未知（.xls 需转换后才能统计）"), className: "oob mut" }));
   }
   if (chips.length) return chips;
   const dash = el("span", "dash");
@@ -1641,19 +1660,19 @@ function oversizedPageStats(files: FileItem[]): OversizedPageStats {
 /** 扫描统计条里的「大幅面页」格。字段整批缺失时返回 null，由 computeStats 过滤掉。 */
 function oversizedPageStat(stats: OversizedPageStats): StatCell | null {
   if (stats.presentFiles === 0) return null;
-  const label = "大幅面页";
-  const unknownNote = stats.unknownFiles > 0 ? `其中 ${stats.unknownFiles} 个文件无法确认幅面` : "";
+  const label = t("大幅面页");
+  const unknownNote = stats.unknownFiles > 0 ? t("其中 {0} 个文件无法确认幅面", stats.unknownFiles) : "";
   if (stats.pages > 0) {
     return {
       label,
-      value: stats.pages.toLocaleString("zh-CN"),
+      value: fmtNum(stats.pages),
       attn: true,
-      sub: unknownNote || "开启跳过后不翻译，原样保留",
+      sub: unknownNote || t("开启跳过后不翻译，原样保留"),
     };
   }
   // 一页都没数出来时不能写 0——那是「确认没有」的说法。
   if (stats.unknownFiles > 0) return { label, value: "—", dim: true, sub: unknownNote };
-  return { label, value: "0", dim: true, sub: "全部为 A4 及以下" };
+  return { label, value: "0", dim: true, sub: t("全部为 A4 及以下") };
 }
 
 /** 文件表「页数 / 尺寸」列里跟在页数后面的那半句；没什么可说时返回空串。 */
@@ -1661,13 +1680,13 @@ function oversizedPageNote(file: FileItem): { text: string; warn: boolean } | nu
   if (!hasOversizedPageInfo(file)) return null;
   const count = maybeCount(file, "oversized_page_count");
   if (count === "n/a") return null;
-  if (count === "unknown") return { text: "幅面未知", warn: false };
+  if (count === "unknown") return { text: t("幅面未知"), warn: false };
   if (count <= 0) return null;
   // 「1 页 · 1 页 A3+」读起来像两件事。整份都是大幅面时直接说「整份都是 A3+」，
   // 部分时说「其中 N 页 A3+」，都跟在总页数后面，语义才连得上。
   const pages = num(file.page_count);
-  if (pages > 0 && count >= pages) return { text: "整份都是 A3+", warn: true };
-  return { text: `其中 ${count} 页 A3+`, warn: true };
+  if (pages > 0 && count >= pages) return { text: t("整份都是 A3+"), warn: true };
+  return { text: t("其中 {0} 页 A3+", count), warn: true };
 }
 
 /** 整份文件都是大幅面页——开着跳过开关选它等于什么都不会翻，扫描阶段就得说。 */
@@ -1721,20 +1740,20 @@ function buildExcelDoneCard(notice: ExcelDoneNotice): HTMLElement {
   const title = el("div", "tt");
   // 「翻译完成 · N 个文件」以前写在这里，和上面那张横幅的标题说的是同一件事。这张卡
   // 只负责一件事：说清哪些内容按设定没有翻译。
-  title.textContent = `按设定未翻译的内容 · 本批 ${notice.fileCount} 个文件、${notice.cellCount.toLocaleString("zh-CN")} 个文本单元格`;
+  title.textContent = t("按设定未翻译的内容 · 本批 {0} 个文件、{1} 个文本单元格", notice.fileCount, fmtNum(notice.cellCount));
   const body = el("div", "bd");
   const phrase = outsideCellPhrase(notice.stats);
   if (phrase) {
-    body.append(document.createTextNode("另有 "));
+    body.append(document.createTextNode(t("另有 ")));
     const em = el("em");
     em.textContent = phrase;
-    body.append(em, document.createTextNode("中的文字未翻译，已原样保留。"));
+    body.append(em, document.createTextNode(t("中的文字未翻译，已原样保留。")));
   }
   if (notice.stats.unknownFiles > 0) {
-    body.append(document.createTextNode(`${notice.stats.unknownFiles} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样没有翻译。`));
+    body.append(document.createTextNode(t("{0} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样没有翻译。", notice.stats.unknownFiles)));
   }
   if (notice.anchorFrozen > 0) {
-    body.append(document.createTextNode(`${notice.anchorFrozen.toLocaleString("zh-CN")} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。`));
+    body.append(document.createTextNode(t("{0} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。", fmtNum(notice.anchorFrozen))));
   }
   tx.append(title, body);
   box.append(tx);
@@ -1752,16 +1771,16 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     header: (head) => {
       if (!st.files.length) return;
       const countSpan = el("span");
-      countSpan.textContent = `已选 ${st.selected.size} / ${st.files.length}`;
+      countSpan.textContent = t("已选 {0} / {1}", st.selected.size, st.files.length);
       const tools = el("div", "tc-tools");
       const selectAll = el("span", "linklike");
-      selectAll.textContent = "全选";
+      selectAll.textContent = t("全选");
       selectAll.addEventListener("click", () => {
         st.selected = new Set(st.files.map((f) => f.path));
         rerender(surface);
       });
       const selectNone = el("span", "linklike");
-      selectNone.textContent = "全不选";
+      selectNone.textContent = t("全不选");
       selectNone.addEventListener("click", () => {
         st.selected = new Set();
         rerender(surface);
@@ -1772,8 +1791,8 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
   });
   if (scanBusy[surface]) {
     card.append(createEmptyState({
-      title: "扫描中…",
-      description: "正在读取文件，请稍候。",
+      title: t("扫描中…"),
+      description: t("正在读取文件，请稍候。"),
       icon: SURFACE_ICON[surface],
     }));
     return card;
@@ -1787,16 +1806,16 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     const copy = allSkipped
       ? {
           title: onlySkipped
-            ? `「${text(onlySkipped.name, text(onlySkipped.relative_path, onlySkipped.path))}」没能纳入清单`
-            : `扫描到的 ${st.skipped.length} 个输入都没能纳入清单`,
+            ? t("「{0}」没能纳入清单", text(onlySkipped.name, text(onlySkipped.relative_path, onlySkipped.path)))
+            : t("扫描到的 {0} 个输入都没能纳入清单", st.skipped.length),
           description: onlySkipped
-            ? `${redactedText(onlySkipped.reason, "原因未知").replace(/[。.]?$/, "。")}处理好之后重新扫描即可。`
-            : "每一项的原因可以点下方「查看扫描报告」看到；处理好之后重新扫描即可。",
+            ? t("{0}。处理好之后重新扫描即可。", tx(redactedText(onlySkipped.reason, t("原因未知")).replace(/[。.]?$/, "")))
+            : t("每一项的原因可以点下方「查看扫描报告」看到；处理好之后重新扫描即可。"),
         }
       : !st.hasEverCompleted
         ? SURFACE_FIRST_EMPTY[surface]
         : st.bannerInfo?.tone === "fail"
-          ? { title: "上一个任务没有顺利完成", description: "失败原因在任务中心的完整报告里；也可以重新选择来源再试一次。" }
+          ? { title: t("上一个任务没有顺利完成"), description: t("失败原因在任务中心的完整报告里；也可以重新选择来源再试一次。") }
           : SURFACE_BANNER_EMPTY[surface];
     const empty = createEmptyState({ title: copy.title, description: copy.description, icon: SURFACE_ICON[surface] });
     card.append(empty);
@@ -1832,11 +1851,16 @@ function buildSkipNoticeRow(surface: Surface, st: SurfaceState): HTMLElement | n
   warnIcon.style.color = "var(--warn)";
   const label = el("span");
   const names = st.skipped.slice(0, 2).map((s) => text(s.name, text(s.relative_path, s.path))).filter(Boolean);
-  const extra = st.skipped.length > names.length ? " 等" : "";
-  label.textContent = `扫描时跳过 ${st.skipped.length} 项${names.length ? `：${names.join("、")}${extra}` : ""}`;
+  const extra = st.skipped.length > names.length;
+  const nameList = names.join(t("、"));
+  label.textContent = !names.length
+    ? t("扫描时跳过 {0} 项", st.skipped.length)
+    : extra
+      ? t("扫描时跳过 {0} 项：{1} 等", st.skipped.length, nameList)
+      : t("扫描时跳过 {0} 项：{1}", st.skipped.length, nameList);
   const skipTools = el("div", "tc-tools");
   const reportLink = el("span", "linklike");
-  reportLink.textContent = "查看扫描报告";
+  reportLink.textContent = t("查看扫描报告");
   reportLink.addEventListener("click", () => showSkipReportModal(surface, st));
   skipTools.append(reportLink);
   skipRow.append(warnIcon, label, skipTools);
@@ -1855,14 +1879,14 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     return cell;
   };
   if (surface === "excel") {
-    // 「\u200b」是窄窗口下表头唯一允许折行的位置（workspace.css 的 .ws-files th 用 keep-all）。
-    row.append(th("文件"), th("格式"), th("工作表", true), th("文本\u200b单元格", true), th("单元格外\u200b内容"), th("状态"));
+    // 「​」是窄窗口下表头唯一允许折行的位置（workspace.css 的 .ws-files th 用 keep-all）。
+    row.append(th(t("文件")), th(t("格式")), th(t("工作表"), true), th(t("文本​单元格"), true), th(t("单元格外​内容")), th(t("状态")));
   } else if (surface === "word") {
-    row.append(th("文件"), th("格式"), th("段落", true), th("表格", true), th("状态"));
+    row.append(th(t("文件")), th(t("格式")), th(t("段落"), true), th(t("表格"), true), th(t("状态")));
   } else if (surface === "cad") {
-    row.append(th("文件"), th("格式"), th("文字实体", true), th("待翻译", true), th("状态"));
+    row.append(th(t("文件")), th(t("格式")), th(t("文字实体"), true), th(t("待翻译"), true), th(t("状态")));
   } else {
-    row.append(th("文件"), th("类型"), th("大小"), th("页数\u00a0/\u00a0\u200b尺寸"), th("状态"));
+    row.append(th(t("文件")), th(t("类型")), th(t("大小")), th(t("页数 / ​尺寸")), th(t("状态")));
   }
   return row;
 }
@@ -1894,9 +1918,9 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     // 没连转换工具的 DWG 读不出内容，计数是 0 不代表图纸里没字——写「—」，不写 0。
     const unreadable = st.historyOnly || isRisky(surface, file);
     const textCell = el("td", "num");
-    textCell.textContent = unreadable ? "—" : num(file.text_count).toLocaleString("zh-CN");
+    textCell.textContent = unreadable ? "—" : fmtNum(num(file.text_count));
     const candidateCell = el("td", "num");
-    candidateCell.textContent = unreadable ? "—" : num(file.candidate_count, num(file.text_count)).toLocaleString("zh-CN");
+    candidateCell.textContent = unreadable ? "—" : fmtNum(num(file.candidate_count, num(file.text_count)));
     row.append(fmtCell, textCell, candidateCell);
   } else if (surface === "excel" || surface === "word") {
     const fmtCell = el("td");
@@ -1905,7 +1929,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     const numCell1 = el("td", "num");
     numCell1.textContent = st.historyOnly ? "—" : surface === "excel" ? String(num(file.sheet_count, file.sheets?.length ?? 0)) : String(num(file.paragraph_count));
     const numCell2 = el("td", "num");
-    numCell2.textContent = st.historyOnly ? "—" : surface === "excel" ? num(file.text_cell_count).toLocaleString("zh-CN") : String(num(file.table_count));
+    numCell2.textContent = st.historyOnly ? "—" : surface === "excel" ? fmtNum(num(file.text_cell_count)) : String(num(file.table_count));
     row.append(numCell1, numCell2);
     if (surface === "excel") {
       const outsideCell = el("td");
@@ -1923,7 +1947,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     if (file.source_type === "image") {
       dimCell.textContent = "—";
     } else {
-      dimCell.append(document.createTextNode(file.page_count === undefined && st.historyOnly ? "—" : `${num(file.page_count)} 页`));
+      dimCell.append(document.createTextNode(file.page_count === undefined && st.historyOnly ? "—" : t("{0} 页", num(file.page_count))));
       const note = oversizedPageNote(file);
       if (note) {
         dimCell.append(document.createTextNode(" · "));
@@ -1941,7 +1965,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   const liveProgress = file.file_id ? st.task?.fileProgress.get(file.file_id) : undefined;
   const outcome = (file.file_id ? st.fileOutcomes.get(file.file_id) : undefined) ?? st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
-    statusCell.append(createChip({ label: "已排除", tone: "mute" }));
+    statusCell.append(createChip({ label: t("已排除"), tone: "mute" }));
   } else if (liveProgress) {
     statusCell.append(createChip({ label: fileProgressLabel(liveProgress, st.task?.task.state), tone: fileProgressTone(liveProgress, st.task?.task.state) }));
   } else if (outcome) {
@@ -1958,14 +1982,14 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     // 格式预判更贴近用户此刻要确认的事。
     statusCell.append(resumeChip(surface, resume));
   } else if (isRisky(surface, file)) {
-    statusCell.append(createChip({ label: surface === "cad" ? "需连接转换工具" : "需先转换", tone: "warn", icon: "warn" }));
+    statusCell.append(createChip({ label: surface === "cad" ? t("需连接转换工具") : t("需先转换"), tone: "warn", icon: "warn" }));
   } else if (surface === "pdf" && isAllOversized(file)) {
     // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
     // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
-    statusCell.append(createChip({ label: "整份均为大幅面", tone: "warn", icon: "warn" }));
+    statusCell.append(createChip({ label: t("整份均为大幅面"), tone: "warn", icon: "warn" }));
   } else {
     // 这一列以前对「一切正常、等着开跑」的文件是空白的，看上去像信息没加载出来。
-    statusCell.append(createChip({ label: "未开始", tone: "mute" }));
+    statusCell.append(createChip({ label: t("未开始"), tone: "mute" }));
   }
   row.append(statusCell);
   return row;
@@ -1973,14 +1997,14 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
 
 function showSkipReportModal(surface: Surface, st: SurfaceState): void {
   const body: (string | HTMLElement)[] = st.skipped.length
-    ? st.skipped.map((s) => `${text(s.name, text(s.relative_path, s.path))} — ${redactedText(s.reason, "原因未知")}`)
-    : ["没有被跳过的项目。"];
+    ? st.skipped.map((s) => text(s.name, text(s.relative_path, s.path)) + " — " + tx(redactedText(s.reason, t("原因未知"))))
+    : [t("没有被跳过的项目。")];
   openModal({
     tone: "warn",
     icon: "warn",
-    title: `扫描报告 · ${SURFACE_LABEL[surface]}`,
+    title: t("扫描报告 · {0}", SURFACE_LABEL[surface]),
     body,
-    actions: [{ label: "关闭" }],
+    actions: [{ label: t("关闭") }],
   });
 }
 
@@ -1992,7 +2016,7 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
   const local = st.task!;
   let note: string | undefined;
   if (local.streamState === "reconnecting") {
-    note = "和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。";
+    note = t("和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。");
   } else {
     const silence = silenceSeconds(local);
     const waiting = !local.task.terminal
@@ -2002,8 +2026,8 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
     // 安全停止时不再发新请求，安静的这段多半是在写文件，只说「等接口」会误导。
     if (waiting) {
       note = local.task.state === "stopping"
-        ? `已等待 ${silence} 秒：正在收尾，等手上的请求回来后把已翻好的内容写进文件，大文档要多等一会儿，程序没有卡住。`
-        : `已等待 ${silence} 秒：这一批已经发给模型，正在等它返回译文，程序没有卡住。`;
+        ? t("已等待 {0} 秒：正在收尾，等手上的请求回来后把已翻好的内容写进文件，大文档要多等一会儿，程序没有卡住。", silence)
+        : t("已等待 {0} 秒：这一批已经发给模型，正在等它返回译文，程序没有卡住。", silence);
     }
   }
   return createTaskProgressPanel({
@@ -2026,11 +2050,11 @@ function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
   if (surface === "word" && local.wordRecovery) {
     const r = local.wordRecovery;
     const chips: HTMLElement[] = [];
-    chipIfAny(chips, num(r.retry_round), `第 ${num(r.retry_round)} 轮重译`, "tint");
-    chipIfAny(chips, num(r.semantic_processing_count), `复查中 ${num(r.semantic_processing_count)}`, "tint");
-    chipIfAny(chips, num(r.semantic_accepted_count), `复查后采用 ${num(r.semantic_accepted_count)}`, "ok");
+    chipIfAny(chips, num(r.retry_round), t("第 {0} 轮重译", num(r.retry_round)), "tint");
+    chipIfAny(chips, num(r.semantic_processing_count), t("复查中 {0}", num(r.semantic_processing_count)), "tint");
+    chipIfAny(chips, num(r.semantic_accepted_count), t("复查后采用 {0}", num(r.semantic_accepted_count)), "ok");
     const unresolved = num(r.retry_unresolved_count, num(r.unresolved_count));
-    chipIfAny(chips, unresolved, `仍未翻好 ${unresolved}`, "warn");
+    chipIfAny(chips, unresolved, t("仍未翻好 {0}", unresolved), "warn");
     return chips;
   }
   if (surface === "pdf" && local.pdfPageRecovery) {
@@ -2043,11 +2067,11 @@ function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
     const skipped = num(r.skipped_oversize_page_count);
     const generated = Math.max(0, num(r.completed_pages) - failed - skipped);
     const toGenerate = Math.max(0, num(r.total_pages) - skipped);
-    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${toGenerate} 页`, "ok"));
-    chipIfAny(chips, skipped, `原样保留 ${skipped} 页`, "mute");
-    chipIfAny(chips, failed, `生成失败 ${failed} 页`, "dgr");
-    chipIfAny(chips, num(r.retrying_page_count), `重试中 ${num(r.retrying_page_count)}`, "warn");
-    chipIfAny(chips, num(r.recovered_page_count), `已恢复 ${num(r.recovered_page_count)}`, "mute");
+    if (hasOwn(r, "completed_pages")) chips.push(chip(t("已生成 {0} / {1} 页", generated, toGenerate), "ok"));
+    chipIfAny(chips, skipped, t("原样保留 {0} 页", skipped), "mute");
+    chipIfAny(chips, failed, t("生成失败 {0} 页", failed), "dgr");
+    chipIfAny(chips, num(r.retrying_page_count), t("重试中 {0}", num(r.retrying_page_count)), "warn");
+    chipIfAny(chips, num(r.recovered_page_count), t("已恢复 {0}", num(r.recovered_page_count)), "mute");
     return chips;
   }
   return [];
@@ -2061,13 +2085,13 @@ function buildWordRecoveryCard(local: LocalTask): HTMLElement | null {
   const head = el("div", "tc-head");
   head.style.cssText = "padding:0 0 8px;border:0";
   const b = el("b");
-  b.textContent = "自动重译与复查";
+  b.textContent = t("自动重译与复查");
   head.append(b);
   card.append(head);
   const note = el("p", "ws-note");
   // ws-note 默认居中（给空态用的），这张卡和其他卡片一样左对齐。
   note.style.textAlign = "left";
-  note.textContent = "译文为空、明显不完整或没通过质量检查的段落会自动重译；重译后仍有疑问、经模型复查才采用的译文，不会存进记忆库。";
+  note.textContent = t("译文为空、明显不完整或没通过质量检查的段落会自动重译；重译后仍有疑问、经模型复查才采用的译文，不会存进记忆库。");
   card.append(note);
   return card;
 }
@@ -2135,15 +2159,15 @@ function buildFileSkipChips(result: JsonObject, path: string): HTMLElement[] {
   const frontMatter = record(item.front_matter);
   if (frontMatter.requested) {
     if (frontMatter.found) {
-      chips.push(createChip({ label: `跳过开头 ${num(frontMatter.protected_paragraph_count)} 段`, tone: "tint" }));
+      chips.push(createChip({ label: t("跳过开头 {0} 段", num(frontMatter.protected_paragraph_count)), tone: "tint" }));
     } else {
       // 一段都没保护，全文照常翻译了。这不是错误，但和用户开这个开关的预期不符，必须显眼。
-      chips.push(createChip({ label: "未识别到正文起点", tone: "warn", icon: "warn" }));
+      chips.push(createChip({ label: t("未识别到正文起点"), tone: "warn", icon: "warn" }));
     }
   }
 
   const oversized = num(item.skipped_oversize_page_count);
-  if (oversized > 0) chips.push(createChip({ label: `跳过 ${oversized} 页 A3+`, tone: "tint" }));
+  if (oversized > 0) chips.push(createChip({ label: t("跳过 {0} 页 A3+", oversized), tone: "tint" }));
 
   return chips;
 }
@@ -2212,23 +2236,23 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   scroll.dataset.keepScroll = "run-settings";
 
   const title = el("div", "rp-title");
-  title.textContent = "运行设置";
+  title.textContent = t("运行设置");
   if (active) {
-    const lockChip = createChip({ label: "任务中锁定", tone: "mute" });
+    const lockChip = createChip({ label: t("任务中锁定"), tone: "mute" });
     lockChip.style.marginLeft = "auto";
     title.append(lockChip);
   }
   scroll.append(title);
 
   const langSec = el("div", "rp-sec");
-  langSec.textContent = "语言";
+  langSec.textContent = t("语言");
   scroll.append(langSec);
 
   // recentKey 按 surface + 方向分开：Excel 的目标语言和 Word 的目标语言是两套习惯，
   // 混在一起会让「最近使用」总是显示另一个页面刚选过的语种。
   const targetField = createLanguageField({
-    label: "目标语言",
-    options: languageOptions.target,
+    label: t("目标语言"),
+    options: localizedLanguageOptions(languageOptions.target),
     value: st.targetLang,
     disabled: active,
     recentKey: `${surface}-target`,
@@ -2252,10 +2276,10 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     // （旧的原生 select 无条件在前面插一条「自动检测」，结果两条 auto 并排出现。）
     const sourceLangOptions: LanguageOption[] = languageOptions.source.some((o) => o.code === "auto")
       ? languageOptions.source
-      : [{ code: "auto", display_name: "自动识别", aliases: ["auto", "自动识别", "自动检测"] }, ...languageOptions.source];
+      : [{ code: "auto", display_name: t("自动识别"), aliases: ["auto", "自动识别", "自动检测", t("自动识别")] }, ...languageOptions.source]; // i18n-ignore 中文别名供搜索匹配
     const sourceField = createLanguageField({
-      label: "源语言",
-      options: sourceLangOptions,
+      label: t("源语言"),
+      options: localizedLanguageOptions(sourceLangOptions),
       value: st.sourceLang,
       disabled: active,
       recentKey: `${surface}-source`,
@@ -2270,7 +2294,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   }
 
   const typeSec = el("div", "rp-sec");
-  typeSec.textContent = `${SURFACE_LABEL[surface]} 选项`;
+  typeSec.textContent = t("{0} 选项", SURFACE_LABEL[surface]);
   scroll.append(typeSec);
 
   const resumeAuto = Boolean(activeResumeDir(st));
@@ -2282,7 +2306,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     const row = createSwitchRow({
       label: toggle.label,
       hint: lockedByResume
-        ? `${toggle.hint}选了「接着上次继续」时由程序打开；要全部重译，点文件表上方横幅里的「改为全部重译」。`
+        ? t("{0}选了「接着上次继续」时由程序打开；要全部重译，点文件表上方横幅里的「改为全部重译」。", toggle.hint)
         : toggle.hint,
       checked: Boolean(st.toggles.get(toggle.key)),
       disabled: active || lockedByResume,
@@ -2290,7 +2314,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     });
     if (lockedByResume) {
       const badge = el("span", "resume-auto");
-      badge.textContent = "已自动开启";
+      badge.textContent = t("已自动开启");
       row.insertBefore(badge, row.querySelector(".sw"));
     }
     scroll.append(row);
@@ -2302,7 +2326,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     // 「本次」会让人以为下次要重设一遍（尤其是把输出位置固定到自定义文件夹的人）。
     // 默认展开——它不是高级选项，是每次开工前会看一眼的东西。
     const fold = createFold({
-      title: "更多设置",
+      title: t("更多设置"),
       content: foldContent,
       open: st.moreSettingsOpen,
       onToggle: (open) => { st.moreSettingsOpen = open; },
@@ -2380,12 +2404,12 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
   if (surface !== "pdf") {
     const domainField = el("div", "field");
     const label = el("label");
-    label.textContent = "专业领域 ";
+    label.textContent = t("专业领域") + " ";
     // 即使当前选的是「无」也保留入口：进入设置后会落到「＋新增提示词」，
     // 让用户可以从空配置直接建立自己的提示词。
     const link = el("span", "linklike");
     link.style.fontSize = "11px";
-    link.textContent = "编辑提示词 ↗ 设置";
+    link.textContent = t("编辑提示词 ↗ 设置");
     link.addEventListener("click", () => navigate("settings", {
       page: "params",
       paramsSurface: surface,
@@ -2396,26 +2420,26 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
     const select = createSelectField({
       label: "",
       // 「无」放在第一项，让「不加任何领域限定」一眼可见。
-      options: domainOptionsFor(surface, st.domainPreset).map((v) => ({ value: v, label: v })),
+      options: domainOptionsFor(surface, st.domainPreset).map((v) => ({ value: v, label: tx(v) })),
       value: st.domainPreset,
       onChange: (value) => {
         const prev = st.domainPreset;
         st.domainPreset = value;
         rerender(surface);
-        void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, "专业领域");
+        void persistSettingsOrRevert(surface, { [`${surface}_domain_preset`]: value }, () => { st.domainPreset = prev; }, t("专业领域"));
       },
     });
     domainField.append(select.root);
     wrap.append(domainField);
   }
 
-  const outputField = createField("输出位置", buildOutputRadioRow(surface, st));
+  const outputField = createField(t("输出位置"), buildOutputRadioRow(surface, st));
   wrap.append(outputField);
   return wrap;
 }
 
 function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): string[] {
-  const builtIns = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"];
+  const builtIns = ["无", "同步工程场景", "资料管理场景", "行政生活化场景"]; // i18n-ignore 发给后端的专业领域预设值，显示时 tx()
   const disabled = Array.isArray(settings[`${surface}_domain_disabled_presets`])
     ? (settings[`${surface}_domain_disabled_presets`] as unknown[]).filter((value): value is string => typeof value === "string")
     : [];
@@ -2423,7 +2447,7 @@ function domainOptionsFor(surface: Exclude<Surface, "pdf">, current: string): st
   const customNames = custom && typeof custom === "object" && !Array.isArray(custom)
     ? Object.keys(custom as JsonObject)
     : [];
-  const options = builtIns.filter((name) => name === "无" || !disabled.includes(name));
+  const options = builtIns.filter((name) => name === "无" || !disabled.includes(name)); // i18n-ignore 与预设值比较
   for (const name of customNames) if (!options.includes(name)) options.push(name);
   if (current && !options.includes(current)) options.push(current);
   return options;
@@ -2446,20 +2470,20 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
         surface,
         nestedPatch(`${outputSettingPathPrefix(surface)}.use_custom_output_dir`, value),
         () => { st.useCustomOutputDir = prev; },
-        "输出位置",
+        t("输出位置"),
       );
     });
     wrapLabel.append(radio, document.createTextNode(` ${label}`));
     return wrapLabel;
   };
-  row.append(makeOption(false, "源目录内"), makeOption(true, "自定义"));
+  row.append(makeOption(false, t("源目录内")), makeOption(true, t("自定义")));
   const container = el("div");
   container.append(row);
   if (st.useCustomOutputDir) {
     const { root, input } = createTextField({
       label: "",
       value: st.customOutputDir,
-      placeholder: "自定义输出目录路径…",
+      placeholder: t("自定义输出目录路径…"),
       onInput: (value) => {
         st.customOutputDir = value;
       },
@@ -2474,7 +2498,7 @@ function buildOutputRadioRow(surface: Surface, st: SurfaceState): HTMLElement {
         surface,
         nestedPatch(`${outputSettingPathPrefix(surface)}.custom_output_dir`, st.customOutputDir),
         () => { st.customOutputDir = prevDir; },
-        "自定义输出目录",
+        t("自定义输出目录"),
       );
     });
     root.style.marginTop = "6px";
@@ -2489,8 +2513,8 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
     const disabled = st.selected.size === 0 || !st.sourcePath.trim() || scanBusy[surface] || busy;
     return createTaskControlFoot({ idle: {
       label: busy
-        ? "正在启动…"
-        : submitFailures.has(surface) ? "重试启动" : disabled ? "开始翻译" : `开始翻译（${st.selected.size} 个文件）`,
+        ? t("正在启动…")
+        : submitFailures.has(surface) ? t("重试启动") : disabled ? t("开始翻译") : t("开始翻译（{0} 个文件）", st.selected.size),
       disabled,
       onClick: () => void startTask(surface, st),
     } });
@@ -2501,18 +2525,18 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   // Excel / Word 不给暂停按钮——后端会直接拒绝，按了只会弹一条报错。
   const pausable = surface === "pdf" || surface === "cad";
   return createTaskControlFoot({
-    idle: { label: "开始翻译", disabled: true, onClick: () => undefined },
+    idle: { label: t("开始翻译"), disabled: true, onClick: () => undefined },
     active: {
       paused: pausable && task.task.state === "paused",
       pausing: pausable && task.task.state === "pausing",
       onResume: () => void resumeTask(surface, st),
       onPause: pausable ? () => void pauseTask(surface, st) : undefined,
       onStop: () => confirmStopTask(surface, st),
-      pauseLabel: "暂停",
+      pauseLabel: t("暂停"),
       finishPaused: surface === "pdf" && task.task.state === "paused"
-        ? { label: "结束任务", onClick: () => void confirmEndPaused(st), note: "结束后会保存已完成的页面，并生成这部分的报告" }
+        ? { label: t("结束任务"), onClick: () => void confirmEndPaused(st), note: t("结束后会保存已完成的页面，并生成这部分的报告") }
         : undefined,
-      stopLabel: "停止",
+      stopLabel: t("停止"),
     },
   });
 }
@@ -2638,24 +2662,24 @@ function resumePendingLabel(surface: Surface, file: ResumeFileInfo): string {
   if (surface === "pdf") {
     const total = file.page_total;
     const done = file.page_done;
-    if (total !== null && done !== null && total > done) return `部分翻译 · 补 ${total - done} 页`;
-    return "部分翻译 · 补剩余页";
+    if (total !== null && done !== null && total > done) return t("部分翻译 · 补 {0} 页", total - done);
+    return t("部分翻译 · 补剩余页");
   }
   const count = file.untranslated_count;
-  if (count === null || count <= 0) return "部分翻译 · 补缺失内容";
-  return surface === "excel" ? `部分翻译 · 补 ${count.toLocaleString("zh-CN")} 格` : `部分翻译 · 补 ${count} 段`;
+  if (count === null || count <= 0) return t("部分翻译 · 补缺失内容");
+  return surface === "excel" ? t("部分翻译 · 补 {0} 格", fmtNum(count)) : t("部分翻译 · 补 {0} 段", count);
 }
 
 function resumeChip(surface: Surface, file: ResumeFileInfo): HTMLElement {
   // found（找到产物但判定不出完整度）按「已有译文」说：底稿照样接得上，补译由后端逐项判。
-  if (file.status === "full" || file.status === "found") return createChip({ label: "已有译文 · 原样保留", tone: "ok" });
+  if (file.status === "full" || file.status === "found") return createChip({ label: t("已有译文 · 原样保留"), tone: "ok" });
   if (file.status === "partial") return createChip({ label: resumePendingLabel(surface, file), tone: "warn" });
   // 源文件在上次翻译后有改动：上次产物当不了底稿，后端会整份重翻这个文件。
-  if (file.status === "diverged") return createChip({ label: "源文件已变化 · 整份重翻", tone: "warn" });
+  if (file.status === "diverged") return createChip({ label: t("源文件已变化 · 整份重翻"), tone: "warn" });
   // 「首次翻译」是状态不是承诺：整个任务按补译方式跑，这个文件因为没有任何已有
   // 译文，事实上就是从头翻——但不能写「全量翻译」，那跟右栏亮着的「仅补译未翻译
   // 内容」开关自相矛盾。
-  return createChip({ label: "无译文 · 首次翻译", tone: "tint" });
+  return createChip({ label: t("无译文 · 首次翻译"), tone: "tint" });
 }
 
 /** 状态列查表用；决策不是「继续」时返回空表，状态列照旧走原来的分支。 */
@@ -2679,24 +2703,24 @@ function buildResumeBanner(surface: Surface, st: SurfaceState): HTMLElement | nu
   badge.append(icon("restart", { size: "sm" }));
   const copy = el("div", "copy");
   const title = el("b");
-  title.textContent = "接着上次继续";
+  title.textContent = t("接着上次继续");
   const sub = el("div", "sub");
   const code = el("code");
   code.textContent = basename(dir);
   const done = info.summary.page_done;
   if (surface === "pdf" && done !== null && done > 0) {
-    sub.append(document.createTextNode("以 "), code, document.createTextNode(` 里已完成的 ${done} 页为底稿，只生成剩下的页；结果存入新的输出文件夹。`));
+    sub.append(document.createTextNode(t("以 ")), code, document.createTextNode(t(" 里已完成的 {0} 页为底稿，只生成剩下的页；结果存入新的输出文件夹。", done)));
   } else {
-    sub.append(document.createTextNode("以 "), code, document.createTextNode(" 里的译文为底稿，只补缺失的部分；结果存入新的输出文件夹。"));
+    sub.append(document.createTextNode(t("以 ")), code, document.createTextNode(t(" 里的译文为底稿，只补缺失的部分；结果存入新的输出文件夹。")));
   }
   if (info.summary.diverged > 0) {
-    sub.append(document.createTextNode(`（${info.summary.diverged} 个源文件已变化的文件会整份重翻）`));
+    sub.append(document.createTextNode(t("（{0} 个源文件已变化的文件会整份重翻）", info.summary.diverged)));
   }
   copy.append(title, sub);
   const acts = el("div", "acts");
   const revert = el("button", "resume-link");
   revert.type = "button";
-  revert.textContent = "改为全部重译";
+  revert.textContent = t("改为全部重译");
   revert.addEventListener("click", () => chooseFresh(surface, st));
   acts.append(revert);
   banner.append(badge, copy, acts);
@@ -2713,17 +2737,17 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
   const mark = icon("help", { size: "sm" });
   const label = el("span");
   const withText = info.summary.full + info.summary.found;
-  label.textContent = `检测到上次的翻译结果（${withText}/${info.files.length} 个文件已有译文）。本次将全部重新翻译。`;
+  label.textContent = t("检测到上次的翻译结果（{0}/{1} 个文件已有译文）。本次将全部重新翻译。", withText, info.files.length);
   const acts = el("div", "acts");
   const again = el("button", "resume-link");
   again.type = "button";
-  again.textContent = "重新选择";
+  again.textContent = t("重新选择");
   // 重新弹的是缓存下来的这一份检测结果，不重扫——用户只是想改主意，没换过路径。
   again.addEventListener("click", () => void showResumeModal(surface, st));
   const close = el("button", "resume-link mute");
   close.type = "button";
   close.textContent = "×";
-  close.setAttribute("aria-label", "不再提示");
+  close.setAttribute("aria-label", t("不再提示"));
   close.addEventListener("click", () => {
     st.resumeNoticeDismissed = true;
     rerender(surface);
@@ -2738,11 +2762,11 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
 function resumeStatChips(info: PreviousOutput): HTMLElement {
   const row = el("div", "rf-stats");
   const s = info.summary;
-  if (s.full > 0) row.append(createChip({ label: `${s.full} 个已有完整译文`, tone: "ok" }));
-  if (s.found > 0) row.append(createChip({ label: `${s.found} 个已有译文`, tone: "ok" }));
-  if (s.partial > 0) row.append(createChip({ label: `${s.partial} 个翻了一部分`, tone: "warn" }));
-  if (s.diverged > 0) row.append(createChip({ label: `${s.diverged} 个源文件已变化`, tone: "warn" }));
-  if (s.none > 0) row.append(createChip({ label: `${s.none} 个还没有译文`, tone: "mute" }));
+  if (s.full > 0) row.append(createChip({ label: t("{0} 个已有完整译文", s.full), tone: "ok" }));
+  if (s.found > 0) row.append(createChip({ label: t("{0} 个已有译文", s.found), tone: "ok" }));
+  if (s.partial > 0) row.append(createChip({ label: t("{0} 个翻了一部分", s.partial), tone: "warn" }));
+  if (s.diverged > 0) row.append(createChip({ label: t("{0} 个源文件已变化", s.diverged), tone: "warn" }));
+  if (s.none > 0) row.append(createChip({ label: t("{0} 个还没有译文", s.none), tone: "mute" }));
   return row;
 }
 
@@ -2760,7 +2784,7 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
   const pathRow = el("div", "rf-path");
   pathRow.append(icon(surface === "pdf" ? "pdf" : "folder", { size: "sm" }));
   const code = el("code");
-  code.textContent = info.selected_dir ? basename(info.selected_dir) : "（未找到可用的历史目录）";
+  code.textContent = info.selected_dir ? basename(info.selected_dir) : t("（未找到可用的历史目录）");
   pathRow.append(code);
   box.append(pathRow);
 
@@ -2774,8 +2798,8 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
     // 页进度只覆盖有清单记录的文件；还有 missing 个文件完全没有页记录，不能让这条进度条
     // 看起来像是「整批」的进度——那会把这几个文件的工作量凭空抹掉。
     span.textContent = missing > 0
-      ? `已完成 ${done ?? 0} / ${total} 页（另有 ${missing} 个文件没有页记录，需整份生成）`
-      : `已完成 ${done ?? 0} / ${total} 页`;
+      ? t("已完成 {0} / {1} 页（另有 {2} 个文件没有页记录，需整份生成）", done ?? 0, total, missing)
+      : t("已完成 {0} / {1} 页", done ?? 0, total);
     line.append(span);
     box.append(line);
   } else {
@@ -2785,7 +2809,7 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
   if (info.summary.last_task_stopped) {
     const stoppedRow = el("div", "rf-stats");
     const when = info.summary.last_time_label;
-    stoppedRow.append(createChip({ label: when ? `上次任务 ${when} 被手动停止` : "上次任务被手动停止", tone: "warn" }));
+    stoppedRow.append(createChip({ label: when ? t("上次任务 {0} 被手动停止", tx(when)) : t("上次任务被手动停止"), tone: "warn" }));
     box.append(stoppedRow);
   }
 
@@ -2794,12 +2818,14 @@ function buildResumeFoundBox(surface: Surface, info: PreviousOutput, handle: () 
     const selRow = el("div", "rf-sel");
     const isLatest = info.selected_dir === info.candidates[0].dir;
     const hint = el("span");
-    hint.textContent = `找到 ${info.candidates.length} 次历史输出${isLatest ? "，已选最近一次" : ""}`;
+    hint.textContent = isLatest
+      ? t("找到 {0} 次历史输出，已选最近一次", info.candidates.length)
+      : t("找到 {0} 次历史输出", info.candidates.length);
     const select = createDropdown({
       className: "rf-history-select",
       options: info.candidates.map((candidate, index) => ({
         value: candidate.dir,
-        label: index === 0 ? `${candidate.label}（最近）` : candidate.label,
+        label: index === 0 ? t("{0}（最近）", tx(candidate.label)) : tx(candidate.label),
       })),
       value: info.selected_dir ?? undefined,
       onChange: (next) => {
@@ -2821,8 +2847,16 @@ function resumeLead(lead: string, body: string): HTMLElement {
   const span = el("span");
   const bold = el("b");
   bold.textContent = lead;
-  span.append(bold, document.createTextNode(`：${body}`));
+  span.append(bold, document.createTextNode(t("：{0}", body)));
   return span;
+}
+
+/** 几句说明接在一起：中文直接相连，英法文句子之间补一个空格。 */
+function joinNotes(...notes: string[]): string {
+  const parts = notes.filter(Boolean);
+  if (!parts.length) return "";
+  const glue = currentLocale() === "zh" ? "" : " ";
+  return glue + parts.join(glue);
 }
 
 function resumeFootnote(body: string): HTMLElement {
@@ -2857,10 +2891,10 @@ function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => v
   // 都得把它们单独点出来，不然「10 页」听起来就是这一批的全部代价。
   const pdfMissingPages = pdfPages ? pdfFilesMissingPageData(info) : 0;
   const pdfMissingNote = pdfMissingPages > 0
-    ? `另有 ${pdfMissingPages} 个文件没有页记录，两种选法都会把它们整份重新生成，不计入这里的页数。`
+    ? t("另有 {0} 个文件没有页记录，两种选法都会把它们整份重新生成，不计入这里的页数。", pdfMissingPages)
     : "";
   const pdfDivergedNote = surface === "pdf" && s.diverged > 0
-    ? `另有 ${s.diverged} 个 PDF 的源文件在上次翻译后改动过，上次的页面无法复用，会整份重新生成。`
+    ? t("另有 {0} 个 PDF 的源文件在上次翻译后改动过，上次的页面无法复用，会整份重新生成。", s.diverged)
     : "";
 
   let handle: ModalHandle | null = null;
@@ -2868,56 +2902,56 @@ function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => v
   const body: (string | HTMLElement)[] = [foundBox];
 
   if (allDone) {
-    body.push("上次这一批已经全部翻完，没有需要补译的内容，产物就在上面这个文件夹里。");
-    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
-    body.push(resumeFootnote("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+    body.push(t("上次这一批已经全部翻完，没有需要补译的内容，产物就在上面这个文件夹里。"));
+    body.push(resumeLead(t("全部重新翻译"), t("不管上次的结果，{0} 个文件从头翻一遍。", fileCount)));
+    body.push(resumeFootnote(t("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。")));
   } else if (pdfPages) {
     body.push(resumeLead(
-      "接着上次继续",
-      `跳过已完成的 ${s.page_done ?? 0} 页，只生成剩下的 ${remaining} 页，最后装订成完整的 PDF。已生成的页面直接复用，不再重复花钱。${pdfMissingNote}${pdfDivergedNote}`,
+      t("接着上次继续"),
+      t("跳过已完成的 {0} 页，只生成剩下的 {1} 页，最后装订成完整的 PDF。已生成的页面直接复用，不再重复花钱。", s.page_done ?? 0, remaining) + joinNotes(pdfMissingNote, pdfDivergedNote),
     ));
     const warnBox = el("div", "resume-warn");
     warnBox.append(icon("warn", { size: "sm" }));
     const warnText = el("span");
-    warnText.textContent = "中途停止的任务，最后几页可能没有真正生成完。继续前会逐页核对，发现占位页或坏页会自动重新生成，不会照单全收。";
+    warnText.textContent = t("中途停止的任务，最后几页可能没有真正生成完。继续前会逐页核对，发现占位页或坏页会自动重新生成，不会照单全收。");
     warnBox.append(warnText);
     body.push(warnBox);
-    body.push(resumeLead("全部重新翻译", `${s.page_total} 页从头生成一遍。${pdfMissingNote}${pdfDivergedNote}`));
-    body.push(resumeFootnote("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+    body.push(resumeLead(t("全部重新翻译"), t("{0} 页从头生成一遍。", s.page_total) + joinNotes(pdfMissingNote, pdfDivergedNote)));
+    body.push(resumeFootnote(t("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。")));
   } else if (pdfNoPageData) {
     // 整批都是「源文件已改动」时按真实原因说话，别拿「读不到页存档」搪塞。
     const allChanged = s.diverged > 0 && s.partial + s.found + s.full === 0;
     body.push(allChanged
-      ? resumeLead("找到上次的翻译产物", "但源文件在上次翻译之后改动过，上次的页面无法复用，继续也会整份重新生成。")
-      : resumeLead("找到上次的翻译产物", "但读不到上次的页存档，继续也会整份重新生成，没法只补翻还缺的部分。"));
-    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
-    body.push(resumeFootnote("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+      ? resumeLead(t("找到上次的翻译产物"), t("但源文件在上次翻译之后改动过，上次的页面无法复用，继续也会整份重新生成。"))
+      : resumeLead(t("找到上次的翻译产物"), t("但读不到上次的页存档，继续也会整份重新生成，没法只补翻还缺的部分。")));
+    body.push(resumeLead(t("全部重新翻译"), t("不管上次的结果，{0} 个文件从头翻一遍。", fileCount)));
+    body.push(resumeFootnote(t("结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。")));
   } else {
     // diverged 文件的「继续」承诺不了省钱：底稿被拒后整份重翻，只有翻译记忆兜底。
     // 有一个说一个，不能让「一个字不动」的许诺盖到它们头上。
     const resumables = s.partial + s.found + s.full;
     const divergedNote = s.diverged > 0
-      ? `其中 ${s.diverged} 个文件的源文件在上次翻译后改动过，上次产物当不了底稿，会整份重新翻译（已翻过的内容尽量由翻译记忆复用）。`
+      ? t("其中 {0} 个文件的源文件在上次翻译后改动过，上次产物当不了底稿，会整份重新翻译（已翻过的内容尽量由翻译记忆复用）。", s.diverged)
       : "";
     body.push(s.diverged > 0 && resumables === 0
-      ? resumeLead("接着上次继续", "源文件在上次翻译后改动过，上次产物当不了底稿，这次会整份重新翻译；已翻过的内容尽量由翻译记忆复用。")
-      : resumeLead("接着上次继续", `以上次的译文为底稿，只翻译还缺译文的部分，已翻好的内容一个字不动，不再重复花钱。${divergedNote}`));
-    body.push(resumeLead("全部重新翻译", `不管上次的结果，${fileCount} 个文件从头翻一遍。`));
-    body.push(resumeFootnote("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。"));
+      ? resumeLead(t("接着上次继续"), t("源文件在上次翻译后改动过，上次产物当不了底稿，这次会整份重新翻译；已翻过的内容尽量由翻译记忆复用。"))
+      : resumeLead(t("接着上次继续"), t("以上次的译文为底稿，只翻译还缺译文的部分，已翻好的内容一个字不动，不再重复花钱。") + joinNotes(divergedNote)));
+    body.push(resumeLead(t("全部重新翻译"), t("不管上次的结果，{0} 个文件从头翻一遍。", fileCount)));
+    body.push(resumeFootnote(t("两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。")));
   }
 
   const title = allDone
-    ? (single ? "这个文件上次已经翻完了" : "这批文件上次已经全部翻完")
+    ? (single ? t("这个文件上次已经翻完了") : t("这批文件上次已经全部翻完"))
     : pdfNoPageData
-      ? (single ? "这份 PDF 找不到可用的续译记录" : "这些 PDF 找不到可用的续译记录")
+      ? (single ? t("这份 PDF 找不到可用的续译记录") : t("这些 PDF 找不到可用的续译记录"))
       : pdfPages
-        ? (single ? "这份 PDF 上次没有翻完" : "这些 PDF 上次没有翻完")
-        : (single ? "这个文件翻译过" : "这个文件夹翻译过一部分");
+        ? (single ? t("这份 PDF 上次没有翻完") : t("这些 PDF 上次没有翻完"))
+        : (single ? t("这个文件翻译过") : t("这个文件夹翻译过一部分"));
 
   const actions: ModalAction[] = [
-    { label: "稍后再说", onClick: () => chooseFresh(surface, st) },
+    { label: t("稍后再说"), onClick: () => chooseFresh(surface, st) },
     {
-      label: "全部重新翻译",
+      label: t("全部重新翻译"),
       variant: allDone || pdfNoPageData ? "primary" : undefined,
       onClick: () => {
         chooseFresh(surface, st);
@@ -2929,7 +2963,7 @@ function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => v
   // 翻译」结果一样，留着它只会让用户以为还有一条能省钱的路。
   if (!allDone && !pdfNoPageData) {
     actions.push({
-      label: "接着上次继续",
+      label: t("接着上次继续"),
       variant: "primary",
       onClick: () => {
         chooseResume(surface, st);
@@ -2941,7 +2975,7 @@ function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => v
   handle = openModal({
     tone: (pdfPages || pdfNoPageData) && !allDone ? "warn" : "tint",
     icon: surface === "pdf" ? "pdf" : "folder",
-    sourceLabel: `${SURFACE_LABEL[surface]} · ${onDecided ? "开始前核对" : "扫描完成"}`,
+    sourceLabel: onDecided ? t("{0} · 开始前核对", SURFACE_LABEL[surface]) : t("{0} · 扫描完成", SURFACE_LABEL[surface]),
     title,
     body,
     actions,
@@ -3030,12 +3064,14 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     }
     if (token !== scanTokens[surface]) return;
     // 一个都没跳过时不提「跳过 0 个」；西文名词前后都要留空格。
-    const skipSuffix = skipped.length > 0 ? `，跳过 ${skipped.length} 个` : "";
+    const skipCount = skipped.length;
     const toastMessage = surface === "pdf"
-      ? `已扫描到 ${items.length} 个 PDF / 图片输入${skipSuffix}。`
+      ? (skipCount > 0 ? t("已扫描到 {0} 个 PDF / 图片输入，跳过 {1} 个。", items.length, skipCount) : t("已扫描到 {0} 个 PDF / 图片输入。", items.length))
       : surface === "cad"
-        ? `已扫描到 ${items.length} 个 DWG / DXF 图纸${skipSuffix}。`
-        : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
+        ? (skipCount > 0 ? t("已扫描到 {0} 个 DWG / DXF 图纸，跳过 {1} 个。", items.length, skipCount) : t("已扫描到 {0} 个 DWG / DXF 图纸。", items.length))
+        : (skipCount > 0
+          ? t("已扫描到 {0} 个 {1} 文件，跳过 {2} 个。", items.length, SURFACE_LABEL[surface], skipCount)
+          : t("已扫描到 {0} 个 {1} 文件。", items.length, SURFACE_LABEL[surface]));
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
     if (st.resumeInfo) void showResumeModal(surface, st);
@@ -3048,7 +3084,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     st.scanSummary = {};
     st.selected = new Set();
     resetResumeState(st);
-    showToast({ message: redactedText((error as Error)?.message, "扫描失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("扫描失败。")), error: true });
   } finally {
     if (token === scanTokens[surface]) {
       scanBusy[surface] = false;
@@ -3098,7 +3134,7 @@ async function resumeAfterStop(surface: Surface, st: SurfaceState, outputDir: st
     rerender(surface);
   }
   if (!detected) {
-    showToast({ message: "没找到上次停下时写出的文件，请点「重新扫描」后再试。", error: true });
+    showToast({ message: t("没找到上次停下时写出的文件，请点「重新扫描」后再试。"), error: true });
     return;
   }
   st.resumeInfo = detected;
@@ -3158,7 +3194,7 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
     return;
   }
   if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
-    showToast({ message: "源语言与目标语言相同，请重新选择。", error: true });
+    showToast({ message: t("源语言与目标语言相同，请重新选择。"), error: true });
     return;
   }
   if (surface === "cad") {
@@ -3167,12 +3203,12 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
       openModal({
         tone: "warn",
         icon: "warn",
-        title: "需要先连接图纸转换工具",
+        title: t("需要先连接图纸转换工具"),
         body: [
-          `选中的文件里有 ${blocked} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。`,
-          "可以去「插件」连接图纸转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。",
+          t("选中的文件里有 {0} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。", blocked),
+          t("可以去「插件」连接图纸转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。"),
         ],
-        actions: [{ label: "取消" }, { label: "打开插件", variant: "primary", onClick: () => navigate("plugins") }],
+        actions: [{ label: t("取消") }, { label: t("打开插件"), variant: "primary", onClick: () => navigate("plugins") }],
       });
       return;
     }
@@ -3230,28 +3266,28 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
   openModal({
     tone: "warn",
     icon: "warn",
-    title: `${legacyExt} 转换方式确认`,
+    title: t("{0} 转换方式确认", legacyExt),
     body:
       surface === "excel"
         ? [
-            `已选择 ${count} 个旧版 .xls 文件，最终结果统一输出为 .xlsx。`,
-            `原始文件不会被改动：公式、宏和样式都完整保留在原来的 .xls 文件里，随时可以打开对照。下面的取舍只影响翻译输出的新文件。`,
-            `优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 没装、没有允许 Translator 控制 Excel，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。`,
+            t("已选择 {0} 个旧版 .xls 文件，最终结果统一输出为 .xlsx。", count),
+            t("原始文件不会被改动：公式、宏和样式都完整保留在原来的 .xls 文件里，随时可以打开对照。下面的取舍只影响翻译输出的新文件。"),
+            t("优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 没装、没有允许 Translator 控制 Excel，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。"),
             st.libreofficeAvailable
-              ? `允许兼容转换：没装 Excel 也能翻译——本机检测到 LibreOffice，会用它转换，公式、样式、合并单元格通常能保留（图表、图片可能有出入）。这项选择只对本次任务生效。`
-              : `允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。安装免费的 LibreOffice 后，兼容转换也能保留公式与样式。`,
+              ? t("允许兼容转换：没装 Excel 也能翻译——本机检测到 LibreOffice，会用它转换，公式、样式、合并单元格通常能保留（图表、图片可能有出入）。这项选择只对本次任务生效。")
+              : t("允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。安装免费的 LibreOffice 后，兼容转换也能保留公式与样式。"),
           ]
         : [
-            `已选择 ${count} 个旧版 ${legacyExt} 文件。最终结果统一输出为 ${finalExt}，源文件不会被改写。`,
-            `优先高保真：用本机 ${appName} 转换，排版完整保留；${appName} 没装、没有允许 Translator 控制 ${appName}，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。`,
-            "允许兼容转换：高保真转换用不了时也继续翻译，但复杂样式、合并单元格、图片、图表和宏可能保留不全。这项选择只对本次任务生效。",
+            t("已选择 {0} 个旧版 {1} 文件。最终结果统一输出为 {2}，源文件不会被改写。", count, legacyExt, finalExt),
+            t("优先高保真：用本机 {0} 转换，排版完整保留；{0} 没装、没有允许 Translator 控制 {0}，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。", appName),
+            t("允许兼容转换：高保真转换用不了时也继续翻译，但复杂样式、合并单元格、图片、图表和宏可能保留不全。这项选择只对本次任务生效。"),
           ],
     // 主按钮给「优先高保真」：它是不会损失内容的那一个。默认高亮有损选项，等于
     // 替用户默认接受丢样式、丢图片、丢宏——回车一按就丢了，而且事后看不出丢了什么。
     actions: [
-      { label: "取消" },
+      { label: t("取消") },
       {
-        label: "允许兼容转换",
+        label: t("允许兼容转换"),
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = true;
           else st.allowDocFallback = true;
@@ -3259,7 +3295,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         },
       },
       {
-        label: "优先高保真",
+        label: t("优先高保真"),
         variant: "primary",
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = false;
@@ -3329,17 +3365,17 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
     openModal({
       tone: "warn",
       icon: "warn",
-      title: "审核模型上次测试没通过",
+      title: t("审核模型上次测试没通过"),
       body: [
-        "逐页审核是开着的，但这台机器上最近一次测试「PDF 与图片审核」用的模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。",
-        "稳妥的做法是先去「设置 → 模型服务 → PDF 与图片审核」重测一次，或者把逐页审核关掉再开始。",
-        "也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。",
+        t("逐页审核是开着的，但这台机器上最近一次测试「PDF 与图片审核」用的模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。"),
+        t("稳妥的做法是先去「设置 → 模型服务 → PDF 与图片审核」重测一次，或者把逐页审核关掉再开始。"),
+        t("也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。"),
       ],
       actions: [
-        { label: "取消" },
-        { label: "去设置里重测", onClick: () => navigate("settings", { page: "models" }) },
+        { label: t("取消") },
+        { label: t("去设置里重测"), onClick: () => navigate("settings", { page: "models" }) },
         {
-          label: "不管测试结果，开始",
+          label: t("不管测试结果，开始"),
           variant: "primary",
           onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
         },
@@ -3354,14 +3390,14 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
     openModal({
       tone: "warn",
       icon: "warn",
-      title: missingRole === "pdf_review" ? "还没有配置好审核模型" : "还没有配置好翻译模型",
+      title: missingRole === "pdf_review" ? t("还没有配置好审核模型") : t("还没有配置好翻译模型"),
       body: [
-        redactedText((error as Error)?.message, "翻译要用的模型还没有填好。"),
-        "填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。",
+        redactedText((error as Error)?.message, t("翻译要用的模型还没有填好。")),
+        t("填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。"),
       ],
       actions: [
-        { label: "取消" },
-        { label: "去设置", variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
+        { label: t("取消") },
+        { label: t("去设置"), variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
       ],
     });
     return;
@@ -3369,9 +3405,9 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "这次任务没能开始",
-    body: [redactedText((error as Error)?.message, "任务准备失败，没有更多信息。")],
-    actions: [{ label: "知道了", variant: "primary" }],
+    title: t("这次任务没能开始"),
+    body: [redactedText((error as Error)?.message, t("任务准备失败，没有更多信息。"))],
+    actions: [{ label: t("知道了"), variant: "primary" }],
   });
 }
 
@@ -3381,18 +3417,18 @@ function showTaskRiskModal(surface: Surface, st: SurfaceState, payload: JsonObje
   openModal({
     tone: "warn",
     icon: "warn",
-    title: "和正在跑的任务共用同一条连接",
+    title: t("和正在跑的任务共用同一条连接"),
     // 原文写的是「按新任务自己的默认吞吐启动」「一次性令牌原子复检」「降低共享组的
     // 运行时容量」——这些是实现细节，读的人只需要知道三件事：共用什么、可能出什么事、
     // 自己的设置会不会被改。
     body: [
-      "这个任务会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。",
-      "因此可能变慢或排队，个别文件可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。真被接口限速时，程序会自动放慢这一次的发送速度，你在设置里填的速度不会被改。",
-      "不着急的话，等前一个任务跑完再开始最稳。",
+      t("这个任务会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。"),
+      t("因此可能变慢或排队，个别文件可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。真被接口限速时，程序会自动放慢这一次的发送速度，你在设置里填的速度不会被改。"),
+      t("不着急的话，等前一个任务跑完再开始最稳。"),
     ],
     actions: [
-      { label: "取消" },
-      { label: "仍要并行启动", variant: "primary", onClick: () => void submitTaskStart(surface, st, payload, token) },
+      { label: t("取消") },
+      { label: t("仍要并行启动"), variant: "primary", onClick: () => void submitTaskStart(surface, st, payload, token) },
     ],
   });
 }
@@ -3555,8 +3591,8 @@ function markTaskInterrupted(surface: Surface, taskId: string): void {
   const local = st.task;
   if (!local || local.task.task_id !== taskId) return;
   local.task = { ...local.task, state: "interrupted", terminal: true };
-  local.phaseName = "翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。";
-  showToast({ message: "和后台的连接断了，这个任务已标记为应用中断。", error: true });
+  local.phaseName = t("翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。");
+  showToast({ message: t("和后台的连接断了，这个任务已标记为应用中断。"), error: true });
   finishTask(surface, local.task);
 }
 
@@ -3589,9 +3625,9 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
         // 权重折算，进度条会从 29% 一下跳到 80%，然后在那儿停十几秒——看上去像快跑完了。
         // 停止期间进度条留在点停止时的位置，标题改说正在做什么。
         // 认阶段名而不是「最后一个阶段」：Excel 开了调整行高时共 4 个阶段，写文件是第 3 个。
-        const writing = splitPhaseName(redactedText(data.phase_name, "")).stage === "生成文件";
+        const writing = splitPhaseName(redactedText(data.phase_name, "")).stage === "生成文件"; // i18n-ignore 比较后端原文阶段名
         if ((surface === "excel" || surface === "word") && writing && total > 0) {
-          local.phaseName = `正在停止：写出已翻好的部分（${Math.min(done, total)}/${total} 个文件）`;
+          local.phaseName = t("正在停止：写出已翻好的部分（{0}/{1} 个文件）", Math.min(done, total), total);
         }
         break;
       }
@@ -3630,20 +3666,20 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
     // 底栏按钮、进度条颜色、顶栏、文件状态全都看 local.task.state。
     case "stopping":
       syncEventState(local, data, "stopping");
-      local.phaseName = "正在停止…";
+      local.phaseName = t("正在停止…");
       break;
     case "pausing":
       syncEventState(local, data, "pausing");
-      local.phaseName = surface === "cad" ? "正在暂停：已发出的这批请求收回后暂停" : "正在暂停：已开始的页面完成后暂停";
+      local.phaseName = surface === "cad" ? t("正在暂停：已发出的这批请求收回后暂停") : t("正在暂停：已开始的页面完成后暂停");
       break;
     case "paused":
       syncEventState(local, data, "paused");
-      local.phaseName = surface === "cad" ? "已暂停，不再发出新的翻译请求" : "已暂停，不再开始新的页面";
+      local.phaseName = surface === "cad" ? t("已暂停，不再发出新的翻译请求") : t("已暂停，不再开始新的页面");
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":
       syncEventState(local, data, "running");
-      local.phaseName = surface === "cad" ? "正在继续翻译" : "正在继续提交页面";
+      local.phaseName = surface === "cad" ? t("正在继续翻译") : t("正在继续提交页面");
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "word_recovery":
@@ -3685,9 +3721,9 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
  *  这期间已提交的页还会陆续完成、继续发进度和状态句，不能让它们把标题改回「正在翻译…」，
  *  否则顶栏写着已暂停，卡片却像还在跑。 */
 const STATE_PHASE_KEYWORD: Partial<Record<TaskStatus["state"], RegExp>> = {
-  pausing: /暂停/,
-  paused: /暂停/,
-  stopping: /停止/,
+  pausing: /暂停/, // i18n-ignore 对后端原文判断
+  paused: /暂停/, // i18n-ignore 对后端原文判断
+  stopping: /停止/, // i18n-ignore 对后端原文判断
 };
 
 function holdsStatePhase(local: LocalTask): boolean {
@@ -3698,7 +3734,7 @@ function holdsStatePhase(local: LocalTask): boolean {
 /** 后端的状态句都带着「状态：」前缀和「[阶段 2/3]」「[收尾中]」这样的标记（给命令行
  *  日志用的）。进度卡片的标题本身就是状态，阶段名另有标签，这些前缀在卡片上全是重复。 */
 function statusPhaseText(value: string): string {
-  return value.replace(/^\s*状态[:：]\s*/, "").replace(/^\s*\[(?:阶段\s*\d+\s*\/\s*\d+|收尾中)\]\s*/, "");
+  return value.replace(/^\s*状态[:：]\s*/, "").replace(/^\s*\[(?:阶段\s*\d+\s*\/\s*\d+|收尾中)\]\s*/, ""); // i18n-ignore 去掉后端原文的前缀和阶段标记
 }
 
 /** progress 事件的 phase_name：Excel / Word / PDF 只有阶段名（「翻译」），CAD 是
@@ -3771,25 +3807,25 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       // 会让人以为翻完了。
       const unfinished = ok && !untranslated ? num(item.unfinished_text_count) : 0;
       const label = notReached
-        ? "停止前没跑到"
+        ? t("停止前没跑到")
         : !ok
-        ? "未生成"
+        ? t("未生成")
         : untranslated
-          ? "已生成 · 整份未翻译"
+          ? t("已生成 · 整份未翻译")
           : unfinished > 0
-            ? `部分翻译 · 还差 ${unfinished.toLocaleString("zh-CN")} ${surface === "excel" ? "格" : "段"}`
+            ? (surface === "excel" ? t("部分翻译 · 还差 {0} 格", fmtNum(unfinished)) : t("部分翻译 · 还差 {0} 段", fmtNum(unfinished)))
             : pending > 0
-              ? `已生成 · ${pending} 处需复核`
-              : "已生成";
+              ? t("已生成 · {0} 处需复核", pending)
+              : t("已生成");
       st.fileOutcomes.set(key, {
         produced: ok,
         label,
         tone: unfinished > 0 ? "warn" : undefined,
         detail: unfinished > 0
-          ? "停止时这份文件还没翻完，没翻的地方保留原文；点上方「接着翻译」只补这一部分。"
+          ? t("停止时这份文件还没翻完，没翻的地方保留原文；点上方「接着翻译」只补这一部分。")
           : (ok && !untranslated) || notReached
             ? ""
-            : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
+            : tx(redactedText(text(item.error, text(item.detail)), t("没有说明原因。"))),
       });
     }
     if (fileId) {
@@ -3862,43 +3898,43 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   ).length;
   // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
   // 「有东西没拿到」，它决定用户下一步要不要重跑。
-  if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
+  if (failed > 0) clauses.push(t("{0} 个文件没能生成", failed));
   // 接口一直限流时后端会先把翻好的部分写出去、其余保留原文（rate_limited_partial）。
   // 只说「N 处需复核」，用户会以为是译文质量问题挨格去看；要直说是限流没翻完、等会儿续译。
   const rateLimited = Array.isArray(result.issues)
     ? result.issues.map(record).find((issue) => text(issue.type) === "rate_limited_partial")
     : undefined;
-  if (rateLimited) clauses.push(`接口持续限流，${num(rateLimited.count)} 处还没翻，稍后用「接着上次继续」补译`);
+  if (rateLimited) clauses.push(t("接口持续限流，{0} 处还没翻，稍后用「接着上次继续」补译", num(rateLimited.count)));
   // CAD 的待复核是按文件记的（逐文件 status=needs_review），没有 review.total_count。
   const reviewFiles = surface === "cad"
     ? fileResults.filter((entry) => fileResultProduced(entry) && fileResultPendingReview(entry) > 0).length
     : 0;
-  if (reviewFiles > 0) clauses.push(`${reviewFiles} 个文件需复核`);
+  if (reviewFiles > 0) clauses.push(t("{0} 个文件需复核", reviewFiles));
   // 占位页不是原页：那是程序自己画的一张失败占位页（白底红框、写着这一页没能生成译图），
   // 源页内容一个像素都不在上面。说成「已保留原页」会让用户去输出 PDF 里找原文。
   // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
-  if (placeholderPages > 0) clauses.push(`${placeholderPages} 页没能生成译文，已放占位页`);
-  if (suspectPages > 0) clauses.push(`${suspectPages} 页译文有疑点，已采用但建议复核`);
-  if (skippedOversizePages > 0) clauses.push(`跳过 ${skippedOversizePages} 页 A3+，原样保留`);
+  if (placeholderPages > 0) clauses.push(t("{0} 页没能生成译文，已放占位页", placeholderPages));
+  if (suspectPages > 0) clauses.push(t("{0} 页译文有疑点，已采用但建议复核", suspectPages));
+  if (skippedOversizePages > 0) clauses.push(t("跳过 {0} 页 A3+，原样保留", skippedOversizePages));
   // 整份都被跳过的文件必须单独点名：它的输出文档跟源文件逐字节一样，一个字都没翻。
   // 后端为此把这种文件的 success 判成 false（见 _file_record_to_result），也在
   // _record_needs_review 里把它算作需复核；界面只说「跳过 N 页」的话，用户会以为
   // 那是一份翻好的文件里少翻了几页，而实际上整份都没动。
   if (untranslatedFiles > 0) {
-    clauses.push(`其中 ${untranslatedFiles} 个文件整份都是 A3+，一个字都没翻`);
+    clauses.push(t("其中 {0} 个文件整份都是 A3+，一个字都没翻", untranslatedFiles));
   }
-  if (protectedParagraphs > 0) clauses.push(`保护开头 ${protectedParagraphs} 段未翻译`);
-  if (review > 0) clauses.push(`${review} 处需复核`);
+  if (protectedParagraphs > 0) clauses.push(t("保护开头 {0} 段未翻译", protectedParagraphs));
+  if (review > 0) clauses.push(t("{0} 处需复核", review));
   // 提示不是待办，但也不能不说：自动目录那条要用户自己回 Word 按一下 F9，不说他不会做。
-  if (hints > 0) clauses.push(`${hints} 处提示待你手动处理`);
+  if (hints > 0) clauses.push(t("{0} 处提示待你手动处理", hints));
   // 中途换过连接就明说：这一半译文出自另一家服务商，用户回头比质量、查账单都要知道。
   // 详细的切换时刻和原因在任务中心的快照行里。
   const switchCount = num(record(result.connections).switch_count);
   if (switchCount > 0) {
     const finalLabel = text(record(result.connections).final_label);
-    clauses.push(finalLabel ? `中途换了连接，后半程由「${finalLabel}」完成` : `中途换了 ${switchCount} 次连接`);
+    clauses.push(finalLabel ? t("中途换了连接，后半程由「{0}」完成", finalLabel) : t("中途换了 {0} 次连接", switchCount));
   }
-  if (autoFixed > 0) clauses.push(`${autoFixed} 处已自动处理`);
+  if (autoFixed > 0) clauses.push(t("{0} 处已自动处理", autoFixed));
   // 停止且真有内容没跑到时，横幅要报出「还剩多少」——不然用户只知道自己点了停止，
   // 不知道停在了哪、值不值得重新跑。字段名照抄任务中心已经在用的口径（tasks.ts）：
   // PDF 按页算（kpi.unstarted_page_count，core/pdf_image_translation.py 的 _done_kpi），
@@ -3918,16 +3954,16 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   if (task.state === "stopped") {
     const unfinishedPages = num(record(result.kpi).unstarted_page_count);
     const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
-    if (unfinishedPages > 0) clauses.push(`还有 ${unfinishedPages} 页没跑到`);
-    else if (unfinishedFiles > 0) clauses.push(`还有 ${unfinishedFiles} 个文件没跑到`);
-    if (unfinishedTexts > 0) clauses.push(`还有 ${unfinishedTexts} 段没翻译，已保留原文，可续译`);
+    if (unfinishedPages > 0) clauses.push(t("还有 {0} 页没跑到", unfinishedPages));
+    else if (unfinishedFiles > 0) clauses.push(t("还有 {0} 个文件没跑到", unfinishedFiles));
+    if (unfinishedTexts > 0) clauses.push(t("还有 {0} 段没翻译，已保留原文，可续译", unfinishedTexts));
   }
   // 按了「安全停止」、但在飞的页刚好全部跑完时，任务照常走完成分支。不点这一句的话，
   // 屏幕上只剩「已完成 · 全部通过」，用户不知道自己那一下有没有截掉内容（只有运行日志
   // 里有一条 WARN）。
   const stopInfo = record(result.stop);
   if (stopInfo.requested === true && stopInfo.truncated === false) {
-    clauses.push("你请求停止时页面都已跑完，没有内容被截断");
+    clauses.push(t("你请求停止时页面都已跑完，没有内容被截断"));
   }
   // 「全部通过」是一句承诺，只有真的一个问题都没有才能说。有文件没生成时一个字都不提，
   // 有需复核/占位页/已自动处理时说「其余」。
@@ -3948,14 +3984,14 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     const hasOther = review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0;
     clauses.push(
       pdfUnreviewed
-        ? hasOther ? "其余页面已生成" : task.state === "stopped" ? "已跑到的页面都已生成" : "全部页面已生成"
+        ? hasOther ? t("其余页面已生成") : task.state === "stopped" ? t("已跑到的页面都已生成") : t("全部页面已生成")
         : hasOther
-          ? "其余全部通过"
+          ? t("其余全部通过")
           // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
-          : task.state === "stopped" ? "已生成的全部通过" : "全部通过",
+          : task.state === "stopped" ? t("已生成的全部通过") : t("全部通过"),
     );
   }
-  if (generated > 0) clauses.push(`输出至 ${outputPath}`);
+  if (generated > 0) clauses.push(t("输出至 {0}", outputPath));
   const tone = resultTone(
     task.state,
     generated,
@@ -3973,7 +4009,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const stateWord = tone === "ok" && task.state === "completed_with_issues"
     ? terminalStateWord("done")
     : terminalStateWord(task.state);
-  const reason = redactedText(result.message, "");
+  const reason = tx(redactedText(result.message, ""));
   if (task.state === "stopped") {
     // 停止是用户自己的操作，不是失败：不报红、不弹错误 toast、按钮也不叫「查看失败原因」。
     // 后端的停止说明（如 CAD 的「已完成文件和断点均已保留」）只在这里出现一次。
@@ -3986,7 +4022,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       ? stoppedSummarySentence(surface, generated, failed, unfinishedUnknown ? null : unfinishedTexts, review)
       : "";
     st.bannerInfo = {
-      title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
+      title: generated > 0 ? t("{0} · 已生成 {1} 个文件", stateWord, generated) : t("{0} · 没有生成文件", stateWord),
       subtitle: condensed || [reason, ...clauses].filter(Boolean).join(" · "),
       tone,
       statusLabel: stateWord,
@@ -3994,16 +4030,16 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     };
   } else if (tone === "fail") {
     const detail = reason || (generated > 0
-      ? "任务在结束前中断，已生成的文件仍保留在输出目录。"
-      : "任务没有产出文件，请看下方日志或完整报告里的原因。");
+      ? t("任务在结束前中断，已生成的文件仍保留在输出目录。")
+      : t("任务没有产出文件，请看下方日志或完整报告里的原因。"));
     st.bannerInfo = {
-      title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
+      title: generated > 0 ? t("{0} · 已生成 {1} 个文件", stateWord, generated) : t("{0} · 没有生成文件", stateWord),
       // 零产出也要拼 clauses：停止在阶段 2 之前时 generated 为 0，而「还有 N 页/
       // 个文件没跑到」恰恰在 clauses 里——那正是最需要报数的一次（其余 clauses
       // 在零产出时本来就都是空的，拼上无害）。
       subtitle: [detail, ...clauses].join(" · "),
       tone,
-      statusLabel: generated > 0 ? `${stateWord} · 部分生成` : stateWord,
+      statusLabel: generated > 0 ? t("{0} · 部分生成", stateWord) : stateWord,
       hasOutput: generated > 0,
     };
   } else {
@@ -4012,20 +4048,20 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     // 用户照着提示去 Word 按了 F9，回来发现还是黄的。所以按报黄的顺序排：需复核 →
     // 自动处理 → 提示（提示本身不报黄，排最后）。
     const suffix = failed > 0
-      ? "有文件未生成"
+      ? t("有文件未生成")
       : review > 0 || pageProblems > 0 || openIssues > 0
-        ? "需复核"
+        ? t("需复核")
         : autoFixed > 0
-          ? "有自动处理"
+          ? t("有自动处理")
           : hints > 0
-            ? "有提示"
+            ? t("有提示")
             : "";
     st.bannerInfo = {
-      title: stateWord === "已完成"
-        ? `已生成 ${generated} 个文件`
+      title: stateWord === t("已完成")
+        ? t("已生成 {0} 个文件", generated)
         : generated > 0
-          ? `${stateWord} · 已生成 ${generated} 个文件`
-          : `${stateWord} · 还没有生成文件`,
+          ? t("{0} · 已生成 {1} 个文件", stateWord, generated)
+          : t("{0} · 还没有生成文件", stateWord),
       subtitle: clauses.join(" · "),
       tone,
       statusLabel: suffix ? `${stateWord} · ${suffix}` : stateWord,
@@ -4040,7 +4076,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 页面开着时横幅已经把原因原话写出来了，再弹一条同样的提示就是一句话说两遍。
   // 只有用户在别的页面时才用提示告诉他任务失败了。
   if (tone === "fail" && !st.renderer) {
-    showToast({ message: reason || "任务未能顺利完成。", error: true });
+    showToast({ message: reason || t("任务未能顺利完成。"), error: true });
   }
   rerender(surface);
 }
@@ -4053,17 +4089,26 @@ function stoppedSummarySentence(
   unfinished: number | null,
   review: number,
 ): string {
-  if (generated === 0) return "停止时还没有翻好的内容，没有生成文件。";
-  const unit = surface === "excel" ? "格" : "段";
-  const lead = failed > 0 ? `${failed} 个文件没能生成；其余` : "";
+  if (generated === 0) return t("停止时还没有翻好的内容，没有生成文件。");
+  const excel = surface === "excel";
+  // 整句做词条（英法语序和中文不同，不能拼半句）：正文三种 × 有没有复核尾巴。
   // null：后端没能数出剩余多少，不报数，也不说「全部翻完」。
   const body = unfinished === null
-    ? "已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续"
+    ? review > 0
+      ? t("已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续，另有 {0} 处需复核。", review)
+      : t("已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续。")
     : unfinished > 0
-      ? `已翻好的内容写进了文件，还有 ${unfinished.toLocaleString("zh-CN")} ${unit}没翻、保留原文，点「接着翻译」从停下的地方继续`
-      : "停止前内容已经全部翻完";
-  const tail = review > 0 ? `，另有 ${review} 处需复核` : "";
-  return `${lead}${body}${tail}。`;
+      ? excel
+        ? review > 0
+          ? t("已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。", fmtNum(unfinished), review)
+          : t("已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续。", fmtNum(unfinished))
+        : review > 0
+          ? t("已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。", fmtNum(unfinished), review)
+          : t("已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续。", fmtNum(unfinished))
+      : review > 0
+        ? t("停止前内容已经全部翻完，另有 {0} 处需复核。", review)
+        : t("停止前内容已经全部翻完。");
+  return failed > 0 ? t("{0} 个文件没能生成；其余{1}", failed, body) : body;
 }
 
 /** 这个文件是因为用户停止才没做（CAD：stopped；Excel / Word：unstarted），而不是失败。 */
@@ -4189,12 +4234,12 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
   stopModals[surface] = openModal({
     tone: "warn",
     icon: "stop",
-    sourceLabel: "停止运行中的任务",
-    title: "停止当前任务？",
+    sourceLabel: t("停止运行中的任务"),
+    title: t("停止当前任务？"),
     body: [stopConfirmBody(surface)],
     actions: [
-      { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
-      { label: "停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
+      { label: t("继续执行"), onClick: () => { stopModals[surface] = null; } },
+      { label: t("停止"), variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
     ],
   });
 }
@@ -4204,7 +4249,7 @@ async function stopTask(taskId: string): Promise<void> {
     const c = await getClient();
     await c.request(`/api/tasks/${taskId}/stop`, { method: "POST" });
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "停止任务失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("停止任务失败。")), error: true });
   }
 }
 
@@ -4225,7 +4270,7 @@ async function pauseTask(surface: Surface, st: SurfaceState): Promise<void> {
     const c = await getClient();
     applyControlResponse(surface, taskId, await c.controlTask(taskId, "pause"));
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "暂停失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("暂停失败。")), error: true });
   }
 }
 
@@ -4236,7 +4281,7 @@ async function resumeTask(surface: Surface, st: SurfaceState): Promise<void> {
     const c = await getClient();
     applyControlResponse(surface, taskId, await c.controlTask(taskId, "resume"));
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "继续任务失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("继续任务失败。")), error: true });
   }
 }
 
@@ -4245,26 +4290,26 @@ async function resumeTask(surface: Surface, st: SurfaceState): Promise<void> {
 function confirmEndPaused(st: SurfaceState): void {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
-  const ok = window.confirm("结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？");
+  const ok = window.confirm(t("结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？"));
   if (!ok) return;
   void (async () => {
     try {
       const c = await getClient();
       await c.request(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
     } catch (error) {
-      showToast({ message: redactedText((error as Error)?.message, "没能结束任务，请再试一次。"), error: true });
+      showToast({ message: redactedText((error as Error)?.message, t("没能结束任务，请再试一次。")), error: true });
     }
   })();
 }
 
 async function openTaskLocalFile(path: string | undefined, reveal: boolean): Promise<void> {
   if (!path) {
-    showToast({ message: "没有可打开的输出路径。", error: true });
+    showToast({ message: t("没有可打开的输出路径。"), error: true });
     return;
   }
   try {
     await invoke("open_local_path", { path, reveal });
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "打开路径失败。"), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("打开路径失败。")), error: true });
   }
 }

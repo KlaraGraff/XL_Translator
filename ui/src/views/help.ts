@@ -10,6 +10,7 @@ import { createCard, createButton } from "../components";
 import { icon, type IconName } from "../icons";
 import { invoke } from "@tauri-apps/api/core";
 import { showQuickStart } from "../quickstart";
+import { t } from "../i18n";
 import "./help.css";
 
 async function openExternalUrl(url: string): Promise<void> {
@@ -26,78 +27,78 @@ interface HelpCardSpec {
 const CARDS: HelpCardSpec[] = [
   {
     iconName: "gear",
-    title: "1. 配置翻译模型",
-    body: "填好服务商、模型和 API 密钥，再点「测试连接」确认能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。",
+    title: t("1. 配置翻译模型"),
+    body: t("填好服务商、模型和 API 密钥，再点「测试连接」确认能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。"),
     footer: (host) => {
       host.append(
-        createButton({ label: "打开模型配置", size: "mini", onClick: () => navigate("settings", { page: "models" }) }),
+        createButton({ label: t("打开模型配置"), size: "mini", onClick: () => navigate("settings", { page: "models" }) }),
       );
     },
   },
   {
     iconName: "doc-file",
-    title: "2. 选择文件与语言",
-    body: "支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。用「浏览」选好文件或文件夹后会自动扫描。源语言默认自动识别，PDF 和图片只需选目标语言。",
+    title: t("2. 选择文件与语言"),
+    body: t("支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。用「浏览」选好文件或文件夹后会自动扫描。源语言默认自动识别，PDF 和图片只需选目标语言。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
       row.append(
         createButton({ label: "Excel", size: "mini", onClick: () => navigate("excel") }),
         createButton({ label: "Word", size: "mini", onClick: () => navigate("word") }),
-        createButton({ label: "PDF / 图片", size: "mini", onClick: () => navigate("pdf") }),
-        createButton({ label: "CAD 图纸", size: "mini", onClick: () => navigate("cad") }),
+        createButton({ label: t("PDF / 图片"), size: "mini", onClick: () => navigate("pdf") }),
+        createButton({ label: t("CAD 图纸"), size: "mini", onClick: () => navigate("cad") }),
       );
       host.append(row);
     },
   },
   {
     iconName: "book",
-    title: "3. 记忆库",
-    body: "Excel 和 Word 翻好的词句会存进记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定的词条一定按你定的译法翻；语言混杂、识别不准的内容照常翻译，但不会存进记忆库。",
+    title: t("3. 记忆库"),
+    body: t("Excel 和 Word 翻好的词句会存进记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定的词条一定按你定的译法翻；语言混杂、识别不准的内容照常翻译，但不会存进记忆库。"),
     footer: (host) => {
-      host.append(createButton({ label: "打开记忆库", size: "mini", onClick: () => navigate("library") }));
+      host.append(createButton({ label: t("打开记忆库"), size: "mini", onClick: () => navigate("library") }));
     },
   },
   {
     iconName: "tasks",
-    title: "任务、停止与并行",
+    title: t("任务、停止与并行"),
     // 429 是 HTTP 状态码，界面上不给用户看内部代号，说清后果就够了。
-    body: "不同类型的任务可以同时进行。两个任务要用同一条模型连接时，会先提醒可能变慢、排队或超时，并且两边都会计费，你确认后才会开始第二个。",
+    body: t("不同类型的任务可以同时进行。两个任务要用同一条模型连接时，会先提醒可能变慢、排队或超时，并且两边都会计费，你确认后才会开始第二个。"),
     footer: (host) => {
-      host.append(createButton({ label: "打开任务中心", size: "mini", onClick: () => navigate("tasks") }));
+      host.append(createButton({ label: t("打开任务中心"), size: "mini", onClick: () => navigate("tasks") }));
     },
   },
   {
     iconName: "folder",
-    title: "输出与兼容格式",
-    body: "标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件」里连接图纸转换工具。",
+    title: t("输出与兼容格式"),
+    body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件」里连接图纸转换工具。"),
     footer: (host) => {
       const details = document.createElement("details");
       details.className = "help-details";
       const summary = document.createElement("summary");
-      summary.textContent = "macOS 自动化权限";
+      summary.textContent = t("macOS 自动化权限");
       const note = document.createElement("p");
       note.textContent =
-        "macOS 12：系统偏好设置 → 安全性与隐私 → 隐私 → 自动化。macOS 13 及以上：系统设置 → 隐私与安全性 → 自动化。允许 Translator 控制 Microsoft Excel 或 Word 后再重试。";
+        t("macOS 12：系统偏好设置 → 安全性与隐私 → 隐私 → 自动化。macOS 13 及以上：系统设置 → 隐私与安全性 → 自动化。允许 Translator 控制 Microsoft Excel 或 Word 后再重试。");
       details.append(summary, note);
       host.append(details);
     },
   },
   {
     iconName: "ext",
-    title: "更新、支持与隐私",
+    title: t("更新、支持与隐私"),
     // 这句话过去写的是「更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启」——
     // 应用内更新上线之后它就不成立了（会下载、验签、就地替换），而且 Windows 上根本没有
     // DMG。帮助页说错更新怎么工作，用户就会在真的替换应用时以为出了别的事。
-    body: "设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 会打开安装程序，装完自动重新打开）。诊断信息只在你主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。",
+    body: t("设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 会打开安装程序，装完自动重新打开）。诊断信息只在你主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
       row.append(
-        createButton({ label: "维护与诊断", size: "mini", onClick: () => navigate("settings", { page: "data" }) }),
+        createButton({ label: t("维护与诊断"), size: "mini", onClick: () => navigate("settings", { page: "data" }) }),
       );
       const feedbackBtn = createButton({
-        label: "反馈问题",
+        label: t("反馈问题"),
         icon: "ext",
         size: "mini",
         onClick: () => void openExternalUrl("https://github.com/KlaraGraff/XL_Translator/issues"),
@@ -114,27 +115,27 @@ function buildHero(container: HTMLElement): void {
 
   const label = document.createElement("span");
   label.className = "section-label";
-  label.textContent = "本地离线帮助";
+  label.textContent = t("本地离线帮助");
   hero.append(label);
 
   const heading = document.createElement("h2");
-  heading.textContent = "从模型配置到结果文件";
+  heading.textContent = t("从模型配置到结果文件");
   hero.append(heading);
 
   const description = document.createElement("p");
-  description.textContent = "帮助内容随应用提供，不需要联网。实际开始翻译前，模型配置与文件扫描都由你主动触发。";
+  description.textContent = t("帮助内容随应用提供，不需要联网。实际开始翻译前，模型配置与文件扫描都由你主动触发。");
   hero.append(description);
 
   const actions = document.createElement("div");
   actions.className = "help-hero-actions";
   actions.append(
     createButton({
-      label: "重新查看快速开始",
+      label: t("重新查看快速开始"),
       variant: "primary",
       onClick: () => void showQuickStart(),
     }),
     createButton({
-      label: "检查更新",
+      label: t("检查更新"),
       onClick: () => navigate("settings", { page: "about" }),
     }),
   );
@@ -166,9 +167,9 @@ function buildCard(spec: HelpCardSpec): HTMLElement {
 
 export function mount(container: HTMLElement, _params: ViewParams): void {
   setTopbar({
-    title: "帮助",
-    status: { label: "本地离线", tone: "idle" },
-    subtitle: "快速开始清单与常见问题",
+    title: t("帮助"),
+    status: { label: t("本地离线"), tone: "idle" },
+    subtitle: t("快速开始清单与常见问题"),
   });
 
   container.style.flexDirection = "column";

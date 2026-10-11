@@ -1,0 +1,15 @@
+{
+  "Excel 表格": { "en": "Excel files", "fr": "Fichiers Excel" },
+  "Word 文档": { "en": "Word documents", "fr": "Documents Word" },
+  "PDF 与图片": { "en": "PDF & images", "fr": "PDF et images" },
+  "CAD 图纸": { "en": "CAD drawings", "fr": "Plans CAO" },
+  "任务中心": { "en": "Task center", "fr": "Centre des tâches" },
+  "记忆库": { "en": "Translation memory", "fr": "Mémoire de traduction" },
+  "插件": { "en": "Plugins", "fr": "Plugins" },
+  "设置": { "en": "Settings", "fr": "Paramètres" },
+  "帮助": { "en": "Help", "fr": "Aide" },
+  "翻译": { "en": "Translation", "fr": "Traduction" },
+  "资源": { "en": "Resources", "fr": "Ressources" },
+  "未连接模型": { "en": "No model connected", "fr": "Aucun modèle connecté" },
+  "{0} 个任务运行中": { "en": "{0} {0|task|tasks} running", "fr": "{0} {0|tâche|tâches} en cours" }
+}

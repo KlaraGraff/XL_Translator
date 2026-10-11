@@ -23,7 +23,7 @@ function installDevShim(): void {
   const port = Number(import.meta.env.VITE_DEV_SIDECAR_PORT);
   const token = String(import.meta.env.VITE_DEV_SIDECAR_TOKEN ?? "");
   if (!Number.isFinite(port) || port <= 0 || !token) {
-    console.warn("[dev-shim] 缺少 VITE_DEV_SIDECAR_PORT / VITE_DEV_SIDECAR_TOKEN，未安装垫片。");
+    console.warn("[dev-shim] 缺少 VITE_DEV_SIDECAR_PORT / VITE_DEV_SIDECAR_TOKEN，未安装垫片。"); // i18n-ignore 仅浏览器开发模式的开发者提示
     return;
   }
 
@@ -34,7 +34,7 @@ function installDevShim(): void {
       case "plugin:dialog|open": {
         const options = (args?.options ?? {}) as { directory?: boolean; multiple?: boolean };
         const input = window.prompt(
-          `[dev-shim] 输入本机${options.directory ? "目录" : "文件"}路径（可用逗号分隔多个，取消=不选）`,
+          `[dev-shim] 输入本机${options.directory ? "目录" : "文件"}路径（可用逗号分隔多个，取消=不选）`, // i18n-ignore 仅浏览器开发模式的开发者提示
         );
         if (input === null || !input.trim()) return null;
         const paths = input.split(",").map((item) => item.trim()).filter(Boolean);
@@ -53,18 +53,18 @@ function installDevShim(): void {
       // 假装成功，那正是这次改动要根除的「界面报告没发生的事」。
       case "plugin:dialog|save": {
         const options = (args?.options ?? {}) as { defaultPath?: string };
-        const input = window.prompt("[dev-shim] 输入导出保存路径（取消=不保存）", options.defaultPath ?? "");
+        const input = window.prompt("[dev-shim] 输入导出保存路径（取消=不保存）", options.defaultPath ?? ""); // i18n-ignore 仅浏览器开发模式的开发者提示
         return input === null || !input.trim() ? null : input.trim();
       }
       case "save_text_file":
       case "save_binary_file":
-        throw new Error("[dev-shim] 浏览器预览不能写本机文件，请在 tauri dev 或打包后的应用里验证导出。");
+        throw new Error("[dev-shim] 浏览器预览不能写本机文件，请在 tauri dev 或打包后的应用里验证导出。"); // i18n-ignore 仅浏览器开发模式的开发者提示
       // 浏览器里没有 .app 可替换，如实回答「不支持应用内更新」，让关于页走它的
       // 降级分支（显示原因 + 下载安装包），而不是给出一个点不动的「下载并安装」。
       case "update_environment":
         return { canSelfUpdate: false, reason: "browser_preview", installBehavior: "in_place" };
       default:
-        throw new Error(`[dev-shim] 未实现的 Tauri 命令：${cmd}`);
+        throw new Error(`[dev-shim] 未实现的 Tauri 命令：${cmd}`); // i18n-ignore 仅浏览器开发模式的开发者提示
     }
   };
 
@@ -74,7 +74,7 @@ function installDevShim(): void {
     // 走查场景用不到真正的回调注册，返回 0 让调用不抛错即可。
     transformCallback: () => 0,
   };
-  console.info(`[dev-shim] 已安装：sidecar http://127.0.0.1:${port}`);
+  console.info(`[dev-shim] 已安装：sidecar http://127.0.0.1:${port}`); // i18n-ignore 仅浏览器开发模式的开发者提示
 }
 
 const existingTauriInternals = (window as unknown as {
