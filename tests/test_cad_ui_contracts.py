@@ -28,7 +28,7 @@ def test_cad_view_is_a_thin_wrapper_over_the_shared_workspace():
 def test_cad_is_a_workspace_surface():
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
     assert 'export type Surface = "excel" | "word" | "pdf" | "cad";' in source
-    assert 'cad: "CAD 图纸翻译"' in source
+    assert 'cad: t("CAD 图纸翻译")' in source
 
 
 def test_every_cad_switch_is_persisted_and_reaches_the_task_payload():

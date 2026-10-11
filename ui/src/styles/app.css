@@ -98,11 +98,13 @@ svg.ic.lg { width: 22px; height: 22px; }
 }
 
 /* ========== 侧栏 ========== */
+/* 法文的侧栏项（« Mémoire de traduction » 加粗时）放不进 210px，侧栏略加宽。 */
+:root[lang="fr-FR"] .side { width: 226px; }
 .side { width: 210px; flex: none; background: var(--rail); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 16px 10px 12px; }
 .brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 16px; font-size: 14.5px; font-weight: 650; letter-spacing: .2px; }
 .brand-mark { width: 27px; height: 27px; border-radius: 8px; background: linear-gradient(135deg, #6b7dff, #4353cc); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; box-shadow: var(--sh-sm); }
 .side-label { font-size: 10.5px; font-weight: 600; letter-spacing: .12em; color: var(--ink-3); text-transform: uppercase; padding: 14px 10px 5px; }
-.side-item { display: flex; align-items: center; gap: 9px; padding: 7.5px 10px; border-radius: var(--r-sm); color: var(--ink-2); font-size: 13px; cursor: pointer; position: relative; } /* 适配点 2：样张 cursor:default → pointer */
+.side-item { white-space: nowrap; display: flex; align-items: center; gap: 9px; padding: 7.5px 10px; border-radius: var(--r-sm); color: var(--ink-2); font-size: 13px; cursor: pointer; position: relative; } /* 适配点 2：样张 cursor:default → pointer */
 .side-item:hover { background: var(--ground-2); color: var(--ink); }
 .side-item.on { background: var(--tint); color: var(--tint-ink); font-weight: 600; }
 .side-badge { margin-left: auto; background: var(--accent); color: var(--on-accent); font-size: 10.5px; font-weight: 700; border-radius: 99px; min-width: 17px; height: 17px; display: flex; align-items: center; justify-content: center; padding: 0 5px; }
@@ -116,8 +118,11 @@ svg.ic.lg { width: 22px; height: 22px; }
 .topbar { height: 62px; flex: none; display: flex; align-items: center; gap: 14px; padding: 0 22px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .topbar h1 { font-size: 16.5px; font-weight: 650; }
 .tb-sub { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
-.tb-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-.pill { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line-2); border-radius: 99px; padding: 5.5px 13px; font-size: 12.5px; color: var(--ink-2); background: var(--surface); }
+/* 英法文的标题、副标题比中文长：标题区可以收窄，副标题单行省略，右侧药丸不换行。 */
+.tb-title { flex: 1 1 auto; min-width: 0; }
+.tb-title h1, .tb-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex: none; }
+.pill { white-space: nowrap; display: flex; align-items: center; gap: 7px; border: 1px solid var(--line-2); border-radius: 99px; padding: 5.5px 13px; font-size: 12.5px; color: var(--ink-2); background: var(--surface); }
 .pill .dot { width: 7px; height: 7px; border-radius: 99px; background: var(--ink-3); }
 .pill.live { border-color: var(--tint-line); color: var(--tint-ink); background: var(--tint); }
 .pill.live .dot { background: var(--accent); }

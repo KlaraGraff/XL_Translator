@@ -145,9 +145,9 @@ class NumericBoundsAlignmentTests(unittest.TestCase):
 
     def test_word_page_shows_only_character_budget_and_retry(self) -> None:
         source = _read_settings_ts()
-        self.assertNotIn('numberField("每批最大段落数"', source)
-        self.assertNotIn('numberField("长段拆分阈值"', source)
-        self.assertIn('numberField("每批字符上限"', source)
+        self.assertNotIn('numberField(t("每批最大段落数")', source)
+        self.assertNotIn('numberField(t("长段拆分阈值")', source)
+        self.assertIn('numberField(t("每批字符上限")', source)
 
     def test_pdf_page_retry_bounds_match_config(self) -> None:
         source = _read_settings_ts()

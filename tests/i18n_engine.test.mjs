@@ -54,3 +54,21 @@ const prefixed = createTranslator("en", [{
 }]);
 assert.equal(prefixed.tx("第 3 页 第 2/3 次失败"), "Page 3 — attempt 2/3 failed", "a leading placeholder takes the longest prefix, trailing-space keys still match");
 console.log("i18n engine prefix tests passed");
+
+const sentences = createTranslator("en", [{
+  "图片翻译失败；已保留源图、页面素材和报告。": { en: "Image translation failed; the source image, page assets and report were kept." },
+  "首个错误：{0}": { en: "First error: {0}" },
+  "{0}、{1}": { en: "{0}, {1}" },
+}]);
+assert.equal(
+  sentences.tx("图片翻译失败；已保留源图、页面素材和报告。首个错误：超时"),
+  "Image translation failed; the source image, page assets and report were kept. First error: 超时",
+  "whole sentences win over splitting at semicolons or list commas",
+);
+console.log("i18n engine sentence tests passed");
+
+const status = createTranslator("fr", [{
+  "状态：[阶段 2/{0}] 正在补译遗留的原文（{1}/{2}）...": { fr: "État : [Étape 2/{0}] complétion du texte non traduit ({1}/{2})…" },
+}]);
+assert.equal(status.tx("[阶段 2/3] 正在补译遗留的原文（13/13）..."), "[Étape 2/3] complétion du texte non traduit (13/13)…", "status lines match without their prefix");
+console.log("i18n engine status tests passed");

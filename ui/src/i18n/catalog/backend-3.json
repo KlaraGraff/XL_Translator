@@ -24,7 +24,7 @@
     "fr": "[Analyse des compléments terminée] {0} {0|texte|textes} à compléter dans l'ensemble des fichiers."
   },
   "[阶段 1 完成] 全部文件合计 {0} 处待翻译文本，相同内容只翻一次（{1}s）": {
-    "en": "[Stage 1 complete] {0} {0|text|texts} to translate across all files; identical content is translated only once ({1}s)",
+    "en": "[Step 1 complete] {0} {0|text|texts} to translate across all files; identical content is translated only once ({1}s)",
     "fr": "[Étape 1 terminée] {0} {0|texte|textes} à traduire dans l'ensemble des fichiers ; les contenus identiques ne sont traduits qu'une fois ({1}s)"
   },
   "工作表名称": {
@@ -32,7 +32,7 @@
     "fr": "noms des feuilles"
   },
   "[阶段 3 完成] 文件写入完毕（{0}s）": {
-    "en": "[Stage 3 complete] Files written ({0}s)",
+    "en": "[Step 3 complete] Files written ({0}s)",
     "fr": "[Étape 3 terminée] Fichiers écrits ({0}s)"
   },
   "  → {0}：{1} 处候选文本，先用来识别原文语言（{2}s）": {
@@ -176,11 +176,11 @@
     "fr": "Démarrage d'Excel..."
   },
   "状态：[阶段 1/{0}] 正在读取所有文件里的文字...": {
-    "en": "Status: [Stage 1/{0}] Reading text from all files...",
+    "en": "Status: [Step 1/{0}] Reading text from all files...",
     "fr": "État : [Étape 1/{0}] Lecture du texte de tous les fichiers..."
   },
   "状态：[阶段 3/{0}] 正在生成双语表格...": {
-    "en": "Status: [Stage 3/{0}] Generating bilingual workbooks...",
+    "en": "Status: [Step 3/{0}] Generating bilingual workbooks...",
     "fr": "État : [Étape 3/{0}] Génération des classeurs bilingues..."
   },
   "状态：[收尾中] 正在关闭 Excel...": {
@@ -200,7 +200,7 @@
     "fr": "Le résultat précédent de {0} ({1}) est endommagé ou illisible ; la traduction reprend entièrement depuis le début."
   },
   "状态：[阶段 1/{0}] 正在转换 .xls 文件：{1}": {
-    "en": "Status: [Stage 1/{0}] Converting .xls file: {1}",
+    "en": "Status: [Step 1/{0}] Converting .xls file: {1}",
     "fr": "État : [Étape 1/{0}] Conversion du fichier .xls : {1}"
   },
   "源文件转换失败 {0}: {1}": {
@@ -280,7 +280,7 @@
     "fr": "Excel n'a pas pu démarrer sur cet ordinateur. Vérifiez qu'il est installé et que cette application est autorisée à le piloter : {0}"
   },
   "状态：[阶段 4/{0}] 正在准备调整行高...": {
-    "en": "Status: [Stage 4/{0}] Preparing to adjust row heights...",
+    "en": "Status: [Step 4/{0}] Preparing to adjust row heights...",
     "fr": "État : [Étape 4/{0}] Préparation de l'ajustement des hauteurs de ligne..."
   },
   "状态：[收尾中] 正在整理任务结果...": {
@@ -344,7 +344,7 @@
     "fr": "{0} {0|titre de section traduit diffère|titres de section traduits diffèrent} de la forme majoritaire du document. Les uniformiser demanderait de modifier des formes de mots ; ils n'ont donc pas été réécrits automatiquement. Ajustez-les manuellement si besoin."
   },
   "状态：[阶段 4/{0}] 正在自动调整行高...": {
-    "en": "Status: [Stage 4/{0}] Adjusting row heights automatically...",
+    "en": "Status: [Step 4/{0}] Adjusting row heights automatically...",
     "fr": "État : [Étape 4/{0}] Ajustement automatique des hauteurs de ligne..."
   },
   "调整行高": {
@@ -352,7 +352,7 @@
     "fr": "Ajustement des hauteurs de ligne"
   },
   "状态：[阶段 4/{0}] 没有需要调整行高的文件，已跳过。": {
-    "en": "Status: [Stage 4/{0}] No files need row height adjustment; skipped.",
+    "en": "Status: [Step 4/{0}] No files need row height adjustment; skipped.",
     "fr": "État : [Étape 4/{0}] Aucun fichier ne nécessite d'ajustement des hauteurs de ligne ; étape ignorée."
   },
   "补译识别失败": {
@@ -364,7 +364,7 @@
     "fr": "Excel n'a pas pu démarrer sur cet ordinateur. Il n'est peut-être pas installé, ou cette application n'est pas autorisée à le piloter."
   },
   "状态：[阶段 3/{0}] 正在翻译{1}（{2}/{3} 批）...": {
-    "en": "Status: [Stage 3/{0}] Translating {1} (batch {2}/{3})...",
+    "en": "Status: [Step 3/{0}] Translating {1} (batch {2}/{3})...",
     "fr": "État : [Étape 3/{0}] Traduction : {1} (lot {2}/{3})..."
   },
   "译文未通过质量校验，已回退为原文": {
@@ -416,7 +416,7 @@
     "fr": "Texte source non traduit dans la traduction : "
   },
   "状态：[阶段 4/{0}] 正在调整行高：{1}": {
-    "en": "Status: [Stage 4/{0}] Adjusting row heights: {1}",
+    "en": "Status: [Step 4/{0}] Adjusting row heights: {1}",
     "fr": "État : [Étape 4/{0}] Ajustement des hauteurs de ligne : {1}"
   },
   "翻译设置里还有没填好的项，请检查所选连接和模型。": {

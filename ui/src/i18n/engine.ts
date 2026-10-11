@@ -80,6 +80,25 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
         if (typeof target !== "string" || !target) continue;
         exact.set(source, target);
         if (PLACEHOLDER_TEST_RE.test(source)) addTemplate(source, target);
+        // 状态行以「状态：」开头，界面显示前会去掉这个前缀（workspace / tasks 的
+        // statusPhaseText）：去掉前缀的说法也认，译文同样去掉 “Status:” 一类前缀。
+        const STATUS_PREFIX = /^状态[:：]\s*/;
+        if (STATUS_PREFIX.test(source)) {
+          const bareSource = source.replace(STATUS_PREFIX, "");
+          const bareTarget = target.replace(/^(Status|État|Statut)\s*:\s*/u, "");
+          const capitalized = bareTarget.charAt(0).toUpperCase() + bareTarget.slice(1);
+          if (bareSource && !exact.has(bareSource)) {
+            exact.set(bareSource, capitalized);
+            if (PLACEHOLDER_TEST_RE.test(bareSource)) addTemplate(bareSource, capitalized);
+          }
+        }
+        // 后端常用「  → …」这类带缩进的行，界面显示前可能已经去掉了首尾空白：两种都认。
+        const bare = source.trim();
+        if (bare !== source && bare && !exact.has(bare)) {
+          const bareTarget = target.trim();
+          exact.set(bare, bareTarget);
+          if (PLACEHOLDER_TEST_RE.test(bare)) addTemplate(bare, bareTarget);
+        }
       }
     }
     const byWeight = (a: TemplateEntry, b: TemplateEntry) => b.weight - a.weight;
@@ -106,11 +125,16 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     });
   }
 
-  function matchTemplate(text: string, depth: number): string | null {
+  // 字面文字很短的模板（「{0}、{1}」「{0} · {1}」）几乎什么都能套上，只在整句、
+  // 具体模板、按句拆分都失败之后才用。
+  const GENERIC_WEIGHT = 3;
+
+  function matchTemplate(text: string, depth: number, generic: boolean): string | null {
     let best: { entry: TemplateEntry; match: RegExpExecArray } | null = null;
     for (const list of [templatesByHead.get(text.charAt(0)) ?? [], templatesAnyHead]) {
       for (const entry of list) {
         if (best && best.entry.weight >= entry.weight) break;
+        if ((entry.weight < GENERIC_WEIGHT) !== generic) continue;
         const match = entry.regex.exec(text);
         if (match) {
           best = { entry, match };
@@ -151,7 +175,7 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     if (!text || depth > 4 || NUMERIC_RE.test(text) || !CJK_RE.test(text)) return text;
     const direct = exact.get(text);
     if (direct !== undefined) return direct;
-    const templated = matchTemplate(text, depth);
+    const templated = matchTemplate(text, depth, false);
     if (templated !== null) return templated;
     const trimmed = text.trim();
     if (trimmed !== text) {
@@ -159,13 +183,19 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       return inner === trimmed ? text : text.replace(trimmed, inner);
     }
     // 整句对不上时，按行、按中文分号、再按句号拆开逐段翻：后端有些说明是几句拼起来的。
-    for (const [separator, joiner] of [["\n", "\n"], ["；", "; "]] as const) {
-      if (!text.includes(separator)) continue;
-      const parts = text.split(separator);
-      const translated = parts.map((part) => translateRuntime(part, depth + 1));
-      if (translated.some((part, index) => part !== parts[index])) return translated.join(joiner);
+    if (text.includes("\n")) {
+      const lines = text.split("\n");
+      const translated = lines.map((line) => translateRuntime(line, depth + 1));
+      if (translated.some((line, index) => line !== lines[index])) return translated.join("\n");
     }
-    return translateSentences(text, depth) ?? text;
+    const bySentence = translateSentences(text, depth);
+    if (bySentence !== null) return bySentence;
+    if (text.includes("；")) {
+      const parts = text.split("；");
+      const translated = parts.map((part) => translateRuntime(part, depth + 1));
+      if (translated.some((part, index) => part !== parts[index])) return translated.join("; ");
+    }
+    return matchTemplate(text, depth, true) ?? text;
   }
 
   return {

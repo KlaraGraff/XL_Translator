@@ -160,6 +160,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
   topbar.className = "topbar";
 
   const titleBlock = document.createElement("div");
+  titleBlock.className = "tb-title";
   const titleRow = document.createElement("div");
   titleRow.style.display = "flex";
   titleRow.style.alignItems = "center";
@@ -265,6 +266,8 @@ export function setTopbar(config: TopbarConfig): void {
     topbarStatusHost.append(createStatus(config.status));
   }
   topbarSubEl.textContent = config.subtitle ?? "";
+  // 英法文副标题常比中文长：一行放不下时省略，悬停看全文。
+  topbarSubEl.title = config.subtitle ?? "";
 }
 
 /** 更新顶栏右侧「任务中心」药丸。count > 0 时切到 live 态并显示计数。 */

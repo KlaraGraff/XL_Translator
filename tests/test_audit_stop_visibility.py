@@ -85,8 +85,8 @@ class StopBannerUnfinishedCountTests(unittest.TestCase):
         self.assertIn(
             "const unfinishedFiles = num(record(result.kpi).unstarted_file_count)", body
         )
-        self.assertIn("clauses.push(`还有 ${unfinishedPages} 页没跑到", body)
-        self.assertIn("clauses.push(`还有 ${unfinishedFiles} 个文件没跑到", body)
+        self.assertIn('clauses.push(t("还有 {0} 页没跑到", unfinishedPages))', body)
+        self.assertIn('clauses.push(t("还有 {0} 个文件没跑到", unfinishedFiles))', body)
 
     def test_fail_banner_keeps_clauses_when_nothing_was_generated(self) -> None:
         # 互审 F2：停止落在阶段 2 之前时 generated 为 0、tone 必为 fail，旧代码在

@@ -524,8 +524,8 @@
     "fr": ", "
   },
   "图片 / 文本框 / 批注": {
-    "en": "Images / text boxes / comments",
-    "fr": "Images / zones de texte / commentaires"
+    "en": "Images / shapes / notes",
+    "fr": "Images / formes / notes"
   },
   "{0} 个 .xls 未统计": {
     "en": "{0} .xls not counted",

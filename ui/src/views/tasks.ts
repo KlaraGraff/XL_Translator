@@ -353,7 +353,7 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     pooledTotal = Math.max(pooledTotal, num(value.pool_connection_count));
   }
   const connectionSummary = connectionNames.length
-    ? connectionNames.join(t("、")) + (pooledTotal > 1 ? t("（共 {0} 个地址，自动轮流使用）", pooledTotal) : "")
+    ? connectionNames.map((name) => tx(name)).join(t("、")) + (pooledTotal > 1 ? t("（共 {0} 个地址，自动轮流使用）", pooledTotal) : "")
     : "";
   const rows: Array<[string, string]> = [
     [t("语言"), [sourceLang, targetLang].filter(Boolean).map(languageName).join(" → ")],
