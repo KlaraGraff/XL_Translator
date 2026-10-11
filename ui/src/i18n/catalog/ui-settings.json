@@ -1,0 +1,1102 @@
+{
+  "测试于 {0}": {
+    "en": "Tested {0}",
+    "fr": "Testé le {0}"
+  },
+  "文档翻译（Excel / Word / CAD）": {
+    "en": "Document translation (Excel / Word / CAD)",
+    "fr": "Traduction de documents (Excel / Word / CAD)"
+  },
+  "记忆库清洗": {
+    "en": "Memory cleanup",
+    "fr": "Nettoyage de la mémoire"
+  },
+  "PDF 与图片翻译": {
+    "en": "PDF & image translation",
+    "fr": "Traduction PDF et images"
+  },
+  "PDF 与图片审核": {
+    "en": "PDF & image review",
+    "fr": "Vérification PDF et images"
+  },
+  "OpenAI 兼容": {
+    "en": "OpenAI-compatible",
+    "fr": "Compatible OpenAI"
+  },
+  "智谱 GLM": {
+    "en": "Zhipu GLM",
+    "fr": "Zhipu GLM"
+  },
+  "阿里百炼": {
+    "en": "Alibaba Cloud Model Studio",
+    "fr": "Alibaba Cloud Model Studio"
+  },
+  "硅基流动": {
+    "en": "SiliconFlow",
+    "fr": "SiliconFlow"
+  },
+  "自定义本地服务": {
+    "en": "Custom local service",
+    "fr": "Service local personnalisé"
+  },
+  "当前服务商无需填写 Base URL": {
+    "en": "This provider doesn't need a Base URL",
+    "fr": "Ce fournisseur n'a pas besoin de Base URL"
+  },
+  "清空任务记录？": {
+    "en": "Clear task history?",
+    "fr": "Effacer l'historique des tâches ?"
+  },
+  "将删除任务中心里的任务记录，不会删除任何翻译结果。": {
+    "en": "This deletes the task history in the Task center. No translated files are deleted.",
+    "fr": "L'historique du Centre des tâches sera supprimé. Aucun fichier traduit ne sera supprimé."
+  },
+  "清空任务记录": {
+    "en": "Clear task history",
+    "fr": "Effacer l'historique"
+  },
+  "清空运行日志？": {
+    "en": "Clear activity logs?",
+    "fr": "Effacer les journaux d'activité ?"
+  },
+  "将删除 Translator 的运行日志，不会删除诊断记录、源文件或翻译结果。": {
+    "en": "This deletes Translator's activity logs. Diagnostics, source files and translated files are kept.",
+    "fr": "Les journaux d'activité de Translator seront supprimés. Les diagnostics, fichiers source et fichiers traduits sont conservés."
+  },
+  "清空日志": {
+    "en": "Clear logs",
+    "fr": "Effacer les journaux"
+  },
+  "清空全部诊断？": {
+    "en": "Clear all diagnostics?",
+    "fr": "Effacer tous les diagnostics ?"
+  },
+  "将删除所有本地诊断记录。导出过的 ZIP 不会被删除。": {
+    "en": "All local diagnostic records will be deleted. ZIP files you exported are kept.",
+    "fr": "Tous les diagnostics locaux seront supprimés. Les fichiers ZIP déjà exportés sont conservés."
+  },
+  "清空诊断": {
+    "en": "Clear diagnostics",
+    "fr": "Effacer les diagnostics"
+  },
+  "删除全部 API 密钥？": {
+    "en": "Delete all API keys?",
+    "fr": "Supprimer toutes les clés API ?"
+  },
+  "将删除 Translator 保存的所有服务商密钥。有任务在运行时不能执行此操作。": {
+    "en": "All provider keys saved by Translator will be deleted. This can't be done while a task is running.",
+    "fr": "Toutes les clés de fournisseur enregistrées par Translator seront supprimées. Impossible pendant qu'une tâche est en cours."
+  },
+  "删除全部密钥": {
+    "en": "Delete all keys",
+    "fr": "Supprimer les clés"
+  },
+  "重置设置？": {
+    "en": "Reset settings?",
+    "fr": "Réinitialiser les paramètres ?"
+  },
+  "将恢复默认设置，API 密钥、记忆库和翻译结果都会保留。": {
+    "en": "Default settings will be restored. API keys, translation memory and translated files are kept.",
+    "fr": "Les paramètres par défaut seront rétablis. Les clés API, la mémoire de traduction et les fichiers traduits sont conservés."
+  },
+  "重置设置": {
+    "en": "Reset settings",
+    "fr": "Réinitialiser"
+  },
+  "清空记忆库？": {
+    "en": "Clear translation memory?",
+    "fr": "Vider la mémoire de traduction ?"
+  },
+  "此操作不会删除翻译结果。建议先在记忆库页面导出一份完整备份。": {
+    "en": "Translated files are not affected. We recommend exporting a full backup from the Translation memory page first.",
+    "fr": "Les fichiers traduits ne sont pas touchés. Exportez d'abord une sauvegarde complète depuis la page Mémoire de traduction."
+  },
+  "清空记忆库": {
+    "en": "Clear memory",
+    "fr": "Vider la mémoire"
+  },
+  "完整重置本地数据？": {
+    "en": "Reset all local data?",
+    "fr": "Réinitialiser toutes les données locales ?"
+  },
+  "只删除 Translator 自己保存的数据。应用本身、你的源文件和翻译结果都不会被删除。": {
+    "en": "Only data saved by Translator itself is deleted. The app, your source files and translated files are kept.",
+    "fr": "Seules les données enregistrées par Translator sont supprimées. L'application, vos fichiers source et vos fichiers traduits sont conservés."
+  },
+  "完整重置": {
+    "en": "Full reset",
+    "fr": "Tout réinitialiser"
+  },
+  "重置": {
+    "en": "Reset",
+    "fr": "Réinitialiser"
+  },
+  "删除": {
+    "en": "Delete",
+    "fr": "Supprimer"
+  },
+  "清空": {
+    "en": "Clear",
+    "fr": "Vider"
+  },
+  "设置": {
+    "en": "Settings",
+    "fr": "Paramètres"
+  },
+  "模型、参数、外观与数据都在这里": {
+    "en": "Models, parameters, appearance and data",
+    "fr": "Modèles, paramètres, apparence et données"
+  },
+  "正在加载设置…": {
+    "en": "Loading settings…",
+    "fr": "Chargement des paramètres…"
+  },
+  "模型服务": {
+    "en": "Models",
+    "fr": "Modèles"
+  },
+  "翻译参数": {
+    "en": "Translation options",
+    "fr": "Options de traduction"
+  },
+  "外观与语言": {
+    "en": "Appearance & language",
+    "fr": "Apparence et langue"
+  },
+  "数据与维护": {
+    "en": "Data & maintenance",
+    "fr": "Données et maintenance"
+  },
+  "更新与关于": {
+    "en": "Updates & about",
+    "fr": "Mises à jour"
+  },
+  "无法连接本地翻译引擎": {
+    "en": "Can't connect to the local translation engine",
+    "fr": "Impossible de se connecter au moteur de traduction local"
+  },
+  "旧的任务历史已损坏，原文件已备份到 {0}；已恢复可用记录，无法读取的记录未能保留。": {
+    "en": "The old task history was damaged and has been backed up to {0}. Readable records were restored; unreadable ones could not be kept.",
+    "fr": "L'ancien historique des tâches était endommagé et a été sauvegardé dans {0}. Les entrées lisibles ont été restaurées ; les autres n'ont pas pu être conservées."
+  },
+  "备份目录": {
+    "en": "the backup folder",
+    "fr": "le dossier de sauvegarde"
+  },
+  "旧的配置无法读取，已备份到 {0}，已新建一份可用的。": {
+    "en": "The old settings couldn't be read. They were backed up to {0} and new settings were created.",
+    "fr": "Les anciens paramètres étaient illisibles. Ils ont été sauvegardés dans {0} et de nouveaux paramètres ont été créés."
+  },
+  "旧的翻译记忆库无法读取，已备份到 {0}，已新建一份可用的。": {
+    "en": "The old translation memory couldn't be read. It was backed up to {0} and a new one was created.",
+    "fr": "L'ancienne mémoire de traduction était illisible. Elle a été sauvegardée dans {0} et une nouvelle a été créée."
+  },
+  "旧的 API Key 文件已损坏，已备份到 {0}；其余服务商的 Key 未能保留，请重新填写各服务商的 Key。": {
+    "en": "The old API key file was damaged and has been backed up to {0}. Keys for other providers could not be kept; please enter them again.",
+    "fr": "L'ancien fichier de clés API était endommagé et a été sauvegardé dans {0}. Les clés des autres fournisseurs n'ont pas pu être conservées ; veuillez les saisir à nouveau."
+  },
+  "任务历史无法安全恢复，原文件未被覆盖，新的任务历史暂时无法保存。": {
+    "en": "The task history couldn't be safely restored. The original file was not overwritten, and new task history can't be saved for now.",
+    "fr": "L'historique des tâches n'a pas pu être restauré en toute sécurité. Le fichier d'origine n'a pas été écrasé ; le nouvel historique ne peut pas être enregistré pour le moment."
+  },
+  "配置文件读不出来，本次按默认设置运行，改动无法保存。原文件没有被覆盖。": {
+    "en": "The settings file can't be read. Default settings are used for now and changes can't be saved. The original file was not overwritten.",
+    "fr": "Le fichier de paramètres est illisible. Les paramètres par défaut sont utilisés et les modifications ne peuvent pas être enregistrées. Le fichier d'origine n'a pas été écrasé."
+  },
+  "翻译记忆库读不出来，本次翻译不会读写它。原文件没有被删除。": {
+    "en": "The translation memory can't be read and won't be used for now. The original file was not deleted.",
+    "fr": "La mémoire de traduction est illisible et ne sera pas utilisée pour le moment. Le fichier d'origine n'a pas été supprimé."
+  },
+  "多为权限问题或被杀毒/备份软件占用：关掉占用它的程序后重启本应用即可；确定要放弃旧数据时，可在「数据与维护」里明确重置。": {
+    "en": "This is usually a permissions issue or the file is locked by antivirus/backup software: close that program and restart the app. If you want to discard the old data, reset it in “Data & maintenance”.",
+    "fr": "Il s'agit généralement d'un problème de droits ou d'un fichier verrouillé par un antivirus ou un logiciel de sauvegarde : fermez ce programme puis redémarrez l'application. Pour abandonner les anciennes données, réinitialisez-les dans « Données et maintenance »."
+  },
+  "有数据暂时无法读取": {
+    "en": "Some data can't be read right now",
+    "fr": "Certaines données sont illisibles"
+  },
+  "有数据被重新创建": {
+    "en": "Some data was recreated",
+    "fr": "Certaines données ont été recréées"
+  },
+  "知道了": {
+    "en": "Got it",
+    "fr": "Compris"
+  },
+  "保存失败：填写的值超出允许范围，已恢复为上次保存的值，请检查后重新输入。": {
+    "en": "Couldn't save: the value is out of range. The last saved value was restored; please check and try again.",
+    "fr": "Échec de l'enregistrement : la valeur est hors limites. La dernière valeur enregistrée a été rétablie ; vérifiez et réessayez."
+  },
+  "展开模型候选": {
+    "en": "Show model suggestions",
+    "fr": "Afficher les modèles proposés"
+  },
+  "还没有候选模型。点下面的「获取模型列表」向服务商要一份。": {
+    "en": "No suggestions yet. Click “Fetch model list” below to get one from the provider.",
+    "fr": "Aucune suggestion pour l'instant. Cliquez sur « Récupérer la liste des modèles » ci-dessous pour l'obtenir auprès du fournisseur."
+  },
+  "从候选里选一个": {
+    "en": "Pick a suggested model",
+    "fr": "Choisir un modèle proposé"
+  },
+  "服务商推荐型号": {
+    "en": "Recommended by the provider",
+    "fr": "Recommandé par le fournisseur"
+  },
+  "已导出提示词配置到 {0}。": {
+    "en": "Prompt settings exported to {0}.",
+    "fr": "Prompts exportés vers {0}."
+  },
+  "提示词配置导出失败：{0}": {
+    "en": "Couldn't export prompts: {0}",
+    "fr": "Échec de l'exportation des prompts : {0}"
+  },
+  "提示词配置导入预览失败": {
+    "en": "Couldn't preview the prompt file",
+    "fr": "Impossible de prévisualiser le fichier de prompts"
+  },
+  "翻译参数配置导入与导出": {
+    "en": "Import & export translation options",
+    "fr": "Importer et exporter les options de traduction"
+  },
+  "一键备份或导入 Excel、Word、PDF、CAD 的翻译参数、语言设置和领域提示词。不含模型、密钥和本机输出目录。": {
+    "en": "Back up or import translation options, language settings and domain prompts for Excel, Word, PDF and CAD in one click. Models, keys and local output folders are not included.",
+    "fr": "Sauvegardez ou importez en un clic les options de traduction, les langues et les prompts de domaine pour Excel, Word, PDF et CAO. Les modèles, les clés et les dossiers de sortie locaux ne sont pas inclus."
+  },
+  "导出配置": {
+    "en": "Export",
+    "fr": "Exporter"
+  },
+  "导入配置": {
+    "en": "Import",
+    "fr": "Importer"
+  },
+  "已有底色处理": {
+    "en": "Existing cell fill",
+    "fr": "Remplissage existant"
+  },
+  "不覆盖已有底色": {
+    "en": "Keep existing fill",
+    "fr": "Conserver le remplissage"
+  },
+  "保留底色并使用红字（默认）": {
+    "en": "Keep fill, use red text (default)",
+    "fr": "Conserver le remplissage, texte en rouge (par défaut)"
+  },
+  "以复核色覆盖底色": {
+    "en": "Replace with review color",
+    "fr": "Remplacer par la couleur de vérification"
+  },
+  "单元格本身已有底色时，复核标记的处理方式。": {
+    "en": "How review marks are applied when a cell already has a fill color.",
+    "fr": "Façon d'appliquer les marques de vérification quand une cellule a déjà une couleur de remplissage."
+  },
+  "已有高亮处理": {
+    "en": "Existing highlight",
+    "fr": "Surlignage existant"
+  },
+  "不覆盖已有高亮": {
+    "en": "Keep existing highlight",
+    "fr": "Conserver le surlignage"
+  },
+  "保留已有高亮并使用红字下划线（默认）": {
+    "en": "Keep highlight, use red underlined text (default)",
+    "fr": "Conserver le surlignage, texte rouge souligné (par défaut)"
+  },
+  "以复核色覆盖已有高亮": {
+    "en": "Replace with review color",
+    "fr": "Remplacer par la couleur de vérification"
+  },
+  "段落本身已有高亮时，复核标记的处理方式。": {
+    "en": "How review marks are applied when a paragraph is already highlighted.",
+    "fr": "Façon d'appliquer les marques de vérification quand un paragraphe est déjà surligné."
+  },
+  "批次与重试": {
+    "en": "Batches & retries",
+    "fr": "Lots et nouvelles tentatives"
+  },
+  "每批字符上限": {
+    "en": "Max characters per batch",
+    "fr": "Caractères max. par lot"
+  },
+  "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。": {
+    "en": "Maximum characters sent to the model at once. Longer content is split into batches, and very long paragraphs are split automatically.",
+    "fr": "Nombre maximal de caractères envoyés au modèle en une fois. Au-delà, le contenu est réparti en lots et les paragraphes très longs sont découpés automatiquement."
+  },
+  "一次发给模型最多多少字；超出会自动分批，特别长的段落会自动拆开。范围 800–12000。": {
+    "en": "Maximum characters sent to the model at once. Longer content is split into batches, and very long paragraphs are split automatically. Range 800–12000.",
+    "fr": "Nombre maximal de caractères envoyés au modèle en une fois. Au-delà, le contenu est réparti en lots et les paragraphes très longs sont découpés automatiquement. Plage 800–12000."
+  },
+  "单段最多重试次数": {
+    "en": "Max retries per paragraph",
+    "fr": "Tentatives max. par paragraphe"
+  },
+  "译文为空、明显不完整或没通过质量检查的段落，最多自动重翻几次。": {
+    "en": "How many times a paragraph is retranslated if the result is empty, clearly incomplete or fails the quality check.",
+    "fr": "Nombre de nouvelles traductions automatiques d'un paragraphe dont le résultat est vide, manifestement incomplet ou refusé par le contrôle qualité."
+  },
+  "单页重试次数": {
+    "en": "Retries per page",
+    "fr": "Tentatives par page"
+  },
+  "一页翻译失败后最多重试几次，0 到 8。": {
+    "en": "How many times a page is retried after a failed translation, 0 to 8.",
+    "fr": "Nombre de nouvelles tentatives après l'échec de la traduction d'une page, de 0 à 8."
+  },
+  "留空自动": {
+    "en": "Auto if empty",
+    "fr": "Auto si vide"
+  },
+  "同时生成页数（留空自动）": {
+    "en": "Pages in parallel (auto if empty)",
+    "fr": "Pages en parallèle (auto si vide)"
+  },
+  "同时翻译几页；留空则按图像模型的速率设置自动决定。": {
+    "en": "How many pages are translated at once. Leave empty to follow the image model's speed settings.",
+    "fr": "Nombre de pages traduites en même temps. Laissez vide pour suivre les réglages de débit du modèle d'image."
+  },
+  "同时翻译几页，1 到 20；留空则按图像模型的速率设置自动决定。": {
+    "en": "How many pages are translated at once, 1 to 20. Leave empty to follow the image model's speed settings.",
+    "fr": "Nombre de pages traduites en même temps, de 1 à 20. Laissez vide pour suivre les réglages de débit du modèle d'image."
+  },
+  "CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。": {
+    "en": "CAD translation options are on the right side of the “CAD drawings” page. Domain prompts can be edited below.",
+    "fr": "Les options de traduction CAO se trouvent à droite de la page « Plans CAO ». Les prompts de domaine se modifient ci-dessous."
+  },
+  "复核标记颜色": {
+    "en": "Review mark colors",
+    "fr": "Couleurs des marques de vérification"
+  },
+  "保留原文复核": {
+    "en": "Source kept, review",
+    "fr": "Source conservée, à vérifier"
+  },
+  "疑似原文异常": {
+    "en": "Suspicious source text",
+    "fr": "Texte source suspect"
+  },
+  "自定义提示词{0}": {
+    "en": "Custom prompt {0}",
+    "fr": "Prompt personnalisé {0}"
+  },
+  "自定义提示词": {
+    "en": "Custom prompt",
+    "fr": "Prompt personnalisé"
+  },
+  "{0}（已停用）": {
+    "en": "{0} (disabled)",
+    "fr": "{0} (désactivé)"
+  },
+  "＋ 新增提示词": {
+    "en": "+ New prompt",
+    "fr": "+ Nouveau prompt"
+  },
+  "当前提示词（旧版）": {
+    "en": "Current prompt (legacy)",
+    "fr": "Prompt actuel (ancien format)"
+  },
+  "已删除提示词“{0}”。": {
+    "en": "Prompt “{0}” deleted.",
+    "fr": "Prompt « {0} » supprimé."
+  },
+  "提示词名称": {
+    "en": "Prompt name",
+    "fr": "Nom du prompt"
+  },
+  "选择已有提示词，或选择“＋ 新增提示词”创建自己的提示词。名称可以在下方编辑。删除内置项只会停用它，之后仍可重新启用。": {
+    "en": "Pick an existing prompt, or choose “+ New prompt” to create your own. You can edit the name below. Deleting a built-in prompt only disables it; you can enable it again later.",
+    "fr": "Choisissez un prompt existant ou « + Nouveau prompt » pour créer le vôtre. Le nom se modifie ci-dessous. Supprimer un prompt intégré ne fait que le désactiver ; vous pourrez le réactiver plus tard."
+  },
+  "提示词内容": {
+    "en": "Prompt text",
+    "fr": "Texte du prompt"
+  },
+  "例如：保留电气专业术语，不要增加解释": {
+    "en": "e.g. Keep electrical terms, don't add explanations",
+    "fr": "Ex. : conserver les termes d'électricité, ne pas ajouter d'explications"
+  },
+  "补充要求（可选）": {
+    "en": "Extra instructions (optional)",
+    "fr": "Consignes supplémentaires (facultatif)"
+  },
+  "整理时会把这段要求一起交给文档翻译模型。整理结果仍需你确认后保存。": {
+    "en": "These instructions are sent to the document translation model when refining. You still review the result before saving.",
+    "fr": "Ces consignes sont transmises au modèle de traduction de documents lors de l'amélioration. Vous validez le résultat avant de l'enregistrer."
+  },
+  "整理结果对比": {
+    "en": "Compare versions",
+    "fr": "Comparer les versions"
+  },
+  "两侧都可以直接修改，确认后再写回上面的提示词。": {
+    "en": "You can edit both sides, then copy the one you want back into the prompt above.",
+    "fr": "Vous pouvez modifier les deux côtés, puis reporter celui de votre choix dans le prompt ci-dessus."
+  },
+  "你的版本": {
+    "en": "Your version",
+    "fr": "Votre version"
+  },
+  "使用你的版本": {
+    "en": "Use your version",
+    "fr": "Utiliser votre version"
+  },
+  "已保留你的版本，请确认后保存。": {
+    "en": "Your version was kept. Review it, then save.",
+    "fr": "Votre version est conservée. Vérifiez-la, puis enregistrez."
+  },
+  "整理后": {
+    "en": "Refined",
+    "fr": "Version améliorée"
+  },
+  "使用这一版": {
+    "en": "Use this version",
+    "fr": "Utiliser cette version"
+  },
+  "已将整理版放回提示词内容，请确认后保存。": {
+    "en": "The refined version was placed in the prompt text. Review it, then save.",
+    "fr": "La version améliorée a été placée dans le texte du prompt. Vérifiez-la, puis enregistrez."
+  },
+  "整理结果不会自动保存": {
+    "en": "The refined version isn't saved automatically",
+    "fr": "La version améliorée n'est pas enregistrée automatiquement"
+  },
+  "例如：电气图纸翻译": {
+    "en": "e.g. Electrical drawing translation",
+    "fr": "Ex. : traduction de plans électriques"
+  },
+  "编辑名称": {
+    "en": "Name",
+    "fr": "Nom"
+  },
+  "名称可以修改；保存时会保留当前提示词内容。不能与内置提示词或其他自定义提示词重名。": {
+    "en": "You can rename it; the prompt text is kept when saving. The name can't match a built-in prompt or another custom prompt.",
+    "fr": "Vous pouvez le renommer ; le texte du prompt est conservé à l'enregistrement. Le nom ne peut pas reprendre celui d'un prompt intégré ou d'un autre prompt personnalisé."
+  },
+  "请输入完整提示词": {
+    "en": "Enter the full prompt",
+    "fr": "Saisissez le prompt complet"
+  },
+  "内置提示词会在此显示": {
+    "en": "The built-in prompt appears here",
+    "fr": "Le prompt intégré s'affiche ici"
+  },
+  "请输入提示词内容": {
+    "en": "Enter the prompt text",
+    "fr": "Saisissez le texte du prompt"
+  },
+  "旧版提示词内容": {
+    "en": "Legacy prompt text",
+    "fr": "Texte du prompt (ancien format)"
+  },
+  "内置提示词（可编辑覆盖）": {
+    "en": "Built-in prompt (editable)",
+    "fr": "Prompt intégré (modifiable)"
+  },
+  "保存": {
+    "en": "Save",
+    "fr": "Enregistrer"
+  },
+  "提示词名称不能为空，且不能与内置选项或已有提示词重名。": {
+    "en": "The prompt name can't be empty or match a built-in option or an existing prompt.",
+    "fr": "Le nom du prompt ne peut pas être vide ni reprendre celui d'une option intégrée ou d'un prompt existant."
+  },
+  "新提示词不能保存为空。": {
+    "en": "A new prompt can't be empty.",
+    "fr": "Un nouveau prompt ne peut pas être vide."
+  },
+  "提示词不能保存为空。": {
+    "en": "The prompt can't be empty.",
+    "fr": "Le prompt ne peut pas être vide."
+  },
+  "已改为不使用专业领域提示词。": {
+    "en": "Domain prompt turned off.",
+    "fr": "Prompt de domaine désactivé."
+  },
+  "新提示词已保存。": {
+    "en": "New prompt saved.",
+    "fr": "Nouveau prompt enregistré."
+  },
+  "提示词已保存。": {
+    "en": "Prompt saved.",
+    "fr": "Prompt enregistré."
+  },
+  "保存选择": {
+    "en": "Save",
+    "fr": "Enregistrer"
+  },
+  "整理": {
+    "en": "Refine",
+    "fr": "Améliorer"
+  },
+  "模型已生成优化建议，请确认后保存。": {
+    "en": "The model suggested an improved version. Review it, then save.",
+    "fr": "Le modèle a proposé une version améliorée. Vérifiez-la, puis enregistrez."
+  },
+  "提示词优化失败：{0}": {
+    "en": "Couldn't refine the prompt: {0}",
+    "fr": "Échec de l'amélioration du prompt : {0}"
+  },
+  "恢复内置默认": {
+    "en": "Restore default",
+    "fr": "Rétablir par défaut"
+  },
+  "已恢复内置提示词。": {
+    "en": "Built-in prompt restored.",
+    "fr": "Prompt intégré rétabli."
+  },
+  "导出提示词": {
+    "en": "Export prompts",
+    "fr": "Exporter les prompts"
+  },
+  "导入提示词": {
+    "en": "Import prompts",
+    "fr": "Importer des prompts"
+  },
+  "提示词设置": {
+    "en": "Prompts",
+    "fr": "Prompts"
+  },
+  "界面语言": {
+    "en": "Interface language",
+    "fr": "Langue de l'interface"
+  },
+  "切换后界面会重新加载。正在运行的任务不受影响，翻译结果的语言仍按各页选择的目标语言。": {
+    "en": "The interface reloads after switching. Running tasks are not affected, and translations still use the target language chosen on each page.",
+    "fr": "L'interface se recharge après le changement. Les tâches en cours ne sont pas affectées et les traductions restent dans la langue cible choisie sur chaque page."
+  },
+  "主题": {
+    "en": "Theme",
+    "fr": "Thème"
+  },
+  "浅色": {
+    "en": "Light",
+    "fr": "Clair"
+  },
+  "始终使用浅色界面": {
+    "en": "Always use the light theme",
+    "fr": "Toujours utiliser le thème clair"
+  },
+  "深色": {
+    "en": "Dark",
+    "fr": "Sombre"
+  },
+  "始终使用深色界面": {
+    "en": "Always use the dark theme",
+    "fr": "Toujours utiliser le thème sombre"
+  },
+  "跟随系统": {
+    "en": "System",
+    "fr": "Système"
+  },
+  "跟随系统的浅色 / 深色外观自动切换": {
+    "en": "Switch automatically with the system's light / dark appearance",
+    "fr": "Suit automatiquement l'apparence claire / sombre du système"
+  },
+  "新增自定义语言": {
+    "en": "Add language",
+    "fr": "Ajouter une langue"
+  },
+  "自定义语言管理": {
+    "en": "Custom languages",
+    "fr": "Langues personnalisées"
+  },
+  "还没有自定义目标语言": {
+    "en": "No custom target languages yet",
+    "fr": "Aucune langue cible personnalisée"
+  },
+  "自定义语言只能作为目标语言使用。": {
+    "en": "Custom languages can only be used as target languages.",
+    "fr": "Les langues personnalisées ne peuvent servir que de langue cible."
+  },
+  "编辑": {
+    "en": "Edit",
+    "fr": "Modifier"
+  },
+  "设置 · 外观与语言 · 自定义语言": {
+    "en": "Settings · Appearance & language · Custom languages",
+    "fr": "Paramètres · Apparence et langue · Langues personnalisées"
+  },
+  "删除「{0}」？": {
+    "en": "Delete “{0}”?",
+    "fr": "Supprimer « {0} » ?"
+  },
+  "删除后该语言不再出现在目标语言列表中；已使用该语言完成的翻译输出不受影响。": {
+    "en": "The language will no longer appear in the target language list. Translations already made in this language are not affected.",
+    "fr": "La langue n'apparaîtra plus dans la liste des langues cibles. Les traductions déjà produites dans cette langue ne sont pas affectées."
+  },
+  "取消": {
+    "en": "Cancel",
+    "fr": "Annuler"
+  },
+  "自定义目标语言已删除。": {
+    "en": "Custom target language deleted.",
+    "fr": "Langue cible personnalisée supprimée."
+  },
+  "显示名称": {
+    "en": "Display name",
+    "fr": "Nom affiché"
+  },
+  "例如 越南语": {
+    "en": "e.g. Vietnamese",
+    "fr": "Ex. : vietnamien"
+  },
+  "语言说明": {
+    "en": "Description",
+    "fr": "Description"
+  },
+  "编辑自定义语言": {
+    "en": "Edit custom language",
+    "fr": "Modifier la langue personnalisée"
+  },
+  "新增自定义目标语言": {
+    "en": "Add custom target language",
+    "fr": "Ajouter une langue cible personnalisée"
+  },
+  "自定义语言只能作为目标语言使用；名称创建后不能修改，说明可以随时改。": {
+    "en": "Custom languages can only be used as target languages. The name can't be changed after creation; the description can be changed anytime.",
+    "fr": "Les langues personnalisées ne peuvent servir que de langue cible. Le nom ne peut plus être modifié après la création ; la description peut l'être à tout moment."
+  },
+  "自定义语言说明已更新。": {
+    "en": "Language description updated.",
+    "fr": "Description de la langue mise à jour."
+  },
+  "请输入自定义语言名称。": {
+    "en": "Enter a name for the custom language.",
+    "fr": "Saisissez un nom pour la langue personnalisée."
+  },
+  "自定义目标语言已添加。": {
+    "en": "Custom target language added.",
+    "fr": "Langue cible personnalisée ajoutée."
+  },
+  "正在读取本地数据目录…": {
+    "en": "Reading the local data folder…",
+    "fr": "Lecture du dossier de données local…"
+  },
+  "本地数据位置": {
+    "en": "Local data location",
+    "fr": "Emplacement des données locales"
+  },
+  "刷新": {
+    "en": "Refresh",
+    "fr": "Actualiser"
+  },
+  "在文件夹中显示": {
+    "en": "Show in folder",
+    "fr": "Afficher le dossier"
+  },
+  "有 {0} 个任务正在运行": {
+    "en": "{0} {0|task is|tasks are} running",
+    "fr": "{0} {0|tâche en cours|tâches en cours}"
+  },
+  "任务运行期间，清空任务记录、日志、诊断，删除全部密钥和完整重置暂时不能用。等任务结束后再操作。": {
+    "en": "While tasks are running, clearing task history, logs and diagnostics, deleting all keys and full reset are unavailable. Wait until the tasks finish.",
+    "fr": "Pendant l'exécution des tâches, l'effacement de l'historique, des journaux et des diagnostics, la suppression des clés et la réinitialisation complète sont indisponibles. Attendez la fin des tâches."
+  },
+  "本地数据": {
+    "en": "Local data",
+    "fr": "Données locales"
+  },
+  "每一项只清理 Translator 自己保存的数据，源文件和翻译结果文件不会被删除。": {
+    "en": "Each item only clears data saved by Translator itself. Source files and translated files are never deleted.",
+    "fr": "Chaque élément n'efface que les données enregistrées par Translator. Les fichiers source et les fichiers traduits ne sont jamais supprimés."
+  },
+  "恢复默认设置，密钥和记忆库会保留": {
+    "en": "Restores default settings; keys and memory are kept",
+    "fr": "Rétablit les paramètres par défaut ; clés et mémoire conservées"
+  },
+  "只显示数量，不显示密钥内容": {
+    "en": "Only the count is shown, never the keys",
+    "fr": "Seul le nombre est affiché, jamais les clés"
+  },
+  "尚未读取本地数据概览": {
+    "en": "Local data overview not loaded yet",
+    "fr": "Aperçu des données locales non chargé"
+  },
+  "点击上方“刷新”查看本地数据的位置和各类占用。": {
+    "en": "Click “Refresh” above to see where local data is stored and how much space it uses.",
+    "fr": "Cliquez sur « Actualiser » ci-dessus pour voir l'emplacement des données locales et l'espace occupé."
+  },
+  "{0} 项": {
+    "en": "{0} {0|item|items}",
+    "fr": "{0} {0|élément|éléments}"
+  },
+  "受保护": {
+    "en": "Protected",
+    "fr": "Protégé"
+  },
+  "自动维护": {
+    "en": "Automatic",
+    "fr": "Automatique"
+  },
+  "快速开始": {
+    "en": "Quick start",
+    "fr": "Démarrage rapide"
+  },
+  "重新显示欢迎引导": {
+    "en": "Show the welcome guide again",
+    "fr": "Réafficher le guide de bienvenue"
+  },
+  "重新显示": {
+    "en": "Show again",
+    "fr": "Réafficher"
+  },
+  "自动保留上限": {
+    "en": "Automatic retention limits",
+    "fr": "Limites de conservation automatique"
+  },
+  "任务记录": {
+    "en": "Task history",
+    "fr": "Historique des tâches"
+  },
+  "最近 {0} 条": {
+    "en": "Last {0}",
+    "fr": "{0} dernières"
+  },
+  "运行日志": {
+    "en": "Activity log",
+    "fr": "Journal d'activité"
+  },
+  "{0} 个 × {1}": {
+    "en": "{0} {0|file|files} × {1}",
+    "fr": "{0} {0|fichier|fichiers} × {1}"
+  },
+  "诊断": {
+    "en": "Diagnostics",
+    "fr": "Diagnostics"
+  },
+  "{0} 条 / {1}": {
+    "en": "{0} {0|record|records} / {1}",
+    "fr": "{0} {0|entrée|entrées} / {1}"
+  },
+  "维护操作不会删除源文件、用户输出目录或已生成的翻译文件。": {
+    "en": "Maintenance never deletes source files, your output folders or translated files.",
+    "fr": "La maintenance ne supprime jamais les fichiers source, vos dossiers de sortie ni les fichiers traduits."
+  },
+  "导出全部诊断": {
+    "en": "Export all",
+    "fr": "Tout exporter"
+  },
+  "诊断只记录版本、系统、任务进行到哪一步、隐去密钥的连接信息、计数和错误代码，不会自动上传。": {
+    "en": "Diagnostics only record the version, system, task progress, connection details with keys hidden, counts and error codes. Nothing is uploaded automatically.",
+    "fr": "Les diagnostics ne contiennent que la version, le système, l'avancement des tâches, les informations de connexion sans les clés, des compteurs et des codes d'erreur. Rien n'est envoyé automatiquement."
+  },
+  "记录": {
+    "en": "Record",
+    "fr": "Entrée"
+  },
+  "类型": {
+    "en": "Type",
+    "fr": "Type"
+  },
+  "大小": {
+    "en": "Size",
+    "fr": "Taille"
+  },
+  "没有诊断记录。": {
+    "en": "No diagnostic records.",
+    "fr": "Aucun diagnostic."
+  },
+  "诊断记录": {
+    "en": "Diagnostic record",
+    "fr": "Diagnostic"
+  },
+  "应用": {
+    "en": "App",
+    "fr": "Application"
+  },
+  "导出": {
+    "en": "Export",
+    "fr": "Exporter"
+  },
+  "诊断记录已删除。": {
+    "en": "Diagnostic record deleted.",
+    "fr": "Diagnostic supprimé."
+  },
+  "记忆库": {
+    "en": "Translation memory",
+    "fr": "Mémoire de traduction"
+  },
+  "建议先导出备份再清空，不会删除任何翻译结果。当前总占用：{0}。": {
+    "en": "Export a backup before clearing. Translated files are not deleted. Current size: {0}.",
+    "fr": "Exportez une sauvegarde avant de vider. Aucun fichier traduit n'est supprimé. Taille actuelle : {0}."
+  },
+  "前往记忆库导出": {
+    "en": "Go to memory to export",
+    "fr": "Exporter depuis la mémoire"
+  },
+  "清空所选语言对": {
+    "en": "Clear a language pair",
+    "fr": "Vider une paire de langues"
+  },
+  "候选来自最近使用过的语言对，与记忆库页面的「最近使用」一致。": {
+    "en": "Options are the recently used language pairs, the same as “Recent” on the Translation memory page.",
+    "fr": "Les options sont les paires de langues récentes, comme « Récents » sur la page Mémoire de traduction."
+  },
+  "清空 {0}": {
+    "en": "Clear {0}",
+    "fr": "Vider {0}"
+  },
+  "清空全部记忆库": {
+    "en": "Clear all memory",
+    "fr": "Vider toute la mémoire"
+  },
+  "完整本地重置": {
+    "en": "Full local reset",
+    "fr": "Réinitialisation complète"
+  },
+  "只删除 Translator 自己保存的数据，不会删除应用本身、你的源文件和翻译结果。完成后需要重新打开应用。": {
+    "en": "Only data saved by Translator itself is deleted; the app, your source files and translated files are kept. You'll need to reopen the app afterwards.",
+    "fr": "Seules les données enregistrées par Translator sont supprimées ; l'application, vos fichiers source et vos fichiers traduits sont conservés. Vous devrez ensuite rouvrir l'application."
+  },
+  "有任务正在运行，暂时不能执行这项操作。": {
+    "en": "A task is running. This action isn't available right now.",
+    "fr": "Une tâche est en cours. Cette action est indisponible pour le moment."
+  },
+  "设置 · 数据与维护 · 完整本地重置": {
+    "en": "Settings · Data & maintenance · Full local reset",
+    "fr": "Paramètres · Données et maintenance · Réinitialisation complète"
+  },
+  "将永久删除所有设置、API Key、记忆库（{0} 条）与任务历史，应用回到首次启动状态。此操作无法恢复。": {
+    "en": "All settings, API keys, translation memory ({0} {0|entry|entries}) and task history will be permanently deleted, and the app returns to its first-launch state. This can't be undone.",
+    "fr": "Tous les paramètres, clés API, la mémoire de traduction ({0} {0|entrée|entrées}) et l'historique des tâches seront définitivement supprimés ; l'application reviendra à son état initial. Action irréversible."
+  },
+  "将永久删除所有设置、API Key、记忆库与任务历史，应用回到首次启动状态。此操作无法恢复。": {
+    "en": "All settings, API keys, translation memory and task history will be permanently deleted, and the app returns to its first-launch state. This can't be undone.",
+    "fr": "Tous les paramètres, clés API, la mémoire de traduction et l'historique des tâches seront définitivement supprimés ; l'application reviendra à son état initial. Action irréversible."
+  },
+  "永久删除": {
+    "en": "Delete permanently",
+    "fr": "Supprimer définitivement"
+  },
+  "本地数据已重置": {
+    "en": "Local data reset",
+    "fr": "Données locales réinitialisées"
+  },
+  "本地数据已删除。请关闭并重新打开 Translator，从头开始使用。": {
+    "en": "Local data was deleted. Close and reopen Translator to start fresh.",
+    "fr": "Les données locales ont été supprimées. Fermez puis rouvrez Translator pour repartir de zéro."
+  },
+  "范围：仅清空语言对 {0}（{1}）。": {
+    "en": "Scope: only the language pair {0} ({1}).",
+    "fr": "Portée : uniquement la paire de langues {0} ({1})."
+  },
+  "设置 · 数据与维护 · {0}": {
+    "en": "Settings · Data & maintenance · {0}",
+    "fr": "Paramètres · Données et maintenance · {0}"
+  },
+  "已完成，翻译结果没有受影响。": {
+    "en": "Done. Translated files were not affected.",
+    "fr": "Terminé. Les fichiers traduits ne sont pas affectés."
+  },
+  "本地数据目录尚未加载。": {
+    "en": "The local data folder hasn't loaded yet.",
+    "fr": "Le dossier de données local n'est pas encore chargé."
+  },
+  "今天 {0}": {
+    "en": "Today {0}",
+    "fr": "Aujourd'hui {0}"
+  },
+  "未提供": {
+    "en": "Not provided",
+    "fr": "Non indiqué"
+  },
+  "版本": {
+    "en": "Version",
+    "fr": "Version"
+  },
+  "开源许可": {
+    "en": "Open-source license",
+    "fr": "Licence open source"
+  },
+  "完整许可文本见项目仓库中的 LICENSE 文件。": {
+    "en": "See the LICENSE file in the project repository for the full text.",
+    "fr": "Le texte complet figure dans le fichier LICENSE du dépôt du projet."
+  },
+  "当前版本：{0}": {
+    "en": "Current version: {0}",
+    "fr": "Version actuelle : {0}"
+  },
+  "后台提醒已暂停，只有手动检查才会联网查询新版本。": {
+    "en": "Background reminders are paused. New versions are only checked when you check manually.",
+    "fr": "Les rappels en arrière-plan sont en pause. Les nouvelles versions ne sont recherchées que manuellement."
+  },
+  "应用每次启动会在后台检查一次更新；发现新版时会在左侧「设置」上点亮红点。": {
+    "en": "The app checks for updates in the background at each launch. When a new version is found, a red dot appears on “Settings” in the sidebar.",
+    "fr": "L'application recherche les mises à jour en arrière-plan à chaque démarrage. Si une nouvelle version existe, un point rouge apparaît sur « Paramètres » dans la barre latérale."
+  },
+  "检查中…": {
+    "en": "Checking…",
+    "fr": "Recherche…"
+  },
+  "检查更新": {
+    "en": "Check for updates",
+    "fr": "Rechercher des mises à jour"
+  },
+  "最新版本：": {
+    "en": "Latest version: ",
+    "fr": "Dernière version : "
+  },
+  "安装失败": {
+    "en": "Installation failed",
+    "fr": "Échec de l'installation"
+  },
+  "有可用更新": {
+    "en": "Update available",
+    "fr": "Mise à jour disponible"
+  },
+  "已是最新": {
+    "en": "Up to date",
+    "fr": "À jour"
+  },
+  "发布包未就绪": {
+    "en": "Release not ready",
+    "fr": "Version pas encore prête"
+  },
+  "不支持自动更新": {
+    "en": "Auto-update not supported",
+    "fr": "Mise à jour auto non prise en charge"
+  },
+  "检查失败": {
+    "en": "Check failed",
+    "fr": "Échec de la recherche"
+  },
+  "安装包": {
+    "en": "Installer",
+    "fr": "Installateur"
+  },
+  "发布日期": {
+    "en": "Release date",
+    "fr": "Date de publication"
+  },
+  "上次检查：{0}": {
+    "en": "Last checked: {0}",
+    "fr": "Dernière recherche : {0}"
+  },
+  "检查更新失败，请稍后重试。": {
+    "en": "Couldn't check for updates. Please try again later.",
+    "fr": "Impossible de rechercher les mises à jour. Réessayez plus tard."
+  },
+  "下载并安装": {
+    "en": "Download and install",
+    "fr": "Télécharger et installer"
+  },
+  "下载安装包": {
+    "en": "Download installer",
+    "fr": "Télécharger l'installateur"
+  },
+  "重试": {
+    "en": "Retry",
+    "fr": "Réessayer"
+  },
+  "重新检查": {
+    "en": "Check again",
+    "fr": "Vérifier à nouveau"
+  },
+  "改为下载安装包": {
+    "en": "Download installer instead",
+    "fr": "Télécharger l'installateur"
+  },
+  "忽略此版本": {
+    "en": "Skip this version",
+    "fr": "Ignorer cette version"
+  },
+  "查看 Release": {
+    "en": "View release",
+    "fr": "Voir la version"
+  },
+  "正在更新到": {
+    "en": "Updating to",
+    "fr": "Mise à jour vers"
+  },
+  "下载中…": {
+    "en": "Downloading…",
+    "fr": "Téléchargement…"
+  },
+  "新版本": {
+    "en": "the new version",
+    "fr": "la nouvelle version"
+  },
+  "正在下载安装包": {
+    "en": "Downloading installer",
+    "fr": "Téléchargement de l'installateur"
+  },
+  "正在校验签名并安装": {
+    "en": "Verifying signature and installing",
+    "fr": "Vérification de la signature et installation"
+  },
+  "已下载 {0}": {
+    "en": "{0} downloaded",
+    "fr": "{0} téléchargés"
+  },
+  "这一步通常几秒钟，请勿关闭窗口。": {
+    "en": "This usually takes a few seconds. Please don't close the window.",
+    "fr": "Cela prend généralement quelques secondes. Ne fermez pas la fenêtre."
+  },
+  "安装中…": {
+    "en": "Installing…",
+    "fr": "Installation…"
+  },
+  "{0} 已安装完成，重启 Translator 后生效。": {
+    "en": "{0} is installed and takes effect after restarting Translator.",
+    "fr": "{0} est installée et prendra effet au redémarrage de Translator."
+  },
+  "立即重启": {
+    "en": "Restart now",
+    "fr": "Redémarrer"
+  },
+  "{0} 已安装完成": {
+    "en": "{0} installed",
+    "fr": "{0} installée"
+  },
+  "重启 Translator 后生效。也可以稍后手动退出再打开。": {
+    "en": "Takes effect after restarting Translator. You can also quit and reopen it later.",
+    "fr": "Prend effet au redémarrage de Translator. Vous pouvez aussi le quitter et le rouvrir plus tard."
+  },
+  "稍后": {
+    "en": "Later",
+    "fr": "Plus tard"
+  },
+  "恢复后台提醒": {
+    "en": "Resume reminders",
+    "fr": "Reprendre les rappels"
+  },
+  "暂停后台提醒": {
+    "en": "Pause reminders",
+    "fr": "Suspendre les rappels"
+  },
+  "诊断代码：{0}": {
+    "en": "Diagnostic code: {0}",
+    "fr": "Code de diagnostic : {0}"
+  },
+  "这一版没有提供更新说明。": {
+    "en": "No release notes for this version.",
+    "fr": "Aucune note de version pour cette version."
+  },
+  "收起更新说明": {
+    "en": "Hide release notes",
+    "fr": "Masquer les notes de version"
+  },
+  "展开完整更新说明": {
+    "en": "Show full release notes",
+    "fr": "Afficher toutes les notes de version"
+  },
+  "无": {
+    "en": "None",
+    "fr": "Aucun"
+  },
+  "自定义": {
+    "en": "Custom",
+    "fr": "Personnalisé"
+  },
+  "同步工程场景": {
+    "en": "Engineering coordination",
+    "fr": "Coordination d'ingénierie"
+  },
+  "资料管理场景": {
+    "en": "Document management",
+    "fr": "Gestion documentaire"
+  },
+  "行政生活化场景": {
+    "en": "Administration & daily life",
+    "fr": "Administration et vie quotidienne"
+  }
+}

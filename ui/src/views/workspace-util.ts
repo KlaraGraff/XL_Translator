@@ -1,6 +1,8 @@
 // 翻译工作区（workspace.ts 及其拆出去的子模块）共用的小工具：建 DOM 节点、从后端
 // 的松散 JSON 里安全取值、脱敏、格式化。全是无状态的纯函数，任何子模块都可以放心引用。
 
+import { localeTag } from "../i18n";
+
 export type JsonObject = Record<string, unknown>;
 
 
@@ -53,7 +55,7 @@ export function redactedText(value: unknown, fallback = ""): string {
 
 export function formatTime(ts?: number): string {
   const date = ts ? new Date(ts * (ts < 2e10 ? 1000 : 1)) : new Date();
-  return date.toLocaleTimeString("zh-CN", { hour12: false });
+  return date.toLocaleTimeString(localeTag(), { hour12: false });
 }
 
 export function formatSizeKb(kb: unknown): string {

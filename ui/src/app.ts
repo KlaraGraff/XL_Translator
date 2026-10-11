@@ -13,6 +13,8 @@ import { checkFirstLaunch } from "./quickstart";
 import { refreshModelPill } from "./model-pill";
 import { runBackgroundUpdateCheck } from "./update-controller";
 import { mountUpdateToast } from "./update-toast";
+import { ApiClient } from "./api-client";
+import { currentLocale, isLocale, localeTag, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
 import * as wordView from "./views/word";
@@ -36,7 +38,7 @@ function resolveTheme(preference: ThemePreference): "light" | "dark" {
 
 function readStoredThemePreference(): ThemePreference {
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+  return stored === "light" || stored === "dark" || stored === "system" ? stored : "light";
 }
 
 function applyTheme(preference: ThemePreference): void {
@@ -44,7 +46,7 @@ function applyTheme(preference: ThemePreference): void {
 }
 
 /**
- * 主题初始化：读取本地缓存的偏好（跟随系统 / 浅色 / 深色），并在跟随系统时监听
+ * 主题初始化：读取本地缓存的偏好（浅色 / 深色 / 跟随系统，没有缓存时按默认的浅色），并在跟随系统时监听
  * 系统主题变化实时刷新。设置页的「外观与语言」子页后续应在写入后端设置的同时
  * 同步写回 localStorage(THEME_STORAGE_KEY)，保证下次启动前的首屏渲染不用等后端。
  */
@@ -57,7 +59,40 @@ function initTheme(): void {
   });
 }
 
+const LOCALE_RELOAD_GUARD_KEY = "translator.locale-reloaded";
+
+/**
+ * 启动时按后端设置对齐主题和界面语言。localStorage 只是首屏缓存，后端
+ * settings.appearance 才是权威值（重置设置、换了 WebView 数据目录都会让两者不一致）。
+ * 语言不一致时只能重载页面：模块级文案在加载时已经按旧语言算好了。
+ * 用 sessionStorage 防止「写不进 localStorage → 每次都不一致 → 无限重载」。
+ */
+async function syncAppearanceFromBackend(): Promise<void> {
+  const client = new ApiClient();
+  await client.connect();
+  const settings = await client.request<{ appearance?: { theme?: unknown; ui_language?: unknown } }>("/api/settings");
+  const appearance = settings.appearance ?? {};
+  const theme = appearance.theme;
+  if (theme === "light" || theme === "dark" || theme === "system") {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    applyTheme(theme);
+  }
+  const language = appearance.ui_language;
+  if (isLocale(language) && language !== currentLocale()) {
+    storeLocale(language);
+    let reloaded = false;
+    try {
+      reloaded = window.sessionStorage.getItem(LOCALE_RELOAD_GUARD_KEY) === language;
+      window.sessionStorage.setItem(LOCALE_RELOAD_GUARD_KEY, language);
+    } catch {
+      reloaded = true;
+    }
+    if (!reloaded) window.location.reload();
+  }
+}
+
 function main(): void {
+  document.documentElement.lang = localeTag();
   initTheme();
   injectIconSprite();
 
@@ -84,6 +119,8 @@ function main(): void {
   registerView("help", helpView);
 
   navigate("excel");
+
+  void syncAppearanceFromBackend().catch(() => undefined);
 
   // 顶栏「当前模型」药丸：先按已保存的配置点亮一次，之后由设置页每次保存/测试后刷新。
   void refreshModelPill();

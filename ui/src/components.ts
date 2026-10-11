@@ -3,6 +3,7 @@
 // （ui/src/styles/app.css 是该样张 CSS 的应用外壳改造版）。各视图代理直接用这些
 // 工厂拼装页面，不必记忆样张里的具体标签结构。
 
+import { fmtNum, t, tx } from "./i18n";
 import { icon, type IconName } from "./icons";
 
 /** 清空一个元素的子节点；不用 replaceChildren（Safari 15.1 不支持）。 */
@@ -296,7 +297,7 @@ export function createHintBadge(message: string, className = "hint"): HTMLSpanEl
   const badge = el("span", { className, text: "?" });
   badge.tabIndex = 0;
   badge.setAttribute("role", "button");
-  badge.setAttribute("aria-label", `说明：${message}`);
+  badge.setAttribute("aria-label", t("说明：{0}", message));
 
   const isOpen = () => activeTip?.anchor === badge;
   const toggle = () => {
@@ -778,6 +779,7 @@ function languageMatches(option: LanguageOption, query: string): boolean {
   if (!query) return true;
   const needle = query.toLowerCase();
   if (option.display_name.toLowerCase().includes(needle)) return true;
+  if (tx(option.display_name).toLowerCase().includes(needle)) return true;
   if (option.code.toLowerCase().includes(needle)) return true;
   return (option.aliases ?? []).some((alias) => alias.toLowerCase().includes(needle));
 }
@@ -853,7 +855,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
 
   const paintButton = () => {
     const found = options.options.find((item) => item.code === current);
-    valueLabel.textContent = found?.display_name ?? current;
+    valueLabel.textContent = found ? tx(found.display_name) : current;
     // 「自动识别」没有真正的语言代码，挂个 auto 角标只会让人以为那是一门语言。
     const showCode = Boolean(found) && current !== AUTO_LANG_CODE;
     codeBadge.textContent = showCode ? current : "";
@@ -869,7 +871,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
 
     const searchWrap = el("div", { className: "lang-search" });
     const search = el("input", { attrs: { type: "text" } });
-    search.placeholder = "搜索语言、代码…";
+    search.placeholder = t("搜索语言、代码…");
     searchWrap.append(search);
     // 目录为空时搜索框只会误导——摆一个搜不出任何东西的输入框，等于暗示问题出在搜索上。
     if (!options.options.length) searchWrap.style.display = "none";
@@ -881,11 +883,11 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
     const keyHints = el("span");
     keyHints.append(
       el("span", { className: "kbd", text: "↑↓" }),
-      document.createTextNode(" 选择 "),
+      document.createTextNode(" " + t("选择") + " "),
       el("span", { className: "kbd", text: "↵" }),
-      document.createTextNode(" 确认 "),
+      document.createTextNode(" " + t("确认") + " "),
       el("span", { className: "kbd", text: "esc" }),
-      document.createTextNode(" 关闭"),
+      document.createTextNode(" " + t("关闭")),
     );
     foot.append(countLabel, keyHints);
 
@@ -967,12 +969,12 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
         row.dataset.code = item.code;
         row.setAttribute("aria-selected", item.code === current ? "true" : "false");
         const name = el("span", { className: "nm" });
-        appendMarkedText(name, item.display_name, query);
+        appendMarkedText(name, tx(item.display_name), query);
         row.append(name);
         // builtin === false 就是设置页加的自定义目标语言；「自动识别」虽然也不是内置
         // 语种，但它是选择器的固有项，不该顶着「自定义」的黄标。
         if (item.builtin === false && item.code !== AUTO_LANG_CODE) {
-          row.append(el("span", { className: "tag", text: "自定义" }));
+          row.append(el("span", { className: "tag", text: t("自定义") }));
         }
         row.append(el("span", { className: "cd", text: item.code === AUTO_LANG_CODE ? "" : item.code }));
         row.addEventListener("click", () => pick(item.code));
@@ -984,12 +986,12 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
         // 「一个都没搜到」和「目录压根没加载出来」是两码事。后者要是也说「换个说法试试」，
         // 等于让用户去调整搜索词来修一个后端没返回数据的故障——怎么试都不会有结果。
         if (!options.options.length) {
-          empty.append(el("b", { text: "语言列表没能加载出来" }));
+          empty.append(el("b", { text: t("语言列表没能加载出来") }));
           empty.append(
-            document.createTextNode("不是你搜的词有问题，多半是程序刚启动还没准备好，稍等几秒再点重试。"),
+            document.createTextNode(t("不是你搜的词有问题，多半是程序刚启动还没准备好，稍等几秒再点重试。")),
           );
           if (options.onReload) {
-            const retry = el("button", { className: "lang-retry", text: "重试" });
+            const retry = el("button", { className: "lang-retry", text: t("重试") });
             retry.type = "button";
             retry.addEventListener("click", () => {
               // 先收浮层：重试会重建整片界面，锚点在那之后就没了（同 pick() 的顺序）。
@@ -999,20 +1001,20 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
             empty.append(retry);
           }
         } else {
-          empty.append(el("b", { text: "没有匹配的语言" }));
-          empty.append(document.createTextNode("换个说法试试，中文名、英文名、语言代码都能搜。"));
+          empty.append(el("b", { text: t("没有匹配的语言") }));
+          empty.append(document.createTextNode(t("换个说法试试，中文名、英文名、语言代码都能搜。")));
         }
         list.append(empty);
       } else {
         if (recent.length) {
-          list.append(el("div", { className: "lang-group", text: "最近使用" }));
+          list.append(el("div", { className: "lang-group", text: t("最近使用") }));
           recent.forEach(appendItem);
-          list.append(el("div", { className: "lang-group", text: "全部语言" }));
+          list.append(el("div", { className: "lang-group", text: t("全部语言") }));
         }
         rest.forEach(appendItem);
       }
 
-      countLabel.textContent = `共 ${pool.length} 项`;
+      countLabel.textContent = t("共 {0} 项", fmtNum(pool.length));
       snapListHeight();
       // 条目数变了高度就变了，重算一次位置，否则贴着视口底部时会溢出。
       place();
@@ -1318,7 +1320,7 @@ export function openModal(options: ModalOptions): ModalHandle {
 
   let confirmInputEl: HTMLInputElement | null = null;
   if (options.confirmInput) {
-    const hint = el("p", { text: "输入以确认：" });
+    const hint = el("p", { text: t("输入以确认：") });
     hint.style.fontSize = "12.5px";
     modal.append(hint);
     confirmInputEl = el("input", { attrs: { type: "text" } });

@@ -1,4 +1,5 @@
 import { createBanner, createButton, createFold, createProgressBar, createSelectField, createTextField, type BannerOptions, type StatusTone } from "./components";
+import { t, tx } from "./i18n";
 
 /** Shared visual building blocks for every translator task surface. */
 export type TaskPanelState = "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
@@ -20,12 +21,12 @@ export function createTaskProgressPanel(options: TaskProgressOptions): HTMLEleme
   const stage = document.createElement("div");
   stage.className = "prog-stage";
   const title = document.createElement("b");
-  title.textContent = options.phase || "正在准备任务";
+  title.textContent = options.phase ? tx(options.phase) : t("正在准备任务");
   const pct = document.createElement("span");
   pct.className = "pct";
   const percent = typeof options.percent === "number" && Number.isFinite(options.percent) ? Math.round(options.percent) : null;
-  const phaseSuffix = options.phaseIndex && options.phaseTotal ? ` · 阶段 ${options.phaseIndex} / ${options.phaseTotal}` : "";
-  pct.textContent = percent === null ? "处理中" : `${percent}%${phaseSuffix}`;
+  const phaseSuffix = options.phaseIndex && options.phaseTotal ? " · " + t("阶段 {0} / {1}", options.phaseIndex, options.phaseTotal) : "";
+  pct.textContent = percent === null ? t("处理中") : `${percent}%${phaseSuffix}`;
   if (options.state === "paused" || options.state === "pausing") pct.style.color = "var(--warn)";
   stage.append(title, pct);
   card.append(stage, createProgressBar({ percent: percent ?? 0, tone: options.state === "paused" || options.state === "pausing" ? "warn" : "accent" }).root);
@@ -38,7 +39,7 @@ export function createTaskProgressPanel(options: TaskProgressOptions): HTMLEleme
   if (options.note) {
     const note = document.createElement("p");
     note.className = "ws-note";
-    note.textContent = options.note;
+    note.textContent = tx(options.note);
     card.append(note);
   }
   return card;
@@ -64,9 +65,9 @@ export function createTaskLogPanel(options: TaskLogOptions): HTMLElement {
   const head = document.createElement("div");
   head.className = "tc-head";
   const title = document.createElement("b");
-  title.textContent = "运行日志";
+  title.textContent = t("运行日志");
   const meta = document.createElement("span");
-  meta.textContent = options.archived ? "已归档" : "实时";
+  meta.textContent = options.archived ? t("已归档") : t("实时");
   head.append(title, meta);
   card.append(head);
   const log = document.createElement("div");
@@ -83,13 +84,13 @@ export function createTaskLogPanel(options: TaskLogOptions): HTMLElement {
     const level = (entry.level ?? "INFO").toUpperCase();
     if (level === "ERROR" || level === "WARN") message.className = "w";
     else if (level === "OK" || level === "SUCCESS") message.className = "g";
-    message.textContent = entry.message ?? "";
+    message.textContent = tx(entry.message ?? "");
     line.append(time, message);
     log.append(line);
   }
   if (!entries.length) {
     const empty = document.createElement("div");
-    empty.textContent = "等待任务开始…";
+    empty.textContent = t("等待任务开始…");
     log.append(empty);
   }
   card.append(log);
@@ -109,7 +110,7 @@ export function createTaskListPanel(options: TaskListPanelOptions = {}): HTMLEle
   const head = document.createElement("div");
   head.className = "tc-head";
   const title = document.createElement("b");
-  title.textContent = options.title ?? "任务清单";
+  title.textContent = options.title ?? t("任务清单");
   head.append(title);
   options.header?.(head);
   card.append(head);
@@ -141,7 +142,7 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
   }
   const active = options.active;
   if (active.paused) {
-    foot.append(createButton({ label: "继续翻译", icon: "play", variant: "primary", size: "big", onClick: active.onResume }));
+    foot.append(createButton({ label: t("继续翻译"), icon: "play", variant: "primary", size: "big", onClick: active.onResume }));
     if (active.finishPaused) {
       foot.append(createButton({ label: active.finishPaused.label, icon: "stop", size: "big", onClick: active.finishPaused.onClick }));
       if (active.finishPaused.note) {
@@ -155,11 +156,11 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
     return foot;
   }
   if (active.pausing) {
-    foot.append(createButton({ label: "正在暂停…", icon: "pause", size: "big", disabled: true, onClick: () => undefined }));
+    foot.append(createButton({ label: t("正在暂停…"), icon: "pause", size: "big", disabled: true, onClick: () => undefined }));
   } else if (active.onPause) {
-    foot.append(createButton({ label: active.pauseLabel ?? "暂停", icon: "pause", size: "big", onClick: active.onPause }));
+    foot.append(createButton({ label: active.pauseLabel ?? t("暂停"), icon: "pause", size: "big", onClick: active.onPause }));
   }
-  foot.append(createButton({ label: active.stopLabel ?? "停止", icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
+  foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
   return foot;
 }
 
@@ -191,8 +192,8 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
   const content = document.createElement("div");
   if (options.domain) {
     const domainField = createSelectField({
-      label: "专业领域",
-      options: options.domain.options.map((value) => ({ value, label: value })),
+      label: t("专业领域"),
+      options: options.domain.options.map((value) => ({ value, label: tx(value) })),
       value: options.domain.value,
       disabled: options.disabled,
       onChange: options.domain.onChange,
@@ -203,7 +204,7 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
         const link = document.createElement("span");
         link.className = "linklike";
         link.style.fontSize = "11px";
-        link.textContent = "编辑提示词 ↗ 设置";
+        link.textContent = t("编辑提示词 ↗ 设置");
         link.addEventListener("click", options.domain.onEdit);
         label.append(" ", link);
       }
@@ -214,11 +215,11 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
     const output = document.createElement("div");
     output.className = "field";
     output.append(document.createElement("label"));
-    output.firstElementChild!.textContent = "输出位置";
+    output.firstElementChild!.textContent = t("输出位置");
     const radios = document.createElement("div");
     radios.className = "radio-row";
     const name = `task-output-${Math.random().toString(36).slice(2)}`;
-    for (const [value, label] of [[false, "源目录内"], [true, "自定义"]] as const) {
+    for (const [value, label] of [[false, t("源目录内")], [true, t("自定义")]] as const) {
       const wrap = document.createElement("label");
       const radio = document.createElement("input");
       radio.type = "radio";
@@ -234,7 +235,7 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
       const field = createTextField({
         label: "",
         value: options.output.customDir,
-        placeholder: "自定义输出目录路径…",
+        placeholder: t("自定义输出目录路径…"),
         disabled: options.disabled,
         onInput: options.output.onDirInput,
       });
@@ -244,7 +245,7 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
     }
     content.append(output);
   }
-  return createFold({ title: "更多设置", content, open: options.open, onToggle: options.onToggle }).root;
+  return createFold({ title: t("更多设置"), content, open: options.open, onToggle: options.onToggle }).root;
 }
 
 export function taskStatusTone(state: string): StatusTone {

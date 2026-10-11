@@ -59,3 +59,5 @@ jobs:
       - run: npm ci
       - name: Type check
         run: npm run check
+      - name: Interface language engine
+        run: node ../tests/i18n_engine.test.mjs

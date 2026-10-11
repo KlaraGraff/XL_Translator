@@ -5,6 +5,7 @@
 import { icon, type IconName } from "./icons";
 import { createPill, createStatus, type StatusTone } from "./components";
 import { navigate, onNavigate, type ViewId } from "./router";
+import { t } from "./i18n";
 
 interface SideItemDef {
   id: ViewId;
@@ -13,21 +14,21 @@ interface SideItemDef {
 }
 
 const TRANSLATE_ITEMS: SideItemDef[] = [
-  { id: "excel", label: "Excel 表格", icon: "excel" },
-  { id: "word", label: "Word 文档", icon: "word" },
-  { id: "pdf", label: "PDF 与图片", icon: "pdf" },
-  { id: "cad", label: "CAD 图纸", icon: "cad" },
+  { id: "excel", label: t("Excel 表格"), icon: "excel" },
+  { id: "word", label: t("Word 文档"), icon: "word" },
+  { id: "pdf", label: t("PDF 与图片"), icon: "pdf" },
+  { id: "cad", label: t("CAD 图纸"), icon: "cad" },
 ];
 
 const RESOURCE_ITEMS: SideItemDef[] = [
-  { id: "tasks", label: "任务中心", icon: "tasks" },
-  { id: "library", label: "记忆库", icon: "book" },
-  { id: "plugins", label: "插件", icon: "spark" },
+  { id: "tasks", label: t("任务中心"), icon: "tasks" },
+  { id: "library", label: t("记忆库"), icon: "book" },
+  { id: "plugins", label: t("插件"), icon: "spark" },
 ];
 
 const SYSTEM_ITEMS: SideItemDef[] = [
-  { id: "settings", label: "设置", icon: "gear" },
-  { id: "help", label: "帮助", icon: "help" },
+  { id: "settings", label: t("设置"), icon: "gear" },
+  { id: "help", label: t("帮助"), icon: "help" },
 ];
 
 export interface ShellHandle {
@@ -106,11 +107,11 @@ export function mountShell(root: HTMLElement): ShellHandle {
   brand.className = "brand";
   const brandMark = document.createElement("span");
   brandMark.className = "brand-mark";
-  brandMark.textContent = "文A";
+  brandMark.textContent = "文A"; // i18n-ignore 品牌标记，不翻
   brand.append(brandMark, document.createTextNode("Translator"));
   side.append(brand);
 
-  side.append(buildSideLabel("翻译"));
+  side.append(buildSideLabel(t("翻译")));
   const itemMap = new Map<ViewId, HTMLDivElement>();
   for (const def of TRANSLATE_ITEMS) {
     const itemEl = buildSideItem(def);
@@ -118,7 +119,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
     side.append(itemEl);
   }
 
-  side.append(buildSideLabel("资源"));
+  side.append(buildSideLabel(t("资源")));
   for (const def of RESOURCE_ITEMS) {
     const itemEl = buildSideItem(def);
     itemMap.set(def.id, itemEl);
@@ -207,7 +208,7 @@ export function mountShell(root: HTMLElement): ShellHandle {
 
   // 初始默认药丸态，避免视图忘记调用 setTaskPill/setModelPill 时顶栏空着。
   setTaskPill({ count: 0 });
-  setModelPill({ label: "未连接模型", tone: "idle" });
+  setModelPill({ label: t("未连接模型"), tone: "idle" });
 
   return { contentContainer: content };
 }
@@ -271,8 +272,8 @@ export function setTaskPill(config: TaskPillConfig): void {
   if (!taskPillHost) return;
   taskPillHost.innerHTML = "";
   const pill = config.count > 0
-    ? createPill({ label: `${config.count} 个任务运行中`, live: true, onClick: () => navigate("tasks") })
-    : createPill({ label: "任务中心", onClick: () => navigate("tasks") });
+    ? createPill({ label: t("{0} 个任务运行中", config.count), live: true, onClick: () => navigate("tasks") })
+    : createPill({ label: t("任务中心"), onClick: () => navigate("tasks") });
   taskPillHost.append(pill);
 }
 
