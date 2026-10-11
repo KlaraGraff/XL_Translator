@@ -618,6 +618,32 @@ def _looks_translated_despite_cjk(
     return _language_evidence(cleaned, target) is not False
 
 
+# 单位列这类短格子：「吨 → t」「小时 → h」「件 → pc」。译文只有一两个字母，够不上
+# looks_like_target_text 的「3 个字母以上的自然语言词」，也不在固定的单位符号表里，
+# 刚翻完的双语格「吨\nt」于是拆不开、整格被当成未译源文——续译核查据此判「源文件
+# 已变化」，要求整份重翻。只在跨文字体系（源文侧有汉字、目标语言不用汉字）且两侧
+# 都很短时认这种配对：同字母语言对里一个孤零零的短词说明不了任何事。
+_SHORT_CROSS_SCRIPT_TARGET_RE = re.compile(r"[^\W\d_]{1,3}\.?")
+_SHORT_CROSS_SCRIPT_SOURCE_MAX_CHARS = 8
+
+
+def _looks_like_short_cross_script_target(
+    source_candidate: str,
+    target_candidate: str,
+    *,
+    target_lang: str,
+) -> bool:
+    if _normalize_lang(target_lang) in {"zh", "ja", "ko"}:
+        return False
+    if "\n" in source_candidate or "\n" in target_candidate:
+        return False
+    if len(source_candidate) > _SHORT_CROSS_SCRIPT_SOURCE_MAX_CHARS:
+        return False
+    if not contains_cjk(source_candidate) or contains_cjk(target_candidate):
+        return False
+    return bool(_SHORT_CROSS_SCRIPT_TARGET_RE.fullmatch(target_candidate))
+
+
 def split_existing_bilingual_text(
     text: str,
     *,
@@ -665,6 +691,10 @@ def split_existing_bilingual_text(
         if not looks_like_target_text(
             target_candidate,
             source_lang=source_lang,
+            target_lang=target_lang,
+        ) and not _looks_like_short_cross_script_target(
+            source_candidate,
+            target_candidate,
             target_lang=target_lang,
         ):
             continue

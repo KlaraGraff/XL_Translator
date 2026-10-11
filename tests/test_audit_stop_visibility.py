@@ -187,7 +187,9 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
                 stack.enter_context(
                     patch("core.task_runner.run_repair_ladder", side_effect=fake_run_repair_ladder)
                 )
-                stack.enter_context(patch("core.task_runner.bilingual_writer.write_bilingual_file"))
+                writer = stack.enter_context(
+                    patch("core.task_runner.bilingual_writer.write_bilingual_file")
+                )
 
                 runner._run()
 
@@ -200,14 +202,13 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
             self.assertTrue(issue["caused_by_stop"])
             self.assertIn("任务停止时还没来得及自动补译", issue["message"])
             self.assertIn("不是补译失败", issue["message"])
-            # 互审 F6：停止标志置位后阶段 3 之前就被拦下，输出文件根本没写出来——
-            # 这条 issue 不许承诺「已在输出文件中标记」，也不许说「接着处理」
-            # （本次没有可续的产物，重跑是从头再来、靠记忆库复用）。
-            self.assertNotIn("已在输出文件中标记", issue["message"])
+            # 停止后已翻好的内容照常写盘，复核标记也跟着写进文件；续译只补还是
+            # 原文的格子，这批「译文里夹着原文」的要整份重翻才会再补，不许说
+            # 「接着处理」。
+            self.assertIn("已在输出文件中标记", issue["message"])
             self.assertNotIn("接着处理", issue["message"])
-            self.assertIn("请按下方源文清单逐条核对。", issue["message"])
-            # 佐证「文件确实没写出来」：契约里该文件是 unstarted。
-            self.assertEqual(stopped.files[0]["status"], "unstarted")
+            self.assertIn("全部重新翻译时", issue["message"])
+            writer.assert_called_once()
 
     def test_over_cap_only_remaining_is_not_mislabeled_as_stopped(self) -> None:
         """没有真的停止时，不能因为凑巧读到某个残留状态就误标成停止导致。"""
