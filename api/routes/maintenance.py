@@ -1,4 +1,4 @@
-"""Update checks, data health, maintenance (clear/reset) and diagnostics bundles."""
+"""Update checks, data health, maintenance (clear/reset), diagnostics bundles and shutdown."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core import diagnostics, maintenance
 from settings import (
@@ -22,6 +22,7 @@ from api.schemas import (
 )
 from api.routes._shared import (
     _require_no_active_tasks,
+    _json_error,
     _json_safe,
 )
 
@@ -167,6 +168,29 @@ def register(app: FastAPI) -> None:
     def delete_diagnostic_record(record_id: str) -> dict[str, Any]:
         _require_no_active_tasks(app, category="diagnostics")
         return maintenance.delete_diagnostic(record_id).as_dict()
+
+    @app.post("/api/system/shutdown", status_code=202)
+    async def request_shutdown() -> Response:
+        """Ask the sidecar to wind down the same way SIGTERM does on Unix.
+
+        Windows has no graceful signal that reaches the sidecar (it is started
+        with ``CREATE_NO_WINDOW``), so the desktop shell calls this before
+        falling back to ``TerminateProcess``.  The hook is installed by
+        ``api.launcher``; an app built any other way (tests, ``uvicorn``
+        started by hand) has no server to stop and says so.
+
+        Async on purpose: the hook flips flags that the event loop thread also
+        touches from uvicorn's signal handler, so it runs on that thread too.
+        """
+        hook = getattr(app.state, "request_shutdown", None)
+        if hook is None:
+            return _json_error(
+                409,
+                "This sidecar was not started by the launcher.",
+                reason="shutdown_unavailable",
+            )
+        hook()
+        return JSONResponse(status_code=202, content={"ok": True, "status": "shutting_down"})
 
 
 def _diagnostic_zip_or_404(record: dict[str, Any]) -> tuple[bytes, str]:

@@ -25,7 +25,8 @@
 
 - 界面不直接读写文件，也不直接调模型；一切都经 `ui/src/api-client.ts` 发给侧车。
 - 侧车由 `api/launcher.py` 启动，Rust 侧在 `src-tauri/src/main.rs` 里拉起它、传端口和令牌，
-  退出时按 `main.rs` 顶部注释里的预算等它收尾。两边的超时数值是成对的，改一边要改另一边。
+  退出时先请它自己收尾（Unix 发 SIGTERM，Windows 调 `POST /api/system/shutdown`），再按
+  `main.rs` 顶部注释里的预算等它退出。两边的超时数值是成对的，改一边要改另一边。
 - 用户数据（`settings.json`、`keys.json`、`tm.db`、任务历史）都在 `APP_DATA_DIR`，
   测试或本地调试用环境变量 `TRANSLATOR_APP_DATA_DIR` 指到隔离目录（`core/app_paths.py`）。
 
@@ -119,6 +120,7 @@ Excel 和 Word 的 `_run()` 只做编排，每个阶段是一个独立方法，�
 - 每个 PR 和推到 `main` 时，GitHub Actions（`.github/workflows/pr-checks.yml`）在 Python 3.11
   上跑 ruff、pytest，在 Node 24 上跑 TypeScript 检查。
 - 打版本标签前另跑 `bash scripts/run_release_env_tests.sh`（见 `AGENTS.md` 第 8 条）。
+- 升级 tauri 或其插件时按 `TAURI_UPGRADE_CHECKLIST.md` 逐条复核。
 
 ## 其他文档
 

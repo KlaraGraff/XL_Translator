@@ -77,3 +77,7 @@ Release 正文里第一条 `---` 分隔线**以上**的内容会显示在应用�
 macOS：正式发布仍需在 macOS 12 arm64 实机完成安装、Gatekeeper、首次启动、sidecar、标准 `.xlsx`/`.docx`/PDF/图片 Mock 流程和卸载重装验收。该实机门不能由 CI 或本地 Mock 替代。
 
 Windows：当前没有 Windows 实机，验收标准为 CI 原生构建通过（含 `PROCESSOR_ARCHITECTURE` 硬门、NSIS 产物唯一性校验、sha256 齐全）加全量自动化测试通过；实机安装观感待有条件时补验，此边界在交付报告中如实标注。
+
+## 升级 tauri
+
+升级 `tauri` 或 `tauri-plugin-*` 时按 [`TAURI_UPGRADE_CHECKLIST.md`](TAURI_UPGRADE_CHECKLIST.md) 逐条复核：退出与更新安装路径上 sidecar 的收尾依赖 tauri 的内部行为，变了不会有编译错误。
