@@ -4,10 +4,11 @@ import { createBanner, createButton, createFold, createProgressBar, createSelect
 export type TaskPanelState = "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
 
 export interface TaskProgressOptions {
+  /** 当前阶段名（读取文件 / 翻译 / 调整行高 / 生成文件），四个翻译页面同一套词。 */
+  stage?: string;
+  /** 这一阶段里具体在做什么（「正在检测语言 2/3」「第 1 / 3 个文件」）。 */
   phase?: string;
   percent?: number | null;
-  phaseIndex?: number;
-  phaseTotal?: number;
   state?: TaskPanelState | string;
   monitor?: HTMLElement[];
   note?: string;
@@ -17,18 +18,29 @@ export function createTaskProgressPanel(options: TaskProgressOptions): HTMLEleme
   const card = document.createElement("div");
   card.className = "card task-progress-panel";
   card.style.padding = "16px 18px 14px";
-  const stage = document.createElement("div");
-  stage.className = "prog-stage";
+  const head = document.createElement("div");
+  head.className = "prog-stage";
+  // 所有翻译页面同一个格式：[阶段名] 具体在做什么 …… 百分比。以前 Excel / Word 写
+  // 「阶段 1 / 3」、PDF 写「阶段 1 / 4」、CAD 什么都不写，阶段总数各页不同，用户
+  // 也用不上这个数字；阶段名本身才说明进行到哪了。
   const title = document.createElement("b");
-  title.textContent = options.phase || "正在准备任务";
+  const stage = options.stage?.trim() ?? "";
+  const phase = options.phase?.trim() ?? "";
+  if (stage && phase && phase !== stage) {
+    const step = document.createElement("span");
+    step.className = "prog-step";
+    step.textContent = stage;
+    title.append(step, document.createTextNode(phase));
+  } else {
+    title.textContent = phase || stage || "正在准备任务";
+  }
   const pct = document.createElement("span");
   pct.className = "pct";
   const percent = typeof options.percent === "number" && Number.isFinite(options.percent) ? Math.round(options.percent) : null;
-  const phaseSuffix = options.phaseIndex && options.phaseTotal ? ` · 阶段 ${options.phaseIndex} / ${options.phaseTotal}` : "";
-  pct.textContent = percent === null ? "处理中" : `${percent}%${phaseSuffix}`;
+  pct.textContent = percent === null ? "处理中" : `${percent}%`;
   if (options.state === "paused" || options.state === "pausing") pct.style.color = "var(--warn)";
-  stage.append(title, pct);
-  card.append(stage, createProgressBar({ percent: percent ?? 0, tone: options.state === "paused" || options.state === "pausing" ? "warn" : "accent" }).root);
+  head.append(title, pct);
+  card.append(head, createProgressBar({ percent: percent ?? 0, tone: options.state === "paused" || options.state === "pausing" ? "warn" : "accent" }).root);
   if (options.monitor?.length) {
     const monitor = document.createElement("div");
     monitor.className = "mon";

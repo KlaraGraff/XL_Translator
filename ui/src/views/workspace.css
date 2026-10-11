@@ -17,6 +17,63 @@
   flex: none;
 }
 
+/* 进度卡标题前的阶段名小标签（读取文件 / 翻译 / 调整行高 / 生成文件），四个翻译页一样。
+   不许折行：标题长了折的是后面的说明句，不是这个标签。 */
+.prog-stage .prog-step {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--tint);
+  color: var(--tint-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+.prog-stage .pct {
+  white-space: nowrap;
+}
+
+/* 扫描统计格（Excel 固定五格）。app.css 的 auto-fit 在 1080 宽的窗口里排成 4 + 1，第 5 格
+   单独掉到第二排。这里按统计条自己的宽度决定：放得下就五格同排，放不下整齐地折成
+   3 + 2（六列网格，前三格各占 2 列、后两格各占 3 列），两排都铺满。 */
+.stats-wrap {
+  container-type: inline-size;
+}
+.stats-wrap > .stats.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@container (max-width: 620px) {
+  .stats-wrap > .stats.five {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .stats-wrap > .stats.five > .stat {
+    grid-column: span 2;
+  }
+  .stats-wrap > .stats.five > .stat:nth-child(n + 4) {
+    grid-column: span 3;
+  }
+}
+
+/* 任务清单：文件名单行省略（悬停 title 看全名），状态胶囊永不折行。文件名格 max-width:0
+   让它只拿其余列用剩的宽度，省略号才生效；状态列按胶囊自身宽度留足。 */
+.tbl td.fname {
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tbl td.fstatus {
+  white-space: nowrap;
+}
+.tbl td.fstatus .chip,
+.filerow .chip {
+  flex: none;
+  white-space: nowrap;
+}
+
 /*
  * PDF 逐页面板（页恢复 / 逐页审核）专属样式：
  *   .linklike.disabled     —— actionable=false 时的操作链接，保留常驻但不可点。
