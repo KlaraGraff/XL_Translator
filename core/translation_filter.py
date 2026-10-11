@@ -344,6 +344,15 @@ def _count_ascii_letters(text: str) -> int:
 
 # ── 主函数 ────────────────────────────────────────────────────────────────────
 
+# 常见标准化机构代号 + 编号。只认列出的代号，不泛化成「大写词 + 数字」：
+# 英文原稿里 ROOM 101、PHASE 2 这类是要翻的。
+_STANDARD_CODE_RE = re.compile(
+    r"^(?:(?:GB|GBJ|JGJ|JGJT|JG|CJJ|CJ|DB\d{0,2}|DL|HG|SH|JB|YB|HJ|TB|JTG|JTJ|CECS|SL|"
+    r"NB|QB|ISO|IEC|EN|DIN|BS|ASTM|ANSI|ASME|NF|JIS|KS|AS|AWS|UL|NFPA|API)"
+    r"(?:/[A-Z]{1,2})?\s*)+\d+(?:[.\-–—:/]\d+)*$"
+)
+
+
 def should_translate(
     text: str,
     target_lang: str = "",
@@ -368,6 +377,13 @@ def should_translate(
 
     # 规则 1：空字符串
     if not text:
+        return False
+
+    # 规则 1b：独立成格的标准号（GB/T 700-2006、JGJ 79-2012、ISO 9001:2015）。
+    # 带空格，会被下面的「词组」规则放行送去翻译；模型照原样还回来，写入端
+    # 又把「译文 == 原文」判成没翻成功，整格涂上需复核底色——一份施工图材料表
+    # 里几百格标准号全黄。标准号在任何目标语言里都原样保留，不必花这笔 API 钱。
+    if _STANDARD_CODE_RE.match(text):
         return False
 
     if target_lang == "zh" and not _is_source_script_text(text, source_lang):
