@@ -35,6 +35,13 @@ class AllConnectionsExhaustedError(RuntimeError):
     """Raised when every connection in the chain has been ruled out."""
 
 
+def _mark_no_replay(exc: BaseException) -> None:
+    try:
+        exc.no_replay = True  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover - exceptions with __slots__
+        pass
+
+
 def concrete_base_engine_members() -> frozenset[str]:
     """Public members ``TranslationEngine`` already defines with a body.
 
@@ -110,6 +117,11 @@ class FailoverTranslationEngine(TranslationEngine):
                     # and backoff; burning a connection would not help.
                     raise
                 if not self._switch_after(connection, exc, failure_kind):
+                    # 整条链都试过了。标成「不要拆批重发」：拆小这一批换不来别的结果，
+                    # 以前这里会被引擎调度当成普通 5xx 二分重发，一批最多拨 15 次已知
+                    # 失效的连接（审计 高-5）。保留原异常本身，用户看到的报错不变；
+                    # 下一批仍会在当前连接上试一次，网关恢复后自然接上。
+                    _mark_no_replay(exc)
                     raise
 
     def translate_batch(

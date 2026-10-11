@@ -155,6 +155,33 @@ class FailoverEngineTests(unittest.TestCase):
         with self.assertRaises(_HttpError):
             _run(engine)
 
+    def test_a_dead_chain_does_not_make_each_batch_bisect(self) -> None:
+        """Audit 高-5: once every connection is dead, a batch is one dial, not ~15."""
+        import core.engine_dispatcher as dispatcher
+
+        dials = [0]
+
+        class _Dead(_StubEngine):
+            engine_name = "custom_openai/x"
+
+            def translate_batch(self, *args, **kwargs):
+                dials[0] += 1
+                raise _HttpError(503)
+
+        pool = _pool(("A", "https://a.example/v1"), ("B", "https://b.example/v1"))
+        engine = FailoverTranslationEngine(
+            build_engine_for=lambda conn: _Dead(conn.label, None), candidates=pool
+        )
+        with patch.object(dispatcher, "_backoff_sleep", lambda *a, **k: None):
+            dispatcher.translate_texts([f"a{i}" for i in range(8)], engine, "en", "sp", 8, 1)
+            first_batch = dials[0]
+            results = dispatcher.translate_texts([f"b{i}" for i in range(8)], engine, "en", "sp", 8, 1)
+        # 第一批：两条连接各拨一次就判定全链失效，不再拆批。
+        self.assertEqual(first_batch, 2)
+        # 之后每批只在当前连接上试一次（网关恢复时能自然接上），也不拆批。
+        self.assertEqual(dials[0] - first_batch, 1)
+        self.assertEqual(len(results), 8)
+
     def test_a_candidate_build_failure_only_skips_itself_not_its_gateway(self) -> None:
         # Regression for 中-9: B and C share a gateway. B's own engine fails
         # to *build* (bad config, missing field, ...) -- that says nothing
