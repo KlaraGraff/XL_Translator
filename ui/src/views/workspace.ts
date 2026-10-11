@@ -3562,8 +3562,9 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
         // 停止时 Excel / Word 会把没翻完的部分跳过、直接进入最后的写文件阶段，后端按阶段
         // 权重折算，进度条会从 29% 一下跳到 80%，然后在那儿停十几秒——看上去像快跑完了。
         // 停止期间进度条留在点停止时的位置，标题改说正在做什么。
-        const lastPhase = num(data.phase_total) > 0 && num(data.phase_index) >= num(data.phase_total);
-        if ((surface === "excel" || surface === "word") && lastPhase && total > 0) {
+        // 认阶段名而不是「最后一个阶段」：Excel 开了调整行高时共 4 个阶段，写文件是第 3 个。
+        const writing = splitPhaseName(redactedText(data.phase_name, "")).stage === "生成文件";
+        if ((surface === "excel" || surface === "word") && writing && total > 0) {
           local.phaseName = `正在停止：写出已翻好的部分（${Math.min(done, total)}/${total} 个文件）`;
         }
         break;

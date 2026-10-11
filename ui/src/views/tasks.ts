@@ -1019,9 +1019,11 @@ function handleEvent(taskId: string, event: SseEvent): void {
     if (Number.isFinite(overall)) entry.overallPercent = Math.min(100, Math.max(0, overall));
   }
   if (event.type === "status") {
-    // 后端的 phase_desc 带着「状态：」前缀（工作区那边同样剥掉了），卡片副标题前面
-    // 已经有状态词，不剥就成了「已暂停提交 · 状态：已暂停提交，等待……」。
-    entry.phaseName = text(data.phase_desc, entry.phaseName).replace(/^状态[:：]\s*/, "");
+    // 后端的 phase_desc 带着「状态：」前缀和「[阶段 2/3]」「[收尾中]」标记（工作区那边同样剥掉了），
+    // 卡片副标题前面已经有状态词，不剥就成了「已暂停提交 · 状态：已暂停提交，等待……」。
+    entry.phaseName = text(data.phase_desc, entry.phaseName)
+      .replace(/^\s*状态[:：]\s*/, "")
+      .replace(/^\s*\[(?:阶段\s*\d+\s*\/\s*\d+|收尾中)\]\s*/, "");
   }
   if (event.type === "file_progress") {
     const current = new Map((entry.task.file_progress?.files ?? []).map((item) => [item.file_id, item]));
