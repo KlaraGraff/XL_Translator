@@ -271,7 +271,8 @@ export function setTaskPill(config: TaskPillConfig): void {
   if (!taskPillHost) return;
   taskPillHost.innerHTML = "";
   const pill = config.count > 0
-    ? createPill({ label: `${config.count} 个任务运行中`, live: true, onClick: () => navigate("tasks") })
+    // 从「N 个任务运行中」进来，用户要看的就是正在跑的那个，而不是上次选中的旧结果。
+    ? createPill({ label: `${config.count} 个任务运行中`, live: true, onClick: () => navigate("tasks", { focus: "active" }) })
     : createPill({ label: "任务中心", onClick: () => navigate("tasks") });
   taskPillHost.append(pill);
 }

@@ -12,12 +12,16 @@ import type { ViewParams } from "../router";
 import { navigate } from "../router";
 import { setTopbar, setTaskBadge, setTaskPill } from "../shell";
 import {
+  closeMenu,
   createChip,
   createButton,
   createEmptyState,
+  createHintBadge,
+  openMenu,
   openModal,
   showToast,
   type ChipTone,
+  type MenuItem,
 } from "../components";
 import { icon, type IconName } from "../icons";
 import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
@@ -1167,6 +1171,26 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
   }
 }
 
+const NO_DIAGNOSTIC_TEXT = "本次任务没有生成诊断记录，没有可导出的内容。";
+
+/** 每个终态任务有没有诊断记录。没问过就不在表里；"pending" 表示正在问。
+ *  手动停止这类正常结束的任务本来就没有诊断记录，以前「导出诊断」照样能点，
+ *  点了弹一条红色报错 toast——一件正常的事被说成了出错。 */
+const diagnosticAvailability = new Map<string, boolean | "pending">();
+
+function ensureDiagnosticAvailability(taskId: string): void {
+  if (diagnosticAvailability.has(taskId)) return;
+  diagnosticAvailability.set(taskId, "pending");
+  void getClient()
+    .then((client) => client.request<{ available?: boolean }>(`/api/diagnostics/task/${encodeURIComponent(taskId)}`))
+    .then((payload) => diagnosticAvailability.set(taskId, payload.available === true))
+    // 问不到就按能导出处理，交给导出时的结果说话，不能因为一次查询失败把按钮锁死。
+    .catch(() => diagnosticAvailability.set(taskId, true))
+    .finally(() => {
+      if (mounted && selectedId === taskId) renderDetail();
+    });
+}
+
 async function exportTaskDiagnostic(taskId: string): Promise<void> {
   try {
     const client = await getClient();
@@ -1177,7 +1201,15 @@ async function exportTaskDiagnostic(taskId: string): Promise<void> {
     if (!saved) return; // 用户在保存框里取消：静默返回，不弹任何提示
     showToast({ message: `诊断包已保存到：${saved}` });
   } catch (error) {
-    showToast({ message: `导出诊断失败：${error instanceof Error ? error.message : String(error)}`, error: true });
+    const message = error instanceof Error ? error.message : String(error);
+    // 诊断记录在详情打开之后被清理掉了：同样是正常情况，换成普通提示并把按钮置灰。
+    if (message.includes("没有生成诊断记录")) {
+      diagnosticAvailability.set(taskId, false);
+      if (mounted && selectedId === taskId) renderDetail();
+      showToast({ message: NO_DIAGNOSTIC_TEXT });
+      return;
+    }
+    showToast({ message: `导出诊断失败：${message}`, error: true });
   }
 }
 
@@ -1368,13 +1400,35 @@ function cardChip(entry: TaskEntry): { label: string; tone: ChipTone } {
   return reviewChip(entry.task) ?? meta;
 }
 
+/** source_label 是「首个文件名 等 N 个文件」（api/task_manager._selected_files_label）。
+ *  卡片标题只放文件名，个数挪到副标题：标题原来是「PDF · 施工说明_三页.pdf 等 3 个文件」，
+ *  340px 的卡片里一截断成「PDF · 施工说明_三页.pdf 等 3 …」，文件名和个数都看不全。 */
+function splitSourceLabel(label: string): { name: string; fileCount: number | null } {
+  const match = /^(.*\S)\s+等\s*(\d+)\s*个文件$/.exec(label.trim());
+  return match ? { name: match[1], fileCount: Number(match[2]) } : { name: label.trim(), fileCount: null };
+}
+
+/** 卡片标题。翻译任务只放文件名（类型看图标、副标题开头也写着）；记忆库清洗的
+ *  source_label 是「语言对 …」，单看不知道是什么任务，保留类型前缀。 */
+function cardTitle(task: TaskStatus): string {
+  const fallback = `任务 ${task.task_id.slice(0, 8)}`;
+  const label = text(task.source_label);
+  if (!WORKSPACE_SURFACES.has(task.surface)) return `${taskSurfaceLabel(task.surface)} · ${label || fallback}`;
+  return splitSourceLabel(label).name || fallback;
+}
+
 function cardSubtitle(entry: TaskEntry): string {
   const meta = taskStateMeta(entry.task, entry.streamState);
+  const isWorkspaceTask = WORKSPACE_SURFACES.has(entry.task.surface);
+  const surfaceLabel = isWorkspaceTask ? taskSurfaceLabel(entry.task.surface) : "";
+  const labelCount = splitSourceLabel(text(entry.task.source_label)).fileCount;
   if (isTaskActive(entry.task)) {
     const phase = entry.phaseName || "正在准备任务";
     // 阶段说明本身就以状态词开头时（「已暂停提交，等待继续……」）不再重复一遍。
     const lead = phase.startsWith(meta.label) ? phase : `${meta.label} · ${phase}`;
-    return `${lead} · ${formatClock(entry.task.created_at)} 开始`;
+    return [surfaceLabel, labelCount ? `${labelCount} 个文件` : "", lead, `${formatClock(entry.task.created_at)} 开始`]
+      .filter(Boolean)
+      .join(" · ");
   }
   // 逐文件结果优先于 KPI 计数：KPI 那几个键各 surface 名字不同，取不到就会退回状态词，
   // 而 file_results 三个 surface 都有。
@@ -1387,8 +1441,17 @@ function cardSubtitle(entry: TaskEntry): string {
           "completed_count",
           "successful_files",
         ]);
-  const detail = successCount === null ? meta.label : successCount > 0 ? `已生成 ${successCount} 个文件` : "没有生成文件";
-  return `${detail} · ${formatDay(entry.task.updated_at ?? entry.task.created_at)}`;
+  const fileCount = total > 0 ? total : labelCount;
+  const countText = fileCount && fileCount > 1 ? `共 ${fileCount} 个文件` : "";
+  // 右边徽章已经说了的话（「没有生成文件」、状态词）副标题不再重复一遍，改说徽章没说的：
+  // 一共几个文件、生成了几个。
+  const chipLabel = cardChip(entry).label;
+  let detail: string;
+  if (successCount === null) detail = countText;
+  else if (successCount === 0) detail = chipLabel === "没有生成文件" ? countText : "没有生成文件";
+  else if (fileCount && fileCount > successCount) detail = `已生成 ${successCount} / ${fileCount} 个文件`;
+  else detail = `已生成 ${successCount} 个文件`;
+  return [surfaceLabel, detail, formatDay(entry.task.updated_at ?? entry.task.created_at)].filter(Boolean).join(" · ");
 }
 
 function renderCard(id: string): HTMLDivElement {
@@ -1409,11 +1472,12 @@ function renderCard(id: string): HTMLDivElement {
   // 标题挂在独立的 .ttl 上（不是裸文本节点）才能省略号截断：source_label 现在是文件名，
   // 下划线连写的长英文名是不可断 token，直接铺出去会把状态徽章顶出 340px 的列表宽度，
   // 用户看不见这条任务到底成没成。完整名字放 title，悬停可看全。
-  const titleText = `${taskSurfaceLabel(entry.task.surface)} · ${text(entry.task.source_label, `任务 ${entry.task.task_id.slice(0, 8)}`)}`;
+  const titleText = cardTitle(entry.task);
   const titleEl = document.createElement("span");
   titleEl.className = "ttl";
   titleEl.textContent = titleText;
-  titleEl.title = titleText;
+  // 悬停时给出完整来源说明（含「等 N 个文件」）。
+  titleEl.title = text(entry.task.source_label, titleText);
   r1.append(titleEl);
   const chipInfo = cardChip(entry);
   const chip = createChip({ label: chipInfo.label, tone: chipInfo.tone });
@@ -1510,23 +1574,19 @@ function renderDetail(): void {
   const actions = document.createElement("div");
   actions.style.marginLeft = "auto";
   actions.style.display = "flex";
+  actions.style.alignItems = "center";
   actions.style.gap = "8px";
   actions.style.flexWrap = "wrap";
+  // 顶部只摆最常用的几个：第一个本地结果（通常是「打开输出目录」）、打开工作区、
+  // 任务控制和导出诊断；其余本地结果和「删除记录」收进「更多」。CAD 任务以前一排
+  // 8 个按钮挤成两行，还有两个同名的「打开本地结果」。
   const references = taskResultReferences(task);
-  for (const reference of references) {
-    actions.append(buildActionButton(reference));
-  }
-  if (task.terminal) {
-    actions.append(
-      createButton({
-        label: "导出诊断",
-        size: "mini",
-        // 详情页上的这个按钮说的是「这一次任务」，就该直接把这一次的诊断包存下来。
-        // 之前它把人扔到设置页去自己找——找的还是全部任务的合集。
-        onClick: () => void exportTaskDiagnostic(task.task_id),
-      }),
-    );
-  }
+  const [primaryReference, ...extraReferences] = references;
+  if (primaryReference) actions.append(buildActionButton(primaryReference));
+  const moreItems: MenuItem[] = extraReferences.map((reference) => ({
+    label: reference.label,
+    onSelect: () => void openTaskLocalFile(reference.path, reference.reveal),
+  }));
   if (task.terminal && (task.surface === "tm_clean" || task.surface === "cleaner")) {
     actions.append(
       createButton({
@@ -1566,8 +1626,39 @@ function renderDetail(): void {
     }
   }
   if (task.terminal) {
+    // 详情页上的这个按钮说的是「这一次任务」，就该直接把这一次的诊断包存下来。
+    // 之前它把人扔到设置页去自己找——找的还是全部任务的合集。
+    ensureDiagnosticAvailability(task.task_id);
+    const availability = diagnosticAvailability.get(task.task_id);
+    actions.append(
+      createButton({
+        label: "导出诊断",
+        size: "mini",
+        disabled: availability !== true,
+        title: availability === false ? NO_DIAGNOSTIC_TEXT : undefined,
+        onClick: () => void exportTaskDiagnostic(task.task_id),
+      }),
+    );
+    // 置灰的按钮收不到悬停，原生 title 提示不可靠，旁边放一个「?」说清为什么不能点。
+    if (availability === false) {
+      const hint = createHintBadge(NO_DIAGNOSTIC_TEXT);
+      // .hint 的皮肤只写在 .swrow 下面，这里照抄同一套样式。
+      hint.style.cssText =
+        "color:var(--ink-3);cursor:help;font-size:11px;border:1px solid var(--line-2);border-radius:99px;width:15px;height:15px;display:inline-flex;align-items:center;justify-content:center;flex:none;margin-left:-4px";
+      actions.append(hint);
+    }
     // 只删任务中心的这条记录；译文、报告、诊断包都在磁盘上原样留着。
-    actions.append(createButton({ label: "删除记录", icon: "trash", variant: "danger", size: "mini", onClick: () => confirmDeleteTask(task.task_id) }));
+    moreItems.push({ label: "删除记录", description: "输出文件不会被删除", onSelect: () => confirmDeleteTask(task.task_id) });
+  }
+  if (moreItems.length) {
+    actions.append(
+      createButton({
+        label: "更多",
+        icon: "chev",
+        size: "mini",
+        onClick: (event) => openMenu(event.currentTarget as HTMLElement, moreItems),
+      }),
+    );
   }
   header.append(actions);
   detailRootEl.append(header);
@@ -1807,9 +1898,26 @@ function renderDetail(): void {
 // View 生命周期
 // ---------------------------------------------------------------------------
 
+/** 从顶栏「N 个任务运行中」进来时选中正在跑的任务。selectedId 是模块级状态，
+ *  不处理的话右边打开的是上次看过的那条（往往是刚完成的旧任务），左边第一张才是在跑的。
+ *  「最近结果」筛选下运行中的任务不显示，所以顺带切回「全部」。 */
+function focusRunningTask(): void {
+  const current = selectedId ? tasks.get(selectedId) : undefined;
+  if (current && isTaskActive(current.task) && filter !== "terminal") return;
+  if (filter === "terminal") filter = "all";
+  const running = visibleOrder().find((id) => {
+    const entry = tasks.get(id);
+    return entry ? isTaskActive(entry.task) : false;
+  });
+  if (running) selectedId = running;
+}
+
 export function mount(container: HTMLElement, params: ViewParams): void {
   mounted = true;
+  // 诊断记录可能在两次进入之间生成或被清理掉，每次进来重新问。
+  diagnosticAvailability.clear();
   if (typeof params.taskId === "string") selectedId = params.taskId;
+  else if (params.focus === "active") focusRunningTask();
   // 必须用 visibleOrder()：order 是「最近一次被 upsert 的在最前」的原始序，既不是
   // 列表的显示顺序，也不受当前筛选约束。拿它播种会选中一条在当前筛选下根本不显示的
   // 任务——左边没有高亮项、右边详情却在放另一条任务的内容。
@@ -1859,6 +1967,8 @@ function renderFilters(): void {
 
 export function unmount(): void {
   mounted = false;
+  // 「更多」菜单挂在 body 上，不随视图一起清掉。
+  closeMenu();
   if (fastPollTimer !== null) {
     window.clearInterval(fastPollTimer);
     fastPollTimer = null;
