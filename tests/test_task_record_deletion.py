@@ -223,6 +223,20 @@ class TaskDiagnosticExportTests(unittest.TestCase):
             404,
         )
 
+    def test_availability_tells_the_detail_page_whether_export_can_work(self) -> None:
+        # 任务详情先问一句再决定「导出诊断」能不能点：没有诊断记录是正常情况
+        # （比如手动停止），不该让用户点了才收到一条红色报错。
+        self._archive("task-alpha")
+
+        self.assertEqual(self.client.get("/api/diagnostics/task/task-alpha").json(), {"available": True})
+        self.assertEqual(
+            self.client.get("/api/diagnostics/task/task-without-record").json(),
+            {"available": False},
+        )
+        # 「{task_id}」也能匹配「xxx.zip」：下载路由必须仍然先命中，返回的是 zip。
+        response = self.client.get("/api/diagnostics/task/task-alpha.zip")
+        self.assertEqual(response.headers["content-type"], "application/zip")
+
     def test_delete_route_rejects_a_running_task_with_409(self) -> None:
         task = ApiTask(
             task_id="live",

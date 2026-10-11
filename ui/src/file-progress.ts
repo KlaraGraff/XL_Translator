@@ -60,6 +60,9 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
     || Number(result.truncated_cells ?? 0) > 0
     || result.sheet_name_status === "preserved"
     || issues.some((issue) => issue && typeof issue === "object" && (issue as Record<string, unknown>).severity === "needs_review");
+  // 停止后写出的 Excel / Word：文件是生成了，可里面还有一部分是原文（后端按续译检测
+  // 同一口径数出来的格/段数）。叫「已生成」会像翻完了一样。
+  const unfinished = Number(result.unfinished_text_count ?? 0);
   const untranslated = result.untranslated === true
     || result.all_pages_skipped_oversize === true
     || (Number(result.page_count ?? 0) > 0 && Number(result.skipped_oversize_page_count ?? 0) >= Number(result.page_count));
@@ -74,13 +77,17 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
       if (file.phase === "adjust") return "待处理 · 等待调整排版";
       return "待处理";
     case "active": {
-      const phase = taskState === "paused" && file.phase === "translate"
-        ? "等待已提交页面完成"
-        : PHASE_LABELS[file.phase] ?? "";
       const count = file.total > 0 ? ` · ${file.completed} / ${file.total}` : "";
+      // 文件翻到一半时暂停：PDF 停止提交新页面、CAD 停在两张图之间都会走到这里，所以
+      // 不写哪一种的细节（以前写「等待已提交页面完成」，CAD 图纸上也这么显示）。PDF 已提交
+      // 的页还会陆续跑完，那一层由进度卡标题「已暂停提交新页面」交代。
+      if (taskState === "paused" && file.phase === "translate") return `已暂停${count}`;
+      const phase = PHASE_LABELS[file.phase] ?? "";
       return `处理中${phase ? ` · ${phase}` : ""}${count}`;
     }
-    case "generated": return `已生成${untranslated ? " · 整份未翻译" : ""}${needsReview ? " · 需复核" : ""}`;
+    case "generated":
+      if (unfinished > 0) return `部分翻译${needsReview ? " · 需复核" : ""}`;
+      return `已生成${untranslated ? " · 整份未翻译" : ""}${needsReview ? " · 需复核" : ""}`;
     case "failed": return "未生成";
     case "unstarted": return "未开始";
     case "stopped": return "已停止";
@@ -91,7 +98,10 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
 
 export function fileProgressTone(file: FileProgress, taskState?: string): "ok" | "warn" | "dgr" | "mute" | "tint" {
   if (taskState === "interrupted" && ["waiting", "active", "paused"].includes(file.state)) return "dgr";
-  if (file.state === "generated") return fileProgressLabel(file).includes("需复核") ? "warn" : "ok";
+  if (file.state === "generated") {
+    const label = fileProgressLabel(file);
+    return label.includes("需复核") || label.startsWith("部分翻译") ? "warn" : "ok";
+  }
   if (file.state === "active") return "tint";
   if (file.state === "failed" || file.state === "interrupted") return "dgr";
   if (file.state === "stopped" || file.state === "unstarted" || file.state === "waiting" || file.state === "paused") return "mute";

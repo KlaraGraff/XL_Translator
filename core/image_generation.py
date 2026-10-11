@@ -31,6 +31,7 @@ from core.model_roles import (
     unsupported_capability_message,
     resolve_effective_model_config,
 )
+from core.user_facing_errors import humanize_error
 from settings import AppSettings
 
 IMAGE_TEST_MAX_ATTEMPTS = 3
@@ -431,7 +432,14 @@ def check_image_generation_connectivity(
             except Exception as exc:  # noqa: BLE001 - retry and report all image errors.
                 last_error = _sanitize_error(exc)
 
-    message = f"{config.label}连接测试失败：{last_error or '未知错误'}"
+    # 设置页只给人话；原始报错（httpx 的英文、服务商的 JSON 报文）进调试日志，
+    # 同时留在结果的 detail 里，不进存盘的那句说明。和 pdf_review 的连接测试一致。
+    logger.debug(f"[图像模型] 连接测试失败原始错误：{last_error}")
+    reason = humanize_error(
+        last_error,
+        fallback="图像模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。",
+    )
+    message = f"{config.label}连接测试失败：{reason}"
     record_image_model_availability(
         settings,
         ok=False,

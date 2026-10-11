@@ -1262,7 +1262,7 @@ export interface ModalOptions {
   /** warn = 黄色警示图标；danger = 红色不可逆操作图标；tint = 中性信息；ok = 绿色完成态。 */
   tone: ModalTone;
   icon: IconName;
-  /** 模态上方的小标签，标出触发来源（例如「设置 · 数据与维护 · 完整本地重置」）。 */
+  /** 标题上方的一行小字，标出触发来源（例如「设置 · 数据与维护 · 完整本地重置」）。 */
   sourceLabel?: string;
   title: string;
   /** 依次渲染为若干个 <p>（字符串项）或原样插入（元素项，例如 <dl class="kv"> / <ul>）。 */
@@ -1287,13 +1287,14 @@ export function openModal(options: ModalOptions): ModalHandle {
   const overlay = el("div", { className: "overlay" });
   const modal = el("div", { className: options.wide ? "modal wide" : "modal" });
 
-  if (options.sourceLabel) {
-    modal.append(el("span", { className: "mlabel", text: options.sourceLabel }));
-  }
-
   const mi = el("div", { className: `mi ${options.tone === "danger" ? "dgr" : options.tone}` });
   mi.append(icon(options.icon));
   modal.append(mi);
+
+  // 来源标签是标题上方的一行小字，在弹窗里面——以前浮在弹窗上沿外面，像另一个控件。
+  if (options.sourceLabel) {
+    modal.append(el("span", { className: "mlabel", text: options.sourceLabel }));
+  }
 
   modal.append(el("h3", { text: options.title }));
 
@@ -1383,7 +1384,7 @@ export interface ToastOptions {
 }
 
 /**
- * 工作区左下角的一次性提示条，超时后自动移除（位置见 app.css 的 .ts-toast）。
+ * 顶栏中间的一次性提示条，超时后自动移除（位置见 app.css 的 .ts-toast）。
  *
  * 放进外壳的提示栈（shell.ts 的 .toast-stack），而不是直接扔 document.body：更新卡片
  * 也停在顶部居中，两者各自 fixed 定位就会重叠。栈还没建好时（启动早期）退回 body，
