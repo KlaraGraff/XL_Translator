@@ -3729,6 +3729,16 @@ class PdfImageTranslationRunner:
             # 也漏计。所以不论从哪条路离开，都在这里统一撤干净。
             self._discard_stopped_pages(prepared_files)
 
+    @staticmethod
+    def _page_render_phase(record: PdfFileRecord) -> str:
+        """File-progress phase while one of this file's pages is being rendered.
+
+        Only the first page reads as「渲染页面」. Pages are rendered one at a time
+        between translations, so reporting every render would flip the file's
+        chip between「渲染页面」and「翻译内容」for each page of a long PDF.
+        """
+        return "translate" if record.pages else "render"
+
     def _push_translation_progress(self, total_pages: int) -> None:
         """Emit the "N / total 已完成" progress pair used by both the normal
         future-completion path and the skipped-oversize-page fast path."""
@@ -3777,7 +3787,7 @@ class PdfImageTranslationRunner:
             self._file_progress.emit(
                 prepared.item.path,
                 "active",
-                "extract",
+                self._page_render_phase(record),
                 completed=self._settled_file_page_count(record),
                 total=record.page_count,
             )
@@ -3817,7 +3827,7 @@ class PdfImageTranslationRunner:
                         self._file_progress.emit(
                             prepared.item.path,
                             "active",
-                            "extract",
+                            self._page_render_phase(record),
                             completed=self._settled_file_page_count(record),
                             total=record.page_count,
                         )

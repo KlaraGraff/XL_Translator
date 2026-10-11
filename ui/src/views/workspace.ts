@@ -873,8 +873,31 @@ function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | n
   next.scrollTop = prevScroll.scrollTop;
 }
 
+/** 整页重建前记下各滚动区的位置，重建后放回去。
+ *
+ *  每来一个任务事件页面都会整体重画一次；没有这一步，用户往下翻到第 30 页的逐页表、
+ *  页恢复列表、右栏设置，下一个事件一到就被弹回顶部。要保位置的滚动区在创建时打上
+ *  `data-keep-scroll="<名字>"`，名字在页面内唯一即可。日志区另有「贴底跟随」的规则，
+ *  由 captureLogScroll / restoreLogScroll 单独处理。 */
+function captureKeptScrolls(container: HTMLElement): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (const node of container.querySelectorAll<HTMLElement>("[data-keep-scroll]")) {
+    if (node.scrollTop > 0) positions.set(node.dataset.keepScroll ?? "", node.scrollTop);
+  }
+  return positions;
+}
+
+function restoreKeptScrolls(container: HTMLElement, positions: Map<string, number>): void {
+  if (!positions.size) return;
+  for (const node of container.querySelectorAll<HTMLElement>("[data-keep-scroll]")) {
+    const top = positions.get(node.dataset.keepScroll ?? "");
+    if (top !== undefined) node.scrollTop = top;
+  }
+}
+
 function renderInto(container: HTMLElement, surface: Surface): void {
   const logScroll = captureLogScroll(container);
+  const keptScrolls = captureKeptScrolls(container);
   while (container.firstChild) container.removeChild(container.firstChild);
   container.removeAttribute("style");
   const st = states[surface];
@@ -895,6 +918,7 @@ function renderInto(container: HTMLElement, surface: Surface): void {
     container.append(buildColLeft(surface, st, active), buildColRight(surface, st, active));
   }
   restoreLogScroll(container, logScroll);
+  restoreKeptScrolls(container, keptScrolls);
 }
 
 function rerender(surface: Surface): void {
@@ -1032,13 +1056,15 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       const recoveryCard = buildWordRecoveryCard(local);
       if (recoveryCard) col.append(recoveryCard);
     }
+    let sharesHeight = false;
     if (surface === "pdf") {
       const recoveryCard = buildPdfRecoveryCard(surface, local);
       if (recoveryCard) col.append(recoveryCard);
       const reviewCard = buildPdfReviewCard(surface, local);
       if (reviewCard) col.append(reviewCard);
+      sharesHeight = Boolean(reviewCard);
     }
-    col.append(buildLogCard(local));
+    col.append(buildLogCard(local, sharesHeight));
   } else {
     col.append(buildSrcBar(surface, st));
     if (st.historyOnly) {
@@ -1722,6 +1748,7 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
 
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
+  tableWrap.dataset.keepScroll = "files";
   const table = el("table", "tbl");
   table.append(buildTableHeadRow(surface));
   const resumeFiles = resumeFileMap(st);
@@ -2194,6 +2221,7 @@ function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement |
 
   const list = el("div");
   list.style.cssText = "max-height:220px;overflow:auto";
+  list.dataset.keepScroll = "pdf-recovery";
   rows.forEach(({ file, page }, index) => {
     const row = buildRecoveryRow(surface, taskId, snapshot, file, page, multiFile);
     if (index === 0) row.style.borderTop = "0";
@@ -2732,6 +2760,7 @@ function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | n
   // min-height:0 是顺手补的保险，不是这次生效的原因——flex 子项的 min-height:auto
   // 只在 overflow 计算值为 visible 时才按内容撑开，而这里已经是 overflow:auto。
   tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto";
+  tableWrap.dataset.keepScroll = "pdf-review";
   // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，给个上限才滚得起来。
   // 上限不再写死 420px：终态任务可能有 5 个文件、84 页，固定 420px 在大屏上会浪费
   // 一大截空间；改成跟视口走（52vh），同时封顶 640px，避免在超大屏上把卡片拉得
@@ -3179,16 +3208,60 @@ async function runPdfPageRestorePrevious(
 
 // ---------------------------------------------------------------------------
 // 逐页快照拉取：没有逐页 SSE，靠聚合事件/任务状态变化触发的一次性 GET。
-// 调用点：handleTaskEvent 的 pdf_page_recovery / pdf_review / pdf_page_action / paused / resumed /
-// 终态分支，adoptExistingTask 接管已有任务时，submitTaskStart 启动新任务后，以及 refetchTask 兜底刷新时。
+// 调用点：handleTaskEvent 的 pdf_page_action / paused / resumed /
+// 终态分支（file_progress / pdf_page_recovery / pdf_review 走 schedulePdfSnapshotRefresh 合并刷新），
+// adoptExistingTask 接管已有任务时，submitTaskStart 启动新任务后，以及 refetchTask 兜底刷新时。
 // ---------------------------------------------------------------------------
 
 /** 返回是否拿到了新快照。轮询类调用方（重跑计时器、批量重跑的等槽位循环）传
  *  `silent: true` 自己管失败计数和退避，不需要也不该在每一轮失败上都弹一条 toast——
  *  那正是高-10 的报错洪水。一次性调用点（任务事件、接管、启动任务）保持原样：
  *  单次失败就该让用户知道。 */
-async function fetchPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
-  if (surface !== "pdf") return false;
+/** 同一任务同一时刻只允许一个逐页快照请求在路上。
+ *
+ *  以前每个触发点各发各的：一次暂停/继续、审核、恢复事件接连到达时会同时飞出好几个
+ *  GET，返回顺序不定，晚到的旧快照会把新快照盖掉，失败时还各弹一条 toast。现在请求
+ *  在路上时再来的调用都合并成「等它回来后再拉一次」，保证调用方拿到的是自己发起之后的
+ *  状态，又不会叠出一串请求。 */
+type PdfSnapshotFlight = { queued: Promise<boolean> | null; queuedSilent: boolean };
+const pdfSnapshotFlights = new Map<string, PdfSnapshotFlight & { running: Promise<boolean> }>();
+
+function fetchPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
+  if (surface !== "pdf") return Promise.resolve(false);
+  const flight = pdfSnapshotFlights.get(taskId);
+  if (flight) {
+    // 只要有一个调用方不要求静默，补拉那一次失败就该提示。
+    if (!options?.silent) flight.queuedSilent = false;
+    flight.queued ??= flight.running.then(() => fetchPdfPagesSnapshot(surface, taskId, { silent: flight.queuedSilent }));
+    return flight.queued;
+  }
+  const entry = { queued: null, queuedSilent: true } as PdfSnapshotFlight & { running: Promise<boolean> };
+  entry.running = (async () => {
+    try {
+      return await loadPdfPagesSnapshot(surface, taskId, options);
+    } finally {
+      // 先摘掉自己，再让排队的那次开始：它进来时看到的就是「没有请求在路上」。
+      pdfSnapshotFlights.delete(taskId);
+    }
+  })();
+  pdfSnapshotFlights.set(taskId, entry);
+  return entry.running;
+}
+
+/** 运行中每译完一页就有一条 file_progress，逐页表要跟着长出来，但不必每条都拉一次：
+ *  合并到最多每 1.5 秒一次。 */
+const PDF_SNAPSHOT_REFRESH_MS = 1500;
+const pdfSnapshotRefreshTimers = new Map<string, number>();
+
+function schedulePdfSnapshotRefresh(surface: Surface, taskId: string): void {
+  if (surface !== "pdf" || pdfSnapshotRefreshTimers.has(taskId)) return;
+  pdfSnapshotRefreshTimers.set(taskId, window.setTimeout(() => {
+    pdfSnapshotRefreshTimers.delete(taskId);
+    void fetchPdfPagesSnapshot(surface, taskId, { silent: true });
+  }, PDF_SNAPSHOT_REFRESH_MS));
+}
+
+async function loadPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
   const st = states[surface];
   if (!st.task || st.task.task.task_id !== taskId) return false;
   const local = st.task;
@@ -3307,12 +3380,26 @@ const LOG_VIEW_LIMIT = 200;
 /** 日志行号发号器（模块级、跨 surface 共用，只要不重号就够用）。 */
 let nextLogSeq = 1;
 
-function buildLogCard(local: LocalTask): HTMLElement {
+/** `sharesHeight`：同一栏里还有逐页审核表（PDF 运行中）。日志卡片默认按内容撑高，
+ *  在 860px 高的窗口里会把逐页表挤得只剩表头；这时两张卡片对半分高度，日志区和文件
+ *  列表各自滚动。 */
+function buildLogCard(local: LocalTask, sharesHeight = false): HTMLElement {
   const card = createTaskLogPanel({
     entries: local.logs.map((entry) => ({ seq: entry.seq, time: entry.time, message: entry.message, level: entry.level })),
     limit: LOG_VIEW_LIMIT,
   });
+  if (sharesHeight) {
+    card.style.flex = "3 1 0%"; // 与逐页审核卡片（运行中 flex:3 1 0%）对半分
+    const log = card.querySelector<HTMLElement>(".log");
+    if (log) {
+      log.style.flex = "1 1 auto";
+      log.style.maxHeight = "none";
+    }
+  }
+  // 文件很多时这一栏不能无限往下长：日志卡片会被挤没，整页还会跟着出现滚动条。
   const fileList = el("div");
+  fileList.style.cssText = `flex:0 0 auto;max-height:${sharesHeight ? 120 : 184}px;overflow-y:auto`;
+  fileList.dataset.keepScroll = "log-files";
   const result = record(local.task.result);
   const rows = [...local.fileProgress.values()];
   if (!rows.length) {
@@ -3345,6 +3432,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   // 用户本来就该在挑文件之前先把它们调好。
   const card = el("div", "card runpanel");
   const scroll = el("div", active ? "rp-scroll dis" : "rp-scroll");
+  scroll.dataset.keepScroll = "run-settings";
 
   const title = el("div", "rp-title");
   title.textContent = "运行设置";
@@ -4417,13 +4505,15 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
 function focusTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
   rememberTaskContext(st, task.task_id);
+  // 切回页面或重开程序接管一个跑到一半的任务时，进度从任务快照里接上，而不是从 0 重新爬。
+  const progress = record(task.progress);
   st.task = {
     task,
     logs: [],
-    phaseName: "正在准备任务",
-    percent: 0,
-    phaseIndex: 0,
-    phaseTotal: 0,
+    phaseName: redactedText(progress.phase_name, "正在准备任务"),
+    percent: Math.min(100, Math.max(0, num(progress.overall_percent, 0))),
+    phaseIndex: num(progress.phase_index, 0),
+    phaseTotal: num(progress.phase_total, 0),
     streamState: "connected",
     watcherActive: false,
     lastEventAt: Date.now(),
@@ -4552,7 +4642,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "progress": {
-      if (data.phase_name !== undefined) local.phaseName = redactedText(data.phase_name, local.phaseName);
+      if (data.phase_name !== undefined && !holdsStatePhase(local)) local.phaseName = redactedText(data.phase_name, local.phaseName);
       const done = num(data.step_done);
       const total = num(data.step_total);
       // step_done/step_total 是**当前阶段**的步数。直接拿它当总进度，扫描一结束进度条
@@ -4563,7 +4653,12 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       if (phaseIndex > 0) local.phaseIndex = phaseIndex;
       if (phaseTotal > 0) local.phaseTotal = phaseTotal;
       const withinPhase = total > 0 ? Math.min(1, done / total) : 0;
-      if (phaseTotal > 0 && phaseIndex > 0) {
+      const overall = Number(data.overall_percent);
+      if (Number.isFinite(overall)) {
+        // 后端按各页面每个阶段的实际耗时比例折算好的总进度（api/task_manager.py
+        // 的 _PHASE_WEIGHTS）。按阶段平均分的话，PDF 整个翻页过程都卡在 25%~50%。
+        local.percent = Math.min(100, Math.max(0, overall));
+      } else if (phaseTotal > 0 && phaseIndex > 0) {
         local.percent = Math.min(100, ((phaseIndex - 1 + withinPhase) / phaseTotal) * 100);
       } else if (total > 0) {
         local.percent = withinPhase * 100;
@@ -4571,11 +4666,14 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "status": {
-      local.phaseName = redactedText(data.phase_desc, local.phaseName);
+      const phase = statusPhaseText(redactedText(data.phase_desc, local.phaseName));
+      // 说的正是当前暂停/停止状态的句子（「正在停止任务：等待 2 页完成…」）照常显示。
+      if (!holdsStatePhase(local) || STATE_PHASE_KEYWORD[local.task.state]?.test(phase)) local.phaseName = phase;
       break;
     }
     case "file_progress": {
       local.fileProgress = reduceFileProgress(local.fileProgress, data as unknown as FileProgress);
+      if (surface === "pdf") schedulePdfSnapshotRefresh(surface, taskId);
       break;
     }
     // 这几个事件都带着后端已经改好的任务状态（data.state），必须同步到本地：
@@ -4603,11 +4701,13 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     case "pdf_page_recovery":
       local.pdfPageRecovery = data;
-      if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
+      // 跑起来之后每处理完一页都会来一条，合并刷新，别一条一个请求。
+      schedulePdfSnapshotRefresh(surface, taskId);
       break;
     case "pdf_review":
       local.pdfReview = data;
-      if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
+      // 跑起来之后每处理完一页都会来一条，合并刷新，别一条一个请求。
+      schedulePdfSnapshotRefresh(surface, taskId);
       break;
     case "pdf_page_action":
       // 没有聚合本地状态需要更新——这个事件纯粹是「去拉一次逐页快照」的信号。
@@ -4629,6 +4729,26 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
   }
   rerender(surface);
+}
+
+/** 暂停中/已暂停/正在停止时，进度卡片标题说的是这个状态本身（「已暂停提交新页面」）。
+ *  这期间已提交的页还会陆续完成、继续发进度和状态句，不能让它们把标题改回「正在翻译…」，
+ *  否则顶栏写着已暂停，卡片却像还在跑。 */
+const STATE_PHASE_KEYWORD: Partial<Record<TaskStatus["state"], RegExp>> = {
+  pausing: /暂停/,
+  paused: /暂停/,
+  stopping: /停止/,
+};
+
+function holdsStatePhase(local: LocalTask): boolean {
+  const state = local.task.state;
+  return state === "pausing" || state === "paused" || state === "stopping";
+}
+
+/** 后端的状态句都带着「状态：」前缀（给命令行日志用的），进度卡片的标题本身就是状态，
+ *  再带前缀就成了「状态：正在翻译…」，跟进度事件给的阶段名来回切换时标题还会跳。 */
+function statusPhaseText(value: string): string {
+  return value.replace(/^\s*状态[:：]\s*/, "");
 }
 
 function syncEventState(local: LocalTask, data: JsonObject, fallback: TaskStatus["state"]): void {

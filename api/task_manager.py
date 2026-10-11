@@ -2104,14 +2104,17 @@ class TranslationTaskManager:
         event_type = _event_type_for_message(message)
         payload = _json_safe(asdict(message) if is_dataclass(message) else message)
         if isinstance(message, ProgressMsg):
-            stage_weights = (15, 10, 45, 20, 10)
-            phase_index = max(1, min(len(stage_weights), int(message.phase_index)))
+            phase_total = int(message.phase_total)
+            phase_index = max(1, int(message.phase_index))
+            if phase_total > 0:
+                phase_index = min(phase_total, phase_index)
             stage_percent = min(100.0, max(0.0, 100.0 * message.step_done / max(1, message.step_total)))
-            completed_weight = sum(stage_weights[: phase_index - 1])
-            overall_percent = completed_weight + stage_weights[phase_index - 1] * stage_percent / 100.0
-            if int(message.phase_total) <= 0:
-                # 没有阶段划分（CAD 直接上报整批进度）：step_done/step_total 就是总进度。
-                overall_percent = stage_percent
+            overall_percent = overall_progress_percent(
+                task.surface, phase_index, phase_total, stage_percent
+            )
+            # 事件本身也带上总进度：界面直接用它画进度条，不再各自按「阶段平均分」折算。
+            if isinstance(payload, dict):
+                payload["overall_percent"] = round(overall_percent, 1)
             with task.condition:
                 task.progress = {
                     "phase_index": phase_index,
@@ -2461,6 +2464,41 @@ def _selected_files_label(files: list[Any]) -> str:
     if len(files) == 1:
         return names[0]
     return f"{names[0]} 等 {len(files)} 个文件"
+
+
+
+# 各页面每个阶段在总进度条上占多少。阶段耗时差别很大：PDF 的「翻译页面」要等图像模型
+# 一页页画，占了整个任务的绝大部分时间，按阶段平均分的话进度条会在 25%~50% 之间爬
+# 完整个任务，最后一秒从 50% 冲到 100%。元组顺序就是各 runner 上报的 phase_index。
+_PHASE_WEIGHTS: dict[str, tuple[float, ...]] = {
+    # 全局扫描 / 云端翻译 / 生成文件 / Excel 精调（没开精调时只有前三段）
+    "excel": (10, 60, 15, 15),
+    # Word 提取 / 云端翻译 / 生成文件
+    "word": (10, 70, 20),
+    # 预处理 PDF / 翻译页面 / 生成最终产物 / 写入报告
+    "pdf": (5, 85, 8, 2),
+}
+
+
+def overall_progress_percent(
+    surface: str, phase_index: int, phase_total: int, stage_percent: float
+) -> float:
+    """Fold one phase's progress into the whole task's 0-100 progress.
+
+    ``phase_total <= 0`` means the runner reports whole-batch progress directly
+    (CAD), so the stage percentage already is the overall one. Weights that do
+    not line up with the reported phase count (a phase was added or dropped)
+    fall back to equal weights rather than guessing.
+    """
+    if phase_total <= 0:
+        return stage_percent
+    weights = _PHASE_WEIGHTS.get(str(surface), ())[:phase_total]
+    if len(weights) != phase_total:
+        weights = (1.0,) * phase_total
+    total = sum(weights) or 1.0
+    index = max(1, min(phase_total, phase_index))
+    done = sum(weights[: index - 1]) + weights[index - 1] * stage_percent / 100.0
+    return min(100.0, max(0.0, 100.0 * done / total))
 
 
 def _event_type_for_message(message: Any) -> str:

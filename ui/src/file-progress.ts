@@ -33,6 +33,8 @@ export function reduceFileProgress(
 const PHASE_LABELS: Record<string, string> = {
   prepare: "准备文件",
   extract: "提取文字",
+  // PDF/图片：把页面渲染成图片交给图像模型（core/pdf_image_translation.py）。
+  render: "渲染页面",
   detect: "识别语言",
   translate: "翻译内容",
   generate: "生成文件",
@@ -63,6 +65,9 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
     || (Number(result.page_count ?? 0) > 0 && Number(result.skipped_oversize_page_count ?? 0) >= Number(result.page_count));
   switch (file.state) {
     case "waiting":
+      // 内容已经全部译完、只等生成文件时（PDF 要等所有页译完才装订）停在
+      // waiting/generate——活已经干完大半，再叫「待处理」或「已暂停」都像还没轮到它。
+      if (file.phase === "generate" && file.total > 0 && file.completed >= file.total) return "已译完 · 等待生成文件";
       if (taskState === "paused") return "已暂停 · 等待继续";
       if (file.phase === "translate") return "待处理 · 等待翻译";
       if (file.phase === "generate") return "待处理 · 等待生成文件";
