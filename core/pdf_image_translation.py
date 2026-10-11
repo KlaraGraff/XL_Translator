@@ -4941,6 +4941,12 @@ class PdfImageTranslationRunner:
                 retried_page_count=len(self._retried_pages),
                 recovered_page_count=len(self._recovered_pages),
                 placeholder_page_count=len(self._placeholder_pages),
+                skipped_oversize_page_count=sum(
+                    1
+                    for prepared in self._prepared_files
+                    for page in prepared.record.pages
+                    if page.skipped_oversize
+                ),
             )
         )
 

@@ -1972,9 +1972,13 @@ function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
     const chips: HTMLElement[] = [];
     // completed_pages 是「跑完的页」，占位页（生成失败后塞回原页）也算在里面。
     // 直接拿它当「已生成」会把失败页说成生成成功，所以先扣掉占位页，失败数另开一格。
+    // 大幅面页同理：跳过翻译、原样保留，也算「跑完」，但不是「已生成」。
     const failed = num(r.placeholder_page_count);
-    const generated = Math.max(0, num(r.completed_pages) - failed);
-    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${num(r.total_pages)} 页`, "ok"));
+    const skipped = num(r.skipped_oversize_page_count);
+    const generated = Math.max(0, num(r.completed_pages) - failed - skipped);
+    const toGenerate = Math.max(0, num(r.total_pages) - skipped);
+    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${toGenerate} 页`, "ok"));
+    chipIfAny(chips, skipped, `原样保留 ${skipped} 页`, "mute");
     chipIfAny(chips, failed, `生成失败 ${failed} 页`, "dgr");
     chipIfAny(chips, num(r.retrying_page_count), `重试中 ${num(r.retrying_page_count)}`, "warn");
     chipIfAny(chips, num(r.recovered_page_count), `已恢复 ${num(r.recovered_page_count)}`, "mute");
@@ -2365,10 +2369,12 @@ function pageIsUnfinished(page: PdfPage): boolean {
  *
  *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
 function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLElement[] {
-  if (file.status === "failed" || file.pages.length === 0) {
-    const bad = el("span", "bad");
-    bad.textContent = "文件打不开";
-    return [bad];
+  if (file.pages.length === 0) {
+    // 一页都没有：要么预处理就失败（打不开、图片校验没过），要么还没轮到预处理。
+    // 有页的失败文件（例如单张图片那一页没生成出来）不是「打不开」，往下按页分桶说。
+    const span = el("span", file.status === "failed" ? "bad" : "");
+    span.textContent = file.status === "failed" ? "文件打不开" : "待处理";
+    return [span];
   }
 
   const pages = file.pages;
@@ -3087,10 +3093,10 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
   };
   void load("source", page.has_source_image, sourceCol);
   void load("translated", page.has_translated_image, translatedCol);
+  let shown: "translated" | "previous" = "translated";
 
   // 没有上一版的页：表头右侧空着，弹窗和以前完全一样。
   if (page.has_previous_image) {
-    let shown: "translated" | "previous" = "translated";
     const restoreBtn = createButton({
       label: "换回这一版",
       size: "mini",
@@ -3135,6 +3141,53 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
       },
     ],
   });
+
+  // 任务还在跑时打开的对比：这一页的译图稍后才出来（或被重新生成），弹窗要自己跟上，
+  // 而不是一直停在「该页尚无译文页图」，逼用户关掉再开。
+  let seen = page;
+  const unwatch = watchPdfPagesSnapshot(taskId, (snapshot) => {
+    if (!handle?.element.isConnected) {
+      unwatch();
+      return;
+    }
+    const next = snapshot.files
+      .find((item) => item.relative_path === file.relative_path)
+      ?.pages.find((item) => item.page_number === page.page_number);
+    if (!next) return;
+    if (!seen.has_source_image && next.has_source_image) {
+      sourceCol.setLoading();
+      void load("source", true, sourceCol);
+    }
+    const translatedChanged = next.has_translated_image
+      && (!seen.has_translated_image || next.attempts !== seen.attempts);
+    if (translatedChanged && shown === "translated") {
+      translatedCol.setLoading();
+      void load("translated", true, translatedCol);
+    }
+    seen = next;
+  });
+}
+
+/** 逐页快照更新时要跟着刷新的地方（目前是打开着的对比弹窗）。按任务分组；回调自己判断
+ *  是否还需要（弹窗已关就退订）。 */
+type PdfSnapshotWatcher = (snapshot: PdfPagesSnapshot) => void;
+const pdfSnapshotWatchers = new Map<string, Set<PdfSnapshotWatcher>>();
+
+function watchPdfPagesSnapshot(taskId: string, watcher: PdfSnapshotWatcher): () => void {
+  let set = pdfSnapshotWatchers.get(taskId);
+  if (!set) {
+    set = new Set();
+    pdfSnapshotWatchers.set(taskId, set);
+  }
+  set.add(watcher);
+  return () => {
+    set.delete(watcher);
+    if (!set.size) pdfSnapshotWatchers.delete(taskId);
+  };
+}
+
+function notifyPdfSnapshotWatchers(taskId: string, snapshot: PdfPagesSnapshot): void {
+  for (const watcher of [...(pdfSnapshotWatchers.get(taskId) ?? [])]) watcher(snapshot);
 }
 
 /** 换回上一版的确认框。不是危险操作（换回来的那一版仍然留得住、随时能再换回去），
@@ -3271,6 +3324,7 @@ async function loadPdfPagesSnapshot(surface: Surface, taskId: string, options?: 
     const snapshot = await c.getPdfPages(taskId);
     if (st.task !== local) return false;
     local.pdfPagesSnapshot = snapshot;
+    notifyPdfSnapshotWatchers(taskId, snapshot);
     if (st.historyOnly) {
       for (const file of st.files) {
         const pageFile = snapshot.files.find((entry) => entry.relative_path === file.relative_path);

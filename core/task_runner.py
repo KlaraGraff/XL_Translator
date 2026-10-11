@@ -260,6 +260,9 @@ class PdfPageRecoveryStatusMsg:
     retried_page_count: int = 0
     recovered_page_count: int = 0
     placeholder_page_count: int = 0
+    # 按「跳过 A3 及更大的页面」原样保留的页。它们算在 completed_pages 里（跑完了），
+    # 但没有生成译文，界面的「已生成 N 页」要把它们扣掉。
+    skipped_oversize_page_count: int = 0
 
 
 @dataclass
