@@ -3672,7 +3672,9 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     st.bannerInfo = {
       title: stateWord === "已完成"
         ? `已生成 ${generated} 个文件`
-        : `${stateWord} · 已生成 ${generated} 个文件`,
+        : generated > 0
+          ? `${stateWord} · 已生成 ${generated} 个文件`
+          : `${stateWord} · 还没有生成文件`,
       subtitle: clauses.join(" · "),
       tone,
       statusLabel: suffix ? `${stateWord} · ${suffix}` : stateWord,
