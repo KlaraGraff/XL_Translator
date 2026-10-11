@@ -48,6 +48,14 @@ class CadPipelineError(RuntimeError):
     """A recoverable CAD pipeline error with a user-facing message."""
 
 
+class CadStopRequested(CadPipelineError):
+    """Raised when the user stops the task mid-file.
+
+    A subclass so callers that only know ``CadPipelineError`` keep working,
+    while the batch runner can record the file as stopped instead of failed.
+    """
+
+
 class CadConverter(Protocol):
     """Adapter used to convert between DWG and an intermediate ASCII DXF."""
 
@@ -172,8 +180,14 @@ def scan_cad_paths(
     *,
     converter: CadConverter | None = None,
     options: CadPipelineOptions | None = None,
+    skipped: list[dict[str, str]] | None = None,
 ) -> list[CadScanSummary]:
-    """Scan selected CAD files and recursively expand selected directories."""
+    """Scan selected CAD files and recursively expand selected directories.
+
+    When ``skipped`` is given, a file that cannot be read is recorded there
+    (``{"path", "name", "reason"}``) and the rest of the batch is still
+    scanned; without it the first error propagates, as before.
+    """
     files: list[Path] = []
     for raw_path in paths:
         path = Path(raw_path)
@@ -193,7 +207,15 @@ def scan_cad_paths(
         elif path.is_file() and path.suffix.lower() in CAD_SUPPORTED_EXTENSIONS:
             files.append(path)
     unique_files = list(dict.fromkeys(files))
-    return [scan_cad_file(path, converter=converter, options=options) for path in unique_files]
+    if skipped is None:
+        return [scan_cad_file(path, converter=converter, options=options) for path in unique_files]
+    summaries: list[CadScanSummary] = []
+    for path in unique_files:
+        try:
+            summaries.append(scan_cad_file(path, converter=converter, options=options))
+        except Exception as exc:  # noqa: BLE001 - one unreadable drawing must not hide the others
+            skipped.append({"path": str(path), "name": path.name, "reason": str(exc) or exc.__class__.__name__})
+    return summaries
 
 
 @dataclass
@@ -207,9 +229,13 @@ class CadTranslationStats:
     untranslated: int = 0
     changed: int = 0
     replacement_characters: int = 0
+    # 超长等确实处理不了的文字；会让文件进入"需复核"。
     unsupported_entities: int = 0
     unknown_entity_count: int = 0
     residual_foreign_text_count: int = 0
+    # 纯数字/符号、标注占位符、不属于所选源语言的文字：正常跳过，不需要复核。
+    skipped_non_text: int = 0
+    skipped_other_language: int = 0
 
 
 @dataclass
@@ -519,12 +545,34 @@ def extract_cad_text_units(
     return units
 
 
+# 图纸里大量出现 M10、Q235、GB/T、DN50、PVC 这类型号/规范代号。它们由拉丁字母
+# 组成，但不是"外文"，判断语言时不能把它们当成英文单词——否则中文图纸里每一条
+# "M10螺栓"都会被当成未翻译的外文残留，整张图被误标"需复核"。
+_LATIN_WORD_RE = re.compile(r"(?<![A-Za-zÀ-ÿ0-9])[A-Za-zÀ-ÿ]+(?![A-Za-zÀ-ÿ0-9])")
+_NON_LATIN_SCRIPT_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0400-\u04ff\u0590-\u06ff\u0e00-\u0eff]"
+)
+
+
+def _has_latin_words(text: str) -> bool:
+    """True when ``text`` contains real Latin-script words, not just codes.
+
+    A word counts when it stands alone (not glued to digits like ``M10``) and
+    is not an all-caps abbreviation of up to 4 letters (``GB``, ``PVC``).
+    """
+    for match in _LATIN_WORD_RE.finditer(text):
+        word = match.group(0)
+        if len(word) >= 2 and not (word.isupper() and len(word) <= 4):
+            return True
+    return False
+
+
 def _is_likely_target_language(text: str, target_lang: str) -> bool:
     normalized = str(target_lang or "").strip().lower().replace("_", "-")
     code = normalized.split("-", 1)[0]
     if code in {"zh", "ja", "ko"}:
         patterns = {"zh": r"[\u3400-\u9fff]", "ja": r"[\u3040-\u30ff\u3400-\u9fff]", "ko": r"[\uac00-\ud7af]"}
-        return bool(re.search(patterns[code], text)) and not bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+        return bool(re.search(patterns[code], text)) and not _has_latin_words(text)
     script_patterns = {
         "ar": r"[\u0600-\u06ff]", "fa": r"[\u0600-\u06ff]", "ur": r"[\u0600-\u06ff]",
         "he": r"[\u0590-\u05ff]", "th": r"[\u0e00-\u0e7f]", "km": r"[\u1780-\u17ff]",
@@ -535,12 +583,26 @@ def _is_likely_target_language(text: str, target_lang: str) -> bool:
     }
     pattern = script_patterns.get(code)
     if pattern:
-        return bool(re.search(pattern, text)) and not bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+        return bool(re.search(pattern, text)) and not _has_latin_words(text)
     # Latin-script targets share the same Unicode ranges. This is deliberately
     # conservative for unknown/custom languages, which must still be scanned.
+    # 混排文字（如"Q235钢板"）里只要还有中日韩等非拉丁文字，就仍需翻译。
     if code in {"en", "fr", "de", "es", "it", "pt", "nl", "sv", "da", "no", "fi", "pl", "cs", "sk", "sl", "hu", "ro", "tr", "vi", "id", "ms"}:
-        return bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+        return bool(re.search(r"[A-Za-zÀ-ÿ]", text)) and not _NON_LATIN_SCRIPT_RE.search(text)
     return False
+
+
+def _is_residual_foreign_text(text: str, target_lang: str) -> bool:
+    """Whether written-back text still looks untranslated for ``target_lang``.
+
+    For CJK/other-script targets the leftover must be real Latin words, not
+    part numbers or standard codes. For Latin targets the leftover is any
+    remaining CJK/other non-Latin script.
+    """
+    code = str(target_lang or "").strip().lower().replace("_", "-").split("-", 1)[0]
+    if code in {"en", "fr", "de", "es", "it", "pt", "nl", "sv", "da", "no", "fi", "pl", "cs", "sk", "sl", "hu", "ro", "tr", "vi", "id", "ms"}:
+        return bool(_NON_LATIN_SCRIPT_RE.search(text))
+    return _has_latin_words(text) and not _is_likely_target_language(text, target_lang)
 
 
 def _matches_source_language(text: str, source_lang: str) -> bool:
@@ -731,7 +793,7 @@ class CadTranslationPipeline:
 
     def _check_stop(self) -> None:
         if self.stop_requested and self.stop_requested():
-            raise CadPipelineError("CAD 翻译已按请求停止；工作证据已保留。")
+            raise CadStopRequested("CAD 翻译已按请求停止；工作证据已保留。")
 
     def _emit(self, stage: str, done: int, total: int, message: str = "") -> None:
         stage_total = max(1, total)
@@ -800,13 +862,13 @@ class CadTranslationPipeline:
                     stats.unsupported_entities += 1
                     continue
                 if not _has_translatable_content(unit.plain_text):
-                    stats.unsupported_entities += 1
+                    stats.skipped_non_text += 1
                     continue
                 if unit.entity_type == "DIMENSION" and "<>" in unit.plain_text:
-                    stats.unsupported_entities += 1
+                    stats.skipped_non_text += 1
                     continue
                 if not _matches_source_language(unit.plain_text, options.source_lang):
-                    stats.unsupported_entities += 1
+                    stats.skipped_other_language += 1
                     continue
                 if options.skip_target_language and _is_likely_target_language(unit.plain_text, options.target_lang):
                     stats.skipped_target_language += 1
@@ -919,7 +981,7 @@ class CadTranslationPipeline:
             if options.scan_residual:
                 stats.residual_foreign_text_count = sum(
                     1 for unit in output_units
-                    if re.search(r"[A-Za-zÀ-ÿ]", unit.plain_text) and not _is_likely_target_language(unit.plain_text, options.target_lang)
+                    if _is_residual_foreign_text(unit.plain_text, options.target_lang)
                 )
             translated_targets = {str(value).strip() for value in translations.values() if value}
             replacements = [

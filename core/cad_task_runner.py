@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from core.cad_translation import (
     CadPipelineOptions,
     CadProgress,
+    CadStopRequested,
     CadTranslationPipeline,
 )
 from core.file_progress import FileProgressReporter
@@ -504,6 +505,11 @@ class CadTaskRunner:
                             target = result.output.parent / related.name
                             if not target.exists():
                                 shutil.copy2(related, target)
+                except CadStopRequested:
+                    # 用户点了停止：当前文件记为"已停止"，不是"失败"，也不进问题清单。
+                    self._file_progress.emit(source, "stopped", "stopped", result={"status": "stopped"})
+                    results.append({"source_path": str(source), "status": "stopped", "message": "已按请求停止"})
+                    continue
                 except Exception as exc:  # one bad drawing must not erase the batch
                     failed_files = True
                     message = str(exc) or exc.__class__.__name__
