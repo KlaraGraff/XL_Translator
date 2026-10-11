@@ -16,7 +16,7 @@ from typing import Any, Literal, Protocol
 from core import tm_manager
 from core import bilingual_writer
 from core.api_config_check import check_translation_api_config
-from core.file_scanner import scan_path
+from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER, scan_path
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
@@ -929,6 +929,28 @@ class TranslationTaskManager:
             return record
         with task.condition:
             return self._status_payload(task, include_result=True)
+
+    def task_source(self, task_id: str) -> dict[str, Any]:
+        """Return the source location of a task still held by this sidecar.
+
+        Task-center payloads and history never carry source paths.  The
+        workspace keeps them in window memory instead, which a reload of the
+        window loses: re-adopting a running or paused task then showed an
+        empty source bar and "this task kept no source path".  Only live
+        in-memory tasks answer here; nothing is read from or written to
+        history, so persisted records stay path-free.
+        """
+        task = self._get_task(task_id)
+        with task.condition:
+            return {
+                "task_id": task.task_id,
+                "surface": task.surface,
+                "source_path": task.source_path,
+                "files": [
+                    {"file_id": file_id, "path": path}
+                    for file_id, path in task.file_sources.items()
+                ],
+            }
 
     def _history_record(self, task_id: str) -> dict[str, Any] | None:
         wanted = str(task_id or "")
@@ -2182,6 +2204,9 @@ class TranslationTaskManager:
             if task.terminal:
                 return
             result = self._complete_file_progress(task, result, state)
+            if state in {"error", "stopped"}:
+                # 完成态不动：PDF 完成后还能单页重跑，会往同一个目录里写。
+                result = _drop_empty_output_dir(result)
             task.state = state
             task.terminal = True
             task.updated_at = time.time()
@@ -2595,6 +2620,48 @@ _ARTIFACT_PATH_KEYS = {
     "custom_output_dir",
 }
 _API_SECRET_RE = re.compile(r"(?i)(?:bearer\s+|sk-[a-z0-9_-]{8,}|api[_ -]?key\s*[:=]\s*)[^\s,;]+")
+
+
+_IGNORABLE_OUTPUT_LEFTOVERS = {".DS_Store", "Thumbs.db", "desktop.ini"}
+
+
+def _drop_empty_output_dir(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove the timestamped output folder when the task wrote nothing into it.
+
+    Runners create ``…_翻译输出_<时间>`` up front.  A task that failed or was
+    stopped before its first file used to leave that empty folder next to the
+    user's sources, and the banner still offered "打开输出目录" onto it.  Only
+    a folder this app generated (the name marker) with no file anywhere inside
+    is removed; anything else stays exactly as it is.
+    """
+    raw = result.get("output_dir") if isinstance(result, dict) else None
+    if not raw:
+        return result
+    folder = Path(str(raw))
+    if GENERATED_OUTPUT_DIR_MARKER not in folder.name:
+        return result
+    try:
+        if not folder.is_dir():
+            return result
+        entries = list(folder.rglob("*"))
+        if any(item.is_file() and item.name not in _IGNORABLE_OUTPUT_LEFTOVERS for item in entries):
+            return result
+        for item in sorted(entries, key=lambda path: len(path.parts), reverse=True):
+            if item.is_dir():
+                item.rmdir()
+            else:
+                item.unlink()
+        folder.rmdir()
+    except OSError:
+        # 删不掉（权限、正好有人在往里写）就原样留着：多一个空文件夹不碍事，误删才碍事。
+        return result
+    cleaned = dict(result)
+    cleaned["output_dir"] = ""
+    for key in ("translated_dir", "publication_dir", "review_dir"):
+        value = cleaned.get(key)
+        if value and Path(str(value)).is_relative_to(folder):
+            cleaned[key] = ""
+    return cleaned
 
 
 def _sanitize_task_data(value: Any, *, key: str = "") -> Any:

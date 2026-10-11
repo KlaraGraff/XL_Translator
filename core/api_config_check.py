@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from config import CLOUD_ENGINES, LM_STUDIO_BASE_URL, OLLAMA_BASE_URL, normalize_cloud_base_url
-from settings import AppSettings, get_cloud_provider_config, get_key
+from settings import AppSettings, get_cloud_provider_config, get_connection_scoped_key, get_key
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
             message=f"{provider_label} 尚未填写 Base URL。",
         )
 
-    if not str(get_key(provider, base_url) or "").strip():
+    if not _primary_connection_key(settings) and not str(get_key(provider, base_url) or "").strip():
         return ApiConfigCheckResult(
             ok=False,
             status="missing_api_key",
@@ -71,6 +71,22 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
         )
 
     return ApiConfigCheckResult(ok=True)
+
+
+def _primary_connection_key(settings: AppSettings) -> str:
+    """The key the task will actually dial with, when the primary owns one.
+
+    Keys saved through a connection row live under ``conn::<id>``; only the
+    panel's legacy write-through also copies the primary's key to the
+    provider/Base URL scope.  A connection added later and then promoted to
+    primary (reorder, or deleting the old primary) therefore has no provider
+    scope key, yet the runners resolve ``conn::<id>`` first and run fine — so
+    checking only the provider scope blocked a start the task would survive.
+    """
+    connections = list(getattr(settings.engine, "connections", None) or [])
+    if not connections:
+        return ""
+    return str(get_connection_scoped_key(connections[0].id) or "").strip()
 
 
 def _provider_label(provider: str) -> str:

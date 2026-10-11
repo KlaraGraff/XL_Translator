@@ -1,3 +1,4 @@
+import pytest
 import hashlib
 import json
 from pathlib import Path
@@ -364,3 +365,33 @@ def test_numbers_next_to_chinese_characters_are_kept_in_the_check():
     assert _numeric_tokens("M10 螺栓 Q235") == []
     assert _valid_translation("Fire exit route 12345", "消防通道12345") == (True, "")
     assert _valid_translation("Room 101", "房间102")[0] is False
+
+
+def test_truncated_dxf_is_rejected_instead_of_passing_as_empty_drawing():
+    complete = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (1, "门"), (0, "ENDSEC"), (0, "EOF"))
+    assert [record.value for record in _parse_dxf(complete)][-1] == "EOF"
+    truncated = _dxf((0, "SECTION"), (2, "ENT"))
+    with pytest.raises(CadPipelineError, match="不完整"):
+        _parse_dxf(truncated)
+
+
+def test_gbk_dxf_is_read_and_written_back_in_its_own_codepage(tmp_path):
+    """老格式 DXF 按 $DWGCODEPAGE（国内基本是 ANSI_936/GBK）存字，不能当 UTF-8 拒收。"""
+    text = _dxf(
+        (0, "SECTION"), (2, "HEADER"), (9, "$DWGCODEPAGE"), (3, "ANSI_936"), (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (8, "图层"), (1, "设备基础"),
+        (0, "ENDSEC"), (0, "EOF"),
+    )
+    source = tmp_path / "old.dxf"
+    source.write_bytes(text.encode("gbk"))
+    assert scan_cad_file(source, options=CadPipelineOptions(target_lang="fr")).candidate_count == 1
+
+    output = tmp_path / "old_fr.dxf"
+    CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {t: "Fondation d'équipement" for t in texts},
+    ).translate_file(source, output, options=CadPipelineOptions(target_lang="fr"))
+    written = output.read_bytes()
+    decoded = written.decode("gbk")
+    assert "图层" in decoded
+    assert "\\U+00E9" in decoded or "é" in decoded

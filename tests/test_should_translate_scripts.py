@@ -117,5 +117,31 @@ class ChineseTargetBranchTests(unittest.TestCase):
                 )
 
 
+class StandardCodeTests(unittest.TestCase):
+    """独立成格的标准号原样保留：送去翻译只会被模型原样还回，再被标成需复核。"""
+
+    def test_standard_codes_are_not_sent(self) -> None:
+        for text in (
+            "GB/T 700-2006",
+            "GB 50016-2014",
+            "JGJ/T 79-2012",
+            "DB11/T 1234-2015",
+            "ISO 9001:2015",
+            "DIN EN ISO 9001:2015",
+        ):
+            for target, source in (("en", "zh"), ("fr", "auto"), ("zh", "en")):
+                with self.subTest(text=text, target=target, source=source):
+                    self.assertFalse(
+                        should_translate(text, target_lang=target, source_lang=source)
+                    )
+
+    def test_capitalised_phrases_with_numbers_are_still_sent(self) -> None:
+        for text in ("ROOM 101", "PHASE 2", "GB/T 700-2006 钢材"):
+            with self.subTest(text=text):
+                self.assertTrue(
+                    should_translate(text, target_lang="en", source_lang="zh")
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

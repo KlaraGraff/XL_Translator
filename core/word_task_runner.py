@@ -20,6 +20,7 @@ from loguru import logger
 
 from core import tm_manager
 from core.api_concurrency_control import (
+    ApiCredentialRejectedError,
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
 )
@@ -304,6 +305,21 @@ def _iter_source_location_labels(
         location_label = str(location.get("location_label") or "未知位置")
         labels.append(f"{file_name} · {section_path} · {location_label}")
     return labels
+
+
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+_CJK_TARGET_PREFIXES = ("zh", "ja", "ko")
+
+
+def _translation_in_unexpected_cjk(source: str, translation: str | None, target_lang: str) -> bool:
+    """A Latin-script target whose "translation" of CJK-free text came back in CJK."""
+    target = str(target_lang or "").strip().lower()
+    if not target or target.startswith(_CJK_TARGET_PREFIXES):
+        return False
+    text = str(translation or "")
+    if not text or text.strip() == str(source or "").strip():
+        return False
+    return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
 
 
 class WordTaskRunner:
@@ -882,6 +898,8 @@ class WordTaskRunner:
         word_batch_stats = WordBatchRunStats()
         model_source_results: dict[str, list[TranslationLanguageResult]] = {}
         model_source_results_lock = threading.Lock()
+        # 模型报「本来就是目标语言」、原样返回的段落：成品体检不再把它们报成未译源文。
+        already_target_sources: set[str] = set()
         recovery_pool: _WordRecoveryPool | None = None
         recovery_outcome = _WordRecoveryOutcome(
             fixed_sources=[],
@@ -1461,8 +1479,25 @@ class WordTaskRunner:
                     on_all_drained=recovery_pool.start,
                 )
 
+                def already_in_target_language(source: str, candidate: str | None) -> bool:
+                    # 自动识别时模型报这段就是目标语言、译文又原样返回（英译英文档里的
+                    # 英文段落）：不是翻译失败，不该占三轮重试再标需复核。
+                    # 译文跟原文不一样也算：模型报这段已经是目标语言，却又「翻」出了别的
+                    # 东西（本机实测里一段英文被译成了中文插进英文文档），那份译文一律不用。
+                    del candidate
+                    if not auto_source_lang:
+                        return False
+                    with model_source_results_lock:
+                        reported = list(model_source_results.get(source, ()))
+                    target = str(target_lang or "").strip().lower()
+                    return bool(reported) and all(
+                        str(item.source_lang or "").strip().lower() == target for item in reported
+                    )
+
                 def recovery_candidate_cb(source: str, candidate: str) -> None:
                     if self.stop_requested():
+                        return
+                    if already_in_target_language(source, candidate):
                         return
                     if _needs_word_translation_retry(
                         source,
@@ -1495,7 +1530,41 @@ class WordTaskRunner:
                 mixed_results: dict[str, MixedLanguageResult] = {}
                 mixed_stats = MixedLanguageRunStats()
 
+                rate_limit_note = (
+                    "接口持续限流，已停止继续请求。已翻好的内容照常写入文件，"
+                    "其余段落保留原文，限流过去后用「接着上次继续」补译即可。"
+                )
+
                 def run_normal_main_translation() -> dict[str, str]:
+                    # 持续限流但已拿到部分译文：按「停止」收尾，写出已翻部分、留下可续译的
+                    # 进度，而不是整批失败、一个文件都不写。一条都没拿到时照旧失败。
+                    nonlocal stopped_message
+                    try:
+                        return _run_normal_main_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        partial = getattr(exc, "partial_results", None) or {}
+                        if not partial or isinstance(exc, ApiCredentialRejectedError):
+                            raise
+                        self._log("WARN", f"{exc}")
+                        if stopped_message is None:
+                            stopped_message = rate_limit_note
+                        self._stop_event.set()
+                        return dict(partial)
+
+                def run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
+                    nonlocal stopped_message
+                    try:
+                        return _run_mixed_main_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        if not misses or isinstance(exc, ApiCredentialRejectedError):
+                            raise
+                        self._log("WARN", f"{exc}")
+                        if stopped_message is None:
+                            stopped_message = rate_limit_note
+                        self._stop_event.set()
+                        return {}
+
+                def _run_normal_main_translation() -> dict[str, str]:
                     if not misses:
                         return {}
                     return translate_word_texts(
@@ -1521,7 +1590,7 @@ class WordTaskRunner:
                         drained_callback=main_drain_gate.queue_drained,
                     )
 
-                def run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
+                def _run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
                     if not mixed_texts:
                         return {}
                     self._queue.put(
@@ -1619,10 +1688,34 @@ class WordTaskRunner:
                         ),
                     )
 
+                already_target_sources.update(
+                    source
+                    for source in misses
+                    if already_in_target_language(source, api_translations.get(source))
+                )
+                for source in already_target_sources:
+                    api_translations[source] = source
+                # 模型没报语言、或者报错了语言时的兜底：目标是拼音文字、原文里一个汉字/假名
+                # 都没有，「译文」里却冒出了汉字，那一定不是要的译文。退回原文交给下面的
+                # 严格重试，重试不过就照常标需复核，不会把中文塞进英文文档里。
+                wrong_script = [
+                    source
+                    for source in misses
+                    if source not in already_target_sources
+                    and _translation_in_unexpected_cjk(source, api_translations.get(source), target_lang)
+                ]
+                for source in wrong_script:
+                    api_translations[source] = source
+                if wrong_script:
+                    self._log(
+                        "WARN",
+                        f"{len(wrong_script)} 处译文不是目标语言（原文没有中文，译文却是中文），已退回原文重试。",
+                    )
                 retry_sources = [
                     source
                     for source in misses
-                    if _needs_word_translation_retry(
+                    if source not in already_target_sources
+                    and _needs_word_translation_retry(
                         source,
                         api_translations.get(source),
                         source_lang=source_lang,
@@ -1645,7 +1738,17 @@ class WordTaskRunner:
                 # 子。跳过占位，它们就和没轮到的段落一样缺席词典：写盘保留原文，
                 # 进度计入「保留原文待续译」，续译时会重新排队。
                 stop_withdrew_unresolved = self._stop_event.is_set()
-                if not stop_withdrew_unresolved:
+                if stop_withdrew_unresolved:
+                    # 没轮到的批次在 translate_word_texts 合并结果时按「原文」补位
+                    # （_merge_unit_results 的缺省值），所以它们其实已经躺在词典里了。
+                    # 不摘掉的话，停止说明会报「已译 3000/3000 段，0 段待续译」，
+                    # 实际只译了三分之一——用户看到的就是一份「全部翻完」的假账。
+                    # 恢复池在停止后不再收候选（add_candidate 直接返回），这批段落
+                    # 不会出现在 unresolved_sources 里，只能按 retry_sources 摘。
+                    for source in retry_sources:
+                        if api_translations.get(source) == source:
+                            api_translations.pop(source, None)
+                else:
                     for source in recovery_outcome.unresolved_sources:
                         api_translations[source] = source
                         identity_fallback_sources.add(source)
@@ -2257,6 +2360,7 @@ class WordTaskRunner:
                         pre_reported_residual_sources={
                             unit.source_text.strip() for unit in still_needs_review
                         },
+                        already_target_sources=already_target_sources,
                     )
                     final_path = final_output_dir / out_path.name
                     elapsed = (datetime.now() - t0).total_seconds()
@@ -2478,6 +2582,9 @@ class WordTaskRunner:
                     )
                     untranslated_texts = max(total_texts - translated_texts, 0)
                     written_files = sum(1 for item in file_results if item.get("success"))
+                    # Word 是全局批量翻译，停止时文件照样每个都写出来，
+                    # unstarted_file_count 恒为 0；界面要靠段数才能说出「还剩多少」。
+                    result_contract["kpi"]["unstarted_text_count"] = untranslated_texts
                     stopped_message = (
                         f"{stopped_message}"
                         f"进度：已译 {translated_texts}/{total_texts} 段，"
@@ -2590,6 +2697,12 @@ class WordTaskRunner:
             elif stopped:
                 status = "unstarted"
                 readable_error = "任务在开始该文件前已停止。"
+            elif error_message:
+                # 与 Excel 同一口径：整批失败时这份文件是「没生成」，不是「还没轮到」。
+                # 以前这里记成 unstarted，同一个 Key 错误，Word 清单写「未开始」、
+                # Excel 写「未生成」。
+                status = "failed"
+                readable_error = "任务整体失败，这个文件没有写出。"
             else:
                 status = "unstarted"
                 readable_error = "该文件未开始处理。"

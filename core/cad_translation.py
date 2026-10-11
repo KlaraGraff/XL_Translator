@@ -8,6 +8,7 @@ writer preserve every DXF record and only replace text group values.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import hashlib
 import os
@@ -65,15 +66,73 @@ class CadConverter(Protocol):
     def dxf_to_dwg(self, source: Path, destination: Path) -> Path: ...
 
 
-def _read_dxf_text(path: Path) -> str:
+# R2007 之前的 DXF 按 $DWGCODEPAGE 声明的 ANSI 代码页存字，国内老图纸基本是
+# ANSI_936（GBK）。以前一律按 UTF-8 读，这类图纸整份读不进来。
+_DXF_CODEPAGES = {
+    "ANSI_874": "cp874",
+    "ANSI_932": "cp932",
+    "ANSI_936": "gbk",
+    "ANSI_949": "cp949",
+    "ANSI_950": "big5",
+    "ANSI_1250": "cp1250",
+    "ANSI_1251": "cp1251",
+    "ANSI_1252": "cp1252",
+    "ANSI_1253": "cp1253",
+    "ANSI_1254": "cp1254",
+    "ANSI_1255": "cp1255",
+    "ANSI_1256": "cp1256",
+    "ANSI_1257": "cp1257",
+    "ANSI_1258": "cp1258",
+}
+_DWGCODEPAGE_RE = re.compile(rb"\$DWGCODEPAGE[ \t]*\r?\n[ \t]*3[ \t]*\r?\n[ \t]*([A-Za-z0-9_]+)")
+
+
+def _dxf_unicode_escape(error: UnicodeEncodeError) -> tuple[str, int]:
+    # 代码页里没有的字符（译文里的 é、œ 等）按 DXF 自己的 \U+XXXX 写法存。
+    chars = error.object[error.start:error.end]
+    return "".join(f"\\U+{ord(char):04X}" for char in chars), error.end
+
+
+codecs.register_error("dxf_unicode_escape", _dxf_unicode_escape)
+
+
+def _detect_dxf_encoding(path: Path) -> str:
+    """UTF-8 能读就用 UTF-8；否则按头部 $DWGCODEPAGE，没有声明时再试 GBK。"""
+    raw = path.read_bytes()
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        pass
+    match = _DWGCODEPAGE_RE.search(raw)
+    candidates = []
+    if match:
+        declared = _DXF_CODEPAGES.get(match.group(1).decode("ascii").upper())
+        if declared:
+            candidates.append(declared)
+    candidates.append("gbk")
+    for encoding in candidates:
+        try:
+            raw.decode(encoding)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeError("DXF 既不是 UTF-8，也不是声明的代码页或 GBK 编码。")
+
+
+def _read_dxf_text(path: Path, encoding: str | None = None) -> str:
     # Disable universal-newline conversion.  DXF group code indentation and
     # CRLF bytes outside edited values are part of the preserved source.
-    with path.open("r", encoding="utf-8", errors="strict", newline="") as stream:
+    encoding = encoding or _detect_dxf_encoding(path)
+    with path.open("r", encoding=encoding, errors="strict", newline="") as stream:
         return stream.read()
 
 
-def _write_dxf_text(path: Path, text: str) -> None:
-    with path.open("w", encoding="utf-8", newline="") as stream:
+def _write_dxf_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    # 按源文件的编码写回：老格式 DXF 改存成 UTF-8，CAD 软件会按头部声明的代码页
+    # 去读，中文就成了乱码。
+    errors = "strict" if encoding == "utf-8" else "dxf_unicode_escape"
+    with path.open("w", encoding=encoding, errors=errors, newline="") as stream:
         stream.write(text)
 
 
@@ -133,7 +192,7 @@ def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list
         try:
             return _parse_dxf(_read_dxf_text(path)), False
         except UnicodeError as exc:
-            raise CadPipelineError("中间 DXF 不是可读的 ASCII/UTF-8 文件。") from exc
+            raise CadPipelineError("中间 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
     if path.suffix.lower() != ".dwg":
         raise CadPipelineError(f"不支持的 CAD 文件格式：{path.suffix}")
     if converter is None:
@@ -144,7 +203,7 @@ def _read_scan_records(path: Path, converter: CadConverter | None) -> tuple[list
         try:
             return _parse_dxf(_read_dxf_text(dxf_path)), False
         except UnicodeError as exc:
-            raise CadPipelineError("DWG 转出的 DXF 不是可读的 ASCII/UTF-8 文件。") from exc
+            raise CadPipelineError("DWG 转出的 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
 
 
 def scan_cad_file(
@@ -293,6 +352,13 @@ def _parse_dxf(text: str) -> list[DxfRecord]:
         except ValueError as exc:
             raise CadPipelineError(f"DXF 代码行无效：{code_text!r}") from exc
         records.append(DxfRecord(code, value, ending, code_text, code_ending))
+    # 被截断的图纸（拷贝中断、网盘没同步完）照样能逐行配对解析，只是后半截没了：
+    # 不拦的话它会以「0 个文字实体」通过扫描，任务里还标成「已生成」，产物是一份
+    # 同样残缺的 DXF。开了 SECTION 却没有收尾的 ENDSEC，就是没读完的文件。
+    opened = sum(1 for record in records if record.code == 0 and record.value.strip() == "SECTION")
+    closed = sum(1 for record in records if record.code == 0 and record.value.strip() == "ENDSEC")
+    if opened > closed:
+        raise CadPipelineError("DXF 文件不完整：有段落没有结束标记，可能已损坏或没有拷贝完整，已拒绝处理。")
     return records
 
 
@@ -883,9 +949,10 @@ class CadTranslationPipeline:
             # converter step fails.
             shutil.copy2(work_dxf, evidence_dir / "source.dxf")
             try:
-                dxf_text = _read_dxf_text(work_dxf)
+                dxf_encoding = _detect_dxf_encoding(work_dxf)
+                dxf_text = _read_dxf_text(work_dxf, dxf_encoding)
             except UnicodeError as exc:
-                raise CadPipelineError("中间 DXF 不是可读的 ASCII/UTF-8 文件。") from exc
+                raise CadPipelineError("中间 DXF 无法识别编码（不是 UTF-8，也不是 GBK 等常见代码页）。") from exc
             records = _parse_dxf(dxf_text)
             stats = CadTranslationStats(scanned_entities=sum(1 for r in records if r.code == 0))
             self._emit("scan", 1, 1, "已读取 DXF")
@@ -971,7 +1038,7 @@ class CadTranslationPipeline:
                     stats.changed += 1
             write_started = time.perf_counter()
             translated_dxf = temp_root / f"{source.stem}_translated.dxf"
-            _write_dxf_text(translated_dxf, _serialize_dxf(records))
+            _write_dxf_text(translated_dxf, _serialize_dxf(records), dxf_encoding)
             shutil.copy2(translated_dxf, evidence_dir / "translated.dxf")
             persisted_work_dxf = output.with_suffix(output.suffix + ".work.dxf")
             if options.keep_work_dxf:

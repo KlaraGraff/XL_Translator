@@ -673,5 +673,81 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             )
 
 
+    # 真实的 translate_word_texts 会给没轮到的批次按原文补位（_merge_unit_results
+    # 的缺省值）。停止时这些补位不能算「已译」，否则停止说明报「已译 N/N 段」、界面
+    # 横幅写「其余全部通过」，实际大半段落还是原文。
+    def test_identity_placeholders_count_as_pending_after_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("已完成翻译的段落。")
+            document.add_paragraph("翻译中途被打断的段落。")
+            document.save(source)
+            translated_text = "This paragraph finished translating before the stop landed."
+
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+
+            def stop_mid_batch(texts, *_args, **kwargs):
+                runner.stop()
+                kwargs["drained_callback"]()
+                # 与真实合并结果同形：没发出去的那一段按原文补位，而不是缺席。
+                return {
+                    "已完成翻译的段落。": translated_text,
+                    "翻译中途被打断的段落。": "翻译中途被打断的段落。",
+                }
+
+            with ExitStack() as stack:
+                self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: _prepared(source)},
+                    real_write=True,
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[
+                            WordSegment("已完成翻译的段落。", "paragraph", "正文第 1 段"),
+                            WordSegment("翻译中途被打断的段落。", "paragraph", "正文第 2 段"),
+                        ],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={
+                            "已完成翻译的段落。": None,
+                            "翻译中途被打断的段落。": None,
+                        },
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=stop_mid_batch,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=_stub_recovery_pool(),
+                    )
+                )
+                runner._run()
+
+            stopped = self._terminal_message(runner, StoppedMsg)
+            self.assertIn("已译 1/2 段，1 段保留原文待续译", stopped.message)
+            self.assertEqual(stopped.kpi["unstarted_text_count"], 1)
+            written = Document(Path(stopped.files[0]["output"]))
+            paragraphs = [paragraph.text for paragraph in written.paragraphs]
+            self.assertIn(translated_text, paragraphs)
+            self.assertIn("翻译中途被打断的段落。", paragraphs)
+
+
 if __name__ == "__main__":
     unittest.main()

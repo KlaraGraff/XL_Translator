@@ -18,7 +18,7 @@ from loguru import logger
 
 from core.bilingual_writer import bilingual_output_name
 from core.bilingual_writer import _sanitize_filename_fragment as _sanitize_bilingual_fragment
-from core.excel_coverage import build_excel_coverage_plan
+from core.excel_coverage import build_excel_coverage_plan, workbook_sheet_titles
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.language_registry import get_target_lang_display
 from core.pdf_image_translation import (
@@ -266,7 +266,12 @@ def match_previous_output(
 # ---------------------------------------------------------------------------
 
 
-def _plan_text_occurrences(plan: Any, *, keyed_by_sheet: bool) -> dict[tuple[str | None, str], int]:
+def _plan_text_occurrences(
+    plan: Any,
+    *,
+    keyed_by_sheet: bool,
+    sheet_alias: dict[str, str] | None = None,
+) -> dict[tuple[str | None, str], int]:
     """一份覆盖率计划里「见过的文本」多重集：键是 (分表名, 文本)，值是出现次数。
 
     必须按出现次数（而不是文本集合）计数：源文件新增的行/段落若恰好复用了底稿里
@@ -286,6 +291,8 @@ def _plan_text_occurrences(plan: Any, *, keyed_by_sheet: bool) -> dict[tuple[str
         sheet: str | None = None
         if keyed_by_sheet and isinstance(data, dict):
             sheet = str(data.get("sheet") or "") or None
+            if sheet is not None and sheet_alias:
+                sheet = sheet_alias.get(sheet, sheet)
         keys: set[str] = set()
         source = str(unit.source_text or "").strip()
         if source:
@@ -330,6 +337,7 @@ def _baseline_removed_source_texts(
     *,
     keyed_by_sheet: bool,
     prefix_tolerant: bool,
+    sheet_alias: dict[str, str] | None = None,
 ) -> list[str]:
     """底稿里有源文半边、源文件里却一次都找不到的文本——源文件删掉的内容。
 
@@ -368,6 +376,8 @@ def _baseline_removed_source_texts(
         sheet = None
         if keyed_by_sheet and isinstance(data, dict):
             sheet = str(data.get("sheet") or "") or None
+            if sheet is not None and sheet_alias:
+                sheet = sheet_alias.get(sheet, sheet)
         key = (sheet, source)
         if available.get(key, 0) > 0:
             available[key] -= 1
@@ -432,6 +442,7 @@ def baseline_missing_source_texts(
                     target_lang=target_lang,
                     source_lang=source_lang,
                     formula_display_value_backfill=formula_display_value_backfill,
+                    original_sheet_names=workbook_sheet_titles(source_path),
                 )
         elif surface == "word":
             source_plan = build_word_coverage_plan(
@@ -444,7 +455,10 @@ def baseline_missing_source_texts(
         else:
             return None
         keyed_by_sheet = surface == "excel"
-        known = _plan_text_occurrences(baseline_plan, keyed_by_sheet=keyed_by_sheet)
+        sheet_alias = _baseline_sheet_alias(source_plan, baseline_plan) if keyed_by_sheet else {}
+        known = _plan_text_occurrences(
+            baseline_plan, keyed_by_sheet=keyed_by_sheet, sheet_alias=sheet_alias
+        )
     except Exception:  # noqa: BLE001 - 核查失败不等于底稿有问题，交还调用方维持原行为。
         logger.debug(
             f"[续译核查] 底稿资格核查跑不起来，按无法核查处理：{source_path}",
@@ -495,8 +509,28 @@ def baseline_missing_source_texts(
         baseline_plan,
         keyed_by_sheet=keyed_by_sheet,
         prefix_tolerant=prefix_tolerant,
+        sheet_alias=sheet_alias,
     )
     return BaselineDivergence(missing, removed)
+
+
+def _baseline_sheet_alias(source_plan: Any, baseline_plan: Any) -> dict[str, str]:
+    """底稿分表名 → 源文件分表名。
+
+    上一轮开着「翻译工作表名称」时，底稿里的「报价单」已经叫「Quotation」，按分表名
+    分桶对账会让每一格都对不上，整份文件被判「源文件已变化」、续译退化成全量重翻。
+    改名不改顺序：两边参与计划的分表数一样时按位置一一对应；数量不同说明真的增删了
+    分表，不做映射，照旧按名字对账。
+    """
+    source_names = tuple(getattr(source_plan, "sheet_names", ()) or ())
+    baseline_names = tuple(getattr(baseline_plan, "sheet_names", ()) or ())
+    if not source_names or len(source_names) != len(baseline_names):
+        return {}
+    return {
+        baseline: source
+        for baseline, source in zip(baseline_names, source_names)
+        if baseline != source
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +617,7 @@ def _classify_excel_or_word(
                 target_lang=target_lang,
                 source_lang=source_lang,
                 formula_display_value_backfill=formula_display_value_backfill,
+                original_sheet_names=workbook_sheet_titles(item_path),
             )
         else:
             plan = build_word_coverage_plan(matched, target_lang=target_lang, source_lang=source_lang)

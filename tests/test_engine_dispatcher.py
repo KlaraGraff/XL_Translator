@@ -4,7 +4,7 @@ import errno
 import unittest
 from unittest.mock import patch
 
-from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+from core.api_concurrency_control import ApiCredentialRejectedError, ApiKeyTemporarilyUnavailableError
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
     build_engine,
@@ -321,20 +321,43 @@ class EngineDispatcherTests(unittest.TestCase):
         engine = PermanentFailureExcelEngine()
         stats = TranslationBatchRunStats()
 
-        result = translate_texts(
-            ["alpha", "beta", "gamma"],
-            engine,
-            "fr",
-            "system prompt",
-            batch_size=20,
-            concurrency=1,
-            source_lang="en",
-            stats=stats,
-        )
+        # 一把被拒的 Key 不是「这一批坏了」：整个任务直接失败并说清原因，而不是每批
+        # 退回原文、最后写出一份全是原文的文件再报「N 处需复核」。
+        with self.assertRaises(ApiCredentialRejectedError) as caught:
+            translate_texts(
+                ["alpha", "beta", "gamma"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                source_lang="en",
+                stats=stats,
+            )
 
         self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
-        self.assertEqual(result, {text: text for text in ("alpha", "beta", "gamma")})
-        self.assertEqual(stats.failed_batch_count, 3)
+        self.assertIn("API Key", str(caught.exception))
+        self.assertEqual(getattr(caught.exception, "partial_results", {}), {})
+
+    def test_missing_model_still_falls_back_without_splitting(self) -> None:
+        # 只有 Key/账户被拒才整任务失败；模型名写错这类 404 仍按原来的方式记为未翻译。
+        engine = PermanentFailureExcelEngine()
+        stats = TranslationBatchRunStats()
+
+        def missing_model(texts, *_args, **_kwargs):
+            engine.calls.append(list(texts))
+            exc = RuntimeError("404 model not found")
+            exc.status_code = 404
+            raise exc
+
+        engine.translate_batch = missing_model
+        result = translate_texts(
+            ["alpha", "beta"], engine, "fr", "system prompt",
+            batch_size=20, concurrency=1, source_lang="en", stats=stats,
+        )
+        self.assertEqual(engine.calls, [["alpha", "beta"]])
+        self.assertEqual(result, {"alpha": "alpha", "beta": "beta"})
+        self.assertEqual(stats.untranslated_count, 2)
 
     def test_a_batch_that_always_fails_is_reported_as_untranslated(self) -> None:
         # The file still gets the source text so the run can finish, but the
@@ -435,20 +458,19 @@ class EngineDispatcherTests(unittest.TestCase):
         engine = PermanentFailureSourcesEngine()
         stats = TranslationBatchRunStats()
 
-        result = translate_texts_with_sources(
-            ["alpha", "beta", "gamma"],
-            engine,
-            "fr",
-            "system prompt",
-            batch_size=20,
-            concurrency=1,
-            stats=stats,
-        )
+        with self.assertRaises(ApiCredentialRejectedError):
+            translate_texts_with_sources(
+                ["alpha", "beta", "gamma"],
+                engine,
+                "fr",
+                "system prompt",
+                batch_size=20,
+                concurrency=1,
+                stats=stats,
+            )
 
         self.assertEqual(engine.calls, [["alpha", "beta", "gamma"]])
-        self.assertEqual(stats.untranslated_count, 3)
         self.assertEqual(stats.retry_count, 0)
-        self.assertEqual(set(result), {"alpha", "beta", "gamma"})
 
     def test_a_failover_wrapper_translates_the_automatic_language_path(self) -> None:
         # Regression for the multi-connection + auto-source-language path that

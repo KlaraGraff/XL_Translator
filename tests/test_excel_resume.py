@@ -928,5 +928,55 @@ class ExcelResumeTests(unittest.TestCase):
             wb_doc.close()
 
 
+    def test_resume_accepts_baseline_whose_sheet_titles_were_translated(self) -> None:
+        """上一轮开着「翻译工作表名称」：底稿里母表已改成译名，副本还叫「报价单_原文」。
+
+        续译要能认出这份底稿：不能按分表名对账判成「源文件已变化」整份重翻，
+        也不能把找不到同名母表的「报价单_原文」副本当成待译内容。
+        """
+        proj = self.tmp / "proj"
+        source = _make_xlsx(
+            proj / "doc.xlsx", {"A1": "你好", "A2": "再见"}, sheet_name="报价单"
+        )
+        resume_dir = self.tmp / "proj_翻译输出_20260101_000000"
+        baseline = _make_baseline(
+            source,
+            resume_dir,
+            translations={"你好": "Hello"},
+            keep_original_sheets=True,
+        )
+        wb = load_workbook(baseline)
+        wb["报价单"].title = "Quotation"
+        wb.save(baseline)
+        wb.close()
+
+        settings = _settings()
+        settings.excel_output.keep_original_sheets = True
+        calls: list[list[str]] = []
+        with _pipeline_patches(translate_side_effect=_fake_translate(calls)):
+            runner = TaskRunner(
+                [FileItem(path=source, name="doc", size_kb=1.0)],
+                settings,
+                source_root=proj,
+                untranslated_only=True,
+                resume_output_dir=str(resume_dir),
+            )
+            done = _run_and_get_done(runner)
+
+        self.assertEqual([t for batch in calls for t in batch], ["再见"])
+        log_texts = "\n".join(_log_texts(runner))
+        self.assertNotIn("无法当底稿", log_texts)
+        out_path = Path(done.file_results[0]["output_path"])
+        wb_out = load_workbook(out_path)
+        try:
+            self.assertEqual(wb_out.sheetnames, ["Quotation", "报价单_原文"])
+            self.assertEqual(wb_out["Quotation"]["A1"].value, "你好\nHello")
+            self.assertEqual(wb_out["Quotation"]["A2"].value, "再见\nT:再见")
+            self.assertEqual(wb_out["报价单_原文"]["A1"].value, "你好")
+            self.assertEqual(wb_out["报价单_原文"]["A2"].value, "再见")
+        finally:
+            wb_out.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
