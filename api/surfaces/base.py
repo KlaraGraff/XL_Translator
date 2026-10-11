@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from api.task_contracts import Runner, TaskInputError, TaskOptions
+from api.task_contracts import (
+    REASON_TRANSLATION_MODEL_MISSING,
+    Runner,
+    TaskInputError,
+    TaskOptions,
+)
 from core.api_config_check import check_translation_api_config
 from settings import AppSettings
 
@@ -144,7 +149,9 @@ def require_translation_model(settings: AppSettings) -> None:
     model_check = check_translation_api_config(settings)
     if not model_check.ok:
         detail = f"（{model_check.detail}）" if model_check.detail else ""
-        raise TaskInputError(f"{model_check.message}{detail}")
+        raise TaskInputError(
+            f"{model_check.message}{detail}", reason=REASON_TRANSLATION_MODEL_MISSING
+        )
 
 
 def file_format(item: Any) -> str:

@@ -3180,12 +3180,27 @@ async function preflightAndSubmit(
     }
     await sendTaskStart(surface, st, payload);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     showStartBlockedModal(surface, st, payload, error);
   } finally {
     submittingSurfaces.delete(surface);
     rerender(surface);
   }
+}
+
+/** 模型还没配好时后端给的拦截原因（api/task_contracts.py 的 REASON_*_MODEL_MISSING），
+ *  值是「设置 › 模型服务」里对应的角色。 */
+const MODEL_MISSING_ROLE: Record<string, string> = {
+  translation_model_missing: "translation",
+  image_model_missing: "image",
+  pdf_review_model_missing: "pdf_review",
+};
+
+/** 启动没成功时记一笔，开始按钮会改叫「重试启动」。没配模型不算：那一次什么都还没
+ *  试过，按钮照旧叫「开始翻译」，出路在弹窗的「去设置」里。 */
+function noteStartFailure(surface: Surface, error: unknown): void {
+  if (MODEL_MISSING_ROLE[apiErrorReason(error)]) submitFailures.delete(surface);
+  else submitFailures.add(surface);
 }
 
 /** 前置校验把任务拦下来时给一个弹窗，不给两秒就消失的提示：任务根本没开始这件事得留在
@@ -3211,6 +3226,25 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
           variant: "primary",
           onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
         },
+      ],
+    });
+    return;
+  }
+  const missingRole = MODEL_MISSING_ROLE[apiErrorReason(error)];
+  if (missingRole) {
+    // 以前这里和其他拦截一样只有「知道了」：用户读完「尚未填写模型名称」还得自己去找
+    // 设置在哪。直接给一个去「设置 › 模型服务」对应角色的主按钮。
+    openModal({
+      tone: "warn",
+      icon: "warn",
+      title: missingRole === "pdf_review" ? "还没有配置好审核模型" : "还没有配置好翻译模型",
+      body: [
+        redactedText((error as Error)?.message, "翻译要用的模型还没有填好。"),
+        "填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。",
+      ],
+      actions: [
+        { label: "取消" },
+        { label: "去设置", variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
       ],
     });
     return;
@@ -3275,7 +3309,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     watchTask(surface);
     if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);

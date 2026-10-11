@@ -8,7 +8,13 @@ from typing import Any
 from loguru import logger
 
 from api.surfaces.base import RunnerRequest, Surface
-from api.task_contracts import Runner, TaskInputError, TaskOptions
+from api.task_contracts import (
+    REASON_IMAGE_MODEL_MISSING,
+    REASON_PDF_REVIEW_MODEL_MISSING,
+    Runner,
+    TaskInputError,
+    TaskOptions,
+)
 from core import bilingual_writer
 from core.model_roles import (
     ROLE_IMAGE,
@@ -72,36 +78,50 @@ class PdfSurface(Surface):
             image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
         except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
             raise TaskInputError(
-                f"PDF 与图片翻译模型的设置不可用：{_model_config_reason(exc)}"
+                f"PDF 与图片翻译模型的设置不可用：{_model_config_reason(exc)}",
+                reason=REASON_IMAGE_MODEL_MISSING,
             ) from exc
         if not image_model.model:
-            raise TaskInputError("请先填写 PDF 与图片翻译模型的名称。")
+            raise TaskInputError(
+                "请先填写 PDF 与图片翻译模型的名称。", reason=REASON_IMAGE_MODEL_MISSING
+            )
         if not provider_supports_capability(image_model.provider, "image"):
             raise TaskInputError(
                 unsupported_capability_message(
                     "PDF 与图片翻译模型", image_model.provider, "image"
-                )
+                ),
+                reason=REASON_IMAGE_MODEL_MISSING,
             )
         if image_model.mode == "cloud" and not image_model.api_key:
-            raise TaskInputError("PDF 与图片翻译模型还没有填写 API 密钥。")
+            raise TaskInputError(
+                "PDF 与图片翻译模型还没有填写 API 密钥。", reason=REASON_IMAGE_MODEL_MISSING
+            )
         if not settings.pdf.review_enabled:
             return
         try:
             review_model = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
         except Exception as exc:  # noqa: BLE001
             raise TaskInputError(
-                f"PDF 与图片审核模型的设置不可用：{_model_config_reason(exc)}"
+                f"PDF 与图片审核模型的设置不可用：{_model_config_reason(exc)}",
+                reason=REASON_PDF_REVIEW_MODEL_MISSING,
             ) from exc
         if not review_model.model:
-            raise TaskInputError("已开启逐页审核，请先填写 PDF 与图片审核模型的名称。")
+            raise TaskInputError(
+                "已开启逐页审核，请先填写 PDF 与图片审核模型的名称。",
+                reason=REASON_PDF_REVIEW_MODEL_MISSING,
+            )
         if not provider_supports_capability(review_model.provider, "vision_text"):
             raise TaskInputError(
                 unsupported_capability_message(
                     "PDF 与图片审核模型", review_model.provider, "vision_text"
-                )
+                ),
+                reason=REASON_PDF_REVIEW_MODEL_MISSING,
             )
         if review_model.mode == "cloud" and not review_model.api_key:
-            raise TaskInputError("已开启逐页审核，请先给 PDF 与图片审核模型填写 API 密钥。")
+            raise TaskInputError(
+                "已开启逐页审核，请先给 PDF 与图片审核模型填写 API 密钥。",
+                reason=REASON_PDF_REVIEW_MODEL_MISSING,
+            )
         availability = str(settings.pdf_review_model_role.availability_status or "unknown")
         if availability == "unavailable" and not options.allow_known_review_failure:
             # 这一条是有出路的拦截（allow_known_review_failure 就是那条出路），界面必须
