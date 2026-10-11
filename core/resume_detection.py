@@ -599,6 +599,60 @@ def _reusable_page_counts(
 # ---------------------------------------------------------------------------
 
 
+def _output_coverage_plan(
+    surface: str,
+    output_path: Path,
+    *,
+    source_path: Path,
+    target_lang: str,
+    source_lang: str,
+    formula_display_value_backfill: bool = True,
+) -> Any:
+    if surface == "excel":
+        # 与 runner 的补译计划同一套开关：不然回填关闭的用户会看到弹窗报
+        # 「还剩 N 处」、续译跑完却一格没动——正是下面注释里那个死循环观感。
+        return build_excel_coverage_plan(
+            output_path,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            formula_display_value_backfill=formula_display_value_backfill,
+            original_sheet_names=workbook_sheet_titles(source_path),
+        )
+    return build_word_coverage_plan(output_path, target_lang=target_lang, source_lang=source_lang)
+
+
+def count_untranslated_in_output(
+    surface: str,
+    output_path: str | Path,
+    *,
+    source_path: str | Path,
+    target_lang: str,
+    source_lang: str | None,
+    formula_display_value_backfill: bool = True,
+) -> int | None:
+    """产物里还剩多少格/段没翻——与续译弹窗「补 N 格 / 补 N 段」同一口径。
+
+    停止后的横幅和任务记录用它报「还有 N 段没翻」：以前停止那边按去重后的文本条数
+    数、弹窗这边按产物里的位置数，同一份文件一边说 314、一边说 337。两边都走这一个
+    函数，数字才对得上。数不出来（文件打不开、计划构建失败）返回 None。
+    """
+    if surface not in {"excel", "word"}:
+        return None
+    try:
+        plan = _output_coverage_plan(
+            surface,
+            Path(output_path),
+            source_path=Path(source_path),
+            target_lang=target_lang,
+            source_lang=source_lang or _DEFAULT_SOURCE_LANG,
+            formula_display_value_backfill=formula_display_value_backfill,
+        )
+        return int(plan.summary.get(COVERAGE_SOURCE_ONLY, 0))
+    except Exception:  # noqa: BLE001 - 数不出来就不报数，绝不拖垮任务收尾。
+        logger.debug(f"[续译检测] 产物未译数统计失败：{output_path}", exc_info=True)
+        return None
+
+
 def _classify_excel_or_word(
     surface: str,
     matched: Path,
@@ -609,18 +663,14 @@ def _classify_excel_or_word(
     formula_display_value_backfill: bool = True,
 ) -> tuple[str, int | None]:
     try:
-        if surface == "excel":
-            # 与 runner 的补译计划同一套开关：不然回填关闭的用户会看到弹窗报
-            # 「还剩 N 处」、续译跑完却一格没动——正是下面注释里那个死循环观感。
-            plan = build_excel_coverage_plan(
-                matched,
-                target_lang=target_lang,
-                source_lang=source_lang,
-                formula_display_value_backfill=formula_display_value_backfill,
-                original_sheet_names=workbook_sheet_titles(item_path),
-            )
-        else:
-            plan = build_word_coverage_plan(matched, target_lang=target_lang, source_lang=source_lang)
+        plan = _output_coverage_plan(
+            surface,
+            matched,
+            source_path=item_path,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            formula_display_value_backfill=formula_display_value_backfill,
+        )
         # 只数 source_only：补译写回只处理 source_units，AMBIGUOUS（多行歧义格）
         # 补译碰都不碰。把它算进未译数，会出现「剩 3 处 → 续译 → 还是剩 3 处」
         # 的死循环观感——数字必须对应续译真正会消掉的量。

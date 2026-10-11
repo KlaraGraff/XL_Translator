@@ -368,6 +368,9 @@ class TaskRunner(BaseTaskRunner):
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
+        # 停止后写出的文件里还剩多少格原文；None 表示没数（没走到写盘后的清点）
+        # 或数不出来——那时不报数，更不能报 0 冒充「已经全部翻完」。
+        unfinished_cells: int | None = None
         fatal_error_message: str | None = None
         quality_issues: list[dict] = []
         file_language_preflights: dict = {}
@@ -786,7 +789,7 @@ class TaskRunner(BaseTaskRunner):
             ))
 
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"[阶段 1 完成] 全部文件合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次（{phase1_elapsed:.2f}s）")
+            self._log("OK", f"读取完成：全部文件合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -918,7 +921,7 @@ class TaskRunner(BaseTaskRunner):
 
             self._log(
                 "INFO",
-                f"[阶段 2] 记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
+                f"记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
@@ -1018,12 +1021,22 @@ class TaskRunner(BaseTaskRunner):
                 quality_issues=quality_issues,
             )
 
-            phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
-            self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
+            self._log("OK", "翻译完成，开始生成文件")
+
+            # 阶段 3 的入口闸（与 Word 同一立场）：停止落在翻译中途时，已经到手的
+            # 译文照常写进文件，没翻到的格子保留原文，之后「接着翻译」只补这部分。
+            # 一条译文都没拿到才整批放弃——写出来也只是一份原文副本。
+            stop_write_note = ""
+            if self._stop_event.is_set():
+                if not global_translations:
+                    raise TaskStopped("任务已停止，还没有翻好的内容，没有生成文件。")
+                stop_write_note = (
+                    "任务已停止，已翻好的内容写进了文件，没翻到的保留原文，可以接着翻译。"
+                )
 
             self._file_progress.emit_many("waiting", "generate")
-
-            _raise_if_stopped()
 
             # ══════════════════════════════════════════════════════════
             # 阶段 3：逐文件串行回填写入
@@ -1096,7 +1109,10 @@ class TaskRunner(BaseTaskRunner):
                     batches.append(current)
                 translated: dict[str, str] = {}
                 for number, batch in enumerate(batches, start=1):
-                    _raise_if_stopped()
+                    if self._stop_event.is_set():
+                        # 阶段 3 不再整批弃文件：名称翻译途中停止，没轮到的名称保持
+                        # 原样，格子照常写出。抛 TaskStopped 会把已翻好的内容一起丢掉。
+                        break
                     self._queue.put(StatusMsg(
                         phase_desc=(
                             f"状态：[阶段 3/{phase_total}] 正在翻译{kind}"
@@ -1112,6 +1128,9 @@ class TaskRunner(BaseTaskRunner):
                 # 接口还在限流，再请求只会等满两分钟后失败；名称保持原样。
                 self._log("WARN", "接口持续限流，本次不翻译输出文件名和工作表名称。")
                 filename_names, sheet_names_to_translate = [], []
+            if self._stop_event.is_set():
+                # 已经停止：名称翻译还要再发请求，名称保持原样，续译时再翻。
+                filename_names, sheet_names_to_translate = [], []
             filename_translations = _translate_name_pool(filename_names, "输出文件名")
             sheet_translations = _translate_name_pool(sheet_names_to_translate, "工作表名称")
             self._queue.put(StatusMsg(
@@ -1120,8 +1139,10 @@ class TaskRunner(BaseTaskRunner):
 
             reserved_output_paths: set[Path] = set()
             for fi, file_item in enumerate(self._files):
+                # 阶段 3 进了门就不再半路丢文件：这一步只把已经算好的译文落盘，
+                # 不发请求；为了「响应停止」把后面文件已经翻好的内容扔掉不划算。
                 self._write_file_output(
-                    _raise_if_stopped=_raise_if_stopped,
+                    _raise_if_stopped=lambda *_args, **_kwargs: None,
                     file_item=file_item,
                     file_results=file_results,
                     fi=fi,
@@ -1157,8 +1178,22 @@ class TaskRunner(BaseTaskRunner):
                 step_done=len(self._files), step_total=len(self._files),
             ))
 
-            phase3_elapsed = (datetime.now() - t_phase3).total_seconds()
-            self._log("OK", f"[阶段 3 完成] 文件写入完毕（{phase3_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"阶段 3 耗时 {(datetime.now() - t_phase3).total_seconds():.2f}s")
+            self._log("OK", "全部文件已生成")
+
+            if self._stop_event.is_set():
+                # 停止后不再调整行高：续译跑完时会对整份文件重新调整。
+                unfinished_cells = self._record_unfinished_after_stop(
+                    file_results,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    formula_display_value_backfill=excel_output.formula_display_value_backfill,
+                )
+                raise TaskStopped(
+                    stop_write_note
+                    or "任务已停止，文件已经写出，行高这次没有调整，接着翻译时会一并处理。"
+                )
 
             elapsed = (datetime.now() - start_ts).total_seconds()
             if need_autofit:
@@ -1205,6 +1240,10 @@ class TaskRunner(BaseTaskRunner):
         if stopped_message is not None:
             self._file_progress.emit_many("stopped", "stopped")
             elapsed = (datetime.now() - start_ts).total_seconds()
+            if unfinished_cells:
+                stopped_message = (
+                    f"{stopped_message}还有 {unfinished_cells} 格没翻。"
+                )
             self._log("WARN", stopped_message)
             self._task_logger.warning(stopped_message)
             self._task_logger.task_end(
@@ -1225,6 +1264,11 @@ class TaskRunner(BaseTaskRunner):
                 actual_results=normal_api_language_results,
                 review_marks=excel_review_marks,
             )
+            # 与续译弹窗「补 N 格」同一口径（产物里还是原文的格子数），横幅据此报
+            # 「还有 N 格没翻」。数不出来时不写这个键（与 Word 一致），界面按「没数清」
+            # 处理，仍给出「接着翻译」。
+            if unfinished_cells is not None:
+                contract["kpi"]["unstarted_text_count"] = unfinished_cells
             _finish_process("cancelled", elapsed_sec=elapsed)
             self._queue.put(
                 StoppedMsg(
@@ -1365,7 +1409,11 @@ class TaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求，整段可能要等好一阵，而进度条的读取阶段已经走满。
+        # 逐个文件报「正在检测语言 x/y」，进度卡标题才看得出还在往前走。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -1671,6 +1719,17 @@ class TaskRunner(BaseTaskRunner):
                 normal_api_translations = run_normal_api_translation()
                 mixed_results = run_mixed_api_translation()
 
+            # 停止时没翻的批次按原文占位交回（batch_stats.stopped_sources）。占位留在
+            # 词典里，写盘会把它当成「模型原样返回」——整格标黄需复核、续译核查也认不出
+            # 它还没翻。摘掉之后这些格子不进写入词典，输出里保留原文，续译时重新排队。
+            stopped_placeholders = {
+                source
+                for source in batch_stats.stopped_sources
+                if normal_api_translations.get(source) == source
+            }
+            for source in stopped_placeholders:
+                normal_api_translations.pop(source, None)
+                normal_api_language_results.pop(source, None)
             api_translations.update(normal_api_translations)
             # 自动识别时模型会报每一格的实际语言：报的就是目标语言、译文又原样
             # 返回的格子（英译英表里的 Total、Steel plate）本来就不用翻，不该进
@@ -1698,7 +1757,11 @@ class TaskRunner(BaseTaskRunner):
                     )
 
             if mixed_texts:
+                stopping = self._stop_event.is_set()
                 for source, result in mixed_results.items():
+                    if stopping and result.note in {"stopped", "missing_result"}:
+                        # 停止时还没轮到的混合语言词条：不是「待人工确认」，保留原文待续译。
+                        continue
                     if result.action in {MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE} and result.translation.strip():
                         api_translations[source] = result.translation.strip()
                     elif result.action == MIXED_ACTION_UNCERTAIN:
@@ -1800,16 +1863,19 @@ class TaskRunner(BaseTaskRunner):
             if batch_stats.quality_reset_count:
                 # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
                 # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
-                mismatch = _detect_post_failure_source_language(
-                    engine=engine,
-                    samples=batch_stats.quality_reset_items,
-                    requested_source=source_lang,
-                    target_lang=target_lang,
-                    reset_count=batch_stats.quality_reset_count,
-                    original_count=(
-                        batch_stats.original_count or len(global_unique_texts)
-                    ),
-                )
+                # 用户按了停止就不再发任何请求，语言方向探测也不例外。
+                mismatch = None
+                if not self._stop_event.is_set():
+                    mismatch = _detect_post_failure_source_language(
+                        engine=engine,
+                        samples=batch_stats.quality_reset_items,
+                        requested_source=source_lang,
+                        target_lang=target_lang,
+                        reset_count=batch_stats.quality_reset_count,
+                        original_count=(
+                            batch_stats.original_count or len(global_unique_texts)
+                        ),
+                    )
                 issue_type = "suspected_source_language_mismatch" if mismatch else "quality_filter_reset"
                 if mismatch:
                     message = _language_mismatch_message(
@@ -1844,7 +1910,7 @@ class TaskRunner(BaseTaskRunner):
                     "WARN",
                     f"有 {batch_stats.quality_reset_count} 条译文没通过质量检查，已改回原文，已记入结果报告。",
                 )
-            self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处（{api_elapsed:.2f}s）")
+            self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
             self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
         return normal_api_translations
 
@@ -2049,7 +2115,7 @@ class TaskRunner(BaseTaskRunner):
         process_paths.append(process_path)
 
         # 收集词条
-        self._log("INFO", f"[阶段 1] 读取文件：{file_item.name}（{fi+1}/{len(self._files)}）")
+        self._log("INFO", f"读取文件：{file_item.name}（{fi+1}/{len(self._files)}）")
         t0 = datetime.now()
         try:
             if self._untranslated_only and not auto_source_lang:
@@ -2198,10 +2264,10 @@ class TaskRunner(BaseTaskRunner):
             self._log(
                 "INFO",
                 f"  → {file_item.name}：{len(text_set)} 处候选文本，"
-                f"先用来识别原文语言（{collect_elapsed:.3f}s）",
+                f"先用来识别原文语言",
             )
         else:
-            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本")
         self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
         self._file_progress.emit(file_item.path, "waiting", "translate")
 
@@ -2263,7 +2329,7 @@ class TaskRunner(BaseTaskRunner):
             step_done=fi, step_total=len(self._files),
         ))
 
-        self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{fi+1}/{len(self._files)}）")
+        self._log("INFO", f"生成文件：{file_item.name}（{fi+1}/{len(self._files)}）")
 
         process_path = process_paths[fi]
         # 换了续译底稿时，output 命名/相对目录必须仍按「原始源文件」算，
@@ -2497,7 +2563,7 @@ class TaskRunner(BaseTaskRunner):
                         "positions": truncated_positions,
                     }
                 )
-            self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
+            self._log("OK", f"文件完成：{file_item.name}")
         except Exception as e:
             logger.debug(f"文件写入失败 {file_item.name} 原始错误：{e!r}")
             write_reason = user_facing_reason(
@@ -2675,13 +2741,11 @@ class TaskRunner(BaseTaskRunner):
                         + (
                             # 补译模式的输出文件不带标记列；双语模式下用户
                             # 也可能关掉「标记需复核内容」——文件里真没标记
-                            # 时不许许诺有标记。停止同理：停止标志置位后
-                            # 阶段 3 之前的 _raise_if_stopped 会拦下写盘，
-                            # 输出文件根本不存在，更不能许诺「已在文件中标记」。
+                            # 时不许许诺有标记。停止时已翻好的内容照常写盘，
+                            # 标记也跟着写进去，这里不再按停止另说。
                             "请按下方源文清单逐条核对。"
                             if self._untranslated_only
                             or not self._settings.excel_review.mark_review_items
-                            or repair_stopped_by_user
                             else "已在输出文件中标记待复核位置。"
                         )
                         + (
@@ -2698,10 +2762,10 @@ class TaskRunner(BaseTaskRunner):
                             else ""
                         )
                         + (
-                            # 不说「接着处理」：停止发生在写盘之前时本次没有
-                            # 可续的产物，重跑是从头再来（已入库的译文会经
-                            # 记忆库直接复用，残留部分重新走自动修复）。
-                            "重新运行任务时，已完成的译文会从记忆库直接取用，"
+                            # 停止后续译只补还是原文的格子，这批「译文里夹着原文」
+                            # 的格子不会再进补译清单；要自动补译它们得整份重新
+                            # 翻译（已入库的译文会经记忆库直接复用）。
+                            "全部重新翻译时，已完成的译文会从记忆库直接取用，"
                             "这批遗留的原文会重新尝试自动补译。"
                             if repair_stopped_by_user
                             and not repair_over_cap_count
@@ -2975,7 +3039,7 @@ class TaskRunner(BaseTaskRunner):
                             },
                         )
                 if autofit_success:
-                    self._log("INFO", f"自动调整行高完成（{autofit_elapsed:.2f}s）")
+                    self._log("INFO", "自动调整行高完成")
                     self._task_logger.info(
                         f"批量AutoFit完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
                     )
@@ -3639,6 +3703,60 @@ class TaskRunner(BaseTaskRunner):
             },
             "error": {"message": error_message} if error_message else {},
         }
+
+    def _record_unfinished_after_stop(
+        self,
+        file_results: list[dict],
+        *,
+        target_lang: str,
+        source_lang: str,
+        formula_display_value_backfill: bool,
+    ) -> int | None:
+        """停止后写出的文件逐个数「还是原文的格子」，记在逐文件结果上并返回合计。
+
+        口径与续译检测完全相同（core.resume_detection.count_untranslated_in_output）：
+        停止横幅说「还有 N 格没翻」，重新扫描后的续译弹窗说「补 N 格」，两个数是同一个数。
+        文件状态也据此从「已生成」改成「部分翻译」，不再让翻了一半的文件看起来像翻完了。
+        任何一个写出的文件数不出来就返回 None：合计少了它就是个凑出来的数。
+        """
+        from core.resume_detection import count_untranslated_in_output
+
+        total: int | None = 0
+        for entry in file_results:
+            if not entry.get("success"):
+                continue
+            output = str(entry.get("output_path") or entry.get("output") or "")
+            source = str(entry.get("source_path") or "")
+            if not source:
+                total = None
+                continue
+            count = None if not output else count_untranslated_in_output(
+                "excel",
+                output,
+                source_path=source,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                formula_display_value_backfill=formula_display_value_backfill,
+            )
+            if count is not None:
+                entry["unfinished_text_count"] = count
+                if total is not None:
+                    total += count
+            else:
+                total = None
+            # 开着行高调整时写完的文件还挂在「等待调整行高」，停止后不再调整——
+            # 这里一并把它落成「已生成」，免得被收尾的 emit_many 改成「已停止」。
+            self._file_progress.emit(
+                source,
+                "generated",
+                "generate",
+                result={
+                    key: value
+                    for key, value in entry.items()
+                    if key not in {"source_path", "source_relative_path"}
+                },
+            )
+        return total
 
     def _connection_switch_summary(self) -> dict[str, object]:
         """The failover history, in the shape the task center and report read."""

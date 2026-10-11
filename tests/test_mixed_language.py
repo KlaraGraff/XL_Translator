@@ -162,5 +162,34 @@ class MixedLanguageTests(unittest.TestCase):
         self.assertEqual(results["贝特瑞 BTR 项目"].translation, "Projet BTR")
 
 
+class MixedLanguageStopTests(unittest.TestCase):
+    def test_request_cut_off_by_stop_is_reported_as_stopped_not_failed(self) -> None:
+        stop = {"set": False}
+        errors: list[str] = []
+
+        class _CutOffEngine(StructuredMixedEngine):
+            def chat(self, system: str, user: str) -> str:
+                # 用户按停止时在途请求被打断。
+                stop["set"] = True
+                raise ConnectionError("connection aborted while stopping")
+
+        sources = ["项目 BTR", "设备 ABC 型号"]
+        results = translate_mixed_language_texts(
+            sources,
+            engine=_CutOffEngine(),
+            target_lang="fr",
+            system_prompt="system",
+            should_stop=lambda: stop["set"],
+            error_callback=errors.append,
+        )
+
+        self.assertEqual(set(results), set(sources))
+        for result in results.values():
+            # 以前 note 是 str(exc)：任务层只认 stopped/missing_result，这些格子
+            # 就成了「待人工确认」、被标记复核，日志还说「没能翻译」。
+            self.assertEqual(result.note, "stopped")
+        self.assertFalse([e for e in errors if "没能翻译" in e], errors)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

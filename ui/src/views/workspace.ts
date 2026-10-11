@@ -11,7 +11,7 @@
 //   setup（未扫描 / 已扫描待开始） --scan--> setup（文件已填充）
 //   setup --start（可能经 xls/doc 兼容确认、并行风险确认）--> running
 //   running --stop--> running（等终态事件）--终态事件--> setup（横幅显示）
-//   running --pause（PDF；CAD 在当前文件结束后暂停）--> paused
+//   running --pause（PDF；CAD 在下一批请求之前暂停）--> paused
 //   paused --resume（PDF / CAD）--> running
 //   paused --end-paused（仅 PDF）--> running（等终态事件，同上落回 setup+横幅）
 // 「right column 运行时锁定」「完成横幅 + 复位」等细节见下方实现与文件尾的架构说明。
@@ -249,10 +249,13 @@ export interface LocalTask {
    *  （见 captureLogScroll / restoreLogScroll）。数组索引不行——满 200 条后每来一条
    *  就从头部丢一条，同一条日志的索引会一直变小。 */
   logs: Array<{ seq: number; time: string; level: string; message: string }>;
+  /** 进度卡标题：这一阶段里具体在做什么（状态句，或 CAD 进度事件的后半句）。 */
   phaseName: string;
+  /** 当前阶段名（读取文件 / 翻译 / 调整行高 / 生成文件），进度卡标题前的小标签。 */
+  stageName: string;
   percent: number;
-  /** 当前阶段序号 / 总阶段数（progress 事件的 phase_index / phase_total）。用来把
-   *  阶段内进度折算成整条进度，也用来在进度卡上写明「阶段 2 / 4」。 */
+  /** 当前阶段序号 / 总阶段数（progress 事件的 phase_index / phase_total）。只用来把
+   *  阶段内进度折算成整条进度；进度卡上不再写「阶段 2 / 4」，各页阶段总数不一样。 */
   phaseIndex: number;
   phaseTotal: number;
   streamState: "connected" | "reconnecting";
@@ -287,6 +290,8 @@ interface FileOutcome {
   produced: boolean;
   label: string;
   detail: string;
+  /** 不给就按 produced 决定（绿 / 红）。停止后只翻了一部分的文件给 warn。 */
+  tone?: "warn";
 }
 
 interface SurfaceState {
@@ -1065,6 +1070,21 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
       },
     }));
   }
+  // Excel / Word 停止后已经写出了一部分：直接从这里接着翻，不用先去「重新扫描」才能
+  // 看到续译入口。
+  // 后端数不出剩余内容时不给 unstarted_text_count：那不是「全部翻完」，照样给入口。
+  const unfinishedRaw = record(record(lastTask?.result).kpi).unstarted_text_count;
+  const unfinishedTexts = num(unfinishedRaw);
+  const unfinishedUnknown = typeof unfinishedRaw !== "number";
+  if ((surface === "excel" || surface === "word") && lastTask?.state === "stopped" && info.hasOutput && (unfinishedTexts > 0 || unfinishedUnknown) && st.files.length) {
+    actions.unshift(createButton({
+      label: t("接着翻译"),
+      icon: "play",
+      variant: "primary",
+      disabled: submittingSurfaces.has(surface),
+      onClick: () => void resumeAfterStop(surface, st, lastOutputDir),
+    }));
+  }
   actions.push(createButton({
     label: info.tone === "fail" ? t("查看失败原因") : t("查看完整报告"),
     icon: "ext",
@@ -1288,9 +1308,11 @@ interface StatCell {
 
 function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
   const stats = computeStats(surface, st);
-  // 四格以内沿用固定 4 列；Excel 多出「图片 / 文本框」那一格后改自适应列宽，
-  // 否则窄窗口下五格会被压得看不清标签。
+  // 四格以内沿用固定 4 列；Excel 固定五格（见 computeStats），五格同排放不下时整齐地
+  // 折成 3 + 2 两排，不让第 5 格孤零零掉到第二行（workspace.css 的 .stats-wrap）。
+  const outer = el("div", "stats-wrap");
   const wrap = el("div", stats.length > 4 ? "stats five" : "stats");
+  outer.append(wrap);
   for (const [index, stat] of stats.entries()) {
     const classes = ["stat"];
     if (!st.files.length) classes.push("dim");
@@ -1310,7 +1332,7 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
     }
     wrap.append(cell);
   }
-  return wrap;
+  return outer;
 }
 
 function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
@@ -1319,16 +1341,14 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     const cells = files.reduce((sum, f) => sum + num(f.text_cell_count), 0);
     const sheets = files.reduce((sum, f) => sum + num(f.sheet_count, f.sheets?.length ?? 0), 0);
     const xls = files.filter((f) => isRisky(surface, f)).length;
-    // outsideCellStat 在字段整批缺失时返回 null（不占版面），过滤掉——.five 修饰类挂在
-    // buildStatsRow 里，靠的就是这里过滤后的实际格数,不需要另外同步。
-    const cellStats: (StatCell | null)[] = [
+    // 固定五格：扫描前、扫描后、扫描失败都是这五格，数不出来的写「—」，页面不会跳。
+    return [
       { label: t("已扫描文件"), value: String(files.length) },
       { label: t("文本单元格"), value: fmtNum(cells) },
       { label: t("工作表"), value: String(sheets) },
       outsideCellStat(outsideCellStats(files)),
       { label: t("旧版 .xls"), value: String(xls), warn: xls > 0 },
     ];
-    return cellStats.filter((stat): stat is StatCell => stat !== null);
   }
   if (surface === "word") {
     const paragraphs = files.reduce((sum, f) => sum + num(f.paragraph_count), 0);
@@ -1446,9 +1466,9 @@ function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes" | "
   return parts.join(t("、"));
 }
 
-/** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。字段在整批文件上都缺失时返回 null——
- *  这一格不该出现，不是「确认为 0」。调用方（computeStats）负责把 null 从数组里滤掉。 */
-function outsideCellStat(stats: OutsideCellStats): StatCell | null {
+/** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。这一格始终在（Excel 统计条固定五格，
+ *  以前字段缺失时整格消失，扫描前后格数在 4 和 5 之间跳）；数不出来就写「—」。 */
+function outsideCellStat(stats: OutsideCellStats): StatCell {
   const label = t("图片 / 文本框 / 批注");
   const unknownNote = stats.unknownFiles > 0 ? t("{0} 个 .xls 未统计", stats.unknownFiles) : "";
   const n = (value: number) => fmtNum(value);
@@ -1464,9 +1484,9 @@ function outsideCellStat(stats: OutsideCellStats): StatCell | null {
   if (stats.unknownFiles > 0) {
     return { label, value: "—", dim: true, sub: t("{0} 个 .xls 需转换后才能统计", stats.unknownFiles) };
   }
-  // 这几个字段在整批文件上都不存在（不是数出来是 0）——这个 surface/这版后端根本不产出
-  // 这项信息，不该显示「0 / 0 / 0」把「不知道」说成「没有」，整格直接不渲染。
-  if (stats.presentFiles === 0) return null;
+  // 这几个字段在整批文件上都不存在（不是数出来是 0，例如还没扫描、扫描失败）——不该显示
+  // 「0 / 0 / 0」把「不知道」说成「没有」，写「—」。
+  if (stats.presentFiles === 0) return { label, value: "—", dim: true };
   return { label, value: "0 / 0 / 0", dim: true, sub: t("无") };
 }
 
@@ -1807,7 +1827,7 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
   tableWrap.dataset.keepScroll = "files";
-  const table = el("table", "tbl");
+  const table = el("table", "tbl ws-files");
   table.append(buildTableHeadRow(surface));
   const resumeFiles = resumeFileMap(st);
   for (const file of st.files) {
@@ -1859,13 +1879,14 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     return cell;
   };
   if (surface === "excel") {
-    row.append(th(t("文件")), th(t("格式")), th(t("工作表"), true), th(t("文本单元格"), true), th(t("单元格外内容")), th(t("状态")));
+    // 「​」是窄窗口下表头唯一允许折行的位置（workspace.css 的 .ws-files th 用 keep-all）。
+    row.append(th(t("文件")), th(t("格式")), th(t("工作表"), true), th(t("文本​单元格"), true), th(t("单元格外​内容")), th(t("状态")));
   } else if (surface === "word") {
     row.append(th(t("文件")), th(t("格式")), th(t("段落"), true), th(t("表格"), true), th(t("状态")));
   } else if (surface === "cad") {
     row.append(th(t("文件")), th(t("格式")), th(t("文字实体"), true), th(t("待翻译"), true), th(t("状态")));
   } else {
-    row.append(th(t("文件")), th(t("类型")), th(t("大小")), th(t("页数 / 尺寸")), th(t("状态")));
+    row.append(th(t("文件")), th(t("类型")), th(t("大小")), th(t("页数 / ​尺寸")), th(t("状态")));
   }
   return row;
 }
@@ -1885,8 +1906,10 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   checkCell.append(checkbox);
   row.append(checkCell);
 
-  const nameCell = el("td");
+  // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
+  const nameCell = el("td", "fname");
   nameCell.textContent = fileLabel(file);
+  nameCell.title = file.relative_path || fileLabel(file);
   row.append(nameCell);
 
   if (surface === "cad") {
@@ -1938,7 +1961,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     row.append(dimCell);
   }
 
-  const statusCell = el("td");
+  const statusCell = el("td", "fstatus");
   const liveProgress = file.file_id ? st.task?.fileProgress.get(file.file_id) : undefined;
   const outcome = (file.file_id ? st.fileOutcomes.get(file.file_id) : undefined) ?? st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
@@ -1949,8 +1972,8 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     // 跑过之后这一列说的是结果，不再说开跑前的预判——那时候的「需先转换」已经成了旧闻。
     const chip = createChip({
       label: outcome.label,
-      tone: outcome.produced ? "ok" : "dgr",
-      icon: outcome.produced ? undefined : "warn",
+      tone: outcome.tone ?? (outcome.produced ? "ok" : "dgr"),
+      icon: outcome.produced && !outcome.tone ? undefined : "warn",
     });
     if (outcome.detail) chip.title = outcome.detail;
     statusCell.append(chip);
@@ -2008,10 +2031,9 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
     }
   }
   return createTaskProgressPanel({
-    phase: redactedText(local.phaseName, t("正在准备任务")),
+    stage: local.stageName,
+    phase: redactedText(local.phaseName, ""),
     percent: local.percent,
-    phaseIndex: local.phaseIndex,
-    phaseTotal: local.phaseTotal,
     state: local.task.state,
     monitor: buildMonChips(surface, local),
     note,
@@ -2191,6 +2213,8 @@ function buildLogCard(local: LocalTask, sharesHeight = false): HTMLElement {
     row.append(createChip({ label: fileProgressLabel(progress, local.task.state), tone: fileProgressTone(progress, local.task.state) }));
     const nm = el("span", "nm");
     nm.textContent = progress.name || progress.relative_path;
+    // 名字太长时单行省略，鼠标停上去看全名（带相对路径，同名文件分得清）。
+    nm.title = progress.relative_path || progress.name;
     row.append(nm);
     for (const chip of buildFileSkipChips(result, progress.relative_path || progress.name)) row.append(chip);
     fileList.append(row);
@@ -2497,7 +2521,7 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   }
 
   const task = st.task!;
-  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 在当前文件做完后暂停。
+  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 停止发出新的一批翻译请求（单张图纸也能停）。
   // Excel / Word 不给暂停按钮——后端会直接拒绝，按了只会弹一条报错。
   const pausable = surface === "pdf" || surface === "cad";
   return createTaskControlFoot({
@@ -2719,7 +2743,7 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
   again.type = "button";
   again.textContent = t("重新选择");
   // 重新弹的是缓存下来的这一份检测结果，不重扫——用户只是想改主意，没换过路径。
-  again.addEventListener("click", () => showResumeModal(surface, st));
+  again.addEventListener("click", () => void showResumeModal(surface, st));
   const close = el("button", "resume-link mute");
   close.type = "button";
   close.textContent = "×";
@@ -2842,9 +2866,13 @@ function resumeFootnote(body: string): HTMLElement {
   return span;
 }
 
-function showResumeModal(surface: Surface, st: SurfaceState): void {
+/** onDecided：从「开始翻译」进来时，选了「接着上次继续」或「全部重新翻译」就接着启动。
+ *  「稍后再说」只关弹窗，不启动。 */
+/** 返回弹窗是否真的打开了。目标语言和上次不一致（resumeState 为空）或没有可续的
+ *  产物时不弹，调用方要自己往下走，不能把这次点击吞掉。 */
+function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => void): boolean {
   const info = resumeState(st);
-  if (!info || resumeHitCount(info) === 0) return;
+  if (!info || resumeHitCount(info) === 0) return false;
   const fileCount = st.files.length || info.files.length;
   const single = fileCount === 1;
   const s = info.summary;
@@ -2922,22 +2950,37 @@ function showResumeModal(surface: Surface, st: SurfaceState): void {
 
   const actions: ModalAction[] = [
     { label: t("稍后再说"), onClick: () => chooseFresh(surface, st) },
-    { label: t("全部重新翻译"), variant: allDone || pdfNoPageData ? "primary" : undefined, onClick: () => chooseFresh(surface, st) },
+    {
+      label: t("全部重新翻译"),
+      variant: allDone || pdfNoPageData ? "primary" : undefined,
+      onClick: () => {
+        chooseFresh(surface, st);
+        onDecided?.();
+      },
+    },
   ];
   // pdfNoPageData 时不给「接着上次继续」——那个按钮在后端会整份重新生成，跟「全部重新
   // 翻译」结果一样，留着它只会让用户以为还有一条能省钱的路。
   if (!allDone && !pdfNoPageData) {
-    actions.push({ label: t("接着上次继续"), variant: "primary", onClick: () => chooseResume(surface, st) });
+    actions.push({
+      label: t("接着上次继续"),
+      variant: "primary",
+      onClick: () => {
+        chooseResume(surface, st);
+        onDecided?.();
+      },
+    });
   }
 
   handle = openModal({
     tone: (pdfPages || pdfNoPageData) && !allDone ? "warn" : "tint",
     icon: surface === "pdf" ? "pdf" : "folder",
-    sourceLabel: t("{0} · 扫描完成", SURFACE_LABEL[surface]),
+    sourceLabel: onDecided ? t("{0} · 开始前核对", SURFACE_LABEL[surface]) : t("{0} · 扫描完成", SURFACE_LABEL[surface]),
     title,
     body,
     actions,
   });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3031,7 +3074,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
           : t("已扫描到 {0} 个 {1} 文件。", items.length, SURFACE_LABEL[surface]));
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
-    if (st.resumeInfo) showResumeModal(surface, st);
+    if (st.resumeInfo) void showResumeModal(surface, st);
   } catch (error) {
     if (token !== scanTokens[surface]) return;
     // 扫描失败必须把上一次的清单清掉：留着旧结果，用户看到的是「路径 B + B 之外的文件」，
@@ -3048,6 +3091,57 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
       rerender(surface);
     }
   }
+}
+
+/**
+ * 只做续译检测、不动清单：和「重新扫描」走同一个接口、同一套比对，但不重置文件清单、
+ * 勾选和横幅。preferredResumeDir 给了就以它为底稿目录（停止横幅上的「接着翻译」用
+ * 刚停下那次任务的输出目录）。检测不到或请求失败都返回 null。
+ */
+async function detectPreviousOutputForStart(
+  surface: Surface,
+  st: SurfaceState,
+  preferredResumeDir?: string,
+): Promise<PreviousOutput | null> {
+  const path = normalizeUserPath(st.sourcePath);
+  if (!path) return null;
+  try {
+    const c = await getClient();
+    const payload = scanPayload(surface, st, path);
+    if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
+    const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
+    const result = record(response.result) && Object.keys(record(response.result)).length ? record(response.result) : response;
+    const detected = parsePreviousOutput(result.previous_output);
+    if (!detected || !detected.selected_dir || resumeHitCount(detected) === 0) return null;
+    return detected;
+  } catch {
+    return null;
+  }
+}
+
+/** 停止横幅上的「接着翻译」：以刚停下那次的输出为底稿，直接按「接着上次继续」启动。 */
+async function resumeAfterStop(surface: Surface, st: SurfaceState, outputDir: string): Promise<void> {
+  // 扫描要跑一个来回：整段占住提交锁，连点「接着翻译」或这时再点「开始翻译」都不会
+  // 再起一条流程。锁在启动前放开，startTask 里的预检提交会自己再拿。
+  if (submittingSurfaces.has(surface)) return;
+  submittingSurfaces.add(surface);
+  rerender(surface);
+  let detected: PreviousOutput | null = null;
+  try {
+    detected = await detectPreviousOutputForStart(surface, st, outputDir || undefined);
+  } finally {
+    submittingSurfaces.delete(surface);
+    rerender(surface);
+  }
+  if (!detected) {
+    showToast({ message: t("没找到上次停下时写出的文件，请点「重新扫描」后再试。"), error: true });
+    return;
+  }
+  st.resumeInfo = detected;
+  st.resumeDetectedLang = detected.target_lang || st.targetLang;
+  st.showBanner = false;
+  chooseResume(surface, st);
+  await startTask(surface, st);
 }
 
 // ---------------------------------------------------------------------------
@@ -3133,6 +3227,35 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
       return;
     }
   }
+  await submitAfterResumeCheck(surface, st);
+}
+
+/** 开始前的续译检测，再预检提交。
+ *  上一次任务没有干净地跑完（停止、失败、中断、有问题）又直接点「开始翻译」：先做一遍
+ *  「重新扫描」那套续译检测。以前续译弹窗只在重新扫描后出现，停止后点开始会整份从头
+ *  重翻，已经付过钱的部分再花一遍。确实有翻了一半的文件才弹窗，其余照常开始。
+ *  .xls / .doc 转换方式弹窗的按钮也走这里——直接预检提交会把这道检测绕过去。 */
+async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promise<void> {
+  const lastState = st.task?.task.terminal ? st.task.task.state : null;
+  if ((surface === "excel" || surface === "word") && st.resumeDecision === null && lastState && lastState !== "done") {
+    if (submittingSurfaces.has(surface)) return;
+    submittingSurfaces.add(surface);
+    rerender(surface);
+    let detected: PreviousOutput | null = null;
+    try {
+      detected = await detectPreviousOutputForStart(surface, st);
+    } finally {
+      submittingSurfaces.delete(surface);
+      rerender(surface);
+    }
+    if (detected && detected.summary.partial > 0) {
+      st.resumeInfo = detected;
+      st.resumeDetectedLang = detected.target_lang || st.targetLang;
+      // 选完之后 resumeDecision 已定，再进这里会直接预检提交；前面的检查（含转换方式）
+      // 都已经过了，不再重走 startTask，免得转换方式弹窗再问一遍。
+      if (showResumeModal(surface, st, () => void submitAfterResumeCheck(surface, st))) return;
+    }
+  }
   await preflightAndSubmit(surface, st);
 }
 
@@ -3168,7 +3291,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = true;
           else st.allowDocFallback = true;
-          void preflightAndSubmit(surface, st);
+          void submitAfterResumeCheck(surface, st);
         },
       },
       {
@@ -3177,7 +3300,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = false;
           else st.allowDocFallback = false;
-          void preflightAndSubmit(surface, st);
+          void submitAfterResumeCheck(surface, st);
         },
       },
     ],
@@ -3210,12 +3333,27 @@ async function preflightAndSubmit(
     }
     await sendTaskStart(surface, st, payload);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     showStartBlockedModal(surface, st, payload, error);
   } finally {
     submittingSurfaces.delete(surface);
     rerender(surface);
   }
+}
+
+/** 模型还没配好时后端给的拦截原因（api/task_contracts.py 的 REASON_*_MODEL_MISSING），
+ *  值是「设置 › 模型服务」里对应的角色。 */
+const MODEL_MISSING_ROLE: Record<string, string> = {
+  translation_model_missing: "translation",
+  image_model_missing: "image",
+  pdf_review_model_missing: "pdf_review",
+};
+
+/** 启动没成功时记一笔，开始按钮会改叫「重试启动」。没配模型不算：那一次什么都还没
+ *  试过，按钮照旧叫「开始翻译」，出路在弹窗的「去设置」里。 */
+function noteStartFailure(surface: Surface, error: unknown): void {
+  if (MODEL_MISSING_ROLE[apiErrorReason(error)]) submitFailures.delete(surface);
+  else submitFailures.add(surface);
 }
 
 /** 前置校验把任务拦下来时给一个弹窗，不给两秒就消失的提示：任务根本没开始这件事得留在
@@ -3241,6 +3379,25 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
           variant: "primary",
           onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
         },
+      ],
+    });
+    return;
+  }
+  const missingRole = MODEL_MISSING_ROLE[apiErrorReason(error)];
+  if (missingRole) {
+    // 以前这里和其他拦截一样只有「知道了」：用户读完「尚未填写模型名称」还得自己去找
+    // 设置在哪。直接给一个去「设置 › 模型服务」对应角色的主按钮。
+    openModal({
+      tone: "warn",
+      icon: "warn",
+      title: missingRole === "pdf_review" ? t("还没有配置好审核模型") : t("还没有配置好翻译模型"),
+      body: [
+        redactedText((error as Error)?.message, t("翻译要用的模型还没有填好。")),
+        t("填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。"),
+      ],
+      actions: [
+        { label: t("取消") },
+        { label: t("去设置"), variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
       ],
     });
     return;
@@ -3305,7 +3462,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     watchTask(surface);
     if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);
@@ -3317,10 +3474,12 @@ function focusTask(surface: Surface, task: TaskStatus): void {
   rememberTaskContext(st, task.task_id);
   // 切回页面或重开程序接管一个跑到一半的任务时，进度从任务快照里接上，而不是从 0 重新爬。
   const progress = record(task.progress);
+  const phase = splitPhaseName(redactedText(progress.phase_name, ""));
   st.task = {
     task,
     logs: [],
-    phaseName: redactedText(progress.phase_name, t("正在准备任务")),
+    phaseName: phase.detail,
+    stageName: phase.stage,
     percent: Math.min(100, Math.max(0, num(progress.overall_percent, 0))),
     phaseIndex: num(progress.phase_index, 0),
     phaseTotal: num(progress.phase_total, 0),
@@ -3452,15 +3611,22 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "progress": {
-      if (data.phase_name !== undefined && !holdsStatePhase(local)) local.phaseName = redactedText(data.phase_name, local.phaseName);
+      if (data.phase_name !== undefined) {
+        // 阶段名只进标签；标题留给状态句（「正在查找记忆库里已有的译文…」），不再被
+        // 光秃秃的「翻译」两个字来回覆盖。CAD 没有状态句，后半句随进度事件一起来。
+        const phase = splitPhaseName(redactedText(data.phase_name, ""));
+        if (phase.stage) local.stageName = phase.stage;
+        if (phase.detail && !holdsStatePhase(local)) local.phaseName = phase.detail;
+      }
       const done = num(data.step_done);
       const total = num(data.step_total);
       if (local.task.state === "stopping") {
         // 停止时 Excel / Word 会把没翻完的部分跳过、直接进入最后的写文件阶段，后端按阶段
         // 权重折算，进度条会从 29% 一下跳到 80%，然后在那儿停十几秒——看上去像快跑完了。
         // 停止期间进度条留在点停止时的位置，标题改说正在做什么。
-        const lastPhase = num(data.phase_total) > 0 && num(data.phase_index) >= num(data.phase_total);
-        if ((surface === "excel" || surface === "word") && lastPhase && total > 0) {
+        // 认阶段名而不是「最后一个阶段」：Excel 开了调整行高时共 4 个阶段，写文件是第 3 个。
+        const writing = splitPhaseName(redactedText(data.phase_name, "")).stage === "生成文件"; // i18n-ignore 比较后端原文阶段名
+        if ((surface === "excel" || surface === "word") && writing && total > 0) {
           local.phaseName = t("正在停止：写出已翻好的部分（{0}/{1} 个文件）", Math.min(done, total), total);
         }
         break;
@@ -3504,11 +3670,11 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     case "pausing":
       syncEventState(local, data, "pausing");
-      local.phaseName = surface === "cad" ? t("正在暂停：当前图纸完成后暂停") : t("正在暂停：已开始的页面完成后暂停");
+      local.phaseName = surface === "cad" ? t("正在暂停：已发出的这批请求收回后暂停") : t("正在暂停：已开始的页面完成后暂停");
       break;
     case "paused":
       syncEventState(local, data, "paused");
-      local.phaseName = surface === "cad" ? t("已暂停：当前文件已翻完") : t("已暂停，不再开始新的页面");
+      local.phaseName = surface === "cad" ? t("已暂停，不再发出新的翻译请求") : t("已暂停，不再开始新的页面");
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":
@@ -3565,10 +3731,19 @@ function holdsStatePhase(local: LocalTask): boolean {
   return state === "pausing" || state === "paused" || state === "stopping";
 }
 
-/** 后端的状态句都带着「状态：」前缀（给命令行日志用的），进度卡片的标题本身就是状态，
- *  再带前缀就成了「状态：正在翻译…」，跟进度事件给的阶段名来回切换时标题还会跳。 */
+/** 后端的状态句都带着「状态：」前缀和「[阶段 2/3]」「[收尾中]」这样的标记（给命令行
+ *  日志用的）。进度卡片的标题本身就是状态，阶段名另有标签，这些前缀在卡片上全是重复。 */
 function statusPhaseText(value: string): string {
-  return value.replace(/^\s*状态[:：]\s*/, ""); // i18n-ignore 去掉后端原文的前缀
+  return value.replace(/^\s*状态[:：]\s*/, "").replace(/^\s*\[(?:阶段\s*\d+\s*\/\s*\d+|收尾中)\]\s*/, ""); // i18n-ignore 去掉后端原文的前缀和阶段标记
+}
+
+/** progress 事件的 phase_name：Excel / Word / PDF 只有阶段名（「翻译」），CAD 是
+ *  「阶段名 · 具体一步：第 i / N 个文件」（core/cad_task_runner.py 的 _progress）。 */
+function splitPhaseName(value: string): { stage: string; detail: string } {
+  const text = value.trim();
+  const cut = text.indexOf(" · ");
+  if (cut < 0) return { stage: text, detail: "" };
+  return { stage: text.slice(0, cut).trim(), detail: text.slice(cut + 3).trim() };
 }
 
 function syncEventState(local: LocalTask, data: JsonObject, fallback: TaskStatus["state"]): void {
@@ -3628,21 +3803,29 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       // 这一行的说明沿用后端给的原话（`fully_skipped_oversize_message`）。
       const untranslated = ok && fileResultUntranslated(item);
       const notReached = !ok && fileResultNotReached(item);
+      // 停止后写出的文件只翻了一部分（后端按续译检测同一口径数的格/段数）。绿色「已生成」
+      // 会让人以为翻完了。
+      const unfinished = ok && !untranslated ? num(item.unfinished_text_count) : 0;
       const label = notReached
         ? t("停止前没跑到")
         : !ok
         ? t("未生成")
         : untranslated
           ? t("已生成 · 整份未翻译")
-          : pending > 0
-            ? t("已生成 · {0} 处需复核", pending)
-            : t("已生成");
+          : unfinished > 0
+            ? (surface === "excel" ? t("部分翻译 · 还差 {0} 格", fmtNum(unfinished)) : t("部分翻译 · 还差 {0} 段", fmtNum(unfinished)))
+            : pending > 0
+              ? t("已生成 · {0} 处需复核", pending)
+              : t("已生成");
       st.fileOutcomes.set(key, {
         produced: ok,
         label,
-        detail: (ok && !untranslated) || notReached
-          ? ""
-          : tx(redactedText(text(item.error, text(item.detail)), t("没有说明原因。"))),
+        tone: unfinished > 0 ? "warn" : undefined,
+        detail: unfinished > 0
+          ? t("停止时这份文件还没翻完，没翻的地方保留原文；点上方「接着翻译」只补这一部分。")
+          : (ok && !untranslated) || notReached
+            ? ""
+            : tx(redactedText(text(item.error, text(item.detail)), t("没有说明原因。"))),
       });
     }
     if (fileId) {
@@ -3761,7 +3944,13 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // Word 是先整批翻完再逐个写文件，停止时每个文件都会写出来，「没跑到的文件」恒为 0；
   // 没翻到的是段落（kpi.unstarted_text_count），它们保留原文留给续译。不报这个数，
   // 横幅会在三分之二段落还是原文时写「其余全部通过」。
-  const unfinishedTexts = task.state === "stopped" ? num(record(result.kpi).unstarted_text_count) : 0;
+  const unfinishedRaw = record(result.kpi).unstarted_text_count;
+  const unfinishedTexts = task.state === "stopped" ? num(unfinishedRaw) : 0;
+  // Excel / Word 停止后数不出产物里还剩多少原文时，后端不写这个键（不是 0）。
+  // 不知道就不能说「全部翻完」「全部通过」。
+  const unfinishedUnknown = task.state === "stopped"
+    && (surface === "excel" || surface === "word")
+    && typeof unfinishedRaw !== "number";
   if (task.state === "stopped") {
     const unfinishedPages = num(record(result.kpi).unstarted_page_count);
     const unfinishedFiles = num(record(result.kpi).unstarted_file_count);
@@ -3787,12 +3976,19 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const totalPages = producedFileResultTotal(result, "page_count");
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
-  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0) {
+  // PDF 没开逐页审核时谁也没判过「通过」：逐文件的 review_enabled 一个都不为真（旧记录
+  // 没有这个键，也按没开算——说「已生成」不会错，说「通过」可能是错的）。
+  const pdfUnreviewed = surface === "pdf"
+    && !fileResults.some((entry) => record(entry).review_enabled === true);
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated && unfinishedTexts === 0 && !unfinishedUnknown) {
+    const hasOther = review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0;
     clauses.push(
-      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
-        ? t("其余全部通过")
-        // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
-        : task.state === "stopped" ? t("已生成的全部通过") : t("全部通过"),
+      pdfUnreviewed
+        ? hasOther ? t("其余页面已生成") : task.state === "stopped" ? t("已跑到的页面都已生成") : t("全部页面已生成")
+        : hasOther
+          ? t("其余全部通过")
+          // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
+          : task.state === "stopped" ? t("已生成的全部通过") : t("全部通过"),
     );
   }
   if (generated > 0) clauses.push(t("输出至 {0}", outputPath));
@@ -3817,9 +4013,17 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   if (task.state === "stopped") {
     // 停止是用户自己的操作，不是失败：不报红、不弹错误 toast、按钮也不叫「查看失败原因」。
     // 后端的停止说明（如 CAD 的「已完成文件和断点均已保留」）只在这里出现一次。
+    // Excel / Word 只说一句话：后端说明、「N 段保留原文待续译」和输出路径以前一起堆在
+    // 横幅上，同一个剩余数说两遍，后面还跟着三行路径（「打开输出目录」按钮就在右边）。
+    // 不是用户按的停止（Word 持续限流时自行收尾）：后端说明里是原因，必须原样给出，
+    // 换成「已翻好的内容写进了文件」那句会让人以为是自己点了停止。
+    const userStopped = task.stop_requested !== false;
+    const condensed = userStopped && (surface === "excel" || surface === "word")
+      ? stoppedSummarySentence(surface, generated, failed, unfinishedUnknown ? null : unfinishedTexts, review)
+      : "";
     st.bannerInfo = {
       title: generated > 0 ? t("{0} · 已生成 {1} 个文件", stateWord, generated) : t("{0} · 没有生成文件", stateWord),
-      subtitle: [reason, ...clauses].filter(Boolean).join(" · "),
+      subtitle: condensed || [reason, ...clauses].filter(Boolean).join(" · "),
       tone,
       statusLabel: stateWord,
       hasOutput: generated > 0,
@@ -3875,6 +4079,36 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     showToast({ message: reason || t("任务未能顺利完成。"), error: true });
   }
   rerender(surface);
+}
+
+/** Excel / Word 停止横幅的那一句话：写出了什么、还剩多少、下一步点哪里。 */
+function stoppedSummarySentence(
+  surface: Surface,
+  generated: number,
+  failed: number,
+  unfinished: number | null,
+  review: number,
+): string {
+  if (generated === 0) return t("停止时还没有翻好的内容，没有生成文件。");
+  const excel = surface === "excel";
+  // 整句做词条（英法语序和中文不同，不能拼半句）：正文三种 × 有没有复核尾巴。
+  // null：后端没能数出剩余多少，不报数，也不说「全部翻完」。
+  const body = unfinished === null
+    ? review > 0
+      ? t("已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续，另有 {0} 处需复核。", review)
+      : t("已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续。")
+    : unfinished > 0
+      ? excel
+        ? review > 0
+          ? t("已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。", fmtNum(unfinished), review)
+          : t("已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续。", fmtNum(unfinished))
+        : review > 0
+          ? t("已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。", fmtNum(unfinished), review)
+          : t("已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续。", fmtNum(unfinished))
+      : review > 0
+        ? t("停止前内容已经全部翻完，另有 {0} 处需复核。", review)
+        : t("停止前内容已经全部翻完。");
+  return failed > 0 ? t("{0} 个文件没能生成；其余{1}", failed, body) : body;
 }
 
 /** 这个文件是因为用户停止才没做（CAD：stopped；Excel / Word：unstarted），而不是失败。 */

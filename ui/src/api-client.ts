@@ -30,6 +30,9 @@ export type TaskStatus = {
   /** Current per-file status snapshot; absent on older or non-file tasks. */
   file_progress?: FileProgressSnapshot;
   progress?: Record<string, unknown>;
+  /** 用户经接口按过停止。缺键（旧历史记录）按「是」处理；false 表示 runner 自行收尾
+   *  （如 Word 持续限流），界面要显示后端给的原因。 */
+  stop_requested?: boolean;
 };
 
 /** CAD 插件与 ODA 能力状态；后端未提供时前端按 unavailable 处理。 */

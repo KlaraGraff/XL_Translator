@@ -12,9 +12,8 @@
  *      cursor:pointer。
  *   3. .overlay 从 position:absolute（相对 .screen 卡片定位）改成 position:fixed（覆盖整个
  *      窗口），z-index 从 10 提到 200，避免被顶栏/侧栏盖住。
- *   4. .modal 补 position:relative、.mlabel 补显式 top/left（样张靠「absolute 但不给
- *      top/left，退回 static position + inline transform」的隐晦写法实现同样效果，这里改成
- *      直接声明，避免以后维护者看不懂）。
+ *   4. .mlabel 在样张里是浮在弹窗上沿外面的深色胶囊；2026-10 走查后改成弹窗内标题上方
+ *      的灰色小字（见 .modal .mlabel）。
  *   5. .toast 是新增的——样张没有画这一屏，标记/复核/删除这类操作反馈仍需要它。视觉语言（顶部
  *      居中浮层、进场动画）沿用产品里原有的 toast 规范，颜色变量与新 token 一一对应。
  */
@@ -224,7 +223,12 @@ table.review-tbl { table-layout: fixed; }
 .combo-caret:hover:not(:disabled) { background: var(--surface-2); color: var(--ink-2); }
 .combo-caret:disabled { cursor: default; opacity: .4; }
 .swrow { display: flex; align-items: center; gap: 9px; padding: 6.5px 0; font-size: 12.5px; color: var(--ink); }
-.swrow .hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+/* 「?」角标两套类名（右栏开关行 .hint、设置页 .swrow-hint）同一个皮肤。以前只有
+   .swrow 里的 .hint 有样式，放进 .field 标签里的就只剩一个光秃秃的问号。 */
+.hint, .swrow-hint { color: var(--ink-3); cursor: help; font-size: 11px; border: 1px solid var(--line-2); border-radius: 99px; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; flex: none; vertical-align: -2px; }
+/* 文字和「?」之间留 6px。.field label 是块级，靠外边距；本身是 flex 的标签（设置页的
+   .field label、.accessbar-label）用 gap，见各自的规则。 */
+.field label > .hint, .field label > .swrow-hint { margin-left: 6px; }
 /* .sw 在应用里用真实 <button role="switch"> 实现（样张是纯展示 div），补一份控件重置。 */
 .sw { appearance: none; -webkit-appearance: none; border: 0; padding: 0; margin-left: auto; width: 32px; height: 19px; border-radius: 99px; background: var(--line-2); position: relative; flex: none; cursor: pointer; transition: .15s; }
 .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 99px; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 25%); transition: left .15s; }
@@ -240,13 +244,15 @@ table.review-tbl { table-layout: fixed; }
 .fold-h svg { margin-left: auto; transition: transform .15s; }
 .fold-b { padding: 11px 12px 4px; border-top: 1px solid var(--line); }
 .rp-foot { flex: none; padding: 13px 16px; border-top: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
-.radio-row { display: flex; gap: 12px; font-size: 12.5px; align-items: center; color: var(--ink); }
-.radio-row input { accent-color: var(--accent); }
+.radio-row { display: flex; gap: 6px 14px; font-size: 12.5px; align-items: center; color: var(--ink); }
+/* 圆点和文字之间固定 6px：浏览器默认的 radio 外边距左右不对称，文字直接贴在圆点上。 */
+.radio-row label { display: inline-flex; align-items: center; gap: 6px; }
+.radio-row input { accent-color: var(--accent); margin: 0; flex: none; }
 
 /* 「连接方式」从连接详情卡里提出来，单独做成一张角色级横条卡，压在连接列表上面。
    它改的是整个角色，长在详情卡里会被读成「当前选中那条连接的属性」。 */
 .accessbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 11px 16px; }
-.accessbar-label { display: flex; align-items: center; font-size: 12px; font-weight: 550; color: var(--ink-2); flex: none; }
+.accessbar-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; color: var(--ink-2); flex: none; }
 
 /* 列表被锁时贴在表头下方的解释条。info＝跟随中（稳定态），pend＝连接方式改了还没保存。
    按钮不再凭空消失，改成灰掉 + 这一条说明「为什么」和「怎么解开」。 */
@@ -343,7 +349,6 @@ table.review-tbl { table-layout: fixed; }
 /* ========== 模态（含危险操作红头样式） ========== */
 /* 适配点 3：position:absolute → fixed，z-index 10 → 200（盖过顶栏/侧栏）。 */
 .overlay { position: fixed; inset: 0; background: rgb(10 14 26 / 45%); display: flex; align-items: center; justify-content: center; gap: 36px; z-index: 200; }
-/* 适配点 4：补 position:relative，配合下面 .mlabel 的显式 top/left。 */
 /* max-height + 正文滚动：正文再长，标题和底部按钮也永远留在视口内。 */
 .modal { position: relative; display: flex; flex-direction: column; width: 400px; max-height: calc(100vh - 72px); background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-lg); padding: 22px 22px 18px; }
 .modal .mbody { overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
@@ -361,7 +366,16 @@ table.review-tbl { table-layout: fixed; }
 .modal p { font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
 .modal .macts { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
 .modal input[type="text"] { width: 100%; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; padding: 0 11px; font: inherit; background: var(--surface); color: var(--ink); margin-top: 4px; }
-.mlabel { position: absolute; top: -34px; left: 22px; font-size: 11.5px; font-weight: 650; letter-spacing: .06em; color: #fff; background: rgb(10 14 26 / 55%); border-radius: 99px; padding: 3px 12px; white-space: nowrap; }
+/* 来源标签放进弹窗里，做成标题上方的一行灰色小字。以前它是浮在弹窗上沿外面的深色
+   胶囊，跟弹窗本身不是一套样式，深色主题下还会压到遮罩外的内容上。 */
+.modal .mlabel { display: block; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--ink-3); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 文本域（例如自定义语言的「语言说明」）和上面的单行输入框同宽同皮肤。弹窗挂在 body 上，
+   设置页 .set-body 下的文本域样式够不着它，不补就是浏览器默认的半宽小框。 */
+.modal textarea { display: block; width: 100%; min-height: 72px; resize: vertical; border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 11px; font: inherit; font-size: 12.5px; line-height: 1.6; background: var(--surface); color: var(--ink); }
+/* 深色主题：卡片底色和页面底色只差一档，弹窗主要靠描边才认得出来。遮罩压暗、弹窗
+   抬到 --surface-2，让它浮在页面上面；弹窗里的输入框仍用 --surface，看上去是嵌进去的。 */
+:root[data-theme="dark"] .overlay { background: rgb(0 0 0 / 60%); }
+:root[data-theme="dark"] .modal { background: var(--surface-2); }
 
 /* ========== 「?」提示浮层（样张未覆盖，新增） ==========
  * 原生 title tooltip 在 WKWebView 里出得慢、位置不可控，父级 pointer-events:none 时
@@ -587,7 +601,7 @@ table.review-tbl { table-layout: fixed; }
  * pointer-events: none 让空白区域点得穿（提示只盖住顶栏下面一小块，底下可能正是
  * 用户要点的东西），卡片本身再把它收回来。
  *
- * 栈里两格：更新卡片在上，一次性提示在下，顺序在 mountShell 里定死。
+ * 栈里两格：更新卡片排在顶栏下面；一次性提示单独定位到顶栏中间（见 .ts-toast）。
  * ========================================================================== */
 /* bottom: 0 —— 栈本身撑满工作区（点得穿，不影响下面的内容），这样卡片的
    max-height: 100% 才有一个确定的参照：窗口有多高，卡片最多就有多高。
@@ -599,19 +613,23 @@ table.review-tbl { table-layout: fixed; }
 }
 /* display: contents —— 格子本身不生成盒子，卡片直接参与栈的 flex 布局；空格不占位。 */
 .toast-slot { display: contents; }
-/* 一次性提示放到工作区左下角。原来跟更新卡片一起停在顶部居中，正好压在来源栏的
-   「浏览」按钮上，扫描完那几秒点不到它。右下角是「开始翻译」，也不能去；左下角只会
-   盖住清单或日志的末尾几行，那里没有按钮。 */
+/* 一次性提示浮在顶栏中间那段空白上。位置换过三次，每一处都踩过坑：
+   - 顶部居中、顶栏下面（和更新卡片一起）：正好压在来源栏的「浏览」按钮上，扫描完那几秒点不到；
+   - 右下角：那里是「开始翻译」；
+   - 左下角：盖住清单末尾——扫描刚结束时被盖住的恰好是「跳过了哪些文件」那一行，设置页
+     则是表单最底下的按钮和说明。
+   顶栏左边是标题、右边是两颗药丸，中间本来就空着；提示只停几秒，偶尔压到一点副标题
+   也不挡任何操作。更新卡片从顶栏下沿（padding-top: 76px）往下排，两者不会叠在一起。 */
 .toast-slot.ts-toast {
-  display: flex; flex-direction: column-reverse; align-items: flex-start; gap: 8px;
-  position: absolute; left: 24px; bottom: 20px; max-width: calc(100% - 48px); pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  position: absolute; top: 11px; left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: min(440px, calc(100% - 48px)); pointer-events: none;
 }
 
 /* ========== Toast（适配点 5：样张未覆盖，新增） ========== */
 .toast { pointer-events: auto; max-width: 440px; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: 10px; color: var(--ink); background: var(--surface); box-shadow: var(--sh-lg); font-size: 12px; animation: toast-in 180ms ease-out; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
-.ts-toast .toast { animation-name: toast-up; }
-@keyframes toast-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.ts-toast .toast { max-width: 100%; }
 .toast.error { border-color: var(--danger-l); color: var(--danger); }
 
 /* ========== 发布说明渲染（markdown.ts 的 .rn；设置页与更新卡片共用） ==========

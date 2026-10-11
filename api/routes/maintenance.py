@@ -157,6 +157,18 @@ def register(app: FastAPI) -> None:
             raise HTTPException(404, "本次任务没有生成诊断记录，没有可导出的内容。")
         return _zip_response(*_diagnostic_zip_or_404(record))
 
+    @app.get("/api/diagnostics/task/{task_id}")
+    def task_diagnostic_availability(task_id: str) -> dict[str, Any]:
+        """Whether this task has a diagnostic record to export.
+
+        Registered after the ``.zip`` route on purpose: ``{task_id}`` also
+        matches ``abc.zip``, so the download has to win the first match.
+
+        任务详情据此决定「导出诊断」能不能点。手动停止等正常结束的任务本来就没有
+        诊断记录，以前要点了按钮、收到一条红色报错 toast 才知道。
+        """
+        return {"available": _task_diagnostic_record(task_id) is not None}
+
     @app.get("/api/diagnostics/{record_id}.zip")
     def download_diagnostic_record(record_id: str) -> StreamingResponse:
         record = diagnostics.find_diagnostic_record(record_id)

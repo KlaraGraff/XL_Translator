@@ -441,6 +441,76 @@ def test_baseline_qualification_follows_backfill_switch(tmp_path):
     assert missing_off == []
 
 
+def test_excel_one_letter_translation_is_not_mistaken_for_divergence(tmp_path):
+    """单位列「吨 → t」：译文只有一个字母的双语格也要认得出来。
+
+    回归：刚整份翻完立刻重新扫描，弹窗报「2 个源文件已变化」要求整份重翻——
+    「吨\nt」拆不开，整格被当成未译源文，底稿里于是找不到源文件的「吨」。
+    """
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = _make_excel_source(root / "a.xlsx", ["项目名称", "吨", "吨", "小时"])
+    history = _write_excel_bilingual(
+        source,
+        _history_dir(root, "20260101_010101"),
+        {"项目名称": "Project name", "吨": "t", "小时": "h"},
+    )
+
+    assert baseline_missing_source_texts(
+        source, history, surface="excel", target_lang="en", source_lang="zh"
+    ) == []
+
+    result = detect_previous_output(
+        surface="excel",
+        items=[{"path": str(source)}],
+        scan_roots=[str(root)],
+        custom_output_root=None,
+        target_lang="en",
+    )
+    entry = result["files"][0]
+    assert entry["status"] == "full"
+    assert entry["untranslated_count"] == 0
+
+    # 大写的「T」同理。
+    history_upper = _write_excel_bilingual(
+        source,
+        _history_dir(root, "20260102_010101"),
+        {"项目名称": "Project name", "吨": "T", "小时": "h"},
+    )
+    assert baseline_missing_source_texts(
+        source, history_upper, surface="excel", target_lang="en", source_lang="zh"
+    ) == []
+
+
+def test_short_cross_script_split_does_not_apply_to_same_alphabet_or_long_source():
+    """短译文配对只放宽「短汉字源文 + 一两个字母」这一种形状。"""
+    from core.translation_coverage import split_existing_bilingual_text
+
+    assert split_existing_bilingual_text("吨\nt", source_lang="zh", target_lang="en") == ("吨", "t")
+    # 目标语言本身用汉字时，一个拉丁字母不是译文。
+    assert split_existing_bilingual_text("吨\nt", source_lang="zh", target_lang="ja") is None
+    # 长句后跟一个字母，不像单位列的配对。
+    assert split_existing_bilingual_text(
+        "钢筋混凝土结构施工方案\nt", source_lang="zh", target_lang="en"
+    ) is None
+    # 同字母语言对里孤零零的短词说明不了任何事。
+    assert split_existing_bilingual_text("Ton\nt", source_lang="en", target_lang="de") is None
+    # 小写单位样的译文照认；大写只在汉字侧是单位词时认。
+    assert split_existing_bilingual_text("数量\npcs", source_lang="zh", target_lang="en") == ("数量", "pcs")
+    assert split_existing_bilingual_text("件\nPCS", source_lang="zh", target_lang="en") == ("件", "PCS")
+
+
+def test_short_cross_script_split_ignores_letter_and_numeral_labels():
+    """单个大写字母、罗马数字是编号：「方案\nA」是一格原文的两行，不是双语。
+
+    回归：放宽短译文配对后这几种格子被当成已翻，续译时直接跳过。
+    """
+    from core.translation_coverage import split_existing_bilingual_text
+
+    for text in ("方案\nA", "类型\nB", "区域\nN", "等级\nⅡ"):
+        assert split_existing_bilingual_text(text, source_lang="zh", target_lang="en") is None, text
+
+
 def test_excel_new_row_reusing_existing_text_is_diverged(tmp_path):
     """新增的行哪怕逐字复用了底稿里出现过的文本，也是底稿没有的内容。
 

@@ -5,10 +5,11 @@ import { t, tx } from "./i18n";
 export type TaskPanelState = "running" | "pausing" | "paused" | "stopping" | "finalizing" | "done" | "completed_with_issues" | "error" | "stopped" | "interrupted";
 
 export interface TaskProgressOptions {
+  /** 当前阶段名（读取文件 / 翻译 / 调整行高 / 生成文件），四个翻译页面同一套词。 */
+  stage?: string;
+  /** 这一阶段里具体在做什么（「正在检测语言 2/3」「第 1 / 3 个文件」）。 */
   phase?: string;
   percent?: number | null;
-  phaseIndex?: number;
-  phaseTotal?: number;
   state?: TaskPanelState | string;
   monitor?: HTMLElement[];
   note?: string;
@@ -18,18 +19,29 @@ export function createTaskProgressPanel(options: TaskProgressOptions): HTMLEleme
   const card = document.createElement("div");
   card.className = "card task-progress-panel";
   card.style.padding = "16px 18px 14px";
-  const stage = document.createElement("div");
-  stage.className = "prog-stage";
+  const head = document.createElement("div");
+  head.className = "prog-stage";
+  // 所有翻译页面同一个格式：[阶段名] 具体在做什么 …… 百分比。以前 Excel / Word 写
+  // 「阶段 1 / 3」、PDF 写「阶段 1 / 4」、CAD 什么都不写，阶段总数各页不同，用户
+  // 也用不上这个数字；阶段名本身才说明进行到哪了。
   const title = document.createElement("b");
-  title.textContent = options.phase ? tx(options.phase) : t("正在准备任务");
+  const stage = options.stage?.trim() ?? "";
+  const phase = options.phase?.trim() ?? "";
+  if (stage && phase && phase !== stage) {
+    const step = document.createElement("span");
+    step.className = "prog-step";
+    step.textContent = tx(stage);
+    title.append(step, document.createTextNode(tx(phase)));
+  } else {
+    title.textContent = phase || stage ? tx(phase || stage) : t("正在准备任务");
+  }
   const pct = document.createElement("span");
   pct.className = "pct";
   const percent = typeof options.percent === "number" && Number.isFinite(options.percent) ? Math.round(options.percent) : null;
-  const phaseSuffix = options.phaseIndex && options.phaseTotal ? " · " + t("阶段 {0} / {1}", options.phaseIndex, options.phaseTotal) : "";
-  pct.textContent = percent === null ? t("处理中") : `${percent}%${phaseSuffix}`;
+  pct.textContent = percent === null ? t("处理中") : `${percent}%`;
   if (options.state === "paused" || options.state === "pausing") pct.style.color = "var(--warn)";
-  stage.append(title, pct);
-  card.append(stage, createProgressBar({ percent: percent ?? 0, tone: options.state === "paused" || options.state === "pausing" ? "warn" : "accent" }).root);
+  head.append(title, pct);
+  card.append(head, createProgressBar({ percent: percent ?? 0, tone: options.state === "paused" || options.state === "pausing" ? "warn" : "accent" }).root);
   if (options.monitor?.length) {
     const monitor = document.createElement("div");
     monitor.className = "mon";
@@ -121,7 +133,7 @@ export interface TaskControlFootOptions {
   idle: { label: string; disabled?: boolean; onClick: () => void };
   active?: {
     paused: boolean;
-    /** 已请求暂停、正在等当前单元（CAD 是当前文件）做完：暂停按钮变成不可点的「正在暂停…」。 */
+    /** 已请求暂停、正在等当前单元（CAD 是已发出的这批请求）收尾：暂停按钮变成不可点的「正在暂停…」。 */
     pausing?: boolean;
     onResume: () => void;
     /** 不支持暂停的任务（Excel / Word）不传，底栏只留「安全停止」。 */
@@ -152,6 +164,9 @@ export function createTaskControlFoot(options: TaskControlFootOptions): HTMLElem
         note.textContent = active.finishPaused.note;
         foot.append(note);
       }
+    } else {
+      // 没有「结束任务」的（CAD）暂停后也要能停：后端 stop() 会先放开暂停再停下。
+      foot.append(createButton({ label: active.stopLabel ?? t("停止"), icon: "stop", variant: "danger", size: "big", onClick: active.onStop }));
     }
     return foot;
   }

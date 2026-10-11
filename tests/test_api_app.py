@@ -210,8 +210,12 @@ class ApiAppTests(unittest.TestCase):
             self.assertEqual(conflict.status_code, 409)
             locks = blocked_client.get("/api/tasks/locks/current")
             self.assertEqual(len(locks.json()["reservations"]), 1)
+            running = blocked_client.get(f"/api/tasks/{first.json()['task_id']}").json()
+            self.assertIs(running["stop_requested"], False)
             stopped = blocked_client.post(f"/api/tasks/{first.json()['task_id']}/stop")
             self.assertEqual(stopped.status_code, 200)
+            # 用户经接口按的停止要留痕：界面据此区分「用户停的」和 runner 自行收尾。
+            self.assertIs(stopped.json()["stop_requested"], True)
 
     def test_failed_runner_start_leaves_terminal_history_record(self) -> None:
         context = TaskApiContext(

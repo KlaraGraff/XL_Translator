@@ -65,10 +65,18 @@ function generatedNeedsReview(file: FileProgress): boolean {
   return needsReview;
 }
 
+/** 停止后写出、里面还留着一部分原文的文件。徽章配色同样直接读这个判断。 */
+function generatedUnfinished(file: FileProgress): boolean {
+  return Number((file.result ?? {}).unfinished_text_count ?? 0) > 0;
+}
+
 export function fileProgressLabel(file: FileProgress, taskState?: string): string {
   if (taskState === "interrupted" && ["waiting", "active", "paused"].includes(file.state)) return t("应用中断");
   const result = file.result ?? {};
   const needsReview = generatedNeedsReview(file);
+  // 停止后写出的 Excel / Word：文件是生成了，可里面还有一部分是原文（后端按续译检测
+  // 同一口径数出来的格/段数）。叫「已生成」会像翻完了一样。
+  const unfinished = generatedUnfinished(file);
   const untranslated = result.untranslated === true
     || result.all_pages_skipped_oversize === true
     || (Number(result.page_count ?? 0) > 0 && Number(result.skipped_oversize_page_count ?? 0) >= Number(result.page_count));
@@ -83,13 +91,17 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
       if (file.phase === "adjust") return t("待处理 · 等待调整排版");
       return t("待处理");
     case "active": {
-      const phase = taskState === "paused" && file.phase === "translate"
-        ? t("等待已提交页面完成")
-        : PHASE_LABELS[file.phase] ?? "";
       const count = file.total > 0 ? `${file.completed} / ${file.total}` : "";
+      // 文件翻到一半时暂停：PDF 停止提交新页面、CAD 停在两张图之间都会走到这里，所以
+      // 不写哪一种的细节（以前写「等待已提交页面完成」，CAD 图纸上也这么显示）。PDF 已提交
+      // 的页还会陆续跑完，那一层由进度卡标题「已暂停提交新页面」交代。
+      if (taskState === "paused" && file.phase === "translate") return [t("已暂停"), count].filter(Boolean).join(" · ");
+      const phase = PHASE_LABELS[file.phase] ?? "";
       return [t("处理中"), phase, count].filter(Boolean).join(" · ");
     }
-    case "generated": return [t("已生成"), untranslated ? t("整份未翻译") : "", needsReview ? t("需复核") : ""].filter(Boolean).join(" · ");
+    case "generated":
+      if (unfinished) return [t("部分翻译"), needsReview ? t("需复核") : ""].filter(Boolean).join(" · ");
+      return [t("已生成"), untranslated ? t("整份未翻译") : "", needsReview ? t("需复核") : ""].filter(Boolean).join(" · ");
     case "failed": return t("未生成");
     case "unstarted": return t("未开始");
     case "stopped": return t("已停止");
@@ -100,7 +112,7 @@ export function fileProgressLabel(file: FileProgress, taskState?: string): strin
 
 export function fileProgressTone(file: FileProgress, taskState?: string): "ok" | "warn" | "dgr" | "mute" | "tint" {
   if (taskState === "interrupted" && ["waiting", "active", "paused"].includes(file.state)) return "dgr";
-  if (file.state === "generated") return generatedNeedsReview(file) ? "warn" : "ok";
+  if (file.state === "generated") return generatedNeedsReview(file) || generatedUnfinished(file) ? "warn" : "ok";
   if (file.state === "active") return "tint";
   if (file.state === "failed" || file.state === "interrupted") return "dgr";
   if (file.state === "stopped" || file.state === "unstarted" || file.state === "waiting" || file.state === "paused") return "mute";

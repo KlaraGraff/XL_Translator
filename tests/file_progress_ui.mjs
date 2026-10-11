@@ -25,7 +25,7 @@ assert.equal(fileProgressLabel({ ...a, state: "generated", result: { sheet_name_
 assert.equal(fileProgressTone({ ...a, state: "generated", result: { all_pages_skipped_oversize: true, quality_flagged_page_count: 1 } }), "warn");
 assert.equal(fileProgressLabel({ ...a, state: "waiting", phase: "adjust" }), "待处理 · 等待调整排版");
 assert.equal(fileProgressLabel({ ...a, state: "waiting", phase: "generate" }, "paused"), "已暂停 · 等待继续");
-assert.equal(fileProgressLabel(a, "paused"), "处理中 · 等待已提交页面完成 · 3 / 12");
+assert.equal(fileProgressLabel(a, "paused"), "已暂停 · 3 / 12");
 assert.equal(fileProgressLabel({ ...a, state: "active", phase: "not_started" }), "处理中 · 3 / 12");
 assert.equal(fileProgressLabel(a, "interrupted"), "应用中断");
 assert.equal(fileProgressTone(a, "interrupted"), "dgr");

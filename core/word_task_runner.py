@@ -365,11 +365,21 @@ class WordTaskRunner(BaseTaskRunner):
         self._file_progress.emit_many("waiting", "extract")
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # 用户按了停止。持续限流时 runner 自己也会置 _stop_event 收尾，那不是用户
+        # 停止：停止说明要保留限流原因，没翻成的段落照常标记复核。
+        self._user_stop_requested = False
         self._task_logger = TaskLogger(enabled=True)
 
     @property
     def task_id(self) -> str:
         return self._task_logger.task_id
+
+    def _before_start(self) -> None:
+        self._user_stop_requested = False
+
+    def stop(self) -> None:
+        self._user_stop_requested = True
+        super().stop()
 
     def _log_front_matter_boundary(
         self, file_name: str, front_matter: WordFrontMatterBoundary
@@ -933,7 +943,7 @@ class WordTaskRunner(BaseTaskRunner):
                 )
             )
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"[阶段 1 完成] 全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次（{phase1_elapsed:.2f}s）")
+            self._log("OK", f"读取完成：全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -1005,7 +1015,7 @@ class WordTaskRunner(BaseTaskRunner):
             api_call_count = len(misses) + len(mixed_texts)
             self._log(
                 "INFO",
-                f"[阶段 2] 记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
+                f"记忆库已有译文 {tm_hit_count} 处，需要模型翻译 {len(misses)} 处，"
                 f"夹杂多种语言 {len(mixed_texts)} 处",
             )
             self._task_logger.global_tm_result(hits=tm_hit_count, misses=api_call_count)
@@ -1420,7 +1430,7 @@ class WordTaskRunner(BaseTaskRunner):
                             self._log("WARN", f"{label} 保留原文，需复核")
 
                 elapsed = (datetime.now() - t0).total_seconds()
-                self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处（{elapsed:.2f}s）")
+                self._log("OK", f"模型翻译完成，共 {len(api_translations)} 处")
                 self._task_logger.global_api_done(returned=len(api_translations), elapsed=elapsed)
                 # TM 写入挪到了残留修复之后（见下）：在这里写会把「修复前」的
                 # 带残留译文存进库，下个文档 TM 命中直接短路，残留就固化了。
@@ -1489,8 +1499,9 @@ class WordTaskRunner(BaseTaskRunner):
                     quality_issues=quality_issues,
                 )
 
-            phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
-            self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"Word 阶段 2 耗时 {(datetime.now() - t_phase2).total_seconds():.2f}s")
+            self._log("OK", "翻译完成，开始生成文件")
 
             # 阶段 3 的入口闸：这里才是真正决定「有没有东西可写」的地方——
             # global_translations 到这里已经是终稿（残留修复、修复阶梯、标题
@@ -1565,8 +1576,9 @@ class WordTaskRunner(BaseTaskRunner):
                     step_total=len(self._files),
                 )
             )
-            phase3_elapsed = (datetime.now() - t_phase3).total_seconds()
-            self._log("OK", f"[阶段 3 完成] Word 文件写入完毕（{phase3_elapsed:.2f}s）")
+            # 耗时只进 app.log 排查用，运行日志里不给用户看秒数。
+            logger.info(f"Word 阶段 3 耗时 {(datetime.now() - t_phase3).total_seconds():.2f}s")
+            self._log("OK", "全部 Word 文件已生成")
         except TaskStopped as exc:
             stopped_message = str(exc)
         except ApiKeyTemporarilyUnavailableError as exc:
@@ -1641,6 +1653,14 @@ class WordTaskRunner(BaseTaskRunner):
                         "已生成的翻译文件仍可使用。"
                     )
 
+            unfinished_paragraphs: int | None = None
+            if stopped_message is not None:
+                unfinished_paragraphs = self._record_unfinished_after_stop(
+                    file_results,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                )
+
             result_contract = self._build_result_contract(
                 file_results=file_results,
                 output_dir=str(output_dir),
@@ -1666,7 +1686,27 @@ class WordTaskRunner(BaseTaskRunner):
                 # 提前收尾（多数场景）还是碰巧在停止生效前就把活干完了（阶段 3 不
                 # 再半路弃文件之后，这种巧合确实会发生）——两种情况数字都不撒谎。
                 total_texts = len(global_unique_texts)
-                if total_texts:
+                if unfinished_paragraphs is not None:
+                    # 与续译弹窗「补 N 段」同一口径：数产物里还是原文的段落位置
+                    # （core.resume_detection.count_untranslated_in_output）。以前这里按
+                    # 去重后的文本条数数，同一份文件停止时说 314、重新扫描后说 337。
+                    result_contract["kpi"]["unstarted_text_count"] = unfinished_paragraphs
+                    if self._user_stop_requested:
+                        stopped_message = (
+                            "任务已停止，已翻好的内容写进了文件，"
+                            + (
+                                f"还有 {unfinished_paragraphs} 段没翻，保留原文，可以接着翻译。"
+                                if unfinished_paragraphs
+                                else "停止前已经全部翻完。"
+                            )
+                        )
+                    elif unfinished_paragraphs:
+                        # 不是用户按的停止（持续限流）：原因放在最前面，不能被换成
+                        # 「任务已停止」——用户什么都没按，看到这句只会以为程序自己坏了。
+                        stopped_message = (
+                            f"{stopped_message}还有 {unfinished_paragraphs} 段没翻。"
+                        )
+                elif total_texts:
                     # 排除「原文当译文」的占位段：它们在词典里只是为了让写盘统一走
                     # 替换通道，实际没翻出来，按「保留原文待续译」计。
                     translated_texts = sum(
@@ -1794,7 +1834,7 @@ class WordTaskRunner(BaseTaskRunner):
                 step_total=len(self._files),
             )
         )
-        self._log("INFO", f"[阶段 1] 读取文件：{file_item.name}（{index + 1}/{len(self._files)}）")
+        self._log("INFO", f"读取文件：{file_item.name}（{index + 1}/{len(self._files)}）")
         try:
             t0 = datetime.now()
             prepared = None
@@ -1893,7 +1933,6 @@ class WordTaskRunner(BaseTaskRunner):
                             if prepared.labels_seen
                             else ""
                         )
-                        + f"（{(datetime.now() - t0).total_seconds():.2f}s）"
                     ),
                 )
             process_paths.append(process_path)
@@ -2122,7 +2161,7 @@ class WordTaskRunner(BaseTaskRunner):
             file_texts.append(text_set)
             global_unique_texts.update(text_set)
             elapsed = (datetime.now() - t0).total_seconds()
-            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置")
             self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
             self._file_progress.emit(file_item.path, "waiting", "translate")
         except Exception as exc:
@@ -2192,7 +2231,11 @@ class WordTaskRunner(BaseTaskRunner):
             for file_item, texts in zip(self._files, file_texts)
         }
         file_language_preflights = {}
-        for file_path, candidate_texts in file_payloads.items():
+        # 每个文件一次模型请求，整段可能要等好一阵，而进度条的读取阶段已经走满。
+        # 逐个文件报「正在检测语言 x/y」，进度卡标题才看得出还在往前走。
+        detect_total = len(file_payloads)
+        for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -2657,7 +2700,7 @@ class WordTaskRunner(BaseTaskRunner):
                 step_total=len(self._files),
             )
         )
-        self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{index + 1}/{len(self._files)}）")
+        self._log("INFO", f"生成文件：{file_item.name}（{index + 1}/{len(self._files)}）")
         try:
             rel_subdir = file_item.path.parent.relative_to(source_root)
         except ValueError:
@@ -2780,6 +2823,9 @@ class WordTaskRunner(BaseTaskRunner):
                     unit.source_text.strip() for unit in still_needs_review
                 },
                 already_target_sources=already_target_sources,
+                # 用户停止后还是原文的段落是「停止时尚未翻译」，由续译补，不算需复核。
+                # 持续限流自行收尾时那些段落是真没翻成，照常标记复核。
+                report_untranslated=not self._user_stop_requested,
             )
             final_path = final_output_dir / out_path.name
             elapsed = (datetime.now() - t0).total_seconds()
@@ -2827,7 +2873,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "INFO",
                         f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
                     )
-                if residual_count:
+                if residual_count and not self._user_stop_requested:
                     self._log(
                         "WARN",
                         (
@@ -2841,7 +2887,7 @@ class WordTaskRunner(BaseTaskRunner):
                     tm_hits=this_tm,
                     api_calls=this_api,
                 )
-                self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
+                self._log("OK", f"文件完成：{file_item.name}")
             except Exception as exc:  # noqa: BLE001 - 文件已提交，统计故障只告警
                 logger.warning(f"Word 文件已写出，但完成日志或统计失败：{exc!r}")
         except Exception as exc:
@@ -2879,6 +2925,49 @@ class WordTaskRunner(BaseTaskRunner):
                     stage_handle.cleanup()
                 except Exception as exc:  # noqa: BLE001 - 不掩盖已提交文件的状态
                     logger.warning(f"Word 临时目录清理失败：{exc!r}")
+
+    def _record_unfinished_after_stop(
+        self,
+        file_results: list[dict],
+        *,
+        target_lang: str,
+        source_lang: str,
+    ) -> int | None:
+        """停止后逐个写出的文件数「还是原文的段落」，记到逐文件结果上并返回合计。
+
+        文件状态据此从绿色「已生成」改成「部分翻译」；任何一个文件数不出来就返回
+        None，调用方退回旧的按文本条数的说法，不报一个凑出来的数。
+        """
+        from core.resume_detection import count_untranslated_in_output
+
+        if not any(entry.get("success") for entry in file_results):
+            return None
+        total = 0
+        for entry in file_results:
+            if not entry.get("success"):
+                continue
+            output = str(entry.get("output") or "")
+            source = str(entry.get("source_path") or "")
+            if not output or not source:
+                return None
+            count = count_untranslated_in_output(
+                "word",
+                output,
+                source_path=source,
+                target_lang=target_lang,
+                source_lang=source_lang,
+            )
+            if count is None:
+                return None
+            entry["unfinished_text_count"] = count
+            total += count
+            self._file_progress.emit(
+                source,
+                "generated",
+                "generate",
+                result={key: value for key, value in entry.items() if key != "source_path"},
+            )
+        return total
 
     def _build_result_contract(
         self,
@@ -2976,6 +3065,13 @@ class WordTaskRunner(BaseTaskRunner):
                     },
                     "review_items": list(raw.get("issues") or []),
                     "error": readable_error,
+                    # 停止后才有：产物里还是原文的段落数（与续译检测同一口径），
+                    # 界面据此把这一行标成「部分翻译」。没有就不带这个键。
+                    **(
+                        {"unfinished_text_count": int(raw["unfinished_text_count"])}
+                        if raw.get("unfinished_text_count") is not None
+                        else {}
+                    ),
                 }
             )
 

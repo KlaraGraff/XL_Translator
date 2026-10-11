@@ -2677,6 +2677,9 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 if not fatal_error:
                     resume_requested = False
                     self._queue.put(ProgressMsg(3, 4, "生成文件", 0, max(1, len(file_records))))
+                    # 进度卡标题否则还停在上一句「正在翻译 PDF 页面，已完成 N / N 页」。
+                    if not self._stop_event.is_set():
+                        self._queue.put(StatusMsg("状态：正在生成输出文件…"))
                     for index, prepared in enumerate(prepared_files, start=1):
                         if stopped and not self._stop_event.is_set() and has_unfinished_pages:
                             resume_requested = True
@@ -2799,13 +2802,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 stopped=stopped,
                 fatal_error=fatal_error,
             )
-            self._queue.put(ProgressMsg(4, 4, "写入报告", 0, 1))
+            self._queue.put(ProgressMsg(4, 4, "生成文件", 0, 1))
             manifest_path, report_path = write_pdf_manifest_and_report(
                 summary, artifact_dir=self._process_work_dir
             )
             logger.info(f"[PDF] 已写入进度记录：{manifest_path.name}")
             self._log("INFO", f"已写入翻译报告：{report_path.name}")
-            self._queue.put(ProgressMsg(4, 4, "写入报告", 1, 1))
+            self._queue.put(ProgressMsg(4, 4, "生成文件", 1, 1))
             # From here on the run thread is finished but the page records, the
             # archive folders and the output directory all stay reachable, which
             # is what lets a finished task still regenerate a single page.

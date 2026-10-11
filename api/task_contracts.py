@@ -41,6 +41,13 @@ class TaskInputError(ValueError):
         self.reason = reason
 
 
+# 模型还没配好时的拦截原因（随错误响应的 reason 一起给界面）。界面认出这几个就在
+# 弹窗里放「去设置」，直接带到「设置 › 模型服务」里对应的角色，而不是只有「知道了」。
+REASON_TRANSLATION_MODEL_MISSING = "translation_model_missing"
+REASON_IMAGE_MODEL_MISSING = "image_model_missing"
+REASON_PDF_REVIEW_MODEL_MISSING = "pdf_review_model_missing"
+
+
 @dataclass(frozen=True)
 class TaskOptions:
     untranslated_only: bool = False

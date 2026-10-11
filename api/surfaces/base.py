@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from api.task_contracts import Runner, TaskInputError, TaskOptions
+from api.task_contracts import (
+    REASON_TRANSLATION_MODEL_MISSING,
+    Runner,
+    TaskInputError,
+    TaskOptions,
+)
 from core.api_config_check import check_translation_api_config
 from settings import AppSettings
 
@@ -71,8 +76,9 @@ class Surface:
     #: The page offers 暂停 (the runner must define ``pause()``).
     can_pause: ClassVar[bool] = False
     #: ``"immediate"`` – the task shows *paused* as soon as pause is pressed;
-    #: ``"file_boundary"`` – it shows *pausing* until the runner reaches the
-    #: end of the current file.
+    #: ``"file_boundary"`` – it shows *pausing* until the runner acknowledges
+    #: a safe point (CAD: between drawings, or between two request batches
+    #: inside one drawing).
     pause_mode: ClassVar[Literal["immediate", "file_boundary"]] = "immediate"
     #: The page offers 继续 after a pause (runner defines ``resume()``).
     can_resume: ClassVar[bool] = False
@@ -144,7 +150,9 @@ def require_translation_model(settings: AppSettings) -> None:
     model_check = check_translation_api_config(settings)
     if not model_check.ok:
         detail = f"（{model_check.detail}）" if model_check.detail else ""
-        raise TaskInputError(f"{model_check.message}{detail}")
+        raise TaskInputError(
+            f"{model_check.message}{detail}", reason=REASON_TRANSLATION_MODEL_MISSING
+        )
 
 
 def file_format(item: Any) -> str:

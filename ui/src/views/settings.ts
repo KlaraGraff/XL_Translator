@@ -687,8 +687,15 @@ async function loadAndRenderPage(token: number): Promise<void> {
   renderBody();
 }
 
+// 上一次 renderBody 画的是哪个子页，用来判断这次重画要不要保留滚动位置。
+let renderedPage: SettingsPage | null = null;
+
 export function renderBody(): void {
   if (!bodyHost) return;
+  // 同一子页里的重画（保存、测试、切换连接……）保持滚动位置。以前整页清空再重建后
+  // 滚动位置不受控制，点「保存配置」后页面停在别处，连接列表那一行被顶部截掉一半。
+  // 换了子页才回到顶部。
+  const keepScroll = renderedPage === currentPage ? bodyHost.scrollTop : 0;
   clearElement(bodyHost);
   // 上一轮渲染留下的表单钩子指向的是已经被 clearElement 摘掉的 DOM。模型页会在下面
   // 重新接上；其他页面就该是空的，否则「获取模型列表」那条路径可能提交一份幽灵表单。
@@ -701,6 +708,8 @@ export function renderBody(): void {
     case "data": renderDataPage(bodyHost); break;
     case "about": renderAboutPage(bodyHost); break;
   }
+  renderedPage = currentPage;
+  bodyHost.scrollTop = keepScroll;
 }
 
 // 模型表单里几个「点了按钮但没提交表单」的输入框——获取模型列表 / 测试连接这类操作

@@ -319,6 +319,14 @@ function pageNeedsRerun(page: PdfPage): boolean {
   return (page.status === "failed" || page.placeholder) && !page.user_skipped;
 }
 
+/** 这个文件这次有没有写出输出文件。只有 completed / needs_review 两种状态有产物；
+ *  后端的单页重跑也只认这两种（rerun_page：没有产物就没有东西可以重装，直接拒绝）。
+ *  全部页都失败的文件根本没有「输出的 PDF」，横幅不能说「输出的 PDF 里这几页是占位图」，
+ *  也不能给一个点了必然报错的「只重跑这 N 页」。 */
+function fileProducedOutput(file: PdfPageFile): boolean {
+  return file.status === "completed" || file.status === "needs_review";
+}
+
 /** 「这一页算不算有问题」统一按 reviewResultChip 判出来的颜色定，不重新发明一套规则：
  *  dgr（失败 / 已跳过占位）和 warn（建议复核 / 审核未通过 / 待复核 / 任务已停止时的
  *  待处理页）都算。折叠默认展开、分组小结、「只看有问题的页」筛选三处共用这一个答案，
@@ -382,7 +390,7 @@ function pageIsUnfinished(page: PdfPage): boolean {
  *     文件上。文件级的失败原因 status/error 快照里现成有，直接用。
  *
  *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
-function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLElement[] {
+function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewEnabled: boolean): HTMLElement[] {
   if (file.pages.length === 0) {
     // 一页都没有：要么预处理就失败（打不开、图片校验没过），要么还没轮到预处理。
     // 有页的失败文件（例如单张图片那一页没生成出来）不是「打不开」，往下按页分桶说。
@@ -408,7 +416,8 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLEl
 
   if (failed.length === 0 && stoppedSet.size === 0 && flagged.length === 0 && unfinished.length === 0 && oversize.length === 0) {
     const all = el("span");
-    all.textContent = t("{0} 页全部通过", pages.length);
+    // 没开逐页审核时谁也没判过「通过」，只能说「已生成」。
+    all.textContent = reviewEnabled ? t("{0} 页全部通过", pages.length) : t("{0} 页已生成", pages.length);
     return [all];
   }
 
@@ -423,7 +432,7 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLEl
   if (flagged.length > 0) push(t("{0} 建议复核", flagged.length), "flag");
   if (unfinished.length > 0) push(t("{0} 待处理", unfinished.length));
   if (oversize.length > 0) push(t("{0} 原样保留", oversize.length));
-  if (passed > 0) push(t("{0} 通过", passed));
+  if (passed > 0) push(reviewEnabled ? t("{0} 通过", passed) : t("{0} 已生成", passed));
 
   const out: HTMLElement[] = [];
   parts.forEach((node, i) => {
@@ -616,7 +625,8 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
     : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
   const head = el("div", "tc-head");
   const b = el("b");
-  b.textContent = t("逐页审核");
+  // 没开审核时这块只是逐页的生成结果，叫「逐页审核」会让人以为每页都审过了。
+  b.textContent = snapshot.review_enabled ? t("逐页审核") : t("逐页结果");
   const span = el("span");
   // 审核关着的时候不能还说「审核模型逐页检查」：同一张表里每一行写的都是「未审核 · 本次
   // 没有让审核模型看这一页」，一屏之内两句话对不上。卡片本身照常用（重试、跳过都在这里）。
@@ -651,7 +661,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   // 把节点拼回卡片，构建顺序和视觉顺序不必是同一件事。
   const table = el("table", "tbl");
   const headRow = el("tr");
-  const headLabels = [t("页"), t("审核结果"), t("说明"), ""];
+  const headLabels = [t("页"), snapshot.review_enabled ? t("审核结果") : t("结果"), t("说明"), ""];
   headLabels.forEach((label, i) => {
     const th = el("th");
     th.textContent = label;
@@ -664,6 +674,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   const failingRows: PdfPageRow[] = [];
   let firstFailingRow: HTMLTableRowElement | null = null;
   let totalPages = 0;
+  let anyProblemFile = false;
 
   for (const file of snapshot.files) {
     const fileKey = file.relative_path;
@@ -672,6 +683,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
     // 最该被看见的文件反而是唯一看不见的，正好反了。
     const anyProblem = file.status === "failed" || file.pages.length === 0 || file.pages.some((page) => pageIsProblem(page, taskStopped));
     const handle: PdfGroupHandle = { fileKey, hasFailingPage: file.pages.some(pageNeedsRerun), rows: [] };
+    if (file.pages.length === 0 && anyProblem) anyProblemFile = true;
 
     if (multiFile) {
       // 默认展开规则：有失败或建议复核的文件默认展开，全部通过的文件默认收起——打开
@@ -693,7 +705,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       const fn = el("span", "fn");
       fn.textContent = file.name;
       const sum = el("span", "sum");
-      sum.append(...buildGroupSummaryNodes(file, taskStopped));
+      sum.append(...buildGroupSummaryNodes(file, taskStopped, snapshot.review_enabled));
       btn.append(fn, sum);
       btn.addEventListener("click", () => toggleGroupOpen(ui, handle));
       cell.append(btn);
@@ -720,7 +732,9 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
 
   // 勾上「只看有问题的页」而一页问题都没有时，表格只剩表头，像是没加载出来。
   // 这一行平时隐藏，只在筛选打开时由 CSS 显示（.pdf-review-card.filter .row-none-bad）。
-  if (totalPages > 0 && !table.querySelector("tr:not(.row-ok):not(.pdf-file-group) td")) {
+  // 一页都没有的失败文件（打不开）只有分组标题行、没有页行，它在筛选下照样露出来，
+  // 这时再说「没有需要处理的页」就跟它对不上，所以也要排除。
+  if (totalPages > 0 && !anyProblemFile && !table.querySelector("tr:not(.row-ok):not(.pdf-file-group) td")) {
     const noneRow = el("tr", "row-none-bad");
     const cell = el("td");
     cell.colSpan = 4;
@@ -769,14 +783,39 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       }));
     }
   } else if (snapshot.terminal && failingRows.length > 0) {
+    // 失败页按「所在文件有没有写出来」分两拨说：写出来的文件里，失败页是一张占位图，
+    // 可以单页重跑；没写出来的文件（每一页都失败）压根没有「输出的 PDF」，单页重跑
+    // 后端也不接（rerun_page 直接拒绝），只能整份重新翻译。以前不分，全部页失败时横幅
+    // 写「输出的 PDF 里这几页是占位图」，上面的大横幅却是「没有生成文件」。
+    const rerunRows = failingRows.filter(({ file }) => fileProducedOutput(file));
+    const deadRows = failingRows.filter(({ file }) => !fileProducedOutput(file));
     banner = el("div", "pdf-fixbar");
     banner.append(el("span", "dot"));
     const txt = el("span", "txt");
-    const em = el("em");
-    em.textContent = t("{0} 页", failingRows.length);
-    appendAroundEm(txt, t("{0}没有生成译文，输出的 PDF 里这几页是占位图。"), em);
     const small = el("small");
-    small.textContent = t("重跑只动这 {0} 页，其余 {1} 页不会重新调用接口。", failingRows.length, totalPages - failingRows.length);
+    if (rerunRows.length > 0) {
+      const em = el("em");
+      em.textContent = t("{0} 页", rerunRows.length);
+      if (deadRows.length > 0) {
+        appendAroundEm(txt, t("{0}没有生成译文，输出的 PDF 里这几页是占位图；另有 {1}连同所在的文件都没有生成。", "{0}", deadUnitsLabel(deadRows)), em);
+      } else {
+        appendAroundEm(txt, t("{0}没有生成译文，输出的 PDF 里这几页是占位图。"), em);
+      }
+      // 「其余」得真有其余：页页都要重跑时不说「其余 0 页」。没生成的文件里那几页前面
+      // 已经单独说过，不再算进「其余」。
+      const rest = totalPages - failingRows.length;
+      small.textContent = rest > 0
+        ? t("重跑只动这 {0} 页，其余 {1} 页不会重新调用接口。", rerunRows.length, rest)
+        : t("重跑会逐页重新生成这 {0} 页，跑完替换输出文件里的占位图。", rerunRows.length);
+    } else {
+      const em = el("em");
+      em.textContent = deadUnitsLabel(deadRows);
+      const deadFiles = new Set(deadRows.map(({ file }) => file.relative_path)).size;
+      appendAroundEm(txt, deadFiles > 1
+        ? t("{0}没有生成译文，这 {1} 个文件都没有生成。", "{0}", deadFiles)
+        : t("{0}没有生成译文，这个文件没有生成。"), em);
+      small.textContent = t("文件没有生成出来，单页重跑帮不上忙；可以在上面的清单里只勾这几个文件，重新开始翻译。");
+    }
     txt.append(small);
     banner.append(txt);
     banner.append(createButton({
@@ -784,12 +823,14 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       size: "mini",
       onClick: () => focusFailingPages(ui, groupHandles, firstFailingRow),
     }));
-    banner.append(createButton({
-      label: t("只重跑这 {0} 页", failingRows.length),
-      size: "mini",
-      variant: "primary",
-      onClick: () => confirmPdfBatchRerun(surface, taskId, failingRows),
-    }));
+    if (rerunRows.length > 0) {
+      banner.append(createButton({
+        label: t("只重跑这 {0} 页", rerunRows.length),
+        size: "mini",
+        variant: "primary",
+        onClick: () => confirmPdfBatchRerun(surface, taskId, rerunRows),
+      }));
+    }
   }
 
   const tableWrap = el("div");
@@ -807,7 +848,21 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   return card;
 }
 
-function reviewResultChip(page: PdfPage, taskStopped: boolean): HTMLElement {
+/** reviewEnabled 只影响「没经过审核模型」那一档的说法，不改颜色分档——pageIsProblem
+ *  按颜色判「有没有问题」，不传这个参数也得到同一个答案。 */
+/** 没生成出来的文件里的失败页怎么数：PDF 按页、图片按张，跟任务中心的「失败页（已放
+ *  占位）」同一口径——那一格只数 PDF 页（图片失败不放占位页），这里要是把图片也叫「页」，
+ *  同一个任务两屏就是 5 和 4 两个数。 */
+function deadUnitsLabel(rows: PdfPageRow[]): string {
+  const images = rows.filter(({ file }) => file.source_type === "image").length;
+  const pages = rows.length - images;
+  const parts: string[] = [];
+  if (pages > 0) parts.push(t("{0} 页", pages));
+  if (images > 0) parts.push(t("{0} 张图片", images));
+  return parts.join(t("、"));
+}
+
+function reviewResultChip(page: PdfPage, taskStopped: boolean, reviewEnabled = true): HTMLElement {
   // 按尺寸跳过的页必须排在最前面判断，而且不能落到「待复核」上：它没有译文也没有页图，
   // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
   if (page.skipped_oversize) return createChip({ label: t("按幅面跳过"), tone: "mute" });
@@ -849,12 +904,16 @@ function reviewResultChip(page: PdfPage, taskStopped: boolean): HTMLElement {
   // "skipped" 是 PdfPageRecord.review_status 的默认值，意思是这一页没经过审核模型
   // （关了逐页审核，或者还没轮到审核）。它是个真值字符串，不能当成「有审核结论」。
   if (!page.review_status || page.review_status === "skipped") {
-    return createChip({ label: t("未审核"), tone: "mute" });
+    // 这次根本没开审核：这一页正常生成了，就说「已生成」。「未审核」留给开了审核
+    // 却没轮到审核的页——那才是值得提一句的事。
+    return reviewEnabled
+      ? createChip({ label: t("未审核"), tone: "mute" })
+      : createChip({ label: t("已生成"), tone: "ok" });
   }
   return createChip({ label: t("待复核"), tone: "warn" });
 }
 
-function reviewNote(page: PdfPage, taskStopped: boolean): string {
+function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): string {
   if (page.skipped_oversize) return t("幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。");
   if (page.pending_action === "regenerate") return t("待执行重新生成，继续翻译后执行。");
   if (page.pending_action === "skip") return t("待执行跳过，继续翻译后执行。");
@@ -882,7 +941,7 @@ function reviewNote(page: PdfPage, taskStopped: boolean): string {
   // 当成兜底文案，于是页面还没生成、审核还关着的时候，每一页都摆着这句凭空的好消息。
   if (page.review_status === "passed") return t("版式一致，文本完整");
   if (!page.review_status || page.review_status === "skipped") {
-    return t("本次没有让审核模型看这一页。");
+    return reviewEnabled ? t("本次没有让审核模型看这一页。") : t("译文页已生成。");
   }
   return "";
 }
@@ -896,15 +955,17 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   row.append(pageCell);
 
   const resultCell = el("td");
-  resultCell.append(rerunning ? createChip({ label: t("重新生成中"), tone: "tint" }) : reviewResultChip(page, taskStopped));
+  resultCell.append(rerunning ? createChip({ label: t("重新生成中"), tone: "tint" }) : reviewResultChip(page, taskStopped, snapshot.review_enabled));
   row.append(resultCell);
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? t("正在重跑这一页，完成后会改写输出文件") : reviewNote(page, taskStopped);
+  noteCell.textContent = rerunning ? t("正在重跑这一页，完成后会改写输出文件") : reviewNote(page, taskStopped, snapshot.review_enabled);
   row.append(noteCell);
 
   const actionsCell = el("td");
+  // 三个链接挤在一格里，窄一点的窗口就会折成两行；不许折行，标签也压短（见下面「跳过」）。
+  actionsCell.style.whiteSpace = "nowrap";
   const actionable = snapshot.actionable;
   const notFinished = page.status === "pending";
   const needsSkip = page.status === "failed" || page.placeholder;
@@ -927,12 +988,19 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   if (snapshot.terminal) {
     // 终态不排队：点下去立刻重跑并覆盖输出文件，所以先过一道危险操作确认。
     // 「跳过该页」在终态没有意义（它的含义是「接受这张失败占位页」），不给入口。
-    const rerunnable = !oversizeSkipped && !notFinished && page.status !== "rendered" && page.status !== "placeholder_pending";
+    // 文件整份没生成出来时后端不接单页重跑（rerun_page 直接拒绝），入口要提前关上，
+    // 不能等用户点了、确认了、花了一个来回才看到报错。
+    const fileDead = !fileProducedOutput(file);
+    const rerunnable = !oversizeSkipped && !fileDead && !notFinished && page.status !== "rendered" && page.status !== "placeholder_pending";
     // rerun_actionable 在后端就已经带上了 not rerun.active，但那是快照说的话；本地
     // 这笔刚发出去的还没进快照，所以两个来源都要看。
     const rerunBusy = snapshot.rerun.active || pendingRerun !== undefined;
     const rerunReason = oversizeSkipped
       ? oversizeReason
+      : fileDead && !notFinished
+        ? file.status === "stopped"
+          ? t("这个文件停止前没跑完，还没有生成出来；对同一输出目录发起「接着上次继续」可以补完。")
+          : t("这个文件这次没有生成出来，单页重新生成帮不上忙；可以只勾这个文件重新开始翻译。")
       : !rerunnable
         ? notFinished && taskStopped
           // 停止时还没跑到的页不是「试过没成」，「单页重新生成」这个动作本身也不适用
@@ -978,7 +1046,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
 
   if (needsSkip) {
     actionsCell.append(document.createTextNode(" · "));
-    actionsCell.append(buildActionLink(t("跳过该页"), !actionable, undefined, () => void runPdfPageAction(surface, taskId, file, page, "skip")));
+    actionsCell.append(buildActionLink(t("跳过"), !actionable, t("跳过这一页，输出文件里保留占位图"), () => void runPdfPageAction(surface, taskId, file, page, "skip")));
   }
   row.append(actionsCell);
   return row;
@@ -1162,10 +1230,12 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
     }
   }
 
+  // 来源标签跟卡片标题同一个说法：没开审核时那张卡片叫「逐页结果」。
+  const reviewEnabled = states[surface].task?.pdfPagesSnapshot?.review_enabled ?? true;
   handle = openModal({
     tone: "warn",
     icon: "pdf",
-    sourceLabel: t("逐页审核") + " · " + SURFACE_LABEL[surface],
+    sourceLabel: (reviewEnabled ? t("逐页审核") : t("逐页结果")) + " · " + SURFACE_LABEL[surface],
     title: t("第 {0} 页对比 · {1}", page.page_number, file.name),
     body: [wrap],
     actions: [
