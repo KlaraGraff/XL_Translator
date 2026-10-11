@@ -244,10 +244,13 @@ export interface LocalTask {
    *  （见 captureLogScroll / restoreLogScroll）。数组索引不行——满 200 条后每来一条
    *  就从头部丢一条，同一条日志的索引会一直变小。 */
   logs: Array<{ seq: number; time: string; level: string; message: string }>;
+  /** 进度卡标题：这一阶段里具体在做什么（状态句，或 CAD 进度事件的后半句）。 */
   phaseName: string;
+  /** 当前阶段名（读取文件 / 翻译 / 调整行高 / 生成文件），进度卡标题前的小标签。 */
+  stageName: string;
   percent: number;
-  /** 当前阶段序号 / 总阶段数（progress 事件的 phase_index / phase_total）。用来把
-   *  阶段内进度折算成整条进度，也用来在进度卡上写明「阶段 2 / 4」。 */
+  /** 当前阶段序号 / 总阶段数（progress 事件的 phase_index / phase_total）。只用来把
+   *  阶段内进度折算成整条进度；进度卡上不再写「阶段 2 / 4」，各页阶段总数不一样。 */
   phaseIndex: number;
   phaseTotal: number;
   streamState: "connected" | "reconnecting";
@@ -1269,9 +1272,11 @@ interface StatCell {
 
 function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
   const stats = computeStats(surface, st);
-  // 四格以内沿用固定 4 列；Excel 多出「图片 / 文本框」那一格后改自适应列宽，
-  // 否则窄窗口下五格会被压得看不清标签。
+  // 四格以内沿用固定 4 列；Excel 固定五格（见 computeStats），五格同排放不下时整齐地
+  // 折成 3 + 2 两排，不让第 5 格孤零零掉到第二行（workspace.css 的 .stats-wrap）。
+  const outer = el("div", "stats-wrap");
   const wrap = el("div", stats.length > 4 ? "stats five" : "stats");
+  outer.append(wrap);
   for (const [index, stat] of stats.entries()) {
     const classes = ["stat"];
     if (!st.files.length) classes.push("dim");
@@ -1291,7 +1296,7 @@ function buildStatsRow(surface: Surface, st: SurfaceState): HTMLElement {
     }
     wrap.append(cell);
   }
-  return wrap;
+  return outer;
 }
 
 function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
@@ -1300,16 +1305,14 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
     const cells = files.reduce((sum, f) => sum + num(f.text_cell_count), 0);
     const sheets = files.reduce((sum, f) => sum + num(f.sheet_count, f.sheets?.length ?? 0), 0);
     const xls = files.filter((f) => isRisky(surface, f)).length;
-    // outsideCellStat 在字段整批缺失时返回 null（不占版面），过滤掉——.five 修饰类挂在
-    // buildStatsRow 里，靠的就是这里过滤后的实际格数,不需要另外同步。
-    const cellStats: (StatCell | null)[] = [
+    // 固定五格：扫描前、扫描后、扫描失败都是这五格，数不出来的写「—」，页面不会跳。
+    return [
       { label: "已扫描文件", value: String(files.length) },
       { label: "文本单元格", value: cells.toLocaleString("zh-CN") },
       { label: "工作表", value: String(sheets) },
       outsideCellStat(outsideCellStats(files)),
       { label: "旧版 .xls", value: String(xls), warn: xls > 0 },
     ];
-    return cellStats.filter((stat): stat is StatCell => stat !== null);
   }
   if (surface === "word") {
     const paragraphs = files.reduce((sum, f) => sum + num(f.paragraph_count), 0);
@@ -1427,9 +1430,9 @@ function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes" | "
   return parts.join("、");
 }
 
-/** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。字段在整批文件上都缺失时返回 null——
- *  这一格不该出现，不是「确认为 0」。调用方（computeStats）负责把 null 从数组里滤掉。 */
-function outsideCellStat(stats: OutsideCellStats): StatCell | null {
+/** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。这一格始终在（Excel 统计条固定五格，
+ *  以前字段缺失时整格消失，扫描前后格数在 4 和 5 之间跳）；数不出来就写「—」。 */
+function outsideCellStat(stats: OutsideCellStats): StatCell {
   const label = "图片 / 文本框 / 批注";
   const unknownNote = stats.unknownFiles > 0 ? `${stats.unknownFiles} 个 .xls 未统计` : "";
   const n = (value: number) => value.toLocaleString("zh-CN");
@@ -1445,9 +1448,9 @@ function outsideCellStat(stats: OutsideCellStats): StatCell | null {
   if (stats.unknownFiles > 0) {
     return { label, value: "—", dim: true, sub: `${stats.unknownFiles} 个 .xls 需转换后才能统计` };
   }
-  // 这几个字段在整批文件上都不存在（不是数出来是 0）——这个 surface/这版后端根本不产出
-  // 这项信息，不该显示「0 / 0 / 0」把「不知道」说成「没有」，整格直接不渲染。
-  if (stats.presentFiles === 0) return null;
+  // 这几个字段在整批文件上都不存在（不是数出来是 0，例如还没扫描、扫描失败）——不该显示
+  // 「0 / 0 / 0」把「不知道」说成「没有」，写「—」。
+  if (stats.presentFiles === 0) return { label, value: "—", dim: true };
   return { label, value: "0 / 0 / 0", dim: true, sub: "无" };
 }
 
@@ -1861,8 +1864,10 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   checkCell.append(checkbox);
   row.append(checkCell);
 
-  const nameCell = el("td");
+  // 文件名单行显示、放不下就省略号，悬停看全名——窄窗口下以前折成两行，整行被撑高。
+  const nameCell = el("td", "fname");
   nameCell.textContent = fileLabel(file);
+  nameCell.title = file.relative_path || fileLabel(file);
   row.append(nameCell);
 
   if (surface === "cad") {
@@ -1914,7 +1919,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     row.append(dimCell);
   }
 
-  const statusCell = el("td");
+  const statusCell = el("td", "fstatus");
   const liveProgress = file.file_id ? st.task?.fileProgress.get(file.file_id) : undefined;
   const outcome = (file.file_id ? st.fileOutcomes.get(file.file_id) : undefined) ?? st.fileOutcomes.get(fileOutcomeKey(fileLabel(file)));
   if (!st.selected.has(file.path)) {
@@ -1984,10 +1989,9 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
     }
   }
   return createTaskProgressPanel({
-    phase: redactedText(local.phaseName, "正在准备任务"),
+    stage: local.stageName,
+    phase: redactedText(local.phaseName, ""),
     percent: local.percent,
-    phaseIndex: local.phaseIndex,
-    phaseTotal: local.phaseTotal,
     state: local.task.state,
     monitor: buildMonChips(surface, local),
     note,
@@ -2167,6 +2171,8 @@ function buildLogCard(local: LocalTask, sharesHeight = false): HTMLElement {
     row.append(createChip({ label: fileProgressLabel(progress, local.task.state), tone: fileProgressTone(progress, local.task.state) }));
     const nm = el("span", "nm");
     nm.textContent = progress.name || progress.relative_path;
+    // 名字太长时单行省略，鼠标停上去看全名（带相对路径，同名文件分得清）。
+    nm.title = progress.relative_path || progress.name;
     row.append(nm);
     for (const chip of buildFileSkipChips(result, progress.relative_path || progress.name)) row.append(chip);
     fileList.append(row);
@@ -3174,12 +3180,27 @@ async function preflightAndSubmit(
     }
     await sendTaskStart(surface, st, payload);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     showStartBlockedModal(surface, st, payload, error);
   } finally {
     submittingSurfaces.delete(surface);
     rerender(surface);
   }
+}
+
+/** 模型还没配好时后端给的拦截原因（api/task_contracts.py 的 REASON_*_MODEL_MISSING），
+ *  值是「设置 › 模型服务」里对应的角色。 */
+const MODEL_MISSING_ROLE: Record<string, string> = {
+  translation_model_missing: "translation",
+  image_model_missing: "image",
+  pdf_review_model_missing: "pdf_review",
+};
+
+/** 启动没成功时记一笔，开始按钮会改叫「重试启动」。没配模型不算：那一次什么都还没
+ *  试过，按钮照旧叫「开始翻译」，出路在弹窗的「去设置」里。 */
+function noteStartFailure(surface: Surface, error: unknown): void {
+  if (MODEL_MISSING_ROLE[apiErrorReason(error)]) submitFailures.delete(surface);
+  else submitFailures.add(surface);
 }
 
 /** 前置校验把任务拦下来时给一个弹窗，不给两秒就消失的提示：任务根本没开始这件事得留在
@@ -3205,6 +3226,25 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
           variant: "primary",
           onClick: () => void preflightAndSubmit(surface, st, { ...payload, allow_known_review_failure: true }),
         },
+      ],
+    });
+    return;
+  }
+  const missingRole = MODEL_MISSING_ROLE[apiErrorReason(error)];
+  if (missingRole) {
+    // 以前这里和其他拦截一样只有「知道了」：用户读完「尚未填写模型名称」还得自己去找
+    // 设置在哪。直接给一个去「设置 › 模型服务」对应角色的主按钮。
+    openModal({
+      tone: "warn",
+      icon: "warn",
+      title: missingRole === "pdf_review" ? "还没有配置好审核模型" : "还没有配置好翻译模型",
+      body: [
+        redactedText((error as Error)?.message, "翻译要用的模型还没有填好。"),
+        "填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。",
+      ],
+      actions: [
+        { label: "取消" },
+        { label: "去设置", variant: "primary", onClick: () => navigate("settings", { page: "models", role: missingRole }) },
       ],
     });
     return;
@@ -3269,7 +3309,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     watchTask(surface);
     if (surface === "pdf") void fetchPdfPagesSnapshot(surface, task.task_id);
   } catch (error) {
-    submitFailures.add(surface);
+    noteStartFailure(surface, error);
     // 真正启动这一步会把前置校验再跑一遍（设置可能在弹窗开着的时候被改了），所以同一批
     // 「有出路的拦截」也会从这里出来，走同一个弹窗。
     showStartBlockedModal(surface, st, payload, error);
@@ -3281,10 +3321,12 @@ function focusTask(surface: Surface, task: TaskStatus): void {
   rememberTaskContext(st, task.task_id);
   // 切回页面或重开程序接管一个跑到一半的任务时，进度从任务快照里接上，而不是从 0 重新爬。
   const progress = record(task.progress);
+  const phase = splitPhaseName(redactedText(progress.phase_name, ""));
   st.task = {
     task,
     logs: [],
-    phaseName: redactedText(progress.phase_name, "正在准备任务"),
+    phaseName: phase.detail,
+    stageName: phase.stage,
     percent: Math.min(100, Math.max(0, num(progress.overall_percent, 0))),
     phaseIndex: num(progress.phase_index, 0),
     phaseTotal: num(progress.phase_total, 0),
@@ -3416,7 +3458,13 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "progress": {
-      if (data.phase_name !== undefined && !holdsStatePhase(local)) local.phaseName = redactedText(data.phase_name, local.phaseName);
+      if (data.phase_name !== undefined) {
+        // 阶段名只进标签；标题留给状态句（「正在查找记忆库里已有的译文…」），不再被
+        // 光秃秃的「翻译」两个字来回覆盖。CAD 没有状态句，后半句随进度事件一起来。
+        const phase = splitPhaseName(redactedText(data.phase_name, ""));
+        if (phase.stage) local.stageName = phase.stage;
+        if (phase.detail && !holdsStatePhase(local)) local.phaseName = phase.detail;
+      }
       const done = num(data.step_done);
       const total = num(data.step_total);
       if (local.task.state === "stopping") {
@@ -3529,10 +3577,19 @@ function holdsStatePhase(local: LocalTask): boolean {
   return state === "pausing" || state === "paused" || state === "stopping";
 }
 
-/** 后端的状态句都带着「状态：」前缀（给命令行日志用的），进度卡片的标题本身就是状态，
- *  再带前缀就成了「状态：正在翻译…」，跟进度事件给的阶段名来回切换时标题还会跳。 */
+/** 后端的状态句都带着「状态：」前缀和「[阶段 2/3]」「[收尾中]」这样的标记（给命令行
+ *  日志用的）。进度卡片的标题本身就是状态，阶段名另有标签，这些前缀在卡片上全是重复。 */
 function statusPhaseText(value: string): string {
-  return value.replace(/^\s*状态[:：]\s*/, "");
+  return value.replace(/^\s*状态[:：]\s*/, "").replace(/^\s*\[(?:阶段\s*\d+\s*\/\s*\d+|收尾中)\]\s*/, "");
+}
+
+/** progress 事件的 phase_name：Excel / Word / PDF 只有阶段名（「翻译」），CAD 是
+ *  「阶段名 · 具体一步：第 i / N 个文件」（core/cad_task_runner.py 的 _progress）。 */
+function splitPhaseName(value: string): { stage: string; detail: string } {
+  const text = value.trim();
+  const cut = text.indexOf(" · ");
+  if (cut < 0) return { stage: text, detail: "" };
+  return { stage: text.slice(0, cut).trim(), detail: text.slice(cut + 3).trim() };
 }
 
 function syncEventState(local: LocalTask, data: JsonObject, fallback: TaskStatus["state"]): void {

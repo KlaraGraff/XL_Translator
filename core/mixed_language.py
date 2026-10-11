@@ -10,6 +10,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Callable
 
+from loguru import logger
+
 from config import (
     REVIEW_MARK_COLOR_FOREIGN_NOISE_DEFAULT,
     REVIEW_MARK_COLOR_UNRESOLVED_DEFAULT,
@@ -26,6 +28,7 @@ from core.api_scheduler import (
     ApiSchedulerAcquireCancelled,
     WeightedApiScheduler,
 )
+from core.engine_dispatcher import user_facing_batch_reason
 from core.language_registry import get_source_lang_display, get_target_lang_display
 from core.translation_filter import (
     TranslationValidationResult,
@@ -461,10 +464,16 @@ def _translate_mixed_batch_with_fallback(
         if len(batch) > 1 and not (should_stop and should_stop()):
             midpoint = max(1, len(batch) // 2)
             stats.retry_count += 1
+            # 拆批的数字和原始异常只给排查用（见 core/word_batching.py 同一处），
+            # 运行日志里说一句人话就够了。
+            logger.debug(
+                "混合语言批次响应无法解析，已缩小批次重试"
+                f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc!r}"
+            )
             if error_callback:
                 error_callback(
-                    "混合语言批次响应无法解析，已缩小批次重试"
-                    f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc}"
+                    "有一批夹杂多种语言的内容没拿到可用结果，已拆成更小的批次重试："
+                    + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
                 )
             left = _translate_mixed_batch_with_fallback(
                 batch[:midpoint],
@@ -495,8 +504,12 @@ def _translate_mixed_batch_with_fallback(
             return {**left, **right}
 
         stats.failed_count += len(batch)
+        logger.debug(f"混合语言单条解析失败，已保留原文：{str(batch[0])[:40]}... | {exc!r}")
         if error_callback:
-            error_callback(f"混合语言单条解析失败，已保留原文：{str(batch[0])[:40]}... | {exc}")
+            error_callback(
+                f"有一处夹杂多种语言的内容没能翻译，已保留原文（如「{str(batch[0])[:40]}…」）："
+                + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
+            )
         return {text: _uncertain_result(text, note=str(exc)) for text in batch}
 
 
@@ -672,8 +685,8 @@ def _recover_one_mixed_result(
                 try:
                     candidate = future.result()
                 except Exception as exc:  # noqa: BLE001 - another recovery branch may still succeed
-                    if error_callback:
-                        error_callback(f"混合语言恢复分支失败：{exc}")
+                    # 另一条恢复分支可能还会成功，这里不打扰用户。
+                    logger.debug(f"混合语言恢复分支失败：{exc!r}")
                     continue
                 if candidate is None:
                     continue

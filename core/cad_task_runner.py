@@ -39,12 +39,14 @@ from core.task_runner import (
 from core.process_artifacts import ProcessArtifacts, find_process_dirs
 
 
+# 每个图纸内部的 5 步，归到所有翻译页面共用的阶段名（读取文件 / 翻译 / 生成文件）
+# 下面：进度卡上的阶段名和 Excel / Word / PDF 一致，具体在做哪一步写在后半句里。
 _PHASES = {
-    "scan": (1, "读取文件"),
-    "match": (2, "匹配记忆库与术语"),
-    "translate": (3, "翻译"),
-    "write": (4, "写回图纸"),
-    "verify": (5, "校验结果"),
+    "scan": ("读取文件", "正在读取图纸"),
+    "match": ("翻译", "正在匹配记忆库与术语"),
+    "translate": ("翻译", "正在翻译图纸文字"),
+    "write": ("生成文件", "正在写回图纸"),
+    "verify": ("生成文件", "正在校验结果"),
 }
 
 # 暂停真正生效时发出的状态行。api/task_manager.py 靠这个前缀确认「已暂停」，
@@ -188,19 +190,21 @@ class CadTaskRunner(BaseTaskRunner):
             time.sleep(0.1)
 
     def _progress(self, progress: CadProgress, *, file_path: Path | None = None) -> None:
-        _phase_index, phase_name = _PHASES.get(progress.stage, (1, progress.stage))
+        stage_name, activity = _PHASES.get(progress.stage, ("翻译", ""))
         # 一批里每个文件都会把 5 个阶段从头走一遍。如果照 Excel/Word 的做法上报
         # 「阶段 i/5 + 阶段内进度」，界面按阶段折算出的总进度会在第二个文件回到
         # 「读取与扫描」时倒退一大截。CAD 这里直接上报整批的总进度：
         # step_done/step_total = 已完成文件 + 当前文件内的加权进度（CadProgress.percent
         # 已按 CAD_STAGE_WEIGHTS 折算好），phase_index=0 表示「没有跨文件的阶段划分」，
-        # 界面就直接用这个比例画进度条。阶段名里带上「第 i / N 个文件」。
+        # 界面就直接用这个比例画进度条。phase_name 写成「阶段名 · 具体一步：第 i / N 个
+        # 文件」，界面取「 · 」前面的部分当阶段名，后半句当进度卡标题。
         file_count = max(1, len(self._files))
         index = next((i for i, item in enumerate(self._files) if file_path is not None and Path(item.path) == Path(file_path)), 0)
         local_percent = max(0.0, min(100.0, float(progress.percent)))
         batch_done = int(round(index * 100 + local_percent))
         batch_total = file_count * 100
-        label = f"{phase_name} · 第 {index + 1} / {file_count} 个文件" if file_count > 1 else phase_name
+        detail = f"{activity}：第 {index + 1} / {file_count} 个文件" if file_count > 1 else activity
+        label = f"{stage_name} · {detail}" if detail else stage_name
         self._last_stage = progress.stage
         self._queue.put(
             ProgressMsg(
