@@ -34,7 +34,7 @@ from core.coverage_arbitration import (
     collect_arbitration_candidates,
     review_coverage_pairs,
 )
-from core.engine_dispatcher import is_local_engine_name
+from core.engine_dispatcher import is_local_engine_name, user_facing_batch_reason
 from core.word_batching import estimate_api_request_weight
 from core.translation_protocol import extract_replace_translation, is_replace_translation
 from engines.base_engine import engine_supports_chat, strip_markdown_json
@@ -123,8 +123,8 @@ def arbitrate_coverage_units(
             notify_model_checks=lambda count, batches: log(
                 "INFO",
                 (
-                    f"  → {context_label}：{count} 对已有译文送模型判定，"
-                    f"分 {batches} 批发出，请稍候。"
+                    f"  → 正在让模型确认 {count} 处已有译文是否对应原文"
+                    f"（分 {batches} 批），请稍候。"
                 ),
             ),
         )
@@ -132,9 +132,11 @@ def arbitrate_coverage_units(
         # 复核只是给启发式加的一道保险。它自己出错（限流、网络、模型异常）不能连累
         # 整个文件——外层的 per-file except 会把这个文件当成"打不开"，直接不出译文，
         # 那比不复核严重得多。出错就退回原判：启发式说已覆盖就已覆盖。
+        logger.debug(f"{context_label}失败原始错误 {file_name}：{exc!r}")
         log(
             "WARNING",
-            f"  → {file_name}：{context_label}未能完成（{exc}），本文件按原判处理。",
+            f"  → {file_name}：核对已有译文没能完成，本文件按原来的判断处理："
+            + user_facing_batch_reason(exc),
         )
         return None
 
@@ -146,9 +148,9 @@ def arbitrate_coverage_units(
     )
     # 把"模型说不是译文"和"没问出结果"分开报：后者成批出现时说明接口在抖，
     # 不是文档里真有那么多配错的段落。
-    detail = f"{len(flipped)} 对改为重新翻译"
+    detail = f"{len(flipped)} 处改为重新翻译"
     if uncertain:
-        detail += f"（其中 {uncertain} 对因未取得判定结果而从严处理）"
+        detail += f"（其中 {uncertain} 处没拿到确认结果，为稳妥起见重新翻译）"
     # 有候选就报一句，哪怕结论是"全都没问题"。只在有异常时才吭声的检查，用户
     # 无从分辨它是查过了没事，还是压根没跑。
     batch_note = (
@@ -157,22 +159,22 @@ def arbitrate_coverage_units(
     log(
         "INFO",
         (
-            f"  → {context_label}：{len(candidates)} 对已有译文，"
-            f"其中 {outcome.model_check_count} 对送模型判定{batch_note}，{detail}。"
+            f"  → 核对已有译文：共 {len(candidates)} 处，"
+            f"其中 {outcome.model_check_count} 处交给模型确认{batch_note}，{detail}。"
         ),
     )
     if outcome.skipped_over_cap:
         log(
             "WARNING",
             (
-                f"  → {context_label}：可疑对超过单文件上限，"
-                f"{outcome.skipped_over_cap} 对未送模型，按原判保留为已有译文。"
+                f"  → 需要确认的已有译文太多，超出部分的 "
+                f"{outcome.skipped_over_cap} 处没有交给模型，按已有译文保留。"
             ),
         )
     if flipped:
         log(
             "INFO",
-            f"  → {file_name}：{len(flipped)} 处原判「已有译文」经复核改为补译。",
+            f"  → {file_name}：{len(flipped)} 处原以为已有译文，核对后改为补译。",
         )
     return outcome
 
@@ -275,9 +277,11 @@ def run_pair_arbitration_batch(
                 )
         if error_callback is not None:
             # 一批判不出就是一批内容被从严重翻，用户看到多出来的译文得知道是为什么。
+            logger.debug(f"{context_label}批次失败原始错误：{exc!r}")
             error_callback(
-                f"  → {context_label}：一批 {len(entries)} 对未取得判定结果（{exc}），"
-                "这一批按从严处理。"
+                f"  → 核对已有译文：有一批 {len(entries)} 处没拿到确认结果，"
+                "这一批为稳妥起见重新翻译："
+                + user_facing_batch_reason(exc)
             )
         return {}
 

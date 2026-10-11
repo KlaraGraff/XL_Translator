@@ -181,7 +181,7 @@ def _locate_tokens(
         token = original[begin:end]
         found = produced.find(token, cursor)
         if found < 0:
-            return [], [], f"原行片段「{token}」在整行成品里被改写或删掉了"
+            return [], [], f"原行里的「{token}」在改写后的整行里被改动或删掉了"
         produced_spans.append((found, found + len(token)))
         cursor = found + len(token)
     return origin_spans, produced_spans, ""
@@ -199,12 +199,12 @@ def verify_insert_only(original: str, produced: str) -> tuple[bool, str]:
     if not result:
         return False, "模型没有返回整行内容"
     if "\n" in result or "\r" in result:
-        return False, "整行成品里出现了换行，页眉高度是固定的"
+        return False, "改写后的整行里出现了换行，会撑高页眉页脚"
 
     source_len = len("".join(source.split()))
     result_len = len("".join(result.split()))
     if result_len > source_len * _MAX_GROWTH_RATIO + _MAX_GROWTH_SLACK:
-        return False, "整行成品比原行长出太多，疑似自由发挥"
+        return False, "改写后的整行比原行长太多，可能加了原文没有的内容"
 
     _, _, reason = _locate_tokens(source, result)
     return (False, reason) if reason else (True, "")
@@ -415,7 +415,7 @@ def resolve_header_footer_lines(
             HeaderFooterResolution(
                 source=line,
                 resolution=RESOLUTION_UNRESOLVED,
-                reject_reason="没有可用的模型通道" if ask_model is None else "",
+                reject_reason="当前翻译连接不支持这一步" if ask_model is None else "",
             )
             for line in pending
         )

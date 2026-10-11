@@ -1416,9 +1416,9 @@ class WordDocumentTests(unittest.TestCase):
         pool.wait_for_completion()
 
         log_text = "\n".join(message for _, message in logs)
-        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 正在语义仲裁", log_text)
-        self.assertIn("方案.docx · 二、表格 · 表格 1 / 单元格 2 正在语义仲裁", log_text)
-        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 语义仲裁接受", log_text)
+        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 正在复查译文意思", log_text)
+        self.assertIn("方案.docx · 二、表格 · 表格 1 / 单元格 2 正在复查译文意思", log_text)
+        self.assertIn("方案.docx · 一、工程概况 · 正文段落 8 复查通过，采用译文", log_text)
         self.assertTrue(any(summary.semantic_accepted_count == 2 for summary in summaries))
 
     def test_word_recovery_pool_keeps_review_when_semantic_is_uncertain(self) -> None:
@@ -1517,7 +1517,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("一、工程概况 / （一）材料要求", content)
             self.assertIn("正文段落 8", content)
             self.assertIn(issue["snippet"], content)
-            self.assertIn("规则校验对不上的原文片段：承包0商", content)
+            self.assertIn("自动检查时在译文里没对上的原文片段：承包0商", content)
 
     def test_quality_report_calls_a_toc_hint_a_hint(self) -> None:
         """只有目录提示时，报告不许顶着「需复核内容」的标题说话。"""
@@ -1643,7 +1643,7 @@ class WordDocumentTests(unittest.TestCase):
 
             self.assertEqual(untranslated_count, 0)
             self.assertEqual(len(issues), 1)
-            self.assertEqual(issues[0]["problem"], "译文中残留少量中文")
+            self.assertEqual(issues[0]["problem"], "译文里还留着少量没翻译的原文")
             self.assertEqual(issues[0]["location"], "body.paragraph[1]")
             self.assertIn("2026年8月9日", issues[0]["status"])
 

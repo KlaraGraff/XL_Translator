@@ -109,11 +109,14 @@ def get_custom_output_dir_error(custom_output_dir: str | Path | None) -> str | N
     if output_root.exists():
         if output_root.is_dir():
             return None
-        return f"输出路径不是目录：{output_root}"
+        return f"输出位置「{output_root.name}」是一个文件，不是文件夹，请另选输出目录。"
 
     blocking_path = _find_blocking_existing_path(output_root)
     if blocking_path is not None:
-        return f"无法在文件路径下创建目录：{blocking_path}"
+        return (
+            f"输出位置里的「{blocking_path.name}」是一个文件，没法在它下面建文件夹，"
+            "请另选输出目录。"
+        )
 
     return None
 
@@ -304,7 +307,7 @@ def autofit_files_batch(
         import xlwings as xw
     except ImportError:
         if log_callback:
-            log_callback("[WARN] xlwings 未安装，已跳过 Excel 行高优化（当前使用 Python 估算值）")
+            log_callback("[WARN] 这台电脑没法让 Excel 自动调整行高，已按估算行高保存。")
         logger.warning("xlwings 未安装，跳过 AutoFit")
         return False
 
@@ -328,10 +331,9 @@ def autofit_files_batch(
                     except Exception as callback_error:  # noqa: BLE001 - progress must not break output
                         logger.warning(f"AutoFit 起始进度回调失败：{callback_error!r}")
                 try:
-                    if log_callback:
-                        log_callback(
-                            f"[INFO] Excel AutoFit 打开临时副本：{staged_path}（原文件：{original_path}）"
-                        )
+                    logger.info(
+                        f"Excel AutoFit 打开临时副本：{staged_path}（原文件：{original_path}）"
+                    )
                     wb = current_app.books.open(str(staged_path))
                     try:
                         for ws in wb.sheets:
@@ -348,16 +350,15 @@ def autofit_files_batch(
                     shutil.copy2(staged_path, original_path)
                     _ensure_owner_writable(original_path)
                     if log_callback:
-                        log_callback(f"[INFO] Excel AutoFit 已回写原文件：{original_path}")
+                        log_callback(f"[INFO] 已调整行高：{original_path.name}")
                     logger.info(f"AutoFit 完成：{original_path.name}")
                 except Exception as e:
-                    reason = humanize_error(
-                        e,
-                        fallback="Excel 自动调整行高失败，已保留 Python 估算结果。",
-                    )
+                    reason = humanize_error(e, fallback="Excel 那边出错了。")
                     logger.warning(f"AutoFit 异常（{original_path.name}）：{e!r}；{reason}")
                     if log_callback:
-                        log_callback(f"[WARN] {original_path.name} AutoFit 失败，已保留 Python 估算值：{reason}")
+                        log_callback(
+                            f"[WARN] {original_path.name} 没能自动调整行高，已按估算行高保存：{reason}"
+                        )
                 finally:
                     done += 1
                     if progress_callback:
@@ -371,15 +372,12 @@ def autofit_files_batch(
                 _do_autofit(new_app)
 
         if log_callback:
-            log_callback(f"[INFO] Excel AutoFit 完成，共处理 {len(file_paths)} 个文件")
+            log_callback(f"[INFO] 自动调整行高完成，共 {len(file_paths)} 个文件")
         return True
     except Exception as e:
-        reason = humanize_error(
-            e,
-            fallback="Excel 自动调整行高失败，已保留 Python 估算结果。",
-        )
+        reason = humanize_error(e, fallback="Excel 那边出错了。")
         if log_callback:
-            log_callback(f"[WARN] Excel AutoFit 失败，已保留 Python 估算值：{reason}")
+            log_callback(f"[WARN] Excel 没能自动调整行高，已按估算行高保存：{reason}")
         logger.warning(f"AutoFit 批量处理异常：{e!r}；{reason}")
         return False
     finally:

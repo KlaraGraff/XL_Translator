@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from loguru import logger
@@ -32,13 +33,16 @@ from core.residual_classifier import (
 )
 from engines.base_engine import get_target_lang_name, strip_markdown_json
 
+# 判断拒收理由是不是给人看的中文句子（residual_classifier 的验收器返回英文）。
+_CJK_TEXT_RE = re.compile(r"[\u4e00-\u9fff]")
+
 METHOD_SURGICAL = "surgical"
 METHOD_FEEDBACK_RETRANSLATION = "feedback_retranslation"
 
 # 日志/报告里的中文名，Word / Excel 主流程共用这一份
 REPAIR_METHOD_LABELS = {
-    METHOD_SURGICAL: "外科修补",
-    METHOD_FEEDBACK_RETRANSLATION: "带反馈重译",
+    METHOD_SURGICAL: "局部修正",
+    METHOD_FEEDBACK_RETRANSLATION: "整句重译",
 }
 
 
@@ -144,17 +148,17 @@ def verify_feedback_retranslation(
     """
     candidate = str(candidate or "")
     if not candidate.strip():
-        return False, "重译稿为空"
+        return False, "重译结果为空"
     if candidate.strip().lower() == str(source_text or "").strip().lower():
-        return False, "重译稿与源文相同"
+        return False, "重译结果和原文一样"
     leftover = classify_residual_spans(candidate, target_lang=target_lang)
     bad = [s for s in leftover if s.category != CATEGORY_QUANTITY_UNIT]
     if bad:
-        return False, "重译稿仍有残留：" + "、".join(f"«{s.text}»" for s in bad)
+        return False, "重译后仍有没翻译的部分：" + "、".join(f"«{s.text}»" for s in bad)
     missing = missing_number_tokens(source_text, candidate)
     if missing:
         lost = "、".join(sorted(missing))
-        return False, f"重译稿丢失或改动了源文中的数字：{lost}"
+        return False, f"重译结果丢了或改了原文里的数字：{lost}"
     return True, ""
 
 
@@ -187,9 +191,9 @@ def repair_unit(
     if categories <= zero_api_categories:
         reasons = []
         if CATEGORY_CN_DATE_UNIT in categories:
-            reasons.append("数字+中文单位残留按既有规则阻断重译")
+            reasons.append("数字加中文单位（如「2026年」）按规则不自动重译")
         if CATEGORY_NUMBERING_PREFIX in categories:
-            reasons.append("序号残留缺乏确定性修复依据，不做模型猜测")
+            reasons.append("没法确定编号该怎么写，不让模型猜")
         return RepairOutcome(
             accepted=False, text=target, reject_reasons=tuple(reasons)
         )
@@ -204,7 +208,7 @@ def repair_unit(
         raw = surgical_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
         if candidate is None:
-            reasons.append("外科修补：未取得协议内回复")
+            reasons.append("局部修正：模型没有按要求的格式回复")
         else:
             ok, why = surgical_repair_ok(
                 target,
@@ -219,7 +223,10 @@ def repair_unit(
                     method=METHOD_SURGICAL,
                     reject_reasons=tuple(reasons),
                 )
-            reasons.append(f"外科修补拒收：{why}")
+            if not _CJK_TEXT_RE.search(str(why or "")):
+                logger.debug(f"外科修补拒收原始理由：{why}")
+                why = "修正结果没通过自动检查"
+            reasons.append(f"局部修正没通过：{why}")
 
     if retranslate_send is not None:
         system, user = build_feedback_retry_messages(
@@ -228,7 +235,7 @@ def repair_unit(
         raw = retranslate_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
         if candidate is None:
-            reasons.append("带反馈重译：未取得协议内回复")
+            reasons.append("整句重译：模型没有按要求的格式回复")
         else:
             ok, why = verify_feedback_retranslation(
                 source_text, candidate, target_lang=target_lang
@@ -240,10 +247,10 @@ def repair_unit(
                     method=METHOD_FEEDBACK_RETRANSLATION,
                     reject_reasons=tuple(reasons),
                 )
-            reasons.append(f"带反馈重译拒收：{why}")
+            reasons.append(f"整句重译没通过：{why}")
 
     if not reasons:
-        reasons.append("无可用修复通道（引擎不支持 chat）")
+        reasons.append("当前翻译连接不支持自动补译")
     return RepairOutcome(
         accepted=False, text=target, reject_reasons=tuple(reasons)
     )

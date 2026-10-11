@@ -58,7 +58,7 @@ def register(app: FastAPI) -> None:
         if include_api_keys is not None:
             include_api_key = bool(include_api_keys)
         if include_api_key and not confirm_sensitive:
-            raise HTTPException(422, "导出 API Key 前必须明确确认敏感配置导出。")
+            raise HTTPException(422, "导出 API 密钥前，请先确认要一起导出这些敏感信息。")
         if valid_days < 0 or valid_days > 3650:
             raise HTTPException(422, "文件有效期只能在 0（长期有效）到 3650 天之间。")
         # 回执和导出文档分成两个字段：``document`` 是原样写盘的那份，格式一个字节都

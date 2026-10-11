@@ -44,7 +44,7 @@ def register(app: FastAPI) -> None:
                 return {
                     "ok": True,
                     "status": "deferred",
-                    "message": "后台更新检查暂不执行。",
+                    "message": "这次先不在后台检查更新。",
                     "reason": deferred,
                     **_update_state_payload(settings),
                 }
@@ -161,7 +161,7 @@ def register(app: FastAPI) -> None:
     def download_diagnostic_record(record_id: str) -> StreamingResponse:
         record = diagnostics.find_diagnostic_record(record_id)
         if record is None:
-            raise HTTPException(404, "Diagnostic record not found.")
+            raise HTTPException(404, "找不到这条诊断记录，可能已被清除。")
         return _zip_response(*_diagnostic_zip_or_404(record))
 
     @app.delete("/api/diagnostics/{record_id}")
@@ -186,7 +186,7 @@ def register(app: FastAPI) -> None:
         if hook is None:
             return _json_error(
                 409,
-                "This sidecar was not started by the launcher.",
+                "这个后台服务不是由应用启动的，不能从这里关闭。",
                 reason="shutdown_unavailable",
             )
         hook()

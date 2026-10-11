@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from loguru import logger
 
 from api.cad_plugin import (
     OFFICIAL_DOWNLOAD_URL,
@@ -14,7 +15,13 @@ from api.cad_plugin import (
     probe_status,
     uninstall,
 )
-from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
+from core.cad_translation import (
+    CadPipelineError,
+    CadPipelineOptions,
+    SubprocessCadConverter,
+    scan_cad_paths,
+)
+from core.task_runner import user_facing_reason
 from api.schemas import (
     CadScanRequest,
 )
@@ -56,7 +63,7 @@ def register(app: FastAPI) -> None:
     def connect_cad_oda(payload: dict[str, Any]) -> dict[str, Any]:
         path = str(payload.get("path") or "").strip()
         if not path:
-            raise HTTPException(422, "path is required.")
+            raise HTTPException(422, "请先选择图纸转换工具程序。")
         try:
             return connect_oda(path)
         except ValueError as exc:
@@ -75,8 +82,13 @@ def register(app: FastAPI) -> None:
         skipped: list[dict[str, str]] = []
         try:
             summaries = scan_cad_paths(payload.paths, converter=converter, options=options, skipped=skipped)
+        except CadPipelineError as exc:
+            raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc
         except Exception as exc:  # noqa: BLE001 - return a user-facing preflight error
-            raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+            logger.opt(exception=exc).warning(f"[CAD] 图纸扫描失败：{exc!r}")
+            raise HTTPException(
+                422, user_facing_reason(exc, fallback="图纸扫描失败，出现了未预期的问题。")
+            ) from exc
         items = [
             {
                 "path": str(item.path),

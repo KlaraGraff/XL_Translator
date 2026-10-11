@@ -237,7 +237,7 @@ def clear_diagnostics() -> MaintenanceResult:
 
 def delete_diagnostic(record_id: str) -> MaintenanceResult:
     if not diagnostics.delete_diagnostic_record(record_id):
-        raise MaintenanceError("诊断记录不存在。")
+        raise MaintenanceError("找不到这条诊断记录，可能已被清除。")
     return MaintenanceResult(category="diagnostics", removed_count=1)
 
 
@@ -376,7 +376,7 @@ def _remove_owned_path(path: Path) -> bool:
     try:
         path.resolve().relative_to(APP_DATA_DIR.resolve())
     except (OSError, ValueError) as exc:
-        raise MaintenanceError("维护操作拒绝删除应用数据目录外的文件。") from exc
+        raise MaintenanceError("为安全起见，清理只会删除本程序自己数据文件夹里的内容。") from exc
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:

@@ -326,7 +326,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
                 )
 
             self.assertEqual(blocked.status_code, 422, blocked.text)
-            self.assertIn("当前配置已测试失败", blocked.json()["detail"])
+            self.assertIn("上次测试没有通过", blocked.json()["detail"])
             # 界面靠这个 reason 认出「这一条拦截是有出路的」，弹一个带「不管测试结果，
             # 开始」按钮的窗口。丢了它就只剩一句两秒消失的提示，而提示里让人做的事
             # 界面上没有入口。
@@ -344,7 +344,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
             files = [PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1)]
 
             with patch("core.model_roles.get_key", return_value="pdf-route-secret"):
-                with self.assertRaisesRegex(TaskInputError, "输出路径不是目录"):
+                with self.assertRaisesRegex(TaskInputError, "是一个文件，不是文件夹"):
                     get_surface("pdf").validate_preflight(
                         files=files,
                         settings=settings,
@@ -415,7 +415,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 if isinstance(message, StoppedMsg)
             ]
             self.assertEqual(len(terminal), 1)
-            self.assertIn("结束暂停", terminal[0].message)
+            self.assertIn("PDF 翻译已结束", terminal[0].message)
             # 完整路径到界面会被脱敏成字面的「[path]」，这句只报输出文件夹的名字。
             self.assertNotIn(str(Path(terminal[0].manifest_path).parent.parent), terminal[0].message)
             manifest = json.loads(Path(terminal[0].manifest_path).read_text(encoding="utf-8"))

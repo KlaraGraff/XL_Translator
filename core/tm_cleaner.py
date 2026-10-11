@@ -28,6 +28,7 @@ from core.api_concurrency_control import handle_api_concurrency_limit
 from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL
 from core.residual_classifier import check_heading_consistency, is_section_heading_source
 from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
+from core.user_facing_errors import humanize_error
 from engines.base_engine import TranslationEngine, strip_markdown_json
 
 
@@ -45,6 +46,14 @@ class CleanSuggestion:
     suggestion_id: int = 0
 
 
+def _cleaning_failure_reason(raw: str) -> str:
+    """批次失败原因换成一句人话；认不出的英文原文不给用户看。"""
+    sentence = humanize_error(raw)
+    if sentence and re.search(r"[\u4e00-\u9fff]", sentence) and not re.search(r"https?://", sentence):
+        return sentence
+    return "模型这几次没有返回可用结果，请稍后重试，或在设置里检查记忆库清洗模型。"
+
+
 class TmCleaningBatchError(RuntimeError):
     """One or more TM cleaning batches failed and must not look successful."""
 
@@ -57,9 +66,13 @@ class TmCleaningBatchError(RuntimeError):
         self.partial_suggestions: list = []
         # 失败之前成功批次已拿到（并已落库）的模型建议。
         self.model_suggestions: list = []
+        logger.warning(
+            f"[记忆库清洗] {self.failed_batches}/{self.total_batches} 个批次失败，"
+            f"首个错误原文：{self.first_error}"
+        )
         super().__init__(
-            f"{self.failed_batches}/{self.total_batches} 个清洗批次失败；"
-            f"首个错误：{self.first_error}"
+            f"记忆库清洗有 {self.failed_batches} 批没成功（共 {self.total_batches} 批）："
+            f"{_cleaning_failure_reason(self.first_error)}"
         )
 
 
@@ -757,7 +770,7 @@ def _run_cleaning_threaded(
                     exc,
                     scheduler=api_scheduler,
                     request_generation=generation,
-                    context_label="TM 清洗",
+                    context_label="记忆库清洗",
                 )
                 if decision is None or not decision.should_retry:
                     raise

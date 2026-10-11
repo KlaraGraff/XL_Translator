@@ -79,7 +79,7 @@ class MixedLanguageMarkingTests(unittest.TestCase):
         self.assertEqual(
             translations[source], "Le projet est exécuté selon la date contractuelle."
         )
-        reported = _issue_for(issues, "混合语言译文经语义校验接受")
+        reported = _issue_for(issues, "夹杂多种语言的译文复查后采用")
         self.assertIsNotNone(reported)
         self.assertEqual(reported["severity"], "resolved")
 
@@ -109,7 +109,7 @@ class MixedLanguageMarkingTests(unittest.TestCase):
 
         self.assertEqual(marks, {source: MIXED_MARK_UNRESOLVED})
         self.assertEqual(translations[source], source)
-        reported = _issue_for(issues, "混合语言内容未能确认")
+        reported = _issue_for(issues, "夹杂多种语言的内容未能确认")
         self.assertEqual(reported["severity"], "needs_review")
 
     def test_already_bilingual_source_is_left_completely_alone(self) -> None:
@@ -269,7 +269,7 @@ class ResidualReportWordingTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         status = issues[0]["status"]
-        self.assertIn("仅残留：一", status)
+        self.assertIn("只有这些没翻译：一", status)
         self.assertNotIn("日期", status)
         self.assertNotIn("编号", status)
         self.assertEqual(issues[0]["severity"], "needs_review")

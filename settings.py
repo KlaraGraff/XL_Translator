@@ -1810,9 +1810,10 @@ def _recreate_settings_file(
         backup_path = _backup_settings_file()
     except OSError as exc:
         if not force:
+            logger.warning(f"settings.json 备份失败：{exc}")
             raise SettingsSchemaError(
-                f"settings.json 无法读取，也无法备份到 {BACKUPS_DIR / 'settings'}"
-                f"（{exc}）。原文件已原样保留；如确定要放弃它，请在维护页执行"
+                f"设置文件读不出来，也没能备份到 {BACKUPS_DIR / 'settings'}。"
+                "原文件已原样保留；如确定要放弃它，请在「设置 → 数据与维护」里点"
                 "「重置设置」。"
             ) from exc
         # An explicit reset says the old file is expendable, so a failed
@@ -2171,10 +2172,10 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
             logger.warning(f"keys.json 暂时读取不到：{exc}")
             return {}
         if not force:
+            logger.warning(f"keys.json 暂时读取不到，拒绝写入：{exc}")
             raise SettingsSchemaError(
-                f"keys.json 无法安全更新：暂时读取不到（{exc}）。原文件已原样"
-                "保留，未做任何改动；确定要放弃它，请到维护页执行「删除全部"
-                " API Key」。"
+                "保存 API 密钥的文件暂时读不到（可能被其他程序占用），为免丢失没有做任何改动；"
+                "确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。"
             ) from exc
         logger.warning(f"keys.json 暂时读取不到，按显式清空继续：{exc}")
         return {}
@@ -2203,10 +2204,10 @@ def _load_keys_unlocked(*, strict: bool, force: bool = False) -> dict[str, str]:
         try:
             backup_path = _backup_keys_file()
         except OSError as backup_exc:
+            logger.warning(f"keys.json 已损坏且备份失败：{backup_exc}")
             raise SettingsSchemaError(
-                f"keys.json 无法安全更新：内容已损坏且备份失败（{backup_exc}）。"
-                "原文件已原样保留，未做任何改动；确定要放弃它，请到维护页"
-                "执行「删除全部 API Key」。"
+                "保存 API 密钥的文件已损坏，也没能备份，为免丢失没有做任何改动；"
+                "确定要放弃它，请在「设置 → 数据与维护」里点「删除全部密钥」。"
             ) from backup_exc
         logger.warning(
             "keys.json 无法解析（{}），已备份到 {} 并按空表继续写入。",

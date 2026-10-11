@@ -57,7 +57,7 @@ def register(app: FastAPI) -> None:
     @app.put("/api/keys/{provider}")
     def put_key(provider: str, payload: ApiKeyPayload) -> dict[str, Any]:
         if not provider.strip():
-            raise HTTPException(422, "Provider is required.")
+            raise HTTPException(422, "请先选择服务商。")
         settings = load_settings()
         before_signatures = _effective_role_signatures(settings)
         before_credentials = _connection_credentials(settings)
@@ -65,12 +65,12 @@ def register(app: FastAPI) -> None:
         _reset_roles_with_changed_effective_signature(
             settings,
             before_signatures,
-            message="API Key 已变化，请重新测试当前配置。",
+            message="API 密钥已变化，请重新测试这条连接。",
         )
         _reset_connections_with_changed_credential(
             settings,
             before_credentials,
-            message="API Key 已变化，请重新测试当前配置。",
+            message="API 密钥已变化，请重新测试这条连接。",
         )
         save_settings(settings)
         return {
@@ -88,12 +88,12 @@ def register(app: FastAPI) -> None:
         _reset_roles_with_changed_effective_signature(
             settings,
             before_signatures,
-            message="API Key 已变化，请重新测试当前配置。",
+            message="API 密钥已变化，请重新测试这条连接。",
         )
         _reset_connections_with_changed_credential(
             settings,
             before_credentials,
-            message="API Key 已变化，请重新测试当前配置。",
+            message="API 密钥已变化，请重新测试这条连接。",
         )
         save_settings(settings)
         return Response(status_code=204)

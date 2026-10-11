@@ -18,6 +18,7 @@ from config import (
     VISION_TEXT_MODEL_PROVIDERS,
 )
 from settings import (
+    _PROVIDER_DISPLAY_NAMES,
     AppSettings,
     ModelConnection,
     ModelRoleSettings,
@@ -37,10 +38,10 @@ ROLE_PDF_REVIEW = "pdf_review"
 SOURCE_INDEPENDENT = "independent"
 
 MODEL_ROLE_LABELS = {
-    ROLE_TRANSLATION: "翻译模型",
-    ROLE_CLEANER: "深度清洗模型",
-    ROLE_IMAGE: "PDF 翻译模型",
-    ROLE_PDF_REVIEW: "PDF翻译（图像翻译）复核",
+    ROLE_TRANSLATION: "文档翻译模型",
+    ROLE_CLEANER: "记忆库清洗模型",
+    ROLE_IMAGE: "PDF 与图片翻译模型",
+    ROLE_PDF_REVIEW: "PDF 与图片审核模型",
 }
 
 MODEL_ROLE_CAPABILITIES = {
@@ -59,11 +60,40 @@ MODEL_ROLES = (
 
 FOLLOW_SOURCE_LABELS = {
     SOURCE_INDEPENDENT: "独立配置",
-    ROLE_TRANSLATION: "跟随翻译模型",
-    ROLE_CLEANER: "跟随深度清洗模型",
-    ROLE_IMAGE: "跟随PDF翻译模型",
-    ROLE_PDF_REVIEW: "跟随PDF翻译（图像翻译）复核",
+    ROLE_TRANSLATION: "跟随文档翻译模型",
+    ROLE_CLEANER: "跟随记忆库清洗模型",
+    ROLE_IMAGE: "跟随 PDF 与图片翻译模型",
+    ROLE_PDF_REVIEW: "跟随 PDF 与图片审核模型",
 }
+
+# 报错里给用户看的能力说法；内部能力代码（text / image / vision_text）不出现在句子里。
+CAPABILITY_LABELS = {
+    "text": "翻译文字",
+    "image": "生成图片",
+    "vision_text": "看图审核",
+}
+
+
+def capability_label(capability: str) -> str:
+    return CAPABILITY_LABELS.get(str(capability or ""), "所需功能")
+
+
+def provider_display_name(provider: str) -> str:
+    """服务商的显示名；用户句子里不出现 provider id（如 custom_openai）。"""
+    value = str(provider or "").strip()
+    if not value:
+        return "未选择的服务商"
+    return _PROVIDER_DISPLAY_NAMES.get(value, value)
+
+
+def unsupported_capability_message(label: str, provider: str, capability: str) -> str:
+    """「服务商不支持这项能力」的统一人话。"""
+    ability = capability_label(capability)
+    return (
+        f"{provider_display_name(provider)}不支持{ability}，"
+        f"请在设置里给{label}换一条支持{ability}的连接。"
+    )
+
 
 # Only a text role can run against a local runner.  Image generation and image
 # understanding are cloud-only in this app, so offering them a local mode would
@@ -827,15 +857,14 @@ def validate_model_capability(config: EffectiveModelConfig) -> None:
     """
     if config.mode == "local" and config.capability != "text":
         raise ModelCapabilityError(
-            f"{config.label}只支持云端{config.capability}能力，不能使用本地模型。"
+            f"{config.label}只能使用云端模型（需要{capability_label(config.capability)}），不能使用本地模型。"
         )
     if config.mode == "cloud" and not provider_supports_capability(
         config.provider,
         config.capability,
     ):
         raise ModelCapabilityError(
-            f"服务商 {config.provider or '未配置'} 不支持{config.label}所需的"
-            f" {config.capability} 能力，请改用具备该能力的连接。"
+            unsupported_capability_message(config.label, config.provider, config.capability)
         )
 
 
@@ -1067,9 +1096,9 @@ def _adopt_stored_source_endpoint(
 def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
     role_name = role_label(role)
     reason = {
-        ROLE_CLEANER: "深度清洗需要云端文本模型。",
-        ROLE_IMAGE: "PDF 翻译需要云端图像生成模型。",
-        ROLE_PDF_REVIEW: "翻译审核需要云端图像理解模型。",
+        ROLE_CLEANER: "记忆库清洗需要云端文本模型。",
+        ROLE_IMAGE: "PDF 与图片翻译需要能生成图片的云端模型。",
+        ROLE_PDF_REVIEW: "PDF 与图片审核需要能看图的云端模型。",
     }.get(role, f"{role_name}只支持云端模型。")
     source_name = role_label(source_role) if source_role else "跟随来源"
     return (

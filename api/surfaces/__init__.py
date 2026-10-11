@@ -40,7 +40,7 @@ def get_surface(key: str) -> Surface:
     normalized = str(key or "").strip().lower()
     surface = _SURFACES.get(normalized)
     if surface is None:
-        raise TaskInputError(f"Unsupported translation surface: {key}")
+        raise TaskInputError("找不到这个翻译页面，请刷新页面后重试。")
     return surface
 
 

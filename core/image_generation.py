@@ -28,6 +28,7 @@ from core.model_roles import (
     image_model_signature,
     provider_supports_capability,
     record_image_model_availability,
+    unsupported_capability_message,
     resolve_effective_model_config,
 )
 from settings import AppSettings
@@ -145,12 +146,12 @@ class OpenAICompatibleImageGenerationClient:
     ) -> bytes:
         if not provider_supports_capability(model_config.provider, "image"):
             raise ImageModelUnavailableError(
-                f"当前服务商不在图像生成能力列表中：{model_config.provider}"
+                unsupported_capability_message(model_config.label, model_config.provider, "image")
             )
         if not model_config.api_key:
-            raise ImageModelUnavailableError(f"{model_config.label}缺少 API Key")
+            raise ImageModelUnavailableError(f"{model_config.label}还没有填写 API 密钥。")
         if not model_config.model:
-            raise ImageModelUnavailableError(f"{model_config.label}名称不能为空")
+            raise ImageModelUnavailableError(f"{model_config.label}还没有填写模型名称。")
 
         base_url = _normalize_base_url(model_config)
         prompt = build_pdf_image_translation_prompt(
@@ -390,7 +391,7 @@ def check_image_generation_connectivity(
     config = resolve_effective_model_config(settings, ROLE_IMAGE, connection_id=connection_id)
     signature = image_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "image"):
-        message = f"{config.label}当前服务商不支持图像生成能力：{config.provider}"
+        message = unsupported_capability_message(config.label, config.provider, "image")
         record_image_model_availability(
             settings,
             ok=False,

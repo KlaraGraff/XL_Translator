@@ -37,8 +37,10 @@ class TaskRunnerTmWriteTests(IsolatedAppDataTestCase):
             )
 
         self.assertEqual(written, 0)
-        self.assertIn("翻译记忆库写入失败", error or "")
-        self.assertIn("database is locked", error or "")
+        self.assertIn("记忆库写入失败", error or "")
+        # 原始 sqlite 报文只进调试日志，给用户的是一句人话。
+        self.assertIn("记忆库暂时无法写入", error or "")
+        self.assertNotIn("database is locked", error or "")
 
     def test_the_automatic_language_path_degrades_the_same_way(self) -> None:
         runner = _runner()
@@ -63,7 +65,7 @@ class TaskRunnerTmWriteTests(IsolatedAppDataTestCase):
             )
 
         self.assertEqual(written, 0)
-        self.assertIn("翻译记忆库写入失败", error or "")
+        self.assertIn("记忆库写入失败", error or "")
 
     def test_a_successful_write_reports_no_error(self) -> None:
         runner = _runner()

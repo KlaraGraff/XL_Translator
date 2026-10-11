@@ -280,9 +280,9 @@ class WordResumeTests(IsolatedAppDataTestCase):
             self.assertIn("TM translation", out_texts)
 
             log_text = "\n".join(self._log_messages(runner))
-            self.assertIn("复用上次双语产物为底稿", log_text)
+            self.assertIn("在上次的翻译结果上补译", log_text)
             # 源文件没有比底稿多出内容，分歧核查不应触发降级。
-            self.assertNotIn("续译核对", log_text)
+            self.assertNotIn("的原文件比上次翻译时", log_text)
 
     def test_translated_output_filename_applies_to_full_and_untranslated_runs(self) -> None:
         for untranslated_only in (False, True):
@@ -348,7 +348,7 @@ class WordResumeTests(IsolatedAppDataTestCase):
             self.assertIn("TM translation", out_texts)
 
             log_text = "\n".join(self._log_messages(runner))
-            self.assertNotIn("复用上次双语产物为底稿", log_text)
+            self.assertNotIn("在上次的翻译结果上补译", log_text)
 
     # ------------------------------------------------------------------
     # 3) auto 源语言 → 照样换底稿，续译对默认配置也要兑现
@@ -411,8 +411,8 @@ class WordResumeTests(IsolatedAppDataTestCase):
             self.assertIn("TM translation", out_texts)
 
             log_text = "\n".join(self._log_messages(runner))
-            self.assertIn("复用上次双语产物为底稿", log_text)
-            self.assertNotIn("续译核对", log_text)
+            self.assertIn("在上次的翻译结果上补译", log_text)
+            self.assertNotIn("的原文件比上次翻译时", log_text)
 
     # ------------------------------------------------------------------
     # 3b) auto 源语言 + 源文件比底稿多出内容 → 分歧核查降级，不吞新增段落
@@ -478,7 +478,7 @@ class WordResumeTests(IsolatedAppDataTestCase):
 
             warning_logs = self._log_messages(runner, level="WARNING")
             self.assertTrue(
-                any("续译核对" in message for message in warning_logs),
+                any("的原文件比上次翻译时" in message for message in warning_logs),
                 warning_logs,
             )
 
@@ -524,7 +524,7 @@ class WordResumeTests(IsolatedAppDataTestCase):
 
             warning_logs = self._log_messages(runner, level="WARNING")
             self.assertTrue(
-                any("续译核对" in message for message in warning_logs),
+                any("的原文件比上次翻译时" in message for message in warning_logs),
                 warning_logs,
             )
 
@@ -580,7 +580,7 @@ class WordResumeTests(IsolatedAppDataTestCase):
             self.assertIn("TM translation", out_texts)
 
             log_text = "\n".join(self._log_messages(runner))
-            self.assertIn("复用上次双语产物为底稿", log_text)
+            self.assertIn("在上次的翻译结果上补译", log_text)
 
     # ------------------------------------------------------------------
     # 4) 底稿损坏 → 降级源文件，且有日志
@@ -615,8 +615,8 @@ class WordResumeTests(IsolatedAppDataTestCase):
             warning_logs = self._log_messages(runner, level="WARNING")
             self.assertTrue(
                 any(
-                    "续译底稿无法建立补译计划" in message
-                    and "已按源文件正常处理" in message
+                    "没法接着上次的结果补译" in message
+                    and "这次从头完整翻译" in message
                     for message in warning_logs
                 ),
                 warning_logs,

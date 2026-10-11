@@ -1063,7 +1063,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertIn("needs_review", {PDF_OUTPUT_STATE_NEEDS_REVIEW})
             self.assertIn("stopped", {PDF_OUTPUT_STATE_STOPPED})
             self.assertIn("failed", {PDF_OUTPUT_STATE_FAILED})
-            self.assertIn("结束原因：已完成，存在需复核页面", report)
+            self.assertIn("结束原因：已完成，有页面需要复核", report)
             self.assertIn("失败占位页：1", report)
 
     def test_stopped_manifest_report_marks_user_stop_and_no_placeholder_pdf(self) -> None:
@@ -1123,7 +1123,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(manifest["terminal_reason"], "user_stopped")
             self.assertEqual(manifest["completed_pdf_file_count"], 1)
             self.assertEqual(manifest["unfinished_pdf_file_count"], 1)
-            self.assertIn("结束原因：用户主动中止", report)
+            self.assertIn("结束原因：用户停止了任务", report)
             self.assertIn("已完成 PDF 文件：1", report)
             self.assertIn("未完成 PDF 文件：1", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
@@ -1294,7 +1294,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             # 用户看到的是一句中文，不是上游那句 "invalid api key"。
             for text in (runner._fatal_model_error, record.pages[0].error):
                 self.assertNotIn("invalid api key", text)
-                self.assertIn("API Key", text)
+                self.assertIn("API 密钥", text)
                 self.assertIn("请在设置里检查", text)
 
     def test_review_failure_regenerates_from_source_and_keeps_candidates(self) -> None:
@@ -1663,7 +1663,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue((output_dir / "first_英文.pdf").exists())
             self.assertFalse((output_dir / "second_英文.pdf").exists())
             report = Path(stopped.report_path).read_text(encoding="utf-8")
-            self.assertIn("结束原因：用户主动中止", report)
+            self.assertIn("结束原因：用户停止了任务", report)
             self.assertIn("未生成（未完成，不生成占位版）", report)
             # 中止的任务也要交出逐文件结果和指标：停在半路正是要看「哪几个文件已经写出来了」
             # 的时候，而这里此前只给一句话，任务中心的文件表和指标格都是空的。
@@ -1840,7 +1840,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue(done)
             self.assertFalse(any(isinstance(msg, StoppedMsg) for msg in messages))
             self.assertTrue(
-                any("已中断 PDF 合成并清除旧产物，继续翻译剩余页面" in msg for msg in logs)
+                any("已中断生成 PDF，清掉了旧的输出文件，继续翻译剩下的页面" in msg for msg in logs)
             )
             self.assertTrue(any("已跳过已完成页面 1 页" in msg for msg in logs))
             self.assertGreaterEqual(runner.assemble_calls, 3)
@@ -1900,7 +1900,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             done = [msg for msg in messages if isinstance(msg, DoneMsg)]
             self.assertTrue(done)
             self.assertTrue(all(item.get("success") for item in done[-1].file_results))
-            self.assertTrue(any("清除旧 PDF 产物失败" in msg for msg in logs))
+            self.assertTrue(any("清除旧的输出文件失败" in msg for msg in logs))
             self.assertFalse(any(isinstance(msg, StoppedMsg) for msg in messages))
 
     def test_render_and_submit_logs_are_diagnostic_only(self) -> None:
@@ -2014,7 +2014,7 @@ class PdfImageTranslationTests(unittest.TestCase):
                 if isinstance(msg, LogMsg) and "生成成功" in msg.message
             ]
             self.assertEqual(review_client.calls, 1)
-            self.assertTrue(any("生成成功，质检通过" in msg.message for msg in success_logs))
+            self.assertTrue(any("生成成功，审核通过" in msg.message for msg in success_logs))
             self.assertTrue(all("1/" not in msg.message for msg in success_logs))
 
     def test_local_descriptor_error_retries_pdf_review_without_regenerating_page(self) -> None:
@@ -3273,7 +3273,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
             self.assertTrue(quality.ok)
             self.assertEqual(quality.status, "ok")
             self.assertIn("blank_page", quality.review_reasons)
-            self.assertIn("疑似空白页", quality.review_message)
+            self.assertIn("译图几乎是空白的", quality.review_message)
 
     def test_blank_output_against_blank_source_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3363,7 +3363,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
         # 质检疑点不否定产物：文件仍然成功，但必须在结果里显式说出来。
         self.assertTrue(result["success"])
         self.assertEqual(result["quality_flagged_page_count"], 1)
-        self.assertIn("内容质检待复核", result["detail"])
+        self.assertIn("自动检查发现问题，待复核", result["detail"])
 
         issues = _summary_issues([record])
         self.assertEqual(issues, [])  # 页级疑点靠页记录汇报，这里没有页记录
@@ -3392,7 +3392,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
         issues = _summary_issues([record])
         self.assertEqual(len(issues), 1)
         self.assertIn("疑似空白页", issues[0]["problem"])
-        self.assertIn("内容质检待复核", issues[0]["status"])
+        self.assertIn("自动检查发现问题，待复核", issues[0]["status"])
 
     # ---------------- 问题 2：固定尺寸模型 × 1% 容差 = 必然失败 ----------------
 
@@ -3569,7 +3569,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
             # 吞吐档案建议 1，用户设置 3——跑起来必须是 3。
             self.assertEqual(image_client.max_active, 3)
             logs = [item.message for item in messages if isinstance(item, LogMsg)]
-            self.assertTrue(any("页图并发：3（用户在设置中指定）" in line for line in logs))
+            self.assertTrue(any("同时处理 3 页（按设置里指定的数量）" in line for line in logs))
 
     # ---------------- 问题 4：一页坏掉拖垮整份文件 ----------------
 
@@ -3719,7 +3719,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
                 1_010_000,
             )
             logs = [item.message for item in _drain_messages(runner, LogMsg)]
-            self.assertTrue(any("渲染 DPI 已从 300 自动降到" in line for line in logs))
+            self.assertTrue(any("已降低清晰度处理，以免内存不足" in line for line in logs))
 
             record = PdfFileRecord(
                 name="big",

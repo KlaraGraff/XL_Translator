@@ -65,8 +65,8 @@ class ExcelSurface(Surface):
         )
         raise TaskInputError(
             "检测到 "
-            f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
-            f"请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换{consequence}"
+            f"{len(xls_files)} 个 .xls 文件，但没法用本机 Excel 转换：{str(reason).rstrip('。')}。"
+            f"请取消任务，安装或授权 Microsoft Excel 后重试，或明确确认兼容转换{consequence}"
         )
 
     def snapshot(

@@ -175,7 +175,7 @@ def _check_openai_compatible(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider=provider,
             model=model,
         )
@@ -239,7 +239,7 @@ def _check_claude(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="claude",
             model=model,
         )
@@ -299,7 +299,7 @@ def _check_zhipu(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="zhipu",
             model=model,
         )
@@ -356,7 +356,7 @@ def _check_dashscope(
         return ConnectivityResult(
             ok=False,
             status="missing_api_key",
-            message="请先填写 API Key。",
+            message="请先填写 API 密钥。",
             provider="dashscope",
             model=model,
         )
@@ -601,7 +601,7 @@ def check_connectivity(
 
     normalized_role = str(role or ROLE_TRANSLATION).strip()
     if normalized_role not in {ROLE_TRANSLATION, ROLE_CLEANER}:
-        raise ValueError("连接测试只支持翻译模型或深度清洗模型。")
+        raise ValueError("连接测试只支持文档翻译模型或记忆库清洗模型。")
     config = resolve_effective_model_config(
         settings,
         normalized_role,

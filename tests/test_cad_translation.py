@@ -215,7 +215,7 @@ def test_invalid_numeric_translation_is_kept_out_of_output(tmp_path):
     output = tmp_path / "number_zh.dxf"
     result = CadTranslationPipeline(converter=None, translator=lambda texts, glossary: {"Bolt 12": "螺栓 13"}).translate_file(source, output)
     assert "Bolt 12" in output.read_text(encoding="utf-8")
-    assert result.unresolved[0]["reason"] == "numeric token drift"
+    assert result.unresolved[0]["reason"] == "译文里的数字和原文对不上"
 
 
 def test_roundtrip_false_does_not_read_back_dwg(tmp_path):

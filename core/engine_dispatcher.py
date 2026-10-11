@@ -5,6 +5,7 @@
 """
 import math
 import random
+import re
 import threading
 import time
 from collections.abc import Sequence
@@ -37,6 +38,7 @@ from core.api_concurrency_control import (
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
 from core.translation_protocol import should_apply_quality_filter
+from core.user_facing_errors import humanize_error
 from engines.base_engine import TranslationEngine
 from settings import AppSettings, get_cloud_provider_config, get_key
 from core.translation_filter import is_translation_redundant  # 质量闭环拦截
@@ -811,8 +813,11 @@ def _translate_batch_with_fallback(
             # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
             raise rejected from exc
         if _is_permanent_request_error(exc):
-            message = f"Excel 翻译请求不可重试，已停止拆分批次：{exc}"
-            logger.error(message)
+            logger.error(f"Excel 翻译请求不可重试，已停止拆分批次：{exc}")
+            message = (
+                f"有一批翻译请求出错，重试也不会成功，这批 {len(batch)} 条内容保留原文："
+                f"{_batch_failure_reason(exc)}"
+            )
             if error_callback:
                 error_callback(message)
             stats.record_untranslated(batch, str(exc))
@@ -827,11 +832,11 @@ def _translate_batch_with_fallback(
         if can_split:
             midpoint = max(1, len(batch) // 2)
             stats.record_retry()
-            message = (
+            logger.warning(
                 "Excel 批次翻译失败，已缩小批次重试"
                 f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc}"
             )
-            logger.warning(message)
+            message = f"有一批翻译出错，已拆成更小的批次重试：{_batch_failure_reason(exc)}"
             if error_callback:
                 error_callback(message)
             _backoff_sleep(
@@ -857,14 +862,45 @@ def _translate_batch_with_fallback(
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
         head = str(batch[0] if batch else "")[:40]
-        err_msg = (
+        logger.error(
             f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数："
             f"{head}... | {exc}"
         )
-        logger.error(err_msg)
+        err_msg = (
+            f"有 {len(batch)} 条内容未能翻译，已保留原文（如「{head}…」）："
+            f"{_batch_failure_reason(exc)}"
+        )
         if error_callback:
             error_callback(err_msg)
         return {text: text for text in batch}
+
+
+_REASON_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+_REASON_URL_RE = re.compile(r"\b(?:https?|wss?)://", re.IGNORECASE)
+_REASON_JSON_RE = re.compile(r"\{\s*[\"']")
+
+
+def user_facing_batch_reason(value: object, *, fallback: str = "模型服务返回了错误。") -> str:
+    """One plain sentence for the run log; the raw error only goes to the debug log.
+
+    这些句子会经 error_callback 进用户的运行日志。原始异常里常有英文报文、请求
+    地址和 JSON 错误体，对用户没用：humanize_error 认得出的换成中文原因，本来就是
+    中文的照常显示，其余一律用兜底句（与 task_runner.user_facing_reason 同一标准，
+    这里另写一份是因为 task_runner 反向依赖本模块）。
+    """
+    logger.debug(f"批次请求失败原始错误：{value!r}")
+    sentence = humanize_error(value)
+    if (
+        not _REASON_CJK_RE.search(sentence)
+        or _REASON_URL_RE.search(sentence)
+        or _REASON_JSON_RE.search(sentence)
+    ):
+        return fallback
+    return sentence
+
+
+def _batch_failure_reason(exc: BaseException) -> str:
+    return user_facing_batch_reason(exc)
 
 
 @bounded_text_operation
@@ -965,8 +1001,11 @@ def _translate_batch_with_sources_fallback(
             # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
             raise rejected from exc
         if _is_permanent_request_error(exc):
-            message = f"Excel 语言回报请求不可重试，已停止拆分批次：{exc}"
-            logger.error(message)
+            logger.error(f"Excel 语言回报请求不可重试，已停止拆分批次：{exc}")
+            message = (
+                f"有一批翻译请求出错，重试也不会成功，这批 {len(batch)} 条内容保留原文："
+                f"{_batch_failure_reason(exc)}"
+            )
             if error_callback:
                 error_callback(message)
             stats.record_untranslated(batch, str(exc))
@@ -1003,8 +1042,11 @@ def _translate_batch_with_sources_fallback(
             )
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
-        err_msg = f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}"
-        logger.error(err_msg)
+        logger.error(f"Excel 有 {len(batch)} 条未能翻译，已原样保留并计入未翻译条数：{exc}")
+        err_msg = (
+            f"有 {len(batch)} 条内容未能翻译，已保留原文："
+            f"{_batch_failure_reason(exc)}"
+        )
         if error_callback:
             error_callback(err_msg)
         return _untranslated_language_results(batch, target_lang)

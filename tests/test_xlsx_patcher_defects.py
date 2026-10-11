@@ -161,7 +161,7 @@ class CellTextGuardTests(_PatcherDefectCase):
         finally:
             workbook.close()
         self.assertEqual(written, "施工内容\nConstructionscopeend!")
-        self.assertTrue(any("XML 非法字符" in line for line in self.logs), self.logs)
+        self.assertTrue(any("无法保存的特殊字符" in line for line in self.logs), self.logs)
         self.assert_only_expected_parts_changed(source, output)
 
     def test_legal_whitespace_survives_sanitizing(self) -> None:

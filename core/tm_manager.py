@@ -10,6 +10,7 @@
   pinned=1 的词条不参与深度清洗，保护手动校对结果。
 """
 import hashlib
+import re
 import shutil
 import sqlite3
 from collections import defaultdict
@@ -22,6 +23,7 @@ from loguru import logger
 from config import BACKUPS_DIR as DEFAULT_BACKUPS_DIR, DB_PATH
 from core.language_registry import is_custom_target_lang
 from core.tm_text import normalize_tm_text_for_compare, normalize_tm_text_for_storage
+from core.user_facing_errors import humanize_error
 
 
 # ── 哈希工具 ──────────────────────────────────────────────────────────────────
@@ -217,7 +219,7 @@ def init_db() -> None:
         raise TmSchemaError(
             f"记忆库 {DB_PATH} 暂时读不到（可能是权限或被其他程序占用），"
             "无法备份，因此不会覆盖它。原文件已原样保留；"
-            "如确定要放弃它，请在「设置 → 数据与维护」里点「清空全部记忆库」。"
+            "如确定要放弃它，请在「设置 → 数据与维护」里点「清空记忆库」。"
         )
     if state == "unusable":
         _recreate_db(stored_version)
@@ -239,7 +241,7 @@ def init_db() -> None:
         if not _is_lock_error(exc):
             raise
         raise TmSchemaError(
-            "翻译记忆库正被其他任务占用，本次没有改动它。请等当前任务结束后重试。"
+            "记忆库正被其他任务占用，这次没有改动它。请等当前任务结束后重试。"
         ) from exc
     logger.info(f"TM 数据库就绪：{DB_PATH}")
 
@@ -483,9 +485,9 @@ def _recreate_db(stored_version: int | None) -> None:
         backup_path = _backup_db()
     except OSError as exc:
         raise TmSchemaError(
-            f"记忆库无法打开，也无法备份到 {BACKUPS_DIR / 'tm'}（{exc}）。"
+            f"记忆库打不开，也没能备份到 {BACKUPS_DIR / 'tm'}。"
             "原文件已原样保留，不会被覆盖；如确定要放弃它，"
-            "请在「设置 → 数据与维护」里点「清空全部记忆库」。"
+            "请在「设置 → 数据与维护」里点「清空记忆库」。"
         ) from exc
     DB_PATH.unlink(missing_ok=True)
     for sidecar in db_sidecar_paths(DB_PATH):
@@ -1317,6 +1319,16 @@ def insert_auto_entries(
     )
 
 
+def _tm_write_failure_reason(exc: BaseException) -> str:
+    """数据库原始报错（sqlite 英文）只进日志；给用户一句能照着做的话。"""
+    if _is_lock_error(exc):
+        return "记忆库正被其他任务占用，请等当前任务结束后重试。"
+    sentence = humanize_error(exc)
+    if sentence and re.search(r"[\u4e00-\u9fff]", sentence):
+        return sentence
+    return "数据库没有接受这次改动，请重试；反复失败时可以导出诊断记录反馈。"
+
+
 @dataclass(frozen=True)
 class TmWriteResult:
     """一次写入尝试的真实结果（供 API/界面如实汇报，别再一律说「已保存」）。"""
@@ -1384,7 +1396,9 @@ def insert_manual_entry_detailed(
                 )
     except Exception as exc:  # noqa: BLE001 - 汇报给界面，别静默吞掉
         logger.warning(f"TM 手动新增失败：{exc}")
-        return TmWriteResult("error", False, f"写入记忆库失败：{exc}")
+        return TmWriteResult(
+            "error", False, "写入记忆库失败：" + _tm_write_failure_reason(exc)
+        )
 
     if changed:
         logger.debug(
@@ -1521,7 +1535,9 @@ def update_entry_full_detailed(
         return TmWriteResult("written", True)
     except Exception as e:
         logger.warning(f"TM 全量更新失败（可能原文冲突）：{e}")
-        return TmWriteResult("error", False, f"更新记忆库失败：{e}")
+        return TmWriteResult(
+            "error", False, "更新记忆库失败：" + _tm_write_failure_reason(e)
+        )
 
 
 def update_entry_full(
@@ -1901,7 +1917,7 @@ def list_conflict_candidates(
 def resolve_conflict_candidate(candidate_id: int, action: str) -> bool:
     """Resolve a candidate without allowing stale or hidden overwrites."""
     if action not in {"keep_existing", "use_candidate", "reject"}:
-        raise ValueError("action must be keep_existing, use_candidate, or reject")
+        raise ValueError("无法识别的冲突处理方式，请刷新页面后重试。")
     with _get_conn() as conn:
         candidate = conn.execute(
             "SELECT * FROM tm_conflict_candidates WHERE id = ?",
@@ -2059,7 +2075,7 @@ def mark_cleaning_suggestions(
     一句 `IN (...)` 会直接撞上 SQLite 的变量上限。
     """
     if status not in {"applied", "stale", "rejected"}:
-        raise ValueError("status must be applied, stale, or rejected")
+        raise ValueError("无法识别的清洗建议状态，请刷新页面后重试。")
     ids = [int(item) for item in suggestion_ids if item]
     if not ids:
         return 0

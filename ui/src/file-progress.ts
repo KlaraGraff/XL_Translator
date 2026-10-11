@@ -40,8 +40,8 @@ const PHASE_LABELS: Record<string, string> = {
   generate: "生成文件",
   adjust: "调整排版",
   // CAD 每个图纸的阶段（core/cad_task_runner.py 的 _PHASES）。
-  scan: "读取图纸",
-  match: "匹配记忆/术语",
+  scan: "读取文件",
+  match: "匹配记忆库与术语",
   write: "写回图纸",
   verify: "校验结果",
 };

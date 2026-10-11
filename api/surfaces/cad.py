@@ -21,7 +21,13 @@ from api.surfaces.base import (
 from api.task_contracts import Runner, TaskInputError, TaskOptions
 from core import bilingual_writer, tm_manager
 from core.cad_task_runner import CadTaskRunner
-from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
+from core.cad_translation import (
+    CadPipelineError,
+    CadPipelineOptions,
+    SubprocessCadConverter,
+    scan_cad_paths,
+)
+from core.task_runner import user_facing_reason
 from core.engine_dispatcher import build_role_engine
 from core.file_progress import file_progress_id
 from core.language_registry import get_target_lang_display
@@ -125,8 +131,13 @@ class CadSurface(Surface):
                 ),
                 skipped=cad_skipped,
             )
+        except CadPipelineError as exc:
+            raise HTTPException(422, str(exc) or "图纸扫描失败。") from exc
         except Exception as exc:
-            raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
+            logger.opt(exception=exc).warning(f"[CAD] 图纸扫描失败：{exc!r}")
+            raise HTTPException(
+                422, user_facing_reason(exc, fallback="图纸扫描失败，出现了未预期的问题。")
+            ) from exc
         items = [
             {
                 "path": str(item.path),
@@ -339,7 +350,7 @@ def load_cad_glossary(path: str | None) -> dict[str, str]:
         return {}
     candidate = Path(str(path)).expanduser()
     if not candidate.is_file():
-        raise TaskInputError(f"CAD 术语库不存在：{candidate}")
+        raise TaskInputError(f"找不到 CAD 术语库文件「{candidate.name}」，它可能已被移动或删除。")
     try:
         if candidate.suffix.lower() == ".json":
             value = json.loads(candidate.read_text(encoding="utf-8"))
@@ -361,4 +372,4 @@ def load_cad_glossary(path: str | None) -> dict[str, str]:
                 glossary[source.strip()] = target.strip()
         return glossary
     except (OSError, UnicodeError, ValueError) as exc:
-        raise TaskInputError(f"CAD 术语库无法读取：{candidate}") from exc
+        raise TaskInputError(f"CAD 术语库文件「{candidate.name}」读不出来，请检查格式（每行「原文,译文」或 JSON 对象）。") from exc

@@ -64,8 +64,8 @@ class WordSurface(Surface):
             return
         raise TaskInputError(
             "检测到 "
-            f"{len(doc_files)} 个 .doc 文件，但本机 Microsoft Word 高保真自动化不可用：{reason}。"
-            "请取消任务，安装/授权 Microsoft Word 后重试，或明确确认兼容转换；"
+            f"{len(doc_files)} 个 .doc 文件，但没法用本机 Word 转换：{str(reason).rstrip('。')}。"
+            "请取消任务，安装或授权 Microsoft Word 后重试，或明确确认兼容转换；"
             "兼容转换可能改变版式、域、图文和宏。"
         )
 

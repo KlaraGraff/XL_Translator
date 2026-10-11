@@ -15,7 +15,7 @@ def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
     if active_count:
         raise HTTPException(
             409,
-            "存在活动任务，不能清理会影响其记录或冻结凭据的数据。",
+            "还有任务在进行，请等它结束后再清理。",
             headers={"X-Translator-Reason": f"active_tasks_block_{category}"},
         )
 

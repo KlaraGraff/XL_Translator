@@ -3472,7 +3472,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     case "paused":
       syncEventState(local, data, "paused");
-      local.phaseName = surface === "cad" ? "已暂停，当前文件已完成" : "已暂停，不再开始新的页面";
+      local.phaseName = surface === "cad" ? "已暂停：当前文件已翻完" : "已暂停，不再开始新的页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":

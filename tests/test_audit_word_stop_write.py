@@ -493,7 +493,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             # 不是重试穷尽。
             review_items = stopped.files[0]["review_items"]
             for item in review_items:
-                self.assertNotIn("重试后仍未获得有效译文", str(item))
+                self.assertNotIn("重译后仍没得到有效译文", str(item))
             warn_logs = [
                 message.message
                 for message in list(runner._queue.queue)
@@ -644,7 +644,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             residual = [
                 item
                 for item in stopped.issues
-                if item.get("problem") == "译文残留未翻译的中文片段"
+                if item.get("problem") == "译文里留着没翻译的原文片段"
                 and item.get("severity") == "needs_review"
             ]
             self.assertEqual(

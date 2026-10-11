@@ -118,7 +118,7 @@ class PdfRegenerateFailureKeepsOldArtifactWordingTests(unittest.TestCase):
             "致命模型错误分支丢了旧产物保留的安抚文案",
         )
         self.assertIn(
-            "已保留上一版产物，输出文件未改动。",
+            "已保留上一版，输出文件未改动。",
             body,
             "重新装配失败分支丢了旧产物保留的安抚文案",
         )
@@ -198,8 +198,8 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
             )
             issue = issues[0]
             self.assertTrue(issue["caused_by_stop"])
-            self.assertIn("任务停止时还没来得及自动修复", issue["message"])
-            self.assertIn("不是修复失败", issue["message"])
+            self.assertIn("任务停止时还没来得及自动补译", issue["message"])
+            self.assertIn("不是补译失败", issue["message"])
             # 互审 F6：停止标志置位后阶段 3 之前就被拦下，输出文件根本没写出来——
             # 这条 issue 不许承诺「已在输出文件中标记」，也不许说「接着处理」
             # （本次没有可续的产物，重跑是从头再来、靠记忆库复用）。
@@ -275,8 +275,8 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
             self.assertEqual(len(issues), 1)
             issue = issues[0]
             self.assertFalse(issue["caused_by_stop"])
-            self.assertNotIn("任务停止时还没来得及自动修复", issue["message"])
-            self.assertIn("超出单次自动修复", issue["message"])
+            self.assertNotIn("任务停止时还没来得及自动补译", issue["message"])
+            self.assertIn("超出单次自动补译", issue["message"])
 
 
 if __name__ == "__main__":

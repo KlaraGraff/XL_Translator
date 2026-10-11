@@ -1485,8 +1485,7 @@ def _process_sheet(
                     if log_callback:
                         log_callback(
                             f"[WARN] {entry.name}!{_column_letter(col_index)}{row_num} "
-                            "是共享公式的主控单元格，主控权无法转交给同组其它单元格，"
-                            "已跳过改写（公式与原文保持不变）"
+                            "的公式与其它单元格共用，为了不破坏公式，这一格保持原样（没有写入译文）"
                         )
                     mutation = None
 
@@ -1523,8 +1522,8 @@ def _process_sheet(
                     new_text, illegal_removed, truncated = sanitize_cell_text(new_text)
                     if illegal_removed and log_callback:
                         log_callback(
-                            f"[WARN] {entry.name}!{coordinate} 译文含 {illegal_removed} 个"
-                            "XML 非法字符，已剔除后写入"
+                            f"[WARN] {entry.name}!{coordinate} 译文里有 {illegal_removed} 个"
+                            "无法保存的特殊字符，已去掉后写入"
                         )
                     if truncated:
                         outcome.truncated_positions.append(
@@ -1532,9 +1531,9 @@ def _process_sheet(
                         )
                         if log_callback:
                             log_callback(
-                                f"[WARN] {entry.name}!{coordinate} 双语文本超过 Excel 单元格"
-                                f"上限 {MAX_CELL_TEXT_LEN} 字符，已截断 {truncated} 字符"
-                                "（不截断的话整个文件 Excel 会判为损坏）"
+                                f"[WARN] {entry.name}!{coordinate} 原文加译文超过 Excel 单元格"
+                                f"上限 {MAX_CELL_TEXT_LEN} 字，已截掉 {truncated} 字"
+                                "（不截的话 Excel 会认为整个文件已损坏）"
                             )
                     if _set_cell_inline_text(cell, new_text):
                         outcome.removed_formula = True
@@ -2221,7 +2220,7 @@ def write_bilingual_workbook(
     try:
         root_rels_data = package.read("_rels/.rels")
         if root_rels_data is None:
-            raise ValueError("不是有效的 xlsx 包：缺少 _rels/.rels")
+            raise ValueError("这个文件不是完整的 Excel 文件，可能已损坏（缺少文件目录）。")
         root_rels = _parse(root_rels_data)
         workbook_part = ""
         for rel in root_rels:
@@ -2229,14 +2228,14 @@ def write_bilingual_workbook(
                 workbook_part = _resolve_part("", rel.get("Target") or "")
                 break
         if not workbook_part or not package.has(workbook_part):
-            raise ValueError("不是有效的 xlsx 包：找不到 workbook 部件")
+            raise ValueError("这个文件不是完整的 Excel 文件，可能已损坏（找不到工作簿内容）。")
 
         content_types = _ContentTypes(package.read("[Content_Types].xml") or b"")
         workbook_root = _parse(package.read(workbook_part))
         workbook_rels_path = _rels_path(workbook_part)
         workbook_rels_data = package.read(workbook_rels_path)
         if workbook_rels_data is None:
-            raise ValueError("不是有效的 xlsx 包：缺少 workbook 关系表")
+            raise ValueError("这个文件不是完整的 Excel 文件，可能已损坏（缺少工作簿目录）。")
         workbook_rels_root = _parse(workbook_rels_data)
 
         styles_part = _resolve_workbook_child_part(
@@ -2337,21 +2336,21 @@ def write_bilingual_workbook(
             if log_callback:
                 if outcome.anchor_frozen_count:
                     log_callback(
-                        f"[INFO] 分表已固定悬浮图片锚点：{entry.name}"
-                        f"（{outcome.anchor_frozen_count} 处）"
+                        f"[INFO] {entry.name}：已固定 {outcome.anchor_frozen_count} 张"
+                        "浮动图片的位置和大小"
                     )
                 if lock_row_height and outcome.shrunk_cells:
                     log_callback(
-                        f"[INFO] 分表已锁定行高并缩字号：{entry.name}"
+                        f"[INFO] {entry.name}：已锁定行高并缩小字号"
                         f"（{outcome.shrunk_cells} 个单元格）"
                     )
                 review_summary = ""
                 if outcome.review_marked or outcome.review_skipped:
-                    review_summary = f"（风险标记 {outcome.review_marked}"
+                    review_summary = f"（复核标记 {outcome.review_marked} 处"
                     if outcome.review_skipped:
-                        review_summary += f"，保留原底色未改 {outcome.review_skipped}"
+                        review_summary += f"，保留原底色未改 {outcome.review_skipped} 处"
                     review_summary += "）"
-                log_callback(f"[INFO] 分表已处理：{entry.name}{review_summary}")
+                log_callback(f"[INFO] 工作表已处理：{entry.name}{review_summary}")
 
         if keep_original_sheets and snapshots:
             cloned_frozen = _clone_original_sheets(
@@ -2368,9 +2367,9 @@ def write_bilingual_workbook(
             # 故意**不**计入 total_anchor_frozen：克隆件上的图片和译文分表上的是同一张，
             # 用户在原文件里只看得见一张。两边都算会让「N 张悬浮图片已固定尺寸」在开了
             # 「保留原文表」时凭空翻倍，那个数字就谁也对不上了。只记日志。
-            if cloned_frozen and log_callback:
-                log_callback(
-                    f"[INFO] 原文分表克隆件已固定悬浮图片锚点：{cloned_frozen} 处"
+            if cloned_frozen:
+                logger.info(
+                    f"原文分表克隆件已固定悬浮图片锚点：{cloned_frozen} 处"
                     "（与译文分表是同一批图片，不计入汇总）"
                 )
             workbook_dirty = True
@@ -2402,7 +2401,7 @@ def write_bilingual_workbook(
             more = f" 等 {len(error_positions)} 处" if len(error_positions) > 5 else ""
             log_callback(
                 f"[INFO] 共 {len(error_positions)} 个单元格是错误值"
-                f"（#N/A、#REF! 之类），已按原样保留、未写入译文：{shown}{more}"
+                f"（#N/A、#REF! 之类），已保持原样、没有写入译文：{shown}{more}"
             )
 
         if truncated_positions and log_callback:
@@ -2414,7 +2413,7 @@ def write_bilingual_workbook(
             )
             log_callback(
                 f"[WARN] 共 {len(truncated_positions)} 个单元格超过 Excel 的 "
-                f"{MAX_CELL_TEXT_LEN} 字符上限已被截断：{shown}{more}"
+                f"{MAX_CELL_TEXT_LEN} 字上限，已被截断：{shown}{more}"
             )
 
         package.save()

@@ -133,10 +133,10 @@ def _summary_terminal_reason(summary: PdfTaskSummary) -> str:
 def _summary_terminal_reason_label(summary: PdfTaskSummary) -> str:
     reason = _summary_terminal_reason(summary)
     return {
-        "end_paused": "用户结束暂停任务",
-        "user_stopped": "用户主动中止",
-        "failed": "异常失败",
-        "completed_needs_review": "已完成，存在需复核页面",
+        "end_paused": "用户结束了任务",
+        "user_stopped": "用户停止了任务",
+        "failed": "出错失败",
+        "completed_needs_review": "已完成，有页面需要复核",
         "completed": "正常完成",
     }.get(reason, reason)
 
@@ -144,10 +144,39 @@ def _summary_terminal_reason_label(summary: PdfTaskSummary) -> str:
 def _pdf_status_label(status: str) -> str:
     return {
         PDF_OUTPUT_STATE_COMPLETED: "已完成",
-        PDF_OUTPUT_STATE_NEEDS_REVIEW: "已完成，存在需复核页面",
+        PDF_OUTPUT_STATE_NEEDS_REVIEW: "已完成，有页面需要复核",
         PDF_OUTPUT_STATE_STOPPED: "已停止",
-        PDF_OUTPUT_STATE_FAILED: "异常失败",
+        PDF_OUTPUT_STATE_FAILED: "出错失败",
     }.get(status, status or "未知")
+
+
+# 报告的逐页表格给人看，不写内部状态码。
+_PDF_PAGE_STATUS_LABELS = {
+    "success": "已生成",
+    "emergency_normalized": "已生成（自动修正了比例）",
+    "placeholder": "失败占位页",
+    "placeholder_pending": "失败，待生成占位页",
+    "pending": "未开始",
+    "rendered": "未开始",
+    "failed": "失败",
+    PDF_PAGE_STATUS_SKIPPED_OVERSIZE: "大幅面，未翻译",
+    "stopped_unstarted": "未开始",
+}
+
+_PDF_REVIEW_STATUS_LABELS = {
+    "passed": "通过",
+    "failed": "未通过",
+    "retrying": "重试中",
+    "skipped": "未审核",
+}
+
+
+def _pdf_page_status_label(status: str) -> str:
+    return _PDF_PAGE_STATUS_LABELS.get(str(status or ""), str(status or "未知"))
+
+
+def _pdf_review_status_label(status: str) -> str:
+    return _PDF_REVIEW_STATUS_LABELS.get(str(status or ""), str(status or "未审核"))
 
 
 def _pdf_file_status_label(record: PdfFileRecord) -> str:
@@ -343,8 +372,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
     lines = [
         "# PDF 翻译报告",
         "",
-        f"- 状态：{summary.status}",
-        f"- 状态说明：{_pdf_status_label(summary.status)}",
+        f"- 状态：{_pdf_status_label(summary.status)}",
         f"- 结束原因：{_summary_terminal_reason_label(summary)}",
         f"- 目标语言：{summary.target_lang_label}",
         f"- 输出目录：{summary.output_dir}",
@@ -358,19 +386,17 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
         f"- 已生成压缩 PDF：{summary.compressed_pdf_count}",
         f"- 已生成译图：{summary.generated_image_count}",
         f"- 压缩输出：{'开启' if summary.compressed_pdf_enabled else '关闭'}",
-        f"- 压缩 JPEG 质量：{summary.compression_quality}",
-        f"- 压缩最大长边：{summary.compression_max_long_edge_px}px",
         f"- 失败占位页：{summary.placeholder_page_count}",
-        f"- 跳过大幅面页（矢量直传）：{summary.skipped_oversize_page_count}",
-        f"- 应急比例归一化页：{summary.emergency_ratio_normalized_count}",
-        f"- 页级重试次数：{summary.retry_count}",
-        f"- 翻译审核：{'开启' if summary.review_enabled else '关闭'}",
+        f"- 大幅面页（未翻译，原样保留）：{summary.skipped_oversize_page_count}",
+        f"- 自动修正比例的页：{summary.emergency_ratio_normalized_count}",
+        f"- 重试次数：{summary.retry_count}",
+        f"- 逐页审核：{'开启' if summary.review_enabled else '关闭'}",
         f"- 审核通过页：{summary.review_passed_page_count}",
         f"- 审核修复页：{summary.review_repaired_page_count}",
         f"- 审核未通过页：{summary.review_failed_page_count}",
         f"- 审核重试次数：{summary.review_retry_count}",
         f"- 审核轻微建议：{summary.review_minor_suggestion_count}",
-        f"- 限流降并发次数：{summary.rate_limit_reduction_count}",
+        f"- 模型太忙被放慢的次数：{summary.rate_limit_reduction_count}",
         f"- 保留部分素材：{'是' if summary.partial_artifacts_available else '否'}",
         f"- 页面素材目录：{Path(summary.output_dir) / PDF_PAGES_ROOT}",
         "",
@@ -383,8 +409,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
             [
                 f"### {file_record.name}",
                 "",
-                f"- 状态：{file_record.status}",
-                f"- 状态说明：{_pdf_file_status_label(file_record)}",
+                f"- 状态：{_pdf_file_status_label(file_record)}",
                 f"- 类型：{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else 'PDF'}",
                 f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else 'PDF'}：{file_record.source_path}",
                 f"- 高清 PDF：{_pdf_artifact_label(file_record.translated_pdf_path, file_record)}",
@@ -407,11 +432,11 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                 f"- 大幅面页处理：本文件 {file_record.skipped_oversize_page_count} 页判定为大幅面，"
                 f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
                 "页参与翻译",
-                f"- 应急比例归一化页：{file_record.emergency_ratio_normalized_count}",
-                f"- 内容质检待复核页：{file_record.quality_flagged_page_count}",
-                f"- 按源页比例补边页：{file_record.ratio_letterboxed_page_count}",
-                f"- 渲染 DPI 降级页（幅面过大）：{file_record.render_downscaled_page_count}",
-                f"- 翻译审核：{'开启' if file_record.review_enabled else '关闭'}",
+                f"- 自动修正比例的页：{file_record.emergency_ratio_normalized_count}",
+                f"- 自动检查发现问题、待复核的页：{file_record.quality_flagged_page_count}",
+                f"- 补白边保持比例的页：{file_record.ratio_letterboxed_page_count}",
+                f"- 因页面过大降低清晰度的页：{file_record.render_downscaled_page_count}",
+                f"- 逐页审核：{'开启' if file_record.review_enabled else '关闭'}",
                 f"- 审核通过页：{file_record.review_passed_page_count}",
                 f"- 审核修复页：{file_record.review_repaired_page_count}",
                 f"- 审核未通过页：{file_record.review_failed_page_count}",
@@ -435,9 +460,9 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
             or page.review_minor_suggestions
         ]
         if review_pages:
-            lines.extend(["", "| 页码 | 状态 | 审核 | 失败序号 | 摘要 | 原始页图像 | 译后页图像 |", "| --- | --- | --- | --- | --- | --- | --- |"])
+            lines.extend(["", "| 页码 | 状态 | 审核 | 失败页编号 | 摘要 | 原始页图像 | 译后页图像 |", "| --- | --- | --- | --- | --- | --- | --- |"])
             for page in review_pages:
-                review_note = page.review_status
+                review_note = _pdf_review_status_label(page.review_status)
                 if page.review_minor_suggestions:
                     review_note += "；轻微建议：" + "；".join(page.review_minor_suggestions[:2])
                 lines.append(
@@ -445,7 +470,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
                     + " | ".join(
                         [
                             str(page.page_number),
-                            page.status,
+                            _pdf_page_status_label(page.status),
                             _escape_table(review_note),
                             page.failure_ordinal,
                             _escape_table(
@@ -489,7 +514,7 @@ def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
     if fully_skipped:
         detail_parts.append("全部页面因幅面过大被跳过，未翻译")
     if record.quality_flagged_page_count:
-        detail_parts.append(f"{record.quality_flagged_page_count} 页内容质检待复核")
+        detail_parts.append(f"{record.quality_flagged_page_count} 页自动检查发现问题，待复核")
     if record.compression_error:
         detail_parts.append("压缩版生成失败")
     return {
@@ -572,7 +597,7 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                     "location_label": "整份文件",
                     "severity": "needs_review",
                     "problem": fully_skipped_oversize_message(file_record),
-                    "status": "全部页面按幅面跳过，未翻译",
+                    "status": "全部页面因幅面过大跳过，未翻译",
                     "source_image_path": file_record.source_path,
                     "translated_image_path": "",
                 }
@@ -599,18 +624,18 @@ def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
                         page.error
                         or page.quality_message
                         or _page_review_issue_text(page)
-                        or page.status
+                        or _pdf_page_status_label(page.status)
                     ),
                     "status": (
                         "审核未通过，占位待人工复核"
                         if page.review_status == "failed"
                         else "失败占位页"
                         if page.placeholder
-                        else "应急比例归一化"
+                        else "已自动修正页面比例"
                         if page.emergency_ratio_normalized
-                        else "内容质检待复核"
+                        else "自动检查发现问题，待复核"
                         if page.quality_flags
-                        else page.status
+                        else _pdf_page_status_label(page.status)
                     ),
                     "source_image_path": page.source_image_path,
                     "translated_image_path": page.translated_image_path,
