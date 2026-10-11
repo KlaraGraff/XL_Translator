@@ -48,7 +48,7 @@
     "fr": "Vérification des compléments Excel"
   },
   "接着上次继续：{0} 在上次的翻译结果 {1} 上补译": {
-    "en": "Resume previous run: filling in {0} on top of the previous result {1}",
+    "en": "Resume last run: filling in {0} on top of the previous result {1}",
     "fr": "Reprise de la traduction précédente : {0} est complété à partir du résultat précédent {1}"
   },
   "，开始按各文件的语言重新找出要补译的内容。": {
@@ -216,7 +216,7 @@
     "fr": "Impossible de lire le fichier source"
   },
   "  → [接着上次继续] {0}：上次的翻译结果已是双语内容，没法从中复制出纯原文的分表，这次不新增「_原文」分表（上次已有的原样保留）。": {
-    "en": "  → [Resume previous run] {0}: The previous result is already bilingual, so a source-only sheet can't be copied from it. No “_原文” sheet will be added this time (any existing one is kept as is).",
+    "en": "  → [Resume last run] {0}: The previous result is already bilingual, so a source-only sheet can't be copied from it. No “_原文” sheet will be added this time (any existing one is kept as is).",
     "fr": "  → [Reprise de la traduction précédente] {0} : le résultat précédent est déjà bilingue ; impossible d'en extraire une feuille contenant uniquement le texte source. Aucune feuille « _原文 » n'est ajoutée cette fois (celle qui existe déjà est conservée telle quelle)."
   },
   "[{0}] 工作表名称保留原名：{1}": {
@@ -292,16 +292,16 @@
     "fr": "{0} {0|traduction avait été reçue|traductions avaient été reçues} avant l'interruption de la tâche, dont {1} {1|enregistrée|enregistrées} dans la mémoire de traduction. Lors d'une nouvelle traduction, ces contenus seront repris directement de la mémoire, sans nouvelle facturation."
   },
   "接口持续限流，已停止继续请求；已拿到的 {0} 条译文照常写入文件，其余内容保留原文，可稍后用「接着上次继续」补译。": {
-    "en": "The service is still limiting requests, so no more requests will be sent. The {0} {0|translation|translations} already received {0|is|are} written to the file as usual; the rest keeps the source text. You can fill it in later with “Resume previous run”.",
-    "fr": "Le service limite toujours les requêtes : plus aucune requête ne sera envoyée. {0} {0|traduction déjà reçue est écrite|traductions déjà reçues sont écrites} dans le fichier ; le reste conserve le texte source. Vous pourrez le compléter plus tard avec « Reprendre la traduction précédente »."
+    "en": "The service is still limiting requests, so no more requests will be sent. The {0} {0|translation|translations} already received {0|is|are} written to the file as usual; the rest keeps the source text. You can fill it in later with “Resume last run”.",
+    "fr": "Le service limite toujours les requêtes : plus aucune requête ne sera envoyée. {0} {0|traduction déjà reçue est écrite|traductions déjà reçues sont écrites} dans le fichier ; le reste conserve le texte source. Vous pourrez le compléter plus tard avec « Reprendre la dernière exécution »."
   },
   "接口持续限流，夹杂多种语言的内容这次没能翻译，已保留原文。": {
     "en": "The service is still limiting requests, so mixed-language content couldn't be translated this time; the source text was kept.",
     "fr": "Le service limite toujours les requêtes : le contenu mêlant plusieurs langues n'a pas pu être traduit cette fois ; le texte source a été conservé."
   },
   "接口持续限流，有 {0} 条内容没能翻译，已保留原文并标记；限流过去后用「接着上次继续」补译即可，已翻好的内容不会重复计费。": {
-    "en": "The service is still limiting requests; {0} {0|item|items} couldn't be translated, so the source text was kept and marked. Once the limit is lifted, use “Resume previous run” to fill them in — content already translated won't be charged again.",
-    "fr": "Le service limite toujours les requêtes : {0} {0|élément n'a pas pu être traduit|éléments n'ont pas pu être traduits} ; le texte source a été conservé et signalé. Une fois la limitation levée, utilisez « Reprendre la traduction précédente » pour compléter ; le contenu déjà traduit ne sera pas refacturé."
+    "en": "The service is still limiting requests; {0} {0|item|items} couldn't be translated, so the source text was kept and marked. Once the limit is lifted, use “Resume last run” to fill them in — content already translated won't be charged again.",
+    "fr": "Le service limite toujours les requêtes : {0} {0|élément n'a pas pu être traduit|éléments n'ont pas pu être traduits} ; le texte source a été conservé et signalé. Une fois la limitation levée, utilisez « Reprendre la dernière exécution » pour compléter ; le contenu déjà traduit ne sera pas refacturé."
   },
   "请按下方源文清单逐条核对。": {
     "en": "Please check them one by one against the source list below.",
@@ -312,7 +312,7 @@
     "fr": "Ils sont signalés pour vérification ; contrôlez les emplacements marqués dans le fichier de sortie."
   },
   "接着上次继续：已找到 {0} 上次的翻译结果 {1}，识别出原文语言后再在它的基础上补译。": {
-    "en": "Resume previous run: found the previous result {1} for {0}. Missing translations will be filled in on top of it once the source language is detected.",
+    "en": "Resume last run: found the previous result {1} for {0}. Missing translations will be filled in on top of it once the source language is detected.",
     "fr": "Reprise de la traduction précédente : résultat précédent {1} trouvé pour {0}. Les traductions manquantes y seront complétées une fois la langue source détectée."
   },
   "这个 .xls 文件没能转换成 .xlsx，请改用兼容转换后重试。": {

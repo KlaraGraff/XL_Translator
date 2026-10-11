@@ -647,6 +647,14 @@ function mergeSentences(current: string, addition: string): string {
   return `${current}；${next}`;
 }
 
+/** Word 复核项的 section_path：后端没找到标题时写「正文」「表格」「表格 2」，其余是文档里的标题原文（用户数据，不翻）。 */
+function sectionLabel(container: string): string {
+  if (container === "正文") return t("正文"); // i18n-ignore 后端原文
+  const table = /^表格(?:\s*(\d+))?$/.exec(container); // i18n-ignore 后端原文
+  if (table) return table[1] ? t("表格 {0}", table[1]) : t("表格");
+  return container;
+}
+
 function toReviewRow(entry: JsonObject): ReviewRow {
   const file = firstText(entry, ["file", "source_relative_path", "relative_path", "path"]);
   // location_label 是后端专门为界面准备的中文位置（「正文段落 5」「第 1 页」），必须排在
@@ -656,7 +664,7 @@ function toReviewRow(entry: JsonObject): ReviewRow {
     firstText(entry, ["cell", "cell_reference", "location_label", "location", "paragraph", "paragraph_index", "table_cell"]),
   );
   const location = [container, position].filter(Boolean).join(" · ");
-  const locationDisplay = [container, tx(position)].filter(Boolean).join(" · ");
+  const locationDisplay = [sectionLabel(container), tx(position)].filter(Boolean).join(" · ");
   const excerptRaw = firstText(entry, ["excerpt", "snippet", "source_excerpt", "text", "source_text"]);
   const excerpt = excerptRaw.length > 80 ? `${excerptRaw.slice(0, 77)}…` : excerptRaw;
   const issueRaw = firstText(entry, ["category", "mark", "type", "issue", "problem"]);

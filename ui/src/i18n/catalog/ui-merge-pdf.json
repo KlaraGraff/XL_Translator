@@ -44,8 +44,8 @@
     "fr": "Ignorer cette page et garder la page de substitution dans le fichier de sortie"
   },
   "这个文件停止前没跑完，还没有生成出来；对同一输出目录发起「接着上次继续」可以补完。": {
-    "en": "This file wasn't finished when the task stopped, so it hasn't been generated yet. Start “Continue from last time” on the same output folder to complete it.",
-    "fr": "Ce fichier n'était pas terminé à l'arrêt et n'a pas encore été généré. Lancez « Reprendre là où on s'était arrêté » sur le même dossier de sortie pour le terminer."
+    "en": "This file wasn't finished when the task stopped, so it hasn't been generated yet. Start “Resume last run” on the same output folder to complete it.",
+    "fr": "Ce fichier n'était pas terminé à l'arrêt et n'a pas encore été généré. Lancez « Reprendre la dernière exécution » sur le même dossier de sortie pour le terminer."
   },
   "这个文件这次没有生成出来，单页重新生成帮不上忙；可以只勾这个文件重新开始翻译。": {
     "en": "This file wasn't generated this time, so regenerating single pages won't help. Select only this file and start the translation again.",

@@ -71,4 +71,5 @@ const status = createTranslator("fr", [{
   "状态：[阶段 2/{0}] 正在补译遗留的原文（{1}/{2}）...": { fr: "État : [Étape 2/{0}] complétion du texte non traduit ({1}/{2})…" },
 }]);
 assert.equal(status.tx("[阶段 2/3] 正在补译遗留的原文（13/13）..."), "[Étape 2/3] complétion du texte non traduit (13/13)…", "status lines match without their prefix");
+assert.equal(status.tx("正在补译遗留的原文（13/13）..."), "Complétion du texte non traduit (13/13)…", "status lines match without their stage mark");
 console.log("i18n engine status tests passed");

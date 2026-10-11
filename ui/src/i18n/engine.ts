@@ -28,6 +28,17 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** 去掉一部分占位符后，把剩下的按原文出现顺序重新编号成 {0} {1} …，原文译文同步改。 */
+function renumberPlaceholders(source: string, target: string): [string, string] {
+  const order: string[] = [];
+  for (const match of source.matchAll(/\{(\d+)(?:\|[^}]*)?\}/g)) if (!order.includes(match[1])) order.push(match[1]);
+  const rename = (text: string) => text.replace(/\{(\d+)((?:\|[^}]*)?)\}/g, (all, index: string, rest: string) => {
+    const position = order.indexOf(index);
+    return position < 0 ? all : `{${position}${rest}}`;
+  });
+  return [rename(source), rename(target)];
+}
+
 export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): Translator {
   const exact = new Map<string, string>();
   const templatesByHead = new Map<string, TemplateEntry[]>();
@@ -90,6 +101,19 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
           if (bareSource && !exact.has(bareSource)) {
             exact.set(bareSource, capitalized);
             if (PLACEHOLDER_TEST_RE.test(bareSource)) addTemplate(bareSource, capitalized);
+          }
+          // 进度条上阶段名单独显示，状态行连「[阶段 2/3]」「[收尾中]」也一起去掉了。
+          const STAGE_MARK = /^\[(?:阶段\s*[^\]]*|收尾中)\]\s*/;
+          if (STAGE_MARK.test(bareSource)) {
+            const [stageSource, stageTarget] = renumberPlaceholders(
+              bareSource.replace(STAGE_MARK, ""),
+              bareTarget.replace(/^\[[^\]]*\]\s*/, ""),
+            );
+            const stageCapitalized = stageTarget.charAt(0).toUpperCase() + stageTarget.slice(1);
+            if (stageSource && !exact.has(stageSource)) {
+              exact.set(stageSource, stageCapitalized);
+              if (PLACEHOLDER_TEST_RE.test(stageSource)) addTemplate(stageSource, stageCapitalized);
+            }
           }
         }
         // 后端常用「  → …」这类带缩进的行，界面显示前可能已经去掉了首尾空白：两种都认。

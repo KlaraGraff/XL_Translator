@@ -88,7 +88,7 @@
     "fr": "[Étape 2] Déjà dans la mémoire de traduction : {0} ; à traduire par le modèle : {1} ; en plusieurs langues : {2}"
   },
   "接口持续限流，已停止继续请求。已翻好的内容照常写入文件，其余段落保留原文，限流过去后用「接着上次继续」补译即可。": {
-    "en": "The service kept rate-limiting requests, so sending was stopped. Content already translated will be written as usual and the remaining paragraphs keep the source text. Once the limit clears, use “Continue from last run” to fill them in.",
+    "en": "The service kept rate-limiting requests, so sending was stopped. Content already translated will be written as usual and the remaining paragraphs keep the source text. Once the limit clears, use “Resume last run” to fill them in.",
     "fr": "Le service a limité les requêtes de façon persistante ; l'envoi a donc été arrêté. Le contenu déjà traduit sera écrit normalement et les paragraphes restants conservent le texte source. Une fois la limite levée, utilisez « Reprendre la dernière exécution » pour les compléter."
   },
   "[阶段 2 完成] 翻译数据就绪（{0}s）": {
@@ -160,7 +160,7 @@
     "fr": "{0}Progression : {1}/{2} paragraphes traduits, {3} conservés en langue source pour plus tard, {4} {4|fichier écrit|fichiers écrits}."
   },
   "  → [接着上次继续] {0}：在上次的翻译结果上补译，这次只补没翻译的内容。": {
-    "en": "  → [Continue from last run] {0}: building on the previous result; only untranslated content will be filled in this time.",
+    "en": "  → [Resume last run] {0}: building on the previous result; only untranslated content will be filled in this time.",
     "fr": "  → [Reprendre la dernière exécution] {0} : complétion à partir du résultat précédent ; seul le contenu non traduit sera complété cette fois."
   },
   "  → [未翻译内容] {0}：检测到{1}，这些内容不在本次翻译范围内，输出文档中会保持原文。建议：{2}。": {
@@ -340,7 +340,7 @@
     "fr": "La tâche de traduction Word a échoué lors de la finalisation : "
   },
   "接着上次继续：{0} 的原文件比上次翻译时{1}，没法接着上次的结果补译，这次完整翻译（已翻过的内容会尽量从记忆库直接取用）。": {
-    "en": "Continue from last run: the source file of {0} has changed since the last translation ({1}), so the previous result cannot be built on. Translating in full this time (already translated content will be reused from translation memory where possible).",
+    "en": "Resume last run: the source file of {0} has changed since the last translation ({1}), so the previous result cannot be built on. Translating in full this time (already translated content will be reused from translation memory where possible).",
     "fr": "Reprendre la dernière exécution : le fichier source de {0} a changé depuis la dernière traduction ({1}) ; impossible de compléter le résultat précédent. Traduction complète cette fois (le contenu déjà traduit sera repris autant que possible depuis la mémoire de traduction)."
   },
   "{0}：{1}，已继续尝试下一处理方式。": {
