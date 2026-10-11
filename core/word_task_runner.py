@@ -1016,7 +1016,7 @@ class WordTaskRunner:
                                 f"  → [未翻译内容] {file_item.name}：检测到"
                                 f"{hidden_content.describe()}，"
                                 "这些内容不在本次翻译范围内，输出文档中会保持原文。"
-                                "建议在 Word 里接受全部修订、或把内容控件转换为普通文本后重试。"
+                                f"建议：{hidden_content.advice()}。"
                             ),
                         )
                         quality_issues.append(
@@ -1029,8 +1029,8 @@ class WordTaskRunner:
                                 "snippet": "",
                                 "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
                                 "status": (
-                                    "这些内容被内容控件或未接受的修订包裹，未参与翻译，"
-                                    "输出文档中保持原文。"
+                                    "这些内容位于内容控件、未接受的修订、文本框或脚注里，"
+                                    "未参与翻译，输出文档中保持原文。"
                                 ),
                                 "severity": "needs_review",
                             }
