@@ -114,6 +114,10 @@ class ApiTask:
     # 只用来把 409 文案说准——「有一页在重新生成」和「有一页在换回上一版」
     # 对用户是两回事，等待时长也差一个量级。
     rerun_kind: str = ""
+    # 用户通过接口按了停止（或暂停后点「结束」）。runner 也会因故自行收尾成
+    # stopped（Word 持续限流），界面靠这个分清「用户停的」和「被迫停的」：
+    # 后者要把后端说明的原因原样给用户看，不能换成「任务已停止」。
+    stop_requested: bool = False
 
 
 class RetiredRunner:
@@ -822,6 +826,7 @@ class TranslationTaskManager:
                 "files": list(task.file_progress.values()),
             },
             "progress": dict(task.progress),
+            "stop_requested": task.stop_requested,
         }
         if include_result:
             result = _sanitize_task_data(task.result or {})
@@ -1014,6 +1019,7 @@ class TranslationTaskManager:
             if task.terminal:
                 return self.task_status(task_id)
             task.state = "stopping"
+            task.stop_requested = True
         task.runner.stop()
         self._append_event(task, "stopping", {"state": "stopping"})
         return self.task_status(task_id)
@@ -1070,6 +1076,7 @@ class TranslationTaskManager:
             if task.state != "paused":
                 raise TaskInputError("只有已暂停的任务可以结束。")
             task.state = "stopping"
+            task.stop_requested = True
             self._append_event(task, "stopping", {"state": "stopping", "reason": "end_paused"})
         if hasattr(task.runner, "end_paused"):
             task.runner.end_paused()  # type: ignore[attr-defined]

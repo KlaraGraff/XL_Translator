@@ -3947,7 +3947,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     // 后端的停止说明（如 CAD 的「已完成文件和断点均已保留」）只在这里出现一次。
     // Excel / Word 只说一句话：后端说明、「N 段保留原文待续译」和输出路径以前一起堆在
     // 横幅上，同一个剩余数说两遍，后面还跟着三行路径（「打开输出目录」按钮就在右边）。
-    const condensed = surface === "excel" || surface === "word"
+    // 不是用户按的停止（Word 持续限流时自行收尾）：后端说明里是原因，必须原样给出，
+    // 换成「已翻好的内容写进了文件」那句会让人以为是自己点了停止。
+    const userStopped = task.stop_requested !== false;
+    const condensed = userStopped && (surface === "excel" || surface === "word")
       ? stoppedSummarySentence(surface, generated, failed, unfinishedTexts, review)
       : "";
     st.bannerInfo = {

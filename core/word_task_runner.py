@@ -365,11 +365,21 @@ class WordTaskRunner(BaseTaskRunner):
         self._file_progress.emit_many("waiting", "extract")
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # 用户按了停止。持续限流时 runner 自己也会置 _stop_event 收尾，那不是用户
+        # 停止：停止说明要保留限流原因，没翻成的段落照常标记复核。
+        self._user_stop_requested = False
         self._task_logger = TaskLogger(enabled=True)
 
     @property
     def task_id(self) -> str:
         return self._task_logger.task_id
+
+    def _before_start(self) -> None:
+        self._user_stop_requested = False
+
+    def stop(self) -> None:
+        self._user_stop_requested = True
+        super().stop()
 
     def _log_front_matter_boundary(
         self, file_name: str, front_matter: WordFrontMatterBoundary
@@ -1681,14 +1691,21 @@ class WordTaskRunner(BaseTaskRunner):
                     # （core.resume_detection.count_untranslated_in_output）。以前这里按
                     # 去重后的文本条数数，同一份文件停止时说 314、重新扫描后说 337。
                     result_contract["kpi"]["unstarted_text_count"] = unfinished_paragraphs
-                    stopped_message = (
-                        "任务已停止，已翻好的内容写进了文件，"
-                        + (
-                            f"还有 {unfinished_paragraphs} 段没翻，保留原文，可以接着翻译。"
-                            if unfinished_paragraphs
-                            else "停止前已经全部翻完。"
+                    if self._user_stop_requested:
+                        stopped_message = (
+                            "任务已停止，已翻好的内容写进了文件，"
+                            + (
+                                f"还有 {unfinished_paragraphs} 段没翻，保留原文，可以接着翻译。"
+                                if unfinished_paragraphs
+                                else "停止前已经全部翻完。"
+                            )
                         )
-                    )
+                    elif unfinished_paragraphs:
+                        # 不是用户按的停止（持续限流）：原因放在最前面，不能被换成
+                        # 「任务已停止」——用户什么都没按，看到这句只会以为程序自己坏了。
+                        stopped_message = (
+                            f"{stopped_message}还有 {unfinished_paragraphs} 段没翻。"
+                        )
                 elif total_texts:
                     # 排除「原文当译文」的占位段：它们在词典里只是为了让写盘统一走
                     # 替换通道，实际没翻出来，按「保留原文待续译」计。
@@ -2806,8 +2823,9 @@ class WordTaskRunner(BaseTaskRunner):
                     unit.source_text.strip() for unit in still_needs_review
                 },
                 already_target_sources=already_target_sources,
-                # 停止后还是原文的段落是「停止时尚未翻译」，由续译补，不算需复核。
-                report_untranslated=not self._stop_event.is_set(),
+                # 用户停止后还是原文的段落是「停止时尚未翻译」，由续译补，不算需复核。
+                # 持续限流自行收尾时那些段落是真没翻成，照常标记复核。
+                report_untranslated=not self._user_stop_requested,
             )
             final_path = final_output_dir / out_path.name
             elapsed = (datetime.now() - t0).total_seconds()
@@ -2855,7 +2873,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "INFO",
                         f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
                     )
-                if residual_count and not self._stop_event.is_set():
+                if residual_count and not self._user_stop_requested:
                     self._log(
                         "WARN",
                         (

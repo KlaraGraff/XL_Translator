@@ -756,6 +756,91 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             self.assertIn(translated_text, paragraphs)
             self.assertIn("翻译中途被打断的段落。", paragraphs)
 
+    def test_rate_limit_stop_keeps_reason_and_review_marks(self) -> None:
+        """持续限流时 runner 自己收尾：不是用户按的停止。
+
+        以前这条路径置的是同一个 _stop_event，收尾时限流原因被换成「任务已停止，
+        已翻好的内容写进了文件…」——用户什么都没按；没翻成的段落也被当成「停止时
+        尚未翻译」，不标复核。
+        """
+        from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.docx"
+            document = Document()
+            document.add_paragraph("已完成翻译的段落。")
+            document.add_paragraph("限流后没翻成的段落。")
+            document.save(source)
+            translated_text = "This paragraph finished translating before the rate limit."
+
+            runner = WordTaskRunner(
+                [WordFileItem(path=source, name=source.name, size_kb=1.0)],
+                self._settings(),
+                source_root=root,
+            )
+
+            def rate_limited(texts, *_args, **kwargs):
+                exc = ApiKeyTemporarilyUnavailableError("接口持续限流")
+                exc.partial_results = {"已完成翻译的段落。": translated_text}
+                raise exc
+
+            with ExitStack() as stack:
+                self._runner_patches(
+                    stack,
+                    root=root,
+                    prepared_by_path={source: _prepared(source)},
+                    real_write=True,
+                )
+                coverage = stack.enter_context(
+                    patch(
+                        "core.word_task_runner._append_post_write_coverage_issues",
+                        return_value=1,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.extract_word_segments",
+                        return_value=[
+                            WordSegment("已完成翻译的段落。", "paragraph", "正文第 1 段"),
+                            WordSegment("限流后没翻成的段落。", "paragraph", "正文第 2 段"),
+                        ],
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.tm_manager.lookup_batch",
+                        return_value={
+                            "已完成翻译的段落。": None,
+                            "限流后没翻成的段落。": None,
+                        },
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner.translate_word_texts",
+                        side_effect=rate_limited,
+                    )
+                )
+                stack.enter_context(
+                    patch(
+                        "core.word_task_runner._WordRecoveryPool",
+                        return_value=_stub_recovery_pool(),
+                    )
+                )
+                runner._run()
+
+            stopped = self._terminal_message(runner, StoppedMsg)
+            self.assertFalse(runner._user_stop_requested)
+            # 限流原因打头，不换成「任务已停止」。
+            self.assertTrue(stopped.message.startswith("接口持续限流"), stopped.message)
+            self.assertNotIn("任务已停止", stopped.message)
+            self.assertIn("还有 1 段没翻", stopped.message)
+            # 没翻成的段落照常进需复核（体检带 report_untranslated=True）。
+            self.assertTrue(coverage.called)
+            for call in coverage.call_args_list:
+                self.assertTrue(call.kwargs["report_untranslated"])
+
 
 if __name__ == "__main__":
     unittest.main()
