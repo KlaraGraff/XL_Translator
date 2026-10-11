@@ -1,8 +1,9 @@
 /*
  * V9 设计 token —— 结构和变量名沿用 docs/mockups/2026-08-06_v9_full_redesign.html，
- * 色值在 2026-10 按「冷调柔光」方案重调过，不再与样张逐一相同：
- *   - 浅色：卡片不用纯白（#fff → #f4f6f9），背景同步压暗，暗环境下不再刺眼。
- *   - 深色：背景从近纯黑抬起，卡片/分隔线拉开层次。
+ * 色值在 2026-10 按「暖调纸感」方案重调过，不再与样张逐一相同：
+ *   - 浅色：卡片不用纯白（#fff → 暖米白 #f6f5f1），背景同步压暗，暗环境下不再刺眼。
+ *   - 深色：蓝黑底换成暖灰石墨，背景从近纯黑抬起，卡片/分隔线拉开层次。
+ *   - 主色仍是蓝紫，只为对比度微调了明度。
  *   - 两套主题的正文、次要文字（--ink-3）和状态色对卡片底色的对比度都 ≥ 4.5。
  * 改色值时请保持上面这条对比度底线；--ink-3 用在大量 10.5–12px 小字上。
  *
@@ -14,39 +15,39 @@
 :root {
   color-scheme: light;
 
-  --accent-base: #4c5de8;
-  --ground: #e6e9f0;
-  --ground-2: #dce0e9;
-  --rail: #edf0f5;
-  --surface: #f4f6f9;
-  --surface-2: #edf0f5;
-  --ink: #161b2c;
-  --ink-2: #4a5470;
-  --ink-3: #5f6882;
-  --line: #d9dde7;
-  --line-2: #c6ccda;
+  --accent-base: #4c5ce6;
+  --ground: #e9e7e1;
+  --ground-2: #dfddd5;
+  --rail: #efeee9;
+  --surface: #f6f5f1;
+  --surface-2: #efeee9;
+  --ink: #1d1c19;
+  --ink-2: #55524b;
+  --ink-3: #6b675f;
+  --line: #dedbd2;
+  --line-2: #cbc7bc;
   --accent: var(--accent-base);
-  --accent-strong: #3d4cc4;
+  --accent-strong: #3c4ac2;
   --on-accent: #fff;
-  --tint: #e8eafb;
-  --tint-line: #c6ccf5;
-  --tint-ink: #3a49ba;
+  --tint: #e9eaf7;
+  --tint-line: #c5cbf2;
+  --tint-ink: #3a48b8;
 
   --ok: #0c7a4c;
-  --ok-t: #dff0e8;
-  --ok-l: #afd9c4;
+  --ok-t: #e1efe6;
+  --ok-l: #b1d8c1;
   --warn: #9a6000;
-  --warn-t: #f5ebdb;
-  --warn-l: #e5d0aa;
+  --warn-t: #f4ead9;
+  --warn-l: #e3cfa8;
   --danger: #c9353b;
-  --danger-t: #f8e5e6;
-  --danger-l: #efbcbf;
+  --danger-t: #f7e4e2;
+  --danger-l: #eebcb8;
 
   /* 键盘焦点圈。系统默认的高饱和蓝框和这套配色不搭，统一换成低饱和的 accent 淡化色：
      --ring 用于「描边式」焦点（outline），--ring-soft 用于输入框那种「外发光式」焦点
      （box-shadow）。故意不用 color-mix()，理由同文件头。 */
   --ring: #a3acf0;
-  --ring-soft: rgb(76 93 232 / 18%);
+  --ring-soft: rgb(76 92 230 / 18%);
 
   --sh-sm: 0 1px 2px rgb(24 34 66 / 5%);
   --sh-md: 0 1px 2px rgb(24 34 66 / 5%), 0 10px 26px -14px rgb(30 45 90 / 20%);
@@ -63,36 +64,36 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  --ground: #151a23;
-  --ground-2: #11151d;
-  --rail: #12161e;
-  --surface: #1e2431;
-  --surface-2: #252c3b;
-  --ink: #eef1f8;
-  --ink-2: #bac2d6;
-  --ink-3: #8f99b2;
-  --line: #343d51;
-  --line-2: #424c63;
-  --accent: #8f9dff;
-  --accent-strong: #7080ff;
-  --on-accent: #11141f;
-  --tint: #262e4d;
-  --tint-line: #3c4785;
-  --tint-ink: #b1bbff;
+  --ground: #1c1b19;
+  --ground-2: #171614;
+  --rail: #191816;
+  --surface: #2a2926;
+  --surface-2: #312f2c;
+  --ink: #efede8;
+  --ink-2: #c6c2b9;
+  --ink-3: #9c978d;
+  --line: #403e3a;
+  --line-2: #524f4a;
+  --accent: #929eff;
+  --accent-strong: #7383ff;
+  --on-accent: #14151f;
+  --tint: #2e2f45;
+  --tint-line: #464c80;
+  --tint-ink: #b4bcff;
 
   --ok: #4fd296;
-  --ok-t: #1c3530;
-  --ok-l: #30614f;
+  --ok-t: #22352b;
+  --ok-l: #36614a;
   --warn: #eaae52;
-  --warn-t: #352d22;
-  --warn-l: #6a5639;
+  --warn-t: #3a3122;
+  --warn-l: #6d5838;
   --danger: #ff7a7d;
-  --danger-t: #3a2227;
-  --danger-l: #6a3840;
+  --danger-t: #3d2523;
+  --danger-l: #6e3a37;
 
   /* 深色下 #a9b3ff 太亮会晃眼，压到中调；发光色则相反，要提亮才看得见。 */
-  --ring: #6472d8;
-  --ring-soft: rgb(143 157 255 / 24%);
+  --ring: #6874d6;
+  --ring-soft: rgb(146 158 255 / 24%);
 
   --sh-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --sh-md: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 26px -14px rgb(0 0 0 / 55%);
