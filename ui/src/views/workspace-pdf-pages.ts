@@ -70,11 +70,11 @@ function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot, pending?: PendingR
   // 中间读到 active=true、page_number=0——页码从 1 开始，0 从来不是一页真实的页，
   // 直接当「没有有效页码」处理，不把这个假页码报给用户。
   const rerunningPage = snapshot.rerun.active && snapshot.rerun.page_number > 0 ? snapshot.rerun.page_number : pending?.pageNumber;
-  if (rerunningPage !== undefined) return t("第 {0} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。", rerunningPage);
-  if (snapshot.rerun.error) return t("上一次重新生成没有成功：{0}", tx(redactedText(snapshot.rerun.error, t("输出文件没有改动。"))));
+  if (rerunningPage !== undefined) return t("第 {0} 页正在重新生成，完成后才能操作其他页；其他页仍可查看。", rerunningPage);
+  if (snapshot.rerun.error) return t("上次重新生成未成功：{0}", tx(redactedText(snapshot.rerun.error, t("输出文件未改动。"))));
   // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
-  if (snapshot.rerun_actionable) return t("任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页并改写输出文件，原来那一版会留成「上一版」，随时能在对比弹窗里换回。");
-  return t("任务已结束，仅可查看对比页图，不能再触发操作。");
+  if (snapshot.rerun_actionable) return t("任务已结束，仍可单独重新生成某一页。重新生成将立即重新处理该页并更新输出文件，原版本保留为「上一版」，可随时在对比窗口中换回。");
+  return t("任务已结束，仅可查看页面对比，无法执行其他操作。");
 }
 
 /** 这一页是不是正在被重新生成。终态没有逐页 SSE，这个判断只能来自快照。 */
@@ -110,7 +110,7 @@ function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile
     icon: "warn",
     title: t("重新生成第 {0} 页？", page.page_number),
     body: [
-      t("现在这一页的译文会保留为「上一版」，重新生成后如果不满意，可以在对比弹窗里换回。重新生成要再调用一次接口，按这一页的用量计费。输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。"),
+      t("该页当前译文将保留为「上一版」；如对重新生成的结果不满意，可在对比窗口中换回。重新生成将再次调用模型，按该页用量计费。输出文件将随之更新；如已对外发送，请重新发送。"),
     ],
     actions: [
       { label: t("取消") },
@@ -131,7 +131,7 @@ async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFi
   try {
     const c = await getClient();
     await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
-    showToast({ message: t("第 {0} 页正在重新生成，跑完会覆盖输出文件。", page.page_number) });
+    showToast({ message: t("第 {0} 页正在重新生成，完成后将更新输出文件。", page.page_number) });
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, t("重新生成失败。")), error: true });
   }
@@ -191,7 +191,7 @@ function scheduleRerunTick(surface: Surface, taskId: string, delay: number): voi
         rerunTickerFailures[surface] += 1;
         if (rerunTickerFailures[surface] >= RERUN_POLL_MAX_FAILURES) {
           stopPdfRerunTicker(surface);
-          showToast({ message: t("刷新重新生成进度连续失败，已停止自动刷新；重新打开这个任务可再次尝试。"), error: true });
+          showToast({ message: t("刷新重新生成进度连续失败，已停止自动刷新；重新打开该任务即可重试。"), error: true });
           return;
         }
         scheduleRerunTick(surface, taskId, Math.min(RERUN_POLL_BASE_MS * 2 ** rerunTickerFailures[surface], RERUN_POLL_MAX_MS));
@@ -395,7 +395,7 @@ function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean, reviewE
     // 一页都没有：要么预处理就失败（打不开、图片校验没过），要么还没轮到预处理。
     // 有页的失败文件（例如单张图片那一页没生成出来）不是「打不开」，往下按页分桶说。
     const span = el("span", file.status === "failed" ? "bad" : "");
-    span.textContent = file.status === "failed" ? t("文件打不开") : t("待处理");
+    span.textContent = file.status === "failed" ? t("无法打开文件") : t("待处理");
     return [span];
   }
 
@@ -499,7 +499,7 @@ async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boole
     if (!ok) {
       failures += 1;
       if (failures >= RERUN_POLL_MAX_FAILURES) {
-        showToast({ message: t("连续几次没能刷新重跑进度，批量重跑已停止；稍后重新打开这个任务再试。"), error: true });
+        showToast({ message: t("多次未能刷新重新生成进度，批量重新生成已停止；请稍后重新打开该任务重试。"), error: true });
         return false;
       }
       continue;
@@ -581,16 +581,16 @@ function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow
   openModal({
     tone: "danger",
     icon: "warn",
-    title: t("重跑这 {0} 页？", rows.length),
+    title: t("重新生成这 {0} 页？", rows.length),
     body: [
-      t("这几页现在的译文会保留为各自的「上一版」，重新生成后如果不满意，可以在对比弹窗里逐页换回；重新生成按页计费，其余页不受影响、不会重新调用接口。"),
+      t("这些页面的当前译文将分别保留为「上一版」；如对结果不满意，可在对比窗口中逐页换回。重新生成按页计费，其余页面不受影响，也不会再次调用模型。"),
       list,
-      t("只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF；如果你已经把这些文件发出去了，记得重新发一份。中途可以按横幅上的「停止」，当前这一页会跑完，后面的不再重跑。"),
+      t("页面将逐页重新生成；全部完成后，将自动替换译文页并重新合成对应文件的输出 PDF。如已对外发送这些文件，请重新发送。处理过程中可点击横幅上的「停止」：当前页将处理完成，其余页面不再重新生成。"),
     ],
     actions: [
       { label: t("取消") },
       {
-        label: t("重跑这 {0} 页", rows.length),
+        label: t("重新生成这 {0} 页", rows.length),
         variant: "danger-solid",
         onClick: () => void runPdfBatchRerun(surface, taskId, rows),
       },
@@ -632,7 +632,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
   // 没有让审核模型看这一页」，一屏之内两句话对不上。卡片本身照常用（重试、跳过都在这里）。
   span.textContent = snapshot.review_enabled
     ? t("审核模型逐页检查版式与译文完整性")
-    : t("本次没有开启逐页审核，下面是每一页的生成结果");
+    : t("本次未开启逐页审核，以下为各页的生成结果");
   head.append(b, span);
 
   const tools = el("div", "tc-tools");
@@ -761,17 +761,17 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       const remaining = Math.max(0, batch.total - batch.done - 1);
       if (remaining > 0) {
         em.textContent = t("{0} 页", remaining);
-        appendAroundEm(txt, t("已停止，剩下的 {0} 不再重跑"), em);
+        appendAroundEm(txt, t("已停止，其余 {0} 不再重新生成"), em);
       } else {
-        txt.append(document.createTextNode(t("已停止，这已经是最后一页")));
+        txt.append(document.createTextNode(t("已停止，当前为最后一页")));
       }
-      if (batch.current) txt.append(document.createTextNode(t("；正在等 {0} 第 {1} 页跑完", batch.current.fileName, batch.current.pageNumber)));
-      small.textContent = t("已经发出去的这一页停不下来，会跑完并照常计费；跑完这一页就停。");
+      if (batch.current) txt.append(document.createTextNode(t("；正在等待 {0} 第 {1} 页完成", batch.current.fileName, batch.current.pageNumber)));
+      small.textContent = t("已发送的当前页无法中止，将处理完成并照常计费；该页完成后即停止。");
     } else {
       em.textContent = t("第 {0} / {1} 页", batch.done + 1, batch.total);
-      appendAroundEm(txt, t("正在重跑 {0}"), em);
+      appendAroundEm(txt, t("正在重新生成 {0}"), em);
       if (batch.current) txt.append(document.createTextNode(t("：{0} 第 {1} 页", batch.current.fileName, batch.current.pageNumber)));
-      small.textContent = t("跑完会自动替换译文页并重新装订这个文件的输出 PDF，其余页不受影响。");
+      small.textContent = t("完成后将自动替换译文页并重新合成该文件的输出 PDF，其余页面不受影响。");
     }
     txt.append(small);
     banner.append(txt);
@@ -797,24 +797,24 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
       const em = el("em");
       em.textContent = t("{0} 页", rerunRows.length);
       if (deadRows.length > 0) {
-        appendAroundEm(txt, t("{0}没有生成译文，输出的 PDF 里这几页是占位图；另有 {1}连同所在的文件都没有生成。", "{0}", deadUnitsLabel(deadRows)), em);
+        appendAroundEm(txt, t("{0}未生成译文，输出 PDF 中这些页面为占位图；另有 {1}及其所在文件均未生成。", "{0}", deadUnitsLabel(deadRows)), em);
       } else {
-        appendAroundEm(txt, t("{0}没有生成译文，输出的 PDF 里这几页是占位图。"), em);
+        appendAroundEm(txt, t("{0}未生成译文，输出 PDF 中这些页面为占位图。"), em);
       }
       // 「其余」得真有其余：页页都要重跑时不说「其余 0 页」。没生成的文件里那几页前面
       // 已经单独说过，不再算进「其余」。
       const rest = totalPages - failingRows.length;
       small.textContent = rest > 0
-        ? t("重跑只动这 {0} 页，其余 {1} 页不会重新调用接口。", rerunRows.length, rest)
-        : t("重跑会逐页重新生成这 {0} 页，跑完替换输出文件里的占位图。", rerunRows.length);
+        ? t("重新生成仅涉及这 {0} 页，其余 {1} 页不会再次调用模型。", rerunRows.length, rest)
+        : t("将逐页重新生成这 {0} 页，完成后替换输出文件中的占位图。", rerunRows.length);
     } else {
       const em = el("em");
       em.textContent = deadUnitsLabel(deadRows);
       const deadFiles = new Set(deadRows.map(({ file }) => file.relative_path)).size;
       appendAroundEm(txt, deadFiles > 1
-        ? t("{0}没有生成译文，这 {1} 个文件都没有生成。", "{0}", deadFiles)
-        : t("{0}没有生成译文，这个文件没有生成。"), em);
-      small.textContent = t("文件没有生成出来，单页重跑帮不上忙；可以在上面的清单里只勾这几个文件，重新开始翻译。");
+        ? t("{0}未生成译文，这 {1} 个文件均未生成。", "{0}", deadFiles)
+        : t("{0}未生成译文，该文件未生成。"), em);
+      small.textContent = t("文件未能生成，单页重新生成无法解决；请在上方清单中仅勾选这些文件，重新开始翻译。");
     }
     txt.append(small);
     banner.append(txt);
@@ -825,7 +825,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
     }));
     if (rerunRows.length > 0) {
       banner.append(createButton({
-        label: t("只重跑这 {0} 页", rerunRows.length),
+        label: t("仅重新生成这 {0} 页", rerunRows.length),
         size: "mini",
         variant: "primary",
         onClick: () => confirmPdfBatchRerun(surface, taskId, rerunRows),
@@ -924,24 +924,24 @@ function reviewNote(page: PdfPage, taskStopped: boolean, reviewEnabled = true): 
     // 轮到」，是「不会再轮到了」；同时说清这不是失败，也不用「单页重新生成」（那是给
     // 已经跑出结果、要推倒重来的页用的），真正能补上它的是对同一输出目录发起续译。
     return taskStopped
-      ? t("任务已停止，这一页还没有跑到；不是生成失败，对同一输出目录发起「接着上次继续」可以把它排回队列。")
+      ? t("任务已停止，尚未处理到该页，并非生成失败；对同一输出目录执行「继续上次翻译」即可将其重新加入队列。")
       : t("尚未处理。");
   }
-  if (page.status === "rendered") return t("页图已渲染，正在等模型返回这一页的译文。");
-  if (page.status === "placeholder_pending") return t("这一页没能生成，正在补一张占位页。");
+  if (page.status === "rendered") return t("页图已渲染，正在等待模型返回该页译文。");
+  if (page.status === "placeholder_pending") return t("该页未能生成，正在补充占位页。");
   // 跟 reviewResultChip 同理：质检疑点要压在「通过」前面，否则这一页会摆着一句
   // 「版式一致，文本完整」，而小结正把它算进「有疑点仍采用」。
   if (page.quality_flagged || page.emergency_ratio_normalized) {
     const detail = redactedText(page.quality_message);
     if (detail) return t("译文已采用，但自动检查有疑点：{0}", tx(detail));
-    if (page.emergency_ratio_normalized) return t("译文偏长，已强行缩排放进原位置，建议看一眼版面。");
-    return t("译文已采用，但自动检查发现疑点，建议看一眼这一页。");
+    if (page.emergency_ratio_normalized) return t("译文偏长，已压缩排版以放入原位置，建议检查版面。");
+    return t("译文已采用，但自动检查发现疑点，建议检查该页。");
   }
   // 「版式一致，文本完整」是一句审核结论，只有审核模型真的判过并通过了才能写。9.2.6 把它
   // 当成兜底文案，于是页面还没生成、审核还关着的时候，每一页都摆着这句凭空的好消息。
   if (page.review_status === "passed") return t("版式一致，文本完整");
   if (!page.review_status || page.review_status === "skipped") {
-    return reviewEnabled ? t("本次没有让审核模型看这一页。") : t("译文页已生成。");
+    return reviewEnabled ? t("本次未使用审核模型检查该页。") : t("译文页已生成。");
   }
   return "";
 }
@@ -960,7 +960,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
 
   const noteCell = el("td");
   noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? t("正在重跑这一页，完成后会改写输出文件") : reviewNote(page, taskStopped, snapshot.review_enabled);
+  noteCell.textContent = rerunning ? t("正在重新生成该页，完成后将更新输出文件") : reviewNote(page, taskStopped, snapshot.review_enabled);
   row.append(noteCell);
 
   const actionsCell = el("td");
@@ -973,13 +973,13 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   // 按幅面跳过的页既没有原页图也没有译文页图（压根没渲染过），重新生成也只会按同一条尺寸
   // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
   const oversizeSkipped = page.skipped_oversize;
-  const oversizeReason = t("该页按幅面跳过，没有生成页图；如需翻译请关闭「跳过 A3 及更大的页面」后重跑。");
+  const oversizeReason = t("该页因幅面被跳过，未生成页图；如需翻译，请关闭「跳过 A3 及更大的页面」后重新翻译。");
 
   actionsCell.append(
     buildActionLink(
       t("查看对比"),
       oversizeSkipped || rerunning,
-      oversizeSkipped ? oversizeReason : rerunning ? t("这一页正在重新生成，跑完再看。") : undefined,
+      oversizeSkipped ? oversizeReason : rerunning ? t("该页正在重新生成，请在完成后查看。") : undefined,
       () => openPdfPageCompareModal(surface, taskId, file, page),
     ),
   );
@@ -999,16 +999,16 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
       ? oversizeReason
       : fileDead && !notFinished
         ? file.status === "stopped"
-          ? t("这个文件停止前没跑完，还没有生成出来；对同一输出目录发起「接着上次继续」可以补完。")
-          : t("这个文件这次没有生成出来，单页重新生成帮不上忙；可以只勾这个文件重新开始翻译。")
+          ? t("该文件在停止前未处理完成，尚未生成；对同一输出目录执行「继续上次翻译」即可补全。")
+          : t("该文件本次未能生成，单页重新生成无法解决；请仅勾选该文件，重新开始翻译。")
       : !rerunnable
         ? notFinished && taskStopped
           // 停止时还没跑到的页不是「试过没成」，「单页重新生成」这个动作本身也不适用
           // （它的前提是已经有一版结果可以推倒重来）。真正能补上它的路是续译——同一个
           // 输出目录发起「接着上次继续」会把这一页重新排进队列，不需要整份推倒重来，
           // 「请重新建立任务」这句在这里是错的，会让用户以为要连已经跑完的页一起重翻。
-          ? t("这一页在停止时还没有跑到，不是生成失败；单页重新生成帮不上忙，对同一输出目录发起「接着上次继续」可以把它排回队列。")
-          : t("这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。")
+          ? t("停止时尚未处理到该页，并非生成失败，单页重新生成无法解决；请对同一输出目录执行「继续上次翻译」，将其重新加入队列。")
+          : t("该页未生成结果，单页重新生成无法解决；请重新创建任务。")
         // 三把锁串在一起，从具体到笼统：批量在跑（这一批还剩好几页）→ 有一页在跑
         // （含本地那笔还没进快照的）→ 逐页记录已释放。顺序不能反：批量重跑期间
         // rerunBusy 同样为真，先撞上笼统那句，用户就看不到「可以按停止」这个出路了。
@@ -1018,11 +1018,11 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
         // 问题——按钮文案由下面的 `rerunning ? "重新生成中"` 单独决定，跟这里的悬停
         // 说明是两回事——但别照着「那一行不会走到这里」去改，那个前提不成立。
         : batchRerunActive
-          ? t("正在批量重跑失败页，等这批跑完再单独操作这一页；要提前停，用上面横幅的「停止」。")
+          ? t("正在批量重新生成失败页，请待完成后再单独操作该页；如需提前停止，请点击上方横幅中的「停止」。")
           : rerunBusy
-            ? t("有一页正在重新生成，跑完再操作下一页。")
+            ? t("有页面正在重新生成，请待完成后再操作其他页面。")
             : !snapshot.rerun_actionable
-              ? t("这个任务的逐页记录已经清理，不能再重新生成单页。")
+              ? t("该任务的逐页记录已清理，无法再重新生成单页。")
               : undefined;
     actionsCell.append(
       buildActionLink(
@@ -1040,7 +1040,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
   const regenReason = oversizeSkipped
     ? oversizeReason
     : actionable && notFinished
-      ? t("该页还没跑完，暂时不能重新生成。")
+      ? t("该页尚未处理完成，暂时无法重新生成。")
       : undefined;
   actionsCell.append(buildActionLink(t("重新生成"), regenDisabled, regenReason, () => void runPdfPageAction(surface, taskId, file, page, "regenerate")));
 
@@ -1181,7 +1181,7 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
   const load = async (kind: "source" | "translated" | "previous", has: boolean, col: CompareColHandle) => {
     if (!has) {
       col.setError(
-        kind === "source" ? t("该页尚无原文页图") : kind === "previous" ? t("这一页没有留下上一版译文") : t("该页尚无译文页图"),
+        kind === "source" ? t("该页尚无原文页图") : kind === "previous" ? t("该页未保留上一版译文") : t("该页尚无译文页图"),
       );
       return;
     }
@@ -1226,7 +1226,7 @@ function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPage
     const busy = !!snapshot?.rerun.active || !!pendingRerunFor(surface, taskId);
     if (busy) {
       restoreBtn.disabled = true;
-      restoreBtn.title = t("有一页正在重新生成，跑完再换回上一版。");
+      restoreBtn.title = t("有页面正在重新生成，请待完成后再换回上一版。");
     }
   }
 
@@ -1310,7 +1310,7 @@ function confirmPdfPageRestorePrevious(
     icon: "warn",
     title: t("换回第 {0} 页的上一版？", page.page_number),
     body: [
-      t("这一页会换回上一版译文，现在的版本变成新的「上一版」，随时可以再换回来。输出文件会重新装配改写——不调用模型，不产生费用；如果你已经把文件发出去了，记得重新发一份。"),
+      t("该页将换回上一版译文，当前版本将成为新的「上一版」，可随时再次换回。输出文件将重新合成，不调用模型，不产生费用；如已对外发送，请重新发送。"),
     ],
     actions: [
       { label: t("取消") },
@@ -1347,7 +1347,7 @@ async function runPdfPageRestorePrevious(
     const c = await getClient();
     // 后端是同步做完才返回的：这个 await 结束时，页图和输出文件都已经换好。
     await c.restorePdfPagePrevious(taskId, file.relative_path, page.page_number);
-    showToast({ message: t("已换回上一版，输出文件已重新装配。") });
+    showToast({ message: t("已换回上一版，输出文件已重新合成。") });
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, t("换回上一版失败。")), error: true });
   }

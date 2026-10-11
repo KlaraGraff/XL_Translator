@@ -400,7 +400,7 @@ def _translate_units_with_fallback(
             decision = api_scheduler.register_concurrency_limit_hit(request_generation)
             stats.record_adaptive_concurrency_decision(decision)
             if stats.record_local_resource_retry() and error_callback:
-                error_callback("电脑同时打开的连接太多，已暂时放慢发送速度并重试。")
+                error_callback("本机同时打开的连接过多，已暂时降低发送速度并重试。")
             if should_stop and should_stop():
                 return {}
             time.sleep(min(0.2 * (2 ** local_resource_retry_round), 1.5))
@@ -457,7 +457,7 @@ def _translate_units_with_fallback(
             )
             if error_callback:
                 error_callback(
-                    "有一批翻译结果不完整，已拆成更小的批次重试："
+                    "一批翻译结果不完整，已拆分为更小的批次重试："
                     + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
                 )
             left = _translate_units_with_fallback(
@@ -499,7 +499,7 @@ def _translate_units_with_fallback(
         logger.debug(f"Word 单段翻译仍失败，已暂时保留原文：{unit.text[:40]}... | {exc!r}")
         if error_callback:
             error_callback(
-                f"有一段翻译仍未成功，暂时保留原文（如「{unit.text[:40]}…」）："
+                f"有一个段落仍未翻译成功，暂时保留原文（如「{unit.text[:40]}…」）："
                 + user_facing_batch_reason(exc)
             )
         return {(unit.source, unit.part_index): unit.text}

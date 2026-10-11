@@ -150,15 +150,15 @@ def verify_feedback_retranslation(
     if not candidate.strip():
         return False, "重译结果为空"
     if candidate.strip().lower() == str(source_text or "").strip().lower():
-        return False, "重译结果和原文一样"
+        return False, "重译结果与原文相同"
     leftover = classify_residual_spans(candidate, target_lang=target_lang)
     bad = [s for s in leftover if s.category != CATEGORY_QUANTITY_UNIT]
     if bad:
-        return False, "重译后仍有没翻译的部分：" + "、".join(f"«{s.text}»" for s in bad)
+        return False, "重译后仍有未翻译的部分：" + "、".join(f"«{s.text}»" for s in bad)
     missing = missing_number_tokens(source_text, candidate)
     if missing:
         lost = "、".join(sorted(missing))
-        return False, f"重译结果丢了或改了原文里的数字：{lost}"
+        return False, f"重译结果遗漏或修改了原文中的数字：{lost}"
     return True, ""
 
 
@@ -193,7 +193,7 @@ def repair_unit(
         if CATEGORY_CN_DATE_UNIT in categories:
             reasons.append("数字加中文单位（如「2026年」）按规则不自动重译")
         if CATEGORY_NUMBERING_PREFIX in categories:
-            reasons.append("没法确定编号该怎么写，不让模型猜")
+            reasons.append("无法确定编号的写法，不交由模型推测")
         return RepairOutcome(
             accepted=False, text=target, reject_reasons=tuple(reasons)
         )
@@ -208,7 +208,7 @@ def repair_unit(
         raw = surgical_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
         if candidate is None:
-            reasons.append("局部修正：模型没有按要求的格式回复")
+            reasons.append("局部修正：模型未按要求的格式回复")
         else:
             ok, why = surgical_repair_ok(
                 target,
@@ -225,8 +225,8 @@ def repair_unit(
                 )
             if not _CJK_TEXT_RE.search(str(why or "")):
                 logger.debug(f"外科修补拒收原始理由：{why}")
-                why = "修正结果没通过自动检查"
-            reasons.append(f"局部修正没通过：{why}")
+                why = "修正结果未通过自动检查"
+            reasons.append(f"局部修正未通过：{why}")
 
     if retranslate_send is not None:
         system, user = build_feedback_retry_messages(
@@ -235,7 +235,7 @@ def repair_unit(
         raw = retranslate_send(system, user)
         candidate = parse_repair_reply(raw) if raw is not None else None
         if candidate is None:
-            reasons.append("整句重译：模型没有按要求的格式回复")
+            reasons.append("整句重译：模型未按要求的格式回复")
         else:
             ok, why = verify_feedback_retranslation(
                 source_text, candidate, target_lang=target_lang
@@ -247,7 +247,7 @@ def repair_unit(
                     method=METHOD_FEEDBACK_RETRANSLATION,
                     reject_reasons=tuple(reasons),
                 )
-            reasons.append(f"整句重译没通过：{why}")
+            reasons.append(f"整句重译未通过：{why}")
 
     if not reasons:
         reasons.append("当前翻译连接不支持自动补译")

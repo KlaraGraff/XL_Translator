@@ -1326,7 +1326,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             for text in (runner._fatal_model_error, record.pages[0].error):
                 self.assertNotIn("invalid api key", text)
                 self.assertIn("API 密钥", text)
-                self.assertIn("请在设置里检查", text)
+                self.assertIn("请在设置中检查", text)
 
     def test_review_failure_regenerates_from_source_and_keeps_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1871,7 +1871,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertTrue(done)
             self.assertFalse(any(isinstance(msg, StoppedMsg) for msg in messages))
             self.assertTrue(
-                any("已中断生成 PDF，清掉了旧的输出文件，继续翻译剩下的页面" in msg for msg in logs)
+                any("已中断 PDF 生成并清除旧的输出文件，将继续翻译剩余页面" in msg for msg in logs)
             )
             self.assertTrue(any("已跳过已完成页面 1 页" in msg for msg in logs))
             self.assertGreaterEqual(runner.assemble_calls, 3)
@@ -2729,7 +2729,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(set(skipped), {"img.png", "photo.heic"})
             self.assertEqual(skipped["img.png"].kind, SKIP_KIND_IMAGES_DISABLED)
             self.assertEqual(skipped["img.png"].source_type, SOURCE_TYPE_IMAGE)
-            self.assertIn("允许独立图片", skipped["img.png"].reason)
+            self.assertIn("「也翻译图片文件」未开启", skipped["img.png"].reason)
             self.assertEqual(off.summary["skipped_count"], 2)
             self.assertIn("2 个图片文件", str(off.risk["message"]))
 
@@ -2753,7 +2753,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             self.assertEqual(result.items, [])
             self.assertEqual(len(result.skipped), 1)
             self.assertEqual(result.skipped[0].kind, SKIP_KIND_IMAGES_DISABLED)
-            self.assertIn("允许独立图片", result.skipped[0].reason)
+            self.assertIn("「也翻译图片文件」未开启", result.skipped[0].reason)
 
     def test_read_pdf_oversized_page_count_is_none_not_zero_when_unreadable(self) -> None:
         # 「读不出来」和「确认没有大幅面页」必须是两个不同的值：前者是 None，
@@ -3304,7 +3304,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
             self.assertTrue(quality.ok)
             self.assertEqual(quality.status, "ok")
             self.assertIn("blank_page", quality.review_reasons)
-            self.assertIn("译图几乎是空白的", quality.review_message)
+            self.assertIn("译图几乎为空白", quality.review_message)
 
     def test_blank_output_against_blank_source_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3853,7 +3853,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
             self.assertFalse(result["success"])
             self.assertTrue(result["all_pages_skipped_oversize"])
             self.assertIn("全部页面因幅面过大被跳过，未翻译", result["detail"])
-            self.assertIn("未产生任何翻译内容", result["error"])
+            self.assertIn("未翻译任何内容", result["error"])
 
             issues = _summary_issues([record])
             self.assertTrue(

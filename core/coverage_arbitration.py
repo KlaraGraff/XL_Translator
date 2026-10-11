@@ -239,7 +239,7 @@ def apply_arbitration(outcome: ArbitrationOutcome) -> list[CoverageUnit]:
     for review in outcome.retranslated:
         review.unit.status = COVERAGE_SOURCE_ONLY
         review.unit.reason = (
-            "原判为已有译文，复核认定下一段不是这一段的译文，已改为补译。"
+            "原判为已有译文，经复核下一段并非本段译文，已改为补译。"
         )
         review.unit.data["arbitration"] = review.reason
         flipped.append(review.unit)

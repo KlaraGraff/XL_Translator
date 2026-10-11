@@ -171,6 +171,19 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     return interpolate(best.entry.target, captures);
   }
 
+  function cjkCount(text: string): number {
+    return (text.match(new RegExp(CJK_RE.source, "g")) ?? []).length;
+  }
+
+  function translateSemicolonParts(text: string, depth: number): string | null {
+    const parts = text.split("；");
+    const translated = parts.map((part) => translateRuntime(part, depth + 1));
+    if (!translated.some((part, index) => part !== parts[index])) return null;
+    // 前一段已经以句号结尾（整句翻出来的）就只空一格，不再接分号。
+    const semicolon = locale === "fr" ? "\u00a0; " : "; ";
+    return translated.reduce((acc, part) => (/[.!?]$/.test(acc) ? `${acc} ${part}` : `${acc}${semicolon}${part}`));
+  }
+
   function translateSentences(text: string, depth: number): string | null {
     // 「A。B。」：逐句翻，每句先带句号找，再不带句号找。
     const sentences = text.match(/[^。]+。?/g);
@@ -200,7 +213,11 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
     const direct = exact.get(text);
     if (direct !== undefined) return direct;
     const templated = matchTemplate(text, depth, false);
-    if (templated !== null) return templated;
+    if (templated !== null) {
+      // 模板的占位可能吞进「；」另一侧的整条说明：拆开逐条翻剩的中文更少时用拆开的。
+      const split = text.includes("；") ? translateSemicolonParts(text, depth) : null;
+      return split !== null && cjkCount(split) < cjkCount(templated) ? split : templated;
+    }
     const trimmed = text.trim();
     if (trimmed !== text) {
       const inner = translateRuntime(trimmed, depth);
@@ -212,12 +229,15 @@ export function createTranslator(locale: Locale, catalogs: Iterable<Catalog>): T
       const translated = lines.map((line) => translateRuntime(line, depth + 1));
       if (translated.some((line, index) => line !== lines[index])) return translated.join("\n");
     }
+    // 几条说明用「；」拼成一行时（任务摘要），按句拆会把分号两侧切进同一句里。
+    // 两种拆法都试，取剩下中文最少的那个。
+    const candidates: string[] = [];
     const bySentence = translateSentences(text, depth);
-    if (bySentence !== null) return bySentence;
-    if (text.includes("；")) {
-      const parts = text.split("；");
-      const translated = parts.map((part) => translateRuntime(part, depth + 1));
-      if (translated.some((part, index) => part !== parts[index])) return translated.join("; ");
+    if (bySentence !== null) candidates.push(bySentence);
+    const bySemicolon = text.includes("；") ? translateSemicolonParts(text, depth) : null;
+    if (bySemicolon !== null) candidates.push(bySemicolon);
+    if (candidates.length) {
+      return candidates.reduce((a, b) => (cjkCount(b) < cjkCount(a) ? b : a));
     }
     return matchTemplate(text, depth, true) ?? text;
   }

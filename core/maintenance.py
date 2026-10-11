@@ -376,7 +376,7 @@ def _remove_owned_path(path: Path) -> bool:
     try:
         path.resolve().relative_to(APP_DATA_DIR.resolve())
     except (OSError, ValueError) as exc:
-        raise MaintenanceError("为安全起见，清理只会删除本程序自己数据文件夹里的内容。") from exc
+        raise MaintenanceError("为安全起见，清理仅删除本程序数据文件夹中的内容。") from exc
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     else:

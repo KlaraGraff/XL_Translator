@@ -68,7 +68,7 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(decision)
         self.assertLess(decision.current_capacity, 8)
-        self.assertTrue(any("电脑同时打开的网络连接太多" in message and "放慢" in message for message in messages))
+        self.assertTrue(any("本机同时打开的网络连接过多" in message and "降低速度" in message for message in messages))
         self.assertFalse(any("接口反馈请求过于频繁" in message for message in messages))
 
     def test_at_the_minimum_the_caller_is_told_to_retry_not_to_give_up(self) -> None:
@@ -86,7 +86,7 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
 
         self.assertIsNotNone(decision)
         self.assertTrue(decision.should_retry)
-        self.assertTrue(any("等待" in message for message in messages))
+        self.assertTrue(any("稍后将重试" in message for message in messages))
 
     def test_local_descriptor_limit_at_minimum_waits_without_upstream_message(self) -> None:
         scheduler = WeightedApiScheduler(1)
@@ -102,8 +102,8 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(decision)
         self.assertTrue(decision.should_retry)
-        self.assertTrue(any("电脑同时打开的网络连接仍然太多" in message for message in messages))
-        self.assertFalse(any("模型服务仍提示太忙" in message for message in messages))
+        self.assertTrue(any("本机同时打开的网络连接仍然过多" in message for message in messages))
+        self.assertFalse(any("模型服务仍提示繁忙" in message for message in messages))
 
     def test_a_key_limited_past_the_grace_window_fails_the_task(self) -> None:
         scheduler = WeightedApiScheduler(1)
@@ -180,8 +180,8 @@ class MinimumCapacityPolicyTests(unittest.TestCase):
                 )
 
         self.assertLessEqual(len(messages), 2, messages)
-        self.assertTrue(any("放慢" in message for message in messages), messages)
-        self.assertTrue(any("最慢档" in message for message in messages), messages)
+        self.assertTrue(any("降低发送速度" in message for message in messages), messages)
+        self.assertTrue(any("最低速度" in message for message in messages), messages)
 
     def test_the_user_facing_lines_carry_no_internal_capacity_numbers(self) -> None:
         scheduler = WeightedApiScheduler(40)

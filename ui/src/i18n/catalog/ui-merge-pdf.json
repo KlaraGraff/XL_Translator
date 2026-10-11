@@ -15,25 +15,25 @@
     "en": "Result",
     "fr": "Résultat"
   },
-  "{0}没有生成译文，输出的 PDF 里这几页是占位图；另有 {1}连同所在的文件都没有生成。": {
+  "{0}未生成译文，输出 PDF 中这些页面为占位图；另有 {1}及其所在文件均未生成。": {
     "en": "No translation was produced for {0}; they appear as placeholders in the output PDF. Another {1} could not be generated, nor could the files they belong to.",
     "fr": "Aucune traduction n'a été produite pour {0} ; elles figurent comme pages de substitution dans le PDF de sortie. {1} supplémentaires n'ont pas été générées, pas plus que les fichiers qui les contiennent."
   },
-  "{0}没有生成译文，这 {1} 个文件都没有生成。": {
+  "{0}未生成译文，这 {1} 个文件均未生成。": {
     "en": "No translation was produced for {0}; none of these {1} files were generated.",
     "fr": "Aucune traduction n'a été produite pour {0} ; aucun de ces {1} fichiers n'a été généré."
   },
-  "{0}没有生成译文，这个文件没有生成。": {
+  "{0}未生成译文，该文件未生成。": {
     "en": "No translation was produced for {0}; this file was not generated.",
     "fr": "Aucune traduction n'a été produite pour {0} ; ce fichier n'a pas été généré."
   },
-  "重跑会逐页重新生成这 {0} 页，跑完替换输出文件里的占位图。": {
-    "en": "A rerun regenerates these {0} {0|page|pages} one by one, then replaces the placeholders in the output file.",
-    "fr": "La relance régénère ces {0} {0|page|pages} une par une, puis remplace les pages de substitution dans le fichier de sortie."
+  "将逐页重新生成这 {0} 页，完成后替换输出文件中的占位图。": {
+    "en": "These {0} {0|page|pages} will be regenerated one by one, then the placeholders in the output file are replaced.",
+    "fr": "Ces {0} {0|page|pages} seront régénérées une par une, puis les pages de substitution du fichier de sortie seront remplacées."
   },
-  "文件没有生成出来，单页重跑帮不上忙；可以在上面的清单里只勾这几个文件，重新开始翻译。": {
-    "en": "The file wasn't generated, so rerunning single pages won't help. Select only these files in the list above and start the translation again.",
-    "fr": "Le fichier n'a pas été généré ; relancer des pages isolées n'aidera pas. Cochez uniquement ces fichiers dans la liste ci-dessus et relancez la traduction."
+  "文件未能生成，单页重新生成无法解决；请在上方清单中仅勾选这些文件，重新开始翻译。": {
+    "en": "The files were not generated, so regenerating single pages will not help. Select only these files in the list above and start the translation again.",
+    "fr": "Les fichiers n'ont pas été générés ; régénérer des pages isolées n'aidera pas. Cochez uniquement ces fichiers dans la liste ci-dessus et relancez la traduction."
   },
   "译文页已生成。": {
     "en": "Translated page generated.",
@@ -43,12 +43,12 @@
     "en": "Skip this page and keep the placeholder in the output file",
     "fr": "Ignorer cette page et garder la page de substitution dans le fichier de sortie"
   },
-  "这个文件停止前没跑完，还没有生成出来；对同一输出目录发起「接着上次继续」可以补完。": {
-    "en": "This file wasn't finished when the task stopped, so it hasn't been generated yet. Start “Resume last run” on the same output folder to complete it.",
-    "fr": "Ce fichier n'était pas terminé à l'arrêt et n'a pas encore été généré. Lancez « Reprendre la dernière exécution » sur le même dossier de sortie pour le terminer."
+  "该文件在停止前未处理完成，尚未生成；对同一输出目录执行「继续上次翻译」即可补全。": {
+    "en": "This file was not finished when the task stopped, so it has not been generated yet. Start “Resume previous translation” on the same output folder to complete it.",
+    "fr": "Ce fichier n'était pas terminé à l'arrêt et n'a pas encore été généré. Lancez « Reprendre la traduction précédente » sur le même dossier de sortie pour le terminer."
   },
-  "这个文件这次没有生成出来，单页重新生成帮不上忙；可以只勾这个文件重新开始翻译。": {
-    "en": "This file wasn't generated this time, so regenerating single pages won't help. Select only this file and start the translation again.",
+  "该文件本次未能生成，单页重新生成无法解决；请仅勾选该文件，重新开始翻译。": {
+    "en": "This file was not generated this time, so regenerating single pages will not help. Select only this file and start the translation again.",
     "fr": "Ce fichier n'a pas été généré cette fois ; régénérer des pages isolées n'aidera pas. Cochez uniquement ce fichier et relancez la traduction."
   }
 }

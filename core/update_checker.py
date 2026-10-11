@@ -218,7 +218,7 @@ def build_update_result_from_release_payload(
         return UpdateCheckResult(
             ok=True,
             status="unknown",
-            message="暂时查不到新版本信息，已跳过更新提示。",
+            message="暂时无法获取新版本信息，已跳过更新提示。",
             current_version=current_version,
             release_url=release_url,
             diagnostic_code="release_tag_invalid",
@@ -229,7 +229,7 @@ def build_update_result_from_release_payload(
         return UpdateCheckResult(
             ok=True,
             status="unsupported_platform",
-            message="只有 Apple 芯片的 Mac 版和 64 位 Windows 版可以检查更新。",
+            message="仅 Apple 芯片 Mac 版和 64 位 Windows 版支持检查更新。",
             current_version=current_version,
             latest_version=latest_version,
             latest_tag=tag_name,
@@ -242,7 +242,7 @@ def build_update_result_from_release_payload(
         return UpdateCheckResult(
             ok=True,
             status="unknown",
-            message="读不出当前的版本号，已跳过更新提示。",
+            message="无法读取当前版本号，已跳过更新提示。",
             current_version=current_version,
             latest_version=latest_version,
             latest_tag=tag_name,
@@ -265,7 +265,7 @@ def build_update_result_from_release_payload(
         return UpdateCheckResult(
             ok=True,
             status="release_not_ready",
-            message="适合这台电脑的新版本还没发布，请稍后再查。",
+            message="适用于本机的新版本尚未发布，请稍后再检查。",
             current_version=current_version,
             latest_version=latest_version,
             latest_tag=tag_name,
@@ -328,7 +328,7 @@ def _fetch_checksum(client: httpx.Client, result: UpdateCheckResult) -> UpdateCh
             result,
             ok=True,
             status="release_not_ready",
-            message="适合这台电脑的新版本还没发布，请稍后再查。",
+            message="适用于本机的新版本尚未发布，请稍后再检查。",
             diagnostic_code="checksum_invalid",
             asset_name="",
             download_url="",

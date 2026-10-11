@@ -28,7 +28,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "gear",
     title: t("1. 配置翻译模型"),
-    body: t("填好服务商、模型和 API 密钥，再点「测试连接」确认能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。"),
+    body: t("填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。文档翻译、PDF 与图片、记忆库清洗可分别使用不同的模型。"),
     footer: (host) => {
       host.append(
         createButton({ label: t("打开模型配置"), size: "mini", onClick: () => navigate("settings", { page: "models" }) }),
@@ -38,7 +38,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "doc-file",
     title: t("2. 选择文件与语言"),
-    body: t("支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。用「浏览」选好文件或文件夹后会自动扫描。源语言默认自动识别，PDF 和图片只需选目标语言。"),
+    body: t("支持 Excel、Word、PDF / 图片和 CAD 图纸（DWG / DXF）。通过「浏览」选择文件或文件夹后将自动扫描。源语言默认自动识别，PDF 和图片仅需选择目标语言。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
@@ -54,7 +54,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "book",
     title: t("3. 记忆库"),
-    body: t("Excel 和 Word 翻好的词句会存进记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定的词条一定按你定的译法翻；语言混杂、识别不准的内容照常翻译，但不会存进记忆库。"),
+    body: t("Excel 和 Word 中已翻译的词句将保存到记忆库，之后翻译 Excel、Word 和 CAD 图纸时优先复用。固定词条始终按您设定的译法翻译；语言混杂或识别不准确的内容照常翻译，但不会保存到记忆库。"),
     footer: (host) => {
       host.append(createButton({ label: t("打开记忆库"), size: "mini", onClick: () => navigate("library") }));
     },
@@ -63,7 +63,7 @@ const CARDS: HelpCardSpec[] = [
     iconName: "tasks",
     title: t("任务、停止与并行"),
     // 429 是 HTTP 状态码，界面上不给用户看内部代号，说清后果就够了。
-    body: t("不同类型的任务可以同时进行。两个任务要用同一条模型连接时，会先提醒可能变慢、排队或超时，并且两边都会计费，你确认后才会开始第二个。"),
+    body: t("不同类型的任务可同时进行。两个任务使用同一条模型连接时，将先提示可能出现变慢、排队或超时，且两项任务均会计费；确认后才会开始第二个任务。"),
     footer: (host) => {
       host.append(createButton({ label: t("打开任务中心"), size: "mini", onClick: () => navigate("tasks") }));
     },
@@ -71,7 +71,7 @@ const CARDS: HelpCardSpec[] = [
   {
     iconName: "folder",
     title: t("输出与兼容格式"),
-    body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸不需要安装 Office。旧版 .xls / .doc 可以用本机 Office 高质量转换，没装或没授权时会先问你要不要改用兼容转换。DWG 图纸需要先在「插件」里连接图纸转换工具。"),
+    body: t("标准 .xlsx、.docx、PDF、图片和 DXF 图纸无需安装 Office。旧版 .xls / .doc 可通过本机 Office 高质量转换；如未安装或未授权，将先询问是否改用兼容转换。DWG 图纸需先在「插件」中连接图纸转换工具。"),
     footer: (host) => {
       const details = document.createElement("details");
       details.className = "help-details";
@@ -90,7 +90,7 @@ const CARDS: HelpCardSpec[] = [
     // 这句话过去写的是「更新只会打开 GitHub 的适配 DMG，不会替换应用或自动重启」——
     // 应用内更新上线之后它就不成立了（会下载、验签、就地替换），而且 Windows 上根本没有
     // DMG。帮助页说错更新怎么工作，用户就会在真的替换应用时以为出了别的事。
-    body: t("设置里可以直接检查更新：下载后先验证签名再安装，什么时候重启由你决定（Windows 会打开安装程序，装完自动重新打开）。诊断信息只在你主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。"),
+    body: t("可在设置中检查更新：下载后先验证签名再安装，重启时间由您决定（Windows 将打开安装程序，安装完成后自动重新打开应用）。诊断信息仅在您主动导出时生成，不包含 API 密钥、原文、译文、提示词或文件路径。"),
     footer: (host) => {
       const row = document.createElement("div");
       row.className = "help-links";
@@ -123,7 +123,7 @@ function buildHero(container: HTMLElement): void {
   hero.append(heading);
 
   const description = document.createElement("p");
-  description.textContent = t("帮助内容随应用提供，不需要联网。实际开始翻译前，模型配置与文件扫描都由你主动触发。");
+  description.textContent = t("帮助内容随应用提供，无需联网。开始翻译前，模型配置与文件扫描均由您主动执行。");
   hero.append(description);
 
   const actions = document.createElement("div");

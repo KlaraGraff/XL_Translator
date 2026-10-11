@@ -189,22 +189,22 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
         raise ValueError("导入的文件必须是一个 JSON 对象。")
     if raw.get("type") != DOCUMENT_CONFIG_EXPORT_TYPE:
         raise ValueError(
-            "这个文件不是文档翻译配置，无法导入。模型服务的配置请在「模型服务」页导入。"
+            "此文件不是文档翻译配置，无法导入。模型服务的配置请在「模型服务」页导入。"
         )
     version = raw.get("version")
     if not isinstance(version, int) or isinstance(version, bool):
         # 缺版本号说的是「这文件不对」，不是「你的应用太旧」。原来两种情况共用
         # 一句话，用户照着提示去升级应用，升完还是导不进来。
         raise ValueError(
-            "这个文件缺少版本号，不像是本应用导出的文档翻译配置。请重新导出一份。"
+            "此文件缺少版本号，可能不是本应用导出的文档翻译配置，请重新导出。"
         )
     if version > DOCUMENT_CONFIG_EXPORT_VERSION:
         raise ValueError(
-            "这个文档翻译配置来自更高版本的应用，当前版本读不了。请先把应用升级到最新版再导入。"
+            "此文档翻译配置来自更高版本的应用，当前版本无法读取。请先将应用升级到最新版本后再导入。"
         )
     document = raw.get("document")
     if not isinstance(document, dict):
-        raise ValueError("文件里没有 document 段，没有可导入的内容。")
+        raise ValueError("文件中没有 document 段，无可导入的内容。")
 
     parsed: dict[str, Any] = {}
     for section in DOCUMENT_CONFIG_SECTIONS:
@@ -223,7 +223,7 @@ def parse_document_config_import(raw: object) -> dict[str, Any]:
         if field in document:
             parsed[field] = document[field]
     if not parsed:
-        raise ValueError("这个文件里没有可导入的文档翻译配置。")
+        raise ValueError("此文件中没有可导入的文档翻译配置。")
     return parsed
 
 

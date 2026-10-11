@@ -598,7 +598,7 @@ class FailoverAttributionTests(unittest.TestCase):
         self.assertEqual(summary["final_label"], pool[1].display_label)
         self.assertEqual(summary["started_with_label"], pool[0].display_label)
         recorded = summary["switches"][0]
-        self.assertEqual(recorded["reason"], "这条连接的服务暂时不可用")
+        self.assertEqual(recorded["reason"], "该连接的服务暂时不可用")
         self.assertTrue(recorded["at"])
 
         # 运行日志那一行照旧发出，两个出口互不替代。

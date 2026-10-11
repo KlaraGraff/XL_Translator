@@ -185,7 +185,7 @@ def _reject_illegal_follow_payload(payload: dict[str, Any]) -> None:
 
 def _model_config_or_422(settings: AppSettings, role: str, connection_id: str = ""):
     if role not in {ROLE_TRANSLATION, ROLE_CLEANER, ROLE_IMAGE, ROLE_PDF_REVIEW}:
-        raise HTTPException(404, "找不到这个模型用途，请刷新页面后重试。")
+        raise HTTPException(404, "未找到该模型用途，请刷新页面后重试。")
     try:
         return resolve_effective_model_config(settings, role, connection_id=connection_id)
     except Exception as exc:

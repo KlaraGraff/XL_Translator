@@ -1,7 +1,7 @@
 {
-  "接着翻译": {
-    "en": "Continue translating",
-    "fr": "Poursuivre la traduction"
+  "继续翻译": {
+    "en": "Resume translation",
+    "fr": "Reprendre la traduction"
   },
   "{0} · 开始前核对": {
     "en": "{0} · Check before starting",
@@ -19,7 +19,7 @@
     "en": "Pages / size",
     "fr": "Pages / format"
   },
-  "正在暂停：已发出的这批请求收回后暂停": {
+  "正在暂停：待已发送的请求返回后暂停": {
     "en": "Pausing: will pause once the requests already sent come back",
     "fr": "Mise en pause une fois revenues les requêtes déjà envoyées"
   },
@@ -27,23 +27,23 @@
     "en": "Paused; no new translation requests will be sent",
     "fr": "En pause\u00a0; aucune nouvelle requête de traduction ne sera envoyée"
   },
-  "部分翻译 · 还差 {0} 格": {
+  "部分翻译 · 剩余 {0} 个单元格": {
     "en": "Partly translated · {0} {0|cell|cells} left",
     "fr": "Traduit en partie · {0} {0|cellule restante|cellules restantes}"
   },
-  "部分翻译 · 还差 {0} 段": {
+  "部分翻译 · 剩余 {0} 段": {
     "en": "Partly translated · {0} {0|paragraph|paragraphs} left",
     "fr": "Traduit en partie · {0} {0|paragraphe restant|paragraphes restants}"
   },
-  "停止时这份文件还没翻完，没翻的地方保留原文；点上方「接着翻译」只补这一部分。": {
-    "en": "This file wasn't finished when the task stopped; untranslated parts keep the source text. Click “Continue translating” above to fill in just those parts.",
+  "停止时该文件尚未翻译完成，未翻译的部分保留原文；点击上方「继续翻译」即可仅补译这些部分。": {
+    "en": "This file was not finished when the task stopped; untranslated parts keep the source text. Click “Continue translation” above to translate only those parts.",
     "fr": "Ce fichier n'était pas terminé à l'arrêt\u00a0; les parties non traduites gardent le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» ci-dessus pour compléter uniquement ces parties."
   },
   "其余页面已生成": {
     "en": "all other pages generated",
     "fr": "toutes les autres pages sont générées"
   },
-  "已跑到的页面都已生成": {
+  "已处理到的页面均已生成": {
     "en": "all pages reached were generated",
     "fr": "toutes les pages atteintes sont générées"
   },
@@ -51,67 +51,67 @@
     "en": "all pages generated",
     "fr": "toutes les pages sont générées"
   },
-  "没找到上次停下时写出的文件，请点「重新扫描」后再试。": {
-    "en": "Couldn't find the files written when the task stopped. Click “Rescan” and try again.",
+  "未找到上次停止时写出的文件，请点击「重新扫描」后重试。": {
+    "en": "Could not find the files written when the task stopped. Click “Rescan” and try again.",
     "fr": "Impossible de trouver les fichiers écrits lors de l'arrêt. Cliquez sur «\u00a0Réanalyser\u00a0» puis réessayez."
   },
-  "还没有配置好审核模型": {
-    "en": "The review model isn't set up yet",
+  "尚未配置审核模型": {
+    "en": "The review model is not set up yet",
     "fr": "Le modèle de vérification n'est pas encore configuré"
   },
-  "还没有配置好翻译模型": {
-    "en": "The translation model isn't set up yet",
+  "尚未配置翻译模型": {
+    "en": "The translation model is not configured yet",
     "fr": "Le modèle de traduction n'est pas encore configuré"
   },
-  "翻译要用的模型还没有填好。": {
-    "en": "The model used for translation hasn't been filled in yet.",
+  "尚未填写翻译所用的模型。": {
+    "en": "The model used for translation has not been specified.",
     "fr": "Le modèle utilisé pour la traduction n'est pas encore renseigné."
   },
-  "填好模型名称和 API 密钥后回到这里，再点「开始翻译」就行。": {
-    "en": "Fill in the model name and API key, then come back here and click “Start translation”.",
+  "填写模型名称和 API 密钥后，返回此处点击「开始翻译」。": {
+    "en": "Enter the model name and API key, then return here and click “Start translation”.",
     "fr": "Renseignez le nom du modèle et la clé API, puis revenez ici et cliquez sur «\u00a0Lancer la traduction\u00a0»."
   },
-  "去设置": {
+  "前往设置": {
     "en": "Open settings",
     "fr": "Ouvrir les paramètres"
   },
-  "停止时还没有翻好的内容，没有生成文件。": {
-    "en": "Nothing had been translated when the task stopped, so no files were generated.",
+  "停止时尚无已翻译的内容，未生成文件。": {
+    "en": "Nothing had been translated when the task stopped; no files were generated.",
     "fr": "Rien n'avait encore été traduit à l'arrêt\u00a0; aucun fichier n'a été généré."
   },
-  "已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续。": {
-    "en": "Translated content was written to the files and untranslated parts keep the source text. Click “Continue translating” to pick up where it stopped.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers et les parties non traduites gardent le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
+  "已翻译内容已写入文件，未翻译部分保留原文；点击「继续翻译」可从停止处继续。": {
+    "en": "Translated content has been written to the files; untranslated parts keep the source text. Click “Continue translation” to resume from where the task stopped.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers et les parties non traduites conservent le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
   },
-  "已翻好的内容写进了文件，没翻的部分保留原文，点「接着翻译」从停下的地方继续，另有 {0} 处需复核。": {
-    "en": "Translated content was written to the files and untranslated parts keep the source text. Click “Continue translating” to pick up where it stopped. {0} {0|item needs|items need} review.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers et les parties non traduites gardent le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {0} {0|élément est|éléments sont} à vérifier."
+  "已翻译内容已写入文件，未翻译部分保留原文；点击「继续翻译」可从停止处继续。另有 {0} 处需复核。": {
+    "en": "Translated content has been written to the files; untranslated parts keep the source text. Click “Continue translation” to resume from where the task stopped. {0} {0|item needs|items need} review.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers et les parties non traduites conservent le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {0} {0|élément est|éléments sont} à vérifier."
   },
-  "已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续。": {
-    "en": "Translated content was written to the files; {0} {0|cell was|cells were} not translated and {0|keeps|keep} the source text. Click “Continue translating” to pick up where it stopped.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|cellule n'a|cellules n'ont} pas été {0|traduite|traduites} et {0|garde|gardent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
+  "已翻译内容已写入文件，尚有 {0} 个单元格未翻译、保留原文；点击「继续翻译」可从停止处继续。": {
+    "en": "Translated content has been written to the files; {0} {0|cell was|cells were} not translated and {0|keeps|keep} the source text. Click “Continue translation” to resume from where the task stopped.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|cellule n'a|cellules n'ont} pas été {0|traduite|traduites} et {0|conserve|conservent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
   },
-  "已翻好的内容写进了文件，还有 {0} 格没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。": {
-    "en": "Translated content was written to the files; {0} {0|cell was|cells were} not translated and {0|keeps|keep} the source text. Click “Continue translating” to pick up where it stopped. {1} {1|item needs|items need} review.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|cellule n'a|cellules n'ont} pas été {0|traduite|traduites} et {0|garde|gardent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {1} {1|élément est|éléments sont} à vérifier."
+  "已翻译内容已写入文件，尚有 {0} 个单元格未翻译、保留原文；点击「继续翻译」可从停止处继续。另有 {1} 处需复核。": {
+    "en": "Translated content has been written to the files; {0} {0|cell was|cells were} not translated and {0|keeps|keep} the source text. Click “Continue translation” to resume from where the task stopped. {1} {1|item needs|items need} review.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|cellule n'a|cellules n'ont} pas été {0|traduite|traduites} et {0|conserve|conservent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {1} {1|élément est|éléments sont} à vérifier."
   },
-  "已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续。": {
-    "en": "Translated content was written to the files; {0} {0|paragraph was|paragraphs were} not translated and {0|keeps|keep} the source text. Click “Continue translating” to pick up where it stopped.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|paragraphe n'a|paragraphes n'ont} pas été {0|traduit|traduits} et {0|garde|gardent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
+  "已翻译内容已写入文件，尚有 {0} 段未翻译、保留原文；点击「继续翻译」可从停止处继续。": {
+    "en": "Translated content has been written to the files; {0} {0|paragraph was|paragraphs were} not translated and {0|keeps|keep} the source text. Click “Continue translation” to resume from where the task stopped.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|paragraphe n'a|paragraphes n'ont} pas été {0|traduit|traduits} et {0|conserve|conservent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée."
   },
-  "已翻好的内容写进了文件，还有 {0} 段没翻、保留原文，点「接着翻译」从停下的地方继续，另有 {1} 处需复核。": {
-    "en": "Translated content was written to the files; {0} {0|paragraph was|paragraphs were} not translated and {0|keeps|keep} the source text. Click “Continue translating” to pick up where it stopped. {1} {1|item needs|items need} review.",
-    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|paragraphe n'a|paragraphes n'ont} pas été {0|traduit|traduits} et {0|garde|gardent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {1} {1|élément est|éléments sont} à vérifier."
+  "已翻译内容已写入文件，尚有 {0} 段未翻译、保留原文；点击「继续翻译」可从停止处继续。另有 {1} 处需复核。": {
+    "en": "Translated content has been written to the files; {0} {0|paragraph was|paragraphs were} not translated and {0|keeps|keep} the source text. Click “Continue translation” to resume from where the task stopped. {1} {1|item needs|items need} review.",
+    "fr": "Le contenu traduit a été écrit dans les fichiers\u00a0; {0} {0|paragraphe n'a|paragraphes n'ont} pas été {0|traduit|traduits} et {0|conserve|conservent} le texte source. Cliquez sur «\u00a0Poursuivre la traduction\u00a0» pour reprendre là où la tâche s'est arrêtée. {1} {1|élément est|éléments sont} à vérifier."
   },
-  "停止前内容已经全部翻完。": {
-    "en": "Everything had already been translated before the task stopped.",
+  "停止前已全部翻译完成。": {
+    "en": "All content had been translated before the task stopped.",
     "fr": "Tout le contenu était déjà traduit avant l'arrêt."
   },
-  "停止前内容已经全部翻完，另有 {0} 处需复核。": {
-    "en": "Everything had already been translated before the task stopped. {0} {0|item needs|items need} review.",
+  "停止前已全部翻译完成，另有 {0} 处需复核。": {
+    "en": "All content had been translated before the task stopped. {0} {0|item needs|items need} review.",
     "fr": "Tout le contenu était déjà traduit avant l'arrêt. {0} {0|élément est|éléments sont} à vérifier."
   },
-  "{0} 个文件没能生成；其余{1}": {
+  "{0} 个文件未能生成；其余{1}": {
     "en": "{0} {0|file|files} could not be generated. For the rest: {1}",
     "fr": "{0} {0|fichier n'a|fichiers n'ont} pas pu être {0|généré|générés}. Pour le reste\u00a0: {1}"
   }

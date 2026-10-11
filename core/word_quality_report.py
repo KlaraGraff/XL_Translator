@@ -284,11 +284,11 @@ def _append_residual_cjk_issues(
             "snippet": _build_source_excerpt(
                 str(unit.data.get("residual_text") or unit.target_text)
             ),
-            "problem": "译文里还留着少量没翻译的原文",
+            "problem": "译文中仍有少量未翻译的原文",
             # 只报实际残留了什么。早先这里固定跟一句"多为日期或编号"，可残留的常常
             # 是章节序号（一、二、三）或单个汉字，那句话等于替用户断言了一个没查过的
             # 原因，会把人往错的方向引。
-            "status": f"该位置译文已完成，只有这些没翻译：{'、'.join(fragments)}，请确认是否需要改写。",
+            "status": f"该位置译文已完成，仅以下内容未翻译：{'、'.join(fragments)}，请确认是否需要改写。",
             "severity": "needs_review",
         }
         key = (
@@ -311,10 +311,9 @@ def _append_residual_cjk_issues(
                 "location_label": "输出文档",
                 "section_path": "正文",
                 "snippet": (
-                    f"共发现 {len(residual_units)} 处译文里还留着没翻译的原文，"
-                    f"已仅列出前 {_POST_WRITE_COVERAGE_ISSUE_LIMIT} 处。"
+                    f"共发现 {len(residual_units)} 处译文中仍有未翻译的原文，仅列出前 {_POST_WRITE_COVERAGE_ISSUE_LIMIT} 处。"
                 ),
-                "problem": "译文里还留着少量没翻译的原文",
+                "problem": "译文中仍有少量未翻译的原文",
                 "status": "其余位置过多，已截断展示。",
                 "severity": "needs_review",
             }
@@ -371,8 +370,8 @@ def _apply_mixed_language_word_results(
             foreign_noise,
             problem="原文疑似夹杂错误外文",
             status=(
-                "已输出译文，但原文里混着疑似写错的外文，未存入记忆库；"
-                "请对照原件确认这段原文本身是否需要更正。"
+                "已输出译文，但原文中夹杂疑似有误的外文，未存入记忆库；"
+                "请对照源文件确认该段原文是否需要更正。"
             ),
             # 程序能做的只是把这段照常翻出来，它没法判断原文里那串外文是不是写错了——
             # 那要对着原件看。这是"原文可能有问题"，不是"程序已经处理好了"。
@@ -394,7 +393,7 @@ def _apply_mixed_language_word_results(
             semantic_translate,
             problem="夹杂多种语言的译文复查后采用",
             status=(
-                "这段夹杂多种语言的译文没通过自动检查，复查后确认意思正确，"
+                "该段夹杂多种语言的译文未通过自动检查，经复查确认含义正确，"
                 "已采用（不存入记忆库）。"
             ),
             severity="resolved",
@@ -465,18 +464,18 @@ def _build_translation_scope_lines(
         listed += f" 等 {len(header_footer_files)} 个文件"
     if translate_headers_footers:
         header_footer_line = (
-            f"- 页眉、页脚已翻译，译文接在同一行原文后面（不另起一行，避免页眉页脚变高）：{listed}。"
+            f"- 页眉、页脚已翻译，译文紧接在同一行原文之后（不另起一行，以免增加页眉页脚高度）：{listed}。"
         )
     else:
         header_footer_line = (
-            f"- 页眉、页脚不参与翻译，输出文档中保持原文：{listed}。"
-            "如需翻译，请在 Word 选项里打开「翻译页眉页脚」后重跑。"
+            f"- 页眉、页脚不参与翻译，输出文档中保持原文：{listed}。如需翻译，"
+            "请在 Word 选项中开启「翻译页眉页脚」后重新运行。"
         )
     return [
         "## 翻译范围说明",
         "",
         header_footer_line,
-        "- 自动生成的目录、索引、页码域同样不翻译：域一刷新就会覆盖译文。",
+        "- 自动生成的目录、索引和页码域同样不翻译：域更新后会覆盖译文。",
         "",
     ]
 
@@ -574,7 +573,7 @@ def _write_word_quality_report(
                     # 早先叫「问题片段」，列出来的又都是中文日期编号，读起来像"译文里的
                     # 日期错了"，而实际情况往往是译文把日期正常译成了外文写法。
                     lines.append(
-                        f"- 自动检查时在译文里没对上的原文片段：{'、'.join(str(item) for item in fragments)}"
+                        f"- 自动检查时未在译文中匹配到的原文片段：{'、'.join(str(item) for item in fragments)}"
                     )
                 lines.append("")
 

@@ -128,7 +128,7 @@ def register(app: FastAPI) -> None:
         if existing is None:
             raise HTTPException(404, "自定义语言不存在。")
         if hasattr(tm_manager, "count_entries_referencing_language") and tm_manager.count_entries_referencing_language(language_code):
-            raise HTTPException(409, "记忆库里还有这个语言的词条，请先导出或清空这些词条。")
+            raise HTTPException(409, "记忆库中仍有该语言的词条，请先导出或清空这些词条。")
         settings.custom_target_langs = remove_custom_target_lang(
             settings.custom_target_langs,
             language_code,
@@ -182,7 +182,7 @@ def register(app: FastAPI) -> None:
     @app.put("/api/settings")
     def put_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload, dict):
-            raise HTTPException(422, "设置内容格式不对，没有保存，请刷新页面后重试。")
+            raise HTTPException(422, "设置内容格式有误，未保存，请刷新页面后重试。")
         # 只查这份 payload 自己点名的角色：这个端点是「当前设置 + 补丁」合并保存，
         # 拿合并结果去查的话，磁盘上早就存着的一条不合法跟随会让每一次保存都 422。
         _reject_illegal_follow_payload(payload)
@@ -201,7 +201,7 @@ def register(app: FastAPI) -> None:
             settings = AppSettings.model_validate(merged)
         except Exception as exc:
             logger.warning(f"[设置] 保存的设置未通过校验：{exc}")
-            raise HTTPException(422, "设置里有不合规的值，没有保存，请刷新页面后重试。") from exc
+            raise HTTPException(422, "设置中包含无效的值，未保存，请刷新页面后重试。") from exc
         # 校验器会在同一 provider 已经存过「服务商记忆」时，把这次刚合并进来的
         # cloud_model/cloud_base_url 悄悄换回记忆里的旧值——这是为切换 provider
         # 时找回上次用过的模型设计的，但代价是这个通用合并端点只改

@@ -142,7 +142,7 @@ class DiagnosticsTests(unittest.TestCase):
                         "location_label": "正文段落 8",
                         "section_path": "一、工程概况",
                         "severity": "resolved",
-                        "problem": "自动检查没通过，复查后采用",
+                        "problem": "未通过自动检查，复查后采用",
                         "status": "本段已写入译文。",
                         "snippet": "需要语义仲裁的段落",
                     }

@@ -63,7 +63,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
             r"apple ?events?.{0,40}(not permitted|permission denied)",
             r"(not permitted|permission denied).{0,40}apple ?events?",
         ),
-        "系统没有授权本程序控制 Office。可在「系统设置 › 隐私与安全性 › 自动化」里授权后重试。",
+        "系统未授权本程序控制 Office。请在「系统设置 › 隐私与安全性 › 自动化」中授权后重试。",
     ),
     (
         (r"-2741", r"syntax error", r"-1708", r"doesn['’]t understand"),
@@ -71,32 +71,32 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"-600\b", r"-609\b", r"application isn['’]t running"),
-        "本机 Office 没有响应。",
+        "本机 Office 无响应。",
     ),
     (
         (r"-10827", r"klsnoexecutablerr"),
-        "macOS 找不到可启动的 Microsoft Excel 程序，可能是 Excel 安装或系统注册异常；请先手动打开一次 Excel，仍失败时修复或重装 Office。",
+        "macOS 找不到可启动的 Microsoft Excel，可能是 Excel 安装或系统注册异常；请先手动打开一次 Excel，如仍失败，请修复或重新安装 Office。",
     ),
     (
         (r"-10814", r"can['’]t be found", r"no such application"),
-        "本机没有安装 Microsoft Office。",
+        "本机未安装 Microsoft Office。",
     ),
     # --- 文件本身的问题 ---
     (
         (r"package not found at", r"not a zip file", r"badzipfile"),
-        "这个文件打不开，可能已损坏，或者后缀名与真实格式不符。",
+        "无法打开此文件，可能已损坏，或扩展名与实际格式不符。",
     ),
     (
         (r"does not support the old \.xls", r"\bxlrd\b", r"unsupported format, or corrupt file"),
-        "这是旧版 .xls 格式，需要先转换成 .xlsx 才能翻译。",
+        "此文件为旧版 .xls 格式，需先转换为 .xlsx 才能翻译。",
     ),
     (
         (r"has been corrupted", r"cannot open broken document", r"cannot open document", r"failed to open"),
-        "这个文件打不开，可能已损坏或设置了打开密码。",
+        "无法打开此文件，可能已损坏或设置了打开密码。",
     ),
     (
         (r"is encrypted", r"password required", r"workbook is protected"),
-        "这个文件有密码保护，程序无法读取。请先去掉密码再试。",
+        "此文件受密码保护，无法读取。请先移除密码后重试。",
     ),
     (
         (r"no such file or directory", r"filenotfounderror", r"cannot find the file"),
@@ -104,7 +104,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"permission denied", r"used by another process", r"access is denied"),
-        "文件被其他程序占用，或者没有读写权限，请关闭占用它的程序后重试。",
+        "文件被其他程序占用，或没有读写权限。请关闭占用该文件的程序后重试。",
     ),
     (
         (r"no space left on device", r"disk full", r"not enough space"),
@@ -119,11 +119,11 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
             r"getaddrinfo failed",
             r"failed to resolve",
         ),
-        "连不上网络：解析不到接口地址，请检查网络、代理，以及接口地址是否写对。",
+        "无法连接网络：无法解析接口地址，请检查网络、代理以及接口地址是否正确。",
     ),
     (
         (r"certificate verify failed", r"\bsslerror\b", r"ssl: ", r"self.signed certificate"),
-        "安全连接校验没通过，通常是代理或安全软件拦截了加密流量。",
+        "安全连接校验未通过，通常是代理或安全软件拦截了加密流量。",
     ),
     (
         (
@@ -146,23 +146,23 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         # 翻译、文件扫描、格式转换都会走到它，挂着不稳的 VPN 跑批量时那句话正好说反。
         # 而且 502/504 网关故障的报文里也带 "timeout"，会先被这一条吃掉。
         # 所以只说观察得到的事实（重试常常就过）和一个不越界的倾向（反复超时多半在上游）。
-        "等模型服务响应超时了，重试一次往往就过；反复超时多半是这条连接的服务那边在排队。",
+        "模型服务响应超时，重试通常即可解决；如反复超时，多为该连接的服务端正在排队。",
     ),
     (
         (r"invalid api key", r"incorrect api key", r"\bunauthorized\b", r"\b401\b"),
-        "接口拒绝了这个 API 密钥，请在设置里检查这条连接的密钥是否正确。",
+        "接口拒绝了此 API 密钥，请在设置中检查该连接的密钥是否正确。",
     ),
     (
         (r"insufficient_quota", r"billing hard limit", r"余额不足", r"额度不足", r"\b402\b"),
-        "这个账号的接口额度或余额不够了，请充值或换一条连接。",
+        "该账号的接口额度或余额不足，请充值或更换连接。",
     ),
     (
         (r"\bforbidden\b", r"\b403\b"),
-        "接口拒绝了这次请求，可能是这个 API 密钥没有该模型的权限。",
+        "接口拒绝了本次请求，可能是该 API 密钥没有此模型的访问权限。",
     ),
     (
         (r"model_not_found", r"do not have access to", r"\b404\b"),
-        "接口上找不到这个模型，请在设置里确认模型名是否写对。",
+        "接口上找不到此模型，请在设置中确认模型名称是否正确。",
     ),
     (
         (r"rate limit", r"too many requests", r"\b429\b", r"并发达到上限"),
@@ -178,7 +178,7 @@ _RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     ),
     (
         (r"internal server error", r"\b500\b"),
-        "模型服务那边出错了，请稍后重试。",
+        "模型服务返回错误，请稍后重试。",
     ),
 )
 

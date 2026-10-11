@@ -363,7 +363,7 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     [t("语言"), [sourceLang, targetLang].filter(Boolean).map(languageName).join(" → ")],
     [t("模型"), models],
     [t("连接"), connectionSummary],
-    [t("运行中换过连接"), connectionSwitchText(task)],
+    [t("运行期间切换过连接"), connectionSwitchText(task)],
     [t("专业领域 / 提示词"), [domain && tx(domain), promptVersion].filter(Boolean).join(" · ")],
     [t("输出位置"), outputPath],
     [
@@ -397,7 +397,7 @@ function connectionSwitchText(task: TaskStatus): string {
     return `${at ? `${at} ` : ""}${from} → ${to}${reason ? t("（{0}）", tx(reason)) : ""}`;
   });
   const finalLabel = firstText(connections, ["final_label"]);
-  return [t("换过 {0} 次", switches.length), steps.join(t("；")), finalLabel ? t("此后由「{0}」完成", finalLabel) : ""]
+  return [t("切换 {0} 次", switches.length), steps.join(t("；")), finalLabel ? t("此后由「{0}」完成", finalLabel) : ""]
     .filter(Boolean)
     .join(" · ");
 }
@@ -471,7 +471,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         [t("未开始"), ["unstarted_count", "not_started_count", "unstarted_file_count"]],
         [t("需复核"), ["review_count", "review_items_count", "review_total", "review_text_count"]],
         [t("记忆库命中"), ["tm_hit_count", "tm_hits"]],
-        [t("交给模型翻译"), ["model_translation_text_count", "model_text_count", "translated_text_count"]],
+        [t("交由模型翻译"), ["model_translation_text_count", "model_text_count", "translated_text_count"]],
       ],
       reviewSource,
     );
@@ -498,7 +498,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
     ).concat(
       pickKpis(
         [
-          [t("重译后补上"), ["retry_recovered_count", "recovered_count"]],
+          [t("重译后补全"), ["retry_recovered_count", "recovered_count"]],
           [t("复查后采用"), ["semantic_accepted_count"]],
         ],
         withRecovery,
@@ -516,7 +516,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         [t("未开始页"), ["unstarted_page_count"]],
         [t("高清 PDF"), ["generated_pdf_count"]],
         [t("译文图片"), ["generated_image_count"]],
-        [t("失败页（已放占位）"), ["placeholder_page_count"]],
+        [t("失败页（已插入占位）"), ["placeholder_page_count"]],
         // 跟「失败占位」并列的必须是与它互斥的那个数。「审核未通过」里有一半是直接退回
         // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。
         [t("有疑点仍采用"), ["suspect_adopted_page_count"]],
@@ -549,7 +549,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
   );
 }
 
-const WARN_KPI_LABELS = new Set([t("需复核"), t("未生成"), t("未翻译段"), t("失败页（已放占位）"), t("有疑点仍采用")]);
+const WARN_KPI_LABELS = new Set([t("需复核"), t("未生成"), t("未翻译段"), t("失败页（已插入占位）"), t("有疑点仍采用")]);
 
 interface ReviewRow {
   file: string;
@@ -598,7 +598,7 @@ const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: 
   marked_red_font: { label: t("已标红字"), note: t("单元格原有底色已保留，改用红色字体标出，请按红字复核。"), tone: "warn" },
   preserved_existing_fill: {
     label: t("未写入标记"),
-    note: t("单元格已有底色，按现有底色保留策略跳过了标记；文件里看不到这处复核提示，只能按本行定位。"),
+    note: t("单元格已有底色，根据底色保留策略未添加标记；文件中不显示此处复核提示，请根据本行定位。"),
     tone: "dgr",
   },
 };
@@ -943,7 +943,7 @@ function refreshTopbarStatus(): void {
   setTopbar({
     title: t("任务中心"),
     status: count > 0 ? { label: t("{0} 个活动任务", count), tone: "run" } : { label: t("空闲"), tone: "idle" },
-    subtitle: t("运行中的任务与最近结果都在这里"),
+    subtitle: t("运行中的任务与最近结果"),
   });
 }
 
@@ -1007,8 +1007,8 @@ export async function watchTask(taskId: string): Promise<void> {
     } catch {
       latest.task = { ...latest.task, state: "interrupted", terminal: true };
       latest.streamState = "interrupted";
-      latest.phaseName = t("翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。");
-      if (mounted) showToast({ message: t("和这个任务的连接没能恢复，已标记为应用中断。"), error: true });
+      latest.phaseName = t("翻译服务意外重启或应用异常退出，此任务无法继续。已生成的文件仍保留在输出目录中；如有需要，请重新开始翻译。");
+      if (mounted) showToast({ message: t("无法恢复与此任务的连接，已标记为应用中断。"), error: true });
     }
   } finally {
     const latest = tasks.get(taskId);
@@ -1165,13 +1165,13 @@ async function resumeTask(taskId: string): Promise<void> {
 async function endPausedPdfTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
   if (!entry || entry.task.surface !== "pdf") return;
-  if (!window.confirm(t("结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？"))) return;
+  if (!window.confirm(t("结束后将不再翻译剩余页面，已完成的页面和报告将保留。确定要结束此任务吗？"))) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/end-paused`, { method: "POST" });
     touch(taskId);
   } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, t("没能结束任务，请再试一次。")), error: true });
+    showToast({ message: redactedText((error as Error)?.message, t("无法结束任务，请重试。")), error: true });
   }
 }
 
@@ -1184,7 +1184,7 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
   }
 }
 
-const NO_DIAGNOSTIC_TEXT = t("这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。");
+const NO_DIAGNOSTIC_TEXT = t("该任务没有诊断记录（可能由早期版本运行，或已被自动清理），无可导出的内容。");
 
 /** 每个终态任务有没有诊断记录。没问过就不在表里；"pending" 表示正在问。
  *  任务结束时后端都会写一份；更早版本跑的任务、或者超出保留上限被清掉的，就没有。
@@ -1234,7 +1234,7 @@ async function copyTaskPath(path: string): Promise<void> {
   // 之前这里没有 catch，失败是彻底静默的——按钮点了，用户以为复制成功，其实什么都没发生。
   // 这里兜住失败并把路径本身放进提示文案，让用户至少能从提示里手动选中复制。
   try {
-    if (!navigator.clipboard?.writeText) throw new Error(t("当前环境不支持写剪贴板"));
+    if (!navigator.clipboard?.writeText) throw new Error(t("当前环境不支持写入剪贴板"));
     await navigator.clipboard.writeText(trimmed);
     showToast({ message: t("路径已复制。") });
   } catch {
@@ -1260,7 +1260,7 @@ function confirmDeleteTask(taskId: string): void {
     tone: "warn",
     icon: "trash",
     title: t("删除这条任务记录？"),
-    body: [t("只从任务中心移除这条记录。已经生成的译文、报告和诊断包都留在原处，不会被删除。")],
+    body: [t("仅从任务中心移除此记录。已生成的译文、报告和诊断包将保留在原处，不会被删除。")],
     actions: [
       { label: t("取消"), variant: "default" },
       { label: t("删除记录"), variant: "danger-solid", onClick: () => void deleteTaskRecord(taskId) },
@@ -1287,7 +1287,7 @@ async function deleteTaskRecord(taskId: string): Promise<void> {
   if (selectedId === taskId) selectedId = visibleOrder()[0] ?? null;
   renderList();
   renderDetail();
-  showToast({ message: t("记录已删除；输出文件没有被动过。") });
+  showToast({ message: t("记录已删除；输出文件未受影响。") });
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,7 +1524,7 @@ function renderList(): void {
   if (!ids.length) {
     const empty = createEmptyState({
       title: t("当前没有可显示的任务"),
-      description: t("开始 Excel、Word、PDF / 图片、CAD 图纸翻译或记忆库清洗后，进度和结果都会显示在这里。"),
+      description: t("开始 Excel、Word、PDF / 图片、CAD 图纸翻译或记忆库清洗后，进度和结果将显示在此处。"),
       icon: "tasks",
     });
     empty.style.flex = "1";
@@ -1552,7 +1552,7 @@ function renderDetail(): void {
   if (!entry) {
     const empty = createEmptyState({
       title: t("选择左侧任务查看详情"),
-      description: t("结果统计、需要复核的位置和生成的文件都在这里。"),
+      description: t("此处显示结果统计、需复核的位置和生成的文件。"),
       icon: "tasks",
     });
     empty.style.flex = "1";
@@ -1749,7 +1749,7 @@ function renderDetail(): void {
     hint.style.fontWeight = "400";
     hint.style.color = "var(--ink-3)";
     hint.style.fontSize = "12px";
-    hint.textContent = t("需复核在前 · 一行一个位置，同一位置的多条判定已并成一行");
+    hint.textContent = t("需复核项在前 · 每行一个位置，同一位置的多条判定已合并");
     sectionTitle.append(hint);
     detailRootEl.append(sectionTitle);
 
@@ -1822,7 +1822,7 @@ function renderDetail(): void {
       note.style.fontSize = "12px";
       note.style.color = "var(--ink-3)";
       note.style.margin = "6px 0";
-      note.textContent = t("仅显示前 50 处，共 {0} 处。完整清单在运行日志与诊断包里。", reviews.length);
+      note.textContent = t("仅显示前 50 处，共 {0} 处。完整清单见运行日志与诊断包。", reviews.length);
       detailRootEl.append(note);
     }
   } else if ((reviewCount(task) ?? 0) > 0) {
@@ -1833,7 +1833,7 @@ function renderDetail(): void {
     note.style.fontSize = "12px";
     note.style.color = "var(--ink-3)";
     note.style.margin = "6px 0 0";
-    note.textContent = t("本次没有把复核标记写进输出文件，因此无法逐格定位。想要逐格定位，请在开始翻译前打开「标记需复核内容」。");
+    note.textContent = t("本次未将复核标记写入输出文件，因此无法定位到单元格。如需定位，请在开始翻译前开启「标记需复核内容」。");
     detailRootEl.append(note);
   }
 
@@ -1896,7 +1896,7 @@ function renderDetail(): void {
       note.style.fontSize = "12px";
       note.style.color = "var(--ink-3)";
       note.style.margin = "6px 0";
-      note.textContent = t("仅显示前 30 个文件，共 {0} 个文件。完整清单在运行日志与诊断包里。", files.length);
+      note.textContent = t("仅显示前 30 个文件，共 {0} 个文件。完整清单见运行日志与诊断包。", files.length);
       detailRootEl.append(note);
     }
   }
@@ -1908,7 +1908,7 @@ function renderDetail(): void {
     logNote.style.marginTop = "10px";
     logNote.textContent =
       entry.streamState === "reconnecting"
-        ? t("和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。")
+        ? t("与后台服务的连接暂时中断，正在自动重新连接；已有进度不会丢失，也不会重复处理。")
         : t("任务运行中，结果统计和生成的文件会在任务结束后补全。");
     detailRootEl.append(logNote);
   }

@@ -205,7 +205,7 @@ def _check_openai_compatible(
         )
         if text.strip() != "OK":
             raise TextTransportError(
-                "连上了，但模型没有按要求回复「OK」，请确认模型名是否写对。",
+                "已连接，但模型未按要求回复「OK」，请确认模型名称是否正确。",
                 kind="invalid_response",
             )
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe status.
@@ -554,7 +554,7 @@ def _check_cleaner_json_protocol(
             or str(payload[0].get("id") or "") != "connectivity-probe"
             or not isinstance(payload[0].get("suggested"), str)
         ):
-            raise ValueError("连上了，但模型的回复格式不对，没法用来清洗记忆库，换一个模型试试。")
+            raise ValueError("已连接，但模型的回复格式不正确，无法用于清洗记忆库，请更换其他模型。")
     except Exception as exc:  # noqa: BLE001 - converted to UI-safe result.
         return ConnectivityResult(
             ok=False,

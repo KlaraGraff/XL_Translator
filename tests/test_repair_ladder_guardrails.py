@@ -153,7 +153,7 @@ class RepairLadderGuardrailTest(unittest.TestCase):
         self.assertEqual(progress, [(1, 1)])
         self.assertEqual(result.accepted, {})
         reasons = result.reject_reasons[units[0].source_text]
-        self.assertTrue(any("没有按要求的格式回复" in reason for reason in reasons))
+        self.assertTrue(any("未按要求的格式回复" in reason for reason in reasons))
 
     def test_accepted_repair_reports_method(self):
         units = [_sentence_unit(1)]

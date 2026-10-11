@@ -146,7 +146,7 @@ export type StreamOptions = {
 function errorDetail(payload: { detail?: unknown }, fallback: string): string {
   const detail = payload.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
-  if (Array.isArray(detail)) return "提交的内容格式不对，这次操作没有生效。"; // i18n-ignore 作为后端原话进 ApiError，构造时由 tx() 翻译，rawMessage 保留中文
+  if (Array.isArray(detail)) return "提交的内容格式不正确，本次操作未生效。"; // i18n-ignore 作为后端原话进 ApiError，构造时由 tx() 翻译，rawMessage 保留中文
   return fallback;
 }
 

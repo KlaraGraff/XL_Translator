@@ -82,12 +82,12 @@ function openQuickStartModal(): void {
   steps.append(
     buildStep(
       t("1. 配置翻译模型"),
-      t("填好服务商、模型和 API 密钥，再点「测试连接」确认能用。"),
+      t("填写服务商、模型和 API 密钥后，点击「测试连接」确认配置可用。"),
       [createButton({ label: t("打开配置"), size: "mini", onClick: () => finish("config") })],
     ),
     buildStep(
       t("2. 选择文件类型与语言"),
-      t("进入 Excel、Word、PDF / 图片或 CAD 图纸页面。源语言默认自动识别，PDF 和图片只需选目标语言。"),
+      t("进入 Excel、Word、PDF / 图片或 CAD 图纸页面。源语言默认自动识别，PDF 和图片只需选择目标语言。"),
       [
         createButton({ label: "Excel", size: "mini", onClick: () => finish("excel") }),
         createButton({ label: "Word", size: "mini", onClick: () => finish("word") }),
@@ -97,7 +97,7 @@ function openQuickStartModal(): void {
     ),
     buildStep(
       t("3. 选择文件并开始"),
-      t("用「浏览」选好文件或文件夹，勾选要翻译的文件，确认右侧选项后点「开始翻译」。开始后再改设置，只影响下一次任务。"),
+      t("通过「浏览」选择文件或文件夹，勾选要翻译的文件，确认右侧选项后点击「开始翻译」。开始后修改的设置仅对下一次任务生效。"),
     ),
   );
 
@@ -107,7 +107,7 @@ function openQuickStartModal(): void {
     sourceLabel: t("欢迎使用 Translator"),
     title: t("快速开始"),
     body: [
-      t("照下面三步就能开始第一次翻译。这个引导不会替你测试连接，也不会发出任何翻译请求。"),
+      t("按以下三个步骤即可开始首次翻译。本引导不会测试连接，也不会发送任何翻译请求。"),
       steps,
     ],
     actions: [

@@ -164,7 +164,7 @@ class CadSurface(Surface):
             },
             "risk": {
                 "capability": status,
-                "message": "还没有连接图纸转换工具：DXF 可以直接翻译，DWG 需要先在「插件管理」里连接转换工具。"
+                "message": "尚未连接图纸转换工具：DXF 可直接翻译，DWG 需先在「插件」中连接转换工具。"
                 if not converter
                 else "",
             },
@@ -180,7 +180,7 @@ class CadSurface(Surface):
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not bool(status.get("enabled")):
             raise TaskInputError(
-                "翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。",
+                "翻译 DWG 图纸前，请先在「插件」中连接图纸转换工具。",
                 reason="cad_capability_missing",
             )
         require_target_lang(getattr(settings, "target_lang", ""), "CAD")
@@ -248,7 +248,7 @@ class CadSurface(Surface):
         converter_path = str(status.get("converter") or "").strip()
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not converter_path:
-            raise TaskInputError("翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。", reason="cad_converter_missing")
+            raise TaskInputError("翻译 DWG 图纸前，请先在「插件」中连接图纸转换工具。", reason="cad_converter_missing")
         # All document surfaces publish into one unique, timestamped
         # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
         # with nested translated/review/run directories, which made a
@@ -376,4 +376,4 @@ def load_cad_glossary(path: str | None) -> dict[str, str]:
                 glossary[source.strip()] = target.strip()
         return glossary
     except (OSError, UnicodeError, ValueError) as exc:
-        raise TaskInputError(f"CAD 术语库文件「{candidate.name}」读不出来，请检查格式（每行「原文,译文」或 JSON 对象）。") from exc
+        raise TaskInputError(f"无法读取 CAD 术语库文件「{candidate.name}」，请检查格式（每行「原文,译文」或 JSON 对象）。") from exc

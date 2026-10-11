@@ -23,7 +23,7 @@ class HumanizeErrorTests(unittest.TestCase):
             "execution error: Not authorized to send Apple events. (-1743)",
         ):
             with self.subTest(raw=raw):
-                self.assertNotIn("已改用内置方式处理", humanize_error(raw))
+                self.assertNotIn("已改用内置方式", humanize_error(raw))
 
     def test_automation_permission_denied_points_at_system_settings(self) -> None:
         raw = "execution error: Not authorized to send Apple events to Microsoft Word. (-1743)"
@@ -32,8 +32,8 @@ class HumanizeErrorTests(unittest.TestCase):
     def test_excel_launch_services_failure_points_at_installation(self) -> None:
         raw = "open failed: kLSNoExecutableErr (-10827)"
         sentence = humanize_error(raw)
-        self.assertIn("macOS 找不到可启动的 Microsoft Excel 程序", sentence)
-        self.assertIn("修复或重装 Office", sentence)
+        self.assertIn("macOS 找不到可启动的 Microsoft Excel", sentence)
+        self.assertIn("修复或重新安装 Office", sentence)
 
     def test_apple_event_permission_denial_is_not_read_as_a_busy_file(self) -> None:
         # 这句里同时有 permission denied 和 Apple events，绝不能落到「关闭占用它的
@@ -45,16 +45,16 @@ class HumanizeErrorTests(unittest.TestCase):
 
     def test_dns_failure_reads_as_no_network(self) -> None:
         raw = "[Errno 8] nodename nor servname provided, or not known"
-        self.assertTrue(humanize_error(raw).startswith("连不上网络"))
+        self.assertTrue(humanize_error(raw).startswith("无法连接网络"))
 
     def test_corrupt_docx_reads_as_broken_file(self) -> None:
         raw = "Package not found at '/tmp/fixtures/broken.docx'"
-        self.assertEqual(humanize_error(raw), "这个文件打不开，可能已损坏，或者后缀名与真实格式不符。")
+        self.assertEqual(humanize_error(raw), "无法打开此文件，可能已损坏，或扩展名与实际格式不符。")
 
     def test_openpyxl_zip_complaint_reads_as_broken_file(self) -> None:
         self.assertEqual(
             humanize_error("File is not a zip file"),
-            "这个文件打不开，可能已损坏，或者后缀名与真实格式不符。",
+            "无法打开此文件，可能已损坏，或扩展名与实际格式不符。",
         )
 
     def test_service_unavailable_drops_status_line_and_mdn_link(self) -> None:

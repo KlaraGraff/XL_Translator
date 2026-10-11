@@ -86,7 +86,7 @@ class SurgicalLadderTest(unittest.TestCase):
         self.assertEqual(len(retranslate.calls), 1)
         # 重译请求里必须带上结构化失败反馈
         self.assertIn("型槽", retranslate.calls[0][0])
-        self.assertTrue(any("局部修正没通过" in r for r in outcome.reject_reasons))
+        self.assertTrue(any("局部修正未通过" in r for r in outcome.reject_reasons))
 
     def test_both_stages_fail_keeps_original_text(self):
         surgical = _RecordingSend(["not json at all"])

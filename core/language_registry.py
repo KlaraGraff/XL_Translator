@@ -471,19 +471,17 @@ def get_custom_target_lang_display_error(
     if len(normalized) > CUSTOM_TARGET_LANG_MAX_LENGTH:
         return f"自定义语言名称不能超过 {CUSTOM_TARGET_LANG_MAX_LENGTH} 个字符。"
     if normalized == CUSTOM_TARGET_LANG_ACTION_LABEL:
-        return "该名称与内置操作项冲突，请换一个名称。"
+        return "该名称与内置操作项冲突，请使用其他名称。"
 
     builtin_or_reserved_match = _find_builtin_or_reserved_language_match(normalized)
     if builtin_or_reserved_match is not None:
         match_type, canonical_name = builtin_or_reserved_match
         if match_type == "builtin":
             return (
-                f"该语言已包含在内置列表中：{canonical_name}。"
-                f"你输入的是：{normalized}。请直接从下拉框选择。"
+                f"该语言已包含在内置列表中：{canonical_name}。您输入的是：{normalized}。请从下拉列表中选择。"
             )
         return (
-            f"系统已识别该语种为：{canonical_name}。"
-            f"你输入的是：{normalized}。该名称不需要再作为自定义语言添加。"
+            f"系统已将该语言识别为：{canonical_name}。您输入的是：{normalized}。无需将其添加为自定义语言。"
         )
 
     existing_custom_match = _find_custom_target_lang_match(
@@ -492,8 +490,7 @@ def get_custom_target_lang_display_error(
     )
     if existing_custom_match is not None:
         return (
-            f"该自定义语言已存在：{existing_custom_match}。"
-            f"你输入的是：{normalized}。请勿重复添加。"
+            f"该自定义语言已存在：{existing_custom_match}。您输入的是：{normalized}。请勿重复添加。"
         )
 
     return None
@@ -950,7 +947,7 @@ def build_lang_pair(
     normalized_source_lang = str(source_lang or "zh").strip() or "zh"
     normalized_target_lang = str(target_lang or "").strip()
     if is_auto_source_lang(normalized_source_lang):
-        raise ValueError("自动识别必须先解析为实际源语言，不能用于 TM 语言对。")
+        raise ValueError("自动识别必须先解析为实际源语言，不能用于记忆库语言对。")
     if not normalized_source_lang or not normalized_target_lang:
         raise ValueError("源语言和目标语言不能为空。")
     return f"{normalized_source_lang}-{normalized_target_lang}"

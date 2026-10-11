@@ -253,7 +253,7 @@ class EngineDispatcherTests(unittest.TestCase):
         # The user is told we slowed down; the internal capacity numbers stay
         # in the debug log, because they are group-level and match nothing the
         # user configured.
-        self.assertTrue(any("已自动放慢发送速度" in message for message in errors), errors)
+        self.assertTrue(any("已自动降低发送速度" in message for message in errors), errors)
 
     def test_translate_texts_retries_same_batch_after_local_descriptor_limit(self) -> None:
         engine = LocalDescriptorLimitExcelEngine(fail_count=1)
@@ -276,7 +276,7 @@ class EngineDispatcherTests(unittest.TestCase):
         self.assertEqual(engine.calls, [["alpha", "beta"], ["alpha", "beta"]])
         self.assertEqual(stats.retry_count, 0)
         self.assertEqual(stats.adaptive_concurrency_reductions, 1)
-        self.assertTrue(any("电脑同时打开的网络连接太多" in message and "放慢" in message for message in errors))
+        self.assertTrue(any("本机同时打开的网络连接过多" in message and "降低速度" in message for message in errors))
 
     def test_translate_texts_waits_out_a_limit_at_minimum_capacity(self) -> None:
         # A key already walked down to the minimum cap is the normal state of a

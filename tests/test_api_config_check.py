@@ -23,7 +23,7 @@ class ApiConfigCheckTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.status, "missing_api_key")
-        self.assertIn("API Key", result.message)
+        self.assertIn("API 密钥", result.message)
 
     def test_cloud_provider_with_required_fields_passes_config_check(self) -> None:
         settings = AppSettings(

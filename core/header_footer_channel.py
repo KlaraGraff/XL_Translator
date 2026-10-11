@@ -181,7 +181,7 @@ def _locate_tokens(
         token = original[begin:end]
         found = produced.find(token, cursor)
         if found < 0:
-            return [], [], f"原行里的「{token}」在改写后的整行里被改动或删掉了"
+            return [], [], f"原行中的「{token}」在改写后的整行中被修改或删除"
         produced_spans.append((found, found + len(token)))
         cursor = found + len(token)
     return origin_spans, produced_spans, ""
@@ -197,14 +197,14 @@ def verify_insert_only(original: str, produced: str) -> tuple[bool, str]:
     source = str(original or "")
     result = str(produced or "").strip()
     if not result:
-        return False, "模型没有返回整行内容"
+        return False, "模型未返回整行内容"
     if "\n" in result or "\r" in result:
-        return False, "改写后的整行里出现了换行，会撑高页眉页脚"
+        return False, "改写后的整行包含换行，会增加页眉页脚的高度"
 
     source_len = len("".join(source.split()))
     result_len = len("".join(result.split()))
     if result_len > source_len * _MAX_GROWTH_RATIO + _MAX_GROWTH_SLACK:
-        return False, "改写后的整行比原行长太多，可能加了原文没有的内容"
+        return False, "改写后的整行明显长于原行，可能添加了原文中没有的内容"
 
     _, _, reason = _locate_tokens(source, result)
     return (False, reason) if reason else (True, "")
@@ -415,7 +415,7 @@ def resolve_header_footer_lines(
             HeaderFooterResolution(
                 source=line,
                 resolution=RESOLUTION_UNRESOLVED,
-                reject_reason="当前翻译连接不支持这一步" if ask_model is None else "",
+                reject_reason="当前翻译连接不支持此步骤" if ask_model is None else "",
             )
             for line in pending
         )
@@ -464,5 +464,5 @@ def _decide(line: str, produced: str, added: str) -> HeaderFooterResolution:
     return HeaderFooterResolution(
         source=line,
         resolution=RESOLUTION_UNRESOLVED,
-        reject_reason=reason or "模型没有返回可用结果",
+        reject_reason=reason or "模型未返回可用结果",
     )

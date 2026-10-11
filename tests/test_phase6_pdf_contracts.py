@@ -326,7 +326,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
                 )
 
             self.assertEqual(blocked.status_code, 422, blocked.text)
-            self.assertIn("上次测试没有通过", blocked.json()["detail"])
+            self.assertIn("上次测试未通过", blocked.json()["detail"])
             # 界面靠这个 reason 认出「这一条拦截是有出路的」，弹一个带「不管测试结果，
             # 开始」按钮的窗口。丢了它就只剩一句两秒消失的提示，而提示里让人做的事
             # 界面上没有入口。
@@ -344,7 +344,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
             files = [PdfFileItem(root / "source.pdf", "source", 1.0, page_count=1)]
 
             with patch("core.model_roles.get_key", return_value="pdf-route-secret"):
-                with self.assertRaisesRegex(TaskInputError, "是一个文件，不是文件夹"):
+                with self.assertRaisesRegex(TaskInputError, "是文件而非文件夹"):
                     get_surface("pdf").validate_preflight(
                         files=files,
                         settings=settings,

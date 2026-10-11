@@ -290,7 +290,7 @@ class ExcelResumeTests(unittest.TestCase):
             wb_out.close()
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("接着上次继续：doc 在上次的翻译结果", log_texts)
+        self.assertIn("继续上次翻译：doc 在上次的翻译结果", log_texts)
 
         # resume 目录全程只读。
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
@@ -333,7 +333,7 @@ class ExcelResumeTests(unittest.TestCase):
         self.assertIn("你好", all_misses)
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertNotIn("接着上次继续：", log_texts)  # 没有底稿可换，不应出现"换底稿"日志
+        self.assertNotIn("继续上次翻译：", log_texts)  # 没有底稿可换，不应出现"换底稿"日志
 
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
 
@@ -396,8 +396,8 @@ class ExcelResumeTests(unittest.TestCase):
             wb_out.close()
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("识别出原文语言后再在它的基础上补译", log_texts)
-        self.assertIn("接着上次继续：c 在上次的翻译结果", log_texts)
+        self.assertIn("识别原文语言后将在此基础上补译", log_texts)
+        self.assertIn("继续上次翻译：c 在上次的翻译结果", log_texts)
 
         # resume 目录全程只读。
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
@@ -437,7 +437,7 @@ class ExcelResumeTests(unittest.TestCase):
 
         log_texts = "\n".join(_log_texts(runner))
         self.assertIn("上次的翻译结果（", log_texts)
-        self.assertIn("已损坏或打不开，这次从头完整翻译", log_texts)
+        self.assertIn("已损坏或无法打开，本次将从头完整翻译", log_texts)
 
         # 损坏的底稿文件本身不该被删除或改写。
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
@@ -476,7 +476,7 @@ class ExcelResumeTests(unittest.TestCase):
             done = _run_and_get_done(runner)
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("的原文件比上次翻译时", log_texts)
+        self.assertIn("的源文件比上次翻译时", log_texts)
 
         result = done.file_results[0]
         self.assertTrue(result.get("success"), result)
@@ -538,7 +538,7 @@ class ExcelResumeTests(unittest.TestCase):
             done = _run_and_get_done(runner)
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("的原文件比上次翻译时", log_texts)
+        self.assertIn("的源文件比上次翻译时", log_texts)
 
         result = done.file_results[0]
         self.assertTrue(result.get("success"), result)
@@ -673,7 +673,7 @@ class ExcelResumeTests(unittest.TestCase):
             wb_out.close()
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("没法接着上次的结果补译，这次从头完整翻译", log_texts)
+        self.assertIn("无法基于上次的结果补译，本次将从头完整翻译", log_texts)
 
         # 底稿本身只读——建计划失败也不该碰它。
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
@@ -745,7 +745,7 @@ class ExcelResumeTests(unittest.TestCase):
             wb_out.close()
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertIn("没法接着上次的结果补译，这次从头完整翻译", log_texts)
+        self.assertIn("无法基于上次的结果补译，本次将从头完整翻译", log_texts)
 
         self.assertEqual(_fingerprint(resume_dir), fingerprint_before)
 
@@ -778,7 +778,7 @@ class ExcelResumeTests(unittest.TestCase):
         self.assertTrue(result.get("success"), result)
 
         log_texts = "\n".join(_log_texts(runner))
-        self.assertNotIn("输出文件会和原文一致", log_texts)
+        self.assertNotIn("输出文件将与原文一致", log_texts)
         self.assertIn("输出与上次的翻译结果一致", log_texts)
 
     # ── 场景 6：不带 resume_output_dir → 行为与旧版完全一致 ──────────────────
@@ -809,7 +809,7 @@ class ExcelResumeTests(unittest.TestCase):
 
         # 没有 resume_output_dir，任何"续译换底稿"相关分支都不该被触发。
         log_texts = "\n".join(_log_texts(runner))
-        self.assertNotIn("接着上次继续", log_texts)
+        self.assertNotIn("继续上次翻译", log_texts)
         self.assertNotIn("上次的翻译结果", log_texts)
 
     # ── 场景 7：续译 + 「保留原文副本」开启 → 不从双语底稿硬克隆 _原文 分表 ──
@@ -967,7 +967,7 @@ class ExcelResumeTests(unittest.TestCase):
 
         self.assertEqual([t for batch in calls for t in batch], ["再见"])
         log_texts = "\n".join(_log_texts(runner))
-        self.assertNotIn("没法接着上次的结果补译", log_texts)
+        self.assertNotIn("无法基于上次的结果补译", log_texts)
         out_path = Path(done.file_results[0]["output_path"])
         wb_out = load_workbook(out_path)
         try:

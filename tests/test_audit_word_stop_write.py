@@ -274,7 +274,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             # 的既有兜底：global_translations 缺这一条，写盘时自动落回原文。
             self.assertIn("翻译中途被打断的段落。", paragraphs)
             # 剩余段数按产物里还是原文的段落数（与续译弹窗同一口径）。
-            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertIn("尚有 1 段未翻译", stopped.message)
             self.assertEqual(stopped.files[0]["unfinished_text_count"], 1)
             # 停止时没翻到的段落是「停止时尚未翻译」，不是需复核的质量问题。
             self.assertFalse(
@@ -401,7 +401,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
 
             stopped = self._terminal_message(runner, StoppedMsg)
             expected_message = (
-                "任务已停止，已翻好的内容写进了文件，还有 1 段没翻，保留原文，可以接着翻译。"
+                "任务已停止，已翻译的内容已写入文件，尚有 1 段未翻译、保留原文，可继续翻译。"
             )
             self.assertEqual(stopped.message, expected_message)
             # 账记在「停止」头上：不许把这次提前收尾包装成失败或错误。
@@ -489,7 +489,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
 
             stopped = self._terminal_message(runner, StoppedMsg)
             # 进度不许撒谎：真译文只有 1 条，占位不算「已译」。
-            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertIn("尚有 1 段未翻译", stopped.message)
             self.assertEqual(stopped.kpi["unstarted_text_count"], 1)
             # 没翻到的段落在产物里保留原文。
             output_path = Path(stopped.files[0]["output"])
@@ -501,7 +501,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             # 不是重试穷尽。
             review_items = stopped.files[0]["review_items"]
             for item in review_items:
-                self.assertNotIn("重译后仍没得到有效译文", str(item))
+                self.assertNotIn("重译后仍未获得有效译文", str(item))
             warn_logs = [
                 message.message
                 for message in list(runner._queue.queue)
@@ -652,7 +652,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             residual = [
                 item
                 for item in stopped.issues
-                if item.get("problem") == "译文里留着没翻译的原文片段"
+                if item.get("problem") == "译文中残留未翻译的原文片段"
                 and item.get("severity") == "needs_review"
             ]
             self.assertEqual(
@@ -749,7 +749,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
                 runner._run()
 
             stopped = self._terminal_message(runner, StoppedMsg)
-            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertIn("尚有 1 段未翻译", stopped.message)
             self.assertEqual(stopped.kpi["unstarted_text_count"], 1)
             written = Document(Path(stopped.files[0]["output"]))
             paragraphs = [paragraph.text for paragraph in written.paragraphs]
@@ -833,9 +833,9 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             stopped = self._terminal_message(runner, StoppedMsg)
             self.assertFalse(runner._user_stop_requested)
             # 限流原因打头，不换成「任务已停止」。
-            self.assertTrue(stopped.message.startswith("接口持续限流"), stopped.message)
+            self.assertTrue(stopped.message.startswith("模型服务持续限流"), stopped.message)
             self.assertNotIn("任务已停止", stopped.message)
-            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertIn("尚有 1 段未翻译", stopped.message)
             # 没翻成的段落照常进需复核（体检带 report_untranslated=True）。
             self.assertTrue(coverage.called)
             for call in coverage.call_args_list:

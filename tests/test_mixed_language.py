@@ -188,7 +188,7 @@ class MixedLanguageStopTests(unittest.TestCase):
             # 以前 note 是 str(exc)：任务层只认 stopped/missing_result，这些格子
             # 就成了「待人工确认」、被标记复核，日志还说「没能翻译」。
             self.assertEqual(result.note, "stopped")
-        self.assertFalse([e for e in errors if "没能翻译" in e], errors)
+        self.assertFalse([e for e in errors if "未能翻译" in e], errors)
 
 
 if __name__ == "__main__":

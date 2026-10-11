@@ -164,12 +164,12 @@ def register(app: FastAPI) -> None:
             incoming = CustomTargetLang.model_validate(raw)
             source_code = incoming.code.strip()
             if not source_code:
-                raise HTTPException(422, "这份记忆库备份里的自定义语言信息不完整，无法导入。")
+                raise HTTPException(422, "此记忆库备份中的自定义语言信息不完整，无法导入。")
             target_code = code_map.get(source_code, source_code)
             if not is_custom_target_lang(source_code) or not is_custom_target_lang(target_code):
                 raise HTTPException(
                     422,
-                    "这份记忆库备份里的自定义语言信息不完整，无法导入。",
+                    "此记忆库备份中的自定义语言信息不完整，无法导入。",
                 )
             existing = by_code.get(target_code)
             if existing is not None:
@@ -179,7 +179,7 @@ def register(app: FastAPI) -> None:
                 ):
                     raise HTTPException(
                         409,
-                        f"备份里的自定义语言（代码 {source_code}）和本机已有的同代码语言设置不同；请在「自定义代码映射」里给它换一个新代码后重试。",
+                        f"备份中的自定义语言（代码 {source_code}）与本机同代码语言的设置不同；请在「自定义代码映射」中为其指定新代码后重试。",
                     )
                 continue
             if target_code != source_code:
@@ -192,14 +192,14 @@ def register(app: FastAPI) -> None:
         def remap_pair(pair: object) -> str:
             parsed = tm_manager.split_lang_pair(str(pair or ""))
             if parsed is None:
-                raise HTTPException(422, f"这份记忆库备份里有无法识别的语言方向：{pair}")
+                raise HTTPException(422, f"此记忆库备份包含无法识别的语言方向：{pair}")
             source, target = parsed
             source = code_map.get(source, source)
             target = code_map.get(target, target)
             if source.startswith("x-custom-"):
-                raise HTTPException(422, "这份记忆库备份把自定义语言用作了原文语言，无法导入（自定义语言只能作为目标语言）。")
+                raise HTTPException(422, "此记忆库备份将自定义语言用作源语言，无法导入（自定义语言只能作为目标语言）。")
             if target.startswith("x-custom-") and target not in custom_codes:
-                raise HTTPException(422, "这份记忆库备份里的自定义语言信息不完整，无法导入。")
+                raise HTTPException(422, "此记忆库备份中的自定义语言信息不完整，无法导入。")
             return f"{source}-{target}"
 
         grouped: dict[str, list[dict[str, Any]]] = {}

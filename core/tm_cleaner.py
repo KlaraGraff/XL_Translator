@@ -51,7 +51,7 @@ def _cleaning_failure_reason(raw: str) -> str:
     sentence = humanize_error(raw)
     if sentence and re.search(r"[\u4e00-\u9fff]", sentence) and not re.search(r"https?://", sentence):
         return sentence
-    return "模型这几次没有返回可用结果，请稍后重试，或在设置里检查记忆库清洗模型。"
+    return "模型最近几次均未返回可用结果，请稍后重试，或在设置中检查记忆库清洗模型。"
 
 
 class TmCleaningBatchError(RuntimeError):
@@ -71,8 +71,7 @@ class TmCleaningBatchError(RuntimeError):
             f"首个错误原文：{self.first_error}"
         )
         super().__init__(
-            f"记忆库清洗有 {self.failed_batches} 批没成功（共 {self.total_batches} 批）："
-            f"{_cleaning_failure_reason(self.first_error)}"
+            f"记忆库清洗有 {self.failed_batches} 批未成功（共 {self.total_batches} 批）：{_cleaning_failure_reason(self.first_error)}"
         )
 
 

@@ -241,7 +241,7 @@ def _scan_one_excel_file(
         # 这句会原样出现在「查看扫描报告」里。原来直接拼 str(exc)，用户看到的是
         # File is not a zip file 之类的英文库报错，既不知道是哪一类问题也不知道怎么办。
         message = "读取失败：" + humanize_error(
-            exc, fallback="这个文件读不出来，可能已损坏或格式与后缀不符。"
+            exc, fallback="无法读取该文件，可能已损坏或格式与扩展名不符。"
         )
         logger.warning(f"扫描文件失败 {path.name}：{exc!r}")
         result.skipped.append(

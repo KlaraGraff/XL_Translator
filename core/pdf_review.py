@@ -121,7 +121,7 @@ class OpenAICompatiblePdfReviewClient:
                 )
             )
         if not model_config.api_key:
-            raise PdfReviewModelUnavailableError("PDF 与图片审核模型还没有填写 API 密钥")
+            raise PdfReviewModelUnavailableError("PDF 与图片审核模型尚未填写 API 密钥")
         if not model_config.model:
             raise PdfReviewModelUnavailableError("PDF 与图片审核模型的名称不能为空")
 
@@ -197,8 +197,8 @@ class OpenAICompatiblePdfReviewClient:
                     humanize_error(
                         str(exc),
                         fallback=(
-                            "PDF 与图片审核模型当前不可用，请在设置里检查这条连接的 "
-                            "API 密钥、模型名和账号额度。"
+                            "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                            "模型名称和账户额度。"
                         ),
                     )
                 ) from exc
@@ -232,8 +232,8 @@ def parse_pdf_review_result(text: str) -> PdfPageReviewResult:
             blocking_issues=[
                 PdfReviewIssue(
                     type="invalid_review_response",
-                    problem="审核模型的回复格式不对，没法据此判断这一页。",
-                    suggestion="请重新审核，或换一个更稳定的看图模型。",
+                    problem="审核模型的回复格式有误，无法据此判断此页。",
+                    suggestion="请重新审核，或更换更稳定的图片识别模型。",
                 )
             ],
             summary="审核结果无法解析。",
@@ -282,7 +282,7 @@ def check_pdf_review_connectivity(
     )
     signature = pdf_review_model_signature(settings, connection_id)
     if not provider_supports_capability(config.provider, "vision_text"):
-        message = "这条连接的服务商不支持看图审核，请换一条连接。"
+        message = "此连接的服务商不支持图片审核，请更换连接。"
         record_pdf_review_model_availability(
             settings,
             ok=False,
@@ -324,7 +324,7 @@ def check_pdf_review_connectivity(
             except Exception as exc:  # noqa: BLE001 - retry and report all review errors.
                 last_error = _sanitize_error(exc)
 
-    message = last_error or "审核模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。"
+    message = last_error or "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。"
     record_pdf_review_model_availability(
         settings,
         ok=False,
@@ -339,7 +339,7 @@ def check_pdf_review_connectivity(
 def _normalize_base_url(config: EffectiveModelConfig) -> str:
     base_url = normalize_cloud_base_url(config.provider, config.base_url)
     if not base_url:
-        raise PdfReviewModelUnavailableError("PDF 与图片审核模型还没有填写接口地址")
+        raise PdfReviewModelUnavailableError("PDF 与图片审核模型尚未填写接口地址")
     return base_url
 
 
@@ -428,7 +428,7 @@ def _sanitize_error(exc: BaseException) -> str:
     logger.debug(f"[PDF审核] 连接测试失败原始错误：{_exception_text(exc)}")
     return humanize_error(
         str(exc),
-        fallback="审核模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。",
+        fallback="审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。",
     )
 
 

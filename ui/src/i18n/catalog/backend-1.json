@@ -19,16 +19,16 @@
     "en": "{0}— attempt {1}/{2}: {3}",
     "fr": "{0}— tentative {1}/{2} : {3}"
   },
-  "状态：正在停止任务：已提交 {0} 页，等待 {1} 页完成{2}。这几页要等模型接口返回或超时，可能要几分钟；已生成的页面和素材都会保留。": {
-    "en": "Status: Stopping the task: {0} pages submitted, waiting for {1} to finish{2}. These pages must wait for the model service to respond or time out, which may take a few minutes. Pages and assets already generated will be kept.",
+  "状态：正在停止任务：已提交 {0} 页，正在等待 {1} 页完成{2}。这些页面需等待模型服务响应或超时，可能需要几分钟；已生成的页面和素材将予以保留。": {
+    "en": "Status: Stopping the task: {0} pages submitted, waiting for {1} to finish{2}. These pages must wait for the model service to respond or time out, which may take several minutes. Pages and assets already generated will be kept.",
     "fr": "Statut : arrêt de la tâche : {0} pages envoyées, {1} en attente de fin{2}. Ces pages doivent attendre la réponse du service de modèle ou l'expiration du délai, ce qui peut prendre quelques minutes. Les pages et ressources déjà générées seront conservées."
   },
   "（已等待 {0} 分 {1} 秒）": {
     "en": "(waited {0} min {1} s)",
     "fr": "(attente : {0} min {1} s)"
   },
-  "这份 PDF 设置了密码或权限保护，暂时不能翻译。": {
-    "en": "This PDF is password- or permission-protected and can't be translated for now.",
+  "此 PDF 受密码或权限保护，暂时无法翻译。": {
+    "en": "This PDF is password- or permission-protected and cannot be translated at this time.",
     "fr": "Ce PDF est protégé par un mot de passe ou des restrictions d'accès et ne peut pas être traduit pour le moment."
   },
   "未知错误。": {
@@ -52,18 +52,18 @@
     "fr": "L'image générée n'a pas pu être décodée."
   },
   "页面比例不匹配。": {
-    "en": "The page aspect ratio doesn't match.",
+    "en": "The page aspect ratio does not match.",
     "fr": "Les proportions de la page ne correspondent pas."
   },
-  "译图的长宽比例算不出来": {
-    "en": "Couldn't compute the aspect ratio of the translated image",
+  "无法计算译图的长宽比": {
+    "en": "Could not compute the aspect ratio of the translated image",
     "fr": "Impossible de calculer les proportions de l'image traduite"
   },
-  "译图的长宽比例和原页差得太多（超过 {0}）": {
+  "译图与原页的长宽比相差过大（超过 {0}）": {
     "en": "The translated image's aspect ratio differs too much from the original page (more than {0})",
     "fr": "Les proportions de l'image traduite s'écartent trop de la page d'origine (plus de {0})"
   },
-  "译图太小（{0}×{1} 像素），文字可能看不清": {
+  "译图尺寸过小（{0}×{1} 像素），文字可能无法辨认": {
     "en": "The translated image is too small ({0}×{1} pixels); text may be hard to read",
     "fr": "L'image traduite est trop petite ({0}×{1} pixels) ; le texte risque d'être illisible"
   },
@@ -99,17 +99,17 @@
     "en": "Placeholder page image",
     "fr": "Image de la page de substitution"
   },
-  "正在暂停：不再开始新的页面，等正在处理的页面完成。": {
+  "正在暂停：不再开始新的页面，正在等待处理中的页面完成。": {
     "en": "Pausing: no new pages will start; waiting for pages in progress to finish.",
     "fr": "Mise en pause : aucune nouvelle page ne sera lancée ; attente de la fin des pages en cours."
   },
-  "[{0}] 第 {1} 页开始重新生成：成功后才会替换译文页和输出文件。": {
+  "[{0}] 开始重新生成第 {1} 页：仅在成功后替换译文页和输出文件。": {
     "en": "[{0}] Regenerating page {1}: the translated page and output files will only be replaced if it succeeds.",
     "fr": "[{0}] Régénération de la page {1} : la page traduite et les fichiers de sortie ne seront remplacés qu'en cas de réussite."
   },
-  "[{0}] 第 {1} 页重新生成没有成功，已保留上一版译文页和输出文件，任务结果未改动。": {
-    "en": "[{0}] Regenerating page {1} didn't succeed. The previous translated page and output files were kept; the task result is unchanged.",
-    "fr": "[{0}] La régénération de la page {1} n'a pas abouti. La version précédente de la page traduite et les fichiers de sortie ont été conservés ; le résultat de la tâche est inchangé."
+  "[{0}] 第 {1} 页重新生成失败，已保留上一版译文页和输出文件，任务结果未改动。": {
+    "en": "[{0}] Regenerating page {1} failed. The previous translated page and output files were kept; the task result is unchanged.",
+    "fr": "[{0}] Échec de la régénération de la page {1}. La version précédente de la page traduite et les fichiers de sortie ont été conservés ; le résultat de la tâche est inchangé."
   },
   "[{0}] 第 {1} 页开始换回上一版：重新生成输出文件，不调用模型。": {
     "en": "[{0}] Reverting page {1} to the previous version: regenerating output files without calling the model.",
@@ -135,20 +135,20 @@
     "en": "[{0}] Page {1} skipped as you chose; a failure placeholder page will be generated.",
     "fr": "[{0}] Page {1} ignorée selon votre choix ; une page de substitution sera générée."
   },
-  "[{0}] 第 {1} 页在中止时还没有生成结果，已按未开始处理：不生成占位页，接着上次继续时会重新排队。": {
-    "en": "[{0}] Page {1} had no result when the task was stopped, so it is treated as not started: no placeholder page will be generated, and it will be requeued when you resume.",
-    "fr": "[{0}] La page {1} n'avait pas de résultat à l'arrêt de la tâche ; elle est considérée comme non commencée : aucune page de substitution ne sera générée et elle sera remise en file à la reprise."
+  "[{0}] 第 {1} 页在任务停止时尚未生成结果，已按未开始处理：不生成占位页，继续上次翻译时将重新排队。": {
+    "en": "[{0}] Page {1} had no result when the task was stopped, so it is treated as not started: no placeholder page will be generated, and it will be requeued when you resume the previous translation.",
+    "fr": "[{0}] La page {1} n'avait pas de résultat à l'arrêt de la tâche ; elle est considérée comme non commencée : aucune page de substitution ne sera générée et elle sera remise en file à la reprise de la traduction précédente."
   },
-  "接着上次继续：共复用上次已完成页 {0} 页，本次只需生成 {1} 页（复用页不消耗任何模型调用）。": {
-    "en": "Resume: reusing {0} {0|page|pages} completed last time; only {1} {1|page needs|pages need} to be generated this time (reused pages don't use any model calls).",
-    "fr": "Reprise : {0} {0|page terminée|pages terminées} la dernière fois {0|est réutilisée|sont réutilisées} ; seules {1} {1|page|pages} restent à générer (les pages réutilisées ne consomment aucun appel au modèle)."
+  "继续上次翻译：复用上次已完成的 {0} 页，本次仅需生成 {1} 页（复用的页面不调用模型）。": {
+    "en": "Resume previous translation: reusing {0} {0|page|pages} completed last time; only {1} {1|page needs|pages need} to be generated this time (reused pages do not call the model).",
+    "fr": "Reprendre la traduction précédente : {0} {0|page terminée|pages terminées} la dernière fois {0|est réutilisée|sont réutilisées} ; seules {1} {1|page|pages} restent à générer (les pages réutilisées ne font appel à aucun modèle)."
   },
-  "这一页没能生成译图": {
+  "此页未能生成译图": {
     "en": "No translated image could be generated for this page",
     "fr": "Aucune image traduite n'a pu être générée pour cette page"
   },
-  "{0}模型只能输出固定尺寸，这一页已补白边保持原比例。": {
-    "en": "{0}— the model can only output a fixed size, so white margins were added to keep this page's original proportions.",
+  "{0}模型仅支持固定尺寸输出，已为此页补充白边以保持原比例。": {
+    "en": "{0}— the model supports only a fixed output size; white margins were added to keep this page's original proportions.",
     "fr": "{0}— le modèle ne produit qu'une taille fixe ; des marges blanches ont été ajoutées pour conserver les proportions d'origine de cette page."
   },
   "[{0}] 第 {1} 页 ": {
@@ -163,8 +163,8 @@
     "en": "Generated successfully",
     "fr": "Générée avec succès"
   },
-  "状态：正在停止任务：已提交的页面都已结束，正在收尾。": {
-    "en": "Status: Stopping the task: all submitted pages have finished; wrapping up.",
+  "状态：正在停止任务：已提交的页面均已结束，正在完成最后处理。": {
+    "en": "Status: Stopping the task: all submitted pages have finished; finalizing.",
     "fr": "Statut : arrêt de la tâche : toutes les pages envoyées sont terminées ; finalisation en cours."
   },
   "（已等待 {0} 秒）": {
@@ -179,19 +179,19 @@
     "en": "Invalid image size.",
     "fr": "Taille d'image non valide."
   },
-  "PDF 与图片翻译模型这一次没有返回可用结果。": {
-    "en": "The PDF & image translation model didn't return a usable result this time.",
+  "PDF 与图片翻译模型本次未返回可用结果。": {
+    "en": "The PDF & image translation model did not return a usable result this time.",
     "fr": "Le modèle de traduction PDF et images n'a pas renvoyé de résultat exploitable cette fois."
   },
-  "不是支持的 PDF 或图片文件，或者是系统临时文件。": {
+  "不是受支持的 PDF 或图片文件，或为系统临时文件。": {
     "en": "Not a supported PDF or image file, or it is a system temporary file.",
     "fr": "Ce n'est pas un fichier PDF ou image pris en charge, ou il s'agit d'un fichier temporaire du système."
   },
-  "接口返回的这一页不是可用的图片，程序无法解码。": {
-    "en": "The page returned by the service isn't a usable image and can't be decoded.",
+  "服务返回的页面不是有效图片，无法解码。": {
+    "en": "The page returned by the service is not a usable image and cannot be decoded.",
     "fr": "La page renvoyée par le service n'est pas une image exploitable et ne peut pas être décodée."
   },
-  "译图几乎是空白的，原页却有内容，可能丢了内容": {
+  "译图几乎为空白，而原页有内容，可能存在内容丢失": {
     "en": "The translated image is almost blank while the original page has content; content may have been lost",
     "fr": "L'image traduite est presque vide alors que la page d'origine a du contenu ; du contenu a peut-être été perdu"
   },
@@ -199,7 +199,7 @@
     "en": "Status: Paused. You can resume translating or end the task.",
     "fr": "Statut : en pause. Vous pouvez reprendre la traduction ou terminer la tâche."
   },
-  "已继续翻译后面的页面。": {
+  "已继续翻译剩余页面。": {
     "en": "Resumed translating the remaining pages.",
     "fr": "Reprise de la traduction des pages restantes."
   },
@@ -207,20 +207,20 @@
     "en": "Page image type must be source, translated or previous.",
     "fr": "Le type d'image de page doit être source, translated ou previous."
   },
-  "第 {0} 页正在重新生成，等它跑完再操作下一页。": {
-    "en": "Page {0} is being regenerated; wait for it to finish before working on another page.",
-    "fr": "La page {0} est en cours de régénération ; attendez la fin avant d'agir sur une autre page."
+  "第 {0} 页正在重新生成，完成后才能操作其他页。": {
+    "en": "Page {0} is being regenerated. Other pages can be changed after it finishes.",
+    "fr": "La page {0} est en cours de régénération. Les autres pages pourront être modifiées une fois l'opération terminée."
   },
-  "第 {0} 页正在换回上一版，等它完成再操作下一页。": {
-    "en": "Page {0} is being reverted to the previous version; wait for it to finish before working on another page.",
-    "fr": "La page {0} est en cours de retour à la version précédente ; attendez la fin avant d'agir sur une autre page."
+  "第 {0} 页正在换回上一版，完成后才能操作其他页。": {
+    "en": "Page {0} is being reverted to the previous version. Other pages can be changed after it finishes.",
+    "fr": "La page {0} est en cours de retour à la version précédente. Les autres pages pourront être modifiées une fois l'opération terminée."
   },
   "任务还在运行，请暂停后再做单页操作。": {
     "en": "The task is still running. Pause it before working on individual pages.",
     "fr": "La tâche est toujours en cours. Mettez-la en pause avant d'agir sur une page."
   },
-  "这个任务没有留下输出目录，不能重新生成单页。": {
-    "en": "This task left no output folder, so individual pages can't be regenerated.",
+  "此任务没有保留输出目录，无法重新生成单页。": {
+    "en": "This task has no output folder, so individual pages cannot be regenerated.",
     "fr": "Cette tâche n'a laissé aucun dossier de sortie ; impossible de régénérer une page."
   },
   "该任务没有这个文件的逐页记录。": {
@@ -231,9 +231,9 @@
     "en": "Page number out of range: {0} has {1} {1|page|pages}.",
     "fr": "Numéro de page hors limites : {0} compte {1} {1|page|pages}."
   },
-  "{0} 这次没有生成输出文件，单页重新生成帮不上忙；请重新建立任务。": {
-    "en": "No output file was generated for {0} this time, so regenerating a single page won't help. Please create a new task.",
-    "fr": "Aucun fichier de sortie n'a été généré pour {0} cette fois ; régénérer une page ne servirait à rien. Veuillez créer une nouvelle tâche."
+  "{0} 本次未生成输出文件，无法通过重新生成单页解决；请新建任务。": {
+    "en": "No output file was generated for {0} this time, so regenerating a single page cannot resolve this. Create a new task.",
+    "fr": "Aucun fichier de sortie n'a été généré pour {0} cette fois ; la régénération d'une page ne permet pas de résoudre ce problème. Veuillez créer une nouvelle tâche."
   },
   "{0} 第 {1} 页没有可以重新生成的结果。": {
     "en": "{0} page {1} has no result that can be regenerated.",
@@ -244,30 +244,30 @@
     "fr": "[{0}] Échec de la régénération de la page {1} : {2}"
   },
   "PDF 与图片翻译模型的名称不能为空。": {
-    "en": "The PDF & image translation model name can't be empty.",
+    "en": "The PDF & image translation model name cannot be empty.",
     "fr": "Le nom du modèle de traduction PDF et images ne peut pas être vide."
   },
-  "{0} 第 {1} 页的结果已经变了，本次重新生成已放弃。": {
-    "en": "{0} page {1} has changed in the meantime, so this regeneration was abandoned.",
-    "fr": "{0}, page {1} : le résultat a changé entre-temps, cette régénération a été abandonnée."
+  "{0} 第 {1} 页的结果已发生变化，已取消本次重新生成。": {
+    "en": "{0} page {1} has changed in the meantime, so this regeneration was canceled.",
+    "fr": "{0}, page {1} : le résultat a changé entre-temps ; cette régénération a été annulée."
   },
-  "这个任务没有留下输出目录，不能换回上一版。": {
-    "en": "This task left no output folder, so it can't revert to the previous version.",
+  "此任务没有保留输出目录，无法换回上一版。": {
+    "en": "This task has no output folder, so it cannot revert to the previous version.",
     "fr": "Cette tâche n'a laissé aucun dossier de sortie ; impossible de revenir à la version précédente."
   },
-  "{0} 这次没有生成输出文件，换回上一版帮不上忙；请重新建立任务。": {
-    "en": "No output file was generated for {0} this time, so reverting to the previous version won't help. Please create a new task.",
-    "fr": "Aucun fichier de sortie n'a été généré pour {0} cette fois ; revenir à la version précédente ne servirait à rien. Veuillez créer une nouvelle tâche."
+  "{0} 本次未生成输出文件，无法通过换回上一版解决；请新建任务。": {
+    "en": "No output file was generated for {0} this time, so reverting to the previous version cannot resolve this. Create a new task.",
+    "fr": "Aucun fichier de sortie n'a été généré pour {0} cette fois ; le retour à la version précédente ne permet pas de résoudre ce problème. Veuillez créer une nouvelle tâche."
   },
-  "{0} 第 {1} 页没有留下上一版译文，无法换回。": {
+  "{0} 第 {1} 页没有上一版译文，无法换回。": {
     "en": "{0} page {1} has no previous translation to revert to.",
     "fr": "{0}, page {1} : aucune traduction précédente vers laquelle revenir."
   },
-  "{0} 第 {1} 页当前的译文页图不在了，无法互换；请重新生成这一页。": {
-    "en": "{0} page {1}: the current translated page image is missing, so the versions can't be swapped. Please regenerate this page.",
+  "{0} 第 {1} 页的当前译文页图已丢失，无法互换；请重新生成此页。": {
+    "en": "{0} page {1}: the current translated page image is missing, so the versions cannot be swapped. Regenerate this page.",
     "fr": "{0}, page {1} : l'image de la page traduite actuelle est introuvable, impossible d'échanger les versions. Veuillez régénérer cette page."
   },
-  "[{0}] 第 {1} 页已不是失败页，已放弃跳过。": {
+  "[{0}] 第 {1} 页已不是失败页，已取消跳过。": {
     "en": "[{0}] Page {1} is no longer a failed page; skip canceled.",
     "fr": "[{0}] La page {1} n'est plus en échec ; saut annulé."
   },
@@ -283,21 +283,21 @@
     "en": "Translation report written: {0}",
     "fr": "Rapport de traduction enregistré : {0}"
   },
-  "接着上次继续：上次的输出文件夹和本次的重叠，本次改为全部重新翻译。": {
-    "en": "Resume: last run's output folder overlaps with this one, so everything will be translated again.",
-    "fr": "Reprise : le dossier de sortie précédent chevauche celui-ci ; tout sera retraduit."
+  "继续上次翻译：上次的输出文件夹与本次重叠，本次将全部重新翻译。": {
+    "en": "Resume previous translation: the previous output folder overlaps with this one, so everything will be translated again.",
+    "fr": "Reprendre la traduction précédente : le dossier de sortie précédent chevauche celui-ci ; tout sera retraduit."
   },
-  "接着上次继续：上次的输出文件夹里读不到进度记录（可能已被移动、删除或损坏），本次全部重新翻译。": {
-    "en": "Resume: no progress record could be read in last run's output folder (it may have been moved, deleted or damaged), so everything will be translated again.",
-    "fr": "Reprise : aucun suivi de progression n'a pu être lu dans le dossier de sortie précédent (déplacé, supprimé ou endommagé) ; tout sera retraduit."
+  "继续上次翻译：无法读取上次输出文件夹中的进度记录（可能已被移动、删除或损坏），本次将全部重新翻译。": {
+    "en": "Resume previous translation: no progress record could be read in the previous output folder (it may have been moved, deleted or damaged), so everything will be translated again.",
+    "fr": "Reprendre la traduction précédente : aucun suivi de progression n'a pu être lu dans le dossier de sortie précédent (déplacé, supprimé ou endommagé) ; tout sera retraduit."
   },
-  "接着上次继续：上次输出的目标语言（{0}）和本次（{1}）不一致，本次全部重新翻译。": {
-    "en": "Resume: last run's target language ({0}) differs from this one ({1}), so everything will be translated again.",
-    "fr": "Reprise : la langue cible précédente ({0}) diffère de celle-ci ({1}) ; tout sera retraduit."
+  "继续上次翻译：上次的目标语言（{0}）与本次（{1}）不一致，本次将全部重新翻译。": {
+    "en": "Resume previous translation: the previous target language ({0}) differs from this one ({1}), so everything will be translated again.",
+    "fr": "Reprendre la traduction précédente : la langue cible précédente ({0}) diffère de celle-ci ({1}) ; tout sera retraduit."
   },
-  "接着上次继续：上次输出里没有可以直接复用的已完成页，本次全部重新翻译。": {
-    "en": "Resume: last run's output has no completed pages that can be reused, so everything will be translated again.",
-    "fr": "Reprise : la sortie précédente ne contient aucune page terminée réutilisable ; tout sera retraduit."
+  "继续上次翻译：上次输出中没有可复用的已完成页面，本次将全部重新翻译。": {
+    "en": "Resume previous translation: the previous output has no completed pages that can be reused, so everything will be translated again.",
+    "fr": "Reprendre la traduction précédente : la sortie précédente ne contient aucune page terminée réutilisable ; tout sera retraduit."
   },
   "状态：正在翻译 PDF 页面，已完成 {0} / {1} 页。": {
     "en": "Status: Translating PDF pages, {0} / {1} done.",
@@ -307,8 +307,8 @@
     "en": "Page read/render failed: {0}",
     "fr": "Échec de lecture/rendu de la page : {0}"
   },
-  "[{0}] 还有页面没翻完，这次没有生成这个文件。": {
-    "en": "[{0}] Some pages aren't translated yet, so this file wasn't generated this time.",
+  "[{0}] 尚有页面未翻译完成，本次未生成此文件。": {
+    "en": "[{0}] Some pages are not yet translated, so this file was not generated this time.",
     "fr": "[{0}] Certaines pages ne sont pas encore traduites ; ce fichier n'a pas été généré cette fois."
   },
   "[{0}] 已生成高清 PDF：{1}": {
@@ -327,8 +327,8 @@
     "en": "Failed to write the translated image: {0}",
     "fr": "Échec de l'écriture de l'image traduite : {0}"
   },
-  "{0}当前模型只能输出固定尺寸，比例对不上时会补白边保持原比例，不再重试。": {
-    "en": "{0}— the current model can only output a fixed size; when proportions don't match, white margins are added to keep the original proportions, without retrying.",
+  "{0}当前模型仅支持固定尺寸输出，比例不符时将补充白边以保持原比例，不再重试。": {
+    "en": "{0}— the current model supports only a fixed output size; when proportions do not match, white margins are added to keep the original proportions, without retrying.",
     "fr": "{0}— le modèle actuel ne produit qu'une taille fixe ; si les proportions ne correspondent pas, des marges blanches sont ajoutées pour conserver les proportions d'origine, sans nouvelle tentative."
   },
   "{0}第 {1}/{2} 次自动检查未通过：{3}": {
@@ -339,7 +339,7 @@
     "en": "{0}— page proportions corrected automatically",
     "fr": "{0}— proportions de la page corrigées automatiquement"
   },
-  "任务已停止，这一页还没有生成结果。": {
+  "任务已停止，此页尚未生成结果。": {
     "en": "The task was stopped before this page had a result.",
     "fr": "La tâche a été arrêtée avant que cette page n'ait de résultat."
   },
@@ -360,11 +360,11 @@
     "fr": "[{0}] Page de substitution générée pour la page {1} : {2}"
   },
   "暂不支持动图或多页图片。": {
-    "en": "Animated or multi-page images aren't supported yet.",
+    "en": "Animated or multi-page images are not supported yet.",
     "fr": "Les images animées ou multipages ne sont pas encore prises en charge."
   },
   "读取 PDF 的组件不可用，请重新安装本程序。": {
-    "en": "The component for reading PDFs isn't available. Please reinstall the app.",
+    "en": "The component for reading PDFs is not available. Reinstall the app.",
     "fr": "Le composant de lecture des PDF n'est pas disponible. Veuillez réinstaller l'application."
   },
   "页码必须是整数。": {
@@ -372,11 +372,11 @@
     "fr": "Le numéro de page doit être un nombre entier."
   },
   "PDF 与图片审核模型的名称不能为空。": {
-    "en": "The PDF & image review model name can't be empty.",
+    "en": "The PDF & image review model name cannot be empty.",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide."
   },
   "{0}已保留上一版译文页和输出文件，本次改动未生效。": {
-    "en": "{0} The previous translated page and output files were kept; this change didn't take effect.",
+    "en": "{0} The previous translated page and output files were kept; this change did not take effect.",
     "fr": "{0} La version précédente de la page traduite et les fichiers de sortie ont été conservés ; cette modification n'a pas été appliquée."
   },
   "{0}已保留上一版，输出文件未改动。": {
@@ -384,31 +384,31 @@
     "fr": "{0} La version précédente a été conservée ; les fichiers de sortie sont inchangés."
   },
   "{0}已保留当前版本，本次换回未生效。": {
-    "en": "{0} The current version was kept; the revert didn't take effect.",
+    "en": "{0} The current version was kept; the revert did not take effect.",
     "fr": "{0} La version actuelle a été conservée ; le retour en arrière n'a pas été appliqué."
   },
-  "[{0}] 第 {1} 页换回上一版没有成功，已保留当前版本，输出文件未改动。": {
-    "en": "[{0}] Reverting page {1} to the previous version didn't succeed. The current version was kept; output files are unchanged.",
-    "fr": "[{0}] Le retour de la page {1} à la version précédente n'a pas abouti. La version actuelle a été conservée ; les fichiers de sortie sont inchangés."
+  "[{0}] 第 {1} 页换回上一版失败，已保留当前版本，输出文件未改动。": {
+    "en": "[{0}] Reverting page {1} to the previous version failed. The current version was kept; output files are unchanged.",
+    "fr": "[{0}] Échec du retour de la page {1} à la version précédente. La version actuelle a été conservée ; les fichiers de sortie sont inchangés."
   },
-  "这一页的译文页图不在任务的页面存档里，已放弃换回。": {
-    "en": "This page's translated image isn't in the task's page archive, so the revert was abandoned.",
-    "fr": "L'image traduite de cette page ne figure pas dans l'archive des pages de la tâche ; le retour en arrière a été abandonné."
+  "此页的译文页图不在任务的页面存档中，已取消换回。": {
+    "en": "This page's translated image is not in the task's page archive, so the revert was canceled.",
+    "fr": "L'image traduite de cette page ne figure pas dans l'archive des pages de la tâche ; le retour en arrière a été annulé."
   },
-  "{0} 整体处理失败，不能单页操作；请重新建立任务。": {
-    "en": "Processing of {0} failed as a whole, so individual pages can't be changed. Please create a new task.",
+  "{0} 整体处理失败，无法进行单页操作；请新建任务。": {
+    "en": "Processing of {0} failed as a whole, so individual pages cannot be changed. Create a new task.",
     "fr": "Le traitement de {0} a échoué dans son ensemble ; impossible d'agir sur une page. Veuillez créer une nouvelle tâche."
   },
-  "{0} 第 {1} 页还没有跑完，暂时不能操作。": {
-    "en": "{0} page {1} hasn't finished yet and can't be changed for now.",
-    "fr": "{0}, page {1} : pas encore terminée, aucune action possible pour le moment."
+  "{0} 第 {1} 页尚未处理完成，暂时无法操作。": {
+    "en": "{0} page {1} has not finished processing and cannot be changed at this time.",
+    "fr": "{0}, page {1} : traitement en cours, aucune action possible pour le moment."
   },
-  "[{0}] 第 {1} 页状态已变化，已放弃本次单页操作。": {
-    "en": "[{0}] Page {1} status has changed, so this page action was abandoned.",
-    "fr": "[{0}] L'état de la page {1} a changé ; cette action sur la page a été abandonnée."
+  "[{0}] 第 {1} 页状态已变化，已取消本次单页操作。": {
+    "en": "[{0}] Page {1} status has changed, so this page action was canceled.",
+    "fr": "[{0}] L'état de la page {1} a changé ; cette action sur la page a été annulée."
   },
   "PDF 与图片翻译模型的名称不能为空": {
-    "en": "The PDF & image translation model name can't be empty",
+    "en": "The PDF & image translation model name cannot be empty",
     "fr": "Le nom du modèle de traduction PDF et images ne peut pas être vide"
   },
   "状态：正在读取文件，准备输出文件夹…": {
@@ -439,7 +439,7 @@
     "en": "Status: {0} {0|file|files} ready, {1} {1|page|pages} in total.",
     "fr": "Statut : {0} {0|fichier prêt|fichiers prêts}, {1} {1|page|pages} au total."
   },
-  "已停止：全部翻完的文件已经生成，没翻完的文件保留了已完成的页面和报告。": {
+  "已停止：已全部翻译的文件均已生成，未翻译完成的文件保留已完成的页面和报告。": {
     "en": "Stopped: fully translated files have been generated; unfinished files keep their completed pages and report.",
     "fr": "Arrêtée : les fichiers entièrement traduits ont été générés ; les fichiers inachevés conservent leurs pages terminées et leur rapport."
   },
@@ -455,21 +455,21 @@
     "en": "Failed to copy the source file: {0}",
     "fr": "Échec de la copie du fichier source : {0}"
   },
-  "接着上次继续：上次输出的页面存档读不出来，本次全部重新翻译。": {
-    "en": "Resume: the page archive from last run's output can't be read, so everything will be translated again.",
-    "fr": "Reprise : l'archive des pages de la sortie précédente est illisible ; tout sera retraduit."
+  "继续上次翻译：无法读取上次输出的页面存档，本次将全部重新翻译。": {
+    "en": "Resume previous translation: the page archive from the previous output cannot be read, so everything will be translated again.",
+    "fr": "Reprendre la traduction précédente : l'archive des pages de la sortie précédente est illisible ; tout sera retraduit."
   },
-  "[{0}] 接着上次继续：源文件现在有 {1} 页，上次记录的是 {2} 页，这个文件整份重新翻译。": {
-    "en": "[{0}] Resume: the source file now has {1} {1|page|pages}, but {2} {2|was|were} recorded last time, so this whole file will be translated again.",
-    "fr": "[{0}] Reprise : le fichier source compte maintenant {1} {1|page|pages}, contre {2} lors de la dernière fois ; ce fichier sera entièrement retraduit."
+  "[{0}] 继续上次翻译：源文件现有 {1} 页，上次记录为 {2} 页，此文件将全部重新翻译。": {
+    "en": "[{0}] Resume previous translation: the source file now has {1} {1|page|pages}, but {2} {2|was|were} recorded last time, so this whole file will be translated again.",
+    "fr": "[{0}] Reprendre la traduction précédente : le fichier source compte maintenant {1} {1|page|pages}, contre {2} lors de la dernière fois ; ce fichier sera entièrement retraduit."
   },
-  "[{0}] 接着上次继续：源文件在上次翻译之后改动过，这个文件整份重新翻译。": {
-    "en": "[{0}] Resume: the source file was changed after the last translation, so this whole file will be translated again.",
-    "fr": "[{0}] Reprise : le fichier source a été modifié depuis la dernière traduction ; ce fichier sera entièrement retraduit."
+  "[{0}] 继续上次翻译：源文件在上次翻译后已被修改，此文件将全部重新翻译。": {
+    "en": "[{0}] Resume previous translation: the source file was changed after the last translation, so this whole file will be translated again.",
+    "fr": "[{0}] Reprendre la traduction précédente : le fichier source a été modifié depuis la dernière traduction ; ce fichier sera entièrement retraduit."
   },
-  "[{0}] 接着上次继续：复用上次已完成页 {1} 页，本次只需生成 {2} 页。": {
-    "en": "[{0}] Resume: reusing {1} {1|page|pages} completed last time; only {2} {2|page needs|pages need} to be generated this time.",
-    "fr": "[{0}] Reprise : {1} {1|page terminée réutilisée|pages terminées réutilisées} ; seules {2} {2|page|pages} restent à générer."
+  "[{0}] 继续上次翻译：复用上次已完成的 {1} 页，本次仅需生成 {2} 页。": {
+    "en": "[{0}] Resume previous translation: reusing {1} {1|page|pages} completed last time; only {2} {2|page needs|pages need} to be generated this time.",
+    "fr": "[{0}] Reprendre la traduction précédente : {1} {1|page terminée réutilisée|pages terminées réutilisées} ; seules {2} {2|page|pages} restent à générer."
   },
   "PDF 页面读取失败：{0}": {
     "en": "Failed to read PDF page: {0}",
@@ -479,8 +479,8 @@
     "en": "[{0}] Page {1} is very large ({2}×{3} mm); processed at reduced resolution to avoid running out of memory.",
     "fr": "[{0}] La page {1} est très grande ({2}×{3} mm) ; elle a été traitée en résolution réduite pour éviter de manquer de mémoire."
   },
-  "这份 PDF 打不开，可能已损坏或后缀名与真实格式不符。": {
-    "en": "This PDF can't be opened. It may be damaged, or its extension doesn't match its actual format.",
+  "无法打开此 PDF，文件可能已损坏或扩展名与实际格式不符。": {
+    "en": "This PDF cannot be opened. It may be damaged, or its extension does not match its actual format.",
     "fr": "Ce PDF ne peut pas être ouvert. Il est peut-être endommagé, ou son extension ne correspond pas à son format réel."
   },
   "重新生成这一页时出现了未预期的问题，输出文件未更新。": {
@@ -491,25 +491,25 @@
     "en": "The PDF & image translation model settings are unusable: ",
     "fr": "Les paramètres du modèle de traduction PDF et images sont inutilisables : "
   },
-  "重新生成后没能重新生成输出文件。": {
-    "en": "The output files couldn't be regenerated after regenerating the page.",
+  "页面重新生成后，未能重新生成输出文件。": {
+    "en": "The output files could not be regenerated after regenerating the page.",
     "fr": "Les fichiers de sortie n'ont pas pu être régénérés après la régénération de la page."
   },
-  "换回上一版后没能重新生成输出文件。": {
-    "en": "The output files couldn't be regenerated after reverting to the previous version.",
+  "换回上一版后，未能重新生成输出文件。": {
+    "en": "The output files could not be regenerated after reverting to the previous version.",
     "fr": "Les fichiers de sortie n'ont pas pu être régénérés après le retour à la version précédente."
   },
   "已保留当前版本，本次换回未生效。": {
-    "en": "The current version was kept; the revert didn't take effect.",
+    "en": "The current version was kept; the revert did not take effect.",
     "fr": "La version actuelle a été conservée ; le retour en arrière n'a pas été appliqué."
   },
-  "图片任务不会生成占位页，不能跳过。": {
-    "en": "Image tasks don't generate placeholder pages, so they can't be skipped.",
+  "图片任务不生成占位页，无法跳过。": {
+    "en": "Image tasks do not generate placeholder pages, so they cannot be skipped.",
     "fr": "Les tâches d'images ne génèrent pas de page de substitution ; impossible d'ignorer."
   },
-  "{0} 第 {1} 页没有失败，不能跳过；如需改动请选择重新生成。": {
-    "en": "{0} page {1} didn't fail, so it can't be skipped. To change it, choose Regenerate.",
-    "fr": "{0}, page {1} : pas en échec, impossible de l'ignorer. Pour la modifier, choisissez Régénérer."
+  "{0} 第 {1} 页未失败，无法跳过；如需修改，请选择「重新生成」。": {
+    "en": "{0} page {1} did not fail, so it cannot be skipped. To change it, choose “Regenerate”.",
+    "fr": "{0}, page {1} : pas en échec, impossible de l'ignorer. Pour la modifier, choisissez « Régénérer »."
   },
   "[{0}] 清除旧译图失败：{1}：{2}": {
     "en": "[{0}] Failed to remove old translated image {1}: {2}",
@@ -523,9 +523,9 @@
     "en": "[{0}] No usable translated name for the output file; keeping the original name.",
     "fr": "[{0}] Aucun nom traduit exploitable pour le fichier de sortie ; le nom d'origine est conservé."
   },
-  "[{0}] 接着上次继续：第 {1} 页的旧译图复制失败，这一页会重新生成。": {
-    "en": "[{0}] Resume: couldn't copy the old translated image for page {1}; this page will be regenerated.",
-    "fr": "[{0}] Reprise : impossible de copier l'ancienne image traduite de la page {1} ; cette page sera régénérée."
+  "[{0}] 继续上次翻译：第 {1} 页的旧译图复制失败，此页将重新生成。": {
+    "en": "[{0}] Resume previous translation: could not copy the old translated image for page {1}; this page will be regenerated.",
+    "fr": "[{0}] Reprendre la traduction précédente : impossible de copier l'ancienne image traduite de la page {1} ; cette page sera régénérée."
   },
   "[{0}] 已生成压缩 PDF：{1}": {
     "en": "[{0}] Compressed PDF generated: {1}",
@@ -543,16 +543,16 @@
     "en": "{0}— review round {1}/{2} not passed: {3}",
     "fr": "{0}— vérification {1}/{2} non réussie : {3}"
   },
-  "（这一页读不出来，没有原页图）": {
-    "en": "(This page can't be read; no original page image)",
+  "（无法读取此页，无原页图像）": {
+    "en": "(This page cannot be read; no original page image)",
     "fr": "(Cette page est illisible ; pas d'image de la page d'origine)"
   },
   "不支持的图片格式；可选择 PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。": {
     "en": "Unsupported image format. Choose PNG, JPG/JPEG, WebP, BMP or TIF/TIFF.",
     "fr": "Format d'image non pris en charge. Choisissez PNG, JPG/JPEG, WebP, BMP ou TIF/TIFF."
   },
-  "这个文件打不开。": {
-    "en": "This file can't be opened.",
+  "无法打开此文件。": {
+    "en": "This file cannot be opened.",
     "fr": "Ce fichier ne peut pas être ouvert."
   },
   "PDF 与图片审核模型的设置不可用：": {
@@ -571,7 +571,7 @@
     "en": "Generating files",
     "fr": "Génération des fichiers"
   },
-  "已中断生成 PDF，清掉了旧的输出文件，继续翻译剩下的页面。": {
+  "已中断 PDF 生成并清除旧的输出文件，将继续翻译剩余页面。": {
     "en": "PDF generation was interrupted; the old output files were removed, and the remaining pages will continue to be translated.",
     "fr": "La génération du PDF a été interrompue ; les anciens fichiers de sortie ont été supprimés et la traduction des pages restantes se poursuit."
   },
@@ -587,12 +587,12 @@
     "en": "[{0}] Page {1} submitted for image generation",
     "fr": "[{0}] Page {1} envoyée pour génération d'image"
   },
-  "正在停止：不再开始新的页面，等正在处理的页面结束。": {
+  "正在停止：不再开始新的页面，正在等待处理中的页面结束。": {
     "en": "Stopping: no new pages will start; waiting for pages in progress to finish.",
     "fr": "Arrêt en cours : aucune nouvelle page ne sera lancée ; attente de la fin des pages en cours."
   },
-  "程序里负责渲染 PDF 页面的组件没能加载，无法处理 PDF；请重装程序后重试。": {
-    "en": "The component that renders PDF pages failed to load, so PDFs can't be processed. Please reinstall the app and try again.",
+  "PDF 页面渲染组件加载失败，无法处理 PDF；请重新安装程序后重试。": {
+    "en": "The PDF page rendering component failed to load, so PDFs cannot be processed. Reinstall the app and try again.",
     "fr": "Le composant de rendu des pages PDF n'a pas pu être chargé ; impossible de traiter les PDF. Veuillez réinstaller l'application puis réessayer."
   },
   "[{0}] 已跳过已完成页面 {1} 页，继续处理剩余 {2} 页。": {
@@ -611,11 +611,11 @@
     "en": "PDF page {0}",
     "fr": "Page {0} du PDF"
   },
-  "PDF 与图片翻译模型这一次没有返回可用结果，请稍后重试或在设置里换一条连接。": {
-    "en": "The PDF & image translation model didn't return a usable result this time. Try again later or switch to another connection in Settings.",
+  "PDF 与图片翻译模型本次未返回可用结果，请稍后重试，或在设置中更换连接。": {
+    "en": "The PDF & image translation model did not return a usable result this time. Try again later or switch to another connection in Settings.",
     "fr": "Le modèle de traduction PDF et images n'a pas renvoyé de résultat exploitable cette fois. Réessayez plus tard ou choisissez une autre connexion dans les paramètres."
   },
-  "{0}审核这一步出错，已保留这次的译图并标为需人工复核。": {
+  "{0}审核步骤出错，已保留本次译图并标记为需人工复核。": {
     "en": "{0}— the review step failed; this translated image was kept and flagged for manual review.",
     "fr": "{0}— l'étape de vérification a échoué ; cette image traduite a été conservée et signalée pour vérification manuelle."
   },
@@ -623,8 +623,8 @@
     "en": "Page {0} is missing its translated page image",
     "fr": "Il manque l'image traduite de la page {0}"
   },
-  "请在设置里检查 PDF 与图片翻译模型这条连接。": {
-    "en": "Please check the PDF & image translation model connection in Settings.",
+  "请在设置中检查 PDF 与图片翻译模型的连接。": {
+    "en": "Check the PDF & image translation model connection in Settings.",
     "fr": "Veuillez vérifier la connexion du modèle de traduction PDF et images dans les paramètres."
   },
   "PDF 翻译已结束，已生成的页面和报告保存在输出文件夹「{0}」。": {
@@ -635,24 +635,24 @@
     "en": "PDF translation was stopped. Generated pages and the report are saved in the output folder “{0}”.",
     "fr": "La traduction PDF a été arrêtée. Les pages générées et le rapport sont enregistrés dans le dossier de sortie « {0} »."
   },
-  "[{0}] 第 {1} 页是大幅面（{2}×{3} mm），不翻译，原页直接放进输出 PDF。": {
-    "en": "[{0}] Page {1} is oversized ({2}×{3} mm); it won't be translated and the original page is placed directly in the output PDF.",
+  "[{0}] 第 {1} 页为大幅面（{2}×{3} mm），不予翻译，原页将直接放入输出 PDF。": {
+    "en": "[{0}] Page {1} is oversized ({2}×{3} mm); it will not be translated and the original page is placed directly in the output PDF.",
     "fr": "[{0}] La page {1} est grand format ({2}×{3} mm) ; elle n'est pas traduite et la page d'origine est placée telle quelle dans le PDF de sortie."
   },
-  "这一页在源文件里读不出来。": {
-    "en": "This page can't be read from the source file.",
+  "无法从源文件读取此页。": {
+    "en": "This page cannot be read from the source file.",
     "fr": "Cette page est illisible dans le fichier source."
   },
-  "压缩版 PDF 没能生成，高清版不受影响。": {
-    "en": "The compressed PDF couldn't be generated; the high-resolution version is unaffected.",
+  "压缩版 PDF 未能生成，高清版不受影响。": {
+    "en": "The compressed PDF could not be generated; the high-resolution version is unaffected.",
     "fr": "Le PDF compressé n'a pas pu être généré ; la version haute résolution n'est pas affectée."
   },
-  "译好的页面没能合成 PDF。": {
-    "en": "The translated pages couldn't be assembled into a PDF.",
+  "已翻译的页面未能合成 PDF。": {
+    "en": "The translated pages could not be assembled into a PDF.",
     "fr": "Les pages traduites n'ont pas pu être assemblées en PDF."
   },
   "译图无法写入输出目录。": {
-    "en": "The translated image can't be written to the output folder.",
+    "en": "The translated image cannot be written to the output folder.",
     "fr": "L'image traduite ne peut pas être écrite dans le dossier de sortie."
   },
   "文件可能正被其他程序打开。": {
@@ -667,32 +667,32 @@
     "en": "Page {0} review — minor suggestions: ",
     "fr": "Vérification de la page {0} — suggestions mineures : "
   },
-  "请在设置里检查 PDF 与图片审核模型这条连接。": {
-    "en": "Please check the PDF & image review model connection in Settings.",
+  "请在设置中检查 PDF 与图片审核模型的连接。": {
+    "en": "Check the PDF & image review model connection in Settings.",
     "fr": "Veuillez vérifier la connexion du modèle de vérification PDF et images dans les paramètres."
   },
-  "页面存档里的文件动不了。": {
-    "en": "Files in the page archive can't be modified.",
+  "无法修改页面存档中的文件。": {
+    "en": "Files in the page archive cannot be modified.",
     "fr": "Les fichiers de l'archive des pages ne peuvent pas être modifiés."
   },
-  "无法把源文件复制到工作文件夹。": {
-    "en": "Couldn't copy the source file to the working folder.",
+  "无法将源文件复制到工作文件夹。": {
+    "en": "Could not copy the source file to the working folder.",
     "fr": "Impossible de copier le fichier source dans le dossier de travail."
   },
-  "[{0}] 第 {1} 页读不出来，已改为失败占位页，其余页面继续：{2}": {
-    "en": "[{0}] Page {1} can't be read and was replaced with a failure placeholder page; other pages continue: {2}",
+  "[{0}] 无法读取第 {1} 页，已改为失败占位页，其余页面继续处理：{2}": {
+    "en": "[{0}] Page {1} cannot be read and was replaced with a failure placeholder page; other pages continue: {2}",
     "fr": "[{0}] La page {1} est illisible et a été remplacée par une page de substitution ; les autres pages continuent : {2}"
   },
-  "这份 PDF 的页面读不出来。": {
-    "en": "The pages of this PDF can't be read.",
+  "无法读取此 PDF 的页面。": {
+    "en": "The pages of this PDF cannot be read.",
     "fr": "Les pages de ce PDF sont illisibles."
   },
-  "PDF 与图片翻译模型当前不可用，请在设置里检查这条连接的 API 密钥、模型名和账号额度。": {
+  "PDF 与图片翻译模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
     "en": "The PDF & image translation model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
     "fr": "Le modèle de traduction PDF et images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
   },
-  "审核模型这一次没有返回可用结果。": {
-    "en": "The review model didn't return a usable result this time.",
+  "审核模型本次未返回可用结果。": {
+    "en": "The review model did not return a usable result this time.",
     "fr": "Le modèle de vérification n'a pas renvoyé de résultat exploitable cette fois."
   },
   "审核请求失败：{0}": {
@@ -703,12 +703,12 @@
     "en": "Compressing page {0} failed; the high-resolution version is used for this page: {1}",
     "fr": "Échec de la compression de la page {0} ; la version haute résolution est utilisée pour cette page : {1}"
   },
-  "文件删不掉。": {
-    "en": "The file can't be deleted.",
+  "无法删除文件。": {
+    "en": "The file cannot be deleted.",
     "fr": "Le fichier ne peut pas être supprimé."
   },
-  "这张图片打不开，可能已损坏或格式不受支持。": {
-    "en": "This image can't be opened. It may be damaged or in an unsupported format.",
+  "无法打开此图片，文件可能已损坏或格式不受支持。": {
+    "en": "This image cannot be opened. It may be damaged or in an unsupported format.",
     "fr": "Cette image ne peut pas être ouverte. Elle est peut-être endommagée ou dans un format non pris en charge."
   },
   "这一页处理失败，已改为失败占位页。": {
@@ -731,7 +731,7 @@
     "en": "An error occurred while compressing this page.",
     "fr": "Une erreur est survenue lors de la compression de cette page."
   },
-  "已暂停：当前文件已翻完，可以继续翻译或停止任务。": {
+  "已暂停：当前文件已翻译完成，可继续翻译或停止任务。": {
     "en": "Paused: the current file is done. You can resume translating or stop the task.",
     "fr": "En pause : le fichier en cours est terminé. Vous pouvez reprendre la traduction ou arrêter la tâche."
   },
@@ -739,15 +739,15 @@
     "en": "Paused",
     "fr": "En pause"
   },
-  "这张图纸没能翻译，出现了未预期的问题。": {
-    "en": "This drawing couldn't be translated because of an unexpected problem.",
+  "出现意外问题，此图纸未能翻译。": {
+    "en": "This drawing could not be translated because of an unexpected problem.",
     "fr": "Ce plan n'a pas pu être traduit à cause d'un problème inattendu."
   },
   "已完成": {
     "en": "Completed",
     "fr": "Terminée"
   },
-  "已完成，有需要复核的地方": {
+  "已完成，部分内容需复核": {
     "en": "Completed, with items to review",
     "fr": "Terminée, avec des points à vérifier"
   },
@@ -811,11 +811,11 @@
     "en": "{0}: translated drawing generated",
     "fr": "{0} : plan traduit généré"
   },
-  "已停止；已翻完的图纸都已保留，可以接着上次继续。": {
-    "en": "Stopped. All drawings translated so far have been kept; you can resume later.",
-    "fr": "Arrêtée. Tous les plans déjà traduits ont été conservés ; vous pourrez reprendre plus tard."
+  "已停止；已翻译的图纸均已保留，可使用「继续上次翻译」继续。": {
+    "en": "Stopped. Drawings already translated have been kept; use “Resume previous translation” to continue.",
+    "fr": "Arrêtée. Les plans déjà traduits ont été conservés ; utilisez « Reprendre la traduction précédente » pour poursuivre."
   },
-  "任务已停止，还没有图纸翻译完成；原图纸未改动，需要时重新开始翻译即可。": {
+  "任务已停止，尚无图纸完成翻译；原图纸未改动，如有需要可重新开始翻译。": {
     "en": "Task stopped before any drawing was translated. The original drawings are unchanged; start the translation again when needed.",
     "fr": "Tâche arrêtée avant qu'aucun plan ne soit traduit. Les plans d'origine sont inchangés ; relancez la traduction si besoin."
   },
@@ -827,13 +827,13 @@
     "en": "Drawing file name",
     "fr": "Nom du fichier de plan"
   },
-  "图纸文件名没能翻译，保留原文件名：": {
-    "en": "The drawing file name couldn't be translated; keeping the original name: ",
+  "图纸文件名未能翻译，已保留原文件名：": {
+    "en": "The drawing file name could not be translated; keeping the original name: ",
     "fr": "Le nom du fichier de plan n'a pas pu être traduit ; le nom d'origine est conservé : "
   },
-  "{0}：沿用上次已经翻好的结果": {
-    "en": "{0}: reusing the result translated last time",
-    "fr": "{0} : réutilisation du résultat traduit la dernière fois"
+  "{0}：沿用上次的翻译结果": {
+    "en": "{0}: reusing the previous translation result",
+    "fr": "{0} : réutilisation du résultat de la traduction précédente"
   },
   "[CAD] {0} 翻译失败：{1}": {
     "en": "[CAD] Failed to translate {0}: {1}",
@@ -848,18 +848,18 @@
     "fr": "{0} {0|traduction contient|traductions contiennent} encore du texte source"
   },
   "有 {0} 处图纸对象暂不支持翻译，已原样保留": {
-    "en": "{0} drawing {0|object isn't|objects aren't} supported for translation yet and {0|was|were} left as is",
+    "en": "{0} drawing {0|object is|objects are} not supported for translation yet and {0|was|were} left as is",
     "fr": "{0} {0|objet du plan n'est pas encore pris en charge pour la traduction ; laissé tel quel|objets du plan ne sont pas encore pris en charge pour la traduction ; laissés tels quels}"
   },
-  "没翻好：{0}": {
+  "未能翻译：{0}": {
     "en": "Not translated: {0}",
     "fr": "Non traduit : {0}"
   },
-  "CAD 翻译没能完成：": {
-    "en": "CAD translation couldn't be completed: ",
+  "CAD 翻译未能完成：": {
+    "en": "CAD translation could not be completed: ",
     "fr": "La traduction CAO n'a pas pu être terminée : "
   },
-  "这次没有拿到可用的译名。": {
+  "本次未获得可用的译名。": {
     "en": "No usable translated name was returned this time.",
     "fr": "Aucun nom traduit exploitable n'a été renvoyé cette fois."
   },
@@ -992,20 +992,20 @@
     "fr": "Fichier inconnu"
   },
   "（服务商反馈：{0}）": {
-    "en": "(Provider says: {0})",
+    "en": "(Provider response: {0})",
     "fr": "(Réponse du fournisseur : {0})"
   },
-  "接口提示账户余额或额度不足": {
-    "en": "The service reports insufficient account balance or quota",
-    "fr": "Le service signale un solde ou un quota de compte insuffisant"
+  "模型服务提示账户余额或额度不足": {
+    "en": "The model service reports insufficient account balance or quota",
+    "fr": "Le service de modèle signale un solde ou un quota de compte insuffisant"
   },
-  "接口拒绝了这条连接的 API 密钥，可能填错、已失效或没有这个模型的权限": {
-    "en": "The service rejected this connection's API key; it may be wrong, expired, or lack access to this model",
-    "fr": "Le service a refusé la clé API de cette connexion ; elle est peut-être erronée, expirée ou sans accès à ce modèle"
+  "模型服务拒绝了此连接的 API 密钥，密钥可能有误、已失效或无权使用该模型": {
+    "en": "The model service rejected this connection's API key; it may be incorrect, expired, or lack access to this model",
+    "fr": "Le service de modèle a refusé la clé API de cette connexion ; elle est peut-être erronée, expirée ou sans accès à ce modèle"
   },
-  "{0}。任务已停止，没有写出只有原文的文件。请到「设置 → 模型服务」检查这条连接后重新开始。": {
-    "en": "{0}. The task was stopped and no source-only files were written. Check this connection under “Settings → Model services”, then start again.",
-    "fr": "{0}. La tâche a été arrêtée et aucun fichier contenant uniquement le texte source n'a été écrit. Vérifiez cette connexion dans « Paramètres → Services de modèles », puis relancez."
+  "{0}。任务已停止，未生成仅含原文的文件。请在「设置 → 模型服务」中检查此连接后重新开始。": {
+    "en": "{0}. The task was stopped and no source-only files were written. Check this connection under “Settings → Models”, then start again.",
+    "fr": "{0}. La tâche a été arrêtée et aucun fichier contenant uniquement le texte source n'a été écrit. Vérifiez cette connexion dans « Paramètres → Modèles », puis relancez."
   },
   "本机句柄不足": {
     "en": "Not enough system handles on this computer",
@@ -1027,47 +1027,47 @@
     "en": "Too many requests",
     "fr": "Trop de requêtes"
   },
-  "{0} 接口反馈请求过于频繁，已直接放慢到最慢档并重试当前批次。{1}": {
-    "en": "{0} The service reports too many requests; slowed down to the lowest speed and retrying the current batch. {1}",
-    "fr": "{0} Le service signale trop de requêtes ; ralentissement au niveau le plus bas et nouvelle tentative du lot en cours. {1}"
+  "{0} 模型服务提示请求过于频繁，已降至最低速度并重试当前批次。{1}": {
+    "en": "{0} The model service reports too many requests; slowed to the lowest speed and retrying the current batch. {1}",
+    "fr": "{0} Le service de modèle signale trop de requêtes ; ralentissement au niveau le plus bas et nouvelle tentative du lot en cours. {1}"
   },
-  "模型服务一直提示太忙：已经放慢到最慢档，{0} 秒内仍不行。请稍后重试，或在设置里换一条连接、更换 API 密钥后重新开始。": {
-    "en": "The model service keeps reporting it's too busy: already slowed to the lowest speed and still failing after {0} s. Try again later, or switch to another connection or API key in Settings and start again.",
-    "fr": "Le service de modèle se dit toujours surchargé : déjà ralenti au niveau le plus bas, toujours en échec après {0} s. Réessayez plus tard, ou changez de connexion ou de clé API dans les paramètres puis relancez."
+  "模型服务持续提示繁忙：已降至最低速度，{0} 秒内仍未恢复。请稍后重试，或在设置中更换连接或 API 密钥后重新开始。": {
+    "en": "The model service keeps reporting that it is busy: already at the lowest speed and still failing after {0} s. Try again later, or switch to another connection or API key in Settings and start again.",
+    "fr": "Le service de modèle signale une surcharge persistante : déjà au niveau le plus bas, toujours en échec après {0} s. Réessayez plus tard, ou changez de connexion ou de clé API dans les paramètres puis relancez."
   },
-  "{0} 电脑同时打开的网络连接太多，已临时放慢并重试当前请求。": {
+  "{0} 本机同时打开的网络连接过多，已暂时降低速度并重试当前请求。": {
     "en": "{0} Too many network connections are open on this computer; temporarily slowed down and retrying the current request.",
     "fr": "{0} Trop de connexions réseau sont ouvertes sur cet ordinateur ; ralentissement temporaire et nouvelle tentative de la requête en cours."
   },
-  "{0} 接口反馈请求过于频繁，已自动放慢发送速度并重试当前批次。{1}": {
-    "en": "{0} The service reports too many requests; automatically slowed down and retrying the current batch. {1}",
-    "fr": "{0} Le service signale trop de requêtes ; ralentissement automatique et nouvelle tentative du lot en cours. {1}"
+  "{0} 模型服务提示请求过于频繁，已自动降低发送速度并重试当前批次。{1}": {
+    "en": "{0} The model service reports too many requests; automatically slowed down and retrying the current batch. {1}",
+    "fr": "{0} Le service de modèle signale trop de requêtes ; ralentissement automatique et nouvelle tentative du lot en cours. {1}"
   },
-  "电脑同时打开的网络连接一直太多，已放到最慢仍无法继续。请关掉其它占用网络的程序后重试。": {
-    "en": "Too many network connections stay open on this computer; even at the lowest speed the task can't continue. Close other programs using the network and try again.",
+  "本机同时打开的网络连接持续过多，已降至最低速度仍无法继续。请关闭其他占用网络的程序后重试。": {
+    "en": "Too many network connections remain open on this computer; even at the lowest speed the task cannot continue. Close other programs using the network and try again.",
     "fr": "Trop de connexions réseau restent ouvertes sur cet ordinateur ; même au niveau le plus lent, la tâche ne peut pas continuer. Fermez les autres programmes qui utilisent le réseau puis réessayez."
   },
-  "{0} 电脑同时打开的网络连接仍然太多，已放到最慢档，正在等待后重试。": {
+  "{0} 本机同时打开的网络连接仍然过多，已降至最低速度，稍后将重试。": {
     "en": "{0} Still too many network connections open on this computer; at the lowest speed, waiting before retrying.",
     "fr": "{0} Toujours trop de connexions réseau ouvertes sur cet ordinateur ; au niveau le plus lent, attente avant nouvelle tentative."
   },
-  "{0} 模型服务仍提示太忙，已放慢到最慢档，正在继续重试当前批次。": {
-    "en": "{0} The model service still reports it's too busy; slowed to the lowest speed and still retrying the current batch.",
-    "fr": "{0} Le service de modèle se dit toujours surchargé ; ralenti au niveau le plus bas, nouvelle tentative du lot en cours."
+  "{0} 模型服务仍提示繁忙，已降至最低速度，正在继续重试当前批次。": {
+    "en": "{0} The model service still reports that it is busy; slowed to the lowest speed and still retrying the current batch.",
+    "fr": "{0} Le service de modèle signale toujours une surcharge ; ralenti au niveau le plus bas, nouvelle tentative du lot en cours."
   },
-  "{0} 电脑同时打开的网络连接仍然太多，已等待 {1} 秒，仍在重试。": {
+  "{0} 本机同时打开的网络连接仍然过多，已等待 {1} 秒，正在继续重试。": {
     "en": "{0} Still too many network connections open on this computer; waited {1} s, still retrying.",
     "fr": "{0} Toujours trop de connexions réseau ouvertes sur cet ordinateur ; attente de {1} s, nouvelles tentatives en cours."
   },
-  "{0} 模型服务仍提示太忙，已放慢到最慢档，正在等待后重试当前批次。{1}": {
-    "en": "{0} The model service still reports it's too busy; slowed to the lowest speed, waiting before retrying the current batch. {1}",
-    "fr": "{0} Le service de modèle se dit toujours surchargé ; ralenti au niveau le plus bas, attente avant nouvelle tentative du lot en cours. {1}"
+  "{0} 模型服务仍提示繁忙，已降至最低速度，稍后将重试当前批次。{1}": {
+    "en": "{0} The model service still reports that it is busy; slowed to the lowest speed, waiting before retrying the current batch. {1}",
+    "fr": "{0} Le service de modèle signale toujours une surcharge ; ralenti au niveau le plus bas, attente avant nouvelle tentative du lot en cours. {1}"
   },
-  "{0} 模型服务仍提示太忙，已等待 {1} 秒，仍在重试当前批次。": {
-    "en": "{0} The model service still reports it's too busy; waited {1} s, still retrying the current batch.",
-    "fr": "{0} Le service de modèle se dit toujours surchargé ; attente de {1} s, nouvelles tentatives du lot en cours."
+  "{0} 模型服务仍提示繁忙，已等待 {1} 秒，正在继续重试当前批次。": {
+    "en": "{0} The model service still reports that it is busy; waited {1} s, still retrying the current batch.",
+    "fr": "{0} Le service de modèle signale toujours une surcharge ; attente de {1} s, nouvelles tentatives du lot en cours."
   },
-  "任务事件已记录；日志只保留用于定位问题的一小段原文摘录，完整正文、译文、提示词和模型响应都不写入。": {
+  "任务事件已记录；日志仅保留用于排查问题的少量原文摘录，不写入完整正文、译文、提示词和模型响应。": {
     "en": "Task event recorded. The log keeps only a short excerpt of source text for troubleshooting; full text, translations, prompts and model responses are never written.",
     "fr": "Événement de tâche enregistré. Le journal ne conserve qu'un court extrait du texte source pour diagnostiquer les problèmes ; le texte complet, les traductions, les prompts et les réponses du modèle ne sont jamais écrits."
   },
@@ -1139,28 +1139,28 @@
     "en": "  [File {0}] Added to task",
     "fr": "  [Fichier {0}] Ajouté à la tâche"
   },
-  "这条连接的服务商不支持看图审核，请换一条连接。": {
-    "en": "This connection's provider doesn't support image review. Please use another connection.",
+  "此连接的服务商不支持图片审核，请更换连接。": {
+    "en": "This connection's provider does not support image review. Use another connection.",
     "fr": "Le fournisseur de cette connexion ne prend pas en charge la vérification d'images. Veuillez utiliser une autre connexion."
   },
-  "审核模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。": {
-    "en": "The review model didn't respond properly. Check this connection's address, API key and model name.",
+  "审核模型未正常响应，请检查此连接的接口地址、API 密钥和模型名称。": {
+    "en": "The review model did not respond properly. Check this connection's address, API key and model name.",
     "fr": "Le modèle de vérification n'a pas répondu correctement. Vérifiez l'adresse, la clé API et le nom du modèle de cette connexion."
   },
-  "PDF 与图片审核模型还没有填写接口地址": {
+  "PDF 与图片审核模型尚未填写接口地址": {
     "en": "The PDF & image review model has no endpoint address yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore d'adresse de service"
   },
-  "PDF 与图片审核模型还没有填写 API 密钥": {
+  "PDF 与图片审核模型尚未填写 API 密钥": {
     "en": "The PDF & image review model has no API key yet",
     "fr": "Le modèle de vérification PDF et images n'a pas encore de clé API"
   },
   "PDF 与图片审核模型的名称不能为空": {
-    "en": "The PDF & image review model name can't be empty",
+    "en": "The PDF & image review model name cannot be empty",
     "fr": "Le nom du modèle de vérification PDF et images ne peut pas être vide"
   },
   "审核结果无法解析。": {
-    "en": "The review result couldn't be parsed.",
+    "en": "The review result could not be parsed.",
     "fr": "Le résultat de la vérification n'a pas pu être interprété."
   },
   "连接测试通过。": {
@@ -1179,19 +1179,19 @@
     "en": "The review model returned a verdict normally.",
     "fr": "Le modèle de vérification a renvoyé un avis normalement."
   },
-  "审核模型的回复格式不对，没法据此判断这一页。": {
-    "en": "The review model's reply isn't in the expected format, so this page can't be judged.",
+  "审核模型的回复格式有误，无法据此判断此页。": {
+    "en": "The review model's reply is not in the expected format, so this page cannot be evaluated.",
     "fr": "La réponse du modèle de vérification n'est pas au format attendu ; impossible d'évaluer cette page."
   },
-  "请重新审核，或换一个更稳定的看图模型。": {
+  "请重新审核，或更换更稳定的图片识别模型。": {
     "en": "Review again, or switch to a more reliable image-capable model.",
     "fr": "Relancez la vérification ou choisissez un modèle de lecture d'images plus fiable."
   },
   "审核判定未通过。": {
-    "en": "The review verdict was a fail.",
+    "en": "The review verdict was negative.",
     "fr": "L'avis de la vérification est négatif."
   },
-  "PDF 与图片审核模型当前不可用，请在设置里检查这条连接的 API 密钥、模型名和账号额度。": {
+  "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、模型名称和账户额度。": {
     "en": "The PDF & image review model is currently unavailable. Check this connection's API key, model name and account quota in Settings.",
     "fr": "Le modèle de vérification PDF et images est actuellement indisponible. Vérifiez la clé API, le nom du modèle et le quota du compte de cette connexion dans les paramètres."
   },
@@ -1207,8 +1207,8 @@
     "en": "None",
     "fr": "Aucun"
   },
-  "Prompt 不能为空。": {
-    "en": "Prompt can't be empty.",
+  "提示词不能为空。": {
+    "en": "The prompt cannot be empty.",
     "fr": "Le prompt ne peut pas être vide."
   },
   "请选择一个有效的提示词后再整理。": {
@@ -1216,7 +1216,7 @@
     "fr": "Sélectionnez un prompt valide avant de l'améliorer."
   },
   "模型未返回可用的优化结果。": {
-    "en": "The model didn't return a usable refined result.",
+    "en": "The model did not return a usable refined result.",
     "fr": "Le modèle n'a pas renvoyé de version améliorée exploitable."
   },
   "未知专业领域预设。": {
@@ -1227,7 +1227,7 @@
     "en": "Custom",
     "fr": "Personnalisé"
   },
-  "自定义领域必须填写完整 Prompt。": {
+  "自定义领域必须填写完整的提示词。": {
     "en": "A custom domain requires a complete prompt.",
     "fr": "Un domaine personnalisé nécessite un prompt complet."
   },
@@ -1236,19 +1236,19 @@
     "fr": "L'amélioration par le modèle a échoué. Vérifiez la configuration du modèle de traduction de documents."
   },
   "自定义提示词名称不能为空且不能与内置预设重名。": {
-    "en": "The custom prompt name can't be empty or match a built-in preset.",
+    "en": "The custom prompt name cannot be empty or identical to a built-in preset.",
     "fr": "Le nom du prompt personnalisé ne peut pas être vide ni identique à un préréglage intégré."
   },
   "自定义输出目录不能为空": {
-    "en": "The custom output folder can't be empty",
+    "en": "The custom output folder cannot be empty",
     "fr": "Le dossier de sortie personnalisé ne peut pas être vide"
   },
-  "输出位置「{0}」是一个文件，不是文件夹，请另选输出目录。": {
-    "en": "The output location “{0}” is a file, not a folder. Please choose another output folder.",
+  "输出位置「{0}」是文件而非文件夹，请另选输出目录。": {
+    "en": "The output location “{0}” is a file, not a folder. Choose another output folder.",
     "fr": "L'emplacement de sortie « {0} » est un fichier, pas un dossier. Veuillez choisir un autre dossier de sortie."
   },
-  "输出位置里的「{0}」是一个文件，没法在它下面建文件夹，请另选输出目录。": {
-    "en": "“{0}” in the output location is a file, so a folder can't be created under it. Please choose another output folder.",
+  "输出位置中的「{0}」是文件，无法在其下创建文件夹，请另选输出目录。": {
+    "en": "“{0}” in the output location is a file, so a folder cannot be created under it. Choose another output folder.",
     "fr": "« {0} » dans l'emplacement de sortie est un fichier ; impossible d'y créer un dossier. Veuillez choisir un autre dossier de sortie."
   },
   "[OK] 已输出：{0}": {
@@ -1259,24 +1259,24 @@
     "en": "[INFO] Row heights adjusted automatically for {0} {0|file|files}",
     "fr": "[INFO] Hauteurs de ligne ajustées automatiquement pour {0} {0|fichier|fichiers}"
   },
-  "[WARN] 这台电脑没法让 Excel 自动调整行高，已按估算行高保存。": {
-    "en": "[WARN] Excel can't adjust row heights automatically on this computer; saved with estimated row heights.",
+  "[WARN] 本机 Excel 无法自动调整行高，已按估算行高保存。": {
+    "en": "[WARN] Excel cannot adjust row heights automatically on this computer; saved with estimated row heights.",
     "fr": "[WARN] Excel ne peut pas ajuster automatiquement les hauteurs de ligne sur cet ordinateur ; enregistré avec des hauteurs estimées."
   },
-  "Excel 那边出错了。": {
-    "en": "Something went wrong in Excel.",
+  "Excel 出现错误。": {
+    "en": "An error occurred in Excel.",
     "fr": "Une erreur s'est produite dans Excel."
   },
-  "[WARN] Excel 没能自动调整行高，已按估算行高保存：{0}": {
-    "en": "[WARN] Excel couldn't adjust row heights automatically; saved with estimated row heights: {0}",
+  "[WARN] Excel 未能自动调整行高，已按估算行高保存：{0}": {
+    "en": "[WARN] Excel could not adjust row heights automatically; saved with estimated row heights: {0}",
     "fr": "[WARN] Excel n'a pas pu ajuster automatiquement les hauteurs de ligne ; enregistré avec des hauteurs estimées : {0}"
   },
   "[INFO] 已调整行高：{0}": {
     "en": "[INFO] Row heights adjusted: {0}",
     "fr": "[INFO] Hauteurs de ligne ajustées : {0}"
   },
-  "[WARN] {0} 没能自动调整行高，已按估算行高保存：{1}": {
-    "en": "[WARN] {0}: row heights couldn't be adjusted automatically; saved with estimated row heights: {1}",
+  "[WARN] {0} 未能自动调整行高，已按估算行高保存：{1}": {
+    "en": "[WARN] {0}: row heights could not be adjusted automatically; saved with estimated row heights: {1}",
     "fr": "[WARN] {0} : impossible d'ajuster automatiquement les hauteurs de ligne ; enregistré avec des hauteurs estimées : {1}"
   },
   "译文缺少原文中的数字或数字出现次数不足。": {
@@ -1339,32 +1339,32 @@
     "en": "Temporary files",
     "fr": "Fichiers temporaires"
   },
-  "为安全起见，清理只会删除本程序自己数据文件夹里的内容。": {
-    "en": "For safety, cleanup only deletes contents of this app's own data folder.",
+  "为安全起见，清理仅删除本程序数据文件夹中的内容。": {
+    "en": "For safety, cleanup deletes only the contents of this app's data folder.",
     "fr": "Par sécurité, le nettoyage ne supprime que le contenu du dossier de données de cette application."
   },
-  "暂时查不到新版本信息，已跳过更新提示。": {
-    "en": "Couldn't get new version information right now; update notice skipped.",
+  "暂时无法获取新版本信息，已跳过更新提示。": {
+    "en": "Could not retrieve new version information at this time; update notice skipped.",
     "fr": "Impossible d'obtenir les informations de nouvelle version pour le moment ; notification de mise à jour ignorée."
   },
-  "只有 Apple 芯片的 Mac 版和 64 位 Windows 版可以检查更新。": {
-    "en": "Only the Apple silicon Mac version and the 64-bit Windows version can check for updates.",
-    "fr": "Seules la version Mac pour puce Apple et la version Windows 64 bits peuvent rechercher des mises à jour."
+  "仅 Apple 芯片 Mac 版和 64 位 Windows 版支持检查更新。": {
+    "en": "Only the Apple silicon Mac version and the 64-bit Windows version support checking for updates.",
+    "fr": "Seules la version Mac pour puce Apple et la version Windows 64 bits prennent en charge la recherche de mises à jour."
   },
-  "读不出当前的版本号，已跳过更新提示。": {
-    "en": "Couldn't read the current version number; update notice skipped.",
+  "无法读取当前版本号，已跳过更新提示。": {
+    "en": "Could not read the current version number; update notice skipped.",
     "fr": "Impossible de lire le numéro de version actuel ; notification de mise à jour ignorée."
   },
-  "适合这台电脑的新版本还没发布，请稍后再查。": {
-    "en": "A new version for this computer hasn't been released yet. Please check again later.",
-    "fr": "Aucune nouvelle version pour cet ordinateur n'est encore publiée. Veuillez revérifier plus tard."
+  "适用于本机的新版本尚未发布，请稍后再检查。": {
+    "en": "A new version for this computer has not been released yet. Check again later.",
+    "fr": "Aucune nouvelle version pour cet ordinateur n'a encore été publiée. Veuillez réessayer plus tard."
   },
   "发现新版 V{0}。": {
     "en": "New version V{0} available.",
     "fr": "Nouvelle version V{0} disponible."
   },
   "当前已是最新版本 V{0}。": {
-    "en": "You're on the latest version, V{0}.",
+    "en": "You are using the latest version, V{0}.",
     "fr": "Vous disposez de la dernière version, V{0}."
   },
   "当前云端 API": {
@@ -1379,16 +1379,16 @@
     "en": "{0}: Base URL not filled in yet.",
     "fr": "{0} : Base URL pas encore renseignée."
   },
-  "{0} 尚未填写 API Key。": {
-    "en": "{0}: API key not filled in yet.",
+  "{0} 尚未填写 API 密钥。": {
+    "en": "{0}: API key not entered.",
     "fr": "{0} : clé API pas encore renseignée."
   },
   "请先填写本地模型名称。": {
-    "en": "Please enter the local model name first.",
+    "en": "Enter the local model name first.",
     "fr": "Veuillez d'abord saisir le nom du modèle local."
   },
   "请先填写本地模型 Base URL。": {
-    "en": "Please enter the local model Base URL first.",
+    "en": "Enter the local model Base URL first.",
     "fr": "Veuillez d'abord saisir la Base URL du modèle local."
   },
   "格": {
@@ -1407,12 +1407,12 @@
     "en": "Connection {0}",
     "fr": "Connexion {0}"
   },
-  "这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。": {
-    "en": "This file isn't in the current model settings format and can't be imported. Use a settings file created by this app's “Export (without key)” or “Export with key”.",
-    "fr": "Ce fichier n'est pas au format actuel de configuration des modèles et ne peut pas être importé. Utilisez un fichier créé par « Exporter (sans clé) » ou « Exporter avec la clé » de cette application."
+  "此文件不是当前版本的模型配置格式，无法导入。请使用本应用「导出（不含密钥）」或「导出（含密钥）」生成的配置文件。": {
+    "en": "This file is not in the current model settings format and cannot be imported. Use a settings file created with this app's “Export (no keys)” or “Export with keys”.",
+    "fr": "Ce fichier n'est pas au format actuel de configuration des modèles et ne peut pas être importé. Utilisez un fichier créé par « Exporter (sans clés) » ou « Exporter avec clés » de cette application."
   },
-  "这个文件由更新版本的应用导出，当前版本读不了。请先把应用升级到最新版再导入。": {
-    "en": "This file was exported by a newer version of the app and can't be read by this version. Please update the app to the latest version before importing.",
+  "此文件由更高版本的应用导出，当前版本无法读取。请先将应用升级到最新版本后再导入。": {
+    "en": "This file was exported by a newer version of the app and cannot be read by this version. Update the app to the latest version before importing.",
     "fr": "Ce fichier a été exporté par une version plus récente de l'application et ne peut pas être lu par cette version. Veuillez mettre à jour l'application avant de l'importer."
   },
   "连接池为空，无法分配连接。": {
@@ -1431,12 +1431,12 @@
     "en": "Claude API returned content in an unexpected format",
     "fr": "L'API Claude a renvoyé un contenu au format inattendu"
   },
-  "找不到这个翻译页面，请刷新页面后重试。": {
-    "en": "This translation page can't be found. Please refresh and try again.",
+  "找不到此翻译页面，请刷新后重试。": {
+    "en": "This translation page cannot be found. Refresh and try again.",
     "fr": "Cette page de traduction est introuvable. Veuillez actualiser puis réessayer."
   },
   "请先选择图纸转换工具程序。": {
-    "en": "Please select the drawing conversion tool first.",
+    "en": "Select the drawing conversion tool first.",
     "fr": "Veuillez d'abord sélectionner l'outil de conversion des plans."
   },
   "百炼": {

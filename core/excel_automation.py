@@ -72,13 +72,13 @@ def probe_local_excel_automation() -> tuple[bool, str]:
     """Probe whether local Excel automation is actually usable on this machine."""
     if not supports_local_excel_automation():
         logger.debug(f"当前平台 {local_excel_platform()} 暂不支持本地 Excel 自动化")
-        return False, "这台电脑的系统不支持用本机 Excel 转换。"
+        return False, "本机操作系统不支持使用 Excel 转换。"
 
     try:
         thread_state = initialize_excel_thread()
     except Exception as exc:
         logger.debug(f"初始化本地 Excel 自动化失败原始错误：{exc!r}")
-        return False, "没能连接本机 Excel：" + humanize_error(
+        return False, "未能连接本机 Excel：" + humanize_error(
             exc,
             fallback="本机缺少连接 Excel 所需的组件。",
         )
@@ -91,9 +91,9 @@ def probe_local_excel_automation() -> tuple[bool, str]:
             return False, "本机缺少连接 Excel 所需的组件。"
         except Exception as exc:
             logger.debug(f"启动本地 Excel 失败原始错误：{exc!r}")
-            return False, "本机 Excel 没能启动：" + humanize_error(
+            return False, "本机 Excel 未能启动：" + humanize_error(
                 exc,
-                fallback="可能没安装，或没有授权本程序控制它。",
+                fallback="可能未安装，或未授权本程序控制它。",
             )
 
         try:

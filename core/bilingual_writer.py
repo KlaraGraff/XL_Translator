@@ -109,13 +109,12 @@ def get_custom_output_dir_error(custom_output_dir: str | Path | None) -> str | N
     if output_root.exists():
         if output_root.is_dir():
             return None
-        return f"输出位置「{output_root.name}」是一个文件，不是文件夹，请另选输出目录。"
+        return f"输出位置「{output_root.name}」是文件而非文件夹，请另选输出目录。"
 
     blocking_path = _find_blocking_existing_path(output_root)
     if blocking_path is not None:
         return (
-            f"输出位置里的「{blocking_path.name}」是一个文件，没法在它下面建文件夹，"
-            "请另选输出目录。"
+            f"输出位置中的「{blocking_path.name}」是文件，无法在其下创建文件夹，请另选输出目录。"
         )
 
     return None
@@ -307,7 +306,7 @@ def autofit_files_batch(
         import xlwings as xw
     except ImportError:
         if log_callback:
-            log_callback("[WARN] 这台电脑没法让 Excel 自动调整行高，已按估算行高保存。")
+            log_callback("[WARN] 本机 Excel 无法自动调整行高，已按估算行高保存。")
         logger.warning("xlwings 未安装，跳过 AutoFit")
         return False
 
@@ -353,11 +352,11 @@ def autofit_files_batch(
                         log_callback(f"[INFO] 已调整行高：{original_path.name}")
                     logger.info(f"AutoFit 完成：{original_path.name}")
                 except Exception as e:
-                    reason = humanize_error(e, fallback="Excel 那边出错了。")
+                    reason = humanize_error(e, fallback="Excel 出现错误。")
                     logger.warning(f"AutoFit 异常（{original_path.name}）：{e!r}；{reason}")
                     if log_callback:
                         log_callback(
-                            f"[WARN] {original_path.name} 没能自动调整行高，已按估算行高保存：{reason}"
+                            f"[WARN] {original_path.name} 未能自动调整行高，已按估算行高保存：{reason}"
                         )
                 finally:
                     done += 1
@@ -375,9 +374,9 @@ def autofit_files_batch(
             log_callback(f"[INFO] 自动调整行高完成，共 {len(file_paths)} 个文件")
         return True
     except Exception as e:
-        reason = humanize_error(e, fallback="Excel 那边出错了。")
+        reason = humanize_error(e, fallback="Excel 出现错误。")
         if log_callback:
-            log_callback(f"[WARN] Excel 没能自动调整行高，已按估算行高保存：{reason}")
+            log_callback(f"[WARN] Excel 未能自动调整行高，已按估算行高保存：{reason}")
         logger.warning(f"AutoFit 批量处理异常：{e!r}；{reason}")
         return False
     finally:

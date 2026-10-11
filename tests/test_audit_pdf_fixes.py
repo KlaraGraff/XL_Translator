@@ -1296,7 +1296,7 @@ class PdfPagePreviousVersionTests(unittest.TestCase):
 
                 with self.assertRaises(PdfPageActionError) as ctx:
                     runner.restore_previous_page(relative_path="source.pdf", page_number=1)
-            self.assertIn("没有留下上一版译文", str(ctx.exception))
+            self.assertIn("没有上一版译文", str(ctx.exception))
 
 
 if __name__ == "__main__":

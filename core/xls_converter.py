@@ -62,7 +62,7 @@ def _format_excel_conversion_error(exc: BaseException) -> str:
     if not is_excel_automation_permission_denied(message):
         return "使用 Excel 转换失败：" + humanize_error(
             message,
-            fallback="本机 Excel 没能完成这次转换，可返回任务设置并选择兼容转换后重试。",
+            fallback="本机 Excel 未能完成本次转换，可返回任务设置，选择兼容转换后重试。",
         )
 
     consequence = describe_xls_compatibility_consequence(
@@ -99,12 +99,12 @@ def describe_xls_compatibility_consequence(*, has_libreoffice: bool) -> str:
     """
     if has_libreoffice:
         return (
-            "，这一步会交给本机 LibreOffice 完成，公式、样式、合并单元格通常能保留"
-            "（图表、图片可能有出入）；原始文件不会被改动。"
+            "，此步骤将由本机 LibreOffice 完成，公式、"
+            "样式和合并单元格通常可以保留（图表、图片可能有差异）；源文件不会被修改。"
         )
     return (
-        "后，输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表"
-        "不会保留；原始文件不会被改动。"
+        "后，输出文件中的公式将变为计算结果，样式、合并单元格、图片和图表不会保留；"
+        "源文件不会被修改。"
     )
 
 
@@ -128,7 +128,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
     xls_path = Path(xls_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise LibreOfficeConversionError("本机没有找到 LibreOffice。")
+        raise LibreOfficeConversionError("本机未找到 LibreOffice。")
 
     out_path = _get_temp_xlsx_path(xls_path)
     work_dir = Path(tempfile.mkdtemp(prefix="xl_translator_lo_"))
@@ -169,7 +169,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
                 f"LibreOffice 转换返回码 {result.returncode}：{detail or '（无输出）'}"
             )
             raise LibreOfficeConversionError(
-                f"LibreOffice 没能转换这个文件：{detail}" if detail else "LibreOffice 没能转换这个文件。"
+                f"LibreOffice 未能转换此文件：{detail}" if detail else "LibreOffice 未能转换此文件。"
             )
 
         converted_path = convert_dir / f"{xls_path.stem}.xlsx"
@@ -180,7 +180,7 @@ def convert_with_libreoffice(xls_path: Path) -> Path:
             if len(candidates) == 1:
                 converted_path = candidates[0]
         if not converted_path.exists():
-            raise LibreOfficeConversionError("LibreOffice 没有生成转换后的文件。")
+            raise LibreOfficeConversionError("LibreOffice 未生成转换后的文件。")
 
         shutil.move(str(converted_path), str(out_path))
         return out_path

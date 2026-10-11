@@ -105,7 +105,7 @@ class ConvertWithLibreofficeMockedTests(unittest.TestCase):
         ):
             with self.assertRaises(LibreOfficeConversionError) as ctx:
                 convert_with_libreoffice(self.xls_path)
-        self.assertIn("没有生成", str(ctx.exception))
+        self.assertIn("未生成", str(ctx.exception))
 
 
 @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")

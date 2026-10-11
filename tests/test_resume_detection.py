@@ -1588,7 +1588,7 @@ def test_excel_row_deleted_from_source_rejects_baseline(tmp_path):
     assert missing == ["施工方案"]
     assert missing.added == []
     assert missing.removed == ["施工方案"]
-    assert describe_baseline_divergence(missing) == "少了 1 处内容"
+    assert describe_baseline_divergence(missing) == "缺少 1 处内容"
 
 
 def test_word_paragraph_deleted_from_source_rejects_baseline(tmp_path):

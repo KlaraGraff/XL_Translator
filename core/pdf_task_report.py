@@ -45,8 +45,9 @@ def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
 
 def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
     return (
-        f"本文件全部 {record.page_count} 页因幅面过大被「跳过大幅面页」跳过，未产生任何翻译内容："
-        "输出 PDF 与源文件内容一致。如需翻译这些图纸页，请在设置中关闭「跳过大幅面页」后重跑。"
+        f"本文件全部 {record.page_count} 页均因幅面过大被跳过，未翻译任何内容，"
+        "输出 PDF 与源文件一致。如需翻译这些页面，"
+        "请关闭「跳过 A3 及更大的页面」后重新翻译。"
     )
 
 
@@ -396,7 +397,7 @@ def _summary_to_report(summary: PdfTaskSummary) -> str:
         f"- 审核未通过页：{summary.review_failed_page_count}",
         f"- 审核重试次数：{summary.review_retry_count}",
         f"- 审核轻微建议：{summary.review_minor_suggestion_count}",
-        f"- 模型太忙被放慢的次数：{summary.rate_limit_reduction_count}",
+        f"- 因模型繁忙而降速的次数：{summary.rate_limit_reduction_count}",
         f"- 保留部分素材：{'是' if summary.partial_artifacts_available else '否'}",
         f"- 页面素材目录：{Path(summary.output_dir) / PDF_PAGES_ROOT}",
         "",

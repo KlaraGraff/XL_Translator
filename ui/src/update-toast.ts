@@ -271,8 +271,8 @@ function patchProgress(view: ProgressView): void {
   // 「可以继续用」只对下载阶段成立——安装会把程序文件换掉,装好之后新任务
   // 可能失败(高-12),那句话由 renderReady 的警示文案接手。
   view.detail.textContent = downloading
-    ? t("下载期间可以继续用，装好后会提醒你重启")
-    : t("这一步通常几秒钟，请勿关闭窗口。");
+    ? t("下载期间可继续使用，安装完成后将提示重启")
+    : t("此步骤通常需要几秒钟，请勿关闭窗口。");
 
   const barClass = determinate ? "ut-bar" : "ut-bar indet";
   if (view.bar.className !== barClass) view.bar.className = barClass;
@@ -297,7 +297,7 @@ function renderReady(): HTMLDivElement {
   el.append(head({
     icon: "check",
     tone: "ok",
-    title: t("{0} 已装好", flow.version || t("新版本")),
+    title: t("{0} 已安装", flow.version || t("新版本")),
     // 不能安抚:程序文件已被替换,正在跑的任务不受影响,但新任务的组件加载可能
     // 失败且报错误导(高-12)。
     detail: t("请尽快重启完成更新，期间新任务可能失败。"),
@@ -318,7 +318,7 @@ function renderFailure(): HTMLDivElement {
   el.append(head({
     icon: "warn",
     tone: "danger",
-    title: tx(flow.failureTitle) || t("更新没装上"),
+    title: tx(flow.failureTitle) || t("更新未安装"),
     detail: tx(flow.message),
     onDismiss: () => {
       dismissedFailureCode = flow.code || "dismissed";
@@ -495,7 +495,7 @@ function render(): void {
     const latest = text(snapshot.result?.latest_version);
     const label = latest && latest === ignored
       ? t("已忽略版本 {0}", latest)
-      : current ? t("已经是最新版本 {0}", current) : t("已经是最新版本");
+      : current ? t("已是最新版本 {0}", current) : t("已是最新版本");
     host.append(renderSlim("ok", "check", label));
     transientTimer = window.setTimeout(() => {
       transientTimer = 0;
@@ -520,8 +520,8 @@ export function openRestartBeforeTaskModal(onProceed: () => void): void {
     icon: "warn",
     title: t("更新已安装，建议先重启"),
     body: [
-      t("新版本的程序文件已经替换完成，当前运行的还是旧版本。"),
-      t("正在进行的任务不受影响，但现在开始新任务可能会莫名失败。建议先重启完成更新，再开始新任务。"),
+      t("新版本的程序文件已替换完成，但当前运行的仍是旧版本。"),
+      t("正在进行的任务不受影响，但此时开始新任务可能意外失败。建议先重启以完成更新，再开始新任务。"),
     ],
     actions: [
       // 「取消」给反悔留门：既不想现在重启、也不想开这个任务（比如想先换文件）。

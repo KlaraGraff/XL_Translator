@@ -27,7 +27,7 @@ STOP_WAIT_STATUS_REFRESH_SECONDS = 5.0
 # 「独立图片 0 / 跳过项 0」，日志写「扫描到 0 个图片文件」，用户把图纸截图放进来，
 # 从头到尾没有一句话告诉他这些图根本没参与。跳过项这一格正是它该出现的地方。
 IMAGES_DISABLED_SKIP_REASON = (
-    "「允许独立图片」没有打开，这个图片文件没有纳入本次任务；要翻它就打开这个开关再扫描一次。"
+    "「也翻译图片文件」未开启，此图片文件未纳入本次任务；如需翻译，请开启该选项后重新扫描。"
 )
 PDF_PAGES_ROOT = "_pdf_pages"
 SOURCE_PAGES_DIRNAME = "source_pages"
@@ -158,8 +158,8 @@ class PdfScanResult:
             message = ""
         elif images_disabled_count == skipped_count:
             message = (
-                f"文件夹里有 {images_disabled_count} 个图片文件，"
-                "「允许独立图片」没有打开，本次不会翻译它们；其余文件仍可继续。"
+                f"文件夹中有 {images_disabled_count} 个图片文件，因「也翻译图片文件」未开启，本次不会翻译；"
+                "其余文件仍可继续处理。"
             )
         else:
             message = (

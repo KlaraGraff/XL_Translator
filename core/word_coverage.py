@@ -498,7 +498,7 @@ def _classify_body_paragraphs(
                     status=COVERAGE_IGNORED,
                     location=location,
                     kind="paragraph",
-                    reason="段落看起来是目标语言译文，默认跳过。",
+                    reason="段落疑似目标语言译文，默认跳过。",
                     data=data,
                 )
             )
@@ -625,7 +625,7 @@ def _classify_cell_text(
             location=location,
             kind="table_cell",
             section_path="表格",
-            reason="表格单元格看起来是目标语言译文，默认跳过。",
+            reason="表格单元格疑似目标语言译文，默认跳过。",
             data=data,
         )
     if len(paragraph_lines) > 1:

@@ -461,7 +461,7 @@ class WordTaskRunner(BaseTaskRunner):
             logger.debug(f"续译底稿定位失败原始错误 {file_item.name}：{exc!r}")
             self._log(
                 "WARNING",
-                f"查找 {file_item.name} 上次的翻译结果时出错，这次从头完整翻译："
+                f"查找 {file_item.name} 的上次翻译结果时出错，本次将完整翻译："
                 + user_facing_reason(exc, fallback="查找时出错。"),
             )
             return None
@@ -529,12 +529,12 @@ class WordTaskRunner(BaseTaskRunner):
                     "problem": (
                         "紧邻段落不是这一段的译文"
                         if judged
-                        else "紧邻段落是不是这一段的译文，未能判定"
+                        else "无法判定紧邻段落是否为本段的译文"
                     ),
                     "status": (
                         (
-                            "已按未翻译处理并补上译文；原有的紧邻内容保持不变，"
-                            "但它很可能不是这一段的译文，请对照原件人工核对后删改。"
+                            "已按未翻译处理并补充译文；原有紧邻内容保持不变，但很可能不是本段的译文，"
+                            "请对照源文件人工核对并修改。"
                         )
                         if judged
                         else (
@@ -660,9 +660,8 @@ class WordTaskRunner(BaseTaskRunner):
         self._log(
             "INFO",
             (
-                f"  → 页眉页脚：{len(lines)} 行已有部分译文，"
-                f"其中 {outcome.model_line_count} 行交给模型补译，"
-                f"补上了 {len(translations)} 行。"
+                f"  → 页眉页脚：{len(lines)} 行已有部分译文，其中 {outcome.model_line_count} 行已提交模型补译，"
+                f"成功补译 {len(translations)} 行。"
             ),
         )
 
@@ -680,16 +679,14 @@ class WordTaskRunner(BaseTaskRunner):
                 if resolution.resolved:
                     # 整行成品没通过验收，退回「只把新译文接在行尾」：原行一个字没动，
                     # 但译文接的位置可能不是最顺的那处，报告里说一句。
-                    problem = "页眉页脚整行改写没通过自动检查"
+                    problem = "页眉页脚整行改写未通过自动检查"
                     status = (
-                        "已改为把新译文接在原行末尾，原有内容一个字符都没有改动。"
-                        f"（{resolution.reject_reason}）"
+                        f"已改为将新译文追加到原行末尾，原有内容保持不变。（{resolution.reject_reason}）"
                     )
                 else:
                     problem = "页眉页脚未能补上译文"
                     status = (
-                        "这一行已有部分译文，程序无法在不改动已有内容的前提下补全，"
-                        "已原样保留，请人工补译。"
+                        "此行已有部分译文，无法在不改动已有内容的前提下补全，已原样保留，请人工补译。"
                         + (f"（{resolution.reject_reason}）" if resolution.reject_reason else "")
                     )
                 quality_issues.append(
@@ -758,7 +755,7 @@ class WordTaskRunner(BaseTaskRunner):
                     message="引擎初始化失败："
                     + user_facing_reason(
                         exc,
-                        fallback="请在设置里检查翻译模型这条连接。",
+                        fallback="请在设置中检查翻译模型的连接。",
                     )
                 )
             )
@@ -789,7 +786,7 @@ class WordTaskRunner(BaseTaskRunner):
                     message="输出目录初始化失败："
                     + user_facing_reason(
                         exc,
-                        fallback="请换一个有写入权限的输出目录后重试。",
+                        fallback="请更换为有写入权限的输出目录后重试。",
                     )
                 )
             )
@@ -914,7 +911,7 @@ class WordTaskRunner(BaseTaskRunner):
         try:
             _raise_if_stopped()
 
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在读取 Word 文件里的文字..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在读取 Word 文件中的文字…"))
             t_phase1 = datetime.now()
             for index, file_item in enumerate(self._files):
                 self._collect_file_texts(
@@ -954,7 +951,7 @@ class WordTaskRunner(BaseTaskRunner):
                 )
             )
             phase1_elapsed = (datetime.now() - t_phase1).total_seconds()
-            self._log("OK", f"读取完成：全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容只翻一次")
+            self._log("OK", f"读取完成：全部文档合计 {len(global_unique_texts)} 处待翻译文本，相同内容仅翻译一次")
             self._task_logger.global_collected(
                 total_unique=len(global_unique_texts),
                 file_count=len(self._files),
@@ -975,7 +972,7 @@ class WordTaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在查找记忆库里已有的译文..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在查找记忆库中已有的译文…"))
             t_phase2 = datetime.now()
             all_texts = list(global_unique_texts)
             normal_texts, mixed_texts = split_mixed_language_sources(
@@ -1046,7 +1043,7 @@ class WordTaskRunner(BaseTaskRunner):
                 self._file_progress.emit_many(
                     "active", "translate", active_translation_paths
                 )
-                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译记忆库里没有的内容..."))
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译记忆库中没有的内容…"))
 
                 def progress_cb(done, total):
                     self._translate_progress.report("batches", done, max(api_call_count, 1))
@@ -1130,8 +1127,8 @@ class WordTaskRunner(BaseTaskRunner):
                 mixed_stats = MixedLanguageRunStats()
 
                 rate_limit_note = (
-                    "接口持续限流，已停止继续请求。已翻好的内容照常写入文件，"
-                    "其余段落保留原文，限流过去后用「接着上次继续」补译即可。"
+                    "模型服务持续限流，已停止发送请求。已翻译的内容将照常写入文件，"
+                    "其余段落保留原文；限流解除后，可使用「继续上次翻译」补译。"
                 )
 
                 def run_normal_main_translation() -> dict[str, str]:
@@ -1193,7 +1190,7 @@ class WordTaskRunner(BaseTaskRunner):
                     if not mixed_texts:
                         return {}
                     self._queue.put(
-                        StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译夹杂多种语言的内容...")
+                        StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在翻译夹杂多种语言的内容…")
                     )
 
                     def mixed_progress_cb(done, total):
@@ -1259,7 +1256,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "INFO",
                         f"共分 {word_batch_stats.batch_count} 批发送"
                         + (
-                            f"，其中 {word_batch_stats.retry_count} 次拆小重试"
+                            f"，其中 {word_batch_stats.retry_count} 次拆分为更小的批次重试"
                             if word_batch_stats.retry_count
                             else ""
                         )
@@ -1311,7 +1308,7 @@ class WordTaskRunner(BaseTaskRunner):
                 if wrong_script:
                     self._log(
                         "WARN",
-                        f"{len(wrong_script)} 处译文不是目标语言（原文没有中文，译文却是中文），已退回原文重试。",
+                        f"{len(wrong_script)} 处译文不是目标语言（原文不含中文，而译文为中文），已退回原文重试。",
                     )
                 retry_sources = [
                     source
@@ -1372,8 +1369,8 @@ class WordTaskRunner(BaseTaskRunner):
                     quality_issues,
                     segment_locations,
                     standard_fixed_sources,
-                    problem="第一次翻译没得到有效译文",
-                    status="已自动单独重译这一段，补上了译文。",
+                    problem="首次翻译未获得有效译文",
+                    status="已自动单独重译本段并补充译文。",
                     severity="resolved",
                 )
                 if recovery_outcome.recovery_review_results:
@@ -1383,8 +1380,7 @@ class WordTaskRunner(BaseTaskRunner):
                         list(recovery_outcome.recovery_review_results.keys()),
                         problem="重译后的译文按规则自动采用",
                         status=(
-                            "译文主体已通过自动检查，本段已写入译文，"
-                            "建议看一下提示的片段。"
+                            "译文主体已通过自动检查，本段已写入译文，建议检查提示的片段。"
                         ),
                         severity="resolved",
                         validation_results=recovery_outcome.recovery_review_results,
@@ -1394,10 +1390,10 @@ class WordTaskRunner(BaseTaskRunner):
                         quality_issues,
                         segment_locations,
                         list(recovery_outcome.semantic_review_results.keys()),
-                        problem="自动检查没通过，复查后采用",
+                        problem="未通过自动检查，复查后采用",
                         status=(
-                            "这段译文没通过自动检查，但复查确认意思与原文完全一致；"
-                            "本段已写入译文，不会存入记忆库。"
+                            "本段译文未通过自动检查，但复查确认其意思与原文完全一致；已写入译文，"
+                            "但不会保存到记忆库。"
                         ),
                         severity="resolved",
                         validation_results=recovery_outcome.semantic_review_results,
@@ -1413,7 +1409,7 @@ class WordTaskRunner(BaseTaskRunner):
                         quality_issues,
                         segment_locations,
                         recovery_outcome.unresolved_sources,
-                        problem="重译后仍没得到有效译文",
+                        problem="重译后仍未获得有效译文",
                         status=(
                             f"已自动重译 {settings.word_batch.strict_retry_attempts} "
                             "轮并复查，仍保留原文，需人工复核。"
@@ -1513,7 +1509,7 @@ class WordTaskRunner(BaseTaskRunner):
                 else:
                     raise TaskStopped("任务已停止，未获得可写入的 Word 翻译结果。")
 
-            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 3/{phase_total}] 正在生成双语 Word…"))
             self._file_progress.emit_many("waiting", "generate")
             self._queue.put(
                 ProgressMsg(
@@ -1641,7 +1637,7 @@ class WordTaskRunner(BaseTaskRunner):
                     logger.debug(f"Word 翻译质量报告写入失败原始错误：{exc!r}")
                     report_reason = user_facing_reason(
                         exc,
-                        fallback="报告文件没能写出。",
+                        fallback="文件写入失败。",
                     )
                     self._log("WARN", f"Word 翻译质量报告写入失败：{report_reason}")
                     report_warning = (
@@ -1689,18 +1685,18 @@ class WordTaskRunner(BaseTaskRunner):
                     result_contract["kpi"]["unstarted_text_count"] = unfinished_paragraphs
                     if self._user_stop_requested:
                         stopped_message = (
-                            "任务已停止，已翻好的内容写进了文件，"
+                            "任务已停止，已翻译的内容已写入文件，"
                             + (
-                                f"还有 {unfinished_paragraphs} 段没翻，保留原文，可以接着翻译。"
+                                f"尚有 {unfinished_paragraphs} 段未翻译、保留原文，可继续翻译。"
                                 if unfinished_paragraphs
-                                else "停止前已经全部翻完。"
+                                else "停止前已全部翻译完成。"
                             )
                         )
                     elif unfinished_paragraphs:
                         # 不是用户按的停止（持续限流）：原因放在最前面，不能被换成
                         # 「任务已停止」——用户什么都没按，看到这句只会以为程序自己坏了。
                         stopped_message = (
-                            f"{stopped_message}还有 {unfinished_paragraphs} 段没翻。"
+                            f"{stopped_message}尚有 {unfinished_paragraphs} 段未翻译。"
                         )
                 elif total_texts:
                     # 排除「原文当译文」的占位段：它们在词典里只是为了让写盘统一走
@@ -1771,10 +1767,10 @@ class WordTaskRunner(BaseTaskRunner):
         except Exception as exc:  # noqa: BLE001 - 终止消息必须发出去
             logger.exception("Word 翻译任务收尾失败")
             fatal_error_message = fatal_error_message or (
-                "Word 翻译任务收尾失败："
+                "Word 翻译任务在完成阶段失败："
                 + user_facing_reason(
                     exc,
-                    fallback="结果摘要没能生成，已生成的翻译文件仍可使用。",
+                    fallback="结果摘要未能生成，已生成的翻译文件仍可使用。",
                 )
             )
         finally:
@@ -1858,8 +1854,8 @@ class WordTaskRunner(BaseTaskRunner):
                     self._log(
                         "WARNING",
                         (
-                            f"{file_item.name}：没法接着上次的结果补译，这次从头完整翻译："
-                            + user_facing_reason(exc, fallback="上次的翻译结果读不出来。")
+                            f"{file_item.name}：无法基于上次的结果补译，本次将从头完整翻译："
+                            + user_facing_reason(exc, fallback="无法读取上次的翻译结果。")
                         ),
                     )
                     resumed_path = None
@@ -1879,9 +1875,9 @@ class WordTaskRunner(BaseTaskRunner):
                     self._log(
                         "WARNING",
                         (
-                            f"接着上次继续：{file_item.name} 的原文件比上次翻译时"
-                            f"{describe_baseline_divergence(missing)}，没法接着上次的结果补译，"
-                            "这次完整翻译（已翻过的内容会尽量从记忆库直接取用）。"
+                            f"继续上次翻译：{file_item.name} 的源文件比上次翻译时{describe_baseline_divergence(missing)}，"
+                            "无法在上次结果的基础上补译，"
+                            "本次将完整翻译（已翻译的内容将尽量直接从记忆库调用）。"
                         ),
                     )
                     resumed_path = None
@@ -1890,7 +1886,7 @@ class WordTaskRunner(BaseTaskRunner):
                 process_path = resumed_path
                 self._log(
                     "INFO",
-                    f"  → [接着上次继续] {file_item.name}：在上次的翻译结果上补译，这次只补没翻译的内容。",
+                    f"  → [继续上次翻译] {file_item.name}：在上次翻译结果的基础上补译，本次仅补译未翻译的内容。",
                 )
             else:
                 self._queue.put(
@@ -1985,9 +1981,9 @@ class WordTaskRunner(BaseTaskRunner):
                         "snippet": "",
                         "problem": "自动目录未参与翻译",
                         "status": (
-                            "目录由 Word 的域自动生成，译文一刷新就会被覆盖，"
-                            "因此不参与翻译。请在 Word 里选中目录、按 F9 并选"
-                            "「更新整个目录」，目录会按译文标题重新生成。"
+                            "目录由 Word 的域自动生成，更新域后译文将被覆盖，因此不参与翻译。"
+                            "请在 Word 中选中目录，按 F9 并选择「更新整个目录」，"
+                            "目录将按译文标题重新生成。"
                         ),
                         "severity": "info",
                     }
@@ -2173,7 +2169,7 @@ class WordTaskRunner(BaseTaskRunner):
             logger.debug(f"Word 文件读取失败 {file_item.name} 原始错误：{exc!r}")
             read_reason = user_facing_reason(
                 exc,
-                fallback="这个文件打不开，可能已损坏或设置了打开密码。",
+                fallback="无法打开此文件，可能已损坏或设置了打开密码。",
             )
             self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {read_reason}")
             self._task_logger.file_error(
@@ -2206,7 +2202,7 @@ class WordTaskRunner(BaseTaskRunner):
         """自动识别源语言：逐个文件做一次语言预检，定下源语言、系统提示词和 TM 语言对，并给每段文本记下候选源语言。"""
         self._queue.put(
             StatusMsg(
-                phase_desc="状态：正在识别每个 Word 文件的原文语言..."
+                phase_desc="状态：正在识别每个 Word 文件的原文语言…"
             )
         )
 
@@ -2232,7 +2228,7 @@ class WordTaskRunner(BaseTaskRunner):
         detect_total = len(file_payloads)
         for detect_index, (file_path, candidate_texts) in enumerate(file_payloads.items(), start=1):
             self._translate_progress.report("detect", detect_index - 1, detect_total)
-            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}..."))
+            self._queue.put(StatusMsg(phase_desc=f"状态：正在检测语言 {detect_index}/{detect_total}…"))
             self._file_progress.emit(file_path, "active", "detect")
             file_language_preflights.update(preflight_files(
                 {file_path: candidate_texts},
@@ -2300,13 +2296,13 @@ class WordTaskRunner(BaseTaskRunner):
             )
             self._log(
                 "OK",
-                f"已自动修正 {len(residual_result.fixes)} 处没翻译的编号。",
+                f"已自动修正 {len(residual_result.fixes)} 处未翻译的编号。",
             )
             _add_quality_issues(
                 quality_issues,
                 segment_locations,
                 list(residual_result.fixes.keys()),
-                problem="译文里有没翻译的编号",
+                problem="译文中含有未翻译的编号",
                 status="已按全文的编号写法自动修正，无需处理。",
                 severity="resolved",
             )
@@ -2329,8 +2325,7 @@ class WordTaskRunner(BaseTaskRunner):
                 self._translate_progress.report("repair", done - 1, total)
                 self._queue.put(StatusMsg(
                     phase_desc=(
-                        f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文"
-                        f"（{done}/{total}）..."
+                        f"状态：[阶段 2/{phase_total}] 正在补译遗留的原文（{done}/{total}）…"
                     )
                 ))
 
@@ -2348,9 +2343,8 @@ class WordTaskRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     (
-                        f"遗留原文的译文有 {len(still_needs_review)} 条，超出单次自动补译上限"
-                        f"（{_RESIDUAL_REPAIR_MAX_UNITS} 条），超出的 "
-                        f"{ladder.over_cap_count} 条这次没有自动补译，已标为待复核。"
+                        f"遗留原文的译文有 {len(still_needs_review)} 条，超出单次自动补译上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），"
+                        f"超出的 {ladder.over_cap_count} 条本次未自动补译，已标为待复核。"
                     ),
                 )
             if ladder.breaker_tripped:
@@ -2381,7 +2375,7 @@ class WordTaskRunner(BaseTaskRunner):
                 quality_issues,
                 segment_locations,
                 repair_accepted_sources,
-                problem="译文里留着没翻译的原文片段",
+                problem="译文中残留未翻译的原文片段",
                 status="已自动补译，通过了自动检查。",
                 severity="resolved",
             )
@@ -2399,8 +2393,8 @@ class WordTaskRunner(BaseTaskRunner):
                     quality_issues,
                     segment_locations,
                     [unit.source_text],
-                    problem="译文里留着没翻译的原文片段",
-                    status=f"没翻译的部分：{spans_desc}{reject_desc}，需人工复核。",
+                    problem="译文中残留未翻译的原文片段",
+                    status=f"未翻译的部分：{spans_desc}{reject_desc}，需人工复核。",
                     severity="needs_review",
                 )
             if repair_over_cap_count:
@@ -2412,12 +2406,10 @@ class WordTaskRunner(BaseTaskRunner):
                         "location_label": "整批任务",
                         "section_path": "正文",
                         "snippet": "",
-                        "problem": "部分遗留的原文这次没有自动补译",
+                        "problem": "部分遗留原文本次未自动补译",
                         "status": (
-                            f"需要补译的内容超出单次自动补译上限"
-                            f"（{_RESIDUAL_REPAIR_MAX_UNITS} 条），其中 "
-                            f"{repair_over_cap_count} 条这次没有尝试，"
-                            "重新运行任务可继续补译。"
+                            f"需要补译的内容超出单次自动补译上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），"
+                            f"其中 {repair_over_cap_count} 条本次未尝试，重新运行任务可继续补译。"
                         ),
                         "severity": "needs_review",
                     }
@@ -2433,15 +2425,14 @@ class WordTaskRunner(BaseTaskRunner):
                         "snippet": "",
                         "problem": "自动补译连续失败，已停止",
                         "status": (
-                            "部分内容没有尝试补译，确认网络和模型连接正常后"
-                            "重新运行任务可继续补译。"
+                            "部分内容未尝试补译；请确认网络和模型连接正常后重新运行任务，以继续补译。"
                         ),
                         "severity": "needs_review",
                     }
                 )
             self._log(
                 "WARN",
-                f"有 {len(still_needs_review)} 条译文里还留着没翻译的原文，已列入待复核。",
+                f"有 {len(still_needs_review)} 条译文中仍残留未翻译的原文，已列入待复核。",
             )
         if residual_result.released_notes:
             # 万/亿等数量单位残留：不拦发布，但报告里留痕
@@ -2500,7 +2491,7 @@ class WordTaskRunner(BaseTaskRunner):
                     segment_locations,
                     [item.unit_key for item in heading_consistency.outliers],
                     problem="章节标题写法与全文多数不一致",
-                    status="统一它们需要改动词形，没有自动改写，如需统一可人工调整。",
+                    status="统一这些写法需要改动词形，因此未自动改写；如需统一，请手动调整。",
                     severity="resolved",
                 )
         return heading_majority
@@ -2623,8 +2614,7 @@ class WordTaskRunner(BaseTaskRunner):
             except Exception as tm_error:  # noqa: BLE001 - never lose finished work
                 logger.warning(f"记忆库写入失败原始错误：{tm_error!r}")
                 tm_write_message = (
-                    "记忆库写入失败，本次译文不受影响，"
-                    "但这批译文没有存进记忆库："
+                    "记忆库写入失败。本次译文不受影响，但该批译文未保存到记忆库："
                     + user_facing_reason(tm_error, fallback="记忆库暂时无法写入。")
                 )
                 self._log("WARN", tm_write_message)
@@ -2638,7 +2628,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "snippet": "",
                         "problem": "记忆库写入失败",
                         "status": tm_write_message
-                        + " 下次翻译相同内容会重新请求模型，可稍后重跑补存。",
+                        + " 下次翻译相同内容时将重新请求模型，可稍后重新运行以补存。",
                         "severity": "needs_review",
                     }
                 )
@@ -2754,7 +2744,7 @@ class WordTaskRunner(BaseTaskRunner):
             if self._untranslated_only:
                 coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
                 if coverage_plan is None:
-                    raise ValueError("补译前的内容核对没有完成，为免写错位置，这个文件没有写出。")
+                    raise ValueError("补译前的内容核对未完成，为避免写入错误位置，未输出此文件。")
                 out_path = write_untranslated_docx(
                     source_path=source_path,
                     output_dir=staged_output_dir,
@@ -2876,8 +2866,7 @@ class WordTaskRunner(BaseTaskRunner):
                     self._log(
                         "WARN",
                         (
-                            f"{file_item.name}：输出文档仍发现 {residual_count} "
-                            "处疑似没翻译的原文，已写入质量报告。"
+                            f"{file_item.name}：输出文档中仍有 {residual_count} 处疑似未翻译的原文，已写入质量报告。"
                         ),
                     )
                 self._task_logger.file_done(
@@ -2902,7 +2891,7 @@ class WordTaskRunner(BaseTaskRunner):
             logger.debug(f"Word 文件写入失败 {file_item.name} 原始错误：{exc!r}")
             write_reason = user_facing_reason(
                 exc,
-                fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
+                fallback="译文文件未能写出，请检查输出目录的剩余空间和写入权限。",
             )
             self._log("ERROR", f"Word 文件写入失败 {file_item.name}：{write_reason}")
             self._task_logger.file_error(file_item.name, write_reason)
@@ -3011,7 +3000,7 @@ class WordTaskRunner(BaseTaskRunner):
                 # 以前这里记成 unstarted，同一个 Key 错误，Word 清单写「未开始」、
                 # Excel 写「未生成」。
                 status = "failed"
-                readable_error = "任务整体失败，这个文件没有写出。"
+                readable_error = "任务整体失败，未输出此文件。"
             else:
                 status = "unstarted"
                 readable_error = "该文件未开始处理。"
@@ -3252,10 +3241,10 @@ def _prepare_word_source_for_translation(
         except WordConversionError as exc:
             logger.debug(f"本地 Office 编号预处理不可用原始错误：{exc!r}")
             message = (
-                "本机 Office 没能处理自动编号，已改用内置方式处理："
+                "本机 Office 未能处理自动编号，已改用内置方式："
                 + user_facing_reason(
                     exc,
-                    fallback="本机 Office 这次没能配合，编号已由程序自行还原。",
+                    fallback="本机 Office 未能完成处理，编号已由程序自动还原。",
                 )
             )
             fallback_messages.append(message)
@@ -3319,7 +3308,7 @@ def _cleanup_converted_word_paths(
             log_callback(
                 "WARN",
                 f"临时 Word 转换文件清理失败 {path.name}: "
-                + user_facing_reason(exc, fallback="临时文件删不掉。"),
+                + user_facing_reason(exc, fallback="无法删除临时文件。"),
             )
 
 
@@ -3929,8 +3918,8 @@ class _WordRecoveryPool:
                 logger.debug(f"Word 恢复池任务失败原始错误：{exc!r}")
                 self._log_callback(
                     "WARN",
-                    "有一段的自动重译没完成，已标为待复核："
-                    + user_facing_reason(exc, fallback="重译过程中出错了。"),
+                    "有一个段落的自动重译未完成，已标记为需复核："
+                    + user_facing_reason(exc, fallback="重译过程中出错。"),
                 )
         finally:
             try:
@@ -4328,7 +4317,7 @@ def _run_header_footer_batch(
         if error_callback is not None:
             logger.debug(f"页眉页脚批次失败原始错误：{exc!r}")
             error_callback(
-                f"  → 页眉页脚：有一批 {len(lines)} 行没拿到译文，这批原样保留："
+                f"  → 页眉页脚：一批共 {len(lines)} 行未获得译文，已原样保留："
                 + user_facing_reason(exc, fallback="模型服务返回了错误。")
             )
         return []

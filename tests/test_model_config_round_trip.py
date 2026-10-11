@@ -307,7 +307,7 @@ class ExportVersionTests(unittest.TestCase):
         with self.assertRaises(ValueError) as raised:
             parse_model_config_import(payload)
 
-        self.assertIn("更新版本", str(raised.exception))
+        self.assertIn("更高版本", str(raised.exception))
 
     def test_a_file_without_a_version_is_still_rejected(self) -> None:
         payload = build_model_config_export_payload(

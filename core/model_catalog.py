@@ -186,7 +186,7 @@ def fetch_ollama_models(
             ok=False,
             models=[],
             status="empty_models",
-            message="Ollama 已响应，但没有读取到已安装模型。",
+            message="Ollama 已响应，但未读取到已安装的模型。",
             detail=url,
         )
     result = ModelCatalogResult(
@@ -230,7 +230,7 @@ def fetch_openai_compatible_models(
             ok=False,
             models=[],
             status="missing_api_key",
-            message="请先填写 API Key，再获取模型列表。",
+            message="请先填写 API 密钥，再获取模型列表。",
         )
     if not normalized_base_url:
         return ModelCatalogResult(
@@ -272,7 +272,7 @@ def fetch_openai_compatible_models(
             ok=False,
             models=[],
             status="empty_models",
-            message="接口已响应，但没有读取到可用模型。",
+            message="服务已响应，但未读取到可用模型。",
             detail=url,
         )
 

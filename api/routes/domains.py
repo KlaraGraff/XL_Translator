@@ -49,7 +49,7 @@ def register(app: FastAPI) -> None:
     def get_domain_settings(surface: str) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
+            raise HTTPException(404, "找不到此翻译页面，请刷新后重试。")
         settings = load_settings()
         prefix = f"{normalized}_"
         return {
@@ -78,11 +78,11 @@ def register(app: FastAPI) -> None:
         """
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
+            raise HTTPException(404, "找不到此翻译页面，请刷新后重试。")
         preset = str(payload.preset or "").strip()
         prompt = str(payload.prompt or "").strip()
         if not prompt:
-            raise HTTPException(422, "Prompt 不能为空。")
+            raise HTTPException(422, "提示词不能为空。")
         settings = load_settings()
         custom_names = {
             str(name).strip()
@@ -134,7 +134,7 @@ def register(app: FastAPI) -> None:
     def put_domain_settings(surface: str, payload: DomainSettingsPayload) -> dict[str, Any]:
         normalized = str(surface or "").strip().lower()
         if normalized not in {"excel", "word", "cad"}:
-            raise HTTPException(404, "找不到这个翻译页面，请刷新页面后重试。")
+            raise HTTPException(404, "找不到此翻译页面，请刷新后重试。")
         preset = str(payload.preset or "").strip()
         custom_names = {
             str(name).strip()
@@ -148,7 +148,7 @@ def register(app: FastAPI) -> None:
         if preset in set(payload.disabled_presets):
             preset = "无"
         if preset == "自定义" and not str(payload.custom_prompt or "").strip():
-            raise HTTPException(422, "自定义领域必须填写完整 Prompt。")
+            raise HTTPException(422, "自定义领域必须填写完整的提示词。")
         settings = load_settings()
         prefix = f"{normalized}_"
         setattr(settings, f"{prefix}domain_preset", preset)
