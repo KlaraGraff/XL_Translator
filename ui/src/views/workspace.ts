@@ -1062,6 +1062,7 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
       label: "接着翻译",
       icon: "play",
       variant: "primary",
+      disabled: submittingSurfaces.has(surface),
       onClick: () => void resumeAfterStop(surface, st, lastOutputDir),
     }));
   }
@@ -2717,7 +2718,7 @@ function buildResumeDismissBar(surface: Surface, st: SurfaceState): HTMLElement 
   again.type = "button";
   again.textContent = "重新选择";
   // 重新弹的是缓存下来的这一份检测结果，不重扫——用户只是想改主意，没换过路径。
-  again.addEventListener("click", () => showResumeModal(surface, st));
+  again.addEventListener("click", () => void showResumeModal(surface, st));
   const close = el("button", "resume-link mute");
   close.type = "button";
   close.textContent = "×";
@@ -2832,9 +2833,11 @@ function resumeFootnote(body: string): HTMLElement {
 
 /** onDecided：从「开始翻译」进来时，选了「接着上次继续」或「全部重新翻译」就接着启动。
  *  「稍后再说」只关弹窗，不启动。 */
-function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => void): void {
+/** 返回弹窗是否真的打开了。目标语言和上次不一致（resumeState 为空）或没有可续的
+ *  产物时不弹，调用方要自己往下走，不能把这次点击吞掉。 */
+function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => void): boolean {
   const info = resumeState(st);
-  if (!info || resumeHitCount(info) === 0) return;
+  if (!info || resumeHitCount(info) === 0) return false;
   const fileCount = st.files.length || info.files.length;
   const single = fileCount === 1;
   const s = info.summary;
@@ -2942,6 +2945,7 @@ function showResumeModal(surface: Surface, st: SurfaceState, onDecided?: () => v
     body,
     actions,
   });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3033,7 +3037,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
         : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
-    if (st.resumeInfo) showResumeModal(surface, st);
+    if (st.resumeInfo) void showResumeModal(surface, st);
   } catch (error) {
     if (token !== scanTokens[surface]) return;
     // 扫描失败必须把上一次的清单清掉：留着旧结果，用户看到的是「路径 B + B 之外的文件」，
@@ -3080,7 +3084,18 @@ async function detectPreviousOutputForStart(
 
 /** 停止横幅上的「接着翻译」：以刚停下那次的输出为底稿，直接按「接着上次继续」启动。 */
 async function resumeAfterStop(surface: Surface, st: SurfaceState, outputDir: string): Promise<void> {
-  const detected = await detectPreviousOutputForStart(surface, st, outputDir || undefined);
+  // 扫描要跑一个来回：整段占住提交锁，连点「接着翻译」或这时再点「开始翻译」都不会
+  // 再起一条流程。锁在启动前放开，startTask 里的预检提交会自己再拿。
+  if (submittingSurfaces.has(surface)) return;
+  submittingSurfaces.add(surface);
+  rerender(surface);
+  let detected: PreviousOutput | null = null;
+  try {
+    detected = await detectPreviousOutputForStart(surface, st, outputDir || undefined);
+  } finally {
+    submittingSurfaces.delete(surface);
+    rerender(surface);
+  }
   if (!detected) {
     showToast({ message: "没找到上次停下时写出的文件，请点「重新扫描」后再试。", error: true });
     return;
@@ -3175,9 +3190,15 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
       return;
     }
   }
-  // 上一次任务没有干净地跑完（停止、失败、中断、有问题）又直接点「开始翻译」：先做一遍
-  // 「重新扫描」那套续译检测。以前续译弹窗只在重新扫描后出现，停止后点开始会整份从头
-  // 重翻，已经付过钱的部分再花一遍。确实有翻了一半的文件才弹窗，其余照常开始。
+  await submitAfterResumeCheck(surface, st);
+}
+
+/** 开始前的续译检测，再预检提交。
+ *  上一次任务没有干净地跑完（停止、失败、中断、有问题）又直接点「开始翻译」：先做一遍
+ *  「重新扫描」那套续译检测。以前续译弹窗只在重新扫描后出现，停止后点开始会整份从头
+ *  重翻，已经付过钱的部分再花一遍。确实有翻了一半的文件才弹窗，其余照常开始。
+ *  .xls / .doc 转换方式弹窗的按钮也走这里——直接预检提交会把这道检测绕过去。 */
+async function submitAfterResumeCheck(surface: Surface, st: SurfaceState): Promise<void> {
   const lastState = st.task?.task.terminal ? st.task.task.state : null;
   if ((surface === "excel" || surface === "word") && st.resumeDecision === null && lastState && lastState !== "done") {
     if (submittingSurfaces.has(surface)) return;
@@ -3193,8 +3214,9 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
     if (detected && detected.summary.partial > 0) {
       st.resumeInfo = detected;
       st.resumeDetectedLang = detected.target_lang || st.targetLang;
-      showResumeModal(surface, st, () => void startTask(surface, st));
-      return;
+      // 选完之后 resumeDecision 已定，再进这里会直接预检提交；前面的检查（含转换方式）
+      // 都已经过了，不再重走 startTask，免得转换方式弹窗再问一遍。
+      if (showResumeModal(surface, st, () => void submitAfterResumeCheck(surface, st))) return;
     }
   }
   await preflightAndSubmit(surface, st);
@@ -3232,7 +3254,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = true;
           else st.allowDocFallback = true;
-          void preflightAndSubmit(surface, st);
+          void submitAfterResumeCheck(surface, st);
         },
       },
       {
@@ -3241,7 +3263,7 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         onClick: () => {
           if (surface === "excel") st.allowXlsFallback = false;
           else st.allowDocFallback = false;
-          void preflightAndSubmit(surface, st);
+          void submitAfterResumeCheck(surface, st);
         },
       },
     ],
