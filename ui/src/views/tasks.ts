@@ -1173,11 +1173,11 @@ async function openTaskLocalFile(path: string, reveal: boolean): Promise<void> {
   }
 }
 
-const NO_DIAGNOSTIC_TEXT = "本次任务没有生成诊断记录，没有可导出的内容。";
+const NO_DIAGNOSTIC_TEXT = "这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。";
 
 /** 每个终态任务有没有诊断记录。没问过就不在表里；"pending" 表示正在问。
- *  手动停止这类正常结束的任务本来就没有诊断记录，以前「导出诊断」照样能点，
- *  点了弹一条红色报错 toast——一件正常的事被说成了出错。 */
+ *  任务结束时后端都会写一份；更早版本跑的任务、或者超出保留上限被清掉的，就没有。
+ *  以前这种情况「导出诊断」照样能点，点了弹一条红色报错 toast。 */
 const diagnosticAvailability = new Map<string, boolean | "pending">();
 
 function ensureDiagnosticAvailability(taskId: string): void {
@@ -1205,7 +1205,7 @@ async function exportTaskDiagnostic(taskId: string): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // 诊断记录在详情打开之后被清理掉了：同样是正常情况，换成普通提示并把按钮置灰。
-    if (message.includes("没有生成诊断记录")) {
+    if (message.includes("没有诊断记录")) {
       diagnosticAvailability.set(taskId, false);
       if (mounted && selectedId === taskId) renderDetail();
       showToast({ message: NO_DIAGNOSTIC_TEXT });

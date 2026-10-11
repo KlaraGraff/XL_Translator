@@ -225,7 +225,7 @@ class TaskDiagnosticExportTests(unittest.TestCase):
 
     def test_availability_tells_the_detail_page_whether_export_can_work(self) -> None:
         # 任务详情先问一句再决定「导出诊断」能不能点：没有诊断记录是正常情况
-        # （比如手动停止），不该让用户点了才收到一条红色报错。
+        # （更早版本跑的任务、记录已被清理），不该让用户点了才收到一条红色报错。
         self._archive("task-alpha")
 
         self.assertEqual(self.client.get("/api/diagnostics/task/task-alpha").json(), {"available": True})
