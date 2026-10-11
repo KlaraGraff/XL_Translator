@@ -178,6 +178,9 @@ class KeysUnreadableSaveTests(unittest.TestCase):
             def read_text(self, *args: Any, **kwargs: Any) -> str:
                 raise PermissionError("locked by antivirus (simulated)")
 
+            def read_bytes(self) -> bytes:
+                raise PermissionError("locked by antivirus (simulated)")
+
         self.keys_path = _UnreadableKeysPath(real_path)
         self.backups_dir = self.app_data / "backups"
         self._patchers = [

@@ -260,6 +260,9 @@ class PdfPageRecoveryStatusMsg:
     retried_page_count: int = 0
     recovered_page_count: int = 0
     placeholder_page_count: int = 0
+    # 按「跳过 A3 及更大的页面」原样保留的页。它们算在 completed_pages 里（跑完了），
+    # 但没有生成译文，界面的「已生成 N 页」要把它们扣掉。
+    skipped_oversize_page_count: int = 0
 
 
 @dataclass
@@ -866,6 +869,8 @@ class TaskRunner:
             file_language_preflights = {}
             tm_language_pairs: list[str] = []
             text_source_scopes: dict[str, list[frozenset[str]]] = {}
+            # 自动识别时每个文件自己的源语言（路径 → 语言），见下方语言预检
+            file_source_langs: dict[str, str] = {}
             file_conversion_modes: dict[str, str] = {
                 str(item.path): "native_xlsx"
                 for item in self._files
@@ -906,6 +911,7 @@ class TaskRunner:
                     try:
                         from core.resume_detection import (
                             baseline_missing_source_texts,
+                            describe_baseline_divergence,
                             match_previous_output,
                         )
                         candidate = match_previous_output(
@@ -951,11 +957,12 @@ class TaskRunner:
                             )
                         ):
                             # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
-                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
+                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）；
+                            # 源文件删掉的内容则相反，会随底稿原样留在产物里。
                             self._log(
                                 "WARN",
                                 f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                                f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                                f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
                                 "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
                             )
                         else:
@@ -1076,6 +1083,9 @@ class TaskRunner:
                             file_item.name,
                             target_lang=target_lang,
                             source_lang=source_lang,
+                            formula_display_value_backfill=(
+                                excel_output.formula_display_value_backfill
+                            ),
                         )
                         coverage_plans.append(None)
                 except Exception as e:
@@ -1133,6 +1143,9 @@ class TaskRunner:
                                     file_item.name,
                                     target_lang=target_lang,
                                     source_lang=source_lang,
+                                    formula_display_value_backfill=(
+                                        excel_output.formula_display_value_backfill
+                                    ),
                                 )
                                 coverage_plans.append(None)
                             degraded = True
@@ -1255,6 +1268,14 @@ class TaskRunner:
                 else:
                     source_lang = get_default_source_lang()
                 tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+                # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
+                # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
+                # 译文」跳过。某个文件没定出语言时才退回全局值。
+                file_source_langs.update(
+                    (file_path, result.source_langs[0])
+                    for file_path, result in file_language_preflights.items()
+                    if result.source_langs
+                )
                 for file_item, text_set in zip(self._files, file_texts):
                     result = file_language_preflights.get(str(file_item.path))
                     if result is None:
@@ -1279,6 +1300,7 @@ class TaskRunner:
                         file_results=file_results,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        file_source_langs=file_source_langs,
                         formula_display_value_backfill=(
                             excel_output.formula_display_value_backfill
                         ),
@@ -1293,6 +1315,7 @@ class TaskRunner:
                         resume_baseline_used=resume_baseline_used,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        file_source_langs=file_source_langs,
                         formula_display_value_backfill=(
                             excel_output.formula_display_value_backfill
                         ),
@@ -1471,7 +1494,46 @@ class TaskRunner:
                 mixed_stats = MixedLanguageRunStats()
                 mixed_results = {}
 
+                def keep_paid_results(exc: ApiKeyTemporarilyUnavailableError) -> None:
+                    """Key 被判暂时不可用、整轮任务要失败时，先把已付费的译文存进记忆库。
+
+                    这一轮不会再出文件，但用户换 key 或等限流过去重跑时，这些词条直接
+                    命中记忆库，不用再付一次钱（审计 高-6）。
+                    """
+                    partial = getattr(exc, "partial_results", None) or {}
+                    if not partial:
+                        return
+                    if auto_source_lang:
+                        language_partial, plain_partial = dict(partial), {}
+                    else:
+                        language_partial, plain_partial = {}, dict(partial)
+                    written, tm_error = self.store_api_results_in_tm(
+                        auto_source_lang=auto_source_lang,
+                        normal_api_language_results=language_partial,
+                        normal_api_translations=plain_partial,
+                        text_source_scopes=text_source_scopes,
+                        target_lang=target_lang,
+                        lang_pair=lang_pair,
+                        max_len=max_len,
+                        engine_name=engine.engine_name,
+                    )
+                    if tm_error:
+                        self._log("WARN", tm_error)
+                    elif written:
+                        self._log(
+                            "INFO",
+                            f"任务中断前已拿到 {len(partial)} 条译文，已存入记忆库 {written} 条；"
+                            "重新翻译时这些内容直接命中记忆库，不会再次计费。",
+                        )
+
                 def run_normal_api_translation() -> dict[str, str]:
+                    try:
+                        return _run_normal_api_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        keep_paid_results(exc)
+                        raise
+
+                def _run_normal_api_translation() -> dict[str, str]:
                     if not misses:
                         return {}
                     if auto_source_lang:
@@ -2178,7 +2240,9 @@ class TaskRunner:
                             plan=coverage_plan,
                             translations=global_translations,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=file_source_langs.get(
+                                str(file_item.path), source_lang
+                            ),
                             keep_original_sheets=(
                                 excel_output.keep_original_sheets and not resume_used_here
                             ),
@@ -2569,7 +2633,7 @@ class TaskRunner:
                 actual_results=normal_api_language_results,
                 review_marks=excel_review_marks,
             )
-            _finish_process("paused", elapsed_sec=elapsed)
+            _finish_process("cancelled", elapsed_sec=elapsed)
             self._queue.put(
                 StoppedMsg(
                     message=stopped_message,
@@ -2922,6 +2986,7 @@ class TaskRunner:
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
+        file_source_langs: dict[str, str] | None = None,
     ) -> None:
         """自动识别源语言的续译：预检定完语言、重算补译清单之前，把底稿换上。
 
@@ -2933,7 +2998,10 @@ class TaskRunner:
         之后新增的内容不在底稿里，硬换底稿会把它静默丢掉。核查放在这里而不是阶段 1，
         是因为文本分类依赖源语言——此刻语言刚定下来，核查结果才作数。
         """
-        from core.resume_detection import baseline_missing_source_texts
+        from core.resume_detection import (
+            baseline_missing_source_texts,
+            describe_baseline_divergence,
+        )
 
         failed_sources = {
             r.get("source_path") for r in file_results if not r.get("success")
@@ -2950,14 +3018,14 @@ class TaskRunner:
                 baseline,
                 surface="excel",
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=(file_source_langs or {}).get(str(file_item.path), source_lang),
                 formula_display_value_backfill=formula_display_value_backfill,
             )
             if missing:
                 self._log(
                     "WARN",
                     f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                    f"多了 {len(missing)} 处内容，上次产物无法当底稿，"
+                    f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
                     "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
                 )
                 continue
@@ -2992,6 +3060,7 @@ class TaskRunner:
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
+        file_source_langs: dict[str, str] | None = None,
         engine=None,
         api_scheduler=None,
         lang_pair: str | None = None,
@@ -3008,10 +3077,16 @@ class TaskRunner:
         """
         global_unique_texts.clear()
         raw_text_count = 0
-        self._log("INFO", f"[补译模式] 源语言已识别为 {source_lang}，开始按它重算待补清单。")
+        file_source_langs = file_source_langs or {}
+        detected_langs = sorted(set(file_source_langs.values())) or [source_lang]
+        self._log(
+            "INFO",
+            f"[补译模式] 源语言已识别为 {'、'.join(detected_langs)}，开始按各文件的语言重算待补清单。",
+        )
         for fi, file_item in enumerate(self._files):
             if fi >= len(process_paths) or fi >= len(coverage_plans):
                 continue
+            file_source_lang = file_source_langs.get(str(file_item.path), source_lang)
             if any(
                 r.get("source_path") == str(file_item.path) and not r.get("success")
                 for r in file_results
@@ -3021,7 +3096,7 @@ class TaskRunner:
                 coverage_plan = build_excel_coverage_plan(
                     process_paths[fi],
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     formula_display_value_backfill=formula_display_value_backfill,
                 )
             except Exception as e:  # noqa: BLE001 - 单个文件读失败不该带走整批
@@ -3048,7 +3123,7 @@ class TaskRunner:
                         coverage_plan = build_excel_coverage_plan(
                             file_item.path,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=file_source_lang,
                             formula_display_value_backfill=formula_display_value_backfill,
                         )
                         degraded = True
@@ -3087,7 +3162,7 @@ class TaskRunner:
                     engine=engine,
                     api_scheduler=api_scheduler,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     lang_pair=lang_pair,
                     concurrency=concurrency,
                     file_name=file_item.name,
@@ -3305,16 +3380,28 @@ class TaskRunner:
         *,
         target_lang: str = "",
         source_lang: str = "zh",
+        formula_display_value_backfill: bool = True,
     ) -> tuple[list[str], int]:
-        """用 openpyxl 快速读取文件中需要翻译的所有唯一词条，并返回工作表数量。"""
+        """用 openpyxl 快速读取文件中需要翻译的所有唯一词条，并返回工作表数量。
+
+        「公式显示值回填」关闭时写入器不会覆盖公式格，这里也就不能把公式格的
+        显示值送去翻译——否则是白付一次 API 费用（审计 高-12），规则与
+        excel_coverage 的补译计划保持一致。
+        """
         from openpyxl import load_workbook
         seen: set[str] = set()
-        wb = load_workbook(str(real_path), read_only=True, data_only=True)
+        # 回填开着读缓存的显示值；关着则读公式本身，好按 data_type 认出公式格跳过
+        wb = load_workbook(
+            str(real_path), read_only=True, data_only=formula_display_value_backfill
+        )
         try:
             worksheets = wb.worksheets
             for ws in worksheets:
-                for row in ws.iter_rows(values_only=True):
-                    for val in row:
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if not formula_display_value_backfill and cell.data_type == "f":
+                            continue
+                        val = cell.value
                         if isinstance(val, str):
                             t = val.strip()
                             if (

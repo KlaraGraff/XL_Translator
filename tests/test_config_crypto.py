@@ -304,7 +304,7 @@ class ExportImportEndpointSealTests(unittest.TestCase):
 class CorruptDetailContractTests(unittest.TestCase):
     """界面靠这句原话认出「文件被改过」这条分支，两边的字面量必须逐字相同。
 
-    settings.ts 里是 `errorMessage(error) === CORRUPT_IMPORT_DETAIL` 的字符串相等
+    settings-models.ts 里是 `errorMessage(error) === CORRUPT_IMPORT_DETAIL` 的字符串相等
     判断。后端改个标点，那个专门的弹窗就会静默退化成一条通用红色 toast——用户再也
     看不到「请联系发送方确认文件来源」这句唯一的安全提示，而且没有任何测试会红。
     这条测试就是那个机器验证。
@@ -313,13 +313,14 @@ class CorruptDetailContractTests(unittest.TestCase):
     def test_the_frontend_carries_the_exact_same_sentence(self) -> None:
         from api.app import CORRUPT_IMPORT_DETAIL
 
+        # 模型配置导入在设置页的「模型服务」子页里（ui/src/views/settings-models.ts）
         settings_ts = (
-            Path(__file__).resolve().parents[1] / "ui" / "src" / "views" / "settings.ts"
+            Path(__file__).resolve().parents[1] / "ui" / "src" / "views" / "settings-models.ts"
         ).read_text(encoding="utf-8")
         self.assertIn(
             f'const CORRUPT_IMPORT_DETAIL = "{CORRUPT_IMPORT_DETAIL}";',
             settings_ts,
-            "ui/src/views/settings.ts 里的 CORRUPT_IMPORT_DETAIL 和 api/app.py 的不一致了",
+            "ui/src/views/settings-models.ts 里的 CORRUPT_IMPORT_DETAIL 和 api/app.py 的不一致了",
         )
 
 

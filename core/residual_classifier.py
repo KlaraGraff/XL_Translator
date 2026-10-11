@@ -35,6 +35,34 @@ CATEGORY_SENTENCE_BLOCK = "sentence_block"      # 成句未译 → 带反馈重�
 # 目标语为中文/日文时不存在「残留中文」问题（与 _light_residual_chinese_issue 一致）
 RESIDUAL_EXEMPT_TARGET_LANGS = frozenset({"zh", "ja"})
 
+# 与 core.language_registry.CUSTOM_TARGET_LANG_PREFIX 相同（本模块只依赖标准库，
+# 测试里核对两者一致）。
+_CUSTOM_TARGET_LANG_PREFIX = "x-custom-"
+_CJK_SCRIPT_RE = re.compile(r"[一-龥぀-ヿ가-힯]")
+_LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ɏ]")
+
+
+def is_residual_exempt_target(target_lang: str, target_text: str | None = None) -> bool:
+    """Whether Han characters in a translation into ``target_lang`` are normal.
+
+    Built-in Chinese and Japanese (any region suffix) are always exempt.
+    User-defined target languages carry no script information, and users of
+    this app name them in Chinese whatever they are (「繁體中文」「粵語」but also
+    「法语（瑞士）」), so a custom language is judged by the translation itself:
+    when it is mostly CJK script, Han characters in it are the language, not
+    leftovers. Before this, a correct Traditional Chinese translation containing
+    「2026年8月9日」was failed as residual Chinese and reset to the source text
+    (audit 高-10).
+    """
+    lang = str(target_lang or "").strip().lower()
+    if re.split(r"[-_]", lang, maxsplit=1)[0] in RESIDUAL_EXEMPT_TARGET_LANGS:
+        return True
+    if not lang.startswith(_CUSTOM_TARGET_LANG_PREFIX) or target_text is None:
+        return False
+    cjk = len(_CJK_SCRIPT_RE.findall(target_text))
+    latin = len(_LATIN_LETTER_RE.findall(target_text))
+    return cjk > 0 and cjk >= latin
+
 _CN_NUM_CHARS = "零一二三四五六七八九十"
 _CN_DIGIT_VALUE = {c: i for i, c in enumerate("零一二三四五六七八九")}
 
@@ -196,7 +224,7 @@ def classify_residual_spans(
     numbering_prefix（如 `第1节` 的「第」「节」两个片段）。
     """
     text = str(target_text or "")
-    if not text or target_lang in RESIDUAL_EXEMPT_TARGET_LANGS:
+    if not text or is_residual_exempt_target(target_lang, text):
         return []
     cjk_matches = list(CJK_SPAN_RE.finditer(text))
     if not cjk_matches:

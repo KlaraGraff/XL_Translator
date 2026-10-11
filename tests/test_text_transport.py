@@ -172,6 +172,29 @@ class TextTransportTests(unittest.TestCase):
         ]
         self.assertEqual(transport.extract_responses_events(events), "done")
 
+    def test_chat_content_given_as_parts_is_kept(self) -> None:
+        # 审计 高-3：已付费的答案放在分段数组里，不能当解析失败丢掉。
+        payload = {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": '["Prix total"'},
+                            {"type": "image_url", "image_url": {"url": "x"}},
+                            {"type": "text", "text": "]"},
+                        ]
+                    },
+                }
+            ]
+        }
+        self.assertEqual(transport.extract_chat_text(payload), '["Prix total"]')
+        with self.assertRaises(transport.TextTransportError) as caught:
+            transport.extract_chat_text(
+                {"choices": [{"finish_reason": "stop", "message": {"content": [{"type": "image_url"}]}}]}
+            )
+        self.assertIn("list", str(caught.exception))
+
     def test_empty_success_and_incomplete_stream_are_rejected(self) -> None:
         with self.assertRaises(transport.TextTransportError):
             transport.extract_chat_text({"choices": [{"finish_reason": "stop", "message": {"content": ""}}]})

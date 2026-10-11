@@ -78,6 +78,45 @@ def test_pipeline_uses_memory_then_glossary_then_ai_and_writes_dwg(tmp_path):
     assert progress[-1].stage == "verify" and progress[-1].percent == 100
 
 
+def test_translate_stage_reports_progress_per_batch(tmp_path):
+    """本机实测：真实 DWG 翻译时进度停在一处一分多钟，然后一下跳过去。
+
+    翻译器接受 ``progress`` 时，每完成一批都要推进「AI 翻译」阶段（25%→70%）。
+    """
+    source = tmp_path / "batches.dxf"
+    source.write_text(
+        _dxf(*[pair for word in ("Alpha", "Bravo", "Charlie", "Delta") for pair in ((0, "TEXT"), (1, word))]),
+        encoding="utf-8",
+    )
+    progress: list[CadProgress] = []
+    seen_during_translation: list[float] = []
+
+    def translate(texts, glossary, progress=None):
+        for done in range(1, 3):
+            progress(done, 2)
+            seen_during_translation.append(progresses[-1].percent)
+        return {text: f"{text}译" for text in texts}
+
+    progresses = progress
+    CadTranslationPipeline(converter=None, translator=translate, progress=progress.append).translate_file(
+        source, tmp_path / "batches_zh.dxf", options=CadPipelineOptions(target_lang="zh", source_lang="auto")
+    )
+
+    assert seen_during_translation == [47.5, 70.0]
+    translate_percents = [item.percent for item in progress if item.stage == "translate"]
+    assert translate_percents == sorted(translate_percents)
+    assert translate_percents[0] == 25.0
+
+
+def test_two_argument_translator_still_works(tmp_path):
+    source = tmp_path / "old.dxf"
+    source.write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
+    result = CadTranslationPipeline(converter=None, translator=lambda texts, glossary: {"Door": "门"}).translate_file(
+        source, tmp_path / "old_zh.dxf"
+    )
+    assert result.stats.ai_translated == 1
+
+
 def test_target_language_skip_and_replacement_scan(tmp_path):
     source = tmp_path / "mixed.dxf"
     source.write_text(_dxf((0, "TEXT"), (1, "中文"), (0, "TEXT"), (1, "Bad")), encoding="utf-8")
@@ -262,3 +301,66 @@ def test_macos_oda_app_is_launched_through_launchservices(tmp_path, monkeypatch)
     ]
     assert captured["command"][6].endswith("/in")
     assert captured["command"][7].endswith("/out")
+
+
+def test_mixed_cjk_text_is_not_skipped_for_latin_targets():
+    # "Q235钢板" 里有拉丁字母，但中文部分仍需翻成英文/法文，不能当作"已是目标语言"跳过。
+    assert not _is_likely_target_language("Q235钢板", "en")
+    assert not _is_likely_target_language("M10螺栓", "fr")
+    assert _is_likely_target_language("Q235 steel plate", "en")
+
+
+def test_part_codes_do_not_block_cjk_target_detection():
+    assert _is_likely_target_language("M10螺栓", "zh")
+    assert _is_likely_target_language("GB/T 700 Q235钢板", "zh")
+    assert not _is_likely_target_language("钢板 steel plate", "zh")
+
+
+def test_numbers_and_other_language_text_do_not_force_review(tmp_path):
+    source = tmp_path / "plan.dxf"
+    source.write_text(
+        _dxf((0, "TEXT"), (1, "1200"), (0, "TEXT"), (1, "Door"), (0, "TEXT"), (1, "M10螺栓")),
+        encoding="utf-8",
+    )
+    result = CadTranslationPipeline(
+        converter=FakeConverter(), translator=lambda texts, glossary: {"Door": "门"}
+    ).translate_file(source, tmp_path / "plan_zh.dxf", options=CadPipelineOptions(source_lang="en", target_lang="zh"))
+    assert result.stats.unsupported_entities == 0
+    assert result.stats.skipped_non_text == 1
+    # "M10螺栓" 已是中文（M10 是规范代号），既不算残留外文，也不需要翻译。
+    assert result.stats.residual_foreign_text_count == 0
+
+
+def test_stop_raises_dedicated_stop_error(tmp_path):
+    from core.cad_translation import CadStopRequested
+
+    source = tmp_path / "a.dxf"
+    source.write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
+    try:
+        CadTranslationPipeline(converter=FakeConverter()).translate_file(
+            source, tmp_path / "a_zh.dxf", stop_requested=lambda: True
+        )
+    except CadStopRequested:
+        pass
+    else:
+        raise AssertionError("expected CadStopRequested")
+
+
+def test_scan_paths_collects_unreadable_files_when_asked(tmp_path):
+    good = tmp_path / "good.dxf"
+    good.write_text(_dxf((0, "TEXT"), (1, "Door")), encoding="utf-8")
+    bad = tmp_path / "bad.dxf"  # 非 UTF-8 内容：单个文件读不动
+    bad.write_bytes(b"0\nTEXT\n1\n\xff\xfe\x00bad\n")
+    skipped: list[dict[str, str]] = []
+    summaries = scan_cad_paths([tmp_path], skipped=skipped)
+    assert [item.filename for item in summaries] == ["good.dxf"]
+    assert [entry["name"] for entry in skipped] == ["bad.dxf"]
+
+
+def test_numbers_next_to_chinese_characters_are_kept_in_the_check():
+    from core.cad_translation import _numeric_tokens, _valid_translation
+
+    assert _numeric_tokens("共12页") == ["12"]
+    assert _numeric_tokens("M10 螺栓 Q235") == []
+    assert _valid_translation("Fire exit route 12345", "消防通道12345") == (True, "")
+    assert _valid_translation("Room 101", "房间102")[0] is False

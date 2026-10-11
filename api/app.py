@@ -167,6 +167,11 @@ class ScanRequest(BaseModel):
     # 续译弹窗里用户从历史下拉换了一个输出目录后重扫时带上；平时为空，
     # 检测自动选最新的一个。
     preferred_resume_dir: str | None = None
+    # 仅 CAD 使用：候选文字数取决于语言对（已是目标语言的文字不算候选），
+    # 所以扫描要带上当前选择的语言，而不是写死 auto→zh。
+    source_language: str | None = None
+    target_language: str | None = None
+    include_block_text: bool = True
 
     @field_validator("path", "preferred_resume_dir", mode="before")
     @classmethod
@@ -549,8 +554,9 @@ def create_app(
             target_lang=str(payload.target_language or "zh"),
             include_block_text=bool(payload.include_block_text),
         )
+        skipped: list[dict[str, str]] = []
         try:
-            summaries = scan_cad_paths(payload.paths, converter=converter, options=options)
+            summaries = scan_cad_paths(payload.paths, converter=converter, options=options, skipped=skipped)
         except Exception as exc:  # noqa: BLE001 - return a user-facing preflight error
             raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
         items = [
@@ -564,7 +570,7 @@ def create_app(
             }
             for item in summaries
         ]
-        return {"items": items, "skipped": [], "capability": status}
+        return {"items": items, "skipped": skipped, "capability": status}
 
     @app.middleware("http")
     async def require_loopback_token(request, call_next):
@@ -1055,14 +1061,17 @@ def create_app(
             status = probe_status()
             converter_path = str(status.get("converter") or "").strip()
             converter = SubprocessCadConverter(converter_path) if converter_path else None
+            cad_skipped: list[dict[str, str]] = []
             try:
                 summaries = scan_cad_paths(
                     roots,
                     converter=converter,
                     options=CadPipelineOptions(
-                        source_lang="auto",
-                        target_lang="zh",
+                        source_lang=str(request.source_language or "auto"),
+                        target_lang=str(request.target_language or "zh"),
+                        include_block_text=bool(request.include_block_text),
                     ),
+                    skipped=cad_skipped,
                 )
             except Exception as exc:
                 raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
@@ -1080,7 +1089,7 @@ def create_app(
             ]
             return {
                 "items": items,
-                "skipped": [],
+                "skipped": cad_skipped,
                 # Keep the capability at the response root for the CAD view;
                 # ``risk.capability`` remains for older scan consumers.
                 "capability": status,

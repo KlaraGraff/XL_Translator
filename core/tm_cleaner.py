@@ -55,6 +55,8 @@ class TmCleaningBatchError(RuntimeError):
         # 批次失败前已算好的 0 API 惯例归一建议由 run_cleaning 挂在这里，
         # 调用方可以只丢模型建议、保住确定性建议，不必整批重来
         self.partial_suggestions: list = []
+        # 失败之前成功批次已拿到（并已落库）的模型建议。
+        self.model_suggestions: list = []
         super().__init__(
             f"{self.failed_batches}/{self.total_batches} 个清洗批次失败；"
             f"首个错误：{self.first_error}"
@@ -506,12 +508,30 @@ def run_cleaning(
                 api_scheduler=api_scheduler,
             )
     except TmCleaningBatchError as batch_error:
-        # 模型批次失败不该连累 0 API 的确定性建议：挂在异常上带出去
-        batch_error.partial_suggestions = list(convention_suggestions)
+        # 模型批次失败不该连累 0 API 的确定性建议和成功批次的模型建议：挂在异常上带出去
+        batch_error.partial_suggestions = list(convention_suggestions) + [
+            s for s in batch_error.model_suggestions if s.entry_id not in convention_covered
+        ]
         raise
     return convention_suggestions + [
         s for s in model_suggestions if s.entry_id not in convention_covered
     ]
+
+
+def _persist_suggestions(suggestions: list[CleanSuggestion]) -> None:
+    tm_manager.persist_cleaning_suggestions(
+        [
+            {
+                "entry_id": item.entry_id,
+                "source_text": item.source_text,
+                "old_target": item.old_target,
+                "new_target": item.new_target,
+                "lang_pair": item.lang_pair,
+                "version": item.expected_version,
+            }
+            for item in suggestions
+        ]
+    )
 
 
 def _run_cleaning_async(
@@ -606,11 +626,16 @@ async def _clean_async_impl(
         suggestions.extend(partial)
 
     if batch_errors:
-        raise TmCleaningBatchError(
+        # 成功批次的建议是付过钱拿到的：先落库再报错，用户在建议列表里照样能审
+        # （审计 高-11）。以前这里直接抛，一个批次失败就把其余批次全部丢掉。
+        _persist_suggestions(suggestions)
+        error = TmCleaningBatchError(
             len(batch_errors),
             total_batches,
             batch_errors[0],
         )
+        error.model_suggestions = list(suggestions)
+        raise error
 
     _emit_clean_progress(
         progress_callback,
@@ -621,19 +646,7 @@ async def _clean_async_impl(
         completed_batches=total_batches,
         submitted_batches=total_batches,
     )
-    tm_manager.persist_cleaning_suggestions(
-        [
-            {
-                "entry_id": item.entry_id,
-                "source_text": item.source_text,
-                "old_target": item.old_target,
-                "new_target": item.new_target,
-                "lang_pair": item.lang_pair,
-                "version": item.expected_version,
-            }
-            for item in suggestions
-        ]
-    )
+    _persist_suggestions(suggestions)
     logger.info(f"清洗完成，发现 {len(suggestions)} 处建议修改")
     return suggestions
 
@@ -803,11 +816,16 @@ def _run_cleaning_threaded(
                     _submit_next()
 
     if batch_errors:
-        raise TmCleaningBatchError(
+        # 成功批次的建议是付过钱拿到的：先落库再报错，用户在建议列表里照样能审
+        # （审计 高-11）。以前这里直接抛，一个批次失败就把其余批次全部丢掉。
+        _persist_suggestions(suggestions)
+        error = TmCleaningBatchError(
             len(batch_errors),
             total_batches,
             batch_errors[0],
         )
+        error.model_suggestions = list(suggestions)
+        raise error
 
     _emit_clean_progress(
         progress_callback,
@@ -818,19 +836,7 @@ def _run_cleaning_threaded(
         completed_batches=total_batches,
         submitted_batches=total_batches,
     )
-    tm_manager.persist_cleaning_suggestions(
-        [
-            {
-                "entry_id": item.entry_id,
-                "source_text": item.source_text,
-                "old_target": item.old_target,
-                "new_target": item.new_target,
-                "lang_pair": item.lang_pair,
-                "version": item.expected_version,
-            }
-            for item in suggestions
-        ]
-    )
+    _persist_suggestions(suggestions)
     logger.info(f"清洗完成，发现 {len(suggestions)} 处建议修改")
     return suggestions
 

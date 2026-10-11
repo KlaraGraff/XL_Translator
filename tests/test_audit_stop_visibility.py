@@ -2,7 +2,7 @@
 docs/AUDIT_FIX_PLAN_2026-08-29.md 第 70-71 行）。
 
 covers:
-  ① PDF 逐页状态要把「已停止」和「失败」分开（ui/src/views/workspace.ts）
+  ① PDF 逐页状态要把「已停止」和「失败」分开（ui/src/views/workspace-pdf-pages.ts）
   ② 停止收尾横幅要报出「还剩多少没跑到」（ui/src/views/workspace.ts）
   ③ 单页重新生成失败要说清「旧产物已保留」（core/pdf_image_translation.py）
   ④ Excel 停止时没来得及自动修复的残留中文，要归因到「停止」，不能算成
@@ -38,7 +38,7 @@ class PdfPageStopStatusWordingTests(unittest.TestCase):
     """子项①：逐页表格里「已停止」不能跟「失败」「建议复核」共用同一个桶。"""
 
     def test_review_result_chip_and_note_brand_a_stopped_pending_page_separately(self) -> None:
-        source = _read_ui("views/workspace.ts")
+        source = _read_ui("views/workspace-pdf-pages.ts")
 
         chip = _function_body(source, "reviewResultChip")
         self.assertIn("taskStopped", chip, "reviewResultChip 丢了 taskStopped 信号")
@@ -52,7 +52,7 @@ class PdfPageStopStatusWordingTests(unittest.TestCase):
         self.assertIn("不是生成失败", note, "停止未跑到的页不能被读成生成失败")
 
     def test_group_summary_buckets_stopped_pages_apart_from_failed_and_flagged(self) -> None:
-        source = _read_ui("views/workspace.ts")
+        source = _read_ui("views/workspace-pdf-pages.ts")
         summary = _function_body(source, "buildGroupSummaryNodes")
         self.assertIn("taskStopped", summary)
         self.assertIn("stoppedSet", summary, "分组小结没有单独的「已停止」桶")
@@ -64,7 +64,7 @@ class PdfPageStopStatusWordingTests(unittest.TestCase):
         # 只认「已停止」这一个终态——这是范围裁剪，不是成因差异：error 终态下同样
         # 会留下 pending 页（_discard_stopped_pages 挂在 finally 上，对所有出口
         # 生效），但那不在审计批次 2 第①条的范围里，另有待办。
-        source = _read_ui("views/workspace.ts")
+        source = _read_ui("views/workspace-pdf-pages.ts")
         card = _function_body(source, "buildPdfReviewCard")
         self.assertIn('local.task.state === "stopped"', card)
 

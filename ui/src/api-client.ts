@@ -48,24 +48,6 @@ export type CadCapabilityStatus = {
   detail?: string;
 };
 
-export type CadScanItem = {
-  path: string;
-  name: string;
-  format: "dwg" | "dxf";
-  text_count?: number;
-  candidate_count?: number;
-  needs_conversion?: boolean;
-  source_language?: string;
-};
-
-export type CadScanResponse = {
-  items: CadScanItem[];
-  skipped: Array<{ path: string; reason: string }>;
-  capability: CadCapabilityStatus;
-};
-
-export type CadScanRequest = { paths: string[]; source_language?: string; target_language: string; include_block_text?: boolean };
-export type CadStartRequest = CadScanRequest & { selected_paths: string[]; source_path?: string; source_lang?: string; target_lang?: string; untranslated_only?: boolean; cad_output_dir?: string; cad_use_memory?: boolean; cad_use_terminology?: boolean; cad_glossary_path?: string; cad_keep_work_dxf?: boolean; cad_copy_related_files?: boolean; cad_verify_roundtrip?: boolean; cad_scan_replacement_chars?: boolean; cad_include_block_text?: boolean; cad_check_entity_counts?: boolean; cad_scan_residual?: boolean };
 
 export type SseEvent = {
   id: number;
@@ -359,9 +341,6 @@ export class ApiClient {
   }
   async refreshCadCapability(): Promise<CadCapabilityStatus> { return this.getCadCapability(); }
 
-  async scanCad(payload: CadScanRequest): Promise<CadScanResponse> {
-    return this.request<CadScanResponse>("/api/cad/scan", { method: "POST", body: JSON.stringify(payload) });
-  }
   async officialCadDownload(): Promise<{ authorization_url?: string; url?: string }> {
     return this.request<{ authorization_url?: string; url?: string }>("/api/plugins/cad/official-download", { method: "POST", body: JSON.stringify({}) });
   }
@@ -370,10 +349,6 @@ export class ApiClient {
     return this.request<CadCapabilityStatus>("/api/plugins/cad/oda", { method: "POST", body: JSON.stringify({ path }) });
   }
 
-  async startCad(payload: CadStartRequest): Promise<TaskStatus> {
-    const sourcePath = payload.source_path || payload.paths[0] || "";
-    return this.request<TaskStatus>("/api/tasks", { method: "POST", body: JSON.stringify({ ...payload, source_path: sourcePath, surface: "cad" }) });
-  }
   async controlTask(taskId: string, action: "pause" | "resume" | "stop" | "retry"): Promise<TaskStatus> {
     return this.request<TaskStatus>(`/api/tasks/${taskId}/${action}`, { method: "POST", body: JSON.stringify({}) });
   }

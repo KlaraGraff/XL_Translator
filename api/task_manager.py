@@ -36,7 +36,7 @@ from core.pdf_image_translation import (
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
-from core.task_history import TaskHistoryError, TaskHistoryStore
+from core.task_history import MAX_TASK_LOG_LINES, TaskHistoryError, TaskHistoryStore
 from loguru import logger
 from core.tm_cleaning_task_runner import TmCleaningTaskRunner
 from core.task_runner import (
@@ -1033,8 +1033,13 @@ class TranslationTaskManager:
             unsaved = [dict(record) for record in self._pending_history.values() if record["terminal"]]
         recent = {record["task_id"]: record for record in self._history.records()}
         recent.update({record["task_id"]: record for record in unsaved})
-        return {"active": active, "recent": sorted(recent.values(),
-                key=lambda record: record.get("updated_at", 0), reverse=True)[:200],
+        # 任务列表每 4 秒轮询一次，界面上只用摘要；日志只在单个任务的状态里返回。
+        # 以前每条记录都带整份日志，轮询报文随历史线性膨胀（审计 高-4）。
+        recent_records = sorted(
+            recent.values(), key=lambda record: record.get("updated_at", 0), reverse=True
+        )[:200]
+        return {"active": [_without_logs(record) for record in active],
+                "recent": [_without_logs(record) for record in recent_records],
                 "active_work_count": self.active_task_count()}
 
     def active_task_count(self) -> int:
@@ -1831,7 +1836,11 @@ class TranslationTaskManager:
             from core.engine_dispatcher import get_system_prompt, translate_texts
             system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
 
-            def translate_batch(texts: list[str], glossary: dict[str, str]) -> dict[str, str]:
+            def translate_batch(
+                texts: list[str],
+                glossary: dict[str, str],
+                progress: Callable[[int, int], None] | None = None,
+            ) -> dict[str, str]:
                 prompt = system_prompt
                 if glossary:
                     prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
@@ -1849,6 +1858,8 @@ class TranslationTaskManager:
                     # receive the user's actual selection.
                     source_lang=source_lang,
                     api_scheduler=api_schedulers.get("translation"),
+                    # 逐批回调：CAD 进度条在「AI 翻译」阶段跟着批次走，而不是停住再跳。
+                    progress_callback=progress,
                 )
 
             source_pair = str(source_lang or "").strip()
@@ -2104,11 +2115,17 @@ class TranslationTaskManager:
         event_type = _event_type_for_message(message)
         payload = _json_safe(asdict(message) if is_dataclass(message) else message)
         if isinstance(message, ProgressMsg):
-            stage_weights = (15, 10, 45, 20, 10)
-            phase_index = max(1, min(len(stage_weights), int(message.phase_index)))
+            phase_total = int(message.phase_total)
+            phase_index = max(1, int(message.phase_index))
+            if phase_total > 0:
+                phase_index = min(phase_total, phase_index)
             stage_percent = min(100.0, max(0.0, 100.0 * message.step_done / max(1, message.step_total)))
-            completed_weight = sum(stage_weights[: phase_index - 1])
-            overall_percent = completed_weight + stage_weights[phase_index - 1] * stage_percent / 100.0
+            overall_percent = overall_progress_percent(
+                task.surface, phase_index, phase_total, stage_percent
+            )
+            # 事件本身也带上总进度：界面直接用它画进度条，不再各自按「阶段平均分」折算。
+            if isinstance(payload, dict):
+                payload["overall_percent"] = round(overall_percent, 1)
             with task.condition:
                 task.progress = {
                     "phase_index": phase_index,
@@ -2309,6 +2326,11 @@ class TranslationTaskManager:
                         "message": str(safe_data.get("message") or ""),
                     }
                 )
+                # 只留最近的一段：这份列表会整份写进 task_history.json，也会随任务
+                # 状态返回。不封顶时长任务能把历史文件撑到几十 MB（审计 高-4）。
+                # 完整日志另有任务日志文件和诊断包，这里只供界面回看。
+                if len(task.logs) > MAX_TASK_LOG_LINES:
+                    del task.logs[: len(task.logs) - MAX_TASK_LOG_LINES]
             now = time.time()
             task.updated_at = now
             task.next_event_id += 1
@@ -2458,6 +2480,47 @@ def _selected_files_label(files: list[Any]) -> str:
     if len(files) == 1:
         return names[0]
     return f"{names[0]} 等 {len(files)} 个文件"
+
+
+
+# 各页面每个阶段在总进度条上占多少。阶段耗时差别很大：PDF 的「翻译页面」要等图像模型
+# 一页页画，占了整个任务的绝大部分时间，按阶段平均分的话进度条会在 25%~50% 之间爬
+# 完整个任务，最后一秒从 50% 冲到 100%。元组顺序就是各 runner 上报的 phase_index。
+_PHASE_WEIGHTS: dict[str, tuple[float, ...]] = {
+    # 全局扫描 / 云端翻译 / 生成文件 / Excel 精调（没开精调时只有前三段）
+    "excel": (10, 60, 15, 15),
+    # Word 提取 / 云端翻译 / 生成文件
+    "word": (10, 70, 20),
+    # 预处理 PDF / 翻译页面 / 生成最终产物 / 写入报告
+    "pdf": (5, 85, 8, 2),
+}
+
+
+def overall_progress_percent(
+    surface: str, phase_index: int, phase_total: int, stage_percent: float
+) -> float:
+    """Fold one phase's progress into the whole task's 0-100 progress.
+
+    ``phase_total <= 0`` means the runner reports whole-batch progress directly
+    (CAD), so the stage percentage already is the overall one. Weights that do
+    not line up with the reported phase count (a phase was added or dropped)
+    fall back to equal weights rather than guessing.
+    """
+    if phase_total <= 0:
+        return stage_percent
+    weights = _PHASE_WEIGHTS.get(str(surface), ())[:phase_total]
+    if len(weights) != phase_total:
+        weights = (1.0,) * phase_total
+    total = sum(weights) or 1.0
+    index = max(1, min(phase_total, phase_index))
+    done = sum(weights[: index - 1]) + weights[index - 1] * stage_percent / 100.0
+    return min(100.0, max(0.0, 100.0 * done / total))
+
+
+def _without_logs(record: dict[str, Any]) -> dict[str, Any]:
+    if "logs" not in record:
+        return record
+    return {key: value for key, value in record.items() if key != "logs"}
 
 
 def _event_type_for_message(message: Any) -> str:

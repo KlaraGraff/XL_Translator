@@ -1,21 +1,25 @@
-// V9 翻译工作区 —— Excel / Word / PDF 三个视图共用的布局模板 + 任务生命周期状态机。
-// 三页「同构」：col-l/col-r 的板块顺序、位置、命名完全一致，只有内容（开关列表、统计
-// 字段、文件表列）按 surface 不同。excel.ts / word.ts / pdf.ts 只提供这些差异化配置，
+// V9 翻译工作区 —— Excel / Word / PDF / CAD 四个视图共用的布局模板 + 任务生命周期状态机。
+// 四页「同构」：col-l/col-r 的板块顺序、位置、命名完全一致，只有内容（开关列表、统计
+// 字段、文件表列）按 surface 不同。excel.ts / word.ts / pdf.ts / cad.ts 只是薄封装，
 // 具体渲染、扫描、启动/停止/暂停、SSE 订阅、设置持久化全部在这里实现一次。
+//
+// 新增一个翻译板块时，不要另写页面：把它加进 Surface，补齐下面各张按 surface 索引的表
+// （TS 会把漏掉的表全部报出来），再在 computeStats / buildTableHeadRow / buildTableRow /
+// buildPayload 里补它自己的那一支。布局、文案、扫描→预检→开始→监听→收尾的流程都自动一致。
 //
 // 状态机（每个 surface 独立一份，模块级 Map 持久化，跨 mount/unmount 保留）：
 //   setup（未扫描 / 已扫描待开始） --scan--> setup（文件已填充）
 //   setup --start（可能经 xls/doc 兼容确认、并行风险确认）--> running
 //   running --stop--> running（等终态事件）--终态事件--> setup（横幅显示）
-//   running --pause（仅 PDF）--> paused
-//   paused --resume（仅 PDF）--> running
+//   running --pause（PDF；CAD 在当前文件结束后暂停）--> paused
+//   paused --resume（PDF / CAD）--> running
 //   paused --end-paused（仅 PDF）--> running（等终态事件，同上落回 setup+横幅）
 // 「right column 运行时锁定」「完成横幅 + 复位」等细节见下方实现与文件尾的架构说明。
 
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { ApiClient, ApiError, apiErrorReason, type PdfPage, type PdfPageFile, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
+import { ApiClient, apiErrorReason, type PdfPagesSnapshot, type SseEvent, type TaskStatus } from "../api-client";
 import { consumePendingRestartWarning } from "../update-controller";
 import { openRestartBeforeTaskModal } from "../update-toast";
 import {
@@ -52,15 +56,22 @@ import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgr
 import { createTaskControlFoot, createTaskListPanel, createTaskLogPanel, createTaskProgressPanel, createTaskTerminalBanner } from "../task-panels";
 import { normalizeUserPath } from "../path-input";
 
+import {
+  buildPdfRecoveryCard,
+  buildPdfReviewCard,
+  fetchPdfPagesSnapshot,
+  schedulePdfSnapshotRefresh,
+  stopPdfRerunTicker,
+} from "./workspace-pdf-pages";
+import { el, formatSizeKb, formatTime, hasOwn, nestedPatch, num, record, redactedText, text, type JsonObject } from "./workspace-util";
 import "./workspace.css";
 
 // ---------------------------------------------------------------------------
 // 类型
 // ---------------------------------------------------------------------------
 
-export type Surface = "excel" | "word" | "pdf";
+export type Surface = "excel" | "word" | "pdf" | "cad";
 
-type JsonObject = Record<string, unknown>;
 
 /** 扫描接口返回的文件条目；字段是后端各 surface 联合，具体用到哪些看 surface。 */
 type FileItem = JsonObject & {
@@ -81,6 +92,9 @@ type FileItem = JsonObject & {
    *  oversizedPageStats() 上方的整段说明，处理方式与 Excel 的 image_count 完全一致。 */
   oversized_page_count?: number | null;
   source_type?: string;
+  /** CAD：图纸里的文字实体总数 / 其中需要翻译的候选数（已是目标语言的不算）。 */
+  text_count?: number;
+  candidate_count?: number;
   needs_conversion?: boolean;
   // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
@@ -179,12 +193,21 @@ const PDF_TOGGLES: ToggleDef[] = [
   { key: "skipOversizedPages", label: "跳过 A3 及更大的页面", hint: "工程图纸通常打印成 A3 或更大的幅面，这类页面一般不需要翻译。两个方向都超过 A4 约 15% 时判定为大幅面页（A3 及以上），横放竖放都算。这些页不送翻译模型，原始内容整页照搬到输出文件，清晰度不变。比 A4 稍大一点的页面（例如扫描时多出来的白边）不会被误判。", default: true, pathKind: "flat", path: "pdf.skip_oversized_pages" },
 ];
 
-const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES };
+// CAD 的开关全部写在 cad_output 下（outputSettingPathPrefix 解析到 cad_output）。
+// 回读校验、乱码扫描、实体数核对、残留外文扫描是质量保护，始终开启，不做成开关。
+const CAD_TOGGLES: ToggleDef[] = [
+  { key: "translateOutputFilename", label: "翻译输出文件名", hint: "按目标语言翻译生成文件的名称；关闭时沿用原文件名。", default: false, pathKind: "output", path: "translate_output_filename" },
+  { key: "cadBlockText", label: "翻译图块内文字", hint: "图块定义和属性里的文字也一起翻译。关闭后只翻译模型空间和布局里直接放置的文字。", default: true, pathKind: "output", path: "include_block_text" },
+  { key: "cadKeepWorkDxf", label: "保留工作 DXF", hint: "在输出文件旁边额外保留一份翻译后的 DXF，便于用其他软件核对。", default: true, pathKind: "output", path: "keep_work_dxf" },
+  { key: "cadCopyRelated", label: "复制同名附属文件", hint: "把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。", default: false, pathKind: "output", path: "copy_related_files" },
+];
 
-const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF" };
-const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf" };
-const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译" };
-const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件" };
+const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
+
+export const SURFACE_LABEL: Record<Surface, string> = { excel: "Excel", word: "Word", pdf: "PDF", cad: "CAD" };
+const SURFACE_ICON: Record<Surface, IconName> = { excel: "excel", word: "word", pdf: "pdf", cad: "cad" };
+const SURFACE_PAGE_TITLE: Record<Surface, string> = { excel: "Excel 表格翻译", word: "Word 文档翻译", pdf: "PDF 与图片翻译", cad: "CAD 图纸翻译" };
+const SURFACE_FILE_NOUN: Record<Surface, string> = { excel: "表格文件", word: "文档", pdf: "PDF / 图片文件", cad: "DWG / DXF 图纸" };
 
 /** 「5 个 PDF / 图片文件」——名词以西文字母开头时补一个空格，否则会挤成「5 个PDF」。 */
 function fileNounPhrase(surface: Surface, count: number): string {
@@ -195,86 +218,27 @@ const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
   excel: "选择文件或文件夹，扫描后勾选要翻译的表格",
   word: "选择文件或文件夹，扫描后勾选要翻译的文档",
   pdf: "选择文件或文件夹，扫描后勾选要翻译的 PDF 与图片",
+  cad: "选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸",
 };
 const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = {
   excel: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的表格会列在这里，可逐个勾选。" },
   word: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的文档会列在这里，可逐个勾选。" },
   pdf: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 PDF 与图片会列在这里，可逐个勾选。" },
+  cad: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。" },
 };
 const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = {
   excel: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
   word: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
   pdf: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
+  cad: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
 };
-
-// ---------------------------------------------------------------------------
-// 小工具
-// ---------------------------------------------------------------------------
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  return node;
-}
-
-function text(value: unknown, fallback = ""): string {
-  return typeof value === "string" && value ? value : fallback;
-}
-
-function record(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
-}
-
-function num(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function hasOwn(obj: JsonObject, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
-}
-
-/** 点路径写入：nestedPatch("a.b.c", 1) => {a:{b:{c:1}}}。与 main.ts 的 nestedPatch verbatim 同构。 */
-function nestedPatch(path: string, value: unknown): JsonObject {
-  const parts = path.split(".");
-  const last = parts.pop() as string;
-  let root: JsonObject = {};
-  let cursor = root;
-  for (const part of parts) {
-    const next: JsonObject = {};
-    cursor[part] = next;
-    cursor = next;
-  }
-  cursor[last] = value;
-  return root;
-}
-
-/** 后端自由文本可能带凭证碎片，展示前一律脱敏。三处（main.ts / tasks.ts / 这里）各自独立实现，故意不共享，见文件尾说明。 */
-function redactedText(value: unknown, fallback = ""): string {
-  const raw = text(value, fallback);
-  if (!raw) return raw;
-  return raw
-    .replace(/(authorization\s*[:=]\s*)([^\s,;]+)/gi, "$1[redacted]")
-    .replace(/\b(sk|rk|pk|api)[-_][a-z0-9_-]{8,}\b/gi, "[redacted]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]");
-}
-
-function formatTime(ts?: number): string {
-  const date = ts ? new Date(ts * (ts < 2e10 ? 1000 : 1)) : new Date();
-  return date.toLocaleTimeString("zh-CN", { hour12: false });
-}
-
-function formatSizeKb(kb: unknown): string {
-  const value = num(kb, 0);
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} MB`;
-  return `${Math.round(value)} KB`;
-}
 
 // ---------------------------------------------------------------------------
 // 每个 surface 的本地状态（模块级，跨 mount/unmount 存活，与 tasks.ts 的后台徽标循环
 // 各自独立——见文件尾「架构偏离说明」）。
 // ---------------------------------------------------------------------------
 
-interface LocalTask {
+export interface LocalTask {
   task: TaskStatus;
   /** seq 是全局单调递增的行号，只用来在整页重建后认出「重建前顶在视口口沿的是哪一行」
    *  （见 captureLogScroll / restoreLogScroll）。数组索引不行——满 200 条后每来一条
@@ -373,6 +337,12 @@ interface SurfaceState {
   renderer: (() => void) | null;
   lastTaskId?: string;
   lastOutputPath?: string;
+  /** CAD：图纸转换工具（ODA）的连接状态，挂载时和每次扫描时刷新。DWG 必须先转成 DXF
+   *  才能读写，没连上时 DXF 照常可翻，DWG 在清单里标「需连接转换工具」。 */
+  cadCapability: JsonObject | null;
+  /** CAD：「从断点继续」选中的上一次输出目录。CAD 的续译不经过扫描检测，而是从
+   *  已停止任务的完成横幅进入；开始翻译时作为 resume_output_dir 发出，任务开始后清空。 */
+  cadResumeDir: string;
 }
 
 function freshToggles(surface: Surface): Map<string, boolean> {
@@ -390,7 +360,7 @@ function freshState(surface: Surface): SurfaceState {
     scanSummary: {},
     selected: new Set(),
     toggles: freshToggles(surface),
-    targetLang: surface === "pdf" ? "zh" : surface === "word" ? "fr" : "en",
+    targetLang: surface === "pdf" || surface === "cad" ? "zh" : surface === "word" ? "fr" : "en",
     sourceLang: "auto",
     domainPreset: surface === "excel" ? "无" : "同步工程场景",
     useCustomOutputDir: false,
@@ -412,13 +382,16 @@ function freshState(surface: Surface): SurfaceState {
     resumeNoticeDismissed: false,
     resumeToggleRestore: null,
     renderer: null,
+    cadCapability: null,
+    cadResumeDir: "",
   };
 }
 
-const states: Record<Surface, SurfaceState> = {
+export const states: Record<Surface, SurfaceState> = {
   excel: freshState("excel"),
   word: freshState("word"),
   pdf: freshState("pdf"),
+  cad: freshState("cad"),
 };
 
 type WorkspaceContext = Pick<SurfaceState, "sourcePath" | "sourcePaths" | "files" | "skipped" | "scanSummary" | "selected">;
@@ -458,6 +431,7 @@ function clearWorkspaceInput(surface: Surface, invalidate = true): void {
   st.lastTaskId = undefined;
   st.lastOutputPath = undefined;
   st.historyOnly = false;
+  st.cadResumeDir = "";
   resetResumeState(st);
 }
 
@@ -489,7 +463,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
       file_id: text(entry.file_id),
       name,
       relative_path: text(entry.relative_path),
-      format: format && ["xlsx", "xls", "docx", "doc", "pdf", "png", "jpg", "jpeg"].includes(format)
+      format: format && ["xlsx", "xls", "docx", "doc", "pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "dwg", "dxf"].includes(format)
         ? format : "",
     };
   });
@@ -512,7 +486,7 @@ async function openWorkspaceTask(surface: Surface, taskId: string, isCurrent: ()
 
 const client = new ApiClient();
 let connectPromise: Promise<void> | null = null;
-async function getClient(): Promise<ApiClient> {
+export async function getClient(): Promise<ApiClient> {
   if (!connectPromise) {
     const attempt = client.connect();
     // 与 ensureBootstrap 同理，而且这一层更致命：connect() 里那记 /health 撞上还没起来的
@@ -576,14 +550,15 @@ async function reloadBootstrap(surface: Surface): Promise<void> {
 }
 
 function applySettingsToStates(): void {
-  for (const surface of ["excel", "word", "pdf"] as Surface[]) {
+  for (const surface of ["excel", "word", "pdf", "cad"] as Surface[]) {
     const st = states[surface];
     st.sourcePath = normalizeUserPath(st.sourcePath || text(settings[`last_${surface}_source_folder`]));
     if (surface === "pdf") {
       const pdf = record(settings.pdf);
       st.targetLang = text(pdf.target_lang, "zh");
     } else {
-      st.targetLang = text(settings[`${surface}_target_lang`], surface === "word" ? "fr" : text(settings.target_lang, "en"));
+      const fallbackTarget = surface === "word" ? "fr" : surface === "cad" ? "zh" : text(settings.target_lang, "en");
+      st.targetLang = text(settings[`${surface}_target_lang`], fallbackTarget);
       st.sourceLang = text(settings[`${surface}_source_lang`], "auto");
     }
     if (surface !== "pdf") {
@@ -619,15 +594,15 @@ function readPath(obj: JsonObject, path: string): unknown {
   return cursor;
 }
 
-/** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output 没有。 */
+/** excel_output/word_output 有旧版 output 兜底（main.ts 的 excelOutputSettings 同款逻辑）；pdf_output、cad_output 没有。 */
 function outputRecord(surface: Surface): JsonObject {
-  if (surface === "pdf") return record(settings.pdf_output);
+  if (surface === "pdf" || surface === "cad") return record(settings[`${surface}_output`]);
   const isolated = record(settings[`${surface}_output`]);
   return Object.keys(isolated).length ? isolated : record(settings.output);
 }
 
 function outputSettingPathPrefix(surface: Surface): string {
-  if (surface === "pdf") return "pdf_output";
+  if (surface === "pdf" || surface === "cad") return `${surface}_output`;
   return hasOwn(settings, `${surface}_output`) ? `${surface}_output` : "output";
 }
 
@@ -659,7 +634,7 @@ async function persistSettingsOrRevert(surface: Surface, patch: JsonObject, reve
 // mount / unmount
 // ---------------------------------------------------------------------------
 
-const mountTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const mountTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
 
 export function mountWorkspace(container: HTMLElement, params: ViewParams, surface: Surface): void {
   const st = states[surface];
@@ -684,6 +659,8 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       // PDF 且已经有任务，每次挂载都重新拉一次快照；fetchPdfPagesSnapshot 内部看到
       // rerun.active 会自己把计时器重新起起来，跟 adoptExistingTask 里的调用是同一套逻辑。
       if (surface === "pdf" && st.task) void fetchPdfPagesSnapshot(surface, st.task.task.task_id);
+      // 用户可能刚在插件页连好转换工具再切回来，所以每次挂载都重新查一次。
+      if (surface === "cad") void refreshCadCapability(isCurrent);
       if (st.renderer) renderInto(container, surface);
     })
     .catch((error) => {
@@ -691,6 +668,24 @@ export function mountWorkspace(container: HTMLElement, params: ViewParams, surfa
       showToast({ message: redactedText((error as Error)?.message, "初始化工作区失败。"), error: true });
       if (st.renderer) renderInto(container, surface);
     });
+}
+
+/** CAD：查询图纸转换工具的连接状态。失败不打断页面——没有结果时按「未知」处理，
+ *  扫描时后端会再回一次最新状态。 */
+async function refreshCadCapability(isCurrent: () => boolean): Promise<void> {
+  try {
+    const c = await getClient();
+    const capability = await c.getCadCapability();
+    if (!isCurrent()) return;
+    states.cad.cadCapability = record(capability);
+    rerender("cad");
+  } catch {
+    // 查询失败时保持原状；扫描接口会带回 capability。
+  }
+}
+
+function cadConverterReady(st: SurfaceState): boolean {
+  return text(record(st.cadCapability).oda) === "connected";
 }
 
 export function unmountWorkspace(surface: Surface): void {
@@ -802,11 +797,12 @@ function captureLogScroll(container: HTMLElement): LogScrollState | null {
 }
 
 function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | null): void {
+  logResizeObserver?.disconnect();
   const next = container.querySelector<HTMLElement>(".log");
   if (!next) return;
   // 没有旧状态（比如第一次渲染日志卡片）按贴底处理，最新的日志本来就该先看到。
   if (!prevScroll || prevScroll.atBottom) {
-    next.scrollTop = next.scrollHeight;
+    stickLogToBottom(next);
     return;
   }
   if (prevScroll.anchorSeq !== null) {
@@ -823,8 +819,52 @@ function restoreLogScroll(container: HTMLElement, prevScroll: LogScrollState | n
   next.scrollTop = prevScroll.scrollTop;
 }
 
+let logResizeObserver: ResizeObserver | null = null;
+
+/** 贴底不能只在重建那一刻设一次 scrollTop：页面插进去以后，下面的文件状态条换了文案
+ *  （比如暂停时变成两行）或者逐页表又长了几行，日志区会再被压矮一截。这时 scrollTop
+ *  没变、可视高度变小，最后一行就被底下的文件状态条盖住半截；下一次重建量到的离底
+ *  距离又超过了容差，从此就不再贴底。所以用户没主动往上翻之前，日志区每次变高变矮都
+ *  重新贴一次底。 */
+function stickLogToBottom(log: HTMLElement): void {
+  log.scrollTop = log.scrollHeight;
+  logResizeObserver?.disconnect();
+  if (typeof ResizeObserver === "undefined") return;
+  let stick = true;
+  log.addEventListener("scroll", () => {
+    stick = log.scrollHeight - log.scrollTop - log.clientHeight <= LOG_SCROLL_STICK_TOLERANCE;
+  }, { passive: true });
+  logResizeObserver = new ResizeObserver(() => {
+    if (stick && log.isConnected) log.scrollTop = log.scrollHeight;
+  });
+  logResizeObserver.observe(log);
+}
+
+/** 整页重建前记下各滚动区的位置，重建后放回去。
+ *
+ *  每来一个任务事件页面都会整体重画一次；没有这一步，用户往下翻到第 30 页的逐页表、
+ *  页恢复列表、右栏设置，下一个事件一到就被弹回顶部。要保位置的滚动区在创建时打上
+ *  `data-keep-scroll="<名字>"`，名字在页面内唯一即可。日志区另有「贴底跟随」的规则，
+ *  由 captureLogScroll / restoreLogScroll 单独处理。 */
+function captureKeptScrolls(container: HTMLElement): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (const node of container.querySelectorAll<HTMLElement>("[data-keep-scroll]")) {
+    if (node.scrollTop > 0) positions.set(node.dataset.keepScroll ?? "", node.scrollTop);
+  }
+  return positions;
+}
+
+function restoreKeptScrolls(container: HTMLElement, positions: Map<string, number>): void {
+  if (!positions.size) return;
+  for (const node of container.querySelectorAll<HTMLElement>("[data-keep-scroll]")) {
+    const top = positions.get(node.dataset.keepScroll ?? "");
+    if (top !== undefined) node.scrollTop = top;
+  }
+}
+
 function renderInto(container: HTMLElement, surface: Surface): void {
   const logScroll = captureLogScroll(container);
+  const keptScrolls = captureKeptScrolls(container);
   while (container.firstChild) container.removeChild(container.firstChild);
   container.removeAttribute("style");
   const st = states[surface];
@@ -845,9 +885,10 @@ function renderInto(container: HTMLElement, surface: Surface): void {
     container.append(buildColLeft(surface, st, active), buildColRight(surface, st, active));
   }
   restoreLogScroll(container, logScroll);
+  restoreKeptScrolls(container, keptScrolls);
 }
 
-function rerender(surface: Surface): void {
+export function rerender(surface: Surface): void {
   const st = states[surface];
   st.renderer?.();
 }
@@ -876,11 +917,12 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   }
   if (active && st.task) {
     const state = st.task.task.state;
-    const meta = runningStatusMeta(state);
+    const meta = runningStatusMeta(state, surface);
     const fileCount = st.selected.size || st.files.length;
     const domainSuffix = surface !== "pdf" ? ` · ${st.domainPreset}` : "";
+    // PDF 没有源语言选择，只说目标语言；其余三页同一句式。
     const subtitle = surface === "pdf"
-      ? `${st.sourcePath.split("/").pop() || "PDF / 图片任务"} · → ${targetLabel(st)}`
+      ? `${fileNounPhrase(surface, fileCount)} · → ${targetLabel(st)}`
       : `${fileNounPhrase(surface, fileCount)} · ${sourceLabel(st)} → ${targetLabel(st)}${domainSuffix}`;
     setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: meta, subtitle });
     return;
@@ -896,10 +938,11 @@ function updateTopbar(surface: Surface, st: SurfaceState, active: boolean): void
   setTopbar({ title: SURFACE_PAGE_TITLE[surface], status: { label: "待选择来源", tone: "idle" }, subtitle: SURFACE_EMPTY_SUBTITLE[surface] });
 }
 
-function runningStatusMeta(state: TaskStatus["state"]): { label: string; tone: StatusTone } {
+function runningStatusMeta(state: TaskStatus["state"], surface: Surface): { label: string; tone: StatusTone } {
   switch (state) {
     case "paused":
-      return { label: "已暂停提交", tone: "pause" };
+      // PDF 暂停的是「提交新页面」；CAD 是做完当前文件后整体暂停。
+      return { label: surface === "cad" ? "已暂停" : "已暂停提交", tone: "pause" };
     case "pausing":
       return { label: "正在暂停", tone: "pause" };
     case "stopping":
@@ -934,6 +977,21 @@ function buildBanner(surface: Surface, st: SurfaceState): HTMLElement {
       onClick: () => openTaskLocalFile(st.lastOutputPath, true),
     }));
   }
+  // CAD 停止后可以从断点继续：已验证的文件直接复用，不用整批重跑。
+  const lastTask = st.task?.task;
+  const lastOutputDir = text(record(lastTask?.result).output_dir);
+  if (surface === "cad" && lastTask?.state === "stopped" && lastOutputDir && st.files.length) {
+    actions.push(createButton({
+      label: "从断点继续",
+      icon: "play",
+      onClick: () => {
+        st.cadResumeDir = lastOutputDir;
+        st.showBanner = false;
+        rerender(surface);
+        showToast({ message: "已选好断点，点「开始翻译」即可继续。" });
+      },
+    }));
+  }
   actions.push(createButton({
     label: info.tone === "fail" ? "查看失败原因" : "查看完整报告",
     icon: "ext",
@@ -965,13 +1023,15 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       const recoveryCard = buildWordRecoveryCard(local);
       if (recoveryCard) col.append(recoveryCard);
     }
+    let sharesHeight = false;
     if (surface === "pdf") {
       const recoveryCard = buildPdfRecoveryCard(surface, local);
       if (recoveryCard) col.append(recoveryCard);
       const reviewCard = buildPdfReviewCard(surface, local);
       if (reviewCard) col.append(reviewCard);
+      sharesHeight = Boolean(reviewCard);
     }
-    col.append(buildLogCard(local));
+    col.append(buildLogCard(local, sharesHeight));
   } else {
     col.append(buildSrcBar(surface, st));
     if (st.historyOnly) {
@@ -980,6 +1040,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
       col.append(note);
     }
     col.append(buildStatsRow(surface, st));
+    if (surface === "cad") {
+      const notice = buildCadConverterBanner(st);
+      if (notice) col.append(notice);
+      const resumeNote = buildCadResumeNote(st);
+      if (resumeNote) col.append(resumeNote);
+    }
     // 单元格外内容的说明只属于 Excel：Word / PDF 没有这条限制，不该出现这段提示。
     if (surface === "excel") {
       const notice = buildOutsideCellBanner(st);
@@ -990,7 +1056,8 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
     if (resumeBanner) col.append(resumeBanner);
     const resumeDismiss = buildResumeDismissBar(surface, st);
     if (resumeDismiss) col.append(resumeDismiss);
-    col.append(buildTableCard(surface, st));
+    const tableCard = buildTableCard(surface, st);
+    col.append(tableCard);
     // 逐页表格以前只在运行中的那半边存在，任务一结束整块就消失了。结果页恰恰是用户
     // 看出某一页翻坏了的地方，看出来了却连表格都回不去，只能整份重翻。终态照样把它
     // 渲染出来——终态的可操作项只有「重新生成某一页」，由卡片自己按快照判断。
@@ -1001,7 +1068,12 @@ function buildColLeft(surface: Surface, st: SurfaceState, active: boolean): HTML
         col.append(note);
       }
       const reviewCard = buildPdfReviewCard(surface, local);
-      if (reviewCard) col.append(reviewCard);
+      if (reviewCard) {
+        // 两张卡片对半分这一栏的高度。任务清单默认 min-height:0，逐页表一展开就把它
+        // 挤得只剩标题，所以这里给它留一个能看到几行文件的下限。
+        tableCard.style.minHeight = "200px";
+        col.append(reviewCard);
+      }
     }
   }
   return col;
@@ -1070,6 +1142,7 @@ function buildSrcBar(surface: Surface, st: SurfaceState): HTMLElement {
 function sourceFileFilter(surface: Surface, st: SurfaceState): { name: string; extensions: string[] } {
   if (surface === "excel") return { name: "Excel 表格", extensions: ["xlsx", "xls"] };
   if (surface === "word") return { name: "Word 文档", extensions: ["docx", "doc"] };
+  if (surface === "cad") return { name: "CAD 图纸", extensions: ["dwg", "dxf"] };
   const images = st.toggles.get("pdfImages") ? ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] : [];
   return { name: images.length ? "PDF 与图片" : "PDF", extensions: ["pdf", ...images] };
 }
@@ -1189,6 +1262,18 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
       { label: "旧版 .doc", value: String(doc), warn: doc > 0 },
     ];
   }
+  if (surface === "cad") {
+    const texts = files.reduce((sum, f) => sum + num(f.text_count), 0);
+    const candidates = files.reduce((sum, f) => sum + num(f.candidate_count, num(f.text_count)), 0);
+    const blocked = files.filter((f) => isRisky(surface, f)).length;
+    return [
+      { label: "已扫描文件", value: String(files.length) },
+      { label: "文字实体", value: texts.toLocaleString("zh-CN") },
+      { label: "待翻译", value: candidates.toLocaleString("zh-CN"), sub: texts > candidates ? "已是目标语言的不计入" : undefined },
+      { label: "需转换工具", value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
+      { label: "跳过项", value: String(st.skipped.length), dim: st.skipped.length === 0 },
+    ];
+  }
   const pages = files.reduce((sum, f) => sum + num(f.page_count), 0);
   const images = files.filter((f) => f.source_type === "image").length;
   // 与 Excel 那格同样的约定：oversizedPageStat 在整批文件都不产出该字段时返回 null，
@@ -1206,6 +1291,8 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
 function isRisky(surface: Surface, f: FileItem): boolean {
   if (surface === "excel") return f.format === "xls" || Boolean(f.needs_conversion);
   if (surface === "word") return f.format === "doc" || Boolean(f.needs_conversion);
+  // DWG 要先经转换工具转成 DXF；转换工具没连上时这些文件开不了工。
+  if (surface === "cad") return Boolean(f.needs_conversion) && !cadConverterReady(states.cad);
   return false;
 }
 
@@ -1302,6 +1389,54 @@ function outsideCellStat(stats: OutsideCellStats): StatCell | null {
   // 这项信息，不该显示「0 / 0 / 0」把「不知道」说成「没有」，整格直接不渲染。
   if (stats.presentFiles === 0) return null;
   return { label, value: "0 / 0 / 0", dim: true, sub: "无" };
+}
+
+// ---------------------------------------------------------------------------
+// CAD 专属提示：转换工具状态、从断点继续。样式沿用 Excel「单元格外内容」那条横幅。
+// ---------------------------------------------------------------------------
+
+/** 转换工具没连上时的提示。只有 DXF 也照常可翻，所以只在清单里真有 DWG、或还没扫描时出现。 */
+function buildCadConverterBanner(st: SurfaceState): HTMLElement | null {
+  if (!st.cadCapability || cadConverterReady(st)) return null;
+  const blocked = st.files.filter((f) => isRisky("cad", f)).length;
+  if (st.files.length && blocked === 0) return null;
+  const banner = el("div", "banner warn");
+  banner.append(icon("warn", { className: "ico" }));
+  const tx = el("div", "tx");
+  const title = el("div", "tt");
+  title.textContent = blocked
+    ? `有 ${blocked} 个 DWG 图纸需要先连接图纸转换工具`
+    : "还没有连接图纸转换工具";
+  const body = el("div", "bd");
+  body.textContent = text(record(st.cadCapability).oda) === "incompatible"
+    ? "检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。"
+    : "DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。";
+  tx.append(title, body);
+  banner.append(tx);
+  banner.append(createButton({ label: "打开插件管理", onClick: () => navigate("plugins") }));
+  return banner;
+}
+
+/** 「从断点继续」已选好时，在清单上方说清这次会接着哪一次的输出继续，并给一个撤销入口。 */
+function buildCadResumeNote(st: SurfaceState): HTMLElement | null {
+  if (!st.cadResumeDir) return null;
+  const banner = el("div", "banner");
+  banner.append(icon("folder", { className: "ico" }));
+  const tx = el("div", "tx");
+  const title = el("div", "tt");
+  title.textContent = "将接着上次停止的位置继续";
+  const body = el("div", "bd");
+  body.textContent = `已经验证过的文件直接复用，其余文件重新翻译。上次输出：${st.cadResumeDir}`;
+  tx.append(title, body);
+  banner.append(tx);
+  banner.append(createButton({
+    label: "改为全部重译",
+    onClick: () => {
+      st.cadResumeDir = "";
+      rerender("cad");
+    },
+  }));
+  return banner;
 }
 
 /** 接入点 2 · 扫描后、任务清单上方的说明横幅。没有可说的就返回 null，不占版面。 */
@@ -1586,6 +1721,7 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
 
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
+  tableWrap.dataset.keepScroll = "files";
   const table = el("table", "tbl");
   table.append(buildTableHeadRow(surface));
   const resumeFiles = resumeFileMap(st);
@@ -1636,6 +1772,8 @@ function buildTableHeadRow(surface: Surface): HTMLTableRowElement {
     row.append(th("文件"), th("格式"), th("工作表", true), th("文本单元格", true), th("单元格外内容"), th("状态"));
   } else if (surface === "word") {
     row.append(th("文件"), th("格式"), th("段落", true), th("表格", true), th("状态"));
+  } else if (surface === "cad") {
+    row.append(th("文件"), th("格式"), th("文字实体", true), th("待翻译", true), th("状态"));
   } else {
     row.append(th("文件"), th("类型"), th("大小"), th("页数 / 尺寸"), th("状态"));
   }
@@ -1661,7 +1799,17 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
   nameCell.textContent = fileLabel(file);
   row.append(nameCell);
 
-  if (surface === "excel" || surface === "word") {
+  if (surface === "cad") {
+    const fmtCell = el("td");
+    fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
+    // 没连转换工具的 DWG 读不出内容，计数是 0 不代表图纸里没字——写「—」，不写 0。
+    const unreadable = st.historyOnly || isRisky(surface, file);
+    const textCell = el("td", "num");
+    textCell.textContent = unreadable ? "—" : num(file.text_count).toLocaleString("zh-CN");
+    const candidateCell = el("td", "num");
+    candidateCell.textContent = unreadable ? "—" : num(file.candidate_count, num(file.text_count)).toLocaleString("zh-CN");
+    row.append(fmtCell, textCell, candidateCell);
+  } else if (surface === "excel" || surface === "word") {
     const fmtCell = el("td");
     fmtCell.append(buildFmtBadge((file.format ?? "").toUpperCase(), isRisky(surface, file)));
     row.append(fmtCell);
@@ -1721,7 +1869,7 @@ function buildTableRow(surface: Surface, st: SurfaceState, file: FileItem, resum
     // 格式预判更贴近用户此刻要确认的事。
     statusCell.append(resumeChip(surface, resume));
   } else if (isRisky(surface, file)) {
-    statusCell.append(createChip({ label: "需先转换", tone: "warn", icon: "warn" }));
+    statusCell.append(createChip({ label: surface === "cad" ? "需连接转换工具" : "需先转换", tone: "warn", icon: "warn" }));
   } else if (surface === "pdf" && isAllOversized(file)) {
     // 不看开关状态：开关在右栏，用户可能来回切，而「这份文件整份都是大幅面」是文件本身的
     // 事实。开着跳过时它一页都不会翻，提前说出来比跑完再发现强。
@@ -1797,9 +1945,13 @@ function buildMonChips(surface: Surface, local: LocalTask): HTMLElement[] {
     const chips: HTMLElement[] = [];
     // completed_pages 是「跑完的页」，占位页（生成失败后塞回原页）也算在里面。
     // 直接拿它当「已生成」会把失败页说成生成成功，所以先扣掉占位页，失败数另开一格。
+    // 大幅面页同理：跳过翻译、原样保留，也算「跑完」，但不是「已生成」。
     const failed = num(r.placeholder_page_count);
-    const generated = Math.max(0, num(r.completed_pages) - failed);
-    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${num(r.total_pages)} 页`, "ok"));
+    const skipped = num(r.skipped_oversize_page_count);
+    const generated = Math.max(0, num(r.completed_pages) - failed - skipped);
+    const toGenerate = Math.max(0, num(r.total_pages) - skipped);
+    if (hasOwn(r, "completed_pages")) chips.push(chip(`已生成 ${generated} / ${toGenerate} 页`, "ok"));
+    chipIfAny(chips, skipped, `原样保留 ${skipped} 页`, "mute");
     chipIfAny(chips, failed, `生成失败 ${failed} 页`, "dgr");
     chipIfAny(chips, num(r.retrying_page_count), `重试中 ${num(r.retrying_page_count)}`, "warn");
     chipIfAny(chips, num(r.recovered_page_count), `已恢复 ${num(r.recovered_page_count)}`, "mute");
@@ -1823,1256 +1975,6 @@ function buildWordRecoveryCard(local: LocalTask): HTMLElement | null {
   note.textContent = "严格重试只处理空译文、明显不完整或质量校验失败内容；语义仲裁接受的边界译文不会自动写入记忆库。";
   card.append(note);
   return card;
-}
-
-// ---------------------------------------------------------------------------
-// PDF 页恢复 / 逐页审核 —— 真正的逐页交互面板（GET /pdf-pages 拉取式快照 + 三个操作端点）。
-// 样张④只画了单文件、少量示例行；这里额外处理多文件分组与几百页的可滚动表格，
-// 具体拉取触发点集中在 fetchPdfPagesSnapshot() 的调用方（watchTask 事件流 / adopt / 任务启动）。
-// ---------------------------------------------------------------------------
-
-type PdfPageRow = { file: PdfPageFile; page: PdfPage };
-
-/** 需要出现在「页恢复」卡片里的页：失败/占位、已排队操作、或用户已接受跳过占位——
- *  纯 pending（还没跑到）或已通过的页不算，那些在「逐页审核」表里露出即可。 */
-function collectRecoveryRows(snapshot: PdfPagesSnapshot): PdfPageRow[] {
-  const rows: PdfPageRow[] = [];
-  for (const file of snapshot.files) {
-    for (const page of file.pages) {
-      if (page.status === "failed" || page.placeholder || page.pending_action || page.user_skipped) {
-        rows.push({ file, page });
-      }
-    }
-  }
-  return rows;
-}
-
-/** 刚点下去、快照还没回来的那一次单页重生成。
- *
- *  后端同一时刻只允许跑一页（rerun_pdf_page 撞上 rerun_active 直接抛 409），但终态没有
- *  逐页 SSE，快照两秒才轮询一次。这两秒里 snapshot.rerun.active 还是 false，逐页表里
- *  每一行的「重新生成」都照常可点——连点两页，第二页换来的只是一句报错。发起时先在本地
- *  记一笔，界面立刻按「有一页在跑」渲染，等快照把真实状态换上来再清掉。 */
-type PendingRerun = { taskId: string; relativePath: string; pageNumber: number };
-
-const pendingReruns: Record<Surface, PendingRerun | undefined> = { excel: undefined, word: undefined, pdf: undefined };
-
-/** 本地这笔只对发起它的那个任务有效——切到别的任务不能跟着禁用。 */
-function pendingRerunFor(surface: Surface, taskId: string): PendingRerun | undefined {
-  const pending = pendingReruns[surface];
-  return pending && pending.taskId === taskId ? pending : undefined;
-}
-
-/** actionable=false 时按钮全部禁用但常驻显示，这句短话解释原因。
- *
- *  只在卡片顶部说一次。早先每个按钮的 title 上也挂着同一句，一张十几行的表里
- *  就有二十多个一模一样的悬浮提示，读起来像出了二十个不同的问题。按行不同的原因
- *  （比如按幅面跳过的页）仍然挂在该行的按钮上——那才是 title 该承担的。 */
-function pdfActionsDisabledReason(snapshot: PdfPagesSnapshot, pending?: PendingRerun): string {
-  if (!snapshot.terminal) return "暂停任务后才能重新生成或跳过页面；操作会在继续翻译时生效。";
-  // 快照还没确认之前，用本地记的那一页说话——否则这句会写着「仍可单独重新生成某一页」，
-  // 而下面每一行的入口都已经是灰的，一屏之内自相矛盾。
-  // page_number > 0 这道额外的门槛是防「重跑刚结束那一瞬间」的显示闪烁：后端把 rerun
-  // 状态标记为「不在跑」和把 page_number 归零不保证是同一次写入，轮询有可能正好夹在
-  // 中间读到 active=true、page_number=0——页码从 1 开始，0 从来不是一页真实的页，
-  // 直接当「没有有效页码」处理，不把这个假页码报给用户。
-  const rerunningPage = snapshot.rerun.active && snapshot.rerun.page_number > 0 ? snapshot.rerun.page_number : pending?.pageNumber;
-  if (rerunningPage !== undefined) return `第 ${rerunningPage} 页正在重新生成，跑完再操作下一页；其他页照常可以查看。`;
-  if (snapshot.rerun.error) return `上一次重新生成没有成功：${redactedText(snapshot.rerun.error, "输出文件没有改动。")}`;
-  // 终态能做的只有单页重生成：它不排队，点了立刻重跑，并把输出文件重新合成一遍。
-  if (snapshot.rerun_actionable) return "任务已结束。仍可单独重新生成某一页——重生成会立刻重跑这一页并改写输出文件，原来那一版会留成「上一版」，随时能在对比弹窗里换回。";
-  return "任务已结束，仅可查看对比页图，不能再触发操作。";
-}
-
-/** 这一页是不是正在被重新生成。终态没有逐页 SSE，这个判断只能来自快照。 */
-function isPageRerunning(snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, pending?: PendingRerun): boolean {
-  if (pending && pending.relativePath === file.relative_path && pending.pageNumber === page.page_number) return true;
-  return (
-    snapshot.rerun.active &&
-    snapshot.rerun.relative_path === file.relative_path &&
-    snapshot.rerun.page_number === page.page_number
-  );
-}
-
-async function runPdfPageAction(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage, action: "regenerate" | "skip"): Promise<void> {
-  try {
-    const c = await getClient();
-    if (action === "regenerate") await c.regeneratePdfPage(taskId, file.relative_path, page.page_number);
-    else await c.skipPdfPage(taskId, file.relative_path, page.page_number);
-    showToast({ message: `已安排${action === "regenerate" ? "重新生成" : "跳过"}第 ${page.page_number} 页，继续翻译后执行。` });
-    await fetchPdfPagesSnapshot(surface, taskId);
-  } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "操作失败。"), error: true });
-  }
-}
-
-/** 危险操作确认：要再花一次钱、还会改写可能已经交出去的文件，两条都得说。
- *
- *  「覆盖之后取不回来」这句已经不成立了——重生成会把现在这一版留成「上一版」，
- *  在对比弹窗里随时能换回来。文案跟着改口，按钮也不再叫「覆盖并重新生成」：
- *  真正不可逆的只剩「已经发出去的那份文件」，那句提醒保留。 */
-function confirmPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): void {
-  openModal({
-    tone: "danger",
-    icon: "warn",
-    title: `重新生成第 ${page.page_number} 页？`,
-    body: [
-      "现在这一页的译文会保留为「上一版」，重新生成后如果不满意，可以在对比弹窗里换回。重新生成要再调用一次接口，按这一页的用量计费。输出文件会跟着改写，如果你已经把它发出去了，记得重新发一份。",
-    ],
-    actions: [
-      { label: "取消" },
-      {
-        label: "重新生成",
-        variant: "danger-solid",
-        onClick: () => void runPdfPageRerun(surface, taskId, file, page),
-      },
-    ],
-  });
-}
-
-async function runPdfPageRerun(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): Promise<void> {
-  // 请求还在路上时表里其他行就得先锁上，不能等两秒后的那次轮询。
-  const pending: PendingRerun = { taskId, relativePath: file.relative_path, pageNumber: page.page_number };
-  pendingReruns[surface] = pending;
-  rerender(surface);
-  try {
-    const c = await getClient();
-    await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
-    showToast({ message: `第 ${page.page_number} 页正在重新生成，跑完会覆盖输出文件。` });
-  } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "重新生成失败。"), error: true });
-  }
-  // 成功要拿到「重新生成中」这一行，失败也要把后端此刻的真实状态换上来。
-  try {
-    await fetchPdfPagesSnapshot(surface, taskId);
-  } finally {
-    // 快照回来了（或者没拉动）就把话语权交回给它：本地这笔只负责盖住中间那一小段。
-    // 拉失败时也要清——那种情况下我们并不知道后端在跑什么，不该一直锁着整张表。
-    if (pendingReruns[surface] === pending) {
-      pendingReruns[surface] = undefined;
-      rerender(surface);
-    }
-  }
-}
-
-/** 终态没有 SSE，重生成的进度只能靠轮询这份快照；跑完自己停，不留空转的 interval。
- *
- *  用 setTimeout 自我重排而不是 setInterval：sidecar 中途重启过时 getPdfPages 会连续
- *  失败，纯 setInterval 只会不多不少每 2 秒报一次错、永远不停（高-10）——快照拉不到，
- *  local.pdfPagesSnapshot.rerun.active 停在拉失败前的最后一次真值上，永远不会自己变
- *  false，下一轮判断条件形同虚设。这里改成连续失败计数：失败就退避（翻倍，封顶 20
- *  秒），累计到上限就整个停掉并且只在停的那一刻说一句话，不再每一轮都弹 toast。 */
-const rerunTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
-const rerunTickerFailures: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
-const RERUN_POLL_BASE_MS = 2000;
-const RERUN_POLL_MAX_MS = 20000;
-const RERUN_POLL_MAX_FAILURES = 5;
-
-function startPdfRerunTicker(surface: Surface, taskId: string): void {
-  if (rerunTickers[surface] !== undefined) return;
-  // fetchPdfPagesSnapshot 的成功分支无条件调用这里——包括「请求发出去时页面还挂载着，
-  // 响应回来时用户已经切走」这种情形（unmountWorkspace 早就 stopPdfRerunTicker 把槽位
-  // 清空了）。不看挂载状态就重开，会在用户已经离开的页面上复活出一个 handle：紧接着
-  // scheduleRerunTick 的下一轮会把这个新 handle 覆盖掉，stopPdfRerunTicker 永远够不着
-  // 它，两条链就在设置、记忆库等不相干的页面上继续轮询、继续弹「已停止自动刷新」的
-  // toast——正是高-10 要消灭的跨页面行为（B1-2）。renderer 在 unmountWorkspace 里被置
-  // 空、mountWorkspace 里被重新赋值，用它当「这一屏当前是否挂载」的判断刚好合适。
-  if (states[surface].renderer === null) return;
-  rerunTickerFailures[surface] = 0;
-  scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
-}
-
-function scheduleRerunTick(surface: Surface, taskId: string, delay: number): void {
-  rerunTickers[surface] = window.setTimeout(() => {
-    void (async () => {
-      const local = states[surface].task;
-      if (!local || local.task.task_id !== taskId || !local.pdfPagesSnapshot?.rerun.active) {
-        stopPdfRerunTicker(surface);
-        return;
-      }
-      const ok = await fetchPdfPagesSnapshot(surface, taskId, { silent: true });
-      // 这次 await 期间可能已经被 stopPdfRerunTicker 掐掉（unmountWorkspace、任务切走），
-      // handle 已经清空，不该再续排下一轮。
-      if (rerunTickers[surface] === undefined) return;
-      if (!ok) {
-        rerunTickerFailures[surface] += 1;
-        if (rerunTickerFailures[surface] >= RERUN_POLL_MAX_FAILURES) {
-          stopPdfRerunTicker(surface);
-          showToast({ message: "刷新重新生成进度连续失败，已停止自动刷新；重新打开这个任务可再次尝试。", error: true });
-          return;
-        }
-        scheduleRerunTick(surface, taskId, Math.min(RERUN_POLL_BASE_MS * 2 ** rerunTickerFailures[surface], RERUN_POLL_MAX_MS));
-        return;
-      }
-      rerunTickerFailures[surface] = 0;
-      scheduleRerunTick(surface, taskId, RERUN_POLL_BASE_MS);
-    })();
-  }, delay);
-}
-
-function stopPdfRerunTicker(surface: Surface): void {
-  const handle = rerunTickers[surface];
-  if (handle !== undefined) {
-    window.clearTimeout(handle);
-    rerunTickers[surface] = undefined;
-  }
-  rerunTickerFailures[surface] = 0;
-}
-
-function buildPdfRecoveryCard(surface: Surface, local: LocalTask): HTMLElement | null {
-  const snapshot = local.pdfPagesSnapshot;
-  if (!snapshot) return null;
-  const rows = collectRecoveryRows(snapshot);
-  if (!rows.length) return null;
-  const taskId = local.task.task_id;
-  const multiFile = snapshot.files.length > 1;
-
-  const card = el("div", "card");
-  card.style.cssText = "padding:0;overflow:hidden";
-  const head = el("div", "tc-head");
-  const b = el("b");
-  b.textContent = "页恢复";
-  const span = el("span");
-  span.textContent = "失败页在此重试，不影响其他页";
-  head.append(b, span);
-  card.append(head);
-
-  if (!snapshot.actionable) {
-    const note = el("p", "ws-note");
-    note.style.cssText = "text-align:left;padding:8px 14px 0";
-    note.textContent = pdfActionsDisabledReason(snapshot, pendingRerunFor(surface, taskId));
-    card.append(note);
-  }
-
-  const list = el("div");
-  list.style.cssText = "max-height:220px;overflow:auto";
-  rows.forEach(({ file, page }, index) => {
-    const row = buildRecoveryRow(surface, taskId, snapshot, file, page, multiFile);
-    if (index === 0) row.style.borderTop = "0";
-    list.append(row);
-  });
-  card.append(list);
-  return card;
-}
-
-function buildRecoveryRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, multiFile: boolean): HTMLElement {
-  const row = el("div", "filerow");
-  const actionable = snapshot.actionable;
-
-  if (page.pending_action === "regenerate") {
-    row.append(createChip({ label: "待执行 · 重新生成", tone: "tint" }));
-  } else if (page.pending_action === "skip") {
-    row.append(createChip({ label: "待执行 · 跳过", tone: "tint" }));
-  } else if (page.user_skipped) {
-    row.append(createChip({ label: "已跳过", tone: "mute" }));
-  } else if (page.attempts > 0) {
-    row.append(createChip({ label: `重试 ${page.attempts}`, tone: "warn" }));
-  } else {
-    row.append(createChip({ label: "失败", tone: "dgr" }));
-  }
-
-  const nm = el("span", "nm");
-  const filePrefix = multiFile ? `${file.name} · ` : "";
-  nm.textContent = `${filePrefix}第 ${page.page_number} 页 · ${redactedText(page.error, page.placeholder ? "页图生成失败" : "待处理")}`;
-  row.append(nm);
-
-  row.append(createButton({
-    label: "立即重试",
-    size: "mini",
-    disabled: !actionable,
-    onClick: () => void runPdfPageAction(surface, taskId, file, page, "regenerate"),
-  }));
-  row.append(createButton({
-    label: "跳过该页",
-    size: "mini",
-    disabled: !actionable,
-    onClick: () => void runPdfPageAction(surface, taskId, file, page, "skip"),
-  }));
-  return row;
-}
-
-// ---------------------------------------------------------------------------
-// 逐页审核卡片：失败页横幅批量重跑 + 文件分组折叠 + 「只看有问题的页」筛选。
-// 三件事有个共同前提——这张卡片每次快照刷新都是整体重建 DOM（buildColLeft 每次都
-// 重新调用 buildPdfReviewCard()，不是增量更新），所以「哪个分组展开了」「筛选勾没勾」
-// 「批量重跑跑到第几页了」都不能存在 DOM 属性或函数局部变量上，一刷新就清零。全部搬到
-// 下面这几个模块级状态里，键是 taskId：同一个任务内随便怎么重渲染都不丢，切到别的
-// 任务或重启应用则从空开始（这正是任务书要的行为，不是偷懒没做持久化）。
-// ---------------------------------------------------------------------------
-
-interface PdfReviewUiState {
-  /** 每个文件分组的展开/收起，键是 file.relative_path；没记录过的文件按
-   *  defaultGroupOpen 规则现算，不预先填满整张表。 */
-  collapse: Map<string, boolean>;
-  /** 「只看有问题的页」勾选框。 */
-  onlyBad: boolean;
-}
-const pdfReviewUiState = new Map<string, PdfReviewUiState>();
-function reviewUiState(taskId: string): PdfReviewUiState {
-  let state = pdfReviewUiState.get(taskId);
-  if (!state) {
-    state = { collapse: new Map(), onlyBad: false };
-    pdfReviewUiState.set(taskId, state);
-  }
-  return state;
-}
-
-/** 这一页算不算「失败页批量重跑」的目标：跟 reviewResultChip 同一套失败判断
- *  （status === "failed" || placeholder），但排除用户已经在面板里主动跳过的占位页——
- *  那是用户自己认下的结果，批量重跑不该替他们翻案；真要改主意，这一行自己的
- *  「重新生成」链接还在，没有被拿掉。 */
-function pageNeedsRerun(page: PdfPage): boolean {
-  return (page.status === "failed" || page.placeholder) && !page.user_skipped;
-}
-
-/** 「这一页算不算有问题」统一按 reviewResultChip 判出来的颜色定，不重新发明一套规则：
- *  dgr（失败 / 已跳过占位）和 warn（建议复核 / 审核未通过 / 待复核 / 任务已停止时的
- *  待处理页）都算。折叠默认展开、分组小结、「只看有问题的页」筛选三处共用这一个答案，
- *  保证它们说的是同一件事，不会出现「筛选说这页没问题，分组小结却把它算进失败」这种
- *  对不上。taskStopped 只影响 reviewResultChip 对 pending 页给出的颜色，见那边注释。 */
-function pageIsProblem(page: PdfPage, taskStopped: boolean): boolean {
-  const tones = reviewResultChip(page, taskStopped).className.split(" ");
-  return tones.includes("dgr") || tones.includes("warn");
-}
-
-interface PdfGroupHandle {
-  fileKey: string;
-  /** 这个文件里有没有需要批量重跑的失败页——只看 pageNeedsRerun，不算「建议复核」。
-   *  「定位到这几页」按的就是这条：只展开真正失败的分组，跟决定默认展开/收起状态、
-   *  分组小结用的「有问题」（失败 + 建议复核）不是同一个判断，两者故意分开。 */
-  hasFailingPage: boolean;
-  rows: HTMLTableRowElement[];
-  /** 单文件任务不建分组标题行，这时候没有按钮可切，toggleGroupOpen 对它是空操作。 */
-  button?: HTMLButtonElement;
-}
-
-/** 展开/收起一个文件分组：aria-expanded 驱动箭头旋转（CSS 选择器，见 workspace.css
- *  的 .grp[aria-expanded="false"] .cv），行的 hid 类直接控制显示；顺手把新状态写回
- *  reviewUiState，不用等下一次整卡重渲染。 */
-function toggleGroupOpen(ui: PdfReviewUiState, handle: PdfGroupHandle, open?: boolean): void {
-  const btn = handle.button;
-  if (!btn) return;
-  const next = open ?? btn.getAttribute("aria-expanded") !== "true";
-  btn.setAttribute("aria-expanded", String(next));
-  handle.rows.forEach((row) => row.classList.toggle("hid", !next));
-  ui.collapse.set(handle.fileKey, next);
-}
-
-/** 「定位到这几页」：照抄样张 focusBad() 的效果——含失败页的分组展开、干净分组收起，
- *  再滚到第一个失败页。单文件任务没有分组按钮可切（toggleGroupOpen 对它是空操作），
- *  滚动仍然生效。 */
-function focusFailingPages(ui: PdfReviewUiState, handles: PdfGroupHandle[], firstFailingRow: HTMLTableRowElement | null): void {
-  for (const handle of handles) {
-    if (handle.button) toggleGroupOpen(ui, handle, handle.hasFailingPage);
-  }
-  firstFailingRow?.scrollIntoView({ block: "center", behavior: "smooth" });
-}
-
-/** 这一页跑完了没有。后端的三个中间态：pending 还没轮到、rendered 页图已渲染正在等
- *  模型、placeholder_pending 等着补占位页。三个的 chip 都是灰的（reviewResultChip），
- *  既不是失败也不是「有问题」——小结要是不单独数它们，就会把它们算进「通过」。 */
-function pageIsUnfinished(page: PdfPage): boolean {
-  return page.status === "pending" || page.status === "rendered" || page.status === "placeholder_pending";
-}
-
-/** 分组标题右侧常驻小结。
- *
- *  这里只说数得出来的事，不下「全部通过」这种总结论，除非真的每一页都跑完且没问题。
- *  之前的写法把「还没跑完」和「通过」混成一档，代价是两处睁眼说瞎话：
- *
- *  1. 任务刚开跑，快照里所有文件的所有页都是 pending，小结却写「17 页全部通过」——
- *     一页都还没翻。多文件任务必然经过这一刻，不是边角情况。
- *  2. 预处理就失败的文件（PDF 打不开、图片校验没过）page_count 是 0、一页都没有，
- *     `total - failed` 算出来是 0，小结写「0 页全部通过」。改动前这里是中性的
- *     「xxx.pdf · 0 页」，不说谎；这是新引入的虚假肯定，而且正好落在最该被看见的
- *     文件上。文件级的失败原因 status/error 快照里现成有，直接用。
- *
- *  所以改成分桶累加：失败 / 已停止 / 建议复核 / 待处理 / 通过，哪档是 0 就不出现。 */
-function buildGroupSummaryNodes(file: PdfPageFile, taskStopped: boolean): HTMLElement[] {
-  if (file.status === "failed" || file.pages.length === 0) {
-    const bad = el("span", "bad");
-    bad.textContent = "文件打不开";
-    return [bad];
-  }
-
-  const pages = file.pages;
-  const failed = pages.filter(pageNeedsRerun);
-  // 停止时还没排上号的页单独一档：它既不是「试过没通过」（失败/建议复核），也不是
-  // 「还在排队，等着轮到」（待处理）——任务已经定格在终态，它不会再自己轮到。混进
-  // 前两档的任何一档都会让用户会错意（以为程序判定这页有质量问题，或以为程序还在
-  // 后台继续跑），见 reviewResultChip 对 pending 页在 taskStopped 下的处理。
-  const stoppedSet = new Set(taskStopped ? pages.filter((page) => !pageNeedsRerun(page) && page.status === "pending") : []);
-  const flagged = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && pageIsProblem(page, taskStopped));
-  const unfinished = pages.filter((page) => !pageNeedsRerun(page) && !stoppedSet.has(page) && !pageIsProblem(page, taskStopped) && pageIsUnfinished(page));
-  const passed = pages.length - failed.length - stoppedSet.size - flagged.length - unfinished.length;
-
-  if (failed.length === 0 && stoppedSet.size === 0 && flagged.length === 0 && unfinished.length === 0) {
-    const all = el("span");
-    all.textContent = `${pages.length} 页全部通过`;
-    return [all];
-  }
-
-  const parts: HTMLElement[] = [];
-  const push = (text: string, className?: string): void => {
-    const node = el("span", className);
-    node.textContent = text;
-    parts.push(node);
-  };
-  if (failed.length > 0) push(`${failed.length} 失败`, "bad");
-  if (stoppedSet.size > 0) push(`${stoppedSet.size} 已停止`, "flag");
-  if (flagged.length > 0) push(`${flagged.length} 建议复核`, "flag");
-  if (unfinished.length > 0) push(`${unfinished.length} 待处理`);
-  if (passed > 0) push(`${passed} 通过`);
-
-  const out: HTMLElement[] = [];
-  parts.forEach((node, i) => {
-    if (i > 0) {
-      const dot = el("span");
-      dot.textContent = "·";
-      out.push(dot);
-    }
-    out.push(node);
-  });
-  return out;
-}
-
-interface PdfBatchRerunState {
-  taskId: string;
-  total: number;
-  done: number;
-  /** 当前这一页的定位信息，纯粹是这个函数自己数出来的——后端不知道这是「一批」，
-   *  快照里只有单页的 rerun.active / page_number，没有「第几页/共几页」这种批次概念，
-   *  也就没法从快照反推进度，只能靠发起方自己记。 */
-  current: { fileName: string; pageNumber: number } | null;
-  /** 用户按了「停止」。含义是「不再发起后面的页」，不是「立刻中断」——后端没有取消
-   *  接口（api-client 只有 rerunPdfPage，没有对应的 cancel），已经发出去的那一页在
-   *  服务端照跑到底。所以按下之后横幅要改口说「跑完这一页就停」，不能假装已经停了。 */
-  stopped: boolean;
-}
-const pdfBatchRerunState: Record<Surface, PdfBatchRerunState | undefined> = {
-  excel: undefined,
-  word: undefined,
-  pdf: undefined,
-};
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-/** 等当前这一页真正跑完（rerun.active 归 false）才能发下一页。终态的单页重跑只有一个
- *  槽位——PdfPagesSnapshot.rerun 是整个任务一份，不是按页分的（见它上面的注释，以及
- *  pdfActionsDisabledReason 里「第 N 页正在重新生成，跑完再操作下一页」那句），批量
- *  重跑没法并发发起，只能串行等。轮询节奏跟 startPdfRerunTicker 一样是 2 秒一次，但
- *  不复用那个 interval：那套是给「用户手动点了单独一页」配的独立计时器，跟这里
- *  「等完一页再发下一页」的串行 await 用途不一样，硬凑一起只会让两边互相踩状态。
- *
- *  返回 false 表示放弃了（连续拉快照失败太多次），调用方应该停掉整批，不能只是
- *  沉默地继续发下一页——快照拉不到时我们并不知道后端到底有没有跑完，硬发下一页
- *  只会撞 409。返回 true 表示槽位正常释放（或任务已经不是这一个了，交回调用方
- *  自己的守卫判断）。 */
-async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boolean> {
-  // 请求刚发出去，给后端一点时间把 rerun.active 标记上；不等这一下，第一次检查可能
-  // 正好撞在「还没来得及写状态」的空档，会把这一页误判成「已经跑完」，提前发下一页。
-  await sleep(1500);
-  let failures = 0;
-  for (;;) {
-    const local = states[surface].task;
-    if (!local || local.task.task_id !== taskId) return true;
-    if (!local.pdfPagesSnapshot?.rerun.active) return true;
-    // sidecar 中途重启过时快照会连续拉不到：local.pdfPagesSnapshot.rerun.active 停在
-    // 拉失败前的最后一次真值上永远不会自己变 false，这个 for(;;) 不设退出条件就是
-    // 死循环，批量重跑卡死在第一页（同高-10 根因）。跟单页那个计时器一样退避 + 封顶。
-    const delay = Math.min(RERUN_POLL_BASE_MS * 2 ** failures, RERUN_POLL_MAX_MS);
-    await sleep(delay);
-    const ok = await fetchPdfPagesSnapshot(surface, taskId, { silent: true });
-    if (!ok) {
-      failures += 1;
-      if (failures >= RERUN_POLL_MAX_FAILURES) {
-        showToast({ message: "刷新重新生成状态连续失败，批量重跑已停止；请检查后台服务是否正常后重新发起。", error: true });
-        return false;
-      }
-      continue;
-    }
-    failures = 0;
-  }
-}
-
-/** 「只重跑这 N 页」确认后的批量执行。走的是终态专用的 rerunPdfPage——立即触发、跑完
- *  覆盖输出，不是 runPdfPageAction 包的 regeneratePdfPage 那条「排队，继续翻译时生效」
- *  的路：后者是给还没结束的任务用的（触发后要等任务继续跑才生效），api-client.ts 在
- *  rerunPdfPage 上明确写着「终态任务专用：现在就重跑」。这条横幅只在 snapshot.terminal
- *  时出现（见 buildPdfReviewCard），用 regeneratePdfPage 会跟 rerun_actionable 的语义
- *  对不上——终态任务本来就不该走「排队等继续翻译」这条路，因为它不会再继续翻译了。 */
-async function runPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): Promise<void> {
-  const batch: PdfBatchRerunState = { taskId, total: rows.length, done: 0, current: null, stopped: false };
-  pdfBatchRerunState[surface] = batch;
-  rerender(surface);
-  try {
-    for (const { file, page } of rows) {
-      // 三个都得查，少一个就会继续往外发请求：
-      //   - stopped：用户按了停止，当前这一页跑完就到此为止；
-      //   - 状态被换掉：被新一轮批量盖掉；
-      //   - taskId 对不上：用户在同一个工作区切到了别的任务。第三条以前漏了——原来的
-      //     注释写着「任务切走了」，但 pdfBatchRerunState 只在这个函数里改，focusTask
-      //     换 states[surface].task 时压根不碰它，这个守卫对任务切换是瞎的。后果是
-      //     waitForRerunSlot 的 taskId 检查会让它每次立刻返回，剩下几页背靠背连发，
-      //     后端一路 409（page_rerun_active），连弹几条错误 toast，一页也没重跑成。
-      if (pdfBatchRerunState[surface] !== batch || batch.stopped) return;
-      if (states[surface].task?.task.task_id !== taskId) return;
-      batch.current = { fileName: file.name, pageNumber: page.page_number };
-      rerender(surface);
-      try {
-        const c = await getClient();
-        await c.rerunPdfPage(taskId, file.relative_path, page.page_number);
-        await fetchPdfPagesSnapshot(surface, taskId);
-        const gotSlot = await waitForRerunSlot(surface, taskId);
-        // 放弃等待（连续拉快照失败）时不能装作这一页正常跑完继续发下一页——那样只会
-        // 一页页往下、每一页都在死循环里重新攒够失败次数才停，体感上批量重跑还是卡住。
-        // waitForRerunSlot 已经弹过一次说明性 toast，这里直接收工。
-        if (!gotSlot) {
-          batch.stopped = true;
-          return;
-        }
-      } catch (error) {
-        showToast({ message: redactedText((error as Error)?.message, `第 ${page.page_number} 页重新生成失败。`), error: true });
-      }
-      if (pdfBatchRerunState[surface] !== batch) return;
-      batch.done += 1;
-      rerender(surface);
-    }
-  } finally {
-    if (pdfBatchRerunState[surface] === batch) pdfBatchRerunState[surface] = undefined;
-    rerender(surface);
-  }
-}
-
-/** 停止批量重跑：只掐掉「发起下一页」，不碰已经在跑的那一页。
- *
- *  不弹确认框——这是刹车，不是危险操作，中间再挡一层就失去意义了。真正要交代清楚的
- *  是它停不掉什么，那句话放在按下之后的横幅上说，比放在确认框里有用。 */
-function stopPdfBatchRerun(surface: Surface, taskId: string): void {
-  const batch = pdfBatchRerunState[surface];
-  if (!batch || batch.taskId !== taskId || batch.stopped) return;
-  batch.stopped = true;
-  rerender(surface);
-}
-
-/** 危险操作确认：跟单页那个 confirmPdfPageRerun 一个道理——会覆盖已有译文，批量做这件
- *  事更不能让人凭一个数字点下去，先把具体是哪几个文件的哪几页摆出来。 */
-function confirmPdfBatchRerun(surface: Surface, taskId: string, rows: PdfPageRow[]): void {
-  const list = el("ul");
-  list.style.cssText = "margin:2px 0 0;padding-left:18px;line-height:1.8";
-  for (const { file, page } of rows) {
-    const li = el("li");
-    li.textContent = `${file.name} · 第 ${page.page_number} 页`;
-    list.append(li);
-  }
-  openModal({
-    tone: "danger",
-    icon: "warn",
-    title: `重跑这 ${rows.length} 页？`,
-    body: [
-      "这几页现在的译文会保留为各自的「上一版」，重新生成后如果不满意，可以在对比弹窗里逐页换回；重新生成按页计费，其余页不受影响、不会重新调用接口。",
-      list,
-      "只能一页跑完再跑下一页，全部跑完会自动替换译文页并重新合成对应文件的输出 PDF；如果你已经把这些文件发出去了，记得重新发一份。中途可以按横幅上的「停止」，当前这一页会跑完，后面的不再重跑。",
-    ],
-    actions: [
-      { label: "取消" },
-      {
-        label: `重跑这 ${rows.length} 页`,
-        variant: "danger-solid",
-        onClick: () => void runPdfBatchRerun(surface, taskId, rows),
-      },
-    ],
-  });
-}
-
-function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElement | null {
-  const snapshot = local.pdfPagesSnapshot;
-  if (!snapshot || !snapshot.files.length) return null;
-  const taskId = local.task.task_id;
-  const multiFile = snapshot.files.length > 1;
-  const ui = reviewUiState(taskId);
-  const batch = pdfBatchRerunState[surface];
-  const batchRerunActive = !!batch && batch.taskId === taskId;
-  // 只认「已停止」这一个终态。注意这是范围裁剪、不是成因差异：error 终态下同样
-  // 会留下 pending 页（_discard_stopped_pages 在 _process_prepared_pages 的
-  // finally 里，对致命模型错误等所有出口一样生效，见
-  // core/pdf_image_translation.py），那些页现在仍显示灰色「待处理」。审计批次 2
-  // 第①条的范围只覆盖「停止」，error 终态的同类改进是另一条待办。
-  const taskStopped = local.task.state === "stopped";
-
-  // .pdf-review-card 是「只看有问题的页」筛选的挂载点（card.filter .row-ok /
-  // .grp-clean 定义在 workspace.css），特意挂在这张卡片自己身上而不是 body：卡片会
-  // 反复整体重建并重新插入页面，全局类名一勾就会连累界面上其它跟这次筛选无关的东西。
-  const card = el("div", "card pdf-review-card");
-  card.classList.toggle("filter", ui.onlyBad);
-  card.style.cssText = snapshot.terminal
-    ? "flex:0 0 auto;display:flex;flex-direction:column;overflow:hidden"
-    : "flex:3 1 0%;min-height:0;display:flex;flex-direction:column;overflow:hidden";
-  const head = el("div", "tc-head");
-  const b = el("b");
-  b.textContent = "逐页审核";
-  const span = el("span");
-  // 审核关着的时候不能还说「审核模型逐页检查」：同一张表里每一行写的都是「未审核 · 本次
-  // 没有让审核模型看这一页」，一屏之内两句话对不上。卡片本身照常用（重试、跳过都在这里）。
-  span.textContent = snapshot.review_enabled
-    ? "审核模型逐页检查版式与译文完整性"
-    : "本次没有开启逐页审核，下面是每一页的生成结果";
-  head.append(b, span);
-
-  const tools = el("div", "tc-tools");
-  const onlyBadLabel = el("label", "onlybad");
-  const onlyBadInput = document.createElement("input");
-  onlyBadInput.type = "checkbox";
-  onlyBadInput.checked = ui.onlyBad;
-  onlyBadInput.addEventListener("change", () => {
-    ui.onlyBad = onlyBadInput.checked;
-    card.classList.toggle("filter", ui.onlyBad);
-  });
-  onlyBadLabel.append(onlyBadInput, document.createTextNode(" 只看有问题的页"));
-  tools.append(onlyBadLabel);
-  head.append(tools);
-  card.append(head);
-
-  if (!snapshot.actionable) {
-    const note = el("p", "ws-note");
-    note.style.cssText = "text-align:left;padding:8px 14px 0";
-    note.textContent = pdfActionsDisabledReason(snapshot, pendingRerunFor(surface, taskId));
-    card.append(note);
-  }
-
-  // 表先建、横幅后建：横幅要报「一共 N 页失败」「第一处失败在哪一行」，这些数只有
-  // 扫过整张表才数得出来，所以构建顺序是表在前；最后再按视觉顺序（头→提示→横幅→表）
-  // 把节点拼回卡片，构建顺序和视觉顺序不必是同一件事。
-  const table = el("table", "tbl");
-  const headRow = el("tr");
-  const headLabels = ["页", "审核结果", "说明", ""];
-  headLabels.forEach((label, i) => {
-    const th = el("th");
-    th.textContent = label;
-    if (i === 3) th.style.width = "190px";
-    headRow.append(th);
-  });
-  table.append(headRow);
-
-  const groupHandles: PdfGroupHandle[] = [];
-  const failingRows: PdfPageRow[] = [];
-  let firstFailingRow: HTMLTableRowElement | null = null;
-  let totalPages = 0;
-
-  for (const file of snapshot.files) {
-    const fileKey = file.relative_path;
-    // 预处理就失败的文件一页都没有，file.pages.some(...) 恒为 false——不额外认一下
-    // file.status，它就会被当成「干净」：默认收起，勾上「只看有问题的页」时整行消失。
-    // 最该被看见的文件反而是唯一看不见的，正好反了。
-    const anyProblem = file.status === "failed" || file.pages.length === 0 || file.pages.some((page) => pageIsProblem(page, taskStopped));
-    const handle: PdfGroupHandle = { fileKey, hasFailingPage: file.pages.some(pageNeedsRerun), rows: [] };
-
-    if (multiFile) {
-      // 默认展开规则：有失败或建议复核的文件默认展开，全部通过的文件默认收起——打开
-      // 这张表多数是为了找问题页，不是逐页确认几十个「通过」。
-      //
-      // ui.collapse 只存用户自己点过的分组，默认值每次现算，绝不写回去。原先第一次
-      // 渲染就把默认值固化进 Map，而「第一次渲染」发生在任务刚开跑、所有页都还是
-      // pending 的时刻：那时 anyProblem 一律是 false，全部分组被钉死成收起状态。
-      // 等文件真的跑出失败页，stored 已经有值，默认展开永远不会再生效——「有失败的
-      // 文件默认展开」这条规则在主流程里等于不存在。
-      const open = ui.collapse.get(fileKey) ?? anyProblem;
-      const groupRow = el("tr", anyProblem ? "pdf-file-group" : "pdf-file-group grp-clean");
-      const cell = el("td");
-      cell.colSpan = 4;
-      const btn = el("button", "grp");
-      btn.type = "button";
-      btn.setAttribute("aria-expanded", String(open));
-      btn.append(icon("chev", { size: "sm", className: "cv" }));
-      const fn = el("span", "fn");
-      fn.textContent = file.name;
-      const sum = el("span", "sum");
-      sum.append(...buildGroupSummaryNodes(file, taskStopped));
-      btn.append(fn, sum);
-      btn.addEventListener("click", () => toggleGroupOpen(ui, handle));
-      cell.append(btn);
-      groupRow.append(cell);
-      table.append(groupRow);
-      handle.button = btn;
-    }
-
-    const open = multiFile ? ui.collapse.get(fileKey) ?? anyProblem : true;
-    for (const page of file.pages) {
-      const row = buildReviewRow(surface, taskId, snapshot, file, page, batchRerunActive, taskStopped);
-      if (!pageIsProblem(page, taskStopped)) row.classList.add("row-ok");
-      if (multiFile && !open) row.classList.add("hid");
-      table.append(row);
-      handle.rows.push(row);
-      totalPages += 1;
-      if (pageNeedsRerun(page)) {
-        failingRows.push({ file, page });
-        if (!firstFailingRow) firstFailingRow = row;
-      }
-    }
-    groupHandles.push(handle);
-  }
-
-  // 失败页横幅：只在终态出现——非终态的失败页走的是 buildPdfRecoveryCard 那张独立的
-  // 「页恢复」卡片（排队式的 regeneratePdfPage，继续翻译才生效），这里的批量重跑走的
-  // 是终态专用、点了立刻重跑的 rerunPdfPage，两条路语义不同，不能在还没结束的任务上
-  // 出现「立刻重跑」的横幅。
-  let banner: HTMLElement | null = null;
-  if (snapshot.terminal && batchRerunActive && batch) {
-    banner = el("div", "pdf-fixbar busy");
-    banner.append(el("span", "spin"));
-    const txt = el("span", "txt");
-    const em = el("em");
-    const small = el("small");
-    if (batch.stopped) {
-      // 按下停止之后，剩下多少页比「第几页」更要紧——用户按刹车就是想知道还会不会
-      // 继续烧钱，答案是「不会，就这一页了」。停在最后一页上时剩余是 0，那句话得换
-      // 个说法，否则界面上会出现「剩下的 0 页不再重跑」这种绕口的废话。
-      const remaining = Math.max(0, batch.total - batch.done - 1);
-      if (remaining > 0) {
-        em.textContent = `${remaining} 页`;
-        txt.append(document.createTextNode("已停止，剩下的 "), em, document.createTextNode(" 不再重跑"));
-      } else {
-        txt.append(document.createTextNode("已停止，这已经是最后一页"));
-      }
-      if (batch.current) txt.append(document.createTextNode(`；正在等 ${batch.current.fileName} 第 ${batch.current.pageNumber} 页跑完`));
-      small.textContent = "已经发出去的这一页停不下来，服务端会把它跑完并计费；跑完就收摊。";
-    } else {
-      em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
-      txt.append(document.createTextNode("正在重跑 "), em);
-      if (batch.current) txt.append(document.createTextNode(`：${batch.current.fileName} 第 ${batch.current.pageNumber} 页`));
-      small.textContent = "跑完会自动替换译文页并重新装订这个文件的输出 PDF，其余页不受影响。";
-    }
-    txt.append(small);
-    banner.append(txt);
-    if (!batch.stopped) {
-      banner.append(createButton({
-        label: "停止",
-        size: "mini",
-        onClick: () => stopPdfBatchRerun(surface, taskId),
-      }));
-    }
-  } else if (snapshot.terminal && failingRows.length > 0) {
-    banner = el("div", "pdf-fixbar");
-    banner.append(el("span", "dot"));
-    const txt = el("span", "txt");
-    const em = el("em");
-    em.textContent = `${failingRows.length} 页`;
-    txt.append(em, document.createTextNode("没有生成译文，输出的 PDF 里这几页是占位图。"));
-    const small = el("small");
-    small.textContent = `重跑只动这 ${failingRows.length} 页，其余 ${totalPages - failingRows.length} 页不会重新调用接口。`;
-    txt.append(small);
-    banner.append(txt);
-    banner.append(createButton({
-      label: "定位到这几页",
-      size: "mini",
-      onClick: () => focusFailingPages(ui, groupHandles, firstFailingRow),
-    }));
-    banner.append(createButton({
-      label: `只重跑这 ${failingRows.length} 页`,
-      size: "mini",
-      variant: "primary",
-      onClick: () => confirmPdfBatchRerun(surface, taskId, failingRows),
-    }));
-  }
-
-  const tableWrap = el("div");
-  // 真正的修复是这两行的先后顺序：style.cssText 是整体替换，原先写在它前面的
-  // maxHeight 会被整块冲掉，420px 的上限等于没写，84 行的表就把外层顶穿了。
-  // min-height:0 是顺手补的保险，不是这次生效的原因——flex 子项的 min-height:auto
-  // 只在 overflow 计算值为 visible 时才按内容撑开，而这里已经是 overflow:auto。
-  tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto";
-  // 终态这张表是从结果页进来的，外面没有运行卡片撑高度，给个上限才滚得起来。
-  // 上限不再写死 420px：终态任务可能有 5 个文件、84 页，固定 420px 在大屏上会浪费
-  // 一大截空间；改成跟视口走（52vh），同时封顶 640px，避免在超大屏上把卡片拉得
-  // 过高。非终态（运行中）分支的高度逻辑不受影响，还是外层 flex 撑高度。
-  if (snapshot.terminal) tableWrap.style.maxHeight = "min(52vh, 640px)";
-  tableWrap.append(table);
-
-  if (banner) card.append(banner);
-  card.append(tableWrap);
-  return card;
-}
-
-function reviewResultChip(page: PdfPage, taskStopped: boolean): HTMLElement {
-  // 按尺寸跳过的页必须排在最前面判断，而且不能落到「待复核」上：它没有译文也没有页图，
-  // 但那是按设定不翻，不是翻译失败。混进复核队列会让人挨个点开看一堆没必要看的页。
-  if (page.skipped_oversize) return createChip({ label: "按幅面跳过", tone: "mute" });
-  if (page.status === "failed" || page.placeholder) {
-    return createChip({ label: page.user_skipped ? "已跳过占位" : "生成失败", tone: "dgr" });
-  }
-  // 译文页还没出来的一律不给审核结论。后端的中间态有三个：pending 还没轮到、
-  // rendered 页图已渲染正在等模型、placeholder_pending 等着补占位页。9.2.6 只认识
-  // pending，另外两个落到了下面的 review_status 分支上，于是页面还没生成就写「待复核」。
-  if (page.status === "pending") {
-    // 中止时这一页可能一次模型调用都没发生：071e130 之后后端把它退回「未开始」而不是
-    // 烧成失败占位页（core/pdf_image_translation.py 的 _discard_stopped_page），所以
-    // 快照里跟「还在排队、马上轮到」长得一模一样，都是 status: "pending"。区别只能靠
-    // 任务是否已经落在终态「已停止」上：还在跑时这就是正常的排队中（灰色、不打扰）；
-    // 一旦定格在「已停止」，它就再也不会自己轮到，用黄色「已停止」把它跟「失败」
-    // （红色）和「还在排队」（灰色）都分开，不能三者共用一个灰色「待处理」。
-    return taskStopped
-      ? createChip({ label: "已停止", tone: "warn" })
-      : createChip({ label: "待处理", tone: "mute" });
-  }
-  if (page.status === "rendered") return createChip({ label: "生成中", tone: "mute" });
-  if (page.status === "placeholder_pending") return createChip({ label: "待补占位", tone: "mute" });
-  // 审核结论要排在质检疑点前面：同一页可能既被质检挂了疑点又被审核判不通过，那时候
-  // 「审核未通过」信息量更大。
-  // 走到这里的页一定有译文（没输出的页在上面几个分支就被拦掉了），所以不能用「生成失败」
-  // 那种深红：小结把这一页算进「已采用但建议复核」，chip 不该看起来像「这一页没有译文」。
-  if (page.review_status === "failed") {
-    return createChip({ label: "审核未通过 · 已采用", tone: "warn" });
-  }
-  if (page.review_status === "retrying") return createChip({ label: "重试中", tone: "mute" });
-  // 本地质检的疑点必须压在 passed 前面。质检跑在送审之前，审核判「通过」不会清掉它，
-  // 所以一页可以同时是 quality_flagged 和 review_status="passed"。9.2.6 只看审核结论，
-  // 于是小结说「N 页译文有疑点」，逐页表格里却每一页都是绿色的「通过」——用户找不到
-  // 是哪一页。这两个数就是小结里 suspect_adopted 的来源，必须在这里露出来。
-  if (page.quality_flagged || page.emergency_ratio_normalized) {
-    return createChip({ label: "建议复核", tone: "warn" });
-  }
-  if (page.review_status === "passed") return createChip({ label: "通过", tone: "ok" });
-  // "skipped" 是 PdfPageRecord.review_status 的默认值，意思是这一页没经过审核模型
-  // （关了逐页审核，或者还没轮到审核）。它是个真值字符串，不能当成「有审核结论」。
-  if (!page.review_status || page.review_status === "skipped") {
-    return createChip({ label: "未审核", tone: "mute" });
-  }
-  return createChip({ label: "待复核", tone: "warn" });
-}
-
-function reviewNote(page: PdfPage, taskStopped: boolean): string {
-  if (page.skipped_oversize) return "幅面超过 A4，未送翻译，原始内容已原样保留在输出文件中。";
-  if (page.pending_action === "regenerate") return "待执行重新生成，继续翻译后执行。";
-  if (page.pending_action === "skip") return "待执行跳过，继续翻译后执行。";
-  if (page.review_summary) return redactedText(page.review_summary);
-  if (page.status === "failed" || page.placeholder) return redactedText(page.error, "页面生成失败。");
-  if (page.status === "pending") {
-    // 跟 reviewResultChip 用同一个 taskStopped 信号：任务已经停止时，这一页不是「还没
-    // 轮到」，是「不会再轮到了」；同时说清这不是失败，也不用「单页重新生成」（那是给
-    // 已经跑出结果、要推倒重来的页用的），真正能补上它的是对同一输出目录发起续译。
-    return taskStopped
-      ? "任务已停止，这一页还没有跑到；不是生成失败，对同一输出目录发起「接着上次继续」可以把它排回队列。"
-      : "尚未处理。";
-  }
-  if (page.status === "rendered") return "页图已渲染，正在等模型返回这一页的译文。";
-  if (page.status === "placeholder_pending") return "这一页没能生成，正在补一张占位页。";
-  // 跟 reviewResultChip 同理：质检疑点要压在「通过」前面，否则这一页会摆着一句
-  // 「版式一致，文本完整」，而小结正把它算进「有疑点仍采用」。
-  if (page.quality_flagged || page.emergency_ratio_normalized) {
-    const detail = redactedText(page.quality_message);
-    if (detail) return `译文已采用，但自动检查有疑点：${detail}`;
-    if (page.emergency_ratio_normalized) return "译文偏长，已强行缩排放进原位置，建议看一眼版面。";
-    return "译文已采用，但自动检查发现疑点，建议看一眼这一页。";
-  }
-  // 「版式一致，文本完整」是一句审核结论，只有审核模型真的判过并通过了才能写。9.2.6 把它
-  // 当成兜底文案，于是页面还没生成、审核还关着的时候，每一页都摆着这句凭空的好消息。
-  if (page.review_status === "passed") return "版式一致，文本完整";
-  if (!page.review_status || page.review_status === "skipped") {
-    return "本次没有让审核模型看这一页。";
-  }
-  return "";
-}
-
-function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnapshot, file: PdfPageFile, page: PdfPage, batchRerunActive: boolean, taskStopped: boolean): HTMLTableRowElement {
-  const row = el("tr");
-  const pendingRerun = pendingRerunFor(surface, taskId);
-  const rerunning = isPageRerunning(snapshot, file, page, pendingRerun);
-  const pageCell = el("td");
-  pageCell.textContent = `第 ${page.page_number} 页`;
-  row.append(pageCell);
-
-  const resultCell = el("td");
-  resultCell.append(rerunning ? createChip({ label: "重新生成中", tone: "tint" }) : reviewResultChip(page, taskStopped));
-  row.append(resultCell);
-
-  const noteCell = el("td");
-  noteCell.style.color = "var(--ink-2)";
-  noteCell.textContent = rerunning ? "正在重跑这一页，完成后会改写输出文件" : reviewNote(page, taskStopped);
-  row.append(noteCell);
-
-  const actionsCell = el("td");
-  const actionable = snapshot.actionable;
-  const notFinished = page.status === "pending";
-  const needsSkip = page.status === "failed" || page.placeholder;
-
-  // 按幅面跳过的页既没有原页图也没有译文页图（压根没渲染过），重新生成也只会按同一条尺寸
-  // 规则再跳一次。两个入口都关掉并说明原因，比让人点进一个空白对比框强。
-  const oversizeSkipped = page.skipped_oversize;
-  const oversizeReason = "该页按幅面跳过，没有生成页图；如需翻译请关闭「跳过 A3 及更大的页面」后重跑。";
-
-  actionsCell.append(
-    buildActionLink(
-      "查看对比",
-      oversizeSkipped || rerunning,
-      oversizeSkipped ? oversizeReason : rerunning ? "这一页正在重新生成，跑完再看。" : undefined,
-      () => openPdfPageCompareModal(surface, taskId, file, page),
-    ),
-  );
-  actionsCell.append(document.createTextNode(" · "));
-
-  if (snapshot.terminal) {
-    // 终态不排队：点下去立刻重跑并覆盖输出文件，所以先过一道危险操作确认。
-    // 「跳过该页」在终态没有意义（它的含义是「接受这张失败占位页」），不给入口。
-    const rerunnable = !oversizeSkipped && !notFinished && page.status !== "rendered" && page.status !== "placeholder_pending";
-    // rerun_actionable 在后端就已经带上了 not rerun.active，但那是快照说的话；本地
-    // 这笔刚发出去的还没进快照，所以两个来源都要看。
-    const rerunBusy = snapshot.rerun.active || pendingRerun !== undefined;
-    const rerunReason = oversizeSkipped
-      ? oversizeReason
-      : !rerunnable
-        ? notFinished && taskStopped
-          // 停止时还没跑到的页不是「试过没成」，「单页重新生成」这个动作本身也不适用
-          // （它的前提是已经有一版结果可以推倒重来）。真正能补上它的路是续译——同一个
-          // 输出目录发起「接着上次继续」会把这一页重新排进队列，不需要整份推倒重来，
-          // 「请重新建立任务」这句在这里是错的，会让用户以为要连已经跑完的页一起重翻。
-          ? "这一页在停止时还没有跑到，不是生成失败；单页重新生成帮不上忙，对同一输出目录发起「接着上次继续」可以把它排回队列。"
-          : "这一页没有跑出结果，单页重新生成帮不上忙；请重新建立任务。"
-        // 三把锁串在一起，从具体到笼统：批量在跑（这一批还剩好几页）→ 有一页在跑
-        // （含本地那笔还没进快照的）→ 逐页记录已释放。顺序不能反：批量重跑期间
-        // rerunBusy 同样为真，先撞上笼统那句，用户就看不到「可以按停止」这个出路了。
-        //
-        // 注意这条链子不看 rerunning：正在被批量处理的那一行也会落到 batchRerunActive
-        // 这句提示上（它的 status 仍是 failed/placeholder，rerunnable 为真）。显示没
-        // 问题——按钮文案由下面的 `rerunning ? "重新生成中"` 单独决定，跟这里的悬停
-        // 说明是两回事——但别照着「那一行不会走到这里」去改，那个前提不成立。
-        : batchRerunActive
-          ? "正在批量重跑失败页，等这批跑完再单独操作这一页；要提前停，用上面横幅的「停止」。"
-          : rerunBusy
-            ? "有一页正在重新生成，跑完再操作下一页。"
-            : !snapshot.rerun_actionable
-              ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
-              : undefined;
-    actionsCell.append(
-      buildActionLink(
-        rerunning ? "重新生成中" : "重新生成",
-        rerunning || rerunBusy || !rerunnable || !snapshot.rerun_actionable || batchRerunActive,
-        rerunReason,
-        () => confirmPdfPageRerun(surface, taskId, file, page),
-      ),
-    );
-    row.append(actionsCell);
-    return row;
-  }
-
-  const regenDisabled = !actionable || notFinished || oversizeSkipped;
-  const regenReason = oversizeSkipped
-    ? oversizeReason
-    : actionable && notFinished
-      ? "该页还没跑完，暂时不能重新生成。"
-      : undefined;
-  actionsCell.append(buildActionLink("重新生成", regenDisabled, regenReason, () => void runPdfPageAction(surface, taskId, file, page, "regenerate")));
-
-  if (needsSkip) {
-    actionsCell.append(document.createTextNode(" · "));
-    actionsCell.append(buildActionLink("跳过该页", !actionable, undefined, () => void runPdfPageAction(surface, taskId, file, page, "skip")));
-  }
-  row.append(actionsCell);
-  return row;
-}
-
-function buildActionLink(label: string, disabled: boolean, title: string | undefined, onClick: () => void): HTMLElement {
-  const span = el("span", disabled ? "linklike disabled" : "linklike");
-  span.textContent = label;
-  if (title) span.title = title;
-  if (!disabled) span.addEventListener("click", onClick);
-  return span;
-}
-
-// ---------------------------------------------------------------------------
-// 页对比模态：原文/译文页图并排。图片走鉴权 fetch + blob（<img src> 加不了自定义头），
-// 关闭时统一 revoke，避免泄漏；缺图/加载失败给占位文案，不留空白。
-// ---------------------------------------------------------------------------
-
-interface CompareColHandle {
-  root: HTMLElement;
-  setImage(url: string): void;
-  setError(message: string): void;
-  setLoading(): void;
-  /** 表头右侧的挂载点：译文栏在这里放「当前版／上一版」切换和「换回这一版」。 */
-  header: HTMLElement;
-}
-
-function buildCompareCol(label: string): CompareColHandle {
-  const root = el("div", "pdf-compare-col");
-  // 表头一行两端对齐：左边是「译文 · 第 N 页」，右边是版本切换。没有右侧内容时
-  // 和原来的单行标题完全一样（flex 空容器不占位），无上一版的页看不出区别。
-  const head = el("div");
-  head.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:24px";
-  const labelEl = el("div", "pdf-compare-label");
-  labelEl.textContent = label;
-  const header = el("div");
-  header.style.cssText = "display:flex;align-items:center;gap:8px";
-  head.append(labelEl, header);
-  const imgWrap = el("div", "pdf-compare-imgwrap");
-  const loading = el("div", "ph");
-  loading.textContent = "加载中…";
-  imgWrap.append(loading);
-  root.append(head, imgWrap);
-
-  const clear = () => {
-    while (imgWrap.firstChild) imgWrap.removeChild(imgWrap.firstChild);
-  };
-  return {
-    root,
-    header,
-    setLoading: () => {
-      clear();
-      const ph = el("div", "ph");
-      ph.textContent = "加载中…";
-      imgWrap.append(ph);
-    },
-    setImage: (url: string) => {
-      clear();
-      const img = document.createElement("img");
-      img.alt = label;
-      img.addEventListener("error", () => {
-        clear();
-        const err = el("div", "ph");
-        err.textContent = "图片加载失败";
-        imgWrap.append(err);
-      });
-      img.src = url;
-      imgWrap.append(img);
-    },
-    setError: (message: string) => {
-      clear();
-      const err = el("div", "ph");
-      err.textContent = message;
-      imgWrap.append(err);
-    },
-  };
-}
-
-/** 译文栏表头的「当前版／上一版」胶囊切换。只有这一页真的留着上一版时才建。 */
-function buildVersionToggle(onPick: (kind: "translated" | "previous") => void): {
-  root: HTMLElement;
-  setKind(kind: "translated" | "previous"): void;
-} {
-  const root = el("div");
-  root.style.cssText =
-    "display:inline-flex;gap:2px;padding:2px;border:1px solid var(--line-2);border-radius:99px;background:var(--surface)";
-  const make = (label: string, kind: "translated" | "previous") => {
-    const pill = el("span");
-    pill.textContent = label;
-    pill.addEventListener("click", () => onPick(kind));
-    return pill;
-  };
-  const current = make("当前版", "translated");
-  const previous = make("上一版", "previous");
-  root.append(current, previous);
-  const paint = (pill: HTMLElement, on: boolean) => {
-    pill.style.cssText = on
-      ? "padding:2px 10px;border-radius:99px;font-size:11.5px;font-weight:600;cursor:pointer;background:var(--accent);color:var(--on-accent)"
-      : "padding:2px 10px;border-radius:99px;font-size:11.5px;cursor:pointer;color:var(--ink-2)";
-  };
-  return {
-    root,
-    setKind: (kind) => {
-      paint(current, kind === "translated");
-      paint(previous, kind === "previous");
-    },
-  };
-}
-
-function openPdfPageCompareModal(surface: Surface, taskId: string, file: PdfPageFile, page: PdfPage): void {
-  const wrap = el("div", "pdf-compare");
-  const sourceCol = buildCompareCol(`原文 · 第 ${page.page_number} 页`);
-  const translatedCol = buildCompareCol(`译文 · 第 ${page.page_number} 页`);
-  wrap.append(sourceCol.root, translatedCol.root);
-
-  const objectUrls: string[] = [];
-  // 换回成功后要用新快照重开这个弹窗；不先关掉旧的，两层对比弹窗会叠在一起，
-  // 关掉上面那层露出来的是换回之前的旧图。
-  let handle: ModalHandle | null = null;
-  const closeCompare = () => {
-    for (const url of objectUrls) URL.revokeObjectURL(url);
-    handle?.close();
-  };
-  const load = async (kind: "source" | "translated" | "previous", has: boolean, col: CompareColHandle) => {
-    if (!has) {
-      col.setError(
-        kind === "source" ? "该页尚无原文页图" : kind === "previous" ? "这一页没有留下上一版译文" : "该页尚无译文页图",
-      );
-      return;
-    }
-    try {
-      const c = await getClient();
-      const blob = await c.getPdfPageImage(taskId, file.relative_path, page.page_number, kind);
-      const url = URL.createObjectURL(blob);
-      objectUrls.push(url);
-      col.setImage(url);
-    } catch (error) {
-      col.setError(redactedText((error as Error)?.message, "图片加载失败"));
-    }
-  };
-  void load("source", page.has_source_image, sourceCol);
-  void load("translated", page.has_translated_image, translatedCol);
-
-  // 没有上一版的页：表头右侧空着，弹窗和以前完全一样。
-  if (page.has_previous_image) {
-    let shown: "translated" | "previous" = "translated";
-    const restoreBtn = createButton({
-      label: "换回这一版",
-      size: "mini",
-      onClick: () => confirmPdfPageRestorePrevious(surface, taskId, file, page, closeCompare),
-    });
-    // 换回按钮只在看着「上一版」时出现：看当前版时它没有指代对象，摆在那里只会
-    // 让人以为「换回」的是眼前这一版。
-    restoreBtn.style.display = "none";
-    const toggle = buildVersionToggle((kind) => {
-      if (kind === shown) return;
-      shown = kind;
-      toggle.setKind(kind);
-      restoreBtn.style.display = kind === "previous" ? "" : "none";
-      translatedCol.setLoading();
-      void load(kind, kind === "previous" ? page.has_previous_image : page.has_translated_image, translatedCol);
-    });
-    toggle.setKind("translated");
-    translatedCol.header.append(toggle.root, restoreBtn);
-    // 重生成正在跑（或刚点下去还没确认）时，输出文件正在被另一件事重装，换回
-    // 只会撞上后端的忙锁；先禁掉，理由挂在 title 上。
-    const local = states[surface].task;
-    const snapshot = local?.task.task_id === taskId ? local.pdfPagesSnapshot : undefined;
-    const busy = !!snapshot?.rerun.active || !!pendingRerunFor(surface, taskId);
-    if (busy) {
-      restoreBtn.disabled = true;
-      restoreBtn.title = "有一页正在重新生成，跑完再换回上一版。";
-    }
-  }
-
-  handle = openModal({
-    tone: "warn",
-    icon: "pdf",
-    sourceLabel: `逐页审核 · ${SURFACE_LABEL[surface]}`,
-    title: `第 ${page.page_number} 页对比 · ${file.name}`,
-    body: [wrap],
-    actions: [
-      {
-        label: "关闭",
-        onClick: () => {
-          for (const url of objectUrls) URL.revokeObjectURL(url);
-        },
-      },
-    ],
-  });
-}
-
-/** 换回上一版的确认框。不是危险操作（换回来的那一版仍然留得住、随时能再换回去），
- *  但它会改写可能已经交出去的输出文件，所以照样先说清后果再动手。 */
-function confirmPdfPageRestorePrevious(
-  surface: Surface,
-  taskId: string,
-  file: PdfPageFile,
-  page: PdfPage,
-  closeCompare: () => void,
-): void {
-  const handle = openModal({
-    tone: "warn",
-    icon: "warn",
-    title: `换回第 ${page.page_number} 页的上一版？`,
-    body: [
-      "这一页会换回上一版译文，现在的版本变成新的「上一版」，随时可以再换回来。输出文件会重新装配改写——不调用模型，不产生费用；如果你已经把文件发出去了，记得重新发一份。",
-    ],
-    actions: [
-      { label: "取消" },
-      {
-        label: "换回上一版",
-        variant: "primary",
-        // 后端是同步装配完才返回的，大文件要等上几秒。原来这里先关弹窗再发请求，
-        // 这几秒里界面毫无动静，用户多点几下别的页操作只会撞出一串 409——所以
-        // 确认框留在原地当忙态：按钮全部禁用、文字换成「换回中…」，做完再统一收。
-        keepOpen: true,
-        onClick: async () => {
-          const buttons = Array.from(handle.element.querySelectorAll("button"));
-          for (const button of buttons) button.disabled = true;
-          const confirmButton = buttons[buttons.length - 1];
-          if (confirmButton) confirmButton.textContent = "换回中…";
-          await runPdfPageRestorePrevious(surface, taskId, file, page, () => {
-            handle.close();
-            closeCompare();
-          });
-        },
-      },
-    ],
-  });
-}
-
-async function runPdfPageRestorePrevious(
-  surface: Surface,
-  taskId: string,
-  file: PdfPageFile,
-  page: PdfPage,
-  closeModals: () => void,
-): Promise<void> {
-  try {
-    const c = await getClient();
-    // 后端是同步做完才返回的：这个 await 结束时，页图和输出文件都已经换好。
-    await c.restorePdfPagePrevious(taskId, file.relative_path, page.page_number);
-    showToast({ message: "已换回上一版，输出文件已重新装配。" });
-  } catch (error) {
-    showToast({ message: redactedText((error as Error)?.message, "换回上一版失败。"), error: true });
-  }
-  // 请求已经落定，忙态确认框完成使命；先把旧的两层弹窗收掉，再按新快照重开对比，
-  // 免得新旧对比弹窗叠在一起。
-  closeModals();
-  // 成功要把两版对调后的新快照换上来（哪一版是「上一版」变了），失败也要看后端此刻
-  // 的真实状态。拿到新快照后重开对比弹窗，图片跟着重新拉一次。
-  const ok = await fetchPdfPagesSnapshot(surface, taskId);
-  if (!ok) return;
-  const local = states[surface].task;
-  if (local?.task.task_id !== taskId) return;
-  const nextFile = local.pdfPagesSnapshot?.files.find((item) => item.relative_path === file.relative_path);
-  const nextPage = nextFile?.pages.find((item) => item.page_number === page.page_number);
-  if (nextFile && nextPage) openPdfPageCompareModal(surface, taskId, nextFile, nextPage);
-}
-
-// ---------------------------------------------------------------------------
-// 逐页快照拉取：没有逐页 SSE，靠聚合事件/任务状态变化触发的一次性 GET。
-// 调用点：handleTaskEvent 的 pdf_page_recovery / pdf_review / pdf_page_action / paused / resumed /
-// 终态分支，adoptExistingTask 接管已有任务时，submitTaskStart 启动新任务后，以及 refetchTask 兜底刷新时。
-// ---------------------------------------------------------------------------
-
-/** 返回是否拿到了新快照。轮询类调用方（重跑计时器、批量重跑的等槽位循环）传
- *  `silent: true` 自己管失败计数和退避，不需要也不该在每一轮失败上都弹一条 toast——
- *  那正是高-10 的报错洪水。一次性调用点（任务事件、接管、启动任务）保持原样：
- *  单次失败就该让用户知道。 */
-async function fetchPdfPagesSnapshot(surface: Surface, taskId: string, options?: { silent?: boolean }): Promise<boolean> {
-  if (surface !== "pdf") return false;
-  const st = states[surface];
-  if (!st.task || st.task.task.task_id !== taskId) return false;
-  const local = st.task;
-  if (local.pdfPagesUnavailable) return false;
-  try {
-    const c = await getClient();
-    const snapshot = await c.getPdfPages(taskId);
-    if (st.task !== local) return false;
-    local.pdfPagesSnapshot = snapshot;
-    if (st.historyOnly) {
-      for (const file of st.files) {
-        const pageFile = snapshot.files.find((entry) => entry.relative_path === file.relative_path);
-        if (pageFile) file.page_count = pageFile.page_count;
-      }
-    }
-    // 单页重生成跑在终态任务上，SSE 那时已经收摊了；接管一个正在重生成的任务
-    // （切回页面、重开程序）也要能自己接上进度，所以起点放在这里而不是发起处。
-    if (snapshot.rerun?.active) startPdfRerunTicker(surface, taskId);
-    rerender(surface);
-    return true;
-  } catch (error) {
-    if (st.task !== local) return false;
-    // Persisted summaries survive sidecar restarts; the in-memory page runner does not.
-    if (local.task.terminal && error instanceof ApiError && error.status === 404) {
-      local.pdfPagesUnavailable = true;
-      rerender(surface);
-      return false;
-    }
-    if (!options?.silent) {
-      showToast({ message: redactedText((error as Error)?.message, "刷新逐页状态失败。"), error: true });
-    }
-    return false;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3158,12 +2060,26 @@ const LOG_VIEW_LIMIT = 200;
 /** 日志行号发号器（模块级、跨 surface 共用，只要不重号就够用）。 */
 let nextLogSeq = 1;
 
-function buildLogCard(local: LocalTask): HTMLElement {
+/** `sharesHeight`：同一栏里还有逐页审核表（PDF 运行中）。日志卡片默认按内容撑高，
+ *  在 860px 高的窗口里会把逐页表挤得只剩表头；这时两张卡片对半分高度，日志区和文件
+ *  列表各自滚动。 */
+function buildLogCard(local: LocalTask, sharesHeight = false): HTMLElement {
   const card = createTaskLogPanel({
     entries: local.logs.map((entry) => ({ seq: entry.seq, time: entry.time, message: entry.message, level: entry.level })),
     limit: LOG_VIEW_LIMIT,
   });
+  if (sharesHeight) {
+    card.style.flex = "3 1 0%"; // 与逐页审核卡片（运行中 flex:3 1 0%）对半分
+    const log = card.querySelector<HTMLElement>(".log");
+    if (log) {
+      log.style.flex = "1 1 auto";
+      log.style.maxHeight = "none";
+    }
+  }
+  // 文件很多时这一栏不能无限往下长：日志卡片会被挤没，整页还会跟着出现滚动条。
   const fileList = el("div");
+  fileList.style.cssText = `flex:0 0 auto;max-height:${sharesHeight ? 120 : 184}px;overflow-y:auto`;
+  fileList.dataset.keepScroll = "log-files";
   const result = record(local.task.result);
   const rows = [...local.fileProgress.values()];
   if (!rows.length) {
@@ -3196,6 +2112,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
   // 用户本来就该在挑文件之前先把它们调好。
   const card = el("div", "card runpanel");
   const scroll = el("div", active ? "rp-scroll dis" : "rp-scroll");
+  scroll.dataset.keepScroll = "run-settings";
 
   const title = el("div", "rp-title");
   title.textContent = "运行设置";
@@ -3228,6 +2145,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
         resetResumeState(st);
         rerender(surface);
       }
+      if (surface === "cad") rescanAfterScanInputChange(surface);
     },
   });
   scroll.append(targetField.root);
@@ -3248,6 +2166,7 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
       onChange: (value) => {
         st.sourceLang = value;
         void persistSettings({ [`${surface}_source_lang`]: value });
+        if (surface === "cad") rescanAfterScanInputChange(surface);
       },
     });
     scroll.append(sourceField.root);
@@ -3343,6 +2262,20 @@ async function handleToggleChange(surface: Surface, st: SurfaceState, toggle: To
     }, toggle.label);
   }
   rerender(surface);
+  if (SCAN_INPUT_TOGGLES.has(toggle.key)) rescanAfterScanInputChange(surface);
+}
+
+/** 这几个开关会改变扫描结果本身（PDF 收不收独立图片、CAD 数不数图块里的字）。 */
+const SCAN_INPUT_TOGGLES = new Set(["pdfImages", "cadBlockText"]);
+
+/** 扫描结果依赖的输入变了，就按「选完来源自动扫描」的同一规矩自动重扫一次。
+ *  以前 CAD 改了目标语言，「待翻译」还停在旧语言的数字，要用户自己点「重新扫描」。
+ *  还没选来源、或任务正在跑时什么都不做。 */
+function rescanAfterScanInputChange(surface: Surface): void {
+  const st = states[surface];
+  if (!normalizeUserPath(st.sourcePath)) return;
+  if (st.task && !st.task.task.terminal) return;
+  void runScan(surface);
 }
 
 function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
@@ -3467,18 +2400,22 @@ function buildRightFoot(surface: Surface, st: SurfaceState, active: boolean): HT
   }
 
   const task = st.task!;
+  // 只有 PDF 和 CAD 支持暂停：PDF 停止提交新页面，CAD 在当前文件做完后暂停。
+  // Excel / Word 不给暂停按钮——后端会直接拒绝，按了只会弹一条报错。
+  const pausable = surface === "pdf" || surface === "cad";
   return createTaskControlFoot({
     idle: { label: "开始翻译", disabled: true, onClick: () => undefined },
     active: {
-      paused: surface === "pdf" && task.task.state === "paused",
-      onResume: () => void resumePdfTask(st),
-      onPause: () => void pausePdfTask(st),
+      paused: pausable && task.task.state === "paused",
+      pausing: pausable && task.task.state === "pausing",
+      onResume: () => void resumeTask(surface, st),
+      onPause: pausable ? () => void pauseTask(surface, st) : undefined,
       onStop: () => confirmStopTask(surface, st),
-      pauseLabel: surface === "pdf" ? "暂停提交" : undefined,
+      pauseLabel: surface === "cad" ? "当前文件完成后暂停" : "暂停提交",
       finishPaused: surface === "pdf" && task.task.state === "paused"
         ? { label: "结束暂停并收尾", onClick: () => void confirmEndPaused(st), note: "收尾会保存已完成页并生成部分结果报告" }
         : undefined,
-      stopLabel: surface === "pdf" ? "安全停止" : "安全停止",
+      stopLabel: "安全停止",
     },
   });
 }
@@ -3907,9 +2844,9 @@ function showResumeModal(surface: Surface, st: SurfaceState): void {
  * 路径取交集，结果只翻了两边都有的那一部分，界面上不报任何错。
  * 只有序号仍等于最新一次的响应才允许写回状态。
  */
-const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0 };
+const scanTokens: Record<Surface, number> = { excel: 0, word: 0, pdf: 0, cad: 0 };
 /** 有扫描在飞时置灰「扫描」「浏览」，避免用户连点又多造一个在途请求。 */
-const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false };
+const scanBusy: Record<Surface, boolean> = { excel: false, word: false, pdf: false, cad: false };
 
 /** preferredResumeDir：用户在弹窗里换了历史输出目录，带着它重扫一遍拿新的逐文件比对结果。 */
 async function runScan(surface: Surface, preferredResumeDir?: string): Promise<void> {
@@ -3931,6 +2868,12 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
       paths: st.sourcePaths.map(normalizeUserPath),
       include_images: surface === "pdf" && Boolean(st.toggles.get("pdfImages")),
     };
+    if (surface === "cad") {
+      // CAD 的「待翻译」数取决于语言对：已经是目标语言的文字不算候选。
+      payload.source_language = st.sourceLang;
+      payload.target_language = st.targetLang;
+      payload.include_block_text = Boolean(st.toggles.get("cadBlockText"));
+    }
     if (preferredResumeDir) payload.preferred_resume_dir = preferredResumeDir;
     const response = await c.request<JsonObject>("/api/sources/scan", { method: "POST", body: JSON.stringify(payload) });
     if (token !== scanTokens[surface]) return; // 已被更晚的扫描取代，这份结果一个字都不能落地
@@ -3943,6 +2886,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     // 只有 Excel 扫描才带 risk.libreoffice_available；Word/PDF 没这个字段，record()
     // 在缺字段时给回 {}，取值自然落回 false，不用按 surface 分支特判。
     st.libreofficeAvailable = Boolean(record(result.risk).libreoffice_available);
+    if (surface === "cad" && Object.keys(record(response.capability)).length) st.cadCapability = record(response.capability);
     st.selected = new Set(items.map((f) => f.path));
     st.showBanner = false;
     // 新清单配旧结果没有意义：上一次跑的是别的文件。
@@ -3968,7 +2912,9 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     const skipSuffix = skipped.length > 0 ? `，跳过 ${skipped.length} 个` : "";
     const toastMessage = surface === "pdf"
       ? `已扫描到 ${items.length} 个 PDF / 图片输入${skipSuffix}。`
-      : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
+      : surface === "cad"
+        ? `已扫描到 ${items.length} 个 DWG / DXF 图纸${skipSuffix}。`
+        : `已扫描到 ${items.length} 个 ${SURFACE_LABEL[surface]} 文件${skipSuffix}。`;
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
     if (st.resumeInfo) showResumeModal(surface, st);
@@ -4017,6 +2963,16 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.translate_headers_footers = Boolean(st.toggles.get("translateHeadersFooters"));
   }
   if (surface === "pdf") payload.include_images = Boolean(st.toggles.get("pdfImages"));
+  if (surface === "cad") {
+    // 已经是目标语言的文字不再送翻译——与扫描时「待翻译」的口径一致。
+    payload.untranslated_only = true;
+    payload.cad_translate_output_filename = Boolean(st.toggles.get("translateOutputFilename"));
+    payload.cad_include_block_text = Boolean(st.toggles.get("cadBlockText"));
+    payload.cad_keep_work_dxf = Boolean(st.toggles.get("cadKeepWorkDxf"));
+    payload.cad_copy_related_files = Boolean(st.toggles.get("cadCopyRelated"));
+    if (st.useCustomOutputDir && st.customOutputDir.trim()) payload.cad_output_dir = normalizeUserPath(st.customOutputDir);
+    if (st.cadResumeDir) payload.resume_output_dir = normalizeUserPath(st.cadResumeDir);
+  }
   return payload;
 }
 
@@ -4032,6 +2988,22 @@ async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
   if (surface !== "pdf" && st.sourceLang !== "auto" && st.sourceLang === st.targetLang) {
     showToast({ message: "源语言与目标语言相同，请重新选择。", error: true });
     return;
+  }
+  if (surface === "cad") {
+    const blocked = st.files.filter((f) => st.selected.has(f.path) && isRisky("cad", f)).length;
+    if (blocked > 0) {
+      openModal({
+        tone: "warn",
+        icon: "warn",
+        title: "需要先连接图纸转换工具",
+        body: [
+          `选中的文件里有 ${blocked} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。`,
+          "可以去插件管理连接转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。",
+        ],
+        actions: [{ label: "取消" }, { label: "打开插件管理", variant: "primary", onClick: () => navigate("plugins") }],
+      });
+      return;
+    }
   }
   if (surface === "excel") {
     const riskyCount = st.files.filter((f) => st.selected.has(f.path) && isRisky("excel", f)).length;
@@ -4213,6 +3185,7 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
     noteTaskStarted(task);
     st.showBanner = false;
     st.fileOutcomes = new Map();
+    st.cadResumeDir = "";
     initFileStages(st);
     rerender(surface);
     watchTask(surface);
@@ -4228,13 +3201,15 @@ async function sendTaskStart(surface: Surface, st: SurfaceState, payload: JsonOb
 function focusTask(surface: Surface, task: TaskStatus): void {
   const st = states[surface];
   rememberTaskContext(st, task.task_id);
+  // 切回页面或重开程序接管一个跑到一半的任务时，进度从任务快照里接上，而不是从 0 重新爬。
+  const progress = record(task.progress);
   st.task = {
     task,
     logs: [],
-    phaseName: "正在准备任务",
-    percent: 0,
-    phaseIndex: 0,
-    phaseTotal: 0,
+    phaseName: redactedText(progress.phase_name, "正在准备任务"),
+    percent: Math.min(100, Math.max(0, num(progress.overall_percent, 0))),
+    phaseIndex: num(progress.phase_index, 0),
+    phaseTotal: num(progress.phase_total, 0),
     streamState: "connected",
     watcherActive: false,
     lastEventAt: Date.now(),
@@ -4246,7 +3221,7 @@ function focusTask(surface: Surface, task: TaskStatus): void {
 
 /** 静默计时器：任务在跑但没有事件进来时，每 5 秒重画一次，让「已等待 N 秒」这句话
  *  自己走动。任务一到终态就停——不留一个空转的 interval。 */
-const silenceTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined };
+const silenceTickers: Record<Surface, number | undefined> = { excel: undefined, word: undefined, pdf: undefined, cad: undefined };
 
 function startSilenceTicker(surface: Surface): void {
   if (silenceTickers[surface] !== undefined) return;
@@ -4363,7 +3338,7 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "progress": {
-      if (data.phase_name !== undefined) local.phaseName = redactedText(data.phase_name, local.phaseName);
+      if (data.phase_name !== undefined && !holdsStatePhase(local)) local.phaseName = redactedText(data.phase_name, local.phaseName);
       const done = num(data.step_done);
       const total = num(data.step_total);
       // step_done/step_total 是**当前阶段**的步数。直接拿它当总进度，扫描一结束进度条
@@ -4374,7 +3349,12 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       if (phaseIndex > 0) local.phaseIndex = phaseIndex;
       if (phaseTotal > 0) local.phaseTotal = phaseTotal;
       const withinPhase = total > 0 ? Math.min(1, done / total) : 0;
-      if (phaseTotal > 0 && phaseIndex > 0) {
+      const overall = Number(data.overall_percent);
+      if (Number.isFinite(overall)) {
+        // 后端按各页面每个阶段的实际耗时比例折算好的总进度（api/task_manager.py
+        // 的 _PHASE_WEIGHTS）。按阶段平均分的话，PDF 整个翻页过程都卡在 25%~50%。
+        local.percent = Math.min(100, Math.max(0, overall));
+      } else if (phaseTotal > 0 && phaseIndex > 0) {
         local.percent = Math.min(100, ((phaseIndex - 1 + withinPhase) / phaseTotal) * 100);
       } else if (total > 0) {
         local.percent = withinPhase * 100;
@@ -4382,22 +3362,34 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     }
     case "status": {
-      local.phaseName = redactedText(data.phase_desc, local.phaseName);
+      const phase = statusPhaseText(redactedText(data.phase_desc, local.phaseName));
+      // 说的正是当前暂停/停止状态的句子（「正在停止任务：等待 2 页完成…」）照常显示。
+      if (!holdsStatePhase(local) || STATE_PHASE_KEYWORD[local.task.state]?.test(phase)) local.phaseName = phase;
       break;
     }
     case "file_progress": {
       local.fileProgress = reduceFileProgress(local.fileProgress, data as unknown as FileProgress);
+      if (surface === "pdf") schedulePdfSnapshotRefresh(surface, taskId);
       break;
     }
+    // 这几个事件都带着后端已经改好的任务状态（data.state），必须同步到本地：
+    // 底栏按钮、进度条颜色、顶栏、文件状态全都看 local.task.state。
     case "stopping":
+      syncEventState(local, data, "stopping");
       local.phaseName = "正在安全停止…";
       break;
+    case "pausing":
+      syncEventState(local, data, "pausing");
+      local.phaseName = "当前文件完成后暂停";
+      break;
     case "paused":
-      local.phaseName = "已暂停提交新页面";
+      syncEventState(local, data, "paused");
+      local.phaseName = surface === "cad" ? "已暂停，当前文件已完成" : "已暂停提交新页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "resumed":
-      local.phaseName = "正在继续提交页面";
+      syncEventState(local, data, "running");
+      local.phaseName = surface === "cad" ? "正在继续翻译" : "正在继续提交页面";
       if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
       break;
     case "word_recovery":
@@ -4405,11 +3397,13 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
     case "pdf_page_recovery":
       local.pdfPageRecovery = data;
-      if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
+      // 跑起来之后每处理完一页都会来一条，合并刷新，别一条一个请求。
+      schedulePdfSnapshotRefresh(surface, taskId);
       break;
     case "pdf_review":
       local.pdfReview = data;
-      if (surface === "pdf") void fetchPdfPagesSnapshot(surface, taskId);
+      // 跑起来之后每处理完一页都会来一条，合并刷新，别一条一个请求。
+      schedulePdfSnapshotRefresh(surface, taskId);
       break;
     case "pdf_page_action":
       // 没有聚合本地状态需要更新——这个事件纯粹是「去拉一次逐页快照」的信号。
@@ -4431,6 +3425,32 @@ function handleTaskEvent(surface: Surface, taskId: string, event: SseEvent): voi
       break;
   }
   rerender(surface);
+}
+
+/** 暂停中/已暂停/正在停止时，进度卡片标题说的是这个状态本身（「已暂停提交新页面」）。
+ *  这期间已提交的页还会陆续完成、继续发进度和状态句，不能让它们把标题改回「正在翻译…」，
+ *  否则顶栏写着已暂停，卡片却像还在跑。 */
+const STATE_PHASE_KEYWORD: Partial<Record<TaskStatus["state"], RegExp>> = {
+  pausing: /暂停/,
+  paused: /暂停/,
+  stopping: /停止/,
+};
+
+function holdsStatePhase(local: LocalTask): boolean {
+  const state = local.task.state;
+  return state === "pausing" || state === "paused" || state === "stopping";
+}
+
+/** 后端的状态句都带着「状态：」前缀（给命令行日志用的），进度卡片的标题本身就是状态，
+ *  再带前缀就成了「状态：正在翻译…」，跟进度事件给的阶段名来回切换时标题还会跳。 */
+function statusPhaseText(value: string): string {
+  return value.replace(/^\s*状态[:：]\s*/, "");
+}
+
+function syncEventState(local: LocalTask, data: JsonObject, fallback: TaskStatus["state"]): void {
+  if (local.task.terminal) return;
+  const state = text(data.state, fallback) as TaskStatus["state"];
+  local.task = { ...local.task, state };
 }
 
 function finishTask(surface: Surface, task: TaskStatus): void {
@@ -4472,7 +3492,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     const item = record(entry);
     const ok = fileResultProduced(item);
     if (ok) produced += 1;
-    else failed += 1;
+    // 用户按停止时还没做完的文件不是失败，算在「还有 N 个没跑到」里：CAD 记为
+    // status=stopped，Excel / Word 记为 status=unstarted。以前只认前者，Excel 停止后
+    // 同一批文件会被说两遍——「3 个文件没能生成 · 还有 3 个文件没跑到」。
+    else if (!fileResultNotReached(item)) failed += 1;
     const key = fileOutcomeKey(text(item.name));
     const fileId = text(item.file_id);
     if (key && !ambiguousNames.has(key)) {
@@ -4480,7 +3503,10 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       // 整份未翻译的文件不能只写「已生成」：文档确实写出来了，可里面一个字都没翻。
       // 这一行的说明沿用后端给的原话（`fully_skipped_oversize_message`）。
       const untranslated = ok && fileResultUntranslated(item);
-      const label = !ok
+      const notReached = !ok && fileResultNotReached(item);
+      const label = notReached
+        ? "停止前没跑到"
+        : !ok
         ? "未生成"
         : untranslated
           ? "已生成 · 整份未翻译"
@@ -4490,7 +3516,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
       st.fileOutcomes.set(key, {
         produced: ok,
         label,
-        detail: ok && !untranslated
+        detail: (ok && !untranslated) || notReached
           ? ""
           : redactedText(text(item.error, text(item.detail)), "没有说明原因。"),
       });
@@ -4566,6 +3592,11 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   // 没能生成的文件排在最前面：其余小结说的都是「做到了什么」，这一句说的是
   // 「有东西没拿到」，它决定用户下一步要不要重跑。
   if (failed > 0) clauses.push(`${failed} 个文件没能生成`);
+  // CAD 的待复核是按文件记的（逐文件 status=needs_review），没有 review.total_count。
+  const reviewFiles = surface === "cad"
+    ? fileResults.filter((entry) => fileResultProduced(entry) && fileResultPendingReview(entry) > 0).length
+    : 0;
+  if (reviewFiles > 0) clauses.push(`${reviewFiles} 个文件需复核`);
   // 占位页不是原页：那是程序自己画的一张失败占位页（白底红框、写着这一页没能生成译图），
   // 源页内容一个像素都不在上面。说成「已保留原页」会让用户去输出 PDF 里找原文。
   // 真正原样保留的只有「跳过 A3+」那一路——它从源 PDF 矢量直传，说法在下面那句。
@@ -4621,11 +3652,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   const totalPages = producedFileResultTotal(result, "page_count");
   const untranslatedPages = pageProblems + skippedOversizePages;
   const everyPageHasProblem = totalPages > 0 && untranslatedPages >= totalPages;
-  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0) {
+  if (failed === 0 && generated > 0 && !everyPageHasProblem && untranslatedFiles === 0 && reviewFiles < generated) {
     clauses.push(
-      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0
+      review > 0 || autoFixed > 0 || pageProblems > 0 || hints > 0 || openIssues > 0 || reviewFiles > 0
         ? "其余全部通过"
-        : "全部通过",
+        // 停止时还有文件没跑到，光说「全部通过」会让人以为整批都好了。
+        : task.state === "stopped" ? "已生成的全部通过" : "全部通过",
     );
   }
   if (generated > 0) clauses.push(`输出至 ${outputPath}`);
@@ -4647,7 +3679,17 @@ function finishTask(surface: Surface, task: TaskStatus): void {
     ? terminalStateWord("done")
     : terminalStateWord(task.state);
   const reason = redactedText(result.message, "");
-  if (tone === "fail") {
+  if (task.state === "stopped") {
+    // 停止是用户自己的操作，不是失败：不报红、不弹错误 toast、按钮也不叫「查看失败原因」。
+    // 后端的停止说明（如 CAD 的「已完成文件和断点均已保留」）只在这里出现一次。
+    st.bannerInfo = {
+      title: generated > 0 ? `${stateWord} · 已生成 ${generated} 个文件` : `${stateWord} · 没有生成文件`,
+      subtitle: [reason, ...clauses].filter(Boolean).join(" · "),
+      tone,
+      statusLabel: stateWord,
+      hasOutput: generated > 0,
+    };
+  } else if (tone === "fail") {
     const detail = reason || (generated > 0
       ? "任务在结束前中断，已生成的文件仍保留在输出目录。"
       : "任务没有产出文件，请看下方日志或完整报告里的原因。");
@@ -4694,6 +3736,12 @@ function finishTask(surface: Surface, task: TaskStatus): void {
   rerender(surface);
 }
 
+/** 这个文件是因为用户停止才没做（CAD：stopped；Excel / Word：unstarted），而不是失败。 */
+function fileResultNotReached(entry: unknown): boolean {
+  const status = text(record(entry).status);
+  return status === "stopped" || status === "unstarted";
+}
+
 /** 逐文件结果是否真的写出了文件。 */
 /** 状态列的连接键：扫描项与 file_results 两边字段不一致——PDF 的 `name` 是带扩展名的
  *  文件名，Excel / Word 的 `name` 是不含扩展名的主干名，而 Word 那一路除了 `name` 什么
@@ -4702,7 +3750,7 @@ function finishTask(surface: Surface, task: TaskStatus): void {
  *
  *  只削掉认识的扩展名：`报价.v2` 这种带点的主干名不能被当成扩展名削掉，否则同一个文件
  *  两边算出来的键会不一样。 */
-const KNOWN_DOC_EXT_RE = /\.(?:xlsx|xlsm|xls|docx|doc|pdf|png|jpe?g|webp|bmp|tiff?)$/i;
+const KNOWN_DOC_EXT_RE = /\.(?:xlsx|xlsm|xls|docx|doc|pdf|png|jpe?g|webp|bmp|tiff?|dwg|dxf)$/i;
 
 function fileOutcomeKey(raw: unknown): string {
   const value = text(raw).trim();
@@ -4733,13 +3781,19 @@ function fileResultPendingReview(item: JsonObject): number {
     if (text(record(raw).severity) === "needs_review") pending += 1;
   }
   if (pending > 0) return pending;
+  // CAD：逐条未解决的文字 + 写回后仍像外文的残留文字。
+  if (item.status === "needs_review") {
+    const stats = record(item.stats);
+    const unresolved = Array.isArray(item.unresolved) ? item.unresolved.length : 0;
+    return Math.max(1, unresolved + num(stats.residual_foreign_text_count) + num(stats.replacement_characters));
+  }
   return num(item.placeholder_page_count) + num(item.suspect_adopted_page_count);
 }
 
 function fileResultProduced(item: JsonObject): boolean {
   if (item.success === true) return true;
-  if (item.status === "failed") return false;
-  return Boolean(text(item.output) || text(item.compressed_output));
+  if (item.status === "failed" || item.status === "stopped") return false;
+  return Boolean(text(item.output) || text(item.compressed_output) || text(item.output_path));
 }
 
 /** 整份都被「跳过 A3+」跳过的文件：输出文档写出来了，但内容跟源文件逐字节一样，一个字都没翻。
@@ -4768,8 +3822,10 @@ function resultTone(
   settled: boolean,
 ): ResultTone {
   if (state === "error" || state === "interrupted") return "fail";
+  // 停止是用户主动的，哪怕一个文件都还没写出来也不算失败。
+  if (state === "stopped") return "warn";
   if (generated === 0) return "fail";
-  if (failed > 0 || state === "stopped") return "warn";
+  if (failed > 0) return "warn";
   if (review > 0 || autoFixed > 0) return "warn";
   // 后端只要给出任何一条结果项，任务终态就是 completed_with_issues，这一行过去无条件
   // 报黄——包括一条待办都没有、只剩「去 Word 里按 F9 刷新目录」这类提示的任务。真正
@@ -4786,8 +3842,15 @@ function resultTone(
 // 停止 / 暂停 / 继续 / 结束暂停
 // ---------------------------------------------------------------------------
 
+const STOP_MODAL_BODY: Record<Surface, string> = {
+  excel: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  word: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  pdf: "已生成的页面会保留在输出目录。想稍后接着跑，请改用「暂停提交」，之后可以选择继续或结束暂停。",
+  cad: "当前图纸完成后停止。已生成的图纸和报告会保留在输出目录，原件不会被改动；之后可以从断点继续。",
+};
+
 /** 正在展示的「安全停止」确认框。任务自己走到终态时要把它关掉——见 closeStopModal。 */
-const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null };
+const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null, cad: null };
 
 function closeStopModal(surface: Surface): void {
   // 任务已经结束了，再问「要不要停止当前任务」没有意义：这个框以前会一直浮在结果横幅
@@ -4805,7 +3868,7 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
     icon: "stop",
     sourceLabel: "停止运行中的任务",
     title: "安全停止当前任务？",
-    body: ["已生成的文件会保留在输出目录；Excel、Word 会结束为终态。PDF / 图片应先「暂停提交」，再选择继续或结束暂停。"],
+    body: [STOP_MODAL_BODY[surface]],
     actions: [
       { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
       { label: "安全停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },
@@ -4822,23 +3885,33 @@ async function stopTask(taskId: string): Promise<void> {
   }
 }
 
-async function pausePdfTask(st: SurfaceState): Promise<void> {
+/** 暂停 / 继续的接口会回传最新任务状态，直接用它更新界面——不能只等事件流：
+ *  以前这里把返回值丢掉，而事件处理又只改了提示文字，任务状态一直停在 running，
+ *  暂停后底栏还是「暂停」按钮，「继续」永远不出现。 */
+function applyControlResponse(surface: Surface, taskId: string, status: TaskStatus): void {
+  const local = states[surface].task;
+  if (!local || local.task.task_id !== taskId || local.task.terminal) return;
+  local.task = { ...local.task, state: status.state };
+  rerender(surface);
+}
+
+async function pauseTask(surface: Surface, st: SurfaceState): Promise<void> {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
   try {
     const c = await getClient();
-    await c.request(`/api/tasks/${taskId}/pause`, { method: "POST" });
+    applyControlResponse(surface, taskId, await c.controlTask(taskId, "pause"));
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "暂停失败。"), error: true });
   }
 }
 
-async function resumePdfTask(st: SurfaceState): Promise<void> {
+async function resumeTask(surface: Surface, st: SurfaceState): Promise<void> {
   const taskId = st.task?.task.task_id;
   if (!taskId) return;
   try {
     const c = await getClient();
-    await c.request(`/api/tasks/${taskId}/resume`, { method: "POST" });
+    applyControlResponse(surface, taskId, await c.controlTask(taskId, "resume"));
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, "继续任务失败。"), error: true });
   }

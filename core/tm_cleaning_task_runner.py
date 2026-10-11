@@ -101,11 +101,13 @@ class TmCleaningTaskRunner:
         except TmCleaningBatchError as exc:
             message = str(exc)
             if exc.partial_suggestions:
-                # 0 API 的惯例归一建议在批次失败前已算好并写进建议表——
+                # 0 API 的惯例归一建议、以及失败前成功批次的模型建议都已写进建议表——
                 # 说清楚它们没受失败影响，用户现在就能在建议列表里看到
+                from_model = sum(1 for s in exc.partial_suggestions if s in exc.model_suggestions)
+                detail = f"，其中 {from_model} 条来自模型" if from_model else "（均为 0 API 惯例归一）"
                 message += (
-                    f"（另有 {len(exc.partial_suggestions)} 条 0 API 惯例归一建议"
-                    "已生成并保存，可在清洗建议列表中直接查看）"
+                    f"（已生成并保存 {len(exc.partial_suggestions)} 条建议{detail}，"
+                    "可在清洗建议列表中直接查看）"
                 )
             self._queue.put(ErrorMsg(message=message))
         except Exception as exc:  # noqa: BLE001 - report via managed task SSE.

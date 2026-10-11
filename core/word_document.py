@@ -291,13 +291,22 @@ class WordHiddenContentReport:
 
     content_control_count: int = 0
     tracked_insertion_count: int = 0
+    # 文本框（w:txbxContent）挂在 w:r/w:drawing 里，脚注/尾注在单独的 XML 部件里，
+    # python-docx 的段落遍历同样走不到——一样必然漏译（审计 高-13）。
+    textbox_count: int = 0
+    footnote_count: int = 0
     # 自动目录也住在内容控件里，但它不是漏译：目录是域，内容由 Word 按标题自动生成，
     # 译出来的字一按 F9 就被覆盖。所以它单独一格，不进 total、不进 found，只作提示。
     toc_control_count: int = 0
 
     @property
     def total(self) -> int:
-        return self.content_control_count + self.tracked_insertion_count
+        return (
+            self.content_control_count
+            + self.tracked_insertion_count
+            + self.textbox_count
+            + self.footnote_count
+        )
 
     @property
     def found(self) -> bool:
@@ -313,12 +322,31 @@ class WordHiddenContentReport:
             parts.append(f"内容控件 {self.content_control_count} 处")
         if self.tracked_insertion_count:
             parts.append(f"未接受的修订插入 {self.tracked_insertion_count} 处")
+        if self.textbox_count:
+            parts.append(f"文本框 {self.textbox_count} 个")
+        if self.footnote_count:
+            parts.append(f"脚注/尾注 {self.footnote_count} 条")
         return "、".join(parts)
+
+    def advice(self) -> str:
+        """按实际检测到的类型给出对应的处理建议，而不是一句笼统的话。"""
+        tips = []
+        if self.tracked_insertion_count:
+            tips.append("在 Word 里接受全部修订")
+        if self.content_control_count:
+            tips.append("把内容控件转换为普通文本")
+        if self.textbox_count:
+            tips.append("把文本框里的文字移到正文")
+        if self.footnote_count:
+            tips.append("脚注/尾注需要另行手工翻译")
+        return "；".join(tips)
 
     def as_dict(self) -> dict[str, int]:
         return {
             "content_control_count": self.content_control_count,
             "tracked_insertion_count": self.tracked_insertion_count,
+            "textbox_count": self.textbox_count,
+            "footnote_count": self.footnote_count,
             "toc_control_count": self.toc_control_count,
             "total": self.total,
         }
@@ -708,7 +736,51 @@ def _detect_hidden_word_content(doc: Document) -> WordHiddenContentReport:
             if _element_has_visible_text(element)
             and not _has_ancestor_tag(element, "w:sdt", body)
         ),
+        textbox_count=sum(
+            1
+            for element in _iter_outermost_elements(body, "w:txbxContent")
+            # 同一个文本框常写两遍：DrawingML 正本 + mc:Fallback 里的 VML 备份。
+            # 只数正本，否则一个文本框报成两个。
+            if _element_has_visible_text(element)
+            and not _has_ancestor_clark(element, _MC_FALLBACK, body)
+        ),
+        footnote_count=_count_note_parts(doc),
     )
+
+
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+_NOTE_PARTS = {
+    "/word/footnotes.xml": "w:footnote",
+    "/word/endnotes.xml": "w:endnote",
+}
+
+
+def _has_ancestor_clark(element, clark_tag: str, root) -> bool:
+    parent = element.getparent()
+    while parent is not None and parent is not root:
+        if parent.tag == clark_tag:
+            return True
+        parent = parent.getparent()
+    return False
+
+
+def _count_note_parts(doc: Document) -> int:
+    """数脚注/尾注里真有文字的条目。分隔线条目（separator）没有 w:t，自然不计。"""
+    from lxml import etree
+
+    total = 0
+    for part in doc.part.package.iter_parts():
+        note_tag = _NOTE_PARTS.get(str(part.partname))
+        if note_tag is None:
+            continue
+        try:
+            root = etree.fromstring(part.blob)
+        except etree.XMLSyntaxError:
+            continue
+        total += sum(
+            1 for note in root.iter(qn(note_tag)) if _element_has_visible_text(note)
+        )
+    return total
 
 
 _TOC_FIELD_INSTRUCTION = re.compile(r"^\s*TOC\b", re.IGNORECASE)

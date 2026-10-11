@@ -157,18 +157,36 @@ function producedCounts(task: TaskStatus): { produced: number; failed: number; t
   return { produced, failed, total: entries.length };
 }
 
+// 按 Record 写而不是 if 链：新增一种任务时 TS 会把这两张表报出来。以前 CAD 任务
+// 落进了 if 链的兜底分支，在任务中心里顶着记忆库图标、标成「TM 清洗」。
+const SURFACE_ICON: Record<TaskSurface, IconName> = {
+  excel: "excel",
+  word: "word",
+  pdf: "pdf",
+  cad: "cad",
+  // 图标集里没有专属图标，用记忆库图标近似。
+  cleaner: "book",
+  tm_clean: "book",
+};
+
+const SURFACE_TASK_LABEL: Record<TaskSurface, string> = {
+  excel: "Excel",
+  word: "Word",
+  pdf: "PDF",
+  cad: "CAD",
+  cleaner: "TM 清洗",
+  tm_clean: "TM 清洗",
+};
+
+/** 能在翻译工作区里打开的任务（侧栏「翻译」下的四个页面）。 */
+const WORKSPACE_SURFACES = new Set<TaskSurface>(["excel", "word", "pdf", "cad"]);
+
 function surfaceIcon(surface: TaskSurface): IconName {
-  if (surface === "excel") return "excel";
-  if (surface === "word") return "word";
-  if (surface === "pdf") return "pdf";
-  return "book"; // cleaner / tm_clean：图标集里没有专属图标，用记忆库图标近似。
+  return SURFACE_ICON[surface] ?? "book";
 }
 
 function taskSurfaceLabel(surface: TaskSurface): string {
-  if (surface === "excel") return "Excel";
-  if (surface === "word") return "Word";
-  if (surface === "pdf") return "PDF";
-  return "TM 清洗";
+  return SURFACE_TASK_LABEL[surface] ?? "TM 清洗";
 }
 
 const STATE_LABELS = TASK_STATE_LABELS;
@@ -460,6 +478,19 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         // 失败占位页的同一批页，两格并列等于把一页坏页数成两页（后端 _done_kpi 同注）。
         ["有疑点仍采用", ["suspect_adopted_page_count"]],
         ["跳过 A3+", ["skipped_oversize_page_count"]],
+      ],
+      source,
+    );
+  }
+  if (task.surface === "cad") {
+    // 字段见 core/cad_task_runner.py 的 DoneMsg / StoppedMsg kpi。
+    return pickKpis(
+      [
+        ["图纸", ["file_count", "selected_file_count"]],
+        ["已翻译文字", ["translated_entities"]],
+        ["未开始", ["unstarted_file_count"]],
+        ["TM 命中", ["tm_hit_count"]],
+        ["模型调用", ["api_call_count"]],
       ],
       source,
     );
@@ -1040,9 +1071,12 @@ async function stopTask(taskId: string): Promise<void> {
   }
 }
 
-async function pausePdfTask(taskId: string): Promise<void> {
+/** 暂停/继续：PDF（暂停提交新页面）和 CAD（当前文件完成后暂停）都支持。 */
+const PAUSABLE_SURFACES = new Set<TaskSurface>(["pdf", "cad"]);
+
+async function pauseTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
-  if (!entry || entry.task.surface !== "pdf") return;
+  if (!entry || !PAUSABLE_SURFACES.has(entry.task.surface)) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/pause`, { method: "POST" });
@@ -1052,9 +1086,9 @@ async function pausePdfTask(taskId: string): Promise<void> {
   }
 }
 
-async function resumePdfTask(taskId: string): Promise<void> {
+async function resumeTask(taskId: string): Promise<void> {
   const entry = tasks.get(taskId);
-  if (!entry || entry.task.surface !== "pdf") return;
+  if (!entry || !PAUSABLE_SURFACES.has(entry.task.surface)) return;
   try {
     const client = await getClient();
     entry.task = await client.request<TaskStatus>(`/api/tasks/${taskId}/resume`, { method: "POST" });
@@ -1442,23 +1476,30 @@ function renderDetail(): void {
       }),
     );
   }
-  const canOpenWorkspace = task.surface === "excel" || task.surface === "word" || task.surface === "pdf";
-  if (canOpenWorkspace) {
+  if (WORKSPACE_SURFACES.has(task.surface)) {
     actions.append(
       createButton({
         label: "打开工作区",
         icon: "play",
         size: "mini",
-        onClick: () => navigate(task.surface as "excel" | "word" | "pdf", { taskId: task.task_id }),
+        onClick: () => navigate(task.surface as "excel" | "word" | "pdf" | "cad", { taskId: task.task_id }),
       }),
     );
   }
   if (isTaskActive(task)) {
-    if (task.surface === "pdf" && task.state === "paused") {
-      actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumePdfTask(task.task_id) }));
+    // CAD 和工作区底栏一致：当前文件完成后暂停，暂停后可继续，随时可安全停止。
+    if (task.surface === "cad") {
+      if (task.state === "paused") {
+        actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
+      } else if (task.state !== "pausing" && task.state !== "stopping") {
+        actions.append(createButton({ label: "当前文件完成后暂停", size: "mini", onClick: () => void pauseTask(task.task_id) }));
+      }
+      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id) }));
+    } else if (task.surface === "pdf" && task.state === "paused") {
+      actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
       actions.append(createButton({ label: "结束暂停", variant: "danger", size: "mini", onClick: () => void endPausedPdfTask(task.task_id) }));
     } else if (task.surface === "pdf") {
-      actions.append(createButton({ label: "暂停提交", size: "mini", onClick: () => void pausePdfTask(task.task_id) }));
+      actions.append(createButton({ label: "暂停提交", size: "mini", onClick: () => void pauseTask(task.task_id) }));
     } else {
       actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id) }));
     }

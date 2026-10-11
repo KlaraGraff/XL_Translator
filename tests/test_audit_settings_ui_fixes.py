@@ -33,7 +33,11 @@ SETTINGS_TS_PATH = Path(__file__).resolve().parents[1] / "ui" / "src" / "views" 
 
 
 def _read_settings_ts() -> str:
-    return SETTINGS_TS_PATH.read_text(encoding="utf-8")
+    # 设置页拆成了 settings.ts + settings-models.ts（模型服务子页），按整页源码一起查。
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (SETTINGS_TS_PATH, SETTINGS_TS_PATH.with_name("settings-models.ts"))
+    )
 
 
 class BuiltinDomainPromptsEndpointTests(unittest.TestCase):

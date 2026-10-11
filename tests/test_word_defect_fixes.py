@@ -470,6 +470,51 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             self.assertIn("内容控件", report.describe())
             self.assertIn("修订", report.describe())
 
+    def test_textboxes_and_footnotes_are_reported(self) -> None:
+        """审计 高-13：文本框和脚注同样走不进 python-docx 的段落遍历。"""
+        from docx.opc.packuri import PackURI
+        from docx.opc.part import Part
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "boxes.docx"
+            doc = Document()
+            doc.add_paragraph("Visible body paragraph.")
+            mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+            wps = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+            box = "<w:txbxContent><w:p><w:r><w:t>文本框里的字</w:t></w:r></w:p></w:txbxContent>"
+            # 正本 + VML 备份写的是同一个文本框，只能算一个
+            doc.element.body.find(qn("w:sectPr")).addprevious(
+                parse_xml(
+                    f'<w:p {nsdecls("w")} xmlns:mc="{mc}" xmlns:wps="{wps}"><w:r>'
+                    "<mc:AlternateContent>"
+                    f"<mc:Choice Requires=\"wps\"><wps:txbx>{box}</wps:txbx></mc:Choice>"
+                    f"<mc:Fallback><w:pict>{box}</w:pict></mc:Fallback>"
+                    "</mc:AlternateContent></w:r></w:p>"
+                )
+            )
+            footnotes = (
+                f'<w:footnotes {nsdecls("w")}>'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:id="1"><w:p><w:r><w:t>脚注正文</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ).encode()
+            part = Part(
+                PackURI("/word/footnotes.xml"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                footnotes,
+                doc.part.package,
+            )
+            doc.part.relate_to(part, RT.FOOTNOTES)
+            doc.save(path)
+
+            report = detect_hidden_word_content(path)
+            self.assertEqual(report.textbox_count, 1)
+            self.assertEqual(report.footnote_count, 1)
+            self.assertTrue(report.found)
+            self.assertIn("文本框 1 个", report.describe())
+            self.assertIn("脚注/尾注 1 条", report.describe())
+            self.assertIn("文本框里的文字移到正文", report.advice())
+
     def test_plain_document_reports_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "plain.docx"

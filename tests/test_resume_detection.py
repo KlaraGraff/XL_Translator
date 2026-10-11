@@ -36,6 +36,7 @@ from core.pdf_image_translation import (
 )
 from core.resume_detection import (
     baseline_missing_source_texts,
+    describe_baseline_divergence,
     detect_previous_output,
     match_previous_output,
 )
@@ -1482,3 +1483,77 @@ def test_baseline_missing_source_texts_word_numbered_paragraphs_have_no_rescue_c
         baseline_plan=baseline_plan,
     )
     assert missing_plus == ["这次新增的段落"]
+
+
+# ---------------------------------------------------------------------------
+# 审计 高-9：源文件删掉的内容不能随底稿留进新产物
+# ---------------------------------------------------------------------------
+
+
+def test_excel_row_deleted_from_source_rejects_baseline(tmp_path):
+    """用户把「施工方案」整行删掉后续译：底稿里还留着这一行和它的旧译文。
+
+    底稿一旦被采用，新产物从底稿长出来，这一行会原样交付出去。核查必须报出来。
+    """
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "a.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.cell(row=1, column=1, value="工程概况")
+    ws.cell(row=2, column=1, value="质量保证措施")
+    wb.save(source)
+
+    baseline = root / "baseline.xlsx"
+    wb2 = Workbook()
+    ws2 = wb2.active
+    ws2.cell(row=1, column=1, value="工程概况\nProject overview")
+    ws2.cell(row=2, column=1, value="施工方案\nConstruction plan")
+    ws2.cell(row=3, column=1, value="质量保证措施\nQuality assurance")
+    wb2.save(baseline)
+
+    missing = baseline_missing_source_texts(
+        source, baseline, surface="excel", target_lang="en", source_lang="zh"
+    )
+    assert missing == ["施工方案"]
+    assert missing.added == []
+    assert missing.removed == ["施工方案"]
+    assert describe_baseline_divergence(missing) == "少了 1 处内容"
+
+
+def test_word_paragraph_deleted_from_source_rejects_baseline(tmp_path):
+    """Word 同理；编号前缀容差照旧生效，「1.1 概述」不算删除。"""
+    source = tmp_path / "source.docx"
+    _make_word_source(source, ["概述"])
+
+    baseline_plan = SimpleNamespace(
+        units=[
+            CoverageUnit(
+                source_text="1.1 概述",
+                target_text="1.1 Overview",
+                status=COVERAGE_COVERED,
+                location="body.paragraph[0]",
+                kind="paragraph",
+                reason="测试底稿",
+            ),
+            CoverageUnit(
+                source_text="作废条款",
+                target_text="Void clause",
+                status=COVERAGE_COVERED,
+                location="body.paragraph[1]",
+                kind="paragraph",
+                reason="测试底稿：源文件里已经删掉的段落",
+            ),
+        ]
+    )
+
+    missing = baseline_missing_source_texts(
+        source,
+        tmp_path / "baseline_placeholder.docx",
+        surface="word",
+        target_lang="en",
+        source_lang="zh",
+        baseline_plan=baseline_plan,
+    )
+    assert missing.removed == ["作废条款"]
+    assert missing.added == []

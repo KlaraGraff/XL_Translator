@@ -234,10 +234,24 @@ def extract_chat_text(payload: object) -> str:
     if not isinstance(first, dict) or first.get("finish_reason") != "stop":
         raise TextTransportError("Chat Completions 结果为空或未正常完成", kind="incomplete")
     message = first.get("message") or {}
-    text = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(text, str) or not text.strip():
-        raise TextTransportError("Chat Completions 返回未包含可用正文")
-    return text
+    content = message.get("content") if isinstance(message, dict) else None
+    content_type = type(content).__name__
+    # 部分兼容网关把正文放成分段数组 [{"type": "text", "text": "..."}]。这一次请求
+    # 已经付过钱、答案就在里面，以前只认字符串，整批当解析失败丢掉再二分重发
+    # （审计 高-3）。
+    if isinstance(content, list):
+        content = "".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") in {"text", "output_text"}
+            and isinstance(part.get("text"), str)
+        )
+    if not isinstance(content, str) or not content.strip():
+        raise TextTransportError(
+            f"Chat Completions 返回未包含可用正文（content 类型：{content_type}）"
+        )
+    return content
 
 
 class ResponsesEvents:

@@ -20,7 +20,7 @@ from core.residual_classifier import (
     CATEGORY_NUMBERING_PREFIX,
     CATEGORY_QUANTITY_UNIT,
     CJK_SPAN_RE,
-    RESIDUAL_EXEMPT_TARGET_LANGS,
+    is_residual_exempt_target,
     classify_residual_spans,
     detect_sibling_convention,
     deterministic_numbering_fix,
@@ -67,7 +67,8 @@ def run_residual_pass(pairs, *, target_lang: str, convention: str = "") -> Resid
       - 目标语言豁免（中→日等，译文含汉字是正常现象）。
     """
     result = ResidualPassResult()
-    if target_lang in RESIDUAL_EXEMPT_TARGET_LANGS:
+    # 自定义目标语言要看具体译文（is_residual_exempt_target），由逐条分类处理。
+    if is_residual_exempt_target(target_lang):
         return result
 
     usable: list[tuple[str, str]] = []

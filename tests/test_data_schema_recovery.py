@@ -582,3 +582,37 @@ class DataHealthApiTests(_IsolatedDataDirTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettingsEncodingTests(_IsolatedDataDirTestCase):
+    """Audit 高-2 / 中-6: a settings.json or keys.json saved in another encoding
+    must be backed up and replaced, not turn every settings call into a 500."""
+
+    def test_a_gbk_settings_file_is_backed_up_and_rebuilt(self) -> None:
+        self.settings_path.write_bytes(
+            json.dumps({"custom_prompt": "中文测试"}, ensure_ascii=False).encode("gb18030")
+        )
+        status, _version, _payload = settings_module._inspect_settings_file()
+        self.assertEqual(status, "unusable")
+        loaded = settings_module.load_settings()
+        self.assertIsInstance(loaded, settings_module.AppSettings)
+        settings_module.save_settings(loaded)
+        self.assertTrue(any(self.backups_dir.glob("*settings*")), list(self.backups_dir.glob("*")))
+        json.loads(self.settings_path.read_text(encoding="utf-8"))
+
+    def test_a_settings_file_with_a_bom_keeps_its_content(self) -> None:
+        current = settings_module.AppSettings(custom_prompt="保留我")
+        payload = current.model_dump(mode="json")
+        payload["schema_version"] = settings_module.SETTINGS_SCHEMA_VERSION
+        self.settings_path.write_bytes(
+            b"\xef\xbb\xbf" + json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
+        status, _version, _payload = settings_module._inspect_settings_file()
+        self.assertIn(status, {"current", "adopted"})
+        self.assertEqual(settings_module.load_settings().custom_prompt, "保留我")
+
+    def test_a_gbk_keys_file_does_not_block_saving_a_key(self) -> None:
+        keys_path = self.root / "keys.json"
+        keys_path.write_bytes('{"openai": "旧"}'.encode("gb18030"))
+        settings_module.save_key("openai", "sk-new")
+        self.assertEqual(settings_module.get_key("openai"), "sk-new")
