@@ -2543,7 +2543,7 @@ function renderAboutPage(host: HTMLElement): void {
   const licenseText = document.createElement("p");
   licenseText.style.fontSize = "12.5px";
   licenseText.style.color = "var(--ink-2)";
-  licenseText.textContent = "MIT License · © 2026 OA";
+  licenseText.textContent = "MIT License";
   const licenseNote = document.createElement("p");
   licenseNote.className = "note";
   licenseNote.style.fontSize = "12px";
