@@ -1587,7 +1587,7 @@ class PdfImageTranslationTests(unittest.TestCase):
             settings.image_model_role.cloud_provider = "custom_openai"
             settings.image_model_role.cloud_model = "image-model"
             settings.image_model_role.cloud_base_url = "https://images.example/v1"
-            image_client = _ConcurrentImageClient(_png_bytes(1200, 1600), sleep_seconds=0.03)
+            image_client = _ConcurrentImageClient(_png_bytes(1200, 1600), expect_active=2)
             runner = PdfImageTranslationRunner(
                 [
                     PdfFileItem(path=first, name="first", size_kb=1.0, page_count=1),
@@ -2908,22 +2908,37 @@ class _UnavailableImageClient:
 
 
 class _ConcurrentImageClient(_FakeImageClient):
-    def __init__(self, image_bytes: bytes, *, sleep_seconds: float) -> None:
+    """Records how many page requests overlap.
+
+    Each call holds until ``expect_active`` calls are in flight at once (or a
+    generous timeout passes) instead of sleeping a fixed time. A fixed sleep
+    made the result depend on how fast the machine renders pages: on a slow
+    runner the first page finished before the third was even rendered, so the
+    test saw 2 overlapping calls while the runner really allowed 3.
+    """
+
+    def __init__(self, image_bytes: bytes, *, expect_active: int, timeout: float = 5.0) -> None:
         super().__init__(image_bytes)
-        self.sleep_seconds = sleep_seconds
+        self.expect_active = expect_active
+        self.timeout = timeout
         self.active = 0
         self.max_active = 0
-        self._lock = threading.Lock()
+        self._cond = threading.Condition()
 
     def generate_page(self, **kwargs):
-        with self._lock:
+        with self._cond:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
+            self._cond.notify_all()
+            self._cond.wait_for(
+                lambda: self.max_active >= self.expect_active, timeout=self.timeout
+            )
         try:
-            time.sleep(self.sleep_seconds)
+            # Give a runner that wrongly allows more calls a chance to show it.
+            time.sleep(0.02)
             return super().generate_page(**kwargs)
         finally:
-            with self._lock:
+            with self._cond:
                 self.active -= 1
 
 
@@ -3525,7 +3540,7 @@ class PdfDefectRegressionTests(unittest.TestCase):
                 (root / f"{name}.pdf").write_bytes(b"%PDF-1.4\n")
             settings = self._pdf_settings(root)
             settings.pdf.page_generation_concurrency = 3
-            image_client = _ConcurrentImageClient(_png_bytes(1200, 1600), sleep_seconds=0.05)
+            image_client = _ConcurrentImageClient(_png_bytes(1200, 1600), expect_active=3)
             runner = PdfImageTranslationRunner(
                 [
                     PdfFileItem(path=root / f"{name}.pdf", name=name, size_kb=1.0, page_count=1)
