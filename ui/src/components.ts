@@ -986,7 +986,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
         if (!options.options.length) {
           empty.append(el("b", { text: "语言列表没能加载出来" }));
           empty.append(
-            document.createTextNode("这不是搜索词的问题：后端没有返回语言目录，多半是刚启动还没就绪。"),
+            document.createTextNode("不是你搜的词有问题，多半是程序刚启动还没准备好，稍等几秒再点重试。"),
           );
           if (options.onReload) {
             const retry = el("button", { className: "lang-retry", text: "重试" });

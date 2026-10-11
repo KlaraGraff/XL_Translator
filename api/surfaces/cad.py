@@ -152,7 +152,7 @@ class CadSurface(Surface):
             },
             "risk": {
                 "capability": status,
-                "message": "ODA 未连接时只能列出 DXF；DWG 翻译需先连接 ODA。"
+                "message": "还没有连接图纸转换工具：DXF 可以直接翻译，DWG 需要先在「插件管理」里连接转换工具。"
                 if not converter
                 else "",
             },
@@ -168,7 +168,7 @@ class CadSurface(Surface):
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not bool(status.get("enabled")):
             raise TaskInputError(
-                "CAD 插件或 ODA 转换器未就绪，请先安装 CAD Support 并连接 ODA。",
+                "翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。",
                 reason="cad_capability_missing",
             )
         require_target_lang(getattr(settings, "target_lang", ""), "CAD")
@@ -236,7 +236,7 @@ class CadSurface(Surface):
         converter_path = str(status.get("converter") or "").strip()
         has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
         if has_dwg and not converter_path:
-            raise TaskInputError("CAD 翻译需要先连接 ODA 转换器。", reason="cad_converter_missing")
+            raise TaskInputError("翻译 DWG 图纸需要先在「插件管理」里连接图纸转换工具。", reason="cad_converter_missing")
         # All document surfaces publish into one unique, timestamped
         # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
         # with nested translated/review/run directories, which made a

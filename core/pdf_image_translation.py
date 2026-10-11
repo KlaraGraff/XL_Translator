@@ -2829,9 +2829,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 self._queue.put(
                     StoppedMsg(
                         message=(
-                            f"PDF 翻译已结束暂停任务，已保留页面素材和报告：{output_dir}"
+                            # 完整路径会被日志脱敏成字面的「[path]」显示给用户，只报文件夹名。
+                            f"PDF 翻译已结束暂停，已生成的页面和报告保存在输出文件夹「{Path(output_dir).name}」。"
                             if self._stop_reason == "end_paused"
-                            else f"PDF 翻译已停止（用户主动停止），已保留页面素材和报告：{output_dir}"
+                            else f"PDF 翻译已停止，已生成的页面和报告保存在输出文件夹「{Path(output_dir).name}」。"
                         ),
                         output_dir=str(output_dir),
                         report_path=str(report_path),

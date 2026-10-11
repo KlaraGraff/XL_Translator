@@ -215,9 +215,9 @@ def init_db() -> None:
     state, stored_version = _inspect_db()
     if state == "unreadable":
         raise TmSchemaError(
-            f"翻译记忆库 {DB_PATH} 暂时读不到（可能是权限或被其他程序占用），"
+            f"记忆库 {DB_PATH} 暂时读不到（可能是权限或被其他程序占用），"
             "无法备份，因此不会覆盖它。原文件已原样保留；"
-            "如确定要放弃它，请在维护页执行「清空翻译记忆库」。"
+            "如确定要放弃它，请在「设置 → 数据与维护」里点「清空全部记忆库」。"
         )
     if state == "unusable":
         _recreate_db(stored_version)
@@ -483,9 +483,9 @@ def _recreate_db(stored_version: int | None) -> None:
         backup_path = _backup_db()
     except OSError as exc:
         raise TmSchemaError(
-            f"翻译记忆库无法打开，也无法备份到 {BACKUPS_DIR / 'tm'}（{exc}）。"
+            f"记忆库无法打开，也无法备份到 {BACKUPS_DIR / 'tm'}（{exc}）。"
             "原文件已原样保留，不会被覆盖；如确定要放弃它，"
-            "请在维护页执行「清空翻译记忆库」。"
+            "请在「设置 → 数据与维护」里点「清空全部记忆库」。"
         ) from exc
     DB_PATH.unlink(missing_ok=True)
     for sidecar in db_sidecar_paths(DB_PATH):

@@ -38,7 +38,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
     def _run(self) -> None:
         started_at = time.monotonic()
         try:
-            self._queue.put(StatusMsg("状态：正在准备 TM 清洗建议..."))
+            self._queue.put(StatusMsg("状态：正在准备记忆库清洗建议..."))
             effective = resolve_effective_model_config(self._settings, ROLE_CLEANER)
             throughput = get_model_throughput(self._settings, effective)
             clean_settings = settings_for_text_role(self._settings, ROLE_CLEANER)
@@ -60,7 +60,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
             if self._stop_event.is_set():
                 self._queue.put(
                     StoppedMsg(
-                        message="TM 清洗已安全停止，未应用任何建议。",
+                        message="记忆库清洗已停止，没有写入任何建议。",
                         kpi={"suggestion_count": len(suggestions), "elapsed_sec": elapsed},
                     )
                 )
@@ -98,7 +98,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
             ProgressMsg(
                 phase_index=1,
                 phase_total=1,
-                phase_name="TM 清洗",
+                phase_name="记忆库清洗",
                 step_done=int(payload.get("done") or 0),
                 step_total=max(1, int(payload.get("total") or 1)),
             )

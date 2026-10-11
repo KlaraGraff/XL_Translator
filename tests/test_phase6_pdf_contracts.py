@@ -415,7 +415,9 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 if isinstance(message, StoppedMsg)
             ]
             self.assertEqual(len(terminal), 1)
-            self.assertIn("结束暂停任务", terminal[0].message)
+            self.assertIn("结束暂停", terminal[0].message)
+            # 完整路径到界面会被脱敏成字面的「[path]」，这句只报输出文件夹的名字。
+            self.assertNotIn(str(Path(terminal[0].manifest_path).parent.parent), terminal[0].message)
             manifest = json.loads(Path(terminal[0].manifest_path).read_text(encoding="utf-8"))
             self.assertEqual(manifest["status"], "stopped")
             self.assertEqual(manifest["terminal_reason"], "end_paused")

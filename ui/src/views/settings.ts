@@ -4,7 +4,7 @@
 // params 约定：{ page?: "models" | "params" | "appearance" | "data" | "about" }，
 // 用于从右栏「编辑 Prompt ↗ 设置」、顶栏模型药丸等处深链到具体子页。
 
-import { type ViewParams } from "../router";
+import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import {
   createCard,
@@ -321,13 +321,13 @@ export const LOCAL_PROVIDER_BASE_URL_DEFAULTS: Record<string, string> = {
 };
 
 const MAINTENANCE_CONFIRM_COPY: Record<MaintenanceClearCategory, { title: string; message: string; confirm: string }> = {
-  task_history: { title: "清空任务摘要？", message: "将删除当前应用保存的任务摘要，不删除任何输出文件。", confirm: "清空任务摘要" },
-  logs: { title: "清空结构化日志？", message: "将删除当前应用日志，不删除诊断、源文件或翻译输出。", confirm: "清空日志" },
+  task_history: { title: "清空任务记录？", message: "将删除任务中心里的任务记录，不会删除任何翻译结果。", confirm: "清空任务记录" },
+  logs: { title: "清空运行日志？", message: "将删除 Translator 的运行日志，不会删除诊断记录、源文件或翻译结果。", confirm: "清空日志" },
   diagnostics: { title: "清空全部诊断？", message: "将删除所有本地诊断记录。导出过的 ZIP 不会被删除。", confirm: "清空诊断" },
-  keys: { title: "删除全部 API Key？", message: "将删除当前应用保存的所有服务商 Key。活动任务期间不能执行此操作。", confirm: "删除全部 Key" },
-  settings: { title: "重置设置？", message: "将恢复设置默认值，但保留 API Key、记忆库和翻译输出。", confirm: "重置设置" },
-  tm: { title: "清空翻译记忆库？", message: "此操作不会删除翻译输出。建议先在记忆库页面导出 JSON 备份。", confirm: "清空 TM" },
-  full_reset: { title: "完整重置本地数据？", message: "只删除 Translator 当前应用数据。应用、DMG、源码、旧版目录、源文件和输出目录不会被触及。", confirm: "完整重置" },
+  keys: { title: "删除全部 API 密钥？", message: "将删除 Translator 保存的所有服务商密钥。有任务在运行时不能执行此操作。", confirm: "删除全部密钥" },
+  settings: { title: "重置设置？", message: "将恢复默认设置，API 密钥、记忆库和翻译结果都会保留。", confirm: "重置设置" },
+  tm: { title: "清空记忆库？", message: "此操作不会删除翻译结果。建议先在记忆库页面导出一份完整备份。", confirm: "清空记忆库" },
+  full_reset: { title: "完整重置本地数据？", message: "只删除 Translator 自己保存的数据。应用本身、你的源文件和翻译结果都不会被删除。", confirm: "完整重置" },
 };
 
 // ---------------------------------------------------------------------------
@@ -1373,6 +1373,15 @@ function renderParamsPage(host: HTMLElement): void {
       ? "同时生成页图的数量；留空时按当前图像模型的吞吐设置自动决定。"
       : "同时生成页图的数量，范围 1–20；留空时按当前图像模型的吞吐设置自动决定。"));
     body.append(grid);
+  } else if (paramsTab === "cad") {
+    // CAD 没有放在这一页的参数；以前这个标签下是一块空白卡片，看着像没加载出来。
+    const note = document.createElement("p");
+    note.className = "note";
+    note.style.margin = "0";
+    note.style.fontSize = "12.5px";
+    note.style.color = "var(--ink-3)";
+    note.textContent = "CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。";
+    body.append(note);
   }
 
   card.append(body);
@@ -1710,10 +1719,10 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     });
     await refreshSettings();
     showToast({
-      message: persistedPreset === "无" ? "已改为不使用领域提示词。"
+      message: persistedPreset === "无" ? "已改为不使用专业领域提示词。"
         : preset === ADD_PROMPT_PRESET ? "新提示词已保存。"
           : customNames.includes(preset) || preset === LEGACY_CUSTOM_PROMPT ? "提示词已保存。"
-            : "当前页面的领域 Prompt 覆盖已保存。",
+            : "提示词已保存。",
     });
   });
   saveBtn = createButton({
@@ -1773,7 +1782,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
           body: JSON.stringify({ preset, custom_prompt: current.customPrompt, prompt_overrides: promptOverrides, name_overrides: current.nameOverrides, custom_prompts: current.customPrompts, disabled_presets: current.disabledPresets }),
         });
         await refreshSettings();
-        showToast({ message: "已恢复该领域的统一内置 Prompt。" });
+        showToast({ message: "已恢复内置提示词。" });
       }),
     });
     actions.push(restoreBtn);
@@ -1833,7 +1842,7 @@ function renderAppearancePage(host: HTMLElement): void {
   const options: { value: ThemePreference; label: string; hint: string }[] = [
     { value: "light", label: "浅色", hint: "始终使用浅色界面" },
     { value: "dark", label: "深色", hint: "始终使用深色界面" },
-    { value: "system", label: "跟随系统", hint: "跟随 macOS 外观设置自动切换" },
+    { value: "system", label: "跟随系统", hint: "跟随系统的浅色 / 深色外观自动切换" },
   ];
   const active = currentThemePreference();
   for (const option of options) {
@@ -1871,7 +1880,7 @@ function renderAppearancePage(host: HTMLElement): void {
   langCard.append(tcHead("自定义语言管理", [addBtn]));
   const customLanguages = targetOptions.filter((option) => option.builtin === false);
   if (!customLanguages.length) {
-    langCard.append(createEmptyState({ title: "还没有自定义目标语言", description: "自定义语言只能作为目标语言使用，创建后内部代码不可更改。", icon: "book" }));
+    langCard.append(createEmptyState({ title: "还没有自定义目标语言", description: "自定义语言只能作为目标语言使用。", icon: "book" }));
   } else {
     for (const option of customLanguages) {
       const name = document.createElement("span");
@@ -1942,7 +1951,7 @@ function openCustomLanguageModal(editing: LanguageOption | null, deleteMode = fa
     tone: "warn", icon: "book",
     sourceLabel: "设置 · 外观与语言 · 自定义语言",
     title: editing ? "编辑自定义语言" : "新增自定义目标语言",
-    body: ["自定义语言只能作为目标语言使用；内部代码创建后不可变。", body],
+    body: ["自定义语言只能作为目标语言使用；名称创建后不能修改，说明可以随时改。", body],
     actions: [
       { label: "取消" },
       {
@@ -2006,7 +2015,7 @@ function renderDataPage(host: HTMLElement): void {
   const span = document.createElement("div");
   span.className = "rp-sec";
   span.style.margin = "0 0 4px";
-  span.textContent = "当前应用数据";
+  span.textContent = "本地数据位置";
   const path = document.createElement("p");
   path.style.fontFamily = "var(--mono)";
   path.style.fontSize = "12px";
@@ -2018,7 +2027,7 @@ function renderDataPage(host: HTMLElement): void {
   headerText.append(span, path);
   headerBody.append(headerText, fieldRow([
     createButton({ label: "刷新", size: "mini", onClick: () => void reRenderAfter(async () => { await refreshMaintenance(); await refreshActiveTaskCount(); }) }),
-    createButton({ label: "在 Finder 中显示", size: "mini", onClick: () => void openAppDataDirectory() }),
+    createButton({ label: "在文件夹中显示", size: "mini", onClick: () => void openAppDataDirectory() }),
   ]));
   headerCard.append(headerBody);
   host.append(headerCard);
@@ -2033,12 +2042,12 @@ function renderDataPage(host: HTMLElement): void {
     warnBody.append(icon("warn", { size: "sm" }));
     const text_ = document.createElement("div");
     const strong = document.createElement("strong");
-    strong.textContent = `有 ${activeTaskCount} 个活动任务`;
+    strong.textContent = `有 ${activeTaskCount} 个任务正在运行`;
     const p = document.createElement("p");
     p.style.margin = "2px 0 0";
     p.style.fontSize = "12.5px";
     p.style.color = "var(--ink-2)";
-    p.textContent = "会影响任务记录或认证状态的清理、删除全部 Key 和完整重置当前不可用。任务完成后再执行这些操作。";
+    p.textContent = "任务运行期间，清空任务记录、日志、诊断，删除全部密钥和完整重置暂时不能用。等任务结束后再操作。";
     text_.append(strong, p);
     warnBody.append(text_);
     warnCard.append(warnBody);
@@ -2049,7 +2058,7 @@ function renderDataPage(host: HTMLElement): void {
   const overviewCard = createCard([tcHead("本地数据分类")]);
   const categories = maintenanceCategories();
   if (!categories.length) {
-    overviewCard.append(createEmptyState({ title: "尚未读取本地数据概览", description: "点击上方“刷新”查看当前应用数据目录和各类别占用。", icon: "folder" }));
+    overviewCard.append(createEmptyState({ title: "尚未读取本地数据概览", description: "点击上方“刷新”查看本地数据的位置和各类占用。", icon: "folder" }));
   } else {
     for (const category of categories) {
       const name = document.createElement("span");
@@ -2084,8 +2093,8 @@ function renderDataPage(host: HTMLElement): void {
   limitsBody.style.gap = "6px";
   limitsBody.append(sectionLabel("自动留存边界"));
   const limitRows: [string, string][] = [
-    ["任务摘要", `最近 ${historyLimit} 条`],
-    ["应用日志", `${num(logsLimit.max_files, 5)} 个 × ${formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024)}`],
+    ["任务记录", `最近 ${historyLimit} 条`],
+    ["运行日志", `${num(logsLimit.max_files, 5)} 个 × ${formatBytes(logsLimit.max_file_bytes || 5 * 1024 * 1024)}`],
     ["诊断", `${num(diagLimit.max_records, 80)} 条 / ${formatBytes(diagLimit.max_total_bytes || 256 * 1024 * 1024)}`],
   ];
   for (const [label, value] of limitRows) {
@@ -2120,7 +2129,7 @@ function renderDataPage(host: HTMLElement): void {
   diagDesc.style.padding = "0 16px";
   diagDesc.style.fontSize = "12px";
   diagDesc.style.color = "var(--ink-3)";
-  diagDesc.textContent = "诊断仅含版本、系统、任务阶段、脱敏连接摘要、计数和错误码，不会自动上传。";
+  diagDesc.textContent = "诊断只记录版本、系统、任务进行到哪一步、隐去密钥的连接信息、计数和错误代码，不会自动上传。";
   diagCard.append(diagDesc);
   const tableWrap = document.createElement("div");
   tableWrap.style.overflowX = "auto";
@@ -2181,14 +2190,14 @@ function renderDataPage(host: HTMLElement): void {
   resetDesc.style.padding = "0 16px";
   resetDesc.style.fontSize = "12px";
   resetDesc.style.color = "var(--ink-3)";
-  resetDesc.textContent = "每一项只作用于当前应用数据基线，输出文件始终受保护。";
+  resetDesc.textContent = "每一项只清理 Translator 自己保存的数据，翻译结果文件不会被删除。";
   resetCard.append(resetDesc);
   const keyCategory = maintenanceCategory("keys");
   const resetItems: { label: string; meta: string; category: MaintenanceClearCategory; blockOnActive: boolean }[] = [
-    { label: "任务摘要", meta: taskHistory ? `${formatBytes(taskHistory.size_bytes)} · ${num(taskHistory.count)} 项` : "", category: "task_history", blockOnActive: true },
-    { label: "结构化日志", meta: logs ? formatBytes(logs.size_bytes) : "", category: "logs", blockOnActive: true },
-    { label: "保存的 API Key", meta: keyCategory ? `${num(keyCategory.count)} 个作用域` : "仅显示作用域，不显示 Key 值", category: "keys", blockOnActive: true },
-    { label: "设置", meta: "保留 Key 与记忆库", category: "settings", blockOnActive: false },
+    { label: "任务记录", meta: taskHistory ? `${formatBytes(taskHistory.size_bytes)} · ${num(taskHistory.count)} 项` : "", category: "task_history", blockOnActive: true },
+    { label: "运行日志", meta: logs ? formatBytes(logs.size_bytes) : "", category: "logs", blockOnActive: true },
+    { label: "保存的 API 密钥", meta: keyCategory ? `${num(keyCategory.count)} 个` : "只显示数量，不显示密钥内容", category: "keys", blockOnActive: true },
+    { label: "设置", meta: "保留密钥与记忆库", category: "settings", blockOnActive: false },
   ];
   for (const item of resetItems) {
     const name = document.createElement("span");
@@ -2232,15 +2241,15 @@ function renderDataPage(host: HTMLElement): void {
   tmBody.style.display = "flex";
   tmBody.style.flexDirection = "column";
   tmBody.style.gap = "8px";
-  tmBody.append(sectionLabel("翻译记忆库"));
+  tmBody.append(sectionLabel("记忆库"));
   const tmDesc = document.createElement("p");
   tmDesc.className = "note";
   tmDesc.style.fontSize = "12px";
   tmDesc.style.color = "var(--ink-3)";
-  tmDesc.textContent = `先导出再删除，不会删除任何翻译输出。当前总占用：${tm ? formatBytes(tm.size_bytes) : "--"}。`;
+  tmDesc.textContent = `建议先导出备份再清空，不会删除任何翻译结果。当前总占用：${tm ? formatBytes(tm.size_bytes) : "--"}。`;
   tmBody.append(tmDesc);
   tmBody.append(fieldRow([
-    createButton({ label: "前往记忆库导出", size: "mini", onClick: () => showToast({ message: "请从左侧「记忆库」进入导出。" }) }),
+    createButton({ label: "前往记忆库导出", size: "mini", onClick: () => navigate("library") }),
   ]));
 
   const tmPairOptions = tmPairCatalog?.recent ?? [];
@@ -2262,11 +2271,11 @@ function renderDataPage(host: HTMLElement): void {
         disabled: activeTaskCount > 0,
         onClick: () => requestMaintenanceClear("tm", selectedTmClearPair),
       }),
-      createButton({ label: "清空全部 TM", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
+      createButton({ label: "清空全部记忆库", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   } else {
     tmBody.append(fieldRow([
-      createButton({ label: "清空全部 TM", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
+      createButton({ label: "清空全部记忆库", size: "mini", variant: "danger", disabled: activeTaskCount > 0, onClick: () => requestMaintenanceClear("tm") }),
     ]));
   }
   tmCard.append(tmBody);
@@ -2283,7 +2292,7 @@ function renderDataPage(host: HTMLElement): void {
   const dangerDesc = document.createElement("p");
   dangerDesc.style.fontSize = "12.5px";
   dangerDesc.style.color = "var(--ink-2)";
-  dangerDesc.textContent = "只删除 Translator 当前应用数据，不删除应用、DMG、源码、旧版目录、源文件或输出目录。完成后需重新打开应用。";
+  dangerDesc.textContent = "只删除 Translator 自己保存的数据，不会删除应用本身、你的源文件和翻译结果。完成后需要重新打开应用。";
   dangerBody.append(dangerDesc);
   dangerBody.append(createButton({
     label: "完整重置", variant: "danger-solid", disabled: activeTaskCount > 0,
@@ -2295,7 +2304,7 @@ function renderDataPage(host: HTMLElement): void {
 
 function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: string): void {
   if (category !== "settings" && activeTaskCount > 0) {
-    showToast({ message: "存在活动任务时不能执行该维护操作。", error: true });
+    showToast({ message: "有任务正在运行，暂时不能执行这项操作。", error: true });
     return;
   }
   const copy = MAINTENANCE_CONFIRM_COPY[category];
@@ -2323,7 +2332,7 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
               openModal({
                 tone: "warn", icon: "check",
                 title: "本地数据已重置",
-                body: ["当前应用数据已删除。请关闭并重新打开 Translator，以全新状态继续使用。"],
+                body: ["本地数据已删除。请关闭并重新打开 Translator，从头开始使用。"],
                 actions: [{ label: "知道了", variant: "primary" }],
               });
             } catch (error) {
@@ -2357,7 +2366,7 @@ function requestMaintenanceClear(category: MaintenanceClearCategory, langPair?: 
           // 维护清理可能改变数据健康状态（比如清空 Key 后旧横幅不再成立），
           // 拉一次让横幅与后端真相对齐。
           void refreshDataHealth(mountToken);
-          showToast({ message: "维护操作已完成；翻译输出未受影响。" });
+          showToast({ message: "已完成，翻译结果没有受影响。" });
         }),
       },
     ],

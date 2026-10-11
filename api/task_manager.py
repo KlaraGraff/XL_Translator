@@ -217,7 +217,7 @@ class TranslationTaskManager:
         )
         if bool(risk["surface_busy"]):
             raise TaskConflictError(
-                "同类型任务仍在运行、暂停或安全停止中。",
+                "同一类翻译已经有一个任务在进行（包括暂停中、正在停止的），请等它结束后再开始。",
                 reason="surface_busy",
             )
         response: dict[str, Any] = {
@@ -260,12 +260,12 @@ class TranslationTaskManager:
                 token = self._confirmation_tokens.pop(str(confirmation_token), None)
             if token is None:
                 raise TaskConflictError(
-                    "风险确认令牌已过期或已使用，请重新预检。",
+                    "这次确认已经过期，请重新点一次开始。",
                     reason="expired_or_consumed",
                 )
             if token.prepared.fingerprint != prepared.fingerprint:
                 raise TaskConflictError(
-                    "预检后的任务设置已变化，请重新确认风险。",
+                    "确认之后任务设置又改过了，请重新点一次开始。",
                     reason="stale",
                 )
             expected_revision = token.registry_revision
@@ -275,10 +275,10 @@ class TranslationTaskManager:
                 group_capacities=prepared.group_capacities,
             )
             if bool(risk["surface_busy"]):
-                raise TaskConflictError("同类型任务仍处于活动状态。", reason="surface_busy")
+                raise TaskConflictError("同一类翻译已经有一个任务在进行，请等它结束后再开始。", reason="surface_busy")
             if risk["shared_groups"]:
                 raise TaskConflictError(
-                    "此任务与活动任务共用模型/API，请先完成风险确认。",
+                    "这个任务会和正在跑的任务共用同一条模型连接，请先确认再开始。",
                     reason="confirmation_required",
                 )
             expected_revision = int(risk["revision"])
@@ -342,10 +342,10 @@ class TranslationTaskManager:
 
         if not str(source_path or "").strip():
             # Path("").resolve() is the process cwd; never scan that.
-            raise TaskInputError("Source path is required.")
+            raise TaskInputError("请先选择要翻译的文件或文件夹。")
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
-            raise TaskInputError(f"Source path does not exist: {root}")
+            raise TaskInputError(f"找不到「{root.name or root}」，它可能已被移动或删除。")
         default_surface_source = getattr(
             settings,
             f"{normalized_surface}_source_lang",
@@ -551,7 +551,7 @@ class TranslationTaskManager:
         if attempted.lease is None:
             reason = attempted.reason or "conflict"
             messages = {
-                "surface_busy": "同类型任务仍处于活动状态。",
+                "surface_busy": "同一类翻译已经有一个任务在进行，请等它结束后再开始。",
                 "stale": "风险确认期间任务资源已变化，请重新预检。",
             }
             raise TaskConflictError(messages.get(reason, "任务资源预约失败。"), reason=reason)
@@ -734,7 +734,7 @@ class TranslationTaskManager:
             "active_tasks": active_tasks,
             "shared_connections": shared_connections,
             "warnings": (
-                ["共享 API 可能触发 429、排队、超时、失败或额外费用。"]
+                ["两个任务共用同一条模型连接，可能变慢、排队或超时，两边都会计费。"]
                 if shared_connections
                 else []
             ),
@@ -986,7 +986,7 @@ class TranslationTaskManager:
                 if task.terminal:
                     continue
                 result = self._complete_file_progress(task, {
-                    "message": "应用或 sidecar 已中断；请依据已有产物或报告新建任务。",
+                    "message": "应用中途关闭，任务没有完成。已生成的文件和报告仍保留在输出目录，可以重新开始翻译。",
                     "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
                 }, "interrupted")
                 task.state = "interrupted"

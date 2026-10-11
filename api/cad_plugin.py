@@ -325,20 +325,20 @@ def _validate_converter(path: Path, info: dict[str, str] | None = None) -> tuple
     info = info or _platform_info()
     try:
         if not path.is_file() or path.is_symlink() or path.name not in _REQUIRED_CONVERTER_NAMES:
-            return False, None, "ODA 转换器路径不是普通文件。"
+            return False, None, "选的不是图纸转换工具（ODA File Converter）的程序。"
     except OSError:
-        return False, None, "ODA 转换器路径无法读取。"
+        return False, None, "读不到选中的图纸转换工具，请检查是否有权限访问。"
     if info.get("system") == "darwin":
         valid = _mach_o(path)
-        return valid, None, "ODA 转换器不是 Mach-O 可执行文件。" if not valid else ""
+        return valid, None, "选的文件不是能在这台 Mac 上运行的图纸转换工具。" if not valid else ""
     if info.get("system") == "windows":
         if not _pe_executable(path):
-            return False, None, "ODA 转换器不是有效的 Windows PE 文件。"
+            return False, None, "选的文件不是能在 Windows 上运行的图纸转换工具。"
         version = _windows_version_metadata(path)
         if not version:
-            return False, None, "ODA 转换器缺少文件版本元数据。"
+            return False, None, "选的图纸转换工具读不出版本信息，可能已损坏，请重新安装。"
         return True, version, ""
-    return False, None, "当前平台不支持 ODA 转换器。"
+    return False, None, "当前系统不支持图纸转换工具。"
 
 
 def _find_converter(root: Path | None = None, info: dict[str, str] | None = None) -> Path | None:
@@ -478,7 +478,7 @@ def probe_status() -> dict[str, Any]:
             detail.append("当前平台仅支持 macOS 13+（Apple Silicon/Intel）或 Windows 10 x64。")
         elif oda_invalid:
             oda_state = "incompatible"
-            detail.append("已配置的 ODA 转换器校验失败。")
+            detail.append("之前连接的图纸转换工具现在用不了，请重新安装或重新选择。")
         elif converter is not None:
             oda_state = "connected"
         enabled = oda_state == "connected" and supported

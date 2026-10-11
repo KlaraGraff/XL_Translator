@@ -49,7 +49,7 @@ import {
 import { icon, type IconName } from "../icons";
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
-import { taskStateWord } from "../task-state-labels";
+import { stopConfirmBody, taskStateWord } from "../task-state-labels";
 // 任务中心是活动任务徽标的权威来源；新任务刚提交时要主动通知它，别等它自己巡检。
 import { noteTaskStarted } from "./tasks";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
@@ -169,7 +169,7 @@ const EXCEL_TOGGLES: ToggleDef[] = [
   { key: "keepOriginal", label: "保留「_原文」副本", hint: "输出文件里为每个工作表额外保留一份未翻译的原始副本。", default: true, pathKind: "output", path: "keep_original_sheets" },
   { key: "formulaBackfill", label: "公式显示值回填", hint: "公式单元格按当前显示值写成静态双语文本，公式本身不再参与计算。", default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: "Excel 精调行高", hint: "需要本机安装 Excel。默认用 Python 估算行高；精调不可用时保留估算结果，并在文件结果中提示。", default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
-  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「使用 Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
+  { key: "lockRowHeight", label: "锁定行高时缩字号", hint: "与「Excel 精调行高」互斥。缩到最小字号仍会溢出的单元格将进入复核。", default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
   { key: "reviewMark", label: "标记需复核内容", hint: "为保留原文和疑似原文异常的单元格标注底色，便于人工复核。程序自己判过没问题的（如语义校验接受）只进报告，不标底色。", default: true, pathKind: "flat", path: "excel_review.mark_review_items" },
 ];
 
@@ -221,10 +221,10 @@ const SURFACE_EMPTY_SUBTITLE: Record<Surface, string> = {
   cad: "选择文件或文件夹，扫描后勾选要翻译的 DWG / DXF 图纸",
 };
 const SURFACE_FIRST_EMPTY: Record<Surface, { title: string; description: string }> = {
-  excel: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的表格会列在这里，可逐个勾选。" },
-  word: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的文档会列在这里，可逐个勾选。" },
-  pdf: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 PDF 与图片会列在这里，可逐个勾选。" },
-  cad: { title: "还没有可翻译的文件", description: "选择来源并点击「扫描」，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。" },
+  excel: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的表格会列在这里，可逐个勾选。" },
+  word: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的文档会列在这里，可逐个勾选。" },
+  pdf: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的 PDF 与图片会列在这里，可逐个勾选。" },
+  cad: { title: "还没有可翻译的文件", description: "用「浏览」选择文件或文件夹后会自动扫描，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。" },
 };
 const SURFACE_BANNER_EMPTY: Record<Surface, { title: string; description: string }> = {
   excel: { title: "可以开始下一批了", description: "上一任务的结果已归档，选择新来源即可继续。" },
@@ -1961,7 +1961,7 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
   const local = st.task!;
   let note: string | undefined;
   if (local.streamState === "reconnecting") {
-    note = "事件流暂时断开，正在自动重连，不会重复处理已有进度。";
+    note = "和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。";
   } else {
     const silence = silenceSeconds(local);
     const waiting = !local.task.terminal
@@ -1972,7 +1972,7 @@ function buildProgressCard(surface: Surface, st: SurfaceState): HTMLElement {
     if (waiting) {
       note = local.task.state === "stopping"
         ? `已等待 ${silence} 秒：正在收尾，等手上的请求回来后把已翻好的内容写进文件，大文档要多等一会儿，程序没有卡住。`
-        : `已等待 ${silence} 秒：请求已经发出，正在等接口把这一批的结果返回，程序没有卡住。`;
+        : `已等待 ${silence} 秒：这一批已经发给模型，正在等它返回译文，程序没有卡住。`;
     }
   }
   return createTaskProgressPanel({
@@ -2351,7 +2351,7 @@ function buildTaskFold(surface: Surface, st: SurfaceState): HTMLElement {
     // 让用户可以从空配置直接建立自己的提示词。
     const link = el("span", "linklike");
     link.style.fontSize = "11px";
-    link.textContent = "编辑 Prompt ↗ 设置";
+    link.textContent = "编辑提示词 ↗ 设置";
     link.addEventListener("click", () => navigate("settings", {
       page: "params",
       paramsSurface: surface,
@@ -3103,15 +3103,15 @@ function showCompatibilityModal(surface: Surface, st: SurfaceState, count: numbe
         ? [
             `已选择 ${count} 个旧版 .xls 文件，最终结果统一输出为 .xlsx。`,
             `原始文件不会被改动：公式、宏和样式都完整保留在原来的 .xls 文件里，随时可以打开对照。下面的取舍只影响翻译输出的新文件。`,
-            `优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 未安装、自动化被拒绝或某个文件转换失败时，该文件明确失败，其他文件继续，绝不静默改用兼容模式。`,
+            `优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 没装、没有允许 Translator 控制 Excel，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。`,
             st.libreofficeAvailable
               ? `允许兼容转换：没装 Excel 也能翻译——本机检测到 LibreOffice，会用它转换，公式、样式、合并单元格通常能保留（图表、图片可能有出入）。这项选择只对本次任务生效。`
               : `允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。安装免费的 LibreOffice 后，兼容转换也能保留公式与样式。`,
           ]
         : [
             `已选择 ${count} 个旧版 ${legacyExt} 文件。最终结果统一输出为 ${finalExt}，源文件不会被改写。`,
-            `优先高保真会通过本机 ${appName} 自动化转换；若 ${appName} 未安装、自动化被拒绝或单文件转换失败，该文件会明确失败，其他文件仍可继续，绝不静默改用兼容模式。`,
-            "允许兼容转换会在高保真不可用时继续处理，但复杂样式、合并单元格、图片、图表和宏可能无法完整保留；这项选择只冻结到本次任务。",
+            `优先高保真：用本机 ${appName} 转换，排版完整保留；${appName} 没装、没有允许 Translator 控制 ${appName}，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。`,
+            "允许兼容转换：高保真转换用不了时也继续翻译，但复杂样式、合并单元格、图片、图表和宏可能保留不全。这项选择只对本次任务生效。",
           ],
     // 主按钮给「优先高保真」：它是不会损失内容的那一个。默认高亮有损选项，等于
     // 替用户默认接受丢样式、丢图片、丢宏——回车一按就丢了，而且事后看不出丢了什么。
@@ -3184,7 +3184,7 @@ function showStartBlockedModal(surface: Surface, st: SurfaceState, payload: Json
       title: "审核模型上次测试没通过",
       body: [
         "逐页审核是开着的，但这台机器上最近一次测试 PDF翻译（图像翻译）复核模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。",
-        "稳妥的做法是先去「设置 → 模型 → PDF翻译（图像翻译）复核」重测一次，或者把逐页审核关掉再开始。",
+        "稳妥的做法是先去「设置 → 模型服务 → PDF翻译（图像翻译）复核」重测一次，或者把逐页审核关掉再开始。",
         "也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。",
       ],
       actions: [
@@ -3386,8 +3386,8 @@ function markTaskInterrupted(surface: Surface, taskId: string): void {
   const local = st.task;
   if (!local || local.task.task_id !== taskId) return;
   local.task = { ...local.task, state: "interrupted", terminal: true };
-  local.phaseName = "sidecar 已重启或应用异常退出；本任务不能继续，请依据已生成产物或清单新建任务。";
-  showToast({ message: "与后台的连接已中断，任务标记为已中断。", error: true });
+  local.phaseName = "翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。";
+  showToast({ message: "和后台的连接断了，这个任务已标记为应用中断。", error: true });
   finishTask(surface, local.task);
 }
 
@@ -3937,13 +3937,6 @@ function resultTone(
 // 停止 / 暂停 / 继续 / 结束暂停
 // ---------------------------------------------------------------------------
 
-const STOP_MODAL_BODY: Record<Surface, string> = {
-  excel: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
-  word: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
-  pdf: "已生成的页面会保留在输出目录。想稍后接着跑，请改用「暂停提交」，之后可以选择继续或结束暂停。",
-  cad: "当前图纸完成后停止。已生成的图纸和报告会保留在输出目录，原件不会被改动；之后可以从断点继续。",
-};
-
 /** 正在展示的「安全停止」确认框。任务自己走到终态时要把它关掉——见 closeStopModal。 */
 const stopModals: Record<Surface, ModalHandle | null> = { excel: null, word: null, pdf: null, cad: null };
 
@@ -3963,7 +3956,7 @@ function confirmStopTask(surface: Surface, st: SurfaceState): void {
     icon: "stop",
     sourceLabel: "停止运行中的任务",
     title: "安全停止当前任务？",
-    body: [STOP_MODAL_BODY[surface]],
+    body: [stopConfirmBody(surface)],
     actions: [
       { label: "继续执行", onClick: () => { stopModals[surface] = null; } },
       { label: "安全停止", variant: "danger-solid", onClick: () => { stopModals[surface] = null; void stopTask(taskId); } },

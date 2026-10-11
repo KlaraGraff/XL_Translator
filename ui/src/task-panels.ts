@@ -89,7 +89,7 @@ export function createTaskLogPanel(options: TaskLogOptions): HTMLElement {
   }
   if (!entries.length) {
     const empty = document.createElement("div");
-    empty.textContent = "等待引擎事件…";
+    empty.textContent = "等待任务开始…";
     log.append(empty);
   }
   card.append(log);
@@ -203,7 +203,7 @@ export function createTaskMoreSettings(options: TaskMoreSettingsOptions): HTMLEl
         const link = document.createElement("span");
         link.className = "linklike";
         link.style.fontSize = "11px";
-        link.textContent = "编辑 Prompt ↗ 设置";
+        link.textContent = "编辑提示词 ↗ 设置";
         link.addEventListener("click", options.domain.onEdit);
         label.append(" ", link);
       }

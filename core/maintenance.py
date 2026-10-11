@@ -59,12 +59,12 @@ def data_overview(*, active_task_count: int = 0) -> dict[str, Any]:
     """Describe owned local data without exposing credentials or external paths."""
     categories = [
         _category("settings", "设置", [SETTINGS_PATH], clearable=True),
-        _category("keys", "API Key", [KEYS_PATH], clearable=True),
-        _category("tm", "翻译记忆库", _tm_paths(), clearable=True),
-        _category("task_history", "任务摘要", [default_history_path()], clearable=True),
-        _category("logs", "结构化日志", _log_paths(), clearable=True),
-        _category("diagnostics", "脱敏诊断", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
-        _category("workspaces", "临时工作区", [WORKSPACES_DIR], clearable=True),
+        _category("keys", "API 密钥", [KEYS_PATH], clearable=True),
+        _category("tm", "记忆库", _tm_paths(), clearable=True),
+        _category("task_history", "任务记录", [default_history_path()], clearable=True),
+        _category("logs", "运行日志", _log_paths(), clearable=True),
+        _category("diagnostics", "诊断记录", [diagnostics.DIAGNOSTICS_DIR], clearable=True),
+        _category("workspaces", "临时文件", [WORKSPACES_DIR], clearable=True),
     ]
     categories[0]["schema"] = get_settings_schema_status()
     categories[1]["key_count"] = _key_count()

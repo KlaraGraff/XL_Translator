@@ -489,7 +489,7 @@ async function waitForRerunSlot(surface: Surface, taskId: string): Promise<boole
     if (!ok) {
       failures += 1;
       if (failures >= RERUN_POLL_MAX_FAILURES) {
-        showToast({ message: "刷新重新生成状态连续失败，批量重跑已停止；请检查后台服务是否正常后重新发起。", error: true });
+        showToast({ message: "连续几次没能刷新重跑进度，批量重跑已停止；稍后重新打开这个任务再试。", error: true });
         return false;
       }
       continue;
@@ -740,7 +740,7 @@ export function buildPdfReviewCard(surface: Surface, local: LocalTask): HTMLElem
         txt.append(document.createTextNode("已停止，这已经是最后一页"));
       }
       if (batch.current) txt.append(document.createTextNode(`；正在等 ${batch.current.fileName} 第 ${batch.current.pageNumber} 页跑完`));
-      small.textContent = "已经发出去的这一页停不下来，服务端会把它跑完并计费；跑完就收摊。";
+      small.textContent = "已经发出去的这一页停不下来，会跑完并照常计费；跑完这一页就停。";
     } else {
       em.textContent = `第 ${batch.done + 1} / ${batch.total} 页`;
       txt.append(document.createTextNode("正在重跑 "), em);
@@ -942,7 +942,7 @@ function buildReviewRow(surface: Surface, taskId: string, snapshot: PdfPagesSnap
           : rerunBusy
             ? "有一页正在重新生成，跑完再操作下一页。"
             : !snapshot.rerun_actionable
-              ? "这个任务的逐页记录已经释放，不能再重新生成单页。"
+              ? "这个任务的逐页记录已经清理，不能再重新生成单页。"
               : undefined;
     actionsCell.append(
       buildActionLink(

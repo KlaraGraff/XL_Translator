@@ -505,7 +505,7 @@ export function renderModelsPage(host: HTMLElement): void {
       { method: "DELETE" },
     );
     await refreshModelRoles();
-    showToast({ message: "已恢复推荐吞吐值。运行中的任务不受影响。" });
+    showToast({ message: "已恢复推荐速率。运行中的任务不受影响。" });
   }) });
   detailBody.append(fieldRow([
     // 「恢复推荐值」留着：它是重置动作（DELETE 路由），失焦语义表达不了「把我存的那份
@@ -1039,7 +1039,7 @@ const CORRUPT_IMPORT_DETAIL = "这份文件在传输过程中损坏，或者被�
 // Key 一起消失，说成「只合并」等于骗人。过期与版本太旧那两条路径的按钮写着「仅导入
 // 配置」，更需要这句话——「仅」字很容易被读成「影响有限」。
 const REPLACES_CONNECTIONS_NOTICE =
-  "文件提到的角色，其连接列表会整份替换本机现有连接（本机自己加的连接及其已保存 Key 将被清除）；文件没提到的配置保持不变。";
+  "文件里包含的用途，其连接列表会整份替换本机现有连接（本机自己加的连接和保存的密钥会被清除）；文件里没有的用途保持不变。";
 
 // 有效期选项与 core/config_crypto.py::DEFAULT_VALID_DAYS 对齐：0 = 长期有效。
 const VALID_DAYS_OPTIONS: { label: string; value: number }[] = [
@@ -1134,12 +1134,13 @@ function buildRolesList(preview: ModelImportPreview): HTMLUListElement {
   if (preview.roles.length) {
     for (const item of preview.roles) {
       const li = document.createElement("li");
-      li.textContent = `${item.role}：${item.fields.join("、") || "无显式字段"}`;
+      // fields 是后端的设置键名（base_url、cloud_model 之类），对用户没有意义，只报数量。
+      li.textContent = `${MODEL_ROLE_LABELS[item.role] || item.role}：${item.fields.length ? `${item.fields.length} 项设置` : "没有具体设置"}`;
       list.append(li);
     }
   } else {
     const li = document.createElement("li");
-    li.textContent = "没有角色配置变更。";
+    li.textContent = "没有需要导入的模型设置。";
     list.append(li);
   }
   return list;
@@ -1263,7 +1264,7 @@ function openApiKeyExportReportModal(savedPath: string, response: ModelConfigExp
       // 数的是后端密封前实际数出来的密钥处数，不是回执里的连接行数：角色「换服务商时
       // 记住的配置」里的密钥也会被一起加密带走，按连接行数报会少算，和收件人导入时
       // 看到的作用域数对不上。
-      ["密钥", textAndChip(`${sealedKeyCount} 个作用域已加密写入 `, createChip({ label: "已加密", tone: "ok" }))],
+      ["密钥", textAndChip(`${sealedKeyCount} 个密钥已加密写入 `, createChip({ label: "已加密", tone: "ok" }))],
       ["有效期至", expiresAt ? `${formatReleaseDate(expiresAt)}（还剩 ${daysFromNow(expiresAt)} 天）` : "长期有效"],
     ]));
   } else {
@@ -1299,7 +1300,7 @@ function openApiKeyExportReportModal(savedPath: string, response: ModelConfigExp
     title: sealed ? "已导出，密钥已加密" : "部分密钥没有导出",
     body,
     actions: [
-      { label: "在访达中显示", onClick: () => void revealSavedFile(savedPath), keepOpen: true },
+      { label: "在文件夹中显示", onClick: () => void revealSavedFile(savedPath), keepOpen: true },
       { label: "知道了", variant: "primary" },
     ],
   });
@@ -1362,9 +1363,9 @@ async function runModelConfigImport(preview: ModelImportPreview, handle: ModalHa
     handle.close();
     const unsealedKeys = preview.seal_status === "unsealed" && result.imported_key_count > 0;
     const keysClause = result.imported_key_count > 0
-      ? `；同时${unsealedKeys ? "解开并写入" : "写入"} ${result.imported_key_count} 个密钥作用域`
+      ? `；同时${unsealedKeys ? "解开并写入" : "写入"} ${result.imported_key_count} 个密钥`
       : "";
-    showToast({ message: `已导入配置，文件提到的角色其连接列表已整份替换${keysClause}。所有受影响角色均需重新测试。` });
+    showToast({ message: `已导入配置，文件里包含的用途，其连接列表已整份替换${keysClause}。这些用途都需要重新测试连接。` });
   } catch (error) {
     showToast({ message: errorMessage(error), error: true });
   }
@@ -1392,11 +1393,11 @@ function openImportNormalModal(preview: ModelImportPreview): void {
   const showPlaintextWarning = preview.legacy_plaintext && preview.sealed_key_count > 0;
   const kvRows: [string, string | HTMLElement][] = [
     ["文件", monoText(preview.fileName)],
-    ["包含", `${preview.roles.length} 个角色 · ${preview.throughput_profile_count} 项吞吐档案`],
+    ["包含", `${preview.roles.length} 个用途 · ${preview.throughput_profile_count} 项速率设置`],
   ];
   if (preview.sealed_key_count > 0) {
     kvRows.push(["密钥", textAndChip(
-      `${preview.sealed_key_count} 个作用域 `,
+      `${preview.sealed_key_count} 个密钥 `,
       showPlaintextWarning
         ? createChip({ label: "明文", tone: "warn" })
         : createChip({ label: "已自动解开", tone: "ok" }),
@@ -1415,7 +1416,7 @@ function openImportNormalModal(preview: ModelImportPreview): void {
   body.push(
     REPLACES_CONNECTIONS_NOTICE,
     buildRolesList(preview),
-    "导入后受影响角色全部变为“未测试”，不会自动请求服务。",
+    "导入后这些用途都会变成“未测试”，不会自动发出任何请求。",
   );
 
   let handle: ModalHandle;
@@ -1450,8 +1451,8 @@ function openImportExpiredModal(preview: ModelImportPreview): void {
     body: [
       `文件的有效期是 ${preview.expires_at ? formatReleaseDate(preview.expires_at) : "未知"}，${elapsedDays > 0 ? `已经过去 ${elapsedDays} 天` : "刚刚过期"}，里面的密钥无法再解开。`,
       buildKvList([
-        ["包含", `${preview.roles.length} 个角色 · ${preview.throughput_profile_count} 项吞吐档案`],
-        ["密钥", textAndChip(`${preview.sealed_key_count} 个作用域 `, createChip({ label: "已失效，无法解开", tone: "warn" }))],
+        ["包含", `${preview.roles.length} 个用途 · ${preview.throughput_profile_count} 项速率设置`],
+        ["密钥", textAndChip(`${preview.sealed_key_count} 个密钥 `, createChip({ label: "已失效，无法解开", tone: "warn" }))],
       ]),
       buildInlineBanner("tint", "连接、模型名和速率设置仍可正常导入，导入后各连接的密钥需要自己填写。想要密钥的话，请让发送方重新导出一份。"),
       // 「仅导入配置」提交的 payload 和正常导入的完全一样，连接列表照样整份替换。
@@ -1475,7 +1476,7 @@ function openImportUnsupportedModal(preview: ModelImportPreview): void {
     sourceLabel: "设置 · 模型服务 · 导入配置",
     title: "需要更新软件才能解开密钥",
     body: [
-      `这份文件由更新版本的 XL Translator 导出，当前版本（${PACKAGE_VERSION}）无法解开其中的密钥。`,
+      `这份文件由更新版本的 Translator 导出，当前版本（${PACKAGE_VERSION}）无法解开其中的密钥。`,
       buildInlineBanner("tint", "更新到最新版后重新导入即可。也可以先只导入配置，之后自己填写密钥。"),
       REPLACES_CONNECTIONS_NOTICE, // 同过期弹窗：「仅」字不代表影响有限，见那边的注释
     ],

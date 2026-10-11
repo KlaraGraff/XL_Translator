@@ -20,7 +20,7 @@ import {
   type ChipTone,
 } from "../components";
 import { icon, type IconName } from "../icons";
-import { TASK_STATE_LABELS } from "../task-state-labels";
+import { TASK_STATE_LABELS, stopConfirmBody } from "../task-state-labels";
 import { ApiClient, type SseEvent, type TaskStatus } from "../api-client";
 import { invoke } from "@tauri-apps/api/core";
 import { fileProgressLabel, fileProgressTone, reduceFileProgress, type FileProgress } from "../file-progress";
@@ -181,8 +181,8 @@ const SURFACE_TASK_LABEL: Record<TaskSurface, string> = {
   word: "Word",
   pdf: "PDF",
   cad: "CAD",
-  cleaner: "TM 清洗",
-  tm_clean: "TM 清洗",
+  cleaner: "记忆库清洗",
+  tm_clean: "记忆库清洗",
 };
 
 /** 能在翻译工作区里打开的任务（侧栏「翻译」下的四个页面）。 */
@@ -193,7 +193,7 @@ function surfaceIcon(surface: TaskSurface): IconName {
 }
 
 function taskSurfaceLabel(surface: TaskSurface): string {
-  return SURFACE_TASK_LABEL[surface] ?? "TM 清洗";
+  return SURFACE_TASK_LABEL[surface] ?? "记忆库清洗";
 }
 
 const STATE_LABELS = TASK_STATE_LABELS;
@@ -214,7 +214,7 @@ const TONE_MAP: Record<string, ChipTone> = {
 
 function taskStateMeta(task: TaskStatus, streamState?: StreamState): { label: string; tone: ChipTone } {
   if (streamState === "reconnecting" && isTaskActive(task)) {
-    return { label: "正在补拉事件", tone: "tint" };
+    return { label: "正在重新连接", tone: "tint" };
   }
   if (streamState === "interrupted") {
     return { label: "应用中断", tone: "dgr" };
@@ -249,7 +249,7 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
   const refs: Array<{ label: string; path: string; reveal: boolean }> = [];
   const actionLabels: Record<string, string> = {
     open_output: "打开输出目录",
-    reveal_output: "在 Finder 中显示主输出",
+    reveal_output: "在文件夹中显示主输出",
     open_report: "打开报告",
     open_manifest: "打开清单",
     copy_output_path: "复制输出路径",
@@ -266,7 +266,7 @@ function taskResultReferences(task: TaskStatus): Array<{ label: string; path: st
     if (path && !refs.some((entry) => entry.path === path)) refs.push({ label, path, reveal });
   };
   add("打开输出目录", ["output_dir", "output_directory"]);
-  add("在 Finder 中显示主输出", ["output_path", "result_path", "output"], true);
+  add("在文件夹中显示主输出", ["output_path", "result_path", "output"], true);
   add("打开报告", ["report_path", "word_translation_report_path", "pdf_translation_report_path"]);
   add("打开清单", ["manifest_path", "pdf_translation_manifest_path"]);
   return refs;
@@ -287,17 +287,17 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     .map(([role, value]) => {
       const model = record(value);
       const name = redactedText(model.label, ROLE_LABELS[role] ?? role);
-      return `${name} ${redactedText(model.model, "已冻结")}`;
+      return `${name} ${redactedText(model.model, "未记录")}`;
     })
     .join(" · ");
   const sourceLang = firstText({ ...snapshot, ...language }, ["source_lang", "source_selection"]);
   const targetLang = firstText({ ...snapshot, ...language }, ["target_lang"]);
   const domain = firstText(snapshot, ["domain_preset", "domain"]);
   const promptVersion = firstText(snapshot, ["prompt_version", "domain_prompt_version"]);
-  const configuredOutput = record(snapshot.excel_output || snapshot.word_output || snapshot.pdf_output);
+  const configuredOutput = record(snapshot.excel_output || snapshot.word_output || snapshot.pdf_output || snapshot.cad_output);
   const outputPath =
     firstText({ ...snapshot, ...output, ...configuredOutput }, ["output_dir", "output_directory", "custom_output_dir"]) ||
-    (configuredOutput.use_custom_output_dir === false ? "与源文件相邻的唯一输出目录" : "任务唯一输出目录");
+    (configuredOutput.use_custom_output_dir === false ? "源文件旁边新建的输出文件夹" : "本次任务的输出文件夹");
   const throughput = record(snapshot.throughput);
   // 一份任务里几个模型角色常常走同一条连接（同一个 provider、同一个 base_url），
   // 而 resource_groups 与 task_snapshot.connections 又是同一批连接的两次成像。
@@ -323,17 +323,17 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     pooledTotal = Math.max(pooledTotal, num(value.pool_connection_count));
   }
   const connectionSummary = connectionNames.length
-    ? connectionNames.join("、") + (pooledTotal > 1 ? `（连接池共 ${pooledTotal} 个地址，会自动轮换）` : "")
+    ? connectionNames.join("、") + (pooledTotal > 1 ? `（共 ${pooledTotal} 个地址，自动轮流使用）` : "")
     : "";
   const rows: Array<[string, string]> = [
     ["语言", [sourceLang, targetLang].filter(Boolean).join(" → ")],
     ["模型", models],
     ["连接", connectionSummary],
     ["运行中换过连接", connectionSwitchText(task)],
-    ["领域 / Prompt", [domain, promptVersion].filter(Boolean).join(" · ")],
+    ["专业领域 / 提示词", [domain, promptVersion].filter(Boolean).join(" · ")],
     ["输出位置", outputPath],
     [
-      "吞吐",
+      "速度设置",
       Object.keys(throughput).length
         ? throughputPhrase("", throughput)
         : Object.entries(modelSnapshot)
@@ -436,7 +436,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["未生成", ["failed_count", "error_count", "failed_files", "failed_file_count"]],
         ["未开始", ["unstarted_count", "not_started_count", "unstarted_file_count"]],
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
-        ["TM 命中", ["tm_hit_count", "tm_hits"]],
+        ["记忆库命中", ["tm_hit_count", "tm_hits"]],
         ["送模型文本", ["model_translation_text_count", "model_text_count", "translated_text_count"]],
       ],
       reviewSource,
@@ -458,7 +458,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         // 只有停止的任务才带这个键：停下时没翻到、保留原文等续译的段落数。
         ["未翻译段", ["unstarted_text_count"]],
         ["需复核", ["review_count", "review_items_count", "review_total", "review_text_count"]],
-        ["TM 命中", ["tm_hit_count", "tm_hits"]],
+        ["记忆库命中", ["tm_hit_count", "tm_hits"]],
       ],
       reviewSource,
     ).concat(
@@ -498,7 +498,7 @@ function surfaceKpiRows(task: TaskStatus): Array<[string, number]> {
         ["图纸", ["file_count", "selected_file_count"]],
         ["已翻译文字", ["translated_entities"]],
         ["未开始", ["unstarted_file_count"]],
-        ["TM 命中", ["tm_hit_count"]],
+        ["记忆库命中", ["tm_hit_count"]],
         ["模型调用", ["api_call_count"]],
       ],
       source,
@@ -963,8 +963,8 @@ export async function watchTask(taskId: string): Promise<void> {
     } catch {
       latest.task = { ...latest.task, state: "interrupted", terminal: true };
       latest.streamState = "interrupted";
-      latest.phaseName = "sidecar 已重启或应用异常退出；本任务不能继续，请依据已生成产物或清单新建任务。";
-      if (mounted) showToast({ message: "任务监控无法恢复，已标记为应用中断。", error: true });
+      latest.phaseName = "翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。";
+      if (mounted) showToast({ message: "和这个任务的连接没能恢复，已标记为应用中断。", error: true });
     }
   } finally {
     const latest = tasks.get(taskId);
@@ -1167,12 +1167,12 @@ async function copyTaskPath(path: string): Promise<void> {
   }
 }
 
-function confirmStopTask(taskId: string): void {
+function confirmStopTask(taskId: string, surface: string): void {
   openModal({
     tone: "warn",
     icon: "warn",
     title: "安全停止当前任务？",
-    body: ["已生成的文件会保留在输出目录；Excel、Word 会结束为终态。PDF / 图片应先“暂停提交”，再选择继续或结束暂停。"],
+    body: [stopConfirmBody(surface)],
     actions: [
       { label: "继续执行", variant: "default" },
       { label: "安全停止", variant: "danger-solid", onClick: () => stopTask(taskId) },
@@ -1417,7 +1417,7 @@ function renderList(): void {
   if (!ids.length) {
     const empty = createEmptyState({
       title: "当前没有可显示的任务",
-      description: "启动 Excel、Word、PDF / 图片翻译或记忆库深度清洗后，状态会保留在这里。",
+      description: "开始 Excel、Word、PDF / 图片、CAD 图纸翻译或记忆库清洗后，进度和结果都会显示在这里。",
       icon: "tasks",
     });
     empty.style.flex = "1";
@@ -1445,7 +1445,7 @@ function renderDetail(): void {
   if (!entry) {
     const empty = createEmptyState({
       title: "选择左侧任务查看详情",
-      description: "结果快照、KPI、结果定位清单与产物入口都在这里。",
+      description: "结果统计、需要复核的位置和生成的文件都在这里。",
       icon: "tasks",
     });
     empty.style.flex = "1";
@@ -1526,14 +1526,14 @@ function renderDetail(): void {
       } else if (task.state !== "pausing" && task.state !== "stopping") {
         actions.append(createButton({ label: "当前文件完成后暂停", size: "mini", onClick: () => void pauseTask(task.task_id) }));
       }
-      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id) }));
+      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     } else if (task.surface === "pdf" && task.state === "paused") {
       actions.append(createButton({ label: "继续翻译", variant: "primary", size: "mini", onClick: () => void resumeTask(task.task_id) }));
       actions.append(createButton({ label: "结束暂停", variant: "danger", size: "mini", onClick: () => void endPausedPdfTask(task.task_id) }));
     } else if (task.surface === "pdf") {
       actions.append(createButton({ label: "暂停提交", size: "mini", onClick: () => void pauseTask(task.task_id) }));
     } else {
-      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id) }));
+      actions.append(createButton({ label: "安全停止", variant: "danger", size: "mini", onClick: () => confirmStopTask(task.task_id, task.surface) }));
     }
   }
   if (task.terminal) {
@@ -1768,8 +1768,8 @@ function renderDetail(): void {
     logNote.style.marginTop = "10px";
     logNote.textContent =
       entry.streamState === "reconnecting"
-        ? `事件流暂时断开，正在从事件 ${entry.lastEventId} 补拉，不会重复处理已有进度。`
-        : "任务运行中，快照与产物会在收尾后补全。";
+        ? "和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。"
+        : "任务运行中，结果统计和生成的文件会在任务结束后补全。";
     detailRootEl.append(logNote);
   }
 }

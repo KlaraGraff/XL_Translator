@@ -137,6 +137,15 @@ export type StreamOptions = {
   signal?: AbortSignal;
 };
 
+/** 错误响应的 detail 一般是一句中文；但 FastAPI 自己的请求校验失败（422）给的是一个
+ *  对象数组，直接 String() 出来就是「[object Object]」。那种情况换成一句人话。 */
+function errorDetail(payload: { detail?: unknown }, fallback: string): string {
+  const detail = payload.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) return "提交的内容格式不对，这次操作没有生效。";
+  return fallback;
+}
+
 /** 后端的错误响应除了 detail 还可能带一个 reason（稳定的机器码）。有出路的拦截靠它区分：
  *  比对中文句子太脆，改一个字界面就认不出来了。 */
 export class ApiError extends Error {
@@ -184,7 +193,7 @@ export class ApiClient {
       const fallback = `${response.status} ${response.statusText}`;
       const payload = await response.json().catch(() => ({ detail: fallback }));
       throw new ApiError(
-        String(payload.detail ?? fallback),
+        errorDetail(payload, fallback),
         response.status,
         typeof payload.reason === "string" ? payload.reason : "",
       );
@@ -211,7 +220,7 @@ export class ApiClient {
     if (!response.ok) {
       const fallback = `${response.status} ${response.statusText}`;
       const payload = await response.json().catch(() => ({ detail: fallback }));
-      throw new Error(String(payload.detail ?? fallback));
+      throw new Error(errorDetail(payload, fallback));
     }
     const disposition = response.headers.get("Content-Disposition") || "";
     const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallbackFilename;
@@ -405,7 +414,7 @@ export class ApiClient {
     if (!response.ok) {
       const fallback = `${response.status} ${response.statusText}`;
       const payload = await response.json().catch(() => ({ detail: fallback }));
-      throw new Error(String(payload.detail ?? fallback));
+      throw new Error(errorDetail(payload, fallback));
     }
     return response.blob();
   }

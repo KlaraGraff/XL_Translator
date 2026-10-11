@@ -923,7 +923,7 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
         self.assertIn("本机检测到 LibreOffice", excel_arm)
         self.assertIn("公式会变成算好的数值", excel_arm)
         self.assertIn(
-            "复杂样式、合并单元格、图片、图表和宏可能无法完整保留",
+            "复杂样式、合并单元格、图片、图表和宏可能保留不全",
             word_arm,
             "Word 分支的既有文案不该被误改",
         )

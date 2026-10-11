@@ -30,3 +30,16 @@ export const TASK_STATE_LABELS: Record<string, string> = {
 export function taskStateWord(state: string): string {
   return TASK_STATE_LABELS[state] ?? "已完成";
 }
+
+/** 「安全停止」确认框正文。工作区和任务中心弹的是同一个确认，所以只在这里写一份；
+ *  以前任务中心那份写着「Excel、Word 会结束为终态」，还漏了 CAD。 */
+const STOP_CONFIRM_BODY: Record<string, string> = {
+  excel: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  word: "当前文件写完后停止。已生成的文件会保留在输出目录，原件不会被改动。",
+  pdf: "已生成的页面会保留在输出目录。想稍后接着跑，请改用「暂停提交」，之后可以选择继续或结束暂停。",
+  cad: "当前图纸完成后停止。已生成的图纸和报告会保留在输出目录，原件不会被改动；之后可以从断点继续。",
+};
+
+export function stopConfirmBody(surface: string): string {
+  return STOP_CONFIRM_BODY[surface] ?? "当前这一批处理完后停止，已经完成的部分会保留。";
+}
