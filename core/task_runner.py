@@ -510,6 +510,9 @@ class TaskRunner:
         )
         max_len      = settings.tm.max_len
         tm_hit_count = 0
+        # 接口持续限流、但已经拿到一部分译文时，不再整批失败：已翻好的照常写出，
+        # 没翻到的保留原文，之后可「接着上次继续」补译。这里记下那次限流。
+        rate_limited: list[ApiKeyTemporarilyUnavailableError] = []
         api_call_count = 0
         file_results: list[dict] = []
         stopped_message: str | None = None
@@ -1548,8 +1551,24 @@ class TaskRunner:
                     try:
                         return _run_normal_api_translation()
                     except ApiKeyTemporarilyUnavailableError as exc:
-                        keep_paid_results(exc)
-                        raise
+                        partial = getattr(exc, "partial_results", None) or {}
+                        if not partial:
+                            # 一条都没翻到：写出去也只是原文副本，照旧整批失败。
+                            keep_paid_results(exc)
+                            raise
+                        rate_limited.append(exc)
+                        self._log(
+                            "WARN",
+                            f"接口持续限流，已停止继续请求；已拿到的 {len(partial)} 条译文照常写入文件，"
+                            "其余内容保留原文，可稍后用「接着上次继续」补译。",
+                        )
+                        if auto_source_lang:
+                            normal_api_language_results.update(partial)
+                            return {
+                                source: result.translation
+                                for source, result in partial.items()
+                            }
+                        return dict(partial)
 
                 def _run_normal_api_translation() -> dict[str, str]:
                     if not misses:
@@ -1591,6 +1610,14 @@ class TaskRunner:
                     )
 
                 def run_mixed_api_translation():
+                    try:
+                        return _run_mixed_api_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        rate_limited.append(exc)
+                        self._log("WARN", "接口持续限流，混合语言内容这次没能翻译，已保留原文。")
+                        return {}
+
+                def _run_mixed_api_translation():
                     if not mixed_texts:
                         return {}
                     self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
@@ -1598,6 +1625,8 @@ class TaskRunner:
                     def mixed_progress_cb(done, total):
                         _emit_api_progress("mixed", done)
 
+                    if rate_limited:
+                        return {}
                     return translate_mixed_language_texts(
                         mixed_texts,
                         engine=engine,
@@ -1675,6 +1704,30 @@ class TaskRunner:
                             f"语义校验接受 {mixed_stats.semantic_accepted_count}"
                         ),
                     )
+                if rate_limited:
+                    if not api_translations and not hits:
+                        raise rate_limited[0]
+                    unfinished = [
+                        text
+                        for text in dict.fromkeys([*misses, *mixed_texts])
+                        if text not in api_translations
+                    ]
+                    for text in unfinished:
+                        # 原样写回并标需复核：用户在文件里看得到哪些格子还没翻。
+                        api_translations[text] = text
+                        _set_excel_review_mark(excel_review_marks, text, MIXED_MARK_UNRESOLVED)
+                    if unfinished:
+                        quality_issues.append(
+                            {
+                                "type": "rate_limited_partial",
+                                "severity": "needs_action",
+                                "count": len(unfinished),
+                                "message": (
+                                    f"接口持续限流，有 {len(unfinished)} 条内容没能翻译，已保留原文并标记；"
+                                    "限流过去后用「接着上次继续」补译即可，已翻好的内容不会重复计费。"
+                                ),
+                            }
+                        )
                 # 注意：这里不能拦停止信号。已经跑到这一步的批次，API 费用已经
                 # 付了——`misses`/`mixed_texts` 里凡是进了 normal_api_translations /
                 # normal_api_language_results 的词条，都要走到下面的 TM 写入，
@@ -1824,7 +1877,7 @@ class TaskRunner:
             # 没开跑」的条数），不用事后探停止标志：停止落在最后一个单元的请求
             # 进行中时，remaining 全是真拒收、标志却已置位，事后探会把归因算反。
             repair_stopped_by_user = False
-            if still_needs_review and engine_supports_chat(engine):
+            if still_needs_review and engine_supports_chat(engine) and not rate_limited:
 
                 def _on_repair_progress(done: int, total: int) -> None:
                     self._queue.put(StatusMsg(
@@ -2178,6 +2231,10 @@ class TaskRunner:
                     )
                 return translated
 
+            if rate_limited and (filename_names or sheet_names_to_translate):
+                # 接口还在限流，再请求只会等满两分钟后失败；名称保持原样。
+                self._log("WARN", "接口持续限流，本次不翻译输出文件名和工作表名称。")
+                filename_names, sheet_names_to_translate = [], []
             filename_translations = _translate_name_pool(filename_names, "输出文件名")
             sheet_translations = _translate_name_pool(sheet_names_to_translate, "工作表名称")
             self._queue.put(StatusMsg(

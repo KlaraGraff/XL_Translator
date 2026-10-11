@@ -173,13 +173,46 @@ def translate_word_texts(
     max_workers = 1 if is_local_engine_name(engine.engine_name) else max(1, int(concurrency))
     max_workers = min(max_workers, len(batches))
 
+    try:
+        _run_batches(
+            batches,
+            max_workers=max_workers,
+            translate_one_batch=_translate_one_batch,
+            notify_drained=_notify_drained,
+            unit_results=unit_results,
+            should_stop=should_stop,
+        )
+    except ApiKeyTemporarilyUnavailableError as exc:
+        # 接口持续限流整轮放弃时，把已经付费拿到、整段都翻完的译文随异常带给调用方，
+        # 由它决定写出已翻部分还是整批失败。
+        missing_sources = {
+            unit.source for unit in units if (unit.source, unit.part_index) not in unit_results
+        }
+        merged = _merge_unit_results(texts, units, unit_results, target_lang=target_lang)
+        exc.partial_results = {  # type: ignore[attr-defined]
+            source: merged[source] for source in texts if source not in missing_sources
+        }
+        raise
+
+    return _merge_unit_results(texts, units, unit_results, target_lang=target_lang)
+
+
+def _run_batches(
+    batches: list[list[WordTranslationUnit]],
+    *,
+    max_workers: int,
+    translate_one_batch: Callable[[list[WordTranslationUnit]], dict[tuple[str, int], str]],
+    notify_drained: Callable[[], None],
+    unit_results: dict[tuple[str, int], str],
+    should_stop,
+) -> None:
     if max_workers <= 1:
         for batch in batches:
             if should_stop and should_stop():
                 logger.info("Word 翻译任务收到停止信号，停止提交后续批次。")
                 break
-            unit_results.update(_translate_one_batch(batch))
-        _notify_drained()
+            unit_results.update(translate_one_batch(batch))
+        notify_drained()
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map: dict = {}
@@ -191,9 +224,9 @@ def translate_word_texts(
                 try:
                     batch = next(batch_iter)
                 except StopIteration:
-                    _notify_drained()
+                    notify_drained()
                     return False
-                future = executor.submit(_translate_one_batch, batch)
+                future = executor.submit(translate_one_batch, batch)
                 future_map[future] = batch
                 return True
 
@@ -208,8 +241,6 @@ def translate_word_texts(
                     unit_results.update(future.result())
                     if not (should_stop and should_stop()):
                         _submit_next()
-
-    return _merge_unit_results(texts, units, unit_results, target_lang=target_lang)
 
 
 def _build_translation_units(

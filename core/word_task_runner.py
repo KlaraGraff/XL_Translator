@@ -1513,7 +1513,41 @@ class WordTaskRunner:
                 mixed_results: dict[str, MixedLanguageResult] = {}
                 mixed_stats = MixedLanguageRunStats()
 
+                rate_limit_note = (
+                    "接口持续限流，已停止继续请求。已翻好的内容照常写入文件，"
+                    "其余段落保留原文，限流过去后用「接着上次继续」补译即可。"
+                )
+
                 def run_normal_main_translation() -> dict[str, str]:
+                    # 持续限流但已拿到部分译文：按「停止」收尾，写出已翻部分、留下可续译的
+                    # 进度，而不是整批失败、一个文件都不写。一条都没拿到时照旧失败。
+                    nonlocal stopped_message
+                    try:
+                        return _run_normal_main_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        partial = getattr(exc, "partial_results", None) or {}
+                        if not partial:
+                            raise
+                        self._log("WARN", f"{exc}")
+                        if stopped_message is None:
+                            stopped_message = rate_limit_note
+                        self._stop_event.set()
+                        return dict(partial)
+
+                def run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
+                    nonlocal stopped_message
+                    try:
+                        return _run_mixed_main_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        if not misses:
+                            raise
+                        self._log("WARN", f"{exc}")
+                        if stopped_message is None:
+                            stopped_message = rate_limit_note
+                        self._stop_event.set()
+                        return {}
+
+                def _run_normal_main_translation() -> dict[str, str]:
                     if not misses:
                         return {}
                     return translate_word_texts(
@@ -1539,7 +1573,7 @@ class WordTaskRunner:
                         drained_callback=main_drain_gate.queue_drained,
                     )
 
-                def run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
+                def _run_mixed_main_translation() -> dict[str, MixedLanguageResult]:
                     if not mixed_texts:
                         return {}
                     self._queue.put(

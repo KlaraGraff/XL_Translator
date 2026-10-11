@@ -230,5 +230,33 @@ class WordBatchingTests(unittest.TestCase):
         self.assertEqual(result_box, [{"待翻译": "待翻译"}])
 
 
+class RateLimitPartialResultTests(unittest.TestCase):
+    def test_finished_paragraphs_ride_on_the_rate_limit_error(self) -> None:
+        from unittest.mock import patch
+
+        from core.api_concurrency_control import ApiKeyTemporarilyUnavailableError
+
+        calls = {"n": 0}
+
+        def fake_batch(batch, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise ApiKeyTemporarilyUnavailableError("接口持续限流")
+            return {(unit.source, unit.part_index): f"T:{unit.text}" for unit in batch}
+
+        settings = WordBatchSettings(max_paragraphs_per_batch=1)
+        with patch("core.word_batching._translate_units_with_fallback", side_effect=fake_batch):
+            with self.assertRaises(ApiKeyTemporarilyUnavailableError) as ctx:
+                translate_word_texts(
+                    ["第一段", "第二段", "第三段"],
+                    engine=type("E", (), {"engine_name": "mock"})(),
+                    target_lang="en",
+                    system_prompt="",
+                    batch_settings=settings,
+                    concurrency=1,
+                )
+        self.assertEqual(ctx.exception.partial_results, {"第一段": "T:第一段"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
