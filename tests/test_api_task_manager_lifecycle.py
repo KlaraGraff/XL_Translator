@@ -11,7 +11,9 @@ Three defects live here, all in ``api/task_manager.py``:
 
 from __future__ import annotations
 
+import json
 import threading
+from pathlib import Path
 import time
 from unittest.mock import patch
 
@@ -222,6 +224,43 @@ class TaskManagerLifecycleTests(IsolatedAppDataTestCase):
         # The stand-in still answers the protocol, so a late stop cannot raise.
         task.runner.stop()
         self.assertFalse(task.runner.needs_poll())
+
+    def test_finished_task_leaves_an_exportable_diagnostic_record(self) -> None:
+        """「导出诊断」以前对所有任务都是灰的：任务结束时从来没人写诊断记录。"""
+        from api.routes.maintenance import _task_diagnostic_record
+
+        task = self._register("diag-error")
+        task.logs.append({"level": "ERROR", "message": "第 3 批没有翻译成功"})
+        task.progress = {"phase_name": "翻译"}
+        self.manager._finish_if_needed(task, "error", "error", {"message": "429 Too Many Requests"})
+
+        record = _task_diagnostic_record("diag-error")
+        self.assertIsNotNone(record)
+        manifest = json.loads((Path(record["record_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["surface"], "excel")
+        self.assertEqual(manifest["phase"], "translate")
+        self.assertEqual(manifest["status"], "error")
+        self.assertEqual(manifest["error_code"], "rate_limited")
+        # 匿名承诺：记录里没有任务 id，也没有日志正文。
+        text = "".join(path.read_text(encoding="utf-8") for path in Path(record["record_dir"]).rglob("*.json"))
+        self.assertNotIn("diag-error", text)
+        self.assertNotIn("第 3 批", text)
+
+        done = self._register("diag-done", surface="cad")
+        done.progress = {"phase_name": "生成文件 · 第 1 / 2 个文件"}
+        self.manager._finish_if_needed(done, "done", "done", {})
+        record = _task_diagnostic_record("diag-done")
+        self.assertIsNotNone(record)
+        manifest = json.loads((Path(record["record_dir"]) / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual((manifest["phase"], manifest["status"], manifest["error_code"]), ("generate", "done", "none"))
+
+    def test_a_failing_diagnostic_write_does_not_block_task_teardown(self) -> None:
+        task = self._register("diag-broken")
+        with patch("core.diagnostics.archive_task_diagnostics", side_effect=OSError("disk full")):
+            self.manager._finish_if_needed(task, "error", "error", {"message": "boom"})
+        self.assertTrue(task.terminal)
+        self.assertTrue(task.lease.released)
+        self.assertIsInstance(task.runner, RetiredRunner)
 
     def test_pdf_task_keeps_its_runner_for_page_comparison(self) -> None:
         task = self._register("pdf-task", surface="pdf")

@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from core import tm_manager
+from core import diagnostics, tm_manager
 from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
@@ -71,6 +71,16 @@ TERMINAL_EVENT_TAIL = 300
 
 # Runner, the task errors and TaskOptions live in api/task_contracts.py
 # (surfaces need them too); they are re-exported from here.
+
+
+# 诊断记录只收 ASCII 类别；阶段名是中文（读取文件 / 翻译 / …），先换成固定代号。
+_DIAGNOSTIC_PHASES = {
+    "读取文件": "read",
+    "翻译": "translate",
+    "调整行高": "adjust",
+    "生成文件": "generate",
+    "记忆库清洗": "tm_clean",
+}
 
 
 @dataclass
@@ -1003,9 +1013,10 @@ class TranslationTaskManager:
                     "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
                 }, "interrupted")
                 task.state = "interrupted"
+                task.result = result
+                self._archive_diagnostics(task)
                 task.terminal = True
                 task.updated_at = time.time()
-                task.result = result
                 # Terminal flag and terminal event must become visible together.
                 self._append_event(task, "interrupted", task.result)
             task.lease.release()
@@ -1741,15 +1752,55 @@ class TranslationTaskManager:
                 # 完成态不动：PDF 完成后还能单页重跑，会往同一个目录里写。
                 result = _drop_empty_output_dir(result)
             task.state = state
+            task.result = _sanitize_task_data(result)
+            # 赶在终态事件之前写好：界面一收到终态就会问「有没有诊断记录」，晚一步
+            # 它就记成「没有」。也要赶在 runner 换成 RetiredRunner 之前（连接摘要
+            # 用它冻结的那份设置）。
+            self._archive_diagnostics(task)
             task.terminal = True
             task.updated_at = time.time()
-            task.result = _sanitize_task_data(result)
             # Append while still holding the condition (it is reentrant): a
             # reader that observes terminal=True must also see the terminal
             # event, or an SSE stream ends cleanly without ever carrying it.
             self._append_event(task, event_type, task.result)
         task.lease.release()
         self._retire_terminal_task(task)
+
+    def _archive_diagnostics(self, task: ApiTask) -> None:
+        """Leave the anonymous support record that 「导出诊断」 exports.
+
+        ``core.diagnostics`` 早就能写匿名诊断记录，任务中心也有导出按钮，但以前
+        没有任何任务结束时真的去写，按钮对所有任务都是灰的。每个结束的任务都留
+        一份（完成、出错、停止、中断），按诊断模块自己的上限滚动清理。记录里只有
+        类型、阶段、计数和服务商类别，不含文件名、路径、原文译文或密钥。写失败
+        只记日志：诊断是辅助信息，不能因为它让任务收不了尾。
+        """
+        try:
+            with task.condition:
+                state = task.state
+                result = dict(task.result or {})
+                logs = list(task.logs)
+                files = list(task.file_progress.values())
+                progress = dict(task.progress)
+            runner = task.runner
+            settings = getattr(runner, "_settings", None) or getattr(runner, "settings", None)
+            if settings is None:
+                settings = self._settings_loader()
+            diagnostics.archive_task_diagnostics(
+                surface=str(task.surface),
+                # CAD 的阶段名带后半句（「翻译 · 第 1 / 3 个文件」），只取「 · 」前面。
+                phase=_DIAGNOSTIC_PHASES.get(str(progress.get("phase_name") or "").split(" · ")[0].strip(), "start"),
+                task_id=task.task_id,
+                settings=settings,
+                selected_files=files,
+                logs=logs,
+                done=result,
+                error_message=str(result.get("message") or "") if state in {"error", "interrupted"} else "",
+                status=state,
+                progress=progress or None,
+            )
+        except Exception:  # noqa: BLE001 - diagnostics must never break task teardown
+            logger.opt(exception=True).warning("任务诊断记录没能写入；任务本身不受影响。")
 
     def _complete_file_progress(self, task: ApiTask, result: dict[str, Any], state: str) -> dict[str, Any]:
         """Reconcile each file against its output, never blanket-mark a task done."""

@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from core import tm_manager
+from core import diagnostics, tm_manager
 import settings as settings_module
 
 
@@ -34,6 +34,9 @@ class IsolatedAppDataTestCase(unittest.TestCase):
             patch.object(settings_module, "BACKUPS_DIR", self.app_data_dir / "backups"),
             patch.object(tm_manager, "BACKUPS_DIR", self.app_data_dir / "backups"),
             patch.object(tm_manager, "DB_PATH", self.app_data_dir / "tm.db"),
+            # 任务结束时会写一份匿名诊断记录（「导出诊断」导出的就是它）。
+            patch.object(diagnostics, "DIAGNOSTICS_DIR", self.app_data_dir / "diagnostics"),
+            patch.object(diagnostics, "DIAGNOSTIC_RECORDS_DIR", self.app_data_dir / "diagnostics" / "records"),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

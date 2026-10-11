@@ -1307,9 +1307,13 @@
     "en": "A full reset requires ticking the confirmation box and typing RESET.",
     "fr": "Une réinitialisation complète nécessite de cocher la confirmation et de saisir RESET."
   },
-  "本次任务没有生成诊断记录，没有可导出的内容。": {
-    "en": "This task didn't produce a diagnostic record, so there's nothing to export.",
-    "fr": "Cette tâche n'a produit aucun rapport de diagnostic : rien à exporter."
+  "这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。": {
+    "en": "This task has no diagnostic record (it ran on an older version, or the record was cleaned up automatically), so there's nothing to export.",
+    "fr": "Cette tâche n'a aucun rapport de diagnostic (elle a été exécutée avec une version antérieure, ou le rapport a été nettoyé automatiquement) : rien à exporter."
+  },
+  "任务诊断记录没能写入；任务本身不受影响。": {
+    "en": "Couldn't write the task's diagnostic record. The task itself is not affected.",
+    "fr": "Impossible d'écrire le rapport de diagnostic de la tâche. La tâche elle-même n'est pas affectée."
   },
   "找不到这条诊断记录，可能已被清除。": {
     "en": "Couldn't find this diagnostic record. It may have been cleared.",

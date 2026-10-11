@@ -154,7 +154,7 @@ def register(app: FastAPI) -> None:
     def download_task_diagnostic(task_id: str) -> StreamingResponse:
         record = _task_diagnostic_record(task_id)
         if record is None:
-            raise HTTPException(404, "本次任务没有生成诊断记录，没有可导出的内容。")
+            raise HTTPException(404, "这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。")
         return _zip_response(*_diagnostic_zip_or_404(record))
 
     @app.get("/api/diagnostics/task/{task_id}")
@@ -164,8 +164,9 @@ def register(app: FastAPI) -> None:
         Registered after the ``.zip`` route on purpose: ``{task_id}`` also
         matches ``abc.zip``, so the download has to win the first match.
 
-        任务详情据此决定「导出诊断」能不能点。手动停止等正常结束的任务本来就没有
-        诊断记录，以前要点了按钮、收到一条红色报错 toast 才知道。
+        任务详情据此决定「导出诊断」能不能点。任务结束时都会写一份记录，但更早版本
+        跑的任务、或超出保留上限被清掉的就没有；以前要点了按钮、收到一条红色报错
+        toast 才知道。
         """
         return {"available": _task_diagnostic_record(task_id) is not None}
 
