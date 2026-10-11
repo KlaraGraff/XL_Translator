@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,8 @@ class ExcelCoveragePlan:
     path: Path
     units: list[CoverageUnit]
     sheet_count: int
+    # 参与计划的分表名（不含上一轮克隆的「_原文」副本），按工作簿顺序。
+    sheet_names: tuple[str, ...] = ()
 
     @property
     def source_units(self) -> list[CoverageUnit]:
@@ -53,8 +56,15 @@ def build_excel_coverage_plan(
     target_lang: str,
     source_lang: str = "zh",
     formula_display_value_backfill: bool = True,
+    original_sheet_names: Iterable[str] = (),
 ) -> ExcelCoveragePlan:
-    """Classify app-style bilingual Excel cells by coverage status."""
+    """Classify app-style bilingual Excel cells by coverage status.
+
+    ``original_sheet_names``：给续译底稿建计划时传源文件的分表名。上一轮开着
+    「翻译工作表名称」时，底稿里的母表已经改成译名，克隆出来的「报价单_原文」
+    在底稿里找不到同名母表，单靠底稿自己的分表名认不出它是副本——整张原文表
+    就被当成待译内容重翻一遍。
+    """
     from openpyxl import load_workbook
 
     source_path = Path(path)
@@ -74,9 +84,12 @@ def build_excel_coverage_plan(
     units: list[CoverageUnit] = []
     try:
         workbook_sheet_names = set(wb.sheetnames)
+        clone_parent_names = workbook_sheet_names | set(original_sheet_names)
+        planned_sheet_names: list[str] = []
         for ws in wb.worksheets:
-            if _is_generated_original_sheet(ws.title, workbook_sheet_names):
+            if _is_generated_original_sheet(ws.title, clone_parent_names):
                 continue
+            planned_sheet_names.append(ws.title)
             # 公式格的显示值一次性读成内存映射。read_only 工作表的
             # ``ws[coord]`` 每次都要重新解析整张 sheet XML，逐格去问是 O(n²)：
             # 实测 1600 个公式格就要 7.7s，万级公式表直接卡到分钟级。
@@ -105,6 +118,7 @@ def build_excel_coverage_plan(
             path=source_path,
             units=units,
             sheet_count=len(wb.worksheets),
+            sheet_names=tuple(planned_sheet_names),
         )
     finally:
         wb.close()
@@ -369,6 +383,20 @@ def _resolve_cell_text(
     if display_values is None:
         return None
     return display_values.get(cell.coordinate)
+
+
+def workbook_sheet_titles(path: str | Path) -> list[str]:
+    """工作簿的分表名（按顺序）；读不出来返回空列表，调用方按「没有额外信息」处理。"""
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(str(path), read_only=True)
+    except Exception:  # noqa: BLE001 - 只是辅助信息，读不出来不能拖垮建计划。
+        return []
+    try:
+        return list(wb.sheetnames)
+    finally:
+        wb.close()
 
 
 def _is_generated_original_sheet(sheet_name: str, workbook_sheet_names: set[str]) -> bool:

@@ -35,7 +35,11 @@ from core.api_scheduler import API_REQUEST_CATEGORY_NORMAL, WeightedApiScheduler
 from core.api_config_check import check_translation_api_config
 from core.coverage_arbitration import RETRANSLATE_MODEL
 from core.coverage_review import arbitrate_coverage_units
-from core.excel_coverage import build_excel_coverage_plan, write_untranslated_excel_file
+from core.excel_coverage import (
+    build_excel_coverage_plan,
+    workbook_sheet_titles,
+    write_untranslated_excel_file,
+)
 from core.file_scanner import FileItem
 from core.file_progress import FileProgressReporter
 from core.language_registry import (
@@ -1057,6 +1061,9 @@ class TaskRunner:
                             source_lang=source_lang,
                             formula_display_value_backfill=(
                                 excel_output.formula_display_value_backfill
+                            ),
+                            original_sheet_names=(
+                                workbook_sheet_titles(file_item.path) if resume_used else ()
                             ),
                         )
                         self._arbitrate_excel_coverage_pairs(
@@ -2102,10 +2109,15 @@ class TaskRunner:
                         except Exception as exc:  # File-level write still reports a bad workbook.
                             logger.debug(f"读取工作表名称失败 {file_item.name}：{exc!r}")
                             names = list(file_item.sheets)
+                        # 续译时这里读的是上次的产物：母表可能已经是译名，「报价单_原文」
+                        # 要拿源文件的分表名才认得出是副本，否则副本也被拿去翻译改名。
+                        clone_parents = set(names)
+                        if Path(process_paths[fi]) != Path(file_item.path):
+                            clone_parents.update(workbook_sheet_titles(file_item.path))
                         sheet_names_to_translate.extend(
                             name
                             for name in names
-                            if not is_generated_original_sheet_title(name, names)
+                            if not is_generated_original_sheet_title(name, clone_parents)
                         )
 
             def _translate_name_pool(names: list[str], kind: str) -> dict[str, str]:
@@ -3098,6 +3110,11 @@ class TaskRunner:
                     target_lang=target_lang,
                     source_lang=file_source_lang,
                     formula_display_value_backfill=formula_display_value_backfill,
+                    original_sheet_names=(
+                        workbook_sheet_titles(file_item.path)
+                        if fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                        else ()
+                    ),
                 )
             except Exception as e:  # noqa: BLE001 - 单个文件读失败不该带走整批
                 # 刚被 _apply_deferred_resume_baselines 换上的底稿探活能过、建计划
@@ -3249,7 +3266,10 @@ class TaskRunner:
         """Build the Phase 4 result contract without exposing document text."""
         files = [dict(item) for item in file_results]
         terminal_sources = {str(item.get("source_path") or "") for item in files}
-        if stopped:
+        # 停止和整批失败（持续限流、上游不可用……）都会在写盘前收尾：此时 file_results
+        # 是空的，不补上这些文件，KPI 就成了「已选 2 / 已生成 0 / 未生成 0」，而同一屏
+        # 的文件清单里两行都写着未生成。
+        if stopped or error_message:
             for item in self._files:
                 if str(item.path) in terminal_sources:
                     continue
@@ -3260,9 +3280,9 @@ class TaskRunner:
                         "source_relative_path": self._relative_source_path(item.path),
                         "format": getattr(item, "format", item.path.suffix.lstrip(".")),
                         "conversion_mode": "not_started",
-                        "status": "unstarted",
+                        "status": "unstarted" if stopped else "failed",
                         "success": False,
-                        "error": "任务在开始该文件前已停止。",
+                        "error": "任务在开始该文件前已停止。" if stopped else "任务整体失败，这个文件没有写出。",
                     }
                 )
 
