@@ -1,0 +1,93 @@
+"""The thread-and-queue shell every task runner shares.
+
+A runner does its work on one background thread and reports through a
+message queue: ``api.task_manager`` pumps ``get_message()`` while
+``needs_poll()`` is true and turns each message into a task event.  Excel,
+Word, PDF, CAD and TM cleaning used to each carry their own copy of that
+shell; it lives here now so a new surface only writes ``_run()``.
+
+Subclasses set ``self._queue``, ``self._thread`` and ``self._stop_event`` in
+their ``__init__`` (``_init_runner_shell()`` does exactly that) and implement
+``_run()``.  Optional capabilities stay optional: the task manager offers
+pause, resume and end-paused only to runners that define ``pause()``,
+``resume()`` and ``end_paused()``.
+"""
+
+from __future__ import annotations
+
+import queue
+import threading
+from typing import Any
+
+from loguru import logger
+
+from core.task_runner_messages import LogMsg
+from settings import provider_key_overrides
+
+
+class BaseTaskRunner:
+    """Background thread + message queue; subclasses implement ``_run()``."""
+
+    # ``None`` keeps Python's default ``Thread-N`` name.
+    _thread_name: str | None = None
+    # Run ``_run()`` inside ``provider_key_overrides(self._key_overrides)`` so
+    # the task's frozen connection keys win over keys.json for its lifetime.
+    _uses_key_overrides = True
+
+    _queue: queue.Queue
+    _thread: threading.Thread | None
+    _stop_event: threading.Event
+
+    def _init_runner_shell(self) -> None:
+        self._queue = queue.Queue()
+        self._thread = None
+        self._stop_event = threading.Event()
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        self._before_start()
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._thread_main, daemon=True, name=self._thread_name
+        )
+        self._thread.start()
+
+    def _before_start(self) -> None:
+        """Reset subclass state (pause flags, stop reasons) before a start."""
+
+    def _thread_main(self) -> None:
+        if self._uses_key_overrides:
+            with provider_key_overrides(getattr(self, "_key_overrides", None) or {}):
+                self._run()
+        else:
+            self._run()
+
+    def _run(self) -> None:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def stop_requested(self) -> bool:
+        return self._stop_event.is_set()
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    # ── messages ─────────────────────────────────────────────────────────
+
+    def needs_poll(self) -> bool:
+        """Thread alive OR messages still queued, so a final DoneMsg is never missed."""
+        return self.is_running() or not self._queue.empty()
+
+    def get_message(self, timeout: float = 0.05) -> Any:
+        """Next queued message, or ``None`` when nothing arrives within ``timeout``."""
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _log(self, level: str, message: str) -> None:
+        self._queue.put(LogMsg(level=level, message=message))
+        logger.info(f"[{level}] {message}")

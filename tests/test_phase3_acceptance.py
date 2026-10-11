@@ -207,7 +207,7 @@ class Phase3ApiAcceptanceTests(unittest.TestCase):
 
     def test_capability_rejection_happens_before_any_image_provider_request(self) -> None:
         """M3A-02: a text-only provider cannot be saved for the image role."""
-        with patch("api.app.check_image_generation_connectivity") as checker:
+        with patch("api.routes.models.check_image_generation_connectivity") as checker:
             response = self.client.put(
                 "/api/models/roles/image",
                 json={

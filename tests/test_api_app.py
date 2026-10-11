@@ -168,7 +168,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):
@@ -194,7 +194,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):
@@ -225,7 +225,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):
@@ -302,7 +302,7 @@ class ApiAppTests(unittest.TestCase):
         )
         self.assertEqual(throughput.status_code, 200)
         with patch(
-            "api.app.fetch_openai_compatible_models",
+            "api.routes.models.fetch_openai_compatible_models",
             return_value=ModelCatalogResult(True, ["model-a"], "ok", "ok"),
         ):
             fetched = self.client.post(
@@ -486,7 +486,7 @@ class ApiAppTests(unittest.TestCase):
                 }
             },
         }
-        with patch("api.app.save_settings", side_effect=OSError("disk full")):
+        with patch("api.routes.config_transfer.save_settings", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 self.client.post("/api/model-config/import", json=payload)
 

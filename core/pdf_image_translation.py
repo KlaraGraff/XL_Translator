@@ -36,6 +36,7 @@ from config import (
     normalize_cloud_base_url,
 )
 from core import bilingual_writer
+from core.runner_base import BaseTaskRunner
 from core.output_name_translation import translate_output_stem
 from core.file_progress import FileProgressReporter
 from core.api_concurrency_control import handle_api_concurrency_limit
@@ -1130,7 +1131,7 @@ def reusable_pdf_pages(
     return reusable
 
 
-class PdfImageTranslationRunner:
+class PdfImageTranslationRunner(BaseTaskRunner):
     """Background runner for PDF image-layout translation."""
 
     def __init__(
@@ -1230,12 +1231,9 @@ class PdfImageTranslationRunner:
     def task_id(self) -> str:
         return self._task_logger.task_id
 
-    def start(self) -> None:
-        self._stop_event.clear()
+    def _before_start(self) -> None:
         self._pause_event.clear()
         self._stop_reason = ""
-        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
-        self._thread.start()
 
     def stop(self) -> None:
         """Request a normal terminal stop after currently submitted pages settle."""
@@ -1279,21 +1277,6 @@ class PdfImageTranslationRunner:
         elif self._pause_event.is_set() and not self._stop_event.is_set():
             self._pause_event.clear()
             self._log("INFO", "已继续翻译：继续提交后续页面。")
-
-    def stop_requested(self) -> bool:
-        return self._stop_event.is_set()
-
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def needs_poll(self) -> bool:
-        return self.is_running() or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05):
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
 
     # ---- per-page review panel -------------------------------------------------
     #
@@ -2451,10 +2434,6 @@ class PdfImageTranslationRunner:
         }.get(level, self._task_logger.info)
         task_logger_method(message)
         logger.info(f"[PDF][{level}] {message}")
-
-    def _run_with_overrides(self) -> None:
-        with provider_key_overrides(self._key_overrides):
-            self._run()
 
     def _run(self) -> None:
         started = datetime.now()

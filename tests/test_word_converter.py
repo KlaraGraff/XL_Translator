@@ -179,6 +179,8 @@ class WordConverterTests(unittest.TestCase):
                 "_libreoffice_python_launch_constraint_message",
                 return_value=None,
             ),
+            # 提示语按平台给：「代码签名」只在 macOS 上说得通，这里固定成 macOS 场景。
+            patch.object(word_converter.platform, "system", return_value="Darwin"),
         ):
             for _ in range(4):
                 with self.assertRaises(WordConversionError) as ctx:

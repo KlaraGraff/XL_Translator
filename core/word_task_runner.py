@@ -19,6 +19,7 @@ from typing import Callable, Iterable
 from loguru import logger
 
 from core import tm_manager
+from core.runner_base import BaseTaskRunner
 from core.api_concurrency_control import (
     ApiCredentialRejectedError,
     ApiKeyTemporarilyUnavailableError,
@@ -52,6 +53,7 @@ from core.language_registry import (
 )
 from core.language_preflight import (
     LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+    LanguagePreflightResult,
     TranslationLanguageResult,
     build_language_preflight_prompt,
     preflight_files,
@@ -76,7 +78,7 @@ from core.residual_classifier import (
     is_section_heading_source,
     summarize_residuals,
 )
-from core.residual_pipeline import run_residual_pass
+from core.residual_pipeline import ResidualPassResult, ResidualUnitReport, run_residual_pass
 from core.residual_repair import (
     DEFAULT_REPAIR_BREAKER_THRESHOLD,
     DEFAULT_REPAIR_MAX_UNITS,
@@ -96,7 +98,6 @@ from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
-    LogMsg,
     ProgressMsg,
     StatusMsg,
     StoppedMsg,
@@ -153,7 +154,7 @@ from core.word_batching import (
 )
 from core.output_name_translation import avoid_bilingual_name_collision, translate_output_stem
 from engines.base_engine import engine_supports_chat, strip_markdown_json
-from settings import AppSettings, provider_key_overrides
+from settings import AppSettings
 # 以下名字已拆到 core.word_quality_report，这里原样再导出，保持旧的导入路径可用。
 from core.word_quality_report import (  # noqa: F401
     _WORD_REVIEW_MARK_PRIORITY,
@@ -322,7 +323,7 @@ def _translation_in_unexpected_cjk(source: str, translation: str | None, target_
     return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
 
 
-class WordTaskRunner:
+class WordTaskRunner(BaseTaskRunner):
     """Run the Word translation pipeline on a background thread."""
 
     def __init__(
@@ -359,36 +360,9 @@ class WordTaskRunner:
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
 
-    def start(self) -> None:
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
-        self._thread.start()
-
     @property
     def task_id(self) -> str:
         return self._task_logger.task_id
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def stop_requested(self) -> bool:
-        return self._stop_event.is_set()
-
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def needs_poll(self) -> bool:
-        return self.is_running() or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05):
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def _log(self, level: str, message: str) -> None:
-        self._queue.put(LogMsg(level=level, message=message))
-        logger.info(f"[{level}] {message}")
 
     def _log_front_matter_boundary(
         self, file_name: str, front_matter: WordFrontMatterBoundary
@@ -702,10 +676,6 @@ class WordTaskRunner:
                     }
                 )
 
-    def _run_with_overrides(self) -> None:
-        with provider_key_overrides(self._key_overrides):
-            self._run()
-
     def _run(self) -> None:
         start_ts = datetime.now()
         settings = self._settings
@@ -916,369 +886,32 @@ class WordTaskRunner:
             self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在提取 Word 文本..."))
             t_phase1 = datetime.now()
             for index, file_item in enumerate(self._files):
-                _raise_if_stopped()
-                self._file_progress.emit(file_item.path, "active", "extract")
-                self._queue.put(
-                    ProgressMsg(
-                        phase_index=1,
-                        phase_total=phase_total,
-                        phase_name="Word 提取",
-                        step_done=index,
-                        step_total=len(self._files),
-                    )
+                self._collect_file_texts(
+                    _raise_if_stopped=_raise_if_stopped,
+                    api_scheduler=api_scheduler,
+                    auto_source_lang=auto_source_lang,
+                    concurrency=concurrency,
+                    converted_temp_paths=converted_temp_paths,
+                    coverage_plans=coverage_plans,
+                    engine=engine,
+                    file_item=file_item,
+                    file_results=file_results,
+                    file_texts=file_texts,
+                    front_matter_summaries=front_matter_summaries,
+                    global_unique_texts=global_unique_texts,
+                    header_channel_entries=header_channel_entries,
+                    index=index,
+                    lang_pair=lang_pair,
+                    phase_total=phase_total,
+                    preprocess_summaries=preprocess_summaries,
+                    process_paths=process_paths,
+                    quality_issues=quality_issues,
+                    review_marks=review_marks,
+                    segment_locations=segment_locations,
+                    settings=settings,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
                 )
-                self._log("INFO", f"[阶段 1] 提取文本：{file_item.name}（{index + 1}/{len(self._files)}）")
-                try:
-                    t0 = datetime.now()
-                    prepared = None
-                    resumed_coverage_plan = None
-                    resume_source_lang = (
-                        source_lang if not auto_source_lang else get_default_source_lang()
-                    )
-                    resumed_path = (
-                        self._resolve_resume_process_path(file_item, target_lang=target_lang)
-                        if self._untranslated_only
-                        else None
-                    )
-                    if resumed_path is not None:
-                        try:
-                            resumed_coverage_plan = build_word_coverage_plan(
-                                resumed_path,
-                                target_lang=target_lang,
-                                source_lang=resume_source_lang,
-                                protect_front_matter=self._protect_front_matter,
-                            )
-                        except Exception as exc:
-                            # 底稿建不出补译计划（结构对不上、已损坏之类）——退回按源
-                            # 文件正常处理，不能让一个用不了的底稿拖累整份文件翻译失败。
-                            self._log(
-                                "WARNING",
-                                (
-                                    f"{file_item.name}：续译底稿无法建立补译计划，"
-                                    f"已按源文件正常处理（{exc}）。"
-                                ),
-                            )
-                            resumed_path = None
-                    if resumed_path is not None:
-                        # 底稿资格核查：补译计划只看底稿——源文件在上次翻译后新增的
-                        # 段落不在底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
-                        # 源文件是 .doc 时读不出文本，核查返回 None，维持原行为。
-                        missing = baseline_missing_source_texts(
-                            file_item.path,
-                            resumed_path,
-                            surface="word",
-                            target_lang=target_lang,
-                            source_lang=resume_source_lang,
-                            baseline_plan=resumed_coverage_plan,
-                        )
-                        if missing:
-                            self._log(
-                                "WARNING",
-                                (
-                                    f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                                    f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
-                                    "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。"
-                                ),
-                            )
-                            resumed_path = None
-                            resumed_coverage_plan = None
-                    if resumed_path is not None:
-                        process_path = resumed_path
-                        self._log(
-                            "INFO",
-                            f"  → [续译] {file_item.name}：复用上次双语产物为底稿，本次只补未译内容。",
-                        )
-                    else:
-                        self._queue.put(
-                            StatusMsg(
-                                phase_desc=(
-                                    f"状态：[阶段 1/{phase_total}] 正在预处理 Word 文档："
-                                    f"{file_item.name}"
-                                )
-                            )
-                        )
-                        prepared = _prepare_word_source_for_translation(
-                            file_item.path,
-                            use_native_preprocessing=(
-                                settings.word_conversion.use_native_preprocessing
-                            ),
-                            allow_doc_fallback=self._allow_doc_fallback,
-                        )
-                        process_path = prepared.path
-                        converted_temp_paths.extend(prepared.temp_paths)
-                        for fallback_message in prepared.fallback_messages:
-                            self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一处理方式。")
-                        self._log(
-                            "INFO",
-                            (
-                                f"Word 预处理完成 {file_item.name}，"
-                                f"使用 {prepared.method}，"
-                                f"自动编号 {prepared.labels_seen} 段，"
-                                f"物化 {prepared.labels_prepended} 段，"
-                                f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
-                            ),
-                        )
-                    process_paths.append(process_path)
-                    hidden_content = detect_hidden_word_content(process_path)
-                    if hidden_content.found:
-                        # 这部分内容 python-docx 根本看不见，本次一定漏译。做不到翻译，
-                        # 至少不能让它静悄悄地漏掉。
-                        self._log(
-                            "WARN",
-                            (
-                                f"  → [未翻译内容] {file_item.name}：检测到"
-                                f"{hidden_content.describe()}，"
-                                "这些内容不在本次翻译范围内，输出文档中会保持原文。"
-                                f"建议：{hidden_content.advice()}。"
-                            ),
-                        )
-                        quality_issues.append(
-                            {
-                                "file": _file_result_identity(file_item, self._source_root),
-                                "kind": "hidden_content",
-                                "location": "document",
-                                "location_label": "整篇文档",
-                                "section_path": "正文",
-                                "snippet": "",
-                                "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
-                                "status": (
-                                    "这些内容位于内容控件、未接受的修订、文本框或脚注里，"
-                                    "未参与翻译，输出文档中保持原文。"
-                                ),
-                                "severity": "needs_review",
-                            }
-                        )
-                    if hidden_content.has_toc:
-                        # 自动目录不是漏译，是设计如此：目录是域，内容由 Word 按标题现生成，
-                        # 翻译出来的字一按 F9 就被覆盖。之前它跟真正的漏译走同一条路，
-                        # 一份正常文档因此在界面上写着「需复核 1」——一件不需要修的事
-                        # 被报成了缺陷。现在只留一句告诉用户去刷新的提示。
-                        self._log(
-                            "INFO",
-                            (
-                                f"  → [自动目录] {file_item.name}：检测到自动目录 "
-                                f"{hidden_content.toc_control_count} 处，目录由 Word 的域生成，"
-                                "不参与翻译。请在 Word 里选中目录、按 F9 并选「更新整个目录」，"
-                                "目录会按译文标题重新生成。"
-                            ),
-                        )
-                        quality_issues.append(
-                            {
-                                "file": _file_result_identity(file_item, self._source_root),
-                                "kind": "toc_field",
-                                "location": "document",
-                                "location_label": "整篇文档",
-                                "section_path": "目录",
-                                "snippet": "",
-                                "problem": "自动目录未参与翻译",
-                                "status": (
-                                    "目录由 Word 的域自动生成，译文一刷新就会被覆盖，"
-                                    "因此不参与翻译。请在 Word 里选中目录、按 F9 并选"
-                                    "「更新整个目录」，目录会按译文标题重新生成。"
-                                ),
-                                "severity": "info",
-                            }
-                        )
-                    preprocess_summaries.append(
-                        {
-                            "hidden_content": hidden_content.as_dict(),
-                            "method": (
-                                prepared.method if prepared is not None else "resume_previous_output"
-                            ),
-                            "labels_seen": prepared.labels_seen if prepared is not None else 0,
-                            "labels_prepended": (
-                                prepared.labels_prepended if prepared is not None else 0
-                            ),
-                            "conversion_method": (
-                                prepared.conversion_method if prepared is not None else None
-                            ),
-                            "conversion_fidelity": (
-                                prepared.conversion_fidelity if prepared is not None else None
-                            ),
-                            "conversion_fallback_messages": (
-                                list(prepared.fallback_messages) if prepared is not None else []
-                            ),
-                            "numbering_method": (
-                                prepared.numbering_method if prepared is not None else None
-                            ),
-                            "numbering_fallback_messages": (
-                                list(prepared.numbering_fallback_messages)
-                                if prepared is not None
-                                else []
-                            ),
-                        }
-                    )
-                    if self._untranslated_only:
-                        coverage_plan = (
-                            resumed_coverage_plan
-                            if resumed_coverage_plan is not None
-                            else build_word_coverage_plan(
-                                process_path,
-                                target_lang=target_lang,
-                                source_lang=resume_source_lang,
-                                protect_front_matter=self._protect_front_matter,
-                            )
-                        )
-                        self._arbitrate_coverage_pairs(
-                            coverage_plan,
-                            engine=engine,
-                            api_scheduler=api_scheduler,
-                            target_lang=target_lang,
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
-                            lang_pair=lang_pair,
-                            concurrency=concurrency,
-                            file_name=file_item.name,
-                            file_identity=_file_result_identity(
-                                file_item, self._source_root
-                            ),
-                            quality_issues=quality_issues,
-                            review_marks=review_marks,
-                        )
-                        coverage_plans.append(coverage_plan)
-                        _remember_coverage_unit_locations(
-                            segment_locations,
-                            _file_result_identity(file_item, self._source_root),
-                            coverage_plan.source_units,
-                        )
-                        text_set = set(coverage_plan.source_texts)
-                        # 覆盖率计划只看正文和表格，页眉页脚要单独取一次才能一起补译。
-                        if self._translate_headers_footers:
-                            header_segments = extract_word_header_footer_segments(
-                                process_path,
-                                target_lang=target_lang,
-                                source_lang=(
-                                    source_lang
-                                    if not auto_source_lang
-                                    else get_default_source_lang()
-                                ),
-                            )
-                            _remember_segment_locations(
-                                segment_locations,
-                                _file_result_identity(file_item, self._source_root),
-                                header_segments,
-                            )
-                            text_set.update(
-                                self._split_header_channel_lines(
-                                    header_segments,
-                                    identity=_file_result_identity(
-                                        file_item, self._source_root
-                                    ),
-                                    source_lang=(
-                                        source_lang
-                                        if not auto_source_lang
-                                        else get_default_source_lang()
-                                    ),
-                                    entries=header_channel_entries,
-                                )
-                            )
-                        summary = coverage_plan.summary
-                        self._log(
-                            "INFO",
-                            (
-                                "  → 补译识别："
-                                f"待补 {summary.get('source_only', 0)}，"
-                                f"已覆盖 {summary.get('covered', 0)}，"
-                                f"不确定跳过 {summary.get('ambiguous', 0)}"
-                            ),
-                        )
-                        self._log_ignored_coverage_units(
-                            file_item.name, coverage_plan.units
-                        )
-                        front_matter_summaries.append(
-                            _front_matter_report(
-                                coverage_plan.front_matter,
-                                requested=self._protect_front_matter,
-                            )
-                        )
-                        self._log_front_matter_boundary(file_item.name, coverage_plan.front_matter)
-                    else:
-                        segments = extract_word_segments(
-                            process_path,
-                            target_lang=target_lang,
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
-                            protect_front_matter=self._protect_front_matter,
-                            include_headers_footers=self._translate_headers_footers,
-                        )
-                        coverage_plans.append(None)
-                        _remember_segment_locations(
-                            segment_locations,
-                            _file_result_identity(file_item, self._source_root),
-                            segments,
-                        )
-                        # 全译模式的页眉页脚同样分流：这种行整条重翻一遍，接在后面的
-                        # 译文会把合同上签的那个译名重写一遍（而且页眉高度是固定的，
-                        # 白接一段没必要的字）。走专用通道只补缺的那截。
-                        text_set = self._split_header_channel_lines(
-                            segments,
-                            identity=_file_result_identity(file_item, self._source_root),
-                            source_lang=(
-                                source_lang
-                                if not auto_source_lang
-                                else get_default_source_lang()
-                            ),
-                            entries=header_channel_entries,
-                        )
-                        # extract_word_segments 只返回抽取好的词条，不携带边界信息；
-                        # 全文翻译模式下要单独查一次正文边界才能把保护结果上报给前端，
-                        # 这与补译模式下 coverage_plan.front_matter 已经"顺手"带出来不同。
-                        front_matter = (
-                            find_word_front_matter_boundary_for_path(process_path)
-                            if self._protect_front_matter
-                            else WordFrontMatterBoundary(body_start_index=None)
-                        )
-                        front_matter_summaries.append(
-                            _front_matter_report(
-                                front_matter,
-                                requested=self._protect_front_matter,
-                            )
-                        )
-                        self._log_front_matter_boundary(file_item.name, front_matter)
-                    file_texts.append(text_set)
-                    global_unique_texts.update(text_set)
-                    elapsed = (datetime.now() - t0).total_seconds()
-                    self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
-                    self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
-                    self._file_progress.emit(file_item.path, "waiting", "translate")
-                except Exception as exc:
-                    if len(process_paths) < index + 1:
-                        process_paths.append(file_item.path)
-                    if len(preprocess_summaries) < index + 1:
-                        preprocess_summaries.append({})
-                    if len(coverage_plans) < index + 1:
-                        coverage_plans.append(None)
-                    if len(front_matter_summaries) < index + 1:
-                        front_matter_summaries.append({})
-                    file_texts.append(set())
-                    logger.debug(f"Word 文件读取失败 {file_item.name} 原始错误：{exc!r}")
-                    read_reason = user_facing_reason(
-                        exc,
-                        fallback="这个文件打不开，可能已损坏或设置了打开密码。",
-                    )
-                    self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {read_reason}")
-                    self._task_logger.file_error(
-                        file_item.name,
-                        f"Word 文件读取失败: {read_reason}",
-                    )
-                    file_results.append(
-                        {
-                            "name": file_item.name,
-                            "source_path": str(file_item.path),
-                            "success": False,
-                            "error": f"Word 文件读取失败: {read_reason}",
-                        }
-                    )
-                    self._file_progress.emit(
-                        file_item.path, "failed", "extract",
-                        result={"error": f"Word 文件读取失败: {read_reason}"},
-                    )
 
             self._queue.put(
                 ProgressMsg(
@@ -1298,66 +931,13 @@ class WordTaskRunner:
             )
 
             if auto_source_lang:
-                self._queue.put(
-                    StatusMsg(
-                        phase_desc="状态：自动识别模式，正在对每个有候选文本的 Word 文件执行一次语言预检..."
-                    )
-                )
-
-                detector_calls = {"count": 0}
-
-                def _detect_file_language(samples, detected_target):
-                    detector_calls["count"] += 1
-                    return engine.chat(
-                        LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
-                        build_language_preflight_prompt(
-                            samples,
-                            target_lang=detected_target,
-                        ),
-                    )
-
-                file_payloads = {
-                    str(file_item.path): texts
-                    for file_item, texts in zip(self._files, file_texts)
-                }
-                file_language_preflights = {}
-                for file_path, candidate_texts in file_payloads.items():
-                    self._file_progress.emit(file_path, "active", "detect")
-                    file_language_preflights.update(preflight_files(
-                        {file_path: candidate_texts},
-                        _detect_file_language,
-                        target_lang=target_lang,
-                    ))
-                    self._file_progress.emit(file_path, "waiting", "translate")
-                detected_sources: list[str] = []
-                for result in file_language_preflights.values():
-                    for detected in result.source_langs:
-                        if detected not in detected_sources:
-                            detected_sources.append(detected)
-                if detected_sources:
-                    source_lang = detected_sources[0]
-                    system_prompt = get_system_prompt(
-                        settings,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        page_key="word",
-                    )
-                else:
-                    source_lang = get_default_source_lang()
-                tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
-                for file_item, text_set in zip(self._files, file_texts):
-                    result = file_language_preflights.get(str(file_item.path))
-                    if result is None:
-                        continue
-                    for text in text_set:
-                        text_source_candidates.setdefault(text, set()).update(result.source_langs)
-                self._log(
-                    "INFO",
-                    (
-                        f"自动语言预检完成：{detector_calls['count']} 次请求，"
-                        f"实际源语言={','.join(detected_sources) or '未确定'}，"
-                        f"TM 语言对={','.join(tm_language_pairs) or '无'}"
-                    ),
+                source_lang, system_prompt, tm_language_pairs, file_language_preflights = self._preflight_source_languages(
+                    engine=engine,
+                    file_texts=file_texts,
+                    settings=settings,
+                    system_prompt=system_prompt,
+                    target_lang=target_lang,
+                    text_source_candidates=text_source_candidates,
                 )
             else:
                 tm_language_pairs = [lang_pair] if lang_pair else []
@@ -1834,333 +1414,47 @@ class WordTaskRunner:
             # ── 残留中文体检 + 确定性序号修复（0 API，与 Excel 共用分类器）──
             # 放在写盘前对最终词典做：能确定修的（序号前缀）直接改词典；
             # 改不了的走修复阶梯；仍修不上的标记待复核并逐位置写进报告。
-            residual_result = run_residual_pass(
-                global_translations.items(), target_lang=target_lang
+            residual_result, still_needs_review = self._repair_residuals(
+                engine=engine,
+                global_translations=global_translations,
+                phase_total=phase_total,
+                quality_issues=quality_issues,
+                review_marks=review_marks,
+                segment_locations=segment_locations,
+                target_lang=target_lang,
             )
-            if residual_result.fixes:
-                global_translations.update(residual_result.fixes)
-                self._log(
-                    "OK",
-                    (
-                        f"残留序号确定性修复 {len(residual_result.fixes)} 条"
-                        f"（序号惯例：{residual_result.convention}）"
-                    ),
-                )
-                _add_quality_issues(
-                    quality_issues,
-                    segment_locations,
-                    list(residual_result.fixes.keys()),
-                    problem="译文残留中文序号",
-                    status="已按文档序号惯例自动修复，无需人工处理。",
-                    severity="resolved",
-                )
-
-            # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）。
-            # 上限/熔断/进度护栏在 run_repair_ladder 里，与 Excel 主流程共用。
-            still_needs_review = list(residual_result.needs_review)
-            repair_method_counts: dict[str, int] = {}
-            repair_accepted_sources: list[str] = []
-            # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
-            repair_reject_reasons: dict[str, tuple[str, ...]] = {}
-            # 超限/熔断要写进结果报告：只在日志里提会被滚走，用户就不知道
-            # 「这批单元根本没尝试修复，重跑还有救」
-            repair_over_cap_count = 0
-            repair_breaker_tripped = False
-            if still_needs_review and engine_supports_chat(engine):
-
-                def _on_repair_progress(done: int, total: int) -> None:
-                    self._queue.put(StatusMsg(
-                        phase_desc=(
-                            f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
-                            f"（{done}/{total}）..."
-                        )
-                    ))
-
-                ladder = run_repair_ladder(
-                    still_needs_review,
-                    target_lang=target_lang,
-                    send=engine.chat,
-                    convention=residual_result.convention,
-                    max_units=_RESIDUAL_REPAIR_MAX_UNITS,
-                    breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
-                    should_stop=self.stop_requested,
-                    on_progress=_on_repair_progress,
-                )
-                if ladder.over_cap_count:
-                    self._log(
-                        "WARN",
-                        (
-                            f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
-                            f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
-                            f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
-                        ),
-                    )
-                if ladder.breaker_tripped:
-                    self._log(
-                        "WARN",
-                        (
-                            f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
-                            "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
-                        ),
-                    )
-                global_translations.update(ladder.accepted)
-                repair_accepted_sources = list(ladder.accepted.keys())
-                repair_method_counts = ladder.method_counts
-                repair_reject_reasons = ladder.reject_reasons
-                repair_over_cap_count = ladder.over_cap_count
-                repair_breaker_tripped = ladder.breaker_tripped
-                still_needs_review = list(ladder.remaining)
-            repaired_total = sum(repair_method_counts.values())
-            if repaired_total:
-                method_desc = "、".join(
-                    f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
-                    for method, count in sorted(repair_method_counts.items())
-                )
-                self._log(
-                    "OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）"
-                )
-                _add_quality_issues(
-                    quality_issues,
-                    segment_locations,
-                    repair_accepted_sources,
-                    problem="译文残留未翻译的中文片段",
-                    status="残留中文已自动修复，修复稿通过机器验收。",
-                    severity="resolved",
-                )
-            if still_needs_review:
-                for unit in still_needs_review:
-                    _set_review_mark(review_marks, unit.source_text, MIXED_MARK_UNRESOLVED)
-                    spans_desc = "、".join(f"«{span}»" for span in unit.spans)
-                    reject_desc = (
-                        "；自动修复尝试被拒："
-                        + "；".join(repair_reject_reasons[unit.source_text])
-                        if unit.source_text in repair_reject_reasons
-                        else ""
-                    )
-                    _add_quality_issues(
-                        quality_issues,
-                        segment_locations,
-                        [unit.source_text],
-                        problem="译文残留未翻译的中文片段",
-                        status=f"残留：{spans_desc}{reject_desc}，需人工复核。",
-                        severity="needs_review",
-                    )
-                if repair_over_cap_count:
-                    quality_issues.append(
-                        {
-                            "file": "",
-                            "kind": "document",
-                            "location": "residual.repair_cap",
-                            "location_label": "整批任务",
-                            "section_path": "正文",
-                            "snippet": "",
-                            "problem": "部分残留中文本次未尝试自动修复",
-                            "status": (
-                                f"待修单元超出单次自动修复上限"
-                                f"（{_RESIDUAL_REPAIR_MAX_UNITS} 条），其中 "
-                                f"{repair_over_cap_count} 条本次未尝试修复，"
-                                "重新运行任务可继续修复。"
-                            ),
-                            "severity": "needs_review",
-                        }
-                    )
-                if repair_breaker_tripped:
-                    quality_issues.append(
-                        {
-                            "file": "",
-                            "kind": "document",
-                            "location": "residual.repair_breaker",
-                            "location_label": "整批任务",
-                            "section_path": "正文",
-                            "snippet": "",
-                            "problem": "自动修复通道因连续请求失败已熔断",
-                            "status": (
-                                "部分单元未尝试修复，确认网络与引擎可用后"
-                                "重新运行任务可继续修复。"
-                            ),
-                            "severity": "needs_review",
-                        }
-                    )
-                self._log(
-                    "WARN",
-                    f"检出 {len(still_needs_review)} 条译文残留中文，已列入待复核。",
-                )
-            if residual_result.released_notes:
-                # 万/亿等数量单位残留：不拦发布，但报告里留痕
-                _add_quality_issues(
-                    quality_issues,
-                    segment_locations,
-                    [unit.source_text for unit in residual_result.released_notes],
-                    problem="译文保留了「万/亿」等数量单位",
-                    status="通常不影响理解，如需统一可人工调整。",
-                    severity="resolved",
-                )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
             # 只有聚在一起才看得出来。多数派可确定性改写时直接改词典。
-            heading_observations = [
-                (source, target, source)
-                for source, target in global_translations.items()
-                if is_section_heading_source(source)
-            ]
-            # 全篇多数派要贯通到 TM 入库口：TM 只拿到 API 未命中子集，
-            # 让它自己投票可能与全篇结论相反，把库改成与交付文件相左的写法
-            heading_majority: str | None = None
-            if heading_observations:
-                heading_consistency = check_heading_consistency(
-                    heading_observations, target_lang=target_lang
-                )
-                heading_majority = heading_consistency.majority_form
-                if heading_consistency.fixes:
-                    global_translations.update(heading_consistency.fixes)
-                    self._log(
-                        "OK",
-                        (
-                            f"节标题写法归一 {len(heading_consistency.fixes)} 条"
-                            "（全篇多数派为准）。"
-                        ),
-                    )
-                    _add_quality_issues(
-                        quality_issues,
-                        segment_locations,
-                        list(heading_consistency.fixes.keys()),
-                        problem="节标题写法与全篇多数派不一致",
-                        status="已按全篇多数派自动归一，无需人工处理。",
-                        severity="resolved",
-                    )
-                elif heading_consistency.outliers:
-                    # 多数派是序数词写法时归一需要词形知识，只报告不改写
-                    _add_quality_issues(
-                        quality_issues,
-                        segment_locations,
-                        [item.unit_key for item in heading_consistency.outliers],
-                        problem="节标题写法与全篇多数派不一致",
-                        status="因归一需要词形变化知识未自动改写，如需统一可人工调整。",
-                        severity="resolved",
-                    )
+            heading_majority = self._normalize_heading_style(
+                global_translations=global_translations,
+                quality_issues=quality_issues,
+                segment_locations=segment_locations,
+                target_lang=target_lang,
+            )
 
             # ── TM 写入（从 API 返回后挪到这里，与 Excel 同一条规矩）：必须
             # 存「文件最终译文」——序号修复、修复阶梯、标题归一都改完之后的
             # 版本；仍带残留的配对由 sanitize_tm_pairs 在入库口拦下。停止信号
             # 不拦这一步：API 结果已付费拿到，写库是本地操作，跳过只会让
             # 下次运行整批重新付费。
-            if api_translations:
-
-                def _final_tm_text(source: str, fallback: str) -> str:
-                    value = global_translations.get(source)
-                    if isinstance(value, str) and value.strip():
-                        return value
-                    return fallback
-
-                # 写库失败不许弄死任务（Excel store_api_results_in_tm 的另一半
-                # 规矩）：此刻 API 已全部付费返回、双语文件还没写，词库写不进去
-                # （典型：词库页长写入持锁）只降级为 WARN + 报告条目，阶段 3
-                # 照常写文件。
-                written = 0
-                try:
-                    if auto_source_lang:
-                        candidate_entries: list[tuple[str, str, str]] = []
-                        for source, translated in api_translations.items():
-                            final_text = _final_tm_text(source, translated)
-                            candidates = text_source_candidates.get(source, set())
-                            reported_codes = {
-                                result.source_lang
-                                for result in model_source_results.get(source, [])
-                                if result.tm_eligible
-                            }
-                            if (
-                                len(candidates) != 1
-                                or len(reported_codes) != 1
-                                or next(iter(reported_codes)) not in candidates
-                                or source in mixed_texts
-                                or source in recovery_review_sources
-                                or source in unresolved_review_sources
-                                or not should_store_translation_in_tm(source, final_text)
-                            ):
-                                continue
-                            pair = build_lang_pair(
-                                target_lang,
-                                source_lang=next(iter(reported_codes)),
-                            )
-                            candidate_entries.append((pair, source, final_text))
-                        if candidate_entries:
-                            hygiene = sanitize_tm_pairs(
-                                [(source, text) for _pair, source, text in candidate_entries],
-                                target_lang=target_lang,
-                                convention=residual_result.convention,
-                                heading_majority=heading_majority,
-                            )
-                            for level, message in tm_hygiene_log_lines(hygiene):
-                                self._log(level, message)
-                            normalized_targets = dict(hygiene.pairs)
-                            rejected_sources = {source for source, _reason in hygiene.rejected}
-                            pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
-                            for pair, source, text in candidate_entries:
-                                if source in rejected_sources:
-                                    continue
-                                pairs_to_insert.setdefault(pair, []).append(
-                                    (source, normalized_targets.get(source, text))
-                                )
-                            written = sum(
-                                tm_manager.insert_batch(
-                                    entries,
-                                    pair,
-                                    max_len,
-                                    engine.engine_name,
-                                    sync_reverse=False,
-                                )
-                                for pair, entries in pairs_to_insert.items()
-                            )
-                    else:
-                        new_pairs = [
-                            (source, _final_tm_text(source, translated))
-                            for source, translated in api_translations.items()
-                            if (
-                                source not in mixed_texts
-                                and source not in recovery_review_sources
-                                and source not in unresolved_review_sources
-                                and should_store_translation_in_tm(
-                                    source, _final_tm_text(source, translated)
-                                )
-                            )
-                        ]
-                        hygiene = sanitize_tm_pairs(
-                            new_pairs,
-                            target_lang=target_lang,
-                            convention=residual_result.convention,
-                            heading_majority=heading_majority,
-                        )
-                        for level, message in tm_hygiene_log_lines(hygiene):
-                            self._log(level, message)
-                        written = tm_manager.insert_batch(
-                            list(hygiene.pairs),
-                            lang_pair,
-                            max_len,
-                            engine.engine_name,
-                            sync_reverse=False,
-                        )
-                except Exception as tm_error:  # noqa: BLE001 - never lose finished work
-                    tm_write_message = (
-                        "翻译记忆库写入失败，本次译文不受影响，"
-                        f"但这批词条没有存入词库：{tm_error}"
-                    )
-                    self._log("WARN", tm_write_message)
-                    quality_issues.append(
-                        {
-                            "file": "",
-                            "kind": "document",
-                            "location": "tm.write_failed",
-                            "location_label": "整批任务",
-                            "section_path": "正文",
-                            "snippet": "",
-                            "problem": "翻译记忆库写入失败",
-                            "status": tm_write_message
-                            + " 下次翻译相同内容会重新调用 API，可稍后重跑补存。",
-                            "severity": "needs_review",
-                        }
-                    )
-                if written:
-                    self._log("INFO", f"新增 TM 词条：{written} 条")
+            self._store_final_translations_in_tm(
+                api_translations=api_translations,
+                auto_source_lang=auto_source_lang,
+                engine=engine,
+                global_translations=global_translations,
+                heading_majority=heading_majority,
+                lang_pair=lang_pair,
+                max_len=max_len,
+                mixed_texts=mixed_texts,
+                model_source_results=model_source_results,
+                quality_issues=quality_issues,
+                recovery_review_sources=recovery_review_sources,
+                residual_result=residual_result,
+                target_lang=target_lang,
+                text_source_candidates=text_source_candidates,
+                unresolved_review_sources=unresolved_review_sources,
+            )
 
             # ── 页眉页脚专用通道：放在 TM 写入之后，正文译文全部定稿之后。
             # 通道产出的是「整行成品」或「接在行尾的一小截」，两种都不是干净的
@@ -2216,250 +1510,35 @@ class WordTaskRunner:
                 # global_translations 落盘，成本是本地磁盘 IO，没有理由为了「响应
                 # 停止」把后面文件已经翻好的内容也扔掉。这里只在停止第一次出现在
                 # 写盘过程中时补记一笔说明（不会覆盖更早的说明），不打断循环。
-                _note_stop_without_discarding(
-                    "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。"
+                self._write_file_output(
+                    _note_stop_without_discarding=_note_stop_without_discarding,
+                    already_target_sources=already_target_sources,
+                    coverage_plans=coverage_plans,
+                    engine=engine,
+                    file_item=file_item,
+                    file_results=file_results,
+                    file_texts=file_texts,
+                    front_matter_summaries=front_matter_summaries,
+                    global_translations=global_translations,
+                    hits=hits,
+                    index=index,
+                    misses=misses,
+                    mixed_texts=mixed_texts,
+                    output_dir=output_dir,
+                    phase_total=phase_total,
+                    preprocess_summaries=preprocess_summaries,
+                    process_paths=process_paths,
+                    process_work_dir=process_work_dir,
+                    quality_issues=quality_issues,
+                    reserved_output_paths=reserved_output_paths,
+                    review_marks=review_marks,
+                    settings=settings,
+                    source_lang=source_lang,
+                    source_root=source_root,
+                    still_needs_review=still_needs_review,
+                    target_lang=target_lang,
+                    word_output=word_output,
                 )
-                already_failed = any(
-                    result.get("source_path") == str(file_item.path)
-                    and not result.get("success")
-                    for result in file_results
-                )
-                if already_failed:
-                    continue
-
-                self._file_progress.emit(file_item.path, "active", "generate")
-
-                self._queue.put(
-                    ProgressMsg(
-                        phase_index=3,
-                        phase_total=phase_total,
-                        phase_name="生成文件",
-                        step_done=index,
-                        step_total=len(self._files),
-                    )
-                )
-                self._log("INFO", f"[阶段 3] 写入 Word：{file_item.name}（{index + 1}/{len(self._files)}）")
-                try:
-                    rel_subdir = file_item.path.parent.relative_to(source_root)
-                except ValueError:
-                    rel_subdir = Path()
-
-                stage_handle = None
-                file_issues_at_start = len(quality_issues)
-                reserved_before = set(reserved_output_paths)
-                committed_out_path = None
-                success_record = None
-                try:
-                    t0 = datetime.now()
-                    source_path = process_paths[index] if index < len(process_paths) else file_item.path
-                    output_source_name = _word_output_source_name(file_item.path)
-                    if word_output.translate_output_filename:
-                        original_stem = Path(output_source_name).stem
-                        try:
-                            translated_stem = translate_output_stem(
-                                engine,
-                                original_stem,
-                                target_lang,
-                                source_lang,
-                            )
-                        except Exception as exc:
-                            logger.debug(f"Word 输出文件名翻译失败原始错误：{exc!r}")
-                            translated_stem = original_stem
-                            self._log(
-                                "WARN",
-                                f"文件名翻译未完成，沿用原文件名：{Path(output_source_name).name}",
-                            )
-                        if translated_stem == original_stem:
-                            self._log(
-                                "INFO",
-                                f"文件名沿用原名：{Path(output_source_name).name}",
-                            )
-                        if translated_stem != original_stem:
-                            output_source_name = f"{translated_stem}{Path(output_source_name).suffix}"
-                    output_source_name = avoid_bilingual_name_collision(
-                        output_dir / rel_subdir,
-                        output_source_name,
-                        target_lang,
-                        reserved_output_paths,
-                    )
-                    final_output_dir = output_dir / rel_subdir
-                    final_output_dir.mkdir(parents=True, exist_ok=True)
-                    stage_handle = tempfile.TemporaryDirectory(
-                        prefix=".word-task-staging-", dir=process_work_dir
-                    )
-                    staged_output_dir = Path(stage_handle.name)
-                    write_log_messages: list[str] = []
-                    mark_counts: list[int] = []
-                    if self._untranslated_only:
-                        coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
-                        if coverage_plan is None:
-                            raise ValueError("缺少补译识别计划，无法安全按位置写入。")
-                        out_path = write_untranslated_docx(
-                            source_path=source_path,
-                            output_dir=staged_output_dir,
-                            plan=coverage_plan,
-                            translations=global_translations,
-                            target_lang=target_lang,
-                            source_lang=source_lang,
-                            output_name=output_source_name,
-                            review_marks=(
-                                review_marks
-                                if settings.word_review.highlight_unresolved
-                                else None
-                            ),
-                            review_mark_colors=settings.word_review.mark_colors,
-                            existing_highlight_policy=settings.word_review.existing_highlight_policy,
-                            log_callback=write_log_messages.append,
-                            translate_headers_footers=self._translate_headers_footers,
-                            output_translation_only=settings.word_output.output_translation_only,
-                        )
-                    else:
-                        out_path = write_bilingual_docx(
-                            source_path=source_path,
-                            output_dir=staged_output_dir,
-                            translations=global_translations,
-                            target_lang=target_lang,
-                            source_lang=source_lang,
-                            output_name=output_source_name,
-                            review_marks=(
-                                review_marks
-                                if settings.word_review.highlight_unresolved
-                                else None
-                            ),
-                            review_mark_colors=settings.word_review.mark_colors,
-                            existing_highlight_policy=settings.word_review.existing_highlight_policy,
-                            log_callback=write_log_messages.append,
-                            issue_callback=lambda info: quality_issues.append(
-                                _word_cell_line_mismatch_issue(
-                                    file_name=_file_result_identity(
-                                        file_item, source_root
-                                    ),
-                                    info=info,
-                                )
-                            ),
-                            protect_front_matter=self._protect_front_matter,
-                            translate_headers_footers=self._translate_headers_footers,
-                            output_translation_only=settings.word_output.output_translation_only,
-                        )
-                    residual_count = _append_post_write_coverage_issues(
-                        issues=quality_issues,
-                        file_name=_file_result_identity(file_item, source_root),
-                        output_path=out_path,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        protect_front_matter=self._protect_front_matter,
-                        review_mark_colors=settings.word_review.mark_colors,
-                        existing_highlight_policy=(
-                            settings.word_review.existing_highlight_policy
-                            if settings.word_review.highlight_unresolved
-                            else None
-                        ),
-                        mark_log_callback=mark_counts.append,
-                        # 写盘前残留巡检已逐位置报过的段落（带修复拒收理由），
-                        # 成品体检不再重复报，防止同一处残留数成两条待办
-                        pre_reported_residual_sources={
-                            unit.source_text.strip() for unit in still_needs_review
-                        },
-                        already_target_sources=already_target_sources,
-                    )
-                    final_path = final_output_dir / out_path.name
-                    elapsed = (datetime.now() - t0).total_seconds()
-                    this_file_texts = file_texts[index]
-                    this_tm = sum(1 for text in this_file_texts if text in hits)
-                    this_api = sum(1 for text in this_file_texts if text in misses or text in mixed_texts)
-                    success_record = {
-                        "name": file_item.name,
-                        "source_path": str(file_item.path),
-                        "output": str(final_path),
-                        "success": True,
-                        "preprocess": (
-                            preprocess_summaries[index]
-                            if index < len(preprocess_summaries)
-                            else {}
-                        ),
-                        "front_matter": (
-                            front_matter_summaries[index]
-                            if index < len(front_matter_summaries)
-                            else {}
-                        ),
-                        "issues": [
-                            issue
-                            for issue in quality_issues
-                            if issue.get("file")
-                            == _file_result_identity(file_item, source_root)
-                        ],
-                    }
-                    _publish_word_file(out_path, final_path)
-                    committed_out_path = final_path
-                    file_results.append(success_record)
-                    self._file_progress.emit(
-                        file_item.path, "generated", "generate",
-                        result={
-                            key: value
-                            for key, value in success_record.items()
-                            if key != "source_path"
-                        },
-                    )
-                    try:
-                        for message in write_log_messages:
-                            self._log("OK" if message.startswith("[OK]") else "INFO", message)
-                        for count in mark_counts:
-                            self._log(
-                                "INFO",
-                                f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
-                            )
-                        if residual_count:
-                            self._log(
-                                "WARN",
-                                (
-                                    f"{file_item.name}：输出文档仍发现 {residual_count} "
-                                    "处疑似未翻译源文，已写入质量报告。"
-                                ),
-                            )
-                        self._task_logger.file_done(
-                            filename=file_item.name,
-                            elapsed=elapsed,
-                            tm_hits=this_tm,
-                            api_calls=this_api,
-                        )
-                        self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
-                    except Exception as exc:  # noqa: BLE001 - 文件已提交，统计故障只告警
-                        logger.warning(f"Word 文件已写出，但完成日志或统计失败：{exc!r}")
-                except Exception as exc:
-                    if committed_out_path is not None:
-                        logger.warning(f"Word 文件已写出，但结果登记失败：{exc!r}")
-                        if success_record is not None and success_record not in file_results:
-                            file_results.append(success_record)
-                        continue
-                    del quality_issues[file_issues_at_start:]
-                    reserved_output_paths.difference_update(
-                        reserved_output_paths - reserved_before
-                    )
-                    logger.debug(f"Word 文件写入失败 {file_item.name} 原始错误：{exc!r}")
-                    write_reason = user_facing_reason(
-                        exc,
-                        fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
-                    )
-                    self._log("ERROR", f"Word 文件写入失败 {file_item.name}：{write_reason}")
-                    self._task_logger.file_error(file_item.name, write_reason)
-                    file_results.append(
-                        {
-                            "name": file_item.name,
-                            "source_path": str(file_item.path),
-                            "success": False,
-                            "error": write_reason,
-                        }
-                    )
-                    self._file_progress.emit(
-                        file_item.path, "failed", "generate",
-                        result={"error": write_reason},
-                    )
-                finally:
-                    if stage_handle is not None:
-                        try:
-                            stage_handle.cleanup()
-                        except Exception as exc:  # noqa: BLE001 - 不掩盖已提交文件的状态
-                            logger.warning(f"Word 临时目录清理失败：{exc!r}")
 
             self._queue.put(
                 ProgressMsg(
@@ -2658,6 +1737,1114 @@ class WordTaskRunner:
                         output_dir=str(output_dir),
                     )
                 )
+
+    def _collect_file_texts(
+        self,
+        *,
+        _raise_if_stopped,
+        api_scheduler,
+        auto_source_lang,
+        concurrency,
+        converted_temp_paths,
+        coverage_plans,
+        engine,
+        file_item,
+        file_results,
+        file_texts,
+        front_matter_summaries,
+        global_unique_texts,
+        header_channel_entries,
+        index,
+        lang_pair,
+        phase_total,
+        preprocess_summaries,
+        process_paths,
+        quality_issues,
+        review_marks,
+        segment_locations,
+        settings,
+        source_lang,
+        target_lang,
+    ) -> None:
+        """阶段 1 的一个文件：读取并预处理 Word，提取待译文本，汇入全局去重表与页眉页脚通道。"""
+        _raise_if_stopped()
+        self._file_progress.emit(file_item.path, "active", "extract")
+        self._queue.put(
+            ProgressMsg(
+                phase_index=1,
+                phase_total=phase_total,
+                phase_name="Word 提取",
+                step_done=index,
+                step_total=len(self._files),
+            )
+        )
+        self._log("INFO", f"[阶段 1] 提取文本：{file_item.name}（{index + 1}/{len(self._files)}）")
+        try:
+            t0 = datetime.now()
+            prepared = None
+            resumed_coverage_plan = None
+            resume_source_lang = (
+                source_lang if not auto_source_lang else get_default_source_lang()
+            )
+            resumed_path = (
+                self._resolve_resume_process_path(file_item, target_lang=target_lang)
+                if self._untranslated_only
+                else None
+            )
+            if resumed_path is not None:
+                try:
+                    resumed_coverage_plan = build_word_coverage_plan(
+                        resumed_path,
+                        target_lang=target_lang,
+                        source_lang=resume_source_lang,
+                        protect_front_matter=self._protect_front_matter,
+                    )
+                except Exception as exc:
+                    # 底稿建不出补译计划（结构对不上、已损坏之类）——退回按源
+                    # 文件正常处理，不能让一个用不了的底稿拖累整份文件翻译失败。
+                    self._log(
+                        "WARNING",
+                        (
+                            f"{file_item.name}：续译底稿无法建立补译计划，"
+                            f"已按源文件正常处理（{exc}）。"
+                        ),
+                    )
+                    resumed_path = None
+            if resumed_path is not None:
+                # 底稿资格核查：补译计划只看底稿——源文件在上次翻译后新增的
+                # 段落不在底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）。
+                # 源文件是 .doc 时读不出文本，核查返回 None，维持原行为。
+                missing = baseline_missing_source_texts(
+                    file_item.path,
+                    resumed_path,
+                    surface="word",
+                    target_lang=target_lang,
+                    source_lang=resume_source_lang,
+                    baseline_plan=resumed_coverage_plan,
+                )
+                if missing:
+                    self._log(
+                        "WARNING",
+                        (
+                            f"续译核对：{file_item.name} 的源文件比上次翻译时"
+                            f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
+                            "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。"
+                        ),
+                    )
+                    resumed_path = None
+                    resumed_coverage_plan = None
+            if resumed_path is not None:
+                process_path = resumed_path
+                self._log(
+                    "INFO",
+                    f"  → [续译] {file_item.name}：复用上次双语产物为底稿，本次只补未译内容。",
+                )
+            else:
+                self._queue.put(
+                    StatusMsg(
+                        phase_desc=(
+                            f"状态：[阶段 1/{phase_total}] 正在预处理 Word 文档："
+                            f"{file_item.name}"
+                        )
+                    )
+                )
+                prepared = _prepare_word_source_for_translation(
+                    file_item.path,
+                    use_native_preprocessing=(
+                        settings.word_conversion.use_native_preprocessing
+                    ),
+                    allow_doc_fallback=self._allow_doc_fallback,
+                )
+                process_path = prepared.path
+                converted_temp_paths.extend(prepared.temp_paths)
+                for fallback_message in prepared.fallback_messages:
+                    self._log("INFO", f"{file_item.name}：{fallback_message}，已继续尝试下一处理方式。")
+                self._log(
+                    "INFO",
+                    (
+                        f"Word 预处理完成 {file_item.name}，"
+                        f"使用 {prepared.method}，"
+                        f"自动编号 {prepared.labels_seen} 段，"
+                        f"物化 {prepared.labels_prepended} 段，"
+                        f"耗时 {(datetime.now() - t0).total_seconds():.2f}s"
+                    ),
+                )
+            process_paths.append(process_path)
+            hidden_content = detect_hidden_word_content(process_path)
+            if hidden_content.found:
+                # 这部分内容 python-docx 根本看不见，本次一定漏译。做不到翻译，
+                # 至少不能让它静悄悄地漏掉。
+                self._log(
+                    "WARN",
+                    (
+                        f"  → [未翻译内容] {file_item.name}：检测到"
+                        f"{hidden_content.describe()}，"
+                        "这些内容不在本次翻译范围内，输出文档中会保持原文。"
+                        f"建议：{hidden_content.advice()}。"
+                    ),
+                )
+                quality_issues.append(
+                    {
+                        "file": _file_result_identity(file_item, self._source_root),
+                        "kind": "hidden_content",
+                        "location": "document",
+                        "location_label": "整篇文档",
+                        "section_path": "正文",
+                        "snippet": "",
+                        "problem": f"存在无法读取的内容（{hidden_content.describe()}）",
+                        "status": (
+                            "这些内容位于内容控件、未接受的修订、文本框或脚注里，"
+                            "未参与翻译，输出文档中保持原文。"
+                        ),
+                        "severity": "needs_review",
+                    }
+                )
+            if hidden_content.has_toc:
+                # 自动目录不是漏译，是设计如此：目录是域，内容由 Word 按标题现生成，
+                # 翻译出来的字一按 F9 就被覆盖。之前它跟真正的漏译走同一条路，
+                # 一份正常文档因此在界面上写着「需复核 1」——一件不需要修的事
+                # 被报成了缺陷。现在只留一句告诉用户去刷新的提示。
+                self._log(
+                    "INFO",
+                    (
+                        f"  → [自动目录] {file_item.name}：检测到自动目录 "
+                        f"{hidden_content.toc_control_count} 处，目录由 Word 的域生成，"
+                        "不参与翻译。请在 Word 里选中目录、按 F9 并选「更新整个目录」，"
+                        "目录会按译文标题重新生成。"
+                    ),
+                )
+                quality_issues.append(
+                    {
+                        "file": _file_result_identity(file_item, self._source_root),
+                        "kind": "toc_field",
+                        "location": "document",
+                        "location_label": "整篇文档",
+                        "section_path": "目录",
+                        "snippet": "",
+                        "problem": "自动目录未参与翻译",
+                        "status": (
+                            "目录由 Word 的域自动生成，译文一刷新就会被覆盖，"
+                            "因此不参与翻译。请在 Word 里选中目录、按 F9 并选"
+                            "「更新整个目录」，目录会按译文标题重新生成。"
+                        ),
+                        "severity": "info",
+                    }
+                )
+            preprocess_summaries.append(
+                {
+                    "hidden_content": hidden_content.as_dict(),
+                    "method": (
+                        prepared.method if prepared is not None else "resume_previous_output"
+                    ),
+                    "labels_seen": prepared.labels_seen if prepared is not None else 0,
+                    "labels_prepended": (
+                        prepared.labels_prepended if prepared is not None else 0
+                    ),
+                    "conversion_method": (
+                        prepared.conversion_method if prepared is not None else None
+                    ),
+                    "conversion_fidelity": (
+                        prepared.conversion_fidelity if prepared is not None else None
+                    ),
+                    "conversion_fallback_messages": (
+                        list(prepared.fallback_messages) if prepared is not None else []
+                    ),
+                    "numbering_method": (
+                        prepared.numbering_method if prepared is not None else None
+                    ),
+                    "numbering_fallback_messages": (
+                        list(prepared.numbering_fallback_messages)
+                        if prepared is not None
+                        else []
+                    ),
+                }
+            )
+            if self._untranslated_only:
+                coverage_plan = (
+                    resumed_coverage_plan
+                    if resumed_coverage_plan is not None
+                    else build_word_coverage_plan(
+                        process_path,
+                        target_lang=target_lang,
+                        source_lang=resume_source_lang,
+                        protect_front_matter=self._protect_front_matter,
+                    )
+                )
+                self._arbitrate_coverage_pairs(
+                    coverage_plan,
+                    engine=engine,
+                    api_scheduler=api_scheduler,
+                    target_lang=target_lang,
+                    source_lang=(
+                        source_lang
+                        if not auto_source_lang
+                        else get_default_source_lang()
+                    ),
+                    lang_pair=lang_pair,
+                    concurrency=concurrency,
+                    file_name=file_item.name,
+                    file_identity=_file_result_identity(
+                        file_item, self._source_root
+                    ),
+                    quality_issues=quality_issues,
+                    review_marks=review_marks,
+                )
+                coverage_plans.append(coverage_plan)
+                _remember_coverage_unit_locations(
+                    segment_locations,
+                    _file_result_identity(file_item, self._source_root),
+                    coverage_plan.source_units,
+                )
+                text_set = set(coverage_plan.source_texts)
+                # 覆盖率计划只看正文和表格，页眉页脚要单独取一次才能一起补译。
+                if self._translate_headers_footers:
+                    header_segments = extract_word_header_footer_segments(
+                        process_path,
+                        target_lang=target_lang,
+                        source_lang=(
+                            source_lang
+                            if not auto_source_lang
+                            else get_default_source_lang()
+                        ),
+                    )
+                    _remember_segment_locations(
+                        segment_locations,
+                        _file_result_identity(file_item, self._source_root),
+                        header_segments,
+                    )
+                    text_set.update(
+                        self._split_header_channel_lines(
+                            header_segments,
+                            identity=_file_result_identity(
+                                file_item, self._source_root
+                            ),
+                            source_lang=(
+                                source_lang
+                                if not auto_source_lang
+                                else get_default_source_lang()
+                            ),
+                            entries=header_channel_entries,
+                        )
+                    )
+                summary = coverage_plan.summary
+                self._log(
+                    "INFO",
+                    (
+                        "  → 补译识别："
+                        f"待补 {summary.get('source_only', 0)}，"
+                        f"已覆盖 {summary.get('covered', 0)}，"
+                        f"不确定跳过 {summary.get('ambiguous', 0)}"
+                    ),
+                )
+                self._log_ignored_coverage_units(
+                    file_item.name, coverage_plan.units
+                )
+                front_matter_summaries.append(
+                    _front_matter_report(
+                        coverage_plan.front_matter,
+                        requested=self._protect_front_matter,
+                    )
+                )
+                self._log_front_matter_boundary(file_item.name, coverage_plan.front_matter)
+            else:
+                segments = extract_word_segments(
+                    process_path,
+                    target_lang=target_lang,
+                    source_lang=(
+                        source_lang
+                        if not auto_source_lang
+                        else get_default_source_lang()
+                    ),
+                    protect_front_matter=self._protect_front_matter,
+                    include_headers_footers=self._translate_headers_footers,
+                )
+                coverage_plans.append(None)
+                _remember_segment_locations(
+                    segment_locations,
+                    _file_result_identity(file_item, self._source_root),
+                    segments,
+                )
+                # 全译模式的页眉页脚同样分流：这种行整条重翻一遍，接在后面的
+                # 译文会把合同上签的那个译名重写一遍（而且页眉高度是固定的，
+                # 白接一段没必要的字）。走专用通道只补缺的那截。
+                text_set = self._split_header_channel_lines(
+                    segments,
+                    identity=_file_result_identity(file_item, self._source_root),
+                    source_lang=(
+                        source_lang
+                        if not auto_source_lang
+                        else get_default_source_lang()
+                    ),
+                    entries=header_channel_entries,
+                )
+                # extract_word_segments 只返回抽取好的词条，不携带边界信息；
+                # 全文翻译模式下要单独查一次正文边界才能把保护结果上报给前端，
+                # 这与补译模式下 coverage_plan.front_matter 已经"顺手"带出来不同。
+                front_matter = (
+                    find_word_front_matter_boundary_for_path(process_path)
+                    if self._protect_front_matter
+                    else WordFrontMatterBoundary(body_start_index=None)
+                )
+                front_matter_summaries.append(
+                    _front_matter_report(
+                        front_matter,
+                        requested=self._protect_front_matter,
+                    )
+                )
+                self._log_front_matter_boundary(file_item.name, front_matter)
+            file_texts.append(text_set)
+            global_unique_texts.update(text_set)
+            elapsed = (datetime.now() - t0).total_seconds()
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译段落位置（{elapsed:.3f}s）")
+            self._task_logger.file_collected(file_item.name, len(text_set), elapsed)
+            self._file_progress.emit(file_item.path, "waiting", "translate")
+        except Exception as exc:
+            if len(process_paths) < index + 1:
+                process_paths.append(file_item.path)
+            if len(preprocess_summaries) < index + 1:
+                preprocess_summaries.append({})
+            if len(coverage_plans) < index + 1:
+                coverage_plans.append(None)
+            if len(front_matter_summaries) < index + 1:
+                front_matter_summaries.append({})
+            file_texts.append(set())
+            logger.debug(f"Word 文件读取失败 {file_item.name} 原始错误：{exc!r}")
+            read_reason = user_facing_reason(
+                exc,
+                fallback="这个文件打不开，可能已损坏或设置了打开密码。",
+            )
+            self._log("ERROR", f"Word 文件读取失败 {file_item.name}: {read_reason}")
+            self._task_logger.file_error(
+                file_item.name,
+                f"Word 文件读取失败: {read_reason}",
+            )
+            file_results.append(
+                {
+                    "name": file_item.name,
+                    "source_path": str(file_item.path),
+                    "success": False,
+                    "error": f"Word 文件读取失败: {read_reason}",
+                }
+            )
+            self._file_progress.emit(
+                file_item.path, "failed", "extract",
+                result={"error": f"Word 文件读取失败: {read_reason}"},
+            )
+
+    def _preflight_source_languages(
+        self,
+        *,
+        engine,
+        file_texts,
+        settings,
+        system_prompt,
+        target_lang,
+        text_source_candidates,
+    ) -> tuple[str, str, list[str], dict[str, LanguagePreflightResult]]:
+        """自动识别源语言：逐个文件做一次语言预检，定下源语言、系统提示词和 TM 语言对，并给每段文本记下候选源语言。"""
+        self._queue.put(
+            StatusMsg(
+                phase_desc="状态：自动识别模式，正在对每个有候选文本的 Word 文件执行一次语言预检..."
+            )
+        )
+
+        detector_calls = {"count": 0}
+
+        def _detect_file_language(samples, detected_target):
+            detector_calls["count"] += 1
+            return engine.chat(
+                LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+                build_language_preflight_prompt(
+                    samples,
+                    target_lang=detected_target,
+                ),
+            )
+
+        file_payloads = {
+            str(file_item.path): texts
+            for file_item, texts in zip(self._files, file_texts)
+        }
+        file_language_preflights = {}
+        for file_path, candidate_texts in file_payloads.items():
+            self._file_progress.emit(file_path, "active", "detect")
+            file_language_preflights.update(preflight_files(
+                {file_path: candidate_texts},
+                _detect_file_language,
+                target_lang=target_lang,
+            ))
+            self._file_progress.emit(file_path, "waiting", "translate")
+        detected_sources: list[str] = []
+        for result in file_language_preflights.values():
+            for detected in result.source_langs:
+                if detected not in detected_sources:
+                    detected_sources.append(detected)
+        if detected_sources:
+            source_lang = detected_sources[0]
+            system_prompt = get_system_prompt(
+                settings,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                page_key="word",
+            )
+        else:
+            source_lang = get_default_source_lang()
+        tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+        for file_item, text_set in zip(self._files, file_texts):
+            result = file_language_preflights.get(str(file_item.path))
+            if result is None:
+                continue
+            for text in text_set:
+                text_source_candidates.setdefault(text, set()).update(result.source_langs)
+        self._log(
+            "INFO",
+            (
+                f"自动语言预检完成：{detector_calls['count']} 次请求，"
+                f"实际源语言={','.join(detected_sources) or '未确定'}，"
+                f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+            ),
+        )
+        return source_lang, system_prompt, tm_language_pairs, file_language_preflights
+
+    def _repair_residuals(
+        self,
+        *,
+        engine,
+        global_translations,
+        phase_total,
+        quality_issues,
+        review_marks,
+        segment_locations,
+        target_lang,
+    ) -> tuple[ResidualPassResult, list[ResidualUnitReport]]:
+        """残留中文体检 + 确定性序号修复 + 修复阶梯；仍修不上的记入待复核。返回体检结果与仍待复核的单元。"""
+        residual_result = run_residual_pass(
+            global_translations.items(), target_lang=target_lang
+        )
+        if residual_result.fixes:
+            global_translations.update(residual_result.fixes)
+            self._log(
+                "OK",
+                (
+                    f"残留序号确定性修复 {len(residual_result.fixes)} 条"
+                    f"（序号惯例：{residual_result.convention}）"
+                ),
+            )
+            _add_quality_issues(
+                quality_issues,
+                segment_locations,
+                list(residual_result.fixes.keys()),
+                problem="译文残留中文序号",
+                status="已按文档序号惯例自动修复，无需人工处理。",
+                severity="resolved",
+            )
+
+        # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）。
+        # 上限/熔断/进度护栏在 run_repair_ladder 里，与 Excel 主流程共用。
+        still_needs_review = list(residual_result.needs_review)
+        repair_method_counts: dict[str, int] = {}
+        repair_accepted_sources: list[str] = []
+        # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
+        repair_reject_reasons: dict[str, tuple[str, ...]] = {}
+        # 超限/熔断要写进结果报告：只在日志里提会被滚走，用户就不知道
+        # 「这批单元根本没尝试修复，重跑还有救」
+        repair_over_cap_count = 0
+        repair_breaker_tripped = False
+        if still_needs_review and engine_supports_chat(engine):
+
+            def _on_repair_progress(done: int, total: int) -> None:
+                self._queue.put(StatusMsg(
+                    phase_desc=(
+                        f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
+                        f"（{done}/{total}）..."
+                    )
+                ))
+
+            ladder = run_repair_ladder(
+                still_needs_review,
+                target_lang=target_lang,
+                send=engine.chat,
+                convention=residual_result.convention,
+                max_units=_RESIDUAL_REPAIR_MAX_UNITS,
+                breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
+                should_stop=self.stop_requested,
+                on_progress=_on_repair_progress,
+            )
+            if ladder.over_cap_count:
+                self._log(
+                    "WARN",
+                    (
+                        f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
+                        f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
+                        f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
+                    ),
+                )
+            if ladder.breaker_tripped:
+                self._log(
+                    "WARN",
+                    (
+                        f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
+                        "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
+                    ),
+                )
+            global_translations.update(ladder.accepted)
+            repair_accepted_sources = list(ladder.accepted.keys())
+            repair_method_counts = ladder.method_counts
+            repair_reject_reasons = ladder.reject_reasons
+            repair_over_cap_count = ladder.over_cap_count
+            repair_breaker_tripped = ladder.breaker_tripped
+            still_needs_review = list(ladder.remaining)
+        repaired_total = sum(repair_method_counts.values())
+        if repaired_total:
+            method_desc = "、".join(
+                f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
+                for method, count in sorted(repair_method_counts.items())
+            )
+            self._log(
+                "OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）"
+            )
+            _add_quality_issues(
+                quality_issues,
+                segment_locations,
+                repair_accepted_sources,
+                problem="译文残留未翻译的中文片段",
+                status="残留中文已自动修复，修复稿通过机器验收。",
+                severity="resolved",
+            )
+        if still_needs_review:
+            for unit in still_needs_review:
+                _set_review_mark(review_marks, unit.source_text, MIXED_MARK_UNRESOLVED)
+                spans_desc = "、".join(f"«{span}»" for span in unit.spans)
+                reject_desc = (
+                    "；自动修复尝试被拒："
+                    + "；".join(repair_reject_reasons[unit.source_text])
+                    if unit.source_text in repair_reject_reasons
+                    else ""
+                )
+                _add_quality_issues(
+                    quality_issues,
+                    segment_locations,
+                    [unit.source_text],
+                    problem="译文残留未翻译的中文片段",
+                    status=f"残留：{spans_desc}{reject_desc}，需人工复核。",
+                    severity="needs_review",
+                )
+            if repair_over_cap_count:
+                quality_issues.append(
+                    {
+                        "file": "",
+                        "kind": "document",
+                        "location": "residual.repair_cap",
+                        "location_label": "整批任务",
+                        "section_path": "正文",
+                        "snippet": "",
+                        "problem": "部分残留中文本次未尝试自动修复",
+                        "status": (
+                            f"待修单元超出单次自动修复上限"
+                            f"（{_RESIDUAL_REPAIR_MAX_UNITS} 条），其中 "
+                            f"{repair_over_cap_count} 条本次未尝试修复，"
+                            "重新运行任务可继续修复。"
+                        ),
+                        "severity": "needs_review",
+                    }
+                )
+            if repair_breaker_tripped:
+                quality_issues.append(
+                    {
+                        "file": "",
+                        "kind": "document",
+                        "location": "residual.repair_breaker",
+                        "location_label": "整批任务",
+                        "section_path": "正文",
+                        "snippet": "",
+                        "problem": "自动修复通道因连续请求失败已熔断",
+                        "status": (
+                            "部分单元未尝试修复，确认网络与引擎可用后"
+                            "重新运行任务可继续修复。"
+                        ),
+                        "severity": "needs_review",
+                    }
+                )
+            self._log(
+                "WARN",
+                f"检出 {len(still_needs_review)} 条译文残留中文，已列入待复核。",
+            )
+        if residual_result.released_notes:
+            # 万/亿等数量单位残留：不拦发布，但报告里留痕
+            _add_quality_issues(
+                quality_issues,
+                segment_locations,
+                [unit.source_text for unit in residual_result.released_notes],
+                problem="译文保留了「万/亿」等数量单位",
+                status="通常不影响理解，如需统一可人工调整。",
+                severity="resolved",
+            )
+        return residual_result, still_needs_review
+
+    def _normalize_heading_style(
+        self,
+        *,
+        global_translations,
+        quality_issues,
+        segment_locations,
+        target_lang,
+    ) -> str | None:
+        """全篇标题写法巡检：多数派写法可确定时直接改写词典，返回采用的多数派（没有则 None）。"""
+        heading_observations = [
+            (source, target, source)
+            for source, target in global_translations.items()
+            if is_section_heading_source(source)
+        ]
+        # 全篇多数派要贯通到 TM 入库口：TM 只拿到 API 未命中子集，
+        # 让它自己投票可能与全篇结论相反，把库改成与交付文件相左的写法
+        heading_majority: str | None = None
+        if heading_observations:
+            heading_consistency = check_heading_consistency(
+                heading_observations, target_lang=target_lang
+            )
+            heading_majority = heading_consistency.majority_form
+            if heading_consistency.fixes:
+                global_translations.update(heading_consistency.fixes)
+                self._log(
+                    "OK",
+                    (
+                        f"节标题写法归一 {len(heading_consistency.fixes)} 条"
+                        "（全篇多数派为准）。"
+                    ),
+                )
+                _add_quality_issues(
+                    quality_issues,
+                    segment_locations,
+                    list(heading_consistency.fixes.keys()),
+                    problem="节标题写法与全篇多数派不一致",
+                    status="已按全篇多数派自动归一，无需人工处理。",
+                    severity="resolved",
+                )
+            elif heading_consistency.outliers:
+                # 多数派是序数词写法时归一需要词形知识，只报告不改写
+                _add_quality_issues(
+                    quality_issues,
+                    segment_locations,
+                    [item.unit_key for item in heading_consistency.outliers],
+                    problem="节标题写法与全篇多数派不一致",
+                    status="因归一需要词形变化知识未自动改写，如需统一可人工调整。",
+                    severity="resolved",
+                )
+        return heading_majority
+
+    def _store_final_translations_in_tm(
+        self,
+        *,
+        api_translations,
+        auto_source_lang,
+        engine,
+        global_translations,
+        heading_majority,
+        lang_pair,
+        max_len,
+        mixed_texts,
+        model_source_results,
+        quality_issues,
+        recovery_review_sources,
+        residual_result,
+        target_lang,
+        text_source_candidates,
+        unresolved_review_sources,
+    ) -> None:
+        """把本次 API 译文的最终定稿版本（修复、标题归一之后）写进翻译记忆库。"""
+        if api_translations:
+
+            def _final_tm_text(source: str, fallback: str) -> str:
+                value = global_translations.get(source)
+                if isinstance(value, str) and value.strip():
+                    return value
+                return fallback
+
+            # 写库失败不许弄死任务（Excel store_api_results_in_tm 的另一半
+            # 规矩）：此刻 API 已全部付费返回、双语文件还没写，词库写不进去
+            # （典型：词库页长写入持锁）只降级为 WARN + 报告条目，阶段 3
+            # 照常写文件。
+            written = 0
+            try:
+                if auto_source_lang:
+                    candidate_entries: list[tuple[str, str, str]] = []
+                    for source, translated in api_translations.items():
+                        final_text = _final_tm_text(source, translated)
+                        candidates = text_source_candidates.get(source, set())
+                        reported_codes = {
+                            result.source_lang
+                            for result in model_source_results.get(source, [])
+                            if result.tm_eligible
+                        }
+                        if (
+                            len(candidates) != 1
+                            or len(reported_codes) != 1
+                            or next(iter(reported_codes)) not in candidates
+                            or source in mixed_texts
+                            or source in recovery_review_sources
+                            or source in unresolved_review_sources
+                            or not should_store_translation_in_tm(source, final_text)
+                        ):
+                            continue
+                        pair = build_lang_pair(
+                            target_lang,
+                            source_lang=next(iter(reported_codes)),
+                        )
+                        candidate_entries.append((pair, source, final_text))
+                    if candidate_entries:
+                        hygiene = sanitize_tm_pairs(
+                            [(source, text) for _pair, source, text in candidate_entries],
+                            target_lang=target_lang,
+                            convention=residual_result.convention,
+                            heading_majority=heading_majority,
+                        )
+                        for level, message in tm_hygiene_log_lines(hygiene):
+                            self._log(level, message)
+                        normalized_targets = dict(hygiene.pairs)
+                        rejected_sources = {source for source, _reason in hygiene.rejected}
+                        pairs_to_insert: dict[str, list[tuple[str, str]]] = {}
+                        for pair, source, text in candidate_entries:
+                            if source in rejected_sources:
+                                continue
+                            pairs_to_insert.setdefault(pair, []).append(
+                                (source, normalized_targets.get(source, text))
+                            )
+                        written = sum(
+                            tm_manager.insert_batch(
+                                entries,
+                                pair,
+                                max_len,
+                                engine.engine_name,
+                                sync_reverse=False,
+                            )
+                            for pair, entries in pairs_to_insert.items()
+                        )
+                else:
+                    new_pairs = [
+                        (source, _final_tm_text(source, translated))
+                        for source, translated in api_translations.items()
+                        if (
+                            source not in mixed_texts
+                            and source not in recovery_review_sources
+                            and source not in unresolved_review_sources
+                            and should_store_translation_in_tm(
+                                source, _final_tm_text(source, translated)
+                            )
+                        )
+                    ]
+                    hygiene = sanitize_tm_pairs(
+                        new_pairs,
+                        target_lang=target_lang,
+                        convention=residual_result.convention,
+                        heading_majority=heading_majority,
+                    )
+                    for level, message in tm_hygiene_log_lines(hygiene):
+                        self._log(level, message)
+                    written = tm_manager.insert_batch(
+                        list(hygiene.pairs),
+                        lang_pair,
+                        max_len,
+                        engine.engine_name,
+                        sync_reverse=False,
+                    )
+            except Exception as tm_error:  # noqa: BLE001 - never lose finished work
+                tm_write_message = (
+                    "翻译记忆库写入失败，本次译文不受影响，"
+                    f"但这批词条没有存入词库：{tm_error}"
+                )
+                self._log("WARN", tm_write_message)
+                quality_issues.append(
+                    {
+                        "file": "",
+                        "kind": "document",
+                        "location": "tm.write_failed",
+                        "location_label": "整批任务",
+                        "section_path": "正文",
+                        "snippet": "",
+                        "problem": "翻译记忆库写入失败",
+                        "status": tm_write_message
+                        + " 下次翻译相同内容会重新调用 API，可稍后重跑补存。",
+                        "severity": "needs_review",
+                    }
+                )
+            if written:
+                self._log("INFO", f"新增 TM 词条：{written} 条")
+
+    def _write_file_output(
+        self,
+        *,
+        _note_stop_without_discarding,
+        already_target_sources,
+        coverage_plans,
+        engine,
+        file_item,
+        file_results,
+        file_texts,
+        front_matter_summaries,
+        global_translations,
+        hits,
+        index,
+        misses,
+        mixed_texts,
+        output_dir,
+        phase_total,
+        preprocess_summaries,
+        process_paths,
+        process_work_dir,
+        quality_issues,
+        reserved_output_paths,
+        review_marks,
+        settings,
+        source_lang,
+        source_root,
+        still_needs_review,
+        target_lang,
+        word_output,
+    ) -> None:
+        """阶段 3 的一个文件：把已算好的译文写进它的 Word 副本，记下结果与质量问题。"""
+        _note_stop_without_discarding(
+            "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，未完成部分保留原文。"
+        )
+        already_failed = any(
+            result.get("source_path") == str(file_item.path)
+            and not result.get("success")
+            for result in file_results
+        )
+        if already_failed:
+            return
+
+        self._file_progress.emit(file_item.path, "active", "generate")
+
+        self._queue.put(
+            ProgressMsg(
+                phase_index=3,
+                phase_total=phase_total,
+                phase_name="生成文件",
+                step_done=index,
+                step_total=len(self._files),
+            )
+        )
+        self._log("INFO", f"[阶段 3] 写入 Word：{file_item.name}（{index + 1}/{len(self._files)}）")
+        try:
+            rel_subdir = file_item.path.parent.relative_to(source_root)
+        except ValueError:
+            rel_subdir = Path()
+
+        stage_handle = None
+        file_issues_at_start = len(quality_issues)
+        reserved_before = set(reserved_output_paths)
+        committed_out_path = None
+        success_record = None
+        try:
+            t0 = datetime.now()
+            source_path = process_paths[index] if index < len(process_paths) else file_item.path
+            output_source_name = _word_output_source_name(file_item.path)
+            if word_output.translate_output_filename:
+                original_stem = Path(output_source_name).stem
+                try:
+                    translated_stem = translate_output_stem(
+                        engine,
+                        original_stem,
+                        target_lang,
+                        source_lang,
+                    )
+                except Exception as exc:
+                    logger.debug(f"Word 输出文件名翻译失败原始错误：{exc!r}")
+                    translated_stem = original_stem
+                    self._log(
+                        "WARN",
+                        f"文件名翻译未完成，沿用原文件名：{Path(output_source_name).name}",
+                    )
+                if translated_stem == original_stem:
+                    self._log(
+                        "INFO",
+                        f"文件名沿用原名：{Path(output_source_name).name}",
+                    )
+                if translated_stem != original_stem:
+                    output_source_name = f"{translated_stem}{Path(output_source_name).suffix}"
+            output_source_name = avoid_bilingual_name_collision(
+                output_dir / rel_subdir,
+                output_source_name,
+                target_lang,
+                reserved_output_paths,
+            )
+            final_output_dir = output_dir / rel_subdir
+            final_output_dir.mkdir(parents=True, exist_ok=True)
+            stage_handle = tempfile.TemporaryDirectory(
+                prefix=".word-task-staging-", dir=process_work_dir
+            )
+            staged_output_dir = Path(stage_handle.name)
+            write_log_messages: list[str] = []
+            mark_counts: list[int] = []
+            if self._untranslated_only:
+                coverage_plan = coverage_plans[index] if index < len(coverage_plans) else None
+                if coverage_plan is None:
+                    raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                out_path = write_untranslated_docx(
+                    source_path=source_path,
+                    output_dir=staged_output_dir,
+                    plan=coverage_plan,
+                    translations=global_translations,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    output_name=output_source_name,
+                    review_marks=(
+                        review_marks
+                        if settings.word_review.highlight_unresolved
+                        else None
+                    ),
+                    review_mark_colors=settings.word_review.mark_colors,
+                    existing_highlight_policy=settings.word_review.existing_highlight_policy,
+                    log_callback=write_log_messages.append,
+                    translate_headers_footers=self._translate_headers_footers,
+                    output_translation_only=settings.word_output.output_translation_only,
+                )
+            else:
+                out_path = write_bilingual_docx(
+                    source_path=source_path,
+                    output_dir=staged_output_dir,
+                    translations=global_translations,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    output_name=output_source_name,
+                    review_marks=(
+                        review_marks
+                        if settings.word_review.highlight_unresolved
+                        else None
+                    ),
+                    review_mark_colors=settings.word_review.mark_colors,
+                    existing_highlight_policy=settings.word_review.existing_highlight_policy,
+                    log_callback=write_log_messages.append,
+                    issue_callback=lambda info: quality_issues.append(
+                        _word_cell_line_mismatch_issue(
+                            file_name=_file_result_identity(
+                                file_item, source_root
+                            ),
+                            info=info,
+                        )
+                    ),
+                    protect_front_matter=self._protect_front_matter,
+                    translate_headers_footers=self._translate_headers_footers,
+                    output_translation_only=settings.word_output.output_translation_only,
+                )
+            residual_count = _append_post_write_coverage_issues(
+                issues=quality_issues,
+                file_name=_file_result_identity(file_item, source_root),
+                output_path=out_path,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                protect_front_matter=self._protect_front_matter,
+                review_mark_colors=settings.word_review.mark_colors,
+                existing_highlight_policy=(
+                    settings.word_review.existing_highlight_policy
+                    if settings.word_review.highlight_unresolved
+                    else None
+                ),
+                mark_log_callback=mark_counts.append,
+                # 写盘前残留巡检已逐位置报过的段落（带修复拒收理由），
+                # 成品体检不再重复报，防止同一处残留数成两条待办
+                pre_reported_residual_sources={
+                    unit.source_text.strip() for unit in still_needs_review
+                },
+                already_target_sources=already_target_sources,
+            )
+            final_path = final_output_dir / out_path.name
+            elapsed = (datetime.now() - t0).total_seconds()
+            this_file_texts = file_texts[index]
+            this_tm = sum(1 for text in this_file_texts if text in hits)
+            this_api = sum(1 for text in this_file_texts if text in misses or text in mixed_texts)
+            success_record = {
+                "name": file_item.name,
+                "source_path": str(file_item.path),
+                "output": str(final_path),
+                "success": True,
+                "preprocess": (
+                    preprocess_summaries[index]
+                    if index < len(preprocess_summaries)
+                    else {}
+                ),
+                "front_matter": (
+                    front_matter_summaries[index]
+                    if index < len(front_matter_summaries)
+                    else {}
+                ),
+                "issues": [
+                    issue
+                    for issue in quality_issues
+                    if issue.get("file")
+                    == _file_result_identity(file_item, source_root)
+                ],
+            }
+            _publish_word_file(out_path, final_path)
+            committed_out_path = final_path
+            file_results.append(success_record)
+            self._file_progress.emit(
+                file_item.path, "generated", "generate",
+                result={
+                    key: value
+                    for key, value in success_record.items()
+                    if key != "source_path"
+                },
+            )
+            try:
+                for message in write_log_messages:
+                    self._log("OK" if message.startswith("[OK]") else "INFO", message)
+                for count in mark_counts:
+                    self._log(
+                        "INFO",
+                        f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
+                    )
+                if residual_count:
+                    self._log(
+                        "WARN",
+                        (
+                            f"{file_item.name}：输出文档仍发现 {residual_count} "
+                            "处疑似未翻译源文，已写入质量报告。"
+                        ),
+                    )
+                self._task_logger.file_done(
+                    filename=file_item.name,
+                    elapsed=elapsed,
+                    tm_hits=this_tm,
+                    api_calls=this_api,
+                )
+                self._log("OK", f"文件完成：{file_item.name}（{elapsed:.2f}s）")
+            except Exception as exc:  # noqa: BLE001 - 文件已提交，统计故障只告警
+                logger.warning(f"Word 文件已写出，但完成日志或统计失败：{exc!r}")
+        except Exception as exc:
+            if committed_out_path is not None:
+                logger.warning(f"Word 文件已写出，但结果登记失败：{exc!r}")
+                if success_record is not None and success_record not in file_results:
+                    file_results.append(success_record)
+                return
+            del quality_issues[file_issues_at_start:]
+            reserved_output_paths.difference_update(
+                reserved_output_paths - reserved_before
+            )
+            logger.debug(f"Word 文件写入失败 {file_item.name} 原始错误：{exc!r}")
+            write_reason = user_facing_reason(
+                exc,
+                fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
+            )
+            self._log("ERROR", f"Word 文件写入失败 {file_item.name}：{write_reason}")
+            self._task_logger.file_error(file_item.name, write_reason)
+            file_results.append(
+                {
+                    "name": file_item.name,
+                    "source_path": str(file_item.path),
+                    "success": False,
+                    "error": write_reason,
+                }
+            )
+            self._file_progress.emit(
+                file_item.path, "failed", "generate",
+                result={"error": write_reason},
+            )
+        finally:
+            if stage_handle is not None:
+                try:
+                    stage_handle.cleanup()
+                except Exception as exc:  # noqa: BLE001 - 不掩盖已提交文件的状态
+                    logger.warning(f"Word 临时目录清理失败：{exc!r}")
 
     def _build_result_contract(
         self,

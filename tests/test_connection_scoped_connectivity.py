@@ -258,7 +258,7 @@ class ConnectivityRouteTests(IsolatedAppDataTestCase):
             seen["connection_id"] = connection_id
             return ConnectivityResult(ok=True, status="ok", message="ok")
 
-        with patch("api.app.check_connectivity", _fake):
+        with patch("api.routes.models.check_connectivity", _fake):
             response = self.client.post(
                 "/api/models/connectivity/translation",
                 json={"connection_id": "conn-42"},
@@ -274,7 +274,7 @@ class ConnectivityRouteTests(IsolatedAppDataTestCase):
             seen["connection_id"] = connection_id
             return ConnectivityResult(ok=True, status="ok", message="ok")
 
-        with patch("api.app.check_connectivity", _fake):
+        with patch("api.routes.models.check_connectivity", _fake):
             response = self.client.post("/api/models/connectivity/translation")
 
         self.assertEqual(response.status_code, 200)

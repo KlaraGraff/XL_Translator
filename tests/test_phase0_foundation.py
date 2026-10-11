@@ -4,6 +4,7 @@ import json
 import os
 import plistlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -112,7 +113,8 @@ class Phase0FoundationTests(unittest.TestCase):
                 plistlib.dump({"LSMinimumSystemVersion": "12.0"}, stream)
             completed = subprocess.run(
                 [
-                    str(ROOT / ".venv" / "bin" / "python3"),
+                    # 跑测试的就是项目要求的那个解释器（本机 .venv，CI 是 setup-python 装的）。
+                    sys.executable,
                     "scripts/verify_macos_minimum_version.py",
                     str(bundle),
                     "--declared",

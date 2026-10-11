@@ -98,7 +98,7 @@ class RouteOrderingTests(unittest.TestCase):
                     seen["connection_id"] = connection_id
                     return {"ok": True, "which": path_segment}
 
-                with patch(f"api.app.{function_name}", _spy):
+                with patch(f"api.routes.models.{function_name}", _spy):
                     response = self.client.post(
                         f"/api/models/connectivity/{path_segment}",
                         json={"connection_id": "conn-77"},
@@ -108,7 +108,7 @@ class RouteOrderingTests(unittest.TestCase):
                 self.assertEqual(seen["connection_id"], "conn-77")
 
     def test_parameterised_connectivity_route_still_serves_other_roles(self) -> None:
-        with patch("api.app.check_connectivity", return_value={"ok": True}):
+        with patch("api.routes.models.check_connectivity", return_value={"ok": True}):
             response = self.client.post("/api/models/connectivity/cleaner")
         self.assertEqual(response.status_code, 200)
         unknown = self.client.post("/api/models/connectivity/nonsense")

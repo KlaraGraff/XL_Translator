@@ -72,8 +72,8 @@ class Phase1LanguageTests(unittest.TestCase):
         settings = AppSettings()
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with patch("api.app.load_settings", return_value=settings), patch(
-                "api.app.save_settings"
+            with patch("api.routes.settings.load_settings", return_value=settings), patch(
+                "api.routes.settings.save_settings"
             ) as save_settings:
                 client = TestClient(create_app())
                 payload = client.get("/api/languages").json()

@@ -160,8 +160,8 @@ class FullTmBackupContractTests(unittest.TestCase):
             "code_map": {source_code: mapped_code},
             "sync_reverse": True,
         }
-        with patch("api.app.load_settings", return_value=settings), patch(
-            "api.app.save_settings"
+        with patch("api.routes.tm.load_settings", return_value=settings), patch(
+            "api.routes.tm.save_settings"
         ):
             client = TestClient(create_app())
             response = client.post("/api/tm/import/full", json=payload)
@@ -205,8 +205,8 @@ class FullTmBackupContractTests(unittest.TestCase):
         tm_manager.DB_PATH = self.root / "restored-conflicts.db"
         tm_manager.init_db()
         settings = AppSettings()
-        with patch("api.app.load_settings", return_value=settings), patch(
-            "api.app.save_settings"
+        with patch("api.routes.tm.load_settings", return_value=settings), patch(
+            "api.routes.tm.save_settings"
         ):
             client = TestClient(create_app())
             response = client.post("/api/tm/import/full", json=backup)

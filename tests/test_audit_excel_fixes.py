@@ -946,7 +946,8 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
                 self.assertIn("原始文件不会被改动", consequence)
 
         repo = Path(__file__).resolve().parents[1]
-        for rel in ("api/task_manager.py", "core/xls_converter.py"):
+        # Excel 的启动预检在 api/surfaces/excel.py（任务管理器按板块分派过去）。
+        for rel in ("api/surfaces/excel.py", "core/xls_converter.py"):
             source = (repo / rel).read_text(encoding="utf-8")
             with self.subTest(rel):
                 self.assertIn("describe_xls_compatibility_consequence(", source)

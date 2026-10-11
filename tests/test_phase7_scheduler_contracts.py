@@ -166,9 +166,7 @@ def _phase7_manager(root: Path, *, runners: list[object]) -> TranslationTaskMana
     manager._scan = scan
     manager._build_runner = build_runner
     manager._build_clean_runner = build_clean_runner
-    manager._validate_excel_preflight = lambda **_kwargs: None
-    manager._validate_word_preflight = lambda **_kwargs: None
-    manager._validate_pdf_preflight = lambda **_kwargs: None
+    manager._validate_preflight = lambda *_args, **_kwargs: None
     return manager
 
 
@@ -665,7 +663,7 @@ class Phase7SseAndPrivacyContracts(unittest.TestCase):
             manager._scan = lambda *_args: [
                 SimpleNamespace(path=root / "fixture.xlsx", name="fixture.xlsx", format="xlsx")
             ]
-            manager._validate_excel_preflight = lambda **_kwargs: None
+            manager._validate_preflight = lambda *_args, **_kwargs: None
             manager._build_runner = lambda **_kwargs: message_runner
 
             with (
@@ -850,7 +848,7 @@ class Phase7HttpContracts(unittest.TestCase):
             manager._scan = lambda *_args: [
                 SimpleNamespace(path=root / "fixture.xlsx", name="fixture.xlsx", format="xlsx")
             ]
-            manager._validate_excel_preflight = lambda **_kwargs: None
+            manager._validate_preflight = lambda *_args, **_kwargs: None
             manager._build_runner = lambda **_kwargs: message_runner
             client = TestClient(create_app(task_manager=manager))
             with (

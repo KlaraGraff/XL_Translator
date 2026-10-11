@@ -15,7 +15,6 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
@@ -83,7 +82,7 @@ from core.residual_classifier import (
     check_heading_consistency,
     is_section_heading_source,
 )
-from core.residual_pipeline import run_residual_pass
+from core.residual_pipeline import ResidualPassResult, run_residual_pass
 from core.residual_repair import (
     DEFAULT_REPAIR_BREAKER_THRESHOLD,
     DEFAULT_REPAIR_MAX_UNITS,
@@ -105,7 +104,21 @@ from core.excel_automation import (
 from core.task_logger import TaskLogger
 from core.process_artifacts import ProcessArtifacts
 from core.user_facing_errors import humanize_error
-from settings import AppSettings, provider_key_overrides
+from core.runner_base import BaseTaskRunner
+# 消息类型移到了 core/task_runner_messages.py（所有任务运行器共用），这里照旧可以导入。
+from core.task_runner_messages import (  # noqa: F401 - re-exported, imported from here across the codebase
+    ProgressMsg,
+    StatusMsg,
+    WordRecoveryStatusMsg,
+    PdfReviewStatusMsg,
+    PdfPageRecoveryStatusMsg,
+    LogMsg,
+    DoneMsg,
+    ErrorMsg,
+    StoppedMsg,
+    TaskStopped,
+)
+from settings import AppSettings
 
 # 「给用户看的一句话」的判定标准，写在这里是因为三个 runner 都要用同一条标准。
 # humanize_error 认识的原因会被换成中文；它认不出的照原样返回——那是库该有的
@@ -211,155 +224,6 @@ _RESIDUAL_REPAIR_MAX_UNITS = DEFAULT_REPAIR_MAX_UNITS
 _RESIDUAL_REPAIR_BREAKER_THRESHOLD = DEFAULT_REPAIR_BREAKER_THRESHOLD
 
 
-# ── 消息类型 ──────────────────────────────────────────────────────────────────
-
-@dataclass
-class ProgressMsg:
-    """全局进度消息。"""
-    phase_index:  int      # 当前阶段序号（1/2/3/4）
-    phase_total:  int      # 总阶段数（3）
-    phase_name:   str      # 阶段名称（如"全局扫描"、"云端翻译"、"生成文件"）
-    step_done:    int      # 当前阶段已完成步数
-    step_total:   int      # 当前阶段总步数
-
-
-@dataclass
-class StatusMsg:
-    phase_desc: str
-
-
-@dataclass
-class WordRecoveryStatusMsg:
-    """Word recovery summary for the non-scrolling execution monitor."""
-    retry_round: int = 0
-    retry_total: int = 0
-    retry_processing_count: int = 0
-    retry_recovered_count: int = 0
-    retry_unresolved_count: int = 0
-    semantic_processing_count: int = 0
-    semantic_checked_count: int = 0
-    semantic_accepted_count: int = 0
-    semantic_uncertain_count: int = 0
-
-
-@dataclass
-class PdfReviewStatusMsg:
-    """PDF page-review summary for the non-scrolling execution monitor."""
-    enabled: bool = False
-    review_round: int = 0
-    review_total: int = 0
-    review_processing_count: int = 0
-    review_passed_count: int = 0
-    review_failed_count: int = 0
-
-
-@dataclass
-class PdfPageRecoveryStatusMsg:
-    """PDF page retry/recovery summary for the non-scrolling execution monitor."""
-    total_pages: int = 0
-    completed_pages: int = 0
-    submitted_page_count: int = 0
-    pending_submitted_page_count: int = 0
-    retrying_page_count: int = 0
-    retried_page_count: int = 0
-    recovered_page_count: int = 0
-    placeholder_page_count: int = 0
-    # 按「跳过 A3 及更大的页面」原样保留的页。它们算在 completed_pages 里（跑完了），
-    # 但没有生成译文，界面的「已生成 N 页」要把它们扣掉。
-    skipped_oversize_page_count: int = 0
-
-
-@dataclass
-class LogMsg:
-    level:   str           # INFO / OK / WARN / ERROR
-    message: str
-    ts:      str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
-    visible: bool = True
-
-
-@dataclass
-class DoneMsg:
-    output_dir:   str
-    file_results: list[dict]
-    elapsed_sec:  float
-    tm_hit_count: int
-    api_call_count: int
-    issues: list[dict] = field(default_factory=list)
-    report_path: str = ""
-    manifest_path: str = ""
-    report_warning: str = ""
-    files: list[dict] = field(default_factory=list)
-    kpi: dict[str, object] = field(default_factory=dict)
-    recovery: dict[str, object] = field(default_factory=dict)
-    review: dict[str, object] = field(default_factory=dict)
-    # Runtime failover history: who took over mid-run, and why.
-    connections: dict[str, object] = field(default_factory=dict)
-    language: dict[str, object] = field(default_factory=dict)
-    error: dict[str, object] = field(default_factory=dict)
-    # 用户按了停止、但任务还是正常跑完时留下的痕迹（requested / truncated）。没有它，
-    # 小结会写「已完成 · 全部通过」，用户看不出自己那一下停止到底起没起作用。
-    stop: dict[str, object] = field(default_factory=dict)
-    translated_dir: str = ""
-    review_dir: str = ""
-    summary_path: str = ""
-    checkpoint_path: str = ""
-
-
-@dataclass
-class ErrorMsg:
-    message: str
-    output_dir: str = ""
-    report_path: str = ""
-    report_warning: str = ""
-    manifest_path: str = ""
-    files: list[dict] = field(default_factory=list)
-    kpi: dict[str, object] = field(default_factory=dict)
-    recovery: dict[str, object] = field(default_factory=dict)
-    review: dict[str, object] = field(default_factory=dict)
-    # Runtime failover history: who took over mid-run, and why.
-    connections: dict[str, object] = field(default_factory=dict)
-    language: dict[str, object] = field(default_factory=dict)
-    error: dict[str, object] = field(default_factory=dict)
-    translated_dir: str = ""
-    review_dir: str = ""
-    summary_path: str = ""
-    checkpoint_path: str = ""
-
-
-@dataclass
-class StoppedMsg:
-    message: str
-    output_dir: str = ""
-    report_path: str = ""
-    report_warning: str = ""
-    manifest_path: str = ""
-    files: list[dict] = field(default_factory=list)
-    kpi: dict[str, object] = field(default_factory=dict)
-    recovery: dict[str, object] = field(default_factory=dict)
-    review: dict[str, object] = field(default_factory=dict)
-    # Runtime failover history: who took over mid-run, and why.
-    connections: dict[str, object] = field(default_factory=dict)
-    language: dict[str, object] = field(default_factory=dict)
-    error: dict[str, object] = field(default_factory=dict)
-    translated_dir: str = ""
-    review_dir: str = ""
-    summary_path: str = ""
-    checkpoint_path: str = ""
-    # DoneMsg 一直带着 issues（残留中文待复核等 quality_issues），StoppedMsg 之前没有——
-    # 停止收尾那条分支只是没把这个字段接上，不是设计上认为"停止就不该带 issues"。
-    # 结果是任务真被停止时，正在处理的这份文件如果恰好检出了残留中文/待复核项，
-    # 这条信息会在收尾时直接被丢掉，前端和任务中心都看不到（详见下面 StoppedMsg(...)
-    # 构造处的说明）。补上这个字段，前端 workspace.ts 的 openIssues 统计（读
-    # result.issues，不挑 task.state）才吃得到停止路径下的 quality_issues。
-    # 新增字段带默认值，旧任务记录/旧消息反序列化时缺这个键按空列表处理，不影响
-    # 旧数据可读。
-    issues: list[dict] = field(default_factory=list)
-
-
-class TaskStopped(Exception):
-    """后台任务收到停止信号时抛出，用于统一收尾。"""
-
-
 def _build_excel_source_excerpt(text: str, *, head: int = 18, tail: int = 16) -> str:
     normalized = " ".join(str(text or "").split())
     if len(normalized) <= head + tail + 3:
@@ -389,7 +253,7 @@ def _already_in_target_language(source: str, item, target_lang: str) -> bool:
 
 # ── TaskRunner ────────────────────────────────────────────────────────────────
 
-class TaskRunner:
+class TaskRunner(BaseTaskRunner):
     """
     封装后台翻译任务（全局聚合流水线）。
     UI 层通过轮询 .get_message() 获取进度/日志/完成消息。
@@ -434,38 +298,9 @@ class TaskRunner:
         self._connection_switches: list[dict[str, str]] = []
         self._switch_lock = threading.Lock()
 
-    def start(self) -> None:
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
-        self._thread.start()
-
     @property
     def task_id(self) -> str:
         return self._task_logger.task_id
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def stop_requested(self) -> bool:
-        return self._stop_event.is_set()
-
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def needs_poll(self) -> bool:
-        """线程存活 OR 队列中仍有待读消息（防止线程退出后 DoneMsg 被遗漏）。"""
-        return self.is_running() or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05):
-        """非阻塞获取消息；无消息时返回 None。"""
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def _log(self, level: str, msg: str) -> None:
-        self._queue.put(LogMsg(level=level, message=msg))
-        logger.info(f"[{level}] {msg}")
 
     def _report_connection_switch(self, previous, current, failure_kind, error) -> None:
         """Surface a runtime connection switch in the task's own event log."""
@@ -489,10 +324,6 @@ class TaskRunner:
         )
 
     # ── 全局聚合流水线主入口 ──────────────────────────────────────────────
-
-    def _run_with_overrides(self) -> None:
-        with provider_key_overrides(self._key_overrides):
-            self._run()
 
     def _run(self) -> None:
         start_ts     = datetime.now()
@@ -885,7 +716,6 @@ class TaskRunner:
             coverage_plans = []
             global_unique_texts: set[str] = set()
             file_language_preflights = {}
-            tm_language_pairs: list[str] = []
             text_source_scopes: dict[str, list[frozenset[str]]] = {}
             # 自动识别时每个文件自己的源语言（路径 → 语言），见下方语言预检
             file_source_langs: dict[str, str] = {}
@@ -897,332 +727,36 @@ class TaskRunner:
             t_phase1 = datetime.now()
 
             for fi, file_item in enumerate(self._files):
-                _raise_if_stopped()
-                self._file_progress.emit(file_item.path, "active", "extract")
-
-                self._queue.put(ProgressMsg(
-                    phase_index=1, phase_total=phase_total, phase_name="全局扫描",
-                    step_done=fi, step_total=len(self._files),
-                ))
-
-                process_path = file_item.path
-                source_is_xls = file_item.path.suffix.lower() == ".xls"
-                resume_used = False
-
-                # 换底稿只在补译覆盖率计划真的会跑的前提下才安全：覆盖率计划负责
-                # 分清「原文」和「已译」，没有它就没法阻止把双语底稿的译文列再整份
-                # 送去翻一遍。源语言已知时这里直接换；自动识别时不能现在换——阶段 1
-                # 取的词条要当语言预检的样本，双语底稿会把译文混进样本、把源语言判
-                # 花——先把匹配好、验证过的底稿记下来，等预检定出源语言、重算补译
-                # 清单之前再换（见 _apply_deferred_resume_baselines）。
-                deferred_baseline: Path | None = None
-                if self._untranslated_only and self._resume_output_dir is not None:
-                    try:
-                        rel_dir = file_item.path.parent.relative_to(root_for_output)
-                    except ValueError:
-                        rel_dir = Path()
-                    naming_source_name = (
-                        file_item.original_path.name
-                        if file_item.original_path
-                        else file_item.path.name
-                    )
-                    try:
-                        from core.resume_detection import (
-                            baseline_missing_source_texts,
-                            describe_baseline_divergence,
-                            match_previous_output,
-                        )
-                        candidate = match_previous_output(
-                            self._resume_output_dir,
-                            str(rel_dir),
-                            naming_source_name,
-                            target_lang,
-                            "excel",
-                        )
-                    except Exception as e:
-                        candidate = None
-                        logger.debug(f"续译底稿匹配失败原始错误 {file_item.name}：{e!r}")
-                        self._log(
-                            "WARN",
-                            f"续译底稿匹配失败 {file_item.name}，改为全量翻译："
-                            + user_facing_reason(e, fallback="续译匹配出错。"),
-                        )
-
-                    if candidate is not None:
-                        if not self._validate_resume_baseline(candidate):
-                            self._log(
-                                "WARN",
-                                f"续译底稿已损坏或无法打开，改用源文件全量翻译："
-                                f"{candidate}",
-                            )
-                        elif auto_source_lang:
-                            deferred_baseline = candidate
-                            self._log(
-                                "INFO",
-                                f"续译：{file_item.name} 已找到上次产物 {candidate.name}，"
-                                "等识别出源语言后再换为底稿。",
-                            )
-                        elif (
-                            missing := baseline_missing_source_texts(
-                                process_path,
-                                candidate,
-                                surface="excel",
-                                target_lang=target_lang,
-                                source_lang=source_lang,
-                                formula_display_value_backfill=(
-                                    excel_output.formula_display_value_backfill
-                                ),
-                            )
-                        ):
-                            # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
-                            # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）；
-                            # 源文件删掉的内容则相反，会随底稿原样留在产物里。
-                            self._log(
-                                "WARN",
-                                f"续译核对：{file_item.name} 的源文件比上次翻译时"
-                                f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
-                                "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
-                            )
-                        else:
-                            process_path = candidate
-                            source_is_xls = False
-                            resume_used = True
-                            self._log(
-                                "INFO",
-                                f"续译：{file_item.name} 以上次产物为底稿 {candidate.name}",
-                            )
-
-                resume_baseline_used.append(resume_used)
-                deferred_resume_baselines.append(deferred_baseline)
-
-                if source_is_xls:
-                    xls_file_count += 1
-
-                # .xls 格式转换（在阶段 1 顺便完成）
-                if source_is_xls:
-                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
-                    from core.xls_converter import (
-                        convert_with_excel,
-                        convert_with_fallback,
-                        convert_with_libreoffice,
-                    )
-                    t_conv = datetime.now()
-                    try:
-                        if not self._allow_xls_fallback:
-                            app = _get_excel_app()
-                            process_path = convert_with_excel(app, process_path)
-                            file_conversion_modes[str(file_item.path)] = "excel_automation"
-                        else:
-                            # 兼容转换内部分两级：本机有 LibreOffice 就优先用它保留公式/
-                            # 样式/合并单元格；没装或转换失败再退回 xlrd 纯取值——用户侧
-                            # 的授权仍是二选一（高保真/兼容），这两级不额外弹选项。
-                            try:
-                                process_path = convert_with_libreoffice(process_path)
-                                file_conversion_modes[str(file_item.path)] = "libreoffice_conversion"
-                            except Exception as lo_error:
-                                lo_reason = user_facing_reason(
-                                    lo_error, fallback="LibreOffice 转换不可用。"
-                                )
-                                # WARN 而不是 INFO：这一步意味着产物质量降级（公式
-                                # 变数值），用户扫日志时应当一眼看到。
-                                self._log(
-                                    "WARN",
-                                    f"{file_item.name}：LibreOffice 兼容转换不可用，"
-                                    f"退回值化转换（公式不会保留）：{lo_reason}",
-                                )
-                                process_path = convert_with_fallback(process_path)
-                                file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
-                        self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")
-                    except Exception as e:
-                        logger.debug(f"源文件转换失败 {file_item.name} 原始错误：{e!r}")
-                        conversion_reason = user_facing_reason(
-                            e,
-                            fallback="这个 .xls 文件没能转换成 .xlsx，请改用兼容转换后重试。",
-                        )
-                        self._log("ERROR", f"源文件转换失败 {file_item.name}: {conversion_reason}")
-                        self._task_logger.file_error(file_item.name, conversion_reason)
-                        file_results.append({
-                            "name": file_item.name,
-                            "source_path": str(file_item.path),
-                            "source_relative_path": self._relative_source_path(file_item.path),
-                            "format": file_item.format,
-                            "conversion_mode": file_conversion_modes.get(
-                                str(file_item.path), "high_fidelity_failed"
-                            ),
-                            "status": "failed",
-                            "success": False,
-                            "error": f"源文件转换失败: {conversion_reason}",
-                        })
-                        self._file_progress.emit(
-                            file_item.path, "failed", "extract",
-                            result={"error": f"源文件转换失败: {conversion_reason}"},
-                        )
-                        process_paths.append(process_path)
-                        file_texts.append(set())
-                        coverage_plans.append(None)
-                        continue
-
-                process_paths.append(process_path)
-
-                # 收集词条
-                self._log("INFO", f"[阶段 1] 提取词汇：{file_item.name}（{fi+1}/{len(self._files)}）")
-                t0 = datetime.now()
-                try:
-                    if self._untranslated_only and not auto_source_lang:
-                        coverage_plan = build_excel_coverage_plan(
-                            process_path,
-                            target_lang=target_lang,
-                            source_lang=source_lang,
-                            formula_display_value_backfill=(
-                                excel_output.formula_display_value_backfill
-                            ),
-                            original_sheet_names=(
-                                workbook_sheet_titles(file_item.path) if resume_used else ()
-                            ),
-                        )
-                        self._arbitrate_excel_coverage_pairs(
-                            coverage_plan,
-                            engine=engine,
-                            api_scheduler=shared_scheduler,
-                            target_lang=target_lang,
-                            source_lang=source_lang,
-                            lang_pair=lang_pair,
-                            concurrency=concurrency,
-                            file_name=file_item.name,
-                            quality_issues=quality_issues,
-                            review_marks=excel_review_marks,
-                        )
-                        coverage_plans.append(coverage_plan)
-                        texts = coverage_plan.source_texts
-                        sheet_count = coverage_plan.sheet_count
-                        self._log_excel_coverage_plan(
-                            file_item.name, coverage_plan, resume_baseline=resume_used
-                        )
-                    else:
-                        texts, sheet_count = self._collect_texts(
-                            process_path,
-                            file_item.name,
-                            target_lang=target_lang,
-                            source_lang=source_lang,
-                            formula_display_value_backfill=(
-                                excel_output.formula_display_value_backfill
-                            ),
-                        )
-                        coverage_plans.append(None)
-                except Exception as e:
-                    # 底稿探活（load_workbook 打得开）过了、真正建补译计划才炸的
-                    # 区间：底稿不行不等于源文件不行。用户只是选了「接着上次继续」，
-                    # 不能因此拿到一个「翻译失败」——退回源文件按全量翻译再试一次，
-                    # 只有源文件自己也读不出来才算失败。（.xls 源的转换件在换底稿
-                    # 时被跳过，退无可退，维持失败但把话术指向底稿。）
-                    degraded = False
-                    if resume_used and file_item.path.suffix.lower() != ".xls":
-                        logger.debug(
-                            f"续译底稿建计划失败原始错误 {file_item.name}：{e!r}"
-                        )
-                        self._log(
-                            "WARN",
-                            f"续译底稿无法建立补译计划 {file_item.name}，"
-                            "已退回按源文件全量翻译："
-                            + user_facing_reason(e, fallback="底稿读取失败。"),
-                        )
-                        process_path = file_item.path
-                        process_paths[-1] = process_path
-                        resume_used = False
-                        resume_baseline_used[-1] = False
-                        try:
-                            if self._untranslated_only and not auto_source_lang:
-                                coverage_plan = build_excel_coverage_plan(
-                                    process_path,
-                                    target_lang=target_lang,
-                                    source_lang=source_lang,
-                                    formula_display_value_backfill=(
-                                        excel_output.formula_display_value_backfill
-                                    ),
-                                )
-                                self._arbitrate_excel_coverage_pairs(
-                                    coverage_plan,
-                                    engine=engine,
-                                    api_scheduler=shared_scheduler,
-                                    target_lang=target_lang,
-                                    source_lang=source_lang,
-                                    lang_pair=lang_pair,
-                                    concurrency=concurrency,
-                                    file_name=file_item.name,
-                                    quality_issues=quality_issues,
-                                    review_marks=excel_review_marks,
-                                )
-                                coverage_plans.append(coverage_plan)
-                                texts = coverage_plan.source_texts
-                                sheet_count = coverage_plan.sheet_count
-                                self._log_excel_coverage_plan(
-                                    file_item.name, coverage_plan
-                                )
-                            else:
-                                texts, sheet_count = self._collect_texts(
-                                    process_path,
-                                    file_item.name,
-                                    target_lang=target_lang,
-                                    source_lang=source_lang,
-                                    formula_display_value_backfill=(
-                                        excel_output.formula_display_value_backfill
-                                    ),
-                                )
-                                coverage_plans.append(None)
-                            degraded = True
-                        except Exception as retry_error:
-                            e = retry_error
-                    if not degraded:
-                        fail_label = "续译底稿读取失败" if resume_used else "源文件读取失败"
-                        logger.debug(f"{fail_label}原始错误 {file_item.name}：{e!r}")
-                        read_reason = user_facing_reason(
-                            e,
-                            fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
-                        )
-                        self._log("ERROR", f"{fail_label} {file_item.name}：{read_reason}")
-                        self._task_logger.file_error(file_item.name, f"{fail_label}: {read_reason}")
-                        file_results.append({
-                            "name": file_item.name,
-                            "source_path": str(file_item.path),
-                            "source_relative_path": self._relative_source_path(file_item.path),
-                            "format": file_item.format,
-                            "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
-                            "status": "failed",
-                            "success": False,
-                            "error": f"{fail_label}: {read_reason}",
-                        })
-                        self._file_progress.emit(
-                            file_item.path, "failed", "extract",
-                            result={"error": f"{fail_label}: {read_reason}"},
-                        )
-                        if len(coverage_plans) < len(process_paths):
-                            coverage_plans.append(None)
-                        file_texts.append(set())
-                        # resume_used 时 process_path 是上次输出的续译底稿，只读，绝不删除
-                        _cleanup_excel_conversion_temp(
-                            process_path, file_item, is_resume_baseline=resume_used
-                        )
-                        continue
-                text_set = set(texts)
-                file_texts.append(text_set)
-                total_sheet_count += sheet_count
-                raw_text_count += len(text_set)
-                collect_elapsed = (datetime.now() - t0).total_seconds()
-
-                if self._untranslated_only and auto_source_lang:
-                    # 这一遍取的是全量候选，只拿来给语言预检当样本。真正要补译的
-                    # 清单要等识别出源语言之后才算得出来（见下面的补译识别重建）。
-                    self._log(
-                        "INFO",
-                        f"  → {file_item.name}：{len(text_set)} 处候选文本，"
-                        f"先用于识别源语言（{collect_elapsed:.3f}s）",
-                    )
-                else:
-                    self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
-                self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
-                self._file_progress.emit(file_item.path, "waiting", "translate")
-
-                global_unique_texts.update(text_set)
+                xls_file_count, total_sheet_count, raw_text_count = self._collect_file_texts(
+                    _raise_if_stopped=_raise_if_stopped,
+                    file_item=file_item,
+                    fi=fi,
+                    phase_total=phase_total,
+                    root_for_output=root_for_output,
+                    target_lang=target_lang,
+                    auto_source_lang=auto_source_lang,
+                    excel_output=excel_output,
+                    source_lang=source_lang,
+                    resume_baseline_used=resume_baseline_used,
+                    deferred_resume_baselines=deferred_resume_baselines,
+                    xls_file_count=xls_file_count,
+                    _get_excel_app=_get_excel_app,
+                    file_conversion_modes=file_conversion_modes,
+                    file_results=file_results,
+                    process_paths=process_paths,
+                    file_texts=file_texts,
+                    coverage_plans=coverage_plans,
+                    concurrency=concurrency,
+                    engine=engine,
+                    excel_review_marks=excel_review_marks,
+                    lang_pair=lang_pair,
+                    quality_issues=quality_issues,
+                    shared_scheduler=shared_scheduler,
+                    _cleanup_excel_conversion_temp=_cleanup_excel_conversion_temp,
+                    total_sheet_count=total_sheet_count,
+                    raw_text_count=raw_text_count,
+                    global_unique_texts=global_unique_texts,
+                )
 
             # 阶段 1 收尾：发送最终进度
             self._queue.put(ProgressMsg(
@@ -1239,116 +773,28 @@ class TaskRunner:
             )
 
             if auto_source_lang:
-                self._queue.put(
-                    StatusMsg(
-                        phase_desc=(
-                            "状态：自动识别模式，正在对每个有候选文本的文件执行一次语言预检..."
-                        )
-                    )
+                source_lang, system_prompt, raw_text_count, file_language_preflights = self._preflight_source_languages(
+                    concurrency=concurrency,
+                    coverage_plans=coverage_plans,
+                    deferred_resume_baselines=deferred_resume_baselines,
+                    engine=engine,
+                    excel_output=excel_output,
+                    excel_review_marks=excel_review_marks,
+                    file_conversion_modes=file_conversion_modes,
+                    file_results=file_results,
+                    file_source_langs=file_source_langs,
+                    file_texts=file_texts,
+                    global_unique_texts=global_unique_texts,
+                    process_paths=process_paths,
+                    quality_issues=quality_issues,
+                    resume_baseline_used=resume_baseline_used,
+                    settings=settings,
+                    shared_scheduler=shared_scheduler,
+                    target_lang=target_lang,
+                    text_source_scopes=text_source_scopes,
+                    system_prompt=system_prompt,
+                    raw_text_count=raw_text_count,
                 )
-
-                detector_calls = {"count": 0}
-
-                def _detect_file_language(samples, detected_target):
-                    detector_calls["count"] += 1
-                    raw = engine.chat(
-                        LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
-                        build_language_preflight_prompt(
-                            samples,
-                            target_lang=detected_target,
-                        ),
-                    )
-                    return raw
-
-                file_payloads = {
-                    str(file_item.path): texts
-                    for file_item, texts in zip(self._files, file_texts)
-                }
-                file_language_preflights = {}
-                for file_path, candidate_texts in file_payloads.items():
-                    self._file_progress.emit(file_path, "active", "detect")
-                    file_language_preflights.update(preflight_files(
-                        {file_path: candidate_texts},
-                        _detect_file_language,
-                        target_lang=target_lang,
-                    ))
-                    self._file_progress.emit(file_path, "waiting", "translate")
-                detected_sources: list[str] = []
-                for result in file_language_preflights.values():
-                    for detected in result.source_langs:
-                        if detected not in detected_sources:
-                            detected_sources.append(detected)
-                if detected_sources:
-                    source_lang = detected_sources[0]
-                    system_prompt = get_system_prompt(
-                        settings,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        page_key="excel",
-                    )
-                else:
-                    source_lang = get_default_source_lang()
-                tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
-                # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
-                # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
-                # 译文」跳过。某个文件没定出语言时才退回全局值。
-                file_source_langs.update(
-                    (file_path, result.source_langs[0])
-                    for file_path, result in file_language_preflights.items()
-                    if result.source_langs
-                )
-                for file_item, text_set in zip(self._files, file_texts):
-                    result = file_language_preflights.get(str(file_item.path))
-                    if result is None:
-                        continue
-                    for text in text_set:
-                        text_source_scopes.setdefault(text, []).append(
-                            frozenset(result.source_langs)
-                        )
-                self._log(
-                    "INFO",
-                    (
-                        f"自动语言预检完成：{detector_calls['count']} 次请求，"
-                        f"实际源语言={','.join(detected_sources) or '未确定'}，"
-                        f"TM 语言对={','.join(tm_language_pairs) or '无'}"
-                    ),
-                )
-                if self._untranslated_only:
-                    self._apply_deferred_resume_baselines(
-                        process_paths=process_paths,
-                        deferred_resume_baselines=deferred_resume_baselines,
-                        resume_baseline_used=resume_baseline_used,
-                        file_results=file_results,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        file_source_langs=file_source_langs,
-                        formula_display_value_backfill=(
-                            excel_output.formula_display_value_backfill
-                        ),
-                    )
-                    raw_text_count = self._rebuild_coverage_plans_after_preflight(
-                        process_paths=process_paths,
-                        coverage_plans=coverage_plans,
-                        file_texts=file_texts,
-                        file_results=file_results,
-                        file_conversion_modes=file_conversion_modes,
-                        global_unique_texts=global_unique_texts,
-                        resume_baseline_used=resume_baseline_used,
-                        target_lang=target_lang,
-                        source_lang=source_lang,
-                        file_source_langs=file_source_langs,
-                        formula_display_value_backfill=(
-                            excel_output.formula_display_value_backfill
-                        ),
-                        engine=engine,
-                        api_scheduler=shared_scheduler,
-                        lang_pair=(tm_language_pairs[0] if tm_language_pairs else None),
-                        concurrency=concurrency,
-                        quality_issues=quality_issues,
-                        review_marks=excel_review_marks,
-                    )
-            else:
-                tm_language_pairs = [lang_pair] if lang_pair else []
 
             excel_policy, excel_policy_reason = self._decide_excel_policy(
                 need_autofit=need_autofit,
@@ -1470,362 +916,32 @@ class TaskRunner:
             # 阶段 1 的 _arbitrate_excel_coverage_pairs 已经把仲裁标记写进去了
             # （中-3）——这里再赋一个新空 dict 会把那些标记全部丢弃，底色不涂、
             # review 计数归零。下面继续用同一个字典累加阶段 2 自己的标记。
-            if (misses or mixed_texts) and not self._stop_event.is_set():
-                api_translation_sources = set(misses) | set(mixed_texts)
-                active_translation_paths = [
-                    self._files[index].path
-                    for index, texts in enumerate(file_texts)
-                    if index < len(self._files)
-                    and any(text in api_translation_sources for text in texts)
-                ]
-                self._file_progress.emit_many(
-                    "active", "translate", active_translation_paths
-                )
-                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
-                self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
-
-                progress_lock = threading.Lock()
-                progress_done = {"normal": 0, "mixed": 0}
-
-                def _emit_api_progress(kind: str, done: int) -> None:
-                    with progress_lock:
-                        progress_done[kind] = max(0, int(done or 0))
-                        total_done = min(progress_done["normal"], len(misses)) + min(
-                            progress_done["mixed"],
-                            len(mixed_texts),
-                        )
-                    self._queue.put(ProgressMsg(
-                        phase_index=2,
-                        phase_total=phase_total,
-                        phase_name="云端翻译",
-                        step_done=min(total_done, max(api_call_count, 1)),
-                        step_total=max(api_call_count, 1),
-                    ))
-
-                def progress_cb(done, total):
-                    _emit_api_progress("normal", done)
-
-                def api_error_cb(msg: str) -> None:
-                    level = "ERROR" if "未能翻译" in msg else "WARN"
-                    self._log(level, msg)
-
-                t0 = datetime.now()
-                batch_stats = TranslationBatchRunStats()
-
-                mixed_stats = MixedLanguageRunStats()
-                mixed_results = {}
-
-                def keep_paid_results(exc: ApiKeyTemporarilyUnavailableError) -> None:
-                    """Key 被判暂时不可用、整轮任务要失败时，先把已付费的译文存进记忆库。
-
-                    这一轮不会再出文件，但用户换 key 或等限流过去重跑时，这些词条直接
-                    命中记忆库，不用再付一次钱（审计 高-6）。
-                    """
-                    partial = getattr(exc, "partial_results", None) or {}
-                    if not partial:
-                        return
-                    if auto_source_lang:
-                        language_partial, plain_partial = dict(partial), {}
-                    else:
-                        language_partial, plain_partial = {}, dict(partial)
-                    written, tm_error = self.store_api_results_in_tm(
-                        auto_source_lang=auto_source_lang,
-                        normal_api_language_results=language_partial,
-                        normal_api_translations=plain_partial,
-                        text_source_scopes=text_source_scopes,
-                        target_lang=target_lang,
-                        lang_pair=lang_pair,
-                        max_len=max_len,
-                        engine_name=engine.engine_name,
-                    )
-                    if tm_error:
-                        self._log("WARN", tm_error)
-                    elif written:
-                        self._log(
-                            "INFO",
-                            f"任务中断前已拿到 {len(partial)} 条译文，已存入记忆库 {written} 条；"
-                            "重新翻译时这些内容直接命中记忆库，不会再次计费。",
-                        )
-
-                def run_normal_api_translation() -> dict[str, str]:
-                    try:
-                        return _run_normal_api_translation()
-                    except ApiKeyTemporarilyUnavailableError as exc:
-                        partial = getattr(exc, "partial_results", None) or {}
-                        if not partial or isinstance(exc, ApiCredentialRejectedError):
-                            # 一条都没翻到：写出去也只是原文副本，照旧整批失败。Key 被拒
-                            # 也一样整批失败，那不是等一等就会好的事。
-                            keep_paid_results(exc)
-                            raise
-                        rate_limited.append(exc)
-                        self._log(
-                            "WARN",
-                            f"接口持续限流，已停止继续请求；已拿到的 {len(partial)} 条译文照常写入文件，"
-                            "其余内容保留原文，可稍后用「接着上次继续」补译。",
-                        )
-                        if auto_source_lang:
-                            normal_api_language_results.update(partial)
-                            return {
-                                source: result.translation
-                                for source, result in partial.items()
-                            }
-                        return dict(partial)
-
-                def _run_normal_api_translation() -> dict[str, str]:
-                    if not misses:
-                        return {}
-                    if auto_source_lang:
-                        language_results = translate_texts_with_sources(
-                            misses,
-                            engine,
-                            target_lang,
-                            system_prompt,
-                            batch_size,
-                            concurrency,
-                            progress_cb,
-                            api_error_cb,
-                            should_stop=self.stop_requested,
-                            api_scheduler=shared_scheduler,
-                            stats=batch_stats,
-                            throughput_unlocked=self._settings.engine.concurrency_unlocked,
-                        )
-                        normal_api_language_results.update(language_results)
-                        return {
-                            source: result.translation
-                            for source, result in language_results.items()
-                        }
-                    return translate_texts(
-                        misses,
-                        engine,
-                        target_lang,
-                        system_prompt,
-                        batch_size,
-                        concurrency,
-                        progress_cb,
-                        api_error_cb,
-                        should_stop=self.stop_requested,
-                        source_lang=source_lang,
-                        api_scheduler=shared_scheduler,
-                        stats=batch_stats,
-                        throughput_unlocked=self._settings.engine.concurrency_unlocked,
-                    )
-
-                def run_mixed_api_translation():
-                    try:
-                        return _run_mixed_api_translation()
-                    except ApiKeyTemporarilyUnavailableError as exc:
-                        if isinstance(exc, ApiCredentialRejectedError):
-                            raise
-                        rate_limited.append(exc)
-                        self._log("WARN", "接口持续限流，混合语言内容这次没能翻译，已保留原文。")
-                        return {}
-
-                def _run_mixed_api_translation():
-                    if not mixed_texts:
-                        return {}
-                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
-
-                    def mixed_progress_cb(done, total):
-                        _emit_api_progress("mixed", done)
-
-                    if rate_limited:
-                        return {}
-                    return translate_mixed_language_texts(
-                        mixed_texts,
-                        engine=engine,
-                        target_lang=target_lang,
-                        system_prompt=system_prompt,
-                        source_lang=source_lang,
-                        concurrency=concurrency,
-                        max_items_per_batch=batch_size,
-                        max_chars_per_batch=DEFAULT_MIXED_MAX_BATCH_CHARS,
-                        retry_attempts=3,
-                        progress_callback=mixed_progress_cb,
-                        error_callback=api_error_cb,
-                        should_stop=self.stop_requested,
-                        api_scheduler=shared_scheduler,
-                        request_category=API_REQUEST_CATEGORY_NORMAL,
-                        stats=mixed_stats,
-                    )
-
-                if misses and mixed_texts and shared_scheduler is not None:
-                    with ThreadPoolExecutor(max_workers=2) as main_executor:
-                        normal_future = main_executor.submit(run_normal_api_translation)
-                        mixed_future = main_executor.submit(run_mixed_api_translation)
-                        normal_api_translations = normal_future.result()
-                        mixed_results = mixed_future.result()
-                else:
-                    normal_api_translations = run_normal_api_translation()
-                    mixed_results = run_mixed_api_translation()
-
-                api_translations.update(normal_api_translations)
-                # 自动识别时模型会报每一格的实际语言：报的就是目标语言、译文又原样
-                # 返回的格子（英译英表里的 Total、Steel plate）本来就不用翻，不该进
-                # 写入词典——进了就会被当成「没翻成功」整格标黄需复核。
-                already_target = {
-                    source
-                    for source, item in normal_api_language_results.items()
-                    if _already_in_target_language(source, item, target_lang)
-                }
-                for source in already_target:
-                    api_translations.pop(source, None)
-                if already_target:
-                    self._log(
-                        "INFO",
-                        f"{len(already_target)} 处内容本来就是目标语言，保持原样，不标记复核。",
-                    )
-                for source, translation in normal_api_translations.items():
-                    if source in already_target:
-                        continue
-                    if str(source or "").strip().lower() == str(translation or "").strip().lower():
-                        _set_excel_review_mark(
-                            excel_review_marks,
-                            source,
-                            MIXED_MARK_UNRESOLVED,
-                        )
-
-                if mixed_texts:
-                    for source, result in mixed_results.items():
-                        if result.action in {MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE} and result.translation.strip():
-                            api_translations[source] = result.translation.strip()
-                        elif result.action == MIXED_ACTION_UNCERTAIN:
-                            api_translations[source] = source
-                        if result.mark_kind:
-                            _set_excel_review_mark(
-                                excel_review_marks,
-                                source,
-                                result.mark_kind,
-                            )
-                    self._log(
-                        "INFO",
-                        (
-                            "混合语言路径："
-                            f"命中 {mixed_stats.input_count} 条，"
-                            f"已双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)}，"
-                            f"疑似原文错误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)}，"
-                            f"不确定 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)}，"
-                            f"语义校验接受 {mixed_stats.semantic_accepted_count}"
-                        ),
-                    )
-                if rate_limited:
-                    if not api_translations and not hits:
-                        raise rate_limited[0]
-                    unfinished = [
-                        text
-                        for text in dict.fromkeys([*misses, *mixed_texts])
-                        if text not in api_translations
-                    ]
-                    for text in unfinished:
-                        # 原样写回并标需复核：用户在文件里看得到哪些格子还没翻。
-                        api_translations[text] = text
-                        _set_excel_review_mark(excel_review_marks, text, MIXED_MARK_UNRESOLVED)
-                    if unfinished:
-                        quality_issues.append(
-                            {
-                                "type": "rate_limited_partial",
-                                "severity": "needs_action",
-                                "count": len(unfinished),
-                                "message": (
-                                    f"接口持续限流，有 {len(unfinished)} 条内容没能翻译，已保留原文并标记；"
-                                    "限流过去后用「接着上次继续」补译即可，已翻好的内容不会重复计费。"
-                                ),
-                            }
-                        )
-                # 注意：这里不能拦停止信号。已经跑到这一步的批次，API 费用已经
-                # 付了——`misses`/`mixed_texts` 里凡是进了 normal_api_translations /
-                # normal_api_language_results 的词条，都要走到下面的 TM 写入，
-                # 否则重跑整批要重新付费（中-2）。真正该拦停止的位置是阶段 3
-                # 开始前那一处 `_raise_if_stopped()`，出文件才是可以整批放弃的部分。
-                api_elapsed = (datetime.now() - t0).total_seconds()
-                self._log(
-                    "INFO",
-                    (
-                        "Excel 实际请求："
-                        f"{batch_stats.batch_count} 批，"
-                        f"缩小重试 {batch_stats.retry_count} 次，"
-                        f"未翻译 {batch_stats.untranslated_count} 条，"
-                        f"最大请求权重 {batch_stats.max_request_weight}"
-                        + (
-                            f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
-                            f"最低并发 {batch_stats.adaptive_lowest_concurrency}"
-                            if batch_stats.adaptive_concurrency_reductions
-                            else ""
-                        )
-                    ),
-                )
-                untranslated_count = (
-                    batch_stats.untranslated_count or batch_stats.failed_batch_count
-                )
-                if untranslated_count:
-                    # The file still gets written with the source text in place,
-                    # so the count has to travel with the result: an unflagged
-                    # run must never hand back source text dressed as translation.
-                    quality_issues.append(
-                        {
-                            "type": "api_unavailable",
-                            "severity": "needs_action",
-                            "count": untranslated_count,
-                            "message": (
-                                f"有 {untranslated_count} 条内容未能从 API 获得译文，"
-                                "文件中这些位置保留的是原文，不是译文。"
-                                "请检查 API Key、Base URL、模型名称或服务状态，重新配置后再试。"
-                            ),
-                            "failed_sources": list(batch_stats.failed_items),
-                        }
-                    )
-                    self._log(
-                        "ERROR",
-                        f"本次有 {untranslated_count} 条内容未获得译文，已在结果中标记为未翻译。",
-                    )
-                if batch_stats.quality_reset_count:
-                    # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
-                    # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
-                    mismatch = _detect_post_failure_source_language(
-                        engine=engine,
-                        samples=batch_stats.quality_reset_items,
-                        requested_source=source_lang,
-                        target_lang=target_lang,
-                        reset_count=batch_stats.quality_reset_count,
-                        original_count=(
-                            batch_stats.original_count or len(global_unique_texts)
-                        ),
-                    )
-                    issue_type = "suspected_source_language_mismatch" if mismatch else "quality_filter_reset"
-                    if mismatch:
-                        message = _language_mismatch_message(
-                            mismatch,
-                            source_lang,
-                            target_lang,
-                        )
-                    else:
-                        message = (
-                            f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
-                            "已回退为原文。这些单元格里保留的是原文，"
-                            + (
-                                "请按下方源文清单逐条核对。"
-                                if self._untranslated_only
-                                or not self._settings.excel_review.mark_review_items
-                                else "已标记待复核，请在输出文件中核对带标记的位置。"
-                            )
-                        )
-                    quality_issues.append(
-                        {
-                            "type": issue_type,
-                            "severity": "needs_action",
-                            "count": batch_stats.quality_reset_count,
-                            "message": message,
-                            "failed_sources": [
-                                {"source": source, "error": "译文未通过质量校验，已回退为原文"}
-                                for source in batch_stats.quality_reset_items
-                            ],
-                        }
-                    )
-                    self._log(
-                        "WARN",
-                        f"质量校验回退 {batch_stats.quality_reset_count} 条译文为原文，已记入结果报告。",
-                    )
-                self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
-                self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
+            normal_api_translations = self._translate_misses_via_api(
+                api_call_count=api_call_count,
+                api_translations=api_translations,
+                auto_source_lang=auto_source_lang,
+                batch_size=batch_size,
+                concurrency=concurrency,
+                engine=engine,
+                excel_review_marks=excel_review_marks,
+                file_texts=file_texts,
+                global_unique_texts=global_unique_texts,
+                hits=hits,
+                lang_pair=lang_pair,
+                max_len=max_len,
+                misses=misses,
+                mixed_texts=mixed_texts,
+                normal_api_language_results=normal_api_language_results,
+                phase_total=phase_total,
+                quality_issues=quality_issues,
+                rate_limited=rate_limited,
+                shared_scheduler=shared_scheduler,
+                source_lang=source_lang,
+                system_prompt=system_prompt,
+                target_lang=target_lang,
+                text_source_scopes=text_source_scopes,
+                normal_api_translations=normal_api_translations,
+            )
                 # TM 写入挪到了残留修复阶梯之后：这里写会把「修复前」的
                 # 带残留译文存进库，下个文档 TM 命中直接短路，残留就固化了。
 
@@ -1841,272 +957,23 @@ class TaskRunner:
 
             # ── 残留中文体检 + 确定性序号修复（0 API，与 Word 共用分类器）──
             # 放在写盘前：能确定修的（序号前缀）直接改词典，改不了的标记复核。
-            residual_result = run_residual_pass(
-                global_translations.items(), target_lang=target_lang
+            residual_result = self._repair_residuals(
+                global_translations=global_translations,
+                target_lang=target_lang,
+                quality_issues=quality_issues,
+                engine=engine,
+                rate_limited=rate_limited,
+                phase_total=phase_total,
+                excel_review_marks=excel_review_marks,
             )
-            if residual_result.fixes:
-                global_translations.update(residual_result.fixes)
-                self._log(
-                    "OK",
-                    (
-                        f"残留序号确定性修复 {len(residual_result.fixes)} 条"
-                        f"（序号惯例：{residual_result.convention}）"
-                    ),
-                )
-                quality_issues.append(
-                    {
-                        "type": "residual_numbering_autofixed",
-                        "severity": "info",
-                        "count": len(residual_result.fixes),
-                        "message": (
-                            f"有 {len(residual_result.fixes)} 条译文的中文序号残留"
-                            "已按文档序号惯例自动修复，无需人工处理。"
-                        ),
-                    }
-                )
-            # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）。
-            # 上限/熔断/进度护栏在 run_repair_ladder 里，与 Word 主流程共用。
-            still_needs_review = list(residual_result.needs_review)
-            repair_method_counts: dict[str, int] = {}
-            # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
-            repair_reject_reasons: dict[str, tuple[str, ...]] = {}
-            # 超限/熔断要写进结果报告：只在日志里提会被滚走，用户就不知道
-            # 「这批单元根本没尝试修复，重跑还有救」
-            repair_over_cap_count = 0
-            repair_breaker_tripped = False
-            # 停止导致的「没来得及修」跟「超限/熔断没修成」是三种不同的成因——
-            # 审计批次 2 第④条：这批未完成的内容不该被说成「修复失败」，用户按了
-            # 停止不算失败。判据用 ladder.stopped_count（阶梯逐单元记录「停止时还
-            # 没开跑」的条数），不用事后探停止标志：停止落在最后一个单元的请求
-            # 进行中时，remaining 全是真拒收、标志却已置位，事后探会把归因算反。
-            repair_stopped_by_user = False
-            if still_needs_review and engine_supports_chat(engine) and not rate_limited:
-
-                def _on_repair_progress(done: int, total: int) -> None:
-                    self._queue.put(StatusMsg(
-                        phase_desc=(
-                            f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
-                            f"（{done}/{total}）..."
-                        )
-                    ))
-
-                ladder = run_repair_ladder(
-                    still_needs_review,
-                    target_lang=target_lang,
-                    send=engine.chat,
-                    convention=residual_result.convention,
-                    max_units=_RESIDUAL_REPAIR_MAX_UNITS,
-                    breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
-                    should_stop=self._stop_event.is_set,
-                    on_progress=_on_repair_progress,
-                )
-                if ladder.over_cap_count:
-                    self._log(
-                        "WARN",
-                        (
-                            f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
-                            f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
-                            f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
-                        ),
-                    )
-                if ladder.breaker_tripped:
-                    self._log(
-                        "WARN",
-                        (
-                            f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
-                            "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
-                        ),
-                    )
-                global_translations.update(ladder.accepted)
-                repair_method_counts = ladder.method_counts
-                repair_reject_reasons = ladder.reject_reasons
-                repair_over_cap_count = ladder.over_cap_count
-                repair_breaker_tripped = ladder.breaker_tripped
-                still_needs_review = ladder.remaining
-                # 跟「超限」「熔断」不冲突，三个成因可能同时出现，下面拼消息时各说各的。
-                repair_stopped_by_user = ladder.stopped_count > 0
-            repaired_total = sum(repair_method_counts.values())
-            if repaired_total:
-                method_desc = "、".join(
-                    f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
-                    for method, count in sorted(repair_method_counts.items())
-                )
-                self._log("OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）")
-                quality_issues.append(
-                    {
-                        "type": "residual_repaired",
-                        "severity": "info",
-                        "count": repaired_total,
-                        "message": (
-                            f"有 {repaired_total} 条译文的残留中文已自动修复"
-                            f"（{method_desc}），修复稿均通过机器验收。"
-                        ),
-                    }
-                )
-            if still_needs_review:
-                for unit in still_needs_review:
-                    _set_excel_review_mark(
-                        excel_review_marks,
-                        unit.source_text,
-                        MIXED_MARK_UNRESOLVED,
-                    )
-                quality_issues.append(
-                    {
-                        "type": "residual_source_language",
-                        "severity": "needs_action",
-                        "count": len(still_needs_review),
-                        # 附加的机器可判字段，不改动 type/severity：报告/界面想按「是不是
-                        # 停止导致的」单独处理时读这个字段，不用去猜 message 里的措辞；
-                        # 旧任务记录没有这个键，读取方按缺省 False（当作非停止）处理即可，
-                        # 不影响旧数据可读——新增字段只加不改，兼容旧结果契约。
-                        "caused_by_stop": repair_stopped_by_user,
-                        "message": (
-                            f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
-                            + (
-                                # 停止不是失败：这批是任务被停止时还没轮到自动修复的部分，
-                                # 不是「模型改了还是不对」。放在最前面说，不然用户会把它跟
-                                # 下面「熔断/超限」这些真正尝试过、没修成的情况混为一谈。
-                                "其中一部分是任务停止时还没来得及自动修复（不是修复失败），"
-                                if repair_stopped_by_user
-                                else ""
-                            )
-                            + (
-                                # 补译模式的输出文件不带标记列；双语模式下用户
-                                # 也可能关掉「标记需复核内容」——文件里真没标记
-                                # 时不许许诺有标记。停止同理：停止标志置位后
-                                # 阶段 3 之前的 _raise_if_stopped 会拦下写盘，
-                                # 输出文件根本不存在，更不能许诺「已在文件中标记」。
-                                "请按下方源文清单逐条核对。"
-                                if self._untranslated_only
-                                or not self._settings.excel_review.mark_review_items
-                                or repair_stopped_by_user
-                                else "已在输出文件中标记待复核位置。"
-                            )
-                            + (
-                                f"其中 {repair_over_cap_count} 条超出单次自动修复"
-                                f"上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），本次未尝试"
-                                "修复，重新运行任务可继续修复。"
-                                if repair_over_cap_count
-                                else ""
-                            )
-                            + (
-                                "自动修复通道因连续请求失败已熔断，部分单元未尝试"
-                                "修复，确认网络与引擎可用后重新运行任务可继续修复。"
-                                if repair_breaker_tripped
-                                else ""
-                            )
-                            + (
-                                # 不说「接着处理」：停止发生在写盘之前时本次没有
-                                # 可续的产物，重跑是从头再来（已入库的译文会经
-                                # 记忆库直接复用，残留部分重新走自动修复）。
-                                "重新运行任务时，已完成的译文会经记忆库复用，"
-                                "这批残留会重新尝试自动修复。"
-                                if repair_stopped_by_user
-                                and not repair_over_cap_count
-                                and not repair_breaker_tripped
-                                else ""
-                            )
-                        ),
-                        "failed_sources": [
-                            {
-                                "source": unit.source_text,
-                                "error": (
-                                    "译文残留中文："
-                                    + "、".join(f"«{span}»" for span in unit.spans)
-                                    + (
-                                        "；修复尝试被拒："
-                                        + "；".join(
-                                            repair_reject_reasons[unit.source_text]
-                                        )
-                                        if unit.source_text in repair_reject_reasons
-                                        else ""
-                                    )
-                                ),
-                            }
-                            for unit in still_needs_review
-                        ],
-                    }
-                )
-                # 运行日志同样要把「停止」和「修复失败」分开说——面板里这条 WARN 是用户
-                # 唯一能看到的第一手记录，跟上面 quality_issues 的 message 措辞保持一致，
-                # 不能一边在报告里说「不是修复失败」，日志这行却只字不提成因。级别仍用
-                # WARN：不管是不是因为停止，这批内容都还需要用户处理，不该看起来比真实
-                # 状态更轻。
-                self._log(
-                    "WARN",
-                    (
-                        f"检出 {len(still_needs_review)} 条译文残留中文，"
-                        + (
-                            "其中一部分是任务停止时还没来得及自动修复，"
-                            if repair_stopped_by_user
-                            else ""
-                        )
-                        + "已列入待复核。"
-                    ),
-                )
-            if residual_result.released_notes:
-                # 万/亿等数量单位残留：不拦发布，但报告里留痕
-                quality_issues.append(
-                    {
-                        "type": "residual_quantity_unit",
-                        "severity": "info",
-                        "count": len(residual_result.released_notes),
-                        "message": (
-                            f"有 {len(residual_result.released_notes)} 条译文保留了「万/亿」等数量单位，"
-                            "通常不影响理解，如需统一可人工调整。"
-                        ),
-                    }
-                )
 
             # ── 文档级标题写法巡检（0 API）：逐段各自都对，全篇混两套写法
             # 只有聚在一起才看得出来。多数派可确定性改写时直接改词典。
-            heading_observations = [
-                (source, target, source)
-                for source, target in global_translations.items()
-                if is_section_heading_source(source)
-            ]
-            # 全篇多数派要贯通到 TM 入库口：TM 只拿到 API 未命中子集，
-            # 让它自己投票可能与全篇结论相反，把库改成与交付文件相左的写法
-            heading_majority: str | None = None
-            if heading_observations:
-                heading_consistency = check_heading_consistency(
-                    heading_observations, target_lang=target_lang
-                )
-                heading_majority = heading_consistency.majority_form
-                if heading_consistency.fixes:
-                    global_translations.update(heading_consistency.fixes)
-                    self._log(
-                        "OK",
-                        (
-                            f"节标题写法归一 {len(heading_consistency.fixes)} 条"
-                            "（全篇多数派为准）。"
-                        ),
-                    )
-                    quality_issues.append(
-                        {
-                            "type": "heading_style_normalized",
-                            "severity": "info",
-                            "count": len(heading_consistency.fixes),
-                            "message": (
-                                f"有 {len(heading_consistency.fixes)} 条节标题译文的写法"
-                                "与全篇多数派不一致，已自动归一，无需人工处理。"
-                            ),
-                        }
-                    )
-                elif heading_consistency.outliers:
-                    # 多数派是序数词写法时不做词形猜测，只报告不改
-                    quality_issues.append(
-                        {
-                            "type": "heading_style_outliers",
-                            "severity": "info",
-                            "count": len(heading_consistency.outliers),
-                            "message": (
-                                f"有 {len(heading_consistency.outliers)} 条节标题译文"
-                                "与全篇多数写法不一致，因归一需要词形变化知识，"
-                                "未自动改写，如需统一可人工调整。"
-                            ),
-                        }
-                    )
+            heading_majority = self._normalize_heading_style(
+                global_translations=global_translations,
+                target_lang=target_lang,
+                quality_issues=quality_issues,
+            )
 
             # ── TM 写入（从 API 返回后挪到这里）：必须存「文件最终译文」——
             # 序号确定性修复、修复阶梯、标题归一都改完之后的版本。早写会把
@@ -2114,35 +981,20 @@ class TaskRunner:
             # 停止信号不拦这一步：能走到这里说明 API 结果已经付费拿到，写入
             # 是本地库操作，跳过只会让下次运行整批重新付费；仍带残留的配对
             # 由 sanitize_tm_pairs 在入库口拦下，不会因停止而混入库里。
-            if normal_api_translations or normal_api_language_results:
-                written, tm_write_error = self.store_api_results_in_tm(
-                    auto_source_lang=auto_source_lang,
-                    normal_api_language_results=normal_api_language_results,
-                    normal_api_translations=normal_api_translations,
-                    text_source_scopes=text_source_scopes,
-                    target_lang=target_lang,
-                    lang_pair=lang_pair,
-                    max_len=max_len,
-                    engine_name=engine.engine_name,
-                    final_translations=global_translations,
-                    convention=residual_result.convention,
-                    heading_majority=heading_majority,
-                )
-                if tm_write_error:
-                    self._log("WARN", tm_write_error)
-                    self._task_logger.warning(tm_write_error)
-                    quality_issues.append(
-                        {
-                            "type": "tm_write_failed",
-                            # 写 TM 是真的失败了，不是「按设计如此」的提示。severity=info
-                            # 已经被界面定义成「用户不用管」的一档（自动目录那类），这一条
-                            # 留在 info 里会连着 KPI 一起被抹掉。
-                            "severity": "needs_action",
-                            "message": tm_write_error,
-                        }
-                    )
-                if written:
-                    self._log("INFO", f"新增 TM 词条：{written} 条")
+            self._store_final_translations_in_tm(
+                normal_api_language_results=normal_api_language_results,
+                normal_api_translations=normal_api_translations,
+                auto_source_lang=auto_source_lang,
+                engine=engine,
+                global_translations=global_translations,
+                heading_majority=heading_majority,
+                lang_pair=lang_pair,
+                max_len=max_len,
+                residual_result=residual_result,
+                target_lang=target_lang,
+                text_source_scopes=text_source_scopes,
+                quality_issues=quality_issues,
+            )
 
             phase2_elapsed = (datetime.now() - t_phase2).total_seconds()
             self._log("OK", f"[阶段 2 完成] 翻译数据就绪（{phase2_elapsed:.2f}s）")
@@ -2246,293 +1098,36 @@ class TaskRunner:
 
             reserved_output_paths: set[Path] = set()
             for fi, file_item in enumerate(self._files):
-                _raise_if_stopped()
-
-                # 跳过阶段 1 已失败的文件
-                already_failed = any(
-                    r.get("source_path") == str(file_item.path) and not r.get("success")
-                    for r in file_results
+                self._write_file_output(
+                    _raise_if_stopped=_raise_if_stopped,
+                    file_item=file_item,
+                    file_results=file_results,
+                    fi=fi,
+                    phase_total=phase_total,
+                    process_paths=process_paths,
+                    resume_baseline_used=resume_baseline_used,
+                    source_root=source_root,
+                    excel_output=excel_output,
+                    filename_translations=filename_translations,
+                    output_dir=output_dir,
+                    reserved_output_paths=reserved_output_paths,
+                    target_lang=target_lang,
+                    coverage_plans=coverage_plans,
+                    excel_review_marks=excel_review_marks,
+                    file_source_langs=file_source_langs,
+                    global_translations=global_translations,
+                    need_autofit=need_autofit,
+                    process_artifacts=process_artifacts,
+                    source_lang=source_lang,
+                    sheet_translations=sheet_translations,
+                    quality_issues=quality_issues,
+                    file_texts=file_texts,
+                    hits=hits,
+                    misses=misses,
+                    mixed_texts=mixed_texts,
+                    file_conversion_modes=file_conversion_modes,
+                    _cleanup_excel_conversion_temp=_cleanup_excel_conversion_temp,
                 )
-                if already_failed:
-                    # 这个文件在阶段 1/2 之间被标失败（例如自动识别源语言后
-                    # 重算补译计划时读不出来），它的 .xls 转换临时件当时未必删
-                    # 过——但不必在这里现删：下面 finally 里的兜底扫描会对
-                    # self._files 里的每一个文件都补删一遍，覆盖这条路径，
-                    # 这里再删一次纯属重复（中-8）。
-                    continue
-
-                self._file_progress.emit(file_item.path, "active", "generate")
-
-                self._queue.put(ProgressMsg(
-                    phase_index=3, phase_total=phase_total, phase_name="生成文件",
-                    step_done=fi, step_total=len(self._files),
-                ))
-
-                self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{fi+1}/{len(self._files)}）")
-
-                process_path = process_paths[fi]
-                # 换了续译底稿时，output 命名/相对目录必须仍按「原始源文件」算，
-                # 否则底稿文件名（已经带过一次「双语」后缀）会在输出名里叠加一遍。
-                naming_original_path = file_item.original_path
-                if (
-                    fi < len(resume_baseline_used)
-                    and resume_baseline_used[fi]
-                    and naming_original_path is None
-                ):
-                    naming_original_path = file_item.path
-
-                try:
-                    rel_subdir = file_item.path.parent.relative_to(source_root)
-                except ValueError:
-                    rel_subdir = Path()
-
-                try:
-                    t0 = datetime.now()
-                    original_name = naming_original_path.name if naming_original_path else file_item.path.name
-                    output_basename = original_name
-                    if excel_output.translate_output_filename:
-                        original_stem = Path(original_name).stem
-                        translated_stem = output_stem_from_translation(
-                            original_stem,
-                            filename_translations.get(original_stem, original_stem),
-                        )
-                        if translated_stem != original_stem:
-                            output_basename = translated_stem + Path(original_name).suffix
-                        else:
-                            self._log("WARN", f"[{file_item.name}] 输出文件名未获得可用译名，沿用原名。")
-                    output_basename = avoid_bilingual_name_collision(
-                        output_dir / rel_subdir,
-                        output_basename,
-                        target_lang,
-                        reserved_output_paths,
-                    )
-                    file_review_positions: list[dict[str, str]] = []
-                    # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
-                    # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
-                    write_stats: dict[str, object] = {}
-                    # KNOWN-ISSUE-VAL-006:
-                    # The current write path intentionally stays text-only.
-                    # See docs/KNOWN_ISSUES.md before reintroducing image flow.
-                    if self._untranslated_only:
-                        coverage_plan = coverage_plans[fi] if fi < len(coverage_plans) else None
-                        if coverage_plan is None:
-                            raise ValueError("缺少补译识别计划，无法安全按位置写入。")
-                        # 「保留原文副本」的快照取自写入源。续译时写入源是上次的双语
-                        # 底稿——从双语内容里克隆不出「未翻译的原始副本」，硬克隆出来
-                        # 的「X_原文」里装的是「原文\n译文」，名字在撒谎、体积还翻倍。
-                        # 底稿里上一轮已有的「X_原文」是普通分表，复制产物时原样保留，
-                        # 不受这里影响。
-                        resume_used_here = (
-                            fi < len(resume_baseline_used) and resume_baseline_used[fi]
-                        )
-                        if excel_output.keep_original_sheets and resume_used_here:
-                            self._log(
-                                "INFO",
-                                (
-                                    f"  → [续译] {file_item.name}：底稿本身是双语内容，"
-                                    "无法从中克隆出纯原文副本，本次不新增「_原文」分表"
-                                    "（上次已有的原样保留）。"
-                                ),
-                            )
-                        out_path = write_untranslated_excel_file(
-                            source_path=process_path,
-                            output_dir=output_dir / rel_subdir,
-                            plan=coverage_plan,
-                            translations=global_translations,
-                            target_lang=target_lang,
-                            source_lang=file_source_langs.get(
-                                str(file_item.path), source_lang
-                            ),
-                            keep_original_sheets=(
-                                excel_output.keep_original_sheets and not resume_used_here
-                            ),
-                            formula_display_value_backfill=(
-                                excel_output.formula_display_value_backfill
-                            ),
-                            output_translation_only=excel_output.output_translation_only,
-                            lock_row_height=excel_output.lock_row_height,
-                            review_marks=excel_review_marks,
-                            review_mark_colors=self._settings.excel_review.mark_colors,
-                            mark_review_items=(
-                                self._settings.excel_review.mark_review_items
-                            ),
-                            existing_fill_policy=(
-                                self._settings.excel_review.existing_fill_policy
-                            ),
-                            review_positions=file_review_positions,
-                            log_callback=lambda msg: self._log(
-                                "OK" if msg.startswith("[OK]") else "INFO", msg
-                            ),
-                            original_path=naming_original_path,
-                            external_autofit_planned=need_autofit,
-                            stats=write_stats,
-                            output_basename=output_basename,
-                            staging_dir=(process_artifacts.work_dir if process_artifacts else None),
-                        )
-                    else:
-                        out_path = bilingual_writer.write_bilingual_file(
-                            source_path          = process_path,
-                            output_dir           = output_dir / rel_subdir,
-                            translations         = global_translations,
-                            target_lang          = target_lang,
-                            source_lang          = source_lang,
-                            keep_original_sheets = excel_output.keep_original_sheets,
-                            formula_display_value_backfill = excel_output.formula_display_value_backfill,
-                            output_translation_only = excel_output.output_translation_only,
-                            lock_row_height      = excel_output.lock_row_height,
-                            review_marks         = excel_review_marks,
-                            review_mark_colors   = self._settings.excel_review.mark_colors,
-                            mark_review_items    = self._settings.excel_review.mark_review_items,
-                            existing_fill_policy = self._settings.excel_review.existing_fill_policy,
-                            review_positions     = file_review_positions,
-                            log_callback         = lambda msg: self._log(
-                                "OK" if msg.startswith("[OK]") else "INFO", msg
-                            ),
-                            original_path        = naming_original_path,
-                            external_autofit_planned = need_autofit,
-                            stats                = write_stats,
-                            output_basename      = output_basename,
-                            staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
-                        )
-                    if excel_output.translate_sheet_names:
-                        with ZipFile(out_path) as workbook_package:
-                            workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))
-                        sheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-                        sheet_names = [
-                            node.get("name", "")
-                            for node in workbook_root.iter(f"{{{sheet_namespace}}}sheet")
-                        ]
-                        requested_sheets = {
-                            old: sheet_translations[old]
-                            for old in sheet_names
-                            if old in sheet_translations and sheet_translations[old] != old
-                        }
-                        if requested_sheets:
-                            rename_result = rename_worksheets(out_path, out_path, requested_sheets)
-                            write_stats["sheet_name_status"] = rename_result.status
-                            write_stats["sheet_name_changes"] = rename_result.names
-                            if rename_result.status == "preserved":
-                                message = f"[{file_item.name}] 工作表名称保留原名：{rename_result.reason}"
-                                self._log("WARN", message)
-                                quality_issues.append({
-                                    "file": file_item.name,
-                                    "type": "sheet_rename_preserved",
-                                    "severity": "needs_review",
-                                    "problem": "工作表名称无法安全改写",
-                                    "status": f"已保留原工作表名称：{rename_result.reason}",
-                                    "message": message,
-                                })
-                        else:
-                            self._log("INFO", f"[{file_item.name}] 工作表名称无可用译名，保留原名。")
-                    write_elapsed = (datetime.now() - t0).total_seconds()
-                    self._task_logger.file_write_done(file_item.name, write_elapsed)
-
-                    # 统计该文件对应的 TM/API 使用情况
-                    this_file_texts = file_texts[fi]
-                    this_tm = sum(1 for t in this_file_texts if t in hits)
-                    this_api = sum(1 for t in this_file_texts if t in misses or t in mixed_texts)
-                    self._task_logger.file_done(
-                        filename=file_item.name,
-                        elapsed=write_elapsed,
-                        tm_hits=this_tm,
-                        api_calls=this_api,
-                    )
-
-                    file_results.append({
-                        "name":    file_item.name,
-                        "source_path": str(file_item.path),
-                        "source_relative_path": self._relative_source_path(file_item.path),
-                        "format": file_item.format,
-                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
-                        "output":  str(out_path),
-                        "output_path": str(out_path),
-                        "status": "succeeded",
-                        "review_count": len(file_review_positions),
-                        "review_items": file_review_positions,
-                        "sheet_name_status": write_stats.get("sheet_name_status", "unchanged"),
-                        "sheet_name_changes": dict(write_stats.get("sheet_name_changes") or {}),
-                        # 悬浮图片/形状里被我们固定住锚点的数量（0 表示没动过）
-                        "anchor_frozen_count": int(
-                            write_stats.get("anchor_frozen_count", 0) or 0
-                        ),
-                        # 超过 Excel 32767 字符上限、被截断的单元格。用户必须看得见，
-                        # 否则那几格译文是残缺的而界面上毫无痕迹。
-                        "truncated_cells": int(
-                            write_stats.get("truncated_cells", 0) or 0
-                        ),
-                        "truncated_positions": list(
-                            write_stats.get("truncated_positions") or []
-                        ),
-                        "success": True,
-                    })
-                    self._file_progress.emit(
-                        file_item.path,
-                        "waiting" if need_autofit else "generated",
-                        "adjust" if need_autofit else "generate",
-                        result={
-                            key: value
-                            for key, value in file_results[-1].items()
-                            if key not in {"source_path", "source_relative_path"}
-                        } if not need_autofit else None,
-                    )
-                    truncated_positions = list(
-                        write_stats.get("truncated_positions") or []
-                    )
-                    if truncated_positions:
-                        # 截断的单元格里译文是残缺的。只写日志不够——日志会被滚过去，
-                        # 用户拿到的是一份看起来正常的文件。
-                        shown = "、".join(truncated_positions[:5])
-                        more = (
-                            f" 等 {len(truncated_positions)} 处"
-                            if len(truncated_positions) > 5
-                            else ""
-                        )
-                        quality_issues.append(
-                            {
-                                "type": "cell_text_truncated",
-                                "severity": "needs_action",
-                                "count": len(truncated_positions),
-                                "file": file_item.name,
-                                "message": (
-                                    f"{file_item.name} 有 {len(truncated_positions)} 个单元格"
-                                    "超过 Excel 的 32767 字符上限，译文已被截断"
-                                    f"（{shown}{more}）。这些格子的内容是不完整的。"
-                                ),
-                                "positions": truncated_positions,
-                            }
-                        )
-                    self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
-                except Exception as e:
-                    logger.debug(f"文件写入失败 {file_item.name} 原始错误：{e!r}")
-                    write_reason = user_facing_reason(
-                        e,
-                        fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
-                    )
-                    self._log("ERROR", f"文件写入失败 {file_item.name}：{write_reason}")
-                    self._task_logger.file_error(file_item.name, write_reason)
-                    file_results.append({
-                        "name": file_item.name,
-                        "source_path": str(file_item.path),
-                        "source_relative_path": self._relative_source_path(file_item.path),
-                        "format": file_item.format,
-                        "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
-                        "status": "failed",
-                        "success": False,
-                        "error": write_reason,
-                    })
-                    self._file_progress.emit(
-                        file_item.path, "failed", "generate",
-                        result={"error": write_reason},
-                    )
-                finally:
-                    # 清理 .xls 转换后的临时 .xlsx 文件；续译底稿是上次输出的历史产物，
-                    # 只读绝不删除
-                    is_resume_baseline = (
-                        fi < len(resume_baseline_used) and resume_baseline_used[fi]
-                    )
-                    _cleanup_excel_conversion_temp(
-                        process_path, file_item, is_resume_baseline=is_resume_baseline
-                    )
 
             # 阶段 3 收尾进度
             self._queue.put(ProgressMsg(
@@ -2550,140 +1145,15 @@ class TaskRunner:
                 self._queue.put(StatusMsg(phase_desc="状态：[收尾中] 正在整理任务结果..."))
 
             # ── 批量 AutoFit：仅在未锁定行高时启用（且开关打开）──────────
-            if need_autofit:
-                out_paths = [
-                    Path(r["output"]) for r in file_results
-                    if r.get("success") and r.get("output")
-                ]
-                if out_paths:
-                    autofit_results_by_path = {
-                        Path(result["output"]).resolve(): result
-                        for result in file_results
-                        if result.get("success") and result.get("output")
-                    }
-                    if reuse_excel_for_autofit:
-                        self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在复用阶段 1 的 Excel 进程精调行高..."))
-                    else:
-                        self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在启动干净 Excel 进程精调行高..."))
-                    self._queue.put(ProgressMsg(
-                        phase_index=4,
-                        phase_total=phase_total,
-                        phase_name="Excel 精调",
-                        step_done=0,
-                        step_total=len(out_paths),
-                    ))
-                    t0 = datetime.now()
-                    self._log(
-                        "INFO",
-                        f"开始 Excel AutoFit，共 {len(out_paths)} 个文件 | policy={excel_policy}",
-                    )
-
-                    def autofit_file_start_cb(current_file):
-                        result = autofit_results_by_path.get(
-                            Path(current_file).resolve()
-                        )
-                        if result is not None:
-                            self._file_progress.emit(
-                                result.get("source_path"), "active", "adjust"
-                            )
-
-                    def autofit_progress_cb(done, total, current_file):
-                        if current_file is not None:
-                            result = autofit_results_by_path.get(
-                                Path(current_file).resolve()
-                            )
-                            if result is not None:
-                                self._file_progress.emit(
-                                    result.get("source_path"),
-                                    "generated",
-                                    "adjust",
-                                    result={
-                                        key: value
-                                        for key, value in result.items()
-                                        if key not in {"source_path", "source_relative_path"}
-                                    },
-                                )
-                        self._queue.put(ProgressMsg(
-                            phase_index=4,
-                            phase_total=phase_total,
-                            phase_name="Excel 精调",
-                            step_done=done,
-                            step_total=total,
-                        ))
-                        if current_file is not None and done < total:
-                            self._queue.put(StatusMsg(
-                                phase_desc=f"状态：[阶段 4/{phase_total}] 正在精调 Excel 行高：{current_file.name}"
-                            ))
-
-                    if reuse_excel_for_autofit:
-                        app = _get_excel_app()
-                        autofit_success = bilingual_writer.autofit_files_batch(
-                            out_paths,
-                            app=app,
-                            log_callback=lambda msg: self._log(
-                                "WARN" if msg.startswith("[WARN]") else "INFO", msg
-                            ),
-                            progress_callback=autofit_progress_cb,
-                            file_start_callback=autofit_file_start_cb,
-                        )
-                    else:
-                        autofit_success = _run_autofit_with_guard(
-                            out_paths,
-                            autofit_progress_cb,
-                            autofit_file_start_cb,
-                        )
-
-                    self._queue.put(ProgressMsg(
-                        phase_index=4,
-                        phase_total=phase_total,
-                        phase_name="Excel 精调",
-                        step_done=len(out_paths),
-                        step_total=len(out_paths),
-                    ))
-                    autofit_elapsed = (datetime.now() - t0).total_seconds()
-                    for result in file_results:
-                        if result.get("success") and result.get("output"):
-                            self._file_progress.emit(
-                                result.get("source_path"),
-                                "generated",
-                                "adjust",
-                                result={
-                                    **{
-                                        key: value
-                                        for key, value in result.items()
-                                        if key not in {"source_path", "source_relative_path"}
-                                    },
-                                },
-                            )
-                    if autofit_success:
-                        self._log("INFO", f"Excel AutoFit 完成，耗时 {autofit_elapsed:.2f}s | policy={excel_policy}")
-                        self._task_logger.info(
-                            f"批量AutoFit完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
-                        )
-                    else:
-                        self._log("WARN", f"Excel AutoFit 未完全完成，已保留 Python 估算行高 | policy={excel_policy}")
-                        self._task_logger.warning(
-                            f"批量AutoFit未完全完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
-                        )
-                else:
-                    for result in file_results:
-                        if result.get("success") and result.get("output"):
-                            self._file_progress.emit(
-                                result.get("source_path"), "generated", "generate",
-                                result={
-                                    key: value
-                                    for key, value in result.items()
-                                    if key not in {"source_path", "source_relative_path"}
-                                },
-                            )
-                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 无可精调文件，已跳过 Excel 精调。"))
-                    self._queue.put(ProgressMsg(
-                        phase_index=4,
-                        phase_total=phase_total,
-                        phase_name="Excel 精调",
-                        step_done=1,
-                        step_total=1,
-                    ))
+            self._run_autofit_phase(
+                need_autofit=need_autofit,
+                file_results=file_results,
+                reuse_excel_for_autofit=reuse_excel_for_autofit,
+                phase_total=phase_total,
+                excel_policy=excel_policy,
+                _get_excel_app=_get_excel_app,
+                _run_autofit_with_guard=_run_autofit_with_guard,
+            )
 
             if excel_output.lock_row_height and excel_output.enable_excel_autofit:
                 self._log("INFO", '已启用"锁定行高，缩小字号"，跳过 Excel AutoFit。')
@@ -2821,6 +1291,1691 @@ class TaskRunner:
             issues         = quality_issues,
             **contract,
         ))
+
+    def _preflight_source_languages(
+        self,
+        *,
+        concurrency,
+        coverage_plans,
+        deferred_resume_baselines,
+        engine,
+        excel_output,
+        excel_review_marks,
+        file_conversion_modes,
+        file_results,
+        file_source_langs,
+        file_texts,
+        global_unique_texts,
+        process_paths,
+        quality_issues,
+        resume_baseline_used,
+        settings,
+        shared_scheduler,
+        target_lang,
+        text_source_scopes,
+        system_prompt,
+        raw_text_count,
+    ) -> tuple[str, str, int, dict]:
+        """自动识别源语言：每个文件做一次语言预检，定出源语言、补译范围和 TM 语言对；返回更新后的源语言、提示词、待译计数和预检结果。"""
+        self._queue.put(
+            StatusMsg(
+                phase_desc=(
+                    "状态：自动识别模式，正在对每个有候选文本的文件执行一次语言预检..."
+                )
+            )
+        )
+
+        detector_calls = {"count": 0}
+
+        def _detect_file_language(samples, detected_target):
+            detector_calls["count"] += 1
+            raw = engine.chat(
+                LANGUAGE_PREFLIGHT_SYSTEM_PROMPT,
+                build_language_preflight_prompt(
+                    samples,
+                    target_lang=detected_target,
+                ),
+            )
+            return raw
+
+        file_payloads = {
+            str(file_item.path): texts
+            for file_item, texts in zip(self._files, file_texts)
+        }
+        file_language_preflights = {}
+        for file_path, candidate_texts in file_payloads.items():
+            self._file_progress.emit(file_path, "active", "detect")
+            file_language_preflights.update(preflight_files(
+                {file_path: candidate_texts},
+                _detect_file_language,
+                target_lang=target_lang,
+            ))
+            self._file_progress.emit(file_path, "waiting", "translate")
+        detected_sources: list[str] = []
+        for result in file_language_preflights.values():
+            for detected in result.source_langs:
+                if detected not in detected_sources:
+                    detected_sources.append(detected)
+        if detected_sources:
+            source_lang = detected_sources[0]
+            system_prompt = get_system_prompt(
+                settings,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                page_key="excel",
+            )
+        else:
+            source_lang = get_default_source_lang()
+        tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+        # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
+        # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
+        # 译文」跳过。某个文件没定出语言时才退回全局值。
+        file_source_langs.update(
+            (file_path, result.source_langs[0])
+            for file_path, result in file_language_preflights.items()
+            if result.source_langs
+        )
+        for file_item, text_set in zip(self._files, file_texts):
+            result = file_language_preflights.get(str(file_item.path))
+            if result is None:
+                continue
+            for text in text_set:
+                text_source_scopes.setdefault(text, []).append(
+                    frozenset(result.source_langs)
+                )
+        self._log(
+            "INFO",
+            (
+                f"自动语言预检完成：{detector_calls['count']} 次请求，"
+                f"实际源语言={','.join(detected_sources) or '未确定'}，"
+                f"TM 语言对={','.join(tm_language_pairs) or '无'}"
+            ),
+        )
+        if self._untranslated_only:
+            self._apply_deferred_resume_baselines(
+                process_paths=process_paths,
+                deferred_resume_baselines=deferred_resume_baselines,
+                resume_baseline_used=resume_baseline_used,
+                file_results=file_results,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                file_source_langs=file_source_langs,
+                formula_display_value_backfill=(
+                    excel_output.formula_display_value_backfill
+                ),
+            )
+            raw_text_count = self._rebuild_coverage_plans_after_preflight(
+                process_paths=process_paths,
+                coverage_plans=coverage_plans,
+                file_texts=file_texts,
+                file_results=file_results,
+                file_conversion_modes=file_conversion_modes,
+                global_unique_texts=global_unique_texts,
+                resume_baseline_used=resume_baseline_used,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                file_source_langs=file_source_langs,
+                formula_display_value_backfill=(
+                    excel_output.formula_display_value_backfill
+                ),
+                engine=engine,
+                api_scheduler=shared_scheduler,
+                lang_pair=(tm_language_pairs[0] if tm_language_pairs else None),
+                concurrency=concurrency,
+                quality_issues=quality_issues,
+                review_marks=excel_review_marks,
+            )
+        return source_lang, system_prompt, raw_text_count, file_language_preflights
+
+    def _translate_misses_via_api(
+        self,
+        *,
+        api_call_count,
+        api_translations,
+        auto_source_lang,
+        batch_size,
+        concurrency,
+        engine,
+        excel_review_marks,
+        file_texts,
+        global_unique_texts,
+        hits,
+        lang_pair,
+        max_len,
+        misses,
+        mixed_texts,
+        normal_api_language_results,
+        phase_total,
+        quality_issues,
+        rate_limited,
+        shared_scheduler,
+        source_lang,
+        system_prompt,
+        target_lang,
+        text_source_scopes,
+        normal_api_translations,
+    ) -> dict[str, str]:
+        """阶段 2：把 TM 未命中的词条（含混合语言词条）送模型翻译，结果写进 api_translations；返回普通词条的译文表。"""
+        if (misses or mixed_texts) and not self._stop_event.is_set():
+            api_translation_sources = set(misses) | set(mixed_texts)
+            active_translation_paths = [
+                self._files[index].path
+                for index, texts in enumerate(file_texts)
+                if index < len(self._files)
+                and any(text in api_translation_sources for text in texts)
+            ]
+            self._file_progress.emit_many(
+                "active", "translate", active_translation_paths
+            )
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在请求大模型翻译未命中词汇..."))
+            self._log("INFO", f"发送 API 请求，共 {api_call_count} 词条")
+
+            progress_lock = threading.Lock()
+            progress_done = {"normal": 0, "mixed": 0}
+
+            def _emit_api_progress(kind: str, done: int) -> None:
+                with progress_lock:
+                    progress_done[kind] = max(0, int(done or 0))
+                    total_done = min(progress_done["normal"], len(misses)) + min(
+                        progress_done["mixed"],
+                        len(mixed_texts),
+                    )
+                self._queue.put(ProgressMsg(
+                    phase_index=2,
+                    phase_total=phase_total,
+                    phase_name="云端翻译",
+                    step_done=min(total_done, max(api_call_count, 1)),
+                    step_total=max(api_call_count, 1),
+                ))
+
+            def progress_cb(done, total):
+                _emit_api_progress("normal", done)
+
+            def api_error_cb(msg: str) -> None:
+                level = "ERROR" if "未能翻译" in msg else "WARN"
+                self._log(level, msg)
+
+            t0 = datetime.now()
+            batch_stats = TranslationBatchRunStats()
+
+            mixed_stats = MixedLanguageRunStats()
+            mixed_results = {}
+
+            def keep_paid_results(exc: ApiKeyTemporarilyUnavailableError) -> None:
+                """Key 被判暂时不可用、整轮任务要失败时，先把已付费的译文存进记忆库。
+
+                这一轮不会再出文件，但用户换 key 或等限流过去重跑时，这些词条直接
+                命中记忆库，不用再付一次钱（审计 高-6）。
+                """
+                partial = getattr(exc, "partial_results", None) or {}
+                if not partial:
+                    return
+                if auto_source_lang:
+                    language_partial, plain_partial = dict(partial), {}
+                else:
+                    language_partial, plain_partial = {}, dict(partial)
+                written, tm_error = self.store_api_results_in_tm(
+                    auto_source_lang=auto_source_lang,
+                    normal_api_language_results=language_partial,
+                    normal_api_translations=plain_partial,
+                    text_source_scopes=text_source_scopes,
+                    target_lang=target_lang,
+                    lang_pair=lang_pair,
+                    max_len=max_len,
+                    engine_name=engine.engine_name,
+                )
+                if tm_error:
+                    self._log("WARN", tm_error)
+                elif written:
+                    self._log(
+                        "INFO",
+                        f"任务中断前已拿到 {len(partial)} 条译文，已存入记忆库 {written} 条；"
+                        "重新翻译时这些内容直接命中记忆库，不会再次计费。",
+                    )
+
+            def run_normal_api_translation() -> dict[str, str]:
+                try:
+                    return _run_normal_api_translation()
+                except ApiKeyTemporarilyUnavailableError as exc:
+                    partial = getattr(exc, "partial_results", None) or {}
+                    if not partial or isinstance(exc, ApiCredentialRejectedError):
+                        # 一条都没翻到：写出去也只是原文副本，照旧整批失败。Key 被拒
+                        # 也一样整批失败，那不是等一等就会好的事。
+                        keep_paid_results(exc)
+                        raise
+                    rate_limited.append(exc)
+                    self._log(
+                        "WARN",
+                        f"接口持续限流，已停止继续请求；已拿到的 {len(partial)} 条译文照常写入文件，"
+                        "其余内容保留原文，可稍后用「接着上次继续」补译。",
+                    )
+                    if auto_source_lang:
+                        normal_api_language_results.update(partial)
+                        return {
+                            source: result.translation
+                            for source, result in partial.items()
+                        }
+                    return dict(partial)
+
+            def _run_normal_api_translation() -> dict[str, str]:
+                if not misses:
+                    return {}
+                if auto_source_lang:
+                    language_results = translate_texts_with_sources(
+                        misses,
+                        engine,
+                        target_lang,
+                        system_prompt,
+                        batch_size,
+                        concurrency,
+                        progress_cb,
+                        api_error_cb,
+                        should_stop=self.stop_requested,
+                        api_scheduler=shared_scheduler,
+                        stats=batch_stats,
+                        throughput_unlocked=self._settings.engine.concurrency_unlocked,
+                    )
+                    normal_api_language_results.update(language_results)
+                    return {
+                        source: result.translation
+                        for source, result in language_results.items()
+                    }
+                return translate_texts(
+                    misses,
+                    engine,
+                    target_lang,
+                    system_prompt,
+                    batch_size,
+                    concurrency,
+                    progress_cb,
+                    api_error_cb,
+                    should_stop=self.stop_requested,
+                    source_lang=source_lang,
+                    api_scheduler=shared_scheduler,
+                    stats=batch_stats,
+                    throughput_unlocked=self._settings.engine.concurrency_unlocked,
+                )
+
+            def run_mixed_api_translation():
+                try:
+                    return _run_mixed_api_translation()
+                except ApiKeyTemporarilyUnavailableError as exc:
+                    if isinstance(exc, ApiCredentialRejectedError):
+                        raise
+                    rate_limited.append(exc)
+                    self._log("WARN", "接口持续限流，混合语言内容这次没能翻译，已保留原文。")
+                    return {}
+
+            def _run_mixed_api_translation():
+                if not mixed_texts:
+                    return {}
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 2/{phase_total}] 正在处理混合语言内容..."))
+
+                def mixed_progress_cb(done, total):
+                    _emit_api_progress("mixed", done)
+
+                if rate_limited:
+                    return {}
+                return translate_mixed_language_texts(
+                    mixed_texts,
+                    engine=engine,
+                    target_lang=target_lang,
+                    system_prompt=system_prompt,
+                    source_lang=source_lang,
+                    concurrency=concurrency,
+                    max_items_per_batch=batch_size,
+                    max_chars_per_batch=DEFAULT_MIXED_MAX_BATCH_CHARS,
+                    retry_attempts=3,
+                    progress_callback=mixed_progress_cb,
+                    error_callback=api_error_cb,
+                    should_stop=self.stop_requested,
+                    api_scheduler=shared_scheduler,
+                    request_category=API_REQUEST_CATEGORY_NORMAL,
+                    stats=mixed_stats,
+                )
+
+            if misses and mixed_texts and shared_scheduler is not None:
+                with ThreadPoolExecutor(max_workers=2) as main_executor:
+                    normal_future = main_executor.submit(run_normal_api_translation)
+                    mixed_future = main_executor.submit(run_mixed_api_translation)
+                    normal_api_translations = normal_future.result()
+                    mixed_results = mixed_future.result()
+            else:
+                normal_api_translations = run_normal_api_translation()
+                mixed_results = run_mixed_api_translation()
+
+            api_translations.update(normal_api_translations)
+            # 自动识别时模型会报每一格的实际语言：报的就是目标语言、译文又原样
+            # 返回的格子（英译英表里的 Total、Steel plate）本来就不用翻，不该进
+            # 写入词典——进了就会被当成「没翻成功」整格标黄需复核。
+            already_target = {
+                source
+                for source, item in normal_api_language_results.items()
+                if _already_in_target_language(source, item, target_lang)
+            }
+            for source in already_target:
+                api_translations.pop(source, None)
+            if already_target:
+                self._log(
+                    "INFO",
+                    f"{len(already_target)} 处内容本来就是目标语言，保持原样，不标记复核。",
+                )
+            for source, translation in normal_api_translations.items():
+                if source in already_target:
+                    continue
+                if str(source or "").strip().lower() == str(translation or "").strip().lower():
+                    _set_excel_review_mark(
+                        excel_review_marks,
+                        source,
+                        MIXED_MARK_UNRESOLVED,
+                    )
+
+            if mixed_texts:
+                for source, result in mixed_results.items():
+                    if result.action in {MIXED_ACTION_TRANSLATE, MIXED_ACTION_FOREIGN_NOISE} and result.translation.strip():
+                        api_translations[source] = result.translation.strip()
+                    elif result.action == MIXED_ACTION_UNCERTAIN:
+                        api_translations[source] = source
+                    if result.mark_kind:
+                        _set_excel_review_mark(
+                            excel_review_marks,
+                            source,
+                            result.mark_kind,
+                        )
+                self._log(
+                    "INFO",
+                    (
+                        "混合语言路径："
+                        f"命中 {mixed_stats.input_count} 条，"
+                        f"已双语 {mixed_stats.action_counts.get(MIXED_ACTION_EXISTING_BILINGUAL, 0)}，"
+                        f"疑似原文错误 {mixed_stats.action_counts.get(MIXED_ACTION_FOREIGN_NOISE, 0)}，"
+                        f"不确定 {mixed_stats.action_counts.get(MIXED_ACTION_UNCERTAIN, 0)}，"
+                        f"语义校验接受 {mixed_stats.semantic_accepted_count}"
+                    ),
+                )
+            if rate_limited:
+                if not api_translations and not hits:
+                    raise rate_limited[0]
+                unfinished = [
+                    text
+                    for text in dict.fromkeys([*misses, *mixed_texts])
+                    if text not in api_translations
+                ]
+                for text in unfinished:
+                    # 原样写回并标需复核：用户在文件里看得到哪些格子还没翻。
+                    api_translations[text] = text
+                    _set_excel_review_mark(excel_review_marks, text, MIXED_MARK_UNRESOLVED)
+                if unfinished:
+                    quality_issues.append(
+                        {
+                            "type": "rate_limited_partial",
+                            "severity": "needs_action",
+                            "count": len(unfinished),
+                            "message": (
+                                f"接口持续限流，有 {len(unfinished)} 条内容没能翻译，已保留原文并标记；"
+                                "限流过去后用「接着上次继续」补译即可，已翻好的内容不会重复计费。"
+                            ),
+                        }
+                    )
+            # 注意：这里不能拦停止信号。已经跑到这一步的批次，API 费用已经
+            # 付了——`misses`/`mixed_texts` 里凡是进了 normal_api_translations /
+            # normal_api_language_results 的词条，都要走到下面的 TM 写入，
+            # 否则重跑整批要重新付费（中-2）。真正该拦停止的位置是阶段 3
+            # 开始前那一处 `_raise_if_stopped()`，出文件才是可以整批放弃的部分。
+            api_elapsed = (datetime.now() - t0).total_seconds()
+            self._log(
+                "INFO",
+                (
+                    "Excel 实际请求："
+                    f"{batch_stats.batch_count} 批，"
+                    f"缩小重试 {batch_stats.retry_count} 次，"
+                    f"未翻译 {batch_stats.untranslated_count} 条，"
+                    f"最大请求权重 {batch_stats.max_request_weight}"
+                    + (
+                        f"，自适应降并发 {batch_stats.adaptive_concurrency_reductions} 次，"
+                        f"最低并发 {batch_stats.adaptive_lowest_concurrency}"
+                        if batch_stats.adaptive_concurrency_reductions
+                        else ""
+                    )
+                ),
+            )
+            untranslated_count = (
+                batch_stats.untranslated_count or batch_stats.failed_batch_count
+            )
+            if untranslated_count:
+                # The file still gets written with the source text in place,
+                # so the count has to travel with the result: an unflagged
+                # run must never hand back source text dressed as translation.
+                quality_issues.append(
+                    {
+                        "type": "api_unavailable",
+                        "severity": "needs_action",
+                        "count": untranslated_count,
+                        "message": (
+                            f"有 {untranslated_count} 条内容未能从 API 获得译文，"
+                            "文件中这些位置保留的是原文，不是译文。"
+                            "请检查 API Key、Base URL、模型名称或服务状态，重新配置后再试。"
+                        ),
+                        "failed_sources": list(batch_stats.failed_items),
+                    }
+                )
+                self._log(
+                    "ERROR",
+                    f"本次有 {untranslated_count} 条内容未获得译文，已在结果中标记为未翻译。",
+                )
+            if batch_stats.quality_reset_count:
+                # 质量校验把译文重置回了原文。文件里这些格子保留的是原文，
+                # 只在日志里提一句会被滚过去——必须进结果报告，逐条可查。
+                mismatch = _detect_post_failure_source_language(
+                    engine=engine,
+                    samples=batch_stats.quality_reset_items,
+                    requested_source=source_lang,
+                    target_lang=target_lang,
+                    reset_count=batch_stats.quality_reset_count,
+                    original_count=(
+                        batch_stats.original_count or len(global_unique_texts)
+                    ),
+                )
+                issue_type = "suspected_source_language_mismatch" if mismatch else "quality_filter_reset"
+                if mismatch:
+                    message = _language_mismatch_message(
+                        mismatch,
+                        source_lang,
+                        target_lang,
+                    )
+                else:
+                    message = (
+                        f"有 {batch_stats.quality_reset_count} 条译文未通过质量校验，"
+                        "已回退为原文。这些单元格里保留的是原文，"
+                        + (
+                            "请按下方源文清单逐条核对。"
+                            if self._untranslated_only
+                            or not self._settings.excel_review.mark_review_items
+                            else "已标记待复核，请在输出文件中核对带标记的位置。"
+                        )
+                    )
+                quality_issues.append(
+                    {
+                        "type": issue_type,
+                        "severity": "needs_action",
+                        "count": batch_stats.quality_reset_count,
+                        "message": message,
+                        "failed_sources": [
+                            {"source": source, "error": "译文未通过质量校验，已回退为原文"}
+                            for source in batch_stats.quality_reset_items
+                        ],
+                    }
+                )
+                self._log(
+                    "WARN",
+                    f"质量校验回退 {batch_stats.quality_reset_count} 条译文为原文，已记入结果报告。",
+                )
+            self._log("OK", f"API 翻译完成，返回 {len(api_translations)} 条（{api_elapsed:.2f}s）")
+            self._task_logger.global_api_done(returned=len(api_translations), elapsed=api_elapsed)
+        return normal_api_translations
+
+    def _collect_file_texts(
+        self,
+        *,
+        _raise_if_stopped,
+        file_item,
+        fi,
+        phase_total,
+        root_for_output,
+        target_lang,
+        auto_source_lang,
+        excel_output,
+        source_lang,
+        resume_baseline_used,
+        deferred_resume_baselines,
+        xls_file_count,
+        _get_excel_app,
+        file_conversion_modes,
+        file_results,
+        process_paths,
+        file_texts,
+        coverage_plans,
+        concurrency,
+        engine,
+        excel_review_marks,
+        lang_pair,
+        quality_issues,
+        shared_scheduler,
+        _cleanup_excel_conversion_temp,
+        total_sheet_count,
+        raw_text_count,
+        global_unique_texts,
+    ) -> tuple[int, int, int]:
+        """阶段 1（单个文件）：选底稿、转换 .xls、扫描待译文本并登记补译计划；返回累加后的三个计数。"""
+        _raise_if_stopped()
+        self._file_progress.emit(file_item.path, "active", "extract")
+
+        self._queue.put(ProgressMsg(
+            phase_index=1, phase_total=phase_total, phase_name="全局扫描",
+            step_done=fi, step_total=len(self._files),
+        ))
+
+        process_path = file_item.path
+        source_is_xls = file_item.path.suffix.lower() == ".xls"
+        resume_used = False
+
+        # 换底稿只在补译覆盖率计划真的会跑的前提下才安全：覆盖率计划负责
+        # 分清「原文」和「已译」，没有它就没法阻止把双语底稿的译文列再整份
+        # 送去翻一遍。源语言已知时这里直接换；自动识别时不能现在换——阶段 1
+        # 取的词条要当语言预检的样本，双语底稿会把译文混进样本、把源语言判
+        # 花——先把匹配好、验证过的底稿记下来，等预检定出源语言、重算补译
+        # 清单之前再换（见 _apply_deferred_resume_baselines）。
+        deferred_baseline: Path | None = None
+        if self._untranslated_only and self._resume_output_dir is not None:
+            try:
+                rel_dir = file_item.path.parent.relative_to(root_for_output)
+            except ValueError:
+                rel_dir = Path()
+            naming_source_name = (
+                file_item.original_path.name
+                if file_item.original_path
+                else file_item.path.name
+            )
+            try:
+                from core.resume_detection import (
+                    baseline_missing_source_texts,
+                    describe_baseline_divergence,
+                    match_previous_output,
+                )
+                candidate = match_previous_output(
+                    self._resume_output_dir,
+                    str(rel_dir),
+                    naming_source_name,
+                    target_lang,
+                    "excel",
+                )
+            except Exception as e:
+                candidate = None
+                logger.debug(f"续译底稿匹配失败原始错误 {file_item.name}：{e!r}")
+                self._log(
+                    "WARN",
+                    f"续译底稿匹配失败 {file_item.name}，改为全量翻译："
+                    + user_facing_reason(e, fallback="续译匹配出错。"),
+                )
+
+            if candidate is not None:
+                if not self._validate_resume_baseline(candidate):
+                    self._log(
+                        "WARN",
+                        f"续译底稿已损坏或无法打开，改用源文件全量翻译："
+                        f"{candidate}",
+                    )
+                elif auto_source_lang:
+                    deferred_baseline = candidate
+                    self._log(
+                        "INFO",
+                        f"续译：{file_item.name} 已找到上次产物 {candidate.name}，"
+                        "等识别出源语言后再换为底稿。",
+                    )
+                elif (
+                    missing := baseline_missing_source_texts(
+                        process_path,
+                        candidate,
+                        surface="excel",
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                        formula_display_value_backfill=(
+                            excel_output.formula_display_value_backfill
+                        ),
+                    )
+                ):
+                    # 补译计划只看底稿——源文件在上次翻译后新增的内容不在
+                    # 底稿里，硬换底稿会把它静默丢掉（不翻译也不进产物）；
+                    # 源文件删掉的内容则相反，会随底稿原样留在产物里。
+                    self._log(
+                        "WARN",
+                        f"续译核对：{file_item.name} 的源文件比上次翻译时"
+                        f"{describe_baseline_divergence(missing)}，上次产物无法当底稿，"
+                        "这次按源文件完整处理（已有译文会尽量由翻译记忆复用）。",
+                    )
+                else:
+                    process_path = candidate
+                    source_is_xls = False
+                    resume_used = True
+                    self._log(
+                        "INFO",
+                        f"续译：{file_item.name} 以上次产物为底稿 {candidate.name}",
+                    )
+
+        resume_baseline_used.append(resume_used)
+        deferred_resume_baselines.append(deferred_baseline)
+
+        if source_is_xls:
+            xls_file_count += 1
+
+        # .xls 格式转换（在阶段 1 顺便完成）
+        if source_is_xls:
+            self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 1/{phase_total}] 正在转换 .xls 文件：{file_item.name}"))
+            from core.xls_converter import (
+                convert_with_excel,
+                convert_with_fallback,
+                convert_with_libreoffice,
+            )
+            t_conv = datetime.now()
+            try:
+                if not self._allow_xls_fallback:
+                    app = _get_excel_app()
+                    process_path = convert_with_excel(app, process_path)
+                    file_conversion_modes[str(file_item.path)] = "excel_automation"
+                else:
+                    # 兼容转换内部分两级：本机有 LibreOffice 就优先用它保留公式/
+                    # 样式/合并单元格；没装或转换失败再退回 xlrd 纯取值——用户侧
+                    # 的授权仍是二选一（高保真/兼容），这两级不额外弹选项。
+                    try:
+                        process_path = convert_with_libreoffice(process_path)
+                        file_conversion_modes[str(file_item.path)] = "libreoffice_conversion"
+                    except Exception as lo_error:
+                        lo_reason = user_facing_reason(
+                            lo_error, fallback="LibreOffice 转换不可用。"
+                        )
+                        # WARN 而不是 INFO：这一步意味着产物质量降级（公式
+                        # 变数值），用户扫日志时应当一眼看到。
+                        self._log(
+                            "WARN",
+                            f"{file_item.name}：LibreOffice 兼容转换不可用，"
+                            f"退回值化转换（公式不会保留）：{lo_reason}",
+                        )
+                        process_path = convert_with_fallback(process_path)
+                        file_conversion_modes[str(file_item.path)] = "compatibility_fallback"
+                self._log("INFO", f"格式转换完成 {file_item.name}，耗时 {(datetime.now() - t_conv).total_seconds():.2f}s")
+            except Exception as e:
+                logger.debug(f"源文件转换失败 {file_item.name} 原始错误：{e!r}")
+                conversion_reason = user_facing_reason(
+                    e,
+                    fallback="这个 .xls 文件没能转换成 .xlsx，请改用兼容转换后重试。",
+                )
+                self._log("ERROR", f"源文件转换失败 {file_item.name}: {conversion_reason}")
+                self._task_logger.file_error(file_item.name, conversion_reason)
+                file_results.append({
+                    "name": file_item.name,
+                    "source_path": str(file_item.path),
+                    "source_relative_path": self._relative_source_path(file_item.path),
+                    "format": file_item.format,
+                    "conversion_mode": file_conversion_modes.get(
+                        str(file_item.path), "high_fidelity_failed"
+                    ),
+                    "status": "failed",
+                    "success": False,
+                    "error": f"源文件转换失败: {conversion_reason}",
+                })
+                self._file_progress.emit(
+                    file_item.path, "failed", "extract",
+                    result={"error": f"源文件转换失败: {conversion_reason}"},
+                )
+                process_paths.append(process_path)
+                file_texts.append(set())
+                coverage_plans.append(None)
+                return xls_file_count, total_sheet_count, raw_text_count
+
+        process_paths.append(process_path)
+
+        # 收集词条
+        self._log("INFO", f"[阶段 1] 提取词汇：{file_item.name}（{fi+1}/{len(self._files)}）")
+        t0 = datetime.now()
+        try:
+            if self._untranslated_only and not auto_source_lang:
+                coverage_plan = build_excel_coverage_plan(
+                    process_path,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    formula_display_value_backfill=(
+                        excel_output.formula_display_value_backfill
+                    ),
+                    original_sheet_names=(
+                        workbook_sheet_titles(file_item.path) if resume_used else ()
+                    ),
+                )
+                self._arbitrate_excel_coverage_pairs(
+                    coverage_plan,
+                    engine=engine,
+                    api_scheduler=shared_scheduler,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    lang_pair=lang_pair,
+                    concurrency=concurrency,
+                    file_name=file_item.name,
+                    quality_issues=quality_issues,
+                    review_marks=excel_review_marks,
+                )
+                coverage_plans.append(coverage_plan)
+                texts = coverage_plan.source_texts
+                sheet_count = coverage_plan.sheet_count
+                self._log_excel_coverage_plan(
+                    file_item.name, coverage_plan, resume_baseline=resume_used
+                )
+            else:
+                texts, sheet_count = self._collect_texts(
+                    process_path,
+                    file_item.name,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                    formula_display_value_backfill=(
+                        excel_output.formula_display_value_backfill
+                    ),
+                )
+                coverage_plans.append(None)
+        except Exception as e:
+            # 底稿探活（load_workbook 打得开）过了、真正建补译计划才炸的
+            # 区间：底稿不行不等于源文件不行。用户只是选了「接着上次继续」，
+            # 不能因此拿到一个「翻译失败」——退回源文件按全量翻译再试一次，
+            # 只有源文件自己也读不出来才算失败。（.xls 源的转换件在换底稿
+            # 时被跳过，退无可退，维持失败但把话术指向底稿。）
+            degraded = False
+            if resume_used and file_item.path.suffix.lower() != ".xls":
+                logger.debug(
+                    f"续译底稿建计划失败原始错误 {file_item.name}：{e!r}"
+                )
+                self._log(
+                    "WARN",
+                    f"续译底稿无法建立补译计划 {file_item.name}，"
+                    "已退回按源文件全量翻译："
+                    + user_facing_reason(e, fallback="底稿读取失败。"),
+                )
+                process_path = file_item.path
+                process_paths[-1] = process_path
+                resume_used = False
+                resume_baseline_used[-1] = False
+                try:
+                    if self._untranslated_only and not auto_source_lang:
+                        coverage_plan = build_excel_coverage_plan(
+                            process_path,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            formula_display_value_backfill=(
+                                excel_output.formula_display_value_backfill
+                            ),
+                        )
+                        self._arbitrate_excel_coverage_pairs(
+                            coverage_plan,
+                            engine=engine,
+                            api_scheduler=shared_scheduler,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            lang_pair=lang_pair,
+                            concurrency=concurrency,
+                            file_name=file_item.name,
+                            quality_issues=quality_issues,
+                            review_marks=excel_review_marks,
+                        )
+                        coverage_plans.append(coverage_plan)
+                        texts = coverage_plan.source_texts
+                        sheet_count = coverage_plan.sheet_count
+                        self._log_excel_coverage_plan(
+                            file_item.name, coverage_plan
+                        )
+                    else:
+                        texts, sheet_count = self._collect_texts(
+                            process_path,
+                            file_item.name,
+                            target_lang=target_lang,
+                            source_lang=source_lang,
+                            formula_display_value_backfill=(
+                                excel_output.formula_display_value_backfill
+                            ),
+                        )
+                        coverage_plans.append(None)
+                    degraded = True
+                except Exception as retry_error:
+                    e = retry_error
+            if not degraded:
+                fail_label = "续译底稿读取失败" if resume_used else "源文件读取失败"
+                logger.debug(f"{fail_label}原始错误 {file_item.name}：{e!r}")
+                read_reason = user_facing_reason(
+                    e,
+                    fallback="这个文件打不开，可能已损坏或不是真正的 Excel 文件。",
+                )
+                self._log("ERROR", f"{fail_label} {file_item.name}：{read_reason}")
+                self._task_logger.file_error(file_item.name, f"{fail_label}: {read_reason}")
+                file_results.append({
+                    "name": file_item.name,
+                    "source_path": str(file_item.path),
+                    "source_relative_path": self._relative_source_path(file_item.path),
+                    "format": file_item.format,
+                    "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                    "status": "failed",
+                    "success": False,
+                    "error": f"{fail_label}: {read_reason}",
+                })
+                self._file_progress.emit(
+                    file_item.path, "failed", "extract",
+                    result={"error": f"{fail_label}: {read_reason}"},
+                )
+                if len(coverage_plans) < len(process_paths):
+                    coverage_plans.append(None)
+                file_texts.append(set())
+                # resume_used 时 process_path 是上次输出的续译底稿，只读，绝不删除
+                _cleanup_excel_conversion_temp(
+                    process_path, file_item, is_resume_baseline=resume_used
+                )
+                return xls_file_count, total_sheet_count, raw_text_count
+        text_set = set(texts)
+        file_texts.append(text_set)
+        total_sheet_count += sheet_count
+        raw_text_count += len(text_set)
+        collect_elapsed = (datetime.now() - t0).total_seconds()
+
+        if self._untranslated_only and auto_source_lang:
+            # 这一遍取的是全量候选，只拿来给语言预检当样本。真正要补译的
+            # 清单要等识别出源语言之后才算得出来（见下面的补译识别重建）。
+            self._log(
+                "INFO",
+                f"  → {file_item.name}：{len(text_set)} 处候选文本，"
+                f"先用于识别源语言（{collect_elapsed:.3f}s）",
+            )
+        else:
+            self._log("INFO", f"  → {file_item.name}：{len(text_set)} 处待翻译文本（{collect_elapsed:.3f}s）")
+        self._task_logger.file_collected(file_item.name, len(text_set), collect_elapsed)
+        self._file_progress.emit(file_item.path, "waiting", "translate")
+
+        global_unique_texts.update(text_set)
+        return xls_file_count, total_sheet_count, raw_text_count
+
+    def _write_file_output(
+        self,
+        *,
+        _raise_if_stopped,
+        file_item,
+        file_results,
+        fi,
+        phase_total,
+        process_paths,
+        resume_baseline_used,
+        source_root,
+        excel_output,
+        filename_translations,
+        output_dir,
+        reserved_output_paths,
+        target_lang,
+        coverage_plans,
+        excel_review_marks,
+        file_source_langs,
+        global_translations,
+        need_autofit,
+        process_artifacts,
+        source_lang,
+        sheet_translations,
+        quality_issues,
+        file_texts,
+        hits,
+        misses,
+        mixed_texts,
+        file_conversion_modes,
+        _cleanup_excel_conversion_temp,
+    ) -> None:
+        """阶段 3（单个文件）：按全局译文词典写出这份文件的双语表格，结果追加进 file_results。"""
+        _raise_if_stopped()
+
+        # 跳过阶段 1 已失败的文件
+        already_failed = any(
+            r.get("source_path") == str(file_item.path) and not r.get("success")
+            for r in file_results
+        )
+        if already_failed:
+            # 这个文件在阶段 1/2 之间被标失败（例如自动识别源语言后
+            # 重算补译计划时读不出来），它的 .xls 转换临时件当时未必删
+            # 过——但不必在这里现删：下面 finally 里的兜底扫描会对
+            # self._files 里的每一个文件都补删一遍，覆盖这条路径，
+            # 这里再删一次纯属重复（中-8）。
+            return
+
+        self._file_progress.emit(file_item.path, "active", "generate")
+
+        self._queue.put(ProgressMsg(
+            phase_index=3, phase_total=phase_total, phase_name="生成文件",
+            step_done=fi, step_total=len(self._files),
+        ))
+
+        self._log("INFO", f"[阶段 3] 写入文件：{file_item.name}（{fi+1}/{len(self._files)}）")
+
+        process_path = process_paths[fi]
+        # 换了续译底稿时，output 命名/相对目录必须仍按「原始源文件」算，
+        # 否则底稿文件名（已经带过一次「双语」后缀）会在输出名里叠加一遍。
+        naming_original_path = file_item.original_path
+        if (
+            fi < len(resume_baseline_used)
+            and resume_baseline_used[fi]
+            and naming_original_path is None
+        ):
+            naming_original_path = file_item.path
+
+        try:
+            rel_subdir = file_item.path.parent.relative_to(source_root)
+        except ValueError:
+            rel_subdir = Path()
+
+        try:
+            t0 = datetime.now()
+            original_name = naming_original_path.name if naming_original_path else file_item.path.name
+            output_basename = original_name
+            if excel_output.translate_output_filename:
+                original_stem = Path(original_name).stem
+                translated_stem = output_stem_from_translation(
+                    original_stem,
+                    filename_translations.get(original_stem, original_stem),
+                )
+                if translated_stem != original_stem:
+                    output_basename = translated_stem + Path(original_name).suffix
+                else:
+                    self._log("WARN", f"[{file_item.name}] 输出文件名未获得可用译名，沿用原名。")
+            output_basename = avoid_bilingual_name_collision(
+                output_dir / rel_subdir,
+                output_basename,
+                target_lang,
+                reserved_output_paths,
+            )
+            file_review_positions: list[dict[str, str]] = []
+            # 写入器要知道后面还会不会跑 Excel 整表 AutoFit：会跑就得把整张表的
+            # 悬浮图片锚点全部固定，否则 Excel 重排行高会把没冻结的图片拉变形。
+            write_stats: dict[str, object] = {}
+            # KNOWN-ISSUE-VAL-006:
+            # The current write path intentionally stays text-only.
+            # See docs/KNOWN_ISSUES.md before reintroducing image flow.
+            if self._untranslated_only:
+                coverage_plan = coverage_plans[fi] if fi < len(coverage_plans) else None
+                if coverage_plan is None:
+                    raise ValueError("缺少补译识别计划，无法安全按位置写入。")
+                # 「保留原文副本」的快照取自写入源。续译时写入源是上次的双语
+                # 底稿——从双语内容里克隆不出「未翻译的原始副本」，硬克隆出来
+                # 的「X_原文」里装的是「原文\n译文」，名字在撒谎、体积还翻倍。
+                # 底稿里上一轮已有的「X_原文」是普通分表，复制产物时原样保留，
+                # 不受这里影响。
+                resume_used_here = (
+                    fi < len(resume_baseline_used) and resume_baseline_used[fi]
+                )
+                if excel_output.keep_original_sheets and resume_used_here:
+                    self._log(
+                        "INFO",
+                        (
+                            f"  → [续译] {file_item.name}：底稿本身是双语内容，"
+                            "无法从中克隆出纯原文副本，本次不新增「_原文」分表"
+                            "（上次已有的原样保留）。"
+                        ),
+                    )
+                out_path = write_untranslated_excel_file(
+                    source_path=process_path,
+                    output_dir=output_dir / rel_subdir,
+                    plan=coverage_plan,
+                    translations=global_translations,
+                    target_lang=target_lang,
+                    source_lang=file_source_langs.get(
+                        str(file_item.path), source_lang
+                    ),
+                    keep_original_sheets=(
+                        excel_output.keep_original_sheets and not resume_used_here
+                    ),
+                    formula_display_value_backfill=(
+                        excel_output.formula_display_value_backfill
+                    ),
+                    output_translation_only=excel_output.output_translation_only,
+                    lock_row_height=excel_output.lock_row_height,
+                    review_marks=excel_review_marks,
+                    review_mark_colors=self._settings.excel_review.mark_colors,
+                    mark_review_items=(
+                        self._settings.excel_review.mark_review_items
+                    ),
+                    existing_fill_policy=(
+                        self._settings.excel_review.existing_fill_policy
+                    ),
+                    review_positions=file_review_positions,
+                    log_callback=lambda msg: self._log(
+                        "OK" if msg.startswith("[OK]") else "INFO", msg
+                    ),
+                    original_path=naming_original_path,
+                    external_autofit_planned=need_autofit,
+                    stats=write_stats,
+                    output_basename=output_basename,
+                    staging_dir=(process_artifacts.work_dir if process_artifacts else None),
+                )
+            else:
+                out_path = bilingual_writer.write_bilingual_file(
+                    source_path          = process_path,
+                    output_dir           = output_dir / rel_subdir,
+                    translations         = global_translations,
+                    target_lang          = target_lang,
+                    source_lang          = source_lang,
+                    keep_original_sheets = excel_output.keep_original_sheets,
+                    formula_display_value_backfill = excel_output.formula_display_value_backfill,
+                    output_translation_only = excel_output.output_translation_only,
+                    lock_row_height      = excel_output.lock_row_height,
+                    review_marks         = excel_review_marks,
+                    review_mark_colors   = self._settings.excel_review.mark_colors,
+                    mark_review_items    = self._settings.excel_review.mark_review_items,
+                    existing_fill_policy = self._settings.excel_review.existing_fill_policy,
+                    review_positions     = file_review_positions,
+                    log_callback         = lambda msg: self._log(
+                        "OK" if msg.startswith("[OK]") else "INFO", msg
+                    ),
+                    original_path        = naming_original_path,
+                    external_autofit_planned = need_autofit,
+                    stats                = write_stats,
+                    output_basename      = output_basename,
+                    staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
+                )
+            if excel_output.translate_sheet_names:
+                with ZipFile(out_path) as workbook_package:
+                    workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))
+                sheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                sheet_names = [
+                    node.get("name", "")
+                    for node in workbook_root.iter(f"{{{sheet_namespace}}}sheet")
+                ]
+                requested_sheets = {
+                    old: sheet_translations[old]
+                    for old in sheet_names
+                    if old in sheet_translations and sheet_translations[old] != old
+                }
+                if requested_sheets:
+                    rename_result = rename_worksheets(out_path, out_path, requested_sheets)
+                    write_stats["sheet_name_status"] = rename_result.status
+                    write_stats["sheet_name_changes"] = rename_result.names
+                    if rename_result.status == "preserved":
+                        message = f"[{file_item.name}] 工作表名称保留原名：{rename_result.reason}"
+                        self._log("WARN", message)
+                        quality_issues.append({
+                            "file": file_item.name,
+                            "type": "sheet_rename_preserved",
+                            "severity": "needs_review",
+                            "problem": "工作表名称无法安全改写",
+                            "status": f"已保留原工作表名称：{rename_result.reason}",
+                            "message": message,
+                        })
+                else:
+                    self._log("INFO", f"[{file_item.name}] 工作表名称无可用译名，保留原名。")
+            write_elapsed = (datetime.now() - t0).total_seconds()
+            self._task_logger.file_write_done(file_item.name, write_elapsed)
+
+            # 统计该文件对应的 TM/API 使用情况
+            this_file_texts = file_texts[fi]
+            this_tm = sum(1 for t in this_file_texts if t in hits)
+            this_api = sum(1 for t in this_file_texts if t in misses or t in mixed_texts)
+            self._task_logger.file_done(
+                filename=file_item.name,
+                elapsed=write_elapsed,
+                tm_hits=this_tm,
+                api_calls=this_api,
+            )
+
+            file_results.append({
+                "name":    file_item.name,
+                "source_path": str(file_item.path),
+                "source_relative_path": self._relative_source_path(file_item.path),
+                "format": file_item.format,
+                "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                "output":  str(out_path),
+                "output_path": str(out_path),
+                "status": "succeeded",
+                "review_count": len(file_review_positions),
+                "review_items": file_review_positions,
+                "sheet_name_status": write_stats.get("sheet_name_status", "unchanged"),
+                "sheet_name_changes": dict(write_stats.get("sheet_name_changes") or {}),
+                # 悬浮图片/形状里被我们固定住锚点的数量（0 表示没动过）
+                "anchor_frozen_count": int(
+                    write_stats.get("anchor_frozen_count", 0) or 0
+                ),
+                # 超过 Excel 32767 字符上限、被截断的单元格。用户必须看得见，
+                # 否则那几格译文是残缺的而界面上毫无痕迹。
+                "truncated_cells": int(
+                    write_stats.get("truncated_cells", 0) or 0
+                ),
+                "truncated_positions": list(
+                    write_stats.get("truncated_positions") or []
+                ),
+                "success": True,
+            })
+            self._file_progress.emit(
+                file_item.path,
+                "waiting" if need_autofit else "generated",
+                "adjust" if need_autofit else "generate",
+                result={
+                    key: value
+                    for key, value in file_results[-1].items()
+                    if key not in {"source_path", "source_relative_path"}
+                } if not need_autofit else None,
+            )
+            truncated_positions = list(
+                write_stats.get("truncated_positions") or []
+            )
+            if truncated_positions:
+                # 截断的单元格里译文是残缺的。只写日志不够——日志会被滚过去，
+                # 用户拿到的是一份看起来正常的文件。
+                shown = "、".join(truncated_positions[:5])
+                more = (
+                    f" 等 {len(truncated_positions)} 处"
+                    if len(truncated_positions) > 5
+                    else ""
+                )
+                quality_issues.append(
+                    {
+                        "type": "cell_text_truncated",
+                        "severity": "needs_action",
+                        "count": len(truncated_positions),
+                        "file": file_item.name,
+                        "message": (
+                            f"{file_item.name} 有 {len(truncated_positions)} 个单元格"
+                            "超过 Excel 的 32767 字符上限，译文已被截断"
+                            f"（{shown}{more}）。这些格子的内容是不完整的。"
+                        ),
+                        "positions": truncated_positions,
+                    }
+                )
+            self._log("OK", f"文件完成：{file_item.name}（{write_elapsed:.2f}s）")
+        except Exception as e:
+            logger.debug(f"文件写入失败 {file_item.name} 原始错误：{e!r}")
+            write_reason = user_facing_reason(
+                e,
+                fallback="译文文件没能写出，请检查输出目录的剩余空间和写入权限。",
+            )
+            self._log("ERROR", f"文件写入失败 {file_item.name}：{write_reason}")
+            self._task_logger.file_error(file_item.name, write_reason)
+            file_results.append({
+                "name": file_item.name,
+                "source_path": str(file_item.path),
+                "source_relative_path": self._relative_source_path(file_item.path),
+                "format": file_item.format,
+                "conversion_mode": file_conversion_modes.get(str(file_item.path), "native_xlsx"),
+                "status": "failed",
+                "success": False,
+                "error": write_reason,
+            })
+            self._file_progress.emit(
+                file_item.path, "failed", "generate",
+                result={"error": write_reason},
+            )
+        finally:
+            # 清理 .xls 转换后的临时 .xlsx 文件；续译底稿是上次输出的历史产物，
+            # 只读绝不删除
+            is_resume_baseline = (
+                fi < len(resume_baseline_used) and resume_baseline_used[fi]
+            )
+            _cleanup_excel_conversion_temp(
+                process_path, file_item, is_resume_baseline=is_resume_baseline
+            )
+
+    def _repair_residuals(
+        self,
+        *,
+        global_translations: dict[str, str],
+        target_lang: str,
+        quality_issues: list[dict],
+        engine,
+        rate_limited: list[ApiKeyTemporarilyUnavailableError],
+        phase_total: int,
+        excel_review_marks: dict[str, str],
+    ) -> ResidualPassResult:
+        """残留中文体检 + 确定性序号修复 + 修复阶梯；改得了的直接改词典，改不了的标记复核。"""
+        residual_result = run_residual_pass(
+            global_translations.items(), target_lang=target_lang
+        )
+        if residual_result.fixes:
+            global_translations.update(residual_result.fixes)
+            self._log(
+                "OK",
+                (
+                    f"残留序号确定性修复 {len(residual_result.fixes)} 条"
+                    f"（序号惯例：{residual_result.convention}）"
+                ),
+            )
+            quality_issues.append(
+                {
+                    "type": "residual_numbering_autofixed",
+                    "severity": "info",
+                    "count": len(residual_result.fixes),
+                    "message": (
+                        f"有 {len(residual_result.fixes)} 条译文的中文序号残留"
+                        "已按文档序号惯例自动修复，无需人工处理。"
+                    ),
+                }
+            )
+        # 修复阶梯：外科修补 → 带反馈重译（验收不过绝不覆盖原译文）。
+        # 上限/熔断/进度护栏在 run_repair_ladder 里，与 Word 主流程共用。
+        still_needs_review = list(residual_result.needs_review)
+        repair_method_counts: dict[str, int] = {}
+        # 拒收理由跟着源文走：残留告警里「为什么没修上」必须逐条可查
+        repair_reject_reasons: dict[str, tuple[str, ...]] = {}
+        # 超限/熔断要写进结果报告：只在日志里提会被滚走，用户就不知道
+        # 「这批单元根本没尝试修复，重跑还有救」
+        repair_over_cap_count = 0
+        repair_breaker_tripped = False
+        # 停止导致的「没来得及修」跟「超限/熔断没修成」是三种不同的成因——
+        # 审计批次 2 第④条：这批未完成的内容不该被说成「修复失败」，用户按了
+        # 停止不算失败。判据用 ladder.stopped_count（阶梯逐单元记录「停止时还
+        # 没开跑」的条数），不用事后探停止标志：停止落在最后一个单元的请求
+        # 进行中时，remaining 全是真拒收、标志却已置位，事后探会把归因算反。
+        repair_stopped_by_user = False
+        if still_needs_review and engine_supports_chat(engine) and not rate_limited:
+
+            def _on_repair_progress(done: int, total: int) -> None:
+                self._queue.put(StatusMsg(
+                    phase_desc=(
+                        f"状态：[阶段 2/{phase_total}] 正在修复残留中文"
+                        f"（{done}/{total}）..."
+                    )
+                ))
+
+            ladder = run_repair_ladder(
+                still_needs_review,
+                target_lang=target_lang,
+                send=engine.chat,
+                convention=residual_result.convention,
+                max_units=_RESIDUAL_REPAIR_MAX_UNITS,
+                breaker_threshold=_RESIDUAL_REPAIR_BREAKER_THRESHOLD,
+                should_stop=self._stop_event.is_set,
+                on_progress=_on_repair_progress,
+            )
+            if ladder.over_cap_count:
+                self._log(
+                    "WARN",
+                    (
+                        f"残留待修单元 {len(still_needs_review)} 条超出单次上限 "
+                        f"{_RESIDUAL_REPAIR_MAX_UNITS}，超出的 "
+                        f"{ladder.over_cap_count} 条本次不发请求，直接列入待复核。"
+                    ),
+                )
+            if ladder.breaker_tripped:
+                self._log(
+                    "WARN",
+                    (
+                        f"残留修复通道连续 {_RESIDUAL_REPAIR_BREAKER_THRESHOLD} 次"
+                        "请求失败，已停止后续修复请求，剩余单元直接列入待复核。"
+                    ),
+                )
+            global_translations.update(ladder.accepted)
+            repair_method_counts = ladder.method_counts
+            repair_reject_reasons = ladder.reject_reasons
+            repair_over_cap_count = ladder.over_cap_count
+            repair_breaker_tripped = ladder.breaker_tripped
+            still_needs_review = ladder.remaining
+            # 跟「超限」「熔断」不冲突，三个成因可能同时出现，下面拼消息时各说各的。
+            repair_stopped_by_user = ladder.stopped_count > 0
+        repaired_total = sum(repair_method_counts.values())
+        if repaired_total:
+            method_desc = "、".join(
+                f"{_RESIDUAL_REPAIR_METHOD_LABELS.get(method, method)} {count} 条"
+                for method, count in sorted(repair_method_counts.items())
+            )
+            self._log("OK", f"残留中文修复阶梯通过 {repaired_total} 条（{method_desc}）")
+            quality_issues.append(
+                {
+                    "type": "residual_repaired",
+                    "severity": "info",
+                    "count": repaired_total,
+                    "message": (
+                        f"有 {repaired_total} 条译文的残留中文已自动修复"
+                        f"（{method_desc}），修复稿均通过机器验收。"
+                    ),
+                }
+            )
+        if still_needs_review:
+            for unit in still_needs_review:
+                _set_excel_review_mark(
+                    excel_review_marks,
+                    unit.source_text,
+                    MIXED_MARK_UNRESOLVED,
+                )
+            quality_issues.append(
+                {
+                    "type": "residual_source_language",
+                    "severity": "needs_action",
+                    "count": len(still_needs_review),
+                    # 附加的机器可判字段，不改动 type/severity：报告/界面想按「是不是
+                    # 停止导致的」单独处理时读这个字段，不用去猜 message 里的措辞；
+                    # 旧任务记录没有这个键，读取方按缺省 False（当作非停止）处理即可，
+                    # 不影响旧数据可读——新增字段只加不改，兼容旧结果契约。
+                    "caused_by_stop": repair_stopped_by_user,
+                    "message": (
+                        f"有 {len(still_needs_review)} 条译文残留了未翻译的中文片段，"
+                        + (
+                            # 停止不是失败：这批是任务被停止时还没轮到自动修复的部分，
+                            # 不是「模型改了还是不对」。放在最前面说，不然用户会把它跟
+                            # 下面「熔断/超限」这些真正尝试过、没修成的情况混为一谈。
+                            "其中一部分是任务停止时还没来得及自动修复（不是修复失败），"
+                            if repair_stopped_by_user
+                            else ""
+                        )
+                        + (
+                            # 补译模式的输出文件不带标记列；双语模式下用户
+                            # 也可能关掉「标记需复核内容」——文件里真没标记
+                            # 时不许许诺有标记。停止同理：停止标志置位后
+                            # 阶段 3 之前的 _raise_if_stopped 会拦下写盘，
+                            # 输出文件根本不存在，更不能许诺「已在文件中标记」。
+                            "请按下方源文清单逐条核对。"
+                            if self._untranslated_only
+                            or not self._settings.excel_review.mark_review_items
+                            or repair_stopped_by_user
+                            else "已在输出文件中标记待复核位置。"
+                        )
+                        + (
+                            f"其中 {repair_over_cap_count} 条超出单次自动修复"
+                            f"上限（{_RESIDUAL_REPAIR_MAX_UNITS} 条），本次未尝试"
+                            "修复，重新运行任务可继续修复。"
+                            if repair_over_cap_count
+                            else ""
+                        )
+                        + (
+                            "自动修复通道因连续请求失败已熔断，部分单元未尝试"
+                            "修复，确认网络与引擎可用后重新运行任务可继续修复。"
+                            if repair_breaker_tripped
+                            else ""
+                        )
+                        + (
+                            # 不说「接着处理」：停止发生在写盘之前时本次没有
+                            # 可续的产物，重跑是从头再来（已入库的译文会经
+                            # 记忆库直接复用，残留部分重新走自动修复）。
+                            "重新运行任务时，已完成的译文会经记忆库复用，"
+                            "这批残留会重新尝试自动修复。"
+                            if repair_stopped_by_user
+                            and not repair_over_cap_count
+                            and not repair_breaker_tripped
+                            else ""
+                        )
+                    ),
+                    "failed_sources": [
+                        {
+                            "source": unit.source_text,
+                            "error": (
+                                "译文残留中文："
+                                + "、".join(f"«{span}»" for span in unit.spans)
+                                + (
+                                    "；修复尝试被拒："
+                                    + "；".join(
+                                        repair_reject_reasons[unit.source_text]
+                                    )
+                                    if unit.source_text in repair_reject_reasons
+                                    else ""
+                                )
+                            ),
+                        }
+                        for unit in still_needs_review
+                    ],
+                }
+            )
+            # 运行日志同样要把「停止」和「修复失败」分开说——面板里这条 WARN 是用户
+            # 唯一能看到的第一手记录，跟上面 quality_issues 的 message 措辞保持一致，
+            # 不能一边在报告里说「不是修复失败」，日志这行却只字不提成因。级别仍用
+            # WARN：不管是不是因为停止，这批内容都还需要用户处理，不该看起来比真实
+            # 状态更轻。
+            self._log(
+                "WARN",
+                (
+                    f"检出 {len(still_needs_review)} 条译文残留中文，"
+                    + (
+                        "其中一部分是任务停止时还没来得及自动修复，"
+                        if repair_stopped_by_user
+                        else ""
+                    )
+                    + "已列入待复核。"
+                ),
+            )
+        if residual_result.released_notes:
+            # 万/亿等数量单位残留：不拦发布，但报告里留痕
+            quality_issues.append(
+                {
+                    "type": "residual_quantity_unit",
+                    "severity": "info",
+                    "count": len(residual_result.released_notes),
+                    "message": (
+                        f"有 {len(residual_result.released_notes)} 条译文保留了「万/亿」等数量单位，"
+                        "通常不影响理解，如需统一可人工调整。"
+                    ),
+                }
+            )
+        return residual_result
+
+    def _normalize_heading_style(
+        self,
+        *,
+        global_translations: dict[str, str],
+        target_lang: str,
+        quality_issues: list[dict],
+    ) -> str | None:
+        """全篇节标题写法巡检：多数派可确定性改写时直接改词典，返回多数派写法。"""
+        heading_observations = [
+            (source, target, source)
+            for source, target in global_translations.items()
+            if is_section_heading_source(source)
+        ]
+        # 全篇多数派要贯通到 TM 入库口：TM 只拿到 API 未命中子集，
+        # 让它自己投票可能与全篇结论相反，把库改成与交付文件相左的写法
+        heading_majority: str | None = None
+        if heading_observations:
+            heading_consistency = check_heading_consistency(
+                heading_observations, target_lang=target_lang
+            )
+            heading_majority = heading_consistency.majority_form
+            if heading_consistency.fixes:
+                global_translations.update(heading_consistency.fixes)
+                self._log(
+                    "OK",
+                    (
+                        f"节标题写法归一 {len(heading_consistency.fixes)} 条"
+                        "（全篇多数派为准）。"
+                    ),
+                )
+                quality_issues.append(
+                    {
+                        "type": "heading_style_normalized",
+                        "severity": "info",
+                        "count": len(heading_consistency.fixes),
+                        "message": (
+                            f"有 {len(heading_consistency.fixes)} 条节标题译文的写法"
+                            "与全篇多数派不一致，已自动归一，无需人工处理。"
+                        ),
+                    }
+                )
+            elif heading_consistency.outliers:
+                # 多数派是序数词写法时不做词形猜测，只报告不改
+                quality_issues.append(
+                    {
+                        "type": "heading_style_outliers",
+                        "severity": "info",
+                        "count": len(heading_consistency.outliers),
+                        "message": (
+                            f"有 {len(heading_consistency.outliers)} 条节标题译文"
+                            "与全篇多数写法不一致，因归一需要词形变化知识，"
+                            "未自动改写，如需统一可人工调整。"
+                        ),
+                    }
+                )
+        return heading_majority
+
+    def _store_final_translations_in_tm(
+        self,
+        *,
+        normal_api_language_results: dict,
+        normal_api_translations: dict[str, str],
+        auto_source_lang: bool,
+        engine,
+        global_translations: dict[str, str],
+        heading_majority: str | None,
+        lang_pair: str | None,
+        max_len: int,
+        residual_result: ResidualPassResult,
+        target_lang: str,
+        text_source_scopes: dict[str, list[frozenset[str]]],
+        quality_issues: list[dict],
+    ) -> None:
+        """把本次 API 结果按「文件最终译文」写进 TM，失败记成需处理的质量问题。"""
+        if normal_api_translations or normal_api_language_results:
+            written, tm_write_error = self.store_api_results_in_tm(
+                auto_source_lang=auto_source_lang,
+                normal_api_language_results=normal_api_language_results,
+                normal_api_translations=normal_api_translations,
+                text_source_scopes=text_source_scopes,
+                target_lang=target_lang,
+                lang_pair=lang_pair,
+                max_len=max_len,
+                engine_name=engine.engine_name,
+                final_translations=global_translations,
+                convention=residual_result.convention,
+                heading_majority=heading_majority,
+            )
+            if tm_write_error:
+                self._log("WARN", tm_write_error)
+                self._task_logger.warning(tm_write_error)
+                quality_issues.append(
+                    {
+                        "type": "tm_write_failed",
+                        # 写 TM 是真的失败了，不是「按设计如此」的提示。severity=info
+                        # 已经被界面定义成「用户不用管」的一档（自动目录那类），这一条
+                        # 留在 info 里会连着 KPI 一起被抹掉。
+                        "severity": "needs_action",
+                        "message": tm_write_error,
+                    }
+                )
+            if written:
+                self._log("INFO", f"新增 TM 词条：{written} 条")
+
+    def _run_autofit_phase(
+        self,
+        *,
+        need_autofit: bool,
+        file_results: list[dict],
+        reuse_excel_for_autofit: bool,
+        phase_total: int,
+        excel_policy: str,
+        _get_excel_app,
+        _run_autofit_with_guard,
+    ) -> None:
+        """阶段 4：用 Excel 对已写好的双语表批量 AutoFit 行高（复用或新起 Excel 进程）。"""
+        if need_autofit:
+            out_paths = [
+                Path(r["output"]) for r in file_results
+                if r.get("success") and r.get("output")
+            ]
+            if out_paths:
+                autofit_results_by_path = {
+                    Path(result["output"]).resolve(): result
+                    for result in file_results
+                    if result.get("success") and result.get("output")
+                }
+                if reuse_excel_for_autofit:
+                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在复用阶段 1 的 Excel 进程精调行高..."))
+                else:
+                    self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 正在启动干净 Excel 进程精调行高..."))
+                self._queue.put(ProgressMsg(
+                    phase_index=4,
+                    phase_total=phase_total,
+                    phase_name="Excel 精调",
+                    step_done=0,
+                    step_total=len(out_paths),
+                ))
+                t0 = datetime.now()
+                self._log(
+                    "INFO",
+                    f"开始 Excel AutoFit，共 {len(out_paths)} 个文件 | policy={excel_policy}",
+                )
+
+                def autofit_file_start_cb(current_file):
+                    result = autofit_results_by_path.get(
+                        Path(current_file).resolve()
+                    )
+                    if result is not None:
+                        self._file_progress.emit(
+                            result.get("source_path"), "active", "adjust"
+                        )
+
+                def autofit_progress_cb(done, total, current_file):
+                    if current_file is not None:
+                        result = autofit_results_by_path.get(
+                            Path(current_file).resolve()
+                        )
+                        if result is not None:
+                            self._file_progress.emit(
+                                result.get("source_path"),
+                                "generated",
+                                "adjust",
+                                result={
+                                    key: value
+                                    for key, value in result.items()
+                                    if key not in {"source_path", "source_relative_path"}
+                                },
+                            )
+                    self._queue.put(ProgressMsg(
+                        phase_index=4,
+                        phase_total=phase_total,
+                        phase_name="Excel 精调",
+                        step_done=done,
+                        step_total=total,
+                    ))
+                    if current_file is not None and done < total:
+                        self._queue.put(StatusMsg(
+                            phase_desc=f"状态：[阶段 4/{phase_total}] 正在精调 Excel 行高：{current_file.name}"
+                        ))
+
+                if reuse_excel_for_autofit:
+                    app = _get_excel_app()
+                    autofit_success = bilingual_writer.autofit_files_batch(
+                        out_paths,
+                        app=app,
+                        log_callback=lambda msg: self._log(
+                            "WARN" if msg.startswith("[WARN]") else "INFO", msg
+                        ),
+                        progress_callback=autofit_progress_cb,
+                        file_start_callback=autofit_file_start_cb,
+                    )
+                else:
+                    autofit_success = _run_autofit_with_guard(
+                        out_paths,
+                        autofit_progress_cb,
+                        autofit_file_start_cb,
+                    )
+
+                self._queue.put(ProgressMsg(
+                    phase_index=4,
+                    phase_total=phase_total,
+                    phase_name="Excel 精调",
+                    step_done=len(out_paths),
+                    step_total=len(out_paths),
+                ))
+                autofit_elapsed = (datetime.now() - t0).total_seconds()
+                for result in file_results:
+                    if result.get("success") and result.get("output"):
+                        self._file_progress.emit(
+                            result.get("source_path"),
+                            "generated",
+                            "adjust",
+                            result={
+                                **{
+                                    key: value
+                                    for key, value in result.items()
+                                    if key not in {"source_path", "source_relative_path"}
+                                },
+                            },
+                        )
+                if autofit_success:
+                    self._log("INFO", f"Excel AutoFit 完成，耗时 {autofit_elapsed:.2f}s | policy={excel_policy}")
+                    self._task_logger.info(
+                        f"批量AutoFit完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
+                    )
+                else:
+                    self._log("WARN", f"Excel AutoFit 未完全完成，已保留 Python 估算行高 | policy={excel_policy}")
+                    self._task_logger.warning(
+                        f"批量AutoFit未完全完成 | 文件数={len(out_paths)} | 耗时={autofit_elapsed:.3f}s | excel_policy={excel_policy}"
+                    )
+            else:
+                for result in file_results:
+                    if result.get("success") and result.get("output"):
+                        self._file_progress.emit(
+                            result.get("source_path"), "generated", "generate",
+                            result={
+                                key: value
+                                for key, value in result.items()
+                                if key not in {"source_path", "source_relative_path"}
+                            },
+                        )
+                self._queue.put(StatusMsg(phase_desc=f"状态：[阶段 4/{phase_total}] 无可精调文件，已跳过 Excel 精调。"))
+                self._queue.put(ProgressMsg(
+                    phase_index=4,
+                    phase_total=phase_total,
+                    phase_name="Excel 精调",
+                    step_done=1,
+                    step_total=1,
+                ))
 
     def store_api_results_in_tm(self, **kwargs) -> tuple[int, str | None]:
         """Write TM without ever letting that write kill a finished translation.
