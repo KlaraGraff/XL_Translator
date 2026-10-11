@@ -869,6 +869,8 @@ class TaskRunner:
             file_language_preflights = {}
             tm_language_pairs: list[str] = []
             text_source_scopes: dict[str, list[frozenset[str]]] = {}
+            # 自动识别时每个文件自己的源语言（路径 → 语言），见下方语言预检
+            file_source_langs: dict[str, str] = {}
             file_conversion_modes: dict[str, str] = {
                 str(item.path): "native_xlsx"
                 for item in self._files
@@ -1264,6 +1266,14 @@ class TaskRunner:
                 else:
                     source_lang = get_default_source_lang()
                 tm_language_pairs = get_tm_language_pairs(detected_sources, target_lang)
+                # 补译判定按每个文件自己的语言做（审计 高-8）：一批里英文件排在日文件
+                # 前面时，拿全局第一个语言去判日文件，它的汉字标题会整份被当成「已是
+                # 译文」跳过。某个文件没定出语言时才退回全局值。
+                file_source_langs.update(
+                    (file_path, result.source_langs[0])
+                    for file_path, result in file_language_preflights.items()
+                    if result.source_langs
+                )
                 for file_item, text_set in zip(self._files, file_texts):
                     result = file_language_preflights.get(str(file_item.path))
                     if result is None:
@@ -1288,6 +1298,7 @@ class TaskRunner:
                         file_results=file_results,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        file_source_langs=file_source_langs,
                         formula_display_value_backfill=(
                             excel_output.formula_display_value_backfill
                         ),
@@ -1302,6 +1313,7 @@ class TaskRunner:
                         resume_baseline_used=resume_baseline_used,
                         target_lang=target_lang,
                         source_lang=source_lang,
+                        file_source_langs=file_source_langs,
                         formula_display_value_backfill=(
                             excel_output.formula_display_value_backfill
                         ),
@@ -2226,7 +2238,9 @@ class TaskRunner:
                             plan=coverage_plan,
                             translations=global_translations,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=file_source_langs.get(
+                                str(file_item.path), source_lang
+                            ),
                             keep_original_sheets=(
                                 excel_output.keep_original_sheets and not resume_used_here
                             ),
@@ -2970,6 +2984,7 @@ class TaskRunner:
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
+        file_source_langs: dict[str, str] | None = None,
     ) -> None:
         """自动识别源语言的续译：预检定完语言、重算补译清单之前，把底稿换上。
 
@@ -2998,7 +3013,7 @@ class TaskRunner:
                 baseline,
                 surface="excel",
                 target_lang=target_lang,
-                source_lang=source_lang,
+                source_lang=(file_source_langs or {}).get(str(file_item.path), source_lang),
                 formula_display_value_backfill=formula_display_value_backfill,
             )
             if missing:
@@ -3040,6 +3055,7 @@ class TaskRunner:
         target_lang: str,
         source_lang: str,
         formula_display_value_backfill: bool,
+        file_source_langs: dict[str, str] | None = None,
         engine=None,
         api_scheduler=None,
         lang_pair: str | None = None,
@@ -3056,10 +3072,16 @@ class TaskRunner:
         """
         global_unique_texts.clear()
         raw_text_count = 0
-        self._log("INFO", f"[补译模式] 源语言已识别为 {source_lang}，开始按它重算待补清单。")
+        file_source_langs = file_source_langs or {}
+        detected_langs = sorted(set(file_source_langs.values())) or [source_lang]
+        self._log(
+            "INFO",
+            f"[补译模式] 源语言已识别为 {'、'.join(detected_langs)}，开始按各文件的语言重算待补清单。",
+        )
         for fi, file_item in enumerate(self._files):
             if fi >= len(process_paths) or fi >= len(coverage_plans):
                 continue
+            file_source_lang = file_source_langs.get(str(file_item.path), source_lang)
             if any(
                 r.get("source_path") == str(file_item.path) and not r.get("success")
                 for r in file_results
@@ -3069,7 +3091,7 @@ class TaskRunner:
                 coverage_plan = build_excel_coverage_plan(
                     process_paths[fi],
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     formula_display_value_backfill=formula_display_value_backfill,
                 )
             except Exception as e:  # noqa: BLE001 - 单个文件读失败不该带走整批
@@ -3096,7 +3118,7 @@ class TaskRunner:
                         coverage_plan = build_excel_coverage_plan(
                             file_item.path,
                             target_lang=target_lang,
-                            source_lang=source_lang,
+                            source_lang=file_source_lang,
                             formula_display_value_backfill=formula_display_value_backfill,
                         )
                         degraded = True
@@ -3135,7 +3157,7 @@ class TaskRunner:
                     engine=engine,
                     api_scheduler=api_scheduler,
                     target_lang=target_lang,
-                    source_lang=source_lang,
+                    source_lang=file_source_lang,
                     lang_pair=lang_pair,
                     concurrency=concurrency,
                     file_name=file_item.name,
