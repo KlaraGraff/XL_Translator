@@ -1,6 +1,37 @@
-# Translator
+# Translator（XL Translator）
 
-Translator 是面向 Excel、Word、PDF 和图片的本地文档翻译器，支持批量翻译、翻译记忆库和双语结果输出。桌面应用使用 Tauri 2 原生窗口、系统 WebView 和 Python 文档引擎 sidecar。
+用大模型批量翻译 **Excel、Word、PDF、图片和 CAD 图纸（DWG / DXF）** 的桌面应用，支持 macOS 和 Windows。Excel 和 Word 默认写成原文加译文的双语文件（也可以只留译文），翻过的词句存进记忆库，下次优先复用，专业术语前后一致。
+
+A desktop app (macOS / Windows) that uses large language models to batch-translate Excel, Word, PDF, images and CAD drawings (DWG / DXF), with bilingual output and a reusable translation memory. [English overview below](#english).
+
+## 能做什么
+
+- **Excel 表格**：`.xlsx` 和旧版 `.xls`，可以翻译工作表名、公式单元格显示的内容和文件名；按译文调整行高，或者保持行高、缩小字号；拿不准的单元格涂色提醒复核。
+- **Word 文档**：`.docx` 和旧版 `.doc`，正文、表格和页眉页脚都能翻；可以保护封面和目录不翻，自动编号翻译后不错乱。文本框和脚注暂时不翻，遇到时会在结果里提示。
+- **PDF 与图片**：逐页用图像模型把页面上的文字换成目标语言，尽量保留原来的版式和插图；图片支持 PNG、JPG、WebP、BMP、TIFF；可以让审核模型逐页检查，另存一份压缩 PDF。
+- **CAD 图纸**：DXF 直接翻译，DWG 先在「插件」页连接 ODA File Converter；图块里的文字可以一起翻，GBK 等中文编码的旧图纸也能正确读写。
+- **记忆库**：Excel 和 Word 翻好的词句自动入库，翻译 Excel、Word 和 CAD 图纸时优先复用；固定的词条一定按你定的译法翻，支持导入、导出和清洗。
+- **任务中心**：不同类型的任务可以同时跑，可以随时停止（PDF 和 CAD 还能暂停），之后只补翻没翻完的部分；每个任务都有结果统计、需要复核的位置和生成的文件。
+- **语言与场景**：内置 59 种语言，源语言可以自动识别，也可以自定义目标语言；提供工程、资料管理、行政日常等场景提示词，也可以自己写。
+
+## 支持的模型服务
+
+在「设置 → 模型服务」里填写服务商、模型和 API 密钥，测试连接通过后就能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。
+
+- 云端：OpenAI / ChatGPT、Claude（Anthropic）、DeepSeek、智谱 GLM、阿里百炼（通义）、硅基流动，以及任何 OpenAI 兼容接口
+- 本机：Ollama、LM Studio，或其他 OpenAI 兼容的本地服务
+- PDF 与图片需要能生成图片的模型：OpenAI、硅基流动或 OpenAI 兼容接口
+
+文件在本机读取和写出，翻译时只把要翻译的文字（PDF 和图片是页面图像）发给你配置的模型服务；用本机模型时，文档内容不会离开你的电脑。
+
+## V10.0.0 主要变化
+
+- 新增 CAD 图纸翻译，页面和流程与 Excel、Word、PDF 相同
+- 新配色：浅色模式改为柔和的暖米白，深色模式层次更分明
+- 界面、运行日志、报错和报告里的说法统一，不再出现程序内部术语
+- API 密钥被拒绝或额度用完时直接停下并说明原因；长时间限速时先保存已翻好的部分
+
+完整说明见[发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)和 [CHANGELOG](docs/CHANGELOG.md)。
 
 ## 系统与下载
 
@@ -51,7 +82,7 @@ Windows 的数据目录是 `%LOCALAPPDATA%\Translator`。
 
 ## 使用边界
 
-标准 `.xlsx`、`.docx`、PDF 和图片流程不依赖 Microsoft Office。旧 `.xls`、`.doc` 高保真转换及部分编号处理可使用本机 Microsoft Office、LibreOffice 或系统转换工具；这些是可选本地软件，不随 Translator 安装包提供。应用会在需要时说明权限、格式保真和回退风险。
+标准 `.xlsx`、`.docx`、PDF、图片和 DXF 图纸不依赖 Microsoft Office。旧 `.xls`、`.doc` 高保真转换及部分编号处理可使用本机 Microsoft Office、LibreOffice 或系统转换工具；DWG 图纸需要 ODA File Converter。这些是可选本地软件，不随 Translator 安装包提供。应用会在需要时说明权限、格式保真和回退风险。
 
 翻译前需要由用户在“设置 → 模型服务”中填写并主动测试可用的服务。快速开始不会自动发送 API 请求。帮助、更新检查、维护和脱敏诊断均在应用内提供；诊断不会自动上传，也不包含 API Key、原文、译文或完整 Prompt。
 
@@ -74,3 +105,18 @@ Windows 的数据目录是 `%LOCALAPPDATA%\Translator`。
 ## 开发
 
 代码结构、一次任务的完整流程和「改什么去哪里」见 [架构说明](docs/ARCHITECTURE.md)；新增一个翻译板块按 [新增翻译板块清单](docs/ADDING_A_TRANSLATION_PAGE.md) 做。
+
+## English
+
+Translator is a desktop app for macOS (Apple Silicon, 12.0+) and Windows (x64, 10+) that translates documents with large language models while keeping their original layout.
+
+- **Excel** (`.xlsx`, `.xls`): sheet names, formula display values and file names can be translated; row heights adjust to the translation, or font size shrinks to fit; uncertain cells are highlighted for review.
+- **Word** (`.docx`, `.doc`): body text, tables, headers and footers; cover pages and tables of contents can be left untouched. Text boxes and footnotes are not translated yet and are reported when found.
+- **PDF and images** (PNG, JPG, WebP, BMP, TIFF): each page is redrawn in the target language by an image model that keeps the original layout and graphics as closely as possible.
+- **CAD drawings** (DXF, and DWG via ODA File Converter): text inside blocks is translated too, and drawings saved in GBK or other legacy Chinese encodings are handled correctly.
+- **Bilingual output** for Excel and Word: original and translation together by default, or translation only.
+- **Translation memory**: translated terms are stored and reused; pinned entries always use your preferred translation.
+- **Models**: OpenAI, Claude, DeepSeek, Zhipu GLM, Alibaba Qwen (DashScope), SiliconFlow, any OpenAI-compatible API, or local models through Ollama and LM Studio.
+- **59 built-in languages** plus custom target languages, with automatic source-language detection.
+
+Download the installer for your system from the [latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest). The interface is currently in Chinese. Licensed under the [MIT License](LICENSE).
