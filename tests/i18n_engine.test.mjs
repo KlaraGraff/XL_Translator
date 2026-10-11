@@ -65,6 +65,16 @@ assert.equal(
   "Image translation failed; the source image, page assets and report were kept. First error: 超时",
   "whole sentences win over splitting at semicolons or list commas",
 );
+const joined = createTranslator("en", [{
+  "有 {0} 条内容未能获得译文。请检查配置后重试。": { en: "{0} {0|item|items} got no translation. Check the settings and try again." },
+  "有 {0} 条译文需复核。": { en: "{0} {0|translation needs|translations need} review." },
+  "{0}、{1}": { en: "{0}, {1}" },
+}]);
+assert.equal(
+  joined.tx("有 13 条内容未能获得译文。请检查配置后重试。；有 3 条译文需复核。"),
+  "13 items got no translation. Check the settings and try again. 3 translations need review.",
+  "messages joined with a semicolon are translated one by one",
+);
 console.log("i18n engine sentence tests passed");
 
 const status = createTranslator("fr", [{

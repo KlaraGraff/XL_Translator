@@ -476,7 +476,7 @@ def _translate_mixed_batch_with_fallback(
             )
             if error_callback:
                 error_callback(
-                    "有一批夹杂多种语言的内容没拿到可用结果，已拆成更小的批次重试："
+                    "有一批夹杂多种语言的内容未获得可用结果，已拆分为更小的批次重试："
                     + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
                 )
             left = _translate_mixed_batch_with_fallback(
@@ -511,7 +511,7 @@ def _translate_mixed_batch_with_fallback(
         logger.debug(f"混合语言单条解析失败，已保留原文：{str(batch[0])[:40]}... | {exc!r}")
         if error_callback:
             error_callback(
-                f"有一处夹杂多种语言的内容没能翻译，已保留原文（如「{str(batch[0])[:40]}…」）："
+                f"有一处夹杂多种语言的内容未能翻译，已保留原文（如「{str(batch[0])[:40]}…」）："
                 + user_facing_batch_reason(exc, fallback="模型返回的内容不完整。")
             )
         return {text: _uncertain_result(text, note=str(exc)) for text in batch}

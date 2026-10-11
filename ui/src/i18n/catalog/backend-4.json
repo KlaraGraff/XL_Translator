@@ -1,7 +1,7 @@
 {
-  "本文件全部 {0} 页因幅面过大被「跳过大幅面页」跳过，未产生任何翻译内容：输出 PDF 与源文件内容一致。如需翻译这些图纸页，请在设置中关闭「跳过大幅面页」后重跑。": {
-    "en": "All {0} {0|page|pages} of this file were skipped as oversized by “Skip oversized pages”, so nothing was translated: the output PDF is identical to the source. To translate these drawing pages, turn off “Skip oversized pages” in Settings and run again.",
-    "fr": "Les {0} {0|page|pages} de ce fichier ont été ignorées car trop grandes (option « Ignorer les pages grand format ») : rien n'a été traduit et le PDF de sortie est identique au fichier source. Pour traduire ces plans, désactivez « Ignorer les pages grand format » dans les paramètres, puis relancez."
+  "本文件全部 {0} 页均因幅面过大被跳过，未翻译任何内容，输出 PDF 与源文件一致。如需翻译这些页面，请关闭「跳过 A3 及更大的页面」后重新翻译。": {
+    "en": "All {0} {0|page|pages} of this file were skipped as oversized, so nothing was translated and the output PDF is identical to the source. To translate these pages, turn off “Skip A3 and larger pages” and translate again.",
+    "fr": "Les {0} {0|page|pages} de ce fichier ont été ignorées car trop grandes : rien n'a été traduit et le PDF de sortie est identique au fichier source. Pour traduire ces pages, désactivez « Ignorer les pages A3 et plus », puis relancez la traduction."
   },
   "审核未通过": {
     "en": "Review failed",
@@ -163,7 +163,7 @@
     "en": "- Minor review suggestions: {0}",
     "fr": "- Suggestions mineures de la vérification : {0}"
   },
-  "- 模型太忙被放慢的次数：{0}": {
+  "- 因模型繁忙而降速的次数：{0}": {
     "en": "- Times slowed down because the model was busy: {0}",
     "fr": "- Ralentissements dus à un modèle surchargé : {0}"
   },
@@ -580,35 +580,35 @@
     "fr": "Saisissez un nom pour la langue personnalisée."
   },
   "自定义语言名称不能超过 {0} 个字符。": {
-    "en": "The custom language name can't exceed {0} characters.",
+    "en": "The custom language name cannot exceed {0} characters.",
     "fr": "Le nom de la langue personnalisée ne peut pas dépasser {0} caractères."
   },
-  "该名称与内置操作项冲突，请换一个名称。": {
-    "en": "This name conflicts with a built-in option. Please choose another name.",
+  "该名称与内置操作项冲突，请使用其他名称。": {
+    "en": "This name conflicts with a built-in option. Choose another name.",
     "fr": "Ce nom est en conflit avec une option intégrée. Choisissez-en un autre."
   },
-  "系统已识别该语种为：{0}。你输入的是：{1}。该名称不需要再作为自定义语言添加。": {
-    "en": "This language is already recognized as: {0}. You entered: {1}. There's no need to add it as a custom language.",
+  "系统已将该语言识别为：{0}。您输入的是：{1}。无需将其添加为自定义语言。": {
+    "en": "This language is already recognized as: {0}. You entered: {1}. It does not need to be added as a custom language.",
     "fr": "Cette langue est déjà reconnue comme : {0}. Vous avez saisi : {1}. Inutile de l'ajouter comme langue personnalisée."
   },
-  "该自定义语言已存在：{0}。你输入的是：{1}。请勿重复添加。": {
-    "en": "This custom language already exists: {0}. You entered: {1}. Please don't add it twice.",
+  "该自定义语言已存在：{0}。您输入的是：{1}。请勿重复添加。": {
+    "en": "This custom language already exists: {0}. You entered: {1}. Do not add it again.",
     "fr": "Cette langue personnalisée existe déjà : {0}. Vous avez saisi : {1}. Ne l'ajoutez pas une seconde fois."
   },
   "自定义语言名称不能为空": {
-    "en": "Custom language name can't be empty",
+    "en": "Custom language name cannot be empty",
     "fr": "Le nom de la langue personnalisée ne peut pas être vide"
   },
-  "该语言已包含在内置列表中：{0}。你输入的是：{1}。请直接从下拉框选择。": {
-    "en": "This language is already in the built-in list: {0}. You entered: {1}. Please select it from the drop-down list.",
-    "fr": "Cette langue figure déjà dans la liste intégrée : {0}. Vous avez saisi : {1}. Sélectionnez-la directement dans la liste déroulante."
+  "该语言已包含在内置列表中：{0}。您输入的是：{1}。请从下拉列表中选择。": {
+    "en": "This language is already in the built-in list: {0}. You entered: {1}. Select it from the drop-down list.",
+    "fr": "Cette langue figure déjà dans la liste intégrée : {0}. Vous avez saisi : {1}. Sélectionnez-la dans la liste déroulante."
   },
-  "自动识别必须先解析为实际源语言，不能用于 TM 语言对。": {
-    "en": "Auto-detect must be resolved to an actual source language first; it can't be used as a translation memory language pair.",
+  "自动识别必须先解析为实际源语言，不能用于记忆库语言对。": {
+    "en": "Auto-detect must be resolved to an actual source language first; it cannot be used as a translation memory language pair.",
     "fr": "La détection automatique doit d'abord être résolue en une langue source réelle ; elle ne peut pas servir de paire de langues pour la mémoire de traduction."
   },
   "源语言和目标语言不能为空。": {
-    "en": "Source and target languages can't be empty.",
+    "en": "Source and target languages cannot be empty.",
     "fr": "Les langues source et cible ne peuvent pas être vides."
   },
   "自动识别": {
@@ -627,55 +627,55 @@
     "en": "{0} {0|file|files}",
     "fr": "{0} {0|fichier|fichiers}"
   },
-  "同一类翻译已经有一个任务在进行（包括暂停中、正在停止的），请等它结束后再开始。": {
-    "en": "A task of this type is already in progress (including paused or stopping tasks). Please wait for it to finish before starting.",
+  "同类翻译已有任务正在进行（包括已暂停和正在停止的任务），请待其结束后再开始。": {
+    "en": "A task of this type is already in progress (including paused or stopping tasks). Wait for it to finish before starting a new one.",
     "fr": "Une tâche de ce type est déjà en cours (y compris en pause ou en cours d'arrêt). Attendez qu'elle se termine avant d'en lancer une autre."
   },
   "请先选择要翻译的文件或文件夹。": {
     "en": "Select a file or folder to translate first.",
     "fr": "Sélectionnez d'abord un fichier ou un dossier à traduire."
   },
-  "找不到「{0}」，它可能已被移动或删除。": {
-    "en": "Couldn't find “{0}”. It may have been moved or deleted.",
+  "找不到「{0}」，可能已被移动或删除。": {
+    "en": "Could not find “{0}”. It may have been moved or deleted.",
     "fr": "Impossible de trouver « {0} ». Il a peut-être été déplacé ou supprimé."
   },
   "源语言必须是内置语言或自动识别；自定义语言只能作为目标语言。": {
     "en": "The source language must be a built-in language or Auto-detect; custom languages can only be used as target languages.",
     "fr": "La langue source doit être une langue intégrée ou la détection automatique ; les langues personnalisées ne peuvent servir que de langue cible."
   },
-  "这里没有找到可以翻译的文件，请换一个文件或文件夹，或检查文件格式。": {
-    "en": "No translatable files were found here. Choose another file or folder, or check the file format.",
-    "fr": "Aucun fichier traduisible n'a été trouvé ici. Choisissez un autre fichier ou dossier, ou vérifiez le format du fichier."
+  "未找到可翻译的文件，请选择其他文件或文件夹，或检查文件格式。": {
+    "en": "No translatable files were found. Choose another file or folder, or check the file format.",
+    "fr": "Aucun fichier traduisible n'a été trouvé. Choisissez un autre fichier ou dossier, ou vérifiez le format du fichier."
   },
-  "同一类翻译已经有一个任务在进行，请等它结束后再开始。": {
-    "en": "A task of this type is already in progress. Please wait for it to finish before starting.",
+  "同类翻译已有任务正在进行，请待其结束后再开始。": {
+    "en": "A task of this type is already in progress. Wait for it to finish before starting a new one.",
     "fr": "Une tâche de ce type est déjà en cours. Attendez qu'elle se termine avant d'en lancer une autre."
   },
-  "确认之后正在运行的任务有变化，请重新点一次开始。": {
-    "en": "The running tasks changed after you confirmed. Please click Start again.",
+  "确认后正在运行的任务发生了变化，请重新点击开始。": {
+    "en": "The running tasks changed after you confirmed. Click Start again.",
     "fr": "Les tâches en cours ont changé depuis votre confirmation. Cliquez à nouveau sur Lancer."
   },
-  "这个任务不支持暂停。": {
-    "en": "This task can't be paused.",
+  "此任务不支持暂停。": {
+    "en": "This task cannot be paused.",
     "fr": "Cette tâche ne peut pas être mise en pause."
   },
   "当前任务不支持继续。": {
-    "en": "This task can't be resumed.",
+    "en": "This task cannot be resumed.",
     "fr": "Cette tâche ne peut pas être reprise."
   },
-  "这个任务暂停后不能直接结束，请点「停止」。": {
-    "en": "This task can't be ended directly while paused. Click “Stop”.",
+  "此任务暂停后无法直接结束，请点击「停止」。": {
+    "en": "This task cannot be ended directly while paused. Click “Stop”.",
     "fr": "Cette tâche ne peut pas être terminée directement pendant la pause. Cliquez sur « Arrêter »."
   },
-  "这一页只能选择「重新生成」或「跳过」。": {
+  "此页只能选择「重新生成」或「跳过」。": {
     "en": "For this page, you can only choose “Regenerate” or “Skip”.",
-    "fr": "Pour cette page, vous ne pouvez choisir que « Régénérer » ou « Ignorer »."
+    "fr": "Pour cette page, vous ne pouvez choisir que « Régénérer » ou « Passer »."
   },
-  "这个任务的逐页记录已经释放，不能再重新生成单页。": {
+  "此任务的逐页记录已释放，无法再重新生成单页。": {
     "en": "This task's page-by-page records have been released, so individual pages can no longer be regenerated.",
     "fr": "Les données page par page de cette tâche ont été libérées : il n'est plus possible de régénérer une page."
   },
-  "这个任务的逐页记录已经释放，不能再换回上一版。": {
+  "此任务的逐页记录已释放，无法再切换回上一版。": {
     "en": "This task's page-by-page records have been released, so you can no longer switch back to the previous version.",
     "fr": "Les données page par page de cette tâche ont été libérées : il n'est plus possible de revenir à la version précédente."
   },
@@ -683,20 +683,20 @@
     "en": "Only PDF & image translation tasks have page-by-page review records.",
     "fr": "Seules les tâches de traduction PDF et images ont un historique de vérification page par page."
   },
-  "这个 PDF 任务没有逐页审核记录。": {
+  "此 PDF 任务没有逐页审核记录。": {
     "en": "This PDF task has no page-by-page review records.",
     "fr": "Cette tâche PDF n'a pas d'historique de vérification page par page."
   },
-  "这次确认已经过期，请重新点一次开始。": {
-    "en": "This confirmation has expired. Please click Start again.",
+  "本次确认已过期，请重新点击开始。": {
+    "en": "This confirmation has expired. Click Start again.",
     "fr": "Cette confirmation a expiré. Cliquez à nouveau sur Lancer."
   },
-  "确认之后任务设置又改过了，请重新点一次开始。": {
-    "en": "The task settings changed after you confirmed. Please click Start again.",
+  "确认后任务设置已更改，请重新点击开始。": {
+    "en": "The task settings changed after you confirmed. Click Start again.",
     "fr": "Les paramètres de la tâche ont changé depuis votre confirmation. Cliquez à nouveau sur Lancer."
   },
-  "这个任务会和正在跑的任务共用同一条模型连接，请先确认再开始。": {
-    "en": "This task will share a model connection with a task that's already running. Please confirm before starting.",
+  "此任务将与正在运行的任务共用同一条模型连接，请确认后再开始。": {
+    "en": "This task will share a model connection with a task that is already running. Confirm before starting.",
     "fr": "Cette tâche partagera une connexion de modèle avec une tâche déjà en cours. Confirmez avant de lancer."
   },
   "请先选择要清洗的语言方向。": {
@@ -707,32 +707,32 @@
     "en": "Language pair {0}",
     "fr": "Paire de langues {0}"
   },
-  "任务没能开始，请稍后再点一次开始。": {
-    "en": "The task couldn't start. Please click Start again in a moment.",
+  "任务未能开始，请稍后重新点击开始。": {
+    "en": "The task could not start. Click Start again in a moment.",
     "fr": "La tâche n'a pas pu démarrer. Cliquez à nouveau sur Lancer dans un instant."
   },
-  "两个任务共用同一条模型连接，可能变慢、排队或超时，两边都会计费。": {
+  "两个任务共用同一条模型连接，可能出现变慢、排队或超时，且均会计费。": {
     "en": "The two tasks share one model connection. They may slow down, queue or time out, and both will be billed.",
     "fr": "Les deux tâches partagent une même connexion de modèle : elles peuvent ralentir, attendre leur tour ou expirer, et les deux seront facturées."
   },
-  "任务历史无法写入，暂时不能清空记录。": {
-    "en": "Task history can't be written right now, so records can't be cleared.",
+  "任务历史无法写入，暂时无法清空记录。": {
+    "en": "Task history cannot be written at the moment, so records cannot be cleared.",
     "fr": "L'historique des tâches ne peut pas être écrit pour le moment : impossible de vider l'historique."
   },
   "任务仍在运行，请先停止，再删除这条记录。": {
     "en": "The task is still running. Stop it before deleting this record.",
     "fr": "La tâche est toujours en cours. Arrêtez-la avant de supprimer cet enregistrement."
   },
-  "任务历史无法写入，暂时不能删除记录。": {
-    "en": "Task history can't be written right now, so records can't be deleted.",
+  "任务历史无法写入，暂时无法删除记录。": {
+    "en": "Task history cannot be written at the moment, so records cannot be deleted.",
     "fr": "L'historique des tâches ne peut pas être écrit pour le moment : impossible de supprimer l'enregistrement."
   },
-  "任务现在不能暂停。": {
-    "en": "The task can't be paused right now.",
+  "任务当前无法暂停。": {
+    "en": "The task cannot be paused at the moment.",
     "fr": "La tâche ne peut pas être mise en pause pour le moment."
   },
-  "任务已经结束，不能继续。": {
-    "en": "The task has already ended and can't be resumed.",
+  "任务已结束，无法继续。": {
+    "en": "The task has already ended and cannot be resumed.",
     "fr": "La tâche est déjà terminée et ne peut pas être reprise."
   },
   "只有已暂停的任务可以继续。": {
@@ -743,7 +743,7 @@
     "en": "Only paused tasks can be ended.",
     "fr": "Seules les tâches en pause peuvent être terminées."
   },
-  "任务已经结束，不能再做单页操作。": {
+  "任务已结束，无法再进行单页操作。": {
     "en": "The task has ended; single-page actions are no longer available.",
     "fr": "La tâche est terminée : les actions sur une page ne sont plus possibles."
   },
@@ -755,61 +755,61 @@
     "en": "The app is closing. Reopen it and try again.",
     "fr": "L'application est en cours de fermeture. Rouvrez-la puis réessayez."
   },
-  "任务还没结束；运行中的任务请先暂停再做单页操作。": {
-    "en": "The task hasn't ended yet. Pause the running task before acting on a single page.",
+  "任务尚未结束；运行中的任务请先暂停，再进行单页操作。": {
+    "en": "The task has not ended yet. Pause the running task before acting on a single page.",
     "fr": "La tâche n'est pas terminée. Mettez-la en pause avant d'agir sur une page précise."
   },
-  "有 PDF 与图片翻译任务正在进行，等它结束后再重新生成这一页。": {
+  "有 PDF 与图片翻译任务正在进行，请待其结束后再重新生成此页。": {
     "en": "A PDF & image translation task is in progress. Wait for it to finish before regenerating this page.",
     "fr": "Une tâche de traduction PDF et images est en cours. Attendez qu'elle se termine pour régénérer cette page."
   },
-  "这个任务正在把一页换回上一版，稍等几秒再删除这条记录。": {
+  "此任务正在将一页切换回上一版，请稍候几秒再删除此记录。": {
     "en": "This task is switching a page back to its previous version. Wait a few seconds before deleting this record.",
     "fr": "Cette tâche est en train de rétablir la version précédente d'une page. Patientez quelques secondes avant de supprimer cet enregistrement."
   },
-  "这个任务正在重新生成某一页，等它跑完再删除这条记录。": {
+  "此任务正在重新生成某一页，请待其完成后再删除此记录。": {
     "en": "This task is regenerating a page. Wait for it to finish before deleting this record.",
     "fr": "Cette tâche est en train de régénérer une page. Attendez la fin avant de supprimer cet enregistrement."
   },
-  "应用中途关闭，任务没有完成。已生成的文件和报告仍保留在输出目录，可以重新开始翻译。": {
+  "应用中途关闭，任务未完成。已生成的文件和报告仍保留在输出目录中，可重新开始翻译。": {
     "en": "The app closed before the task finished. Files and reports already generated remain in the output folder, and you can start the translation again.",
     "fr": "L'application s'est fermée avant la fin de la tâche. Les fichiers et rapports déjà générés restent dans le dossier de sortie ; vous pouvez relancer la traduction."
   },
-  "这个任务正在把一页换回上一版，马上就好，稍等一下再重新生成。": {
-    "en": "This task is switching a page back to its previous version. It's almost done; wait a moment before regenerating.",
-    "fr": "Cette tâche est en train de rétablir la version précédente d'une page. C'est presque fini ; patientez un instant avant de régénérer."
+  "此任务正在将一页切换回上一版，即将完成，请稍候再重新生成。": {
+    "en": "This task is switching a page back to its previous version. It is almost done; wait a moment before regenerating.",
+    "fr": "Cette tâche est en train de rétablir la version précédente d'une page. L'opération est presque terminée ; patientez un instant avant de régénérer."
   },
-  "这个任务已经有一页在重新生成，等它跑完再操作下一页。": {
+  "此任务已有一页正在重新生成，请待其完成后再操作下一页。": {
     "en": "A page of this task is already being regenerated. Wait for it to finish before working on the next page.",
     "fr": "Une page de cette tâche est déjà en cours de régénération. Attendez la fin avant de passer à la suivante."
   },
-  "这一页没能开始重新生成，请稍后再试。": {
-    "en": "Couldn't start regenerating this page. Please try again later.",
+  "此页未能开始重新生成，请稍后重试。": {
+    "en": "Could not start regenerating this page. Try again later.",
     "fr": "Impossible de lancer la régénération de cette page. Réessayez plus tard."
   },
-  "这个任务正在把另一页换回上一版，马上就好，稍等一下再操作。": {
-    "en": "This task is switching another page back to its previous version. It's almost done; wait a moment and try again.",
-    "fr": "Cette tâche est en train de rétablir la version précédente d'une autre page. C'est presque fini ; patientez un instant puis réessayez."
+  "此任务正在将另一页切换回上一版，即将完成，请稍候再操作。": {
+    "en": "This task is switching another page back to its previous version. It is almost done; wait a moment and try again.",
+    "fr": "Cette tâche est en train de rétablir la version précédente d'une autre page. L'opération est presque terminée ; patientez un instant, puis réessayez."
   },
-  "这个任务有一页正在重新生成，等它跑完再换回上一版。": {
+  "此任务有一页正在重新生成，请待其完成后再切换回上一版。": {
     "en": "A page of this task is being regenerated. Wait for it to finish before switching back to the previous version.",
     "fr": "Une page de cette tâche est en cours de régénération. Attendez la fin avant de revenir à la version précédente."
   },
-  "翻译中途意外结束，请重试。": {
-    "en": "The translation ended unexpectedly. Please try again.",
-    "fr": "La traduction s'est arrêtée de manière inattendue. Veuillez réessayer."
+  "翻译意外中止，请重试。": {
+    "en": "The translation ended unexpectedly. Try again.",
+    "fr": "La traduction s'est arrêtée de manière inattendue. Réessayez."
   },
-  "等待关闭超时，单页操作还没确认结束。": {
-    "en": "Timed out while waiting to close; the single-page action hasn't confirmed it finished.",
+  "等待关闭超时，单页操作尚未确认结束。": {
+    "en": "Timed out while waiting to close; the single-page action has not confirmed it finished.",
     "fr": "Délai d'attente de fermeture dépassé : l'action sur la page n'a pas confirmé sa fin."
   },
-  "任务运行时出现了未预期的问题，请重试或查看运行日志。": {
+  "任务运行时发生意外问题，请重试或查看运行日志。": {
     "en": "An unexpected problem occurred while the task was running. Try again or check the activity log.",
     "fr": "Un problème inattendu est survenu pendant la tâche. Réessayez ou consultez le journal d'activité."
   },
-  "任务没能启动，出现了未预期的问题，请重试。": {
-    "en": "The task couldn't start because of an unexpected problem. Please try again.",
-    "fr": "La tâche n'a pas pu démarrer à cause d'un problème inattendu. Veuillez réessayer."
+  "任务因意外问题未能启动，请重试。": {
+    "en": "The task could not start because of an unexpected problem. Try again.",
+    "fr": "La tâche n'a pas pu démarrer à cause d'un problème inattendu. Réessayez."
   },
   "文档翻译模型": {
     "en": "Document translation model",
@@ -851,16 +851,16 @@
     "en": "image review",
     "fr": "la vérification d'images"
   },
-  "{0}不支持{1}，请在设置里给{2}换一条支持{3}的连接。": {
-    "en": "{0} doesn't support {1}. In Settings, give the {2} a connection that supports {3}.",
+  "{0}不支持{1}，请在设置中为{2}更换支持{3}的连接。": {
+    "en": "{0} does not support {1}. In Settings, give the {2} a connection that supports {3}.",
     "fr": "{0} ne prend pas en charge {1}. Dans les paramètres, attribuez au {2} une connexion qui prend en charge {3}."
   },
   "{0}不能跟随{1}，请改为独立配置。": {
-    "en": "{0} can't use the same settings as {1}. Configure it separately instead.",
+    "en": "{0} cannot use the same settings as {1}. Configure it separately instead.",
     "fr": "{0} ne peut pas reprendre la configuration de {1}. Configurez-le de façon indépendante."
   },
   "跟随来源不可用：{0}当前是本地模型，请改为独立云端配置。\n原因：{1}": {
-    "en": "Can't follow this source: {0} currently uses a local model. Configure a separate cloud model instead.\nReason: {1}",
+    "en": "Cannot follow this source: {0} currently uses a local model. Configure a separate cloud model instead.\nReason: {1}",
     "fr": "Source suivie indisponible : {0} utilise actuellement un modèle local. Configurez un modèle cloud indépendant.\nMotif : {1}"
   },
   "所需功能": {
@@ -871,8 +871,8 @@
     "en": "No provider selected",
     "fr": "Aucun fournisseur sélectionné"
   },
-  "{0}只能独立配置，不能和其他用途共用连接。\n原因：图像生成模型无法用于译文审核或文档翻译，共用一份连接会让其中一方落在服务不了它的服务器上。": {
-    "en": "{0} must be configured separately and can't share a connection with other uses.\nReason: image generation models can't be used for translation review or document translation, so sharing a connection would send one of them to a server that can't handle it.",
+  "{0}只能独立配置，不能与其他用途共用连接。\n原因：图像生成模型无法用于译文审核或文档翻译，共用连接会导致其中一方被发送到无法处理该请求的服务器。": {
+    "en": "{0} must be configured separately and cannot share a connection with other uses.\nReason: image generation models cannot be used for translation review or document translation, so sharing a connection would send one of them to a server that cannot handle it.",
     "fr": "{0} doit être configuré de façon indépendante et ne peut pas partager sa connexion avec d'autres usages.\nMotif : les modèles de génération d'images ne servent ni à la vérification des traductions ni à la traduction de documents ; partager une connexion enverrait l'un des deux vers un serveur incapable de le traiter."
   },
   "{0}只支持云端模型。": {
@@ -892,11 +892,11 @@
     "fr": "{0} n'a aucune connexion disponible."
   },
   "找不到要修改的连接。": {
-    "en": "Couldn't find the connection to edit.",
+    "en": "Could not find the connection to edit.",
     "fr": "Impossible de trouver la connexion à modifier."
   },
   "找不到要删除的连接。": {
-    "en": "Couldn't find the connection to delete.",
+    "en": "Could not find the connection to delete.",
     "fr": "Impossible de trouver la connexion à supprimer."
   },
   "{0}至少要保留一条连接。": {
@@ -908,7 +908,7 @@
     "fr": "L'ordre doit inclure toutes les connexions actuelles, et elles seules."
   },
   "{0}不能跟随自己，请选择其他角色或独立配置。": {
-    "en": "{0} can't follow itself. Choose another model or configure it separately.",
+    "en": "{0} cannot follow itself. Choose another model or configure it separately.",
     "fr": "{0} ne peut pas se suivre lui-même. Choisissez un autre modèle ou configurez-le de façon indépendante."
   },
   "{0}只能使用云端模型（需要{1}），不能使用本地模型。": {
@@ -924,74 +924,74 @@
     "fr": "Type de connexion inconnu."
   },
   "{0}不能跟随已经跟随其他模型的{1}，请直接选择最终来源。": {
-    "en": "{0} can't follow {1}, which itself follows another model. Choose the final source directly.",
+    "en": "{0} cannot follow {1}, which itself follows another model. Choose the final source directly.",
     "fr": "{0} ne peut pas suivre {1}, qui suit lui-même un autre modèle. Choisissez directement la source finale."
   },
   "记忆库清洗需要云端文本模型。": {
     "en": "Memory cleanup needs a cloud text model.",
     "fr": "Le nettoyage de la mémoire nécessite un modèle de texte cloud."
   },
-  "PDF 与图片翻译需要能生成图片的云端模型。": {
+  "PDF 与图片翻译需要支持图片生成的云端模型。": {
     "en": "PDF & image translation needs a cloud model that can generate images.",
     "fr": "La traduction PDF et images nécessite un modèle cloud capable de générer des images."
   },
-  "PDF 与图片审核需要能看图的云端模型。": {
+  "PDF 与图片审核需要支持图片识别的云端模型。": {
     "en": "PDF & image review needs a cloud model that can read images.",
     "fr": "La vérification PDF et images nécessite un modèle cloud capable d'analyser des images."
   },
-  "系统没有授权本程序控制 Office。可在「系统设置 › 隐私与安全性 › 自动化」里授权后重试。": {
-    "en": "The system hasn't allowed this app to control Office. Grant access in “System Settings › Privacy & Security › Automation” and try again.",
+  "系统未授权本程序控制 Office。请在「系统设置 › 隐私与安全性 › 自动化」中授权后重试。": {
+    "en": "The system has not allowed this app to control Office. Grant access in “System Settings › Privacy & Security › Automation” and try again.",
     "fr": "Le système n'a pas autorisé cette application à contrôler Office. Accordez l'autorisation dans « Réglages Système › Confidentialité et sécurité › Automatisation », puis réessayez."
   },
   "本机 Office 不支持这项自动化操作。": {
-    "en": "The Office installed on this computer doesn't support this automation.",
+    "en": "The Office installed on this computer does not support this automation.",
     "fr": "La version d'Office installée sur cet ordinateur ne prend pas en charge cette automatisation."
   },
-  "本机 Office 没有响应。": {
-    "en": "Office on this computer isn't responding.",
+  "本机 Office 无响应。": {
+    "en": "Office on this computer is not responding.",
     "fr": "Office ne répond pas sur cet ordinateur."
   },
-  "macOS 找不到可启动的 Microsoft Excel 程序，可能是 Excel 安装或系统注册异常；请先手动打开一次 Excel，仍失败时修复或重装 Office。": {
-    "en": "macOS can't find a Microsoft Excel app it can launch. Excel may be installed incorrectly or not registered with the system. Open Excel manually once; if it still fails, repair or reinstall Office.",
+  "macOS 找不到可启动的 Microsoft Excel，可能是 Excel 安装或系统注册异常；请先手动打开一次 Excel，如仍失败，请修复或重新安装 Office。": {
+    "en": "macOS cannot find a Microsoft Excel app it can launch. Excel may be installed incorrectly or not registered with the system. Open Excel manually once; if it still fails, repair or reinstall Office.",
     "fr": "macOS ne trouve aucune application Microsoft Excel à lancer. Excel est peut-être mal installé ou mal enregistré dans le système. Ouvrez Excel une fois manuellement ; si le problème persiste, réparez ou réinstallez Office."
   },
-  "本机没有安装 Microsoft Office。": {
-    "en": "Microsoft Office isn't installed on this computer.",
+  "本机未安装 Microsoft Office。": {
+    "en": "Microsoft Office is not installed on this computer.",
     "fr": "Microsoft Office n'est pas installé sur cet ordinateur."
   },
-  "这个文件打不开，可能已损坏，或者后缀名与真实格式不符。": {
-    "en": "This file can't be opened. It may be damaged, or its extension doesn't match its actual format.",
+  "无法打开此文件，可能已损坏，或扩展名与实际格式不符。": {
+    "en": "This file cannot be opened. It may be damaged, or its extension does not match its actual format.",
     "fr": "Impossible d'ouvrir ce fichier. Il est peut-être endommagé, ou son extension ne correspond pas à son format réel."
   },
-  "这是旧版 .xls 格式，需要先转换成 .xlsx 才能翻译。": {
+  "此文件为旧版 .xls 格式，需先转换为 .xlsx 才能翻译。": {
     "en": "This is the older .xls format. Convert it to .xlsx before translating.",
     "fr": "Ce fichier est à l'ancien format .xls. Convertissez-le en .xlsx avant de le traduire."
   },
-  "这个文件打不开，可能已损坏或设置了打开密码。": {
-    "en": "This file can't be opened. It may be damaged or password-protected.",
+  "无法打开此文件，可能已损坏或设置了打开密码。": {
+    "en": "This file cannot be opened. It may be damaged or password-protected.",
     "fr": "Impossible d'ouvrir ce fichier. Il est peut-être endommagé ou protégé par un mot de passe."
   },
-  "这个文件有密码保护，程序无法读取。请先去掉密码再试。": {
-    "en": "This file is password-protected and can't be read. Remove the password and try again.",
+  "此文件受密码保护，无法读取。请先移除密码后重试。": {
+    "en": "This file is password-protected and cannot be read. Remove the password and try again.",
     "fr": "Ce fichier est protégé par un mot de passe et ne peut pas être lu. Retirez le mot de passe, puis réessayez."
   },
   "文件不存在或已被移动，请重新选择来源。": {
-    "en": "The file doesn't exist or has been moved. Please select the source again.",
+    "en": "The file does not exist or has been moved. Select the source again.",
     "fr": "Le fichier n'existe pas ou a été déplacé. Sélectionnez à nouveau la source."
   },
-  "文件被其他程序占用，或者没有读写权限，请关闭占用它的程序后重试。": {
-    "en": "The file is in use by another program, or you don't have permission to read or write it. Close the program using it and try again.",
+  "文件被其他程序占用，或没有读写权限。请关闭占用该文件的程序后重试。": {
+    "en": "The file is in use by another program, or you do not have permission to read or write it. Close the program using it and try again.",
     "fr": "Le fichier est utilisé par un autre programme, ou vous n'avez pas l'autorisation de le lire ou de l'écrire. Fermez le programme qui l'utilise, puis réessayez."
   },
   "磁盘空间不足，无法写出结果文件。": {
     "en": "Not enough disk space to write the output file.",
     "fr": "Espace disque insuffisant pour écrire le fichier de sortie."
   },
-  "连不上网络：解析不到接口地址，请检查网络、代理，以及接口地址是否写对。": {
-    "en": "Can't connect: the API address couldn't be resolved. Check your network, proxy, and that the API address is correct.",
+  "无法连接网络：无法解析接口地址，请检查网络、代理以及接口地址是否正确。": {
+    "en": "Cannot connect: the API address could not be resolved. Check your network, proxy, and that the API address is correct.",
     "fr": "Connexion impossible : l'adresse de l'API est introuvable. Vérifiez le réseau, le proxy et l'exactitude de l'adresse de l'API."
   },
-  "安全连接校验没通过，通常是代理或安全软件拦截了加密流量。": {
+  "安全连接校验未通过，通常是代理或安全软件拦截了加密流量。": {
     "en": "The secure connection check failed. This is usually caused by a proxy or security software intercepting encrypted traffic.",
     "fr": "La vérification de la connexion sécurisée a échoué. Cela vient généralement d'un proxy ou d'un logiciel de sécurité qui intercepte le trafic chiffré."
   },
@@ -999,24 +999,24 @@
     "en": "The API refused the connection. Check your network and that this connection's address is reachable.",
     "fr": "L'API a refusé la connexion. Vérifiez le réseau et que l'adresse de cette connexion est accessible."
   },
-  "等模型服务响应超时了，重试一次往往就过；反复超时多半是这条连接的服务那边在排队。": {
-    "en": "The model service took too long to respond. Retrying usually works; repeated timeouts mostly mean the service behind this connection is busy.",
+  "模型服务响应超时，重试通常即可解决；如反复超时，多为该连接的服务端正在排队。": {
+    "en": "The model service took too long to respond. Retrying usually resolves this; repeated timeouts usually mean the service behind this connection is busy.",
     "fr": "Le service du modèle a mis trop de temps à répondre. Une nouvelle tentative suffit souvent ; des dépassements répétés signifient en général que le service de cette connexion est saturé."
   },
-  "接口拒绝了这个 API 密钥，请在设置里检查这条连接的密钥是否正确。": {
+  "接口拒绝了此 API 密钥，请在设置中检查该连接的密钥是否正确。": {
     "en": "The API rejected this API key. Check this connection's key in Settings.",
     "fr": "L'API a refusé cette clé API. Vérifiez la clé de cette connexion dans les paramètres."
   },
-  "这个账号的接口额度或余额不够了，请充值或换一条连接。": {
+  "该账号的接口额度或余额不足，请充值或更换连接。": {
     "en": "This account has run out of quota or credit. Top it up or use another connection.",
     "fr": "Ce compte a épuisé son quota ou son crédit. Rechargez-le ou utilisez une autre connexion."
   },
-  "接口拒绝了这次请求，可能是这个 API 密钥没有该模型的权限。": {
+  "接口拒绝了本次请求，可能是该 API 密钥没有此模型的访问权限。": {
     "en": "The API rejected this request. This API key may not have access to the model.",
     "fr": "L'API a refusé cette requête. Cette clé API n'a peut-être pas accès à ce modèle."
   },
-  "接口上找不到这个模型，请在设置里确认模型名是否写对。": {
-    "en": "The API couldn't find this model. Check the model name in Settings.",
+  "接口上找不到此模型，请在设置中确认模型名称是否正确。": {
+    "en": "The API could not find this model. Check the model name in Settings.",
     "fr": "L'API ne trouve pas ce modèle. Vérifiez le nom du modèle dans les paramètres."
   },
   "接口反馈请求过于频繁，程序已自动放慢并重试。": {
@@ -1024,11 +1024,11 @@
     "fr": "L'API a signalé trop de requêtes ; l'application a ralenti et réessayé automatiquement."
   },
   "接口网关暂时异常，请稍后重试。": {
-    "en": "The API gateway is having temporary issues. Please try again later.",
+    "en": "The API gateway is having temporary issues. Try again later.",
     "fr": "La passerelle de l'API rencontre un problème temporaire. Réessayez plus tard."
   },
-  "模型服务那边出错了，请稍后重试。": {
-    "en": "The model service returned an error. Please try again later.",
+  "模型服务返回错误，请稍后重试。": {
+    "en": "The model service returned an error. Try again later.",
     "fr": "Le service du modèle a renvoyé une erreur. Réessayez plus tard."
   },
   "Excel 复核标记": {
@@ -1083,23 +1083,23 @@
     "en": "The imported file must be a JSON object.",
     "fr": "Le fichier importé doit être un objet JSON."
   },
-  "这个文件不是文档翻译配置，无法导入。模型服务的配置请在「模型服务」页导入。": {
-    "en": "This file isn't a document translation configuration and can't be imported. Import model service settings on the “Model services” page.",
-    "fr": "Ce fichier n'est pas une configuration de traduction de documents et ne peut pas être importé. Importez la configuration des services de modèles depuis la page « Services de modèles »."
+  "此文件不是文档翻译配置，无法导入。模型服务的配置请在「模型服务」页导入。": {
+    "en": "This file is not a document translation configuration and cannot be imported. Import model service settings on the “Models” page.",
+    "fr": "Ce fichier n'est pas une configuration de traduction de documents et ne peut pas être importé. Importez la configuration des services de modèles depuis la page « Modèles »."
   },
-  "这个文件缺少版本号，不像是本应用导出的文档翻译配置。请重新导出一份。": {
-    "en": "This file has no version number and doesn't look like a document translation configuration exported by this app. Please export it again.",
-    "fr": "Ce fichier n'a pas de numéro de version et ne semble pas être une configuration de traduction exportée par cette application. Exportez-la à nouveau."
+  "此文件缺少版本号，可能不是本应用导出的文档翻译配置，请重新导出。": {
+    "en": "This file has no version number and may not be a document translation configuration exported by this app. Export it again.",
+    "fr": "Ce fichier n'a pas de numéro de version et n'est peut-être pas une configuration de traduction exportée par cette application. Exportez-la à nouveau."
   },
-  "这个文档翻译配置来自更高版本的应用，当前版本读不了。请先把应用升级到最新版再导入。": {
-    "en": "This document translation configuration comes from a newer version of the app and can't be read by this one. Update the app to the latest version, then import it.",
+  "此文档翻译配置来自更高版本的应用，当前版本无法读取。请先将应用升级到最新版本后再导入。": {
+    "en": "This document translation configuration comes from a newer version of the app and cannot be read by this one. Update the app to the latest version, then import it.",
     "fr": "Cette configuration de traduction provient d'une version plus récente de l'application et ne peut pas être lue par celle-ci. Mettez l'application à jour, puis importez-la."
   },
-  "文件里没有 document 段，没有可导入的内容。": {
-    "en": "The file has no “document” section, so there's nothing to import.",
+  "文件中没有 document 段，无可导入的内容。": {
+    "en": "The file has no “document” section, so there is nothing to import.",
     "fr": "Le fichier ne contient pas de section « document » : rien à importer."
   },
-  "这个文件里没有可导入的文档翻译配置。": {
+  "此文件中没有可导入的文档翻译配置。": {
     "en": "This file contains no document translation configuration to import.",
     "fr": "Ce fichier ne contient aucune configuration de traduction de documents à importer."
   },
@@ -1112,22 +1112,22 @@
     "fr": "Retraduction de la phrase entière"
   },
   "重译结果为空": {
-    "en": "The retranslation came back empty",
+    "en": "The retranslation is empty",
     "fr": "La retraduction est vide"
   },
-  "重译结果和原文一样": {
+  "重译结果与原文相同": {
     "en": "The retranslation is identical to the source text",
     "fr": "La retraduction est identique au texte source"
   },
-  "重译结果丢了或改了原文里的数字：{0}": {
+  "重译结果遗漏或修改了原文中的数字：{0}": {
     "en": "The retranslation dropped or changed numbers from the source text: {0}",
     "fr": "La retraduction a omis ou modifié des nombres du texte source : {0}"
   },
   "当前翻译连接不支持自动补译": {
-    "en": "The current translation connection doesn't support filling in missing translations automatically",
+    "en": "The current translation connection does not support filling in missing translations automatically",
     "fr": "La connexion de traduction actuelle ne permet pas de compléter automatiquement les traductions"
   },
-  "重译后仍有没翻译的部分：": {
+  "重译后仍有未翻译的部分：": {
     "en": "Some parts are still untranslated after retranslation: ",
     "fr": "Certaines parties restent non traduites après la retraduction : "
   },
@@ -1135,36 +1135,36 @@
     "en": "Numbers with Chinese units (such as “2026年”) are not retranslated automatically by design",
     "fr": "Les nombres suivis d'une unité chinoise (comme « 2026年 ») ne sont pas retraduits automatiquement, par principe"
   },
-  "没法确定编号该怎么写，不让模型猜": {
-    "en": "Couldn't determine how the numbering should be written, so the model wasn't asked to guess",
+  "无法确定编号的写法，不交由模型推测": {
+    "en": "Could not determine how the numbering should be written, so the model was not asked to guess",
     "fr": "Impossible de déterminer l'écriture de la numérotation ; le modèle n'a pas été autorisé à deviner"
   },
-  "局部修正：模型没有按要求的格式回复": {
-    "en": "Partial fix: the model didn't reply in the required format",
+  "局部修正：模型未按要求的格式回复": {
+    "en": "Partial fix: the model did not reply in the required format",
     "fr": "Correction partielle : le modèle n'a pas répondu au format demandé"
   },
-  "修正结果没通过自动检查": {
-    "en": "The fix didn't pass the automatic checks",
+  "修正结果未通过自动检查": {
+    "en": "The fix did not pass the automatic checks",
     "fr": "La correction n'a pas passé les contrôles automatiques"
   },
-  "局部修正没通过：{0}": {
+  "局部修正未通过：{0}": {
     "en": "Partial fix failed: {0}",
     "fr": "Échec de la correction partielle : {0}"
   },
-  "整句重译：模型没有按要求的格式回复": {
-    "en": "Full sentence retranslation: the model didn't reply in the required format",
+  "整句重译：模型未按要求的格式回复": {
+    "en": "Full sentence retranslation: the model did not reply in the required format",
     "fr": "Retraduction de la phrase entière : le modèle n'a pas répondu au format demandé"
   },
-  "整句重译没通过：{0}": {
+  "整句重译未通过：{0}": {
     "en": "Full sentence retranslation failed: {0}",
     "fr": "Échec de la retraduction de la phrase entière : {0}"
   },
   "{0} 不支持混合语言结构化调用": {
-    "en": "{0} doesn't support structured mixed-language requests",
+    "en": "{0} does not support structured mixed-language requests",
     "fr": "{0} ne prend pas en charge les requêtes structurées multilingues"
   },
   "混合语言响应不是 JSON 数组": {
-    "en": "The mixed-language response isn't a JSON array",
+    "en": "The mixed-language response is not a JSON array",
     "fr": "La réponse multilingue n'est pas un tableau JSON"
   },
   "混合语言响应缺少 {0} 条结果": {
@@ -1172,7 +1172,7 @@
     "fr": "Il manque {0} {0|résultat|résultats} dans la réponse multilingue"
   },
   "混合语言响应项不是对象": {
-    "en": "A mixed-language response item isn't an object",
+    "en": "A mixed-language response item is not an object",
     "fr": "Un élément de la réponse multilingue n'est pas un objet"
   },
   "混合语言响应包含未知 id：{0}": {
@@ -1192,7 +1192,7 @@
     "fr": "Action multilingue={0} sans traduction"
   },
   "混合语言单条解析失败，已保留原文：{0}... | {1}": {
-    "en": "Couldn't read a mixed-language result; source text kept: {0}... | {1}",
+    "en": "Could not read a mixed-language result; source text kept: {0}... | {1}",
     "fr": "Impossible de lire un résultat multilingue ; texte source conservé : {0}... | {1}"
   },
   "混合语言": {
@@ -1200,7 +1200,7 @@
     "fr": "Texte multilingue"
   },
   "混合语言批次响应无法解析，已缩小批次重试（{0} -> {1}+{2}）：{3}": {
-    "en": "Couldn't read the mixed-language batch response; retrying with smaller batches ({0} -> {1}+{2}): {3}",
+    "en": "Could not read the mixed-language batch response; retrying with smaller batches ({0} -> {1}+{2}): {3}",
     "fr": "Impossible de lire la réponse du lot multilingue ; nouvel essai avec des lots plus petits ({0} -> {1}+{2}) : {3}"
   },
   "混合语言重试": {
@@ -1239,12 +1239,12 @@
     "en": "Page-by-page review is on. Enter an API key for the PDF & image review model first.",
     "fr": "La vérification page par page est activée. Saisissez d'abord une clé API pour le modèle de vérification PDF et images."
   },
-  "PDF 与图片审核模型上次测试没有通过；请重新测试、关闭审核，或确认仍要继续。": {
+  "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。": {
     "en": "The PDF & image review model failed its last test. Test it again, turn off review, or confirm that you want to continue anyway.",
     "fr": "Le modèle de vérification PDF et images a échoué à son dernier test. Testez-le à nouveau, désactivez la vérification ou confirmez que vous souhaitez continuer."
   },
   "PDF 与图片翻译模型的设置不可用：{0}": {
-    "en": "The PDF & image translation model settings can't be used: {0}",
+    "en": "The PDF & image translation model settings cannot be used: {0}",
     "fr": "Les paramètres du modèle de traduction PDF et images sont inutilisables : {0}"
   },
   "PDF 与图片翻译模型": {
@@ -1252,7 +1252,7 @@
     "fr": "Modèle de traduction PDF et images"
   },
   "PDF 与图片审核模型的设置不可用：{0}": {
-    "en": "The PDF & image review model settings can't be used: {0}",
+    "en": "The PDF & image review model settings cannot be used: {0}",
     "fr": "Les paramètres du modèle de vérification PDF et images sont inutilisables : {0}"
   },
   "补译复核": {
@@ -1263,7 +1263,7 @@
     "en": "{0} {0|segment|segments} will be retranslated",
     "fr": "{0} {0|segment sera retraduit|segments seront retraduits}"
   },
-  "（其中 {0} 处没拿到确认结果，为稳妥起见重新翻译）": {
+  "（其中 {0} 处未获得确认结果，为稳妥起见重新翻译）": {
     "en": " ({0} of them got no confirmation and will be retranslated to be safe)",
     "fr": " (dont {0} sans confirmation, {0|retraduit|retraduits} par précaution)"
   },
@@ -1275,23 +1275,23 @@
     "en": "  → Checking existing translations: {0} in total, {1} sent to the model for confirmation{2}; {3}.",
     "fr": "  → Vérification des traductions existantes : {0} au total, dont {1} soumis au modèle pour confirmation{2} ; {3}."
   },
-  "  → 需要确认的已有译文太多，超出部分的 {0} 处没有交给模型，按已有译文保留。": {
+  "  → 需确认的已有译文过多，超出部分的 {0} 处未交给模型，保留已有译文。": {
     "en": "  → Too many existing translations to confirm; the extra {0} {0|segment was|segments were} not sent to the model and kept as is.",
     "fr": "  → Trop de traductions existantes à confirmer : {0} {0|segment excédentaire n'a pas été soumis au modèle et est conservé tel quel|segments excédentaires n'ont pas été soumis au modèle et sont conservés tels quels}."
   },
-  "  → {0}：{1} 处原以为已有译文，核对后改为补译。": {
-    "en": "  → {0}: {1} {1|segment|segments} first thought to be already translated will be translated after checking.",
-    "fr": "  → {0} : {1} {1|segment|segments} que l'on croyait déjà {1|traduit|traduits} {1|sera traduit|seront traduits} après vérification."
+  "  → {0}：{1} 处原判定为已有译文，经核对改为补译。": {
+    "en": "  → {0}: {1} {1|segment|segments} initially treated as translated will be filled in after checking.",
+    "fr": "  → {0} : {1} {1|segment|segments} d'abord {1|considéré|considérés} comme {1|traduit|traduits} {1|sera complété|seront complétés} après vérification."
   },
-  "  → {0}：核对已有译文没能完成，本文件按原来的判断处理：": {
-    "en": "  → {0}: couldn't finish checking existing translations; this file is handled as originally assessed: ",
+  "  → {0}：核对已有译文未能完成，本文件按原判断处理：": {
+    "en": "  → {0}: could not finish checking existing translations; this file is handled as originally assessed: ",
     "fr": "  → {0} : la vérification des traductions existantes n'a pas pu aboutir ; ce fichier est traité selon l'évaluation initiale : "
   },
-  "  → 正在让模型确认 {0} 处已有译文是否对应原文（分 {1} 批），请稍候。": {
+  "  → 正在由模型确认 {0} 处已有译文是否与原文对应（分 {1} 批），请稍候。": {
     "en": "  → Asking the model to confirm whether {0} existing {0|translation matches|translations match} the source text (in {1} {1|batch|batches}). Please wait.",
     "fr": "  → Le modèle vérifie si {0} {0|traduction existante correspond|traductions existantes correspondent} au texte source (en {1} {1|lot|lots}). Veuillez patienter."
   },
-  "  → 核对已有译文：有一批 {0} 处没拿到确认结果，这一批为稳妥起见重新翻译：": {
+  "  → 核对已有译文：有一批 {0} 处未获得确认结果，为稳妥起见重新翻译此批：": {
     "en": "  → Checking existing translations: a batch of {0} got no confirmation and will be retranslated to be safe: ",
     "fr": "  → Vérification des traductions existantes : un lot de {0} n'a pas reçu de confirmation et sera retraduit par précaution : "
   },
@@ -1307,35 +1307,35 @@
     "en": "A full reset requires ticking the confirmation box and typing RESET.",
     "fr": "Une réinitialisation complète nécessite de cocher la confirmation et de saisir RESET."
   },
-  "这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。": {
-    "en": "This task has no diagnostic record (it ran on an older version, or the record was cleaned up automatically), so there's nothing to export.",
-    "fr": "Cette tâche n'a aucun rapport de diagnostic (elle a été exécutée avec une version antérieure, ou le rapport a été nettoyé automatiquement) : rien à exporter."
+  "该任务没有诊断记录（可能由早期版本运行，或已被自动清理），无可导出的内容。": {
+    "en": "This task has no diagnostic record (it may have run on an earlier version, or the record was cleaned up automatically). There is nothing to export.",
+    "fr": "Cette tâche n'a aucun rapport de diagnostic (elle a peut-être été exécutée avec une version antérieure, ou le rapport a été supprimé automatiquement). Il n'y a rien à exporter."
   },
-  "任务诊断记录没能写入；任务本身不受影响。": {
-    "en": "Couldn't write the task's diagnostic record. The task itself is not affected.",
+  "任务诊断记录写入失败；任务本身不受影响。": {
+    "en": "Could not write the task's diagnostic record. The task itself is not affected.",
     "fr": "Impossible d'écrire le rapport de diagnostic de la tâche. La tâche elle-même n'est pas affectée."
   },
   "找不到这条诊断记录，可能已被清除。": {
-    "en": "Couldn't find this diagnostic record. It may have been cleared.",
+    "en": "Could not find this diagnostic record. It may have been cleared.",
     "fr": "Impossible de trouver ce rapport de diagnostic. Il a peut-être été effacé."
   },
-  "这个后台服务不是由应用启动的，不能从这里关闭。": {
-    "en": "This background service wasn't started by the app and can't be shut down from here.",
+  "此后台服务不是由应用启动的，无法从此处关闭。": {
+    "en": "This background service was not started by the app and cannot be shut down from here.",
     "fr": "Ce service d'arrière-plan n'a pas été lancé par l'application et ne peut pas être arrêté d'ici."
   },
-  "这条诊断记录的文件已经被清理掉了，没有可导出的内容。": {
-    "en": "The files for this diagnostic record have been cleaned up, so there's nothing to export.",
+  "此诊断记录的文件已被清理，无可导出的内容。": {
+    "en": "The files for this diagnostic record have been cleaned up, so there is nothing to export.",
     "fr": "Les fichiers de ce rapport de diagnostic ont été supprimés : rien à exporter."
   },
-  "这次先不在后台检查更新。": {
+  "本次暂不在后台检查更新。": {
     "en": "Skipping the background update check this time.",
     "fr": "Pas de recherche de mises à jour en arrière-plan pour cette fois."
   },
-  "模型这几次没有返回可用结果，请稍后重试，或在设置里检查记忆库清洗模型。": {
-    "en": "The model didn't return usable results in the last few attempts. Try again later, or check the memory cleanup model in Settings.",
+  "模型最近几次均未返回可用结果，请稍后重试，或在设置中检查记忆库清洗模型。": {
+    "en": "The model did not return usable results in the last few attempts. Try again later, or check the memory cleanup model in Settings.",
     "fr": "Le modèle n'a renvoyé aucun résultat exploitable lors des dernières tentatives. Réessayez plus tard ou vérifiez le modèle de nettoyage de la mémoire dans les paramètres."
   },
-  "记忆库清洗有 {0} 批没成功（共 {1} 批）：{2}": {
+  "记忆库清洗有 {0} 批未成功（共 {1} 批）：{2}": {
     "en": "Memory cleanup: {0} of {1} {1|batch|batches} failed: {2}",
     "fr": "Nettoyage de la mémoire : {0} {0|lot sur|lots sur} {1} {0|a échoué|ont échoué} : {2}"
   },
@@ -1344,23 +1344,23 @@
     "fr": "Erreur inconnue"
   },
   "{0}响应解析失败 (无法匹配为包含 {1} 条记录的数组)，大模型原始内容：{2}": {
-    "en": "Couldn't read the {0} response (it isn't an array of {1} {1|item|items}). Raw model output: {2}",
+    "en": "Could not read the {0} response (it is not an array of {1} {1|item|items}). Raw model output: {2}",
     "fr": "Impossible de lire la réponse de {0} (ce n'est pas un tableau de {1} {1|élément|éléments}). Réponse brute du modèle : {2}"
   },
   "{0}响应解析失败：数组长度必须为 {1}": {
-    "en": "Couldn't read the {0} response: the array must contain {1} {1|item|items}",
+    "en": "Could not read the {0} response: the array must contain {1} {1|item|items}",
     "fr": "Impossible de lire la réponse de {0} : le tableau doit contenir {1} {1|élément|éléments}"
   },
   "{0} 不支持 chat() 方法": {
-    "en": "{0} doesn't support chat requests",
+    "en": "{0} does not support chat requests",
     "fr": "{0} ne prend pas en charge les requêtes de conversation"
   },
   "{0}响应解析失败：不是 JSON 数组": {
-    "en": "Couldn't read the {0} response: it isn't a JSON array",
+    "en": "Could not read the {0} response: it is not a JSON array",
     "fr": "Impossible de lire la réponse de {0} : ce n'est pas un tableau JSON"
   },
   "{0}响应解析失败：第 {1} 项译文缺失或不是字符串（{2}），违反协议约定": {
-    "en": "Couldn't read the {0} response: translation for item {1} is missing or isn't text ({2})",
+    "en": "Could not read the {0} response: translation for item {1} is missing or is not text ({2})",
     "fr": "Impossible de lire la réponse de {0} : la traduction de l'élément {1} est absente ou n'est pas du texte ({2})"
   },
   "跟随连接必须选择来源。": {
@@ -1368,7 +1368,7 @@
     "fr": "Une connexion qui en suit une autre doit avoir une source sélectionnée."
   },
   "独立连接不能同时指定跟随来源。": {
-    "en": "A separate connection can't also follow another source.",
+    "en": "A separate connection cannot also follow another source.",
     "fr": "Une connexion indépendante ne peut pas suivre une autre source."
   },
   "解锁口令不正确。": {
@@ -1380,7 +1380,7 @@
     "fr": "La connexion principale de la source suivie suit elle-même un autre modèle. Choisissez directement la source finale."
   },
   "API 密钥已变化，请重新测试这条连接。": {
-    "en": "The API key changed. Please test this connection again.",
+    "en": "The API key changed. Test this connection again.",
     "fr": "La clé API a changé. Testez à nouveau cette connexion."
   },
   "翻译任务异常结束：未收到完成消息。": {
@@ -1411,7 +1411,7 @@
     "en": "The API request was cancelled while waiting its turn",
     "fr": "La requête API a été annulée pendant son attente"
   },
-  "夹着没翻译的原文：": {
+  "包含未翻译的原文：": {
     "en": "Contains untranslated source text: ",
     "fr": "Contient du texte source non traduit : "
   },
@@ -1419,24 +1419,24 @@
     "en": "Before saving to translation memory, numbering or heading style was standardized in {0} {0|translation|translations}.",
     "fr": "Avant l'enregistrement dans la mémoire de traduction, la numérotation ou le style des titres a été harmonisé dans {0} {0|traduction|traductions}."
   },
-  "有 {0} 条译文里还夹着没翻译的原文，没有存进记忆库：{1}": {
+  "有 {0} 条译文中仍夹杂未翻译的原文，未写入记忆库：{1}": {
     "en": "{0} {0|translation still contains|translations still contain} untranslated source text and {0|was|were} not saved to translation memory: {1}",
     "fr": "{0} {0|traduction contient|traductions contiennent} encore du texte source non traduit et n'{0|a|ont} pas été {0|enregistrée|enregistrées} dans la mémoire de traduction : {1}"
   },
   "找不到这个任务，可能已被清除。": {
-    "en": "Couldn't find this task. It may have been cleared.",
+    "en": "Could not find this task. It may have been cleared.",
     "fr": "Impossible de trouver cette tâche. Elle a peut-être été effacée."
   },
   "请先选择 {0} 目标语言。": {
     "en": "Select a target language for {0} first.",
     "fr": "Sélectionnez d'abord la langue cible pour {0}."
   },
-  "找不到这个模型用途，请刷新页面后重试。": {
-    "en": "Couldn't find this model use. Refresh the page and try again.",
+  "未找到该模型用途，请刷新页面后重试。": {
+    "en": "Could not find this model use. Refresh the page and try again.",
     "fr": "Impossible de trouver cet usage de modèle. Actualisez la page, puis réessayez."
   },
-  "原判为已有译文，复核认定下一段不是这一段的译文，已改为补译。": {
-    "en": "Initially judged as already translated, but the check found the next paragraph isn't its translation, so it will be translated.",
+  "原判为已有译文，经复核下一段并非本段译文，已改为补译。": {
+    "en": "Initially judged as already translated, but the check found that the next paragraph is not its translation, so it will be translated.",
     "fr": "Considéré au départ comme déjà traduit, mais la vérification a établi que le paragraphe suivant n'en est pas la traduction : il sera donc traduit."
   }
 }

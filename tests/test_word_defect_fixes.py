@@ -513,7 +513,7 @@ class WordHiddenContentDetectionTests(unittest.TestCase):
             self.assertTrue(report.found)
             self.assertIn("文本框 1 个", report.describe())
             self.assertIn("脚注/尾注 1 条", report.describe())
-            self.assertIn("文本框里的文字移到正文", report.advice())
+            self.assertIn("将文本框中的文字移至正文", report.advice())
 
     def test_plain_document_reports_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1067,7 +1067,7 @@ class WordRunFallbackTests(IsolatedAppDataTestCase):
 
             errors = [item for item in runner._queue.queue if isinstance(item, ErrorMsg)]
             self.assertEqual(len(errors), 1)
-            self.assertIn("Word 翻译任务收尾失败", errors[0].message)
+            self.assertIn("Word 翻译任务在完成阶段失败", errors[0].message)
             self.assertNotIn("contract exploded", errors[0].message)
 
 
@@ -1231,7 +1231,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
                     "section_path": "正文",
                     "location_label": "正文段落 5",
                     "snippet": "施工范围……安装",
-                    "problem": "重译后仍没得到有效译文",
+                    "problem": "重译后仍未获得有效译文",
                     "status": "保留原文，待人工复核",
                     "severity": "needs_review",
                 },
@@ -1250,7 +1250,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
                     "section_path": "正文",
                     "location_label": "正文段落 9",
                     "snippet": "设备安装",
-                    "problem": "重译后仍没得到有效译文",
+                    "problem": "重译后仍未获得有效译文",
                     "status": "保留原文，待人工复核",
                     "severity": "needs_review",
                 },
@@ -1265,7 +1265,7 @@ class WordReviewPositionCountTests(IsolatedAppDataTestCase):
 
             merged = next(item for item in review["items"] if item["location"] == "正文段落 5")
             # 合并的是行数，不是内容：两句判定都要留在这一行里。
-            self.assertIn("重译后仍没得到有效译文", str(merged["problem"]))
+            self.assertIn("重译后仍未获得有效译文", str(merged["problem"]))
             self.assertIn("输出文档仍存在未译源文", str(merged["problem"]))
             self.assertEqual(merged["action"], "保留原文，待人工复核")
 

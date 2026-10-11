@@ -49,7 +49,7 @@ class PdfPageStopStatusWordingTests(unittest.TestCase):
 
         note = _function_body(source, "reviewNote")
         self.assertIn("taskStopped", note)
-        self.assertIn("不是生成失败", note, "停止未跑到的页不能被读成生成失败")
+        self.assertIn("并非生成失败", note, "停止未跑到的页不能被读成生成失败")
 
     def test_group_summary_buckets_stopped_pages_apart_from_failed_and_flagged(self) -> None:
         source = _read_ui("views/workspace-pdf-pages.ts")
@@ -85,8 +85,8 @@ class StopBannerUnfinishedCountTests(unittest.TestCase):
         self.assertIn(
             "const unfinishedFiles = num(record(result.kpi).unstarted_file_count)", body
         )
-        self.assertIn('clauses.push(t("还有 {0} 页没跑到", unfinishedPages))', body)
-        self.assertIn('clauses.push(t("还有 {0} 个文件没跑到", unfinishedFiles))', body)
+        self.assertIn('clauses.push(t("尚有 {0} 页未处理", unfinishedPages))', body)
+        self.assertIn('clauses.push(t("尚有 {0} 个文件未处理", unfinishedFiles))', body)
 
     def test_fail_banner_keeps_clauses_when_nothing_was_generated(self) -> None:
         # 互审 F2：停止落在阶段 2 之前时 generated 为 0、tone 必为 fail，旧代码在
@@ -200,8 +200,8 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
             )
             issue = issues[0]
             self.assertTrue(issue["caused_by_stop"])
-            self.assertIn("任务停止时还没来得及自动补译", issue["message"])
-            self.assertIn("不是补译失败", issue["message"])
+            self.assertIn("任务停止时尚未自动补译", issue["message"])
+            self.assertIn("并非补译失败", issue["message"])
             # 停止后已翻好的内容照常写盘，复核标记也跟着写进文件；续译只补还是
             # 原文的格子，这批「译文里夹着原文」的要整份重翻才会再补，不许说
             # 「接着处理」。
@@ -276,7 +276,7 @@ class ExcelStopNotRepairedWordingTests(unittest.TestCase):
             self.assertEqual(len(issues), 1)
             issue = issues[0]
             self.assertFalse(issue["caused_by_stop"])
-            self.assertNotIn("任务停止时还没来得及自动补译", issue["message"])
+            self.assertNotIn("任务停止时尚未自动补译", issue["message"])
             self.assertIn("超出单次自动补译", issue["message"])
 
 

@@ -123,8 +123,8 @@ def arbitrate_coverage_units(
             notify_model_checks=lambda count, batches: log(
                 "INFO",
                 (
-                    f"  → 正在让模型确认 {count} 处已有译文是否对应原文"
-                    f"（分 {batches} 批），请稍候。"
+                    f"  → 正在由模型确认 {count} 处已有译文是否与原文对应（分 {batches} 批），"
+                    "请稍候。"
                 ),
             ),
         )
@@ -135,7 +135,7 @@ def arbitrate_coverage_units(
         logger.debug(f"{context_label}失败原始错误 {file_name}：{exc!r}")
         log(
             "WARNING",
-            f"  → {file_name}：核对已有译文没能完成，本文件按原来的判断处理："
+            f"  → {file_name}：核对已有译文未能完成，本文件按原判断处理："
             + user_facing_batch_reason(exc),
         )
         return None
@@ -150,7 +150,7 @@ def arbitrate_coverage_units(
     # 不是文档里真有那么多配错的段落。
     detail = f"{len(flipped)} 处改为重新翻译"
     if uncertain:
-        detail += f"（其中 {uncertain} 处没拿到确认结果，为稳妥起见重新翻译）"
+        detail += f"（其中 {uncertain} 处未获得确认结果，为稳妥起见重新翻译）"
     # 有候选就报一句，哪怕结论是"全都没问题"。只在有异常时才吭声的检查，用户
     # 无从分辨它是查过了没事，还是压根没跑。
     batch_note = (
@@ -167,14 +167,14 @@ def arbitrate_coverage_units(
         log(
             "WARNING",
             (
-                f"  → 需要确认的已有译文太多，超出部分的 "
-                f"{outcome.skipped_over_cap} 处没有交给模型，按已有译文保留。"
+                f"  → 需确认的已有译文过多，超出部分的 {outcome.skipped_over_cap} 处未交给模型，"
+                "保留已有译文。"
             ),
         )
     if flipped:
         log(
             "INFO",
-            f"  → {file_name}：{len(flipped)} 处原以为已有译文，核对后改为补译。",
+            f"  → {file_name}：{len(flipped)} 处原判定为已有译文，经核对改为补译。",
         )
     return outcome
 
@@ -279,8 +279,8 @@ def run_pair_arbitration_batch(
             # 一批判不出就是一批内容被从严重翻，用户看到多出来的译文得知道是为什么。
             logger.debug(f"{context_label}批次失败原始错误：{exc!r}")
             error_callback(
-                f"  → 核对已有译文：有一批 {len(entries)} 处没拿到确认结果，"
-                "这一批为稳妥起见重新翻译："
+                f"  → 核对已有译文：有一批 {len(entries)} 处未获得确认结果，"
+                "为稳妥起见重新翻译此批："
                 + user_facing_batch_reason(exc)
             )
         return {}

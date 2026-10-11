@@ -312,7 +312,7 @@ class ImageGenerationTests(unittest.TestCase):
         with patch("core.model_roles.get_key", return_value="secret"):
             odd = check_image_generation_connectivity(settings, client=OddClient(), max_attempts=1)
         self.assertNotIn("weird upstream", odd.message)
-        self.assertIn("图像模型没有正常响应", odd.message)
+        self.assertIn("图像模型未正常响应", odd.message)
 
 
 if __name__ == "__main__":

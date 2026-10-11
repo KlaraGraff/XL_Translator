@@ -90,8 +90,7 @@ def unsupported_capability_message(label: str, provider: str, capability: str) -
     """「服务商不支持这项能力」的统一人话。"""
     ability = capability_label(capability)
     return (
-        f"{provider_display_name(provider)}不支持{ability}，"
-        f"请在设置里给{label}换一条支持{ability}的连接。"
+        f"{provider_display_name(provider)}不支持{ability}，请在设置中为{label}更换支持{ability}的连接。"
     )
 
 
@@ -709,9 +708,9 @@ def _follow_rejection_message(role: str, source: str) -> str:
     isolated = role if role in FOLLOW_ISOLATED_ROLES else source
     if isolated in FOLLOW_ISOLATED_ROLES:
         return (
-            f"{role_label(isolated)}只能独立配置，不能和其他用途共用连接。"
-            f"\n原因：图像生成模型无法用于译文审核或文档翻译，"
-            "共用一份连接会让其中一方落在服务不了它的服务器上。"
+            f"{role_label(isolated)}只能独立配置，不能与其他用途共用连接。\n原因："
+            "图像生成模型无法用于译文审核或文档翻译，"
+            "共用连接会导致其中一方被发送到无法处理该请求的服务器。"
         )
     return f"{role_label(role)}不能跟随{role_label(source)}，请改为独立配置。"
 
@@ -1097,8 +1096,8 @@ def _local_follow_not_allowed_message(role: str, source_role: str = "") -> str:
     role_name = role_label(role)
     reason = {
         ROLE_CLEANER: "记忆库清洗需要云端文本模型。",
-        ROLE_IMAGE: "PDF 与图片翻译需要能生成图片的云端模型。",
-        ROLE_PDF_REVIEW: "PDF 与图片审核需要能看图的云端模型。",
+        ROLE_IMAGE: "PDF 与图片翻译需要支持图片生成的云端模型。",
+        ROLE_PDF_REVIEW: "PDF 与图片审核需要支持图片识别的云端模型。",
     }.get(role, f"{role_name}只支持云端模型。")
     source_name = role_label(source_role) if source_role else "跟随来源"
     return (

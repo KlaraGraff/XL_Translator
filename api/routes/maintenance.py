@@ -44,7 +44,7 @@ def register(app: FastAPI) -> None:
                 return {
                     "ok": True,
                     "status": "deferred",
-                    "message": "这次先不在后台检查更新。",
+                    "message": "本次暂不在后台检查更新。",
                     "reason": deferred,
                     **_update_state_payload(settings),
                 }
@@ -154,7 +154,7 @@ def register(app: FastAPI) -> None:
     def download_task_diagnostic(task_id: str) -> StreamingResponse:
         record = _task_diagnostic_record(task_id)
         if record is None:
-            raise HTTPException(404, "这个任务没有诊断记录（更早的版本跑的，或已被自动清理），没有可导出的内容。")
+            raise HTTPException(404, "该任务没有诊断记录（可能由早期版本运行，或已被自动清理），无可导出的内容。")
         return _zip_response(*_diagnostic_zip_or_404(record))
 
     @app.get("/api/diagnostics/task/{task_id}")
@@ -199,7 +199,7 @@ def register(app: FastAPI) -> None:
         if hook is None:
             return _json_error(
                 409,
-                "这个后台服务不是由应用启动的，不能从这里关闭。",
+                "此后台服务不是由应用启动的，无法从此处关闭。",
                 reason="shutdown_unavailable",
             )
         hook()
@@ -218,7 +218,7 @@ def _diagnostic_zip_or_404(record: dict[str, Any]) -> tuple[bytes, str]:
         return diagnostics.build_diagnostic_zip_bytes(record["record_dir"])
     except FileNotFoundError as exc:
         raise HTTPException(
-            404, "这条诊断记录的文件已经被清理掉了，没有可导出的内容。"
+            404, "此诊断记录的文件已被清理，无可导出的内容。"
         ) from exc
 
 

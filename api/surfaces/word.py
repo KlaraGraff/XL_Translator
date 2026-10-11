@@ -65,10 +65,9 @@ class WordSurface(Surface):
         if available:
             return
         raise TaskInputError(
-            "检测到 "
-            f"{len(doc_files)} 个 .doc 文件，但没法用本机 Word 转换：{str(reason).rstrip('。')}。"
-            "请取消任务，安装或授权 Microsoft Word 后重试，或明确确认兼容转换；"
-            "兼容转换可能改变版式、域、图文和宏。"
+            f"检测到 {len(doc_files)} 个 .doc 文件，但无法使用本机 Word 转换：{str(reason).rstrip('。')}。"
+            "请取消任务，安装或授权 Microsoft Word 后重试，"
+            "或明确确认兼容转换；兼容转换可能改变版式、域、图文和宏。"
         )
 
     def snapshot(

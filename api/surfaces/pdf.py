@@ -128,7 +128,7 @@ class PdfSurface(Surface):
             # 拿它开一个带「仍要继续」按钮的弹窗，而不是弹一句两秒就没的提示。靠比对中文
             # 句子来认这种情况太脆，给它一个稳定的 reason。
             raise TaskInputError(
-                "PDF 与图片审核模型上次测试没有通过；请重新测试、关闭审核，或确认仍要继续。",
+                "PDF 与图片审核模型上次测试未通过；请重新测试、关闭审核，或确认继续。",
                 reason="pdf_review_model_unavailable",
             )
 

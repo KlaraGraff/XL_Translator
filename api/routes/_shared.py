@@ -15,7 +15,7 @@ def _require_no_active_tasks(app: FastAPI, *, category: str) -> None:
     if active_count:
         raise HTTPException(
             409,
-            "还有任务在进行，请等它结束后再清理。",
+            "仍有任务正在进行，请待其结束后再清理。",
             headers={"X-Translator-Reason": f"active_tasks_block_{category}"},
         )
 

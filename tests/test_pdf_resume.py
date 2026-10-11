@@ -374,8 +374,8 @@ class PdfResumeRunTests(unittest.TestCase):
             logs = "\n".join(m.message for m in messages if isinstance(m, LogMsg))
             self.assertEqual(client.calls, 2)
             self.assertEqual(done.api_call_count, 2)
-            self.assertIn("复用上次已完成页 1 页", logs)
-            self.assertIn("本次只需生成 2 页", logs)
+            self.assertIn("复用上次已完成的 1 页", logs)
+            self.assertIn("本次仅需生成 2 页", logs)
 
             output_dir = Path(done.output_dir)
             # Process manifests live in the app-owned process log directory;
@@ -412,7 +412,7 @@ class PdfResumeRunTests(unittest.TestCase):
             done = [m for m in messages if isinstance(m, DoneMsg)][-1]
             logs = "\n".join(m.message for m in messages if isinstance(m, LogMsg))
             self.assertEqual(client.calls, 3)
-            self.assertIn("本次全部重新翻译", logs)
+            self.assertIn("本次将全部重新翻译", logs)
             self.assertTrue(Path(done.output_dir).is_dir())
 
     def test_source_page_count_change_reuses_nothing_from_that_file(self) -> None:
@@ -430,7 +430,7 @@ class PdfResumeRunTests(unittest.TestCase):
 
             logs = "\n".join(message.message for message in _drain(runner, LogMsg))
             self.assertEqual(client.calls, 3)
-            self.assertIn("整份重新翻译", logs)
+            self.assertIn("此文件将全部重新翻译", logs)
 
     def test_target_language_change_reuses_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

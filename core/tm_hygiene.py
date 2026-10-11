@@ -60,7 +60,7 @@ def sanitize_tm_pairs(
         materialized, target_lang=target_lang, convention=convention
     )
     rejected = {
-        unit.source_text: "夹着没翻译的原文：" + "、".join(f"«{t}»" for t in unit.spans)
+        unit.source_text: "包含未翻译的原文：" + "、".join(f"«{t}»" for t in unit.spans)
         for unit in residual.needs_review
     }
     # 序号修好但正文仍有阻断残留的配对最终没入库：只算「拦下」，不算「归一」，
@@ -118,8 +118,7 @@ def tm_hygiene_log_lines(hygiene: TmHygieneResult) -> list[tuple[str, str]]:
         lines.append((
             "WARN",
             (
-                f"有 {len(hygiene.rejected)} 条译文里还夹着没翻译的原文，"
-                f"没有存进记忆库：{samples}"
+                f"有 {len(hygiene.rejected)} 条译文中仍夹杂未翻译的原文，未写入记忆库：{samples}"
             ),
         ))
     return lines

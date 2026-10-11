@@ -67,7 +67,7 @@ def check_translation_api_config(settings: AppSettings) -> ApiConfigCheckResult:
         return ApiConfigCheckResult(
             ok=False,
             status="missing_api_key",
-            message=f"{provider_label} 尚未填写 API Key。",
+            message=f"{provider_label} 尚未填写 API 密钥。",
         )
 
     return ApiConfigCheckResult(ok=True)

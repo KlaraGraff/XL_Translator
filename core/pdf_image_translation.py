@@ -363,7 +363,7 @@ def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
             PdfScanSkippedItem(
                 path,
                 relative,
-                "不是支持的 PDF 或图片文件，或者是系统临时文件。",
+                "不是受支持的 PDF 或图片文件，或为系统临时文件。",
                 suffix.lstrip("."),
                 source_type,
             )
@@ -377,7 +377,7 @@ def _scan_one_pdf_source(path: Path, root: Path, result: PdfScanResult) -> None:
         )
         result.items.append(item)
     except Exception as exc:  # noqa: BLE001 - one broken input must not block its peers.
-        reason = f"读取失败：{user_facing_reason(exc, fallback='这个文件打不开。')}"
+        reason = f"读取失败：{user_facing_reason(exc, fallback='无法打开此文件。')}"
         logger.warning(f"扫描 PDF/图片失败 {path.name}：{exc}")
         result.skipped.append(
             PdfScanSkippedItem(path, relative, reason, suffix.lstrip("."), source_type)
@@ -458,18 +458,18 @@ def check_page_quality(
         return PageQualityResult(
             False,
             "decode_error",
-            "接口返回的这一页不是可用的图片，程序无法解码。",
+            "服务返回的页面不是有效图片，无法解码。",
         )
 
     source_ratio = _safe_ratio(source_width, source_height)
     output_ratio = _safe_ratio(width, height)
     if source_ratio <= 0 or output_ratio <= 0:
-        return PageQualityResult(False, "ratio_error", "译图的长宽比例算不出来", width, height)
+        return PageQualityResult(False, "ratio_error", "无法计算译图的长宽比", width, height)
     if abs(source_ratio - output_ratio) / source_ratio > ratio_tolerance:
         return PageQualityResult(
             False,
             "ratio_error",
-            f"译图的长宽比例和原页差得太多（超过 {ratio_tolerance:.1%}）",
+            f"译图与原页的长宽比相差过大（超过 {ratio_tolerance:.1%}）",
             width,
             height,
         )
@@ -482,7 +482,7 @@ def check_page_quality(
     ):
         reasons.append("low_resolution")
         messages.append(
-            f"译图太小（{width}×{height} 像素），文字可能看不清"
+            f"译图尺寸过小（{width}×{height} 像素），文字可能无法辨认"
         )
 
     if ink_ratio < PDF_QC_BLANK_INK_RATIO and luma_stddev < PDF_QC_BLANK_STDDEV:
@@ -493,7 +493,7 @@ def check_page_quality(
         if source_ink is not None and source_ink >= PDF_QC_SOURCE_INK_RATIO_FLOOR:
             reasons.append("blank_page")
             messages.append(
-                "译图几乎是空白的，原页却有内容，可能丢了内容"
+                "译图几乎为空白，而原页有内容，可能存在内容丢失"
             )
 
     return PageQualityResult(
@@ -1253,7 +1253,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if self._stop_event.is_set():
             return
         self._pause_event.set()
-        self._log("INFO", "正在暂停：不再开始新的页面，等正在处理的页面完成。")
+        self._log("INFO", "正在暂停：不再开始新的页面，正在等待处理中的页面完成。")
 
     def _wait_while_paused(self) -> bool:
         """Return false when pause turned into a terminal stop request."""
@@ -1272,10 +1272,10 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._stop_event.clear()
             self._pause_event.clear()
             self._stop_reason = ""
-            self._log("INFO", "已继续翻译后面的页面。")
+            self._log("INFO", "已继续翻译剩余页面。")
         elif self._pause_event.is_set() and not self._stop_event.is_set():
             self._pause_event.clear()
-            self._log("INFO", "已继续翻译后面的页面。")
+            self._log("INFO", "已继续翻译剩余页面。")
 
     # ---- per-page review panel -------------------------------------------------
     #
@@ -1418,11 +1418,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 restoring = self._restore_page_key
         if active is not None:
             raise PdfPageActionError(
-                f"第 {active[1]} 页正在重新生成，等它跑完再操作下一页。"
+                f"第 {active[1]} 页正在重新生成，完成后才能操作其他页。"
             )
         if restoring is not None:
             raise PdfPageActionError(
-                f"第 {restoring[1]} 页正在换回上一版，等它完成再操作下一页。"
+                f"第 {restoring[1]} 页正在换回上一版，完成后才能操作其他页。"
             )
 
     def result_patch(self) -> dict[str, Any]:
@@ -1445,7 +1445,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if self.is_running():
             raise PdfPageActionError("任务还在运行，请暂停后再做单页操作。")
         if self._finished_output_dir is None:
-            raise PdfPageActionError("这个任务没有留下输出目录，不能重新生成单页。")
+            raise PdfPageActionError("此任务没有保留输出目录，无法重新生成单页。")
         # Checked before the per-page checks below, not only at the claim: while
         # a rerun is in flight the page it owns has left ``record.pages``, so the
         # eligibility checks would otherwise answer "this page has no result to
@@ -1465,7 +1465,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         # the rerun would only delete evidence and then fail the same way.
         if record.status not in {PDF_OUTPUT_STATE_COMPLETED, PDF_OUTPUT_STATE_NEEDS_REVIEW}:
             raise PdfPageActionError(
-                f"{record.name} 这次没有生成输出文件，单页重新生成帮不上忙；请重新建立任务。"
+                f"{record.name} 本次未生成输出文件，无法通过重新生成单页解决；请新建任务。"
             )
         page = next(
             (item for item in list(record.pages) if item.page_number == page_number),
@@ -1559,7 +1559,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             logger.debug(f"[PDF] 单页重生成解析翻译模型配置失败原始错误：{exc!r}")
             raise PdfPageActionError(
                 "PDF 与图片翻译模型的设置不可用："
-                + user_facing_reason(exc, fallback="请在设置里检查 PDF 与图片翻译模型这条连接。")
+                + user_facing_reason(exc, fallback="请在设置中检查 PDF 与图片翻译模型的连接。")
             ) from exc
         if not provider_supports_capability(model_config.provider, "image"):
             raise PdfPageActionError(
@@ -1588,7 +1588,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     "PDF 与图片审核模型的设置不可用："
                     + user_facing_reason(
                         exc,
-                        fallback="请在设置里检查 PDF 与图片审核模型这条连接。",
+                        fallback="请在设置中检查 PDF 与图片审核模型的连接。",
                     )
                 ) from exc
             if not provider_supports_capability(review_model_config.provider, "vision_text"):
@@ -1618,11 +1618,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         )
         if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
             raise PdfPageActionError(
-                f"{record.name} 第 {page_number} 页的结果已经变了，本次重新生成已放弃。"
+                f"{record.name} 第 {page_number} 页的结果已发生变化，已取消本次重新生成。"
             )
         self._log(
             "INFO",
-            f"[{record.name}] 第 {page_number} 页开始重新生成：成功后才会替换译文页和输出文件。",
+            f"[{record.name}] 开始重新生成第 {page_number} 页：仅在成功后替换译文页和输出文件。",
         )
         # 事务边界。这一步之前先把「回滚需要的一切」拍下来：页记录本身、这份文件
         # 的产物字段和状态、逐页计数。重生成失败（模型 Key 失效是最常见的一种）时
@@ -1667,7 +1667,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 # 把「旧产物没丢」说进异常消息（低-旧产物提示），不能只在 record.error
                 # 缺失时走默认文案才带这句话。
                 reason = _with_sentence_end(
-                    record.error or "重新生成后没能重新生成输出文件。"
+                    record.error or "页面重新生成后，未能重新生成输出文件。"
                 )
                 raise PdfPageActionError(f"{reason}已保留上一版，输出文件未改动。")
             committed = True
@@ -1704,8 +1704,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         self._restore_page_counters(counters_backup)
         self._log(
             "WARN",
-            f"[{record.name}] 第 {page_number} 页重新生成没有成功，"
-            "已保留上一版译文页和输出文件，任务结果未改动。",
+            f"[{record.name}] 第 {page_number} 页重新生成失败，已保留上一版译文页和输出文件，"
+            "任务结果未改动。",
         )
 
     # ---- swapping one page back to its previous version -------------------------
@@ -1723,7 +1723,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if self.is_running():
             raise PdfPageActionError("任务还在运行，请暂停后再做单页操作。")
         if self._finished_output_dir is None:
-            raise PdfPageActionError("这个任务没有留下输出目录，不能换回上一版。")
+            raise PdfPageActionError("此任务没有保留输出目录，无法换回上一版。")
         self._raise_if_rerun_active()
         with self._page_action_lock:
             prepared = self._find_prepared_file(relative_path)
@@ -1736,7 +1736,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             )
         if record.status not in {PDF_OUTPUT_STATE_COMPLETED, PDF_OUTPUT_STATE_NEEDS_REVIEW}:
             raise PdfPageActionError(
-                f"{record.name} 这次没有生成输出文件，换回上一版帮不上忙；请重新建立任务。"
+                f"{record.name} 本次未生成输出文件，无法通过换回上一版解决；请新建任务。"
             )
         page = next(
             (item for item in record.pages if item.page_number == page_number),
@@ -1749,11 +1749,11 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             PDF_PAGE_IMAGE_KIND_PREVIOUS,
         ):
             raise PdfPageActionError(
-                f"{record.name} 第 {page_number} 页没有留下上一版译文，无法换回。"
+                f"{record.name} 第 {page_number} 页没有上一版译文，无法换回。"
             )
         if not page.translated_image_path or not Path(page.translated_image_path).is_file():
             raise PdfPageActionError(
-                f"{record.name} 第 {page_number} 页当前的译文页图不在了，无法互换；请重新生成这一页。"
+                f"{record.name} 第 {page_number} 页的当前译文页图已丢失，无法互换；请重新生成此页。"
             )
         with self._rerun_lock:
             self._raise_if_rerun_active(locked=True)
@@ -1793,7 +1793,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._finalize_file_record(prepared, should_assemble=True)
             if record.status == PDF_OUTPUT_STATE_FAILED:
                 reason = _with_sentence_end(
-                    record.error or "换回上一版后没能重新生成输出文件。"
+                    record.error or "换回上一版后，未能重新生成输出文件。"
                 )
                 raise PdfPageActionError(f"{reason}已保留当前版本，本次换回未生效。")
             committed = True
@@ -1814,8 +1814,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 self._restore_page_counters(counters_backup)
                 self._log(
                     "WARN",
-                    f"[{record.name}] 第 {page_number} 页换回上一版没有成功，"
-                    "已保留当前版本，输出文件未改动。",
+                    f"[{record.name}] 第 {page_number} 页换回上一版失败，已保留当前版本，输出文件未改动。",
                 )
         self._rewrite_finished_report(extra_elapsed_sec=time.monotonic() - started)
         self._log(
@@ -1843,7 +1842,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         temp = base_dir / f"{PDF_PAGE_IMAGE_SWAP_PREFIX}{current.name}"
         for path in (current, previous, restored_current, swapped_previous, temp):
             if not _path_is_within(path, base_dir):
-                raise PdfPageActionError("这一页的译文页图不在任务的页面存档里，已放弃换回。")
+                raise PdfPageActionError("此页的译文页图不在任务的页面存档中，已取消换回。")
         done: list[tuple[Path, Path]] = []
         try:
             temp.unlink(missing_ok=True)
@@ -1854,7 +1853,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._undo_page_version_swap(done)
             raise PdfPageActionError(
                 "换回上一版时页图文件改名失败："
-                + user_facing_reason(exc, fallback="页面存档里的文件动不了。")
+                + user_facing_reason(exc, fallback="无法修改页面存档中的文件。")
                 + "已保留当前版本，本次换回未生效。"
             ) from exc
         previous_state = dict(page.previous_page_state or {})
@@ -1980,7 +1979,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
             if record.status == PDF_OUTPUT_STATE_FAILED:
                 raise PdfPageActionError(
-                    f"{record.name} 整体处理失败，不能单页操作；请重新建立任务。"
+                    f"{record.name} 整体处理失败，无法进行单页操作；请新建任务。"
                 )
             page = next(
                 (item for item in list(record.pages) if item.page_number == page_number),
@@ -1988,15 +1987,14 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             )
             if page is None or page.status not in _PDF_PAGE_REGENERABLE_STATUSES:
                 raise PdfPageActionError(
-                    f"{record.name} 第 {page_number} 页还没有跑完，暂时不能操作。"
+                    f"{record.name} 第 {page_number} 页尚未处理完成，暂时无法操作。"
                 )
             if kind == PDF_PAGE_ACTION_SKIP:
                 if record.source_type == SOURCE_TYPE_IMAGE:
-                    raise PdfPageActionError("图片任务不会生成占位页，不能跳过。")
+                    raise PdfPageActionError("图片任务不生成占位页，无法跳过。")
                 if page.status not in _PDF_PAGE_SKIPPABLE_STATUSES:
                     raise PdfPageActionError(
-                        f"{record.name} 第 {page_number} 页没有失败，不能跳过；"
-                        "如需改动请选择重新生成。"
+                        f"{record.name} 第 {page_number} 页未失败，无法跳过；如需修改，请选择「重新生成」。"
                     )
             self._pending_page_actions = [
                 action
@@ -2162,7 +2160,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 # The page changed hands between the request and this point.
                 self._log(
                     "WARN",
-                    f"[{record.name}] 第 {action.page_number} 页状态已变化，已放弃本次单页操作。",
+                    f"[{record.name}] 第 {action.page_number} 页状态已变化，已取消本次单页操作。",
                 )
                 continue
             if action.kind == PDF_PAGE_ACTION_REGENERATE:
@@ -2213,7 +2211,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if page.status not in _PDF_PAGE_SKIPPABLE_STATUSES:
             self._log(
                 "WARN",
-                f"[{record.name}] 第 {page.page_number} 页已不是失败页，已放弃跳过。",
+                f"[{record.name}] 第 {page.page_number} 页已不是失败页，已取消跳过。",
             )
             return
         page.status = "placeholder_pending"
@@ -2255,8 +2253,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._emit_page_status_locked()
         self._log(
             "WARN",
-            f"[{record.name}] 第 {page_record.page_number} 页在中止时还没有生成结果，"
-            "已按未开始处理：不生成占位页，接着上次继续时会重新排队。",
+            f"[{record.name}] 第 {page_record.page_number} 页在任务停止时尚未生成结果，已按未开始处理："
+            "不生成占位页，继续上次翻译时将重新排队。",
             visible=False,
         )
 
@@ -2329,7 +2327,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 self._log(
                     "WARN",
                     f"[{prepared.record.name}] 清除旧译图失败：{candidate.name}："
-                    f"{user_facing_reason(exc, fallback='文件删不掉。')}",
+                    f"{user_facing_reason(exc, fallback='无法删除文件。')}",
                 )
         return stashed
 
@@ -2494,7 +2492,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     message="PDF 与图片翻译模型的设置不可用："
                     + user_facing_reason(
                         exc,
-                        fallback="请在设置里检查 PDF 与图片翻译模型这条连接。",
+                        fallback="请在设置中检查 PDF 与图片翻译模型的连接。",
                     )
                 )
             )
@@ -2537,7 +2535,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         message="PDF 与图片审核模型的设置不可用："
                         + user_facing_reason(
                             exc,
-                            fallback="请在设置里检查 PDF 与图片审核模型这条连接。",
+                            fallback="请在设置中检查 PDF 与图片审核模型的连接。",
                         )
                     )
                 )
@@ -2760,12 +2758,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 result={},
                                 force=True,
                             )
-                        self._log("INFO", "已中断生成 PDF，清掉了旧的输出文件，继续翻译剩下的页面。")
+                        self._log("INFO", "已中断 PDF 生成并清除旧的输出文件，将继续翻译剩余页面。")
                         continue
                 break
 
             if stopped and not fatal_error:
-                self._log("WARN", "已停止：全部翻完的文件已经生成，没翻完的文件保留了已完成的页面和报告。")
+                self._log("WARN", "已停止：已全部翻译的文件均已生成，未翻译完成的文件保留已完成的页面和报告。")
         except ImageModelUnavailableError as exc:
             fatal_error = str(exc)
             record_image_model_availability(
@@ -2922,7 +2920,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - file-level failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 logger.debug(f"[PDF] 复制源文件失败原始错误：{exc!r}")
-                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法把源文件复制到工作文件夹。')}"
+                record.error = f"复制源文件失败：{user_facing_reason(exc, fallback='无法将源文件复制到工作文件夹。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -2947,7 +2945,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 except Exception as exc:  # noqa: BLE001 - file-level validation failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
                     logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
-                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='这张图片打不开，可能已损坏或格式不受支持。')}"
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='无法打开此图片，文件可能已损坏或格式不受支持。')}"
                 prepared_files.append(
                     self._prepared_file_shell(
                         item,
@@ -3094,13 +3092,13 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if _path_is_within(resume_path, Path(output_dir)) or _path_is_within(
             Path(output_dir), resume_path
         ):
-            self._log("WARN", "接着上次继续：上次的输出文件夹和本次的重叠，本次改为全部重新翻译。")
+            self._log("WARN", "继续上次翻译：上次的输出文件夹与本次重叠，本次将全部重新翻译。")
             return
         manifest = read_pdf_resume_manifest(resume_path)
         if manifest is None:
             self._log(
                 "WARN",
-                "接着上次继续：上次的输出文件夹里读不到进度记录（可能已被移动、删除或损坏），本次全部重新翻译。",
+                "继续上次翻译：无法读取上次输出文件夹中的进度记录（可能已被移动、删除或损坏），本次将全部重新翻译。",
             )
             return
         previous_lang = str(manifest.get("target_lang") or "")
@@ -3108,7 +3106,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if previous_lang and current_lang and previous_lang != current_lang:
             self._log(
                 "WARN",
-                f"接着上次继续：上次输出的目标语言（{previous_lang}）和本次（{current_lang}）不一致，本次全部重新翻译。",
+                f"继续上次翻译：上次的目标语言（{previous_lang}）与本次（{current_lang}）不一致，本次将全部重新翻译。",
             )
             return
         try:
@@ -3118,7 +3116,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             reusable = reusable_pdf_pages(manifest, resume_archive_path)
         except Exception as exc:  # noqa: BLE001 - resume is best-effort by design.
             logger.debug(f"[PDF] 读取上次输出页存档失败原始错误：{exc!r}")
-            self._log("WARN", "接着上次继续：上次输出的页面存档读不出来，本次全部重新翻译。")
+            self._log("WARN", "继续上次翻译：无法读取上次输出的页面存档，本次将全部重新翻译。")
             return
 
         manifest_files = _resume_manifest_files(manifest)
@@ -3138,8 +3136,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             if previous_page_count != record.page_count:
                 self._log(
                     "WARN",
-                    f"[{record.name}] 接着上次继续：源文件现在有 {record.page_count} 页，上次记录的是 "
-                    f"{previous_page_count} 页，这个文件整份重新翻译。",
+                    f"[{record.name}] 继续上次翻译：源文件现有 {record.page_count} 页，上次记录为 {previous_page_count} 页，"
+                    "此文件将全部重新翻译。",
                 )
                 continue
             previous_size = _resume_int(entry.get("source_pdf_size_bytes"))
@@ -3150,7 +3148,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             ):
                 self._log(
                     "WARN",
-                    f"[{record.name}] 接着上次继续：源文件在上次翻译之后改动过，这个文件整份重新翻译。",
+                    f"[{record.name}] 继续上次翻译：源文件在上次翻译后已被修改，此文件将全部重新翻译。",
                 )
                 continue
             reused = self._adopt_resume_pages(prepared, pages)
@@ -3158,12 +3156,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 total_reused += reused
                 self._log(
                     "INFO",
-                    f"[{record.name}] 接着上次继续：复用上次已完成页 {reused} 页，"
-                    f"本次只需生成 {max(0, record.page_count - reused)} 页。",
+                    f"[{record.name}] 继续上次翻译：复用上次已完成的 {reused} 页，"
+                    f"本次仅需生成 {max(0, record.page_count - reused)} 页。",
                 )
 
         if not total_reused:
-            self._log("INFO", "接着上次继续：上次输出里没有可以直接复用的已完成页，本次全部重新翻译。")
+            self._log("INFO", "继续上次翻译：上次输出中没有可复用的已完成页面，本次将全部重新翻译。")
             return
         with self._page_status_lock:
             # 复用页按「已提交且已完成」记账，和大幅面跳过页同一条口径，否则「N/M 已完成」
@@ -3173,8 +3171,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._emit_page_status_locked()
         self._log(
             "INFO",
-            f"接着上次继续：共复用上次已完成页 {total_reused} 页，本次只需生成 "
-            f"{max(0, total_pages - total_reused)} 页（复用页不消耗任何模型调用）。",
+            f"继续上次翻译：复用上次已完成的 {total_reused} 页，"
+            f"本次仅需生成 {max(0, total_pages - total_reused)} 页（复用的页面不调用模型）。",
         )
 
     def _adopt_resume_pages(
@@ -3196,7 +3194,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 logger.debug(f"[PDF] 复用上次译图失败原始错误：{exc!r}")
                 self._log(
                     "WARN",
-                    f"[{record.name}] 接着上次继续：第 {source.page_number} 页的旧译图复制失败，这一页会重新生成。",
+                    f"[{record.name}] 继续上次翻译：第 {source.page_number} 页的旧译图复制失败，此页将重新生成。",
                 )
                 continue
             source_copy = ""
@@ -3290,9 +3288,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             )
                             self._log(
                                 "INFO",
-                                f"[{prepared.record.name}] 第 "
-                                f"{page_record.page_number} 页是大幅面（{short_mm:.0f}×{long_mm:.0f} mm），"
-                                "不翻译，原页直接放进输出 PDF。",
+                                f"[{prepared.record.name}] 第 {page_record.page_number} 页为大幅面（{short_mm:.0f}×{long_mm:.0f} mm），不予翻译，"
+                                "原页将直接放入输出 PDF。",
                             )
                             self._record_page_submitted()
                             self._record_page_completed(page_record)
@@ -3350,7 +3347,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     if self._stop_event.is_set() and not stop_logged:
                         stop_logged = True
                         self._stop_wait_started_at = time.monotonic()
-                        self._log("WARN", "正在停止：不再开始新的页面，等正在处理的页面结束。")
+                        self._log("WARN", "正在停止：不再开始新的页面，正在等待处理中的页面结束。")
                         self._emit_stop_wait_status(force=True)
                     elif self._stop_event.is_set() and stop_logged:
                         # 等待期间没有任何页跑完也要让状态行往前走（见 _stop_wait_status）。
@@ -3492,7 +3489,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         prepared.record.status = PDF_OUTPUT_STATE_FAILED
                         logger.debug(f"[PDF] PDF 渲染组件不可用原始错误：{exc!r}")
                         prepared.record.error = (
-                            "程序里负责渲染 PDF 页面的组件没能加载，无法处理 PDF；请重装程序后重试。"
+                            "PDF 页面渲染组件加载失败，无法处理 PDF；请重新安装程序后重试。"
                         )
                 return
 
@@ -3523,7 +3520,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 except Exception as exc:  # noqa: BLE001 - file-level render failure.
                     record.status = PDF_OUTPUT_STATE_FAILED
                     logger.debug(f"[PDF] 图片读取失败原始错误：{exc!r}")
-                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='这张图片打不开，可能已损坏或格式不受支持。')}"
+                    record.error = f"图片读取失败：{user_facing_reason(exc, fallback='无法打开此图片，文件可能已损坏或格式不受支持。')}"
                     self._log("ERROR", f"[{record.name}] {record.error}")
                 continue
             try:
@@ -3567,9 +3564,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                             )
                             self._log(
                                 "ERROR",
-                                f"[{record.name}] 第 {page_number} 页读不出来，"
-                                f"已改为失败占位页，其余页面继续："
-                                f"{user_facing_reason(exc, fallback='这一页在源文件里读不出来。')}",
+                                f"[{record.name}] 无法读取第 {page_number} 页，已改为失败占位页，其余页面继续处理："
+                                f"{user_facing_reason(exc, fallback='无法从源文件读取此页。')}",
                             )
                         yield (prepared, page_record)
                 finally:
@@ -3577,7 +3573,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             except Exception as exc:  # noqa: BLE001 - file-level render failure.
                 record.status = PDF_OUTPUT_STATE_FAILED
                 logger.debug(f"[PDF] PDF 渲染失败原始错误：{exc!r}")
-                record.error = f"PDF 页面读取失败：{user_facing_reason(exc, fallback='这份 PDF 的页面读不出来。')}"
+                record.error = f"PDF 页面读取失败：{user_facing_reason(exc, fallback='无法读取此 PDF 的页面。')}"
                 self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _broken_page_record(
@@ -3611,7 +3607,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             file_name=file_name,
             status="placeholder_pending",
             placeholder=True,
-            error=f"页面读取/渲染失败：{user_facing_reason(error, fallback='这一页在源文件里读不出来。')}",
+            error=f"页面读取/渲染失败：{user_facing_reason(error, fallback='无法从源文件读取此页。')}",
             source_width_px=int(max(1, round(width_pt * scale))),
             source_height_px=int(max(1, round(height_pt * scale))),
             page_width_pt=float(width_pt),
@@ -3636,7 +3632,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             self._refresh_file_record_counts(record)
             self._log(
                 "WARN",
-                f"[{record.name}] 还有页面没翻完，这次没有生成这个文件。",
+                f"[{record.name}] 尚有页面未翻译完成，本次未生成此文件。",
             )
             return
 
@@ -3681,7 +3677,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                     logger.debug(f"[PDF] 压缩 PDF 生成失败原始错误：{exc!r}")
                     record.compression_error = user_facing_reason(
                         exc,
-                        fallback="压缩版 PDF 没能生成，高清版不受影响。",
+                        fallback="压缩版 PDF 未能生成，高清版不受影响。",
                     )
                     self._log(
                         "WARN",
@@ -3706,7 +3702,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         except Exception as exc:  # noqa: BLE001 - file-level failure.
             record.status = PDF_OUTPUT_STATE_FAILED
             logger.debug(f"[PDF] PDF 合成失败原始错误：{exc!r}")
-            record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='译好的页面没能合成 PDF。')}"
+            record.error = f"生成 PDF 失败：{user_facing_reason(exc, fallback='已翻译的页面未能合成 PDF。')}"
             self._log("ERROR", f"[{record.name}] {record.error}")
 
     def _finalize_image_record(
@@ -4139,8 +4135,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         if ratio_tolerance > PDF_ASPECT_RATIO_TOLERANCE + 1e-9:
             self._log(
                 "INFO",
-                f"{self._page_log_prefix(page_record)}当前模型只能输出固定尺寸，"
-                "比例对不上时会补白边保持原比例，不再重试。",
+                f"{self._page_log_prefix(page_record)}当前模型仅支持固定尺寸输出，比例不符时将补充白边以保持原比例，"
+                "不再重试。",
                 visible=False,
             )
         attempt = 1
@@ -4172,8 +4168,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         user_facing_reason(
                             exc,
                             fallback=(
-                                "PDF 与图片翻译模型当前不可用，请在设置里检查这条连接的 API 密钥、"
-                                "模型名和账号额度。"
+                                "PDF 与图片翻译模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                                "模型名称和账户额度。"
                             ),
                         )
                     ) from exc
@@ -4197,7 +4193,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 )
                 last_error = user_facing_reason(
                     exc,
-                    fallback="PDF 与图片翻译模型这一次没有返回可用结果，请稍后重试或在设置里换一条连接。",
+                    fallback="PDF 与图片翻译模型本次未返回可用结果，请稍后重试，或在设置中更换连接。",
                 )
                 self._record_page_retrying(page_record)
                 self._log(
@@ -4288,8 +4284,8 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                                 user_facing_reason(
                                     exc,
                                     fallback=(
-                                        "PDF 与图片审核模型当前不可用，请在设置里检查这条连接的 "
-                                        "API 密钥、模型名和账号额度。"
+                                        "PDF 与图片审核模型当前不可用，请在设置中检查此连接的 API 密钥、"
+                                        "模型名称和账户额度。"
                                     ),
                                 )
                             ) from exc
@@ -4297,7 +4293,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         logger.debug(f"[PDF] 审核请求失败原始错误：{exc!r}")
                         review_failure_reason = user_facing_reason(
                             exc,
-                            fallback="审核模型这一次没有返回可用结果。",
+                            fallback="审核模型本次未返回可用结果。",
                         )
                         review_result = PdfPageReviewResult(
                             passed=False,
@@ -4352,8 +4348,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                         self._record_page_recovered(page_record)
                         self._log(
                             "WARN",
-                            f"{self._page_log_prefix(page_record)}审核这一步出错，"
-                            "已保留这次的译图并标为需人工复核。",
+                            f"{self._page_log_prefix(page_record)}审核步骤出错，已保留本次译图并标记为需人工复核。",
                         )
                         return page_record
                     candidate_artifact["review_status"] = (
@@ -4494,7 +4489,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
             page_record.status = PDF_PAGE_STATUS_STOPPED_UNSTARTED
             page_record.placeholder = False
             page_record.translated_image_path = ""
-            page_record.error = last_error or "任务已停止，这一页还没有生成结果。"
+            page_record.error = last_error or "任务已停止，此页尚未生成结果。"
             return page_record
 
         if source_type == SOURCE_TYPE_IMAGE:
@@ -4504,7 +4499,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page_record.review_status = "failed"
                 self._record_page_review_failed()
             page_record.translated_image_path = ""
-            page_record.error = last_error or "这一页没能生成译图"
+            page_record.error = last_error or "此页未能生成译图"
             self._record_page_failed(page_record)
             return page_record
 
@@ -4516,7 +4511,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page_record.translated_image_path = str(
             translated_pages_dir / page_image_name(page_record.page_number, page_count, failed=True)
         )
-        page_record.error = last_error or "这一页没能生成译图"
+        page_record.error = last_error or "此页未能生成译图"
         self._record_page_placeholder(page_record)
         return page_record
 
@@ -4579,8 +4574,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         page_record.ratio_letterboxed = True
         self._log(
             "INFO",
-            f"{self._page_log_prefix(page_record)}模型只能输出固定尺寸，"
-            "这一页已补白边保持原比例。",
+            f"{self._page_log_prefix(page_record)}模型仅支持固定尺寸输出，已为此页补充白边以保持原比例。",
             visible=False,
         )
         return width, height
@@ -4678,13 +4672,12 @@ class PdfImageTranslationRunner(BaseTaskRunner):
         """
         pending_submitted = max(0, self._submitted_page_count - self._completed_page_count)
         if not pending_submitted:
-            return "状态：正在停止任务：已提交的页面都已结束，正在收尾。"
+            return "状态：正在停止任务：已提交的页面均已结束，正在完成最后处理。"
         waited = self._stop_wait_elapsed_label()
         return (
-            "状态：正在停止任务："
-            f"已提交 {self._submitted_page_count} 页，等待 {pending_submitted} 页完成"
-            f"{waited}。这几页要等模型接口返回或超时，可能要几分钟；"
-            "已生成的页面和素材都会保留。"
+            f"状态：正在停止任务：已提交 {self._submitted_page_count} 页，正在等待 {pending_submitted} 页完成{waited}。"
+            "这些页面需等待模型服务响应或超时，可能需要几分钟；"
+            "已生成的页面和素材将予以保留。"
         )
 
     def _stop_wait_elapsed_label(self) -> str:
@@ -4798,7 +4791,7 @@ class PdfImageTranslationRunner(BaseTaskRunner):
                 page_number=page.page_number,
                 failure_ordinal=failure_ordinal,
                 error_summary=page.error,
-                source_image_path=page.source_image_path or "（这一页读不出来，没有原页图）",
+                source_image_path=page.source_image_path or "（无法读取此页，无原页图像）",
                 placeholder_path=placeholder_path,
                 width=page.source_width_px,
                 height=page.source_height_px,
@@ -5226,9 +5219,9 @@ def _pdf_render_scale_for_page(
 
 def _pdf_read_error_message(exc: Exception) -> str:
     if "password" in str(exc).lower():
-        return "这份 PDF 设置了密码或权限保护，暂时不能翻译。"
+        return "此 PDF 受密码或权限保护，暂时无法翻译。"
     logger.debug(f"[PDF] 打开 PDF 失败原始错误：{exc!r}")
-    return f"PDF 读取失败：{user_facing_reason(exc, fallback='这份 PDF 打不开，可能已损坏或后缀名与真实格式不符。')}"
+    return f"PDF 读取失败：{user_facing_reason(exc, fallback='无法打开此 PDF，文件可能已损坏或扩展名与实际格式不符。')}"
 
 
 def _append_pdf_image_page(
@@ -5425,7 +5418,7 @@ def _localized_pdf_placeholder_problem(error_summary: str) -> str:
             return sentence
     return user_facing_reason(
         raw,
-        fallback="PDF 与图片翻译模型这一次没有返回可用结果。",
+        fallback="PDF 与图片翻译模型本次未返回可用结果。",
     )
 
 

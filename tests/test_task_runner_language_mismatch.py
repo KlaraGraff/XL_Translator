@@ -35,7 +35,7 @@ class LanguageMismatchIssueTests(unittest.TestCase):
         self.assertEqual(engine.calls, 1)
         self.assertEqual(
             _language_mismatch_message(result, "zh", "fr"),
-            "语言方向疑似选错：检测到的源文本更像法文，当前选择为“中文 → 法文”。"
+            "语言方向可能有误：检测到源文本更接近法文，当前选择为“中文 → 法文”。"
             "建议反向选择“法文 → 中文”后重新翻译。",
         )
 

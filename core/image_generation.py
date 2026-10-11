@@ -150,9 +150,9 @@ class OpenAICompatibleImageGenerationClient:
                 unsupported_capability_message(model_config.label, model_config.provider, "image")
             )
         if not model_config.api_key:
-            raise ImageModelUnavailableError(f"{model_config.label}还没有填写 API 密钥。")
+            raise ImageModelUnavailableError(f"{model_config.label}尚未填写 API 密钥。")
         if not model_config.model:
-            raise ImageModelUnavailableError(f"{model_config.label}还没有填写模型名称。")
+            raise ImageModelUnavailableError(f"{model_config.label}尚未填写模型名称。")
 
         base_url = _normalize_base_url(model_config)
         prompt = build_pdf_image_translation_prompt(
@@ -437,7 +437,7 @@ def check_image_generation_connectivity(
     logger.debug(f"[图像模型] 连接测试失败原始错误：{last_error}")
     reason = humanize_error(
         last_error,
-        fallback="图像模型没有正常响应，请检查这条连接的地址、API 密钥和模型名。",
+        fallback="图像模型未正常响应，请检查该连接的地址、API 密钥和模型名称。",
     )
     message = f"{config.label}连接测试失败：{reason}"
     record_image_model_availability(

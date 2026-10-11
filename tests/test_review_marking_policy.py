@@ -269,7 +269,7 @@ class ResidualReportWordingTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         status = issues[0]["status"]
-        self.assertIn("只有这些没翻译：一", status)
+        self.assertIn("仅以下内容未翻译：一", status)
         self.assertNotIn("日期", status)
         self.assertNotIn("编号", status)
         self.assertEqual(issues[0]["severity"], "needs_review")

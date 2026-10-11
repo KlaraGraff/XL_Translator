@@ -303,7 +303,7 @@ def _classify_excel_cell(
             status=COVERAGE_IGNORED,
             location=location,
             kind="cell",
-            reason="单元格看起来是目标语言译文，默认跳过。",
+            reason="单元格疑似目标语言译文，默认跳过。",
             data=data,
         )
 

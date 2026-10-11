@@ -72,11 +72,11 @@ def credential_rejection(exc: BaseException) -> ApiCredentialRejectedError | Non
     if not status and not any(marker in lowered for marker in _CREDENTIAL_MARKERS):
         return None
     if status == 402 or "quota" in lowered or "billing" in lowered or "余额" in message or "额度" in message:
-        reason = "接口提示账户余额或额度不足"
+        reason = "模型服务提示账户余额或额度不足"
     else:
-        reason = "接口拒绝了这条连接的 API 密钥，可能填错、已失效或没有这个模型的权限"
+        reason = "模型服务拒绝了此连接的 API 密钥，密钥可能有误、已失效或无权使用该模型"
     return ApiCredentialRejectedError(
-        f"{reason}。任务已停止，没有写出只有原文的文件。请到「设置 → 模型服务」检查这条连接后重新开始。"
+        f"{reason}。任务已停止，未生成仅含原文的文件。请在「设置 → 模型服务」中检查此连接后重新开始。"
     )
 
 
@@ -334,24 +334,21 @@ def _announce_slowdown(
     if local_descriptor_limit:
         if say_slowdown:
             error_callback(
-                f"{context_label} 电脑同时打开的网络连接太多，"
-                "已临时放慢并重试当前请求。"
+                f"{context_label} 本机同时打开的网络连接过多，已暂时降低速度并重试当前请求。"
             )
         return
 
     if say_slowdown and say_floor:
         error_callback(
-            f"{context_label} 接口反馈请求过于频繁，已直接放慢到最慢档并重试当前批次。"
-            f"{_upstream_reason(exc)}"
+            f"{context_label} 模型服务提示请求过于频繁，已降至最低速度并重试当前批次。{_upstream_reason(exc)}"
         )
     elif say_slowdown:
         error_callback(
-            f"{context_label} 接口反馈请求过于频繁，已自动放慢发送速度并重试当前批次。"
-            f"{_upstream_reason(exc)}"
+            f"{context_label} 模型服务提示请求过于频繁，已自动降低发送速度并重试当前批次。{_upstream_reason(exc)}"
         )
     elif say_floor:
         error_callback(
-            f"{context_label} 模型服务仍提示太忙，已放慢到最慢档，正在继续重试当前批次。"
+            f"{context_label} 模型服务仍提示繁忙，已降至最低速度，正在继续重试当前批次。"
         )
 
 
@@ -398,13 +395,13 @@ def _wait_out_minimum_capacity_limit(
     if elapsed >= MINIMUM_CAPACITY_GRACE_SECONDS:
         if local_descriptor_limit:
             raise ApiKeyTemporarilyUnavailableError(
-                "电脑同时打开的网络连接一直太多，已放到最慢仍无法继续。"
-                "请关掉其它占用网络的程序后重试。"
+                "本机同时打开的网络连接持续过多，已降至最低速度仍无法继续。"
+                "请关闭其他占用网络的程序后重试。"
             ) from exc
         raise ApiKeyTemporarilyUnavailableError(
             (
-                f"模型服务一直提示太忙：已经放慢到最慢档，{int(elapsed)} 秒内仍不行。"
-                "请稍后重试，或在设置里换一条连接、更换 API 密钥后重新开始。"
+                f"模型服务持续提示繁忙：已降至最低速度，{int(elapsed)} 秒内仍未恢复。请稍后重试，"
+                "或在设置中更换连接或 API 密钥后重新开始。"
             )
         ) from exc
 
@@ -421,20 +418,19 @@ def _wait_out_minimum_capacity_limit(
     if error_callback:
         if local_descriptor_limit and say_floor:
             error_callback(
-                f"{context_label} 电脑同时打开的网络连接仍然太多，已放到最慢档，正在等待后重试。"
+                f"{context_label} 本机同时打开的网络连接仍然过多，已降至最低速度，稍后将重试。"
             )
         elif local_descriptor_limit and say_heartbeat:
             error_callback(
-                f"{context_label} 电脑同时打开的网络连接仍然太多，已等待 {int(elapsed)} 秒，仍在重试。"
+                f"{context_label} 本机同时打开的网络连接仍然过多，已等待 {int(elapsed)} 秒，正在继续重试。"
             )
         elif say_floor:
             error_callback(
-                f"{context_label} 模型服务仍提示太忙，已放慢到最慢档，正在等待后重试当前批次。"
-                f"{_upstream_reason(exc)}"
+                f"{context_label} 模型服务仍提示繁忙，已降至最低速度，稍后将重试当前批次。{_upstream_reason(exc)}"
             )
         elif say_heartbeat:
             error_callback(
-                f"{context_label} 模型服务仍提示太忙，已等待 {int(elapsed)} 秒，仍在重试当前批次。"
+                f"{context_label} 模型服务仍提示繁忙，已等待 {int(elapsed)} 秒，正在继续重试当前批次。"
             )
     _interruptible_sleep(delay, should_stop)
     return replace(decision, action=API_CONCURRENCY_ACTION_RETRY_CURRENT)

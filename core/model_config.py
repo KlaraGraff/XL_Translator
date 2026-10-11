@@ -158,15 +158,15 @@ def parse_model_config_import(raw: object) -> ImportedModelConfig:
         raise ValueError("Imported configuration must be a JSON object.")
     if raw.get("type") != MODEL_CONFIG_EXPORT_TYPE:
         # 按钮上不再写版本号，所以这里必须自己说清楚“文件不对”，而不是丢一个内部代号。
-        raise ValueError("这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。")
+        raise ValueError("此文件不是当前版本的模型配置格式，无法导入。请使用本应用「导出（不含密钥）」或「导出（含密钥）」生成的配置文件。")
     try:
         version = int(raw.get("version"))
     except (TypeError, ValueError):
-        raise ValueError("这个文件不是当前版本的模型配置格式，无法导入。请使用本应用“导出（不含 Key）”或“导出含 Key”生成的配置文件。") from None
+        raise ValueError("此文件不是当前版本的模型配置格式，无法导入。请使用本应用「导出（不含密钥）」或「导出（含密钥）」生成的配置文件。") from None
     if version > MODEL_CONFIG_EXPORT_VERSION:
         # 更新的版本才是真读不了；旧版本必须读得进来，否则一次格式升级就等于把
         # 用户手里所有导出文件作废，而这些文件常常是他唯一的一份配置备份。
-        raise ValueError("这个文件由更新版本的应用导出，当前版本读不了。请先把应用升级到最新版再导入。")
+        raise ValueError("此文件由更高版本的应用导出，当前版本无法读取。请先将应用升级到最新版本后再导入。")
     if isinstance(raw.get("model_profiles"), dict):
         return _parse_model_profiles(raw)
     raise ValueError("model_profiles must be a JSON object.")

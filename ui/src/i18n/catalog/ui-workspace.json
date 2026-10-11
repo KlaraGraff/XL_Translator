@@ -3,15 +3,15 @@
     "en": "Only fill in untranslated content",
     "fr": "Compléter uniquement le contenu non traduit"
   },
-  "只翻译还没有译文的内容，已翻译部分保持不变。": {
-    "en": "Only translates content that has no translation yet; already translated parts stay as they are.",
+  "仅翻译尚无译文的内容，已翻译部分保持不变。": {
+    "en": "Translates only content that has no translation yet; translated parts remain unchanged.",
     "fr": "Seul le contenu sans traduction est traduit ; les parties déjà traduites restent inchangées."
   },
   "仅显示译文": {
     "en": "Translation only",
     "fr": "Traduction seule"
   },
-  "开启后工作表里只放译文。要不要另存一份原文，看下面的「另存原文工作表」。": {
+  "开启后工作表中仅保留译文。是否另存原文，由下方「另存原文工作表」决定。": {
     "en": "When on, worksheets contain only the translation. Whether a copy of the source is kept depends on “Keep source worksheets” below.",
     "fr": "Si activé, les feuilles ne contiennent que la traduction. Pour conserver une copie du texte source, voir « Conserver les feuilles source » ci-dessous."
   },
@@ -19,23 +19,23 @@
     "en": "Translate file names",
     "fr": "Traduire les noms de fichiers"
   },
-  "把输出文件的名称也翻成目标语言；关闭时沿用原文件名。": {
-    "en": "Also translates output file names into the target language; when off, the original names are kept.",
+  "将输出文件名翻译为目标语言；关闭时沿用原文件名。": {
+    "en": "Translates output file names into the target language; when off, the original names are kept.",
     "fr": "Les noms des fichiers de sortie sont aussi traduits dans la langue cible ; si désactivé, les noms d'origine sont conservés."
   },
   "翻译工作表名称": {
     "en": "Translate worksheet names",
     "fr": "Traduire les noms de feuilles"
   },
-  "工作表标签名也翻译，公式里引用到的表名会一起改；改了不安全的表保留原名。": {
-    "en": "Worksheet tab names are translated too, and references in formulas are updated; sheets that can't be renamed safely keep their names.",
-    "fr": "Les noms d'onglets sont aussi traduits et les références dans les formules mises à jour ; les feuilles qu'on ne peut pas renommer sans risque gardent leur nom."
+  "同时翻译工作表标签名，并同步更新公式中引用的表名；无法安全重命名的工作表保留原名。": {
+    "en": "Worksheet tab names are translated and references in formulas are updated; sheets that cannot be renamed safely keep their names.",
+    "fr": "Les noms d'onglets sont aussi traduits et les références dans les formules mises à jour ; les feuilles qui ne peuvent pas être renommées sans risque conservent leur nom."
   },
   "另存原文工作表": {
     "en": "Keep source worksheets",
     "fr": "Conserver les feuilles source"
   },
-  "每张工作表旁边再放一份没翻译的原文，表名后面加「_原文」。": {
+  "在每张工作表旁保留一份未翻译的原文副本，表名后加「_原文」。": {
     "en": "Places an untranslated copy next to each worksheet, with “_原文” added to its name.",
     "fr": "Place une copie non traduite à côté de chaque feuille, avec « _原文 » ajouté à son nom."
   },
@@ -43,7 +43,7 @@
     "en": "Translate formula cells",
     "fr": "Traduire les cellules à formule"
   },
-  "公式单元格按现在显示的内容写成双语文字，之后不再自动计算。关闭则公式单元格保持原样、不翻译。": {
+  "公式单元格按当前显示内容写为双语文本，此后不再自动计算。关闭时公式单元格保持原样，不予翻译。": {
     "en": "Formula cells are written as bilingual text based on what they currently display and will no longer recalculate. When off, formula cells are left as they are, untranslated.",
     "fr": "Les cellules à formule sont écrites en texte bilingue d'après ce qu'elles affichent et ne seront plus recalculées. Si désactivé, elles restent telles quelles, sans traduction."
   },
@@ -51,25 +51,25 @@
     "en": "Adjust row heights with Excel",
     "fr": "Ajuster les hauteurs avec Excel"
   },
-  "需要本机装有 Excel。开启后用 Excel 按译文重算行高，更准；用不了时保留程序估算的行高，并在结果里提示。": {
-    "en": "Requires Excel on this computer. When on, Excel recalculates row heights for the translation, which is more accurate; if Excel can't be used, the estimated heights are kept and the result says so.",
+  "需要本机安装 Excel。开启后由 Excel 按译文重新计算行高，结果更准确；Excel 不可用时保留估算行高，并在结果中提示。": {
+    "en": "Requires Excel on this computer. When on, Excel recalculates row heights for the translation for better accuracy; if Excel is not available, the estimated heights are kept and the result indicates this.",
     "fr": "Nécessite Excel sur cet ordinateur. Si activé, Excel recalcule les hauteurs de ligne pour la traduction, de façon plus précise ; si Excel n'est pas disponible, les hauteurs estimées sont conservées et le résultat le signale."
   },
   "保持行高，缩小字号": {
     "en": "Keep row heights, shrink text",
     "fr": "Garder les hauteurs, réduire le texte"
   },
-  "不改行高，译文放不下时缩小字号；缩到最小仍放不下的单元格标为需复核。和「用 Excel 调整行高」只能选一个。": {
-    "en": "Row heights stay the same; text is shrunk when the translation doesn't fit. Cells that still don't fit at the minimum size are marked for review. Can't be combined with “Adjust row heights with Excel”.",
+  "保持行高不变，译文超出时缩小字号；缩至最小字号仍无法容纳的单元格标记为需复核。不能与「用 Excel 调整行高」同时使用。": {
+    "en": "Row heights stay the same; text is shrunk when the translation does not fit. Cells that still do not fit at the minimum size are marked for review. Cannot be combined with “Adjust row heights with Excel”.",
     "fr": "Les hauteurs de ligne ne changent pas ; la police est réduite si la traduction ne tient pas. Les cellules qui ne tiennent toujours pas à la taille minimale sont marquées à vérifier. Incompatible avec « Ajuster les hauteurs avec Excel »."
   },
   "标记需复核内容": {
     "en": "Mark content needing review",
     "fr": "Signaler le contenu à vérifier"
   },
-  "把保留了原文、或原文里疑似夹杂错误外文的单元格涂上底色，方便人工检查。程序已确认没问题的只写进报告，不涂色。": {
-    "en": "Shades cells that kept the source text or whose source seems to contain stray foreign text, so they're easy to check. Items already confirmed as fine only appear in the report.",
-    "fr": "Colore les cellules qui ont gardé le texte source ou dont le texte source semble contenir du texte étranger parasite, pour faciliter la vérification. Les éléments déjà confirmés comme corrects figurent seulement dans le rapport."
+  "为保留原文或原文疑似夹杂错误外文的单元格添加底色，便于人工检查。已确认无问题的内容仅记入报告，不添加底色。": {
+    "en": "Shades cells that kept the source text or whose source seems to contain stray foreign text, for manual checking. Items already confirmed as correct appear only in the report and are not shaded.",
+    "fr": "Colore les cellules qui ont gardé le texte source ou dont le texte source semble contenir du texte étranger parasite, pour faciliter la vérification manuelle. Les éléments déjà confirmés comme corrects figurent uniquement dans le rapport, sans couleur."
   },
   "开启后输出文件只保留译文；关闭时保留原文与译文。": {
     "en": "When on, output files contain only the translation; when off, they contain both source and translation.",
@@ -79,8 +79,8 @@
     "en": "Use Word / LibreOffice for numbering",
     "fr": "Numérotation via Word / LibreOffice"
   },
-  "翻译前要把自动编号（如 1.1、（一））转成普通文字，免得译后编号错乱。开启时优先用本机的 Word 或 LibreOffice，效果更准；都没有时自动改用内置方式。关闭则始终用内置方式。只处理临时副本，原件不动。": {
-    "en": "Before translating, automatic numbering (such as 1.1 or (a)) is turned into plain text so it doesn't get scrambled. When on, Word or LibreOffice on this computer is used first for better accuracy, falling back to the built-in method if neither is available. When off, the built-in method is always used. Only a temporary copy is processed; the original is untouched.",
+  "翻译前将自动编号（如 1.1、（一））转换为普通文本，以免译后编号错乱。开启时优先使用本机的 Word 或 LibreOffice，效果更准确；两者均未安装时自动改用内置方式。关闭时始终使用内置方式。仅处理临时副本，源文件保持不变。": {
+    "en": "Before translating, automatic numbering (such as 1.1 or (a)) is converted to plain text so that it is not scrambled. When on, Word or LibreOffice on this computer is used first for better accuracy, falling back to the built-in method if neither is available. When off, the built-in method is always used. Only a temporary copy is processed; the source file is not changed.",
     "fr": "Avant la traduction, la numérotation automatique (par ex. 1.1 ou (a)) est convertie en texte simple pour éviter qu'elle soit désordonnée. Si activé, Word ou LibreOffice sur cet ordinateur est utilisé en priorité pour plus de précision, avec la méthode intégrée en secours. Si désactivé, la méthode intégrée est toujours utilisée. Seule une copie temporaire est traitée ; l'original n'est pas modifié."
   },
   "为保留原文或质量校验未通过的段落加高亮，便于人工复核。": {
@@ -91,39 +91,39 @@
     "en": "Skip cover and contents",
     "fr": "Ignorer couverture et sommaire"
   },
-  "从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；找不到正文起点时不启用，并在日志里说明。": {
-    "en": "Content from the start of the document up to the first chapter heading (cover, approval page, contents, preface) is not translated. Headings are detected from patterns like “Chapter 1”, “1 Overview”, “1.1”, “(a)” and Word heading styles; if the start of the main text can't be found, this is not applied and the log says so.",
+  "从文档开头到正文第一个章节标题之前的内容（封面、批准页、目录、前言）不翻译。章节标题按「第一章」「1 概述」「1.1」「（一）」和 Word 标题样式识别；未找到正文起点时不启用，并在日志中说明。": {
+    "en": "Content from the start of the document up to the first chapter heading (cover, approval page, contents, preface) is not translated. Headings are detected from patterns like “Chapter 1”, “1 Overview”, “1.1”, “(a)” and Word heading styles; if the start of the main text cannot be found, this option is not applied and this is noted in the log.",
     "fr": "Le contenu situé entre le début du document et le premier titre de chapitre (couverture, page d'approbation, sommaire, préface) n'est pas traduit. Les titres sont reconnus d'après des formes comme « Chapitre 1 », « 1 Présentation », « 1.1 », « (a) » et les styles de titre Word ; si le début du texte principal est introuvable, l'option n'est pas appliquée et le journal l'indique."
   },
   "翻译页眉页脚": {
     "en": "Translate headers & footers",
     "fr": "Traduire en-têtes et pieds de page"
   },
-  "开启后页眉页脚也翻译，译文用「 / 」接在原文同一行，免得页眉变高把正文往下挤。页码和目录类的页眉页脚不翻。": {
-    "en": "When on, headers and footers are translated too, with the translation added on the same line after “ / ” so headers don't grow and push the body down. Page numbers and contents-type headers and footers are not translated.",
+  "开启后同时翻译页眉页脚，译文以「 / 」接在原文同一行，以免页眉增高导致正文下移。页码和目录类页眉页脚不翻译。": {
+    "en": "When on, headers and footers are also translated, with the translation added on the same line after “ / ” so that headers do not grow and push the body text down. Page numbers and contents-type headers and footers are not translated.",
     "fr": "Si activé, les en-têtes et pieds de page sont aussi traduits ; la traduction est ajoutée sur la même ligne après « / » pour ne pas agrandir l'en-tête ni décaler le texte. Les numéros de page et les en-têtes de type sommaire ne sont pas traduits."
   },
   "逐页审核": {
     "en": "Page review",
     "fr": "Contrôle des pages"
   },
-  "每页翻完再让审核模型检查一遍版式和文字是否完整，有问题的页会提醒你复核。每页多调用一次模型，会多一份费用。": {
-    "en": "After each page is translated, a review model checks that the layout and text are complete, and flags pages to review. This adds one extra model call per page, which costs extra.",
+  "每页翻译完成后由审核模型检查版式和文字是否完整，并提示复核有问题的页面。每页将额外调用一次模型，产生额外费用。": {
+    "en": "After each page is translated, a review model checks that the layout and text are complete and flags pages for review. Each page requires one extra model call, which incurs additional cost.",
     "fr": "Après la traduction de chaque page, un modèle de vérification contrôle que la mise en page et le texte sont complets, et signale les pages à vérifier. Cela ajoute un appel au modèle par page, donc un coût supplémentaire."
   },
   "生成压缩 PDF": {
     "en": "Create compressed PDF",
     "fr": "Créer un PDF compressé"
   },
-  "在原始输出之外额外生成一份体积更小的 PDF。": {
-    "en": "Also creates a smaller PDF in addition to the regular output.",
+  "在常规输出之外，另生成一份体积更小的 PDF。": {
+    "en": "Creates a smaller PDF in addition to the regular output.",
     "fr": "Crée aussi un PDF plus léger en plus de la sortie normale."
   },
   "也翻译图片文件": {
     "en": "Also translate images",
     "fr": "Traduire aussi les images"
   },
-  "开启后扫描时会把 PNG、JPG、WebP、BMP、TIFF 图片也列进来一起翻译；关闭则只处理 PDF。": {
+  "开启后，扫描时将 PNG、JPG、WebP、BMP、TIFF 图片一并纳入翻译；关闭时仅处理 PDF。": {
     "en": "When on, PNG, JPG, WebP, BMP and TIFF images are included in the scan and translated too; when off, only PDFs are processed.",
     "fr": "Si activé, les images PNG, JPG, WebP, BMP et TIFF sont incluses dans l'analyse et traduites aussi ; sinon, seuls les PDF sont traités."
   },
@@ -131,7 +131,7 @@
     "en": "Skip A3 and larger pages",
     "fr": "Ignorer les pages A3 et plus"
   },
-  "长宽都比 A4 大约 15% 以上的页面（A3 及更大，横竖都算）不翻译，原样放进输出文件，清晰度不变。工程图纸常是这种幅面。比 A4 稍大一点的（比如扫描白边）不受影响。": {
+  "长、宽均超出 A4 约 15% 以上的页面（A3 及更大，横向、纵向均适用）不翻译，按原样写入输出文件，清晰度不变。工程图纸常用此类幅面。略大于 A4 的页面（如带扫描白边）不受影响。": {
     "en": "Pages more than about 15% larger than A4 in both dimensions (A3 and up, portrait or landscape) are not translated and are placed in the output as they are, at full quality. Engineering drawings often use these sizes. Pages only slightly larger than A4 (e.g. scan margins) are not affected.",
     "fr": "Les pages dépassant le format A4 d'environ 15 % dans les deux dimensions (A3 et plus, portrait ou paysage) ne sont pas traduites et sont placées telles quelles dans la sortie, sans perte de qualité. Les plans techniques utilisent souvent ces formats. Les pages à peine plus grandes que l'A4 (marges de numérisation, par ex.) ne sont pas concernées."
   },
@@ -139,7 +139,7 @@
     "en": "Translate text in blocks",
     "fr": "Traduire le texte des blocs"
   },
-  "图块里的文字（含属性文字）也一起翻译；关闭则只翻译直接画在图纸上的文字。": {
+  "同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。": {
     "en": "Text inside blocks (including attributes) is translated too; when off, only text drawn directly on the drawing is translated.",
     "fr": "Le texte des blocs (attributs compris) est aussi traduit ; sinon, seul le texte placé directement sur le plan est traduit."
   },
@@ -147,7 +147,7 @@
     "en": "Also save a DXF",
     "fr": "Enregistrer aussi un DXF"
   },
-  "除了输出的图纸，再额外保存一份翻译后的 DXF，方便用别的软件核对。": {
+  "在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。": {
     "en": "Saves a translated DXF in addition to the output drawing, for checking in other software.",
     "fr": "Enregistre un DXF traduit en plus du plan de sortie, pour le vérifier dans un autre logiciel."
   },
@@ -223,27 +223,27 @@
     "en": "Choose files or a folder, then select the DWG / DXF drawings to translate",
     "fr": "Choisissez des fichiers ou un dossier, puis cochez les plans DWG / DXF à traduire"
   },
-  "还没有可翻译的文件": {
+  "尚无可翻译的文件": {
     "en": "No files to translate yet",
     "fr": "Aucun fichier à traduire pour l'instant"
   },
-  "用「浏览」选择文件或文件夹后会自动扫描，找到的表格会列在这里，可逐个勾选。": {
-    "en": "Pick files or a folder with “Browse” and they're scanned automatically. Spreadsheets found are listed here so you can select them one by one.",
+  "通过「浏览」选择文件或文件夹后将自动扫描，找到的表格将列于此处，可逐个勾选。": {
+    "en": "Select files or a folder with “Browse” to scan them automatically. Spreadsheets found are listed here and can be selected individually.",
     "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les classeurs trouvés s'affichent ici et peuvent être cochés un par un."
   },
-  "用「浏览」选择文件或文件夹后会自动扫描，找到的文档会列在这里，可逐个勾选。": {
-    "en": "Pick files or a folder with “Browse” and they're scanned automatically. Documents found are listed here so you can select them one by one.",
+  "通过「浏览」选择文件或文件夹后将自动扫描，找到的文档将列于此处，可逐个勾选。": {
+    "en": "Select files or a folder with “Browse” to scan them automatically. Documents found are listed here and can be selected individually.",
     "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les documents trouvés s'affichent ici et peuvent être cochés un par un."
   },
-  "用「浏览」选择文件或文件夹后会自动扫描，找到的 PDF 与图片会列在这里，可逐个勾选。": {
-    "en": "Pick files or a folder with “Browse” and they're scanned automatically. PDFs and images found are listed here so you can select them one by one.",
+  "通过「浏览」选择文件或文件夹后将自动扫描，找到的 PDF 与图片将列于此处，可逐个勾选。": {
+    "en": "Select files or a folder with “Browse” to scan them automatically. PDFs and images found are listed here and can be selected individually.",
     "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les PDF et images trouvés s'affichent ici et peuvent être cochés un par un."
   },
-  "用「浏览」选择文件或文件夹后会自动扫描，找到的 DWG / DXF 图纸会列在这里，可逐个勾选。": {
-    "en": "Pick files or a folder with “Browse” and they're scanned automatically. DWG / DXF drawings found are listed here so you can select them one by one.",
+  "通过「浏览」选择文件或文件夹后将自动扫描，找到的 DWG / DXF 图纸将列于此处，可逐个勾选。": {
+    "en": "Select files or a folder with “Browse” to scan them automatically. DWG / DXF drawings found are listed here and can be selected individually.",
     "fr": "Choisissez des fichiers ou un dossier avec « Parcourir » : l'analyse démarre automatiquement. Les plans DWG / DXF trouvés s'affichent ici et peuvent être cochés un par un."
   },
-  "可以开始下一批了": {
+  "可开始下一批": {
     "en": "Ready for the next batch",
     "fr": "Prêt pour le lot suivant"
   },
@@ -251,8 +251,8 @@
     "en": "The previous task's results are archived. Choose a new source to continue.",
     "fr": "Les résultats de la tâche précédente sont archivés. Choisissez une nouvelle source pour continuer."
   },
-  "这个任务不属于当前工作区。": {
-    "en": "This task doesn't belong to this workspace.",
+  "此任务不属于当前工作区。": {
+    "en": "This task does not belong to this workspace.",
     "fr": "Cette tâche n'appartient pas à cet espace de travail."
   },
   "文件 {0}": {
@@ -260,15 +260,15 @@
     "fr": "Fichier {0}"
   },
   "重新加载语言列表失败。": {
-    "en": "Couldn't reload the language list.",
+    "en": "Could not reload the language list.",
     "fr": "Impossible de recharger la liste des langues."
   },
-  "{0}没有保存成功，已恢复为原来的设置。": {
-    "en": "“{0}” couldn't be saved; the previous setting has been restored.",
+  "{0}未能保存，已恢复为原设置。": {
+    "en": "“{0}” could not be saved; the previous setting has been restored.",
     "fr": "« {0} » n'a pas pu être enregistré ; le réglage précédent a été rétabli."
   },
   "初始化工作区失败。": {
-    "en": "Couldn't load the workspace.",
+    "en": "Could not load the workspace.",
     "fr": "Impossible de charger l'espace de travail."
   },
   "加载中": {
@@ -315,8 +315,8 @@
     "en": "Starting",
     "fr": "Démarrage"
   },
-  "正在读取 {0}并检查模型连接，文件大时要几秒": {
-    "en": "Reading {0} and checking the model connection; large files take a few seconds",
+  "正在读取 {0}并检查模型连接，大文件需要几秒钟": {
+    "en": "Reading {0} and checking the model connection; large files may take a few seconds",
     "fr": "Lecture de {0} et vérification de la connexion au modèle ; quelques secondes pour les gros fichiers"
   },
   "已扫描 · 待开始": {
@@ -324,7 +324,7 @@
     "fr": "Analysé · Prêt"
   },
   "已找到 {0}，勾选后开始翻译": {
-    "en": "Found {0}. Select the ones you want, then start",
+    "en": "Found {0}. Select items to translate, then start",
     "fr": "Trouvé : {0}. Cochez ceux à traduire, puis lancez"
   },
   "待选择来源": {
@@ -363,7 +363,7 @@
     "en": "Resume from checkpoint",
     "fr": "Reprendre au point d'arrêt"
   },
-  "已选好断点，点「开始翻译」即可继续。": {
+  "已选择断点，点击「开始翻译」继续。": {
     "en": "Checkpoint selected. Click “Start translation” to continue.",
     "fr": "Point d'arrêt sélectionné. Cliquez sur « Lancer la traduction » pour continuer."
   },
@@ -375,11 +375,11 @@
     "en": "View full report",
     "fr": "Voir le rapport complet"
   },
-  "这个历史任务未保留原始来源路径。结果仍可查看；重新翻译请先选择来源并扫描。": {
-    "en": "This past task didn't keep its source path. You can still view the results; to translate again, choose a source and scan it first.",
+  "此历史任务未保留来源路径。结果仍可查看；如需重新翻译，请先选择来源并扫描。": {
+    "en": "This past task did not keep its source path. Results can still be viewed; to translate again, choose a source and scan it first.",
     "fr": "Cette tâche passée n'a pas conservé le chemin de sa source. Les résultats restent consultables ; pour retraduire, choisissez d'abord une source et analysez-la."
   },
-  "这个历史任务的逐页记录已不可用。文件结果仍可在完整报告中查看。": {
+  "此历史任务的逐页记录已不可用。文件结果仍可在完整报告中查看。": {
     "en": "Page-by-page records for this past task are no longer available. File results can still be viewed in the full report.",
     "fr": "Le suivi page par page de cette tâche passée n'est plus disponible. Les résultats par fichier restent consultables dans le rapport complet."
   },
@@ -399,8 +399,8 @@
     "en": "Browse",
     "fr": "Parcourir"
   },
-  "正在扫描当前路径，完成后再选新的来源。": {
-    "en": "Scanning the current path. Choose a new source once it's done.",
+  "正在扫描当前路径，完成后方可选择新来源。": {
+    "en": "Scanning the current path. Choose a new source once the scan is complete.",
     "fr": "Analyse du chemin actuel en cours. Choisissez une nouvelle source une fois terminée."
   },
   "选择文件夹…": {
@@ -444,11 +444,11 @@
     "fr": "Choisir des {0}"
   },
   "选择来源失败。": {
-    "en": "Couldn't choose the source.",
+    "en": "Could not choose the source.",
     "fr": "Impossible de choisir la source."
   },
-  "已选择来源，但记住上次目录失败。": {
-    "en": "Source selected, but the last-used folder couldn't be remembered.",
+  "已选择来源，但未能记住上次使用的目录。": {
+    "en": "Source selected, but the last-used folder could not be remembered.",
     "fr": "Source sélectionnée, mais le dernier dossier utilisé n'a pas pu être mémorisé."
   },
   "已扫描文件": {
@@ -551,27 +551,27 @@
     "en": "{0} DWG {0|drawing needs|drawings need} the drawing converter to be connected first",
     "fr": "{0} {0|plan|plans} DWG {0|nécessite|nécessitent} d'abord de connecter le convertisseur de plans"
   },
-  "还没有连接图纸转换工具": {
-    "en": "The drawing converter isn't connected yet",
+  "尚未连接图纸转换工具": {
+    "en": "The drawing converter is not connected yet",
     "fr": "Le convertisseur de plans n'est pas encore connecté"
   },
-  "检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。": {
-    "en": "The converter that was found can't be used. DWG files need the converter to be read and written; DXF files aren't affected and can be translated directly.",
+  "检测到的转换工具无法使用。DWG 需要转换工具才能读写；DXF 不受影响，可直接翻译。": {
+    "en": "The detected converter cannot be used. DWG files need the converter to be read and written; DXF files are not affected and can be translated directly.",
     "fr": "Le convertisseur détecté est inutilisable. Les fichiers DWG en ont besoin pour être lus et écrits ; les fichiers DXF ne sont pas concernés et peuvent être traduits directement."
   },
-  "DWG 需要转换工具才能读写；DXF 不受影响，可以直接翻译。连接后回到这里重新扫描即可。": {
-    "en": "DWG files need the converter to be read and written; DXF files aren't affected and can be translated directly. Once it's connected, come back here and scan again.",
+  "DWG 需要转换工具才能读写；DXF 不受影响，可直接翻译。连接后请返回此处重新扫描。": {
+    "en": "DWG files need the converter to be read and written; DXF files are not affected and can be translated directly. Once it is connected, return here and scan again.",
     "fr": "Les fichiers DWG ont besoin du convertisseur pour être lus et écrits ; les fichiers DXF ne sont pas concernés et peuvent être traduits directement. Une fois connecté, revenez ici et relancez l'analyse."
   },
   "打开插件": {
     "en": "Open Plugins",
     "fr": "Ouvrir les plugins"
   },
-  "将接着上次停止的位置继续": {
+  "将从上次停止的位置继续": {
     "en": "Will continue from where the last run stopped",
     "fr": "Reprise à l'endroit où la dernière exécution s'est arrêtée"
   },
-  "已经验证过的文件直接复用，其余文件重新翻译。上次输出：{0}": {
+  "已验证的文件直接复用，其余文件重新翻译。上次输出：{0}": {
     "en": "Files already verified are reused; the rest are translated again. Last output: {0}",
     "fr": "Les fichiers déjà vérifiés sont réutilisés ; les autres sont retraduits. Dernière sortie : {0}"
   },
@@ -579,24 +579,24 @@
     "en": "Retranslate everything",
     "fr": "Tout retraduire"
   },
-  "这批文件里有 {0}不会被翻译": {
-    "en": "{0} in these files won't be translated",
+  "此批文件中有 {0}不会被翻译": {
+    "en": "{0} in these files will not be translated",
     "fr": "{0} dans ces fichiers ne seront pas traduits"
   },
-  "有 {0} 个 .xls 文件暂时数不出图片、文本框和批注": {
-    "en": "Images, text boxes and comments can't be counted yet in {0} .xls {0|file|files}",
+  "有 {0} 个 .xls 文件暂时无法统计图片、文本框和批注": {
+    "en": "Images, text boxes and comments cannot yet be counted in {0} .xls {0|file|files}",
     "fr": "Impossible pour l'instant de compter images, zones de texte et commentaires dans {0} {0|fichier|fichiers} .xls"
   },
-  "翻译只覆盖单元格里的文字。图片里的字需要 OCR，暂不支持；文本框、形状和批注里的字暂未接入。这些内容会原样保留，不会丢失也不会变形。": {
-    "en": "Only text in cells is translated. Text in images would need OCR, which isn't supported yet; text in text boxes, shapes and comments isn't handled yet either. This content is kept exactly as it is—nothing is lost or distorted.",
+  "仅翻译单元格中的文字。图片中的文字需要 OCR，暂不支持；文本框、形状和批注中的文字暂不处理。这些内容将按原样保留，不会丢失或变形。": {
+    "en": "Only text in cells is translated. Text in images requires OCR, which is not supported yet; text in text boxes, shapes and comments is not processed yet. This content is kept as is, without loss or distortion.",
     "fr": "Seul le texte des cellules est traduit. Le texte des images nécessiterait une reconnaissance de caractères, pas encore prise en charge ; le texte des zones de texte, formes et commentaires n'est pas encore traité non plus. Ce contenu est conservé tel quel, sans perte ni déformation."
   },
-  "翻译只覆盖单元格里的文字，图片、文本框和批注里的字会原样保留。": {
+  "仅翻译单元格中的文字，图片、文本框和批注中的文字将按原样保留。": {
     "en": "Only text in cells is translated; text in images, text boxes and comments is kept as it is.",
     "fr": "Seul le texte des cellules est traduit ; le texte des images, zones de texte et commentaires est conservé tel quel."
   },
-  "另有 {0} 个 .xls 文件要先转换成 .xlsx 才能统计，转换后如果有这些内容，同样不会被翻译。": {
-    "en": " Also, {0} .xls {0|file needs|files need} to be converted to .xlsx before counting; any such content found after conversion won't be translated either.",
+  "另有 {0} 个 .xls 文件需先转换为 .xlsx 才能统计；转换后如有此类内容，同样不会被翻译。": {
+    "en": " Also, {0} .xls {0|file needs|files need} to be converted to .xlsx before counting; any such content found after conversion will not be translated either.",
     "fr": " Par ailleurs, {0} {0|fichier|fichiers} .xls {0|doit|doivent} être {0|converti|convertis} en .xlsx avant comptage ; un tel contenu, s'il existe, ne sera pas traduit non plus."
   },
   "查看是哪些文件": {
@@ -612,7 +612,7 @@
     "fr": "Résultats de l'analyse · Contenu hors cellules"
   },
   "这些文件里有不参与翻译的内容": {
-    "en": "These files contain content that won't be translated",
+    "en": "These files contain content that will not be translated",
     "fr": "Ces fichiers contiennent du contenu qui ne sera pas traduit"
   },
   "没有检测到图片或文本框。": {
@@ -663,12 +663,12 @@
     "en": " was not translated and has been kept as is.",
     "fr": " n'a pas été traduit et a été conservé tel quel."
   },
-  "{0} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样没有翻译。": {
-    "en": " Images, text boxes and comments in {0} .xls {0|file|files} couldn't be counted; any text in them wasn't translated either.",
+  "{0} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样未翻译。": {
+    "en": " Images, text boxes and comments in {0} .xls {0|file|files} could not be counted; any text in them was not translated either.",
     "fr": " Les images, zones de texte et commentaires de {0} {0|fichier|fichiers} .xls n'ont pas pu être comptés ; leur texte n'a pas été traduit non plus."
   },
   "{0} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。": {
-    "en": " {0} floating {0|image was|images were} fixed in size so they don't stretch when row heights change.",
+    "en": " {0} floating {0|image was|images were} fixed in size so that they do not stretch when row heights change.",
     "fr": " {0} {0|image flottante a|images flottantes ont} reçu une taille fixe pour ne pas être {0|étirée|étirées} quand les hauteurs de ligne changent."
   },
   "全选": {
@@ -683,33 +683,33 @@
     "en": "Reading files, please wait.",
     "fr": "Lecture des fichiers, veuillez patienter."
   },
-  "「{0}」没能纳入清单": {
-    "en": "“{0}” couldn't be added to the list",
+  "「{0}」未能加入清单": {
+    "en": "“{0}” could not be added to the list",
     "fr": "« {0} » n'a pas pu être ajouté à la liste"
   },
-  "扫描到的 {0} 个输入都没能纳入清单": {
+  "扫描到的 {0} 项均未能加入清单": {
     "en": "None of the {0} scanned items could be added to the list",
     "fr": "Aucun des {0} éléments analysés n'a pu être ajouté à la liste"
   },
-  "{0}。处理好之后重新扫描即可。": {
-    "en": "{0}. Fix it, then scan again.",
-    "fr": "{0}. Corrigez le problème, puis relancez l'analyse."
+  "{0}。处理后请重新扫描。": {
+    "en": "{0}. Resolve the issue, then scan again.",
+    "fr": "{0}. Résolvez le problème, puis relancez l'analyse."
   },
   "原因未知": {
     "en": "Unknown reason",
     "fr": "Raison inconnue"
   },
-  "每一项的原因可以点下方「查看扫描报告」看到；处理好之后重新扫描即可。": {
-    "en": "Click “View scan report” below to see the reason for each item; fix them, then scan again.",
-    "fr": "Cliquez sur « Voir le rapport d'analyse » ci-dessous pour connaître la raison de chaque élément ; corrigez-les, puis relancez l'analyse."
+  "点击下方「查看扫描报告」可查看各项原因；处理后请重新扫描。": {
+    "en": "Click “View scan report” below to see the reason for each item; resolve the issues, then scan again.",
+    "fr": "Cliquez sur « Voir le rapport d'analyse » ci-dessous pour connaître la raison de chaque élément ; résolvez les problèmes, puis relancez l'analyse."
   },
-  "上一个任务没有顺利完成": {
-    "en": "The previous task didn't complete",
+  "上一个任务未能完成": {
+    "en": "The previous task did not complete",
     "fr": "La tâche précédente n'a pas abouti"
   },
-  "失败原因在任务中心的完整报告里；也可以重新选择来源再试一次。": {
-    "en": "The reason is in the full report in the Task center. You can also choose a source again and retry.",
-    "fr": "La cause figure dans le rapport complet du Centre des tâches. Vous pouvez aussi choisir à nouveau une source et réessayer."
+  "失败原因见任务中心的完整报告；也可重新选择来源后重试。": {
+    "en": "See the full report in the Task center for the reason, or choose a source again and retry.",
+    "fr": "La cause figure dans le rapport complet du Centre des tâches ; vous pouvez aussi choisir à nouveau une source et réessayer."
   },
   "扫描时跳过 {0} 项": {
     "en": "{0} {0|item|items} skipped during scan",
@@ -787,17 +787,17 @@
     "en": "Scan report · {0}",
     "fr": "Rapport d'analyse · {0}"
   },
-  "和后台的连接暂时断开，正在自动重连，已有进度不会丢失，也不会重复处理。": {
-    "en": "Lost connection to the background service; reconnecting automatically. Progress won't be lost or processed twice.",
+  "与后台服务的连接暂时中断，正在自动重新连接；已有进度不会丢失，也不会重复处理。": {
+    "en": "Connection to the background service was lost; reconnecting automatically. Progress will not be lost or processed twice.",
     "fr": "Connexion au service perdue ; reconnexion automatique en cours. La progression ne sera ni perdue ni traitée deux fois."
   },
-  "已等待 {0} 秒：正在收尾，等手上的请求回来后把已翻好的内容写进文件，大文档要多等一会儿，程序没有卡住。": {
-    "en": "Waiting for {0} s: finishing up. Once the pending requests return, the translated content will be written to the files. Large documents take a little longer—nothing is stuck.",
-    "fr": "Attente depuis {0} s : finalisation en cours. Dès le retour des requêtes en cours, le contenu traduit sera écrit dans les fichiers. Les gros documents prennent un peu plus de temps ; rien n'est bloqué."
+  "已等待 {0} 秒：正在收尾，待进行中的请求返回后将已翻译的内容写入文件。大文档耗时较长，程序仍在正常运行。": {
+    "en": "Waiting for {0} s: finishing. Once pending requests return, the translated content will be written to the files. Large documents take longer; the app is still running normally.",
+    "fr": "Attente depuis {0} s : finalisation en cours. Dès le retour des requêtes en cours, le contenu traduit sera écrit dans les fichiers. Les gros documents prennent plus de temps ; l'application fonctionne normalement."
   },
-  "已等待 {0} 秒：这一批已经发给模型，正在等它返回译文，程序没有卡住。": {
-    "en": "Waiting for {0} s: this batch has been sent to the model and its translation is on the way—nothing is stuck.",
-    "fr": "Attente depuis {0} s : ce lot a été envoyé au modèle et la traduction est attendue ; rien n'est bloqué."
+  "已等待 {0} 秒：此批内容已发送至模型，正在等待返回译文，程序仍在正常运行。": {
+    "en": "Waiting for {0} s: this batch has been sent to the model and the translation is pending; the app is still running normally.",
+    "fr": "Attente depuis {0} s : ce lot a été envoyé au modèle et la traduction est attendue ; l'application fonctionne normalement."
   },
   "正在准备任务": {
     "en": "Preparing task",
@@ -815,7 +815,7 @@
     "en": "Accepted after recheck {0}",
     "fr": "Acceptés après revérification {0}"
   },
-  "仍未翻好 {0}": {
+  "仍未完成 {0}": {
     "en": "Still unresolved {0}",
     "fr": "Toujours non résolus {0}"
   },
@@ -843,7 +843,7 @@
     "en": "Automatic retranslation and recheck",
     "fr": "Retraduction et revérification automatiques"
   },
-  "译文为空、明显不完整或没通过质量检查的段落会自动重译；重译后仍有疑问、经模型复查才采用的译文，不会存进记忆库。": {
+  "译文为空、明显不完整或未通过质量检查的段落将自动重译；重译后仍存疑、经模型复查后才采用的译文不会写入记忆库。": {
     "en": "Paragraphs whose translation is empty, clearly incomplete or failed the quality check are retranslated automatically. Translations that were only accepted after a model recheck are not saved to translation memory.",
     "fr": "Les paragraphes dont la traduction est vide, manifestement incomplète ou n'a pas passé le contrôle qualité sont retraduits automatiquement. Les traductions acceptées seulement après revérification par le modèle ne sont pas enregistrées dans la mémoire de traduction."
   },
@@ -887,9 +887,9 @@
     "en": "{0} options",
     "fr": "Options {0}"
   },
-  "{0}选了「接着上次继续」时由程序打开；要全部重译，点文件表上方横幅里的「改为全部重译」。": {
-    "en": "{0} Turned on automatically because you chose “Resume last run”. To retranslate everything, click “Retranslate everything” in the banner above the file list.",
-    "fr": "{0} Activé automatiquement car vous avez choisi « Reprendre la dernière exécution ». Pour tout retraduire, cliquez sur « Tout retraduire » dans le bandeau au-dessus de la liste."
+  "{0}选择「继续上次翻译」时自动开启；如需全部重译，请点击文件列表上方横幅中的「改为全部重译」。": {
+    "en": "{0} Turned on automatically when “Resume previous translation” is selected. To retranslate everything, click “Retranslate everything” in the banner above the file list.",
+    "fr": "{0} Activé automatiquement lorsque « Reprendre la traduction précédente » est choisi. Pour tout retraduire, cliquez sur « Tout retraduire » dans le bandeau au-dessus de la liste."
   },
   "已自动开启": {
     "en": "Auto-enabled",
@@ -951,7 +951,7 @@
     "en": "End task",
     "fr": "Terminer la tâche"
   },
-  "结束后会保存已完成的页面，并生成这部分的报告": {
+  "结束后将保存已完成的页面，并生成相应报告": {
     "en": "Completed pages are saved and a report is created for them",
     "fr": "Les pages terminées sont enregistrées et un rapport est créé pour elles"
   },
@@ -971,7 +971,7 @@
     "en": "Partly translated · missing content to add",
     "fr": "Traduit en partie · contenu manquant à compléter"
   },
-  "部分翻译 · 补 {0} 格": {
+  "部分翻译 · 补 {0} 个单元格": {
     "en": "Partly translated · {0} {0|cell|cells} to add",
     "fr": "Traduit en partie · {0} {0|cellule|cellules} à compléter"
   },
@@ -983,7 +983,7 @@
     "en": "Already translated · kept",
     "fr": "Déjà traduit · conservé"
   },
-  "源文件已变化 · 整份重翻": {
+  "源文件已变化 · 整份重译": {
     "en": "Source changed · full retranslation",
     "fr": "Source modifiée · retraduction complète"
   },
@@ -991,23 +991,23 @@
     "en": "No translation · first run",
     "fr": "Pas de traduction · première fois"
   },
-  "接着上次继续": {
-    "en": "Resume last run",
-    "fr": "Reprendre la dernière exécution"
+  "继续上次翻译": {
+    "en": "Resume previous translation",
+    "fr": "Reprendre la traduction précédente"
   },
   "以 ": {
     "en": "Using ",
     "fr": "À partir de "
   },
   " 里已完成的 {0} 页为底稿，只生成剩下的页；结果存入新的输出文件夹。": {
-    "en": " ({0} {0|page|pages} already done) as the base; only the remaining pages are generated. Results go to a new output folder.",
+    "en": " ({0} {0|page|pages} already done) as the base; only the remaining pages are generated. Results are saved to a new output folder.",
     "fr": " ({0} {0|page déjà terminée|pages déjà terminées}), seules les pages restantes sont générées. Le résultat est enregistré dans un nouveau dossier de sortie."
   },
   " 里的译文为底稿，只补缺失的部分；结果存入新的输出文件夹。": {
-    "en": " as the base; only the missing parts are filled in. Results go to a new output folder.",
+    "en": " as the base; only the missing parts are filled in. Results are saved to a new output folder.",
     "fr": ", seules les parties manquantes sont complétées. Le résultat est enregistré dans un nouveau dossier de sortie."
   },
-  "（{0} 个源文件已变化的文件会整份重翻）": {
+  "（{0} 个源文件已变化的文件将整份重译）": {
     "en": " ({0} {0|file whose source has|files whose source has} changed will be fully retranslated)",
     "fr": " ({0} {0|fichier dont la source a changé sera retraduit|fichiers dont la source a changé seront retraduits} entièrement)"
   },
@@ -1031,7 +1031,7 @@
     "en": "{0} already translated",
     "fr": "{0} déjà {0|traduit|traduits}"
   },
-  "{0} 个翻了一部分": {
+  "{0} 个已部分翻译": {
     "en": "{0} partly translated",
     "fr": "{0} {0|traduit|traduits} en partie"
   },
@@ -1039,7 +1039,7 @@
     "en": "{0} with changed source",
     "fr": "{0} avec source modifiée"
   },
-  "{0} 个还没有译文": {
+  "{0} 个尚无译文": {
     "en": "{0} not yet translated",
     "fr": "{0} pas encore {0|traduit|traduits}"
   },
@@ -1079,99 +1079,99 @@
     "en": ": {0}",
     "fr": " : {0}"
   },
-  "另有 {0} 个文件没有页记录，两种选法都会把它们整份重新生成，不计入这里的页数。": {
+  "另有 {0} 个文件没有页面记录，无论选择哪种方式都将整份重新生成，不计入此处页数。": {
     "en": "{0} more {0|file has|files have} no page records; either way {0|it|they} will be regenerated in full and {0|is|are} not included in the page count here.",
     "fr": "{0} autre(s) fichier(s) sans suivi des pages : dans les deux cas, ils seront régénérés entièrement et ne sont pas comptés ici."
   },
-  "另有 {0} 个 PDF 的源文件在上次翻译后改动过，上次的页面无法复用，会整份重新生成。": {
-    "en": "The source of {0} more {0|PDF|PDFs} changed after the last translation; previous pages can't be reused, so {0|it|they} will be regenerated in full.",
+  "另有 {0} 个 PDF 的源文件在上次翻译后已修改，上次的页面无法复用，将整份重新生成。": {
+    "en": "The source of {0} more {0|PDF|PDFs} changed after the last translation; previous pages cannot be reused, so {0|it|they} will be regenerated in full.",
     "fr": "La source de {0} autre(s) PDF a changé depuis la dernière traduction ; les pages précédentes ne sont pas réutilisables et seront régénérées entièrement."
   },
-  "上次这一批已经全部翻完，没有需要补译的内容，产物就在上面这个文件夹里。": {
-    "en": "This batch was fully translated last time—nothing needs filling in. The results are in the folder above.",
+  "此批文件上次已全部翻译完成，无需补译；结果位于上方文件夹中。": {
+    "en": "This batch was fully translated last time; nothing needs to be filled in. The results are in the folder above.",
     "fr": "Ce lot a été entièrement traduit la dernière fois ; rien n'est à compléter. Les résultats se trouvent dans le dossier ci-dessus."
   },
   "全部重新翻译": {
     "en": "Retranslate all",
     "fr": "Tout retraduire"
   },
-  "不管上次的结果，{0} 个文件从头翻一遍。": {
+  "忽略上次的结果，将 {0} 个文件从头重新翻译。": {
     "en": "Ignore the previous results and translate {0} {0|file|files} from scratch.",
     "fr": "Ignorer les résultats précédents et retraduire {0} {0|fichier|fichiers} depuis le début."
   },
-  "结果会存进一个新的输出文件夹，上次的产物不会被覆盖或删除。": {
-    "en": "Results are saved to a new output folder; previous output won't be overwritten or deleted.",
+  "结果将保存到新的输出文件夹，上次的输出不会被覆盖或删除。": {
+    "en": "Results are saved to a new output folder; previous output will not be overwritten or deleted.",
     "fr": "Les résultats sont enregistrés dans un nouveau dossier de sortie ; la sortie précédente n'est ni écrasée ni supprimée."
   },
-  "跳过已完成的 {0} 页，只生成剩下的 {1} 页，最后装订成完整的 PDF。已生成的页面直接复用，不再重复花钱。": {
+  "跳过已完成的 {0} 页，仅生成剩余的 {1} 页，最后合成为完整的 PDF。已生成的页面直接复用，不会重复产生费用。": {
     "en": "Skip the {0} completed pages, generate only the remaining {1}, then assemble the full PDF. Pages already generated are reused at no extra cost.",
     "fr": "Ignorer les {0} pages terminées, générer seulement les {1} restantes, puis assembler le PDF complet. Les pages déjà générées sont réutilisées sans frais supplémentaires."
   },
-  "中途停止的任务，最后几页可能没有真正生成完。继续前会逐页核对，发现占位页或坏页会自动重新生成，不会照单全收。": {
+  "中途停止的任务，最后几页可能未完整生成。继续前将逐页核对，占位页或损坏页面将自动重新生成。": {
     "en": "If a task was stopped midway, the last few pages may not be fully generated. Each page is checked before continuing, and placeholder or broken pages are regenerated automatically.",
     "fr": "Si une tâche a été arrêtée en cours de route, les dernières pages peuvent être incomplètes. Chaque page est vérifiée avant de reprendre ; les pages de substitution ou défectueuses sont régénérées automatiquement."
   },
-  "{0} 页从头生成一遍。": {
+  "从头重新生成全部 {0} 页。": {
     "en": "Generate all {0} pages from scratch.",
     "fr": "Générer les {0} pages depuis le début."
   },
-  "两种选法都会把结果存进一个新的输出文件夹，上次的产物不会被覆盖或删除。": {
-    "en": "Either way, results are saved to a new output folder; previous output won't be overwritten or deleted.",
+  "无论选择哪种方式，结果都将保存到新的输出文件夹，上次的输出不会被覆盖或删除。": {
+    "en": "Either way, results are saved to a new output folder; previous output will not be overwritten or deleted.",
     "fr": "Dans les deux cas, les résultats sont enregistrés dans un nouveau dossier de sortie ; la sortie précédente n'est ni écrasée ni supprimée."
   },
-  "找到上次的翻译产物": {
+  "找到上次的翻译结果": {
     "en": "Previous output found",
     "fr": "Sortie précédente trouvée"
   },
-  "但源文件在上次翻译之后改动过，上次的页面无法复用，继续也会整份重新生成。": {
-    "en": "but the source changed after the last translation, so previous pages can't be reused—continuing would regenerate everything anyway.",
+  "但源文件在上次翻译后已修改，上次的页面无法复用，继续翻译也将整份重新生成。": {
+    "en": "but the source changed after the last translation, so previous pages cannot be reused; continuing would regenerate everything.",
     "fr": "mais la source a changé depuis la dernière traduction : les pages précédentes ne sont pas réutilisables et tout serait régénéré de toute façon."
   },
-  "但读不到上次的页存档，继续也会整份重新生成，没法只补翻还缺的部分。": {
-    "en": "but its saved pages can't be read, so continuing would regenerate everything—there's no way to fill in only what's missing.",
+  "但无法读取上次的页面存档，继续翻译也将整份重新生成，无法仅补译缺失部分。": {
+    "en": "but its saved pages cannot be read, so continuing would regenerate everything; missing parts cannot be filled in separately.",
     "fr": "mais ses pages enregistrées sont illisibles : reprendre régénérerait tout, sans pouvoir compléter uniquement ce qui manque."
   },
-  "其中 {0} 个文件的源文件在上次翻译后改动过，上次产物当不了底稿，会整份重新翻译（已翻过的内容尽量由翻译记忆复用）。": {
-    "en": "The source of {0} {0|file|files} changed after the last translation, so the previous output can't be used as a base; {0|it|they} will be fully retranslated (with translation memory reusing what it can).",
+  "其中 {0} 个文件的源文件在上次翻译后已修改，上次的输出无法作为底稿，将整份重新翻译（已翻译的内容尽量由记忆库复用）。": {
+    "en": "The source of {0} {0|file|files} changed after the last translation, so the previous output cannot be used as a base; {0|it|they} will be fully retranslated (with translation memory reusing what it can).",
     "fr": "La source de {0} {0|fichier|fichiers} a changé depuis la dernière traduction : la sortie précédente ne peut pas servir de base et {0|il sera retraduit|ils seront retraduits} entièrement (la mémoire de traduction réutilise ce qu'elle peut)."
   },
-  "源文件在上次翻译后改动过，上次产物当不了底稿，这次会整份重新翻译；已翻过的内容尽量由翻译记忆复用。": {
-    "en": "The source changed after the last translation, so the previous output can't be used as a base. This run will retranslate in full, with translation memory reusing what it can.",
+  "源文件在上次翻译后已修改，上次的输出无法作为底稿，本次将整份重新翻译；已翻译的内容尽量由记忆库复用。": {
+    "en": "The source changed after the last translation, so the previous output cannot be used as a base. This run will retranslate in full, with translation memory reusing what it can.",
     "fr": "La source a changé depuis la dernière traduction : la sortie précédente ne peut pas servir de base. Cette exécution retraduira tout, la mémoire de traduction réutilisant ce qu'elle peut."
   },
-  "以上次的译文为底稿，只翻译还缺译文的部分，已翻好的内容一个字不动，不再重复花钱。": {
-    "en": "Use the previous translation as a base and translate only what's missing. Translated content stays untouched, with no extra cost.",
-    "fr": "Partir de la traduction précédente et traduire uniquement ce qui manque. Le contenu déjà traduit reste intact, sans frais supplémentaires."
+  "以上次的译文为底稿，仅翻译缺少译文的部分；已翻译的内容保持不变，不会重复产生费用。": {
+    "en": "Use the previous translation as a base and translate only what is missing. Translated content remains unchanged, with no repeated cost.",
+    "fr": "Partir de la traduction précédente et traduire uniquement ce qui manque. Le contenu déjà traduit reste inchangé, sans frais supplémentaires."
   },
-  "这个文件上次已经翻完了": {
+  "此文件上次已翻译完成": {
     "en": "This file was already fully translated",
     "fr": "Ce fichier a déjà été entièrement traduit"
   },
-  "这批文件上次已经全部翻完": {
+  "这批文件上次已全部翻译完成": {
     "en": "These files were already fully translated",
     "fr": "Ces fichiers ont déjà été entièrement traduits"
   },
-  "这份 PDF 找不到可用的续译记录": {
+  "此 PDF 无可用的续译记录": {
     "en": "No usable resume data for this PDF",
     "fr": "Aucune donnée de reprise utilisable pour ce PDF"
   },
-  "这些 PDF 找不到可用的续译记录": {
+  "这些 PDF 无可用的续译记录": {
     "en": "No usable resume data for these PDFs",
     "fr": "Aucune donnée de reprise utilisable pour ces PDF"
   },
-  "这份 PDF 上次没有翻完": {
-    "en": "This PDF wasn't finished last time",
+  "此 PDF 上次未翻译完成": {
+    "en": "This PDF was not finished last time",
     "fr": "Ce PDF n'a pas été terminé la dernière fois"
   },
-  "这些 PDF 上次没有翻完": {
-    "en": "These PDFs weren't finished last time",
+  "这些 PDF 上次未翻译完成": {
+    "en": "These PDFs were not finished last time",
     "fr": "Ces PDF n'ont pas été terminés la dernière fois"
   },
-  "这个文件翻译过": {
+  "此文件已翻译过": {
     "en": "This file has been translated before",
     "fr": "Ce fichier a déjà été traduit"
   },
-  "这个文件夹翻译过一部分": {
+  "此文件夹已部分翻译": {
     "en": "This folder was partly translated before",
     "fr": "Ce dossier a déjà été traduit en partie"
   },
@@ -1212,18 +1212,18 @@
     "fr": "Échec de l'analyse."
   },
   "源语言与目标语言相同，请重新选择。": {
-    "en": "Source and target languages are the same. Please choose again.",
+    "en": "Source and target languages are the same. Select different languages.",
     "fr": "Les langues source et cible sont identiques. Veuillez en choisir d'autres."
   },
   "需要先连接图纸转换工具": {
     "en": "Connect the drawing converter first",
     "fr": "Connectez d'abord le convertisseur de plans"
   },
-  "选中的文件里有 {0} 个 DWG 图纸。DWG 要先用转换工具转成 DXF 才能翻译和写回。": {
+  "所选文件中有 {0} 个 DWG 图纸。DWG 需先通过转换工具转换为 DXF，才能翻译和写回。": {
     "en": "The selection includes {0} DWG {0|drawing|drawings}. DWG files must be converted to DXF with the converter before they can be translated and written back.",
     "fr": "La sélection contient {0} {0|plan|plans} DWG. Les fichiers DWG doivent être convertis en DXF par le convertisseur avant de pouvoir être traduits et réécrits."
   },
-  "可以去「插件」连接图纸转换工具后重新扫描，或者取消勾选这些 DWG，只翻译 DXF。": {
+  "可在「插件」中连接图纸转换工具后重新扫描，或取消勾选这些 DWG，仅翻译 DXF。": {
     "en": "Connect the drawing converter in “Plugins” and scan again, or deselect these DWG files and translate only the DXF files.",
     "fr": "Connectez le convertisseur de plans dans « Plugins » puis relancez l'analyse, ou décochez ces DWG pour ne traduire que les DXF."
   },
@@ -1239,32 +1239,32 @@
     "en": "{0} legacy .xls {0|file is|files are} selected. Output is always saved as .xlsx.",
     "fr": "{0} {0|ancien fichier|anciens fichiers} .xls {0|sélectionné|sélectionnés}. La sortie est toujours enregistrée en .xlsx."
   },
-  "原始文件不会被改动：公式、宏和样式都完整保留在原来的 .xls 文件里，随时可以打开对照。下面的取舍只影响翻译输出的新文件。": {
-    "en": "The original files won't be changed: formulas, macros and styles stay intact in the original .xls files, which you can open for comparison at any time. The choice below only affects the new translated files.",
+  "源文件不会被修改：公式、宏和样式均完整保留在原 .xls 文件中，可随时打开对照。以下选择仅影响翻译输出的新文件。": {
+    "en": "The source files will not be changed: formulas, macros and styles stay intact in the original .xls files, which can be opened for comparison at any time. The choice below affects only the new translated files.",
     "fr": "Les fichiers d'origine ne sont pas modifiés : formules, macros et styles restent intacts dans les fichiers .xls d'origine, consultables à tout moment. Le choix ci-dessous ne concerne que les nouveaux fichiers traduits."
   },
-  "优先高保真：用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；Excel 没装、没有允许 Translator 控制 Excel，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。": {
-    "en": "High fidelity first: converts with Excel on this computer, carrying styles, merged cells, images and charts into the output. If Excel isn't installed, Translator isn't allowed to control Excel, or a file fails to convert, that file is marked as failed and the others continue—it never silently switches to compatibility conversion.",
-    "fr": "Haute fidélité d'abord : la conversion passe par Excel sur cet ordinateur et reprend styles, cellules fusionnées, images et graphiques. Si Excel n'est pas installé, si Translator n'est pas autorisé à piloter Excel ou si un fichier ne se convertit pas, ce fichier est marqué en échec et les autres continuent ; aucune bascule silencieuse vers la conversion compatible."
+  "优先高保真：使用本机 Excel 转换，样式、合并单元格、图片和图表完整带入输出；若未安装 Excel、未允许 Translator 控制 Excel 或某个文件转换失败，该文件将标记为失败，其他文件照常处理，不会自动改用兼容转换。": {
+    "en": "High fidelity first: converts with Excel on this computer, carrying styles, merged cells, images and charts into the output. If Excel is not installed, Translator is not allowed to control Excel, or a file fails to convert, that file is marked as failed and the others continue; compatibility conversion is never used automatically.",
+    "fr": "Haute fidélité d'abord : la conversion passe par Excel sur cet ordinateur et reprend styles, cellules fusionnées, images et graphiques. Si Excel n'est pas installé, si Translator n'est pas autorisé à piloter Excel ou si un fichier ne se convertit pas, ce fichier est marqué en échec et les autres continuent ; aucune bascule automatique vers la conversion compatible."
   },
-  "允许兼容转换：没装 Excel 也能翻译——本机检测到 LibreOffice，会用它转换，公式、样式、合并单元格通常能保留（图表、图片可能有出入）。这项选择只对本次任务生效。": {
+  "允许兼容转换：未安装 Excel 时也可翻译。已在本机检测到 LibreOffice，将使用其进行转换，公式、样式和合并单元格通常可以保留（图表、图片可能有差异）。此选择仅对本次任务生效。": {
     "en": "Allow compatibility conversion: translate without Excel. LibreOffice was found on this computer and will be used; formulas, styles and merged cells are usually kept (charts and images may differ). This choice applies to this task only.",
     "fr": "Autoriser la conversion compatible : traduire sans Excel. LibreOffice a été détecté sur cet ordinateur et sera utilisé ; formules, styles et cellules fusionnées sont généralement conservés (graphiques et images peuvent différer). Ce choix ne vaut que pour cette tâche."
   },
-  "允许兼容转换：没装 Excel 也能翻译，但输出文件里公式会变成算好的数值，样式、合并单元格、图片和图表不会保留。这项选择只对本次任务生效。安装免费的 LibreOffice 后，兼容转换也能保留公式与样式。": {
+  "允许兼容转换：未安装 Excel 时也可翻译，但输出文件中的公式将变为计算结果，样式、合并单元格、图片和图表不会保留。此选择仅对本次任务生效。安装免费的 LibreOffice 后，兼容转换也可保留公式与样式。": {
     "en": "Allow compatibility conversion: translate without Excel, but formulas become their calculated values in the output, and styles, merged cells, images and charts are not kept. This choice applies to this task only. With the free LibreOffice installed, compatibility conversion can keep formulas and styles too.",
     "fr": "Autoriser la conversion compatible : traduire sans Excel, mais les formules deviennent leurs valeurs calculées dans la sortie, et styles, cellules fusionnées, images et graphiques ne sont pas conservés. Ce choix ne vaut que pour cette tâche. Avec LibreOffice (gratuit) installé, la conversion compatible conserve aussi formules et styles."
   },
   "已选择 {0} 个旧版 {1} 文件。最终结果统一输出为 {2}，源文件不会被改写。": {
-    "en": "{0} legacy {1} {0|file is|files are} selected. Output is always saved as {2}; the source files won't be modified.",
+    "en": "{0} legacy {1} {0|file is|files are} selected. Output is always saved as {2}; the source files will not be modified.",
     "fr": "{0} {0|ancien fichier|anciens fichiers} {1} {0|sélectionné|sélectionnés}. La sortie est toujours enregistrée en {2} ; les fichiers source ne sont pas modifiés."
   },
-  "优先高保真：用本机 {0} 转换，排版完整保留；{0} 没装、没有允许 Translator 控制 {0}，或某个文件转换失败时，这个文件会标为失败，其他文件照常继续，不会悄悄改用兼容转换。": {
-    "en": "High fidelity first: converts with {0} on this computer, keeping the layout intact. If {0} isn't installed, Translator isn't allowed to control {0}, or a file fails to convert, that file is marked as failed and the others continue—it never silently switches to compatibility conversion.",
-    "fr": "Haute fidélité d'abord : la conversion passe par {0} sur cet ordinateur et conserve toute la mise en page. Si {0} n'est pas installé, si Translator n'est pas autorisé à piloter {0} ou si un fichier ne se convertit pas, ce fichier est marqué en échec et les autres continuent ; aucune bascule silencieuse vers la conversion compatible."
+  "优先高保真：使用本机 {0} 转换，排版完整保留；若未安装 {0}、未允许 Translator 控制 {0} 或某个文件转换失败，该文件将标记为失败，其他文件照常处理，不会自动改用兼容转换。": {
+    "en": "High fidelity first: converts with {0} on this computer, keeping the layout intact. If {0} is not installed, Translator is not allowed to control {0}, or a file fails to convert, that file is marked as failed and the others continue; compatibility conversion is never used automatically.",
+    "fr": "Haute fidélité d'abord : la conversion passe par {0} sur cet ordinateur et conserve toute la mise en page. Si {0} n'est pas installé, si Translator n'est pas autorisé à piloter {0} ou si un fichier ne se convertit pas, ce fichier est marqué en échec et les autres continuent ; aucune bascule automatique vers la conversion compatible."
   },
-  "允许兼容转换：高保真转换用不了时也继续翻译，但复杂样式、合并单元格、图片、图表和宏可能保留不全。这项选择只对本次任务生效。": {
-    "en": "Allow compatibility conversion: keep translating when high-fidelity conversion isn't available, but complex styles, merged cells, images, charts and macros may not be fully kept. This choice applies to this task only.",
+  "允许兼容转换：高保真转换不可用时继续翻译，但复杂样式、合并单元格、图片、图表和宏可能无法完整保留。此选择仅对本次任务生效。": {
+    "en": "Allow compatibility conversion: continue translating when high-fidelity conversion is not available, but complex styles, merged cells, images, charts and macros may not be fully kept. This choice applies to this task only.",
     "fr": "Autoriser la conversion compatible : poursuivre la traduction quand la conversion haute fidélité est indisponible, mais styles complexes, cellules fusionnées, images, graphiques et macros risquent de ne pas être entièrement conservés. Ce choix ne vaut que pour cette tâche."
   },
   "允许兼容转换": {
@@ -1275,35 +1275,35 @@
     "en": "High fidelity first",
     "fr": "Haute fidélité"
   },
-  "审核模型上次测试没通过": {
+  "审核模型上次测试未通过": {
     "en": "The review model failed its last test",
     "fr": "Le modèle de vérification a échoué à son dernier test"
   },
-  "逐页审核是开着的，但这台机器上最近一次测试「PDF 与图片审核」用的模型时失败了。照这样开始，页面会照常翻译，审核那一步很可能每页都出错。": {
-    "en": "Page review is on, but the last test of the “PDF & image review” model on this computer failed. If you start now, pages will be translated as usual, but the review step will likely fail on every page.",
+  "逐页审核已开启，但本机最近一次测试「PDF 与图片审核」模型时失败。如现在开始，页面将正常翻译，但审核步骤很可能在每一页都出错。": {
+    "en": "Page review is on, but the last test of the “PDF & image review” model on this computer failed. If you start now, pages will be translated normally, but the review step will likely fail on every page.",
     "fr": "La vérification page par page est activée, mais le dernier test du modèle « Vérification PDF et images » sur cet ordinateur a échoué. En lançant maintenant, les pages seront traduites normalement, mais l'étape de vérification échouera probablement à chaque page."
   },
-  "稳妥的做法是先去「设置 → 模型服务 → PDF 与图片审核」重测一次，或者把逐页审核关掉再开始。": {
-    "en": "The safe option is to retest it in “Settings → Model services → PDF & image review”, or turn off page review before starting.",
-    "fr": "Le plus sûr est de le retester dans « Paramètres → Services de modèles → Vérification PDF et images », ou de désactiver la vérification page par page avant de lancer."
+  "建议先在「设置 → 模型服务 → PDF 与图片审核」中重新测试，或关闭逐页审核后再开始。": {
+    "en": "Retest it first in “Settings → Models → PDF & image review”, or turn off page review before starting.",
+    "fr": "Retestez-le d'abord dans « Paramètres → Modèles → Vérification PDF et images », ou désactivez la vérification page par page avant de lancer."
   },
-  "也可以不管测试结果直接开始：这只影响这一次任务，设置不会被改动。": {
-    "en": "You can also start anyway: this only affects this task, and your settings won't change.",
+  "也可忽略测试结果直接开始：仅影响本次任务，设置不会被修改。": {
+    "en": "You can also start anyway: this affects only this task, and your settings will not change.",
     "fr": "Vous pouvez aussi lancer quand même : cela ne concerne que cette tâche et vos réglages ne changent pas."
   },
-  "去设置里重测": {
+  "前往设置重新测试": {
     "en": "Retest in Settings",
     "fr": "Retester dans les paramètres"
   },
-  "不管测试结果，开始": {
+  "忽略并开始": {
     "en": "Start anyway",
     "fr": "Lancer quand même"
   },
-  "这次任务没能开始": {
-    "en": "This task couldn't start",
+  "本次任务未能开始": {
+    "en": "This task could not start",
     "fr": "Cette tâche n'a pas pu démarrer"
   },
-  "任务准备失败，没有更多信息。": {
+  "任务准备失败，无更多信息。": {
     "en": "Task preparation failed; no further details.",
     "fr": "La préparation de la tâche a échoué, sans plus de détails."
   },
@@ -1311,35 +1311,35 @@
     "en": "Got it",
     "fr": "Compris"
   },
-  "和正在跑的任务共用同一条连接": {
+  "与正在运行的任务共用同一条连接": {
     "en": "Shares a connection with a running task",
     "fr": "Connexion partagée avec une tâche en cours"
   },
-  "这个任务会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。": {
-    "en": "This task will use the same API connection as a task that's already running. Both send requests at their own pace, so the service sees the two loads combined.",
-    "fr": "Cette tâche utilisera la même connexion API qu'une tâche déjà en cours. Chacune envoie ses requêtes à son rythme, et le service reçoit donc les deux charges cumulées."
+  "此任务将与正在运行的任务共用同一条 API 连接。两个任务各自按设定速度发送请求，服务端收到的是两者叠加的请求量。": {
+    "en": "This task will use the same API connection as a task that is already running. Each sends requests at its own pace, so the service receives the combined load.",
+    "fr": "Cette tâche utilisera la même connexion API qu'une tâche déjà en cours. Chacune envoie ses requêtes à son rythme, et le service reçoit donc la charge cumulée."
   },
-  "因此可能变慢或排队，个别文件可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。真被接口限速时，程序会自动放慢这一次的发送速度，你在设置里填的速度不会被改。": {
-    "en": "Things may slow down or queue up, and some files may time out. If this connection is billed by usage, both tasks incur costs at the same time. If the service starts limiting requests, this run slows down automatically; the speed in your settings isn't changed.",
-    "fr": "Le traitement peut ralentir ou être mis en file d'attente, et certains fichiers peuvent expirer. Si cette connexion est facturée à l'usage, les deux tâches génèrent des frais en même temps. Si le service limite les requêtes, cette exécution ralentit automatiquement ; la vitesse définie dans vos réglages n'est pas modifiée."
+  "因此处理可能变慢或需要排队，个别文件可能超时失败；如该连接按用量计费，两个任务将同时产生费用。如遇服务限速，程序将自动降低本次任务的发送速度，设置中的速度不会被修改。": {
+    "en": "Processing may slow down or queue, and some files may time out. If this connection is billed by usage, both tasks incur costs at the same time. If the service limits requests, this task slows down automatically; the speed in your settings is not changed.",
+    "fr": "Le traitement peut ralentir ou être mis en file d'attente, et certains fichiers peuvent expirer. Si cette connexion est facturée à l'usage, les deux tâches génèrent des frais en même temps. Si le service limite les requêtes, cette tâche ralentit automatiquement ; la vitesse définie dans vos réglages n'est pas modifiée."
   },
-  "不着急的话，等前一个任务跑完再开始最稳。": {
-    "en": "If it's not urgent, the safest option is to wait for the other task to finish.",
+  "如不急于处理，建议待前一个任务完成后再开始。": {
+    "en": "If it is not urgent, it is safest to wait for the other task to finish.",
     "fr": "Si ce n'est pas urgent, le plus sûr est d'attendre la fin de l'autre tâche."
   },
   "仍要并行启动": {
     "en": "Start anyway",
     "fr": "Lancer quand même"
   },
-  "翻译服务意外重启或应用异常退出，这个任务没法接着跑了。已经生成的文件还在输出目录里；需要的话请重新开始一次翻译。": {
-    "en": "The translation service restarted unexpectedly or the app quit, so this task can't continue. Files already generated are still in the output folder; start a new translation if needed.",
+  "翻译服务意外重启或应用异常退出，此任务无法继续。已生成的文件仍保留在输出目录中；如有需要，请重新开始翻译。": {
+    "en": "The translation service restarted unexpectedly or the app quit, so this task cannot continue. Files already generated remain in the output folder; start a new translation if needed.",
     "fr": "Le service de traduction a redémarré de façon inattendue ou l'application s'est fermée : cette tâche ne peut pas reprendre. Les fichiers déjà générés restent dans le dossier de sortie ; relancez une traduction si nécessaire."
   },
-  "和后台的连接断了，这个任务已标记为应用中断。": {
+  "与后台服务的连接已断开，此任务已标记为应用中断。": {
     "en": "Lost connection to the background service; this task has been marked as interrupted.",
     "fr": "Connexion au service en arrière-plan perdue ; cette tâche a été marquée comme interrompue."
   },
-  "正在停止：写出已翻好的部分（{0}/{1} 个文件）": {
+  "正在停止：写入已翻译的部分（{0}/{1} 个文件）": {
     "en": "Stopping: writing out the translated parts ({0}/{1} files)",
     "fr": "Arrêt : écriture des parties traduites ({0}/{1} fichiers)"
   },
@@ -1371,7 +1371,7 @@
     "en": "Resuming page submission",
     "fr": "Reprise de l'envoi des pages"
   },
-  "停止前没跑到": {
+  "停止前未处理": {
     "en": "Not reached before stop",
     "fr": "Non atteint avant l'arrêt"
   },
@@ -1395,20 +1395,20 @@
     "en": "No reason given.",
     "fr": "Aucune raison indiquée."
   },
-  "{0} 个文件没能生成": {
+  "{0} 个文件未能生成": {
     "en": "{0} {0|file|files} could not be generated",
     "fr": "{0} {0|fichier n'a|fichiers n'ont} pas pu être {0|généré|générés}"
   },
-  "接口持续限流，{0} 处还没翻，稍后用「接着上次继续」补译": {
-    "en": "The service kept limiting requests; {0} {0|item is|items are} still untranslated. Use “Resume last run” later to fill {0|it|them} in",
-    "fr": "Le service a limité les requêtes en continu ; {0} {0|élément reste|éléments restent} à traduire. Utilisez « Reprendre la dernière exécution » plus tard pour compléter"
+  "服务持续限流，{0} 处尚未翻译，请稍后使用「继续上次翻译」补译": {
+    "en": "The service kept limiting requests; {0} {0|item is|items are} still untranslated. Use “Resume previous translation” later to fill {0|it|them} in",
+    "fr": "Le service a limité les requêtes en continu ; {0} {0|élément reste|éléments restent} à traduire. Utilisez « Reprendre la traduction précédente » plus tard pour compléter"
   },
   "{0} 个文件需复核": {
     "en": "{0} {0|file needs|files need} review",
     "fr": "{0} {0|fichier|fichiers} à vérifier"
   },
-  "{0} 页没能生成译文，已放占位页": {
-    "en": "{0} {0|page|pages} couldn't be translated; placeholder {0|page|pages} inserted",
+  "{0} 页未能生成译文，已插入占位页": {
+    "en": "{0} {0|page|pages} could not be translated; placeholder {0|page|pages} inserted",
     "fr": "{0} {0|page n'a|pages n'ont} pas pu être {0|traduite|traduites} ; page(s) de substitution insérée(s)"
   },
   "{0} 页译文有疑点，已采用但建议复核": {
@@ -1419,7 +1419,7 @@
     "en": "{0} A3+ {0|page|pages} skipped and kept as is",
     "fr": "{0} {0|page|pages} A3+ {0|ignorée et conservée telle quelle|ignorées et conservées telles quelles}"
   },
-  "其中 {0} 个文件整份都是 A3+，一个字都没翻": {
+  "其中 {0} 个文件全部为 A3+ 页面，未翻译任何内容": {
     "en": "{0} of them {0|is|are} entirely A3+ and nothing was translated",
     "fr": "dont {0} entièrement en A3+, sans rien de traduit"
   },
@@ -1431,15 +1431,15 @@
     "en": "{0} to review",
     "fr": "{0} à vérifier"
   },
-  "{0} 处提示待你手动处理": {
-    "en": "{0} {0|note|notes} for you to handle manually",
+  "{0} 处提示需手动处理": {
+    "en": "{0} {0|note|notes} to handle manually",
     "fr": "{0} {0|remarque|remarques} à traiter manuellement"
   },
-  "中途换了连接，后半程由「{0}」完成": {
-    "en": "Switched connection midway; the rest was done by “{0}”",
+  "中途切换了连接，后续部分由「{0}」完成": {
+    "en": "Connection switched midway; the remainder was handled by “{0}”",
     "fr": "Connexion changée en cours de route ; la suite a été traitée par « {0} »"
   },
-  "中途换了 {0} 次连接": {
+  "中途切换连接 {0} 次": {
     "en": "Switched connection {0} {0|time|times} midway",
     "fr": "Connexion changée {0} fois en cours de route"
   },
@@ -1447,21 +1447,21 @@
     "en": "{0} handled automatically",
     "fr": "{0} {0|traité|traités} automatiquement"
   },
-  "还有 {0} 页没跑到": {
+  "尚有 {0} 页未处理": {
     "en": "{0} {0|page|pages} not reached",
     "fr": "{0} {0|page non atteinte|pages non atteintes}"
   },
-  "还有 {0} 个文件没跑到": {
+  "尚有 {0} 个文件未处理": {
     "en": "{0} {0|file|files} not reached",
     "fr": "{0} {0|fichier non atteint|fichiers non atteints}"
   },
-  "还有 {0} 段没翻译，已保留原文，可续译": {
+  "尚有 {0} 段未翻译，已保留原文，可继续翻译": {
     "en": "{0} {0|paragraph|paragraphs} not translated; source kept and can be resumed",
     "fr": "{0} {0|paragraphe non traduit|paragraphes non traduits} ; texte source conservé, reprise possible"
   },
-  "你请求停止时页面都已跑完，没有内容被截断": {
-    "en": "All pages had finished when you asked to stop; nothing was cut off",
-    "fr": "Toutes les pages étaient terminées lors de votre demande d'arrêt ; rien n'a été tronqué"
+  "请求停止时所有页面均已完成，没有内容被截断": {
+    "en": "All pages had finished when the stop was requested; nothing was cut off",
+    "fr": "Toutes les pages étaient terminées au moment de la demande d'arrêt ; rien n'a été tronqué"
   },
   "其余全部通过": {
     "en": "everything else passed",
@@ -1491,7 +1491,7 @@
     "en": "The task was interrupted before finishing; files already generated remain in the output folder.",
     "fr": "La tâche a été interrompue avant la fin ; les fichiers déjà générés restent dans le dossier de sortie."
   },
-  "任务没有产出文件，请看下方日志或完整报告里的原因。": {
+  "任务未生成任何文件，原因请查看下方日志或完整报告。": {
     "en": "The task produced no files. See the log below or the full report for the reason.",
     "fr": "La tâche n'a produit aucun fichier. Consultez le journal ci-dessous ou le rapport complet pour connaître la cause."
   },
@@ -1523,12 +1523,12 @@
     "en": "{0} {0|file|files} generated",
     "fr": "{0} {0|fichier généré|fichiers générés}"
   },
-  "{0} · 还没有生成文件": {
+  "{0} · 尚未生成文件": {
     "en": "{0} · No files generated yet",
     "fr": "{0} · Aucun fichier généré pour l'instant"
   },
   "任务未能顺利完成。": {
-    "en": "The task didn't complete successfully.",
+    "en": "The task did not complete successfully.",
     "fr": "La tâche ne s'est pas terminée correctement."
   },
   "停止运行中的任务": {
@@ -1544,31 +1544,31 @@
     "fr": "Continuer"
   },
   "停止任务失败。": {
-    "en": "Couldn't stop the task.",
+    "en": "Could not stop the task.",
     "fr": "Impossible d'arrêter la tâche."
   },
   "暂停失败。": {
-    "en": "Couldn't pause the task.",
+    "en": "Could not pause the task.",
     "fr": "Impossible de mettre la tâche en pause."
   },
   "继续任务失败。": {
-    "en": "Couldn't resume the task.",
+    "en": "Could not resume the task.",
     "fr": "Impossible de reprendre la tâche."
   },
-  "结束后不再翻译剩下的页面，已完成的页面和报告会保留。确定结束这个任务吗？": {
-    "en": "The remaining pages won't be translated; completed pages and the report are kept. End this task?",
+  "结束后将不再翻译剩余页面，已完成的页面和报告将保留。确定要结束此任务吗？": {
+    "en": "The remaining pages will not be translated; completed pages and the report are kept. End this task?",
     "fr": "Les pages restantes ne seront pas traduites ; les pages terminées et le rapport sont conservés. Terminer cette tâche ?"
   },
-  "没能结束任务，请再试一次。": {
-    "en": "Couldn't end the task. Please try again.",
+  "无法结束任务，请重试。": {
+    "en": "Could not end the task. Try again.",
     "fr": "Impossible de terminer la tâche. Veuillez réessayer."
   },
   "没有可打开的输出路径。": {
-    "en": "There's no output path to open.",
+    "en": "No output path to open.",
     "fr": "Aucun chemin de sortie à ouvrir."
   },
   "打开路径失败。": {
-    "en": "Couldn't open the path.",
+    "en": "Could not open the path.",
     "fr": "Impossible d'ouvrir le chemin."
   }
 }

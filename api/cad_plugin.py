@@ -35,8 +35,8 @@ PLUGIN_VERSION = "0.1.0"
 OFFICIAL_DOWNLOAD_URL = "https://www.opendesign.com/cn/guestfiles/oda_file_converter"
 _REQUIRED_CONVERTER_NAMES = ("ODAFileConverter", "ODAFileConverter.exe")
 # 安装出错时对外只说这两句；具体哪条校验没过写进日志文件。
-PACKAGE_INVALID_MESSAGE = "这个插件包不完整或已被改动，请重新下载。"
-NOT_CONVERTER_MESSAGE = "选的不是图纸转换工具程序。"
+PACKAGE_INVALID_MESSAGE = "此插件包不完整或已被修改，请重新下载。"
+NOT_CONVERTER_MESSAGE = "所选程序不是图纸转换工具。"
 
 
 def _package_error(detail: str) -> ValueError:
@@ -337,16 +337,16 @@ def _validate_converter(path: Path, info: dict[str, str] | None = None) -> tuple
         if not path.is_file() or path.is_symlink() or path.name not in _REQUIRED_CONVERTER_NAMES:
             return False, None, NOT_CONVERTER_MESSAGE
     except OSError:
-        return False, None, "读不到选中的图纸转换工具，请检查是否有权限访问。"
+        return False, None, "无法读取所选的图纸转换工具，请检查访问权限。"
     if info.get("system") == "darwin":
         valid = _mach_o(path)
-        return valid, None, "选的文件不是能在这台 Mac 上运行的图纸转换工具。" if not valid else ""
+        return valid, None, "所选文件不是可在此 Mac 上运行的图纸转换工具。" if not valid else ""
     if info.get("system") == "windows":
         if not _pe_executable(path):
-            return False, None, "选的文件不是能在 Windows 上运行的图纸转换工具。"
+            return False, None, "所选文件不是可在 Windows 上运行的图纸转换工具。"
         version = _windows_version_metadata(path)
         if not version:
-            return False, None, "选的图纸转换工具读不出版本信息，可能已损坏，请重新安装。"
+            return False, None, "无法读取所选图纸转换工具的版本信息，该工具可能已损坏，请重新安装。"
         return True, version, ""
     return False, None, "当前系统不支持图纸转换工具。"
 
@@ -488,7 +488,7 @@ def probe_status() -> dict[str, Any]:
             detail.append("当前平台仅支持 macOS 13+（Apple Silicon/Intel）或 Windows 10 x64。")
         elif oda_invalid:
             oda_state = "incompatible"
-            detail.append("之前连接的图纸转换工具现在用不了，请重新安装或重新选择。")
+            detail.append("之前连接的图纸转换工具已不可用，请重新安装或重新选择。")
         elif converter is not None:
             oda_state = "connected"
         enabled = oda_state == "connected" and supported
@@ -586,12 +586,12 @@ def install_from_directory(source: str) -> dict[str, Any]:
         src = Path(source).expanduser().resolve()
         dst = plugin_root().resolve()
         if not src.is_dir():
-            raise ValueError("找不到这个插件包文件夹。")
+            raise ValueError("找不到该插件包文件夹。")
         if src == dst or dst in src.parents or src in dst.parents:
-            raise ValueError("不能从程序自己的插件文件夹安装，请选择下载得到的插件包。")
+            raise ValueError("无法从程序自身的插件文件夹安装，请选择已下载的插件包。")
         manifest = _validate_manifest(src / "plugin.json")
         if not _core_compatible(manifest):
-            raise ValueError("这个插件包和当前版本的程序不兼容，请下载对应的版本。")
+            raise ValueError("此插件包与当前版本的程序不兼容，请下载对应版本。")
         _validate_package_checksums(src, manifest)
         dst.parent.mkdir(parents=True, exist_ok=True)
         staging = dst.with_name(f"{dst.name}.installing-{uuid.uuid4().hex}")
@@ -651,7 +651,7 @@ def connect_oda(path: str) -> dict[str, Any]:
         # dependency into a bundled component, which is prohibited.
         try:
             if plugin_root().resolve() in candidate.parents:
-                raise ValueError("图纸转换工具不能放在本程序的插件文件夹里，请换个位置安装后再选。")
+                raise ValueError("图纸转换工具不能位于本程序的插件文件夹中，请安装到其他位置后重新选择。")
         except OSError:
             pass
         root = plugin_root()

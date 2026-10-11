@@ -208,7 +208,7 @@ def register(app: FastAPI) -> None:
             # 报错要说清是哪一种缺，别让用户以为页图丢了。
             raise HTTPException(
                 404,
-                "这一页没有留下上一版译文。" if kind == "previous" else "该页图不存在。",
+                "此页没有上一版译文。" if kind == "previous" else "该页的图像不存在。",
             )
         return FileResponse(
             path,

@@ -1517,7 +1517,7 @@ class WordDocumentTests(unittest.TestCase):
             self.assertIn("一、工程概况 / （一）材料要求", content)
             self.assertIn("正文段落 8", content)
             self.assertIn(issue["snippet"], content)
-            self.assertIn("自动检查时在译文里没对上的原文片段：承包0商", content)
+            self.assertIn("自动检查时未在译文中匹配到的原文片段：承包0商", content)
 
     def test_quality_report_calls_a_toc_hint_a_hint(self) -> None:
         """只有目录提示时，报告不许顶着「需复核内容」的标题说话。"""
@@ -1643,7 +1643,7 @@ class WordDocumentTests(unittest.TestCase):
 
             self.assertEqual(untranslated_count, 0)
             self.assertEqual(len(issues), 1)
-            self.assertEqual(issues[0]["problem"], "译文里还留着少量没翻译的原文")
+            self.assertEqual(issues[0]["problem"], "译文中仍有少量未翻译的原文")
             self.assertEqual(issues[0]["location"], "body.paragraph[1]")
             self.assertIn("2026年8月9日", issues[0]["status"])
 

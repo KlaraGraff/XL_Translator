@@ -1,13 +1,13 @@
 {
-  "停止翻译后，已翻好的内容会写进文件，没翻到的格子保留原文，之后可以接着翻译。原件不会被改动。": {
-    "en": "After you stop, everything translated so far is written to the file; untranslated cells keep their source text and you can continue later. The original is not changed.",
-    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les cellules non traduites gardent le texte source et vous pourrez reprendre plus tard. L'original n'est pas modifié."
+  "停止翻译后，已翻译的内容将写入文件，未翻译的单元格保留原文，之后可继续翻译。源文件不会被修改。": {
+    "en": "After you stop, everything translated so far is written to the file; untranslated cells keep their source text and you can continue later. The source file is not modified.",
+    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les cellules non traduites gardent le texte source et vous pourrez reprendre plus tard. Le fichier source n'est pas modifié."
   },
-  "停止翻译后，已翻好的内容会写进文件，没翻到的段落保留原文，之后可以接着翻译。原件不会被改动。": {
-    "en": "After you stop, everything translated so far is written to the file; untranslated paragraphs keep their source text and you can continue later. The original is not changed.",
-    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les paragraphes non traduits gardent le texte source et vous pourrez reprendre plus tard. L'original n'est pas modifié."
+  "停止翻译后，已翻译的内容将写入文件，未翻译的段落保留原文，之后可继续翻译。源文件不会被修改。": {
+    "en": "After you stop, everything translated so far is written to the file; untranslated paragraphs keep their source text and you can continue later. The source file is not modified.",
+    "fr": "Après l'arrêt, tout ce qui est déjà traduit est écrit dans le fichier ; les paragraphes non traduits gardent le texte source et vous pourrez reprendre plus tard. Le fichier source n'est pas modifié."
   },
-  "缺模型名": {
+  "缺少模型名称": {
     "en": "Model name missing",
     "fr": "Nom du modèle manquant"
   },

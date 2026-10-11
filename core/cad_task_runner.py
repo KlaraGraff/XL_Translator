@@ -53,14 +53,14 @@ _PHASES = {
 # 改措辞时两边一起改（那边直接 import 这个常量）。
 # 两处生效点：两张图纸之间，以及一张图纸翻译途中的两批请求之间（只有一张图纸时，
 # 以前要等整张图翻完才停，等于点了没用）。
-CAD_PAUSED_STATUS = "已暂停：当前文件已翻完，可以继续翻译或停止任务。"
+CAD_PAUSED_STATUS = "已暂停：当前文件已翻译完成，可继续翻译或停止任务。"
 CAD_PAUSED_IN_FILE_STATUS = "已暂停：不再发出新的翻译请求，可以继续翻译或停止任务。"
 CAD_PAUSED_STATUS_PREFIX = "已暂停"
 
 # 摘要里给人看的状态；manifest / report 里仍存内部状态码。
 _CAD_STATUS_LABELS = {
     "done": "已完成",
-    "completed_with_issues": "已完成，有需要复核的地方",
+    "completed_with_issues": "已完成，部分内容需复核",
     "stopped": "已停止",
     "error": "出错",
     "succeeded": "已完成",
@@ -69,7 +69,7 @@ _CAD_STATUS_LABELS = {
 }
 
 # 单个图纸失败时给用户看的兜底句；原始异常写进日志文件。
-_CAD_FILE_FAILURE_FALLBACK = "这张图纸没能翻译，出现了未预期的问题。"
+_CAD_FILE_FAILURE_FALLBACK = "出现意外问题，此图纸未能翻译。"
 
 
 def _cad_failure_message(exc: BaseException, *, fallback: str = _CAD_FILE_FAILURE_FALLBACK) -> str:
@@ -458,8 +458,8 @@ class CadTaskRunner(BaseTaskRunner):
                 logger.warning(f"[CAD] 输出文件名翻译失败：{exc!r}")
                 self._log(
                     "WARN",
-                    "图纸文件名没能翻译，保留原文件名："
-                    + user_facing_reason(exc, fallback="这次没有拿到可用的译名。"),
+                    "图纸文件名未能翻译，已保留原文件名："
+                    + user_facing_reason(exc, fallback="本次未获得可用的译名。"),
                 )
         try:
             self._log("INFO", f"共 {len(self._files)} 个图纸文件")
@@ -531,7 +531,7 @@ class CadTaskRunner(BaseTaskRunner):
                         file_result.update({**_file_identity(source), "source_path": str(source), "output_path": str(output), "status": "succeeded", "resumed": True, **copied_paths})
                         results.append(file_result)
                         self._file_progress.emit(source, "generated", "verify", completed=1, total=1, result=file_result)
-                        self._log("INFO", f"{source.name}：沿用上次已经翻好的结果")
+                        self._log("INFO", f"{source.name}：沿用上次的翻译结果")
                         checkpoint_files[source_key] = {**prior, "output_path": str(output), **copied_paths, "result": file_result}
                         self._write_checkpoint(checkpoint_files)
                         continue
@@ -616,7 +616,7 @@ class CadTaskRunner(BaseTaskRunner):
                 self._write_checkpoint(checkpoint_files)
                 if result.unresolved:
                     issues.extend(
-                        {"file": source.name, **entry, "problem": f"没翻好：{entry.get('reason') or '未获得译文'}"}
+                        {"file": source.name, **entry, "problem": f"未能翻译：{entry.get('reason') or '未获得译文'}"}
                         for entry in result.unresolved
                     )
                 if stats.replacement_characters:
@@ -644,9 +644,9 @@ class CadTaskRunner(BaseTaskRunner):
                 # 第一张图写完之前就停下时，没有断点可续（断点按文件记），输出目录也会
                 # 因为是空的被收掉，界面不会给「从断点继续」——说明文字要跟着说实话。
                 stop_message = (
-                    "已停止；已翻完的图纸都已保留，可以接着上次继续。"
+                    "已停止；已翻译的图纸均已保留，可使用「继续上次翻译」继续。"
                     if completed_count
-                    else "任务已停止，还没有图纸翻译完成；原图纸未改动，需要时重新开始翻译即可。"
+                    else "任务已停止，尚无图纸完成翻译；原图纸未改动，如有需要可重新开始翻译。"
                 )
                 self._queue.put(
                     StoppedMsg(
@@ -684,7 +684,7 @@ class CadTaskRunner(BaseTaskRunner):
             logger.opt(exception=exc).error(f"[CAD] 翻译流程失败：{exc!r}")
             self._queue.put(
                 ErrorMsg(
-                    message="CAD 翻译没能完成："
+                    message="CAD 翻译未能完成："
                     + _cad_failure_message(exc, fallback="出现了未预期的问题。"),
                     **batch_paths,
                 )

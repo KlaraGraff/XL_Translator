@@ -261,7 +261,7 @@ class SharedFormulaDonationTests(unittest.TestCase):
         )
 
         self.assertEqual(positions, [], "译文没写成，底色不该单独涂上去")
-        warning = [line for line in logs if "B1" in line and "公式与其它单元格共用" in line]
+        warning = [line for line in logs if "B1" in line and "公式与其他单元格共用" in line]
         self.assertTrue(warning, f"任务日志里没有交代放弃的原因：{logs}")
 
         cells = _sheet_cells(target)
@@ -870,8 +870,8 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
             result = ExcelScanResult(root=Path("."), items=[item])
             risk = result.risk
         self.assertFalse(risk["libreoffice_available"])
-        self.assertIn("公式会变成算好的数值", risk["message"])
-        self.assertIn("原始文件不会被改动", risk["message"])
+        self.assertIn("公式将变为计算结果", risk["message"])
+        self.assertIn("源文件不会被修改", risk["message"])
 
     def test_aggregate_scan_message_switches_when_libreoffice_is_available(self) -> None:
         from core.file_scanner import ExcelScanResult, FileItem
@@ -885,9 +885,9 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
             risk = result.risk
         self.assertTrue(risk["libreoffice_available"])
         self.assertIn("LibreOffice", risk["message"])
-        self.assertIn("原始文件不会被改动", risk["message"])
+        self.assertIn("源文件不会被修改", risk["message"])
         # 装了 LO 之后不该再吓唬用户说公式一定会被拍死成数值。
-        self.assertNotIn("公式会变成算好的数值", risk["message"])
+        self.assertNotIn("公式将变为计算结果", risk["message"])
 
     @unittest.skipUnless(HAS_XLWT, "本机没有 xlwt，无法现场生成 .xls 夹具")
     def test_single_file_risk_message_states_the_consequence_without_libreoffice(self) -> None:
@@ -904,8 +904,8 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
             with mock.patch("core.word_converter._find_soffice", return_value=None):
                 item = _build_file_item(path)
             message = item.risk["message"]
-            self.assertIn("公式会变成算好的数值", message)
-            self.assertIn("原始文件不会被改动", message)
+            self.assertIn("公式将变为计算结果", message)
+            self.assertIn("源文件不会被修改", message)
 
     def test_ui_modal_pins_both_excel_wording_variants_and_keeps_word_wording(self) -> None:
         source = _read_ui("views/workspace.ts")
@@ -917,13 +917,13 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
         _, _, arms = body.partition('surface === "excel"')
         excel_arm, sep, word_arm = arms.partition(": [")
         self.assertTrue(sep, "在函数体里找不到三元的 Word 分支")
-        self.assertIn("原始文件不会被改动", excel_arm)
+        self.assertIn("源文件不会被修改", excel_arm)
         # 「允许兼容转换」这一段本身又按 libreofficeAvailable 分了两个变体，两句都
         # 必须原样留在 Excel 分支里——只留一句就是把某一类机器的用户晾在旧文案上。
         self.assertIn("本机检测到 LibreOffice", excel_arm)
-        self.assertIn("公式会变成算好的数值", excel_arm)
+        self.assertIn("公式将变为计算结果", excel_arm)
         self.assertIn(
-            "复杂样式、合并单元格、图片、图表和宏可能保留不全",
+            "复杂样式、合并单元格、图片、图表和宏可能无法完整保留",
             word_arm,
             "Word 分支的既有文案不该被误改",
         )
@@ -943,7 +943,7 @@ class XlsCompatibilityWarningWordingTests(unittest.TestCase):
                 has_libreoffice=has_libreoffice
             )
             with self.subTest(has_libreoffice=has_libreoffice):
-                self.assertIn("原始文件不会被改动", consequence)
+                self.assertIn("源文件不会被修改", consequence)
 
         repo = Path(__file__).resolve().parents[1]
         # Excel 的启动预检在 api/surfaces/excel.py（任务管理器按板块分派过去）。

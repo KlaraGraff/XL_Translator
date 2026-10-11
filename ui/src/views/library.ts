@@ -488,7 +488,7 @@ function renderTopbarStatus(): void {
   setTopbar({
     title: t("记忆库"),
     status: { label: t("{0} 条", fmtNum(total)), tone: "idle" },
-    subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先"),
+    subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高"),
   });
 }
 
@@ -628,13 +628,13 @@ function openAddEditModal(editing: TmEntry | null): void {
               if (status === "written") {
                 showToast({ message: syncReverse ? t("记忆条目已保存，并同步反向语言对。") : t("记忆条目已保存。") });
               } else if (status === "blocked_pinned") {
-                showToast({ message: backendMessage ? tx(backendMessage) : t("该原文已有固定词条，新译文没有写入。"), error: true });
+                showToast({ message: backendMessage ? tx(backendMessage) : t("该原文已有固定词条，新译文未写入。"), error: true });
                 conflictMessage = backendMessage;
                 keepConflictMessage = true;
                 await refreshConflicts();
                 renderConflictArea();
               } else {
-                showToast({ message: backendMessage ? tx(backendMessage) : t("记忆条目没有写入。") });
+                showToast({ message: backendMessage ? tx(backendMessage) : t("记忆条目未写入。") });
               }
             }
             if (!keepConflictMessage) conflictMessage = "";
@@ -721,13 +721,13 @@ function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmati
   // 印的是「一次性令牌原子复检」「429」「合计潜在并发」和逐条连接的角色/并发明细——
   // 都是实现细节，用户要知道的只有：共用了什么、可能出什么事、自己的设置会不会被改。
   const body: Array<HTMLElement | string> = [
-    t("这次清洗会和正在跑的任务用到同一条 API 连接。两边都按各自的速度发请求，接口那边看到的是两份请求叠在一起。"),
-    t("因此可能变慢或排队，个别请求可能超时失败；如果这条连接是按用量计费的，花费也会同时产生。你在设置里填的速度不会被改。"),
+    t("本次清洗将与正在运行的任务使用同一条 API 连接。双方按各自的速度发送请求，服务商将同时收到两组请求。"),
+    t("因此可能变慢或排队，个别请求可能超时失败；如该连接按用量计费，两项任务都将产生费用。设置中填写的速度不会改变。"),
   ];
   if (active.length) {
     const heading = document.createElement("p");
     heading.style.fontWeight = "600";
-    heading.textContent = t("正在跑的任务");
+    heading.textContent = t("正在运行的任务");
     body.push(heading);
     const list = document.createElement("ul");
     list.style.paddingLeft = "18px";
@@ -740,12 +740,12 @@ function openTaskRiskModal(payload: JsonObject, preflight: { requires_confirmati
     }
     body.push(list);
   }
-  body.push(t("不着急的话，等前一个任务跑完再开始最稳。"));
+  body.push(t("如不急于处理，建议待前一个任务完成后再开始。"));
 
   openModal({
     tone: "warn",
     icon: "warn",
-    title: t("和正在跑的任务共用同一条连接"),
+    title: t("与正在运行的任务共用同一条连接"),
     body,
     actions: [
       { label: t("取消"), variant: "default" },
@@ -768,12 +768,12 @@ async function submitTmCleanStart(payload: JsonObject, confirmationToken: string
       body: JSON.stringify(confirmationToken ? { ...payload, confirmation_token: confirmationToken } : payload),
     });
     cleaningState = "idle";
-    showToast({ message: t("记忆库清洗已开始，可以在任务中心看进度。") });
+    showToast({ message: t("记忆库清洗已开始，可在任务中心查看进度。") });
     navigate("tasks", { taskId: task.task_id });
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: t("记忆库清洗没能开始：{0}", errorMessage(error)), error: true });
+    showToast({ message: t("记忆库清洗未能开始：{0}", errorMessage(error)), error: true });
   }
 }
 
@@ -789,9 +789,9 @@ function confirmTmClean(): void {
     title: t("清洗记忆库？"),
     body: [
       keyword
-        ? t("会把「{0}」里没有固定的词条交给模型检查，找出译法不统一或有错的地方，给出修改建议。这会调用模型，按条数产生费用。", pairLabel)
-        : t("会把「{0}」里没有固定的词条（共 {1} 条，固定词条不参与）交给模型检查，找出译法不统一或有错的地方，给出修改建议。这会调用模型，按条数产生费用。", pairLabel, fmtNum(total)),
-      t("建议生成后要你逐条确认才会写入，记忆库不会被直接改动。"),
+        ? t("将由模型检查「{0}」中未固定的词条，找出译法不统一或有误之处，并给出修改建议。此操作将调用模型，按条数产生费用。", pairLabel)
+        : t("将由模型检查「{0}」中未固定的词条（共 {1} 条，固定词条不参与），找出译法不统一或有误之处，并给出修改建议。此操作将调用模型，按条数产生费用。", pairLabel, fmtNum(total)),
+      t("生成的建议需逐条确认后才会写入，记忆库不会被直接修改。"),
     ],
     actions: [
       { label: t("取消"), variant: "default" },
@@ -824,7 +824,7 @@ async function tmClean(): Promise<void> {
   } catch (error) {
     cleaningState = "error";
     renderStateRow();
-    showToast({ message: t("记忆库清洗没能开始：{0}", errorMessage(error)), error: true });
+    showToast({ message: t("记忆库清洗未能开始：{0}", errorMessage(error)), error: true });
   }
 }
 
@@ -909,15 +909,15 @@ interface ApplySuggestionsResult {
 const CLEAN_OUTCOME_INFO: Record<string, { tone: ChipTone; label: string; reason?: string }> = {
   updated: { tone: "ok", label: t("已写入") },
   unchanged: { tone: "mute", label: t("未改动"), reason: t("库中译文已经是这个值") },
-  pinned: { tone: "warn", label: t("已跳过"), reason: t("词条已被固定——固定词条不接受清洗建议，如需改动请先解除固定") },
-  stale: { tone: "warn", label: t("已跳过"), reason: t("词条在你审阅期间被改动过，建议已过期") },
+  pinned: { tone: "warn", label: t("已跳过"), reason: t("词条已固定，不接受清洗建议；如需修改，请先解除固定") },
+  stale: { tone: "warn", label: t("已跳过"), reason: t("词条在审阅期间已被修改，建议已过期") },
   missing: { tone: "warn", label: t("已跳过"), reason: t("词条已被删除") },
-  invalid: { tone: "warn", label: t("已跳过"), reason: t("译文改成了空白，没有写入；这一条仍留在待审列表") },
+  invalid: { tone: "warn", label: t("已跳过"), reason: t("译文为空，未写入；该条仍保留在待审列表") },
 };
-const CLEAN_OUTCOME_UNSELECTED = { tone: "mute" as ChipTone, label: t("未勾选"), reason: t("留在待审列表，下次打开还能处理") };
+const CLEAN_OUTCOME_UNSELECTED = { tone: "mute" as ChipTone, label: t("未勾选"), reason: t("保留在待审列表，下次打开时可继续处理") };
 // 服务端没回报去向时（旧版本服务端、或响应里缺了这一条）不编结论：
 // 「未改动＝库里已经是这个值」是个事实断言，猜错会误导用户。
-const CLEAN_OUTCOME_UNKNOWN = { tone: "mute" as ChipTone, label: t("已提交"), reason: t("服务端未回报这一条的写入结果") };
+const CLEAN_OUTCOME_UNKNOWN = { tone: "mute" as ChipTone, label: t("已提交"), reason: t("服务端未返回该条的写入结果") };
 
 function openCleanReviewModal(): void {
   const checks: HTMLInputElement[] = [];
@@ -927,7 +927,7 @@ function openCleanReviewModal(): void {
     const staleNote = document.createElement("div");
     staleNote.style.cssText =
       "background:var(--ground);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px";
-    staleNote.textContent = t("另有 {0} 条建议已失效：生成之后对应词条被你改动或固定过，为避免盖掉你的修改，已自动作废。", fmtNum(cleanStaleCount));
+    staleNote.textContent = t("另有 {0} 条建议已失效：建议生成后，对应词条已被修改或固定；为避免覆盖您的修改，已自动作废。", fmtNum(cleanStaleCount));
     body.push(staleNote);
   }
   if (!cleanSuggestions.length) {
@@ -1005,7 +1005,7 @@ function openCleanReviewModal(): void {
           }));
           const accepted = suggestions.filter((item) => item.accepted).length;
           if (!accepted) {
-            showToast({ message: t("还没有勾选任何建议。勾选后再写入；暂不处理可点「取消」。") });
+            showToast({ message: t("尚未勾选任何建议。请勾选后再写入；如暂不处理，请点击「取消」。") });
             return;
           }
           const result = await client.request<{
@@ -1209,7 +1209,7 @@ function openImportPreviewModal(fileName: string, format: "json" | "csv", langPa
     options: [
       { value: "skip", label: t("跳过重复项") },
       { value: "overwrite", label: t("覆盖重复项") },
-      { value: "keep_both", label: t("两份都留，列入待裁决冲突") },
+      { value: "keep_both", label: t("保留两者，列入待裁决冲突") },
     ],
   });
   let syncReverse = false;
@@ -1307,7 +1307,7 @@ function openFullImportPreviewModal(fileName: string, payload: JsonObject): void
     options: [
       { value: "skip", label: t("跳过重复项") },
       { value: "overwrite", label: t("用备份里的译文覆盖重复项") },
-      { value: "keep_both", label: t("两份都留，列入待裁决冲突") },
+      { value: "keep_both", label: t("保留两者，列入待裁决冲突") },
     ],
   });
   const codeMapField = createTextField({ label: t("自定义代码映射（可选 JSON）"), value: "{}", placeholder: t("例如 {0}", '{"x-custom-old":"x-custom-new"}') });
@@ -1638,7 +1638,7 @@ function renderTable(): void {
   if (!entries.length) {
     const empty = createEmptyState({
       title: t("当前语言对没有记忆条目"),
-      description: t("Excel 和 Word 翻译中符合入库条件的内容会保存为记忆，也可以用上方“新增词条”或“导入”手动补充。"),
+      description: t("Excel 和 Word 翻译中符合入库条件的内容将保存为记忆，也可通过上方「新增词条」或「导入」手动添加。"),
       icon: "book",
     });
     tableScrollEl.append(empty);
@@ -1654,7 +1654,7 @@ function renderTable(): void {
     selectAllCheckbox.checked = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id));
     // 用户实测反馈：这个复选框看起来像「全选所有页」，实际只勾选当前页——行为不改
     // （改了会打乱现有习惯），但补一句悬停说明，让人一眼看懂它管的范围。
-    selectAllCheckbox.title = t("只勾选当前页显示的条目，不包括其他页；跨页请用下方“选择全部”。");
+    selectAllCheckbox.title = t("仅勾选当前页显示的条目；如需跨页选择，请使用下方「选择全部」。");
     selectAllCheckbox.addEventListener("change", () => {
       if (selectAllCheckbox.checked) entries.forEach((entry) => selectedIds.add(entry.id));
       else entries.forEach((entry) => selectedIds.delete(entry.id));
@@ -1731,7 +1731,7 @@ function renderTable(): void {
         deleteLink.style.color = "var(--ink-3)";
         deleteLink.title = t("固定词条不能直接删除，请先解除固定。");
         deleteLink.addEventListener("click", () => {
-          showToast({ message: t("固定词条不能直接删除，请先点这一行的固定图标解除固定。"), error: true });
+          showToast({ message: t("固定词条不能直接删除，请先点击该行的固定图标解除固定。"), error: true });
         });
       } else {
         deleteLink.style.color = "var(--danger)";
@@ -1890,10 +1890,10 @@ async function loadLibrary(container: HTMLElement, reviewTaskId: string | null):
     await Promise.all([refreshTm(), refreshConflicts()]);
   } catch (error) {
     if (!isCurrent()) return;
-    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先") });
+    setTopbar({ title: t("记忆库"), status: { label: t("加载失败"), tone: "warn" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
     renderLoadFailure(container, errorMessage(error), () => {
       if (!isCurrent()) return;
-      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先") });
+      setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
       renderLoadingPlaceholder(container);
       void loadLibrary(container, reviewTaskId);
     });
@@ -1927,7 +1927,7 @@ export function mount(container: HTMLElement, params: ViewParams): void {
   selectedIds.clear();
   container.style.flexDirection = "column";
 
-  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用这里的译法，固定的词条最优先") });
+  setTopbar({ title: t("记忆库"), status: { label: t("加载中…"), tone: "idle" }, subtitle: t("翻译 Excel、Word 和 CAD 图纸时优先复用此处的译法，固定词条优先级最高") });
 
   renderLoadingPlaceholder(container);
 

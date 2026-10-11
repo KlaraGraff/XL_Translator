@@ -392,7 +392,7 @@ def get_system_prompt(
 
     if domain_preset == "自定义":
         if not custom_prompt.strip():
-            raise ValueError("自定义领域 Prompt 不能为空")
+            raise ValueError("自定义领域提示词不能为空")
         prompt = custom_prompt
         return append_prompt_block(
             prompt,
@@ -886,8 +886,7 @@ def _translate_batch_with_fallback(
         if _is_permanent_request_error(exc):
             logger.error(f"Excel 翻译请求不可重试，已停止拆分批次：{exc}")
             message = (
-                f"有一批翻译请求出错，重试也不会成功，这批 {len(batch)} 条内容保留原文："
-                f"{_batch_failure_reason(exc)}"
+                f"一批翻译请求出错且无法通过重试解决，该批 {len(batch)} 条内容已保留原文：{_batch_failure_reason(exc)}"
             )
             if error_callback:
                 error_callback(message)
@@ -907,7 +906,7 @@ def _translate_batch_with_fallback(
                 "Excel 批次翻译失败，已缩小批次重试"
                 f"（{len(batch)} -> {midpoint}+{len(batch) - midpoint}）：{exc}"
             )
-            message = f"有一批翻译出错，已拆成更小的批次重试：{_batch_failure_reason(exc)}"
+            message = f"一批翻译出错，已拆分为更小的批次重试：{_batch_failure_reason(exc)}"
             if error_callback:
                 error_callback(message)
             _backoff_sleep(
@@ -1084,8 +1083,7 @@ def _translate_batch_with_sources_fallback(
         if _is_permanent_request_error(exc):
             logger.error(f"Excel 语言回报请求不可重试，已停止拆分批次：{exc}")
             message = (
-                f"有一批翻译请求出错，重试也不会成功，这批 {len(batch)} 条内容保留原文："
-                f"{_batch_failure_reason(exc)}"
+                f"一批翻译请求出错且无法通过重试解决，该批 {len(batch)} 条内容已保留原文：{_batch_failure_reason(exc)}"
             )
             if error_callback:
                 error_callback(message)

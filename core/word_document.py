@@ -333,11 +333,11 @@ class WordHiddenContentReport:
         """按实际检测到的类型给出对应的处理建议，而不是一句笼统的话。"""
         tips = []
         if self.tracked_insertion_count:
-            tips.append("在 Word 里接受全部修订")
+            tips.append("在 Word 中接受全部修订")
         if self.content_control_count:
-            tips.append("把内容控件转换为普通文本")
+            tips.append("将内容控件转换为普通文本")
         if self.textbox_count:
-            tips.append("把文本框里的文字移到正文")
+            tips.append("将文本框中的文字移至正文")
         if self.footnote_count:
             tips.append("脚注/尾注需要另行手工翻译")
         return "；".join(tips)

@@ -156,7 +156,7 @@ def get_local_word_automation_availability() -> tuple[bool, str]:
         if not Path(osascript_path).exists():
             return False, "本机缺少连接 Word 所需的系统组件。"
         if not Path("/Applications/Microsoft Word.app").exists():
-            return False, "没有找到 Microsoft Word，可能没安装。"
+            return False, "未找到 Microsoft Word，可能尚未安装。"
         return True, "已检测到 Microsoft Word；实际转换仍可能要求自动化权限。"
     if system == "Windows":
         try:
@@ -166,7 +166,7 @@ def get_local_word_automation_availability() -> tuple[bool, str]:
             return False, "本机缺少连接 Word 所需的组件。"
         return True, "已检测到 Windows Word 自动化依赖；实际转换仍会验证 Word 安装状态。"
     logger.debug(f"当前平台 {system} 不支持本机 Microsoft Word 自动化")
-    return False, "这台电脑的系统不支持用本机 Word 转换。"
+    return False, "当前系统不支持使用本机 Word 进行转换。"
 
 
 def convert_with_native_word(doc_path: str | Path) -> Path:
@@ -181,7 +181,7 @@ def convert_with_native_word(doc_path: str | Path) -> Path:
         _convert_with_macos_word(source_path, output_path)
         return output_path
     logger.debug(f"当前平台 {system} 暂不支持本地 Word 自动化")
-    raise WordConversionError("这台电脑的系统不支持用本机 Word 转换。")
+    raise WordConversionError("当前系统不支持使用本机 Word 进行转换。")
 
 
 def convert_with_libreoffice(doc_path: str | Path) -> Path:
@@ -189,7 +189,7 @@ def convert_with_libreoffice(doc_path: str | Path) -> Path:
     source_path = Path(doc_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise WordConversionError("本机没有找到 LibreOffice。")
+        raise WordConversionError("本机未找到 LibreOffice。")
 
     output_path = _get_temp_docx_path(source_path)
     work_dir = Path(tempfile.mkdtemp(prefix="word_translator_lo_"))
@@ -271,7 +271,7 @@ def convert_numbering_to_text_with_native_apps(
             logger.debug(f"Word 编号预处理策略不可用 {source_path.name} ({method_name})，原始信息：{exc}")
 
     detail = "；".join(errors) if errors else "没有可用的预处理策略"
-    raise WordConversionError(f"没能用本机 Office 处理 Word 自动编号：{detail}")
+    raise WordConversionError(f"未能使用本机 Office 处理 Word 自动编号：{detail}")
 
 
 def convert_numbering_to_text_with_native_word(docx_path: str | Path) -> Path:
@@ -298,7 +298,7 @@ def convert_numbering_to_text_with_libreoffice(docx_path: str | Path) -> Path:
     source_path = Path(docx_path)
     soffice_path = _find_soffice()
     if soffice_path is None:
-        raise WordConversionError("本机没有找到 LibreOffice。")
+        raise WordConversionError("本机未找到 LibreOffice。")
 
     # 先确认这台机器上 LibreOffice 自带的 Python 还能起来，再决定要不要拉起 soffice。
     # 顺序很重要：soffice 启动要好几秒，而这条路真正会挂的地方是它的 Python——
@@ -397,7 +397,7 @@ def _convert_with_windows_word(source_path: Path, output_path: Path) -> None:
         logger.debug(f"使用本地 Word 转换失败原始错误：{exc!r}")
         raise WordConversionError(
             "使用本机 Word 转换失败："
-            + humanize_error(exc, fallback="Word 没能完成这次转换。")
+            + humanize_error(exc, fallback="Word 未能完成本次转换。")
         ) from exc
     finally:
         if document is not None:
@@ -486,7 +486,7 @@ def _convert_numbering_with_windows_word(source_path: Path, output_path: Path) -
         logger.debug(f"使用本地 Word 预处理编号失败原始错误：{exc!r}")
         raise WordConversionError(
             "使用本机 Word 处理自动编号失败："
-            + humanize_error(exc, fallback="Word 没能完成这一步。")
+            + humanize_error(exc, fallback="Word 未能完成此步骤。")
         ) from exc
     finally:
         if document is not None:
@@ -624,8 +624,8 @@ def _find_libreoffice_python(soffice_path: Path) -> Path:
             return candidate
 
     raise WordConversionError(
-        f"没找到 LibreOffice 自带的 Python（从 {soffice_path} 推断）。"
-        "编号转文本这一步需要它，本次改用纯 Python 兜底。"
+        f"未找到 LibreOffice 自带的 Python（根据 {soffice_path} 推断）。"
+        "编号转文本需要该组件，本次改用纯 Python 备用方案。"
     )
 
 
@@ -652,13 +652,13 @@ def _libreoffice_python_killed_message(python_path: Path, signal_number: int) ->
         # 根本不会走到这里（见 _libreoffice_python_launch_constraint_message）；
         # 走到这里说明预检没读出来，所以话不能说死，更不能劝人白白重装一遍。
         return (
-            "LibreOffice 自带的 Python 被 macOS 直接终止（代码签名或启动限制未通过）。"
-            "新版 LibreOffice 只允许它自己调用这个 Python，外部程序调用会被系统拦下。"
-            "已自动改用内置方式处理编号，译文不受影响。"
+            "LibreOffice 自带的 Python 被 macOS 终止（代码签名或启动限制未通过）。"
+            "新版 LibreOffice 只允许它自己调用这个 Python，"
+            "外部程序调用时会被系统阻止。已自动改用内置方式处理编号，译文不受影响。"
         )
     return (
         f"LibreOffice 自带的 Python 被信号 {signal_number} 终止：{python_path}。"
-        "会自动改用内置方式处理编号。"
+        "将自动改用内置方式处理编号。"
     )
 
 
@@ -719,7 +719,8 @@ def _libreoffice_python_launch_constraint_message(python_path: Path) -> str | No
     if "Parent Launch Constraint" in listing:
         return (
             "新版 LibreOffice 只允许它自己调用内置的 Python（代码签名里带有启动限制），"
-            "外部程序一调用就会被 macOS 终止。已自动改用内置方式处理编号，译文不受影响。"
+            "外部程序调用时会被 macOS 终止。已自动改用内置方式处理编号，"
+            "译文不受影响。"
         )
     return None
 

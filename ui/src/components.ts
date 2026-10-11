@@ -986,9 +986,9 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
         // 「一个都没搜到」和「目录压根没加载出来」是两码事。后者要是也说「换个说法试试」，
         // 等于让用户去调整搜索词来修一个后端没返回数据的故障——怎么试都不会有结果。
         if (!options.options.length) {
-          empty.append(el("b", { text: t("语言列表没能加载出来") }));
+          empty.append(el("b", { text: t("无法加载语言列表") }));
           empty.append(
-            document.createTextNode(t("不是你搜的词有问题，多半是程序刚启动还没准备好，稍等几秒再点重试。")),
+            document.createTextNode(t("这并非搜索词的问题，通常是程序刚启动、尚未就绪，请稍候几秒后点击「重试」。")),
           );
           if (options.onReload) {
             const retry = el("button", { className: "lang-retry", text: t("重试") });
@@ -1002,7 +1002,7 @@ export function createLanguagePicker(options: LanguagePickerOptions): LanguagePi
           }
         } else {
           empty.append(el("b", { text: t("没有匹配的语言") }));
-          empty.append(document.createTextNode(t("换个说法试试，中文名、英文名、语言代码都能搜。")));
+          empty.append(document.createTextNode(t("请尝试其他关键词，可按中文名、英文名或语言代码搜索。")));
         }
         list.append(empty);
       } else {

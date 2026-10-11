@@ -100,8 +100,8 @@ class ExcelWordRunLogTests(IsolatedAppDataTestCase):
             messages = list(runner._queue.queue)
 
         statuses = _statuses(messages)
-        self.assertIn("状态：正在检测语言 1/2...", statuses)
-        self.assertIn("状态：正在检测语言 2/2...", statuses)
+        self.assertIn("状态：正在检测语言 1/2…", statuses)
+        self.assertIn("状态：正在检测语言 2/2…", statuses)
         logs = _visible_logs(messages)
         self.assertTrue(logs)
         for line in logs:
@@ -127,8 +127,8 @@ class ExcelWordRunLogTests(IsolatedAppDataTestCase):
             messages = list(runner._queue.queue)
 
         statuses = _statuses(messages)
-        self.assertIn("状态：正在检测语言 1/2...", statuses)
-        self.assertIn("状态：正在检测语言 2/2...", statuses)
+        self.assertIn("状态：正在检测语言 1/2…", statuses)
+        self.assertIn("状态：正在检测语言 2/2…", statuses)
         logs = _visible_logs(messages)
         self.assertTrue(logs)
         for line in logs:

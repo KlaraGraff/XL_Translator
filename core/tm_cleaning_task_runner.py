@@ -48,7 +48,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
     def _run(self) -> None:
         started_at = time.monotonic()
         try:
-            self._queue.put(StatusMsg("状态：正在准备记忆库清洗建议..."))
+            self._queue.put(StatusMsg("状态：正在准备记忆库清洗建议…"))
             effective = resolve_effective_model_config(self._settings, ROLE_CLEANER)
             throughput = get_model_throughput(self._settings, effective)
             clean_settings = settings_for_text_role(self._settings, ROLE_CLEANER)
@@ -70,7 +70,7 @@ class TmCleaningTaskRunner(BaseTaskRunner):
             if self._stop_event.is_set():
                 self._queue.put(
                     StoppedMsg(
-                        message="记忆库清洗已停止，没有写入任何建议。",
+                        message="记忆库清洗已停止，未写入任何建议。",
                         kpi={"suggestion_count": len(suggestions), "elapsed_sec": elapsed},
                     )
                 )
@@ -94,18 +94,17 @@ class TmCleaningTaskRunner(BaseTaskRunner):
                 # 0 API 的惯例归一建议、以及失败前成功批次的模型建议都已写进建议表——
                 # 说清楚它们没受失败影响，用户现在就能在建议列表里看到
                 from_model = sum(1 for s in exc.partial_suggestions if s in exc.model_suggestions)
-                detail = f"，其中 {from_model} 条来自模型" if from_model else "（都是按固定规则自动整理的，没有调用模型）"
+                detail = f"，其中 {from_model} 条来自模型" if from_model else "（均按固定规则自动生成，未调用模型）"
                 message += (
-                    f"（已生成并保存 {len(exc.partial_suggestions)} 条建议{detail}，"
-                    "可在清洗建议列表中直接查看）"
+                    f"（已生成并保存 {len(exc.partial_suggestions)} 条建议{detail}，可在清洗建议列表中查看）"
                 )
             self._queue.put(ErrorMsg(message=message))
         except Exception as exc:  # noqa: BLE001 - report via managed task SSE.
             logger.opt(exception=exc).warning(f"[记忆库清洗] 任务失败：{exc!r}")
             self._queue.put(
                 ErrorMsg(
-                    message="记忆库清洗没能完成："
-                    + user_facing_reason(exc, fallback="出现了未预期的问题，请重试。")
+                    message="记忆库清洗未能完成："
+                    + user_facing_reason(exc, fallback="发生意外问题，请重试。")
                 )
             )
 

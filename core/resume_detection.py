@@ -320,14 +320,14 @@ class BaselineDivergence(list):
 
 
 def describe_baseline_divergence(missing: list[str]) -> str:
-    """「多了 N 处」/「少了 M 处」/「多了 N 处、少了 M 处」，给续译核对的提示文案用。"""
+    """「多出 N 处」/「缺少 M 处」/「多出 N 处、缺少 M 处」，给续译核对的提示文案用。"""
     added = getattr(missing, "added", missing)
     removed = getattr(missing, "removed", [])
     parts = []
     if added:
-        parts.append(f"多了 {len(added)} 处")
+        parts.append(f"多出 {len(added)} 处")
     if removed:
-        parts.append(f"少了 {len(removed)} 处")
+        parts.append(f"缺少 {len(removed)} 处")
     return "、".join(parts) + "内容"
 
 

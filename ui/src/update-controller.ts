@@ -171,19 +171,19 @@ export function canSelfUpdate(): boolean {
 }
 
 const SELF_UPDATE_BLOCKED_COPY: Record<string, string> = {
-  running_from_dmg: t("Translator 当前是从磁盘映像里运行的，没法自己替换自己。请先把它拖进「应用程序」，或直接下载新版安装包。"),
-  install_location_read_only: t("Translator 所在目录没有写入权限，装不上更新。请把它移到「应用程序」，或直接下载新版安装包。"),
-  unsupported_architecture: t("这台机器的处理器架构没有对应的应用内更新包，请直接下载安装包。"),
+  running_from_dmg: t("Translator 当前从磁盘映像运行，无法自行更新。请先将其拖入「应用程序」，或下载新版安装包。"),
+  install_location_read_only: t("Translator 所在目录没有写入权限，无法安装更新。请将其移至「应用程序」，或下载新版安装包。"),
+  unsupported_architecture: t("本机处理器架构没有对应的应用内更新包，请下载安装包。"),
   unsupported_platform: t("当前系统不支持应用内更新，请直接下载安装包。"),
-  not_a_bundle: t("没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
-  install_location_unknown: t("没能定位到 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
+  not_a_bundle: t("未能定位 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
+  install_location_unknown: t("未能定位 Translator 的安装位置，应用内更新已停用。请直接下载安装包。"),
   dev_build: t("开发模式下不提供应用内更新。"),
   browser_preview: t("浏览器预览模式下不提供应用内更新。"),
-  environment_probe_failed: t("没能确认这台机器是否支持应用内更新，请直接下载安装包。"),
+  environment_probe_failed: t("无法确认本机是否支持应用内更新，请直接下载安装包。"),
 };
 
 export function selfUpdateBlockedCopy(reason: string): string {
-  return SELF_UPDATE_BLOCKED_COPY[reason] ?? t("这台机器暂不支持应用内更新，请直接下载安装包。");
+  return SELF_UPDATE_BLOCKED_COPY[reason] ?? t("本机暂不支持应用内更新，请直接下载安装包。");
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +353,7 @@ export async function requestUpdateInstall(): Promise<void> {
       const running = await activeTaskCount();
       const body = running > 0
         ? [
-          t("现在安装会中断这 {0} 个任务或单页操作，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。", running),
+          t("立即安装将中断这 {0} 个任务或单页操作。已翻译的部分将保留在任务中心，未完成的部分需要重新开始。", running),
           t("安装程序会在更新完成后自动重新打开 Translator。"),
         ]
         : [t("安装过程中 Translator 会关闭，安装程序完成后会自动重新打开它。")];
@@ -428,7 +428,7 @@ async function startInstall(): Promise<void> {
       const running = await activeTaskCount();
       if (running > 0 && !await confirmModal({
         title: t("还有 {0} 个任务或单页操作正在进行", running),
-        body: [t("下载期间仍有工作正在进行，现在安装会中断它们。已经生成的文件会保留。")],
+        body: [t("下载期间仍有工作在进行，立即安装将中断这些工作。已生成的文件将保留。")],
         confirmLabel: t("仍然安装"), cancelLabel: t("暂不安装"),
       })) {
         state.flow = idleUpdateFlow();
@@ -451,12 +451,12 @@ async function startInstall(): Promise<void> {
         // 「取不到更新信息」不能说成「下载失败」：那句话会让人一遍遍重试一件不可能
         // 成功的事——这一版没有提供应用内更新包时，重试到下一个版本发布为止都是失败。
         stage === "activity-check"
-          ? t("无法确认是否还有任务或单页操作正在进行，请稍后重试。当前版本没有被改动，可以正常继续使用。")
+          ? t("无法确认是否还有任务或单页操作正在进行，请稍后重试。当前版本未作改动，可继续正常使用。")
           : stage === "resolve"
-          ? t("没有取到这一版的更新信息：可能是网络不通，也可能是这一版没有提供应用内更新包。可以稍后再试，或改为下载安装包。当前版本没有被改动，可以正常继续使用。")
+          ? t("未能获取该版本的更新信息：可能是网络不通，或该版本未提供应用内更新包。请稍后重试，或改为下载安装包。当前版本未作改动，可继续正常使用。")
           : stage === "download"
-            ? t("安装包没有下载完，当前版本没有被改动，可以正常继续使用。")
-            : t("更新没有安装成功，当前版本没有被改动，可以正常继续使用。"),
+            ? t("安装包未下载完成。当前版本未作改动，可继续正常使用。")
+            : t("更新未能安装。当前版本未作改动，可继续正常使用。"),
       code: updaterDiagnosticCode(error),
     };
   } finally {
@@ -492,8 +492,8 @@ export async function requestRestart(): Promise<void> {
       const confirmed = await confirmModal({
         title: t("还有 {0} 个任务或单页操作正在进行", running),
         body: [
-          t("现在重启会中断它们，已经翻好的部分会保留在任务中心，未完成的部分需要重新开始。"),
-          t("更新已经装好了，下次正常退出再打开也会生效——不重启不会丢掉这次更新。"),
+          t("立即重启将中断这些任务。已翻译的部分将保留在任务中心，未完成的部分需要重新开始。"),
+          t("更新已安装，下次退出并重新打开应用时生效；暂不重启不会影响本次更新。"),
         ],
         confirmLabel: t("仍然重启"),
         cancelLabel: t("稍后重启"),

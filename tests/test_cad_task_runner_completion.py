@@ -130,7 +130,7 @@ def test_cad_stop_before_any_drawing_does_not_promise_a_checkpoint(tmp_path, mon
     stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
     assert not any(item.get("status") in {"succeeded", "needs_review"} for item in stopped.files)
     assert "断点" not in stopped.message
-    assert "还没有图纸翻译完成" in stopped.message
+    assert "尚无图纸完成翻译" in stopped.message
 
 
 def test_cad_stop_after_a_finished_drawing_keeps_the_checkpoint_message(tmp_path, monkeypatch):
@@ -142,7 +142,7 @@ def test_cad_stop_after_a_finished_drawing_keeps_the_checkpoint_message(tmp_path
     messages = _run(_stopping_runner(tmp_path, [first, second], stop_on="Window"))
     stopped = next(message for message in messages if type(message).__name__ == "StoppedMsg")
     assert any(item.get("status") in {"succeeded", "needs_review"} for item in stopped.files)
-    assert "已翻完的图纸都已保留" in stopped.message
+    assert "已翻译的图纸均已保留" in stopped.message
 
 
 def _batched_runner(tmp_path) -> tuple[CadTaskRunner, list[str]]:

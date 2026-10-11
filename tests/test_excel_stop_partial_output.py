@@ -154,7 +154,7 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
         self.assertEqual(stopped.kpi["unstarted_text_count"], untranslated)
         # 停止时没翻的格子不是「需复核」。
         self.assertEqual(stopped.review["total_count"], 0)
-        self.assertIn(f"还有 {untranslated} 格没翻", stopped.message)
+        self.assertIn(f"尚有 {untranslated} 个单元格未翻译", stopped.message)
 
         output = Path(entry["output_path"])
         cells = [
@@ -247,7 +247,7 @@ class ExcelStopWritesTranslatedPart(unittest.TestCase):
         self.assertTrue(entry["success"], entry)
         self.assertNotIn("unstarted_text_count", stopped.kpi)
         self.assertNotIn("unfinished_text_count", entry)
-        self.assertNotIn("还有", stopped.message)
+        self.assertNotIn("尚有", stopped.message)
 
 
 if __name__ == "__main__":  # pragma: no cover

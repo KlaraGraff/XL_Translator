@@ -232,7 +232,7 @@ class TranslationTaskManager:
         )
         if bool(risk["surface_busy"]):
             raise TaskConflictError(
-                "同一类翻译已经有一个任务在进行（包括暂停中、正在停止的），请等它结束后再开始。",
+                "同类翻译已有任务正在进行（包括已暂停和正在停止的任务），请待其结束后再开始。",
                 reason="surface_busy",
             )
         response: dict[str, Any] = {
@@ -275,12 +275,12 @@ class TranslationTaskManager:
                 token = self._confirmation_tokens.pop(str(confirmation_token), None)
             if token is None:
                 raise TaskConflictError(
-                    "这次确认已经过期，请重新点一次开始。",
+                    "本次确认已过期，请重新点击开始。",
                     reason="expired_or_consumed",
                 )
             if token.prepared.fingerprint != prepared.fingerprint:
                 raise TaskConflictError(
-                    "确认之后任务设置又改过了，请重新点一次开始。",
+                    "确认后任务设置已更改，请重新点击开始。",
                     reason="stale",
                 )
             expected_revision = token.registry_revision
@@ -290,10 +290,10 @@ class TranslationTaskManager:
                 group_capacities=prepared.group_capacities,
             )
             if bool(risk["surface_busy"]):
-                raise TaskConflictError("同一类翻译已经有一个任务在进行，请等它结束后再开始。", reason="surface_busy")
+                raise TaskConflictError("同类翻译已有任务正在进行，请待其结束后再开始。", reason="surface_busy")
             if risk["shared_groups"]:
                 raise TaskConflictError(
-                    "这个任务会和正在跑的任务共用同一条模型连接，请先确认再开始。",
+                    "此任务将与正在运行的任务共用同一条模型连接，请确认后再开始。",
                     reason="confirmation_required",
                 )
             expected_revision = int(risk["revision"])
@@ -360,7 +360,7 @@ class TranslationTaskManager:
             raise TaskInputError("请先选择要翻译的文件或文件夹。")
         root = Path(source_path).expanduser().resolve()
         if not root.exists():
-            raise TaskInputError(f"找不到「{root.name or root}」，它可能已被移动或删除。")
+            raise TaskInputError(f"找不到「{root.name or root}」，可能已被移动或删除。")
         default_surface_source = getattr(
             settings,
             f"{normalized_surface}_source_lang",
@@ -409,7 +409,7 @@ class TranslationTaskManager:
             ]
         if not files:
             logger.info(f"[任务] 没有找到可翻译的 {normalized_surface} 文件：{root}")
-            raise TaskInputError("这里没有找到可以翻译的文件，请换一个文件或文件夹，或检查文件格式。")
+            raise TaskInputError("未找到可翻译的文件，请选择其他文件或文件夹，或检查文件格式。")
         self._validate_preflight(
             normalized_surface, files=files, settings=settings, options=selected_options
         )
@@ -565,11 +565,11 @@ class TranslationTaskManager:
         if attempted.lease is None:
             reason = attempted.reason or "conflict"
             messages = {
-                "surface_busy": "同一类翻译已经有一个任务在进行，请等它结束后再开始。",
-                "stale": "确认之后正在运行的任务有变化，请重新点一次开始。",
+                "surface_busy": "同类翻译已有任务正在进行，请待其结束后再开始。",
+                "stale": "确认后正在运行的任务发生了变化，请重新点击开始。",
             }
             raise TaskConflictError(
-                messages.get(reason, "任务没能开始，请稍后再点一次开始。"), reason=reason
+                messages.get(reason, "任务未能开始，请稍后重新点击开始。"), reason=reason
             )
         lease = attempted.lease
         try:
@@ -650,7 +650,7 @@ class TranslationTaskManager:
                         task,
                         {
                             "message": user_facing_reason(
-                                exc, fallback="任务没能启动，出现了未预期的问题，请重试。"
+                                exc, fallback="任务因意外问题未能启动，请重试。"
                             )
                         },
                         "error",
@@ -756,7 +756,7 @@ class TranslationTaskManager:
             "active_tasks": active_tasks,
             "shared_connections": shared_connections,
             "warnings": (
-                ["两个任务共用同一条模型连接，可能变慢、排队或超时，两边都会计费。"]
+                ["两个任务共用同一条模型连接，可能出现变慢、排队或超时，且均会计费。"]
                 if shared_connections
                 else []
             ),
@@ -938,7 +938,7 @@ class TranslationTaskManager:
                         task.history_dirty = False
             return removed
         except OSError as exc:
-            raise TaskHistoryError("任务历史无法写入，暂时不能清空记录。") from exc
+            raise TaskHistoryError("任务历史无法写入，暂时无法清空记录。") from exc
 
     def delete_task_record(self, task_id: str) -> dict[str, Any]:
         """删除单条任务记录本身。
@@ -959,9 +959,9 @@ class TranslationTaskManager:
                 # Terminal, but still writing: the rerun (or restore) rebuilds
                 # the output file and the report under this record.
                 raise TaskConflictError(
-                    "这个任务正在把一页换回上一版，稍等几秒再删除这条记录。"
+                    "此任务正在将一页切换回上一版，请稍候几秒再删除此记录。"
                     if live.rerun_kind == "restore"
-                    else "这个任务正在重新生成某一页，等它跑完再删除这条记录。",
+                    else "此任务正在重新生成某一页，请待其完成后再删除此记录。",
                     reason="page_rerun_active",
                 )
         # 其它任务可能仍在运行并写历史，先把内存里挂着的脏记录落盘，
@@ -976,7 +976,7 @@ class TranslationTaskManager:
                 removed_from_pending = self._pending_history.pop(key, None) is not None
                 self._history_warning_tasks.discard(key)
         except OSError as exc:
-            raise TaskHistoryError("任务历史无法写入，暂时不能删除记录。") from exc
+            raise TaskHistoryError("任务历史无法写入，暂时无法删除记录。") from exc
         with self._lock:
             removed_from_memory = self._tasks.pop(key, None) is not None or removed_from_pending
         if not removed_from_history and not removed_from_memory:
@@ -1009,7 +1009,7 @@ class TranslationTaskManager:
                 if task.terminal:
                     continue
                 result = self._complete_file_progress(task, {
-                    "message": "应用中途关闭，任务没有完成。已生成的文件和报告仍保留在输出目录，可以重新开始翻译。",
+                    "message": "应用中途关闭，任务未完成。已生成的文件和报告仍保留在输出目录中，可重新开始翻译。",
                     "recovery": {"can_resume": False, "reason": "sidecar_restarted"},
                 }, "interrupted")
                 task.state = "interrupted"
@@ -1039,16 +1039,16 @@ class TranslationTaskManager:
         """Pause PDF page submission while its sidecar and snapshot remain alive."""
         task = self._get_task(task_id)
         if not get_surface(task.surface).can_pause:
-            raise TaskInputError("这个任务不支持暂停。")
+            raise TaskInputError("此任务不支持暂停。")
         with task.condition:
             if task.terminal:
                 return self.task_status(task_id)
             if not hasattr(task.runner, "pause"):
-                raise TaskInputError("这个任务不支持暂停。")
+                raise TaskInputError("此任务不支持暂停。")
             if task.state == "paused":
                 return self.task_status(task_id)
             if task.state != "running":
-                raise TaskInputError("任务现在不能暂停。")
+                raise TaskInputError("任务当前无法暂停。")
             # A surface that pauses at its next safe point (CAD: between
             # drawings or between request batches) keeps the intermediate
             # state visible until the runner acknowledges it.
@@ -1066,7 +1066,7 @@ class TranslationTaskManager:
             raise TaskInputError("当前任务不支持继续。")
         with task.condition:
             if task.terminal:
-                raise TaskInputError("任务已经结束，不能继续。")
+                raise TaskInputError("任务已结束，无法继续。")
             if not hasattr(task.runner, "resume"):
                 raise TaskInputError("当前任务不支持继续。")
             if task.state != "paused":
@@ -1080,7 +1080,7 @@ class TranslationTaskManager:
         """End an intentionally paused PDF task and retain its partial evidence."""
         task = self._get_task(task_id)
         if not get_surface(task.surface).can_end_paused:
-            raise TaskInputError("这个任务暂停后不能直接结束，请点「停止」。")
+            raise TaskInputError("此任务暂停后无法直接结束，请点击「停止」。")
         with task.condition:
             if task.terminal:
                 return self.task_status(task_id)
@@ -1156,7 +1156,7 @@ class TranslationTaskManager:
         """Queue a single-page action; only a paused task may accept one."""
         normalized = str(action or "").strip().lower()
         if normalized not in {"regenerate", "skip"}:
-            raise TaskInputError("这一页只能选择「重新生成」或「跳过」。")
+            raise TaskInputError("此页只能选择「重新生成」或「跳过」。")
         task = self._get_task(task_id)
         runner = self._pdf_review_runner(task)
         method = (
@@ -1170,7 +1170,7 @@ class TranslationTaskManager:
         # is already running again and the request is rejected outright.
         with task.condition:
             if task.terminal:
-                raise TaskConflictError("任务已经结束，不能再做单页操作。", reason="task_terminal")
+                raise TaskConflictError("任务已结束，无法再进行单页操作。", reason="task_terminal")
             if task.state != "paused":
                 raise TaskConflictError(
                     "只有已暂停的 PDF 与图片任务可以单独处理某一页。",
@@ -1207,20 +1207,20 @@ class TranslationTaskManager:
         task = self._get_task(task_id)
         runner = self._pdf_review_runner(task)
         if not callable(getattr(runner, "rerun_page", None)):
-            raise TaskInputError("这个任务的逐页记录已经释放，不能再重新生成单页。")
+            raise TaskInputError("此任务的逐页记录已释放，无法再重新生成单页。")
         with task.condition:
             if self._shutdown.is_set():
                 raise TaskConflictError("应用正在关闭，请重新打开后再操作。", reason="shutting_down")
             if not task.terminal:
                 raise TaskConflictError(
-                    "任务还没结束；运行中的任务请先暂停再做单页操作。",
+                    "任务尚未结束；运行中的任务请先暂停，再进行单页操作。",
                     reason="task_not_terminal",
                 )
             if task.rerun_active:
                 raise TaskConflictError(
-                    "这个任务正在把一页换回上一版，马上就好，稍等一下再重新生成。"
+                    "此任务正在将一页切换回上一版，即将完成，请稍候再重新生成。"
                     if task.rerun_kind == "restore"
-                    else "这个任务已经有一页在重新生成，等它跑完再操作下一页。",
+                    else "此任务已有一页正在重新生成，请待其完成后再操作下一页。",
                     reason="page_rerun_active",
                 )
             task.rerun_active = True
@@ -1239,10 +1239,10 @@ class TranslationTaskManager:
             if attempted.lease is None:
                 reason = attempted.reason or "conflict"
                 messages = {
-                    "surface_busy": "有 PDF 与图片翻译任务正在进行，等它结束后再重新生成这一页。",
+                    "surface_busy": "有 PDF 与图片翻译任务正在进行，请待其结束后再重新生成此页。",
                 }
                 raise TaskConflictError(
-                    messages.get(reason, "这一页没能开始重新生成，请稍后再试。"),
+                    messages.get(reason, "此页未能开始重新生成，请稍后重试。"),
                     reason=reason,
                 )
             lease = attempted.lease
@@ -1300,20 +1300,20 @@ class TranslationTaskManager:
         task = self._get_task(task_id)
         runner = self._pdf_review_runner(task)
         if not callable(getattr(runner, "restore_previous_page", None)):
-            raise TaskInputError("这个任务的逐页记录已经释放，不能再换回上一版。")
+            raise TaskInputError("此任务的逐页记录已释放，无法再切换回上一版。")
         with task.condition:
             if self._shutdown.is_set():
                 raise TaskConflictError("应用正在关闭，请重新打开后再操作。", reason="shutting_down")
             if not task.terminal:
                 raise TaskConflictError(
-                    "任务还没结束；运行中的任务请先暂停再做单页操作。",
+                    "任务尚未结束；运行中的任务请先暂停，再进行单页操作。",
                     reason="task_not_terminal",
                 )
             if task.rerun_active:
                 raise TaskConflictError(
-                    "这个任务正在把另一页换回上一版，马上就好，稍等一下再操作。"
+                    "此任务正在将另一页切换回上一版，即将完成，请稍候再操作。"
                     if task.rerun_kind == "restore"
-                    else "这个任务有一页正在重新生成，等它跑完再换回上一版。",
+                    else "此任务有一页正在重新生成，请待其完成后再切换回上一版。",
                     reason="page_rerun_active",
                 )
             task.rerun_active = True
@@ -1442,7 +1442,7 @@ class TranslationTaskManager:
             "request_page_skip",
         )
         if not all(callable(getattr(runner, name, None)) for name in required):
-            raise TaskInputError("这个 PDF 任务没有逐页审核记录。")
+            raise TaskInputError("此 PDF 任务没有逐页审核记录。")
         return runner
 
     def reservations(self) -> list[dict[str, Any]]:
@@ -1584,7 +1584,7 @@ class TranslationTaskManager:
                     if remaining <= 0:
                         if task.rerun_active:
                             self._append_event(task, "pdf_page_shutdown_pending", {
-                                "message": "等待关闭超时，单页操作还没确认结束。",
+                                "message": "等待关闭超时，单页操作尚未确认结束。",
                             })
                         break
                     task.condition.wait(timeout=min(remaining, 0.25))
@@ -1657,7 +1657,7 @@ class TranslationTaskManager:
                 result={
                     "message": user_facing_reason(
                         "Translation runner ended without a terminal message.",
-                        fallback="翻译中途意外结束，请重试。",
+                        fallback="翻译意外中止，请重试。",
                     )
                 },
             )
@@ -1670,7 +1670,7 @@ class TranslationTaskManager:
                 event_type="error",
                 result={
                     "message": user_facing_reason(
-                        exc, fallback="任务运行时出现了未预期的问题，请重试或查看运行日志。"
+                        exc, fallback="任务运行时发生意外问题，请重试或查看运行日志。"
                     )
                 },
             )
@@ -1800,7 +1800,7 @@ class TranslationTaskManager:
                 progress=progress or None,
             )
         except Exception:  # noqa: BLE001 - diagnostics must never break task teardown
-            logger.opt(exception=True).warning("任务诊断记录没能写入；任务本身不受影响。")
+            logger.opt(exception=True).warning("任务诊断记录写入失败；任务本身不受影响。")
 
     def _complete_file_progress(self, task: ApiTask, result: dict[str, Any], state: str) -> dict[str, Any]:
         """Reconcile each file against its output, never blanket-mark a task done."""

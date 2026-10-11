@@ -219,7 +219,7 @@ class ChannelGlueTests(unittest.TestCase):
 
         self.assertEqual(translations, {REAL_HEADER: REAL_ADDED})
         self.assertEqual(len(issues), 1)
-        self.assertEqual(issues[0]["problem"], "页眉页脚整行改写没通过自动检查")
+        self.assertEqual(issues[0]["problem"], "页眉页脚整行改写未通过自动检查")
         self.assertEqual(issues[0]["severity"], "resolved")
 
     def test_a_line_that_cannot_be_completed_is_reported_for_a_human(self) -> None:
