@@ -9,16 +9,10 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 
-from api.cad_plugin import (
-    probe_status,
-)
+from api.surfaces import get_surface
 from api.task_manager import (
     TaskOptions,
 )
-from core.file_scanner import scan_excel_sources
-from core.pdf_image_translation import scan_pdf_sources
-from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
-from core.word_document import scan_word_sources
 from settings import (
     load_settings,
 )
@@ -41,67 +35,11 @@ def register(app: FastAPI) -> None:
         roots = [Path(item).expanduser() for item in request.paths if str(item).strip()]
         if not roots:
             roots = [Path(request.path).expanduser()]
-        if request.surface == "cad":
-            from core.file_progress import file_progress_id
-            status = probe_status()
-            converter_path = str(status.get("converter") or "").strip()
-            converter = SubprocessCadConverter(converter_path) if converter_path else None
-            cad_skipped: list[dict[str, str]] = []
-            try:
-                summaries = scan_cad_paths(
-                    roots,
-                    converter=converter,
-                    options=CadPipelineOptions(
-                        source_lang=str(request.source_language or "auto"),
-                        target_lang=str(request.target_language or "zh"),
-                        include_block_text=bool(request.include_block_text),
-                    ),
-                    skipped=cad_skipped,
-                )
-            except Exception as exc:
-                raise HTTPException(422, str(exc) or "CAD 文件扫描失败。") from exc
-            items = [
-                {
-                    "path": str(item.path),
-                    "name": item.filename,
-                    "format": item.format,
-                    "text_count": item.text_entity_count,
-                    "candidate_count": item.candidate_count,
-                    "needs_conversion": item.needs_conversion,
-                    "file_id": file_progress_id(item.path),
-                }
-                for item in summaries
-            ]
-            return {
-                "items": items,
-                "skipped": cad_skipped,
-                # Keep the capability at the response root for the CAD view;
-                # ``risk.capability`` remains for older scan consumers.
-                "capability": status,
-                "summary": {
-                    "file_count": len(items),
-                    "text_entity_count": sum(item["text_count"] for item in items),
-                    "candidate_count": sum(item["candidate_count"] for item in items),
-                },
-                "risk": {
-                    "capability": status,
-                    "message": "ODA 未连接时只能列出 DXF；DWG 翻译需先连接 ODA。"
-                    if not converter
-                    else "",
-                },
-                "previous_output": None,
-            }
-        if request.surface == "excel":
-            result = _merge_scan_results([scan_excel_sources(root) for root in roots])
-        elif request.surface == "word":
-            result = _merge_scan_results([scan_word_sources(root) for root in roots])
-        else:
-            result = _merge_scan_results(
-                [
-                    scan_pdf_sources(root, include_images=request.include_images)
-                    for root in roots
-                ]
-            )
+        surface = get_surface(request.surface)
+        custom = surface.scan_response(request, roots)
+        if custom is not None:
+            return custom
+        result = _merge_scan_results([surface.scan_sources(root, request) for root in roots])
         from core.file_progress import file_progress_id
 
         payload = {

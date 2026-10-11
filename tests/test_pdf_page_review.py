@@ -239,7 +239,7 @@ class PdfPageReviewRouteTests(IsolatedAppDataTestCase):
 
     def _patches(self, manager: TranslationTaskManager):
         return (
-            patch.object(manager, "_validate_pdf_preflight"),
+            patch.object(manager, "_validate_preflight"),
             patch(
                 "api.task_manager.task_api_context_for_page",
                 return_value=TaskApiContext(frozenset(), {}),

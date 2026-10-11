@@ -168,7 +168,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):
@@ -194,7 +194,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):
@@ -225,7 +225,7 @@ class ApiAppTests(unittest.TestCase):
         with (
             patch("api.task_manager.task_api_context_for_page", return_value=context),
             patch(
-                "api.task_manager.check_translation_api_config",
+                "api.surfaces.base.check_translation_api_config",
                 return_value=ApiConfigCheckResult(ok=True),
             ),
         ):

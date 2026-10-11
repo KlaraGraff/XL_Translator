@@ -11,27 +11,16 @@ import uuid
 from collections.abc import Callable, Generator
 from dataclasses import asdict, dataclass, field, is_dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any
 
 from core import tm_manager
-from core import bilingual_writer
-from core.api_config_check import check_translation_api_config
-from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER, scan_path
+from core.file_scanner import GENERATED_OUTPUT_DIR_MARKER
 from core.file_progress import FileProgressMsg, file_progress_entry, file_progress_id
 from core.model_api_identity import task_api_context_for_page
 from core.engine_dispatcher import activate_translation_surface
-from core.language_registry import get_target_lang_display, normalize_source_selection
-from core.model_roles import (
-    ROLE_IMAGE,
-    ROLE_PDF_REVIEW,
-    provider_supports_capability,
-    resolve_effective_model_config,
-)
-from core.engine_dispatcher import build_role_engine
+from core.language_registry import normalize_source_selection
 from core.pdf_image_translation import (
-    PdfImageTranslationRunner,
     PdfPageActionError,
-    scan_pdf_path,
 )
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
@@ -48,39 +37,22 @@ from core.task_runner import (
     ProgressMsg,
     StatusMsg,
     StoppedMsg,
-    TaskRunner,
     WordRecoveryStatusMsg,
     user_facing_reason,
 )
-from core.word_document import scan_word_path
-from core.word_task_runner import WordTaskRunner
-from core.cad_task_runner import CadTaskRunner
-from core.cad_translation import CadPipelineOptions, SubprocessCadConverter, scan_cad_paths
-from api.cad_plugin import probe_status
-from core.word_converter import get_local_word_automation_availability
-from core.xls_converter import (
-    describe_xls_compatibility_consequence,
-    get_local_excel_availability,
-    libreoffice_xls_conversion_available,
+from api.surfaces import RunnerRequest, get_surface
+from api.task_contracts import (  # noqa: F401 - re-exported
+    Runner,
+    TaskConflictError,
+    TaskInputError,
+    TaskNotFoundError,
+    TaskOptions,
 )
 from settings import AppSettings, load_settings
 
-TaskSurface = Literal["excel", "word", "pdf", "cad", "tm_clean"]
-
-_PAGE_BY_SURFACE = {
-    "excel": "excel_translate",
-    "word": "word_translate",
-    "pdf": "pdf_translate",
-    "cad": "cad_translate",
-    "tm_clean": "tm_clean",
-}
-_LABEL_BY_SURFACE = {
-    "excel": "Excel translation",
-    "word": "Word translation",
-    "pdf": "PDF translation",
-    "cad": "CAD drawing translation",
-    "tm_clean": "TM cleaning",
-}
+# A surface key ("excel", "word", "pdf", "cad", "tm_clean").  What each
+# surface does differently lives in api/surfaces/, not in this module.
+TaskSurface = str
 
 # Shortest gap between two history writes for the same task while it runs.
 # Every event used to trigger a full sanitize + read + rewrite of the history
@@ -96,73 +68,8 @@ MAX_RETAINED_TERMINAL_TASKS = 12
 TERMINAL_EVENT_TAIL = 300
 
 
-class Runner(Protocol):
-    def start(self) -> None: ...
-
-    def stop(self) -> None: ...
-
-    def needs_poll(self) -> bool: ...
-
-    def get_message(self, timeout: float = 0.05) -> Any: ...
-
-
-class TaskNotFoundError(KeyError):
-    """Raised when a task ID does not belong to this sidecar."""
-
-
-class TaskConflictError(RuntimeError):
-    """Raised when the scheduler cannot admit a candidate task."""
-
-    def __init__(self, message: str, *, reason: str = "conflict") -> None:
-        super().__init__(message)
-        self.reason = reason
-
-
-class TaskInputError(ValueError):
-    """Raised when a source path has no usable files for the selected surface."""
-
-    def __init__(self, message: str, *, reason: str = "invalid_input") -> None:
-        super().__init__(message)
-        self.reason = reason
-
-
-@dataclass(frozen=True)
-class TaskOptions:
-    untranslated_only: bool = False
-    protect_front_matter: bool = False
-    translate_headers_footers: bool = False
-    allow_xls_fallback: bool = False
-    allow_doc_fallback: bool = False
-    include_images: bool = False
-    source_lang: str | None = None
-    target_lang: str | None = None
-    allow_known_review_failure: bool = False
-    lang_pair: str | None = None
-    # 「接着上次继续」时上一次任务的输出目录；runner 只读它，不往里写。
-    resume_output_dir: str | None = None
-    # CAD-only task settings. These are deliberately separate from the
-    # document output suffix settings: CAD always creates a sibling output
-    # file/directory and never exposes a filename-suffix option.
-    cad_output_dir: str | None = None
-    cad_use_terminology: bool = True
-    cad_keep_work_dxf: bool = True
-    cad_copy_related_files: bool = False
-    cad_verify_roundtrip: bool = True
-    cad_scan_replacement_chars: bool = True
-    cad_include_block_text: bool = True
-    cad_glossary_path: str | None = None
-    cad_use_memory: bool = True
-    cad_check_entity_counts: bool = True
-    cad_scan_residual: bool = True
-    cad_translate_output_filename: bool = False
-
-    @property
-    def xls_conversion_mode(self) -> str:
-        return "compatibility" if self.allow_xls_fallback else "high_fidelity"
-
-    @property
-    def doc_conversion_mode(self) -> str:
-        return "compatibility" if self.allow_doc_fallback else "high_fidelity"
+# Runner, the task errors and TaskOptions live in api/task_contracts.py
+# (surfaces need them too); they are re-exported from here.
 
 
 @dataclass
@@ -385,7 +292,8 @@ class TranslationTaskManager:
         selected_paths: list[str] | None,
         options: TaskOptions | None,
     ) -> PreparedTask:
-        normalized_surface = _normalize_surface(surface)
+        spec = get_surface(surface)
+        normalized_surface = spec.key
         source_path = str(normalize_user_path(str(source_path or "")) or "")
         selected_paths = [
             str(normalize_user_path(str(path)))
@@ -403,14 +311,14 @@ class TranslationTaskManager:
         settings = self._settings_loader().model_copy(deep=True)
         activate_translation_surface(settings, normalized_surface)
 
-        if normalized_surface == "tm_clean":
+        if not spec.requires_source:
             lang_pair = str(selected_options.lang_pair or source_path or "").strip()
             if "-" not in lang_pair or not all(part.strip() for part in lang_pair.split("-", 1)):
                 raise TaskInputError("TM 清洗任务必须选择有效的定向语言对。")
             tm_manager.init_db()
             context = task_api_context_for_page(
                 settings,
-                _PAGE_BY_SURFACE[normalized_surface],
+                spec.page_key,
                 busy_connection_ids=self._busy_connection_ids(),
             )
             task_snapshot: dict[str, object] = {
@@ -451,11 +359,11 @@ class TranslationTaskManager:
         if source_selection is None:
             raise TaskInputError("源语言必须是内置语言或自动识别；自定义语言只能作为目标语言。")
         if selected_options.target_lang:
-            if normalized_surface == "pdf":
+            if spec.target_lang_setting == "pdf":
                 settings.pdf.target_lang = selected_options.target_lang
             else:
                 settings.target_lang = selected_options.target_lang
-        elif normalized_surface in {"excel", "word"}:
+        elif spec.target_lang_setting == "per_surface":
             settings.target_lang = getattr(
                 settings,
                 f"{normalized_surface}_target_lang",
@@ -467,7 +375,7 @@ class TranslationTaskManager:
             for path in (selected_paths or [])
             if str(path or "").strip()
         }
-        if normalized_surface == "cad":
+        if spec.scan_honours_selection:
             files = self._scan(
                 root,
                 normalized_surface,
@@ -488,24 +396,17 @@ class TranslationTaskManager:
             raise TaskInputError(
                 f"No supported {normalized_surface} files were found at: {root}"
             )
-        if normalized_surface == "excel":
-            self._validate_excel_preflight(files=files, settings=settings, options=selected_options)
-        elif normalized_surface == "word":
-            self._validate_word_preflight(files=files, settings=settings, options=selected_options)
-        elif normalized_surface == "cad":
-            self._validate_cad_preflight(files=files, settings=settings)
-        else:
-            self._validate_pdf_preflight(files=files, settings=settings, options=selected_options)
-        if normalized_surface in {"excel", "word"}:
-            tm_manager.init_db()
-        elif normalized_surface == "cad":
+        self._validate_preflight(
+            normalized_surface, files=files, settings=settings, options=selected_options
+        )
+        if spec.uses_translation_memory:
             tm_manager.init_db()
 
         context = task_api_context_for_page(
-                settings,
-                _PAGE_BY_SURFACE[normalized_surface],
-                busy_connection_ids=self._busy_connection_ids(),
-            )
+            settings,
+            spec.page_key,
+            busy_connection_ids=self._busy_connection_ids(),
+        )
         prompt_source = "|".join(
             (
                 str(getattr(settings, "domain_preset", "") or ""),
@@ -532,80 +433,22 @@ class TranslationTaskManager:
         task_snapshot = {
             "surface": normalized_surface,
             "source_lang": source_selection,
-            "target_lang": settings.pdf.target_lang if normalized_surface == "pdf" else settings.target_lang,
+            "target_lang": (
+                settings.pdf.target_lang
+                if spec.target_lang_setting == "pdf"
+                else settings.target_lang
+            ),
             "domain_preset": (
                 getattr(settings, f"{normalized_surface}_domain_preset", "")
-                if normalized_surface in {"excel", "word"}
+                if spec.domain_preset_in_snapshot
                 else ""
             ),
             "prompt_signature": hashlib.sha256(prompt_source.encode("utf-8")).hexdigest()[:12],
             "connections": self._connection_summaries(context),
         }
-        if normalized_surface == "excel":
-            task_snapshot.update(
-                {
-                    "excel_output": settings.excel_output.model_dump(mode="json"),
-                    "excel_review": settings.excel_review.model_dump(mode="json"),
-                    "tm": {"max_len": settings.tm.max_len},
-                    "xls_conversion_mode": selected_options.xls_conversion_mode,
-                    "selected_file_count": len(files),
-                    "xls_file_count": sum(1 for item in files if _excel_file_format(item) == "xls"),
-                }
-            )
-        elif normalized_surface == "word":
-            task_snapshot.update(
-                {
-                    "word_output": settings.word_output.model_dump(mode="json"),
-                    "word_batch": settings.word_batch.model_dump(mode="json"),
-                    "word_review": settings.word_review.model_dump(mode="json"),
-                    "word_conversion": settings.word_conversion.model_dump(mode="json"),
-                    "tm": {"max_len": settings.tm.max_len},
-                    "doc_conversion_mode": selected_options.doc_conversion_mode,
-                    "selected_file_count": len(files),
-                    "doc_file_count": sum(1 for item in files if _word_file_format(item) == "doc"),
-                }
-            )
-        elif normalized_surface == "cad":
-            glossary_signature = ""
-            if selected_options.cad_glossary_path:
-                glossary_path = Path(selected_options.cad_glossary_path).expanduser()
-                try:
-                    glossary_signature = hashlib.sha256(glossary_path.read_bytes()).hexdigest()
-                except OSError:
-                    glossary_signature = "missing"
-            task_snapshot.update(
-                {
-                    "selected_file_count": len(files),
-                    "cad_output_dir": selected_options.cad_output_dir or "",
-                    "cad_checks": {
-                        "verify_roundtrip": selected_options.cad_verify_roundtrip,
-                        "scan_replacement_chars": selected_options.cad_scan_replacement_chars,
-                        "check_entity_counts": selected_options.cad_check_entity_counts,
-                        "scan_residual": selected_options.cad_scan_residual,
-                    },
-                    "cad_options": {
-                        "use_terminology": selected_options.cad_use_terminology,
-                        "keep_work_dxf": selected_options.cad_keep_work_dxf,
-                        "copy_related_files": selected_options.cad_copy_related_files,
-                        "include_block_text": selected_options.cad_include_block_text,
-                        "glossary_path": selected_options.cad_glossary_path or "",
-                        "glossary_sha256": glossary_signature,
-                    },
-                    "tm": {"enabled": selected_options.cad_use_memory, "priority": "user_memory_first"},
-                }
-            )
-            task_snapshot["target_lang_display"] = get_target_lang_display(settings.target_lang)
-        else:
-            task_snapshot.update(
-                {
-                    "pdf": settings.pdf.model_dump(mode="json"),
-                    "pdf_output": settings.pdf_output.model_dump(mode="json"),
-                    "selected_file_count": len(files),
-                    "pdf_file_count": sum(1 for item in files if getattr(item, "source_type", "pdf") == "pdf"),
-                    "image_file_count": sum(1 for item in files if getattr(item, "source_type", "pdf") == "image"),
-                    "tm": {"enabled": False},
-                }
-            )
+        task_snapshot.update(
+            spec.snapshot(settings=settings, files=files, options=selected_options)
+        )
         return self._prepared_from_context(
             surface=normalized_surface,
             source_path=str(root),
@@ -660,21 +503,10 @@ class TranslationTaskManager:
                 "resume_output_dir": options.resume_output_dir,
             },
         }
-        if surface == "cad":
-            cad_files = []
-            for item in files:
-                path = Path(getattr(item, "path", ""))
-                try:
-                    stat = path.stat()
-                    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                    cad_files.append({"path": str(path.resolve()), "sha256": digest, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
-                except OSError:
-                    cad_files.append({"path": str(path.resolve()), "missing": True})
-            fingerprint_payload["cad_content_identity"] = cad_files
-            fingerprint_payload["options"]["cad"] = {
-                key: getattr(options, key)
-                for key in ("cad_use_terminology", "cad_keep_work_dxf", "cad_copy_related_files", "cad_verify_roundtrip", "cad_scan_replacement_chars", "cad_include_block_text", "cad_glossary_path", "cad_use_memory", "cad_check_entity_counts", "cad_scan_residual", "cad_translate_output_filename")
-            }
+        if files:
+            extras = get_surface(surface).fingerprint_extras(files=files, options=options)
+            if extras:
+                fingerprint_payload["surface_extras"] = extras
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -707,9 +539,8 @@ class TranslationTaskManager:
         expected_revision: int | None,
     ) -> dict[str, Any]:
         task_id = uuid.uuid4().hex
-        owner_label = _LABEL_BY_SURFACE[prepared.surface]
-        if prepared.surface == "cad":
-            owner_label = f"{owner_label} → {get_target_lang_display(str(prepared.task_snapshot.get('target_lang') or ''))}"
+        spec = get_surface(prepared.surface)
+        owner_label = spec.owner_label(prepared.task_snapshot)
         attempted = self._registry.reserve_task(
             owner_key=task_id,
             owner_label=owner_label,
@@ -730,7 +561,7 @@ class TranslationTaskManager:
                 role: lease.scheduler_for(group)
                 for role, group in prepared.role_groups.items()
             }
-            if prepared.surface == "tm_clean":
+            if not spec.requires_source:
                 runner = self._build_clean_runner(
                     lang_pair=str(prepared.options.lang_pair or ""),
                     settings=prepared.settings,
@@ -1182,7 +1013,7 @@ class TranslationTaskManager:
     def pause_task(self, task_id: str) -> dict[str, Any]:
         """Pause PDF page submission while its sidecar and snapshot remain alive."""
         task = self._get_task(task_id)
-        if task.surface not in {"pdf", "cad"}:
+        if not get_surface(task.surface).can_pause:
             raise TaskInputError("当前任务不支持暂停提交。")
         with task.condition:
             if task.terminal:
@@ -1193,17 +1024,19 @@ class TranslationTaskManager:
                 return self.task_status(task_id)
             if task.state != "running":
                 raise TaskInputError("当前任务不处于可暂停状态。")
-            # CAD pauses at the current-file boundary. Keep the intermediate
-            # state visible until the runner acknowledges that boundary.
-            task.state = "pausing" if task.surface == "cad" else "paused"
-            self._append_event(task, "pausing" if task.surface == "cad" else "paused", {"state": task.state})
+            # A surface that pauses at the current-file boundary (CAD) keeps
+            # the intermediate state visible until the runner acknowledges it.
+            task.state = (
+                "pausing" if get_surface(task.surface).pause_mode == "file_boundary" else "paused"
+            )
+            self._append_event(task, task.state, {"state": task.state})
         task.runner.pause()  # type: ignore[attr-defined]
         return self.task_status(task_id)
 
     def resume_task(self, task_id: str) -> dict[str, Any]:
         """Resume a same-sidecar PDF task with its frozen settings."""
         task = self._get_task(task_id)
-        if task.surface not in {"pdf", "cad"}:
+        if not get_surface(task.surface).can_resume:
             raise TaskInputError("当前任务不支持继续。")
         with task.condition:
             if task.terminal:
@@ -1220,7 +1053,7 @@ class TranslationTaskManager:
     def end_paused_task(self, task_id: str) -> dict[str, Any]:
         """End an intentionally paused PDF task and retain its partial evidence."""
         task = self._get_task(task_id)
-        if task.surface != "pdf":
+        if not get_surface(task.surface).can_end_paused:
             raise TaskInputError("只有 PDF/图片任务支持结束暂停任务。")
         with task.condition:
             if task.terminal:
@@ -1372,7 +1205,7 @@ class TranslationTaskManager:
             # free when a real PDF task is running: the same-type slot is taken.
             attempted = self._registry.reserve_task(
                 owner_key=f"{task.task_id}:page-rerun",
-                owner_label=_LABEL_BY_SURFACE["pdf"],
+                owner_label=get_surface("pdf").label,
                 task_type="pdf",
                 group_capacities=task.group_capacities,
             )
@@ -1731,6 +1564,10 @@ class TranslationTaskManager:
         self.mark_active_tasks_interrupted()
         self.flush_history()
 
+    # The three seams below are where the task manager hands over to a
+    # surface (api/surfaces/).  Tests replace them on an instance to run the
+    # lifecycle without real files, models or converters.
+
     def _scan(
         self,
         root: Path,
@@ -1739,57 +1576,17 @@ class TranslationTaskManager:
         *,
         selected_paths: set[str] | None = None,
     ) -> list[Any]:
-        if surface == "excel":
-            return scan_path(root)
-        if surface == "word":
-            return scan_word_path(root)
-        if surface == "cad":
-            status = probe_status()
-            converter_path = str(status.get("converter") or "").strip()
-            converter = SubprocessCadConverter(converter_path) if converter_path else None
-            scan_options = CadPipelineOptions(include_block_text=options.cad_include_block_text)
-            output_root = Path(options.cad_output_dir).expanduser().resolve() if options.cad_output_dir else None
+        return get_surface(surface).scan(root, options, selected_paths=selected_paths)
 
-            def under(path: Path, parent: Path | None) -> bool:
-                if parent is None:
-                    return False
-                try:
-                    path.resolve().relative_to(parent)
-                    return True
-                except ValueError:
-                    return False
-
-            if selected_paths:
-                scan_inputs = [Path(path) for path in sorted(selected_paths)]
-            elif root.is_dir():
-                scan_inputs = [
-                    candidate
-                    for candidate in sorted(root.rglob("*"))
-                    if candidate.is_file()
-                    and candidate.suffix.lower() in {".dwg", ".dxf"}
-                    and not under(candidate, output_root)
-                    and not any(
-                        part in {"CAD翻译输出", ".cad-work", ".cad-review"}
-                        or (part.endswith("_翻译输出") or "_翻译输出_" in part)
-                        for part in candidate.relative_to(root).parts
-                    )
-                ]
-            else:
-                scan_inputs = [root]
-
-            summaries = []
-            for candidate in scan_inputs:
-                if under(candidate, output_root):
-                    continue
-                try:
-                    summaries.extend(scan_cad_paths([candidate], converter=converter, options=scan_options))
-                except Exception as exc:  # one malformed drawing must not abort the batch preflight
-                    logger.warning("CAD 预检跳过文件 {}：{}", candidate, exc)
-            return [
-                type("CadFile", (), {"path": summary.path, "name": summary.filename, "format": summary.format})()
-                for summary in summaries
-            ]
-        return scan_pdf_path(root, include_images=options.include_images)
+    def _validate_preflight(
+        self,
+        surface: TaskSurface,
+        *,
+        files: list[Any],
+        settings: AppSettings,
+        options: TaskOptions,
+    ) -> None:
+        get_surface(surface).validate_preflight(files=files, settings=settings, options=options)
 
     def _build_runner(
         self,
@@ -1804,300 +1601,18 @@ class TranslationTaskManager:
         api_schedulers: dict[str, Any] | None = None,
         connection_chains: dict[str, tuple[str, ...]] | None = None,
     ) -> Runner:
-        api_schedulers = dict(api_schedulers or {})
-        chains = dict(connection_chains or {})
-        translation_chain = tuple(chains.get("translation") or ())
-        if surface == "excel":
-            return TaskRunner(
-                files,
-                settings,
+        return get_surface(surface).build_runner(
+            RunnerRequest(
+                files=files,
+                settings=settings,
                 source_root=source_root,
-                allow_xls_fallback=options.allow_xls_fallback,
+                options=options,
                 source_lang=source_lang,
                 key_overrides=key_overrides,
-                api_scheduler=api_schedulers.get("translation"),
-                untranslated_only=options.untranslated_only,
-                connection_chain=translation_chain,
-                resume_output_dir=options.resume_output_dir,
+                api_schedulers=dict(api_schedulers or {}),
+                connection_chains=dict(connection_chains or {}),
             )
-        if surface == "word":
-            return WordTaskRunner(
-                files,
-                settings,
-                source_root=source_root,
-                source_lang=source_lang,
-                key_overrides=key_overrides,
-                untranslated_only=options.untranslated_only,
-                protect_front_matter=options.protect_front_matter,
-                translate_headers_footers=options.translate_headers_footers,
-                allow_doc_fallback=options.allow_doc_fallback,
-                api_scheduler=api_schedulers.get("translation"),
-                resume_output_dir=options.resume_output_dir,
-            )
-        if surface == "cad":
-            status = probe_status()
-            converter_path = str(status.get("converter") or "").strip()
-            has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
-            if has_dwg and not converter_path:
-                raise TaskInputError("CAD 翻译需要先连接 ODA 转换器。", reason="cad_converter_missing")
-            # All document surfaces publish into one unique, timestamped
-            # task root.  CAD used to keep a permanent ``CAD翻译输出`` folder
-            # with nested translated/review/run directories, which made a
-            # second run overwrite or mix with the first one.  Reuse the
-            # shared builder used by Excel, Word and PDF instead.
-            cad_output = getattr(settings, "cad_output", None)
-            configured_output_dir = options.cad_output_dir
-            if not configured_output_dir and cad_output is not None and getattr(cad_output, "use_custom_output_dir", False):
-                configured_output_dir = str(getattr(cad_output, "custom_output_dir", "") or "").strip() or None
-            output_dir = bilingual_writer.build_output_dir(source_root, configured_output_dir)
-            engine = build_role_engine(
-                settings,
-                "translation",
-                connection_ids=tuple(chains.get("translation") or ()),
-            )
-            from core.engine_dispatcher import get_system_prompt, translate_texts
-            system_prompt = get_system_prompt(settings, target_lang=settings.target_lang, source_lang=source_lang, page_key="cad")
-
-            def translate_batch(
-                texts: list[str],
-                glossary: dict[str, str],
-                progress: Callable[[int, int], None] | None = None,
-            ) -> dict[str, str]:
-                prompt = system_prompt
-                if glossary:
-                    prompt += "\n固定术语（必须遵守）：\n" + "\n".join(f"{k} = {v}" for k, v in glossary.items())
-                return translate_texts(
-                    texts,
-                    engine,
-                    settings.target_lang,
-                    prompt,
-                    max(1, int(settings.engine.batch_size)),
-                    max(1, int(settings.engine.concurrency)),
-                    # CAD preflight may keep mixed English/French text under
-                    # automatic detection.  Passing ``zh`` here silently
-                    # changes the model instruction and can produce a wrong
-                    # translation; the engine accepts ``auto`` and should
-                    # receive the user's actual selection.
-                    source_lang=source_lang,
-                    api_scheduler=api_schedulers.get("translation"),
-                    # 逐批回调：CAD 进度条在「AI 翻译」阶段跟着批次走，而不是停住再跳。
-                    progress_callback=progress,
-                )
-
-            source_pair = str(source_lang or "").strip()
-            memory_pairs = (
-                [f"{source_pair}-{settings.target_lang}"]
-                if source_pair and source_pair != "auto"
-                else [f"{candidate}-{settings.target_lang}" for candidate in ("en", "fr", "zh")]
-            )
-
-            def memory_lookup(texts: list[str]) -> dict[str, str | None]:
-                hits: dict[str, str | None] = {text: None for text in texts}
-                remaining = list(texts)
-                for pair in memory_pairs:
-                    if not remaining:
-                        break
-                    current = tm_manager.lookup_batch(remaining, pair)
-                    for text, value in current.items():
-                        if value and hits.get(text) in (None, ""):
-                            hits[text] = value
-                    remaining = [text for text in remaining if not hits.get(text)]
-                return hits
-
-            return CadTaskRunner(
-                files,
-                source_root=source_root,
-                output_dir=output_dir,
-                converter=SubprocessCadConverter(converter_path) if converter_path else None,
-                memory_lookup=memory_lookup if options.cad_use_memory else None,
-                translator=translate_batch,
-                filename_translator=engine,
-                glossary=_load_cad_glossary(options.cad_glossary_path) if options.cad_use_terminology else {},
-                options=CadPipelineOptions(
-                    source_lang=source_lang,
-                    target_lang=settings.target_lang,
-                    skip_target_language=options.untranslated_only,
-                    keep_work_dxf=options.cad_keep_work_dxf,
-                    include_block_text=options.cad_include_block_text,
-                    verify_roundtrip=options.cad_verify_roundtrip,
-                    scan_replacement_chars=options.cad_scan_replacement_chars,
-                    copy_related_files=options.cad_copy_related_files,
-                    check_entity_counts=options.cad_check_entity_counts,
-                    scan_residual=options.cad_scan_residual,
-                ),
-                resume_output_dir=options.resume_output_dir,
-                translate_output_filename=options.cad_translate_output_filename,
-                translation_identity={
-                    "model": getattr(settings.engine, "cloud_model", ""),
-                    "provider": getattr(settings.engine, "cloud_provider", ""),
-                    "target_lang": settings.target_lang,
-                    "source_lang": source_lang,
-                },
-            )
-        return PdfImageTranslationRunner(
-            files,
-            settings,
-            source_root=source_root,
-            key_overrides=key_overrides,
-            api_scheduler=api_schedulers.get("image"),
-            review_api_scheduler=api_schedulers.get("pdf_review"),
-            resume_output_dir=options.resume_output_dir,
         )
-
-    @staticmethod
-    def _validate_excel_preflight(
-        *,
-        files: list[Any],
-        settings: AppSettings,
-        options: TaskOptions,
-    ) -> None:
-        """Fail before task creation for deterministic Excel input/settings issues."""
-        if not str(settings.target_lang or "").strip():
-            raise TaskInputError("请先选择 Excel 目标语言。")
-        model_check = check_translation_api_config(settings)
-        if not model_check.ok:
-            detail = f"（{model_check.detail}）" if model_check.detail else ""
-            raise TaskInputError(f"{model_check.message}{detail}")
-        excel_output = settings.excel_output
-        if excel_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                excel_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
-
-        xls_files = [
-            item
-            for item in files
-            if _excel_file_format(item) == "xls"
-        ]
-        if not xls_files or options.allow_xls_fallback:
-            return
-        available, reason = get_local_excel_availability()
-        if available:
-            return
-        consequence = describe_xls_compatibility_consequence(
-            has_libreoffice=libreoffice_xls_conversion_available()
-        )
-        raise TaskInputError(
-            "检测到 "
-            f"{len(xls_files)} 个 .xls 文件，但本机 Microsoft Excel 高保真自动化不可用：{reason}。"
-            f"请取消任务，安装/授权 Microsoft Excel 后重试，或明确确认兼容转换{consequence}"
-        )
-
-    @staticmethod
-    def _validate_word_preflight(
-        *,
-        files: list[Any],
-        settings: AppSettings,
-        options: TaskOptions,
-    ) -> None:
-        """Fail Word startup before allocating a task for known bad input.
-
-        A selected legacy document is never silently routed through a
-        compatibility converter.  The task either has a native Word path or a
-        task-level, explicit ``allow_doc_fallback`` confirmation captured in
-        its frozen snapshot.
-        """
-        if not str(settings.target_lang or "").strip():
-            raise TaskInputError("请先选择 Word 目标语言。")
-        model_check = check_translation_api_config(settings)
-        if not model_check.ok:
-            detail = f"（{model_check.detail}）" if model_check.detail else ""
-            raise TaskInputError(f"{model_check.message}{detail}")
-        word_output = settings.word_output
-        if word_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                word_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
-
-        doc_files = [item for item in files if _word_file_format(item) == "doc"]
-        if not doc_files or options.allow_doc_fallback:
-            return
-        available, reason = get_local_word_automation_availability()
-        if available:
-            return
-        raise TaskInputError(
-            "检测到 "
-            f"{len(doc_files)} 个 .doc 文件，但本机 Microsoft Word 高保真自动化不可用：{reason}。"
-            "请取消任务，安装/授权 Microsoft Word 后重试，或明确确认兼容转换；"
-            "兼容转换可能改变版式、域、图文和宏。"
-        )
-
-    @staticmethod
-    def _validate_pdf_preflight(
-        *,
-        files: list[Any],
-        settings: AppSettings,
-        options: TaskOptions,
-    ) -> None:
-        """Validate PDF/image-specific settings before allocating a task lease."""
-        if not files:
-            raise TaskInputError("请至少选择一个 PDF 或图片文件。")
-        if not str(settings.pdf.target_lang or "").strip():
-            raise TaskInputError("请先选择 PDF/图片目标语言。")
-        pdf_output = settings.pdf_output
-        if pdf_output.use_custom_output_dir:
-            output_error = bilingual_writer.get_custom_output_dir_error(
-                pdf_output.custom_output_dir
-            )
-            if output_error:
-                raise TaskInputError(output_error)
-        try:
-            image_model = resolve_effective_model_config(settings, ROLE_IMAGE)
-        except Exception as exc:  # noqa: BLE001 - give UI the resolved contract error.
-            raise TaskInputError(f"PDF 翻译模型配置不可用：{exc}") from exc
-        if not image_model.model:
-            raise TaskInputError("请先填写 PDF 翻译模型名称。")
-        if not provider_supports_capability(image_model.provider, "image"):
-            raise TaskInputError(
-                f"当前 PDF 翻译模型服务商不支持图像生成能力：{image_model.provider}"
-            )
-        if image_model.mode == "cloud" and not image_model.api_key:
-            raise TaskInputError("PDF 翻译模型尚未配置 API Key。")
-        if not settings.pdf.review_enabled:
-            return
-        try:
-            review_model = resolve_effective_model_config(settings, ROLE_PDF_REVIEW)
-        except Exception as exc:  # noqa: BLE001
-            raise TaskInputError(f"PDF翻译（图像翻译）复核模型配置不可用：{exc}") from exc
-        if not review_model.model:
-            raise TaskInputError("已启用逐页审核，请先填写 PDF翻译（图像翻译）复核模型名称。")
-        if not provider_supports_capability(review_model.provider, "vision_text"):
-            raise TaskInputError(
-                f"当前 PDF翻译（图像翻译）复核模型服务商不支持视觉理解能力：{review_model.provider}"
-            )
-        if review_model.mode == "cloud" and not review_model.api_key:
-            raise TaskInputError("已启用逐页审核，请先配置审核模型 API Key。")
-        availability = str(settings.pdf_review_model_role.availability_status or "unknown")
-        if availability == "unavailable" and not options.allow_known_review_failure:
-            # 这一条是有出路的拦截（allow_known_review_failure 就是那条出路），界面必须
-            # 拿它开一个带「仍要继续」按钮的弹窗，而不是弹一句两秒就没的提示。靠比对中文
-            # 句子来认这种情况太脆，给它一个稳定的 reason。
-            raise TaskInputError(
-                "PDF翻译（图像翻译）复核模型当前配置已测试失败；请重新测试、关闭审核，或明确确认继续。",
-                reason="pdf_review_model_unavailable",
-            )
-
-    @staticmethod
-    def _validate_cad_preflight(*, files: list[Any], settings: AppSettings) -> None:
-        if not files:
-            raise TaskInputError("请至少选择一个 DWG 或 DXF 文件。")
-        status = probe_status()
-        has_dwg = any(Path(getattr(item, "path", "")).suffix.lower() == ".dwg" for item in files)
-        if has_dwg and not bool(status.get("enabled")):
-            raise TaskInputError(
-                "CAD 插件或 ODA 转换器未就绪，请先安装 CAD Support 并连接 ODA。",
-                reason="cad_capability_missing",
-            )
-        if not str(getattr(settings, "target_lang", "") or "").strip():
-            raise TaskInputError("请先选择 CAD 目标语言。")
-        model_check = check_translation_api_config(settings)
-        if not model_check.ok:
-            detail = f"（{model_check.detail}）" if model_check.detail else ""
-            raise TaskInputError(f"{model_check.message}{detail}")
 
     def _pump_runner(self, task: ApiTask) -> None:
         try:
@@ -2158,10 +1673,12 @@ class TranslationTaskManager:
                     "step_done": int(message.step_done),
                     "step_total": int(message.step_total),
                 }
-            if task.surface == "cad":
+            if get_surface(task.surface).pause_mode == "file_boundary":
+                # The file-boundary pause is acknowledged through a status line,
+                # and the page reads this surface's progress off the snapshot.
                 with task.condition:
                     task.task_snapshot.update(task.progress)
-        if isinstance(message, StatusMsg) and task.surface == "cad":
+        if isinstance(message, StatusMsg) and get_surface(task.surface).pause_mode == "file_boundary":
             if str(message.phase_desc).startswith("任务已暂停"):
                 with task.condition:
                     if not task.terminal and task.state == "pausing":
@@ -2296,7 +1813,7 @@ class TranslationTaskManager:
         logs, the tail of the event stream) is kept here and on disk.
         """
         with task.condition:
-            if task.surface != "pdf":
+            if not get_surface(task.surface).keeps_runner_after_finish:
                 # PDF is the exception: page comparison images stay browsable
                 # after the run and are resolved through the runner.  Those
                 # runners are bounded by the retention cap below instead.
@@ -2421,68 +1938,6 @@ class TranslationTaskManager:
         return task
 
 
-def _normalize_surface(surface: str) -> TaskSurface:
-    normalized = str(surface or "").strip().lower()
-    if normalized not in _PAGE_BY_SURFACE:
-        raise TaskInputError(f"Unsupported translation surface: {surface}")
-    return normalized  # type: ignore[return-value]
-
-
-def _load_cad_glossary(path: str | None) -> dict[str, str]:
-    """Load an optional simple JSON/CSV terminology map."""
-    if not str(path or "").strip():
-        return {}
-    candidate = Path(str(path)).expanduser()
-    if not candidate.is_file():
-        raise TaskInputError(f"CAD 术语库不存在：{candidate}")
-    try:
-        if candidate.suffix.lower() == ".json":
-            value = json.loads(candidate.read_text(encoding="utf-8"))
-            if not isinstance(value, dict):
-                raise ValueError("JSON 术语库必须是原文到译文的对象。")
-            return {
-                str(key): str(item)
-                for key, item in value.items()
-                if str(key).strip() and str(item).strip()
-            }
-        glossary: dict[str, str] = {}
-        for row in candidate.read_text(encoding="utf-8-sig").splitlines():
-            if not row.strip() or row.lstrip().startswith("#"):
-                continue
-            source, separator, target = row.partition("\t")
-            if not separator:
-                source, separator, target = row.partition(",")
-            if separator and source.strip() and target.strip():
-                glossary[source.strip()] = target.strip()
-        return glossary
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise TaskInputError(f"CAD 术语库无法读取：{candidate}") from exc
-
-
-def _excel_file_format(item: Any) -> str:
-    """Return a normalized Excel format without assuming a concrete item class.
-
-    The public scanner returns ``FileItem`` instances, but task-manager unit
-    tests and future adapters may provide a minimal file-like object.  The
-    startup preflight must therefore treat absent metadata as non-legacy
-    rather than crash before acquiring the task resource.
-    """
-    explicit = str(getattr(item, "format", "") or "").strip().lower()
-    if explicit:
-        return explicit.lstrip(".")
-    path = getattr(item, "path", None)
-    return Path(path).suffix.lower().lstrip(".") if path else ""
-
-
-def _word_file_format(item: Any) -> str:
-    """Return a normalized Word format without assuming a concrete scanner type."""
-    explicit = str(getattr(item, "format", "") or "").strip().lower()
-    if explicit:
-        return explicit.lstrip(".")
-    path = getattr(item, "path", None)
-    return Path(path).suffix.lower().lstrip(".") if path else ""
-
-
 def _scanned_file_name(item: Any) -> str:
     """Return one scanned entry's file name without assuming a scanner type.
 
@@ -2508,17 +1963,9 @@ def _selected_files_label(files: list[Any]) -> str:
 
 
 
-# 各页面每个阶段在总进度条上占多少。阶段耗时差别很大：PDF 的「翻译页面」要等图像模型
-# 一页页画，占了整个任务的绝大部分时间，按阶段平均分的话进度条会在 25%~50% 之间爬
-# 完整个任务，最后一秒从 50% 冲到 100%。元组顺序就是各 runner 上报的 phase_index。
-_PHASE_WEIGHTS: dict[str, tuple[float, ...]] = {
-    # 全局扫描 / 云端翻译 / 生成文件 / Excel 精调（没开精调时只有前三段）
-    "excel": (10, 60, 15, 15),
-    # Word 提取 / 云端翻译 / 生成文件
-    "word": (10, 70, 20),
-    # 预处理 PDF / 翻译页面 / 生成最终产物 / 写入报告
-    "pdf": (5, 85, 8, 2),
-}
+# 各页面每个阶段在总进度条上占多少，见各 Surface 的 ``phase_weights``。阶段耗时差别
+# 很大：PDF 的「翻译页面」要等图像模型一页页画，占了整个任务的绝大部分时间，按阶段
+# 平均分的话进度条会在 25%~50% 之间爬完整个任务，最后一秒从 50% 冲到 100%。
 
 
 def overall_progress_percent(
@@ -2533,7 +1980,10 @@ def overall_progress_percent(
     """
     if phase_total <= 0:
         return stage_percent
-    weights = _PHASE_WEIGHTS.get(str(surface), ())[:phase_total]
+    try:
+        weights = tuple(get_surface(surface).phase_weights)[:phase_total]
+    except TaskInputError:
+        weights = ()
     if len(weights) != phase_total:
         weights = (1.0,) * phase_total
     total = sum(weights) or 1.0

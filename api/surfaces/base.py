@@ -1,0 +1,160 @@
+"""What a translation surface (a page under 翻译 in the sidebar) tells the task manager.
+
+The task manager used to know every page by name: ``if surface == "excel" …
+elif surface == "word" … elif surface == "cad"`` in a dozen places, so adding
+CAD meant hunting down each branch.  Now each page is one ``Surface``
+subclass in ``api/surfaces/<key>.py``, registered in ``api/surfaces/__init__.py``,
+and the task manager only asks it questions.  See docs/ADDING_A_TRANSLATION_PAGE.md.
+
+Everything here has a default, so a new surface overrides only what differs.
+The three methods without a usable default are ``scan``,
+``validate_preflight`` and ``build_runner``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, ClassVar, Literal
+
+from api.task_contracts import Runner, TaskInputError, TaskOptions
+from core.api_config_check import check_translation_api_config
+from settings import AppSettings
+
+
+@dataclass(frozen=True)
+class RunnerRequest:
+    """Everything the task manager hands a surface to build its runner."""
+
+    files: list[Any]
+    settings: AppSettings
+    source_root: Path
+    options: TaskOptions
+    source_lang: str
+    key_overrides: dict[str, str]
+    api_schedulers: dict[str, Any] = field(default_factory=dict)
+    connection_chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+class Surface:
+    """One translation page as the backend sees it."""
+
+    # ── identity ─────────────────────────────────────────────────────────
+    #: Value of ``surface`` in API requests and task records.
+    key: ClassVar[str]
+    #: English label for the scheduler and task history ("Excel translation").
+    label: ClassVar[str]
+    #: Model page key passed to ``task_api_context_for_page``; it decides
+    #: which model roles (translation / image / pdf_review / cleaner) the task uses.
+    page_key: ClassVar[str]
+
+    # ── task start ───────────────────────────────────────────────────────
+    #: False only for TM cleaning, which runs on a language pair, not on files.
+    requires_source: ClassVar[bool] = True
+    #: Open the TM database before the task starts.
+    uses_translation_memory: ClassVar[bool] = False
+    #: Where the target language lives in settings: ``"shared"`` (the global
+    #: ``target_lang``), ``"per_surface"`` (``<key>_target_lang`` is copied
+    #: into ``target_lang`` when the request names none) or ``"pdf"``
+    #: (``settings.pdf.target_lang``).
+    target_lang_setting: ClassVar[Literal["shared", "per_surface", "pdf"]] = "shared"
+    #: Record ``<key>_domain_preset`` in the task snapshot.
+    domain_preset_in_snapshot: ClassVar[bool] = False
+    #: ``scan`` receives the user's ticked files and scans only those.
+    scan_honours_selection: ClassVar[bool] = False
+
+    # ── running task ─────────────────────────────────────────────────────
+    #: Share of the progress bar per runner phase, in ``phase_index`` order.
+    #: Empty means equal shares.  Runners that report ``phase_total <= 0``
+    #: (CAD) give the overall percentage directly and ignore this.
+    phase_weights: ClassVar[tuple[float, ...]] = ()
+    #: The page offers 暂停 (the runner must define ``pause()``).
+    can_pause: ClassVar[bool] = False
+    #: ``"immediate"`` – the task shows *paused* as soon as pause is pressed;
+    #: ``"file_boundary"`` – it shows *pausing* until the runner reaches the
+    #: end of the current file.
+    pause_mode: ClassVar[Literal["immediate", "file_boundary"]] = "immediate"
+    #: The page offers 继续 after a pause (runner defines ``resume()``).
+    can_resume: ClassVar[bool] = False
+    #: The page offers 结束暂停任务 (runner defines ``end_paused()``).
+    can_end_paused: ClassVar[bool] = False
+    #: The finished task keeps its runner so per-page review and reruns keep
+    #: working (PDF).  Other runners are released when the task ends.
+    keeps_runner_after_finish: ClassVar[bool] = False
+
+    # ── hooks ────────────────────────────────────────────────────────────
+
+    def scan(
+        self,
+        root: Path,
+        options: TaskOptions,
+        *,
+        selected_paths: set[str] | None = None,
+    ) -> list[Any]:
+        """Files under ``root`` this surface can translate."""
+        raise NotImplementedError
+
+    def scan_sources(self, root: Path, request: Any) -> Any:
+        """Scan for the page's file list (``/api/sources/scan``).
+
+        Returns a scan result with ``items``, ``skipped``, ``summary`` and
+        ``risk``; ``request`` is the ``ScanRequest``.  Results for several
+        roots are merged by the route.
+        """
+        raise NotImplementedError
+
+    def scan_response(self, request: Any, roots: list[Path]) -> dict[str, Any] | None:
+        """A complete ``/api/sources/scan`` response, for a page whose list
+        does not fit the shared shape (CAD).  ``None`` uses ``scan_sources``."""
+        return None
+
+    def validate_preflight(
+        self, *, files: list[Any], settings: AppSettings, options: TaskOptions
+    ) -> None:
+        """Raise ``TaskInputError`` for anything that would fail the task anyway."""
+        raise NotImplementedError
+
+    def snapshot(
+        self, *, settings: AppSettings, files: list[Any], options: TaskOptions
+    ) -> dict[str, object]:
+        """Surface-specific fields frozen into the task snapshot."""
+        return {"selected_file_count": len(files)}
+
+    def fingerprint_extras(
+        self, *, files: list[Any], options: TaskOptions
+    ) -> dict[str, object]:
+        """Extra inputs that make two otherwise identical starts different tasks."""
+        return {}
+
+    def owner_label(self, snapshot: dict[str, object]) -> str:
+        """How the scheduler names a running task of this surface."""
+        return self.label
+
+    def build_runner(self, request: RunnerRequest) -> Runner:
+        raise NotImplementedError
+
+
+def require_target_lang(value: str | None, page_name: str) -> None:
+    if not str(value or "").strip():
+        raise TaskInputError(f"请先选择 {page_name} 目标语言。")
+
+
+def require_translation_model(settings: AppSettings) -> None:
+    """The text translation model must be usable before a task may start."""
+    model_check = check_translation_api_config(settings)
+    if not model_check.ok:
+        detail = f"（{model_check.detail}）" if model_check.detail else ""
+        raise TaskInputError(f"{model_check.message}{detail}")
+
+
+def file_format(item: Any) -> str:
+    """Normalized extension of a scanned item without assuming its class.
+
+    Each scanner returns its own item type, and task-manager tests hand in
+    bare objects, so absent metadata counts as "no format" rather than a crash.
+    """
+    explicit = str(getattr(item, "format", "") or "").strip().lower()
+    if explicit:
+        return explicit.lstrip(".")
+    path = getattr(item, "path", None)
+    return Path(path).suffix.lower().lstrip(".") if path else ""

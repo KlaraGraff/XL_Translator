@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from api.app import create_app
+from api.surfaces import get_surface
 from api.task_manager import TaskInputError, TaskOptions, TranslationTaskManager
 from core.model_api_identity import TaskApiContext
 from core.model_roles import SOURCE_INDEPENDENT
@@ -344,7 +345,7 @@ class PdfTaskSnapshotAndPreflightContractTests(IsolatedAppDataTestCase):
 
             with patch("core.model_roles.get_key", return_value="pdf-route-secret"):
                 with self.assertRaisesRegex(TaskInputError, "输出路径不是目录"):
-                    TranslationTaskManager._validate_pdf_preflight(
+                    get_surface("pdf").validate_preflight(
                         files=files,
                         settings=settings,
                         options=TaskOptions(),
@@ -385,7 +386,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertEqual(client.calls, 1)
                 runner.resume()
                 assert runner._thread is not None
-                runner._thread.join(5)
+                runner._thread.join(30)  # 整套测试并行压着 CPU 时，三页加收尾可能超过 5 秒
 
             self.assertFalse(runner.is_running())
             messages = _drain_runner_messages(runner)
@@ -405,7 +406,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertEqual(client.calls, 1)
                 runner.end_paused()
                 assert runner._thread is not None
-                runner._thread.join(5)
+                runner._thread.join(30)  # 整套测试并行压着 CPU 时，三页加收尾可能超过 5 秒
 
             self.assertFalse(runner.is_running())
             terminal = [
@@ -449,7 +450,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
                 self.assertEqual(client.calls, 1)
                 runner.end_paused()
                 assert runner._thread is not None
-                runner._thread.join(5)
+                runner._thread.join(30)  # 整套测试并行压着 CPU 时，三页加收尾可能超过 5 秒
 
             terminal = [
                 message
@@ -473,7 +474,7 @@ class PdfPauseAndSseContractTests(IsolatedAppDataTestCase):
             client = TestClient(create_app(task_manager=manager))
 
             with (
-                patch.object(manager, "_validate_pdf_preflight"),
+                patch.object(manager, "_validate_preflight"),
                 patch(
                     "api.task_manager.task_api_context_for_page",
                     return_value=TaskApiContext(frozenset(), {}),

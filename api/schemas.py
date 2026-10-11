@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
+from api.surfaces import DOCUMENT_SURFACE_KEYS, SURFACE_KEYS
 from core.path_utils import normalize_user_path, normalize_user_paths
 
 
@@ -16,7 +17,8 @@ class ApiKeyPayload(BaseModel):
 
 class ScanRequest(BaseModel):
     path: str = Field(min_length=1)
-    surface: Literal["excel", "word", "pdf", "cad"]
+    # The file-based pages registered in api/surfaces/.
+    surface: Literal[DOCUMENT_SURFACE_KEYS]  # type: ignore[valid-type]
     include_images: bool = False
     # 「浏览 → 选择文件」允许一次挑多个文件（只限类型，不限数量）。给了 paths 就按这
     # 几个路径各扫一次再合并；不给就还是按 path 扫一个文件或一整个文件夹。
@@ -60,7 +62,8 @@ class PdfPageActionRequest(BaseModel):
 
 class TaskStartRequest(BaseModel):
     source_path: str = ""
-    surface: Literal["excel", "word", "pdf", "cad", "tm_clean"]
+    # Every surface registered in api/surfaces/.
+    surface: Literal[SURFACE_KEYS]  # type: ignore[valid-type]
     selected_paths: list[str] = Field(default_factory=list)
     untranslated_only: bool = False
     protect_front_matter: bool = False

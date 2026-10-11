@@ -37,7 +37,7 @@ def test_cad_scan_sources_exposes_capability_at_response_root(tmp_path, monkeypa
         "converter": None,
         "enabled": True,
     }
-    with patch("api.routes.tasks.probe_status", return_value=status):
+    with patch("api.surfaces.cad.probe_status", return_value=status):
         with TestClient(create_app()) as client:
             response = client.post(
                 "/api/sources/scan",
@@ -80,8 +80,8 @@ def test_cad_auto_source_language_reaches_translation_engine(tmp_path, monkeypat
         return {"Door": "门"}
 
     with (
-        patch("api.task_manager.probe_status", return_value={"converter": ""}),
-        patch("api.task_manager.build_role_engine", return_value=object()),
+        patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
+        patch("api.surfaces.cad.build_role_engine", return_value=object()),
         patch("core.engine_dispatcher.get_system_prompt", return_value="CAD prompt"),
         patch("core.engine_dispatcher.translate_texts", side_effect=fake_translate),
     ):
@@ -144,7 +144,7 @@ def test_cad_scan_excludes_custom_output_directory(tmp_path, monkeypatch):
     generated = output / "source_中文.dxf"
     generated.write_text(_dxf_text(), encoding="utf-8")
     manager = TranslationTaskManager(settings_loader=AppSettings)
-    with patch("api.task_manager.probe_status", return_value={"converter": ""}):
+    with patch("api.surfaces.cad.probe_status", return_value={"converter": ""}):
         files = manager._scan(
             tmp_path,
             "cad",
