@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -37,7 +37,7 @@ from config import (
 )
 from core import bilingual_writer
 from core.output_name_translation import translate_output_stem
-from core.file_progress import FileProgressReporter, file_progress_id
+from core.file_progress import FileProgressReporter
 from core.api_concurrency_control import handle_api_concurrency_limit
 from core.api_scheduler import (
     API_REQUEST_CATEGORY_RECOVERY,
@@ -85,72 +85,83 @@ from core.task_runner import (
 from core.process_artifacts import ProcessArtifacts, find_process_dirs
 from settings import AppSettings, provider_key_overrides
 
-
-SOURCE_TYPE_PDF = "pdf"
-SOURCE_TYPE_IMAGE = "image"
-SUPPORTED_PDF_SUFFIXES = {".pdf"}
-SUPPORTED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
-# 认得出是图片、但本程序不接的格式。它们和上面那批一样要走「跳过项」，不能悄悄消失。
-UNSUPPORTED_IMAGE_SUFFIXES = {".gif", ".avif", ".heic", ".heif", ".svg"}
-SKIP_KIND_IMAGES_DISABLED = "images_disabled"
-# 中止后等待在飞页面时，状态行的重发间隔（秒）。
-STOP_WAIT_STATUS_REFRESH_SECONDS = 5.0
-# 「允许独立图片」关着时，文件夹里的图片此前是被 `continue` 直接吃掉的：扫描摘要写
-# 「独立图片 0 / 跳过项 0」，日志写「扫描到 0 个图片文件」，用户把图纸截图放进来，
-# 从头到尾没有一句话告诉他这些图根本没参与。跳过项这一格正是它该出现的地方。
-IMAGES_DISABLED_SKIP_REASON = (
-    "「允许独立图片」没有打开，这个图片文件没有纳入本次任务；要翻它就打开这个开关再扫描一次。"
+# 数据模型与结果整理已拆到独立模块，这里原样再导出，保持旧的导入路径可用。
+from core.pdf_models import (  # noqa: F401
+    SOURCE_TYPE_PDF,
+    SOURCE_TYPE_IMAGE,
+    SUPPORTED_PDF_SUFFIXES,
+    SUPPORTED_IMAGE_SUFFIXES,
+    UNSUPPORTED_IMAGE_SUFFIXES,
+    SKIP_KIND_IMAGES_DISABLED,
+    STOP_WAIT_STATUS_REFRESH_SECONDS,
+    IMAGES_DISABLED_SKIP_REASON,
+    PDF_PAGES_ROOT,
+    SOURCE_PAGES_DIRNAME,
+    TRANSLATED_PAGES_DIRNAME,
+    REVIEW_CANDIDATES_DIRNAME,
+    PDF_REPORT_FILENAME,
+    PDF_MANIFEST_FILENAME,
+    PDF_OUTPUT_STATE_COMPLETED,
+    PDF_OUTPUT_STATE_NEEDS_REVIEW,
+    PDF_OUTPUT_STATE_STOPPED,
+    PDF_OUTPUT_STATE_FAILED,
+    PDF_PAGE_ACTION_REGENERATE,
+    PDF_PAGE_ACTION_SKIP,
+    PDF_PAGE_IMAGE_STASH_PREFIX,
+    PDF_PAGE_IMAGE_PREVIOUS_PREFIX,
+    PDF_PAGE_IMAGE_SWAP_PREFIX,
+    PDF_PAGE_IMAGE_KIND_SOURCE,
+    PDF_PAGE_IMAGE_KIND_TRANSLATED,
+    PDF_PAGE_IMAGE_KIND_PREVIOUS,
+    PDF_PAGE_STATUS_SKIPPED_OVERSIZE,
+    PDF_PAGE_STATUS_STOPPED_UNSTARTED,
+    _PDF_PAGE_REGENERABLE_STATUSES,
+    _PDF_PAGE_SKIPPABLE_STATUSES,
+    PdfFileItem,
+    PdfScanSkippedItem,
+    PdfScanResult,
+    PageQualityResult,
+    PdfPageRecord,
+    PdfFileRecord,
+    PdfTaskSummary,
+    _PreparedPdfFile,
 )
-PDF_PAGES_ROOT = "_pdf_pages"
-SOURCE_PAGES_DIRNAME = "source_pages"
-TRANSLATED_PAGES_DIRNAME = "translated_pages"
-REVIEW_CANDIDATES_DIRNAME = "review_candidates"
-PDF_REPORT_FILENAME = "pdf_translation_report.md"
-PDF_MANIFEST_FILENAME = "pdf_translation_manifest.json"
-PDF_OUTPUT_STATE_COMPLETED = "completed"
-PDF_OUTPUT_STATE_NEEDS_REVIEW = "needs_review"
-PDF_OUTPUT_STATE_STOPPED = "stopped"
-PDF_OUTPUT_STATE_FAILED = "failed"
-
-PDF_PAGE_ACTION_REGENERATE = "regenerate"
-PDF_PAGE_ACTION_SKIP = "skip"
-# 终态任务单页重生成时，旧译文页图被改名挪到这个前缀下。前缀放在最前面，页图名
-# 的所有 glob（页面存档复用、面板取图）都以 page_00N 开头，因此挪走的文件不会被
-# 任何一处当成有效页图；重生成成功就删掉，失败就原样搬回。
-PDF_PAGE_IMAGE_STASH_PREFIX = ".rerun_backup."
-# 重生成成功后，被顶下去的那一版译文页图不再删掉，改名留在这个前缀下当「上一版」。
-# 前缀同样放在最前面，理由和上面那条一模一样：所有找当前页图的 glob 都以 page_00N
-# 开头，上一版因此不会被任何一处当成有效页图，只由 previous_image_path 指名读取。
-# 只留一版：再往前的那版在下一次重生成时被顶替，磁盘不随重跑次数无限长。
-PDF_PAGE_IMAGE_PREVIOUS_PREFIX = ".previous."
-# 换回上一版时，当前版先改名挪到这个前缀下当中转（三步互换的第一步）。同一目录内
-# os.replace，中途失败按相反顺序还原，磁盘上不会留下半套。
-PDF_PAGE_IMAGE_SWAP_PREFIX = ".restore_swap."
-PDF_PAGE_IMAGE_KIND_SOURCE = "source"
-PDF_PAGE_IMAGE_KIND_TRANSLATED = "translated"
-PDF_PAGE_IMAGE_KIND_PREVIOUS = "previous"
-# 「跳过大幅面页」功能专用的页面终态：页面判定为超出 A4 的大幅面页，从未提交给
-# 翻译模型，装订时从源 PDF 矢量直传。语义上和 request_page_skip 的用户手动跳过
-# （发生在失败之后）完全不同，不要合并成同一个状态。
-PDF_PAGE_STATUS_SKIPPED_OVERSIZE = "skipped_oversize"
-# 中止时还没跑出任何结果的页面。占位页是「模型试过了，就是没成」的结论；中止的页
-# 没有这个结论——它连一次模型调用都没发生过。这个状态只在工作线程和主循环之间传
-# 一次：主循环见到它就把这条页记录整条撤掉，让这一页回到「还没开始」，于是产物不
-# 会被烧进占位页、报告如实报截断、续译时这一页还能重新排队。它不写进清单，也不该
-# 出现在前端（页记录不在了，快照给的就是 pending）。
-PDF_PAGE_STATUS_STOPPED_UNSTARTED = "stopped_unstarted"
-# A page may only be re-run or skipped once its own processing unit settled.
-# Everything else is still owned by an in-flight future.
-_PDF_PAGE_REGENERABLE_STATUSES = frozenset(
-    {
-        "success",
-        "emergency_normalized",
-        "placeholder_pending",
-        "placeholder",
-        PDF_OUTPUT_STATE_FAILED,
-    }
+from core.pdf_task_report import (  # noqa: F401
+    _record_is_fully_skipped_oversize,
+    fully_skipped_oversize_message,
+    _page_archive_stem,
+    _format_file_size,
+    _review_failure_summary,
+    _review_feedback_text,
+    _completed_pdf_file_count,
+    _unfinished_pdf_file_count,
+    _completed_image_file_count,
+    _unfinished_image_file_count,
+    _summary_terminal_reason,
+    _summary_terminal_reason_label,
+    _pdf_status_label,
+    _pdf_file_status_label,
+    _pdf_artifact_label,
+    _pdf_file_material_paths,
+    _record_has_usable_translated_pages,
+    _no_usable_translated_pages_error,
+    _finished_page_numbers,
+    _finished_page_count,
+    _last_contiguous_finished_page,
+    _page_progress_label,
+    _real_generated_page_count,
+    _generated_progress_label,
+    _unstarted_page_count,
+    _last_finished_page_label,
+    _summary_to_manifest,
+    _summary_to_report,
+    _escape_table,
+    _page_review_issue_text,
+    _file_record_to_result,
+    _done_kpi,
+    _summary_issues,
 )
-_PDF_PAGE_SKIPPABLE_STATUSES = frozenset({"placeholder_pending", PDF_OUTPUT_STATE_FAILED})
+
 
 # --- 页面内容质检的阈值 ------------------------------------------------------
 # 这些判据只用来「标记待复核」，永远不会丢页、也不会触发重试，所以全部按
@@ -216,273 +227,6 @@ def _api_group_signature_from_config(config: Any) -> tuple[str, str, str] | None
     ).rstrip("/")
     api_key = str(getattr(config, "api_key", "") or "").strip()
     return ("cloud", base_url, api_key)
-
-
-@dataclass
-class PdfFileItem:
-    path: Path
-    name: str
-    size_kb: float
-    page_count: int = 0
-    source_type: str = SOURCE_TYPE_PDF
-    relative_path: str = ""
-    format: str = "pdf"
-    width_px: int = 0
-    height_px: int = 0
-    # 扫描阶段的大幅面页（超出 A4 尺寸）预估，仅读 /MediaBox 等元数据，不渲染。
-    # None 表示「读不出来」（例如某一页损坏），不是「确认没有大幅面页」——两者
-    # 不能用 0 混在一起，否则界面会把「无法判断」显示成「零大幅面页」。与
-    # file_scanner 里 image_count / image_count_unknown_files 的三态写法保持一致。
-    oversized_page_count: int | None = None
-
-
-@dataclass(frozen=True)
-class PdfScanSkippedItem:
-    """A PDF/image-looking input that must remain visible but unselectable."""
-
-    path: Path
-    relative_path: str
-    reason: str
-    format: str = ""
-    source_type: str = ""
-    # 跳过原因的机器可读分类。目前只区分「开关没开」（images_disabled）和其余，
-    # 用来决定摘要那句话怎么说：图片被开关挡下不是「文件坏了」。
-    kind: str = ""
-
-
-@dataclass
-class PdfScanResult:
-    """Typed PDF/image scan contract consumed by the local API and Tauri UI."""
-
-    root: Path
-    include_images: bool
-    items: list[PdfFileItem] = field(default_factory=list)
-    skipped: list[PdfScanSkippedItem] = field(default_factory=list)
-
-    @property
-    def summary(self) -> dict[str, int]:
-        pdf_count = sum(1 for item in self.items if item.source_type == SOURCE_TYPE_PDF)
-        image_count = sum(1 for item in self.items if item.source_type == SOURCE_TYPE_IMAGE)
-        total_units = sum(
-            1 if item.source_type == SOURCE_TYPE_IMAGE else max(0, int(item.page_count))
-            for item in self.items
-        )
-        # 大幅面页计数只对 PDF 有意义；独立图片输入没有「页」的概念，不参与
-        # 已知/未知的统计，否则会把「单张图片」错记成「零大幅面页的 PDF」。
-        pdf_items = [item for item in self.items if item.source_type == SOURCE_TYPE_PDF]
-        known_oversized_page_counts = [
-            item.oversized_page_count for item in pdf_items if item.oversized_page_count is not None
-        ]
-        return {
-            "scanned_count": len(self.items),
-            "selected_count": len(self.items),
-            "pdf_count": pdf_count,
-            "image_count": image_count,
-            "total_page_or_image_count": total_units,
-            "skipped_count": len(self.skipped),
-            "oversized_page_count": sum(known_oversized_page_counts),
-            "oversized_page_count_unknown_files": sum(
-                1 for item in pdf_items if item.oversized_page_count is None
-            ),
-        }
-
-    @property
-    def risk(self) -> dict[str, object]:
-        skipped_count = len(self.skipped)
-        images_disabled_count = sum(
-            1 for item in self.skipped if item.kind == SKIP_KIND_IMAGES_DISABLED
-        )
-        if not skipped_count:
-            message = ""
-        elif images_disabled_count == skipped_count:
-            message = (
-                f"文件夹里有 {images_disabled_count} 个图片文件，"
-                "「允许独立图片」没有打开，本次不会翻译它们；其余文件仍可继续。"
-            )
-        else:
-            message = (
-                "部分 PDF/图片不可读、不受支持或未纳入本次任务，已列入跳过项目；其余文件仍可继续。"
-            )
-        return {
-            "include_images": self.include_images,
-            "mixed_input_supported": bool(
-                self.summary["pdf_count"] and self.summary["image_count"]
-            ),
-            "generated_output_excluded": True,
-            "has_skipped": bool(skipped_count),
-            "skipped_count": skipped_count,
-            "images_disabled_count": images_disabled_count,
-            "message": message,
-        }
-
-
-@dataclass
-class PageQualityResult:
-    ok: bool
-    status: str
-    message: str = ""
-    width: int = 0
-    height: int = 0
-    # 内容维度的疑点。故意不参与 `ok`：这些判据是启发式的，误杀一张正常页
-    # 的代价（丢掉一页真译文、白烧一轮重试）比放过一张可疑页大得多，所以
-    # 命中的页照样进产物，只是打上「请复核」并在报告里点名。
-    review_reasons: list[str] = field(default_factory=list)
-    review_message: str = ""
-
-
-@dataclass
-class PdfPageRecord:
-    page_number: int
-    source_image_path: str
-    file_name: str = ""
-    translated_image_path: str = ""
-    status: str = "pending"
-    attempts: int = 0
-    error: str = ""
-    emergency_ratio_normalized: bool = False
-    # 模型只支持固定尺寸时，输出比例注定和源页不同，这一页按源页比例补白边
-    # 后再入册。这是该模型的已知代价，不是异常，不进 needs_review。
-    ratio_letterboxed: bool = False
-    # 内容质检的疑点（near-blank / 分辨率过低）。页面照常进产物，文件标 needs_review。
-    quality_flags: list[str] = field(default_factory=list)
-    quality_message: str = ""
-    # 实际渲染 DPI；低于 PDF_RENDER_DPI_DEFAULT 表示这一页因为像素上限被降级。
-    render_dpi: float = 0.0
-    placeholder: bool = False
-    failure_ordinal: str = ""
-    source_width_px: int = 0
-    source_height_px: int = 0
-    output_width_px: int = 0
-    output_height_px: int = 0
-    page_width_pt: float = 0.0
-    page_height_pt: float = 0.0
-    # 「跳过大幅面页」命中的页面：从未提交给翻译模型，装订时从源 PDF 矢量直传。
-    # UI 需要靠这个字段和别的终态区分开，单独给张「未翻译，原样保留」的角标。
-    skipped_oversize: bool = False
-    review_enabled: bool = False
-    review_status: str = "skipped"
-    review_attempts: int = 0
-    review_issues: list[dict[str, Any]] = field(default_factory=list)
-    review_minor_suggestions: list[str] = field(default_factory=list)
-    candidate_artifacts: list[dict[str, Any]] = field(default_factory=list)
-    final_candidate_attempt: int = 0
-    # 单页重生成留下的「上一版」译文页图（同目录改名保留，见
-    # PDF_PAGE_IMAGE_PREVIOUS_PREFIX）。空串＝这一页没有上一版，界面不给换回入口。
-    previous_image_path: str = ""
-    # 上一版那一次的页面结论（状态/质检/审核/输出尺寸，字段清单见
-    # _PAGE_VERSION_FIELDS）。只留图不留结论的话，一页从失败占位页换回好译文之后，
-    # 记录仍然写着「占位页」，报告、计数和界面会继续把这一页当坏页。
-    # 两个字段都带默认值：更早的 task_history 记录里没有它们，读回来是空，
-    # 表现就是「这一页还没有上一版」，其余功能不受影响。
-    # 注意：这个 dict 是进程内快照，写清单时会在 _summary_to_manifest 里剔掉，
-    # 不进用户输出目录的 pdf_translation_manifest.json。
-    previous_page_state: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class PdfFileRecord:
-    name: str
-    source_path: str
-    relative_path: str
-    source_type: str = SOURCE_TYPE_PDF
-    source_copy_path: str = ""
-    translated_pdf_path: str = ""
-    compressed_pdf_path: str = ""
-    translated_image_path: str = ""
-    translated_image_format: str = ""
-    status: str = "pending"
-    page_count: int = 0
-    generated_page_count: int = 0
-    placeholder_page_count: int = 0
-    emergency_ratio_normalized_count: int = 0
-    ratio_letterboxed_page_count: int = 0
-    quality_flagged_page_count: int = 0
-    render_downscaled_page_count: int = 0
-    skipped_oversize_page_count: int = 0
-    retry_count: int = 0
-    review_enabled: bool = False
-    reviewed_page_count: int = 0
-    review_passed_page_count: int = 0
-    review_repaired_page_count: int = 0
-    review_failed_page_count: int = 0
-    # 「译文有疑点但仍然采用」的页数：审核没通过、本地质检有标记、或走了应急比例归一化，
-    # 而这一页没有退回失败占位页。口径跟 _record_needs_review 判 needs_review 的那半边对齐
-    # （整份跳过大幅面另有自己的说法）。
-    # 单独给这个数是因为另外几个计数两两都会重叠——审核没通过的页有一半是直接退回占位页的
-    # （见 _finalize_page_failure），质检标记也留在退回前的最后一次尝试上——界面把它们相加
-    # 就会把一页坏页说成两三页。这个数与 placeholder_page_count 严格互斥，可以直接相加。
-    suspect_adopted_page_count: int = 0
-    review_retry_count: int = 0
-    review_minor_suggestion_count: int = 0
-    error: str = ""
-    compression_error: str = ""
-    source_pdf_size_bytes: int = 0
-    high_quality_pdf_size_bytes: int = 0
-    compressed_pdf_size_bytes: int = 0
-    pages: list[PdfPageRecord] = field(default_factory=list)
-
-
-@dataclass
-class PdfTaskSummary:
-    status: str
-    output_dir: str
-    target_lang: str
-    target_lang_label: str
-    started_at: str
-    completed_at: str
-    elapsed_sec: float
-    file_count: int
-    total_page_count: int
-    generated_pdf_count: int
-    placeholder_page_count: int
-    emergency_ratio_normalized_count: int
-    retry_count: int
-    skipped_oversize_page_count: int = 0
-    # 中止/失败的任务在任务中心只能靠这两个数说清楚「跑到哪了」：真正写出了译图的页数，
-    # 和连开始都没轮到的页数。（提交了但没跑出来的页在 placeholder_page_count。）
-    generated_page_count: int = 0
-    unstarted_page_count: int = 0
-    compressed_pdf_enabled: bool = False
-    compressed_pdf_count: int = 0
-    generated_image_count: int = 0
-    compression_quality: int = PDF_COMPRESSED_JPEG_QUALITY_DEFAULT
-    compression_max_long_edge_px: int = PDF_COMPRESSED_MAX_LONG_EDGE_PX
-    review_enabled: bool = False
-    reviewed_page_count: int = 0
-    review_passed_page_count: int = 0
-    review_repaired_page_count: int = 0
-    review_failed_page_count: int = 0
-    # 与 placeholder_page_count 严格互斥的「有疑点但仍然采用」页数，口径见 PdfFileRecord
-    # 上的同名字段。任务中心那排指标格只能拿这个数跟占位页并列，拿 review_failed_page_count
-    # 并列会把同一页在两个格子里各数一次。
-    suspect_adopted_page_count: int = 0
-    review_retry_count: int = 0
-    review_minor_suggestion_count: int = 0
-    rate_limit_reduction_count: int = 0
-    partial_artifacts_available: bool = False
-    image_model_signature: str = ""
-    pdf_review_model_signature: str = ""
-    stopped: bool = False
-    stop_reason: str = ""
-    files: list[PdfFileRecord] = field(default_factory=list)
-
-
-@dataclass
-class _PreparedPdfFile:
-    item: PdfFileItem
-    relative_pdf: Path
-    record: PdfFileRecord
-    source_pages_dir: Path
-    translated_pages_dir: Path
-    review_candidates_dir: Path
-    translated_pdf_path: Path
-    compressed_pdf_path: Path
-    app_managed: bool
-    final_output_dir: Path
-    # 图片源的交付路径。PDF 变体在准备阶段就解析定了，图片源要等模型吐回来才知道
-    # 后缀，所以这里留空、由第一次落盘时解析并缓存——之后每一轮重生成都原子覆盖
-    # 同一个文件名，不再重复触发 ``resolve_translated_image_path`` 的改名副作用。
-    translated_image_path: Path | None = None
 
 
 def is_supported_pdf_file(path: str | Path) -> bool:
@@ -1095,25 +839,6 @@ def _record_needs_review(record: PdfFileRecord) -> bool:
         or record.review_failed_page_count
         or record.quality_flagged_page_count
         or _record_is_fully_skipped_oversize(record)
-    )
-
-
-def _record_is_fully_skipped_oversize(record: PdfFileRecord) -> bool:
-    """A file where every single page was skipped for being oversized.
-
-    The artifact is then byte-for-byte the source content — not one word was
-    translated — so it must never be reported as a completed translation.
-    """
-    return bool(
-        record.page_count > 0
-        and record.skipped_oversize_page_count >= record.page_count
-    )
-
-
-def fully_skipped_oversize_message(record: PdfFileRecord) -> str:
-    return (
-        f"本文件全部 {record.page_count} 页因幅面过大被「跳过大幅面页」跳过，未产生任何翻译内容："
-        "输出 PDF 与源文件内容一致。如需翻译这些图纸页，请在设置中关闭「跳过大幅面页」后重跑。"
     )
 
 
@@ -5454,10 +5179,6 @@ def _relative_pdf_path(path: Path, source_root: Path | None) -> Path:
         return Path(path.name)
 
 
-def _page_archive_stem(relative_pdf: Path) -> Path:
-    return relative_pdf.with_suffix("")
-
-
 def _load_pdfium():
     try:
         import pypdfium2 as pdfium  # type: ignore
@@ -5584,17 +5305,6 @@ def _safe_file_size(path: str | Path) -> int:
         return Path(path).stat().st_size
     except OSError:
         return 0
-
-
-def _format_file_size(size_bytes: int) -> str:
-    if size_bytes <= 0:
-        return "未知"
-    size = float(size_bytes)
-    for unit in ("B", "KB", "MB"):
-        if size < 1024 or unit == "MB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{size:.1f} MB"
 
 
 def _write_compressed_page_jpeg(source_path: Path, output_path: Path) -> Path:
@@ -5909,280 +5619,6 @@ def _write_review_json(output_path: Path, result: PdfPageReviewResult) -> None:
     )
 
 
-def _review_failure_summary(result: PdfPageReviewResult) -> str:
-    if result.summary:
-        return result.summary
-    if result.blocking_issues:
-        issue = result.blocking_issues[0]
-        parts = [issue.location, issue.problem, issue.suggestion]
-        return "；".join(part for part in parts if part) or "审核未通过"
-    return "审核未通过"
-
-
-def _review_feedback_text(result: PdfPageReviewResult) -> str:
-    lines: list[str] = []
-    for index, issue in enumerate(result.blocking_issues, start=1):
-        parts = [
-            f"type={issue.type}",
-            f"location={issue.location}" if issue.location else "",
-            f"problem={issue.problem}" if issue.problem else "",
-            f"suggestion={issue.suggestion}" if issue.suggestion else "",
-        ]
-        lines.append(f"{index}. " + "; ".join(part for part in parts if part))
-    return "\n".join(lines) or result.summary or "The previous candidate failed review."
-
-
-def _completed_pdf_file_count(summary: PdfTaskSummary) -> int:
-    return sum(
-        1
-        for record in summary.files
-        if record.source_type != SOURCE_TYPE_IMAGE and record.translated_pdf_path
-    )
-
-
-def _unfinished_pdf_file_count(summary: PdfTaskSummary) -> int:
-    return sum(
-        1
-        for record in summary.files
-        if record.source_type != SOURCE_TYPE_IMAGE and not record.translated_pdf_path
-    )
-
-
-def _completed_image_file_count(summary: PdfTaskSummary) -> int:
-    return sum(
-        1
-        for record in summary.files
-        if record.source_type == SOURCE_TYPE_IMAGE and record.translated_image_path
-    )
-
-
-def _unfinished_image_file_count(summary: PdfTaskSummary) -> int:
-    return sum(
-        1
-        for record in summary.files
-        if record.source_type == SOURCE_TYPE_IMAGE and not record.translated_image_path
-    )
-
-
-def _summary_terminal_reason(summary: PdfTaskSummary) -> str:
-    if summary.stopped or summary.status == PDF_OUTPUT_STATE_STOPPED:
-        return summary.stop_reason or "user_stopped"
-    if summary.status == PDF_OUTPUT_STATE_FAILED:
-        return "failed"
-    if summary.status == PDF_OUTPUT_STATE_NEEDS_REVIEW:
-        return "completed_needs_review"
-    return "completed"
-
-
-def _summary_terminal_reason_label(summary: PdfTaskSummary) -> str:
-    reason = _summary_terminal_reason(summary)
-    return {
-        "end_paused": "用户结束暂停任务",
-        "user_stopped": "用户主动中止",
-        "failed": "异常失败",
-        "completed_needs_review": "已完成，存在需复核页面",
-        "completed": "正常完成",
-    }.get(reason, reason)
-
-
-def _pdf_status_label(status: str) -> str:
-    return {
-        PDF_OUTPUT_STATE_COMPLETED: "已完成",
-        PDF_OUTPUT_STATE_NEEDS_REVIEW: "已完成，存在需复核页面",
-        PDF_OUTPUT_STATE_STOPPED: "已停止",
-        PDF_OUTPUT_STATE_FAILED: "异常失败",
-    }.get(status, status or "未知")
-
-
-def _pdf_file_status_label(record: PdfFileRecord) -> str:
-    if record.source_type == SOURCE_TYPE_IMAGE:
-        if record.translated_image_path:
-            return "已完成译图"
-        if record.status == PDF_OUTPUT_STATE_FAILED:
-            return "生成失败"
-        if record.status == PDF_OUTPUT_STATE_STOPPED:
-            return "未完成图片，已保留页面素材"
-        return "未完成图片"
-    if record.translated_pdf_path:
-        return "已完成 PDF"
-    if record.status == PDF_OUTPUT_STATE_FAILED:
-        return "生成失败"
-    if record.status == PDF_OUTPUT_STATE_STOPPED:
-        return "未完成 PDF，已保留页面素材"
-    return "未完成 PDF"
-
-
-def _pdf_artifact_label(path: str, record: PdfFileRecord) -> str:
-    if path:
-        return path
-    if record.source_type == SOURCE_TYPE_IMAGE:
-        if record.status == PDF_OUTPUT_STATE_STOPPED:
-            return "未生成（未完成，不生成失败译图）"
-        return "未生成"
-    if record.status == PDF_OUTPUT_STATE_STOPPED:
-        return "未生成（未完成，不生成占位版）"
-    return "未生成"
-
-
-def _pdf_file_material_paths(summary: PdfTaskSummary, record: PdfFileRecord) -> dict[str, str]:
-    output_dir = Path(summary.output_dir)
-    archive_stem = _page_archive_stem(
-        Path(record.relative_path or record.name or "未命名 PDF")
-    )
-    return {
-        "source_pages": str(output_dir / PDF_PAGES_ROOT / SOURCE_PAGES_DIRNAME / archive_stem),
-        "translated_pages": str(
-            output_dir / PDF_PAGES_ROOT / TRANSLATED_PAGES_DIRNAME / archive_stem
-        ),
-        "review_candidates": str(
-            output_dir / PDF_PAGES_ROOT / REVIEW_CANDIDATES_DIRNAME / archive_stem
-        ),
-    }
-
-
-def _record_has_usable_translated_pages(record: PdfFileRecord) -> bool:
-    return any(
-        (
-            page.translated_image_path
-            and not page.placeholder
-            and page.status in {"success", "emergency_normalized"}
-        )
-        # 跳过大幅面页的页面没有 translated_image_path（矢量直传，不走栅格化），
-        # 但它本身就是一份有效产物；一份全是大幅面页的 PDF 不该被判定成「零
-        # 可用页面」而整份失败。
-        or page.skipped_oversize
-        for page in record.pages
-    )
-
-
-def _no_usable_translated_pages_error(record: PdfFileRecord) -> str:
-    page_errors = [
-        str(page.error or "").strip()
-        for page in sorted(record.pages, key=lambda item: item.page_number)
-        if page.placeholder or page.status in {"placeholder_pending", PDF_OUTPUT_STATE_FAILED}
-    ]
-    first_error = next((error for error in page_errors if error), "")
-    if record.source_type == SOURCE_TYPE_IMAGE:
-        message = "图片翻译失败，未生成译图；已保留源图、页面素材和报告。"
-    else:
-        message = "全部页面生成失败，未生成译文 PDF；已保留源页、失败页素材和报告。"
-    if first_error:
-        message += f"首个错误：{first_error}"
-    return message
-
-
-def _finished_page_numbers(record: PdfFileRecord) -> list[int]:
-    numbers: list[int] = []
-    for page in record.pages:
-        if (
-            page.status in {"success", "emergency_normalized", "placeholder", PDF_PAGE_STATUS_SKIPPED_OVERSIZE}
-            # placeholder_pending 的页要排掉：它的 translated_image_path 指着一张
-            # 「page_00N_failed.png」，那是占位图**将要**写到的位置，中止时这一步根本没跑，
-            # 文件并不存在。不排掉的话报告会把 3 页失败页算成已完成（12/14 而不是 9/14）。
-            or (
-                page.translated_image_path
-                and page.status
-                not in {"pending", "failed", "placeholder_pending", PDF_OUTPUT_STATE_FAILED}
-            )
-        ):
-            numbers.append(int(page.page_number))
-    return sorted(set(numbers))
-
-
-def _finished_page_count(record: PdfFileRecord) -> int:
-    page_count = max(0, int(record.page_count or 0))
-    explicit = max(0, int(record.generated_page_count or 0))
-    computed = len(_finished_page_numbers(record))
-    if record.translated_pdf_path and page_count and not max(explicit, computed):
-        return page_count
-    finished = max(explicit, computed)
-    return min(page_count, finished) if page_count else finished
-
-
-def _last_contiguous_finished_page(record: PdfFileRecord) -> int:
-    page_count = max(0, int(record.page_count or 0))
-    numbers = set(_finished_page_numbers(record))
-    if record.translated_pdf_path and page_count and not numbers:
-        return page_count
-    current = 0
-    for page_number in range(1, page_count + 1):
-        if page_number not in numbers:
-            break
-        current = page_number
-    return current
-
-
-def _page_progress_label(record: PdfFileRecord) -> str:
-    page_count = max(0, int(record.page_count or 0))
-    finished = _finished_page_count(record)
-    return f"{finished}/{page_count}" if page_count else str(finished)
-
-
-def _real_generated_page_count(record: PdfFileRecord) -> int:
-    """真正生成了译图的页数。
-
-    「跑完的页」（_finished_page_count）里混着占位页和整页跳过的 A3+ 页——它们确实各自
-    留下了一张图，但都不是译文。界面上「已生成 N / M 页」这句话早就是扣掉占位页之后的数
-    （见 workspace.ts 的 pdf 进度徽标），报告和任务中心也得按同一个口径说，否则又会出现
-    「已生成页面 14/14」和「失败占位页 2」并排的自相矛盾。
-    """
-    finished = _finished_page_count(record)
-    not_translated = max(0, int(record.placeholder_page_count or 0)) + max(
-        0, int(record.skipped_oversize_page_count or 0)
-    )
-    return max(0, finished - not_translated)
-
-
-def _generated_progress_label(record: PdfFileRecord) -> str:
-    page_count = max(0, int(record.page_count or 0))
-    generated = _real_generated_page_count(record)
-    return f"{generated}/{page_count}" if page_count else str(generated)
-
-
-def _unstarted_page_count(record: PdfFileRecord) -> int:
-    """从未开始处理的页数：中止时没轮到的那几页，连页记录都还没建。
-
-    以页记录条数为准，但不能只看它：合成成功的文件可以只留下产物路径而不留页记录
-    （历史清单、测试替身都是这样），那种情况下已生成页数才是真正处理过的页数。
-    """
-    page_count = max(0, int(record.page_count or 0))
-    if not page_count:
-        return 0
-    touched = max(len(record.pages), _finished_page_count(record))
-    return max(0, page_count - touched)
-
-
-def _last_finished_page_label(record: PdfFileRecord) -> str:
-    page_count = max(0, int(record.page_count or 0))
-    last_page = _last_contiguous_finished_page(record)
-    if not last_page:
-        return "尚未处理任何页面"
-    if page_count and last_page >= page_count:
-        return "全部页面"
-    return f"第 {last_page} 页"
-
-
-def _summary_to_manifest(summary: PdfTaskSummary) -> dict[str, Any]:
-    payload = asdict(summary)
-    # previous_page_state 是「换回上一版」的进程内快照（页尺寸、结论等运行期字段），
-    # 只在换回流程里读写，清单没有它的读者；写出去等于把内部字段升格成对外格式，
-    # 以后一改就背兼容包袱。previous_image_path 保留——它回答「这一页有没有上一版
-    # 可换」，排查清单时用得上。
-    for file_payload in payload.get("files") or []:
-        for page_payload in file_payload.get("pages") or []:
-            page_payload.pop("previous_page_state", None)
-    payload["route"] = "pdf_image_layout_translation"
-    payload["render_dpi"] = PDF_RENDER_DPI_DEFAULT
-    payload["image_format"] = "png"
-    payload["terminal_reason"] = _summary_terminal_reason(summary)
-    payload["terminal_reason_label"] = _summary_terminal_reason_label(summary)
-    payload["completed_pdf_file_count"] = _completed_pdf_file_count(summary)
-    payload["unfinished_pdf_file_count"] = _unfinished_pdf_file_count(summary)
-    payload["completed_image_file_count"] = _completed_image_file_count(summary)
-    payload["unfinished_image_file_count"] = _unfinished_image_file_count(summary)
-    return payload
-
-
 def _safe_image_model_signature(settings: AppSettings) -> str:
     try:
         return image_model_signature(settings)
@@ -6197,281 +5633,3 @@ def _safe_pdf_review_model_signature(settings: AppSettings) -> str:
         return ""
 
 
-def _summary_to_report(summary: PdfTaskSummary) -> str:
-    lines = [
-        "# PDF 翻译报告",
-        "",
-        f"- 状态：{summary.status}",
-        f"- 状态说明：{_pdf_status_label(summary.status)}",
-        f"- 结束原因：{_summary_terminal_reason_label(summary)}",
-        f"- 目标语言：{summary.target_lang_label}",
-        f"- 输出目录：{summary.output_dir}",
-        f"- 文件数：{summary.file_count}",
-        f"- 总页数：{summary.total_page_count}",
-        f"- 已完成 PDF 文件：{_completed_pdf_file_count(summary)}",
-        f"- 未完成 PDF 文件：{_unfinished_pdf_file_count(summary)}",
-        f"- 已完成图片文件：{_completed_image_file_count(summary)}",
-        f"- 未完成图片文件：{_unfinished_image_file_count(summary)}",
-        f"- 已生成高清 PDF：{summary.generated_pdf_count}",
-        f"- 已生成压缩 PDF：{summary.compressed_pdf_count}",
-        f"- 已生成译图：{summary.generated_image_count}",
-        f"- 压缩输出：{'开启' if summary.compressed_pdf_enabled else '关闭'}",
-        f"- 压缩 JPEG 质量：{summary.compression_quality}",
-        f"- 压缩最大长边：{summary.compression_max_long_edge_px}px",
-        f"- 失败占位页：{summary.placeholder_page_count}",
-        f"- 跳过大幅面页（矢量直传）：{summary.skipped_oversize_page_count}",
-        f"- 应急比例归一化页：{summary.emergency_ratio_normalized_count}",
-        f"- 页级重试次数：{summary.retry_count}",
-        f"- 翻译审核：{'开启' if summary.review_enabled else '关闭'}",
-        f"- 审核通过页：{summary.review_passed_page_count}",
-        f"- 审核修复页：{summary.review_repaired_page_count}",
-        f"- 审核未通过页：{summary.review_failed_page_count}",
-        f"- 审核重试次数：{summary.review_retry_count}",
-        f"- 审核轻微建议：{summary.review_minor_suggestion_count}",
-        f"- 限流降并发次数：{summary.rate_limit_reduction_count}",
-        f"- 保留部分素材：{'是' if summary.partial_artifacts_available else '否'}",
-        f"- 页面素材目录：{Path(summary.output_dir) / PDF_PAGES_ROOT}",
-        "",
-        "## 文件明细",
-        "",
-    ]
-    for file_record in summary.files:
-        material_paths = _pdf_file_material_paths(summary, file_record)
-        lines.extend(
-            [
-                f"### {file_record.name}",
-                "",
-                f"- 状态：{file_record.status}",
-                f"- 状态说明：{_pdf_file_status_label(file_record)}",
-                f"- 类型：{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else 'PDF'}",
-                f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else 'PDF'}：{file_record.source_path}",
-                f"- 高清 PDF：{_pdf_artifact_label(file_record.translated_pdf_path, file_record)}",
-                f"- 压缩 PDF：{_pdf_artifact_label(file_record.compressed_pdf_path, file_record)}",
-                f"- 译图：{_pdf_artifact_label(file_record.translated_image_path, file_record)}",
-                f"- 模型输出格式：{file_record.translated_image_format or '未生成'}",
-                f"- 源文件体积：{_format_file_size(file_record.source_pdf_size_bytes)}",
-                f"- 高清版体积：{_format_file_size(file_record.high_quality_pdf_size_bytes)}",
-                f"- 压缩版体积：{_format_file_size(file_record.compressed_pdf_size_bytes)}",
-                f"- 页数：{file_record.page_count}",
-                # 「页面完成进度」在中止的报告里被读成了「已提交」（实测写 12/14，界面同时
-                # 写着 9/14）。改成三行说清楚：真正生成了译文的页、跑到哪一页、一页都没轮到
-                # 的页——它们和「失败占位页」「大幅面页」相加正好是总页数。
-                f"- 已生成页面：{_generated_progress_label(file_record)}",
-                f"- 已连续处理到页码：{_last_finished_page_label(file_record)}",
-                f"- 未开始页面：{_unstarted_page_count(file_record)}",
-                f"- 源{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['source_pages']}",
-                f"- 译后{'图片' if file_record.source_type == SOURCE_TYPE_IMAGE else '页'}素材：{material_paths['translated_pages']}",
-                f"- 失败占位页：{file_record.placeholder_page_count}",
-                f"- 大幅面页处理：本文件 {file_record.skipped_oversize_page_count} 页判定为大幅面，"
-                f"将原样保留；{max(0, file_record.page_count - file_record.skipped_oversize_page_count)} "
-                "页参与翻译",
-                f"- 应急比例归一化页：{file_record.emergency_ratio_normalized_count}",
-                f"- 内容质检待复核页：{file_record.quality_flagged_page_count}",
-                f"- 按源页比例补边页：{file_record.ratio_letterboxed_page_count}",
-                f"- 渲染 DPI 降级页（幅面过大）：{file_record.render_downscaled_page_count}",
-                f"- 翻译审核：{'开启' if file_record.review_enabled else '关闭'}",
-                f"- 审核通过页：{file_record.review_passed_page_count}",
-                f"- 审核修复页：{file_record.review_repaired_page_count}",
-                f"- 审核未通过页：{file_record.review_failed_page_count}",
-                f"- 审核轻微建议：{file_record.review_minor_suggestion_count}",
-            ]
-        )
-        if summary.review_enabled or file_record.review_enabled:
-            lines.append(f"- 审核候选图：{material_paths['review_candidates']}")
-        if file_record.error:
-            lines.append(f"- 错误：{file_record.error}")
-        if file_record.compression_error:
-            lines.append(f"- 压缩提示：{file_record.compression_error}")
-        review_pages = [
-            page
-            for page in file_record.pages
-            if page.placeholder
-            or page.emergency_ratio_normalized
-            or page.error
-            or page.quality_flags
-            or page.review_issues
-            or page.review_minor_suggestions
-        ]
-        if review_pages:
-            lines.extend(["", "| 页码 | 状态 | 审核 | 失败序号 | 摘要 | 原始页图像 | 译后页图像 |", "| --- | --- | --- | --- | --- | --- | --- |"])
-            for page in review_pages:
-                review_note = page.review_status
-                if page.review_minor_suggestions:
-                    review_note += "；轻微建议：" + "；".join(page.review_minor_suggestions[:2])
-                lines.append(
-                    "| "
-                    + " | ".join(
-                        [
-                            str(page.page_number),
-                            page.status,
-                            _escape_table(review_note),
-                            page.failure_ordinal,
-                            _escape_table(
-                                page.error
-                                or page.quality_message
-                                or _page_review_issue_text(page)
-                            ),
-                            _escape_table(page.source_image_path),
-                            _escape_table(page.translated_image_path),
-                        ]
-                    )
-                    + " |"
-                )
-        lines.append("")
-    return "\n".join(lines)
-
-
-def _escape_table(value: str) -> str:
-    return str(value or "").replace("|", "\\|").replace("\n", " ")
-
-
-def _page_review_issue_text(page: PdfPageRecord) -> str:
-    issues = []
-    for issue in page.review_issues[:3]:
-        if isinstance(issue, dict):
-            parts = [
-                str(issue.get("location") or "").strip(),
-                str(issue.get("problem") or "").strip(),
-                str(issue.get("suggestion") or "").strip(),
-            ]
-            issues.append("；".join(part for part in parts if part))
-    return " / ".join(issue for issue in issues if issue)
-
-
-def _file_record_to_result(record: PdfFileRecord) -> dict[str, Any]:
-    fully_skipped = _record_is_fully_skipped_oversize(record)
-    # 全部页面都被大幅面跳过时产物只是源文件副本：文件确实生成了，但翻译
-    # 一个字都没有，所以这里不能算 success。
-    success = bool(record.translated_pdf_path or record.translated_image_path) and not fully_skipped
-    detail_parts = []
-    if fully_skipped:
-        detail_parts.append("全部页面因幅面过大被跳过，未翻译")
-    if record.quality_flagged_page_count:
-        detail_parts.append(f"{record.quality_flagged_page_count} 页内容质检待复核")
-    if record.compression_error:
-        detail_parts.append("压缩版生成失败")
-    return {
-        "file_id": file_progress_id(record.source_path),
-        "name": record.name,
-        "source_type": record.source_type,
-        "success": success,
-        "status": record.status,
-        "detail": "，".join(detail_parts),
-        "error": (
-            record.error
-            or (fully_skipped_oversize_message(record) if fully_skipped else "")
-        ),
-        "all_pages_skipped_oversize": fully_skipped,
-        "quality_flagged_page_count": record.quality_flagged_page_count,
-        "ratio_letterboxed_page_count": record.ratio_letterboxed_page_count,
-        "render_downscaled_page_count": record.render_downscaled_page_count,
-        "output": record.translated_pdf_path or record.translated_image_path,
-        "compressed_output": record.compressed_pdf_path,
-        "translated_image_path": record.translated_image_path,
-        "translated_image_format": record.translated_image_format,
-        "page_count": record.page_count,
-        "placeholder_page_count": record.placeholder_page_count,
-        "skipped_oversize_page_count": record.skipped_oversize_page_count,
-        "emergency_ratio_normalized_count": record.emergency_ratio_normalized_count,
-        "review_enabled": record.review_enabled,
-        "reviewed_page_count": record.reviewed_page_count,
-        "review_passed_page_count": record.review_passed_page_count,
-        "review_repaired_page_count": record.review_repaired_page_count,
-        "review_failed_page_count": record.review_failed_page_count,
-        "suspect_adopted_page_count": record.suspect_adopted_page_count,
-        "review_retry_count": record.review_retry_count,
-        "review_minor_suggestion_count": record.review_minor_suggestion_count,
-        "high_quality_pdf_size_bytes": record.high_quality_pdf_size_bytes,
-        "compressed_pdf_size_bytes": record.compressed_pdf_size_bytes,
-    }
-
-
-def _done_kpi(summary: PdfTaskSummary) -> dict[str, Any]:
-    """任务中心那排指标格的数据源。
-
-    PDF 以前一个字段都不给，任务中心的 PDF 指标表因此整段是死代码：跑完点进详情，
-    页数、失败占位、审核未通过全都不显示。键名对齐 ui/src/views/tasks.ts 的 PDF 回退表。
-
-    没发生的事不占格子：没有疑点页就不报「有疑点仍采用 0」，没出译图就不报「译图 0」——
-    一排零会让人以为哪里出了问题。
-
-    跟占位页并列的那格给的是 suspect_adopted_page_count，不是 review_failed_page_count：
-    审核没通过的页有一半是直接退回失败占位页的，两个数并列会让同一页在两个格子里各数一次。
-    """
-    kpi: dict[str, Any] = {
-        "file_count": summary.file_count,
-        "total_page_count": summary.total_page_count,
-        "generated_pdf_count": summary.generated_pdf_count,
-        "placeholder_page_count": summary.placeholder_page_count,
-    }
-    # 中止和失败的任务，「高清 PDF 0 / 失败占位 0」几乎等于什么都没说：工作区那一屏明写着
-    # 「已生成 9 / 14 页」，任务中心得给得出同一个数，否则同一份任务两屏两种说法。跑完的
-    # 任务不出这两格——那时已生成页数就是总页数，多一格只是占地方。
-    if summary.stopped or summary.status == PDF_OUTPUT_STATE_FAILED:
-        kpi["generated_page_count"] = summary.generated_page_count
-        if summary.unstarted_page_count:
-            kpi["unstarted_page_count"] = summary.unstarted_page_count
-    if summary.generated_image_count:
-        kpi["generated_image_count"] = summary.generated_image_count
-    if summary.suspect_adopted_page_count:
-        kpi["suspect_adopted_page_count"] = summary.suspect_adopted_page_count
-    if summary.skipped_oversize_page_count:
-        kpi["skipped_oversize_page_count"] = summary.skipped_oversize_page_count
-    return kpi
-
-
-def _summary_issues(file_records: list[PdfFileRecord]) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    for file_record in file_records:
-        if _record_is_fully_skipped_oversize(file_record):
-            issues.append(
-                {
-                    "file": file_record.name,
-                    "location_label": "整份文件",
-                    "severity": "needs_review",
-                    "problem": fully_skipped_oversize_message(file_record),
-                    "status": "全部页面按幅面跳过，未翻译",
-                    "source_image_path": file_record.source_path,
-                    "translated_image_path": "",
-                }
-            )
-        for page in file_record.pages:
-            if not (
-                page.placeholder
-                or page.emergency_ratio_normalized
-                or page.error
-                or page.quality_flags
-                or page.review_status == "failed"
-            ):
-                continue
-            issues.append(
-                {
-                    "file": file_record.name,
-                    "location_label": (
-                        "图片文件"
-                        if file_record.source_type == SOURCE_TYPE_IMAGE
-                        else f"第 {page.page_number} 页"
-                    ),
-                    "severity": "needs_review",
-                    "problem": (
-                        page.error
-                        or page.quality_message
-                        or _page_review_issue_text(page)
-                        or page.status
-                    ),
-                    "status": (
-                        "审核未通过，占位待人工复核"
-                        if page.review_status == "failed"
-                        else "失败占位页"
-                        if page.placeholder
-                        else "应急比例归一化"
-                        if page.emergency_ratio_normalized
-                        else "内容质检待复核"
-                        if page.quality_flags
-                        else page.status
-                    ),
-                    "source_image_path": page.source_image_path,
-                    "translated_image_path": page.translated_image_path,
-                }
-            )
-    return issues
