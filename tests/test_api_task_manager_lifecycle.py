@@ -107,6 +107,29 @@ class TaskManagerLifecycleTests(IsolatedAppDataTestCase):
         self.assertLessEqual(len(writes), 3)
         self.assertGreaterEqual(len(writes), 1)
 
+    def test_task_logs_are_capped_and_kept_out_of_the_task_list(self) -> None:
+        """Audit 高-4: logs neither grow without bound nor ride every list poll."""
+        from core.task_history import MAX_TASK_LOG_LINES
+
+        task = self._register("chatty")
+        for index in range(MAX_TASK_LOG_LINES + 120):
+            self.manager._append_event(task, "log", {"level": "INFO", "message": f"line {index}"})
+        self.assertEqual(len(task.logs), MAX_TASK_LOG_LINES)
+        self.assertEqual(task.logs[-1]["message"], f"line {MAX_TASK_LOG_LINES + 119}")
+        listing = self.manager.list_tasks()
+        for record in listing["active"] + listing["recent"]:
+            self.assertNotIn("logs", record)
+
+    def test_an_old_history_record_with_huge_logs_is_trimmed_on_the_next_write(self) -> None:
+        from core.task_history import MAX_TASK_LOG_LINES
+
+        store = self.manager._history
+        store.upsert({"task_id": "old", "state": "done", "terminal": True,
+                      "logs": [{"message": str(i)} for i in range(MAX_TASK_LOG_LINES * 3)]})
+        store.upsert({"task_id": "new", "state": "done", "terminal": True, "logs": []})
+        old = next(record for record in store.records() if record["task_id"] == "old")
+        self.assertEqual(len(old["logs"]), MAX_TASK_LOG_LINES)
+
     def test_history_flush_cost_stays_flat_as_events_pile_up(self) -> None:
         """Guard the O(n^2) shape, not the absolute speed of this machine."""
         task = self._register("timed")

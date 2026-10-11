@@ -36,7 +36,7 @@ from core.pdf_image_translation import (
 from core.task_logger import redact_absolute_paths, sanitize_task_log_message
 from core.path_utils import normalize_user_path
 from core.task_resources import ScheduledTaskLease, TaskResourceRegistry
-from core.task_history import TaskHistoryError, TaskHistoryStore
+from core.task_history import MAX_TASK_LOG_LINES, TaskHistoryError, TaskHistoryStore
 from loguru import logger
 from core.tm_cleaning_task_runner import TmCleaningTaskRunner
 from core.task_runner import (
@@ -1033,8 +1033,13 @@ class TranslationTaskManager:
             unsaved = [dict(record) for record in self._pending_history.values() if record["terminal"]]
         recent = {record["task_id"]: record for record in self._history.records()}
         recent.update({record["task_id"]: record for record in unsaved})
-        return {"active": active, "recent": sorted(recent.values(),
-                key=lambda record: record.get("updated_at", 0), reverse=True)[:200],
+        # 任务列表每 4 秒轮询一次，界面上只用摘要；日志只在单个任务的状态里返回。
+        # 以前每条记录都带整份日志，轮询报文随历史线性膨胀（审计 高-4）。
+        recent_records = sorted(
+            recent.values(), key=lambda record: record.get("updated_at", 0), reverse=True
+        )[:200]
+        return {"active": [_without_logs(record) for record in active],
+                "recent": [_without_logs(record) for record in recent_records],
                 "active_work_count": self.active_task_count()}
 
     def active_task_count(self) -> int:
@@ -2315,6 +2320,11 @@ class TranslationTaskManager:
                         "message": str(safe_data.get("message") or ""),
                     }
                 )
+                # 只留最近的一段：这份列表会整份写进 task_history.json，也会随任务
+                # 状态返回。不封顶时长任务能把历史文件撑到几十 MB（审计 高-4）。
+                # 完整日志另有任务日志文件和诊断包，这里只供界面回看。
+                if len(task.logs) > MAX_TASK_LOG_LINES:
+                    del task.logs[: len(task.logs) - MAX_TASK_LOG_LINES]
             now = time.time()
             task.updated_at = now
             task.next_event_id += 1
@@ -2499,6 +2509,12 @@ def overall_progress_percent(
     index = max(1, min(phase_total, phase_index))
     done = sum(weights[: index - 1]) + weights[index - 1] * stage_percent / 100.0
     return min(100.0, max(0.0, 100.0 * done / total))
+
+
+def _without_logs(record: dict[str, Any]) -> dict[str, Any]:
+    if "logs" not in record:
+        return record
+    return {key: value for key, value in record.items() if key != "logs"}
 
 
 def _event_type_for_message(message: Any) -> str:

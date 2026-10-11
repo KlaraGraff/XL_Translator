@@ -38,6 +38,17 @@ def _lock_for_path(path: Path) -> threading.RLock:
         return _PATH_LOCKS.setdefault(normalized, threading.RLock())
 
 
+# 每条任务记录里保留的日志行数上限（审计 高-4）。完整日志在任务日志文件和诊断包里。
+MAX_TASK_LOG_LINES = 500
+
+
+def _trim_logs(record: dict[str, Any]) -> dict[str, Any]:
+    logs = record.get("logs")
+    if not isinstance(logs, list) or len(logs) <= MAX_TASK_LOG_LINES:
+        return record
+    return {**record, "logs": logs[-MAX_TASK_LOG_LINES:]}
+
+
 class TaskHistoryStore:
     """Persist only already-sanitized task-center records.
 
@@ -68,7 +79,8 @@ class TaskHistoryStore:
             ]
             records.insert(0, dict(record))
             self._ensure_writable()
-            self._write_locked(records[: self._limit])
+            # 旧版本写下的记录可能带着几万行日志；顺手剪到上限，文件下一次写入时就瘦下来。
+            self._write_locked([_trim_logs(item) for item in records[: self._limit]])
 
     def remove(self, task_id: str) -> bool:
         """Drop one record in a single locked read-filter-write.
