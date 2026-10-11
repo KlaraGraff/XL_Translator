@@ -1,223 +1,223 @@
 # Translator（XL Translator）
 
-用大模型批量翻译 **Excel、Word、PDF、图片和 CAD 图纸（DWG / DXF）** 的桌面应用，支持 macOS 和 Windows。Excel 和 Word 默认写成原文加译文的双语文件（也可以只留译文），翻过的词句存进记忆库，下次优先复用，专业术语前后一致。
+Translator 是一款基于大语言模型的桌面文档翻译应用，支持批量翻译 **Excel、Word、PDF、图片及 CAD 图纸（DWG / DXF）**，适用于 macOS 与 Windows。Excel 与 Word 默认输出原文与译文对照的双语文件，也可仅保留译文。已翻译的词句存入翻译记忆库，供后续任务复用，以保持术语一致。
 
-A desktop app for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, images and CAD drawings (DWG / DXF)**. Excel and Word files come out bilingual by default (original plus translation, or translation only), and every translated term goes into a translation memory so later jobs reuse it and keep terminology consistent.
+Translator is a desktop application for macOS and Windows that uses large language models to batch-translate **Excel, Word, PDF, image and CAD (DWG / DXF) files**. Excel and Word files are output in bilingual form by default, with an option to keep the translation only. Translated segments are stored in a translation memory and reused in later jobs to keep terminology consistent.
 
-[下载最新版 · Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
+[下载最新版本 · Download the latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest)
 
-![Translator 主界面：Excel 表格翻译完成 · Main window after an Excel translation](docs/images/readme/app-excel.png)
+![Translator 主界面：Excel 翻译完成 · Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> 本页截图用一套虚构的水泵房改造项目资料（材料清单、施工方案、验收单、平面图）实际跑出，译成英文，截图里是中文界面。界面还可以在「设置 → 外观与语言」里切换成英语或法语；输出文件夹名、报告文件和写进文档的复核标记目前仍是中文。
+> 本页截图均由一组虚构的示例文件（水泵房改造项目的材料清单、施工方案、验收单和平面图）实际翻译生成，目标语言为英语，界面语言为中文。界面语言可在「设置 → 外观与语言」中切换为英语或法语；输出文件夹名称、报告文件及写入文档的复核标记目前仍为中文。
 >
-> The screenshots on this page come from real runs on a set of made-up sample files for a pump room retrofit project, translated into English, with the interface set to Chinese. The interface can also be switched to English or French under Settings → Appearance & language; output folder names, report files and review markers written into documents are still in Chinese.
+> All screenshots on this page were produced by translating a set of fictitious sample files (a material list, construction plan, inspection form and layout drawing for a pump room retrofit) into English, with the interface set to Chinese. The interface language can be changed to English or French under Settings → Appearance & language. Output folder names, report files and review markers written into documents remain in Chinese.
 
-## 能做什么 · Features
+## 功能 · Features
 
-### Excel 表格 · Excel
+### Excel
 
-支持 `.xlsx` 和旧版 `.xls`。可以翻译工作表名、公式单元格显示的内容和文件名；按译文调整行高，或者保持行高、缩小字号；拿不准的单元格涂色提醒复核。型号、标准号这类内容（如 `GB/T 8163-2018`）原样保留。
+支持 `.xlsx` 及旧版 `.xls` 格式。可翻译工作表名称、公式单元格的显示值及文件名；行高可随译文自动调整，也可保持行高并缩小字号；需要复核的单元格以底色标出。型号、标准编号等内容（如 `GB/T 8163-2018`）保持原样。
 
-Supports `.xlsx` and legacy `.xls`. Sheet names, the displayed values of formula cells and file names can be translated too. Row heights adjust to the translation, or the font shrinks to fit; cells that need a second look are highlighted. Model numbers and standard codes such as `GB/T 8163-2018` are kept as they are.
+Supports `.xlsx` and legacy `.xls` files. Sheet names, displayed values of formula cells and file names can also be translated. Row heights can be adjusted to fit the translation, or kept fixed with the font size reduced. Cells requiring review are highlighted. Model numbers and standard codes such as `GB/T 8163-2018` are left unchanged.
 
-![Excel 翻译进行中：进度和运行日志 · Excel translation in progress](docs/images/readme/app-excel-running.png)
+![Excel 翻译进行中 · Excel translation in progress](docs/images/readme/app-excel-running.png)
 
-![Excel 双语输出：每个单元格原文在上、译文在下 · Bilingual Excel output](docs/images/readme/result-excel.png)
+![Excel 双语输出：原文在上，译文在下 · Bilingual Excel output](docs/images/readme/result-excel.png)
 
-### Word 文档 · Word
+### Word
 
-支持 `.docx` 和旧版 `.doc`，正文、表格和页眉页脚都能翻；可以保护封面和目录不翻，自动编号翻译后不错乱。文本框和脚注暂时不翻，遇到时会在结果里提示。
+支持 `.docx` 及旧版 `.doc` 格式，可翻译正文、表格及页眉页脚。可选择不翻译封面和目录；自动编号在翻译后保持正确。文本框和脚注暂不翻译，检测到时将在结果中提示。
 
-Supports `.docx` and legacy `.doc`: body text, tables, headers and footers. Cover pages and tables of contents can be left untouched, and automatic numbering stays intact. Text boxes and footnotes are not translated yet; they are reported when found.
+Supports `.docx` and legacy `.doc` files, including body text, tables, headers and footers. Cover pages and tables of contents can be excluded from translation, and automatic numbering is preserved. Text boxes and footnotes are not yet translated and are reported when detected.
 
-![Word 文档翻译完成 · Word translation finished](docs/images/readme/app-word.png)
+![Word 翻译完成 · Word translation completed](docs/images/readme/app-word.png)
 
-![Word 双语输出：每段原文后面接译文 · Bilingual Word output](docs/images/readme/result-word.png)
+![Word 双语输出：原文段落后附译文 · Bilingual Word output](docs/images/readme/result-word.png)
 
 ### PDF 与图片 · PDF and images
 
-逐页用图像模型把页面上的文字换成目标语言，尽量保留原来的版式和插图。图片支持 PNG、JPG、WebP、BMP、TIFF。可以让审核模型逐页检查，翻完还能单独重新生成某一页，并另存一份压缩 PDF。
+由图像模型逐页将文字替换为目标语言，并尽量保留原有版式和插图。图片支持 PNG、JPG、WebP、BMP 和 TIFF 格式。可启用审核模型逐页检查，翻译完成后可单独重新生成指定页面，并可另存压缩版 PDF。
 
-Each page is redrawn in the target language by an image model that keeps the original layout and graphics as closely as possible. Images in PNG, JPG, WebP, BMP and TIFF are supported. A review model can check every page, any single page can be regenerated afterwards, and a compressed copy of the PDF can be saved as well.
+Each page is redrawn in the target language by an image model, preserving the original layout and graphics as closely as possible. Supported image formats are PNG, JPG, WebP, BMP and TIFF. A review model can optionally check each page; individual pages can be regenerated after translation, and a compressed copy of the PDF can be saved.
 
-![PDF 翻译完成，下方是逐页结果 · PDF translation with the per-page list](docs/images/readme/app-pdf.png)
+![PDF 翻译完成及逐页结果 · PDF translation with per-page results](docs/images/readme/app-pdf.png)
 
 ![PDF 原文与译文对照 · Original and translated PDF page](docs/images/readme/result-pdf.png)
 
 ### CAD 图纸 · CAD drawings
 
-DXF 直接翻译；DWG 先在「插件」页连接 ODA File Converter。图块里的文字可以一起翻，GBK 等中文编码的旧图纸也能正确读写。
+DXF 文件可直接翻译；DWG 文件需先在「插件」页面配置 ODA File Converter。图块内的文字可一并翻译，GBK 等中文编码的旧图纸可正确读写。
 
-DXF files are translated directly; for DWG, connect ODA File Converter on the Plugins page first. Text inside blocks can be translated too, and older drawings saved in GBK or other Chinese encodings are read and written correctly.
+DXF files are translated directly. DWG files require ODA File Converter, configured on the Plugins page. Text inside blocks can be included, and legacy drawings in GBK or other Chinese encodings are read and written correctly.
 
-![CAD 图纸翻译完成 · CAD translation finished](docs/images/readme/app-cad.png)
+![CAD 翻译完成 · CAD translation completed](docs/images/readme/app-cad.png)
 
 ![CAD 原图与译图对照 · Original and translated drawing](docs/images/readme/result-cad.png)
 
 ### 记忆库 · Translation memory
 
-Excel 和 Word 翻好的词句自动入库，翻译 Excel、Word 和 CAD 图纸时优先复用。固定的词条一定按你定的译法翻。支持导入、导出和清洗。
+Excel 与 Word 的翻译结果自动存入记忆库，在翻译 Excel、Word 和 CAD 图纸时优先复用。已固定的词条始终采用指定译法。记忆库支持导入、导出和清洗。
 
-Terms translated in Excel and Word are stored automatically and reused when translating Excel, Word and CAD drawings. Pinned entries always use your preferred translation. The memory can be imported, exported and cleaned up.
+Translations from Excel and Word jobs are stored automatically and reused first when translating Excel, Word and CAD files. Pinned entries always use the specified translation. The memory supports import, export and cleanup.
 
-![记忆库，固定的词条带图钉标记 · Translation memory with pinned entries](docs/images/readme/app-library.png)
+![记忆库（带图钉标记的为已固定词条） · Translation memory with pinned entries](docs/images/readme/app-library.png)
 
 ### 任务中心 · Task center
 
-不同类型的任务可以同时跑，可以随时停止（PDF 和 CAD 还能暂停），之后只补翻没翻完的部分。每个任务都有结果统计、需要复核的位置和生成的文件。支持浅色和深色模式。
+不同类型的任务可同时运行，任务可随时停止（PDF 和 CAD 任务还可暂停），之后可仅翻译剩余部分。每个任务均保留结果统计、待复核位置及输出文件。界面提供浅色与深色两种模式。
 
-Different kinds of jobs can run at the same time. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only what is left. Every job keeps its statistics, the places that need review, and the files it produced. Light and dark modes are both supported.
+Jobs of different types can run concurrently. Any job can be stopped (PDF and CAD jobs can also be paused) and later resumed to translate only the remaining content. Each job records its statistics, items requiring review and output files. Light and dark themes are available.
 
 ![任务中心 · Task center](docs/images/readme/app-tasks.png)
 
-![任务中心，深色模式 · Task center in dark mode](docs/images/readme/app-tasks-dark.png)
+![任务中心（深色模式） · Task center in dark mode](docs/images/readme/app-tasks-dark.png)
 
-### 语言与场景 · Languages and domains
+### 语言与领域 · Languages and domains
 
-内置 59 种语言，源语言可以自动识别，也可以自定义目标语言。提供工程、资料管理、行政日常等场景提示词，也可以自己写。
+内置 59 种语言，支持自动识别源语言及自定义目标语言。提供工程、资料管理、行政办公等领域的预设提示词，也可自定义提示词。
 
-59 built-in languages, automatic source-language detection, and custom target languages. Built-in prompts cover engineering, document control and everyday office text, and you can write your own.
+59 built-in languages, automatic source-language detection and custom target languages are supported. Preset prompts are provided for engineering, document control and general administration, and custom prompts can be defined.
 
-## 支持的模型服务 · Model services
+## 模型服务 · Model services
 
-在「设置 → 模型服务」里填写服务商、模型和 API 密钥，测试连接通过后就能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。
+在「设置 → 模型服务」中填写服务商、模型名称和 API 密钥，测试连接成功后即可使用。文档翻译、PDF 与图片翻译、记忆库清洗可分别配置不同的模型。
 
-Enter the provider, model and API key under Settings → Models, then test the connection. Document translation, PDF and image translation, and memory cleanup can each use a different model.
+Configure the provider, model name and API key under Settings → Models and test the connection before use. Document translation, PDF and image translation, and memory cleanup can each use a different model.
 
 | | 中文 | English |
 |---|---|---|
-| 云端 · Cloud | OpenAI / ChatGPT、Claude（Anthropic）、DeepSeek、智谱 GLM、阿里百炼（通义）、硅基流动，以及任何 OpenAI 兼容接口 | OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Alibaba Qwen (DashScope), SiliconFlow, and any OpenAI-compatible API |
-| 本机 · Local | Ollama、LM Studio，或其他 OpenAI 兼容的本地服务 | Ollama, LM Studio, or another OpenAI-compatible local server |
-| PDF 与图片 · PDF and images | 需要能生成图片的模型：OpenAI、硅基流动或 OpenAI 兼容接口 | Needs an image-capable model: OpenAI, SiliconFlow or an OpenAI-compatible API |
+| 云端 · Cloud | OpenAI / ChatGPT、Claude（Anthropic）、DeepSeek、智谱 GLM、阿里百炼（通义）、硅基流动，以及其他 OpenAI 兼容接口 | OpenAI, Claude (Anthropic), DeepSeek, Zhipu GLM, Alibaba Qwen (DashScope), SiliconFlow and other OpenAI-compatible APIs |
+| 本地 · Local | Ollama、LM Studio 及其他 OpenAI 兼容的本地服务 | Ollama, LM Studio and other OpenAI-compatible local servers |
+| PDF 与图片 · PDF and images | 需使用支持图像生成的模型：OpenAI、硅基流动或 OpenAI 兼容接口 | Requires an image generation model: OpenAI, SiliconFlow or an OpenAI-compatible API |
 
-文件在本机读取和写出，翻译时只把要翻译的文字（PDF 和图片是页面图像）发给你配置的模型服务；用本机模型时，文档内容不会离开你的电脑。
+文件的读取和写入均在本机完成，翻译时仅将待翻译文字（PDF 与图片为页面图像）发送至所配置的模型服务。使用本地模型时，文档内容不会离开本机。
 
-Files are read and written on your computer. Only the text to translate (page images for PDF and images) is sent to the model service you configure; with a local model, document content never leaves your computer.
+Files are read and written locally. Only the text to be translated (page images for PDF and image files) is sent to the configured model service. When a local model is used, document content does not leave the computer.
 
 ![模型服务设置 · Model service settings](docs/images/readme/app-settings.png)
 
-## V10.0.0 主要变化 · What's new in V10.0.0
+## V10.0.0 主要更新 · What's new in V10.0.0
 
-- 新增 CAD 图纸翻译，页面和流程与 Excel、Word、PDF 相同
-- 新增英语和法语界面，在「设置 → 外观与语言」里切换
-- 新配色：浅色模式改为柔和的暖米白，深色模式层次更分明
-- 界面、运行日志、报错和报告里的说法统一，不再出现程序内部术语
-- API 密钥被拒绝或额度用完时直接停下并说明原因；长时间限速时先保存已翻好的部分
+- 新增 CAD 图纸翻译，操作流程与 Excel、Word、PDF 一致
+- 新增英语和法语界面，可在「设置 → 外观与语言」中切换
+- 调整配色：浅色模式采用暖米白色，深色模式增强卡片与背景的层次
+- 统一界面、运行日志、错误信息和报告中的用语，不再出现程序内部术语
+- API 密钥无效或额度用尽时，任务立即停止并说明原因；持续限流时，先保存已完成的部分
 
 <!-- English -->
 
-- New: CAD drawing translation, with the same page and steps as Excel, Word and PDF
-- New: English and French interface, selectable under Settings → Appearance & language
-- New color scheme: a soft warm off-white light mode and a dark mode with clearer layering
-- Consistent wording across the interface, run log, error messages and reports, with no internal technical terms
-- If the API key is rejected or the quota runs out, the job stops and says why; under long rate limiting, finished work is saved first
+- CAD drawing translation, with the same workflow as Excel, Word and PDF
+- English and French interface, selectable under Settings → Appearance & language
+- Updated color scheme: a warm off-white light theme and a dark theme with clearer contrast between cards and background
+- Consistent terminology across the interface, run log, error messages and reports, without internal technical terms
+- Jobs stop immediately with an explanation when the API key is rejected or the quota is exhausted; under sustained rate limiting, completed work is saved first
 
-完整说明见[发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)和 [CHANGELOG](docs/CHANGELOG.md)。See the [release page](https://github.com/KlaraGraff/XL_Translator/releases/latest) and the [CHANGELOG](docs/CHANGELOG.md) for details.
+详见[发布页面](https://github.com/KlaraGraff/XL_Translator/releases/latest)及 [CHANGELOG](docs/CHANGELOG.md)。For details, see the [release page](https://github.com/KlaraGraff/XL_Translator/releases/latest) and the [CHANGELOG](docs/CHANGELOG.md).
 
-## 系统与下载 · System requirements and downloads
+## 系统要求与下载 · System requirements and downloads
 
 当前版本提供两个原生安装包：
 
 - macOS（Apple Silicon，M 系列芯片）：`Translator_macOS_arm64_<版本>.dmg`，要求 **macOS 12.0 Monterey 及以上版本**
 - Windows（x64）：`Translator_Windows_x64_<版本>_Setup.exe`，要求 **Windows 10 及以上版本**
 
-打开[最新版发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)下载安装包；每个安装包都有同名的 `.sha256` 校验文件。不提供 Intel Mac 安装包与更新，Intel Mac 用户请继续使用旧版。
+安装包可从[最新版本发布页](https://github.com/KlaraGraff/XL_Translator/releases/latest)下载，每个安装包均附有同名的 `.sha256` 校验文件。不提供 Intel Mac 版本的安装包及更新，Intel Mac 用户请继续使用旧版本。
 
-Two native installers are provided:
+Two native installers are available:
 
 - macOS (Apple Silicon): `Translator_macOS_arm64_<version>.dmg`, requires **macOS 12.0 Monterey or later**
 - Windows (x64): `Translator_Windows_x64_<version>_Setup.exe`, requires **Windows 10 or later**
 
-Download them from the [latest release](https://github.com/KlaraGraff/XL_Translator/releases/latest); each installer comes with a `.sha256` checksum file of the same name. There is no installer or update for Intel Macs; Intel Mac users should keep using an older version.
+Installers are available on the [latest release page](https://github.com/KlaraGraff/XL_Translator/releases/latest), each with a `.sha256` checksum file of the same name. Intel Macs are not supported; users on Intel Macs should continue to use an earlier version.
 
 ### macOS 安装与首次打开 · Installing on macOS
 
-下载后可在终端验证 · Verify the download in Terminal:
+下载后可在终端中校验 · Verify the download in Terminal:
 
 ```bash
 cd ~/Downloads
 shasum -a 256 -c Translator_macOS_arm64_<版本>.dmg.sha256
 ```
 
-校验结果必须显示 `OK`。
+校验结果应显示 `OK`。
 
-1. 打开已校验的 DMG，将 `Translator.app` 拖到 `Applications`。
-2. 从“应用程序”启动 Translator。
-3. 每一版的签名状态写在该版本的发布说明里。若说明写的是 Developer ID 签名并已通过 Apple 公证，双击即可打开；若写的是 ad-hoc 签名、未公证，macOS 会提示“无法验证开发者”，需要在“系统设置 → 隐私与安全性”中确认“仍要打开”。无论哪种情况，都只安装从官方发布页下载并通过上一步校验的 DMG，不要从其他来源找替代安装包。
+1. 打开已校验的 DMG，将 `Translator.app` 拖入「应用程序」文件夹。
+2. 从「应用程序」启动 Translator。
+3. 各版本的签名状态以该版本的发布说明为准。若为 Developer ID 签名且已通过 Apple 公证，可直接打开；若为 ad-hoc 签名且未公证，macOS 会提示「无法验证开发者」，需在「系统设置 → 隐私与安全性」中选择「仍要打开」。请仅安装从官方发布页下载并通过校验的 DMG，不要使用其他来源的安装包。
 
-The check must print `OK`.
+The output should read `OK`.
 
-1. Open the verified DMG and drag `Translator.app` into `Applications`.
-2. Start Translator from Applications.
-3. The release notes of each version state how it is signed. If they say Developer ID signed and Apple notarized, it opens with a double-click. If they say ad-hoc signed and not notarized, macOS warns that the developer cannot be verified; confirm "Open Anyway" under System Settings → Privacy & Security. Either way, only install a DMG downloaded from the official release page and verified in the step above.
+1. Open the verified DMG and drag `Translator.app` into the Applications folder.
+2. Launch Translator from Applications.
+3. The signing status of each version is stated in its release notes. Builds signed with a Developer ID and notarized by Apple open directly. For ad-hoc signed builds that are not notarized, macOS reports that the developer cannot be verified; select "Open Anyway" under System Settings → Privacy & Security. Only install a DMG downloaded from the official release page and verified as described above.
 
-macOS 的数据目录是 `~/Library/Application Support/Translator`。On macOS, app data lives in `~/Library/Application Support/Translator`.
+macOS 的数据目录为 `~/Library/Application Support/Translator`。On macOS, application data is stored in `~/Library/Application Support/Translator`.
 
 ### Windows 安装与首次打开 · Installing on Windows
 
-下载后可在 PowerShell 验证（对比输出的哈希值与 `.sha256` 文件里的值一致）· Verify the download in PowerShell (the hash must match the one in the `.sha256` file):
+下载后可在 PowerShell 中校验，输出的哈希值应与 `.sha256` 文件中的值一致 · Verify the download in PowerShell; the hash must match the value in the `.sha256` file:
 
 ```powershell
 Get-FileHash "$env:USERPROFILE\Downloads\Translator_Windows_x64_<版本>_Setup.exe" -Algorithm SHA256
 Get-Content "$env:USERPROFILE\Downloads\Translator_Windows_x64_<版本>_Setup.exe.sha256"
 ```
 
-1. 运行已校验的 `Setup.exe`。安装只写入当前用户目录，不需要管理员权限。
-2. Windows 安装包暂不携带代码签名，SmartScreen 可能提示“已保护你的电脑”；请先完成上一步校验，再选择“更多信息 → 仍要运行”。只对从官方发布页下载并通过校验的安装包这样做。
-3. 应用界面依赖 Microsoft Edge WebView2 运行时。若系统缺少，安装器会联网自动安装；这是首次安装唯一可能需要网络的步骤。
+1. 运行已校验的 `Setup.exe`。安装程序仅写入当前用户目录，无需管理员权限。
+2. Windows 安装包目前未进行代码签名，SmartScreen 可能提示「Windows 已保护你的电脑」。完成校验后，选择「更多信息 → 仍要运行」。此操作仅适用于从官方发布页下载并通过校验的安装包。
+3. 应用界面依赖 Microsoft Edge WebView2 运行时。如系统中未安装，安装程序将联网自动安装；这是首次安装过程中唯一可能需要联网的步骤。
 
-1. Run the verified `Setup.exe`. It installs into your user folder and does not need administrator rights.
-2. The Windows installer is not code-signed yet, so SmartScreen may say "Windows protected your PC". After verifying the checksum, choose "More info → Run anyway". Only do this for an installer downloaded from the official release page and verified.
-3. The interface needs the Microsoft Edge WebView2 runtime. If it is missing, the installer downloads and installs it; this is the only step of a first install that may need the internet.
+1. Run the verified `Setup.exe`. The installer writes only to the current user's folder and does not require administrator rights.
+2. The Windows installer is not yet code-signed, so SmartScreen may display "Windows protected your PC". After verifying the checksum, select "More info → Run anyway". Do this only for an installer downloaded from the official release page and verified.
+3. The interface requires the Microsoft Edge WebView2 runtime. If it is not installed, the installer downloads and installs it automatically. This is the only step of the initial installation that may require an internet connection.
 
-Windows 的数据目录是 `%LOCALAPPDATA%\Translator`。On Windows, app data lives in `%LOCALAPPDATA%\Translator`.
+Windows 的数据目录为 `%LOCALAPPDATA%\Translator`。On Windows, application data is stored in `%LOCALAPPDATA%\Translator`.
 
 ## 首次启动 · First launch
 
-首次启动会显示快速开始，不会自动从其他目录导入旧版本数据。当前应用数据目录中已有的数据会按兼容规则读取或升级；遇到损坏数据时，会先备份原文件，再新建可用数据，并在设置中提示备份位置。如果原文件无法读取、备份或新建失败，会保留原件并说明原因，不保证能恢复其中的内容。
+首次启动时显示快速开始向导，不会自动从其他目录导入旧版本数据。应用数据目录中的现有数据将按兼容规则读取或升级。如检测到数据损坏，应用会先备份原文件，再创建新的数据文件，并在设置中提示备份位置。如原文件无法读取、备份或重建，应用将保留原文件并说明原因，但不保证其内容可以恢复。
 
-The first launch shows a quick-start guide and does not import data from other folders. Existing data in the app data folder is read or upgraded under the compatibility rules. Damaged data is backed up first, a working copy is created, and Settings shows where the backup is. If the original cannot be read, backed up or replaced, it is left in place and the reason is shown; its contents may not be recoverable.
+On first launch, a quick-start guide is displayed; data from other folders is not imported automatically. Existing data in the application data folder is read or upgraded according to the compatibility rules. If data is found to be damaged, the original file is backed up, a new data file is created, and the backup location is shown in Settings. If the original file cannot be read, backed up or recreated, it is kept in place and the reason is reported; recovery of its contents is not guaranteed.
 
-## 使用边界 · What you need to know
+## 使用说明 · Usage notes
 
-标准 `.xlsx`、`.docx`、PDF、图片和 DXF 图纸不依赖 Microsoft Office。旧 `.xls`、`.doc` 高保真转换及部分编号处理可使用本机 Microsoft Office、LibreOffice 或系统转换工具；DWG 图纸需要 ODA File Converter。这些是可选本地软件，不随 Translator 安装包提供。应用会在需要时说明权限、格式保真和回退风险。
+标准 `.xlsx`、`.docx`、PDF、图片及 DXF 图纸无需安装 Microsoft Office。旧版 `.xls`、`.doc` 的高保真转换及部分编号处理可调用本机的 Microsoft Office、LibreOffice 或系统转换工具；DWG 图纸需要 ODA File Converter。上述软件均为可选，不随 Translator 安装包提供。需要使用时，应用会说明所需权限、格式保真程度及备用方案的影响。
 
-翻译前需要由用户在“设置 → 模型服务”中填写并主动测试可用的服务。快速开始不会自动发送 API 请求。帮助、更新检查、维护和脱敏诊断均在应用内提供；诊断不会自动上传，也不包含 API Key、原文、译文或完整 Prompt。
+翻译前，需在「设置 → 模型服务」中配置模型服务并完成连接测试。快速开始向导不会自动发送 API 请求。帮助、更新检查、维护及脱敏诊断功能均内置于应用中；诊断信息不会自动上传，且不包含 API 密钥、原文、译文或完整提示词。
 
-Standard `.xlsx`, `.docx`, PDF, images and DXF drawings do not need Microsoft Office. High-fidelity conversion of legacy `.xls` and `.doc` files and some numbering fixes can use Microsoft Office, LibreOffice or system converters on your computer; DWG drawings need ODA File Converter. These are optional and not bundled with Translator. The app explains permissions, fidelity and fallback risks when they come up.
+Standard `.xlsx`, `.docx`, PDF, image and DXF files do not require Microsoft Office. High-fidelity conversion of legacy `.xls` and `.doc` files and certain numbering corrections can use Microsoft Office, LibreOffice or system converters installed on the computer. DWG drawings require ODA File Converter. These programs are optional and are not included with Translator. When one is needed, the application explains the required permissions, the expected format fidelity and the impact of any fallback.
 
-Before translating, enter a model service under Settings → Models and test it yourself. The quick-start guide never sends API requests on its own. Help, update checks, maintenance and anonymized diagnostics are built in. Diagnostics are never uploaded automatically and never contain API keys, source text, translations or full prompts.
+Before translating, configure a model service under Settings → Models and test the connection. The quick-start guide does not send API requests automatically. Help, update checks, maintenance and anonymized diagnostics are built into the application. Diagnostics are never uploaded automatically and do not include API keys, source text, translations or complete prompts.
 
-### 配置文件的导出与导入 · Exporting and importing settings
+### 配置的导出与导入 · Exporting and importing configurations
 
-“设置 → 模型服务”可以把整份模型配置导出给同事。不含密钥的导出是明文 `.json`；含密钥的导出是加密的 `.xltcfg`，密钥段用应用内置的密钥加密，文件被改动过就无法导入，导出时可以选择 7 天 / 30 天 / 90 天 / 长期有效。
+「设置 → 模型服务」支持导出完整的模型配置，便于分享给他人使用。不含密钥的导出文件为明文 `.json`；含密钥的导出文件为加密的 `.xltcfg`，密钥部分使用应用内置密钥加密，文件被修改后将无法导入。导出时可选择 7 天、30 天、90 天或长期有效。
 
-安全边界：任何装有本应用的人都能解开任意一份 `.xltcfg`。它防的是文件在传输途中被不相干的人看到，防不了拿到应用的人——不要把含密钥的配置文件发到公开群或网盘。导出时只会带上你自己在本机填写过的密钥，从别人的配置里导入来的密钥不会继续外传。
+安全提示：任何安装了本应用的用户均可解密 `.xltcfg` 文件。该加密仅用于防止文件在传输过程中被无关人员查看，无法防范持有本应用的用户。请勿将含密钥的配置文件发布到公开群组或网盘。导出文件仅包含在本机手动填写的密钥，从他人配置中导入的密钥不会被再次导出。
 
-Settings → Models can export the whole model setup for a colleague. An export without keys is a plain `.json` file. An export with keys is an encrypted `.xltcfg` file: the keys are encrypted with a key built into the app, a modified file cannot be imported, and the export can be valid for 7, 30 or 90 days or without limit.
+The complete model configuration can be exported under Settings → Models for use by others. Exports without keys are plain `.json` files. Exports with keys are encrypted `.xltcfg` files: the keys are encrypted with a key built into the application, and a modified file cannot be imported. Exports can be valid for 7, 30 or 90 days, or without expiry.
 
-Security note: anyone who has the app can open any `.xltcfg` file. It protects the file from unrelated people while it is being sent, not from people who have the app, so do not post a file with keys in a public group or shared drive. An export only includes keys you entered on this computer; keys imported from someone else's file are never passed on.
+Security note: any user with the application installed can decrypt an `.xltcfg` file. The encryption only protects the file from unrelated parties during transfer, not from users who have the application. Do not share configuration files containing keys in public groups or cloud folders. Exports include only keys entered manually on the local computer; keys imported from another configuration are never exported again.
 
 ## 版本更新 · Updates
 
-应用启动后会在后台检查一次更新，发现新版时点亮侧栏“设置”的红点。在“设置 → 更新与关于”可以直接完成更新：应用下载官方更新包、校验签名、就地替换，签名不匹配的包一律拒装。macOS 替换完成后由用户决定何时重启；Windows 交由安装程序完成，安装前会先确认是否打断正在运行的任务。后台提醒可以暂停，也可以忽略某个具体版本。
+应用启动后会在后台检查一次更新，发现新版本时在侧栏「设置」上显示提示标记。在「设置 → 更新与关于」中可直接完成更新：应用下载官方更新包、校验签名并就地替换，签名不符的更新包一律拒绝安装。macOS 上替换完成后由用户决定重启时间；Windows 上由安装程序完成更新，安装前会确认是否中断正在运行的任务。后台更新提醒可以暂停，也可以忽略指定版本。
 
-应用内更新不可用时（例如直接从 DMG 里运行、安装目录不可写、架构不匹配、开发构建），应用会说明具体原因并退回到手动下载安装包，不会给一个点不动的按钮。取更新信息、下载、安装三步中任何一步失败都会说明是哪一步断的，当前已安装的版本不受影响。
+应用内更新不可用时（例如直接从 DMG 运行、安装目录不可写、架构不匹配或开发版本），应用会说明原因并引导手动下载安装包。获取更新信息、下载或安装任一步骤失败时，应用会指明失败的步骤，当前已安装的版本不受影响。
 
-手动下载走官方 GitHub Release 页，应用仅接受与本机系统和架构匹配且带 SHA-256 校验文件的完整发布包。
+手动下载请访问官方 GitHub Release 页面。应用仅接受与本机系统及架构匹配、且附有 SHA-256 校验文件的完整发布包。
 
-The app checks for updates once in the background after it starts and shows a red dot on Settings when a new version is available. Settings → Updates & about installs it directly: the app downloads the official package, verifies its signature and replaces itself, and refuses any package whose signature does not match. On macOS you choose when to restart; on Windows the installer takes over, after asking whether to interrupt running jobs. Update reminders can be paused, or a specific version can be skipped.
+The application checks for updates once in the background after startup and displays an indicator on Settings in the sidebar when a new version is available. Updates can be installed directly under Settings → Updates & about: the application downloads the official package, verifies its signature and replaces itself in place, and rejects any package whose signature does not match. On macOS, the user chooses when to restart; on Windows, the installer completes the update after confirming whether running jobs may be interrupted. Background update reminders can be paused, and specific versions can be skipped.
 
-When in-app updating is not possible (for example when running straight from the DMG, when the install folder is read-only, on an architecture mismatch, or in a development build), the app says why and falls back to a manual download. If fetching update information, downloading or installing fails, the app says which step failed, and the installed version is left untouched.
+If in-app updating is unavailable (for example, when running directly from the DMG, when the installation folder is not writable, on an architecture mismatch, or in a development build), the application states the reason and directs the user to a manual download. If retrieving update information, downloading or installing fails, the application identifies the failed step, and the installed version remains unaffected.
 
-Manual downloads come from the official GitHub Releases page. The app only accepts complete release packages that match your system and architecture and come with a SHA-256 checksum file.
+Manual downloads are available from the official GitHub Releases page. The application accepts only complete release packages that match the system and architecture and include a SHA-256 checksum file.
 
 ## 开发 · Development
 
-代码结构、一次任务的完整流程和「改什么去哪里」见 [架构说明](docs/ARCHITECTURE.md)；新增一个翻译板块按 [新增翻译板块清单](docs/ADDING_A_TRANSLATION_PAGE.md) 做。
+代码结构、任务的完整执行流程及各类修改的对应位置，参见[架构说明](docs/ARCHITECTURE.md)；新增翻译模块的步骤，参见[新增翻译模块清单](docs/ADDING_A_TRANSLATION_PAGE.md)。
 
-The [architecture guide](docs/ARCHITECTURE.md) explains how the code is organized, how a job runs end to end and where to make each kind of change; to add a new translation page, follow the [checklist for a new translation page](docs/ADDING_A_TRANSLATION_PAGE.md). Both documents are in Chinese. The desktop shell is built with Tauri 2 (Rust), the interface in TypeScript, and the document engine in Python.
+The [architecture guide](docs/ARCHITECTURE.md) describes the code structure, the end-to-end execution of a job and where each type of change belongs. The steps for adding a translation module are listed in the [new translation module checklist](docs/ADDING_A_TRANSLATION_PAGE.md). Both documents are written in Chinese. The desktop shell is built with Tauri 2 (Rust), the interface with TypeScript, and the document engine with Python.
 
-## 许可 · License
+## 许可证 · License
 
-[MIT License](LICENSE)
+本项目采用 [MIT 许可证](LICENSE)。This project is licensed under the [MIT License](LICENSE).
