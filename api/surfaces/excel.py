@@ -31,8 +31,10 @@ class ExcelSurface(Surface):
     uses_translation_memory = True
     target_lang_setting = "per_surface"
     domain_preset_in_snapshot = True
-    # 全局扫描 / 云端翻译 / 生成文件 / Excel 精调（没开精调时只有前三段）
-    phase_weights = (10, 60, 15, 15)
+    # 读取文件 / 翻译 / 生成文件 / 调整行高（没开时只有前三段）。时间几乎都花在等
+    # 模型上，所以「翻译」占大头（它包含识别语言、补译、翻译工作表名称）；读取和
+    # 生成是本机操作，很快；调整行高要启动 Excel，留得稍多一点。
+    phase_weights = (5, 80, 5, 10)
 
     def scan(self, root: Path, options: TaskOptions, *, selected_paths=None) -> list[Any]:
         return scan_path(root)

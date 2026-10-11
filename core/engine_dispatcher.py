@@ -669,29 +669,79 @@ def translate_texts_with_sources(
     scheduler = None if is_local else (api_scheduler or WeightedApiScheduler(max(1, concurrency)))
     results: dict[str, TranslationLanguageResult] = {}
     done = 0
-    for batch in batches:
-        if should_stop and should_stop():
-            break
-        try:
-            partial = _translate_batch_with_sources_fallback(
-                batch,
-                engine=engine,
-                target_lang=target_lang,
-                system_prompt=system_prompt,
-                api_scheduler=scheduler,
-                request_category=request_category,
-                should_stop=should_stop,
-                error_callback=error_callback,
-                stats=run_stats,
-            )
-        except ApiKeyTemporarilyUnavailableError as exc:
-            # 同 translate_texts：前面已付费的批次随异常带出去（审计 高-6）。
-            _attach_partial_results(exc, results)
-            raise
+
+    def _run_batch(batch: list[str]) -> dict[str, TranslationLanguageResult]:
+        return _translate_batch_with_sources_fallback(
+            batch,
+            engine=engine,
+            target_lang=target_lang,
+            system_prompt=system_prompt,
+            api_scheduler=scheduler,
+            request_category=request_category,
+            should_stop=should_stop,
+            error_callback=error_callback,
+            stats=run_stats,
+        )
+
+    def _record(batch: list[str], partial: dict[str, TranslationLanguageResult]) -> None:
+        nonlocal done
         results.update(partial)
         done += len(batch)
         if progress_callback:
             progress_callback(min(done, len(texts)), len(texts))
+
+    if is_local:
+        # 本地引擎同 translate_texts：串行提交，并发交给引擎自己。
+        for batch in batches:
+            if should_stop and should_stop():
+                break
+            try:
+                partial = _run_batch(batch)
+            except ApiKeyTemporarilyUnavailableError as exc:
+                # 同 translate_texts：前面已付费的批次随异常带出去（审计 高-6）。
+                _attach_partial_results(exc, results)
+                raise
+            _record(batch, partial)
+        return results
+
+    # 云端引擎和 translate_texts 一样按并发数同时提交。这里以前是逐批串行：
+    # 源语言选「自动识别」（Excel 的默认）时，并发设置形同虚设，一份 30 批的
+    # 表格要排队等 30 次请求，比指定源语言慢好几倍。
+    max_workers = max(1, int(concurrency))
+    fatal: ApiKeyTemporarilyUnavailableError | None = None
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map: dict = {}
+        batch_iter = iter(batches)
+
+        def _submit_next() -> bool:
+            if should_stop and should_stop():
+                return False
+            try:
+                batch = next(batch_iter)
+            except StopIteration:
+                return False
+            future_map[executor.submit(_run_batch, batch)] = batch
+            return True
+
+        for _ in range(min(max_workers, len(batches))):
+            if not _submit_next():
+                break
+        while future_map:
+            done_futures, _ = wait(tuple(future_map.keys()), return_when=FIRST_COMPLETED)
+            for future in done_futures:
+                batch = future_map.pop(future)
+                try:
+                    partial = future.result()
+                except ApiKeyTemporarilyUnavailableError as exc:
+                    # 不再提交新批次，等在途的落定，已付费的译文随异常带出去（审计 高-6）。
+                    fatal = fatal or exc
+                    continue
+                _record(batch, partial)
+                if fatal is None and not (should_stop and should_stop()):
+                    _submit_next()
+    if fatal is not None:
+        _attach_partial_results(fatal, results)
+        raise fatal
     return results
 
 
