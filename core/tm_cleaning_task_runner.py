@@ -10,12 +10,13 @@ from typing import Any
 from core.engine_dispatcher import build_engine
 from core.model_roles import ROLE_CLEANER, resolve_effective_model_config, settings_for_text_role
 from core.model_throughput import get_model_throughput
+from core.runner_base import BaseTaskRunner
 from core.task_runner import DoneMsg, ErrorMsg, LogMsg, ProgressMsg, StatusMsg, StoppedMsg
 from core.tm_cleaner import TmCleaningBatchError, run_cleaning
-from settings import AppSettings, provider_key_overrides
+from settings import AppSettings
 
 
-class TmCleaningTaskRunner:
+class TmCleaningTaskRunner(BaseTaskRunner):
     """Turn suggestion-only TM cleaning into a normal managed background task."""
 
     def __init__(
@@ -33,27 +34,6 @@ class TmCleaningTaskRunner:
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-
-    def start(self) -> None:
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def needs_poll(self) -> bool:
-        return bool(self._thread and self._thread.is_alive()) or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05) -> Any:
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def _run_with_overrides(self) -> None:
-        with provider_key_overrides(self._key_overrides):
-            self._run()
 
     def _run(self) -> None:
         started_at = time.monotonic()

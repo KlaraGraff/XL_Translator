@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
+from core.runner_base import BaseTaskRunner
 from core.cad_translation import (
     CadPipelineOptions,
     CadProgress,
@@ -52,8 +53,13 @@ def _target_filename_label(target_lang: str) -> str:
     return safe or "中文"
 
 
-class CadTaskRunner:
+class CadTaskRunner(BaseTaskRunner):
     """Run one or more CAD files while exposing the shared runner protocol."""
+
+    _thread_name = "cad-translation"
+    # CAD calls the translation engine through a closure the task manager
+    # builds, which already carries the task's connection keys.
+    _uses_key_overrides = False
 
     def __init__(
         self,
@@ -116,14 +122,11 @@ class CadTaskRunner:
         self._file_progress = FileProgressReporter(self._queue, files, self._source_root)
         self._file_progress.emit_many("waiting", "extract")
 
-    def start(self) -> None:
-        self._stop_event.clear()
+    def _before_start(self) -> None:
         self._pause_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="cad-translation")
-        self._thread.start()
 
     def stop(self) -> None:
-        self._stop_event.set()
+        super().stop()
         self._pause_event.clear()
 
     def pause(self) -> None:
@@ -135,15 +138,6 @@ class CadTaskRunner:
 
     def end_paused(self) -> None:
         self.stop()
-
-    def needs_poll(self) -> bool:
-        return bool(self._thread and self._thread.is_alive()) or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05) -> Any:
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
 
     def _progress(self, progress: CadProgress, *, file_path: Path | None = None) -> None:
         _phase_index, phase_name = _PHASES.get(progress.stage, (1, progress.stage))

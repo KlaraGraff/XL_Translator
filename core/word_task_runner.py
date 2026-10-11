@@ -19,6 +19,7 @@ from typing import Callable, Iterable
 from loguru import logger
 
 from core import tm_manager
+from core.runner_base import BaseTaskRunner
 from core.api_concurrency_control import (
     ApiCredentialRejectedError,
     ApiKeyTemporarilyUnavailableError,
@@ -96,7 +97,6 @@ from core.tm_hygiene import sanitize_tm_pairs, tm_hygiene_log_lines
 from core.task_runner import (
     DoneMsg,
     ErrorMsg,
-    LogMsg,
     ProgressMsg,
     StatusMsg,
     StoppedMsg,
@@ -153,7 +153,7 @@ from core.word_batching import (
 )
 from core.output_name_translation import avoid_bilingual_name_collision, translate_output_stem
 from engines.base_engine import engine_supports_chat, strip_markdown_json
-from settings import AppSettings, provider_key_overrides
+from settings import AppSettings
 # 以下名字已拆到 core.word_quality_report，这里原样再导出，保持旧的导入路径可用。
 from core.word_quality_report import (  # noqa: F401
     _WORD_REVIEW_MARK_PRIORITY,
@@ -322,7 +322,7 @@ def _translation_in_unexpected_cjk(source: str, translation: str | None, target_
     return not _CJK_RE.search(str(source or "")) and bool(_CJK_RE.search(text))
 
 
-class WordTaskRunner:
+class WordTaskRunner(BaseTaskRunner):
     """Run the Word translation pipeline on a background thread."""
 
     def __init__(
@@ -359,36 +359,9 @@ class WordTaskRunner:
         self._stop_event = threading.Event()
         self._task_logger = TaskLogger(enabled=True)
 
-    def start(self) -> None:
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_with_overrides, daemon=True)
-        self._thread.start()
-
     @property
     def task_id(self) -> str:
         return self._task_logger.task_id
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def stop_requested(self) -> bool:
-        return self._stop_event.is_set()
-
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    def needs_poll(self) -> bool:
-        return self.is_running() or not self._queue.empty()
-
-    def get_message(self, timeout: float = 0.05):
-        try:
-            return self._queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def _log(self, level: str, message: str) -> None:
-        self._queue.put(LogMsg(level=level, message=message))
-        logger.info(f"[{level}] {message}")
 
     def _log_front_matter_boundary(
         self, file_name: str, front_matter: WordFrontMatterBoundary
@@ -701,10 +674,6 @@ class WordTaskRunner:
                         "severity": "resolved" if resolution.resolved else "needs_review",
                     }
                 )
-
-    def _run_with_overrides(self) -> None:
-        with provider_key_overrides(self._key_overrides):
-            self._run()
 
     def _run(self) -> None:
         start_ts = datetime.now()
