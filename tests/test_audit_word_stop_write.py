@@ -273,8 +273,18 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
             # core/word_document.py 里 `_resolve_translation` 对「找不到译文」
             # 的既有兜底：global_translations 缺这一条，写盘时自动落回原文。
             self.assertIn("翻译中途被打断的段落。", paragraphs)
-            self.assertIn("已译 1/2 段", stopped.message)
-            self.assertIn("已写入 1 个文件", stopped.message)
+            # 剩余段数按产物里还是原文的段落数（与续译弹窗同一口径）。
+            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertEqual(stopped.files[0]["unfinished_text_count"], 1)
+            # 停止时没翻到的段落是「停止时尚未翻译」，不是需复核的质量问题。
+            self.assertFalse(
+                [
+                    issue
+                    for issue in stopped.issues
+                    if issue.get("problem") == "输出文档仍存在未译源文"
+                ],
+                stopped.issues,
+            )
 
     def test_stop_before_any_translation_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -391,9 +401,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
 
             stopped = self._terminal_message(runner, StoppedMsg)
             expected_message = (
-                "任务已停止，停止前已获得的译文将照常写入文档并存入记忆库，"
-                "未完成部分保留原文。"
-                "进度：已译 1/2 段，1 段保留原文待续译，已写入 1 个文件。"
+                "任务已停止，已翻好的内容写进了文件，还有 1 段没翻，保留原文，可以接着翻译。"
             )
             self.assertEqual(stopped.message, expected_message)
             # 账记在「停止」头上：不许把这次提前收尾包装成失败或错误。
@@ -481,8 +489,8 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
 
             stopped = self._terminal_message(runner, StoppedMsg)
             # 进度不许撒谎：真译文只有 1 条，占位不算「已译」。
-            self.assertIn("已译 1/2 段", stopped.message)
-            self.assertIn("1 段保留原文待续译", stopped.message)
+            self.assertIn("还有 1 段没翻", stopped.message)
+            self.assertEqual(stopped.kpi["unstarted_text_count"], 1)
             # 没翻到的段落在产物里保留原文。
             output_path = Path(stopped.files[0]["output"])
             written = Document(output_path)
@@ -741,7 +749,7 @@ class WordStopWritesPartialTranslationTests(IsolatedAppDataTestCase):
                 runner._run()
 
             stopped = self._terminal_message(runner, StoppedMsg)
-            self.assertIn("已译 1/2 段，1 段保留原文待续译", stopped.message)
+            self.assertIn("还有 1 段没翻", stopped.message)
             self.assertEqual(stopped.kpi["unstarted_text_count"], 1)
             written = Document(Path(stopped.files[0]["output"]))
             paragraphs = [paragraph.text for paragraph in written.paragraphs]

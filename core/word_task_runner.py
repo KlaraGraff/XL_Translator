@@ -1641,6 +1641,14 @@ class WordTaskRunner(BaseTaskRunner):
                         "已生成的翻译文件仍可使用。"
                     )
 
+            unfinished_paragraphs: int | None = None
+            if stopped_message is not None:
+                unfinished_paragraphs = self._record_unfinished_after_stop(
+                    file_results,
+                    target_lang=target_lang,
+                    source_lang=source_lang,
+                )
+
             result_contract = self._build_result_contract(
                 file_results=file_results,
                 output_dir=str(output_dir),
@@ -1666,7 +1674,20 @@ class WordTaskRunner(BaseTaskRunner):
                 # 提前收尾（多数场景）还是碰巧在停止生效前就把活干完了（阶段 3 不
                 # 再半路弃文件之后，这种巧合确实会发生）——两种情况数字都不撒谎。
                 total_texts = len(global_unique_texts)
-                if total_texts:
+                if unfinished_paragraphs is not None:
+                    # 与续译弹窗「补 N 段」同一口径：数产物里还是原文的段落位置
+                    # （core.resume_detection.count_untranslated_in_output）。以前这里按
+                    # 去重后的文本条数数，同一份文件停止时说 314、重新扫描后说 337。
+                    result_contract["kpi"]["unstarted_text_count"] = unfinished_paragraphs
+                    stopped_message = (
+                        "任务已停止，已翻好的内容写进了文件，"
+                        + (
+                            f"还有 {unfinished_paragraphs} 段没翻，保留原文，可以接着翻译。"
+                            if unfinished_paragraphs
+                            else "停止前已经全部翻完。"
+                        )
+                    )
+                elif total_texts:
                     # 排除「原文当译文」的占位段：它们在词典里只是为了让写盘统一走
                     # 替换通道，实际没翻出来，按「保留原文待续译」计。
                     translated_texts = sum(
@@ -2780,6 +2801,8 @@ class WordTaskRunner(BaseTaskRunner):
                     unit.source_text.strip() for unit in still_needs_review
                 },
                 already_target_sources=already_target_sources,
+                # 停止后还是原文的段落是「停止时尚未翻译」，由续译补，不算需复核。
+                report_untranslated=not self._stop_event.is_set(),
             )
             final_path = final_output_dir / out_path.name
             elapsed = (datetime.now() - t0).total_seconds()
@@ -2827,7 +2850,7 @@ class WordTaskRunner(BaseTaskRunner):
                         "INFO",
                         f"{file_item.name}：已在输出文档标记 {count} 处需复核位置。",
                     )
-                if residual_count:
+                if residual_count and not self._stop_event.is_set():
                     self._log(
                         "WARN",
                         (
@@ -2879,6 +2902,49 @@ class WordTaskRunner(BaseTaskRunner):
                     stage_handle.cleanup()
                 except Exception as exc:  # noqa: BLE001 - 不掩盖已提交文件的状态
                     logger.warning(f"Word 临时目录清理失败：{exc!r}")
+
+    def _record_unfinished_after_stop(
+        self,
+        file_results: list[dict],
+        *,
+        target_lang: str,
+        source_lang: str,
+    ) -> int | None:
+        """停止后逐个写出的文件数「还是原文的段落」，记到逐文件结果上并返回合计。
+
+        文件状态据此从绿色「已生成」改成「部分翻译」；任何一个文件数不出来就返回
+        None，调用方退回旧的按文本条数的说法，不报一个凑出来的数。
+        """
+        from core.resume_detection import count_untranslated_in_output
+
+        if not any(entry.get("success") for entry in file_results):
+            return None
+        total = 0
+        for entry in file_results:
+            if not entry.get("success"):
+                continue
+            output = str(entry.get("output") or "")
+            source = str(entry.get("source_path") or "")
+            if not output or not source:
+                return None
+            count = count_untranslated_in_output(
+                "word",
+                output,
+                source_path=source,
+                target_lang=target_lang,
+                source_lang=source_lang,
+            )
+            if count is None:
+                return None
+            entry["unfinished_text_count"] = count
+            total += count
+            self._file_progress.emit(
+                source,
+                "generated",
+                "generate",
+                result={key: value for key, value in entry.items() if key != "source_path"},
+            )
+        return total
 
     def _build_result_contract(
         self,
@@ -2976,6 +3042,13 @@ class WordTaskRunner(BaseTaskRunner):
                     },
                     "review_items": list(raw.get("issues") or []),
                     "error": readable_error,
+                    # 停止后才有：产物里还是原文的段落数（与续译检测同一口径），
+                    # 界面据此把这一行标成「部分翻译」。没有就不带这个键。
+                    **(
+                        {"unfinished_text_count": int(raw["unfinished_text_count"])}
+                        if raw.get("unfinished_text_count") is not None
+                        else {}
+                    ),
                 }
             )
 

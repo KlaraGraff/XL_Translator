@@ -140,8 +140,13 @@ def _append_post_write_coverage_issues(
     mark_log_callback=None,
     pre_reported_residual_sources: set[str] | None = None,
     already_target_sources: set[str] | None = None,
+    report_untranslated: bool = True,
 ) -> int:
     """成品文档体检：先按体检结果往文档上涂复核标记，再把同一批位置写进报告。
+
+    ``report_untranslated=False`` 用在用户按了停止之后：那些还是原文的段落是「停止时
+    尚未翻译」，留给续译补，不是译文质量问题——不涂复核标记、不进需复核清单，只按
+    返回值计数。夹带零星原文的译文（residual）照常报。
 
     顺序不能倒过来。以前这里只写报告，报告里几十条「需人工复核」在文件里一个标记
     都没有——用户勾了「标记需复核内容」，拿到的却是一张要自己去几百页里对照的清单。
@@ -167,10 +172,16 @@ def _append_post_write_coverage_issues(
                 )
             ],
         )
+    mark_plan = plan
+    if not report_untranslated:
+        mark_plan = replace(
+            plan,
+            units=[unit for unit in plan.units if unit.status != COVERAGE_SOURCE_ONLY],
+        )
     if existing_highlight_policy is not None:
         marked = apply_coverage_review_marks(
             output_path,
-            plan=plan,
+            plan=mark_plan,
             review_mark_colors=review_mark_colors,
             existing_highlight_policy=existing_highlight_policy,
         )
@@ -180,6 +191,7 @@ def _append_post_write_coverage_issues(
     residual_units = plan.residual_units
     if not source_units and not residual_units:
         return 0
+    reported_source_units = source_units if report_untranslated else []
 
     existing_keys = {
         (
@@ -190,7 +202,7 @@ def _append_post_write_coverage_issues(
         )
         for issue in issues
     }
-    for unit in source_units[:_POST_WRITE_COVERAGE_ISSUE_LIMIT]:
+    for unit in reported_source_units[:_POST_WRITE_COVERAGE_ISSUE_LIMIT]:
         issue = {
             "file": file_name,
             "kind": unit.kind,
@@ -213,7 +225,7 @@ def _append_post_write_coverage_issues(
         existing_keys.add(key)
         issues.append(issue)
 
-    if len(source_units) > _POST_WRITE_COVERAGE_ISSUE_LIMIT:
+    if len(reported_source_units) > _POST_WRITE_COVERAGE_ISSUE_LIMIT:
         issues.append(
             {
                 "file": file_name,
