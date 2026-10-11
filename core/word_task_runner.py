@@ -2505,7 +2505,7 @@ class WordTaskRunner:
             nonlocal terminal_sent
             terminal_sent = True
             if isinstance(message, StoppedMsg):
-                _finish_process("paused", elapsed_sec=(datetime.now() - start_ts).total_seconds())
+                _finish_process("cancelled", elapsed_sec=(datetime.now() - start_ts).total_seconds())
             elif isinstance(message, ErrorMsg):
                 _finish_process("failed", elapsed_sec=(datetime.now() - start_ts).total_seconds())
             else:
