@@ -818,13 +818,28 @@ function buildRoleSeg(): HTMLElement {
     segc.className = role === modelRole ? "segc on" : "segc";
     const b = document.createElement("b");
     b.textContent = MODEL_ROLE_LABELS[role] || role;
+    // 窄窗口下四张卡挤在一行，标题只占一行、放不下就省略，完整名字悬停可见。
+    b.title = b.textContent;
     const primary = roleConnections(role)[0];
     const primarySource = primary?.source_role || text(payload.source_role, "independent");
-    const modeSummary = primary?.connection_mode === "follow"
+    const following = primary?.connection_mode === "follow";
+    const modelName = primary ? primary.model : text(payload.model);
+    const modeSummary = following
       ? `跟随${MODEL_ROLE_LABELS[primarySource] || primarySource}`
-      : primary?.model || text(payload.model) || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
+      : modelName || (primary?.connection_mode === "local" ? "本地模型" : "云端 API");
     const span = document.createElement("span");
-    span.textContent = modeSummary || "未配置";
+    span.className = "segc-sub";
+    const summary = document.createElement("i");
+    summary.textContent = modeSummary || "未配置";
+    span.append(summary);
+    // 有连接但模型名还空着：跟随行尤其容易漏——卡片写着「跟随…」看起来已经配好，
+    // 真用到这个用途时才报错。在卡片上直接标出来；摘要太长时省略的是摘要，不是这个标记。
+    if (primary && !modelName) {
+      const missing = document.createElement("em");
+      missing.textContent = "缺模型名";
+      span.append(missing);
+    }
+    span.title = [summary.textContent, primary && !modelName ? "缺模型名" : ""].filter(Boolean).join(" · ");
     segc.append(b, span);
     segc.addEventListener("click", () => {
       if (modelRole === role) return;
@@ -870,14 +885,17 @@ function buildConnectionListCard(role: string): HTMLElement {
       ? "ok" : connection.availability_status === "unavailable" ? "warn" : "mute";
     const dot = document.createElement("span");
     dot.className = "cdot";
-    dot.style.background = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--danger)" : "var(--ink-3)";
+    // 测试失败用琥珀色，和详情卡里「测试失败」胶囊、失败原因同一个颜色。
+    dot.style.background = tone === "ok" ? "var(--ok)" : tone === "warn" ? "var(--warn)" : "var(--ink-3)";
     const name = document.createElement("span");
     name.style.flex = "1";
     name.style.fontWeight = "600";
     name.textContent = connection.display_label || `连接 ${index + 1}`;
     const chips: HTMLElement[] = [];
     if (index === 0) chips.push(createChip({ label: "主用", tone: "tint" }));
-    if (connection.connection_mode === "follow") chips.push(createChip({ label: `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`, tone: "tint" }));
+    // 没起名的跟随行，名称本身就是「跟随…」（见 saveModel），再挂一个同样文字的胶囊是重复。
+    const followChip = `跟随${MODEL_ROLE_LABELS[connection.source_role || ""] || connection.source_role || "其他用途"}`;
+    if (connection.connection_mode === "follow" && name.textContent !== followChip) chips.push(createChip({ label: followChip, tone: "tint" }));
     if (connection.connection_mode === "local") chips.push(createChip({ label: "本地", tone: "mute" }));
     if (!connection.has_api_key && !LOCAL_PROVIDERS.includes(connection.provider)) {
       chips.push(createChip({ label: "无密钥", tone: "warn" }));

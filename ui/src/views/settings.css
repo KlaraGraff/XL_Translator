@@ -131,21 +131,11 @@
 .set-body input.swatch-input::-webkit-color-swatch-wrapper { padding: 0; border-radius: 6px; }
 .set-body input.swatch-input::-webkit-color-swatch { border: 0; border-radius: 6px; }
 
-/* .field label 里追加的「?」提示角标；跟 .swrow .hint 视觉一致，换个类名避免撞车。 */
+/* .field label 里追加的「?」提示角标。皮肤在 app.css（.hint / .swrow-hint 共用）；
+   这里的标签是 flex，文字和角标的 6px 由 gap 给，去掉 app.css 给块级标签加的外边距。 */
 .set-body .field label { display: flex; align-items: center; gap: 6px; }
-.swrow-hint {
-  color: var(--ink-3);
-  cursor: help;
-  font-size: 11px;
-  border: 1px solid var(--line-2);
-  border-radius: 99px;
-  width: 15px;
-  height: 15px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-}
+.set-body .field label > .hint,
+.set-body .field label > .swrow-hint { margin-left: 0; }
 
 .field-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
 
@@ -161,6 +151,21 @@
   border-bottom: 1px solid var(--line);
 }
 .set-body .accessbar .radio-row { flex-wrap: wrap; }
+
+/* 模型服务的四张用途卡。名字和摘要都只占一行，放不下就省略（title 里有全文）——
+   以前窄窗口下「PDF 与图片翻译」这类标题折成两行，四张卡高矮不齐。窗口再窄一些时
+   改成两列两行，而不是四张都挤成只剩几个字。断点按设置页宽度算：侧栏 210 + 内容区
+   左右留白 44 + 设置导航 188 + 间距 16，四张卡各至少 ~205px 时需要约 1300px 的窗口。 */
+.set-body .seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.set-body .segc { min-width: 0; padding: 11px 12px; }
+.set-body .segc b,
+.set-body .segc .segc-sub i { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-body .segc .segc-sub { display: flex; gap: 6px; min-width: 0; }
+.set-body .segc .segc-sub i { font-style: normal; min-width: 0; }
+.set-body .segc .segc-sub em { font-style: normal; font-weight: 600; color: var(--warn); flex: none; }
+@media (max-width: 1300px) {
+  .set-body .seg { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* 数据与维护：活动任务提醒 / 完整本地重置 用同一张危险底色卡片。 */
 .card.danger-section { border-color: var(--danger-l); background: var(--danger-t); }
