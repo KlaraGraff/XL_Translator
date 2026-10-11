@@ -31,6 +31,7 @@ from core.api_scheduler import (
 from core.api_concurrency_control import (
     ApiKeyTemporarilyUnavailableError,
     handle_api_concurrency_limit,
+    is_api_concurrency_limit_error,
 )
 from core.language_registry import append_prompt_block, build_target_lang_note_block
 from core.language_preflight import TranslationLanguageResult
@@ -580,23 +581,43 @@ def translate_texts(
             if not _submit_next():
                 break
 
+        # key 被判「暂时不能用」时整轮任务会以致命错误收场，但在那之前已经有批次
+        # 翻好、付过钱了。以前第一个异常直接从这里抛出去，这些译文跟着局部变量
+        # 一起丢掉（审计 高-6）。现在不再提交新批次，等已经在路上的批次落定，
+        # 把拿到的译文挂在异常上带出去，由调用方决定怎么保住它们。
+        fatal: ApiKeyTemporarilyUnavailableError | None = None
         while future_map:
             done_futures, _ = wait(tuple(future_map.keys()), return_when=FIRST_COMPLETED)
             for future in done_futures:
-                batch, partial = future.result()
                 future_map.pop(future, None)
+                try:
+                    batch, partial = future.result()
+                except ApiKeyTemporarilyUnavailableError as exc:
+                    fatal = fatal or exc
+                    continue
                 with lock:
                     results.update(partial)
                     done_count += len(batch)
                     if progress_callback:
                         progress_callback(min(done_count, total), total)
-                if not (should_stop and should_stop()):
+                if fatal is None and not (should_stop and should_stop()):
                     _submit_next()
 
     _apply_quality_filter(
         results, target_lang, source_lang=source_lang, stats=run_stats
     )
+    if fatal is not None:
+        _attach_partial_results(fatal, results)
+        raise fatal
     return results
+
+
+def _attach_partial_results(exc: BaseException, results: dict) -> None:
+    """Hand already-paid translations to the caller on a task-fatal API error."""
+    try:
+        exc.partial_results = dict(results)  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover - exceptions with __slots__
+        pass
 
 
 def translate_texts_with_sources(
@@ -639,17 +660,22 @@ def translate_texts_with_sources(
     for batch in batches:
         if should_stop and should_stop():
             break
-        partial = _translate_batch_with_sources_fallback(
-            batch,
-            engine=engine,
-            target_lang=target_lang,
-            system_prompt=system_prompt,
-            api_scheduler=scheduler,
-            request_category=request_category,
-            should_stop=should_stop,
-            error_callback=error_callback,
-            stats=run_stats,
-        )
+        try:
+            partial = _translate_batch_with_sources_fallback(
+                batch,
+                engine=engine,
+                target_lang=target_lang,
+                system_prompt=system_prompt,
+                api_scheduler=scheduler,
+                request_category=request_category,
+                should_stop=should_stop,
+                error_callback=error_callback,
+                stats=run_stats,
+            )
+        except ApiKeyTemporarilyUnavailableError as exc:
+            # 同 translate_texts：前面已付费的批次随异常带出去（审计 高-6）。
+            _attach_partial_results(exc, results)
+            raise
         results.update(partial)
         done += len(batch)
         if progress_callback:
@@ -791,6 +817,7 @@ def _translate_batch_with_fallback(
             len(batch) > 1
             and split_depth < _MAX_BATCH_SPLIT_DEPTH
             and not (should_stop and should_stop())
+            and not _is_rate_limit_error(exc)
         )
         if can_split:
             midpoint = max(1, len(batch) // 2)
@@ -940,6 +967,7 @@ def _translate_batch_with_sources_fallback(
             len(batch) > 1
             and split_depth < _MAX_BATCH_SPLIT_DEPTH
             and not (should_stop and should_stop())
+            and not _is_rate_limit_error(exc)
         )
         if can_split:
             stats.record_retry()
@@ -991,6 +1019,20 @@ def _untranslated_language_results(
         )
         for text in batch
     }
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """限流（429 / 并发上限）拆小批次救不了，只会把请求数放大好几倍（审计 高-7）。
+
+    这类错误已经按退避节奏把同一批重试过了；重试用完仍被限流，这一批就记为未翻译，
+    不再拆成 2、4、8 个请求去撞同一个正在限流的端点。
+    """
+    if is_api_concurrency_limit_error(exc):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    return str(status_code or "") == "429"
 
 
 def _is_permanent_request_error(exc: BaseException) -> bool:

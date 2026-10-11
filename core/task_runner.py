@@ -1474,7 +1474,46 @@ class TaskRunner:
                 mixed_stats = MixedLanguageRunStats()
                 mixed_results = {}
 
+                def keep_paid_results(exc: ApiKeyTemporarilyUnavailableError) -> None:
+                    """Key 被判暂时不可用、整轮任务要失败时，先把已付费的译文存进记忆库。
+
+                    这一轮不会再出文件，但用户换 key 或等限流过去重跑时，这些词条直接
+                    命中记忆库，不用再付一次钱（审计 高-6）。
+                    """
+                    partial = getattr(exc, "partial_results", None) or {}
+                    if not partial:
+                        return
+                    if auto_source_lang:
+                        language_partial, plain_partial = dict(partial), {}
+                    else:
+                        language_partial, plain_partial = {}, dict(partial)
+                    written, tm_error = self.store_api_results_in_tm(
+                        auto_source_lang=auto_source_lang,
+                        normal_api_language_results=language_partial,
+                        normal_api_translations=plain_partial,
+                        text_source_scopes=text_source_scopes,
+                        target_lang=target_lang,
+                        lang_pair=lang_pair,
+                        max_len=max_len,
+                        engine_name=engine.engine_name,
+                    )
+                    if tm_error:
+                        self._log("WARN", tm_error)
+                    elif written:
+                        self._log(
+                            "INFO",
+                            f"任务中断前已拿到 {len(partial)} 条译文，已存入记忆库 {written} 条；"
+                            "重新翻译时这些内容直接命中记忆库，不会再次计费。",
+                        )
+
                 def run_normal_api_translation() -> dict[str, str]:
+                    try:
+                        return _run_normal_api_translation()
+                    except ApiKeyTemporarilyUnavailableError as exc:
+                        keep_paid_results(exc)
+                        raise
+
+                def _run_normal_api_translation() -> dict[str, str]:
                     if not misses:
                         return {}
                     if auto_source_lang:
