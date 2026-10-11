@@ -8,9 +8,9 @@ A desktop app for macOS and Windows that uses large language models to batch-tra
 
 ![Translator 主界面：Excel 表格翻译完成 · Main window after an Excel translation](docs/images/readme/app-excel.png)
 
-> 本页截图用一套虚构的水泵房改造项目资料（材料清单、施工方案、验收单、平面图）实际跑出，译成英文。界面目前只有中文。
+> 本页截图用一套虚构的水泵房改造项目资料（材料清单、施工方案、验收单、平面图）实际跑出，译成英文，截图里是中文界面。界面还可以在「设置 → 外观与语言」里切换成英语或法语；输出文件夹名、报告文件和写进文档的复核标记目前仍是中文。
 >
-> The screenshots on this page come from real runs on a set of made-up sample files for a pump room retrofit project, translated into English. The app interface is currently in Chinese only.
+> The screenshots on this page come from real runs on a set of made-up sample files for a pump room retrofit project, translated into English, with the interface set to Chinese. The interface can also be switched to English or French under Settings → Appearance & language; output folder names, report files and review markers written into documents are still in Chinese.
 
 ## 能做什么 · Features
 
@@ -82,7 +82,7 @@ Different kinds of jobs can run at the same time. Any job can be stopped (PDF an
 
 在「设置 → 模型服务」里填写服务商、模型和 API 密钥，测试连接通过后就能用。文档翻译、PDF 与图片、记忆库清洗可以各用各的模型。
 
-Enter the provider, model and API key under Settings → Model services, then test the connection. Document translation, PDF and image translation, and memory cleanup can each use a different model.
+Enter the provider, model and API key under Settings → Models, then test the connection. Document translation, PDF and image translation, and memory cleanup can each use a different model.
 
 | | 中文 | English |
 |---|---|---|
@@ -99,6 +99,7 @@ Files are read and written on your computer. Only the text to translate (page im
 ## V10.0.0 主要变化 · What's new in V10.0.0
 
 - 新增 CAD 图纸翻译，页面和流程与 Excel、Word、PDF 相同
+- 新增英语和法语界面，在「设置 → 外观与语言」里切换
 - 新配色：浅色模式改为柔和的暖米白，深色模式层次更分明
 - 界面、运行日志、报错和报告里的说法统一，不再出现程序内部术语
 - API 密钥被拒绝或额度用完时直接停下并说明原因；长时间限速时先保存已翻好的部分
@@ -106,6 +107,7 @@ Files are read and written on your computer. Only the text to translate (page im
 <!-- English -->
 
 - New: CAD drawing translation, with the same page and steps as Excel, Word and PDF
+- New: English and French interface, selectable under Settings → Appearance & language
 - New color scheme: a soft warm off-white light mode and a dark mode with clearer layering
 - Consistent wording across the interface, run log, error messages and reports, with no internal technical terms
 - If the API key is rejected or the quota runs out, the job stops and says why; under long rate limiting, finished work is saved first
@@ -184,7 +186,7 @@ The first launch shows a quick-start guide and does not import data from other f
 
 Standard `.xlsx`, `.docx`, PDF, images and DXF drawings do not need Microsoft Office. High-fidelity conversion of legacy `.xls` and `.doc` files and some numbering fixes can use Microsoft Office, LibreOffice or system converters on your computer; DWG drawings need ODA File Converter. These are optional and not bundled with Translator. The app explains permissions, fidelity and fallback risks when they come up.
 
-Before translating, enter a model service under Settings → Model services and test it yourself. The quick-start guide never sends API requests on its own. Help, update checks, maintenance and anonymized diagnostics are built in. Diagnostics are never uploaded automatically and never contain API keys, source text, translations or full prompts.
+Before translating, enter a model service under Settings → Models and test it yourself. The quick-start guide never sends API requests on its own. Help, update checks, maintenance and anonymized diagnostics are built in. Diagnostics are never uploaded automatically and never contain API keys, source text, translations or full prompts.
 
 ### 配置文件的导出与导入 · Exporting and importing settings
 
@@ -192,7 +194,7 @@ Before translating, enter a model service under Settings → Model services and 
 
 安全边界：任何装有本应用的人都能解开任意一份 `.xltcfg`。它防的是文件在传输途中被不相干的人看到，防不了拿到应用的人——不要把含密钥的配置文件发到公开群或网盘。导出时只会带上你自己在本机填写过的密钥，从别人的配置里导入来的密钥不会继续外传。
 
-Settings → Model services can export the whole model setup for a colleague. An export without keys is a plain `.json` file. An export with keys is an encrypted `.xltcfg` file: the keys are encrypted with a key built into the app, a modified file cannot be imported, and the export can be valid for 7, 30 or 90 days or without limit.
+Settings → Models can export the whole model setup for a colleague. An export without keys is a plain `.json` file. An export with keys is an encrypted `.xltcfg` file: the keys are encrypted with a key built into the app, a modified file cannot be imported, and the export can be valid for 7, 30 or 90 days or without limit.
 
 Security note: anyone who has the app can open any `.xltcfg` file. It protects the file from unrelated people while it is being sent, not from people who have the app, so do not post a file with keys in a public group or shared drive. An export only includes keys you entered on this computer; keys imported from someone else's file are never passed on.
 
@@ -204,7 +206,7 @@ Security note: anyone who has the app can open any `.xltcfg` file. It protects t
 
 手动下载走官方 GitHub Release 页，应用仅接受与本机系统和架构匹配且带 SHA-256 校验文件的完整发布包。
 
-The app checks for updates once in the background after it starts and shows a red dot on Settings when a new version is available. Settings → Updates & About installs it directly: the app downloads the official package, verifies its signature and replaces itself, and refuses any package whose signature does not match. On macOS you choose when to restart; on Windows the installer takes over, after asking whether to interrupt running jobs. Update reminders can be paused, or a specific version can be skipped.
+The app checks for updates once in the background after it starts and shows a red dot on Settings when a new version is available. Settings → Updates & about installs it directly: the app downloads the official package, verifies its signature and replaces itself, and refuses any package whose signature does not match. On macOS you choose when to restart; on Windows the installer takes over, after asking whether to interrupt running jobs. Update reminders can be paused, or a specific version can be skipped.
 
 When in-app updating is not possible (for example when running straight from the DMG, when the install folder is read-only, on an architecture mismatch, or in a development build), the app says why and falls back to a manual download. If fetching update information, downloading or installing fails, the app says which step failed, and the installed version is left untouched.
 
