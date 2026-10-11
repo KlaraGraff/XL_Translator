@@ -1079,6 +1079,9 @@ class TaskRunner:
                             file_item.name,
                             target_lang=target_lang,
                             source_lang=source_lang,
+                            formula_display_value_backfill=(
+                                excel_output.formula_display_value_backfill
+                            ),
                         )
                         coverage_plans.append(None)
                 except Exception as e:
@@ -1136,6 +1139,9 @@ class TaskRunner:
                                     file_item.name,
                                     target_lang=target_lang,
                                     source_lang=source_lang,
+                                    formula_display_value_backfill=(
+                                        excel_output.formula_display_value_backfill
+                                    ),
                                 )
                                 coverage_plans.append(None)
                             degraded = True
@@ -3347,16 +3353,28 @@ class TaskRunner:
         *,
         target_lang: str = "",
         source_lang: str = "zh",
+        formula_display_value_backfill: bool = True,
     ) -> tuple[list[str], int]:
-        """用 openpyxl 快速读取文件中需要翻译的所有唯一词条，并返回工作表数量。"""
+        """用 openpyxl 快速读取文件中需要翻译的所有唯一词条，并返回工作表数量。
+
+        「公式显示值回填」关闭时写入器不会覆盖公式格，这里也就不能把公式格的
+        显示值送去翻译——否则是白付一次 API 费用（审计 高-12），规则与
+        excel_coverage 的补译计划保持一致。
+        """
         from openpyxl import load_workbook
         seen: set[str] = set()
-        wb = load_workbook(str(real_path), read_only=True, data_only=True)
+        # 回填开着读缓存的显示值；关着则读公式本身，好按 data_type 认出公式格跳过
+        wb = load_workbook(
+            str(real_path), read_only=True, data_only=formula_display_value_backfill
+        )
         try:
             worksheets = wb.worksheets
             for ws in worksheets:
-                for row in ws.iter_rows(values_only=True):
-                    for val in row:
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if not formula_display_value_backfill and cell.data_type == "f":
+                            continue
+                        val = cell.value
                         if isinstance(val, str):
                             t = val.strip()
                             if (
