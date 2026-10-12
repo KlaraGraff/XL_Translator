@@ -19,9 +19,11 @@ name: Release (tag / publish)
 #                 releases/latest 和 latest.json 都已回到上一个正式版，
 #                 已安装的应用不会再收到这个版本的更新。
 #   step=discard  删掉一个还没发布（草稿）的版本，以便用同一版本号重新构建：
-#                 先建 archive/v{version}-{短提交号} 标签指向原来的提交，留存
-#                 那份源码（例如软著提交用的版本），再删草稿 Release 和
-#                 v{version} 标签。已发布的版本拒绝删除，要先 retract。
+#                 先确认原来的提交留得住：建 archive/v{version}-{短提交号}
+#                 标签指向它；工作流的令牌建不了时（该提交改过工作流文件，
+#                 GITHUB_TOKEN 没有 workflows 权限），确认它已在 main 的历史里
+#                 也算留住。然后删草稿 Release 和 v{version} 标签。已发布的
+#                 版本拒绝删除，要先 retract。
 #
 # 用 GITHUB_TOKEN 创建的 tag 不会触发 push 事件（GitHub 防止工作流互相
 # 连锁触发），所以 tag 步骤显式 dispatch 构建工作流，并传 release=true 让它
@@ -289,19 +291,31 @@ jobs:
             sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha')"
           fi
           archive="archive/${tag}-${sha:0:7}"
+          kept=""
           if gh api "repos/$repo/git/ref/tags/$archive" >/dev/null 2>&1; then
             echo "归档标签 $archive 已存在。"
-          else
-            gh api "repos/$repo/git/refs" -f "ref=refs/tags/$archive" -f "sha=$sha" >/dev/null
+          elif ! gh api "repos/$repo/git/refs" -f "ref=refs/tags/$archive" -f "sha=$sha" >/dev/null 2> "$RUNNER_TEMP/archive.err"; then
+            echo "::warning::建不了归档标签 $archive：$(cat "$RUNNER_TEMP/archive.err")"
           fi
-          if [[ "$(gh api "repos/$repo/git/ref/tags/$archive" --jq '.object.sha')" != "$sha" ]]; then
-            echo "::error::归档标签 $archive 没有指向 $sha，停止，不删除任何东西。"
+          if [[ "$(gh api "repos/$repo/git/ref/tags/$archive" --jq '.object.sha' 2>/dev/null || true)" == "$sha" ]]; then
+            kept="归档标签 \`$archive\`"
+          else
+            # 提交已在 main 的历史里（main 比它新或与它相同），删标签后也一直找得到。
+            status="$(gh api "repos/$repo/compare/${sha}...main" --jq '.status')"
+            if [[ "$status" != "ahead" && "$status" != "identical" ]]; then
+              echo "::error::$sha 既没有归档标签，也不在 main 的历史里（compare 结果 $status），停止，不删除任何东西。"
+              exit 1
+            fi
+            kept="main 的历史（没有建成归档标签）"
+          fi
+          if [[ "$has_release" == "1" ]] && ! gh release delete "$tag" --yes; then
+            echo "::error::删除草稿 Release $tag 失败，标签没有动。"
             exit 1
           fi
-          if [[ "$has_release" == "1" ]]; then
-            gh release delete "$tag" --yes
+          if ! gh api -X DELETE "repos/$repo/git/refs/tags/$tag" 2> "$RUNNER_TEMP/delete.err"; then
+            echo "::error::删除标签 $tag 失败：$(cat "$RUNNER_TEMP/delete.err")"
+            exit 1
           fi
-          gh api -X DELETE "repos/$repo/git/refs/tags/$tag"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::删除后仍能读到 $tag 的 Release。"
             exit 1
@@ -313,6 +327,6 @@ jobs:
           {
             echo "### 已删除草稿 $tag"
             echo
-            echo "原提交 \`$sha\` 保留在归档标签 \`$archive\`。"
+            echo "原提交 \`$sha\` 保留在$kept。"
             echo "现在可以用 step=tag 以同一版本号重新打标签和构建。"
           } >> "$GITHUB_STEP_SUMMARY"

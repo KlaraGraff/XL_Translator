@@ -169,8 +169,8 @@ def test_release_workflow_replaces_body_before_publishing():
     tail = workflow[discard:]
     assert "step=retract" in tail
     archive = tail.index('-f "ref=refs/tags/$archive"')
-    archive_check = tail.index("没有指向 $sha")
-    assert archive < archive_check < tail.index('gh release delete "$tag"') < tail.index('-X DELETE "repos/$repo/git/refs/tags/$tag"')
+    kept_check = tail.index("不在 main 的历史里")
+    assert archive < kept_check < tail.index('gh release delete "$tag"') < tail.index('-X DELETE "repos/$repo/git/refs/tags/$tag"')
 
 
 def test_build_workflow_accepts_dispatched_tag_releases_only_when_asked():
