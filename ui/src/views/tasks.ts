@@ -594,15 +594,22 @@ const EXCEL_REVIEW_CATEGORY_LABELS: Record<string, string> = {
   heading_style_outliers: "节标题写法不一致，未自动改写", // i18n-ignore 参与复核判断与合并，显示时 tx()
   tm_write_failed: "翻译记忆库写入失败", // i18n-ignore 参与复核判断与合并，显示时 tx()
   cell_text_truncated: "超长单元格文本被截断", // i18n-ignore 参与复核判断与合并，显示时 tx()
+  shape_text_overflow: "文本框放不下译文，已缩到最小字号", // i18n-ignore 参与复核判断与合并，显示时 tx()
 };
 
-/** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`）。
- *  这三个值说的是「复核标记有没有真的写进 xlsx」，全都不是「这条问题已经解决」——
+/** Excel 复核项的 action（core/xlsx_patcher.py `_record_review_position`；文本框和
+ *  批注的复核项来自 core/xlsx_embedded_text.py，固定为 listed_only）。
+ *  这几个值说的是「复核标记有没有真的写进 xlsx」，全都不是「这条问题已经解决」——
  *  尤其 preserved_existing_fill 是「单元格本来就有底色，标记没写进去」，
  *  之前一律显示灰色「已处理」，等于告诉用户文件里能找到标记，实际上找不到。 */
 const EXCEL_REVIEW_ACTIONS: Record<string, { label: string; note: string; tone: ChipTone }> = localized(() => ({
   marked_fill: { label: t("已标底色"), note: t("已在该单元格填入复核底色，请在文件中按底色复核。"), tone: "warn" },
   marked_red_font: { label: t("已标红字"), note: t("单元格原有底色已保留，改用红色字体标出，请按红字复核。"), tone: "warn" },
+  listed_only: {
+    label: t("仅在此列出"),
+    note: t("文本框和批注里无法标底色，请根据本行定位复核。"),
+    tone: "warn",
+  },
   preserved_existing_fill: {
     label: t("未写入标记"),
     note: t("单元格已有底色，根据底色保留策略未添加标记；文件中不显示此处复核提示，请根据本行定位。"),

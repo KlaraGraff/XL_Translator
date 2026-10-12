@@ -761,6 +761,10 @@ class ExcelOutputSettings(BaseModel):
     custom_output_dir: str = ""
     enable_excel_autofit: bool = False
     lock_row_height: bool = False
+    # 文本框/形状里的字和批注（V10.1 起）。旧版 settings.json 没有这两个键时按默认值
+    # 补齐（加法改动，无需迁移）：文本框默认翻，批注默认不翻。
+    translate_shapes: bool = True
+    translate_comments: bool = False
 
 
 class WordOutputSettings(BaseModel):

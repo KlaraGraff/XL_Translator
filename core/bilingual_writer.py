@@ -179,6 +179,7 @@ def write_bilingual_file(
     stats: dict[str, object] | None = None,
     output_basename: str | None = None,
     staging_dir: Path | None = None,
+    embedded_text=None,
 ) -> Path:
     """
     将翻译结果回填至 Excel 文件并保存至输出目录。
@@ -202,6 +203,7 @@ def write_bilingual_file(
                                  为 True 时写入器会把整张表的悬浮图片锚点全部固定，
                                  否则 Excel 重排行高会把没冻结的图片拉变形
     :param stats:                可选统计出参，写入 mutated_cells / anchor_frozen_count
+    :param embedded_text:        文本框和批注的翻译选项（core.xlsx_embedded_text.EmbeddedTextOptions）
     :return:                     输出文件路径
     """
     lang_display = _sanitize_filename_fragment(
@@ -240,6 +242,7 @@ def write_bilingual_file(
             log_callback=log_callback,
             review_positions=review_positions,
             external_autofit_planned=external_autofit_planned,
+            embedded_text=embedded_text,
             stats=stats,
         ),
         staging_dir=staging_dir,

@@ -67,7 +67,7 @@ from core.mixed_language import (
     split_mixed_language_sources,
     translate_mixed_language_texts,
 )
-from core.translation_coverage import format_ignored_coverage_report
+from core.translation_coverage import format_ignored_coverage_report, resolve_coverage_source_lang
 from core.translation_filter import should_translate
 from core.engine_dispatcher import (
     TranslationBatchRunStats,
@@ -103,6 +103,7 @@ from core.document_profile import (
     request_document_profile,
 )
 from core import tm_manager
+from core.xlsx_embedded_text import KIND_SHAPE, EmbeddedTextOptions, collect_embedded_units
 from core.xlsx_patcher import is_generated_original_sheet_title
 from core.excel_automation import (
     create_excel_app,
@@ -2343,6 +2344,15 @@ class TaskRunner(BaseTaskRunner):
                 )
                 return xls_file_count, total_sheet_count, raw_text_count
         text_set = set(texts)
+        text_set |= self._collect_embedded_texts(
+            process_path,
+            file_item.name,
+            excel_output=excel_output,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            # 自动识别 + 补译：这一遍只是给语言预检取样，补译清单等识别完再重算。
+            coverage=self._untranslated_only and not auto_source_lang,
+        )
         file_texts.append(text_set)
         total_sheet_count += sheet_count
         raw_text_count += len(text_set)
@@ -2485,6 +2495,14 @@ class TaskRunner(BaseTaskRunner):
                         ),
                     )
                 out_path = write_untranslated_excel_file(
+                    embedded_text=self._embedded_text_options(
+                        process_path,
+                        excel_output=excel_output,
+                        translations=global_translations,
+                        target_lang=target_lang,
+                        source_lang=file_source_langs.get(str(file_item.path), source_lang),
+                        coverage=True,
+                    ),
                     source_path=process_path,
                     output_dir=output_dir / rel_subdir,
                     plan=coverage_plan,
@@ -2519,6 +2537,14 @@ class TaskRunner(BaseTaskRunner):
                 )
             else:
                 out_path = bilingual_writer.write_bilingual_file(
+                    embedded_text        = self._embedded_text_options(
+                        process_path,
+                        excel_output=excel_output,
+                        translations=global_translations,
+                        target_lang=target_lang,
+                        source_lang=source_lang,
+                        coverage=False,
+                    ),
                     source_path          = process_path,
                     output_dir           = output_dir / rel_subdir,
                     translations         = global_translations,
@@ -2539,6 +2565,18 @@ class TaskRunner(BaseTaskRunner):
                     stats                = write_stats,
                     output_basename      = output_basename,
                     staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
+                )
+            embedded_parts = []
+            if write_stats.get("shape_paragraphs"):
+                embedded_parts.append(f"文本框 {write_stats['shape_paragraphs']} 段")
+            if write_stats.get("comments"):
+                embedded_parts.append(f"批注 {write_stats['comments']} 条")
+            if embedded_parts:
+                shrunk = int(write_stats.get("shrunk_shapes") or 0)
+                self._log(
+                    "INFO",
+                    f"  → {file_item.name}：已翻译" + "、".join(embedded_parts)
+                    + (f"；{shrunk} 个文本框的译文放不下，已缩小字号" if shrunk else ""),
                 )
             if excel_output.translate_sheet_names:
                 with ZipFile(out_path) as workbook_package:
@@ -3616,6 +3654,14 @@ class TaskRunner(BaseTaskRunner):
                 )
             coverage_plans[fi] = coverage_plan
             text_set = set(coverage_plan.source_texts)
+            text_set |= self._collect_embedded_texts(
+                process_paths[fi],
+                file_item.name,
+                excel_output=self._settings.excel_output,
+                target_lang=target_lang,
+                source_lang=file_source_lang,
+                coverage=True,
+            )
             file_texts[fi] = text_set
             raw_text_count += len(text_set)
             global_unique_texts.update(text_set)
@@ -3874,6 +3920,88 @@ class TaskRunner(BaseTaskRunner):
         except Exception as e:
             logger.debug(f"续译底稿探活失败原始错误 {path}：{e!r}")
             return False
+
+    def _collect_embedded_texts(
+        self,
+        path: Path,
+        item_name: str,
+        *,
+        excel_output,
+        target_lang: str,
+        source_lang: str,
+        coverage: bool,
+    ) -> set[str]:
+        """文本框里的字和批注（按设置开关），过一遍与单元格相同的「值不值得翻」判断。"""
+        shapes = bool(getattr(excel_output, "translate_shapes", False))
+        comments = bool(getattr(excel_output, "translate_comments", False))
+        if not (shapes or comments):
+            return set()
+        coverage_langs = (
+            (resolve_coverage_source_lang(source_lang), target_lang) if coverage else None
+        )
+        try:
+            units = collect_embedded_units(
+                path, shapes=shapes, comments=comments, coverage=coverage_langs
+            )
+        except Exception as exc:  # noqa: BLE001 - 读不出来就只翻单元格，不连累整个文件
+            logger.debug(f"读取文本框/批注失败 {item_name}：{exc!r}")
+            self._log("WARN", f"{item_name}：文本框和批注读取失败，本次只翻译单元格。")
+            return set()
+        texts: set[str] = set()
+        shape_count = comment_count = 0
+        for unit in units:
+            if not should_translate(unit.text, target_lang=target_lang, source_lang=source_lang):
+                continue
+            texts.add(unit.text)
+            if unit.kind == KIND_SHAPE:
+                shape_count += 1
+            else:
+                comment_count += 1
+        parts = []
+        if shape_count:
+            parts.append(f"文本框 {shape_count} 段")
+        if comment_count:
+            parts.append(f"批注 {comment_count} 条")
+        if parts:
+            self._log("INFO", f"  → {item_name}：另有" + "、".join(parts) + "待翻译")
+        return texts
+
+    @staticmethod
+    def _embedded_text_options(
+        path: Path,
+        *,
+        excel_output,
+        translations: dict[str, str],
+        target_lang: str,
+        source_lang: str,
+        coverage: bool,
+    ) -> EmbeddedTextOptions | None:
+        shapes = bool(getattr(excel_output, "translate_shapes", False))
+        comments = bool(getattr(excel_output, "translate_comments", False))
+        if not (shapes or comments):
+            return None
+        allowed = None
+        if coverage:
+            # 补译只改还没有译文的段落和批注；按写入源当场重算，和收集时同一套判断。
+            try:
+                allowed = frozenset(
+                    unit.key
+                    for unit in collect_embedded_units(
+                        path,
+                        shapes=shapes,
+                        comments=comments,
+                        coverage=(resolve_coverage_source_lang(source_lang), target_lang),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"补译写入前重读文本框/批注失败 {path.name}：{exc!r}")
+                return None
+        return EmbeddedTextOptions(
+            shapes=shapes,
+            comments=comments,
+            translations=translations,
+            allowed_keys=allowed,
+        )
 
     @staticmethod
     def _collect_texts(

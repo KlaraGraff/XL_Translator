@@ -149,6 +149,7 @@ def write_untranslated_excel_file(
     stats: dict[str, object] | None = None,
     output_basename: str | None = None,
     staging_dir: Path | None = None,
+    embedded_text=None,
 ) -> Path:
     """Copy an Excel file and patch translations only at plan-limited source-only positions.
 
@@ -226,6 +227,7 @@ def write_untranslated_excel_file(
             allowed_positions=allowed_positions,
             external_autofit_planned=external_autofit_planned,
             stats=stats,
+            embedded_text=embedded_text,
         ),
         staging_dir=staging_dir,
     )

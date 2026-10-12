@@ -2253,6 +2253,7 @@ def write_bilingual_workbook(
     allowed_positions: dict[str, set[str]] | None = None,
     external_autofit_planned: bool = False,
     stats: dict[str, object] | None = None,
+    embedded_text=None,
 ) -> None:
     """就地补丁式回填双语内容（``file_path`` 应当已是输出副本）。
 
@@ -2278,6 +2279,10 @@ def write_bilingual_workbook(
     另有 ``stats["truncated_cells"]``（因超 32767 字符被截断的单元格数）与
     ``stats["truncated_positions"]``（``分表名!坐标`` 列表），同样的信息也会
     通过 ``log_callback`` 报出来——截断绝不能是静默的。
+
+    ``embedded_text``：``core.xlsx_embedded_text.EmbeddedTextOptions``，翻译文本框和
+    批注；None 表示不动它们（旧行为）。写入数记进 ``stats["shape_paragraphs"]`` /
+    ``stats["comments"]`` / ``stats["shrunk_shapes"]``。
     """
     review_enabled = bool(mark_review_items)
     review_color_map = normalize_review_mark_colors(review_mark_colors)
@@ -2382,6 +2387,20 @@ def write_bilingual_workbook(
             else []
         )
 
+        # 文本框和批注在快照之后、单元格之前写：快照要的是原文；单元格那一轮
+        # 冻结图片锚点时读到的绘图部件要已经是写好译文的版本，两处改动才不会互相覆盖。
+        embedded_stats = None
+        if embedded_text is not None and embedded_text.enabled:
+            from core.xlsx_embedded_text import apply_embedded_translations
+
+            embedded_stats = apply_embedded_translations(
+                package,
+                embedded_text,
+                translation_only=output_translation_only,
+                review_marks=review_mark_map,
+                review_positions=review_positions,
+            )
+
         removed_formula = False
         workbook_dirty = styles_data is _MINIMAL_STYLES_XML
         total_mutated_cells = 0
@@ -2477,6 +2496,10 @@ def write_bilingual_workbook(
             stats["anchor_frozen_count"] = total_anchor_frozen
             stats["truncated_cells"] = len(truncated_positions)
             stats["truncated_positions"] = truncated_positions
+            if embedded_stats is not None:
+                stats["shape_paragraphs"] = embedded_stats.shape_paragraphs
+                stats["comments"] = embedded_stats.comments
+                stats["shrunk_shapes"] = embedded_stats.shrunk_shapes
 
         if error_positions and log_callback:
             # 这些格子存的是 #N/A / #REF! 这类错误值。它们被抽取端当成普通文本

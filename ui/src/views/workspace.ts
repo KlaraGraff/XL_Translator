@@ -176,6 +176,8 @@ const EXCEL_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "translateOutputFilename", label: t("翻译文件名"), hint: t("将输出文件名翻译为目标语言；关闭时沿用原文件名。"), default: false, pathKind: "output", path: "translate_output_filename" },
   { key: "translateSheetNames", label: t("翻译工作表名称"), hint: t("同时翻译工作表标签名，并同步更新公式中引用的表名；无法安全重命名的工作表保留原名。"), default: true, pathKind: "output", path: "translate_sheet_names" },
   { key: "keepOriginal", label: t("另存原文工作表"), hint: t("在每张工作表旁保留一份未翻译的原文副本，表名后加「_原文」。"), default: true, pathKind: "output", path: "keep_original_sheets" },
+  { key: "translateShapes", label: t("翻译文本框和形状"), hint: t("同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的列入复核清单。"), default: true, pathKind: "output", path: "translate_shapes" },
+  { key: "translateComments", label: t("翻译批注"), hint: t("同时翻译单元格批注。双语时译文接在原批注下一行，作者署名保留不译。"), default: false, pathKind: "output", path: "translate_comments" },
   { key: "formulaBackfill", label: t("翻译公式单元格"), hint: t("公式单元格按当前显示内容写为双语文本，此后不再自动计算。关闭时公式单元格保持原样，不予翻译。"), default: true, pathKind: "output", path: "formula_display_value_backfill" },
   { key: "excelAutofit", label: t("用 Excel 调整行高"), hint: t("需要本机安装 Excel。开启后由 Excel 按译文重新计算行高，结果更准确；Excel 不可用时保留估算行高，并在结果中提示。"), default: false, pathKind: "output", path: "enable_excel_autofit", exclusiveWith: "lockRowHeight" },
   { key: "lockRowHeight", label: t("保持行高，缩小字号"), hint: t("保持行高不变，译文超出时缩小字号；缩至最小字号仍无法容纳的单元格标记为需复核。不能与「用 Excel 调整行高」同时使用。"), default: false, pathKind: "output", path: "lock_row_height", exclusiveWith: "excelAutofit" },
@@ -1381,7 +1383,7 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
       { label: t("已扫描文件"), value: String(files.length) },
       { label: t("文本单元格"), value: fmtNum(cells) },
       { label: t("工作表"), value: String(sheets) },
-      outsideCellStat(outsideCellStats(files)),
+      outsideCellStat(outsideCellStats(files), st),
       { label: t("旧版 .xls"), value: String(xls), warn: xls > 0 },
     ];
   }
@@ -1457,9 +1459,9 @@ function fileLabel(f: FileItem): string {
 // ---------------------------------------------------------------------------
 // Excel「单元格外内容」——嵌入图片里的字、文本框/形状里的字
 //
-// 这些内容目前一律不翻译：写入器逐字节原样保留它们。本节不改变这个行为，只负责把它
-// 说出来——用户看到「翻译完成」时，默认理解是「整个文件都翻了」，而实际上图片里的字
-// 一个都没动，不说清楚就是误导。
+// 图片里的字一律不翻译；文本框和批注按「翻译文本框和形状」「翻译批注」两个开关决定。
+// 不翻的部分写入器逐字节原样保留。本节负责把「哪些没翻」说出来——用户看到「翻译完成」
+// 时，默认理解是「整个文件都翻了」，而实际上图片里的字一个都没动，不说清楚就是误导。
 //
 // 三种状态必须区分开，绝不能合并：
 //   数字   —— 扫描阶段数清楚了，例如 6 张图片；
@@ -1507,6 +1509,16 @@ function outsideCellStats(files: FileItem[]): OutsideCellStats {
   return stats;
 }
 
+/** 只留下按当前开关不会被翻译的那几类：开了「翻译文本框和形状」就不再把文本框算进去，
+ *  批注同理。图片里的字始终不翻。 */
+function untranslatedOutside(stats: OutsideCellStats, st: SurfaceState): OutsideCellStats {
+  return {
+    ...stats,
+    shapes: st.toggles.get("translateShapes") ? 0 : stats.shapes,
+    comments: st.toggles.get("translateComments") ? 0 : stats.comments,
+  };
+}
+
 /** 有没有确凿数出来的东西。为 false 时可能是「确认没有」，也可能是「全都没数出来」。 */
 function hasKnownOutside(stats: OutsideCellStats): boolean {
   return stats.images > 0 || stats.shapes > 0 || stats.comments > 0;
@@ -1523,16 +1535,25 @@ function outsideCellPhrase(stats: Pick<OutsideCellStats, "images" | "shapes" | "
 
 /** 接入点 1 · 扫描统计条里的「图片 / 文本框」格。这一格始终在（Excel 统计条固定五格，
  *  以前字段缺失时整格消失，扫描前后格数在 4 和 5 之间跳）；数不出来就写「—」。 */
-function outsideCellStat(stats: OutsideCellStats): StatCell {
+function outsideCellStat(stats: OutsideCellStats, st: SurfaceState): StatCell {
   const label = t("图片 / 文本框 / 批注");
   const unknownNote = stats.unknownFiles > 0 ? t("{0} 个 .xls 未统计", stats.unknownFiles) : "";
   const n = (value: number) => fmtNum(value);
   if (hasKnownOutside(stats)) {
+    const shapes = Boolean(st.toggles.get("translateShapes"));
+    const comments = Boolean(st.toggles.get("translateComments"));
+    const note = shapes && comments
+      ? t("图片不翻译，原样保留")
+      : shapes
+        ? t("图片和批注不翻译，原样保留")
+        : comments
+          ? t("图片和文本框不翻译，原样保留")
+          : t("不翻译，原样保留");
     return {
       label,
       value: `${n(stats.images)} / ${n(stats.shapes)} / ${n(stats.comments)}`,
-      attn: true,
-      sub: unknownNote ? t("不翻译，原样保留 · {0}", unknownNote) : t("不翻译，原样保留"),
+      attn: hasKnownOutside(untranslatedOutside(stats, st)),
+      sub: unknownNote ? `${note} · ${unknownNote}` : note,
     };
   }
   // 一个都没数出来时不能写「0 / 0 / 0」——那是「确认没有」的说法。留「—」并说明原因。
@@ -1596,7 +1617,7 @@ function buildCadResumeNote(st: SurfaceState): HTMLElement | null {
 /** 接入点 2 · 扫描后、任务清单上方的说明横幅。没有可说的就返回 null，不占版面。 */
 function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
   if (!st.files.length) return null;
-  const stats = outsideCellStats(st.files);
+  const stats = untranslatedOutside(outsideCellStats(st.files), st);
   const known = hasKnownOutside(stats);
   if (!known && stats.unknownFiles === 0) return null;
 
@@ -1608,11 +1629,15 @@ function buildOutsideCellBanner(st: SurfaceState): HTMLElement | null {
     ? t("此批文件中有 {0}不会被翻译", outsideCellPhrase(stats))
     : t("有 {0} 个 .xls 文件暂时无法统计图片、文本框和批注", stats.unknownFiles);
   const body = el("div", "bd");
+  const reasons: string[] = [];
+  if (stats.images > 0) reasons.push(t("图片中的文字需要 OCR，暂不支持。"));
+  if (stats.shapes > 0) reasons.push(t("「翻译文本框和形状」已关闭，文本框和形状中的文字不处理。"));
+  if (stats.comments > 0) reasons.push(t("「翻译批注」已关闭，批注不处理，需要时可在右侧选项中打开。"));
   body.textContent = known
-    ? t("仅翻译单元格中的文字。图片中的文字需要 OCR，暂不支持；文本框、形状和批注中的文字暂不处理。这些内容将按原样保留，不会丢失或变形。")
-    : t("仅翻译单元格中的文字，图片、文本框和批注中的文字将按原样保留。");
+    ? reasons.join("") + t("这些内容将按原样保留，不会丢失或变形。")
+    : t("图片中的文字不翻译，将按原样保留。");
   if (stats.unknownFiles > 0) {
-    body.textContent += t("另有 {0} 个 .xls 文件需先转换为 .xlsx 才能统计；转换后如有此类内容，同样不会被翻译。", stats.unknownFiles);
+    body.textContent += t("另有 {0} 个 .xls 文件需先转换为 .xlsx 才能统计，其中图片里的文字同样不会被翻译。", stats.unknownFiles);
   }
   tx.append(title, body);
   banner.append(tx);
@@ -1632,8 +1657,8 @@ function showOutsideCellModal(st: SurfaceState): void {
     }
     const phrase = outsideCellPhrase({
       images: typeof images === "number" ? images : 0,
-      shapes: typeof shapes === "number" ? shapes : 0,
-      comments: typeof comments === "number" ? comments : 0,
+      shapes: typeof shapes === "number" && !st.toggles.get("translateShapes") ? shapes : 0,
+      comments: typeof comments === "number" && !st.toggles.get("translateComments") ? comments : 0,
     });
     if (phrase) lines.push(`${fileLabel(file)} — ${phrase}`);
   }
@@ -1777,7 +1802,7 @@ function anchorFrozenTotal(result: JsonObject): number {
 function buildExcelDoneNotice(st: SurfaceState, result: JsonObject): ExcelDoneNotice | null {
   // 只统计真正送去翻译的那些文件；用户取消勾选的不该出现在完成汇总里。
   const files = st.files.filter((f) => st.selected.has(f.path));
-  const stats = outsideCellStats(files);
+  const stats = untranslatedOutside(outsideCellStats(files), st);
   const anchorFrozen = anchorFrozenTotal(result);
   if (!hasKnownOutside(stats) && stats.unknownFiles === 0 && anchorFrozen === 0) return null;
   return {
@@ -1805,7 +1830,7 @@ function buildExcelDoneCard(notice: ExcelDoneNotice): HTMLElement {
     body.append(em, document.createTextNode(t("中的文字未翻译，已原样保留。")));
   }
   if (notice.stats.unknownFiles > 0) {
-    body.append(document.createTextNode(t("{0} 个 .xls 文件的图片、文本框和批注未能统计，其中的文字同样未翻译。", notice.stats.unknownFiles)));
+    body.append(document.createTextNode(t("{0} 个 .xls 文件的图片、文本框和批注未能统计，其中图片里的文字同样未翻译。", notice.stats.unknownFiles)));
   }
   if (notice.anchorFrozen > 0) {
     body.append(document.createTextNode(t("{0} 张悬浮图片已固定尺寸，避免行高变化时被拉伸。", fmtNum(notice.anchorFrozen))));
