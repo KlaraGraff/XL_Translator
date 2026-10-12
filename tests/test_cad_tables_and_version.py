@@ -251,3 +251,21 @@ def test_task_option_reaches_the_pipeline():
     assert cad_layout_options(TaskOptions(cad_output_version="2007"))["output_version"] == "2007"
     assert cad_layout_options(TaskOptions(cad_output_version="1999"))["output_version"] == "source"
     assert cad_layout_options(TaskOptions())["output_version"] == "source"
+
+
+def test_underlined_latin_text_is_not_swallowed_by_the_format_code(tmp_path):
+    # 带下划线的标题：译成法文后 \L 紧跟单词，读回时整段被当成格式代码删掉，
+    # 校验数出来少一条，「仅译文」整张图被拦下不出图。
+    from core.cad_translation import _mtext_runs, _plain_text
+
+    assert _plain_text("\\LPlan de démolition\\l") == "Plan de démolition"
+    assert _plain_text("{\\OAbc\\o; et \\KXyz\\k}") == "Abc; et Xyz"
+    assert [run.text for run in _mtext_runs("{\\LPlan}\\P\\OCoupe")] == ["Plan", "Coupe"]
+    mtext = (
+        (0, "MTEXT"), (5, "21"), (330, "1F"), (100, "AcDbEntity"), (8, "0"), (100, "AcDbMText"),
+        (10, "0"), (20, "0"), (30, "0"), (40, "2.5"), (41, "60"), (71, "1"), (1, "{\\L墙体拆除图}"), (7, "Standard"),
+    )
+    result, output, _ = _translate(tmp_path, _drawing(*mtext), TRANSLATIONS, translation_font="original")
+    assert _field(_entities(output, "MTEXT")[0], 1) == "{\\LPlan de démolition des murs}"
+    records = _parse_dxf(output.read_text(encoding="utf-8"))
+    assert [unit.plain_text for unit in extract_cad_text_units(records)] == ["Plan de démolition des murs"]

@@ -111,7 +111,9 @@ _TEXT_ENTITY_TYPES = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF", "DIMENSION"
 # MLEADER text lives in group 304 inside CONTEXT_DATA.  Group 302 and 303 are
 # structural markers and must never be sent to the translator.
 _MLEADER_TEXT_CODE = 304
-_DXF_FORMAT_RE = re.compile(r"\\[A-Za-z]+(?!\+)")
+# 不带参数的开关（\L 下划线、\O 上划线、\K 删除线、\N 分栏……）都只有一个字母，
+# 后面紧跟的就是正文：写成 [A-Za-z]+ 会把「\LPlan」里的 Plan 一起当格式代码删掉。
+_DXF_FORMAT_RE = re.compile(r"\\[A-Za-z](?!\+)")
 # DXF's ``\\U+`` escape is a four-hex-digit code unit.  A greedy 4-6 digit
 # expression consumes the first letters of an ASCII word after the escape
 # (``\\U+4E00Door`` used to become one invalid code point).
@@ -731,7 +733,7 @@ def _plain_text(value: str) -> str:
     # MTEXT style commands carry parameters up to ``;`` (for example
     # ``\fArial|b0;``). Removing only the initial letter leaves font names in
     # the sentence and causes them to be sent to the translator.
-    value = re.sub(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;", "", value)
+    value = re.sub(r"\\[fFhHwWcCaAtTqQsSp][^;]*;", "", value)
     value = _DXF_FORMAT_RE.sub("", value)
     value = value.replace("{", "").replace("}", "")
     return value.strip()
@@ -760,14 +762,14 @@ def _mtext_runs(value: str) -> tuple[CadTextRun, ...]:
                 if plain:
                     runs.append(CadTextRun(start, i, plain))
                 start = None
-            m = re.match(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;", value[i:])
+            m = re.match(r"\\[fFhHwWcCaAtTqQsSp][^;]*;", value[i:])
             if m:
                 i += len(m.group(0))
                 continue
             if value[i:i + 2] == "\\P":
                 i += 2
                 continue
-            m = re.match(r"\\[A-Za-z]+", value[i:])
+            m = re.match(r"\\[A-Za-z]", value[i:])
             if m:
                 i += len(m.group(0))
                 continue
@@ -1203,7 +1205,7 @@ def _restore_format_codes(value: str, protected: Mapping[str, str]) -> str:
 
 def _safe_translation(original: str, translated: str) -> str:
     result = str(translated or "").strip()
-    control_re = re.compile(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;|\\P|[{}]")
+    control_re = re.compile(r"\\[fFhHwWcCaAtTqQsSp][^;]*;|\\[LlOoKk]|\\P|[{}]")
     matches = list(control_re.finditer(original))
     if not matches:
         return result
@@ -1262,7 +1264,7 @@ def _ascii_chunks(value: str, limit: int = 240) -> list[str]:
     # Never split a DXF Unicode escape or formatting command across records.
     # The limit counts UTF-8 bytes, so a chunk of real CJK/accented
     # characters stays within the group-value length CAD readers accept.
-    tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsSp][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
+    tokens = re.findall(r"\\[fFhHwWcCaAtTqQsSp][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]|.", value)
     chunks: list[str] = []
     current = ""
     for token in tokens:
