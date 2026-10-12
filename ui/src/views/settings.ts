@@ -1196,6 +1196,18 @@ function excelReviewSettings(): JsonObject {
 function wordBatchSettings(): JsonObject {
   return record(settings?.word_batch);
 }
+/** 「失败重试次数」：接口临时故障时同一批重发几次。上下限对齐 config.py 的 REQUEST_RETRY_ATTEMPTS_*。 */
+function requestRetryField(surface: "excel" | "cad"): HTMLDivElement {
+  const grid = document.createElement("div");
+  grid.className = "grid2";
+  grid.append(numberField(
+    t("失败重试次数"),
+    num(record(settings?.request_retry)[surface], 2),
+    (v) => void reRenderAfter(() => saveSettingPath(`request_retry.${surface}`, v), { rerenderOnError: true }),
+    { min: 0, max: 5, integer: true, hint: t("模型服务暂时不可用、请求超时或回答中断时，同一批内容自动重新发送的次数，范围 0 到 5。仍失败的内容保留原文，并在结果中标记。") },
+  ));
+  return grid;
+}
 function wordReviewSettings(): JsonObject {
   return record(settings?.word_review);
 }
@@ -1345,6 +1357,7 @@ function renderParamsPage(host: HTMLElement): void {
       const colors = record(excelReviewSettings().mark_colors);
       await persistSettings({ excel_review: { mark_colors: { ...colors, [mark]: color.replace("#", "").toUpperCase() } } });
     })));
+    body.append(requestRetryField("excel"));
   } else if (paramsTab === "word") {
     const review = wordReviewSettings();
     const batch = wordBatchSettings();
@@ -1403,14 +1416,14 @@ function renderParamsPage(host: HTMLElement): void {
       : t("同时翻译的页数，范围 1 到 20；留空则根据图像模型的速率设置自动确定。")));
     body.append(grid);
   } else if (paramsTab === "cad") {
-    // CAD 没有放在这一页的参数；以前这个标签下是一块空白卡片，看着像没加载出来。
+    // CAD 在这一页只有失败重试次数，其余选项在 CAD 页右栏。
     const note = document.createElement("p");
     note.className = "note";
     note.style.margin = "0";
     note.style.fontSize = "12.5px";
     note.style.color = "var(--ink-3)";
-    note.textContent = t("CAD 图纸的翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。");
-    body.append(note);
+    note.textContent = t("CAD 图纸的其他翻译选项在「CAD 图纸」页右侧设置；专业领域提示词可以在下方编辑。");
+    body.append(requestRetryField("cad"), note);
   }
 
   card.append(body);
@@ -1523,7 +1536,17 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   body.style.gap = "10px";
 
   let selectedPreset = selected;
-  let saveBtn: HTMLButtonElement | null = null;
+  // 编辑器里最近一次落盘（或载入）的内容。离开输入框时和它比，一样就不发请求。
+  let savedPrompt = "";
+  let savedName = "";
+  // 失焦保存和选中即保存可能前后脚：排成一队，每一次都从上一次存完的 current 出发，
+  // 后一个请求才不会带着旧的覆盖表把前一个刚存的提示词冲掉。
+  let saveQueue: Promise<unknown> = Promise.resolve();
+  let rejectedDraft = "";
+  const enqueueSave = (task: () => Promise<unknown>): Promise<unknown> => {
+    saveQueue = saveQueue.then(task, task);
+    return saveQueue;
+  };
   let optimizeBtn: HTMLButtonElement | null = null;
   let restoreBtn: HTMLButtonElement | null = null;
   const deletePreset = (name: string): void => {
@@ -1559,6 +1582,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     onChange: (value) => {
       selectedPreset = value;
       updateEditor(value);
+      if (value !== ADD_PROMPT_PRESET) selectPreset(value);
     },
   });
   body.append(fieldWithHint(t("提示词名称"), presetDropdown.root, t("选择已有提示词，或选择「＋ 新增提示词」创建自定义提示词。名称可在下方编辑。删除内置提示词仅会将其停用，之后仍可重新启用。")));
@@ -1618,7 +1642,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       label: t("使用您的版本"), size: "mini",
       onClick: () => {
         promptArea.value = optimizationOriginal;
-        showToast({ message: t("已保留您的版本，请确认后保存。") });
+        saveDraft();
       },
     });
     originalBox.append(originalLabel, originalArea, useOriginal);
@@ -1636,7 +1660,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       label: t("使用这一版"), icon: "check", variant: "primary", size: "mini",
       onClick: () => {
         promptArea.value = optimizationDraft;
-        showToast({ message: t("已将整理版放回提示词内容，请确认后保存。") });
+        saveDraft();
       },
     });
     resultBox.append(resultLabel, resultArea, useResult);
@@ -1675,7 +1699,8 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     refinementField.style.display = "none";
     const label = promptField.querySelector("label");
     if (label) label.firstChild && (label.firstChild.textContent = add ? t("提示词内容") : legacy ? t("旧版提示词内容") : custom ? t("提示词内容") : isBuiltIn(preset) ? t("内置提示词（可编辑覆盖）") : t("提示词内容"));
-    if (saveBtn) saveBtn.textContent = t("保存");
+    savedPrompt = promptArea.value;
+    savedName = nameInput.value;
     if (optimizeBtn) {
       optimizeBtn.style.display = none ? "none" : "";
       optimizeBtn.disabled = false;
@@ -1684,8 +1709,11 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   };
   updateEditor(selectedPreset);
 
-  const doSave = () => void reRenderAfter(async () => {
+  // 把编辑器里的内容折进一份完整的领域配置。返回 null 表示没有可存的内容（新增提示词
+  // 还没写正文）；名称、正文不合规时抛错，由调用方提示，草稿原样留在输入框里。
+  const buildDomainPayload = (): { payload: JsonObject; persistedPreset: string; structural: boolean } | null => {
     const preset = selectedPreset;
+    if (preset === ADD_PROMPT_PRESET && !promptArea.value.trim()) return null;
     const promptOverrides = { ...current.promptOverrides };
     const nameOverrides = { ...current.nameOverrides };
     let customPrompt = current.customPrompt;
@@ -1736,29 +1764,85 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
       if (name === defaultName) delete nameOverrides[preset];
       else nameOverrides[preset] = name;
     }
-    await client.request(`/api/domains/${surface}`, {
-      method: "PUT",
-      body: JSON.stringify({
+    return {
+      payload: {
         preset: persistedPreset,
         custom_prompt: customPrompt,
         prompt_overrides: promptOverrides,
         name_overrides: nameOverrides,
         custom_prompts: customPrompts,
         disabled_presets: disabledPresets,
-      }),
-    });
+      },
+      persistedPreset,
+      // 新建、改名、旧版转存都会改变下拉里的选项，必须整张卡重画；
+      // 只改正文或内置名称不用，免得把光标从用户刚点进去的输入框里抢走。
+      structural: persistedPreset !== preset || preset === ADD_PROMPT_PRESET || preset === LEGACY_CUSTOM_PROMPT,
+    };
+  };
+  const putDomain = async (payload: JsonObject): Promise<true> => {
+    await client.request(`/api/domains/${surface}`, { method: "PUT", body: JSON.stringify(payload) });
     await refreshSettings();
-    showToast({
-      message: persistedPreset === "无" ? t("已停用专业领域提示词。") // i18n-ignore 领域预设值比较
-        : preset === ADD_PROMPT_PRESET ? t("新提示词已保存。")
-          : customNames.includes(preset) || preset === LEGACY_CUSTOM_PROMPT ? t("提示词已保存。")
-            : t("提示词已保存。"),
+    return true;
+  };
+  const isDirty = (): boolean => promptArea.value !== savedPrompt || nameInput.value !== savedName;
+  // 改动即保存：离开正文或名称输入框（以及采用整理结果）时自动落盘，不再有「保存」按钮。
+  // 以前改完要点到页面底部的按钮，看不到按钮的人一切走就等于没改。
+  const saveDraft = (): void => {
+    if (selectedPreset === "无" || !isDirty()) return; // i18n-ignore 领域预设值比较
+    // 草稿在这里同步取走：排队期间用户可能已在下拉里换了别的提示词，编辑器内容随之被替换。
+    let built: ReturnType<typeof buildDomainPayload>;
+    const draftKey = `${promptArea.value}\u0000${nameInput.value}`;
+    try {
+      built = buildDomainPayload();
+    } catch (error) {
+      // 正文和名称之间来回点也会各触发一次失焦；同一份没改过的草稿只提示一次。
+      if (rejectedDraft !== draftKey) showToast({ message: errorMessage(error), error: true });
+      rejectedDraft = draftKey;
+      return;
+    }
+    rejectedDraft = "";
+    if (!built) return;
+    const { payload, persistedPreset } = built;
+    const structural = built.structural || nameInput.value !== savedName;
+    const draftPrompt = promptArea.value;
+    const draftName = nameInput.value;
+    void enqueueSave(async () => {
+      if (structural) {
+        pendingDomainPreset = persistedPreset;
+        if (!await reRenderAfter(() => putDomain(payload))) return;
+      } else {
+        try {
+          await putDomain(payload);
+        } catch (error) {
+          showToast({ message: friendlyErrorMessage(error), error: true });
+          return;
+        }
+        Object.assign(current, domainSettingsFor(surface));
+        if (promptArea.value === draftPrompt && nameInput.value === draftName) {
+          savedPrompt = draftPrompt;
+          savedName = draftName;
+        }
+      }
+      showToast({ message: t("提示词已自动保存。") });
     });
-  });
-  saveBtn = createButton({
-    label: t("保存选择"),
-    variant: "primary", size: "mini", onClick: doSave,
-  });
+  };
+  promptArea.addEventListener("blur", saveDraft);
+  nameInput.addEventListener("blur", saveDraft);
+  // 选中即生效：下拉选哪个，翻译就用哪个，跟这一页其它参数一样不用另点保存。
+  const selectPreset = (preset: string): void => {
+    void enqueueSave(() => reRenderAfter(async () => {
+      const persisted = preset === LEGACY_CUSTOM_PROMPT ? "自定义" : preset; // i18n-ignore 领域预设值（发回后端）
+      await putDomain({
+        preset: persisted,
+        custom_prompt: current.customPrompt,
+        prompt_overrides: current.promptOverrides,
+        name_overrides: current.nameOverrides,
+        custom_prompts: current.customPrompts,
+        disabled_presets: current.disabledPresets,
+      });
+      showToast({ message: persisted === "无" ? t("已停用专业领域提示词。") : t("已改用提示词「{0}」。", tx(presetDisplayName(persisted))) }); // i18n-ignore 领域预设值比较
+    }));
+  };
   optimizeBtn = createButton({
     label: t("整理"), icon: "wand", size: "mini",
     onClick: () => void (async () => {
@@ -1782,7 +1866,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
           optimizationDraft = result.prompt;
           refinementField.style.display = "";
           renderOptimizationCompare();
-          showToast({ message: t("模型已生成优化建议，请确认后保存。") });
+          showToast({ message: t("模型已生成优化建议，请选择要采用的版本。") });
         }
       } catch (error) {
         showToast({ message: t("提示词优化失败：{0}", errorMessage(error)), error: true });
@@ -1794,7 +1878,7 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
   if (selectedPreset === "无") optimizeBtn.style.display = "none"; // i18n-ignore 领域预设值比较
   // 按钮是在编辑器首次填充后创建的，再同步一次初始文案和显隐状态。
   updateEditor(selectedPreset);
-  const actions: HTMLButtonElement[] = [saveBtn, optimizeBtn];
+  const actions: HTMLElement[] = [optimizeBtn];
   if (isBuiltIn(selectedPreset)) {
     restoreBtn = createButton({
       label: t("恢复内置默认"), size: "mini",
@@ -1817,7 +1901,13 @@ function renderDomainPromptCard(surface: TranslationSurface): HTMLDivElement {
     });
     actions.push(restoreBtn);
   }
-  const actionsRow = fieldRow(actions);
+  const autoSaveNote = document.createElement("span");
+  autoSaveNote.textContent = t("选择和修改均自动保存。");
+  autoSaveNote.style.marginRight = "auto";
+  autoSaveNote.style.fontSize = "12px";
+  autoSaveNote.style.color = "var(--ink-3)";
+  autoSaveNote.style.alignSelf = "center";
+  const actionsRow = fieldRow([autoSaveNote, ...actions]);
   actionsRow.style.justifyContent = "flex-end";
   body.append(actionsRow);
 

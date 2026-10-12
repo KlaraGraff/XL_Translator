@@ -176,7 +176,7 @@ class FailoverEngineTests(unittest.TestCase):
             dispatcher.translate_texts([f"a{i}" for i in range(8)], engine, "en", "sp", 8, 1)
             first_batch = dials[0]
             results = dispatcher.translate_texts([f"b{i}" for i in range(8)], engine, "en", "sp", 8, 1)
-        retries = dispatcher._MAX_TRANSIENT_RETRIES
+        retries = dispatcher.DEFAULT_TRANSIENT_RETRIES
         # 第一批：两条连接各拨一次就判定全链失效，不再拆批；之后整批原样再发
         # 固定的 retries 次（5xx 多半几秒后就好），每次都落在当前连接上。
         self.assertEqual(first_batch, 2 + retries)

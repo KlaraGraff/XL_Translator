@@ -56,6 +56,9 @@ from config import (
     WORD_REVIEW_HIGHLIGHT_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_DEFAULT,
     WORD_STRICT_RETRY_ATTEMPTS_MAX,
+    REQUEST_RETRY_ATTEMPTS_DEFAULT,
+    REQUEST_RETRY_ATTEMPTS_MAX,
+    REQUEST_RETRY_ATTEMPTS_MIN,
     WORD_STRICT_RETRY_ATTEMPTS_MIN,
     normalize_cloud_base_url,
     configured_cloud_base_url,
@@ -846,6 +849,25 @@ class WordBatchSettings(BaseModel):
         return self
 
 
+class RequestRetrySettings(BaseModel):
+    """接口临时故障时同一批的重发次数，Excel 和 CAD 各一项（v32 起）。
+
+    旧设置文件没有这一节，读取时按默认值补齐（加法改动，无需迁移）。Word 有自己的
+    「单段最多重试次数」，PDF 有「单页重试次数」，不在这里。
+    """
+
+    excel: int = Field(
+        default=REQUEST_RETRY_ATTEMPTS_DEFAULT,
+        ge=REQUEST_RETRY_ATTEMPTS_MIN,
+        le=REQUEST_RETRY_ATTEMPTS_MAX,
+    )
+    cad: int = Field(
+        default=REQUEST_RETRY_ATTEMPTS_DEFAULT,
+        ge=REQUEST_RETRY_ATTEMPTS_MIN,
+        le=REQUEST_RETRY_ATTEMPTS_MAX,
+    )
+
+
 class WordReviewSettings(BaseModel):
     highlight_unresolved: bool = WORD_REVIEW_HIGHLIGHT_DEFAULT
     highlight_color: str = WORD_REVIEW_HIGHLIGHT_COLOR_DEFAULT
@@ -1088,6 +1110,7 @@ class AppSettings(BaseModel):
     pdf_output: PdfOutputSettings = Field(default_factory=PdfOutputSettings)
     excel_review: ExcelReviewSettings = Field(default_factory=ExcelReviewSettings)
     word_batch: WordBatchSettings = Field(default_factory=WordBatchSettings)
+    request_retry: RequestRetrySettings = Field(default_factory=RequestRetrySettings)
     word_review: WordReviewSettings = Field(default_factory=WordReviewSettings)
     word_conversion: WordConversionSettings = Field(default_factory=WordConversionSettings)
     cleaner_model_role: ModelRoleSettings = Field(

@@ -703,6 +703,19 @@ class TransientTransportRetryTests(unittest.TestCase):
         self.assertEqual(len(engine.calls), 2)
         self.assertEqual(result["alpha"].translation, "ok:alpha")
 
+    def test_the_retry_count_follows_the_setting(self) -> None:
+        for retries in (0, 4):
+            with self.subTest(retries=retries):
+                engine = _TransportFailingEngine(failures=[_transport_http_error(503) for _ in range(9)])
+                errors: list[str] = []
+                translate_texts(
+                    ["alpha"], engine, "fr", "system prompt", batch_size=20, concurrency=1,
+                    error_callback=errors.append, source_lang="en", transient_retries=retries,
+                )
+                self.assertEqual(len(engine.calls), retries + 1)
+                expected = f"重试 {retries} 次后仍失败" if retries else "一批翻译请求未成功"
+                self.assertIn(expected, errors[-1])
+
     def test_the_first_wait_outlasts_the_transport_error_cache(self) -> None:
         # Resending inside the cache window only gets the cached failure back.
         from core.engine_dispatcher import _TRANSIENT_RETRY_BASE_DELAY

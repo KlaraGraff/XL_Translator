@@ -27,6 +27,7 @@ from config import (
     CHUNK_LOCAL_MAX,
     LM_STUDIO_BASE_URL,
     OLLAMA_BASE_URL,
+    REQUEST_RETRY_ATTEMPTS_DEFAULT,
 )
 from core.api_scheduler import (
     API_CONCURRENCY_ACTION_REDUCED,
@@ -69,9 +70,10 @@ _CONCURRENCY_RETRY_BASE_DELAY = 0.5
 _CONCURRENCY_RETRY_MAX_DELAY = 8.0
 # A 5xx, a timeout or a connection dropped mid-answer is usually gone a few
 # seconds later.  The text transport never resends on its own (it marks those
-# errors no_replay), so this layer resends the same batch a fixed number of
-# times after a pause.  Splitting would not help a server that is down.
-_MAX_TRANSIENT_RETRIES = 2
+# errors no_replay), so this layer resends the same batch after a pause, as
+# many times as 翻译参数 → 失败重试次数 says.  Splitting would not help a
+# server that is down.
+DEFAULT_TRANSIENT_RETRIES = REQUEST_RETRY_ATTEMPTS_DEFAULT
 # The first wait must clear the transport's failed-request cache even at the
 # low end of the jitter (x0.75), or the first resend never leaves the machine.
 _TRANSIENT_RETRY_BASE_DELAY = FAILED_REQUEST_CACHE_SECONDS * 1.5
@@ -551,6 +553,7 @@ def translate_texts(
     stats: TranslationBatchRunStats | None = None,
     throughput_unlocked: bool = False,
     request_callback=None,
+    transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
 ) -> dict[str, str]:
     """
     将 texts 分批送入 engine，汇总返回 {原文: 译文}。
@@ -610,6 +613,7 @@ def translate_texts(
                     should_stop=should_stop,
                     error_callback=error_callback,
                     stats=run_stats,
+                    max_transient_retries=transient_retries,
                 ),
                 batch,
                 index=batch_index,
@@ -648,6 +652,7 @@ def translate_texts(
                 should_stop=should_stop,
                 error_callback=error_callback,
                 stats=run_stats,
+                max_transient_retries=transient_retries,
             ),
             batch,
             index=batch_index,
@@ -737,6 +742,7 @@ def translate_texts_with_sources(
     request_category: str = API_REQUEST_CATEGORY_NORMAL,
     stats: TranslationBatchRunStats | None = None,
     throughput_unlocked: bool = False,
+    transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
 ) -> dict[str, TranslationLanguageResult]:
     """Translate bounded batches while retaining model-reported source codes.
 
@@ -772,6 +778,7 @@ def translate_texts_with_sources(
             should_stop=should_stop,
             error_callback=error_callback,
             stats=run_stats,
+            max_transient_retries=transient_retries,
         )
 
     def _record(batch: list[str], partial: dict[str, TranslationLanguageResult]) -> None:
@@ -890,6 +897,7 @@ def _translate_batch_with_fallback(
     split_depth: int = 0,
     concurrency_round: int = 0,
     transient_round: int = 0,
+    max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
 ) -> dict[str, str]:
     if not batch:
         return {}
@@ -971,14 +979,16 @@ def _translate_batch_with_fallback(
                     split_depth=split_depth,
                     concurrency_round=concurrency_round + 1,
                     transient_round=transient_round,
+                    max_transient_retries=max_transient_retries,
                 )
         rejected = credential_rejection(exc)
         if rejected is not None:
             # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
             raise rejected from exc
-        if _should_retry_transient(exc, transient_round):
+        if _should_retry_transient(exc, transient_round, max_transient_retries):
             if not _wait_before_transient_retry(
-                exc, transient_round, stats=stats, error_callback=error_callback, should_stop=should_stop,
+                exc, transient_round, max_transient_retries,
+                stats=stats, error_callback=error_callback, should_stop=should_stop,
             ):
                 stats.record_stopped(batch)
                 return {text: text for text in batch}
@@ -996,6 +1006,7 @@ def _translate_batch_with_fallback(
                 split_depth=split_depth,
                 concurrency_round=concurrency_round,
                 transient_round=transient_round + 1,
+                max_transient_retries=max_transient_retries,
             )
         if _is_permanent_request_error(exc):
             logger.error(f"Excel 翻译请求不再重发，已停止拆分批次：{exc}")
@@ -1032,6 +1043,7 @@ def _translate_batch_with_fallback(
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
+                max_transient_retries=max_transient_retries,
             )
             right = _translate_batch_with_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1039,6 +1051,7 @@ def _translate_batch_with_fallback(
                 api_scheduler=api_scheduler, request_category=request_category,
                 should_stop=should_stop, error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
+                max_transient_retries=max_transient_retries,
             )
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
@@ -1099,6 +1112,7 @@ def _translate_batch_with_sources_fallback(
     split_depth: int = 0,
     concurrency_round: int = 0,
     transient_round: int = 0,
+    max_transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
 ) -> dict[str, TranslationLanguageResult]:
     if not batch:
         return {}
@@ -1185,6 +1199,7 @@ def _translate_batch_with_sources_fallback(
                     split_depth=split_depth,
                     concurrency_round=concurrency_round + 1,
                     transient_round=transient_round,
+                    max_transient_retries=max_transient_retries,
                 )
         # Splitting a batch cannot fix a rejected key or a missing model, and
         # the sources variant used to keep bisecting anyway — mirror the plain
@@ -1193,9 +1208,10 @@ def _translate_batch_with_sources_fallback(
         if rejected is not None:
             # 401/403、Key 无效、没额度：后面每一批都会同样被拒，整个任务直接失败。
             raise rejected from exc
-        if _should_retry_transient(exc, transient_round):
+        if _should_retry_transient(exc, transient_round, max_transient_retries):
             if not _wait_before_transient_retry(
-                exc, transient_round, stats=stats, error_callback=error_callback, should_stop=should_stop,
+                exc, transient_round, max_transient_retries,
+                stats=stats, error_callback=error_callback, should_stop=should_stop,
             ):
                 stats.record_stopped(batch)
                 return _untranslated_language_results(batch, target_lang)
@@ -1212,6 +1228,7 @@ def _translate_batch_with_sources_fallback(
                 split_depth=split_depth,
                 concurrency_round=concurrency_round,
                 transient_round=transient_round + 1,
+                max_transient_retries=max_transient_retries,
             )
         if _is_permanent_request_error(exc):
             logger.error(f"Excel 语言回报请求不再重发，已停止拆分批次：{exc}")
@@ -1241,6 +1258,7 @@ def _translate_batch_with_sources_fallback(
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
+                max_transient_retries=max_transient_retries,
             )
             right = _translate_batch_with_sources_fallback(
                 batch[midpoint:], engine=engine, target_lang=target_lang,
@@ -1248,6 +1266,7 @@ def _translate_batch_with_sources_fallback(
                 request_category=request_category, should_stop=should_stop,
                 error_callback=error_callback, stats=stats,
                 split_depth=split_depth + 1,
+                max_transient_retries=max_transient_retries,
             )
             return {**left, **right}
         stats.record_untranslated(batch, str(exc))
@@ -1302,13 +1321,13 @@ def _is_transient_request_error(exc: BaseException) -> bool:
     return isinstance(exc, (TimeoutError, ConnectionError))
 
 
-def _should_retry_transient(exc: BaseException, transient_round: int) -> bool:
+def _should_retry_transient(exc: BaseException, transient_round: int, limit: int) -> bool:
     # Only errors the layer below did not already resend: the text transport
     # marks every failure no_replay, and the failover engine marks the one
     # that ended a whole connection chain.  Engines with their own retry loop
     # (Claude, Ollama) raise unmarked errors and keep their old path.
     return (
-        transient_round < _MAX_TRANSIENT_RETRIES
+        transient_round < limit
         and bool(getattr(exc, "no_replay", False))
         and _is_transient_request_error(exc)
     )
@@ -1317,6 +1336,7 @@ def _should_retry_transient(exc: BaseException, transient_round: int) -> bool:
 def _wait_before_transient_retry(
     exc: BaseException,
     transient_round: int,
+    limit: int,
     *,
     stats: TranslationBatchRunStats,
     error_callback,
@@ -1325,11 +1345,11 @@ def _wait_before_transient_retry(
     """Log the retry, back off, and return False if the task was stopped meanwhile."""
     stats.record_transient_retry()
     logger.warning(
-        f"批次请求暂时失败，第 {transient_round + 1}/{_MAX_TRANSIENT_RETRIES} 次重发同一批：{exc!r}"
+        f"批次请求暂时失败，第 {transient_round + 1}/{limit} 次重发同一批：{exc!r}"
     )
     if error_callback:
         error_callback(
-            f"一批翻译请求暂时失败，稍后自动重试（第 {transient_round + 1}/{_MAX_TRANSIENT_RETRIES} 次）："
+            f"一批翻译请求暂时失败，稍后自动重试（第 {transient_round + 1}/{limit} 次）："
             f"{_batch_failure_reason(exc)}"
         )
     _backoff_sleep(

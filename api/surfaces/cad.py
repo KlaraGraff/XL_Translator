@@ -314,6 +314,8 @@ class CadSurface(Surface):
                 # 每批请求的发出与返回：写进运行日志。
                 request_callback=request_callback,
                 stats=stats,
+                # 接口临时故障时同一批的重发次数（翻译参数 → CAD → 失败重试次数）。
+                transient_retries=settings.request_retry.cad,
             )
             # 接口放弃的批次、停止时没发出去的批次，translate_texts 按原文占位交回。
             # 那不是译文：以前管线把它们当成「已翻译」计数，日志和报告都说全翻好了。
@@ -347,6 +349,7 @@ class CadSurface(Surface):
                 should_stop=should_stop,
                 api_scheduler=api_schedulers.get("translation"),
                 stats=stats,
+                transient_retries=settings.request_retry.cad,
             )
             # 接口放弃或停止时没发出去的条目按原文占位交回，那不是译文，也不是语种判断。
             failed = stats.untranslated_sources | stats.stopped_sources
