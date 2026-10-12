@@ -83,6 +83,10 @@ _DIAGNOSTIC_PHASES = {
 }
 
 
+# 见 _iter_task_sse：把 WebKit 攒着不交出的小块事件推出去。2 KB 在本机回环上可以忽略。
+SSE_FLUSH_PADDING = ":" + " " * 2048 + "\n\n"
+
+
 @dataclass
 class ApiTask:
     task_id: str
@@ -1535,6 +1539,11 @@ class TranslationTaskManager:
                 last_id = event["id"]
                 payload = json.dumps(event["data"], ensure_ascii=False, separators=(",", ":"))
                 yield f"id: {event['id']}\nevent: {event['type']}\ndata: {payload}\n\n"
+            # 每批事件后补一段 SSE 注释。macOS 的 WebView（WebKit）会把流里零碎的小块
+            # 攒着，等后面再来数据才交给页面：一批事件里最后那条（常常是文件进度）就一直
+            # 慢一拍，界面上计数比运行日志少一批。注释行界面直接忽略，只用来把前面的
+            # 事件「推」出去。
+            yield SSE_FLUSH_PADDING
             if terminal:
                 return
 

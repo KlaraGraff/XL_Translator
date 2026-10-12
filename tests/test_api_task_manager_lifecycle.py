@@ -416,6 +416,24 @@ class TaskManagerLifecycleTests(IsolatedAppDataTestCase):
         self.assertTrue(finished.wait(timeout=5))
         thread.join(timeout=5)
 
+    def test_each_burst_of_sse_events_is_followed_by_flush_padding(self) -> None:
+        # macOS WebKit 会攒着流里的小块数据，一批事件的最后一条要等下一批才交给页面
+        # （CAD 文件进度因此比运行日志少一批）。每批后面补一段注释把它推出去。
+        from api.task_manager import SSE_FLUSH_PADDING
+
+        task = self._register("padding")
+        self.manager._append_event(task, "log", {"level": "INFO", "message": "first"})
+        self.manager._append_event(task, "log", {"level": "INFO", "message": "second"})
+        stream = self.manager.iter_sse("padding")
+        chunks = [next(stream), next(stream), next(stream)]
+        self.assertIn("first", chunks[0])
+        self.assertIn("second", chunks[1])
+        self.assertEqual(chunks[2], SSE_FLUSH_PADDING)
+        self.assertTrue(SSE_FLUSH_PADDING.startswith(":") and SSE_FLUSH_PADDING.endswith("\n\n"))
+        self.assertNotIn("\n", SSE_FLUSH_PADDING[:-2])
+        self.assertGreaterEqual(len(SSE_FLUSH_PADDING), 1024)
+        self.manager.begin_shutdown()
+
     def test_restarted_manager_closes_history_left_running(self) -> None:
         task = self._register("orphan")
         self.manager._append_event(task, "log", {"level": "INFO", "message": "mid-run"})
