@@ -31,6 +31,9 @@ class ScanRequest(BaseModel):
     source_language: str | None = None
     target_language: str | None = None
     include_block_text: bool = True
+    # 锁定不翻译的图块/图层：统计数不含这些文字，和翻译时的口径一致。
+    locked_blocks: str = ""
+    locked_layers: str = ""
 
     @field_validator("path", "preferred_resume_dir", mode="before")
     @classmethod
@@ -48,11 +51,29 @@ class CadScanRequest(BaseModel):
     source_language: str | None = None
     target_language: str = "zh"
     include_block_text: bool = True
+    locked_blocks: str = ""
+    locked_layers: str = ""
 
     @field_validator("paths", mode="before")
     @classmethod
     def _normalize_paths(cls, value: Any) -> Any:
         return normalize_user_paths(value)
+
+
+class CadInspectRequest(BaseModel):
+    """逐张统计 / 扫描图块名：一次只开一张图（DWG 会转换并缓存给翻译任务用）。"""
+
+    path: str = Field(min_length=1)
+    source_language: str | None = None
+    target_language: str = "zh"
+    include_block_text: bool = True
+    locked_blocks: str = ""
+    locked_layers: str = ""
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _normalize_path(cls, value: Any) -> Any:
+        return normalize_user_path(value)
 
 
 class PdfPageActionRequest(BaseModel):
@@ -91,6 +112,14 @@ class TaskStartRequest(BaseModel):
     cad_check_entity_counts: bool = True
     cad_scan_residual: bool = True
     cad_translate_output_filename: bool = False
+    # 译文排版、显示模式、锁定名单、译文字体（对应设置里的 cad_output.*）。
+    cad_fit_layout: bool = True
+    cad_fit_default_scale: float = 0.7
+    cad_fit_min_scale: float = 0.4
+    cad_display_mode: str = "translation"
+    cad_locked_blocks: str = ""
+    cad_locked_layers: str = ""
+    cad_translation_font: str = "compatible"
 
     @field_validator(
         "source_path",

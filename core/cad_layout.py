@@ -11,7 +11,11 @@
 
 没有字体文件可量，宽度按字体类型粗估（SHX 单线字体与 TrueType 各一套系数，
 系数取自真实图纸的实测）。估算宁可偏宽：多缩一点只是字窄一些，少缩了就还是叠在
-一起。缩放有下限（字高不低于原来的一半），空间实在太小时仍可能有少量重叠。
+一起。
+
+缩多少由用户设置决定（见 :class:`FitSettings`）：放不下时先缩到「默认比例」，同一张
+图里缩过的字大小一致；还放不下就每次再缩 0.1，直到放下或到「最小比例」。到了最小
+比例仍放不下的停在最小比例，并记进报告请人复核。
 """
 from __future__ import annotations
 
@@ -31,11 +35,14 @@ _SHX_METRICS = {"wide": 0.75, "narrow": 0.6, "space": 0.5}
 _TTF_METRICS = {"wide": 1.0, "narrow": 0.56, "space": 0.3}
 _TTF_SUFFIXES = (".ttf", ".ttc", ".otf")
 
-# 缩放下限：字高不低于原来的一半，字宽比例不低于原来的 0.35。
-# 只需要收一点（不小于 0.7）时只收字宽，字高不变；再多才开始降字高。
-_MIN_HEIGHT_SCALE = 0.5
-_MIN_WIDTH_SCALE = 0.35
+# 整体缩放（字高缩放 × 字宽缩放）不小于 0.7 时只收字宽，字高不变，和旁边的文字、
+# 标注线还对得齐；再多才开始降字高，字宽停在原来的 0.7。
 _WIDTH_ONLY_SCALE = 0.7
+# 默认比例之后每档再缩多少。
+_SCALE_STEP = 0.1
+# 设置的取值范围（界面同样限制，这里兜底旧数据和手改的 settings.json）。
+DEFAULT_SCALE_RANGE = (0.5, 1.0)
+MIN_SCALE_RANGE = (0.3, 1.0)
 # 收缩后与相邻文字之间留的空隙（按原字高 × 原宽度比例计）。
 _PAD_EM = 0.3
 
@@ -45,6 +52,31 @@ _NEIGHBOR_TYPES = frozenset({"TEXT", "ATTRIB", "MTEXT"})
 _PERCENT_SYMBOL_RE = re.compile(r"%%[cdpCDP]")
 _PERCENT_TOGGLE_RE = re.compile(r"%%[uoUO]")
 _MTEXT_LINE_SPACING = 1.67
+
+
+@dataclass(frozen=True)
+class FitSettings:
+    """放不下时缩到多少：先到 ``default_scale``，再按 0.1 一档降到 ``min_scale``。"""
+
+    default_scale: float = 0.7
+    min_scale: float = 0.4
+
+    def normalized(self) -> "FitSettings":
+        default = min(max(_float(self.default_scale, 0.7), DEFAULT_SCALE_RANGE[0]), DEFAULT_SCALE_RANGE[1])
+        minimum = min(max(_float(self.min_scale, 0.4), MIN_SCALE_RANGE[0]), default)
+        return FitSettings(round(default, 2), round(minimum, 2))
+
+    def tiers(self) -> list[float]:
+        """从大到小的各档整体缩放比例，第一档是默认比例，最后一档是最小比例。"""
+        settings = self.normalized()
+        tiers = [settings.default_scale]
+        current = settings.default_scale
+        while current - _SCALE_STEP > settings.min_scale + 1e-9:
+            current = round(current - _SCALE_STEP, 2)
+            tiers.append(current)
+        if tiers[-1] > settings.min_scale + 1e-9:
+            tiers.append(settings.min_scale)
+        return tiers
 
 
 @dataclass(frozen=True)
@@ -267,13 +299,24 @@ def _box(entity: _TextEntity) -> _TextBox:
     return _TextBox(entity.entity_no, left, right, bottom, top)
 
 
-def _scales(fit: float) -> tuple[float, float]:
-    """``(字高缩放, 字宽缩放)``，两者相乘尽量等于 ``fit``。"""
-    if fit >= _WIDTH_ONLY_SCALE:
-        return 1.0, fit
-    height_scale = max(_MIN_HEIGHT_SCALE, fit / _WIDTH_ONLY_SCALE)
-    width_scale = max(_MIN_WIDTH_SCALE, fit / height_scale)
-    return height_scale, width_scale
+def _scales(scale: float) -> tuple[float, float]:
+    """``(字高缩放, 字宽缩放)``，两者相乘等于 ``scale``：先收字宽，收到 0.7 再降字高。"""
+    if scale >= _WIDTH_ONLY_SCALE:
+        return 1.0, scale
+    return scale / _WIDTH_ONLY_SCALE, _WIDTH_ONLY_SCALE
+
+
+def _pick_scale(fit: float, settings: FitSettings) -> tuple[float, bool]:
+    """按档位挑整体缩放比例：``(比例, 是否放得下)``。
+
+    ``fit`` 是刚好放下需要的比例。能放下的最大一档就是答案；连最小比例都放不下时
+    停在最小比例。
+    """
+    tiers = settings.tiers()
+    for tier in tiers:
+        if tier <= fit + 1e-9:
+            return tier, True
+    return tiers[-1], False
 
 
 def _format_number(value: float) -> str:
@@ -284,15 +327,20 @@ def fit_translated_texts(
     records: list[Any],
     originals: Mapping[int, str],
     plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
 ) -> int:
     """Shrink translated TEXT/ATTRIB entities that would overlap a neighbour.
 
     ``originals`` maps the ordinal of each translated entity (its position
     among ``0`` records, stable across MTEXT write-back) to its source text.
     Edits ``records`` in place and returns how many entities were shrunk.
+    Entities that still overlap at the minimum scale are appended to
+    ``unresolved`` as ``{"source", "translation"}``.
     """
     if not originals:
         return 0
+    settings = (settings or FitSettings()).normalized()
     entities = _collect_entities(records, plain_text)
     groups: dict[tuple[tuple[str, str], float], list[_TextBox]] = {}
     for entity in entities:
@@ -349,7 +397,10 @@ def fit_translated_texts(
         room = allowed - _PAD_EM * height * width_factor
         if needed <= room:
             continue
-        height_scale, width_scale = _scales(max(room, 0.0) / needed)
+        scale, fits = _pick_scale(max(room, 0.0) / needed, settings)
+        if not fits and unresolved is not None and not any(item.get("entity") == entity.entity_no for item in unresolved):
+            unresolved.append({"source": plain_text(original), "translation": entity.text, "entity": entity.entity_no})
+        height_scale, width_scale = _scales(scale)
         edits.append((entity, height * height_scale, width_factor * width_scale))
 
     for entity, new_height, new_width_factor in sorted(edits, key=lambda item: item[0].start, reverse=True):
@@ -380,6 +431,109 @@ def _write_size(records: list[Any], start: int, end: int, height: float, width_f
         height_index + 1,
         replace(template, code=41, value=_format_number(width_factor), code_text=code_text),
     )
+
+
+# 双语新增的译文行和原文之间至少留这么多空（按原文字高计）；原本的空是 0.4。
+_MIN_LINE_GAP = 0.15
+
+
+def fit_added_lines(
+    records: list[Any],
+    added: Mapping[int, tuple[int, bool]],
+    plain_text: Callable[[str], str],
+    settings: FitSettings | None = None,
+    unresolved: list[dict[str, str]] | None = None,
+) -> int:
+    """Shrink and move bilingual translation lines that would cover the next line.
+
+    ``added`` maps the ordinal of each added translation TEXT to
+    ``(ordinal of its source TEXT, placed below)``.  表格和逐行说明里行距很紧，
+    原文下方另起的一行会压到下一行的原文上：这时先把两行之间的空收窄，再按设置的
+    档位（相对原文字号）缩小译文行，让它落在原文和下一行之间。到最小比例仍放不下的
+    停在最小比例，记进 ``unresolved``。返回调整过的行数。
+    """
+    if not added:
+        return 0
+    settings = (settings or FitSettings()).normalized()
+    entities = _collect_entities(records, plain_text)
+    by_no = {entity.entity_no: entity for entity in entities}
+    groups: dict[tuple[tuple[str, str], float], list[_TextBox]] = {}
+    for entity in entities:
+        groups.setdefault((entity.container, round(entity.rotation, 1)), []).append(_box(entity))
+
+    edits: list[tuple[_TextEntity, float, float]] = []
+    for added_no, (source_no, below) in added.items():
+        line, source = by_no.get(added_no), by_no.get(source_no)
+        if line is None or source is None:
+            continue
+        line_box, source_box = _box(line), _box(source)
+        source_height = source.height
+        obstacles = []
+        for box in groups.get((line.container, round(line.rotation, 1)), []):
+            if box.entity_no in {added_no, source_no}:
+                continue
+            # 和原文在同一行的（左右相邻的文字）不算，那是横向防重叠管的。
+            same_line = min(box.top, source_box.top) - max(box.bottom, source_box.bottom)
+            if same_line > 0.3 * min(box.top - box.bottom, source_height):
+                continue
+            if min(box.right, line_box.right) - max(box.left, line_box.left) <= 0.1 * source_height:
+                continue
+            if below and box.top > line_box.bottom and box.bottom < source_box.bottom:
+                obstacles.append(box.top)
+            elif not below and box.bottom < line_box.top and box.top > source_box.top:
+                obstacles.append(box.bottom)
+        if not obstacles:
+            continue
+        if below:
+            available = source_box.bottom - max(obstacles)
+        else:
+            available = min(obstacles) - source_box.top
+        line_height = line.height
+        min_gap = _MIN_LINE_GAP * source_height
+        if available - min_gap >= line_height:
+            new_height = line_height
+            fits = True
+        else:
+            fit = max(available - min_gap, 0.0) / source_height
+            tiers = [tier * source_height for tier in settings.tiers() if tier * source_height < line_height]
+            tiers = tiers or [min(line_height, settings.min_scale * source_height)]
+            new_height = next((height for height in tiers if height <= fit * source_height + 1e-9), tiers[-1])
+            fits = new_height <= fit * source_height + 1e-9
+        if not fits and unresolved is not None:
+            unresolved.append({"source": source.text, "translation": line.text, "entity": added_no})
+        current_gap = source_box.bottom - line_box.top if below else line_box.bottom - source_box.top
+        gap = min(current_gap, available - new_height) if fits else min_gap
+        if below:
+            new_top = source_box.bottom - gap
+            new_bottom = new_top - new_height
+        else:
+            new_bottom = source_box.top + gap
+            new_top = new_bottom + new_height
+        bottom, top = _vertical_span(line.valign, _local(line)[1], line_height)
+        new_anchor = {3: new_top, 2: (new_bottom + new_top) / 2}.get(line.valign, new_bottom)
+        old_anchor = {3: top, 2: (bottom + top) / 2}.get(line.valign, bottom)
+        edits.append((line, new_height, new_anchor - old_anchor))
+
+    for line, new_height, shift in sorted(edits, key=lambda item: item[0].start, reverse=True):
+        _shift_entity(records, line.start, line.end, line.rotation, shift)
+        _write_size(records, line.start, line.end, new_height, line.width_factor)
+    return len(edits)
+
+
+def _shift_entity(records: list[Any], start: int, end: int, rotation: float, shift: float) -> None:
+    """把单行文字沿它自己的「上下」方向移动 ``shift``（两个插入点一起移）。"""
+    if not shift:
+        return
+    angle = math.radians(rotation)
+    dx, dy = -shift * math.sin(angle), shift * math.cos(angle)
+    for index in range(start + 1, end):
+        record = records[index]
+        if record.code == 101:
+            break
+        if record.code in {10, 11}:
+            records[index] = replace(record, value=_format_number(_float(record.value) + dx))
+        elif record.code in {20, 21}:
+            records[index] = replace(record, value=_format_number(_float(record.value) + dy))
 
 
 def short_text_rows(

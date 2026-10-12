@@ -798,6 +798,34 @@ class CadOutputSettings(BaseModel):
     include_block_text: bool = True
     keep_work_dxf: bool = False
     copy_related_files: bool = False
+    # v34 起：译文排版、显示模式、锁定不翻译的图块/图层、译文字体。旧文件没有这些键时
+    # 按默认值补齐（加法改动，无需迁移）。
+    # 译文会压到旁边的文字时缩小字号；先缩到默认比例，再按 0.1 一档缩到最小比例。
+    fit_layout: bool = True
+    fit_default_scale: float = 0.7
+    fit_min_scale: float = 0.4
+    # translation 纯译文；source_first 原文在上、译文在下；translation_first 译文在上。
+    display_mode: str = "translation"
+    # 用户手写的锁定名单，逗号或换行分隔，可用 * 通配；原样保存，下次打开照原样显示。
+    locked_blocks: str = ""
+    locked_layers: str = ""
+    # compatible：译文改用 AutoCAD 自带字体写回；original：沿用原文字样式。
+    translation_font: str = "compatible"
+
+    @model_validator(mode="after")
+    def _normalize_cad_layout(self):
+        from core.cad_layout import FitSettings
+
+        fit = FitSettings(self.fit_default_scale, self.fit_min_scale).normalized()
+        self.fit_default_scale = fit.default_scale
+        self.fit_min_scale = fit.min_scale
+        if self.display_mode not in {"translation", "source_first", "translation_first"}:
+            self.display_mode = "translation"
+        if self.translation_font not in {"compatible", "original"}:
+            self.translation_font = "compatible"
+        self.locked_blocks = str(self.locked_blocks or "")[:4000]
+        self.locked_layers = str(self.locked_layers or "")[:4000]
+        return self
 
 
 class ExcelReviewSettings(BaseModel):

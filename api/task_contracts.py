@@ -77,6 +77,14 @@ class TaskOptions:
     cad_check_entity_counts: bool = True
     cad_scan_residual: bool = True
     cad_translate_output_filename: bool = False
+    # 译文排版、显示模式、锁定名单、译文字体（对应设置里的 cad_output.*）。
+    cad_fit_layout: bool = True
+    cad_fit_default_scale: float = 0.7
+    cad_fit_min_scale: float = 0.4
+    cad_display_mode: str = "translation"
+    cad_locked_blocks: str = ""
+    cad_locked_layers: str = ""
+    cad_translation_font: str = "compatible"
 
     @property
     def xls_conversion_mode(self) -> str:

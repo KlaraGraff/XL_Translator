@@ -22,5 +22,41 @@
   "已是目标语言": {
     "en": "Already in the target language",
     "fr": "Déjà dans la langue cible"
+  },
+  "图纸读取失败，出现了未预期的问题。": {
+    "en": "Could not read the drawing: an unexpected problem occurred.",
+    "fr": "Impossible de lire le plan : un problème inattendu est survenu."
+  },
+  "有 {0} 处译文缩到最小比例仍会压到旁边的文字": {
+    "en": "{0} {0|translation|translations} still {0|runs|run} into nearby text at the minimum size",
+    "fr": "{0} {0|traduction chevauche|traductions chevauchent} encore le texte voisin à la taille minimale"
+  },
+  "使用扫描时已转换好的图纸，跳过格式转换": {
+    "en": "Using the drawing converted during the scan; conversion skipped",
+    "fr": "Utilisation du plan converti lors de l'analyse ; conversion ignorée"
+  },
+  "图纸里有 {0} 处上次写入的双语译文，已先恢复原文再重新翻译": {
+    "en": "The drawing contains {0} bilingual {0|translation|translations} from a previous run; the source text was restored before translating again",
+    "fr": "Le plan contient {0} {0|traduction bilingue|traductions bilingues} d'une exécution précédente ; le texte d'origine a été rétabli avant de retraduire"
+  },
+  "锁定不翻译的图块和图层里有 {0} 处文字，保持原样": {
+    "en": "{0} {0|text|texts} in locked blocks and layers left unchanged",
+    "fr": "{0} {0|texte|textes} dans les blocs et calques verrouillés {0|laissé|laissés} tel quel"
+  },
+  "这张图里没有找到这些图块：{0}，请检查锁定名单是否写错": {
+    "en": "These blocks were not found in this drawing: {0}. Check the lock list for typos.",
+    "fr": "Ces blocs sont introuvables dans ce plan : {0}. Vérifiez la liste de verrouillage."
+  },
+  "这张图里没有找到这些图层：{0}，请检查锁定名单是否写错": {
+    "en": "These layers were not found in this drawing: {0}. Check the lock list for typos.",
+    "fr": "Ces calques sont introuvables dans ce plan : {0}. Vérifiez la liste de verrouillage."
+  },
+  "{0} 处译文缩到最小比例仍会压到旁边的文字，已列入报告，请复核": {
+    "en": "{0} {0|translation|translations} still {0|runs|run} into nearby text at the minimum size and {0|is|are} listed in the report for review",
+    "fr": "{0} {0|traduction chevauche|traductions chevauchent} encore le texte voisin à la taille minimale ; {0|elle est signalée|elles sont signalées} dans le rapport, à vérifier"
+  },
+  "- 缩到最小比例仍会压到旁边文字：{0} 处": {
+    "en": "- Still overlapping nearby text at the minimum size: {0}",
+    "fr": "- Chevauche encore le texte voisin à la taille minimale : {0}"
   }
 }

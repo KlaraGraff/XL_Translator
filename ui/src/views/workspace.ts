@@ -28,6 +28,7 @@ import {
   createEmptyState,
   createField,
   createFold,
+  createHintBadge,
   createLanguageField,
   createProgressBar,
   createDropdown,
@@ -100,6 +101,9 @@ type FileItem = JsonObject & {
   candidate_count?: number | null;
   counts_pending?: boolean;
   needs_conversion?: boolean;
+  /** CAD：文件字节数。逐张统计只在图纸不大时自动进行（见 autoCountCadAfterScan）。 */
+  size?: number | null;
+  uncertain_count?: number | null;
   // 以下几个是 Excel 的「单元格外内容」计数，见下方 outsideCellStats() 的整段说明。
   // null 是后端明确表达的「这个文件数不出来」，不是 0；字段缺失则是「这一版后端不产出」。
   image_count?: number | null;
@@ -205,6 +209,7 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
+  { key: "cadFitLayout", label: t("放不下时缩小字号"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到默认比例，仍放不下再每次缩 0.1，直到最小比例。缩到最小仍放不下的列入报告。"), default: true, pathKind: "output", path: "fit_layout" },
 ]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
@@ -921,6 +926,7 @@ function restoreKeptScrolls(container: HTMLElement, positions: Map<string, numbe
 function renderInto(container: HTMLElement, surface: Surface): void {
   const logScroll = captureLogScroll(container);
   const keptScrolls = captureKeptScrolls(container);
+  const keptFocus = captureKeptFocus(container);
   while (container.firstChild) container.removeChild(container.firstChild);
   container.removeAttribute("style");
   const st = states[surface];
@@ -942,6 +948,25 @@ function renderInto(container: HTMLElement, surface: Surface): void {
   }
   restoreLogScroll(container, logScroll);
   restoreKeptScrolls(container, keptScrolls);
+  restoreKeptFocus(container, keptFocus);
+}
+
+/** 整页重建时输入框会被换成新的一个：打着 `data-keep-focus="<名字>"` 的输入框正在输入
+ *  时，重建后把焦点和光标放回同名的新输入框，否则逐张统计每回来一张图纸，正在写的锁定
+ *  名单就被打断一次。输入的内容本身由各自的草稿状态保住。 */
+function captureKeptFocus(container: HTMLElement): { name: string; start: number | null; end: number | null } | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return null;
+  if (!container.contains(active) || !active.dataset.keepFocus) return null;
+  return { name: active.dataset.keepFocus, start: active.selectionStart, end: active.selectionEnd };
+}
+
+function restoreKeptFocus(container: HTMLElement, kept: { name: string; start: number | null; end: number | null } | null): void {
+  if (!kept) return;
+  const next = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[data-keep-focus="${kept.name}"]`);
+  if (!next || next.disabled) return;
+  next.focus();
+  if (kept.start !== null && kept.end !== null) next.setSelectionRange(kept.start, kept.end);
 }
 
 export function rerender(surface: Surface): void {
@@ -1848,6 +1873,11 @@ function buildTableCard(surface: Surface, st: SurfaceState): HTMLElement {
     return card;
   }
 
+  if (surface === "cad") {
+    const countBar = buildCadCountBar(st);
+    if (countBar) card.append(countBar);
+  }
+
   const tableWrap = el("div");
   tableWrap.style.cssText = "flex:1;overflow:auto";
   tableWrap.dataset.keepScroll = "files";
@@ -2352,6 +2382,8 @@ function buildColRight(surface: Surface, st: SurfaceState, active: boolean): HTM
     }
     scroll.append(row);
   }
+
+  if (surface === "cad") scroll.append(...buildCadWritebackFields(st, active), ...buildCadLockFields(st, active));
 
   if (!active) {
     const foldContent = buildTaskFold(surface, st);
@@ -3071,6 +3103,9 @@ function scanPayload(surface: Surface, st: SurfaceState, path: string): JsonObje
     payload.source_language = st.sourceLang;
     payload.target_language = st.targetLang;
     payload.include_block_text = Boolean(st.toggles.get("cadBlockText"));
+    // 锁定的图块和图层不计入待翻译，和翻译时的口径一致。
+    payload.locked_blocks = cadLockText("blocks");
+    payload.locked_layers = cadLockText("layers");
   }
   return payload;
 }
@@ -3085,6 +3120,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
   clearWorkspaceInput(surface);
   const token = ++scanTokens[surface];
   scanBusy[surface] = true;
+  if (surface === "cad") cancelCadInspection(st);
   rerender(surface);
   try {
     const c = await getClient();
@@ -3135,6 +3171,7 @@ async function runScan(surface: Surface, preferredResumeDir?: string): Promise<v
     showToast({ message: toastMessage });
     // 弹窗不阻塞扫描结果展示：清单已经写进状态了，finally 里的 rerender 会把它铺在弹窗背后。
     if (st.resumeInfo) void showResumeModal(surface, st);
+    if (surface === "cad") autoCountCadAfterScan(st, token);
   } catch (error) {
     if (token !== scanTokens[surface]) return;
     // 扫描失败必须把上一次的清单清掉：留着旧结果，用户看到的是「路径 B + B 之外的文件」，
@@ -3238,6 +3275,13 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.cad_include_block_text = Boolean(st.toggles.get("cadBlockText"));
     payload.cad_keep_work_dxf = Boolean(st.toggles.get("cadKeepWorkDxf"));
     payload.cad_copy_related_files = Boolean(st.toggles.get("cadCopyRelated"));
+    payload.cad_fit_layout = Boolean(st.toggles.get("cadFitLayout"));
+    payload.cad_fit_default_scale = cadScale("fit_default_scale", 0.7);
+    payload.cad_fit_min_scale = cadScale("fit_min_scale", 0.4);
+    payload.cad_display_mode = cadChoice("display_mode", CAD_DISPLAY_MODES, "translation");
+    payload.cad_translation_font = cadChoice("translation_font", CAD_FONT_CHOICES, "compatible");
+    payload.cad_locked_blocks = cadLockText("blocks");
+    payload.cad_locked_layers = cadLockText("layers");
     if (st.useCustomOutputDir && st.customOutputDir.trim()) payload.cad_output_dir = normalizeUserPath(st.customOutputDir);
     if (st.cadResumeDir) payload.resume_output_dir = normalizeUserPath(st.cadResumeDir);
   }
@@ -3246,6 +3290,8 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
 
 async function startTask(surface: Surface, st: SurfaceState): Promise<void> {
   if (!st.sourcePath.trim() || !st.selected.size) return;
+  // 开始翻译后不再逐张统计：任务自己会转换（扫描时已转好的直接从缓存取）。
+  if (surface === "cad" && cadInspect.running) cancelCadInspection(st);
   // 更新已装好但还没重启时,新任务的组件加载可能按旧偏移读到新二进制而失败,
   // 报错文案还会带偏方向(高-12)——第一次新建任务先拦一下,提醒重启。
   // 「仍要开始」重新走 startTask:警告已消费,这次会直接放行,后续守卫照常跑。
@@ -4372,4 +4418,444 @@ async function openTaskLocalFile(path: string | undefined, reveal: boolean): Pro
   } catch (error) {
     showToast({ message: redactedText((error as Error)?.message, t("打开路径失败。")), error: true });
   }
+}
+
+// ---------------------------------------------------------------------------
+// CAD：译文写回（显示方式、译文字体、缩小字号的比例）与锁定不翻译的图块/图层
+//
+// 这些都存在 cad_output 下，改了就存；任务开始时随请求发出（buildPayload）。锁定名单
+// 会改变「待翻译」数，改完按「选完来源自动扫描」的规矩重扫一次。
+//
+// 逐张统计：DWG 扫描时只列出、不转换。图纸不多（≤10 张、每张 ≤50 MB）时扫描完自动一张
+// 一张地转换统计，每回来一张更新一行；多了就在清单上方给一个「全部统计」按钮，由用户决
+// 定要不要等。转换结果存在应用数据目录的缓存里，开始翻译时直接复用，不会再转一遍。
+// 「扫描图块名」走同一个接口，顺带把每张图里装着文字的图块和图层收集起来，列成可搜索、
+// 可勾选的清单，勾上就写进锁定名单。
+// ---------------------------------------------------------------------------
+
+const CAD_DISPLAY_MODES = ["translation", "source_first", "translation_first"] as const;
+const CAD_FONT_CHOICES = ["compatible", "original"] as const;
+const CAD_DEFAULT_SCALES = ["0.9", "0.8", "0.7", "0.6", "0.5"];
+const CAD_MIN_SCALES = ["0.7", "0.6", "0.5", "0.4", "0.3"];
+const CAD_AUTO_COUNT_MAX_FILES = 10;
+const CAD_AUTO_COUNT_MAX_BYTES = 50 * 1024 * 1024;
+
+type CadLockKind = "blocks" | "layers";
+/** sample：图块里的前几段文字。转换工具会把图框这类块改名成「$TD_AUDIT_GENERATED_(187B)」，
+ *  光看名字认不出，列在名字下面帮着认。 */
+type CadContainer = { name: string; texts: number; files: number; sample: string };
+
+interface CadInspectState {
+  /** 每次开始/取消统计都加一；回来的结果对不上号就丢掉。 */
+  token: number;
+  running: boolean;
+  done: number;
+  total: number;
+  /** 收集到的图块和图层（按名字合并多张图）以及它们来自哪些图纸。 */
+  blocks: Map<string, CadContainer>;
+  layers: Map<string, CadContainer>;
+  inspected: Set<string>;
+  failures: Map<string, string>;
+  /** 收集结果属于哪一次选择的来源；换了来源就清空。 */
+  sourceKey: string;
+  search: string;
+  /** 正在输入、还没存的锁定名单。null 表示没有草稿，显示已保存的值。 */
+  draft: Record<CadLockKind, string | null>;
+}
+
+const cadInspect: CadInspectState = {
+  token: 0,
+  running: false,
+  done: 0,
+  total: 0,
+  blocks: new Map(),
+  layers: new Map(),
+  inspected: new Set(),
+  failures: new Map(),
+  sourceKey: "",
+  search: "",
+  draft: { blocks: null, layers: null },
+};
+
+function cadOutputValue(key: string): unknown {
+  return outputRecord("cad")[key];
+}
+
+function cadScale(key: "fit_default_scale" | "fit_min_scale", fallback: number): number {
+  const value = Number(cadOutputValue(key));
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function cadChoice<T extends string>(key: string, choices: readonly T[], fallback: T): T {
+  const value = cadOutputValue(key);
+  return typeof value === "string" && (choices as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+function cadLockText(kind: CadLockKind): string {
+  return cadInspect.draft[kind] ?? text(cadOutputValue(kind === "blocks" ? "locked_blocks" : "locked_layers"));
+}
+
+/** 锁定名单按逗号、顿号、分号、斜杠、换行拆开（与后端 parse_lock_patterns 一致），比较时不分大小写。 */
+function splitLockNames(value: string): string[] {
+  return value.split(/[,;/\n\r\t，、；]+/).map((part) => part.trim()).filter(Boolean);
+}
+
+function lockListHas(value: string, name: string): boolean {
+  const wanted = name.toUpperCase();
+  return splitLockNames(value).some((part) => part.toUpperCase() === wanted);
+}
+
+function persistCadOutput(key: string, value: unknown, what: string, after?: () => void): void {
+  const previous = cadOutputValue(key);
+  // 先改本地设置再落盘，重绘时界面马上显示新值；失败时改回去。
+  settings = { ...settings, cad_output: { ...outputRecord("cad"), [key]: value } };
+  rerender("cad");
+  void persistSettingsOrRevert("cad", nestedPatch(`cad_output.${key}`, value as JsonObject[string]), () => {
+    settings = { ...settings, cad_output: { ...outputRecord("cad"), [key]: previous } };
+  }, what).then(() => after?.());
+}
+
+function saveCadLock(kind: CadLockKind, value: string): void {
+  const key = kind === "blocks" ? "locked_blocks" : "locked_layers";
+  cadInspect.draft[kind] = null;
+  if (value === text(cadOutputValue(key))) return;
+  persistCadOutput(key, value, kind === "blocks" ? t("锁定的图块") : t("锁定的图层"), () => rescanAfterScanInputChange("cad"));
+}
+
+function buildCadWritebackFields(_st: SurfaceState, active: boolean): HTMLElement[] {
+  const nodes: HTMLElement[] = [];
+  const sec = el("div", "rp-sec");
+  sec.textContent = t("译文写回");
+  nodes.push(sec);
+
+  const display = createSelectField({
+    label: t("显示方式"),
+    hint: t("双语时译文与原文在同一图层：单行文字在原文下方（或上方）另起一行、字高为原文的 0.8 倍；多行文字、标注和引线在同一个框里换行；块属性写成「原文 / 译文」。再次翻译同一张图时会先清掉上次写入的译文。"),
+    options: [
+      { value: "translation", label: t("仅译文") },
+      { value: "source_first", label: t("原文在上，译文在下") },
+      { value: "translation_first", label: t("译文在上，原文在下") },
+    ],
+    value: cadChoice("display_mode", CAD_DISPLAY_MODES, "translation"),
+    disabled: active,
+    onChange: (value) => persistCadOutput("display_mode", value, t("显示方式")),
+  });
+  nodes.push(display.root);
+
+  const font = createSelectField({
+    label: t("译文字体"),
+    hint: t("图纸里的字体常常缺法文重音字母或中文。选「AutoCAD 自带字体」时，译文改用每台装了 AutoCAD 的电脑都有的字体写入（西文 simplex，中文 gbenor + gbcbig），在别人的电脑上也能正常显示；没翻译的文字不改。"),
+    options: [
+      { value: "compatible", label: t("AutoCAD 自带字体（推荐）") },
+      { value: "original", label: t("沿用原文字体") },
+    ],
+    value: cadChoice("translation_font", CAD_FONT_CHOICES, "compatible"),
+    disabled: active,
+    onChange: (value) => persistCadOutput("translation_font", value, t("译文字体")),
+  });
+  nodes.push(font.root);
+
+  if (states.cad.toggles.get("cadFitLayout")) {
+    const defaultScale = cadScale("fit_default_scale", 0.7);
+    const minScale = cadScale("fit_min_scale", 0.4);
+    const scaleLabel = (value: string) => `${Math.round(Number(value) * 100)}%`;
+    const row = el("div");
+    row.style.cssText = "display:flex;gap:8px";
+    const first = createSelectField({
+      label: t("先缩到"),
+      hint: t("放不下时先缩到这个比例（相对原文字号）。"),
+      options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
+      value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? "0.7",
+      disabled: active,
+      onChange: (value) => {
+        const scale = Number(value);
+        persistCadOutput("fit_default_scale", scale, t("缩小比例"));
+        // 最小比例不能大于默认比例；后端也会这样收，界面先对齐，免得显示一个不生效的值。
+        if (cadScale("fit_min_scale", 0.4) > scale) persistCadOutput("fit_min_scale", scale, t("最小比例"));
+      },
+    });
+    const last = createSelectField({
+      label: t("最小比例"),
+      hint: t("仍放不下时每次再缩 0.1，最小缩到这个比例；到这里还放不下的列入报告，请人工复核。"),
+      options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
+      value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
+      disabled: active,
+      onChange: (value) => persistCadOutput("fit_min_scale", Number(value), t("最小比例")),
+    });
+    for (const field of [first.root, last.root]) field.style.flex = "1";
+    row.append(first.root, last.root);
+    nodes.push(row);
+  }
+  return nodes;
+}
+
+function buildCadLockFields(st: SurfaceState, active: boolean): HTMLElement[] {
+  const nodes: HTMLElement[] = [];
+  const sec = el("div", "rp-sec");
+  sec.textContent = t("锁定不翻译");
+  nodes.push(sec);
+
+  const makeArea = (kind: CadLockKind, label: string, hint: string, placeholder: string): HTMLElement => {
+    const area = document.createElement("textarea");
+    area.rows = 2;
+    area.value = cadLockText(kind);
+    area.placeholder = placeholder;
+    area.disabled = active;
+    area.dataset.keepFocus = `cad-lock-${kind}`;
+    area.style.cssText = "display:block;width:100%;min-height:52px;resize:vertical;border:1px solid var(--line-2);border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px;line-height:1.5;background:var(--surface);color:var(--ink)";
+    area.addEventListener("input", () => { cadInspect.draft[kind] = area.value; });
+    area.addEventListener("change", () => saveCadLock(kind, area.value));
+    const field = createField(label, area);
+    field.querySelector("label")?.append(createHintBadge(hint));
+    return field;
+  };
+  nodes.push(makeArea(
+    "blocks",
+    t("图块名"),
+    t("这些图块里的文字（含块属性和嵌套在里面的图块）保持原样，常用于图框、标题栏、会签栏、公司标志。多个名字用逗号或换行分开，* 代表任意字符，如 TK*。不分大小写。"),
+    t("例如：TK*, 图框A1, 签名栏"),
+  ));
+  nodes.push(makeArea(
+    "layers",
+    t("图层名"),
+    t("这些图层上的文字保持原样。图块里画在 0 图层上的文字跟随图块所在的图层。写法同上。"),
+    t("例如：签字, TITLE*"),
+  ));
+
+  const scanRow = el("div");
+  scanRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:-2px 0 10px";
+  const selected = st.files.filter((f) => st.selected.has(f.path) && !isRisky("cad", f));
+  const remaining = selected.filter((f) => !cadInspect.inspected.has(f.path));
+  scanRow.append(createButton({
+    label: cadInspect.running ? t("停止") : t("扫描图块名"),
+    size: "mini",
+    icon: cadInspect.running ? undefined : "search",
+    disabled: active || (!cadInspect.running && remaining.length === 0),
+    title: !cadInspect.running && selected.length > 0 && remaining.length === 0 ? t("已勾选的图纸都已扫描") : undefined,
+    onClick: () => {
+      if (cadInspect.running) cancelCadInspection(st);
+      else void inspectCadDrawings(st, remaining.map((f) => f.path));
+    },
+  }));
+  const note = el("span");
+  note.style.cssText = "font-size:11.5px;color:var(--ink-3)";
+  note.textContent = cadInspect.running
+    ? t("正在读取第 {0} / {1} 张图纸…", Math.min(cadInspect.done + 1, cadInspect.total), cadInspect.total)
+    : cadInspect.inspected.size
+      ? t("已扫描 {0} 张图纸", cadInspect.inspected.size)
+      : selected.length
+        ? t("读取已勾选的 {0} 张图纸，列出其中带文字的图块和图层", selected.length)
+        : t("请先选择图纸");
+  scanRow.append(note);
+  nodes.push(scanRow);
+
+  if (cadInspect.blocks.size || cadInspect.layers.size) nodes.push(buildCadContainerList(active));
+  return nodes;
+}
+
+function buildCadContainerList(active: boolean): HTMLElement {
+  const wrap = el("div");
+  wrap.style.cssText = "border:1px solid var(--line-2);border-radius:8px;padding:8px;margin-bottom:11px";
+  const search = document.createElement("input");
+  search.type = "text";
+  search.placeholder = t("搜索图块或图层名…");
+  search.value = cadInspect.search;
+  search.dataset.keepFocus = "cad-lock-search";
+  search.style.cssText = "width:100%;height:28px;border:1px solid var(--line-2);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-size:12px;padding:0 8px;margin-bottom:6px";
+  search.addEventListener("input", () => {
+    cadInspect.search = search.value;
+    rerender("cad");
+  });
+  wrap.append(search);
+
+  const list = el("div");
+  list.dataset.keepScroll = "cad-lock-list";
+  list.style.cssText = "max-height:220px;overflow:auto;font-size:12px";
+  const query = cadInspect.search.trim().toUpperCase();
+  const groups: Array<[CadLockKind, string, Map<string, CadContainer>]> = [
+    ["blocks", t("图块"), cadInspect.blocks],
+    ["layers", t("图层"), cadInspect.layers],
+  ];
+  let shown = 0;
+  for (const [kind, title, items] of groups) {
+    const matches = [...items.values()]
+      .filter((item) => !query || item.name.toUpperCase().includes(query) || item.sample.toUpperCase().includes(query))
+      .sort((a, b) => b.texts - a.texts || a.name.localeCompare(b.name));
+    if (!matches.length) continue;
+    const head = el("div");
+    head.style.cssText = "font-size:11px;color:var(--ink-3);margin:6px 0 2px";
+    head.textContent = `${title}（${matches.length}）`;
+    list.append(head);
+    const current = cadLockText(kind);
+    for (const item of matches) {
+      const row = el("label");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = lockListHas(current, item.name);
+      box.disabled = active;
+      box.addEventListener("change", () => toggleCadLockName(kind, item.name, box.checked));
+      const name = el("span");
+      name.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      name.textContent = item.name;
+      name.title = item.sample ? `${item.name}\n${item.sample}` : item.name;
+      if (item.sample) {
+        const sample = el("span");
+        sample.style.cssText = "display:block;font-size:11px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis";
+        sample.textContent = item.sample;
+        name.append(sample);
+      }
+      const count = el("span");
+      count.style.cssText = "color:var(--ink-3);font-size:11px;white-space:nowrap";
+      count.textContent = item.files > 1
+        ? t("{0} 处文字 · {1} 张图", fmtNum(item.texts), item.files)
+        : t("{0} 处文字", fmtNum(item.texts));
+      row.append(box, name, count);
+      list.append(row);
+      shown += 1;
+    }
+  }
+  if (!shown) {
+    const empty = el("div");
+    empty.style.cssText = "color:var(--ink-3);padding:6px 0";
+    empty.textContent = t("没有匹配的图块或图层");
+    list.append(empty);
+  }
+  wrap.append(list);
+  return wrap;
+}
+
+function toggleCadLockName(kind: CadLockKind, name: string, checked: boolean): void {
+  const current = splitLockNames(cadLockText(kind));
+  const wanted = name.toUpperCase();
+  const kept = current.filter((part) => part.toUpperCase() !== wanted);
+  if (checked) kept.push(name);
+  saveCadLock(kind, kept.join(", "));
+}
+
+function cancelCadInspection(st: SurfaceState): void {
+  cadInspect.token += 1;
+  cadInspect.running = false;
+  // 换了来源，收集到的图块和图层就不再属于这一批图纸。
+  const key = `${normalizeUserPath(st.sourcePath)}\n${st.sourcePaths.join("\n")}`;
+  if (key !== cadInspect.sourceKey) {
+    cadInspect.sourceKey = key;
+    cadInspect.blocks = new Map();
+    cadInspect.layers = new Map();
+    cadInspect.inspected = new Set();
+    cadInspect.failures = new Map();
+    cadInspect.search = "";
+  }
+}
+
+/** 扫描完，DWG 不多也不大时自动逐张统计；否则留给清单上方的「全部统计」按钮。 */
+function autoCountCadAfterScan(st: SurfaceState, scanToken: number): void {
+  if (scanToken !== scanTokens.cad) return;
+  const pending = cadPendingFiles(st);
+  if (!pending.length || pending.length > CAD_AUTO_COUNT_MAX_FILES) return;
+  if (!pending.every((f) => typeof f.size === "number" && f.size <= CAD_AUTO_COUNT_MAX_BYTES)) return;
+  void inspectCadDrawings(st, pending.map((f) => f.path));
+}
+
+function cadPendingFiles(st: SurfaceState): FileItem[] {
+  return st.files.filter((f) => cadCountsPending(f) && !isRisky("cad", f));
+}
+
+async function inspectCadDrawings(st: SurfaceState, paths: string[]): Promise<void> {
+  if (!paths.length || (st.task && !st.task.task.terminal)) return;
+  const token = ++cadInspect.token;
+  cadInspect.running = true;
+  cadInspect.done = 0;
+  cadInspect.total = paths.length;
+  rerender("cad");
+  try {
+    const c = await getClient();
+    for (const path of paths) {
+      if (token !== cadInspect.token) return;
+      try {
+        const response = await c.request<JsonObject>("/api/cad/inspect", {
+          method: "POST",
+          body: JSON.stringify({
+            path,
+            source_language: st.sourceLang,
+            target_language: st.targetLang,
+            include_block_text: Boolean(st.toggles.get("cadBlockText")),
+            locked_blocks: cadLockText("blocks"),
+            locked_layers: cadLockText("layers"),
+          }),
+        });
+        if (token !== cadInspect.token) return;
+        const file = st.files.find((f) => f.path === path);
+        if (file) {
+          file.text_count = numOrNull(response.text_count);
+          file.candidate_count = numOrNull(response.candidate_count);
+          file.uncertain_count = numOrNull(response.uncertain_count);
+          file.counts_pending = false;
+        }
+        if (!cadInspect.inspected.has(path)) {
+          cadInspect.inspected.add(path);
+          mergeCadContainers(cadInspect.blocks, response.blocks);
+          mergeCadContainers(cadInspect.layers, response.layers);
+        }
+        cadInspect.failures.delete(path);
+      } catch (error) {
+        if (token !== cadInspect.token) return;
+        // 一张读不了不影响其余的：这一行保持「开始后统计」，任务里会给出具体原因。
+        cadInspect.failures.set(path, redactedText((error as Error)?.message, t("图纸读取失败。")));
+      }
+      cadInspect.done += 1;
+      rerender("cad");
+    }
+  } finally {
+    if (token === cadInspect.token) {
+      cadInspect.running = false;
+      const failed = cadInspect.failures.size;
+      if (failed) showToast({ message: t("{0} 张图纸未能读取，将在开始翻译后再试。", failed), error: true });
+      rerender("cad");
+    }
+  }
+}
+
+function mergeCadContainers(target: Map<string, CadContainer>, raw: unknown): void {
+  if (!Array.isArray(raw)) return;
+  for (const item of raw) {
+    const entry = record(item);
+    const name = text(entry.name);
+    if (!name) continue;
+    const existing = target.get(name);
+    if (existing) {
+      existing.texts += num(entry.texts);
+      existing.files += 1;
+      existing.sample ||= text(entry.sample);
+    } else {
+      target.set(name, { name, texts: num(entry.texts), files: 1, sample: text(entry.sample) });
+    }
+  }
+}
+
+/** 文件清单上方：还有 DWG 没统计时给「全部统计」，统计中显示进度和「停止」。 */
+function buildCadCountBar(st: SurfaceState): HTMLElement | null {
+  const pending = cadPendingFiles(st);
+  if (!cadInspect.running && !pending.length) return null;
+  const bar = el("div");
+  bar.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 12px;font-size:12px;color:var(--ink-2);border-bottom:1px solid var(--line)";
+  const label = el("span");
+  label.style.flex = "1";
+  label.textContent = cadInspect.running
+    ? t("正在转换并统计第 {0} / {1} 张图纸，可以先调整设置", Math.min(cadInspect.done + 1, cadInspect.total), cadInspect.total)
+    : t("{0} 张 DWG 尚未统计文字数。现在统计会逐张转换，转换结果在翻译时直接使用。", pending.length);
+  bar.append(label);
+  bar.append(createButton({
+    label: cadInspect.running ? t("停止统计") : t("全部统计"),
+    size: "mini",
+    onClick: () => {
+      if (cadInspect.running) {
+        cancelCadInspection(st);
+        rerender("cad");
+      } else {
+        void inspectCadDrawings(st, pending.map((f) => f.path));
+      }
+    },
+  }));
+  return bar;
 }

@@ -153,3 +153,79 @@ def test_cad_scan_excludes_custom_output_directory(tmp_path, monkeypatch):
             TaskOptions(cad_output_dir=str(output)),
         )
     assert [item.path for item in files] == [source]
+
+
+def _framed_dxf_text() -> str:
+    pairs = (
+        (0, "SECTION"), (2, "BLOCKS"),
+        (0, "BLOCK"), (8, "0"), (2, "TK-A1"), (70, "0"),
+        (0, "TEXT"), (8, "0"), (1, "设计单位"),
+        (0, "ENDBLK"),
+        (0, "ENDSEC"),
+        (0, "SECTION"), (2, "ENTITIES"),
+        (0, "INSERT"), (8, "图框"), (2, "TK-A1"),
+        (0, "TEXT"), (8, "说明"), (1, "设备基础"),
+        (0, "ENDSEC"), (0, "EOF"),
+    )
+    return "".join(f"{code}\n{value}\n" for code, value in pairs)
+
+
+def test_cad_inspect_returns_counts_blocks_and_layers_and_honours_locks(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
+    source = tmp_path / "framed.dxf"
+    source.write_text(_framed_dxf_text(), encoding="utf-8")
+    status = {"plugin": "enabled", "oda": "connected", "converter": None, "enabled": True}
+    with patch("api.routes.cad.probe_status", return_value=status):
+        with TestClient(create_app()) as client:
+            plain = client.post("/api/cad/inspect", json={"path": str(source), "target_language": "fr"})
+            locked = client.post(
+                "/api/cad/inspect",
+                json={"path": str(source), "target_language": "fr", "locked_blocks": "tk*"},
+            )
+            scanned = client.post(
+                "/api/cad/scan",
+                json={"paths": [str(source)], "target_language": "fr", "locked_layers": "说明"},
+            )
+
+    assert plain.status_code == 200, plain.text
+    body = plain.json()
+    assert (body["text_count"], body["converted"]) == (2, False)
+    assert body["blocks"] == [{"name": "TK-A1", "texts": 1, "inserts": 1, "sample": "设计单位"}]
+    assert {layer["name"] for layer in body["layers"]} == {"0", "说明"}
+    assert locked.json()["text_count"] == 1
+    assert scanned.json()["items"][0]["text_count"] == 1
+
+
+def test_cad_task_options_reach_the_pipeline(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "APP_DATA_DIR", tmp_path / "app-data")
+    settings = AppSettings()
+    manager = TranslationTaskManager(settings_loader=lambda: settings)
+    source = tmp_path / "sample.dxf"
+    source.write_text(_dxf_text(), encoding="utf-8")
+    with (
+        patch("api.surfaces.cad.probe_status", return_value={"converter": ""}),
+        patch("api.surfaces.cad.build_role_engine", return_value=object()),
+    ):
+        runner = manager._build_runner(
+            surface="cad",
+            files=[SimpleNamespace(path=source, name=source.name, format="dxf")],
+            settings=settings,
+            source_root=tmp_path,
+            options=TaskOptions(
+                cad_fit_default_scale=0.8,
+                cad_fit_min_scale=0.9,
+                cad_display_mode="source_first",
+                cad_locked_blocks="tk*, 签名栏",
+                cad_locked_layers="",
+                cad_translation_font="bogus",
+            ),
+            source_lang="auto",
+            key_overrides={},
+        )
+
+    options = runner._options
+    assert (options.fit_default_scale, options.fit_min_scale) == (0.8, 0.8)
+    assert options.display_mode == "source_first"
+    assert options.locked_blocks == ("TK*", "签名栏") and options.locked_layers == ()
+    assert options.translation_font == "compatible"
+    assert runner._dxf_cache.root == tmp_path / "app-data" / "cache" / "cad-dxf-v1"
