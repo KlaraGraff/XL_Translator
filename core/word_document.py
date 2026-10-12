@@ -2661,13 +2661,34 @@ def _layout_tags_to_keep(text: str) -> frozenset:
     return frozenset(tags)
 
 
+# run 里挂着的非文字内容：图片、文本框（新版 DrawingML 与 VML 备份）、嵌入对象、
+# 脚注/尾注/批注的引用标记。``paragraph.text`` 读不到它们，模型也就还不回来；
+# 「仅显示译文」改写整段时若跟着 w:t 一起扫掉，文本框、图片和脚注编号就从文档里
+# 无声消失了。不管译文写成什么样都原样留在原位。
+_EMBEDDED_RUN_CONTENT_TAGS = frozenset(
+    {
+        qn("w:drawing"),
+        qn("w:pict"),
+        qn("w:object"),
+        qn("w:ptab"),
+        qn("w:footnoteReference"),
+        qn("w:endnoteReference"),
+        qn("w:footnoteRef"),
+        qn("w:endnoteRef"),
+        qn("w:commentReference"),
+        "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent",
+    }
+)
+
+
 def _set_run_text_keeping_layout(run, text: str, keep_tags: frozenset) -> None:
     """改写 run 的文字，同时把指定的版式节点留在原位。
 
     ``Run.text = ...`` 先 ``clear_content()`` 把 run 里的一切扫空，w:tab / w:br 一起
     陪葬。Word 默认的三段式页眉是「左标题 <w:tab/> 右章号」，制表位一没，整行塌成左
     对齐，右侧章号不再靠右——治页眉跑版的路上再带出一种跑版。这里先把要保住的节点摘
-    下来，写完文字按原来的前后位置挂回去。
+    下来，写完文字按原来的前后位置挂回去。``_EMBEDDED_RUN_CONTENT_TAGS`` 里的节点
+    无条件保留。
     """
     element = run._r
     leading: list = []
@@ -2677,7 +2698,7 @@ def _set_run_text_keeping_layout(run, text: str, keep_tags: frozenset) -> None:
         if child.tag == qn("w:t"):
             seen_text = True
             continue
-        if child.tag not in keep_tags:
+        if child.tag not in keep_tags and child.tag not in _EMBEDDED_RUN_CONTENT_TAGS:
             continue
         (trailing if seen_text else leading).append(child)
 
