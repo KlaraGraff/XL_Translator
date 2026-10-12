@@ -2566,18 +2566,18 @@ class TaskRunner(BaseTaskRunner):
                     output_basename      = output_basename,
                     staging_dir          = (process_artifacts.work_dir if process_artifacts else None),
                 )
-            embedded_parts = []
-            if write_stats.get("shape_paragraphs"):
-                embedded_parts.append(f"文本框 {write_stats['shape_paragraphs']} 段")
-            if write_stats.get("comments"):
-                embedded_parts.append(f"批注 {write_stats['comments']} 条")
-            if embedded_parts:
-                shrunk = int(write_stats.get("shrunk_shapes") or 0)
-                self._log(
-                    "INFO",
-                    f"  → {file_item.name}：已翻译" + "、".join(embedded_parts)
-                    + (f"；{shrunk} 个文本框的译文放不下，已缩小字号" if shrunk else ""),
-                )
+            shapes = int(write_stats.get("shape_paragraphs") or 0)
+            comments = int(write_stats.get("comments") or 0)
+            # 每种组合写成整句：界面按整句模板翻译日志，拼接出来的句子对不上模板。
+            if shapes and comments:
+                self._log("INFO", f"  → {file_item.name}：已翻译文本框 {shapes} 段、批注 {comments} 条")
+            elif shapes:
+                self._log("INFO", f"  → {file_item.name}：已翻译文本框 {shapes} 段")
+            elif comments:
+                self._log("INFO", f"  → {file_item.name}：已翻译批注 {comments} 条")
+            shrunk = int(write_stats.get("shrunk_shapes") or 0)
+            if shrunk:
+                self._log("INFO", f"  → {file_item.name}：{shrunk} 个文本框的译文放不下，已缩小字号")
             if excel_output.translate_sheet_names:
                 with ZipFile(out_path) as workbook_package:
                     workbook_root = etree.fromstring(workbook_package.read("xl/workbook.xml"))
@@ -3957,13 +3957,12 @@ class TaskRunner(BaseTaskRunner):
                 shape_count += 1
             else:
                 comment_count += 1
-        parts = []
-        if shape_count:
-            parts.append(f"文本框 {shape_count} 段")
-        if comment_count:
-            parts.append(f"批注 {comment_count} 条")
-        if parts:
-            self._log("INFO", f"  → {item_name}：另有" + "、".join(parts) + "待翻译")
+        if shape_count and comment_count:
+            self._log("INFO", f"  → {item_name}：另有文本框 {shape_count} 段、批注 {comment_count} 条待翻译")
+        elif shape_count:
+            self._log("INFO", f"  → {item_name}：另有文本框 {shape_count} 段待翻译")
+        elif comment_count:
+            self._log("INFO", f"  → {item_name}：另有批注 {comment_count} 条待翻译")
         return texts
 
     @staticmethod

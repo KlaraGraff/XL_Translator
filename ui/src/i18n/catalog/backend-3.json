@@ -1526,5 +1526,37 @@
   "{0} 个表格的单元格内容已同步为译文，在 AutoCAD 里编辑表格也不会变回原文": {
     "en": "Cell contents of {0} table(s) updated with the translation, so editing the table in AutoCAD keeps the translation",
     "fr": "Contenu des cellules de {0} tableau(x) mis à jour avec la traduction : modifier le tableau dans AutoCAD conserve la traduction"
+  },
+  "  → {0}：已翻译文本框 {1} 段、批注 {2} 条": {
+    "en": "  → {0}: translated {1} text box {1|paragraph|paragraphs} and {2} {2|comment|comments}",
+    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de zones de texte et {2} {2|commentaire|commentaires} traduits"
+  },
+  "  → {0}：已翻译文本框 {1} 段": {
+    "en": "  → {0}: translated {1} text box {1|paragraph|paragraphs}",
+    "fr": "  → {0} : {1} {1|paragraphe|paragraphes} de zones de texte traduits"
+  },
+  "  → {0}：已翻译批注 {1} 条": {
+    "en": "  → {0}: translated {1} {1|comment|comments}",
+    "fr": "  → {0} : {1} {1|commentaire traduit|commentaires traduits}"
+  },
+  "  → {0}：{1} 个文本框的译文放不下，已缩小字号": {
+    "en": "  → {0}: the translation did not fit in {1} text {1|box|boxes}; font size reduced",
+    "fr": "  → {0} : la traduction ne tenait pas dans {1} {1|zone|zones} de texte ; taille de police réduite"
+  },
+  "{0}：文本框和批注读取失败，本次只翻译单元格。": {
+    "en": "{0}: could not read text boxes and comments; only cells are translated this time.",
+    "fr": "{0} : impossible de lire les zones de texte et commentaires ; seules les cellules sont traduites cette fois."
+  },
+  "  → {0}：另有文本框 {1} 段、批注 {2} 条待翻译": {
+    "en": "  → {0}: also {1} text box {1|paragraph|paragraphs} and {2} {2|comment|comments} to translate",
+    "fr": "  → {0} : également {1} {1|paragraphe|paragraphes} de zones de texte et {2} {2|commentaire|commentaires} à traduire"
+  },
+  "  → {0}：另有文本框 {1} 段待翻译": {
+    "en": "  → {0}: also {1} text box {1|paragraph|paragraphs} to translate",
+    "fr": "  → {0} : également {1} {1|paragraphe|paragraphes} de zones de texte à traduire"
+  },
+  "  → {0}：另有批注 {1} 条待翻译": {
+    "en": "  → {0}: also {1} {1|comment|comments} to translate",
+    "fr": "  → {0} : également {1} {1|commentaire|commentaires} à traduire"
   }
 }
