@@ -39,15 +39,15 @@ TRANSLATIONS = {
 }
 
 
-def _box_xml(texts: list[str]) -> str:
+def _box_xml(texts: list[str], ppr: str = "") -> str:
     paragraphs = "".join(
-        f'<w:p><w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>{text}</w:t></w:r></w:p>' for text in texts
+        f'<w:p>{ppr}<w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>{text}</w:t></w:r></w:p>' for text in texts
     )
     return f"<w:txbxContent>{paragraphs}</w:txbxContent>"
 
 
-def _textbox_paragraph(texts: list[str], *, cx: int, cy: int, autofit: bool = False) -> str:
-    box = _box_xml(texts)
+def _textbox_paragraph(texts: list[str], *, cx: int, cy: int, autofit: bool = False, ppr: str = "") -> str:
+    box = _box_xml(texts, ppr)
     fit = "<a:spAutoFit/>" if autofit else ""
     return (
         f'<w:p {nsdecls("w")} xmlns:mc="{MC}" xmlns:wps="{WPS}" xmlns:wp="{WP}" xmlns:a="{A}" xmlns:v="{V}">'
@@ -84,10 +84,13 @@ def _notes_part(doc, *, name: str, tag: str, ref_tag: str, text: str, rel_type: 
     doc.part.relate_to(part, rel_type)
 
 
-def build_document(path: Path, *, cx: int = 2286000, cy: int = 914400, autofit: bool = False) -> None:
+def build_document(
+    path: Path, *, cx: int = 2286000, cy: int = 914400, autofit: bool = False, ppr: str = ""
+) -> None:
+    """``ppr``：文本框里每段的 ``<w:pPr>``，用来给段落设行距。"""
     doc = Document()
     end = doc.element.body.find(qn("w:sectPr"))
-    end.addprevious(parse_xml(_textbox_paragraph(BOX_TEXTS, cx=cx, cy=cy, autofit=autofit)))
+    end.addprevious(parse_xml(_textbox_paragraph(BOX_TEXTS, cx=cx, cy=cy, autofit=autofit, ppr=ppr)))
     end.addprevious(
         parse_xml(
             f'<w:p {nsdecls("w")}><w:r><w:t>这一段带脚注</w:t></w:r>'
@@ -213,6 +216,30 @@ class WordStoryTests(unittest.TestCase):
             output = self._write(source, name=name)
             sizes = set(re.findall(r'<w:sz w:val="(\d+)"/>', _xml(output, "word/document.xml")))
             self.assertEqual(sizes, {"22"}, name)
+
+    def test_line_spacing_counts_when_judging_room(self) -> None:
+        sizes = {}
+        for name, ppr in (("single", ""), ("wide", '<w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr>')):
+            source = self.root / f"{name}.docx"
+            build_document(source, cx=180 * 12700, cy=100 * 12700, ppr=ppr)
+            output = self._write(source, name=name)
+            sizes[name] = set(re.findall(r'<w:sz w:val="(\d+)"/>', _xml(output, "word/document.xml")))
+        # 同样大的框：单倍行距放得下，1.5 倍行距要缩字。
+        self.assertEqual(sizes["single"], {"22"})
+        self.assertTrue(all(int(size) < 22 for size in sizes["wide"]), sizes["wide"])
+
+    def test_exact_line_spacing_shrinks_with_the_font(self) -> None:
+        source = self.root / "exact.docx"
+        build_document(source, cx=180 * 12700, cy=80 * 12700, ppr='<w:pPr><w:spacing w:line="400" w:lineRule="exact"/></w:pPr>')
+        output = self._write(source, name="exact")
+        xml = _xml(output, "word/document.xml")
+        size = {int(value) for value in re.findall(r'<w:sz w:val="(\d+)"/>', xml)}
+        line = {int(value) for value in re.findall(r'w:line="(\d+)"', xml)}
+        self.assertEqual(len(size), 1)
+        self.assertEqual(len(line), 1)
+        # 字缩到几成，固定行距也缩到几成；规则仍是固定值。
+        self.assertAlmostEqual(line.pop() / 400, size.pop() / 22, delta=0.05)
+        self.assertNotIn('w:lineRule="auto"', xml)
 
     def test_untranslated_only_fills_in_what_is_missing_without_repeating(self) -> None:
         first = self._write()

@@ -11,8 +11,9 @@ run 里的 DrawingML 或 VML 图形中）和脚注/尾注（独立的 footnotes.
   - 仅显示译文：原段原地换成译文，脚注编号、图片之类的非文字节点原样留在原位。
 
 两处和正文不一样：
-  - 文本框尺寸是固定的。按框的大小和字号估算排版，放不下就按比例缩小这个文本框
-    里的字号，缩到下限仍放不下的报给调用方进质量报告；
+  - 文本框尺寸是固定的。按框的大小、字号和行距估算排版（core/text_box_fit.py，
+    和 Excel 文本框同一套），放不下就按比例缩小这个文本框里的字号，缩到下限仍放
+    不下的报给调用方进质量报告；
   - 同一个文本框在文件里常写两遍：DrawingML 正本（``mc:Choice``）和给旧版 Word
     看的 VML 备份（``mc:Fallback``）。只翻正本，写完把正本的内容复制到备份，两边
     看到的一致。
@@ -22,8 +23,6 @@ run 里的 DrawingML 或 VML 图形中）和脚注/尾注（独立的 footnotes.
 """
 from __future__ import annotations
 
-import math
-import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, field
 
@@ -33,6 +32,7 @@ from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 from lxml import etree
 
+from core.text_box_fit import MIN_SCALE, ParagraphMetrics, fitting_scale
 from core.translation_coverage import looks_like_source_text, looks_like_target_text
 
 KIND_TEXTBOX = "textbox"
@@ -56,10 +56,7 @@ _NOTE_PARTS = {
 _NOTE_LAYOUT_TYPES = frozenset({"separator", "continuationSeparator", "continuationNotice"})
 
 # 文本框里的字缩到原来的这个比例还放不下，就不再缩，报进质量报告。
-TEXTBOX_MIN_SCALE = 0.6
-# 估算排版用的字宽和行高（相对字号）：西文按半个汉字宽、略放宽，行高按 1.25 倍。
-_HALF_WIDTH_EM = 0.55
-_LINE_HEIGHT_EM = 1.25
+TEXTBOX_MIN_SCALE = MIN_SCALE
 _EMU_PER_PT = 12700
 _DEFAULT_INSETS = {"lIns": 91440, "rIns": 91440, "tIns": 45720, "bIns": 45720}
 
@@ -404,19 +401,11 @@ def _sync_fallback_copies(changed_boxes: list) -> None:
 
 @dataclass(frozen=True)
 class _BoxLayout:
-    """框内可用宽高（磅）和每段的（显示宽度, 字号磅, 段前段后磅）。"""
+    """框内可用宽高（磅）和各段的排版量。"""
 
     width: float
     height: float
-    paragraphs: tuple[tuple[int, float, float], ...]
-
-
-def _display_width(text: str) -> int:
-    return sum(
-        2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
-        for char in text
-        if char not in "\r\n"
-    )
+    paragraphs: tuple[ParagraphMetrics, ...]
 
 
 def _int_attr(el, name: str, default: int) -> int:
@@ -426,26 +415,46 @@ def _int_attr(el, name: str, default: int) -> int:
         return default
 
 
-def _paragraph_spacing_pt(paragraph: Paragraph) -> float:
-    total = 0.0
-    for attr in ("space_before", "space_after"):
-        value = None
-        try:
-            value = getattr(paragraph.paragraph_format, attr)
-            style = paragraph.style
-            while value is None and style is not None:
-                value = getattr(style.paragraph_format, attr)
-                style = style.base_style
-        except Exception:  # noqa: BLE001 - 估算用，读不到按 0
-            value = None
-        total += value.pt if value is not None else 0.0
-    return total
+def _format_value(paragraph: Paragraph, attr: str):
+    """段落格式的某一项：段落自己没写就沿样式链往上找。"""
+    try:
+        value = getattr(paragraph.paragraph_format, attr)
+        style = paragraph.style
+        while value is None and style is not None:
+            value = getattr(style.paragraph_format, attr)
+            style = style.base_style
+    except Exception:  # noqa: BLE001 - 估算用，读不到按没写
+        return None
+    return value
+
+
+def _paragraph_metrics(paragraph: Paragraph) -> ParagraphMetrics:
+    from docx.shared import Length
+
+    from core.word_document import _paragraph_effective_half_points
+
+    spacing = sum(
+        value.pt
+        for value in (_format_value(paragraph, "space_before"), _format_value(paragraph, "space_after"))
+        if value is not None
+    )
+    line = _format_value(paragraph, "line_spacing")
+    factor, exact = 1.0, None
+    if isinstance(line, Length):
+        exact = line.pt  # 固定值 / 最小值：按给定磅值
+    elif isinstance(line, (int, float)) and line > 0:
+        factor = float(line)
+    return ParagraphMetrics(
+        text=paragraph.text or "",
+        size_pt=_paragraph_effective_half_points(paragraph) / 2,
+        line_factor=factor,
+        exact_line_pt=exact,
+        spacing_pt=spacing,
+    )
 
 
 def _box_layout(story: _Story) -> _BoxLayout | None:
     """读 DrawingML 文本框的尺寸；读不到（纯 VML、自动调整框大小）返回 None，不缩。"""
-    from core.word_document import _paragraph_effective_half_points
-
     box = story.container
     txbx = box.getparent()
     if txbx is None or txbx.tag != f"{{{_WPS}}}txbx":
@@ -465,12 +474,7 @@ def _box_layout(story: _Story) -> _BoxLayout | None:
     if body_pr is not None and body_pr.get("vert") not in (None, "horz"):
         cx, cy = cy, cx
     paragraphs = tuple(
-        (
-            _display_width(p.text or ""),
-            _paragraph_effective_half_points(p) / 2,
-            _paragraph_spacing_pt(p),
-        )
-        for p in _story_paragraphs(box, story.doc, "w:txbxContent")
+        _paragraph_metrics(p) for p in _story_paragraphs(box, story.doc, "w:txbxContent")
     )
     return _BoxLayout(
         max(1.0, (cx - insets["lIns"] - insets["rIns"]) / _EMU_PER_PT),
@@ -479,33 +483,31 @@ def _box_layout(story: _Story) -> _BoxLayout | None:
     )
 
 
-def _text_height(layout: _BoxLayout, scale: float) -> float:
-    total = 0.0
-    for units, size, spacing in layout.paragraphs:
-        size *= scale
-        line_width = units * _HALF_WIDTH_EM * size
-        lines = max(1, math.ceil(line_width / layout.width))
-        total += lines * _LINE_HEIGHT_EM * size + spacing
-    return total
-
-
 def _fitting_scale(before: _BoxLayout, after: _BoxLayout | None) -> tuple[float, bool]:
-    """译文放进原框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。
-
-    原文本来就超出框的，以原文占的高度为准，不比原来更挤就行。
-    """
+    """译文放进原框要把字号缩到多少（1 = 不用缩），以及缩到下限时是否放得下。"""
     if after is None:
         return 1.0, True
-    room = max(after.height, _text_height(before, 1.0))
+    return fitting_scale(
+        list(before.paragraphs),
+        list(after.paragraphs),
+        width_pt=after.width,
+        height_pt=after.height,
+        min_scale=TEXTBOX_MIN_SCALE,
+    )
 
-    def fits(scale: float) -> bool:
-        return _text_height(after, scale) <= room
 
-    scale = 1.0
-    while scale > TEXTBOX_MIN_SCALE and not fits(scale):
-        scale = round(scale - 0.05, 2)
-    scale = max(TEXTBOX_MIN_SCALE, scale)
-    return scale, fits(scale)
+def _scale_exact_line_spacing(paragraph: Paragraph, scale: float) -> None:
+    """固定行距（含最小值）的段落：行距跟字号一起缩，不然字缩了行高还在，框照样放不下。"""
+    from docx.shared import Length
+
+    line = _format_value(paragraph, "line_spacing")
+    if not isinstance(line, Length):
+        return
+    rule = _format_value(paragraph, "line_spacing_rule")
+    spacing = paragraph._p.get_or_add_pPr().get_or_add_spacing()
+    spacing.set(qn("w:line"), str(max(1, int(round(line.twips * scale)))))
+    # 规则可能写在样式里：显式写到段落上，免得段落只有 w:line 被当成倍数行距。
+    spacing.set(qn("w:lineRule"), "atLeast" if rule is not None and rule.name == "AT_LEAST" else "exact")
 
 
 def _shrink_story_text(story: _Story, scale: float) -> None:
@@ -517,6 +519,7 @@ def _shrink_story_text(story: _Story, scale: float) -> None:
     box = story.container
     for paragraph in _story_paragraphs(box, story.doc, "w:txbxContent"):
         base = _paragraph_effective_half_points(paragraph)
+        _scale_exact_line_spacing(paragraph, scale)
         for r in paragraph._p.iter(qn("w:r")):
             if _nearest_ancestor(r, qn("w:txbxContent")) is not box:
                 continue
