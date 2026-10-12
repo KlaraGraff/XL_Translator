@@ -1207,6 +1207,10 @@ def _freeze_two_cell_anchor(
         return 0
     from_col, from_col_off, from_row, from_row_off = start
     to_col, to_col_off, to_row, to_row_off = end
+    if _is_text_box_anchor(anchor):
+        # 文本框跟着行变高只会多出空白，不会变形；冻结反而把宽度写死成按 Windows
+        # 字宽算的磅值，Mac 上列比这宽，框就窄了一截、折行变多（Mac 实测窄约 6%）。
+        return 0
     # drawing 里的行列是 0-based；图片高度只取决于 [from_row, to_row) 这些行。
     if not freeze_all and not any(
         (row + 1) in changed_rows for row in range(from_row, to_row)
@@ -1237,6 +1241,17 @@ def _freeze_two_cell_anchor(
     parent = anchor.getparent()
     parent.replace(anchor, one_cell)
     return 1
+
+
+def _is_text_box_anchor(anchor) -> bool:
+    """锚点下是一个带文字的形状（文本框、带字的图形），不是图片。"""
+    sp = anchor.find(_xdr("sp"))
+    if sp is None:
+        return False
+    tx_body = sp.find(_xdr("txBody"))
+    if tx_body is None:
+        return False
+    return any((t.text or "").strip() for t in tx_body.iter(f"{{{NS_A}}}t"))
 
 
 def _freeze_absolute_anchor(

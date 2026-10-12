@@ -958,6 +958,7 @@ _PT_PER_UNIT = {"pt": 1.0, "px": 0.75, "in": 72.0, "cm": 72 / 2.54, "mm": 72 / 2
 _COMMENT_INSET_PT = (7.2, 3.6)
 _DEFAULT_COMMENT_FONT_PT = 9.0
 _DEFAULT_ROW_PT = 15.0
+_COMMENT_WRAP_FACTOR = 0.85
 
 
 def _comment_font_size(text_el) -> float:
@@ -985,8 +986,12 @@ def _vml_number(body: str, tag: str) -> int | None:
 
 
 def _comment_needed_pt(text: str, size_pt: float, width_pt: float) -> float:
-    """批注文字要占多高：和文本框同一套估算，再多留一行，宁可框大一点。"""
-    usable = max(1.0, width_pt - 2 * _COMMENT_INSET_PT[0])
+    """批注文字要占多高：和文本框同一套估算，再多留一行，宁可框大一点。
+
+    折行宽度按框内宽的 85% 算：批注字体由 Excel 自己挑（Mac 上常换成更宽的字体），
+    只多留一行时 Mac 实测长批注最后一个词仍在框外。
+    """
+    usable = max(1.0, (width_pt - 2 * _COMMENT_INSET_PT[0]) * _COMMENT_WRAP_FACTOR)
     lines = paragraphs_height([ParagraphMetrics(text=text, size_pt=size_pt)], usable)
     return lines + paragraphs_height([ParagraphMetrics(text="", size_pt=size_pt)], usable) + 2 * _COMMENT_INSET_PT[1]
 

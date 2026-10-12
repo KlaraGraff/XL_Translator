@@ -255,6 +255,16 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertEqual(review, [])
         self.assertEqual(stats["grown_shapes"], 1)
 
+    def test_text_box_anchor_is_not_frozen_when_rows_change(self) -> None:
+        # 行高一变，图片要冻成定尺寸锚点防变形；文本框不冻：写死的宽度在 Mac 上会比列窄。
+        from core.xlsx_patcher import _SheetGeometry, fix_drawing_anchors
+
+        sheet_root = etree.fromstring(f'<worksheet xmlns="{NS_MAIN}"><sheetData/></worksheet>'.encode())
+        drawing = etree.fromstring(_drawing_xml(["图例说明"]))
+        frozen = fix_drawing_anchors(drawing, _SheetGeometry(sheet_root), set(), freeze_all=True)
+        self.assertEqual(frozen, 0)
+        self.assertIsNotNone(drawing.find(f"{{{NS_XDR}}}twoCellAnchor"))
+
     def test_rotated_box_that_cannot_grow_is_listed_for_review(self) -> None:
         build_workbook(self.source, box=(1097280, 457200))
         with zipfile.ZipFile(self.source) as source:
