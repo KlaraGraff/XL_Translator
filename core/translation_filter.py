@@ -16,6 +16,8 @@ from core.residual_classifier import (
     is_residual_exempt_target,
     NumberGroup,
     match_number_groups,
+    months_written_as_names,
+    normalize_dotted_dates,
     number_group_readings,
     scale_number_key,
     summarize_residuals,
@@ -141,6 +143,7 @@ def _missing_number_tokens(
     if not source_tokens:
         return []
 
+    translated = normalize_dotted_dates(translated)
     # 比对按「数值」而不是按「写法」：1500 与 1 500 / 1,500 / １５００ / ١٥٠٠
     # 是同一个数，配对成功即消耗（原文两个 3、译文只剩一个照样算丢）。空白分组
     # 的两种读法由 match_number_groups 兜住（1 500 是一个数，100 200 是两个）。
@@ -148,7 +151,19 @@ def _missing_number_tokens(
         [token.group for token in source_tokens],
         [token.group for token in _find_number_tokens(translated)],
     )
-    return [source_tokens[index] for index in missing_indexes]
+    missing = [source_tokens[index] for index in missing_indexes]
+    if not missing:
+        return missing
+    # 月份数字写成了月份名：每个这样的月份抵掉一个同值的缺失数字。
+    months_as_names = months_written_as_names(original, translated)
+    still_missing: list[_NumberToken] = []
+    for token in missing:
+        value = token.token.strip()
+        if value.isdigit() and int(value) in months_as_names:
+            months_as_names.remove(int(value))
+            continue
+        still_missing.append(token)
+    return still_missing
 
 
 def _number_context_fragment(text: str, start: int, end: int) -> str:

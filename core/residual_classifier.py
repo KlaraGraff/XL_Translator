@@ -683,11 +683,84 @@ def match_number_groups(source_groups, target_groups) -> list[int]:
     return missing
 
 
+# 「2026年10月12日」按内置规则要换成目标语言的写法，月份数字因此常常变成月份名
+# （12 octobre 2026、October 12, 2026）。数字完整性校验只认数字，若不放行月份名，
+# 这类完全正确的译文会被判「缺数字」、整格退回原文。原文里「数字+月」的那个数字
+# 在译文里换成了该月的月份名，就视为保留；表里没有的语言维持原判（退回 + 复核）。
+# 写法按小写比较；带 * 的是要变格的词干（октября、жовтня），其余只认整词。
+_MONTH_NAME_STEMS: dict[int, tuple[str, ...]] = {
+    1: ("january", "jan", "janvier", "janv", "enero", "janeiro", "gennaio", "januar", "jänner", "januari", "ianuarie", "ocak", "stycznia", "styczeń", "январ*", "січ*", "ιανουαρ*", "يناير"),
+    2: ("february", "feb", "février", "fevrier", "févr", "fevr", "febrero", "fevereiro", "febbraio", "februar", "februari", "februarie", "şubat", "subat", "lutego", "luty", "феврал*", "лют*", "φεβρουαρ*", "فبراير"),
+    3: ("march", "mar", "mars", "marzo", "março", "marco", "märz", "maart", "maret", "martie", "mart", "marca", "marzec", "март*", "берез*", "μαρτ*", "مارس"),
+    4: ("april", "apr", "avril", "abril", "aprile", "aprilie", "nisan", "kwietnia", "kwiecień", "апрел*", "квіт*", "απριλ*", "أبريل", "ابريل"),
+    5: ("may", "mai", "mayo", "maio", "maggio", "mei", "mayıs", "mayis", "maja", "maj", "май", "мая", "трав*", "μαΐ*", "μαι*", "مايو"),
+    6: ("june", "jun", "juin", "junio", "junho", "giugno", "juni", "iunie", "haziran", "czerwca", "czerwiec", "июн*", "черв*", "ιουν*", "يونيو"),
+    7: ("july", "jul", "juillet", "juil", "julio", "julho", "luglio", "juli", "iulie", "temmuz", "lipca", "lipiec", "июл*", "лип*", "ιουλ*", "يوليو"),
+    8: ("august", "aug", "août", "aout", "agosto", "augustus", "agustus", "ogos", "ağustos", "agustos", "sierpnia", "sierpień", "август*", "серп*", "αυγουστ*", "أغسطس", "اغسطس"),
+    9: ("september", "sep", "sept", "septembre", "septiembre", "setembro", "settembre", "septembrie", "eylül", "eylul", "września", "wrzesień", "сентябр*", "верес*", "σεπτεμβρ*", "سبتمبر"),
+    10: ("october", "oct", "octobre", "octubre", "outubro", "ottobre", "oktober", "okt", "octombrie", "ekim", "października", "październik", "октябр*", "жовт*", "οκτωβρ*", "أكتوبر", "اكتوبر"),
+    11: ("november", "nov", "novembre", "noviembre", "novembro", "nopember", "noiembrie", "kasım", "kasim", "listopada", "listopad", "ноябр*", "листопад*", "νοεμβρ*", "نوفمبر"),
+    12: ("december", "dec", "décembre", "decembre", "diciembre", "dezembro", "dicembre", "dezember", "desember", "disember", "decembrie", "aralık", "aralik", "grudnia", "grudzień", "декабр*", "груд*", "δεκεμβρ*", "ديسمبر"),
+}
+# 「3个月」的「个」挡在数字和「月」之间，不会被当成月份。
+_CN_MONTH_RE = re.compile(r"(?<!\d)(\d{1,2})\s*月")
+# 「12.10.2026」这类点号日期：NUMBER_TOKEN_RE 会把「12.10」读成小数，统一成斜杠写法再比。
+_DOTTED_DATE_RE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\.(\d{2,4})(?![\d.])")
+
+
+def _has_month_name(text: str, month: int) -> bool:
+    lowered = text.lower()
+    for stem in _MONTH_NAME_STEMS.get(month, ()):
+        # 带 * 的是词干（俄语、乌克兰语、希腊语要变格），按词首匹配；其余只认整词，
+        # 免得 major、junior 被当成月份名。
+        if stem.endswith("*"):
+            pattern = rf"(?<![^\W\d_]){re.escape(stem[:-1])}"
+        else:
+            pattern = rf"(?<![^\W\d_]){re.escape(stem)}(?![^\W\d_])"
+        if re.search(pattern, lowered):
+            return True
+    return False
+
+
+def months_written_as_names(original: str, translated: str) -> list[int]:
+    """原文里哪些「数字+月」的月份数字在译文里写成了该月的月份名，返回这些月份值。"""
+    kept: list[int] = []
+    translated = str(translated or "")
+    for match in _CN_MONTH_RE.finditer(str(original or "")):
+        month = int(match.group(1))
+        if not 1 <= month <= 12:
+            continue
+        if _has_month_name(translated, month):
+            kept.append(month)
+    return kept
+
+
+def normalize_dotted_dates(text: str) -> str:
+    """「12.10.2026」→「12/10/2026」，免得「12.10」被读成一个小数。"""
+    return _DOTTED_DATE_RE.sub(r"\1/\2/\3", str(text or ""))
+
+
 def missing_number_tokens(source_text: str, target_text: str) -> list[str]:
-    """源文里出现、译文里找不到的数字 token（原样返回源文写法，供报错文案用）。"""
+    """源文里出现、译文里找不到的数字 token（原样返回源文写法，供报错文案用）。
+
+    月份数字写成了月份名（2026年10月12日 → 12 octobre 2026）不算丢，见
+    ``months_written_as_names``。
+    """
+    target_text = normalize_dotted_dates(target_text)
     source_groups = number_groups(source_text)
     missing_indexes = match_number_groups(source_groups, number_groups(target_text))
-    return [source_groups[index].token for index in missing_indexes]
+    missing = [source_groups[index].token for index in missing_indexes]
+    if not missing:
+        return missing
+    months_as_names = months_written_as_names(source_text, target_text)
+    still_missing: list[str] = []
+    for token in missing:
+        value = str(token or "").strip()
+        if value.isdigit() and int(value) in months_as_names:
+            months_as_names.remove(int(value))
+            continue
+        still_missing.append(token)
+    return still_missing
 
 
 def extract_number_tokens(text: str) -> list[str]:
