@@ -1045,6 +1045,9 @@ class OnboardingSettings(BaseModel):
 
 
 UI_LANGUAGES = ("zh", "en", "fr")
+# 配色方案 id，与 ui/src/palette.ts、ui/src/styles/palettes.css 保持一致。
+# 第一个是默认值（V10 起的暖调纸感），也是 v30 及更早的设置文件补齐时用的值。
+PALETTES = ("warm", "cool", "celadon", "graphite", "amber")
 
 
 class AppearanceSettings(BaseModel):
@@ -1055,6 +1058,9 @@ class AppearanceSettings(BaseModel):
     theme: str = "light"
     # 界面语言：中文 / English / Français。界面文字由前端按词条表翻译，后端只存选择。
     ui_language: str = "zh"
+    # 配色方案（v31 起）：与 theme 独立，每个方案都有浅色、深色两套。旧文件没有这个
+    # 字段，读取时按默认值补齐，外观和升级前完全一样。
+    palette: str = PALETTES[0]
 
     @model_validator(mode="after")
     def _normalize_theme(self):
@@ -1062,6 +1068,8 @@ class AppearanceSettings(BaseModel):
             self.theme = "light"
         if self.ui_language not in UI_LANGUAGES:
             self.ui_language = "zh"
+        if self.palette not in PALETTES:
+            self.palette = PALETTES[0]
         return self
 
 

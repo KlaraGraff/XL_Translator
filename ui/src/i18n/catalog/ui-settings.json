@@ -1094,5 +1094,53 @@
   "行政生活化场景": {
     "en": "Administration & daily life",
     "fr": "Administration et vie quotidienne"
+  },
+  "配色方案": {
+    "en": "Color scheme",
+    "fr": "Palette de couleurs"
+  },
+  "暖调纸感": {
+    "en": "Warm paper",
+    "fr": "Papier chaud"
+  },
+  "暖米白纸色，夜间不刺眼（默认）": {
+    "en": "Warm off-white, easy on the eyes at night (default)",
+    "fr": "Blanc cassé chaud, doux pour les yeux le soir (par défaut)"
+  },
+  "冷调柔光": {
+    "en": "Soft cool",
+    "fr": "Froid doux"
+  },
+  "蓝灰冷色，保留原来的风格": {
+    "en": "Cool blue-grey, close to the original look",
+    "fr": "Gris bleuté, proche de l'apparence d'origine"
+  },
+  "青瓷": {
+    "en": "Celadon",
+    "fr": "Céladon"
+  },
+  "灰绿底色配青绿主色，最柔和": {
+    "en": "Grey-green tones with a teal accent, the softest",
+    "fr": "Tons gris-vert et accent sarcelle, le plus doux"
+  },
+  "石墨": {
+    "en": "Graphite",
+    "fr": "Graphite"
+  },
+  "纯中性灰，不带色偏": {
+    "en": "Pure neutral grey with no color cast",
+    "fr": "Gris neutre, sans dominante de couleur"
+  },
+  "琥珀护眼": {
+    "en": "Amber comfort",
+    "fr": "Ambre confort"
+  },
+  "米黄纸色，蓝光最少，适合夜间长时间使用": {
+    "en": "Beige paper tones with the least blue light, for long evening sessions",
+    "fr": "Tons papier beige, le moins de lumière bleue, pour les longues soirées"
+  },
+  "每个配色方案都有浅色和深色两套，跟随上面的主题设置切换。": {
+    "en": "Each color scheme has a light and a dark version, chosen by the theme setting above.",
+    "fr": "Chaque palette existe en version claire et sombre, selon le thème choisi ci-dessus."
   }
 }

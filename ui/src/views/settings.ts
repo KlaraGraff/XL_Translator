@@ -4,6 +4,7 @@
 // params 约定：{ page?: "models" | "params" | "appearance" | "data" | "about" }，
 // 用于从右栏「编辑 Prompt ↗ 设置」、顶栏模型药丸等处深链到具体子页。
 
+import { DEFAULT_PALETTE, PALETTES, applyPalette, isPaletteId, storePalette, type PaletteId } from "../palette";
 import { navigate, type ViewParams } from "../router";
 import { setTopbar } from "../shell";
 import {
@@ -872,6 +873,10 @@ export async function refreshSettings(): Promise<void> {
   const pref = currentThemePreference();
   applyThemeVisual(pref);
   commitThemeToLocalStorage(pref);
+  // 配色方案同理：重置设置会把它改回默认方案，这里跟着对齐。
+  const palette = currentPalettePreference();
+  applyPalette(palette);
+  storePalette(palette);
 }
 
 async function refreshProviderDefaults(): Promise<void> {
@@ -1848,6 +1853,79 @@ function currentThemePreference(): ThemePreference {
   return value === "dark" || value === "system" ? value : "light";
 }
 
+function currentPalettePreference(): PaletteId {
+  const value = record(settings?.appearance).palette;
+  return isPaletteId(value) ? value : DEFAULT_PALETTE;
+}
+
+function paletteSwatch(palette: (typeof PALETTES)[number]): HTMLElement {
+  // 小色样：背景条上放一张卡片，卡片里两行字色和一个主色按钮。按当前浅色 / 深色画。
+  const dark = document.documentElement.dataset.theme === "dark";
+  const colors = dark ? palette.swatch.dark : palette.swatch.light;
+  const frame = document.createElement("span");
+  frame.className = "pal-swatch";
+  frame.style.background = colors.ground;
+  const card = document.createElement("span");
+  card.className = "pal-card";
+  card.style.background = colors.surface;
+  card.style.borderColor = colors.line;
+  const line1 = document.createElement("i");
+  line1.style.background = colors.ink;
+  const line2 = document.createElement("i");
+  line2.style.background = colors.ink3;
+  const button = document.createElement("i");
+  button.className = "pal-btn";
+  button.style.background = colors.accent;
+  card.append(line1, line2, button);
+  frame.append(card);
+  return frame;
+}
+
+// 配色方案：和主题分段控件同样的顺序——先切可见颜色给即时反馈，落盘成功后才写
+// localStorage，落盘失败就把颜色回滚。
+function renderPaletteCard(host: HTMLElement): void {
+  const card = createCard([]);
+  const body = document.createElement("div");
+  body.style.padding = "14px 16px";
+  body.append(sectionLabel(t("配色方案")));
+  const grid = document.createElement("div");
+  grid.className = "pal-grid";
+  const active = currentPalettePreference();
+  for (const palette of PALETTES) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = palette.id === active ? "pal-opt on" : "pal-opt";
+    option.setAttribute("aria-pressed", String(palette.id === active));
+    const b = document.createElement("b");
+    b.textContent = palette.label();
+    const span = document.createElement("span");
+    span.textContent = palette.hint();
+    option.append(paletteSwatch(palette), b, span);
+    option.addEventListener("click", () => void reRenderAfter(async () => {
+      const previous = currentPalettePreference();
+      if (palette.id === previous) return;
+      applyPalette(palette.id);
+      try {
+        await persistSettings({ appearance: { ...record(settings?.appearance), palette: palette.id } });
+      } catch (error) {
+        applyPalette(previous);
+        throw error;
+      }
+      storePalette(palette.id);
+    }));
+    grid.append(option);
+  }
+  body.append(grid);
+  const note = document.createElement("div");
+  note.style.marginTop = "8px";
+  note.style.fontSize = "12px";
+  note.style.color = "var(--ink-3)";
+  note.textContent = t("每个配色方案都有浅色和深色两套，跟随上面的主题设置切换。");
+  body.append(note);
+  card.append(body);
+  host.append(card);
+}
+
 function currentLanguagePreference(): Locale {
   const value = record(settings?.appearance).ui_language;
   return isLocale(value) ? value : "zh";
@@ -1939,6 +2017,7 @@ function renderAppearancePage(host: HTMLElement): void {
   themeBody.append(seg);
   themeCard.append(themeBody);
   host.append(themeCard);
+  renderPaletteCard(host);
 
   const langCard = createCard([]);
   const addBtn = createButton({

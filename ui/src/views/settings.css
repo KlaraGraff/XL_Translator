@@ -180,3 +180,20 @@
 
 /* 诊断码：用户看不懂，但截图发过来时它是唯一有用的东西。 */
 .diag-code { font-family: var(--mono); font-size: 11.5px; }
+
+/* 外观与语言 → 配色方案：五个方案排成一行（窄窗口自动换行），每个选项上方是方案自己的色样。
+   色样颜色由 settings.ts 按方案的 swatch 写在行内样式里，与当前页面的配色无关。 */
+.pal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.pal-opt { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px 11px; cursor: pointer; background: var(--surface); min-width: 0; }
+.pal-opt:hover { border-color: var(--line-2); }
+.pal-opt:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.pal-opt b { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.pal-opt span:not(.pal-swatch):not(.pal-card) { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; }
+.pal-opt.on { border-color: var(--tint-line); background: var(--tint); }
+.pal-opt.on b { color: var(--tint-ink); }
+.pal-swatch { display: flex; align-items: center; justify-content: center; height: 46px; border-radius: 8px; padding: 7px 10px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%); }
+.pal-card { position: relative; display: block; width: 100%; height: 100%; border: 1px solid; border-radius: 5px; }
+.pal-card i { position: absolute; left: 8px; height: 3px; border-radius: 2px; }
+.pal-card i:nth-child(1) { top: 8px; width: 46%; }
+.pal-card i:nth-child(2) { top: 16px; width: 30%; }
+.pal-card i.pal-btn { top: auto; left: auto; right: 7px; bottom: 6px; width: 22px; height: 9px; border-radius: 3px; }
