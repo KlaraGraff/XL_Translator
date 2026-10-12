@@ -221,7 +221,7 @@ class CadTaskRunner(BaseTaskRunner):
         # 以前标题会在「AI 翻译」和「状态：[阶段 3/5] 翻译完成」之间来回跳。
         if progress.message:
             prefix = f"{Path(file_path).name}：" if file_path is not None else ""
-            self._log("INFO", f"{prefix}{progress.message}")
+            self._log(progress.level or "INFO", f"{prefix}{progress.message}")
         if file_path is not None:
             # 文件状态用全页共享的 "active"（见 ui/src/file-progress.ts），以前写成
             # "running"，界面认不出来，状态芯片上直接显示 undefined。

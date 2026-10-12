@@ -28,6 +28,65 @@ class AppearanceSettingsTests(unittest.TestCase):
             settings = AppSettings.model_validate({"appearance": {"ui_language": value}})
             self.assertEqual(settings.appearance.ui_language, value)
 
+    def test_default_palettes_are_graphite(self) -> None:
+        appearance = AppSettings().appearance
+        self.assertEqual(appearance.palette_light, "graphite")
+        self.assertEqual(appearance.palette_dark, "graphite")
+
+    def test_invalid_palette_falls_back_to_default(self) -> None:
+        settings = AppSettings.model_validate({"appearance": {"palette_light": "neon", "palette_dark": "石墨"}})
+
+        self.assertEqual(settings.appearance.palette_light, "graphite")
+        self.assertEqual(settings.appearance.palette_dark, "graphite")
+
+    def test_light_and_dark_palettes_are_independent(self) -> None:
+        for light in settings_module.PALETTES:
+            for dark in settings_module.PALETTES:
+                appearance = AppSettings.model_validate(
+                    {"appearance": {"palette_light": light, "palette_dark": dark}}
+                ).appearance
+                self.assertEqual((appearance.palette_light, appearance.palette_dark), (light, dark))
+
+
+class PaletteUpgradeTests(IsolatedAppDataTestCase):
+    """v31 added appearance.palette_light / palette_dark; v30 files get the default."""
+
+    def _write_settings(self, payload: dict) -> None:
+        self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        (self.app_data_dir / "settings.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _read_settings(self) -> dict:
+        return json.loads((self.app_data_dir / "settings.json").read_text(encoding="utf-8"))
+
+    def test_v30_file_gets_default_palettes_and_keeps_its_choices(self) -> None:
+        self._write_settings(
+            {"settings_version": 30, "appearance": {"theme": "system", "ui_language": "en"}}
+        )
+
+        loaded = settings_module.load_settings()
+
+        self.assertEqual(loaded.appearance.palette_light, "graphite")
+        self.assertEqual(loaded.appearance.palette_dark, "graphite")
+        # A v30 "system" was picked by the user (v30 already defaulted to light).
+        self.assertEqual(loaded.appearance.theme, "system")
+        self.assertEqual(loaded.appearance.ui_language, "en")
+
+    def test_v30_file_is_stamped_on_next_save(self) -> None:
+        self._write_settings({"settings_version": 30, "appearance": {"theme": "dark"}})
+
+        loaded = settings_module.load_settings()
+        loaded.appearance.palette_light = "celadon"
+        loaded.appearance.palette_dark = "amber"
+        settings_module.save_settings(loaded)
+
+        persisted = self._read_settings()
+        self.assertEqual(persisted["settings_version"], settings_module.SETTINGS_SCHEMA_VERSION)
+        self.assertEqual(persisted["appearance"]["palette_light"], "celadon")
+        self.assertEqual(persisted["appearance"]["palette_dark"], "amber")
+        self.assertEqual(persisted["appearance"]["theme"], "dark")
+        reloaded = settings_module.load_settings().appearance
+        self.assertEqual((reloaded.palette_light, reloaded.palette_dark), ("celadon", "amber"))
+
 
 class ThemeDefaultMigrationTests(IsolatedAppDataTestCase):
     """v29 files stored the old default "system"; v30 reads that as "light"."""

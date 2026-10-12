@@ -270,7 +270,7 @@ table.review-tbl { table-layout: fixed; }
 .prog-stage span { color: var(--ink-2); font-size: 12.5px; }
 .prog-stage .pct { margin-left: auto; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--tint-ink); }
 .bar { height: 7px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); }
+.bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--bar-end)); }
 /* 不确定进度：解包安装拿不到字节数，用来回滑动的短条代替百分比。 */
 .bar.indet i { width: 34%; animation: bar-indet 1.35s ease-in-out infinite; }
 @keyframes bar-indet { from { margin-left: -34%; } to { margin-left: 100%; } }
@@ -709,8 +709,7 @@ table.review-tbl { table-layout: fixed; }
 .ut-rn.clamped { position: relative; max-height: 6.4em; overflow: hidden; }
 /* 夹住时底部渐隐，明示「下面还有」。渐变终点必须是卡片底色而不是透明——Safari 会把
    transparent 解析成 rgba(0,0,0,0)，浅色背景上会渐出一条灰边。 */
-.ut-rn.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, rgba(246, 245, 241, 0), var(--surface)); }
-:root[data-theme="dark"] .ut-rn.clamped::after { background: linear-gradient(to bottom, rgba(42, 41, 38, 0), var(--surface)); }
+.ut-rn.clamped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(to bottom, var(--surface-clear), var(--surface)); }
 .ut-blocked { padding: 0 14px 10px 40px; font-size: 11.6px; color: var(--warn); line-height: 1.6; }
 
 .ut-foot { display: flex; align-items: center; gap: 12px; padding: 8px 11px 8px 14px; border-top: 1px solid var(--line); }
@@ -728,7 +727,7 @@ table.review-tbl { table-layout: fixed; }
 .ut-bar { height: 4px; border-radius: 99px; background: var(--ground-2); overflow: hidden; }
 /* 宽度走过渡：进度按整数百分比通知（见 update-controller 的节流），直接改宽度就是
    一格一格地蹦；160ms 刚好把相邻两格接上，又不会慢到落在真实进度后面。 */
-.ut-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #7d8cff); transition: width 160ms ease-out; }
+.ut-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--bar-end)); transition: width 160ms ease-out; }
 /* 长度未知时来回滑，而不是停在 0%——一条不动的进度条读起来就是「卡住了」。 */
 .ut-bar.indet i { width: 34%; animation: ut-slide 1.25s ease-in-out infinite alternate; }
 @keyframes ut-slide { from { margin-left: 0; } to { margin-left: 66%; } }

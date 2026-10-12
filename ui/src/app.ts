@@ -4,6 +4,7 @@
 import "./dev-tauri-shim";
 
 import "./styles/tokens.css";
+import "./styles/palettes.css";
 import "./styles/app.css";
 
 import { injectIconSprite } from "./icons";
@@ -17,6 +18,7 @@ import { ApiClient } from "./api-client";
 import { currentLocale, isLocale, localeTag, storeLocale } from "./i18n";
 
 import * as excelView from "./views/excel";
+import { applyPalettes, initPalettes, palettesFromAppearance, storePalettes } from "./palette";
 import * as wordView from "./views/word";
 import * as pdfView from "./views/pdf";
 import * as cadView from "./views/cad";
@@ -46,12 +48,14 @@ function applyTheme(preference: ThemePreference): void {
 }
 
 /**
- * 主题初始化：读取本地缓存的偏好（浅色 / 深色 / 跟随系统，没有缓存时按默认的浅色），并在跟随系统时监听
+ * 主题初始化：读取本地缓存的偏好（浅色 / 深色 / 跟随系统，没有缓存时按默认的浅色）和浅色、深色
+ * 各自的配色方案（没有缓存时按默认的素雅灰），并在跟随系统时监听
  * 系统主题变化实时刷新。设置页的「外观与语言」子页后续应在写入后端设置的同时
  * 同步写回 localStorage(THEME_STORAGE_KEY)，保证下次启动前的首屏渲染不用等后端。
  */
 function initTheme(): void {
   applyTheme(readStoredThemePreference());
+  initPalettes();
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if (readStoredThemePreference() === "system") {
       applyTheme("system");
@@ -70,13 +74,16 @@ const LOCALE_RELOAD_GUARD_KEY = "translator.locale-reloaded";
 async function syncAppearanceFromBackend(): Promise<void> {
   const client = new ApiClient();
   await client.connect();
-  const settings = await client.request<{ appearance?: { theme?: unknown; ui_language?: unknown } }>("/api/settings");
+  const settings = await client.request<{ appearance?: { theme?: unknown; palette_light?: unknown; palette_dark?: unknown; ui_language?: unknown } }>("/api/settings");
   const appearance = settings.appearance ?? {};
   const theme = appearance.theme;
   if (theme === "light" || theme === "dark" || theme === "system") {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
     applyTheme(theme);
   }
+  const palettes = palettesFromAppearance(appearance);
+  storePalettes(palettes);
+  applyPalettes(palettes);
   const language = appearance.ui_language;
   if (isLocale(language) && language !== currentLocale()) {
     storeLocale(language);
