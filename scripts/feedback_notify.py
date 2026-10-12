@@ -24,6 +24,7 @@ FEEDBACK_SMTP_PORT (default 465).
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -76,7 +77,7 @@ def parse_notice(comment: str) -> Notice | None:
     body = _SIGNATURE_RE.sub("", _FOOTER_RE.sub("", "\n".join(lines[2:])).strip()).strip()
     if not subject or not body:
         return None
-    return Notice(parse_version(marker[1]), subject[1], f"{body}\n\n{SIGNATURE}\n")
+    return Notice(parse_version(marker[1]), subject[1], body)
 
 
 def contact_email(issue_body: str) -> str:
@@ -96,8 +97,23 @@ def build_message(sender: str, to: str, notice: Notice) -> EmailMessage:
     message["To"] = to
     message["Subject"] = notice.subject
     message["Message-ID"] = make_msgid(domain=sender.partition("@")[2] or None)
-    message.set_content(notice.body)
+    # 纯文本给不显示 HTML 的客户端；HTML 版按段落排版，落款靠右。
+    message.set_content(f"{notice.body}\n\n{SIGNATURE}\n")
+    message.add_alternative(_html_body(notice.body), subtype="html")
     return message
+
+
+def _html_body(body: str) -> str:
+    paragraphs = "".join(
+        f'<p style="margin:0 0 1em">{"<br>".join(html.escape(line) for line in block.split(chr(10)))}</p>'
+        for block in re.split(r"\n\s*\n", body.strip())
+    )
+    return (
+        '<!doctype html><html><body style="font-family:-apple-system,\'Segoe UI\',\'PingFang SC\','
+        '\'Microsoft YaHei\',sans-serif;font-size:14px;line-height:1.7;color:#222">'
+        f'<div style="max-width:560px">{paragraphs}'
+        f'<p style="margin:1.5em 0 0;text-align:right">{html.escape(SIGNATURE)}</p></div></body></html>\n'
+    )
 
 
 class GitHub:
