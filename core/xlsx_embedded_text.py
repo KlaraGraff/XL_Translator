@@ -583,12 +583,27 @@ class _SheetGrid:
     rows: dict[int, float]
     default_column: float
     default_row: float
+    # 有内容的单元格（行 → 列，都从 0 起）和合并区域（首行, 首列, 末行, 末列），
+    # 文本框往下加高时用来找下面第一行有内容的地方。
+    filled: dict[int, frozenset[int]] = field(default_factory=dict)
+    merged: tuple[tuple[int, int, int, int], ...] = ()
 
     def column(self, index: int) -> float:
         return self.columns.get(index, self.default_column)
 
     def row(self, index: int) -> float:
         return self.rows.get(index, self.default_row)
+
+    def row_has_content(self, row: int, first_col: int, last_col: int) -> bool:
+        if any(first_col <= col <= last_col for col in self.filled.get(row, ())):
+            return True
+        return any(
+            top <= row <= bottom
+            and left <= last_col
+            and right >= first_col
+            and left in self.filled.get(top, ())
+            for top, left, bottom, right in self.merged
+        )
 
 
 def _column_width_pt(chars: float) -> float:
@@ -624,6 +639,7 @@ def _sheet_grid(package: _Package, sheet_part: str) -> _SheetGrid | None:
         for index in range(first - 1, min(last, first + 16383)):
             columns[index] = width
     rows: dict[int, float] = {}
+    filled: dict[int, set[int]] = {}
     for row in root.iter(_m("row")):
         try:
             index = int(row.get("r")) - 1
@@ -633,7 +649,36 @@ def _sheet_grid(package: _Package, sheet_part: str) -> _SheetGrid | None:
                 rows[index] = float(row.get("ht"))
         except (TypeError, ValueError):
             continue
-    return _SheetGrid(columns, rows, default_column, default_row)
+        for cell in row.iter(_m("c")):
+            if not _cell_has_content(cell):
+                continue
+            position = _cell_index(str(cell.get("r") or ""))
+            if position is not None:
+                filled.setdefault(position[0], set()).add(position[1])
+    merged = []
+    for merge in root.iter(_m("mergeCell")):
+        first, _, last = str(merge.get("ref") or "").partition(":")
+        start, end = _cell_index(first), _cell_index(last or first)
+        if start is not None and end is not None:
+            merged.append((start[0], start[1], end[0], end[1]))
+    return _SheetGrid(
+        columns,
+        rows,
+        default_column,
+        default_row,
+        {row: frozenset(cols) for row, cols in filled.items()},
+        tuple(merged),
+    )
+
+
+def _cell_has_content(cell) -> bool:
+    if cell.find(_m("f")) is not None:
+        return True
+    value = cell.find(_m("v"))
+    if value is not None and (value.text or "").strip():
+        return True
+    inline = cell.find(_m("is"))
+    return inline is not None and any((t.text or "").strip() for t in inline.iter(_m("t")))
 
 
 def _anchor_point(marker, grid: _SheetGrid, *, column: bool) -> float | None:
@@ -758,8 +803,8 @@ def _apply_shapes(
         stats.shrunk_shapes += 1
         if fits:
             continue
-        # 缩到下限还放不下：框往下加高到放得下（maple 2026-10-12 选的做法）。加不了的
-        # （竖排、旋转、组合里的形状、量不出大小）才列入复核。
+        # 缩到下限还放不下：框往下加高（maple 2026-10-12 选的做法），只长进下面的空白。
+        # 空白不够、或加不了的（竖排、旋转、组合里的形状、非两格锚定）列入复核。
         if _grow_shape(sp, after, scale, grid):
             stats.grown_shapes += 1
             continue
@@ -776,7 +821,10 @@ def _apply_shapes(
 
 
 def _grow_shape(sp, layout: _ShapeLayout, scale: float, grid: _SheetGrid | None) -> bool:
-    """把形状往下加高到按 ``scale`` 缩过的文字放得下（多留一行），成功返回 True。"""
+    """把形状往下加高到按 ``scale`` 缩过的文字放得下（多留一行），放下了返回 True。
+
+    下面空白不够时只长到空白用完为止，返回 False（调用方列入复核）。
+    """
     if layout.width is None or layout.height is None or not layout.wrap:
         return False
     tx_body = sp.find(_x("txBody"))
@@ -794,35 +842,63 @@ def _grow_shape(sp, layout: _ShapeLayout, scale: float, grid: _SheetGrid | None)
     extra = paragraphs_height(paragraphs, layout.width, scale) + margin - layout.height
     if extra <= 0:
         return False
-    extra_emu = int(math.ceil(extra * _EMU_PER_PT))
-    if anchor.tag == _x("twoCellAnchor"):
-        end = anchor.find(_x("to"))
-        row_el = end.find(_x("row")) if end is not None else None
-        off_el = end.find(_x("rowOff")) if end is not None else None
-        if row_el is None or off_el is None:
-            return False
-        try:
-            row, offset = int(row_el.text), int(off_el.text)
-        except (TypeError, ValueError):
-            return False
-        remaining = extra + offset / _EMU_PER_PT
-        for _ in range(10000):
-            height = grid.row(row) if grid is not None else _DEFAULT_ROW_PT
-            if height > 0 and remaining < height:
-                break
-            remaining -= max(0.0, height)
-            row += 1
-        row_el.text = str(row)
-        off_el.text = str(int(math.ceil(remaining * _EMU_PER_PT)))
-    else:
-        ext = anchor.find(_x("ext"))
-        if ext is None:
-            return False
-        ext.set("cy", str(_emu_attr(ext, "cy", 0) + extra_emu))
+    if anchor.tag != _x("twoCellAnchor") or grid is None:
+        return False  # 单格/绝对锚定量不出框下面是哪几格，不冒险盖住内容
+    start, end = anchor.find(_x("from")), anchor.find(_x("to"))
+    try:
+        first_col = int(start.find(_x("col")).text)
+        to_col = int(end.find(_x("col")).text)
+        last_col = to_col if int(end.find(_x("colOff")).text) > 0 else to_col - 1
+        row_el, off_el = end.find(_x("row")), end.find(_x("rowOff"))
+        row, offset = int(row_el.text), int(off_el.text)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    # 偏移超过本行行高的锚点（有的程序这样写）先折算到真正所在的行。
+    offset_pt = offset / _EMU_PER_PT
+    for _ in range(10000):
+        height = grid.row(row)
+        if height > 0 and offset_pt < height:
+            break
+        offset_pt -= max(0.0, height)
+        row += 1
+    # 只往空白处长：长到下面第一行有内容的地方为止，不盖住表头和数据。
+    room = _blank_room_below(grid, row, offset_pt, first_col, max(first_col, last_col))
+    grow = min(extra, room)
+    if grow <= 0:
+        return False
+    extra_emu = int(math.ceil(grow * _EMU_PER_PT))
+    remaining = grow + offset_pt
+    for _ in range(10000):
+        height = grid.row(row)
+        if height > 0 and remaining < height:
+            break
+        remaining -= max(0.0, height)
+        row += 1
+    row_el.text = str(row)
+    off_el.text = str(int(math.ceil(remaining * _EMU_PER_PT)))
     ext = xfrm.find(_a("ext")) if xfrm is not None else None
     if ext is not None:
         ext.set("cy", str(_emu_attr(ext, "cy", 0) + extra_emu))
-    return True
+    return grow >= extra
+
+
+# 往下找空白最多看这么多行；再往下都空就当作没有尽头。
+_BLANK_SCAN_ROWS = 500
+
+
+def _blank_room_below(grid: _SheetGrid, row: int, offset_pt: float, first_col: int, last_col: int) -> float:
+    """框下边（第 row 行内 offset_pt 处）往下、到第一行有内容的格子之前，有多少磅空白。"""
+    room = 0.0
+    if offset_pt > 0:
+        if grid.row_has_content(row, first_col, last_col):
+            return 0.0
+        room = max(0.0, grid.row(row) - offset_pt)
+        row += 1
+    for index in range(row, row + _BLANK_SCAN_ROWS):
+        if grid.row_has_content(index, first_col, last_col):
+            return room
+        room += grid.row(index)
+    return math.inf
 
 
 def _replace_comment_text(text_el, prefix: str, body: str) -> None:

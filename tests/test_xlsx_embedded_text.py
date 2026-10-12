@@ -85,11 +85,14 @@ def build_workbook(
     threaded: bool = True,
     box: tuple[int, int] = (1828800, 762000),
     list_style: str = "",
+    cells: dict[str, str] | None = None,
 ) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "表1"
     ws["A1"] = "单元格原文"
+    for ref, value in (cells or {}).items():
+        ws[ref] = value
     ws["B2"] = "有批注"
     ws["B2"].comment = Comment("张三:\n这里要核对", "张三")
     if threaded:
@@ -254,6 +257,22 @@ class EmbeddedTextTests(unittest.TestCase):
         self.assertAlmostEqual(cy / 12700, grown_pt, delta=1)
         self.assertEqual(review, [])
         self.assertEqual(stats["grown_shapes"], 1)
+
+    def test_box_grows_only_into_blank_rows(self) -> None:
+        # 框在 D 列第 2 行起，高 36 磅（落在第 4 行里）；D6 有表头。框只长到第 6 行顶，
+        # 不盖住表头；仍放不下，列入复核。别的列有内容不算。
+        build_workbook(self.source, box=(1097280, 457200), cells={"D6": "序号", "F5": "旁边一列"})
+        review: list[dict[str, str]] = []
+        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
+        self.assertIn("<xdr:to><xdr:col>3</xdr:col><xdr:colOff>1097280</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>", drawing)
+        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
+
+        # 紧贴着框下边就有内容：一点也不加高。
+        build_workbook(self.source, box=(1097280, 457200), cells={"D4": "合计"})
+        review = []
+        drawing = _part(self._write(review_positions=review), "xl/drawings/drawing1.xml")
+        self.assertIn("<xdr:row>1</xdr:row><xdr:rowOff>457200</xdr:rowOff></xdr:to>", drawing)
+        self.assertEqual([item["category"] for item in review], [REVIEW_CATEGORY_SHAPE_OVERFLOW])
 
     def test_text_box_anchor_is_not_frozen_when_rows_change(self) -> None:
         # 行高一变，图片要冻成定尺寸锚点防变形；文本框不冻：写死的宽度在 Mac 上会比列窄。

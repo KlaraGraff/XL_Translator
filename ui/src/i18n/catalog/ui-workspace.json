@@ -1787,9 +1787,9 @@
     "en": "Translate text boxes and shapes",
     "fr": "Traduire les zones de texte et formes"
   },
-  "同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的，把文本框往下加高，可能会盖住下面几行单元格。": {
-    "en": "Also translates text in text boxes and shapes, paragraph by paragraph. When a translation does not fit, the font size in that text box is reduced; boxes that still overflow at 60% of the original size are made taller, which may cover a few rows of cells below.",
-    "fr": "Traduit aussi le texte des zones de texte et des formes, paragraphe par paragraphe. Si la traduction ne tient pas, la taille de police de la zone est réduite ; les zones qui débordent encore à 60 % de la taille d'origine sont agrandies vers le bas et peuvent masquer quelques lignes de cellules."
+  "同时翻译文本框和形状里的文字，按段翻译。译文放不下时自动缩小这个文本框的字号，缩到原来的 60% 仍放不下的，把文本框往下加高，只占下面的空白，不盖住单元格内容；空白不够的列入复核清单。": {
+    "en": "Also translates text in text boxes and shapes, paragraph by paragraph. When a translation does not fit, the font size in that text box is reduced; boxes that still overflow at 60% of the original size are made taller into the blank space below without covering cell contents; if there is not enough blank space, they are listed for review.",
+    "fr": "Traduit aussi le texte des zones de texte et des formes, paragraphe par paragraphe. Si la traduction ne tient pas, la taille de police de la zone est réduite ; les zones qui débordent encore à 60 % de la taille d'origine sont agrandies vers le bas dans l'espace vide, sans masquer le contenu des cellules ; si l'espace manque, elles sont listées pour vérification."
   },
   "翻译批注": {
     "en": "Translate comments",
