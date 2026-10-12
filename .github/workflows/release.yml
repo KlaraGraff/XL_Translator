@@ -18,6 +18,10 @@ name: Release (tag / publish)
 #   step=retract  把已发布的版本改回草稿：不删产物、不动标签。改完确认
 #                 releases/latest 和 latest.json 都已回到上一个正式版，
 #                 已安装的应用不会再收到这个版本的更新。
+#   step=discard  删掉一个还没发布（草稿）的版本，以便用同一版本号重新构建：
+#                 先建 archive/v{version}-{短提交号} 标签指向原来的提交，留存
+#                 那份源码（例如软著提交用的版本），再删草稿 Release 和
+#                 v{version} 标签。已发布的版本拒绝删除，要先 retract。
 #
 # 用 GITHUB_TOKEN 创建的 tag 不会触发 push 事件（GitHub 防止工作流互相
 # 连锁触发），所以 tag 步骤显式 dispatch 构建工作流，并传 release=true 让它
@@ -27,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       step:
-        description: "tag = 打标签并开始构建；publish = 换正文并正式发布；notes = 只换正文；retract = 撤回为草稿"
+        description: "tag = 打标签并开始构建；publish = 换正文并正式发布；notes = 只换正文；retract = 撤回为草稿；discard = 删除草稿和标签（先留归档标签）"
         required: true
         type: choice
         options:
@@ -35,6 +39,7 @@ on:
           - publish
           - notes
           - retract
+          - discard
       version:
         description: "版本号，例如 10.0.1（不带 v）"
         required: true
@@ -248,4 +253,66 @@ jobs:
             echo
             echo "产物和标签都保留。releases/latest 与 latest.json 已回到上一个正式版。"
             echo "修好后：如需改正文，更新 \`docs/release-notes/v${VERSION}.md\` 合进 main，再用 step=publish 重新发布。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  discard:
+    name: Discard draft v${{ inputs.version }} (keep an archive tag)
+    if: inputs.step == 'discard'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Archive the tagged commit, then delete the draft and the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::版本号格式应为 X.Y.Z（不带 v），收到的是 $VERSION。"
+            exit 1
+          fi
+          tag="v${VERSION}"
+          repo="$GITHUB_REPOSITORY"
+          if gh release view "$tag" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
+            if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
+              echo "::error::$tag 已经发布，不能直接删除。先用 step=retract 撤回为草稿。"
+              exit 1
+            fi
+            has_release=1
+          else
+            has_release=0
+          fi
+          if ! gh api "repos/$repo/git/ref/tags/$tag" > "$RUNNER_TEMP/ref.json" 2>/dev/null; then
+            echo "::error::找不到标签 $tag。"
+            exit 1
+          fi
+          # 轻量标签直接指向提交；附注标签要再解一层。
+          sha="$(jq -r '.object.sha' "$RUNNER_TEMP/ref.json")"
+          if [[ "$(jq -r '.object.type' "$RUNNER_TEMP/ref.json")" == "tag" ]]; then
+            sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha')"
+          fi
+          archive="archive/${tag}-${sha:0:7}"
+          if gh api "repos/$repo/git/ref/tags/$archive" >/dev/null 2>&1; then
+            echo "归档标签 $archive 已存在。"
+          else
+            gh api "repos/$repo/git/refs" -f "ref=refs/tags/$archive" -f "sha=$sha" >/dev/null
+          fi
+          if [[ "$(gh api "repos/$repo/git/ref/tags/$archive" --jq '.object.sha')" != "$sha" ]]; then
+            echo "::error::归档标签 $archive 没有指向 $sha，停止，不删除任何东西。"
+            exit 1
+          fi
+          if [[ "$has_release" == "1" ]]; then
+            gh release delete "$tag" --yes
+          fi
+          gh api -X DELETE "repos/$repo/git/refs/tags/$tag"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::删除后仍能读到 $tag 的 Release。"
+            exit 1
+          fi
+          if gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::删除后标签 $tag 仍然存在。"
+            exit 1
+          fi
+          {
+            echo "### 已删除草稿 $tag"
+            echo
+            echo "原提交 \`$sha\` 保留在归档标签 \`$archive\`。"
+            echo "现在可以用 step=tag 以同一版本号重新打标签和构建。"
           } >> "$GITHUB_STEP_SUMMARY"

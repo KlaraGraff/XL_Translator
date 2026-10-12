@@ -162,7 +162,15 @@ def test_release_workflow_replaces_body_before_publishing():
     assert 'check_release_latest.py --expect "v${VERSION}"' in workflow
     assert 'gh release edit "$tag" --draft=true' in workflow
     assert 'check_release_latest.py --not "v${VERSION}"' in workflow
-    assert "gh release delete" not in workflow and "git push --delete" not in workflow
+    # 删除只出现在 discard 这一步：只删草稿，删之前先建好并读回归档标签。
+    discard = workflow.index("\n  discard:")
+    head = workflow[:discard]
+    assert "gh release delete" not in head and "DELETE" not in head and "git push --delete" not in head
+    tail = workflow[discard:]
+    assert "step=retract" in tail
+    archive = tail.index('-f "ref=refs/tags/$archive"')
+    archive_check = tail.index("没有指向 $sha")
+    assert archive < archive_check < tail.index('gh release delete "$tag"') < tail.index('-X DELETE "repos/$repo/git/refs/tags/$tag"')
 
 
 def test_build_workflow_accepts_dispatched_tag_releases_only_when_asked():
