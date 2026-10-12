@@ -209,7 +209,7 @@ const CAD_TOGGLES: ToggleDef[] = localized(() => ([
   { key: "cadBlockText", label: t("翻译图块内文字"), hint: t("同时翻译图块中的文字（含属性文字）；关闭时仅翻译直接绘制在图纸上的文字。"), default: true, pathKind: "output", path: "include_block_text" },
   { key: "cadKeepWorkDxf", label: t("另存一份 DXF"), hint: t("在输出图纸之外，另存一份翻译后的 DXF，便于在其他软件中核对。"), default: false, pathKind: "output", path: "keep_work_dxf" },
   { key: "cadCopyRelated", label: t("复制同名附属文件"), hint: t("把与图纸同名的其他文件（如 .ctb、.pdf 说明）一并复制到输出目录。"), default: false, pathKind: "output", path: "copy_related_files" },
-  { key: "cadFitLayout", label: t("放不下时缩小字号"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号：先缩到「初始字号比例」，仍放不下再每次缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告。"), default: true, pathKind: "output", path: "fit_layout" },
+  { key: "cadFitLayout", label: t("超长译文自动缩小"), hint: t("译文比原文长、会压到旁边的文字时，先把字压窄，再缩小字号。「初始字号比例」是第一次缩到原文字号的多少；仍放不下时每次再缩 0.1，直到「最小字号比例」。缩到最小仍放不下的列入报告，请人工复核。"), default: true, pathKind: "output", path: "fit_layout" },
 ]));
 
 const TOGGLES: Record<Surface, ToggleDef[]> = { excel: EXCEL_TOGGLES, word: WORD_TOGGLES, pdf: PDF_TOGGLES, cad: CAD_TOGGLES };
@@ -4592,7 +4592,6 @@ function buildCadScaleFields(active: boolean): HTMLElement {
   const row = el("div", "rp-pair");
   const first = createSelectField({
     label: t("初始字号比例"),
-    hint: t("放不下时，先把译文字号缩到原文字号的这个比例。"),
     options: CAD_DEFAULT_SCALES.map((value) => ({ value, label: scaleLabel(value) })),
     value: CAD_DEFAULT_SCALES.find((value) => Number(value) === defaultScale) ?? "0.7",
     disabled: active,
@@ -4605,7 +4604,6 @@ function buildCadScaleFields(active: boolean): HTMLElement {
   });
   const last = createSelectField({
     label: t("最小字号比例"),
-    hint: t("仍放不下时每次再缩 0.1，最小缩到原文字号的这个比例；到这里还放不下的列入报告，请人工复核。"),
     options: CAD_MIN_SCALES.filter((value) => Number(value) <= defaultScale).map((value) => ({ value, label: scaleLabel(value) })),
     value: CAD_MIN_SCALES.find((value) => Number(value) === minScale) ?? String(Math.min(defaultScale, 0.4)),
     disabled: active,
