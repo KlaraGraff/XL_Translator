@@ -1,0 +1,176 @@
+name: Release (tag / publish)
+
+# 发版里所有要写 GitHub 的步骤都在这里，由 GitHub 自己的机器执行。
+# 云端会话推不了 tag、也改不了 Release，以前只能等 maple 的 Mac 在线代办；
+# 现在云端 Claude 用 workflow_dispatch 触发本工作流即可，maple 也可以在
+# GitHub 网页 Actions 页手动点 Run workflow。
+#
+# 两步，分开触发，每一步都要 maple 先在对话里确认：
+#
+#   step=tag      在 main 最新提交上打 v{version} 标签，并触发
+#                 build-distributions.yml 出草稿 Release。
+#   step=publish  用仓库里的 docs/release-notes/v{version}.md 替换草稿正文，
+#                 读回核对一致后再取消草稿（AGENTS.md 第 9 条的顺序）。
+#
+# 用 GITHUB_TOKEN 创建的 tag 不会触发 push 事件（GitHub 防止工作流互相
+# 连锁触发），所以 tag 步骤显式 dispatch 构建工作流，并传 release=true 让它
+# 走和 tag push 完全相同的正式发布路径。
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "tag = 打标签并开始构建；publish = 换正文并正式发布"
+        required: true
+        type: choice
+        options:
+          - tag
+          - publish
+      version:
+        description: "版本号，例如 10.0.1（不带 v）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  tag:
+    name: Tag v${{ inputs.version }} and start the build
+    if: inputs.step == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::只能从 main 打发布标签（本次是 $GITHUB_REF）。"
+            exit 1
+          fi
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Check version, changelog and that the tag is new
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          python scripts/verify_release_metadata.py --tag "$tag"
+          python scripts/check_changelog_version.py --version "$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::标签 $tag 已经存在，不会覆盖。"
+            exit 1
+          fi
+      # PR checks 在构建机同款的 Python 3.11 + 锁定依赖、没有 Office 的 Linux 上
+      # 跑全量测试，等价于 AGENTS.md 第 8 条在云端的那一半；macOS 构建里还会
+      # 再跑一遍 release_env_tests.py。
+      - name: Require green PR checks on this commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          green="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-checks.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')"
+          if [[ "$green" == "0" ]]; then
+            echo "::error::main 的 $GITHUB_SHA 上还没有通过的 PR checks，等它变绿再打标签。"
+            exit 1
+          fi
+      - name: Create the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/v${VERSION}" \
+            -f sha="$GITHUB_SHA" >/dev/null
+          echo "已在 $GITHUB_SHA 上创建标签 v${VERSION}。"
+      - name: Start the release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run build-distributions.yml --ref "v${VERSION}" -f release=true
+          {
+            echo "### v${VERSION}"
+            echo
+            echo "- 标签：\`v${VERSION}\` → \`$GITHUB_SHA\`"
+            echo "- 已触发 Build Translator distributions，完成后会生成**草稿** Release。"
+            echo "- 下一步：把发布说明写进 \`docs/release-notes/v${VERSION}.md\` 合进 main，再用 step=publish 运行本工作流。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish v${{ inputs.version }}
+    if: inputs.step == 'publish'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+      - name: Read the draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::版本号格式应为 X.Y.Z（不带 v），收到的是 $VERSION。"
+            exit 1
+          fi
+          tag="v${VERSION}"
+          if ! gh release view "$tag" --json isDraft,body > "$RUNNER_TEMP/release.json"; then
+            echo "::error::找不到 $tag 的 Release。构建可能还没跑完，或者标签没打。"
+            exit 1
+          fi
+          if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/release.json")" != "true" ]]; then
+            echo "::error::$tag 已经不是草稿，不会再改它。"
+            exit 1
+          fi
+          jq -r '.body' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/draft-body.md"
+      - name: Check the release notes against this build
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="docs/release-notes/v${VERSION}.md"
+          if [[ ! -f "$notes" ]]; then
+            echo "::error::main 上没有 $notes。先把发布说明合进 main。"
+            exit 1
+          fi
+          python scripts/check_release_notes.py \
+            --notes "$notes" \
+            --version "$VERSION" \
+            --draft-body "$RUNNER_TEMP/draft-body.md"
+      # 顺序不能换：先替换正文、读回核对，最后才取消草稿。
+      - name: Replace the draft body and read it back
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          notes="docs/release-notes/v${VERSION}.md"
+          gh release edit "$tag" --notes-file "$notes" >/dev/null
+          gh release view "$tag" --json body --jq '.body' > "$RUNNER_TEMP/readback.md"
+          python scripts/check_release_notes.py --notes "$notes" --compare "$RUNNER_TEMP/readback.md"
+      - name: Publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          gh release edit "$tag" --draft=false >/dev/null
+          gh release view "$tag" --json isDraft,url,assets > "$RUNNER_TEMP/published.json"
+          if [[ "$(jq -r '.isDraft' "$RUNNER_TEMP/published.json")" != "false" ]]; then
+            echo "::error::取消草稿后读回仍是草稿。"
+            exit 1
+          fi
+          url="$(jq -r '.url' "$RUNNER_TEMP/published.json")"
+          {
+            echo "### v${VERSION} 已发布"
+            echo
+            echo "$url"
+            echo
+            jq -r '.assets[] | "- \(.name)"' "$RUNNER_TEMP/published.json"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -33,6 +33,19 @@ Windows 构建产出 NSIS 安装器（`installMode: currentUser`，不需要管�
 
 两个平台构建前都需要在 `ui/` 执行 `npm ci`，并具备 Rust、Node 与受控 Python 3.11（macOS 另需 Xcode Command Line Tools）。标准发布依赖不允许通过“不受支持 Python”开关绕过。
 
+## 发版步骤（release.yml）
+
+打标签和正式发布都由 `.github/workflows/release.yml` 在 GitHub 上执行，云端会话用 workflow_dispatch 触发即可，不需要本机推 tag 或运行 `gh release edit`。每一步都要先得到 maple 的确认。
+
+1. 版本号改动（`app_meta.py` 等五处 + `docs/CHANGELOG.md` 顶部 `## VX.Y.Z`）合进 main，等 main 上的 PR checks 变绿。
+2. 运行 `release.yml`，`step=tag`、`version=X.Y.Z`，分支选 main。工作流核对版本号与 changelog、确认标签不存在、确认该提交的 PR checks 已通过，然后打 `vX.Y.Z` 标签，并以 `release=true` 触发 `build-distributions.yml`，产出**草稿** Release。
+   - 用 `GITHUB_TOKEN` 创建的标签不会触发 push 事件，所以这里显式 dispatch 构建；`release=true` 让它走与 tag push 完全相同的判定（只认稳定 `vX.Y.Z` 标签，Apple 密钥齐全才是 formal-release）。
+   - 如果标签已建好但构建没触发起来，直接对该标签运行 `build-distributions.yml` 并勾选 `release` 即可，不要删标签重打。
+3. 构建完成后，把发布说明写进 `docs/release-notes/vX.Y.Z.md`（写法见该目录的 README），走 PR 合进 main。
+4. 运行 `release.yml`，`step=publish`、`version=X.Y.Z`。工作流先用 `scripts/check_release_notes.py` 核对正文（占位句、中英顺序、下载文件名、签名公证状态与草稿里的构建渠道一致），再替换草稿正文、读回逐字比对，最后才 `--draft=false`。
+
+仓库简介、topics 这类仓库设置不在 `GITHUB_TOKEN` 的权限内，仍需在 GitHub 网页上手动修改。
+
 ## 正式发布与临时标签构建
 
 GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 和 `ui/package.json` 的版本必须完全一致；任一不一致即失败。
@@ -51,7 +64,7 @@ GitHub Actions 只接受稳定标签 `vX.Y.Z`。标签、`app_meta.py`、`src-ta
 
 CI 将证书导入临时 keychain（钥匙串密码 run 内随机生成），签名 sidecar、应用和 DMG，用 `notarytool`（Apple ID + App 专用密码 + Team ID）提交 Apple 公证，staple 后用 Gatekeeper 评估。
 
-如果稳定 tag 缺少任一 Apple Secret，工作流仍然照常发布正式 Release（不再标注 Pre-release），只是 macOS 产物降级为原生 `TEMP_SIGNED_TEST`：应用和 sidecar 使用 ad-hoc 临时签名、DMG 不公证，首次打开需要右键“打开”。Release 说明里会写明这一点，构建日志也会给出 warning。`workflow_dispatch` 仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release。
+如果稳定 tag 缺少任一 Apple Secret，工作流仍然照常发布正式 Release（不再标注 Pre-release），只是 macOS 产物降级为原生 `TEMP_SIGNED_TEST`：应用和 sidecar 使用 ad-hoc 临时签名、DMG 不公证，首次打开需要右键“打开”。Release 说明里会写明这一点，构建日志也会给出 warning。手动 `workflow_dispatch`（不勾选 `release`）仍生成 `UNSIGNED_TEST` artifact，不创建或修改 Release；只有 `release.yml` 在标签上以 `release=true` 触发时才等同于 tag push。
 
 ### Windows 签名现状
 
