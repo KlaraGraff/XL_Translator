@@ -654,3 +654,56 @@ def test_scan_log_explains_what_was_left_out(tmp_path):
     ).translate_file(source, tmp_path / "plan_en.dxf", options=CadPipelineOptions(target_lang="en"))
     assert (result.stats.skipped_non_text, result.stats.skipped_codes, result.stats.skipped_target_language) == (1, 2, 3)
     assert "共 5 处文字，不需要翻译的：纯数字和符号 1 处，编号、轴号、型号和尺寸 2 处，已是目标语言 1 处" in messages
+
+
+def _french_drawing(acadver):
+    header = ((0, "SECTION"), (2, "HEADER"), (9, "$ACADVER"), (1, acadver), (0, "ENDSEC")) if acadver else ()
+    long_note = "设备基础说明" * 30
+    return _dxf(
+        *header,
+        (0, "SECTION"), (2, "ENTITIES"),
+        (0, "TEXT"), (8, "0"), (10, "0"), (20, "0"), (40, "2.5"), (7, "ARIAL"), (1, "设备基坑"),
+        (0, "MTEXT"), (8, "0"), (10, "0"), (20, "10"), (40, "2.5"), (1, long_note),
+        (0, "ENDSEC"), (0, "EOF"),
+    ), long_note
+
+
+def test_utf8_dxf_gets_real_accented_characters_not_unicode_escapes(tmp_path):
+    """AutoCAD 2026 实测：TrueType 或不挂大字体的单行文字会把 \\U+00E9 原样显示出来。"""
+    drawing, long_note = _french_drawing("AC1032")
+    source = tmp_path / "pit.dxf"
+    source.write_text(drawing, encoding="utf-8")
+    long_translation = "Note sur les fondations d'équipement, à vérifier sur place. " * 12
+    translations = {"设备基坑": "Fosse d'équipement", long_note: long_translation}
+    output = tmp_path / "pit_fr.dxf"
+    CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {text: translations[text] for text in texts},
+    ).translate_file(source, output, options=CadPipelineOptions(target_lang="fr"))
+    written = output.read_text(encoding="utf-8")
+    assert "Fosse d'équipement" in written
+    assert "\\U+" not in written
+    # 长的多行文字照样按块拆开，每块按 UTF-8 字节计不超过 240，拼起来就是译文。
+    records = _parse_dxf(written)
+    mtext_start = next(i for i, record in enumerate(records) if record.code == 0 and record.value == "MTEXT")
+    mtext_end = next(i for i in range(mtext_start + 1, len(records)) if records[i].code == 0)
+    chunks = [record.value for record in records[mtext_start:mtext_end] if record.code in {1, 3}]
+    assert len(chunks) > 1
+    assert all(len(chunk.encode("utf-8")) <= 240 for chunk in chunks)
+    assert "".join(chunks) == long_translation.strip()
+
+
+@pytest.mark.parametrize("acadver", ["AC1015", None])
+def test_old_or_unversioned_dxf_keeps_unicode_escapes(tmp_path, acadver):
+    """2007 以前的 DXF 按图纸代码页读，非 ASCII 仍写成 \\U+XXXX。"""
+    drawing, long_note = _french_drawing(acadver)
+    source = tmp_path / "pit.dxf"
+    source.write_text(drawing, encoding="utf-8")
+    output = tmp_path / "pit_fr.dxf"
+    CadTranslationPipeline(
+        converter=None,
+        translator=lambda texts, glossary: {text: "Fosse d'équipement" for text in texts},
+    ).translate_file(source, output, options=CadPipelineOptions(target_lang="fr"))
+    written = output.read_text(encoding="utf-8")
+    assert "Fosse d'\\U+00E9quipement" in written
+    assert "é" not in written

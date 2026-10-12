@@ -862,20 +862,49 @@ def _safe_translation(original: str, translated: str) -> str:
     return "".join(out)
 
 
-def _encode_dxf_text(value: str, *, multiline: bool) -> str:
-    """Keep one group value on one physical DXF line and escape non-ASCII."""
+def _encode_dxf_text(value: str, *, multiline: bool, escape: bool = True) -> str:
+    """Keep one group value on one physical DXF line.
+
+    ``escape`` writes non-ASCII as DXF ``\\U+XXXX``.  Only old (pre-2007)
+    DXF needs that; in a UTF-8 DXF the characters are written as they are,
+    because AutoCAD shows the escape literally in single-line text whose
+    style is a TrueType font or an SHX font without a big font (verified in
+    AutoCAD 2026: 「\\U+00E9」 appeared instead of é).
+    """
     value = value.replace("\r\n", "\n").replace("\r", "\n")
     value = value.replace("\n", r"\P" if multiline else " ")
+    if not escape:
+        return value
     return "".join(char if ord(char) < 128 else f"\\U+{ord(char):04X}" for char in value)
+
+
+def _writes_real_unicode(records: Sequence[DxfRecord], encoding: str) -> bool:
+    """Whether translated text may be written as real characters.
+
+    DXF from AutoCAD 2007 on ($ACADVER AC1021 and later) is UTF-8 throughout.
+    Older DXF is read in the drawing's code page, so non-ASCII stays escaped.
+    """
+    if encoding.replace("_", "-").lower() not in {"utf-8", "utf8"}:
+        return False
+    for index, record in enumerate(records[:-1]):
+        if record.code == 9 and record.value.strip().upper() == "$ACADVER":
+            version = records[index + 1].value.strip().upper()
+            match = re.fullmatch(r"AC(\d{4})", version)
+            return bool(match) and int(match.group(1)) >= 1021
+        if record.code == 0 and record.value.strip().upper() == "ENDSEC":
+            break
+    return False
 
 
 def _ascii_chunks(value: str, limit: int = 240) -> list[str]:
     # Never split a DXF Unicode escape or formatting command across records.
+    # The limit counts UTF-8 bytes, so a chunk of real CJK/accented
+    # characters stays within the group-value length CAD readers accept.
     tokens = re.findall(r"\\[fFhHwWcCaAtTqQoOsS][^;]*;|\\U\+[0-9A-Fa-f]{4}|\\M\+[1-5][0-9A-Fa-f]{4}|\\[A-Za-z]+|.", value)
     chunks: list[str] = []
     current = ""
     for token in tokens:
-        if current and len(current) + len(token) > limit:
+        if current and len(current.encode("utf-8")) + len(token.encode("utf-8")) > limit:
             chunks.append(current)
             current = ""
         current += token
@@ -884,8 +913,10 @@ def _ascii_chunks(value: str, limit: int = 240) -> list[str]:
     return chunks
 
 
-def _replace_unit(records: list[DxfRecord], unit: CadTextUnit, translated: str) -> None:
-    value = _encode_dxf_text(_safe_translation(unit.original, translated), multiline=unit.entity_type == "MTEXT")
+def _replace_unit(records: list[DxfRecord], unit: CadTextUnit, translated: str, *, escape: bool = True) -> None:
+    value = _encode_dxf_text(
+        _safe_translation(unit.original, translated), multiline=unit.entity_type == "MTEXT", escape=escape,
+    )
     if unit.entity_type == "MTEXT":
         chunks = _ascii_chunks(value)
         final = next((index for index in reversed(unit.record_indices) if records[index].code == 1), None)
@@ -908,13 +939,13 @@ def _replace_unit(records: list[DxfRecord], unit: CadTextUnit, translated: str) 
 
 
 def _replace_unit_runs(
-    records: list[DxfRecord], unit: CadTextUnit, translations: Mapping[str, str],
+    records: list[DxfRecord], unit: CadTextUnit, translations: Mapping[str, str], *, escape: bool = True,
 ) -> None:
     """Replace MTEXT runs while preserving controls and paragraph topology."""
     if not unit.runs or unit.entity_type not in {"MTEXT", "MLEADER", "MULTILEADER"}:
         value = translations.get(unit.plain_text)
         if value:
-            _replace_unit(records, unit, value)
+            _replace_unit(records, unit, value, escape=escape)
         return
     assembled = "".join(records[index].value for index in unit.record_indices)
     for run in reversed(unit.runs):
@@ -927,13 +958,14 @@ def _replace_unit_runs(
         replacement = _encode_dxf_text(
             leading + _safe_translation(span.strip(), target) + trailing,
             multiline=False,
+            escape=escape,
         )
         assembled = assembled[:run.start] + replacement + assembled[run.end:]
     if unit.entity_type in {"MLEADER", "MULTILEADER"}:
         index = unit.record_indices[0]
         records[index] = _record_copy(records[index], value=assembled, code=304)
         return
-    encoded = _encode_dxf_text(assembled, multiline=True)
+    encoded = _encode_dxf_text(assembled, multiline=True, escape=escape)
     chunks = _ascii_chunks(encoded)
     final = next((index for index in reversed(unit.record_indices) if records[index].code == 1), None)
     if final is None:
@@ -1213,6 +1245,8 @@ class CadTranslationPipeline:
             except UnicodeError as exc:
                 raise CadPipelineError("图纸的文字编码无法识别（不是 UTF-8，也不是 GBK 等常见编码）。") from exc
             records = _parse_dxf(dxf_text)
+            # 新格式（UTF-8）DXF 的译文直接写字符；老格式按代码页读，仍写 \U+XXXX。
+            escape_unicode = not _writes_real_unicode(records, dxf_encoding)
             stats = CadTranslationStats(scanned_entities=sum(1 for r in records if r.code == 0))
             self._emit("scan", 1, 1, "已读取图纸")
             units = extract_cad_text_units(records, include_block_text=options.include_block_text)
@@ -1382,7 +1416,7 @@ class CadTranslationPipeline:
                 changed_unit = any(run.text in translations for run in unit.runs)
                 if not unit.runs and unit.plain_text in translations:
                     changed_unit = True
-                _replace_unit_runs(records, unit, translations)
+                _replace_unit_runs(records, unit, translations, escape=escape_unicode)
                 if changed_unit:
                     stats.changed += 1
             if options.fit_layout:
