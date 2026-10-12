@@ -489,9 +489,9 @@
     "en": "To translate",
     "fr": "À traduire"
   },
-  "已是目标语言的不计入": {
-    "en": "Text already in the target language is excluded",
-    "fr": "Hors texte déjà dans la langue cible"
+  "不含纯数字、编号和已是目标语言的文字": {
+    "en": "Excludes plain numbers, codes and text already in the target language",
+    "fr": "Hors nombres seuls, codes et texte déjà dans la langue cible"
   },
   "需转换工具": {
     "en": "Need converter",

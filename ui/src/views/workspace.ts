@@ -1385,7 +1385,7 @@ function computeStats(surface: Surface, st: SurfaceState): StatCell[] {
         label: t("待翻译"),
         value: noneCounted ? "—" : fmtNum(candidates),
         dim: noneCounted,
-        sub: texts > candidates ? t("已是目标语言的不计入") : undefined,
+        sub: texts > candidates ? t("不含纯数字、编号和已是目标语言的文字") : undefined,
       },
       { label: t("需转换工具"), value: String(blocked), warn: blocked > 0, dim: blocked === 0 },
       { label: t("跳过项"), value: String(st.skipped.length), dim: st.skipped.length === 0 },
