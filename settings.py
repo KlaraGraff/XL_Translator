@@ -814,6 +814,9 @@ class CadOutputSettings(BaseModel):
     locked_layers: str = ""
     # compatible：译文改用 AutoCAD 自带字体写回；original：沿用原文字样式。
     translation_font: str = "compatible"
+    # DWG 译文图纸的版本：source 跟随原图，或 2018/2013/2010/2007/2004/2000。旧文件没有这个键时
+    # 按默认值补齐；不升版本号，老版本应用读到这个键也只是忽略。
+    output_version: str = "source"
 
     @model_validator(mode="after")
     def _normalize_cad_layout(self):
@@ -826,6 +829,8 @@ class CadOutputSettings(BaseModel):
             self.display_mode = "translation"
         if self.translation_font not in {"compatible", "original"}:
             self.translation_font = "compatible"
+        if self.output_version not in {"source", "2018", "2013", "2010", "2007", "2004", "2000"}:
+            self.output_version = "source"
         self.locked_blocks = str(self.locked_blocks or "")[:4000]
         self.locked_layers = str(self.locked_layers or "")[:4000]
         return self

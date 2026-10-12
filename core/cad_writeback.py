@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -26,6 +27,7 @@ TRANSLATION_STYLE = "XLT_TRANSLATION"
 # 扩展数据里第一个字符串说明这段文字是怎么来的。
 MARK_ADDED = "added"          # 双语时新增的译文文字：再翻一次时整个删掉
 MARK_COMBINED = "combined"    # 原文和译文写在同一段里：后面跟着原文，再翻一次时恢复
+MARK_TABLE = "table"          # 表格单元格改成了双语：后面跟着 {双语值: 原值} 的 JSON
 _XDATA_CHUNK = 240
 
 # 译文专用样式的字体：都是 AutoCAD 安装自带的（AutoCAD 2026 for Mac 的安装清单与
@@ -341,7 +343,114 @@ def restore_previous_run(records: list[Any]) -> int:
         if kind == MARK_COMBINED and payload:
             cleaned = _restore_text(records[start].value.strip().upper(), cleaned, payload)
         records[start + 1:end] = cleaned
+        if kind == MARK_TABLE and payload:
+            # 标记拿掉后实体变短：内容对象在 OBJECTS 段，范围按新的位置重新找。
+            _restore_cells(records, start, start + 1 + len(cleaned), payload)
     return touched
+
+
+TABLE_CELL_CODES = frozenset({1, 302})
+# 表格内容对象里指向别的对象的组码（软/硬指针、硬所有）。330 是所属，单独看。
+_TABLE_LINK_CODES = frozenset({340, 350, 360})
+
+
+def _objects_bounds(records: Sequence[Any]) -> tuple[int, int] | None:
+    for index, record in enumerate(records):
+        if record.code == 2 and record.value.strip().upper() == "OBJECTS" and index and records[index - 1].code == 0:
+            end = next(
+                (i for i in range(index + 1, len(records)) if records[i].code == 0 and records[i].value.strip().upper() == "ENDSEC"),
+                len(records),
+            )
+            return index + 1, end
+    return None
+
+
+ContentIndex = tuple[dict[str, tuple[int, int]], dict[str, list[tuple[int, int]]]]
+
+
+def table_content_index(records: Sequence[Any]) -> ContentIndex:
+    """OBJECTS 段里的对象：按句柄、按所属句柄。记录位置一变（增删记录）就要重建。"""
+    by_handle: dict[str, tuple[int, int]] = {}
+    by_owner: dict[str, list[tuple[int, int]]] = {}
+    bounds = _objects_bounds(records)
+    if bounds is None:
+        return by_handle, by_owner
+    for obj_start, obj_end in _entity_ranges(records[bounds[0]:bounds[1]]):
+        span = (bounds[0] + obj_start, bounds[0] + obj_end)
+        body = records[span[0] + 1:span[1]]
+        handle = next((r.value.strip().upper() for r in body if r.code == 5), "")
+        owner = next((r.value.strip().upper() for r in body if r.code == 330), "")
+        if handle:
+            by_handle[handle] = span
+        if owner:
+            by_owner.setdefault(owner, []).append(span)
+    return by_handle, by_owner
+
+
+def table_content_ranges(
+    records: Sequence[Any], start: int, end: int, index: ContentIndex | None = None,
+) -> list[tuple[int, int]]:
+    """一个表格（ACAD_TABLE）在 OBJECTS 段里的内容对象。
+
+    AutoCAD 2008 起的表格把单元格内容另存在 TABLECONTENT 一类对象里，存成 DWG 时按
+    那一份重建表格：只改表格实体本身，转回 DWG 后单元格又是原文。这里从表格出发，
+    顺着它引用的、和以它为所属的对象往下找几层（字段、扩展字典也在里面）。
+    """
+    by_handle, by_owner = index if index is not None else table_content_index(records)
+    if not by_handle and not by_owner:
+        return []
+
+    def links(span: tuple[int, int]) -> tuple[str, list[str]]:
+        body = records[span[0] + 1:span[1]]
+        handle = next((r.value.strip().upper() for r in body if r.code == 5), "")
+        return handle, [r.value.strip().upper() for r in body if r.code in _TABLE_LINK_CODES]
+
+    found: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    frontier = [(start, end)]
+    for _depth in range(3):
+        following: list[tuple[int, int]] = []
+        for span in frontier:
+            handle, refs = links(span)
+            candidates = [by_handle[ref] for ref in refs if ref in by_handle]
+            candidates += by_owner.get(handle, []) if handle else []
+            for candidate in candidates:
+                if candidate not in seen:
+                    seen.add(candidate)
+                    found.append(candidate)
+                    following.append(candidate)
+        frontier = following
+    return found
+
+
+def replace_cell_values(records: list[Any], spans: Sequence[tuple[int, int]], mapping: dict[str, str]) -> int:
+    """把这些范围里等于 ``mapping`` 某个键的单元格文字换成对应的值。返回换了几处。"""
+    changed = 0
+    for span_start, span_end in spans:
+        for index in range(span_start + 1, span_end):
+            record = records[index]
+            if record.code not in TABLE_CELL_CODES or record.value not in mapping:
+                continue
+            if record.code == 1 and records[index - 1].code == 2:
+                continue  # 长文字分了段，这只是最后一段
+            records[index] = _copy(record, value=mapping[record.value])
+            changed += 1
+    return changed
+
+
+def _restore_cells(records: list[Any], start: int, end: int, payload: str) -> None:
+    """表格单元格写回原值：标记里是 ``{双语值: 原值}``，按值找，不按位置找。
+
+    存成 DWG 再转回来时转换工具会重排表格的组码，按位置记的话第二次翻译就会找错格子。
+    """
+    try:
+        originals = json.loads(payload)
+    except ValueError:
+        return
+    if not isinstance(originals, dict):
+        return
+    mapping = {str(key): str(value) for key, value in originals.items()}
+    replace_cell_values(records, [(start, end), *table_content_ranges(records, start, end)], mapping)
 
 
 def _restore_text(entity_type: str, body: list[Any], source: str) -> list[Any]:

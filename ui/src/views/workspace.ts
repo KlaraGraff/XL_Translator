@@ -3283,6 +3283,7 @@ function buildPayload(surface: Surface, st: SurfaceState): JsonObject {
     payload.cad_fit_min_scale = cadScale("fit_min_scale", 0.4);
     payload.cad_display_mode = cadChoice("display_mode", CAD_DISPLAY_MODES, "translation");
     payload.cad_translation_font = cadChoice("translation_font", CAD_FONT_CHOICES, "compatible");
+    payload.cad_output_version = cadChoice("output_version", CAD_OUTPUT_VERSIONS, "source");
     payload.cad_locked_blocks = cadLockText("blocks");
     payload.cad_locked_layers = cadLockText("layers");
     if (st.useCustomOutputDir && st.customOutputDir.trim()) payload.cad_output_dir = normalizeUserPath(st.customOutputDir);
@@ -4438,6 +4439,7 @@ async function openTaskLocalFile(path: string | undefined, reveal: boolean): Pro
 
 const CAD_DISPLAY_MODES = ["translation", "source_first", "translation_first"] as const;
 const CAD_FONT_CHOICES = ["compatible", "original"] as const;
+const CAD_OUTPUT_VERSIONS = ["source", "2018", "2013", "2010", "2007", "2004", "2000"] as const;
 const CAD_DEFAULT_SCALES = ["0.9", "0.8", "0.7", "0.6", "0.5"];
 const CAD_MIN_SCALES = ["0.7", "0.6", "0.5", "0.4", "0.3"];
 const CAD_AUTO_COUNT_MAX_FILES = 10;
@@ -4568,6 +4570,19 @@ function buildCadWritebackFields(st: SurfaceState, active: boolean): HTMLElement
     onChange: (value) => persistCadOutput("translation_font", value, t("译文字体")),
   });
   nodes.push(font.root);
+
+  const version = createSelectField({
+    label: t("输出图纸版本"),
+    hint: t("只对 DWG 图纸生效。「跟随原图」时译好的图纸和原图同一版本（比 2000 更早的存成 2000），用旧版 AutoCAD 的人也能打开；DXF 图纸始终保持原来的版本。"),
+    options: [
+      { value: "source", label: t("跟随原图（推荐）") },
+      ...CAD_OUTPUT_VERSIONS.slice(1).map((year) => ({ value: year, label: t("AutoCAD {0} 格式", year) })),
+    ],
+    value: cadChoice("output_version", CAD_OUTPUT_VERSIONS, "source"),
+    disabled: active,
+    onChange: (value) => persistCadOutput("output_version", value, t("输出图纸版本")),
+  });
+  nodes.push(version.root);
 
   // 开关和它的两档比例画成一组：开着时比例缩进挂在开关下面，关掉就只剩开关。
   const fitToggle = TOGGLES.cad.find((toggle) => toggle.key === "cadFitLayout");
