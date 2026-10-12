@@ -783,9 +783,9 @@
     "en": "The drawing converter produced no file within {0} seconds.",
     "fr": "L'outil de conversion des plans n'a produit aucun fichier en {0} secondes."
   },
-  "图纸转换工具在 {0} 秒内未写完文件。": {
-    "en": "The drawing converter did not finish writing the file within {0} seconds.",
-    "fr": "L'outil de conversion des plans n'a pas fini d'écrire le fichier en {0} secondes."
+  "图纸转换工具中途退出，这张图纸没有转换完整。": {
+    "en": "The drawing converter quit partway through; this drawing was not fully converted.",
+    "fr": "L'outil de conversion des plans s'est arrêté en cours de route ; ce plan n'a pas été entièrement converti."
   },
   "已停止；已完成的部分已保留。": {
     "en": "Stopped; completed parts have been kept.",

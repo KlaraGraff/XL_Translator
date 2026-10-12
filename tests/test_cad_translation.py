@@ -1,6 +1,7 @@
 import pytest
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 from core.cad_translation import (
@@ -276,109 +277,111 @@ def test_macos_oda_does_not_force_missing_offscreen_qt_plugin(tmp_path, monkeypa
     assert "QT_QPA_PLATFORM" not in captured["env"]
 
 
-def test_macos_oda_app_is_launched_through_launchservices(tmp_path, monkeypatch):
-    source = tmp_path / "sample.dxf"
-    source.write_text("DXF", encoding="utf-8")
-    destination = tmp_path / "sample.dwg"
+def _fake_oda_app(tmp_path, monkeypatch, on_run):
+    """A fake ODA .app; ``on_run(command, timeout)`` stands in for ``open -W``."""
     app_executable = tmp_path / "ODAFileConverter.app" / "Contents" / "MacOS" / "ODAFileConverter"
     app_executable.parent.mkdir(parents=True)
     app_executable.write_text("binary", encoding="utf-8")
-    captured = {}
+    calls = []
 
-    def fake_run(command, *, check, timeout, stdout, stderr, text):
-        captured["command"] = command
-        output_dir = Path(command[7])
-        (output_dir / "sample.dwg").write_text("DWG", encoding="utf-8")
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "/usr/bin/open":
+            return on_run(command, kwargs["timeout"])
+        return None
 
     monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
     monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
     monkeypatch.setattr("core.cad_translation.shutil.which", lambda name: "/usr/bin/open")
-    monkeypatch.setattr(SubprocessCadConverter, "_POLL_INTERVAL", 0.01)
+    return app_executable, calls
+
+
+def test_macos_oda_app_is_launched_through_launchservices_and_waited_for(tmp_path, monkeypatch):
+    source = tmp_path / "sample.dxf"
+    source.write_text("DXF", encoding="utf-8")
+    destination = tmp_path / "sample.dwg"
+
+    def on_run(command, timeout):
+        (Path(command[8]) / "sample.dwg").write_text("DWG", encoding="utf-8")
+
+    app_executable, calls = _fake_oda_app(tmp_path, monkeypatch, on_run)
 
     SubprocessCadConverter(app_executable, timeout=2).dxf_to_dwg(source, destination)
 
     assert destination.read_text(encoding="utf-8") == "DWG"
-    assert captured["command"][:6] == [
-        "/usr/bin/open", "-n", "-g", "-a", str(app_executable.parent.parent.parent), "--args"
+    command = calls[0][0]
+    # -W：open 等这个 ODA 实例退出（转换结束）才返回，而不是一启动就返回。
+    assert command[:7] == [
+        "/usr/bin/open", "-n", "-g", "-W", "-a", str(app_executable.parent.parent.parent), "--args"
     ]
-    assert captured["command"][6].endswith("/in")
-    assert captured["command"][7].endswith("/out")
+    assert command[7].endswith("/in")
+    assert command[8].endswith("/out")
+    assert calls[0][1]["timeout"] == 2
 
 
-def _fake_oda_app(tmp_path, monkeypatch, write_output):
-    """Launch a fake ODA .app: ``open`` returns at once, the file is written while we poll."""
-    app_executable = tmp_path / "ODAFileConverter.app" / "Contents" / "MacOS" / "ODAFileConverter"
-    app_executable.parent.mkdir(parents=True)
-    app_executable.write_text("binary", encoding="utf-8")
-    state = {"output_dir": None, "polls": 0}
-
-    def fake_run(command, *, check, timeout, stdout, stderr, text):
-        state["output_dir"] = Path(command[7])
-
-    def fake_sleep(_seconds):
-        state["polls"] += 1
-        write_output(state["output_dir"], state["polls"])
-
-    monkeypatch.setattr("core.cad_translation.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("core.cad_translation.subprocess.run", fake_run)
-    monkeypatch.setattr("core.cad_translation.shutil.which", lambda name: "/usr/bin/open")
-    monkeypatch.setattr("core.cad_translation.time.sleep", fake_sleep)
-    return app_executable, state
-
-
-def test_macos_oda_waits_until_dxf_is_fully_written(tmp_path, monkeypatch):
-    # ODA 后台边转边写：文件刚出现时只有前半截。以前一出现就拿去解析，
-    # 大图纸稳定报「图纸文件不完整」。
-    complete = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (1, "门"), (0, "ENDSEC"), (0, "EOF"))
-    half = complete[: len(complete) // 2]
-
-    def write_output(output_dir, poll):
-        target = output_dir / "sample.dxf"
-        if poll == 1:
-            target.write_text(half, encoding="utf-8")
-        elif poll == 3:
-            target.write_text(complete, encoding="utf-8")
+def test_macos_oda_dxf_without_eof_after_exit_is_a_conversion_failure(tmp_path, monkeypatch):
+    # ODA 中途崩溃留下的半截 DXF，要报转换失败，不能当成图纸本身损坏去解析。
+    def on_run(command, timeout):
+        (Path(command[8]) / "sample.dxf").write_text(_dxf((0, "SECTION"), (2, "ENTITIES")), encoding="utf-8")
 
     source = tmp_path / "sample.dwg"
     source.write_bytes(b"AC1032")
-    app_executable, state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+    app_executable, _calls = _fake_oda_app(tmp_path, monkeypatch, on_run)
 
-    destination = SubprocessCadConverter(app_executable, timeout=30).dwg_to_dxf(source, tmp_path / "out.dxf")
+    with pytest.raises(CadPipelineError, match="中途退出"):
+        SubprocessCadConverter(app_executable).dwg_to_dxf(source, tmp_path / "out.dxf")
+
+
+def test_macos_oda_complete_dxf_is_returned(tmp_path, monkeypatch):
+    complete = _dxf((0, "SECTION"), (2, "ENTITIES"), (0, "TEXT"), (1, "门"), (0, "ENDSEC"), (0, "EOF"))
+
+    def on_run(command, timeout):
+        (Path(command[8]) / "sample.dxf").write_text(complete, encoding="utf-8")
+
+    source = tmp_path / "sample.dwg"
+    source.write_bytes(b"AC1032")
+    app_executable, _calls = _fake_oda_app(tmp_path, monkeypatch, on_run)
+
+    destination = SubprocessCadConverter(app_executable).dwg_to_dxf(source, tmp_path / "out.dxf")
 
     assert destination.read_text(encoding="utf-8") == complete
-    assert state["polls"] >= 4
 
 
-def test_macos_oda_reports_unfinished_dxf_on_timeout(tmp_path, monkeypatch):
-    clock = {"now": 0.0}
-    monkeypatch.setattr("core.cad_translation.time.monotonic", lambda: clock["now"])
+def test_macos_oda_without_output_reports_no_file(tmp_path, monkeypatch):
+    source = tmp_path / "sample.dwg"
+    source.write_bytes(b"AC1032")
+    app_executable, _calls = _fake_oda_app(tmp_path, monkeypatch, lambda command, timeout: None)
 
-    def write_output(output_dir, poll):
-        clock["now"] += 1
-        (output_dir / "sample.dxf").write_text(_dxf((0, "SECTION"), (2, "ENTITIES")), encoding="utf-8")
+    with pytest.raises(CadPipelineError, match="未生成文件"):
+        SubprocessCadConverter(app_executable).dwg_to_dxf(source, tmp_path / "out.dxf")
+
+
+def test_macos_oda_timeout_stops_only_this_conversion(tmp_path, monkeypatch):
+    def on_run(command, timeout):
+        raise subprocess.TimeoutExpired(command, timeout)
 
     source = tmp_path / "sample.dwg"
     source.write_bytes(b"AC1032")
-    app_executable, _state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+    app_executable, calls = _fake_oda_app(tmp_path, monkeypatch, on_run)
 
-    with pytest.raises(CadPipelineError, match="未写完"):
+    with pytest.raises(CadPipelineError, match="超时"):
         SubprocessCadConverter(app_executable, timeout=5).dwg_to_dxf(source, tmp_path / "out.dxf")
 
+    open_command = calls[0][0]
+    assert calls[1][0] == ["pkill", "-f", open_command[7]]
+    assert "xl-cad-convert-" in open_command[7]
 
-def test_macos_oda_waits_for_dwg_size_to_settle(tmp_path, monkeypatch):
-    def write_output(output_dir, poll):
-        target = output_dir / "sample.dwg"
-        if poll <= 3:
-            target.write_bytes(b"x" * (100 * poll))
 
-    source = tmp_path / "sample.dxf"
-    source.write_text("DXF", encoding="utf-8")
-    app_executable, state = _fake_oda_app(tmp_path, monkeypatch, write_output)
+def test_conversion_timeout_grows_with_drawing_size(tmp_path):
+    small = tmp_path / "small.dwg"
+    small.write_bytes(b"x" * 1000)
+    large = tmp_path / "large.dwg"
+    large.write_bytes(b"x" * (5 * 1024 * 1024))
+    converter = SubprocessCadConverter("/tmp/ODAFileConverter", timeout=600)
 
-    destination = SubprocessCadConverter(app_executable, timeout=30).dxf_to_dwg(source, tmp_path / "out.dwg")
-
-    assert destination.read_bytes() == b"x" * 300
-    assert state["polls"] >= 7
+    assert converter._timeout_for(small) == 600
+    assert converter._timeout_for(large) == 600 + 5 * 30
+    assert converter._timeout_for(tmp_path / "missing.dwg") == 600
 
 
 def test_text_with_unicode_line_separators_is_not_split():
