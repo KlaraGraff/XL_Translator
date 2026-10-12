@@ -139,7 +139,7 @@ class SettingsPersistenceTests(unittest.TestCase):
                     {
                         "settings_version": SETTINGS_SCHEMA_VERSION - 1,
                         "target_lang": "fr",
-                        "custom_prompt": "keep-me",
+                        "last_source_folder": "keep-me",
                     }
                 ),
                 encoding="utf-8",
@@ -157,10 +157,10 @@ class SettingsPersistenceTests(unittest.TestCase):
             self.assertEqual(status["stored_version"], SETTINGS_SCHEMA_VERSION - 1)
             # Taken over as-is, not replaced by defaults.
             self.assertEqual(loaded.target_lang, "fr")
-            self.assertEqual(loaded.custom_prompt, "keep-me")
+            self.assertEqual(loaded.last_source_folder, "keep-me")
 
             persisted = json.loads(settings_path.read_text(encoding="utf-8"))
-            self.assertEqual(persisted["custom_prompt"], "keep-me")
+            self.assertEqual(persisted["last_source_folder"], "keep-me")
             self.assertEqual(persisted["settings_version"], SETTINGS_SCHEMA_VERSION)
             self.assertEqual(status_after["state"], "current")
             # Adoption keeps everything, so the user is told nothing.

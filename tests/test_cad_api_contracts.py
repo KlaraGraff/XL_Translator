@@ -111,7 +111,7 @@ def test_domain_prompt_optimize_accepts_saved_custom_prompt(tmp_path, monkeypatc
 
     class FakeEngine:
         def chat(self, system, user):
-            assert "当前提示词名称：我的 CAD 提示词" in user
+            assert "补充要求名称：我的 CAD 提示词" in user
             return "整理后的 CAD 提示词"
 
     with TestClient(create_app()) as client:

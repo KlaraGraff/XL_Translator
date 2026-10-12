@@ -421,7 +421,7 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
             source = root / "source.xlsx"
             source.touch()
             settings = AppSettings(
-                excel_domain_preset="资料管理场景",
+                excel_domain_preset="资料员要求",
                 excel_target_lang="fr",
             )
             settings.engine.mode = "cloud"
@@ -453,12 +453,12 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
             frozen_settings = captured["settings"]
             self.assertIsInstance(frozen_settings, AppSettings)
             settings.engine.cloud_model = "future-model-v2"
-            settings.excel_domain_preset = "行政生活化场景"
+            settings.excel_domain_preset = "行政要求"
             settings.excel_target_lang = "en"
             settings.model_throughput_profiles.clear()
 
             self.assertEqual(frozen_settings.engine.cloud_model, "snapshot-model-v1")
-            self.assertEqual(frozen_settings.excel_domain_preset, "资料管理场景")
+            self.assertEqual(frozen_settings.excel_domain_preset, "资料员要求")
             self.assertEqual(frozen_settings.excel_target_lang, "fr")
             snapshot = started["model_snapshot"][ROLE_TRANSLATION]
             self.assertEqual(snapshot["model"], "snapshot-model-v1")
@@ -469,7 +469,7 @@ class Phase3SnapshotAndExchangeAcceptanceTests(IsolatedAppDataTestCase):
                 api_key_scope("custom_openai", "https://snapshot.example/v1"),
             )
             self.assertEqual(started["task_snapshot"]["target_lang"], "fr")
-            self.assertEqual(started["task_snapshot"]["domain_preset"], "资料管理场景")
+            self.assertEqual(started["task_snapshot"]["domain_preset"], "资料员要求")
 
 
 if __name__ == "__main__":

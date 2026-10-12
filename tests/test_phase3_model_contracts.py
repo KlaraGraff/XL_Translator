@@ -11,7 +11,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from config import DOMAIN_PRESETS
+from config import CORE_TRANSLATION_PROMPT, EXTRA_PROMPT_HEADER
 from core.engine_dispatcher import get_system_prompt
 from core.model_config import (
     MODEL_CONFIG_EXPORT_VERSION,
@@ -199,14 +199,14 @@ class Phase3ModelContractTests(unittest.TestCase):
         self.assertNotIn("key-a", signature_a)
         self.assertNotIn("key-a", signature_b)
 
-    def test_domain_presets_keep_the_three_named_builtins_and_custom_mode(self) -> None:
-        self.assertEqual(
-            set(DOMAIN_PRESETS),
-            {"无", "自动识别场景", "同步工程场景", "资料管理场景", "行政生活化场景", "自定义"},
+    def test_core_rules_always_lead_and_extra_requirements_only_append(self) -> None:
+        settings = AppSettings(
+            domain_preset="资料员要求",
+            domain_custom_prompts={"资料员要求": {"_base": "字段名称保持一致"}},
         )
-        settings = AppSettings(domain_preset="资料管理场景")
-        prompt = get_system_prompt(settings, target_lang="en", source_lang="zh")
-        self.assertIn("资料管理", prompt)
+        prompt = get_system_prompt(settings, target_lang="", source_lang="zh")
+        self.assertEqual(prompt, f"{CORE_TRANSLATION_PROMPT}\n\n{EXTRA_PROMPT_HEADER}\n字段名称保持一致")
+        self.assertEqual(get_system_prompt(AppSettings(), target_lang="", source_lang="zh"), CORE_TRANSLATION_PROMPT)
 
     def test_translation_engine_appends_fixed_output_protocol_after_domain_prompt(self) -> None:
         settings = AppSettings(domain_preset="自定义", custom_prompt="用户领域要求")
@@ -234,19 +234,25 @@ class Phase3ModelContractTests(unittest.TestCase):
     def test_excel_and_word_domain_state_is_independent(self) -> None:
         """M3B-02: each translation page needs its own domain state."""
         settings = AppSettings(
-            excel_domain_preset="资料管理场景",
-            word_domain_preset="行政生活化场景",
+            excel_domain_preset="资料员要求",
+            excel_domain_custom_prompts={"资料员要求": {"_base": "字段名称保持一致"}},
+            word_domain_preset="行政要求",
+            word_domain_custom_prompts={"行政要求": {"_base": "语气自然礼貌"}},
         )
         excel_prompt = get_system_prompt(settings, target_lang="en", page_key="excel")
         word_prompt = get_system_prompt(settings, target_lang="en", page_key="word")
-        self.assertIn("资料管理", excel_prompt)
-        self.assertIn("行政", word_prompt)
-        self.assertNotEqual(excel_prompt, word_prompt)
+        self.assertIn("字段名称保持一致", excel_prompt)
+        self.assertNotIn("语气自然礼貌", excel_prompt)
+        self.assertIn("语气自然礼貌", word_prompt)
 
-    def test_empty_custom_domain_prompt_is_rejected(self) -> None:
-        settings = AppSettings(excel_domain_preset="自定义", excel_custom_prompt="")
-        with self.assertRaises(ValueError):
-            get_system_prompt(settings, target_lang="en", page_key="excel")
+    def test_missing_extra_requirement_falls_back_to_the_core_rules(self) -> None:
+        # 选中的补充要求不存在（或 V9 旧版自定义提示词为空）时照常翻译，只用内置规则。
+        for settings in (
+            AppSettings(excel_domain_preset="自定义", excel_custom_prompt=""),
+            AppSettings(excel_domain_preset="已删除的要求"),
+        ):
+            prompt = get_system_prompt(settings, target_lang="", page_key="excel")
+            self.assertEqual(prompt, CORE_TRANSLATION_PROMPT)
 
     def test_cleaning_full_override_cannot_remove_json_protocol(self) -> None:
         """M3B-07: full cleaner overrides must retain protocol boundaries."""

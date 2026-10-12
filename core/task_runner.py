@@ -74,6 +74,7 @@ from core.engine_dispatcher import (
     build_engine,
     build_role_engine,
     get_system_prompt,
+    smart_context_enabled,
     translate_texts,
     translate_texts_with_sources,
 )
@@ -97,7 +98,6 @@ from core.document_profile import (
     append_profile,
     drop_unlocked_short_hits,
     is_context_sensitive,
-    is_smart_preset,
     lookup_locked_tm,
     request_document_profile,
 )
@@ -885,7 +885,7 @@ class TaskRunner(BaseTaskRunner):
 
             _raise_if_stopped()
 
-            smart_mode = is_smart_preset(getattr(settings, "excel_domain_preset", settings.domain_preset))
+            smart_mode = smart_context_enabled(settings, "excel")
             self._smart_mode = smart_mode
             if smart_mode and global_unique_texts and engine_supports_chat(engine):
                 # 「自动识别场景」：正式翻译前先读一遍全部文字，概括出文档说明带进每批提示词。

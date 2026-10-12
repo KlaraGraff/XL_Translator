@@ -22,7 +22,9 @@ from core.request_progress import (
     BatchRequestEvent,
 )
 from config import (
-    DOMAIN_PRESETS,
+    CORE_TRANSLATION_PROMPT,
+    EXTRA_PROMPT_HEADER,
+    NO_EXTRA_PROMPT,
     CHUNK_CLOUD_MAX,
     CHUNK_LOCAL_MAX,
     LM_STUDIO_BASE_URL,
@@ -395,110 +397,51 @@ def get_system_prompt(
     source_lang: str = "zh",
     page_key: str = "",
 ) -> str:
-    """
-    根据领域预设和目标语言生成最终 System Prompt。
+    """拼出发给文档翻译模型的 System Prompt（不含返回格式，那段由引擎追加）。
 
-    领域提示词只维护一份 `_base` 主版本；旧版扁平字符串和按语言映射仍可读取，
-    但不会再覆盖新的统一主 Prompt 设计。
+    内置规则（CORE_TRANSLATION_PROMPT）始终在最前面、用户改不了；用户选了「补充要求」
+    时接在后面，只追加、不替换。「自动识别场景」的文档说明由各任务在拿到之后用
+    core.document_profile.append_profile 接上，不在这里。
     """
     normalized_page = str(page_key or "").strip().lower()
-    if normalized_page in {"excel", "word", "cad"}:
-        prefix = f"{normalized_page}_"
-        domain_preset = str(
-            getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
-            or settings.domain_preset
-        ).strip()
-        custom_prompt = str(
-            getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt)
-            or ""
-        )
-        domain_prompt_overrides = dict(
-            getattr(
-                settings,
-                f"{prefix}domain_prompt_overrides",
-                settings.domain_prompt_overrides,
-            )
-            or {}
-        )
-        domain_custom_prompts = dict(
-            getattr(settings, f"{prefix}domain_custom_prompts", {}) or {}
-        )
-    else:
-        domain_preset = str(settings.domain_preset or "").strip()
-        custom_prompt = str(settings.custom_prompt or "")
-        domain_prompt_overrides = dict(settings.domain_prompt_overrides or {})
-        domain_custom_prompts = {}
-
-    # Named prompts created by the user are resolved before the legacy
-    # ``自定义`` sentinel.  Keep both string and language-map values readable
-    # so older settings files remain usable after the schema addition.
-    named_entry = domain_custom_prompts.get(domain_preset)
-    if isinstance(named_entry, dict):
-        # New data has one canonical ``_base`` prompt.  Prefer it for every
-        # target language; the target-specific lookup remains a compatibility
-        # fallback for settings written by older versions.
-        named_prompt = str(named_entry.get("_base") or named_entry.get(target_lang) or "")
-        if not named_prompt.strip():
-            named_prompt = next(
-                (str(value) for value in named_entry.values() if isinstance(value, str) and value.strip()),
+    prefix = f"{normalized_page}_" if normalized_page in {"excel", "word", "cad"} else ""
+    selected = str(
+        getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
+        or NO_EXTRA_PROMPT
+    ).strip()
+    extras = dict(getattr(settings, f"{prefix}domain_custom_prompts", None) or {})
+    if not prefix and not extras:
+        extras = dict(settings.domain_custom_prompts or {})
+    extra = ""
+    entry = extras.get(selected) if selected != NO_EXTRA_PROMPT else None
+    if isinstance(entry, dict):
+        # 正常数据只有一份 ``_base``；旧版按目标语言存的映射仍按当前语言读。
+        extra = str(entry.get("_base") or entry.get(target_lang) or "").strip()
+        if not extra:
+            extra = next(
+                (str(value).strip() for value in entry.values() if isinstance(value, str) and value.strip()),
                 "",
             )
-    elif isinstance(named_entry, str):
-        named_prompt = named_entry
-    else:
-        named_prompt = ""
-    if named_prompt.strip():
-        return append_prompt_block(
-            named_prompt,
-            build_target_lang_note_block(target_lang, settings.custom_target_langs),
-        )
-
-    if domain_preset == "自定义":
-        if not custom_prompt.strip():
-            raise ValueError("自定义领域提示词不能为空")
-        prompt = custom_prompt
-        return append_prompt_block(
-            prompt,
-            build_target_lang_note_block(target_lang, settings.custom_target_langs),
-        )
-    # 用户自定义覆盖优先于内置预设。新数据按「预设名 → {_base: Prompt}」存放；
-    # 旧版按目标语言保存的映射仍按当前语言读取，找不到时取第一份有效值，保证升级
-    # 后已有配置仍可用。
-    override_entry = domain_prompt_overrides.get(domain_preset)
-    if isinstance(override_entry, dict):
-        # Canonical storage is one language-neutral ``_base`` value.  Read old
-        # target-language maps as a fallback so existing settings keep working.
-        override_prompt = override_entry.get("_base") or override_entry.get(target_lang)
-        if not isinstance(override_prompt, str) or not override_prompt.strip():
-            override_prompt = next(
-                (value for value in override_entry.values() if isinstance(value, str) and value.strip()),
-                "",
-            )
-        if override_prompt:
-            return append_prompt_block(
-                override_prompt,
-                build_target_lang_note_block(target_lang, settings.custom_target_langs),
-            )
-    elif isinstance(override_entry, str):
-        # 未经 AppSettings 校验的旧扁平值（比如手工构造的 dict 配置）：保持旧语义，
-        # 不分语言直接用。正常加载路径在 settings 校验时已迁移成嵌套形态。
-        return append_prompt_block(
-            override_entry,
-            build_target_lang_note_block(target_lang, settings.custom_target_langs),
-        )
-    preset = DOMAIN_PRESETS.get(domain_preset, "")
-    prompt = ""
-    if isinstance(preset, dict):
-        # Built-in prompts are maintained once in ``_base``.  The language
-        # entries remain readable for older configurations but never override
-        # the canonical prompt.
-        prompt = preset.get("_base", "") or preset.get(target_lang, "")
-    else:
-        prompt = preset
+    elif isinstance(entry, str):
+        extra = entry.strip()
+    elif selected == "自定义":
+        # 没经过 v35 迁移的旧调用方（CLI 手工构造的设置）还可能用 V9 的单条自定义提示词。
+        extra = str(getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or "").strip()
+    prompt = CORE_TRANSLATION_PROMPT
+    if extra:
+        prompt = f"{prompt}\n\n{EXTRA_PROMPT_HEADER}\n{extra}"
     return append_prompt_block(
         prompt,
         build_target_lang_note_block(target_lang, settings.custom_target_langs),
     )
+
+
+def smart_context_enabled(settings: AppSettings, page_key: str) -> bool:
+    """「自动识别场景」开关：这一页翻译前要不要先通读文档、写一段文档说明。"""
+    normalized_page = str(page_key or "").strip().lower()
+    if normalized_page in {"excel", "word", "cad"}:
+        return bool(getattr(settings, f"{normalized_page}_smart_context", True))
+    return bool(getattr(settings, "domain_smart_context", True))
 
 
 def activate_translation_surface(settings: AppSettings, surface: str) -> AppSettings:
@@ -509,8 +452,11 @@ def activate_translation_surface(settings: AppSettings, surface: str) -> AppSett
     prefix = f"{normalized}_"
     settings.domain_preset = str(
         getattr(settings, f"{prefix}domain_preset", settings.domain_preset)
-        or "自动识别场景"
+        or NO_EXTRA_PROMPT
     ).strip()
+    settings.domain_smart_context = bool(
+        getattr(settings, f"{prefix}smart_context", settings.domain_smart_context)
+    )
     settings.custom_prompt = str(
         getattr(settings, f"{prefix}custom_prompt", settings.custom_prompt) or ""
     )

@@ -23,8 +23,6 @@ import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
-SMART_PRESET = "自动识别场景"
-
 # 送去概括的样本：出现次数最多的短标签 + 最长的几段说明，合计不超过这么多字。
 _SAMPLE_CHAR_BUDGET = 6000
 _SAMPLE_FREQUENT = 200
@@ -50,10 +48,6 @@ _PROFILE_SYSTEM = (
     "（例如和门窗编号连在一起的字通常是等级或型号的一部分）。\n"
     "只输出说明正文，不要标题，不要翻译全文，不要解释你的推理。"
 )
-
-
-def is_smart_preset(preset: object) -> bool:
-    return str(preset or "").strip() == SMART_PRESET
 
 
 def is_context_sensitive(text: object) -> bool:

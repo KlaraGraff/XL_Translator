@@ -69,10 +69,10 @@ class ModelUpgradeMigrationTests(unittest.TestCase):
                 loaded = __import__("settings").load_settings()
                 loaded.image_model_role = ModelRoleSettings(cloud_model="gpt-image-2.5-flare")
                 save_settings(loaded)
-                backup_files = list((backups / "settings").glob("settings_unusable_*.json"))
+                backup_files = list((backups / "settings").glob("settings_v*_before_upgrade_*.json"))
                 self.assertEqual(len(backup_files), 1)
                 save_settings(__import__("settings").load_settings())
-                self.assertEqual(len(list((backups / "settings").glob("settings_unusable_*.json"))), 1)
+                self.assertEqual(len(list((backups / "settings").glob("settings_v*_before_upgrade_*.json"))), 1)
 
 
 if __name__ == "__main__":

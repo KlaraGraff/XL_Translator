@@ -328,6 +328,12 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
   const sourceLang = firstText({ ...snapshot, ...language }, ["source_lang", "source_selection"]);
   const targetLang = firstText({ ...snapshot, ...language }, ["target_lang"]);
   const domain = firstText(snapshot, ["domain_preset", "domain"]);
+  // V10 起快照带 smart_context：domain_preset 只是补充要求的名字。更早的任务记录里
+  // domain_preset 是场景名，照旧显示。
+  const smartContext = typeof snapshot.smart_context === "boolean" ? snapshot.smart_context : null;
+  const promptParts = smartContext === null
+    ? [domain && tx(domain)]
+    : [smartContext ? t("自动识别场景") : "", domain && domain !== "无" ? t("补充要求：{0}", domain) : ""]; // i18n-ignore 与后端值比较
   const promptVersion = firstText(snapshot, ["prompt_version", "domain_prompt_version"]);
   const configuredOutput = record(snapshot.excel_output || snapshot.word_output || snapshot.pdf_output || snapshot.cad_output);
   const outputPath =
@@ -365,7 +371,7 @@ function taskSnapshotRows(task: TaskStatus): Array<[string, string]> {
     [t("模型"), models],
     [t("连接"), connectionSummary],
     [t("运行期间切换过连接"), connectionSwitchText(task)],
-    [t("专业领域 / 提示词"), [domain && tx(domain), promptVersion].filter(Boolean).join(" · ")],
+    [t("提示词"), [...promptParts, promptVersion].filter(Boolean).join(" · ")],
     [t("输出位置"), outputPath],
     [
       t("速度设置"),

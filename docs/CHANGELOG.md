@@ -18,6 +18,10 @@
 
   **Colors and wording**: Settings > Appearance & language offers five color schemes (Neutral grey, Warm paper, Soft cool, Celadon, Amber comfort), chosen separately for light and dark mode, Neutral grey by default (settings schema v31). Wording across the interface, logs, errors and reports is unified and made formal in all three languages. "Deep clean" is renamed "Clean up memory" and warns about model charges first.
 
+- **提示词拆成内置规则和补充要求**：「设置 → 翻译参数 → 提示词设置」改为三部分：内置规则（只读，每次都发送，用户无法修改，避免改坏后拿不到译文）；「自动识别场景」开关（默认开，翻译前通读文档写一段文档说明附在内置规则后面），运行面板也可直接开关；用户的「补充要求」，可存多条、选一条用，只追加在内置规则后面，不替换。删除同步工程、资料管理、行政生活化三个预设（内容与内置规则重复）。旧数据自动迁移（settings schema v35，文档配置导出 v4）：原先选自动识别或任一预设的页面开启开关；改写过的预设、V9 的单条自定义提示词转成补充要求，原文一字不改；有内容被转换时，首次写入前先备份原设置文件到 backups/settings/。
+
+  **Prompts split into built-in rules and extra instructions**: Settings > Translation > Prompt settings now has three parts: the built-in rules (read-only, always sent and not editable, so an edit can no longer break the translation reply); an "Auto-detect scenario" switch (on by default; the document is read first and a short description is appended after the built-in rules), also available in the run panel; and the user's extra instructions, several of which can be saved with one in use, always appended after the built-in rules, never replacing them. The Engineering, Records management and Administrative presets are removed (they repeated the built-in rules). Old data migrates automatically (settings schema v35, document config export v4): pages that used auto-detect or a preset get the switch on; edited presets and the V9 single custom prompt become extra instructions word for word; when anything is converted the original settings file is first backed up to backups/settings/.
+
 - **停止与续译**：Excel 停止时保存已完成译文并标记「部分翻译」，可从中断处继续；手动停止不再记为接口错误，也不再产生额外模型调用；重新扫描不再误报「源文件已变化」。
 
   **Stop and resume**: A stopped Excel task saves completed translations, is marked as partly translated and can resume. A manual stop is no longer recorded as an API error or followed by extra model requests. Rescanning no longer falsely reports a changed source file.

@@ -39,11 +39,18 @@ def test_every_cad_switch_is_persisted_and_reaches_the_task_payload():
     """
     source = WORKSPACE_VIEW.read_text(encoding="utf-8")
     block = source[source.index("const CAD_TOGGLES"):source.index("const TOGGLES:")]
-    keys = re.findall(r'key: "(\w+)"', block)
-    assert keys, "CAD toggles not found"
+    keys = []
     for line in block.splitlines():
-        if "key:" in line:
-            assert 'pathKind: "output"' in line, line
+        if "key:" not in line:
+            continue
+        key = re.search(r'key: "(\w+)"', line).group(1)
+        if key == "smartContext":
+            # 「自动识别场景」存在设置里，任务开始时服务端按 cad_smart_context 读，不走任务参数。
+            assert 'pathKind: "flat", path: "cad_smart_context"' in line, line
+            continue
+        assert 'pathKind: "output"' in line, line
+        keys.append(key)
+    assert keys, "CAD toggles not found"
     payload = source[source.index("function buildPayload"):source.index("async function startTask")]
     for key in keys:
         assert f'st.toggles.get("{key}")' in payload, key

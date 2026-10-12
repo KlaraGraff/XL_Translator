@@ -38,7 +38,7 @@ from core.document_config import (
 )
 from core.engine_dispatcher import get_system_prompt
 from core.language_registry import get_default_target_lang
-from settings import AppSettings
+from settings import AppSettings, migrate_prompt_layers
 
 _UI_SRC = Path(__file__).resolve().parents[1] / "ui" / "src"
 
@@ -189,32 +189,31 @@ class DomainOverrideLangMigrationTests(unittest.TestCase):
 
 
 class DomainOverrideDispatchTests(unittest.TestCase):
-    """统一主 Prompt：覆盖与翻译方向解耦，所有目标语言共用同一份覆盖。"""
+    """v35 起场景改写转成补充要求：旧覆盖不管存成哪种形态，迁移后对所有目标语言都生效。"""
 
-    def _settings(self) -> AppSettings:
+    def _settings(self, override: object) -> AppSettings:
         return AppSettings.model_validate(
-            {
-                "excel_domain_preset": "同步工程场景",
-                "excel_target_lang": "fr",
-                "excel_domain_prompt_overrides": {
-                    "同步工程场景": {"fr": OVERRIDE_TEXT}
-                },
-            }
+            migrate_prompt_layers(
+                {
+                    "excel_domain_preset": "同步工程场景",
+                    "excel_target_lang": "fr",
+                    "excel_domain_prompt_overrides": {"同步工程场景": override},
+                }
+            )
         )
 
     def test_override_used_for_its_own_target_lang(self) -> None:
-        prompt = get_system_prompt(self._settings(), target_lang="fr", page_key="excel")
+        prompt = get_system_prompt(self._settings({"fr": OVERRIDE_TEXT}), target_lang="fr", page_key="excel")
         self.assertIn(OVERRIDE_TEXT, prompt)
 
     def test_other_target_lang_uses_the_same_canonical_override(self) -> None:
-        prompt = get_system_prompt(self._settings(), target_lang="en", page_key="excel")
+        prompt = get_system_prompt(self._settings({"fr": OVERRIDE_TEXT}), target_lang="en", page_key="excel")
         self.assertIn(OVERRIDE_TEXT, prompt, "统一主 Prompt 应适用于所有目标语言")
 
-    def test_unvalidated_flat_override_keeps_legacy_semantics(self) -> None:
-        # 防御分支：绕过校验直接塞旧扁平值（pydantic 默认不校验赋值），
-        # 保持旧语义不分语言直接用，而不是抛错或静默丢弃。
-        settings = self._settings()
-        settings.excel_domain_prompt_overrides = {"同步工程场景": OVERRIDE_TEXT}  # type: ignore[assignment]
+    def test_flat_legacy_override_is_kept(self) -> None:
+        settings = self._settings(OVERRIDE_TEXT)
+        self.assertTrue(settings.excel_smart_context)
+        self.assertEqual(settings.excel_domain_preset, "同步工程场景（旧版修改）")
         prompt = get_system_prompt(settings, target_lang="en", page_key="excel")
         self.assertIn(OVERRIDE_TEXT, prompt)
 
@@ -283,58 +282,42 @@ class DomainOverrideRoundTripTests(_PatchedAppDataTestCase):
 
 
 class DomainPutEndpointTests(_PatchedAppDataTestCase):
-    """中-15：PUT /api/domains/{surface} 收嵌套新形态，也收旧客户端的扁平写入。"""
+    """PUT /api/domains/{surface}：补充要求收旧客户端的语言映射和扁平值，统一落成 `_base`。"""
 
     def setUp(self) -> None:
         super().setUp()
         self.client = TestClient(create_app())
 
-    def _put(self, overrides: dict) -> dict:
+    def _put(self, prompts: dict) -> dict:
         response = self.client.put(
             "/api/domains/excel",
-            json={
-                "preset": "同步工程场景",
-                "custom_prompt": "",
-                "prompt_overrides": overrides,
-                "name_overrides": {},
-            },
+            json={"smart_context": True, "preset": "无", "custom_prompts": prompts},
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def test_nested_override_collapses_to_canonical_base(self) -> None:
-        body = self._put({"同步工程场景": {"fr": OVERRIDE_TEXT}})
-        self.assertEqual(
-            body["prompt_overrides"], {"同步工程场景": {"_base": OVERRIDE_TEXT}}
-        )
+    def test_nested_prompt_collapses_to_canonical_base(self) -> None:
+        body = self._put({"我的要求": {"fr": OVERRIDE_TEXT}})
+        self.assertEqual(body["custom_prompts"], {"我的要求": {"_base": OVERRIDE_TEXT}})
 
     def test_flat_legacy_put_is_normalized_not_rejected(self) -> None:
-        # 旧客户端仍可发送扁平值，但新服务端统一落成 `_base`。
-        response = self.client.put("/api/settings", json={"excel_target_lang": "fr"})
-        self.assertEqual(response.status_code, 200, response.text)
-        body = self._put({"同步工程场景": OVERRIDE_TEXT})
-        self.assertEqual(
-            body["prompt_overrides"], {"同步工程场景": {"_base": OVERRIDE_TEXT}}
-        )
+        body = self._put({"我的要求": OVERRIDE_TEXT})
+        self.assertEqual(body["custom_prompts"], {"我的要求": {"_base": OVERRIDE_TEXT}})
 
     def test_empty_lang_layer_is_dropped(self) -> None:
-        body = self._put({"同步工程场景": {}})
-        self.assertEqual(body["prompt_overrides"], {})
+        body = self._put({"我的要求": {}})
+        self.assertEqual(body["custom_prompts"], {})
 
 
 class DocumentConfigExportVersionTests(unittest.TestCase):
-    """统一主 Prompt：导出文件里的覆盖结构变了，版本号必须跟着升。
-
-    旧版应用校验不了嵌套覆盖，若版本号不动，它读新文件时报的是一段英文校验
-    错误；升到 2 之后走版本闸门，得到的是「请先升级应用」的明白话。
-    """
+    """导出文件结构变了，版本号必须跟着升，旧版应用才会报「请先升级应用」。"""
 
     def test_export_version_is_bumped(self) -> None:
-        self.assertEqual(DOCUMENT_CONFIG_EXPORT_VERSION, 3)
+        self.assertEqual(DOCUMENT_CONFIG_EXPORT_VERSION, 4)
 
     def test_v1_bundle_with_flat_overrides_still_imports(self) -> None:
         # 导入侧只拒绝比自己高的版本：老同事导出的 v1 扁平覆盖照常进来，
-        # 并在新设置写入时归入统一主 Prompt。
+        # 转成一条补充要求。
         merged = apply_document_config_import(
             AppSettings(),
             parse_document_config_import(
@@ -349,24 +332,30 @@ class DocumentConfigExportVersionTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            merged.excel_domain_prompt_overrides,
-            {"同步工程场景": {"_base": OVERRIDE_TEXT}},
+            merged.excel_domain_custom_prompts,
+            {"同步工程场景（旧版修改）": {"_base": OVERRIDE_TEXT}},
         )
+        self.assertEqual(merged.excel_domain_prompt_overrides, {})
+        self.assertTrue(merged.excel_smart_context)
 
 
 class DomainOverrideUiSourcePinTests(unittest.TestCase):
-    """统一主 Prompt：设置页按预设名读写 `_base`，不再重复展示语言栏。"""
+    """v35 提示词：内置规则只读展示，补充要求只存一份 `_base`，不再有可改写的场景预设。"""
 
-    def test_editor_reads_canonical_override_with_legacy_fallback(self) -> None:
+    def test_core_rules_are_shown_read_only_from_the_backend(self) -> None:
         source = _read_ui("views/settings.ts")
-        self.assertIn("values._base || values[targetLang]", source)
+        self.assertIn("/api/domains/builtin-prompts", source)
+        self.assertIn("core_prompt", source)
+        self.assertIn("prompt-readonly", source)
+        self.assertNotIn("恢复内置默认", source)
         self.assertNotIn("promptLanguageValue", source)
         self.assertNotIn("prompt-language-pair", source)
 
-    def test_save_writes_only_the_canonical_base_layer(self) -> None:
+    def test_extra_requirement_is_saved_as_a_single_base_layer(self) -> None:
         source = _read_ui("views/settings.ts")
-        self.assertIn("langOverrides._base = promptArea.value", source)
-        self.assertIn("delete langOverrides._base", source)
+        self.assertIn("_base: promptArea.value", source)
+        self.assertIn("custom_prompts", source)
+        self.assertNotIn("prompt_overrides:", source)
         self.assertNotIn("同步语言对", source)
 
 

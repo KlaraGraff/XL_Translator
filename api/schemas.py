@@ -279,16 +279,13 @@ class ModelRoleTestPayload(BaseModel):
 
 
 class DomainSettingsPayload(BaseModel):
-    preset: str = "自动识别场景"
-    custom_prompt: str = ""
-    # 新形态统一保存为「预设名 → {"_base": Prompt}」；仍接受旧的
-    # 语言映射和扁平字符串，写入时折叠为一个主 Prompt。
-    prompt_overrides: dict[str, dict[str, str] | str] = Field(default_factory=dict)
-    name_overrides: dict[str, str] = Field(default_factory=dict)
-    # Named user prompts also use one canonical ``_base`` value.  Language maps
-    # and plain strings remain accepted for backwards compatibility.
+    # 「自动识别场景」开关。
+    smart_context: bool = True
+    # 选中的补充要求：「无」或 custom_prompts 里的一个名字。
+    preset: str = "无"
+    # 用户的补充要求，统一存成「名称 → {"_base": 正文}」；仍接受旧的语言映射和
+    # 扁平字符串，写入时折叠成一份。
     custom_prompts: dict[str, dict[str, str] | str] = Field(default_factory=dict)
-    disabled_presets: list[str] = Field(default_factory=list)
 
 
 class DomainPromptOptimizePayload(BaseModel):

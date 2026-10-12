@@ -13,11 +13,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import settings as settings_module
-from config import DOMAIN_PRESETS
 from core import tm_manager
 from core.cad_translation import CadPipelineOptions, CadTranslationPipeline
 from core.document_profile import (
-    SMART_PRESET,
     append_profile,
     drop_unlocked_short_hits,
     is_context_sensitive,
@@ -114,11 +112,12 @@ class RequestProfileTests(unittest.TestCase):
 
 
 class SmartPresetTests(unittest.TestCase):
-    def test_smart_preset_has_a_prompt_and_is_the_default_everywhere(self) -> None:
-        self.assertIn(SMART_PRESET, DOMAIN_PRESETS)
+    def test_smart_context_is_on_by_default_everywhere(self) -> None:
         settings = AppSettings()
+        for key in ("domain_smart_context", "excel_smart_context", "word_smart_context", "cad_smart_context"):
+            self.assertTrue(getattr(settings, key), key)
         for key in ("domain_preset", "excel_domain_preset", "word_domain_preset", "cad_domain_preset"):
-            self.assertEqual(getattr(settings, key), SMART_PRESET, key)
+            self.assertEqual(getattr(settings, key), "无", key)
         self.assertTrue(settings.pdf.smart_context)
         prompt = get_system_prompt(settings, target_lang="en", source_lang="zh", page_key="cad")
         self.assertIn("文档说明为准", prompt)
@@ -182,7 +181,7 @@ class SmartDomainMigrationTests(IsolatedAppDataTestCase):
         self.app_data_dir.mkdir(parents=True, exist_ok=True)
         (self.app_data_dir / "settings.json").write_text(json.dumps(payload), encoding="utf-8")
 
-    def test_old_defaults_move_to_smart_and_deliberate_choices_stay(self) -> None:
+    def test_old_defaults_and_retired_scenes_turn_auto_detect_on(self) -> None:
         self._write(
             {
                 "settings_version": 32,
@@ -192,21 +191,26 @@ class SmartDomainMigrationTests(IsolatedAppDataTestCase):
             }
         )
         loaded = settings_module.load_settings()
-        self.assertEqual(loaded.excel_domain_preset, SMART_PRESET)
-        self.assertEqual(loaded.word_domain_preset, "资料管理场景")
-        self.assertEqual(loaded.cad_domain_preset, SMART_PRESET)
-        self.assertEqual(loaded.domain_preset, SMART_PRESET)
+        # v33 把旧默认迁到「自动识别场景」；v35 再把它和停用的场景都变成开关打开、补充要求「无」。
+        for page in ("excel", "word", "cad"):
+            self.assertTrue(getattr(loaded, f"{page}_smart_context"), page)
+            self.assertEqual(getattr(loaded, f"{page}_domain_preset"), "无", page)
+        self.assertTrue(loaded.domain_smart_context)
 
     def test_trial_name_is_renamed(self) -> None:
         # 开发版试用时这个领域叫「智能」，已存进 v33 设置文件的跟着改名。
         self._write({"settings_version": 33, "word_domain_preset": "智能", "excel_domain_preset": "无"})
         loaded = settings_module.load_settings()
-        self.assertEqual(loaded.word_domain_preset, SMART_PRESET)
+        self.assertTrue(loaded.word_smart_context)
+        self.assertFalse(loaded.excel_smart_context)
         self.assertEqual(loaded.excel_domain_preset, "无")
 
-    def test_current_version_keeps_an_explicit_old_default(self) -> None:
-        self._write({"settings_version": settings_module.SETTINGS_SCHEMA_VERSION, "cad_domain_preset": "同步工程场景"})
-        self.assertEqual(settings_module.load_settings().cad_domain_preset, "同步工程场景")
+    def test_current_version_is_not_migrated_again(self) -> None:
+        # v35 的「无」只是没选补充要求，不能再按旧含义把自动识别关掉。
+        self._write({"settings_version": settings_module.SETTINGS_SCHEMA_VERSION, "cad_domain_preset": "无"})
+        loaded = settings_module.load_settings()
+        self.assertTrue(loaded.cad_smart_context)
+        self.assertEqual(loaded.cad_domain_preset, "无")
 
 
 def _dxf(*texts: str) -> str:
